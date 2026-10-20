@@ -126,7 +126,7 @@ configure_file("${ORCA_SOURCE_ROOT}/src/libslic3r/libslic3r_version.h.in" "${CMA
 target_link_libraries(libslic3r_mobile PUBLIC
     Eigen3::Eigen admesh libigl libnest2d miniz qoi semver::semver expat clipper Clipper2 glu-libtess mcut qhull
     TBB::tbb
-    orca_boost_headers cereal::cereal
+    orca_boost_headers cereal
     Boost::filesystem Boost::system Boost::thread Boost::log
     Boost::locale Boost::regex Boost::chrono Boost::date_time Boost::iostreams Boost::atomic
     noise::noise
