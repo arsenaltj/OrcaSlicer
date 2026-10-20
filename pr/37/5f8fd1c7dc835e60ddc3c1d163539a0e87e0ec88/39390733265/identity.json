@@ -1,0 +1,25 @@
+{
+  "pr": 37,
+  "run": 39390733265,
+  "head": "5f8fd1c7dc835e60ddc3c1d163539a0e87e0ec88",
+  "base": "29f94d0c540f2e0b98498619fe93842467cbdc2f",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "feat(sdk): integrate v1.7 LAN SDK and Android FFI",
+  "path": "pr/37/5f8fd1c7dc835e60ddc3c1d163539a0e87e0ec88/39390733265",
+  "created": "2026-10-20T08:05:59+00:00",
+  "files": {
+    "index.html": "d4693d61d5a158cfaae0a514739a21480a0c6a7888f3ebfe6d9343d6542a7066",
+    "details.html": "60cb484c8dba1e64b44770a01552524dfc313a432fd5806067df46e8fbf60357",
+    "report.json": "ca362a3d86e54aeb1c00c03b5950b638431eace59f71cc95b949ff0d8e195641",
+    "summary.md": "4ff783f5e4eecfdf0b98866e8fa1c0ea261af9679c76bc2093447e5291e92980",
+    "archify-receipts.json": "f424f746b0b2156c44ead641488468dbc32cf318f97aa77be5826d8412283e43",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l1-modules.html": "b696d834ff2736143b3f8cefddfe2f4d29acd689013d284e68c9e3469e87d419",
+    "l1-modules.json": "e55caab08263408b53ea5f4ded404fb5aa00a87e70d62c43bde6a3dbc8d1238d",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}

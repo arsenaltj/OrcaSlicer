@@ -1,5 +1,15 @@
 [
   {
+    "pr": 37,
+    "run": 39390733265,
+    "head": "5f8fd1c7dc835e60ddc3c1d163539a0e87e0ec88",
+    "base": "29f94d0c540f2e0b98498619fe93842467cbdc2f",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "feat(sdk): integrate v1.7 LAN SDK and Android FFI",
+    "path": "pr/37/5f8fd1c7dc835e60ddc3c1d163539a0e87e0ec88/39390733265",
+    "created": "2026-10-20T08:05:59+00:00"
+  },
+  {
     "pr": 36,
     "run": 39365950926,
     "head": "f125fabcd0a313c083472b020334cc19356eff85",
