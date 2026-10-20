@@ -158,6 +158,7 @@ if(_boost_module_includes)
 endif()
 if(_boost_module_includes)
     target_include_directories(libslic3r_mobile PUBLIC ${_boost_module_includes})
+    target_include_directories(libslic3r_mobile PUBLIC "${libnoise_SOURCE_DIR}")
 endif()
 target_include_directories(libslic3r_mobile PUBLIC "${cereal_SOURCE_DIR}/include")
 
