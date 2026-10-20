@@ -18,17 +18,6 @@ set(BOOST_ENABLE_CMAKE ON CACHE BOOL "" FORCE)
 set(BOOST_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
 set(BOOST_SKIP_INSTALL_RULES ON CACHE BOOL "" FORCE)
 set(BOOST_INCLUDE_LIBRARIES "system;filesystem;thread;log;locale;regex;chrono;date_time;iostreams;atomic" CACHE STRING "" FORCE)
-if(DEFINED CEREAL_SOURCE_DIR)
-    set(FETCHCONTENT_SOURCE_DIR_CEREAL "${CEREAL_SOURCE_DIR}")
-endif()
-FetchContent_Declare(cereal
-    URL https://github.com/USCiLab/cereal/archive/refs/tags/v1.3.0.zip
-    URL_HASH SHA256=71642cb54658e98c8f07a0f0d08bf9766f1c3771496936f6014169d3726d9657)
-FetchContent_MakeAvailable(cereal)
-if(TARGET cereal AND NOT TARGET cereal::cereal)
-    add_library(cereal::cereal ALIAS cereal)
-endif()
-
 FetchContent_Declare(boost
     URL https://github.com/boostorg/boost/releases/download/boost-1.84.0/boost-1.84.0.tar.gz
     URL_HASH SHA256=4d27e9efed0f6f152dc28db6430b9d3dfb40c0345da7342eaa5a987dde57bd95)
@@ -72,8 +61,7 @@ set(EXPAT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory("${ORCA_DEPS_SOURCE}/nlohmann" "deps/nlohmann")
 add_subdirectory("${ORCA_DEPS_SOURCE}/fast_float" "deps/fast_float")
 add_subdirectory("${ORCA_DEPS_SOURCE}/admesh" "deps/admesh")
-target_include_directories(admesh PUBLIC "${ORCA_SOURCE_ROOT}/src")
-
+target_link_libraries(admesh PUBLIC Boost::headers)
 add_library(clipper STATIC "${ORCA_DEPS_SOURCE}/clipper/clipper_z.cpp")
 target_include_directories(clipper SYSTEM PUBLIC "${ORCA_DEPS_SOURCE}/clipper" "${ORCA_SOURCE_ROOT}/src")
 target_link_libraries(clipper PUBLIC Eigen3::Eigen TBB::tbb)
@@ -89,7 +77,7 @@ add_subdirectory("${ORCA_DEPS_SOURCE}/semver" "deps/semver")
 
 add_library(libnest2d INTERFACE)
 target_include_directories(libnest2d INTERFACE "${ORCA_DEPS_SOURCE}/libnest2d/include")
-target_link_libraries(libnest2d INTERFACE NLopt::nlopt TBB::tbb)
+target_link_libraries(libnest2d INTERFACE NLopt::nlopt Boost::headers TBB::tbb)
 
 file(GLOB_RECURSE ORCA_LIBSLIC3R_CPP CONFIGURE_DEPENDS "${ORCA_SOURCE_ROOT}/src/libslic3r/*.cpp")
 set(_mobile_excludes
@@ -97,13 +85,13 @@ set(_mobile_excludes
     "/SLAPrint.cpp$" "/SLAPrintSteps.cpp$"
     "/Format/AssimpImport.cpp$" "/Format/DRC.cpp$" "/Format/OBJ.cpp$" "/Format/objparser.cpp$"
     "/Format/SL1.cpp$" "/Format/STEP.cpp$" "/Format/svg.cpp$"
-    "/TexturePainting.cpp$" "/ObjColorUtils.cpp$" "/TextureToColor/"
+    "/TexturePainting.cpp$" "/TextureToColor/"
     "/PNGReadWrite.cpp$" "/MeshBoolean.cpp$" "/CutSurface.cpp$" "/IntersectionPoints.cpp$"
     "/Triangulation.cpp$" "/TryCatchSignal"
     "/OpenVDBUtils.cpp$" "/Geometry/VoronoiUtilsCgal.cpp$"
     "/Shape/TextShape.cpp$" "/Emboss.cpp"
     "/pchheader.cpp$"
-    "/GCodeSender.cpp$" "/GCode/Thumbnails.cpp$" "/ProjectTask.cpp"
+    "/GCodeSender.cpp$" "/ProjectTask.cpp"
 )
 foreach(_pattern IN LISTS _mobile_excludes)
     list(FILTER ORCA_LIBSLIC3R_CPP EXCLUDE REGEX "${_pattern}")
@@ -116,13 +104,11 @@ target_compile_definitions(libslic3r_mobile PUBLIC
     TBB_USE_CAPTURED_EXCEPTION=0
     BOOST_ALL_NO_LIB=1
     BOOST_ERROR_CODE_HEADER_ONLY=1
-    BOOST_SYSTEM_NO_DEPRECATED=1
-    ORCA_CHECK_GCODE_PLACEHOLDERS=0)
+    BOOST_SYSTEM_NO_DEPRECATED=1)
 target_compile_options(libslic3r_mobile PRIVATE -fvisibility=hidden)
 target_include_directories(libslic3r_mobile
     PRIVATE "${ORCA_SOURCE_ROOT}/src/libslic3r"
     PUBLIC "${ORCA_SOURCE_ROOT}/src" "${CMAKE_CURRENT_BINARY_DIR}/generated")
-set(ORCA_CHECK_GCODE_PLACEHOLDERS "0" CACHE STRING "" FORCE)
 configure_file("${ORCA_SOURCE_ROOT}/src/libslic3r/libslic3r_version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/libslic3r_version.h" @ONLY)
 
 target_link_libraries(libslic3r_mobile PUBLIC
@@ -134,7 +120,7 @@ target_link_libraries(libslic3r_mobile PUBLIC
     ${CMAKE_DL_LIBS} log)
 
 if(EXISTS "${ORCA_SOURCE_ROOT}/src/orca_slicing/c_api.cpp" AND EXISTS "${ORCA_SOURCE_ROOT}/src/orca_slicing/engine.cpp")
-    add_library(orca_slicing_c SHARED "${ORCA_SOURCE_ROOT}/src/orca_slicing/c_api.cpp" "${ORCA_SOURCE_ROOT}/src/orca_slicing/engine.cpp" "${ORCA_SOURCE_ROOT}/src/orca_slicing/project_support.cpp" "${ORCA_SOURCE_ROOT}/src/orca_slicing/recommendation_support.cpp" "${ORCA_SOURCE_ROOT}/src/orca_slicing/android_jni.cpp")
+    add_library(orca_slicing_c SHARED "${ORCA_SOURCE_ROOT}/src/orca_slicing/c_api.cpp" "${ORCA_SOURCE_ROOT}/src/orca_slicing/engine.cpp")
     target_compile_definitions(orca_slicing_c PRIVATE ORCA_MOBILE_ANDROID=1)
     target_include_directories(orca_slicing_c PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_slicing/include" "${ORCA_SOURCE_ROOT}/src")
     target_link_libraries(orca_slicing_c PRIVATE libslic3r_mobile log)
@@ -151,23 +137,3 @@ if(TARGET orca_slicing_c)
     install(TARGETS orca_slicing_c LIBRARY DESTINATION lib)
 endif()
 install(TARGETS orca_mobile_stl_gate RUNTIME DESTINATION bin)
-
-file(GLOB _boost_module_includes LIST_DIRECTORIES true "${boost_SOURCE_DIR}/libs/*/include")
-if(_boost_module_includes)
-    target_include_directories(admesh PUBLIC ${_boost_module_includes})
-endif()
-if(_boost_module_includes)
-    target_include_directories(libslic3r_mobile PUBLIC ${_boost_module_includes})
-    target_include_directories(libslic3r_mobile PUBLIC "${libnoise_SOURCE_DIR}")
-endif()
-target_include_directories(libslic3r_mobile PUBLIC "${cereal_SOURCE_DIR}/include")
-
-
-
-
-
-
-
-
-
-
