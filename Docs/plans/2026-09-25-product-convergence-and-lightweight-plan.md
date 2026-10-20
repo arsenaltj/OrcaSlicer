@@ -1,3 +1,15 @@
+# 2026-10-19 Redesign 智能切片详情内嵌（已实施、已安装，待用户 GUI 验收）
+
+用户授权将截图中的智能切片详情改为左侧边栏完整展示：移除“查看全部”跳转，预估时间、预计耗材及其他预估指标置于信息列表最前面，切换三种方案时随方案更新。
+
+实现范围：`src/slic3r/GUI/Redesign/RedesignModelWorkflow.cpp`、`src/slic3r/GUI/Redesign/RedesignShell.hpp`。详情控件按实际行数动态创建，轻量分析与正式候选统一将预估指标置顶；未改变 SmartSlice 算法、参数应用或 Orca 原生切片流程。
+
+验证：Windows `Run -NoLaunch -Jobs 2` 五步通过并安装到 `.tmp/dev/run`，证据 [`20261019-095608-071`](../../.tmp/dev/logs/20261019-095608-071/result.json)，源码身份 `84788856c57842314094e7ca0c7b04ea6b5cbe0ce88eabbdbbb663e67198fdfe`；`git diff --check` 通过。
+
+当前范围：真实 GUI 尚未启动；用户需验证三种方案、完整详情、侧栏滚动、重新分析和开始切片。无关未跟踪架构 HTML 不纳入。
+
+计划变更：替代 2026-10-14“最多八行/超出显示查看全部”的展示约束，改为完整详情常驻左侧列表；保留原有滚动容器和正式切片验收边界。
+
 # 2026-10-17 Redesign/原生 Gizmo 深色主题可读性（已实施，待 GUI 验收）
 
 # 2026-10-17 Redesign 切片页进入时相机首帧跳变（已实施，已安装，待 GUI 验收）
@@ -1607,3 +1619,14 @@ PR 作者报告已有新控件的真实窗口、预览、前后对比和保存�
 验证与安装：[Run 20261017-004001-785](../../.tmp/dev/logs/20261017-004001-785/result.json) 的 catalogs/build/install/runtime-check/python-check 五步退出码均为 0；源码身份为 `c16bd9a7c3790b410587bd9a27f15d4ad57e0d5af4fe4bb288b8cd423172b70d`。构建产物 `.tmp/dev/build/src/Release/OrcaSlicer.dll` 与安装文件 `.tmp/dev/run/OrcaSlicer.dll` 的 SHA256 均为 `350c4ef068debbe6790e10f6389aca42f4ce94e0ab82c61ef967f3e799ca6ed1`。`git diff --check` 通过；本轮为显示位置调整，未新增仅验证常量或源码文本的测试，也未将上一轮 83/83 回归记为本轮位置验收。安装后仅增量更新两份状态文档。
 
 当前状态与剩余：已安装到 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run`，未启动应用、操作用户窗口、提交或推送；实际视觉由用户测试。待确认切片中不同百分比、窗口/DPI、小窗口边界、准备/Preview 页面及导航器隐藏偏好下的显示。上一轮取景和导航器修复的用户通过反馈继续有效；无关未跟踪架构 HTML 未修改。
+# 2026-10-19 AI 智能切片精确预估交互（已实施、已安装，待用户 GUI 验收）
+
+目标：消除快速启发式时间与正式 G-code 时间差距过大时的误导，将精确原生模拟结果作为主指标。
+
+实现：`SmartSlicingWorkbenchState` 增加工作区版本绑定的精确预估状态；`SmartSlicingFeatureHost` 在轻量分析完成后对当前方案启动后台原生试切片，方案切换、重新分析、工作区变化或正式切片开始时取消并丢弃旧结果；`OrcaTrialSliceExecutor` 复用临时 `Print`/G-code 统计并补充克数；`RedesignModelWorkflow` 在模拟完成前显示“精确计算中”，失败时明确显示“暂无准确时间”和带偏差提示的 AI 快速参考，正式切片完成后显示正式统计及来源。
+
+验收：Windows Run [`20261019-113623-348`](../../.tmp/dev/logs/20261019-113623-348/result.json) 五步通过；SmartSlicing 定向回归 289 cases / 3848 assertions 通过；集成守卫与 diff 检查通过。真实 GUI 验收待用户承接。
+
+补充：分析过程中的“计算说明”行已移除，仅保留“预计打印时间：精确计算中…”和“预计耗材：精确计算中…”。本轮源码编译、安装与运行时检查通过，已更新 `.tmp/dev/run`，待用户 GUI 验收。
+
+补充：根据界面验收反馈，左侧信息列表进一步移除“换料次数”和“数据来源”两行；本轮构建、安装和定向回归已通过，待用户确认最终界面。

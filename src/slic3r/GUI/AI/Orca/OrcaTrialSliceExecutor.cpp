@@ -1,5 +1,6 @@
 #include "OrcaTrialSliceExecutor.hpp"
 #include "OrcaParameterProposalAdapter.hpp"
+#include "SmartSliceApplier.hpp"
 
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/Print.hpp"
@@ -441,12 +442,36 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
     return execute_trial_slice_impl(candidate, nullptr, {}, nullptr, nullptr);
 }
 
+TrialSliceResult OrcaTrialSliceExecutor::execute_recommendation_slice(
+    OrcaTrialSliceInput input, const SliceRecommendation& recommendation,
+    const WorkspaceRevision& base_revision)
+{
+    TrialSliceResult result;
+    result.candidate_id = "smart-slice-preview-" + std::string(slice_mode_id(recommendation.mode));
+    result.base_revision = base_revision;
+
+    DynamicPrintConfig effective_config;
+    std::string diagnostic;
+    if (!SmartSliceApplier::BuildConfig(input.config, recommendation, effective_config, &diagnostic)) {
+        result.diagnostic_code = diagnostic.empty() ? "smart_slice_preview_config_failed" : std::move(diagnostic);
+        return result;
+    }
+
+    SliceCandidate candidate;
+    candidate.id = result.candidate_id;
+    candidate.base_revision = base_revision;
+    return execute_trial_slice_impl(candidate, nullptr, {}, nullptr, nullptr,
+                                    std::move(input), std::move(effective_config));
+}
+
 TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice_impl(
     const SliceCandidate& candidate,
     const TrialSliceTask* versioned_task,
     const std::shared_ptr<const RecommendationCancellationToken>& cancellation_token,
     TrialMetrics* trial_metrics,
-    TrialEvaluationFacts* evaluation_facts)
+    TrialEvaluationFacts* evaluation_facts,
+    std::optional<OrcaTrialSliceInput> supplied_input,
+    std::optional<DynamicPrintConfig> override_config)
 {
     TrialSliceResult result;
     result.candidate_id  = candidate.id;
@@ -455,7 +480,9 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice_impl(
         OrcaTrialSliceInput input;
         bool prepared_session = false;
         std::optional<PreparedParameters> prepared_parameters;
-        {
+        if (supplied_input) {
+            input = std::move(*supplied_input);
+        } else {
             std::lock_guard<std::mutex> lock(m_session_mutex);
             if (m_session_input) {
                 input = *m_session_input;
@@ -480,15 +507,16 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice_impl(
                         if (matches)
                             prepared_parameters = prepared;
                     }
-                }
             } else if (versioned_task != nullptr) {
-                result.diagnostic_code = "versioned_trial_session_input_unavailable";
-                return result;
+                    result.diagnostic_code = "versioned_trial_session_input_unavailable";
+                    return result;
+            }
             }
         }
-        if (!prepared_session) {
+        if (supplied_input || !prepared_session) {
             m_cancel_requested.store(false, std::memory_order_release);
-            input = m_input_provider();
+            if (!supplied_input)
+                input = m_input_provider();
         }
         m_timed_out.store(false, std::memory_order_release);
         const auto local_deadline = std::chrono::steady_clock::now() + m_maximum_duration;
@@ -541,7 +569,9 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice_impl(
             result.diagnostic_code = m_timed_out.load(std::memory_order_acquire) ? "workflow_timeout" : "trial_slice_canceled";
             return result;
         }
-        if (!candidate.parameters.entries.empty()) {
+        if (override_config) {
+            input.config = std::move(*override_config);
+        } else if (!candidate.parameters.entries.empty()) {
             if (versioned_task != nullptr) {
                 DynamicPrintConfig patched_config;
                 const OrcaParameterApplyResult parameter_result = OrcaParameterProposalAdapter().validate_and_apply(
@@ -630,6 +660,14 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice_impl(
             return result;
         }
         result.metrics = extract_metrics(gcode_result, expected_filament_mapping, prime_tower_enabled);
+        if (result.metrics->filament_volume_mm3) {
+            double density = 1.24;
+            if (const auto* densities = effective_config.option<ConfigOptionFloats>("filament_density");
+                densities != nullptr && !densities->values.empty() && std::isfinite(densities->values.front()) &&
+                densities->values.front() > 0.0)
+                density = densities->values.front();
+            result.metrics->material_grams = *result.metrics->filament_volume_mm3 * density / 1000.0;
+        }
         result.metrics->warning_codes.insert(result.metrics->warning_codes.end(), validation_warnings.size(),
                                              "native_validation_warning");
         if (trial_metrics != nullptr) {

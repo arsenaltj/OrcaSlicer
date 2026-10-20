@@ -340,6 +340,14 @@ private:
 
 struct SmartSlicingFeatureHost::Impl
 {
+    struct ExactEstimateResult
+    {
+        uint64_t attempt{0};
+        AI::SmartSlicing::RecommendationGoal goal{AI::SmartSlicing::RecommendationGoal::Balanced};
+        AI::SmartSlicing::WorkspaceRevision revision;
+        AI::SmartSlicing::TrialSliceResult result;
+    };
+
     Impl(Plater& plater, wxAuiManager& aui_manager, Sidebar& sidebar, StartOfficialSliceFn start_official_slice)
         : plater(plater)
         , aui_manager(aui_manager)
@@ -618,6 +626,143 @@ struct SmartSlicingFeatureHost::Impl
         }
     }
 
+    static AI::SmartSlicing::SliceMode slice_mode_for_goal(AI::SmartSlicing::RecommendationGoal goal)
+    {
+        return goal == AI::SmartSlicing::RecommendationGoal::Speed ? AI::SmartSlicing::SliceMode::SPEED :
+            goal == AI::SmartSlicing::RecommendationGoal::Quality ? AI::SmartSlicing::SliceMode::QUALITY :
+            AI::SmartSlicing::SliceMode::BALANCED;
+    }
+
+    void cancel_exact_estimate()
+    {
+        trial_executor->cancel_trial_slice();
+        std::lock_guard<std::mutex> lock(exact_estimate_mutex);
+        ++last_exact_estimate_attempt;
+        exact_estimate.status = ExactEstimateStatus::None;
+        exact_estimate.estimated_time_seconds.reset();
+        exact_estimate.material_volume_mm3.reset();
+        exact_estimate.material_grams.reset();
+        exact_estimate.tool_changes.reset();
+        exact_estimate.source.clear();
+        exact_estimate.diagnostic = "smart_slice_preview_canceled";
+        exact_estimate_pending.reset();
+    }
+
+    void start_exact_estimate(AI::SmartSlicing::RecommendationGoal goal)
+    {
+        bool lightweight_running = false;
+        {
+            std::lock_guard<std::mutex> lock(lightweight_mutex);
+            lightweight_running = lightweight_analyzing;
+        }
+        if (!workbench_active || !workbench_ai_mode || recommendation_worker_state.running() ||
+            lightweight_running || native_session.pending() ||
+            workbench_official.phase == AI::SmartSlicing::OfficialSlicePhase::Slicing)
+            return;
+
+        {
+            std::lock_guard<std::mutex> lock(exact_estimate_mutex);
+            if (exact_estimate.status == ExactEstimateStatus::Running && exact_estimate.goal == goal &&
+                exact_estimate.revision == current_native_revision())
+                return;
+        }
+        if (exact_worker.joinable())
+            return;
+
+        AI::SmartSlicing::SliceRecommendation recommendation;
+        {
+            std::lock_guard<std::mutex> lock(lightweight_mutex);
+            if (!lightweight_analysis || !lightweight_analysis->completed)
+                return;
+            const auto* found = lightweight_analysis->find(slice_mode_for_goal(goal));
+            if (found == nullptr)
+                return;
+            recommendation = *found;
+        }
+
+        const auto revision = current_native_revision();
+        if (!revision.valid()) return;
+        if (!goal_selection.selected(revision)) {
+            goal_selection.select(goal, revision);
+            selected_goal = goal;
+        }
+        OrcaTrialSliceInput input;
+        try { input = workspace->capture_trial_slice_input(); }
+        catch (...) {
+            std::lock_guard<std::mutex> lock(exact_estimate_mutex);
+            exact_estimate.status = ExactEstimateStatus::Failed;
+            exact_estimate.goal = goal;
+            exact_estimate.revision = revision;
+            exact_estimate.diagnostic = "smart_slice_preview_input_failed";
+            return;
+        }
+
+        uint64_t attempt;
+        {
+            std::lock_guard<std::mutex> lock(exact_estimate_mutex);
+            attempt = ++last_exact_estimate_attempt;
+            exact_estimate = {};
+            exact_estimate.status = ExactEstimateStatus::Running;
+            exact_estimate.goal = goal;
+            exact_estimate.revision = revision;
+            exact_estimate.source = "native_trial";
+            exact_estimate_pending.reset();
+        }
+        try {
+            exact_worker = std::thread([this, attempt, goal, revision,
+                                        recommendation = std::move(recommendation),
+                                        input = std::move(input)]() mutable {
+                ExactEstimateResult pending;
+                pending.attempt = attempt;
+                pending.goal = goal;
+                pending.revision = revision;
+                pending.result = trial_executor->execute_recommendation_slice(
+                    std::move(input), recommendation, revision);
+                {
+                    std::lock_guard<std::mutex> lock(exact_estimate_mutex);
+                    exact_estimate_pending = std::move(pending);
+                }
+            });
+        } catch (...) {
+            std::lock_guard<std::mutex> lock(exact_estimate_mutex);
+            exact_estimate.status = ExactEstimateStatus::Failed;
+            exact_estimate.diagnostic = "smart_slice_preview_worker_start_failed";
+        }
+    }
+
+    void drain_exact_estimate()
+    {
+        std::optional<ExactEstimateResult> pending;
+        {
+            std::lock_guard<std::mutex> lock(exact_estimate_mutex);
+            if (exact_estimate_pending)
+                pending = std::move(exact_estimate_pending);
+        }
+        if (pending) {
+            if (exact_worker.joinable()) exact_worker.join();
+            std::lock_guard<std::mutex> lock(exact_estimate_mutex);
+            if (pending->attempt != last_exact_estimate_attempt ||
+                pending->revision != current_native_revision())
+                return;
+            const auto& result = pending->result;
+            exact_estimate.goal = pending->goal;
+            exact_estimate.revision = pending->revision;
+            if (result.status == AI::SmartSlicing::TrialSliceStatus::Succeeded && result.metrics) {
+                exact_estimate.status = ExactEstimateStatus::Ready;
+                exact_estimate.estimated_time_seconds = result.metrics->estimated_time_seconds;
+                exact_estimate.material_volume_mm3 = result.metrics->filament_volume_mm3;
+                exact_estimate.material_grams = result.metrics->material_grams;
+                exact_estimate.tool_changes = result.metrics->tool_changes;
+                exact_estimate.source = "native_trial";
+                exact_estimate.diagnostic.clear();
+            } else {
+                exact_estimate.status = ExactEstimateStatus::Failed;
+                exact_estimate.diagnostic = result.diagnostic_code.empty() ?
+                    "smart_slice_preview_failed" : result.diagnostic_code;
+            }
+        }
+    }
+
     void drain_lightweight_worker()
     {
         if (!lightweight_worker.joinable()) return;
@@ -793,6 +938,30 @@ struct SmartSlicingFeatureHost::Impl
         recommendation_coordinator.check_deadline();
         refresh_recommendation_revision();
         drain_recommendation_results();
+        drain_exact_estimate();
+        if (workbench_active && workbench_ai_mode && !native_session.pending() &&
+            !recommendation_worker_state.running()) {
+            bool lightweight_ready = false;
+            {
+                std::lock_guard<std::mutex> lock(lightweight_mutex);
+                lightweight_ready = lightweight_analysis && lightweight_analysis->completed &&
+                    !lightweight_analyzing;
+            }
+            if (lightweight_ready) {
+                const auto current = current_native_revision();
+                const auto goal = goal_selection.selected(current).value_or(
+                    AI::SmartSlicing::RecommendationGoal::Balanced);
+                bool should_start = false;
+                {
+                    std::lock_guard<std::mutex> lock(exact_estimate_mutex);
+                    const bool current_result = exact_estimate.revision == current && exact_estimate.goal == goal;
+                    should_start = (!current_result || exact_estimate.status == ExactEstimateStatus::None ||
+                        exact_estimate.status == ExactEstimateStatus::Failed) && !exact_worker.joinable();
+                }
+                if (should_start)
+                    start_exact_estimate(goal);
+            }
+        }
         if (workbench_active && workbench_ai_mode && !native_session.pending()) {
             const auto current = current_native_revision();
             if (current.valid() && (!observed_workbench_revision || *observed_workbench_revision != current)) {
@@ -836,6 +1005,7 @@ struct SmartSlicingFeatureHost::Impl
     void cancel_recommendation_session(AI::SmartSlicing::RecommendationCancellationReason reason)
     {
         using namespace AI::SmartSlicing;
+        cancel_exact_estimate();
         {
             std::lock_guard<std::mutex> lock(lightweight_mutex);
             ++last_lightweight_attempt;
@@ -870,6 +1040,11 @@ struct SmartSlicingFeatureHost::Impl
             const WorkspaceRevision current = workspace->current_revision();
             if (current == snapshot.workspace_revision)
                 return;
+            // A model, plate, material, or print-parameter edit invalidates
+            // the native preview immediately.  Cancel the worker before the
+            // coordinator publishes the new workspace revision so the UI
+            // cannot briefly reuse the old exact metrics.
+            cancel_exact_estimate();
             recommendation_coordinator.enqueue(WorkspaceRevisionChangedCommand{
                 snapshot.workflow_id, snapshot.attempt_id, current});
             recommendation_coordinator.process_all();
@@ -918,6 +1093,8 @@ struct SmartSlicingFeatureHost::Impl
         join_recommendation_worker();
         if (lightweight_worker.joinable())
             lightweight_worker.join();
+        if (exact_worker.joinable())
+            exact_worker.join();
         clear_recommendation_results();
         presenter.reset();
         if (panel != nullptr)
@@ -1347,6 +1524,10 @@ struct SmartSlicingFeatureHost::Impl
             if (state.diagnostic.empty() && !lightweight_diagnostic.empty())
                 state.diagnostic = lightweight_diagnostic;
         }
+        {
+            std::lock_guard<std::mutex> lock(exact_estimate_mutex);
+            state.exact_estimate = exact_estimate;
+        }
         state.analyzing = state.analyzing || state.lightweight_analyzing;
         state.can_analyze = !state.analyzing && !native_session.pending() &&
             workbench_official.phase != OfficialSlicePhase::Slicing;
@@ -1476,6 +1657,7 @@ struct SmartSlicingFeatureHost::Impl
     RecommendationHostEventBindings recommendation_event_bindings;
     std::thread recommendation_worker;
     std::thread lightweight_worker;
+    std::thread exact_worker;
     AI::SmartSlicing::RecommendationWorkerState recommendation_worker_state;
     mutable std::mutex recommendation_result_mutex;
     std::deque<AI::SmartSlicing::RecommendationTaskResult> recommendation_results;
@@ -1504,6 +1686,10 @@ struct SmartSlicingFeatureHost::Impl
     bool lightweight_analyzing {false};
     bool lightweight_stale {false};
     uint64_t last_lightweight_attempt {0};
+    mutable std::mutex exact_estimate_mutex;
+    ExactEstimateView exact_estimate;
+    std::optional<ExactEstimateResult> exact_estimate_pending;
+    uint64_t last_exact_estimate_attempt{0};
 };
 
 SmartSlicingFeatureHost::SmartSlicingFeatureHost(Plater& plater, wxAuiManager& aui_manager, Sidebar& sidebar,
@@ -1636,7 +1822,10 @@ bool SmartSlicingFeatureHost::select_goal(AI::SmartSlicing::RecommendationGoal g
     }();
     if ((!m_impl->workbench_candidate(goal) && !quick_available) ||
         !m_impl->goal_selection.select(goal, revision)) return false;
+    m_impl->cancel_exact_estimate();
     m_impl->selected_goal = goal;
+    m_impl->publish_workbench();
+    m_impl->start_exact_estimate(goal);
     m_impl->publish_workbench();
     return true;
 }

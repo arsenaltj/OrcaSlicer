@@ -1,3 +1,17 @@
+# 2026-10-19 Redesign 智能切片详情内嵌（已实施、已安装，待用户 GUI 验收）
+
+主线：承接用户要求，取消智能切片详情的“查看全部”跳转，让预估指标和全部方案参数直接显示在左侧边栏。
+
+本轮：`RedesignModelWorkflow.cpp` 将详情行控件改为按实际行数动态创建；轻量分析与正式候选都把预计时间、预计耗材/体积、质量或换料等预估指标放在列表前面；移除切片参数详情弹框入口，保留左侧滚动区域承载完整列表。未改变方案选择、参数应用和 Orca 原生切片流程。
+
+验证：Windows `dev.ps1 Run -NoLaunch -Jobs 2` 的 catalogs/build/install/runtime-check/python-check 五步全部退出码 0，结果 [`20261019-095608-071`](../../.tmp/dev/logs/20261019-095608-071/result.json)，安装到 `.tmp/dev/run`；源码身份 `84788856c57842314094e7ca0c7b04ea6b5cbe0ce88eabbdbbb663e67198fdfe`；`git diff --check` 通过。
+
+未结：尚未启动程序；用户需用匹配运行目录检查三种方案切换、全部详情行、侧栏滚动、重新分析及开始切片流程。无关未跟踪 `Docs/architecture/smart-slicing-implementation.html` 不纳入本轮。
+
+下一步：用户运行 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run/orca-slicer.exe`，导入模型进入 AI 切片页，确认预估指标位于最前且不再出现“查看全部”；如有布局或滚动问题沿当前源码继续修正。
+
+计划变更：将原“最多八行、超出显示查看全部”的 UI-08 约束替换为“左侧边栏直接显示完整详情列表”；保留现有详情滚动容器和 SmartSlice 算法、参数注入、原生切片边界。
+
 # 2026-10-17 Redesign 切片页进入时相机首帧跳变（已实施、已安装，待用户 GUI 验收）
 
 主线：承接用户授权，修复进入 AI 切片页时先短暂显示旧视角、随后跳到正面视角的问题。
@@ -645,3 +659,16 @@
 下一步：用户运行 `.tmp/dev/run/orca-slicer.exe`，验证“首次切片→切换模式→再次切片”时卡片边框/勾标和详情保持正确。
 计划变更：新增 SmartSlice 模式选择历史显示项；不改变原生切片算法和切片门禁，不提交、不推送。
 验证：SmartSlicing 定向 CppTest 292/292 通过（`20261016-181338-031`）；Run -NoLaunch 的 catalogs/build/install/runtime-check/python-check 五步通过（`20261016-211052-896`，源码身份 `889c03442f995bf4b01038c1d7742ea3e0bb5efab9ecc4a0dd0cd5d5b775db2a`）；`verify_ai_integration.py --json` 与 `git diff --check` 通过。安装成功不替代 GUI 验收。
+# 2026-10-19 AI 智能切片精确预估交互（已构建安装，待用户 GUI 验收）
+
+主线：避免把快速启发式时间直接作为预计打印时间，改为对当前方案执行一次后台原生试切片，并区分模拟、正式和失败状态。
+
+本轮：复用 `OrcaTrialSliceExecutor` 的临时 `Print`/G-code 统计，为当前方案增加工作区版本绑定的精确预估状态；精确完成前显示“精确计算中”，分析中移除冗余的“计算说明”行，并进一步移除左侧的“换料次数”和“数据来源”行，快速时间只在模拟失败时作为带偏差提示的辅助参考；正式切片完成后左侧直接读取正式 `print_statistics`。切换方案、重新分析、模型/配置变化和开始正式切片都会取消并失效旧模拟结果。
+
+验证：本轮 `dev.ps1 Run -NoLaunch -Jobs 2` 的 catalogs/build/install/runtime-check/python-check 五步全部通过，结果 [`20261019-144227-780`](../../.tmp/dev/logs/20261019-144227-780/result.json)，已安装到 `.tmp/dev/run`；`slic3rutils_tests.exe "[SmartSlicing]"` 289 cases / 3848 assertions 通过；`scripts/verify_ai_integration.py --json` 返回 `ok: true`；`git diff --check` 通过。
+
+未结：等待用户启动最新 `.tmp/dev/run/orca-slicer.exe`，确认分析中不显示“计算说明”、精确模拟完成后不显示“换料次数”和“数据来源”、切换方案取消旧结果、正式切片后显示时间和耗材，以及模拟失败仍可开始正式切片。
+
+下一步：用户运行 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run/orca-slicer.exe` 完成真实 GUI 验收；如模拟速度、布局或状态文案需要调整，沿当前未提交源码继续修正。
+
+计划变更：新增“AI 精确预估交互”实施项；将原三卡片轻量数值从主指标降为快速参考，新增原生试切统计状态与正式切片统计覆盖规则。未提交、未推送，不纳入无关未跟踪架构 HTML。

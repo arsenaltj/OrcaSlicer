@@ -39,6 +39,7 @@
 #include <wx/activityindicator.h>
 #include <wx/colordlg.h>
 #include <boost/log/trivial.hpp>
+#include <cmath>
 #include <sstream>
 
 namespace Slic3r::GUI {
@@ -238,29 +239,19 @@ struct SliceDetailRow
     wxString section;
 };
 
-constexpr size_t MAX_VISIBLE_SLICE_DETAIL_ROWS = 8;
-
-wxString slice_detail_rows_text(const std::vector<SliceDetailRow>& rows)
-{
-    wxString result;
-    wxString category;
-    for (const auto& row : rows) {
-        if (!row.section.empty() && row.section != category) {
-            if (!result.empty()) result += "\n";
-            result += row.section + "\n";
-            category = row.section;
-        }
-        result += row.label + "  " + row.value + "\n";
-    }
-    if (!result.empty()) result.RemoveLast();
-    return result;
-}
+wxString format_estimated_time(double seconds);
 
 std::vector<SliceDetailRow> candidate_detail_rows(
     const std::vector<ConfigPatchEntry>& parameters, const std::optional<TrialMetrics>& metrics)
 {
     std::vector<SliceDetailRow> rows;
     rows.reserve(parameters.size() + 3);
+    if (metrics) {
+        if (metrics->estimated_time_seconds.known())
+            rows.push_back({_L("预计打印时间"), format_estimated_time(*metrics->estimated_time_seconds.value), _L("原生试切结果")});
+        if (metrics->total_material_volume_mm3.known())
+            rows.push_back({_L("耗材体积"), wxString::Format(_L("%.1f cm³"), *metrics->total_material_volume_mm3.value / 1000.), _L("原生试切结果")});
+    }
     for (const auto& entry : parameters) {
         const auto* definition = print_config_def.get(entry.key);
         rows.push_back({
@@ -268,39 +259,78 @@ std::vector<SliceDetailRow> candidate_detail_rows(
             parameter_value(entry),
             definition ? _(definition->category) : wxString()});
     }
-    if (metrics) {
-        if (metrics->estimated_time_seconds.known())
-            rows.push_back({_L("预计时间"), wxString::Format(_L("%.0f 分钟"), *metrics->estimated_time_seconds.value / 60.), _L("预估指标")});
-        if (metrics->total_material_volume_mm3.known())
-            rows.push_back({_L("耗材体积"), wxString::Format(_L("%.1f cm³"), *metrics->total_material_volume_mm3.value / 1000.), _L("预估指标")});
-        if (metrics->tool_change_count.known())
-            rows.push_back({_L("换料次数"), wxString::Format(_L("%zu"), *metrics->tool_change_count.value), _L("预估指标")});
-    }
     return rows;
 }
 
-std::vector<SliceDetailRow> lightweight_detail_rows(const SliceRecommendation& recommendation)
+wxString format_estimated_time(double seconds)
+{
+    const auto minutes = static_cast<long long>(std::llround(std::max(0.0, seconds) / 60.0));
+    if (minutes >= 60)
+        return wxString::Format(_L("%lld 小时 %lld 分钟"), minutes / 60, minutes % 60);
+    return wxString::Format(_L("%lld 分钟"), minutes);
+}
+
+std::vector<SliceDetailRow> exact_estimate_detail_rows(
+    const SliceRecommendation& recommendation, const ExactEstimateView& estimate)
 {
     const auto support = recommendation.enable_support ? _L("树状") : _L("关闭");
     const auto adaptive = recommendation.adaptive_layer_height ? _L("启用") : _L("关闭");
     const auto wall_generator = recommendation.arachne_wall_generator ? _L("Arachne") : _L("经典");
-    return {
-        {_L("层高"), wxString::Format(_L("%.2f mm"), recommendation.layer_height_mm), _L("推荐参数")},
-        {_L("墙数"), wxString::Format("%d", recommendation.wall_loops), _L("推荐参数")},
-        {_L("填充率"), wxString::Format(_L("%.0f%% · %s"), recommendation.sparse_infill_density_percent,
-                                          wxString::FromUTF8(recommendation.sparse_infill_pattern)), _L("推荐参数")},
-        {_L("外壁速度"), wxString::Format(_L("%.0f mm/s"), recommendation.outer_wall_speed_mm_s), _L("推荐参数")},
-        {_L("支撑"), support, _L("推荐参数")},
-        {_L("支撑角度"), wxString::Format(_L("%.0f°"), recommendation.support_threshold_angle_deg), _L("推荐参数")},
-        {_L("自适应层高"), adaptive, _L("推荐参数")},
-        {_L("墙生成器"), wall_generator, _L("推荐参数")},
-        {_L("预计时间"), wxString::Format(_L("%.0f 分钟"), recommendation.estimated_time_seconds / 60.0), _L("预估指标")},
-        {_L("预计耗材"), wxString::Format(_L("%.1f g"), recommendation.estimated_material_grams), _L("预估指标")},
-        {_L("表面质量"), wxString::Format(_L("%s (%.0f/100)"),
-                                             wxString::FromUTF8(recommendation.surface_quality_rating),
-                                             recommendation.surface_quality_score), _L("预估指标")},
-        {_L("悬垂风险"), wxString::Format(_L("%.0f/100"), recommendation.overhang_risk_score * 100.0), _L("预估指标")},
-    };
+    std::vector<SliceDetailRow> rows;
+    if (estimate.status == ExactEstimateStatus::Ready) {
+        rows.push_back({_L("预计打印时间"), estimate.estimated_time_seconds ?
+            format_estimated_time(*estimate.estimated_time_seconds) : _L("暂无"), _L("原生模拟结果")});
+        rows.push_back({_L("预计耗材"), estimate.material_grams ?
+            wxString::Format(_L("%.2f g"), *estimate.material_grams) : _L("暂无"), _L("原生模拟结果")});
+    } else {
+        rows.push_back({_L("预计打印时间"), estimate.status == ExactEstimateStatus::Failed ?
+            _L("暂无准确时间") : _L("精确计算中…"), _L("原生模拟结果")});
+        if (estimate.status == ExactEstimateStatus::Failed)
+            rows.push_back({_L("AI快速参考"),
+                wxString::Format(_L("约 %.0f 分钟（可能存在较大偏差）"), recommendation.estimated_time_seconds / 60.0),
+                _L("辅助参考")});
+        rows.push_back({_L("预计耗材"), estimate.status == ExactEstimateStatus::Failed ?
+            wxString::Format(_L("%.1f g（AI估算）"), recommendation.estimated_material_grams) :
+            _L("精确计算中…"), _L("辅助参考")});
+    }
+    rows.push_back({_L("表面质量"), wxString::Format(_L("%s (%.0f/100)"),
+                                         wxString::FromUTF8(recommendation.surface_quality_rating),
+                                         recommendation.surface_quality_score), _L("预估指标")});
+    rows.push_back({_L("悬垂风险"), wxString::Format(_L("%.0f/100"), recommendation.overhang_risk_score * 100.0), _L("预估指标")});
+    rows.push_back({_L("层高"), wxString::Format(_L("%.2f mm"), recommendation.layer_height_mm), _L("推荐参数")});
+    rows.push_back({_L("墙数"), wxString::Format("%d", recommendation.wall_loops), _L("推荐参数")});
+    rows.push_back({_L("填充率"), wxString::Format(_L("%.0f%% · %s"), recommendation.sparse_infill_density_percent,
+                                      wxString::FromUTF8(recommendation.sparse_infill_pattern)), _L("推荐参数")});
+    rows.push_back({_L("外壁速度"), wxString::Format(_L("%.0f mm/s"), recommendation.outer_wall_speed_mm_s), _L("推荐参数")});
+    rows.push_back({_L("支撑"), support, _L("推荐参数")});
+    rows.push_back({_L("支撑角度"), wxString::Format(_L("%.0f°"), recommendation.support_threshold_angle_deg), _L("推荐参数")});
+    rows.push_back({_L("自适应层高"), adaptive, _L("推荐参数")});
+    rows.push_back({_L("墙生成器"), wall_generator, _L("推荐参数")});
+    return rows;
+}
+
+std::vector<SliceDetailRow> official_detail_rows(PartPlate* plate)
+{
+    std::vector<SliceDetailRow> rows;
+    if (plate == nullptr || !plate->is_slice_result_valid() || plate->get_slice_result() == nullptr)
+        return rows;
+    const auto& statistics = plate->get_slice_result()->print_statistics;
+    const double seconds = statistics.modes[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time;
+    double volume = 0.0;
+    for (const auto& [_, value] : statistics.total_volumes_per_extruder)
+        if (std::isfinite(value) && value > 0.0) volume += value;
+    double density = 1.24;
+    if (wxGetApp().preset_bundle != nullptr) {
+        DynamicPrintConfig config = wxGetApp().preset_bundle->full_config();
+        config.apply(*plate->config(), true);
+        if (const auto* densities = config.option<ConfigOptionFloats>("filament_density");
+            densities != nullptr && !densities->values.empty() && std::isfinite(densities->values.front()) &&
+            densities->values.front() > 0.0)
+            density = densities->values.front();
+    }
+    rows.push_back({_L("打印时间"), format_estimated_time(seconds), _L("正式切片结果")});
+    rows.push_back({_L("实际耗材"), wxString::Format(_L("%.2f g"), volume * density / 1000.0), _L("正式切片结果")});
+    return rows;
 }
 }
 
@@ -559,27 +589,8 @@ void RedesignShell::build_model_workflow()
     m_slice_parameter_panel->SetBackgroundColour(m_ai_slicing_controls->GetBackgroundColour());
     auto* parameters = new wxFlexGridSizer(2, FromDIP(12), FromDIP(12)); parameters->AddGrowableCol(0);
     m_slice_parameter_panel->SetSizer(parameters);
-    for (size_t i = 0; i < MAX_VISIBLE_SLICE_DETAIL_ROWS; ++i) {
-        auto* label = new wxStaticText(m_slice_parameter_panel, wxID_ANY, wxEmptyString);
-        RedesignTheme::style_text(label,RedesignTheme::secondary_text_colour(),12);
-        parameters->Add(label,0,wxALIGN_CENTER_VERTICAL);
-        auto* value = new wxStaticText(m_slice_parameter_panel, wxID_ANY, wxEmptyString);
-        m_slice_parameter_labels[i] = label;
-        m_slice_parameter_values[i] = value;
-        RedesignTheme::style_text(value,RedesignTheme::primary_text_colour(),12);
-        parameters->Add(value,0,wxALIGN_RIGHT | wxALIGN_CENTER_VERTICAL);
-        parameters->Show(label, false);
-        parameters->Show(value, false);
-    }
     ai->Add(m_slice_parameter_panel,0,wxEXPAND | wxALL,FromDIP(16));
     m_slice_parameter_panel->Hide();
-    m_slice_details = new wxStaticText(m_ai_slicing_controls, wxID_ANY, wxEmptyString); m_slice_details->Hide();
-    m_slice_parameters_all = slicing_link(m_ai_slicing_controls,_L("查看全部  ›"));
-    ai->Add(m_slice_parameters_all,0,wxALIGN_RIGHT | wxRIGHT,FromDIP(16));
-    m_slice_parameters_all->Hide();
-    m_slice_parameters_all->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {
-        show_redesign_details(this, m_slice_details->GetLabel(), _L("切片参数"));
-    });
     m_slice_analyze = slicing_link(m_ai_slicing_controls, _L("重新分析"));
     ai->Add(m_slice_analyze, 0, wxEXPAND | wxALL, FromDIP(8));
     m_slice_analyze->Hide();
@@ -1555,24 +1566,44 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
     const bool has_parameters = has_display_goal && state.candidates[selected].has_value();
     const auto* selected_quick = has_display_goal ? quick_recommendation(selected) : nullptr;
     std::vector<SliceDetailRow> detail_rows;
-    if (has_parameters)
+    const bool official_ready = state.official.phase == OfficialSlicePhase::Completed &&
+        !background_slicing && plate && plate->is_slice_result_valid();
+    if (official_ready)
+        detail_rows = official_detail_rows(plate);
+    else if (has_parameters)
         detail_rows = candidate_detail_rows(state.effective_parameters[selected], state.metrics[selected]);
-    else if (selected_quick != nullptr)
-        detail_rows = lightweight_detail_rows(*selected_quick);
+    else if (selected_quick != nullptr) {
+        ExactEstimateView estimate = state.exact_estimate;
+        if (estimate.goal != display_goal ||
+            (state.session.workspace_revision.valid() && estimate.revision != state.session.workspace_revision))
+            estimate.status = ExactEstimateStatus::None;
+        detail_rows = exact_estimate_detail_rows(*selected_quick, estimate);
+    }
 
-    const wxString detail_text = slice_detail_rows_text(detail_rows);
-    layout_changed = set_control_label(m_slice_details, detail_text) || layout_changed;
     const bool has_details = !detail_rows.empty();
     layout_changed = m_slice_parameter_panel->Show(has_details) || layout_changed;
-    layout_changed = m_slice_parameters_all->Show(detail_rows.size() > MAX_VISIBLE_SLICE_DETAIL_ROWS) || layout_changed;
-    const size_t visible_rows = std::min(detail_rows.size(), MAX_VISIBLE_SLICE_DETAIL_ROWS);
     if (auto* parameters = m_slice_parameter_panel->GetSizer()) {
-        for (size_t i = 0; i < MAX_VISIBLE_SLICE_DETAIL_ROWS; ++i) {
-            const bool visible = i < visible_rows;
+        while (m_slice_parameter_labels.size() < detail_rows.size()) {
+            auto* label = new wxStaticText(m_slice_parameter_panel, wxID_ANY, wxEmptyString);
+            RedesignTheme::style_text(label, RedesignTheme::secondary_text_colour(), 12);
+            parameters->Add(label, 0, wxALIGN_CENTER_VERTICAL);
+            auto* value = new wxStaticText(m_slice_parameter_panel, wxID_ANY, wxEmptyString);
+            RedesignTheme::style_text(value, RedesignTheme::primary_text_colour(), 12);
+            parameters->Add(value, 0, wxALIGN_RIGHT | wxALIGN_CENTER_VERTICAL);
+            m_slice_parameter_labels.push_back(label);
+            m_slice_parameter_values.push_back(value);
+            layout_changed = true;
+        }
+        for (size_t i = 0; i < m_slice_parameter_labels.size(); ++i) {
+            const bool visible = i < detail_rows.size();
+            const wxString label_text = visible ? detail_rows[i].label : wxEmptyString;
+            const wxString value_text = visible ? detail_rows[i].value : wxEmptyString;
+            layout_changed = (m_slice_parameter_labels[i]->GetLabel() != label_text) || layout_changed;
+            layout_changed = (m_slice_parameter_values[i]->GetLabel() != value_text) || layout_changed;
             parameters->Show(m_slice_parameter_labels[i], visible);
             parameters->Show(m_slice_parameter_values[i], visible);
-            m_slice_parameter_labels[i]->SetLabel(visible ? detail_rows[i].label : wxEmptyString);
-            m_slice_parameter_values[i]->SetLabel(visible ? detail_rows[i].value : wxEmptyString);
+            m_slice_parameter_labels[i]->SetLabel(label_text);
+            m_slice_parameter_values[i]->SetLabel(value_text);
         }
         parameters->Layout();
     }

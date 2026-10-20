@@ -15,6 +15,7 @@
 #include <string>
 #include <thread>
 #include <chrono>
+#include <vector>
 
 #include <wx/image.h>
 
@@ -166,12 +167,10 @@ private:
     wxWindow* m_slice_save { nullptr };
     wxWindow* m_slice_print { nullptr };
     std::array<wxWindow*, 3> m_slice_goals { nullptr, nullptr, nullptr };
-    wxStaticText* m_slice_details { nullptr };
     wxPanel* m_slice_parameter_panel {nullptr};
-    // The compact slicing summary shows at most eight rows. The complete
-    // recommendation remains available through the themed details dialog.
-    std::array<wxStaticText*, 8> m_slice_parameter_labels {};
-    std::array<wxStaticText*, 8> m_slice_parameter_values {};
+    // The compact slicing summary keeps every detail row in the left sidebar.
+    std::vector<wxStaticText*> m_slice_parameter_labels;
+    std::vector<wxStaticText*> m_slice_parameter_values;
     wxStaticText* m_slice_status { nullptr };
     wxStaticText* m_slice_check_status { nullptr };
     wxStaticText* m_slice_model_stats { nullptr };
@@ -182,7 +181,6 @@ private:
     WorkbenchSlider* m_slice_color_count {nullptr};
     wxStaticText* m_slice_color_count_label {nullptr};
     wxWindow* m_slice_palette_all {nullptr};
-    wxWindow* m_slice_parameters_all {nullptr};
     wxWindow* m_slice_check {nullptr};
     std::unique_ptr<RedesignSlicingTools> m_slice_tools;
     SlicingCanvasOverlay* m_slice_stats_overlay {nullptr};
