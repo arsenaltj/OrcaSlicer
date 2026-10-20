@@ -13,7 +13,11 @@
 
 #include "FuzzySkin.hpp"
 
+#ifdef ORCA_MOBILE_ANDROID
+#include "noise.h"
+#else
 #include "libnoise/noise.h"
+#endif
 
 // #define DEBUG_FUZZY
 
@@ -823,3 +827,4 @@ void apply_fuzzy_skin(Arachne::ExtrusionLine* extrusion, const PerimeterGenerato
 }
 
 } // namespace Slic3r::Feature::FuzzySkin
+
