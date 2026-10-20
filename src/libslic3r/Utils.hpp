@@ -16,7 +16,11 @@
 #include <boost/date_time.hpp>
 #include "boost/date_time/posix_time/ptime.hpp"
 
+#ifdef ORCA_MOBILE_ANDROID
+#include "MobileDigest.hpp"
+#else
 #include <openssl/md5.h>
+#endif
 
 #include "libslic3r.h"
 #include "Semver.hpp"
@@ -783,3 +787,4 @@ bool check_layer_id_pattern(const std::string& pattern, int layer_id);
 #endif
 
 #endif // slic3r_Utils_hpp_
+

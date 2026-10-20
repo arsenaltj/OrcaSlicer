@@ -50,7 +50,11 @@
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/xml_parser.hpp>
 #include <boost/foreach.hpp>
+#ifdef ORCA_MOBILE_ANDROID
+#include "../MobileDigest.hpp"
+#else
 #include <openssl/md5.h>
+#endif
 
 namespace pt = boost::property_tree;
 
@@ -9977,3 +9981,4 @@ std::optional<EmbossShape> read_emboss_shape(const char **attributes, unsigned i
 
 
 } // namespace Slic3r
+
