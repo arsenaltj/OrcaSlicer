@@ -251,7 +251,6 @@ _finished:
 // BBS: add part plate related logic
 // BBS: backup & restore
 // Loading model from a file, it may be a simple geometry file as STL or OBJ, however it may be a project file as well.
-#ifndef ORCA_MOBILE_ANDROID
 // Build a plain geometry ModelObject from a textured mesh. The texture itself is carried
 // separately on Model::texture_mesh and consumed by the texture import dialog.
 #ifndef ORCA_MOBILE_ANDROID
