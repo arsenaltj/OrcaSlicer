@@ -4,8 +4,10 @@
 
 #include <boost/algorithm/string/case_conv.hpp>
 #include <qoi/qoi.h>
+#ifndef ORCA_MOBILE_ANDROID
 #include <jpeglib.h>
 #include <jerror.h>
+#endif
 #include <vector>
 #include <boost/algorithm/string.hpp>
 
@@ -19,11 +21,13 @@ struct CompressedPNG : CompressedImageBuffer
     std::string_view tag() const override { return "thumbnail"sv; }
 };
 
+#ifndef ORCA_MOBILE_ANDROID
 struct CompressedJPG : CompressedImageBuffer
 {
     ~CompressedJPG() override { free(data); }
     std::string_view tag() const override { return "thumbnail_JPG"sv; }
 };
+#endif
 
 struct CompressedQOI : CompressedImageBuffer
 {
@@ -52,50 +56,41 @@ std::unique_ptr<CompressedImageBuffer> compress_thumbnail_png(const ThumbnailDat
 
 std::unique_ptr<CompressedImageBuffer> compress_thumbnail_jpg(const ThumbnailData& data)
 {
+#ifndef ORCA_MOBILE_ANDROID
     // Take vector of RGBA pixels and flip the image vertically
     std::vector<unsigned char> rgba_pixels(data.pixels.size());
     const unsigned int row_size = data.width * 4;
-    for (unsigned int y = 0; y < data.height; ++y) {
+    for (unsigned int y = 0; y < data.height; ++y)
         ::memcpy(rgba_pixels.data() + (data.height - y - 1) * row_size, data.pixels.data() + y * row_size, row_size);
-    }
-
-    // Store pointers to scanlines start for later use
     std::vector<unsigned char*> rows_ptrs;
     rows_ptrs.reserve(data.height);
-    for (unsigned int y = 0; y < data.height; ++y) {
-        rows_ptrs.emplace_back(&rgba_pixels[y * row_size]);
-    }
-
+    for (unsigned int y = 0; y < data.height; ++y) rows_ptrs.emplace_back(&rgba_pixels[y * row_size]);
     std::vector<unsigned char> compressed_data(data.pixels.size());
     unsigned char* compressed_data_ptr = compressed_data.data();
     unsigned long compressed_data_size = data.pixels.size();
-
     jpeg_error_mgr err;
     jpeg_compress_struct info;
     info.err = jpeg_std_error(&err);
     jpeg_create_compress(&info);
     jpeg_mem_dest(&info, &compressed_data_ptr, &compressed_data_size);
-
     info.image_width = data.width;
     info.image_height = data.height;
     info.input_components = 4;
     info.in_color_space = JCS_EXT_RGBA;
-
     jpeg_set_defaults(&info);
     jpeg_set_quality(&info, 85, TRUE);
     jpeg_start_compress(&info, TRUE);
-
     jpeg_write_scanlines(&info, rows_ptrs.data(), data.height);
     jpeg_finish_compress(&info);
     jpeg_destroy_compress(&info);
-
-    // FIXME -> Add error checking
-
     auto out = std::make_unique<CompressedJPG>();
     out->data = malloc(compressed_data_size);
     out->size = size_t(compressed_data_size);
-    ::memcpy(out->data, (const void*)compressed_data.data(), out->size);
+    ::memcpy(out->data, compressed_data.data(), out->size);
     return out;
+#else
+    return compress_thumbnail_png(data);
+#endif
 }
 
 std::unique_ptr<CompressedImageBuffer> compress_thumbnail_qoi(const ThumbnailData &data)
