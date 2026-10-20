@@ -1,8 +1,10 @@
 #include "Model.hpp"
 #include "libslic3r.h"
 #include "BuildVolume.hpp"
+#ifndef ORCA_MOBILE_ANDROID
 #include "TexturePainting.hpp"
 #include "Format/AssimpImport.hpp"
+#endif
 #include "ClipperUtils.hpp"
 #include "Exception.hpp"
 #include "Model.hpp"
@@ -15,9 +17,11 @@
 #include "MaterialType.hpp"
 
 #include "Format/AMF.hpp"
-#include "Format/svg.hpp"
 #include "Format/bbs_3mf.hpp"
+#ifndef ORCA_MOBILE_ANDROID
+#include "Format/svg.hpp"
 #include "Format/DRC.hpp"
+#endif
 // BBS
 #include "FaceDetector.hpp"
 
@@ -37,7 +41,9 @@
 #include "GCodeWriter.hpp"
 
 // BBS: for segment
+#ifndef ORCA_MOBILE_ANDROID
 #include "MeshBoolean.hpp"
+#endif
 #include "Format/3mf.hpp"
 
 // Transtltion
@@ -186,6 +192,7 @@ Model::~Model()
         Slic3r::remove_backup(*this, true);
 }
 
+#ifndef ORCA_MOBILE_ANDROID
 Model Model::read_from_step(const std::string&                                      input_file,
                             LoadStrategy                                            options,
                             ImportStepProgressFn                                    stepFn,
@@ -239,6 +246,7 @@ _finished:
 
     return model;
 }
+#endif
 
 // BBS: add part plate related logic
 // BBS: backup & restore
@@ -315,6 +323,7 @@ Model Model::read_from_file(const std::string&                                  
         result = load_stl(input_file.c_str(), &model, nullptr, stlFn);
     else if (boost::algorithm::iends_with(input_file, ".oltp"))
         result = load_stl(input_file.c_str(), &model, nullptr, stlFn,256);
+#ifndef ORCA_MOBILE_ANDROID
     else if (boost::algorithm::iends_with(input_file, ".obj")) {
         ObjInfo                 obj_info;
         ObjParser::MtlData      mtl_data;
@@ -421,10 +430,13 @@ Model Model::read_from_file(const std::string&                                  
     }
     else if (boost::algorithm::iends_with(input_file, ".svg"))
         result = load_svg(input_file.c_str(), &model, message);
+#endif
     //BBS: remove the old .amf.xml files
     //else if (boost::algorithm::iends_with(input_file, ".amf") || boost::algorithm::iends_with(input_file, ".amf.xml"))
+#ifndef ORCA_MOBILE_ANDROID
     else if (boost::algorithm::iends_with(input_file, ".drc"))
         result = load_drc(input_file.c_str(), &model);
+#endif
     else if (boost::algorithm::iends_with(input_file, ".amf"))
         //BBS: is_xxx is used for is_inches when load amf
         result = load_amf(input_file.c_str(), config, config_substitutions, &model, is_xxx);
@@ -1327,6 +1339,7 @@ void ModelObject::assign_new_unique_ids_recursive()
 int ModelObject::get_backup_id() const { return m_model ? get_model()->get_object_backup_id(*this) : -1; }
 
 // BBS: Boolean Operations impl. - MusangKing
+#ifndef ORCA_MOBILE_ANDROID
 bool ModelObject::make_boolean(ModelObject *cut_object, const std::string &boolean_opts)
 {
     // merge meshes into single volume instead of multi-parts object
@@ -1347,6 +1360,9 @@ bool ModelObject::make_boolean(ModelObject *cut_object, const std::string &boole
     }
     return true;
 }
+#else
+bool ModelObject::make_boolean(ModelObject *, const std::string &) { return false; }
+#endif
 
 ModelVolume *ModelObject::add_volume(const TriangleMesh &mesh, bool modify_to_center_geometry)
 {

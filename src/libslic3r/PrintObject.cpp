@@ -11,7 +11,9 @@
 #include "Layer.hpp"
 #include "MutablePolygon.hpp"
 #include "PrintConfig.hpp"
+#ifndef ORCA_MOBILE_ANDROID
 #include "SLA/IndexedMesh.hpp"
+#endif
 #include "Support/SupportMaterial.hpp"
 #include "Support/SupportSpotsGenerator.hpp"
 #include "Support/TreeSupport.hpp"
@@ -824,6 +826,7 @@ bool PrintObject::need_z_contouring() const
     return false;
 }
 
+#ifndef ORCA_MOBILE_ANDROID
 void PrintObject::contour_z()
 {
     if (!this->set_started(posContouring)) {
@@ -871,6 +874,12 @@ void PrintObject::contour_z()
 
     this->set_done(posContouring);
 }
+#else
+void PrintObject::contour_z()
+{
+    if (this->set_started(posContouring)) this->set_done(posContouring);
+}
+#endif
 
 // BBS
 void PrintObject::clear_overhangs_for_lift()
