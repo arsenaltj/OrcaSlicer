@@ -1,5 +1,15 @@
 [
   {
+    "pr": 36,
+    "run": 39365950926,
+    "head": "f125fabcd0a313c083472b020334cc19356eff85",
+    "base": "600e02fe292bb96c67e250950bba0acb5a13e553",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "feat: add native smart slicing estimates",
+    "path": "pr/36/f125fabcd0a313c083472b020334cc19356eff85/39365950926",
+    "created": "2026-10-20T03:48:34+00:00"
+  },
+  {
     "pr": 35,
     "run": 39044611162,
     "head": "62892ea6d11ef790482591ceb55f5b88a567009d",

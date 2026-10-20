@@ -1,0 +1,25 @@
+{
+  "pr": 36,
+  "run": 39365950926,
+  "head": "f125fabcd0a313c083472b020334cc19356eff85",
+  "base": "600e02fe292bb96c67e250950bba0acb5a13e553",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "feat: add native smart slicing estimates",
+  "path": "pr/36/f125fabcd0a313c083472b020334cc19356eff85/39365950926",
+  "created": "2026-10-20T03:48:34+00:00",
+  "files": {
+    "index.html": "8f62e9ce1ce9ae917db4d0b117c031cd71b61a2679de7c31603b61fa0474374c",
+    "details.html": "602cb77bc64c2400013a613428c7469cad3b5ad2669613d2013fcd1d3e067299",
+    "report.json": "96deca0a263df9b693aa304cec6e7da861894ee43e749c9a4f3e0964ee5dc690",
+    "summary.md": "103d7f724b26d0ae94362a37a8ead5a1ef207e383b1cd5db72529035965bde01",
+    "archify-receipts.json": "ea9ce37fc80a213f04eacabb712e8e14fa8de2f0bc2d7f27f18f6b378b9f8d52",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l1-modules.html": "20dda18b0f1fcb7d6c31db93265c64a6d7ada82b188f85a006237b325b832e53",
+    "l1-modules.json": "031a14d384cd38ab5d998318db686250b83334f7921fff2014ee569f6f821cab",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
