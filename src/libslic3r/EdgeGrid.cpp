@@ -3,14 +3,18 @@
 #include <float.h>
 #include <unordered_map>
 
+#ifdef EDGE_GRID_DEBUG_OUTPUT
 #include <png.h>
+#endif
 
 #include "libslic3r.h"
 #include "ClipperUtils.hpp"
 #include "EdgeGrid.hpp"
 #include "Geometry.hpp"
 #include "SVG.hpp"
+#ifdef EDGE_GRID_DEBUG_OUTPUT
 #include "PNGReadWrite.hpp"
+#endif
 
 // #define EDGE_GRID_DEBUG_OUTPUT
 
@@ -1632,3 +1636,4 @@ void export_intersections_to_svg(const std::string &filename, const Polygons &po
 }
 
 } // namespace Slic3r
+
