@@ -586,13 +586,12 @@ TEST_CASE("Image home is the default surface with an explicit legacy fallback", 
     CHECK(RedesignFeatureFlags::surface_enabled("IMAGE_HOME"));
 }
 
-TEST_CASE("Image home startup requires no pending 3D work", "[UiRedesign]")
+TEST_CASE("Image home startup respects explicit 3D routes", "[UiRedesign]")
 {
-    CHECK(RedesignFeatureFlags::image_home_on_startup(true, false, false, false));
-    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(false, false, false, false));
-    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(true, true, false, false));
-    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(true, false, true, false));
-    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(true, false, false, true));
+    CHECK(RedesignFeatureFlags::image_home_on_startup(true, false, false));
+    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(false, false, false));
+    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(true, true, false));
+    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(true, false, true));
 }
 
 TEST_CASE("Startup splash is enabled by default with an explicit override", "[UiRedesign]")

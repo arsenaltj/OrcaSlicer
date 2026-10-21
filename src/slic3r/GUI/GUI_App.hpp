@@ -252,6 +252,10 @@ private:
     wxWeakRef<wxWindow> m_startup_frame;
     std::chrono::steady_clock::time_point m_startup_started;
     std::chrono::steady_clock::time_point m_startup_stage_started;
+    bool            m_redesign_restore_pending { false };
+    std::string     m_redesign_restore_dir;
+    std::string     m_redesign_restore_path;
+    std::string     m_redesign_restore_origin;
     bool            m_app_conf_exists{ false };
     EAppMode        m_app_mode{ EAppMode::Editor };
     bool            m_is_recreating_gui{ false };
@@ -801,6 +805,7 @@ private:
     void            schedule_startup(StartupStage stage, const wxString& message);
     void            fail_startup();
     void            finish_post_init();
+    void            show_pending_redesign_restore_prompt();
     void            log_startup_timing(const char* stage) const;
     void            copy_network_if_available();
     bool            on_init_network(bool try_backup = false);
