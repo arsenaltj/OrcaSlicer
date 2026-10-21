@@ -98,7 +98,12 @@ TEST_CASE("Geometry-only STL imports a visible default profile accepted by real 
     auto mesh=Slic3r::make_cube(10,10,10);
     REQUIRE(Slic3r::store_stl(file.string().c_str(),&mesh,true));
     auto project=orca::slicing::load_project(file.string(),nlohmann::json::object(),nlohmann::json::array(),directory.string());
-    CHECK(project.metadata["basePreset"]["version"]==1);
+    const auto catalog=orca::slicing::offline_presets();
+    const auto& defaultPreset=project.metadata.at("basePreset");
+    CHECK(defaultPreset.at("version")==catalog.at("version"));
+    CHECK(defaultPreset.at("id")==catalog["devices"][1].at("id"));
+    CHECK(defaultPreset.at("sourceRefs")==catalog["devices"][1].at("sourceRefs"));
+    CHECK(defaultPreset.at("schemaSourceRef")==catalog["devices"][1].at("schemaSourceRef"));
     CHECK(project.config.opt_string("before_layer_change_gcode").find("G92 E0")!=std::string::npos);
     Slic3r::Print print;
     print.set_status_silent();print.apply(project.model,project.config);

@@ -7,6 +7,8 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <limits>
 #include <fstream>
+#include <array>
+#include <cstdint>
 #include "test_utils.hpp"
 
 TEST_CASE("Recommendation planner emits baseline and three native quality plans", "[OrcaSlicingSupport]")
@@ -51,6 +53,32 @@ TEST_CASE("Recommendation selection consumes only validated native trial metrics
 
 
 namespace {
+void check_prepared_geometry(const orca::slicing::LoadedProject& actual,const orca::slicing::LoadedProject& expected)
+{
+    REQUIRE(actual.model.objects.size()==expected.model.objects.size());
+    CHECK(actual.inputSha256==expected.inputSha256);
+    CHECK(orca::slicing::config_json(actual.config)==orca::slicing::config_json(expected.config));
+    for(const char* key:{"projectId","revision","projectCommands"})
+        CHECK(actual.metadata.value(key,nlohmann::json())==expected.metadata.value(key,nlohmann::json()));
+    for(size_t oi=0;oi<actual.model.objects.size();++oi) {
+        const auto* a=actual.model.objects[oi];const auto* e=expected.model.objects[oi];
+        CHECK(a->name==e->name);
+        REQUIRE(a->instances.size()==e->instances.size());
+        REQUIRE(a->volumes.size()==e->volumes.size());
+        for(size_t ii=0;ii<a->instances.size();++ii) {
+            // Euler angles have nonunique representations at gimbal lock. The
+            // complete affine matrix and physical bounds define the transform.
+            const auto am=a->instances[ii]->get_matrix();const auto em=e->instances[ii]->get_matrix();
+            for(int row=0;row<4;++row) for(int col=0;col<4;++col)
+                CHECK_THAT(am.matrix()(row,col),Catch::Matchers::WithinAbs(em.matrix()(row,col),1e-9));
+            const auto ab=a->instance_bounding_box(ii), eb=e->instance_bounding_box(ii);
+            for(int axis=0;axis<3;++axis) {
+                CHECK_THAT(ab.min[axis],Catch::Matchers::WithinAbs(eb.min[axis],1e-9));
+                CHECK_THAT(ab.max[axis],Catch::Matchers::WithinAbs(eb.max[axis],1e-9));
+            }
+        }
+    }
+}
 orca::slicing::LoadedProject preparation_project()
 {
     orca::slicing::LoadedProject project{Slic3r::Model{},Slic3r::DynamicPrintConfig::full_print_config(),"fixture.stl","",nlohmann::json::object()};
@@ -286,7 +314,7 @@ TEST_CASE("Each temporary orientation previews the exact confirmed command witho
             const auto bounds=confirmed.model.objects[0]->instance_bounding_box(0);
             CHECK_THAT(bounds.min.z(),Catch::Matchers::WithinAbs(0,1e-6));
             CHECK_THAT(bounds.size().z(),Catch::Matchers::WithinAbs(preview["candidates"][n]["height"].get<double>(),1e-6));
-            CHECK(orca::slicing::describe_project(temporary)["objects"]==orca::slicing::describe_project(confirmed)["objects"]);
+            check_prepared_geometry(temporary,confirmed);
             CHECK(orca::slicing::describe_project(source)==before);
         }
     }
@@ -311,7 +339,7 @@ TEST_CASE("Picked world normals rotate the selected face down and preserve insta
     CHECK_THAT(finalNormal.z(),Catch::Matchers::WithinAbs(-1,1e-6));
     CHECK_THAT(instance->get_scaling_factor().y(),Catch::Matchers::WithinAbs(3,1e-9));
     CHECK_THAT(confirmed.model.objects[0]->instance_bounding_box(0).min.z(),Catch::Matchers::WithinAbs(0,1e-6));
-    CHECK(orca::slicing::describe_project(temporary)["objects"]==orca::slicing::describe_project(confirmed)["objects"]);
+    check_prepared_geometry(temporary,confirmed);
     CHECK_THROWS(orca::slicing::orientation_preview(temporary,{{"normal",{0,0,0}}}));
 }
 TEST_CASE("Scene ranges cover exported painted triangles and distinguish instances and parts", "[OrcaSlicingSupport][MobileSceneRanges]")
@@ -459,4 +487,65 @@ TEST_CASE("Final explicit reassignment supersedes historical slots while preserv
     CHECK_FALSE(project.model.objects[0]->volumes[0]->mmu_segmentation_facets.empty());
     CHECK(project.metadata["projectCommands"]==history);
     CHECK(orca::slicing::slicing_model(project).objects[0]->volumes[0]->mmu_segmentation_facets.empty());
+}
+
+TEST_CASE("Reflected scene face normals orient the picked outer face onto the bed", "[OrcaSlicingSupport][MobileOrientation][MobileSceneRanges]")
+{
+    struct Scene {std::vector<Slic3r::Vec3d> vertices;std::vector<std::array<uint32_t,3>> triangles;std::vector<uint16_t> palette;};
+    auto read_scene=[](const orca::slicing::LoadedProject& project) {
+        ScopedTemporaryFile file(".scene");const auto info=orca::slicing::write_scene(project,file.string());
+        std::ifstream input(file.string(),std::ios::binary);input.seekg(32);Scene scene;
+        for(size_t n=0;n<info["vertexCount"].get<size_t>();++n) {
+            float xyz[3];input.read(reinterpret_cast<char*>(xyz),sizeof(xyz));scene.vertices.emplace_back(xyz[0],xyz[1],xyz[2]);
+        }
+        for(size_t n=0;n<info["triangleCount"].get<size_t>();++n) {
+            std::array<uint32_t,3> triangle;input.read(reinterpret_cast<char*>(triangle.data()),sizeof(triangle));scene.triangles.push_back(triangle);
+        }
+        for(size_t n=0;n<scene.triangles.size();++n) {
+            uint16_t color;input.read(reinterpret_cast<char*>(&color),sizeof(color));scene.palette.push_back(color);
+        }
+        REQUIRE(input.good());return scene;
+    };
+    auto normal=[](const Scene& scene,size_t index)->Slic3r::Vec3d {
+        const auto& t=scene.triangles[index];
+        return (scene.vertices[t[1]]-scene.vertices[t[0]]).cross(scene.vertices[t[2]]-scene.vertices[t[0]]).normalized();
+    };
+    auto original=preparation_project();original.metadata["projectId"]="mirrored";original.metadata["revision"]=3;
+    original.metadata["sourceColors"]={"#ff0000","#00ff00"};
+    original.model.objects[0]->volumes[0]->mmu_segmentation_facets.set_triangle_from_string(0,"8");
+    const auto baseline=read_scene(original);
+    for(int mirrors=0;mirrors<4;++mirrors) {
+        DYNAMIC_SECTION("instance/volume mirror mask "<<mirrors) {
+            auto source=original;auto* object=source.model.objects[0];auto* volume=object->volumes[0];
+            if(mirrors&1) object->instances[0]->set_mirror(Slic3r::Vec3d(-1,1,1));
+            if(mirrors&2) volume->set_mirror(Slic3r::Vec3d(1,-1,1));
+            object->invalidate_bounding_box();
+            const auto sourceVertices=volume->mesh().its.vertices;const auto sourceIndices=volume->mesh().its.indices;
+            const auto sourcePaint=volume->mmu_segmentation_facets.get_triangle_as_string(0);
+            const auto before=orca::slicing::describe_project(source);
+            const auto scene=read_scene(source);CHECK(scene.palette==baseline.palette);
+            const double top=object->instance_bounding_box(0).max.z();
+            size_t picked=scene.triangles.size();
+            for(size_t n=0;n<scene.triangles.size();++n) {
+                const auto& face=scene.triangles[n];
+                if(std::abs(scene.vertices[face[0]].z()-top)<1e-6 && std::abs(scene.vertices[face[1]].z()-top)<1e-6 && std::abs(scene.vertices[face[2]].z()-top)<1e-6) {picked=n;break;}
+            }
+            REQUIRE(picked<scene.triangles.size());
+            const auto pickedNormal=normal(scene,picked);CHECK_THAT(pickedNormal.z(),Catch::Matchers::WithinAbs(1,1e-6));
+            auto temporary=source;
+            const auto preview=orca::slicing::orientation_preview(temporary,{{"normal",{pickedNormal.x(),pickedNormal.y(),pickedNormal.z()}}});
+            auto confirmed=source;
+            orca::slicing::apply_project_commands(confirmed,nlohmann::json::array({preview["command"]}));
+            check_prepared_geometry(temporary,confirmed);
+            const auto finalScene=read_scene(confirmed);CHECK(finalScene.palette==scene.palette);
+            CHECK_THAT(normal(finalScene,picked).z(),Catch::Matchers::WithinAbs(-1,1e-6));
+            for(const auto vertex:finalScene.triangles[picked])
+                CHECK_THAT(finalScene.vertices[vertex].z(),Catch::Matchers::WithinAbs(0,1e-5));
+            CHECK_THAT(confirmed.model.objects[0]->instance_bounding_box(0).min.z(),Catch::Matchers::WithinAbs(0,1e-6));
+            CHECK(source.model.objects[0]->volumes[0]->mesh().its.vertices==sourceVertices);
+            CHECK(source.model.objects[0]->volumes[0]->mesh().its.indices==sourceIndices);
+            CHECK(source.model.objects[0]->volumes[0]->mmu_segmentation_facets.get_triangle_as_string(0)==sourcePaint);
+            CHECK(orca::slicing::describe_project(source)==before);
+        }
+    }
 }

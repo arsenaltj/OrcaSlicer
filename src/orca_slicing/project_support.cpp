@@ -289,7 +289,11 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
 
     LoadedProject project{std::move(model), std::move(config), inputPath, sha256_file(inputPath), Json::object()};
     project.sourceConfig=sourceConfig;
-    if (offlinePreset) project.metadata["basePreset"]=offline_presets()["devices"][1];
+    if (offlinePreset) {
+        const Json catalog=offline_presets();
+        project.metadata["basePreset"]=catalog["devices"][1];
+        project.metadata["basePreset"]["version"]=catalog.at("version");
+    }
     project.metadata["unsupportedFeatures"] = unsupported;
     project.metadata["sourceColors"] = sourceColors;
     project.metadata["workspaceRoot"] = workspaceRoot;
@@ -593,6 +597,7 @@ Json write_scene(const LoadedProject& project, const std::string& outputPath)
                     continue;
                 const size_t firstTriangle=triangles.size();
                 const Transform3d matrix = instance_matrix * volume->get_matrix();
+                const bool reverseWinding=matrix.linear().determinant()<0;
                 const int defaultMaterial=std::max(1,volume->extruder_id());
                 auto append_mesh = [&](const indexed_triangle_set& mesh, size_t color) {
                     if (mesh.vertices.size()>UINT32_MAX-vertices.size() || mesh.indices.size()>UINT32_MAX-triangles.size())
@@ -605,6 +610,10 @@ Json write_scene(const LoadedProject& project, const std::string& outputPath)
                     for (const auto& triangle:mesh.indices) {
                         stl_triangle_vertex_indices output_triangle;
                         output_triangle << static_cast<int>(triangle[0]+vertex_offset),static_cast<int>(triangle[1]+vertex_offset),static_cast<int>(triangle[2]+vertex_offset);
+                        // A reflection reverses geometric winding. Restore the
+                        // outward normal used by GPU picking without touching
+                        // source meshes, painted leaf identity or face palettes.
+                        if(reverseWinding) std::swap(output_triangle[1],output_triangle[2]);
                         triangles.push_back(output_triangle);
                         face_palettes.push_back(static_cast<uint16_t>(std::min(color,palette_count-1)));
                     }
