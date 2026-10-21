@@ -30,6 +30,7 @@ struct ThreeMfScan {
         result["features"].push_back(item);
         if(status=="blocked") result["blockedFeatures"].push_back(item);
     }
+    static bool ends_with(const std::string& value,const char* suffix) {const size_t n=std::strlen(suffix);return value.size()>=n && value.compare(value.size()-n,n,suffix)==0;}
     static std::string local(const char* name) {const char* p=std::strrchr(name,'|');return p?p+1:name;}
     static const char* attr(const XML_Char** at,const char* key) {
         for(size_t i=0;at[i];i+=2) {const char* p=std::strrchr(at[i],'|');if(std::strcmp(p?p+1:at[i],key)==0) return at[i+1];}return "";
@@ -242,7 +243,7 @@ inline Json inspect_archive(const std::string& path) {
                     else for(const auto& plate:parsed) {
                         if(!plate.is_object()) {scan.feature("filament_sequence_format","blocked","Unrecognized plate sequence");continue;}
                         for(auto option=plate.begin();option!=plate.end();++option) {
-                            if((option.key()!="sequence" && option.key()!="nozzle_sequence" && option.key()!="optimal_assignment") || !option.value().is_array())
+                            if((option.key()!="sequence" && option.key()!="filament_sequence" && option.key()!="nozzle_sequence" && option.key()!="optimal_assignment") || !option.value().is_array())
                                 scan.feature("filament_sequence_directive:"+option.key(),"blocked","Unrecognized sequence directive");
                             else custom=custom||!option.value().empty();
                         }
@@ -260,8 +261,8 @@ inline Json inspect_archive(const std::string& path) {
         else if(kind.rfind("metadata/imagemap/",0)==0 || kind.find("sla_support")!=std::string::npos || kind.find("sla_drain")!=std::string::npos)
             scan.feature("unsupported_geometry_asset","blocked","Unsupported geometry-generation data cannot be dropped");
         else if(kind.size()>3 && (kind.substr(kind.size()-3)==".py" || kind.substr(kind.size()-3)==".sh")) scan.feature("embedded_external_program","blocked","Embedded script/plugin code is not executed by Android");
-        else if(kind.rfind("metadata/",0)==0 && kind.find(".png")==std::string::npos && kind!="metadata/slice_info.config" &&
-                kind.find(".gcode")==std::string::npos && kind.find(".md5")==std::string::npos &&
+        else if(kind.rfind("metadata/",0)==0 && !ThreeMfScan::ends_with(kind,".png") && kind!="metadata/slice_info.config" &&
+                !ThreeMfScan::ends_with(kind,".gcode") && !ThreeMfScan::ends_with(kind,".md5") &&
                 kind.rfind("metadata/filament_settings_",0)!=0 && kind.rfind("metadata/machine_settings_",0)!=0 && kind.rfind("metadata/process_settings_",0)!=0)
             scan.feature("unknown_asset:"+name,"blocked","Unrecognized vendor/project payload is retained but cannot be assumed irrelevant to output");
     }

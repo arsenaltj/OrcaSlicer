@@ -833,3 +833,42 @@ TEST_CASE("Parameter enum identifiers and defaults use the native schema", "[Orc
     CHECK(std::find(definition->enum_values.begin(),definition->enum_values.end(),item.at("default").get<std::string>())!=definition->enum_values.end());
     CHECK(item.at("default")==item.at("defaultSerialized"));
 }
+
+TEST_CASE("Both filament sequence aliases preserve empty metadata and reject custom order in every mode", "[OrcaSlicingSupport][ThreeMfPreflight]")
+{
+    ScopedTemporaryFile file(".3mf");
+    for(const char* alias:{"sequence","filament_sequence"}) for(const bool enabled:{false,true}) {
+        DYNAMIC_SECTION(alias<<" custom="<<enabled) {
+            const nlohmann::json sequence=enabled?nlohmann::json::array({1,2}):nlohmann::json::array();
+            const nlohmann::json payload={{"plate_1",{{alias,sequence},{"nozzle_sequence",nlohmann::json::array()},{"optimal_assignment",nlohmann::json::array()}}}};
+            write_3mf_fixture(file.string(),basic_3mf_model(),one_plate(),{},{{"Metadata/filament_sequence.json",payload.dump()}});
+            const auto scan=orca::slicing::inspect_three_mf(file.string());
+            CHECK(scan["blockedFeatures"].empty()==!enabled);
+            CHECK(has_3mf_feature(scan,enabled?"custom_filament_sequence":"empty_filament_sequence",enabled?"blocked":"preserved_metadata"));
+            for(const bool mono:{false,true}) {
+                auto project=preparation_project();project.config.set("enable_prime_tower",false);
+                project.metadata["blockingFeatures"]=scan["blockedFeatures"];
+                if(mono) orca::slicing::apply_project_commands(project,nlohmann::json::array({{{"type","singleMaterial"},{"filamentIndex",0}}}));
+                if(enabled) CHECK_THROWS(orca::slicing::validate_output_capabilities(project));
+                else CHECK_NOTHROW(orca::slicing::validate_output_capabilities(project));
+            }
+        }
+    }
+}
+TEST_CASE("Vendor JSON stays blocked when image or artifact suffixes occur inside its filename", "[OrcaSlicingSupport][ThreeMfPreflight]")
+{
+    ScopedTemporaryFile file(".3mf");const std::string content=R"({"lattice":true})";
+    for(const std::string filename:{"Metadata/vendor_geometry.json","Metadata/vendor_geometry.png.json","Metadata/vendor_geometry.gcode.json","Metadata/vendor_geometry.md5.json"}) {
+        DYNAMIC_SECTION(filename) {
+            write_3mf_fixture(file.string(),basic_3mf_model(),one_plate(),{},{{filename,content}});
+            const auto scan=orca::slicing::inspect_three_mf(file.string());
+            CHECK_FALSE(scan["blockedFeatures"].empty());
+            CHECK(has_3mf_feature(scan,"unknown_asset:"+filename,"blocked"));
+            for(const bool mono:{false,true}) {
+                auto project=preparation_project();project.metadata["blockingFeatures"]=scan["blockedFeatures"];
+                if(mono) orca::slicing::apply_project_commands(project,nlohmann::json::array({{{"type","singleMaterial"},{"filamentIndex",0}}}));
+                CHECK_THROWS(orca::slicing::validate_output_capabilities(project));
+            }
+        }
+    }
+}
