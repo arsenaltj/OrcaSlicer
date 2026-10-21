@@ -685,6 +685,8 @@ void write_3mf_fixture(const std::string& path,const std::string& model,const st
     mz_zip_archive zip{};REQUIRE(mz_zip_writer_init_file(&zip,path.c_str(),0));
     struct End{mz_zip_archive& zip;~End(){mz_zip_writer_end(&zip);}} end{zip};
     auto add=[&](const std::string& name,const std::string& data){REQUIRE(mz_zip_writer_add_mem(&zip,name.c_str(),data.data(),data.size(),MZ_DEFAULT_COMPRESSION));};
+    add("[Content_Types].xml",R"(<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>)");
+    add("_rels/.rels",R"(<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel-1" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>)");
     add("3D/3dmodel.model",model);
     if(!settings.empty()) add("Metadata/model_settings.config","<config>"+settings+"</config>");
     if(!config.empty()) add("Metadata/project_settings.config",config.dump());
@@ -699,6 +701,7 @@ bool has_3mf_feature(const nlohmann::json& inspection,const std::string& id,cons
 }
 TEST_CASE("Basic 3MF five-color paint and native support annotations remain explicit-consent output", "[OrcaSlicingSupport][ThreeMfPreflight]")
 {
+    ScopedSlic3rTemporaryDir directory;
     ScopedTemporaryFile file(".3mf");
     const nlohmann::json config={{"filament_colour",{"#110000","#002200","#000033","#444400","#555555"}},
         {"filament_density",{"1.24","1.24","1.24","1.24","1.24"}},{"filament_diameter",{"1.75","1.75","1.75","1.75","1.75"}},
@@ -724,6 +727,7 @@ TEST_CASE("Basic 3MF five-color paint and native support annotations remain expl
 }
 TEST_CASE("3MF semantic blocks cannot be bypassed by any output material mode", "[OrcaSlicingSupport][ThreeMfPreflight]")
 {
+    ScopedSlic3rTemporaryDir directory;
     const std::map<std::string,std::string> extras{{"Metadata/vendor_geometry.json","{\"lattice\":true}"}};
     ScopedTemporaryFile file(".3mf");write_3mf_fixture(file.string(),basic_3mf_model(),one_plate(),{},extras);
     const auto source=orca::slicing::load_project(file.string());
@@ -749,6 +753,7 @@ TEST_CASE("Multi-plate and unowned 3MF build instances are enumerated and never 
 }
 TEST_CASE("Unknown extensions geometry part types and scripts have specific 3MF diagnostics", "[OrcaSlicingSupport][ThreeMfPreflight]")
 {
+    ScopedSlic3rTemporaryDir directory;
     ScopedTemporaryFile file(".3mf");
     write_3mf_fixture(file.string(),basic_3mf_model("<vendor:implicit xmlns:vendor=\"urn:vendor:geometry\"/>"),one_plate());
     auto scan=orca::slicing::inspect_three_mf(file.string());CHECK(has_3mf_feature(scan,"model_namespace:urn:vendor:geometry","blocked"));
@@ -768,6 +773,7 @@ TEST_CASE("Unknown extensions geometry part types and scripts have specific 3MF 
 }
 TEST_CASE("Native single-plate settings are applied before overrides without rejecting normal parts", "[OrcaSlicingSupport][ThreeMfPreflight]")
 {
+    ScopedSlic3rTemporaryDir directory;
     ScopedTemporaryFile file(".3mf");
     const std::string parts="<object id=\"1\"><part id=\"1\" subtype=\"normal_part\"/><part id=\"2\" subtype=\"modifier_part\"/></object>";
     write_3mf_fixture(file.string(),basic_3mf_model(),parts+one_plate("<metadata key=\"print_sequence\" value=\"by object\"/>"),{{"print_sequence","by layer"}});
