@@ -1,3 +1,6 @@
+#ifdef ORCA_MOBILE_ANDROID
+#include "orca_mobile_nozzle_resources.hpp"
+#endif
 #include "Config.hpp"
 #include "Exception.hpp"
 #include "Print.hpp"
@@ -3380,7 +3383,11 @@ int Print::get_hrc_by_nozzle_type(const NozzleType&type)
         //std::ifstream in(file_path.string());
         json j;
         try {
+#ifdef ORCA_MOBILE_ANDROID
+            j = json::parse(orca_mobile_resources::nozzle_info);
+#else
             j = json::parse(in);
+#endif
             in.close();
             for (const auto& elem : j["nozzle_hrc"].items())
                 nozzle_type_to_hrc[elem.key()] = elem.value();
@@ -3412,7 +3419,11 @@ std::vector<std::string> Print::get_incompatible_filaments_by_nozzle(const float
         boost::nowide::ifstream in(file_path.string());
         json j;
         try {
+#ifdef ORCA_MOBILE_ANDROID
+            j = json::parse(orca_mobile_resources::nozzle_incompatibles);
+#else
             j = json::parse(in);
+#endif
             for(auto& [volume_type, diameter_list] : j["incompatible_nozzles"].items()) {
                 for(auto& [diameter, filaments]: diameter_list.items()){
                     incompatible_filaments[volume_type][diameter] = filaments.get<std::vector<std::string>>();

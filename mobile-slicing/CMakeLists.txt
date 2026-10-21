@@ -115,6 +115,9 @@ foreach(_pattern IN LISTS _mobile_excludes)
 endforeach()
 list(APPEND ORCA_LIBSLIC3R_CPP "${ORCA_SOURCE_ROOT}/src/libslic3r/MobileTriangulation.cpp")
 
+file(READ "${ORCA_SOURCE_ROOT}/resources/info/nozzle_info.json" ORCA_MOBILE_NOZZLE_INFO)
+file(READ "${ORCA_SOURCE_ROOT}/resources/info/nozzle_incompatibles.json" ORCA_MOBILE_NOZZLE_INCOMPATIBLES)
+configure_file("${CMAKE_CURRENT_LIST_DIR}/nozzle_resources.hpp.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/orca_mobile_nozzle_resources.hpp" @ONLY)
 add_library(libslic3r_mobile STATIC ${ORCA_LIBSLIC3R_CPP})
 target_compile_definitions(libslic3r_mobile PUBLIC
     ORCA_MOBILE_ANDROID=1
