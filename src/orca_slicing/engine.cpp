@@ -226,6 +226,7 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
     // Print::apply normalizes a by-value copy (e.g. vase walls/top/infill).
     // Identity, snapshots and confirmed candidate configs must describe that
     // actual normalized config, not the caller's requested values.
+    validate_material_plan(project,print.extruders(true));
     project.config=print.full_print_config();
     validate_output_capabilities(project);
     const auto prefix=root(request,workspace)/artifact_key(request,project);
@@ -252,6 +253,10 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
     catch (const Slic3r::CanceledException&) {budget.check();throw std::runtime_error("SLICING_CANCELED");}
     if (generated.empty() || !stdfs::is_regular_file(stdfs::u8path(generated))) throw std::runtime_error("GCODE_NOT_CREATED");
     budget.check();
+    std::vector<unsigned int> activeMaterialIds;
+    for(const auto& usage:gcode.print_statistics.total_volumes_per_extruder)
+        if(std::isfinite(usage.second) && usage.second>1e-9) activeMaterialIds.push_back(usage.first);
+    validate_material_plan(project,activeMaterialIds);
     Json preview=write_preview(gcode,previewPartial.u8string());
     budget.check();
     commit_file(stdfs::u8path(generated),gcodeFinal);
@@ -271,6 +276,7 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
         {"projectRevision",project.metadata.at("revision")},{"inputSha256",project.inputSha256},
         {"configSha256",json_sha256(config_json(project.config))},{"effectiveConfig",config_json(project.config)},
         {"requestedConfig",requestedConfig},{"requestedConfigSha256",json_sha256(requestedConfig)},
+        {"materialPlanValidationVersion",1},{"activeMaterialIds",activeMaterialIds},
         {"jobId",text(request,"jobId")},{"attemptId",text(request,"attemptId")},{"state","succeeded"},
         {"quality",text(request,"quality","standard")},{"qualityPresetVersion","p1-v2"},
         {"outputMode",project.metadata.value("outputMode",Json("native"))},
@@ -425,6 +431,7 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
                         trial["configDiff"][option.key()]=Json{{"before",baselineConfig.value(option.key(),Json())},{"after",option.value()}};
                 for (const char* key:{"gcodePath","gcodeSize","gcodeSha256","scenePath","sceneSha256","previewPath","previewSha256","layerCount","layerHeights","manifestPath"}) trial[key]=result.at(key);
                 for(const char* key:{"filamentCost","costCurrency","costStatus"}) if(result.contains(key)) trial[key]=result.at(key);
+                trial["materialPlanValidationVersion"]=1; trial["activeMaterialIds"]=result.at("activeMaterialIds");
                 trial["metrics"]=Json{{"printTimeSeconds",result["printTimeSeconds"]},{"filamentVolumeMm3",result["filamentVolumeMm3"]},
                     {"filamentGrams",result["filamentGrams"]},{"calculationElapsedMs",result["calculationElapsedMs"]}};
                 for (const auto& warning:result["warnings"]) trial["warnings"].push_back(warning);

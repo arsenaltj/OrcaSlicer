@@ -1071,6 +1071,23 @@ Model slicing_model(const LoadedProject& project)
     return model;
 }
 
+void validate_material_plan(const LoadedProject& project,const std::vector<unsigned int>& logicalIds)
+{
+#ifdef ORCA_MOBILE_ANDROID
+    const std::set<unsigned int> used(logicalIds.begin(),logicalIds.end());
+    if(used.empty()) throw std::runtime_error("NO_EXTRUSION_MATERIAL:No actual printable material usage");
+    const auto* colors=project.config.option<Slic3r::ConfigOptionStrings>("filament_colour");
+    for(const auto id:used) if(!colors || id>=colors->values.size())
+        throw std::runtime_error("MATERIAL_ROUTE_OUT_OF_RANGE:Support/surface/custom tool exceeds the logical material slots");
+    if(used.size()!=1) throw std::runtime_error("UNSUPPORTED_MATERIAL_SWITCH:Support, surface or custom routing uses multiple materials; select a supported single-material configuration");
+    if(project.metadata.value("outputMode",std::string())=="singleMaterial" &&
+        *used.begin()!=project.metadata.at("singleMaterialFilamentIndex").get<unsigned int>())
+        throw std::runtime_error("SINGLE_MATERIAL_ROUTE_MISMATCH:Support/surface routing differs from the explicitly selected material");
+#else
+    (void)project;(void)logicalIds;
+#endif
+}
+
 void validate_output_capabilities(const LoadedProject& project)
 {
     // Geometry/project semantics never become safe merely by assigning one

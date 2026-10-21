@@ -47,6 +47,8 @@ std::string json_sha256(const Json& value);
 // only on this copy, never on the source scene or original input.
 Slic3r::Model slicing_model(const LoadedProject& project);
 void validate_output_capabilities(const LoadedProject& project);
+// Full Print/GCodeProcessor logical IDs, including support and custom tool routing.
+void validate_material_plan(const LoadedProject& project, const std::vector<unsigned int>& logicalIds);
 // Reject whole/partial XY overflow, exclusion intersection, below-bed and height overflow.
 void validate_project_bounds(const LoadedProject& project);
 // Native-derived v2 project fragment; caller supplies projectId/revision/scenePath.

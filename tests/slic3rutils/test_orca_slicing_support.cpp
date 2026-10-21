@@ -1,6 +1,7 @@
 #include "orca_slicing/recommendation_support.hpp"
 #include "orca_slicing/engine.hpp"
 #include "libslic3r/PrintBase.hpp"
+#include "libslic3r/Print.hpp"
 #include <miniz.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -893,4 +894,36 @@ TEST_CASE("Unsafe ZIP entry paths are rejected before the 3MF auxiliary loader",
     }
     write_3mf_fixture(file.string(),basic_3mf_model(),one_plate());
     CHECK_NOTHROW(orca::slicing::inspect_three_mf(file.string()));
+}
+
+TEST_CASE("Full Print material plan includes support routing after explicit single-material consent", "[OrcaSlicingSupport][MaterialPlan]")
+{
+    auto project=preparation_project();
+    project.config.set_key_value("filament_colour",new Slic3r::ConfigOptionStrings({"#FF0000","#0000FF"}));
+    project.config.set_key_value("filament_density",new Slic3r::ConfigOptionFloats({1.24,1.24}));
+    project.config.set_key_value("filament_diameter",new Slic3r::ConfigOptionFloats({1.75,1.75}));
+    project.config.set_key_value("filament_map",new Slic3r::ConfigOptionInts({1,1}));
+    project.config.set("support_filament",2);project.config.set("support_interface_filament",2);
+    orca::slicing::apply_project_commands(project,nlohmann::json::array({{{"type","singleMaterial"},{"filamentIndex",0}}}));
+    auto model=orca::slicing::slicing_model(project);
+    project.config.set("enable_support",false);
+    Slic3r::Print ordinary;ordinary.apply(model,project.config);
+    const auto single=ordinary.extruders(true);REQUIRE(single==std::vector<unsigned int>{0});
+    CHECK_NOTHROW(orca::slicing::validate_material_plan(project,single));
+    project.config.set("enable_support",true);
+    Slic3r::Print supported;supported.apply(model,project.config);
+    const auto materials=supported.extruders(true);
+    REQUIRE((materials==std::vector<unsigned int>{0,1}));
+    CHECK_THROWS(orca::slicing::validate_material_plan(project,materials));
+}
+TEST_CASE("Actual material usage cannot be empty, outside slots or differ from explicit selection", "[OrcaSlicingSupport][MaterialPlan]")
+{
+    auto project=preparation_project();
+    project.config.set_key_value("filament_colour",new Slic3r::ConfigOptionStrings({"#FF0000","#0000FF"}));
+    project.metadata["outputMode"]="singleMaterial";project.metadata["singleMaterialFilamentIndex"]=0;
+    CHECK_NOTHROW(orca::slicing::validate_material_plan(project,{0,0}));
+    CHECK_THROWS(orca::slicing::validate_material_plan(project,{}));
+    CHECK_THROWS(orca::slicing::validate_material_plan(project,{1}));
+    CHECK_THROWS(orca::slicing::validate_material_plan(project,{0,1}));
+    CHECK_THROWS(orca::slicing::validate_material_plan(project,{2}));
 }
