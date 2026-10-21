@@ -1,6 +1,7 @@
 #include "orca_slicing/recommendation_support.hpp"
 #include "orca_slicing/engine.hpp"
 #include "libslic3r/PrintBase.hpp"
+#include <miniz.h>
 
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
@@ -656,5 +657,134 @@ TEST_CASE("Invalid orientation candidates retain the strict printable and exclus
         auto temporary=source;const auto result=orca::slicing::orientation_preview(temporary,{{"candidateIndex",0}});
         CHECK(result["candidates"][4]["valid"]==false);temporary=source;
         CHECK_THROWS_WITH(orca::slicing::orientation_preview(temporary,{{"candidateIndex",4}}),"MODEL_INTERSECTS_EXCLUDED_AREA");
+    }
+}
+
+namespace {
+std::string basic_3mf_model(const std::string& extra={},bool painted=false)
+{
+    return std::string("<model xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\" xmlns:p=\"http://schemas.microsoft.com/3dmanufacturing/production/2015/06\" unit=\"millimeter\" requiredextensions=\"p\">")+
+        "<metadata name=\"OrcaSlicer\">2.5.0</metadata><resources><object id=\"1\" type=\"model\"><mesh><vertices>"
+        "<vertex x=\"0\" y=\"0\" z=\"0\"/><vertex x=\"8\" y=\"0\" z=\"0\"/><vertex x=\"0\" y=\"12\" z=\"0\"/><vertex x=\"0\" y=\"0\" z=\"16\"/>"
+        "</vertices><triangles><triangle v1=\"0\" v2=\"2\" v3=\"1\""+(painted?" paint_color=\"8\" paint_supports=\"4\"":"")+"/>"
+        "<triangle v1=\"0\" v2=\"1\" v3=\"3\"/><triangle v1=\"1\" v2=\"2\" v3=\"3\"/><triangle v1=\"2\" v2=\"0\" v3=\"3\"/>"
+        "</triangles></mesh></object>"+extra+"</resources><build><item objectid=\"1\"/></build></model>";
+}
+std::string one_plate(const std::string& extra={})
+{
+    return "<plate><metadata key=\"plater_id\" value=\"1\"/>"+extra+
+        "<model_instance><metadata key=\"object_id\" value=\"1\"/><metadata key=\"instance_id\" value=\"0\"/></model_instance></plate>";
+}
+void write_3mf_fixture(const std::string& path,const std::string& model,const std::string& settings={},const nlohmann::json& config=nlohmann::json::object(),
+                       const std::map<std::string,std::string>& extras={})
+{
+    mz_zip_archive zip{};REQUIRE(mz_zip_writer_init_file(&zip,path.c_str(),0));
+    struct End{mz_zip_archive& zip;~End(){mz_zip_writer_end(&zip);}} end{zip};
+    auto add=[&](const std::string& name,const std::string& data){REQUIRE(mz_zip_writer_add_mem(&zip,name.c_str(),data.data(),data.size(),MZ_DEFAULT_COMPRESSION));};
+    add("3D/3dmodel.model",model);
+    if(!settings.empty()) add("Metadata/model_settings.config","<config>"+settings+"</config>");
+    if(!config.empty()) add("Metadata/project_settings.config",config.dump());
+    for(const auto& extra:extras) add(extra.first,extra.second);
+    REQUIRE(mz_zip_writer_finalize_archive(&zip));
+}
+bool has_3mf_feature(const nlohmann::json& inspection,const std::string& id,const std::string& status)
+{
+    for(const auto& feature:inspection.at("features")) if(feature.at("id")==id && feature.at("status")==status) return true;
+    return false;
+}
+}
+TEST_CASE("Basic 3MF five-color paint and native support annotations remain explicit-consent output", "[OrcaSlicingSupport][ThreeMfPreflight]")
+{
+    ScopedTemporaryFile file(".3mf");
+    const nlohmann::json config={{"filament_colour",{"#110000","#002200","#000033","#444400","#555555"}},
+        {"filament_density",{"1.24","1.24","1.24","1.24","1.24"}},{"filament_diameter",{"1.75","1.75","1.75","1.75","1.75"}},
+        {"filament_map",{1,1,1,1,1}},{"nozzle_diameter",{"0.4"}},{"enable_prime_tower","0"},{"silent_mode","0"}};
+    write_3mf_fixture(file.string(),basic_3mf_model({},true),one_plate(),config,{{"Metadata/filament_sequence.json",R"({"plate_1":{"sequence":[],"nozzle_sequence":[],"optimal_assignment":[]}})"}});
+    const auto original=orca::slicing::file_sha256(file.string());
+    const auto inspection=orca::slicing::inspect_three_mf(file.string());
+    CHECK(inspection["blockedFeatures"].empty());CHECK(inspection["currentPlate"]=="1");
+    CHECK(has_3mf_feature(inspection,"paint_color","requires_single_material"));
+    CHECK(has_3mf_feature(inspection,"paint_supports","supported_native"));
+    CHECK(has_3mf_feature(inspection,"retired_disabled_silent_mode","preserved_metadata"));
+    CHECK(has_3mf_feature(inspection,"empty_filament_sequence","preserved_metadata"));
+    auto project=orca::slicing::load_project(file.string());
+    CHECK(project.metadata["blockingFeatures"].empty());
+    CHECK(project.metadata["sourceInspectionVersion"]==1);
+    CHECK(orca::slicing::describe_project(project)["model"]["colors"].size()==5);
+    const auto vertices=project.model.objects[0]->volumes[0]->mesh().its.vertices;
+    orca::slicing::apply_project_commands(project,nlohmann::json::array({{{"type","singleMaterial"},{"filamentIndex",0}}}));
+    CHECK_NOTHROW(orca::slicing::validate_output_capabilities(project));
+    CHECK(project.model.objects[0]->volumes[0]->mesh().its.vertices==vertices);
+    CHECK_FALSE(project.model.objects[0]->volumes[0]->mmu_segmentation_facets.empty());
+    CHECK(orca::slicing::file_sha256(file.string())==original);
+}
+TEST_CASE("3MF semantic blocks cannot be bypassed by any output material mode", "[OrcaSlicingSupport][ThreeMfPreflight]")
+{
+    const std::map<std::string,std::string> extras{{"Metadata/vendor_geometry.json","{\"lattice\":true}"}};
+    ScopedTemporaryFile file(".3mf");write_3mf_fixture(file.string(),basic_3mf_model(),one_plate(),{},extras);
+    const auto source=orca::slicing::load_project(file.string());
+    REQUIRE_FALSE(source.metadata.at("blockingFeatures").empty());
+    for(const std::string mode:{"native","singleMaterial"}) {
+        DYNAMIC_SECTION(mode) {
+            auto project=source;
+            if(mode=="singleMaterial") orca::slicing::apply_project_commands(project,nlohmann::json::array({{{"type","singleMaterial"},{"filamentIndex",0}}}));
+            CHECK_THROWS(orca::slicing::validate_output_capabilities(project));
+            CHECK(project.metadata["blockingFeatures"][0]["blocksAllOutputModes"]==true);
+        }
+    }
+}
+TEST_CASE("Multi-plate and unowned 3MF build instances are enumerated and never flattened", "[OrcaSlicingSupport][ThreeMfPreflight]")
+{
+    ScopedTemporaryFile file(".3mf");
+    const std::string second="<plate><metadata key=\"plater_id\" value=\"2\"/><model_instance><metadata key=\"object_id\" value=\"1\"/><metadata key=\"instance_id\" value=\"0\"/></model_instance></plate>";
+    write_3mf_fixture(file.string(),basic_3mf_model(),one_plate()+second);
+    auto scan=orca::slicing::inspect_three_mf(file.string());CHECK(scan["plateCount"]==2);CHECK(scan["currentPlate"].is_null());
+    CHECK(has_3mf_feature(scan,"multiple_plates","blocked"));
+    write_3mf_fixture(file.string(),basic_3mf_model(),"<plate><metadata key=\"plater_id\" value=\"1\"/></plate>");
+    scan=orca::slicing::inspect_three_mf(file.string());CHECK(has_3mf_feature(scan,"unassigned_build_items","blocked"));
+}
+TEST_CASE("Unknown extensions geometry part types and scripts have specific 3MF diagnostics", "[OrcaSlicingSupport][ThreeMfPreflight]")
+{
+    ScopedTemporaryFile file(".3mf");
+    write_3mf_fixture(file.string(),basic_3mf_model("<vendor:implicit xmlns:vendor=\"urn:vendor:geometry\"/>"),one_plate());
+    auto scan=orca::slicing::inspect_three_mf(file.string());CHECK(has_3mf_feature(scan,"model_namespace:urn:vendor:geometry","blocked"));
+    write_3mf_fixture(file.string(),basic_3mf_model(),"<object id=\"1\"><part id=\"1\" subtype=\"vendor_lattice\"/></object>"+one_plate());
+    scan=orca::slicing::inspect_three_mf(file.string());CHECK(has_3mf_feature(scan,"part_type:vendor_lattice","blocked"));
+    write_3mf_fixture(file.string(),basic_3mf_model(),one_plate(),{},{{"Metadata/filament_sequence.json",R"({"plate_1":{"sequence":[1,2]}})"}});
+    scan=orca::slicing::inspect_three_mf(file.string());CHECK(has_3mf_feature(scan,"custom_filament_sequence","blocked"));
+    write_3mf_fixture(file.string(),basic_3mf_model(),one_plate(),{{"post_process",{"python fix.py"}},{"slicing_pipeline_plugin",{"vendor.python"}}});
+    scan=orca::slicing::inspect_three_mf(file.string());CHECK(has_3mf_feature(scan,"external_processing:post_process","blocked"));
+    CHECK(has_3mf_feature(scan,"external_processing:slicing_pipeline_plugin","blocked"));
+    write_3mf_fixture(file.string(),basic_3mf_model(),one_plate(),{{"sparse_infill_pattern","future_vendor_pattern"}});
+    const auto substituted=orca::slicing::load_project(file.string());
+    CHECK_FALSE(substituted.metadata["blockingFeatures"].empty());
+    CHECK_THROWS(orca::slicing::validate_output_capabilities(substituted));
+    write_3mf_fixture(file.string(),basic_3mf_model(),one_plate(),{{"vendor_unsupported_flow_policy","special"}});
+    scan=orca::slicing::inspect_three_mf(file.string());CHECK(has_3mf_feature(scan,"unknown_config:vendor_unsupported_flow_policy","blocked"));
+}
+TEST_CASE("Native single-plate settings are applied before overrides without rejecting normal parts", "[OrcaSlicingSupport][ThreeMfPreflight]")
+{
+    ScopedTemporaryFile file(".3mf");
+    const std::string parts="<object id=\"1\"><part id=\"1\" subtype=\"normal_part\"/><part id=\"2\" subtype=\"modifier_part\"/></object>";
+    write_3mf_fixture(file.string(),basic_3mf_model(),parts+one_plate("<metadata key=\"print_sequence\" value=\"by object\"/>"),{{"print_sequence","by layer"}});
+    const auto scan=orca::slicing::inspect_three_mf(file.string());CHECK(scan["blockedFeatures"].empty());
+    CHECK(has_3mf_feature(scan,"parts_modifiers","supported_native"));
+    // Use a real single mesh for the load/plate configuration assertion; the
+    // two-part scan above protects recognition without inventing missing geometry.
+    write_3mf_fixture(file.string(),basic_3mf_model(),one_plate("<metadata key=\"print_sequence\" value=\"by object\"/>"),{{"print_sequence","by layer"}});
+    const auto project=orca::slicing::load_project(file.string());
+    CHECK(orca::slicing::config_json(project.config)["print_sequence"]=="by object");
+    const auto override=orca::slicing::load_project(file.string(),{{"print_sequence","by layer"}});
+    CHECK(orca::slicing::config_json(override.config)["print_sequence"]=="by layer");
+}
+TEST_CASE("External processing is rejected even after explicit single-material conversion", "[OrcaSlicingSupport][ThreeMfPreflight]")
+{
+    for(const char* key:{"post_process","plugins","slicing_pipeline_plugin"}) {
+        DYNAMIC_SECTION(key) {
+            auto project=preparation_project();
+            project.config.set_key_value(key,new Slic3r::ConfigOptionStrings({"unavailable.py"}));
+            orca::slicing::apply_project_commands(project,nlohmann::json::array({{{"type","singleMaterial"},{"filamentIndex",0}}}));
+            CHECK_THROWS(orca::slicing::validate_output_capabilities(project));
+        }
     }
 }

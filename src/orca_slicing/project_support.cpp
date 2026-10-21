@@ -1,5 +1,8 @@
 #include "project_support.hpp"
 #include "preset_catalog.generated.hpp"
+#include "three_mf_inspection.hpp"
+#include "libslic3r/Format/bbs_3mf.hpp"
+#include "libslic3r/Preset.hpp"
 
 #include <algorithm>
 #include <array>
@@ -239,6 +242,8 @@ Model load_mobile_obj(const std::string& path, Json& unsupported)
 
 } // namespace
 
+Json inspect_three_mf(const std::string& inputPath) {return detail::inspect_archive(inputPath);}
+
 LoadedProject load_project(const std::string& inputPath, const Json& configOverrides,
                            const Json& transforms, const std::string& workspaceRoot, const Json& projectCommands)
 {
@@ -251,6 +256,17 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
     ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::EnableSilent};
     Model model;
     Json unsupported=Json::array();
+    Json inspection;
+    PlateDataPtrs plates;std::vector<Preset*> presets;
+    struct SourceData {PlateDataPtrs& plates;std::vector<Preset*>& presets;
+        ~SourceData(){release_PlateData_list(plates);for(auto* preset:presets) delete preset;}
+    } sourceData{plates,presets};
+    std::string sourceExtension=std::filesystem::u8path(inputPath).extension().u8string();
+    std::transform(sourceExtension.begin(),sourceExtension.end(),sourceExtension.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+    if(sourceExtension==".3mf") {
+        inspection=inspect_three_mf(inputPath);
+        substitutions.rule=ForwardCompatibilitySubstitutionRule::Enable; // retain default-substitution evidence
+    }
     if (!workspaceRoot.empty())
         set_temporary_dir((std::filesystem::u8path(workspaceRoot) / "native-temp").u8string());
     try {
@@ -262,16 +278,39 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
 #endif
         model = Model::read_from_file(inputPath, &config, &substitutions,
                                       LoadStrategy::AddDefaultInstances | LoadStrategy::LoadModel |
-                                      LoadStrategy::LoadConfig | LoadStrategy::LoadAuxiliary);
+                                      LoadStrategy::LoadConfig | LoadStrategy::LoadAuxiliary,&plates,&presets);
     } catch (const std::exception& error) {
         const std::string detail = bbs_3mf_last_error();
-        throw std::runtime_error(std::string(error.what()) + (detail.empty() ? std::string() : "; " + detail));
+        throw std::runtime_error(std::string(error.what()) + (detail.empty() ? std::string() : "; " + detail) +
+            (inspection.is_object() && !inspection["blockedFeatures"].empty()?"; 3MF_FEATURES:"+inspection["blockedFeatures"].dump():std::string()));
     }
     if (model.objects.empty()) {
         const std::string detail = bbs_3mf_last_error();
-        throw std::runtime_error("project contains no model objects: " + inputPath + (detail.empty() ? std::string() : "; " + detail));
+        throw std::runtime_error("project contains no model objects: " + inputPath + (detail.empty() ? std::string() : "; " + detail) +
+            (inspection.is_object() && !inspection["blockedFeatures"].empty()?"; 3MF_FEATURES:"+inspection["blockedFeatures"].dump():std::string()));
     }
 
+    // Single-plate settings are part of the original profile, before user
+    // overrides. Multi-plate projects are inspected but never silently flattened.
+    if(sourceExtension==".3mf" && plates.size()==1) config.apply(plates.front()->config);
+    if(sourceExtension==".3mf") {
+        if(!bbs_3mf_last_error().empty()) {
+            Json feature{{"id","native_import_warning"},{"status","blocked"},{"path",inputPath},{"message",bbs_3mf_last_error()}};
+            inspection["features"].push_back(feature);inspection["blockedFeatures"].push_back(feature);
+        }
+        for(const auto& key:substitutions.unrecogized_keys) {
+            const bool retiredDisabled=key=="silent_mode" && std::any_of(inspection["features"].begin(),inspection["features"].end(),[](const Json& feature){return feature.at("id")=="retired_disabled_silent_mode";});
+            if(retiredDisabled) continue;
+            Json feature{{"id","unknown_import_setting:"+key},{"status","blocked"},{"path",inputPath},
+                {"message","Native importer could not preserve this source setting"}};
+            inspection["features"].push_back(feature);inspection["blockedFeatures"].push_back(feature);
+        }
+        for(const auto& changed:substitutions.substitutions) {
+            Json feature{{"id","substituted_import_setting:"+(changed.opt_def?changed.opt_def->opt_key:std::string("unknown"))},
+                {"status","blocked"},{"path",inputPath},{"message","Unknown source value was substituted; output is blocked"}};
+            inspection["features"].push_back(feature);inspection["blockedFeatures"].push_back(feature);
+        }
+    }
     DynamicPrintConfig complete = DynamicPrintConfig::full_print_config();
     std::string extension=std::filesystem::u8path(inputPath).extension().u8string();
     std::transform(extension.begin(),extension.end(),extension.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
@@ -294,14 +333,50 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
         project.metadata["basePreset"]=catalog["devices"][1];
         project.metadata["basePreset"]["version"]=catalog.at("version");
     }
+    project.metadata["sourceInspectionVersion"]=1;
     project.metadata["unsupportedFeatures"] = unsupported;
+    project.metadata["blockingFeatures"]=Json::array();
+    project.metadata["unsupportedOutputFeatures"]=Json::array();
+    for(const auto& id:unsupported) project.metadata["unsupportedOutputFeatures"].push_back(Json{{"id",id},{"status","requires_single_material"},{"path",inputPath},
+        {"message","OBJ appearance is retained in the original source; geometry-only output requires explicit consent"},{"blocksAllOutputModes",false},{"requiresExplicitSingleMaterial",true}});
+    if(!inspection.is_null()) {
+        project.metadata["threeMfInspection"]=inspection;
+        for(auto& feature:inspection["features"]) {
+            const auto status=feature.value("status",std::string());
+            feature["blocksAllOutputModes"]=status=="blocked";feature["requiresExplicitSingleMaterial"]=status=="requires_single_material";
+            if(status=="blocked" || status=="requires_single_material") {
+                project.metadata["unsupportedFeatures"].push_back(feature.at("id"));
+                project.metadata["unsupportedOutputFeatures"].push_back(feature);
+                if(status=="blocked") project.metadata["blockingFeatures"].push_back(feature);
+            }
+        }
+        inspection["blockedFeatures"]=project.metadata["blockingFeatures"];
+        project.metadata["threeMfInspection"]=inspection;
+        project.metadata["plateCount"]=inspection["plateCount"];
+        project.metadata["currentPlate"]=inspection["currentPlate"];
+        project.metadata["plates"]=inspection["plates"];
+        project.metadata["previewCompleteness"]=inspection["blockedFeatures"].empty()?"native-model":"partial-unsupported-content";
+    }
     project.metadata["sourceColors"] = sourceColors;
     project.metadata["workspaceRoot"] = workspaceRoot;
     project.metadata["transforms"] = transforms.is_null() ? Json::array() : transforms;
-    project.metadata["sourceFormat"] = std::filesystem::u8path(inputPath).extension().u8string();
+    project.metadata["sourceFormat"] = sourceExtension;
     project.metadata["colors"] = colors_json(project.config);
     project.metadata["filamentMap"] = filament_map_json(project.config);
     apply_project_commands(project, projectCommands);
+    for(const char* key:{"post_process","plugins","slicing_pipeline_plugin","print_plugin_config_overrides","printer_plugin_config_overrides","filament_plugin_config_overrides"}) {
+        bool active=false;
+        if(const auto* scripts=project.config.option<ConfigOptionStrings>(key)) {
+            for(const auto& script:scripts->values) active=active||detail::ThreeMfScan::active(Json(script));
+        } else if(const auto* script=project.config.option<ConfigOptionString>(key)) active=detail::ThreeMfScan::active(Json(script->value));
+        const std::string id=std::string("external_processing:")+key;
+        if(active && std::none_of(project.metadata["blockingFeatures"].begin(),project.metadata["blockingFeatures"].end(),[&](const Json& item){return item.value("id",std::string())==id;})) {
+            Json feature{{"id",id},{"status","blocked"},{"path",inputPath},{"message","Android does not execute external scripts/Python plugins"},
+                {"blocksAllOutputModes",true},{"requiresExplicitSingleMaterial",false}};
+            project.metadata["unsupportedFeatures"].push_back(id);project.metadata["blockingFeatures"].push_back(feature);
+            project.metadata["unsupportedOutputFeatures"].push_back(feature);
+        }
+    }
     return project;
 }
 
@@ -936,8 +1011,20 @@ Model slicing_model(const LoadedProject& project)
 
 void validate_output_capabilities(const LoadedProject& project)
 {
+    // Geometry/project semantics never become safe merely by assigning one
+    // material. Derive this list from the original archive on every load.
+    if(!project.metadata.value("blockingFeatures",Json::array()).empty())
+        throw std::runtime_error("UNSUPPORTED_3MF_OUTPUT:"+project.metadata.at("blockingFeatures").dump());
+    for(const char* key:{"post_process","plugins","slicing_pipeline_plugin","print_plugin_config_overrides","printer_plugin_config_overrides","filament_plugin_config_overrides"}) {
+        if(const auto* scripts=project.config.option<ConfigOptionStrings>(key)) {
+            for(const auto& script:scripts->values) if(detail::ThreeMfScan::active(Json(script)))
+                throw std::runtime_error(std::string("UNSUPPORTED_EXTERNAL_PROCESSING:")+key);
+        } else if(const auto* script=project.config.option<ConfigOptionString>(key);script && detail::ThreeMfScan::active(Json(script->value)))
+            throw std::runtime_error(std::string("UNSUPPORTED_EXTERNAL_PROCESSING:")+key);
+    }
 #ifdef ORCA_MOBILE_ANDROID
-    if (!project.metadata.value("unsupportedFeatures",Json::array()).empty() &&
+    if (project.metadata.value("sourceFormat",std::string())==".obj" &&
+        !project.metadata.value("unsupportedFeatures",Json::array()).empty() &&
         project.metadata.value("outputMode",std::string())!="singleMaterial")
         throw std::runtime_error("UNSUPPORTED_OBJ_APPEARANCE:Original is preserved; explicitly confirm geometry-only single-material output");
     if (const auto* prime=project.config.option<ConfigOptionBool>("enable_prime_tower"))

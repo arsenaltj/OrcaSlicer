@@ -24,6 +24,9 @@ struct LoadedProject {
     Json sourceConfig = Json::object();
 };
 
+// Read-only archive feature/plate inspection; original ZIP is never rewritten.
+Json inspect_three_mf(const std::string& inputPath);
+
 // Paths are UTF-8. Overrides are a JSON object of native option values (scalars or
 // arrays); native serialized strings are accepted. Throws std::exception on failure.
 // Transforms: [] or [{objectIndex, instanceIndex (optional), translation:[x,y,z],
