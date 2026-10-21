@@ -165,99 +165,6 @@ std::array<std::uint8_t, 4> parse_color(std::string value)
     return rgba;
 }
 
-struct VertexKey {
-    std::int64_t x;
-    std::int64_t y;
-    std::int64_t z;
-    bool operator==(const VertexKey& other) const { return x == other.x && y == other.y && z == other.z; }
-};
-struct VertexKeyHash {
-    size_t operator()(const VertexKey& value) const noexcept {
-        size_t h = static_cast<size_t>(value.x);
-        h = h * 31u + static_cast<size_t>(value.y);
-        h = h * 31u + static_cast<size_t>(value.z);
-        return h;
-    }
-};
-struct FaceKey {
-    std::array<std::uint32_t, 3> value{};
-    bool operator==(const FaceKey& other) const { return value == other.value; }
-};
-struct FaceKeyHash {
-    size_t operator()(const FaceKey& value) const noexcept {
-        size_t h = value.value[0];
-        h = h * 31u + value.value[1];
-        h = h * 31u + value.value[2];
-        return h;
-    }
-};
-
-VertexKey vertex_key(const stl_vertex& vertex)
-{
-    constexpr double scale = 1000000.0;
-    return {static_cast<std::int64_t>(std::llround(static_cast<double>(vertex.x()) * scale)),
-            static_cast<std::int64_t>(std::llround(static_cast<double>(vertex.y()) * scale)),
-            static_cast<std::int64_t>(std::llround(static_cast<double>(vertex.z()) * scale))};
-}
-
-FaceKey face_key(std::uint32_t a, std::uint32_t b, std::uint32_t c)
-{
-    FaceKey result{{a, b, c}};
-    std::sort(result.value.begin(), result.value.end());
-    return result;
-}
-
-std::vector<std::uint16_t> painted_face_palettes(const ModelVolume& volume, size_t palette_count)
-{
-    const auto& mesh = volume.mesh().its;
-    std::vector<std::uint16_t> palettes(mesh.indices.size(), 0);
-    const int default_extruder = volume.extruder_id();
-    if (default_extruder > 0)
-        std::fill(palettes.begin(), palettes.end(), static_cast<std::uint16_t>(std::min<size_t>(palette_count - 1, static_cast<size_t>(default_extruder - 1))));
-    if (volume.mmu_segmentation_facets.empty() || palette_count == 0)
-        return palettes;
-
-    std::unordered_map<VertexKey, std::vector<std::uint32_t>, VertexKeyHash> vertices;
-    vertices.reserve(mesh.vertices.size());
-    for (std::uint32_t i = 0; i < mesh.vertices.size(); ++i)
-        vertices[vertex_key(mesh.vertices[i])].push_back(i);
-
-    std::unordered_map<FaceKey, size_t, FaceKeyHash> faces;
-    faces.reserve(mesh.indices.size());
-    for (size_t i = 0; i < mesh.indices.size(); ++i) {
-        const auto& triangle = mesh.indices[i];
-        faces.emplace(face_key(triangle(0), triangle(1), triangle(2)), i);
-    }
-
-    for (int state = static_cast<int>(EnforcerBlockerType::Extruder1);
-         state <= static_cast<int>(EnforcerBlockerType::ExtruderMax); ++state) {
-        const auto selected = volume.mmu_segmentation_facets.get_facets(volume, static_cast<EnforcerBlockerType>(state));
-        const std::uint16_t palette = static_cast<std::uint16_t>(std::min<size_t>(palette_count - 1, static_cast<size_t>(state - 1)));
-        for (const auto& triangle : selected.indices) {
-            const auto i0 = vertices.find(vertex_key(selected.vertices[triangle(0)]));
-            const auto i1 = vertices.find(vertex_key(selected.vertices[triangle(1)]));
-            const auto i2 = vertices.find(vertex_key(selected.vertices[triangle(2)]));
-            if (i0 == vertices.end() || i1 == vertices.end() || i2 == vertices.end())
-                continue;
-            bool mapped = false;
-            for (const std::uint32_t a : i0->second) {
-                for (const std::uint32_t b : i1->second) {
-                    for (const std::uint32_t c : i2->second) {
-                        const auto found = faces.find(face_key(a, b, c));
-                        if (found != faces.end()) {
-                            palettes[found->second] = palette;
-                            mapped = true;
-                            break;
-                        }
-                    }
-                    if (mapped) break;
-                }
-                if (mapped) break;
-            }
-        }
-    }
-    return palettes;
-}
 
 } // namespace
 
@@ -392,21 +299,33 @@ Json write_scene(const LoadedProject& project, const std::string& outputPath)
             for (const ModelVolume* volume : object->volumes) {
                 if (!volume->is_model_part())
                     continue;
-                const auto& mesh = volume->mesh().its;
-                const auto painted = painted_face_palettes(*volume, palette_count);
                 const Transform3d matrix = instance_matrix * volume->get_matrix();
-                const std::uint32_t vertex_offset = static_cast<std::uint32_t>(vertices.size());
-                vertices.reserve(vertices.size() + mesh.vertices.size());
-                for (const auto& vertex : mesh.vertices) {
-                    const Vec3d transformed = matrix * vertex.cast<double>();
-                    vertices.emplace_back(static_cast<float>(transformed.x()), static_cast<float>(transformed.y()), static_cast<float>(transformed.z()));
-                }
-                triangles.reserve(triangles.size() + mesh.indices.size());
-                face_palettes.reserve(face_palettes.size() + mesh.indices.size());
-                for (size_t fi = 0; fi < mesh.indices.size(); ++fi) {
-                    const auto& triangle = mesh.indices[fi];
-                    { stl_triangle_vertex_indices output_triangle; output_triangle << static_cast<int>(triangle(0) + vertex_offset), static_cast<int>(triangle(1) + vertex_offset), static_cast<int>(triangle(2) + vertex_offset); triangles.push_back(output_triangle); }
-                    face_palettes.push_back(fi < painted.size() ? painted[fi] : 0);
+                const int defaultMaterial=std::max(1,volume->extruder_id());
+                auto append_mesh = [&](const indexed_triangle_set& mesh, size_t color) {
+                    if (mesh.vertices.size()>UINT32_MAX-vertices.size() || mesh.indices.size()>UINT32_MAX-triangles.size())
+                        throw std::overflow_error("SCENE_TOO_LARGE");
+                    const uint32_t vertex_offset=static_cast<uint32_t>(vertices.size());
+                    for (const auto& vertex:mesh.vertices) {
+                        const Vec3d transformed=matrix*vertex.cast<double>();
+                        vertices.emplace_back(transformed.cast<float>());
+                    }
+                    for (const auto& triangle:mesh.indices) {
+                        stl_triangle_vertex_indices output_triangle;
+                        output_triangle << static_cast<int>(triangle[0]+vertex_offset),static_cast<int>(triangle[1]+vertex_offset),static_cast<int>(triangle[2]+vertex_offset);
+                        triangles.push_back(output_triangle);
+                        face_palettes.push_back(static_cast<uint16_t>(std::min(color,palette_count-1)));
+                    }
+                };
+                if (volume->mmu_segmentation_facets.empty()) {
+                    append_mesh(volume->mesh().its,size_t(defaultMaterial-1));
+                } else {
+                    // Render the real painted leaf triangles, including split
+                    // facets. Matching painted leaves back to original vertices
+                    // silently lost partial-face colors. Source mesh stays intact.
+                    std::vector<indexed_triangle_set> groups;
+                    volume->mmu_segmentation_facets.get_facets(*volume,groups);
+                    for (size_t state=0;state<groups.size();++state)
+                        if (!groups[state].indices.empty()) append_mesh(groups[state],state==0?size_t(defaultMaterial-1):state-1);
                 }
             }
         }

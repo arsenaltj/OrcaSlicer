@@ -31,8 +31,8 @@ int orca_slicing_execute(orca_slicing_context* handle,const char* request,orca_s
  try {
   auto req=orca::slicing::Json::parse(request);
   auto answer=context->engine.execute(req,[&](const orca::slicing::Json& e){if(event){auto text=e.dump();event(text.c_str(),user);}});
-  // Keep engine failures intact. Flat fields remain for v1 consumers; v2 ledger
-  // readers use result and must retain the full identity inside that object.
+  // Keep engine failures intact. v2 carries the payload once in result:
+  // duplicating full configs and four trial artifacts risks Binder size limits.
   if (!answer.is_object()) return failure(ORCA_SLICE_INTERNAL,"INVALID_NATIVE_RESULT","Expected object",result);
   if (answer.contains("error") || !answer.value("ok",true)) {
    answer["ok"]=false; answer["schemaVersion"]=2;
@@ -41,13 +41,10 @@ int orca_slicing_execute(orca_slicing_context* handle,const char* request,orca_s
   }
   answer["schemaVersion"]=2; answer["engineVersion"]=orca_slicing_version();
   answer["sourceCommit"]=ORCA_SLICING_SOURCE_COMMIT;
-  if (!answer.contains("result")) {auto payload=answer; answer["result"]=std::move(payload);}
-  else if (answer["result"].is_object()) {
-   answer["result"]["schemaVersion"]=2;
-   answer["result"]["engineVersion"]=orca_slicing_version();
-   answer["result"]["sourceCommit"]=ORCA_SLICING_SOURCE_COMMIT;
-  }
-  answer["ok"]=true; *result=copy(answer.dump());
+  auto payload=std::move(answer);
+  answer=orca::slicing::Json{{"ok",true},{"schemaVersion",2},{"engineVersion",orca_slicing_version()},
+      {"sourceCommit",ORCA_SLICING_SOURCE_COMMIT},{"result",std::move(payload)}};
+  *result=copy(answer.dump());
   return *result?ORCA_SLICE_OK:ORCA_SLICE_RESOURCE;
  }
  catch(const nlohmann::json::exception& e){return failure(ORCA_SLICE_INVALID,"INVALID_JSON",e.what(),result);}
