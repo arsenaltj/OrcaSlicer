@@ -221,6 +221,7 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
             throw std::runtime_error("FILAMENT_DENSITY_REQUIRED_FOR_METRICS");
         grams+=usage.second*densities->values[usage.first]/1000.0;
     }
+    description["applyQualityPreset"]=false;
     Json out=preview;
     out.update(Json{{"schemaVersion",2},{"projectId",request.value("projectId",Json())},
         {"projectRevision",project.metadata.at("revision")},{"inputSha256",project.inputSha256},
@@ -286,7 +287,10 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
         // Import may expose an off-bed source for preparation, but an update
         // cannot commit invalid placement and slicing always enforces the gate.
         if (operation=="update" || operation=="projectCommand") validate_project_bounds(project);
+        if (request.value("applyQualityPreset",false) && !request.value("executeEffectiveConfig",false))
+            project.config=quality_config(project.config,text(request,"quality","standard"));
         Json description=scene_and_snapshot(project,root(request,workspace_)/artifact_key(request,project));
+        description["applyQualityPreset"]=false;
         budget.check();
         return Json{{"schemaVersion",2},{"state","succeeded"},{"project",description},
             {"scenePath",description.at("scenePath")},{"inputSha256",project.inputSha256}};
