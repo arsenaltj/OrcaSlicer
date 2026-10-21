@@ -946,4 +946,8 @@ TEST_CASE("Raw support and feature selectors cannot be silently clamped by Print
     CHECK_THROWS(orca::slicing::validate_material_assignments(project));
     project.model.objects[0]->volumes[0]->config.set("outer_wall_filament_id",0);
     CHECK_NOTHROW(orca::slicing::validate_material_assignments(project));
+    project.model.objects[0]->volumes[0]->config.set("extruder",9);
+    CHECK_THROWS(orca::slicing::validate_material_assignments(project));
+    orca::slicing::apply_project_commands(project,nlohmann::json::array({{{"type","singleMaterial"},{"filamentIndex",0}}}));
+    CHECK_NOTHROW(orca::slicing::validate_material_assignments(project));
 }

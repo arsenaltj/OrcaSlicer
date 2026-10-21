@@ -420,29 +420,35 @@ void validate_material_assignments(const LoadedProject& project)
         for(int physical:maps->values) if(physical<1 || !diameters || size_t(physical)>diameters->values.size())
             throw std::runtime_error("MATERIAL_REMAP_REQUIRED:physical tool out of range");
     }
+    std::map<std::pair<size_t,size_t>,int> assignments;
+    for(const auto& assignment:project.metadata.value("materialAssignments",Json::array()))
+        assignments[{assignment.at("objectIndex").get<size_t>(),assignment.at("volumeIndex").get<size_t>()}]=assignment.at("filamentIndex").get<int>();
+    for(const auto& assignment:assignments)
+        if(assignment.second<0 || size_t(assignment.second)>=slots) throw std::runtime_error("MATERIAL_REMAP_REQUIRED:assigned slot out of range");
+    const auto allMapped=[&assignments](const Slic3r::ModelObject& object,size_t oi) {
+        bool any=false;for(size_t vi=0;vi<object.volumes.size();++vi) if(object.volumes[vi]->is_model_part()) {any=true;if(!assignments.count({oi,vi})) return false;}return any;
+    };
+    bool allPartsMapped=!project.model.objects.empty();
+    for(size_t oi=0;oi<project.model.objects.size();++oi) allPartsMapped=allPartsMapped&&allMapped(*project.model.objects[oi],oi);
     // PrintObject/PrintRegion normalize invalid selectors to material 1. Reject
     // raw global/object/part/range values before Print::apply can hide them.
-    const auto validateRoutes=[slots](const DynamicPrintConfig& config,const std::string& scope) {
+    const auto validateRoutes=[slots](const DynamicPrintConfig& config,const std::string& scope,bool baseExplicitlyRemapped=false) {
         for(const char* key:{"extruder","support_filament","support_interface_filament","sparse_infill_filament_id","internal_solid_filament_id","top_surface_filament_id","bottom_surface_filament_id","outer_wall_filament_id","inner_wall_filament_id"}) {
+            if(baseExplicitlyRemapped && std::string_view(key)=="extruder") continue;
             const auto* raw=config.option(key);if(!raw) continue;
             const auto* selector=dynamic_cast<const ConfigOptionInt*>(raw);
             if(!selector || selector->value<0 || size_t(selector->value)>slots)
                 throw std::runtime_error("MATERIAL_ROUTE_OUT_OF_RANGE:"+scope+":"+key+" (0 inherits; logical slots="+std::to_string(slots)+")");
         }
     };
-    validateRoutes(project.config,"global");
+    validateRoutes(project.config,"global",allPartsMapped);
     for(size_t oi=0;oi<project.model.objects.size();++oi) {
         const auto* object=project.model.objects[oi];const std::string scope="object/"+std::to_string(oi);
-        validateRoutes(object->config.get(),scope);
-        for(size_t vi=0;vi<object->volumes.size();++vi) validateRoutes(object->volumes[vi]->config.get(),scope+"/part/"+std::to_string(vi));
+        validateRoutes(object->config.get(),scope,allMapped(*object,oi));
+        for(size_t vi=0;vi<object->volumes.size();++vi) validateRoutes(object->volumes[vi]->config.get(),scope+"/part/"+std::to_string(vi),object->volumes[vi]->is_model_part()&&assignments.count({oi,vi}));
         for(const auto& range:object->layer_config_ranges) validateRoutes(range.second.get(),scope+"/height-range");
     }
 
-    std::map<std::pair<size_t,size_t>,int> assignments;
-    for(const auto& assignment:project.metadata.value("materialAssignments",Json::array()))
-        assignments[{assignment.at("objectIndex").get<size_t>(),assignment.at("volumeIndex").get<size_t>()}]=assignment.at("filamentIndex").get<int>();
-    for(const auto& assignment:assignments)
-        if(assignment.second<0 || size_t(assignment.second)>=slots) throw std::runtime_error("MATERIAL_REMAP_REQUIRED:assigned slot out of range");
     // Scene palette size is not active material usage. Explicit per-part user
     // assignments replace paint only on the slicing copy; unused source colors
     // must stay visible and must not create false material index errors.
