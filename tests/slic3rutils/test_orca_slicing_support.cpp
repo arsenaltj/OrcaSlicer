@@ -10,6 +10,7 @@
 #include <fstream>
 #include <array>
 #include <algorithm>
+#include <filesystem>
 #include <cstdint>
 #include "test_utils.hpp"
 
@@ -714,7 +715,13 @@ TEST_CASE("Basic 3MF five-color paint and native support annotations remain expl
     CHECK(has_3mf_feature(inspection,"paint_supports","supported_native"));
     CHECK(has_3mf_feature(inspection,"retired_disabled_silent_mode","preserved_metadata"));
     CHECK(has_3mf_feature(inspection,"empty_filament_sequence","preserved_metadata"));
-    auto project=orca::slicing::load_project(file.string());
+    const std::string workspace=(directory.path()/"explicit-workspace").string();
+    Slic3r::set_temporary_dir(""); // Reproduce the raw ABI process's unset global.
+    auto project=orca::slicing::load_project(file.string(),nlohmann::json::object(),nlohmann::json::array(),workspace);
+    const auto tempRoot=(std::filesystem::u8path(workspace)/"native-temp").lexically_normal();
+    const auto backup=std::filesystem::u8path(project.model.get_backup_path()).lexically_normal();
+    CHECK(std::filesystem::u8path(Slic3r::temporary_dir()).lexically_normal()==tempRoot);
+    CHECK(backup.lexically_relative(tempRoot).generic_u8string().rfind("orcaslicer_model/",0)==0);
     CHECK(project.metadata["blockingFeatures"].empty());
     CHECK(project.metadata["sourceInspectionVersion"]==1);
     CHECK(orca::slicing::describe_project(project)["model"]["colors"].size()==5);
@@ -730,7 +737,7 @@ TEST_CASE("3MF semantic blocks cannot be bypassed by any output material mode", 
     ScopedSlic3rTemporaryDir directory;
     const std::map<std::string,std::string> extras{{"Metadata/vendor_geometry.json","{\"lattice\":true}"}};
     ScopedTemporaryFile file(".3mf");write_3mf_fixture(file.string(),basic_3mf_model(),one_plate(),{},extras);
-    const auto source=orca::slicing::load_project(file.string());
+    const auto source=orca::slicing::load_project(file.string(),nlohmann::json::object(),nlohmann::json::array(),directory.string());
     REQUIRE_FALSE(source.metadata.at("blockingFeatures").empty());
     for(const std::string mode:{"native","singleMaterial"}) {
         DYNAMIC_SECTION(mode) {
@@ -765,7 +772,7 @@ TEST_CASE("Unknown extensions geometry part types and scripts have specific 3MF 
     scan=orca::slicing::inspect_three_mf(file.string());CHECK(has_3mf_feature(scan,"external_processing:post_process","blocked"));
     CHECK(has_3mf_feature(scan,"external_processing:slicing_pipeline_plugin","blocked"));
     write_3mf_fixture(file.string(),basic_3mf_model(),one_plate(),{{"sparse_infill_pattern","future_vendor_pattern"}});
-    const auto substituted=orca::slicing::load_project(file.string());
+    const auto substituted=orca::slicing::load_project(file.string(),nlohmann::json::object(),nlohmann::json::array(),directory.string());
     CHECK_FALSE(substituted.metadata["blockingFeatures"].empty());
     CHECK_THROWS(orca::slicing::validate_output_capabilities(substituted));
     write_3mf_fixture(file.string(),basic_3mf_model(),one_plate(),{{"vendor_unsupported_flow_policy","special"}});
@@ -782,17 +789,19 @@ TEST_CASE("Native single-plate settings are applied before overrides without rej
     // Use a real single mesh for the load/plate configuration assertion; the
     // two-part scan above protects recognition without inventing missing geometry.
     write_3mf_fixture(file.string(),basic_3mf_model(),one_plate("<metadata key=\"print_sequence\" value=\"by object\"/>"),{{"print_sequence","by layer"}});
-    const auto project=orca::slicing::load_project(file.string());
+    const auto project=orca::slicing::load_project(file.string(),nlohmann::json::object(),nlohmann::json::array(),directory.string());
     CHECK(orca::slicing::config_json(project.config)["print_sequence"]=="by object");
-    const auto override=orca::slicing::load_project(file.string(),{{"print_sequence","by layer"}});
+    const auto override=orca::slicing::load_project(file.string(),{{"print_sequence","by layer"}},nlohmann::json::array(),directory.string());
     CHECK(orca::slicing::config_json(override.config)["print_sequence"]=="by layer");
 }
 TEST_CASE("External processing is rejected even after explicit single-material conversion", "[OrcaSlicingSupport][ThreeMfPreflight]")
 {
-    for(const char* key:{"post_process","plugins","slicing_pipeline_plugin"}) {
+    for(const char* key:{"post_process","plugins","slicing_pipeline_plugin","print_plugin_config_overrides","printer_plugin_config_overrides","filament_plugin_config_overrides"}) {
         DYNAMIC_SECTION(key) {
             auto project=preparation_project();
-            project.config.set_key_value(key,new Slic3r::ConfigOptionStrings({"unavailable.py"}));
+            const auto* definition=Slic3r::print_config_def.get(key);REQUIRE(definition);
+            if(definition->type==Slic3r::coString) project.config.set_key_value(key,new Slic3r::ConfigOptionString("configured.py"));
+            else project.config.set_key_value(key,new Slic3r::ConfigOptionStrings({"unavailable.py"}));
             orca::slicing::apply_project_commands(project,nlohmann::json::array({{{"type","singleMaterial"},{"filamentIndex",0}}}));
             CHECK_THROWS(orca::slicing::validate_output_capabilities(project));
         }
@@ -871,4 +880,17 @@ TEST_CASE("Vendor JSON stays blocked when image or artifact suffixes occur insid
             }
         }
     }
+}
+
+TEST_CASE("Unsafe ZIP entry paths are rejected before the 3MF auxiliary loader", "[OrcaSlicingSupport][ThreeMfPreflight]")
+{
+    ScopedTemporaryFile file(".3mf");
+    for(const std::string entry:{"../escape.json","Metadata/../escape.json","C:/absolute.json",R"(Metadata\..\escape.json)"}) {
+        DYNAMIC_SECTION(entry) {
+            write_3mf_fixture(file.string(),basic_3mf_model(),one_plate(),{},{{entry,"{\"lattice\":true}"}});
+            CHECK_THROWS_WITH(orca::slicing::inspect_three_mf(file.string()),"3MF_UNSAFE_ARCHIVE_ENTRY:"+entry);
+        }
+    }
+    write_3mf_fixture(file.string(),basic_3mf_model(),one_plate());
+    CHECK_NOTHROW(orca::slicing::inspect_three_mf(file.string()));
 }

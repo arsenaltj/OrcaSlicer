@@ -226,7 +226,16 @@ inline Json inspect_archive(const std::string& path) {
     if(!mz_zip_reader_init_file(&zip,path.c_str(),0)) throw std::runtime_error("3MF_ARCHIVE_READ_FAILED");
     struct Close{mz_zip_archive& z;~Close(){mz_zip_reader_end(&z);}} close{zip};ThreeMfScan scan;
     const auto count=mz_zip_reader_get_num_files(&zip);
-    for(mz_uint i=0;i<count;++i) {mz_zip_archive_file_stat stat{};if(mz_zip_reader_file_stat(&zip,i,&stat)) scan.archivePaths.insert(ThreeMfScan::lower(stat.m_filename));}
+    // Validate archive ENTRY names before parsing or handing the ZIP to the aux
+    // loader. Production component p:path="/3D/..." references are not entries.
+    for(mz_uint i=0;i<count;++i) {
+        mz_zip_archive_file_stat stat{};if(!mz_zip_reader_file_stat(&zip,i,&stat)) throw std::runtime_error("3MF_ARCHIVE_INDEX_FAILED");
+        std::string entry=stat.m_filename;std::replace(entry.begin(),entry.end(),'\\','/');
+        bool unsafe=entry.empty() || entry.front()=='/' || (entry.size()>1 && std::isalpha(static_cast<unsigned char>(entry[0])) && entry[1]==':');
+        std::istringstream parts(entry);std::string part;while(std::getline(parts,part,'/')) unsafe=unsafe||part=="..";
+        if(unsafe) throw std::runtime_error("3MF_UNSAFE_ARCHIVE_ENTRY:"+std::string(stat.m_filename));
+        scan.archivePaths.insert(ThreeMfScan::lower(entry));
+    }
     for(mz_uint i=0;i<count;++i) {
         mz_zip_archive_file_stat stat{};if(!mz_zip_reader_file_stat(&zip,i,&stat)) throw std::runtime_error("3MF_ARCHIVE_INDEX_FAILED");
         const std::string name=stat.m_filename,kind=ThreeMfScan::lower(name);scan.file=name;

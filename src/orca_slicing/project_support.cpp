@@ -366,9 +366,10 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
     apply_project_commands(project, projectCommands);
     for(const char* key:{"post_process","plugins","slicing_pipeline_plugin","print_plugin_config_overrides","printer_plugin_config_overrides","filament_plugin_config_overrides"}) {
         bool active=false;
-        if(const auto* scripts=project.config.option<ConfigOptionStrings>(key)) {
+        const ConfigOption* rawOption=project.config.option(key);
+        if(const auto* scripts=dynamic_cast<const ConfigOptionStrings*>(rawOption)) {
             for(const auto& script:scripts->values) active=active||detail::ThreeMfScan::active(Json(script));
-        } else if(const auto* script=project.config.option<ConfigOptionString>(key)) active=detail::ThreeMfScan::active(Json(script->value));
+        } else if(const auto* script=dynamic_cast<const ConfigOptionString*>(rawOption)) active=detail::ThreeMfScan::active(Json(script->value));
         const std::string id=std::string("external_processing:")+key;
         if(active && std::none_of(project.metadata["blockingFeatures"].begin(),project.metadata["blockingFeatures"].end(),[&](const Json& item){return item.value("id",std::string())==id;})) {
             Json feature{{"id",id},{"status","blocked"},{"path",inputPath},{"message","Android does not execute external scripts/Python plugins"},
@@ -1077,10 +1078,11 @@ void validate_output_capabilities(const LoadedProject& project)
     if(!project.metadata.value("blockingFeatures",Json::array()).empty())
         throw std::runtime_error("UNSUPPORTED_3MF_OUTPUT:"+project.metadata.at("blockingFeatures").dump());
     for(const char* key:{"post_process","plugins","slicing_pipeline_plugin","print_plugin_config_overrides","printer_plugin_config_overrides","filament_plugin_config_overrides"}) {
-        if(const auto* scripts=project.config.option<ConfigOptionStrings>(key)) {
+        const ConfigOption* rawOption=project.config.option(key);
+        if(const auto* scripts=dynamic_cast<const ConfigOptionStrings*>(rawOption)) {
             for(const auto& script:scripts->values) if(detail::ThreeMfScan::active(Json(script)))
                 throw std::runtime_error(std::string("UNSUPPORTED_EXTERNAL_PROCESSING:")+key);
-        } else if(const auto* script=project.config.option<ConfigOptionString>(key);script && detail::ThreeMfScan::active(Json(script->value)))
+        } else if(const auto* script=dynamic_cast<const ConfigOptionString*>(rawOption);script && detail::ThreeMfScan::active(Json(script->value)))
             throw std::runtime_error(std::string("UNSUPPORTED_EXTERNAL_PROCESSING:")+key);
     }
 #ifdef ORCA_MOBILE_ANDROID
