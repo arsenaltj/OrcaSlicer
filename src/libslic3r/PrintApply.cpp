@@ -1404,7 +1404,13 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
     auto opt_nozzle_volume_type = dynamic_cast<const ConfigOptionEnumsGeneric*>(new_full_config.option("nozzle_volume_type"));
     for (int index = 0; opt_extruder_type && opt_nozzle_volume_type && index < filament_maps.size(); index++)
     {
-        ExtruderType extruder_type = (ExtruderType)(opt_extruder_type->get_at(filament_maps[index] - 1));
+        // Serialized geometry-only presets may legitimately contain empty variant
+        // columns. Keep the seeded physical slot instead of indexing an empty vector.
+        const int physical = filament_maps[index] - 1;
+        if (physical < 0 || size_t(physical) >= opt_extruder_type->values.size() ||
+            size_t(physical) >= opt_nozzle_volume_type->values.size())
+            continue;
+        ExtruderType extruder_type = (ExtruderType)(opt_extruder_type->get_at(physical));
         NozzleVolumeType nozzle_volume_type = (NozzleVolumeType)(opt_nozzle_volume_type->get_at(filament_maps[index] - 1));
         // Orca: honour the per-filament volume map only when a producer sized it to the filament
         // count; mis-sized maps (stale project values, CLI runs until the per-filament synthesis
