@@ -420,6 +420,24 @@ void validate_material_assignments(const LoadedProject& project)
         for(int physical:maps->values) if(physical<1 || !diameters || size_t(physical)>diameters->values.size())
             throw std::runtime_error("MATERIAL_REMAP_REQUIRED:physical tool out of range");
     }
+    // PrintObject/PrintRegion normalize invalid selectors to material 1. Reject
+    // raw global/object/part/range values before Print::apply can hide them.
+    const auto validateRoutes=[slots](const DynamicPrintConfig& config,const std::string& scope) {
+        for(const char* key:{"extruder","support_filament","support_interface_filament","sparse_infill_filament_id","internal_solid_filament_id","top_surface_filament_id","bottom_surface_filament_id","outer_wall_filament_id","inner_wall_filament_id"}) {
+            const auto* raw=config.option(key);if(!raw) continue;
+            const auto* selector=dynamic_cast<const ConfigOptionInt*>(raw);
+            if(!selector || selector->value<0 || size_t(selector->value)>slots)
+                throw std::runtime_error("MATERIAL_ROUTE_OUT_OF_RANGE:"+scope+":"+key+" (0 inherits; logical slots="+std::to_string(slots)+")");
+        }
+    };
+    validateRoutes(project.config,"global");
+    for(size_t oi=0;oi<project.model.objects.size();++oi) {
+        const auto* object=project.model.objects[oi];const std::string scope="object/"+std::to_string(oi);
+        validateRoutes(object->config.get(),scope);
+        for(size_t vi=0;vi<object->volumes.size();++vi) validateRoutes(object->volumes[vi]->config.get(),scope+"/part/"+std::to_string(vi));
+        for(const auto& range:object->layer_config_ranges) validateRoutes(range.second.get(),scope+"/height-range");
+    }
+
     std::map<std::pair<size_t,size_t>,int> assignments;
     for(const auto& assignment:project.metadata.value("materialAssignments",Json::array()))
         assignments[{assignment.at("objectIndex").get<size_t>(),assignment.at("volumeIndex").get<size_t>()}]=assignment.at("filamentIndex").get<int>();

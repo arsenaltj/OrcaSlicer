@@ -927,3 +927,23 @@ TEST_CASE("Actual material usage cannot be empty, outside slots or differ from e
     CHECK_THROWS(orca::slicing::validate_material_plan(project,{0,1}));
     CHECK_THROWS(orca::slicing::validate_material_plan(project,{2}));
 }
+
+TEST_CASE("Raw support and feature selectors cannot be silently clamped by Print apply", "[OrcaSlicingSupport][MaterialPlan]")
+{
+    auto project=preparation_project();
+    project.config.set_key_value("filament_colour",new Slic3r::ConfigOptionStrings({"#FF0000"}));
+    project.config.set_key_value("filament_density",new Slic3r::ConfigOptionFloats({1.24}));
+    project.config.set_key_value("filament_diameter",new Slic3r::ConfigOptionFloats({1.75}));
+    project.config.set_key_value("filament_map",new Slic3r::ConfigOptionInts({1}));
+    project.config.set("enable_support",true);project.config.set("support_filament",2);
+    CHECK_THROWS(orca::slicing::validate_material_assignments(project));
+    project.config.set("support_filament",0);project.config.set("support_interface_filament",0);
+    CHECK_NOTHROW(orca::slicing::validate_material_assignments(project));
+    project.model.objects[0]->config.set("support_interface_filament",2);
+    CHECK_THROWS(orca::slicing::validate_material_assignments(project));
+    project.model.objects[0]->config.set("support_interface_filament",0);
+    project.model.objects[0]->volumes[0]->config.set("outer_wall_filament_id",2);
+    CHECK_THROWS(orca::slicing::validate_material_assignments(project));
+    project.model.objects[0]->volumes[0]->config.set("outer_wall_filament_id",0);
+    CHECK_NOTHROW(orca::slicing::validate_material_assignments(project));
+}
