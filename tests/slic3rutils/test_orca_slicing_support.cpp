@@ -393,7 +393,9 @@ TEST_CASE("Preset catalog reads do not touch invalid snapshots or require an inp
 {
     orca::slicing::Engine engine("");
     const auto catalog=engine.execute({{"operation","presets"},{"snapshotPath","does-not-exist"}},{});
-    CHECK(catalog==orca::slicing::offline_presets());
+    const auto staticCatalog=orca::slicing::offline_presets();
+    for(const char* field:{"devices","materials","sourceRefs","version"}) CHECK(catalog[field]==staticCatalog[field]);
+    CHECK(catalog.contains("parameterMetadata"));
 }
 
 TEST_CASE("Restoring source profiles restores config without replacing geometry and remains externally undoable", "[OrcaSlicingSupport][MobilePresets]")
@@ -421,7 +423,9 @@ TEST_CASE("Preset catalog bypasses a worker lock already held by an import", "[O
     CHECK_THROWS(engine.execute({{"operation","import"},{"inputPath","missing-native-import.obj"}},[&](const nlohmann::json&) {
         observed=engine.execute({{"operation","presets"}},{});
     }));
-    CHECK(observed==orca::slicing::offline_presets());
+    const auto staticCatalog=orca::slicing::offline_presets();
+    for(const char* field:{"devices","materials","sourceRefs","version"}) CHECK(observed[field]==staticCatalog[field]);
+    CHECK(observed.contains("parameterMetadata"));
 }
 
 TEST_CASE("Native warnings expose only genuine model instance volume or config locations", "[OrcaSlicingSupport][MobileWarnings]")
@@ -787,4 +791,39 @@ TEST_CASE("External processing is rejected even after explicit single-material c
             CHECK_THROWS(orca::slicing::validate_output_capabilities(project));
         }
     }
+}
+
+TEST_CASE("P1 parameter catalog exports actual acceleration vector constraints without invented limits", "[OrcaSlicingSupport][ParameterMetadata]")
+{
+    const auto catalog=orca::slicing::project_presets(nlohmann::json::object());
+    const auto& metadata=catalog.at("parameterMetadata");const auto& parameters=metadata.at("parameters");
+    CHECK(metadata.at("version")=="p1-common-v1");CHECK(parameters.size()<=16);CHECK(metadata.dump().size()<16384);
+    CHECK(metadata.at("sourceRef").at("path")=="src/libslic3r/PrintConfig.cpp");
+    for(const char* key:{"inner_wall_acceleration","machine_max_acceleration_extruding"}) {
+        DYNAMIC_SECTION(key) {
+            const auto* definition=Slic3r::print_config_def.get(key);REQUIRE(definition);
+            const auto& item=parameters.at(key);
+            CHECK(item.at("type")=="coFloats");CHECK(item.at("typeId")==int(definition->type));
+            CHECK(item.at("vector")==true);CHECK(item.at("nullable")==definition->nullable);
+            CHECK(item.at("sidetext")==definition->sidetext);CHECK(item.at("unit")==definition->sidetext);
+            CHECK_THAT(item.at("min").get<double>(),Catch::Matchers::WithinAbs(definition->min,1e-9));
+            if(definition->max==std::numeric_limits<float>::max()) CHECK_FALSE(item.contains("max"));
+            else CHECK_THAT(item.at("max").get<double>(),Catch::Matchers::WithinAbs(definition->max,1e-9));
+            const auto* defaults=dynamic_cast<const Slic3r::ConfigOptionVector<double>*>(definition->default_value.get());REQUIRE(defaults);
+            REQUIRE(item.at("default").size()==defaults->values.size());
+            for(size_t i=0;i<defaults->values.size();++i) CHECK_THAT(item.at("default")[i].get<double>(),Catch::Matchers::WithinAbs(defaults->values[i],1e-9));
+            CHECK(item.at("defaultSerialized")==definition->default_value->serialize());
+            if(definition->nullable) CHECK(item.at("nilToken")=="nil");else CHECK_FALSE(item.contains("nilToken"));
+        }
+    }
+}
+TEST_CASE("Parameter enum identifiers and defaults use the native schema", "[OrcaSlicingSupport][ParameterMetadata]")
+{
+    const auto metadata=orca::slicing::project_presets(nlohmann::json::object()).at("parameterMetadata");
+    const auto& item=metadata.at("parameters").at("support_type");
+    const auto* definition=Slic3r::print_config_def.get("support_type");REQUIRE(definition);
+    CHECK(item.at("type")=="coEnum");CHECK(item.at("enumValues")==definition->enum_values);
+    CHECK(item.at("enumLabels")==definition->enum_labels);
+    CHECK(std::find(definition->enum_values.begin(),definition->enum_values.end(),item.at("default").get<std::string>())!=definition->enum_values.end());
+    CHECK(item.at("default")==item.at("defaultSerialized"));
 }

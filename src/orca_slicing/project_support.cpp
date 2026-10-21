@@ -441,6 +441,66 @@ void validate_material_assignments(const LoadedProject& project)
 }
 
 namespace {
+Json common_parameter_metadata()
+{
+    Json result{{"version","p1-common-v1"},{"parameters",Json::object()}};
+#ifdef ORCA_SLICING_SOURCE_COMMIT
+    result["sourceCommit"]=ORCA_SLICING_SOURCE_COMMIT;
+#endif
+    // Schema references are the same pinned source used by the offline catalog.
+    const Json catalog=offline_presets();
+    for(const auto& source:catalog["sourceRefs"])
+        if(source.at("path")=="src/libslic3r/PrintConfig.cpp") result["sourceRef"]=source;
+    const auto type_name=[](ConfigOptionType type)->const char* {
+        switch(type) {
+        case coFloat:return "coFloat";case coFloats:return "coFloats";case coInt:return "coInt";case coInts:return "coInts";
+        case coPercent:return "coPercent";case coPercents:return "coPercents";case coBool:return "coBool";case coBools:return "coBools";
+        case coString:return "coString";case coStrings:return "coStrings";case coEnum:return "coEnum";case coEnums:return "coEnums";
+        case coFloatOrPercent:return "coFloatOrPercent";case coFloatsOrPercents:return "coFloatsOrPercents";default:return nullptr;
+        }
+    };
+    DynamicPrintConfig schema; // Definition lookup only, no full-config clone or worker state.
+    for(const char* key:{"layer_height","wall_loops","top_shell_layers","bottom_shell_layers","sparse_infill_density","enable_support",
+        "support_type","support_threshold_angle","nozzle_diameter","nozzle_temperature","nozzle_temperature_initial_layer",
+        "filament_density","filament_flow_ratio","inner_wall_acceleration","machine_max_acceleration_extruding","outer_wall_acceleration"}) {
+        const auto* definition=print_config_def.get(key);if(!definition) continue;
+        const char* type=type_name(definition->type);if(!type) continue;
+        Json item{{"key",key},{"type",type},{"typeId",int(definition->type)},{"nullable",definition->nullable},
+            {"vector",!definition->is_scalar()},{"readonly",definition->readonly},{"sidetext",definition->sidetext}};
+        if(!definition->label.empty()) item["label"]=definition->label;
+        if(!definition->sidetext.empty()) item["unit"]=definition->sidetext;
+        // FLT_MAX is the schema's unset-limit sentinel, not an invented edit limit.
+        if(definition->min>-std::numeric_limits<float>::max()) item["min"]=definition->min;
+        if(definition->max<std::numeric_limits<float>::max()) item["max"]=definition->max;
+        if(!definition->ratio_over.empty()) item["ratioOver"]=definition->ratio_over;
+        if(definition->nullable) item["nilToken"]="nil";
+        if(!definition->enum_values.empty()) item["enumValues"]=definition->enum_values;
+        if(!definition->enum_labels.empty()) item["enumLabels"]=definition->enum_labels;
+        if(const auto* option=definition->default_value.get()) {
+            item["defaultSerialized"]=serialized_option(schema,key,*option);
+            if(definition->type==coEnum) item["default"]=item["defaultSerialized"];
+            else if(const auto* values=dynamic_cast<const ConfigOptionVector<double>*>(option)) {
+                Json array=Json::array();const auto* vector=dynamic_cast<const ConfigOptionVectorBase*>(option);
+                for(size_t i=0;i<values->values.size();++i) array.push_back(vector->is_nil(i)?Json():Json(values->values[i]));
+                item["default"]=array;
+            } else if(const auto* values=dynamic_cast<const ConfigOptionVector<int>*>(option)) {
+                Json array=Json::array();const auto* vector=dynamic_cast<const ConfigOptionVectorBase*>(option);
+                for(size_t i=0;i<values->values.size();++i) array.push_back(vector->is_nil(i)?Json():Json(values->values[i]));
+                item["default"]=array;
+            } else if(const auto* values=dynamic_cast<const ConfigOptionVector<unsigned char>*>(option)) {
+                Json array=Json::array();const auto* vector=dynamic_cast<const ConfigOptionVectorBase*>(option);
+                for(size_t i=0;i<values->values.size();++i) array.push_back(vector->is_nil(i)?Json():Json(values->values[i]!=0));
+                item["default"]=array;
+            } else if(const auto* value=dynamic_cast<const ConfigOptionFloatOrPercent*>(option)) item["default"]=Json{{"value",value->value},{"percent",value->percent}};
+            else if(const auto* value=dynamic_cast<const ConfigOptionSingle<double>*>(option)) item["default"]=value->value;
+            else if(const auto* value=dynamic_cast<const ConfigOptionSingle<int>*>(option)) item["default"]=value->value;
+            else if(const auto* value=dynamic_cast<const ConfigOptionSingle<bool>*>(option)) item["default"]=value->value;
+            else if(const auto* value=dynamic_cast<const ConfigOptionSingle<std::string>*>(option)) item["default"]=value->value;
+        }
+        result["parameters"][key]=std::move(item);
+    }
+    return result;
+}
 Json source_material_options(const Json& original)
 {
     Json options=Json::object();
@@ -456,6 +516,7 @@ Json source_material_options(const Json& original)
 Json project_presets(const Json& request)
 {
     Json result=offline_presets();
+    result["parameterMetadata"]=common_parameter_metadata();
     for(const char* group:{"devices","materials"}) {
         result[group][0]["available"]=false;
         result[group][0]["reason"]="Refresh this project to capture the original source profile before restoring it.";
