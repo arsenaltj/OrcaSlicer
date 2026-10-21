@@ -8,6 +8,7 @@
 #include <limits>
 #include <fstream>
 #include <array>
+#include <algorithm>
 #include <cstdint>
 #include "test_utils.hpp"
 
@@ -322,6 +323,9 @@ TEST_CASE("Each temporary orientation previews the exact confirmed command witho
 TEST_CASE("Picked world normals rotate the selected face down and preserve instance scale", "[OrcaSlicingSupport][MobileOrientation]")
 {
     auto source=preparation_project();
+    // This math fixture reaches 120 mm after nonuniform scaling. Give its
+    // requested orientations a real bed that can contain them.
+    source.config.set_key_value("printable_area",new Slic3r::ConfigOptionPoints({{0,0},{500,0},{500,500},{0,500}}));
     source.model.objects[0]->instances[0]->set_rotation(Slic3r::Vec3d(0.3,0.2,0.4));
     source.model.objects[0]->instances[0]->set_scaling_factor(Slic3r::Vec3d(2,3,4));
     source.model.objects[0]->invalidate_bounding_box();
@@ -547,5 +551,110 @@ TEST_CASE("Reflected scene face normals orient the picked outer face onto the be
             CHECK(source.model.objects[0]->volumes[0]->mmu_segmentation_facets.get_triangle_as_string(0)==sourcePaint);
             CHECK(orca::slicing::describe_project(source)==before);
         }
+    }
+}
+
+namespace {
+void write_asymmetric_obj(const std::string& path,const Slic3r::Vec3d& origin=Slic3r::Vec3d::Zero())
+{
+    const auto mesh=Slic3r::make_cube(8,12,16);std::ofstream file(path);
+    for(const auto& vertex:mesh.its.vertices) {
+        const Slic3r::Vec3d p=vertex.cast<double>()+origin;file<<"v "<<p.x()<<" "<<p.y()<<" "<<p.z()<<"\n";
+    }
+    for(const auto& face:mesh.its.indices) file<<"f "<<face[0]+1<<" "<<face[1]+1<<" "<<face[2]+1<<"\n";
+}
+}
+TEST_CASE("Bed edge raw OBJ orientations keep center or use only the necessary translation", "[OrcaSlicingSupport][MobileOrientation]")
+{
+    ScopedTemporaryFile file(".obj");write_asymmetric_obj(file.string());
+    const auto source=orca::slicing::load_project(file.string());
+    const auto before=orca::slicing::describe_project(source);
+    const auto original=source.model.objects[0]->instance_bounding_box(0);
+    CHECK_THAT(original.center().x(),Catch::Matchers::WithinAbs(4,1e-9));
+    CHECK_THAT(original.center().y(),Catch::Matchers::WithinAbs(6,1e-9));
+    for(int n=0;n<6;++n) {
+        DYNAMIC_SECTION("raw candidate "<<n) {
+            auto previewProject=source;
+            const auto preview=orca::slicing::orientation_preview(previewProject,{{"candidateIndex",n}});
+            for(const auto& candidate:preview["candidates"]) CHECK(candidate["valid"]==true);
+            const auto confirmed=orca::slicing::load_project(file.string(),orca::slicing::config_json(source.config),
+                source.metadata.at("transforms"),{},previewProject.metadata.at("projectCommands"));
+            CHECK_NOTHROW(orca::slicing::validate_project_bounds(previewProject));
+            CHECK_NOTHROW(orca::slicing::validate_project_bounds(confirmed));
+            check_prepared_geometry(previewProject,confirmed);
+            const auto bounds=confirmed.model.objects[0]->instance_bounding_box(0);
+            for(int axis=0;axis<2;++axis) {
+                const double half=bounds.size()[axis]*0.5;
+                CHECK_THAT(bounds.center()[axis],Catch::Matchers::WithinAbs(std::clamp(original.center()[axis],half,200-half),1e-9));
+            }
+            if(n==1) { // The actual r13 command: original Y [0,12] becomes [0,16], never [-16,0].
+                CHECK_THAT(bounds.min.y(),Catch::Matchers::WithinAbs(0,1e-9));
+                CHECK_THAT(bounds.max.y(),Catch::Matchers::WithinAbs(16,1e-9));
+            }
+            if(n==4) { // Original center X=4 cannot hold a 16 mm width: move only +4 mm.
+                CHECK_THAT(bounds.size().x(),Catch::Matchers::WithinAbs(16,1e-9));
+                CHECK_THAT(bounds.center().x(),Catch::Matchers::WithinAbs(8,1e-9));
+                CHECK_THAT(bounds.min.x(),Catch::Matchers::WithinAbs(0,1e-9));
+            }
+            CHECK(orca::slicing::describe_project(source)==before);
+        }
+    }
+}
+TEST_CASE("Far source geometry rotated scaled instances preserve XY center in preview and replay", "[OrcaSlicingSupport][MobileOrientation]")
+{
+    ScopedTemporaryFile file(".obj");write_asymmetric_obj(file.string(),Slic3r::Vec3d(120,-70,25));
+    const nlohmann::json initial=nlohmann::json::array({{{"objectIndex",0},{"instanceIndex",0},
+        {"rotation",{0.17,0.29,0.23}},{"scale",{1.5,0.75,2.0}},{"translation",{70,70,25}}}});
+    auto source=orca::slicing::load_project(file.string(),nlohmann::json::object(),initial);
+    auto* object=source.model.objects[0];auto* instance=object->instances[0];
+    const auto initialBounds=object->instance_bounding_box(0);
+    const Slic3r::Vec3d offset=instance->get_offset()+Slic3r::Vec3d(70-initialBounds.center().x(),100-initialBounds.center().y(),-initialBounds.min.z());
+    auto transforms=initial;transforms[0]["translation"]={offset.x(),offset.y(),offset.z()};
+    source=orca::slicing::load_project(file.string(),nlohmann::json::object(),transforms);
+    const auto before=orca::slicing::describe_project(source);
+    const Slic3r::Matrix3d rotation=source.model.objects[0]->instances[0]->get_transformation().get_rotation_matrix().linear();
+    const Slic3r::Vec3d normal=rotation*Slic3r::Vec3d::UnitX();
+    for(int mode=0;mode<7;++mode) {
+        DYNAMIC_SECTION("translated source mode "<<mode) {
+            auto temporary=source;
+            const nlohmann::json request=mode<6?nlohmann::json{{"candidateIndex",mode}}:
+                nlohmann::json{{"normal",{normal.x(),normal.y(),normal.z()}}};
+            const auto preview=orca::slicing::orientation_preview(temporary,request);
+            const auto confirmed=orca::slicing::load_project(file.string(),orca::slicing::config_json(source.config),transforms,{},temporary.metadata.at("projectCommands"));
+            CHECK_NOTHROW(orca::slicing::validate_project_bounds(confirmed));check_prepared_geometry(temporary,confirmed);
+            const auto bounds=confirmed.model.objects[0]->instance_bounding_box(0);
+            CHECK_THAT(bounds.center().x(),Catch::Matchers::WithinAbs(70,1e-8));
+            CHECK_THAT(bounds.center().y(),Catch::Matchers::WithinAbs(100,1e-8));
+            CHECK_THAT(bounds.min.z(),Catch::Matchers::WithinAbs(0,1e-8));
+            CHECK(orca::slicing::describe_project(source)==before);
+        }
+    }
+}
+TEST_CASE("Invalid orientation candidates retain the strict printable and exclusion gates", "[OrcaSlicingSupport][MobileOrientation]")
+{
+    ScopedTemporaryFile file(".obj");write_asymmetric_obj(file.string());
+    auto source=orca::slicing::load_project(file.string());
+    SECTION("rotated width exceeds a real rectangular bed") {
+        source.config.set_key_value("printable_area",new Slic3r::ConfigOptionPoints({{0,0},{10,0},{10,200},{0,200}}));
+        auto temporary=source;const auto result=orca::slicing::orientation_preview(temporary,{{"candidateIndex",0}});
+        CHECK(result["candidates"][4]["valid"]==false);
+        CHECK(result["candidates"][4]["error"]=="ORIENTATION_DOES_NOT_FIT_PRINTABLE_AREA");
+        temporary=source;
+        CHECK_THROWS_WITH(orca::slicing::orientation_preview(temporary,{{"candidateIndex",4}}),"ORIENTATION_DOES_NOT_FIT_PRINTABLE_AREA");
+    }
+    SECTION("nonrectangular bed rejects a footprint beyond its diagonal") {
+        source.config.set_key_value("printable_area",new Slic3r::ConfigOptionPoints({{0,0},{40,0},{0,40}}));
+        source.model.objects[0]->instances[0]->set_offset(Slic3r::Vec3d(15,5,0));source.model.objects[0]->invalidate_bounding_box();
+        CHECK_NOTHROW(orca::slicing::validate_project_bounds(source));
+        auto temporary=source;const auto result=orca::slicing::orientation_preview(temporary,{{"candidateIndex",0}});
+        CHECK(result["candidates"][1]["valid"]==false);temporary=source;
+        CHECK_THROWS_WITH(orca::slicing::orientation_preview(temporary,{{"candidateIndex",1}}),"MODEL_OUTSIDE_PRINTABLE_AREA");
+    }
+    SECTION("a rotated footprint cannot silently enter an excluded region") {
+        source.config.set_key_value("bed_exclude_area",new Slic3r::ConfigOptionPoints({{10,0},{30,0},{30,30},{10,30}}));
+        CHECK_NOTHROW(orca::slicing::validate_project_bounds(source));
+        auto temporary=source;const auto result=orca::slicing::orientation_preview(temporary,{{"candidateIndex",0}});
+        CHECK(result["candidates"][4]["valid"]==false);temporary=source;
+        CHECK_THROWS_WITH(orca::slicing::orientation_preview(temporary,{{"candidateIndex",4}}),"MODEL_INTERSECTS_EXCLUDED_AREA");
     }
 }

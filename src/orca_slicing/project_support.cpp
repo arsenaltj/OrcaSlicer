@@ -28,7 +28,7 @@ namespace orca::slicing {
 namespace {
 
 using namespace Slic3r;
-void orient_instance(ModelObject& object,size_t ii,const Json& command);
+void orient_instance(ModelObject& object,size_t ii,const Json& command,const DynamicPrintConfig& config);
 const std::array<Vec3d,6>& cardinal_rotations();
 
 std::unique_ptr<ConfigOption> enum_option_with_definition(const DynamicPrintConfig& config,
@@ -462,21 +462,34 @@ Json orientation_preview(LoadedProject& temporary,const Json& request)
     const Vec3d originalRotation=instance->get_rotation(), originalOffset=instance->get_offset();
     Json candidates=Json::array();
     const std::array<const char*,6> labels{{"Object +Z up","Object +Y up","Object -Y up","Object -Z up","Object -X up","Object +X up"}};
-    size_t lowest=0;
+    size_t lowest=0;bool hasValid=false;
     for(size_t n=0;n<cardinal_rotations().size();++n) {
-        instance->set_rotation(originalRotation); instance->set_offset(originalOffset); object.invalidate_bounding_box();
+        instance->set_rotation(originalRotation);instance->set_offset(originalOffset);object.invalidate_bounding_box();
         Json command{{"type","orient"},{"objectIndex",oi},{"instanceIndex",ii},{"candidateIndex",n}};
-        orient_instance(object,size_t(ii),command);
-        const double height=object.instance_bounding_box(ii).size().z();
-        candidates.push_back(Json{{"index",n},{"label",labels[n]},{"height",height},{"command",command}});
-        if(height<candidates[lowest]["height"].get<double>()-1e-6) lowest=n;
+        Json candidate{{"index",n},{"label",labels[n]},{"command",command},{"valid",false}};
+        try {
+            orient_instance(object,size_t(ii),command,temporary.config);
+            validate_project_bounds(temporary);
+            candidate["valid"]=true;
+        } catch(const std::exception& error) {candidate["error"]=error.what();}
+        const double height=object.instance_bounding_box(ii).size().z();candidate["height"]=height;
+        candidates.push_back(candidate);
+        if(candidate["valid"].get<bool>() && (!hasValid||height<candidates[lowest]["height"].get<double>()-1e-6)) {
+            lowest=n;hasValid=true;
+        }
     }
-    instance->set_rotation(originalRotation); instance->set_offset(originalOffset); object.invalidate_bounding_box();
-    int selected=request.value("candidateIndex",int(lowest));
-    if(selected<0 || selected>=int(candidates.size())) throw std::out_of_range("ORIENTATION_CANDIDATE_NOT_FOUND");
-    Json command=candidates[size_t(selected)]["command"];
-    if(request.contains("normal")) {command=Json{{"type","faceOrient"},{"objectIndex",oi},{"instanceIndex",ii},{"normal",request.at("normal")}};selected=-1;}
-    orient_instance(object,size_t(ii),command);
+    instance->set_rotation(originalRotation);instance->set_offset(originalOffset);object.invalidate_bounding_box();
+    int selected=-1;Json command;
+    if(request.contains("normal")) command=Json{{"type","faceOrient"},{"objectIndex",oi},{"instanceIndex",ii},{"normal",request.at("normal")}};
+    else {
+        selected=request.value("candidateIndex",hasValid?int(lowest):-1);
+        if(selected<0) throw std::runtime_error("NO_VALID_ORIENTATION");
+        if(selected>=int(candidates.size())) throw std::out_of_range("ORIENTATION_CANDIDATE_NOT_FOUND");
+        if(!candidates[size_t(selected)]["valid"].get<bool>()) throw std::runtime_error(candidates[size_t(selected)]["error"].get<std::string>());
+        command=candidates[size_t(selected)]["command"];
+    }
+    orient_instance(object,size_t(ii),command,temporary.config);
+    validate_project_bounds(temporary);
     Json commands=temporary.metadata.value("projectCommands",Json::array()); commands.push_back(command);
     temporary.metadata["projectCommands"]=commands;
     return Json{{"projectId",temporary.metadata.value("projectId",Json())},{"sourceRevision",temporary.metadata.value("revision",Json())},
@@ -725,9 +738,10 @@ const std::array<Vec3d,6>& cardinal_rotations()
     static const std::array<Vec3d,6> rotations{{{0,0,0},{pi/2,0,0},{-pi/2,0,0},{pi,0,0},{0,pi/2,0},{0,-pi/2,0}}};
     return rotations;
 }
-void orient_instance(ModelObject& object,size_t ii,const Json& command)
+void orient_instance(ModelObject& object,size_t ii,const Json& command,const DynamicPrintConfig& config)
 {
     auto* instance=object.instances.at(ii);
+    const Vec3d originalCenter=object.instance_bounding_box(ii).center();
     if (command.value("type",std::string())=="faceOrient") {
         const Vec3d normal=json_vec3(command.at("normal"),Vec3d::Zero());
         if (!normal.allFinite() || normal.norm()<1e-9) throw std::invalid_argument("INVALID_FACE_NORMAL");
@@ -751,7 +765,38 @@ void orient_instance(ModelObject& object,size_t ii,const Json& command)
         }
         instance->set_rotation(rotations.at(size_t(selected)));
     }
-    object.invalidate_bounding_box(); place_on_bed(object,ii);
+    object.invalidate_bounding_box();
+    const Vec3d rotatedCenter=object.instance_bounding_box(ii).center();
+    Vec3d offset=instance->get_offset();
+    offset.x()+=originalCenter.x()-rotatedCenter.x();
+    offset.y()+=originalCenter.y()-rotatedCenter.y();
+    instance->set_offset(offset);object.invalidate_bounding_box();place_on_bed(object,ii);
+    // Preserve the user's center whenever possible. On a rectangular bed,
+    // clamping the final footprint applies the minimum necessary XY translation.
+    // Nonrectangular beds/exclusions remain subject to the existing bounds gate.
+    if(const auto* bed=config.option<ConfigOptionPoints>("printable_area");bed && bed->values.size()==4) {
+        Vec2d lo=bed->values.front(),hi=lo;
+        for(const auto& point:bed->values) {lo=lo.cwiseMin(point);hi=hi.cwiseMax(point);}
+        std::set<int> corners;
+        bool rectangle=(hi-lo).minCoeff()>0;
+        for(size_t n=0;n<4;++n) {
+            const auto& point=bed->values[n];const auto edge=bed->values[(n+1)%4]-point;
+            const bool xLow=std::abs(point.x()-lo.x())<1e-9,xHigh=std::abs(point.x()-hi.x())<1e-9;
+            const bool yLow=std::abs(point.y()-lo.y())<1e-9,yHigh=std::abs(point.y()-hi.y())<1e-9;
+            rectangle=rectangle && (xLow||xHigh) && (yLow||yHigh) && (std::abs(edge.x())<1e-9||std::abs(edge.y())<1e-9);
+            corners.insert((xHigh?1:0)+(yHigh?2:0));
+        }
+        if(rectangle && corners.size()==4) {
+            const auto bounds=object.instance_bounding_box(ii);offset=instance->get_offset();
+            for(int axis=0;axis<2;++axis) {
+                const double size=bounds.size()[axis];
+                if(size>hi[axis]-lo[axis]+1e-9) throw std::runtime_error("ORIENTATION_DOES_NOT_FIT_PRINTABLE_AREA");
+                const double target=std::clamp(bounds.min[axis],lo[axis],std::max(lo[axis],hi[axis]-size));
+                offset[axis]+=target-bounds.min[axis];
+            }
+            instance->set_offset(offset);object.invalidate_bounding_box();
+        }
+    }
 }
 
 bool inside_polygon(const Vec2d& p, const Pointfs& polygon)
@@ -857,7 +902,7 @@ void apply_project_commands(LoadedProject& project, const Json& commands)
             auto* copy=object.add_instance(*instance);
             copy->set_offset(instance->get_offset()+shift);
         } else if (type == "orient" || type == "faceOrient") {
-            orient_instance(object,size_t(ii),cmd);
+            orient_instance(object,size_t(ii),cmd,project.config);
         } else if (type == "assignMaterial" || type == "material") {
             const int vi=cmd.value("volumeIndex",-1), filament=cmd.value("filamentIndex",-1);
             if (filament<0) throw std::out_of_range("INVALID_FILAMENT_INDEX");
