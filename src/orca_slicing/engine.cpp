@@ -57,7 +57,7 @@ Json slice_one(const Json& request, const EventSink& sink, std::atomic<bool>& ca
     const Json overrides = request.value("config", Json::object());
     emit(sink, job, attempt, "importing", 2, "读取模型和配置");
     if (canceled.load()) throw std::runtime_error("SLICING_CANCELED");
-    LoadedProject project = load_project(input, overrides, request.value("transforms", Json::array()));
+    LoadedProject project = load_project(input, overrides, request.value("transforms", Json::array()), workspace);
     emit(sink, job, attempt, "analyzing", 12, "模型解析完成", describe_project(project));
     if (canceled.load()) throw std::runtime_error("SLICING_CANCELED");
 
@@ -126,14 +126,14 @@ Json Engine::execute(const Json& request, const EventSink& sink)
     }
     if (operation == "recommend") {
         const std::string input = value_or(request, "inputPath");
-        LoadedProject project = load_project(input, request.value("config", Json::object()), request.value("transforms", Json::array()));
+        LoadedProject project = load_project(input, request.value("config", Json::object()), request.value("transforms", Json::array()), workspace_);
         Json out{{"jobId",value_or(request,"jobId")},{"attemptId",value_or(request,"attemptId")},{"state","succeeded"},{"candidates",Json::array()}};
         for (const auto& candidate : recommendation_candidates(project)) out["candidates"].push_back(describe_candidate(candidate));
         emit(sink, value_or(request,"jobId"), value_or(request,"attemptId"), "recommendation", 100, "本地推荐候选已生成", out);
         return out;
     }
     if (operation == "import" || operation == "analyze") {
-        LoadedProject project = load_project(value_or(request,"inputPath"), request.value("config", Json::object()), request.value("transforms", Json::array()));
+        LoadedProject project = load_project(value_or(request,"inputPath"), request.value("config", Json::object()), request.value("transforms", Json::array()), workspace_);
         return describe_project(project);
     }
     throw std::runtime_error("OPERATION_UNSUPPORTED");

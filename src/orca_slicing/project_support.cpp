@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "libslic3r/Sha256Digest.hpp"
+#include "libslic3r/Utils.hpp"
 
 namespace orca::slicing {
 namespace {
@@ -260,10 +261,21 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
 
     DynamicPrintConfig config;
     ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::EnableSilent};
-    Model model = Model::read_from_file(inputPath, &config, &substitutions,
-                                        LoadStrategy::AddDefaultInstances);
-    if (model.objects.empty())
-        throw std::runtime_error("project contains no model objects: " + inputPath);
+    Model model;
+    if (!workspaceRoot.empty())
+        set_temporary_dir((std::filesystem::u8path(workspaceRoot) / "native-temp").u8string());
+    try {
+        model = Model::read_from_file(inputPath, &config, &substitutions,
+                                      LoadStrategy::AddDefaultInstances | LoadStrategy::LoadModel |
+                                      LoadStrategy::LoadConfig | LoadStrategy::LoadAuxiliary);
+    } catch (const std::exception& error) {
+        const std::string detail = bbs_3mf_last_error();
+        throw std::runtime_error(std::string(error.what()) + (detail.empty() ? std::string() : "; " + detail));
+    }
+    if (model.objects.empty()) {
+        const std::string detail = bbs_3mf_last_error();
+        throw std::runtime_error("project contains no model objects: " + inputPath + (detail.empty() ? std::string() : "; " + detail));
+    }
 
     if (!configOverrides.is_null()) {
         if (!configOverrides.is_object())
