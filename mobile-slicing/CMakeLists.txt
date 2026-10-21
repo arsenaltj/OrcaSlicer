@@ -147,7 +147,14 @@ if(EXISTS "${ORCA_SOURCE_ROOT}/src/orca_slicing/c_api.cpp" AND EXISTS "${ORCA_SO
         "${ORCA_SOURCE_ROOT}/src/orca_slicing/project_support.cpp"
         "${ORCA_SOURCE_ROOT}/src/orca_slicing/recommendation_support.cpp"
         "${ORCA_SOURCE_ROOT}/src/orca_slicing/android_jni.cpp")
-    target_compile_definitions(orca_slicing_c PRIVATE ORCA_MOBILE_ANDROID=1)
+    execute_process(COMMAND git -C "${ORCA_SOURCE_ROOT}" rev-parse HEAD
+        OUTPUT_VARIABLE ORCA_SLICING_SOURCE_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _orca_identity_status)
+    if(NOT _orca_identity_status EQUAL 0 OR NOT ORCA_SLICING_SOURCE_COMMIT MATCHES "^[0-9a-f]+$")
+        message(FATAL_ERROR "Native slicing requires a verified source commit")
+    endif()
+    target_compile_definitions(orca_slicing_c PRIVATE ORCA_MOBILE_ANDROID=1
+        ORCA_SLICING_SOURCE_COMMIT="${ORCA_SLICING_SOURCE_COMMIT}")
     target_include_directories(orca_slicing_c PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_slicing/include" "${ORCA_SOURCE_ROOT}/src")
     target_link_libraries(orca_slicing_c PRIVATE libslic3r_mobile log)
     set_target_properties(orca_slicing_c PROPERTIES OUTPUT_NAME orca_slicing_c)
