@@ -73,8 +73,14 @@ try {
   summary.quotaBefore = shell('df -k ' + sh(quota), 'quota-before').stdout.toString();
   const failed = execute('disk-full', {}, 'SLICING_FAILED');
   summary.quotaAfter = shell('df -k ' + sh(quota), 'quota-after').stdout.toString();
-  const quotaFields = summary.quotaAfter.trim().split(/\r?\n/).at(-1).trim().split(/\s+/);
-  assert.equal(Number(quotaFields[3]), 0, 'Quota is not full; another failure cannot be called ENOSPC');
+  // The G-code exporter removes its failed partial file, releasing blocks.
+  // Probe this isolated filesystem directly to record kernel ENOSPC rather
+  // than expecting it to remain full after the engine's cleanup.
+  const fullProbe = shell('dd if=/dev/zero of=' + sh(quota + '/enospc-probe.bin') + ' bs=4096 count=8192', 'kernel-enospc-probe', true);
+  summary.quotaKernelProbe = { exitCode: fullProbe.status, stderr: fullProbe.stderr.toString(), stdout: fullProbe.stdout.toString() };
+  assert.notEqual(fullProbe.status, 0);
+  assert(/No space left on device|ENOSPC/i.test(fullProbe.stderr.toString() + fullProbe.stdout.toString()), 'Kernel did not report ENOSPC');
+  summary.quotaExhausted = shell('df -k ' + sh(quota), 'quota-exhausted').stdout.toString();
   assert(/space|disk|write|flush|scene|snapshot/i.test(failed.error.message), 'Disk failure was not a write failure');
   shell('umount ' + sh(quota), 'unmount-owned-quota'); mounted = false;
   execute('ordinary-after-faults', {}, null);
