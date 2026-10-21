@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -12,6 +13,8 @@
 #include <map>
 #include <cstring>
 #include "libslic3r/GCode/GCodeProcessor.hpp"
+#include "libslic3r/ClipperUtils.hpp"
+#include "libslic3r/Format/objparser.hpp"
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -166,6 +169,43 @@ std::array<std::uint8_t, 4> parse_color(std::string value)
 }
 
 
+#ifdef ORCA_MOBILE_ANDROID
+Model load_mobile_obj(const std::string& path, Json& unsupported)
+{
+    ObjParser::ObjData data{};
+    if (!ObjParser::objparse(path.c_str(),data)) throw std::runtime_error("OBJ_PARSE_FAILED");
+    indexed_triangle_set mesh;
+    for (size_t i=0;i+OBJ_VERTEX_LENGTH<=data.coordinates.size();i+=OBJ_VERTEX_LENGTH) {
+        const Vec3f vertex(data.coordinates[i],data.coordinates[i+1],data.coordinates[i+2]);
+        if (!vertex.allFinite()) throw std::runtime_error("OBJ_NONFINITE_VERTEX");
+        mesh.vertices.push_back(vertex);
+    }
+    std::vector<int> face;
+    auto flush=[&] {
+        if (face.empty()) return;
+        if (face.size()<3 || face.size()>4) throw std::runtime_error("OBJ_REQUIRES_TRIANGLES_OR_QUADS");
+        for (size_t i=1;i+1<face.size();++i) mesh.indices.emplace_back(face[0],face[i],face[i+1]);
+        face.clear();
+    };
+    for (const auto& vertex:data.vertices) {
+        if (vertex.coordIdx==-1) {flush();continue;}
+        if (vertex.coordIdx<0 || size_t(vertex.coordIdx)>=mesh.vertices.size()) throw std::runtime_error("OBJ_VERTEX_INDEX_OUT_OF_RANGE");
+        face.push_back(vertex.coordIdx);
+    }
+    flush();
+    if (mesh.vertices.empty() || mesh.indices.empty()) throw std::runtime_error("OBJ_EMPTY_GEOMETRY");
+    TriangleMesh geometry(std::move(mesh));
+    if (geometry.volume()<0) geometry.flip_triangles();
+    Model model;
+    auto* object=model.add_object(); object->name=std::filesystem::u8path(path).stem().u8string(); object->input_file=path;
+    object->add_volume(std::move(geometry),ModelVolumeType::MODEL_PART,false);
+    model.add_default_instances();
+    if (data.has_vertex_color) unsupported.push_back("OBJ_VERTEX_COLOR_IMPORT");
+    if (!data.textureCoordinates.empty() || !data.mtllibs.empty()) unsupported.push_back("OBJ_TEXTURE_OR_MATERIAL_SIDECAR");
+    return model;
+}
+#endif
+
 } // namespace
 
 LoadedProject load_project(const std::string& inputPath, const Json& configOverrides,
@@ -179,9 +219,16 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
     DynamicPrintConfig config;
     ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::EnableSilent};
     Model model;
+    Json unsupported=Json::array();
     if (!workspaceRoot.empty())
         set_temporary_dir((std::filesystem::u8path(workspaceRoot) / "native-temp").u8string());
     try {
+#ifdef ORCA_MOBILE_ANDROID
+        std::string extension=std::filesystem::u8path(inputPath).extension().u8string();
+        std::transform(extension.begin(),extension.end(),extension.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+        if (extension==".obj") model=load_mobile_obj(inputPath,unsupported);
+        else
+#endif
         model = Model::read_from_file(inputPath, &config, &substitutions,
                                       LoadStrategy::AddDefaultInstances | LoadStrategy::LoadModel |
                                       LoadStrategy::LoadConfig | LoadStrategy::LoadAuxiliary);
@@ -195,6 +242,23 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
     }
 
     DynamicPrintConfig complete = DynamicPrintConfig::full_print_config();
+    std::string extension=std::filesystem::u8path(inputPath).extension().u8string();
+    std::transform(extension.begin(),extension.end(),extension.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+    const bool offlinePreset=extension==".stl" || extension==".obj";
+    if (offlinePreset) {
+        // Versioned DEFAULT machine/material profile for geometry-only files.
+        // Applied during import, visible and persisted before any slicing. A
+        // 3MF never receives this profile and user overrides are applied later.
+        complete.set_key_value("nozzle_diameter",new ConfigOptionFloats({0.4}));
+        complete.set_key_value("filament_type",new ConfigOptionStrings({"PLA"}));
+        complete.set_key_value("filament_density",new ConfigOptionFloats({1.24}));
+        complete.set_key_value("filament_diameter",new ConfigOptionFloats({1.75}));
+        complete.set_key_value("printable_area",new ConfigOptionPoints({{0,0},{256,0},{256,256},{0,256}}));
+        complete.set("printable_height",256.0,true);
+        complete.set("enable_prime_tower",false,true);
+        complete.set("use_relative_e_distances",true,true);
+        complete.set("before_layer_change_gcode",std::string(";BEFORE_LAYER_CHANGE\n;[layer_z]\nG92 E0\n"),true);
+    }
     complete.apply(config);
     config = std::move(complete);
     const Json sourceColors = colors_json(config);
@@ -202,6 +266,9 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
     apply_transforms(model, transforms);
 
     LoadedProject project{std::move(model), std::move(config), inputPath, sha256_file(inputPath), Json::object()};
+    if (offlinePreset) project.metadata["basePreset"]=Json{{"presetId","p1-offline-fff-0.4-pla"},{"version",1},
+        {"printerTechnology","FFF"},{"nozzleDiameterMm",0.4},{"material","PLA"},{"bedSizeMm",{256,256,256}}};
+    project.metadata["unsupportedFeatures"] = unsupported;
     project.metadata["sourceColors"] = sourceColors;
     project.metadata["workspaceRoot"] = workspaceRoot;
     project.metadata["transforms"] = transforms.is_null() ? Json::array() : transforms;
@@ -544,6 +611,9 @@ Model slicing_model(const LoadedProject& project)
 void validate_output_capabilities(const LoadedProject& project)
 {
 #ifdef ORCA_MOBILE_ANDROID
+    if (!project.metadata.value("unsupportedFeatures",Json::array()).empty() &&
+        project.metadata.value("outputMode",std::string())!="singleMaterial")
+        throw std::runtime_error("UNSUPPORTED_OBJ_APPEARANCE:Original is preserved; explicitly confirm geometry-only single-material output");
     if (const auto* prime=project.config.option<ConfigOptionBool>("enable_prime_tower"))
         if (prime->value) throw std::runtime_error("UNSUPPORTED_PRIME_TOWER:Android triangulation is unavailable; explicitly configure a supported single-material job");
     const Model model=slicing_model(project);
@@ -559,6 +629,43 @@ void validate_output_capabilities(const LoadedProject& project)
 #endif
 }
 
+
+
+void validate_project_bounds(const LoadedProject& project)
+{
+    const auto* bed=project.config.option<ConfigOptionPoints>("printable_area");
+    const auto* height=project.config.option<ConfigOptionFloat>("printable_height");
+    if (!bed || bed->values.size()<3 || !height || !std::isfinite(height->value) || height->value<=0)
+        throw std::runtime_error("INVALID_PRINT_VOLUME");
+    Polygon printable=Polygon::new_scale(bed->values); printable.make_counter_clockwise();
+    Polygons excluded;
+    if (const auto* areas=project.config.option<ConfigOptionPoints>("bed_exclude_area")) {
+        // Orca encodes exclusion rectangles as successive groups of four points.
+        if (!areas->values.empty() && areas->values.size()%4!=0) throw std::runtime_error("INVALID_EXCLUDED_AREAS");
+        for (size_t i=0;i<areas->values.size();i+=4) {
+            Pointfs region(areas->values.begin()+i,areas->values.begin()+i+4);
+            Polygon polygon=Polygon::new_scale(region); polygon.make_counter_clockwise(); excluded.push_back(std::move(polygon));
+        }
+    }
+    for (size_t oi=0;oi<project.model.objects.size();++oi) {
+        const auto& object=*project.model.objects[oi];
+        for (size_t ii=0;ii<object.instances.size();++ii) {
+            const auto bounds=object.instance_bounding_box(ii);
+            if (!bounds.defined || !bounds.min.allFinite() || !bounds.max.allFinite()) throw std::runtime_error("INVALID_MODEL_BOUNDS");
+            if (bounds.min.z() < -0.001) throw std::runtime_error("MODEL_BELOW_BED");
+            if (bounds.max.z() > height->value+0.001) throw std::runtime_error("MODEL_EXCEEDS_PRINTABLE_HEIGHT");
+            for (const auto* volume:object.volumes) if (volume->is_model_part()) {
+                // Conservatively validate the complete projected volume hull.
+                // No outside instance/part may be silently dropped by Print.
+                const Polygon& footprint=volume->get_convex_hull_2d(object.instances[ii]->get_matrix());
+                if (footprint.points.size()<3) throw std::runtime_error("DEGENERATE_PRINT_FOOTPRINT");
+                if (!diff(footprint,printable).empty()) throw std::runtime_error("MODEL_OUTSIDE_PRINTABLE_AREA");
+                if (!excluded.empty() && !intersection(Polygons{footprint},excluded).empty())
+                    throw std::runtime_error("MODEL_INTERSECTS_EXCLUDED_AREA");
+            }
+        }
+    }
+}
 
 Json write_preview(const GCodeProcessorResult& gcode, const std::string& path)
 {

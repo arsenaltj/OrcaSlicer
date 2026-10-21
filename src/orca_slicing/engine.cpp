@@ -165,12 +165,8 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
     budget.check();
     const auto started=Clock::now();
     validate_output_capabilities(project);
-    const auto prefix=root(request,workspace)/artifact_key(request,project);
-    Json description=scene_and_snapshot(project,prefix);
-    const auto gcodePartial=stdfs::u8path(prefix.u8string()+".gcode.partial");
-    const auto gcodeFinal=stdfs::u8path(prefix.u8string()+".gcode");
-    const auto previewPartial=stdfs::u8path(prefix.u8string()+".orcapv.partial");
-    const auto previewFinal=stdfs::u8path(prefix.u8string()+".orcapv");
+    validate_project_bounds(project);
+    const Json requestedConfig=config_json(project.config);
     emit(sink,request,"validating",20,"校验实际生效配置与模型");
     Slic3r::Print print;
     PrintScope registration(budget,print);
@@ -180,6 +176,17 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
     });
     auto model=slicing_model(project);
     print.apply(model,project.config);
+    // Print::apply normalizes a by-value copy (e.g. vase walls/top/infill).
+    // Identity, snapshots and confirmed candidate configs must describe that
+    // actual normalized config, not the caller's requested values.
+    project.config=print.full_print_config();
+    validate_output_capabilities(project);
+    const auto prefix=root(request,workspace)/artifact_key(request,project);
+    Json description=scene_and_snapshot(project,prefix);
+    const auto gcodePartial=stdfs::u8path(prefix.u8string()+".gcode.partial");
+    const auto gcodeFinal=stdfs::u8path(prefix.u8string()+".gcode");
+    const auto previewPartial=stdfs::u8path(prefix.u8string()+".orcapv.partial");
+    const auto previewFinal=stdfs::u8path(prefix.u8string()+".orcapv");
     std::vector<Slic3r::StringObjectException> warnings;
     const auto validation=print.validate(&warnings);
     if (!validation.string.empty()) throw std::runtime_error("VALIDATION_FAILED:"+validation.string);
@@ -210,6 +217,7 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
     out.update(Json{{"schemaVersion",2},{"projectId",request.value("projectId",Json())},
         {"projectRevision",project.metadata.at("revision")},{"inputSha256",project.inputSha256},
         {"configSha256",json_sha256(config_json(project.config))},{"effectiveConfig",config_json(project.config)},
+        {"requestedConfig",requestedConfig},{"requestedConfigSha256",json_sha256(requestedConfig)},
         {"jobId",text(request,"jobId")},{"attemptId",text(request,"attemptId")},{"state","succeeded"},
         {"quality",text(request,"quality","standard")},{"qualityPresetVersion","p1-v2"},
         {"outputMode",project.metadata.value("outputMode",Json("native"))},
@@ -267,6 +275,9 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
             project.metadata["revision"]=request.value("projectRevision",request.value("revision",Json(1)));
             project.metadata["quality"]=text(request,"quality","standard");
         }
+        // Import may expose an off-bed source for preparation, but an update
+        // cannot commit invalid placement and slicing always enforces the gate.
+        if (operation=="update" || operation=="projectCommand") validate_project_bounds(project);
         Json description=scene_and_snapshot(project,root(request,workspace_)/artifact_key(request,project));
         budget.check();
         return Json{{"schemaVersion",2},{"state","succeeded"},{"project",description},
@@ -281,7 +292,8 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
         return slice_one(project,request,sink,budget,workspace_);
     }
     if (operation=="recommend") {
-        const auto baselineConfigSha=json_sha256(config_json(project.config));
+        const Json baselineConfig=config_json(project.config);
+        const auto baselineConfigSha=json_sha256(baselineConfig);
         Json out{{"schemaVersion",2},{"jobId",text(request,"jobId")},{"attemptId",text(request,"attemptId")},
             {"state","succeeded"},{"recommendationState","proposed"},{"projectId",request.value("projectId",Json())},
             {"sourceRevision",project.metadata.at("revision")},{"inputSha256",project.inputSha256},
@@ -301,6 +313,12 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
             try {
                 const Json result=slice_one(project,trialRequest,EventSink{},budget,workspace_);
                 trial["validated"]=true; trial["state"]="succeeded"; trial["result"]=result;
+                trial["requestedConfig"]=trial["config"];
+                trial["config"]=result.at("effectiveConfig"); trial["configSha256"]=result.at("configSha256");
+                trial["configDiff"]=Json::object();
+                for (auto option=trial["config"].begin();option!=trial["config"].end();++option)
+                    if (!baselineConfig.contains(option.key()) || baselineConfig[option.key()]!=option.value())
+                        trial["configDiff"][option.key()]=Json{{"before",baselineConfig.value(option.key(),Json())},{"after",option.value()}};
                 for (const char* key:{"gcodePath","gcodeSize","gcodeSha256","scenePath","sceneSha256","previewPath","previewSha256","layerCount","layerHeights","manifestPath"}) trial[key]=result.at(key);
                 trial["metrics"]=Json{{"printTimeSeconds",result["printTimeSeconds"]},{"filamentVolumeMm3",result["filamentVolumeMm3"]},
                     {"filamentGrams",result["filamentGrams"]},{"calculationElapsedMs",result["calculationElapsedMs"]}};
