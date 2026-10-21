@@ -21,7 +21,7 @@ function run(args) {
 }
 if(!process.argv.includes('--verify-only')) {
  run(['-S',path.join(root,'mobile-slicing'),'-B',build,'-G','Ninja','-DCMAKE_MAKE_PROGRAM='+ninja,'-DCMAKE_TOOLCHAIN_FILE='+path.join(ndk,'build/cmake/android.toolchain.cmake'),'-DANDROID_ABI=arm64-v8a','-DANDROID_PLATFORM=android-35','-DANDROID_STL=c++_static','-DCMAKE_BUILD_TYPE=Release']);
- run(['--build',build,'--target','orca_slicing_c','orca_mobile_stl_gate','-j2']);
+ run(['--build',build,'--target','orca_slicing_c','orca_mobile_stl_gate','orca_slicing_json_gate','-j2']);
 }
 const library=path.join(build,'liborca_slicing_c.so');
 const elf=fs.readFileSync(library);

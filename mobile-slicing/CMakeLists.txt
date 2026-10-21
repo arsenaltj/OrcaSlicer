@@ -158,6 +158,9 @@ if(EXISTS "${ORCA_SOURCE_ROOT}/src/orca_slicing/c_api.cpp" AND EXISTS "${ORCA_SO
     target_include_directories(orca_slicing_c PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_slicing/include" "${ORCA_SOURCE_ROOT}/src")
     target_link_libraries(orca_slicing_c PRIVATE libslic3r_mobile log)
     set_target_properties(orca_slicing_c PROPERTIES OUTPUT_NAME orca_slicing_c)
+    add_executable(orca_slicing_json_gate "${CMAKE_CURRENT_LIST_DIR}/slicing_json_gate.cpp")
+    target_include_directories(orca_slicing_json_gate PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_slicing/include")
+    target_link_libraries(orca_slicing_json_gate PRIVATE orca_slicing_c)
 endif()
 
 add_executable(orca_mobile_stl_gate "${CMAKE_CURRENT_LIST_DIR}/stl_gcode_gate.cpp")
