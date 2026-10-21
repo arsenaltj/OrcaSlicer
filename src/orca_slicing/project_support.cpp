@@ -451,8 +451,14 @@ void apply_config_overrides(DynamicPrintConfig& config, const Json& overrides)
     if (!overrides.is_object()) throw std::invalid_argument("CONFIG_MUST_BE_OBJECT");
     ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Disable};
     for (auto it = overrides.begin(); it != overrides.end(); ++it) {
+        const std::string value=native_value(it.value());
+        // Preserve concrete option types for an unchanged serialized snapshot.
+        // Re-deserializing optional empty enum vectors can create generic options
+        // where legacy Print code expects an absent/typed variant column.
+        const ConfigOption* existing=config.option(it.key());
+        if (existing && existing->serialize()==value) continue;
         if (!config.option(it.key(), true)) throw std::invalid_argument("UNKNOWN_CONFIG:" + it.key());
-        config.set_deserialize(it.key(), native_value(it.value()), substitutions);
+        config.set_deserialize(it.key(), value, substitutions);
     }
 }
 

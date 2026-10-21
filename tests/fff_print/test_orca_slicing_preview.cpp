@@ -107,6 +107,7 @@ TEST_CASE("Geometry-only STL imports a visible default profile accepted by real 
     Slic3r::Print restoredPrint;restoredPrint.set_status_silent();
     restoredPrint.apply(restored.model,restored.config);
     CHECK(restoredPrint.validate().string.empty());
+    CHECK_NOTHROW(restoredPrint.process());
     // An explicit user override remains authoritative, even if invalid.
     auto user=orca::slicing::load_project(file.string(),{{"before_layer_change_gcode",""}},nlohmann::json::array(),directory.string());
     CHECK(user.config.opt_string("before_layer_change_gcode").empty());

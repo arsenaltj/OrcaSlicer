@@ -3502,7 +3502,11 @@ void Print::update_filament_maps_to_config(std::vector<int> f_maps, std::vector<
         auto* ori_volume_map = m_ori_full_print_config.option<ConfigOptionInts>("filament_volume_map", true);
         for (int index = 0; opt_extruder_type && opt_nozzle_volume_type && index < f_maps.size(); index++)
         {
-            ExtruderType extruder_type = (ExtruderType)(opt_extruder_type->get_at(f_maps[index] - 1));
+            const int physical = f_maps[index] - 1;
+            if (physical < 0 || size_t(physical) >= opt_extruder_type->values.size() ||
+                size_t(physical) >= opt_nozzle_volume_type->values.size())
+                continue; // Keep seeded physical slot for absent/empty variant columns.
+            ExtruderType extruder_type = (ExtruderType)(opt_extruder_type->get_at(physical));
             NozzleVolumeType nozzle_volume_type = (NozzleVolumeType)(opt_nozzle_volume_type->get_at(f_maps[index] - 1));
             if (f_volume_maps.empty()) {
                 // No per-filament map supplied: backfill from the extruder's own volume type.
