@@ -99,7 +99,7 @@ file(GLOB_RECURSE ORCA_LIBSLIC3R_CPP CONFIGURE_DEPENDS "${ORCA_SOURCE_ROOT}/src/
 set(_mobile_excludes
     "/SLA/"
     "/SLAPrint.cpp$" "/SLAPrintSteps.cpp$"
-    "/Format/AssimpImport.cpp$" "/Format/DRC.cpp$" "/Format/OBJ.cpp$" "/Format/objparser.cpp$"
+    "/Format/AssimpImport.cpp$" "/Format/DRC.cpp$" "/Format/OBJ.cpp$"
     "/Format/SL1.cpp$" "/Format/STEP.cpp$" "/Format/svg.cpp$"
     "/ObjColorUtils.cpp$"
     "/TexturePainting.cpp$" "/TextureToColor/"
