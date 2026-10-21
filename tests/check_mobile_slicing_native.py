@@ -23,6 +23,7 @@ def main():
     parser.add_argument('--build-dir', required=True, type=Path)
     parser.add_argument('--output-dir', required=True, type=Path)
     parser.add_argument('--link-tests', action='store_true')
+    parser.add_argument('--compile-only', action='store_true', help='Compile native/test objects without linking or touching the existing build')
     parser.add_argument('--relink-only', action='store_true', help='Relink existing directed-test objects after dependency library changes')
     options = parser.parse_args()
     source = Path(__file__).resolve().parents[1]
@@ -81,6 +82,13 @@ def main():
             print(process.stderr.encode('ascii', 'backslashreplace').decode(), flush=True)
         return process.returncode == 0
 
+    if options.compile_only:
+        for unit in units + tests:
+            obj = output / (unit.stem + '.o')
+            if not run(unit.name + ':object', compiler + args + test_args + ['-c', str(unit), '-o', str(obj)]):
+                return 1
+        print('Directed objects compiled; no link or device test executed.')
+        return 0
     if not options.relink_only:
         for unit in units + tests:
             if not run(unit.name + ':syntax', compiler + args + test_args + ['-fsyntax-only', str(unit)]):

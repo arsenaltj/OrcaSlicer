@@ -1,4 +1,6 @@
 #include "orca_slicing/recommendation_support.hpp"
+#include "orca_slicing/engine.hpp"
+#include "libslic3r/PrintBase.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
@@ -209,5 +211,252 @@ TEST_CASE("Basic OBJ geometry imports through the native parser", "[OrcaSlicingS
     const auto project=orca::slicing::load_project(file.string());
     REQUIRE(project.model.objects.size()==1);
     CHECK(project.model.objects[0]->volumes[0]->mesh().its.indices.size()==4);
-    CHECK(project.metadata["basePreset"]["presetId"]=="p1-offline-fff-0.4-pla");
+    CHECK(project.metadata["basePreset"]["id"]=="generic/fff-0.4-200");
+}
+
+
+TEST_CASE("Offline catalog and applied material use the same inherited bundle", "[OrcaSlicingSupport][MobilePresets]")
+{
+    const auto catalog=orca::slicing::offline_presets();
+    REQUIRE(catalog["devices"].size()==2);
+    REQUIRE(catalog["materials"].size()==3);
+    CHECK(catalog["devices"][1]["requiresConfirmation"]==true);
+    CHECK(catalog["devices"][1]["resetScopes"]==nlohmann::json::array({"device","material","process"}));
+    for(size_t n=1;n<catalog["materials"].size();++n) {
+        DYNAMIC_SECTION(catalog["materials"][n]["id"].get<std::string>()) {
+            auto project=preparation_project();
+            const auto& entry=catalog["materials"][n];
+            orca::slicing::apply_preset(project,"material",entry["id"].get<std::string>());
+            for(const char* key:{"nozzle_temperature","nozzle_temperature_initial_layer","filament_density","filament_flow_ratio"}) {
+                auto expected=Slic3r::DynamicPrintConfig::full_print_config();
+                orca::slicing::apply_config_overrides(expected,nlohmann::json{{key,entry["config"][key]}});
+                CHECK(project.config.option(key)->serialize()==expected.option(key)->serialize());
+            }
+            CHECK(project.metadata["materialPresetSourceRefs"]==entry["sourceRefs"]);
+            REQUIRE(entry["sourceRefs"].size()==3);
+            CHECK(entry["sourceRefs"][0]["path"].get<std::string>().find("fdm_filament_common.json")!=std::string::npos);
+        }
+    }
+}
+TEST_CASE("Generic machine preset resets actual machine material and process config", "[OrcaSlicingSupport][MobilePresets]")
+{
+    auto project=preparation_project();
+    project.config.set("layer_height",0.31); project.config.set("wall_loops",5);
+    project.config.set_key_value("nozzle_diameter",new Slic3r::ConfigOptionFloats({0.8}));
+    const auto original=project.model.objects[0]->volumes[0]->mesh().its.vertices;
+    orca::slicing::apply_preset(project,"device","generic/fff-0.4-200");
+    const auto volume=orca::slicing::describe_project(project)["printVolume"];
+    CHECK(volume["polygon"]==nlohmann::json::array({{0,0},{200,0},{200,200},{0,200}}));
+    CHECK_THAT(volume["height"].get<double>(),Catch::Matchers::WithinAbs(200,1e-9));
+    CHECK_THAT(project.config.option<Slic3r::ConfigOptionFloats>("nozzle_diameter")->values[0],Catch::Matchers::WithinAbs(0.4,1e-9));
+    const auto defaults=Slic3r::DynamicPrintConfig::full_print_config();
+    CHECK(project.config.opt_int("wall_loops")==defaults.opt_int("wall_loops"));
+    CHECK_THAT(project.config.opt_float("layer_height"),Catch::Matchers::WithinAbs(defaults.opt_float("layer_height"),1e-9));
+    CHECK(project.model.objects[0]->volumes[0]->mesh().its.vertices==original);
+}
+TEST_CASE("Preset changes reject stale logical material assignments without implicit mono conversion", "[OrcaSlicingSupport][MobilePresets]")
+{
+    auto project=preparation_project();
+    project.metadata["sourceColors"]={"#ff0000","#00ff00"};
+    project.config.set_key_value("filament_colour",new Slic3r::ConfigOptionStrings({"#ff0000","#00ff00"}));
+    project.config.set_key_value("filament_density",new Slic3r::ConfigOptionFloats({1.2,1.2}));
+    project.config.set_key_value("filament_map",new Slic3r::ConfigOptionInts({1,1}));
+    orca::slicing::apply_project_commands(project,nlohmann::json::array({{{"type","assignMaterial"},{"filamentIndex",1}}}));
+    CHECK_THROWS(orca::slicing::apply_preset(project,"material","generic/petg"));
+    CHECK_FALSE(project.metadata.contains("outputMode"));
+    project=preparation_project(); project.metadata["sourceColors"]={"#ff0000","#00ff00"};
+    orca::slicing::apply_project_commands(project,nlohmann::json::array({{{"type","singleMaterial"},{"filamentIndex",0}}}));
+    CHECK_NOTHROW(orca::slicing::apply_preset(project,"material","generic/petg"));
+    CHECK(orca::slicing::describe_project(project)["model"]["colors"].size()==2);
+    CHECK(project.config.option<Slic3r::ConfigOptionStrings>("filament_colour")->values.size()==1);
+}
+TEST_CASE("Each temporary orientation previews the exact confirmed command without modifying source", "[OrcaSlicingSupport][MobileOrientation]")
+{
+    auto source=preparation_project(); source.metadata["projectId"]="source";source.metadata["revision"]=7;
+    const auto before=orca::slicing::describe_project(source);
+    for(int n=0;n<6;++n) {
+        DYNAMIC_SECTION("candidate "<<n) {
+            auto temporary=source;
+            auto preview=orca::slicing::orientation_preview(temporary,nlohmann::json{{"candidateIndex",n}});
+            REQUIRE(preview["candidates"].size()==6);
+            CHECK(preview["sourceRevision"]==7);
+            CHECK(preview["projectId"]=="source");
+            auto confirmed=source;
+            orca::slicing::apply_project_commands(confirmed,nlohmann::json::array({preview["command"]}));
+            const auto bounds=confirmed.model.objects[0]->instance_bounding_box(0);
+            CHECK_THAT(bounds.min.z(),Catch::Matchers::WithinAbs(0,1e-6));
+            CHECK_THAT(bounds.size().z(),Catch::Matchers::WithinAbs(preview["candidates"][n]["height"].get<double>(),1e-6));
+            CHECK(orca::slicing::describe_project(temporary)["objects"]==orca::slicing::describe_project(confirmed)["objects"]);
+            CHECK(orca::slicing::describe_project(source)==before);
+        }
+    }
+}
+TEST_CASE("Picked world normals rotate the selected face down and preserve instance scale", "[OrcaSlicingSupport][MobileOrientation]")
+{
+    auto source=preparation_project();
+    source.model.objects[0]->instances[0]->set_rotation(Slic3r::Vec3d(0.3,0.2,0.4));
+    source.model.objects[0]->instances[0]->set_scaling_factor(Slic3r::Vec3d(2,3,4));
+    source.model.objects[0]->invalidate_bounding_box();
+    const Slic3r::Matrix3d rotation=source.model.objects[0]->instances[0]->get_transformation().get_rotation_matrix().linear();
+    const Slic3r::Vec3d worldNormal=rotation*Slic3r::Vec3d::UnitX();
+    auto temporary=source;
+    const auto preview=orca::slicing::orientation_preview(temporary,{{"normal",{worldNormal.x(),worldNormal.y(),worldNormal.z()}}});
+    CHECK(preview["selectedIndex"]==-1);
+    auto confirmed=source;
+    orca::slicing::apply_project_commands(confirmed,nlohmann::json::array({preview["command"]}));
+    const auto* instance=confirmed.model.objects[0]->instances[0];
+    const Slic3r::Vec3d finalNormal=instance->get_transformation().get_rotation_matrix().linear()*Slic3r::Vec3d::UnitX();
+    CHECK_THAT(finalNormal.x(),Catch::Matchers::WithinAbs(0,1e-6));
+    CHECK_THAT(finalNormal.y(),Catch::Matchers::WithinAbs(0,1e-6));
+    CHECK_THAT(finalNormal.z(),Catch::Matchers::WithinAbs(-1,1e-6));
+    CHECK_THAT(instance->get_scaling_factor().y(),Catch::Matchers::WithinAbs(3,1e-9));
+    CHECK_THAT(confirmed.model.objects[0]->instance_bounding_box(0).min.z(),Catch::Matchers::WithinAbs(0,1e-6));
+    CHECK(orca::slicing::describe_project(temporary)["objects"]==orca::slicing::describe_project(confirmed)["objects"]);
+    CHECK_THROWS(orca::slicing::orientation_preview(temporary,{{"normal",{0,0,0}}}));
+}
+TEST_CASE("Scene ranges cover exported painted triangles and distinguish instances and parts", "[OrcaSlicingSupport][MobileSceneRanges]")
+{
+    auto project=preparation_project();
+    auto* object=project.model.objects[0];
+    object->volumes[0]->mmu_segmentation_facets.set_triangle_from_string(0,"88883");
+    object->add_volume(Slic3r::make_cube(5,5,5),Slic3r::ModelVolumeType::MODEL_PART,false);
+    object->add_instance(*object->instances[0])->set_offset(Slic3r::Vec3d(40,0,0));
+    project.metadata["sourceColors"]={"#ff0000","#00ff00"};
+    ScopedTemporaryFile scene(".scene");
+    const auto info=orca::slicing::write_scene(project,scene.string());
+    REQUIRE(info["sceneRanges"].size()==4);
+    size_t next=0;
+    for(const auto& range:info["sceneRanges"]) {
+        CHECK(range["firstTriangle"].get<size_t>()==next);
+        next+=range["triangleCount"].get<size_t>();
+        CHECK(range["objectIndex"]==0);
+        CHECK(range.contains("bounds"));
+    }
+    CHECK(next==info["triangleCount"].get<size_t>());
+    CHECK(info["sceneRanges"][0]["triangleCount"]==15);
+    CHECK(info["sceneRanges"][1]["volumeIndex"]==1);
+    CHECK(info["sceneRanges"][2]["instanceIndex"]==1);
+    std::ifstream input(scene.string(),std::ios::binary); char magic[8];input.read(magic,8);
+    CHECK(std::string(magic,8)=="ORCASC01");
+}
+TEST_CASE("Filament cost uses actual per slot mass and distinguishes unknown price and currency", "[OrcaSlicingSupport][MobileCost]")
+{
+    auto config=Slic3r::DynamicPrintConfig::full_print_config();
+    config.set_key_value("filament_density",new Slic3r::ConfigOptionFloats({1.25,1.5}));
+    config.set_key_value("filament_cost",new Slic3r::ConfigOptionFloats({20,40}));
+    const nlohmann::json usage={{"0",1000.0},{"1",2000.0}};
+    auto cost=orca::slicing::filament_cost(config,usage,"CNY");
+    CHECK_THAT(cost["filamentCost"].get<double>(),Catch::Matchers::WithinAbs(0.145,1e-9));
+    CHECK(cost["costCurrency"]=="CNY"); CHECK(cost["costStatus"]=="estimated");
+    cost=orca::slicing::filament_cost(config,usage);
+    CHECK(cost["costStatus"]=="missing_currency"); CHECK_FALSE(cost.contains("costCurrency"));
+    config.set_key_value("filament_cost",new Slic3r::ConfigOptionFloats({20,0}));
+    cost=orca::slicing::filament_cost(config,usage,"CNY");
+    CHECK(cost["costStatus"]=="missing_price"); CHECK_FALSE(cost.contains("filamentCost"));
+    cost=orca::slicing::filament_cost(config,usage);
+    CHECK(cost["costStatus"]=="missing_price_and_currency");
+}
+TEST_CASE("Preset catalog reads do not touch invalid snapshots or require an input model", "[OrcaSlicingSupport][MobilePresets]")
+{
+    orca::slicing::Engine engine("");
+    const auto catalog=engine.execute({{"operation","presets"},{"snapshotPath","does-not-exist"}},{});
+    CHECK(catalog==orca::slicing::offline_presets());
+}
+
+TEST_CASE("Restoring source profiles restores config without replacing geometry and remains externally undoable", "[OrcaSlicingSupport][MobilePresets]")
+{
+    ScopedTemporaryFile file(".obj");
+    {std::ofstream obj(file.string());obj<<"v 0 0 0\nv 10 0 0\nv 0 10 0\nv 0 0 10\nf 1 3 2\nf 1 2 4\nf 2 3 4\nf 3 1 4\n";}
+    const auto source=orca::slicing::load_project(file.string());
+    auto project=source;
+    orca::slicing::apply_preset(project,"material","generic/petg");
+    project.config.set("wall_loops",5);
+    const auto before=orca::slicing::config_json(project.config);
+    orca::slicing::apply_preset(project,"material","source/current");
+    CHECK(project.config.opt_int("wall_loops")==5);
+    CHECK(project.config.option("filament_density")->serialize()==source.config.option("filament_density")->serialize());
+    CHECK(project.metadata["materialPresetSourceRefs"][0]["sha256"]==source.inputSha256);
+    orca::slicing::apply_preset(project,"device","source/current");
+    CHECK(orca::slicing::config_json(project.config)==orca::slicing::config_json(source.config));
+    orca::slicing::apply_config_overrides(project.config,before);
+    CHECK(orca::slicing::config_json(project.config)==before);
+    CHECK(orca::slicing::describe_project(project)["objects"]==orca::slicing::describe_project(source)["objects"]);
+}
+TEST_CASE("Preset catalog bypasses a worker lock already held by an import", "[OrcaSlicingSupport][MobilePresets]")
+{
+    orca::slicing::Engine engine(""); nlohmann::json observed;
+    CHECK_THROWS(engine.execute({{"operation","import"},{"inputPath","missing-native-import.obj"}},[&](const nlohmann::json&) {
+        observed=engine.execute({{"operation","presets"}},{});
+    }));
+    CHECK(observed==orca::slicing::offline_presets());
+}
+
+TEST_CASE("Native warnings expose only genuine model instance volume or config locations", "[OrcaSlicingSupport][MobileWarnings]")
+{
+    const auto project=preparation_project(); Slic3r::StringObjectException warning;
+    warning.string="Risk without native location";
+    auto located=orca::slicing::describe_warning(project,warning);
+    CHECK(located["kind"]=="global"); CHECK_FALSE(located.contains("objectIndex")); CHECK_FALSE(located.contains("layer"));
+    warning.object=project.model.objects[0]->instances[0];
+    located=orca::slicing::describe_warning(project,warning);
+    CHECK(located["objectIndex"]==0); CHECK(located["instanceIndex"]==0);
+    warning.object=project.model.objects[0]->volumes[0];
+    located=orca::slicing::describe_warning(project,warning);
+    CHECK(located["volumeIndex"]==0); CHECK_FALSE(located.contains("instanceIndex"));
+    warning.object=nullptr; warning.opt_key="layer_height";
+    located=orca::slicing::describe_warning(project,warning);
+    CHECK(located["kind"]=="config"); CHECK(located["configKey"]=="layer_height"); CHECK_FALSE(located.contains("layer"));
+    const auto unrelated=preparation_project(); warning.object=unrelated.model.objects[0];warning.opt_key.clear();
+    located=orca::slicing::describe_warning(project,warning);
+    CHECK(located["kind"]=="global"); CHECK_FALSE(located.contains("objectIndex"));
+}
+
+TEST_CASE("Source preset catalog reads the captured original profile and verifies frozen identity", "[OrcaSlicingSupport][MobilePresets]")
+{
+    const auto project=preparation_project();
+    const auto config=orca::slicing::config_json(project.config);
+    const std::string inputSha(64,'a');
+    const nlohmann::json source={{"schemaVersion",2},{"inputPath","original.3mf"},{"inputSha256",inputSha},
+        {"config",config},{"configSha256",orca::slicing::json_sha256(config)}};
+    ScopedTemporaryFile sidecar(".source-profile.json");
+    {std::ofstream output(sidecar.string());output<<source.dump();}
+    const nlohmann::json request={{"operation","presets"},{"sourceProfilePath",sidecar.string()},
+        {"sourceProfileSha256",orca::slicing::file_sha256(sidecar.string())},{"inputSha256",inputSha}};
+    orca::slicing::Engine engine(""); const auto catalog=engine.execute(request,{});
+    CHECK(catalog["devices"][0]["available"]==true);
+    CHECK(catalog["devices"][0]["config"]==config);
+    CHECK(catalog["materials"][0]["config"]["filament_density"]==config["filament_density"]);
+    CHECK_FALSE(catalog["materials"][0]["config"].contains("printable_area"));
+    CHECK(catalog["devices"][0]["sourceRefs"][0]["sha256"]==inputSha);
+    auto wrong=request;wrong["inputSha256"]=std::string(64,'b');
+    CHECK_THROWS_WITH(engine.execute(wrong,{}),"SOURCE_PROFILE_IDENTITY_MISMATCH");
+    {std::ofstream output(sidecar.string(),std::ios::app);output<<" ";}
+    CHECK_THROWS_WITH(engine.execute(request,{}),"SOURCE_PROFILE_IDENTITY_MISMATCH");
+}
+TEST_CASE("Print volume descriptor preserves distinct native exclusion rectangles", "[OrcaSlicingSupport][MobileSceneRanges]")
+{
+    auto project=preparation_project();
+    project.config.set_key_value("bed_exclude_area",new Slic3r::ConfigOptionPoints({{0,0},{10,0},{10,10},{0,10},{80,80},{90,80},{90,90},{80,90}}));
+    const auto volume=orca::slicing::print_volume(project.config);
+    REQUIRE(volume["exclusions"].size()==2);
+    CHECK(volume["exclusions"][0]==nlohmann::json::array({{0,0},{10,0},{10,10},{0,10}}));
+    CHECK(volume["exclusions"][1]==nlohmann::json::array({{80,80},{90,80},{90,90},{80,90}}));
+}
+TEST_CASE("Final explicit reassignment supersedes historical slots while preserving source paint", "[OrcaSlicingSupport][MobilePresets]")
+{
+    auto project=preparation_project();
+    project.metadata["sourceColors"]={"#ff0000","#00ff00"};
+    project.model.objects[0]->volumes[0]->mmu_segmentation_facets.set_triangle_from_string(0,"8");
+    CHECK_THROWS(orca::slicing::validate_material_assignments(project));
+    // Slot 1 belonged to the old profile; the persisted history later remaps it
+    // explicitly to slot 0. Only the final state may reach Print or the catalog.
+    const nlohmann::json history=nlohmann::json::array({{{"type","assignMaterial"},{"filamentIndex",1}},{{"type","assignMaterial"},{"filamentIndex",0}}});
+    CHECK_NOTHROW(orca::slicing::apply_project_commands(project,history));
+    CHECK_NOTHROW(orca::slicing::apply_preset(project,"material","generic/pla"));
+    REQUIRE(project.metadata["materialAssignments"].size()==1);
+    CHECK(project.metadata["materialAssignments"][0]["filamentIndex"]==0);
+    CHECK_FALSE(project.metadata.contains("outputMode"));
+    CHECK_FALSE(project.model.objects[0]->volumes[0]->mmu_segmentation_facets.empty());
+    CHECK(project.metadata["projectCommands"]==history);
+    CHECK(orca::slicing::slicing_model(project).objects[0]->volumes[0]->mmu_segmentation_facets.empty());
 }
