@@ -8,6 +8,10 @@
 #include <fstream>
 #include <limits>
 #include <sstream>
+#include <set>
+#include <map>
+#include <cstring>
+#include "libslic3r/GCode/GCodeProcessor.hpp"
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -65,8 +69,10 @@ std::string sha256_file(const std::string& path)
 Vec3d json_vec3(const Json& value, const Vec3d& fallback)
 {
     if (!value.is_array() || value.size() != 3)
-        return fallback;
-    return Vec3d(value[0].get<double>(), value[1].get<double>(), value[2].get<double>());
+        throw std::invalid_argument("TRANSFORM_REQUIRES_THREE_COMPONENTS");
+    Vec3d result(value[0].get<double>(), value[1].get<double>(), value[2].get<double>());
+    if (!result.allFinite()) throw std::invalid_argument("NONFINITE_TRANSFORM");
+    return result;
 }
 
 void apply_transforms(Model& model, const Json& transforms)
@@ -99,7 +105,11 @@ void apply_transforms(Model& model, const Json& transforms)
                 if (entry.contains("rotation"))
                     instance->set_rotation(json_vec3(entry["rotation"], instance->get_rotation()));
                 if (entry.contains("scale"))
-                    instance->set_scaling_factor(json_vec3(entry["scale"], instance->get_scaling_factor()));
+                    {
+                    const Vec3d scale = json_vec3(entry["scale"], instance->get_scaling_factor());
+                    if (scale.minCoeff() <= 0) throw std::invalid_argument("SCALE_MUST_BE_POSITIVE");
+                    instance->set_scaling_factor(scale);
+                }
             }
             object->invalidate_bounding_box();
         }
@@ -252,7 +262,7 @@ std::vector<std::uint16_t> painted_face_palettes(const ModelVolume& volume, size
 } // namespace
 
 LoadedProject load_project(const std::string& inputPath, const Json& configOverrides,
-                           const Json& transforms, const std::string& workspaceRoot)
+                           const Json& transforms, const std::string& workspaceRoot, const Json& projectCommands)
 {
     if (inputPath.empty())
         throw std::invalid_argument("inputPath is empty");
@@ -277,23 +287,21 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
         throw std::runtime_error("project contains no model objects: " + inputPath + (detail.empty() ? std::string() : "; " + detail));
     }
 
-    if (!configOverrides.is_null()) {
-        if (!configOverrides.is_object())
-            throw std::invalid_argument("configOverrides must be an object");
-        for (auto it = configOverrides.begin(); it != configOverrides.end(); ++it) {
-            if (config.option(it.key(), true) == nullptr)
-                throw std::invalid_argument("unknown configuration override: " + it.key());
-            config.set_deserialize(it.key(), native_value(it.value()), substitutions);
-        }
-    }
+    DynamicPrintConfig complete = DynamicPrintConfig::full_print_config();
+    complete.apply(config);
+    config = std::move(complete);
+    const Json sourceColors = colors_json(config);
+    apply_config_overrides(config, configOverrides);
     apply_transforms(model, transforms);
 
     LoadedProject project{std::move(model), std::move(config), inputPath, sha256_file(inputPath), Json::object()};
+    project.metadata["sourceColors"] = sourceColors;
     project.metadata["workspaceRoot"] = workspaceRoot;
     project.metadata["transforms"] = transforms.is_null() ? Json::array() : transforms;
-    project.metadata["sourceFormat"] = "3mf";
+    project.metadata["sourceFormat"] = std::filesystem::u8path(inputPath).extension().u8string();
     project.metadata["colors"] = colors_json(project.config);
     project.metadata["filamentMap"] = filament_map_json(project.config);
+    apply_project_commands(project, projectCommands);
     return project;
 }
 
@@ -321,15 +329,41 @@ Json describe_project(const LoadedProject& project)
     }
 
     Json result = project.metadata.is_object() ? project.metadata : Json::object();
+    result["schemaVersion"] = 2;
     result["inputPath"] = project.inputPath;
     result["inputSha256"] = project.inputSha256;
     result["name"] = project.model.objects.empty() ? std::filesystem::u8path(project.inputPath).stem().u8string()
                                                     : project.model.objects.front()->name;
     result["model"] = Json{{"vertices", vertices}, {"triangles", triangles},
                             {"bounds", bounds_json(project.model.bounding_box_exact())},
-                            {"colors", colors_json(project.config)},
+                            {"colors", project.metadata.value("sourceColors",colors_json(project.config))},
                             {"filamentMap", filament_map_json(project.config)}};
+    result["objects"] = Json::array();
+    for (size_t oi = 0; oi < project.model.objects.size(); ++oi) {
+        const auto* object = project.model.objects[oi];
+        Json item{{"objectId", "object-" + std::to_string(oi)}, {"objectIndex", oi},
+                  {"name", object->name}, {"bounds", bounds_json(object->bounding_box_exact())},
+                  {"parts", Json::array()}, {"instances", Json::array()}};
+        for (size_t vi = 0; vi < object->volumes.size(); ++vi) {
+            const auto* volume = object->volumes[vi];
+            item["parts"].push_back(Json{{"volumeIndex", vi}, {"name", volume->name},
+                {"material", volume->extruder_id()}, {"isModelPart", volume->is_model_part()},
+                {"painted", !volume->mmu_segmentation_facets.empty()}});
+        }
+        for (size_t ii = 0; ii < object->instances.size(); ++ii) {
+            const auto* instance = object->instances[ii];
+            auto vector_json = [](const Vec3d& v) { return Json::array({v.x(),v.y(),v.z()}); };
+            item["instances"].push_back(Json{{"instanceIndex", ii},
+                {"instanceId", "object-" + std::to_string(oi) + "-instance-" + std::to_string(ii)},
+                {"translation", vector_json(instance->get_offset())},
+                {"rotation", vector_json(instance->get_rotation())},
+                {"scale", vector_json(instance->get_scaling_factor())},
+                {"bounds", bounds_json(object->instance_bounding_box(ii))}});
+        }
+        result["objects"].push_back(std::move(item));
+    }
     result["config"] = config_json(project.config);
+    result["configSha256"] = json_sha256(result["config"]);
     if (!result.contains("transforms"))
         result["transforms"] = Json::array();
     return result;
@@ -339,7 +373,7 @@ Json write_scene(const LoadedProject& project, const std::string& outputPath)
 {
     if (outputPath.empty())
         throw std::invalid_argument("outputPath is empty");
-    const Json colors = colors_json(project.config);
+    const Json colors = project.metadata.value("sourceColors",colors_json(project.config));
     const size_t palette_count = std::max<size_t>(1, colors.size());
     std::vector<std::array<std::uint8_t, 4>> palette;
     palette.reserve(palette_count);
@@ -413,19 +447,255 @@ Json write_scene(const LoadedProject& project, const std::string& outputPath)
                 {"paletteCount", palette_size}, {"flags", flags}, {"bounds", bounds_json(project.model.bounding_box_exact())}};
 }
 
+
+std::string file_sha256(const std::string& path) { return sha256_file(path); }
+std::string json_sha256(const Json& value)
+{
+    const std::string text = value.dump();
+    Sha256Digest digest;
+    if (!digest.update(text.data(), text.size())) throw std::runtime_error("HASH_FAILED");
+    const auto result = digest.final_hex();
+    if (result.empty()) throw std::runtime_error("HASH_FAILED");
+    return result;
+}
+
+void apply_config_overrides(DynamicPrintConfig& config, const Json& overrides)
+{
+    if (overrides.is_null()) return;
+    if (!overrides.is_object()) throw std::invalid_argument("CONFIG_MUST_BE_OBJECT");
+    ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Disable};
+    for (auto it = overrides.begin(); it != overrides.end(); ++it) {
+        if (!config.option(it.key(), true)) throw std::invalid_argument("UNKNOWN_CONFIG:" + it.key());
+        config.set_deserialize(it.key(), native_value(it.value()), substitutions);
+    }
+}
+
+namespace {
+void place_on_bed(ModelObject& object, size_t ii)
+{
+    const auto bounds = object.instance_bounding_box(ii);
+    auto* instance = object.instances.at(ii);
+    Vec3d offset = instance->get_offset();
+    offset.z() -= bounds.min.z();
+    instance->set_offset(offset);
+    object.invalidate_bounding_box();
+}
+
+bool inside_polygon(const Vec2d& p, const Pointfs& polygon)
+{
+    bool inside = false;
+    if (polygon.size() < 3) return false;
+    for (size_t i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++) {
+        const auto& a = polygon[i]; const auto& b = polygon[j];
+        const Vec2d ab = b-a, ap = p-a;
+        const double cross = ab.x()*ap.y()-ab.y()*ap.x();
+        if (std::abs(cross) < 1e-6 && ap.dot(ab) >= -1e-6 && ap.dot(ab) <= ab.squaredNorm()+1e-6) return true;
+        if ((a.y() > p.y()) != (b.y() > p.y()) &&
+            p.x() < (b.x()-a.x())*(p.y()-a.y())/(b.y()-a.y())+a.x()) inside = !inside;
+    }
+    return inside;
+}
+
+void arrange_project(LoadedProject& project, double gap)
+{
+    const auto* bed = project.config.option<ConfigOptionPoints>("printable_area");
+    if (!bed || bed->values.size() < 3 || !std::isfinite(gap) || gap < 0)
+        throw std::invalid_argument("ARRANGE_REQUIRES_VALID_BED_AND_GAP");
+    Vec2d lo = bed->values.front(), hi = lo;
+    for (const auto& p : bed->values) { lo = lo.cwiseMin(p); hi = hi.cwiseMax(p); }
+    double x = lo.x()+gap, y = lo.y()+gap, row = 0;
+    struct Placement { ModelObject* object; size_t instance; Vec3d offset; };
+    std::vector<Placement> placements;
+    for (auto* object : project.model.objects) for (size_t ii=0; ii<object->instances.size(); ++ii) {
+        const auto bb = object->instance_bounding_box(ii);
+        const Vec3d size = bb.size();
+        if (x+size.x() > hi.x()-gap) { x=lo.x()+gap; y+=row+gap; row=0; }
+        if (y+size.y() > hi.y()-gap) throw std::runtime_error("ARRANGE_BED_OVERFLOW");
+        for (const Vec2d& corner : std::array<Vec2d,4>{{{x,y},{x+size.x(),y},{x,y+size.y()},{x+size.x(),y+size.y()}}})
+            if (!inside_polygon(corner, bed->values)) throw std::runtime_error("ARRANGE_BED_OVERFLOW");
+        // Rectangular shelf packing is deterministic; reject bed exclusion regions too.
+        if (const auto* excluded = project.config.option<ConfigOptionPoints>("bed_exclude_area")) {
+            if (excluded->values.size() >= 3) {
+                Vec2d elo=excluded->values.front(), ehi=elo;
+                for (const auto& p : excluded->values) { elo=elo.cwiseMin(p); ehi=ehi.cwiseMax(p); }
+                if (x<ehi.x() && x+size.x()>elo.x() && y<ehi.y() && y+size.y()>elo.y())
+                    throw std::runtime_error("ARRANGE_EXCLUDED_AREA");
+            }
+        }
+        placements.push_back({object,ii,object->instances[ii]->get_offset()+Vec3d(x-bb.min.x(),y-bb.min.y(),-bb.min.z())});
+        x+=size.x()+gap; row=std::max(row,size.y());
+    }
+    for (const auto& p : placements) {
+        p.object->instances[p.instance]->set_offset(p.offset); p.object->invalidate_bounding_box();
+    }
+}
+}
+
+void apply_project_commands(LoadedProject& project, const Json& commands)
+{
+    if (!commands.is_array()) throw std::invalid_argument("PROJECT_COMMANDS_MUST_BE_ARRAY");
+    project.metadata["projectCommands"] = commands;
+    project.metadata["materialAssignments"] = Json::array();
+    for (const auto& raw : commands) {
+        const Json cmd = raw.is_string() ? Json{{"type",raw}} : raw;
+        if (!cmd.is_object()) throw std::invalid_argument("INVALID_PROJECT_COMMAND");
+        const std::string type = cmd.value("type", std::string());
+        if (type == "arrange") { arrange_project(project,cmd.value("gapMm",5.0)); continue; }
+        const int oi=cmd.value("objectIndex",0);
+        if (oi<0 || size_t(oi)>=project.model.objects.size()) throw std::out_of_range("COMMAND_OBJECT_NOT_FOUND");
+        auto& object=*project.model.objects[oi];
+        const int ii=cmd.value("instanceIndex",0);
+        if (ii<0 || size_t(ii)>=object.instances.size()) throw std::out_of_range("COMMAND_INSTANCE_NOT_FOUND");
+        auto* instance=object.instances[ii];
+        if (type == "transform") {
+            Json transform=cmd; transform["objectIndex"]=oi; transform["instanceIndex"]=ii;
+            apply_transforms(project.model,Json::array({transform}));
+            if (cmd.contains("sizeMm")) {
+                const Vec3d wanted=json_vec3(cmd["sizeMm"],Vec3d::Zero());
+                const Vec3d current=object.instance_bounding_box(ii).size();
+                if (wanted.minCoeff()<=0 || current.minCoeff()<=0) throw std::invalid_argument("INVALID_SIZE_MM");
+                // World-axis dimensions are only independent for cardinal rotations.
+                const auto r=instance->get_rotation();
+                constexpr double halfPi=1.57079632679489661923;
+                for (int axis=0;axis<3;++axis)
+                    if (std::abs(r[axis]/halfPi-std::round(r[axis]/halfPi))>1e-6)
+                        throw std::invalid_argument("SIZE_REQUIRES_CARDINAL_ROTATION_USE_SCALE");
+                Vec3d factors=wanted.cwiseQuotient(current);
+                const Matrix3d rotation=instance->get_transformation().get_rotation_matrix().linear().cwiseAbs();
+                instance->set_scaling_factor(instance->get_scaling_factor().cwiseProduct(rotation.transpose()*factors));
+            }
+        } else if (type == "duplicate") {
+            Vec3d shift(object.instance_bounding_box(ii).size().x()+5.0,0,0);
+            if (cmd.contains("offset")) shift=json_vec3(cmd["offset"],shift);
+            auto* copy=object.add_instance(*instance);
+            copy->set_offset(instance->get_offset()+shift);
+        } else if (type == "orient") {
+            // Supported geometric orientation: six cardinal faces, minimize height,
+            // deterministic ties keep the earliest candidate; finally put on bed.
+            constexpr double pi=3.14159265358979323846;
+            const std::array<Vec3d,6> rotations{{{0,0,0},{pi/2,0,0},{-pi/2,0,0},{pi,0,0},{0,pi/2,0},{0,-pi/2,0}}};
+            Vec3d best=rotations.front(); double height=std::numeric_limits<double>::infinity();
+            for (const auto& rotation:rotations) {
+                instance->set_rotation(rotation); object.invalidate_bounding_box();
+                const double z=object.instance_bounding_box(ii).size().z();
+                if (z<height-1e-6) { height=z; best=rotation; }
+            }
+            instance->set_rotation(best); object.invalidate_bounding_box(); place_on_bed(object,ii);
+        } else if (type == "assignMaterial" || type == "material") {
+            const int vi=cmd.value("volumeIndex",-1), filament=cmd.value("filamentIndex",-1);
+            const auto* colors=project.config.option<ConfigOptionStrings>("filament_colour");
+            if (filament<0 || (colors && size_t(filament)>=colors->values.size())) throw std::out_of_range("INVALID_FILAMENT_INDEX");
+            if (vi < -1 || (vi>=0 && size_t(vi)>=object.volumes.size())) throw std::out_of_range("COMMAND_VOLUME_NOT_FOUND");
+            for (size_t v=0;v<object.volumes.size();++v) if (vi<0 || int(v)==vi) {
+                object.volumes[v]->config.set("extruder",filament+1);
+                project.metadata["materialAssignments"].push_back(Json{{"objectIndex",oi},{"volumeIndex",v},{"filamentIndex",filament}});
+            }
+        } else throw std::invalid_argument("PROJECT_COMMAND_UNSUPPORTED:"+type);
+        object.invalidate_bounding_box();
+    }
+}
+
+Model slicing_model(const LoadedProject& project)
+{
+    Model model(project.model);
+    for (const auto& assignment : project.metadata.value("materialAssignments",Json::array())) {
+        auto* volume=model.objects.at(assignment.at("objectIndex").get<size_t>())->volumes.at(assignment.at("volumeIndex").get<size_t>());
+        volume->mmu_segmentation_facets.reset();
+        volume->config.set("extruder",assignment.at("filamentIndex").get<int>()+1);
+    }
+    return model;
+}
+
+void validate_output_capabilities(const LoadedProject& project)
+{
+#ifdef ORCA_MOBILE_ANDROID
+    if (const auto* prime=project.config.option<ConfigOptionBool>("enable_prime_tower"))
+        if (prime->value) throw std::runtime_error("UNSUPPORTED_PRIME_TOWER:Android triangulation is unavailable; explicitly configure a supported single-material job");
+    const Model model=slicing_model(project);
+    std::set<int> materials;
+    for (const auto* object:model.objects) for (const auto* volume:object->volumes) if (volume->is_model_part()) {
+        if (!volume->mmu_segmentation_facets.empty())
+            throw std::runtime_error("UNSUPPORTED_PAINTED_MATERIAL_SWITCH:Assign an explicit single material to each part to export; original colors are retained");
+        int material=volume->extruder_id();
+        if (material<=0) material=object->config.extruder();
+        materials.insert(std::max(1,material));
+    }
+    if (materials.size()>1) throw std::runtime_error("UNSUPPORTED_MATERIAL_SWITCH:Android P1 requires explicit single-material assignment");
+#endif
+}
+
+
+Json write_preview(const GCodeProcessorResult& gcode, const std::string& path)
+{
+    struct Layer { float z=0; std::vector<std::pair<size_t,size_t>> moves; uint32_t first=0; };
+    std::map<unsigned int,Layer> layers;
+    for (size_t i=1; i<gcode.moves.size(); ++i) {
+        const auto& m=gcode.moves[i];
+        if (m.type==EMoveType::Extrude && !m.internal_only && m.extrusion_role!=erCustom &&
+            m.extrusion_role!=erNone && m.delta_extruder>0 && m.width>0 && m.position.allFinite()) {
+            auto& layer=layers[m.layer_id];
+            const float z=m.print_z>0 ? m.print_z : m.position.z();
+            if (layer.z==0 || z<layer.z) layer.z=z;
+        }
+    }
+    if (layers.empty()) throw std::runtime_error("PREVIEW_NO_PRINT_LAYERS");
+    size_t previousIndex=0;
+    for (size_t i=1; i<gcode.moves.size(); ++i) {
+        const auto& m=gcode.moves[i];
+        if (m.internal_only || (m.type!=EMoveType::Travel && m.type!=EMoveType::Wipe && m.type!=EMoveType::Extrude)) continue;
+        const size_t from=previousIndex; previousIndex=i;
+        const auto& previous=gcode.moves[from];
+        auto layer=layers.find(m.layer_id);
+        if (layer==layers.end() || !m.position.allFinite() || !previous.position.allFinite() ||
+            (m.position-previous.position).squaredNorm()<1e-12f) continue;
+        if (m.type==EMoveType::Travel || m.type==EMoveType::Wipe ||
+            (m.type==EMoveType::Extrude && m.extrusion_role!=erNone && m.extrusion_role!=erCustom && m.delta_extruder>0))
+            layer->second.moves.emplace_back(i,from);
+    }
+    uint64_t total=0;
+    Json heights=Json::array();
+    for (auto& entry:layers) {
+        auto& layer=entry.second;
+        if (total>UINT32_MAX || layer.moves.size()>UINT32_MAX-total) throw std::overflow_error("PREVIEW_TOO_LARGE");
+        layer.first=static_cast<uint32_t>(total); total+=layer.moves.size(); heights.push_back(layer.z);
+    }
+    const auto outputPath=std::filesystem::u8path(path);
+    if (outputPath.has_parent_path()) std::filesystem::create_directories(outputPath.parent_path());
+    std::ofstream output(outputPath,std::ios::binary|std::ios::trunc);
+    if (!output) throw std::runtime_error("PREVIEW_CREATE_FAILED");
+    auto integer=[&](uint64_t value,size_t bytes) { for (size_t i=0;i<bytes;++i) output.put(static_cast<char>((value>>(8*i))&255)); };
+    auto real=[&](float value) { uint32_t bits; std::memcpy(&bits,&value,4); integer(bits,4); };
+    output.write("ORCAPV01",8); integer(layers.size(),4); integer(total,4); integer(32,8); integer(32+16*layers.size(),8);
+    for (const auto& entry:layers) {
+        const auto& layer=entry.second;
+        real(layer.z); integer(layer.first,4); integer(layer.moves.size(),4); integer(0,4);
+    }
+    for (const auto& entry:layers) for (const auto& indices:entry.second.moves) {
+        const auto& m=gcode.moves[indices.first]; const auto& a=gcode.moves[indices.second].position;
+        for (int axis=0;axis<3;++axis) real(a[axis]);
+        for (int axis=0;axis<3;++axis) real(m.position[axis]);
+        real(m.width); integer(m.extruder_id,2); integer(static_cast<uint8_t>(m.extrusion_role),1);
+        integer(m.type==EMoveType::Extrude?1:m.type==EMoveType::Travel?2:4,1);
+    }
+    output.flush();
+    if (!output) throw std::runtime_error("PREVIEW_WRITE_FAILED");
+    output.close();
+    return Json{{"previewPath",path},{"previewSize",std::filesystem::file_size(outputPath)},
+        {"previewSha256",file_sha256(path)},{"layerCount",layers.size()},{"layerHeights",heights},
+        {"segmentCount",total},{"previewFlags",{{"extrusion",1},{"travel",2},{"wipe",4}}}};
+}
+
 DynamicPrintConfig quality_config(const DynamicPrintConfig& base, const std::string& quality)
 {
-    if (quality != "standard" && quality != "fine" && quality != "fast" && quality != "smart")
-        throw std::invalid_argument("quality must be standard, fine, fast or smart");
-    const double layer_height = quality == "fine" ? 0.12 : quality == "fast" ? 0.28 : 0.20;
+    if (quality != "standard" && quality != "fine" && quality != "fast")
+        throw std::invalid_argument("QUALITY_REQUIRES_CONFIRMED_EFFECTIVE_CONFIG");
+    double nozzle = 0.4;
+    if (const auto* diameters = base.option<ConfigOptionFloats>("nozzle_diameter"))
+        if (!diameters->values.empty()) nozzle = diameters->values.front();
+    if (!std::isfinite(nozzle) || nozzle <= 0) throw std::invalid_argument("INVALID_NOZZLE_DIAMETER");
     DynamicPrintConfig result(base);
-    result.set("layer_height", layer_height, true);
-#ifdef ORCA_MOBILE_ANDROID
-    // The Android P1 core intentionally omits CGAL triangulation; keep the first gate deterministic.
-    result.set("enable_prime_tower", false, true);
-#endif
+    result.set("layer_height", nozzle * (quality == "fine" ? 0.30 : quality == "fast" ? 0.70 : 0.50), true);
     return result;
 }
 
 } // namespace orca::slicing
-

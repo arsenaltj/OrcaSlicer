@@ -6,6 +6,8 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PrintConfig.hpp"
 
+namespace Slic3r { struct GCodeProcessorResult; }
+
 namespace orca::slicing {
 
 using Json = nlohmann::json;
@@ -27,17 +29,30 @@ struct LoadedProject {
 LoadedProject load_project(const std::string& inputPath,
                            const Json& configOverrides = Json::object(),
                            const Json& transforms = Json::array(),
-                           const std::string& workspaceRoot = {});
+                           const std::string& workspaceRoot = {},
+                           const Json& projectCommands = Json::array());
 
-// Project fragment per CONTRACT-v1; caller supplies projectId/revision/scenePath.
+// Replay against the unchanged original, preserving deterministic object/instance IDs.
+void apply_project_commands(LoadedProject& project, const Json& commands);
+void apply_config_overrides(Slic3r::DynamicPrintConfig& config, const Json& overrides);
+std::string file_sha256(const std::string& path);
+std::string json_sha256(const Json& value);
+// A source-preserving copy for Print; explicit material assignments override paint
+// only on this copy, never on the source scene or original input.
+Slic3r::Model slicing_model(const LoadedProject& project);
+void validate_output_capabilities(const LoadedProject& project);
+// Native-derived v2 project fragment; caller supplies projectId/revision/scenePath.
 Json describe_project(const LoadedProject& project);
 
 // ORCASC01, little endian, transformed mm geometry. Returns scenePath, counts,
 // bounds, colors and flags. Source Model and annotations are never modified.
 Json write_scene(const LoadedProject& project, const std::string& outputPath);
 
-// Copy base and apply a bounded nozzle-aware quality layer height. smart uses
-// standard as the starting point; its trial planning is in recommendation_support.
+// ORCAPV01 from the same native processor result used for statistics.
+Json write_preview(const Slic3r::GCodeProcessorResult& gcode, const std::string& path);
+
+// Copy base and apply a nozzle-aware fixed preset. smart requires a frozen config
+// and is deliberately rejected here; never falls back to standard.
 Slic3r::DynamicPrintConfig quality_config(const Slic3r::DynamicPrintConfig& base,
                                         const std::string& quality);
 
