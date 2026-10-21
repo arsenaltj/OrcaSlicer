@@ -706,7 +706,7 @@ TEST_CASE("Basic 3MF five-color paint and native support annotations remain expl
     ScopedTemporaryFile file(".3mf");
     const nlohmann::json config={{"filament_colour",{"#110000","#002200","#000033","#444400","#555555"}},
         {"filament_density",{"1.24","1.24","1.24","1.24","1.24"}},{"filament_diameter",{"1.75","1.75","1.75","1.75","1.75"}},
-        {"filament_map",{1,1,1,1,1}},{"nozzle_diameter",{"0.4"}},{"enable_prime_tower","0"},{"silent_mode","0"}};
+        {"filament_map",{"1","1","1","1","1"}},{"nozzle_diameter",{"0.4"}},{"enable_prime_tower","0"},{"silent_mode","0"}};
     write_3mf_fixture(file.string(),basic_3mf_model({},true),one_plate(),config,{{"Metadata/filament_sequence.json",R"({"plate_1":{"sequence":[],"nozzle_sequence":[],"optimal_assignment":[]}})"}});
     const auto original=orca::slicing::file_sha256(file.string());
     const auto inspection=orca::slicing::inspect_three_mf(file.string());
