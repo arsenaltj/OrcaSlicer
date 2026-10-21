@@ -1,5 +1,8 @@
 get_filename_component(_TEST_NAME ${CMAKE_CURRENT_LIST_DIR} NAME)
 add_executable(${_TEST_NAME}_tests
+    test_orca_slicing_support.cpp
+    ../../src/orca_slicing/project_support.cpp
+    ../../src/orca_slicing/recommendation_support.cpp
     test_beauty_cell_domain.cpp
     test_parent_surface_visibility.cpp
     test_portrait_parent_cleanup.cpp

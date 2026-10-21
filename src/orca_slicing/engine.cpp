@@ -166,6 +166,7 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
     const auto started=Clock::now();
     validate_output_capabilities(project);
     validate_project_bounds(project);
+    project.metadata["quality"]=text(request,"quality","standard");
     const Json requestedConfig=config_json(project.config);
     emit(sink,request,"validating",20,"校验实际生效配置与模型");
     Slic3r::Print print;
@@ -175,22 +176,29 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
         budget.check(); emit(sink,request,"slicing",std::clamp(status.percent,0,100),status.text);
     });
     auto model=slicing_model(project);
+    emit(sink,request,"validating",21,"应用并归一化打印配置",Json{{"nativeStage","print_apply.started"}});
     print.apply(model,project.config);
+    emit(sink,request,"validating",22,"打印配置归一化完成",Json{{"nativeStage","print_apply.completed"}});
     // Print::apply normalizes a by-value copy (e.g. vase walls/top/infill).
     // Identity, snapshots and confirmed candidate configs must describe that
     // actual normalized config, not the caller's requested values.
     project.config=print.full_print_config();
     validate_output_capabilities(project);
     const auto prefix=root(request,workspace)/artifact_key(request,project);
+    emit(sink,request,"validating",23,"写入场景及有效配置快照",Json{{"nativeStage","scene_snapshot.started"}});
     Json description=scene_and_snapshot(project,prefix);
+    emit(sink,request,"validating",24,"场景及有效配置快照已提交",Json{{"nativeStage","scene_snapshot.completed"}});
     const auto gcodePartial=stdfs::u8path(prefix.u8string()+".gcode.partial");
     const auto gcodeFinal=stdfs::u8path(prefix.u8string()+".gcode");
     const auto previewPartial=stdfs::u8path(prefix.u8string()+".orcapv.partial");
     const auto previewFinal=stdfs::u8path(prefix.u8string()+".orcapv");
     std::vector<Slic3r::StringObjectException> warnings;
+    emit(sink,request,"validating",25,"执行原生打印校验",Json{{"nativeStage","print_validate.started"}});
     const auto validation=print.validate(&warnings);
     if (!validation.string.empty()) throw std::runtime_error("VALIDATION_FAILED:"+validation.string);
+    emit(sink,request,"validating",26,"原生打印校验通过",Json{{"nativeStage","print_validate.completed"}});
     budget.check();
+    emit(sink,request,"slicing",30,"执行原生切片",Json{{"nativeStage","print_process.started"}});
     try { print.process(); }
     catch (const Slic3r::CanceledException&) { budget.check(); throw std::runtime_error("SLICING_CANCELED"); }
     budget.check();
@@ -312,8 +320,10 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
             emit(sink,request,"trial",int(out["candidates"].size()*25),"真实试切："+plan.candidateId,Json{{"candidateId",plan.candidateId}});
             try {
                 const Json result=slice_one(project,trialRequest,EventSink{},budget,workspace_);
-                trial["validated"]=true; trial["state"]="succeeded"; trial["result"]=result;
-                trial["requestedConfig"]=trial["config"];
+                trial["validated"]=true; trial["state"]="succeeded";
+                // Complete requested/effective configs are archived in the trial
+                // manifest. The aggregate transports each effective config once.
+                trial["requestedConfigSha256"]=result.at("requestedConfigSha256");
                 trial["config"]=result.at("effectiveConfig"); trial["configSha256"]=result.at("configSha256");
                 trial["configDiff"]=Json::object();
                 for (auto option=trial["config"].begin();option!=trial["config"].end();++option)
