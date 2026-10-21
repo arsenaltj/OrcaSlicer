@@ -641,8 +641,10 @@ void validate_project_bounds(const LoadedProject& project)
     Polygons excluded;
     if (const auto* areas=project.config.option<ConfigOptionPoints>("bed_exclude_area")) {
         // Orca encodes exclusion rectangles as successive groups of four points.
-        if (!areas->values.empty() && areas->values.size()%4!=0) throw std::runtime_error("INVALID_EXCLUDED_AREAS");
-        for (size_t i=0;i<areas->values.size();i+=4) {
+        // FullPrintConfig uses a single origin point as the disabled-area sentinel.
+        const bool disabled = areas->values.size()==1 && areas->values.front().isZero();
+        if (!disabled && !areas->values.empty() && areas->values.size()%4!=0) throw std::runtime_error("INVALID_EXCLUDED_AREAS");
+        for (size_t i=0;!disabled && i<areas->values.size();i+=4) {
             Pointfs region(areas->values.begin()+i,areas->values.begin()+i+4);
             Polygon polygon=Polygon::new_scale(region); polygon.make_counter_clockwise(); excluded.push_back(std::move(polygon));
         }

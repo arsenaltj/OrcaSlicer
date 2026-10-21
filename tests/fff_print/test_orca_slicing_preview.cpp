@@ -77,7 +77,11 @@ TEST_CASE("Native preview follows processor extrusion modes resets and circular 
             "G1 Z0.4\nG1 X10 Y10 E1\n";
     }
     Slic3r::GCodeProcessor processor;
-    processor.apply_config(config);processor.process_file(source.string());
+    processor.apply_config(config);processor.initialize(source.string());
+    processor.initialize_result_moves();
+    std::ifstream input(source.string(),std::ios::binary);
+    processor.process_buffer(std::string(std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>()));
+    processor.finalize(false);
     const auto info=orca::slicing::write_preview(processor.get_result(),preview.string());
     CHECK(info["layerCount"]==2);
     // The circular command must retain its processor-discretized intermediate
