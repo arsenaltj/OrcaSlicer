@@ -1,4 +1,5 @@
 #include "project_support.hpp"
+#include "preset_catalog.generated.hpp"
 
 #include <algorithm>
 #include <array>
@@ -27,6 +28,8 @@ namespace orca::slicing {
 namespace {
 
 using namespace Slic3r;
+void orient_instance(ModelObject& object,size_t ii,const Json& command);
+const std::array<Vec3d,6>& cardinal_rotations();
 
 std::unique_ptr<ConfigOption> enum_option_with_definition(const DynamicPrintConfig& config,
     const std::string& key, const ConfigOption& option)
@@ -274,28 +277,19 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
     std::transform(extension.begin(),extension.end(),extension.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
     const bool offlinePreset=extension==".stl" || extension==".obj";
     if (offlinePreset) {
-        // Versioned DEFAULT machine/material profile for geometry-only files.
-        // Applied during import, visible and persisted before any slicing. A
-        // 3MF never receives this profile and user overrides are applied later.
-        complete.set_key_value("nozzle_diameter",new ConfigOptionFloats({0.4}));
-        complete.set_key_value("filament_type",new ConfigOptionStrings({"PLA"}));
-        complete.set_key_value("filament_density",new ConfigOptionFloats({1.24}));
-        complete.set_key_value("filament_diameter",new ConfigOptionFloats({1.75}));
-        complete.set_key_value("printable_area",new ConfigOptionPoints({{0,0},{256,0},{256,256},{0,256}}));
-        complete.set("printable_height",256.0,true);
-        complete.set("enable_prime_tower",false,true);
-        complete.set("use_relative_e_distances",true,true);
-        complete.set("before_layer_change_gcode",std::string(";BEFORE_LAYER_CHANGE\n;[layer_z]\nG92 E0\n"),true);
+        // The generated bundle and catalog metadata have identical versioned sources.
+        apply_config_overrides(complete, offline_presets()["devices"][1]["config"]);
     }
     complete.apply(config);
     config = std::move(complete);
     const Json sourceColors = colors_json(config);
+    const Json sourceConfig = config_json(config);
     apply_config_overrides(config, configOverrides);
     apply_transforms(model, transforms);
 
     LoadedProject project{std::move(model), std::move(config), inputPath, sha256_file(inputPath), Json::object()};
-    if (offlinePreset) project.metadata["basePreset"]=Json{{"presetId","p1-offline-fff-0.4-pla"},{"version",1},
-        {"printerTechnology","FFF"},{"nozzleDiameterMm",0.4},{"material","PLA"},{"bedSizeMm",{256,256,256}}};
+    project.sourceConfig=sourceConfig;
+    if (offlinePreset) project.metadata["basePreset"]=offline_presets()["devices"][1];
     project.metadata["unsupportedFeatures"] = unsupported;
     project.metadata["sourceColors"] = sourceColors;
     project.metadata["workspaceRoot"] = workspaceRoot;
@@ -305,6 +299,204 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
     project.metadata["filamentMap"] = filament_map_json(project.config);
     apply_project_commands(project, projectCommands);
     return project;
+}
+
+
+Json offline_presets()
+{
+    // Function-local immutable data is safe for synchronous reads while a slice
+    // owns global workerMutex. No source files, workspace, temp dirs or TBB calls.
+    static const Json catalog=Json::parse(kOfflinePresetCatalog);
+    return catalog;
+}
+Json print_volume(const DynamicPrintConfig& config)
+{
+    Json result{{"polygon",Json::array()},{"exclusions",Json::array()},{"height",0.0}};
+    if (const auto* area=config.option<ConfigOptionPoints>("printable_area"))
+        for (const auto& point:area->values) result["polygon"].push_back({point.x(),point.y()});
+    if (const auto* excluded=config.option<ConfigOptionPoints>("bed_exclude_area"); excluded && excluded->values.size()>=3) {
+        // The native bounds gate interprets each successive four points as an
+        // independent rectangle, not one polygon joining unrelated exclusions.
+        const size_t stride=excluded->values.size()%4==0?4:excluded->values.size();
+        for(size_t first=0;first<excluded->values.size();first+=stride) {
+            Json polygon=Json::array();
+            for(size_t n=first;n<first+stride;++n) polygon.push_back({excluded->values[n].x(),excluded->values[n].y()});
+            result["exclusions"].push_back(polygon);
+        }
+    }
+    if (const auto* height=config.option<ConfigOptionFloat>("printable_height")) result["height"]=height->value;
+    return result;
+}
+void validate_material_assignments(const LoadedProject& project)
+{
+    const auto* colors=project.config.option<ConfigOptionStrings>("filament_colour");
+    const auto* density=project.config.option<ConfigOptionFloats>("filament_density");
+    const auto* diameters=project.config.option<ConfigOptionFloats>("nozzle_diameter");
+    const size_t slots=density?density->values.size():0;
+    if(!slots || !colors || colors->values.size()!=slots) throw std::runtime_error("MATERIAL_REMAP_REQUIRED:palette/density slot mismatch");
+    const auto* maps=project.config.option<ConfigOptionInts>("filament_map");
+    if(maps && !maps->values.empty()) {
+        if(maps->values.size()!=slots) throw std::runtime_error("MATERIAL_REMAP_REQUIRED:logical slot map mismatch");
+        for(int physical:maps->values) if(physical<1 || !diameters || size_t(physical)>diameters->values.size())
+            throw std::runtime_error("MATERIAL_REMAP_REQUIRED:physical tool out of range");
+    }
+    std::map<std::pair<size_t,size_t>,int> assignments;
+    for(const auto& assignment:project.metadata.value("materialAssignments",Json::array()))
+        assignments[{assignment.at("objectIndex").get<size_t>(),assignment.at("volumeIndex").get<size_t>()}]=assignment.at("filamentIndex").get<int>();
+    for(const auto& assignment:assignments)
+        if(assignment.second<0 || size_t(assignment.second)>=slots) throw std::runtime_error("MATERIAL_REMAP_REQUIRED:assigned slot out of range");
+    // Scene palette size is not active material usage. Explicit per-part user
+    // assignments replace paint only on the slicing copy; unused source colors
+    // must stay visible and must not create false material index errors.
+    for(size_t oi=0;oi<project.model.objects.size();++oi) {
+        const auto* object=project.model.objects[oi];
+        for(size_t vi=0;vi<object->volumes.size();++vi) {
+            const auto* volume=object->volumes[vi]; if(!volume->is_model_part()) continue;
+            if(assignments.count({oi,vi})) continue;
+            const int logical=std::max(1,volume->extruder_id()>0?volume->extruder_id():object->config.extruder());
+            if(size_t(logical)>slots) throw std::runtime_error("MATERIAL_REMAP_REQUIRED:part slot out of range");
+            for(const auto state:TriangleSelector::extract_used_facet_states(volume->mmu_segmentation_facets.get_data()))
+                if(int(state)>int(slots)) throw std::runtime_error("MATERIAL_REMAP_REQUIRED:painted slot out of range; explicitly reassign or consent to singleMaterial");
+        }
+    }
+}
+
+namespace {
+Json source_material_options(const Json& original)
+{
+    Json options=Json::object();
+    const Json catalog=offline_presets();
+    for(const auto& material:catalog["materials"]) if(material.contains("config"))
+        for(auto it=material["config"].begin();it!=material["config"].end();++it)
+            if(original.contains(it.key())) options[it.key()]=original.at(it.key());
+    for(const char* key:{"filament_colour","filament_map"})
+        if(original.contains(key)) options[key]=original.at(key);
+    return options;
+}
+}
+Json project_presets(const Json& request)
+{
+    Json result=offline_presets();
+    for(const char* group:{"devices","materials"}) {
+        result[group][0]["available"]=false;
+        result[group][0]["reason"]="Refresh this project to capture the original source profile before restoring it.";
+    }
+    if(!request.contains("sourceProfilePath") || !request["sourceProfilePath"].is_string() || request["sourceProfilePath"].get<std::string>().empty()) return result;
+    const auto path=request.at("sourceProfilePath").get<std::string>();
+    if(!request.contains("sourceProfileSha256") || file_sha256(path)!=request.at("sourceProfileSha256"))
+        throw std::runtime_error("SOURCE_PROFILE_IDENTITY_MISMATCH");
+    Json source; std::ifstream input(std::filesystem::u8path(path));
+    if(!input) throw std::runtime_error("SOURCE_PROFILE_NOT_FOUND"); input>>source;
+    if(source.value("schemaVersion",0)!=2 || !source.contains("config") || !source["config"].is_object() ||
+       !request.contains("inputSha256") || source.at("inputSha256")!=request.at("inputSha256") ||
+       source.at("configSha256")!=json_sha256(source.at("config"))) throw std::runtime_error("SOURCE_PROFILE_IDENTITY_MISMATCH");
+    const Json refs=Json::array({Json{{"path",source.at("inputPath")},{"sha256",source.at("inputSha256")},{"hashFormat","binary"}}});
+    for(const char* group:{"devices","materials"}) {
+        auto& entry=result[group][0];entry["available"]=true;entry.erase("reason");entry["sourceRefs"]=refs;
+        entry["config"]=std::string(group)=="devices"?source.at("config"):source_material_options(source.at("config"));
+    }
+    return result;
+}
+
+void apply_preset(LoadedProject& project,const std::string& kind,const std::string& presetId)
+{
+    if(kind!="device" && kind!="material") throw std::invalid_argument("PRESET_KIND_UNSUPPORTED");
+    const Json catalog=offline_presets();
+    const Json& entries=catalog.at(kind=="device"?"devices":"materials");
+    auto match=std::find_if(entries.begin(),entries.end(),[&](const Json& item){return item.at("id")==presetId;});
+    if(match==entries.end()) throw std::invalid_argument("PRESET_NOT_FOUND:"+presetId);
+    Json provenance=match->value("sourceRefs",Json::array());
+    if(presetId=="source/current") {
+        // Reload unchanged source; do not use the current overrides as a source.
+        const auto source=load_project(project.inputPath,Json::object(),Json::array(),project.metadata.value("workspaceRoot",std::string()));
+        if(kind=="device") project.config=source.config;
+        else {
+            const Json options=source_material_options(config_json(source.config));
+            apply_config_overrides(project.config,options);
+        }
+        provenance=Json::array({Json{{"path",project.inputPath},{"sha256",project.inputSha256}}});
+    } else if(kind=="device") {
+        auto config=DynamicPrintConfig::full_print_config();
+        apply_config_overrides(config,match->at("config"));
+        project.config=std::move(config);
+        // A real device reset replaces machine, material AND process. The UI
+        // must confirm resetScopes; this is never silently applied as a rename.
+        project.metadata["quality"]="standard";
+        project.metadata["applyQualityPreset"]=false;
+    } else {
+        // This bundle replaces one logical slot set. Keep geometry/paint intact.
+        // Existing nonzero assignments must be remapped explicitly, not clamped.
+        apply_config_overrides(project.config,match->at("config"));
+    }
+    if(presetId!="source/current") {
+        // The generated material is a one-slot profile; preserve a usable source
+        // color for this slot, while scene/sourceColors remains the original set.
+        const auto source=project.metadata.value("sourceColors",Json::array());
+        project.config.set_key_value("filament_colour",new ConfigOptionStrings({source.empty()?"#FFFFFF":source.front().get<std::string>()}));
+        int physical=1;
+        if(kind=="material") if(const auto* maps=project.config.option<ConfigOptionInts>("filament_map"); maps && !maps->values.empty()) physical=maps->values.front();
+        project.config.set_key_value("filament_map",new ConfigOptionInts({physical}));
+    }
+    // Retain user consent across a profile reset, but never manufacture it.
+    if(project.metadata.value("outputMode",std::string())=="singleMaterial") project.config.set("enable_prime_tower",false,true);
+    validate_material_assignments(project);
+    project.metadata[kind+"PresetId"]=presetId;
+    project.metadata[kind+"PresetSourceRefs"]=provenance;
+    project.metadata[kind+"PresetUnsupportedSourceOptions"]=match->value("unsupportedSourceOptions",Json::object());
+    project.metadata["colors"]=colors_json(project.config);
+    project.metadata["filamentMap"]=filament_map_json(project.config);
+    project.metadata["presetCatalogVersion"]=catalog.at("version");
+    project.metadata["executeEffectiveConfig"]=false;
+}
+Json orientation_preview(LoadedProject& temporary,const Json& request)
+{
+    const int oi=request.value("objectIndex",0), ii=request.value("instanceIndex",0);
+    if(oi<0 || size_t(oi)>=temporary.model.objects.size()) throw std::out_of_range("COMMAND_OBJECT_NOT_FOUND");
+    auto& object=*temporary.model.objects[oi];
+    if(ii<0 || size_t(ii)>=object.instances.size()) throw std::out_of_range("COMMAND_INSTANCE_NOT_FOUND");
+    auto* instance=object.instances[ii];
+    const Vec3d originalRotation=instance->get_rotation(), originalOffset=instance->get_offset();
+    Json candidates=Json::array();
+    const std::array<const char*,6> labels{{"Object +Z up","Object +Y up","Object -Y up","Object -Z up","Object -X up","Object +X up"}};
+    size_t lowest=0;
+    for(size_t n=0;n<cardinal_rotations().size();++n) {
+        instance->set_rotation(originalRotation); instance->set_offset(originalOffset); object.invalidate_bounding_box();
+        Json command{{"type","orient"},{"objectIndex",oi},{"instanceIndex",ii},{"candidateIndex",n}};
+        orient_instance(object,size_t(ii),command);
+        const double height=object.instance_bounding_box(ii).size().z();
+        candidates.push_back(Json{{"index",n},{"label",labels[n]},{"height",height},{"command",command}});
+        if(height<candidates[lowest]["height"].get<double>()-1e-6) lowest=n;
+    }
+    instance->set_rotation(originalRotation); instance->set_offset(originalOffset); object.invalidate_bounding_box();
+    int selected=request.value("candidateIndex",int(lowest));
+    if(selected<0 || selected>=int(candidates.size())) throw std::out_of_range("ORIENTATION_CANDIDATE_NOT_FOUND");
+    Json command=candidates[size_t(selected)]["command"];
+    if(request.contains("normal")) {command=Json{{"type","faceOrient"},{"objectIndex",oi},{"instanceIndex",ii},{"normal",request.at("normal")}};selected=-1;}
+    orient_instance(object,size_t(ii),command);
+    Json commands=temporary.metadata.value("projectCommands",Json::array()); commands.push_back(command);
+    temporary.metadata["projectCommands"]=commands;
+    return Json{{"projectId",temporary.metadata.value("projectId",Json())},{"sourceRevision",temporary.metadata.value("revision",Json())},
+        {"inputSha256",temporary.inputSha256},{"candidates",candidates},{"selectedIndex",selected},{"command",command}};
+}
+Json filament_cost(const DynamicPrintConfig& config,const Json& volumePerFilament,const std::string& currency)
+{
+    const auto* densities=config.option<ConfigOptionFloats>("filament_density");
+    const auto* prices=config.option<ConfigOptionFloats>("filament_cost");
+    bool missingPrice=false; double amount=0;
+    for(auto usage=volumePerFilament.begin();usage!=volumePerFilament.end();++usage) {
+        const size_t index=std::stoull(usage.key()); const double volume=usage.value().get<double>();
+        if(!std::isfinite(volume) || volume<0) throw std::invalid_argument("INVALID_FILAMENT_USAGE");
+        if(volume==0) continue;
+        if(!densities || index>=densities->values.size() || !std::isfinite(densities->values[index]) || densities->values[index]<=0)
+            throw std::runtime_error("FILAMENT_DENSITY_REQUIRED_FOR_COST");
+        if(!prices || index>=prices->values.size() || !std::isfinite(prices->values[index]) || prices->values[index]<=0) {missingPrice=true;continue;}
+        // mm3 * (g/cm3) / 1e6 = kg; prices are configured currency/kg.
+        amount+=volume*densities->values[index]*prices->values[index]/1000000.0;
+    }
+    Json result{{"costStatus",missingPrice?(currency.empty()?"missing_price_and_currency":"missing_price"):(currency.empty()?"missing_currency":"estimated")}};
+    if(!currency.empty()) result["costCurrency"]=currency;
+    if(!missingPrice) result["filamentCost"]=amount;
+    return result;
 }
 
 Json config_json(const DynamicPrintConfig& config)
@@ -350,7 +542,8 @@ Json describe_project(const LoadedProject& project)
             const auto* volume = object->volumes[vi];
             item["parts"].push_back(Json{{"volumeIndex", vi}, {"name", volume->name},
                 {"material", volume->extruder_id()}, {"isModelPart", volume->is_model_part()},
-                {"painted", !volume->mmu_segmentation_facets.empty()}});
+                {"painted", !volume->mmu_segmentation_facets.empty()},
+                {"bounds", bounds_json(volume->mesh().transformed_bounding_box(volume->get_matrix()))},{"boundsSpace","object"}});
         }
         for (size_t ii = 0; ii < object->instances.size(); ++ii) {
             const auto* instance = object->instances[ii];
@@ -364,6 +557,7 @@ Json describe_project(const LoadedProject& project)
         }
         result["objects"].push_back(std::move(item));
     }
+    result["printVolume"] = print_volume(project.config);
     result["config"] = config_json(project.config);
     result["configSha256"] = json_sha256(result["config"]);
     if (!result.contains("transforms"))
@@ -387,13 +581,17 @@ Json write_scene(const LoadedProject& project, const std::string& outputPath)
     std::vector<stl_vertex> vertices;
     std::vector<stl_triangle_vertex_indices> triangles;
     std::vector<std::uint16_t> face_palettes;
-    for (const ModelObject* object : project.model.objects) {
+    Json ranges=Json::array();
+    for (size_t oi=0;oi<project.model.objects.size();++oi) {
+        const ModelObject* object=project.model.objects[oi];
         const size_t instance_count = object->instances.empty() ? 1 : object->instances.size();
         for (size_t ii = 0; ii < instance_count; ++ii) {
             const Transform3d instance_matrix = object->instances.empty() ? Transform3d::Identity() : object->instances[ii]->get_matrix();
-            for (const ModelVolume* volume : object->volumes) {
+            for (size_t vi=0;vi<object->volumes.size();++vi) {
+                const ModelVolume* volume=object->volumes[vi];
                 if (!volume->is_model_part())
                     continue;
+                const size_t firstTriangle=triangles.size();
                 const Transform3d matrix = instance_matrix * volume->get_matrix();
                 const int defaultMaterial=std::max(1,volume->extruder_id());
                 auto append_mesh = [&](const indexed_triangle_set& mesh, size_t color) {
@@ -422,6 +620,9 @@ Json write_scene(const LoadedProject& project, const std::string& outputPath)
                     for (size_t state=0;state<groups.size();++state)
                         if (!groups[state].indices.empty()) append_mesh(groups[state],state==0?size_t(defaultMaterial-1):state-1);
                 }
+                if (triangles.size()>firstTriangle) ranges.push_back(Json{{"firstTriangle",firstTriangle},
+                    {"triangleCount",triangles.size()-firstTriangle},{"objectIndex",oi},{"instanceIndex",ii},{"volumeIndex",vi},
+                    {"bounds",bounds_json(volume->mesh().transformed_bounding_box(matrix))},{"boundsSpace","world"}});
             }
         }
     }
@@ -458,7 +659,8 @@ Json write_scene(const LoadedProject& project, const std::string& outputPath)
         throw std::runtime_error("cannot write scene: " + outputPath);
 
     return Json{{"scenePath", outputPath}, {"vertexCount", vertex_count}, {"triangleCount", triangle_count},
-                {"paletteCount", palette_size}, {"flags", flags}, {"bounds", bounds_json(project.model.bounding_box_exact())}};
+                {"paletteCount", palette_size}, {"flags", flags}, {"bounds", bounds_json(project.model.bounding_box_exact())},
+                {"sceneRanges",ranges},{"printVolume",print_volume(project.config)}};
 }
 
 
@@ -505,6 +707,42 @@ void place_on_bed(ModelObject& object, size_t ii)
     offset.z() -= bounds.min.z();
     instance->set_offset(offset);
     object.invalidate_bounding_box();
+}
+
+
+const std::array<Vec3d,6>& cardinal_rotations()
+{
+    constexpr double pi=3.14159265358979323846;
+    static const std::array<Vec3d,6> rotations{{{0,0,0},{pi/2,0,0},{-pi/2,0,0},{pi,0,0},{0,pi/2,0},{0,-pi/2,0}}};
+    return rotations;
+}
+void orient_instance(ModelObject& object,size_t ii,const Json& command)
+{
+    auto* instance=object.instances.at(ii);
+    if (command.value("type",std::string())=="faceOrient") {
+        const Vec3d normal=json_vec3(command.at("normal"),Vec3d::Zero());
+        if (!normal.allFinite() || normal.norm()<1e-9) throw std::invalid_argument("INVALID_FACE_NORMAL");
+        // The picked normal is already in WORLD space. Pre-multiply the current
+        // rotation, preserving nonuniform scale/mirror and the selected instance.
+        const Matrix3d delta=Eigen::Quaterniond::FromTwoVectors(normal.normalized(),-Vec3d::UnitZ()).toRotationMatrix();
+        const Matrix3d current=instance->get_transformation().get_rotation_matrix().linear();
+        const Vec3d zyx=(delta*current).eulerAngles(2,1,0);
+        instance->set_rotation(Vec3d(zyx.z(),zyx.y(),zyx.x()));
+    } else {
+        const auto& rotations=cardinal_rotations();
+        int selected=command.value("candidateIndex",-1);
+        if (selected<-1 || selected>=int(rotations.size())) throw std::out_of_range("ORIENTATION_CANDIDATE_NOT_FOUND");
+        if (selected<0) {
+            double height=std::numeric_limits<double>::infinity();
+            for (size_t n=0;n<rotations.size();++n) {
+                instance->set_rotation(rotations[n]); object.invalidate_bounding_box();
+                const double z=object.instance_bounding_box(ii).size().z();
+                if(z<height-1e-6) {height=z;selected=int(n);}
+            }
+        }
+        instance->set_rotation(rotations.at(size_t(selected)));
+    }
+    object.invalidate_bounding_box(); place_on_bed(object,ii);
 }
 
 bool inside_polygon(const Vec2d& p, const Pointfs& polygon)
@@ -569,9 +807,7 @@ void apply_project_commands(LoadedProject& project, const Json& commands)
         if (type == "arrange") { arrange_project(project,cmd.value("gapMm",5.0)); continue; }
         if (type == "singleMaterial") {
             const int filament=cmd.value("filamentIndex",-1);
-            const auto* colors=project.config.option<ConfigOptionStrings>("filament_colour");
-            if (filament<0 || (colors && size_t(filament)>=colors->values.size()))
-                throw std::out_of_range("INVALID_FILAMENT_INDEX");
+            if (filament<0) throw std::out_of_range("INVALID_FILAMENT_INDEX");
             for (size_t oi=0;oi<project.model.objects.size();++oi)
                 for (size_t vi=0;vi<project.model.objects[oi]->volumes.size();++vi)
                     if (project.model.objects[oi]->volumes[vi]->is_model_part())
@@ -611,22 +847,11 @@ void apply_project_commands(LoadedProject& project, const Json& commands)
             if (cmd.contains("offset")) shift=json_vec3(cmd["offset"],shift);
             auto* copy=object.add_instance(*instance);
             copy->set_offset(instance->get_offset()+shift);
-        } else if (type == "orient") {
-            // Supported geometric orientation: six cardinal faces, minimize height,
-            // deterministic ties keep the earliest candidate; finally put on bed.
-            constexpr double pi=3.14159265358979323846;
-            const std::array<Vec3d,6> rotations{{{0,0,0},{pi/2,0,0},{-pi/2,0,0},{pi,0,0},{0,pi/2,0},{0,-pi/2,0}}};
-            Vec3d best=rotations.front(); double height=std::numeric_limits<double>::infinity();
-            for (const auto& rotation:rotations) {
-                instance->set_rotation(rotation); object.invalidate_bounding_box();
-                const double z=object.instance_bounding_box(ii).size().z();
-                if (z<height-1e-6) { height=z; best=rotation; }
-            }
-            instance->set_rotation(best); object.invalidate_bounding_box(); place_on_bed(object,ii);
+        } else if (type == "orient" || type == "faceOrient") {
+            orient_instance(object,size_t(ii),cmd);
         } else if (type == "assignMaterial" || type == "material") {
             const int vi=cmd.value("volumeIndex",-1), filament=cmd.value("filamentIndex",-1);
-            const auto* colors=project.config.option<ConfigOptionStrings>("filament_colour");
-            if (filament<0 || (colors && size_t(filament)>=colors->values.size())) throw std::out_of_range("INVALID_FILAMENT_INDEX");
+            if (filament<0) throw std::out_of_range("INVALID_FILAMENT_INDEX");
             if (vi < -1 || (vi>=0 && size_t(vi)>=object.volumes.size())) throw std::out_of_range("COMMAND_VOLUME_NOT_FOUND");
             for (size_t v=0;v<object.volumes.size();++v) if (vi<0 || int(v)==vi) {
                 object.volumes[v]->config.set("extruder",filament+1);
@@ -635,6 +860,13 @@ void apply_project_commands(LoadedProject& project, const Json& commands)
         } else throw std::invalid_argument("PROJECT_COMMAND_UNSUPPORTED:"+type);
         object.invalidate_bounding_box();
     }
+    std::map<std::pair<size_t,size_t>,int> finalAssignments;
+    for(const auto& assignment:project.metadata["materialAssignments"])
+        finalAssignments[{assignment.at("objectIndex").get<size_t>(),assignment.at("volumeIndex").get<size_t>()}]=assignment.at("filamentIndex").get<int>();
+    project.metadata["materialAssignments"]=Json::array();
+    for(const auto& assignment:finalAssignments)
+        project.metadata["materialAssignments"].push_back(Json{{"objectIndex",assignment.first.first},{"volumeIndex",assignment.first.second},{"filamentIndex",assignment.second}});
+    if(!finalAssignments.empty()) validate_material_assignments(project);
 }
 
 Model slicing_model(const LoadedProject& project)

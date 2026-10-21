@@ -131,6 +131,8 @@ LoadedProject load(const Json& request,const std::string& workspace)
     project.metadata["projectId"]=request.value("projectId",Json());
     project.metadata["revision"]=request.value("projectRevision",request.value("revision",Json(1)));
     project.metadata["quality"]=text(request,"quality","standard");
+    for(const char* key:{"devicePresetId","materialPresetId","devicePresetSourceRefs","materialPresetSourceRefs","devicePresetUnsupportedSourceOptions","materialPresetUnsupportedSourceOptions","presetCatalogVersion","costCurrency"})
+        if(request.contains(key)) project.metadata[key]=request[key];
     return project;
 }
 stdfs::path root(const Json& request,const std::string& workspace)
@@ -150,11 +152,21 @@ Json scene_and_snapshot(LoadedProject& project,const stdfs::path& prefix)
     const auto sceneInfo=write_scene(project,partial.u8string());
     commit_file(partial,scene);
     Json description=describe_project(project);
+    description.update(sceneInfo);
+    if(!project.sourceConfig.empty()) {
+        const Json source{{"schemaVersion",2},{"inputPath",project.inputPath},{"inputSha256",project.inputSha256},
+            {"config",project.sourceConfig},{"configSha256",json_sha256(project.sourceConfig)}};
+        const auto sourcePath=prefix.parent_path()/(json_sha256(source)+".source-profile.json");
+        write_json(sourcePath,source);
+        description["sourceProfilePath"]=sourcePath.u8string();
+        description["sourceProfileSha256"]=file_sha256(sourcePath.u8string());
+    }
     description["scenePath"]=scene.u8string();
     description["sceneSha256"]=file_sha256(scene.u8string());
     description["sceneSize"]=stdfs::file_size(scene);
     auto snapshot=prefix; snapshot+=".project.json";
     description["snapshotPath"]=snapshot.u8string();
+    description["sceneMetadataPath"]=snapshot.u8string();
     description["sourceCommit"]=ORCA_SLICING_SOURCE_COMMIT;
     description["engineVersion"]="orca-slicing-c/1.0.0";
     write_json(snapshot,description);
@@ -195,6 +207,7 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
     budget.check();
     const auto started=Clock::now();
     validate_output_capabilities(project);
+    validate_material_assignments(project);
     validate_material_compatibility(project);
     validate_project_bounds(project);
     project.metadata["quality"]=text(request,"quality","standard");
@@ -268,12 +281,20 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
         {"gcodePath",gcodeFinal.u8string()},{"gcodeSize",stdfs::file_size(gcodeFinal)},
         {"gcodeSha256",file_sha256(gcodeFinal.u8string())},{"scenePath",description.at("scenePath")},
         {"sceneSha256",description.at("sceneSha256")},{"sceneSize",description.at("sceneSize")},
-        {"snapshotPath",description.at("snapshotPath")},{"colors",description["model"]["colors"]},{"palette",description["model"]["colors"]},
+        {"snapshotPath",description.at("snapshotPath")},{"sceneMetadataPath",description.at("sceneMetadataPath")},
+        {"sceneRanges",description.at("sceneRanges")},{"printVolume",description.at("printVolume")},
+        {"colors",description["model"]["colors"]},{"palette",Json::array()},
         {"filamentVolumeMm3",volume},{"filamentGrams",grams},
         {"printTimeSeconds",gcode.print_statistics.modes[size_t(Slic3r::PrintEstimatedStatistics::ETimeMode::Normal)].time},
         {"calculationElapsedMs",std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now()-started).count()},
         {"warnings",Json::array()},{"project",description}});
-    for (const auto& warning:warnings) out["warnings"].push_back(warning.string);
+    if(const auto* colors=project.config.option<Slic3r::ConfigOptionStrings>("filament_colour"))
+        out["palette"]=colors->values;
+    Json usages=Json::object();
+    for(const auto& usage:gcode.print_statistics.total_volumes_per_extruder) usages[std::to_string(usage.first)]=usage.second;
+    out["filamentVolumePerSlotMm3"]=usages;
+    out.update(filament_cost(project.config,usages,project.metadata.value("costCurrency",std::string())));
+    for (const auto& warning:warnings) out["warnings"].push_back(describe_warning(project,warning));
     budget.check();
     auto manifest=prefix; manifest+=".result.json";
     out["manifestPath"]=manifest.u8string();
@@ -283,11 +304,35 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
 }
 } // namespace
 
+
+Json describe_warning(const LoadedProject& project,const Slic3r::StringObjectException& warning)
+{
+    Json item{{"message",warning.string},{"kind","global"}};
+    if(!warning.opt_key.empty()) {item["configKey"]=warning.opt_key;item["kind"]="config";}
+    if(!warning.object) return item;
+    // IDs survive slicing_model/Print copies. Use native identities, never text
+    // guesses. Sequential-print clearance warnings can point to an instance.
+    for(size_t oi=0;oi<project.model.objects.size();++oi) {
+        const auto* object=project.model.objects[oi];
+        if(warning.object->id()==object->id()) {item["objectIndex"]=oi;item["kind"]="object";return item;}
+        for(size_t ii=0;ii<object->instances.size();++ii)
+            if(warning.object->id()==object->instances[ii]->id()) {
+                item["objectIndex"]=oi;item["instanceIndex"]=ii;item["kind"]="object";return item;
+            }
+        for(size_t vi=0;vi<object->volumes.size();++vi)
+            if(warning.object->id()==object->volumes[vi]->id()) {
+                item["objectIndex"]=oi;item["volumeIndex"]=vi;item["kind"]="object";return item;
+            }
+    }
+    return item;
+}
+
 Engine::Engine(std::string workspace):workspace_(std::move(workspace)) {}
 Engine::~Engine() {cancel();}
 void Engine::cancel() noexcept {canceled_.store(true);}
 Json Engine::execute(const Json& raw,const EventSink& sink)
 {
+    if (text(raw,"operation")=="presets") return project_presets(raw);
     std::unique_lock<std::mutex> worker(workerMutex,std::try_to_lock);
     if (!worker.owns_lock()) throw std::runtime_error("BUSY:Only one native worker may execute");
     canceled_.store(false);
@@ -304,16 +349,30 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
     emit(sink,request,"importing",2,"读取工程快照");
     LoadedProject project=load(request,workspace_);
     budget.check();
+    if(operation=="preset") {
+        apply_preset(project,text(request,"kind"),text(request,"presetId"));
+        budget.check();
+        Json description=scene_and_snapshot(project,root(request,workspace_)/artifact_key(request,project));
+        return Json{{"schemaVersion",2},{"state","succeeded"},{"project",description}};
+    }
+    if(operation=="orientationPreview") {
+        if(request.contains("sourceRevision") && request["sourceRevision"]!=project.metadata["revision"])
+            throw std::runtime_error("ORIENTATION_SOURCE_REVISION_MISMATCH");
+        Json out=orientation_preview(project,request);
+        budget.check();
+        // Temp project artifacts only; Android must not commit this description
+        // until the user confirms command against sourceRevision/inputSha256.
+        Json description=scene_and_snapshot(project,root(request,workspace_)/artifact_key(request,project));
+        out["previewProject"]=description;out["schemaVersion"]=2;out["state"]="succeeded";
+        return out;
+    }
     if (operation=="import" || operation=="analyze" || operation=="update" || operation=="projectCommand") {
         // update callers submit the full durable command history; an optional
         // single command is appended once to that history before replay.
         if (request.contains("command")) {
             Json commands=request.value("projectCommands",Json::array()); commands.push_back(request["command"]);
-            project=load_project(text(request,"inputPath"),request.value("config",Json::object()),
-                request.value("transforms",Json::array()),workspace_,commands);
-            project.metadata["projectId"]=request.value("projectId",Json());
-            project.metadata["revision"]=request.value("projectRevision",request.value("revision",Json(1)));
-            project.metadata["quality"]=text(request,"quality","standard");
+            Json replay=request; replay["projectCommands"]=commands; replay.erase("command");
+            project=load(replay,workspace_);
         }
         // Import may expose an off-bed source for preparation, but an update
         // cannot commit invalid placement and slicing always enforces the gate.
@@ -365,6 +424,7 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
                     if (!baselineConfig.contains(option.key()) || baselineConfig[option.key()]!=option.value())
                         trial["configDiff"][option.key()]=Json{{"before",baselineConfig.value(option.key(),Json())},{"after",option.value()}};
                 for (const char* key:{"gcodePath","gcodeSize","gcodeSha256","scenePath","sceneSha256","previewPath","previewSha256","layerCount","layerHeights","manifestPath"}) trial[key]=result.at(key);
+                for(const char* key:{"filamentCost","costCurrency","costStatus"}) if(result.contains(key)) trial[key]=result.at(key);
                 trial["metrics"]=Json{{"printTimeSeconds",result["printTimeSeconds"]},{"filamentVolumeMm3",result["filamentVolumeMm3"]},
                     {"filamentGrams",result["filamentGrams"]},{"calculationElapsedMs",result["calculationElapsedMs"]}};
                 for (const auto& warning:result["warnings"]) trial["warnings"].push_back(warning);

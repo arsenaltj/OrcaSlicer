@@ -6,7 +6,7 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PrintConfig.hpp"
 
-namespace Slic3r { struct GCodeProcessorResult; }
+namespace Slic3r { struct GCodeProcessorResult; struct StringObjectException; }
 
 namespace orca::slicing {
 
@@ -19,6 +19,9 @@ struct LoadedProject {
     std::string inputSha256;
     // Source identity, transforms, palette and filament/nozzle mapping; no mesh copy.
     Json metadata = Json::object();
+    // Original profile before overrides/commands; saved as a separate read-only
+    // JSON sidecar so catalog reads never need to parse a model under worker load.
+    Json sourceConfig = Json::object();
 };
 
 // Paths are UTF-8. Overrides are a JSON object of native option values (scalars or
@@ -45,6 +48,18 @@ void validate_output_capabilities(const LoadedProject& project);
 void validate_project_bounds(const LoadedProject& project);
 // Native-derived v2 project fragment; caller supplies projectId/revision/scenePath.
 Json describe_project(const LoadedProject& project);
+
+// Pure immutable compiled catalog; no model load, temp dir or worker lock.
+Json offline_presets();
+Json project_presets(const Json& request);
+Json describe_warning(const LoadedProject& project, const Slic3r::StringObjectException& warning);
+void apply_preset(LoadedProject& project, const std::string& kind, const std::string& presetId);
+// Mutates only the caller's temporary LoadedProject, never the persisted source.
+Json orientation_preview(LoadedProject& temporary, const Json& request);
+Json print_volume(const Slic3r::DynamicPrintConfig& config);
+Json filament_cost(const Slic3r::DynamicPrintConfig& config, const Json& volumePerFilament,
+                   const std::string& currency = {});
+void validate_material_assignments(const LoadedProject& project);
 
 // ORCASC01, little endian, transformed mm geometry. Returns scenePath, counts,
 // bounds, colors and flags. Source Model and annotations are never modified.

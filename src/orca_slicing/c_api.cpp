@@ -26,10 +26,13 @@ const char* orca_slicing_capabilities(){return "{\"available\":true,\"schemaVers
 orca_slicing_context* orca_slicing_create(const char* workspace){if(!workspace||!*workspace)return nullptr;try{auto context=std::make_shared<Context>(workspace);auto id=next_handle.fetch_add(1);std::lock_guard<std::mutex> lock(registry_mutex);registry.emplace(id,std::move(context));return reinterpret_cast<orca_slicing_context*>(id);}catch(...){return nullptr;}}
 int orca_slicing_execute(orca_slicing_context* handle,const char* request,orca_slicing_event_fn event,void* user,char** result){
  if(!result)return ORCA_SLICE_INVALID;*result=nullptr;auto context=acquire(handle);if(!context||!request)return failure(ORCA_SLICE_INVALID,"INVALID_ARGUMENT","Invalid slicing handle/request",result);
- bool expected=false;if(!context->busy.compare_exchange_strong(expected,true))return failure(ORCA_SLICE_BUSY,"BUSY","Slicing context already has an active operation",result);
- struct Reset{std::atomic<bool>& flag;~Reset(){flag.store(false);}} reset{context->busy};
  try {
   auto req=orca::slicing::Json::parse(request);
+  const bool readOnlyPresets=req.value("operation",std::string())=="presets";
+  bool expected=false;
+  if(!readOnlyPresets && !context->busy.compare_exchange_strong(expected,true))
+   return failure(ORCA_SLICE_BUSY,"BUSY","Slicing context already has an active operation",result);
+  struct Reset{std::atomic<bool>& flag;bool owned;~Reset(){if(owned)flag.store(false);}} reset{context->busy,!readOnlyPresets};
   auto answer=context->engine.execute(req,[&](const orca::slicing::Json& e){if(event){auto text=e.dump();event(text.c_str(),user);}});
   // Keep engine failures intact. v2 carries the payload once in result:
   // duplicating full configs and four trial artifacts risks Binder size limits.
