@@ -13,6 +13,8 @@
 #include <mutex>
 #include <thread>
 #include <stdexcept>
+#include <set>
+#include <optional>
 #if defined(__linux__) || defined(__ANDROID__)
 #include <unistd.h>
 #endif
@@ -159,12 +161,41 @@ Json scene_and_snapshot(LoadedProject& project,const stdfs::path& prefix)
     return description;
 }
 
+void validate_material_compatibility(const LoadedProject& project)
+{
+    const auto* diameters=project.config.option<Slic3r::ConfigOptionFloats>("nozzle_diameter");
+    const auto* presets=project.config.option<Slic3r::ConfigOptionStrings>("filament_settings_id");
+    if (!diameters || diameters->values.empty()) throw std::runtime_error("NOZZLE_CONFIGURATION_REQUIRED");
+    if (!presets || presets->values.empty()) return;
+    const auto* maps=project.config.option<Slic3r::ConfigOptionInts>("filament_map");
+    const auto* types=dynamic_cast<const Slic3r::ConfigOptionInts*>(project.config.option("nozzle_volume_type"));
+    const auto model=slicing_model(project);
+    std::set<int> used;
+    for(const auto* object:model.objects) for(const auto* volume:object->volumes) if(volume->is_model_part())
+        used.insert(std::max(1,volume->extruder_id()>0?volume->extruder_id():object->config.extruder())-1);
+    for(int logical:used) {
+        const int physical=maps && !maps->values.empty()?maps->values[std::min<size_t>(logical,maps->values.size()-1)]-1:0;
+        if(physical<0 || size_t(physical)>=diameters->values.size()) throw std::runtime_error("INVALID_MATERIAL_TOOL_MAPPING");
+        std::optional<Slic3r::NozzleVolumeType> kind;
+        if(types && size_t(physical)<types->values.size()) kind=static_cast<Slic3r::NozzleVolumeType>(types->values[physical]);
+        const auto incompatible=Slic3r::Print::get_incompatible_filaments_by_nozzle(float(diameters->values[physical]),kind);
+        std::string alias=presets->values[std::min<size_t>(logical,presets->values.size()-1)];
+        alias=alias.substr(0,alias.find('@'));
+        const auto first=alias.find_first_not_of(" \t\r\n"),last=alias.find_last_not_of(" \t\r\n");
+        if(first==std::string::npos) continue;
+        alias=alias.substr(first,last-first+1);
+        if(std::find(incompatible.begin(),incompatible.end(),alias)!=incompatible.end())
+            throw std::runtime_error("MATERIAL_NOZZLE_INCOMPATIBLE:"+alias);
+    }
+}
+
 Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,Budget& budget,
                const std::string& workspace)
 {
     budget.check();
     const auto started=Clock::now();
     validate_output_capabilities(project);
+    validate_material_compatibility(project);
     validate_project_bounds(project);
     project.metadata["quality"]=text(request,"quality","standard");
     const Json requestedConfig=config_json(project.config);

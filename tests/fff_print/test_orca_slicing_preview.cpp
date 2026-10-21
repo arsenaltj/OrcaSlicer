@@ -149,3 +149,16 @@ TEST_CASE("Engine result identity reports actual normalized vase configuration",
     CHECK(result["requestedConfigSha256"]!=result["configSha256"]);
     CHECK(result["gcodeSha256"]==orca::slicing::file_sha256(result["gcodePath"]));
 }
+
+#ifdef ORCA_MOBILE_ANDROID
+TEST_CASE("Offline nozzle compatibility blocks a known incompatible material preset", "[OrcaSlicingPreview]")
+{
+    ScopedSlic3rTemporaryDir directory;ScopedTemporaryFile file(".stl");
+    auto mesh=Slic3r::make_cube(10,10,10);REQUIRE(Slic3r::store_stl(file.string().c_str(),&mesh,true));
+    orca::slicing::Engine engine(directory.string());
+    const nlohmann::json request={{"operation","slice"},{"projectId","material-check"},{"projectRevision",1},
+        {"jobId","material-job"},{"attemptId","a1"},{"inputPath",file.string()},{"quality","standard"},
+        {"config",{{"nozzle_diameter",nlohmann::json::array({0.2})},{"filament_settings_id",nlohmann::json::array({"Bambu PLA Marble @ System"})}}}};
+    CHECK_THROWS_WITH(engine.execute(request,{}),Catch::Matchers::ContainsSubstring("MATERIAL_NOZZLE_INCOMPATIBLE"));
+}
+#endif
