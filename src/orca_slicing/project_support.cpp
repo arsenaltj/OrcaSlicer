@@ -541,6 +541,22 @@ void apply_project_commands(LoadedProject& project, const Json& commands)
         if (!cmd.is_object()) throw std::invalid_argument("INVALID_PROJECT_COMMAND");
         const std::string type = cmd.value("type", std::string());
         if (type == "arrange") { arrange_project(project,cmd.value("gapMm",5.0)); continue; }
+        if (type == "singleMaterial") {
+            const int filament=cmd.value("filamentIndex",-1);
+            const auto* colors=project.config.option<ConfigOptionStrings>("filament_colour");
+            if (filament<0 || (colors && size_t(filament)>=colors->values.size()))
+                throw std::out_of_range("INVALID_FILAMENT_INDEX");
+            for (size_t oi=0;oi<project.model.objects.size();++oi)
+                for (size_t vi=0;vi<project.model.objects[oi]->volumes.size();++vi)
+                    if (project.model.objects[oi]->volumes[vi]->is_model_part())
+                        project.metadata["materialAssignments"].push_back(Json{{"objectIndex",oi},{"volumeIndex",vi},{"filamentIndex",filament}});
+            // This is an explicit persisted USER COMMAND. Never call on import,
+            // quality changes or a failed multi-material validation as fallback.
+            project.config.set("enable_prime_tower",false,true);
+            project.metadata["outputMode"]="singleMaterial";
+            project.metadata["singleMaterialFilamentIndex"]=filament;
+            continue;
+        }
         const int oi=cmd.value("objectIndex",0);
         if (oi<0 || size_t(oi)>=project.model.objects.size()) throw std::out_of_range("COMMAND_OBJECT_NOT_FOUND");
         auto& object=*project.model.objects[oi];
