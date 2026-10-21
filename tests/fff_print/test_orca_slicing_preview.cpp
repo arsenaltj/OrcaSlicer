@@ -108,6 +108,24 @@ TEST_CASE("Geometry-only STL imports a visible default profile accepted by real 
     restoredPrint.apply(restored.model,restored.config);
     CHECK(restoredPrint.validate().string.empty());
     CHECK_NOTHROW(restoredPrint.process());
+    const auto* sourceVariants=dynamic_cast<const Slic3r::ConfigOptionInts*>(project.config.option("nozzle_volume_type"));
+    const auto* restoredVariants=dynamic_cast<const Slic3r::ConfigOptionInts*>(restored.config.option("nozzle_volume_type"));
+    REQUIRE(sourceVariants); REQUIRE(restoredVariants);
+    CHECK(restoredVariants->values==sourceVariants->values);
+    auto changedConfig=orca::slicing::config_json(project.config);
+    changedConfig["wall_loops"]=4;
+    auto changed=orca::slicing::load_project(file.string(),changedConfig,nlohmann::json::array(),directory.string());
+    Slic3r::Print changedPrint;changedPrint.set_status_silent();changedPrint.apply(changed.model,changed.config);
+    CHECK_NOTHROW(changedPrint.process());
+    CHECK_THROWS_AS(orca::slicing::load_project(file.string(),{{"nozzle_volume_type",nlohmann::json::array()}},nlohmann::json::array(),directory.string()),std::invalid_argument);
+    const auto* definition=project.config.def()->get("nozzle_volume_type");
+    REQUIRE(definition); REQUIRE(definition->enum_keys_map);
+    for(const auto& entry:*definition->enum_keys_map) if(!sourceVariants->values.empty() && entry.second!=sourceVariants->values.front()) {
+        auto variantConfig=orca::slicing::config_json(project.config);variantConfig["nozzle_volume_type"]=entry.first;
+        auto variant=orca::slicing::load_project(file.string(),variantConfig,nlohmann::json::array(),directory.string());
+        const auto* values=dynamic_cast<const Slic3r::ConfigOptionInts*>(variant.config.option("nozzle_volume_type"));
+        REQUIRE(values); REQUIRE(!values->values.empty()); CHECK(values->values.front()==entry.second); break;
+    }
     // An explicit user override remains authoritative, even if invalid.
     auto user=orca::slicing::load_project(file.string(),{{"before_layer_change_gcode",""}},nlohmann::json::array(),directory.string());
     CHECK(user.config.opt_string("before_layer_change_gcode").empty());

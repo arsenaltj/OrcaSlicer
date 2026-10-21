@@ -11,6 +11,7 @@
 #include <sstream>
 #include <set>
 #include <map>
+#include <memory>
 #include <cstring>
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/ClipperUtils.hpp"
@@ -26,6 +27,33 @@ namespace orca::slicing {
 namespace {
 
 using namespace Slic3r;
+
+std::unique_ptr<ConfigOption> enum_option_with_definition(const DynamicPrintConfig& config,
+    const std::string& key, const ConfigOption& option)
+{
+    std::unique_ptr<ConfigOption> copy(option.clone());
+    const auto* definition=config.def()->get(key);
+    const auto* mapping=definition ? definition->enum_keys_map : nullptr;
+    if (auto* value=dynamic_cast<ConfigOptionEnumGeneric*>(copy.get())) {
+        if (!value->keys_map) value->keys_map=mapping;
+        if (!value->keys_map) throw std::invalid_argument("ENUM_DEFINITION_MISSING:"+key);
+    }
+    if (auto* value=dynamic_cast<ConfigOptionEnumsGeneric*>(copy.get())) {
+        if (!value->keys_map) value->keys_map=mapping;
+        if (!value->keys_map && !value->values.empty()) throw std::invalid_argument("ENUM_DEFINITION_MISSING:"+key);
+    }
+    if (auto* value=dynamic_cast<ConfigOptionEnumsGenericNullable*>(copy.get())) {
+        if (!value->keys_map) value->keys_map=mapping;
+        if (!value->keys_map && !value->values.empty()) throw std::invalid_argument("ENUM_DEFINITION_MISSING:"+key);
+    }
+    return copy;
+}
+std::string serialized_option(const DynamicPrintConfig& config,const std::string& key,const ConfigOption& option)
+{
+    if (option.type()==coEnum || option.type()==coEnums)
+        return enum_option_with_definition(config,key,option)->serialize();
+    return option.serialize();
+}
 
 std::string native_value(const Json& value)
 {
@@ -284,7 +312,7 @@ Json config_json(const DynamicPrintConfig& config)
     Json result = Json::object();
     for (const auto& key : config.keys()) {
         if (const ConfigOption* option = config.option(key))
-            result[key] = option->serialize();
+            result[key] = serialized_option(config,key,*option);
     }
     return result;
 }
@@ -452,12 +480,18 @@ void apply_config_overrides(DynamicPrintConfig& config, const Json& overrides)
     ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Disable};
     for (auto it = overrides.begin(); it != overrides.end(); ++it) {
         const std::string value=native_value(it.value());
+        const bool physicalVariant=it.key()=="extruder_type" || it.key()=="nozzle_volume_type";
+        if (physicalVariant && it.value().is_array() && it.value().empty())
+            throw std::invalid_argument("EMPTY_EXTRUDER_VARIANT:"+it.key());
         // Preserve concrete option types for an unchanged serialized snapshot.
         // Re-deserializing optional empty enum vectors can create generic options
         // where legacy Print code expects an absent/typed variant column.
         const ConfigOption* existing=config.option(it.key());
-        if (existing && existing->serialize()==value) continue;
+        if (existing && serialized_option(config,it.key(),*existing)==value) continue;
+        if (physicalVariant && value.empty()) throw std::invalid_argument("EMPTY_EXTRUDER_VARIANT:"+it.key());
         if (!config.option(it.key(), true)) throw std::invalid_argument("UNKNOWN_CONFIG:" + it.key());
+        if (const ConfigOption* target=config.option(it.key()); target && (target->type()==coEnum || target->type()==coEnums))
+            config.set_key_value(it.key(),enum_option_with_definition(config,it.key(),*target).release());
         config.set_deserialize(it.key(), value, substitutions);
     }
 }
