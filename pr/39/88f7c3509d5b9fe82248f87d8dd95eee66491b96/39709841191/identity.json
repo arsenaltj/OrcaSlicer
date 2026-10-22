@@ -1,0 +1,25 @@
+{
+  "pr": 39,
+  "run": 39709841191,
+  "head": "88f7c3509d5b9fe82248f87d8dd95eee66491b96",
+  "base": "aee65644545f2746ea08f6efccb73bc853a3db5f",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "Supersede PR #38: integrate v2.5.0-alpha portrait candidate and SDK updates",
+  "path": "pr/39/88f7c3509d5b9fe82248f87d8dd95eee66491b96/39709841191",
+  "created": "2026-10-22T02:13:04+00:00",
+  "files": {
+    "index.html": "75bfeefef852117ad390fb7c0f428ac1daa82253afe516aff5e32b8c1f1aafbe",
+    "details.html": "aa2f552d042dc5b0911a66fe8e03de7ebb3eca4e50f0563729717d8753858be6",
+    "report.json": "8ce261250097967f7942bd1738e4bea7d4917079dc0f827c9bae798c72e5061d",
+    "summary.md": "63bdeff4dc0ea17634dc560da6d01e3dd57383e60f4225baadc4b1aaae1262be",
+    "archify-receipts.json": "a887b60c96a5c0f780bc29c20fe66c0c2551ea16734418af8c2f5bd3f866c261",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l1-modules.html": "131f5f24b9964a320655902722a160c6a9e8ea65fde33836e67f1131d3362796",
+    "l1-modules.json": "d0d59e7881d43012defb5ce47c3c6ecd189182d667aba703ab8248854bd8ed0e",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
