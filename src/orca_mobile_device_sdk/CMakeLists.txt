@@ -47,6 +47,13 @@ if(UNIX AND NOT APPLE)
         "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports/device.map"
     )
 endif()
+if(ANDROID)
+    target_link_options(orca_mobile_device_sdk_ffi PRIVATE
+        "-Wl,-z,max-page-size=16384"
+        "-Wl,-z,common-page-size=16384"
+        "-Wl,--exclude-libs,ALL"
+    )
+endif()
 
 target_include_directories(orca_mobile_device_sdk
     PUBLIC
