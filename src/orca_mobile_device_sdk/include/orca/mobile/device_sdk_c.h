@@ -10,7 +10,7 @@
 #    define ORCA_MOBILE_DEVICE_API __declspec(dllimport)
 #  endif
 #else
-#  define ORCA_MOBILE_DEVICE_API
+#  define ORCA_MOBILE_DEVICE_API __attribute__((visibility("default")))
 #endif
 
 #ifdef __cplusplus
