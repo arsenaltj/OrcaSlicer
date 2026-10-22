@@ -1,3 +1,7 @@
+# 2026-10-22 PR #38：候选推送与 integration 冲突处理
+
+候选提交 `6427e784ac4c53129216269e5a580eab7d4221e2` 已推送到 `origin/codex/upstream-v2.5.0-alpha-portrait-preserved`，PR #38 的目标为 `codex/team/integration`，固定目标 SHA 为 `aee65644545f2746ea08f6efccb73bc853a3db5f`。GitHub 首次计算发现四个共享文件冲突；本次普通三方合并保留候选的 Redesign 防闪烁更新与 `LibDataChannel` 链接，并合并远端 SDK/连接器、SmartSlicing、测试和文档。合并提交后的构建与定向回归仍需重新执行，完成后再允许合并 PR。
+
 # 2026-10-22 远端 integration、候选验收修改与人像工作台分层组合
 
 候选工作树继续固定为 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha` / `codex/upstream-v2.5.0-alpha-portrait-preserved`，HEAD `cf891f6ba11bf5726de2615063bd6c1cb7783446`。组合来源固定为旧 integration `600e02fe292bb96c67e250950bba0acb5a13e553`、官方 tag `v2.5.0-alpha` `3880f2c58ec392ed2bd5938ab31c9c7c496c0eb2`、远端 integration `aee65644545f2746ea08f6efccb73bc853a3db5f` 和试验提交 `71e5002c9d487aa8b0d44f21317b303d360a2ca5`。操作前后 HTTPS 均核验远端未漂移；本地 `codex/team/integration` 和 `codex/task/filament-portrait-autoaccept-20261015` 的分支指针及工作树保持不动。
