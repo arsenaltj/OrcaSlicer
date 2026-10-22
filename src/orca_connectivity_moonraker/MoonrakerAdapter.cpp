@@ -8,7 +8,7 @@
 #include <sstream>
 #include <utility>
 
-namespace Orca::SDK {
+namespace Orca::MobileDevice {
 namespace {
 
 constexpr const char* kObjectsQuery =
@@ -714,4 +714,4 @@ bool MoonrakerAdapter::set_failure(std::string code, std::string message, bool r
     return false;
 }
 
-} // namespace Orca::SDK
+} // namespace Orca::MobileDevice

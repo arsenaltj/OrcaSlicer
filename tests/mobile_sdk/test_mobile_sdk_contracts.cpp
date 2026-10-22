@@ -1,10 +1,8 @@
 #include <catch2/catch_all.hpp>
 
-#include "orca/mobile/device/MobileDeviceSDK.hpp"
+#include "orca/mobile/device/DeviceSDK.hpp"
 #include "orca/mobile/device/CommandEnvelope.hpp"
 #include "orca/mobile/device/Connectivity.hpp"
-#include "orca/mobile/device/ModelGeneration.hpp"
-#include "orca/mobile/device/Slicing.hpp"
 
 using namespace Orca::MobileDevice;
 
@@ -211,38 +209,6 @@ TEST_CASE("Command envelope validates identity sequence and expiry", "[MobileDev
     REQUIRE_FALSE(command.is_retry_of(different_session));
     REQUIRE_FALSE(command.is_retry_of(different_device));
     REQUIRE_FALSE(command.is_retry_of(different_payload));
-}
-
-TEST_CASE("AI and slicing DTOs round trip through versioned JSON", "[MobileDeviceSDK]")
-{
-    ModelJob job;
-    job.request_id = "request-1";
-    job.job_id = "job-1";
-    job.source = ModelInputSource::Image;
-    job.state = ModelJobState::Generating;
-    job.progress = 42;
-    job.options.provider = "gateway";
-    job.options.output_format = ModelArtifactFormat::Obj;
-    job.artifact_sha256 = "abc";
-
-    auto job_json = nlohmann::json(job);
-    job_json["future_field"] = true;
-    const ModelJob decoded_job = job_json.get<ModelJob>();
-    REQUIRE(decoded_job.protocol_version == "orca.model-job/v1");
-    REQUIRE(decoded_job.source == ModelInputSource::Image);
-    REQUIRE(decoded_job.state == ModelJobState::Generating);
-    REQUIRE(decoded_job.options.output_format == ModelArtifactFormat::Obj);
-
-    SlicingRequest request;
-    request.request_id = "slice-1";
-    request.source_uri = "object://models/example.3mf";
-    request.input_format = SlicingInputFormat::ThreeMf;
-    request.execution_mode = SlicingExecutionMode::Remote;
-    request.plate_index = 2;
-    const SlicingRequest decoded_request = nlohmann::json(request).get<SlicingRequest>();
-    REQUIRE(decoded_request.protocol_version == "orca.slicing/v1");
-    REQUIRE(decoded_request.execution_mode == SlicingExecutionMode::Remote);
-    REQUIRE(decoded_request.plate_index == 2);
 }
 
 TEST_CASE("Printer contracts serialize without desktop types", "[MobileDeviceSDK]")

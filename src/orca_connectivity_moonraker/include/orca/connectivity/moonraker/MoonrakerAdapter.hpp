@@ -1,6 +1,6 @@
 #pragma once
 
-#include "orca/sdk/Connectivity.hpp"
+#include "orca/mobile/device/Connectivity.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace Orca::SDK {
+namespace Orca::MobileDevice {
 
 struct MoonrakerHttpRequest {
     std::string method;
@@ -140,4 +140,4 @@ private:
     bool m_objects_loaded{false};
 };
 
-} // namespace Orca::SDK
+} // namespace Orca::MobileDevice
