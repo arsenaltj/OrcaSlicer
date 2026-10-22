@@ -1,6 +1,16 @@
 [
   {
     "pr": 39,
+    "run": 39712049740,
+    "head": "7d2e40776c38599a7296811329d452fb15079196",
+    "base": "aee65644545f2746ea08f6efccb73bc853a3db5f",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "Supersede PR #38: integrate v2.5.0-alpha portrait candidate and SDK updates",
+    "path": "pr/39/7d2e40776c38599a7296811329d452fb15079196/39712049740",
+    "created": "2026-10-22T02:36:53+00:00"
+  },
+  {
+    "pr": 39,
     "run": 39710766171,
     "head": "cadd9c980c221d044292ce6f95a91827707cc14d",
     "base": "aee65644545f2746ea08f6efccb73bc853a3db5f",
