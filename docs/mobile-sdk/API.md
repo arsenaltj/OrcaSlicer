@@ -7,15 +7,15 @@
 | 逻辑产物 | CMake target | 公开入口 | 状态 |
 |---|---|---|---|
 | C++ 静态 SDK | `orca_mobile_sdk` / `OrcaSlicer::MobileSDK` | `orca/sdk/MobileSDK.hpp` | 可构建，用于 C++ 宿主和测试 |
-| C ABI 共享 SDK | `orca_mobile_sdk_ffi` / `OrcaSlicer::MobileSDKShared` | `orca/sdk_c.h` | 可构建；输出逻辑名为 `orca_mobile_sdk_c` |
+| C ABI 共享 SDK | `orca_mobile_device_sdk_ffi` / `OrcaSlicer::MobileDeviceSDKShared` | `orca/mobile/device_sdk_c.h` | 可构建；输出逻辑名为 `orca_mobile_sdk_c` |
 | WonderMaker LAN adapter | `orca_connectivity_wondermaker` / `OrcaSlicer::WonderMakerAdapter` | `orca/connectivity/wondermaker/WonderMakerAdapter.hpp` | 注入式 LAN 边界；自动化证据为 simulator-only |
 | Moonraker compatibility adapter | `orca_connectivity_moonraker` / `OrcaSlicer::MoonrakerAdapter` | `orca/connectivity/moonraker/MoonrakerAdapter.hpp` | Fake/兼容性测试基线，不计入 WonderMaker 一期真实设备验收 |
 
-C++ 静态库的文件后缀由平台决定。C ABI 共享库的 canonical Unix/Android 文件名是 `liborca_mobile_sdk_c.so`；Windows 构建生成 `orca_mobile_sdk_c.dll` 和对应导入库。Android 打包为三个 ABI 文件：
+C++ 静态库的文件后缀由平台决定。C ABI 共享库的 canonical Unix/Android 文件名是 `liborca_mobile_device_sdk_c.so`；Windows 构建生成 `orca_mobile_sdk_c.dll` 和对应导入库。Android 打包为三个 ABI 文件：
 
-- `arm64-v8a/liborca_mobile_sdk_c.so`
-- `armeabi-v7a/liborca_mobile_sdk_c.so`
-- `x86_64/liborca_mobile_sdk_c.so`
+- `arm64-v8a/liborca_mobile_device_sdk_c.so`
+- `armeabi-v7a/liborca_mobile_device_sdk_c.so`
+- `x86_64/liborca_mobile_device_sdk_c.so`
 
 `orca-mobile/sdk.lock.json` 记录每个 ABI 的 artifact 路径、SHA-256、文件大小、ELF 架构、ABI/contract version、OrcaSlicer source commit、Android API 和 NDK 版本。当前 checked-in lock 记录 ABI、contract、Android API、NDK 和 source commit；source commit 的具体值以 sdk.lock.json 为准。在最终 OrcaSlicer 集成提交确定后，必须重新生成并验证 lock，旧 lock 不能证明它已经匹配更新后的 SDK worktree。
 
@@ -148,7 +148,7 @@ LAN → RemoteBroker → Relay
 ### 7.1 ABI 规则
 
 ```c
-#include <orca/sdk_c.h>
+#include <orca/mobile/device_sdk_c.h>
 ```
 
 C ABI 版本常量为 `ORCA_SDK_ABI_VERSION_MAJOR=1`、`ORCA_SDK_ABI_VERSION_MINOR=0`。字符串和字节使用显式长度 span，不要求 NUL 结尾：

@@ -142,7 +142,7 @@ orca-mobile/
 ```text
 lib/features + lib/core
           ↓
-packages/printer_client   packages/orca_sdk_bridge   packages/platform_services
+packages/printer_client   packages/orca_mobile_device   packages/platform_services
           ↓                         ↓                         ↓
      Mock/Unavailable       C ABI/FFI bridge          Android/iOS host
 ```

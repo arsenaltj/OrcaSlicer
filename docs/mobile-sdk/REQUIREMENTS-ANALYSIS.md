@@ -76,7 +76,7 @@
 | 工程/领域 | 职责与交付物 | 本轮修订后的边界 |
 |---|---|---|
 | OrcaSlicer / MobileSDK | 中立 DTO、命令信封、连接路径和协议适配边界 | 公共契约、C ABI 和路径状态机已通过；需新增 WonderMaker WebSocket/HTTP 与 MQTT/文件适配，不把供应商字段直接写入公共 DTO |
-| orca-mobile | 根目录 Flutter 应用、`lib/features` 页面、`packages/printer_client`、`packages/orca_sdk_bridge`、`packages/platform_services`、Android/iOS 宿主和测试工具 | Android FFI 已有证据；真实设备发现、PIN 配对、状态流、控制和 iOS bridge 仍待完成 |
+| orca-mobile | 根目录 Flutter 应用、`lib/features` 页面、`packages/printer_client`、`packages/orca_mobile_device`、`packages/platform_services`、Android/iOS 宿主和测试工具 | Android FFI 已有证据；真实设备发现、PIN 配对、状态流、控制和 iOS bridge 仍待完成 |
 | orca-platform | NestJS 模块化单体基线、`src/modules`、OpenAPI/事件契约、数据库迁移、部署和测试 | 当前只有后端基线；identity/devices 仍为 501 预留，实时网关、Worker、远程控制和管理 API 尚未形成独立目录或业务实现 |
 | 供应商设备/固件 | 单一型号的 LAN 协议、设备身份、配对、证书、Connector、远程 MQTT/TLS 和文件/视频能力 | 供应商需提供协议文档、测试固件、设备级凭据和联合验收支持；用户账号由我方管理 |
 | 基础设施 | Broker/Relay、对象存储、CDN、队列、实时网关、监控、密钥和证书 | Broker 归属尚未确定；二期必须先做责任边界、证书生命周期和故障恢复设计 |
@@ -207,7 +207,7 @@ orca-mobile/
 ```text
 lib/features + lib/core
           ↓
-packages/printer_client   packages/orca_sdk_bridge   packages/platform_services
+packages/printer_client   packages/orca_mobile_device   packages/platform_services
           ↓                         ↓                         ↓
      Mock/Unavailable       C ABI/FFI bridge          Android/iOS host
 ```

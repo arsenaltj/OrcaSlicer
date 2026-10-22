@@ -1,7 +1,7 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),cp=require('node:child_process');
 const {pathToFileURL}=require('node:url');
-const mobileFiles=['lib','packages/printer_client','packages/orca_sdk_bridge','packages/platform_services','android','ios','integration_test','test','tool','pubspec.yaml'];
+const mobileFiles=['lib','packages/printer_client','packages/orca_mobile_device','packages/platform_services','android','ios','integration_test','test','tool','pubspec.yaml'];
 const platformFiles=['src/modules','contracts/http/openapi.yaml','contracts/events','db/migrations','db/seeds','deploy','scripts','test','package.json'];
 function all(source,markers){return markers.every(marker=>source.includes(marker));}
 function checkDocs({md,html,topology,mobilePaths,platformPaths}){
@@ -13,7 +13,7 @@ function checkDocs({md,html,topology,mobilePaths,platformPaths}){
   toc_targets:anchors.length>0&&anchors.every(id=>ids.has(id)),
   mobile_actual_paths:mobileFiles.every(p=>mobilePaths[p]===true),
   platform_actual_paths:platformFiles.every(p=>platformPaths[p]===true),
-  report_uses_actual_mobile_paths:all(md,['lib/features','packages/printer_client','packages/orca_sdk_bridge','packages/platform_services','android/','ios/','integration_test/','tool/']),
+  report_uses_actual_mobile_paths:all(md,['lib/features','packages/printer_client','packages/orca_mobile_device','packages/platform_services','android/','ios/','integration_test/','tool/']),
   report_uses_actual_platform_paths:all(md,['src/modules','contracts/','openapi.yaml','db/','migrations/','deploy/','test/','NestJS 模块化单体基线']),
   report_labels_future_backend_split:all(md,['当前没有 '+String.fromCharCode(96)+'apps/api/'+String.fromCharCode(96),'后续扩展方向','不能作为当前实现状态描述']),
   monorepo_layout:['orca-frontend','apps/web','apps/admin','编译隔离'].every(p=>md.includes(p)&&topology.includes(p)),
