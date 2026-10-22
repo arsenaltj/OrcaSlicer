@@ -83,7 +83,6 @@ public:
     std::function<void()> on_boundary_adjust;
     // Beauty operation index: recolor, soften, repair, cleanup.
     std::function<void(int)> on_operation_changed;
-    std::function<void(bool)> on_original_view_changed;
     std::function<void()> on_undo;
     std::function<void()> on_redo;
     std::function<void()> on_save;
@@ -188,9 +187,7 @@ private:
     Button* m_pick_partition {nullptr};
     Button* m_apply_partition {nullptr};
     WorkbenchSwitch* m_lighting {nullptr};
-    WorkbenchSwitch* m_original_view {nullptr};
     wxPanel* m_lighting_row {nullptr};
-    wxPanel* m_original_view_row {nullptr};
     wxSlider* m_displacement {nullptr};
     wxSlider* m_falloff {nullptr};
     wxStaticText* m_displacement_label {nullptr};

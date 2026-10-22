@@ -161,10 +161,18 @@ public:
     void set_workbench_editable(bool editable) {
         m_workbench_editable = editable;
         if (!m_workbench_source) return;
-        m_workbench_source->Enable(editable && bool(m_histogram));
-        if (m_workbench_mode) m_workbench_mode->Enable(editable && bool(m_histogram) && portrait_color_count_supported());
+        const bool source_enabled = editable && bool(m_histogram);
+        if (m_workbench_source->IsEnabled() != source_enabled)
+            m_workbench_source->Enable(source_enabled);
+        if (m_workbench_mode) {
+            const bool mode_enabled = source_enabled && portrait_color_count_supported();
+            if (m_workbench_mode->IsEnabled() != mode_enabled)
+                m_workbench_mode->Enable(mode_enabled);
+        }
         const int source = m_source->GetSelection();
-        m_workbench_count->Enable(editable && bool(m_histogram) && (source == 0 || source == 2));
+        const bool count_enabled = source_enabled && (source == 0 || source == 2);
+        if (m_workbench_count->IsEnabled() != count_enabled)
+            m_workbench_count->Enable(count_enabled);
     }
     wxWindow* build_workbench_mode(wxWindow* parent) {
         auto* container = new wxPanel(parent);

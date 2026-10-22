@@ -6,6 +6,12 @@
 
 namespace Slic3r::GUI {
 
+inline bool preview_has_source_appearance(bool has_vertex_colors, bool has_face_colors,
+                                          const AI::ModelArtifactTextureSurface& surface)
+{
+    return has_vertex_colors || has_face_colors || !surface.faces.empty();
+}
+
 inline AI::ModelArtifactTextureSurface::Face preview_texture_face_color(
     AI::ModelArtifactTextureSurface::Face face, const std::array<float, 3>* color)
 {

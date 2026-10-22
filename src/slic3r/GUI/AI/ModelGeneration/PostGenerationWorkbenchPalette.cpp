@@ -117,7 +117,6 @@ void ModelGenerationPanel::apply_workbench_printer_filaments()
         m_workbench_operation_notice = "耗材已匹配，但预览刷新失败，原模型和工程配置保持不变";
         refresh_controls(); return;
     }
-    if (m_workbench_original) m_workbench_original->SetValue(false);
     if (m_beauty_controls) m_beauty_controls->synchronize_preview_options();
     m_apply_filaments_match = capture_applied_filament_match(
         *staged, *m_model_preview, AI::model_artifact_sha256(m_displayed_model_path));

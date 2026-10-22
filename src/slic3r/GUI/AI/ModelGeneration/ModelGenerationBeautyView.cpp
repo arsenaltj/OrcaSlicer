@@ -169,10 +169,6 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         _L("Alt＋左键旋转，右键平移，滚轮缩放。原件保留，修改可撤销。"));
     wrap_workbench_text(hint, FromDIP(260));
     hint->Hide();
-    auto* base_placeholder = new wxButton(m_finishing_panel, wxID_ANY, _L("增加底座（待实现）"));
-    base_placeholder->Disable();
-    base_placeholder->SetToolTip(_L("生成后底座几何编辑将在后续版本提供；当前不会改变模型。"));
-    base_placeholder->Hide();
     m_finishing_tool = new wxChoice(m_finishing_panel, wxID_ANY);
     for (const auto& label : {_L("整体美颜"), _L("局部修整"), _L("多色试色"), _L("网格修复"), _L("统一这块颜色"), _L("清理小杂点")})
         m_finishing_tool->Append(label);
@@ -300,9 +296,6 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     sizer->Add(m_finishing_status, 0, wxEXPAND | wxALL, FromDIP(10));
     m_beauty_controls = new BeautyWorkbenchControls(m_finishing_panel, m_model_preview, m_palette_provider,
         [this] { if (m_finishing_panel) { m_finishing_panel->Layout(); static_cast<wxScrolledWindow*>(m_finishing_panel)->FitInside(); } });
-    m_beauty_controls->on_original_view_changed = [this](bool enabled) {
-        if (m_workbench_original) m_workbench_original->SetValue(enabled);
-    };
     m_beauty_controls->on_boundary_adjust = [this] {
         if (m_model_preview) m_model_preview->set_selection_preview_suppressed(false);
         if (m_model_preview) m_model_preview->refine_selection_boundary();

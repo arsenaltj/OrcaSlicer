@@ -434,16 +434,13 @@ private:
     wxWindow* m_workbench_base {nullptr};
     wxPanel* m_workbench_footer {nullptr};
     wxPanel* m_workbench_parameters {nullptr};
-    wxPanel* m_workbench_model_info {nullptr};
-    std::array<wxStaticText*, 4> m_workbench_model_info_values {};
     wxStaticText* m_workbench_parameter_faces {nullptr};
     wxStaticText* m_workbench_parameter_output {nullptr};
     wxStaticBitmap* m_workbench_parameter_divider {nullptr};
     wxSlider* m_workbench_smoothing_iterations {nullptr};
     wxToggleButton* m_workbench_preserve_hard_edges {nullptr};
-    void layout_workbench_parameters();
+    void layout_workbench_parameters(bool force = false);
     wxStaticText* m_workbench_state_status {nullptr};
-    wxStaticText* m_workbench_model_name {nullptr};
     wxStaticText* m_workbench_model_status {nullptr};
     wxStaticText* m_workbench_check_status {nullptr};
     wxStaticText* m_workbench_palette_status {nullptr};

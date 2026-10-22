@@ -58,7 +58,6 @@ bool ModelPreview3D::restore_printer_filament_preview_source()
         m_manual_color_model.reset();
     }
     m_semantic_model.reset();
-    m_beauty_original_view = false;
     if (m_canvas) m_canvas->Refresh(false);
     m_printer_filament_restore.reset();
     BOOST_LOG_TRIVIAL(info) << "AI restored pre-printer appearance: source="
@@ -101,7 +100,6 @@ bool ModelPreview3D::restore_printer_filament_input_source()
     m_semantic_model.reset();
     m_color_trial_enabled = m_color_trial->enabled();
     m_trial_palette = m_color_trial->colors();
-    m_beauty_original_view = false;
     if (m_canvas) m_canvas->Refresh(false);
     m_printer_filament_restore.reset();
     return true;
@@ -203,24 +201,28 @@ ModelPreview3D::FaceColorOverrides ModelPreview3D::printer_filament_export_faces
 
 bool ModelPreview3D::restore_beauty_face_colors(const FaceColorOverrides& colors)
 {
-    if (!m_has_model || !m_semantic_source || !m_context || !m_canvas->SetCurrent(*m_context)) return false;
+    if (!m_has_model || !m_context || !m_canvas->SetCurrent(*m_context)) return false;
     try {
-        const auto& mesh = m_semantic_source->mesh;
+        const indexed_triangle_set* mesh = m_semantic_source ? &m_semantic_source->mesh :
+            m_region_editor->ready() ? &m_region_editor->mesh() :
+            current_region_preparation() ? &m_region_preparation->mesh :
+            !m_pending_mesh.indices.empty() ? &m_pending_mesh : nullptr;
+        if (!mesh) return false;
         std::unique_ptr<GLModel> model;
         if (!colors.empty()) {
-            if (m_manual_corner_normals.size() != mesh.indices.size() * 3)
-                m_manual_corner_normals = ModelPreviewNormals::corner_normals(mesh);
+            if (m_manual_corner_normals.size() != mesh->indices.size() * 3)
+                m_manual_corner_normals = ModelPreviewNormals::corner_normals(*mesh);
             GLModel::Geometry geometry;
             geometry.format = {GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3N3T2};
             geometry.reserve_vertices(colors.size() * 3);
             geometry.reserve_indices(colors.size() * 3);
             for (const auto& item : colors) {
-                if (item.first >= mesh.indices.size()) return false;
-                const auto& face = mesh.indices[item.first];
+                if (item.first >= mesh->indices.size()) return false;
+                const auto& face = mesh->indices[item.first];
                 const auto packed = preview_rgb8(item.second[0], item.second[1], item.second[2]);
                 const auto base = uint32_t(geometry.vertices_count());
                 for (size_t corner = 0; corner < 3; ++corner)
-                    geometry.add_vertex(mesh.vertices[face[corner]], m_manual_corner_normals[item.first * 3 + corner],
+                    geometry.add_vertex(mesh->vertices[face[corner]], m_manual_corner_normals[item.first * 3 + corner],
                                         Vec2f(float(packed), -1.f));
                 geometry.add_triangle(base, base + 1, base + 2);
             }

@@ -387,10 +387,6 @@ void ModelGenerationPanel::export_semantic_candidate()
                         }
                         self->m_model_preview->synchronize_project_bound_semantics(
                             color_state, self->m_model_preview->color_trial_state());
-                        if (color_state.source == 1) {
-                            if (self->m_workbench_original) self->m_workbench_original->SetValue(false);
-                            if (self->m_beauty_controls) self->m_beauty_controls->synchronize_preview_options();
-                        }
                         self->m_finishing_candidate = destination;
                         self->m_beauty_manual_color_dirty = false;
                         self->m_finishing_candidate_baked_appearance = baked;

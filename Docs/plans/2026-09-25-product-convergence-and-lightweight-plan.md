@@ -1,3 +1,29 @@
+# 2026-10-22 3D 模型工作台原色对照开关刷新修复
+
+目标与范围：承接生成后 3D 模型工作台底栏和原色对照整改，修复“点击原色对照后双栏渲染已切换，但开关滑块/轨道仍显示旧状态”。仅修改底栏自绘开关的事件到视觉状态同步，不改比较渲染、源外观判断、编辑命中、相机共享、GPU 缓存、外部 API、状态模型或持久化格式。
+
+根因与实现：`WorkbenchSwitch` 的位图在其自定义 `SetValue()` 中重建；Windows 用户点击由原生 `wxBitmapToggleButton` 先改值并发出 `wxEVT_TOGGLEBUTTON`，不会自动进入派生类 `SetValue()`。新增的原色对照处理器只在预览层拒绝请求时才回写，因此请求成功时业务状态与双栏画面已变化，开关位图没有刷新。现在原色对照使用 `event.IsChecked()` 发起切换，并始终以 `original_comparison_enabled()` 最终值调用 `SetValue()`；同一底栏的网格开关也按事件值显式调用 `SetValue()`，防止相同问题。
+
+自动验证：固定 `.tmp/dev/build` 的 `CMAKE_HOME_DIRECTORY` 已核对为当前 checkout，VS 2022 x64 Release `OrcaSlicer`、`slic3rutils_tests` 增量构建通过；[`PostGenerationWorkbench`](../../.tmp/dev/logs/20261022-workbench-switch-refresh/post-generation-workbench.log) 49 cases / 1917 assertions、[`UiRedesign`](../../.tmp/dev/logs/20261022-workbench-switch-refresh/ui-redesign.log) 86 cases / 1340 assertions 均通过，[`verify_ai_integration.py --json`](../../.tmp/dev/logs/20261022-workbench-switch-refresh/verify-ai-integration.json) 为 `ok: true`。固定 [`Run -NoLaunch`](../../.tmp/dev/logs/20261022-143242-433/result.json) 的 catalogs/build/install/runtime-check/python-check 五步通过，source identity `55d08a0ed2527dc53d3f729366be014f35cd1f947c1d9aeb1ee828fad05248f5`，build/run DLL SHA256 均为 `AD561F5F3AC5010C29CB2BC7BB9B60E1B40FBA3862FC543C6261572B36ED4CAB`。未新增整幅后台 bitmap，也未改变 500 ms 差异刷新策略。
+
+GUI 与接受边界：匹配 PID `25588` 从固定 `.tmp/dev/run` 和隔离 datadir `workbench-bottom-original-compare-20261022-data` 启动。未加载状态下原色对照正确禁用；载入含纹理的基准模型后，开启原色对照立即显示蓝色右位开关及“当前模型 / 原贴图”双栏，关闭立即恢复灰色左位及单栏。网格开关也完成关闭/开启位图往返并恢复默认开启。日志 `debug_Thu_Oct_22_14_34_15_25588.log.0` 记录 `comparison=false → true → false`，对照态 GL viewport 为半宽且 `gl_error=0`。该烟测确认本缺陷已修复，不替代真实人像整体观感的用户接受或实体打印颜色保真。
+
+计划变更：将该问题作为既有“3D 模型工作台底栏、状态与原色对照整改”的显示刷新缺陷闭环；代码、编译、安装、专项测试、集成边界和限定真实 GUI 往返均已通过。真实人像用户视觉接受与实体打印颜色保真仍单独未结；不提交、不推送、不打包或提升候选。
+
+# 2026-10-22 3D 模型工作台顶栏与防闪烁整改（已实施、实机烟测通过）
+
+目标与范围：按用户本轮计划仅调整生成后 3D 模型工作台，不改其他页面的独立美颜入口，不改变外部 API、状态模型或持久化格式。工作树固定为 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha`、分支 `codex/upstream-v2.5.0-alpha-portrait-preserved`、HEAD `7d2e40776c38599a7296811329d452fb15079196`；构建目录继续为 `.tmp/dev/build`，运行目录为 `.tmp/dev/run`。
+
+实现：`PostGenerationWorkbenchView.cpp` 删除顶栏模型名、结果对照、画布左上信息卡和左侧美颜入口，建立带 `wxCLIP_CHILDREN`/Windows 原生双缓冲的顶栏宿主，固定排列“状态 → 返回图像设计 → 3D 美颜工作台”。两个命令按钮统一 140×38 DIP、黄色背景、深色文字及 8 DIP 圆角；美颜按钮固定文案，复用 `request_enter_beauty()`，不可编辑或编辑中禁用。`PostGenerationWorkbenchPresentation.cpp` 删除已移除控件的更新路径，保留完整状态映射和底部模型信息弹窗，按标签、tooltip、启用、显隐、尺寸、父级和顺序差异决定写入及 `Layout()`/`FitInside()`。`ModelPreview3D.hpp` 将 500 ms 耗材颜色同步改为数据变化才 `Refresh(false)`；颜色控件和圆角区域同样跳过无变化写入。GL 画布继续使用既有 GPU 资源缓存与 `SwapBuffers()`，未新增整幅后台 bitmap。
+
+自动验证：[`PostGenerationWorkbench`](../../.tmp/dev/logs/20261022-workbench-ui-refresh/post-generation-workbench.log) 47/47、1902 assertions；[`UiRedesign`](../../.tmp/dev/logs/20261022-workbench-ui-refresh/ui-redesign.log) 84/84、1325 assertions；`scripts/verify_ai_integration.py --json` 为 `ok: true`，`git diff --check` 通过。固定 VS 2022 x64 Release [`Run -NoLaunch`](../../.tmp/dev/logs/20261022-113558-620/result.json) 的 catalogs/build/install/runtime-check/python-check 五步均为 0，source identity `5b408c2741dc2f14cad2cb84ccb4b352ebbe41bce1eee578777d1a5ec8700e73`；build/run EXE SHA256 均为 `A3CE64715716D44D2209C2663568EB4152F13DB074C2EA0006E36F3982D80CED`，DLL SHA256 均为 `EEBFED7E2ECDF01365A9DB2CC67750401F86F53232B8605A95FD451D559F5122`。
+
+GUI 证据：从原候选数据完整克隆独立 datadir `workbench-ui-refresh-20261022-data`，用固定工程副本启动匹配 PID `11236`。真实主窗口验证未加载和就绪/已接受状态、顶栏顺序及等尺寸按钮；顶栏模型名、结果对照、左侧美颜入口和左上信息卡均消失；底部“模型信息”图标可打开面数/顶点/尺寸详情。旋转、缩放、原始/美颜历史切换、进入/退出美颜以及返回图像设计均正常出帧；进入美颜后顶栏保持固定文案、原尺寸和禁用态，重复点击不触发。移除鼠标悬停噪声后连续采集 8 帧、约 4.2 秒，整窗 data URL 完全一致（`unique_images=1`），覆盖至少 8 个 500 ms 同步机会。首次整窗比较受真实鼠标位置和悬停高亮变化干扰，不作为后台重绘结论。
+
+接受边界：加载中、处理中、候选就绪和加载失败的真实可见瞬间未通过付费生成或人为破坏资产来制造，状态文案/许可仍由定向测试覆盖。GUI 烟测不等同用户视觉接受；真实人像的五官、眉眼、耳发、衣肤边界和整体观感继续待用户确认，实体打印颜色保真继续待实物验证。当前实例保持响应；未提交、推送、打包、提升候选或启用生产入口。
+
+计划变更：新增并完成“3D 模型工作台顶栏与防闪烁整改”工程项，状态更新为代码、Release 构建、定向自动测试和限定真实 GUI 烟测通过；人工视觉与实物打印接受项仍保持独立未结。
+
 # 2026-10-22 PR #38：候选推送与 integration 冲突处理
 
 候选提交 `6427e784ac4c53129216269e5a580eab7d4221e2` 已推送到 `origin/codex/upstream-v2.5.0-alpha-portrait-preserved`，PR #38 的目标为 `codex/team/integration`，固定目标 SHA 为 `aee65644545f2746ea08f6efccb73bc853a3db5f`。GitHub 首次计算发现四个共享文件冲突；合并提交 `177c61bfde25384bfd8105c9ce2f57e35d845fbb` 保留候选的 Redesign 防闪烁更新与 `LibDataChannel` 链接，并合并远端 SDK/连接器、SmartSlicing、测试和文档。合并后 Release 增量构建、`verify_ai_integration.py`、`verify_mobile_sdk_boundary.py` 均通过；`ModelGenerationPresentation` 65/8879、`SmartSlicing` 289/3848，组合人像/工作台/颜色/Redesign 测试 343/37693 全部通过。

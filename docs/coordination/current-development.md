@@ -1,3 +1,27 @@
+# 2026-10-22 3D 模型工作台原色对照开关刷新修复（已安装、GUI 往返通过）
+
+主线：继续在 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha` / `codex/upstream-v2.5.0-alpha-portrait-preserved`、HEAD `7d2e40776c38599a7296811329d452fb15079196` 收尾生成后 3D 模型工作台底栏与原色对照；保留全部既有未提交修改，不提交、推送、打包或覆盖用户正在运行的 `.tmp/dev/run`。
+
+本轮：修复底栏 `WorkbenchSwitch` 的点击状态只改变业务值、位图却不刷新的问题。网格开关用 `wxCommandEvent::IsChecked()` 同步自绘值；原色对照先请求预览层切换，再以 `original_comparison_enabled()` 的最终状态无条件回写自绘开关，正常启用和无源外观拒绝回退都会刷新。未改变双栏渲染、GPU 缓存、状态模型、外部 API 或持久化格式。
+
+验证：固定 VS 2022 x64 Release `.tmp/dev/build` 的 `OrcaSlicer` 与 `slic3rutils_tests` 增量构建通过；[`PostGenerationWorkbench`](../../.tmp/dev/logs/20261022-workbench-switch-refresh/post-generation-workbench.log) 49/49、1917 assertions，[`UiRedesign`](../../.tmp/dev/logs/20261022-workbench-switch-refresh/ui-redesign.log) 86/86、1340 assertions，[`verify_ai_integration.py --json`](../../.tmp/dev/logs/20261022-workbench-switch-refresh/verify-ai-integration.json) 返回 `ok: true`。固定 [`Run -NoLaunch`](../../.tmp/dev/logs/20261022-143242-433/result.json) 五步通过，source identity `55d08a0ed2527dc53d3f729366be014f35cd1f947c1d9aeb1ee828fad05248f5`，build/run DLL SHA256 均为 `AD561F5F3AC5010C29CB2BC7BB9B60E1B40FBA3862FC543C6261572B36ED4CAB`。
+
+未结：匹配 PID `25588` 使用隔离 datadir `workbench-bottom-original-compare-20261022-data` 保持响应。真实主窗口已验证未加载时原色对照禁用；载入纹理基准模型后，开启时开关立即变蓝并右移、画布切为“当前模型 / 原贴图”双栏，关闭时开关恢复灰色左位、画布恢复单栏；网格开关也完成关闭/开启视觉往返并恢复默认开启。运行日志记录 `comparison=false → true → false`、半宽 viewport 和 `gl_error=0`。真实人像视觉接受及实体打印颜色保真继续独立待验收。
+
+下一步：用户可直接检查当前 PID `25588` 的原色对照和网格开关；后续按既有计划继续真实人像观感与打印色准验收。计划变更：在既有底栏与原色对照整改项下闭环本次显示刷新缺陷，代码、构建、安装、专项测试及限定 GUI 往返均已通过。
+
+# 2026-10-22 3D 模型工作台顶栏与防闪烁整改（已实施、实机烟测通过）
+
+主线：在 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha` / `codex/upstream-v2.5.0-alpha-portrait-preserved`、HEAD `7d2e40776c38599a7296811329d452fb15079196` 上完成生成后 3D 模型工作台整改；不提交、不推送、不打包，也不改变 integration、外部 API、状态模型或持久化格式。
+
+本轮：移除顶栏模型名、画布左上拓扑/面数/顶点/尺寸信息卡、结果对照按钮和左侧美颜入口；顶栏改为固定“状态 → 返回图像设计 → 3D 美颜工作台”，两个按钮统一 140×38 DIP、黄色背景、深色文字和 8 DIP 圆角，美颜入口复用原行为并在不可编辑或已进入编辑态时禁用。保留底部模型信息入口/弹窗和结果处理接口。500 ms 耗材同步只在颜色或绑定变化时刷新，标签、tooltip、启用、显隐、尺寸及布局改为差异写入；顶栏宿主使用 `wxCLIP_CHILDREN` 和 Windows 双缓冲，继续复用 GL 缓存及 `SwapBuffers()`，未新增整幅后台 bitmap。
+
+验证：[`PostGenerationWorkbench`](../../.tmp/dev/logs/20261022-workbench-ui-refresh/post-generation-workbench.log) 47/47、1902 assertions 和 [`UiRedesign`](../../.tmp/dev/logs/20261022-workbench-ui-refresh/ui-redesign.log) 84/84、1325 assertions 通过，`scripts/verify_ai_integration.py --json` 返回 `ok: true`，`git diff --check` 通过。固定 Release [`Run -NoLaunch`](../../.tmp/dev/logs/20261022-113558-620/result.json) 的 catalogs/build/install/runtime-check/python-check 五步通过，source identity `5b408c2741dc2f14cad2cb84ccb4b352ebbe41bce1eee578777d1a5ec8700e73`；build/run DLL SHA256 均为 `EEBFED7E2ECDF01365A9DB2CC67750401F86F53232B8605A95FD451D559F5122`。独立 datadir `workbench-ui-refresh-20261022-data` 的匹配 PID `11236` 已实机验证未加载、就绪/已接受、编辑模式、固定顶栏顺序/尺寸/禁用态、返回图像设计、历史切换、底部模型信息弹窗及旋转缩放；无鼠标悬停干扰时连续 8 帧覆盖约 4.2 秒，`unique_images=1`，操作中未见白闪或整窗闪烁。
+
+未结：加载中、处理中、候选就绪和加载失败的真实可见瞬间未为烟测人为制造，完整文案映射由定向测试覆盖；真实人像的五官/眉眼/耳发/衣肤边界、最终用户视觉接受和实体打印颜色保真仍分别待验收。应用日志中的 `PartPlate::calc_exclude_triangles` 旧夹具错误不属于本轮 UI 路径，实例保持响应。
+
+下一步：用户可直接检查当前匹配 PID `11236` 的最大化 3D 工作台；若接受本轮视觉效果，再按既有计划继续真实人像与打印色准验收。计划变更：新增并完成“3D 模型工作台顶栏与防闪烁整改”工程项，将其从代码实施推进为构建、专项测试和限定 GUI 烟测通过；不提升候选、不触碰此前未结的人像与实物接受项。
+
 # 2026-10-22 PR #38：候选已推送，正在处理 integration 冲突
 
 候选 `6427e784ac4c53129216269e5a580eab7d4221e2` 已推送到远端候选分支，PR #38 指向 `codex/team/integration` 的固定 SHA `aee65644545f2746ea08f6efccb73bc853a3db5f`。GitHub 报告四个共享文件冲突，合并提交 `177c61bfde25384bfd8105c9ce2f57e35d845fbb` 已按候选验收逻辑解决：保留 Redesign 防闪烁控件更新、`LibDataChannel` 链接和两边状态文档。合并后 Release 增量构建、AI/SDK 边界检查和定向回归均通过：ModelGenerationPresentation 65/8879、SmartSlicing 289/3848，组合人像/工作台/颜色/Redesign 343/37693。

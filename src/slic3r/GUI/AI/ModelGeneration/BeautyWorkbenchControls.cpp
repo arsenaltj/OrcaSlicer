@@ -261,7 +261,6 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
     };
     m_lighting = switch_row(_L("光照立体展示"), m_lighting_row);
     m_lighting->SetToolTip(_L("只改变预览明暗，不改变模型颜色或耗材槽位。"));
-    m_original_view = switch_row(_L("查看模型原色"), m_original_view_row);
     m_displacement = new WorkbenchSlider(this, wxID_ANY, 2, -20, 20, wxColour(61, 127, 255), "workbench_parameter_thumb");
     m_displacement->SetToolTip(_L("局部表面推拉距离，单位 0.1 mm；负值向内。"));
     m_displacement_label = new wxStaticText(this, wxID_ANY, _L("推拉距离 · 0.1 mm/格"));
@@ -346,11 +345,6 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
     m_lighting->Bind(wxEVT_TOGGLEBUTTON, [this](wxCommandEvent& event) {
         m_lighting->SetValue(event.IsChecked());
         if (m_preview) m_preview->set_beauty_lighting(event.IsChecked());
-    });
-    m_original_view->Bind(wxEVT_TOGGLEBUTTON, [this](wxCommandEvent& event) {
-        m_original_view->SetValue(event.IsChecked());
-        if (m_preview) m_preview->set_beauty_original_view(event.IsChecked());
-        if (on_original_view_changed) on_original_view_changed(event.IsChecked());
     });
     m_operation->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&) {
         if (on_operation_changed && m_operation->GetSelection() >= 0)
@@ -464,7 +458,6 @@ void BeautyWorkbenchControls::synchronize_preview_options()
 {
     if (m_preview) {
         m_lighting->SetValue(m_preview->beauty_lighting());
-        m_original_view->SetValue(m_preview->beauty_original_view());
     }
 }
 
@@ -798,7 +791,7 @@ void BeautyWorkbenchControls::attach_parameters(wxWindow* surface, wxWindow* str
     auto* parameters = surface->GetSizer();
     for (wxWindow* control : std::initializer_list<wxWindow*>{
              m_displacement_label, m_displacement, m_falloff_label, m_falloff,
-             strength_label, strength, m_lighting_row, m_original_view_row}) {
+             strength_label, strength, m_lighting_row}) {
         control->GetContainingSizer()->Detach(control);
         control->Reparent(surface);
         parameters->Add(control, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, surface->FromDIP(12));

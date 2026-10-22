@@ -43,11 +43,51 @@ namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
 namespace {
 constexpr int beauty_finishing_tools[] = {4, 1, 3, 5, 1};
+
+wxColour workbench_status_colour(PostGenerationStatusTone tone)
+{
+    switch (tone) {
+    case PostGenerationStatusTone::Neutral: return wxColour(190, 190, 196);
+    case PostGenerationStatusTone::Accent: return wxColour(255, 194, 39);
+    case PostGenerationStatusTone::Success: return wxColour(91, 205, 137);
+    case PostGenerationStatusTone::Information: return wxColour(97, 174, 255);
+    case PostGenerationStatusTone::Error: return wxColour(255, 128, 112);
+    }
+    return wxColour(190, 190, 196);
+}
+
+bool set_workbench_label(wxWindow* control, const wxString& text)
+{
+    if (control->GetLabel() == text) return false;
+    control->SetLabel(text);
+    return true;
+}
+
+void set_workbench_tooltip(wxWindow* control, const wxString& text)
+{
+    if (control->GetToolTipText() != text) control->SetToolTip(text);
+}
+
+bool set_workbench_enabled(wxWindow* control, bool enabled)
+{
+    if (control->IsEnabled() == enabled) return false;
+    control->Enable(enabled);
+    return true;
+}
+
+bool set_workbench_shown(wxWindow* control, bool shown)
+{
+    if (control->IsShown() == shown) return false;
+    control->Show(shown);
+    return true;
+}
+
 // Native wrapping may keep an entire CJK sentence as one word. Measure the
 // displayed text so a narrow tool panel never truncates its instructions.
-void wrap_workbench_text(wxStaticText* label, int width, bool preserve_lines = false)
+bool set_wrapped_workbench_text(wxStaticText* label, const wxString& text, int width,
+                                bool preserve_lines = false)
 {
-    wxString source = label->GetLabel(), line, result;
+    wxString source = text, line, result;
     source.Replace("\r", "");
     if (!preserve_lines) source.Replace("\n", "");
     for (wxUniChar character : source) {
@@ -62,10 +102,15 @@ void wrap_workbench_text(wxStaticText* label, int width, bool preserve_lines = f
         line += character;
     }
     const wxString wrapped = result + line;
-    label->SetLabel(wrapped);
+    bool changed = set_workbench_label(label, wrapped);
     wxClientDC dc(label);
     dc.SetFont(label->GetFont());
-    label->SetMinSize(wxSize(1, dc.GetMultiLineTextExtent(wrapped).y + label->FromDIP(2)));
+    const wxSize minimum(1, dc.GetMultiLineTextExtent(wrapped).y + label->FromDIP(2));
+    if (label->GetMinSize() != minimum) {
+        label->SetMinSize(minimum);
+        changed = true;
+    }
+    return changed;
 }
 
 void apply_workbench_theme(wxWindow* window, bool enabled,
@@ -112,7 +157,6 @@ void ModelGenerationPanel::rescale_post_generation_workbench()
     };
     rescale(rescale, m_workbench_shell);
     rescale(rescale, m_workbench_parameters);
-    rescale(rescale, m_workbench_model_info);
     rescale(rescale, m_workbench_history_toggle);
     if (m_workbench_logo) {
         m_workbench_logo->SetBitmap(create_scaled_bitmap("workbench_logo", m_workbench_logo, 36));
@@ -124,8 +168,15 @@ void ModelGenerationPanel::rescale_post_generation_workbench()
     }
     m_workbench_parameter_divider->SetBitmap(create_scaled_bitmap(
         "workbench_parameter_divider", m_workbench_parameter_divider, 12));
-    m_workbench_model_name->SetMinSize(FromDIP(wxSize(100, 24)));
-    m_workbench_model_status->SetMinSize(FromDIP(wxSize(100, 24)));
+    const wxSize status_size = FromDIP(wxSize(100, 24));
+    m_workbench_model_status->SetFont(wxGetApp().bold_font());
+    m_workbench_model_status->SetMinSize(status_size);
+    m_workbench_model_status->SetMaxSize(status_size);
+    for (wxWindow* control : {m_workbench_return_to_design_button, m_workbench_edit}) {
+        control->SetFont(wxGetApp().bold_font());
+        control->SetMinSize(FromDIP(wxSize(140, 38)));
+        control->SetMaxSize(FromDIP(wxSize(140, 38)));
+    }
     auto* search = static_cast<TextInput*>(m_workbench_history_search->GetParent());
     auto search_icon = ScalableBitmap(search, "workbench_search", 12).bmp().ConvertToImage();
     search_icon.Replace(0, 0, 0, 235, 235, 235);
@@ -148,13 +199,15 @@ void ModelGenerationPanel::rescale_post_generation_workbench()
     }
     refresh_workbench_history();
     refresh_post_generation_workbench();
+    layout_workbench_parameters(true);
     Layout();
     Refresh(false);
 }
 
-void ModelGenerationPanel::layout_workbench_parameters()
+void ModelGenerationPanel::layout_workbench_parameters(bool force)
 {
     if (!m_workbench_parameters) return;
+    bool layout_needed = force;
     const bool visible = m_finishing_workbench && m_workbench_editing;
     auto* overlay_host = m_model_preview->workbench_overlay_parent();
     // The reference viewport is about 778 DIP wide at the workbench scale.
@@ -168,45 +221,57 @@ void ModelGenerationPanel::layout_workbench_parameters()
         m_workbench_parameters->Reparent(parameter_parent);
         if (dock_parameters)
             m_finishing_panel->GetSizer()->Insert(1, m_workbench_parameters, 0, wxEXPAND | wxBOTTOM, FromDIP(12));
+        layout_needed = true;
     }
-    m_workbench_parameters->Show(visible);
+    layout_needed = set_workbench_shown(m_workbench_parameters, visible) || layout_needed;
     const auto host_size = overlay_host->GetClientSize();
+    const int viewport_top = m_model_preview->workbench_viewport_top();
+    const int viewport_height = std::max(0, host_size.y - viewport_top);
     const int inset = FromDIP(12);
     const int right_inset = FromDIP(40);
     const wxSize toggle_size = FromDIP(wxSize(19, 98));
-    m_workbench_history_toggle->Show(m_finishing_workbench);
-    m_workbench_history_toggle->SetSize(std::max(0, host_size.x - toggle_size.x),
-        std::max(0, (host_size.y - toggle_size.y) / 2), toggle_size.x, toggle_size.y);
-    m_workbench_history_toggle->Raise();
-    const wxSize info_size = m_workbench_model_info->GetSizer()->CalcMin();
-    const int info_width = std::max(FromDIP(220), info_size.x);
-    const bool show_info = m_finishing_workbench && m_model_preview_ready &&
-        host_size.x >= info_width + 2 * inset &&
-        (!visible || dock_parameters || host_size.x >= info_width + FromDIP(248) + 2 * inset + right_inset);
-    m_workbench_model_info->Show(show_info);
-    if (show_info) {
-        m_workbench_model_info->SetSize(inset, inset, info_width, info_size.y);
-        m_workbench_model_info->Layout();
-        m_workbench_model_info->Raise();
+    layout_needed = set_workbench_shown(m_workbench_history_toggle, m_finishing_workbench) || layout_needed;
+    const wxRect toggle_rect(std::max(0, host_size.x - toggle_size.x),
+        viewport_top + std::max(0, (viewport_height - toggle_size.y) / 2), toggle_size.x, toggle_size.y);
+    if (m_workbench_history_toggle->GetRect() != toggle_rect) {
+        m_workbench_history_toggle->SetSize(toggle_rect);
+        layout_needed = true;
     }
+    if (layout_needed) m_workbench_history_toggle->Raise();
     if (!visible) return;
     auto* surface = static_cast<wxScrolledWindow*>(m_workbench_parameters);
     if (dock_parameters) {
-        surface->SetMinSize(wxSize(-1, surface->GetSizer()->CalcMin().y));
-        m_finishing_panel->Layout();
-        static_cast<wxScrolledWindow*>(m_finishing_panel)->FitInside();
-        surface->Layout();
-        surface->FitInside();
+        const wxSize minimum(-1, surface->GetSizer()->CalcMin().y);
+        if (surface->GetMinSize() != minimum) {
+            surface->SetMinSize(minimum);
+            layout_needed = true;
+        }
+        if (layout_needed) {
+            m_finishing_panel->Layout();
+            static_cast<wxScrolledWindow*>(m_finishing_panel)->FitInside();
+            surface->Layout();
+            surface->FitInside();
+        }
         return;
     }
-    surface->SetMinSize(wxDefaultSize);
+    if (surface->GetMinSize() != wxDefaultSize) {
+        surface->SetMinSize(wxDefaultSize);
+        layout_needed = true;
+    }
     const int width = std::min(FromDIP(248), std::max(FromDIP(200), host_size.x - inset - right_inset));
     const int content_height = surface->GetSizer()->CalcMin().y;
-    const int height = std::min(content_height, std::max(FromDIP(120), host_size.y - 2 * inset));
-    surface->SetSize(std::max(inset, host_size.x - width - right_inset), inset, width, height);
-    surface->Layout();
-    surface->FitInside();
-    surface->Raise();
+    const int height = std::min(content_height, std::max(FromDIP(120), viewport_height - 2 * inset));
+    const wxRect surface_rect(std::max(inset, host_size.x - width - right_inset),
+        viewport_top + inset, width, height);
+    if (surface->GetRect() != surface_rect) {
+        surface->SetSize(surface_rect);
+        layout_needed = true;
+    }
+    if (layout_needed) {
+        surface->Layout();
+        surface->FitInside();
+        surface->Raise();
+    }
 }
 
 void ModelGenerationPanel::refresh_post_generation_workbench()
@@ -214,16 +279,14 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     if (!m_workbench_shell || !m_finishing_workbench || m_refreshing_workbench_layout) return;
     // Layout sends synchronous size events back to this refresh function.
     m_refreshing_workbench_layout = true;
+    bool layout_changed = false;
     const auto state = post_generation_ui_state();
     update_workbench_history_actions();
     const auto title_path = !m_finishing_candidate.empty() && !m_finishing_source.empty()
         ? m_finishing_source : m_displayed_model_path;
-    wxString model_name = title_path.empty() ? _L("未加载模型")
-        : wxString(title_path.filename().wstring());
     bool accepted = !m_finishing_accepted_path.empty() && title_path == m_finishing_accepted_path;
     for (const auto& entry : m_library_entries) {
         if (entry.model_path != title_path) continue;
-        if (!entry.title.empty()) model_name = entry.title;
         accepted = accepted || entry.accepted_finishing;
         break;
     }
@@ -231,24 +294,28 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     switch (state.status) {
     case PostGenerationUiState::Status::Empty: model_status = _L("未加载"); break;
     case PostGenerationUiState::Status::Loading: model_status = _L("加载中"); break;
-    case PostGenerationUiState::Status::Ready: model_status = accepted ? _L("已接受") : _L("就绪"); break;
+    case PostGenerationUiState::Status::Ready: model_status = accepted ? _L("已处理") : _L("就绪"); break;
     case PostGenerationUiState::Status::Editing: model_status = _L("编辑中"); break;
     case PostGenerationUiState::Status::Processing: model_status = _L("处理中"); break;
     case PostGenerationUiState::Status::CandidateReady: model_status = _L("候选就绪"); break;
     case PostGenerationUiState::Status::ComparingBefore: model_status = _L("处理前"); break;
     case PostGenerationUiState::Status::Error: model_status = _L("加载失败"); break;
     }
-    m_workbench_model_name->SetLabel(model_name);
-    m_workbench_model_name->SetToolTip(model_name);
-    m_workbench_model_status->SetLabel(model_status);
-    m_workbench_model_status->SetToolTip(model_status);
+    set_workbench_label(m_workbench_model_status, model_status);
+    set_workbench_tooltip(m_workbench_model_status, model_status);
+    const wxColour status_colour = workbench_status_colour(post_generation_status_tone(
+        state.status, m_model_preview && m_model_preview->original_comparison_enabled()));
+    if (m_workbench_model_status->GetForegroundColour() != status_colour) {
+        m_workbench_model_status->SetForegroundColour(status_colour);
+        m_workbench_model_status->Refresh(false);
+    }
     const bool show_status = m_workbench_load_error || m_preview_loading;
-    m_workbench_state_status->Show(show_status);
+    layout_changed = set_workbench_shown(m_workbench_state_status, show_status) || layout_changed;
     if (show_status) {
-        m_workbench_state_status->SetLabel(m_status->GetLabel());
-        m_workbench_state_status->SetToolTip(m_workbench_load_error ? m_result_summary->GetLabel() : wxString());
-        wrap_workbench_text(m_workbench_state_status,
-            std::max(FromDIP(200), m_workbench_view_host->GetClientSize().x - FromDIP(16)));
+        set_workbench_tooltip(m_workbench_state_status,
+            m_workbench_load_error ? m_result_summary->GetLabel() : wxString());
+        layout_changed = set_wrapped_workbench_text(m_workbench_state_status, m_status->GetLabel(),
+            std::max(FromDIP(200), m_workbench_view_host->GetClientSize().x - FromDIP(16))) || layout_changed;
     }
     if (m_workbench_settings_editing != m_workbench_editing) {
         // Move whole sizer groups, keeping their controls and Beauty session alive.
@@ -260,69 +327,92 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         m_workbench_settings_editing = m_workbench_editing;
         m_workbench_beauty_heading->SetLabel(m_workbench_editing ? _L("模型美化") : _L("3D 美颜"));
         m_workbench_palette_heading->SetLabel(m_workbench_editing ? _L("目标色数") : _L("多色模型"));
-        m_workbench_base->Show(!m_workbench_editing);
         m_workbench_settings_scroll->Scroll(-1, 0);
+        layout_changed = true;
     }
-    m_workbench_settings->Show();
-    m_finishing_panel->Show(m_workbench_editing);
-    m_workbench_footer->Show(m_workbench_editing || m_finishing_running || !m_finishing_candidate.empty() ||
-                            (m_beauty_transactions && m_beauty_transactions->processing()));
+    layout_changed = set_workbench_shown(m_workbench_settings, true) || layout_changed;
+    layout_changed = set_workbench_shown(m_finishing_panel, m_workbench_editing) || layout_changed;
+    layout_changed = set_workbench_shown(m_workbench_footer,
+        m_workbench_editing || m_finishing_running || !m_finishing_candidate.empty() ||
+        (m_beauty_transactions && m_beauty_transactions->processing())) || layout_changed;
     const bool history_was_shown = m_workbench_history_panel->IsShown();
     if (!m_workbench_import_feedback)
-        m_workbench_history_panel->Show(!m_workbench_editing && !m_workbench_history_collapsed);
+        layout_changed = set_workbench_shown(m_workbench_history_panel,
+            !m_workbench_editing && !m_workbench_history_collapsed) || layout_changed;
     const wxString history_action = m_workbench_editing ? _L("返回历史模型") :
         m_workbench_history_panel->IsShown() ? _L("收起历史模型") : _L("展开历史模型");
-    m_workbench_history_toggle->SetName(history_action);
-    m_workbench_history_toggle->SetToolTip(history_action);
+    if (m_workbench_history_toggle->GetName() != history_action)
+        m_workbench_history_toggle->SetName(history_action);
+    set_workbench_tooltip(m_workbench_history_toggle, history_action);
     static_cast<WorkbenchButton*>(m_workbench_history_toggle)->set_drawer_open(
         m_workbench_editing || m_workbench_history_panel->IsShown());
-    m_workbench_history_toggle->Enable(!m_workbench_import_feedback);
-    m_workbench_edit->Enable(m_model_preview_ready || m_finishing_running);
+    set_workbench_enabled(m_workbench_history_toggle, !m_workbench_import_feedback);
+    set_workbench_enabled(m_workbench_edit, state.can_edit && !m_workbench_editing);
     const auto snapshot = workbench_snapshot();
     if (m_workbench_project_summary) {
         const auto& filaments = snapshot.printer_filaments;
-        m_workbench_project_summary->SetLabel(wxString::FromUTF8(filaments.printer)+
+        const wxString summary = wxString::FromUTF8(filaments.printer)+
             wxString::Format(_L("\n%llu 个喷嘴 · %llu 个实体槽位"),static_cast<unsigned long long>(filaments.nozzles),
                 static_cast<unsigned long long>(filaments.physical_count)) +
             (filaments.idle_nozzles ? wxString::Format(_L(" · %llu 个喷嘴空闲"), static_cast<unsigned long long>(filaments.idle_nozzles)) : wxString{}) +
-            (snapshot.apply_filaments_reason.empty() ? wxString{} : "\n" + wxString::FromUTF8(snapshot.apply_filaments_reason)));
-        m_workbench_project_summary->Wrap(FromDIP(235));
+            (snapshot.apply_filaments_reason.empty() ? wxString{} : "\n" + wxString::FromUTF8(snapshot.apply_filaments_reason));
+        layout_changed = set_wrapped_workbench_text(m_workbench_project_summary, summary,
+            FromDIP(235), true) || layout_changed;
     }
-    m_workbench_configure_filaments->Enable(snapshot.can_edit_project_colors);
-    m_workbench_add_filament->Enable(snapshot.can_edit_project_colors && wxGetApp().preset_bundle && wxGetApp().preset_bundle->filament_presets.size()<32 && snapshot.printer_filaments.physical_count < snapshot.printer_filaments.physical_capacity);
+    set_workbench_enabled(m_workbench_configure_filaments, snapshot.can_edit_project_colors);
+    set_workbench_enabled(m_workbench_add_filament, snapshot.can_edit_project_colors &&
+        wxGetApp().preset_bundle && wxGetApp().preset_bundle->filament_presets.size() < 32 &&
+        snapshot.printer_filaments.physical_count < snapshot.printer_filaments.physical_capacity);
     const bool device = wxGetApp().plater() && wxGetApp().plater()->get_machine_sync_status();
-    m_workbench_sync_filaments->Enable(snapshot.can_edit_project_colors && device);
-    m_workbench_sync_filaments->SetToolTip(device?_L("使用原生设备耗材同步流程"):_L("当前没有可同步的同型号设备；可离线配置耗材"));
+    set_workbench_enabled(m_workbench_sync_filaments, snapshot.can_edit_project_colors && device);
+    set_workbench_tooltip(m_workbench_sync_filaments,
+        device ? _L("使用原生设备耗材同步流程") : _L("当前没有可同步的同型号设备；可离线配置耗材"));
     if (m_workbench_return_to_design_button)
-        m_workbench_return_to_design_button->Enable(post_generation_return_to_design_allowed(state));
+        set_workbench_enabled(m_workbench_return_to_design_button,
+            post_generation_return_to_design_allowed(state));
     const bool topology_normal = snapshot.check.status == WorkbenchCheckStatus::Normal &&
         snapshot.check.candidate_status != RepairCandidateStatus::Ready && snapshot.candidate_path.empty() && !snapshot.dirty;
-    m_workbench_check->SetLabel(m_workbench_check_running ? _L("取消") : topology_normal ? _L("正常") : _L("检查"));
-    static_cast<WorkbenchButton*>(m_workbench_check)->SetTextColor(StateColor(topology_normal ? wxColour(91, 205, 137) : wxColour(190,190,196)));
-    m_workbench_check_status->SetForegroundColour(topology_normal ? wxColour(91, 205, 137) : wxColour(190,190,196));
-    m_workbench_check->Enable(m_workbench_check_running || (state.can_edit && m_finishing_candidate.empty() && !snapshot.dirty));
-    for (wxWindow* color : m_workbench_project_colors->GetChildren()) color->Enable(snapshot.can_edit_project_colors);
+    layout_changed = set_workbench_label(m_workbench_check,
+        m_workbench_check_running ? _L("取消") : topology_normal ? _L("正常") : _L("检查")) || layout_changed;
+    const wxColour check_colour = topology_normal ? wxColour(91, 205, 137) : wxColour(190,190,196);
+    if (m_workbench_check_status->GetForegroundColour() != check_colour) {
+        static_cast<WorkbenchButton*>(m_workbench_check)->SetTextColor(StateColor(check_colour));
+        m_workbench_check_status->SetForegroundColour(check_colour);
+    }
+    set_workbench_enabled(m_workbench_check,
+        m_workbench_check_running || (state.can_edit && m_finishing_candidate.empty() && !snapshot.dirty));
+    for (wxWindow* color : m_workbench_project_colors->GetChildren())
+        set_workbench_enabled(color, snapshot.can_edit_project_colors);
     if (m_workbench_apply_project_filaments) {
-        m_workbench_apply_project_filaments->Enable(snapshot.can_apply_printer_filaments);
-        m_workbench_apply_project_filaments->SetToolTip(snapshot.can_apply_printer_filaments
+        set_workbench_enabled(m_workbench_apply_project_filaments, snapshot.can_apply_printer_filaments);
+        set_workbench_tooltip(m_workbench_apply_project_filaments, snapshot.can_apply_printer_filaments
             ? _L("模型匹配到真实耗材和兼容叠色，自动保存；可撤销，不修改装料颜色") : wxString::FromUTF8(snapshot.apply_filaments_reason));
     }
-    m_workbench_palette_details->Enable(state.can_edit && m_finishing_candidate.empty());
+    set_workbench_enabled(m_workbench_palette_details, state.can_edit && m_finishing_candidate.empty());
     m_model_preview->set_workbench_palette_editable(state.can_edit && m_finishing_candidate.empty());
-    m_workbench_original->SetValue(m_model_preview->beauty_original_view());
-    m_workbench_edit->SetLabel(m_workbench_editing ? _L("一键美化") : _L("3D 美颜工作台"));
-    m_workbench_print->Disable();
+    if (m_workbench_original) {
+        const bool comparison_available = m_model_preview->original_comparison_available();
+        const bool comparison_enabled = m_model_preview->original_comparison_enabled();
+        if (m_workbench_original->GetValue() != comparison_enabled)
+            m_workbench_original->SetValue(comparison_enabled);
+        set_workbench_enabled(m_workbench_original, comparison_available);
+        set_workbench_tooltip(m_workbench_original, comparison_available
+            ? _L("并排显示当前模型与导入时的原贴图、顶点色或材质色")
+            : _L("当前模型没有可用的原贴图、顶点色或材质色"));
+    }
+    set_workbench_enabled(m_workbench_print, false);
     const bool can_import = (snapshot.can_import_for_slicing || snapshot.can_force_import) && is_nonempty_model(m_displayed_model_path);
     if (auto* portrait = FindWindowByName("portrait_r6_entry", m_workbench_shell)) {
-        portrait->Enable(snapshot.actions.can_edit && snapshot.portrait_available);
-        portrait->SetLabel(snapshot.portrait_enabled ? _L("退出人像保护（R6）") : _L("人像保护（R6）"));
-        portrait->SetToolTip(snapshot.portrait_available ? _L("可选人像保护；退出保留已保存的保护边界。") :
-            wxString::FromUTF8(snapshot.portrait_unavailable_reason));
+        set_workbench_enabled(portrait, snapshot.actions.can_edit && snapshot.portrait_available);
+        layout_changed = set_workbench_label(portrait,
+            snapshot.portrait_enabled ? _L("退出人像保护（R6）") : _L("人像保护（R6）")) || layout_changed;
+        set_workbench_tooltip(portrait, snapshot.portrait_available
+            ? _L("可选人像保护；退出保留已保存的保护边界。")
+            : wxString::FromUTF8(snapshot.portrait_unavailable_reason));
     }
     if (m_workbench_print_navigation)
-        m_workbench_print_navigation->Enable(can_import);
-    m_workbench_slicing->Enable(can_import);
-    m_workbench_settings_scroll->Layout();
+        set_workbench_enabled(m_workbench_print_navigation, can_import);
+    set_workbench_enabled(m_workbench_slicing, can_import);
     if (wxGetApp().preset_bundle) {
         const auto config = wxGetApp().preset_bundle->full_config();
         size_t index = 0;
@@ -343,11 +433,11 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
                     value = wxString::Format("%.0f", speeds->values.front());
                 value += " mm/s";
             }
-            m_workbench_slice_values[index++]->SetLabel(value);
+            layout_changed = set_workbench_label(m_workbench_slice_values[index++], value) || layout_changed;
         }
     }
-    m_workbench_slice_values[5]->SetLabel(_L("未切片"));
-    m_workbench_slice_values[6]->SetLabel(_L("未切片"));
+    wxString estimated_time = _L("未切片");
+    wxString estimated_filament = _L("未切片");
     if (auto* plater = wxGetApp().plater(); plater &&
         !m_displayed_model_path.empty() && m_last_imported_model_path == m_displayed_model_path &&
         !plater->is_background_process_slicing()) {
@@ -370,14 +460,17 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
             if (matching_source) {
                 const auto& statistics = plate->fff_print()->print_statistics();
                 if (!statistics.estimated_normal_print_time.empty())
-                    m_workbench_slice_values[5]->SetLabel(wxString::FromUTF8(statistics.estimated_normal_print_time));
+                    estimated_time = wxString::FromUTF8(statistics.estimated_normal_print_time);
                 if (statistics.total_used_filament > 0.0)
-                    m_workbench_slice_values[6]->SetLabel(wxString::Format("%.1f m / %.0f g",
-                        statistics.total_used_filament / 1000.0, statistics.total_weight));
+                    estimated_filament = wxString::Format("%.1f m / %.0f g",
+                        statistics.total_used_filament / 1000.0, statistics.total_weight);
             }
         }
     }
-    m_workbench_check->SetToolTip(topology_normal ? _L("拓扑正常；点击重新检查") : _L("检查拓扑并生成临时修复候选；原模型保留，接受前不会覆盖。"));
+    layout_changed = set_workbench_label(m_workbench_slice_values[5], estimated_time) || layout_changed;
+    layout_changed = set_workbench_label(m_workbench_slice_values[6], estimated_filament) || layout_changed;
+    set_workbench_tooltip(m_workbench_check, topology_normal
+        ? _L("拓扑正常；点击重新检查") : _L("检查拓扑并生成临时修复候选；原模型保留，接受前不会覆盖。"));
     wxString check_text;
     if (snapshot.check.candidate_status == RepairCandidateStatus::Ready) {
         check_text = _L("修复完成 · 待接受");
@@ -395,31 +488,27 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     if (!snapshot.check.summary.empty()) check_text += "\n" + from_u8(snapshot.check.summary);
     if (!snapshot.check.repair_reason.empty()) check_text += "\n" + from_u8(snapshot.check.repair_reason);
     if (!m_workbench_operation_notice.empty()) check_text += "\n" + from_u8(m_workbench_operation_notice);
-    m_workbench_check_status->SetToolTip(check_text);
-    m_workbench_check_status->SetLabel(check_text);
-    wrap_workbench_text(m_workbench_check_status, FromDIP(242), true);
+    set_workbench_tooltip(m_workbench_check_status, check_text);
+    layout_changed = set_wrapped_workbench_text(m_workbench_check_status, check_text,
+        FromDIP(242), true) || layout_changed;
     const auto trial = m_model_preview->color_trial_state();
-    m_workbench_palette_status->SetLabel(wxString::Format(_L("当前色卡 · %llu 色"),
-        static_cast<unsigned long long>(trial.colors.size())));
-    m_comparison_panel->Layout();
-    m_workbench_view_host->Layout();
-    m_workbench_shell->Layout();
-    static_cast<wxScrolledWindow*>(m_workbench_shell)->FitInside();
-    m_workbench_parameter_faces->SetLabel(wxNumberFormatter::ToString(
-        static_cast<wxLongLong_t>(m_model_preview->triangle_count())));
+    layout_changed = set_workbench_label(m_workbench_palette_status,
+        wxString::Format(_L("当前色卡 · %llu 色"),
+            static_cast<unsigned long long>(trial.colors.size()))) || layout_changed;
+    layout_changed = set_workbench_label(m_workbench_parameter_faces,
+        wxNumberFormatter::ToString(static_cast<wxLongLong_t>(m_model_preview->triangle_count()))) || layout_changed;
     const bool candidate_ready = !m_finishing_candidate.empty() && m_finishing_result.success &&
         m_model_preview_ready && !m_preview_loading && !m_finishing_running;
-    m_workbench_parameter_output->SetLabel(candidate_ready
-        ? wxNumberFormatter::ToString(static_cast<wxLongLong_t>(m_finishing_result.faces_after)) : "--");
-    m_workbench_model_info_values[0]->SetLabel(_L("三角面"));
-    m_workbench_model_info_values[1]->SetLabel(wxString::Format("%llu",
-        static_cast<unsigned long long>(m_model_preview->triangle_count())));
-    m_workbench_model_info_values[2]->SetLabel(wxString::Format("%llu",
-        static_cast<unsigned long long>(m_model_preview->vertex_count())));
-    const auto& dimensions = m_model_preview->model_dimensions();
-    m_workbench_model_info_values[3]->SetLabel(wxString::Format(wxString::FromUTF8("%.1f × %.1f × %.1f mm"),
-        dimensions.x(), dimensions.y(), dimensions.z()));
-    layout_workbench_parameters();
+    layout_changed = set_workbench_label(m_workbench_parameter_output, candidate_ready
+        ? wxNumberFormatter::ToString(static_cast<wxLongLong_t>(m_finishing_result.faces_after)) : "--") || layout_changed;
+    if (layout_changed) {
+        m_workbench_settings_scroll->Layout();
+        m_comparison_panel->Layout();
+        m_workbench_view_host->Layout();
+        m_workbench_shell->Layout();
+        static_cast<wxScrolledWindow*>(m_workbench_shell)->FitInside();
+        layout_workbench_parameters(true);
+    } else layout_workbench_parameters();
     if (!history_was_shown && m_workbench_history_scroller->IsShownOnScreen())
         request_library_thumbnails(true);
     publish_workbench_state();

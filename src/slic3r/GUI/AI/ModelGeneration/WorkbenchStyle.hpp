@@ -128,6 +128,7 @@ public:
         Bind(wxEVT_SIZE, [this](wxSizeEvent& event) { update_bar(); update_shape(); event.Skip(); });
     }
     void set_rounded_corners(bool rounded) {
+        if (m_rounded == rounded) return;
         m_rounded = rounded;
         update_shape();
     }

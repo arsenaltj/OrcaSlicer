@@ -107,7 +107,7 @@ bool ModelGenerationPanel::finishing_workbench_layout_ready(bool enabled) const
         m_preview_message && m_result_summary && m_preview_kind && m_model_decision_panel;
     if (!common_ready) return false;
     return enabled ? m_local_recolor_toggle != nullptr :
-        m_workbench_model_info && m_workbench_history_toggle && m_finishing_gray;
+        m_workbench_model_status && m_workbench_edit && m_workbench_history_toggle && m_finishing_gray;
 }
 
 void ModelGenerationPanel::set_finishing_workbench(bool enabled)
@@ -143,7 +143,6 @@ void ModelGenerationPanel::set_finishing_workbench(bool enabled)
          m_displayed_model_path == m_finishing_accepted_path)));
     m_model_preview->set_beauty_view(enabled);
     if (!enabled) {
-        m_workbench_model_info->Hide();
         m_workbench_history_toggle->Hide();
     }
     m_model_preview->set_color_controls_visible(!enabled);

@@ -3,6 +3,7 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationUiState.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelPreviewTextureColor.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportSession.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportEligibility.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportUiGuard.hpp"
@@ -1142,6 +1143,34 @@ TEST_CASE("a failed history replacement preserves actions for the retained valid
     CHECK(recovered.status == PostGenerationUiState::Status::Ready);
     CHECK(recovered.can_edit);
     CHECK(recovered.can_import);
+}
+
+TEST_CASE("post-generation status tones preserve semantic meaning during original comparison",
+          "[PostGenerationWorkbench][UiRedesign]")
+{
+    using Status = PostGenerationUiState::Status;
+    CHECK(post_generation_status_tone(Status::Empty) == PostGenerationStatusTone::Neutral);
+    CHECK(post_generation_status_tone(Status::Loading) == PostGenerationStatusTone::Accent);
+    CHECK(post_generation_status_tone(Status::Processing) == PostGenerationStatusTone::Accent);
+    CHECK(post_generation_status_tone(Status::CandidateReady) == PostGenerationStatusTone::Accent);
+    CHECK(post_generation_status_tone(Status::Ready) == PostGenerationStatusTone::Success);
+    CHECK(post_generation_status_tone(Status::Editing) == PostGenerationStatusTone::Information);
+    CHECK(post_generation_status_tone(Status::ComparingBefore) == PostGenerationStatusTone::Information);
+    CHECK(post_generation_status_tone(Status::Error) == PostGenerationStatusTone::Error);
+    CHECK(post_generation_status_tone(Status::Ready, true) == PostGenerationStatusTone::Information);
+    CHECK(post_generation_status_tone(Status::Loading, true) == PostGenerationStatusTone::Accent);
+    CHECK(post_generation_status_tone(Status::Error, true) == PostGenerationStatusTone::Error);
+}
+
+TEST_CASE("original comparison requires an imported material appearance",
+          "[PostGenerationWorkbench][UiRedesign][TextureImport]")
+{
+    Slic3r::AI::ModelArtifactTextureSurface surface;
+    CHECK_FALSE(preview_has_source_appearance(false, false, surface));
+    CHECK(preview_has_source_appearance(true, false, surface));
+    CHECK(preview_has_source_appearance(false, true, surface));
+    surface.faces.emplace_back();
+    CHECK(preview_has_source_appearance(false, false, surface));
 }
 
 
