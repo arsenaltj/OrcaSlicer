@@ -46,11 +46,11 @@ def main():
     args = []
     for key in ('DEFINES', 'INCLUDES', 'FLAGS'):
         args.extend(tokens(re.search(r'^  ' + key + r' = (.*)$', block, re.M).group(1)))
-    args = [arg for arg in args if not arg.startswith('-DORCA_SLICING_SOURCE_COMMIT')]
+    args = [arg for arg in args if not arg.startswith('-DORCA_MOBILE_SLICING_SOURCE_COMMIT')]
     for index, arg in enumerate(args):
         args[index] = arg.replace(home.as_posix() + '/mobile-slicing/../src', source.as_posix() + '/src').replace(
             '-I' + home.as_posix() + '/src', '-I' + source.as_posix() + '/src')
-    args += ['-DORCA_SLICING_SOURCE_COMMIT="native-directed-tests"', '-O0', '-g0']
+    args += ['-DORCA_MOBILE_SLICING_SOURCE_COMMIT="native-directed-tests"', '-O0', '-g0']
     generated = output / 'include/catch2'
     generated.mkdir(parents=True, exist_ok=True)
     template = (source / 'tests/catch2/src/catch2/catch_user_config.hpp.in').read_text(encoding='utf-8')
