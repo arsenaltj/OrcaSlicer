@@ -10,7 +10,7 @@ From the repository worktree:
 node mobile-slicing/build_android_arm64.cjs
 ```
 
-The script uses the Visual Studio bundled Ninja when `NINJA` is unset and the pinned NDK when `ANDROID_NDK` is unset. It configures with `-DANDROID_ABI=arm64-v8a`, `-DANDROID_PLATFORM=android-24`, and 16 KiB ELF page alignment linker flags. It builds the `orca_mobile_core` static archive first; when coordinator `src/orca_mobile_slicing_sdk/c_api.cpp` and `engine.cpp` exist, the same entry also defines `orca_mobile_slicing_sdk`.
+The script uses the Visual Studio bundled Ninja when `NINJA` is unset and the pinned NDK when `ANDROID_NDK` is unset. It configures with `-DANDROID_ABI=arm64-v8a`, `-DANDROID_PLATFORM=android-24`, and 16 KiB ELF page alignment linker flags. It builds the `OrcaSlicer::Core` static archive first; when coordinator `src/orca_mobile_slicing_sdk/c_api.cpp` and `engine.cpp` exist, the same entry also defines `orca_mobile_slicing_sdk`.
 
 Fetched dependency URLs and SHA256 pins are in `CMakeLists.txt`. Local dependency sources are referenced from `deps_src`; no desktop superbuild is used.
 
