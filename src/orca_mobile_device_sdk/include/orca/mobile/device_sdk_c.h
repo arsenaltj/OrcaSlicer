@@ -3,14 +3,20 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#if defined(_WIN32) && defined(ORCA_MOBILE_DEVICE_BUILD_SHARED)
-#  if defined(ORCA_MOBILE_DEVICE_BUILDING)
-#    define ORCA_MOBILE_DEVICE_API __declspec(dllexport)
+#if defined(_WIN32)
+#  if defined(ORCA_MOBILE_DEVICE_BUILD_SHARED)
+#    if defined(ORCA_MOBILE_DEVICE_BUILDING)
+#      define ORCA_MOBILE_DEVICE_API __declspec(dllexport)
+#    else
+#      define ORCA_MOBILE_DEVICE_API __declspec(dllimport)
+#    endif
 #  else
-#    define ORCA_MOBILE_DEVICE_API __declspec(dllimport)
+#    define ORCA_MOBILE_DEVICE_API
 #  endif
-#else
+#elif defined(__GNUC__) || defined(__clang__)
 #  define ORCA_MOBILE_DEVICE_API __attribute__((visibility("default")))
+#else
+#  define ORCA_MOBILE_DEVICE_API
 #endif
 
 #ifdef __cplusplus

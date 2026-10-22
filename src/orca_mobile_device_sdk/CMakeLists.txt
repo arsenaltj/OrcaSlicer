@@ -42,6 +42,11 @@ set_target_properties(orca_mobile_device_sdk_ffi PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
 )
+if(UNIX AND NOT APPLE)
+    target_link_options(orca_mobile_device_sdk_ffi PRIVATE
+        "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports/device.map"
+    )
+endif()
 
 target_include_directories(orca_mobile_device_sdk
     PUBLIC
