@@ -33,10 +33,10 @@ def main():
         parser.error('output-dir must not be inside the read-only existing build')
     output.mkdir(parents=True, exist_ok=True)
     ninja = (build / 'build.ninja').read_text(encoding='utf-8')
-    marker = 'build CMakeFiles/orca_slicing_c.dir/'
+    marker = 'build CMakeFiles/orca_mobile_slicing_sdk.dir/'
     block = ninja[ninja.index(marker):].split('\n\n', 1)[0]
     rules = (build / 'CMakeFiles/rules.ninja').read_text(encoding='utf-8')
-    rule = re.search(r'rule CXX_COMPILER__orca_slicing_c[^\n]*\n(.*?)(?:\n\n|\Z)', rules, re.S).group(1)
+    rule = re.search(r'rule CXX_COMPILER__orca_mobile_slicing_sdk[^\n]*\n(.*?)(?:\n\n|\Z)', rules, re.S).group(1)
     command = re.search(r'  command = (.*)', rule).group(1)
     command = re.sub(r'\$\{[^}]+\}', '', command)
     prefix = command.split('$DEFINES', 1)[0]
@@ -65,7 +65,7 @@ def main():
         header.write_text('#pragma once\n#include "' + (source / 'tests/catch2/extras/catch_amalgamated.hpp').as_posix() + '"\n', encoding='utf-8')
     test_args = ['-I' + str(output / 'include'), '-I' + str(source / 'tests'),
                  '-I' + str(source / 'tests/catch2/src'), '-DTEST_DATA_DIR="' + (source / 'tests/data').as_posix() + '"']
-    units = [source / 'src/orca_slicing' / name for name in
+    units = [source / 'src/orca_mobile_slicing_sdk' / name for name in
              ('project_support.cpp', 'engine.cpp', 'recommendation_support.cpp', 'c_api.cpp')]
     tests = [source / 'tests/slic3rutils/test_orca_slicing_support.cpp',
              source / 'tests/fff_print/test_orca_slicing_preview.cpp']
@@ -109,7 +109,7 @@ def main():
             if not run(unit.name + ':object', compiler + args + test_args + ['-c', str(unit), '-o', str(obj)]):
                 return 1
             objects.append(str(obj))
-        link_marker = 'build liborca_slicing_c.so:'
+        link_marker = 'build liborca_mobile_slicing_sdk.so:'
         link_block = ninja[ninja.index(link_marker):].split('\n\n', 1)[0]
         libs = tokens(re.search(r'^  LINK_LIBRARIES = (.*)$', link_block, re.M).group(1))
         executable = output / 'orca_slicing_support_tests'

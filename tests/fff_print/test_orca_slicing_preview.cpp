@@ -36,11 +36,11 @@ TEST_CASE("Native preview stores only real print layers with exact binary offset
     };
     append(3,.2f,10);append(8,.4f,20);
     ScopedTemporaryFile file(".orcapv");
-    const auto info=orca::slicing::write_preview(result,file.string());
+    const auto info=orca::mobile::slicing::write_preview(result,file.string());
     REQUIRE(info["layerCount"]==2);
     REQUIRE(info["segmentCount"]==2);
     CHECK(info["previewSize"]==32+2*16+2*32);
-    CHECK(info["previewSha256"]==orca::slicing::file_sha256(file.string()));
+    CHECK(info["previewSha256"]==orca::mobile::slicing::file_sha256(file.string()));
     std::ifstream input(file.string(),std::ios::binary);
     char magic[8];input.read(magic,8);
     CHECK(std::string(magic,8)=="ORCAPV01");
@@ -57,7 +57,7 @@ TEST_CASE("Native preview rejects files with no print extrusion", "[OrcaSlicingP
     Slic3r::GCodeProcessorResult result;
     result.moves.emplace_back();
     ScopedTemporaryFile file(".orcapv");
-    CHECK_THROWS_WITH(orca::slicing::write_preview(result,file.string()),"PREVIEW_NO_PRINT_LAYERS");
+    CHECK_THROWS_WITH(orca::mobile::slicing::write_preview(result,file.string()),"PREVIEW_NO_PRINT_LAYERS");
 }
 TEST_CASE("Native preview follows processor extrusion modes resets and circular moves", "[OrcaSlicingPreview]")
 {
@@ -82,7 +82,7 @@ TEST_CASE("Native preview follows processor extrusion modes resets and circular 
     std::ifstream input(source.string(),std::ios::binary);
     processor.process_buffer(std::string(std::istreambuf_iterator<char>(input),std::istreambuf_iterator<char>()));
     processor.finalize(false);
-    const auto info=orca::slicing::write_preview(processor.get_result(),preview.string());
+    const auto info=orca::mobile::slicing::write_preview(processor.get_result(),preview.string());
     CHECK(info["layerCount"]==2);
     // The circular command must retain its processor-discretized intermediate
     // vertices rather than collapse to a straight chord or vanish under M83.
@@ -97,8 +97,8 @@ TEST_CASE("Geometry-only STL imports a visible default profile accepted by real 
     ScopedTemporaryFile file(".stl");
     auto mesh=Slic3r::make_cube(10,10,10);
     REQUIRE(Slic3r::store_stl(file.string().c_str(),&mesh,true));
-    auto project=orca::slicing::load_project(file.string(),nlohmann::json::object(),nlohmann::json::array(),directory.string());
-    const auto catalog=orca::slicing::offline_presets();
+    auto project=orca::mobile::slicing::load_project(file.string(),nlohmann::json::object(),nlohmann::json::array(),directory.string());
+    const auto catalog=orca::mobile::slicing::offline_presets();
     const auto& defaultPreset=project.metadata.at("basePreset");
     CHECK(defaultPreset.at("version")==catalog.at("version"));
     CHECK(defaultPreset.at("id")==catalog["devices"][1].at("id"));
@@ -108,7 +108,7 @@ TEST_CASE("Geometry-only STL imports a visible default profile accepted by real 
     Slic3r::Print print;
     print.set_status_silent();print.apply(project.model,project.config);
     CHECK(print.validate().string.empty());
-    auto restored=orca::slicing::load_project(file.string(),orca::slicing::config_json(project.config),nlohmann::json::array(),directory.string());
+    auto restored=orca::mobile::slicing::load_project(file.string(),orca::mobile::slicing::config_json(project.config),nlohmann::json::array(),directory.string());
     Slic3r::Print restoredPrint;restoredPrint.set_status_silent();
     restoredPrint.apply(restored.model,restored.config);
     CHECK(restoredPrint.validate().string.empty());
@@ -117,22 +117,22 @@ TEST_CASE("Geometry-only STL imports a visible default profile accepted by real 
     const auto* restoredVariants=dynamic_cast<const Slic3r::ConfigOptionInts*>(restored.config.option("nozzle_volume_type"));
     REQUIRE(sourceVariants); REQUIRE(restoredVariants);
     CHECK(restoredVariants->values==sourceVariants->values);
-    auto changedConfig=orca::slicing::config_json(project.config);
+    auto changedConfig=orca::mobile::slicing::config_json(project.config);
     changedConfig["wall_loops"]=4;
-    auto changed=orca::slicing::load_project(file.string(),changedConfig,nlohmann::json::array(),directory.string());
+    auto changed=orca::mobile::slicing::load_project(file.string(),changedConfig,nlohmann::json::array(),directory.string());
     Slic3r::Print changedPrint;changedPrint.set_status_silent();changedPrint.apply(changed.model,changed.config);
     CHECK_NOTHROW(changedPrint.process());
-    CHECK_THROWS_AS(orca::slicing::load_project(file.string(),{{"nozzle_volume_type",nlohmann::json::array()}},nlohmann::json::array(),directory.string()),std::invalid_argument);
+    CHECK_THROWS_AS(orca::mobile::slicing::load_project(file.string(),{{"nozzle_volume_type",nlohmann::json::array()}},nlohmann::json::array(),directory.string()),std::invalid_argument);
     const auto* definition=project.config.def()->get("nozzle_volume_type");
     REQUIRE(definition); REQUIRE(definition->enum_keys_map);
     for(const auto& entry:*definition->enum_keys_map) if(!sourceVariants->values.empty() && entry.second!=sourceVariants->values.front()) {
-        auto variantConfig=orca::slicing::config_json(project.config);variantConfig["nozzle_volume_type"]=entry.first;
-        auto variant=orca::slicing::load_project(file.string(),variantConfig,nlohmann::json::array(),directory.string());
+        auto variantConfig=orca::mobile::slicing::config_json(project.config);variantConfig["nozzle_volume_type"]=entry.first;
+        auto variant=orca::mobile::slicing::load_project(file.string(),variantConfig,nlohmann::json::array(),directory.string());
         const auto* values=dynamic_cast<const Slic3r::ConfigOptionInts*>(variant.config.option("nozzle_volume_type"));
         REQUIRE(values); REQUIRE(!values->values.empty()); CHECK(values->values.front()==entry.second); break;
     }
     // An explicit user override remains authoritative, even if invalid.
-    auto user=orca::slicing::load_project(file.string(),{{"before_layer_change_gcode",""}},nlohmann::json::array(),directory.string());
+    auto user=orca::mobile::slicing::load_project(file.string(),{{"before_layer_change_gcode",""}},nlohmann::json::array(),directory.string());
     CHECK(user.config.opt_string("before_layer_change_gcode").empty());
 }
 TEST_CASE("Engine result identity reports actual normalized vase configuration", "[OrcaSlicingPreview]")
@@ -141,7 +141,7 @@ TEST_CASE("Engine result identity reports actual normalized vase configuration",
     ScopedTemporaryFile file(".stl");
     auto mesh=Slic3r::make_cube(10,10,10);
     REQUIRE(Slic3r::store_stl(file.string().c_str(),&mesh,true));
-    orca::slicing::Engine engine(directory.string());
+    orca::mobile::slicing::Engine engine(directory.string());
     const nlohmann::json request={{"operation","slice"},{"projectId","vase-test"},{"projectRevision",1},
         {"jobId","vase-job"},{"attemptId","vase-attempt"},{"inputPath",file.string()},
         {"executeEffectiveConfig",true},{"quality","standard"},
@@ -150,9 +150,9 @@ TEST_CASE("Engine result identity reports actual normalized vase configuration",
     CHECK(result["requestedConfig"]["wall_loops"]=="3");
     CHECK(result["effectiveConfig"]["wall_loops"]=="1");
     CHECK(result["effectiveConfig"]["top_shell_layers"]=="0");
-    CHECK(result["configSha256"]==orca::slicing::json_sha256(result["effectiveConfig"]));
+    CHECK(result["configSha256"]==orca::mobile::slicing::json_sha256(result["effectiveConfig"]));
     CHECK(result["requestedConfigSha256"]!=result["configSha256"]);
-    CHECK(result["gcodeSha256"]==orca::slicing::file_sha256(result["gcodePath"]));
+    CHECK(result["gcodeSha256"]==orca::mobile::slicing::file_sha256(result["gcodePath"]));
 }
 
 #ifdef ORCA_MOBILE_ANDROID
@@ -160,7 +160,7 @@ TEST_CASE("Offline nozzle compatibility blocks a known incompatible material pre
 {
     ScopedSlic3rTemporaryDir directory;ScopedTemporaryFile file(".stl");
     auto mesh=Slic3r::make_cube(10,10,10);REQUIRE(Slic3r::store_stl(file.string().c_str(),&mesh,true));
-    orca::slicing::Engine engine(directory.string());
+    orca::mobile::slicing::Engine engine(directory.string());
     const nlohmann::json request={{"operation","slice"},{"projectId","material-check"},{"projectRevision",1},
         {"jobId","material-job"},{"attemptId","a1"},{"inputPath",file.string()},{"quality","standard"},
         {"config",{{"nozzle_diameter",nlohmann::json::array({0.2})},{"filament_settings_id",nlohmann::json::array({"Bambu PLA Marble @ System"})}}}};
