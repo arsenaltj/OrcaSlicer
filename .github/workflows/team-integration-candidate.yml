@@ -31,6 +31,8 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
+      - name: Fetch pinned candidate baseline tag
+        run: git fetch --no-tags --no-recurse-submodules origin refs/tags/v2.5.0-alpha:refs/tags/v2.5.0-alpha
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
