@@ -586,7 +586,17 @@ bool portrait_recognition_enabled(const fs::path& resources)
         const auto manifest = strict_json(bounded_read(resources / "tools" / "ai" /
             "orca_ai_runtime_dependencies.json", max_config_bytes));
         const auto& enabled = manifest.at("portrait_recognition").at("enabled");
-        return enabled.is_boolean() && enabled.get<bool>();
+        if (enabled.is_boolean() && enabled.get<bool>()) return true;
+        // The lightweight native recognizer is intentionally separate from
+        // the optional Python/weights bundle. A staged MediaPipe runtime next
+        // to the executable is sufficient to expose the user initiated
+        // portrait optimizer, even when the heavy production bundle remains
+        // disabled in the dependency manifest.
+        const auto native = resources.parent_path() / "ai" / "portrait_semantics";
+        return fs::is_regular_file(native / "runtime-manifest.json") &&
+            fs::is_regular_file(native / "libmediapipe.dll") &&
+            fs::is_regular_file(native / "face_landmarker.task") &&
+            fs::is_regular_file(native / "selfie_multiclass_256x256.tflite");
     } catch (...) { return false; }
 }
 

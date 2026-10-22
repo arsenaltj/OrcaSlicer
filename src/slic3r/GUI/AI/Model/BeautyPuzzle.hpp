@@ -3,6 +3,7 @@
 #include "BeautySurface.hpp"
 #include "slic3r/AI/Contracts/ColorIntent.hpp"
 #include "libslic3r/TextureToColor/ColorUtils.hpp"
+#include "slic3r/AI/ModelGeneration/SemanticColoring/SemanticColoring.hpp"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <atomic>
@@ -39,10 +40,18 @@ struct BeautyPuzzle {
     std::vector<PhysicalFilamentChannel> palette;
     std::map<uint32_t, size_t> filament_slots;
     std::vector<MixedColorRecipe> mixed_recipes;
+    // Optional identity for partitions created from native automatic source
+    // slots.  Semantics annotate pieces after topology is fixed and never
+    // participate in connectivity.
+    std::string automatic_basis_signature;
+    std::map<uint32_t, size_t> region_source_slots;
+    std::map<uint32_t, int32_t> region_semantic_labels;
+    std::map<uint32_t, float> region_semantic_confidence;
     uint32_t next_id {1};
 
     static constexpr size_t max_faces = 2000000;
     static constexpr uint32_t max_id = 1000000000;
+    static constexpr size_t max_native_color_slots = 32;
 
     static std::array<float, 4> filament_color(const PhysicalFilamentChannel& channel) {
         require(is_rgb_hex_color(channel.display_color), "Invalid filament color.");
@@ -316,6 +325,152 @@ struct BeautyPuzzle {
         return result;
     }
 
+    // Automatic color partitioning deliberately ignores surface normal angle.
+    // Faces join only through a shared triangle edge when their source colors
+    // are close and their semantic labels do not describe different anatomy.
+    // This keeps a same-color folded garment as one complete editable region,
+    // while preserving confirmed eye/lip/skin boundaries.
+    static BeautyPuzzle create_color_regions(const BeautySurface& surface,
+        const std::vector<int32_t>& semantic_labels, const std::vector<std::array<double, 3>>& face_colors,
+        const std::function<bool()>& canceled = {})
+    {
+        check_surface_data(surface);
+        require(face_colors.size() == surface.face_patch.size(),
+            "Automatic color regions require per-face source colors.");
+        require(semantic_labels.empty() || semantic_labels.size() == surface.face_patch.size(),
+            "Semantic hints belong to different geometry.");
+        auto checkpoint = [&] { if (canceled && canceled()) throw std::runtime_error("Puzzle preparation cancelled."); };
+        const size_t count = surface.face_patch.size();
+        std::vector<uint32_t> parent(count), rank(count, 0);
+        std::iota(parent.begin(), parent.end(), 0);
+        const auto find = [&](auto&& self, uint32_t x) -> uint32_t {
+            return parent[x] == x ? x : parent[x] = self(self, parent[x]);
+        };
+        const auto core = [](int32_t label) {
+            return label == int32_t(SemanticColoring::Label::Iris) ||
+                   label == int32_t(SemanticColoring::Label::EyeSclera) ||
+                   label == int32_t(SemanticColoring::Label::Lips) ||
+                   label == int32_t(SemanticColoring::Label::FaceSkin) ||
+                   label == int32_t(SemanticColoring::Label::BodySkin);
+        };
+        const auto compatible_semantics = [&](size_t a, size_t b) {
+            if (semantic_labels.empty()) return true;
+            const int32_t la = semantic_labels[a], lb = semantic_labels[b];
+            if (la == lb) return true;
+            if (la < 0 || lb < 0) return !core(la == -1 ? lb : la);
+            return !(core(la) || core(lb));
+        };
+        const auto join = [&](uint32_t a, uint32_t b) {
+            a = find(find, a); b = find(find, b);
+            if (a == b) return;
+            if (rank[a] < rank[b]) std::swap(a, b);
+            parent[b] = a; if (rank[a] == rank[b]) ++rank[a];
+        };
+        for (size_t f = 0; f < count; ++f) {
+            if ((f & 4095) == 0) checkpoint();
+            for (const int32_t n : surface.face_neighbors[f]) {
+                if (n < 0 || size_t(n) <= f || !compatible_semantics(f, size_t(n))) continue;
+                double distance = 0.;
+                for (size_t c = 0; c < 3; ++c) {
+                    const double delta = face_colors[f][c] - face_colors[size_t(n)][c];
+                    distance += delta * delta;
+                }
+                if (distance <= .0225) join(uint32_t(f), uint32_t(n));
+            }
+        }
+        BeautyPuzzle result; result.geometry_id = surface.geometry_id; result.face_piece.resize(count);
+        std::map<uint32_t, uint32_t> ids;
+        for (size_t f = 0; f < count; ++f) {
+            if ((f & 4095) == 0) checkpoint();
+            const uint32_t root = find(find, uint32_t(f));
+            auto [it, inserted] = ids.emplace(root, result.next_id);
+            if (inserted) ++result.next_id;
+            result.face_piece[f] = it->second;
+        }
+        return result;
+    }
+
+    static BeautyPuzzle create_slot_regions(const BeautySurface& surface,
+        const std::vector<size_t>& source_slots, std::string basis_signature,
+        const std::vector<int32_t>& semantic_labels = {},
+        const std::vector<float>& semantic_confidence = {},
+        const std::function<bool()>& canceled = {})
+    {
+        check_surface_data(surface);
+        require(!basis_signature.empty() && basis_signature.size() <= 128,
+            "Automatic color regions require a basis identity.");
+        require(source_slots.size() == surface.face_patch.size(),
+            "Automatic source slots belong to different geometry.");
+        require(semantic_labels.empty() || semantic_labels.size() == source_slots.size(),
+            "Semantic hints belong to different geometry.");
+        require(semantic_confidence.empty() || semantic_confidence.size() == source_slots.size(),
+            "Semantic confidence belongs to different geometry.");
+        for (size_t slot : source_slots)
+            require(slot < max_native_color_slots, "Invalid automatic source slot.");
+        for (float confidence : semantic_confidence)
+            require(std::isfinite(confidence) && confidence >= 0.f && confidence <= 1.f,
+                "Invalid semantic confidence.");
+        auto checkpoint = [&] { if (canceled && canceled()) throw std::runtime_error("Puzzle preparation cancelled."); };
+        const size_t count = source_slots.size();
+        std::vector<uint32_t> parent(count), rank(count, 0);
+        std::iota(parent.begin(), parent.end(), 0);
+        const auto find = [&](auto&& self, uint32_t x) -> uint32_t {
+            return parent[x] == x ? x : parent[x] = self(self, parent[x]);
+        };
+        const auto join = [&](uint32_t a, uint32_t b) {
+            a = find(find, a); b = find(find, b);
+            if (a == b) return;
+            if (rank[a] < rank[b]) std::swap(a, b);
+            parent[b] = a;
+            if (rank[a] == rank[b]) ++rank[a];
+        };
+        for (size_t face = 0; face < count; ++face) {
+            if ((face & 4095) == 0) checkpoint();
+            for (int32_t neighbor : surface.face_neighbors[face])
+                if (neighbor >= 0 && size_t(neighbor) > face &&
+                    source_slots[face] == source_slots[size_t(neighbor)])
+                    join(uint32_t(face), uint32_t(neighbor));
+        }
+        BeautyPuzzle result;
+        result.geometry_id = surface.geometry_id;
+        result.automatic_basis_signature = std::move(basis_signature);
+        result.face_piece.resize(count);
+        std::map<uint32_t, uint32_t> ids;
+        std::map<uint32_t, std::map<int32_t, double>> votes;
+        std::map<uint32_t, double> vote_totals;
+        for (size_t face = 0; face < count; ++face) {
+            if ((face & 4095) == 0) checkpoint();
+            const uint32_t root = find(find, uint32_t(face));
+            auto [entry, inserted] = ids.emplace(root, result.next_id);
+            if (inserted) ++result.next_id;
+            const uint32_t piece = entry->second;
+            result.face_piece[face] = piece;
+            result.region_source_slots.emplace(piece, source_slots[face]);
+            if (!semantic_labels.empty() && semantic_labels[face] >= 0) {
+                const double confidence = semantic_confidence.empty() ? 1.0 : semantic_confidence[face];
+                const double weight = surface.areas[face] * confidence;
+                votes[piece][semantic_labels[face]] += weight;
+                vote_totals[piece] += weight;
+            }
+        }
+        for (const auto& piece : votes) {
+            int32_t winner = -1;
+            double best = -1.0;
+            for (const auto& vote : piece.second)
+                if (vote.second > best || (vote.second == best && vote.first < winner)) {
+                    winner = vote.first;
+                    best = vote.second;
+                }
+            if (winner >= 0 && best >= 0.0) {
+                result.region_semantic_labels[piece.first] = winner;
+                const double total = vote_totals[piece.first];
+                result.region_semantic_confidence[piece.first] = total > 0.0 ? float(best / total) : 0.f;
+            }
+        }
+        checkpoint();
+        return result;
+    }
+
     // A coarse editing partition, distinct from the legacy micro-piece preview.
     // The caller must bind semantic labels to this exact surface before passing
     // them in; -1 is unknown, nonnegative values identify semantic regions.
@@ -471,6 +626,31 @@ struct BeautyPuzzle {
     std::vector<size_t> faces(uint32_t id) const {
         std::vector<size_t> result;
         for (size_t f = 0; f < face_piece.size(); ++f) if (face_piece[f] == id) result.push_back(f);
+        return result;
+    }
+
+    static bool semantic_label_matches_region(int32_t value, const std::string& region) {
+        using Label = SemanticColoring::Label;
+        if (value < 0 || value >= int32_t(SemanticColoring::label_count)) return false;
+        const auto label = Label(value);
+        if (region == "hair") return label == Label::Hair;
+        if (region == "skin") return label == Label::FaceSkin || label == Label::BodySkin;
+        if (region == "eyes") return label == Label::EyeSclera || label == Label::Iris || label == Label::Eyebrow;
+        if (region == "lips") return label == Label::Lips || label == Label::MouthInterior;
+        if (region == "clothes") return label == Label::Clothes || label == Label::Accessories;
+        return false;
+    }
+
+    // Semantics annotate an already fixed native-slot partition. A shortcut
+    // selection therefore returns every face in each winning region rather
+    // than the subset of faces that supplied the semantic votes.
+    std::vector<size_t> semantic_region_faces(const std::string& region) const {
+        std::set<uint32_t> pieces;
+        for (const auto& item : region_semantic_labels)
+            if (semantic_label_matches_region(item.second, region)) pieces.insert(item.first);
+        std::vector<size_t> result;
+        for (size_t face = 0; face < face_piece.size(); ++face)
+            if (pieces.count(face_piece[face])) result.push_back(face);
         return result;
     }
 
@@ -946,7 +1126,8 @@ struct BeautyPuzzle {
             start = end;
         }
         for (const auto& item : colors) saved_colors.push_back({{"id", item.first}, {"rgba", item.second}});
-        Json result={{"schema", !target_colors.empty()?"orca.beauty-puzzle/v4":palette.empty()?"orca.beauty-puzzle/v1":mixed_recipes.empty()?"orca.beauty-puzzle/v2":"orca.beauty-puzzle/v3"}, {"geometry_id", geometry_id},
+        const bool native_regions = !automatic_basis_signature.empty();
+        Json result={{"schema", native_regions?"orca.beauty-puzzle/v5":!target_colors.empty()?"orca.beauty-puzzle/v4":palette.empty()?"orca.beauty-puzzle/v1":mixed_recipes.empty()?"orca.beauty-puzzle/v2":"orca.beauty-puzzle/v3"}, {"geometry_id", geometry_id},
                 {"face_count", face_piece.size()}, {"next_id", next_id},
                 {"colors", std::move(saved_colors)}};
         result["piece_runs"]=std::move(runs);
@@ -967,6 +1148,16 @@ struct BeautyPuzzle {
             result["target_colors"]=Json::array();
             for(const auto& item:target_colors)result["target_colors"].push_back({{"id",item.first},{"rgba",item.second}});
         }
+        if (native_regions) {
+            result["automatic_basis_signature"] = automatic_basis_signature;
+            result["region_source_slots"] = Json::array();
+            for (const auto& item : region_source_slots)
+                result["region_source_slots"].push_back({item.first, item.second});
+            result["region_semantics"] = Json::array();
+            for (const auto& item : region_semantic_labels)
+                result["region_semantics"].push_back({item.first, item.second,
+                    region_semantic_confidence.count(item.first) ? region_semantic_confidence.at(item.first) : 0.f});
+        }
         return result;
     }
 
@@ -974,10 +1165,18 @@ struct BeautyPuzzle {
         require(face_count > 0 && face_count <= max_faces && !geometry.empty() && geometry.size() <= 256,
                 "Invalid puzzle surface identity.");
         const auto schema=json.is_object()?json.value("schema",std::string{}):std::string{};
-        const bool targets=schema=="orca.beauty-puzzle/v4";
-        const bool mixed=targets || schema=="orca.beauty-puzzle/v3",matched=mixed || schema=="orca.beauty-puzzle/v2";
-        require(json.is_object() && ((json.size()==6 && schema=="orca.beauty-puzzle/v1") || (matched && json.size()==(targets?10:mixed?9:8))),
+        const bool native_regions=schema=="orca.beauty-puzzle/v5";
+        const bool targets=native_regions ? json.contains("target_colors") : schema=="orca.beauty-puzzle/v4";
+        const bool mixed=native_regions ? json.contains("mixed_recipes") : targets || schema=="orca.beauty-puzzle/v3";
+        const bool matched=native_regions ? json.contains("palette") || json.contains("filament_slots") : mixed || schema=="orca.beauty-puzzle/v2";
+        const size_t expected_fields = 6 + (matched ? 2 : 0) + (mixed ? 1 : 0) + (targets ? 1 : 0) + (native_regions ? 3 : 0);
+        require(json.is_object() && ((schema=="orca.beauty-puzzle/v1" && json.size()==6) ||
+            ((schema=="orca.beauty-puzzle/v2" || schema=="orca.beauty-puzzle/v3" || schema=="orca.beauty-puzzle/v4" || native_regions) &&
+             json.size()==expected_fields)),
                 "Unsupported puzzle record.");
+        require(!native_regions || (json.contains("automatic_basis_signature") &&
+            json.contains("region_source_slots") && json.contains("region_semantics")),
+            "Incomplete automatic region metadata.");
         require(json.at("geometry_id") == geometry && integer(json.at("face_count"), max_faces) == face_count,
                 "Puzzle record belongs to different geometry.");
         BeautyPuzzle result;
@@ -1054,6 +1253,32 @@ struct BeautyPuzzle {
                     color[ch]=float(value);
                 }
                 require(result.target_colors.emplace(id,color).second,"Repeated puzzle target identity.");
+            }
+        }
+        if (native_regions) {
+            require(json.at("automatic_basis_signature").is_string(), "Invalid automatic basis identity.");
+            result.automatic_basis_signature = json.at("automatic_basis_signature").get<std::string>();
+            const auto& slots = json.at("region_source_slots");
+            require(slots.is_array() && slots.size() <= face_count, "Invalid automatic source slots.");
+            for (const auto& item : slots) {
+                require(item.is_array() && item.size() == 2, "Invalid automatic source slot.");
+                require(result.region_source_slots.emplace(uint32_t(integer(item[0], max_id - 1)),
+                    size_t(integer(item[1], max_native_color_slots - 1))).second,
+                    "Repeated automatic source slot.");
+            }
+            const auto& semantics = json.at("region_semantics");
+            require(semantics.is_array() && semantics.size() <= face_count, "Invalid region semantics.");
+            for (const auto& item : semantics) {
+                require(item.is_array() && item.size() == 3 && item[1].is_number_integer() &&
+                    item[1].get<int64_t>() >= 0 && item[2].is_number(), "Invalid region semantic vote.");
+                const uint32_t id = uint32_t(integer(item[0], max_id - 1));
+                const int64_t label = item[1].get<int64_t>();
+                const double confidence = item[2].get<double>();
+                require(label <= std::numeric_limits<int32_t>::max() && std::isfinite(confidence) &&
+                    confidence >= 0.0 && confidence <= 1.0, "Invalid region semantic confidence.");
+                require(result.region_semantic_labels.emplace(id, int32_t(label)).second &&
+                    result.region_semantic_confidence.emplace(id, float(confidence)).second,
+                    "Repeated region semantic vote.");
             }
         }
         result.check_state();
@@ -1775,6 +2000,21 @@ private:
             require(id > 0 && id < next_id, "Puzzle partition contains an invalid identity.");
             ids.insert(id);
         }
+        require(automatic_basis_signature.size() <= 128,
+            "Automatic color basis identity is too long.");
+        if (automatic_basis_signature.empty())
+            require(region_source_slots.empty() && region_semantic_labels.empty() && region_semantic_confidence.empty(),
+                "Automatic region metadata requires a basis identity.");
+        for (const auto& item : region_source_slots)
+            require(ids.count(item.first) && item.second < max_native_color_slots,
+                "Automatic source slot refers to a missing piece.");
+        for (const auto& item : region_semantic_labels)
+            require(ids.count(item.first) && item.second >= 0,
+                "Semantic label refers to a missing piece.");
+        for (const auto& item : region_semantic_confidence)
+            require(ids.count(item.first) && region_semantic_labels.count(item.first) &&
+                std::isfinite(item.second) && item.second >= 0.f && item.second <= 1.f,
+                "Semantic confidence refers to a missing piece.");
         require(colors.size() <= ids.size(), "Too many puzzle color overrides.");
         for (const auto& item : colors) {
             require(ids.count(item.first) != 0, "Puzzle color refers to a missing piece.");

@@ -5,6 +5,7 @@
 #include "SemanticRegionEvidence.hpp"
 #include "PortraitShapeDetails.hpp"
 #include "PortraitOptimization.hpp"
+#include "PortraitColorBlockPostprocess.hpp"
 #include <filesystem>
 #include <memory>
 
@@ -42,8 +43,10 @@ public:
         size_t face_count = 0;
         FaceColors faces;
         AI::SemanticColoring::SubfaceColors subfaces;
+        std::shared_ptr<const PortraitColorBlocks::Result> color_blocks;
     };
     struct Result {
+        std::shared_ptr<PortraitColorBlocks::Result> color_blocks;
         GLModel::Geometry geometry;
         FaceColors automatic;
         AI::SemanticColoring::SubfaceColors automatic_subfaces;
@@ -66,6 +69,7 @@ public:
         size_t parent_repair_cells {0};
         std::string parent_repair_status;
         nlohmann::json parent_repair_audit;
+        bool analysis_only {false};
     };
     ModelSemanticColoring(std::filesystem::path runtime, std::filesystem::path cache);
     ~ModelSemanticColoring();
@@ -79,7 +83,10 @@ public:
                  bool allow_boundary_upgrade = true,
                  std::map<std::string, Color> manual_cells = {},
                  std::shared_ptr<PortraitOptimizationTask> progress = {},
-                 std::shared_ptr<const SavedAppearance> saved_appearance = {});
+                 std::shared_ptr<const SavedAppearance> saved_appearance = {},
+                 size_t automatic_color_count = 6,
+                 bool analysis_only = false,
+                 bool color_block_postprocess = false);
     void cancel();
     std::unique_ptr<Result> poll();
     bool busy() const;

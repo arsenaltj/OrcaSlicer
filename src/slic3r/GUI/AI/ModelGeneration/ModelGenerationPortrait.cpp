@@ -61,98 +61,34 @@ wxWindow* ModelGenerationPanel::build_portrait_optimization(wxWindow* parent)
 {
     auto* wrapper = new wxPanel(parent);
     wrapper->SetBackgroundColour(parent->GetBackgroundColour());
-    auto* layout = new wxBoxSizer(wxVERTICAL);
-    m_portrait_mode_choice = m_model_preview->build_workbench_mode(wrapper,
-        [this](bool portrait) { request_semantic_mode(portrait ? SemanticMode::Portrait : SemanticMode::General); },
-        [this] { cancel_portrait_optimization(); });
-    layout->Add(m_portrait_mode_choice, 0, wxEXPAND);
+    wrapper->SetSizer(new wxBoxSizer(wxVERTICAL));
+    // Portrait recoloring and the ten-color/four-to-six-color fallback are
+    // frozen.  The only user entry is Beauty Workbench -> Automatic Partition,
+    // which requests semantic labels without changing native colors.
     m_model_preview->set_portrait_mode(false);
-    m_model_preview->set_portrait_input_changed([this] {
-        if (m_portrait_task && m_portrait_task->snapshot().running()) {
-            const auto current_colors = m_model_preview->color_trial_state();
-            cancel_portrait_optimization();
-            m_model_preview->restore_color_trial_without_recognition(current_colors);
-            if (m_portrait_status) m_portrait_status->SetLabel(_L("配色输入已变化，优化已取消，请重新优化。"));
-        }
-    });
-    m_portrait_card = new wxPanel(wrapper);
-    m_portrait_card->SetBackgroundColour(parent->GetBackgroundColour());
-    auto* card = new wxBoxSizer(wxVERTICAL);
-    m_portrait_start = workbench_button(m_portrait_card, _L("重新优化人像区域"));
-    m_portrait_start->SetMinSize(FromDIP(wxSize(-1, 48)));
-    m_portrait_start->SetBackgroundColor(StateColor(
-        std::pair<wxColour,int>(wxColour(75,75,80), StateColor::Disabled),
-        std::pair<wxColour,int>(wxColour(255,212,90), StateColor::Hovered),
-        std::pair<wxColour,int>(wxColour(255,194,39), StateColor::Normal)));
-    m_portrait_start->SetTextColor(StateColor(wxColour(22,22,25)));
-    m_portrait_start->SetFont(wxGetApp().bold_font());
-    card->Add(m_portrait_start, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    m_portrait_start->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        if (m_portrait_draft_before) {
-            if (!post_generation_ui_state().can_edit) return;
-            if (m_beauty_transactions && !m_beauty_transactions->begin(
-                BeautyWorkbenchTransactionController::OperationKind::SemanticReoptimization)) return;
-            m_portrait_task = std::make_shared<PortraitOptimizationTask>(ModelGenerationPresentation::new_request_id(), m_displayed_model_path.string(), m_sequence);
-            m_portrait_task->evidence("恢复同源草稿：本次仅重建裁切网格并保存，不重新识别。原有颜色与保护边界保留；耳根、发际、颈侧及眉周的未确认残色仍需检查。",true);
-            m_portrait_cancel_requested = false; m_portrait_preview_drawn = false;
-            m_beauty_reoptimization_before = m_portrait_draft_before;
-            export_semantic_candidate();
-        } else {
-            wxString reason;
-            if (!request_portrait_optimization(reason)) m_portrait_status->SetLabel(reason);
-        }
-    });
-    m_portrait_status = new wxStaticText(m_portrait_card, wxID_ANY, _L("本地人像识别，结果先保存为候选。"));
-    m_portrait_status->SetForegroundColour(wxColour(230,230,234));
-    m_portrait_status->SetMinSize(FromDIP(wxSize(1,-1)));
-    card->Add(m_portrait_status, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
-    m_portrait_gauge = new wxGauge(m_portrait_card, wxID_ANY, 100);
-    card->Add(m_portrait_gauge, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
-    m_portrait_time = new wxStaticText(m_portrait_card, wxID_ANY, wxEmptyString);
-    m_portrait_time->SetForegroundColour(wxColour(180,180,188));
-    card->Add(m_portrait_time, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
-    auto* commands = new wxBoxSizer(wxHORIZONTAL);
-    m_portrait_cancel = workbench_button(m_portrait_card, _L("取消优化"));
-    commands->Add(m_portrait_cancel, 1, wxRIGHT, FromDIP(4));
-    m_portrait_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { cancel_portrait_optimization(); });
-    auto* details = workbench_button(m_portrait_card, _L("识别依据"));
-    commands->Add(details, 1);
-    details->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        auto state = m_portrait_task ? m_portrait_task->snapshot() : PortraitOptimizationState{};
-        wxString message = wxString::FromUTF8(state.evidence);
-        if (message.empty()) message = _L("保存结果会按原始模型和几何身份恢复。重新优化时只复用身份匹配的证据；缺少证据的区域保留原外观。");
-        message += _L("\n\n保护边界未变化不代表识别准确；请结合原色对照检查五官位置。");
-        if (!state.reason.empty()) message += "\n\n" + wxString::FromUTF8(state.reason);
-        if (!state.request_id.empty()) message += "\n\n" + _L("诊断 ID：") + wxString::FromUTF8(state.request_id);
-        wxMessageBox(message, _L("识别依据与未处理原因"), wxOK | wxICON_INFORMATION, wxGetTopLevelParent(this));
-    });
-    card->Add(commands, 0, wxEXPAND);
-    m_portrait_card->SetSizer(card); layout->Add(m_portrait_card, 0, wxEXPAND);
-    wrapper->SetSizer(layout); m_portrait_card->Hide();
-    m_portrait_timer.SetOwner(this, wxWindow::NewControlId());
-    Bind(wxEVT_TIMER, [this](wxTimerEvent&) { update_portrait_optimization(); }, m_portrait_timer.GetId());
-    if (portrait_recognition_enabled()) m_portrait_timer.Start(250);
-    else wrapper->Hide();
+    m_model_preview->set_portrait_input_changed({});
+    wrapper->Hide();
     return wrapper;
 }
 
 bool ModelGenerationPanel::request_semantic_mode(SemanticMode mode)
 {
+    if (mode == SemanticMode::Portrait) {
+        if (m_model_preview) m_model_preview->set_portrait_mode(false);
+        m_semantic_mode = SemanticMode::General;
+        return false;
+    }
     if (mode == SemanticMode::Portrait && !portrait_recognition_enabled()) return false;
     if (m_shutdown || !m_model_preview || (m_portrait_task && m_portrait_task->snapshot().running()) ||
         m_portrait_draft_before || !m_finishing_candidate.empty()) return false;
     if (mode == m_semantic_mode) return true;
-    const bool first = !m_portrait_entered;
     m_semantic_mode = mode;
     m_model_preview->set_portrait_mode(mode == SemanticMode::Portrait);
     if (mode == SemanticMode::Portrait) {
         m_portrait_entered = true;
-        const bool start = portrait_should_start_on_enter(first, m_model_preview->has_saved_portrait_result(),
-            workbench_snapshot().can_reoptimize_regions && !m_workbench_check_running);
-        if (start) {
-            wxString reason;
-            if (!request_portrait_optimization(reason)) m_portrait_status->SetLabel(reason);
-        }
+        // Recognition is an explicit user action. Entering portrait mode only
+        // prepares the lightweight controls; it must not start a local worker
+        // or block generation/import on its own.
     }
     update_portrait_optimization(); publish_workbench_state(); return true;
 }
@@ -162,8 +98,66 @@ void ModelGenerationPanel::reset_portrait_session()
     if (m_portrait_task) m_portrait_task->finish(PortraitOutcome::Cancelled);
     m_portrait_task.reset(); m_portrait_draft_before.reset(); m_portrait_preview_draft.reset();
     m_portrait_entered = m_portrait_preview_drawn = m_portrait_cancel_requested = false;
+    m_auto_portrait_active = false;
+    m_auto_portrait_geometry.clear();
+    m_portrait_reoptimization_pending = false;
+    m_portrait_reoptimization_count = 0;
+    m_portrait_observed_automatic_count = 0;
     m_semantic_mode = SemanticMode::General;
     if (m_model_preview) { m_model_preview->set_portrait_mode(false); m_model_preview->after_next_preview_frame({}); }
+}
+
+void ModelGenerationPanel::queue_portrait_reoptimization()
+{
+    m_portrait_reoptimization_pending = false;
+    m_portrait_reoptimization_count = 0;
+    m_auto_portrait_active = false;
+    return;
+    if (m_shutdown || !m_model_preview) return;
+    const auto current_colors = m_model_preview->color_trial_state();
+    const bool count_changed = current_colors.automatic_count != m_portrait_observed_automatic_count;
+    m_portrait_observed_automatic_count = current_colors.automatic_count;
+    const bool automatic_source = current_colors.source == 0;
+    const bool supported = automatic_source && m_model_preview->portrait_color_count_supported();
+    const bool running = m_portrait_task && m_portrait_task->snapshot().running();
+    const bool known_portrait = m_model_preview->semantic_person_detected() ||
+        m_model_preview->has_modern_portrait_color_blocks() || m_auto_portrait_active;
+
+    // A palette change invalidates an in-flight candidate. Preserve the new
+    // slider state across the rollback performed by cancellation, then queue
+    // one replacement request below.
+    if (running) {
+        cancel_portrait_optimization();
+        m_model_preview->restore_color_trial_without_recognition(current_colors);
+    }
+
+    if (!supported) {
+        m_portrait_reoptimization_pending = false;
+        m_portrait_reoptimization_count = 0;
+        m_auto_portrait_active = false;
+        if (!m_model_preview->portrait_color_count_supported()) {
+            // Returning to four-to-six colors on the same model must be able
+            // to run a fresh detection after the ordinary palette is restored.
+            m_auto_portrait_geometry.clear();
+            m_semantic_mode = SemanticMode::General;
+            m_model_preview->set_portrait_mode(false);
+            if (m_portrait_card) m_portrait_card->Hide();
+        }
+        return;
+    }
+    // Track switches and manual color-block edits use the same invalidation
+    // callback but do not change the automatic suggestion count. They must
+    // not recursively launch a new optimizer task.
+    if (!known_portrait || !count_changed) return;
+
+    m_portrait_reoptimization_pending = true;
+    m_portrait_reoptimization_count = current_colors.automatic_count;
+    m_portrait_reoptimization_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(450);
+    if (m_portrait_status)
+        m_portrait_status->SetLabel(wxString::Format(
+            _L("自动建议已调整至 %d 色，等待自动重新优化……"), m_portrait_reoptimization_count));
+    BOOST_LOG_TRIVIAL(info) << "Portrait reoptimization queued: geometry="
+        << m_model_preview->geometry_id() << ", colors=" << m_portrait_reoptimization_count;
 }
 
 void ModelGenerationPanel::cancel_portrait_optimization()
@@ -230,8 +224,90 @@ void ModelGenerationPanel::portrait_preview_ready()
 
 void ModelGenerationPanel::update_portrait_optimization()
 {
+    m_portrait_reoptimization_pending = false;
+    m_portrait_reoptimization_count = 0;
+    m_auto_portrait_active = false;
+    if (m_portrait_card) m_portrait_card->Hide();
+    return;
     if (m_shutdown || !m_portrait_card || !m_model_preview) return;
-    if (m_semantic_mode != SemanticMode::Portrait &&
+    if (!m_model_preview->portrait_color_count_supported()) {
+        m_portrait_reoptimization_pending = false;
+        m_portrait_reoptimization_count = 0;
+        m_auto_portrait_active = false;
+        m_auto_portrait_geometry.clear();
+        m_portrait_card->Hide();
+        return;
+    }
+    if (m_portrait_reoptimization_pending &&
+        std::chrono::steady_clock::now() >= m_portrait_reoptimization_deadline) {
+        const auto trial = m_model_preview->color_trial_state();
+        if (trial.source != 0 || trial.automatic_count != m_portrait_reoptimization_count) {
+            m_portrait_reoptimization_pending = false;
+            m_portrait_reoptimization_count = 0;
+        } else if ((!m_portrait_task || !m_portrait_task->snapshot().running()) &&
+            !m_portrait_draft_before && m_finishing_candidate.empty() &&
+            !m_workbench_check_running && !m_workbench_import_running &&
+            post_generation_ui_state().can_edit && m_model_preview->semantic_reoptimization_available()) {
+            const int requested_count = m_portrait_reoptimization_count;
+            m_portrait_reoptimization_pending = false;
+            m_portrait_reoptimization_count = 0;
+            m_auto_portrait_active = true;
+            m_auto_portrait_geometry = m_model_preview->geometry_id();
+            m_model_preview->activate_automatic_portrait_probe();
+            request_semantic_mode(SemanticMode::Portrait);
+            wxString reason;
+            if (!request_portrait_optimization(reason)) {
+                m_auto_portrait_active = false;
+                m_semantic_mode = SemanticMode::General;
+                m_model_preview->set_portrait_mode(false);
+                if (m_portrait_status) m_portrait_status->SetLabel(reason);
+                BOOST_LOG_TRIVIAL(warning) << "Queued portrait reoptimization failed to start: colors="
+                    << requested_count << ", reason=" << reason.ToUTF8().data();
+            } else {
+                BOOST_LOG_TRIVIAL(info) << "Queued portrait reoptimization started: geometry="
+                    << m_auto_portrait_geometry << ", colors=" << requested_count;
+            }
+            return;
+        }
+    }
+    // Run one lightweight portrait probe after the ordinary color preview is
+    // available. The semantic worker owns the actual person detection; a
+    // negative result is handled by the completion callback and returns to
+    // ordinary coloring without showing a blocking portrait workflow.
+    if (m_semantic_mode == SemanticMode::General &&
+        (!m_portrait_task || !m_portrait_task->snapshot().running()) &&
+        !m_portrait_draft_before && m_finishing_candidate.empty() &&
+        !m_workbench_check_running && !m_workbench_import_running &&
+        (!m_model_preview->has_saved_portrait_result() || !m_model_preview->has_modern_portrait_color_blocks()) &&
+        m_model_preview->semantic_reoptimization_available() &&
+        // Historical assets become editable only after their preview and
+        // metadata have been published. Do not consume the geometry key while
+        // that transition is still in progress; doing so would suppress the
+        // one automatic migration attempt for an old portrait result.
+        post_generation_ui_state().can_edit) {
+        const auto geometry = m_model_preview->geometry_id();
+        if (!geometry.empty() && geometry != m_auto_portrait_geometry) {
+            m_portrait_observed_automatic_count = m_model_preview->color_trial_state().automatic_count;
+            m_auto_portrait_geometry = geometry;
+            m_auto_portrait_active = true;
+            m_model_preview->activate_automatic_portrait_probe();
+            request_semantic_mode(SemanticMode::Portrait);
+            wxString reason;
+            if (!request_portrait_optimization(reason)) {
+                m_auto_portrait_active = false;
+                m_semantic_mode = SemanticMode::General;
+                m_model_preview->set_portrait_mode(false);
+                BOOST_LOG_TRIVIAL(info) << "Automatic portrait probe skipped: " << reason.ToUTF8().data();
+            }
+            return;
+        }
+    }
+    // A saved V2 result must still reach the visibility refresh after the
+    // hidden legacy selector returns to General; otherwise the old early
+    // return leaves the re-optimization card permanently hidden.
+    const bool portrait_ready = m_model_preview->semantic_person_detected() ||
+        m_model_preview->has_modern_portrait_color_blocks();
+    if (m_semantic_mode != SemanticMode::Portrait && !portrait_ready &&
         !m_portrait_card->IsShown() && (!m_portrait_task || !m_portrait_task->snapshot().running())) return;
     if (m_portrait_task && m_portrait_task->snapshot().running() && m_portrait_preview_draft &&
         m_model_preview->beauty_editor_failed()) {
@@ -247,30 +323,60 @@ void ModelGenerationPanel::update_portrait_optimization()
         finish_portrait_optimization(PortraitOutcome::DraftOnly,_L("预览选区或裁切编辑数据恢复失败；原草稿已保留，请重试保存。"));
         return;
     }
-    if (m_portrait_task && m_portrait_task->snapshot().running() && m_portrait_preview_drawn &&
+    // A preview frame callback is an optional rendering acknowledgement.  On
+    // some layouts SwapBuffers() can render successfully without reporting a
+    // submitted frame, leaving m_portrait_preview_drawn false forever even
+    // though the candidate is loaded and region preparation has completed.
+    // The candidate is safe to finish once the editor is ready and no
+    // selection/partition worker is active; keep the callback as the fast
+    // path, with the editor state as the reliable fallback.
+    const bool preview_ready_fallback = m_model_preview->region_editing_ready() &&
+        !m_model_preview->selection_busy() && !m_model_preview->region_selection_preparing();
+    if (m_portrait_task && m_portrait_task->snapshot().running() &&
+        (m_portrait_preview_drawn || preview_ready_fallback) &&
         !m_finishing_candidate.empty() && !m_model_preview->selection_busy() &&
         !m_model_preview->region_selection_preparing() && !(m_beauty_controls && m_beauty_controls->partitioning())) {
+        if (!m_portrait_preview_drawn)
+            BOOST_LOG_TRIVIAL(info) << "Portrait preview frame acknowledgement missing; completing from prepared editor state";
+        m_portrait_preview_drawn = true;
         m_portrait_preview_draft.reset();
         clear_portrait_draft();
         m_portrait_draft_before.reset();
-        finish_portrait_optimization(PortraitOutcome::Ready); return;
+        finish_portrait_optimization(PortraitOutcome::Ready);
+        if (m_auto_portrait_active && !m_finishing_candidate.empty()) {
+            // Automatic migration uses the same publication and undo/history
+            // transaction as the explicit Accept action, but does not leave a
+            // user-facing candidate confirmation step behind.
+            m_auto_portrait_active = false;
+            accept_model_finishing();
+        }
+        return;
     }
     const auto task = m_portrait_task ? m_portrait_task->snapshot() : PortraitOptimizationState{};
-    const bool visible = m_semantic_mode == SemanticMode::Portrait;
+    // A completed V2 result is itself a validated portrait signal.  Keep the
+    // card visible after accepting a candidate even though the hidden legacy
+    // mode selector is returned to General.
+    const bool has_saved_portrait = m_model_preview->has_modern_portrait_color_blocks();
+    const bool visible = m_model_preview->semantic_person_detected() || has_saved_portrait;
     const bool changed = m_portrait_card->IsShown() != visible;
     m_portrait_card->Show(visible);
     const auto state = workbench_snapshot();
     if (m_workbench_project_colors) m_workbench_project_colors->Enable(state.can_edit_project_colors);
     m_portrait_mode_choice->Enable(!task.running() && !m_portrait_draft_before && m_finishing_candidate.empty());
-    m_portrait_start->SetLabel(task.running() ? _L("优化中…") : m_portrait_draft_before ? _L("重试保存裁切草稿") : _L("重新优化人像区域"));
-    m_portrait_start->Enable(!task.running() && ((bool(m_portrait_draft_before) && state.actions.can_edit) || state.can_reoptimize_regions) && !m_workbench_check_running);
+    m_portrait_start->SetLabel(task.running() ? _L("优化中…") : m_portrait_draft_before ? _L("重试保存裁切草稿") : has_saved_portrait ? _L("重新优化") : _L("人像颜色块后处理"));
+    m_portrait_start->Enable(!m_portrait_reoptimization_pending && !task.running() &&
+        ((bool(m_portrait_draft_before) && state.actions.can_edit) || state.can_reoptimize_regions) && !m_workbench_check_running);
     m_portrait_cancel->Show(task.running() || bool(m_portrait_draft_before));
     m_portrait_cancel->SetLabel(task.running() ? _L("取消优化") : _L("放弃草稿"));
     m_portrait_cancel->Enable(!m_portrait_cancel_requested || bool(m_portrait_draft_before));
     auto* gauge = static_cast<wxGauge*>(m_portrait_gauge);
     gauge->Show(task.running() || (task.percent == 100 && !m_finishing_candidate.empty()));
     wxString text;
-    if (task.running()) {
+    if (m_portrait_reoptimization_pending && !task.running()) {
+        text = wxString::Format(_L("自动建议已调整至 %d 色，等待自动重新优化……"),
+            m_portrait_reoptimization_count);
+        m_portrait_time->SetLabel(wxEmptyString);
+    } else if (task.running()) {
         text = wxString::Format(_L("优化中 · 步骤 %d/6\n"), int(task.progress.stage) + 1) + stage_name(task.progress.stage);
         if (!task.progress.detail.empty()) text += "\n" + wxString::FromUTF8(task.progress.detail);
         if (task.progress.total) text += wxString::Format(_L(" · %llu/%llu"), (unsigned long long)task.progress.completed, (unsigned long long)task.progress.total);
@@ -322,6 +428,7 @@ void ModelGenerationPanel::update_portrait_optimization()
 
 void ModelGenerationPanel::prepare_portrait_import(AI::ModelImportRequest& request)
 {
+    if(m_model_preview && m_model_preview->portrait_color_blocks())return;
     const auto shapes=m_model_preview ? m_model_preview->portrait_shape_details() : nullptr;
     if (!shapes || !shapes->surface_partition || request.color_mode==AI::ImportColorMode::SingleColor) return;
     // A saved contour is carried by the verified GLB texture. Texture matching
@@ -344,11 +451,20 @@ void ModelGenerationPanel::prepare_portrait_import(AI::ModelImportRequest& reque
 
 bool ModelGenerationPanel::request_portrait_optimization(wxString& reason)
 {
-    if (m_shutdown || m_semantic_mode != SemanticMode::Portrait || m_portrait_draft_before ||
+    reason = _L("人像重配色已停用；请在 3D 美颜工作台点击“自动划区”，按需附加语义标签。");
+    return false;
+    const bool detected_v2_portrait = m_model_preview &&
+        (m_model_preview->semantic_person_detected() || m_model_preview->has_modern_portrait_color_blocks());
+    if (m_shutdown || ((m_semantic_mode != SemanticMode::Portrait) && !detected_v2_portrait) || m_portrait_draft_before ||
         m_workbench_check_running || (m_portrait_task && m_portrait_task->snapshot().running())) {
         reason = _L("请在人像模式下等待检查或当前任务结束；未保存草稿须先保存或放弃。");
         return false;
     }
+
+    // A cached V2 result is already proof that the background detector found
+    // a person. Re-running from the Beauty workbench must not require the
+    // hidden legacy mode selector to be toggled first.
+    if (detected_v2_portrait) m_semantic_mode = SemanticMode::Portrait;
 
         if (!m_model_preview || !post_generation_ui_state().can_edit || !m_finishing_candidate.empty()) {
             reason = _L("当前模型不可编辑，请先完成任务或接受、放弃候选版本。");
@@ -387,8 +503,33 @@ bool ModelGenerationPanel::request_portrait_optimization(wxString& reason)
         const bool unlocked = m_model_preview->portrait_shapes_unlocked();
         m_model_preview->set_semantic_completion_callback([this, task, sequence, edit_revision, manual_colors, model_path, unlocked](bool success) {
             if (m_shutdown || m_sequence != sequence || m_portrait_task != task) return;
+            const bool automatic = m_auto_portrait_active;
+            if (success && !m_model_preview->semantic_person_detected()) {
+                success = false;
+                if (automatic) {
+                    if (auto before = std::move(m_beauty_reoptimization_before))
+                        restore_beauty_candidate(*before);
+                    finish_portrait_optimization(PortraitOutcome::Failed, _L("未检测到人像，已沿用普通配色。"));
+                    m_auto_portrait_active = false;
+                    m_semantic_mode = SemanticMode::General;
+                    m_model_preview->set_portrait_mode(false);
+                    refresh_model_finishing();
+                    return;
+                }
+            }
             if (!success) {
                 const auto error = m_model_preview->semantic_error();
+                if (automatic) {
+                    if (auto before = std::move(m_beauty_reoptimization_before))
+                        restore_beauty_candidate(*before);
+                    if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "automatic portrait probe unavailable");
+                    finish_portrait_optimization(PortraitOutcome::Failed, error);
+                    m_auto_portrait_active = false;
+                    m_semantic_mode = SemanticMode::General;
+                    m_model_preview->set_portrait_mode(false);
+                    refresh_model_finishing();
+                    return;
+                }
                 const bool edited = edit_revision != m_model_preview->leaf_edit_revision() ||
                     manual_colors != m_model_preview->face_color_overrides() ||
                     model_path != m_displayed_model_path || unlocked != m_model_preview->portrait_shapes_unlocked();

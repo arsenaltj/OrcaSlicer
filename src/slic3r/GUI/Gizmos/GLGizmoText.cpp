@@ -460,7 +460,7 @@ bool GLGizmoText::on_mouse(const wxMouseEvent &mouse_event)
     bool grabber_contains_mouse = (get_hover_id() != -1);
 
     if (mouse_event.LeftDown()) {
-        if ((!control_down || grabber_contains_mouse) &&            
+        if ((!control_down || grabber_contains_mouse) &&
             gizmo_event(SLAGizmoEventType::LeftDown, mouse_pos, mouse_event.ShiftDown(), mouse_event.AltDown(), false))
             // the gizmo got the event and took some action, there is no need
             // to do anything more
@@ -542,7 +542,7 @@ void GLGizmoText::on_render()
 
     ModelObject *mo = nullptr;
     mo = m_c->selection_info()->model_object();
-    
+
     if (mo == nullptr) {
         const Selection &selection = m_parent.get_selection();
         mo = selection.get_model()->objects[m_object_idx];
@@ -555,7 +555,7 @@ void GLGizmoText::on_render()
 
     // First check that the mouse pointer is on an object.
     const Selection &    selection = m_parent.get_selection();
-    const ModelInstance *mi        = mo->instances[0];    
+    const ModelInstance *mi        = mo->instances[0];
     Plater *plater = wxGetApp().plater();
     if (!plater)
         return;
@@ -614,7 +614,7 @@ void GLGizmoText::on_render()
             shader->stop_using();
         }
     }
-    
+
     delete_temp_preview_text_volume();
 
     if (m_is_modify && !m_need_update_text)
@@ -710,7 +710,7 @@ void GLGizmoText::push_button_style(bool pressed) {
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(238 / 255.f, 238 / 255.f, 238 / 255.f, 1.f));
             ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.f, 1.f, 1.f, 1.f));
         }
-    
+
     }
 }
 
@@ -959,7 +959,7 @@ void GLGizmoText::on_render_input_window(float x, float y, float bottom_limit)
 
     float f_scale = m_parent.get_gizmos_manager().get_layout_scale();
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 4.0f * f_scale));
-    
+
     ImGui::SameLine(caption_size);
     ImGui::AlignTextToFramePadding();
     if (m_imgui->bbl_checkbox(m_desc["surface"], m_is_surface_text))
@@ -1558,7 +1558,7 @@ bool GLGizmoText::update_raycast_cache(const Vec2d &mouse_position, const Camera
             }
         }
     }
-    
+
     m_rr = {mouse_position, closest_hit_mesh_id, closest_hit, closest_nromal};
     return true;
 }

@@ -1,5 +1,8 @@
 #pragma once
 #include "ModelPreviewColorState.hpp"
+#include "PortraitColorBlockPostprocess.hpp"
+#include "PrinterFilamentRestoreSnapshot.hpp"
+#include <optional>
 #include "slic3r/AI/ModelGeneration/SemanticColoring/SemanticColoring.hpp"
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
 #include "slic3r/GUI/AI/Model/SurfaceSelectionState.hpp"
@@ -12,6 +15,8 @@ struct SecondaryRegionEvidence;
 struct BeautyPartitionSnapshot;
 struct PortraitShapeDetails;
 struct BeautyCandidateSnapshot {
+    std::shared_ptr<const PortraitColorBlocks::Result> color_blocks;
+    std::optional<PrinterFilamentRestoreSnapshot> printer_restore;
     std::shared_ptr<DynamicPrintConfig> project_config;
     std::vector<std::string> project_presets;
     boost::filesystem::path source;

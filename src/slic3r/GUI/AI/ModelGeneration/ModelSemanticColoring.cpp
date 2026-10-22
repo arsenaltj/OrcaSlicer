@@ -21,10 +21,30 @@
 #include <numeric>
 #include <thread>
 #include <boost/dll/runtime_symbol_info.hpp>
+#include <boost/log/trivial.hpp>
 
 namespace Slic3r::GUI {
 namespace SC = AI::SemanticColoring;
 namespace {
+std::vector<SC::Color> portrait_intermediate_palette(const SC::MeshSnapshot& source)
+{
+    PreviewPalette::Histogram histogram;
+    const bool vertex=source.vertex_colors.size()==source.mesh.vertices.size();
+    const bool face=source.face_colors.size()==source.mesh.indices.size();
+    for (size_t i=0;i<source.mesh.indices.size();++i) {
+        const auto &tri=source.mesh.indices[i];
+        const Vec3f a=source.mesh.vertices[tri[0]], b=source.mesh.vertices[tri[1]], c=source.mesh.vertices[tri[2]];
+        const double area=double((b-a).cross(c-a).norm())*.5;
+        if (!std::isfinite(area) || area<=0) continue;
+        SC::Color color{};
+        if (vertex) for (size_t k=0;k<3;++k) for (size_t channel=0;channel<3;++channel) color[channel]+=source.vertex_colors[tri[k]][channel]/3.f;
+        else if (face) for (size_t channel=0;channel<3;++channel) color[channel]=source.face_colors[i][channel];
+        else color={.7f,.7f,.7f};
+        const auto channel=[](float value) { return uint32_t(std::lround(std::clamp(value,0.f,1.f)*255.f)); };
+        histogram.add((channel(color[0])<<16)|(channel(color[1])<<8)|channel(color[2]), area);
+    }
+    return histogram.trial_palette(10, {}, true);
+}
 bool red_preview_color(const SC::Color& color)
 {
     SC::Color linear = color;
@@ -317,6 +337,9 @@ struct ModelSemanticColoring::Impl {
         std::map<std::string, Color> manual_cells;
         std::shared_ptr<PortraitOptimizationTask> portrait_progress;
         std::shared_ptr<const SavedAppearance> saved_appearance;
+        size_t automatic_color_count {6};
+        bool analysis_only {false};
+        bool color_block_postprocess {false};
     } request;
     struct Job {
         Request request;
@@ -342,6 +365,7 @@ struct ModelSemanticColoring::Impl {
         worker = std::thread([this, task] {
             const auto started = std::chrono::steady_clock::now();
             auto result = std::make_unique<Result>();
+            result->analysis_only = task->request.analysis_only;
             const auto portrait = task->request.portrait_progress;
             std::string contour_evidence = task->request.shapes
                 ? " 连续边界：恢复已保存的同源细节；父级证据独立校验。" : std::string();
@@ -423,6 +447,63 @@ struct ModelSemanticColoring::Impl {
                     result->error = analysis->error;
                     if (analysis->error.empty() && !analysis->canceled) {
                         cached_analysis = analysis;
+                        // The V2 portrait allocator is opt-in and bounded to
+                        // four, five or six automatic colors. Ordinary semantic
+                        // requests must keep using the palette matcher.
+                        const auto strategy = task->request.color_block_postprocess &&
+                            PortraitColorBlocks::portrait_color_postprocess_supported(task->request.automatic_color_count)
+                            ? PortraitColorBlocks::Strategy::ColorRegionMajorityV2
+                            : PortraitColorBlocks::Strategy::LegacyReadOnly;
+                        if (task->request.analysis_only) {
+                            report({PortraitStage::Recognizing, "语义标签已就绪，原生配色保持不变", 1, 1});
+                        } else if (strategy == PortraitColorBlocks::Strategy::ConnectedColorBlocksV1 ||
+                            strategy == PortraitColorBlocks::Strategy::ColorRegionMajorityV2) {
+                            if(strategy == PortraitColorBlocks::Strategy::ConnectedColorBlocksV1 && task->request.shapes && task->request.shapes->surface_partition)
+                                throw std::runtime_error("此旧版本含连续裁切区域，暂不转换颜色块；已保留原配色和编辑，请使用未优化的原始模型。 ");
+                            // An explicit portrait optimization still needs a
+                            // source-bound local runtime identity.  The
+                            // connected-color postprocess can operate on the
+                            // native analysis alone for ordinary previews,
+                            // but accepting an explicit portrait request
+                            // without the shipped evidence would turn a
+                            // missing runtime into a false success.
+                            if (task->request.portrait_progress && result->region_runtime_identity.empty())
+                                throw std::runtime_error("Local portrait evidence failed: bundled_semantic_runtime_unavailable");
+                            report({PortraitStage::Preparing, "普通配色后构建十色颜色区域", 0, 0});
+                            PortraitColorBlocks::Input input{source, *analysis};
+                            input.strategy = strategy;
+                            input.mapping=task->request.palette; input.targets=task->request.targets;
+                            input.intermediate_palette = portrait_intermediate_palette(source);
+                            input.final_color_count = task->request.automatic_color_count;
+                            if(task->request.saved_appearance) {
+                                // V2 must migrate from the original appearance,
+                                // never expand an already compressed V1/V2
+                                // preview back into the ten-color analysis.
+                                if (strategy == PortraitColorBlocks::Strategy::ConnectedColorBlocksV1) {
+                                    input.processed_faces=task->request.saved_appearance->faces;
+                                    input.processed_subfaces=task->request.saved_appearance->subfaces;
+                                }
+                                input.previous=task->request.saved_appearance->color_blocks;
+                            }
+                            input.processed_faces=SC::compose(input.processed_faces,task->request.manual,true);
+                            result->color_blocks=PortraitColorBlocks::build(input,cancel);
+                            const auto diagnostic=result->color_blocks->diagnostic_summary();
+                            BOOST_LOG_TRIVIAL(info) << "[PortraitColorBlocks] units="
+                                << result->color_blocks->units.size() << " blocks="
+                                << result->color_blocks->current().blocks.size()
+                                << " color_blocked=" << diagnostic.color_blocked_edges
+                                << " semantic_blocked=" << diagnostic.semantic_blocked_edges
+                                << " topology_disconnected=" << diagnostic.topology_blocked_edges
+                                << " nonmanifold=" << diagnostic.nonmanifold_edges
+                                << " historical_locked=" << diagnostic.historical_locked_edges;
+                            result->color_blocks->appearance(result->automatic,result->automatic_subfaces);
+                            result->shape_details=task->request.shapes;
+                            result->geometry=build_semantic_colored_geometry(*task->request.source,
+                                result->automatic,result->automatic_subfaces,cancel,
+                                task->request.shapes ? task->request.shapes->surface_partition.get() : nullptr,
+                                &task->request.manual_cells);
+                            contour_evidence="双轨颜色块后处理；旧父级修复、扩张和全局传播冻结。";
+                        } else {
                         const auto source_automatic = SC::map_palette(
                             source, *analysis, task->request.palette, task->request.portrait);
                         result->automatic = SC::remap_palette_targets(source_automatic,
@@ -716,8 +797,28 @@ struct ModelSemanticColoring::Impl {
                           }
                         }
                         if (portrait && !result->shape_error.empty() &&
-                            (!result->shape_details || !result->shape_details->current_parent_evidence(fingerprint)))
-                            throw std::runtime_error("Local portrait evidence failed: " + result->shape_error);
+                            (!result->shape_details || !result->shape_details->current_parent_evidence(fingerprint))) {
+                            // The lightweight native recognizer deliberately
+                            // does not ship the legacy Python/weights worker
+                            // that produces contour-parent evidence. Native
+                            // face/body recognition is still sufficient for
+                            // the safe whole-face and subface preview, so do
+                            // not turn the expected missing legacy worker into
+                            // a failed optimization. Any other evidence error
+                            // remains fatal and preserves the pre-optimization
+                            // appearance as before.
+                            const bool lightweight_native = !result->region_runtime_identity.empty();
+                            const bool legacy_runtime_missing =
+                                result->shape_error == "bundled_semantic_runtime_unavailable" ||
+                                result->shape_error == "portrait_recognition_disabled";
+                            if (lightweight_native && legacy_runtime_missing) {
+                                result->shape_details.reset();
+                                result->shape_error.clear();
+                                contour_evidence.clear();
+                            } else {
+                                throw std::runtime_error("Local portrait evidence failed: " + result->shape_error);
+                            }
+                        }
                         report({PortraitStage::Coloring, "校验连续裁切，合成手工颜色、受保护细节和父级配色", 0, 0});
                         SC::FaceColors locked_colors;
                         const bool contour_plan=result->shape_details && result->shape_details->surface_partition;
@@ -849,6 +950,7 @@ struct ModelSemanticColoring::Impl {
                             if(contour_plan && result->geometry.is_empty() && !cancel())
                                 throw std::runtime_error("The combined contour editing surface exceeds its safe triangle budget.");
                         }
+                        } // Legacy generation is frozen; old saved results remain readable.
                     }
                 }
             } catch (const std::exception& error) { result->error = error.what(); }
@@ -869,6 +971,7 @@ struct ModelSemanticColoring::Impl {
         });
         } catch (const std::exception& error) {
             task->result = std::make_unique<Result>();
+            task->result->analysis_only = task->request.analysis_only;
             task->result->error = error.what();
             task->done.store(true);
         }
@@ -883,7 +986,10 @@ bool ModelSemanticColoring::request(std::shared_ptr<const Snapshot> source, std:
                                    std::shared_ptr<const PortraitShapeDetails> shapes,std::vector<std::string> palette_roles,
                                    bool allow_boundary_upgrade, std::map<std::string, Color> manual_cells,
                                    std::shared_ptr<PortraitOptimizationTask> progress,
-                                   std::shared_ptr<const SavedAppearance> saved_appearance)
+                                    std::shared_ptr<const SavedAppearance> saved_appearance,
+                                    size_t automatic_color_count,
+                                    bool analysis_only,
+                                    bool color_block_postprocess)
 {
     auto& state = *m_impl;
     auto configuration = provider_configuration(state.runtime);
@@ -891,6 +997,7 @@ bool ModelSemanticColoring::request(std::shared_ptr<const Snapshot> source, std:
         const auto& previous=state.request.saved_appearance;
         if(!previous || !saved_appearance) return bool(previous)==bool(saved_appearance);
         return previous->geometry_id==saved_appearance->geometry_id && previous->face_count==saved_appearance->face_count &&
+            previous->color_blocks==saved_appearance->color_blocks &&
             previous->faces==saved_appearance->faces && previous->subfaces.size()==saved_appearance->subfaces.size() &&
             std::equal(previous->subfaces.begin(),previous->subfaces.end(),saved_appearance->subfaces.begin(),
                 [](const auto& a,const auto& b){return a.face_id==b.face_id && a.path==b.path && a.color==b.color;});
@@ -899,11 +1006,15 @@ bool ModelSemanticColoring::request(std::shared_ptr<const Snapshot> source, std:
         state.request.targets == targets && state.request.portrait == portrait_card &&
         state.request.manual == manual && state.request.configuration == configuration &&
         state.request.source_path == source_path && state.request.shapes == shapes && state.request.palette_roles==palette_roles &&
-        state.request.allow_boundary_upgrade == allow_boundary_upgrade && state.request.manual_cells == manual_cells && same_appearance()) return false;
+        state.request.allow_boundary_upgrade == allow_boundary_upgrade && state.request.manual_cells == manual_cells &&
+        state.request.automatic_color_count == automatic_color_count && state.request.analysis_only == analysis_only &&
+        state.request.color_block_postprocess == color_block_postprocess &&
+        same_appearance()) return false;
     if (state.job) state.job->canceled.store(true);
     state.request = {std::move(source), std::move(palette), std::move(targets), std::move(portrait_card),std::move(palette_roles),
         std::move(manual), std::move(configuration), ++state.generation, std::move(source_path), std::move(shapes),
-        allow_boundary_upgrade, std::move(manual_cells), std::move(progress),std::move(saved_appearance)};
+        allow_boundary_upgrade, std::move(manual_cells), std::move(progress),std::move(saved_appearance),
+        automatic_color_count, analysis_only, color_block_postprocess};
     state.wanted = true; state.pending = true; state.start(); return true;
 }
 void ModelSemanticColoring::cancel() {

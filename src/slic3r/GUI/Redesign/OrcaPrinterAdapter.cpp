@@ -47,7 +47,7 @@ GLCanvas3D* prepare_plate_renderer(Plater* plater)
         const auto size = plater->GetClientSize();
         imgui->set_display_size(float(std::max(1, size.x)), float(std::max(1, size.y)));
         imgui->new_frame();
-        imgui->render();
+        imgui->render(imgui->end_frame());
     }
     return canvas->init() ? canvas : nullptr;
 }

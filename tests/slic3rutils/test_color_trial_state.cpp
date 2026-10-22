@@ -40,6 +40,14 @@ void require_same(const trial::State& a, const trial::State& b)
     REQUIRE(a.project_color_slots == b.project_color_slots);
     REQUIRE(a.project_semantic_slots == b.project_semantic_slots);
     REQUIRE(a.project_slot_identity == b.project_slot_identity);
+    REQUIRE(a.automatic_count == b.automatic_count);
+    REQUIRE(a.manual_count == b.manual_count);
+    REQUIRE(a.project_count == b.project_count);
+    REQUIRE(a.automatic_basis_signature == b.automatic_basis_signature);
+    REQUIRE(a.color_card_target_palette == b.color_card_target_palette);
+    REQUIRE(a.color_card_target_slot_ids == b.color_card_target_slot_ids);
+    REQUIRE(a.source_to_target_slot == b.source_to_target_slot);
+    REQUIRE(a.color_card_weighted_error == b.color_card_weighted_error);
 }
 
 TEST_CASE("Project-bound trials update physical slots without rebuilding source assignments", "[ColorTrialState][PostGenerationWorkbench]")
@@ -102,6 +110,60 @@ TEST_CASE("Semantic trial saves the full candidate palette separately from repea
     require_same(saved, restored);
     REQUIRE(restored.semantic_palette.size() == 4);
     REQUIRE(restored.colors[0] == restored.colors[1]);
+}
+
+TEST_CASE("Native color-card remaps round trip without merging equal target slots", "[ColorTrialState][ColorCardRemap]")
+{
+    auto saved = saved_trial();
+    saved.automatic_basis_signature = "0123456789abcdef";
+    saved.color_card_target_palette = {{.2f,.3f,.4f}, {.2f,.3f,.4f}, {.9f,.8f,.7f}, {0.f,0.f,0.f}};
+    saved.color_card_target_slot_ids = {5, 9, 12, 20};
+    saved.source_to_target_slot = {1, 0, 2};
+    saved.colors = {saved.color_card_target_palette[1], saved.color_card_target_palette[0],
+                    saved.color_card_target_palette[2]};
+    saved.color_card_weighted_error = .125;
+    trial::State restored;
+    std::string error;
+    const auto encoded = trial::encode(saved, 20, geometry_id);
+    REQUIRE(encoded.contains("automatic_basis_signature"));
+    REQUIRE(trial::decode(encoded, 20, geometry_id, restored, error));
+    require_same(saved, restored);
+    REQUIRE(restored.source_to_target_slot[0] != restored.source_to_target_slot[1]);
+    auto invalid = encoded;
+    invalid["source_to_target_slot"] = {0, 0, 2};
+    CHECK_FALSE(trial::decode(invalid, 20, geometry_id, restored, error));
+}
+
+TEST_CASE("Dynamic color cards persist as exact-count manual snapshots", "[ColorTrialState][ColorCardRemap]")
+{
+    auto card = saved_trial();
+    card.source = 7;
+    card.count = 4;
+    card.manual_count = 11;
+    card.project_color_slots = {0, 1, 2};
+    card.project_semantic_slots = {0, 1, 2};
+    card.project_slot_identity = "stale-project-binding";
+    trial::normalize_for_persistence(card);
+    CHECK(card.source == 2);
+    CHECK(card.manual_count == 4);
+    CHECK(card.project_color_slots.empty());
+    CHECK(card.project_semantic_slots.empty());
+    CHECK(card.project_slot_identity.empty());
+
+    trial::State restored;
+    std::string error;
+    REQUIRE(trial::decode(trial::encode(card, 20, geometry_id), 20, geometry_id, restored, error));
+    CHECK(restored.source == 2);
+    CHECK(restored.count == 4);
+    CHECK(restored.manual_count == 4);
+
+    auto project = saved_trial();
+    project.source = 1;
+    project.project_color_slots = {0, 1, 2};
+    project.project_slot_identity = "valid-project-binding";
+    trial::normalize_for_persistence(project);
+    CHECK(project.source == 1);
+    CHECK(project.project_slot_identity == "valid-project-binding");
 }
 
 TEST_CASE("Legacy trials keep their existing assignments until semantic optimization is enabled", "[ColorTrialState][SemanticColoring]")
@@ -335,4 +397,29 @@ TEST_CASE("Extended trials restore their slot bindings and legacy six-color draf
     legacy.erase("semantic_region_slots");
     REQUIRE(trial::decode(legacy, 20, geometry_id, restored, error));
     require_same(saved_trial(), restored);
+}
+
+TEST_CASE("Automatic, manual, and printer sources retain independent color counts", "[ColorTrialState][PostGenerationWorkbench]")
+{
+    auto saved = saved_trial();
+    saved.source = 1;
+    saved.count = 10;
+    saved.automatic_count = 18;
+    saved.manual_count = 7;
+    saved.project_count = 10;
+    trial::State restored;
+    std::string error;
+    REQUIRE(trial::decode(trial::encode(saved, 20, geometry_id), 20, geometry_id, restored, error));
+    CHECK(restored.automatic_count == 18);
+    CHECK(restored.manual_count == 7);
+    CHECK(restored.project_count == 10);
+
+    auto legacy = trial::encode(saved_trial(), 20, geometry_id);
+    legacy.erase("automatic_count");
+    legacy.erase("manual_count");
+    legacy.erase("project_count");
+    REQUIRE(trial::decode(legacy, 20, geometry_id, restored, error));
+    CHECK(restored.automatic_count == 6);
+    CHECK(restored.manual_count == 6);
+    CHECK(restored.project_count == 0);
 }

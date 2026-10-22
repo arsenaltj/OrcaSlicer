@@ -225,6 +225,9 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         if (m_workbench_palette_status)
             m_workbench_palette_status->SetLabel(wxString::Format(_L("当前色卡 · %llu 色"),
                 static_cast<unsigned long long>(count)));
+        if (m_beauty_controls && m_model_preview)
+            m_beauty_controls->synchronize_automatic_basis(
+                m_model_preview->automatic_color_basis_signature());
     });
     controls->Add(m_workbench_palette_status, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     auto* filament_heading = new wxBoxSizer(wxHORIZONTAL);

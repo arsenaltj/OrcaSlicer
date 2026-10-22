@@ -215,14 +215,26 @@ bool ModelGenerationPanel::request_check_workbench()
                         self->m_beauty_candidate_files.push_back(destination);
                         if (self->m_beauty_transactions) self->m_beauty_transactions->mark_preview_ready();
                         self->m_workbench_repair_attempts.insert(id + "|" + repair.output_sha256);
-                        // Keep the repaired mesh as an explicit candidate. The
-                        // existing Beauty footer provides Accept/Discard and
-                        // therefore preserves undo/redo and the original file.
-                        self->m_workbench_auto_repair = false;
+                        // A fully rechecked topology candidate with no bound
+                        // appearance edits is safe to publish immediately.
+                        // Reuse the normal AcceptCandidate transaction so the
+                        // original file, history, undo and rollback paths stay
+                        // identical to an explicit user acceptance.
+                        self->m_workbench_auto_repair =
+                            workbench_topology_safe(self->m_workbench_check_result) &&
+                            self->m_workbench_check_result.appearance_mapped &&
+                            self->m_workbench_check_result.appearance_confidence >= 0.99;
                         self->m_workbench_check_result.candidate_status = RepairCandidateStatus::Ready;
                         self->m_workbench_check_result.candidate_path = destination.string();
                         self->m_workbench_check_result.candidate_sha256 = repair.output_sha256;
-                        self->m_workbench_check_result.summary += "\n修复候选已生成，请预览后接受或保留原模型。";
+                        if (self->m_workbench_auto_repair) {
+                            self->m_workbench_check_result.summary += "\n修复复检通过，正在自动接受并保存。";
+                            self->m_status->SetLabel(wxString::FromUTF8(self->m_workbench_check_result.summary));
+                            self->refresh_controls();
+                            self->accept_model_finishing();
+                        } else {
+                            self->m_workbench_check_result.summary += "\n修复候选已生成，请预览后接受或保留原模型。";
+                        }
                     }
                 } else {
                     cleanup();

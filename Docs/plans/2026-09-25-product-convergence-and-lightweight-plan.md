@@ -1,3 +1,35 @@
+# 2026-10-22 PR #38：候选推送与 integration 冲突处理
+
+候选提交 `6427e784ac4c53129216269e5a580eab7d4221e2` 已推送到 `origin/codex/upstream-v2.5.0-alpha-portrait-preserved`，PR #38 的目标为 `codex/team/integration`，固定目标 SHA 为 `aee65644545f2746ea08f6efccb73bc853a3db5f`。GitHub 首次计算发现四个共享文件冲突；合并提交 `177c61bfde25384bfd8105c9ce2f57e35d845fbb` 保留候选的 Redesign 防闪烁更新与 `LibDataChannel` 链接，并合并远端 SDK/连接器、SmartSlicing、测试和文档。合并后 Release 增量构建、`verify_ai_integration.py`、`verify_mobile_sdk_boundary.py` 均通过；`ModelGenerationPresentation` 65/8879、`SmartSlicing` 289/3848，组合人像/工作台/颜色/Redesign 测试 343/37693 全部通过。
+
+# 2026-10-22 远端 integration、候选验收修改与人像工作台分层组合
+
+候选工作树继续固定为 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha` / `codex/upstream-v2.5.0-alpha-portrait-preserved`，HEAD `cf891f6ba11bf5726de2615063bd6c1cb7783446`。组合来源固定为旧 integration `600e02fe292bb96c67e250950bba0acb5a13e553`、官方 tag `v2.5.0-alpha` `3880f2c58ec392ed2bd5938ab31c9c7c496c0eb2`、远端 integration `aee65644545f2746ea08f6efccb73bc853a3db5f` 和试验提交 `71e5002c9d487aa8b0d44f21317b303d360a2ca5`。操作前后 HTTPS 均核验远端未漂移；本地 `codex/team/integration` 和 `codex/task/filament-portrait-autoaccept-20261015` 的分支指针及工作树保持不动。
+
+合入采用隔离工作树中的普通三方合并。临时提交 `32d570d6de79cd037d307e994ae3a769418a299d` 以候选为第一父、远端 integration 为第二父，`36d066eaf80281ca44eca8614ddf5970b42982c6` 移植试验提交，`4f63fa38e5d99866aa96ef650614b7ad29d4bee0` 只规范合并带入文件的空白。结果按路径回写候选工作树，保留其既有 staged/unstaged/未跟踪状态；没有用临时提交替换候选分支，也没有提交、推送、打包、reset 或 clean。远端 `src/orca_sdk/**`、两套连接器、SDK 文档/边界脚本/测试和 SmartSlicing 更新完整纳入；`CMakeLists.txt`、`src/slic3r/CMakeLists.txt`、SmartSlicing、Redesign 和状态文档按段融合，候选既有新 UI、相机首帧、方案卡闪烁、切片后 Preview、历史与普通 Orca 修复保持有效。
+
+试验层加入 `PortraitColorBlockCache`、`PortraitColorBlockPostprocess`、`PrinterFilamentRestoreSnapshot` 及测试，保留原生自动颜色基准、稳定源槽映射、Beauty 按需自动划区、语义保护/诊断/缓存、4/5/6 色槽位身份、耗材恢复和精确 MMU 子树失败回滚。旧人像卡片和旧自动重配色入口继续只读兼容。合入后发现普通语义请求会因 4/5/6 色条件误进 `ColorRegionMajorityV2`，现新增默认关闭的 `color_block_postprocess` 请求标志并纳入请求去重身份；仅显式启用且颜色数为 4/5/6 才运行 V2，Beauty 仍先以 `analysis_only` 获取语义，再由 `BeautyPuzzle::create_slot_regions` 显式建区。
+
+工程验证已通过。修复前失败的普通语义 4 项为 4/4；Mobile SDK、SmartSlicing、UiRedesign、PortraitColorBlocks、BeautyPuzzle、ColorTrialState、ModelPreviewPalette、ModelPreviewState、ModelColorImport、PostGenerationWorkbench 和 PrinterFilament 定向矩阵共 707/707；普通 Orca 的 3MF/配置、模型/颜色导入、纹理、切片、G-code、Preview、Preset 和 Undo/Redo 回归 679/679。`verify_ai_integration.py --json`、`verify_mobile_sdk_boundary.py --json`、架构 README 和 `git diff HEAD --check` 均通过，完整证据位于 [`20261022-explicit-color-block-trigger`](../../.tmp/dev/logs/20261022-explicit-color-block-trigger)。固定 Visual Studio 17 2022 x64 / Release / `BUILD_TESTING=ON` / `ORCA_AI_PORTRAIT_RECOGNITION=OFF` 的 [`Run -NoLaunch`](../../.tmp/dev/logs/20261022-012358-098/result.json) 五步通过；源码身份 `7ff2d0d6300400624d3a0c0bf498e4dcb065201922699a91d7c9b25f768ce590`，native identity `aa86c912dfd68bde296dcb831e16a90f71c5e373888dfc3c177bd89cb850b3c4`，EXE SHA256 `A3CE64715716D44D2209C2663568EB4152F13DB074C2EA0006E36F3982D80CED`，DLL SHA256 `7ADDC5F8CEADD1F708207BB9D240E58D85C6CAFCE7C576BBC64C196F25E18E5E`。最终身份清单固定写入 [`final-identity.json`](../../.tmp/dev/logs/20261022-integration-sync-final/final-identity.json)。
+
+GUI 烟测使用独立 datadir `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha/.tmp/dev/integration-sync-gui-data` 和工程副本 `candidate-four-slot-roundtrip-20261021.3mf`（SHA256 `C79F73507E0F27589E522F905121FF7D61186D15DA645536429A26B35424FE0B`）。PID `25476` 从固定 run 目录加载匹配 EXE/DLL，窗口标题、3MF 单对象加载、Redesign `prepare` 路由和相机完成均有日志；物理像素截图 [`gui-onscreen-physical.png`](../../.tmp/dev/logs/20261022-explicit-color-block-trigger/gui-onscreen-physical.png) 显示新 UI、模型和擦料塔。较早两张 1554×986 截图受 DPI 感知影响只覆盖窗口左上角，不作为模型消失证据。
+
+接受边界保持不变：真实人像的五官、眉眼、耳发、衣肤边界、4/5/6 色映射、同数量换卡、Beauty 自动划区、保存重开、耗材恢复、旧缓存兼容及最终方案卡运行态/悬停闪烁尚未在本次组合版本完整人工验收；用户视觉接受和实体打印颜色保真继续分别记录。完成这些项目之前，候选不标记为可提升，integration 不更新；回滚仍使用操作前快照和隔离工作树结果，不执行整树还原。
+
+# 2026-10-21 v2.5.0-alpha 候选分层同步：工程验证完成，待用户视觉与实体打印验收
+
+候选工作树固定为 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha` / `codex/upstream-v2.5.0-alpha-portrait-preserved`，HEAD `cf891f6ba11bf5726de2615063bd6c1cb7783446`；构建与运行分别使用 `.tmp/dev/build`、`.tmp/dev/run`，CMakeCache 源码归属核验通过。`codex/team/integration`（`600e02fe292bb96c67e250950bba0acb5a13e553`）和试验分支 `codex/task/filament-portrait-autoaccept-20261015`（`a1f412779467dfd4b1b71e29c8f723db60b6f9ad`）均未触碰。
+
+自动验证已闭环：同一 Release build 的普通 Orca 回归 679/679 CTest 通过，覆盖 3MF/配置读写、G-code、模型/颜色导入、纹理位移与纹理导入、Preview、Preset、Undo/Redo、原生切片和 G-code 导出；证据 [`ctest-ordinary-regression-20261021.log`](../../.tmp/dev/logs/20261021-candidate-targeted/ctest-ordinary-regression-20261021.log)。最终[`人像/工作台`](../../.tmp/dev/logs/20261021-candidate-four-slot-exit-fix/ctest-workbench-portrait-r3.log) 387/387、PostGenerationWorkbench 46/46、UiRedesign 95/95、integration guardrails 52/52 通过；[`verify_ai_integration.py --json`](../../.tmp/dev/logs/20261021-candidate-four-slot-exit-fix/verify-ai-integration-r2.json) 返回 `ok: true`，`git diff --check` 通过。方案卡闪烁补丁后的 [`UiRedesign`](../../.tmp/dev/logs/20261021-185256-980/result.json) 96/96、integration guardrails 52/52 和 AI 集成验证再次通过；最新 [`Run -NoLaunch`](../../.tmp/dev/logs/20261021-185617-586/result.json) 的构建、安装、runtime-check 和 Python 检查全部通过，构建/安装 DLL SHA256 均为 `4375FBF24C07EE813632D7A754F5894F128EBB6918D720AF5E50073F91EA1F2D`。
+
+四槽与叠色 GUI 已验证：独立 datadir 中将四个实体槽设为红、蓝、绿、黄并保留 5–8 号叠色配方；Beauty 工作台应用耗材后导入原生准备页，原生列表继续显示 4 个实体槽和 4 个叠色槽。撤销移除模型，重做恢复模型及配色；保存、关闭工程并重开 [`candidate-four-slot-roundtrip-20261021.3mf`](../../.tmp/dev/candidate-final-gui-data/models/projects/candidate-four-slot-roundtrip-20261021.3mf) 后，槽位、混合比例、模型以及原始/美颜历史均恢复。3MF SHA256 `C79F73507E0F27589E522F905121FF7D61186D15DA645536429A26B35424FE0B`，归档审计确认 8 个颜色/混合配置和第 8 槽模型绑定均已持久化。
+
+退出与崩溃结论：真实主窗口在上述往返后正常退出，ProcDump 记录退出码 `0x00000000`，未处理异常监控没有生成 dump，应用日志完整到 `GUI_App::~GUI_App: exit`。较早的 1.39 GB dump 是 `-e 1` 捕获的已处理 `wil::ResultException` 首次机会异常，进程随后继续运行，不计为崩溃；证据位于 [`20261021-candidate-four-slot-gui-r3`](../../.tmp/dev/logs/20261021-candidate-four-slot-gui-r3)。
+
+方案卡闪烁处理：根因是 SmartSlice 的一秒 revision 发布会重复进入 UI 应用路径，而该路径曾无条件重写卡片/徽标/参数行/页签颜色/多行按钮、浮层位置、tooltip 和原生页主题，Windows 因此反复使控件失效重绘；鼠标停在方案卡上时，tooltip 的周期性重建还会扩大闪烁。更新链现按内容、颜色、可见性、尺寸、父级和 tooltip 实际差异写入，保留原 revision timer 和业务状态发布。稳定结果态 14 帧、约 5.85 秒的整窗像素完全一致。最终 tooltip 补丁已随最新 DLL 安装并以 PID `33908` 启动、载入回归 3MF；由于当前 CUA 未暴露原生窗口，最终产物的重新分析运行态和悬停态仍待用户视觉确认。
+
+接受状态：构建、自动测试、普通 Orca 回归、架构门禁、四槽/叠色主窗口往返和正常退出均已通过。方案卡最终运行态/悬停态、真实人像五官、眉眼、耳发、衣肤边界及整体观感仍待用户视觉验收，实体打印颜色保真仍待实物验证；各项分别记录，不能由代码或其他 GUI 功能证据替代。完成前保持候选为本地评估工作树，不提交、不推送、不合并、不打包，也不更新 `codex/team/integration`；试验分支继续不动。
+
 # 2026-10-19 Redesign 智能切片详情内嵌（已实施、已安装，待用户 GUI 验收）
 
 用户授权将截图中的智能切片详情改为左侧边栏完整展示：移除“查看全部”跳转，预估时间、预计耗材及其他预估指标置于信息列表最前面，切换三种方案时随方案更新。
@@ -68,6 +100,55 @@
 
 已新增 [SmartSlice 实现原理与优化路线 HTML 说明](../architecture/smart-slicing-implementation.html)。文档基于当前分支源码确认：SmartSlice 负责端侧离线规则推荐和快速估算，用户显式选择后将参数原子化写入 Orca 当前打印板配置，最终由 Orca 原生切片、G-code、统计和预览完成正式结果。后续优化按“原生统计校准 → 几何/能力特征增强 → 选择性原生试切片 → 多目标与反馈闭环 → 基准回归”分阶段推进，不复制第二套切片器，不把估算写成正式统计。
 
+# 2026-10-21 PC-01 原生配色基准、色卡映射与按需自动划区
+
+用户决定取消自动人像重配色和十色回退，恢复原生自动建议作为唯一颜色归属来源。当前实现新增 `AutomaticColorBasis`，以几何 ID、原始颜色签名、请求色数、原生源色板、逐面源槽和面积生成稳定基准签名。色卡不再逐面寻找最近目标色，也不使用语义角色强制配色；任意 `N` 色卡都从原始 histogram 建立同一份 `N` 色自动建议基准，再通过面积加权的 Oklab Hungarian 最小成本分配，将每个源槽一对一映射到独立色卡槽。槽位 ID 参与确定性排序，同 RGB 的不同槽不会合并；原生实际色组少于 `N` 时只映射有效源槽，其余目标槽保持未使用。
+
+`orca.color-trial/v2` 的可选字段保存基准签名、目标色板、目标槽位 ID、源槽到目标槽映射和加权误差。动态色卡在旧来源编号无法持久化时规范化为精确数量的手动快照，并同步 `manual_count`；打印机恢复快照、历史恢复和工作台元数据使用同一规范化规则。旧字段缺失时继续走兼容路径，旧 `portrait-color-blocks/v1/v2` 和旧语义结果仍可读取，但不再覆盖当前原生/手动显示色板，也不再触发自动迁移或自动重配色。
+
+3D 美颜工作台的“自动划区”成为唯一主动入口。点击后先按需请求本地语义识别，再使用 `unit_source_slots` 和共享三角边建立 `BeautyPuzzle/v5` 连通区；颜色阈值、法线角度和语义边界均不参与切分。语义标签按区域内三角面积乘置信度投票，附着到完整区域，仅用于快捷选区。识别失败、运行时缺失或非人像会继续完成纯源槽划区。相同基准下切换同数量色卡只改变目标颜色；颜色数、几何、原始颜色或自动建议参数改变时，基准签名变化，进行中的划区被取消，旧分区清除并提示重新点击，已提交的手工改色继续保留。
+
+旧人像模式选择、独立人像优化卡片和加载、历史恢复、滑杆变化时的自动检测/自动优化已在运行时停用。旧优化代码和缓存读取保留，用于兼容历史工程；外部 API、3MF 基础格式、色卡文件、打印任务和实体/叠色耗材配置不变。打印机耗材继续使用独立槽位身份和配方匹配链路，不参与色卡基准计算。
+
+验证分层记录：`ModelPreviewPalette` 覆盖面积加权一对一最优分配、确定性、同 RGB 独立槽、少于请求色数及逐面源槽面积；`ColorTrialState` 覆盖新字段往返、非法重复目标槽拒绝和动态色卡规范化；`BeautyPuzzle` 覆盖源槽连通、跨法线/语义边界、拓扑断开和面积置信度多数票；`ModelPreviewState|PortraitColorBlocks|PostGenerationWorkbench` 覆盖旧缓存、历史预览及工作台消费者。六组标签在最终源码上的联合回归通过（`.tmp/dev/logs/20261021-192042-157/result.json`），分阶段日志保留在 `20261021-184051-463`、`20261021-185455-920`、`20261021-191127-249` 和 `20261021-191322-389`。Windows Release 固定目录增量构建通过（`.tmp/dev/logs/20261021-191841-159/result.json`），`scripts/verify_ai_integration.py --json` 返回 `ok: true`，`git diff --check` 通过。
+
+GUI 和交付边界：用户正常关闭旧 PID 29764 后，固定目录 `Run -NoLaunch` 的 catalogs、build、install、runtime-check 和 Python 检查五步通过（`.tmp/dev/logs/20261021-211232-406/result.json`）。build/run DLL SHA-256 均为 `2D4657F1A7D4C531D92F20CA8B047C56B19AF9F96CCA7D92C0D86CBD991F71CB`，EXE 均为 `12FC90B5B103D060A1121C4595EF7356625ECDE3C7ABD04A1D22235F88EDA60A`。匹配验证入口 `D:/TEST/OrcaSlicer/.tmp/dev/run/orca-slicer.exe` 已启动为 PID 34120。待验证：同数量自动建议/色卡逐面区域一致、同数量换卡只换颜色、不同数量换卡清除旧分区且不后台划区、自动划区前后颜色不变、语义快捷选择完整区域、手工改色、撤销重做、保存重开、旧工程和打印机耗材应用。代码测试和启动成功不替代 GUI 配色对照、用户视觉接受、设备同步或实物色准。用户已明确授权将当前工作树全部改动提交到当前本地分支；未推送或打包。
+
+# 2026-10-21 3D 模型历史记录打开闪退修复
+
+用户反馈在 3D 模型界面点击“打开历史模型”后程序闪退。首份崩溃日志 `D:/TEST/OrcaSlicer/.tmp/dev/data/log/crash_Wed_Oct_21_15_43_56_0.log` 的访问冲突位于 `ModelGenerationPanel::set_finishing_workbench()`；失败指令解引用 `m_comparison_panel`。第一轮增加防护并重建后，继续操作产生 `crash_Wed_Oct_21_16_07_48_0.log`，栈位于 `show_finishing_version()` 调用 `ModelPreviewColorControls::state()`。对象文件审计确认 `ModelGenerationBeautyVersions.obj` 仍是 10 月 19 日旧对象。共享头新增自动建议滑杆状态成员后，部分 `ModelGenerationPanel` 分拆实现仍沿用旧类布局，导致同一 DLL 内成员偏移不一致；历史模型内容不是根因。
+
+修复分两层：`request_open_workbench()` 先执行现有延迟初始化，并在切换工作台前校验窗口、sizer、共享预览和工作台控件是否完整；`set_finishing_workbench()` 再做防御校验，失败时保持当前页面并记录关键指针状态。构建侧不再依赖会被旧 PCH helper 覆盖的 `OBJECT_DEPENDS`，而是对 ModelGeneration 头集合计算布局哈希，并将对应版本宏加入全部 21 个 `ModelGenerationPanel` 实现文件的编译定义。任一相关头变化都会改变 Visual Studio 编译命令并整组重编译，防止增量构建再次混入旧布局。
+
+验证：最终完整 GUI 库重建通过（`.tmp/dev/logs/20261021-161126-900/result.json`），构建日志明确列出 21 个实现全部重编译，Visual Studio 工程中的 `ModelGenerationBeautyVersions.cpp` 带统一布局宏，旧对象已刷新；`PortraitColorBlocks|PrinterFilamentImport|PrinterFilamentRecipes|PostGenerationWorkbench|UiRedesign` 定向回归通过（`.tmp/dev/logs/20261021-162523-792/result.json`）；最新 `Run` 的构建、安装、runtime-check、Python 检查和启动通过（`.tmp/dev/logs/20261021-162736-685/result.json`）。构建目录与运行目录 DLL SHA-256 均为 `00EFE00886AA8FC4B16E513DB06320990411E0B18793A80CE965A6252D6CD3CC`，EXE SHA-256 均为 `12FC90B5B103D060A1121C4595EF7356625ECDE3C7ABD04A1D22235F88EDA60A`；`scripts/verify_ai_integration.py --json` 返回 `ok: true`，`git diff --check` 通过。最终修复进程 PID 29764 正常响应，启动后未新增崩溃日志。
+
+GUI 边界：本轮 Computer-use 仍无 Windows 应用清单和原生窗口控制接口，不能将启动成功写成历史模型真实点击已通过。用户需在已启动的匹配运行时中点击“打开历史模型”并选择一条记录，核对历史列表、模型加载和工作台进入；这一视觉/交互验收与代码测试分开记录。本轮不提交、推送、打包或修改其他 checkout。
+
+# 2026-10-21 PC-01 自动建议 4～6 色槽位身份与滑杆自动重优化
+
+用户要求人像优化后的 4、5、6 色必须与对应初始自动建议色板保持相同槽位身份和顺序，并且每次滑杆进入这三个色数时自动重跑；低于 4 色或高于 6 色立即恢复普通配色。当前实现保持 `ColorRegionMajorityV2` 的输入色板顺序，新增颜色块、角色和缓存的显式槽位索引；语义角色只能绑定已有槽位，不能再按角色顺序重组最终色板。虹膜、眼白、肤色和唇色继续占用独立合法槽，头发和眉毛使用现有最深槽，普通衣服等区域按原始颜色匹配输入色板中的最近槽，手工改色仍保留独立覆盖。
+
+自动建议滑杆使用 450 ms 合并延迟。4～6 色内连续拖动时取消旧候选并仅处理最后一次稳定输入；轨道切换和块级手工改色不会因色数未变递归重启。进入 1～3 或 7～32 色时清空待处理请求、V2 结果和自动探测键，并恢复当前普通自动配色；从范围外返回 4～6 色后重新检测并启动优化。算法版本从 4 升至 5，控制签名从 5 升至 6，旧缓存只会失效重建，不会覆盖普通配色、耗材配置或历史模型数据。
+
+验证分层记录：`PortraitColorBlocks` 回归通过，结果 `.tmp/dev/logs/20261021-153135-300/result.json`；`PortraitColorBlocks|PrinterFilamentImport|PrinterFilamentRecipes|PostGenerationWorkbench` 扩展回归通过，结果 `.tmp/dev/logs/20261021-153709-370/result.json`；Windows Release 构建、安装、runtime-check 和 Python 检查通过，结果 `.tmp/dev/logs/20261021-153427-418/result.json`。当时 build/run DLL SHA-256 均为 `0A9E682C5E748ABF5C7497D35313BD005334CC4BB0670E91CE4C87D5C6D300CA`，`scripts/verify_ai_integration.py --json` 返回 `ok: true`，`git diff --check` 通过。代码测试不替代 GUI：4→5→6 的末次调度、6→7→6 与 4→3→4 的恢复、4/5/6 槽序视觉一致性、衣服最近槽效果、耗材应用及导入切片仍待人工验收。未提交、推送、打包或修改其他 checkout。
+
+# 2026-10-21 PC-01 V2 最终实现状态（代码完成，GUI 待人工验收）
+
+本计划的颜色区域部分已落地到分支 `codex/task/filament-portrait-autoaccept-20261015`。自动建议仅在 4～6 色启用 `ColorRegionMajorityV2`；低于 4 色或高于 6 色保持普通自动配色。十色/中间分析使用原始面色 canonical source，衣服等非保护区域按原始颜色误差和面积参与剩余槽位竞争；虹膜、头发、眉毛优先选择合法色板中的深色槽，并在同色合并时保留次级语义身份。V2 缓存带策略版本和源签名，旧缓存失配时只丢弃新候选，不覆盖普通配色。
+
+最近验证：颜色块、耗材、配方和工作台定向 CTest 96/96 通过（`.tmp/dev/logs/20261021-111610-746/result.json`，测试时 source identity `aecbf0e7dd3c9f3f9992421a6781478899e34d8b84f579b795b4f4088baac56a`）；Release 目标构建、运行时安装、架构集成检查和差异检查通过。最新运行入口为 `D:/TEST/OrcaSlicer/.tmp/dev/run/orca-slicer.exe`，Run 记录 `.tmp/dev/logs/20261021-110647-158/result.json`，DLL SHA-256 `2365171ABD4F738F0AC973D257554ED8C9B564D3FACF4044819E55CB0A4AA12A`。
+
+验收边界：真实窗口自动化当前未取得 Orca 原生窗口句柄，因此 GUI 视觉、历史模型自动优化和色卡切换效果仍需用户在上述入口人工确认；不把构建成功替代视觉验收，也不把旧实验仓库证据当作生产通过。除本计划代码验证和运行入口更新外，本轮不提交、不推送、不制作安装包。
+
+# 2026-10-16 PC-01 人像颜色连通块后处理（代码验证完成，GUI 待验）
+
+用户确认新策略替代旧人像扩张、父级修复与全局颜色传播；旧结果只读兼容，不自动迁移。分支 `codex/task/filament-portrait-autoaccept-20261015`，源码 `D:/TEST/OrcaSlicer`；保留此前所有未提交修改。本轮只实施本地轻量颜色后处理，不提交、推送、打包或付费生成。
+
+范围：普通配色后同时构建原始外观/正常配色两轨，共享 MediaPipe 识别证据；共享边连通、固定 Oklab 加权平方距离 0.0025、语义冲突隔离，未决完整块只预览相邻已确认浅色候选，不级联传播。工作台分页展示未决块、精确子面定位、单独改色与撤销。内容寻址缓存可选引用，失配只丢新候选。颜色块版本保留源网格/贴图，最终颜色通过现有面/子面外观契约导入；真实耗材配置不变。
+
+共享契约范围：`ModelMatchedColors` 仅增加可选 midpoint 子面槽位列表，旧 v1 元数据没有该数组仍可读取；原生适配器按原几何及槽位身份直接写 MMU 子树，失败撤销本次导入。新增桌面缓存引用只通过既有 3MF Auxiliaries 归档，不进入 HTTP 生成请求。耗材、色卡和槽位数量策略不变。旧连续裁切区域保留读取；显式重新执行时拒绝不支持的转换并保留编辑，不静默展开或丢弃。
+
+风险与验收：现有识别契约没有人物实例 ID，算法支持显式实例屏障，现阶段仅能验证共享边/语义屏障，不能宣称复杂相连多人模型的人物隔离已验收。百万面性能/内存、旧裁切工程、工程及 3MF 重开、真实 GUI、双轨视觉和用户接受均需分别记录。固定 Windows Release 增量构建与定向 CTest 已通过（`.tmp/dev/logs/20261016-000119-750/result.json`，源码身份 `18edd6f76e93f2c9fd9edeb78f451f76101e3984665ed6cf631ae696c64ff82e`）；显式人像优化缺少轻量运行时证据时仍明确失败，不误报成功。自动划区的颜色块优先修复回归为 119/119 通过（`.tmp/dev/logs/20261016-092359-627/result.json`）；完整 Run 安装与运行时检查随后通过（`.tmp/dev/logs/20261016-093736-161/result.json`）。恢复点：新增 PortraitColorBlockPostprocess/Cache 已接入 worker、ModelPreview3D 和 Beauty 候选/保存链路，自动划区已优先使用颜色连通块面级身份，等待用户真实运行入口验证。
 
 # 2026-10-14 SmartSlice：详情弹框单一自绘内容面板已实现，待视觉复验
 
@@ -1630,3 +1711,14 @@ PR 作者报告已有新控件的真实窗口、预览、前后对比和保存�
 补充：分析过程中的“计算说明”行已移除，仅保留“预计打印时间：精确计算中…”和“预计耗材：精确计算中…”。本轮源码编译、安装与运行时检查通过，已更新 `.tmp/dev/run`，待用户 GUI 验收。
 
 补充：根据界面验收反馈，左侧信息列表进一步移除“换料次数”和“数据来源”两行；本轮构建、安装和定向回归已通过，待用户确认最终界面。
+# 2026-10-14 打印机耗材应用后的原贴图恢复与自动建议数量隔离（实现完成，GUI待验）
+
+本轮承接用户计划，继续 `codex/task/workbench-topology-filaments-20261012`。实现 `printer_filament_restore/v1` 可选恢复元数据和内存快照：应用打印机耗材前保存颜色试色、面级覆盖、自动/语义面色、子面色、局部叶片编辑、人像形状及几何身份；切换离开打印机耗材来源时恢复这些状态并刷新视口，几何或模型哈希不一致时丢弃快照。应用流程继续清除原色精确表面覆盖并激活实体/叠色预览；离开打印机耗材后导入请求不再复用旧 `applied_printer_filament_match`，只有当前有效打印机来源允许沿用。
+
+`ModelPreviewColorControls::State` 为自动建议、手动试色和打印机耗材保存独立数量，自动建议仍以进入模型时的初始数量为基线并保持 1–32 色范围；旧 `orca.color-trial/v2` 缺少新字段时按兼容默认值读取。保存色卡索引超过历史范围时恢复快照按手动颜色编码，不改变外部来源序号和旧 3MF/历史读取。
+
+验证：定向 C++ 回归 [`20261014-202100-929`](../../.tmp/dev/logs/20261014-202100-929/result.json) 通过；Windows Release 应用构建 [`20261014-202905-412`](../../.tmp/dev/logs/20261014-202905-412/result.json) 通过；`verify_ai_integration.py --json` 和 `git diff --check` 通过。当前运行目录 DLL 未替换，因为用户实例仍在运行；本会话未获得可操作的 Orca 窗口，故真实 GUI、视觉接受、设备同步和实物色准不升级为通过。
+
+范围保持：不改变耗材配置/叠色配方、外部导入 API、历史文件格式或打印任务流程；不提交、推送、打包、购买生成或发送打印任务。用户关闭验证实例后，恢复 `.tmp/dev/run` DLL 并按短状态中的普通模型、人像局部编辑、叠色槽、保存重开和导入失效矩阵继续验收。
+
+\r\n

@@ -3,7 +3,14 @@
 #include "libslic3r/Color.hpp"
 #include "libslic3r/Point.hpp"
 #include "objparser.hpp"
+#include "libslic3r/Point.hpp"
+#include <admesh/stl.h>
+#include <array>
+#include <functional>
+#include <map>
+#include <string>
 #include <unordered_map>
+#include <vector>
 namespace Slic3r {
 
 class TriangleMesh;
