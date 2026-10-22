@@ -179,11 +179,18 @@ bool set_current_thread_name(const char *thread_name)
 	return true;
 }
 
+#ifdef ORCA_MOBILE_ANDROID
+std::optional<std::string> get_current_thread_name()
+{
+    return std::nullopt;
+}
+#else
 std::optional<std::string> get_current_thread_name()
 {
 	char buf[16];
 	return std::string(pthread_getname_np(pthread_self(), buf, 16) == 0 ? buf : "");
 }
+#endif
 
 #endif
 
