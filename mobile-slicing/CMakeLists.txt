@@ -18,6 +18,9 @@ set(BOOST_ENABLE_CMAKE ON CACHE BOOL "" FORCE)
 set(BOOST_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
 set(BOOST_SKIP_INSTALL_RULES ON CACHE BOOL "" FORCE)
 set(BOOST_INCLUDE_LIBRARIES "system;filesystem;thread;log;locale;regex;chrono;date_time;iostreams;atomic" CACHE STRING "" FORCE)
+set(BOOST_FILESYSTEM_DISABLE_STATX ON CACHE BOOL "Disable statx for Android API 24" FORCE)
+set(BOOST_FILESYSTEM_HAS_STATX OFF CACHE BOOL "Disable statx detection for Android API 24" FORCE)
+set(BOOST_LOCALE_ENABLE_ICONV OFF CACHE BOOL "Disable iconv on Android API 24" FORCE)
 FetchContent_Declare(boost
     URL https://github.com/boostorg/boost/releases/download/boost-1.84.0/boost-1.84.0.tar.gz
     URL_HASH SHA256=4d27e9efed0f6f152dc28db6430b9d3dfb40c0345da7342eaa5a987dde57bd95)
@@ -157,7 +160,7 @@ if(EXISTS "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/c_api.cpp" AND EXISTS
         ORCA_MOBILE_SLICING_SOURCE_COMMIT="${ORCA_MOBILE_SLICING_SOURCE_COMMIT}")
     target_include_directories(orca_mobile_slicing_sdk PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/include" "${ORCA_SOURCE_ROOT}/src")
     target_link_libraries(orca_mobile_slicing_sdk PRIVATE orca_mobile_core log)
-    set_target_properties(orca_mobile_slicing_sdk PROPERTIES OUTPUT_NAME orca_mobile_slicing_sdk_c)
+    set_target_properties(orca_mobile_slicing_sdk PROPERTIES OUTPUT_NAME orca_mobile_slicing_sdk_c CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
     add_executable(orca_mobile_slicing_json_gate "${CMAKE_CURRENT_LIST_DIR}/slicing_json_gate.cpp")
     target_include_directories(orca_mobile_slicing_json_gate PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/include")
     target_link_libraries(orca_mobile_slicing_json_gate PRIVATE orca_mobile_slicing_sdk)
@@ -173,4 +176,9 @@ if(TARGET orca_mobile_slicing_sdk)
     install(TARGETS orca_mobile_slicing_sdk LIBRARY DESTINATION lib)
 endif()
 install(TARGETS orca_mobile_stl_gate RUNTIME DESTINATION bin)
+
+
+
+
+
 

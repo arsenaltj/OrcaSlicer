@@ -14,6 +14,8 @@ set(ORCA_MOBILE_DEVICE_SDK_SOURCES
     include/orca/mobile/device_sdk_c.h
     Connectivity.cpp
     CommandEnvelope.cpp
+    ../orca_connectivity_moonraker/MoonrakerAdapter.cpp
+    ../orca_connectivity_wondermaker/WonderMakerAdapter.cpp
     include/orca/mobile/device/CommandEnvelope.hpp
     include/orca/mobile/device/Connectivity.hpp
     include/orca/mobile/device/DeviceSDK.hpp
@@ -37,6 +39,8 @@ add_library(OrcaSlicer::MobileDeviceSDKShared ALIAS orca_mobile_device_sdk_ffi)
 set_target_properties(orca_mobile_device_sdk_ffi PROPERTIES
     OUTPUT_NAME "orca_mobile_device_sdk_c"
     WINDOWS_EXPORT_ALL_SYMBOLS OFF
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
 )
 
 target_include_directories(orca_mobile_device_sdk
@@ -44,12 +48,23 @@ target_include_directories(orca_mobile_device_sdk
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${ORCA_MOBILE_DEVICE_SDK_GENERATED_INCLUDE_DIR}
         ${CMAKE_SOURCE_DIR}/deps_src
+        ${CMAKE_CURRENT_SOURCE_DIR}/../orca_connectivity_moonraker/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../orca_connectivity_wondermaker/include
 )
 target_include_directories(orca_mobile_device_sdk_ffi
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${ORCA_MOBILE_DEVICE_SDK_GENERATED_INCLUDE_DIR}
         ${CMAKE_SOURCE_DIR}/deps_src
+)
+
+target_include_directories(orca_mobile_device_sdk_ffi
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${ORCA_MOBILE_DEVICE_SDK_GENERATED_INCLUDE_DIR}
+        ${CMAKE_SOURCE_DIR}/deps_src
+        ${CMAKE_CURRENT_SOURCE_DIR}/../orca_connectivity_moonraker/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../orca_connectivity_wondermaker/include
 )
 
 target_link_libraries(orca_mobile_device_sdk PUBLIC nlohmann_json)
@@ -62,7 +77,7 @@ target_compile_definitions(orca_mobile_device_sdk_ffi
     PRIVATE ORCA_MOBILE_DEVICE_BUILD_SHARED ORCA_MOBILE_DEVICE_BUILDING
     INTERFACE ORCA_MOBILE_DEVICE_BUILD_SHARED
 )
-source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${ORCA_MOBILE_DEVICE_SDK_SOURCES})
+source_group(TREE ${CMAKE_SOURCE_DIR}/src FILES ${ORCA_MOBILE_DEVICE_SDK_SOURCES})
 
 # The SDK is a public-source target. It deliberately has no dependency on
 # wxWidgets, Python, GUI targets, vendor DLLs, or commercial service code.
@@ -85,3 +100,5 @@ install(TARGETS orca_mobile_device_sdk orca_mobile_device_sdk_ffi
 install(DIRECTORY include/ DESTINATION include)
 install(FILES "${ORCA_MOBILE_DEVICE_SDK_GENERATED_INCLUDE_DIR}/orca/mobile/device/MobileDeviceSDKBuildInfo.hpp"
         DESTINATION include/orca/mobile/device)
+
+
