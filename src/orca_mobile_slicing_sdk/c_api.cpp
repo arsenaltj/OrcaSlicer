@@ -1,4 +1,4 @@
-#include "include/orca/slicing_c.h"
+#include "include/orca/mobile/slicing_sdk_c.h"
 #include "engine.hpp"
 #include "libslic3r/PrintBase.hpp"
 #include <atomic>
@@ -8,58 +8,58 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
-#ifndef ORCA_SLICING_SOURCE_COMMIT
-#define ORCA_SLICING_SOURCE_COMMIT "unknown"
+#ifndef ORCA_MOBILE_SLICING_SOURCE_COMMIT
+#define ORCA_MOBILE_SLICING_SOURCE_COMMIT "unknown"
 #endif
 namespace {
-struct Context { explicit Context(const char* root):engine(root){} orca::slicing::Engine engine; std::atomic<bool> busy{false}; };
+struct Context { explicit Context(const char* root):engine(root){} orca::mobile::slicing::Engine engine; std::atomic<bool> busy{false}; };
 std::mutex registry_mutex;
 std::unordered_map<uintptr_t,std::shared_ptr<Context>> registry;
 std::atomic<uintptr_t> next_handle{1};
-std::shared_ptr<Context> acquire(orca_slicing_context* handle){std::lock_guard<std::mutex> lock(registry_mutex);auto it=registry.find(reinterpret_cast<uintptr_t>(handle));return it==registry.end()?nullptr:it->second;}
+std::shared_ptr<Context> acquire(orca_mobile_slicing_context* handle){std::lock_guard<std::mutex> lock(registry_mutex);auto it=registry.find(reinterpret_cast<uintptr_t>(handle));return it==registry.end()?nullptr:it->second;}
 char* copy(const std::string& text){auto* p=static_cast<char*>(std::malloc(text.size()+1));if(p)std::memcpy(p,text.c_str(),text.size()+1);return p;}
-int failure(int code,const char* name,const std::string& message,char** result){if(result)*result=copy(orca::slicing::Json{{"schemaVersion",2},{"sourceCommit",ORCA_SLICING_SOURCE_COMMIT},{"ok",false},{"error",{{"code",name},{"message",message}}}}.dump());return code;}
+int failure(int code,const char* name,const std::string& message,char** result){if(result)*result=copy(orca::mobile::slicing::Json{{"schemaVersion",2},{"sourceCommit",ORCA_MOBILE_SLICING_SOURCE_COMMIT},{"ok",false},{"error",{{"code",name},{"message",message}}}}.dump());return code;}
 }
 extern "C" {
-const char* orca_slicing_version(){return "orca-slicing-c/1.0.0";}
-const char* orca_slicing_capabilities(){return "{\"available\":true,\"schemaVersion\":2,\"abiVersion\":\"1.0\",\"engineVersion\":\"orca-slicing-c/1.0.0\",\"sourceCommit\":\"" ORCA_SLICING_SOURCE_COMMIT "\",\"formats\":[\"stl\",\"obj\",\"3mf\"],\"qualities\":[\"standard\",\"fine\",\"fast\",\"smart\"],\"nativeSlicing\":true,\"nativeRecommendation\":true,\"remoteAI\":false}";}
-orca_slicing_context* orca_slicing_create(const char* workspace){if(!workspace||!*workspace)return nullptr;try{auto context=std::make_shared<Context>(workspace);auto id=next_handle.fetch_add(1);std::lock_guard<std::mutex> lock(registry_mutex);registry.emplace(id,std::move(context));return reinterpret_cast<orca_slicing_context*>(id);}catch(...){return nullptr;}}
-int orca_slicing_execute(orca_slicing_context* handle,const char* request,orca_slicing_event_fn event,void* user,char** result){
- if(!result)return ORCA_SLICE_INVALID;*result=nullptr;auto context=acquire(handle);if(!context||!request)return failure(ORCA_SLICE_INVALID,"INVALID_ARGUMENT","Invalid slicing handle/request",result);
+const char* orca_mobile_slicing_version(){return "orca-mobile-slicing-sdk/1.0.0";}
+const char* orca_mobile_slicing_capabilities(){return "{\"available\":true,\"schemaVersion\":2,\"abiVersion\":\"1.0\",\"engineVersion\":\"orca-mobile-slicing-sdk/1.0.0\",\"sourceCommit\":\"" ORCA_MOBILE_SLICING_SOURCE_COMMIT "\",\"formats\":[\"stl\",\"obj\",\"3mf\"],\"qualities\":[\"standard\",\"fine\",\"fast\",\"smart\"],\"nativeSlicing\":true,\"nativeRecommendation\":true,\"remoteAI\":false}";}
+orca_mobile_slicing_context* orca_mobile_slicing_create(const char* workspace){if(!workspace||!*workspace)return nullptr;try{auto context=std::make_shared<Context>(workspace);auto id=next_handle.fetch_add(1);std::lock_guard<std::mutex> lock(registry_mutex);registry.emplace(id,std::move(context));return reinterpret_cast<orca_mobile_slicing_context*>(id);}catch(...){return nullptr;}}
+int orca_mobile_slicing_execute(orca_mobile_slicing_context* handle,const char* request,orca_mobile_slicing_event_fn event,void* user,char** result){
+ if(!result)return ORCA_MOBILE_SLICING_INVALID;*result=nullptr;auto context=acquire(handle);if(!context||!request)return failure(ORCA_MOBILE_SLICING_INVALID,"INVALID_ARGUMENT","Invalid slicing handle/request",result);
  try {
-  auto req=orca::slicing::Json::parse(request);
+  auto req=orca::mobile::slicing::Json::parse(request);
   const bool readOnlyPresets=req.value("operation",std::string())=="presets";
   bool expected=false;
   if(!readOnlyPresets && !context->busy.compare_exchange_strong(expected,true))
-   return failure(ORCA_SLICE_BUSY,"BUSY","Slicing context already has an active operation",result);
+   return failure(ORCA_MOBILE_SLICING_BUSY,"BUSY","Slicing context already has an active operation",result);
   struct Reset{std::atomic<bool>& flag;bool owned;~Reset(){if(owned)flag.store(false);}} reset{context->busy,!readOnlyPresets};
-  auto answer=context->engine.execute(req,[&](const orca::slicing::Json& e){if(event){auto text=e.dump();event(text.c_str(),user);}});
+  auto answer=context->engine.execute(req,[&](const orca::mobile::slicing::Json& e){if(event){auto text=e.dump();event(text.c_str(),user);}});
   // Keep engine failures intact. v2 carries the payload once in result:
   // duplicating full configs and four trial artifacts risks Binder size limits.
-  if (!answer.is_object()) return failure(ORCA_SLICE_INTERNAL,"INVALID_NATIVE_RESULT","Expected object",result);
+  if (!answer.is_object()) return failure(ORCA_MOBILE_SLICING_INTERNAL,"INVALID_NATIVE_RESULT","Expected object",result);
   if (answer.contains("error") || !answer.value("ok",true)) {
    answer["ok"]=false; answer["schemaVersion"]=2;
-   answer["sourceCommit"]=ORCA_SLICING_SOURCE_COMMIT;
-   *result=copy(answer.dump()); return *result?ORCA_SLICE_INTERNAL:ORCA_SLICE_RESOURCE;
+   answer["sourceCommit"]=ORCA_MOBILE_SLICING_SOURCE_COMMIT;
+   *result=copy(answer.dump()); return *result?ORCA_MOBILE_SLICING_INTERNAL:ORCA_MOBILE_SLICING_RESOURCE;
   }
-  answer["schemaVersion"]=2; answer["engineVersion"]=orca_slicing_version();
-  answer["sourceCommit"]=ORCA_SLICING_SOURCE_COMMIT;
+  answer["schemaVersion"]=2; answer["engineVersion"]=orca_mobile_slicing_version();
+  answer["sourceCommit"]=ORCA_MOBILE_SLICING_SOURCE_COMMIT;
   auto payload=std::move(answer);
-  answer=orca::slicing::Json{{"ok",true},{"schemaVersion",2},{"engineVersion",orca_slicing_version()},
-      {"sourceCommit",ORCA_SLICING_SOURCE_COMMIT},{"result",std::move(payload)}};
+  answer=orca::mobile::slicing::Json{{"ok",true},{"schemaVersion",2},{"engineVersion",orca_mobile_slicing_version()},
+      {"sourceCommit",ORCA_MOBILE_SLICING_SOURCE_COMMIT},{"result",std::move(payload)}};
   *result=copy(answer.dump());
-  return *result?ORCA_SLICE_OK:ORCA_SLICE_RESOURCE;
+  return *result?ORCA_MOBILE_SLICING_OK:ORCA_MOBILE_SLICING_RESOURCE;
  }
- catch(const nlohmann::json::exception& e){return failure(ORCA_SLICE_INVALID,"INVALID_JSON",e.what(),result);}
- catch(const Slic3r::CanceledException&){return failure(ORCA_SLICE_CANCELED,"CANCELED","SLICING_CANCELED",result);}
- catch(const std::bad_alloc&){return failure(ORCA_SLICE_RESOURCE,"MEMORY_LIMIT","Native allocation failed; project is preserved",result);}
- catch(const std::exception& e){const std::string msg=e.what();if(msg=="SLICING_CANCELED")return failure(ORCA_SLICE_CANCELED,"CANCELED",msg,result);
- if(msg=="RECOMMENDATION_TIMEOUT")return failure(ORCA_SLICE_RESOURCE,"TIMEOUT",msg,result);
- if(msg=="MEMORY_LIMIT")return failure(ORCA_SLICE_RESOURCE,"MEMORY_LIMIT",msg,result);
- if(msg.rfind("BUSY:",0)==0)return failure(ORCA_SLICE_BUSY,"BUSY",msg,result);return failure(ORCA_SLICE_INTERNAL,"SLICING_FAILED",msg,result);}
- catch(...){return failure(ORCA_SLICE_INTERNAL,"NATIVE_FAILURE","Unknown native slicing failure",result);}
+ catch(const nlohmann::json::exception& e){return failure(ORCA_MOBILE_SLICING_INVALID,"INVALID_JSON",e.what(),result);}
+ catch(const Slic3r::CanceledException&){return failure(ORCA_MOBILE_SLICING_CANCELED,"CANCELED","SLICING_CANCELED",result);}
+ catch(const std::bad_alloc&){return failure(ORCA_MOBILE_SLICING_RESOURCE,"MEMORY_LIMIT","Native allocation failed; project is preserved",result);}
+ catch(const std::exception& e){const std::string msg=e.what();if(msg=="SLICING_CANCELED")return failure(ORCA_MOBILE_SLICING_CANCELED,"CANCELED",msg,result);
+ if(msg=="RECOMMENDATION_TIMEOUT")return failure(ORCA_MOBILE_SLICING_RESOURCE,"TIMEOUT",msg,result);
+ if(msg=="MEMORY_LIMIT")return failure(ORCA_MOBILE_SLICING_RESOURCE,"MEMORY_LIMIT",msg,result);
+ if(msg.rfind("BUSY:",0)==0)return failure(ORCA_MOBILE_SLICING_BUSY,"BUSY",msg,result);return failure(ORCA_MOBILE_SLICING_INTERNAL,"SLICING_FAILED",msg,result);}
+ catch(...){return failure(ORCA_MOBILE_SLICING_INTERNAL,"NATIVE_FAILURE","Unknown native slicing failure",result);}
 }
-void orca_slicing_cancel(orca_slicing_context* handle){if(auto c=acquire(handle))c->engine.cancel();}
-void orca_slicing_destroy(orca_slicing_context* handle){std::shared_ptr<Context> c;{std::lock_guard<std::mutex> lock(registry_mutex);auto it=registry.find(reinterpret_cast<uintptr_t>(handle));if(it==registry.end())return;c=std::move(it->second);registry.erase(it);}c->engine.cancel();}
-void orca_slicing_free_string(char* text){std::free(text);}
+void orca_mobile_slicing_cancel(orca_mobile_slicing_context* handle){if(auto c=acquire(handle))c->engine.cancel();}
+void orca_mobile_slicing_destroy(orca_mobile_slicing_context* handle){std::shared_ptr<Context> c;{std::lock_guard<std::mutex> lock(registry_mutex);auto it=registry.find(reinterpret_cast<uintptr_t>(handle));if(it==registry.end())return;c=std::move(it->second);registry.erase(it);}c->engine.cancel();}
+void orca_mobile_slicing_free_string(char* text){std::free(text);}
 }

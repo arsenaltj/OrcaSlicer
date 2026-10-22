@@ -6,7 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace Orca::SDK {
+namespace Orca::MobileDevice {
 
 enum class ConnectionPath : uint8_t {
     Lan = 0,
@@ -257,4 +257,4 @@ void from_json(const nlohmann::json& json, TransferJob& value);
 void to_json(nlohmann::json& json, const RemoteSession& value);
 void from_json(const nlohmann::json& json, RemoteSession& value);
 
-} // namespace Orca::SDK
+} // namespace Orca::MobileDevice

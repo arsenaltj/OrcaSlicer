@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-using namespace Orca::SDK;
+using namespace Orca::MobileDevice;
 using Catch::Matchers::WithinAbs;
 using Catch::Matchers::WithinRel;
 
@@ -134,7 +134,7 @@ void install_standard_http(const std::shared_ptr<FakeHttp>& http,
 
 } // namespace
 
-TEST_CASE("Moonraker probe, object discovery, query and API key stay GUI independent", "[Moonraker][MobileSDK]")
+TEST_CASE("Moonraker probe, object discovery, query and API key stay GUI independent", "[Moonraker][MobileDeviceSDK]")
 {
     auto http = std::make_shared<FakeHttp>();
     install_standard_http(http, "printing", 0.42);
@@ -160,7 +160,7 @@ TEST_CASE("Moonraker probe, object discovery, query and API key stay GUI indepen
     }
 }
 
-TEST_CASE("Moonraker subscribes only to objects reported by objects list", "[Moonraker][MobileSDK]")
+TEST_CASE("Moonraker subscribes only to objects reported by objects list", "[Moonraker][MobileDeviceSDK]")
 {
     auto http = std::make_shared<FakeHttp>();
     install_standard_http(http, "printing", 0.42, {"print_stats", "extruder"});
@@ -193,7 +193,7 @@ TEST_CASE("Moonraker subscribes only to objects reported by objects list", "[Moo
     REQUIRE(status.current_file == "pause.gcode");
 }
 
-TEST_CASE("Moonraker clamps progress to the SDK range and maps cancelled states", "[Moonraker][MobileSDK]")
+TEST_CASE("Moonraker clamps progress to the SDK range and maps cancelled states", "[Moonraker][MobileDeviceSDK]")
 {
     SECTION("progress values remain in 0..1")
     {
@@ -224,7 +224,7 @@ TEST_CASE("Moonraker clamps progress to the SDK range and maps cancelled states"
     }
 }
 
-TEST_CASE("Moonraker falls back to polling and reconciles after reconnect", "[Moonraker][MobileSDK]")
+TEST_CASE("Moonraker falls back to polling and reconciles after reconnect", "[Moonraker][MobileDeviceSDK]")
 {
     auto http = std::make_shared<FakeHttp>();
     install_standard_http(http, "paused", 0.5);
@@ -250,7 +250,7 @@ TEST_CASE("Moonraker falls back to polling and reconciles after reconnect", "[Mo
     REQUIRE_FALSE(adapter.connected());
 }
 
-TEST_CASE("Moonraker WebSocket faults switch to polling fallback", "[Moonraker][MobileSDK]")
+TEST_CASE("Moonraker WebSocket faults switch to polling fallback", "[Moonraker][MobileDeviceSDK]")
 {
     SECTION("invalid JSON")
     {
@@ -313,7 +313,7 @@ TEST_CASE("Moonraker WebSocket faults switch to polling fallback", "[Moonraker][
     }
 }
 
-TEST_CASE("Moonraker probe clears cached state and enforces preconditions", "[Moonraker][MobileSDK]")
+TEST_CASE("Moonraker probe clears cached state and enforces preconditions", "[Moonraker][MobileDeviceSDK]")
 {
     SECTION("probe requires an endpoint and HTTP transport")
     {
@@ -355,7 +355,7 @@ TEST_CASE("Moonraker probe clears cached state and enforces preconditions", "[Mo
     }
 }
 
-TEST_CASE("Moonraker upload and print commands use stable transport requests", "[Moonraker][MobileSDK]")
+TEST_CASE("Moonraker upload and print commands use stable transport requests", "[Moonraker][MobileDeviceSDK]")
 {
     auto http = std::make_shared<FakeHttp>();
     http->handler = [](const MoonrakerHttpRequest& request) {
@@ -384,7 +384,7 @@ TEST_CASE("Moonraker upload and print commands use stable transport requests", "
     REQUIRE(nlohmann::json::parse(http->requests[5].body).at("script") == "CANCEL_PRINT");
 }
 
-TEST_CASE("Moonraker maps HTTP and JSON fault matrix to stable errors", "[Moonraker][MobileSDK]")
+TEST_CASE("Moonraker maps HTTP and JSON fault matrix to stable errors", "[Moonraker][MobileDeviceSDK]")
 {
     SECTION("authentication")
     {

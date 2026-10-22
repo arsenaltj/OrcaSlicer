@@ -3,7 +3,7 @@
 #include <functional>
 #include <string>
 #include <nlohmann/json.hpp>
-namespace orca::slicing {
+namespace orca::mobile::slicing {
 using Json=nlohmann::json;
 using EventSink=std::function<void(const Json&)>;
 class Engine {

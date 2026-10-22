@@ -14,7 +14,7 @@ target_include_directories(${_target}
 )
 target_link_libraries(${_target}
     PUBLIC
-        OrcaSlicer::MobileSDK
+        OrcaSlicer::MobileDeviceSDK
 )
 target_compile_features(${_target} PUBLIC cxx_std_17)
 set_property(TARGET ${_target} PROPERTY FOLDER "mobile_sdk")

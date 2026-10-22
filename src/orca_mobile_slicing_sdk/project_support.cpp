@@ -27,7 +27,7 @@
 #include "libslic3r/Sha256Digest.hpp"
 #include "libslic3r/Utils.hpp"
 
-namespace orca::slicing {
+namespace orca::mobile::slicing {
 namespace {
 
 using namespace Slic3r;
@@ -469,8 +469,8 @@ namespace {
 Json common_parameter_metadata()
 {
     Json result{{"version","p1-common-v1"},{"parameters",Json::object()}};
-#ifdef ORCA_SLICING_SOURCE_COMMIT
-    result["sourceCommit"]=ORCA_SLICING_SOURCE_COMMIT;
+#ifdef ORCA_MOBILE_SLICING_SOURCE_COMMIT
+    result["sourceCommit"]=ORCA_MOBILE_SLICING_SOURCE_COMMIT;
 #endif
     // Schema references are the same pinned source used by the offline catalog.
     const Json catalog=offline_presets();
@@ -1259,4 +1259,4 @@ DynamicPrintConfig quality_config(const DynamicPrintConfig& base, const std::str
     return result;
 }
 
-} // namespace orca::slicing
+} // namespace orca::mobile::slicing

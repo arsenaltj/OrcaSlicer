@@ -18,11 +18,11 @@
 #if defined(__linux__) || defined(__ANDROID__)
 #include <unistd.h>
 #endif
-#ifndef ORCA_SLICING_SOURCE_COMMIT
-#define ORCA_SLICING_SOURCE_COMMIT "unknown"
+#ifndef ORCA_MOBILE_SLICING_SOURCE_COMMIT
+#define ORCA_MOBILE_SLICING_SOURCE_COMMIT "unknown"
 #endif
 namespace stdfs=std::filesystem;
-namespace orca::slicing {
+namespace orca::mobile::slicing {
 namespace {
 using Clock=std::chrono::steady_clock;
 std::mutex workerMutex;
@@ -167,8 +167,8 @@ Json scene_and_snapshot(LoadedProject& project,const stdfs::path& prefix)
     auto snapshot=prefix; snapshot+=".project.json";
     description["snapshotPath"]=snapshot.u8string();
     description["sceneMetadataPath"]=snapshot.u8string();
-    description["sourceCommit"]=ORCA_SLICING_SOURCE_COMMIT;
-    description["engineVersion"]="orca-slicing-c/1.0.0";
+    description["sourceCommit"]=ORCA_MOBILE_SLICING_SOURCE_COMMIT;
+    description["engineVersion"]="orca-mobile-slicing-sdk/1.0.0";
     write_json(snapshot,description);
     return description;
 }
@@ -282,8 +282,8 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
         {"outputMode",project.metadata.value("outputMode",Json("native"))},
         {"singleMaterialFilamentIndex",project.metadata.value("singleMaterialFilamentIndex",Json())},
         {"sourceColorCount",description["model"]["colors"].size()},
-        {"engineVersion","orca-slicing-c/1.0.0"},{"sourceCommit",ORCA_SLICING_SOURCE_COMMIT},
-        {"sourceIdentityValidated",std::string(ORCA_SLICING_SOURCE_COMMIT)!="unknown"},
+        {"engineVersion","orca-mobile-slicing-sdk/1.0.0"},{"sourceCommit",ORCA_MOBILE_SLICING_SOURCE_COMMIT},
+        {"sourceIdentityValidated",std::string(ORCA_MOBILE_SLICING_SOURCE_COMMIT)!="unknown"},
         {"gcodePath",gcodeFinal.u8string()},{"gcodeSize",stdfs::file_size(gcodeFinal)},
         {"gcodeSha256",file_sha256(gcodeFinal.u8string())},{"scenePath",description.at("scenePath")},
         {"sceneSha256",description.at("sceneSha256")},{"sceneSize",description.at("sceneSize")},
@@ -412,7 +412,7 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
             Json trial=describe_candidate(plan);
             trial["sourceRevision"]=project.metadata.at("revision"); trial["sourceConfigSha256"]=baselineConfigSha;
             trial["inputSha256"]=project.inputSha256; trial["configSha256"]=json_sha256(config_json(plan.config));
-            trial["schemaVersion"]=2; trial["sourceCommit"]=ORCA_SLICING_SOURCE_COMMIT;
+            trial["schemaVersion"]=2; trial["sourceCommit"]=ORCA_MOBILE_SLICING_SOURCE_COMMIT;
             Json trialRequest=request;
             trialRequest["attemptId"]=text(request,"attemptId")+"-"+plan.candidateId;
             trialRequest["quality"]=plan.quality; trialRequest["executeEffectiveConfig"]=true;
@@ -448,4 +448,4 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
     }
     throw std::invalid_argument("OPERATION_UNSUPPORTED");
 }
-} // namespace orca::slicing
+} // namespace orca::mobile::slicing

@@ -1,12 +1,12 @@
 #include <catch2/catch_all.hpp>
 
-#include "orca/sdk/MobileSDK.hpp"
-#include "orca/sdk/CommandEnvelope.hpp"
-#include "orca/sdk/Connectivity.hpp"
-#include "orca/sdk/ModelGeneration.hpp"
-#include "orca/sdk/Slicing.hpp"
+#include "orca/mobile/device/MobileDeviceSDK.hpp"
+#include "orca/mobile/device/CommandEnvelope.hpp"
+#include "orca/mobile/device/Connectivity.hpp"
+#include "orca/mobile/device/ModelGeneration.hpp"
+#include "orca/mobile/device/Slicing.hpp"
 
-using namespace Orca::SDK;
+using namespace Orca::MobileDevice;
 
 namespace {
 
@@ -21,7 +21,7 @@ std::array<PathObservation, 3> all_paths(bool lan, bool remote_broker, bool rela
 
 } // namespace
 
-TEST_CASE("MobileSDK preserves legacy connection state numeric values", "[MobileSDK]")
+TEST_CASE("MobileDeviceSDK preserves legacy connection state numeric values", "[MobileDeviceSDK]")
 {
     static_assert(static_cast<uint8_t>(ConnectionState::Connecting) == 3);
     static_assert(static_cast<uint8_t>(ConnectionState::Connected) == 4);
@@ -33,7 +33,7 @@ TEST_CASE("MobileSDK preserves legacy connection state numeric values", "[Mobile
     static_assert(static_cast<uint8_t>(ConnectionState::Expired) > static_cast<uint8_t>(ConnectionState::Offline));
 }
 
-TEST_CASE("MobileSDK exposes a shared desktop build identity", "[MobileSDK]")
+TEST_CASE("MobileDeviceSDK exposes a shared desktop build identity", "[MobileDeviceSDK]")
 {
     static_assert(kMobileSdkContractMajor == 1);
     static_assert(kMobileSdkContractMinor == 0);
@@ -42,7 +42,7 @@ TEST_CASE("MobileSDK exposes a shared desktop build identity", "[MobileSDK]")
     REQUIRE(std::string(mobile_sdk_source_commit_short()).size() > 0);
 }
 
-TEST_CASE("Connection path selection follows LAN RemoteBroker relay priority", "[MobileSDK]")
+TEST_CASE("Connection path selection follows LAN RemoteBroker relay priority", "[MobileDeviceSDK]")
 {
     ConnectionPathSelector selector;
 
@@ -68,7 +68,7 @@ TEST_CASE("Connection path selection follows LAN RemoteBroker relay priority", "
     REQUIRE(selection.requires_state_sync);
 }
 
-TEST_CASE("Connection path JSON emits RemoteBroker and accepts legacy P2P", "[MobileSDK]")
+TEST_CASE("Connection path JSON emits RemoteBroker and accepts legacy P2P", "[MobileDeviceSDK]")
 {
     nlohmann::json encoded = ConnectionPath::RemoteBroker;
     REQUIRE(encoded.get<std::string>() == "remote_broker");
@@ -76,7 +76,7 @@ TEST_CASE("Connection path JSON emits RemoteBroker and accepts legacy P2P", "[Mo
     REQUIRE(nlohmann::json("remote_broker").get<ConnectionPath>() == ConnectionPath::RemoteBroker);
 }
 
-TEST_CASE("Connection state machine covers pairing authentication sync expiration and offline transitions", "[MobileSDK]")
+TEST_CASE("Connection state machine covers pairing authentication sync expiration and offline transitions", "[MobileDeviceSDK]")
 {
     ConnectionStateMachine machine;
     machine.begin_discovery();
@@ -113,7 +113,7 @@ TEST_CASE("Connection state machine covers pairing authentication sync expiratio
     REQUIRE(machine.state() == ConnectionState::Offline);
 }
 
-TEST_CASE("Connection path selection stays sticky while the active path is healthy", "[MobileSDK]")
+TEST_CASE("Connection path selection stays sticky while the active path is healthy", "[MobileDeviceSDK]")
 {
     ConnectionPathSelector selector;
     REQUIRE(selector.select(all_paths(false, true, true)).path == ConnectionPath::RemoteBroker);
@@ -124,7 +124,7 @@ TEST_CASE("Connection path selection stays sticky while the active path is healt
     REQUIRE_FALSE(selection.requires_state_sync);
 }
 
-TEST_CASE("Connection state JSON round trips every v1.7 state", "[MobileSDK]")
+TEST_CASE("Connection state JSON round trips every v1.7 state", "[MobileDeviceSDK]")
 {
     const std::array<std::pair<ConnectionState, const char*>, 11> states{{
         {ConnectionState::Disconnected, "disconnected"},
@@ -147,7 +147,7 @@ TEST_CASE("Connection state JSON round trips every v1.7 state", "[MobileSDK]")
     }
 }
 
-TEST_CASE("Command envelope validates identity sequence and expiry", "[MobileSDK]")
+TEST_CASE("Command envelope validates identity sequence and expiry", "[MobileDeviceSDK]")
 {
     CommandEnvelope command;
     command.session_id = "session-1";
@@ -213,7 +213,7 @@ TEST_CASE("Command envelope validates identity sequence and expiry", "[MobileSDK
     REQUIRE_FALSE(command.is_retry_of(different_payload));
 }
 
-TEST_CASE("AI and slicing DTOs round trip through versioned JSON", "[MobileSDK]")
+TEST_CASE("AI and slicing DTOs round trip through versioned JSON", "[MobileDeviceSDK]")
 {
     ModelJob job;
     job.request_id = "request-1";
@@ -245,7 +245,7 @@ TEST_CASE("AI and slicing DTOs round trip through versioned JSON", "[MobileSDK]"
     REQUIRE(decoded_request.plate_index == 2);
 }
 
-TEST_CASE("Printer contracts serialize without desktop types", "[MobileSDK]")
+TEST_CASE("Printer contracts serialize without desktop types", "[MobileDeviceSDK]")
 {
     PrinterCapability capability;
     capability.status_stream = true;
@@ -333,7 +333,7 @@ TEST_CASE("Printer contracts serialize without desktop types", "[MobileSDK]")
     REQUIRE(future_status.get<PrinterStatus>().event_sequence == 42);
 }
 
-TEST_CASE("TransferJob and RemoteSession round trip with unknown extensions", "[MobileSDK]")
+TEST_CASE("TransferJob and RemoteSession round trip with unknown extensions", "[MobileDeviceSDK]")
 {
     TransferJob transfer;
     transfer.file_id = "file-1";

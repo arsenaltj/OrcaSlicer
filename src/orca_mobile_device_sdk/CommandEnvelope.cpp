@@ -1,8 +1,8 @@
-#include "orca/sdk/CommandEnvelope.hpp"
+#include "orca/mobile/device/CommandEnvelope.hpp"
 
 #include <limits>
 
-namespace Orca::SDK {
+namespace Orca::MobileDevice {
 
 namespace {
 
@@ -96,4 +96,4 @@ const char* command_validation_error_name(CommandValidationError error)
     return "unknown";
 }
 
-} // namespace Orca::SDK
+} // namespace Orca::MobileDevice

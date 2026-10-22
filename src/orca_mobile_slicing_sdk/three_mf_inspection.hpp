@@ -11,7 +11,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <cctype>
-namespace orca::slicing::detail {
+namespace orca::mobile::slicing::detail {
 struct ThreeMfScan {
     Json result{{"schemaVersion",1},{"features",Json::array()},{"blockedFeatures",Json::array()},{"plates",Json::array()},
         {"buildItems",Json::array()},{"sourcePreserved",true},{"currentPlate",nullptr}};
@@ -277,4 +277,4 @@ inline Json inspect_archive(const std::string& path) {
     }
     return scan.finish();
 }
-} // namespace orca::slicing::detail
+} // namespace orca::mobile::slicing::detail

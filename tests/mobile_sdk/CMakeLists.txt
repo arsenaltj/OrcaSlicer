@@ -6,7 +6,7 @@ if (NOT COMMAND orcaslicer_discover_tests)
     endfunction()
 endif()
 
-# ORCA_MOBILE_SDK_ONLY bypasses src/CMakeLists.txt; register the adapter here for the SDK-only test graph.
+# ORCA_MOBILE_DEVICE_SDK_ONLY bypasses src/CMakeLists.txt; register the adapter here for the SDK-only test graph.
 if (NOT TARGET OrcaSlicer::WonderMakerAdapter)
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/orca_connectivity_wondermaker ${CMAKE_BINARY_DIR}/orca_connectivity_wondermaker)
 endif()
@@ -18,7 +18,7 @@ add_executable(${_TEST_NAME}_tests
 )
 
 target_link_libraries(${_TEST_NAME}_tests PRIVATE
-    OrcaSlicer::MobileSDK
+    OrcaSlicer::MobileDeviceSDK
     OrcaSlicer::MoonrakerAdapter
     OrcaSlicer::WonderMakerAdapter
     Catch2::Catch2WithMain
@@ -33,7 +33,7 @@ add_executable(${_TEST_NAME}_cabi_tests
     test_mobile_sdk_threading.cpp
 )
 target_link_libraries(${_TEST_NAME}_cabi_tests PRIVATE
-    OrcaSlicer::MobileSDKShared
+    OrcaSlicer::MobileDeviceSDKShared
     Catch2::Catch2WithMain
 )
 target_compile_features(${_TEST_NAME}_cabi_tests PRIVATE c_std_11 cxx_std_17)
@@ -45,10 +45,10 @@ set_target_properties(${_TEST_NAME}_cabi_tests PROPERTIES
     CXX_STANDARD_REQUIRED YES
     FOLDER "tests"
 )
-target_compile_definitions(${_TEST_NAME}_cabi_tests PRIVATE ORCA_SDK_BUILD_SHARED)
+target_compile_definitions(${_TEST_NAME}_cabi_tests PRIVATE ORCA_MOBILE_DEVICE_BUILD_SHARED)
 add_custom_command(TARGET ${_TEST_NAME}_cabi_tests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:orca_mobile_sdk_ffi>
+            $<TARGET_FILE:orca_mobile_device_sdk_ffi>
             $<TARGET_FILE_DIR:${_TEST_NAME}_cabi_tests>
 )
 orcaslicer_discover_tests(${_TEST_NAME}_cabi_tests)

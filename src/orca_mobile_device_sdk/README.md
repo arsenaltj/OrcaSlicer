@@ -1,6 +1,6 @@
 # Orca mobile SDK core
 
-`src/orca_sdk` contains the platform neutral contract layer for mobile hosts, desktop integration code, and protocol adapters. The public SDK is C++17 code with standard library and `nlohmann::json` dependencies. It does not depend on wxWidgets, Python, GUI targets, desktop user directories, vendor DLLs, or commercial service code.
+`src/orca_mobile_device_sdk` contains the platform neutral contract layer for mobile hosts, desktop integration code, and protocol adapters. The public SDK is C++17 code with standard library and `nlohmann::json` dependencies. It does not depend on wxWidgets, Python, GUI targets, desktop user directories, vendor DLLs, or commercial service code.
 
 The v1.7 connection contract is **LAN → RemoteBroker → Relay**. `P2p` remains only as a deprecated C++ source compatibility alias for `RemoteBroker`; it is not emitted by the v1.7 JSON contract and classic ICE/TURN P2P is a phase-three optional capability.
 
@@ -8,14 +8,14 @@ The v1.7 connection contract is **LAN → RemoteBroker → Relay**. `P2p` remain
 
 | Logical artifact | CMake target | Consumer | Status and boundary |
 |---|---|---|---|
-| C++ static SDK | `orca_mobile_sdk` / `OrcaSlicer::MobileSDK` | Native C++ hosts and tests | Buildable contract library. Platform output is a static library (`.lib` or `.a`). |
-| C ABI shared SDK | `orca_mobile_sdk_ffi` / `OrcaSlicer::MobileSDKShared` | C11, Android, Flutter/Dart FFI | Buildable poll-first facade. The canonical Unix and Android filename is `liborca_mobile_sdk_c.so`; Windows produces `orca_mobile_sdk_c.dll` and its import library. |
+| C++ static SDK | `orca_mobile_device_sdk` / `OrcaSlicer::MobileDeviceSDK` | Native C++ hosts and tests | Buildable contract library. Platform output is a static library (`.lib` or `.a`). |
+| C ABI shared SDK | `orca_mobile_device_sdk_ffi` / `OrcaSlicer::MobileDeviceSDKShared` | C11, Android, Flutter/Dart FFI | Buildable poll-first facade. The canonical Unix and Android filename is `liborca_mobile_device_sdk_c.so`; Windows produces `orca_mobile_device_sdk_c.dll` and its import library. |
 | WonderMaker LAN adapter | `orca_connectivity_wondermaker` / `OrcaSlicer::WonderMakerAdapter` | LAN integration and simulator tests | Injected HTTP, WebSocket, and discovery boundary. Current automated evidence is simulator-only; it is not a real-device or vendor-protocol acceptance result. |
 | Moonraker compatibility adapter | `orca_connectivity_moonraker` / `OrcaSlicer::MoonrakerAdapter` | Compatibility and Fake transport tests | Retained as an SDK abstraction and test baseline. It is not the WonderMaker phase-one LAN implementation. |
-| Android native package | `liborca_mobile_sdk_c.so` in `arm64-v8a`, `armeabi-v7a`, and `x86_64` | `orca-mobile` Android FFI loader | Three ABI files with the same logical artifact name. `sdk.lock.json` records identity, hash, size, API level, and NDK metadata. |
+| Android native package | `liborca_mobile_device_sdk_c.so` in `arm64-v8a`, `armeabi-v7a`, and `x86_64` | `orca-mobile` Android FFI loader | Three ABI files with the same logical artifact name. `sdk.lock.json` records identity, hash, size, API level, and NDK metadata. |
 | Apple native package | XCFramework | iOS/macOS hosts | Deferred. No iOS/macOS/XCFramework artifact is part of the v1.7 Android delivery. |
 
-The C++ and C ABI targets compile the same public source set. The shared target changes the output filename through CMake `OUTPUT_NAME`; the logical target remains `orca_mobile_sdk_ffi`.
+The C++ and C ABI targets compile the same public source set. The shared target changes the output filename through CMake `OUTPUT_NAME`; the logical target remains `orca_mobile_device_sdk_ffi`.
 
 Android artifact files are packaged under the ABI-specific `jniLibs` directories. The checked-in mobile lock records the ABI, contract, Android API, NDK and source identity. Its exact source commit is the value in sdk.lock.json. The lock must be regenerated after selecting the final OrcaSlicer integration commit; it must not be treated as proof that a stale artifact matches a newer SDK worktree.
 
@@ -24,17 +24,15 @@ Android artifact files are packaged under the ABI-specific `jniLibs` directories
 Include the single entry point when a host needs the complete contract:
 
 ```cpp
-#include <orca/sdk/MobileSDK.hpp>
+#include <orca/mobile/device/DeviceSDK.hpp>
 ```
 
-`MobileSDK.hpp` includes these public headers:
+`DeviceSDK.hpp` includes these public headers:
 
 - `CommandEnvelope.hpp`: versioned, expiring, idempotent command envelopes.
 - `Connectivity.hpp`: connection paths, monitoring states, printer DTOs, transfer/session DTOs, path selection, state machine, and protocol adapter interface.
-- `ModelGeneration.hpp`: provider-neutral model requests, jobs, artifact manifests, and `IModelGenerationClient`.
-- `Slicing.hpp`: local/remote slicing requests, results, progress, and `ISlicingEngine`.
 
-`MobileSDK.hpp` also exposes the contract name/version and generated source identity helpers: `kMobileSdkContractName`, `kMobileSdkContractMajor`, `kMobileSdkContractMinor`, `mobile_sdk_source_commit()`, and `mobile_sdk_source_commit_short()`.
+`DeviceSDK.hpp` also exposes the contract name/version and generated source identity helpers: `kMobileSdkContractName`, `kMobileSdkContractMajor`, `kMobileSdkContractMinor`, `mobile_sdk_source_commit()`, and `mobile_sdk_source_commit_short()`.
 
 The public C++ headers use canonical SDK values only. WonderMaker wire fields, MQTT topics, WebSocket private fields, certificate objects, file-server fields, and vendor error codes stay inside adapter implementations.
 
@@ -43,18 +41,18 @@ The public C++ headers use canonical SDK values only. WonderMaker wire fields, M
 C and FFI consumers include:
 
 ```c
-#include <orca/sdk_c.h>
+#include <orca/mobile/device_sdk_c.h>
 ```
 
-The C ABI uses opaque `orca_sdk_t`, `orca_sdk_session_t`, and `orca_sdk_task_t` handles; fixed-width integers; explicit UTF-8 byte spans; stable negative error codes; and `struct_size` checks for forward-compatible structures. It is a poll-first API and does not require a cross-thread callback for一期 use.
+The C ABI uses opaque `orca_mobile_device_t`, `orca_mobile_device_session_t`, and `orca_mobile_device_task_t` handles; fixed-width integers; explicit UTF-8 byte spans; stable negative error codes; and `struct_size` checks for forward-compatible structures. It is a poll-first API and does not require a cross-thread callback for一期 use.
 
 The 20 exported functions are grouped as follows:
 
-- Identity and errors: `orca_sdk_abi_version`, `orca_sdk_contract_version`, `orca_sdk_source_commit`, `orca_sdk_source_commit_short`, `orca_sdk_error_message`.
-- Span-based identity queries: `orca_sdk_get_abi_version`, `orca_sdk_get_contract_version`, `orca_sdk_get_source_commit`.
-- SDK lifetime: `orca_sdk_create`, `orca_sdk_destroy`.
-- Session lifetime and asynchronous work: `orca_sdk_session_create`, `orca_sdk_session_destroy`, `orca_sdk_session_submit_task`, `orca_sdk_task_cancel`, `orca_sdk_task_destroy`, `orca_sdk_task_get_id`, `orca_sdk_task_get_state`.
-- Event delivery: `orca_sdk_poll_event`, `orca_sdk_event_clear`, `orca_sdk_wakeup`.
+- Identity and errors: `orca_mobile_device_abi_version`, `orca_mobile_device_contract_version`, `orca_mobile_device_source_commit`, `orca_mobile_device_source_commit_short`, `orca_mobile_device_error_message`.
+- Span-based identity queries: `orca_mobile_device_get_abi_version`, `orca_mobile_device_get_contract_version`, `orca_mobile_device_get_source_commit`.
+- SDK lifetime: `orca_mobile_device_create`, `orca_mobile_device_destroy`.
+- Session lifetime and asynchronous work: `orca_mobile_device_session_create`, `orca_mobile_device_session_destroy`, `orca_mobile_device_session_submit_task`, `orca_mobile_device_task_cancel`, `orca_mobile_device_task_destroy`, `orca_mobile_device_task_get_id`, `orca_mobile_device_task_get_state`.
+- Event delivery: `orca_mobile_device_poll_event`, `orca_mobile_device_event_clear`, `orca_mobile_device_wakeup`.
 
 The v1.7 facade accepts these task kinds: `SYNC` for the compatibility baseline, plus JSON-payload `DISCOVER`, `CONNECT`, `DISCONNECT`, `STATUS`, `COMMAND`, and `TRANSFER`. The facade validates task kind, UTF-8, JSON, structure size, cancellation, timeout, event ownership, and handle lifetime. The current facade is the stable ABI boundary; it does not claim that every task kind is already wired to a real device operation.
 
@@ -98,4 +96,4 @@ Real-device acceptance is a separate gate requiring the specified WonderMaker ha
 
 AI Gateway clients, real cloud slicing, production remote MQTT/TLS, video transport, and classic ICE/TURN P2P are outside the一期 SDK delivery. P2P remains a phase-three optional extension unless a later supplier decision explicitly moves it into a remote MVP gate.
 
-For detailed interfaces, use [the MobileSDK API reference](../../Docs/mobile-sdk/API.md). For the repository-level mobile guide, see [Docs/mobile-sdk/README.md](../../Docs/mobile-sdk/README.md).
+For detailed interfaces, use [the MobileDeviceSDK API reference](../../Docs/mobile-sdk/API.md). For the repository-level mobile guide, see [Docs/mobile-sdk/README.md](../../Docs/mobile-sdk/README.md).

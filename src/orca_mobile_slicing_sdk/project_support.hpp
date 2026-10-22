@@ -8,7 +8,7 @@
 
 namespace Slic3r { struct GCodeProcessorResult; struct StringObjectException; }
 
-namespace orca::slicing {
+namespace orca::mobile::slicing {
 
 using Json = nlohmann::json;
 
@@ -81,5 +81,5 @@ Slic3r::DynamicPrintConfig quality_config(const Slic3r::DynamicPrintConfig& base
 // Native option serialization, for durable JSON and replay through load_project.
 Json config_json(const Slic3r::DynamicPrintConfig& config);
 
-} // namespace orca::slicing
+} // namespace orca::mobile::slicing
 #endif

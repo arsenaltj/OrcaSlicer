@@ -1,12 +1,10 @@
 #pragma once
 
-#include "orca/sdk/MobileSDKBuildInfo.hpp"
-#include "orca/sdk/CommandEnvelope.hpp"
-#include "orca/sdk/Connectivity.hpp"
-#include "orca/sdk/ModelGeneration.hpp"
-#include "orca/sdk/Slicing.hpp"
+#include "orca/mobile/device/MobileDeviceSDKBuildInfo.hpp"
+#include "orca/mobile/device/CommandEnvelope.hpp"
+#include "orca/mobile/device/Connectivity.hpp"
 
-namespace Orca::SDK {
+namespace Orca::MobileDevice {
 
 inline constexpr unsigned kMobileSdkContractMajor = 1;
 inline constexpr unsigned kMobileSdkContractMinor = 0;
@@ -17,12 +15,12 @@ inline constexpr const char* kMobileSdkContractName = "orca.mobile-sdk/v1";
 // support bundles and host applications.
 inline constexpr const char* mobile_sdk_source_commit()
 {
-    return ORCA_MOBILE_SDK_SOURCE_COMMIT;
+    return ORCA_MOBILE_DEVICE_SDK_SOURCE_COMMIT;
 }
 
 inline constexpr const char* mobile_sdk_source_commit_short()
 {
-    return ORCA_MOBILE_SDK_SOURCE_COMMIT_SHORT;
+    return ORCA_MOBILE_DEVICE_SDK_SOURCE_COMMIT_SHORT;
 }
 
-} // namespace Orca::SDK
+} // namespace Orca::MobileDevice

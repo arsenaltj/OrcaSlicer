@@ -7,7 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace Orca::SDK {
+namespace Orca::MobileDevice {
 
 inline constexpr const char* kCommandProtocolVersion = "orca.command/v1";
 
@@ -46,4 +46,4 @@ struct CommandEnvelope {
 
 const char* command_validation_error_name(CommandValidationError error);
 
-} // namespace Orca::SDK
+} // namespace Orca::MobileDevice

@@ -4,7 +4,7 @@
 #include <vector>
 #include "project_support.hpp"
 
-namespace orca::slicing {
+namespace orca::mobile::slicing {
 
 struct RecommendationCandidate {
     std::string candidateId;
@@ -27,5 +27,5 @@ Json describe_candidate(const RecommendationCandidate& candidate);
 Json select_recommendation(const Json& completedTrials,
                            const std::string& preference = "balanced");
 
-} // namespace orca::slicing
+} // namespace orca::mobile::slicing
 #endif

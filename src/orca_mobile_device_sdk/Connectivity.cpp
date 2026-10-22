@@ -1,9 +1,9 @@
-#include "orca/sdk/Connectivity.hpp"
+#include "orca/mobile/device/Connectivity.hpp"
 
 #include <algorithm>
 #include <stdexcept>
 
-namespace Orca::SDK {
+namespace Orca::MobileDevice {
 
 namespace {
 
@@ -495,4 +495,4 @@ void from_json(const nlohmann::json& json, RemoteSession& value)
     value.state_synced = json.value("state_synced", false);
 }
 
-} // namespace Orca::SDK
+} // namespace Orca::MobileDevice

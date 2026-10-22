@@ -143,27 +143,26 @@ target_link_libraries(libslic3r_mobile PUBLIC
     noise::noise
     ${CMAKE_DL_LIBS} log)
 
-if(EXISTS "${ORCA_SOURCE_ROOT}/src/orca_slicing/c_api.cpp" AND EXISTS "${ORCA_SOURCE_ROOT}/src/orca_slicing/engine.cpp")
-    add_library(orca_slicing_c SHARED
-        "${ORCA_SOURCE_ROOT}/src/orca_slicing/c_api.cpp"
-        "${ORCA_SOURCE_ROOT}/src/orca_slicing/engine.cpp"
-        "${ORCA_SOURCE_ROOT}/src/orca_slicing/project_support.cpp"
-        "${ORCA_SOURCE_ROOT}/src/orca_slicing/recommendation_support.cpp"
-        "${ORCA_SOURCE_ROOT}/src/orca_slicing/android_jni.cpp")
+if(EXISTS "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/c_api.cpp" AND EXISTS "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/engine.cpp")
+    add_library(orca_mobile_slicing_sdk SHARED
+        "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/c_api.cpp"
+        "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/engine.cpp"
+        "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/project_support.cpp"
+        "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/recommendation_support.cpp")
     execute_process(COMMAND git -C "${ORCA_SOURCE_ROOT}" rev-parse HEAD
-        OUTPUT_VARIABLE ORCA_SLICING_SOURCE_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE
+        OUTPUT_VARIABLE ORCA_MOBILE_SLICING_SOURCE_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE
         RESULT_VARIABLE _orca_identity_status)
-    if(NOT _orca_identity_status EQUAL 0 OR NOT ORCA_SLICING_SOURCE_COMMIT MATCHES "^[0-9a-f]+$")
+    if(NOT _orca_identity_status EQUAL 0 OR NOT ORCA_MOBILE_SLICING_SOURCE_COMMIT MATCHES "^[0-9a-f]+$")
         message(FATAL_ERROR "Native slicing requires a verified source commit")
     endif()
-    target_compile_definitions(orca_slicing_c PRIVATE ORCA_MOBILE_ANDROID=1
-        ORCA_SLICING_SOURCE_COMMIT="${ORCA_SLICING_SOURCE_COMMIT}")
-    target_include_directories(orca_slicing_c PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_slicing/include" "${ORCA_SOURCE_ROOT}/src")
-    target_link_libraries(orca_slicing_c PRIVATE libslic3r_mobile log)
-    set_target_properties(orca_slicing_c PROPERTIES OUTPUT_NAME orca_slicing_c)
-    add_executable(orca_slicing_json_gate "${CMAKE_CURRENT_LIST_DIR}/slicing_json_gate.cpp")
-    target_include_directories(orca_slicing_json_gate PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_slicing/include")
-    target_link_libraries(orca_slicing_json_gate PRIVATE orca_slicing_c)
+    target_compile_definitions(orca_mobile_slicing_sdk PRIVATE ORCA_MOBILE_ANDROID=1
+        ORCA_MOBILE_SLICING_SOURCE_COMMIT="${ORCA_MOBILE_SLICING_SOURCE_COMMIT}")
+    target_include_directories(orca_mobile_slicing_sdk PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/include" "${ORCA_SOURCE_ROOT}/src")
+    target_link_libraries(orca_mobile_slicing_sdk PRIVATE libslic3r_mobile log)
+    set_target_properties(orca_mobile_slicing_sdk PROPERTIES OUTPUT_NAME orca_mobile_slicing_sdk_c)
+    add_executable(orca_mobile_slicing_json_gate "${CMAKE_CURRENT_LIST_DIR}/slicing_json_gate.cpp")
+    target_include_directories(orca_mobile_slicing_json_gate PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/include")
+    target_link_libraries(orca_mobile_slicing_json_gate PRIVATE orca_mobile_slicing_sdk)
 endif()
 
 add_executable(orca_mobile_stl_gate "${CMAKE_CURRENT_LIST_DIR}/stl_gcode_gate.cpp")
@@ -172,8 +171,8 @@ target_include_directories(orca_mobile_stl_gate PRIVATE "${ORCA_SOURCE_ROOT}/src
 target_link_libraries(orca_mobile_stl_gate PRIVATE libslic3r_mobile log)
 
 install(TARGETS libslic3r_mobile ARCHIVE DESTINATION lib)
-if(TARGET orca_slicing_c)
-    install(TARGETS orca_slicing_c LIBRARY DESTINATION lib)
+if(TARGET orca_mobile_slicing_sdk)
+    install(TARGETS orca_mobile_slicing_sdk LIBRARY DESTINATION lib)
 endif()
 install(TARGETS orca_mobile_stl_gate RUNTIME DESTINATION bin)
 

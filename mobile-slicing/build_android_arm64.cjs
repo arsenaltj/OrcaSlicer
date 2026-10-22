@@ -21,9 +21,9 @@ function run(args) {
 }
 if(!process.argv.includes('--verify-only')) {
  run(['-S',path.join(root,'mobile-slicing'),'-B',build,'-G','Ninja','-DCMAKE_MAKE_PROGRAM='+ninja,'-DCMAKE_TOOLCHAIN_FILE='+path.join(ndk,'build/cmake/android.toolchain.cmake'),'-DANDROID_ABI=arm64-v8a','-DANDROID_PLATFORM=android-35','-DANDROID_STL=c++_static','-DCMAKE_BUILD_TYPE=Release']);
- run(['--build',build,'--target','orca_slicing_c','orca_mobile_stl_gate','orca_slicing_json_gate','-j2']);
+ run(['--build',build,'--target','orca_mobile_slicing_sdk','orca_mobile_stl_gate','orca_mobile_slicing_json_gate','-j2']);
 }
-const library=path.join(build,'liborca_slicing_c.so');
+const library=path.join(build,'liborca_mobile_slicing_sdk_c.so');
 const elf=fs.readFileSync(library);
 if(elf.subarray(0,4).toString('hex')!=='7f454c46'||elf[4]!==2||elf[5]!==1) throw new Error('Expected little-endian ELF64');
 const offset=Number(elf.readBigUInt64LE(32)), size=elf.readUInt16LE(54), count=elf.readUInt16LE(56);
@@ -32,12 +32,12 @@ for(let i=0;i<count;i++){const o=offset+i*size;if(elf.readUInt32LE(o)!==1)contin
 if(!loads.length)throw new Error('No ELF LOAD entries');
 const readelf=path.join(ndk,'toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-readelf.exe');
 const symbols=cp.execFileSync(readelf,['--dyn-syms',library],{encoding:'utf8',maxBuffer:8*1024*1024,windowsHide:true});
-for(const name of ['orca_slicing_create','orca_slicing_execute','orca_slicing_cancel','orca_slicing_destroy'])if(!symbols.includes(name))throw new Error('Missing exported symbol '+name);
+for(const name of ['orca_mobile_slicing_create','orca_mobile_slicing_execute','orca_mobile_slicing_cancel','orca_mobile_slicing_destroy'])if(!symbols.includes(name))throw new Error('Missing exported symbol '+name);
 const sourceCommit=git(['rev-parse','HEAD']);
 if(!elf.includes(Buffer.from(sourceCommit)))throw new Error('ELF does not contain current configured source commit');
 const packageDir=path.join(build,'package-arm64-v8a');
 fs.mkdirSync(packageDir,{recursive:true});
-const packagedLibrary=path.join(packageDir,'liborca_slicing_c.so');
+const packagedLibrary=path.join(packageDir,'liborca_mobile_slicing_sdk_c.so');
 const strip=path.join(ndk,'toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-strip.exe');
 cp.execFileSync(strip,['--strip-unneeded',library,'-o',packagedLibrary],{windowsHide:true});
 const packaged=fs.readFileSync(packagedLibrary);

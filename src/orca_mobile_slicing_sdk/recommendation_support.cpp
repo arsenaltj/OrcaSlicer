@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <tuple>
 
-namespace orca::slicing {
+namespace orca::mobile::slicing {
 namespace {
 
 Json diff_json(const Slic3r::DynamicPrintConfig& base, const Slic3r::DynamicPrintConfig& candidate)
@@ -196,6 +196,6 @@ Json select_recommendation(const Json& completedTrials, const std::string& prefe
                 {"warnings", Json::array()}};
 }
 
-} // namespace orca::slicing
+} // namespace orca::mobile::slicing
 
 
