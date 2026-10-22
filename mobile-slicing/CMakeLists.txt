@@ -161,6 +161,7 @@ if(EXISTS "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/c_api.cpp" AND EXISTS
     target_include_directories(orca_mobile_slicing_sdk PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/include" "${ORCA_SOURCE_ROOT}/src")
     target_link_libraries(orca_mobile_slicing_sdk PRIVATE orca_mobile_core log)
     set_target_properties(orca_mobile_slicing_sdk PROPERTIES OUTPUT_NAME orca_mobile_slicing_sdk_c CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+    target_link_options(orca_mobile_slicing_sdk PRIVATE "-Wl,--version-script=${CMAKE_CURRENT_LIST_DIR}/exports/slicing.map")
     add_executable(orca_mobile_slicing_json_gate "${CMAKE_CURRENT_LIST_DIR}/slicing_json_gate.cpp")
     target_include_directories(orca_mobile_slicing_json_gate PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/include")
     target_link_libraries(orca_mobile_slicing_json_gate PRIVATE orca_mobile_slicing_sdk)
@@ -176,6 +177,8 @@ if(TARGET orca_mobile_slicing_sdk)
     install(TARGETS orca_mobile_slicing_sdk LIBRARY DESTINATION lib)
 endif()
 install(TARGETS orca_mobile_stl_gate RUNTIME DESTINATION bin)
+
+
 
 
 
