@@ -1,6 +1,6 @@
 # 2026-10-22 PR #38：候选推送与 integration 冲突处理
 
-候选提交 `6427e784ac4c53129216269e5a580eab7d4221e2` 已推送到 `origin/codex/upstream-v2.5.0-alpha-portrait-preserved`，PR #38 的目标为 `codex/team/integration`，固定目标 SHA 为 `aee65644545f2746ea08f6efccb73bc853a3db5f`。GitHub 首次计算发现四个共享文件冲突；本次普通三方合并保留候选的 Redesign 防闪烁更新与 `LibDataChannel` 链接，并合并远端 SDK/连接器、SmartSlicing、测试和文档。合并提交后的构建与定向回归仍需重新执行，完成后再允许合并 PR。
+候选提交 `6427e784ac4c53129216269e5a580eab7d4221e2` 已推送到 `origin/codex/upstream-v2.5.0-alpha-portrait-preserved`，PR #38 的目标为 `codex/team/integration`，固定目标 SHA 为 `aee65644545f2746ea08f6efccb73bc853a3db5f`。GitHub 首次计算发现四个共享文件冲突；合并提交 `177c61bfde25384bfd8105c9ce2f57e35d845fbb` 保留候选的 Redesign 防闪烁更新与 `LibDataChannel` 链接，并合并远端 SDK/连接器、SmartSlicing、测试和文档。合并后 Release 增量构建、`verify_ai_integration.py`、`verify_mobile_sdk_boundary.py` 均通过；`ModelGenerationPresentation` 65/8879、`SmartSlicing` 289/3848，组合人像/工作台/颜色/Redesign 测试 343/37693 全部通过。
 
 # 2026-10-22 远端 integration、候选验收修改与人像工作台分层组合
 

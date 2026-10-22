@@ -1,6 +1,6 @@
 # 2026-10-22 PR #38：候选已推送，正在处理 integration 冲突
 
-候选 `6427e784ac4c53129216269e5a580eab7d4221e2` 已推送到远端候选分支，PR #38 指向 `codex/team/integration` 的固定 SHA `aee65644545f2746ea08f6efccb73bc853a3db5f`。GitHub 报告四个共享文件冲突，当前已按候选验收逻辑解决：保留 Redesign 防闪烁控件更新、`LibDataChannel` 链接和两边状态文档。合并提交后的构建、集成检查和定向测试完成前，不把 PR 标记为可合并。
+候选 `6427e784ac4c53129216269e5a580eab7d4221e2` 已推送到远端候选分支，PR #38 指向 `codex/team/integration` 的固定 SHA `aee65644545f2746ea08f6efccb73bc853a3db5f`。GitHub 报告四个共享文件冲突，合并提交 `177c61bfde25384bfd8105c9ce2f57e35d845fbb` 已按候选验收逻辑解决：保留 Redesign 防闪烁控件更新、`LibDataChannel` 链接和两边状态文档。合并后 Release 增量构建、AI/SDK 边界检查和定向回归均通过：ModelGenerationPresentation 65/8879、SmartSlicing 289/3848，组合人像/工作台/颜色/Redesign 343/37693。
 
 # 2026-10-22 远端 integration 与已验收候选组合（工程回归通过，待真实人像验收）
 
