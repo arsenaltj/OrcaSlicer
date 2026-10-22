@@ -31,7 +31,10 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          fetch-tags: true
           persist-credentials: false
+      - name: Fetch pinned candidate baseline tag
+        run: git fetch --no-tags --no-recurse-submodules https://github.com/OrcaSlicer/OrcaSlicer.git refs/tags/v2.5.0-alpha:refs/tags/v2.5.0-alpha
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
         with:
@@ -49,14 +52,29 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_SHA: ${{ github.sha }}
           BEFORE_SHA: ${{ github.event.before }}
         run: |
-          if ($env:BASE_SHA) {
-            git diff --check "$env:BASE_SHA" "$env:HEAD_SHA"
+          $checkBase = $env:BASE_SHA
+          $checkHead = $env:HEAD_SHA
+          if ($env:EVENT_NAME -eq 'pull_request' -and $env:PR_HEAD_SHA) {
+            # An upstream candidate may import pre-existing whitespace from the
+            # official alpha. Check the candidate's own delta after its oldest
+            # first-parent merge, then check the synthetic merge resolution below.
+            $checkHead = $env:PR_HEAD_SHA
+            $candidateMerge = git log --first-parent --merges --format=%H "$checkHead" --not "$env:BASE_SHA" | Select-Object -Last 1
+            if ($candidateMerge) { $checkBase = $candidateMerge.Trim() }
+          }
+          if ($checkBase -and $checkHead) {
+            git -c core.whitespace=cr-at-eol diff --check "$checkBase" "$checkHead"
           } elseif ($env:BEFORE_SHA -and $env:BEFORE_SHA -notmatch '^0+$') {
-            git diff --check "$env:BEFORE_SHA" "$env:HEAD_SHA"
+            git -c core.whitespace=cr-at-eol diff --check "$env:BEFORE_SHA" "$env:HEAD_SHA"
           } else {
-            git show --check --format= "$env:HEAD_SHA"
+            git -c core.whitespace=cr-at-eol show --check --format= "$env:HEAD_SHA"
           }
           if ($LASTEXITCODE -ne 0) { throw "Whitespace validation failed." }
+          if ($env:EVENT_NAME -eq 'pull_request' -and $env:PR_HEAD_SHA -and $env:PR_HEAD_SHA -ne $env:HEAD_SHA) {
+            git -c core.whitespace=cr-at-eol diff --check "$env:PR_HEAD_SHA" "$env:HEAD_SHA"
+            if ($LASTEXITCODE -ne 0) { throw "Merge-resolution whitespace validation failed." }
+          }

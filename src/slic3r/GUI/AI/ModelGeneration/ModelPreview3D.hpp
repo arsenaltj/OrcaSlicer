@@ -20,6 +20,8 @@
 #include "ModelPreviewPalette.hpp"
 #include "ModelPreviewColorControls.hpp"
 #include "ModelSemanticColoring.hpp"
+#include "PortraitColorBlockCache.hpp"
+#include "PrinterFilamentRestoreSnapshot.hpp"
 #include "PortraitResidualProposal.hpp"
 #include "PortraitResidualRequest.hpp"
 #include "slic3r/GUI/I18N.hpp"
@@ -150,12 +152,28 @@ public:
             m_trial_toggle_started = std::chrono::steady_clock::now();
             m_color_trial_enabled = m_color_trial->enabled();
             m_trial_palette = m_color_trial->colors();
-            // Only the host semantic command may start recognition.
-            if (!m_suppress_semantic_change && m_portrait_input_changed) m_portrait_input_changed();
+            // Legacy portrait candidates remain readable from metadata, but
+            // native automatic coloring now exclusively owns the rendered
+            // palette.  Semantic evidence is retained for on-demand region
+            // labels; old recoloring models and automatic overrides are not.
+            if (!m_suppress_semantic_change && (m_semantic_ready || m_semantic_model)) {
+                m_selected_color_block.reset();
+                m_semantic_model.reset();
+                m_selection_model.reset();
+                m_automatic_face_colors.clear();
+                m_automatic_subface_colors.clear();
+                m_semantic_ready = false;
+                m_color_trial->set_semantic_mode(false);
+                m_color_trial->set_semantic_status(_L("已使用原生自动建议区域；语义只在自动划区时作为选区标签。"), false);
+            }
             m_canvas->Refresh(false);
             if (m_color_trial_changed) m_color_trial_changed(m_trial_palette.size());
             BOOST_LOG_TRIVIAL(info) << "AI color trial toggled: enabled=" << m_color_trial_enabled
                 << ", palette=" << m_trial_palette.size() << ", geometry_reloaded=false";
+        };
+        m_color_trial->on_source_changed = [this](int previous, int next) {
+            if (!m_restoring_printer_input && previous == 1 && next != 1)
+                restore_printer_filament_preview_source();
         };
         trace_stage("color_controls");
         m_color_trial->on_region_changed = [this] {
@@ -323,6 +341,11 @@ public:
         bool valid {false};
     };
 
+    // Appearance captured immediately before applying the printer palette.
+    // It is separate from the applied slot mapping so switching back to an
+    // automatic/manual source can restore the exact editable preview.
+    using PrinterFilamentRestoreSnapshot = Slic3r::GUI::PrinterFilamentRestoreSnapshot;
+
     // CPU-only data: prepare on a worker, then adopt on the GUI thread. Neither
     // OBJ parsing nor per-triangle color/normal preparation needs an OpenGL context.
     struct PreparedModel {
@@ -358,12 +381,15 @@ public:
         size_t colors {0};
         std::vector<PreviewPalette::Color> trial_palette;
         std::shared_ptr<const PreviewPalette::Histogram> trial_histogram;
+        std::shared_ptr<PreviewPalette::AutomaticColorUnits> automatic_color_units;
         std::string geometry_id;
         std::string artifact_sha256;
         std::vector<Vec3f> corner_normals;
         FaceColorOverrides face_color_overrides;
         std::optional<SelectionState> selection;
         std::optional<ModelPreviewColorControls::State> color_trial;
+        std::optional<PrinterFilamentRestoreSnapshot> printer_filament_restore;
+        std::shared_ptr<const PortraitColorBlocks::Result> color_blocks;
         std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> semantic_source;
         FaceColorOverrides saved_semantic_faces;
         SubfaceColorOverrides saved_semantic_subfaces;
@@ -419,7 +445,8 @@ public:
         prepared.geometry_id = AI::SurfaceSelectionPersistence::geometry_fingerprint(its);
         if (stop_if_canceled()) return false;
         trace_stage("geometry_fingerprint");
-        nlohmann::json region_reference, secondary_region_reference, shape_reference;
+        nlohmann::json region_reference, secondary_region_reference, shape_reference, restore_shape_reference, block_reference, restore_block_reference;
+        std::string block_semantic_signature;
         prepared.face_color_overrides = explicit_overrides;
         auto record = metadata_path;
         if (record.empty()) { record = path; record.replace_extension(".json"); }
@@ -434,6 +461,9 @@ public:
             const auto& metadata = frozen_history ? history_metadata->restoration_fields() : fallback;
             std::string state_error;
             if (metadata.is_object()) {
+                if (metadata.contains("portrait_color_blocks")) block_reference=metadata["portrait_color_blocks"];
+                if(metadata.contains("semantic_color_state") && metadata["semantic_color_state"].is_object())
+                    block_semantic_signature=metadata["semantic_color_state"].value("signature",std::string{});
                 if (metadata.contains("semantic_region_evidence")) region_reference = metadata["semantic_region_evidence"];
                 if (metadata.contains("secondary_region_evidence")) secondary_region_reference = metadata["secondary_region_evidence"];
                 if (metadata.contains("portrait_shape_reference")) shape_reference = metadata["portrait_shape_reference"];
@@ -442,7 +472,7 @@ public:
                 if (metadata.contains("color_trial")) {
                     ModelPreviewColorControls::State trial;
                     if (AI::ColorTrialPersistence::decode(metadata["color_trial"], its.indices.size(), prepared.geometry_id, trial, state_error)) {
-                        if (trial.source != 1 || trial.project_slot_identity.empty()) trial.source = 2;
+                        AI::ColorTrialPersistence::normalize_for_persistence(trial);
                         trial.notice = _L("已恢复此版本保存的试色。");
                         prepared.color_trial = std::move(trial);
                     }
@@ -457,6 +487,39 @@ public:
                 if (metadata.contains("semantic_result") && metadata["semantic_result"].is_object()) {
                     decode_semantic_result(metadata["semantic_result"],prepared.geometry_id,its.indices.size(),
                         prepared.saved_semantic_faces,prepared.saved_semantic_subfaces);
+                }
+                if (metadata.contains("printer_filament_restore") && metadata["printer_filament_restore"].is_object()) {
+                    const auto& restore = metadata["printer_filament_restore"];
+                    if(restore.contains("portrait_color_blocks"))restore_block_reference=restore["portrait_color_blocks"];
+                    PrinterFilamentRestoreSnapshot snapshot;
+                    snapshot.geometry_id = restore.value("geometry_id", std::string());
+                    std::string restore_error;
+                    ModelPreviewColorControls::State restore_trial;
+                    const bool geometry_ok = snapshot.geometry_id == prepared.geometry_id;
+                    const bool trial_ok = geometry_ok && restore.contains("color_trial") &&
+                        AI::ColorTrialPersistence::decode(restore["color_trial"], its.indices.size(), prepared.geometry_id,
+                            restore_trial, restore_error);
+                    if (trial_ok) {
+                        snapshot.color_trial = std::move(restore_trial);
+                        if (restore.contains("face_color_intent") &&
+                            !AI::SurfaceSelectionPersistence::decode_colors(restore["face_color_intent"],
+                                its.indices.size(), prepared.geometry_id, snapshot.face_color_overrides, restore_error) &&
+                            restore_error.empty())
+                            restore_error = "Invalid printer restore face colors.";
+                        if (restore_error.empty() && restore.contains("semantic_result") && restore["semantic_result"].is_object() &&
+                            !decode_semantic_result(restore["semantic_result"], prepared.geometry_id, its.indices.size(),
+                                snapshot.saved_semantic_faces, snapshot.saved_semantic_subfaces))
+                            restore_error = "Invalid printer restore semantic colors.";
+                        if (restore_error.empty() && restore.contains("automatic_semantic_result") && restore["automatic_semantic_result"].is_object() &&
+                            !decode_semantic_result(restore["automatic_semantic_result"], prepared.geometry_id, its.indices.size(),
+                                snapshot.automatic_face_colors, snapshot.automatic_subface_colors))
+                            restore_error = "Invalid printer restore automatic semantic colors.";
+                        if (restore.contains("leaf_edits")) snapshot.leaf_edits = restore["leaf_edits"];
+                        snapshot.shapes_unlocked = restore.value("shapes_unlocked", false);
+                        if (restore.contains("portrait_shape_reference")) restore_shape_reference = restore["portrait_shape_reference"];
+                        if (restore_error.empty()) prepared.printer_filament_restore = std::move(snapshot);
+                    }
+                    if (!restore_error.empty()) BOOST_LOG_TRIVIAL(warning) << "Printer-filament restore snapshot ignored: " << restore_error;
                 }
             }
             if (!state_error.empty()) BOOST_LOG_TRIVIAL(warning) << "Saved local editing state ignored: " << state_error;
@@ -481,6 +544,25 @@ public:
         }
         if (stop_if_canceled()) return false;
         trace_stage("semantic_snapshot");
+        if(prepared.semantic_source) {
+            const auto root=boost::filesystem::path(Slic3r::data_dir())/"cache"/"portrait-color-blocks";
+            std::string block_error;
+            if(!block_reference.is_null()) prepared.color_blocks=PortraitColorBlocks::load(block_reference,root,
+                prepared.geometry_id,its.indices.size(),prepared.semantic_source->content_id,block_error);
+            if(prepared.color_blocks && ((!block_semantic_signature.empty() &&
+                block_semantic_signature!=prepared.color_blocks->semantic_signature) ||
+                (prepared.color_trial && prepared.color_blocks->control_signature!=PortraitColorBlocks::controls_signature(
+                    prepared.color_trial->mapping_colors,prepared.color_trial->colors)))) {
+                prepared.color_blocks.reset();block_error="颜色块识别或普通配色签名已变化，沿用普通配色。";
+            }
+            if(!block_reference.is_null() && !prepared.color_blocks) {
+                prepared.saved_semantic_faces.clear();prepared.saved_semantic_subfaces.clear();
+            }
+            if(prepared.printer_filament_restore && !restore_block_reference.is_null())
+                prepared.printer_filament_restore->color_blocks=PortraitColorBlocks::load(restore_block_reference,root,
+                    prepared.geometry_id,its.indices.size(),prepared.semantic_source->content_id,block_error);
+            if(!block_error.empty()) BOOST_LOG_TRIVIAL(warning)<<block_error;
+        }
         const auto runtime = semantic_region_runtime_directory();
         const auto cache = std::filesystem::u8path(Slic3r::data_dir()) / "cache";
         if (!shape_reference.is_null()) try {
@@ -490,6 +572,16 @@ public:
                 prepared.geometry_id, its.indices.size(), portrait_shape_runtime_fingerprint(), true);
         } catch (const std::exception& failure) {
             BOOST_LOG_TRIVIAL(warning) << "Portrait shape cache rejected: " << failure.what();
+        }
+        if (prepared.printer_filament_restore && !restore_shape_reference.is_null()) try {
+            if (restore_shape_reference.at("model_sha256") != AI::model_artifact_sha256(path))
+                throw std::invalid_argument("Printer restore shape model hash changed.");
+            prepared.printer_filament_restore->portrait_shapes = PortraitShapeCache::load(restore_shape_reference,
+                boost::filesystem::path(cache.native()), prepared.geometry_id, its.indices.size(),
+                portrait_shape_runtime_fingerprint(), true);
+        } catch (const std::exception& failure) {
+            BOOST_LOG_TRIVIAL(warning) << "Printer restore shape cache rejected: " << failure.what();
+            prepared.printer_filament_restore.reset();
         }
         prepared.region_runtime_identity = semantic_region_runtime_identity(runtime);
         if (!region_reference.is_null()) {
@@ -525,6 +617,9 @@ public:
         geometry.reserve_indices(its.indices.size() * 3);
         std::unordered_set<uint32_t> observed_colors;
         auto trial_histogram = std::make_shared<PreviewPalette::Histogram>();
+        auto automatic_color_units = std::make_shared<PreviewPalette::AutomaticColorUnits>();
+        automatic_color_units->colors.reserve(its.indices.size());
+        automatic_color_units->area.reserve(its.indices.size());
         // Shared OBJ vertices often occur in six triangles. Pack/count their color
         // once while retaining all original face corners and the exact RGB8 output.
         std::vector<uint32_t> packed_vertex_colors;
@@ -573,11 +668,15 @@ public:
                 preview_rgb8(uniform_color[0], uniform_color[1], uniform_color[2]);
             if (!has_vertex_colors)
                 observed_colors.insert(uniform_packed);
+            PreviewPalette::Color unit_color {};
             for (size_t corner = 0; corner < 3; ++corner) {
                 const auto vertex_index = indices[corner];
                 const RGBA& color = has_vertex_colors ? obj_info.vertex_colors[vertex_index] : uniform_color;
                 const uint32_t packed = has_vertex_colors ? packed_vertex_colors[vertex_index] : uniform_packed;
                 trial_histogram->add(packed, area_weight);
+                unit_color[0] += float((packed >> 16) & 255) / (3.f * 255.f);
+                unit_color[1] += float((packed >> 8) & 255) / (3.f * 255.f);
+                unit_color[2] += float(packed & 255) / (3.f * 255.f);
                 if (has_vertex_colors && !counted_vertices[vertex_index]) {
                     observed_colors.insert(packed);
                     counted_vertices[vertex_index] = 1;
@@ -587,6 +686,8 @@ public:
                 geometry.add_vertex(its.vertices[indices[corner]], corner_normals[face_index * 3 + corner],
                     Vec2f(float(shown), lock == locked_colors.end() ? color[3] : -1.0f));
             }
+            automatic_color_units->colors.push_back(unit_color);
+            automatic_color_units->area.push_back(area_weight * 0.5);
             geometry.add_triangle(base, base + 1, base + 2);
         }
         if (geometry.is_empty()) {
@@ -604,6 +705,7 @@ public:
         const size_t preview_color_count = std::clamp(prepared.colors, size_t(1), PreviewPalette::max_preview_colors);
         prepared.trial_palette = trial_histogram->palette(preview_color_count, {}, true);
         prepared.trial_histogram = std::move(trial_histogram);
+        prepared.automatic_color_units = std::move(automatic_color_units);
         if (stop_if_canceled()) return false;
         trace_stage("palette");
         BOOST_LOG_TRIVIAL(info) << "AI color trial palette: colors=" << prepared.trial_palette.size()
@@ -674,6 +776,8 @@ public:
         m_pending_mesh = std::move(prepared.mesh);
         m_pending_vertex_colors = std::move(prepared.vertex_colors);
         m_geometry_id = std::move(prepared.geometry_id);
+        m_printer_filament_restore = std::move(prepared.printer_filament_restore);
+        auto loaded_color_blocks = std::move(prepared.color_blocks);
         m_face_color_overrides = std::move(prepared.face_color_overrides);
         m_semantic_source = std::move(prepared.semantic_source);
         m_portrait_shapes = std::move(prepared.shape_details);
@@ -697,16 +801,21 @@ public:
         color_count = m_color_count;
         m_palette = palette;
         m_has_model = true;
-        m_color_trial->load(m_trial_histogram, m_trial_palette);
+        m_color_trial->load(m_trial_histogram, m_trial_palette, m_geometry_id,
+            std::move(prepared.automatic_color_units));
         if (prepared.color_trial) {
             m_suppress_semantic_change = m_beauty_view || !prepared.saved_semantic_faces.empty() || !prepared.saved_semantic_subfaces.empty();
             m_color_trial->restore(*prepared.color_trial);
             m_suppress_semantic_change = false;
         }
-        if (!prepared.saved_semantic_faces.empty() || !prepared.saved_semantic_subfaces.empty() ||
-            (m_portrait_shapes && m_portrait_shapes->surface_partition))
-            set_saved_semantic_result(std::move(prepared.saved_semantic_faces), std::move(prepared.saved_semantic_subfaces));
+        // Legacy semantic appearance remains available for history/export
+        // compatibility, but native automatic colors exclusively own preview
+        // rendering and color-card membership.
+        m_saved_semantic_faces = std::move(prepared.saved_semantic_faces);
+        m_saved_semantic_subfaces = std::move(prepared.saved_semantic_subfaces);
         if (prepared.color_trial) synchronize_project_bound_semantics(*prepared.color_trial, m_color_trial->state());
+        if (loaded_color_blocks)
+            BOOST_LOG_TRIVIAL(info) << "Legacy portrait color-block metadata loaded read-only; native palette remains active";
         if(m_portrait_shapes && m_portrait_shapes->derived_boundary()) ensure_region_editor();
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
@@ -733,6 +842,8 @@ public:
         m_pending_vertex_colors = std::move(cached->vertex_colors);
         m_geometry_id = std::move(cached->geometry_id);
         m_face_color_overrides = std::move(cached->face_color_overrides);
+        m_printer_filament_restore = std::move(cached->printer_filament_restore);
+        auto loaded_color_blocks = std::move(cached->color_blocks);
         m_semantic_source = std::move(cached->semantic_source);
         m_portrait_shapes = std::move(cached->shape_details);
         m_shapes_unlocked = cached->shapes_unlocked;
@@ -757,15 +868,18 @@ public:
         dimensions = m_model_dimensions = cached->dimensions;
         m_palette = palette;
         m_has_model = true;
-        m_color_trial->load(m_trial_histogram, m_trial_palette);
+        m_color_trial->load(m_trial_histogram, m_trial_palette, m_geometry_id,
+            std::move(cached->automatic_color_units));
         if (cached->color_trial) {
             if (m_beauty_view || !saved_faces.empty() || !saved_subfaces.empty())
                 restore_color_trial_without_recognition(*cached->color_trial);
             else m_color_trial->restore(*cached->color_trial);
         }
-        if (!saved_faces.empty() || !saved_subfaces.empty())
-            set_saved_semantic_result(saved_faces, saved_subfaces);
+        m_saved_semantic_faces = saved_faces;
+        m_saved_semantic_subfaces = saved_subfaces;
         if (cached->color_trial) synchronize_project_bound_semantics(*cached->color_trial, m_color_trial->state());
+        if (loaded_color_blocks)
+            BOOST_LOG_TRIVIAL(info) << "Cached portrait color-block metadata ignored for rendering; native palette remains active";
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
         default_view();
@@ -817,12 +931,15 @@ private:
         m_manual_leaf_colors.clear(); m_manual_cell_colors.clear(); m_pending_leaf_edits=nullptr;
         m_saved_semantic_faces.clear(); m_saved_semantic_subfaces.clear();
         m_semantic_analysis.reset(); m_semantic_ready = false;
+        m_person_detected = false;
         m_semantic_error.clear();
         m_region_evidence.reset(); m_region_runtime_identity.clear(); m_region_evidence_error.clear();
         m_secondary_region_evidence.reset(); m_secondary_region_evidence_error.clear();
         m_protected_faces.clear();
         m_foreground_faces.clear(); m_selection_domain.clear();
         m_pending_selection.reset(); m_geometry_id.clear(); m_face_color_overrides.clear();
+        m_printer_filament_restore.reset();
+        m_color_blocks.reset(); m_selected_color_block.reset();
         m_selection_redo.clear();
         m_stroke.clear();
         m_drawing_selection = false;
@@ -1144,12 +1261,12 @@ public:
         return true;
     }
     wxString semantic_region_status() const {
-        if (m_semantic_controller && m_semantic_controller->busy()) return _L("正在识别人像区域，请等待完成或取消。");
-        if (semantic_regions_ready()) return _L("区域识别缓存可用；自动匹配不会重新识别。");
-        if (!m_region_evidence_error.empty()) return _L("区域证据失效或恢复失败，请点击“重新优化人像区域”：") +
+        if (m_semantic_controller && m_semantic_controller->busy()) return _L("正在为自动划区识别语义标签，请等待完成或取消。");
+        if (semantic_regions_ready()) return _L("自动划区语义标签可用；颜色与区域边界保持不变。");
+        if (!m_region_evidence_error.empty()) return _L("语义标签失效或恢复失败，请重新点击“自动划区”：") +
             wxString::FromUTF8(m_region_evidence_error);
-        if (!m_semantic_error.empty()) return _L("人像识别未完成，请点击“重新优化人像区域”重试：") + m_semantic_error;
-        return _L("当前模型尚无可靠区域标签，请先点击“重新优化人像区域”完成识别。");
+        if (!m_semantic_error.empty()) return _L("自动划区语义识别未完成，请重新点击“自动划区”：") + m_semantic_error;
+        return _L("当前尚无区域语义标签；点击“自动划区”后会按需识别，失败时仍按原生颜色槽划区。");
     }
     size_t semantic_selection_protected_count() const { return m_semantic_selection_protected; }
     size_t semantic_selection_low_confidence_count() const { return m_semantic_selection_low_confidence; }
@@ -1612,16 +1729,91 @@ public:
         return reference;
     }
     bool semantic_result_active() const {
-        return m_semantic_ready && (bool(m_semantic_analysis) ||
-            !m_saved_semantic_faces.empty() || !m_saved_semantic_subfaces.empty());
+        return m_semantic_ready && bool(m_semantic_analysis);
+    }
+    bool semantic_person_detected() const { return m_person_detected; }
+    bool portrait_color_count_supported() const {
+        return m_color_trial && m_color_trial->portrait_color_count_supported();
+    }
+    bool has_modern_portrait_color_blocks() const {
+        return m_color_blocks && m_color_blocks->strategy == PortraitColorBlocks::Strategy::ColorRegionMajorityV2;
     }
     bool semantic_optimization_enabled() const {
         return m_color_trial_enabled && m_color_trial && m_color_trial->semantic_optimization();
     }
+    // Internal automatic path: enable the semantic worker without exposing a
+    // portrait mode selector or requiring the user to toggle a color-control
+    // checkbox first.
+    void activate_automatic_portrait_probe() {
+        if (m_color_trial) m_color_trial->activate_for_beauty_semantics();
+    }
     bool semantic_processing() const { return m_semantic_controller && m_semantic_controller->busy(); }
     bool semantic_reoptimization_available() const {
         return portrait_recognition_enabled() && !semantic_processing() && m_has_model && bool(m_semantic_source) && m_color_trial &&
-            !m_color_trial->colors().empty() && m_color_trial->colors().size() <= 6;
+            m_color_trial->portrait_color_count_supported();
+    }
+
+    // V2 binds semantic roles to the already established color regions.  The
+    // selection UI must consume that same binding; selecting raw semantic
+    // faces here would silently reintroduce the old semantic-boundary
+    // partitioning path.  This is intentionally a selection-only operation:
+    // it does not recolor, rerun recognition, or change printer materials.
+    size_t select_portrait_color_region(const std::string& region, bool record_history = true)
+    {
+        if (!m_color_blocks || m_color_blocks->strategy != PortraitColorBlocks::Strategy::ColorRegionMajorityV2 ||
+            !region_editing_ready()) return 0;
+        if (!m_region_editor->ready()) {
+            m_deferred_selection = [this, region, record_history] {
+                select_portrait_color_region(region, record_history);
+            };
+            ensure_region_editor();
+            return 0;
+        }
+        const auto role_matches = [&](AI::SemanticColoring::Label label) {
+            using L = AI::SemanticColoring::Label;
+            if (region == "hair") return label == L::Hair;
+            if (region == "skin") return label == L::FaceSkin || label == L::BodySkin;
+            if (region == "eyes") return label == L::EyeSclera || label == L::Iris || label == L::Eyebrow;
+            if (region == "lips") return label == L::Lips || label == L::MouthInterior;
+            if (region == "clothes") return label == L::Clothes || label == L::Accessories;
+            // Secondary detail IDs are also accepted so an explicit detail
+            // selection follows its color-region binding when available.
+            if (region == "iris") return label == L::Iris;
+            if (region == "sclera" || region == "eye_sclera") return label == L::EyeSclera;
+            if (region == "eyebrow") return label == L::Eyebrow;
+            if (region == "mouth" || region == "imouth") return label == L::Lips || label == L::MouthInterior;
+            return false;
+        };
+        const auto before = selection_state();
+        const auto partition = m_color_blocks->face_partition();
+        if (partition.size() != before.selected.size()) return 0;
+        auto next = before;
+        next.selected.assign(partition.size(), 0);
+        next.foreground.assign(partition.size(), 0);
+        next.domain.assign(partition.size(), 0);
+        m_semantic_selection_protected = m_semantic_selection_low_confidence = 0;
+        size_t count = 0;
+        for (size_t face = 0; face < partition.size(); ++face) {
+            const uint32_t id = partition[face];
+            if (!id || id - 1 >= m_color_blocks->current().blocks.size()) continue;
+            const auto &block = m_color_blocks->current().blocks[id - 1];
+            if (!role_matches(block.semantic)) continue;
+            if (face < before.protected_faces.size() && before.protected_faces[face]) {
+                ++m_semantic_selection_protected;
+                continue;
+            }
+            if (block.status == PortraitColorBlocks::Status::Unresolved)
+                ++m_semantic_selection_low_confidence;
+            next.selected[face] = next.foreground[face] = next.domain[face] = 1;
+            ++count;
+        }
+        if (!count) return 0;
+        if (record_history) push_selection_history(before.selected);
+        m_selection_preview_suppressed = false;
+        m_selection_overlay_visible = true;
+        set_selection_enabled(true);
+        restore_selection_state(std::move(next));
+        return count;
     }
     wxString semantic_reoptimization_reason() const {
         if (!portrait_recognition_enabled()) return _L("当前版本可直接自动划区、分区填色和画笔涂色。");
@@ -1629,7 +1821,7 @@ public:
         if (!m_has_model) return _L("当前没有已加载模型。");
         if (!m_semantic_source) return _L("当前模型缺少可用于人像识别的面颜色输入。");
         if (!m_color_trial || m_color_trial->colors().empty()) return _L("当前没有有效色卡。");
-        if (m_color_trial->colors().size() > 6) return _L("人像区域优化只支持 1 至 6 个有效槽位。");
+        if (!m_color_trial->portrait_color_count_supported()) return _L("人像颜色块后处理仅支持自动建议四至六色；当前将使用普通配色。");
         return m_semantic_error;
     }
     const wxString& semantic_error() const { return m_semantic_error; }
@@ -1644,7 +1836,7 @@ public:
             const auto label = m_region_evidence->labels[face];
             labels.push_back(m_region_evidence->confidence[face] >= AI::SemanticColoring::minimum_confidence &&
                 label != AI::SemanticColoring::Label::Unknown && label != AI::SemanticColoring::Label::Background
-                    ? int32_t(native_facial_detail(label) ? AI::SemanticColoring::Label::FaceSkin : label) : -1);
+                    ? int32_t(label) : -1);
         }
         if (secondary_regions_ready()) {
             std::set<size_t> assigned;
@@ -1668,6 +1860,34 @@ public:
                 for (const auto f : details[index].faces) labels[f] = offset + int32_t(index);
         }
         return labels;
+    }
+    std::vector<float> beauty_semantic_confidence() const {
+        const auto labels = beauty_semantic_labels();
+        if (labels.empty()) return {};
+        std::vector<float> confidence(m_triangle_count, 0.f);
+        if (semantic_regions_ready()) {
+            for (size_t face = 0; face < m_triangle_count; ++face) {
+                const auto label = m_region_evidence->labels[face];
+                if (m_region_evidence->confidence[face] >= AI::SemanticColoring::minimum_confidence &&
+                    label != AI::SemanticColoring::Label::Unknown && label != AI::SemanticColoring::Label::Background)
+                    confidence[face] = m_region_evidence->confidence[face];
+            }
+        }
+        if (m_leaf_editing) confidence = m_leaf_editing->expand(confidence, 0.f);
+        if (confidence.size() != labels.size()) return {};
+        for (size_t unit = 0; unit < labels.size(); ++unit) {
+            if (labels[unit] < 0) confidence[unit] = 0.f;
+            else if (confidence[unit] <= 0.f) confidence[unit] = 1.f;
+        }
+        return confidence;
+    }
+    std::vector<size_t> beauty_automatic_source_slots() const {
+        if (!m_color_trial) return {};
+        const auto& basis = m_color_trial->automatic_color_basis();
+        if (!basis.valid() || basis.unit_source_slots.size() != m_triangle_count) return {};
+        return m_leaf_editing
+            ? m_leaf_editing->expand(basis.unit_source_slots, basis.source_palette.size())
+            : basis.unit_source_slots;
     }
     void set_beauty_pick_callback(std::function<void(size_t)> callback) { m_beauty_pick = std::move(callback); }
     bool beauty_partition_visible() const { return bool(m_partition_model); }
@@ -1807,8 +2027,35 @@ public:
         update_semantic_coloring();
         return m_semantic_controller && m_semantic_controller->busy();
     }
+    bool request_partition_semantics(std::function<void()> completion) {
+        if (semantic_regions_ready() || !portrait_recognition_enabled() || !m_has_model ||
+            !m_semantic_source || !m_color_trial || semantic_processing()) return false;
+        if (!m_semantic_controller) {
+            const auto executable = std::filesystem::path(wxStandardPaths::Get().GetExecutablePath().ToStdWstring());
+            m_semantic_controller = std::make_unique<ModelSemanticColoring>(
+                executable.parent_path() / "ai" / "portrait_semantics",
+                std::filesystem::u8path(Slic3r::data_dir()) / "cache" / "portrait_semantics");
+        }
+        m_semantic_completion = [completion = std::move(completion)](bool) {
+            if (completion) completion();
+        };
+        const bool started = m_semantic_controller->request(m_semantic_source,
+            m_color_trial->mapping_colors(), m_color_trial->colors(), {}, {},
+            std::filesystem::path(m_model_path.native()), {}, {}, false, {}, {}, {},
+            size_t(std::clamp(m_color_trial->automatic_count(), 1, int(PreviewPalette::max_preview_colors))), true);
+        if (!started) {
+            m_semantic_completion = {};
+            return false;
+        }
+        m_semantic_submission_edit_revision = m_leaf_edit_revision;
+        m_semantic_submission_manual = m_face_color_overrides;
+        m_semantic_submission_unlocked = m_shapes_unlocked;
+        m_color_trial->set_semantic_status(_L("正在按需识别区域标签；原生配色和区域边界保持不变……"), true);
+        m_semantic_timer.Start(100);
+        return true;
+    }
     void cancel_semantic_request() {
-        m_semantic_error = _L("用户已取消人像区域优化。");
+        m_semantic_error = _L("用户已取消自动划区语义识别。");
         if (m_semantic_controller) m_semantic_controller->cancel();
         m_semantic_timer.Stop();
         m_color_trial->set_semantic_status(m_semantic_error, false);
@@ -1826,49 +2073,28 @@ public:
     bool restore_beauty_face_colors(const FaceColorOverrides& colors);
     void set_paint_commit_callback(std::function<void(const std::vector<size_t>&)> callback) { m_paint_commit = std::move(callback); }
     void set_beauty_history_callback(std::function<void(bool)> callback) { m_beauty_history = std::move(callback); }
+    std::shared_ptr<const PortraitColorBlocks::Result> portrait_color_blocks() const {return m_color_blocks;}
+    bool restore_portrait_color_blocks(std::shared_ptr<const PortraitColorBlocks::Result>, bool refresh=true);
+    bool switch_portrait_color_track(PortraitColorBlocks::Track);
+    bool select_portrait_color_block(uint32_t);
+    bool recolor_portrait_color_block(uint32_t,const std::array<float,3>&);
+    nlohmann::json portrait_color_blocks_metadata() const;
+    std::optional<PrinterFilamentRestoreSnapshot> printer_restore_snapshot() const {return m_printer_filament_restore;}
+    void restore_printer_restore_snapshot(std::optional<PrinterFilamentRestoreSnapshot> state) {m_printer_filament_restore=std::move(state);}
+    bool has_portrait_color_block_contract() const {return bool(m_color_blocks) || (m_printer_filament_restore && bool(m_printer_filament_restore->color_blocks));}
     FaceColorOverrides import_face_color_overrides(bool use_current_trial = true) const {
-        if (use_current_trial && !m_semantic_analysis && !m_saved_semantic_faces.empty())
-            { auto result=AI::SemanticColoring::compose(m_saved_semantic_faces,m_face_color_overrides,true);
-              auto children=SubfaceColorOverrides{}; AI::compose_leaf_colors(result,children,m_manual_leaf_colors); return implicit_cell_colors(std::move(result)); }
-        const bool semantic = use_current_trial && m_color_trial_enabled &&
-            m_color_trial->semantic_optimization() && m_semantic_ready && m_semantic_analysis;
-        auto automatic = semantic
-            ? AI::SemanticColoring::apply_semantic_region_slot_overrides(m_automatic_face_colors, *m_semantic_analysis,
-                m_color_trial->semantic_region_slots(), m_color_trial->semantic_palette())
-            : m_automatic_face_colors;
-        if (semantic && !(m_portrait_shapes && m_portrait_shapes->derived_boundary())) {
-            FaceColorOverrides locked;
-            if (m_portrait_shapes) for (const auto& item : m_automatic_face_colors)
-                if (m_portrait_shapes->locks.face_locked(item.first)) locked.push_back(item);
-            auto children = m_automatic_subface_colors;
-            compose_portrait_shapes(*m_semantic_analysis, m_portrait_shapes.get(), automatic, children, locked);
-        }
-        auto result=AI::SemanticColoring::compose(automatic,m_face_color_overrides,semantic);
-        auto children=SubfaceColorOverrides{};
-        if (semantic && m_portrait_shapes && m_portrait_shapes->locks.leaf_domain)
-            AI::preserve_locked_leaf_colors(m_portrait_shapes->locks,m_automatic_face_colors,m_automatic_subface_colors,result,children);
-        AI::compose_leaf_colors(result,children,m_manual_leaf_colors); return implicit_cell_colors(std::move(result));
+        (void)use_current_trial;
+        auto result = m_face_color_overrides;
+        auto children = SubfaceColorOverrides {};
+        AI::compose_leaf_colors(result, children, m_manual_leaf_colors);
+        return implicit_cell_colors(std::move(result));
     }
     SubfaceColorOverrides import_subface_color_overrides(bool use_current_trial = true) const {
-        if (use_current_trial && !m_semantic_analysis && !m_saved_semantic_subfaces.empty())
-            { auto result=AI::SemanticColoring::compose_subfaces(m_saved_semantic_subfaces,m_face_color_overrides,true);
-              auto roots=FaceColorOverrides{}; AI::compose_leaf_colors(roots,result,m_manual_leaf_colors); return contour_subfaces(std::move(result)); }
-        const bool semantic = use_current_trial && m_color_trial_enabled &&
-            m_color_trial->semantic_optimization() && m_semantic_ready && m_semantic_analysis;
-        auto automatic = semantic
-            ? AI::SemanticColoring::apply_semantic_region_slot_overrides(m_automatic_subface_colors, *m_semantic_analysis,
-                m_color_trial->semantic_region_slots(), m_color_trial->semantic_palette())
-            : m_automatic_subface_colors;
-        if (semantic && !(m_portrait_shapes && m_portrait_shapes->derived_boundary())) {
-            auto faces = m_automatic_face_colors;
-            compose_portrait_shapes(*m_semantic_analysis, m_portrait_shapes.get(), faces, automatic);
-        }
-        auto result=AI::SemanticColoring::compose_subfaces(automatic,m_face_color_overrides,semantic);
-        auto roots=semantic ? AI::SemanticColoring::apply_semantic_region_slot_overrides(m_automatic_face_colors,*m_semantic_analysis,
-            m_color_trial->semantic_region_slots(),m_color_trial->semantic_palette()) : FaceColorOverrides{};
-        if (semantic && m_portrait_shapes && m_portrait_shapes->locks.leaf_domain)
-            AI::preserve_locked_leaf_colors(m_portrait_shapes->locks,m_automatic_face_colors,m_automatic_subface_colors,roots,result);
-        AI::compose_leaf_colors(roots,result,m_manual_leaf_colors); return contour_subfaces(std::move(result));
+        (void)use_current_trial;
+        auto roots = m_face_color_overrides;
+        auto result = SubfaceColorOverrides {};
+        AI::compose_leaf_colors(roots, result, m_manual_leaf_colors);
+        return contour_subfaces(std::move(result));
     }
     nlohmann::json semantic_color_metadata() const {
         if (!m_semantic_analysis) return nlohmann::json::object();
@@ -1877,14 +2103,12 @@ public:
             {"face", m_semantic_analysis->face_identity}};
     }
     nlohmann::json semantic_result_metadata() const {
-        const auto faces = import_face_color_overrides(true);
-        const auto subfaces = import_subface_color_overrides(true);
-        if (faces.empty() && subfaces.empty()) return nlohmann::json::object();
+        if (m_saved_semantic_faces.empty() && m_saved_semantic_subfaces.empty()) return nlohmann::json::object();
         nlohmann::json result = {{"schema", "orca.semantic-result/v1"}, {"geometry_id", m_geometry_id},
             {"face_count", m_triangle_count}, {"faces", nlohmann::json::array()},
             {"subfaces", nlohmann::json::array()}};
-        for (const auto& item : faces) result["faces"].push_back({item.first, item.second});
-        for (const auto& item : subfaces)
+        for (const auto& item : m_saved_semantic_faces) result["faces"].push_back({item.first, item.second});
+        for (const auto& item : m_saved_semantic_subfaces)
             result["subfaces"].push_back({item.face_id, item.path.depth, item.path.value, item.color});
         return result;
     }
@@ -1897,19 +2121,14 @@ public:
     }
     bool region_selection_failed() const { return m_region_prepare_failed; }
     bool set_saved_semantic_result(FaceColorOverrides faces, SubfaceColorOverrides subfaces) {
-        if (!m_semantic_source || !m_context || !m_canvas->SetCurrent(*m_context)) return false;
-        const auto cell_colors=import_cell_color_overrides();
-        auto geometry = build_semantic_colored_geometry(*m_semantic_source, faces, subfaces,{},
-            m_portrait_shapes && m_portrait_shapes->surface_partition ? m_portrait_shapes->surface_partition.get() : nullptr,
-            &cell_colors);
-        if (geometry.is_empty()) return false;
-        auto model = std::make_unique<GLModel>();
-        model->init_from(std::move(geometry));
-        m_semantic_model = std::move(model);
+        if (!m_semantic_source) return false;
+        for (const auto& item : faces) if (item.first >= m_triangle_count) return false;
+        for (const auto& item : subfaces) if (item.face_id >= m_triangle_count) return false;
         m_saved_semantic_faces = std::move(faces);
         m_saved_semantic_subfaces = std::move(subfaces);
-        m_semantic_ready = true;
-        m_canvas->Refresh(false);
+        m_semantic_model.reset();
+        m_semantic_ready = false;
+        if (m_canvas) m_canvas->Refresh(false);
         return true;
     }
     nlohmann::json selection_metadata() const {
@@ -2074,12 +2293,26 @@ public:
     }
     bool showing_model(const boost::filesystem::path& path) const { return m_has_model && path == m_model_path && same_stamp(m_model_stamp, file_stamp(path)); }
     ModelPreviewColorControls::State color_trial_state() const { return m_color_trial->state(); }
+    const PreviewPalette::AutomaticColorBasis& automatic_color_basis() const {
+        static const PreviewPalette::AutomaticColorBasis empty;
+        return m_color_trial ? m_color_trial->automatic_color_basis() : empty;
+    }
+    std::string automatic_color_basis_signature() const {
+        return m_color_trial ? m_color_trial->automatic_basis_signature() : std::string{};
+    }
     const std::vector<PreviewPalette::Color>& project_colors() const { return m_color_trial->project_colors(); }
     std::vector<FilamentColorPack> configuration_color_sources() const { return m_color_trial->configuration_color_sources(); }
     void refresh_saved_color_packs() { m_color_trial->refresh_saved_color_packs(); }
     void set_project_filament_edit_handler(std::function<void(size_t)> handler) {
         m_color_trial->on_project_color_edit = std::move(handler);
     }
+    void capture_printer_filament_restore_snapshot();
+    // Restore the pre-printer color source before rebuilding a match. This is
+    // used when the user applies the native printer palette a second time;
+    // otherwise the previous printer colors would become the new input.
+    bool restore_printer_filament_input_source();
+    bool restore_printer_filament_preview_source();
+    nlohmann::json printer_filament_restore_metadata() const;
     bool apply_project_filament_palette(const std::vector<size_t>* bindings = nullptr);
     void set_project_configuration_override(std::shared_ptr<const PresetBundle> bundle) { m_color_trial->set_project_configuration_override(std::move(bundle)); }
     bool project_matching_valid() const { return m_color_trial->project_matching_valid(); }
@@ -2118,16 +2351,6 @@ public:
         for (auto& item : m_automatic_subface_colors) recolor(item.color);
         std::unordered_set<size_t> manual_faces;
         for (const auto& item : m_face_color_overrides) manual_faces.insert(item.first);
-        // Saved semantic results include manual leaf overlays and their descendants.
-        auto manual_leaf = [this](size_t face, uint8_t depth, uint8_t path) {
-            for (uint8_t ancestor = 0; ancestor <= depth; ++ancestor)
-                if (m_manual_leaf_colors.count({face, ancestor, uint8_t(path >> (2 * (depth - ancestor)))})) return true;
-            return false;
-        };
-        for (auto& item : m_saved_semantic_faces)
-            if (!manual_faces.count(item.first) && !manual_leaf(item.first, 0, 0)) recolor(item.second);
-        for (auto& item : m_saved_semantic_subfaces)
-            if (!manual_faces.count(item.face_id) && !manual_leaf(item.face_id, item.path.depth, item.path.value)) recolor(item.color);
         if (m_portrait_shapes && m_portrait_shapes->surface_partition) {
             auto shapes = std::make_shared<PortraitShapeDetails>(*m_portrait_shapes);
             for (const auto& row : shapes->surface_partition->at("faces")) {
@@ -2141,9 +2364,7 @@ public:
             }
             m_portrait_shapes = std::move(shapes);
         }
-        if (!m_semantic_analysis && (!m_saved_semantic_faces.empty() || !m_saved_semantic_subfaces.empty()))
-            set_saved_semantic_result(m_saved_semantic_faces, m_saved_semantic_subfaces);
-        else rebuild_semantic_preview_from_cached_result();
+        rebuild_semantic_preview_from_cached_result();
     }
     void set_workbench_palette_editable(bool editable) { m_color_trial->set_workbench_editable(editable); }
     void show_workbench_palette_details() {
@@ -2183,10 +2404,7 @@ public:
     }
     nlohmann::json color_trial_metadata() const {
         AI::ColorTrialPersistence::State saved = m_color_trial->state();
-        if (saved.source != 1 || saved.project_slot_identity.empty()) {
-            saved.source = 2;
-            saved.project_color_slots.clear(); saved.project_semantic_slots.clear(); saved.project_slot_identity.clear();
-        }
+        AI::ColorTrialPersistence::normalize_for_persistence(saved);
         return AI::ColorTrialPersistence::encode(saved, m_triangle_count, m_geometry_id);
     }
     void restore_color_trial(const ModelPreviewColorControls::State& state) { m_color_trial->restore(state); }
@@ -2381,10 +2599,13 @@ private:
         size_t colors {0};
         std::vector<PreviewPalette::Color> trial_palette;
         std::shared_ptr<const PreviewPalette::Histogram> trial_histogram;
+        std::shared_ptr<const PreviewPalette::AutomaticColorUnits> automatic_color_units;
         std::string geometry_id;
         FaceColorOverrides face_color_overrides;
         std::optional<SelectionState> selection;
         std::optional<ModelPreviewColorControls::State> color_trial;
+        std::optional<PrinterFilamentRestoreSnapshot> printer_filament_restore;
+        std::shared_ptr<const PortraitColorBlocks::Result> color_blocks;
         std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> semantic_source;
         FaceColorOverrides saved_semantic_faces;
         SubfaceColorOverrides saved_semantic_subfaces;
@@ -2438,11 +2659,14 @@ private:
         if (m_texture_model) bytes += m_texture_model->memory_used();
         if (m_manual_color_model) bytes += m_manual_color_model->cpu_memory_used() + m_manual_color_model->gpu_memory_used();
         constexpr size_t cache_limit = size_t(384) * 1024 * 1024;
+        if(m_color_blocks) bytes+=m_color_blocks->memory_bytes();
         if (bytes > cache_limit)
             return;
         m_cached_preview = std::make_unique<CachedPreview>();
         m_cached_preview->geometry_id = m_geometry_id;
         m_cached_preview->face_color_overrides = m_face_color_overrides;
+        m_cached_preview->printer_filament_restore = m_printer_filament_restore;
+        m_cached_preview->color_blocks=m_color_blocks;
         m_cached_preview->manual_color_model = std::move(m_manual_color_model);
         m_cached_preview->semantic_source = m_semantic_source;
         m_cached_preview->region_evidence = m_region_evidence;
@@ -2479,6 +2703,7 @@ private:
         m_cached_preview->vertices = m_vertex_count;
         m_cached_preview->colors = m_color_count;
         m_cached_preview->trial_histogram = m_trial_histogram;
+        m_cached_preview->automatic_color_units = m_color_trial->automatic_color_units();
         // New model loads reset the trial; never relabel a previous custom or
         // project palette as a fresh automatic suggestion on a cache hit.
         const size_t preview_color_count = std::clamp(m_color_count, size_t(1), PreviewPalette::max_preview_colors);
@@ -3189,9 +3414,8 @@ private:
                 if(m_residual_preview_model) {
                     shader->set_uniform("preview_color_count",0);
                     m_residual_preview_model->render(shader);
-                } else if (m_semantic_ready && m_semantic_model && ((m_color_trial_enabled && m_color_trial->semantic_optimization()) ||
-                    (m_beauty_view && (!m_saved_semantic_faces.empty() || !m_saved_semantic_subfaces.empty())) ||
-                    (m_leaf_editing && (!m_manual_leaf_colors.empty() || !m_manual_cell_colors.empty()))) &&
+                } else if (m_semantic_ready && m_semantic_model &&
+                    m_leaf_editing && (!m_manual_leaf_colors.empty() || !m_manual_cell_colors.empty()) &&
                     !m_gray_view && !(m_beauty_view && m_beauty_original_view))
                     m_semantic_model->render(shader);
                 else if (m_texture_model && !m_gray_view && !m_exact_surface_display)
@@ -3348,13 +3572,17 @@ private:
     size_t m_semantic_selection_protected {0}, m_semantic_selection_low_confidence {0};
     std::unique_ptr<GLModel> m_semantic_model;
     std::unique_ptr<GLModel> m_residual_preview_model;
+    std::shared_ptr<const PortraitColorBlocks::Result> m_color_blocks;
+    std::optional<uint32_t> m_selected_color_block;
     bool m_semantic_ready {false};
+    bool m_person_detected {false};
     wxString m_semantic_error;
     FaceColorOverrides m_automatic_face_colors;
     SubfaceColorOverrides m_automatic_subface_colors;
     FaceColorOverrides m_saved_semantic_faces;
     SubfaceColorOverrides m_saved_semantic_subfaces;
     bool m_suppress_semantic_change {false};
+    bool m_restoring_printer_input {false};
     bool m_project_color_sync_suspended {false};
     ModelPreviewColorControls* m_color_trial {nullptr};
     std::vector<PreviewPalette::Color> m_trial_palette;
@@ -3407,6 +3635,7 @@ private:
     std::optional<SelectionState> m_pending_selection;
     std::string m_geometry_id;
     FaceColorOverrides m_face_color_overrides;
+    std::optional<PrinterFilamentRestoreSnapshot> m_printer_filament_restore;
     SelectionGesture m_selection_gesture {SelectionGesture::Lasso};
     std::vector<Vec2d> m_stroke;
     double m_brush_radius {18.0};

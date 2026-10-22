@@ -83,7 +83,7 @@ inline bool place(ModelObject& object, const Polygon& bed, const arrangement::Ar
         // then rotate/translate. Miter joins reject valid native corner contacts.
         ExPolygon local(item.poly.contour);
         if (local.contour.is_counter_clockwise()) local.contour.reverse();
-        auto footprint = offset_ex(local, float(inflation), ClipperLib::jtSquare);
+        auto footprint = offset_ex(local, float(inflation), jtSquare);
         for (auto& area : footprint) {
             area.rotate(item.rotation);
             area.translate(item.translation.x(), item.translation.y());

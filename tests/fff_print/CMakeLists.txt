@@ -11,11 +11,19 @@ add_executable(${_TEST_NAME}_tests
 	test_extrusion_processor.cpp
 	test_fill.cpp
 	test_flow.cpp
+	test_gcode_processor.cpp
+	test_gcode_statistics.cpp
 	test_gcode_timing.cpp
+	test_gcode.cpp
+	test_gcodeprocessor.cpp
 	test_gcodewriter.cpp
+	test_imex_mode_gcode.cpp
+	test_imex_slice_offset.cpp
 	test_model.cpp
 	test_multifilament.cpp
 	test_perimeters.cpp
+	# Seam geometry and pipeline regressions share the existing Print fixtures.
+	test_precise_seam.cpp
 	test_print.cpp
 	test_printobject.cpp
 	test_mixed_filament.cpp
@@ -25,7 +33,10 @@ add_executable(${_TEST_NAME}_tests
 	test_slicing_pipeline_hook.cpp
 	test_smart_slicing_trial_executor.cpp
 	test_support_material.cpp
+	test_texture_displacement.cpp
+	test_tree_support.cpp
 	test_trianglemesh.cpp
+	test_wipe.cpp
 	test_wipe_tower.cpp
 	)
 target_link_libraries(${_TEST_NAME}_tests test_common libslic3r OrcaSlicer::SmartSlicing Catch2::Catch2WithMain)

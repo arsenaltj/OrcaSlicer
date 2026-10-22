@@ -1,6 +1,7 @@
 # Additional model coloring sources and optional inference dependencies.
 # The three core editing sources already belong to SLIC3R_GUI_SOURCES.
 target_sources(libslic3r_gui PRIVATE
+    GUI/AI/ModelGeneration/PortraitColorBlockPostprocess.cpp
     GUI/AI/ModelGeneration/ModelSemanticColoring.cpp
     GUI/AI/ModelGeneration/ModelPreviewSemantics.cpp
     AI/ModelGeneration/SemanticColoring/SemanticColoring.cpp

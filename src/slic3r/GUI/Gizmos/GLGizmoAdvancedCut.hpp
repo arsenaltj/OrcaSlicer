@@ -135,7 +135,7 @@ public:
     bool is_looking_forward() const;
 
     bool unproject_on_cut_plane(const Vec2d &mouse_pos, Vec3d &pos, Vec3d &pos_world);
-    
+
     virtual bool apply_clipping_plane() { return m_connectors_editing; }
 
     void data_changed(bool is_serializing) override;

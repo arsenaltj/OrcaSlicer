@@ -16,7 +16,7 @@ using Slic3r::Vec3d;
 namespace selection = Slic3r::AI::SurfaceSelectionPersistence;
 namespace trial = Slic3r::AI::ColorTrialPersistence;
 
-TEST_CASE("Manual region edits export the displayed palette without recomputing trial colors", "[ModelPreviewState][ManualTrialImport][Regression]")
+TEST_CASE("Legacy semantic colors do not replace the displayed manual import palette", "[ModelPreviewState][ManualTrialImport][Regression]")
 {
     using Controls = Slic3r::GUI::ModelPreviewColorControls;
     Controls::State saved;
@@ -24,7 +24,7 @@ TEST_CASE("Manual region edits export the displayed palette without recomputing 
     saved.colors = {{.1f, .2f, .3f}, {.4f, .5f, .6f}};
     saved.semantic_palette = {{.8f, .2f, .3f}, {.8f, .2f, .3f}};
     saved.semantic_optimization = true;
-    CHECK(Controls::manual_import_palette(saved) == saved.semantic_palette);
+    CHECK(Controls::manual_import_palette(saved) == saved.colors);
     saved.semantic_optimization = false;
     CHECK(Controls::manual_import_palette(saved) == saved.colors);
     saved.semantic_optimization = true;
@@ -32,7 +32,7 @@ TEST_CASE("Manual region edits export the displayed palette without recomputing 
     CHECK(Controls::manual_import_palette(saved) == saved.colors);
 }
 
-TEST_CASE("Restored manual trial history exposes an import palette without a new edit", "[ModelPreviewState][ManualTrialImport][Regression]")
+TEST_CASE("Restored manual history ignores legacy semantic recoloring", "[ModelPreviewState][ManualTrialImport][Regression]")
 {
     using Controls = Slic3r::GUI::ModelPreviewColorControls;
     const std::string fingerprint(64, 'a');
@@ -46,7 +46,7 @@ TEST_CASE("Restored manual trial history exposes an import palette without a new
     std::string error;
     REQUIRE(trial::decode(trial::encode(original, 20, fingerprint), 20, fingerprint, restored, error));
     REQUIRE(restored.manual_colors.empty());
-    CHECK(Controls::manual_import_palette(restored) == original.semantic_palette);
+    CHECK(Controls::manual_import_palette(restored) == original.colors);
     CHECK(restored.mapping_colors == original.mapping_colors);
 }
 
@@ -951,4 +951,33 @@ TEST_CASE("Thin planar assets remain visible before their thickness reaches zero
         Slic3r::Geometry::rotation_transform(angles.first * Vec3d::UnitZ());
     const Vec3d facing = rotation * Vec3d::UnitY();
     CHECK(std::abs(facing.z()) > 0.25);
+}
+
+TEST_CASE("Saved color blocks validate normal palette and discard only stale candidates", "[PortraitColorBlocks][ModelPreviewState]")
+{
+    namespace PC=Slic3r::GUI::PortraitColorBlocks;namespace SC=Slic3r::AI::SemanticColoring;
+    SavedPreview fixture;ScopedTemporaryDir cache("portrait-blocks-preview-cache");
+    struct DataScope {std::string previous=Slic3r::data_dir();~DataScope(){Slic3r::set_data_dir(previous);}} scope;
+    Slic3r::set_data_dir(cache.string());
+    REQUIRE(fixture.original.semantic_source);
+    const auto& source=*fixture.original.semantic_source;
+    SC::Analysis analysis;analysis.geometry_id=source.geometry_id;analysis.content_id=source.content_id;analysis.signature=std::string(64,'c');
+    analysis.face_labels.assign(fixture.original.triangles,SC::Label::Unknown);analysis.face_confidence.assign(fixture.original.triangles,.95f);
+    PC::Input input{source,analysis};input.mapping=fixture.colors.mapping_colors;input.targets=fixture.colors.colors;
+    const auto blocks=PC::build(input);auto doc=fixture.metadata(source.geometry_id);
+    doc["portrait_color_blocks"]=PC::save(*blocks,cache.path()/"cache"/"portrait-color-blocks");
+    doc["semantic_color_state"]={{"signature",analysis.signature}};
+    doc["semantic_result"]={{"schema","orca.semantic-result/v1"},{"geometry_id",source.geometry_id},
+        {"face_count",fixture.original.triangles},{"faces",{{0,{.9f,.1f,.1f}}}},{"subfaces",nlohmann::json::array()}};
+    fixture.write(fixture.adjacent,doc);std::string error;ModelPreview3D::PreparedModel valid;
+    REQUIRE(ModelPreview3D::prepare_model(fixture.model,valid,error));REQUIRE(valid.color_blocks);
+    REQUIRE(PC::encode(*valid.color_blocks)==PC::encode(*blocks));
+    const int fault=GENERATE(0,1,2);
+    if(fault==0)doc["color_trial"]["colors"][0]={.5f,.5f,.5f};
+    if(fault==1)doc["semantic_color_state"]["signature"]=std::string(64,'d');
+    if(fault==2)boost::filesystem::remove(cache.path()/"cache"/"portrait-color-blocks"/(doc["portrait_color_blocks"]["content_id"].get<std::string>()+".json"));
+    fixture.write(fixture.adjacent,doc);ModelPreview3D::PreparedModel stale;
+    REQUIRE(ModelPreview3D::prepare_model(fixture.model,stale,error));REQUIRE_FALSE(stale.color_blocks);
+    REQUIRE(stale.saved_semantic_faces.empty());REQUIRE(stale.face_color_overrides==fixture.intent);
+    REQUIRE(stale.semantic_source->content_id==source.content_id);
 }

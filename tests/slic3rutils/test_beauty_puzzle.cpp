@@ -32,6 +32,82 @@
 using namespace Slic3r;
 using namespace Slic3r::AI;
 
+TEST_CASE("Automatic color regions cross hard folds without fragmenting equal colors", "[BeautyWorkbench][BeautyPuzzle]") {
+    indexed_triangle_set mesh;
+    mesh.vertices = {{0,0,0},{1,0,0},{0,1,0},{1,1,2}};
+    mesh.indices = {{0,1,2},{1,3,2}};
+    std::vector<RGBA> colors(mesh.vertices.size(), RGBA{.35f,.35f,.35f,1.f});
+    const auto surface = BeautySurface::build(mesh, colors);
+    const std::vector<std::array<double, 3>> faces(2, {.35, .35, .35});
+    const auto puzzle = BeautyPuzzle::create_color_regions(*surface, {}, faces);
+    REQUIRE(puzzle.piece_count() == 1);
+    REQUIRE_NOTHROW(puzzle.validate(*surface));
+}
+
+TEST_CASE("Native automatic slot regions ignore semantic and normal boundaries", "[BeautyWorkbench][BeautyPuzzle][AutomaticColorBasis]") {
+    indexed_triangle_set mesh;
+    mesh.vertices = {{0,0,0},{1,0,0},{0,1,0},{1,1,2}};
+    mesh.indices = {{0,1,2},{1,3,2}};
+    std::vector<RGBA> colors(mesh.vertices.size(), RGBA{.35f,.35f,.35f,1.f});
+    const auto surface = BeautySurface::build(mesh, colors, {}, {}, false);
+    const std::vector<int32_t> conflicting {
+        int32_t(SemanticColoring::Label::Iris), int32_t(SemanticColoring::Label::Clothes)};
+    const auto together = BeautyPuzzle::create_slot_regions(*surface, {3,3}, "basis-6", conflicting);
+    REQUIRE(together.piece_count() == 1);
+    REQUIRE(together.region_source_slots.size() == 1);
+    CHECK(together.region_source_slots.begin()->second == 3);
+    CHECK(together.region_semantic_labels.size() == 1);
+    REQUIRE_NOTHROW(together.validate(*surface));
+
+    const auto separate = BeautyPuzzle::create_slot_regions(*surface, {3,4}, "basis-6", conflicting);
+    REQUIRE(separate.piece_count() == 2);
+    CHECK(separate.semantic_region_faces("eyes") == std::vector<size_t>{0});
+    CHECK(separate.semantic_region_faces("clothes") == std::vector<size_t>{1});
+    REQUIRE_NOTHROW(separate.validate(*surface));
+    const auto saved = separate.encode();
+    REQUIRE(saved.at("schema") == "orca.beauty-puzzle/v5");
+    const auto restored = BeautyPuzzle::decode(saved, surface->geometry_id, mesh.indices.size());
+    CHECK(restored.automatic_basis_signature == "basis-6");
+    CHECK(restored.region_source_slots == separate.region_source_slots);
+    CHECK(restored.region_semantic_labels == separate.region_semantic_labels);
+    REQUIRE_NOTHROW(restored.validate(*surface));
+}
+
+TEST_CASE("Automatic regions attach the area weighted semantic winner to the complete region", "[BeautyWorkbench][BeautyPuzzle][AutomaticColorBasis]") {
+    indexed_triangle_set mesh;
+    mesh.vertices = {{0,0,0},{1,0,0},{0,1,0},{0,-4,0}};
+    mesh.indices = {{0,1,2},{1,0,3}};
+    std::vector<RGBA> colors(mesh.vertices.size(), RGBA{.4f,.4f,.4f,1.f});
+    const auto surface = BeautySurface::build(mesh, colors, {}, {}, false);
+    REQUIRE(surface->areas.size() == 2);
+    const std::vector<int32_t> labels {
+        int32_t(SemanticColoring::Label::Iris), int32_t(SemanticColoring::Label::Clothes)};
+    const std::vector<float> confidence {1.f, .8f};
+    const auto puzzle = BeautyPuzzle::create_slot_regions(*surface, {2,2}, "basis-weighted", labels, confidence);
+    REQUIRE(puzzle.piece_count() == 1);
+    const uint32_t piece = puzzle.face_piece.front();
+    REQUIRE(puzzle.region_semantic_labels.count(piece) == 1);
+    CHECK(puzzle.region_semantic_labels.at(piece) == int32_t(SemanticColoring::Label::Clothes));
+    const double iris_vote = surface->areas[0] * confidence[0];
+    const double clothes_vote = surface->areas[1] * confidence[1];
+    CHECK_THAT(puzzle.region_semantic_confidence.at(piece), Catch::Matchers::WithinAbs(
+        clothes_vote / (iris_vote + clothes_vote), 1e-6));
+    CHECK(puzzle.semantic_region_faces("clothes") == std::vector<size_t>{0,1});
+    CHECK(puzzle.semantic_region_faces("eyes").empty());
+    REQUIRE_NOTHROW(puzzle.validate(*surface));
+}
+
+TEST_CASE("Disconnected faces retain separate native automatic regions", "[BeautyWorkbench][BeautyPuzzle][AutomaticColorBasis]") {
+    indexed_triangle_set mesh;
+    mesh.vertices = {{0,0,0},{1,0,0},{0,1,0},{3,0,0},{4,0,0},{3,1,0}};
+    mesh.indices = {{0,1,2},{3,4,5}};
+    std::vector<RGBA> colors(mesh.vertices.size(), RGBA{.2f,.4f,.6f,1.f});
+    const auto surface = BeautySurface::build(mesh, colors, {}, {}, false);
+    const auto puzzle = BeautyPuzzle::create_slot_regions(*surface, {2,2}, "basis-4");
+    REQUIRE(puzzle.piece_count() == 2);
+    REQUIRE_NOTHROW(puzzle.validate(*surface));
+}
+
 TEST_CASE("Puzzle preview repaints base and painted colors after a source replacement", "[ModelPreviewPuzzle]") {
     indexed_triangle_set mesh;
     mesh.vertices={{0,0,0},{1,0,0},{0,1,0},{1,1,0}};

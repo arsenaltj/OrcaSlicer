@@ -9,6 +9,7 @@
 #include <boost/format.hpp>
 #include <mutex>
 
+#include "git_commit_hash.h"
 #include "libslic3r_version.h"
 #include "slic3r/BuildInfo.hpp"
 

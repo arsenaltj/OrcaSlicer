@@ -6,9 +6,7 @@
 #include "slic3r/GUI/I18N.hpp"
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
-#include "slic3r/GUI/AI/Orca/WorkbenchFilamentRecipes.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaPrintPaletteSnapshot.hpp"
-#include "libslic3r/ColorDecomposeRecipe.hpp"
 #include <wx/menu.h>
 #include <wx/sizer.h>
 #include <wx/weakref.h>
@@ -61,6 +59,11 @@ std::optional<AI::ModelMatchedColors> capture_applied_filament_match(
             return {};
         matched.face_slots[item.first] = logical_slots[index];
     }
+    for (const auto& child : preview.import_subface_color_overrides(true)) {
+        const size_t index = PrinterFilamentPreview::nearest(child.color, logical_colors);
+        if (index >= logical_slots.size()) return {};
+        matched.subface_slots.push_back({child.face_id, child.path.depth, child.path.value, logical_slots[index]});
+    }
     if (std::any_of(matched.face_slots.begin(), matched.face_slots.end(), [](size_t slot) { return slot == size_t(-1); }) ||
         !matched.valid()) return {};
     return matched;
@@ -77,59 +80,32 @@ void ModelGenerationPanel::apply_workbench_printer_filaments()
     auto before = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
     before->project_config = std::make_shared<DynamicPrintConfig>(bundle->project_config);
     before->project_presets = bundle->filament_presets;
+    // Applying printer filaments is a read-only match against the live native
+    // palette. Never stage color-card targets here: doing so changes the
+    // printer slot count and invents recipes from the card.
     auto staged = std::make_shared<PresetBundle>(*bundle);
-    std::vector<size_t> bindings;
     std::vector<PrinterFilamentSlotRemap::Change> changes;
     std::string error;
     const auto state = PrinterFilamentConfig::capture(*bundle);
-    const auto trial = m_model_preview->color_trial_state();
-    const bool stale_project_match = trial.source == 1 && !trial.project_slot_identity.empty() &&
-        trial.project_slot_identity != state.identity;
+    if (!state.ready) {
+        m_workbench_operation_notice = state.reason.empty() ? "请先配置当前打印机耗材" : state.reason;
+        refresh_controls(); publish_workbench_state(); return;
+    }
+    auto trial = m_model_preview->color_trial_state();
+    if (trial.source == 1 && !m_model_preview->restore_printer_filament_input_source()) {
+        m_workbench_operation_notice = "无法恢复应用前的模型颜色，请重新加载模型后再试";
+        refresh_controls(); publish_workbench_state(); return;
+    }
+    trial = m_model_preview->color_trial_state();
     if (m_applied_filaments_saved_model == m_displayed_model_path &&
         m_applied_filaments_saved_signature == state.signature && trial.source == 1 &&
+        trial.enabled && m_model_preview->project_matching_valid() &&
         !m_beauty_manual_color_dirty && (!m_beauty_controls || !m_beauty_controls->has_changes())) {
         m_workbench_operation_notice = "已应用并保存，可直接导入";
         refresh_controls(); return;
     }
-    if (state.physical_capacity < 32) {
-        std::vector<std::string> targets;
-        // The semantic/portrait palette is an alternate rendering of the
-        // same logical card entries.  Stage one target per logical color and
-        // let apply_bound reuse those slot identities for both palettes.
-        // Appending both palettes here doubled a six-color portrait card to
-        // twelve targets and consequently created surplus mix slots.
-        // A stale printer match may still contain a deleted mixed color.  In
-        // that case rebuild from the live native palette so stage_targets()
-        // cannot recreate the removed recipe.  A valid match keeps the trial
-        // palette and its explicit slot bindings.
-        std::vector<PreviewPalette::Color> source_colors;
-        if (stale_project_match) source_colors = m_model_preview->project_colors();
-        else source_colors = trial.colors.empty() ? trial.semantic_palette : trial.colors;
-        for (const auto& c : source_colors)
-            targets.push_back(color_decompose_rgb_to_hex({static_cast<unsigned char>(std::lround(c[0]*255)),
-                static_cast<unsigned char>(std::lround(c[1]*255)), static_cast<unsigned char>(std::lround(c[2]*255))}));
-        auto preferred = trial.project_slot_identity == state.identity ? trial.project_color_slots : std::vector<size_t>{};
-        if (!WorkbenchFilamentRecipes::stage_targets(*staged, targets, bindings, error, preferred)) {
-            m_workbench_operation_notice = error;
-            refresh_controls(); publish_workbench_state(); return;
-        }
-        // A previous card may have left obsolete virtual recipes at the end
-        // of the native list. Keep the staged project bounded to the current
-        // logical card and carry the removals through the normal remap
-        // transaction so model/painting references stay undoable.
-        for (size_t at = bundle->filament_presets.size(); at < staged->filament_presets.size(); ++at)
-            changes.push_back({{at}, -1, -1});
-        if (!PrinterFilamentConfig::trim_unused_physical_slots(*staged, bindings, targets.size(), changes, error)) {
-            m_workbench_operation_notice = error;
-            refresh_controls(); publish_workbench_state(); return;
-        }
-        if (!PrinterFilamentConfig::trim_unused_mixed_slots(*staged, bindings, targets.size(), changes, error)) {
-            m_workbench_operation_notice = error;
-            refresh_controls(); publish_workbench_state(); return;
-        }
-    }
     m_model_preview->set_project_configuration_override(staged);
-    if (!m_model_preview->apply_project_filament_palette(bindings.empty() ? nullptr : &bindings)) {
+    if (!m_model_preview->apply_project_filament_palette()) {
         m_model_preview->set_project_configuration_override({});
         restore_beauty_candidate(*before);
         m_workbench_operation_notice = "耗材匹配失败，原模型和工程配置保持不变";

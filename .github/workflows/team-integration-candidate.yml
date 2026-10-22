@@ -29,7 +29,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          fetch-tags: true
           persist-credentials: false
+      - name: Fetch pinned candidate baseline tag
+        run: git fetch --no-tags --no-recurse-submodules https://github.com/OrcaSlicer/OrcaSlicer.git refs/tags/v2.5.0-alpha:refs/tags/v2.5.0-alpha
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'

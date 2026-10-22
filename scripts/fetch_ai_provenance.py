@@ -24,6 +24,9 @@ def pinned_commits(document: dict) -> list[str]:
     if errors:
         raise ValueError(f"Integration lock has {len(errors)} schema/contract errors; run verify_ai_integration.py --json")
     values = [document["upstream"]["sha"]]
+    candidate_baseline = document.get("candidate_baseline")
+    if isinstance(candidate_baseline, dict):
+        values.append(candidate_baseline["sha"])
     values.extend(source["sha"] for source in document["feature_sources"].values())
     values.extend(receipt["integration_commit"] for receipt in document["integration_receipts"].values())
     if any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{40}", value) is None for value in values):

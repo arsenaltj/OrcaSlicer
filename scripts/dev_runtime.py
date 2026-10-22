@@ -33,6 +33,41 @@ def write_json(path: Path, value: object) -> None:
     temporary.replace(path)
 
 
+def verify_lightweight_portrait_runtime(root: Path, runtime: Path) -> None:
+    """Validate the optional native portrait runtime staged beside the EXE.
+
+    The production Python/weights bundle remains disabled for partition builds,
+    but the small MediaPipe C ABI runtime is an independent, explicitly pinned
+    capability.  Keep it outside the normal install manifest while still
+    checking the same hashes as ``prepare_semantic_runtime.ps1``.
+    """
+    native = runtime / "ai/portrait_semantics"
+    manifest_path = native / "runtime-manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError("lightweight portrait runtime is missing runtime-manifest.json")
+    try:
+        staged = read_json(manifest_path)
+        expected = read_json(root / "cmake/semantic_runtime_manifest.json")
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("lightweight portrait runtime has an invalid manifest") from exc
+    for key in ("schema", "platform", "provider", "execution", "source_commit"):
+        if staged.get(key) != expected.get(key):
+            raise ValueError(f"lightweight portrait runtime manifest mismatch: {key}")
+    specs = list(expected.get("wheel_entries", [])) + [
+        item for item in expected.get("downloads", []) if item.get("key") != "wheel"
+    ]
+    for spec in specs:
+        name = spec.get("filename")
+        path = native / name if isinstance(name, str) else None
+        if path is None or not path.is_file():
+            raise ValueError(f"lightweight portrait runtime is missing {name}")
+        if path.stat().st_size != int(spec.get("bytes", -1)) or digest(path) != spec.get("sha256"):
+            raise ValueError(f"lightweight portrait runtime checksum mismatch: {name}")
+    for name in ("MODEL_LICENSES.md", "providers.json"):
+        if not (native / name).is_file():
+            raise ValueError(f"lightweight portrait runtime is missing {name}")
+
+
 def identity(root: Path) -> dict:
     """Hash changed bytes without requiring a handoff, commit or remote access."""
     head = git(root, "rev-parse", "HEAD").decode().strip()
@@ -191,7 +226,12 @@ def verify_runtime(root: Path, build: Path, installed: list[str], runtime: Path 
         metadata = read_json(build / "orca_ai_runtime_dependencies.json")
         if metadata.get("portrait_recognition", {}).get("enabled") is not False:
             raise ValueError("Partition-only runtime has inconsistent portrait capabilities")
-        leftovers = ("resources/beauty-runtime", "ai/portrait_semantics",
+        # The heavy Python/weights bundle is still forbidden in a partition
+        # build.  A separately staged, pinned native MediaPipe runtime is the
+        # supported lightweight portrait capability and is validated above.
+        if (runtime / "ai/portrait_semantics").exists():
+            verify_lightweight_portrait_runtime(root, runtime)
+        leftovers = ("resources/beauty-runtime",
                      *("resources/tools/ai/portrait_parent_cleanup_" + name + ".json"
                        for name in ("catalog", "fangfei", "partition", "locks")))
         if any((runtime / name).exists() for name in leftovers):

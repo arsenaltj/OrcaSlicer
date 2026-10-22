@@ -29,6 +29,7 @@
 #include <wx/weakref.h>
 
 #include <cstdint>
+#include <chrono>
 #include <ctime>
 #include <array>
 #include <atomic>
@@ -121,6 +122,7 @@ public:
     void cancel_portrait_optimization();
     wxWindow* build_portrait_optimization(wxWindow* parent);
     void update_portrait_optimization();
+    void queue_portrait_reoptimization();
     void finish_portrait_optimization(PortraitOutcome outcome, const wxString& reason = wxString());
     void portrait_preview_ready();
     void reset_portrait_session();
@@ -165,6 +167,12 @@ private:
     SemanticMode m_semantic_mode {SemanticMode::General};
     bool m_portrait_entered {false}, m_portrait_preview_drawn {false};
     bool m_portrait_cancel_requested {false};
+    bool m_auto_portrait_active {false};
+    std::string m_auto_portrait_geometry;
+    bool m_portrait_reoptimization_pending {false};
+    int m_portrait_reoptimization_count {0};
+    int m_portrait_observed_automatic_count {0};
+    std::chrono::steady_clock::time_point m_portrait_reoptimization_deadline {};
     std::shared_ptr<PortraitOptimizationTask> m_portrait_task;
     wxPanel* m_portrait_card {nullptr};
     Button* m_portrait_start {nullptr};
@@ -335,6 +343,7 @@ private:
     void refresh_local_recolor_controls();
     wxWindow* build_model_finishing(wxWindow* parent);
     void refresh_model_finishing();
+    bool finishing_workbench_layout_ready(bool enabled) const;
     void set_finishing_workbench(bool enabled);
 public:
     void mount_workbench(wxWindow* parent);

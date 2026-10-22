@@ -32,6 +32,15 @@ class IntegrationGuardrailTests(unittest.TestCase):
 
     def test_repository_lock_declares_guarded_modular_architecture(self) -> None:
         self.assertEqual("orcaslicer.ai-integration-lock/v4", self.document["schema"])
+        self.assertEqual(
+            {
+                "remote": "upstream",
+                "tag": "v2.5.0-alpha",
+                "sha": "3880f2c58ec392ed2bd5938ab31c9c7c496c0eb2",
+                "purpose": "official_tag_candidate_diff_base",
+            },
+            self.document["candidate_baseline"],
+        )
         architecture = self.document["architecture_contract"]
 
         self.assertEqual("desktop_modular_monolith", architecture["pattern"])
@@ -442,6 +451,14 @@ class IntegrationGuardrailTests(unittest.TestCase):
         errors = GUARDRAILS.validate_document(document)
 
         self.assertTrue(any("upstream.sha" in error["message"] for error in errors))
+
+    def test_rejects_changed_candidate_baseline_pin(self) -> None:
+        document = copy.deepcopy(self.document)
+        document["candidate_baseline"]["sha"] = "0" * 40
+
+        errors = GUARDRAILS.validate_document(document)
+
+        self.assertTrue(any("candidate_baseline.sha" in error["message"] for error in errors))
 
     def test_rejects_unsafe_or_overlapping_boundary_paths(self) -> None:
         document = copy.deepcopy(self.document)

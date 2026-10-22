@@ -1,12 +1,62 @@
+#include <boost/filesystem/path.hpp>
+#include <boost/filesystem/operations.hpp>
+#include <boost/filesystem/directory.hpp>
+#include <boost/filesystem/file_status.hpp>
 #include <catch2/catch_all.hpp>
 
+#include <algorithm>
 #include <boost/filesystem.hpp>
+#include <boost/nowide/convert.hpp>
+#include <boost/nowide/fstream.hpp>
+#include <cstddef>
 #include <fstream>
+#include <functional>
+#include <future>
+#include <mutex>
+#include <new>
+#include <nlohmann/json.hpp>
+#include <shared_mutex>
 
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
+#include <catch2/catch_message.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include "libslic3r/PresetBundle.hpp"
+#include "libslic3r/IMEXHelpers.hpp"
+#include "libslic3r/ParallelResolve.hpp"
 #include "libslic3r/AppConfig.hpp"
+#include "libslic3r/Model.hpp"
+#include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/Utils.hpp"
+#include "libslic3r/miniz_extension.hpp"
+#include "libslic3r/PrinterBedAssets.hpp"
 
 #include "test_utils.hpp"
+
+#include <iostream>
+#include <initializer_list>
+#include <vector>
+#include <string>
+#include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/Preset.hpp"
+#include <utility>
+#include "libslic3r/Config.hpp"
+#include <map>
+#include <memory>
+#include <optional>
+#include <regex>
+#include "libslic3r/libslic3r.h"
+#include "libslic3r/PublishSettings.hpp"
+#include <set>
+#include "libslic3r/TriangleSelector.hpp"
+#include <iterator>
+#include <miniz.h>
+
+#ifndef _WIN32
+#include <unistd.h> // geteuid
+#endif
 
 using namespace Slic3r;
 
@@ -45,6 +95,20 @@ namespace {
 
 namespace fs = boost::filesystem;
 
+// Whether a key is listed in a vector of keys (published_keys / skipped_keys).
+bool contains_key(const std::vector<std::string> &keys, const std::string &key)
+{
+    return std::find(keys.begin(), keys.end(), key) != keys.end();
+}
+
+void check_double_vector(const std::vector<double> &actual, std::initializer_list<double> expected)
+{
+    REQUIRE(actual.size() == expected.size());
+    size_t index = 0;
+    for (double value : expected)
+        REQUIRE_THAT(actual[index++], Catch::Matchers::WithinAbs(value, 1e-6));
+}
+
 void write_print_preset(const DynamicPrintConfig &default_config, const fs::path &file, const std::string &name, const std::string &inherits = {})
 {
     DynamicPrintConfig config(default_config);
@@ -67,6 +131,16 @@ void write_preset_with_inherits(const DynamicPrintConfig &default_config, const 
     config.save_to_json(file.string(), name, "User", "1.0.0");
 }
 
+// A user preset file stating nothing but the preset it inherits, so every value it
+// ends up with came from resolving that parent.
+void write_minimal_child(const fs::path &file, const std::string &name, const std::string &inherits)
+{
+    fs::create_directories(file.parent_path());
+    std::ofstream(file.string())
+        << R"({"type":"process","name":")" << name << R"(","from":"User","version":"1.0.0","inherits":")"
+        << inherits << R"("})";
+}
+
 // Add an in-memory preset (no file) with the given inherits value (empty => root preset).
 Preset &add_inmemory_preset(PresetCollection &coll, const std::string &name, const std::string &inherits = {})
 {
@@ -83,6 +157,22 @@ void set_renamed_from(PresetCollection &coll, const std::string &preset_name, st
             it->renamed_from = std::move(old_names);
 }
 
+// A single-slot PLA file config for the published-material load tests (mirrors what the GUI
+// builds from a 3mf's project settings before load_config_model).
+DynamicPrintConfig published_pla_file_config()
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75 };
+    config.opt<ConfigOptionInts>("filament_self_index")->values = { 1 };
+    config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard" };
+    config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000" };
+    config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA" };
+    config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic" };
+    config.opt<ConfigOptionStrings>("filament_ids")->values = { "GFL99" };
+    config.option<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.9 };
+    return config;
+}
+
 // A standalone print preset collection that exposes the protected rename-map builder, so a
 // renamed_from scenario can be set up without the full system-profile load pipeline.
 // (PresetCollection is non-copyable - it holds a mutex - so it is constructed directly with
@@ -94,6 +184,124 @@ struct RenameTestCollection : public PresetCollection
                            static_cast<const PrintRegionConfig &>(FullPrintConfig::defaults()))
     {}
     using PresetCollection::update_map_system_profile_renamed;
+};
+
+struct ScopedPresetDataDir
+{
+    ScopedTemporaryDir tmp{"orca-local-bundle-reload"};
+    std::string        previous{data_dir()};
+
+    ScopedPresetDataDir() { set_data_dir(tmp.path().string()); }
+    ~ScopedPresetDataDir() { set_data_dir(previous); }
+
+    fs::path bundle_dir(const std::string& id) const
+    {
+        return tmp.path() / PRESET_USER_DIR / DEFAULT_USER_FOLDER_NAME / PRESET_LOCAL_DIR / id;
+    }
+};
+
+void write_bundle_metadata(const fs::path& bundle_dir, const std::string& id)
+{
+    fs::create_directories(bundle_dir);
+    std::ofstream((bundle_dir / PRESET_BUNDLE_METADATA).string()) << "{\"id\":\"" << id << "\"}";
+}
+
+void write_print_preset_with_layer_height(const DynamicPrintConfig& default_config, const fs::path& file,
+                                          const std::string& name, double layer_height)
+{
+    DynamicPrintConfig config(default_config);
+    config.option<ConfigOptionString>("print_settings_id", true)->value = name;
+    config.option<ConfigOptionString>(BBL_JSON_KEY_INHERITS, true)->value.clear();
+    config.option<ConfigOptionFloat>("layer_height", true)->value = layer_height;
+    fs::create_directories(file.parent_path());
+    config.save_to_json(file.string(), name, "User", "1.0.0");
+}
+
+double layer_height(const Preset& preset)
+{
+    return preset.config.option<ConfigOptionFloat>("layer_height")->value;
+}
+
+// The first copy snapshots the dirty edit; cloning that snapshot replays the edit after source loading.
+// This exercises late failures and concurrent metadata updates without a production test hook.
+struct ReloadEdit : ConfigOptionString
+{
+    std::function<void()> on_restore;
+    bool copied = false;
+
+    explicit ReloadEdit(std::function<void()> on_restore) : ConfigOptionString("dirty start gcode"), on_restore(std::move(on_restore)) {}
+
+    ConfigOption* clone() const override
+    {
+        if (copied)
+            on_restore();
+        auto* copy   = new ReloadEdit(*this);
+        copy->copied = true;
+        return copy;
+    }
+};
+
+void check_reload_state(const PresetBundle& bundle, const PresetBundle& before)
+{
+    const PresetCollection* actual[]   = {&bundle.prints, &bundle.filaments, &bundle.printers};
+    const PresetCollection* expected[] = {&before.prints, &before.filaments, &before.printers};
+    for (size_t i = 0; i < 3; ++i) {
+        CAPTURE(i);
+        CHECK(actual[i]->get_selected_preset_name() == expected[i]->get_selected_preset_name());
+        CHECK(actual[i]->get_edited_preset().config == expected[i]->get_edited_preset().config);
+        CHECK(actual[i]->get_edited_preset().is_dirty == expected[i]->get_edited_preset().is_dirty);
+        REQUIRE(actual[i]->size() == expected[i]->size());
+        for (size_t j = 0; j < actual[i]->size(); ++j) {
+            const Preset& preset = actual[i]->get_presets()[j];
+            const Preset& old    = expected[i]->get_presets()[j];
+            CHECK(preset.name == old.name);
+            CHECK(preset.config == old.config);
+            CHECK(preset.bundle_id == old.bundle_id);
+            CHECK(preset.is_compatible == old.is_compatible);
+            CHECK(preset.is_visible == old.is_visible);
+            CHECK(preset.is_dirty == old.is_dirty);
+            CHECK(actual[i]->get_preset_name_by_alias(preset.alias) == expected[i]->get_preset_name_by_alias(old.alias));
+        }
+    }
+    CHECK(bundle.filament_presets == before.filament_presets);
+    CHECK(bundle.project_config == before.project_config);
+}
+
+struct LocalReloadFixture
+{
+    ScopedPresetDataDir data_dir;
+    PresetBundle bundle;
+    const std::string id     = "reload-target";
+    const fs::path directory = data_dir.bundle_dir(id);
+    const std::string prefix = std::string(PRESET_LOCAL_DIR) + "/" + id + "/";
+    std::string error;
+
+    LocalReloadFixture()
+    {
+        write_bundle_metadata(directory, id);
+        write_print_preset_with_layer_height(bundle.prints.default_preset().config, directory / PRESET_PRINT_NAME / "Print.json", "Print",
+                                             0.20);
+        write_preset_with_inherits(bundle.filaments.default_preset().config, directory / PRESET_FILAMENT_NAME / "Filament.json", "Filament",
+                                   "");
+        write_preset_with_inherits(bundle.printers.default_preset().config, directory / PRESET_PRINTER_NAME / "Printer.json", "Printer", "");
+        REQUIRE(bundle.reload_local_bundle("", id, &error));
+        bundle.prints.select_preset_by_name(prefix + "Print", true);
+        bundle.filaments.select_preset_by_name(prefix + "Filament", true);
+        bundle.printers.select_preset_by_name(prefix + "Printer", true);
+        bundle.filament_presets = {prefix + "Filament"};
+        bundle.update_compatible(PresetSelectCompatibleType::Never);
+    }
+
+    void change_sources()
+    {
+        write_print_preset_with_layer_height(bundle.prints.default_preset().config, directory / PRESET_PRINT_NAME / "Print.json", "Print",
+                                             0.30);
+        write_preset_with_inherits(bundle.filaments.default_preset().config, directory / PRESET_FILAMENT_NAME / "Added Filament.json",
+                                   "Added Filament", "");
+        write_preset_with_inherits(bundle.printers.default_preset().config, directory / PRESET_PRINTER_NAME / "Added Printer.json",
+                                   "Added Printer", "");
+        std::ofstream((directory / PRESET_BUNDLE_METADATA).string()) << "{\"id\":\"" << id << "\",\"version\":\"2.0.0\"}";
+    }
 };
 
 } // namespace
@@ -213,6 +421,726 @@ TEST_CASE("Printer extruder count tolerates missing nozzle diameter", "[Preset][
 
     config.set_key_value("nozzle_diameter", new ConfigOptionFloats({ 0.4, 0.6 }));
     CHECK(bundle.get_printer_extruder_count() == 2);
+}
+
+TEST_CASE("Reloading one local bundle preserves unrelated and modified presets", "[Preset][Bundle]")
+{
+    using Catch::Matchers::WithinAbs;
+
+    ScopedPresetDataDir data_dir;
+    PresetBundle        bundle;
+    const std::string   id = "reload-target";
+    const fs::path      bundle_dir = data_dir.bundle_dir(id);
+    const fs::path      process_file = bundle_dir / PRESET_PRINT_NAME / "Managed Print.json";
+    const std::string   target_name = std::string(PRESET_LOCAL_DIR) + "/" + id + "/Managed Print";
+    std::string         error;
+
+    write_bundle_metadata(bundle_dir, id);
+    write_print_preset_with_layer_height(bundle.prints.default_preset().config, process_file, "Managed Print", 0.20);
+    write_preset_with_inherits(bundle.filaments.default_preset().config,
+                               bundle_dir / PRESET_FILAMENT_NAME / "Managed Filament.json", "Managed Filament", "");
+    write_preset_with_inherits(bundle.printers.default_preset().config,
+                               bundle_dir / PRESET_PRINTER_NAME / "Managed Printer.json", "Managed Printer", "");
+
+    REQUIRE(bundle.reload_local_bundle("", id, &error));
+    const Preset* target = bundle.prints.find_preset(target_name, false, true);
+    REQUIRE(target != nullptr);
+    CHECK(target->bundle_id == id);
+    CHECK_FALSE(target->is_user());
+    REQUIRE(bundle.filaments.find_preset(std::string(PRESET_LOCAL_DIR) + "/" + id + "/Managed Filament") != nullptr);
+    REQUIRE(bundle.printers.find_preset(std::string(PRESET_LOCAL_DIR) + "/" + id + "/Managed Printer") != nullptr);
+    CHECK(bundle.prints.get_preset_name_by_alias("Managed Print") == target_name);
+    CHECK(bundle.filaments.get_preset_name_by_alias("Managed Filament") ==
+          std::string(PRESET_LOCAL_DIR) + "/" + id + "/Managed Filament");
+    CHECK(bundle.printers.get_preset_name_by_alias("Managed Printer") ==
+          std::string(PRESET_LOCAL_DIR) + "/" + id + "/Managed Printer");
+
+    const std::string unrelated_name = add_inmemory_preset(bundle.prints, "Unrelated Process").name;
+    bundle.prints.select_preset_by_name(unrelated_name, true);
+    write_print_preset_with_layer_height(bundle.prints.default_preset().config, process_file, "Managed Print", 0.25);
+    REQUIRE(bundle.reload_local_bundle("", id, &error));
+    CHECK(bundle.prints.get_selected_preset_name() == unrelated_name);
+    target = bundle.prints.find_preset(target_name, false, true);
+    REQUIRE(target != nullptr);
+    CHECK_THAT(layer_height(*target), WithinAbs(0.25, 1e-6));
+
+    bundle.prints.select_preset_by_name(target_name, true);
+    bundle.prints.get_edited_preset().config.option<ConfigOptionFloat>("layer_height", true)->value = 0.33;
+    REQUIRE(bundle.prints.update_dirty());
+    write_print_preset_with_layer_height(bundle.prints.default_preset().config, process_file, "Managed Print", 0.28);
+    REQUIRE(bundle.reload_local_bundle("", id, &error));
+    CHECK(bundle.prints.get_selected_preset_name() == target_name);
+    CHECK_THAT(layer_height(bundle.prints.get_selected_preset()), WithinAbs(0.28, 1e-6));
+    CHECK_THAT(layer_height(bundle.prints.get_edited_preset()), WithinAbs(0.33, 1e-6));
+    CHECK(bundle.prints.current_is_dirty());
+
+    std::ofstream(process_file.string()) << "not json";
+    CHECK_FALSE(bundle.reload_local_bundle("", id, &error));
+    CHECK(fs::exists(process_file));
+    CHECK_THAT(layer_height(bundle.prints.get_selected_preset()), WithinAbs(0.28, 1e-6));
+    CHECK_THAT(layer_height(bundle.prints.get_edited_preset()), WithinAbs(0.33, 1e-6));
+
+    bundle.prints.discard_current_changes();
+    REQUIRE(fs::remove_all(process_file.parent_path()) > 0);
+    REQUIRE(bundle.reload_local_bundle("", id, &error));
+    CHECK(bundle.prints.find_preset(target_name, false, true) == nullptr);
+    CHECK(bundle.prints.get_selected_preset_name() != target_name);
+    CHECK(bundle.filaments.find_preset(std::string(PRESET_LOCAL_DIR) + "/" + id + "/Managed Filament") != nullptr);
+    CHECK(bundle.printers.find_preset(std::string(PRESET_LOCAL_DIR) + "/" + id + "/Managed Printer") != nullptr);
+
+    const std::string filament_name = std::string(PRESET_LOCAL_DIR) + "/" + id + "/Managed Filament";
+    const std::string printer_name  = std::string(PRESET_LOCAL_DIR) + "/" + id + "/Managed Printer";
+    bundle.filaments.select_preset_by_name(filament_name, true);
+    bundle.printers.select_preset_by_name(printer_name, true);
+    bundle.filament_presets = { filament_name };
+    REQUIRE(fs::remove_all(bundle_dir / PRESET_FILAMENT_NAME) > 0);
+    REQUIRE(fs::remove_all(bundle_dir / PRESET_PRINTER_NAME) > 0);
+    REQUIRE(bundle.reload_local_bundle("", id, &error));
+    CHECK(bundle.filaments.get_selected_preset_name() != filament_name);
+    CHECK(bundle.printers.get_selected_preset_name() != printer_name);
+    REQUIRE(bundle.filament_presets.size() == 1);
+    CHECK(bundle.filament_presets.front() != filament_name);
+    CHECK(bundle.filaments.find_preset(bundle.filament_presets.front(), false) != nullptr);
+}
+
+TEST_CASE("Reloading a local bundle resolves a loaded parent preset", "[Preset][Bundle]")
+{
+    ScopedPresetDataDir data_dir;
+    PresetBundle        bundle;
+    const std::string   id = "inherited-target";
+    const fs::path      bundle_dir = data_dir.bundle_dir(id);
+    const std::string   parent_name = "Generic ABS @System";
+    const std::string   target_name = std::string(PRESET_LOCAL_DIR) + "/" + id + "/Managed Filament";
+    std::string         error;
+
+    add_inmemory_preset(bundle.filaments, parent_name);
+    write_bundle_metadata(bundle_dir, id);
+    write_preset_with_inherits(bundle.filaments.default_preset().config,
+                               bundle_dir / PRESET_FILAMENT_NAME / "Managed Filament.json", "Managed Filament", parent_name);
+
+    REQUIRE(bundle.reload_local_bundle("", id, &error));
+    const Preset* target = bundle.filaments.find_preset(target_name, false, true);
+    REQUIRE(target != nullptr);
+    CHECK(target->inherits() == parent_name);
+}
+
+TEST_CASE("Reloading a local bundle rejects unsafe source and inheritance changes", "[Preset][Bundle]")
+{
+    ScopedPresetDataDir data_dir;
+    PresetBundle        bundle;
+    const std::string   id = "guarded-target";
+    const fs::path      bundle_dir = data_dir.bundle_dir(id);
+    const std::string   target_name = std::string(PRESET_LOCAL_DIR) + "/" + id + "/Managed Print";
+    std::string         error;
+
+    write_bundle_metadata(bundle_dir, id);
+    write_print_preset_with_layer_height(bundle.prints.default_preset().config,
+                                         bundle_dir / PRESET_PRINT_NAME / "Managed Print.json", "Managed Print", 0.20);
+    REQUIRE(bundle.reload_local_bundle("", id, &error));
+
+    add_inmemory_preset(bundle.prints, "External Child", target_name);
+    CHECK_FALSE(bundle.reload_local_bundle("", id, &error));
+    CHECK(error.find("External Child") != std::string::npos);
+    CHECK(bundle.prints.find_preset(target_name, false, true) != nullptr);
+
+    for (auto it = bundle.prints.begin(); it != bundle.prints.end(); ++it) {
+        if (it->name == "External Child") {
+            bundle.prints.erase(it);
+            break;
+        }
+    }
+    fs::remove_all(bundle_dir);
+    CHECK_FALSE(bundle.reload_local_bundle("", id, &error));
+    CHECK(bundle.prints.find_preset(target_name, false, true) != nullptr);
+    CHECK_FALSE(bundle.reload_local_bundle("", "../outside", &error));
+    CHECK(error == "Local bundle id must be a single path component");
+    CHECK_FALSE(bundle.reload_local_bundle("../outside", id, &error));
+    CHECK(error == "Preset folder must be a single path component");
+#ifdef _WIN32
+    CHECK_FALSE(bundle.reload_local_bundle("", "C:", &error));
+    CHECK(error == "Local bundle id must be a single path component");
+#endif
+}
+
+TEST_CASE("A failure while restoring dirty edits leaves the whole local bundle unchanged", "[Preset][Bundle][Regression]")
+{
+    LocalReloadFixture f;
+    bool restored = false;
+    f.bundle.printers.get_edited_preset().config.set_key_value("machine_start_gcode", new ReloadEdit([&] {
+                                                                   restored = true;
+                                                                   throw std::bad_alloc();
+                                                               }));
+    f.bundle.printers.update_dirty();
+    const PresetBundle before(f.bundle);
+    const BundleMetadata metadata = f.bundle.bundles.m_bundles.at(f.id);
+    const fs::path local_dir      = f.bundle.dir_user_presets_local;
+    f.change_sources();
+
+    CHECK_FALSE(f.bundle.reload_local_bundle("", f.id, &f.error));
+    REQUIRE(restored);
+    CHECK_THAT(f.error, Catch::Matchers::ContainsSubstring("Failed to reload"));
+    check_reload_state(f.bundle, before);
+    CHECK(f.bundle.dir_user_presets_local == local_dir);
+    const auto& after = f.bundle.bundles.m_bundles.at(f.id);
+    CHECK(after.version == metadata.version);
+    CHECK(after.path == metadata.path);
+    CHECK(after.bundle_type == metadata.bundle_type);
+    CHECK(after.print_presets == metadata.print_presets);
+    CHECK(after.filament_presets == metadata.filament_presets);
+    CHECK(after.printer_presets == metadata.printer_presets);
+    CHECK(fs::exists(f.directory / PRESET_FILAMENT_NAME / "Added Filament.json"));
+
+    // The rejected staging state does not poison the next reload or leave locks held.
+    f.bundle.printers.discard_current_changes();
+    REQUIRE(f.bundle.reload_local_bundle("", f.id, &f.error));
+    CHECK_THAT(layer_height(f.bundle.prints.get_selected_preset()), Catch::Matchers::WithinAbs(0.30, 1e-6));
+}
+
+TEST_CASE("A subscribed bundle registered during staging wins over the local reload", "[Preset][Bundle][Regression]")
+{
+    const bool replace_local_entry = GENERATE(false, true);
+    LocalReloadFixture f;
+    if (!replace_local_entry)
+        f.bundle.bundles.m_bundles.erase(f.id);
+    bool registered = false;
+    f.bundle.printers.get_edited_preset().config.set_key_value("machine_start_gcode", new ReloadEdit([&] {
+                                                                   // Finish a background metadata write after the initial local-source
+                                                                   // check, before live commit.
+                                                                   std::async(std::launch::async, [&] {
+                                                                       BundleMetadata subscribed;
+                                                                       subscribed.id            = f.id;
+                                                                       subscribed.bundle_type   = BundleType::Subscribed;
+                                                                       subscribed.is_subscribed = true;
+                                                                       subscribed.version       = "9.0.0";
+                                                                       std::unique_lock<std::shared_mutex> lock(f.bundle.bundles.RWMtx);
+                                                                       f.bundle.bundles.m_bundles.insert_or_assign(f.id,
+                                                                                                                   std::move(subscribed));
+                                                                   }).get();
+                                                                   registered = true;
+                                                               }));
+    f.bundle.printers.update_dirty();
+    const PresetBundle before(f.bundle);
+    f.change_sources();
+
+    CHECK_FALSE(f.bundle.reload_local_bundle("", f.id, &f.error));
+    REQUIRE(registered);
+    CHECK_THAT(f.error, Catch::Matchers::ContainsSubstring("subscribed"));
+    check_reload_state(f.bundle, before);
+    const auto& metadata = f.bundle.bundles.m_bundles.at(f.id);
+    CHECK(metadata.bundle_type == BundleType::Subscribed);
+    CHECK(metadata.is_subscribed);
+    CHECK(metadata.version == "9.0.0");
+}
+
+TEST_CASE("External compatible process references prevent local bundle replacement and removal", "[Preset][Bundle][Regression]")
+{
+    const bool edited_only = GENERATE(false, true);
+    const bool remove      = GENERATE(false, true);
+    LocalReloadFixture f;
+    const std::string external_name = "External Filament";
+    add_inmemory_preset(f.bundle.filaments, external_name);
+    f.bundle.filaments.select_preset_by_name(external_name, true);
+    Preset& dependent = edited_only ? f.bundle.filaments.get_edited_preset() : *f.bundle.filaments.find_preset(external_name, false, true);
+    dependent.config.set_key_value("compatible_prints", new ConfigOptionStrings({f.prefix + "Print"}));
+    if (!edited_only)
+        f.bundle.filaments.select_preset_by_name(external_name, true);
+    f.bundle.filaments.update_dirty();
+    f.bundle.filament_presets = {external_name};
+    f.bundle.update_compatible(PresetSelectCompatibleType::Never);
+    REQUIRE(f.bundle.filaments.get_edited_preset().is_compatible);
+    const PresetBundle before(f.bundle);
+    if (remove)
+        REQUIRE(fs::remove(f.directory / PRESET_PRINT_NAME / "Print.json"));
+    else
+        f.change_sources();
+
+    CHECK_FALSE(f.bundle.reload_local_bundle("", f.id, &f.error));
+    CHECK_THAT(f.error, Catch::Matchers::ContainsSubstring(external_name));
+    check_reload_state(f.bundle, before);
+    CHECK(f.bundle.bundles.m_bundles.at(f.id).print_presets == std::vector<std::string>{f.prefix + "Print"});
+}
+
+TEST_CASE("External compatible printer references prevent local bundle replacement and removal", "[Preset][Bundle][Regression]")
+{
+    const bool filament    = GENERATE(false, true);
+    const bool edited_only = GENERATE(false, true);
+    const bool remove      = GENERATE(false, true);
+    LocalReloadFixture f;
+    PresetCollection& collection    = filament ? f.bundle.filaments : f.bundle.prints;
+    const std::string external_name = filament ? "External Filament" : "External Print";
+    add_inmemory_preset(collection, external_name);
+    collection.select_preset_by_name(external_name, true);
+    Preset& dependent = edited_only ? collection.get_edited_preset() : *collection.find_preset(external_name, false, true);
+    dependent.config.set_key_value("compatible_printers", new ConfigOptionStrings({f.prefix + "Printer"}));
+    if (!edited_only)
+        collection.select_preset_by_name(external_name, true);
+    collection.update_dirty();
+    if (filament)
+        f.bundle.filament_presets = {external_name};
+    f.bundle.update_compatible(PresetSelectCompatibleType::Never);
+    REQUIRE(collection.get_edited_preset().is_compatible);
+    const PresetBundle before(f.bundle);
+    if (remove)
+        REQUIRE(fs::remove(f.directory / PRESET_PRINTER_NAME / "Printer.json"));
+    else
+        f.change_sources();
+
+    CHECK_FALSE(f.bundle.reload_local_bundle("", f.id, &f.error));
+    CHECK_THAT(f.error, Catch::Matchers::ContainsSubstring(external_name));
+    check_reload_state(f.bundle, before);
+}
+
+TEST_CASE("Local reload retains internal compatibility references and live vendor and calibration pointers", "[Preset][Bundle][Regression]")
+{
+    LocalReloadFixture f;
+    VendorProfile& vendor = f.bundle.vendors["TestVendor"];
+    vendor.id             = "TestVendor";
+    Preset& external      = add_inmemory_preset(f.bundle.filaments, "Vendor Filament");
+    external.is_system    = true;
+    external.vendor       = &vendor;
+    f.bundle.set_calibrate_printer(f.prefix + "Printer");
+
+    DynamicPrintConfig config(f.bundle.filaments.default_preset().config);
+    config.set_key_value("compatible_prints", new ConfigOptionStrings({f.prefix + "Print"}));
+    config.set_key_value("compatible_printers", new ConfigOptionStrings({f.prefix + "Printer"}));
+    write_preset_with_inherits(config, f.directory / PRESET_FILAMENT_NAME / "Filament.json", "Filament", "");
+    f.change_sources();
+    REQUIRE(f.bundle.reload_local_bundle("", f.id, &f.error));
+    CHECK(f.bundle.filaments.get_selected_preset_name() == f.prefix + "Filament");
+    CHECK(f.bundle.filaments.get_edited_preset().is_compatible);
+    CHECK(f.bundle.vendors.at("TestVendor").id == vendor.id);
+    CHECK(f.bundle.filaments.find_preset("Vendor Filament")->vendor == &vendor);
+    CHECK(f.bundle.calibrate_printer == f.bundle.printers.find_preset(f.prefix + "Printer"));
+    CHECK(f.bundle.calibrate_filaments.count(f.bundle.filaments.find_preset("Vendor Filament")) == 1);
+    CHECK(f.bundle.calibrate_filaments.count(f.bundle.filaments.find_preset(f.prefix + "Filament", false, true)) == 1);
+}
+
+TEST_CASE("Local reload preserves dirty filament and printer options over new source values", "[Preset][Bundle][Regression]")
+{
+    LocalReloadFixture f;
+    f.bundle.filaments.get_edited_preset().config.option<ConfigOptionFloats>("filament_flow_ratio")->values = {1.13};
+    f.bundle.printers.get_edited_preset().config.option<ConfigOptionFloats>("nozzle_diameter")->values      = {0.6};
+    f.bundle.filaments.update_dirty();
+    f.bundle.printers.update_dirty();
+    DynamicPrintConfig filament_config(f.bundle.filaments.get_selected_preset().config);
+    filament_config.option<ConfigOptionFloats>("filament_flow_ratio")->values = {0.98};
+    write_preset_with_inherits(filament_config, f.directory / PRESET_FILAMENT_NAME / "Filament.json", "Filament", "");
+    DynamicPrintConfig printer_config(f.bundle.printers.get_selected_preset().config);
+    printer_config.option<ConfigOptionFloats>("nozzle_diameter")->values = {0.8};
+    write_preset_with_inherits(printer_config, f.directory / PRESET_PRINTER_NAME / "Printer.json", "Printer", "");
+
+    REQUIRE(f.bundle.reload_local_bundle("", f.id, &f.error));
+    check_double_vector(f.bundle.filaments.get_selected_preset().config.option<ConfigOptionFloats>("filament_flow_ratio")->values, {0.98});
+    check_double_vector(f.bundle.filaments.get_edited_preset().config.option<ConfigOptionFloats>("filament_flow_ratio")->values, {1.13});
+    check_double_vector(f.bundle.printers.get_selected_preset().config.option<ConfigOptionFloats>("nozzle_diameter")->values, {0.8});
+    check_double_vector(f.bundle.printers.get_edited_preset().config.option<ConfigOptionFloats>("nozzle_diameter")->values, {0.6});
+    CHECK(f.bundle.filaments.current_is_dirty());
+    CHECK(f.bundle.printers.current_is_dirty());
+}
+
+TEST_CASE("Local reload rejects removal or rename of a dirty selected preset in every collection", "[Preset][Bundle][Regression]")
+{
+    const auto type   = GENERATE(Preset::TYPE_PRINT, Preset::TYPE_FILAMENT, Preset::TYPE_PRINTER);
+    const bool rename = GENERATE(false, true);
+    LocalReloadFixture f;
+    PresetCollection& collection = type == Preset::TYPE_PRINT    ? f.bundle.prints :
+                                   type == Preset::TYPE_FILAMENT ? f.bundle.filaments :
+                                                                   f.bundle.printers;
+    const char* directory        = type == Preset::TYPE_PRINT    ? PRESET_PRINT_NAME :
+                                   type == Preset::TYPE_FILAMENT ? PRESET_FILAMENT_NAME :
+                                                                   PRESET_PRINTER_NAME;
+    const std::string name       = type == Preset::TYPE_PRINT ? "Print" : type == Preset::TYPE_FILAMENT ? "Filament" : "Printer";
+    const char* key              = type == Preset::TYPE_PRINT    ? "layer_height" :
+                                   type == Preset::TYPE_FILAMENT ? "filament_flow_ratio" :
+                                                                   "nozzle_diameter";
+    collection.get_edited_preset().config.set_deserialize_strict(key, "0.37");
+    collection.update_dirty();
+    REQUIRE(collection.current_is_dirty());
+    const PresetBundle before(f.bundle);
+    REQUIRE(fs::remove(f.directory / directory / (name + ".json")));
+    if (rename)
+        write_preset_with_inherits(collection.default_preset().config, f.directory / directory / "Renamed.json", "Renamed", "");
+
+    CHECK_FALSE(f.bundle.reload_local_bundle("", f.id, &f.error));
+    CHECK_THAT(f.error, Catch::Matchers::ContainsSubstring("modified selected preset"));
+    check_reload_state(f.bundle, before);
+}
+
+TEST_CASE("Local reload reconciles filament slots and purge volumes while retaining unrelated project options",
+          "[Preset][Bundle][Regression]")
+{
+    LocalReloadFixture f;
+    DynamicPrintConfig printer_config(f.bundle.printers.get_selected_preset().config);
+    printer_config.option<ConfigOptionFloats>("nozzle_diameter")->values = {0.4, 0.4};
+    write_preset_with_inherits(printer_config, f.directory / PRESET_PRINTER_NAME / "Printer.json", "Printer", "");
+    f.bundle.project_config.option<ConfigOptionFloats>("flush_volumes_matrix")->values = {0.};
+    f.bundle.project_config.option<ConfigOptionFloats>("flush_volumes_vector")->values = {111., 222.};
+    f.bundle.project_config.option<ConfigOptionFloats>("flush_multiplier")->values     = {0.75};
+    f.bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values     = {"#123456"};
+    const ConfigOption* colour                                                         = f.bundle.project_config.option("filament_colour");
+
+    REQUIRE(f.bundle.reload_local_bundle("", f.id, &f.error));
+    // Reload keeps the single loaded spool and leaves the second hardware
+    // nozzle idle; the printer still contributes a second purge multiplier.
+    CHECK(f.bundle.filament_presets == std::vector<std::string>{f.prefix + "Filament"});
+    check_double_vector(f.bundle.project_config.option<ConfigOptionFloats>("flush_multiplier")->values, {0.75, 1.});
+    check_double_vector(f.bundle.project_config.option<ConfigOptionFloats>("flush_volumes_vector")->values, {111., 222.});
+    check_double_vector(f.bundle.project_config.option<ConfigOptionFloats>("flush_volumes_matrix")->values,
+                        {0., 0.});
+    CHECK(f.bundle.project_config.option("filament_colour") == colour);
+    CHECK(f.bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{"#123456"});
+}
+
+TEST_CASE("Local reload rejects a non-FFF printer selection without changing live presets", "[Preset][Bundle][Regression]")
+{
+    const bool from_source = GENERATE(false, true);
+    LocalReloadFixture f;
+    DynamicPrintConfig printer_config(f.bundle.printers.get_selected_preset().config);
+    printer_config.set_key_value("printer_technology", new ConfigOptionEnum<PrinterTechnology>(ptSLA));
+    if (from_source)
+        write_preset_with_inherits(printer_config, f.directory / PRESET_PRINTER_NAME / "Printer.json", "Printer", "");
+    else
+        f.bundle.printers.load_preset("", "Non-FFF Printer", printer_config, true);
+    const PresetBundle before(f.bundle);
+
+    CHECK_FALSE(f.bundle.reload_local_bundle("", f.id, &f.error));
+    CHECK_THAT(f.error, Catch::Matchers::ContainsSubstring(from_source ? "invalid preset" : "FFF printer selection"));
+    check_reload_state(f.bundle, before);
+    CHECK(f.bundle.bundles.m_bundles.at(f.id).printer_presets == std::vector<std::string>{f.prefix + "Printer"});
+}
+
+TEST_CASE("Listing local bundles returns only ids that reload accepts", "[Preset][Bundle]")
+{
+    ScopedPresetDataDir data_dir;
+    PresetBundle        bundle;
+    const fs::path      local_dir = data_dir.bundle_dir("unused").parent_path();
+    std::string         error;
+
+    CHECK(bundle.list_local_bundle_ids("").empty());
+    CHECK_FALSE(fs::exists(local_dir));
+    CHECK(bundle.list_local_bundle_ids("../outside").empty());
+
+    write_bundle_metadata(data_dir.bundle_dir("valid-b"), "valid-b");
+    write_print_preset_with_layer_height(bundle.prints.default_preset().config,
+                                         data_dir.bundle_dir("valid-b") / PRESET_PRINT_NAME / "Listed Print.json",
+                                         "Listed Print", 0.20);
+    write_bundle_metadata(data_dir.bundle_dir("valid-a"), "valid-a");
+    fs::create_directories(data_dir.bundle_dir("no-metadata"));
+    write_bundle_metadata(data_dir.bundle_dir("wrong-id"), "other-id");
+    write_bundle_metadata(data_dir.bundle_dir("subscribed-folder"), "subscribed-folder");
+    fs::create_directories(data_dir.tmp.path() / PRESET_USER_DIR / DEFAULT_USER_FOLDER_NAME / PRESET_SUBSCRIBED_DIR /
+                           "subscribed-folder");
+    write_bundle_metadata(data_dir.bundle_dir("subscribed-registry"), "subscribed-registry");
+    BundleMetadata subscribed;
+    subscribed.id          = "subscribed-registry";
+    subscribed.bundle_type = BundleType::Subscribed;
+    bundle.bundles.m_bundles.emplace(subscribed.id, subscribed);
+    std::ofstream((local_dir / "stray-file.json").string()) << "{}";
+
+    const size_t print_count = bundle.prints.size();
+    const std::vector<std::string> expected{"valid-a", "valid-b"};
+    CHECK(bundle.list_local_bundle_ids("") == expected);
+    CHECK(bundle.prints.size() == print_count);
+    CHECK_FALSE(fs::exists(data_dir.bundle_dir("no-metadata") / PRESET_BUNDLE_METADATA));
+
+    for (const std::string& rejected : {"no-metadata", "wrong-id", "subscribed-folder", "subscribed-registry"})
+        CHECK_FALSE(bundle.reload_local_bundle("", rejected, &error));
+
+    REQUIRE(bundle.reload_local_bundle("", "valid-b", &error));
+    CHECK(bundle.prints.find_preset(std::string(PRESET_LOCAL_DIR) + "/valid-b/Listed Print", false, true) != nullptr);
+}
+
+TEST_CASE("Selected printer uses its default or saved bed type", "[Preset][Bundle]")
+{
+    PresetBundle bundle;
+    Preset& printer = add_inmemory_preset(bundle.printers, "Test Printer");
+    printer.is_system = true;
+    printer.config.option<ConfigOptionString>("printer_model")->value = "TEST-MODEL";
+    printer.config.option<ConfigOptionString>("printer_variant")->value = "0.4";
+    printer.config.option<ConfigOptionString>("default_bed_type")->value = "Engineering Plate";
+
+    AppConfig app_config;
+    app_config.set("curr_bed_type", std::to_string(static_cast<int>(btPTE)));
+    PresetBundle::PresetPreferences preferred_selection;
+    BedType expected_bed_type;
+
+    SECTION("New printer uses its symbolic default") {
+        expected_bed_type = btEP;
+        preferred_selection = {"TEST-MODEL", "0.4"};
+    }
+    SECTION("Re-enabled printer uses its saved selection") {
+        expected_bed_type = btPC;
+        preferred_selection = {"TEST-MODEL", "0.4"};
+        app_config.set_printer_setting("Test Printer", "curr_bed_type",
+                                       std::to_string(static_cast<int>(expected_bed_type)));
+    }
+    SECTION("Existing printer keeps its saved selection after presets reload") {
+        expected_bed_type = btPCT;
+        app_config.set("presets", PRESET_PRINTER_NAME, "Test Printer");
+        app_config.set_printer_setting("Test Printer", "curr_bed_type",
+                                       std::to_string(static_cast<int>(expected_bed_type)));
+    }
+
+    bundle.load_selections(app_config, preferred_selection);
+    bundle.export_selections(app_config);
+
+    CHECK(bundle.project_config.opt_enum<BedType>("curr_bed_type") == expected_bed_type);
+    CHECK(app_config.get_printer_setting("Test Printer", "curr_bed_type") == std::to_string(static_cast<int>(expected_bed_type)));
+}
+
+TEST_CASE("A directory of user presets loads with each one resolved against its parent", "[Preset][Bundle]")
+{
+    ScopedTemporaryDir   temp_dir;
+    RenameTestCollection coll;
+
+    Preset &parent = add_inmemory_preset(coll, "Parent Process");
+    parent.config.option<ConfigOptionFloat>("layer_height", true)->value = 0.24;
+    parent.is_system = true;
+
+    constexpr int children = 400;
+    for (int i = 0; i < children; ++ i)
+        write_minimal_child(temp_dir.path() / PRESET_PRINT_NAME / ("Child " + std::to_string(i) + ".json"),
+                            "Child " + std::to_string(i), "Parent Process");
+
+    PresetsConfigSubstitutions substitutions;
+    coll.load_presets(temp_dir.path().string(), PRESET_PRINT_NAME, substitutions,
+                      ForwardCompatibilitySubstitutionRule::Disable);
+
+    CHECK(coll.size() == size_t(children) + 2); // the children, the default preset and the parent
+    CHECK(coll.error_count() == 0);
+    for (int i = 0; i < children; ++ i) {
+        const Preset *child = coll.find_preset("Child " + std::to_string(i));
+        REQUIRE(child != nullptr);
+        CHECK(child->inherits() == "Parent Process");
+        CHECK(child->alias == "Child " + std::to_string(i));
+        CHECK(child->loaded);
+        REQUIRE(child->config.option<ConfigOptionFloat>("layer_height") != nullptr);
+        CHECK_THAT(child->config.opt_float("layer_height"), Catch::Matchers::WithinAbs(0.24, 1e-9));
+    }
+}
+
+TEST_CASE("A user preset synced to the cloud and back keeps its values on every nozzle variant", "[Preset][Bundle]")
+{
+    // Two extruders with a Standard and a High Flow variant each, as on a dual-nozzle printer.
+    auto add_parent = [](PresetCollection &coll) {
+        Preset &parent = add_inmemory_preset(coll, "Parent Process");
+        parent.config.set_key_value("print_extruder_variant",
+            new ConfigOptionStrings({"Direct Drive Standard", "Direct Drive High Flow", "Direct Drive Standard", "Direct Drive High Flow"}));
+        parent.config.set_key_value("print_extruder_id", new ConfigOptionInts({1, 1, 2, 2}));
+        parent.config.set_deserialize_strict("outer_wall_speed", "50,50,50,50");
+        parent.is_system  = true;
+        parent.setting_id = "parent-id";
+        return parent.config;
+    };
+
+    RenameTestCollection local;
+    const DynamicPrintConfig parent_config = add_parent(local);
+    Preset &child = add_inmemory_preset(local, "User Process", "Parent Process");
+    child.config.apply_only(parent_config, {"print_extruder_variant", "print_extruder_id"});
+    child.config.set_deserialize_strict("outer_wall_speed", "11,12,21,22");
+    child.version = Semver(1, 0, 0);
+
+    std::map<std::string, std::string> uploaded;
+    REQUIRE(local.get_differed_values_to_update(child, uploaded) == 0);
+    uploaded[BBL_JSON_KEY_SETTING_ID] = "child-id";
+    uploaded[BBL_JSON_KEY_USER_ID]    = "user";
+
+    // A cloud copy stored before uploads carried the variant layout holds the values alone.
+    std::map<std::string, std::string> stored_without_layout = uploaded;
+    stored_without_layout.erase("print_extruder_variant");
+    stored_without_layout.erase("print_extruder_id");
+    // One saved while the parent had a single variant covers the first extruder only.
+    std::map<std::string, std::string> stored_single_value = stored_without_layout;
+    stored_single_value["outer_wall_speed"] = "11";
+
+    struct Case { const char *label; std::map<std::string, std::string> values; const char *expected; };
+    for (const Case &c : {Case{"current upload", uploaded, "11,12,21,22"},
+                          Case{"stored without layout", stored_without_layout, "11,12,21,22"},
+                          Case{"stored with a single value", stored_single_value, "11,11,50,50"}}) {
+        DYNAMIC_SECTION(c.label) {
+            RenameTestCollection       downloaded;
+            PresetsConfigSubstitutions substitutions;
+            add_parent(downloaded);
+            REQUIRE(downloaded.load_user_preset("User Process", c.values, substitutions, ForwardCompatibilitySubstitutionRule::Disable));
+
+            const Preset *synced = downloaded.find_preset("User Process");
+            REQUIRE(synced != nullptr);
+            CHECK(synced->config.opt_serialize("outer_wall_speed") == c.expected);
+        }
+    }
+}
+
+TEST_CASE("A user filament synced to the cloud and back keeps its values and unset overrides on every variant", "[Preset][Bundle]")
+{
+    auto add_parent = [](PresetCollection &coll) {
+        Preset &parent = add_inmemory_preset(coll, "Parent Filament");
+        parent.config.set_key_value("filament_extruder_variant",
+            new ConfigOptionStrings({"Direct Drive Standard", "Direct Drive High Flow"}));
+        parent.config.set_deserialize_strict("nozzle_temperature", "220,220");
+        parent.config.set_deserialize_strict("filament_retraction_length", "nil,nil");
+        parent.is_system  = true;
+        parent.setting_id = "parent-id";
+        return parent.config;
+    };
+    auto make_collection = [] {
+        return std::make_unique<PresetCollection>(Preset::TYPE_FILAMENT, Preset::filament_options(),
+                                                  static_cast<const PrintRegionConfig &>(FullPrintConfig::defaults()));
+    };
+
+    auto local = make_collection();
+    add_parent(*local);
+    Preset &child = add_inmemory_preset(*local, "User Filament", "Parent Filament");
+    child.config.apply_only(add_parent(*make_collection()), {"filament_extruder_variant"});
+    child.config.set_deserialize_strict("nozzle_temperature", "200,210");
+    child.config.set_deserialize_strict("filament_retraction_length", "1.2,nil");
+    child.version = Semver(1, 0, 0);
+
+    std::map<std::string, std::string> uploaded;
+    REQUIRE(local->get_differed_values_to_update(child, uploaded) == 0);
+    uploaded[BBL_JSON_KEY_SETTING_ID] = "child-id";
+    uploaded[BBL_JSON_KEY_USER_ID]    = "user";
+    std::map<std::string, std::string> stored_without_layout = uploaded;
+    stored_without_layout.erase("filament_extruder_variant");
+
+    for (const auto &[label, values] : {std::make_pair("current upload", uploaded),
+                                        std::make_pair("stored without layout", stored_without_layout)}) {
+        DYNAMIC_SECTION(label) {
+            auto                       downloaded = make_collection();
+            PresetsConfigSubstitutions substitutions;
+            add_parent(*downloaded);
+            REQUIRE(downloaded->load_user_preset("User Filament", values, substitutions, ForwardCompatibilitySubstitutionRule::Disable));
+
+            const Preset *synced = downloaded->find_preset("User Filament");
+            REQUIRE(synced != nullptr);
+            CHECK(synced->config.opt_serialize("nozzle_temperature") == "200,210");
+            CHECK(synced->config.opt_serialize("filament_retraction_length") == "1.2,nil");
+        }
+    }
+}
+
+TEST_CASE("Repeated loads of a user preset directory produce the same presets", "[Preset][Bundle]")
+{
+    ScopedTemporaryDir temp_dir;
+
+    auto seed_directory = [&]() {
+        for (int i = 0; i < 200; ++ i)
+            write_minimal_child(temp_dir.path() / PRESET_PRINT_NAME / ("Child " + std::to_string(i) + ".json"),
+                                "Child " + std::to_string(i), "Parent Process");
+    };
+
+    std::vector<std::vector<std::string>> names_per_run;
+    for (int run = 0; run < 3; ++ run) {
+        RenameTestCollection coll;
+        Preset &parent = add_inmemory_preset(coll, "Parent Process");
+        parent.is_system = true;
+        if (run == 0)
+            seed_directory();
+
+        PresetsConfigSubstitutions substitutions;
+        coll.load_presets(temp_dir.path().string(), PRESET_PRINT_NAME, substitutions,
+                          ForwardCompatibilitySubstitutionRule::Disable);
+
+        std::vector<std::string> names;
+        for (auto it = coll.begin(); it != coll.end(); ++ it)
+            names.push_back(it->name + "|" + it->alias + "|" + it->inherits());
+        names_per_run.push_back(std::move(names));
+    }
+
+    REQUIRE(names_per_run[0].size() > 200);
+    CHECK(names_per_run[1] == names_per_run[0]);
+    CHECK(names_per_run[2] == names_per_run[0]);
+}
+
+TEST_CASE("An unreadable user preset is counted and removed while the rest still load", "[Preset][Bundle]")
+{
+    ScopedTemporaryDir   temp_dir;
+    RenameTestCollection coll;
+    const fs::path       dir = temp_dir.path() / PRESET_PRINT_NAME;
+
+    for (int i = 0; i < 20; ++ i)
+        write_preset_with_inherits(coll.default_preset().config, dir / ("Good " + std::to_string(i) + ".json"),
+                                   "Good " + std::to_string(i), std::string());
+    fs::create_directories(dir);
+    std::ofstream((dir / "Broken.json").string()) << "{not-json";
+
+    PresetsConfigSubstitutions substitutions;
+    coll.load_presets(temp_dir.path().string(), PRESET_PRINT_NAME, substitutions,
+                      ForwardCompatibilitySubstitutionRule::EnableSilent);
+
+    CHECK(coll.error_count() == 1);
+    CHECK(coll.find_preset("Broken") == nullptr);
+    CHECK_FALSE(fs::exists(dir / "Broken.json"));
+    for (int i = 0; i < 20; ++ i)
+        CHECK(coll.find_preset("Good " + std::to_string(i)) != nullptr);
+}
+
+TEST_CASE("A user filament naming no compatible printer gets the one after its @, in memory and on disk", "[Preset][Bundle]")
+{
+    ScopedTemporaryDir temp_dir;
+    PresetBundle       bundle;
+    const fs::path     file = temp_dir.path() / PRESET_FILAMENT_NAME / "My PLA @Test Printer.json";
+    REQUIRE(bundle.filaments.default_preset().config.option<ConfigOptionStrings>("compatible_printers")->values.empty());
+    write_preset_with_inherits(bundle.filaments.default_preset().config, file, "My PLA @Test Printer", std::string());
+
+    PresetsConfigSubstitutions substitutions;
+    bundle.filaments.load_presets(temp_dir.path().string(), PRESET_FILAMENT_NAME, substitutions,
+                                  ForwardCompatibilitySubstitutionRule::EnableSilent);
+
+    const std::vector<std::string> expected { "Test Printer" };
+    const Preset *preset = bundle.filaments.find_preset("My PLA @Test Printer");
+    REQUIRE(preset != nullptr);
+    CHECK(preset->config.option<ConfigOptionStrings>("compatible_printers")->values == expected);
+
+    DynamicPrintConfig                 saved;
+    std::map<std::string, std::string> key_values;
+    std::string                        reason;
+    saved.load_from_json(file.string(), ForwardCompatibilitySubstitutionRule::EnableSilent, key_values, reason);
+    REQUIRE(reason.empty());
+    REQUIRE(saved.option<ConfigOptionStrings>("compatible_printers") != nullptr);
+    CHECK(saved.option<ConfigOptionStrings>("compatible_printers")->values == expected);
+}
+
+TEST_CASE("A user preset's setting id equal to its base id is dropped in memory, not in the .info written back", "[Preset][Bundle]")
+{
+    ScopedTemporaryDir temp_dir;
+    PresetBundle       bundle;
+    const fs::path     file = temp_dir.path() / PRESET_FILAMENT_NAME / "My PLA @Test Printer.json";
+    write_preset_with_inherits(bundle.filaments.default_preset().config, file, "My PLA @Test Printer", std::string());
+    fs::path info = file;
+    info.replace_extension(".info");
+    std::ofstream(info.string()) << "sync_info = \nuser_id = \nsetting_id = PFUS1\nbase_id = PFUS1\nupdated_time = 0\n";
+
+    PresetsConfigSubstitutions substitutions;
+    bundle.filaments.load_presets(temp_dir.path().string(), PRESET_FILAMENT_NAME, substitutions,
+                                  ForwardCompatibilitySubstitutionRule::EnableSilent);
+
+    const Preset *preset = bundle.filaments.find_preset("My PLA @Test Printer");
+    REQUIRE(preset != nullptr);
+    CHECK(preset->setting_id.empty());
+    CHECK(preset->base_id == "PFUS1");
+    Preset reloaded(Preset::TYPE_FILAMENT, "My PLA @Test Printer");
+    reloaded.load_info(info.string());
+    CHECK(reloaded.setting_id == "PFUS1");
+}
+
+TEST_CASE("A user preset that is not loaded still reports its substituted values", "[Preset][Bundle]")
+{
+    ScopedTemporaryDir   temp_dir;
+    RenameTestCollection coll;
+    const fs::path       dir = temp_dir.path() / PRESET_PRINT_NAME;
+    fs::create_directories(dir);
+    std::ofstream((dir / "Orphan.json").string())
+        << R"({"type":"process","name":"Orphan","from":"User","version":"1.0.0","inherits":"No Such Parent",)"
+        << R"("wall_generator":"no_such_generator"})";
+
+    PresetsConfigSubstitutions substitutions;
+    coll.load_presets(temp_dir.path().string(), PRESET_PRINT_NAME, substitutions,
+                      ForwardCompatibilitySubstitutionRule::Enable);
+
+    CHECK(coll.find_preset("Orphan") == nullptr);
+    CHECK(coll.error_count() == 1);
+    REQUIRE(substitutions.size() == 1);
+    CHECK(substitutions.front().preset_name == "Orphan");
 }
 
 TEST_CASE("find_preset resolves a system preset's renamed_from", "[Preset][Rename]")
@@ -507,6 +1435,107 @@ TEST_CASE("Profile validator flags dangling and renamed preset references", "[Pr
     }
 }
 
+TEST_CASE("Every printer variant has a compatible default material", "[Preset][Validate][DefaultMaterials]")
+{
+    PresetBundle bundle;
+    auto &vendor = bundle.vendors["Acme"];
+    vendor.id = vendor.name = "Acme";
+    vendor.models.emplace_back();
+    auto &model = vendor.models.back();
+    model.id = model.name = "Acme Printer";
+    model.default_materials = {"Acme PLA @0.4", "Acme PLA @0.6"};
+
+    for (const std::string variant : {"0.4", "0.6"}) {
+        model.variants.emplace_back(variant);
+        const std::string printer_name = "Acme Printer " + variant;
+        Preset &printer = add_inmemory_preset(bundle.printers, printer_name);
+        printer.is_system = true;
+        printer.is_visible = false; // Validation covers uninstalled variants too.
+        printer.vendor = &vendor;
+        printer.config.option<ConfigOptionString>("printer_model")->value = model.id;
+        printer.config.option<ConfigOptionString>("printer_variant")->value = variant;
+        printer.config.option<ConfigOptionFloats>("nozzle_diameter")->values = {std::stod(variant)};
+
+        Preset &filament = add_inmemory_preset(bundle.filaments, "Acme PLA @" + variant);
+        filament.is_system = true;
+        filament.vendor = &vendor;
+        filament.alias = "Acme PLA";
+        filament.config.option<ConfigOptionStrings>("compatible_printers")->values = {printer_name};
+    }
+
+    // A second system filament, compatible with a user printer this model does not have, so a
+    // section can list a known-but-incompatible name without tripping the existence check.
+    Preset &other_printer = add_inmemory_preset(bundle.printers, "Acme Printer 0.2");
+    other_printer.vendor = &vendor;
+    Preset &other_filament = add_inmemory_preset(bundle.filaments, "Acme PLA @0.2");
+    other_filament.is_system = true;
+    other_filament.vendor = &vendor;
+    other_filament.alias = "Acme PLA";
+    other_filament.config.option<ConfigOptionStrings>("compatible_printers")->values = {"Acme Printer 0.2"};
+
+    CHECK_FALSE(bundle.has_errors());
+    bool expected_errors = true;
+
+    SECTION("A model default for one nozzle does not cover another nozzle") {
+        model.default_materials = {"Acme PLA @0.4"};
+    }
+    SECTION("An empty default list leaves every variant uncovered") {
+        model.default_materials.clear();
+    }
+    SECTION("An unknown filament cannot be a default") {
+        model.default_materials = {"Missing PLA"};
+    }
+    SECTION("An unknown name is an error even when a compatible default covers the variant") {
+        model.default_materials.insert(model.default_materials.begin(), "Missing PLA");
+    }
+    SECTION("An unknown default_filament_profile name is an error") {
+        bundle.printers.find_preset("Acme Printer 0.6", false, true)
+            ->config.option<ConfigOptionStrings>("default_filament_profile", true)->values = {"Missing PLA"};
+    }
+    SECTION("A known default_filament_profile name is not an error") {
+        bundle.printers.find_preset("Acme Printer 0.6", false, true)
+            ->config.option<ConfigOptionStrings>("default_filament_profile", true)->values = {"Acme PLA @0.6"};
+        expected_errors = false;
+    }
+    SECTION("A short alias does not resolve as an installed default") {
+        model.default_materials = {"Acme PLA"};
+    }
+    SECTION("A user filament cannot satisfy a shipped default") {
+        bundle.filaments.find_preset("Acme PLA @0.6", false, true)->is_system = false;
+    }
+    SECTION("One compatible default per variant is sufficient") {
+        model.default_materials.insert(model.default_materials.begin(), "Acme PLA @0.2");
+        expected_errors = false;
+    }
+    SECTION("Compatibility conditions apply to each nozzle") {
+        model.default_materials = {"Acme PLA @0.4"};
+        Preset *filament = bundle.filaments.find_preset("Acme PLA @0.4", false, true);
+        auto &library = bundle.vendors[PresetBundle::ORCA_FILAMENT_LIBRARY];
+        library.id = library.name = PresetBundle::ORCA_FILAMENT_LIBRARY;
+        filament->vendor = &library;
+        filament->config.option<ConfigOptionStrings>("compatible_printers")->values.clear();
+        filament->config.option<ConfigOptionString>("compatible_printers_condition")->value = "nozzle_diameter[0] == 0.4";
+    }
+    SECTION("Library defaults respect printer exclusions") {
+        model.default_materials = {"Acme PLA @0.4"};
+        Preset *filament = bundle.filaments.find_preset("Acme PLA @0.4", false, true);
+        auto &library = bundle.vendors[PresetBundle::ORCA_FILAMENT_LIBRARY];
+        library.id = library.name = PresetBundle::ORCA_FILAMENT_LIBRARY;
+        filament->vendor = &library;
+        filament->config.option<ConfigOptionStrings>("compatible_printers")->values.clear();
+        CHECK_FALSE(bundle.check_printer_default_materials());
+        filament->m_excluded_from.insert("Acme Printer 0.6");
+    }
+    SECTION("User printers do not need model defaults") {
+        model.default_materials = {"Acme PLA @0.4"};
+        bundle.printers.find_preset("Acme Printer 0.6", false, true)->is_system = false;
+        expected_errors = false;
+    }
+
+    CHECK(bundle.check_printer_default_materials() == expected_errors);
+    CHECK(bundle.has_errors() == expected_errors);
+}
+
 // Under a shared override key, the last preset merged into the full config overwrote the others', so an
 // edited slicing-pipeline override never reached Print::apply's diff and re-configuring a plugin never
 // re-sliced. Per-type keys make that collision impossible; guard the scoping here.
@@ -545,6 +1574,588 @@ struct LibraryFilamentTestCollection : public PresetCollection
 };
 
 } // namespace
+
+TEST_CASE("Missing app config is accepted as default CLI state", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    AppConfig app_config;
+    app_config.set_loading_path((dir.path() / "missing.conf").string());
+    CHECK(app_config.load_if_exists().empty());
+}
+
+TEST_CASE("Read-only user preset loading does not create or delete files", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    PresetBundle       bundle;
+    PresetsConfigSubstitutions substitutions;
+
+    const fs::path missing_root = dir.path() / "missing-user";
+    bundle.prints.load_presets(missing_root.string(), PRESET_PRINT_NAME, substitutions,
+                               ForwardCompatibilitySubstitutionRule::EnableSilent, nullptr,
+                               PresetOrigin(), true);
+    CHECK_FALSE(fs::exists(missing_root / PRESET_PRINT_NAME));
+
+    const fs::path malformed = dir.path() / "existing-user" / PRESET_PRINT_NAME / "malformed.json";
+    fs::create_directories(malformed.parent_path());
+    std::ofstream(malformed.string()) << "{not-json";
+    bundle.prints.load_presets((dir.path() / "existing-user").string(), PRESET_PRINT_NAME, substitutions,
+                               ForwardCompatibilitySubstitutionRule::EnableSilent, nullptr,
+                               PresetOrigin(), true);
+    CHECK(fs::exists(malformed));
+}
+
+TEST_CASE("Typeless preset resolution probes loaded FFF collections", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    const fs::path      source_file = dir.path() / "typeless-process.json";
+    std::ofstream(source_file.string()) << R"({"name":"Typeless Process","from":"User"})";
+
+    PresetBundle bundle;
+    Preset      &process = add_inmemory_preset(bundle.prints, "Typeless Process");
+    process.file = source_file.string();
+    process.config.option<ConfigOptionFloats>("travel_speed", true)->values = {321.0};
+
+    DynamicPrintConfig raw;
+    Preset::Type       resolved_type = Preset::TYPE_INVALID;
+    std::string        error;
+    REQUIRE(bundle.resolve_preset_config_type(raw, resolved_type, source_file.string(),
+                                              ForwardCompatibilitySubstitutionRule::EnableSilent, error, false));
+    CHECK(error.empty());
+    CHECK(resolved_type == Preset::TYPE_PRINT);
+    REQUIRE(raw.option<ConfigOptionFloats>("travel_speed")->values.size() == 1);
+    CHECK_THAT(raw.option<ConfigOptionFloats>("travel_speed")->values.front(), Catch::Matchers::WithinAbs(321.0, 1e-6));
+}
+
+TEST_CASE("Typeless preset resolution preserves duplicate identity ambiguity", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    const fs::path      source_file = dir.path() / "duplicate-process.json";
+    std::ofstream(source_file.string()) << "{}";
+
+    PresetBundle bundle;
+    add_inmemory_preset(bundle.prints, "First Process Identity").file  = source_file.string();
+    add_inmemory_preset(bundle.prints, "Second Process Identity").file = source_file.string();
+
+    DynamicPrintConfig raw;
+    Preset::Type       resolved_type = Preset::TYPE_INVALID;
+    std::string        error;
+    CHECK_FALSE(bundle.resolve_preset_config_type(raw, resolved_type, source_file.string(),
+                                                  ForwardCompatibilitySubstitutionRule::EnableSilent, error, false));
+    CHECK(error == "Preset identity is ambiguous");
+    CHECK(resolved_type == Preset::TYPE_INVALID);
+}
+
+TEST_CASE("Typeless preset resolution rejects cross-type ambiguity", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    const fs::path      source_file = dir.path() / "ambiguous.json";
+    std::ofstream(source_file.string()) << "{}";
+
+    PresetBundle bundle;
+    add_inmemory_preset(bundle.prints, "Process Identity").file       = source_file.string();
+    add_inmemory_preset(bundle.filaments, "Filament Identity").file = source_file.string();
+
+    DynamicPrintConfig raw;
+    Preset::Type       resolved_type = Preset::TYPE_INVALID;
+    std::string        error;
+    CHECK_FALSE(bundle.resolve_preset_config_type(raw, resolved_type, source_file.string(),
+                                                  ForwardCompatibilitySubstitutionRule::EnableSilent, error, false));
+    CHECK(error == "Preset type is ambiguous");
+    CHECK(resolved_type == Preset::TYPE_INVALID);
+}
+
+TEST_CASE("Typeless preset resolution rejects a missing type candidate", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    const fs::path      source_file = dir.path() / "unknown.json";
+    std::ofstream(source_file.string()) << "{}";
+
+    PresetBundle       bundle;
+    DynamicPrintConfig raw;
+    Preset::Type       resolved_type = Preset::TYPE_INVALID;
+    std::string        error;
+    CHECK_FALSE(bundle.resolve_preset_config_type(raw, resolved_type, source_file.string(),
+                                                  ForwardCompatibilitySubstitutionRule::EnableSilent, error, false));
+    CHECK(error == "Preset type could not be resolved");
+    CHECK(resolved_type == Preset::TYPE_INVALID);
+}
+
+TEST_CASE("Exact file resolution rejects multiple preset identities", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    const fs::path      source_file = dir.path() / "duplicate.json";
+    std::ofstream(source_file.string()) << "{}";
+
+    PresetBundle bundle;
+    Preset &first = add_inmemory_preset(bundle.prints, "First Identity");
+    first.file = source_file.string();
+    Preset &second = add_inmemory_preset(bundle.prints, "Second Identity");
+    second.file = source_file.string();
+
+    DynamicPrintConfig raw;
+    raw.option<ConfigOptionString>(BBL_JSON_KEY_INHERITS, true)->value = "Parent";
+
+    std::string error;
+    CHECK_FALSE(bundle.resolve_preset_config(raw, Preset::TYPE_PRINT, source_file.string(),
+                                             ForwardCompatibilitySubstitutionRule::EnableSilent, error, false));
+    CHECK(error == "Preset identity is ambiguous");
+}
+
+TEST_CASE("System preset resolution returns the canonical vendor configuration", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir source_dir;
+    PresetBundle bundle;
+
+    VendorProfile vendor("VendorB");
+    vendor.name = "Vendor B";
+    auto [vendor_it, inserted] = bundle.vendors.emplace(vendor.id, std::move(vendor));
+    REQUIRE(inserted);
+
+    Preset &resolved = add_inmemory_preset(bundle.prints, "Vendor B Process", "fdm_process_common");
+    resolved.is_system = true;
+    resolved.vendor    = &vendor_it->second;
+    resolved.file      = (source_dir.path() / "vendor-b-process.json").string();
+    std::ofstream(resolved.file) << "{}";
+    resolved.config.option<ConfigOptionFloats>("travel_speed", true)->values = {321.0};
+    resolved.config.option<ConfigOptionInt>("wall_loops", true)->value       = 2;
+
+    DynamicPrintConfig raw;
+    raw.option<ConfigOptionString>(BBL_JSON_KEY_INHERITS, true)->value = "fdm_process_common";
+    raw.option<ConfigOptionInt>("wall_loops", true)->value             = 5;
+
+    std::string error;
+    REQUIRE(bundle.resolve_preset_config(raw, Preset::TYPE_PRINT, resolved.file,
+                                         ForwardCompatibilitySubstitutionRule::EnableSilent, error));
+    CHECK(error.empty());
+    REQUIRE(raw.option<ConfigOptionFloats>("travel_speed")->values.size() == 1);
+    CHECK_THAT(raw.option<ConfigOptionFloats>("travel_speed")->values.front(), Catch::Matchers::WithinAbs(321.0, 1e-6));
+    CHECK(raw.option<ConfigOptionInt>("wall_loops")->value == 2);
+}
+
+TEST_CASE("Manifest-backed preset resolution loads the source vendor tree", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    const fs::path      vendor_dir = dir.path() / "Acme";
+    const fs::path      child_file = vendor_dir / "process" / "nested" / "child.json";
+
+    std::ofstream((dir.path() / "Acme.json").string())
+        << R"({"version":"1.0.0","name":"Acme","process_list":[)"
+        << R"({"name":"fdm_process_common","sub_path":"process/base.json"},)"
+        << R"({"name":"Acme Process","sub_path":"process/nested/child.json"}]})";
+    fs::create_directories(child_file.parent_path());
+    std::ofstream((vendor_dir / "process" / "base.json").string())
+        << R"({"type":"process","name":"fdm_process_common","from":"system",)"
+        << R"("instantiation":"false","travel_speed":["321"]})";
+    std::ofstream(child_file.string())
+        << R"({"type":"process","name":"Acme Process","from":"system",)"
+        << R"("instantiation":"true","inherits":"fdm_process_common","wall_loops":"5"})";
+
+    DynamicPrintConfig raw;
+    raw.option<ConfigOptionString>(BBL_JSON_KEY_INHERITS, true)->value = "fdm_process_common";
+    raw.option<ConfigOptionInt>("wall_loops", true)->value             = 5;
+
+    PresetBundle bundle;
+    std::string  error;
+    REQUIRE(bundle.resolve_preset_config(raw, Preset::TYPE_PRINT, child_file.string(),
+                                         ForwardCompatibilitySubstitutionRule::EnableSilent, error));
+    CHECK(error.empty());
+    REQUIRE(raw.option<ConfigOptionFloats>("travel_speed")->values.size() == 1);
+    CHECK_THAT(raw.option<ConfigOptionFloats>("travel_speed")->values.front(), Catch::Matchers::WithinAbs(321.0, 1e-6));
+    CHECK(raw.option<ConfigOptionInt>("wall_loops")->value == 5);
+}
+
+TEST_CASE("Manifest-backed resolution is scoped to the explicit source root", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    auto write_vendor = [&](const std::string &root_name, double travel_speed) {
+        const fs::path root       = dir.path() / root_name;
+        const fs::path child_file = root / "Acme" / "process" / "child.json";
+        fs::create_directories(child_file.parent_path());
+        std::ofstream((root / "Acme.json").string())
+            << R"({"version":"1.0.0","name":"Acme","process_list":[)"
+            << R"({"name":"fdm_process_common","sub_path":"process/base.json"},)"
+            << R"({"name":"Acme Process","sub_path":"process/child.json"}]})";
+        std::ofstream((root / "Acme" / "process" / "base.json").string())
+            << R"({"type":"process","name":"fdm_process_common","from":"system",)"
+            << R"("instantiation":"false","travel_speed":[")" << travel_speed << R"("]})";
+        std::ofstream(child_file.string())
+            << R"({"type":"process","name":"Acme Process","from":"system",)"
+            << R"("instantiation":"true","inherits":"fdm_process_common"})";
+        return child_file;
+    };
+
+    const fs::path source_a = write_vendor("root-a", 111.0);
+    const fs::path source_b = write_vendor("root-b", 222.0);
+    REQUIRE(fs::exists(source_a));
+
+    DynamicPrintConfig raw;
+    raw.option<ConfigOptionString>(BBL_JSON_KEY_INHERITS, true)->value = "synthetic-parent-marker";
+
+    PresetBundle bundle;
+    std::string  error;
+    REQUIRE(bundle.resolve_preset_config(raw, Preset::TYPE_PRINT, source_b.string(),
+                                         ForwardCompatibilitySubstitutionRule::EnableSilent, error));
+    REQUIRE(raw.option<ConfigOptionFloats>("travel_speed")->values.size() == 1);
+    CHECK_THAT(raw.option<ConfigOptionFloats>("travel_speed")->values.front(), Catch::Matchers::WithinAbs(222.0, 1e-6));
+}
+
+TEST_CASE("Exact-only resolution rejects an unconfigured manifest-backed file", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    const fs::path      source_file = dir.path() / "Acme" / "process" / "child.json";
+    fs::create_directories(source_file.parent_path());
+    std::ofstream((dir.path() / "Acme.json").string())
+        << R"({"version":"1.0.0","name":"Acme","process_list":[)"
+        << R"({"name":"Acme Process","sub_path":"process/child.json"}]})";
+    std::ofstream(source_file.string())
+        << R"({"type":"process","name":"Acme Process","from":"system",)"
+        << R"("instantiation":"true","layer_height":"0.2"})";
+
+    DynamicPrintConfig raw;
+    raw.option<ConfigOptionString>(BBL_JSON_KEY_INHERITS, true)->value = "Some Parent";
+
+    PresetBundle bundle;
+    std::string  error;
+    CHECK_FALSE(bundle.resolve_preset_config(raw, Preset::TYPE_PRINT, source_file.string(),
+                                             ForwardCompatibilitySubstitutionRule::EnableSilent, error, false));
+    CHECK(error == "Preset was not found in the loaded bundle");
+}
+
+TEST_CASE("Vendor filament resolution uses the shared Orca library base", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    const fs::path      library_dir = dir.path() / PresetBundle::ORCA_FILAMENT_LIBRARY;
+    const fs::path      vendor_dir  = dir.path() / "Acme";
+    const fs::path      child_file  = vendor_dir / "filament" / "nested" / "petg.json";
+
+    std::ofstream((dir.path() / (std::string(PresetBundle::ORCA_FILAMENT_LIBRARY) + ".json")).string())
+        << R"({"version":"1.0.0","name":"OrcaFilamentLibrary","filament_list":[)"
+        << R"({"name":"fdm_filament_pet","sub_path":"filament/pet.json","filament_id":"GFL99"}]})";
+    fs::create_directories(library_dir / "filament");
+    std::ofstream((library_dir / "filament" / "pet.json").string())
+        << R"({"type":"filament","name":"fdm_filament_pet","from":"system",)"
+        << R"("filament_id":"GFL99","instantiation":"false",)"
+        << R"("filament_type":["PETG"],"filament_density":["1.27"]})";
+
+    std::ofstream((dir.path() / "Acme.json").string())
+        << R"({"version":"1.0.0","name":"Acme","filament_list":[)"
+        << R"({"name":"Acme PETG","sub_path":"filament/nested/petg.json","filament_id":"GFA00"}]})";
+    fs::create_directories(child_file.parent_path());
+    std::ofstream(child_file.string())
+        << R"({"type":"filament","name":"Acme PETG","from":"system",)"
+        << R"("filament_id":"GFA00","instantiation":"true","inherits":"fdm_filament_pet"})";
+
+    DynamicPrintConfig raw;
+    raw.option<ConfigOptionString>(BBL_JSON_KEY_INHERITS, true)->value = "fdm_filament_pet";
+
+    PresetBundle bundle;
+    std::string  error;
+    REQUIRE(bundle.resolve_preset_config(raw, Preset::TYPE_FILAMENT, child_file.string(),
+                                         ForwardCompatibilitySubstitutionRule::EnableSilent, error));
+    CHECK(error.empty());
+    CHECK(raw.opt_string("filament_type", 0u) == "PETG");
+    REQUIRE(raw.option<ConfigOptionFloats>("filament_density")->values.size() == 1);
+    CHECK_THAT(raw.option<ConfigOptionFloats>("filament_density")->values.front(), Catch::Matchers::WithinAbs(1.27, 1e-6));
+}
+
+TEST_CASE("Manifest-backed resolution rejects a missing parent", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    const fs::path      child_file = dir.path() / "Acme" / "process" / "child.json";
+
+    std::ofstream((dir.path() / "Acme.json").string())
+        << R"({"version":"1.0.0","name":"Acme","process_list":[)"
+        << R"({"name":"Acme Process","sub_path":"process/child.json"}]})";
+    fs::create_directories(child_file.parent_path());
+    std::ofstream(child_file.string())
+        << R"({"type":"process","name":"Acme Process","from":"system",)"
+        << R"("instantiation":"true","inherits":"Missing Parent","layer_height":"0.2"})";
+
+    DynamicPrintConfig raw;
+    raw.option<ConfigOptionString>(BBL_JSON_KEY_INHERITS, true)->value = "Missing Parent";
+
+    PresetBundle bundle;
+    std::string  error;
+    CHECK_FALSE(bundle.resolve_preset_config(raw, Preset::TYPE_PRINT, child_file.string(),
+                                             ForwardCompatibilitySubstitutionRule::EnableSilent, error));
+    CHECK_FALSE(error.empty());
+}
+
+TEST_CASE("Manifest-backed resolution rejects a vendor load with malformed entries", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    const fs::path      child_file = dir.path() / "Acme" / "process" / "child.json";
+
+    std::ofstream((dir.path() / "Acme.json").string())
+        << R"({"version":"1.0.0","name":"Acme","process_list":[123,)"
+        << R"({"name":"Acme Process","sub_path":"process/child.json"}]})";
+    fs::create_directories(child_file.parent_path());
+    std::ofstream(child_file.string())
+        << R"({"type":"process","name":"Acme Process","from":"system",)"
+        << R"("instantiation":"true","layer_height":"0.2"})";
+
+    DynamicPrintConfig raw;
+    raw.option<ConfigOptionString>(BBL_JSON_KEY_INHERITS, true)->value = "fdm_process_common";
+
+    PresetBundle bundle;
+    std::string  error;
+    CHECK_FALSE(bundle.resolve_preset_config(raw, Preset::TYPE_PRINT, child_file.string(),
+                                             ForwardCompatibilitySubstitutionRule::EnableSilent, error));
+    CHECK_FALSE(error.empty());
+}
+
+TEST_CASE("Manifest-backed resolution rejects files absent from the vendor manifest", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    const fs::path      listed_file   = dir.path() / "Acme" / "process" / "listed.json";
+    const fs::path      unlisted_file = dir.path() / "Acme" / "process" / "unlisted.json";
+
+    std::ofstream((dir.path() / "Acme.json").string())
+        << R"({"version":"1.0.0","name":"Acme","process_list":[)"
+        << R"({"name":"Listed Process","sub_path":"process/listed.json"}]})";
+    fs::create_directories(listed_file.parent_path());
+    std::ofstream(listed_file.string())
+        << R"({"type":"process","name":"Listed Process","from":"system",)"
+        << R"("instantiation":"true","layer_height":"0.2"})";
+    std::ofstream(unlisted_file.string())
+        << R"({"type":"process","name":"Unlisted Process","from":"system",)"
+        << R"("instantiation":"true","inherits":"fdm_process_common"})";
+
+    DynamicPrintConfig raw;
+    raw.option<ConfigOptionString>(BBL_JSON_KEY_INHERITS, true)->value = "fdm_process_common";
+
+    PresetBundle bundle;
+    std::string  error;
+    CHECK_FALSE(bundle.resolve_preset_config(raw, Preset::TYPE_PRINT, unlisted_file.string(),
+                                             ForwardCompatibilitySubstitutionRule::EnableSilent, error));
+    CHECK(error == "Source file is not an instantiated preset in its vendor manifest");
+}
+
+TEST_CASE("Manifest-backed resolution rejects a mismatched preset type", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    const fs::path      process_file = dir.path() / "Acme" / "process" / "child.json";
+
+    std::ofstream((dir.path() / "Acme.json").string())
+        << R"({"version":"1.0.0","name":"Acme","process_list":[)"
+        << R"({"name":"Acme Process","sub_path":"process/child.json"}]})";
+    fs::create_directories(process_file.parent_path());
+    std::ofstream(process_file.string())
+        << R"({"type":"process","name":"Acme Process","from":"system",)"
+        << R"("instantiation":"true","layer_height":"0.2"})";
+
+    DynamicPrintConfig raw;
+    raw.option<ConfigOptionString>(BBL_JSON_KEY_INHERITS, true)->value = "fdm_filament_common";
+
+    PresetBundle bundle;
+    std::string  error;
+    CHECK_FALSE(bundle.resolve_preset_config(raw, Preset::TYPE_FILAMENT, process_file.string(),
+                                             ForwardCompatibilitySubstitutionRule::EnableSilent, error));
+    CHECK(error == "Source file is not an instantiated preset in its vendor manifest");
+}
+
+TEST_CASE("Resolution terminates when no vendor manifest exists", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    const fs::path      detached_file = dir.path() / "detached.json";
+    std::ofstream(detached_file.string()) << "{}";
+
+    DynamicPrintConfig raw;
+    raw.option<ConfigOptionString>(BBL_JSON_KEY_INHERITS, true)->value = "Missing Parent";
+
+    PresetBundle bundle;
+    std::string  error;
+    CHECK_FALSE(bundle.resolve_preset_config(raw, Preset::TYPE_PRINT, detached_file.string(),
+                                             ForwardCompatibilitySubstitutionRule::EnableSilent, error));
+    CHECK(error == "Preset was not found in the loaded bundle");
+}
+
+TEST_CASE("Manifest-backed resolution reuses the vendor tree it already loaded", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    const fs::path      process_dir = dir.path() / "Acme" / "process";
+    fs::create_directories(process_dir);
+    std::ofstream((dir.path() / "Acme.json").string())
+        << R"({"version":"1.0.0","name":"Acme","process_list":[)"
+        << R"({"name":"fdm_process_common","sub_path":"process/base.json"},)"
+        << R"({"name":"Acme First","sub_path":"process/first.json"},)"
+        << R"({"name":"Acme Second","sub_path":"process/second.json"}]})";
+    auto write_base = [&](double travel_speed) {
+        std::ofstream((process_dir / "base.json").string())
+            << R"({"type":"process","name":"fdm_process_common","from":"system",)"
+            << R"("instantiation":"false","travel_speed":[")" << travel_speed << R"("]})";
+    };
+    auto write_child = [&](const std::string &file, const std::string &name) {
+        std::ofstream((process_dir / file).string())
+            << R"({"type":"process","name":")" << name << R"(","from":"system",)"
+            << R"("instantiation":"true","inherits":"fdm_process_common"})";
+    };
+    write_base(111.0);
+    write_child("first.json", "Acme First");
+    write_child("second.json", "Acme Second");
+
+    auto travel_speed = [&](PresetBundle &bundle, const std::string &file) {
+        DynamicPrintConfig raw;
+        raw.option<ConfigOptionString>(BBL_JSON_KEY_INHERITS, true)->value = "fdm_process_common";
+        std::string error;
+        REQUIRE(bundle.resolve_preset_config(raw, Preset::TYPE_PRINT, (process_dir / file).string(),
+                                             ForwardCompatibilitySubstitutionRule::EnableSilent, error));
+        return raw.option<ConfigOptionFloats>("travel_speed")->values.front();
+    };
+
+    PresetBundle bundle;
+    CHECK_THAT(travel_speed(bundle, "first.json"), Catch::Matchers::WithinAbs(111.0, 1e-6));
+
+    // Only a reload would see this change.
+    write_base(222.0);
+    CHECK_THAT(travel_speed(bundle, "second.json"), Catch::Matchers::WithinAbs(111.0, 1e-6));
+
+    PresetBundle fresh;
+    CHECK_THAT(travel_speed(fresh, "second.json"), Catch::Matchers::WithinAbs(222.0, 1e-6));
+}
+
+TEST_CASE("Manifest-backed resolution does not keep a vendor tree that failed to load", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    const fs::path      child_file = dir.path() / "Acme" / "process" / "child.json";
+    auto write_manifest = [&](const std::string &leading_entry) {
+        std::ofstream((dir.path() / "Acme.json").string())
+            << R"({"version":"1.0.0","name":"Acme","process_list":[)" << leading_entry
+            << R"({"name":"Acme Process","sub_path":"process/child.json"}]})";
+    };
+    write_manifest("123,");
+    fs::create_directories(child_file.parent_path());
+    std::ofstream(child_file.string())
+        << R"({"type":"process","name":"Acme Process","from":"system",)"
+        << R"("instantiation":"true","layer_height":"0.2"})";
+
+    PresetBundle bundle;
+    auto resolve = [&](std::string &error) {
+        DynamicPrintConfig raw;
+        raw.option<ConfigOptionString>(BBL_JSON_KEY_INHERITS, true)->value = "fdm_process_common";
+        return bundle.resolve_preset_config(raw, Preset::TYPE_PRINT, child_file.string(),
+                                            ForwardCompatibilitySubstitutionRule::EnableSilent, error);
+    };
+
+    std::string error;
+    CHECK_FALSE(resolve(error));
+    CHECK_FALSE(error.empty());
+
+    write_manifest("");
+    error.clear();
+    CHECK(resolve(error));
+    CHECK(error.empty());
+}
+
+TEST_CASE("Manifest-backed resolution reuses the library base for type-probed files", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    const fs::path      library_pet  = dir.path() / PresetBundle::ORCA_FILAMENT_LIBRARY / "filament" / "pet.json";
+    const fs::path      filament_dir = dir.path() / "Acme" / "filament";
+
+    std::ofstream((dir.path() / (std::string(PresetBundle::ORCA_FILAMENT_LIBRARY) + ".json")).string())
+        << R"({"version":"1.0.0","name":"OrcaFilamentLibrary","filament_list":[)"
+        << R"({"name":"fdm_filament_pet","sub_path":"filament/pet.json","filament_id":"GFL99"}]})";
+    fs::create_directories(library_pet.parent_path());
+    auto write_library_pet = [&](double density) {
+        std::ofstream(library_pet.string())
+            << R"({"type":"filament","name":"fdm_filament_pet","from":"system",)"
+            << R"("filament_id":"GFL99","instantiation":"false",)"
+            << R"("filament_type":["PETG"],"filament_density":[")" << density << R"("]})";
+    };
+    write_library_pet(1.27);
+
+    std::ofstream((dir.path() / "Acme.json").string())
+        << R"({"version":"1.0.0","name":"Acme","filament_list":[)"
+        << R"({"name":"Acme PETG","sub_path":"filament/petg.json","filament_id":"GFA00"},)"
+        << R"({"name":"Acme PETG Matte","sub_path":"filament/petg_matte.json","filament_id":"GFA01"}]})";
+    fs::create_directories(filament_dir);
+    auto write_child = [&](const std::string &file, const std::string &name, const std::string &filament_id) {
+        std::ofstream((filament_dir / file).string())
+            << R"({"type":"filament","name":")" << name << R"(","from":"system",)"
+            << R"("filament_id":")" << filament_id << R"(","instantiation":"true","inherits":"fdm_filament_pet"})";
+    };
+    write_child("petg.json", "Acme PETG", "GFA00");
+    write_child("petg_matte.json", "Acme PETG Matte", "GFA01");
+
+    auto density = [](const DynamicPrintConfig &config) {
+        return config.option<ConfigOptionFloats>("filament_density")->values.front();
+    };
+
+    PresetBundle       bundle;
+    DynamicPrintConfig first;
+    first.option<ConfigOptionString>(BBL_JSON_KEY_INHERITS, true)->value = "fdm_filament_pet";
+    std::string error;
+    REQUIRE(bundle.resolve_preset_config(first, Preset::TYPE_FILAMENT, (filament_dir / "petg.json").string(),
+                                         ForwardCompatibilitySubstitutionRule::EnableSilent, error));
+    CHECK_THAT(density(first), Catch::Matchers::WithinAbs(1.27, 1e-6));
+
+    // Only a reload would see this change.
+    write_library_pet(1.5);
+
+    DynamicPrintConfig second;
+    Preset::Type       type = Preset::TYPE_INVALID;
+    REQUIRE(bundle.resolve_preset_config_type(second, type, (filament_dir / "petg_matte.json").string(),
+                                              ForwardCompatibilitySubstitutionRule::EnableSilent, error));
+    CHECK(type == Preset::TYPE_FILAMENT);
+    CHECK_THAT(density(second), Catch::Matchers::WithinAbs(1.27, 1e-6));
+}
+
+TEST_CASE("Manifest-backed resolution shares the library between vendors under one root", "[Preset][Bundle][Regression]")
+{
+    ScopedTemporaryDir dir;
+    const fs::path      library_dir = dir.path() / PresetBundle::ORCA_FILAMENT_LIBRARY / "filament";
+
+    std::ofstream((dir.path() / (std::string(PresetBundle::ORCA_FILAMENT_LIBRARY) + ".json")).string())
+        << R"({"version":"1.0.0","name":"OrcaFilamentLibrary","filament_list":[)"
+        << R"({"name":"fdm_filament_pet","sub_path":"filament/pet.json","filament_id":"GFL99"},)"
+        << R"({"name":"Generic PETG","sub_path":"filament/generic_petg.json","filament_id":"GFL98"}]})";
+    fs::create_directories(library_dir);
+    auto write_library_pet = [&](double density) {
+        std::ofstream((library_dir / "pet.json").string())
+            << R"({"type":"filament","name":"fdm_filament_pet","from":"system",)"
+            << R"("filament_id":"GFL99","instantiation":"false",)"
+            << R"("filament_type":["PETG"],"filament_density":[")" << density << R"("]})";
+    };
+    write_library_pet(1.27);
+    std::ofstream((library_dir / "generic_petg.json").string())
+        << R"({"type":"filament","name":"Generic PETG","from":"system",)"
+        << R"("filament_id":"GFL98","instantiation":"true","inherits":"fdm_filament_pet"})";
+
+    auto write_vendor = [&](const std::string &vendor, const std::string &filament_id) {
+        const fs::path filament_dir = dir.path() / vendor / "filament";
+        fs::create_directories(filament_dir);
+        std::ofstream((dir.path() / (vendor + ".json")).string())
+            << R"({"version":"1.0.0","name":")" << vendor << R"(","filament_list":[)"
+            << R"({"name":")" << vendor << R"( PETG","sub_path":"filament/petg.json","filament_id":")" << filament_id << R"("}]})";
+        std::ofstream((filament_dir / "petg.json").string())
+            << R"({"type":"filament","name":")" << vendor << R"( PETG","from":"system",)"
+            << R"("filament_id":")" << filament_id << R"(","instantiation":"true","inherits":"fdm_filament_pet"})";
+        return filament_dir / "petg.json";
+    };
+    const fs::path acme_petg = write_vendor("Acme", "GFA00");
+    const fs::path beta_petg = write_vendor("Beta", "GFB00");
+
+    auto density = [&](PresetBundle &bundle, const fs::path &file) {
+        DynamicPrintConfig raw;
+        raw.option<ConfigOptionString>(BBL_JSON_KEY_INHERITS, true)->value = "fdm_filament_pet";
+        std::string error;
+        REQUIRE(bundle.resolve_preset_config(raw, Preset::TYPE_FILAMENT, file.string(),
+                                             ForwardCompatibilitySubstitutionRule::EnableSilent, error));
+        return raw.option<ConfigOptionFloats>("filament_density")->values.front();
+    };
+
+    PresetBundle bundle;
+    CHECK_THAT(density(bundle, acme_petg), Catch::Matchers::WithinAbs(1.27, 1e-6));
+
+    // Only a reload would see this change.
+    write_library_pet(1.5);
+    CHECK_THAT(density(bundle, beta_petg), Catch::Matchers::WithinAbs(1.27, 1e-6));
+    CHECK_THAT(density(bundle, library_dir / "generic_petg.json"), Catch::Matchers::WithinAbs(1.27, 1e-6));
+
+    PresetBundle fresh;
+    CHECK_THAT(density(fresh, beta_petg), Catch::Matchers::WithinAbs(1.5, 1e-6));
+}
 
 // Orca: a filament in the Orca Filament Library that names its compatible printers has to hide the generic
 // library filament sharing its alias, the same way a vendor owned filament does. Otherwise both are compatible
@@ -597,6 +2208,87 @@ TEST_CASE("A printer specific filament supersedes the generic library filament w
     CHECK(is_compatible_with_printer(generic_lib, PresetWithVendorProfile(*printer_c, nullptr)));
 }
 
+namespace {
+
+// One system printer plus the filament presets a machine facing dialog has to choose between:
+// an Orca Filament Library generic with no compatible_printers, a same alias vendor filament
+// that names the printer, a library filament with no vendor twin, and a vendor filament that
+// belongs to a different printer.
+struct MachineFilaments
+{
+    PresetBundle  bundle;
+    VendorProfile library{PresetBundle::ORCA_FILAMENT_LIBRARY};
+    VendorProfile vendor{"Vendor"};
+
+    MachineFilaments()
+    {
+        // VendorProfile's constructor takes an id; the library rule keys off the name.
+        library.name = PresetBundle::ORCA_FILAMENT_LIBRARY;
+        vendor.name  = "Vendor";
+
+        Preset &printer = add_inmemory_preset(bundle.printers, "Printer A 0.4 nozzle");
+        printer.is_system = true;
+        printer.vendor    = &vendor;
+        printer.config.option<ConfigOptionString>("printer_model", true)->value = "Printer A";
+
+        add_filament(library, "Generic ABS @System",    "Generic ABS", {});
+        add_filament(vendor,  "Generic ABS @Printer A", "Generic ABS", { "Printer A 0.4 nozzle" });
+        add_filament(library, "FilAr ABS @System",      "FilAr ABS",   {});
+        add_filament(vendor,  "Vendor PLA @Printer B",  "Vendor PLA",  { "Printer B 0.4 nozzle" });
+
+        // update_library_profile_excluded_from() is protected and has its own test above; record
+        // the exclusion it derives from the same alias vendor filament.
+        Preset *shadowed = bundle.filaments.find_preset("Generic ABS @System");
+        REQUIRE(shadowed != nullptr);
+        shadowed->m_excluded_from.insert("Printer A 0.4 nozzle");
+    }
+
+    void add_filament(const VendorProfile &owner, const std::string &name, const std::string &alias,
+                      std::vector<std::string> compatible_printers)
+    {
+        Preset &preset = add_inmemory_preset(bundle.filaments, name);
+        preset.is_system = true;
+        preset.alias     = alias;
+        preset.vendor    = &owner;
+        compatible_list(bundle.filaments, name, "compatible_printers") = std::move(compatible_printers);
+    }
+
+    bool offers(const std::string &preset_name, bool include_user_presets = false)
+    {
+        const std::vector<Preset *> offered =
+            bundle.get_filament_presets_for_machine("Printer A", "0.4", include_user_presets);
+        return std::any_of(offered.begin(), offered.end(),
+                           [&preset_name](const Preset *p) { return p->name == preset_name; });
+    }
+};
+
+} // namespace
+
+TEST_CASE("Filaments offered for a machine follow the app's compatibility rule", "[Preset][Bundle]")
+{
+    MachineFilaments f;
+
+    SECTION("a library filament with no compatible_printers is offered") {
+        CHECK(f.offers("FilAr ABS @System"));
+    }
+
+    SECTION("a same alias vendor filament shadows the library generic") {
+        CHECK(f.offers("Generic ABS @Printer A"));
+        CHECK_FALSE(f.offers("Generic ABS @System"));
+    }
+
+    SECTION("a filament naming a different printer is not offered") {
+        CHECK_FALSE(f.offers("Vendor PLA @Printer B"));
+    }
+
+    SECTION("a user filament is offered only when the printer supports user presets") {
+        add_inmemory_preset(f.bundle.filaments, "My PLA");
+
+        CHECK_FALSE(f.offers("My PLA", /*include_user_presets=*/false));
+        CHECK(f.offers("My PLA", /*include_user_presets=*/true));
+    }
+}
+
 
 namespace {
 
@@ -613,7 +2305,7 @@ const char *kMixedKeys[] = {
 } // namespace
 
 // Mixed-color filament metadata lives in project_config as parallel per-filament arrays.
-// set_num_filaments() is the single place that grows them alongside filament_colour; if it
+// set_num_filaments() grows them alongside filament_colour; if it
 // misses them, creating a mixed slot writes past the end of the short arrays.
 TEST_CASE("set_num_filaments keeps mixed-color arrays in step with the filament count", "[Preset][Bundle][FilamentMixer]")
 {
@@ -733,6 +2425,2954 @@ TEST_CASE("Sizing the filament list to a multi-tool nozzle count keeps mixed slo
 
         CHECK(bundle.filament_presets.size() == nozzle_count);
         CHECK(bundle.num_mixed_filaments() == 0);
+    }
+}
+
+// A "published" 3MF keeps the user's currently-selected presets and overlays only the
+// author-selected process keys onto the edited preset (mirrors the GUI load path: normalize
+// before load_config_model, then the overlay in load_config_file_config).
+TEST_CASE("Published 3MF overlays only the author-selected process keys onto the edited preset", "[Preset][Bundle][Published]")
+{
+    // The file config the GUI builds from a .3mf's project settings.
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        // The loader derives the filament count from filament_colour and throws when it is
+        // empty; a 3mf always carries it.
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000" };
+        config.opt_float("layer_height") = 0.28;                       // process scalar
+        config.opt<ConfigOptionFloats>("wiping_volumes_extruders")->values = { 140., 150. }; // matching-size vector
+        config.opt<ConfigOptionStrings>("post_process")->values = { "script-a", "script-b" }; // mismatched vector
+        config.opt<ConfigOptionInts>("nozzle_temperature")->values = { 220 }; // filament key (not applied anywhere)
+        // Structural (denylisted) key: must be silently ignored. full_print_config() omits the
+        // *_settings_id keys, so create one explicitly.
+        config.opt_string("print_settings_id", true) = "file process";
+        config.opt<ConfigOptionFloats>("flush_multiplier")->values = { 2., 2. }; // must NOT cross over
+        config.opt<ConfigOptionFloats>("wipe_tower_x")->values = { 100. };       // plate geometry, does cross over
+        config.opt<ConfigOptionFloat>("wipe_tower_rotation_angle")->value = 45.; // published-only plate geometry, crosses over
+        config.option("curr_bed_type")->setInt(BedType::btPC);                   // must NOT cross over
+        return config;
+    };
+
+    const std::vector<std::string> published_keys = {
+        "layer_height", "wiping_volumes_extruders", "post_process", "nozzle_temperature", "print_settings_id"
+    };
+
+    PresetBundle bundle;
+    const std::string pre_load_name = bundle.prints.get_edited_preset().name;
+    const size_t      pre_load_size = bundle.prints.size();
+
+    // The edited presets are the overlay targets: recognizable pre-load values.
+    bundle.prints.get_edited_preset().config.opt_float("layer_height") = 0.1;
+    bundle.prints.get_edited_preset().config.opt<ConfigOptionFloats>("wiping_volumes_extruders")->values = { 10., 20. };
+    bundle.prints.get_edited_preset().config.opt<ConfigOptionStrings>("post_process")->values = { "existing-script" };
+    bundle.prints.get_edited_preset().config.opt_string("print_settings_id") = "user process";
+    // Capture the ctor-seeded project_config values so the assertions below check the load
+    // leaves them untouched rather than hardcoding the defaults.
+    const std::vector<std::string> seed_filament_colour  = bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values;
+    const std::vector<double>      seed_flush_multiplier = bundle.project_config.opt<ConfigOptionFloats>("flush_multiplier")->values;
+    const int                      seed_bed_type         = bundle.project_config.option("curr_bed_type")->getInt();
+
+    DynamicPrintConfig config = make_file_config();
+    // The GUI normalizes the config before load; mirror that so only the production path runs.
+    Preset::normalize(config);
+
+    PublishedConfig pub;
+    pub.published      = true;
+    pub.published_keys = published_keys;
+    bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+    // a) Process scalar overlaid; matching-size vector applied, mismatched one lands in
+    // skipped_keys; applied keys are not reported.
+    CHECK_THAT(bundle.prints.get_edited_preset().config.opt_float("layer_height"), Catch::Matchers::WithinAbs(0.28, 0.000001));
+    check_double_vector(bundle.prints.get_edited_preset().config.opt<ConfigOptionFloats>("wiping_volumes_extruders")->values, { 140., 150. });
+    CHECK(bundle.prints.get_edited_preset().config.opt<ConfigOptionStrings>("post_process")->values == std::vector<std::string>{ "existing-script" });
+    CHECK(contains_key(pub.skipped_keys, "post_process"));
+    CHECK_FALSE(contains_key(pub.skipped_keys, "layer_height"));
+    CHECK_FALSE(contains_key(pub.skipped_keys, "wiping_volumes_extruders"));
+
+    // b) A filament key is never applied anywhere and is reported as skipped.
+    CHECK(bundle.prints.get_edited_preset().config.option("nozzle_temperature") == nullptr);
+    CHECK(contains_key(pub.skipped_keys, "nozzle_temperature"));
+
+    // c) A structural key is silently ignored: neither applied nor reported as skipped.
+    CHECK(bundle.prints.get_edited_preset().config.opt_string("print_settings_id") == "user process");
+    CHECK_FALSE(contains_key(pub.skipped_keys, "print_settings_id"));
+
+    // d) Only plate/bed geometry crosses in published mode: filament/purge data and bed type
+    // stay at the ctor seeds.
+    CHECK(bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values == seed_filament_colour);
+    CHECK(bundle.project_config.opt<ConfigOptionFloats>("flush_multiplier")->values == seed_flush_multiplier);
+    CHECK(bundle.project_config.option("curr_bed_type")->getInt() == seed_bed_type);
+    check_double_vector(bundle.project_config.opt<ConfigOptionFloats>("wipe_tower_x")->values, { 100. });
+    CHECK_THAT(bundle.project_config.opt<ConfigOptionFloat>("wipe_tower_rotation_angle")->value, Catch::Matchers::WithinAbs(45., 0.000001));
+
+    // e) The published path keeps the user's currently-selected presets: same preset, same size.
+    CHECK(bundle.prints.get_edited_preset().name == pre_load_name);
+    CHECK(bundle.prints.size() == pre_load_size);
+
+    // f) Non-published control: the overlay is disabled, the file's presets are imported
+    // instead, and no skipped_keys are produced.
+    PresetBundle     control_bundle;
+    const size_t     control_pre_size = control_bundle.prints.size();
+    PublishedConfig  control_pub;
+    control_pub.published      = false;
+    control_pub.published_keys = published_keys;
+    DynamicPrintConfig control_config = make_file_config();
+    Preset::normalize(control_config);
+    control_bundle.load_config_model("test.3mf", std::move(control_config), Semver(), &control_pub);
+
+    CHECK(control_pub.skipped_keys.empty());
+    CHECK(control_bundle.prints.size() > control_pre_size);
+    // The file's layer_height reached the edited preset via the normal import, not the overlay.
+    CHECK_THAT(control_bundle.prints.get_edited_preset().config.opt_float("layer_height"), Catch::Matchers::WithinAbs(0.28, 0.000001));
+}
+
+// The published printer overlay is restricted to the publishable retraction/z-hop allowlist:
+// matching-size vectors apply, mismatched vectors are reported as skipped, and any other
+// printer-class key (e.g. machine_start_gcode) is contract-excluded (never applied, never
+// reported).
+TEST_CASE("Published 3MF overlays only the allowlisted retraction and z-hop keys onto the edited printer preset", "[Preset][Bundle][Published]")
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000" };
+    Preset::normalize(config);
+    config.opt<ConfigOptionFloats>("retraction_length")->values = { 1.4 };         // matching size (1 extruder)
+    config.opt<ConfigOptionFloats>("retraction_speed")->values = { 45., 55. };     // size 2: mismatched
+    config.opt_string("machine_start_gcode") = "G28 ; from file";                  // outside the allowlist
+
+    PresetBundle bundle;
+    bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_length")->values = { 0.8 };
+    // A recognizable non-default value: the skipped mismatch below must leave it untouched
+    // (asserting the default instead would silently test PrintConfig's retraction_speed).
+    bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_speed")->values = { 33. };
+    bundle.printers.get_edited_preset().config.opt_string("machine_start_gcode") = "G28 ; user";
+
+    PublishedConfig pub;
+    pub.published      = true;
+    pub.published_keys = { "retraction_length", "retraction_speed", "machine_start_gcode" };
+    bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+    // Matching-size retraction vector applied; mismatched vector reported as skipped and the
+    // receiver's own value survives.
+    check_double_vector(bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_length")->values, { 1.4 });
+    check_double_vector(bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_speed")->values, { 33. });
+    CHECK(contains_key(pub.skipped_keys, "retraction_speed"));
+    // Contract-excluded printer key: silently ignored, absent from skipped_keys.
+    CHECK(bundle.printers.get_edited_preset().config.opt_string("machine_start_gcode") == "G28 ; user");
+    CHECK_FALSE(contains_key(pub.skipped_keys, "machine_start_gcode"));
+}
+
+// A published 3MF carries per-slot material keys; on load they are applied positionally to the
+// receiver's slot N (a key-only entry has no type gate), written onto the slot's stored preset
+// in place.
+TEST_CASE("Published 3MF applies positional material keys onto the receiver's material presets", "[Preset][Bundle][Published]")
+{
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        // Two filament slots; filament_diameter drives the normalized per-slot vector sizes.
+        config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75, 1.75 };
+        // Keep the multi-extruder consistency validation happy for a 2-slot config.
+        config.opt<ConfigOptionInts>("filament_self_index")->values = { 1, 2 };
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard", "Direct Drive Standard" };
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#00FF00" };
+        config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA", "PETG" };
+        config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic", "Generic" };
+        config.opt<ConfigOptionStrings>("filament_ids")->values = { "GFL99", "GFT99" };
+        // Author per-slot retraction values. These are per-filament override keys that are not
+        // members of the static PrintRegionConfig, so full_print_config() omits them and they
+        // must be created explicitly (as nullable, matching the real 3MF project config).
+        config.option<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.9, 1.2 };
+        config.option<ConfigOptionFloatsNullable>("filament_z_hop", true)->values = { 0.2, 0.3 };
+        return config;
+    };
+
+    PresetBundle bundle;
+    Preset &pla  = add_inmemory_preset(bundle.filaments, "My PLA");
+    pla.filament_id = "GFL99";
+    pla.config.opt_string("filament_type", 0u)   = "PLA";
+    pla.config.opt_string("filament_vendor", 0u) = "Generic";
+    pla.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+    pla.config.opt<ConfigOptionStrings>("filament_settings_id")->values = { "receiver-pla" };
+    Preset &petg = add_inmemory_preset(bundle.filaments, "My PETG");
+    petg.filament_id = "GFT99";
+    petg.config.opt_string("filament_type", 0u)   = "PETG";
+    petg.config.opt_string("filament_vendor", 0u) = "Generic";
+    petg.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.6 };
+    petg.config.opt<ConfigOptionFloatsNullable>("filament_z_hop", true)->values = { 0.1 };
+    bundle.filament_presets = { "My PLA", "My PETG" };
+
+    PublishedMaterialEntry pla_entry;
+    pla_entry.filament_id = "GFL99";
+    pla_entry.slot        = 0; // the author's PLA slot
+    pla_entry.keys        = { "filament_retraction_length", "filament_settings_id" };
+    PublishedMaterialEntry petg_entry;
+    petg_entry.filament_id = "GFT99";
+    petg_entry.slot        = 1; // the author's PETG slot
+    petg_entry.keys        = { "filament_retraction_length", "filament_z_hop" };
+    // A slot-less entry (no slot field, only possible in hand-crafted files): silently skipped.
+    PublishedMaterialEntry noslot_entry;
+    noslot_entry.filament_type = "ABS";
+    noslot_entry.keys          = { "filament_retraction_length" };
+
+    PublishedConfig pub;
+    pub.published      = true;
+    pub.material_keys  = { pla_entry, petg_entry, noslot_entry };
+    DynamicPrintConfig config = make_file_config();
+    Preset::normalize(config);
+    bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+    // The author's slot values are written onto the receiver's stored presets in place.
+    check_double_vector(bundle.filaments.find_preset("My PLA")->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+    check_double_vector(bundle.filaments.find_preset("My PETG")->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 1.2 });
+    check_double_vector(bundle.filaments.find_preset("My PETG")->config.opt<ConfigOptionFloatsNullable>("filament_z_hop")->values, { 0.3 });
+    // Structural keys inside a material entry are silently ignored: the receiver's own
+    // filament_settings_id is untouched and nothing is reported for it.
+    CHECK(bundle.filaments.find_preset("My PLA")->config.opt<ConfigOptionStrings>("filament_settings_id")->values == std::vector<std::string>{ "receiver-pla" });
+    CHECK_FALSE(contains_key(pub.skipped_keys, "material:GFL99 (filament_settings_id)"));
+    // Everything applied; the slot-less entry produced no skipped entry.
+    CHECK(pub.skipped_keys.empty());
+}
+
+// A "full publish" slot serializes the whole filament. On load the slot always receives a
+// standalone detached copy of the author's material - created even when the receiver's own
+// material matches the published type - and no receiver library preset is ever mutated.
+TEST_CASE("Published 3MF full-published slots are imported as standalone detached copies", "[Preset][Bundle][Published]")
+{
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        // Two author slots; filament_diameter drives the normalized per-slot vector sizes.
+        config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75, 1.75 };
+        config.opt<ConfigOptionInts>("filament_self_index")->values = { 1, 2 };
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard", "Direct Drive Standard" };
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#00FF00" };
+        config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA", "PETG" };
+        config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic", "Generic" };
+        config.opt<ConfigOptionStrings>("filament_ids")->values = { "GFL99", "GFT99" };
+        config.option<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.9, 1.2 };
+        return config;
+    };
+    // The full dump of slot 0, publishing the whole filament as type "ABS".
+    auto make_full_abs_entry = [] {
+        PublishedMaterialEntry entry;
+        entry.slot                = 0;
+        entry.full                = true;
+        entry.publish_type        = true;
+        entry.publish_type_value  = "ABS";
+        entry.full_keys           = { "filament_retraction_length" };
+        return entry;
+    };
+
+    SECTION("type match still creates a detached copy instead of mutating the receiver material") {
+        PresetBundle bundle;
+        Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+        pla.config.opt_string("filament_type", 0u) = "PLA";
+        pla.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+        bundle.filament_presets = { "My PLA", "My PLA" };
+
+        PublishedMaterialEntry full = make_full_abs_entry();
+        full.publish_type_value     = "PLA"; // author requires PLA, receiver slot is PLA
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { full };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        // The type matches, but the import still detaches: the slot lands on a fresh copy
+        // named from the published type (no identity fields in this entry), carrying the
+        // author's values; the receiver's own material is untouched.
+        CHECK(bundle.filament_presets[0] == "PLA");
+        Preset *copy = bundle.filaments.find_preset("PLA", false, true);
+        REQUIRE(copy != nullptr);
+        check_double_vector(copy->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+        check_double_vector(bundle.filaments.find_preset("My PLA", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.5 });
+        CHECK(pub.skipped_keys.empty());
+        REQUIRE(pub.material_replacements.size() == 1);
+        CHECK(pub.material_replacements[0] == "slot 0: My PLA -> PLA");
+    }
+
+    SECTION("type mismatch also detaches: a fresh same-type copy replaces the slot") {
+        PresetBundle bundle;
+        Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+        pla.config.opt_string("filament_type", 0u) = "PLA";
+        pla.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+        Preset &abs = add_inmemory_preset(bundle.filaments, "My ABS");
+        abs.config.opt_string("filament_type", 0u) = "ABS";
+        abs.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.3 };
+        bundle.filament_presets = { "My PLA" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { make_full_abs_entry() };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        REQUIRE(bundle.filament_presets.size() == 1);
+        // No substitution search runs: a brand-new copy named after the published type is
+        // created and both pre-existing presets stay exactly as they were.
+        CHECK(bundle.filament_presets[0] == "ABS");
+        Preset *copy = bundle.filaments.find_preset("ABS", false, true);
+        REQUIRE(copy != nullptr);
+        check_double_vector(copy->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+        check_double_vector(bundle.filaments.find_preset("My ABS", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.3 });
+        check_double_vector(bundle.filaments.find_preset("My PLA", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.5 });
+        CHECK(pub.skipped_keys.empty());
+        REQUIRE(pub.material_replacements.size() == 1);
+        CHECK(pub.material_replacements[0] == "slot 0: My PLA -> ABS");
+    }
+
+    SECTION("the author's identity rides on the copy when the type has no library match") {
+        PresetBundle bundle;
+        Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+        pla.config.opt_string("filament_type", 0u) = "PLA";
+        pla.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+        Preset &other = add_inmemory_preset(bundle.filaments, "Other PLA");
+        other.config.opt_string("filament_type", 0u) = "PLA";
+        other.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.7 };
+        bundle.filament_presets = { "My PLA" };
+
+        PublishedMaterialEntry full = make_full_abs_entry();
+        // The dump carries the identity too, so the created copy takes the author's type
+        // and vendor instead of the baseline clone's.
+        full.full_keys = { "filament_retraction_length", "filament_type", "filament_vendor" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { full };
+        DynamicPrintConfig config = make_file_config();
+        // The author's slot 0 really is ABS.
+        config.opt<ConfigOptionStrings>("filament_type")->values = { "ABS", "PETG" };
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        // No ABS preset needs to exist in the library: the copy carries the author's values,
+        // type and vendor included. Neither receiver preset was touched.
+        CHECK(bundle.filament_presets[0] == "ABS");
+        Preset *copy = bundle.filaments.find_preset("ABS", false, true);
+        REQUIRE(copy != nullptr);
+        check_double_vector(copy->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+        CHECK(copy->config.opt_string("filament_type", 0u) == "ABS");
+        CHECK(copy->config.opt_string("filament_vendor", 0u) == "Generic");
+        check_double_vector(bundle.filaments.find_preset("My PLA", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.5 });
+        CHECK(bundle.filaments.find_preset("My PLA", false, true)->config.opt_string("filament_type", 0u) == "PLA");
+        check_double_vector(bundle.filaments.find_preset("Other PLA", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.7 });
+        CHECK(pub.skipped_keys.empty());
+        REQUIRE(pub.material_replacements.size() == 1);
+        CHECK(pub.material_replacements[0] == "slot 0: My PLA -> ABS");
+    }
+}
+
+// The author's preset name travels in the file and names the created standalone copy (variant
+// tail stripped), regardless of what the receiver's library holds: an exact-name library preset
+// is never reused nor mutated.
+TEST_CASE("Published 3MF imports a full material under the author's stripped name", "[Preset][Bundle][Published]")
+{
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75 };
+        config.opt<ConfigOptionInts>("filament_self_index")->values = { 1 };
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard" };
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000" };
+        config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA" };
+        config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic" };
+        config.opt<ConfigOptionStrings>("filament_ids")->values = { "OGFL99" };
+        config.option<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.9 };
+        return config;
+    };
+
+    auto add_pla = [](PresetBundle &bundle, const char *name, const char *id, const char *vendor, const char *setting_id) {
+        Preset &preset = add_inmemory_preset(bundle.filaments, name);
+        preset.filament_id = id;
+        preset.setting_id  = setting_id;
+        preset.config.opt_string("filament_type", 0u) = "PLA";
+        preset.config.opt_string("filament_vendor", 0u) = vendor;
+        preset.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+        return &preset;
+    };
+
+    SECTION("an exact-name library preset exists: a detached copy is created beside it") {
+        PresetBundle bundle;
+        Preset &petg = add_inmemory_preset(bundle.filaments, "My PETG");
+        petg.config.opt_string("filament_type", 0u) = "PETG";
+        petg.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.6 };
+        add_pla(bundle, "Generic PLA @System", "OGFL99", "Generic", "RcBNzytWgwRrwXXz");
+        add_pla(bundle, "Bambu PLA Basic @System", "OGFA00", "Bambu Lab", "zkc85XTKi4cb6cOw");
+        bundle.filament_presets = { "My PETG" };
+
+        PublishedMaterialEntry entry;
+        entry.slot               = 0;
+        entry.full               = true;
+        entry.publish_type       = true;
+        entry.publish_type_value = "PLA";
+        entry.filament_id        = "OGFL99";
+        entry.filament_vendor    = "Generic";
+        entry.setting_id         = "RcBNzytWgwRrwXXz";
+        entry.preset_name        = "Generic PLA @System";
+        entry.full_keys          = { "filament_retraction_length" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { entry };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        // The copy is named after the stripped author name; the receiver's exact-name preset
+        // keeps its own values.
+        CHECK(bundle.filament_presets[0] == "Generic PLA");
+        check_double_vector(bundle.filaments.find_preset("Generic PLA", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+        check_double_vector(bundle.filaments.find_preset("Generic PLA @System", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.5 });
+        check_double_vector(bundle.filaments.find_preset("My PETG", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.6 });
+        REQUIRE(pub.material_replacements.size() == 1);
+        CHECK(pub.material_replacements[0] == "slot 0: My PETG -> Generic PLA");
+        CHECK(pub.skipped_keys.empty());
+    }
+
+    SECTION("only the name is present (broken/stale ids): the copy is still created") {
+        PresetBundle bundle;
+        Preset &petg = add_inmemory_preset(bundle.filaments, "My PETG");
+        petg.config.opt_string("filament_type", 0u) = "PETG";
+        petg.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.6 };
+        add_pla(bundle, "Generic PLA @System", "OGFL99", "Generic", "RcBNzytWgwRrwXXz");
+        add_pla(bundle, "Bambu PLA Basic @System", "OGFA00", "Bambu Lab", "zkc85XTKi4cb6cOw");
+        bundle.filament_presets = { "My PETG" };
+
+        PublishedMaterialEntry entry;
+        entry.slot               = 0;
+        entry.full               = true;
+        entry.publish_type       = true;
+        entry.publish_type_value = "PLA";
+        entry.preset_name        = "Generic PLA @System";
+        entry.full_keys          = { "filament_retraction_length" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { entry };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        CHECK(bundle.filament_presets[0] == "Generic PLA");
+        check_double_vector(bundle.filaments.find_preset("Bambu PLA Basic @System", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.5 });
+        REQUIRE(pub.material_replacements.size() == 1);
+        CHECK(pub.material_replacements[0] == "slot 0: My PETG -> Generic PLA");
+        CHECK(pub.skipped_keys.empty());
+    }
+
+    SECTION("grown slot (author slot 1) receives its own detached copy") {
+        auto two_slot_config = [] {
+            DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+            config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75, 1.75 };
+            config.opt<ConfigOptionInts>("filament_self_index")->values = { 1, 2 };
+            config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard", "Direct Drive Standard" };
+            config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#FFFF00" };
+            config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA", "PLA" };
+            config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic", "Generic" };
+            config.opt<ConfigOptionStrings>("filament_ids")->values = { "OGFL99", "OGFL99" };
+            config.option<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.9, 0.8 };
+            return config;
+        };
+
+        PresetBundle bundle;
+        Preset &petg = add_inmemory_preset(bundle.filaments, "My PETG");
+        petg.config.opt_string("filament_type", 0u) = "PETG";
+        petg.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.6 };
+        add_pla(bundle, "Generic PLA @System", "OGFL99", "Generic", "RcBNzytWgwRrwXXz");
+        add_pla(bundle, "Bambu PLA Basic @System", "OGFA00", "Bambu Lab", "zkc85XTKi4cb6cOw");
+        bundle.filament_presets = { "My PETG" };
+
+        PublishedMaterialEntry entry;
+        entry.slot               = 1;
+        entry.full               = true;
+        entry.publish_type       = true;
+        entry.publish_type_value = "PLA";
+        entry.preset_name        = "Generic PLA @System";
+        entry.full_keys          = { "filament_retraction_length" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { entry };
+        DynamicPrintConfig config = two_slot_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        REQUIRE(bundle.filament_presets.size() == 2);
+        CHECK(bundle.filament_presets[0] == "My PETG");
+        // The grown slot seeds the receiver's last preset ("My PETG"), then the full material
+        // detaches onto a copy carrying the author's slot-1 value; "Generic PLA @System" is
+        // left untouched.
+        CHECK(bundle.filament_presets[1] == "Generic PLA");
+        check_double_vector(bundle.filaments.find_preset("Generic PLA", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.8 });
+        check_double_vector(bundle.filaments.find_preset("Generic PLA @System", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.5 });
+        REQUIRE(pub.material_replacements.size() == 1);
+        CHECK(pub.material_replacements[0] == "slot 1: My PETG -> Generic PLA");
+        CHECK(pub.skipped_keys.empty());
+    }
+}
+
+// The stripped author name can collide with an existing library preset ("Generic PLA"): the
+// created copy must uniquify with the "(Published)" suffix rather than overwrite, reuse or
+// mutate any of the receiver's own presets.
+TEST_CASE("Published 3MF uniquifies an imported full material name on collision", "[Preset][Bundle][Published]")
+{
+    PresetBundle bundle;
+    Preset &petg = add_inmemory_preset(bundle.filaments, "My PETG");
+    petg.config.opt_string("filament_type", 0u) = "PETG";
+    petg.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.6 };
+    // A legacy bundle preset literally named "Generic PLA" - collides with the stripped name.
+    Preset &bare = add_inmemory_preset(bundle.filaments, "Generic PLA");
+    bare.config.opt_string("filament_type", 0u) = "PLA";
+    bare.config.opt_string("filament_vendor", 0u) = "Generic";
+    bare.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+    // The author's exact preset.
+    Preset &qidi = add_inmemory_preset(bundle.filaments, "Generic PLA @Qidi Q2 0.4 nozzle");
+    qidi.config.opt_string("filament_type", 0u) = "PLA";
+    qidi.config.opt_string("filament_vendor", 0u) = "Generic";
+    qidi.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+    // The Orca library preset.
+    Preset &sys = add_inmemory_preset(bundle.filaments, "Generic PLA @System");
+    sys.config.opt_string("filament_type", 0u) = "PLA";
+    sys.config.opt_string("filament_vendor", 0u) = "Generic";
+    sys.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+    bundle.filament_presets = { "My PETG" };
+
+    PublishedMaterialEntry entry;
+    entry.slot               = 0;
+    entry.full               = true;
+    entry.publish_type       = true;
+    entry.publish_type_value = "PLA";
+    entry.preset_name        = "Generic PLA @Qidi Q2 0.4 nozzle";
+    entry.full_keys          = { "filament_retraction_length" };
+
+    PublishedConfig pub;
+    pub.published     = true;
+    pub.material_keys = { entry };
+    DynamicPrintConfig config = published_pla_file_config();
+    Preset::normalize(config);
+    bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+    // The copy lands beside the collision, suffixed; every pre-existing preset keeps its own
+    // values.
+    CHECK(bundle.filament_presets[0] == "Generic PLA (Published)");
+    check_double_vector(bundle.filaments.find_preset("Generic PLA (Published)", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+    check_double_vector(bundle.filaments.find_preset("Generic PLA", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.5 });
+    check_double_vector(bundle.filaments.find_preset("Generic PLA @Qidi Q2 0.4 nozzle", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.5 });
+    check_double_vector(bundle.filaments.find_preset("Generic PLA @System", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.5 });
+    REQUIRE(pub.material_replacements.size() == 1);
+    CHECK(pub.material_replacements[0] == "slot 0: My PETG -> Generic PLA (Published)");
+    CHECK(pub.skipped_keys.empty());
+}
+
+// The overlay writes onto the edited layer only when that layer survives the load (slot 0's
+// preset still matches the edited preset). When the user views a non-first slot's material and
+// the published entry targets that slot, the final re-select would destroy the edited layer -
+// so the values must land on the stored preset instead and survive.
+TEST_CASE("Published 3MF writes to the stored preset when the edited layer is re-selected away", "[Preset][Bundle][Published]")
+{
+    // Two-slot author config: slot 1 carries the published retraction value.
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75, 1.75 };
+        config.opt<ConfigOptionInts>("filament_self_index")->values = { 1, 2 };
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard", "Direct Drive Standard" };
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#00FF00" };
+        config.opt<ConfigOptionStrings>("filament_type")->values = { "PETG", "PLA" };
+        config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic", "Generic" };
+        config.opt<ConfigOptionStrings>("filament_ids")->values = { "GFT99", "GFL99" };
+        config.option<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.6, 0.9 };
+        return config;
+    };
+
+    PresetBundle bundle;
+    Preset &petg = add_inmemory_preset(bundle.filaments, "My PETG");
+    petg.config.opt_string("filament_type", 0u) = "PETG";
+    petg.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.6 };
+    Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+    pla.config.opt_string("filament_type", 0u) = "PLA";
+    pla.config.opt<ConfigOptionStrings>("filament_colour", true)->values = { "#123456" };
+    pla.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+    bundle.filament_presets = { "My PETG", "My PLA" };
+    // The user is viewing slot 1's material.
+    REQUIRE(bundle.filaments.select_preset_by_name("My PLA", false));
+
+    PublishedMaterialEntry entry;
+    entry.slot                = 1;
+    entry.publish_type        = true;
+    entry.publish_type_value  = "PLA";
+    entry.publish_color       = true;
+    entry.color               = "#ABCDEF";
+    entry.keys                = { "filament_retraction_length" };
+
+    PublishedConfig pub;
+    pub.published     = true;
+    pub.material_keys = { entry };
+    DynamicPrintConfig config = make_file_config();
+    Preset::normalize(config);
+    bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+    // The published values survived on the stored preset (the edited layer was re-selected to
+    // slot 0's material and must not have been the only copy).
+    Preset *stored = bundle.filaments.find_preset("My PLA", false, true);
+    REQUIRE(stored != nullptr);
+    CHECK(stored->config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#ABCDEF" });
+    check_double_vector(stored->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+    // The load re-selected slot 0's material, mirroring a normal project load.
+    CHECK(bundle.filaments.get_edited_preset().name == "My PETG");
+    // Selecting the slot's material afterwards surfaces the applied values.
+    REQUIRE(bundle.filaments.select_preset_by_name("My PLA", false));
+    CHECK(bundle.filaments.get_edited_preset().config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#ABCDEF" });
+    check_double_vector(bundle.filaments.get_edited_preset().config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+    CHECK(pub.skipped_keys.empty());
+}
+
+// The created copy is named after the author's preset with the "@variant" tail stripped;
+// trailing whitespace left behind by the truncation must be trimmed away, and names without
+// a tail pass through unchanged.
+TEST_CASE("publish_material_base_name strips the variant tail from a published preset name", "[Preset][Bundle][Published]")
+{
+    CHECK(publish_material_base_name("Generic PLA @System") == "Generic PLA");
+    CHECK(publish_material_base_name("Generic PLA @Qidi Q2 0.4 nozzle") == "Generic PLA");
+    // Truncation at '@' leaves the space before the tail; it must not survive.
+    CHECK(publish_material_base_name("Generic PLA  @System") == "Generic PLA");
+    CHECK(publish_material_base_name("Voron Generic PLA") == "Voron Generic PLA");
+    CHECK(publish_material_base_name("") == "");
+    // A tail-only name strips to nothing; the caller falls back to identity fields.
+    CHECK(publish_material_base_name("@System").empty());
+}
+
+// A full-published material arrives as a brand-new standalone preset: parentless, visible,
+// project-embedded ("Preset Inside Project"), carrying the author's values and colour - and
+// never touching any of the receiver's own presets.
+TEST_CASE("Published 3MF imports a full material as a detached project-embedded preset", "[Preset][Bundle][Published]")
+{
+    PresetBundle bundle;
+    Preset &petg = add_inmemory_preset(bundle.filaments, "My PETG");
+    petg.config.opt_string("filament_type", 0u) = "PETG";
+    petg.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.6 };
+    Preset &spare = add_inmemory_preset(bundle.filaments, "Spare PLA");
+    spare.config.opt_string("filament_type", 0u) = "PLA";
+    spare.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.4 };
+    bundle.filament_presets = { "My PETG" };
+
+    PublishedMaterialEntry entry;
+    entry.slot                = 0;
+    entry.full                = true;
+    entry.publish_type        = true;
+    entry.publish_type_value  = "PLA";
+    entry.publish_color       = true;
+    entry.color               = "#ABCDEF";
+    entry.filament_id         = "AFL01";
+    entry.setting_id          = "Sid000111222";
+    entry.preset_name         = "Author PLA @Vendor";
+    entry.full_keys           = { "filament_retraction_length" };
+
+    PublishedConfig pub;
+    pub.published     = true;
+    pub.material_keys = { entry };
+    DynamicPrintConfig config = published_pla_file_config();
+    Preset::normalize(config);
+    bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+    // The slot lands on the freshly created copy, named after the stripped author name.
+    CHECK(bundle.filament_presets[0] == "Author PLA");
+    Preset *copy = bundle.filaments.find_preset("Author PLA", false, true);
+    REQUIRE(copy != nullptr);
+    // Detached + project-embedded contract.
+    CHECK(copy->is_project_embedded);
+    CHECK(copy->inherits().empty());
+    CHECK(copy->setting_id.empty());
+    CHECK(copy->vendor == nullptr);
+    CHECK_FALSE(copy->is_system);
+    CHECK_FALSE(copy->is_default);
+    CHECK_FALSE(copy->is_external);
+    CHECK(copy->is_visible);
+    CHECK(copy->filament_id == "AFL01");
+    CHECK(copy->config.opt<ConfigOptionStrings>("filament_settings_id")->values == std::vector<std::string>{ "Author PLA" });
+    // The published values and colour live on the copy.
+    check_double_vector(copy->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+    CHECK(copy->config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#ABCDEF" });
+    // Universally compatible: no printer/print restrictions survive the import.
+    CHECK(copy->config.opt<ConfigOptionStrings>("compatible_printers")->values.empty());
+    CHECK(copy->config.opt<ConfigOptionStrings>("compatible_prints")->values.empty());
+    CHECK(copy->config.opt<ConfigOptionString>("compatible_printers_condition")->value.empty());
+    CHECK(copy->config.opt<ConfigOptionString>("compatible_prints_condition")->value.empty());
+    // Nothing pre-existing was touched.
+    check_double_vector(bundle.filaments.find_preset("My PETG", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.6 });
+    check_double_vector(bundle.filaments.find_preset("Spare PLA", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.4 });
+    CHECK(pub.skipped_keys.empty());
+    REQUIRE(pub.material_replacements.size() == 1);
+    CHECK(pub.material_replacements[0] == "slot 0: My PETG -> Author PLA");
+}
+
+// Compatibility restrictions riding on the receiver's baseline preset must not leak onto the
+// imported copy: a detached full material is usable with every printer and print profile.
+TEST_CASE("Published 3MF clears printer restrictions on the imported full material", "[Preset][Bundle][Published]")
+{
+    PresetBundle bundle;
+    Preset &restricted = add_inmemory_preset(bundle.filaments, "Restricted PLA");
+    restricted.config.opt_string("filament_type", 0u) = "PLA";
+    restricted.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+    restricted.config.set_key_value("compatible_printers", new ConfigOptionStrings({ "Unrelated Printer" }));
+    restricted.config.set_key_value("compatible_prints", new ConfigOptionStrings({ "Unrelated Print" }));
+    restricted.config.option<ConfigOptionString>("compatible_printers_condition", true)->value = "printer_settings_id==\"Nope\"";
+    restricted.config.option<ConfigOptionString>("compatible_prints_condition", true)->value = "print_settings_id==\"Nope\"";
+    bundle.filament_presets = { "Restricted PLA" };
+
+    PublishedMaterialEntry entry;
+    entry.slot                = 0;
+    entry.full                = true;
+    entry.publish_type        = true;
+    entry.publish_type_value  = "PLA";
+    entry.full_keys           = { "filament_retraction_length" };
+
+    PublishedConfig pub;
+    pub.published     = true;
+    pub.material_keys = { entry };
+    DynamicPrintConfig config = published_pla_file_config();
+    Preset::normalize(config);
+    bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+    // The copy (named from the published type; no identity fields) has no restrictions left.
+    CHECK(bundle.filament_presets[0] == "PLA");
+    Preset *copy = bundle.filaments.find_preset("PLA", false, true);
+    REQUIRE(copy != nullptr);
+    CHECK(copy->config.opt<ConfigOptionStrings>("compatible_printers")->values.empty());
+    CHECK(copy->config.opt<ConfigOptionStrings>("compatible_prints")->values.empty());
+    CHECK(copy->config.opt<ConfigOptionString>("compatible_printers_condition")->value.empty());
+    CHECK(copy->config.opt<ConfigOptionString>("compatible_prints_condition")->value.empty());
+    // The receiver's own restricted preset keeps its restrictions.
+    const Preset *original = bundle.filaments.find_preset("Restricted PLA", false, true);
+    REQUIRE(original != nullptr);
+    CHECK(original->config.opt<ConfigOptionStrings>("compatible_printers")->values == std::vector<std::string>{ "Unrelated Printer" });
+    CHECK(original->config.opt<ConfigOptionString>("compatible_printers_condition")->value == "printer_settings_id==\"Nope\"");
+    CHECK(pub.skipped_keys.empty());
+}
+
+// Identical Full materials (same setting_id + preset_name identity) share one created
+// instance: an author who pointed several slots at one material gets one standalone copy,
+// and the first entry's slot values win.
+TEST_CASE("Published 3MF shares one imported copy between identical full slots", "[Preset][Bundle][Published]")
+{
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75, 1.75 };
+        config.opt<ConfigOptionInts>("filament_self_index")->values = { 1, 2 };
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard", "Direct Drive Standard" };
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#00FF00" };
+        config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA", "PLA" };
+        config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic", "Generic" };
+        config.opt<ConfigOptionStrings>("filament_ids")->values = { "AFL01", "AFL01" };
+        config.option<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.9, 0.8 };
+        return config;
+    };
+    auto make_entry = [](int slot) {
+        PublishedMaterialEntry entry;
+        entry.slot                = slot;
+        entry.full                = true;
+        entry.publish_type        = true;
+        entry.publish_type_value  = "PLA";
+        entry.filament_id         = "AFL01";
+        entry.setting_id          = "Sid000111222";
+        entry.preset_name         = "Author PLA @Vendor";
+        entry.full_keys           = { "filament_retraction_length" };
+        return entry;
+    };
+
+    PresetBundle bundle;
+    Preset &petg = add_inmemory_preset(bundle.filaments, "My PETG");
+    petg.config.opt_string("filament_type", 0u) = "PETG";
+    petg.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.6 };
+    Preset &other = add_inmemory_preset(bundle.filaments, "Other PETG");
+    other.config.opt_string("filament_type", 0u) = "PETG";
+    other.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.65 };
+    bundle.filament_presets = { "My PETG", "Other PETG" };
+
+    PublishedConfig pub;
+    pub.published     = true;
+    pub.material_keys = { make_entry(0), make_entry(1) };
+    DynamicPrintConfig config = make_file_config();
+    Preset::normalize(config);
+    bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+    // Both slots point at the single shared copy; no second "(Published)" instance exists.
+    REQUIRE(bundle.filament_presets.size() == 2);
+    CHECK(bundle.filament_presets[0] == "Author PLA");
+    CHECK(bundle.filament_presets[1] == "Author PLA");
+    CHECK(bundle.filaments.find_preset("Author PLA", false, true) != nullptr);
+    CHECK(bundle.filaments.find_preset("Author PLA (Published)", false, true) == nullptr);
+    // The first entry's slot values won.
+    check_double_vector(bundle.filaments.find_preset("Author PLA", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+    // Both slots reported, same target; originals untouched.
+    REQUIRE(pub.material_replacements.size() == 2);
+    CHECK(pub.material_replacements[0] == "slot 0: My PETG -> Author PLA");
+    CHECK(pub.material_replacements[1] == "slot 1: Other PETG -> Author PLA");
+    check_double_vector(bundle.filaments.find_preset("My PETG", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.6 });
+    check_double_vector(bundle.filaments.find_preset("Other PETG", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.65 });
+    CHECK(pub.skipped_keys.empty());
+}
+
+// Without a preset name the copy falls back to the stable material id; fully anonymous
+// hand-crafted entries never share instances between slots (their dedup key is slot-scoped).
+TEST_CASE("Published 3MF names unidentified full materials from their fallback fields", "[Preset][Bundle][Published]")
+{
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75, 1.75 };
+        config.opt<ConfigOptionInts>("filament_self_index")->values = { 1, 2 };
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard", "Direct Drive Standard" };
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#00FF00" };
+        config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA", "PLA" };
+        config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic", "Generic" };
+        config.opt<ConfigOptionStrings>("filament_ids")->values = { "GFL99", "GFT99" };
+        config.option<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.9, 1.2 };
+        return config;
+    };
+
+    SECTION("empty preset_name falls back to the filament_id") {
+        PresetBundle bundle;
+        Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+        pla.config.opt_string("filament_type", 0u) = "PLA";
+        pla.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+        bundle.filament_presets = { "My PLA" };
+
+        PublishedMaterialEntry entry;
+        entry.slot                = 0;
+        entry.full                = true;
+        entry.publish_type        = true;
+        entry.publish_type_value  = "PLA";
+        entry.filament_id         = "AFL01";
+        entry.full_keys           = { "filament_retraction_length" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { entry };
+        DynamicPrintConfig config = published_pla_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        CHECK(bundle.filament_presets[0] == "AFL01");
+        CHECK(bundle.filaments.find_preset("AFL01", false, true) != nullptr);
+        CHECK(pub.skipped_keys.empty());
+    }
+
+    SECTION("fully anonymous entries get slot-scoped copies") {
+        PresetBundle bundle;
+        Preset &first = add_inmemory_preset(bundle.filaments, "First PLA");
+        first.config.opt_string("filament_type", 0u) = "PLA";
+        first.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+        Preset &second = add_inmemory_preset(bundle.filaments, "Second PLA");
+        second.config.opt_string("filament_type", 0u) = "PLA";
+        second.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.55 };
+        bundle.filament_presets = { "First PLA", "Second PLA" };
+
+        PublishedMaterialEntry entry0;
+        entry0.slot                = 0;
+        entry0.full                = true;
+        entry0.publish_type        = true;
+        entry0.publish_type_value  = "ABS"; // the only naming field present
+        entry0.full_keys           = { "filament_retraction_length" };
+        PublishedMaterialEntry entry1 = entry0;
+        entry1.slot                = 1;
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { entry0, entry1 };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        // No shared identity: each slot gets its own uniquified copy.
+        CHECK(bundle.filament_presets[0] == "ABS");
+        CHECK(bundle.filament_presets[1] == "ABS (Published)");
+        CHECK(bundle.filaments.find_preset("ABS", false, true) != nullptr);
+        CHECK(bundle.filaments.find_preset("ABS (Published)", false, true) != nullptr);
+        CHECK(pub.skipped_keys.empty());
+    }
+}
+
+// Within-load dedup does not span loads: importing the same published file again into the same
+// session creates a second, uniquified copy instead of mutating or reusing the first.
+TEST_CASE("Re-importing a published full material uniquifies the second copy", "[Preset][Bundle][Published]")
+{
+    PresetBundle bundle;
+    Preset &petg = add_inmemory_preset(bundle.filaments, "My PETG");
+    petg.config.opt_string("filament_type", 0u) = "PETG";
+    petg.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.6 };
+    bundle.filament_presets = { "My PETG" };
+
+    auto make_entry = [] {
+        PublishedMaterialEntry entry;
+        entry.slot                = 0;
+        entry.full                = true;
+        entry.publish_type        = true;
+        entry.publish_type_value  = "PLA";
+        entry.filament_id         = "AFL01";
+        entry.setting_id          = "Sid000111222";
+        entry.preset_name         = "Author PLA @Vendor";
+        entry.full_keys           = { "filament_retraction_length" };
+        return entry;
+    };
+
+    for (int round = 0; round < 2; ++round) {
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { make_entry() };
+        DynamicPrintConfig config = published_pla_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        if (round == 0) {
+            CHECK(bundle.filament_presets[0] == "Author PLA");
+            CHECK(bundle.filaments.find_preset("Author PLA (Published)", false, true) == nullptr);
+        } else {
+            // The second import uniquifies beside the first instead of touching it.
+            CHECK(bundle.filament_presets[0] == "Author PLA (Published)");
+            check_double_vector(bundle.filaments.find_preset("Author PLA (Published)", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+            check_double_vector(bundle.filaments.find_preset("Author PLA", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+            REQUIRE(pub.material_replacements.size() == 1);
+            CHECK(pub.material_replacements[0] == "slot 0: Author PLA -> Author PLA (Published)");
+        }
+        CHECK(pub.skipped_keys.empty());
+    }
+}
+
+// A partially-published slot can carry a curated type and/or colour. The colour is applied
+// regardless of the type match; a type mismatch with no same-type replacement keeps the
+// receiver's material and reports the slot's keys as skipped. The receiver's slot count grows
+// only as far as the highest slot with published content.
+TEST_CASE("Published 3MF partial slots apply colour and gate keys by the published type", "[Preset][Bundle][Published]")
+{
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75, 1.75 };
+        config.opt<ConfigOptionInts>("filament_self_index")->values = { 1, 2 };
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard", "Direct Drive Standard" };
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#00FF00" };
+        config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA", "PETG" };
+        config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic", "Generic" };
+        config.opt<ConfigOptionStrings>("filament_ids")->values = { "GFL99", "GFT99" };
+        config.option<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.9, 1.2 };
+        return config;
+    };
+
+    SECTION("matching type applies the keys and the colour") {
+        PresetBundle bundle;
+        Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+        pla.config.opt_string("filament_type", 0u) = "PLA";
+        pla.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+        pla.config.opt<ConfigOptionStrings>("filament_colour", true)->values = { "#123456" };
+        bundle.filament_presets = { "My PLA" };
+
+        PublishedMaterialEntry entry;
+        entry.slot                = 0;
+        entry.publish_type        = true;
+        entry.publish_type_value  = "PLA";
+        entry.publish_color       = true;
+        entry.color               = "#ABCDEF";
+        entry.keys                = { "filament_retraction_length" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { entry };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        // Type matched: keys and colour applied onto the receiver's preset in place.
+        Preset *pla_preset = bundle.filaments.find_preset("My PLA", false, true);
+        REQUIRE(pla_preset != nullptr);
+        check_double_vector(pla_preset->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+        CHECK(pla_preset->config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#ABCDEF" });
+        CHECK(pub.skipped_keys.empty());
+        CHECK(pub.material_replacements.empty());
+    }
+
+    SECTION("type mismatch without a replacement keeps the material and skips the keys") {
+        PresetBundle bundle;
+        Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+        pla.config.opt_string("filament_type", 0u) = "PLA";
+        pla.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+        pla.config.opt<ConfigOptionStrings>("filament_colour", true)->values = { "#123456" };
+        bundle.filament_presets = { "My PLA" };
+
+        PublishedMaterialEntry entry;
+        entry.slot                = 0;
+        entry.publish_type        = true;
+        entry.publish_type_value  = "ABS"; // no ABS in the receiver library
+        entry.publish_color       = true;
+        entry.color               = "#ABCDEF";
+        entry.keys                = { "filament_retraction_length" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { entry };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        // The slot keeps the receiver's material: the colour applies in place, the keys are
+        // skipped.
+        CHECK(bundle.filament_presets[0] == "My PLA");
+        Preset *pla_preset = bundle.filaments.find_preset("My PLA", false, true);
+        REQUIRE(pla_preset != nullptr);
+        check_double_vector(pla_preset->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.5 });
+        CHECK(pla_preset->config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#ABCDEF" });
+        CHECK(contains_key(pub.skipped_keys, "material:ABS (filament_retraction_length)"));
+        CHECK(pub.material_replacements.empty());
+    }
+
+    SECTION("receiver slot count grows to fit the highest published slot and assigns matching type preset") {
+        PresetBundle bundle;
+        Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+        pla.config.opt_string("filament_type", 0u) = "PLA";
+        pla.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+        pla.config.opt<ConfigOptionStrings>("filament_colour", true)->values = { "#123456" };
+        Preset &petg = add_inmemory_preset(bundle.filaments, "My PETG");
+        petg.config.opt_string("filament_type", 0u) = "PETG";
+        petg.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.8 };
+        // The receiver has a single slot; the file carries two, only slot 1 is published.
+        bundle.filament_presets = { "My PLA" };
+
+        PublishedMaterialEntry entry;
+        entry.slot                = 1;
+        entry.publish_type        = true;
+        entry.publish_type_value  = "PETG";
+        entry.keys                = { "filament_retraction_length" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { entry };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        // The slot list was grown so author slot 1 has a material (the PETG preset), which
+        // then receives the author's values in place.
+        REQUIRE(bundle.filament_presets.size() == 2);
+        CHECK(bundle.filament_presets[1] == "My PETG");
+        check_double_vector(bundle.filaments.find_preset("My PETG", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 1.2 });
+        check_double_vector(bundle.filaments.find_preset("My PLA", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.5 });
+    }
+}
+
+// The receiver's slot list grows only as far as the highest published slot: a file whose author
+// published nothing (or only a low slot) must not pull filler materials into the receiver's
+// setup, and the receiver never grows to the file's count.
+TEST_CASE("Published 3MF grows the receiver's slots only as far as the published slots", "[Preset][Bundle][Published]")
+{
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        // Four author slots (a 4-filament model).
+        config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75, 1.75, 1.75, 1.75 };
+        config.opt<ConfigOptionInts>("filament_self_index")->values = { 1, 2, 3, 4 };
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard", "Direct Drive Standard", "Direct Drive Standard", "Direct Drive Standard" };
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#00FF00", "#0000FF", "#FFFF00" };
+        config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA", "PLA", "PLA", "PLA" };
+        config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic", "Generic", "Generic", "Generic" };
+        config.opt<ConfigOptionStrings>("filament_ids")->values = { "GFL99", "GFL99", "GFL99", "GFL99" };
+        return config;
+    };
+    auto add_pla_preset = [](PresetBundle &bundle) {
+        Preset &preset = add_inmemory_preset(bundle.filaments, "My PLA");
+        preset.config.opt_string("filament_type", 0u) = "PLA";
+        preset.config.opt<ConfigOptionStrings>("filament_colour", true)->values = { "#123456" };
+        return &preset;
+    };
+    auto make_color_entry = [](int slot) {
+        PublishedMaterialEntry entry;
+        entry.slot          = slot;
+        entry.publish_color = true;
+        entry.color         = "#ABCDEF";
+        return entry;
+    };
+
+    // A file whose author published nothing for any slot: the receiver's setup is untouched.
+    {
+        PresetBundle bundle;
+        add_pla_preset(bundle);
+        bundle.filament_presets = { "My PLA" };
+
+        PublishedConfig pub;
+        pub.published = true; // no material entries at all
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        CHECK(bundle.filament_presets.size() == 1);
+        CHECK(bundle.filaments.find_preset("My PLA")->config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#123456" });
+        CHECK(pub.skipped_keys.empty());
+    }
+
+    // Only slot 0 published: a single-slot receiver keeps its single slot; the file's other
+    // three slots pull nothing in.
+    {
+        PresetBundle bundle;
+        add_pla_preset(bundle);
+        bundle.filament_presets = { "My PLA" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { make_color_entry(0) };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        CHECK(bundle.filament_presets.size() == 1);
+        // The published colour lands on the slot's preset in place.
+        CHECK(bundle.filaments.find_preset("My PLA", false, true)->config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#ABCDEF" });
+    }
+
+    // Slot 3 published: the receiver grows to 4 so the published slot exists. Unpublished
+    // filler slots repeat the receiver's last preset ("Add one filament" behaviour).
+    {
+        PresetBundle bundle;
+        add_pla_preset(bundle);
+        bundle.filament_presets = { "My PLA" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { make_color_entry(3) };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        REQUIRE(bundle.filament_presets.size() == 4);
+        CHECK(bundle.filament_presets[1] == "My PLA");
+        CHECK(bundle.filament_presets[2] == "My PLA");
+        // Only "My PLA" exists in the library, so the published slot keeps the aliasing and the
+        // colour is written onto the shared preset (every slot references it).
+        CHECK(bundle.filament_presets[3] == "My PLA");
+        CHECK(bundle.filaments.find_preset("My PLA", false, true)->config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#ABCDEF" });
+        // The project-level per-slot vectors were grown and seeded: fillers take their preset's
+        // colour, the published slot its published colour.
+        CHECK(bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values.size() == 4);
+        CHECK(bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values[1] == "#123456");
+        CHECK(bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values[3] == "#ABCDEF");
+        CHECK(bundle.project_config.opt<ConfigOptionStrings>("filament_multi_colour")->values.size() == 4);
+        CHECK(bundle.project_config.opt<ConfigOptionStrings>("filament_colour_type")->values.size() == 4);
+        CHECK(bundle.project_config.opt<ConfigOptionInts>("filament_map")->values.size() == 4);
+        CHECK(bundle.project_config.opt<ConfigOptionFloats>("flush_volumes_matrix")->values.size() == 16);
+    }
+
+    // Slots 0 and 2 published: the receiver grows to 3, never to the file's 4.
+    {
+        PresetBundle bundle;
+        add_pla_preset(bundle);
+        bundle.filament_presets = { "My PLA" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { make_color_entry(0), make_color_entry(2) };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        REQUIRE(bundle.filament_presets.size() == 3);
+        CHECK(bundle.filament_presets[1] == "My PLA");
+    }
+
+    // A receiver with more slots than the file's filament count keeps its setup: neither the
+    // preset list nor the project-level vectors are shrunk to the file's smaller size.
+    {
+        PresetBundle bundle;
+        add_pla_preset(bundle);
+        bundle.filament_presets = { "My PLA", "My PLA", "My PLA" };
+        // Distinct project colours make a shrink observable.
+        bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values       = { "#111111", "#222222", "#333333" };
+        bundle.project_config.opt<ConfigOptionStrings>("filament_multi_colour")->values = { "#111111", "#222222", "#333333" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { make_color_entry(0) }; // highest published slot: 0
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        // A one-filament file: num_filaments (1) is below the receiver's slot count (3).
+        config.opt<ConfigOptionFloats>("filament_diameter")->values          = { 1.75 };
+        config.opt<ConfigOptionInts>("filament_self_index")->values          = { 1 };
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard" };
+        config.opt<ConfigOptionStrings>("filament_colour")->values           = { "#FF0000" };
+        config.opt<ConfigOptionStrings>("filament_type")->values             = { "PLA" };
+        config.opt<ConfigOptionStrings>("filament_vendor")->values           = { "Generic" };
+        config.opt<ConfigOptionStrings>("filament_ids")->values              = { "GFL99" };
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        REQUIRE(bundle.filament_presets.size() == 3);
+        // No shrink: all three project entries survive, with slot 0 synced to the published
+        // colour at its unshifted index and slots 1-2 untouched.
+        CHECK(bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#ABCDEF", "#222222", "#333333" });
+        CHECK(bundle.project_config.opt<ConfigOptionStrings>("filament_multi_colour")->values == std::vector<std::string>{ "#ABCDEF", "#222222", "#333333" });
+        CHECK(bundle.project_config.opt<ConfigOptionInts>("filament_map")->values.size() == 3);
+        // The published colour still reached slot 0's preset in place.
+        CHECK(bundle.filaments.find_preset("My PLA", false, true)->config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#ABCDEF" });
+    }
+}
+
+// A published slot is seeded from an unused library preset and the values are written onto it
+// in place, so the receiver's own material (slot 0) is never overwritten.
+TEST_CASE("Published 3MF grows published slots to the receiver's last preset and recolors it in place", "[Preset][Bundle][Published]")
+{
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75, 1.75, 1.75, 1.75 };
+        config.opt<ConfigOptionInts>("filament_self_index")->values = { 1, 2, 3, 4 };
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard", "Direct Drive Standard", "Direct Drive Standard", "Direct Drive Standard" };
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#00FF00", "#0000FF", "#FFFF00" };
+        config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA", "PLA", "PLA", "PLA" };
+        config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic", "Generic", "Generic", "Generic" };
+        config.opt<ConfigOptionStrings>("filament_ids")->values = { "GFL99", "GFL99", "GFL99", "GFL99" };
+        return config;
+    };
+
+    // Receiver with its own material plus one more library preset; author publishes only slot 4
+    // (Red). Growth always repeats the receiver's last filament ("Add one filament"), so the
+    // grown slot references the shared "My PLA" preset and the published red recolors it in
+    // place; the unused "Other PLA" preset is left untouched.
+    PresetBundle bundle;
+    Preset &mine = add_inmemory_preset(bundle.filaments, "My PLA");
+    mine.config.opt_string("filament_type", 0u) = "PLA";
+    mine.config.opt<ConfigOptionStrings>("filament_colour", true)->values = { "#123456" };
+    Preset &other = add_inmemory_preset(bundle.filaments, "Other PLA");
+    other.config.opt_string("filament_type", 0u) = "PLA";
+    other.config.opt<ConfigOptionStrings>("filament_colour", true)->values = { "#654321" };
+    bundle.filament_presets = { "My PLA" };
+
+    PublishedMaterialEntry entry;
+    entry.slot          = 3;
+    entry.publish_color = true;
+    entry.color         = "#ABCDEF";
+    PublishedConfig pub;
+    pub.published     = true;
+    pub.material_keys = { entry };
+    DynamicPrintConfig config = make_file_config();
+    Preset::normalize(config);
+    bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+    REQUIRE(bundle.filament_presets.size() == 4);
+    // Every grown slot (published or filler) repeats the receiver's last preset.
+    CHECK(bundle.filament_presets[1] == "My PLA");
+    CHECK(bundle.filament_presets[2] == "My PLA");
+    // The published red recolors the shared "My PLA" preset in place; the unused "Other PLA"
+    // preset is left untouched.
+    CHECK(bundle.filament_presets[3] == "My PLA");
+    CHECK(bundle.filaments.find_preset("My PLA", false, true)->config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#ABCDEF" });
+    CHECK(bundle.filaments.find_preset("Other PLA", false, true)->config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#654321" });
+    // The project-level colours are sized and seeded for every grown slot.
+    CHECK(bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values.size() == 4);
+    CHECK(bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values[1] == "#123456");
+    CHECK(bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values[3] == "#ABCDEF");
+    CHECK(bundle.project_config.opt<ConfigOptionStrings>("filament_multi_colour")->values.size() == 4);
+    CHECK(bundle.project_config.opt<ConfigOptionStrings>("filament_colour_type")->values.size() == 4);
+    CHECK(bundle.project_config.opt<ConfigOptionInts>("filament_map")->values.size() == 4);
+}
+
+// Growth always repeats the receiver's last preset; a published slot only lands on its
+// material identity when the aliased grown slot is re-pointed (de-alias fires on a preset
+// key). Lock the identity priority there: an exact filament_id outranks an arbitrary unused
+// preset, and an entry carrying only a family constrains the pick to that family.
+TEST_CASE("Published 3MF re-points an aliased grown slot by published identity or family without a type requirement", "[Preset][Bundle][Published]")
+{
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75, 1.75, 1.75, 1.75 };
+        config.opt<ConfigOptionInts>("filament_self_index")->values = { 1, 2, 3, 4 };
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard", "Direct Drive Standard", "Direct Drive Standard", "Direct Drive Standard" };
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#00FF00", "#0000FF", "#FFFF00" };
+        config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA", "PLA", "PLA", "PLA" };
+        config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic", "Generic", "Generic", "Generic" };
+        config.opt<ConfigOptionStrings>("filament_ids")->values = { "GFL99", "GFL99", "GFL99", "GFL99" };
+        return config;
+    };
+
+    PublishedMaterialEntry entry;
+    entry.slot            = 2;
+    entry.filament_type   = "PLA";
+    entry.filament_vendor = "Generic";
+    entry.keys            = { "filament_retraction_length" };
+    // An unused preset sorting before everything else: an unconstrained pick would take it.
+    PresetBundle bundle;
+    Preset &mine     = add_inmemory_preset(bundle.filaments, "My PLA");
+    mine.config.opt_string("filament_type", 0u) = "PLA";
+    Preset &arbitrary = add_inmemory_preset(bundle.filaments, "Aaa PLA");
+    arbitrary.config.opt_string("filament_type", 0u) = "PLA";
+    bundle.filament_presets = { "My PLA" };
+
+    SECTION("an exact filament_id outranks the first unused preset") {
+        Preset &authored = add_inmemory_preset(bundle.filaments, "Zzz PLA");
+        authored.config.opt_string("filament_type", 0u) = "PLA";
+        authored.filament_id = "GFA00";
+        entry.filament_id    = "GFA00";
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { entry };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        REQUIRE(bundle.filament_presets.size() == 3);
+        CHECK(bundle.filament_presets[1] == "My PLA");
+        CHECK(bundle.filament_presets[2] == "Zzz PLA");
+        // The exact-id preset outranks the type-only "Aaa PLA"; the re-point is reported.
+        REQUIRE(pub.material_replacements.size() == 1);
+        CHECK(pub.material_replacements[0] == "slot 2: My PLA -> Zzz PLA");
+    }
+
+    SECTION("a family-only entry picks an unused preset of that family") {
+        Preset &petg = add_inmemory_preset(bundle.filaments, "Bbb PETG");
+        petg.config.opt_string("filament_type", 0u) = "PETG";
+        entry.filament_type = "PETG";
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { entry };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        REQUIRE(bundle.filament_presets.size() == 3);
+        // The family pick lands on the only PETG preset (the PLA presets and the receiver's own
+        // material lose), and the re-point is reported.
+        CHECK(bundle.filament_presets[2] == "Bbb PETG");
+        REQUIRE(pub.material_replacements.size() == 1);
+        CHECK(pub.material_replacements[0] == "slot 2: My PLA -> Bbb PETG");
+    }
+}
+
+// The GUI displays the edited preset, a snapshot of the selected collection preset taken at
+// selection time. Since the overlay mutates the collection presets in place, the load must
+// re-select the first slot's filament so the applied values - and slot replacements - surface
+// in the GUI.
+TEST_CASE("Published 3MF refreshes the edited preset so the applied material values surface", "[Preset][Bundle][Published]")
+{
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75 };
+        config.opt<ConfigOptionInts>("filament_self_index")->values = { 1 };
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard" };
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000" };
+        config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA" };
+        config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic" };
+        config.opt<ConfigOptionStrings>("filament_ids")->values = { "GFL99" };
+        config.option<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.9 };
+        return config;
+    };
+    auto make_entry = [] {
+        PublishedMaterialEntry entry;
+        entry.slot                = 0;
+        entry.publish_type        = true;
+        entry.publish_type_value  = "PLA";
+        entry.publish_color       = true;
+        entry.color               = "#ABCDEF";
+        entry.keys                = { "filament_retraction_length" };
+        return entry;
+    };
+
+    SECTION("the edited preset carries the applied colour and keys") {
+        PresetBundle bundle;
+        Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+        pla.config.opt_string("filament_type", 0u) = "PLA";
+        pla.config.opt<ConfigOptionStrings>("filament_colour", true)->values = { "#123456" };
+        pla.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+        bundle.filament_presets = { "My PLA" };
+        // Mirror the GUI: the displayed preset is the collection's edited preset.
+        REQUIRE(bundle.filaments.select_preset_by_name("My PLA", false));
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { make_entry() };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        const Preset &edited = bundle.filaments.get_edited_preset();
+        // The slot references the edited preset, so the overlay lands on the edited layer:
+        // visible as a modification while the stored preset stays untouched.
+        CHECK(edited.name == "My PLA");
+        CHECK(edited.config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#ABCDEF" });
+        check_double_vector(edited.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+        CHECK(bundle.filaments.find_preset("My PLA", false, true)->config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#123456" });
+        check_double_vector(bundle.filaments.find_preset("My PLA", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.5 });
+        // The overlay is a visible, revertible modification of the edited preset.
+        CHECK(bundle.filaments.current_is_dirty());
+        CHECK(pub.skipped_keys.empty());
+    }
+
+    SECTION("a slot replacement is reflected in the edited preset") {
+        PresetBundle bundle;
+        Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+        pla.config.opt_string("filament_type", 0u) = "PLA";
+        pla.config.opt<ConfigOptionStrings>("filament_colour", true)->values = { "#123456" };
+        pla.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+        Preset &abs = add_inmemory_preset(bundle.filaments, "My ABS");
+        abs.config.opt_string("filament_type", 0u) = "ABS";
+        abs.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.3 };
+        bundle.filament_presets = { "My PLA" };
+        REQUIRE(bundle.filaments.select_preset_by_name("My PLA", false));
+
+        PublishedMaterialEntry entry = make_entry();
+        entry.publish_type_value     = "ABS"; // mismatch: replaced by the library's ABS
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { entry };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        REQUIRE(bundle.filament_presets[0] == "My ABS");
+        // The edited preset now displays the replacement with the author's values on top.
+        const Preset &edited = bundle.filaments.get_edited_preset();
+        CHECK(edited.name == "My ABS");
+        CHECK(edited.config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#ABCDEF" });
+        check_double_vector(edited.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+    }
+}
+
+// The overlay lands on the edited layer when the slot references the collection's edited
+// preset, so the user's unsaved in-memory edits on it survive a published load (only the
+// published keys are touched) and the change shows as a visible, revertible modification.
+TEST_CASE("Published 3MF preserves unsaved edits on the edited filament preset", "[Preset][Bundle][Published]")
+{
+    PresetBundle bundle;
+    Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+    pla.config.opt_string("filament_type", 0u) = "PLA";
+    pla.config.opt<ConfigOptionStrings>("filament_colour", true)->values = { "#123456" };
+    pla.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+    pla.config.opt<ConfigOptionFloatsNullable>("filament_z_hop", true)->values = { 0.1 };
+    bundle.filament_presets = { "My PLA" };
+    REQUIRE(bundle.filaments.select_preset_by_name("My PLA", false));
+
+    // The user has unsaved in-memory edits on the preset being shown.
+    bundle.filaments.get_edited_preset().config.opt<ConfigOptionFloatsNullable>("filament_z_hop")->values = { 0.7 };
+
+    PublishedMaterialEntry entry;
+    entry.slot                = 0;
+    entry.publish_type        = true;
+    entry.publish_type_value  = "PLA";
+    entry.publish_color       = true;
+    entry.color               = "#ABCDEF";
+    entry.keys                = { "filament_retraction_length" };
+
+    PublishedConfig pub;
+    pub.published     = true;
+    pub.material_keys = { entry };
+    DynamicPrintConfig config = published_pla_file_config();
+    Preset::normalize(config);
+    bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+    // Published values land on the edited layer...
+    const Preset &edited = bundle.filaments.get_edited_preset();
+    CHECK(edited.name == "My PLA");
+    CHECK(edited.config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#ABCDEF" });
+    check_double_vector(edited.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+    // ...the user's unsaved edit on a non-published key survives...
+    check_double_vector(edited.config.opt<ConfigOptionFloatsNullable>("filament_z_hop")->values, { 0.7 });
+    // ...and the stored preset is untouched.
+    Preset *stored = bundle.filaments.find_preset("My PLA", false, true);
+    REQUIRE(stored != nullptr);
+    CHECK(stored->config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#123456" });
+    check_double_vector(stored->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.5 });
+    check_double_vector(stored->config.opt<ConfigOptionFloatsNullable>("filament_z_hop")->values, { 0.1 });
+    // The overlay is a visible, revertible modification of the edited preset.
+    CHECK(bundle.filaments.current_is_dirty());
+    CHECK(pub.skipped_keys.empty());
+    CHECK(pub.material_replacements.empty());
+}
+
+// The published overlay must validate '#' variant indices: an out-of-range index is reported as
+// skipped and must NOT resize/corrupt the receiver's vector, and a variant suffix on a scalar
+// key is rejected instead of silently no-op'd.
+TEST_CASE("Published 3MF rejects out-of-range vector variants and variant-suffixed scalar keys", "[Preset][Bundle][Published]")
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000" };
+    // Vector key, size 2 (matches the receiver's resized vector); distinct values make the
+    // applied element observable.
+    config.opt<ConfigOptionFloats>("wiping_volumes_extruders")->values = { 140., 150. };
+    config.opt_float("layer_height") = 0.28;
+    Preset::normalize(config);
+
+    PresetBundle bundle;
+    bundle.prints.get_edited_preset().config.opt<ConfigOptionFloats>("wiping_volumes_extruders")->values = { 10., 20. };
+    bundle.prints.get_edited_preset().config.opt_float("layer_height") = 0.1;
+
+    PublishedConfig pub;
+    pub.published      = true;
+    pub.published_keys = { "wiping_volumes_extruders#5", "wiping_volumes_extruders#1", "wiping_volumes_extruders#abc", "layer_height#0" };
+    bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+    // In-range variant applied element-wise; the out-of-range one did not resize the vector.
+    check_double_vector(bundle.prints.get_edited_preset().config.opt<ConfigOptionFloats>("wiping_volumes_extruders")->values, { 10., 150. });
+    CHECK(bundle.prints.get_edited_preset().config.opt<ConfigOptionFloats>("wiping_volumes_extruders")->values.size() == 2);
+    // Out-of-range variant, malformed variant and variant-suffixed scalar are reported as
+    // skipped; the malformed one must not fall back to element 0.
+    CHECK(contains_key(pub.skipped_keys, "wiping_volumes_extruders#5"));
+    CHECK(contains_key(pub.skipped_keys, "wiping_volumes_extruders#abc"));
+    CHECK(contains_key(pub.skipped_keys, "layer_height#0"));
+    CHECK_FALSE(contains_key(pub.skipped_keys, "wiping_volumes_extruders#1"));
+    // The scalar was never applied.
+    CHECK_THAT(bundle.prints.get_edited_preset().config.opt_float("layer_height"), Catch::Matchers::WithinAbs(0.1, 0.000001));
+}
+
+// The print/printer overlay guards option types like the material pass does: a published key
+// whose file-side option kind differs from the receiver's is reported as skipped instead of
+// throwing ConfigurationError out of load_config_model, which would abort the whole project
+// load. (Nullable variants share the type() of their non-nullable base, so this covers
+// genuinely different option kinds - e.g. a string where a float vector is expected.)
+TEST_CASE("Published 3MF reports type-mismatched keys as skipped instead of aborting", "[Preset][Bundle][Published]")
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000" };
+    // The file carries the vector key as a string option (equal size to the receiver's)...
+    config.set_key_value("wiping_volumes_extruders", new ConfigOptionStrings({ "140", "150" }));
+    config.opt_float("layer_height") = 0.28;
+
+    PresetBundle bundle;
+    // ...while the receiver's edited print preset holds the float variant of the same key:
+    // without the type guard, ConfigOptionVector::set() throws ConfigurationError out of
+    // load_config_model.
+    bundle.prints.get_edited_preset().config.set_key_value("wiping_volumes_extruders", new ConfigOptionFloats({ 10., 20. }));
+    bundle.prints.get_edited_preset().config.opt_float("layer_height") = 0.1;
+
+    PublishedConfig pub;
+    pub.published      = true;
+    pub.published_keys = { "wiping_volumes_extruders", "layer_height" };
+    bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+    // The load completes; the type-mismatched key is reported as skipped and the receiver's
+    // value is untouched; the matching scalar key still applies.
+    CHECK(contains_key(pub.skipped_keys, "wiping_volumes_extruders"));
+    check_double_vector(bundle.prints.get_edited_preset().config.opt<ConfigOptionFloats>("wiping_volumes_extruders")->values, { 10., 20. });
+    CHECK_THAT(bundle.prints.get_edited_preset().config.opt_float("layer_height"), Catch::Matchers::WithinAbs(0.28, 0.000001));
+    CHECK_FALSE(contains_key(pub.skipped_keys, "layer_height"));
+}
+
+// A receiver filament preset missing its material identity (hand-edited file) must not crash
+// the type gate: the gate reads it as a type mismatch, and the slot falls back to the
+// "no replacement" path (keys skipped, colour still applied to the slot's preset).
+TEST_CASE("Published 3MF survives a receiver preset missing its material identity", "[Preset][Bundle][Published]")
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75 };
+    config.opt<ConfigOptionInts>("filament_self_index")->values = { 1 };
+    config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard" };
+    config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000" };
+    config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA" };
+    config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic" };
+    config.opt<ConfigOptionStrings>("filament_ids")->values = { "GFL99" };
+    config.option<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.9 };
+    Preset::normalize(config);
+
+    PresetBundle bundle;
+    Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+    // Malformed receiver preset: the identity options are missing entirely.
+    pla.config.erase("filament_type");
+    pla.config.erase("filament_vendor");
+    pla.config.opt<ConfigOptionStrings>("filament_colour", true)->values = { "#123456" };
+    pla.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+    bundle.filament_presets = { "My PLA" };
+
+    PublishedMaterialEntry entry;
+    entry.filament_type        = "PLA";
+    entry.filament_vendor      = "Generic";
+    entry.filament_id          = "GFL99";
+    entry.slot                 = 0;
+    entry.publish_type         = true; // exercises the type gate against the missing identity
+    // Require ABS: the receiver library (PLA-typed default preset, typeless slot preset) has no
+    // ABS candidate, so the gate falls into the "no replacement" path (a PLA requirement would
+    // legitimately replace the slot with the visible PLA default).
+    entry.publish_type_value   = "ABS";
+    entry.publish_color        = true;
+    entry.color                = "#ABCDEF";
+    entry.keys                 = { "filament_retraction_length" };
+
+    PublishedConfig pub;
+    pub.published     = true;
+    pub.material_keys = { entry };
+    bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+    // The gate reads the missing identity as a type mismatch; no same-type replacement exists,
+    // so the keys are skipped while the colour applies to the slot's preset in place. No crash.
+    CHECK(contains_key(pub.skipped_keys, "material:GFL99 (filament_retraction_length)"));
+    CHECK(bundle.filament_presets[0] == "My PLA");
+    Preset *mine_preset = bundle.filaments.find_preset("My PLA", false, true);
+    REQUIRE(mine_preset != nullptr);
+    CHECK(mine_preset->config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#ABCDEF" });
+}
+
+// Lock the exact contents and order of the printer allowlist (the union of the tab's
+// "Retraction" and "Z-Hop" optgroup lists, Tab.cpp).
+TEST_CASE("Printer publishable allowlist matches the printer tab's Retraction and Z-Hop optgroups", "[Preset][Bundle][Published]")
+{
+    auto keys_of = [](const std::vector<PublishablePrinterOption>& opts) {
+        std::vector<std::string> keys;
+        keys.reserve(opts.size());
+        for (const PublishablePrinterOption& opt : opts)
+            keys.emplace_back(opt.key);
+        return keys;
+    };
+
+    const std::vector<std::string> expected_retraction = {
+        "retraction_length", "retract_restart_extra", "retraction_speed", "deretraction_speed",
+        "retraction_minimum_travel", "retract_when_changing_layer", "wipe", "wipe_distance",
+        "retract_before_wipe", "retract_after_wipe"
+    };
+    const std::vector<std::string> expected_z_hop = {
+        "retract_lift_enforce", "z_hop_types", "z_hop", "travel_slope", "retract_lift_above",
+        "retract_lift_below"
+    };
+
+    CHECK(keys_of(publishable_printer_retraction_options()) == expected_retraction);
+    CHECK(keys_of(publishable_printer_z_hop_options()) == expected_z_hop);
+
+    std::set<std::string> expected_union(expected_retraction.begin(), expected_retraction.end());
+    expected_union.insert(expected_z_hop.begin(), expected_z_hop.end());
+    CHECK(publishable_printer_keys() == expected_union);
+}
+
+// Loading the same published file twice must not compound values on the receiver's presets:
+// each load re-applies the same absolute values, so the result is idempotent.
+TEST_CASE("Published 3MF reloading does not compound values on the receiver's presets", "[Preset][Bundle][Published]")
+{
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75 };
+        config.opt<ConfigOptionInts>("filament_self_index")->values = { 1 };
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard" };
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000" };
+        config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA" };
+        config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic" };
+        config.opt<ConfigOptionStrings>("filament_ids")->values = { "GFL99" };
+        config.option<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.9 };
+        return config;
+    };
+    auto make_entry = [] {
+        PublishedMaterialEntry entry;
+        entry.slot          = 0;
+        entry.publish_color = true;
+        entry.color         = "#ABCDEF";
+        entry.keys          = { "filament_retraction_length" };
+        return entry;
+    };
+
+    PresetBundle bundle;
+    Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+    pla.config.opt_string("filament_type", 0u) = "PLA";
+    pla.config.opt<ConfigOptionStrings>("filament_colour", true)->values = { "#123456" };
+    pla.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+    bundle.filament_presets = { "My PLA" };
+
+    auto load = [&] {
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { make_entry() };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+    };
+    load();
+    // First load: the receiver's preset carries the published values (mutated in place).
+    CHECK(bundle.filaments.find_preset("My PLA", false, true)->config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#ABCDEF" });
+    load();
+    // Each load re-applies the same values onto the (already mutated) preset: no accumulation.
+    CHECK(bundle.filaments.find_preset("My PLA", false, true)->config.opt<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{ "#ABCDEF" });
+    check_double_vector(bundle.filaments.find_preset("My PLA", false, true)->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+}
+
+// A receiver with several slots aliasing the same preset (multi-extruder profile with one
+// filament) and an author publishing keys on several slots: each published slot is re-pointed
+// at its own distinct preset so values never leak between slots.
+TEST_CASE("Published 3MF gives each published slot its own preset on an aliased receiver", "[Preset][Bundle][Published]")
+{
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75, 1.75, 1.75, 1.75 };
+        config.opt<ConfigOptionInts>("filament_self_index")->values = { 1, 2, 3, 4 };
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard", "Direct Drive Standard", "Direct Drive Standard", "Direct Drive Standard" };
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#00FF00", "#0000FF", "#FFFF00" };
+        config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA", "PLA", "PLA", "PLA" };
+        config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic", "Generic", "Generic", "Generic" };
+        config.opt<ConfigOptionStrings>("filament_ids")->values = { "GFL99", "GFL99", "GFL99", "GFL99" };
+        config.option<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.6, 0.9, 1.2, 1.5 };
+        return config;
+    };
+    auto make_key_entry = [](int slot) {
+        PublishedMaterialEntry entry;
+        entry.slot = slot;
+        entry.keys = { "filament_retraction_length" };
+        return entry;
+    };
+
+    // A 4-extruder receiver with a single filament preset: the slots alias [A, A, A, A] before
+    // the published pass.
+    PresetBundle bundle;
+    Preset &mine = add_inmemory_preset(bundle.filaments, "My PLA");
+    mine.config.opt_string("filament_type", 0u) = "PLA";
+    mine.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+    // Spare library presets for the re-pointing to fall back on.
+    for (const char *name : { "Extra PLA A", "Extra PLA B", "Extra PLA C" }) {
+        Preset &extra = add_inmemory_preset(bundle.filaments, name);
+        extra.config.opt_string("filament_type", 0u) = "PLA";
+        extra.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+    }
+    bundle.filament_presets = { "My PLA", "My PLA", "My PLA", "My PLA" };
+
+    PublishedConfig pub;
+    pub.published     = true;
+    pub.material_keys = { make_key_entry(0), make_key_entry(1), make_key_entry(2), make_key_entry(3) };
+    DynamicPrintConfig config = make_file_config();
+    Preset::normalize(config);
+    bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+    REQUIRE(bundle.filament_presets.size() == 4);
+    // Every published slot references its own distinct preset: slot 0 keeps the receiver's
+    // material, slots 1-3 are re-pointed at the spare library presets.
+    CHECK(bundle.filament_presets[0] == "My PLA");
+    CHECK(bundle.filament_presets[1] != bundle.filament_presets[0]);
+    CHECK(bundle.filament_presets[2] != bundle.filament_presets[0]);
+    CHECK(bundle.filament_presets[2] != bundle.filament_presets[1]);
+    CHECK(bundle.filament_presets[3] != bundle.filament_presets[0]);
+    CHECK(bundle.filament_presets[3] != bundle.filament_presets[1]);
+    CHECK(bundle.filament_presets[3] != bundle.filament_presets[2]);
+    // Each slot's stored preset carries its own slot's retraction (mutated in place).
+    const std::vector<double> expected = { 0.6, 0.9, 1.2, 1.5 };
+    for (size_t slot = 0; slot < 4; ++slot) {
+        Preset *preset = bundle.filaments.find_preset(bundle.filament_presets[slot], false, true);
+        REQUIRE(preset != nullptr);
+        check_double_vector(preset->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { expected[slot] });
+    }
+    CHECK(pub.skipped_keys.empty());
+}
+
+// De-aliasing runs on the exported identity even without a checked Type row: the re-pointed
+// slot lands on the exact published material (by filament_id) rather than an arbitrary spare,
+// and the formerly silent re-point is surfaced through the replacements notification list.
+TEST_CASE("Published 3MF de-aliases an aliased slot by published identity without a type requirement", "[Preset][Bundle][Published]")
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75, 1.75 };
+    config.opt<ConfigOptionInts>("filament_self_index")->values = { 1, 2 };
+    config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = { "Direct Drive Standard", "Direct Drive Standard" };
+    config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#00FF00" };
+    config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA", "PLA" };
+    config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic", "Generic" };
+    config.opt<ConfigOptionStrings>("filament_ids")->values = { "GFL99", "GFL99" };
+    config.option<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.6, 0.9 };
+
+    PresetBundle bundle;
+    Preset &mine = add_inmemory_preset(bundle.filaments, "My PLA");
+    mine.config.opt_string("filament_type", 0u) = "PLA";
+    mine.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+    // A spare sorting before the exact match: an unconstrained pick would take it.
+    Preset &spare = add_inmemory_preset(bundle.filaments, "Aaa PLA");
+    spare.config.opt_string("filament_type", 0u) = "PLA";
+    spare.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+    Preset &match = add_inmemory_preset(bundle.filaments, "Zzz PLA");
+    match.config.opt_string("filament_type", 0u) = "PLA";
+    match.config.opt<ConfigOptionFloatsNullable>("filament_retraction_length", true)->values = { 0.5 };
+    match.filament_id = "GFA00";
+    bundle.filament_presets = { "My PLA", "My PLA" };
+
+    PublishedMaterialEntry entry;
+    entry.slot            = 1;
+    entry.filament_type   = "PLA";
+    entry.filament_vendor = "Generic";
+    entry.filament_id     = "GFA00";
+    entry.keys            = { "filament_retraction_length" };
+    PublishedConfig pub;
+    pub.published     = true;
+    pub.material_keys = { entry };
+    Preset::normalize(config);
+    bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+    REQUIRE(bundle.filament_presets.size() == 2);
+    CHECK(bundle.filament_presets[0] == "My PLA");
+    CHECK(bundle.filament_presets[1] == "Zzz PLA");
+    // The published key was written onto the re-pointed slot's own preset.
+    Preset *target = bundle.filaments.find_preset("Zzz PLA", false, true);
+    REQUIRE(target != nullptr);
+    check_double_vector(target->config.opt<ConfigOptionFloatsNullable>("filament_retraction_length")->values, { 0.9 });
+    REQUIRE(pub.material_replacements.size() == 1);
+    CHECK(pub.material_replacements[0] == "slot 1: My PLA -> Zzz PLA");
+    CHECK(pub.skipped_keys.empty());
+}
+
+// Printer retraction keys are published per-extruder ("#N"): a receiver with a different
+// extruder count still receives the in-range elements; out-of-range variants are reported as
+// skipped instead of corrupting the receiver's vector.
+TEST_CASE("Published 3MF applies per-extruder printer keys across extruder-count mismatches", "[Preset][Bundle][Published]")
+{
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000" };
+        // Author has 4 extruders.
+        config.opt<ConfigOptionFloats>("retraction_length")->values = { 0.6, 0.9, 1.2, 1.5 };
+        Preset::normalize(config);
+        return config;
+    };
+
+    // Receiver with a single extruder: only "#0" is in range; "#1..#3" are skipped.
+    {
+        PresetBundle bundle;
+        bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_length")->values = { 0.8 };
+        PublishedConfig pub;
+        pub.published      = true;
+        pub.published_keys = { "retraction_length#0", "retraction_length#1", "retraction_length#2", "retraction_length#3" };
+        DynamicPrintConfig config = make_file_config();
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        check_double_vector(bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_length")->values, { 0.6 });
+        CHECK(contains_key(pub.skipped_keys, "retraction_length#1"));
+        CHECK(contains_key(pub.skipped_keys, "retraction_length#2"));
+        CHECK(contains_key(pub.skipped_keys, "retraction_length#3"));
+        CHECK_FALSE(contains_key(pub.skipped_keys, "retraction_length#0"));
+    }
+
+    // Receiver with four extruders and a 1-extruder author: only "#0" is published; the
+    // receiver's other extruders keep their own values.
+    {
+        PresetBundle bundle;
+        bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_length")->values = { 0.8, 0.8, 0.8, 0.8 };
+        PublishedConfig pub;
+        pub.published      = true;
+        pub.published_keys = { "retraction_length#0" };
+        DynamicPrintConfig config = make_file_config();
+        // The author's file carries a single-extruder value.
+        config.opt<ConfigOptionFloats>("retraction_length")->values = { 0.7 };
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        check_double_vector(bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_length")->values, { 0.7, 0.8, 0.8, 0.8 });
+        CHECK(pub.skipped_keys.empty());
+    }
+}
+
+// A published mixed filament serializes its definition (components, ratios, gradient) into the
+// receiver's project_config - the project-level parallel arrays, not a filament preset. The
+// mix's own blended colour is carried as publish_color so the receiver renders the swatch.
+TEST_CASE("Published 3MF applies a mixed filament definition onto the receiver's project config", "[Preset][Bundle][Published]")
+{
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        // Three author slots: two physical PLA/PETG plus one virtual mixed slot (index 2)
+        // blending slots 1 and 2 at 60/40 with a gradient.
+        config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75, 1.75, 1.75 };
+        config.opt<ConfigOptionInts>("filament_self_index")->values = { 1, 2, 3 };
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = {
+            "Direct Drive Standard", "Direct Drive Standard", "Direct Drive Standard"
+        };
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#0000FF", "#800080" };
+        config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA", "PETG", "PLA" };
+        config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic", "Generic", "Generic" };
+        config.opt<ConfigOptionStrings>("filament_ids")->values = { "GFL99", "GFT99", "GFL99" };
+        // The mixed slot's definition. These keys are project-level arrays in the full config;
+        // on export they are masked so only the published slot's entry survives.
+        config.opt<ConfigOptionBools>("filament_is_mixed")->values = { 0, 0, 1 };
+        config.opt<ConfigOptionStrings>("filament_mixed_components")->values = { "", "", "1,2" };
+        config.opt<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values = { "", "", "0.6,0.4" };
+        config.opt<ConfigOptionBools>("filament_mixed_gradient")->values = { 0, 0, 1 };
+        config.opt<ConfigOptionStrings>("filament_mixed_gradient_range")->values = { "", "", "0.9,0.1" };
+        config.opt<ConfigOptionStrings>("filament_mixed_gradient_curve")->values = { "", "", "0,0.1|1,0.9" };
+        config.opt<ConfigOptionBools>("filament_mixed_gradient_per_part")->values = { 0, 0, 1 };
+        return config;
+    };
+
+    // A receiver that already carries the mix slot at index 2 as an actual mixed slot (e.g. a
+    // two-physical-plus-one-mix project with the same layout): the incoming definition is a
+    // like-for-like override of the virtual slot and applies in place without relocation.
+    {
+        PresetBundle bundle;
+        Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+        pla.config.opt_string("filament_type", 0u) = "PLA";
+        Preset &petg = add_inmemory_preset(bundle.filaments, "My PETG");
+        petg.config.opt_string("filament_type", 0u) = "PETG";
+        bundle.filament_presets = { "My PLA", "My PETG", "My PLA" };
+
+        // Grow the receiver's project arrays to 3 slots first, as set_num_filaments would,
+        // then mark the third slot as the receiver's own mixed filament.
+        bundle.set_num_filaments(3);
+        bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values[2]                = 1;
+        bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_components")->values[2]      = "1,1";
+        bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[2] = "0.5,0.5";
+
+        PublishedMaterialEntry mix;
+        mix.filament_type   = "PLA";
+        mix.filament_vendor = "Generic";
+        mix.filament_id     = "GFL99";
+        mix.slot            = 2;
+        mix.publish_color   = true;
+        mix.color           = "#800080";
+        mix.keys            = { "filament_is_mixed",       "filament_mixed_components",
+                                "filament_mixed_sublayer_ratios", "filament_mixed_gradient",
+                                "filament_mixed_gradient_range",  "filament_mixed_gradient_curve",
+                                "filament_mixed_gradient_per_part" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { mix };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        // The definition landed in project_config's parallel arrays at the author slot.
+        const auto &is_mixed = bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values;
+        REQUIRE(is_mixed.size() == 3);
+        CHECK(is_mixed[2]);
+        const auto &components = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_components")->values;
+        REQUIRE(components.size() == 3);
+        CHECK(components[2] == "1,2");
+        const auto &ratios = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values;
+        REQUIRE(ratios.size() == 3);
+        CHECK(ratios[2] == "0.6,0.4");
+        const auto &gradient = bundle.project_config.opt<ConfigOptionBools>("filament_mixed_gradient")->values;
+        CHECK(gradient[2]);
+        const auto &range = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_gradient_range")->values;
+        CHECK(range[2] == "0.9,0.1");
+        const auto &curve = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_gradient_curve")->values;
+        CHECK(curve[2] == "0,0.1|1,0.9");
+        const auto &per_part = bundle.project_config.opt<ConfigOptionBools>("filament_mixed_gradient_per_part")->values;
+        CHECK(per_part[2]);
+        // The mix's blended colour crossed into project_config for the swatch.
+        const auto &colour = bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values;
+        REQUIRE(colour.size() == 3);
+        CHECK(colour[2] == "#800080");
+        // The other slots were not overwritten by the mask.
+        CHECK_FALSE(is_mixed[0]);
+        CHECK_FALSE(is_mixed[1]);
+        // Nothing skipped: every serialized mixed key was applied.
+        CHECK(pub.skipped_keys.empty());
+        // Like-for-like override: no slot was relocated.
+        CHECK(pub.material_replacements.empty());
+    }
+
+    // A receiver with fewer slots: the slot is grown and seeded before the definition applies.
+    {
+        PresetBundle bundle;
+        Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+        pla.config.opt_string("filament_type", 0u) = "PLA";
+        bundle.filament_presets = { "My PLA" };
+
+        PublishedMaterialEntry mix;
+        mix.slot = 2;
+        mix.keys = { "filament_is_mixed", "filament_mixed_components", "filament_mixed_sublayer_ratios" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { mix };
+        DynamicPrintConfig config = make_file_config();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        REQUIRE(bundle.filament_presets.size() == 3);
+        const auto &is_mixed = bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values;
+        REQUIRE(is_mixed.size() == 3);
+        CHECK(is_mixed[2]);
+        const auto &components = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_components")->values;
+        REQUIRE(components.size() == 3);
+        CHECK(components[2] == "1,2");
+        CHECK(pub.skipped_keys.empty());
+    }
+}
+
+// A published mixed filament whose definition cannot be applied is reported as skipped instead
+// of aborting the load: the entry lists a mixed key that the file's payload does not carry.
+TEST_CASE("Published 3MF reports an unappliable mixed filament definition as skipped", "[Preset][Bundle][Published]")
+{
+    PresetBundle bundle;
+    Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+    pla.config.opt_string("filament_type", 0u) = "PLA";
+    bundle.filament_presets = { "My PLA" };
+
+    // Two author slots (so slot 1 is in range) but the payload omits the mixed arrays: the
+    // entry lists them, the file config does not.
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75, 1.75 };
+    config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#00FF00" };
+    config.opt<ConfigOptionStrings>("filament_type")->values = { "PLA", "PLA" };
+    config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic", "Generic" };
+
+    PublishedMaterialEntry mix;
+    mix.slot = 1;
+    mix.keys = { "filament_mixed_components", "filament_mixed_sublayer_ratios" };
+
+    PublishedConfig pub;
+    pub.published     = true;
+    pub.material_keys = { mix };
+    Preset::normalize(config);
+    bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+    // The receiver grows to two slots; the missing payload keys are reported as skipped rather
+    // than dropped silently (material_label is empty for this entry).
+    REQUIRE(bundle.filament_presets.size() == 2);
+    CHECK(contains_key(pub.skipped_keys, "material: (filament_mixed_components)"));
+    CHECK(contains_key(pub.skipped_keys, "material: (filament_mixed_sublayer_ratios)"));
+}
+
+// A published mixed filament must never convert one of the receiver's real, physical slots
+// into a virtual mix: definitions that collide with a physical slot are relocated past every
+// positional (real-filament) destination, while ones colliding with an existing mixed slot
+// override it in place.
+TEST_CASE("Published 3MF relocates a mixed filament instead of overwriting a physical slot", "[Preset][Bundle][Published]")
+{
+    // An author project with <num_author_slots> slots whose last slot is a mixed filament.
+    auto make_file_config = [](size_t num_author_slots, size_t num_tail_mixes = 1) {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        std::vector<double> diameters(num_author_slots, 1.75);
+        std::vector<int> self_index;
+        std::vector<std::string> variants;
+        std::vector<std::string> types;
+        for (size_t i = 0; i < num_author_slots; ++i) {
+            self_index.push_back(int(i + 1));
+            variants.emplace_back("Direct Drive Standard");
+            types.push_back(i % 2 == 0 ? "PLA" : "PETG");
+        }
+        config.opt<ConfigOptionFloats>("filament_diameter")->values          = diameters;
+        config.opt<ConfigOptionInts>("filament_self_index")->values          = self_index;
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = variants;
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#00AA00", "#0000FF", "#FFFF00", "#800080" };
+        config.opt<ConfigOptionStrings>("filament_colour")->values.resize(num_author_slots, "#808080");
+        config.opt<ConfigOptionStrings>("filament_type")->values     = types;
+        config.opt<ConfigOptionStrings>("filament_vendor")->values.assign(num_author_slots, "Generic");
+        config.opt<ConfigOptionStrings>("filament_ids")->values.resize(num_author_slots);
+        // The last <num_tail_mixes> author slots are mixed ones (components differ per slot so
+        // the definitions are distinguishable after relocation).
+        const size_t first_mix_slot                                        = num_author_slots - num_tail_mixes;
+        config.opt<ConfigOptionBools>("filament_is_mixed")->values.assign(num_author_slots, 0);
+        config.opt<ConfigOptionStrings>("filament_mixed_components")->values.assign(num_author_slots, "");
+        config.opt<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values.assign(num_author_slots, "");
+        for (size_t i = first_mix_slot; i < num_author_slots; ++i) {
+            config.opt<ConfigOptionBools>("filament_is_mixed")->values[i]       = 1;
+            config.opt<ConfigOptionStrings>("filament_mixed_components")->values[i] =
+                i % 2 == 0 ? std::string("1,2") : std::string("1,3");
+            config.opt<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[i] =
+                i % 2 == 0 ? std::string("0.6,0.4") : std::string("0.3,0.7");
+        }
+        return config;
+    };
+
+    // The reported bug: an author publishes with physical filaments on slots 1-2 and a mixed
+    // filament on slot 5; the receiver runs five real filaments of his own. Slot 5 must stay
+    // untouched and the mix lands as a newly appended virtual slot 6.
+    {
+        PresetBundle bundle;
+        Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+        pla.config.opt_string("filament_type", 0u) = "PLA";
+        bundle.filament_presets = { "My PLA", "My PLA", "My PLA", "My PLA", "My PLA" };
+        bundle.set_num_filaments(5, "#123456");
+        const std::vector<std::string> receiver_colours =
+            bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values;
+
+        PublishedMaterialEntry mix;
+        mix.filament_type   = "PLA";
+        mix.filament_vendor = "Generic";
+        mix.slot            = 4;
+        mix.publish_color   = true;
+        mix.color           = "#800080";
+        mix.keys            = { "filament_is_mixed",       "filament_mixed_components",
+                                "filament_mixed_sublayer_ratios", "filament_mixed_gradient",
+                                "filament_mixed_gradient_range",  "filament_mixed_gradient_curve",
+                                "filament_mixed_gradient_per_part" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { mix };
+        DynamicPrintConfig config = make_file_config(5);
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        // The receiver grew by exactly one extra virtual slot.
+        REQUIRE(bundle.filament_presets.size() == 6);
+        // All five physical slots kept their meaning: no mixed flag, untouched names/colours.
+        const auto &is_mixed = bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values;
+        REQUIRE(is_mixed.size() == 6);
+        CHECK_FALSE(is_mixed[0]);
+        CHECK_FALSE(is_mixed[1]);
+        CHECK_FALSE(is_mixed[2]);
+        CHECK_FALSE(is_mixed[3]);
+        CHECK_FALSE(is_mixed[4]);
+        CHECK(is_mixed[5]);
+        CHECK(std::equal(receiver_colours.begin(), receiver_colours.end(),
+                         bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values.begin()));
+        CHECK(bundle.filament_presets[0] == "My PLA");
+        CHECK(bundle.filament_presets[4] == "My PLA");
+        // The definition itself is readable at the new index.
+        const auto &components = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_components")->values;
+        REQUIRE(components.size() == 6);
+        CHECK(components[5] == "1,2");
+        const auto &ratios = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values;
+        REQUIRE(ratios.size() == 6);
+        CHECK(ratios[5] == "0.6,0.4");
+        // The blended colour seeds the swatch of the new slot only.
+        const auto &colour = bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values;
+        REQUIRE(colour.size() == 6);
+        CHECK(colour[5] == "#800080");
+        // The relocation is surfaced to the user through the post-import notice (the de-alias
+        // pass may contribute further messages, so presence is asserted, not the count).
+        bool relocated_reported = false;
+        for (const std::string &message : pub.material_replacements)
+            if (message.find("slot 4 -> slot 5") != std::string::npos)
+                relocated_reported = true;
+        CHECK(relocated_reported);
+        CHECK(pub.skipped_keys.empty());
+    }
+
+    // A definition colliding with the receiver's own mixed filament is overridden in place:
+    // nothing grows, nothing is reported as moved.
+    {
+        PresetBundle bundle;
+        Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+        pla.config.opt_string("filament_type", 0u) = "PLA";
+        bundle.filament_presets = { "My PLA", "My PLA", "My PLA" };
+        bundle.set_num_filaments(3);
+        bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values[2]                = 1;
+        bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_components")->values[2]      = "1,1";
+        bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[2] = "0.9,0.1";
+
+        PublishedMaterialEntry mix;
+        mix.slot            = 2;
+        mix.publish_color   = true;
+        mix.color           = "#800080";
+        mix.keys            = { "filament_is_mixed",       "filament_mixed_components",
+                                "filament_mixed_sublayer_ratios" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { mix };
+        DynamicPrintConfig config = make_file_config(3);
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        CHECK(bundle.filament_presets.size() == 3);
+        const auto &is_mixed = bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values;
+        REQUIRE(is_mixed.size() == 3);
+        CHECK_FALSE(is_mixed[0]);
+        CHECK_FALSE(is_mixed[1]);
+        CHECK(is_mixed[2]);
+        const auto &components = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_components")->values;
+        REQUIRE(components.size() == 3);
+        CHECK(components[2] == "1,2");
+        const auto &ratios = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values;
+        REQUIRE(ratios.size() == 3);
+        CHECK(ratios[2] == "0.6,0.4");
+        CHECK(pub.skipped_keys.empty());
+        CHECK(pub.material_replacements.empty());
+    }
+
+    // Author publishes four physical filaments plus two mixed ones on slots 5 and 6; the
+    // receiver runs five real filaments. Both mixes relocate onto consecutive fresh slots,
+    // preserving their author order (slot 5 -> slot 6, slot 6 -> slot 7); no receiver slot is
+    // converted into a virtual mix.
+    {
+        PresetBundle bundle;
+        Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+        pla.config.opt_string("filament_type", 0u) = "PLA";
+        bundle.filament_presets = { "My PLA", "My PLA", "My PLA", "My PLA", "My PLA" };
+        bundle.set_num_filaments(5, "#123456");
+        const std::vector<std::string> receiver_colours =
+            bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values;
+
+        auto make_mix_entry = [](int authored_slot, const char *color) {
+            PublishedMaterialEntry entry;
+            entry.slot          = authored_slot;
+            entry.publish_color = true;
+            entry.color         = color;
+            entry.keys          = { "filament_is_mixed", "filament_mixed_components", "filament_mixed_sublayer_ratios" };
+            return entry;
+        };
+        PublishedMaterialEntry mix_a = make_mix_entry(4, "#800080");
+        PublishedMaterialEntry mix_b = make_mix_entry(5, "#FF69B4");
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { mix_a, mix_b };
+        DynamicPrintConfig config = make_file_config(6, 2);
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        // Two fresh virtual slots were appended.
+        REQUIRE(bundle.filament_presets.size() == 7);
+        const auto &is_mixed = bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values;
+        REQUIRE(is_mixed.size() == 7);
+        for (size_t i = 0; i < 5; ++i)
+            CHECK_FALSE(is_mixed[i]);
+        CHECK(is_mixed[5]);
+        CHECK(is_mixed[6]);
+        // The definitions follow their author order.
+        const auto &components = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_components")->values;
+        REQUIRE(components.size() == 7);
+        CHECK(components[5] == "1,2");
+        CHECK(components[6] == "1,3");
+        const auto &ratios = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values;
+        REQUIRE(ratios.size() == 7);
+        CHECK(ratios[5] == "0.6,0.4");
+        CHECK(ratios[6] == "0.3,0.7");
+        // The five real slots kept their colours; each mix's blended colour seeded its new slot.
+        const auto &colour = bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values;
+        REQUIRE(colour.size() == 7);
+        CHECK(std::equal(receiver_colours.begin(), receiver_colours.end(), colour.begin()));
+        CHECK(colour[5] == "#800080");
+        CHECK(colour[6] == "#FF69B4");
+        // Both relocations are reported with the correct mapping.
+        bool a_reported = false, b_reported = false;
+        for (const std::string &message : pub.material_replacements) {
+            if (message.find("slot 4 -> slot 5") != std::string::npos)
+                a_reported = true;
+            if (message.find("slot 5 -> slot 6") != std::string::npos)
+                b_reported = true;
+        }
+        CHECK(a_reported);
+        CHECK(b_reported);
+        CHECK(pub.skipped_keys.empty());
+        // The relocation table is exposed for the model-reference remapping.
+        REQUIRE(pub.mixed_slot_relocations.size() == 2);
+        CHECK(pub.mixed_slot_relocations.at(4) == 5);
+        CHECK(pub.mixed_slot_relocations.at(5) == 6);
+    }
+}
+
+// A receiver that already owns a MIXED filament must keep the physical-first invariant after a
+// published-3MF import: when incoming physical filaments would land on (or ahead of) the
+// receiver's mixed slot, that mix is displaced to a fresh tail slot instead of being left
+// interleaved with them (the R,M,R bug).
+TEST_CASE("Published 3MF relocates the receiver's mixed filament past the incoming physical slots", "[Preset][Bundle][Published]")
+{
+    // Build the receiver's tool-changer with three slots, the third being the receiver's own
+    // mixed filament. A SEMM (single_extruder_multi_material) receiver sizes its slot list by
+    // hand, so a lower slot count than the printer's nozzle count is preserved on load - a
+    // non-SEMM tool-changer would top the preset list up to the nozzle count and shift the
+    // expected sizes (the rebalance logic under test is the same either way).
+    auto make_receiver = [](PresetBundle &bundle, const std::string &components, const std::string &ratios) {
+        Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+        pla.config.opt_string("filament_type", 0u) = "PLA";
+        bundle.filament_presets = { "My PLA", "My PLA", "My PLA" };
+        bundle.set_num_filaments(3, "#123456");
+        bundle.printers.get_edited_preset().config.opt<ConfigOptionBool>("single_extruder_multi_material", true)->value = true;
+        bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values[2]          = 1;
+        bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_components")->values[2] = components;
+        bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[2] = ratios;
+        bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values[2]        = "#800080";
+        bundle.project_config.opt<ConfigOptionStrings>("filament_multi_colour")->values[2] = "#800080";
+    };
+    auto make_real_entry = [](int slot, const char *color) {
+        PublishedMaterialEntry entry;
+        entry.slot            = slot;
+        entry.filament_type   = "PLA";
+        entry.filament_vendor = "Generic";
+        entry.publish_color   = true;
+        entry.color           = color;
+        return entry;
+    };
+    // A four-physical author project with no mixed slots (colour publish only), as in the
+    // reported Ferrari reference file.
+    auto make_config_4_real = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.opt<ConfigOptionFloats>("filament_diameter")->values = { 1.75, 1.75, 1.75, 1.75 };
+        config.opt<ConfigOptionInts>("filament_self_index")->values = { 1, 2, 3, 4 };
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = {
+            "Direct Drive Standard", "Direct Drive Standard", "Direct Drive Standard", "Direct Drive Standard"
+        };
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#000000", "#FFFFFF", "#FFFF00" };
+        config.opt<ConfigOptionStrings>("filament_type")->values   = { "PLA", "PLA", "PLA", "PLA" };
+        config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic", "Generic", "Generic", "Generic" };
+        config.opt<ConfigOptionStrings>("filament_ids")->values    = { "GFL99", "GFL99", "GFL99", "GFL99" };
+        return config;
+    };
+
+    // [R, R, M] + four colour-only physical slots at authored 0..3 -> [R, R, R, R, M].
+    {
+        PresetBundle bundle;
+        make_receiver(bundle, "1,2", "0.5,0.5");
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { make_real_entry(0, "#FF0000"), make_real_entry(1, "#000000"),
+                              make_real_entry(2, "#FFFFFF"), make_real_entry(3, "#FFFF00") };
+        DynamicPrintConfig config = make_config_4_real();
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        // The receiver grows by one extra virtual slot; the mix lands at the tail.
+        REQUIRE(bundle.filament_presets.size() == 5);
+        const auto &is_mixed = bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values;
+        REQUIRE(is_mixed.size() == 5);
+        for (size_t i = 0; i < 4; ++i)
+            CHECK_FALSE(is_mixed[i]);
+        CHECK(is_mixed[4]);
+        // The definition travelled with its swatch colour; the vacated slot 2 became physical.
+        const auto &components = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_components")->values;
+        REQUIRE(components.size() == 5);
+        CHECK(components[4] == "1,2");
+        CHECK(components[2].empty());
+        const auto &colour = bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values;
+        REQUIRE(colour.size() == 5);
+        CHECK(colour[4] == "#800080");
+        CHECK(colour[2] == "#FFFFFF");
+        CHECK(pub.mixed_slot_relocations.at(2) == 4);
+        bool relocated_reported = false;
+        for (const std::string &message : pub.material_replacements)
+            if (message.find("slot 2 -> slot 4") != std::string::npos &&
+                message.find("mixed filament") != std::string::npos)
+                relocated_reported = true;
+        CHECK(relocated_reported);
+        CHECK(pub.skipped_keys.empty());
+    }
+
+    // [R, R, M] plus a payload mix authored at slot 3: the receiver mix (displaced to slot 3) sits
+    // ahead of the appended payload mix (slot 4), preserving physical-first tail ordering.
+    {
+        PresetBundle bundle;
+        make_receiver(bundle, "1,2", "0.5,0.5");
+
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.opt<ConfigOptionFloats>("filament_diameter")->values         = { 1.75, 1.75, 1.75, 1.75 };
+        config.opt<ConfigOptionInts>("filament_self_index")->values         = { 1, 2, 3, 4 };
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = {
+            "Direct Drive Standard", "Direct Drive Standard", "Direct Drive Standard", "Direct Drive Standard"
+        };
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#000000", "#0000FF", "#800080" };
+        config.opt<ConfigOptionStrings>("filament_type")->values   = { "PLA", "PLA", "PLA", "PLA" };
+        config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic", "Generic", "Generic", "Generic" };
+        config.opt<ConfigOptionStrings>("filament_ids")->values    = { "GFL99", "GFL99", "GFL99", "GFL99" };
+        // Authored slot 3 is a payload mixed definition blending slots 1 and 3.
+        config.opt<ConfigOptionBools>("filament_is_mixed")->values                     = { 0, 0, 0, 1 };
+        config.opt<ConfigOptionStrings>("filament_mixed_components")->values           = { "", "", "", "1,3" };
+        config.opt<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values      = { "", "", "", "0.6,0.4" };
+        config.opt<ConfigOptionBools>("filament_mixed_gradient")->values               = { 0, 0, 0, 1 };
+        config.opt<ConfigOptionStrings>("filament_mixed_gradient_range")->values       = { "", "", "", "0.9,0.1" };
+        config.opt<ConfigOptionStrings>("filament_mixed_gradient_curve")->values       = { "", "", "", "0,0.1|1,0.9" };
+        config.opt<ConfigOptionBools>("filament_mixed_gradient_per_part")->values      = { 0, 0, 0, 1 };
+
+        PublishedMaterialEntry mix;
+        mix.slot          = 3;
+        mix.filament_type = "PLA";
+        mix.publish_color = true;
+        mix.color         = "#800080";
+        mix.keys          = { "filament_is_mixed", "filament_mixed_components", "filament_mixed_sublayer_ratios",
+                              "filament_mixed_gradient", "filament_mixed_gradient_range", "filament_mixed_gradient_curve",
+                              "filament_mixed_gradient_per_part" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { make_real_entry(0, "#FF0000"), make_real_entry(1, "#000000"),
+                              make_real_entry(2, "#0000FF"), mix };
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        REQUIRE(bundle.filament_presets.size() == 5);
+        const auto &is_mixed = bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values;
+        REQUIRE(is_mixed.size() == 5);
+        CHECK_FALSE(is_mixed[0]);
+        CHECK_FALSE(is_mixed[1]);
+        CHECK_FALSE(is_mixed[2]);
+        CHECK(is_mixed[3]); // receiver's mix, displaced to slot 3 first
+        CHECK(is_mixed[4]); // payload's mix, appended after
+        const auto &components = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_components")->values;
+        REQUIRE(components.size() == 5);
+        CHECK(components[3] == "1,2");
+        CHECK(components[4] == "1,3");
+        REQUIRE(pub.mixed_slot_relocations.size() == 2);
+        CHECK(pub.mixed_slot_relocations.at(2) == 3);
+        CHECK(pub.mixed_slot_relocations.at(3) == 4);
+        CHECK(pub.skipped_keys.empty());
+    }
+}
+
+// Multiple receiver mixed slots interleaved with multiple incoming physical slots all rebalance
+// onto consecutive tail slots in index order (no cascade/overlap).
+TEST_CASE("Published 3MF rebalances several receiver mixed slots past the physical region", "[Preset][Bundle][Published]")
+{
+    PresetBundle bundle;
+    Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+    pla.config.opt_string("filament_type", 0u) = "PLA";
+    bundle.filament_presets = { "My PLA", "My PLA", "My PLA" };
+    bundle.set_num_filaments(3, "#123456");
+    bundle.printers.get_edited_preset().config.opt<ConfigOptionBool>("single_extruder_multi_material", true)->value = true;
+    // Receiver: slot 1 and slot 2 are mixed.
+    bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values[1]             = 1;
+    bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values[2]             = 1;
+    bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_components")->values[1]   = "1,2";
+    bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_components")->values[2]   = "1,3";
+    bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[1] = "0.5,0.5";
+    bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[2] = "0.4,0.6";
+
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.opt<ConfigOptionFloats>("filament_diameter")->values         = { 1.75, 1.75, 1.75 };
+    config.opt<ConfigOptionInts>("filament_self_index")->values         = { 1, 2, 3 };
+    config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = {
+        "Direct Drive Standard", "Direct Drive Standard", "Direct Drive Standard"
+    };
+    config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#00AA00", "#0000FF" };
+    config.opt<ConfigOptionStrings>("filament_type")->values   = { "PLA", "PLA", "PLA" };
+    config.opt<ConfigOptionStrings>("filament_vendor")->values = { "Generic", "Generic", "Generic" };
+    config.opt<ConfigOptionStrings>("filament_ids")->values    = { "GFL99", "GFL99", "GFL99" };
+
+    auto make_real_entry = [](int slot, const char *color) {
+        PublishedMaterialEntry entry;
+        entry.slot            = slot;
+        entry.filament_type   = "PLA";
+        entry.filament_vendor = "Generic";
+        entry.publish_color   = true;
+        entry.color           = color;
+        return entry;
+    };
+
+    PublishedConfig pub;
+    pub.published     = true;
+    pub.material_keys = { make_real_entry(0, "#FF0000"), make_real_entry(1, "#00AA00"), make_real_entry(2, "#0000FF") };
+    Preset::normalize(config);
+    bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+    REQUIRE(bundle.filament_presets.size() == 5);
+    const auto &is_mixed = bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values;
+    REQUIRE(is_mixed.size() == 5);
+    for (size_t i = 0; i < 3; ++i)
+        CHECK_FALSE(is_mixed[i]);
+    CHECK(is_mixed[3]);
+    CHECK(is_mixed[4]);
+    const auto &components = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_components")->values;
+    REQUIRE(components.size() == 5);
+    CHECK(components[3] == "1,2");
+    CHECK(components[4] == "1,3");
+    REQUIRE(pub.mixed_slot_relocations.size() == 2);
+    CHECK(pub.mixed_slot_relocations.at(1) == 3);
+    CHECK(pub.mixed_slot_relocations.at(2) == 4);
+    CHECK(pub.skipped_keys.empty());
+}
+
+// The receiver's printer gates how many PHYSICAL filament slots a published 3MF may add: a
+// non-SEMM tool-changer feeds filament N from nozzle N, so a published slot past the nozzle
+// count cannot become a physical filament. It becomes an empty mixed-filament placeholder
+// instead - a virtual tail slot the GUI flags (broken mix) and the user fills with components
+// from their own filaments. SEMM receivers keep the ungated behaviour.
+TEST_CASE("Published 3MF turns a surplus slot past the printer's filament capacity into an empty mixed placeholder", "[Preset][Bundle][Published]")
+{
+    // An author project with <num_author_slots> physical slots, no mixed ones.
+    auto make_file_config = [](size_t num_author_slots) {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        std::vector<double> diameters(num_author_slots, 1.75);
+        std::vector<int> self_index;
+        std::vector<std::string> variants;
+        for (size_t i = 0; i < num_author_slots; ++i) {
+            self_index.push_back(int(i + 1));
+            variants.emplace_back("Direct Drive Standard");
+        }
+        config.opt<ConfigOptionFloats>("filament_diameter")->values          = diameters;
+        config.opt<ConfigOptionInts>("filament_self_index")->values          = self_index;
+        config.opt<ConfigOptionStrings>("filament_extruder_variant")->values = variants;
+        config.opt<ConfigOptionStrings>("filament_colour")->values.resize(num_author_slots, "#808080");
+        config.opt<ConfigOptionStrings>("filament_type")->values.assign(num_author_slots, "PLA");
+        config.opt<ConfigOptionStrings>("filament_vendor")->values.assign(num_author_slots, "Generic");
+        config.opt<ConfigOptionStrings>("filament_ids")->values.resize(num_author_slots);
+        return config;
+    };
+    // A non-SEMM receiver with <nozzles> nozzles running <slots> copies of one preset.
+    auto make_receiver = [](PresetBundle &bundle, size_t nozzles, size_t slots) {
+        Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+        pla.config.opt_string("filament_type", 0u) = "PLA";
+        bundle.filament_presets.assign(slots, "My PLA");
+        bundle.set_num_filaments(slots, "#123456");
+        auto &printer_config                                    = bundle.printers.get_edited_preset().config;
+        printer_config.opt<ConfigOptionBool>("single_extruder_multi_material", true)->value = false;
+        printer_config.opt<ConfigOptionFloats>("nozzle_diameter", true)->values.assign(nozzles, 0.4);
+    };
+    auto make_physical_entry = [](int slot, const char *color) {
+        PublishedMaterialEntry entry;
+        entry.slot            = slot;
+        entry.filament_type   = "PLA";
+        entry.filament_vendor = "Generic";
+        entry.publish_color   = true;
+        entry.color           = color;
+        return entry;
+    };
+
+    // The reported case: an author publishes with a filament on slot 5; the receiver is a
+    // 4-filament tool-changer. The receiver keeps its four physical slots and the surplus
+    // material lands as an empty mixed placeholder at the tail.
+    {
+        PresetBundle bundle;
+        make_receiver(bundle, 4, 4);
+        const std::vector<std::string> receiver_colours =
+            bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values;
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { make_physical_entry(4, "#ABCDEF") };
+        DynamicPrintConfig config = make_file_config(5);
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        // The receiver grew by exactly one virtual slot, not a fifth physical one.
+        REQUIRE(bundle.filament_presets.size() == 5);
+        const auto &is_mixed = bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values;
+        REQUIRE(is_mixed.size() == 5);
+        for (size_t i = 0; i < 4; ++i)
+            CHECK_FALSE(is_mixed[i]);
+        CHECK(is_mixed[4]);
+        // The placeholder carries no definition: the GUI's integrity check flags it and
+        // blocks slicing until the user assigns components.
+        const auto &components = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_components")->values;
+        REQUIRE(components.size() == 5);
+        CHECK(components[4].empty());
+        // The four physical slots kept their meaning and colours.
+        CHECK(std::equal(receiver_colours.begin(), receiver_colours.end(),
+                         bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values.begin()));
+        CHECK(bundle.filament_presets[0] == "My PLA");
+        CHECK(bundle.filament_presets[3] == "My PLA");
+        // The published colour seeds the placeholder's swatch.
+        CHECK(bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values[4] == "#ABCDEF");
+        // The conversion is surfaced through the post-import notice.
+        bool placeholder_reported = false;
+        for (const std::string &message : pub.material_replacements)
+            if (message.find("unassigned mixed filament") != std::string::npos)
+                placeholder_reported = true;
+        CHECK(placeholder_reported);
+        CHECK(pub.skipped_keys.empty());
+        CHECK(pub.mixed_slot_relocations.empty());
+    }
+
+    // Two surplus slots (5 and 6) become two consecutive empty placeholders.
+    {
+        PresetBundle bundle;
+        make_receiver(bundle, 4, 4);
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { make_physical_entry(4, "#ABCDEF"), make_physical_entry(5, "#F0F0F0") };
+        DynamicPrintConfig config = make_file_config(6);
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        REQUIRE(bundle.filament_presets.size() == 6);
+        const auto &is_mixed = bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values;
+        REQUIRE(is_mixed.size() == 6);
+        for (size_t i = 0; i < 4; ++i)
+            CHECK_FALSE(is_mixed[i]);
+        CHECK(is_mixed[4]);
+        CHECK(is_mixed[5]);
+        const auto &components = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_components")->values;
+        REQUIRE(components.size() == 6);
+        CHECK(components[4].empty());
+        CHECK(components[5].empty());
+        const auto &colour = bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values;
+        REQUIRE(colour.size() == 6);
+        CHECK(colour[4] == "#ABCDEF");
+        CHECK(colour[5] == "#F0F0F0");
+        CHECK(pub.skipped_keys.empty());
+        CHECK(pub.mixed_slot_relocations.empty());
+    }
+
+    // A surplus slot past both the receiver's list and the capacity packs onto the next free
+    // tail slot (never max(authored, next_free), which would grow filler physical slots past
+    // the capacity), and the relocation is recorded for the model-reference remapping.
+    {
+        PresetBundle bundle;
+        make_receiver(bundle, 2, 2);
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { make_physical_entry(3, "#ABCDEF") };
+        DynamicPrintConfig config = make_file_config(4);
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        REQUIRE(bundle.filament_presets.size() == 3);
+        const auto &is_mixed = bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values;
+        REQUIRE(is_mixed.size() == 3);
+        CHECK_FALSE(is_mixed[0]);
+        CHECK_FALSE(is_mixed[1]);
+        CHECK(is_mixed[2]);
+        const auto &components = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_components")->values;
+        REQUIRE(components.size() == 3);
+        CHECK(components[2].empty());
+        REQUIRE(pub.mixed_slot_relocations.size() == 1);
+        CHECK(pub.mixed_slot_relocations.at(3) == 2);
+        bool relocation_reported = false;
+        for (const std::string &message : pub.material_replacements)
+            if (message.find("slot 3 -> slot 2") != std::string::npos &&
+                message.find("unassigned mixed filament") != std::string::npos)
+                relocation_reported = true;
+        CHECK(relocation_reported);
+        CHECK(pub.skipped_keys.empty());
+    }
+
+    // A Full Publish entry past the capacity becomes a placeholder too: no standalone
+    // detached copy is created for a material that got no physical slot.
+    {
+        PresetBundle bundle;
+        make_receiver(bundle, 4, 4);
+
+        PublishedMaterialEntry entry = make_physical_entry(4, "#ABCDEF");
+        entry.full                   = true;
+        entry.preset_name            = "Generic PLA @System";
+        entry.filament_id            = "GFL99";
+        entry.full_keys              = { "filament_retraction_length" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { entry };
+        DynamicPrintConfig config = make_file_config(5);
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        REQUIRE(bundle.filament_presets.size() == 5);
+        const auto &is_mixed = bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values;
+        REQUIRE(is_mixed.size() == 5);
+        CHECK(is_mixed[4]);
+        // No detached copy under the stripped name or its uniquified forms.
+        CHECK(bundle.filaments.find_preset("Generic PLA", false, true) == nullptr);
+        CHECK(bundle.filaments.find_preset("Generic PLA (Published)", false, true) == nullptr);
+        CHECK(pub.skipped_keys.empty());
+    }
+
+    // A SEMM receiver (the default printer preset) sizes its slot list by hand: the published
+    // slot past the nozzle count still grows physically, as before the capacity gate.
+    {
+        PresetBundle bundle;
+        Preset &pla = add_inmemory_preset(bundle.filaments, "My PLA");
+        pla.config.opt_string("filament_type", 0u) = "PLA";
+        bundle.filament_presets = { "My PLA", "My PLA", "My PLA", "My PLA" };
+        bundle.set_num_filaments(4, "#123456");
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { make_physical_entry(4, "#ABCDEF") };
+        DynamicPrintConfig config = make_file_config(5);
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        REQUIRE(bundle.filament_presets.size() == 5);
+        const auto &is_mixed = bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values;
+        REQUIRE(is_mixed.size() == 5);
+        for (size_t i = 0; i < 5; ++i)
+            CHECK_FALSE(is_mixed[i]);
+        CHECK(bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values[4] == "#ABCDEF");
+        CHECK(pub.skipped_keys.empty());
+    }
+
+    // A pre-existing oversized slot list is never shrunk: a published entry pointing at one
+    // of its slots is applied positionally even though the list exceeds the nozzle count.
+    {
+        PresetBundle bundle;
+        make_receiver(bundle, 4, 5);
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { make_physical_entry(4, "#ABCDEF") };
+        DynamicPrintConfig config = make_file_config(5);
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        REQUIRE(bundle.filament_presets.size() == 5);
+        const auto &is_mixed = bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values;
+        REQUIRE(is_mixed.size() == 5);
+        for (size_t i = 0; i < 5; ++i)
+            CHECK_FALSE(is_mixed[i]);
+        // The published colour reached the addressed slot's (shared) preset in place.
+        CHECK(bundle.filaments.find_preset("My PLA", false, true)->config.opt<ConfigOptionStrings>("filament_colour")->values ==
+              std::vector<std::string>{ "#ABCDEF" });
+        CHECK(bundle.project_config.opt<ConfigOptionStrings>("filament_colour")->values[4] == "#ABCDEF");
+        CHECK(pub.skipped_keys.empty());
+    }
+
+    // On a single-physical-slot receiver an empty mix could never be edited (the sidebar's
+    // mixed section needs two physical filaments), so the surplus entry is dropped and
+    // reported instead of becoming an unfixable placeholder.
+    {
+        PresetBundle bundle;
+        make_receiver(bundle, 1, 1);
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { make_physical_entry(1, "#ABCDEF") };
+        DynamicPrintConfig config = make_file_config(2);
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        CHECK(bundle.filament_presets.size() == 1);
+        const auto &is_mixed = bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values;
+        REQUIRE(is_mixed.size() == 1);
+        CHECK_FALSE(is_mixed[0]);
+        REQUIRE(pub.skipped_keys.size() == 1);
+        CHECK(pub.skipped_keys.front().find("the printer's filament limit is 1") != std::string::npos);
+    }
+
+    // A payload mixed definition is exempt from the capacity gate: mixes are virtual slots
+    // that consume no nozzle, so a published mix past the nozzle count still lands.
+    {
+        PresetBundle bundle;
+        make_receiver(bundle, 4, 4);
+
+        PublishedMaterialEntry mix;
+        mix.slot          = 4;
+        mix.publish_color = true;
+        mix.color         = "#800080";
+        mix.keys          = { "filament_is_mixed", "filament_mixed_components", "filament_mixed_sublayer_ratios" };
+
+        PublishedConfig pub;
+        pub.published     = true;
+        pub.material_keys = { mix };
+        DynamicPrintConfig config = make_file_config(5);
+        config.opt<ConfigOptionBools>("filament_is_mixed")->values.assign(5, 0);
+        config.opt<ConfigOptionStrings>("filament_mixed_components")->values.assign(5, "");
+        config.opt<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values.assign(5, "");
+        config.opt<ConfigOptionBools>("filament_is_mixed")->values[4]                = 1;
+        config.opt<ConfigOptionStrings>("filament_mixed_components")->values[4]      = "1,2";
+        config.opt<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[4] = "0.6,0.4";
+        Preset::normalize(config);
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        REQUIRE(bundle.filament_presets.size() == 5);
+        const auto &is_mixed = bundle.project_config.opt<ConfigOptionBools>("filament_is_mixed")->values;
+        REQUIRE(is_mixed.size() == 5);
+        CHECK(is_mixed[4]);
+        const auto &components = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_components")->values;
+        REQUIRE(components.size() == 5);
+        CHECK(components[4] == "1,2");
+        const auto &ratios = bundle.project_config.opt<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values;
+        REQUIRE(ratios.size() == 5);
+        CHECK(ratios[4] == "0.6,0.4");
+        CHECK(pub.skipped_keys.empty());
+    }
+}
+
+// A single-extruder receiver collapses the author's per-extruder printer slots onto its single
+// slot: the first serialized variant of a base key is applied, the remaining variants of that
+// base key are reported as skipped.
+TEST_CASE("Published 3MF collapses a multi-extruder publish onto a single-extruder receiver", "[Preset][Bundle][Published]")
+{
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000" };
+        // Author has two extruders.
+        config.opt<ConfigOptionFloats>("retraction_length")->values = { 0.6, 0.9 };
+        config.opt<ConfigOptionFloats>("retraction_speed")->values  = { 30.0, 40.0 };
+        Preset::normalize(config);
+        return config;
+    };
+
+    // Both extruders published: the first serialized variant (#0, left) lands on the receiver's
+    // single slot; the second variant (#1) is reported as skipped.
+    {
+        PresetBundle bundle;
+        bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_length")->values = { 0.8 };
+        bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_speed")->values  = { 25.0 };
+        PublishedConfig pub;
+        pub.published      = true;
+        pub.published_keys = { "retraction_length#0", "retraction_length#1", "retraction_speed#0", "retraction_speed#1" };
+        DynamicPrintConfig config = make_file_config();
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        check_double_vector(bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_length")->values, { 0.6 });
+        check_double_vector(bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_speed")->values, { 30.0 });
+        CHECK(contains_key(pub.skipped_keys, "retraction_length#1"));
+        CHECK(contains_key(pub.skipped_keys, "retraction_speed#1"));
+        CHECK_FALSE(contains_key(pub.skipped_keys, "retraction_length#0"));
+        CHECK_FALSE(contains_key(pub.skipped_keys, "retraction_speed#0"));
+    }
+
+    // Only the second extruder published: the single-extruder receiver still applies it (the
+    // author's "right" is the only serialized slot) and reports nothing skipped.
+    {
+        PresetBundle bundle;
+        bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_length")->values = { 0.8 };
+        PublishedConfig pub;
+        pub.published      = true;
+        pub.published_keys = { "retraction_length#1" };
+        DynamicPrintConfig config = make_file_config();
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        check_double_vector(bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_length")->values, { 0.9 });
+        CHECK(pub.skipped_keys.empty());
+    }
+}
+
+// A multi-extruder "similar setup" receiver overrides each published extruder slot element-wise
+// (no collapsing): each '#N' variant applies to the matching receiver slot, out-of-range ones are
+// reported as skipped.
+TEST_CASE("Published 3MF overrides each extruder slot on a similar multi-extruder receiver", "[Preset][Bundle][Published]")
+{
+    auto make_file_config = [] {
+        DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+        config.opt<ConfigOptionStrings>("filament_colour")->values = { "#FF0000", "#00FF00" };
+        // Author has two extruders.
+        config.opt<ConfigOptionFloats>("retraction_length")->values = { 0.6, 0.9 };
+        Preset::normalize(config);
+        return config;
+    };
+
+    // Receiver with two extruders: both published slots override element-wise.
+    {
+        PresetBundle bundle;
+        bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_length")->values = { 0.8, 0.8 };
+        PublishedConfig pub;
+        pub.published      = true;
+        pub.published_keys = { "retraction_length#0", "retraction_length#1" };
+        DynamicPrintConfig config = make_file_config();
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        check_double_vector(bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_length")->values, { 0.6, 0.9 });
+        CHECK(pub.skipped_keys.empty());
+    }
+
+    // Receiver with three extruders: slots 0 and 1 override, slot 2 keeps its own value.
+    {
+        PresetBundle bundle;
+        bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_length")->values = { 0.8, 0.8, 0.7 };
+        PublishedConfig pub;
+        pub.published      = true;
+        pub.published_keys = { "retraction_length#0", "retraction_length#1" };
+        DynamicPrintConfig config = make_file_config();
+        bundle.load_config_model("test.3mf", std::move(config), Semver(), &pub);
+
+        check_double_vector(bundle.printers.get_edited_preset().config.opt<ConfigOptionFloats>("retraction_length")->values, { 0.6, 0.9, 0.7 });
+        CHECK(pub.skipped_keys.empty());
+    }
+}
+
+TEST_CASE("Loading incomplete mixed metadata normalizes slots before adding a filament", "[Preset][Bundle][FilamentMixer]")
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    const std::vector<std::string> colors = { "#000000", "#FFFFFF", "#5E5C64" };
+    config.option<ConfigOptionStrings>("filament_colour")->values = colors;
+    config.option<ConfigOptionBool>("single_extruder_multi_material")->value = true;
+    config.option<ConfigOptionFloats>("filament_diameter")->values = { 1.75, 1.75, 1.75 };
+    config.option<ConfigOptionStrings>("filament_settings_id", true)->values = { "Test PETG", "Test PLA", "Test TPU" };
+    const std::vector<std::string> bool_keys = {
+        "filament_is_mixed", "filament_mixed_gradient", "filament_mixed_gradient_per_part"
+    };
+    const std::vector<std::string> string_keys = {
+        "filament_mixed_components", "filament_mixed_sublayer_ratios",
+        "filament_mixed_gradient_range", "filament_mixed_gradient_curve"
+    };
+    const size_t metadata_size = GENERATE(0u, 1u, 4u);
+    for (const auto &key : bool_keys) {
+        if (metadata_size == 0)
+            config.erase(key);
+        else {
+            auto &values = config.option<ConfigOptionBools>(key)->values;
+            values.assign(metadata_size, false);
+            if (metadata_size > colors.size())
+                values.back() = true;
+        }
+    }
+    for (const auto &key : string_keys) {
+        if (metadata_size == 0)
+            config.erase(key);
+        else {
+            auto &values = config.option<ConfigOptionStrings>(key)->values;
+            values.assign(metadata_size, "");
+            if (metadata_size > colors.size())
+                values.back() = "stale";
+        }
+    }
+    Preset::normalize(config);
+
+    PresetBundle bundle;
+    bundle.load_config_model("test.3mf", std::move(config), Semver());
+    const auto presets = bundle.filament_presets;
+    REQUIRE(presets.size() == colors.size());
+    REQUIRE(presets[0] != presets[1]);
+    REQUIRE(presets[1] != presets[2]);
+    REQUIRE(presets[0] != presets[2]);
+    for (const auto &key : bool_keys) {
+        CAPTURE(key, metadata_size);
+        CHECK(bundle.project_config.option<ConfigOptionBools>(key)->values ==
+              std::vector<unsigned char>(colors.size(), false));
+    }
+    for (const auto &key : string_keys) {
+        CAPTURE(key, metadata_size);
+        CHECK(bundle.project_config.option<ConfigOptionStrings>(key)->values ==
+              std::vector<std::string>(colors.size(), ""));
+    }
+    REQUIRE(bundle.num_physical_filaments() == colors.size());
+    REQUIRE(bundle.num_mixed_filaments() == 0);
+
+    bundle.set_num_filaments(bundle.num_physical_filaments() + bundle.num_mixed_filaments() + 1, "#FF0000");
+    REQUIRE(bundle.filament_presets.size() == presets.size() + 1);
+    const auto &actual_colors = bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values;
+    REQUIRE(actual_colors.size() == colors.size() + 1);
+    for (size_t i = 0; i < presets.size(); ++i) {
+        CHECK(bundle.filament_presets[i] == presets[i]);
+        CHECK(actual_colors[i] == colors[i]);
+    }
+    CHECK(bundle.num_physical_filaments() == colors.size() + 1);
+    CHECK_FALSE(bundle.is_mixed_filament(colors.size()));
+}
+
+TEST_CASE("Loading a project preserves existing mixed filament definitions", "[Preset][Bundle][FilamentMixer]")
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.option<ConfigOptionBool>("single_extruder_multi_material")->value = true;
+    config.option<ConfigOptionFloats>("filament_diameter")->values = { 1.75, 1.75, 1.75 };
+    config.option<ConfigOptionStrings>("filament_colour")->values = { "#000000", "#FFFFFF", "#808080" };
+    config.option<ConfigOptionBools>("filament_is_mixed")->values = { false, false, true };
+    config.option<ConfigOptionStrings>("filament_mixed_components")->values = { "", "", "1,2" };
+    config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values = { "", "", "1,2" };
+    config.option<ConfigOptionBools>("filament_mixed_gradient")->values = { false, false, true };
+    config.option<ConfigOptionStrings>("filament_mixed_gradient_range")->values = { "", "", "0,100" };
+    config.option<ConfigOptionStrings>("filament_mixed_gradient_curve")->values = { "", "", "0,0.1|1,0.9" };
+    config.option<ConfigOptionBools>("filament_mixed_gradient_per_part")->values = { false, false, true };
+    Preset::normalize(config);
+    const auto original = config;
+
+    PresetBundle bundle;
+    bundle.load_config_model("test.3mf", std::move(config), Semver());
+    for (const auto *key : kMixedKeys) {
+        CAPTURE(key);
+        CHECK(*bundle.project_config.option(key) == *original.option(key));
+    }
+    CHECK(bundle.num_physical_filaments() == 2);
+    CHECK(bundle.num_mixed_filaments() == 1);
+}
+
+TEST_CASE("Adding a filament preserves slots with incomplete mixed metadata", "[Preset][Bundle][FilamentMixer]")
+{
+    PresetBundle bundle;
+    bundle.set_num_filaments(3u, std::string("#000000"));
+    auto *colors = bundle.project_config.option<ConfigOptionStrings>("filament_colour");
+    colors->values = { "#000000", "#FFFFFF", "#5E5C64" };
+    bundle.filament_presets = { "Test PETG", "Test PLA", "Test TPU" };
+    const auto original_presets = bundle.filament_presets;
+    const auto original_colors = colors->values;
+    auto *flags = bundle.project_config.option<ConfigOptionBools>("filament_is_mixed");
+    flags->values = GENERATE(std::vector<unsigned char>{}, std::vector<unsigned char>{ false },
+                            std::vector<unsigned char>{ false, false, false, true });
+    const std::vector<std::string> string_keys = {
+        "filament_mixed_components", "filament_mixed_sublayer_ratios",
+        "filament_mixed_gradient_range", "filament_mixed_gradient_curve"
+    };
+    const std::vector<std::string> bool_keys = {
+        "filament_mixed_gradient", "filament_mixed_gradient_per_part"
+    };
+    for (const auto &key : string_keys)
+        bundle.project_config.option<ConfigOptionStrings>(key)->values = { "", "", "", "stale" };
+    for (const auto &key : bool_keys)
+        bundle.project_config.option<ConfigOptionBools>(key)->values = { false, false, false, true };
+
+    REQUIRE(bundle.num_physical_filaments() == original_colors.size());
+    REQUIRE(bundle.num_mixed_filaments() == 0);
+    bundle.set_num_filaments(bundle.num_physical_filaments() + bundle.num_mixed_filaments() + 1, "#FF0000");
+
+    REQUIRE(bundle.filament_presets.size() == original_presets.size() + 1);
+    REQUIRE(colors->values.size() == original_colors.size() + 1);
+    for (size_t i = 0; i < original_presets.size(); ++i) {
+        CHECK(bundle.filament_presets[i] == original_presets[i]);
+        CHECK(colors->values[i] == original_colors[i]);
+    }
+    CHECK(colors->values.back() == "#FF0000");
+    CHECK(bundle.num_physical_filaments() == 4);
+    CHECK(bundle.num_mixed_filaments() == 0);
+    REQUIRE(flags->values.size() == 4);
+    CHECK_FALSE(bundle.is_mixed_filament(3));
+    for (const auto &key : string_keys) {
+        CAPTURE(key);
+        CHECK(bundle.project_config.option<ConfigOptionStrings>(key)->values ==
+              std::vector<std::string>{ "", "", "", "" });
+    }
+    for (const auto &key : bool_keys) {
+        CAPTURE(key);
+        CHECK(bundle.project_config.option<ConfigOptionBools>(key)->values ==
+              std::vector<unsigned char>{ false, false, false, false });
     }
 }
 

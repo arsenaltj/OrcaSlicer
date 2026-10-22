@@ -1681,6 +1681,34 @@ TEST_CASE("color card cleanup compacts retained mixed recipes before tail deleti
     CHECK(PrinterFilamentSlotRemap::validate(changes, 7, 5));
 }
 
+TEST_CASE("printer palette cleanup retains a mixed binding in addition to all physical slots", "[PrinterFilamentImport][PrinterFilamentRecipes][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    auto draft = printer_filament_fixture(4, 6);
+    for (size_t slot = 4; slot < 6; ++slot) {
+        draft.project_config.option<ConfigOptionBools>("filament_is_mixed")->values[slot] = true;
+        draft.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[slot] = "1,2";
+        draft.project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[slot] = "0.5,0.5";
+        draft.project_config.option<ConfigOptionStrings>("filament_colour")->values[slot] = "#8A6A5A";
+        draft.project_config.option<ConfigOptionStrings>("filament_multi_colour")->values[slot] = "#8A6A5A";
+    }
+    std::vector<size_t> bindings {0, 1, 2, 5};
+    std::vector<PrinterFilamentConfig::SlotChange> changes;
+    std::string error;
+    REQUIRE(PrinterFilamentConfig::trim_unused_mixed_slots(draft, bindings, 4, changes, error));
+    INFO(error);
+    const auto state = PrinterFilamentConfig::capture(draft);
+    CHECK(state.physical_count == 4);
+    REQUIRE(state.mixed.size() == 1);
+    CHECK(state.mixed.front().slot == 4);
+    CHECK(draft.filament_presets.size() == 5);
+    CHECK(bindings == std::vector<size_t>{0, 1, 2, 4});
+    REQUIRE(changes.size() == 1);
+    CHECK(changes.front().removed == 5);
+    CHECK(changes.front().replacement == 4);
+    CHECK(PrinterFilamentSlotRemap::validate(changes, 6, 5));
+}
+
 TEST_CASE("printer palette application trims surplus physical slots before mixed cleanup", "[PrinterFilamentImport][PrinterFilamentRecipes][PostGenerationWorkbench]")
 {
     using namespace Slic3r;

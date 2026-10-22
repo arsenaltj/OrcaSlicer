@@ -6,6 +6,34 @@
 #include <map>
 
 namespace Slic3r::GUI {
+// Direct native painting for an accepted face/child slot contract. Build a
+// temporary tree and publish only after all identities and leaves validate.
+inline bool apply_matched_subface_slots(const indexed_triangle_set& expected,
+    const indexed_triangle_set& actual, TriangleSelector::TriangleSplittingData& painting,
+    const AI::ModelMatchedColors& matched, std::string& error)
+{
+    error.clear();
+    if (!matched.valid() || actual.indices.size() != matched.face_slots.size() ||
+        expected.vertices.size() != actual.vertices.size() || expected.indices.size() != actual.indices.size() ||
+        !std::equal(expected.vertices.begin(), expected.vertices.end(), actual.vertices.begin(),
+            [](const auto& a, const auto& b) { return (a.array() == b.array()).all(); }) ||
+        !std::equal(expected.indices.begin(), expected.indices.end(), actual.indices.begin(),
+            [](const auto& a, const auto& b) { return (a.array() == b.array()).all(); })) {
+        error = "Applied subface slots belong to another source topology."; return false;
+    }
+    TriangleMesh mesh(actual);
+    TriangleSelector selector(mesh);
+    selector.deserialize(painting);
+    std::map<size_t, std::vector<TriangleSelector::MidpointSubfaceState>> grouped;
+    for (const auto& leaf : matched.subface_slots)
+        grouped[leaf.face_id].push_back({leaf.depth, leaf.path, EnforcerBlockerType(leaf.slot + 1)});
+    for (const auto& face : grouped)
+        if (!selector.set_facet_midpoint_subfaces(int(face.first),
+                EnforcerBlockerType(matched.face_slots[face.first] + 1), face.second)) {
+            error = "Applied subface slot tree is invalid."; return false;
+        }
+    painting = selector.serialize(); return true;
+}
 // 3MF stores a portable source basename. Only accept our UUID or GLB hash names;
 // the complete mesh is still compared before transferring any paint.
 inline bool same_generated_artifact_name(const std::string& saved, const std::string& incoming)

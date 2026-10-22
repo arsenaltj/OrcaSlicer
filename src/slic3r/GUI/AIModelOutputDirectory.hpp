@@ -6,6 +6,7 @@
 #include <boost/filesystem.hpp>
 #include <boost/nowide/cstdlib.hpp>
 #include <boost/process/environment.hpp>
+#include <wx/app.h>
 #include <wx/stdpaths.h>
 
 namespace Slic3r::GUI {
@@ -90,10 +91,16 @@ inline const AIModelOutputDirectory& ai_model_output_directory()
     // ORCASLICER_AI_OUTPUT_DIR still wins for managed deployments.
     const boost::filesystem::path user_data = !Slic3r::data_dir().empty()
         ? boost::filesystem::path(Slic3r::data_dir())
-        : into_path(wxStandardPaths::Get().GetUserDataDir());
-    static const AIModelOutputDirectory directory(
-        into_path(wxStandardPaths::Get().GetExecutablePath()).parent_path(),
-        user_data);
+        : (wxTheApp ? into_path(wxStandardPaths::Get().GetUserDataDir())
+                    : boost::filesystem::current_path());
+    // Unit and command-line test hosts do not create a wxApp. wxStandardPaths
+    // is not safe to query before wx startup, so retain a deterministic local
+    // fallback there while the normal GUI path continues to use the executable
+    // directory.
+    const auto installation_directory = wxTheApp
+        ? into_path(wxStandardPaths::Get().GetExecutablePath()).parent_path()
+        : boost::filesystem::current_path();
+    static const AIModelOutputDirectory directory(installation_directory, user_data);
     return directory;
 }
 

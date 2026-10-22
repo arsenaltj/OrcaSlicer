@@ -211,7 +211,17 @@ void ModelGenerationPanel::publish_workbench_state()
 
 bool ModelGenerationPanel::request_open_workbench()
 {
-    if (m_shutdown || !m_page_initialized || m_busy) return false;
+    if (m_shutdown) return false;
+    initialize_for_shell_host();
+    if (!m_page_initialized || m_busy || !finishing_workbench_layout_ready(true)) {
+        BOOST_LOG_TRIVIAL(error) << "Workbench open rejected before a complete model layout was available: page_initialized="
+            << m_page_initialized << ", busy=" << m_busy
+            << ", model_page=" << bool(m_model_page)
+            << ", comparison=" << bool(m_comparison_panel)
+            << ", workbench_host=" << bool(m_workbench_view_host)
+            << ", workbench_shell=" << bool(m_workbench_shell);
+        return false;
+    }
     const bool opening = !m_finishing_workbench;
     if (!m_model_preview_ready) {
         m_workbench_editing = false;
@@ -281,8 +291,11 @@ bool ModelGenerationPanel::request_workbench_color_matching()
         const int mode = m_import_color_mode ? m_import_color_mode->GetSelection() : 0;
         request.color_mode = mode == 1 ? AI::ImportColorMode::AutoMap : mode == 2 ? AI::ImportColorMode::SingleColor :
             mode == 3 ? AI::ImportColorMode::ManualMatch : AI::ImportColorMode::NativeMatch;
+        const auto trial_state = m_model_preview->color_trial_state();
+        request.use_saved_printer_match = request.color_mode == AI::ImportColorMode::NativeMatch &&
+            trial_state.source == 1 && trial_state.enabled && m_model_preview->project_matching_valid();
         if (request.color_mode == AI::ImportColorMode::NativeMatch &&
-            m_model_preview->color_trial_state().source == 1 &&
+            trial_state.source == 1 &&
             (m_beauty_manual_color_dirty || (m_beauty_controls && m_beauty_controls->has_changes()))) {
             m_workbench_operation_notice = "应用打印机耗材后存在未保存的局部改色，请先重新应用打印机耗材再导入。";
             refresh_post_generation_workbench();
