@@ -24,6 +24,18 @@ option(USE_SLIC3R_CONSOLE_LOG "Enable console logging in RelWithDebInfo builds" 
 set(ORCA_SLIC3R_CORE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 include("${CMAKE_CURRENT_SOURCE_DIR}/core_sources.cmake")
 set(lisbslic3r_sources ${ORCA_SLIC3R_CORE_SOURCES})
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_custom_target(orca_slicer_core_manifest_check ALL
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/scripts/verify_core_source_manifest.py
+                --source-root ${CMAKE_SOURCE_DIR}
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Checking shared OrcaSlicer::Core source manifest"
+        VERBATIM
+    )
+endif()
+
 
 if (APPLE)
     list(APPEND lisbslic3r_sources

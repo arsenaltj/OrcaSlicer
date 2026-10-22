@@ -99,6 +99,18 @@ target_include_directories(libnest2d INTERFACE "${ORCA_DEPS_SOURCE}/libnest2d/in
 target_link_libraries(libnest2d INTERFACE NLopt::nlopt orca_boost_headers TBB::tbb)
 
 set(ORCA_SLIC3R_CORE_SOURCE_DIR "${ORCA_SOURCE_ROOT}/src/libslic3r")
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_custom_target(orca_slicer_core_manifest_check ALL
+        COMMAND ${Python3_EXECUTABLE}
+                ${ORCA_SOURCE_ROOT}/scripts/verify_core_source_manifest.py
+                --source-root ${ORCA_SOURCE_ROOT}
+        WORKING_DIRECTORY ${ORCA_SOURCE_ROOT}
+        COMMENT "Checking shared OrcaSlicer::Core source manifest"
+        VERBATIM
+    )
+endif()
+
 include("${ORCA_SLIC3R_CORE_SOURCE_DIR}/core_sources.cmake")
 set(ORCA_LIBSLIC3R_CPP ${ORCA_SLIC3R_CORE_SOURCES})
 list(FILTER ORCA_LIBSLIC3R_CPP INCLUDE REGEX "\\.(cpp|mm)$")
