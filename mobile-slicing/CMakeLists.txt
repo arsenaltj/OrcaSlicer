@@ -10,7 +10,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_ANDROID_API 24)
 set(ANDROID_STL c++_static CACHE STRING "" FORCE)
-set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384")
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 -Wl,--exclude-libs,ALL")
 set(ORCA_SOURCE_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." CACHE PATH "OrcaSlicer source root")
 set(ORCA_DEPS_SOURCE "${ORCA_SOURCE_ROOT}/deps_src")
 include(FetchContent)
@@ -176,6 +176,7 @@ if(TARGET orca_mobile_slicing_sdk)
     install(TARGETS orca_mobile_slicing_sdk LIBRARY DESTINATION lib)
 endif()
 install(TARGETS orca_mobile_stl_gate RUNTIME DESTINATION bin)
+
 
 
 
