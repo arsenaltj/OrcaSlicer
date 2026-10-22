@@ -95,7 +95,8 @@ add_library(libnest2d INTERFACE)
 target_include_directories(libnest2d INTERFACE "${ORCA_DEPS_SOURCE}/libnest2d/include")
 target_link_libraries(libnest2d INTERFACE NLopt::nlopt orca_boost_headers TBB::tbb)
 
-file(GLOB_RECURSE ORCA_LIBSLIC3R_CPP CONFIGURE_DEPENDS "${ORCA_SOURCE_ROOT}/src/libslic3r/*.cpp")
+include("${CMAKE_CURRENT_LIST_DIR}/core_sources.cmake")
+set(ORCA_LIBSLIC3R_CPP ${ORCA_MOBILE_CORE_SOURCES})
 set(_mobile_excludes
     "/SLA/"
     "/SLAPrint.cpp$" "/SLAPrintSteps.cpp$"
@@ -107,19 +108,16 @@ set(_mobile_excludes
     "/Triangulation.cpp$" "/TryCatchSignal"
     "/OpenVDBUtils.cpp$" "/Geometry/VoronoiUtilsCgal.cpp$"
     "/Shape/TextShape.cpp$" "/Emboss.cpp"
-    "/pchheader.cpp$"
     "/GCodeSender.cpp$" "/ProjectTask.cpp"
 )
 foreach(_pattern IN LISTS _mobile_excludes)
     list(FILTER ORCA_LIBSLIC3R_CPP EXCLUDE REGEX "${_pattern}")
 endforeach()
-list(APPEND ORCA_LIBSLIC3R_CPP "${ORCA_SOURCE_ROOT}/src/libslic3r/MobileTriangulation.cpp")
-
 file(READ "${ORCA_SOURCE_ROOT}/resources/info/nozzle_info.json" ORCA_MOBILE_NOZZLE_INFO)
 file(READ "${ORCA_SOURCE_ROOT}/resources/info/nozzle_incompatibles.json" ORCA_MOBILE_NOZZLE_INCOMPATIBLES)
 configure_file("${CMAKE_CURRENT_LIST_DIR}/nozzle_resources.hpp.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/orca_mobile_nozzle_resources.hpp" @ONLY)
-add_library(libslic3r_mobile STATIC ${ORCA_LIBSLIC3R_CPP})
-target_compile_definitions(libslic3r_mobile PUBLIC
+add_library(orca_mobile_core STATIC ${ORCA_LIBSLIC3R_CPP})
+target_compile_definitions(orca_mobile_core PUBLIC
     ORCA_MOBILE_ANDROID=1
     USE_TBB=1
     TBB_USE_CAPTURED_EXCEPTION=0
@@ -127,14 +125,14 @@ target_compile_definitions(libslic3r_mobile PUBLIC
     BOOST_ERROR_CODE_HEADER_ONLY=1
     BOOST_SYSTEM_NO_DEPRECATED=1
     ORCA_CHECK_GCODE_PLACEHOLDERS=0)
-target_compile_options(libslic3r_mobile PRIVATE -fvisibility=hidden)
-target_include_directories(libslic3r_mobile
+target_compile_options(orca_mobile_core PRIVATE -fvisibility=hidden)
+target_include_directories(orca_mobile_core
     PRIVATE "${ORCA_SOURCE_ROOT}/src/libslic3r"
     PUBLIC "${ORCA_SOURCE_ROOT}/src" "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(ORCA_CHECK_GCODE_PLACEHOLDERS 0 CACHE STRING "" FORCE)
 configure_file("${ORCA_SOURCE_ROOT}/src/libslic3r/libslic3r_version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/libslic3r_version.h" @ONLY)
 
-target_link_libraries(libslic3r_mobile PUBLIC
+target_link_libraries(orca_mobile_core PUBLIC
     Eigen3::Eigen admesh libigl libnest2d miniz qoi semver::semver expat clipper Clipper2 glu-libtess mcut qhull
     TBB::tbb TBB::tbbmalloc
     orca_boost_headers cereal
@@ -158,7 +156,7 @@ if(EXISTS "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/c_api.cpp" AND EXISTS
     target_compile_definitions(orca_mobile_slicing_sdk PRIVATE ORCA_MOBILE_ANDROID=1
         ORCA_MOBILE_SLICING_SOURCE_COMMIT="${ORCA_MOBILE_SLICING_SOURCE_COMMIT}")
     target_include_directories(orca_mobile_slicing_sdk PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/include" "${ORCA_SOURCE_ROOT}/src")
-    target_link_libraries(orca_mobile_slicing_sdk PRIVATE libslic3r_mobile log)
+    target_link_libraries(orca_mobile_slicing_sdk PRIVATE orca_mobile_core log)
     set_target_properties(orca_mobile_slicing_sdk PROPERTIES OUTPUT_NAME orca_mobile_slicing_sdk_c)
     add_executable(orca_mobile_slicing_json_gate "${CMAKE_CURRENT_LIST_DIR}/slicing_json_gate.cpp")
     target_include_directories(orca_mobile_slicing_json_gate PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/include")
@@ -168,9 +166,9 @@ endif()
 add_executable(orca_mobile_stl_gate "${CMAKE_CURRENT_LIST_DIR}/stl_gcode_gate.cpp")
 target_compile_definitions(orca_mobile_stl_gate PRIVATE ORCA_MOBILE_ANDROID=1)
 target_include_directories(orca_mobile_stl_gate PRIVATE "${ORCA_SOURCE_ROOT}/src")
-target_link_libraries(orca_mobile_stl_gate PRIVATE libslic3r_mobile log)
+target_link_libraries(orca_mobile_stl_gate PRIVATE orca_mobile_core log)
 
-install(TARGETS libslic3r_mobile ARCHIVE DESTINATION lib)
+install(TARGETS orca_mobile_core ARCHIVE DESTINATION lib)
 if(TARGET orca_mobile_slicing_sdk)
     install(TARGETS orca_mobile_slicing_sdk LIBRARY DESTINATION lib)
 endif()
