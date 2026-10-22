@@ -2470,6 +2470,8 @@ float GLCanvas3D::get_collapse_toolbar_height() const
     if (m_compact_slicing_tools) return 0;
     GLToolbar& collapse_toolbar = wxGetApp().plater()->get_collapse_toolbar();
     const auto state            = wxGetApp().plater()->get_sidebar_docking_state();
+    return state != Sidebar::None ? collapse_toolbar.get_height() : 0;
+}
 
 // The bottom-left corner: the 3D navigator, then the column of round canvas buttons beside it, in
 // units of the toolbar scale. Shared by _render_3d_navigator, _render_canvas_toolbar,
@@ -2674,6 +2676,9 @@ void GLCanvas3D::_render_frame(bool scene_dirty, bool only_init)
 
     trace_stage("picking");
 
+    const bool overlay_tick = m_fps_overlay_tick;
+    m_fps_overlay_tick = false;
+
     // draw scene
     glsafe(::glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
     // Invalidate the shadow map each frame; only the View3D path below rebuilds it. This keeps
@@ -2716,12 +2721,17 @@ void GLCanvas3D::_render_frame(bool scene_dirty, bool only_init)
     }
     /* preview render */
     else if (m_canvas_type == ECanvasType::CanvasPreview && m_render_preview) {
+        // Keep the G-code clipping plane in sync with the preview objects before
+        // the shadow and toolpath passes.
+        m_gcode_viewer.set_clipping_plane(_get_section_view_plane());
         _render_objects(GLVolumeCollection::ERenderType::Opaque, !m_gizmos.is_running());
         _render_sla_slices();
         _render_selection();
         _render_bed(camera.get_view_matrix(), camera.get_projection_matrix(), !camera.is_looking_downward(), m_show_world_axes);
         _render_platelist(camera.get_view_matrix(), camera.get_projection_matrix(), !camera.is_looking_downward(), only_current, true, hover_id);
+        _render_shadows(camera.get_view_matrix(), camera.get_projection_matrix());
         // BBS: GUI refactor: add canvas size as parameters
+        _render_gcode(cnv_size.get_width(), cnv_size.get_height());
         _render_gcode_overlay(cnv_size.get_width(), cnv_size.get_height());
         m_frame_profiler.mark("legend");
     }
@@ -2841,13 +2851,6 @@ void GLCanvas3D::_render_frame(bool scene_dirty, bool only_init)
     if (_is_frame_skipping_enabled())
         signature = _overlay_signature(draw_data);
     m_frame_profiler.mark("imgui end");
-
-    if (reuse_scene) {
-        // A reused scene under an unchanged overlay is the frame already on screen.
-        if (signature.has_value() && signature == m_presented_signature)
-            return;
-        m_scene_cache.render(m_background);
-    }
 
     _render_overlay_toolbars();
     m_frame_profiler.mark("toolbars");
@@ -9847,31 +9850,30 @@ void GLCanvas3D::_render_wireframe_overlay()
 //BBS: GUI refactor: add canvas size as parameters
 void GLCanvas3D::_render_gcode(int canvas_width, int canvas_height)
 {
-    m_gcode_viewer.render(canvas_width, canvas_height, SLIDER_RIGHT_MARGIN * GCODE_VIEWER_SLIDER_SCALE,
-                          !m_suppress_gcode_window);
-    IMSlider *layers_slider = m_gcode_viewer.get_layers_slider();
-    IMSlider *moves_slider  = m_gcode_viewer.get_moves_slider();
-
-    if (layers_slider->is_need_post_tick_event()) {
-        auto evt = new wxCommandEvent(EVT_CUSTOMEVT_TICKSCHANGED, m_canvas->GetId());
-        evt->SetInt((int)layers_slider->get_post_tick_event_type());
-        wxPostEvent(m_canvas, *evt);
-        layers_slider->reset_post_tick_event();
+    // Realistic view: toolpaths sample the same depth map produced by the shadow
+    // pass. With no valid map, explicitly disable sampling in the viewer.
+    const bool receive_shadows = m_shadow_map_valid && m_shadow_map_texture_id != 0 && m_shadow_map_size != 0;
+    if (receive_shadows) {
+        glsafe(::glActiveTexture(GL_TEXTURE4));
+        glsafe(::glBindTexture(GL_TEXTURE_2D, m_shadow_map_texture_id));
+        glsafe(::glActiveTexture(GL_TEXTURE0));
+        m_gcode_viewer.set_shadow_map(4, m_shadow_light_vp, 0.35f, 1.0f / static_cast<float>(m_shadow_map_size));
     }
+    else
+        m_gcode_viewer.set_shadow_map(4, Transform3d::Identity(), 0.0f, 0.0f);
 
-    if (layers_slider->is_dirty()) {
-        set_volumes_z_range({layers_slider->GetLowerValueD(), layers_slider->GetHigherValueD()});
-        if (m_gcode_viewer.has_data()) {
-            m_gcode_viewer.set_layers_z_range({static_cast<unsigned int>(layers_slider->GetLowerValue()), static_cast<unsigned int>(layers_slider->GetHigherValue())});
-        }
-        layers_slider->set_as_dirty(false);
-        post_event(SimpleEvent(EVT_GLCANVAS_UPDATE));
-    }
+    const AppConfig* cfg = wxGetApp().app_config;
+    const bool lossy_passes = cfg != nullptr && _is_realistic_view_enabled() &&
+                              (_shadow_mode() != EShadowMode::Off || cfg->get_bool(SETTING_OPENGL_PHONG_SSAO));
+    m_gcode_viewer.set_tone(lossy_passes ? 1.1f : 1.0f, 1.15f);
+    m_gcode_viewer.set_light_top_dir(_static_light_dir_eye().value_or(Vec3d(-0.4574957, 0.4574957, 0.7624929)));
 
-    if (moves_slider->is_dirty()) {
-        moves_slider->set_as_dirty(false);
-        m_gcode_viewer.update_sequential_view_current((moves_slider->GetLowerValueD() - 1.0), static_cast<unsigned int>(moves_slider->GetHigherValueD() - 1.0));
-        post_event(SimpleEvent(EVT_GLCANVAS_UPDATE));
+    m_gcode_viewer.render_scene(canvas_width, canvas_height);
+
+    if (receive_shadows) {
+        glsafe(::glActiveTexture(GL_TEXTURE4));
+        glsafe(::glBindTexture(GL_TEXTURE_2D, 0));
+        glsafe(::glActiveTexture(GL_TEXTURE0));
     }
 }
 
@@ -10034,6 +10036,66 @@ void GLCanvas3D::_render_overlays()
     if (!m_compact_slicing_tools) {
         _render_canvas_toolbar();
     }
+}
+
+void GLCanvas3D::_render_gcode_overlay(int canvas_width, int canvas_height)
+{
+    m_gcode_viewer.render_overlay(canvas_width, canvas_height, SLIDER_RIGHT_MARGIN * GCODE_VIEWER_SLIDER_SCALE,
+                                  !m_suppress_gcode_window);
+    IMSlider *layers_slider = m_gcode_viewer.get_layers_slider();
+    IMSlider *moves_slider  = m_gcode_viewer.get_moves_slider();
+
+    if (layers_slider->is_need_post_tick_event()) {
+        auto evt = new wxCommandEvent(EVT_CUSTOMEVT_TICKSCHANGED, m_canvas->GetId());
+        evt->SetInt((int)layers_slider->get_post_tick_event_type());
+        wxPostEvent(m_canvas, *evt);
+        layers_slider->reset_post_tick_event();
+    }
+
+    if (layers_slider->is_dirty()) {
+        set_volumes_z_range({layers_slider->GetLowerValueD(), layers_slider->GetHigherValueD()});
+        if (m_gcode_viewer.has_data()) {
+            m_gcode_viewer.set_layers_z_range({static_cast<unsigned int>(layers_slider->GetLowerValue()), static_cast<unsigned int>(layers_slider->GetHigherValue())});
+        }
+        layers_slider->set_as_dirty(false);
+        post_event(SimpleEvent(EVT_GLCANVAS_UPDATE));
+    }
+
+    if (moves_slider->is_dirty()) {
+        moves_slider->set_as_dirty(false);
+        m_gcode_viewer.update_sequential_view_current((moves_slider->GetLowerValueD() - 1.0), static_cast<unsigned int>(moves_slider->GetHigherValueD() - 1.0));
+        post_event(SimpleEvent(EVT_GLCANVAS_UPDATE));
+    }
+}
+
+void GLCanvas3D::_render_overlay_toolbars()
+{
+    glsafe(::glDisable(GL_DEPTH_TEST));
+
+    _render_separator_toolbar_right();
+    _render_separator_toolbar_left();
+    _render_main_toolbar();
+    _render_collapse_toolbar();
+    _render_assemble_view_toolbar();
+    //BBS: GUI refactor: GLToolbar
+    //move gizmos behind of main
+    _render_gizmos_overlay();
+
+    if (m_layers_editing.last_object_id >= 0 && m_layers_editing.object_max_z() > 0.0f)
+        m_layers_editing.render_overlay(*this);
+}
+
+size_t GLCanvas3D::_overlay_signature(const ImDrawData* draw_data) const
+{
+    // The recorded ImGui geometry plus the state of the toolbars and the gizmo bar, which draw
+    // outside ImGui.
+    size_t hash = ImGuiWrapper::draw_data_signature(draw_data);
+    for (size_t state_hash : { m_main_toolbar.get_state_hash(), m_separator_toolbar.get_state_hash(),
+                               m_assemble_view_toolbar.get_state_hash(),
+                               collapse_toolbar().get_state_hash(),
+                               m_gizmos.get_overlay_state_hash() })
+        boost::hash_combine(hash, state_hash);
+    return hash;
 }
 
 void GLCanvas3D::_render_style_editor()
@@ -11272,6 +11334,7 @@ void GLCanvas3D::_render_collapse_toolbar() const
     }
 
     GLToolbar& collapse_toolbar = this->collapse_toolbar();
+    const CollapseSide side = collapse_side();
 
     const Size cnv_size = get_canvas_size();
     const float top  = 0.5f * (float)cnv_size.get_height();

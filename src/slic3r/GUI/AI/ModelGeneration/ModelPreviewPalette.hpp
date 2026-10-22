@@ -5,6 +5,12 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <iomanip>
+#include <limits>
+#include <memory>
+#include <sstream>
+#include <string>
 #include <vector>
 
 namespace Slic3r::GUI::PreviewPalette {
@@ -21,6 +27,125 @@ struct ColorTrialMapping {
     std::vector<Color> mapping_colors;
     std::vector<Color> target_colors;
 };
+
+// The automatic palette is the only source of model-region membership.  A
+// color card may replace the displayed colors, but it never changes these
+// source slots.  Unit vectors are optional because the preview shader can use
+// the same centers directly while an editor may attach face/sub-face units.
+struct AutomaticColorBasis {
+    std::string geometry_id;
+    std::string source_color_signature;
+    size_t requested_count {0};
+    std::vector<Color> source_palette;
+    std::vector<size_t> unit_source_slots;
+    std::vector<double> unit_area;
+    std::vector<double> source_area;
+    std::string basis_signature;
+
+    bool valid() const {
+        return requested_count > 0 && requested_count <= max_preview_colors &&
+            !source_palette.empty() && source_palette.size() <= requested_count &&
+            source_area.size() == source_palette.size() &&
+            unit_source_slots.size() == unit_area.size() &&
+            std::all_of(source_area.begin(), source_area.end(),
+                [](double area) { return std::isfinite(area) && area >= 0.0; }) &&
+            std::all_of(unit_area.begin(), unit_area.end(),
+                [](double area) { return std::isfinite(area) && area >= 0.0; }) &&
+            std::all_of(unit_source_slots.begin(), unit_source_slots.end(),
+                [this](size_t slot) { return slot < source_palette.size(); });
+    }
+};
+
+struct AutomaticColorUnits {
+    std::vector<Color> colors;
+    std::vector<double> area;
+
+    bool valid() const {
+        return !colors.empty() && colors.size() == area.size() &&
+            std::all_of(colors.begin(), colors.end(), [](const Color& color) {
+                return std::all_of(color.begin(), color.end(), [](float value) {
+                    return std::isfinite(value) && value >= 0.f && value <= 1.f;
+                });
+            }) &&
+            std::all_of(area.begin(), area.end(), [](double value) {
+                return std::isfinite(value) && value >= 0.0;
+            });
+    }
+};
+
+struct ColorCardRemap {
+    std::string basis_signature;
+    std::vector<Color> target_palette;
+    std::vector<size_t> target_slot_ids;
+    std::vector<size_t> source_to_target_slot;
+    double weighted_error {0.0};
+
+    bool valid(size_t source_count) const {
+        if (basis_signature.empty() || target_palette.size() != target_slot_ids.size() ||
+            source_to_target_slot.size() != source_count || source_count > target_palette.size() ||
+            !std::isfinite(weighted_error) || weighted_error < 0.0) return false;
+        auto identities = target_slot_ids;
+        std::sort(identities.begin(), identities.end());
+        if (std::adjacent_find(identities.begin(), identities.end()) != identities.end()) return false;
+        std::vector<uint8_t> used(target_palette.size(), 0);
+        for (size_t slot : source_to_target_slot) {
+            if (slot >= target_palette.size() || used[slot]) return false;
+            used[slot] = 1;
+        }
+        return true;
+    }
+
+    std::vector<Color> source_order_targets() const {
+        std::vector<Color> result;
+        result.reserve(source_to_target_slot.size());
+        for (size_t slot : source_to_target_slot) {
+            if (slot >= target_palette.size()) return {};
+            result.push_back(target_palette[slot]);
+        }
+        return result;
+    }
+};
+
+namespace detail {
+inline void fnv_append(uint64_t& hash, const void* data, size_t bytes)
+{
+    const auto* first = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < bytes; ++i) { hash ^= first[i]; hash *= 1099511628211ULL; }
+}
+inline void fnv_u32(uint64_t& hash, uint32_t value)
+{
+    std::array<uint8_t, 4> bytes {};
+    for (size_t i = 0; i < bytes.size(); ++i) bytes[i] = uint8_t(value >> (8 * i));
+    fnv_append(hash, bytes.data(), bytes.size());
+}
+inline void fnv_u64(uint64_t& hash, uint64_t value)
+{
+    std::array<uint8_t, 8> bytes {};
+    for (size_t i = 0; i < bytes.size(); ++i) bytes[i] = uint8_t(value >> (8 * i));
+    fnv_append(hash, bytes.data(), bytes.size());
+}
+inline void fnv_float(uint64_t& hash, float value)
+{
+    if (value == 0.f) value = 0.f;
+    uint32_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(value), "Unexpected float width.");
+    std::memcpy(&bits, &value, sizeof(bits));
+    fnv_u32(hash, bits);
+}
+inline void fnv_double(uint64_t& hash, double value)
+{
+    if (value == 0.0) value = 0.0;
+    uint64_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(value), "Unexpected double width.");
+    std::memcpy(&bits, &value, sizeof(bits));
+    fnv_u64(hash, bits);
+}
+inline void fnv_string(uint64_t& hash, const std::string& value)
+{
+    fnv_u64(hash, uint64_t(value.size()));
+    fnv_append(hash, value.data(), value.size());
+}
+} // namespace detail
 inline constexpr float lightness_weight = .35f;
 // Oklab matrices: https://bottosson.github.io/posts/oklab/ (public domain).
 inline Color to_lab(Color rgb)
@@ -219,6 +344,35 @@ public:
         return palette_impl(std::min(max_preview_colors, limit), locked, preserve_hues);
     }
 
+    std::vector<double> group_weights(const std::vector<Color>& rgb_centers) const
+    {
+        std::vector<double> result(rgb_centers.size(), 0.0);
+        if (rgb_centers.empty()) return result;
+        std::vector<Color> lab_centers;
+        lab_centers.reserve(rgb_centers.size());
+        for (const auto& center : rgb_centers) lab_centers.push_back(to_lab(center));
+        for (const auto& sample : samples()) {
+            const size_t slot = nearest_lab_index(sample.lab, lab_centers);
+            if (slot < result.size()) result[slot] += sample.weight;
+        }
+        return result;
+    }
+
+    std::string signature() const
+    {
+        // A compact deterministic identity is sufficient here: the enclosing
+        // 3MF record already binds it to a cryptographic geometry fingerprint.
+        uint64_t hash = 1469598103934665603ULL;
+        for (size_t i = 0; i < bins.size(); ++i) if (bins[i].weight > 0.0) {
+            detail::fnv_u32(hash, uint32_t(i));
+            detail::fnv_double(hash, bins[i].weight);
+            for (double value : bins[i].sum) detail::fnv_double(hash, value);
+        }
+        std::ostringstream out;
+        out << std::hex << std::setw(16) << std::setfill('0') << hash;
+        return out.str();
+    }
+
 private:
     std::vector<Color> palette_impl(size_t limit, const std::vector<Color>& locked, bool preserve_hues) const
     {
@@ -325,4 +479,135 @@ private:
         return centers;
     }
 };
+
+inline std::string automatic_basis_signature(const AutomaticColorBasis& basis)
+{
+    uint64_t hash = 1469598103934665603ULL;
+    detail::fnv_string(hash, basis.geometry_id);
+    detail::fnv_string(hash, basis.source_color_signature);
+    detail::fnv_u64(hash, uint64_t(basis.requested_count));
+    detail::fnv_u64(hash, uint64_t(basis.source_palette.size()));
+    for (const auto& color : basis.source_palette)
+        for (float value : color) detail::fnv_float(hash, value);
+    detail::fnv_u64(hash, uint64_t(basis.source_area.size()));
+    for (double area : basis.source_area) detail::fnv_double(hash, area);
+    detail::fnv_u64(hash, uint64_t(basis.unit_source_slots.size()));
+    for (size_t slot : basis.unit_source_slots) detail::fnv_u64(hash, uint64_t(slot));
+    detail::fnv_u64(hash, uint64_t(basis.unit_area.size()));
+    for (double area : basis.unit_area) detail::fnv_double(hash, area);
+    std::ostringstream out;
+    out << std::hex << std::setw(16) << std::setfill('0') << hash;
+    return out.str();
+}
+
+inline bool attach_automatic_color_units(AutomaticColorBasis& basis, const AutomaticColorUnits* units)
+{
+    if (!units || !units->valid() || basis.source_palette.empty()) return false;
+    std::vector<Color> centers;
+    centers.reserve(basis.source_palette.size());
+    for (const auto& color : basis.source_palette) centers.push_back(to_lab(color));
+    basis.unit_source_slots.clear();
+    basis.unit_source_slots.reserve(units->colors.size());
+    basis.unit_area = units->area;
+    basis.source_area.assign(basis.source_palette.size(), 0.0);
+    for (size_t i = 0; i < units->colors.size(); ++i) {
+        const size_t slot = nearest_lab_index(to_lab(units->colors[i]), centers);
+        basis.unit_source_slots.push_back(slot);
+        basis.source_area[slot] += units->area[i];
+    }
+    return true;
+}
+
+inline AutomaticColorBasis make_automatic_color_basis(const Histogram& histogram, size_t requested_count,
+    const std::string& geometry_id = {}, bool preserve_hues = true,
+    const AutomaticColorUnits* units = nullptr)
+{
+    AutomaticColorBasis result;
+    result.geometry_id = geometry_id;
+    result.source_color_signature = histogram.signature();
+    result.requested_count = std::clamp(requested_count, size_t(1), max_preview_colors);
+    result.source_palette = histogram.trial_palette(result.requested_count, {}, preserve_hues);
+    result.source_area = histogram.group_weights(result.source_palette);
+    attach_automatic_color_units(result, units);
+    result.basis_signature = automatic_basis_signature(result);
+    return result;
+}
+
+// Rectangular Hungarian assignment.  Sources are rows and card slots are
+// columns; source_count <= target_count.  Ascending traversal plus strict
+// improvement gives a deterministic first-slot result for exact ties.
+inline ColorCardRemap minimum_cost_color_card_remap(const AutomaticColorBasis& basis,
+    const std::vector<Color>& target_palette, std::vector<size_t> target_slot_ids = {})
+{
+    ColorCardRemap result;
+    result.basis_signature = basis.basis_signature;
+    result.target_palette = target_palette;
+    if (target_slot_ids.empty()) {
+        target_slot_ids.resize(target_palette.size());
+        for (size_t i = 0; i < target_slot_ids.size(); ++i) target_slot_ids[i] = i;
+    }
+    result.target_slot_ids = std::move(target_slot_ids);
+    const size_t rows = basis.source_palette.size(), columns = target_palette.size();
+    if (!basis.valid() || rows == 0 || rows > columns || result.target_slot_ids.size() != columns)
+        return result;
+    std::vector<size_t> column_order(columns);
+    for (size_t i = 0; i < columns; ++i) column_order[i] = i;
+    std::sort(column_order.begin(), column_order.end(), [&](size_t first, size_t second) {
+        return result.target_slot_ids[first] < result.target_slot_ids[second];
+    });
+    for (size_t i = 1; i < column_order.size(); ++i)
+        if (result.target_slot_ids[column_order[i - 1]] == result.target_slot_ids[column_order[i]])
+            return ColorCardRemap{};
+
+    std::vector<Color> source_lab, target_lab;
+    source_lab.reserve(rows); target_lab.reserve(columns);
+    for (const auto& color : basis.source_palette) source_lab.push_back(to_lab(color));
+    for (const auto& color : target_palette) target_lab.push_back(to_lab(color));
+    std::vector<double> u(rows + 1), v(columns + 1);
+    std::vector<size_t> p(columns + 1), way(columns + 1);
+    const auto cost = [&](size_t source, size_t sorted_target) {
+        const size_t target = column_order[sorted_target];
+        const double weight = basis.source_area[source] > 0.0 ? basis.source_area[source] : 1.0;
+        return weight * double(distance(source_lab[source], target_lab[target]));
+    };
+    for (size_t i = 1; i <= rows; ++i) {
+        p[0] = i;
+        size_t column0 = 0;
+        std::vector<double> minimum(columns + 1, std::numeric_limits<double>::infinity());
+        std::vector<uint8_t> used(columns + 1, 0);
+        do {
+            used[column0] = 1;
+            const size_t row0 = p[column0];
+            double delta = std::numeric_limits<double>::infinity();
+            size_t column1 = 0;
+            for (size_t j = 1; j <= columns; ++j) if (!used[j]) {
+                const double current = cost(row0 - 1, j - 1) - u[row0] - v[j];
+                if (current < minimum[j]) { minimum[j] = current; way[j] = column0; }
+                if (minimum[j] < delta) { delta = minimum[j]; column1 = j; }
+            }
+            if (!std::isfinite(delta)) return ColorCardRemap{};
+            for (size_t j = 0; j <= columns; ++j) {
+                if (used[j]) { u[p[j]] += delta; v[j] -= delta; }
+                else minimum[j] -= delta;
+            }
+            column0 = column1;
+        } while (p[column0] != 0);
+        do {
+            const size_t column1 = way[column0];
+            p[column0] = p[column1];
+            column0 = column1;
+        } while (column0 != 0);
+    }
+    result.source_to_target_slot.assign(rows, columns);
+    for (size_t j = 1; j <= columns; ++j)
+        if (p[j] > 0 && p[j] <= rows) result.source_to_target_slot[p[j] - 1] = column_order[j - 1];
+    result.weighted_error = 0.0;
+    for (size_t i = 0; i < rows; ++i) {
+        if (result.source_to_target_slot[i] >= columns) return ColorCardRemap{};
+        const auto sorted = std::find(column_order.begin(), column_order.end(), result.source_to_target_slot[i]);
+        if (sorted == column_order.end()) return ColorCardRemap{};
+        result.weighted_error += cost(i, size_t(sorted - column_order.begin()));
+    }
+    return result;
+}
 } // namespace Slic3r::GUI::PreviewPalette

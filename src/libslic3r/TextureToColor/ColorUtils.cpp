@@ -319,8 +319,17 @@ static bool smooth_region_geom_boundary(CGALMesh& mesh, std::vector<std::size_t>
     }
 
     // 3. smooth boundary
-    Tree boundary_tree(mesh.faces().begin(), mesh.faces().end(), mesh);
-    boundary_tree.accelerate_distance_queries();
+    // AABB face primitives keep a reference to the mesh geometry. Keep that
+    // geometry immutable while the working mesh is moved by the smoothing
+    // loop; CGAL 6.x may otherwise retain stale primitive bounds and abort
+    // while querying or destroying the accelerated tree.
+    if (polylines.empty())
+        return true;
+    const CGALMesh projection_mesh = mesh;
+    Tree boundary_tree(projection_mesh.faces().begin(), projection_mesh.faces().end(), projection_mesh);
+    // CGAL's optional Kd-tree is not needed for the exact AABB projection and
+    // its destruction is unstable for some imported meshes on Windows.
+    boundary_tree.do_not_accelerate_distance_queries();
 
     constexpr std::size_t max_iters = 5;
     const double smooth_weight = smooth_parameters.smooth_weight;  // Controls smoothing intensity; larger values produce smoother results. Range: 0.1~1.0.

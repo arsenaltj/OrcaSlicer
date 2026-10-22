@@ -37,14 +37,20 @@ bool RedesignFeatureFlags::surface_enabled(std::string_view surface)
         return is_enabled_value(value);
     if (const char* value = std::getenv("ORCASLICER_UI_REDESIGN"))
         return is_enabled_value(value);
-    return surface == "IMAGE_HOME" || surface == "STARTUP_SPLASH" || surface == "STARTUP_BUFFER" ||
+    return surface == "SHELL" || surface == "IMAGE_HOME" || surface == "STARTUP_SPLASH" || surface == "STARTUP_BUFFER" ||
            surface == "STARTUP_SETUP" || surface == "MODEL_WORKFLOW";
+}
+
+bool RedesignFeatureFlags::shell_on_startup(bool editor)
+{
+    return editor && surface_enabled("SHELL");
 }
 
 bool RedesignFeatureFlags::image_home_on_startup(bool shell_active, bool has_input_files,
                                                   bool default_prepare, bool restore_available)
 {
-    return shell_active && !has_input_files && !default_prepare && !restore_available;
+    return shell_active && surface_enabled("IMAGE_HOME") && !has_input_files &&
+           !default_prepare && !restore_available;
 }
 
 }

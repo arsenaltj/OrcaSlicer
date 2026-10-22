@@ -180,6 +180,13 @@ private:
     // Triangle picker drag point (barycentric weights)
     double m_tri_wx{0.333}, m_tri_wy{0.333}, m_tri_wz{0.334};
 
+    // Cached triangle gradient; the bitmap is rebuilt only when size or endpoint colours change.
+    wxBitmap m_tri_cache_bmp;
+    wxSize   m_tri_cache_size;
+    wxColour m_tri_cache_c0;
+    wxColour m_tri_cache_c1;
+    wxColour m_tri_cache_c2;
+
     std::array<RatioLabelPanel*, 3> m_triangle_ratio_labels{nullptr, nullptr, nullptr};
 };
 

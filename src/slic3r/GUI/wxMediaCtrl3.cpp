@@ -549,8 +549,48 @@ void wxMediaCtrl3::PlayThread()
                         error = 1;
                         break;
                     }
-                    m_frame = bm;
-                    m_frame_is_video = true;
+                    lk.unlock();
+                    error = Bambu_ReadSample(tunnel, &sample);
+                    lk.lock();
+                }
+                if (error == 0) {
+                    auto frame_size = m_frame_size;
+                    lk.unlock();
+                    decoder.decode(sample);
+#ifdef _WIN32
+                    wxBitmap bm;
+                    decoder.toWxBitmap(bm, frame_size);
+#else
+                    wxImage bm;
+                    decoder.toWxImage(bm, frame_size);
+#endif
+                    lk.lock();
+                    if (m_url != url) {
+                        error = 1;
+                        break;
+                    }
+                    if (bm.IsOk()) {
+                        auto now = std::chrono::system_clock::now();
+                        if (m_last_PTS && (sample.decode_time - m_last_PTS) < 30000000ULL) { // 3s
+                            auto next_PTS_expected = m_last_PTS_expected + std::chrono::milliseconds((sample.decode_time - m_last_PTS) / 10000ULL);
+                            auto next_PTS_practical = m_last_PTS_practical + std::chrono::milliseconds(minFrameDuration);
+                            auto next_PTS = std::max(next_PTS_expected, next_PTS_practical);
+                            if (now < next_PTS)
+                                std::this_thread::sleep_until(next_PTS);
+                            else
+                                next_PTS = now;
+                            m_last_PTS = sample.decode_time;
+                            m_last_PTS_expected = next_PTS_expected;
+                            m_last_PTS_practical = next_PTS;
+                        } else {
+                            m_last_PTS = sample.decode_time;
+                            m_last_PTS_expected = now;
+                            m_last_PTS_practical = now;
+                        }
+                        m_frame = bm;
+                        m_frame_is_video = true;
+                    }
+                    CallAfter([this] { Refresh(); });
                 }
             }
             if (tunnel) {

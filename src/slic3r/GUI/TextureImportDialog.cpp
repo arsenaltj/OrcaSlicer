@@ -3209,6 +3209,7 @@ void TextureImportDialog::on_mesh_repair_decision_required(wxCommandEvent&)
     m_mesh_repair_decision = (ret == wxID_NO)
         ? Slic3r::TexturePaintingSettings::MeshRepairDecision::RepairAndImport
         : Slic3r::TexturePaintingSettings::MeshRepairDecision::ImportWithoutRepair;
+#endif
 
     start_computation(auto_color, initial);
 }

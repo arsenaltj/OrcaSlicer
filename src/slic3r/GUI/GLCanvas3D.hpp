@@ -647,6 +647,7 @@ private:
 #endif
     unsigned int m_last_w, m_last_h;
     bool m_in_render;
+    bool m_tab_down{ false };
     // How many canvases are inside _render_frame() right now - see is_frame_in_progress().
     static int s_frames_in_progress;
     wxTimer m_timer;

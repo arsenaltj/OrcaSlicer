@@ -5,11 +5,13 @@
 #include "../ModelGeneration/PortraitPaletteRoles.hpp"
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -32,7 +34,36 @@ struct State {
     SemanticColoring::SemanticRegionSlotBindings semantic_region_slots = SemanticColoring::default_semantic_region_slot_bindings;
     std::vector<size_t> project_color_slots, project_semantic_slots;
     std::string project_slot_identity;
+    // Counts are kept per source.  The printer source may have a different
+    // number of physical/mixed slots than the automatic or manual palette.
+    int automatic_count {6}, manual_count {6}, project_count {0};
+    // Optional native automatic-basis/color-card remap.  Old v1/v2 records
+    // omit these fields and continue through the legacy paired-palette path.
+    std::string automatic_basis_signature;
+    std::vector<GUI::PreviewPalette::Color> color_card_target_palette;
+    std::vector<size_t> color_card_target_slot_ids;
+    std::vector<size_t> source_to_target_slot;
+    double color_card_weighted_error {0.0};
 };
+
+// Saved color-card entries use the persisted manual source because dynamic
+// UI source indices are not stable across installations. Keep the per-source
+// count aligned with the exact palette being saved so restoring the snapshot
+// cannot replace an N-color card with an older manual-count value.
+inline void normalize_as_manual_snapshot(State& state)
+{
+    state.source = 2;
+    state.manual_count = std::clamp(state.count, 1, int(GUI::PreviewPalette::max_preview_colors));
+    state.project_color_slots.clear();
+    state.project_semantic_slots.clear();
+    state.project_slot_identity.clear();
+}
+
+inline void normalize_for_persistence(State& state)
+{
+    if (state.source != 1 || state.project_slot_identity.empty())
+        normalize_as_manual_snapshot(state);
+}
 
 namespace detail {
 inline bool valid_fingerprint(const std::string& value)
@@ -42,8 +73,38 @@ inline bool valid_fingerprint(const std::string& value)
     return true;
 }
 
+inline bool valid_basis_signature(const std::string& value)
+{
+    if (value.empty()) return true;
+    if (value.size() != 16 && value.size() != 64) return false;
+    return std::all_of(value.begin(), value.end(), [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    });
+}
+
 inline bool valid_state(const State& state)
 {
+    if (!valid_basis_signature(state.automatic_basis_signature) ||
+        !std::isfinite(state.color_card_weighted_error) || state.color_card_weighted_error < 0.0)
+        return false;
+    const bool has_card = !state.color_card_target_palette.empty() ||
+        !state.color_card_target_slot_ids.empty() || !state.source_to_target_slot.empty();
+    if (has_card) {
+        if (state.automatic_basis_signature.empty() ||
+            state.color_card_target_palette.size() != state.color_card_target_slot_ids.size() ||
+            state.colors.size() != state.mapping_colors.size() ||
+            state.source_to_target_slot.size() != state.mapping_colors.size() ||
+            state.mapping_colors.size() > state.color_card_target_palette.size()) return false;
+        std::vector<uint8_t> used(state.color_card_target_palette.size(), 0);
+        std::set<size_t> slot_ids;
+        for (size_t id : state.color_card_target_slot_ids)
+            if (id > 65535 || !slot_ids.insert(id).second) return false;
+        for (size_t i = 0; i < state.source_to_target_slot.size(); ++i) {
+            const size_t slot = state.source_to_target_slot[i];
+            if (slot >= used.size() || used[slot] || state.colors[i] != state.color_card_target_palette[slot]) return false;
+            used[slot] = 1;
+        }
+    } else if (state.color_card_weighted_error != 0.0) return false;
     if (!state.project_slot_identity.empty() || !state.project_color_slots.empty() || !state.project_semantic_slots.empty()) {
         if (state.source != 1 || state.project_slot_identity.empty() || state.project_slot_identity.size() > 65536 ||
             state.project_color_slots.size() != state.colors.size() ||
@@ -57,12 +118,16 @@ inline bool valid_state(const State& state)
         (!state.semantic_portrait_card.empty() && state.semantic_portrait_card.size() != 6)) return false;
     if (state.source < 0 || state.source > 2 || state.count < 1 ||
         state.count > int(GUI::PreviewPalette::max_preview_colors) ||
+        state.automatic_count < 1 || state.automatic_count > int(GUI::PreviewPalette::max_preview_colors) ||
+        state.manual_count < 1 || state.manual_count > int(GUI::PreviewPalette::max_preview_colors) ||
+        state.project_count < 0 || state.project_count > int(GUI::PreviewPalette::max_preview_colors) ||
         state.colors.size() > size_t(state.count) || state.colors.size() != state.mapping_colors.size() ||
         (state.enabled && state.colors.empty())) return false;
     for (const int slot : state.semantic_region_slots)
         if (slot < -1 || slot >= int(GUI::PreviewPalette::max_preview_colors) ||
             (slot >= 0 && size_t(slot) >= state.colors.size())) return false;
-    for (const auto* palette : {&state.colors, &state.mapping_colors, &state.semantic_palette, &state.semantic_mapping_palette, &state.semantic_portrait_card})
+    for (const auto* palette : {&state.colors, &state.mapping_colors, &state.semantic_palette, &state.semantic_mapping_palette,
+                                &state.semantic_portrait_card, &state.color_card_target_palette})
         for (const auto& color : *palette)
             for (float channel : color)
                 if (!std::isfinite(channel) || channel < 0.0f || channel > 1.0f) return false;
@@ -123,6 +188,8 @@ inline nlohmann::json encode(const State& state, size_t actual_face_count, const
     nlohmann::json doc {{"schema", "orca.color-trial/v2"}, {"geometry_sha256", fingerprint}, {"face_count", actual_face_count},
             {"colors", state.colors}, {"mapping_colors", state.mapping_colors}, {"locks", state.locks},
             {"source", state.source}, {"count", state.count}, {"enabled", state.enabled},
+            {"automatic_count", state.automatic_count}, {"manual_count", state.manual_count},
+            {"project_count", state.project_count},
             {"fidelity", state.fidelity}, {"lighting", state.lighting},
             {"semantic_optimization", state.semantic_optimization},
             {"semantic_palette", state.semantic_palette}, {"semantic_mapping_palette", state.semantic_mapping_palette},
@@ -138,6 +205,13 @@ inline nlohmann::json encode(const State& state, size_t actual_face_count, const
         doc["project_slot_identity"] = state.project_slot_identity;
         doc["project_color_slots"] = state.project_color_slots;
         doc["project_semantic_slots"] = state.project_semantic_slots;
+    }
+    if (!state.automatic_basis_signature.empty()) doc["automatic_basis_signature"] = state.automatic_basis_signature;
+    if (!state.color_card_target_palette.empty()) {
+        doc["color_card_target_palette"] = state.color_card_target_palette;
+        doc["color_card_target_slot_ids"] = state.color_card_target_slot_ids;
+        doc["source_to_target_slot"] = state.source_to_target_slot;
+        doc["color_card_weighted_error"] = state.color_card_weighted_error;
     }
     return doc;
 }
@@ -179,6 +253,22 @@ inline bool decode(const nlohmann::json& doc, size_t actual_face_count, const st
         return fail("Trial colors require normalized RGB palettes within the preview limit.");
     restored.source = int(source);
     restored.count = int(count);
+    auto read_count = [&](const char* name, int fallback, int& target) {
+        if (!doc.contains(name)) { target = fallback; return true; }
+        uint64_t value;
+        if (!detail::read_unsigned(doc[name], value) || value < 1 || value > GUI::PreviewPalette::max_preview_colors)
+            return false;
+        target = int(value); return true;
+    };
+    if (!read_count("automatic_count", restored.source == 0 ? restored.count : 6, restored.automatic_count) ||
+        !read_count("manual_count", restored.source == 2 ? restored.count : 6, restored.manual_count))
+        return fail("Invalid source color counts.");
+    if (doc.contains("project_count")) {
+        uint64_t value;
+        if (!detail::read_unsigned(doc["project_count"], value) || value > GUI::PreviewPalette::max_preview_colors)
+            return fail("Invalid printer color count.");
+        restored.project_count = int(value);
+    } else restored.project_count = restored.source == 1 ? restored.count : 0;
     restored.enabled = doc["enabled"].get<bool>();
     restored.fidelity = doc["fidelity"].get<bool>();
     restored.lighting = doc["lighting"].get<bool>();
@@ -223,6 +313,35 @@ inline bool decode(const nlohmann::json& doc, size_t actual_face_count, const st
                 item.second->push_back(size_t(slot));
             }
         }
+    }
+    if (doc.contains("automatic_basis_signature")) {
+        if (!doc["automatic_basis_signature"].is_string()) return fail("Invalid automatic color basis signature.");
+        restored.automatic_basis_signature = doc["automatic_basis_signature"].get<std::string>();
+        if (!detail::valid_basis_signature(restored.automatic_basis_signature))
+            return fail("Invalid automatic color basis signature.");
+    }
+    const bool has_card = doc.contains("color_card_target_palette") ||
+        doc.contains("color_card_target_slot_ids") || doc.contains("source_to_target_slot") ||
+        doc.contains("color_card_weighted_error");
+    if (has_card) {
+        if (!doc.contains("color_card_target_palette") ||
+            !detail::read_palette(doc["color_card_target_palette"], restored.color_card_target_palette) ||
+            !doc.contains("color_card_target_slot_ids") || !doc["color_card_target_slot_ids"].is_array() ||
+            !doc.contains("source_to_target_slot") || !doc["source_to_target_slot"].is_array() ||
+            !doc.contains("color_card_weighted_error") || !doc["color_card_weighted_error"].is_number())
+            return fail("Incomplete color-card remap.");
+        for (const auto& list : {std::make_pair(&doc["color_card_target_slot_ids"], &restored.color_card_target_slot_ids),
+                                 std::make_pair(&doc["source_to_target_slot"], &restored.source_to_target_slot)}) {
+            if (list.first->size() > GUI::PreviewPalette::max_preview_colors)
+                return fail("Color-card remap exceeds the preview limit.");
+            for (const auto& entry : *list.first) {
+                uint64_t value;
+                if (!detail::read_unsigned(entry, value) || value > 65535)
+                    return fail("Invalid color-card slot identity.");
+                list.second->push_back(size_t(value));
+            }
+        }
+        restored.color_card_weighted_error = doc["color_card_weighted_error"].get<double>();
     }
     if (!detail::valid_state(restored)) return fail("Trial color centers and targets must form valid pairs.");
     output = std::move(restored);

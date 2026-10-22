@@ -52,6 +52,7 @@ public:
                      const boost::filesystem::path& library_root = {});
     void reset_asset();
     void synchronize_preview_options();
+    void synchronize_automatic_basis(const std::string& basis_signature);
     void set_portrait_enabled(bool enabled) { m_portrait_enabled = enabled; update_text(); }
     void mark_saved();
     void attach_actions(wxWindow* footer);
@@ -109,16 +110,29 @@ public:
     std::function<void(const std::string&, std::function<void()>, std::function<void()>)> on_record;
     std::function<std::vector<std::string>()> on_available_colors;
     std::function<void(size_t)> on_color_slot_changed;
+    std::function<void(bool)> on_color_blocks_change;
 
 private:
     void on_history_key(wxKeyEvent& event);
     void update_text();
     void wrap_status(wxStaticText* label);
     void update_secondary_details();
+    void update_color_blocks(bool editable);
+    wxPanel* m_color_blocks_panel {nullptr};
+    ComboBox* m_color_track {nullptr};
+    ComboBox* m_color_blocks_list {nullptr};
+    wxStaticText* m_color_blocks_status {nullptr};
+    Button* m_color_block_edit {nullptr};
+    Button* m_color_blocks_previous {nullptr};
+    Button* m_color_blocks_next {nullptr};
+    std::shared_ptr<const void> m_color_blocks_identity;
+    size_t m_color_blocks_page {0};
+    std::vector<uint32_t> m_visible_color_blocks;
     void start_partition(const nlohmann::json& saved = {});
     void finish_partition();
     void clear_partition(const AI::SurfaceSelectionPersistence::SelectionState& selection);
     void select_piece(size_t face);
+    size_t select_partition_semantic(const std::string& region);
     void apply_partition_selection();
     void restore_partition(const AI::BeautyPuzzle& puzzle, uint32_t selected);
     struct PartitionTask {
@@ -131,6 +145,7 @@ private:
         bool restoring {false};
         std::string error;
         std::string geometry;
+        std::string automatic_basis_signature;
         boost::filesystem::path source;
         std::optional<AI::ShapeLockSet> locks;
     };
@@ -189,6 +204,7 @@ private:
     std::optional<AI::BeautyPuzzle> m_partition;
     uint32_t m_selected_piece {0};
     std::shared_ptr<PartitionTask> m_partition_task;
+    bool m_partition_semantics_attempted {false};
     std::thread m_partition_worker;
     wxTimer m_partition_timer;
     AI::BeautyDocument m_document;
@@ -202,5 +218,7 @@ private:
     bool m_can_redo {false};
     bool m_details_open {false};
     bool m_portrait_enabled {false};
+    size_t m_semantic_selection_protected {0};
+    size_t m_semantic_selection_low_confidence {0};
 };
 }

@@ -5,6 +5,7 @@
 #include "slic3r/AI/SmartSlicing/Application/TrialSliceScheduler.hpp"
 #include "slic3r/AI/SmartSlicing/Domain/IntentConstraintSnapshot.hpp"
 #include "slic3r/AI/SmartSlicing/Ports/ITrialSliceExecutor.hpp"
+#include "slic3r/AI/SmartSlicing/Domain/SmartSliceTypes.hpp"
 
 #include <atomic>
 #include <functional>
@@ -55,6 +56,10 @@ public:
                              uint64_t maximum_temporary_disk_bytes);
 
     AI::SmartSlicing::TrialSliceResult execute_trial_slice(const AI::SmartSlicing::SliceCandidate& candidate) override;
+    AI::SmartSlicing::TrialSliceResult execute_recommendation_slice(
+        OrcaTrialSliceInput input,
+        const AI::SmartSlicing::SliceRecommendation& recommendation,
+        const AI::SmartSlicing::WorkspaceRevision& base_revision);
     AI::SmartSlicing::VersionedTrialSliceResult execute_versioned_trial_slice(
         const AI::SmartSlicing::TrialSliceTask& task,
         const std::shared_ptr<const AI::SmartSlicing::RecommendationCancellationToken>& cancellation_token);
@@ -69,7 +74,9 @@ private:
         const AI::SmartSlicing::TrialSliceTask* versioned_task,
         const std::shared_ptr<const AI::SmartSlicing::RecommendationCancellationToken>& cancellation_token,
         AI::SmartSlicing::TrialMetrics* trial_metrics,
-        AI::SmartSlicing::TrialEvaluationFacts* evaluation_facts);
+        AI::SmartSlicing::TrialEvaluationFacts* evaluation_facts,
+        std::optional<OrcaTrialSliceInput> supplied_input = std::nullopt,
+        std::optional<DynamicPrintConfig> override_config = std::nullopt);
     static AI::SmartSlicing::SlicingMetrics extract_metrics(const GCodeProcessorResult& result,
                                                              const std::vector<int>& expected_filament_mapping,
                                                              bool prime_tower_enabled);

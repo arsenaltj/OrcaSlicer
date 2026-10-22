@@ -55,6 +55,8 @@ class Button : public StaticBox
     bool isCenter    = true;
     bool vertical    = false;
     int leftPadding = 0;
+    bool m_show_indicator = false;
+    wxColour m_indicator_color = wxColour("#009688");
 
     static const int buttonWidth  = 200;
     static const int buttonHeight = 50;
@@ -72,6 +74,7 @@ public:
 
     void SetIcon(const wxString& icon);
     void SetIcon(const wxBitmap& icon);
+    void SetIconSpacing(int spacing);
 
     void SetMinSize(const wxSize& size) override;
     void SetMaxSize(const wxSize& size) override;

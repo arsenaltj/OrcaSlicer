@@ -26,6 +26,7 @@
 #include <wx/filename.h>
 
 #include <slic3r/GUI/Widgets/WebView.hpp>
+#include <slic3r/GUI/Widgets/WebViewHostDialog.hpp>
 #include "Widgets/LoadingBrand.hpp"
 
 namespace pt = boost::property_tree;
@@ -976,8 +977,7 @@ void WebViewPanel::OnFreshLoginStatus(wxTimerEvent &event)
 {
     if (wxGetApp().is_closing())
         return;
-    auto mainframe = Slic3r::GUI::wxGetApp().mainframe;
-    if (mainframe && mainframe->m_webview == this) {
+    if (WebViewPanel::if_built() == this) {
         auto* app_config = Slic3r::GUI::wxGetApp().app_config;
         if (app_config && app_config->get_stealth_mode()) return;
         Slic3r::GUI::wxGetApp().get_login_info(ORCA_CLOUD_PROVIDER);

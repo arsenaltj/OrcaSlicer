@@ -5815,6 +5815,7 @@ if (is_marlin_flavor)
             size_t extruders_count = size_t(boost::any_cast<int>(v));
             wxTheApp->CallAfter([this, opt_key, value, extruders_count]() {
                 if (opt_key == "extruders_count" || opt_key == "single_extruder_multi_material") {
+                    const size_t old_extruders_count = m_extruders_count;
                     extruders_count_changed(extruders_count, true);
                     init_options_list(); // m_options_list should be updated before UI updating
                     update_dirty();

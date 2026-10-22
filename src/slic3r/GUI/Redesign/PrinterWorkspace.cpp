@@ -6,6 +6,8 @@
 #include "../DeviceManager.hpp"
 #include "../DeviceCore/DevManager.h"
 #include "../MediaPlayCtrl.h"
+#include "../wxMediaCtrl3.h"
+#include "../../Utils/NetworkAgent.hpp"
 #include "../Printer/PrinterFileSystem.h"
 #include "../wxExtensions.hpp"
 #include "libslic3r/Utils.hpp"

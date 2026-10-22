@@ -780,11 +780,13 @@ TEST_CASE("Local reload reconciles filament slots and purge volumes while retain
     const ConfigOption* colour                                                         = f.bundle.project_config.option("filament_colour");
 
     REQUIRE(f.bundle.reload_local_bundle("", f.id, &f.error));
-    CHECK(f.bundle.filament_presets == std::vector<std::string>{f.prefix + "Filament", f.prefix + "Filament"});
+    // Reload keeps the single loaded spool and leaves the second hardware
+    // nozzle idle; the printer still contributes a second purge multiplier.
+    CHECK(f.bundle.filament_presets == std::vector<std::string>{f.prefix + "Filament"});
     check_double_vector(f.bundle.project_config.option<ConfigOptionFloats>("flush_multiplier")->values, {0.75, 1.});
-    check_double_vector(f.bundle.project_config.option<ConfigOptionFloats>("flush_volumes_vector")->values, {111., 222., 111., 222.});
+    check_double_vector(f.bundle.project_config.option<ConfigOptionFloats>("flush_volumes_vector")->values, {111., 222.});
     check_double_vector(f.bundle.project_config.option<ConfigOptionFloats>("flush_volumes_matrix")->values,
-                        {0., 333., 333., 0., 0., 333., 333., 0.});
+                        {0., 0.});
     CHECK(f.bundle.project_config.option("filament_colour") == colour);
     CHECK(f.bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values == std::vector<std::string>{"#123456"});
 }

@@ -6388,16 +6388,9 @@ void ObjectList::fix_through_cgal(const std::vector<int> &obj_idxs, const std::v
         object(obj_idx)->ensure_on_bed();
         plater->changed_mesh(obj_idx);
 
-        if (modified) {
-            painting_removed = painting_removed || count_painted() < painted_before;
-            mo->ensure_on_bed();
-            plater->changed_mesh(obj_idx);
-            plater->get_partplate_list().notify_instance_update(obj_idx, 0);
-            plater->sidebar().obj_list()->update_plate_values_for_items();
-            update_item_error_icon(obj_idx, vol_idx);
-            update_info_items(obj_idx);
-        }
-
+        const size_t volumes_after = mo->volumes.size();
+        if (volumes_after > volumes_before)
+            add_volumes_to_object_in_list(obj_idx);
         plater->get_partplate_list().notify_instance_update(obj_idx, 0);
         plater->sidebar().obj_list()->update_plate_values_for_items();
 

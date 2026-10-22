@@ -2,7 +2,6 @@
 #include "I18N.hpp"
 #include "slic3r/BuildInfo.hpp"
 
-#include "BuildCommit.hpp"
 #include "GUI.hpp"
 #include "GUI_App.hpp"
 #include "MainFrame.hpp"

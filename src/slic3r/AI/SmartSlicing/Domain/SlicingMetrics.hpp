@@ -11,6 +11,7 @@ struct SlicingMetrics
 {
     std::optional<double> estimated_time_seconds;
     std::optional<double> filament_volume_mm3;
+    std::optional<double> material_grams;
     std::optional<double> support_volume_mm3;
     std::optional<double> flush_volume_mm3;
     std::optional<double> wipe_tower_volume_mm3;

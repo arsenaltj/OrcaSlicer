@@ -11,6 +11,7 @@
 #include <wx/event.h>
 #include <string>
 #include <functional>
+#include <chrono>
 #include <wx/dialog.h>
 #include <wx/accel.h>
 #include <wx/webview.h>
@@ -28,11 +29,13 @@
 #include "wx/fs_mem.h"
 #include "wx/stdpaths.h"
 #include <wx/panel.h>
+#include <wx/button.h>
+#include <wx/stattext.h>
 #include <wx/sizer.h>
 #include <wx/tbarbase.h>
 #include "wx/textctrl.h"
 #include <wx/timer.h>
-#include <chrono>
+#include "Lazy.hpp"
 
 
 namespace Slic3r {
@@ -137,17 +140,37 @@ public:
     bool Show(bool show = true) override;
 private:
     enum class LoadingState { Loading, Ready, Failed, Closing };
-
-    void CreateBrowser(const wxString& url);
     void ShowLoading(const wxString& url);
-    void ShowLoadFailure(bool timed_out);
     void StartVisibleLoadingTimer();
-    bool IsCurrentBrowserEvent(const wxWebViewEvent& evt) const;
-    bool IsMainDocumentEvent(const wxWebViewEvent& evt) const;
+    void ShowLoadFailure(bool timed_out);
     void OnShow(wxShowEvent& evt);
     void OnLoadingTimeout(wxTimerEvent& evt);
     void OnRetryHome(wxCommandEvent& evt);
     void OnEnterPrepare(wxCommandEvent& evt);
+    void CreateBrowser(const wxString& url);
+    bool IsCurrentBrowserEvent(const wxWebViewEvent& evt) const;
+    bool IsMainDocumentEvent(const wxWebViewEvent& evt) const;
+    void create_browser();
+    void create_cloud_browser();
+    void reset_browser();
+    // Consumes the cloud pane's webview events so they stay off the homepage handlers.
+    void OnCloudWebViewEvent(wxWebViewEvent& evt);
+    // True when `url` has the same scheme/host/port as the cloud origin ({web}).
+    bool is_cloud_origin(const wxString& url) const;
+    // True when a navigation to `url` must leave the pane: an http(s) URL on another origin than
+    // the (known) cloud origin. False for non-web schemes and while the origin is unknown.
+    bool should_divert_cloud_url(const wxString& url) const;
+    // Parses a request_web_session message and defers it to GUI_App.
+    void on_cloud_script_message(const std::string& body);
+    // Loads `url`, first clearing a lazily-required sign-out (see cloud_signed_out).
+    void load_cloud_after_signout(const wxString& url);
+    // First load of a freshly created pane: deferred so CreateWebView's queued "wx" handler add
+    // runs first and the page sees window.wx at load time (guide §3).
+    void schedule_cloud_load(const wxString& url);
+    // Clears the pane's stored web data (its cookie-backed session) on an explicit sign-out.
+    void clear_cloud_storage();
+    // Re-applies the content sizer's proportions and min sizes for the cloud state.
+    void apply_cloud_layout(bool cloud_on);
 
     wxWebView* m_browser{nullptr};
     wxPanel* m_loading_panel{nullptr};
@@ -156,17 +179,33 @@ private:
     wxButton* m_prepare_button{nullptr};
     wxTimer m_loading_timer;
     LoadingState m_loading_state{LoadingState::Loading};
-    wxString m_home_url;
-    wxString m_requested_url;
     std::chrono::steady_clock::time_point m_loading_started;
     std::chrono::steady_clock::time_point m_visible_loading_started;
     bool m_visible_loading_started_once{false};
+    wxWebView* m_cloud_browser{nullptr};
+    wxBoxSizer* m_content_sizer{nullptr};
+    wxString m_home_url;
+    wxString m_requested_url;
+    bool m_reset_on_show{false};
+    // {web} origin (scheme://host[:port]) of the loaded pane. Set from every load, including the
+    // plain cloud fallback, so navigation policy can keep {web} pages in the pane and send other
+    // sites to the system browser.
+    wxString m_cloud_base_url;
+    // Start URL the pane was last seeded with. An open whose URL matches this is an ordinary
+    // re-open (nothing changed), so it only shows the pane instead of reloading it (guide §10).
+    wxString m_cloud_seed_url;
+    // Sign-out clear the pane must apply once it exists / next loads.
+    wxString m_cloud_signout_url;
+    wxString m_cloud_after_signout_url;
+    bool     m_cloud_pending_signout{false};
+    wxButton *  m_button_stop;
+    wxTextCtrl *m_url;
+#if !BBL_RELEASE_TO_PUBLIC
+    // Created only by the internal-build toolbar in the constructor.
     wxBoxSizer *bSizer_toolbar;
     wxButton *  m_button_back;
     wxButton *  m_button_forward;
-    wxButton *  m_button_stop{nullptr};
     wxButton *  m_button_reload;
-    wxTextCtrl *m_url{nullptr};
     wxButton *  m_button_tools;
 #endif //BBL_RELEASE_TO_PUBLIC
 

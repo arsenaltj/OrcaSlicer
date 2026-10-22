@@ -25,13 +25,71 @@
 #include <cstddef>
 #include <cstdlib>
 #include <algorithm>
-#include <chrono>
-#include <cmath>
+#include <ios>
+#include <iomanip>
+#include <cstring>
+#include <map>
+#include <exception>
+#include <functional>
+#include <memory>
+#include <initializer_list>
+#include <cstdint>
+#include <cstdlib>
+#include "libslic3r/CommonDefs.hpp"
+#include "libslic3r/TriangleSelector.hpp"
+#include <cstdio>
+#include "libslic3r/LocalesUtils.hpp"
+#include "libslic3r/FlushVolCalc.hpp"
+#include "libslic3r/Point.hpp"
+#include "libslic3r/GCode/GCodeProcessor.hpp"
+#include "libslic3r/Technologies.hpp"
+#include "libslic3r/BoundingBox.hpp"
+#include "libslic3r/PrintBase.hpp"
+#include "libslic3r/Preset.hpp"
+#include <fstream>
+#include "libslic3r/calib.hpp"
+#include <iterator>
+#include "libslic3r/Format/OBJ.hpp"
+#include "libslic3r/Geometry.hpp"
+#include "libslic3r/Arrange.hpp"
+#include "libslic3r/MultiNozzleUtils.hpp"
+#include "libslic3r/Color.hpp"
+#include <miniz.h>
+#include "libslic3r/Exception.hpp"
+#include "libslic3r/AppConfig.hpp"
+#include "libslic3r/CSGMesh/CSGMesh.hpp"
+#include "libslic3r/format.hpp"
+#include "libslic3r/MeshBoolean.hpp"
 #include <numeric>
 #include <limits>
 #include <optional>
+#include "slic3r/GUI/Event.hpp"
+#include "slic3r/GUI/Gizmos/GLGizmoBase.hpp"
+#include "slic3r/GUI/Widgets/StateColor.hpp"
+#include "slic3r/GUI/Widgets/AMSItem.hpp"
+#include "slic3r/GUI/Search.hpp"
+#include "slic3r/GUI/ObjectDataViewModel.hpp"
+#include "slic3r/GUI/Field.hpp"
+#include "slic3r/GUI/Widgets/PopupWindow.hpp"
 #include <set>
-#include <stdexcept>
+#include "slic3r/GUI/Widgets/StaticLine.hpp"
+#include "slic3r/GUI/GUI_ObjectSettings.hpp"
+#include "slic3r/GUI/ColorDecomposeDialog.hpp"
+#include "slic3r/GUI/SettingsIndex.hpp"
+#include "slic3r/GUI/Jobs/Job.hpp"
+#include "slic3r/GUI/ParamsPanel.hpp"
+#include "slic3r/GUI/SceneRaycaster.hpp"
+#include "slic3r/GUI/PrinterWebView.hpp"
+#include "slic3r/GUI/ReleaseNote.hpp"
+#include "slic3r/GUI/Jobs/Worker.hpp"
+#include "slic3r/GUI/UnsavedChangesDialog.hpp"
+#include "slic3r/GUI/Printer/PrinterFileSystem.h"
+#include "slic3r/GUI/GUI_Geometry.hpp"
+#include "slic3r/GUI/Widgets/DialogButtons.hpp"
+#include "slic3r/GUI/PrintOptionsDialog.hpp"
+#include "slic3r/GUI/CalibrationPanel.hpp"
+#include "slic3r/GUI/CalibrationWizard.hpp"
+#include "slic3r/GUI/Monitor.hpp"
 #include <slic3r/plugin/PluginDescriptor.hpp>
 #include <slic3r/plugin/PluginManager.hpp>
 #include <slic3r/plugin/PluginResolver.hpp>
@@ -98,6 +156,7 @@
 #include <wx/evtloop.h>
 #include <wx/timer.h>
 #include <wx/wrapsizer.h>
+#include <wx/weakref.h>
 #ifdef _WIN32
 #include <wx/richtooltip.h>
 #include <wx/custombgwin.h>
@@ -4155,7 +4214,7 @@ void Sidebar::update_presets(Preset::Type preset_type)
             // no single extruder's diameter.
             const int variant = p->combo_nozzle_dia->FindString(diameter);
             p->combo_nozzle_dia->SetSelection(variant != wxNOT_FOUND ? variant : (*p->single_extruder).combo_diameter->GetSelection());
-            
+
             // ORCA update nozzle type
             const auto& full_config = wxGetApp().preset_bundle->full_config();
             wxString nozzle_type = "-";
@@ -4349,7 +4408,540 @@ static std::string blend_mixed_color(const std::vector<unsigned int> &comp_ids,
     return Slic3r::blend_color_multi(hex_colors, ratios);
 }
 
-#include "SidebarMixedFilament.ipp"
+void Sidebar::update_mixed_filament_list()
+{
+    auto* plater = dynamic_cast<Plater*>(GetParent());
+    if (!plater) return;
+
+    wxWindowUpdateLocker noUpdates(this);
+
+    const wxColour mc_bg     = StateColor::darkModeColorFor(*wxWHITE);
+    const wxColour mc_border = StateColor::darkModeColorFor(wxColour("#DBDBDB")); // same color with filament combo box border
+    const wxColour mc_text   = StateColor::darkModeColorFor(wxColour("#262E30"));
+    const wxColour mc_dim    = StateColor::darkModeColorFor(wxColour("#ACACAC"));
+
+    auto& project_config = wxGetApp().preset_bundle->project_config;
+    auto mixed_indices = plater->mixed_filament_config_indices();
+    size_t num_physical = p->combos_filament.size();
+
+    auto* is_mixed_opt    = project_config.option<ConfigOptionBools>("filament_is_mixed");
+    auto* components_opt  = project_config.option<ConfigOptionStrings>("filament_mixed_components");
+    auto* ratios_opt      = project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios");
+    auto* colours_opt     = project_config.option<ConfigOptionStrings>("filament_colour");
+    auto* grad_opt        = project_config.option<ConfigOptionBools>("filament_mixed_gradient");
+    auto* grad_range_opt  = project_config.option<ConfigOptionStrings>("filament_mixed_gradient_range");
+
+    bool can_mix = (num_physical >= 2);
+    bool has_mixed = can_mix && !mixed_indices.empty();
+
+    // Check integrity of mixed filament component references
+    std::vector<size_t> broken_slots;
+    if (is_mixed_opt && components_opt)
+        broken_slots = check_mixed_filament_integrity(is_mixed_opt->values, components_opt->values, num_physical);
+    std::set<size_t> broken_set(broken_slots.begin(), broken_slots.end());
+
+    // Type consistency check
+    if (is_mixed_opt && components_opt) {
+        std::vector<std::string> physical_types;
+        auto& preset_bundle = *wxGetApp().preset_bundle;
+        for (size_t i = 0; i < num_physical; ++i) {
+            std::string ft;
+            if (i < preset_bundle.filament_presets.size()) {
+                auto* preset = preset_bundle.filaments.find_preset(preset_bundle.filament_presets[i]);
+                if (preset) {
+                    std::string display_type;
+                    ft = preset->config.get_filament_type(display_type);
+                }
+            }
+            if (ft.empty()) ft = "PLA";
+            physical_types.push_back(ft);
+        }
+        auto type_mismatch_slots = check_mixed_filament_type_consistency(
+            is_mixed_opt->values, components_opt->values, physical_types);
+        for (size_t s : type_mismatch_slots)
+            broken_set.insert(s);
+        broken_slots.insert(broken_slots.end(), type_mismatch_slots.begin(), type_mismatch_slots.end());
+    }
+
+    bool at_limit = (wxGetApp().preset_bundle->filament_presets.size() >= size_t(EnforcerBlockerType::ExtruderMax));
+    p->m_btn_add_mixed_filament->Show(can_mix && !has_mixed && !at_limit);
+    p->m_panel_mixed_title->Show(has_mixed);
+    p->m_mixed_scroll_area->Show(has_mixed);
+    p->m_panel_mixed_content->Show(has_mixed);
+    if (p->m_btn_mixed_add)
+        p->m_btn_mixed_add->Enable(!at_limit);
+    p->m_panel_mixed_warning->Show(false);
+
+    // Show/dismiss 3D canvas notification for broken mixed filaments
+    auto*       notify        = plater->get_notification_manager();
+    GLCanvas3D* view3d_canvas = plater->get_view3D_canvas3D();
+    if(view3d_canvas && view3d_canvas->is_initialized() && notify){
+        if (has_mixed && !broken_set.empty()) {
+            notify->push_notification(NotificationType::BBLMixedFilamentBroken,
+                NotificationManager::NotificationLevel::ErrorNotificationLevel,
+                _u8L("Mixed filament has invalid or mismatched components. Please re-edit affected entries."));
+        } else {
+            notify->close_notification_of_type(NotificationType::BBLMixedFilamentBroken);
+        }
+    }
+
+    if (has_mixed) {
+        auto* left_col  = p->m_sizer_mixed_filaments->GetItem(size_t(0))->GetSizer();
+        auto* right_col = p->m_sizer_mixed_filaments->GetItem(size_t(1))->GetSizer();
+        left_col->Clear(true);
+        right_col->Clear(true);
+
+        std::vector<std::string> physical_colors;
+        if (colours_opt) {
+            for (size_t i = 0; i < num_physical && i < colours_opt->values.size(); ++i)
+                physical_colors.push_back(colours_opt->values[i]);
+        }
+
+        auto make_swatch_panel = [this](wxWindow* parent, const wxColour& col, unsigned int num) -> wxPanel* {
+            int swatch_sz = FromDIP(20);
+            auto* panel = new wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(swatch_sz, swatch_sz));
+            panel->SetMinSize(wxSize(swatch_sz, swatch_sz));
+            bool is_dark = wxGetApp().dark_mode();
+            panel->Bind(wxEVT_PAINT, [panel, col, num, is_dark](wxPaintEvent&) {
+                wxPaintDC dc(panel);
+                wxSize sz = panel->GetClientSize();
+                dc.SetBackground(wxBrush(col));
+                dc.Clear();
+                if (!is_dark && col.Red() > 224 && col.Green() > 224 && col.Blue() > 224) {
+                    dc.SetPen(wxPen(wxColour(130, 130, 128), 1));
+                    dc.SetBrush(*wxTRANSPARENT_BRUSH);
+                    dc.DrawRectangle(0, 0, sz.GetWidth(), sz.GetHeight());
+                }
+                if (is_dark && col.Red() < 45 && col.Green() < 45 && col.Blue() < 45) {
+                    dc.SetPen(wxPen(wxColour(207, 207, 207), 1));
+                    dc.SetBrush(*wxTRANSPARENT_BRUSH);
+                    dc.DrawRectangle(0, 0, sz.GetWidth(), sz.GetHeight());
+                }
+                wxString txt = wxString::Format("%u", num);
+                dc.SetFont(::Label::Body_14);
+                wxSize txt_sz = dc.GetTextExtent(txt);
+                dc.SetTextForeground(col.GetLuminance() > 0.5 ? wxColour(50, 58, 61) : *wxWHITE);
+                dc.DrawText(txt, (sz.GetWidth() - txt_sz.GetWidth()) / 2,
+                                 (sz.GetHeight() - txt_sz.GetHeight()) / 2);
+            });
+            return panel;
+        };
+
+        for (size_t i = 0; i < mixed_indices.size(); ++i) {
+            size_t cfg_idx = mixed_indices[i];
+            auto* combo_and_btn_sizer = new wxBoxSizer(wxHORIZONTAL);
+
+            if (i == 0 || i % 2 == 0) // dont add left margin for right column items so all horizontal margins will be equal like on filaments section
+                combo_and_btn_sizer->AddSpacer(FromDIP(SidebarProps::ContentMargin()));
+
+            // Parse components and ratios from config strings (supports 2-N components)
+            std::vector<unsigned int> comp_ids;
+            std::vector<int> comp_ratios;
+            if (components_opt && cfg_idx < components_opt->values.size()) {
+                std::istringstream iss(components_opt->values[cfg_idx]);
+                std::string tok;
+                while (std::getline(iss, tok, ',')) {
+                    unsigned int v = 0;
+                    if (std::sscanf(tok.c_str(), "%u", &v) == 1)
+                        comp_ids.push_back(v);
+                }
+            }
+            if (ratios_opt && cfg_idx < ratios_opt->values.size()) {
+                CNumericLocalesSetter c_locale_setter;
+                std::istringstream iss(ratios_opt->values[cfg_idx]);
+                std::string tok;
+                while (std::getline(iss, tok, ',')) {
+                    float v = 0;
+                    if (std::sscanf(tok.c_str(), "%f", &v) == 1)
+                        comp_ratios.push_back((int)(v * 100 + 0.5f));
+                }
+            }
+            if (!comp_ids.empty() && comp_ratios.size() != comp_ids.size()) {
+                BOOST_LOG_TRIVIAL(warning) << "Mixed filament slot " << cfg_idx
+                    << ": ratio count (" << comp_ratios.size()
+                    << ") != component count (" << comp_ids.size()
+                    << "), resetting to even distribution";
+                int n = (int)comp_ids.size();
+                comp_ratios.assign(n, 100 / n);
+                comp_ratios[0] += 100 - (100 / n) * n;
+            }
+
+            bool is_broken = broken_set.count(cfg_idx) > 0;
+
+            // Recalculate mixed color based on current physical colors
+            if (!is_broken && !comp_ids.empty() && comp_ids.size() == comp_ratios.size()) {
+                std::string new_mixed_color = blend_mixed_color(comp_ids, comp_ratios, physical_colors);
+
+                if (colours_opt && cfg_idx < colours_opt->values.size() && colours_opt->values[cfg_idx] != new_mixed_color) {
+                    colours_opt->values[cfg_idx] = new_mixed_color;
+
+                    auto* multi_colour_opt = project_config.option<ConfigOptionStrings>("filament_multi_colour");
+                    if (multi_colour_opt && cfg_idx < multi_colour_opt->values.size()) {
+                        multi_colour_opt->values[cfg_idx] = new_mixed_color;
+                    }
+                }
+            }
+
+            bool is_gradient = false;
+            int  gradient_direction = 0;
+            if (grad_opt && cfg_idx < grad_opt->values.size())
+                is_gradient = grad_opt->values[cfg_idx];
+            if (is_gradient && grad_range_opt && cfg_idx < grad_range_opt->values.size()) {
+                CNumericLocalesSetter c_locale_setter;
+                float v0 = 0, v1 = 0;
+                if (std::sscanf(grad_range_opt->values[cfg_idx].c_str(), "%f,%f", &v0, &v1) == 2)
+                    gradient_direction = (v0 > v1) ? 0 : 1;
+            }
+
+            std::string mix_color_str = (colours_opt && cfg_idx < colours_opt->values.size())
+                ? colours_opt->values[cfg_idx] : "#888888";
+            wxColour mix_col(mix_color_str);
+            unsigned int mix_num = (unsigned int)(cfg_idx + 1);
+
+            // The swatch fades bottom to top over the model's height, sampled the same way
+            // the slicer builds the sublayers, so it matches the editor's Effect Preview. The
+            // ramp comes back empty for every slot that is not a two component gradient mix.
+            const int swatch_sz = FromDIP(20);
+            const std::vector<wxColour> gradient_ramp = mixed_gradient_ramp(project_config, cfg_idx, swatch_sz);
+
+            if (!gradient_ramp.empty()) {
+                auto* grad_panel = new wxPanel(p->m_panel_mixed_content, wxID_ANY,
+                                               wxDefaultPosition, wxSize(swatch_sz, swatch_sz));
+                grad_panel->SetMinSize(wxSize(swatch_sz, swatch_sz));
+                grad_panel->SetBackgroundStyle(wxBG_STYLE_PAINT);
+                grad_panel->Bind(wxEVT_PAINT, [grad_panel, gradient_ramp, mix_num](wxPaintEvent&) {
+                    wxBufferedPaintDC dc(grad_panel);
+                    wxSize sz = grad_panel->GetClientSize();
+                    fill_gradient_ramp_rect(dc, wxRect(0, 0, sz.GetWidth(), sz.GetHeight()), gradient_ramp);
+                    wxString txt = wxString::Format("%u", mix_num);
+                    dc.SetFont(::Label::Body_14);
+                    wxSize txt_sz = dc.GetTextExtent(txt);
+                    // The number sits at the swatch's middle, so take its contrast from the
+                    // colour printed at mid height rather than from either endpoint.
+                    dc.SetTextForeground(gradient_ramp[gradient_ramp.size() / 2].GetLuminance() > 0.5 ? wxColour(50, 58, 61) : *wxWHITE);
+                    dc.DrawText(txt, (sz.GetWidth() - txt_sz.GetWidth()) / 2,
+                                     (sz.GetHeight() - txt_sz.GetHeight()) / 2);
+                });
+                grad_panel->Bind(wxEVT_LEFT_UP, [this, i](wxMouseEvent&) { edit_mixed_filament(i); }); // ORCA also open edit color dialog with clicking swatch
+                combo_and_btn_sizer->Add(grad_panel, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(SidebarProps::ElementSpacing()) - FromDIP(2)); // ElementSpacing - 2 (from combo box))
+            } else {
+                auto swatch_panel = make_swatch_panel(p->m_panel_mixed_content, mix_col, mix_num);
+                swatch_panel->Bind(wxEVT_LEFT_UP, [this, i](wxMouseEvent&) { edit_mixed_filament(i); }); // ORCA also open edit color dialog with clicking swatch
+                combo_and_btn_sizer->Add(swatch_panel, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(SidebarProps::ElementSpacing()) - FromDIP(2)); // ElementSpacing - 2 (from combo box))
+            }
+
+            auto* content_panel = new wxPanel(p->m_panel_mixed_content, wxID_ANY);
+            content_panel->SetBackgroundColour(mc_bg);
+            content_panel->SetBackgroundStyle(wxBG_STYLE_PAINT);
+
+            // Pre-compute all values the paint lambda needs (avoid capturing `this` for FromDIP)
+            int cp_pad        = FromDIP(4);
+            int cp_swatch_sz  = FromDIP(20);
+            int cp_sep_margin = FromDIP(3);
+            int cp_pct_left   = FromDIP(2);
+            int cp_gap        = FromDIP(2);
+            int cp_pct_gap    = FromDIP(4);
+            bool cp_is_dark   = wxGetApp().dark_mode();
+
+            // Build per-component colour list for the lambda
+            std::vector<wxColour> cp_colours;
+            std::vector<bool>     cp_valid;
+            std::vector<unsigned int> cp_ids = comp_ids;
+            std::vector<int>          cp_ratios = comp_ratios;
+            bool cp_is_gradient = is_gradient;
+            int  cp_gradient_dir = gradient_direction;
+            for (size_t ci = 0; ci < comp_ids.size(); ++ci) {
+                bool valid = (comp_ids[ci] >= 1 && comp_ids[ci] <= physical_colors.size());
+                cp_valid.push_back(valid);
+                cp_colours.push_back(valid ? wxColour(physical_colors[comp_ids[ci] - 1]) : wxColour("#D9D9D9"));
+            }
+
+            // Reorder for gradient display: from -> to
+            std::vector<unsigned int> draw_ids;
+            std::vector<int>          draw_ratios;
+            std::vector<wxColour>     draw_colours;
+            std::vector<bool>         draw_valid;
+            if (cp_is_gradient && cp_ids.size() == 2) {
+                int fi = (cp_gradient_dir == 0) ? 0 : 1;
+                int ti = 1 - fi;
+                draw_ids     = { cp_ids[fi], cp_ids[ti] };
+                draw_ratios  = { cp_ratios.size() > (size_t)fi ? cp_ratios[fi] : 0,
+                                 cp_ratios.size() > (size_t)ti ? cp_ratios[ti] : 0 };
+                draw_colours = { cp_colours[fi], cp_colours[ti] };
+                draw_valid   = { cp_valid[fi], cp_valid[ti] };
+            } else {
+                draw_ids     = cp_ids;
+                draw_ratios  = cp_ratios;
+                draw_colours = cp_colours;
+                draw_valid   = cp_valid;
+            }
+
+            content_panel->Bind(wxEVT_PAINT, [content_panel, mc_bg, mc_border, mc_text, mc_dim,
+                                               cp_pad, cp_swatch_sz, cp_sep_margin, cp_pct_left,
+                                               cp_gap, cp_pct_gap, cp_is_dark,
+                                               cp_is_gradient,
+                                               draw_ids, draw_ratios, draw_colours, draw_valid](wxPaintEvent&) {
+                wxBufferedPaintDC dc(content_panel);
+                wxSize sz = content_panel->GetClientSize();
+
+                dc.SetBrush(wxBrush(mc_bg));
+                dc.SetPen(wxPen(mc_border, 1));
+                dc.DrawRectangle(0, 0, sz.GetWidth(), sz.GetHeight());
+
+                dc.SetFont(::Label::Body_13);
+                int x = cp_pad;
+                int y_swatch = (sz.GetHeight() - cp_swatch_sz) / 2;
+                int text_h = dc.GetTextExtent(wxT("A")).GetHeight();
+                int y_text = y_swatch + (cp_swatch_sz - text_h) / 2;
+                int avail = sz.GetWidth() - cp_pad;
+                wxString ellipsis = wxT("...");
+                int ellipsis_w = dc.GetTextExtent(ellipsis).GetWidth();
+
+                auto fits = [&](int needed) -> bool {
+                    return (x + needed) <= (avail - ellipsis_w);
+                };
+
+                size_t n = draw_ids.size();
+                for (size_t ci = 0; ci < n; ++ci) {
+                    // Separator: "+" or arrow
+                    if (ci > 0) {
+                        wxString sep = cp_is_gradient ? wxT("\u2192") : wxT("+");
+                        int sep_w = dc.GetTextExtent(sep).GetWidth() + cp_sep_margin * 2;
+                        if (!fits(sep_w + cp_swatch_sz)) {
+                            dc.SetTextForeground(mc_text);
+                            dc.DrawText(ellipsis, x, y_text);
+                            break;
+                        }
+                        dc.SetTextForeground(mc_text);
+                        dc.DrawText(sep, x + cp_sep_margin, y_text);
+                        x += sep_w;
+                    }
+
+                    // Swatch
+                    if (!fits(cp_swatch_sz)) {
+                        dc.SetTextForeground(mc_text);
+                        dc.DrawText(ellipsis, x, y_text);
+                        break;
+                    }
+
+                    if (draw_valid[ci]) {
+                        wxColour col = draw_colours[ci];
+                        dc.SetBrush(wxBrush(col));
+                        dc.SetPen(*wxTRANSPARENT_PEN);
+                        dc.DrawRectangle(x, y_swatch, cp_swatch_sz, cp_swatch_sz);
+                        if (!cp_is_dark && col.Red() > 224 && col.Green() > 224 && col.Blue() > 224) {
+                            dc.SetPen(wxPen(wxColour(130, 130, 128), 1));
+                            dc.SetBrush(*wxTRANSPARENT_BRUSH);
+                            dc.DrawRectangle(x, y_swatch, cp_swatch_sz, cp_swatch_sz);
+                        }
+                        if (cp_is_dark && col.Red() < 45 && col.Green() < 45 && col.Blue() < 45) {
+                            dc.SetPen(wxPen(wxColour(207, 207, 207), 1));
+                            dc.SetBrush(*wxTRANSPARENT_BRUSH);
+                            dc.DrawRectangle(x, y_swatch, cp_swatch_sz, cp_swatch_sz);
+                        }
+                        dc.SetFont(::Label::Body_14);
+                        wxString num = wxString::Format("%u", draw_ids[ci]);
+                        wxSize num_sz = dc.GetTextExtent(num);
+                        dc.SetTextForeground(col.GetLuminance() > 0.5 ? wxColour(50, 58, 61) : *wxWHITE);
+                        dc.DrawText(num, x + (cp_swatch_sz - num_sz.GetWidth()) / 2,
+                                         y_swatch + (cp_swatch_sz - num_sz.GetHeight()) / 2);
+                        dc.SetFont(::Label::Body_13);
+                    } else {
+                        dc.SetBrush(wxBrush(mc_bg));
+                        dc.SetPen(wxPen(mc_dim, 1));
+                        dc.DrawRectangle(x, y_swatch, cp_swatch_sz, cp_swatch_sz);
+                        wxString dash = wxT("\u2014");
+                        wxSize dash_sz = dc.GetTextExtent(dash);
+                        dc.SetTextForeground(mc_dim);
+                        dc.DrawText(dash, x + (cp_swatch_sz - dash_sz.GetWidth()) / 2,
+                                          y_swatch + (cp_swatch_sz - dash_sz.GetHeight()) / 2);
+                    }
+                    x += cp_swatch_sz + cp_gap;
+
+                    // Ratio text (skip for gradient)
+                    if (!cp_is_gradient) {
+                        int r = (ci < draw_ratios.size()) ? draw_ratios[ci] : 0;
+                        wxString pct = wxString::Format("%d%%", r);
+                        int pct_w = dc.GetTextExtent(pct).GetWidth();
+                        if (!fits(pct_w)) {
+                            dc.SetTextForeground(mc_text);
+                            dc.DrawText(ellipsis, x, y_text);
+                            break;
+                        }
+                        dc.SetTextForeground(mc_text);
+                        dc.DrawText(pct, x + cp_pct_left, y_text);
+                        x += pct_w + cp_pct_gap;
+                    }
+                }
+            });
+
+            // Tooltip: always show full info
+            {
+                wxString tip;
+                for (size_t ci = 0; ci < draw_ids.size(); ++ci) {
+                    if (ci > 0) tip += cp_is_gradient ? wxT(" \u2192 ") : wxT(" + ");
+                    int r = (ci < draw_ratios.size()) ? draw_ratios[ci] : 0;
+                    tip += wxString::Format("%u (%d%%)", draw_ids[ci], r);
+                }
+                content_panel->SetToolTip(tip);
+            }
+
+            // Repaint on resize so truncation updates
+            content_panel->Bind(wxEVT_SIZE, [content_panel](wxSizeEvent& e) {
+                content_panel->Refresh();
+                e.Skip();
+            });
+
+            content_panel->SetCursor(wxCursor(wxCURSOR_HAND));
+            size_t panel_idx = i;
+            content_panel->Bind(wxEVT_LEFT_UP, [this, panel_idx](wxMouseEvent&) { edit_mixed_filament(panel_idx); });
+
+            combo_and_btn_sizer->Add(content_panel, 1, wxALL | wxEXPAND, FromDIP(2))->SetMinSize({-1, FromDIP(30)});
+
+            auto* menu_btn = new ScalableButton(p->m_panel_mixed_content, wxID_ANY,
+                is_broken ? "error" : "menu_filament");
+            menu_btn->SetToolTip(is_broken ? _L("Mixed filament has broken component references") : _L("Edit / Delete / Merge"));
+            menu_btn->Bind(wxEVT_BUTTON, [this, panel_idx, cfg_idx](wxCommandEvent&) {
+                wxMenu menu;
+
+                auto* edit_item = menu.Append(wxID_ANY, _L("Edit"));
+                menu.Bind(wxEVT_MENU, [this, panel_idx](wxCommandEvent&) {
+                    edit_mixed_filament(panel_idx);
+                }, edit_item->GetId());
+
+                wxMenu* sub_menu = new wxMenu();
+                std::vector<wxBitmap*> icons = get_extruder_color_icons(true);
+                int filaments_cnt = icons.size();
+                for (int j = 0; j < filaments_cnt; ++j) {
+                    if ((size_t)j == cfg_idx)
+                        continue;
+
+                    wxString item_name;
+                    bool is_target_mixed = wxGetApp().preset_bundle->is_mixed_filament(j);
+                    if (is_target_mixed) {
+                        item_name = wxString::Format(_L("Filament %d"), j + 1);
+                    } else {
+                        auto preset = wxGetApp().preset_bundle->filaments.find_preset(
+                            wxGetApp().preset_bundle->filament_presets[j]);
+                        item_name = preset ? from_u8(preset->label(false))
+                                           : wxString::Format(_L("Filament %d"), j + 1);
+                    }
+
+                    auto* mi = new wxMenuItem(sub_menu, wxID_ANY, item_name);
+#ifndef __linux__
+                    mi->SetBitmap(*icons[j]);
+#endif
+                    sub_menu->Append(mi);
+                    sub_menu->Bind(wxEVT_MENU, [this, cfg_idx, j](wxCommandEvent&) {
+                        change_filament(cfg_idx, j);
+                    }, mi->GetId());
+                }
+                if (filaments_cnt > 1)
+                    menu.AppendSubMenu(sub_menu, _L("Merge with"));
+                else
+                    delete sub_menu;
+
+                menu.AppendSeparator(); // ORCA use seperator for reducing accidental clicks to delete
+
+                // ORCA use delete item on end of menu to prevent accidental clicks. clicking to submenus(merge) already not allowed by OS
+                auto* del_item = menu.Append(wxID_ANY, _L("Delete"));
+                menu.Bind(wxEVT_MENU, [this, panel_idx](wxCommandEvent&) {
+                    delete_mixed_filament_at(panel_idx);
+                }, del_item->GetId());
+
+                PopupMenu(&menu);
+            });
+            combo_and_btn_sizer->Add(menu_btn, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(SidebarProps::ElementSpacing()) - FromDIP(2)); // ElementSpacing - 2 (from combo box))
+
+            combo_and_btn_sizer->Add(FromDIP(SidebarProps::ContentMargin()), 0, 0, 0, 0);
+
+            int side = i % 2;
+            auto* col = (side == 0) ? left_col : right_col;
+            if (side == 1 && i > 1) col->Remove(i / 2);
+            col->Add(combo_and_btn_sizer, 1, wxEXPAND);
+            if (side == 0 && i > 0) {
+                right_col->AddStretchSpacer(1);
+            }
+        }
+    }
+
+    recalc_filament_scroll_sizes();
+
+    p->m_panel_filament_content->FitInside();
+    p->m_mixed_scroll_area->FitInside();
+    p->scrolled->Layout();
+    m_scrolled_sizer->Layout();
+    p->scrolled->Layout();
+
+    size_t total = wxGetApp().preset_bundle->filament_presets.size();
+    obj_list()->update_objects_list_filament_column(total);
+
+    // Sync mixed filament colors into the config used by 3D view rendering.
+    plater->update_filament_colors_in_full_config();
+    obj_list()->update_filament_colors();
+
+    // Check if any broken mixed filament is used by objects on current plate.
+    // Scan raw extruder assignments (object / volume / height-range / painting)
+    // instead of get_extruders() which expands mixed slots and loses their IDs.
+    p->m_mixed_filament_broken = false;
+    if (!broken_slots.empty()) {
+        std::set<size_t> broken_1based;
+        for (size_t s : broken_slots) broken_1based.insert(s + 1);
+
+        auto* curr_plate = plater->get_partplate_list().get_curr_plate();
+        if (curr_plate) {
+            for (auto& obj : plater->model().objects) {
+                if (!curr_plate->contain_instance_totally(obj, 0))
+                    continue;
+                // Check object-level extruder
+                int obj_ext = obj->config.has("extruder") ? obj->config.extruder() : 1;
+                if (broken_1based.count((size_t)obj_ext)) {
+                    p->m_mixed_filament_broken = true;
+                    break;
+                }
+                bool found = false;
+                for (auto* vol : obj->volumes) {
+                    // Check volume-level extruder
+                    int vol_ext = vol->config.has("extruder") ? vol->config.extruder() : obj_ext;
+                    if (broken_1based.count((size_t)vol_ext)) { found = true; break; }
+                    // Check color painting data (mmu segmentation facets)
+                    if (vol->is_model_part() && !vol->mmu_segmentation_facets.empty()) {
+                        for (size_t broken_slot : broken_1based) {
+                            if (vol->mmu_segmentation_facets.has_facets(*vol, EnforcerBlockerType(broken_slot)))
+                                { found = true; break; }
+                        }
+                        if (found) break;
+                    }
+                }
+                if (found) { p->m_mixed_filament_broken = true; break; }
+                // Check height range modifier extruder overrides
+                for (auto& [range, cfg] : obj->layer_config_ranges) {
+                    if (cfg.has("extruder")) {
+                        int layer_ext = cfg.option("extruder")->getInt();
+                        if (layer_ext > 0 && broken_1based.count((size_t)layer_ext))
+                            { found = true; break; }
+                    }
+                }
+                if (found) { p->m_mixed_filament_broken = true; break; }
+            }
+        }
+    }
+
+    if (plater->canvas3D()) {
+        plater->canvas3D()->set_as_dirty();
+        plater->get_view3D_canvas3D()->reload_scene(false);
+    }
+
+    if (p->m_mixed_filament_broken) {
+        auto* mf = wxGetApp().mainframe;
+        if (mf)
+            mf->update_slice_print_status(MainFrame::eEventObjectUpdate, false);
+    }
+
+    if (auto *tab = dynamic_cast<TabPrintPlate *>(wxGetApp().plate_tab))
+        tab->update_mixed_filament_seq_state();
+
+}
 
 bool Sidebar::has_broken_mixed_filament() const
 {
@@ -4526,7 +5118,35 @@ static std::string serialize_mixed_gradient_curve_if_custom(const MixedFilamentR
 #include "SidebarMixedFilamentCreation.ipp"
 #include "PlaterTextureUnits.ipp"
 
-void Sidebar::add_mixed_filament(const std::string& target_color)
+int Sidebar::ensure_mixed_filament(const std::vector<unsigned int> &components, const std::vector<int> &ratios)
+{
+    if (components.size() < 2 || components.size() != ratios.size())
+        return -1;
+    if (p->combos_filament.size() < 2)
+        return -1;
+    if (std::accumulate(ratios.begin(), ratios.end(), 0) <= 0)
+        return -1;
+
+    if (const int existing = find_fixed_mixed_filament(wxGetApp().preset_bundle->project_config, components, ratios);
+        existing >= 0)
+        return existing;
+
+    if (wxGetApp().preset_bundle->filament_presets.size() >= size_t(EnforcerBlockerType::ExtruderMax))
+        return -1;
+
+    std::vector<std::string> color_strs, names, types;
+    collect_physical_filament_info(color_strs, names, types);
+
+    MixedFilamentResult result;
+    result.components = components;
+    result.ratios     = ratios;
+    const size_t created_at = wxGetApp().preset_bundle->filament_presets.size();
+    if (!create_mixed_filament_from_result(this, result, color_strs))
+        return -1;
+    return int(created_at);
+}
+
+void Sidebar::add_mixed_filament()
 {
     auto* plater = dynamic_cast<Plater*>(GetParent());
     if (!plater) return;
@@ -4536,7 +5156,7 @@ void Sidebar::add_mixed_filament(const std::string& target_color)
     std::vector<std::string> color_strs, names, types;
     collect_physical_filament_info(color_strs, names, types);
 
-    MixedFilamentDialog dlg(this, color_strs, names, types, target_color);
+    MixedFilamentDialog dlg(this, color_strs, names, types);
     if (dlg.ShowModal() == wxID_OK) {
         auto result = dlg.get_result();
         create_mixed_filament_from_result(this, result, color_strs, true);
@@ -6533,6 +7153,7 @@ struct Plater::priv
     Sidebar *  sidebar;
     AIAssistantPanel* ai_assistant_panel { nullptr };
     MainFrame *main_frame;
+    wxWeakRef<wxWindow> tabpanel_event_source;
 
     MenuFactory menus;
 
@@ -6557,6 +7178,14 @@ struct Plater::priv
     // GUI elements
     AuiMgr m_aui_mgr;
     std::unique_ptr<SmartSlicingFeatureHost> smart_slicing_host;
+    // Live dock panes. `on_close` runs when the user closes one from its close button; `shown` is
+    // what the owner asked for.
+    struct DockPane
+    {
+        std::function<void()> on_close;
+        bool                  shown{true};
+    };
+    std::map<wxWindow*, DockPane> m_dock_panes;
     wxString m_default_window_layout;
     wxPanel* current_panel{ nullptr };
     std::vector<wxPanel*> panels;
@@ -6733,6 +7362,7 @@ struct Plater::priv
 
     void enable_sidebar(bool enabled);
     void collapse_sidebar(bool collapse);
+    void apply_color_mode();
     void update_sidebar(bool force_update = false);
     // The sidebar shows the selected presets, which a G-code previewed without its own settings has nothing to do
     // with, so it stays hidden then. With the file's settings loaded it shows them, as for a .gcode.3mf.
@@ -6790,8 +7420,11 @@ struct Plater::priv
     std::vector<size_t> load_files(const std::vector<fs::path>& input_files,
                                    LoadStrategy strategy,
                                    bool ask_multi = false,
-                                   ObjImportColorFn obj_color_fn = nullptr, ModelColorImportResult* color_result = nullptr,
-                                   const TextureImportOptions* texture_options = nullptr);
+                                   ObjImportColorFn obj_color_fn = nullptr,
+                                   ModelColorImportResult* color_result = nullptr,
+                                   const TextureImportOptions* texture_options = nullptr,
+                                   bool* published_out = nullptr,
+                                   bool* config_loaded_out = nullptr);
     std::vector<size_t> load_model_objects(const ModelObjectPtrs& model_objects, bool allow_negative_z = false, bool split_object = false, bool auto_drop = true);
 
     // Texture-to-color import: a mesh loaded with UVs + a texture map gets its faces clustered
@@ -6872,6 +7505,8 @@ struct Plater::priv
 
     void undo();
     void redo();
+    // True, and tells the user, while a background job is working on the model - see the definition.
+    bool undo_redo_blocked_by_job();
     bool undo_redo_to(size_t time_to_load);
 
     // BBS: backup
@@ -7188,6 +7823,7 @@ bool PlaterDropTarget::OnDropFiles(wxCoord x, wxCoord y, const wxArrayString &fi
 Plater::priv::priv(Plater *q, MainFrame *main_frame)
     : q(q)
     , main_frame(main_frame)
+    , tabpanel_event_source(main_frame ? main_frame->m_tabpanel : nullptr)
     //BBS: add bed_exclude_area
     , config(Slic3r::DynamicPrintConfig::new_from_defaults_keys({
         "printable_area", "bed_exclude_area", "wrapping_exclude_area", "extruder_printable_area", "bed_custom_texture", "bed_custom_model", "print_sequence",
@@ -7265,7 +7901,7 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
     this->q->Bind(EVT_NOTICE_CHILDE_SIZE_CHANGED, &Sidebar::on_size, sidebar);
     this->q->Bind(EVT_NOTICE_FULL_SCREEN_CHANGED, &Sidebar::on_full_screen, sidebar);
     this->q->Bind(EVT_ADD_CUSTOM_FILAMENT, &priv::on_add_custom_filament, this);
-    main_frame->m_tabpanel->Bind(wxEVT_NOTEBOOK_PAGE_CHANGING, &priv::on_tab_selection_changing, this);
+    if (tabpanel_event_source) tabpanel_event_source->Bind(wxEVT_NOTEBOOK_PAGE_CHANGING, &priv::on_tab_selection_changing, this);
 
     auto* panel_3d = new wxPanel(q);
     view3D = new View3D(panel_3d, bed, &model, config, &background_process);
@@ -7708,7 +8344,7 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
 
             catch (...) {}
             
-            if (this->q->get_project_filename().IsEmpty() && this->q->is_empty_project()) {
+            if (!this->q->only_gcode_mode() && !this->q->using_exported_file() && this->q->get_project_filename().IsEmpty() && this->q->is_empty_project()) {
                 int skip_confirm = e.GetInt();
                 // Skips the preset reload; trigger_restore_project()'s callers load the presets first.
                 this->q->new_project(skip_confirm, true, wxString(), false);
@@ -7756,7 +8392,8 @@ Plater::priv::~priv()
         delete config;
     // Saves the database of visited (already shown) hints into hints.ini.
     notification_manager->deactivate_loaded_hints();
-    main_frame->m_tabpanel->Unbind(wxEVT_NOTEBOOK_PAGE_CHANGING, &priv::on_tab_selection_changing, this);
+    if (tabpanel_event_source)
+        tabpanel_event_source->Unbind(wxEVT_NOTEBOOK_PAGE_CHANGING, &priv::on_tab_selection_changing, this);
 }
 
 void Plater::priv::update(unsigned int flags)
@@ -8231,14 +8868,95 @@ void read_binary_stl(const std::string& filename, std::string& model_id, std::st
     return;
 }
 
+// Logs what show_substitutions_info() would list, for loads that don't show the dialog.
+static void log_substitutions(const ConfigSubstitutions& substitutions, const std::string& source)
+{
+    for (const ConfigSubstitution& substitution : substitutions)
+        BOOST_LOG_TRIVIAL(warning) << "Loading " << source << ": " << substitution.opt_def->opt_key << " = \"" << substitution.old_value
+                                   << "\" replaced with \"" << substitution.new_value->serialize() << "\"";
+}
+
+static void log_substitutions(const PresetsConfigSubstitutions& substitutions, const std::string& source)
+{
+    for (const PresetConfigSubstitutions& preset : substitutions)
+        log_substitutions(preset.substitutions, source + " (preset " + preset.preset_name + ")");
+}
+
+// After the settings of a project or a G-code were loaded into the presets: size the per-filament project
+// lists to the loaded filament count, and drop state only a connected printer may set.
+static void sync_loaded_project_filament_config(DynamicConfig& proj_cfg)
+{
+    ConfigOptionStrings* filament_color = proj_cfg.opt<ConfigOptionStrings>("filament_colour");
+    if (filament_color) {
+        size_t filament_count = filament_color->size();
+
+        // Sync filament map
+        ConfigOptionInts* filament_map = proj_cfg.opt<ConfigOptionInts>("filament_map", true);
+        if (filament_map->size() != filament_count) {
+            filament_map->values.resize(filament_count, 1);
+        }
+
+        ConfigOptionInts* filament_nozzle_map = proj_cfg.opt<ConfigOptionInts>("filament_nozzle_map", true);
+        if (filament_nozzle_map->size() != filament_count) {
+            filament_nozzle_map->values.resize(filament_count, 0);
+        }
+
+        ConfigOptionInts* filament_volume_map = proj_cfg.opt<ConfigOptionInts>("filament_volume_map", true);
+        if (filament_volume_map->size() != filament_count) {
+            filament_volume_map->values.resize(filament_count, static_cast<int>(NozzleVolumeType::nvtStandard));
+        }
+
+        // Sync filament multi colour
+        ConfigOptionStrings* filament_multi_color = proj_cfg.opt<ConfigOptionStrings>("filament_multi_colour", true);
+        if (filament_multi_color->size() != filament_count) {
+            filament_multi_color->values.resize(filament_count);
+        }
+        // If there is no multi-color data or color is not match, use single color as default value
+        for (size_t i = 0; i < filament_count; i++) {
+            std::vector<std::string> colors = Slic3r::split_string(filament_multi_color->values[i], ' ');
+            if (i >= filament_multi_color->values.size() || colors.empty() || colors[0] != filament_color->values[i] ) {
+                filament_multi_color->values[i] = filament_color->values[i];
+            }
+        }
+        // Sync filament colour type
+        ConfigOptionStrings* filament_color_type = proj_cfg.opt<ConfigOptionStrings>("filament_colour_type", true);
+        if (filament_color_type && filament_color_type->size() != filament_count) {
+            filament_color_type->values.resize(filament_count);
+
+            for (size_t i = 0; i < filament_count; i++) {
+                if (i >= filament_color_type->values.size() || filament_color_type->values[i].empty()) {
+                    filament_color_type->values[i] = "1";
+                }
+            }
+        }
+    }
+
+    // Filament Track Switch state is derived live from the connected
+    // printer; a loaded project must not carry a stale installed/active
+    // flag, so clear both and let device sync re-derive them.
+    if (auto* has_switcher = proj_cfg.opt<ConfigOptionBool>("has_filament_switcher"))
+        has_switcher->value = false;
+    if (auto* dynamic_map = proj_cfg.opt<ConfigOptionBool>("enable_filament_dynamic_map"))
+        dynamic_map->value = false;
+}
+
 // BBS: backup & restore
 std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_files,
                                              LoadStrategy strategy,
                                              bool ask_multi,
-                                             ObjImportColorFn obj_color_fn, ModelColorImportResult* color_result,
-                                             const TextureImportOptions* texture_options)
+                                             ObjImportColorFn obj_color_fn,
+                                             ModelColorImportResult* color_result,
+                                             const TextureImportOptions* texture_options,
+                                             bool* published_out,
+                                             bool* config_loaded_out)
 {
-    if (color_result != nullptr) *color_result = {};
+    if (color_result != nullptr)
+        *color_result = {};
+    if (published_out != nullptr)
+        *published_out = false;
+    if (config_loaded_out != nullptr)
+        *config_loaded_out = false;
+
     std::vector<size_t> empty_result;
     bool dlg_cont = true;
     bool is_user_cancel = false;
@@ -9074,8 +9792,6 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                 bool                  is_xxx;
                 Semver                file_version;
 
-                // Only feature callers supply a custom color policy. Ordinary imports
-                // keep Model::texture_mesh and use the native texture import dialog below.
                 if (boost::iends_with(path.string(), ".stp") ||
                     boost::iends_with(path.string(), ".step")) {
                         double linear = string_to_double_decimal_point(wxGetApp().app_config->get("linear_deflection"));
@@ -11555,7 +12271,7 @@ void Plater::priv::reload_from_disk()
                 bool   is_split = wxGetApp().app_config->get_bool("is_split_compound");
                 new_model       = Model::read_from_step(path, LoadStrategy::AddDefaultInstances | LoadStrategy::LoadModel, nullptr, nullptr, nullptr, linear, angle, is_split);
             }else {
-                new_model = Model::read_from_file(path, nullptr, nullptr, LoadStrategy::AddDefaultInstances | LoadStrategy::LoadModel, &plate_data, &project_presets);
+                new_model = Model::read_from_file(path, nullptr, nullptr, LoadStrategy::AddDefaultInstances | LoadStrategy::LoadModel, &plate_data, &project_presets, nullptr, nullptr, nullptr, nullptr, nullptr, 0);
             }
 
 
@@ -13475,7 +14191,7 @@ void Plater::priv::on_change_color_mode(SimpleEvent& evt) {
     assemble_view->get_canvas3d()->on_change_color_mode(m_is_dark);
     if (m_send_to_sdcard_dlg) m_send_to_sdcard_dlg->on_change_color_mode();
 
-    apply_color_mode();
+    m_aui_mgr.apply_color_mode();
 }
 
 #include "PlaterNativeWorkspace.ipp"
@@ -14904,6 +15620,326 @@ std::vector<size_t> Plater::physical_filament_config_indices() const
     }
     return indices;
 }
+
+#if 0 // Superseded by the option-aware implementation in PlaterTextureImport.ipp.
+bool Plater::priv::run_textured_mesh_import_dialog(Slic3r::Model& loaded_model, TextureImportResult& result,
+                                                   std::function<bool()> cancel_callback,
+                                                   std::function<bool(int)> progress_callback)
+{
+    if (!loaded_model.texture_mesh || !has_importable_texture(*loaded_model.texture_mesh)) return false;
+
+    // Defense in depth: if all geometry got dropped earlier (e.g. by a future
+    // regression of the zero-volume cleanup) but the textured mesh is still
+    // alive, there is nothing for the dialog to paint onto. Skip the dialog
+    // gracefully so load_files() can fall through to its "no geometry"
+    // message instead of making the user round-trip a meaningless matcher.
+    if (loaded_model.objects.empty()) {
+        BOOST_LOG_TRIVIAL(warning) << "handle_textured_mesh_import: skipping dialog because the loaded model has no geometry objects";
+        loaded_model.texture_mesh.reset();
+        result.skipped = true;
+        return true;
+    }
+
+    const wxString fallback_warning = _L("Texture import failed. The model appears to contain texture data, but the texture import process could not be completed. The model will be imported as geometry only.");
+
+    BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: opening texture import dialog";
+
+    std::vector<TextureFilamentEntry> filament_entries;
+    {
+        auto& preset_bundle = *wxGetApp().preset_bundle;
+        auto& project_config = preset_bundle.project_config;
+        auto* colours_opt = project_config.option<ConfigOptionStrings>("filament_colour");
+        auto* is_mixed_opt = project_config.option<ConfigOptionBools>("filament_is_mixed");
+        auto* type_opt = project_config.option<ConfigOptionStrings>("filament_type");
+        auto* components_opt = project_config.option<ConfigOptionStrings>("filament_mixed_components");
+        auto* ratios_opt = project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios");
+        const size_t total = preset_bundle.filament_presets.size();
+        filament_entries.reserve(total);
+        for (size_t i = 0; i < total; ++i) {
+            TextureFilamentEntry entry;
+            entry.kind = (is_mixed_opt && i < is_mixed_opt->values.size() && is_mixed_opt->values[i]) ?
+                TextureFilamentKind::ExistingMixed : TextureFilamentKind::ExistingPhysical;
+            entry.dialog_index = (int)filament_entries.size();
+            entry.project_config_index = i;
+            entry.color_hex = (colours_opt && i < colours_opt->values.size()) ? colours_opt->values[i] : "#808080";
+            entry.type = (type_opt && i < type_opt->values.size()) ? type_opt->values[i] : "";
+
+            std::string name;
+            if (i < preset_bundle.filament_presets.size()) {
+                auto* preset = preset_bundle.filaments.find_preset(preset_bundle.filament_presets[i]);
+                if (preset)
+                    name = preset->label(false);
+            }
+            if (name.empty())
+                name = into_u8(wxString::Format(_L("Filament %d"), int(i + 1)));
+            entry.name = name;
+
+            if (entry.kind == TextureFilamentKind::ExistingMixed) {
+                if (components_opt && i < components_opt->values.size())
+                    entry.mixed_components = Slic3r::parse_mixed_components(components_opt->values[i]);
+                std::vector<double> ratios = Slic3r::parse_mixed_ratios(
+                    ratios_opt && i < ratios_opt->values.size() ? ratios_opt->values[i] : "",
+                    entry.mixed_components.size());
+                entry.mixed_ratios.reserve(ratios.size());
+                for (double ratio : ratios)
+                    entry.mixed_ratios.push_back((int)std::lround(ratio * 100.0));
+            }
+            filament_entries.push_back(std::move(entry));
+        }
+    }
+
+    TextureImportDialog dlg(q, *loaded_model.texture_mesh, filament_entries,
+                            std::move(cancel_callback), std::move(progress_callback));
+    if (dlg.ShowModal() != wxID_OK) {
+        if (dlg.was_skipped()) {
+            BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: user skipped texture matching";
+            result.skipped = true;
+            loaded_model.texture_mesh.reset();
+            return true;
+        }
+        if (dlg.fallback_to_geometry_only()) {
+            BOOST_LOG_TRIVIAL(warning) << "handle_textured_mesh_import: texture import failed, falling back to geometry-only import";
+            result.fallback_to_geometry_only = true;
+            result.fallback_warning = fallback_warning;
+            loaded_model.texture_mesh.reset();
+            return true;
+        }
+        BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: user cancelled";
+        loaded_model.texture_mesh.reset();
+        return false;
+    }
+
+    auto painted = dlg.get_painted_mesh();
+    auto final_matches = dlg.get_matches();
+
+    if (painted.face_colors.empty() || final_matches.empty()) {
+        BOOST_LOG_TRIVIAL(warning) << "handle_textured_mesh_import: no painting result";
+        result.fallback_to_geometry_only = true;
+        result.fallback_warning = fallback_warning;
+        loaded_model.texture_mesh.reset();
+        return true;
+    }
+
+    BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: got " << painted.cluster_colors.size()
+                            << " clusters, skipped=" << dlg.was_skipped();
+
+    result.painted = std::move(painted);
+    result.matches = std::move(final_matches);
+    result.new_filament_colors = dlg.get_new_filament_colors();
+    result.new_filament_preset_names = dlg.get_new_filament_preset_names();
+    result.new_mixed_filaments = dlg.get_new_mixed_filaments();
+    result.filament_entries = dlg.get_filament_entries();
+    result.existing_filament_count = dlg.get_existing_filament_count();
+    result.skipped = dlg.was_skipped();
+    return true;
+}
+
+void Plater::priv::apply_textured_mesh_import_result(Slic3r::Model& loaded_model, const std::vector<size_t>& obj_idxs,
+                                                     const TextureImportResult& result,
+                                                     LoadProgressCallback progress_callback, bool update_scene)
+{
+    auto update_apply_progress = [&progress_callback](int percent, const wxString& message) {
+        return !progress_callback || progress_callback(std::clamp(percent, 0, 100), message);
+    };
+
+    const auto& painted = result.painted;
+    const auto& final_matches = result.matches;
+
+    if (painted.face_colors.empty() || final_matches.empty()) {
+        BOOST_LOG_TRIVIAL(warning) << "handle_textured_mesh_import: no painting result";
+        loaded_model.texture_mesh.reset();
+        return;
+    }
+
+    BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: got " << painted.cluster_colors.size()
+                            << " clusters, skipped=" << result.skipped;
+    if (!update_apply_progress(0, _L("Applying texture colors...")))
+        return;
+
+    auto collect_physical_color_strs = []() {
+        std::vector<std::string> colors;
+        auto& project_config = wxGetApp().preset_bundle->project_config;
+        auto* colours_opt = project_config.option<ConfigOptionStrings>("filament_colour");
+        auto* is_mixed_opt = project_config.option<ConfigOptionBools>("filament_is_mixed");
+        const size_t total = wxGetApp().preset_bundle->filament_presets.size();
+        for (size_t i = 0; i < total; ++i) {
+            const bool is_mixed = is_mixed_opt && i < is_mixed_opt->values.size() && is_mixed_opt->values[i];
+            if (!is_mixed)
+                colors.push_back(colours_opt && i < colours_opt->values.size() ? colours_opt->values[i] : "#808080");
+        }
+        return colors;
+    };
+
+    const auto& entries = result.filament_entries;
+    std::vector<int> filament_index_remap(entries.size(), -1);
+    size_t existing_physical_count = 0;
+    size_t new_physical_count = 0;
+    for (const auto& entry : entries) {
+        if (entry.kind == TextureFilamentKind::ExistingPhysical)
+            ++existing_physical_count;
+        else if (entry.kind == TextureFilamentKind::NewPhysical)
+            ++new_physical_count;
+    }
+
+    for (const auto& entry : entries) {
+        if (entry.dialog_index < 0 || entry.dialog_index >= (int)filament_index_remap.size())
+            continue;
+        if (entry.kind == TextureFilamentKind::ExistingPhysical) {
+            filament_index_remap[entry.dialog_index] = (int)entry.project_config_index;
+        } else if (entry.kind == TextureFilamentKind::ExistingMixed) {
+            filament_index_remap[entry.dialog_index] = (int)(entry.project_config_index + new_physical_count);
+        }
+    }
+
+    size_t new_physical_order = 0;
+    for (const auto& entry : entries) {
+        if (entry.kind != TextureFilamentKind::NewPhysical)
+            continue;
+        wxColour new_col(entry.color_hex);
+        const size_t final_idx = existing_physical_count + new_physical_order;
+        sidebar->add_custom_filament(new_col, entry.preset_name);
+        if (entry.dialog_index >= 0 && entry.dialog_index < (int)filament_index_remap.size())
+            filament_index_remap[entry.dialog_index] = (int)final_idx;
+        BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: created pending physical filament dialog="
+                                << entry.dialog_index << " final=" << final_idx
+                                << " color=" << entry.color_hex
+                                << " preset=" << entry.preset_name;
+        ++new_physical_order;
+    }
+
+    std::vector<std::string> physical_colors_for_mixing = collect_physical_color_strs();
+    for (const auto& mixed : result.new_mixed_filaments) {
+        MixedFilamentResult mixed_result;
+        mixed_result.ratios = mixed.ratios;
+        mixed_result.components.reserve(mixed.component_dialog_indices.size());
+        bool valid_components = true;
+        for (int component_dialog_idx : mixed.component_dialog_indices) {
+            if (component_dialog_idx < 0 || component_dialog_idx >= (int)filament_index_remap.size() ||
+                filament_index_remap[component_dialog_idx] < 0) {
+                valid_components = false;
+                break;
+            }
+            mixed_result.components.push_back((unsigned int)(filament_index_remap[component_dialog_idx] + 1));
+        }
+        if (!valid_components || mixed_result.components.size() < 2 ||
+            mixed_result.components.size() != mixed_result.ratios.size()) {
+            BOOST_LOG_TRIVIAL(warning) << "handle_textured_mesh_import: invalid pending mixed filament dialog="
+                                       << mixed.dialog_index;
+            continue;
+        }
+
+        const int final_idx = (int)wxGetApp().preset_bundle->filament_presets.size();
+        if (create_mixed_filament_from_result(sidebar, mixed_result, physical_colors_for_mixing)) {
+            if (mixed.dialog_index >= 0 && mixed.dialog_index < (int)filament_index_remap.size())
+                filament_index_remap[mixed.dialog_index] = final_idx;
+            physical_colors_for_mixing = collect_physical_color_strs();
+            BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: created pending mixed filament dialog="
+                                    << mixed.dialog_index << " final=" << final_idx;
+        }
+    }
+
+    std::vector<Slic3r::FilamentMatch> remapped_matches = final_matches;
+    for (auto& m : remapped_matches) {
+        if (m.filament_index < 0)
+            continue;
+        if (m.filament_index < (int)filament_index_remap.size() && filament_index_remap[m.filament_index] >= 0) {
+            m.filament_index = filament_index_remap[m.filament_index];
+        } else {
+            BOOST_LOG_TRIVIAL(warning) << "handle_textured_mesh_import: invalid filament index "
+                                       << m.filament_index << " in texture mapping";
+            m.filament_index = -1;
+        }
+    }
+
+    int min_used_filament_1based = -1;
+    {
+        std::map<std::array<std::size_t, 3>, int> color_to_filament;
+        for (const auto& m : remapped_matches) {
+            if (m.cluster_index >= 0 && m.cluster_index < (int)painted.cluster_colors.size() && m.filament_index >= 0)
+                color_to_filament[painted.cluster_colors[m.cluster_index]] = m.filament_index + 1;
+        }
+        for (const auto& face_color : painted.face_colors) {
+            auto it = color_to_filament.find(face_color);
+            if (it == color_to_filament.end())
+                continue;
+            if (min_used_filament_1based < 0 || it->second < min_used_filament_1based)
+                min_used_filament_1based = it->second;
+        }
+    }
+    if (min_used_filament_1based < 0)
+        BOOST_LOG_TRIVIAL(warning) << "handle_textured_mesh_import: cannot determine base filament from painted faces";
+
+    if (!update_apply_progress(25, _L("Applying texture colors...")))
+        return;
+
+    for (size_t obj_order = 0; obj_order < obj_idxs.size(); ++obj_order) {
+        size_t idx = obj_idxs[obj_order];
+        if (idx >= loaded_model.objects.size()) continue;
+        ModelObject* obj = loaded_model.objects[idx];
+        if (!obj) continue;
+
+        // painted is derived from the whole textured mesh and is meaningful
+        // only against a single MODEL_PART volume. Applying it to every
+        // volume of a multi-part / modifier object would overwrite each
+        // volume with the same painted geometry. Restrict to the first
+        // model_part and warn when the object holds more than one.
+        ModelVolume* target = nullptr;
+        int part_count = 0;
+        for (ModelVolume* vol : obj->volumes) {
+            if (vol && vol->is_model_part()) {
+                ++part_count;
+                if (!target) target = vol;
+            }
+        }
+        if (!target) continue;
+        if (part_count > 1) {
+            BOOST_LOG_TRIVIAL(warning)
+                << "handle_textured_mesh_import: object has " << part_count
+                << " model parts; painting only applied to the first part.";
+        }
+        if (Slic3r::apply_painted_mesh_to_volume(painted, remapped_matches, *target)
+            && min_used_filament_1based > 0) {
+            target->config.set("extruder", min_used_filament_1based);
+            obj->config.set("extruder", min_used_filament_1based);
+            if (update_scene) {
+                if (auto* obj_list = wxGetApp().obj_list()) {
+                    obj_list->update_objects_list_filament_column(std::max<size_t>(
+                        wxGetApp().filaments_cnt(), (size_t)min_used_filament_1based));
+                    obj_list->update_info_items(idx);
+                }
+            }
+            BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: set base filament to "
+                                    << min_used_filament_1based << " for object index " << idx
+                                    << ", object extruder=" << obj->config.extruder()
+                                    << ", volume extruder=" << target->config.extruder();
+        }
+        // bbox invalidation is performed inside apply_painted_mesh_to_volume.
+        obj->ensure_on_bed();
+        const int object_percent = 25 + (int)(60 * (obj_order + 1) / std::max<size_t>(obj_idxs.size(), 1));
+        if (!update_apply_progress(object_percent, _L("Applying texture colors...")))
+            return;
+    }
+
+    BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: painting applied to model volumes";
+    loaded_model.texture_mesh.reset();
+    if (update_scene) {
+        if (!update_apply_progress(90, _L("Updating 3D view...")))
+            return;
+        update();
+    }
+    update_apply_progress(100, _L("Texture colors applied."));
+}
+
+void Plater::priv::handle_textured_mesh_import(Slic3r::Model& loaded_model, const std::vector<size_t>& obj_idxs,
+                                               std::function<bool()> cancel_callback)
+{
+    TextureImportResult result;
+    if (!run_textured_mesh_import_dialog(loaded_model, result, std::move(cancel_callback)))
+        return;
+    if (!result.painted.face_colors.empty())
+        apply_textured_mesh_import_result(loaded_model, obj_idxs, result);
+}
+#endif
 
 #include "PlaterTextureImport.ipp"
 #include "PlaterWorkbenchImport.ipp"
@@ -17258,6 +18294,22 @@ void Plater::force_update_all_plate_thumbnails()
     }
 }
 
+std::vector<size_t> Plater::load_files(const std::vector<fs::path>& input_files,
+                                       LoadStrategy strategy,
+                                       bool ask_multi,
+                                       bool* published_out)
+{
+    p->m_slice_all_only_has_gcode = false;
+    p->preview->get_canvas3d()->reset_select_plate_toolbar_selection();
+    bool config_loaded = false;
+    std::vector<size_t> result = p->load_files(input_files, strategy, ask_multi,
+                                               ObjImportColorFn{}, nullptr, nullptr,
+                                               published_out, &config_loaded);
+    if (config_loaded && !is_loading_project())
+        normalize_bed_types(false);
+    return result;
+}
+
 // To be called when providing a list of files to the GUI slic3r on command line.
 std::vector<size_t> Plater::load_files(const std::vector<std::string>& input_files,
                                        LoadStrategy strategy,
@@ -17998,7 +19050,28 @@ Sidebar::DockingState Plater::get_sidebar_docking_state() const { return p->get_
 
 #include "PlaterAIFeatureHosts.ipp"
 
-void Plater::reset_window_layout() { p->reset_window_layout(); }
+void Plater::reset_window_layout()
+{
+    p->reset_window_layout();
+#ifdef SLIC3R_CAD
+    // The Design tab docks its own sidebar.
+    if (DesignPanel* design = DesignPanel::if_built())
+        design->reset_window_layout();
+#endif
+}
+
+void Plater::add_dock_pane(wxWindow* window, const std::string& name, const wxString& caption, const std::string& dock,
+                           const wxSize& size, std::function<void()> on_close)
+{
+    p->add_dock_pane(window, name, caption, dock, size, std::move(on_close));
+}
+void Plater::remove_dock_pane(wxWindow* window) { p->remove_dock_pane(window); }
+void Plater::remove_dock_panes()
+{
+    while (!p->m_dock_panes.empty())
+        p->remove_dock_pane(p->m_dock_panes.begin()->first);
+}
+void Plater::show_dock_pane(wxWindow* window, bool show) { p->show_dock_pane(window, show); }
 
 //BBS
 void Plater::select_curr_plate_all() { p->select_curr_plate_all(); }
@@ -20026,8 +21099,15 @@ int Plater::export_config_3mf(int plate_idx, Export3mfProgressFn proFn)
 //BBS
 void Plater::send_calibration_job_finished(wxCommandEvent & evt)
 {
-    if (p->main_frame != nullptr)
-        p->main_frame->notify_calibration_job_finished(evt.GetInt(), evt.GetString());
+    p->main_frame->request_select_tab(TAB_ID_CALIBRATION);
+    CalibrationPanel* calibration_panel = CalibrationPanel::ensure();
+    if (calibration_panel) {
+        auto curr_wizard = static_cast<CalibrationWizard*>(calibration_panel->get_tabpanel()->GetPage(evt.GetInt()));
+        wxCommandEvent event(EVT_CALIBRATION_JOB_FINISHED);
+        event.SetString(evt.GetString());
+        event.SetEventObject(curr_wizard);
+        wxPostEvent(curr_wizard, event);
+    }
     evt.Skip();
 }
 
@@ -20050,8 +21130,12 @@ void Plater::print_job_finished(wxCommandEvent &evt)
     Slic3r::DeviceManager* dev = Slic3r::GUI::wxGetApp().getDeviceManager();
     if (!dev) return;
 
-    if (p->main_frame != nullptr)
-        p->main_frame->select_monitor_status(evt.GetString().ToStdString());
+    dev->set_selected_machine(evt.GetString().ToStdString());
+    p->main_frame->request_select_tab(TAB_ID_MONITOR);
+    // Selects the status page on a built Device tab; one built by the switch starts there.
+    MonitorPanel* curr_monitor = MonitorPanel::if_built();
+    if(curr_monitor)
+       curr_monitor->get_tabpanel()->ChangeSelection(MonitorPanel::PrinterTab::PT_STATUS);
 }
 
 void Plater::send_job_finished(wxCommandEvent& evt)
@@ -20805,8 +21889,8 @@ void Plater::update_print_error_info(int code, std::string msg, std::string extr
     if (p->m_send_to_sdcard_dlg) {
         p->m_send_to_sdcard_dlg->update_print_error_info(code, msg, extra);
     }
-    if (p->main_frame != nullptr)
-        p->main_frame->update_print_error_info(code, msg, extra);
+    if (CalibrationPanel* calibration = CalibrationPanel::if_built())
+        calibration->update_print_error_info(code, msg, extra);
 }
 
 wxString Plater::get_project_filename(const wxString& extension) const
@@ -21122,7 +22206,8 @@ void Plater::pop_warning_and_go_to_device_page(wxString printer_name, PrinterWar
 {
     printer_name.Replace("Bambu Lab", "", false);
     wxString content;
-    bool device_page = wxGetApp().mainframe != nullptr && wxGetApp().mainframe->is_printer_view();
+    MainFrame* frame       = wxGetApp().mainframe;
+    bool       device_page = frame != nullptr && frame->m_monitor_page->in_book();
     if (type == PrinterWarningType::NOT_CONNECTED) {
         if (device_page) {
             content = wxString::Format(_L("Printer not connected. Please go to the device page to connect %s before syncing."),
@@ -22694,19 +23779,9 @@ bool Plater::can_copy_to_clipboard() const
     return true;
 }
 
-bool Plater::can_undo() const
-{
-    // The shell owns project commands while the native workspace is hidden.
-    if (!IsShown())
-        return p->can_begin_project_config_change() && p->undo_redo_stack_main().has_undo_snapshot();
-    return p->is_view3D_shown() && p->undo_redo_stack().has_undo_snapshot();
-}
-bool Plater::can_redo() const
-{
-    if (!IsShown())
-        return p->can_begin_project_config_change() && p->undo_redo_stack_main().has_redo_snapshot();
-    return p->is_view3D_shown() && p->undo_redo_stack().has_redo_snapshot();
-}
+// The job check keeps the buttons in step with priv::undo()/redo(), which refuse while one runs.
+bool Plater::can_undo() const { return IsShown() && p->is_view3D_shown() && p->m_worker.is_idle() && p->undo_redo_stack().has_undo_snapshot(); }
+bool Plater::can_redo() const { return IsShown() && p->is_view3D_shown() && p->m_worker.is_idle() && p->undo_redo_stack().has_redo_snapshot(); }
 bool Plater::can_reload_from_disk() const { return p->can_reload_from_disk(); }
 //BBS
 bool Plater::can_fillcolor() const { return p->can_fillcolor(); }

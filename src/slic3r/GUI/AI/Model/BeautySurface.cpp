@@ -113,19 +113,19 @@ std::vector<uint8_t> effective_mask(size_t count, const std::vector<uint8_t>& se
 
 std::shared_ptr<BeautySurface> BeautySurface::build(const indexed_triangle_set& mesh,
     const std::vector<RGBA>& colors, const std::vector<uint32_t>& saved_partition,
-    const std::function<bool()>& canceled)
+    const std::function<bool()>& canceled, bool respect_normal_guard)
 {
-    return build_impl(mesh,colors,saved_partition,canceled,true);
+    return build_impl(mesh,colors,saved_partition,canceled,true,respect_normal_guard);
 }
 std::shared_ptr<BeautySurface> BeautySurface::build_for_appearance(const indexed_triangle_set& mesh,
     const std::vector<RGBA>& colors,const std::vector<uint32_t>& saved_partition,
     const std::function<bool()>& canceled)
 {
-    return build_impl(mesh,colors,saved_partition,canceled,false);
+    return build_impl(mesh,colors,saved_partition,canceled,false,true);
 }
 std::shared_ptr<BeautySurface> BeautySurface::build_impl(const indexed_triangle_set& mesh,
     const std::vector<RGBA>& colors,const std::vector<uint32_t>& saved_partition,
-    const std::function<bool()>& canceled,bool vertex_graph)
+    const std::function<bool()>& canceled,bool vertex_graph,bool respect_normal_guard)
 {
     require(!mesh.vertices.empty() && !mesh.indices.empty() && mesh.indices.size()<=2000000 && mesh.vertices.size()<=6000000,
         "Beauty editing supports up to two million triangles.");
@@ -221,7 +221,12 @@ std::shared_ptr<BeautySurface> BeautySurface::build_impl(const indexed_triangle_
                 const size_t f=queue[at];patch.faces.push_back(f);
                 for(int32_t neighbor:out->face_neighbors[f]) {
                     if(neighbor<0 || out->face_patch[neighbor]!=unassigned || queue.size()>=512 || area>=target_area)continue;
-                    if(out->normals[seed].dot(out->normals[neighbor])<.90)continue;
+                    // Normal continuity protects the legacy surface editing
+                    // substrate from crossing hard creases. Automatic color
+                    // partitioning opts out: a same-color garment must remain
+                    // one region across folds, with semantic/color rules
+                    // deciding boundaries instead.
+                    if(respect_normal_guard && out->normals[seed].dot(out->normals[neighbor])<.90)continue;
                     double color_distance=0;
                     for(int ch=0;ch<3;++ch) {
                         const double delta=face_colors[seed][ch]-face_colors[neighbor][ch];

@@ -48,6 +48,12 @@ EXPECTED_UPSTREAM = {
     "ref": "upstream/main",
     "sha": "b6ef6cf1be428b931d669dcc31b7f43ae320be85",
 }
+EXPECTED_CANDIDATE_BASELINE = {
+    "remote": "upstream",
+    "tag": "v2.5.0-alpha",
+    "sha": "3880f2c58ec392ed2bd5938ab31c9c7c496c0eb2",
+    "purpose": "official_tag_candidate_diff_base",
+}
 EXPECTED_FEATURE_SOURCES = {
     "model_generation": {
         "branch": "codex/model-generation",
@@ -314,20 +320,23 @@ def validate_document(document: Any) -> list[dict[str, str]]:
     """Validate schema, pinned identities and ownership boundary declarations."""
     errors: list[dict[str, str]] = []
     root = _expect_object(document, "document", errors)
+    document_keys = (
+        "schema",
+        "integration_branch",
+        "branch_policy",
+        "ci_contract",
+        "upstream",
+        "feature_sources",
+        "integration_receipts",
+        "runtime_contract",
+        "architecture_contract",
+        "boundaries",
+    )
+    if "candidate_baseline" in root:
+        document_keys += ("candidate_baseline",)
     _expect_exact_keys(
         root,
-        (
-            "schema",
-            "integration_branch",
-            "branch_policy",
-            "ci_contract",
-            "upstream",
-            "feature_sources",
-            "integration_receipts",
-            "runtime_contract",
-            "architecture_contract",
-            "boundaries",
-        ),
+        document_keys,
         "document",
         errors,
     )
@@ -349,6 +358,14 @@ def validate_document(document: Any) -> list[dict[str, str]]:
     for key, expected in EXPECTED_UPSTREAM.items():
         _expect_constant(upstream.get(key), expected, f"upstream.{key}", errors)
     _validate_sha(upstream.get("sha"), "upstream.sha", errors)
+
+    candidate_baseline = root.get("candidate_baseline")
+    if candidate_baseline is not None:
+        candidate_baseline = _expect_object(candidate_baseline, "candidate_baseline", errors)
+        _expect_exact_keys(candidate_baseline, EXPECTED_CANDIDATE_BASELINE, "candidate_baseline", errors)
+        for key, expected in EXPECTED_CANDIDATE_BASELINE.items():
+            _expect_constant(candidate_baseline.get(key), expected, f"candidate_baseline.{key}", errors)
+        _validate_sha(candidate_baseline.get("sha"), "candidate_baseline.sha", errors)
 
     sources = _expect_object(root.get("feature_sources"), "feature_sources", errors)
     _expect_exact_keys(sources, EXPECTED_FEATURE_SOURCES, "feature_sources", errors)
@@ -658,15 +675,17 @@ def validate_architecture_budgets(document: dict[str, Any], repo_root: Path) -> 
         return errors
 
     upstream = document.get("upstream")
-    upstream_sha = upstream.get("sha") if isinstance(upstream, dict) else None
-    if not isinstance(upstream_sha, str) or SHA_PATTERN.fullmatch(upstream_sha) is None:
-        errors.append(_issue("architecture.diff_base", "architecture diff budget requires a full upstream SHA"))
+    candidate_baseline = document.get("candidate_baseline")
+    baseline = candidate_baseline if isinstance(candidate_baseline, dict) else upstream
+    baseline_sha = baseline.get("sha") if isinstance(baseline, dict) else None
+    if not isinstance(baseline_sha, str) or SHA_PATTERN.fullmatch(baseline_sha) is None:
+        errors.append(_issue("architecture.diff_base", "architecture diff budget requires a full baseline SHA"))
         return errors
 
     relative_paths = tuple(sorted(path for path in diff_budgets if isinstance(path, str)))
     result = _run_git(
         repo_root,
-        ["diff", "--no-renames", "--numstat", upstream_sha, "--", *relative_paths],
+        ["diff", "--no-renames", "--numstat", baseline_sha, "--", *relative_paths],
     )
     if result.returncode != 0:
         errors.append(_issue("architecture.diff_failed", "shared touchpoint diff could not be measured"))
@@ -888,6 +907,9 @@ def validate_git(document: dict[str, Any], repo_root: Path) -> tuple[list[dict[s
         errors.extend(validate_git_secret_content(repo_root))
 
     shas = {"upstream": document["upstream"]["sha"]}
+    candidate_baseline = document.get("candidate_baseline")
+    if isinstance(candidate_baseline, dict):
+        shas["candidate baseline"] = candidate_baseline["sha"]
     shas.update({name: source["sha"] for name, source in document["feature_sources"].items()})
     for name, sha in shas.items():
         if _run_git(repo_root, ["cat-file", "-e", f"{sha}^{{commit}}"]).returncode != 0:
@@ -896,6 +918,25 @@ def validate_git(document: dict[str, Any], repo_root: Path) -> tuple[list[dict[s
     upstream_sha = document["upstream"]["sha"]
     if _run_git(repo_root, ["merge-base", "--is-ancestor", upstream_sha, head]).returncode != 0:
         errors.append(_issue("git.upstream_ancestor", f"locked upstream {upstream_sha} is not an ancestor of HEAD {head}"))
+
+    if isinstance(candidate_baseline, dict):
+        candidate_sha = candidate_baseline["sha"]
+        if _run_git(repo_root, ["merge-base", "--is-ancestor", candidate_sha, head]).returncode != 0:
+            errors.append(
+                _issue(
+                    "git.candidate_baseline_ancestor",
+                    f"candidate baseline {candidate_sha} is not an ancestor of HEAD {head}",
+                )
+            )
+        tag = candidate_baseline["tag"]
+        tag_result = _run_git(repo_root, ["rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"])
+        if tag_result.returncode != 0 or tag_result.stdout.strip() != candidate_sha:
+            errors.append(
+                _issue(
+                    "git.candidate_baseline_tag",
+                    f"candidate baseline tag {tag} does not resolve to {candidate_sha}",
+                )
+            )
 
     # feature_sources records historical imports, not the current developer
     # branch tips. Fixed source objects and ancestor receipts below preserve

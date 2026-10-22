@@ -27,6 +27,9 @@
 #include "Redesign/RedesignTheme.hpp"
 #include "WebViewDialog.hpp"
 #include "PartPlate.hpp"
+#ifdef SLIC3R_CAD
+#include "slic3r/GUI/CAD/DesignPanel.hpp"
+#endif
 
 #include <boost/log/trivial.hpp>
 #include "libslic3r/AppConfig.hpp"

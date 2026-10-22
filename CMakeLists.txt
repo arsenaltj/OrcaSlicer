@@ -15,6 +15,8 @@ endif()
 # It just lets you later do `set_property(TARGET foo PROPERTY FOLDER "bar")`
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
+option(ORCA_MOBILE_SDK_ONLY "Configure only the public MobileSDK and its open-source contract tests" OFF)
+
 if (WIN32)
     # Detect known CI environments
     set(IS_CI FALSE)
@@ -171,6 +173,22 @@ option(SLIC3R_ASAN              "Enable ASan on Clang and GCC" 0)
 # Python stubgen module
 option(ORCA_BUILD_PYTHON_STUBGEN_MODULE "Build importable Python module for pybind11-stubgen" ON)
 set(ORCA_BUNDLED_UV_EXECUTABLE "" CACHE FILEPATH "Path to a uv executable to bundle for Python package installation. Leave empty to auto-download.")
+if (ORCA_MOBILE_SDK_ONLY)
+    set(CMAKE_CXX_STANDARD 17)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    option(BUILD_TESTS "Build unit tests" OFF)
+    enable_testing()
+    add_subdirectory(deps_src/nlohmann)
+    add_subdirectory(src/orca_sdk)
+    add_subdirectory(src/orca_connectivity_moonraker)
+    if (BUILD_TESTS)
+        add_subdirectory(tests/catch2)
+        include(CTest)
+        include(Catch)
+        add_subdirectory(tests/mobile_sdk)
+    endif()
+    return()
+endif()
 
 # Auto-download uv if not provided by the user.
 # uv is pinned: the executable ships inside the signed app, so the build must
@@ -344,6 +362,10 @@ endif ()
 option(SLIC3R_BUILD_SANDBOXES   "Build development sandboxes" OFF)
 option(BUILD_TESTS       "Build unit tests" OFF)
 option(ORCA_TOOLS       "Build Orca tools" OFF)
+
+if (ORCA_MOBILE_SDK_ONLY AND SLIC3R_GUI)
+    message(FATAL_ERROR "ORCA_MOBILE_SDK_ONLY requires SLIC3R_GUI=OFF")
+endif ()
 
 if (FLATPAK)
     set(SLIC3R_FHS ON CACHE BOOL "" FORCE)
@@ -1291,13 +1313,6 @@ elseif (MSVC AND NOT IS_CLANG_CL)
 endif ()
 
 add_subdirectory(src)
-set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT OrcaSlicer_app_gui)
-
-add_dependencies(gettext_make_pot hintsToPot)
-
-if(SLIC3R_BUILD_SANDBOXES)
-    add_subdirectory(sandboxes)
-endif()
 
 if(BUILD_TESTS)
     add_subdirectory(tests)
@@ -1305,6 +1320,15 @@ if(BUILD_TESTS)
         # Catch2 is vendored under tests/ and sets its own warning flags too.
         orcaslicer_silence_third_party_warnings("${CMAKE_CURRENT_SOURCE_DIR}/tests/catch2")
     endif ()
+endif()
+
+
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT OrcaSlicer_app_gui)
+
+add_dependencies(gettext_make_pot hintsToPot)
+
+if(SLIC3R_BUILD_SANDBOXES)
+    add_subdirectory(sandboxes)
 endif()
 
 if (NOT WIN32 AND NOT APPLE)
@@ -1492,6 +1516,7 @@ set (CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/OrcaSlicer/OrcaSlicer")
 set (CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}/resources/images\\\\OrcaSlicer.ico")
 set (CPACK_NSIS_MUI_ICON "${CPACK_PACKAGE_ICON}")
 set (CPACK_NSIS_MUI_UNIICON "${CPACK_PACKAGE_ICON}")
+# Relative to the install dir: CPack's NSIS template prefixes $INSTDIR itself.
 set (CPACK_NSIS_INSTALLED_ICON_NAME "orca-slicer.exe")
 set (CPACK_PACKAGE_CHECKSUM SHA256)
 set (CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)

@@ -18,6 +18,30 @@
 
 using namespace Slic3r::GUI;
 
+TEST_CASE("Preview auto-fit waits for a ready viewport and frames each result once", "[UiRedesign][PreviewAutoFit]")
+{
+    PreviewAutoFitState state;
+    state.request();
+    CHECK(state.pending());
+    CHECK_FALSE(state.consume(41, false, true, true));
+    CHECK_FALSE(state.consume(41, true, false, true));
+    CHECK_FALSE(state.consume(41, true, true, false));
+    CHECK(state.pending());
+
+    CHECK(state.consume(41, true, true, true));
+    CHECK_FALSE(state.pending());
+    REQUIRE(state.last_result_id());
+    CHECK(*state.last_result_id() == 41);
+
+    state.request();
+    CHECK_FALSE(state.consume(41, true, true, true));
+    CHECK_FALSE(state.pending());
+
+    state.request();
+    CHECK(state.consume(42, true, true, true));
+    CHECK(*state.last_result_id() == 42);
+}
+
 TEST_CASE("Slicing navigation waits for analysis and workspace operations to finish", "[UiRedesign][WorkbenchNavigation]")
 {
     CHECK(workbench_mode_switch_allowed(false, false, false, false, false));
@@ -588,11 +612,30 @@ TEST_CASE("Image home is the default surface with an explicit legacy fallback", 
 
 TEST_CASE("Image home startup requires no pending 3D work", "[UiRedesign]")
 {
-    CHECK(RedesignFeatureFlags::image_home_on_startup(true, false, false, false));
+    ScopedEnvironment global("ORCASLICER_UI_REDESIGN");
+    ScopedEnvironment shell("ORCASLICER_UI_REDESIGN_SHELL");
+    ScopedEnvironment image_home("ORCASLICER_UI_REDESIGN_IMAGE_HOME");
+    set_environment("ORCASLICER_UI_REDESIGN", nullptr);
+    set_environment("ORCASLICER_UI_REDESIGN_SHELL", nullptr);
+    set_environment("ORCASLICER_UI_REDESIGN_IMAGE_HOME", nullptr);
+
+    const bool shell_active = RedesignFeatureFlags::shell_on_startup(true);
+    CHECK(shell_active);
+    CHECK_FALSE(RedesignFeatureFlags::shell_on_startup(false));
+    CHECK(RedesignFeatureFlags::image_home_on_startup(shell_active, false, false, false));
     CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(false, false, false, false));
-    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(true, true, false, false));
-    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(true, false, true, false));
-    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(true, false, false, true));
+    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(shell_active, true, false, false));
+    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(shell_active, false, true, false));
+    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(shell_active, false, false, true));
+
+    set_environment("ORCASLICER_UI_REDESIGN_IMAGE_HOME", "0");
+    CHECK(RedesignFeatureFlags::shell_on_startup(true));
+    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(true, false, false, false));
+    set_environment("ORCASLICER_UI_REDESIGN_IMAGE_HOME", nullptr);
+    set_environment("ORCASLICER_UI_REDESIGN", "0");
+    CHECK_FALSE(RedesignFeatureFlags::shell_on_startup(true));
+    set_environment("ORCASLICER_UI_REDESIGN_SHELL", "1");
+    CHECK(RedesignFeatureFlags::shell_on_startup(true));
 }
 
 TEST_CASE("Startup splash is enabled by default with an explicit override", "[UiRedesign]")

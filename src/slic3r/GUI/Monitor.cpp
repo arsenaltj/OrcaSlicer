@@ -227,6 +227,10 @@ void MonitorPanel::init_tabpanel()
     //m_status_add_machine_panel = new AddMachinePanel(m_tabpanel);
     m_status_info_panel        = new StatusPanel(m_tabpanel);
     trace_stage("status_panel");
+    // Queue the staged status page before AddPage selects it and dispatches the
+    // page-changed event. Otherwise MonitorPanel::built() is still true while
+    // the StatusPanel controls (including the axis buttons) do not exist yet.
+    add_build_steps_of(*m_status_info_panel);
     m_tabpanel->AddPage(m_status_info_panel, _L("Status"), true);
     add_build_step([this] {
         m_media_file_panel = new MediaFilePanel(m_tabpanel);
@@ -239,19 +243,7 @@ void MonitorPanel::init_tabpanel()
     add_build_step([this] {
         m_hms_panel = new HMSPanel(m_tabpanel);
         m_tabpanel->AddPage(m_hms_panel, _L("Assistant(HMS)"), false);
-
-    m_media_file_panel = new MediaFilePanel(m_tabpanel);
-    trace_stage("media_file_panel");
-    m_tabpanel->AddPage(m_media_file_panel, _L("Storage"), false);
-    //m_tabpanel->AddPage(m_media_file_panel, _L("Internal Storage"), false);
-
-    m_upgrade_panel = new UpgradePanel(m_tabpanel);
-    trace_stage("upgrade_panel");
-    m_tabpanel->AddPage(m_upgrade_panel, _L_CONTEXT(L_CONTEXT("Update", "Firmware"), "Firmware"), false);
-
-    m_hms_panel = new HMSPanel(m_tabpanel);
-    trace_stage("hms_panel");
-    m_tabpanel->AddPage(m_hms_panel, _L("Assistant(HMS)"),    false);
+    });
 
     std::string network_ver = Slic3r::NetworkAgent::get_version();
     if (!network_ver.empty()) {

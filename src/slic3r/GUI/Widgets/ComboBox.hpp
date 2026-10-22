@@ -101,6 +101,7 @@ public:
     void     DeleteOneItem(unsigned int pos) { DoDeleteOneItem(pos); }
 
     void ForceDropdownOpen();
+    void CloseDropdown();
     void DismissDropdown();
 
 protected:

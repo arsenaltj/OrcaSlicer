@@ -444,6 +444,93 @@ TEST_CASE("Preview nearest colors use the same chroma priority across interpolat
     }
 }
 
+TEST_CASE("Color cards use a deterministic weighted one-to-one assignment", "[ModelPreviewPalette][ColorCardRemap]")
+{
+    AutomaticColorBasis basis;
+    basis.geometry_id = "geometry";
+    basis.source_color_signature = "source";
+    basis.requested_count = 2;
+    basis.source_palette = {{.48f,.48f,.48f}, {.55f,.55f,.55f}};
+    basis.source_area = {100.0, 1.0};
+    basis.basis_signature = automatic_basis_signature(basis);
+    const std::vector<Color> card {{.49f,.49f,.49f}, {1.f,1.f,1.f}};
+
+    const auto remap = minimum_cost_color_card_remap(basis, card, {17, 42});
+    REQUIRE(remap.valid(2));
+    REQUIRE(remap.target_palette == card);
+    REQUIRE(remap.target_slot_ids == std::vector<size_t>{17, 42});
+    CHECK(remap.source_to_target_slot == std::vector<size_t>{0, 1});
+    CHECK(remap.source_order_targets() == std::vector<Color>{card[0], card[1]});
+
+    const double swapped = 100.0 * distance(to_lab(basis.source_palette[0]), to_lab(card[1])) +
+        distance(to_lab(basis.source_palette[1]), to_lab(card[0]));
+    CHECK(remap.weighted_error < swapped);
+    CHECK(minimum_cost_color_card_remap(basis, card, {17, 42}).source_to_target_slot ==
+        remap.source_to_target_slot);
+}
+
+TEST_CASE("Equal RGB color-card slots keep independent identities", "[ModelPreviewPalette][ColorCardRemap]")
+{
+    AutomaticColorBasis basis;
+    basis.geometry_id = "geometry";
+    basis.source_color_signature = "source";
+    basis.requested_count = 2;
+    basis.source_palette = {{1.f,0.f,0.f}, {0.f,0.f,1.f}};
+    basis.source_area = {1.0, 1.0};
+    basis.basis_signature = automatic_basis_signature(basis);
+    const std::vector<Color> card {{.2f,.3f,.4f}, {.2f,.3f,.4f}};
+    const auto remap = minimum_cost_color_card_remap(basis, card, {3, 9});
+    REQUIRE(remap.valid(2));
+    REQUIRE(remap.source_to_target_slot.size() == 2);
+    CHECK(remap.source_to_target_slot[0] != remap.source_to_target_slot[1]);
+    CHECK(remap.target_slot_ids[remap.source_to_target_slot[0]] !=
+        remap.target_slot_ids[remap.source_to_target_slot[1]]);
+
+    const auto identity_tie = minimum_cost_color_card_remap(basis, card, {42, 17});
+    REQUIRE(identity_tie.valid(2));
+    CHECK(identity_tie.source_to_target_slot == std::vector<size_t>{1, 0});
+    CHECK_FALSE(minimum_cost_color_card_remap(basis, card, {17, 17}).valid(2));
+}
+
+TEST_CASE("Automatic color basis is stable and does not invent empty groups", "[ModelPreviewPalette][ColorCardRemap]")
+{
+    Histogram histogram;
+    histogram.add(0xff0000, 10.0);
+    const auto first = make_automatic_color_basis(histogram, 6, "geometry", true);
+    const auto second = make_automatic_color_basis(histogram, 6, "geometry", true);
+    REQUIRE(first.valid());
+    CHECK(first.requested_count == 6);
+    CHECK(first.source_palette.size() == 1);
+    CHECK(first.basis_signature == second.basis_signature);
+    const std::vector<Color> card {{1,0,0}, {0,1,0}, {0,0,1}, {1,1,1}, {0,0,0}, {.5f,.5f,.5f}};
+    const auto remap = minimum_cost_color_card_remap(first, card);
+    REQUIRE(remap.valid(1));
+    CHECK(remap.source_to_target_slot.size() == 1);
+}
+
+TEST_CASE("Automatic color basis captures native unit membership and area", "[ModelPreviewPalette][AutomaticColorBasis]")
+{
+    Histogram histogram;
+    histogram.add(0xff0000, 10.0);
+    histogram.add(0x0000ff, 5.0);
+    AutomaticColorUnits units;
+    units.colors = {{1.f, 0.f, 0.f}, {0.f, 0.f, 1.f}, {1.f, 0.f, 0.f}};
+    units.area = {4.0, 5.0, 6.0};
+
+    const auto basis = make_automatic_color_basis(histogram, 2, "geometry", false, &units);
+    REQUIRE(basis.valid());
+    REQUIRE(basis.unit_source_slots.size() == units.colors.size());
+    CHECK(basis.unit_source_slots[0] == basis.unit_source_slots[2]);
+    CHECK(basis.unit_source_slots[0] != basis.unit_source_slots[1]);
+    CHECK_THAT(basis.source_area[basis.unit_source_slots[0]], Catch::Matchers::WithinAbs(10.0, 1e-12));
+    CHECK_THAT(basis.source_area[basis.unit_source_slots[1]], Catch::Matchers::WithinAbs(5.0, 1e-12));
+
+    auto changed = basis;
+    changed.unit_area[0] += 1.0;
+    changed.basis_signature = automatic_basis_signature(changed);
+    CHECK(changed.basis_signature != basis.basis_signature);
+}
+
 TEST_CASE("Protected preview palettes keep supported minority hues among dominant gray shades", "[ModelPreviewPalette]")
 {
     Histogram histogram;

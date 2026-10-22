@@ -172,6 +172,24 @@ private:
     bool m_pending {false};
 };
 
+// Lightweight recommendations are not presented as final print-time
+// statistics. The Redesign workbench may run one native trial slice for the
+// currently displayed goal and publish the resulting metrics separately.
+enum class ExactEstimateStatus { None, Running, Ready, Failed };
+
+struct ExactEstimateView
+{
+    ExactEstimateStatus status{ExactEstimateStatus::None};
+    AI::SmartSlicing::RecommendationGoal goal{AI::SmartSlicing::RecommendationGoal::Balanced};
+    AI::SmartSlicing::WorkspaceRevision revision;
+    std::optional<double> estimated_time_seconds;
+    std::optional<double> material_volume_mm3;
+    std::optional<double> material_grams;
+    std::optional<size_t> tool_changes;
+    std::string source;
+    std::string diagnostic;
+};
+
 struct SmartSlicingWorkbenchState
 {
     AI::SmartSlicing::RecommendationSessionSnapshot session;
@@ -205,6 +223,7 @@ struct SmartSlicingWorkbenchState
     std::optional<AI::SmartSlicing::SmartAnalysisResult> lightweight_analysis;
     bool lightweight_analyzing {false};
     bool lightweight_stale {false};
+    ExactEstimateView exact_estimate;
 };
 
 inline bool workbench_goal_is_currently_selected(

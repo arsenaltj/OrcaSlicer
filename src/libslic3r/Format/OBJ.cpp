@@ -259,6 +259,10 @@ bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo& obj_info, std::s
     }
     if (meshptr->volume() < 0) {
         meshptr->flip_triangles();
+        // Flipping swaps corners 1 and 2 of every face, so the UVs have to follow.
+        for (std::array<Vec2f, 3> &uv : obj_info.uvs)
+            std::swap(uv[1], uv[2]);
+    }
     if (stop_if_canceled()) return false;
     // Hand the parsed material table back so callers can build a TexturedMesh from it.
     if (out_mtl)

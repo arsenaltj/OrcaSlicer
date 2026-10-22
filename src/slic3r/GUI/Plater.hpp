@@ -1,7 +1,20 @@
 #ifndef slic3r_Plater_hpp_
 #define slic3r_Plater_hpp_
 
+#include "libslic3r/Config.hpp"
+#include "libslic3r/PrintConfig.hpp"
+#include <cstddef>
+#include <map>
+#include "libslic3r/Technologies.hpp"
+#include "libslic3r/Color.hpp"
+#include "libslic3r/Format/bbs_3mf.hpp"
+#include <functional>
 #include <array>
+#include "libslic3r/Point.hpp"
+#include "libslic3r/PublishSettings.hpp"
+#include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/libslic3r.h"
+#include <atomic>
 #include <memory>
 #include "slic3r/GUI/Event.hpp"
 #include "slic3r/GUI/I18N.hpp"
@@ -19,7 +32,8 @@
 #include <wx/panel.h>
 // BBS
 #include <wx/notebook.h>
-#include <wx/weakref.h>
+#include <wx/sizer.h>
+#include <wx/string.h>
 
 #include "Selection.hpp"
 #include "AI/AIDesktopFeatureHost.hpp"
@@ -166,7 +180,6 @@ class Sidebar : public wxPanel
 
 public:
 #include "AI/SidebarWorkflowDeclarations.ipp"
-
     enum DockingState
     {
         None, Left, Right
@@ -287,7 +300,16 @@ public:
     void                                 udpate_combos_filament_badge();
 
     // Mixed-color filament sidebar section
-    void add_mixed_filament(const std::string& target_color = {});
+    void add_mixed_filament();
+    // The filament slot that blends `components` (1-based physical filament indices) in `ratios`
+    // (percentages) at a fixed ratio, creating it when no existing fixed mixed slot already describes
+    // that blend (see find_fixed_mixed_filament()). Returns the 0-based filament index, or -1 when the
+    // paint-state cap leaves no room for another one.
+    //
+    // Exists so a feature that needs a blend can ask for one without going through the modal dialog:
+    // a texture displacement bake turns each mix it painted with into a slot, which is what moves the
+    // interleaving from its own paint mask to the slicer, where it happens per layer.
+    int ensure_mixed_filament(const std::vector<unsigned int> &components, const std::vector<int> &ratios);
     void edit_mixed_filament(size_t idx);
     void delete_mixed_filament_at(size_t idx);
     // Drops every mixed filament at once, after confirming. The texture displacement gizmo can create
@@ -449,8 +471,14 @@ public:
     std::vector<size_t> load_files(const std::vector<boost::filesystem::path>& input_files,
                                    LoadStrategy strategy = LoadStrategy::LoadModel | LoadStrategy::LoadConfig,
                                    bool ask_multi = false,
-                                   ObjImportColorFn obj_color_fn = nullptr, ModelColorImportResult* color_result = nullptr,
+                                   ObjImportColorFn obj_color_fn = nullptr,
+                                   ModelColorImportResult* color_result = nullptr,
                                    const TextureImportOptions* texture_options = nullptr);
+    // Legacy project-loading entry point that reports published-file status.
+    std::vector<size_t> load_files(const std::vector<boost::filesystem::path>& input_files,
+                                   LoadStrategy strategy,
+                                   bool ask_multi,
+                                   bool* published_out);
     // To be called when providing a list of files to the GUI slic3r on command line.
     std::vector<size_t> load_files(const std::vector<std::string>& input_files,
                                    LoadStrategy strategy = LoadStrategy::LoadModel | LoadStrategy::LoadConfig,
@@ -734,6 +762,14 @@ public:
     // pending until the UI worker has finalized the job.
     bool arrange_for_ai_workflow();
     void notify_ai_arrange_finished(bool success);
+
+    // Docked UV-editor pane used by GLGizmoTextureDisplacement's LSCM projection preview (see
+    // UVEditorCanvas.hpp). Returns nullptr only before the main window is fully constructed.
+    class UVEditorCanvas* get_uv_editor_canvas();
+    // Shows or hides the UV-editor AUI pane, updating its docked layout accordingly. Safe to call
+    // repeatedly (e.g. every time the gizmo's active layer/projection method changes).
+    void show_uv_editor(bool show);
+
     void orient();
     void find_new_position(const ModelInstancePtrs  &instances);
     //BBS: add job state related functions

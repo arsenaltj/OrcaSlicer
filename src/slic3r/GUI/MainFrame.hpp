@@ -24,6 +24,7 @@
 
 #include <string>
 #include <map>
+#include <vector>
 #include "AI/MainFrameWorkspaceSupport.hpp"
 
 #include "GUI_Utils.hpp"
@@ -237,7 +238,7 @@ class MainFrame : public DPIFrame
     bool can_delete_all() const;
     bool can_reslice() const;
 #include "MainFrameRedesignCommands.ipp"
-    void bind_diff_dialog();
+    DiffPresetDialog* make_diff_dialog();
 
     // BBS
     wxBoxSizer* create_side_tools();
@@ -510,7 +511,16 @@ public:
     PrintHostQueueDialog* printhost_queue_dlg() { return m_printhost_queue_dlg; }
     Plater*               m_plater { nullptr };
 #include "MainFrameRedesignState.ipp"
-    bool                   m_ai_assistant_registered { false };
+    // Lazy pages, created once and kept for the frame's life; their panels are reached
+    // through LazyInstance's statics, and show_device() only moves pages in and out of the book.
+#ifdef SLIC3R_CAD
+    LazyPage<DesignPanel>* m_design_page { nullptr };
+    // The Design panel when its tab is the one on screen, else null. Edit > Undo/Redo act on
+    // the tab that is shown: its own history when that is Design, the plater's otherwise.
+    DesignPanel*           shown_design_panel() const;
+#endif
+    // The top bar's Undo/Redo, for a tab that keeps its own history (Design).
+    void set_undo_redo_enabled(bool undo, bool redo);
     //BBS: GUI refactor
     LazyPage<MonitorPanel>* m_monitor_page{ nullptr };
 

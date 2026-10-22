@@ -101,6 +101,8 @@ bool ModelGenerationPanel::show_finishing_version(const boost::filesystem::path&
 {
     const auto view = m_model_preview->view_state();
     const auto color_state = m_model_preview->color_trial_state();
+    const auto block_state=m_model_preview->portrait_color_blocks();
+    const auto printer_restore=m_model_preview->printer_restore_snapshot();
     size_t triangles = 0, colors = 0; Vec3d dimensions = Vec3d::Zero(); std::string error;
     const bool session_source = m_finishing_workbench && m_beauty_session_source &&
         path == m_beauty_session_source->source;
@@ -135,6 +137,13 @@ bool ModelGenerationPanel::show_finishing_version(const boost::filesystem::path&
     } else if (m_finishing_workbench || m_model_preview->semantic_result_active())
         m_model_preview->restore_color_trial_without_recognition(color_state);
     else m_model_preview->restore_color_trial(color_state);
+    if(path==m_finishing_candidate) {
+        m_model_preview->restore_portrait_color_blocks(block_state);
+        m_model_preview->restore_printer_restore_snapshot(printer_restore);
+    } else if(session_source) {
+        m_model_preview->restore_portrait_color_blocks(m_beauty_session_source->color_blocks);
+        m_model_preview->restore_printer_restore_snapshot(m_beauty_session_source->printer_restore);
+    }
     m_model_preview->set_color_controls_visible(!m_finishing_workbench || m_finishing_tool->GetSelection() == 2);
     m_model_preview->set_selection_preview_suppressed(
         m_finishing_workbench && !m_finishing_candidate.empty() && path == m_finishing_candidate);
@@ -264,6 +273,8 @@ void ModelGenerationPanel::accept_model_finishing()
     const auto leaf_edits=m_model_preview->leaf_edit_metadata();
     if (!leaf_edits.is_null() && !leaf_edits.empty()) metadata["beauty_leaf_edit"]=leaf_edits;
     metadata["color_trial"] = m_model_preview->color_trial_metadata();
+    const auto printer_restore = m_model_preview->printer_filament_restore_metadata();
+    if (!printer_restore.empty()) metadata["printer_filament_restore"] = printer_restore;
     if (filament_application && m_apply_filaments_staged) {
         metadata["printer_filament_configuration"]["presets"] = m_apply_filaments_staged->filament_presets;
         for (const auto& key : m_apply_filaments_staged->project_config.keys())
@@ -343,6 +354,8 @@ void ModelGenerationPanel::accept_model_finishing()
                     metadata["portrait_shape_reference"] = std::move(shapes);
                     metadata["portrait_shapes_unlocked"] = after->shapes_unlocked;
                 }
+                if(after->color_blocks)metadata["portrait_color_blocks"]=PortraitColorBlocks::save(*after->color_blocks,
+                    cache_root/"portrait-color-blocks");
                 nlohmann::json document;
                 const auto& options = after->options;
                 if (options.beauty_appearance || options.beauty_deform || options.beauty_puzzle) {
@@ -363,7 +376,7 @@ void ModelGenerationPanel::accept_model_finishing()
                 committed->store(true);
             } catch (const std::exception& e) { error = e.what(); }
             wxGetApp().CallAfter([weak, revision, canceled, committed, candidate, before, after,
-                source_context, region_cache_unsaved, topology_candidate, filament_application, final_check, metadata_path, error] {
+                source_context, region_cache_unsaved, topology_candidate, filament_application, final_check, metadata_path, error]() mutable {
                 if (!weak || weak->m_shutdown || revision != weak->m_sequence ||
                     weak->m_beauty_publication_committed != committed) return;
                 auto* self = weak.get();
@@ -460,6 +473,14 @@ void ModelGenerationPanel::accept_model_finishing()
                 self->m_status->SetLabel(self->m_finishing_status->GetLabel());
                 self->m_model_preview_message->SetLabel(_L("当前显示：已接受的三维处理版本。"));
                 if (topology_candidate || filament_application) {
+                    if (topology_candidate) {
+                        // The candidate is already the accepted model at this
+                        // point. Do not leave Ready in the workbench state or
+                        // the import gate will keep waiting for a button that
+                        // no longer exists.
+                        final_check.candidate_status = RepairCandidateStatus::Accepted;
+                        final_check.candidate_path.clear();
+                    }
                     self->m_workbench_check_result = final_check;
                     self->m_workbench_check_path = candidate.string();
                     self->m_workbench_check_revision = self->m_sequence;

@@ -18,6 +18,7 @@
 #include <cassert>
 #include <string>
 #include "slic3r/GUI/GUI.hpp"
+#include "slic3r/GUI/MainFrame.hpp"
 #include "libslic3r/Utils.hpp"
 #include <wx/panel.h>
 #include "slic3r/GUI/DeviceCore/DevExtruderSystem.h"

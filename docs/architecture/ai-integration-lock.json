@@ -30,6 +30,12 @@
     "ref": "upstream/main",
     "sha": "b6ef6cf1be428b931d669dcc31b7f43ae320be85"
   },
+  "candidate_baseline": {
+    "remote": "upstream",
+    "tag": "v2.5.0-alpha",
+    "sha": "3880f2c58ec392ed2bd5938ab31c9c7c496c0eb2",
+    "purpose": "official_tag_candidate_diff_base"
+  },
   "feature_sources": {
     "model_generation": {
       "branch": "codex/model-generation",

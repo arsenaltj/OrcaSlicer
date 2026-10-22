@@ -3086,7 +3086,9 @@ void PrintConfigDef::init_fff_params()
     // Internal use only, no translation.
     def = this->add("filament_nozzle_map", coInts);
     def->mode = comDevelop;
-    def->set_default_value(new ConfigOptionInts{1});
+    // Nozzle ids are zero-based throughout the engine and plate metadata. Keep the
+    // full-config default aligned with the value written back after an auto slice.
+    def->set_default_value(new ConfigOptionInts{0});
 
     def = this->add("filament_flush_temp", coInts);
     def->label = L("Flush temperature");

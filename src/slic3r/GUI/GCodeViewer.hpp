@@ -172,6 +172,12 @@ public:
         GCodeWindow gcode_window;
         float m_scale = 1.0;
         bool m_show_marker = false;
+        // The tool marker at the current move, drawn in 3D.
+        void render_marker(const bool has_render_path, int canvas_width, int canvas_height, const libvgcode::EViewType& view_type);
+        // The marker position window and G-code window, drawn in the overlay pass.
+        void render_overlay(const bool has_render_path, float legend_height, const libvgcode::Viewer* viewer,
+                            uint32_t gcode_id, int canvas_width, int canvas_height, int right_margin,
+                            const libvgcode::EViewType& view_type, bool show_gcode_window);
         void render(const bool has_render_path, float legend_height, const libvgcode::Viewer* viewer, uint32_t gcode_id, int canvas_width, int canvas_height, int right_margin, const libvgcode::EViewType& view_type, bool show_gcode_window);
     };
     struct ExtruderFilament
@@ -398,6 +404,15 @@ public:
     void render_all_plates_stats(const std::vector<const GCodeProcessorResult*>& gcode_result_list, bool show = true) const;
     //BBS: GUI refactor: add canvas width and height
     void render(int canvas_width, int canvas_height, int right_margin, bool show_gcode_window = true);
+    // Shells, toolpaths, sequential markers and IDEX/IQEX toolhead boxes in the 3D pass.
+    void render_scene(int canvas_width, int canvas_height);
+    // Legend, sliders, marker position window and G-code window, all ImGui.
+    void render_overlay(int canvas_width, int canvas_height, int right_margin, bool show_gcode_window);
+    void render_shadow_casters(const Transform3d& light_view_matrix, const Transform3d& light_projection_matrix, const Vec3d& light_position);
+    void set_shadow_map(int texture_unit, const Transform3d& light_view_projection, float intensity, float texel_size);
+    void set_tone(float exposure, float saturation);
+    void set_clipping_plane(const ClippingPlane& plane);
+    void set_light_top_dir(const Vec3d& direction);
     //BBS
     // void _render_calibration_thumbnail_internal(ThumbnailData& thumbnail_data, const ThumbnailsParams& thumbnail_params, PartPlateList& partplate_list, OpenGLManager& opengl_manager);
     // void _render_calibration_thumbnail_framebuffer(ThumbnailData& thumbnail_data, unsigned int w, unsigned int h, const ThumbnailsParams& thumbnail_params, PartPlateList& partplate_list, OpenGLManager& opengl_manager);

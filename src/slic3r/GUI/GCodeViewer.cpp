@@ -16,6 +16,7 @@
 #include "GUI_App.hpp"
 #include "Shortcuts.hpp"
 #include "Plater.hpp"
+#include "MainFrame.hpp"
 #include "Camera.hpp"
 #include "I18N.hpp"
 #include "format.hpp"
@@ -1097,7 +1098,7 @@ void GCodeViewer::SequentialView::GCodeWindow::stop_mapping_file()
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": finished mapping file " << m_filename;
     }
 }
-void GCodeViewer::SequentialView::render(const bool has_render_path, float legend_height, const libvgcode::Viewer* viewer, uint32_t gcode_id, int canvas_width, int canvas_height, int right_margin, const libvgcode::EViewType& view_type, bool show_gcode_window)
+void GCodeViewer::SequentialView::render_marker(const bool has_render_path, int canvas_width, int canvas_height, const libvgcode::EViewType& view_type)
 {
     if (has_render_path && m_show_marker) {
         // marker.set_world_offset(current_offset);
@@ -1108,7 +1109,7 @@ void GCodeViewer::SequentialView::render(const bool has_render_path, float legen
     }
 }
 
-void GCodeViewer::SequentialView::render_overlay(const bool has_render_path, float legend_height, const libvgcode::Viewer* viewer, uint32_t gcode_id, int canvas_width, int canvas_height, int right_margin, const libvgcode::EViewType& view_type)
+void GCodeViewer::SequentialView::render_overlay(const bool has_render_path, float legend_height, const libvgcode::Viewer* viewer, uint32_t gcode_id, int canvas_width, int canvas_height, int right_margin, const libvgcode::EViewType& view_type, bool show_gcode_window)
 {
     if (has_render_path && m_show_marker)
         marker.render_position_window(viewer, canvas_width, canvas_height, view_type);
@@ -2457,6 +2458,13 @@ void GCodeViewer::render(int canvas_width, int canvas_height, int right_margin, 
     }
 }
 
+void GCodeViewer::render_scene(int canvas_width, int canvas_height)
+{
+    // Keep toolpath geometry in the depth-tested scene pass. Legends, sliders and
+    // the G-code window are rendered separately by render_overlay().
+    render(canvas_width, canvas_height, 0, false);
+}
+
 size_t GCodeViewer::shadow_casters_signature() const
 {
     size_t hash = m_viewer.get_vertices_count();
@@ -2515,7 +2523,7 @@ void GCodeViewer::set_clipping_plane(const ClippingPlane& plane)
     m_viewer.set_clipping_plane(m_clipping_plane);
 }
 
-void GCodeViewer::render_overlay(int canvas_width, int canvas_height, int right_margin)
+void GCodeViewer::render_overlay(int canvas_width, int canvas_height, int right_margin, bool show_gcode_window)
 {
     if (m_viewer.get_extrusion_roles().empty())
         return;
@@ -2537,7 +2545,9 @@ void GCodeViewer::render_overlay(int canvas_width, int canvas_height, int right_
     m_sequential_view.marker.set_world_position(libvgcode::convert(curr_vertex.position));
     m_sequential_view.marker.set_z_offset(m_z_offset + 0.5f);
     // BBS fixed buttom margin. m_moves_slider.pos_y
-    m_sequential_view.render(!m_no_render_path, legend_height, &m_viewer, m_viewer.get_current_vertex().gcode_id, canvas_width, canvas_height - bottom_margin * m_scale, right_margin * m_scale, m_viewer.get_view_type(), show_gcode_window);
+    m_sequential_view.render_overlay(!m_no_render_path, legend_height, &m_viewer, m_viewer.get_current_vertex().gcode_id,
+                                     canvas_width, canvas_height - bottom_margin * m_scale, right_margin * m_scale,
+                                     m_viewer.get_view_type(), show_gcode_window);
 
 #if VGCODE_ENABLE_COG_AND_TOOL_MARKERS
     if (is_legend_shown()) {

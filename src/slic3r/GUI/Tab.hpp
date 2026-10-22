@@ -723,7 +723,7 @@ public:
     void		update_sla();
     void        update_pages(); // update m_pages according to printer technology
 	void        on_gcode_flavor_changed();
-	void		extruders_count_changed(size_t extruders_count, bool user_initiated);
+	void		extruders_count_changed(size_t extruders_count, bool user_initiated = false);
 	PageShp		build_kinematics_page();
 	void		build_unregular_pages(bool from_initial_build = false);
 	void		on_preset_loaded() override;

@@ -735,6 +735,10 @@ public:
         ForwardCompatibilitySubstitutionRule compatibility_rule, bool allow_cache,
         const std::atomic<bool>* cancel = nullptr, std::vector<std::string>* failed = nullptr);
 
+    // Merge one independently loaded vendor bundle into this bundle. This overload
+    // is kept for setup-wizard callers that load a vendor with a shared base bundle.
+    std::vector<std::string> merge_presets(PresetBundle &&other);
+
 private:
     // Move the presets and vendor profiles of `others` into this bundle, in one pass
     // over each collection. A preset whose name this bundle or an earlier one of

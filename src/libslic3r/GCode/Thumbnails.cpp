@@ -68,23 +68,29 @@ std::unique_ptr<CompressedImageBuffer> compress_thumbnail_png(const ThumbnailDat
 
 std::unique_ptr<CompressedImageBuffer> compress_thumbnail_jpg(const ThumbnailData& data)
 {
-    // Take vector of RGBA pixels and flip the image vertically
-    std::vector<unsigned char> rgba_pixels(data.pixels.size());
-    const unsigned int row_size = data.width * 4;
+    // JPEG has no alpha channel. Convert RGBA pixels to RGB while flipping the image vertically.
+    const unsigned int row_size = data.width * 3;
+    std::vector<unsigned char> rgb_pixels(size_t(data.width) * data.height * 3);
     for (unsigned int y = 0; y < data.height; ++y) {
-        ::memcpy(rgba_pixels.data() + (data.height - y - 1) * row_size, data.pixels.data() + y * row_size, row_size);
+        const unsigned char *src = data.pixels.data() + size_t(y) * data.width * 4;
+        unsigned char *dst = rgb_pixels.data() + size_t(data.height - y - 1) * row_size;
+        for (unsigned int x = 0; x < data.width; ++x) {
+            dst[x * 3 + 0] = src[x * 4 + 0];
+            dst[x * 3 + 1] = src[x * 4 + 1];
+            dst[x * 3 + 2] = src[x * 4 + 2];
+        }
     }
 
     // Store pointers to scanlines start for later use
     std::vector<unsigned char*> rows_ptrs;
     rows_ptrs.reserve(data.height);
     for (unsigned int y = 0; y < data.height; ++y) {
-        rows_ptrs.emplace_back(&rgba_pixels[y * row_size]);
+        rows_ptrs.emplace_back(&rgb_pixels[size_t(y) * row_size]);
     }
 
     std::vector<unsigned char> compressed_data(data.pixels.size());
     unsigned char* compressed_data_ptr = compressed_data.data();
-    unsigned long compressed_data_size = data.pixels.size();
+    unsigned long compressed_data_size = static_cast<unsigned long>(compressed_data.size());
 
     jpeg_error_mgr err;
     jpeg_compress_struct info;
@@ -94,8 +100,8 @@ std::unique_ptr<CompressedImageBuffer> compress_thumbnail_jpg(const ThumbnailDat
 
     info.image_width = data.width;
     info.image_height = data.height;
-    info.input_components = 4;
-    info.in_color_space = JCS_EXT_RGBA;
+    info.input_components = 3;
+    info.in_color_space = JCS_RGB;
 
     jpeg_set_defaults(&info);
     jpeg_set_quality(&info, 85, TRUE);

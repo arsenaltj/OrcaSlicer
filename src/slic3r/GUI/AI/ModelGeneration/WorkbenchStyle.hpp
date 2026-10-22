@@ -517,6 +517,7 @@ public:
     }
     void SetLabel(const wxString& label) override {
         if (!m_multiline) { Button::SetLabel(label); return; }
+        if (wxWindow::GetLabel() == label) return;
         wxWindow::SetLabel(label);
         Refresh(false);
     }

@@ -19,6 +19,7 @@
 #include "wx/bitmap.h"
 #include "wx/uri.h"
 #include "wx/mediactrl.h"
+#include "IMediaController.hpp"
 #include <wx/image.h>
 
 wxDECLARE_EVENT(EVT_MEDIA_CTRL_STAT, wxCommandEvent);

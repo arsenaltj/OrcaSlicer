@@ -127,6 +127,13 @@ void Button::SetPaddingSize(const wxSize& size)
     messureSize();
 }
 
+void Button::SetIconSpacing(int spacing)
+{
+    m_icon_spacing = spacing;
+    messureSize();
+    Refresh();
+}
+
 void Button::SetLeftPadding(int size)
 {
     leftPadding = std::max(0, size);

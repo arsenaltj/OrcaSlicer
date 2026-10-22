@@ -4,6 +4,7 @@
 #include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchTextureImport.hpp"
 #include "slic3r/GUI/AI/Orca/ModelColorUpdate.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitColorBlockCache.hpp"
 #include "libslic3r/TexturePainting.hpp"
 #include "slic3r/GUI/ModelColorImportResult.hpp"
 #include "slic3r/GUI/TextureImportModel.hpp"
@@ -671,4 +672,54 @@ TEST_CASE("Workbench texture matching returns no usable slots when material iden
     TextureImportOptions options;
     options.workbench_review = true;
     CHECK(workspace_texture_filaments(entries, &options).empty());
+}
+
+TEST_CASE("Accepted subface slots retain same color material identities through 3MF", "[PortraitColorBlocks][WorkbenchTextureImport]")
+{
+    auto mesh=its_make_cube(10,10,10);
+    AI::ModelMatchedColors matched;
+    matched.source_sha256=std::string(64,'a');matched.geometry_id=std::string(64,'b');
+    matched.palette={{0,"#808080","PLA",true},{1,"#808080","PLA",true}};
+    matched.face_slots.assign(mesh.indices.size(),0);
+    matched.subface_slots={{0,4,255,1}};
+    REQUIRE(matched.valid());
+    AI::ModelMatchedColors decoded;std::string error;
+    REQUIRE(AI::decode_model_matched_colors(AI::encode_model_matched_colors(matched),decoded,error));
+    REQUIRE(decoded.subface_slots.size()==1);REQUIRE(decoded.subface_slots[0].slot==1);
+    Model model;ScopedTemporaryDir backup("portrait-blocks-native");model.set_backup_path(backup.string());
+    auto* object=model.add_object("blocks","source.obj",TriangleMesh(mesh));object->add_instance();
+    auto* volume=object->volumes.front();auto painting=volume->mmu_segmentation_facets.get_data();
+    REQUIRE(apply_matched_subface_slots(mesh,mesh,painting,decoded,error));
+    const auto unchanged=painting;auto bad=decoded;bad.subface_slots[0].slot=999;
+    REQUIRE_FALSE(apply_matched_subface_slots(mesh,mesh,painting,bad,error));REQUIRE(painting==unchanged);
+    auto changed=mesh;changed.indices[0].x()=changed.indices[0].y();
+    REQUIRE_FALSE(apply_matched_subface_slots(mesh,changed,painting,decoded,error));REQUIRE(painting==unchanged);
+    volume->mmu_segmentation_facets.set_data(TriangleSelector::TriangleSplittingData(painting));
+    namespace PC=PortraitColorBlocks;namespace SC=AI::SemanticColoring;
+    SC::MeshSnapshot source;source.mesh=mesh;source.geometry_id=matched.geometry_id;source.content_id=matched.source_sha256;
+    source.face_colors.assign(mesh.indices.size(),RGBA{.4f,.4f,.4f,1.f});
+    SC::Analysis analysis;analysis.geometry_id=source.geometry_id;analysis.content_id=source.content_id;analysis.signature=std::string(64,'c');
+    analysis.face_labels.assign(mesh.indices.size(),SC::Label::Unknown);analysis.face_confidence.assign(mesh.indices.size(),.95f);
+    const auto blocks=PC::build({source,analysis});blocks->recolor(0,{.8f,.8f,.8f});blocks->active=PC::Track::SourceAppearance;
+    ScopedTemporaryDir cache("portrait-blocks-native-cache");const auto reference=PC::save(*blocks,cache.path());
+    PC::archive({reference},cache.path(),model.get_auxiliary_file_temp_path());
+    ScopedTemporaryFile file(".3mf");const auto path=file.string();
+    DynamicPrintConfig config=DynamicPrintConfig::full_print_config();
+    PlateData plate;plate.plate_index=0;StoreParams params;params.path=path.c_str();params.model=&model;params.config=&config;
+    params.strategy=SaveStrategy::Zip64|SaveStrategy::Silence;params.plate_data_list.push_back(&plate);
+    REQUIRE(store_bbs_3mf(params));
+    Model restored;ScopedTemporaryDir reopened("portrait-blocks-native-reopened");restored.set_backup_path(reopened.string());
+    DynamicPrintConfig restored_config;ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs plates;std::vector<Preset*> presets;bool bbl=false,orca=false;Semver version;
+    const bool loaded=load_bbs_3mf(path.c_str(),&restored_config,&substitutions,&restored,&plates,&presets,&bbl,&orca,&version,nullptr,
+        LoadStrategy::LoadModel|LoadStrategy::LoadConfig|LoadStrategy::LoadAuxiliary);
+    release_PlateData_list(plates);for(auto* preset:presets)delete preset;
+    REQUIRE(loaded);REQUIRE(restored.objects.size()==1);REQUIRE(restored.objects.front()->volumes.size()==1);
+    REQUIRE(restored.objects.front()->volumes.front()->mmu_segmentation_facets.get_data()==painting);
+    ScopedTemporaryDir recovered("portrait-blocks-native-recovered");
+    REQUIRE(PC::restore_archive(restored.get_auxiliary_file_temp_path(),recovered.path())==1);
+    const auto state=PC::load(reference,recovered.path(),source.geometry_id,mesh.indices.size(),source.content_id,error);
+    REQUIRE(state);REQUIRE(PC::encode(*state)==PC::encode(*blocks));
+    auto legacy=AI::encode_model_matched_colors(matched);legacy.erase("subface_slots");
+    REQUIRE(AI::decode_model_matched_colors(legacy,decoded,error));REQUIRE(decoded.subface_slots.empty());
 }

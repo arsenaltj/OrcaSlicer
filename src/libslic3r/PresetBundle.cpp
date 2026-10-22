@@ -3653,6 +3653,12 @@ std::vector<std::vector<std::string>> PresetBundle::merge_presets(const std::vec
     return duplicates;
 }
 
+std::vector<std::string> PresetBundle::merge_presets(PresetBundle &&other)
+{
+    auto all_duplicates = this->merge_presets(std::vector<PresetBundle*>{&other});
+    return all_duplicates.empty() ? std::vector<std::string>{} : std::move(all_duplicates.front());
+}
+
 void PresetBundle::update_system_maps()
 {
     this->prints 	   .update_map_system_profile_renamed();

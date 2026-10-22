@@ -137,6 +137,7 @@ protected:
     SelectMObjectPopup      m_mobjectlist_popup;
     CalibrationWizard*      m_cali_panels[CALI_MODE_COUNT];
     wxTimer*                m_refresh_timer = nullptr;
+    bool                    m_initialized = false;
 };
 }} // namespace Slic3r::GUI
 

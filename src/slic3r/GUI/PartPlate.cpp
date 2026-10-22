@@ -5542,18 +5542,7 @@ void PartPlateList::set_default_wipe_tower_pos_for_plate(int plate_idx, bool ini
         f_volume_maps = wxGetApp().preset_bundle->get_default_nozzle_volume_types_for_filaments(filament_maps);
     }
     DynamicPrintConfig full_config = wxGetApp().preset_bundle->full_config(false, filament_maps, f_volume_maps);
-    // The default position used to be sized from the preset-only config. When
-    // SmartSlice changes the per-plate layer height, the final tower depth can
-    // grow after the initial position was chosen. Include the effective plate
-    // overrides so this clamp uses the same values as the upcoming slice.
-    full_config.apply(*part_plate->config(), true);
-    float w = dynamic_cast<const ConfigOptionFloat *>(full_config.option("prime_tower_width"))->value;
-    float v = dynamic_cast<const ConfigOptionFloat *>(full_config.option("prime_volume"))->value;
-    bool enable_wrapping = false;
-    const ConfigOptionBool *wrapping_opt = dynamic_cast<const ConfigOptionBool *>(full_config.option("enable_wrapping_detection"));
-    if (wrapping_opt) enable_wrapping = wrapping_opt->value;
-    int nozzle_nums = wxGetApp().preset_bundle->get_printer_extruder_count();
-    Vec3d wipe_tower_size = part_plate->estimate_wipe_tower_size(full_config, w, v, nozzle_nums, init_pos ? 2 : 0, false, enable_wrapping);
+    WipeTowerFootprint footprint = part_plate->estimate_wipe_tower_footprint(full_config, init_pos ? 2 : 0);
 
     if (!init_pos && (is_approx(footprint.width, 0.0) || is_approx(footprint.depth, 0.0))) {
         footprint = part_plate->estimate_wipe_tower_footprint(full_config, 2);
@@ -5597,6 +5586,7 @@ void PartPlateList::set_default_wipe_tower_pos_for_plate(int plate_idx, bool ini
     dynamic_cast<ConfigOptionFloats *>(proj_cfg.option("wipe_tower_y"))->set_at(&wt_y_opt, plate_idx, 0);
 }
 
+//this may be happened after machine changed
 void PartPlateList::sync_wipe_tower_positions_to_model()
 {
     if (m_model == nullptr || wxGetApp().preset_bundle == nullptr)
@@ -7105,20 +7095,20 @@ void PartPlateList::render(const Transform3d& view_matrix, const Transform3d& pr
 	}
 	for (it = m_plate_list.begin(); it != m_plate_list.end(); it++) {
 		int current_index = (*it)->get_index();
-		if ((only_current || hide_inactive) && (current_index != m_current_plate))
+        if (only_current && (current_index != m_current_plate))
 			continue;
 		if (current_index == m_current_plate) {
 			PartPlate::HeightLimitMode height_mode = (only_current)?PartPlate::HEIGHT_LIMIT_NONE:m_height_limit_mode;
 			if (plate_hover_index == current_index)
-                (*it)->render(view_matrix, projection_matrix, bottom, only_body, false, height_mode, plate_hover_action, render_cali, show_grid, hide_chrome);
+                (*it)->render(view_matrix, projection_matrix, bottom, only_body, false, height_mode, plate_hover_action, render_cali, show_grid, false);
 			else
-                (*it)->render(view_matrix, projection_matrix, bottom, only_body, false, height_mode, -1, render_cali, show_grid, hide_chrome);
+                (*it)->render(view_matrix, projection_matrix, bottom, only_body, false, height_mode, -1, render_cali, show_grid, false);
 		}
 		else {
 			if (plate_hover_index == current_index)
-				(*it)->render(view_matrix, projection_matrix, bottom, only_body, false, PartPlate::HEIGHT_LIMIT_NONE, plate_hover_action, render_cali, show_grid, hide_chrome);
+                (*it)->render(view_matrix, projection_matrix, bottom, only_body, false, PartPlate::HEIGHT_LIMIT_NONE, plate_hover_action, render_cali, show_grid, false);
 			else
-                (*it)->render(view_matrix, projection_matrix, bottom, only_body, false, PartPlate::HEIGHT_LIMIT_NONE, -1, render_cali, show_grid, hide_chrome);
+                (*it)->render(view_matrix, projection_matrix, bottom, only_body, false, PartPlate::HEIGHT_LIMIT_NONE, -1, render_cali, show_grid, false);
 		}
 	}
 }
@@ -8273,7 +8263,7 @@ bool PartPlateList::load_logo_texture()
 void PartPlateList::load_icon_textures()
 {
 	if (!icon_textures_loaded())
-		generate_icon_textures();
+        generate_icon_textures(m_is_dark);
 }
 
 bool PartPlateList::load_next_plate_texture()

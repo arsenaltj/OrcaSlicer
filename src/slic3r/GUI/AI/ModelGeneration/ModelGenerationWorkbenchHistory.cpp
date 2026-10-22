@@ -333,7 +333,7 @@ void ModelGenerationPanel::refresh_workbench_history()
         else ++it;
     }
     const auto status = m_ui_history_loading ? _L("正在读取模型…") :
-        !m_ui_history_error.empty() ? from_u8(m_ui_history_error) :
+        !m_ui_history_error.empty() ? wxString::FromUTF8(m_ui_history_error.c_str()) :
         wxString::Format(_L("%llu 个模型"), static_cast<unsigned long long>(entries.size()));
     if (m_workbench_history_status->GetLabel() != status) m_workbench_history_status->SetLabel(status);
 }

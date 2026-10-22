@@ -823,7 +823,7 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
                 if (CGAL::is_closed(cgal_mesh))
                     break;
                 std::vector<halfedge_descriptor> borders;
-                PMP::extract_boundary_cycles(cgal_mesh, std::back_inserter(borders));
+                CGAL::extract_boundary_cycles(cgal_mesh, std::back_inserter(borders));
                 bool filled = false;
                 for (halfedge_descriptor border : borders) {
                     if (canceled())

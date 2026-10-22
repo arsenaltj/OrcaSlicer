@@ -1540,10 +1540,10 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
         return out;
     };
 
-    SegmentationDetail::for_each_painting_layer_group(num_layers, size_t(granularity), [&num_layers, &num_facets_states, &layer_color_stat, &top_raw, &triangles_by_color_top,
-                                                                               &throw_on_cancel_callback, &input_expolygons, &bottom_raw, &triangles_by_color_bottom,
-                                                                               &shell_triangles_by_color_top, &shell_triangles_by_color_bottom](size_t begin, size_t end, size_t layer_idx_offset) {
-        for (size_t layer_idx = begin; layer_idx < end; ++ layer_idx) {
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, num_layers), [&num_layers, &num_facets_states, &layer_color_stat, &top_raw, &triangles_by_color_top,
+                                                                  &throw_on_cancel_callback, &input_expolygons, &bottom_raw, &triangles_by_color_bottom,
+                                                                  &shell_triangles_by_color_top, &shell_triangles_by_color_bottom](const tbb::blocked_range<size_t> &range) {
+        for (size_t layer_idx = range.begin(); layer_idx < range.end(); ++ layer_idx) {
             for (size_t color_idx = 0; color_idx < num_facets_states; ++color_idx) {
                 throw_on_cancel_callback();
                 LayerColorStat stat = layer_color_stat(layer_idx, color_idx);
@@ -1591,13 +1591,26 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
         }
     });
 
+    // Gather shell projections per target layer in source-layer order. This
+    // keeps the merge deterministic while allowing the projection pass to run
+    // in parallel.
+    std::vector<std::vector<ExPolygons>> shell_top_by_layer(num_facets_states, std::vector<ExPolygons>(num_layers));
+    std::vector<std::vector<ExPolygons>> shell_bottom_by_layer(num_facets_states, std::vector<ExPolygons>(num_layers));
+    for (size_t color_idx = 0; color_idx < num_facets_states; ++color_idx)
+        for (size_t layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
+            for (auto &[target, projection] : shell_triangles_by_color_top[color_idx][layer_idx])
+                append(shell_top_by_layer[color_idx][target], std::move(projection));
+            for (auto &[target, projection] : shell_triangles_by_color_bottom[color_idx][layer_idx])
+                append(shell_bottom_by_layer[color_idx][target], std::move(projection));
+        }
+
     if (trace.enabled)
         for (size_t layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
             throw_on_cancel_callback();
             trace.color_regions("topown", layer_idx, triangles_by_color_top, num_layers);
             trace.color_regions("bottomown", layer_idx, triangles_by_color_bottom, num_layers);
-            trace.color_regions("topshell", layer_idx, shell_triangles_by_color_top, num_layers);
-            trace.color_regions("bottomshell", layer_idx, shell_triangles_by_color_bottom, num_layers);
+            trace.color_regions("topshell", layer_idx, shell_top_by_layer);
+            trace.color_regions("bottomshell", layer_idx, shell_bottom_by_layer);
         }
 
     std::vector<std::vector<ExPolygons>> triangles_by_color_merged(num_facets_states);
@@ -2180,6 +2193,18 @@ void SegmentationDetail::repair_invalid_colored_partition(std::vector<ExPolygons
     }
     for (auto &group : candidate) group = intersection_ex(union_ex(group), shape);
 
+    // Integer clipping of rotated Voronoi cells can leave a sub-grid sliver
+    // uncovered at a cell boundary. It carries no independent paint evidence;
+    // keep the partition closed by assigning that residual to the default
+    // group rather than dropping coverage or inventing an explicit color.
+    ExPolygons covered;
+    for (const auto &group : candidate) append(covered, group);
+    const ExPolygons missing = diff_ex(shape, union_ex(covered));
+    if (!missing.empty()) {
+        append(candidate[0], missing);
+        candidate[0] = union_ex(candidate[0]);
+    }
+
     // A default projected contour supplies no new explicit paint. Preserve
     // existing explicit colors there, including unresolved overlaps, rather
     // than erasing them or choosing an owner by slot number.
@@ -2286,24 +2311,54 @@ bool SegmentationDetail::transfer_default_color_regions(std::vector<ExPolygons> 
     const size_t none=regions.size();
     const ExPolygons domain=diff_ex(regions[0],joined(regions,1,none));
     if(domain.empty())return false;
+    // Canonicalize the proposed groups before clipping them into the default
+    // region.  A candidate may contain competing explicit colors; subtract
+    // their complete intersection from every group so boolean rounding cannot
+    // leave a tiny sliver assigned to one of the competing colors.
+    std::vector<ExPolygons> candidate_groups(candidate.size());
+    for (size_t color = 0; color < candidate.size(); ++color)
+        candidate_groups[color] = union_ex(candidate[color]);
+    ExPolygons competing;
+    for (size_t a = 1; a < candidate_groups.size(); ++a)
+        for (size_t b = a + 1; b < candidate_groups.size(); ++b)
+            append(competing, intersection_ex(candidate_groups[a], candidate_groups[b]));
+    competing = union_ex(competing);
+
     std::vector<ExPolygons> additions(regions.size());
-    for(size_t color=1;color<regions.size();++color)
-        additions[color]=intersection_ex(domain,diff_ex(candidate[color],joined(candidate,0,color)));
+    for (size_t color = 1; color < regions.size(); ++color) {
+        additions[color] = intersection_ex(domain, diff_ex(candidate[color], joined(candidate, 0, color)));
+        additions[color] = diff_ex(additions[color], competing);
+    }
     const ExPolygons added=joined(additions,1,none);
     if(added.empty())return false;
     std::vector<ExPolygons> result=regions;result[0]=diff_ex(regions[0],added);
     for(size_t color=1;color<regions.size();++color) {
         append(result[color],additions[color]);result[color]=union_ex(result[color]);
-        if(area_mm2(diff_ex(regions[color],result[color]))>1e-6)return false;
+        const double lost = area_mm2(diff_ex(regions[color],result[color]));
+        if (lost > 1e-6) return false;
     }
     // Boolean rounding must not create a new gap, overlap, or excursion outside
     // the old coverage. Existing invalid partitions remain separately visible.
-    const ExPolygons before=joined(regions,0,none),after=joined(result,0,none);
-    if(area_mm2(diff_ex(before,after))>1e-6 || area_mm2(diff_ex(after,before))>1e-6 || area_mm2(diff_ex(added,domain))>1e-6)return false;
+    const ExPolygons before = joined(regions, 0, none);
+    ExPolygons after = joined(result, 0, none);
+    // If clipping introduced a tiny excursion at an old boundary, remove it
+    // from the newly proposed explicit groups and rebuild the default group.
+    // This keeps the original coverage as the authoritative domain.
+    const ExPolygons extra_coverage = diff_ex(after, before);
+    if (!extra_coverage.empty()) {
+        for (size_t color = 1; color < result.size(); ++color)
+            result[color] = diff_ex(result[color], extra_coverage);
+        result[0] = diff_ex(before, joined(result, 1, none));
+        after = joined(result, 0, none);
+    }
+    const double missing = area_mm2(diff_ex(before,after));
+    const double extra = area_mm2(diff_ex(after,before));
+    const double outside = area_mm2(diff_ex(added,domain));
+    if (missing > 1e-6 || extra > 1e-6 || outside > 1e-6) return false;
     double overlap_growth=0.;
     for(size_t a=0;a<regions.size();++a)for(size_t b=a+1;b<regions.size();++b)
         overlap_growth+=area_mm2(intersection_ex(result[a],result[b]))-area_mm2(intersection_ex(regions[a],regions[b]));
-    if(overlap_growth>1e-6)return false;
+    if (overlap_growth > 1e-6) return false;
     regions=std::move(result);return true;
 }
 

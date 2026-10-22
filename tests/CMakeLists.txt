@@ -88,13 +88,23 @@ function(orcaslicer_discover_tests TARGET)
     catch_discover_tests(${TARGET} ADD_TAGS_AS_LABELS)
 endfunction()
 
+if (ORCA_MOBILE_SDK_ONLY)
+    add_subdirectory(mobile_sdk)
+    return()
+endif()
+
 add_subdirectory(libnest2d)
 add_subdirectory(libslic3r)
-add_subdirectory(slic3rutils)
+add_subdirectory(mobile_sdk)
+if (SLIC3R_GUI)
+    add_subdirectory(slic3rutils)
+endif()
 add_subdirectory(fff_print)
 add_subdirectory(sla_print)
 add_subdirectory(filament_group)
-add_subdirectory(ui_redesign)
+if (SLIC3R_GUI)
+    add_subdirectory(ui_redesign)
+endif()
 
 # End-to-end checks of the orca-slicer binary. Linux only: they read result.json, which the CLI
 # writes on Linux only. src/ is added before tests/, so the target is known here.

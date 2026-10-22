@@ -165,6 +165,34 @@ TEST_CASE("Native textured imports retain closed geometry through color applicat
     CHECK(model.objects.size() == 1);
 }
 
+TEST_CASE("Adaptive textured imports survive geometric color smoothing on a small closed mesh", "[Model][ModelImport][Regression]")
+{
+    const Model model = Model::read_from_file(std::string(TEST_DATA_DIR) + "/model_artifact/textured.glb");
+    REQUIRE(model.texture_mesh);
+    REQUIRE_FALSE(model.texture_mesh->textures.empty());
+
+    TexturePaintingSettings settings;
+    settings.target_colors_num = 0;
+    settings.smooth_weight = 0.5;
+    settings.mesh_repair_decision = TexturePaintingSettings::MeshRepairDecision::ImportWithoutRepair;
+
+    PaintedMesh painted;
+    REQUIRE(texture_to_painting(*model.texture_mesh, painted, settings));
+    REQUIRE_FALSE(painted.indices.empty());
+    REQUIRE(painted.indices.size() == painted.face_colors.size());
+
+    indexed_triangle_set result;
+    result.vertices.reserve(painted.vertices.size());
+    result.indices.reserve(painted.indices.size());
+    for (const auto& vertex : painted.vertices)
+        result.vertices.emplace_back(vertex[0], vertex[1], vertex[2]);
+    for (const auto& face : painted.indices)
+        result.indices.emplace_back(face[0], face[1], face[2]);
+
+    CHECK(its_num_open_edges(result) == 0);
+    CHECK(result.indices.size() >= 4);
+}
+
 TEST_CASE("Painted mesh unit conversion preserves nearby corners at a nonzero source offset", "[Model][ModelImport][ModelVertexColors]")
 {
     const int unit_conversion = GENERATE(0, 1, 2);

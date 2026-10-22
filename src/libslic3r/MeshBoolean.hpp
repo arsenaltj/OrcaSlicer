@@ -6,6 +6,7 @@
 #include <memory>
 #include <exception>
 #include <functional>
+#include <optional>
 
 #include <libslic3r/TriangleMesh.hpp>
 #include <Eigen/Geometry>
@@ -73,6 +74,14 @@ TriangleMesh merge(std::vector<TriangleMesh> meshes);
 
 bool does_bound_a_volume(const CGALMesh &mesh);
 bool empty(const CGALMesh &mesh);
+
+// Compute a least-squares conformal map for a connected disk-like patch.
+// Returns no value for empty, closed, multiply connected, or otherwise unsupported meshes.
+std::optional<std::vector<Vec2f>> parameterize_lscm(const indexed_triangle_set &mesh);
+
+indexed_triangle_set remesh_isotropic(const indexed_triangle_set &mesh, double target_edge_length,
+                                      unsigned n_iterations = 3, double sharp_angle_deg = 40.0,
+                                      unsigned n_relaxation_steps = 1);
 
 // Repair a mesh using CGAL. Cancellation is checked between CGAL calls and while
 // copying input; individual CGAL calls cannot be interrupted. On cancellation,

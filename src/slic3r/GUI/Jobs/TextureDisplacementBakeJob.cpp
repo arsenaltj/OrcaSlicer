@@ -124,7 +124,7 @@ void TextureDisplacementBakeJob::finalize(bool canceled, std::exception_ptr &ept
         // runs ModelVolume::update_extruder_count(), which clamps paint above the old filament count.
         Sidebar &sidebar = plater->sidebar();
         const std::vector<int> filament_of = GLGizmoTextureDisplacement::palette_filaments(
-            m_input.color.palette, m_triangle_color, [&sidebar](const PrintableColor &mix) {
+            m_input.color.palette, m_triangle_color, [&sidebar](const GLGizmoTextureDisplacement::PaletteEntry &mix) {
                 return sidebar.ensure_mixed_filament({ unsigned(mix.a + 1), unsigned(mix.b + 1) },
                                                      { mix.a_percent(), 100 - mix.a_percent() });
             });

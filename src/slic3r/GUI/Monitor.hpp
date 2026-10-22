@@ -101,6 +101,7 @@ private:
 
     int last_status;
     bool update_flag{false};
+    bool m_initialized{false};
     wxTimer* m_refresh_timer = nullptr;
 
 public:

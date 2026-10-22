@@ -41,7 +41,7 @@ struct BeautySurface {
 
     static std::shared_ptr<BeautySurface> build(const indexed_triangle_set& mesh,
         const std::vector<RGBA>& colors, const std::vector<uint32_t>& saved_partition = {},
-        const std::function<bool()>& canceled = {});
+        const std::function<bool()>& canceled = {}, bool respect_normal_guard = true);
 
     // Appearance and partitioning need face adjacency. Geometry distance rows
     // are prepared only by vertex_weights/deform if this lighter entry is used.
@@ -68,7 +68,7 @@ private:
         double falloff_mm,const std::function<bool()>& canceled) const;
     static std::shared_ptr<BeautySurface> build_impl(const indexed_triangle_set& mesh,
         const std::vector<RGBA>& colors, const std::vector<uint32_t>& saved_partition,
-        const std::function<bool()>& canceled, bool vertex_graph);
+        const std::function<bool()>& canceled, bool vertex_graph, bool respect_normal_guard);
 };
 
 } // namespace Slic3r::AI

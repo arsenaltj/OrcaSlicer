@@ -1147,7 +1147,7 @@ void GUI_App::fail_startup()
 
 bool GUI_App::should_start_with_redesign_shell() const
 {
-    if (!is_editor() || !RedesignFeatureFlags::surface_enabled("IMAGE_HOME"))
+    if (!RedesignFeatureFlags::shell_on_startup(is_editor()))
         return false;
 
     const bool has_input_files = init_params != nullptr && !init_params->input_files.empty();
@@ -1160,12 +1160,15 @@ bool GUI_App::should_start_with_redesign_shell() const
     }
     const bool image_home = RedesignFeatureFlags::image_home_on_startup(
         true, has_input_files, default_prepare, restore_available);
+    const char* initial_surface = image_home ? "image_home" :
+        has_input_files ? (init_params->input_gcode ? "gcode" : "file") :
+        restore_available ? "restore" : "prepare";
     BOOST_LOG_TRIVIAL(info) << "[UiRedesign] initial surface="
-                             << (image_home ? "image_home" : "legacy")
+                             << initial_surface
                              << " input_files=" << has_input_files
                              << " default_prepare=" << default_prepare
                              << " restore_available=" << restore_available;
-    return image_home;
+    return true;
 }
 
 void GUI_App::post_init()
@@ -1301,7 +1304,22 @@ void GUI_App::advance_startup(wxTimerEvent&)
             schedule_startup(StartupStage::Reveal, _L("Opening the workspace..."));
             break;
         case StartupStage::Reveal:
-            if (!mainframe->is_redesign_shell_active() && mainframe->is_prepare_or_preview_tab()) {
+            // Startup callbacks may mutate the shared Plater after the redesign
+            // route was selected. Re-apply the semantic route before revealing
+            // the workspace so the visible shell and actual canvas agree.
+            if (mainframe->is_redesign_shell_active()) {
+                const bool has_explicit_input = init_params != nullptr && !init_params->input_files.empty();
+                if (has_explicit_input) {
+                    const bool reveal_preview = init_params->input_gcode || plater_->is_preview_shown();
+                    mainframe->select_tab(reveal_preview ? TAB_ID_PREVIEW : TAB_ID_PREPARE);
+                    BOOST_LOG_TRIVIAL(info) << "[UiRedesign] reveal route="
+                                             << (reveal_preview ? "preview" : "prepare")
+                                             << " input_gcode=" << init_params->input_gcode;
+                } else {
+                    mainframe->select_tab();
+                }
+            }
+            if (mainframe->is_prepare_or_preview_tab()) {
                 // Loading G-code can select Preview. Verify a new frame of the
                 // selected canvas, not the earlier empty Prepare warmup frame.
                 auto* selected_canvas = plater_->get_current_canvas3D();
@@ -1459,7 +1477,11 @@ void GUI_App::finish_post_init()
             mainframe->select_tab(TAB_ID_PREPARE);
     }
 
-    plater_->trigger_restore_project(1);
+    // A queued restore event treats a pure G-code session as an empty project
+    // because it has no model objects. Do not let it replace an explicit
+    // startup input after that input has already selected and loaded Preview.
+    if (init_params->input_files.empty())
+        plater_->trigger_restore_project(1);
     if (is_closing() || !m_startup_frame)
         return;
     //#endif

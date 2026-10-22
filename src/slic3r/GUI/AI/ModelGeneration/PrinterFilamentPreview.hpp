@@ -46,6 +46,10 @@ inline bool apply_bound(AI::ColorTrialPersistence::State& state, const std::vect
     }
     updated.source = 1; updated.enabled = true; updated.count = int(updated.colors.size());
     updated.project_slot_identity = identity;
+    updated.color_card_target_palette.clear();
+    updated.color_card_target_slot_ids.clear();
+    updated.source_to_target_slot.clear();
+    updated.color_card_weighted_error = 0.0;
     if (!AI::ColorTrialPersistence::detail::valid_state(updated)) return false;
     state = std::move(updated); return true;
 }
@@ -75,6 +79,10 @@ inline bool apply(AI::ColorTrialPersistence::State& state, const std::vector<siz
     match(updated.semantic_palette, updated.project_semantic_slots);
     updated.source = 1; updated.enabled = true; updated.count = int(updated.colors.size());
     updated.project_slot_identity = identity;
+    updated.color_card_target_palette.clear();
+    updated.color_card_target_slot_ids.clear();
+    updated.source_to_target_slot.clear();
+    updated.color_card_weighted_error = 0.0;
     if (!AI::ColorTrialPersistence::detail::valid_state(updated)) return false;
     state = std::move(updated);
     return true;

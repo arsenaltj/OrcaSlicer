@@ -142,7 +142,7 @@ struct Http::priv
 	std::string error_buffer;    // Used for CURLOPT_ERRORBUFFER
     std::string headers;
 	size_t limit;
-	bool cancel;
+	std::atomic_bool cancel;
 	bool follow_redirects;
     std::unique_ptr<form_file> putFile;
 

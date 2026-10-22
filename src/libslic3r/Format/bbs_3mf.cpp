@@ -884,6 +884,15 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 append(mmu_segmentation, bbs_get_attribute_value_charptr(attributes, count, MMU_SEGMENTATION_ATTR));
                 append(fuzzy_skin, bbs_get_attribute_value_charptr(attributes, count, CUSTOM_FUZZY_SKIN_ATTR));
                 append(face_properties, bbs_get_attribute_value_charptr(attributes, count, FACE_PROPERTY_ATTR));
+                // Texture displacement paint is sparse in the same way as the other optional
+                // triangle attributes: keep each slot indexed by the triangle it was read from,
+                // but do not allocate a full mask for slots that have no paint.
+                for (int slot = 0; slot < int(TEXTURE_DISPLACEMENT_MAX_LAYERS); ++slot)
+                    if (const char *paint = bbs_get_attribute_value_charptr(attributes, count, TEXTURE_DISPLACEMENT_ATTRS[slot])) {
+                        std::vector<std::string> &mask = texture_displacement[slot];
+                        mask.resize(triangles.size());
+                        mask.back() = paint;
+                    }
             }
 
             // backup & restore
@@ -894,6 +903,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 std::swap(custom_seam, o.custom_seam);
                 std::swap(mmu_segmentation, o.mmu_segmentation);
                 std::swap(fuzzy_skin, o.fuzzy_skin);
+                for (int slot = 0; slot < int(TEXTURE_DISPLACEMENT_MAX_LAYERS); ++slot)
+                    std::swap(texture_displacement[slot], o.texture_displacement[slot]);
                 std::swap(face_properties, o.face_properties);
             }
 
@@ -904,6 +915,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 custom_seam.clear();
                 mmu_segmentation.clear();
                 fuzzy_skin.clear();
+                for (std::vector<std::string> &slot : texture_displacement)
+                    slot.clear();
                 face_properties.clear();
             }
         };
@@ -5558,6 +5571,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             for (const Metadata& metadata : volume_data->metadata) {
                 if (metadata.key == NAME_KEY)
                     volume->name = metadata.value;
+                else if (metadata.key == TEXTURE_DISPLACEMENT_KEY)
+                    _apply_texture_displacement(*volume, metadata.value);
                 else if (metadata.key == "image_map_asset") {
                     add_error("This project requires the removed ImageMap experimental mode. Reimport the original textured model.");
                     return false;
