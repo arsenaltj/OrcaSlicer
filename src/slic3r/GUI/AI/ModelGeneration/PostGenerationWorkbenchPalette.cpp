@@ -646,15 +646,11 @@ void ModelGenerationPanel::synchronize_workbench_project_palette(bool activate_p
         update_enabled(*row);
     }
     if (rebuild) {
-        auto* contents = m_workbench_project_colors->GetSizer();
-        // Keep the primary action within reach even with the full 32-slot table.
-        // Every row stays accessible through the list's own scrollbar.
-        const int list_height = std::clamp(contents->CalcMin().y, FromDIP(46), FromDIP(216));
-        m_workbench_project_colors->SetMinSize(wxSize(1, list_height));
-        m_workbench_project_colors->SetMaxSize(wxSize(-1, list_height));
+        const int natural_height = m_workbench_project_colors->GetSizer()->CalcMin().y;
+        m_workbench_project_colors->SetMinSize(wxSize(1, natural_height));
+        m_workbench_project_colors->SetMaxSize(wxDefaultSize);
         m_workbench_project_colors->InvalidateBestSize();
         m_workbench_project_colors->Layout();
-        if (auto* scroll = dynamic_cast<wxScrolledWindow*>(m_workbench_project_colors)) scroll->FitInside();
         m_workbench_settings_scroll->Layout();
         m_workbench_settings_scroll->FitInside();
     }

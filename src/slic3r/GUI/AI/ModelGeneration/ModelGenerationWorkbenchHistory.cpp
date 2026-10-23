@@ -10,6 +10,7 @@
 #include <wx/scrolwin.h>
 #include <wx/notebook.h>
 #include <wx/dialog.h>
+#include <wx/dcbuffer.h>
 #include <wx/sizer.h>
 #include <wx/wupdlock.h>
 #include <cstring>
@@ -17,6 +18,57 @@
 namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
 namespace {
+class WorkbenchHistoryThumbnail final : public wxPanel {
+public:
+    explicit WorkbenchHistoryThumbnail(wxWindow* parent) : wxPanel(parent)
+    {
+        SetBackgroundColour(wxColour(22, 22, 25));
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(GetBackgroundColour()));
+            dc.Clear();
+            const wxBitmap& bitmap = m_bitmap.IsOk() ? m_bitmap : m_fallback;
+            if (bitmap.IsOk())
+                dc.DrawBitmap(bitmap, (GetClientSize().x - bitmap.GetWidth()) / 2,
+                              (GetClientSize().y - bitmap.GetHeight()) / 2, true);
+        });
+        rescale();
+    }
+
+    void set_image(const wxImage& image)
+    {
+        m_source = image.IsOk() ? image.Copy() : wxImage();
+        rebuild_bitmap();
+    }
+
+    void rescale()
+    {
+        const wxSize extent = FromDIP(wxSize(96, 96));
+        SetMinSize(extent);
+        SetMaxSize(extent);
+        m_fallback = create_scaled_bitmap("workbench_object", this, 40);
+        rebuild_bitmap();
+    }
+
+private:
+    void rebuild_bitmap()
+    {
+        m_bitmap = wxBitmap();
+        if (m_source.IsOk()) {
+            const wxSize target = FromDIP(wxSize(96, 96));
+            const wxSize fitted = fit_workbench_thumbnail_size(
+                m_source.GetWidth(), m_source.GetHeight(), target.x, target.y);
+            if (fitted.x > 0 && fitted.y > 0)
+                m_bitmap = wxBitmap(m_source.Scale(fitted.x, fitted.y, wxIMAGE_QUALITY_BILINEAR));
+        }
+        Refresh(false);
+    }
+
+    wxBitmap m_bitmap, m_fallback;
+    wxImage m_source;
+};
+
 class WorkbenchHistoryCard final : public wxPanel {
 public:
     WorkbenchHistoryCard(wxWindow* parent, std::function<void(const ModelLibraryEntry&)> open)
@@ -29,7 +81,7 @@ public:
         container->Add(m_surface, 1, wxEXPAND);
         SetSizer(container);
         auto* row = new wxBoxSizer(wxVERTICAL);
-        m_visual = new wxStaticBitmap(m_surface, wxID_ANY, create_scaled_bitmap("workbench_object", this, 40));
+        m_visual = new WorkbenchHistoryThumbnail(m_surface);
         row->Add(m_visual, 0, wxALIGN_CENTER_HORIZONTAL | wxALL, FromDIP(6));
         m_name = new wxStaticText(m_surface, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize,
             wxST_ELLIPSIZE_END | wxST_NO_AUTORESIZE);
@@ -53,7 +105,7 @@ public:
         const bool resized = GetMinSize() != size;
         if (resized) {
             SetMinSize(size);
-            m_visual->SetMinSize(FromDIP(wxSize(96, 96)));
+            m_visual->rescale();
             m_name->SetMinSize(FromDIP(wxSize(96, 18)));
             m_state->SetMinSize(FromDIP(wxSize(96, 22)));
         }
@@ -80,8 +132,8 @@ public:
                     pixels.InitAlpha();
                     std::memcpy(pixels.GetAlpha(), image->thumbnail_alpha.data(), image->thumbnail_alpha.size());
                 }
-                m_visual->SetBitmap(wxBitmap(pixels.Scale(FromDIP(96), FromDIP(96), wxIMAGE_QUALITY_BILINEAR)));
-            } else m_visual->SetBitmap(create_scaled_bitmap("workbench_object", this, 40));
+                m_visual->set_image(pixels);
+            } else m_visual->set_image(wxImage());
             m_thumbnail_revision = image->thumbnail_revision;
         }
         m_initialized = true;
@@ -102,7 +154,7 @@ public:
 private:
     ModelLibraryEntry m_entry;
     WorkbenchPanel* m_surface;
-    wxStaticBitmap* m_visual;
+    WorkbenchHistoryThumbnail* m_visual;
     wxStaticText *m_name, *m_state;
     uint64_t m_thumbnail_revision {0};
     bool m_initialized {false}, m_current {false};

@@ -188,9 +188,9 @@ void ModelGenerationPanel::preview_model_finishing()
     const bool smooth = m_finishing_workbench ? (tool == 0 || tool == 1) : m_finishing_smooth->GetValue();
     const bool repair = m_finishing_workbench ? tool == 3 : m_finishing_repair->GetValue();
     AI::ModelFinishingOptions options {!cleanup && !recolor && smooth, !local && repair, m_finishing_strength->GetValue() / 100.0};
-    if (m_finishing_workbench && m_workbench_smoothing_iterations && m_workbench_preserve_hard_edges) {
-        options.smoothing_iterations = geometry_smoothing ? m_workbench_smoothing_iterations->GetValue() : 0;
-        options.preserve_hard_edges = !geometry_smoothing || m_workbench_preserve_hard_edges->GetValue();
+    if (m_finishing_workbench) {
+        options.smoothing_iterations = geometry_smoothing ? 4 : 0;
+        options.preserve_hard_edges = true;
     }
     options.selected_faces = selected_faces;
     if (m_finishing_workbench && m_model_preview->active_shape_locks()) {

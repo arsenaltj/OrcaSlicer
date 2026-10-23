@@ -57,7 +57,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     m_workbench_check_result.phase = WorkbenchCheckPhase::Inspecting;
     m_workbench_check_result.summary = "正在检查模型……";
     m_workbench_check_running = true;
-    m_workbench_check_overlay_visible = automatic;
+    m_workbench_check_card_visible = automatic;
     update_finishing_selection();
     refresh_model_finishing();
     wxWeakRef<ModelGenerationPanel> weak(this);
@@ -82,7 +82,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                     weak->m_workbench_check_result.phase = phase;
                     weak->m_workbench_check_result.summary = text;
                     if (phase == WorkbenchCheckPhase::Repairing || phase == WorkbenchCheckPhase::Rechecking)
-                        weak->m_workbench_check_overlay_visible = true;
+                        weak->m_workbench_check_card_visible = true;
                     weak->refresh_post_generation_workbench();
                 });
             };

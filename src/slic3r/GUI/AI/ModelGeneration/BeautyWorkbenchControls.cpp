@@ -23,6 +23,7 @@
 #include <wx/settings.h>
 #include <wx/wrapsizer.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <exception>
 
@@ -271,6 +272,9 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
     m_falloff_label = new wxStaticText(this, wxID_ANY, _L("边缘衰减 · 0.1 mm/格"));
     root->Add(m_falloff_label, 0);
     root->Add(m_falloff, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
+    for (wxWindow* control : std::array<wxWindow*, 5> {{m_lighting_row, m_displacement_label,
+             m_displacement, m_falloff_label, m_falloff}})
+        control->Hide();
     auto* semantic_row = new wxBoxSizer(wxHORIZONTAL);
     m_auto_region = dark_choice();
     m_auto_region->Append(_L("头发"));
@@ -704,29 +708,29 @@ void BeautyWorkbenchControls::update_text()
     m_reoptimize->SetToolTip(m_preview && !m_preview->semantic_reoptimization_available()
         ? m_preview->semantic_reoptimization_reason()
         : _L("显式重新识别人像区域；选区与保护区保持不变。"));
-    const bool deform = geometry_deform_selected();
     m_displacement_label->SetLabel(wxString::Format(_L("推拉距离 · %.1f mm"), displacement_mm()));
     m_falloff_label->SetLabel(wxString::Format(_L("边缘衰减 · %.1f mm"), falloff_mm()));
-    m_displacement->Show(deform);
-    m_falloff->Show(deform);
-    m_displacement_label->Show(deform);
-    m_falloff_label->Show(deform);
+    m_lighting_row->Hide();
+    m_displacement->Hide();
+    m_falloff->Hide();
+    m_displacement_label->Hide();
+    m_falloff_label->Hide();
     m_displacement->Enable(active);
     m_falloff->Enable(active);
     const int operation = m_operation->GetSelection();
     const bool unsupported_glb_operation = AI::model_artifact_format(m_source) == "glb" &&
         (operation == 2 || operation == 3);
-    m_preview_button->Enable(active && !unsupported_glb_operation);
-    m_preview_button->Show(m_operation->GetSelection() != 0);
+    m_preview_button->Enable(active && operation != 0 && !unsupported_glb_operation);
+    m_preview_button->Show();
     m_accept->Enable(available && m_candidate_ready);
-    m_accept->Show(m_candidate_ready);
+    m_accept->Show();
     m_discard->Enable(available && (m_candidate_ready || m_dirty));
-    m_discard->Show(m_candidate_ready || m_dirty);
+    m_discard->Show();
     m_discard->SetLabel(m_candidate_ready ? _L("放弃候选") : _L("放弃修改"));
     m_cancel->Enable(m_processing || bool(m_partition_task) || selection_calculating);
-    m_cancel->Show(m_processing || bool(m_partition_task) || selection_calculating);
-    m_undo->Show(m_can_undo);
-    m_redo->Show(m_can_redo);
+    m_cancel->Show();
+    m_undo->Show();
+    m_redo->Show();
     m_details_toggle->SetLabel(m_details_open ? _L("收起高级语义工具") : _L("高级语义工具"));
     for (wxWindow* control : std::initializer_list<wxWindow*>{m_secondary_status, m_import_secondary,
              m_regenerate_evidence,
@@ -800,23 +804,13 @@ void BeautyWorkbenchControls::wrap_status(wxStaticText* label)
 bool BeautyWorkbenchControls::geometry_deform_selected() const { return m_operation && m_operation->GetSelection() == 4; }
 int BeautyWorkbenchControls::operation_index() const { return m_operation ? m_operation->GetSelection() : 0; }
 
-void BeautyWorkbenchControls::attach_parameters(wxWindow* surface, wxWindow* strength_label, wxWindow* strength)
-{
-    auto* parameters = surface->GetSizer();
-    for (wxWindow* control : std::initializer_list<wxWindow*>{
-             m_displacement_label, m_displacement, m_falloff_label, m_falloff,
-             strength_label, strength, m_lighting_row}) {
-        control->GetContainingSizer()->Detach(control);
-        control->Reparent(surface);
-        parameters->Add(control, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, surface->FromDIP(12));
-    }
-}
-
 void BeautyWorkbenchControls::attach_actions(wxWindow* footer, Button* compare)
 {
     auto* actions = new wxWrapSizer(wxHORIZONTAL, wxREMOVE_LEADING_SPACES);
+    size_t action_count = 0;
     for (Button* button : {m_preview_button, compare, m_accept, m_discard, m_cancel, m_undo, m_redo, m_save}) {
         if (!button) continue;
+        ++action_count;
         if (auto* containing_sizer = button->GetContainingSizer())
             containing_sizer->Detach(button);
         if (button->GetParent() != footer)
@@ -834,6 +828,13 @@ void BeautyWorkbenchControls::attach_actions(wxWindow* footer, Button* compare)
         }
         actions->Add(button, 0, wxRIGHT | wxBOTTOM, FromDIP(4));
     }
+    // wxWrapSizer reports a single-row minimum even after the fixed side rail
+    // wraps its children. Reserve two controls per row so later rows are not
+    // clipped by the non-scrolling footer.
+    const int rows = int((action_count + 1) / 2);
+    const int min_height = FromDIP(rows * 36);
+    actions->SetMinSize(wxSize(1, min_height));
+    footer->SetMinSize(wxSize(-1, min_height));
     footer->SetSizer(actions);
 }
 

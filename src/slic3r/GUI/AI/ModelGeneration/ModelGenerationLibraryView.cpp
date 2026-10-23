@@ -206,7 +206,8 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
                     const auto& source = m_library_entries[index];
                     ModelGenerationUIHistoryEntry target;
                     target.asset_key = workbench_history_key(source);
-                    target.thumbnail_source = workbench_thumbnail_source(source, FromDIP(72));
+                    target.thumbnail_source = workbench_thumbnail_source(
+                        source, ModelGenerationPresentation::generated_models_root(), FromDIP(96));
                     target.job_id = source.job_id;
                     target.title = text_to_utf8(source.title);
                     target.details = text_to_utf8(source.details);
@@ -307,7 +308,7 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
 void ModelGenerationPanel::request_library_thumbnails(bool for_shell)
 {
     if (for_shell && m_library_scan_pending) return;
-    if (for_shell && m_library_shell_thumbnails_running && m_library_shell_thumbnail_edge == FromDIP(72)) return;
+    if (for_shell && m_library_shell_thumbnails_running && m_library_shell_thumbnail_edge == FromDIP(96)) return;
     cancel_library_loading();
     start_library_worker();
     m_library_requested_by_shell = for_shell;
@@ -315,13 +316,15 @@ void ModelGenerationPanel::request_library_thumbnails(bool for_shell)
     auto request = std::make_shared<ModelLibraryLoader::Request>();
     request->revision = m_library_revision;
     request->for_shell = for_shell;
-    request->edge = for_shell ? FromDIP(72) : m_library_thumbnail_edge;
+    request->root = ModelGenerationPresentation::generated_models_root();
+    request->edge = for_shell ? FromDIP(96) : m_library_thumbnail_edge;
     if (for_shell) {
         m_library_shell_thumbnail_edge = request->edge;
         const auto end = std::min(m_ui_history_entries.size(), m_library_entries.size());
         for (size_t i = 0; i < end; ++i) {
             auto& target = m_ui_history_entries[i];
-            const auto signature = workbench_thumbnail_source(m_library_entries[i], request->edge);
+            const auto signature = workbench_thumbnail_source(
+                m_library_entries[i], request->root, request->edge);
             if (target.thumbnail_source != signature) { target.thumbnail_source = signature; target.thumbnail_ready = false; }
             if (!target.thumbnail_ready) { request->entries.push_back(m_library_entries[i]); request->indices.push_back(i); }
         }

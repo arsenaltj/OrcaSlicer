@@ -75,7 +75,6 @@ public:
     void set_portrait_enabled(bool enabled) { m_portrait_enabled = enabled; update_text(); }
     void mark_saved();
     void attach_actions(wxWindow* footer, Button* compare);
-    void attach_parameters(wxWindow* surface, wxWindow* strength_label, wxWindow* strength);
     void set_history_permissions(bool undo, bool redo);
     void request_secondary_partition(const boost::filesystem::path& source);
     void set_dirty(bool dirty) { m_dirty = dirty; update_text(); }

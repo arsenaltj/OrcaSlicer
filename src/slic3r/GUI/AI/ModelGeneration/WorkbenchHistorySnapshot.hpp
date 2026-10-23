@@ -1,8 +1,10 @@
 #pragma once
 
 #include "ModelLibraryEntry.hpp"
+#include "ModelLibraryModelThumbnail.hpp"
 #include "ModelGenerationHost.hpp"
 #include <boost/filesystem.hpp>
+#include <cmath>
 
 namespace Slic3r::GUI {
 inline std::string workbench_history_key(const ModelLibraryEntry& entry)
@@ -11,7 +13,8 @@ inline std::string workbench_history_key(const ModelLibraryEntry& entry)
     return std::to_string(entry.job_id.size()) + ":" + entry.job_id + entry.model_path.generic_string();
 }
 
-inline std::string workbench_thumbnail_source(const ModelLibraryEntry& entry, int edge)
+inline std::string workbench_thumbnail_source(const ModelLibraryEntry& entry,
+                                              const boost::filesystem::path& root, int edge)
 {
     const auto stamp = [](const boost::filesystem::path& path) {
         boost::system::error_code ec;
@@ -24,8 +27,22 @@ inline std::string workbench_thumbnail_source(const ModelLibraryEntry& entry, in
     };
     auto display = entry.ai_image_path;
     if (!display.empty()) display += ".display.png";
-    return stamp(entry.ai_image_path) + "|" + stamp(display) + "|" +
+    const auto manifest = library_model_thumbnail_manifest(root, entry.model_path);
+    const auto model_thumbnail = library_model_thumbnail_image(root, entry.model_path);
+    return stamp(entry.model_path) + "|" + stamp(manifest) + "|" + stamp(model_thumbnail) + "|" +
+        stamp(entry.ai_image_path) + "|" + stamp(display) + "|" +
         stamp(entry.reference_image_path) + "|" + std::to_string(edge);
+}
+
+inline wxSize fit_workbench_thumbnail_size(int source_width, int source_height,
+                                           int target_width, int target_height)
+{
+    if (source_width <= 0 || source_height <= 0 || target_width <= 0 || target_height <= 0)
+        return {};
+    const double scale = std::min(double(target_width) / source_width,
+                                  double(target_height) / source_height);
+    return {std::max(1, int(std::lround(source_width * scale))),
+            std::max(1, int(std::lround(source_height * scale)))};
 }
 
 inline bool retain_workbench_thumbnail(ModelGenerationUIHistoryEntry& target,

@@ -1,3 +1,15 @@
+# 2026-10-23 3D 工作台细节修复与历史缩略图整改（代码与 GUI 关键路径通过，待用户验收）
+
+主线：上一轮已验收内容已独立提交为 `b1a417baea feat: refine 3d workbench beauty and filament workflow`。本轮继续在 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha` / `codex/upstream-v2.5.0-alpha-portrait-preserved` 整改生成后 3D 工作台；源码、测试和状态文档保持未提交，不推送、不打包。
+
+本轮：模型检查改为模型区域内的无边框灰色浮动卡片，不再绘制全画布遮罩或暂停 GL；检查期间模型持续可见和出帧，但背景编辑、相机及页面切换保持锁定。历史卡片优先使用 3D 模型缩略图，缺失时回退 AI 图或参考图，并在固定 96 DIP 区域内完整等比显示。检查修复摘要压缩为一句话并提供暗色详情窗；旧美颜参数浮层已移除。3D 美颜的八项操作固定保留在非滚动底栏，不可用项禁用但不隐藏。打印机耗材槽按实际高度展开，删除内部滚动与高度上限，只保留主设置栏滚动。
+
+未结：100%/125%/150% 系统 DPI 未逐档实测，检查失败/轻微风险分支未在本轮逐一制造。用户最终视觉接受和实体打印色彩保真分别待验，代码测试和屏幕显示不能替代实物验收。
+
+下一步：保持当前 20 个修改文件未提交，等待用户用固定 `.tmp/dev/run` 版本复核；本轮验证 PID `11412` 已正常退出，无保存或丢弃提示。后续仅按验收反馈增量修正，不提交、推送或打包。
+
+计划变更：最终 VS 2022 x64 Release 的 catalogs/build/install/runtime-check/python-check 五步通过，证据为 [`Run`](../../.tmp/dev/logs/20261023-180256-312/result.json)。指定测试共 177/177、4169 assertions 通过：`AtomicModelCapabilities + WorkbenchHistory` 3/21、`PostGenerationWorkbench` 62/2199、`WorkbenchTopology` 8/361、`PrinterFilaments` 18/248、`UiRedesign` 86/1340；交叉标签聚合运行的完整日志见 [`CppTest`](../../.tmp/dev/logs/20261023-181319-874/result.json)，183/183 个已注册 CTest 用例通过。`scripts/verify_ai_integration.py --json` 返回 `ok: true`。真实人像 GUI 已验证无外围遮罩的修复卡片、背景输入锁、完整历史缩略图、一句摘要和详情入口、详情浅色正文、旧参数浮层消失、耗材单滚动条，以及最大化和窗口模式下美颜八项操作完整显示。首次 GUI 检查发现的详情暗字和底栏仅两按钮问题已分别修正为显式 RichEdit 主题和四行固定高度；最终版本复核通过。恢复工程保留于 `.tmp/dev/data/models/projects/orcaslicer-ai-finish-3f26e457-bfd4-4a66-9804-2882239e48f9.3mf`。
+
 # 2026-10-23 3D 美颜工作台与色卡直导整改（代码与 GUI 关键路径通过，待用户验收）
 
 主线：继续在 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha` / `codex/upstream-v2.5.0-alpha-portrait-preserved`、干净基线 `5891dbd592 feat: refine 3d workbench repair and filament workflow` 上完善生成后 3D 工作台。本轮源码、测试和状态文档保持未提交；不推送、不打包。

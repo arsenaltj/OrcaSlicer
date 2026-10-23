@@ -151,7 +151,8 @@ public:
             const auto now=std::chrono::steady_clock::now();
             const double seconds=std::chrono::duration<double>(now-m_rotation_tick).count();
             m_rotation_tick=now;
-            if (!IsShownOnScreen() || !m_has_model || m_dragging || m_drawing_selection) {
+            if (!IsShownOnScreen() || !m_has_model || m_workbench_input_locked ||
+                m_dragging || m_drawing_selection) {
                 set_auto_rotation(false);return;
             }
             m_yaw=std::remainder(m_yaw+std::min(seconds,0.1)*0.35,6.283185307179586);
@@ -213,6 +214,7 @@ public:
             event.Skip();
         });
         m_canvas->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
+            if (m_workbench_input_locked) return;
             set_auto_rotation(false);
             const bool edit_view = point_in_edit_view(event.GetPosition());
             if (edit_view && m_selection_enabled && !selection_busy() && !event.AltDown() &&
@@ -236,6 +238,7 @@ public:
             m_canvas->SetFocus();
         });
         m_canvas->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent& event) {
+            if (m_workbench_input_locked) return;
             if (m_drawing_selection) {
                 const wxPoint point = edit_view_point(event.GetPosition());
                 m_stroke.emplace_back(point.x, point.y);
@@ -252,6 +255,7 @@ public:
                 finish_drag();
         });
         m_canvas->Bind(wxEVT_MOTION, [this](wxMouseEvent& event) {
+            if (m_workbench_input_locked) return;
             if (event.RightIsDown() && m_canvas->HasCapture()) {
                 const wxPoint current = event.GetPosition();
                 const double radius = std::max(0.001, 0.5 * m_bounds.size().norm());
@@ -285,6 +289,7 @@ public:
             m_canvas->Refresh(false);
         });
         m_canvas->Bind(wxEVT_MOUSEWHEEL, [this](wxMouseEvent& event) {
+            if (m_workbench_input_locked) return;
             if (m_drawing_selection) return;
             const int delta = event.GetWheelDelta();
             if (delta == 0)
@@ -294,16 +299,20 @@ public:
             m_canvas->Refresh(false);
         });
         m_canvas->Bind(wxEVT_RIGHT_DOWN, [this](wxMouseEvent& event) {
+            if (m_workbench_input_locked) return;
             set_auto_rotation(false);
             if (m_drawing_selection) finish_drag();
             m_last_mouse = event.GetPosition();
             if (!m_canvas->HasCapture()) m_canvas->CaptureMouse();
         });
-        m_canvas->Bind(wxEVT_RIGHT_UP, [this](wxMouseEvent&) { finish_drag(); });
+        m_canvas->Bind(wxEVT_RIGHT_UP, [this](wxMouseEvent&) {
+            if (!m_workbench_input_locked) finish_drag();
+        });
         m_canvas->Bind(wxEVT_MOUSE_CAPTURE_LOST, [this](wxMouseCaptureLostEvent&) {
             m_dragging = false; m_drawing_selection = false; m_stroke.clear(); m_canvas->Refresh(false);
         });
         m_canvas->Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
+            if (m_workbench_input_locked) return;
             if (!event.ControlDown() && (event.GetKeyCode() == 'F' || event.GetKeyCode() == 'f')) {
                 focus_selection(); return;
             }
@@ -1036,6 +1045,9 @@ private:
 
 public:
     void set_library_thumbnail_root(const boost::filesystem::path& root) { m_library_thumbnail_root = root; }
+    void set_library_thumbnail_published_callback(std::function<void()> callback) {
+        m_library_thumbnail_published = std::move(callback);
+    }
     void set_preview_background(const wxColour& color)
     {
         m_preview_background = color;
@@ -2435,21 +2447,17 @@ public:
     void set_portrait_progress(std::shared_ptr<PortraitOptimizationTask> task) { m_portrait_progress = std::move(task); }
     void set_portrait_input_changed(std::function<void()> fn) { m_portrait_input_changed = std::move(fn); }
     void after_next_preview_frame(std::function<void()> fn) { m_after_preview_frame = std::move(fn); m_canvas->Refresh(false); }
-    bool workbench_canvas_suspended() const { return m_workbench_canvas_suspended; }
-    void suspend_workbench_canvas() {
-        if (!m_canvas || m_workbench_canvas_suspended) return;
-        if (m_canvas->HasCapture()) m_canvas->ReleaseMouse();
-        m_dragging = false;
-        m_drawing_selection = false;
-        m_stroke.clear();
-        m_workbench_canvas_suspended = true;
-        m_canvas->Hide();
-    }
-    void resume_workbench_canvas() {
-        if (!m_canvas || !m_workbench_canvas_suspended) return;
-        m_workbench_canvas_suspended = false;
-        m_canvas->Show();
-        m_canvas->Refresh(false);
+    void set_workbench_input_locked(bool locked) {
+        if (m_workbench_input_locked == locked) return;
+        m_workbench_input_locked = locked;
+        if (locked) {
+            set_auto_rotation(false);
+            if (m_canvas && m_canvas->HasCapture()) m_canvas->ReleaseMouse();
+            m_dragging = false;
+            m_drawing_selection = false;
+            m_stroke.clear();
+            if (m_canvas) m_canvas->Refresh(false);
+        }
     }
     void synchronize_project_colors(bool activate = false) {
         const auto before = m_color_trial->state();
@@ -3411,6 +3419,10 @@ private:
             if (::glGetError() != GL_NO_ERROR || !same_stamp(m_model_stamp, file_stamp(m_model_path))) return;
             publish_library_model_thumbnail(m_library_thumbnail_root, m_model_path,
                 {sha, m_model_stamp.bytes, static_cast<int64_t>(m_model_stamp.modified.time_since_epoch().count())}, width, height, pixels);
+            if (m_library_thumbnail_published) {
+                const auto callback = m_library_thumbnail_published;
+                CallAfter([callback] { callback(); });
+            }
         } catch (const std::exception& error) {
             BOOST_LOG_TRIVIAL(warning) << "Model library thumbnail unavailable: " << error.what();
         }
@@ -3762,6 +3774,7 @@ private:
 
     boost::filesystem::path m_library_thumbnail_root;
     std::string m_pending_library_thumbnail_sha;
+    std::function<void()> m_library_thumbnail_published;
     wxGLCanvas* m_canvas {nullptr};
     wxPanel* m_comparison_header {nullptr};
     std::vector<wxStaticText*> m_comparison_labels;
@@ -3825,7 +3838,6 @@ private:
     std::string m_workbench_grid_geometry;
     WorkbenchRoundBasePreviewState m_round_base_preview;
     std::unique_ptr<GLModel> m_round_base_model;
-    bool m_workbench_canvas_suspended {false};
     bool m_beauty_lighting {true};
     bool m_original_comparison {false};
     bool m_has_source_appearance {false};
@@ -3912,6 +3924,7 @@ private:
     double m_zoom {1.0};
     bool m_dragging {false};
     bool m_drag_moved {false};
+    bool m_workbench_input_locked {false};
     bool m_selection_enabled {false};
     bool m_selection_overlay_visible {true};
     bool m_selection_preview_suppressed {false};

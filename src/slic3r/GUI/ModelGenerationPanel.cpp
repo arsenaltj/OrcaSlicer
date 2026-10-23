@@ -49,6 +49,7 @@
 #include <wx/dcbuffer.h>
 #include <wx/dcclient.h>
 #include <wx/datetime.h>
+#include <wx/dialog.h>
 #include <wx/filedlg.h>
 #include <wx/gauge.h>
 #include <wx/glcanvas.h>
@@ -820,6 +821,12 @@ void ModelGenerationPanel::shutdown()
 {
     if (m_shutdown)
         return;
+    hide_workbench_check_card();
+    if (m_workbench_check_card) {
+        m_workbench_check_card->Destroy();
+        m_workbench_check_card = nullptr;
+        m_workbench_check_modal = nullptr;
+    }
     if (m_portrait_draft_before && !(m_portrait_task && m_portrait_task->snapshot().running())) preserve_portrait_draft();
     m_shutdown = true;
     if (m_workbench_check_cancel) m_workbench_check_cancel->store(true);
@@ -1567,6 +1574,14 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         color = new wxToggleButton(m_local_recolor_controls, wxID_ANY, wxEmptyString);
     m_local_recolor_panel->Hide();
     m_model_preview = new ModelPreview3D(model_card);
+    {
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        m_model_preview->set_library_thumbnail_published_callback([weak] {
+            if (!weak || weak->m_shutdown || !weak->m_finishing_workbench) return;
+            weak->cancel_library_loading();
+            weak->request_library_thumbnails(true);
+        });
+    }
     m_model_preview->SetMinSize(wxSize(FromDIP(420), wxDefaultCoord));
     model_card_sizer->Add(m_model_preview, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
     model_card->SetSizer(model_card_sizer);

@@ -82,11 +82,6 @@ void apply_workbench_theme(wxWindow* window, bool enabled,
     if (auto* toggle = dynamic_cast<WorkbenchSwitch*>(window)) toggle->rescale_workbench();
 }
 
-void apply_workbench_parameter_theme(wxWindow* parameters)
-{
-    apply_workbench_theme(parameters, true, wxColour(40, 40, 43));
-}
-
 void repaint_workbench_surface(wxWindow* window)
 {
     if (!window || !window->IsShownOnScreen() || window->IsFrozen()) return;
@@ -150,8 +145,6 @@ void ModelGenerationPanel::set_finishing_workbench(bool enabled)
     m_front_model_view->Show(!enabled);
     m_reset_model_view->Show(!enabled);
     apply_workbench_theme(m_finishing_panel, enabled);
-    // The parameter surface can be reparented outside the inspector while hidden.
-    apply_workbench_parameter_theme(m_workbench_parameters);
     apply_workbench_theme(m_workbench_footer, enabled);
     apply_workbench_theme(m_workbench_history_panel, enabled);
     if (enabled && m_workbench_history_search) {
@@ -303,7 +296,6 @@ void ModelGenerationPanel::refresh_model_finishing()
     if (!m_finishing_workbench || m_workbench_editing)
         m_model_preview->set_color_controls_visible(!m_finishing_workbench || tool == 2);
     const bool selection_visible = local || tool == 4;
-    const bool geometry_smoothing_enabled = m_finishing_workbench && tool == 0;
     m_finishing_selection_section->Show(m_finishing_workbench && selection_visible);
     m_finishing_selection_section->SetLabel(m_finishing_selection_open ? _L("收起选择区域") : _L("选择区域"));
     m_finishing_selection_controls->Show(selection_visible && (!m_finishing_workbench || m_finishing_selection_open));
@@ -311,13 +303,11 @@ void ModelGenerationPanel::refresh_model_finishing()
     m_finishing_overlay->Enable(editable && !pending);
     const bool beauty_editable = m_finishing_workbench && editable;
     m_finishing_selection_controls->Enable((editable && !pending) || beauty_editable);
-    m_workbench_smoothing_iterations->Enable(beauty_editable && !pending && geometry_smoothing_enabled);
-    m_workbench_preserve_hard_edges->Enable(beauty_editable && !pending && geometry_smoothing_enabled);
     m_finishing_tool->Enable(editable && !pending);
     m_finishing_preset->Show(!m_finishing_workbench && !color && tool != 3 && !cleanup);
     m_finishing_smooth->Show(!m_finishing_workbench && !color && tool != 3 && !cleanup);
-    m_finishing_strength->Show(!color && tool != 3 && !(m_finishing_workbench && m_beauty_controls && m_beauty_controls->geometry_deform_selected()));
-    m_finishing_strength_value->Show(!color && tool != 3 && !(m_finishing_workbench && m_beauty_controls && m_beauty_controls->geometry_deform_selected()));
+    m_finishing_strength->Show(!m_finishing_workbench && !color && tool != 3);
+    m_finishing_strength_value->Show(!m_finishing_workbench && !color && tool != 3);
     m_finishing_strength_value->SetLabel(wxString::Format(_L("处理强度：%d%%"), m_finishing_strength->GetValue()));
     m_finishing_cleanup_hint->Show(cleanup);
     m_finishing_gray->Show(!m_finishing_workbench && !color && !cleanup);
@@ -328,8 +318,8 @@ void ModelGenerationPanel::refresh_model_finishing()
     // Automatic topology repairs are committed without a user candidate
     // review.  Keep the footer free of the legacy compare affordance while
     // that save transaction is running; manual beauty candidates retain it.
-    m_finishing_compare_model->Show(pending && !m_workbench_auto_repair);
-    m_finishing_compare_model->Enable(editable);
+    m_finishing_compare_model->Show(m_finishing_workbench || (pending && !m_workbench_auto_repair));
+    m_finishing_compare_model->Enable(editable && pending && !m_workbench_auto_repair);
     m_finishing_compare_model->SetLabel(m_finishing_workbench
         ? (m_finishing_before ? _L("查看处理后") : _L("查看处理前"))
         : (m_finishing_before ? _L("当前为处理前") : _L("按住查看处理前")));

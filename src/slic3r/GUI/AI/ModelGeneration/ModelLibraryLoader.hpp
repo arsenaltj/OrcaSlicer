@@ -39,7 +39,8 @@ public:
     };
     struct Ports {
         std::function<std::vector<ModelLibraryEntry>(const boost::filesystem::path&, const std::atomic<bool>&)> read;
-        std::function<Thumbnail(const ModelLibraryEntry&, int, const std::atomic<bool>&)> thumbnail;
+        std::function<Thumbnail(const boost::filesystem::path&, const ModelLibraryEntry&, int,
+                                const std::atomic<bool>&)> thumbnail;
     };
     explicit ModelLibraryLoader(Ports ports) : m_ports(std::move(ports)), m_worker([this] { run(); }) {}
     ~ModelLibraryLoader() { stop(); }
@@ -102,7 +103,9 @@ private:
                     const size_t destination = request->indices.empty() ? index : request->indices.at(index);
                     Thumbnail thumbnail {request->revision, destination, request->for_shell};
                     try {
-                        if (m_ports.thumbnail) thumbnail = m_ports.thumbnail(request->entries[index], request->edge, request->cancelled);
+                        if (m_ports.thumbnail)
+                            thumbnail = m_ports.thumbnail(request->root, request->entries[index],
+                                                          request->edge, request->cancelled);
                     } catch (...) {} // A bad thumbnail never removes an asset.
                     thumbnail.revision = request->revision; thumbnail.index = destination; thumbnail.for_shell = request->for_shell;
                     std::lock_guard<std::mutex> lock(m_mutex);
