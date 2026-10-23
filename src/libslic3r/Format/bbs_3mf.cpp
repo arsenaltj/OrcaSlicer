@@ -96,7 +96,7 @@
 #include <boost/property_tree/xml_parser.hpp>
 #include <boost/foreach.hpp>
 #ifdef ORCA_MOBILE_ANDROID
-#include "../MobileDigest.hpp"
+#include "MobileDigest.hpp"
 #else
 #include <openssl/md5.h>
 #endif
