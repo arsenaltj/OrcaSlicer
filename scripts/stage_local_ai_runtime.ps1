@@ -243,7 +243,7 @@ if (-not $VerifyOnly) {
 
 if ((Read-CacheValue 'ORCA_AI_WINDOWS_INSTALLER') -ne 'ON') { throw 'AI runtime packaging is not enabled in this build.' }
 Assert-PlainTree $outputPath
-$required = @('orca-slicer.exe', 'OrcaSlicer.dll', 'python/python.exe', 'python/pythonw.exe', 'python/python312.dll',
+$required = @('orca-slicer.exe', 'OrcaSlicer.dll', 'python/python.exe', 'python/pythonw.exe', 'python/python312.dll', 'python/python3.dll',
     'resources/tools/uv/uv.exe',
     'resources/images/OrcaSlicer_gradient_circle.svg', 'resources/i18n/zh_CN/OrcaSlicer.mo',
     'resources/i18n/zh_TW/OrcaSlicer.mo', 'resources/tools/ai/orca_ai_build_info.json',
@@ -341,7 +341,7 @@ foreach ($name in @('orca-slicer.exe', 'OrcaSlicer.dll')) {
 }
 Invoke-Logged (Require-File 'python/python.exe') @('-I', '-B',
     (Require-File 'resources/tools/ai/verify_bundled_runtime.py'), '--python-root',
-    (Join-Path $outputPath 'python'), '--expect-python', '3.12.13', '--expect-pillow', '12.2.0', '--json') 'verify.log'
+    (Join-Path $outputPath 'python'), '--expect-python', '3.12.13', '--expect-pillow', '12.2.0', '--expect-yoyoclaw', '--json') 'verify.log'
 
 $hashes = [ordered]@{}
 foreach ($relative in $required + @($runtimeFiles + $runtimeNativeFiles | ForEach-Object { "resources/tools/ai/$_" })) {

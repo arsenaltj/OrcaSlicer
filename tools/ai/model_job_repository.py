@@ -95,6 +95,9 @@ def _persist_job(job: Job, *, touch: bool = True, required: bool = False) -> Non
         "texture_quality": job.texture_quality,
         "output_format": job.output_format,
         "provider": job.provider,
+        "design_provider": job.design_provider,
+        "design_model": job.design_model,
+        "geometry_model": job.geometry_model,
         "user_prompt": "" if job.source == "image" and job.user_prompt == DEFAULT_IMAGE_INSTRUCTION else job.user_prompt,
         "prepared_prompt": job.prepared_prompt,
         "source_design_job_id": job.source_design_job_id,
@@ -191,6 +194,9 @@ def _load_job(directory: Path) -> Job | None:
         texture_quality=texture_quality,
         output_format=output_format,
         provider=_generation_provider(payload),
+        design_provider=("gpt" if payload.get("design_provider", "gpt") == "image2" else str(payload.get("design_provider", "gpt"))) if payload.get("design_provider", "gpt") in {"gpt", "image2", "yoyoclaw"} else "gpt",
+        design_model=str(payload.get("design_model", "")) if isinstance(payload.get("design_model", ""), str) else "",
+        geometry_model=str(payload.get("geometry_model", "")) if isinstance(payload.get("geometry_model", ""), str) else "",
         print_settings=print_settings,
     )
     job.source_design_job_id = str(payload.get("source_design_job_id", ""))

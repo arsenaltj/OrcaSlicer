@@ -21,7 +21,12 @@ def path_is_within(path: Path, root: Path) -> bool:
         return False
 
 
-def verify_runtime(python_root: Path, expected_python: str, expected_pillow: str) -> dict[str, object]:
+def verify_runtime(
+    python_root: Path,
+    expected_python: str,
+    expected_pillow: str,
+    expect_yoyoclaw: bool = False,
+) -> dict[str, object]:
     import PIL
     from PIL import Image
 
@@ -43,6 +48,24 @@ def verify_runtime(python_root: Path, expected_python: str, expected_pillow: str
         if decoded.mode != "RGBA" or decoded.size != (2, 2) or decoded.getpixel((0, 0)) != (1, 2, 3, 4):
             raise RuntimeError("Pillow native PNG round-trip failed")
 
+    yoyoclaw_modules: dict[str, str] = {}
+    if expect_yoyoclaw:
+        import cryptography
+        from cryptography.hazmat.bindings import _rust
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        import requests
+
+        for name, module in (("requests", requests), ("cryptography", cryptography), ("cryptography_native", _rust)):
+            module_path = Path(module.__file__).resolve(strict=True)
+            if not path_is_within(module_path, python_root):
+                raise RuntimeError(f"{name} was imported from outside the bundled runtime")
+            yoyoclaw_modules[name] = module_path.relative_to(python_root.resolve(strict=True)).as_posix()
+
+        cipher = AESGCM(bytes(range(32)))
+        nonce, plaintext, aad = bytes(range(12)), b"orca-yoyoclaw-runtime-check", b"runtime-check"
+        if cipher.decrypt(nonce, cipher.encrypt(nonce, plaintext, aad), aad) != plaintext:
+            raise RuntimeError("YOYOClaw native AES-GCM round-trip failed")
+
     relative_module = pillow_module.resolve(strict=True).relative_to(python_root.resolve(strict=True)).as_posix()
     return {
         "schema_version": 1,
@@ -50,6 +73,8 @@ def verify_runtime(python_root: Path, expected_python: str, expected_pillow: str
         "pillow_version": PIL.__version__,
         "pillow_module": relative_module,
         "native_png_roundtrip": True,
+        "yoyoclaw_modules": yoyoclaw_modules,
+        "yoyoclaw_native_roundtrip": expect_yoyoclaw,
     }
 
 
@@ -58,11 +83,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--python-root", type=Path, required=True)
     parser.add_argument("--expect-python", required=True)
     parser.add_argument("--expect-pillow", required=True)
+    parser.add_argument("--expect-yoyoclaw", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     try:
-        report = verify_runtime(args.python_root, args.expect_python, args.expect_pillow)
+        report = verify_runtime(args.python_root, args.expect_python, args.expect_pillow, args.expect_yoyoclaw)
     except Exception as exc:
         print(f"Bundled AI runtime verification failed ({type(exc).__name__}).", file=sys.stderr)
         return 1
@@ -72,7 +98,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         print(
             f"Bundled AI runtime: PASS (Python {report['python_version']}, "
-            f"Pillow {report['pillow_version']}, isolated native PNG round-trip)"
+            f"Pillow {report['pillow_version']}, isolated native PNG round-trip, "
+            f"YOYOClaw dependencies={'present' if report['yoyoclaw_modules'] else 'not requested'})"
         )
     return 0
 

@@ -858,7 +858,7 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     sizer->Add(prompt_surface, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(21));
     sizer->AddSpacer(FromDIP(21));
     sizer->Add(section_label(scroll, _L("3D 模型选择")), 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(21));
-    m_provider = new RedesignChoice(scroll, {wxString("Tripo"), _L("腾讯混元3D")});
+    m_provider = new RedesignChoice(scroll, {wxString("Tripo"), wxString("YOYOClaw")});
     sizer->Add(m_provider, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(21));
     auto* style_label = new wxStaticText(scroll, wxID_ANY, _L("风格"));
     wxArrayString styles;

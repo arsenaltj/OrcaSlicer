@@ -20,8 +20,9 @@ class ProviderPolicyTests(unittest.TestCase):
     def test_quality_first_provider_order_has_no_automatic_fallback(self):
         policy = provider_policy()
 
-        self.assertEqual(policy.design_providers, ("gpt", "image2"))
+        self.assertEqual(policy.design_providers, ("gpt", "yoyoclaw"))
         self.assertEqual(policy.geometry_provider, "tripo")
+        self.assertEqual(policy.geometry_providers, ("tripo", "yoyoclaw"))
         self.assertFalse(policy.automatic_fallback)
         self.assertEqual(policy.max_paid_model_tasks_per_confirmation, 1)
 

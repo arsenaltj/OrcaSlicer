@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass
-from hunyuan_provider_gateway import validate_options as validate_hunyuan_options
 from io import BytesIO
 from model_contracts import (
     DEFAULT_IMAGE_INSTRUCTION,
@@ -35,6 +34,7 @@ from tripo_client import (
     validate_generation_options,
 )
 from typing import Any
+from yoyoclaw_provider_gateway import validate_options as validate_yoyoclaw_options
 
 
 def _text_field(value: Any, name: str, *, allow_empty: bool = False) -> str:
@@ -281,10 +281,10 @@ def _generation_options(payload: dict[str, Any], face_limit: int, *,
     try:
         validate_generation_option_values(geometry, texture)
         if validate_provider_constraints:
-            if provider == "hunyuan":
-                validate_hunyuan_options(face_limit, geometry, texture)
-            else:
+            if provider == "tripo":
                 validate_generation_options(face_limit, geometry, texture)
+            elif provider == "yoyoclaw":
+                validate_yoyoclaw_options(face_limit, geometry, texture)
     except (TripoError, ProviderGatewayError) as exc:
         raise RequestError("invalid_generation_options", str(exc), 400) from None
     if output not in ("glb", "obj"):
@@ -293,9 +293,42 @@ def _generation_options(payload: dict[str, Any], face_limit: int, *,
 
 def _generation_provider(payload: dict[str, Any]) -> str:
     provider = payload.get("provider", "tripo")
-    if not isinstance(provider, str) or provider not in ("tripo", "hunyuan"):
-        raise RequestError("invalid_provider", "Provider must be tripo or hunyuan.", 400)
+    if not isinstance(provider, str) or provider not in ("tripo", "yoyoclaw"):
+        raise RequestError("invalid_provider", "Provider must be tripo or yoyoclaw.", 400)
     return provider
+
+
+def _design_provider(payload: dict[str, Any]) -> str:
+    provider = payload.get("design_provider", "gpt")
+    # A handful of early internal clients sent image2 through the old provider
+    # field.  Keep that alias only when it is explicitly a design value; the
+    # geometry provider field remains independent.
+    if "design_provider" not in payload and payload.get("provider") in {"gpt", "image2"}:
+        provider = payload.get("provider")
+    if provider == "image2":
+        provider = "gpt"
+    if not isinstance(provider, str) or provider not in {"gpt", "yoyoclaw"}:
+        raise RequestError("invalid_design_provider", "Design provider must be gpt or yoyoclaw.", 400)
+    return provider
+
+
+def _model_id(value: Any, name: str) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise RequestError("invalid_model", f"{name} must be a string.", 400)
+    value = value.strip()
+    if len(value.encode("utf-8")) > 256 or any(ord(char) < 32 for char in value):
+        raise RequestError("invalid_model", f"{name} is invalid.", 400)
+    return value
+
+
+def _design_model(payload: dict[str, Any]) -> str:
+    return _model_id(payload.get("design_model"), "design_model")
+
+
+def _geometry_model(payload: dict[str, Any]) -> str:
+    return _model_id(payload.get("geometry_model", payload.get("model_id")), "geometry_model")
 
 def _normalize_image_instruction(value: Any) -> str:
     if value is None:

@@ -93,6 +93,10 @@ private:
     void refresh_prompt_count();
     void apply_generation_options(const ModelGenerationUIOptions& options);
     void on_generation_option_changed();
+    void refresh_provider_catalog();
+    void apply_provider_catalog(const AIModelGenerationClient::ProviderCatalog& catalog,
+                                const std::string& error = {});
+    void refresh_provider_choice(bool geometry_mode);
     bool request_open_history(const std::string& job_id);
     void request_generate_design();
     void request_generate_model();
@@ -288,6 +292,12 @@ private:
     ModelGenerationUIState m_model_generation_state;
     ImageDesignDraft m_image_design_draft;
     ModelGenerationUIOptions m_generation_options;
+    AIModelGenerationClient::ProviderCatalog m_provider_catalog;
+    std::uint64_t m_provider_catalog_sequence { 0 };
+    std::string m_provider_catalog_role;
+    std::string m_provider_catalog_provider;
+    bool m_generation_geometry_mode { false };
+    int m_last_service_status { 0 };
     Page m_active_page { Page::Image };
     // Keep the semantic workspace request, not only the visual host. Several
     // legacy requests (Prepare, Preview, Monitor and Multi-device) currently

@@ -42,6 +42,12 @@ inline RedesignPrimaryAction redesign_primary_action(const ModelGenerationUIStat
 {
     // A changed 2D input always wins.  A changed 3D option can reuse the
     // confirmed design image and only fork a new model task from ModelReady.
+    // Persisting a 3D option is a transient stage; keep the geometry controls
+    // active so their provider catalog callback cannot be replaced by the
+    // image-provider picker while the save is in flight.
+    if (effective_stage == ModelGenerationUIStage::Saving3DOptions && state.design_ready &&
+        state.inputs_match_job)
+        return RedesignPrimaryAction::Model;
     if (effective_stage == ModelGenerationUIStage::DesignReady && state.inputs_match_job)
         return RedesignPrimaryAction::Model;
     if (effective_stage == ModelGenerationUIStage::ModelReady && state.design_ready && state.inputs_match_job &&

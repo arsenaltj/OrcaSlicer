@@ -95,6 +95,9 @@ class TextImageEntryTests(unittest.TestCase):
             with (self.subTest(pro_key=pro_key),
                   temporary_environment(OPENAI_PRO_API=pro_key, OPENAI_PRO_URL=None, OPENAI_API_KEY=legacy_key)):
                 handler = sidecar.Handler.__new__(sidecar.Handler)
+                handler._read_model_json = mock.Mock(return_value={
+                    "request_id": "unavailable", "prompt": "test object", "style": "realistic",
+                })
                 with self.assertRaises(sidecar.RequestError) as failure:
                     handler._create_text_job()
                 self.assertEqual(failure.exception.status, 503)

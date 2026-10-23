@@ -113,7 +113,7 @@ print("independent")
                           present=lambda job: {"id": job.id, "state": job.state},
                           image_provider_status=lambda: {"available": True}, fallback_enabled=lambda: False,
                           gateway=lambda provider: mock.Mock(model_generation_available=lambda: True),
-                          can_retry_hunyuan=lambda job: False, can_retry_unsubmitted=lambda job: False,
+                          can_retry_unsubmitted=lambda job: False,
                           latest_task_id=lambda job: "", assess_reference=lambda job: None,
                           clear_artifact=lambda job: setattr(job, "artifact_path", None),
                           validate_image=_validate_image_file, generate=model_worker)

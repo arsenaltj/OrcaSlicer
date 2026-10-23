@@ -39,9 +39,9 @@ _GENERATION_PROFILE_FACE_LIMITS = {"quality": 1000000, "performance": 300000}
 
 @dataclass(frozen=True)
 class ProviderPolicy:
-    design_providers: tuple[str, ...] = ("gpt", "image2")
+    design_providers: tuple[str, ...] = ("gpt", "yoyoclaw")
     geometry_provider: str = "tripo"
-    geometry_providers: tuple[str, ...] = ("tripo", "hunyuan")
+    geometry_providers: tuple[str, ...] = ("tripo", "yoyoclaw")
     automatic_fallback: bool = False
     max_paid_model_tasks_per_confirmation: int = 1
 
@@ -61,6 +61,7 @@ class ModelTaskRequest:
     geometry_quality: str | None = None
     texture_quality: str = "standard"
     output_format: str = "glb"
+    model_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -115,7 +116,7 @@ class PaidTaskAuthorization:
                 code="invalid_authorization",
                 category="authorization",
             )
-        if provider not in {"tripo", "hunyuan"}:
+        if provider not in {"tripo", "yoyoclaw"}:
             raise ProviderGatewayError("Unsupported model provider.", code="invalid_provider",
                                        category="validation")
         return cls(normalized, provider, "model_generation")
@@ -505,6 +506,7 @@ class ModelProviderGateway:
         *,
         stop_event: Any = None,
         progress: Callable[[int | float | None], None] | None = None,
+        model_id: str = "",
     ) -> dict[str, Any]:
         normalized = task_id.strip() if isinstance(task_id, str) else ""
         if not normalized:

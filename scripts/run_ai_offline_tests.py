@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.pattern.startswith('test_') or not args.pattern.endswith('.py') or any(c in args.pattern for c in '/\\:'):
         parser.error('--pattern must be a test_*.py filename or glob, not a path')
     for key in list(os.environ):
-        if key.upper().startswith(("OPENAI_", "TRIPO_", "TRIPO3D_", "ORCASLICER_AI_", "HUNYUAN3D_")) or key.upper() == 'HY3D_API':
+        if key.upper().startswith(("OPENAI_", "TRIPO_", "TRIPO3D_", "ORCASLICER_AI_", "YOYOCLAW_")):
             del os.environ[key]
     sys.addaudithook(network_guard)
     root = Path(__file__).resolve().parents[1]

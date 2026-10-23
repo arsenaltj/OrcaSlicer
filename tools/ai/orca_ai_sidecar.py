@@ -19,6 +19,7 @@ import time
 import traceback
 import uuid
 import zipfile
+from urllib.parse import parse_qs, urlsplit
 from ai_diagnostics import (
     diagnostic_context,
     event as diagnostic_event,
@@ -51,10 +52,6 @@ from email import policy
 from email.parser import BytesParser
 from glb_artifact import Glb, GlbError, prepare_generated_glb, write_analysis_obj
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from hunyuan_provider_gateway import (
-    HunyuanModelProviderGateway,
-    validate_options as validate_hunyuan_options,
-)
 from io import BytesIO
 from model_artifact_workflow import ModelArtifactWorkflow, ModelArtifactWorkflowPorts
 from model_color_regions import (
@@ -218,11 +215,20 @@ from model_provider_gateway import (
     TextureTaskRequest,
     provider_policy,
 )
+from yoyoclaw_provider_gateway import (
+    GEOMETRY_ROLE as YOYOCLAW_GEOMETRY_ROLE,
+    IMAGE_ROLE as YOYOCLAW_IMAGE_ROLE,
+    YoYoClawModelProviderGateway,
+    generate_design_image as generate_yoyoclaw_design_image,
+)
+from yoyoclaw_client import DEFAULT_BASE_URL as YOYOCLAW_DEFAULT_BASE_URL
 from model_quality_workflow import ModelQualityWorkflow, ModelQualityWorkflowPorts
 from model_refinement import build_model_refinement_advice
 from model_request import (
     ValidatedImage,
     _boolean_field,
+    _design_model,
+    _design_provider,
     _generation_options,
     _generation_provider,
     _multipart_palette,
@@ -252,6 +258,8 @@ from openai_preprocessor import (
     complete_text,
     complete_vision,
     complete_vision_once,
+    _unrestricted_creation_prompt,
+    build_geometry_reference_prompt,
     edit_image,
     generate_geometry_reference_image,
     image_preprocessing_policy,
@@ -338,11 +346,101 @@ from typing import Any, BinaryIO, Callable, Mapping
 # Compatibility exports for existing consumers; implementation lives in the atoms.
 
 _MODEL_PROVIDER_GATEWAY = ModelProviderGateway()
-_HUNYUAN_PROVIDER_GATEWAY = HunyuanModelProviderGateway()
+_YOYOCLAW_PROVIDER_GATEWAY = YoYoClawModelProviderGateway()
 
 
 def _model_gateway(provider: str):
-    return _HUNYUAN_PROVIDER_GATEWAY if provider == "hunyuan" else _MODEL_PROVIDER_GATEWAY
+    if provider == "yoyoclaw":
+        return _YOYOCLAW_PROVIDER_GATEWAY
+    return _MODEL_PROVIDER_GATEWAY
+
+
+def _image_provider_status(provider: str = "gpt", model: str = "") -> dict[str, Any]:
+    """Return status for the provider currently selected by the design UI."""
+    provider = provider.strip().lower() if isinstance(provider, str) else "gpt"
+    if provider == "yoyoclaw":
+        catalog = _YOYOCLAW_PROVIDER_GATEWAY.catalog(YOYOCLAW_IMAGE_ROLE)
+        models = catalog.get("models", []) if isinstance(catalog, dict) else []
+        selected = model.strip() if isinstance(model, str) else ""
+        available = catalog.get("state") == "ready" and any(
+            isinstance(item, dict) and item.get("id") == selected and item.get("available", True)
+            for item in models
+        ) if selected else catalog.get("state") == "ready" and bool(models)
+        return {
+            "available": bool(available),
+            "provider": "yoyoclaw",
+            "model": selected or str(catalog.get("default_model", "")),
+            "source": "yoyoclaw",
+            "base_url": safe_endpoint(YOYOCLAW_DEFAULT_BASE_URL),
+            "catalog_state": catalog.get("state", "error"),
+            "catalog": catalog,
+        }
+    status = dict(image_provider_status())
+    status.update({"provider": "gpt", "model": model or os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2")})
+    return status
+
+
+def _generate_design_image_for_job(
+    instruction: str,
+    output_path: str | os.PathLike[str],
+    style: str = "cartoon",
+    custom_style: str = "",
+    *,
+    palette: tuple[str, ...] = (),
+    palette_roles: Mapping[str, str] | None = None,
+    job: Job | None = None,
+    provider: str = "gpt",
+    model: str = "",
+) -> Path:
+    provider = provider or (job.design_provider if job is not None else "gpt")
+    model = model or (job.design_model if job is not None else "")
+    if provider == "yoyoclaw":
+        prompt = _unrestricted_creation_prompt(instruction, style, custom_style, from_image=False)
+        return generate_yoyoclaw_design_image(model, prompt, output_path)
+    return generate_geometry_reference_image(
+        instruction, output_path, style, custom_style, palette=palette, palette_roles=palette_roles
+    )
+
+
+def _edit_design_image_for_job(
+    input_path: str | os.PathLike[str],
+    instruction: str,
+    output_path: str | os.PathLike[str],
+    palette: tuple[str, ...],
+    style: str = "sculpture",
+    shadow_color: str = "blue",
+    palette_roles: Mapping[str, str] | None = None,
+    custom_style: str = "",
+    geometry_output_path: str | os.PathLike[str] | None = None,
+    *,
+    print_settings: Mapping[str, Any] | None = None,
+    preprocessing_options: Mapping[str, Any] | None = None,
+    job: Job | None = None,
+    provider: str = "gpt",
+    model: str = "",
+) -> Path:
+    provider = provider or (job.design_provider if job is not None else "gpt")
+    model = model or (job.design_model if job is not None else "")
+    if provider == "yoyoclaw":
+        prompt = build_geometry_reference_prompt(
+            instruction, style, custom_style,
+            print_settings=print_settings, preprocessing_options=preprocessing_options,
+        )
+        result = generate_yoyoclaw_design_image(
+            model, prompt, output_path, image_path=Path(input_path)
+        )
+        if geometry_output_path is not None:
+            try:
+                Path(geometry_output_path).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(result, geometry_output_path)
+            except OSError:
+                raise OpenAIPreprocessorError("The YOYOClaw design reference could not be saved.") from None
+        return result
+    return preprocess_image(
+        input_path, instruction, output_path, palette, style, shadow_color,
+        palette_roles, custom_style, geometry_output_path,
+        print_settings=print_settings, preprocessing_options=preprocessing_options,
+    )
 
 HOST = os.environ.get("ORCASLICER_AI_SIDECAR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ORCASLICER_AI_SIDECAR_PORT", "18764"))
@@ -380,6 +478,7 @@ def _runtime_network_metadata() -> dict[str, dict[str, object]]:
         "tripo": network_diagnostics(
             os.environ.get("TRIPO_API_BASE", "https://openapi.tripo3d.com/v3")
         ),
+        "yoyoclaw": network_diagnostics(YOYOCLAW_DEFAULT_BASE_URL),
     }
 
 
@@ -930,10 +1029,6 @@ def _download_conversion(
     return _model_artifact_workflow().download_conversion(job, generation_id, format_name, attempt_number, resume)
 
 
-def _can_manually_retry_hunyuan(job: Job) -> bool:
-    return _model_job_lifecycle().can_manually_retry_hunyuan(job)
-
-
 def _latest_generation_task_id(job: Job) -> str:
     return _model_job_lifecycle().latest_generation_task_id(job)
 
@@ -1017,10 +1112,10 @@ def _design_workflow() -> DesignWorkflow:
         apply_printable_image=lambda *args, **kwargs: _apply_printable_image_pipeline(*args, **kwargs),
         assess_reference=lambda job: _assess_reference_advice(job),
         assess_preview=lambda *args, **kwargs: _assess_job_preview_visual_quality(*args, **kwargs),
-        generate_image=lambda *args, **kwargs: generate_geometry_reference_image(*args, **kwargs),
-        edit_image=lambda *args, **kwargs: preprocess_image(*args, **kwargs),
+        generate_image=lambda *args, **kwargs: _generate_design_image_for_job(*args, **kwargs),
+        edit_image=lambda *args, **kwargs: _edit_design_image_for_job(*args, **kwargs),
         vision_once=lambda *args, **kwargs: complete_vision_once(*args, **kwargs),
-        image_provider_status=lambda: image_provider_status(),
+        image_provider_status=lambda provider="gpt": _image_provider_status(provider),
         fallback_enabled=lambda: _preprocess_fallback_enabled(),
         validate_image=lambda *args, **kwargs: _validate_image_file(*args, **kwargs),
         review_nonportrait=lambda *args, **kwargs: review_nonportrait_reference(*args, **kwargs),
@@ -1097,8 +1192,7 @@ def _job_application(get_job=None) -> ModelJobApplication:
         preprocess_image=_preprocess_image_job,
         present=lambda *args, **kwargs: _public_job(*args, **kwargs),
         fallback_enabled=lambda *args, **kwargs: _preprocess_fallback_enabled(*args, **kwargs),
-        image_provider_status=lambda *args, **kwargs: image_provider_status(*args, **kwargs),
-        can_retry_hunyuan=lambda *args, **kwargs: _can_manually_retry_hunyuan(*args, **kwargs),
+        image_provider_status=lambda *args, **kwargs: _image_provider_status(*args, **kwargs),
         can_retry_unsubmitted=lambda *args, **kwargs: _can_retry_unsubmitted_model(*args, **kwargs),
         clear_artifact=lambda *args, **kwargs: _clear_job_artifact(*args, **kwargs),
         latest_task_id=lambda *args, **kwargs: _latest_generation_task_id(*args, **kwargs),
@@ -1284,7 +1378,8 @@ class Handler(BaseHTTPRequestHandler):
             name = part.get_param("name", header="content-disposition")
             if name not in {
                 "request_id", "instruction", "palette", "palette_roles", "palette_recommendation_confirmed", "provider",
-                "face_limit", "geometry_quality", "texture_quality", "output_format",
+                "design_provider", "design_model", "geometry_model", "face_limit", "geometry_quality",
+                "texture_quality", "output_format",
                 "palette_color_count", "style", "custom_style", "print", "image", "generate_image",
             } or name in seen:
                 raise RequestError("invalid_multipart", "Multipart fields are unexpected or duplicated.", 400)
@@ -1370,6 +1465,35 @@ class Handler(BaseHTTPRequestHandler):
             return _JOBS.get(job_id)
 
     def do_GET(self) -> None:
+        parsed_path = urlsplit(self.path)
+        if parsed_path.path == "/v1/orcaslicer/model-provider-catalog":
+            if not self._require_native_client():
+                return
+            query = parse_qs(parsed_path.query, keep_blank_values=True)
+            role = query.get("role", [""])[0]
+            provider = query.get("provider", [""])[0]
+            allowed = {"image": provider_policy().design_providers, "geometry": provider_policy().geometry_providers}
+            if provider not in allowed.get(role, ()):
+                self._model_error(400, "invalid_request", "A supported provider and catalog role are required.")
+                return
+            if provider == "yoyoclaw":
+                catalog = dict(_YOYOCLAW_PROVIDER_GATEWAY.catalog(role))
+                catalog["connection_state"] = (
+                    "connected" if catalog.get("state") in {"ready", "empty"}
+                    else str(catalog.get("state", "error"))
+                )
+                self.send_json(200, catalog)
+            else:
+                available = (bool(image_provider_status()["available"]) if role == "image"
+                             else _model_gateway(provider).model_generation_available())
+                self.send_json(200, {
+                    "role": role, "provider": provider, "state": "ready" if available else "not_configured",
+                    "connection_state": "configured" if available else "not_configured",
+                    "default_model": provider if available else "",
+                    "models": [{"id": provider, "name": provider, "available": True}] if available else [],
+                    "error": None if available else {"code": "provider_not_configured", "message": "Provider is not configured."},
+                })
+            return
         if self.path == "/v1/orcaslicer/capabilities":
             if not self._require_native_client():
                 return
@@ -1640,7 +1764,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(result.status, result.payload)
 
     def _create_text_job(self) -> None:
-        self._application().require_design_source("text")
         self._send_application_result(self._application().create_text_job(self._read_model_json()))
 
     def _create_text_palette_recommendation(self) -> None:
@@ -1651,7 +1774,6 @@ class Handler(BaseHTTPRequestHandler):
         self._send_application_result(self._application().recommend_model_style(*self._read_image_multipart()))
 
     def _create_image_job(self) -> None:
-        self._application().require_design_source("image")
         self._send_application_result(self._application().create_image_job(*self._read_image_multipart()))
 
     def _create_image_palette_recommendation(self) -> None:

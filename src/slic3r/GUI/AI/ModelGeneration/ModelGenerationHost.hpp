@@ -21,6 +21,9 @@ struct ModelGenerationUIInput
 struct ModelGenerationUIOptions
 {
     std::string provider { "tripo" };
+    std::string design_provider { "gpt" };
+    std::string design_model;
+    std::string geometry_model;
     int face_limit { 1000000 };
     std::string geometry_quality { "standard" };
     std::string texture_quality { "standard" };

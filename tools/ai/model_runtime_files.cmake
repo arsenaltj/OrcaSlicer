@@ -18,6 +18,8 @@ set(ORCA_MODEL_CAPABILITY_RUNTIME_FILES
     "${CMAKE_SOURCE_DIR}/tools/ai/model_quality_workflow.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/model_request.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/model_texture_baking.py"
+    "${CMAKE_SOURCE_DIR}/tools/ai/yoyoclaw_client.py"
+    "${CMAKE_SOURCE_DIR}/tools/ai/yoyoclaw_provider_gateway.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/portrait_geometry_reference.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/portrait_model_materials.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/portrait_multiview_workflow.py"

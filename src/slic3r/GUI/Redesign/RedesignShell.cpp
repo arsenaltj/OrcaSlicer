@@ -163,6 +163,14 @@ wxString text(const char* value)
     return wxString::FromUTF8(value);
 }
 
+wxString provider_display_name(const std::string& provider)
+{
+    if (provider == "gpt") return text("GPT");
+    if (provider == "tripo") return text("Tripo");
+    if (provider == "yoyoclaw") return text("YOYOClaw");
+    return wxString::FromUTF8(provider.c_str());
+}
+
 constexpr const char* kRedesignAssetsTabId = "REDESIGN_ASSETS";
 
 void style_text(wxWindow* window, const wxColour& colour, int point_size, bool bold = false)
@@ -213,6 +221,8 @@ public:
 
     wxStaticText* label() const { return m_label; }
 
+    void set_geometry_mode(bool geometry_mode) { m_geometry_mode = geometry_mode; }
+
     void set_status(AIServiceStatus status)
     {
         wxColour colour(156, 156, 163);
@@ -232,14 +242,14 @@ public:
         case AIServiceStatus::GenerationUnavailable:
             description = text("生成不可用，请检查服务配置");
             colour = accent_colour();
-            tooltip = text("AI 图片生成服务已连接，但生成功能暂不可用，请检查服务配置。");
+            tooltip = service_name() + text("已连接，但生成功能暂不可用，请检查服务配置。");
             break;
         case AIServiceStatus::Connected:
             description = text("已连接");
             colour = wxColour(122, 205, 153);
             break;
         }
-        m_label->SetLabel(text("AI 图片生成服务: ") + description);
+        m_label->SetLabel(service_name() + text(": ") + description);
         m_label->SetForegroundColour(colour);
         m_indicator->SetForegroundColour(colour);
         for (wxWindow* control : {static_cast<wxWindow*>(this),
@@ -256,9 +266,27 @@ public:
         GetParent()->Layout();
     }
 
+    void set_provider_status(const wxString& provider, const wxString& description, bool ready)
+    {
+        const wxColour colour = ready ? wxColour(122, 205, 153) : accent_colour();
+        m_label->SetLabel(service_name() + text("（") + provider + text("）: ") + description);
+        m_label->SetForegroundColour(colour);
+        m_indicator->SetForegroundColour(colour);
+        m_indicator->Refresh();
+        m_label->Refresh();
+        Layout();
+        GetParent()->Layout();
+    }
+
 private:
+    wxString service_name() const
+    {
+        return m_geometry_mode ? text("AI 3D 模型生成服务") : text("AI 图片生成服务");
+    }
+
     wxPanel* m_indicator { nullptr };
     wxStaticText* m_label { nullptr };
+    bool m_geometry_mode { false };
 };
 
 wxBitmap scaled_bitmap(const wxImage& image, const wxSize& bounds, bool allow_upscale = false)
@@ -1245,9 +1273,23 @@ void RedesignShell::disconnect_model_generation_host()
 
 void RedesignShell::set_service_status(AIServiceStatus status)
 {
+    m_last_service_status = static_cast<int>(status);
     if (!m_sidecar_status)
         return;
-    static_cast<ImageServiceStatusRow*>(m_sidecar_status->GetParent())->set_status(status);
+    if (m_provider_choice != nullptr) {
+        // A successful local discovery does not describe the selected provider.
+        if (status == AIServiceStatus::Connected || status == AIServiceStatus::GenerationUnavailable) {
+            m_provider_catalog_role.clear();
+            refresh_provider_catalog();
+            return;
+        }
+        ++m_provider_catalog_sequence;
+        m_provider_catalog_role.clear();
+        m_provider_catalog.state = "checking";
+    }
+    auto* row = static_cast<ImageServiceStatusRow*>(m_sidecar_status->GetParent());
+    row->set_geometry_mode(m_generation_geometry_mode);
+    row->set_status(status);
 }
 
 void RedesignShell::build_image_workspace()
@@ -1409,10 +1451,10 @@ void RedesignShell::build_image_workspace()
     });
     settings_content->Add(prompt_surface, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
 
-    m_provider_label = new wxStaticText(settings_content_host, wxID_ANY, text("3D模型选择"));
+    m_provider_label = new wxStaticText(settings_content_host, wxID_ANY, text("图像模型选择"));
     style_text(m_provider_label, primary_text_colour(), 13, true);
     settings_content->Add(m_provider_label, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
-    const wxArrayString provider_choices {text("Tripo"), text("腾讯混元3D")};
+    const wxArrayString provider_choices {text("GPT"), text("YOYOClaw")};
     auto* provider_picker = new StylePicker(settings_content_host, provider_choices, [this](int) {
                                                 if (!m_applying_model_generation_state)
                                                     on_generation_option_changed();
@@ -1434,8 +1476,10 @@ void RedesignShell::build_image_workspace()
     face_limit_picker->SetName("model-face-limit-choice");
     face_limit_picker->SetWindowStyleFlag(face_limit_picker->GetWindowStyleFlag() | wxWANTS_CHARS);
     m_face_limit_choice = face_limit_picker;
-    settings_content->AddSpacer(FromDIP(12));
-    settings_content->Add(face_limit_picker, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(21));
+    face_limit_picker->Hide();
+    auto* face_limit_row = new wxBoxSizer(wxVERTICAL);
+    face_limit_row->Add(face_limit_picker, 0, wxEXPAND | wxTOP, FromDIP(12));
+    settings_content->Add(face_limit_row, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(21));
 
     auto* style_label_control = new wxStaticText(settings_content_host, wxID_ANY, text("风格"));
     style_text(style_label_control, primary_text_colour(), 13, true);
@@ -1507,6 +1551,16 @@ void RedesignShell::build_image_workspace()
     });
     settings_content->Add(m_custom_style_panel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
     settings_content->AddSpacer(FromDIP(16));
+
+    // Keep style controls above provider selection in the sidebar. The
+    // controls are built together with the rest of the form, then moved as a
+    // group so their existing callbacks and state remain unchanged.
+    settings_content->Detach(m_provider_label);
+    settings_content->Detach(m_provider_choice);
+    settings_content->Detach(face_limit_row);
+    settings_content->Add(m_provider_label, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    settings_content->Add(m_provider_choice, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    settings_content->Add(face_limit_row, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(21));
     update_generation_style_controls();
 
     settings_scroll->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
@@ -1806,6 +1860,7 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     }
     if (m_custom_style != nullptr && m_custom_style->GetValue().ToStdString(wxConvUTF8) != state.input.custom_style)
         m_custom_style->ChangeValue(wxString::FromUTF8(state.input.custom_style));
+    m_generation_geometry_mode = redesign_primary_action(state, image_stage) == RedesignPrimaryAction::Model;
     apply_generation_options(state.options);
     m_applying_model_generation_state = false;
     m_input_sync_ok = m_model_generation_host != nullptr && current_generation_input() == state.input;
@@ -1844,16 +1899,28 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     if (m_face_limit_choice != nullptr) {
         auto* picker = static_cast<StylePicker*>(m_face_limit_choice);
         const bool face_limit_editable = options_editable && picker->choice_count() > 1;
-        picker->Show(provider_visible);
+        picker->Show(provider_visible && m_generation_geometry_mode && state.options.provider == "tripo");
         picker->Enable(face_limit_editable);
         picker->set_interactive(face_limit_editable);
     }
+    const auto selected_provider_ready = [this]() {
+        if (m_provider_choice == nullptr)
+            return true;
+        const int selection = static_cast<StylePicker*>(m_provider_choice)->selection();
+        const bool yoyoclaw = selection == 1;
+        const auto& model = m_generation_geometry_mode ? m_generation_options.geometry_model :
+                                                         m_generation_options.design_model;
+        return m_provider_catalog.role == (m_generation_geometry_mode ? "geometry" : "image") &&
+            m_provider_catalog.provider == (m_generation_geometry_mode ? m_generation_options.provider : m_generation_options.design_provider) &&
+            m_provider_catalog.supports_model(yoyoclaw ? model : std::string());
+    };
 
     wxString primary_label = m_image_design_draft.replaces_design()
         ? text("重新生成 2D 设计图") : text("生成 2D 设计图");
     // The host validates both prompt-only and image inputs; editability still
     // blocks submission while an image is loading.
-    bool primary_enabled = m_input_sync_ok && state.can_generate_design && editable;
+    bool primary_enabled = m_input_sync_ok && m_option_sync_ok && state.can_generate_design && editable &&
+                           selected_provider_ready();
     m_secondary_action = SecondaryAction::None;
     wxString secondary_label;
     wxString placeholder = text("等待生成");
@@ -1916,7 +1983,8 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
             update_design_preview();
         else {
             primary_label = text("重新生成 2D 设计图");
-            primary_enabled = m_input_sync_ok && state.can_generate_design && editable;
+            primary_enabled = m_input_sync_ok && m_option_sync_ok && state.can_generate_design && editable &&
+                              selected_provider_ready();
             placeholder = text("生成已停止");
             placeholder_mode = ImagePreview::PlaceholderMode::Stopped;
         }
@@ -1932,7 +2000,8 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         } else {
             primary_label = text("生成 3D 模型");
             primary_enabled = m_option_sync_ok && state.can_generate_model &&
-                              m_design_image_state == ImageState::Ready && editable;
+                              m_design_image_state == ImageState::Ready && editable &&
+                              selected_provider_ready();
             update_design_preview();
             if (state.can_restart) {
                 m_secondary_action = SecondaryAction::Restart;
@@ -1959,10 +2028,12 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         if (redesign_primary_action(state, image_stage) == RedesignPrimaryAction::Model) {
             primary_label = text("生成 3D 模型");
             primary_enabled = m_input_sync_ok && m_option_sync_ok && state.can_generate_model &&
-                              m_design_image_state == ImageState::Ready && editable;
+                              m_design_image_state == ImageState::Ready && editable &&
+                              selected_provider_ready();
         } else {
             primary_label = state.design_image_path.empty() ? text("生成 2D 设计图") : text("重新生成 2D 设计图");
-            primary_enabled = m_input_sync_ok && state.can_generate_design && editable;
+            primary_enabled = m_input_sync_ok && m_option_sync_ok && state.can_generate_design && editable &&
+                              selected_provider_ready();
         }
         update_design_preview();
         break;
@@ -2078,9 +2149,12 @@ ModelGenerationUIOptions RedesignShell::current_generation_options() const
     ModelGenerationUIOptions options = m_generation_options;
     if (m_provider_choice != nullptr) {
         const int provider = static_cast<StylePicker*>(m_provider_choice)->selection();
-        options.provider = provider == 1 ? "hunyuan" : "tripo";
+        if (m_generation_geometry_mode)
+            options.provider = provider == 1 ? "yoyoclaw" : "tripo";
+        else
+            options.design_provider = provider == 1 ? "yoyoclaw" : "gpt";
     }
-    if (options.provider == "hunyuan") {
+    if (options.provider == "yoyoclaw") {
         options.face_limit = std::min(options.face_limit, 1000000);
         options.geometry_quality = "standard";
         options.texture_quality = "standard";
@@ -2091,8 +2165,18 @@ ModelGenerationUIOptions RedesignShell::current_generation_options() const
 void RedesignShell::apply_generation_options(const ModelGenerationUIOptions& options)
 {
     m_generation_options = options;
-    if (m_provider_choice != nullptr)
-        static_cast<StylePicker*>(m_provider_choice)->set_selection(options.provider == "hunyuan" ? 1 : 0);
+    refresh_provider_choice(m_generation_geometry_mode);
+    if (m_provider_choice != nullptr) {
+        auto* provider = static_cast<StylePicker*>(m_provider_choice);
+        const int selection = m_generation_geometry_mode
+            ? options.provider == "yoyoclaw" ? 1 : 0
+            : options.design_provider == "yoyoclaw" ? 1 : 0;
+        provider->set_selection(selection);
+    }
+    refresh_provider_catalog();
+    if (m_provider_catalog.state != "checking" &&
+        m_provider_catalog_role == (m_generation_geometry_mode ? "geometry" : "image"))
+        apply_provider_catalog(m_provider_catalog);
     if (m_face_limit_choice != nullptr) {
         auto* picker = static_cast<StylePicker*>(m_face_limit_choice);
         wxArrayString choices;
@@ -2107,12 +2191,114 @@ void RedesignShell::apply_generation_options(const ModelGenerationUIOptions& opt
     }
 }
 
+void RedesignShell::refresh_provider_choice(bool geometry_mode)
+{
+    if (m_provider_choice == nullptr)
+        return;
+    m_generation_geometry_mode = geometry_mode;
+    const wxArrayString choices = geometry_mode
+        ? wxArrayString {text("Tripo"), text("YOYOClaw")}
+        : wxArrayString {text("GPT"), text("YOYOClaw")};
+    auto* provider = static_cast<StylePicker*>(m_provider_choice);
+    const int current = provider->selection();
+    const int selection = current == 1 ? 1 : 0;
+    provider->set_choices(choices, selection);
+    if (m_provider_label != nullptr)
+        m_provider_label->SetLabel(geometry_mode ? text("3D模型选择") : text("图像模型选择"));
+}
+
+void RedesignShell::refresh_provider_catalog()
+{
+    if (m_provider_choice == nullptr)
+        return;
+    if (m_sidecar_status != nullptr) {
+        auto* row = dynamic_cast<ImageServiceStatusRow*>(m_sidecar_status->GetParent());
+        if (row != nullptr) row->set_geometry_mode(m_generation_geometry_mode);
+    }
+    const auto* provider = static_cast<StylePicker*>(m_provider_choice);
+    const int selection = provider->selection();
+    const std::string selected_provider = m_generation_geometry_mode
+        ? selection == 1 ? "yoyoclaw" : "tripo"
+        : selection == 1 ? "yoyoclaw" : "gpt";
+    const std::string role = m_generation_geometry_mode ? "geometry" : "image";
+    if (role == m_provider_catalog_role && selected_provider == m_provider_catalog_provider &&
+        (m_provider_catalog.state == "checking" || m_provider_catalog.state == "ready" || m_provider_catalog.state == "empty" ||
+         m_provider_catalog.state == "not_configured" || m_provider_catalog.state == "error")) {
+        return;
+    }
+    m_provider_catalog_role = role;
+    m_provider_catalog_provider = selected_provider;
+    const std::uint64_t sequence = ++m_provider_catalog_sequence;
+    m_provider_catalog = {role, selected_provider, "checking", "", {}, "", "", false};
+    if (m_sidecar_status != nullptr) {
+        auto* row = dynamic_cast<ImageServiceStatusRow*>(m_sidecar_status->GetParent());
+        if (row != nullptr) row->set_provider_status(provider_display_name(selected_provider), text("检测中"), false);
+    }
+    if (m_model_generation_host == nullptr) {
+        apply_provider_catalog(m_provider_catalog, "Model generation host is unavailable.");
+        return;
+    }
+    wxWeakRef<RedesignShell> weak(this);
+    m_model_generation_host->get_provider_catalog(
+        role, selected_provider,
+        [weak, sequence, role, selected_provider](AIModelGenerationClient::ProviderCatalog catalog) mutable {
+            // The feature host delivers catalog callbacks on the UI thread.
+            if (!weak || sequence != weak->m_provider_catalog_sequence ||
+                role != weak->m_provider_catalog_role || selected_provider != weak->m_provider_catalog_provider)
+                return;
+            weak->apply_provider_catalog(catalog);
+        },
+        [weak, sequence, role, selected_provider](std::string error) {
+            if (!weak || sequence != weak->m_provider_catalog_sequence ||
+                role != weak->m_provider_catalog_role || selected_provider != weak->m_provider_catalog_provider)
+                return;
+            weak->apply_provider_catalog(
+                AIModelGenerationClient::ProviderCatalog{role, selected_provider, "error", "", {}, "", "", false}, error);
+        });
+}
+
+void RedesignShell::apply_provider_catalog(const AIModelGenerationClient::ProviderCatalog& catalog,
+                                           const std::string& error)
+{
+    m_provider_catalog = catalog;
+    const bool geometry = m_generation_geometry_mode;
+    const bool ready = error.empty() && catalog.ready();
+    if (catalog.provider == "yoyoclaw") {
+        const std::string model = ready && catalog.supports_model(catalog.default_model)
+            ? catalog.default_model : std::string();
+        if (geometry) m_generation_options.geometry_model = model;
+        else m_generation_options.design_model = model;
+    }
+    if (catalog.provider != "yoyoclaw") {
+        if (geometry) m_generation_options.geometry_model.clear();
+        else m_generation_options.design_model.clear();
+    }
+    if (m_sidecar_status != nullptr) {
+        auto* row = dynamic_cast<ImageServiceStatusRow*>(m_sidecar_status->GetParent());
+        if (row != nullptr) {
+            row->set_geometry_mode(geometry);
+            const wxString description = ready ? (catalog.remotely_connected() ? text("已连接") : text("已配置")) :
+                catalog.state == "not_configured" ? text("未配置") :
+                catalog.state == "empty" ? text("无可用模型") : text("不可用");
+            row->set_provider_status(provider_display_name(catalog.provider), description, ready);
+        }
+    }
+    if (m_model_generation_host != nullptr && !m_applying_model_generation_state)
+        synchronize_generation_options();
+    if (m_image_settings_content != nullptr) {
+        m_image_settings_content->Layout();
+        layout_image_settings();
+    }
+}
+
 void RedesignShell::on_generation_option_changed()
 {
     if (m_model_generation_host == nullptr || m_applying_model_generation_state || m_provider_choice == nullptr)
         return;
+    refresh_provider_choice(m_generation_geometry_mode);
     const auto options = current_generation_options();
     m_generation_options = options;
+    refresh_provider_catalog();
     const bool valid = options.face_limit != 2000000 || options.geometry_quality == "detailed";
     if (!valid) {
         m_option_sync_ok = false;
@@ -2199,7 +2385,7 @@ void RedesignShell::request_generate_design()
         return;
     m_submit_in_progress = true;
     apply_model_generation_state(m_model_generation_state);
-    if (!synchronize_generation_input()) {
+    if (!synchronize_generation_options() || !synchronize_generation_input()) {
         m_submit_in_progress = false;
         apply_model_generation_state(m_model_generation_host->snapshot());
         return;

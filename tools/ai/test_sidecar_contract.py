@@ -101,6 +101,107 @@ def temporary_environment(**values):
 
 
 class SidecarHealthContractTests(unittest.TestCase):
+    def test_provider_catalogs_probe_each_role_without_cross_provider_dependencies(self):
+        token = "a5" * 32
+        proof = hmac.new(token.encode(), f"client:{PRODUCTION.SIDECAR_SESSION_NONCE}".encode(), hashlib.sha256).hexdigest()
+        def yoyo_catalog(role):
+            return {"role": role, "provider": "yoyoclaw", "state": "ready", "default_model": role,
+                    "models": [{"id": role, "name": role, "available": True}], "error": None}
+        with temporary_environment(ORCASLICER_AI_SESSION_TOKEN=token, ORCASLICER_AI_REQUIRE_SESSION="1"), \
+             mock.patch.object(PRODUCTION, "image_provider_status", return_value={"available": False}), \
+             mock.patch.object(PRODUCTION._MODEL_PROVIDER_GATEWAY, "model_generation_available", return_value=True), \
+             mock.patch.object(PRODUCTION._YOYOCLAW_PROVIDER_GATEWAY, "catalog", side_effect=yoyo_catalog), \
+             mock.patch.object(PRODUCTION, "_submit") as submit, sidecar_server(PRODUCTION.Handler) as port:
+            for role, provider, expected in (("image", "gpt", False), ("image", "yoyoclaw", True),
+                                              ("geometry", "tripo", True), ("geometry", "yoyoclaw", True)):
+                with self.subTest(role=role, provider=provider):
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/v1/orcaslicer/model-provider-catalog?role={role}&provider={provider}",
+                        headers={"X-OrcaSlicer-Client": "native", "X-OrcaSlicer-Session-Proof": proof})
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        catalog = json.load(response)
+                    self.assertEqual(catalog["role"], role)
+                    self.assertEqual(catalog["provider"], provider)
+                    self.assertEqual(catalog["state"], "ready" if expected else "not_configured")
+                    self.assertEqual(bool(catalog["models"]), expected)
+                    self.assertEqual(
+                        catalog["connection_state"],
+                        "connected" if provider == "yoyoclaw" else "configured" if expected else "not_configured",
+                    )
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/orcaslicer/model-provider-catalog?role=geometry&provider=removed-provider",
+                headers={"X-OrcaSlicer-Client": "native", "X-OrcaSlicer-Session-Proof": proof})
+            with self.assertRaises(urllib.error.HTTPError) as removed:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(removed.exception.code, 400)
+            submit.assert_not_called()
+
+    def test_yoyoclaw_submission_routes_do_not_require_gpt(self):
+        selected_model = "image/qwen-image-3.0"
+        status_calls = []
+
+        def provider_status(provider="gpt", model=""):
+            status_calls.append((provider, model))
+            return {"available": provider == "yoyoclaw" and model == selected_model}
+
+        with tempfile.TemporaryDirectory() as root, temporary_environment(
+            OPENAI_API_KEY=None, OPENAI_PRO_API=None, OPENAI_PRO_URL=None,
+            ORCASLICER_AI_OUTPUT_DIR=root, ORCASLICER_AI_SESSION_TOKEN=None,
+        ), mock.patch.dict(PRODUCTION._JOBS, {}, clear=True), \
+             mock.patch.object(PRODUCTION, "_image_provider_status", side_effect=provider_status), \
+             mock.patch.object(PRODUCTION, "_submit") as submit, sidecar_server(PRODUCTION.Handler) as port:
+            headers = {"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"}
+            text_request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/text",
+                data=json.dumps({
+                    "request_id": "yoyoclaw-text", "prompt": "printable figure", "style": "realistic",
+                    "design_provider": "yoyoclaw", "design_model": selected_model,
+                }).encode(),
+                headers=headers,
+            )
+            with urllib.request.urlopen(text_request, timeout=5) as response:
+                self.assertEqual(response.status, 202)
+
+            fields = {
+                "request_id": "yoyoclaw-image", "instruction": "printable figure", "style": "realistic",
+                "design_provider": "yoyoclaw", "design_model": selected_model,
+            }
+            body, content_type = multipart_image_request(fields, valid_png_bytes(512))
+            image_request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/image",
+                data=body,
+                headers={"X-OrcaSlicer-Client": "native", "Content-Type": content_type},
+            )
+            with urllib.request.urlopen(image_request, timeout=5) as response:
+                self.assertEqual(response.status, 202)
+
+            self.assertEqual(submit.call_count, 2)
+            self.assertEqual(status_calls, [("yoyoclaw", selected_model), ("yoyoclaw", selected_model)])
+            for call in submit.call_args_list:
+                self.assertEqual(call.args[0].design_provider, "yoyoclaw")
+                self.assertEqual(call.args[0].design_model, selected_model)
+
+    def test_gpt_catalog_does_not_require_a_geometry_provider_and_rejects_wrong_roles(self):
+        with temporary_environment(ORCASLICER_AI_SESSION_TOKEN=None, ORCASLICER_AI_REQUIRE_SESSION=None), \
+             mock.patch.object(PRODUCTION, "image_provider_status", return_value={"available": True}), \
+             mock.patch.object(PRODUCTION._MODEL_PROVIDER_GATEWAY, "model_generation_available", return_value=False), \
+             mock.patch.object(PRODUCTION, "_submit") as submit, sidecar_server(PRODUCTION.Handler) as port:
+            url = f"http://127.0.0.1:{port}/v1/orcaslicer/model-provider-catalog"
+            with self.assertRaises(urllib.error.HTTPError) as denied:
+                urllib.request.urlopen(url + "?role=image&provider=gpt", timeout=5)
+            self.assertEqual(denied.exception.code, 401)
+            request = urllib.request.Request(url + "?role=image&provider=gpt", headers={"X-OrcaSlicer-Client": "native"})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                catalog = json.load(response)
+                self.assertEqual(catalog["state"], "ready")
+                self.assertEqual(catalog["connection_state"], "configured")
+            for role, provider in (("geometry", "gpt"), ("image", "tripo"), ("text", "yoyoclaw"), ("image", "unknown")):
+                request = urllib.request.Request(url + f"?role={role}&provider={provider}", headers={"X-OrcaSlicer-Client": "native"})
+                with self.assertRaises(urllib.error.HTTPError) as invalid:
+                    urllib.request.urlopen(request, timeout=5)
+                self.assertEqual(invalid.exception.code, 400)
+            submit.assert_not_called()
+
     def test_atomic_catalog_requires_native_client_and_never_creates_work(self):
         token = "a5" * 32
         proof = hmac.new(token.encode(), f"client:{PRODUCTION.SIDECAR_SESSION_NONCE}".encode(), hashlib.sha256).hexdigest()
@@ -964,7 +1065,7 @@ class SidecarHealthContractTests(unittest.TestCase):
     def test_legacy_recommendation_routes_create_unrestricted_design_jobs(self):
         for source in ("text", "image"):
             with self.subTest(source=source), tempfile.TemporaryDirectory() as directory, temporary_environment(OPENAI_API_KEY="test-openai", ORCASLICER_AI_OUTPUT_DIR=directory), mock.patch.object(PRODUCTION, "_submit") as submit, mock.patch.object(PRODUCTION, "image_provider_status", return_value={"available": True}), mock.patch.dict(PRODUCTION._JOBS, {}, clear=True), sidecar_server(PRODUCTION.Handler) as port:
-                fields = {"request_id": "legacy", "style": "realistic", "palette_color_count": "20", "provider": "hunyuan"}
+                fields = {"request_id": "legacy", "style": "realistic", "palette_color_count": "20", "provider": "yoyoclaw"}
                 if source == "image":
                     fields["instruction"] = "portrait"
                     body, content_type = multipart_image_request(fields, valid_png_bytes())
@@ -978,18 +1079,18 @@ class SidecarHealthContractTests(unittest.TestCase):
                 self.assertEqual(job.palette, ())
                 self.assertEqual(job.palette_recommendation, {})
                 self.assertEqual(public["state"], "preprocessing")
-                self.assertEqual(public["provider"], "hunyuan")
-                self.assertEqual(PRODUCTION._load_job(job.directory).provider, "hunyuan")
+                self.assertEqual(public["provider"], "yoyoclaw")
+                self.assertEqual(PRODUCTION._load_job(job.directory).provider, "yoyoclaw")
                 self.assertIs(submit.call_args.args[1], PRODUCTION._preprocess_image_job if source == "image" else PRODUCTION._preprocess_text_job)
                 if source == "image": self.assertEqual(job.input_path.read_bytes(), valid_png_bytes())
 
     def test_new_design_routes_preserve_all_generation_options(self):
         cases = (
-            {"provider": "hunyuan", "face_limit": 1000000, "geometry_quality": "standard", "texture_quality": "standard", "output_format": "obj"},
+            {"provider": "yoyoclaw", "face_limit": 1000000, "geometry_quality": "standard", "texture_quality": "standard", "output_format": "obj"},
             {"provider": "tripo", "face_limit": 2000000, "geometry_quality": "detailed", "texture_quality": "extreme", "output_format": "obj"},
             # Draft 3D combinations do not affect any of the 2D design routes.
             {"provider": "tripo", "face_limit": 2000000, "geometry_quality": "standard"},
-            {"provider": "hunyuan", "face_limit": 2000000, "geometry_quality": "detailed", "texture_quality": "extreme"},
+            {"provider": "yoyoclaw", "face_limit": 2000000, "geometry_quality": "detailed", "texture_quality": "extreme"},
             {},
         )
         for route in ("text", "image", "recommend-text-palette", "recommend-image-palette"):
@@ -1029,15 +1130,15 @@ class SidecarHealthContractTests(unittest.TestCase):
             job = PRODUCTION._new_job("text", ())
             job.state = "awaiting_confirmation"
             PRODUCTION._JOBS[job.id] = job
-            options = {"provider": "hunyuan", "face_limit": 300000, "geometry_quality": "standard",
+            options = {"provider": "yoyoclaw", "face_limit": 300000, "geometry_quality": "standard",
                        "texture_quality": "standard", "output_format": "glb"}
             request = urllib.request.Request(
                 f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job.id}/generation-options",
                 data=json.dumps(options).encode(), headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"})
             with urllib.request.urlopen(request, timeout=5) as response:
                 public = json.loads(response.read())["job"]
-            self.assertEqual(public["provider"], "hunyuan")
-            self.assertEqual(PRODUCTION._load_job(job.directory).provider, "hunyuan")
+            self.assertEqual(public["provider"], "yoyoclaw")
+            self.assertEqual(PRODUCTION._load_job(job.directory).provider, "yoyoclaw")
             self.assertEqual(job.attempts, [])
             submit.assert_not_called()
 
@@ -1979,21 +2080,23 @@ class SidecarHealthContractTests(unittest.TestCase):
             health = self.fetch_health(PRODUCTION.Handler)
 
         policy = health["capabilities"]["model_generation"]["provider_policy"]
-        self.assertEqual(policy["design_providers"], ["gpt", "image2"])
+        self.assertEqual(policy["design_providers"], ["gpt", "yoyoclaw"])
         self.assertEqual(policy["geometry_provider"], "tripo")
+        self.assertEqual(policy["geometry_providers"], ["tripo", "yoyoclaw"])
         self.assertFalse(policy["automatic_fallback"])
         self.assertEqual(policy["max_paid_model_tasks_per_confirmation"], 1)
 
     def test_windows_installer_manifest_includes_model_runtime_dependencies(self):
         repository = TOOLS_AI.parents[1]
         cmake_manifest = (repository / "CMakeLists.txt").read_text(encoding="utf-8")
+        cmake_manifest += (TOOLS_AI / "model_runtime_files.cmake").read_text(encoding="utf-8")
 
         for module in (
             "model_input_image_quality.py",
             "model_job_support.py",
             "model_provider_gateway.py",
-            "hunyuan_client.py",
-            "hunyuan_provider_gateway.py",
+            "yoyoclaw_client.py",
+            "yoyoclaw_provider_gateway.py",
             "model_refinement.py",
             "sampled_local_thickness.py",
         ):
@@ -2001,7 +2104,7 @@ class SidecarHealthContractTests(unittest.TestCase):
 
     def test_production_health_contract_with_openai_only(self):
         with temporary_environment(OPENAI_API_KEY="test-openai", TRIPO_API_KEY=None), \
-             mock.patch.object(PRODUCTION._HUNYUAN_PROVIDER_GATEWAY, "model_generation_available", return_value=False):
+             mock.patch.object(PRODUCTION._YOYOCLAW_PROVIDER_GATEWAY, "model_generation_available", return_value=False):
             health = self.fetch_health(PRODUCTION.Handler)
         self.assert_contract(health)
         self.assertTrue(health["capabilities"]["config_proposal"]["available"])
@@ -2081,7 +2184,7 @@ class SidecarHealthContractTests(unittest.TestCase):
             health = self.fetch_health(PRODUCTION.Handler)
 
         network = health["runtime"]["network"]
-        self.assertEqual(set(network), {"openai", "image2", "tripo"})
+        self.assertEqual(set(network), {"openai", "image2", "tripo", "yoyoclaw"})
         for provider in network.values():
             self.assertEqual(set(provider), {"source", "schemes", "bypass"})
             self.assertIsInstance(provider["source"], str)
