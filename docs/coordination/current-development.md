@@ -1,3 +1,15 @@
+# 2026-10-23 3D 工作台侧栏、自动修复、耗材试色与底座整改（已实施、GUI 复核通过、本地提交收尾）
+
+主线：继续在 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha` / `codex/upstream-v2.5.0-alpha-portrait-preserved` 收尾生成后 3D 工作台。上一轮对照 UI 已独立提交为 `5f80495bfb feat: refine 3d model workbench comparison ui`；本轮 41 个源码/测试文件与两份状态文档随 `feat: refine 3d workbench repair and filament workflow` 本地提交，不推送、不打包、不提升候选。
+
+本轮：删除侧栏完整“3D 美颜”分组、人像保护、原生配色匹配和旧打印机耗材来源入口；首次导入改为画布内“检查 → 修复 → 复检”自动接受流程，并收紧只有已确认 `Attention` 可继续的导入许可。检查模态改为双缓冲深灰遮罩、固定灰色卡片和自绘进度条。色卡详情移除重复原色预览；“打印机耗材”提升为一级标题，同“导入切片”风格的主按钮置于标题正下方，实体槽/叠色配方/试色按钮统一 28 DIP 行高并复用 Orca 原生预设、颜色、菜单和混合耗材入口。底部改为“增加底座 → 原色对照 → 网格”，底座默认关闭；预览和导入直径统一为 `max(X,Y)+4 mm`，四周各留 2 mm，开关业务值立即回写自绘状态。
+
+未结：失败模态的每个真实分支、混合耗材对话框完整人工交互、100%/125%/150% DPI、窄窗口和实体打印颜色保真仍独立未验证。代码测试不能替代这些视觉及实物验收。
+
+下一步：保留固定 `.tmp/dev/run`、`.tmp/dev/data` 的 PID `28428` 供用户复核；后续反馈作为新一轮增量处理。本轮不推送、不打包。
+
+计划变更：VS 2022 x64 Release 增量构建通过；`OrcaModelPreparation` 10/157、`WorkbenchTopology` 8/361、`WorkbenchImportEligibility` 2/30、`PrinterFilaments` 18/248、`PrinterFilamentPreview` 2/24、`PrinterFilamentImport` 13/708、`PostGenerationWorkbench` 55/1982、`UiRedesign` 86/1340 全部通过，集成守卫和 diff 检查通过。真实人像逐阶段验证深灰模态无白块/白闪并自动关闭；底座开关即时刷新、往返正常，底座视觉覆盖最长 XY 投影并留余量；原色对照左栏底座和原生耗材名称下拉此前已通过。证据见 [`round-base-fix`](../../.tmp/dev/logs/20261023-workbench-round-base-fix)、[`modal-theme-fix`](../../.tmp/dev/logs/20261023-workbench-modal-theme-fix) 和 [`Run`](../../.tmp/dev/logs/20261023-122515-666/result.json)；实体打印色彩保真未验证。
+
 # 2026-10-22 3D 模型工作台原色对照开关刷新修复（已安装、GUI 往返通过）
 
 主线：继续在 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha` / `codex/upstream-v2.5.0-alpha-portrait-preserved`、HEAD `7d2e40776c38599a7296811329d452fb15079196` 收尾生成后 3D 模型工作台底栏与原色对照；保留全部既有未提交修改，不提交、推送、打包或覆盖用户正在运行的 `.tmp/dev/run`。

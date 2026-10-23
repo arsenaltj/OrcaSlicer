@@ -78,13 +78,9 @@ ModelPreparation prepare_model(const ModelObject& source, const ModelPreparation
             break;
         case ModelBaseTemplate::Round:
         default:
-            // A round display base should stay compact under a portrait or
-            // figurine.  Using the XY diagonal here makes a wide pose (for
-            // example, outstretched arms) produce an unnecessarily huge
-            // plinth.  The short footprint dimension is a stable support
-            // diameter and leaves the oval/rectangle templates available
-            // when full footprint coverage is required.
-            mesh = TriangleMesh(its_make_cylinder(std::max(4.0, std::min(width, depth) / 2.0), base_height));
+            // Cover the longest XY span and retain the requested 2 mm radial
+            // margin on every side of the transformed body footprint.
+            mesh = TriangleMesh(its_make_cylinder(std::max(4.0, std::max(width, depth) / 2.0), base_height));
             break;
         }
         result.base = std::make_unique<Model>();

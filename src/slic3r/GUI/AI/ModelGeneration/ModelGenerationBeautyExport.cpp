@@ -342,6 +342,7 @@ void ModelGenerationPanel::export_semantic_candidate()
                     if (keep_contour_draft) self->preserve_portrait_draft();
                 } else {
                     size_t triangles = 0, colors = 0; Vec3d dimensions; std::string error;
+                    self->invalidate_printer_filament_trial_for_model_change();
                     if (!self->m_model_preview->load_prepared_model(std::move(*prepared), {}, triangles,
                             dimensions, colors, error)) {
                         self->m_save_and_return = false;

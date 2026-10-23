@@ -208,6 +208,7 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                 ui([&] {
                     object.volumes.front()->set_mesh(std::move(final_mesh));
                     object.volumes.front()->set_new_unique_id();
+                    object.invalidate_bounding_box();
                 });
                 if (stopped()) return;
                 detached.texture_mesh.reset();
@@ -215,7 +216,8 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                 bool created = false;
                 ui([&] {
                     created = LocalPrintModelImport::prepare(object, prepared->placement.placement,
-                        prepared->placement.bed_size, prepared->model, prepared->result.error);
+                        prepared->placement.bed_size, prepared->model, prepared->result.error,
+                        request.apply_round_base_preparation);
                 });
                 if (!created || stopped()) return;
                 if (!LocalPrintModelImport::place(*prepared->model->objects.front(), prepared->placement.bed,

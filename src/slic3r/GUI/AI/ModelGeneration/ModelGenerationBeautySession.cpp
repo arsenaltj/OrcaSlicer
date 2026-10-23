@@ -321,7 +321,10 @@ void ModelGenerationPanel::refresh_model_finishing()
         ? _L("力度越大，可合并的杂色块越大。仅处理选区内部；不会自动识别五官、纽扣或花纹。")
         : _L("强度越高，柔化越明显。保护轮廓与细小结构；可随时调整并重新预览。"));
     m_finishing_repair->Show(!m_finishing_workbench && tool == 3);
-    m_finishing_compare_model->Show(pending);
+    // Automatic topology repairs are committed without a user candidate
+    // review.  Keep the footer free of the legacy compare affordance while
+    // that save transaction is running; manual beauty candidates retain it.
+    m_finishing_compare_model->Show(pending && !m_workbench_auto_repair);
     m_finishing_compare_model->Enable(editable);
     m_finishing_compare_model->SetLabel(m_finishing_workbench
         ? (m_finishing_before ? _L("查看处理后") : _L("查看处理前"))
@@ -582,6 +585,7 @@ bool ModelGenerationPanel::restore_beauty_candidate(const BeautyCandidateSnapsho
             m_workbench_operation_notice = "无法恢复耗材配置：" + config_error; return false;
         }
     }
+    invalidate_printer_filament_trial_for_model_change();
     if (!m_model_preview->load_prepared_model(std::move(prepared), {}, triangles, dimensions, colors, error)) {
         // Only undo the configuration action just committed above; a no-op
         // restoration must never undo an unrelated project action.

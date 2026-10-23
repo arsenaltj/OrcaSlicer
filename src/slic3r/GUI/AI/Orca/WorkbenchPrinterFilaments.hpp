@@ -13,6 +13,16 @@
 
 namespace Slic3r::GUI::PrinterFilamentConfig {
 
+inline constexpr int workbench_row_height_dip = 28;
+
+inline std::optional<size_t> mixed_panel_index(
+    const std::vector<size_t>& mixed_config_indices, size_t config_slot)
+{
+    const auto found = std::find(mixed_config_indices.begin(), mixed_config_indices.end(), config_slot);
+    if (found == mixed_config_indices.end()) return {};
+    return size_t(std::distance(mixed_config_indices.begin(), found));
+}
+
 inline GUI::WorkbenchPrinterFilaments capture(const PresetBundle& bundle)
 {
     GUI::WorkbenchPrinterFilaments state;
@@ -24,6 +34,7 @@ inline GUI::WorkbenchPrinterFilaments capture(const PresetBundle& bundle)
         !bundle.is_bbl_vendor() ? state.nozzles : 32;
     nlohmann::json identity = {{"printer", state.printer}, {"nozzles", nozzles ? nozzles->serialize() : ""},
         {"slots", nlohmann::json::array()}};
+    nlohmann::json layout = {{"slots", nlohmann::json::array()}};
     const auto* colors = bundle.project_config.option<ConfigOptionStrings>("filament_colour");
     const size_t count = bundle.filament_presets.size();
     std::vector<std::string> types;
@@ -31,6 +42,7 @@ inline GUI::WorkbenchPrinterFilaments capture(const PresetBundle& bundle)
     for (size_t i = 0; i < count; ++i) {
         const bool mixed = bundle.is_mixed_filament(i);
         identity["slots"].push_back({i, mixed, bundle.filament_presets[i]});
+        layout["slots"].push_back({i, mixed});
         if (mixed) {
             WorkbenchMixedFilament recipe;
             recipe.slot = i;
@@ -76,6 +88,10 @@ inline GUI::WorkbenchPrinterFilaments capture(const PresetBundle& bundle)
     for (const auto& slot : state.slots) identity["loaded"].push_back({slot.slot, slot.color, slot.material, slot.compatible});
     for (const auto& recipe : state.mixed) identity["recipes"].push_back({recipe.slot, recipe.color, recipe.recipe, recipe.valid});
     state.identity = identity.dump();
+    // The settings rail uses this value to decide whether its native-style
+    // rows must be rebuilt. Colors, material presets and recipe ratios are
+    // deliberately excluded so ordinary edits can update controls in place.
+    state.layout = layout.dump();
     nlohmann::json signature = identity;
     for (const auto& key : bundle.project_config.keys())
         signature["project"][key] = bundle.project_config.option(key)->serialize();

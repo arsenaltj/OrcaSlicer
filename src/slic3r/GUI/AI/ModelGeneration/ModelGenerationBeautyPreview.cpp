@@ -393,6 +393,7 @@ void ModelGenerationPanel::preview_model_finishing()
             } else {
                 const auto view = self->m_model_preview->view_state();
                 size_t triangles = 0, colors = 0; Vec3d dimensions; std::string error = preview_error;
+                self->invalidate_printer_filament_trial_for_model_change();
                 if (!error.empty() || !self->m_model_preview->load_prepared_model(
                     std::move(*prepared), {}, triangles, dimensions, colors, error)) {
                     self->m_save_and_return = false;

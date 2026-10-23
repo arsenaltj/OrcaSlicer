@@ -348,12 +348,94 @@ inline bool decode(const nlohmann::json& doc, size_t actual_face_count, const st
     return true;
 }
 
+namespace detail {
+
+struct ProjectSlotIdentityEntry {
+    size_t slot {0};
+    bool mixed {false};
+    std::string descriptor;
+};
+
+struct ProjectSlotIdentity {
+    std::string printer;
+    std::string nozzles;
+    std::vector<ProjectSlotIdentityEntry> slots;
+};
+
+inline std::optional<ProjectSlotIdentity> decode_project_slot_identity(const std::string& value)
+{
+    const auto document = nlohmann::json::parse(value, nullptr, false);
+    if (document.is_discarded() || !document.is_object() ||
+        !document.contains("printer") || !document["printer"].is_string() ||
+        !document.contains("nozzles") || !document["nozzles"].is_string() ||
+        !document.contains("slots") || !document["slots"].is_array()) return {};
+
+    ProjectSlotIdentity result;
+    result.printer = document["printer"].get<std::string>();
+    result.nozzles = document["nozzles"].get<std::string>();
+    std::set<size_t> seen;
+    for (const auto& item : document["slots"]) {
+        if (!item.is_array() || item.size() < 2 ||
+            !(item[0].is_number_unsigned() || item[0].is_number_integer()) || !item[1].is_boolean()) return {};
+        const auto signed_slot = item[0].get<std::int64_t>();
+        if (signed_slot < 0 || signed_slot > 65535 || !seen.insert(size_t(signed_slot)).second) return {};
+        nlohmann::json descriptor = item;
+        for (const char* key : {"loaded", "recipes"}) {
+            if (!document.contains(key) || !document[key].is_array()) continue;
+            for (const auto& candidate : document[key]) {
+                if (!candidate.is_array() || candidate.empty() ||
+                    !(candidate[0].is_number_unsigned() || candidate[0].is_number_integer())) continue;
+                if (candidate[0].get<std::int64_t>() == signed_slot) descriptor.push_back(candidate);
+            }
+        }
+        result.slots.push_back({size_t(signed_slot), item[1].get<bool>(), descriptor.dump()});
+    }
+    return result;
+}
+
+inline bool project_slot_identity_rebindable(const std::string& before, const std::string& after,
+    const std::vector<size_t>& bindings)
+{
+    if (before == after) return true;
+    const auto previous = decode_project_slot_identity(before);
+    const auto current = decode_project_slot_identity(after);
+    if (!previous || !current || previous->printer != current->printer || previous->nozzles != current->nozzles)
+        return false;
+
+    size_t stable_prefix = 0;
+    if (previous->slots.size() == current->slots.size()) {
+        while (stable_prefix < previous->slots.size() &&
+               previous->slots[stable_prefix].slot == current->slots[stable_prefix].slot &&
+               previous->slots[stable_prefix].mixed == current->slots[stable_prefix].mixed)
+            ++stable_prefix;
+    } else {
+        const size_t shared = std::min(previous->slots.size(), current->slots.size());
+        while (stable_prefix < shared &&
+               previous->slots[stable_prefix].descriptor == current->slots[stable_prefix].descriptor)
+            ++stable_prefix;
+    }
+    for (const size_t binding : bindings) {
+        const auto found = std::find_if(previous->slots.begin(), previous->slots.end(),
+            [binding](const auto& item) { return item.slot == binding; });
+        if (found == previous->slots.end() || size_t(found - previous->slots.begin()) >= stable_prefix ||
+            size_t(found - previous->slots.begin()) >= current->slots.size() ||
+            current->slots[size_t(found - previous->slots.begin())].slot != binding ||
+            current->slots[size_t(found - previous->slots.begin())].mixed != found->mixed) return false;
+    }
+    return true;
+}
+
+} // namespace detail
+
 inline bool synchronize_project_targets(State& state, const std::vector<size_t>& slots,
     const std::vector<GUI::PreviewPalette::Color>& colors, const std::string& identity)
 {
     if (state.source != 1) return true;
     if (!detail::valid_state(state) || state.project_slot_identity.empty() ||
-        state.project_slot_identity != identity || slots.size() != colors.size()) return false;
+        identity.empty() || slots.size() != colors.size()) return false;
+    std::vector<size_t> bindings = state.project_color_slots;
+    bindings.insert(bindings.end(), state.project_semantic_slots.begin(), state.project_semantic_slots.end());
+    if (!detail::project_slot_identity_rebindable(state.project_slot_identity, identity, bindings)) return false;
     auto updated = state;
     for (const auto& item : {std::make_pair(&updated.colors, &state.project_color_slots),
                              std::make_pair(&updated.semantic_palette, &state.project_semantic_slots)}) {
@@ -363,6 +445,7 @@ inline bool synchronize_project_targets(State& state, const std::vector<size_t>&
             (*item.first)[i] = colors[size_t(found - slots.begin())];
         }
     }
+    updated.project_slot_identity = identity;
     if (!detail::valid_state(updated)) return false;
     state = std::move(updated);
     return true;

@@ -11,12 +11,10 @@ void ModelPreview3D::capture_printer_filament_restore_snapshot()
     snapshot.color_blocks=m_color_blocks;
     snapshot.geometry_id = m_geometry_id;
     snapshot.color_trial = m_color_trial->state();
-    // Saved trial-card sources use indices beyond the persisted trial schema;
-    // keep their colors as a manual restore source without serializing an
-    // unsupported source value.
-    if (snapshot.color_trial.source == 1 || snapshot.color_trial.source > 2) {
-        AI::ColorTrialPersistence::normalize_as_manual_snapshot(snapshot.color_trial);
-    }
+    // Keep the in-memory source verbatim.  The trial must be able to restore
+    // the exact automatic, printer, manual, or saved-card source after the
+    // user leaves printer-filament preview.  Persistence normalizes a copy
+    // below because dynamic saved-card indices are not stable on disk.
     snapshot.face_color_overrides = m_face_color_overrides;
     snapshot.automatic_face_colors = m_automatic_face_colors;
     snapshot.automatic_subface_colors = m_automatic_subface_colors;
@@ -51,9 +49,15 @@ bool ModelPreview3D::restore_printer_filament_preview_source()
     // printer application.
     m_color_trial_enabled = target_state.enabled;
     m_trial_palette = m_color_trial->colors();
-    if (!snapshot.leaf_edits.is_null()) restore_leaf_edits(snapshot.leaf_edits);
+    if (!snapshot.leaf_edits.is_null() && !restore_leaf_edits(snapshot.leaf_edits)) {
+        m_printer_filament_restore.reset();
+        return false;
+    }
     if (!m_face_color_overrides.empty()) {
-        if (!restore_beauty_face_colors(m_face_color_overrides)) return false;
+        if (!restore_beauty_face_colors(m_face_color_overrides)) {
+            m_printer_filament_restore.reset();
+            return false;
+        }
     } else {
         m_manual_color_model.reset();
     }
@@ -91,9 +95,18 @@ bool ModelPreview3D::restore_printer_filament_input_source()
     m_saved_semantic_subfaces = snapshot.saved_semantic_subfaces;
     m_portrait_shapes = snapshot.portrait_shapes;
     m_shapes_unlocked = snapshot.shapes_unlocked;
-    if (!snapshot.leaf_edits.is_null() && !restore_leaf_edits(snapshot.leaf_edits)) return false;
+    if (!snapshot.leaf_edits.is_null() && !restore_leaf_edits(snapshot.leaf_edits)) {
+        // A failed restore cannot be retried against a partially rebuilt
+        // appearance. Drop the snapshot so a later trial cannot reuse stale
+        // geometry-bound state.
+        m_printer_filament_restore.reset();
+        return false;
+    }
     if (!m_face_color_overrides.empty()) {
-        if (!restore_beauty_face_colors(m_face_color_overrides)) return false;
+        if (!restore_beauty_face_colors(m_face_color_overrides)) {
+            m_printer_filament_restore.reset();
+            return false;
+        }
     } else {
         m_manual_color_model.reset();
     }
@@ -105,10 +118,29 @@ bool ModelPreview3D::restore_printer_filament_input_source()
     return true;
 }
 
+bool ModelPreview3D::exit_printer_filament_trial()
+{
+    if (!m_printer_filament_restore) return true;
+    if (!m_color_trial || m_printer_filament_restore->geometry_id != m_geometry_id) {
+        m_printer_filament_restore.reset();
+        return false;
+    }
+    // Restore the source selection first while suppressing the normal source
+    // callback.  The regular preview-source restore then reinstates the
+    // captured appearance layers and releases the snapshot atomically.
+    const auto source = m_printer_filament_restore->color_trial;
+    m_suppress_semantic_change = true;
+    m_color_trial->restore(source);
+    m_suppress_semantic_change = false;
+    return restore_printer_filament_preview_source();
+}
+
 nlohmann::json ModelPreview3D::printer_filament_restore_metadata() const
 {
     if (!m_printer_filament_restore || m_printer_filament_restore->geometry_id != m_geometry_id) return {};
     const auto& snapshot = *m_printer_filament_restore;
+    auto persisted_trial = snapshot.color_trial;
+    AI::ColorTrialPersistence::normalize_for_persistence(persisted_trial);
     auto semantic = [&](const FaceColorOverrides& faces, const SubfaceColorOverrides& subfaces) {
         nlohmann::json result = {{"schema", "orca.semantic-result/v1"}, {"geometry_id", m_geometry_id},
             {"face_count", m_triangle_count}, {"faces", nlohmann::json::array()}, {"subfaces", nlohmann::json::array()}};
@@ -117,7 +149,7 @@ nlohmann::json ModelPreview3D::printer_filament_restore_metadata() const
         return result;
     };
     nlohmann::json result = {{"schema", "orca.printer-filament-restore/v1"}, {"geometry_id", m_geometry_id},
-        {"color_trial", AI::ColorTrialPersistence::encode(snapshot.color_trial, m_triangle_count, m_geometry_id)},
+        {"color_trial", AI::ColorTrialPersistence::encode(persisted_trial, m_triangle_count, m_geometry_id)},
         {"face_color_intent", AI::SurfaceSelectionPersistence::encode_colors(snapshot.face_color_overrides, m_triangle_count, m_geometry_id)},
         {"semantic_result", semantic(snapshot.saved_semantic_faces, snapshot.saved_semantic_subfaces)},
         {"automatic_semantic_result", semantic(snapshot.automatic_face_colors, snapshot.automatic_subface_colors)},

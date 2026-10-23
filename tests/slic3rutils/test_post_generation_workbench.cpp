@@ -9,6 +9,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportUiGuard.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchProjectColor.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchRoundBasePreview.hpp"
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
 #include "slic3r/GUI/AI/Model/BeautyDocument.hpp"
 #include "slic3r/GUI/AI/Orca/AIImportSeamRepair.hpp"
@@ -36,6 +37,125 @@
 #include <vector>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("Round base preview is reversible and bound to one geometry identity",
+          "[PostGenerationWorkbench][OrcaModelPreparation]")
+{
+    Slic3r::BoundingBoxf3 bounds;
+    bounds.merge(Slic3r::Vec3d(-10., -20., 5.));
+    bounds.merge(Slic3r::Vec3d(10., 20., 45.));
+    WorkbenchRoundBasePreviewState preview;
+    preview.reset("geometry-a");
+    CHECK_FALSE(preview.enabled("geometry-a"));
+    REQUIRE(preview.available(bounds));
+
+    std::string error;
+    REQUIRE(preview.set_enabled(true, bounds, error));
+    CHECK(error.empty());
+    REQUIRE(preview.enabled("geometry-a"));
+    REQUIRE_FALSE(preview.enabled("geometry-b"));
+    const auto layout = preview.layout("geometry-a", bounds);
+    REQUIRE(layout);
+    CHECK_THAT(layout->height, Catch::Matchers::WithinAbs(3.0, 1e-9));
+    CHECK_THAT(layout->body_scale, Catch::Matchers::WithinAbs(0.93, 1e-9));
+    CHECK_THAT(layout->radius, Catch::Matchers::WithinAbs(20.6, 1e-9));
+    CHECK_THAT((layout->body_transform * Slic3r::Vec3d(0, 0, 5)).z(),
+        Catch::Matchers::WithinAbs(7.8, 1e-9));
+    CHECK_THAT((layout->body_transform * Slic3r::Vec3d(0, 0, 45)).z(),
+        Catch::Matchers::WithinAbs(45.0, 1e-9));
+    CHECK_THAT((layout->base_transform * Slic3r::Vec3d(0, 0, 0)).z(),
+        Catch::Matchers::WithinAbs(5.0, 1e-9));
+
+    REQUIRE(preview.set_enabled(false, bounds, error));
+    CHECK_FALSE(preview.layout("geometry-a", bounds));
+    preview.reset("geometry-b");
+    CHECK_FALSE(preview.enabled("geometry-b"));
+}
+
+TEST_CASE("Round base preview rejects unsafe dimensions without retaining the toggle",
+          "[PostGenerationWorkbench][OrcaModelPreparation]")
+{
+    Slic3r::BoundingBoxf3 bounds;
+    bounds.merge(Slic3r::Vec3d(0., 0., 0.));
+    bounds.merge(Slic3r::Vec3d(20., 20., 3.));
+    WorkbenchRoundBasePreviewState preview;
+    preview.reset("geometry");
+    std::string error;
+    CHECK_FALSE(preview.set_enabled(true, bounds, error));
+    CHECK_FALSE(error.empty());
+    CHECK_FALSE(preview.enabled("geometry"));
+}
+
+TEST_CASE("Workbench filament rows use native compact height and mixed-slot identity mapping",
+          "[PostGenerationWorkbench][PrinterFilaments]")
+{
+    CHECK(PrinterFilamentConfig::workbench_row_height_dip == 28);
+    const std::vector<size_t> mixed {3, 6, 9};
+    CHECK(PrinterFilamentConfig::mixed_panel_index(mixed, 3) == 0);
+    CHECK(PrinterFilamentConfig::mixed_panel_index(mixed, 6) == 1);
+    CHECK(PrinterFilamentConfig::mixed_panel_index(mixed, 9) == 2);
+    CHECK_FALSE(PrinterFilamentConfig::mixed_panel_index(mixed, 4));
+}
+
+TEST_CASE("Workbench import keeps round base preparation opt-in",
+          "[PostGenerationWorkbench][OrcaModelPreparation]")
+{
+    Slic3r::AI::ModelImportRequest request;
+    CHECK_FALSE(request.apply_round_base_preparation);
+    request.apply_round_base_preparation = true;
+    CHECK(request.apply_round_base_preparation);
+}
+
+TEST_CASE("Workbench placement adds a round base only to its detached import copy",
+          "[PostGenerationWorkbench][OrcaModelPreparation][LocalPrintModelImport]")
+{
+    using namespace Slic3r;
+    Model source;
+    auto* object = source.add_object();
+    object->input_file = "portrait.glb";
+    auto* body = object->add_volume(TriangleMesh(its_make_cube(20, 30, 40)));
+    body->source.input_file = object->input_file;
+    body->config.set("extruder", 3);
+
+    std::unique_ptr<Model> prepared;
+    std::string error;
+    REQUIRE(LocalPrintModelImport::prepare(*object, {100, 100}, {250, 250}, prepared, error, true));
+    REQUIRE(error.empty());
+    REQUIRE(prepared);
+    REQUIRE(prepared->objects.size() == 1);
+    const auto* imported = prepared->objects.front();
+    REQUIRE(imported->instances.size() == 1);
+    REQUIRE(imported->volumes.size() == 2);
+    CHECK(imported->volumes.back()->name == "AI round base");
+    CHECK(imported->volumes.back()->extruder_id() == 3);
+    CHECK_THAT(imported->instance_bounding_box(0).size().z(), Catch::Matchers::WithinAbs(40., 0.001));
+    TriangleMesh base_mesh = imported->volumes.back()->mesh();
+    base_mesh.transform(imported->instances.front()->get_matrix() * imported->volumes.back()->get_matrix());
+    const auto base_bounds = base_mesh.bounding_box();
+    CHECK_THAT(base_bounds.min.z(), Catch::Matchers::WithinAbs(0., 0.001));
+    CHECK_THAT(base_bounds.max.z(), Catch::Matchers::WithinAbs(3., 0.001));
+    TriangleMesh body_mesh = imported->volumes.front()->mesh();
+    body_mesh.transform(imported->instances.front()->get_matrix() * imported->volumes.front()->get_matrix());
+    const auto body_bounds = body_mesh.bounding_box();
+    CHECK_THAT(body_bounds.min.z(), Catch::Matchers::WithinAbs(2.8, 0.001));
+    CHECK_THAT(base_bounds.size().x(), Catch::Matchers::WithinAbs(base_bounds.size().y(), 0.001));
+    CHECK_THAT(base_bounds.size().x(), Catch::Matchers::WithinAbs(
+        std::max(body_bounds.size().x(), body_bounds.size().y()) + 4.0, 0.001));
+    CHECK(object->instances.empty());
+    REQUIRE(object->volumes.size() == 1);
+
+    Model too_short;
+    auto* unsafe = too_short.add_object();
+    unsafe->input_file = "unsafe.glb";
+    auto* unsafe_body = unsafe->add_volume(TriangleMesh(its_make_cube(10, 10, 3)));
+    unsafe_body->source.input_file = unsafe->input_file;
+    std::unique_ptr<Model> rejected;
+    CHECK_FALSE(LocalPrintModelImport::prepare(*unsafe, {100, 100}, {250, 250}, rejected, error, true));
+    CHECK_FALSE(error.empty());
+    CHECK_FALSE(rejected);
+    CHECK(unsafe->instances.empty());
+    REQUIRE(unsafe->volumes.size() == 1);
+}
 
 TEST_CASE("An OBJ repair snapshot saves physical face colors through the appearance pipeline", "[WorkbenchTopology][BeautyAppearance]")
 {
@@ -417,8 +537,10 @@ TEST_CASE("confirmed risky imports reach the asynchronous host without claiming 
     state.actions.can_import = true;
     state.model_path = "generated/portrait.glb";
     state.can_force_import = true;
-    state.check.status = WorkbenchCheckStatus::Invalid;
+    state.check.status = WorkbenchCheckStatus::Attention;
+    state.check.force_import_risk = true;
     state.check.model_sha256 = std::string(64, 'a');
+    state.force_import_acknowledged = true;
     Slic3r::AI::ModelImportRequest request;
     request.artifact.local_path = state.model_path;
     request.topology_check_sha256 = state.check.model_sha256;
@@ -456,6 +578,20 @@ TEST_CASE("confirmed risky imports reach the asynchronous host without claiming 
         state.can_force_import = false;
         CHECK_FALSE(workbench_import_request_allowed(state, request));
     }
+
+    SECTION("only an acknowledged attention result can use the exception") {
+        for (const auto status : {WorkbenchCheckStatus::NotRun, WorkbenchCheckStatus::Invalid,
+                                  WorkbenchCheckStatus::Failed}) {
+            state.check.status = status;
+            CHECK_FALSE(workbench_import_request_allowed(state, request));
+        }
+        state.check.status = WorkbenchCheckStatus::Attention;
+        state.force_import_acknowledged = false;
+        CHECK_FALSE(workbench_import_request_allowed(state, request));
+        state.force_import_acknowledged = true;
+        state.check.force_import_risk = false;
+        CHECK_FALSE(workbench_import_request_allowed(state, request));
+    }
 }
 
 TEST_CASE("closed and explicitly unchecked imports use their own current evidence", "[WorkbenchImportEligibility]")
@@ -473,12 +609,15 @@ TEST_CASE("closed and explicitly unchecked imports use their own current evidenc
 
     state.can_import_for_slicing = false;
     state.can_force_import = true;
-    state.check = {};
-    request.topology_check_sha256.clear();
+    state.check.status = WorkbenchCheckStatus::Attention;
+    state.check.force_import_risk = true;
+    state.check.model_sha256 = std::string(64, 'd');
+    state.force_import_acknowledged = true;
+    request.topology_check_sha256 = state.check.model_sha256;
     CHECK_FALSE(workbench_import_request_allowed(state, request));
     request.topology_risk_confirmed = true;
     CHECK(workbench_import_request_allowed(state, request));
-    state.check.model_sha256 = std::string(64, 'd');
+    state.check.model_sha256 = std::string(64, 'e');
     CHECK_FALSE(workbench_import_request_allowed(state, request));
 }
 
@@ -1239,6 +1378,60 @@ TEST_CASE("physical filament lists retain equal colors and more than six slot id
     CHECK(PrinterFilamentConfig::capture(bundle).identity!=identity);
     bundle.filaments.find_preset("Loaded PLA",false)->is_compatible=false;
     CHECK_FALSE(PrinterFilamentConfig::capture(bundle).ready);
+}
+
+TEST_CASE("printer trial keeps slot bindings through color and preset edits", "[PrinterFilaments][PrinterFilamentPreview][PostGenerationWorkbench]")
+{
+    using Color = PreviewPalette::Color;
+    auto bundle = printer_filament_fixture(1, 2);
+    const auto initial = PrinterFilamentConfig::capture(bundle);
+    REQUIRE(initial.ready);
+
+    Slic3r::AI::ColorTrialPersistence::State trial;
+    trial.colors = {{1, 0, 0}, {0, 0, 1}};
+    trial.mapping_colors = trial.colors;
+    trial.count = 2;
+    trial.source = 2;
+    const Color original {.0705882f, .203922f, .337255f};
+    REQUIRE(PrinterFilamentPreview::apply_bound(trial, {0, 1}, {original, original}, initial.identity));
+
+    bundle.project_config.option<Slic3r::ConfigOptionStrings>("filament_colour")->values[0] = "#00FFFF";
+    const auto recolored = PrinterFilamentConfig::capture(bundle);
+    CHECK(recolored.layout == initial.layout);
+    CHECK(recolored.identity != initial.identity);
+    CHECK(recolored.signature != initial.signature);
+    const Color cyan {0, 1, 1};
+    REQUIRE(Slic3r::AI::ColorTrialPersistence::synchronize_project_targets(
+        trial, {0, 1}, {cyan, original}, recolored.identity));
+    CHECK(trial.project_color_slots == std::vector<size_t>{0, 1});
+    CHECK(trial.colors[0] == cyan);
+
+    auto alternate = bundle.filaments.find_preset("Loaded PLA", false)->config;
+    alternate.option<Slic3r::ConfigOptionInts>("nozzle_temperature")->values = {215};
+    bundle.filaments.load_preset("", "Loaded PLA Alternate", alternate, false);
+    bundle.filament_presets[1] = "Loaded PLA Alternate";
+    const auto preset_changed = PrinterFilamentConfig::capture(bundle);
+    REQUIRE(preset_changed.ready);
+    CHECK(preset_changed.layout == recolored.layout);
+    CHECK(preset_changed.identity != recolored.identity);
+    REQUIRE(Slic3r::AI::ColorTrialPersistence::synchronize_project_targets(
+        trial, {0, 1}, {cyan, original}, preset_changed.identity));
+    CHECK(trial.project_color_slots == std::vector<size_t>{0, 1});
+
+    bundle.set_num_filaments(3, "#ABCDEF");
+    bundle.filament_presets[2] = "Loaded PLA";
+    const auto expanded = PrinterFilamentConfig::capture(bundle);
+    REQUIRE(expanded.ready);
+    CHECK(expanded.layout != preset_changed.layout);
+    const Color appended {.670588f, .803922f, .937255f};
+    REQUIRE(Slic3r::AI::ColorTrialPersistence::synchronize_project_targets(
+        trial, {0, 1, 2}, {cyan, original, appended}, expanded.identity));
+    CHECK(trial.project_color_slots == std::vector<size_t>{0, 1});
+
+    bundle.update_num_filaments(1);
+    const auto reduced = PrinterFilamentConfig::capture(bundle);
+    CHECK_FALSE(Slic3r::AI::ColorTrialPersistence::synchronize_project_targets(
+        trial, {0}, {cyan}, reduced.identity));
 }
 
 TEST_CASE("draft filament additions preserve live configuration and cannot exceed fixed nozzle capacity", "[PrinterFilaments][PostGenerationWorkbench]")

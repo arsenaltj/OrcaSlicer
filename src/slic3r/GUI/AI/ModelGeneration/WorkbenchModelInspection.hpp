@@ -150,6 +150,7 @@ inline WorkbenchCheckResult inspect_workbench_mesh(const TriangleMesh& mesh,
         result.status = result.nonmanifold_edges || result.nonmanifold_vertices || result.degenerate_faces || result.duplicate_faces || result.inconsistent_edges || result.self_intersections
             ? WorkbenchCheckStatus::Invalid : result.boundary_edges
                 ? WorkbenchCheckStatus::Attention : WorkbenchCheckStatus::Normal;
+        result.force_import_risk = result.status == WorkbenchCheckStatus::Attention;
         result.summary = "开放边 " + std::to_string(result.boundary_edges) + "；非流形边 " +
             std::to_string(result.nonmanifold_edges) + "；退化面 " + std::to_string(result.degenerate_faces) +
             "；重复面 " + std::to_string(result.duplicate_faces) + "；方向不一致 " +

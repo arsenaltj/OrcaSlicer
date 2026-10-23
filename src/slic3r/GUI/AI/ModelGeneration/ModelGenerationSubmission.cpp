@@ -220,6 +220,7 @@ void ModelGenerationPanel::submit_confirmed_model()
     m_displayed_model_palette.clear();
     m_displayed_model_palette_roles.clear();
     clear_model_quality();
+    invalidate_printer_filament_trial_for_model_change();
     if (m_model_preview != nullptr)
         m_model_preview->clear();
     const uint64_t sequence = ++m_sequence;
@@ -387,6 +388,7 @@ void ModelGenerationPanel::handle_error(const std::string& error, uint64_t seque
     m_displayed_model_path.clear();
     m_displayed_model_palette.clear();
     m_displayed_model_palette_roles.clear();
+    invalidate_printer_filament_trial_for_model_change();
     if (m_model_preview != nullptr)
         m_model_preview->clear();
     m_artifact_format.clear();

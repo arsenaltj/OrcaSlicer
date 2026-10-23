@@ -450,7 +450,7 @@ void RedesignShell::build_model_workflow()
         auto* label = new wxStaticText(parent, wxID_ANY, title);
         RedesignTheme::style_text(label, RedesignTheme::primary_text_colour(), 12);
         line->Add(label, 0, wxALIGN_CENTER_VERTICAL);
-        if (title == _L("检查修复") || title == _L("3D 美颜")) {
+        if (title == _L("检查修复")) {
             auto* info = slicing_link(parent, wxEmptyString);
             info->SetPaddingSize(FromDIP(wxSize(0,0)));
             info->set_scaled_icon("workbench_info",16);
@@ -549,17 +549,6 @@ void RedesignShell::build_model_workflow()
     hidden_controls->Add(m_slice_palette_all, 0, wxALIGN_RIGHT | wxTOP, FromDIP(6));
     m_slice_palette_all->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         show_slicing_palette_details();
-    });
-    heading(hidden_sections, hidden_controls, _L("3D 美颜"));
-    auto* beauty = command(hidden_sections, _L("3D 美颜工作台"));
-    beauty->SetBackgroundColor(StateColor(slicing_control_colour()));
-    beauty->SetCornerRadius(FromDIP(12));
-    beauty->set_navigation_assets({},"workbench_native_arrow");
-    beauty->SetMinSize(FromDIP(wxSize(-1,56)));
-    RedesignTheme::style_text(beauty,RedesignTheme::primary_text_colour(),12);
-    hidden_controls->Add(beauty, 0, wxEXPAND);
-    beauty->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        if (slicing_mode_switch_allowed() && open_model_workbench()) m_model_generation_host->request_enter_beauty();
     });
     heading(scroll, controls, _L("切片"));
     m_ai_slicing_controls = new WorkbenchPanel(scroll, true);

@@ -1337,15 +1337,25 @@ void BeautyWorkbenchControls::prepare_import(const boost::filesystem::path& path
         request.portrait_color_block_references.push_back(metadata["portrait_color_blocks"]);
     if(metadata.contains("printer_filament_restore") && metadata["printer_filament_restore"].contains("portrait_color_blocks"))
         request.portrait_color_block_references.push_back(metadata["printer_filament_restore"]["portrait_color_blocks"]);
+    // A live workbench match is already bound to the current source hash and
+    // native palette.  Do not replace it with an older accepted-version
+    // metadata record while preparing the import request.
+    if (request.color_mode == AI::ImportColorMode::NativeMatch && request.matched_colors &&
+        !request.use_saved_printer_match) {
+        request.color_trial.reset();
+        request.face_color_overrides.clear();
+        request.subface_color_overrides.clear();
+        return;
+    }
     if (request.color_mode == AI::ImportColorMode::NativeMatch && request.use_saved_printer_match &&
         metadata.contains("applied_printer_filament_match")) {
         if (!metadata.contains("model_sha256") || !metadata["model_sha256"].is_string() ||
             metadata["model_sha256"].get<std::string>() != AI::model_artifact_sha256(path))
-            throw std::runtime_error("已应用的打印机耗材匹配与当前模型文件不一致，请重新应用打印机耗材。");
+            throw std::runtime_error("已保存的打印机耗材匹配与当前模型文件不一致，请重新进入打印机耗材试色。");
         AI::ModelMatchedColors matched;
         std::string error;
         if (!AI::decode_model_matched_colors(metadata["applied_printer_filament_match"], matched, error))
-            throw std::runtime_error("已保存的打印机耗材匹配无效，请回工作台重新应用。" + error);
+            throw std::runtime_error("已保存的打印机耗材匹配无效，请回工作台重新进入试色。" + error);
         request.matched_colors = std::move(matched);
         // The accepted artifact already contains the applied appearance. The
         // per-face slot snapshot is authoritative and must not be rematched

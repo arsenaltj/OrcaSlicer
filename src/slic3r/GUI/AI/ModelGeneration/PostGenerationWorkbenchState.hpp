@@ -14,9 +14,13 @@ namespace Slic3r::GUI {
 enum class WorkbenchCheckStatus { NotRun, Running, Normal, Attention, Invalid, Failed };
 enum class WorkbenchCheckPhase { Idle, Inspecting, Repairing, Rechecking };
 enum class RepairCandidateStatus { None, Generating, Ready, Accepted, Rejected, Failed };
+// Automatic checks are run when a model first becomes visible; manual checks
+// are initiated from the sidebar and retain the existing candidate workflow.
+enum class WorkbenchCheckSource { Automatic, Manual };
 
 struct WorkbenchCheckResult {
     WorkbenchCheckStatus status {WorkbenchCheckStatus::NotRun};
+    WorkbenchCheckSource source {WorkbenchCheckSource::Automatic};
     std::string model_sha256;
     std::string summary;
     size_t boundary_edges {0};
@@ -59,7 +63,7 @@ struct WorkbenchMixedFilament {
     bool valid {false};
 };
 struct WorkbenchPrinterFilaments {
-    std::string printer, identity, signature, reason;
+    std::string printer, identity, layout, signature, reason;
     size_t nozzles {0}, physical_count {0}, idle_nozzles {0}, physical_capacity {32};
     std::vector<WorkbenchFilamentSlot> slots;
     std::vector<WorkbenchMixedFilament> mixed;
@@ -88,6 +92,7 @@ struct PostGenerationWorkbenchState {
     bool can_edit_project_colors {false};
     bool can_import_for_slicing {false};
     bool can_force_import {false};
+    bool force_import_acknowledged {false};
     bool import_has_topology_risk {false};
     std::string import_topology_reason;
     bool can_print {false};

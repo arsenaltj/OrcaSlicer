@@ -144,12 +144,12 @@ std::optional<size_t> choose_single_color_filament(wxWindow* parent, Plater& pla
     return selectable[static_cast<size_t>(choice->GetSelection())];
 }
 
-void show_orca_filament_selection(wxWindow* parent, Plater& plater, size_t selected_slot, bool add_slot,
-    const std::vector<FilamentColorPack>& import_sources)
+bool show_orca_filament_selection(wxWindow* parent, Plater& plater, size_t selected_slot, bool add_slot,
+    const std::vector<FilamentColorPack>& import_sources, std::optional<FilamentColorPack> preloaded)
 {
     using namespace ModelGenerationInputStyle;
     auto* bundle = wxGetApp().preset_bundle;
-    if (!bundle) return;
+    if (!bundle) return false;
     const auto initial_project = bundle->project_config;
     const auto initial_printer = bundle->printers.get_edited_preset().config;
     const auto initial_presets = bundle->filament_presets;
@@ -361,6 +361,19 @@ void show_orca_filament_selection(wxWindow* parent, Plater& plater, size_t selec
         dialog.Layout();
     };
     rebuild();
+    // A workbench import opens this native dialog with the currently visible
+    // card already staged.  The draft remains cancellable until the user
+    // presses 完成, so closing the dialog still leaves the project untouched.
+    if (preloaded && preloaded->valid()) {
+        import_source(*preloaded);
+        if (import_choice) {
+            for (size_t i = 0; i < import_sources.size(); ++i)
+                if (import_sources[i].name == preloaded->name) {
+                    import_choice->SetSelection(int(i + 1));
+                    break;
+                }
+        }
+    }
     for (size_t i=0;i<drafts.size();++i) if(drafts[i].slot==selected_slot) slots->SetSelection(int(i));
     for (size_t i=0;i<mixed_drafts.size();++i) if(mixed_drafts[i].slot==selected_slot) slots->SetSelection(int(drafts.size()+i));
     slots->Bind(wxEVT_LISTBOX,[&](wxCommandEvent&){refresh();});
@@ -433,7 +446,8 @@ void show_orca_filament_selection(wxWindow* parent, Plater& plater, size_t selec
     });
     dialog.SetSizer(root);apply(&dialog);apply_control(done,Role::PrimaryAction);apply_control(cancel,Role::QuietAction);
     dialog.SetMinSize(dialog.FromDIP(wxSize(760,480)));dialog.SetSize(dialog.FromDIP(wxSize(830,550)));
-    refresh();dialog.CentreOnParent();dialog.ShowModal();
+    refresh();dialog.CentreOnParent();
+    return dialog.ShowModal() == wxID_OK;
 }
 
 void delete_orca_printer_filament(wxWindow* parent, Plater& plater, size_t slot)

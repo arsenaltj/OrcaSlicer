@@ -2402,6 +2402,7 @@ void ModelGenerationPanel::on_retexture_from_library(const std::string& geometry
     m_displayed_model_palette.clear();
     m_displayed_model_palette_roles.clear();
     clear_model_quality();
+    invalidate_printer_filament_trial_for_model_change();
     if (m_model_preview != nullptr)
         m_model_preview->clear();
     const uint64_t sequence = m_sequence;
@@ -4164,6 +4165,7 @@ void ModelGenerationPanel::reset(bool remove_remote)
     m_displayed_model_palette.clear();
     m_displayed_model_palette_roles.clear();
     clear_model_quality();
+    invalidate_printer_filament_trial_for_model_change();
     if (m_model_preview != nullptr)
         m_model_preview->clear();
     if (m_preview_book != nullptr)
@@ -4772,6 +4774,7 @@ void ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
         return;
     }
     if (displayed_model_deleted) {
+        invalidate_printer_filament_trial_for_model_change();
         if (m_model_preview != nullptr)
             m_model_preview->clear();
         m_displayed_model_path.clear();

@@ -140,6 +140,123 @@ void repaint_workbench_surface(wxWindow* window)
         repaint_workbench_surface(child);
 }
 }
+
+void ModelGenerationPanel::hide_workbench_check_overlay()
+{
+    m_workbench_check_overlay_visible = false;
+    if (!m_workbench_check_overlay || !m_workbench_check_overlay->IsShown()) return;
+    if (m_workbench_check_progress) m_workbench_check_progress->set_running(false);
+    if (m_workbench_check_overlay_dismissing) return;
+    if (m_model_preview && m_model_preview->workbench_canvas_suspended()) {
+        m_workbench_check_overlay_dismissing = true;
+        m_model_preview->resume_workbench_canvas();
+        m_workbench_check_overlay->Raise();
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        m_model_preview->after_next_preview_frame([weak] {
+            if (!weak || !weak->m_workbench_check_overlay) return;
+            weak->m_workbench_check_overlay_dismissing = false;
+            if (weak->m_workbench_check_overlay_visible) {
+                if (weak->m_model_preview) weak->m_model_preview->suspend_workbench_canvas();
+                weak->m_workbench_check_overlay->Raise();
+                return;
+            }
+            wxWindowUpdateLocker locker(weak->m_workbench_check_overlay);
+            weak->m_workbench_check_overlay->Hide();
+            weak->m_workbench_check_overlay->GetParent()->Layout();
+        });
+        return;
+    }
+    wxWindowUpdateLocker locker(m_workbench_check_overlay);
+    m_workbench_check_overlay->Hide();
+    m_workbench_check_overlay->GetParent()->Layout();
+}
+
+void ModelGenerationPanel::cancel_workbench_check()
+{
+    if (!m_workbench_check_running || !m_workbench_check_cancel) return;
+    m_workbench_check_cancel->store(true);
+    if (m_workbench_check_message)
+        m_workbench_check_message->SetLabel(_L("正在取消检查，当前模型保持不变……"));
+    if (m_workbench_check_cancel_button) m_workbench_check_cancel_button->Disable();
+}
+
+void ModelGenerationPanel::acknowledge_workbench_risk()
+{
+    if (m_workbench_check_running || m_workbench_check_result.status != WorkbenchCheckStatus::Attention ||
+        !m_workbench_check_result.force_import_risk || m_workbench_check_result.model_sha256.empty()) return;
+    m_workbench_force_import_ack_hash = m_workbench_check_result.model_sha256;
+    m_workbench_force_import_ack_revision = m_sequence;
+    m_workbench_operation_notice = "已忽略轻微拓扑风险；后续可正常导入切片。";
+    hide_workbench_check_overlay();
+    refresh_post_generation_workbench();
+    publish_workbench_state();
+}
+
+void ModelGenerationPanel::update_workbench_check_overlay()
+{
+    if (!m_workbench_check_overlay || !m_workbench_check_modal) return;
+    const auto& result = m_workbench_check_result;
+    const bool automatic = result.source == WorkbenchCheckSource::Automatic;
+    const bool repair_phase = result.phase == WorkbenchCheckPhase::Repairing ||
+        result.phase == WorkbenchCheckPhase::Rechecking;
+    bool show = m_workbench_check_overlay_visible;
+    if (m_workbench_check_running && (automatic || repair_phase)) show = true;
+    if (m_workbench_auto_repair && m_finishing_running) show = true;
+    if (!m_workbench_check_running && !m_workbench_auto_repair && !automatic &&
+        result.candidate_status == RepairCandidateStatus::Ready) show = false;
+    if (!m_workbench_check_running && !m_workbench_auto_repair && automatic &&
+        (result.status == WorkbenchCheckStatus::Normal || result.status == WorkbenchCheckStatus::NotRun) &&
+        result.candidate_status != RepairCandidateStatus::Ready) show = false;
+    if (!show) {
+        hide_workbench_check_overlay();
+        return;
+    }
+    m_workbench_check_overlay_visible = true;
+    if (m_model_preview) m_model_preview->suspend_workbench_canvas();
+    if (!m_workbench_check_overlay->IsShown()) {
+        wxWindowUpdateLocker locker(m_workbench_check_overlay);
+        m_workbench_check_overlay->SetSize(m_workbench_check_overlay->GetParent()->GetClientRect());
+        m_workbench_check_overlay->Show();
+        m_workbench_check_overlay->Raise();
+    }
+    wxString phase;
+    if (m_workbench_check_running) {
+        switch (result.phase) {
+        case WorkbenchCheckPhase::Repairing: phase = _L("修复模型"); break;
+        case WorkbenchCheckPhase::Rechecking: phase = _L("复检模型"); break;
+        default: phase = _L("检查模型"); break;
+        }
+    } else if (m_workbench_auto_repair && m_finishing_running) phase = _L("保存修复结果");
+    else phase = result.status == WorkbenchCheckStatus::Attention ? _L("检查完成") : _L("检查未通过");
+    bool modal_layout_changed = set_workbench_label(m_workbench_check_phase, phase);
+    wxString message = from_u8(result.summary);
+    if (m_workbench_auto_repair && m_finishing_running)
+        message = _L("安全修复已通过复检，正在自动接受并保存……");
+    else if (!m_workbench_check_running && result.status == WorkbenchCheckStatus::Attention && result.force_import_risk)
+        message += _L("\n这是轻微开放边界风险；可忽略后继续导入切片，也可以返回 2D 设计图。\n导入许可仅绑定当前模型版本。")
+            ;
+    else if (!m_workbench_check_running && result.status != WorkbenchCheckStatus::Attention)
+        message += _L("\n当前结果不能强制导入，只能返回 2D 设计图。")
+            ;
+    if (set_workbench_label(m_workbench_check_message, message)) {
+        m_workbench_check_message->Wrap(FromDIP(376));
+        modal_layout_changed = true;
+    }
+    const bool running = m_workbench_check_running || (m_workbench_auto_repair && m_finishing_running);
+    modal_layout_changed = set_workbench_shown(m_workbench_check_cancel_button, m_workbench_check_running) || modal_layout_changed;
+    set_workbench_enabled(m_workbench_check_cancel_button, m_workbench_check_running &&
+        (!m_workbench_check_cancel || !m_workbench_check_cancel->load()));
+    const bool attention = !m_workbench_check_running && result.status == WorkbenchCheckStatus::Attention &&
+        result.force_import_risk;
+    modal_layout_changed = set_workbench_shown(m_workbench_check_continue_button, attention) || modal_layout_changed;
+    modal_layout_changed = set_workbench_shown(m_workbench_check_return_button, !running && !attention) || modal_layout_changed;
+    modal_layout_changed = set_workbench_shown(m_workbench_check_progress, running) || modal_layout_changed;
+    m_workbench_check_progress->set_running(running);
+    if (modal_layout_changed) {
+        m_workbench_check_modal->Layout();
+        m_workbench_check_overlay->Layout();
+    }
+}
 void ModelGenerationPanel::rescale_post_generation_workbench()
 {
     if (!m_workbench_shell) return;
@@ -158,11 +275,15 @@ void ModelGenerationPanel::rescale_post_generation_workbench()
     rescale(rescale, m_workbench_shell);
     rescale(rescale, m_workbench_parameters);
     rescale(rescale, m_workbench_history_toggle);
+    rescale(rescale, m_workbench_check_overlay);
+    if (m_workbench_check_overlay && m_workbench_check_overlay->GetParent())
+        m_workbench_check_overlay->SetSize(m_workbench_check_overlay->GetParent()->GetClientRect());
     if (m_workbench_logo) {
         m_workbench_logo->SetBitmap(create_scaled_bitmap("workbench_logo", m_workbench_logo, 36));
         m_workbench_logo->SetMinSize(FromDIP(wxSize(36, 36)));
     }
     for (auto* info : {m_workbench_check_info, m_workbench_beauty_info}) {
+        if (!info) continue;
         info->SetBitmap(create_scaled_bitmap("workbench_info", info, 12));
         info->SetMinSize(FromDIP(wxSize(12, 12)));
     }
@@ -281,6 +402,7 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     m_refreshing_workbench_layout = true;
     bool layout_changed = false;
     const auto state = post_generation_ui_state();
+    update_workbench_check_overlay();
     update_workbench_history_actions();
     const auto title_path = !m_finishing_candidate.empty() && !m_finishing_source.empty()
         ? m_finishing_source : m_displayed_model_path;
@@ -325,7 +447,8 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
             m_workbench_settings_sections->Insert(index,
                 m_workbench_settings_groups[m_workbench_editing ? 2 - index : 1 + index], 0, wxEXPAND);
         m_workbench_settings_editing = m_workbench_editing;
-        m_workbench_beauty_heading->SetLabel(m_workbench_editing ? _L("模型美化") : _L("3D 美颜"));
+        if (m_workbench_beauty_heading)
+            m_workbench_beauty_heading->SetLabel(m_workbench_editing ? _L("模型美化") : _L("3D 美颜"));
         m_workbench_palette_heading->SetLabel(m_workbench_editing ? _L("目标色数") : _L("多色模型"));
         m_workbench_settings_scroll->Scroll(-1, 0);
         layout_changed = true;
@@ -383,13 +506,31 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         m_workbench_check_running || (state.can_edit && m_finishing_candidate.empty() && !snapshot.dirty));
     for (wxWindow* color : m_workbench_project_colors->GetChildren())
         set_workbench_enabled(color, snapshot.can_edit_project_colors);
-    if (m_workbench_apply_project_filaments) {
-        set_workbench_enabled(m_workbench_apply_project_filaments, snapshot.can_apply_printer_filaments);
-        set_workbench_tooltip(m_workbench_apply_project_filaments, snapshot.can_apply_printer_filaments
-            ? _L("模型匹配到真实耗材和兼容叠色，自动保存；可撤销，不修改装料颜色") : wxString::FromUTF8(snapshot.apply_filaments_reason));
+    if (m_workbench_printer_filament_trial) {
+        const bool has_card = m_model_preview && m_model_preview->current_color_pack().has_value();
+        const bool can_trial = snapshot.can_edit_project_colors &&
+            (m_printer_filament_trial_active || has_card);
+        set_workbench_enabled(m_workbench_printer_filament_trial, can_trial);
+        layout_changed = set_workbench_label(m_workbench_printer_filament_trial,
+            m_printer_filament_trial_active ? _L("退出打印机耗材试色") : _L("将当前色卡导入到打印机耗材")) || layout_changed;
+        set_workbench_tooltip(m_workbench_printer_filament_trial, m_printer_filament_trial_active
+            ? _L("退出试色并恢复进入前的模型外观；已提交的耗材配置保留。")
+            : has_card ? _L("打开已预载当前色卡的原生耗材配置；只有点击完成才会提交并进入试色。")
+                       : _L("当前没有可导入色卡，请先生成自动建议或完成试色。"));
     }
     set_workbench_enabled(m_workbench_palette_details, state.can_edit && m_finishing_candidate.empty());
     m_model_preview->set_workbench_palette_editable(state.can_edit && m_finishing_candidate.empty());
+    if (m_workbench_base) {
+        std::string base_reason;
+        const bool base_available = m_model_preview->round_base_preview_available(&base_reason);
+        const bool base_enabled = m_model_preview->round_base_preview_enabled();
+        if (m_workbench_base->GetValue() != base_enabled)
+            m_workbench_base->SetValue(base_enabled);
+        set_workbench_enabled(m_workbench_base, state.can_edit && base_available);
+        set_workbench_tooltip(m_workbench_base, base_available
+            ? _L("预览 3 mm 圆形底座；导入切片时与当前模型一并生成")
+            : wxString::FromUTF8(base_reason));
+    }
     if (m_workbench_original) {
         const bool comparison_available = m_model_preview->original_comparison_available();
         const bool comparison_enabled = m_model_preview->original_comparison_enabled();
@@ -399,6 +540,12 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         set_workbench_tooltip(m_workbench_original, comparison_available
             ? _L("并排显示当前模型与导入时的原贴图、顶点色或材质色")
             : _L("当前模型没有可用的原贴图、顶点色或材质色"));
+    }
+    if (m_workbench_grid) {
+        const bool grid_visible = m_model_preview->workbench_grid_visible();
+        if (m_workbench_grid->GetValue() != grid_visible)
+            m_workbench_grid->SetValue(grid_visible);
+        set_workbench_enabled(m_workbench_grid, m_model_preview->has_model());
     }
     set_workbench_enabled(m_workbench_print, false);
     const bool can_import = (snapshot.can_import_for_slicing || snapshot.can_force_import) && is_nonempty_model(m_displayed_model_path);

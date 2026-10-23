@@ -67,6 +67,8 @@ namespace Slic3r::GUI {
 
 class ModelPreview3D;
 class BeautyWorkbenchControls;
+class WorkbenchIndeterminateProgress;
+class WorkbenchLabel;
 struct BeautyPartitionSnapshot;
 struct SemanticRegionEvidence;
 struct SecondaryRegionEvidence;
@@ -130,7 +132,7 @@ public:
     void restore_portrait_draft();
     void clear_portrait_draft();
     void prepare_portrait_import(AI::ModelImportRequest& request);
-    bool request_check_workbench();
+    bool request_check_workbench(bool automatic = false);
     bool request_save_and_return();
     bool request_workbench_results();
     void set_workbench_results_handler(std::function<void()> handler) { m_workbench_results = std::move(handler); }
@@ -191,6 +193,23 @@ private:
     bool m_workbench_check_running {false};
     bool m_workbench_import_running {false};
     bool m_workbench_auto_repair {false};
+    WorkbenchCheckSource m_workbench_check_source {WorkbenchCheckSource::Automatic};
+    std::string m_workbench_force_import_ack_hash;
+    std::uint64_t m_workbench_force_import_ack_revision {0};
+    wxPanel* m_workbench_check_overlay {nullptr};
+    wxPanel* m_workbench_check_modal {nullptr};
+    WorkbenchLabel* m_workbench_check_phase {nullptr};
+    WorkbenchLabel* m_workbench_check_message {nullptr};
+    WorkbenchIndeterminateProgress* m_workbench_check_progress {nullptr};
+    WorkbenchButton* m_workbench_check_cancel_button {nullptr};
+    WorkbenchButton* m_workbench_check_continue_button {nullptr};
+    WorkbenchButton* m_workbench_check_return_button {nullptr};
+    bool m_workbench_check_overlay_visible {false};
+    bool m_workbench_check_overlay_dismissing {false};
+    void update_workbench_check_overlay();
+    void hide_workbench_check_overlay();
+    void cancel_workbench_check();
+    void acknowledge_workbench_risk();
     void ensure_workbench_check();
     std::function<void(size_t)> m_project_color_edit;
     std::function<void(size_t)> m_project_filament_delete;
@@ -198,13 +217,41 @@ private:
     AI::PrintablePaletteSnapshot m_workbench_project_palette;
     std::vector<AI::PhysicalFilamentChannel> m_workbench_project_channels;
     std::string m_workbench_filament_signature;
+    std::string m_workbench_filament_layout;
+    struct WorkbenchFilamentRowView {
+        size_t slot {0};
+        bool mixed {false};
+        wxPanel* panel {nullptr};
+        WorkbenchButton* swatch {nullptr};
+        WorkbenchButton* preset {nullptr};
+        WorkbenchButton* actions {nullptr};
+        wxPanel* components {nullptr};
+        std::vector<size_t> component_slots;
+        std::vector<WorkbenchButton*> component_swatches;
+        std::vector<wxStaticText*> component_ratios;
+        std::string color;
+        wxString label;
+        wxString tooltip;
+        std::vector<std::string> component_colors;
+        std::vector<wxString> component_tooltips;
+        std::vector<int> component_percentages;
+        bool enabled {false};
+    };
+    std::vector<WorkbenchFilamentRowView> m_workbench_filament_rows;
+    wxStaticText* m_workbench_mixed_filament_title {nullptr};
     wxPanel* m_workbench_project_colors {nullptr};
     wxStaticText* m_workbench_project_summary {nullptr};
     WorkbenchButton* m_workbench_apply_project_filaments {nullptr};
+    WorkbenchButton* m_workbench_printer_filament_trial {nullptr};
     WorkbenchButton* m_workbench_configure_filaments {nullptr};
     WorkbenchButton* m_workbench_add_filament {nullptr};
     WorkbenchButton* m_workbench_sync_filaments {nullptr};
     void apply_workbench_printer_filaments();
+    void toggle_printer_filament_trial();
+    void exit_printer_filament_trial(const wxString& reason = wxString());
+    // Invalidate the in-memory trial before replacing or clearing preview data.
+    // This deliberately avoids publishing a transient UI state mid-operation.
+    void invalidate_printer_filament_trial_for_model_change();
     wxTimer m_workbench_sync_timer;
     bool m_save_and_return {false};
     std::string m_workbench_operation_notice;
@@ -216,6 +263,9 @@ private:
     std::optional<AI::ModelMatchedColors> m_apply_filaments_match;
     boost::filesystem::path m_applied_filaments_saved_model;
     std::string m_applied_filaments_saved_signature;
+    bool m_printer_filament_trial_active {false};
+    std::string m_printer_filament_trial_geometry;
+    std::string m_printer_filament_trial_signature;
     void finish_printer_filament_application(bool success);
     bool commit_printer_filament_application(std::string& error);
     std::function<void()> m_workbench_results;
@@ -431,7 +481,8 @@ private:
     wxStaticText* m_workbench_palette_heading {nullptr};
     wxStaticBitmap* m_workbench_check_info {nullptr};
     wxStaticBitmap* m_workbench_beauty_info {nullptr};
-    wxWindow* m_workbench_base {nullptr};
+    wxToggleButton* m_workbench_base {nullptr};
+    wxToggleButton* m_workbench_grid {nullptr};
     wxPanel* m_workbench_footer {nullptr};
     wxPanel* m_workbench_parameters {nullptr};
     wxStaticText* m_workbench_parameter_faces {nullptr};
