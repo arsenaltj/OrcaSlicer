@@ -108,7 +108,9 @@
 #include "GCode/ConflictChecker.hpp"
 
 #include <codecvt>
+#ifndef ORCA_MOBILE_ANDROID
 #include "Format/STEP.hpp"
+#endif
 #include "PlaceholderParser.hpp"
 #include "SurfaceCollection.hpp"
 #include "BeltBrim.hpp"

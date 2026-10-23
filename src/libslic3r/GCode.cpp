@@ -143,7 +143,9 @@ using namespace std::literals::string_view_literals;
 #include "Extruder.hpp"
 #include "ExtrusionEntityCollection.hpp"
 #include "FilamentMixer.hpp"
+#ifndef ORCA_MOBILE_ANDROID
 #include "Format/STEP.hpp"
+#endif
 #include "Model.hpp"
 #include "MultiNozzleUtils.hpp"
 #include "Slicing.hpp"
