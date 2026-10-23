@@ -1,21 +1,21 @@
 # MobileSDK API 参考
 
-本文档对应 `src/orca_sdk` 当前公开头文件和 v1.7 SDK 任务基线。源目录入口见 [`src/orca_sdk/README.md`](../../src/orca_sdk/README.md)。
+本文档对应 `src/orca_mobile_device_sdk` 当前公开头文件和 v1.7 SDK 任务基线。源目录入口见 [`src/orca_mobile_device_sdk/README.md`](../../src/orca_mobile_device_sdk/README.md)。
 
 ## 1. 产物与构建 target
 
 | 逻辑产物 | CMake target | 公开入口 | 状态 |
 |---|---|---|---|
-| C++ 静态 SDK | `orca_mobile_sdk` / `OrcaSlicer::MobileSDK` | `orca/sdk/MobileSDK.hpp` | 可构建，用于 C++ 宿主和测试 |
-| C ABI 共享 SDK | `orca_mobile_sdk_ffi` / `OrcaSlicer::MobileSDKShared` | `orca/sdk_c.h` | 可构建；输出逻辑名为 `orca_mobile_sdk_c` |
+| C++ 静态 SDK | `orca_mobile_device_sdk` / `OrcaSlicer::MobileDeviceSDK` | `orca/mobile/device/DeviceSDK.hpp` | 可构建，用于 C++ 宿主和测试 |
+| C ABI 共享 SDK | `orca_mobile_device_sdk_ffi` / `OrcaSlicer::MobileDeviceSDKShared` | `orca/mobile/device_sdk_c.h` | 可构建；输出逻辑名为 `orca_mobile_device_sdk_c` |
 | WonderMaker LAN adapter | `orca_connectivity_wondermaker` / `OrcaSlicer::WonderMakerAdapter` | `orca/connectivity/wondermaker/WonderMakerAdapter.hpp` | 注入式 LAN 边界；自动化证据为 simulator-only |
 | Moonraker compatibility adapter | `orca_connectivity_moonraker` / `OrcaSlicer::MoonrakerAdapter` | `orca/connectivity/moonraker/MoonrakerAdapter.hpp` | Fake/兼容性测试基线，不计入 WonderMaker 一期真实设备验收 |
 
-C++ 静态库的文件后缀由平台决定。C ABI 共享库的 canonical Unix/Android 文件名是 `liborca_mobile_sdk_c.so`；Windows 构建生成 `orca_mobile_sdk_c.dll` 和对应导入库。Android 打包为三个 ABI 文件：
+C++ 静态库的文件后缀由平台决定。C ABI 共享库的 canonical Unix/Android 文件名是 `liborca_mobile_device_sdk_c.so`；Windows 构建生成 `orca_mobile_device_sdk_c.dll` 和对应导入库。Android 打包为三个 ABI 文件：
 
-- `arm64-v8a/liborca_mobile_sdk_c.so`
-- `armeabi-v7a/liborca_mobile_sdk_c.so`
-- `x86_64/liborca_mobile_sdk_c.so`
+- `arm64-v8a/liborca_mobile_device_sdk_c.so`
+- `armeabi-v7a/liborca_mobile_device_sdk_c.so`
+- `x86_64/liborca_mobile_device_sdk_c.so`
 
 `orca-mobile/sdk.lock.json` 记录每个 ABI 的 artifact 路径、SHA-256、文件大小、ELF 架构、ABI/contract version、OrcaSlicer source commit、Android API 和 NDK 版本。当前 checked-in lock 记录 ABI、contract、Android API、NDK 和 source commit；source commit 的具体值以 sdk.lock.json 为准。在最终 OrcaSlicer 集成提交确定后，必须重新生成并验证 lock，旧 lock 不能证明它已经匹配更新后的 SDK worktree。
 
@@ -24,7 +24,7 @@ iOS、macOS、Xcode、CocoaPods、Swift bridge 和 XCFramework 当前为 deferre
 ## 2. C++ 统一入口
 
 ```cpp
-#include <orca/sdk/MobileSDK.hpp>
+#include <orca/mobile/device/DeviceSDK.hpp>
 ```
 
 `MobileSDK.hpp` 包含：
@@ -148,37 +148,37 @@ LAN → RemoteBroker → Relay
 ### 7.1 ABI 规则
 
 ```c
-#include <orca/sdk_c.h>
+#include <orca/mobile/device_sdk_c.h>
 ```
 
-C ABI 版本常量为 `ORCA_SDK_ABI_VERSION_MAJOR=1`、`ORCA_SDK_ABI_VERSION_MINOR=0`。字符串和字节使用显式长度 span，不要求 NUL 结尾：
+C ABI 版本常量为 `ORCA_MOBILE_DEVICE_ABI_VERSION_MAJOR=1`、`ORCA_MOBILE_DEVICE_ABI_VERSION_MINOR=0`。字符串和字节使用显式长度 span，不要求 NUL 结尾：
 
-- `orca_sdk_string_t`：`const char* data` + `uint32_t size`；
-- `orca_sdk_bytes_t`：`const uint8_t* data` + `uint32_t size`。
+- `orca_mobile_device_string_t`：`const char* data` + `uint32_t size`；
+- `orca_mobile_device_bytes_t`：`const uint8_t* data` + `uint32_t size`。
 
 公共结构均以 `struct_size` 开头。调用方应填入实际结构大小；库会拒绝小于最小结构的请求，并对被截断的未来字段使用兼容默认值。句柄是 opaque 类型，不能由调用方释放或复制内部内存。
 
-稳定错误码包括：`ORCA_SDK_OK`、`ORCA_SDK_E_INVALID_ARGUMENT`、`ORCA_SDK_E_INVALID_HANDLE`、`ORCA_SDK_E_STRUCT_TOO_SMALL`、`ORCA_SDK_E_BUFFER_TOO_SMALL`、`ORCA_SDK_E_TIMEOUT`、`ORCA_SDK_E_CANCELED`、`ORCA_SDK_E_ALREADY_COMPLETE`、`ORCA_SDK_E_BUSY`、`ORCA_SDK_E_UNSUPPORTED`、`ORCA_SDK_E_WAKEUP`、`ORCA_SDK_E_OUT_OF_MEMORY`、`ORCA_SDK_E_INTERNAL` 和 `ORCA_SDK_E_ABI_MISMATCH`。
+稳定错误码包括：`ORCA_MOBILE_DEVICE_OK`、`ORCA_MOBILE_DEVICE_E_INVALID_ARGUMENT`、`ORCA_MOBILE_DEVICE_E_INVALID_HANDLE`、`ORCA_MOBILE_DEVICE_E_STRUCT_TOO_SMALL`、`ORCA_MOBILE_DEVICE_E_BUFFER_TOO_SMALL`、`ORCA_MOBILE_DEVICE_E_TIMEOUT`、`ORCA_MOBILE_DEVICE_E_CANCELED`、`ORCA_MOBILE_DEVICE_E_ALREADY_COMPLETE`、`ORCA_MOBILE_DEVICE_E_BUSY`、`ORCA_MOBILE_DEVICE_E_UNSUPPORTED`、`ORCA_MOBILE_DEVICE_E_WAKEUP`、`ORCA_MOBILE_DEVICE_E_OUT_OF_MEMORY`、`ORCA_MOBILE_DEVICE_E_INTERNAL` 和 `ORCA_MOBILE_DEVICE_E_ABI_MISMATCH`。
 
 ### 7.2 公共结构
 
-- `orca_sdk_options_t`：SDK 创建选项；
-- `orca_sdk_session_options_t`：session 选项和可选 device ID；
-- `orca_sdk_task_request_t`：`struct_size`、task kind 和 UTF-8 JSON payload；
-- `orca_sdk_event_t`：事件类型、状态、序号、时间戳、task、task ID、消息和 payload；
-- `orca_sdk_t`、`orca_sdk_session_t`、`orca_sdk_task_t`：opaque handles。
+- `orca_mobile_device_options_t`：SDK 创建选项；
+- `orca_mobile_device_session_options_t`：session 选项和可选 device ID；
+- `orca_mobile_device_task_request_t`：`struct_size`、task kind 和 UTF-8 JSON payload；
+- `orca_mobile_device_event_t`：事件类型、状态、序号、时间戳、task、task ID、消息和 payload；
+- `orca_mobile_device_t`、`orca_mobile_device_session_t`、`orca_mobile_device_task_t`：opaque handles。
 
 Task kind 为：
 
 | 常量 | 数值 | 用途 |
 |---|---:|---|
-| `ORCA_SDK_TASK_KIND_SYNC` | 1 | 兼容基线 task |
-| `ORCA_SDK_TASK_KIND_DISCOVER` | 2 | 发现 facade |
-| `ORCA_SDK_TASK_KIND_CONNECT` | 3 | 连接 facade |
-| `ORCA_SDK_TASK_KIND_DISCONNECT` | 4 | 断开 facade |
-| `ORCA_SDK_TASK_KIND_STATUS` | 5 | 状态 facade |
-| `ORCA_SDK_TASK_KIND_COMMAND` | 6 | 命令 facade |
-| `ORCA_SDK_TASK_KIND_TRANSFER` | 7 | 文件传输 facade |
+| `ORCA_MOBILE_DEVICE_TASK_KIND_SYNC` | 1 | 兼容基线 task |
+| `ORCA_MOBILE_DEVICE_TASK_KIND_DISCOVER` | 2 | 发现 facade |
+| `ORCA_MOBILE_DEVICE_TASK_KIND_CONNECT` | 3 | 连接 facade |
+| `ORCA_MOBILE_DEVICE_TASK_KIND_DISCONNECT` | 4 | 断开 facade |
+| `ORCA_MOBILE_DEVICE_TASK_KIND_STATUS` | 5 | 状态 facade |
+| `ORCA_MOBILE_DEVICE_TASK_KIND_COMMAND` | 6 | 命令 facade |
+| `ORCA_MOBILE_DEVICE_TASK_KIND_TRANSFER` | 7 | 文件传输 facade |
 
 非 `SYNC` task 的 payload 必须是合法 UTF-8 JSON。当前 C ABI facade 完成 kind、payload、生命周期和异步事件门面校验；具体设备操作仍由宿主或适配器接入。
 
@@ -186,40 +186,40 @@ Task kind 为：
 
 **Identity and errors**
 
-- `orca_sdk_abi_version()`
-- `orca_sdk_contract_version()`
-- `orca_sdk_source_commit()`
-- `orca_sdk_source_commit_short()`
-- `orca_sdk_error_message()`
-- `orca_sdk_get_abi_version()`
-- `orca_sdk_get_contract_version()`
-- `orca_sdk_get_source_commit()`
+- `orca_mobile_device_abi_version()`
+- `orca_mobile_device_contract_version()`
+- `orca_mobile_device_source_commit()`
+- `orca_mobile_device_source_commit_short()`
+- `orca_mobile_device_error_message()`
+- `orca_mobile_device_get_abi_version()`
+- `orca_mobile_device_get_contract_version()`
+- `orca_mobile_device_get_source_commit()`
 
 **Lifecycle and tasks**
 
-- `orca_sdk_create()` / `orca_sdk_destroy()`
-- `orca_sdk_session_create()` / `orca_sdk_session_destroy()`
-- `orca_sdk_session_submit_task()`
-- `orca_sdk_task_cancel()`
-- `orca_sdk_task_destroy()`
-- `orca_sdk_task_get_id()`
-- `orca_sdk_task_get_state()`
+- `orca_mobile_device_create()` / `orca_mobile_device_destroy()`
+- `orca_mobile_device_session_create()` / `orca_mobile_device_session_destroy()`
+- `orca_mobile_device_session_submit_task()`
+- `orca_mobile_device_task_cancel()`
+- `orca_mobile_device_task_destroy()`
+- `orca_mobile_device_task_get_id()`
+- `orca_mobile_device_task_get_state()`
 
 **Events**
 
-- `orca_sdk_poll_event()`：阻塞或超时轮询 session 事件；
-- `orca_sdk_event_clear()`：释放最近一次轮询事件的 backing storage；
-- `orca_sdk_wakeup()`：唤醒等待该 session 的 poller。
+- `orca_mobile_device_poll_event()`：阻塞或超时轮询 session 事件；
+- `orca_mobile_device_event_clear()`：释放最近一次轮询事件的 backing storage；
+- `orca_mobile_device_wakeup()`：唤醒等待该 session 的 poller。
 
-事件类型包括 `ORCA_SDK_EVENT_SESSION_READY`、`ORCA_SDK_EVENT_TASK_SUBMITTED`、`ORCA_SDK_EVENT_TASK_COMPLETED`、`ORCA_SDK_EVENT_TASK_CANCELED` 和 `ORCA_SDK_EVENT_ERROR`。task 状态包括 `PENDING`、`COMPLETED` 和 `CANCELED`。
+事件类型包括 `ORCA_MOBILE_DEVICE_EVENT_SESSION_READY`、`ORCA_MOBILE_DEVICE_EVENT_TASK_SUBMITTED`、`ORCA_MOBILE_DEVICE_EVENT_TASK_COMPLETED`、`ORCA_MOBILE_DEVICE_EVENT_TASK_CANCELED` 和 `ORCA_MOBILE_DEVICE_EVENT_ERROR`。task 状态包括 `PENDING`、`COMPLETED` 和 `CANCELED`。
 
 ### 7.4 生命周期规则
 
-1. 创建 `orca_sdk_t`，再创建 session。
-2. 通过 `orca_sdk_session_submit_task()` 提交 task；非 `SYNC` task 要提供 JSON payload。
-3. 使用 `orca_sdk_poll_event()` 消费事件，并在处理后调用 `orca_sdk_event_clear()`。
-4. pending task 可调用 `orca_sdk_task_cancel()`；取消通过事件和 task state 报告。
-5. 未清理 terminal task event 或仍在执行的 task，`orca_sdk_task_destroy()` 返回 `ORCA_SDK_E_BUSY`。
+1. 创建 `orca_mobile_device_t`，再创建 session。
+2. 通过 `orca_mobile_device_session_submit_task()` 提交 task；非 `SYNC` task 要提供 JSON payload。
+3. 使用 `orca_mobile_device_poll_event()` 消费事件，并在处理后调用 `orca_mobile_device_event_clear()`。
+4. pending task 可调用 `orca_mobile_device_task_cancel()`；取消通过事件和 task state 报告。
+5. 未清理 terminal task event 或仍在执行的 task，`orca_mobile_device_task_destroy()` 返回 `ORCA_MOBILE_DEVICE_E_BUSY`。
 6. 先销毁 task，再销毁 session，最后销毁 SDK；销毁会使句柄失效并唤醒阻塞 poller。
 7. 重复销毁、过期句柄和销毁期间的新调用返回稳定错误码，不释放调用方拥有的内存。
 

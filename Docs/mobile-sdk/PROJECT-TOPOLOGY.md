@@ -30,7 +30,7 @@
            │                   └── Realtime / Relay
            │
            ▼
-   OrcaSlicer::MobileSDK
+   OrcaSlicer::MobileDeviceSDK
    中立 DTO、命令契约、状态机
 
 Platform Backend ───────► Object Storage / CDN / Search / Queue
@@ -63,7 +63,7 @@ repos/
 
 不要把移动端、后端和基础设施代码直接放进 OrcaSlicer 桌面仓库。桌面仓库可以继续维护共享 SDK 源码和切片适配，但产品服务的发布、权限和部署生命周期不同。
 
-当 `OrcaSlicer::MobileSDK` 的 ABI 和版本策略稳定后，再将它拆成独立的 `orca-mobile-sdk` 仓库或发布包。拆分前，OrcaSlicer 是 SDK 的源代码归属仓库；拆分后，桌面端和移动端都从同一个 SDK 版本消费产物。
+当 `OrcaSlicer::MobileDeviceSDK` 的 ABI 和版本策略稳定后，再将它拆成独立的 `orca-mobile-sdk` 仓库或发布包。拆分前，OrcaSlicer 是 SDK 的源代码归属仓库；拆分后，桌面端和移动端都从同一个 SDK 版本消费产物。
 
 ## 3. OrcaSlicer Desktop 仓库
 
@@ -71,7 +71,7 @@ repos/
 
 ```text
 OrcaSlicer/
-├── src/orca_sdk/
+├── src/orca_mobile_device_sdk/
 │   ├── include/orca/sdk/          # 公共中立头文件
 │   ├── Connectivity.*             # 路径和连接状态机
 │   ├── CommandEnvelope.*          # 控制命令信封
@@ -123,7 +123,7 @@ orca-mobile/
 │   └── features/                 # shell、discover、devices、monitor、mine、services、settings
 ├── packages/
 │   ├── printer_client/           # PrinterClient、模型、Mock/Unavailable 实现
-│   ├── orca_sdk_bridge/          # C ABI/FFI、Native/Mock SDK bridge
+│   ├── orca_mobile_device_bridge/          # C ABI/FFI、Native/Mock SDK bridge
 │   └── platform_services/        # Android/iOS 平台能力抽象
 ├── android/                      # Android 宿主、JNI/FFI 原生库和权限
 ├── ios/                          # iOS 宿主工程
@@ -142,7 +142,7 @@ orca-mobile/
 ```text
 lib/features + lib/core
           ↓
-packages/printer_client   packages/orca_sdk_bridge   packages/platform_services
+packages/printer_client   packages/orca_mobile_device   packages/platform_services
           ↓                         ↓                         ↓
      Mock/Unavailable       C ABI/FFI bridge          Android/iOS host
 ```
@@ -370,7 +370,7 @@ printer.status.updated.v1
 moderation.review_required.v1
 ```
 
-`OrcaSlicer::MobileSDK` 的 `CommandEnvelope` 是设备控制命令的基础格式；云端命令、移动端本地命令和 Edge Connector 命令都应保留 `session_id`、`command_id`、`sequence`、过期时间和设备回执。
+`OrcaSlicer::MobileDeviceSDK` 的 `CommandEnvelope` 是设备控制命令的基础格式；云端命令、移动端本地命令和 Edge Connector 命令都应保留 `session_id`、`command_id`、`sequence`、过期时间和设备回执。
 
 OpenAPI、事件 Schema 和 MobileSDK DTO 要分别版本化：
 
@@ -396,13 +396,13 @@ OrcaSlicer Desktop
 ### SDK
 
 ```text
-orca_mobile_sdk static/shared library
+orca_mobile_device_sdk static/shared library
 ├── Windows/Linux/macOS desktop artifact
 ├── iOS XCFramework
 └── Android AAR/JNI
 ```
 
-iOS 和 Android 产物应由 SDK 发布流水线生成，移动端仓库通过版本号引用，不直接复制 `src/orca_sdk` 源码。
+iOS 和 Android 产物应由 SDK 发布流水线生成，移动端仓库通过版本号引用，不直接复制 `src/orca_mobile_device_sdk` 源码。
 
 ### Mobile
 
@@ -554,4 +554,4 @@ Billing Transaction
 - 把摄像头视频连接和打印控制连接绑定在同一个长连接上；
 - 在没有 ABI、版本和 golden test 约束前，把 C++ 核心拆成多个移动端私有副本。
 
-当前 `src/orca_sdk` 是这个工程边界的第一块基础。后续协议适配器、移动端绑定、云端 API 和业务平台都应围绕这些稳定契约扩展，而不应把桌面工程整体搬进移动端。
+当前 `src/orca_mobile_device_sdk` 是这个工程边界的第一块基础。后续协议适配器、移动端绑定、云端 API 和业务平台都应围绕这些稳定契约扩展，而不应把桌面工程整体搬进移动端。

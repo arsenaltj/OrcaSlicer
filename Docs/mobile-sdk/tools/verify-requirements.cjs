@@ -1,7 +1,7 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),cp=require('node:child_process');
 const {pathToFileURL}=require('node:url');
-const mobileFiles=['lib','packages/printer_client','packages/orca_sdk_bridge','packages/platform_services','android','ios','integration_test','test','tool','pubspec.yaml'];
+const mobileFiles=['lib','packages/printer_client','packages/orca_mobile_device','packages/platform_services','android','ios','integration_test','test','tool','pubspec.yaml'];
 const platformFiles=['src/modules','contracts/http/openapi.yaml','contracts/events','db/migrations','db/seeds','deploy','scripts','test','package.json'];
 function all(source,markers){return markers.every(marker=>source.includes(marker));}
 function checkDocs({md,html,topology,mobilePaths,platformPaths}){
@@ -13,7 +13,7 @@ function checkDocs({md,html,topology,mobilePaths,platformPaths}){
   toc_targets:anchors.length>0&&anchors.every(id=>ids.has(id)),
   mobile_actual_paths:mobileFiles.every(p=>mobilePaths[p]===true),
   platform_actual_paths:platformFiles.every(p=>platformPaths[p]===true),
-  report_uses_actual_mobile_paths:all(md,['lib/features','packages/printer_client','packages/orca_sdk_bridge','packages/platform_services','android/','ios/','integration_test/','tool/']),
+  report_uses_actual_mobile_paths:all(md,['lib/features','packages/printer_client','packages/orca_mobile_device','packages/platform_services','android/','ios/','integration_test/','tool/']),
   report_uses_actual_platform_paths:all(md,['src/modules','contracts/','openapi.yaml','db/','migrations/','deploy/','test/','NestJS 模块化单体基线']),
   report_labels_future_backend_split:all(md,['当前没有 '+String.fromCharCode(96)+'apps/api/'+String.fromCharCode(96),'后续扩展方向','不能作为当前实现状态描述']),
   monorepo_layout:['orca-frontend','apps/web','apps/admin','编译隔离'].every(p=>md.includes(p)&&topology.includes(p)),
@@ -39,7 +39,7 @@ async function browserCheck(file,output,modulePath){
 }
 async function verify(options){
  const worktree=path.resolve(options.worktree||path.join(__dirname,'../../..')),workspace=path.resolve(options.workspace||workspaceFor(worktree)),output=path.resolve(options.output);fs.mkdirSync(output,{recursive:true});if(fs.existsSync(path.join(output,'validation.json')))throw new Error('Choose a new output directory; previous validation evidence is retained.');
- const docs=path.join(worktree,'docs/mobile-sdk'),mdFile=path.join(docs,'REQUIREMENTS-ANALYSIS.md'),htmlFile=path.join(docs,'REQUIREMENTS-ANALYSIS.html'),topFile=path.join(docs,'PROJECT-TOPOLOGY.md');
+ const docs=path.join(worktree,'Docs/mobile-sdk'),mdFile=path.join(docs,'REQUIREMENTS-ANALYSIS.md'),htmlFile=path.join(docs,'REQUIREMENTS-ANALYSIS.html'),topFile=path.join(docs,'PROJECT-TOPOLOGY.md');
  const input={md:fs.readFileSync(mdFile,'utf8'),html:fs.readFileSync(htmlFile,'utf8'),topology:fs.readFileSync(topFile,'utf8'),mobilePaths:Object.fromEntries(mobileFiles.map(p=>[p,fs.existsSync(path.join(workspace,'repos/orca-mobile',p))])),platformPaths:Object.fromEntries(platformFiles.map(p=>[p,fs.existsSync(path.join(workspace,'repos/orca-platform',p))]))};
  const checks=checkDocs(input),taskId=path.basename(worktree),artifact=path.join(workspace,'artifacts',taskId),revision=path.join(artifact,'evidence/requirements-revision-20261019');
  const files=[mdFile,htmlFile,topFile,path.join(artifact,'reports/requirements-analysis-v1.7.md'),path.join(artifact,'reports/requirements-analysis-v1.7.html'),path.join(revision,'vendor-reply-summary.md'),path.join(revision,'implementation-status.md'),path.join(revision,'local-repo-structure.md')].map(file=>{const bytes=fs.readFileSync(file);return{path:file,bytes:bytes.length,sha256:crypto.createHash('sha256').update(bytes).digest('hex')};});

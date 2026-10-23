@@ -1,6 +1,6 @@
 # OrcaSlicer MobileSDK 使用指南
 
-`OrcaSlicer::MobileSDK` 是 OrcaSlicer 中面向移动端和其他宿主工程的无界面核心契约层。它位于 `src/orca_sdk`，只依赖 C++17、标准库和 `nlohmann_json`。
+`OrcaSlicer::MobileDeviceSDK` 是 OrcaSlicer 中面向移动端和其他宿主工程的无界面核心契约层。它位于 `src/orca_mobile_device_sdk`，只依赖 C++17、标准库和 `nlohmann_json`。
 
 SDK 的目标是让桌面端、iOS、Android、Edge Connector 和云端客户端共享同一套数据模型与操作边界。桌面 UI、wxWidgets、Python、Bambu 专有 DLL、AI Provider Key、HTTP/WebSocket 实现和 WebRTC 实现都不属于这个目标。
 
@@ -11,7 +11,7 @@ SDK 的目标是让桌面端、iOS、Android、Edge Connector 和云端客户端
             │
             ▼
 ┌──────────────────────────┐
-│ OrcaSlicer::MobileSDK     │  公共 DTO、状态机、命令契约、适配器接口
+│ OrcaSlicer::MobileDeviceSDK     │  公共 DTO、状态机、命令契约、适配器接口
 └──────────────┬───────────┘
                │
        ┌───────┴────────┐
@@ -27,9 +27,9 @@ SDK 的目标是让桌面端、iOS、Android、Edge Connector 和云端客户端
 ## 构建和同步规则
 
 1. `src/CMakeLists.txt` 始终加入 `orca_sdk`，桌面构建和移动 SDK 构建使用同一个 CMake 源码树。
-2. `OrcaSlicer` 和 `libslic3r_gui` 都链接 `OrcaSlicer::MobileSDK`，因此桌面构建会编译并检查同一套 SDK 契约。
+2. `OrcaSlicer` 和 `libslic3r_gui` 都链接 `OrcaSlicer::MobileDeviceSDK`，因此桌面构建会编译并检查同一套 SDK 契约。
 3. CMake 生成 `orca/sdk/MobileSDKBuildInfo.hpp`，其中包含源代码完整 commit 和短 commit。桌面端和移动 SDK 产物必须使用相同的 source identity。
-4. 可移植的连接、任务和切片编排逻辑应进入 `src/orca_sdk` 或其他明确的无 UI Domain/Port；桌面 UI 只保留窗口、导航、线程调度和用户交互适配。
+4. 可移植的连接、任务和切片编排逻辑应进入 `src/orca_mobile_device_sdk` 或其他明确的无 UI Domain/Port；桌面 UI 只保留窗口、导航、线程调度和用户交互适配。
 5. 商业 Gateway、厂商私有协议和专有 DLL 必须位于 SDK 外部适配器，不能成为开源 MobileSDK 的编译依赖。
 6. `[MobileSDK]` 测试位于 `tests/mobile_sdk/test_mobile_sdk_contracts.cpp`，桌面分支和开源分支都应保留这组测试。
 
@@ -39,12 +39,12 @@ SDK 的目标是让桌面端、iOS、Android、Edge Connector 和云端客户端
 python scripts/verify_mobile_sdk_boundary.py --source-root . --json
 ```
 
-在已配置的 CMake 环境中，`orca_mobile_sdk_boundary_check` 会作为构建目标执行同一检查。
+在已配置的 CMake 环境中，`orca_mobile_device_sdk_boundary_check` 会作为构建目标执行同一检查。
 
 ## 最小示例
 
 ```cpp
-#include <orca/sdk/MobileSDK.hpp>
+#include <orca/mobile/device/DeviceSDK.hpp>
 
 using namespace Orca::SDK;
 
@@ -110,7 +110,7 @@ MobileSDK 的核心文件、契约测试和边界检查脚本都保留在公开�
 - 不把私有凭据写入 MobileSDK 或公共测试；
 - 通过独立 CMake target 注入；
 - 保留没有商业适配器时的空实现、模拟实现或远程客户端边界；
-- 让上游分支可以只合入 `src/orca_sdk`、测试和文档而不携带私有服务代码。
+- 让上游分支可以只合入 `src/orca_mobile_device_sdk`、测试和文档而不携带私有服务代码。
 
 ## 工程拓扑
 
