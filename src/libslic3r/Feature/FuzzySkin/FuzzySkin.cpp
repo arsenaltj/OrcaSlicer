@@ -27,11 +27,7 @@
 
 #include "FuzzySkin.hpp"
 
-#ifdef ORCA_MOBILE_ANDROID
-#include "noise.h"
-#else
 #include "libnoise/noise.h"
-#endif
 #include <functional>
 
 // #define DEBUG_FUZZY
