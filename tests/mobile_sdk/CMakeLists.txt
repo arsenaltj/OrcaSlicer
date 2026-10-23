@@ -65,6 +65,7 @@ if(ORCA_PLATFORM_TEST_BOOST_SOURCE_DIR)
     target_compile_features(mobile_slicing_platform_md5_tests PRIVATE cxx_std_17)
     target_compile_definitions(mobile_slicing_platform_md5_tests PRIVATE ORCA_MOBILE_ANDROID=1)
     target_include_directories(mobile_slicing_platform_md5_tests PRIVATE ../../src
+        ../../src/orca_mobile_slicing_sdk/platform
         ${_orca_test_boost_headers}
         "${ORCA_PLATFORM_TEST_BOOST_SOURCE_DIR}/libs/numeric/conversion/include")
     target_link_libraries(mobile_slicing_platform_md5_tests PRIVATE Catch2::Catch2WithMain)

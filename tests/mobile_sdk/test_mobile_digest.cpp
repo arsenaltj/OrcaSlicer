@@ -1,5 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
-#include "orca_mobile_slicing_sdk/platform/MobileDigest.hpp"
+#include <openssl/md5.h>
 #include <algorithm>
 #include <array>
 #include <string>

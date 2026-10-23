@@ -95,11 +95,7 @@
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/xml_parser.hpp>
 #include <boost/foreach.hpp>
-#ifdef ORCA_MOBILE_ANDROID
-#include "MobileDigest.hpp"
-#else
 #include <openssl/md5.h>
-#endif
 #include <string>
 #include <vector>
 #include <utility>

@@ -32,11 +32,7 @@
 #include <boost/date_time.hpp>
 #include "boost/date_time/posix_time/ptime.hpp"
 
-#ifdef ORCA_MOBILE_ANDROID
-#include "MobileDigest.hpp"
-#else
 #include <openssl/md5.h>
-#endif
 #include <vector>
 
 #include "libslic3r.h"
