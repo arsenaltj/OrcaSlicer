@@ -1,3 +1,15 @@
+# 2026-10-23 3D 美颜工作台与色卡直导整改（代码与 GUI 关键路径通过，待用户验收）
+
+主线：继续在 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha` / `codex/upstream-v2.5.0-alpha-portrait-preserved`、干净基线 `5891dbd592 feat: refine 3d workbench repair and filament workflow` 上完善生成后 3D 工作台。本轮源码、测试和状态文档保持未提交；不推送、不打包。
+
+本轮：检查/修复遮罩的标题和说明固定为深灰同底自绘白字；当前色卡改为 1 至 32 色直接原子导入，按实际实体容量生成基础槽和剩余叠色配方，清理旧叠色并按 Lab 最近色自动重映射，不再打开配置或替代槽确认窗。9 色配 4 个实体槽得到 4 个实体槽和 5 个叠色槽，重复 RGB 保留独立原生身份；成功和失败均在主按钮下方反馈。画布全局候选栏已移除，预览、处理前、接受/放弃、取消、撤销/重做及保存返回固定在 3D 美颜侧栏底部；自动检查/修复期间不显示，手动修复候选会打开美颜面板。美颜颜色列表按原生槽号显示实体槽和叠色槽，并按 `(类型, 槽号)` 保持选择。首次安装后启动在 `BeautyWorkbenchControls::attach_actions()` 崩溃，原因是已脱离布局的按钮返回空 `GetContainingSizer()`；现已增加空值保护并保留必要的 `Reparent()`，未改变候选状态语义。
+
+未结：系统 DPI 未实际切换，100%/125%/150% 组合未完整验证；手动检查候选及各失败分支未逐项触发。实体打印色彩保真独立未验证，代码测试和屏幕试色均不能替代实物验收。
+
+下一步：匹配版本当前以 PID `14272` 从 `.tmp/dev/run/orca-slicer.exe --datadir .tmp/dev/data` 运行并响应，界面停留在 9 色打印机耗材试色状态，供用户直接验收。保持进程、工程和本轮改动不变且未提交；后续只按验收反馈增量修正。
+
+计划变更：首次启动崩溃证据保留于 [crash log](../../.tmp/dev/data/log/crash_Fri_Oct_23_14_23_28_0.log)。修复后的 catalogs/build/install/runtime-check/python-check 五步通过，证据为 [`Run`](../../.tmp/dev/logs/20261023-142454-228/result.json)；随后 `PostGenerationWorkbench` 与 `UiRedesign` 共 152/152 通过，证据为 [`CppTest`](../../.tmp/dev/logs/20261023-143423-216/result.json)。修复前的工作台组 163/163、耗材组 42/42 仍分别见 [`workbench`](../../.tmp/dev/logs/20261023-141141-685/result.json) 与 [`filaments`](../../.tmp/dev/logs/20261023-141410-533/result.json)，`scripts/verify_ai_integration.py --json` 返回 `ok: true`。匹配版本 GUI 已验证深灰白字自动修复模态无白闪、自动流程无全局候选栏、9 色直接生成 4 个实体槽和 5 个叠色槽且无确认窗、美颜下拉同时列出耗材 1 至 4 和叠色 5 至 9、叠色槽可绘制并完整撤销、美颜内部操作区正确切换；连续三个跨 500 ms 帧稳定，最大化布局无重叠。自动修复新增一个已接受历史版本，原始资产保持不变。
+
 # 2026-10-23 3D 工作台侧栏、自动修复、耗材试色与底座整改（已实施、GUI 复核通过、本地提交收尾）
 
 主线：继续在 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha` / `codex/upstream-v2.5.0-alpha-portrait-preserved` 收尾生成后 3D 工作台。上一轮对照 UI 已独立提交为 `5f80495bfb feat: refine 3d model workbench comparison ui`；本轮 41 个源码/测试文件与两份状态文档随 `feat: refine 3d workbench repair and filament workflow` 本地提交，不推送、不打包、不提升候选。

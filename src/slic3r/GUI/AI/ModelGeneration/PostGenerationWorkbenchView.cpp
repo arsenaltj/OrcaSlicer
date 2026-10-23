@@ -226,15 +226,18 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         center_row->AddStretchSpacer(1);
         m_workbench_check_modal = new WorkbenchPaintedPanel(
             m_workbench_check_overlay, wxColour(45, 45, 49), 8, wxColour(72, 72, 78));
+        m_workbench_check_modal->SetName("ai_content_color");
         m_workbench_check_modal->SetMinSize(FromDIP(wxSize(410, 174)));
         auto* modal_root = new wxBoxSizer(wxVERTICAL);
         m_workbench_check_phase = new WorkbenchLabel(m_workbench_check_modal, _L("检查模型"));
+        m_workbench_check_phase->SetName("ai_content_color");
         m_workbench_check_phase->SetFont(wxGetApp().bold_font());
         m_workbench_check_phase->SetForegroundColour(wxColour(238, 240, 244));
         modal_root->Add(m_workbench_check_phase, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM,
                         FromDIP(16));
         m_workbench_check_message = new WorkbenchLabel(m_workbench_check_modal);
-        m_workbench_check_message->SetForegroundColour(wxColour(205, 207, 214));
+        m_workbench_check_message->SetName("ai_content_color");
+        m_workbench_check_message->SetForegroundColour(wxColour(238, 240, 244));
         m_workbench_check_message->Wrap(FromDIP(376));
         modal_root->Add(m_workbench_check_message, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
         m_workbench_check_progress = new WorkbenchIndeterminateProgress(m_workbench_check_modal);
@@ -326,11 +329,16 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     apply_slice_action_style(m_workbench_printer_filament_trial);
     m_workbench_printer_filament_trial->SetName("workbench_printer_filament_trial");
     m_workbench_printer_filament_trial->SetIcon("workbench_printer");
-    m_workbench_printer_filament_trial->SetToolTip(_L("将当前色卡预载到原生耗材配置；点击完成后进入打印机耗材试色。"));
+    m_workbench_printer_filament_trial->SetToolTip(_L("直接生成实体耗材与叠色配方，原子提交后进入打印机耗材试色。"));
     m_workbench_printer_filament_trial->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         toggle_printer_filament_trial();
     });
     controls->Add(m_workbench_printer_filament_trial, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+    m_workbench_printer_filament_feedback = new wxStaticText(scroll, wxID_ANY, wxEmptyString,
+        wxDefaultPosition, wxDefaultSize, wxST_NO_AUTORESIZE);
+    m_workbench_printer_filament_feedback->SetForegroundColour(wxColour(190, 190, 196));
+    m_workbench_printer_filament_feedback->Hide();
+    controls->Add(m_workbench_printer_filament_feedback, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     auto* filament_scroll = new WorkbenchScrolledWindow(scroll, wxID_ANY, wxDefaultPosition,
         wxDefaultSize, wxVSCROLL | wxBORDER_NONE);
     filament_scroll->SetScrollRate(0, FromDIP(12));
@@ -648,13 +656,14 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     switches->AddStretchSpacer();
     icons->AddStretchSpacer();
     workspace_sizer->Add(view_tools_host, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(8));
-    m_workbench_footer = new WorkbenchPanel(workspace);
+    m_workbench_footer = new WorkbenchPanel(m_finishing_panel);
     m_workbench_footer->SetBackgroundColour(wxColour(32, 32, 35));
-    m_beauty_controls->attach_actions(m_workbench_footer);
     m_finishing_compare_model->GetContainingSizer()->Detach(m_finishing_compare_model);
     m_finishing_compare_model->Reparent(m_workbench_footer);
-    m_workbench_footer->GetSizer()->Add(m_finishing_compare_model, 0, wxRIGHT, FromDIP(4));
-    workspace_sizer->Add(m_workbench_footer, 0, wxEXPAND | wxALL, FromDIP(8));
+    m_beauty_controls->attach_actions(m_workbench_footer, m_finishing_compare_model);
+    m_workbench_footer->Hide();
+    m_finishing_panel->GetSizer()->Add(m_workbench_footer, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM,
+        FromDIP(8));
     workspace->SetSizer(workspace_sizer);
     row->Add(workspace, 1, wxEXPAND);
     row->Add(build_workbench_history(shell), 0, wxEXPAND | wxTOP | wxBOTTOM | wxLEFT,

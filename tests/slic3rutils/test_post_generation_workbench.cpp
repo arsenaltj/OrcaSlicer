@@ -1623,6 +1623,144 @@ static FilamentColorPack filament_import_card(size_t count)
     return pack;
 }
 
+TEST_CASE("workbench cards accept up to thirty two colors without widening legacy saved cards",
+          "[PrinterFilamentImport][PostGenerationWorkbench]")
+{
+    const size_t count = GENERATE(1u, 6u, 7u, 9u, 12u, 32u);
+    const auto pack = filament_import_card(count);
+    INFO(count);
+    CHECK(pack.valid_for_workbench_import());
+    CHECK(pack.valid() == (count <= 6));
+
+    const auto oversized = filament_import_card(33);
+    CHECK_FALSE(oversized.valid_for_workbench_import());
+}
+
+TEST_CASE("direct workbench card import creates one unique native identity per color",
+          "[PrinterFilamentImport][PrinterFilamentRecipes][PostGenerationWorkbench]")
+{
+    const size_t count = GENERATE(6u, 7u, 9u, 12u, 32u);
+    auto live = printer_filament_fixture(4, 4);
+    const auto project_before = live.project_config;
+    const auto presets_before = live.filament_presets;
+    const auto pack = filament_import_card(count);
+    PrinterFilamentConfig::StagedColorPackImport staged;
+    std::string error;
+
+    INFO(count);
+    const bool staged_ok = PrinterFilamentConfig::stage_workbench_color_pack_import(live, pack, staged, error);
+    INFO(error);
+    REQUIRE(staged_ok);
+    REQUIRE(staged.configuration);
+    const auto imported = PrinterFilamentConfig::capture(*staged.configuration);
+    REQUIRE(imported.ready);
+    CHECK(staged.physical_count == 4);
+    CHECK(staged.mixed_count == count - 4);
+    CHECK(imported.physical_count == 4);
+    CHECK(imported.mixed.size() == count - 4);
+    REQUIRE(staged.bindings.size() == count);
+    CHECK(std::set<size_t>(staged.bindings.begin(), staged.bindings.end()).size() == count);
+    for (const size_t slot : staged.bindings) CHECK(slot < count);
+    CHECK(PrinterFilamentSlotRemap::validate(staged.changes, 4, count));
+
+    // The extended card deliberately repeats #123456. Equal RGB entries must
+    // still retain separate native identities rather than collapsing together.
+    if (count >= 9) {
+        CHECK(pack.colors[6] == pack.colors[7]);
+        CHECK(pack.colors[7] == pack.colors[8]);
+        CHECK(staged.bindings[6] != staged.bindings[7]);
+        CHECK(staged.bindings[7] != staged.bindings[8]);
+        CHECK(staged.bindings[6] != staged.bindings[8]);
+    }
+    CHECK(live.project_config == project_before);
+    CHECK(live.filament_presets == presets_before);
+}
+
+TEST_CASE("direct workbench card staging supports repeated expansion and compression",
+          "[PrinterFilamentImport][PrinterFilamentRecipes][PostGenerationWorkbench]")
+{
+    auto live = printer_filament_fixture(4, 4);
+    for (const size_t count : {9u, 6u, 9u, 4u}) {
+        INFO("stage " << count << " colors");
+        PrinterFilamentConfig::StagedColorPackImport staged;
+        std::string error;
+        const bool staged_ok = PrinterFilamentConfig::stage_workbench_color_pack_import(
+            live, filament_import_card(count), staged, error);
+        INFO(error);
+        REQUIRE(staged_ok);
+        REQUIRE(staged.configuration);
+        const auto imported = PrinterFilamentConfig::capture(*staged.configuration);
+        REQUIRE(imported.ready);
+        CHECK(imported.physical_count == std::min(size_t(4), count));
+        CHECK(imported.mixed.size() == count - std::min(size_t(4), count));
+        CHECK(staged.bindings.size() == count);
+        CHECK(std::set<size_t>(staged.bindings.begin(), staged.bindings.end()).size() == count);
+        live = *staged.configuration;
+    }
+}
+
+TEST_CASE("single nozzle direct import keeps four configured spools and creates five mixtures",
+          "[PrinterFilamentImport][PrinterFilamentRecipes][PostGenerationWorkbench]")
+{
+    auto live = printer_filament_fixture(1, 4);
+    PrinterFilamentConfig::StagedColorPackImport staged;
+    std::string error;
+    const bool staged_ok = PrinterFilamentConfig::stage_workbench_color_pack_import(
+        live, filament_import_card(9), staged, error);
+    INFO(error);
+    REQUIRE(staged_ok);
+    REQUIRE(staged.configuration);
+    const auto imported = PrinterFilamentConfig::capture(*staged.configuration);
+    REQUIRE(imported.ready);
+    CHECK(staged.physical_count == 4);
+    CHECK(staged.mixed_count == 5);
+    CHECK(imported.physical_count == 4);
+    CHECK(imported.mixed.size() == 5);
+    CHECK(staged.bindings.size() == 9);
+    CHECK(std::set<size_t>(staged.bindings.begin(), staged.bindings.end()).size() == 9);
+}
+
+TEST_CASE("automatic slot replacement uses nearest Lab color and stable native slot ties",
+          "[PrinterFilamentImport][PostGenerationWorkbench]")
+{
+    auto target = [](size_t slot, const std::string& color) {
+        WorkbenchFilamentSlot item;
+        item.slot = slot;
+        item.color = color;
+        item.exists = item.configured = item.compatible = true;
+        return item;
+    };
+    auto nearest = PrinterFilamentConfig::nearest_replacement_slot("#101010",
+        {target(5, "#FFFFFF"), target(3, "#000000")});
+    REQUIRE(nearest);
+    CHECK(*nearest == 3);
+
+    nearest = PrinterFilamentConfig::nearest_replacement_slot("#808080",
+        {target(7, "#808080"), target(2, "#808080")});
+    REQUIRE(nearest);
+    CHECK(*nearest == 2);
+}
+
+TEST_CASE("failed direct workbench staging leaves the live preset bundle unchanged",
+          "[PrinterFilamentImport][PrinterFilamentRecipes][PostGenerationWorkbench]")
+{
+    auto live = printer_filament_fixture(4, 4);
+    live.filaments.find_preset("Loaded PLA", false)->is_compatible = false;
+    const auto project_before = live.project_config;
+    const auto presets_before = live.filament_presets;
+    PrinterFilamentConfig::StagedColorPackImport staged;
+    std::string error;
+
+    CHECK_FALSE(PrinterFilamentConfig::stage_workbench_color_pack_import(
+        live, filament_import_card(9), staged, error));
+    CHECK_FALSE(error.empty());
+    CHECK_FALSE(staged.configuration);
+    CHECK(staged.bindings.empty());
+    CHECK(staged.changes.empty());
+    CHECK(live.project_config == project_before);
+    CHECK(live.filament_presets == presets_before);
+}
+
 TEST_CASE("partially loaded printers retain their spools through native normalization", "[PrinterFilamentRecipes][PrinterFilaments]")
 {
     const size_t nozzles = GENERATE(4u, 6u);
@@ -1992,10 +2130,13 @@ TEST_CASE("virtual mixtures keep their identities and do not consume card colors
 
     draft = live;
     changes.clear();
-    const auto project = draft.project_config;
-    CHECK_FALSE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(32), changes, error));
-    CHECK(draft.project_config == project);
-    CHECK(changes.empty());
+    REQUIRE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(32), changes, error));
+    const auto full = PrinterFilamentConfig::capture(draft);
+    REQUIRE(full.ready);
+    CHECK(full.physical_count == 32);
+    CHECK(full.mixed.empty());
+    CHECK(draft.filament_presets.size() == 32);
+    CHECK(PrinterFilamentSlotRemap::validate(changes, 6, 32));
 }
 
 TEST_CASE("card import leaves missing or incompatible material choices pending without dropping colors", "[PrinterFilamentImport][PostGenerationWorkbench]")

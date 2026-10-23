@@ -87,13 +87,34 @@ void ModelGenerationPanel::set_workbench_import_feedback(bool active)
     refresh_workbench_history();
 }
 
-std::vector<std::string> ModelGenerationPanel::local_recolor_palette() const
+std::vector<BeautyColorItem> ModelGenerationPanel::local_recolor_palette() const
 {
-    std::vector<std::string> palette = project_palette();
-    if (palette.empty())
-        palette = !m_displayed_model_palette.empty() ? m_displayed_model_palette : m_job_palette;
-    if (palette.size() > Slic3r::AI::kMaxPhysicalColorChannels)
-        palette.resize(Slic3r::AI::kMaxPhysicalColorChannels);
+    std::vector<BeautyColorItem> palette;
+    if (wxGetApp().preset_bundle) {
+        const auto filaments = PrinterFilamentConfig::capture(*wxGetApp().preset_bundle);
+        for (const auto& slot : filaments.slots) {
+            if (!slot.exists || !slot.configured || !slot.compatible || !AI::is_rgb_hex_color(slot.color)) continue;
+            palette.push_back({slot.color, u8"耗材 " + std::to_string(slot.slot + 1),
+                               slot.slot, BeautyColorSource::Physical});
+        }
+        for (const auto& slot : filaments.mixed) {
+            if (!slot.valid || !AI::is_rgb_hex_color(slot.color)) continue;
+            palette.push_back({slot.color, u8"叠色 " + std::to_string(slot.slot + 1),
+                               slot.slot, BeautyColorSource::Mixed});
+        }
+    }
+    if (!palette.empty()) return palette;
+
+    auto fallback = project_palette();
+    if (fallback.empty())
+        fallback = !m_displayed_model_palette.empty() ? m_displayed_model_palette : m_job_palette;
+    if (fallback.size() > PreviewPalette::max_preview_colors)
+        fallback.resize(PreviewPalette::max_preview_colors);
+    for (size_t slot = 0; slot < fallback.size(); ++slot) {
+        if (!AI::is_rgb_hex_color(fallback[slot])) continue;
+        palette.push_back({fallback[slot], u8"耗材 " + std::to_string(slot + 1),
+                           slot, BeautyColorSource::Physical});
+    }
     return palette;
 }
 
@@ -116,7 +137,7 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
     state.asset_id = m_displayed_model_job_id;
     state.model_path = m_displayed_model_path.string();
     state.candidate_path = m_finishing_candidate.string();
-    state.palette = local_recolor_palette();
+    for (const auto& color : local_recolor_palette()) state.palette.push_back(color.color);
     state.editing = m_workbench_editing;
     state.semantic_mode = m_semantic_mode;
     if (m_portrait_task) state.portrait_optimization = m_portrait_task->snapshot();

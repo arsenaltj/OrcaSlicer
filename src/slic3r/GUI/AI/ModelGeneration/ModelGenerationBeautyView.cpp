@@ -139,18 +139,25 @@ void ModelGenerationPanel::on_discard(wxCommandEvent&)
 
 wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
 {
-    auto* scroll = new WorkbenchScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxSize(FromDIP(280), FromDIP(480)), wxVSCROLL | wxBORDER_NONE);
-    scroll->SetMinSize(wxSize(FromDIP(280), FromDIP(200)));
+    auto* panel = new WorkbenchPanel(parent);
+    panel->SetMinSize(wxSize(FromDIP(280), FromDIP(200)));
+    panel->SetBackgroundColour(wxColour(32, 32, 35));
+    m_finishing_panel = panel;
+    auto* panel_sizer = new wxBoxSizer(wxVERTICAL);
+    auto* scroll = new WorkbenchScrolledWindow(panel, wxID_ANY, wxDefaultPosition,
+        wxSize(FromDIP(280), FromDIP(480)), wxVSCROLL | wxBORDER_NONE);
+    m_finishing_scroll = scroll;
     scroll->SetScrollRate(0, FromDIP(12));
     scroll->set_rounded_corners(true);
-    m_finishing_panel = scroll;
     scroll->SetBackgroundColour(wxColour(32, 32, 35));
+    panel_sizer->Add(scroll, 1, wxEXPAND);
+    panel->SetSizer(panel_sizer);
     auto* sizer = new wxBoxSizer(wxVERTICAL);
     auto* title_row = new wxBoxSizer(wxHORIZONTAL);
-    auto* title = new wxStaticText(m_finishing_panel, wxID_ANY, _L("3D 美颜工作台"));
+    auto* title = new wxStaticText(scroll, wxID_ANY, _L("3D 美颜工作台"));
     title->SetFont(wxFontInfo(10).FaceName("HONOR Sans Design").Weight(wxFONTWEIGHT_MEDIUM));
     title_row->Add(title, 1, wxALIGN_CENTER_VERTICAL | wxTOP | wxBOTTOM, FromDIP(8));
-    auto* close_editor = workbench_button(m_finishing_panel, _L("返回"));
+    auto* close_editor = workbench_button(scroll, _L("返回"));
     close_editor->SetFont(wxFontInfo(8).FaceName("HONOR Sans Design").Weight(wxFONTWEIGHT_MEDIUM));
     close_editor->SetPaddingSize(FromDIP(wxSize(12, 4)));
     close_editor->SetMinSize(FromDIP(wxSize(45, 27)));
@@ -165,25 +172,25 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     title_row->Add(close_editor, 0, wxTOP | wxBOTTOM, FromDIP(8));
     sizer->AddSpacer(FromDIP(17));
     sizer->Add(title_row, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-    auto* hint = new wxStaticText(m_finishing_panel, wxID_ANY,
+    auto* hint = new wxStaticText(scroll, wxID_ANY,
         _L("Alt＋左键旋转，右键平移，滚轮缩放。原件保留，修改可撤销。"));
     wrap_workbench_text(hint, FromDIP(260));
     hint->Hide();
-    m_finishing_tool = new wxChoice(m_finishing_panel, wxID_ANY);
+    m_finishing_tool = new wxChoice(scroll, wxID_ANY);
     for (const auto& label : {_L("整体美颜"), _L("局部修整"), _L("多色试色"), _L("网格修复"), _L("统一这块颜色"), _L("清理小杂点")})
         m_finishing_tool->Append(label);
     m_finishing_tool->SetSelection(0);
     sizer->Add(m_finishing_tool, 0, wxEXPAND | wxALL, FromDIP(10));
-    m_finishing_gray = new wxCheckBox(m_finishing_panel, wxID_ANY, _L("灰模观察凹凸（仅显示）"));
+    m_finishing_gray = new wxCheckBox(scroll, wxID_ANY, _L("灰模观察凹凸（仅显示）"));
     sizer->Add(m_finishing_gray, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
     m_finishing_gray->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { m_model_preview->set_gray_view(m_finishing_gray->GetValue()); });
-    m_finishing_selection_section = workbench_button(m_finishing_panel, _L("选择区域"));
+    m_finishing_selection_section = workbench_button(scroll, _L("选择区域"));
     m_finishing_selection_section->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         m_finishing_selection_open = !m_finishing_selection_open;
         refresh_model_finishing();
     });
     sizer->Add(m_finishing_selection_section, 0, wxEXPAND | wxALL, FromDIP(10));
-    m_finishing_selection_controls = new wxPanel(m_finishing_panel);
+    m_finishing_selection_controls = new wxPanel(scroll);
     auto* selection = new wxBoxSizer(wxVERTICAL);
     auto* selection_title = new wxStaticText(m_finishing_selection_controls, wxID_ANY, _L("选择区域"));
     selection_title->SetFont(wxGetApp().bold_font());
@@ -221,7 +228,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     auto* focus_selection = workbench_button(m_finishing_selection_controls, _L("放大选区"));
     focus_selection->SetToolTip(_L("将选中的区域放到画面中央；“完整显示模型”可恢复全貌。"));
     selection->Add(focus_selection, 0, wxEXPAND | wxTOP, FromDIP(8));
-    auto* overlay_row = m_finishing_overlay_row = new wxPanel(m_finishing_panel);
+    auto* overlay_row = m_finishing_overlay_row = new wxPanel(scroll);
     auto* overlay_layout = new wxBoxSizer(wxHORIZONTAL);
     overlay_layout->Add(new wxStaticText(overlay_row, wxID_ANY, _L("显示选区高亮")),
         1, wxALIGN_CENTER_VERTICAL);
@@ -248,30 +255,30 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     m_finishing_radius->Bind(wxEVT_SLIDER, [this](wxCommandEvent&) { update_finishing_selection(); });
     undo_selection->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_model_preview->undo_selection(); });
     clear_selection->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_model_preview->clear_selection(); });
-    m_finishing_preset = new wxChoice(m_finishing_panel, wxID_ANY);
+    m_finishing_preset = new wxChoice(scroll, wxID_ANY);
     for (const auto& label : {_L("轻柔 · 保留细节"), _L("均衡 · 表面柔化"), _L("加强 · 平滑凹凸"), _L("仅修复 · 保留造型")})
         m_finishing_preset->Append(label);
     m_finishing_preset->SetSelection(0);
     sizer->Add(m_finishing_preset, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
-    m_finishing_smooth = new wxCheckBox(m_finishing_panel, wxID_ANY, _L("表面美化（保护边界和锐边）"));
+    m_finishing_smooth = new wxCheckBox(scroll, wxID_ANY, _L("表面美化（保护边界和锐边）"));
     m_finishing_smooth->SetValue(true);
     sizer->Add(m_finishing_smooth, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
-    m_finishing_strength = new WorkbenchSlider(m_finishing_panel, wxID_ANY, 15, 0, 100,
+    m_finishing_strength = new WorkbenchSlider(scroll, wxID_ANY, 15, 0, 100,
         wxColour(61, 127, 255), "workbench_parameter_thumb");
-    m_finishing_cleanup_hint = new wxStaticText(m_finishing_panel, wxID_ANY,
+    m_finishing_cleanup_hint = new wxStaticText(scroll, wxID_ANY,
         _L("先圈住杂点及周围主色，保护眼睛、花纹等细节。只合并孤立小色块；连续条带可用“统一这块颜色”。"));
     wrap_workbench_text(m_finishing_cleanup_hint, FromDIP(260));
     sizer->Add(m_finishing_cleanup_hint, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
     // Native wxSL_LABELS creates sibling labels that overlap after tool panels
     // are shown/hidden. Keep the value in our sizer with the rest of the form.
-    m_finishing_strength_value = new wxStaticText(m_finishing_panel, wxID_ANY, _L("处理强度：15%"));
+    m_finishing_strength_value = new wxStaticText(scroll, wxID_ANY, _L("处理强度：15%"));
     sizer->Add(m_finishing_strength_value, 0, wxLEFT | wxRIGHT, FromDIP(10));
     m_finishing_strength->Bind(wxEVT_SLIDER, [this](wxCommandEvent&) {
         m_finishing_strength_value->SetLabel(wxString::Format(_L("处理强度：%d%%"), m_finishing_strength->GetValue()));
     });
     m_finishing_strength->SetToolTip(_L("强度越高，柔化越明显。保护轮廓与细小结构；可随时调整并重新预览。"));
     sizer->Add(m_finishing_strength, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
-    m_finishing_repair = new wxCheckBox(m_finishing_panel, wxID_ANY, _L("网格清理与面朝向修复"));
+    m_finishing_repair = new wxCheckBox(scroll, wxID_ANY, _L("网格清理与面朝向修复"));
     m_finishing_repair->SetValue(false);
     sizer->Add(m_finishing_repair, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
     // Keep action targets stable on narrow side rails. Two columns leave
@@ -279,7 +286,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     // actions without overlapping adjacent controls.
     auto* actions = new wxGridSizer(0, 2, FromDIP(4), FromDIP(4));
     auto button = [&](wxButton*& target, const wxString& label) {
-        target = new wxButton(m_finishing_panel, wxID_ANY, label);
+        target = new wxButton(scroll, wxID_ANY, label);
         actions->Add(target, 0, wxEXPAND);
     };
     button(m_finishing_preview, _L("预览处理效果"));
@@ -290,12 +297,12 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     button(m_finishing_redo, _L("重做已保存修整"));
     button(m_finishing_cancel, _L("取消处理"));
     sizer->Add(actions, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
-    m_finishing_status = new wxStaticText(m_finishing_panel, wxID_ANY, wxEmptyString);
+    m_finishing_status = new wxStaticText(scroll, wxID_ANY, wxEmptyString);
     wrap_workbench_text(m_finishing_status, FromDIP(260));
     wrap_workbench_text(m_finishing_selection_status, FromDIP(240));
     sizer->Add(m_finishing_status, 0, wxEXPAND | wxALL, FromDIP(10));
-    m_beauty_controls = new BeautyWorkbenchControls(m_finishing_panel, m_model_preview, m_palette_provider,
-        [this] { if (m_finishing_panel) { m_finishing_panel->Layout(); static_cast<wxScrolledWindow*>(m_finishing_panel)->FitInside(); } });
+    m_beauty_controls = new BeautyWorkbenchControls(scroll, m_model_preview, m_palette_provider,
+        [this] { if (m_finishing_scroll) { m_finishing_scroll->Layout(); m_finishing_scroll->FitInside(); } });
     m_beauty_controls->on_boundary_adjust = [this] {
         if (m_model_preview) m_model_preview->set_selection_preview_suppressed(false);
         if (m_model_preview) m_model_preview->refine_selection_boundary();
@@ -525,7 +532,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     m_beauty_controls->on_available_colors = [this] { return local_recolor_palette(); };
     m_beauty_controls->on_color_slot_changed = [this](size_t slot) { m_region_color_index = int(slot); };
     sizer->Insert(1, m_beauty_controls, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
-    m_finishing_panel->SetSizer(sizer);
+    scroll->SetSizer(sizer);
     m_finishing_preview->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { preview_model_finishing(); });
     m_finishing_accept->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { accept_model_finishing(); });
     m_finishing_discard->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { discard_model_finishing(); });
@@ -614,20 +621,20 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         m_finishing_strength->SetValue(preset == 0 ? 15 : preset == 2 ? 65 : 35);
         refresh_model_finishing();
     });
-    m_finishing_panel->Bind(wxEVT_SIZE, [this, hint](wxSizeEvent& event) {
-        const int width = std::max(FromDIP(80), m_finishing_panel->GetClientSize().x - FromDIP(34));
+    scroll->Bind(wxEVT_SIZE, [this, hint](wxSizeEvent& event) {
+        const int width = std::max(FromDIP(80), m_finishing_scroll->GetClientSize().x - FromDIP(34));
         wrap_workbench_text(hint, width); wrap_workbench_text(m_finishing_status, width); event.Skip();
     });
-    for (wxWindow* child : m_finishing_panel->GetChildren())
+    for (wxWindow* child : scroll->GetChildren())
         child->SetMaxSize(wxSize(FromDIP(280), -1));
     for (wxWindow* child : m_finishing_selection_controls->GetChildren())
         child->SetMaxSize(wxSize(FromDIP(260), -1));
     close_editor->SetMaxSize(FromDIP(wxSize(45, 27)));
-    m_finishing_panel->Hide();
+    panel->Hide();
     // The old selector remains as an internal compatibility facade. Beauty
     // users choose operations from BeautyWorkbenchControls below.
     m_finishing_tool->Hide();
-    return m_finishing_panel;
+    return panel;
 }
 
 void ModelGenerationPanel::paint_beauty_color(const std::vector<size_t>& faces)
@@ -636,7 +643,7 @@ void ModelGenerationPanel::paint_beauty_color(const std::vector<size_t>& faces)
         !m_model_preview || m_finishing_tool->GetSelection() != 4 || faces.empty()) return;
     const auto palette = local_recolor_palette();
     if (m_region_color_index < 0 || size_t(m_region_color_index) >= palette.size()) return;
-    const wxColour color(from_u8(palette[m_region_color_index]));
+    const wxColour color(from_u8(palette[m_region_color_index].color));
     if (!color.IsOk()) return;
     const auto geometry = m_model_preview->beauty_geometry_id();
     const bool leaves = m_model_preview->leaf_editing();

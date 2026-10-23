@@ -269,6 +269,11 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                             self->refresh_controls();
                             self->accept_model_finishing();
                         } else {
+                            // Manual repair candidates are reviewed in the
+                            // Beauty inspector. Its fixed action dock owns
+                            // accept/discard; the canvas no longer has a
+                            // global candidate bar.
+                            self->m_workbench_editing = true;
                             self->m_workbench_check_result.summary += "\n修复候选已生成，请预览后接受或保留原模型。";
                         }
                     }

@@ -494,7 +494,7 @@ public:
             pack.colors.emplace_back(hex.data());
             pack.labels.emplace_back("槽位 " + std::to_string(i + 1));
         }
-        return pack.valid() ? std::optional<FilamentColorPack>(std::move(pack)) : std::nullopt;
+        return pack.valid_for_workbench_import() ? std::optional<FilamentColorPack>(std::move(pack)) : std::nullopt;
     }
     bool color_card_source_active() const {
         // Every saved color card participates in region-preserving remapping;

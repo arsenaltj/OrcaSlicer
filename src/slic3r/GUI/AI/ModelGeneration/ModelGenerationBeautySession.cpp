@@ -280,12 +280,16 @@ void ModelGenerationPanel::refresh_model_finishing()
     const bool transaction_busy = (m_portrait_task && m_portrait_task->snapshot().running()) || m_workbench_check_running || (m_beauty_transactions && m_beauty_transactions->processing()) ||
         m_model_preview->semantic_processing() ||
         (m_finishing_workbench && m_model_preview->selection_busy());
+    const bool show_beauty_actions = m_finishing_workbench && m_workbench_editing && !m_workbench_check_running &&
+        !(m_workbench_auto_repair && (m_finishing_running || pending));
+    const bool show_finishing_panel = m_finishing_workbench && m_workbench_editing &&
+        (ready || m_finishing_running || pending);
     const bool repaint_layout = m_finishing_workbench &&
-        (m_finishing_panel->IsShown() != m_workbench_editing ||
+        (m_finishing_panel->IsShown() != show_finishing_panel ||
          m_workbench_history_panel->IsShown() != (!m_workbench_editing && !m_workbench_history_collapsed) ||
-         m_workbench_footer->IsShown() != (m_workbench_editing || m_finishing_running || pending ||
-                                          (m_beauty_transactions && m_beauty_transactions->processing())));
-    m_finishing_panel->Show(m_finishing_workbench && m_workbench_editing && (ready || m_finishing_running || pending));
+         m_workbench_footer->IsShown() != show_beauty_actions);
+    m_finishing_panel->Show(show_finishing_panel);
+    m_workbench_footer->Show(show_beauty_actions);
     const auto beauty_source = pending ? m_finishing_candidate : m_displayed_model_path;
     if (m_beauty_controls)
         m_beauty_controls->synchronize(beauty_source, ready && !m_busy && !transaction_busy &&
@@ -374,10 +378,11 @@ void ModelGenerationPanel::refresh_model_finishing()
         m_recheck_model->SetToolTip(_L("本地处理版本请导入准备页，检查实际打印条件。"));
     }
     wrap_workbench_text(m_finishing_status,
-        std::max(FromDIP(80), m_finishing_panel->GetClientSize().x - FromDIP(34)));
+        std::max(FromDIP(80), m_finishing_scroll->GetClientSize().x - FromDIP(34)));
     wrap_workbench_text(m_finishing_selection_status, FromDIP(240));
     m_finishing_panel->Layout();
-    static_cast<wxScrolledWindow*>(m_finishing_panel)->FitInside();
+    m_finishing_scroll->Layout();
+    m_finishing_scroll->FitInside();
     if (auto* page = dynamic_cast<wxScrolledWindow*>(m_finishing_panel->GetParent())) {
         page->Layout(); page->FitInside();
     }
@@ -422,6 +427,8 @@ void ModelGenerationPanel::reset_beauty_asset()
     m_workbench_check_path.clear();
     m_workbench_check_result = {};
     m_workbench_operation_notice.clear();
+    m_workbench_printer_filament_notice.clear();
+    m_workbench_printer_filament_notice_error = false;
     m_applied_filaments_saved_model.clear();
     m_applied_filaments_saved_signature.clear();
     clear_unaccepted_beauty_candidates();

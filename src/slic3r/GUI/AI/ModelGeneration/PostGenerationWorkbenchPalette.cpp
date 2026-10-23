@@ -7,7 +7,6 @@
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/GUI/PresetComboBoxes.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
-#include "slic3r/GUI/AI/Orca/OrcaFilamentSelection.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaPrintPaletteSnapshot.hpp"
 #include <wx/menu.h>
 #include <wx/sizer.h>
@@ -104,16 +103,24 @@ void ModelGenerationPanel::toggle_printer_filament_trial()
         exit_printer_filament_trial();
         return;
     }
+    auto report = [this](std::string message, bool error) {
+        m_workbench_printer_filament_notice = message;
+        m_workbench_printer_filament_notice_error = error;
+        m_workbench_operation_notice = std::move(message);
+        refresh_controls();
+        publish_workbench_state();
+    };
     const auto snapshot = workbench_snapshot();
-    if (!snapshot.can_edit_project_colors || m_finishing_candidate.size()) return;
+    if (!snapshot.can_edit_project_colors || m_finishing_candidate.size()) {
+        report("模型处理中或存在未接受候选，请先完成当前操作。", true);
+        return;
+    }
     // A previously persisted printer source may still be visible after a
     // history restore.  Return to its captured appearance before taking a new
     // trial snapshot, otherwise the old native palette would become the input.
     if (m_model_preview->color_trial_state().source == 1 &&
         !m_model_preview->restore_printer_filament_input_source()) {
-        m_workbench_operation_notice = "无法恢复进入试色前的模型外观，请重新载入模型后再试。";
-        refresh_controls();
-        publish_workbench_state();
+        report("无法恢复进入试色前的模型外观，请重新载入模型后再试。", true);
         return;
     }
     // Read the card only after restoring a persisted printer source.  The
@@ -121,31 +128,59 @@ void ModelGenerationPanel::toggle_printer_filament_trial()
     // is the one the user explicitly asked to import into the native palette.
     const auto card = m_model_preview->current_color_pack();
     if (!card) {
-        m_workbench_operation_notice = "当前没有可导入的色卡，请先生成自动建议或完成试色。";
-        refresh_controls();
-        publish_workbench_state();
+        report("当前没有可导入的色卡，请先生成自动建议或完成试色。", true);
         return;
     }
-    const auto sources = m_model_preview->configuration_color_sources();
-    set_project_color_sync_suspended(true);
-    const bool committed = show_orca_filament_selection(
-        wxGetTopLevelParent(m_workbench_shell), *wxGetApp().plater(), size_t(-1), false, sources, *card);
-    set_project_color_sync_suspended(false);
-    if (!committed) return;
 
-    if (!m_model_preview->apply_project_filament_palette() ||
-        !m_model_preview->activate_printer_filament_preview()) {
-        m_model_preview->exit_printer_filament_trial();
-        m_workbench_operation_notice = "耗材配置已提交，但模型试色刷新失败；请重新载入模型后再试。";
-        synchronize_workbench_project_palette(true);
-        refresh_controls();
-        publish_workbench_state();
+    auto* bundle = wxGetApp().preset_bundle;
+    auto* plater = wxGetApp().plater();
+    if (!bundle || !plater) {
+        report("当前没有可用的打印机耗材配置。", true);
         return;
     }
+    PrinterFilamentConfig::StagedColorPackImport staged;
+    std::string error;
+    if (!PrinterFilamentConfig::stage_workbench_color_pack_import(*bundle, *card, staged, error)) {
+        report(error.empty() ? "色卡无法生成可用的实体耗材与叠色配方，工程保持原状。" : error, true);
+        return;
+    }
+
+    const auto before = capture_beauty_candidate();
+    set_project_color_sync_suspended(true);
+    m_model_preview->set_project_configuration_override(staged.configuration);
+    auto rollback_preview = [&] {
+        m_model_preview->set_project_configuration_override({});
+        set_project_color_sync_suspended(false);
+        restore_beauty_candidate(before);
+    };
+    if (!m_model_preview->apply_project_filament_palette(&staged.bindings) ||
+        !m_model_preview->activate_printer_filament_preview()) {
+        rollback_preview();
+        report("色卡暂存成功，但模型试色无法激活；工程和模型预览均保持原状。", true);
+        return;
+    }
+    if (PrinterFilamentConfig::capture(*bundle).signature != staged.source_signature) {
+        rollback_preview();
+        report("提交前打印机或耗材配置已变化，请重新导入色卡。", true);
+        return;
+    }
+    if (!plater->apply_printer_filament_config(*staged.configuration, staged.changes, error)) {
+        rollback_preview();
+        report(error.empty() ? "色卡提交失败，工程和模型预览均保持原状。" :
+            "色卡提交失败，工程和模型预览均保持原状：" + error, true);
+        return;
+    }
+    m_model_preview->set_project_configuration_override({});
+    set_project_color_sync_suspended(false);
     m_printer_filament_trial_active = true;
     m_printer_filament_trial_geometry = m_model_preview->geometry_id();
-    m_printer_filament_trial_signature = PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature;
-    m_workbench_operation_notice = "已进入打印机耗材试色；修改槽位颜色会立即同步模型，退出后恢复进入前外观。";
+    m_printer_filament_trial_signature = PrinterFilamentConfig::capture(*bundle).signature;
+    const std::string success = "已导入 " + std::to_string(card->colors.size()) + " 色：" +
+        std::to_string(staged.physical_count) + " 个实体槽 + " +
+        std::to_string(staged.mixed_count) + " 个叠色槽，已进入试色";
+    m_workbench_printer_filament_notice = success;
+    m_workbench_printer_filament_notice_error = false;
+    m_workbench_operation_notice = success;
     synchronize_workbench_project_palette(true);
     refresh_controls();
     publish_workbench_state();
@@ -163,6 +198,8 @@ void ModelGenerationPanel::exit_printer_filament_trial(const wxString& reason)
     m_printer_filament_trial_signature.clear();
     m_workbench_operation_notice = !reason.empty() ? std::string(reason.ToUTF8().data()) :
         (restored ? "已退出打印机耗材试色，模型已恢复进入前外观。" : "耗材试色已失效，请重新载入模型。 ");
+    m_workbench_printer_filament_notice = m_workbench_operation_notice;
+    m_workbench_printer_filament_notice_error = !restored;
     refresh_controls();
     publish_workbench_state();
 }

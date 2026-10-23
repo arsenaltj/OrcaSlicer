@@ -632,10 +632,14 @@ void BeautyWorkbenchControls::update_text()
     if (on_available_colors) {
         const auto colors = on_available_colors();
         if (colors != m_palette_colors) {
+            std::optional<BeautyColorItem> selected;
+            const int previous_selection = m_color_slot->GetSelection();
+            if (previous_selection >= 0 && size_t(previous_selection) < m_palette_colors.size())
+                selected = m_palette_colors[size_t(previous_selection)];
             m_palette_colors = colors;
             m_color_slot->Clear();
             for (size_t slot = 0; slot < colors.size(); ++slot) {
-                const wxString hex = wxString::FromUTF8(colors[slot]);
+                const wxString hex = wxString::FromUTF8(colors[slot].color);
                 wxColour color(hex);
                 if (!color.IsOk()) color = wxColour(128, 128, 128);
                 const int swatch_width = FromDIP(30), swatch_height = FromDIP(16);
@@ -647,12 +651,17 @@ void BeautyWorkbenchControls::update_text()
                 dc.SetPen(wxPen(wxColour(80, 80, 80), FromDIP(1)));
                 dc.DrawRoundedRectangle(0, 0, swatch_width, swatch_height, FromDIP(2));
                 dc.SelectObject(wxNullBitmap);
-                m_color_slot->Append(wxString::Format(_L("耗材 %llu · "),
-                    static_cast<unsigned long long>(slot + 1)) + hex, swatch);
+                m_color_slot->Append(wxString::FromUTF8(colors[slot].label) + " · " + hex, swatch);
             }
             if (!colors.empty()) {
-                m_color_slot->SetSelection(0);
-                if (on_color_slot_changed) on_color_slot_changed(0);
+                size_t next = 0;
+                if (selected) {
+                    const auto found = std::find_if(colors.begin(), colors.end(),
+                        [&](const BeautyColorItem& item) { return item.same_identity(*selected); });
+                    if (found != colors.end()) next = size_t(std::distance(colors.begin(), found));
+                }
+                m_color_slot->SetSelection(int(next));
+                if (on_color_slot_changed) on_color_slot_changed(next);
             }
         }
     }
@@ -710,9 +719,14 @@ void BeautyWorkbenchControls::update_text()
     m_preview_button->Enable(active && !unsupported_glb_operation);
     m_preview_button->Show(m_operation->GetSelection() != 0);
     m_accept->Enable(available && m_candidate_ready);
+    m_accept->Show(m_candidate_ready);
     m_discard->Enable(available && (m_candidate_ready || m_dirty));
+    m_discard->Show(m_candidate_ready || m_dirty);
     m_discard->SetLabel(m_candidate_ready ? _L("放弃候选") : _L("放弃修改"));
     m_cancel->Enable(m_processing || bool(m_partition_task) || selection_calculating);
+    m_cancel->Show(m_processing || bool(m_partition_task) || selection_calculating);
+    m_undo->Show(m_can_undo);
+    m_redo->Show(m_can_redo);
     m_details_toggle->SetLabel(m_details_open ? _L("收起高级语义工具") : _L("高级语义工具"));
     for (wxWindow* control : std::initializer_list<wxWindow*>{m_secondary_status, m_import_secondary,
              m_regenerate_evidence,
@@ -798,12 +812,15 @@ void BeautyWorkbenchControls::attach_parameters(wxWindow* surface, wxWindow* str
     }
 }
 
-void BeautyWorkbenchControls::attach_actions(wxWindow* footer)
+void BeautyWorkbenchControls::attach_actions(wxWindow* footer, Button* compare)
 {
     auto* actions = new wxWrapSizer(wxHORIZONTAL, wxREMOVE_LEADING_SPACES);
-    for (Button* button : {m_preview_button, m_accept, m_discard, m_cancel, m_undo, m_redo, m_save}) {
-        button->GetContainingSizer()->Detach(button);
-        button->Reparent(footer);
+    for (Button* button : {m_preview_button, compare, m_accept, m_discard, m_cancel, m_undo, m_redo, m_save}) {
+        if (!button) continue;
+        if (auto* containing_sizer = button->GetContainingSizer())
+            containing_sizer->Detach(button);
+        if (button->GetParent() != footer)
+            button->Reparent(footer);
         if (button == m_undo || button == m_redo) {
             const wxString label = button->GetLabel();
             button->SetName(label);

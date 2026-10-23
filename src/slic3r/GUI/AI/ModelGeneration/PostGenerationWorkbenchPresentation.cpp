@@ -212,6 +212,13 @@ void ModelGenerationPanel::update_workbench_check_overlay()
         return;
     }
     m_workbench_check_overlay_visible = true;
+    const wxColour modal_text(238, 240, 244);
+    for (auto* label : {m_workbench_check_phase, m_workbench_check_message}) {
+        if (label->GetForegroundColour() != modal_text) {
+            label->SetForegroundColour(modal_text);
+            label->Refresh(false);
+        }
+    }
     if (m_model_preview) m_model_preview->suspend_workbench_canvas();
     if (!m_workbench_check_overlay->IsShown()) {
         wxWindowUpdateLocker locker(m_workbench_check_overlay);
@@ -335,13 +342,13 @@ void ModelGenerationPanel::layout_workbench_parameters(bool force)
     // Keep its floating controls there, while docking at the 640 DIP minimum.
     const bool dock_parameters = overlay_host->GetClientSize().x < FromDIP(720);
     static_cast<WorkbenchScrolledWindow*>(m_workbench_parameters)->set_rounded_corners(!dock_parameters);
-    wxWindow* parameter_parent = dock_parameters ? m_finishing_panel : overlay_host;
+    wxWindow* parameter_parent = dock_parameters ? m_finishing_scroll : overlay_host;
     if (m_workbench_parameters->GetParent() != parameter_parent) {
         if (auto* sizer = m_workbench_parameters->GetContainingSizer())
             sizer->Detach(m_workbench_parameters);
         m_workbench_parameters->Reparent(parameter_parent);
         if (dock_parameters)
-            m_finishing_panel->GetSizer()->Insert(1, m_workbench_parameters, 0, wxEXPAND | wxBOTTOM, FromDIP(12));
+            m_finishing_scroll->GetSizer()->Insert(1, m_workbench_parameters, 0, wxEXPAND | wxBOTTOM, FromDIP(12));
         layout_needed = true;
     }
     layout_needed = set_workbench_shown(m_workbench_parameters, visible) || layout_needed;
@@ -369,7 +376,8 @@ void ModelGenerationPanel::layout_workbench_parameters(bool force)
         }
         if (layout_needed) {
             m_finishing_panel->Layout();
-            static_cast<wxScrolledWindow*>(m_finishing_panel)->FitInside();
+            m_finishing_scroll->Layout();
+            m_finishing_scroll->FitInside();
             surface->Layout();
             surface->FitInside();
         }
@@ -454,10 +462,13 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         layout_changed = true;
     }
     layout_changed = set_workbench_shown(m_workbench_settings, true) || layout_changed;
-    layout_changed = set_workbench_shown(m_finishing_panel, m_workbench_editing) || layout_changed;
-    layout_changed = set_workbench_shown(m_workbench_footer,
-        m_workbench_editing || m_finishing_running || !m_finishing_candidate.empty() ||
-        (m_beauty_transactions && m_beauty_transactions->processing())) || layout_changed;
+    const bool finishing_ready = m_model_preview_ready && is_nonempty_model(m_displayed_model_path);
+    const bool show_finishing_panel = m_workbench_editing &&
+        (finishing_ready || m_finishing_running || !m_finishing_candidate.empty());
+    layout_changed = set_workbench_shown(m_finishing_panel, show_finishing_panel) || layout_changed;
+    const bool show_beauty_actions = m_workbench_editing && !m_workbench_check_running &&
+        !(m_workbench_auto_repair && (m_finishing_running || !m_finishing_candidate.empty()));
+    layout_changed = set_workbench_shown(m_workbench_footer, show_beauty_actions) || layout_changed;
     const bool history_was_shown = m_workbench_history_panel->IsShown();
     if (!m_workbench_import_feedback)
         layout_changed = set_workbench_shown(m_workbench_history_panel,
@@ -507,16 +518,37 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     for (wxWindow* color : m_workbench_project_colors->GetChildren())
         set_workbench_enabled(color, snapshot.can_edit_project_colors);
     if (m_workbench_printer_filament_trial) {
-        const bool has_card = m_model_preview && m_model_preview->current_color_pack().has_value();
-        const bool can_trial = snapshot.can_edit_project_colors &&
-            (m_printer_filament_trial_active || has_card);
+        const auto card = m_model_preview ? m_model_preview->current_color_pack() : std::nullopt;
+        const bool has_card = card && card->valid_for_workbench_import();
+        const bool can_trial = m_printer_filament_trial_active ||
+            (snapshot.can_edit_project_colors && has_card);
         set_workbench_enabled(m_workbench_printer_filament_trial, can_trial);
         layout_changed = set_workbench_label(m_workbench_printer_filament_trial,
             m_printer_filament_trial_active ? _L("退出打印机耗材试色") : _L("将当前色卡导入到打印机耗材")) || layout_changed;
+        const wxString disabled_reason = !has_card
+            ? _L("当前没有 1 至 32 色的有效色卡，请先生成自动建议或完成试色。")
+            : !snapshot.can_edit_project_colors
+                ? _L("模型处理中或存在未接受候选，请先完成当前操作。") : wxString{};
         set_workbench_tooltip(m_workbench_printer_filament_trial, m_printer_filament_trial_active
             ? _L("退出试色并恢复进入前的模型外观；已提交的耗材配置保留。")
-            : has_card ? _L("打开已预载当前色卡的原生耗材配置；只有点击完成才会提交并进入试色。")
-                       : _L("当前没有可导入色卡，请先生成自动建议或完成试色。"));
+            : can_trial ? _L("直接生成实体耗材与叠色配方；成功后一次提交并进入试色，不打开配置确认窗。")
+                        : disabled_reason);
+        if (m_workbench_printer_filament_feedback) {
+            const wxString feedback = !m_workbench_printer_filament_notice.empty()
+                ? wxString::FromUTF8(m_workbench_printer_filament_notice) : disabled_reason;
+            const bool feedback_error = !m_workbench_printer_filament_notice.empty()
+                ? m_workbench_printer_filament_notice_error : false;
+            const wxColour color = feedback_error ? wxColour(255, 150, 146) :
+                (!m_workbench_printer_filament_notice.empty() ? wxColour(91, 205, 137) : wxColour(190, 190, 196));
+            if (m_workbench_printer_filament_feedback->GetForegroundColour() != color) {
+                m_workbench_printer_filament_feedback->SetForegroundColour(color);
+                m_workbench_printer_filament_feedback->Refresh(false);
+            }
+            layout_changed = set_wrapped_workbench_text(m_workbench_printer_filament_feedback,
+                feedback, FromDIP(235), true) || layout_changed;
+            layout_changed = set_workbench_shown(m_workbench_printer_filament_feedback,
+                !feedback.empty()) || layout_changed;
+        }
     }
     set_workbench_enabled(m_workbench_palette_details, state.can_edit && m_finishing_candidate.empty());
     m_model_preview->set_workbench_palette_editable(state.can_edit && m_finishing_candidate.empty());

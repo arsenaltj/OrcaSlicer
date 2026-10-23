@@ -18,6 +18,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 class Button;
 class wxChoice;
@@ -35,6 +36,24 @@ struct BeautyPartitionSnapshot {
     uint32_t selected {0};
     std::string canonical_geometry_id,source_sha256,mapping_sha256;
     AI::SurfaceSelectionPersistence::SelectionState selection;
+};
+
+enum class BeautyColorSource { Physical, Mixed };
+
+struct BeautyColorItem {
+    std::string color;
+    std::string label;
+    size_t native_slot {0};
+    BeautyColorSource source {BeautyColorSource::Physical};
+
+    bool operator==(const BeautyColorItem& other) const {
+        return color == other.color && label == other.label && native_slot == other.native_slot &&
+            source == other.source;
+    }
+    bool operator!=(const BeautyColorItem& other) const { return !(*this == other); }
+    bool same_identity(const BeautyColorItem& other) const {
+        return native_slot == other.native_slot && source == other.source;
+    }
 };
 
 // Adapter for the existing result-window finishing controls. It deliberately
@@ -55,7 +74,7 @@ public:
     void synchronize_automatic_basis(const std::string& basis_signature);
     void set_portrait_enabled(bool enabled) { m_portrait_enabled = enabled; update_text(); }
     void mark_saved();
-    void attach_actions(wxWindow* footer);
+    void attach_actions(wxWindow* footer, Button* compare);
     void attach_parameters(wxWindow* surface, wxWindow* strength_label, wxWindow* strength);
     void set_history_permissions(bool undo, bool redo);
     void request_secondary_partition(const boost::filesystem::path& source);
@@ -107,7 +126,7 @@ public:
     std::function<void()> on_fill_color;
     std::function<void()> on_paint_mode;
     std::function<void(const std::string&, std::function<void()>, std::function<void()>)> on_record;
-    std::function<std::vector<std::string>()> on_available_colors;
+    std::function<std::vector<BeautyColorItem>()> on_available_colors;
     std::function<void(size_t)> on_color_slot_changed;
     std::function<void(bool)> on_color_blocks_change;
 
@@ -169,7 +188,7 @@ private:
     ComboBox* m_color_slot {nullptr};
     Button* m_fill_color {nullptr};
     Button* m_paint_color {nullptr};
-    std::vector<std::string> m_palette_colors;
+    std::vector<BeautyColorItem> m_palette_colors;
     ComboBox* m_auto_region {nullptr};
     ComboBox* m_auto_detail {nullptr};
     std::vector<std::string> m_auto_detail_ids;

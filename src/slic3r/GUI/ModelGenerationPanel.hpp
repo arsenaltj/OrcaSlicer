@@ -69,6 +69,7 @@ class ModelPreview3D;
 class BeautyWorkbenchControls;
 class WorkbenchIndeterminateProgress;
 class WorkbenchLabel;
+struct BeautyColorItem;
 struct BeautyPartitionSnapshot;
 struct SemanticRegionEvidence;
 struct SecondaryRegionEvidence;
@@ -241,6 +242,7 @@ private:
     wxStaticText* m_workbench_mixed_filament_title {nullptr};
     wxPanel* m_workbench_project_colors {nullptr};
     wxStaticText* m_workbench_project_summary {nullptr};
+    wxStaticText* m_workbench_printer_filament_feedback {nullptr};
     WorkbenchButton* m_workbench_apply_project_filaments {nullptr};
     WorkbenchButton* m_workbench_printer_filament_trial {nullptr};
     WorkbenchButton* m_workbench_configure_filaments {nullptr};
@@ -266,6 +268,8 @@ private:
     bool m_printer_filament_trial_active {false};
     std::string m_printer_filament_trial_geometry;
     std::string m_printer_filament_trial_signature;
+    std::string m_workbench_printer_filament_notice;
+    bool m_workbench_printer_filament_notice_error {false};
     void finish_printer_filament_application(bool success);
     bool commit_printer_filament_application(std::string& error);
     std::function<void()> m_workbench_results;
@@ -409,7 +413,7 @@ private:
     void redo_model_finishing();
     void undo_model_finishing();
     void export_semantic_candidate();
-    std::vector<std::string> local_recolor_palette() const;
+    std::vector<BeautyColorItem> local_recolor_palette() const;
     void update_region_mode();
     wxWindow* build_workbench_history(wxWindow* parent);
     void refresh_workbench_history();
@@ -461,6 +465,7 @@ private:
     ModelGenerationUIState m_ui_state;
 
     wxPanel* m_finishing_panel {nullptr};
+    wxScrolledWindow* m_finishing_scroll {nullptr};
     wxWindow* m_finishing_selection_section {nullptr};
     bool m_finishing_selection_open {false};
     wxWindow* build_post_generation_workbench(wxWindow* parent);
