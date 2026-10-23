@@ -55,3 +55,18 @@ target_include_directories(mobile_slicing_platform_digest_tests PRIVATE ../../sr
 target_link_libraries(mobile_slicing_platform_digest_tests PRIVATE Catch2::Catch2WithMain)
 target_compile_features(mobile_slicing_platform_digest_tests PRIVATE cxx_std_17)
 orcaslicer_discover_tests(mobile_slicing_platform_digest_tests)
+
+# Optional pinned Boost headers let the SDK-only host build validate the Android
+# MD5 compatibility adapter without adding Boost to the Device SDK dependency graph.
+if(ORCA_PLATFORM_TEST_BOOST_SOURCE_DIR)
+    file(GLOB _orca_test_boost_headers LIST_DIRECTORIES true
+         "${ORCA_PLATFORM_TEST_BOOST_SOURCE_DIR}/libs/*/include")
+    add_executable(mobile_slicing_platform_md5_tests test_mobile_digest.cpp)
+    target_compile_features(mobile_slicing_platform_md5_tests PRIVATE cxx_std_17)
+    target_compile_definitions(mobile_slicing_platform_md5_tests PRIVATE ORCA_MOBILE_ANDROID=1)
+    target_include_directories(mobile_slicing_platform_md5_tests PRIVATE ../../src
+        ${_orca_test_boost_headers}
+        "${ORCA_PLATFORM_TEST_BOOST_SOURCE_DIR}/libs/numeric/conversion/include")
+    target_link_libraries(mobile_slicing_platform_md5_tests PRIVATE Catch2::Catch2WithMain)
+    orcaslicer_discover_tests(mobile_slicing_platform_md5_tests)
+endif()

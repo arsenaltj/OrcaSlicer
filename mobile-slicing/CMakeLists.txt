@@ -166,7 +166,8 @@ target_compile_definitions(orca_slicer_core PUBLIC
 target_compile_options(orca_slicer_core PRIVATE -fvisibility=hidden)
 target_include_directories(orca_slicer_core
     PRIVATE "${ORCA_SOURCE_ROOT}/src/libslic3r"
-    PUBLIC "${ORCA_SOURCE_ROOT}/src" "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    PUBLIC "${ORCA_SOURCE_ROOT}/src" "${CMAKE_CURRENT_BINARY_DIR}/generated"
+           "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/platform")
 set(ORCA_CHECK_GCODE_PLACEHOLDERS 0 CACHE STRING "" FORCE)
 configure_file("${ORCA_SOURCE_ROOT}/src/libslic3r/libslic3r_version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/libslic3r_version.h" @ONLY)
 

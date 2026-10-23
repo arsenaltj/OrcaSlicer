@@ -1,6 +1,8 @@
 #include "Model.hpp"
 #include "calib.hpp"
+#ifndef ORCA_MOBILE_ANDROID
 #include "Format/STEP.hpp"
+#endif
 #include "TriangleMesh.hpp"
 #include "Semver.hpp"
 #include "Format/OBJ.hpp"

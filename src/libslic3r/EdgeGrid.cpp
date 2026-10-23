@@ -9,7 +9,7 @@
 #include <float.h>
 #include <unordered_map>
 
-#ifdef EDGE_GRID_DEBUG_OUTPUT
+#ifndef ORCA_MOBILE_ANDROID
 #include <png.h>
 #endif
 
@@ -23,7 +23,7 @@
 #include "EdgeGrid.hpp"
 #include "Geometry.hpp"
 #include "SVG.hpp"
-#ifdef EDGE_GRID_DEBUG_OUTPUT
+#ifndef ORCA_MOBILE_ANDROID
 #include "PNGReadWrite.hpp"
 #endif
 
