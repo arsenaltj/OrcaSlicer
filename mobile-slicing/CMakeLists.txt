@@ -71,13 +71,17 @@ FetchContent_Declare(libnoise
     URL https://github.com/SoftFever/Orca-deps-libnoise/archive/refs/tags/1.0.zip
     URL_HASH SHA256=96ffd6cc47898dd8147aab53d7d1b1911b507d9dbaecd5613ca2649468afd8b6)
 FetchContent_MakeAvailable(libnoise)
-# Expose the same libnoise/ include layout as desktop installations, without
-# adding Android branches to shared core sources. Cached dependency sources
-# remain read-only; hosts without symlink privileges use a local header copy.
+# Expose the desktop libnoise/ include layout in this build directory.
+# Stage only public headers; dependency sources and shared core stay unchanged.
+FetchContent_GetProperties(libnoise)
+if(NOT EXISTS "${libnoise_SOURCE_DIR}/src/module/modulebase.h")
+    message(FATAL_ERROR "Pinned libnoise source headers are missing")
+endif()
+file(COPY "${libnoise_SOURCE_DIR}/src/"
+     DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/generated/libnoise"
+     FILES_MATCHING PATTERN "*.h")
 if(NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/generated/libnoise/module/modulebase.h")
-    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
-    file(CREATE_LINK "${libnoise_SOURCE_DIR}/src"
-         "${CMAKE_CURRENT_BINARY_DIR}/generated/libnoise" SYMBOLIC COPY_ON_ERROR)
+    message(FATAL_ERROR "Could not stage the libnoise public header layout")
 endif()
 if(TARGET noise AND NOT TARGET noise::noise)
     add_library(noise::noise ALIAS noise)
