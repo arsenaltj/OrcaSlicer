@@ -112,5 +112,3 @@ install(TARGETS orca_mobile_device_sdk orca_mobile_device_sdk_ffi
 install(DIRECTORY include/ DESTINATION include)
 install(FILES "${ORCA_MOBILE_DEVICE_SDK_GENERATED_INCLUDE_DIR}/orca/mobile/device/MobileDeviceSDKBuildInfo.hpp"
         DESTINATION include/orca/mobile/device)
-
-

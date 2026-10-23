@@ -96,9 +96,32 @@ void repaint_workbench_surface(wxWindow* window)
         repaint_workbench_surface(child);
 }
 }
+bool ModelGenerationPanel::finishing_workbench_layout_ready(bool enabled) const
+{
+    const bool common_ready = GetSizer() && m_generation_content && m_generation_header &&
+        m_model_page && m_model_page->GetSizer() && m_comparison_panel &&
+        m_workbench_view_host && m_workbench_view_host->GetSizer() && m_workbench_shell &&
+        m_model_preview && m_model_stats && m_front_model_view && m_reset_model_view &&
+        m_workflow_panel && m_preview_area && m_expand_images && m_zoom_out && m_zoom_in &&
+        m_zoom_fit && m_preview_zoom && m_finishing_shortcut && m_preview_stage_hint &&
+        m_preview_message && m_result_summary && m_preview_kind && m_model_decision_panel;
+    if (!common_ready) return false;
+    return enabled ? m_local_recolor_toggle != nullptr :
+        m_workbench_model_info && m_workbench_history_toggle && m_finishing_gray;
+}
+
 void ModelGenerationPanel::set_finishing_workbench(bool enabled)
 {
     if (m_finishing_workbench == enabled) return;
+    if (!finishing_workbench_layout_ready(enabled)) {
+        BOOST_LOG_TRIVIAL(error) << "Refusing workbench mode switch because its window layout is incomplete: enabled="
+            << enabled << ", page_initialized=" << m_page_initialized
+            << ", model_page=" << bool(m_model_page)
+            << ", comparison=" << bool(m_comparison_panel)
+            << ", workbench_host=" << bool(m_workbench_view_host)
+            << ", workbench_shell=" << bool(m_workbench_shell);
+        return;
+    }
     // Reparent, theme and lay out the shared viewport before exposing the new mode.
     wxWindowUpdateLocker mode_updates(this);
     m_finishing_workbench = enabled;
@@ -486,6 +509,8 @@ BeautyCandidateSnapshot ModelGenerationPanel::capture_beauty_candidate() const
     snapshot.region_evidence_error = m_model_preview->semantic_region_evidence_error();
     snapshot.secondary_evidence = m_model_preview->secondary_region_evidence();
     snapshot.secondary_evidence_error = m_model_preview->secondary_region_evidence_error();
+    snapshot.color_blocks=m_model_preview->portrait_color_blocks();
+    snapshot.printer_restore=m_model_preview->printer_restore_snapshot();
     snapshot.shape_details = m_model_preview->portrait_shape_details();
     snapshot.shapes_unlocked = m_model_preview->portrait_shapes_unlocked();
     snapshot.leaf_edits=m_model_preview->leaf_edit_metadata();
@@ -596,6 +621,8 @@ bool ModelGenerationPanel::restore_beauty_candidate(const BeautyCandidateSnapsho
         m_finishing_candidate_semantic_faces = m_model_preview->import_face_color_overrides(true);
         m_finishing_candidate_semantic_subfaces = m_model_preview->import_subface_color_overrides(true);
     }
+    m_model_preview->restore_portrait_color_blocks(snapshot.color_blocks);
+    m_model_preview->restore_printer_restore_snapshot(snapshot.printer_restore);
     if (snapshot.geometry_id == m_model_preview->geometry_id() &&
         snapshot.selection.selected.size() == m_model_preview->triangle_count())
         m_model_preview->restore_selection_state(snapshot.selection);

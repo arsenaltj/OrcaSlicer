@@ -45,3 +45,13 @@ add_custom_command(TARGET ${_TEST_NAME}_cabi_tests POST_BUILD
             $<TARGET_FILE_DIR:${_TEST_NAME}_cabi_tests>
 )
 orcaslicer_discover_tests(${_TEST_NAME}_cabi_tests)
+
+# Run the shared digest contract against the Android backend on the host,
+# without pulling desktop/OpenSSL dependencies into the SDK-only build.
+add_executable(mobile_slicing_platform_digest_tests
+    ../libslic3r/test_sha256_digest.cpp
+    ../../src/orca_mobile_slicing_sdk/platform/AndroidSha256Digest.cpp)
+target_include_directories(mobile_slicing_platform_digest_tests PRIVATE ../../src)
+target_link_libraries(mobile_slicing_platform_digest_tests PRIVATE Catch2::Catch2WithMain)
+target_compile_features(mobile_slicing_platform_digest_tests PRIVATE cxx_std_17)
+orcaslicer_discover_tests(mobile_slicing_platform_digest_tests)

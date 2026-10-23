@@ -1,4 +1,10 @@
 #include <algorithm>
+#include <cstddef>
+#include <cstdlib>
+#include <cstdint>
+#include <utility>
+#include <cmath>
+#include <set>
 #include <vector>
 #include <float.h>
 #include <unordered_map>
@@ -7,6 +13,11 @@
 #include <png.h>
 #endif
 
+#include "Polygon.hpp"
+#include "Point.hpp"
+#include "Polyline.hpp"
+#include "ExPolygon.hpp"
+#include "Line.hpp"
 #include "libslic3r.h"
 #include "ClipperUtils.hpp"
 #include "EdgeGrid.hpp"
@@ -1640,5 +1651,3 @@ void export_intersections_to_svg(const std::string &filename, const Polygons &po
 }
 
 } // namespace Slic3r
-
-

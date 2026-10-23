@@ -1,4 +1,6 @@
 #include "ObjColorUtils.hpp"
+#include <vector>
+#include "Color.hpp"
 
 #include <algorithm>
 

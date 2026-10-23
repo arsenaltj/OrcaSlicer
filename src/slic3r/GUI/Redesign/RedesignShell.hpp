@@ -2,6 +2,7 @@
 
 #include "ImageDesignDraft.hpp"
 #include "NativeWorkspaceTheme.hpp"
+#include "RedesignModelRoute.hpp"
 #include "../AI/ModelGeneration/ModelGenerationHost.hpp"
 #include "../AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "../AI/ModelGeneration/WorkbenchImportSession.hpp"
@@ -203,6 +204,7 @@ private:
     ModelView m_model_view {ModelView::Result};
     bool m_native_slicing {false};
     bool m_preview_toolpath_outside {false};
+    PreviewAutoFitState m_preview_auto_fit;
     bool m_slice_completion_retry_pending {false};
     bool m_import_in_progress {false};
     bool m_import_switching_view {false};

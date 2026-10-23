@@ -5,6 +5,7 @@
 #include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/GLToolbar.hpp"
 #include "slic3r/GUI/Widgets/Label.hpp"
+#include "slic3r/GUI/GUI.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Print.hpp"
 #include "slic3r/Utils/ASCIIFolding.hpp"

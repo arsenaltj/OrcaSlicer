@@ -197,5 +197,3 @@ Json select_recommendation(const Json& completedTrials, const std::string& prefe
 }
 
 } // namespace orca::mobile::slicing
-
-

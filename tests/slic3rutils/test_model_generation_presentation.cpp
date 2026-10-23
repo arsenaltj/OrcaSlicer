@@ -361,24 +361,6 @@ private:
     std::optional<std::string> m_previous;
 };
 
-class ScopedWorkingDirectory
-{
-public:
-    explicit ScopedWorkingDirectory(const boost::filesystem::path& directory)
-        : m_previous(boost::filesystem::current_path())
-    {
-        boost::filesystem::current_path(directory);
-    }
-    ~ScopedWorkingDirectory()
-    {
-        boost::system::error_code ignored;
-        boost::filesystem::current_path(m_previous, ignored);
-    }
-
-private:
-    boost::filesystem::path m_previous;
-};
-
 nlohmann::json write_design_fixture(const boost::filesystem::path& directory)
 {
     boost::filesystem::create_directories(directory);

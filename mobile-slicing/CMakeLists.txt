@@ -81,9 +81,7 @@ add_subdirectory("${ORCA_DEPS_SOURCE}/fast_float" "deps/fast_float")
 add_subdirectory("${ORCA_DEPS_SOURCE}/admesh" "deps/admesh")
 target_include_directories(admesh SYSTEM PUBLIC "${ORCA_SOURCE_ROOT}/src")
 target_link_libraries(admesh PUBLIC orca_boost_headers Boost::log)
-add_library(clipper STATIC "${ORCA_DEPS_SOURCE}/clipper/clipper_z.cpp")
-target_include_directories(clipper SYSTEM PUBLIC "${ORCA_DEPS_SOURCE}/clipper" "${ORCA_SOURCE_ROOT}/src")
-target_link_libraries(clipper PUBLIC Eigen3::Eigen TBB::tbb)
+# Upstream v2.5 uses Clipper2; the removed legacy clipper target is not rebuilt.
 add_subdirectory("${ORCA_DEPS_SOURCE}/clipper2" "deps/clipper2")
 add_subdirectory("${ORCA_DEPS_SOURCE}/expat" "deps/expat")
 add_subdirectory("${ORCA_DEPS_SOURCE}/glu-libtess" "deps/glu-libtess")
@@ -119,8 +117,10 @@ list(FILTER ORCA_LIBSLIC3R_CPP INCLUDE REGEX "\\.(cpp|mm)$")
 list(APPEND ORCA_LIBSLIC3R_CPP
     "${ORCA_SOURCE_ROOT}/src/libslic3r/ExPolygonCollection.cpp"
     "${ORCA_SOURCE_ROOT}/src/libslic3r/JumpPointSearch.cpp"
-    "${ORCA_SOURCE_ROOT}/src/libslic3r/MobileTriangulation.cpp")
+    "${ORCA_SOURCE_ROOT}/src/libslic3r/MobileTriangulation.cpp"
+    "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/platform/AndroidSha256Digest.cpp")
 set(_mobile_excludes
+    "/Sha256Digest.cpp$"
     "/SLA/"
     "/SLAPrint.cpp$" "/SLAPrintSteps.cpp$"
     "/Format/AssimpImport.cpp$" "/Format/DRC.cpp$" "/Format/OBJ.cpp$"
@@ -159,7 +159,7 @@ set(ORCA_CHECK_GCODE_PLACEHOLDERS 0 CACHE STRING "" FORCE)
 configure_file("${ORCA_SOURCE_ROOT}/src/libslic3r/libslic3r_version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/libslic3r_version.h" @ONLY)
 
 target_link_libraries(orca_slicer_core PUBLIC
-    Eigen3::Eigen admesh libigl libnest2d miniz qoi semver::semver expat clipper Clipper2 glu-libtess mcut qhull
+    Eigen3::Eigen admesh libigl libnest2d miniz qoi semver::semver expat Clipper2 glu-libtess mcut qhull
     TBB::tbb TBB::tbbmalloc
     orca_boost_headers cereal
     Boost::filesystem Boost::system Boost::thread Boost::log
@@ -201,12 +201,3 @@ if(TARGET orca_mobile_slicing_sdk)
     install(TARGETS orca_mobile_slicing_sdk LIBRARY DESTINATION lib)
 endif()
 install(TARGETS orca_mobile_stl_gate RUNTIME DESTINATION bin)
-
-
-
-
-
-
-
-
-

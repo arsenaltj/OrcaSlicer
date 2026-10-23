@@ -5,6 +5,8 @@
 #include "libslic3r/BoundingBox.hpp"
 #include <functional>
 #include "libslic3r/Color.hpp"
+#include <cstddef>
+#include <utility>
 #include <vector>
 #include <string>
 

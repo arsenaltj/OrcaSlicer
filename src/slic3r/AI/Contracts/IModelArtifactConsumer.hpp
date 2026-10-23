@@ -6,12 +6,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 #include <nlohmann/json.hpp>
+#include <set>
+#include <tuple>
 
 namespace Slic3r::AI {
 
@@ -52,10 +55,18 @@ struct ModelSubfaceColorOverride
 
 // Explicit per-face native assignments from an accepted workbench version.
 // RGB cannot identify a slot when two loaded materials have the same color.
+struct ModelSubfaceSlot {
+    size_t face_id {0};
+    uint8_t depth {0}, path {0};
+    size_t slot {0};
+};
 struct ModelMatchedColors {
     std::string source_sha256, geometry_id;
     std::vector<PhysicalFilamentChannel> palette;
     std::vector<size_t> face_slots;
+    // Optional midpoint leaves on the same immutable source geometry. Slot
+    // identity remains authoritative even when different slots share RGB.
+    std::vector<ModelSubfaceSlot> subface_slots;
     std::vector<MixedColorRecipe> mixed_recipes;
     // Optional native configuration fingerprints. Empty values preserve older
     // beauty-puzzle records; new workbench snapshots populate both.
@@ -67,6 +78,14 @@ struct ModelMatchedColors {
             !valid_native_mixed_palette(palette, mixed_recipes)) return false;
         for (size_t slot : face_slots)
             if (!native_palette_has_slot(palette, mixed_recipes, slot)) return false;
+        if (subface_slots.size() > 2000000) return false;
+        std::set<std::tuple<size_t, uint8_t, uint8_t>> keys;
+        for (const auto& leaf : subface_slots) {
+            if (leaf.face_id >= face_slots.size() || leaf.depth == 0 || leaf.depth > 4 ||
+                unsigned(leaf.path) >= (1u << (2u * leaf.depth)) ||
+                !native_palette_has_slot(palette, mixed_recipes, leaf.slot) ||
+                !keys.emplace(leaf.face_id, leaf.depth, leaf.path).second) return false;
+        }
         return true;
     }
 };
@@ -89,9 +108,12 @@ inline nlohmann::json encode_model_matched_colors(const ModelMatchedColors& valu
                            {"color", recipe.target_color}, {"components", components},
                            {"settings", recipe.native_settings_fingerprint}, {"uniform", recipe.uniform_color}});
     }
+    nlohmann::json leaves = nlohmann::json::array();
+    for (const auto& leaf : value.subface_slots)
+        leaves.push_back({leaf.face_id, leaf.depth, leaf.path, leaf.slot});
     return {{"schema", "orca.applied-printer-filament-match/v1"},
             {"source_sha256", value.source_sha256}, {"geometry_id", value.geometry_id},
-            {"palette", palette}, {"mixed_recipes", recipes}, {"face_slots", value.face_slots},
+            {"palette", palette}, {"mixed_recipes", recipes}, {"face_slots", value.face_slots}, {"subface_slots", leaves},
             {"material_fingerprint", value.material_fingerprint}, {"process_fingerprint", value.process_fingerprint}};
 }
 
@@ -149,6 +171,18 @@ inline bool decode_model_matched_colors(const nlohmann::json& doc, ModelMatchedC
     for (const auto& item : doc["face_slots"])
         if (!item.is_number_unsigned()) return fail("Invalid face slot in applied snapshot.");
         else parsed.face_slots.push_back(item.get<size_t>());
+    if (doc.contains("subface_slots")) {
+        const auto& leaves = doc["subface_slots"];
+        if (!leaves.is_array() || leaves.size() > 2000000) return fail("Invalid applied subface slots.");
+        for (const auto& leaf : leaves) {
+            if (!leaf.is_array() || leaf.size() != 4 ||
+                !std::all_of(leaf.begin(), leaf.end(), [](const auto& v) { return v.is_number_unsigned(); }) ||
+                leaf[1].get<size_t>() > 4 || leaf[2].get<size_t>() > 255)
+                return fail("Invalid applied subface identity.");
+            parsed.subface_slots.push_back({leaf[0].get<size_t>(), leaf[1].get<uint8_t>(),
+                leaf[2].get<uint8_t>(), leaf[3].get<size_t>()});
+        }
+    }
     if (!parsed.valid()) return fail("Applied printer-filament snapshot failed validation.");
     output = std::move(parsed);
     return true;
@@ -168,6 +202,11 @@ struct ModelImportRequest
     std::vector<ModelSubfaceColorOverride> subface_color_overrides;
     std::string face_color_geometry_id;
     std::optional<ModelMatchedColors> matched_colors;
+    // Only the live, validated printer-filament source may reuse the accepted
+    // on-disk face-to-slot snapshot. Other color sources must rematch.
+    bool use_saved_printer_match {false};
+    // Desktop-only optional caches, archived through existing 3MF auxiliaries.
+    std::vector<nlohmann::json> portrait_color_block_references;
     // Desktop preparation intent only. Never serialized into a provider job or
     // applied to geometry by importing; the user must confirm in preparation.
     bool suggest_base_preparation {false};

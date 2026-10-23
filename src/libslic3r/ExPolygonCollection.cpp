@@ -134,4 +134,3 @@ BoundingBox get_extents(const ExPolygonCollection &expolygon)
 }
 
 }
-

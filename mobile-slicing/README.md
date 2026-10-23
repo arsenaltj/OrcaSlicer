@@ -19,4 +19,3 @@ Fetched dependency URLs and SHA256 pins are in `CMakeLists.txt`. Local dependenc
 The configure path reaches Android Clang 19, Boost, oneTBB, Eigen 5.0.1, NLopt 2.5.0, libnoise, MCUT, qhull, and the local dependency graph. The first complete compile attempt reached local dependency compilation and currently stops at `admesh` because its upstream target does not propagate Boost headers; the mobile entry now adds `Boost::headers` to that target. Evidence logs are kept under the task artifact evidence directory.
 
 The original first gate failed before source configuration because plain CMake could not find Ninja. The reproducible entry fixes this with the absolute bundled Ninja path.
-

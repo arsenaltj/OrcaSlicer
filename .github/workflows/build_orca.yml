@@ -48,32 +48,78 @@ jobs:
         if: ${{ !(runner.os == 'macOS' && inputs.macos-combine-only) }}
         uses: actions/cache@v6
         with:
-          path: ${{ inputs.cache-path }}
+          path: ${{ github.workspace }}/${{ inputs.cache-path }}
           key: ${{ inputs.cache-key }}
           fail-on-cache-miss: true
 
       - uses: lukka/get-cmake@latest
-        # The windows-11-arm runner needs CMake <= 3.31 (handled in the next step).
-        if: ${{ !(runner.os == 'Windows' && inputs.arch == 'arm64') }}
         with:
           cmakeVersion: "~4.3.0"  # use most recent 4.3.x version
           useLocalCache: true         # <--= Use the local cache (default is 'false').
           useCloudCache: true
 
-      - name: Install CMake 3.31.x (Windows ARM64)
-        # windows-11-arm ships CMake 4.x, which removed pre-3.5 policy
-        # compatibility AND has incomplete ASM_ARMASM linker modules
-        # (breaks Boost.Context on ARM64). Pin to the last 3.x release.
-        if: runner.os == 'Windows' && inputs.arch == 'arm64'
-        shell: pwsh
+      # Compiler cache. Pushes save it, so main keeps it warm; pull requests
+      # restore it and discard what they compiled. Objects are keyed on the
+      # preprocessed source, the compiler and the flags, so a leg only ever
+      # hits its own entries. A failed install costs the caching, not the build.
+      - name: Name the compiler cache leg
+        if: ${{ !inputs.macos-combine-only }}
+        shell: bash
         run: |
-          $ver = "3.31.6"
-          $url = "https://github.com/Kitware/CMake/releases/download/v$ver/cmake-$ver-windows-arm64.zip"
-          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\cmake.zip"
-          Expand-Archive -Path "$env:RUNNER_TEMP\cmake.zip" -DestinationPath "$env:RUNNER_TEMP\cmake" -Force
-          $cmakeBin = "$env:RUNNER_TEMP\cmake\cmake-$ver-windows-arm64\bin"
-          if (-not (Test-Path "$cmakeBin\cmake.exe")) { throw "cmake.exe not found at $cmakeBin" }
-          Add-Content -Path $env:GITHUB_PATH -Value $cmakeBin
+          leg="${{ runner.os }}-${{ inputs.arch || 'amd64' }}${{ runner.os == 'Windows' && format('-{0}', inputs.compiler) || '' }}"
+          # clang-cl refuses a precompiled header from another cl.exe build and ccache
+          # does not hash that build, so each one gets its own cache. The build number
+          # is read from cl.exe itself; the toolset directory keeps its name across patches.
+          if [ "${{ runner.os }}" = Windows ]; then
+            vswhere='/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe'
+            toolset=$(tr -d '\r\n' < "$("$vswhere" -latest -products '*' -find 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt' | tr -d '\r')")
+            cl=$("$vswhere" -latest -products '*' -find 'VC\Tools\MSVC\'"$toolset"'\**\cl.exe' | tr -d '\r' | head -1)
+            leg="$leg-vc$("$cl" 2>&1 | grep -o -E 'Version [0-9.]+' | cut -d' ' -f2)"
+          fi
+          echo "CCACHE_LEG=$leg" >> "$GITHUB_ENV"
+          echo "CCACHE_ENTRY=ccache-$leg-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_ENV"
+
+      # The action only installs and configures ccache. Restore and save go
+      # through actions/cache with one path string, since the cache service
+      # only matches entries saved under the identical path and the action
+      # spells it differently on Windows.
+      - name: Compiler cache
+        id: ccache
+        if: ${{ !inputs.macos-combine-only }}
+        continue-on-error: true
+        uses: hendrikmuhs/ccache-action@v1.2.24
+        with:
+          key: ${{ env.CCACHE_LEG }}
+          max-size: 3G
+          restore: false
+          save: false
+          # ccache -s runs as its own step; no summary table per job.
+          job-summary: ''
+
+      - name: Restore compiler cache
+        id: ccache_restore
+        if: ${{ steps.ccache.outcome == 'success' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ${{ env.CCACHE_ENTRY }}
+          restore-keys: ccache-${{ env.CCACHE_LEG }}-
+
+      - name: Enable compiler cache
+        if: ${{ steps.ccache.outcome == 'success' }}
+        shell: bash
+        run: |
+          echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> "$GITHUB_ENV"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> "$GITHUB_ENV"
+          # Headers a fresh checkout has just written, the few files that
+          # use __DATE__ or __TIME__, and the precompiled header, whose
+          # macros ccache cannot see.
+          echo "CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime" >> "$GITHUB_ENV"
+          # Hash the includes the compiler reports instead of preprocessing
+          # every miss before compiling it.
+          echo "CCACHE_DEPEND=1" >> "$GITHUB_ENV"
+          # The restored directory carries the previous run's counters.
+          ccache -z
 
       - name: Get the version and date on Ubuntu and macOS
         if: runner.os != 'Windows'
@@ -136,10 +182,19 @@ jobs:
       - name: Free disk space
         if: runner.os == 'macOS' && !inputs.macos-combine-only && !startsWith(inputs.os, 'orca-')
         run: |
-          df -hI /dev/disk3s1s1
-          sudo find /Applications -maxdepth 1 -type d -name "Xcode_*.app" ! -name "Xcode_15.4.app" -exec rm -rf {} +
+          df -hI /
+          # Deleting the unused Xcodes takes minutes, so only do it when the
+          # build might not fit. A cold build uses under 4 GiB after this step.
+          avail_gib=$(df -g / | awk 'NR == 2 { print $4 }')
+          if [ "$avail_gib" -ge 15 ]; then
+            echo "$avail_gib GiB free, enough for the build"
+            exit 0
+          fi
+          # Keep only the selected Xcode
+          xcode=$(basename "$(cd "$(xcode-select -p)/../.." && pwd -P)")
+          sudo find /Applications -maxdepth 1 -type d -name "Xcode_*.app" ! -name "$xcode" -exec rm -rf {} +
           sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/*
-          df -hI /dev/disk3s1s1
+          df -hI /
 
       - name: Build slicer mac
         if: runner.os == 'macOS' && !inputs.macos-combine-only
@@ -276,7 +331,27 @@ jobs:
         if: runner.os == 'Windows' && !startsWith(inputs.os, 'orca-')
         run: |
           dir "C:/Program Files (x86)/Windows Kits/10/Include"
-          choco install nsis
+          $nsisDir = Join-Path $env:RUNNER_TEMP 'nsis'
+          $makensis = Join-Path $nsisDir 'makensis.exe'
+          if (-not (Test-Path $makensis)) {
+            $zip = Join-Path $env:RUNNER_TEMP "nsis-$env:NSIS_VERSION.zip"
+            curl.exe -fsSL --retry 5 --retry-all-errors --retry-delay 15 -o $zip "https://downloads.sourceforge.net/project/nsis/NSIS%203/$env:NSIS_VERSION/nsis-$env:NSIS_VERSION.zip"
+            if ($LASTEXITCODE -ne 0) { throw "NSIS $env:NSIS_VERSION download failed." }
+            if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $env:NSIS_SHA256) {
+              throw "NSIS $env:NSIS_VERSION archive does not match its pinned SHA256."
+            }
+            Expand-Archive $zip $env:RUNNER_TEMP
+            Move-Item (Join-Path $env:RUNNER_TEMP "nsis-$env:NSIS_VERSION") $nsisDir
+          }
+          & $makensis /VERSION
+          $nsisDir | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
+
+      - name: Save NSIS
+        if: runner.os == 'Windows' && !vars.SELF_HOSTED && steps.nsis-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/nsis
+          key: nsis-${{ env.NSIS_VERSION }}
 
       - name: Build slicer Win
         if: runner.os == 'Windows'
@@ -291,19 +366,11 @@ jobs:
           ORCA_AI_DISTRIBUTION_CHANNEL: commercial
           ORCA_AI_PACKAGE_REVISION: ci-${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          $arch = "${{ inputs.arch }}"
-          # -l selects clang-cl and -x Ninja; together they build the slicer with clang.
-          $clang = "${{ inputs.compiler }}" -eq "clang"
-          $flags = if ($clang) { "-l", "-x" } else { @() }
-          if ($clang) {
-            # Build against the same VC toolchain and SDK as the dependencies.
-            $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-            $vs = & $vswhere -latest -property installationPath
-            $devArch = if ($arch -eq "arm64") { "arm64" } else { "amd64" }
-            Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
-            Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=$devArch"
-          }
-          if ($arch -eq "arm64") { .\build_release_vs.bat slicer arm64 @flags tests } else { .\build_release_vs.bat slicer @flags tests }
+          # cache-path is the install directory inside the deps build directory.
+          $deps = (Split-Path "${{ github.workspace }}/${{ inputs.cache-path }}").Replace('\', '/')
+          # -l compiles with Visual Studio's clang-cl and -x builds with Ninja; --msvc --msbuild is cl under the Visual Studio generator.
+          $flags = if ("${{ inputs.compiler }}" -eq "clang") { "-l", "-x" } else { "--msvc", "--msbuild" }
+          .\build_win.bat -s --tests -i --arch ${{ inputs.arch }} --build-dir $env:BUILD_DIR --deps-dir $deps @flags
         shell: pwsh
 
       - name: Verify commercial AI runtime identity

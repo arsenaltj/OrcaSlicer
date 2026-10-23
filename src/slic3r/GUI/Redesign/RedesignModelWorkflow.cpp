@@ -134,6 +134,12 @@ bool set_control_label(wxWindow* control, const wxString& text)
     return true;
 }
 
+void set_control_tooltip(wxWindow* control, const wxString& text)
+{
+    if (control->GetToolTipText() != text)
+        control->SetToolTip(text);
+}
+
 bool set_wrapped_label(wxStaticText* label, const wxString& text, int width)
 {
     wxClientDC dc(label);
@@ -884,8 +890,30 @@ void RedesignShell::build_model_workflow()
     m_model_generation_host->set_workbench_listener([weak](const auto& state) { if (weak) weak->apply_workbench_state(state); });
     Bind(wxEVT_IDLE, [weak](wxIdleEvent& event) {
         event.Skip();
-        if (!weak || weak->m_active_page != Page::Model || weak->m_model_view != ModelView::Preview ||
-            weak->m_slicing_state.official.phase != OfficialSlicePhase::Completed) return;
+        if (!weak || weak->m_active_page != Page::Model || weak->m_model_view != ModelView::Preview) return;
+        if (weak->m_preview_auto_fit.pending() && weak->m_plater) {
+            auto* canvas = weak->m_plater->get_preview_canvas3D();
+            if (canvas) {
+                auto& viewer = canvas->get_gcode_viewer();
+                auto& camera = weak->m_plater->get_camera();
+                const auto size = canvas->get_canvas_size();
+                const auto& viewport = camera.get_viewport();
+                const bool viewport_ready = canvas->is_initialized() && !canvas->is_reload_delayed() &&
+                    size.get_width() > 0 && size.get_height() > 0 &&
+                    viewport[2] == int(size.get_width()) && viewport[3] == int(size.get_height()) &&
+                    !camera.requires_zoom_to_bed && !camera.requires_zoom_to_volumes &&
+                    camera.requires_zoom_to_plate <= REQUIRES_ZOOM_TO_PLATE_IDLE;
+                if (weak->m_preview_auto_fit.consume(viewer.loaded_result_id(), weak->m_plater->is_preview_loaded(),
+                                                     viewer.has_data() && viewer.get_paths_bounding_box().defined,
+                                                     viewport_ready)) {
+                    canvas->zoom_to_gcode();
+                    canvas->set_as_dirty();
+                    BOOST_LOG_TRIVIAL(info) << "[RedesignPreview] auto-fit result=" << viewer.loaded_result_id()
+                        << " viewport=" << viewport[2] << "x" << viewport[3];
+                }
+            }
+        }
+        if (weak->m_slicing_state.official.phase != OfficialSlicePhase::Completed) return;
         // The native preview finishes loading after the completion callback.
         // Refresh only when its result changes, without re-running analysis.
         const bool outside = OrcaPrinterAdapter(weak->m_plater).preview_toolpath_outside();
@@ -917,6 +945,7 @@ void RedesignShell::return_model_overview()
 void RedesignShell::show_model_view(ModelView view)
 {
     if (!owns_model_workflow() || (m_import_in_progress && !m_import_switching_view)) return;
+    if (view == ModelView::Preview) m_preview_auto_fit.request();
 
     // Route changes can arrive synchronously from both the button handler and
     // the model-generation state listener. Keep an already selected view
@@ -928,8 +957,11 @@ void RedesignShell::show_model_view(ModelView view)
         // remains Preview during that operation, so entering the same route
         // again must still restore Plater's actual preview panel and reload
         // the current G-code result.
-        if (view == ModelView::Preview && m_plater && !m_plater->is_preview_shown()) {
-            m_plater->select_view_3D("Preview");
+        const bool panel_out_of_sync = m_plater &&
+            ((view == ModelView::Preview && !m_plater->is_preview_shown()) ||
+             (view == ModelView::Slicing && !m_plater->is_view3D_shown()));
+        if (panel_out_of_sync) {
+            m_plater->select_view_3D(view == ModelView::Preview ? "Preview" : "3D");
             m_plater->get_current_canvas3D()->use_workbench_appearance();
             m_plater->collapse_sidebar(!m_native_slicing);
         }
@@ -1012,8 +1044,15 @@ void RedesignShell::refresh_workflow_layout()
             ? RedesignTheme::accent_colour() : RedesignTheme::primary_text_colour()));
     }
     layout_slicing_overlays();
-    m_content_host->Layout();
+    // Plater is reparented through two nested panels. Lay out each host when
+    // the slicing page changes visibility so its canvas receives the new size.
     Layout();
+    m_content_host->Layout();
+    if (slicing) {
+        m_slicing_page->Layout();
+        m_native_plater_host->Layout();
+        m_plater->Layout();
+    }
     const bool camera_fit_pending = compact && m_model_view == ModelView::Slicing &&
         !m_slice_camera_fitted && m_plater && !m_plater->model().objects.empty();
     if (camera_fit_pending) {
@@ -1334,28 +1373,38 @@ void RedesignShell::update_slicing_tools()
     const bool editable=m_slice_tools->editable() && !running;
     m_slice_color_mode->Enable(editable); m_slice_color_source->Enable(editable); m_slice_color_count->Enable(editable);
     const auto edit_reason=wxString::FromUTF8(m_slice_tools->editability_reason());
-    m_slice_color_mode->SetToolTip(edit_reason); m_slice_color_source->SetToolTip(edit_reason);
-    m_slice_color_count->SetToolTip(edit_reason);
-    m_slice_color_count_label->SetToolTip(wxString::FromUTF8(m_slice_tools->message()));
+    set_control_tooltip(m_slice_color_mode, edit_reason); set_control_tooltip(m_slice_color_source, edit_reason);
+    set_control_tooltip(m_slice_color_count, edit_reason);
+    set_control_tooltip(m_slice_color_count_label, wxString::FromUTF8(m_slice_tools->message()));
     m_slice_check->Enable(!m_slice_tools->busy() && !running);
     const auto& check=m_slice_tools->check();
     const std::array<wxString,6> labels{_L("未检查"),_L("检查中"),_L("正常"),_L("需注意"),_L("异常"),_L("检查失败")};
-    m_slice_check_status->SetLabel(labels[size_t(check.status)]);
-    m_slice_check_status->SetForegroundColour(check.status==WorkbenchCheckStatus::Normal ? wxColour(255,255,255)
+    bool badge_changed = set_control_label(m_slice_check_status, labels[size_t(check.status)]);
+    const auto foreground = check.status==WorkbenchCheckStatus::Normal ? wxColour(255,255,255)
         : check.status==WorkbenchCheckStatus::Invalid || check.status==WorkbenchCheckStatus::Failed ? wxColour(255,150,146)
-        : RedesignTheme::primary_text_colour());
-    m_slice_check_status->SetBackgroundColour(check.status==WorkbenchCheckStatus::Normal ? wxColour(21,194,82)
-        : slicing_control_colour());
-    m_slice_check_status->SetMinSize(FromDIP(wxSize(check.status==WorkbenchCheckStatus::Failed ? 80 : 60,36)));
-    m_slice_check_status->Refresh(false);
-    m_slice_check_status->SetToolTip(wxString::FromUTF8(check.summary));
+        : RedesignTheme::primary_text_colour();
+    const auto background = check.status==WorkbenchCheckStatus::Normal ? wxColour(21,194,82)
+        : slicing_control_colour();
+    const auto minimum = FromDIP(wxSize(check.status==WorkbenchCheckStatus::Failed ? 80 : 60,36));
+    if (m_slice_check_status->GetForegroundColour() != foreground) {
+        m_slice_check_status->SetForegroundColour(foreground); badge_changed = true;
+    }
+    if (m_slice_check_status->GetBackgroundColour() != background) {
+        m_slice_check_status->SetBackgroundColour(background); badge_changed = true;
+    }
+    if (m_slice_check_status->GetMinSize() != minimum) {
+        m_slice_check_status->SetMinSize(minimum); badge_changed = true;
+    }
+    if (badge_changed) m_slice_check_status->Refresh(false);
+    set_control_tooltip(m_slice_check_status, wxString::FromUTF8(check.summary));
     const auto& palette=m_slice_tools->palette();
     m_slice_palette_all->Show(palette.size()>6 || m_slicing_state.has_selected_goal || !m_slice_tools->message().empty());
     if (!palette.empty() && !m_slice_tools->busy() && !m_slice_color_count->HasCapture()) {
         m_slice_committed_count=int(std::clamp(palette.size(),size_t(1),
             m_slice_color_mode->GetSelection()==1 ? size_t(6) : size_t(32)));
-        m_slice_color_count->SetValue(m_slice_committed_count);
-        m_slice_color_count_label->SetLabel(wxString::Format(_L("%d色"),m_slice_committed_count));
+        if (m_slice_color_count->GetValue() != m_slice_committed_count)
+            m_slice_color_count->SetValue(m_slice_committed_count);
+        set_control_label(m_slice_color_count_label, wxString::Format(_L("%d色"),m_slice_committed_count));
     }
     if (palette==m_slice_displayed_palette) return;
     m_slice_displayed_palette=palette;
@@ -1395,11 +1444,13 @@ void RedesignShell::layout_slicing_overlays()
     if (!m_slice_stats_overlay || !m_plater) return;
     const bool visible=native_workspace_visible() && !m_native_slicing;
     auto* canvas=m_plater->get_current_canvas3D()->get_wxglcanvas();
+    bool overlay_changed = false;
     if (m_slice_stats_overlay->GetParent()!=canvas) {
         m_slice_stats_overlay->Reparent(canvas); m_slice_progress_overlay->Reparent(canvas);
+        overlay_changed = true;
     }
     const auto size=canvas->GetClientSize();
-    m_slice_stats_overlay->Hide();
+    if (m_slice_stats_overlay->IsShown()) m_slice_stats_overlay->Hide();
     const auto progress_size = canvas->FromDIP(wxSize(320, 46));
     const int margin = canvas->FromDIP(10);
     // Match the native 3D navigator's 128 DIP region at the bottom left.
@@ -1407,12 +1458,20 @@ void RedesignShell::layout_slicing_overlays()
     const int max_y = std::max(0, size.y - progress_size.y - margin);
     const int y = std::clamp(size.y - (navigator_height + progress_size.y) / 2,
         std::min(margin, max_y), max_y);
-    m_slice_progress_overlay->SetSize(std::max(FromDIP(10),size.x-FromDIP(440)),
+    const wxRect progress_bounds(std::max(FromDIP(10),size.x-FromDIP(440)),
         y, progress_size.x, progress_size.y);
+    if (m_slice_progress_overlay->GetRect() != progress_bounds) {
+        m_slice_progress_overlay->SetSize(progress_bounds);
+        overlay_changed = true;
+    }
     const bool running = workbench_slice_running(m_plater->is_background_process_slicing(),
                                                  m_slicing_state.official.phase);
-    m_slice_progress_overlay->Show(visible && running);
-    if (visible) m_slice_progress_overlay->Raise();
+    const bool show_progress = visible && running;
+    if (m_slice_progress_overlay->IsShown() != show_progress) {
+        m_slice_progress_overlay->Show(show_progress);
+        overlay_changed = true;
+    }
+    if (show_progress && overlay_changed) m_slice_progress_overlay->Raise();
 }
 
 void RedesignShell::layout_slicing_camera_loading()
@@ -1459,6 +1518,8 @@ void RedesignShell::select_slicing_tab(bool native)
 void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
 {
     const bool background_slicing = m_plater && m_plater->is_background_process_slicing();
+    const bool external_toolpath = m_plater &&
+        (m_plater->only_gcode_mode() || m_plater->using_exported_file());
     const bool running = workbench_slice_running(background_slicing, state.official.phase);
     // The previous SmartSlice phase is the last UI snapshot.  Use it as the
     // edge detector; the current Plater flag is intentionally not reused here
@@ -1556,7 +1617,7 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
         wxString tooltip = layer+"\n"+availability;
         if (workbench_goal_was_last_sliced(state, RECOMMENDATION_GOALS[i]))
             tooltip += _L("\n上次切片成功");
-        button->SetToolTip(tooltip);
+        set_control_tooltip(button, tooltip);
     }
     const auto display_goal = state.has_selected_goal ? state.selected_goal :
         state.pending_slice_goal.value_or(state.last_sliced_goal.value_or(RECOMMENDATION_GOALS.front()));
@@ -1594,18 +1655,22 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
             m_slice_parameter_values.push_back(value);
             layout_changed = true;
         }
+        bool parameter_layout_changed = false;
         for (size_t i = 0; i < m_slice_parameter_labels.size(); ++i) {
             const bool visible = i < detail_rows.size();
             const wxString label_text = visible ? detail_rows[i].label : wxEmptyString;
             const wxString value_text = visible ? detail_rows[i].value : wxEmptyString;
-            layout_changed = (m_slice_parameter_labels[i]->GetLabel() != label_text) || layout_changed;
-            layout_changed = (m_slice_parameter_values[i]->GetLabel() != value_text) || layout_changed;
-            parameters->Show(m_slice_parameter_labels[i], visible);
-            parameters->Show(m_slice_parameter_values[i], visible);
-            m_slice_parameter_labels[i]->SetLabel(label_text);
-            m_slice_parameter_values[i]->SetLabel(value_text);
+            parameter_layout_changed = parameters->Show(m_slice_parameter_labels[i], visible) || parameter_layout_changed;
+            parameter_layout_changed = parameters->Show(m_slice_parameter_values[i], visible) || parameter_layout_changed;
+            parameter_layout_changed = set_control_label(m_slice_parameter_labels[i],
+                label_text) || parameter_layout_changed;
+            parameter_layout_changed = set_control_label(m_slice_parameter_values[i],
+                value_text) || parameter_layout_changed;
         }
-        parameters->Layout();
+        if (parameter_layout_changed) {
+            parameters->Layout();
+            layout_changed = true;
+        }
     }
     const bool lightweight_ready = state.lightweight_analysis && state.lightweight_analysis->completed;
     const bool preflight_has_blocking_issue = state.preflight && state.preflight->has_blocking_issue();
@@ -1660,7 +1725,7 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
             status = _L("切片完成，导出前请处理预览中的错误。");
         }
     }
-    m_slice_status->SetToolTip(status);
+    set_control_tooltip(m_slice_status, status);
     const bool needs_attention = !state.analyzing && !state.diagnostic.empty();
     const bool recommendation_ready = lightweight_ready && !running &&
         state.official.phase != OfficialSlicePhase::Completed;
@@ -1680,18 +1745,18 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
     layout_changed = set_wrapped_label(m_slice_status, status_label, FromDIP(285)) || layout_changed;
     layout_changed = m_slice_analyze->Show(show_analysis_status && !running) || layout_changed;
     m_slice_analyze->SetLabel(_L("重新分析"));
-    m_slice_analyze->SetToolTip(_L("重新执行三种轻量分析；选择方案后将直接使用 Orca 原生切片。"));
+    set_control_tooltip(m_slice_analyze, _L("重新执行三种轻量分析；选择方案后将直接使用 Orca 原生切片。"));
     layout_changed = m_slice_keep_mesh->Show(state.can_keep_current_mesh && !state.analyzing && !running) || layout_changed;
     const auto route = workbench_slice_route(m_native_slicing, running || m_import_in_progress || m_slice_tools->busy(),
         state.can_retry, state.can_start, state.can_start_native);
     m_slice_start->Enable(route != WorkbenchSliceRoute::Unavailable);
     m_slice_start->SetLabel(state.can_retry && !m_native_slicing ? _L("重试切片") : _L("开始切片"));
     if (route == WorkbenchSliceRoute::Unavailable && !m_native_slicing) {
-        m_slice_start->SetToolTip(lightweight_ready
+        set_control_tooltip(m_slice_start, lightweight_ready
             ? _L("当前方案还未选择，或 Orca 原生切片暂时不可启动。")
             : _L("请等待三种方案分析完成后再开始切片。"));
     } else {
-        m_slice_start->SetToolTip(wxEmptyString);
+        set_control_tooltip(m_slice_start, wxEmptyString);
     }
     m_slice_analyze->Enable(state.can_analyze);
     layout_changed = m_slice_cancel->Show(state.analyzing || running) || layout_changed;
@@ -1700,10 +1765,14 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
     m_ai_slicing_tab->Enable(can_switch);
     m_native_slicing_tab->Enable(can_switch);
     m_slice_return_overview->Enable(can_switch);
-    static_cast<WorkbenchButton*>(m_ai_slicing_tab)->SetTextColor(StateColor(m_native_slicing
-        ? RedesignTheme::secondary_text_colour() : RedesignTheme::primary_text_colour()));
-    static_cast<WorkbenchButton*>(m_native_slicing_tab)->SetTextColor(StateColor(m_native_slicing
-        ? RedesignTheme::primary_text_colour() : RedesignTheme::secondary_text_colour()));
+    auto* ai_tab = static_cast<WorkbenchButton*>(m_ai_slicing_tab);
+    auto* native_tab = static_cast<WorkbenchButton*>(m_native_slicing_tab);
+    const StateColor ai_tab_colour(m_native_slicing
+        ? RedesignTheme::secondary_text_colour() : RedesignTheme::primary_text_colour());
+    const StateColor native_tab_colour(m_native_slicing
+        ? RedesignTheme::primary_text_colour() : RedesignTheme::secondary_text_colour());
+    if (ai_tab->GetTextColor() != ai_tab_colour) ai_tab->SetTextColor(ai_tab_colour);
+    if (native_tab->GetTextColor() != native_tab_colour) native_tab->SetTextColor(native_tab_colour);
     m_slice_export->Enable(OrcaPrinterAdapter(m_plater).snapshot().gcode_ready);
     refresh_project_save_actions();
     const bool can_open_print = !running && !m_import_in_progress && !m_slice_tools->busy() && OrcaPrinterAdapter(m_plater).snapshot().gcode_ready;
@@ -1716,7 +1785,7 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
         (m_model_view == ModelView::Slicing || m_model_view == ModelView::Preview) &&
         plate && plate->is_slice_result_valid())
         show_model_view(ModelView::Preview);
-    else if (!m_native_slicing && !running && plate && !plate->is_slice_result_valid() &&
+    else if (!external_toolpath && !m_native_slicing && !running && plate && !plate->is_slice_result_valid() &&
              m_model_view == ModelView::Preview && m_active_page == Page::Model) {
         wxWeakRef<RedesignShell> weak(this);
         CallAfter([weak] {
@@ -1733,7 +1802,6 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
         if (auto* scroll = dynamic_cast<wxScrolledWindow*>(m_ai_slicing_controls->GetParent())) scroll->FitInside();
     }
     layout_slicing_overlays();
-    if (m_native_slicing) refresh_native_theme();
 }
 
 bool RedesignShell::can_save_print_project() const

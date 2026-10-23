@@ -401,6 +401,12 @@
       "needle": "inline bool printer_command_allowed"
     },
     {
+      "id": "workbench_portrait_color_blocks",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/PortraitColorBlockPostprocess.cpp",
+      "needle": "std::shared_ptr<Result> build(const Input& in, const SC::Cancel& cancel)",
+      "detail": "Local postprocessing of ordinary colors into two source-bound edge-connected tracks; unresolved lighter-neighbor previews remain unconfirmed and printer slots are not mutated."
+    },
+    {
       "id": "workbench_portrait_optimization",
       "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationPortrait.cpp",
       "needle": "bool ModelGenerationPanel::request_portrait_optimization(wxString& reason)"

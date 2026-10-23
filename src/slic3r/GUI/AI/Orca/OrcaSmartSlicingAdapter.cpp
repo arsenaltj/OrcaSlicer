@@ -640,7 +640,7 @@ AI::SmartSlicing::WorkspaceContext OrcaSmartSlicingAdapter::capture_context_impl
             instance_lock.instance_id = instance->id().id;
             context.intent_constraints.records.push_back(std::move(instance_lock));
             model_stream << "instance:" << instance->id().id << ':' << instance->timestamp() << ':' << instance->printable << ':'
-                         << instance->auto_drop << ':' << instance->arrange_order << ':';
+                         << object->auto_drop << ':' << instance->arrange_order << ':';
             append_matrix(model_stream, instance->get_matrix());
         }
         if (instance_count == 0)

@@ -117,6 +117,8 @@ void ModelGenerationPanel::export_semantic_candidate()
     const auto region_evidence = m_model_preview->semantic_region_evidence();
     const auto secondary_evidence = m_model_preview->secondary_region_evidence();
     const auto shape_details = m_model_preview->portrait_shape_details();
+    const auto printer_restore_snapshot=m_model_preview->printer_restore_snapshot();
+    const bool color_block_contract=m_model_preview->has_portrait_color_block_contract();
     const bool shapes_unlocked = m_model_preview->portrait_shapes_unlocked();
     const auto leaf_edits=m_model_preview->leaf_edit_metadata();
     const auto leaf_revision=m_model_preview->leaf_edit_revision();
@@ -202,7 +204,13 @@ void ModelGenerationPanel::export_semantic_candidate()
     }
     m_finishing_id = "finish-semantic-" + new_request_id();
     m_finishing_candidate_baked_appearance = nullptr;
-    const auto destination = temp_path(m_finishing_id, AI::model_artifact_format(source) == "obj" ? "obj" : "glb");
+    // OBJ can carry only whole-face vertex colours. Semantic recognition also
+    // emits subface/cell edits; route those candidates through the existing
+    // OBJ-to-GLB appearance writer so the fine edits are baked into a
+    // colour-bearing GLB instead of being rejected by the OBJ guard.
+    const bool needs_glb_appearance = !color_block_contract && (!subfaces.empty() || !cell_colors.empty());
+    const auto destination = temp_path(m_finishing_id,
+        AI::model_artifact_format(source) == "obj" && !needs_glb_appearance ? "obj" : "glb");
     m_finishing_canceled = std::make_shared<std::atomic<bool>>(false);
     m_beauty_publication_committed.reset();
     const auto canceled = m_finishing_canceled;
@@ -219,7 +227,7 @@ void ModelGenerationPanel::export_semantic_candidate()
     const uint64_t sequence = m_sequence;
     const auto cache_root=boost::filesystem::path(Slic3r::data_dir())/"cache";
     try {
-        m_finishing_worker = std::thread([weak, source, destination, options, canceled, sequence, manual_overrides, color_state, before, region_evidence, secondary_evidence, shape_details, shapes_unlocked,leaf_edits,leaf_revision,partition_snapshot,portrait_task,cell_colors,cache_root,draft_snapshot,baked_semantic] {
+        m_finishing_worker = std::thread([weak, source, destination, options, canceled, sequence, manual_overrides, color_state, before, region_evidence, secondary_evidence, shape_details, shapes_unlocked,leaf_edits,leaf_revision,partition_snapshot,portrait_task,cell_colors,cache_root,draft_snapshot,baked_semantic,color_block_contract,printer_restore_snapshot] {
             auto saved_shapes=shape_details;
             auto saved_edits=leaf_edits;
             auto output_options=options;
@@ -250,8 +258,27 @@ void ModelGenerationPanel::export_semantic_candidate()
                         saved_shapes->locks.geometry_id);
                 }
                 if(portrait_task) portrait_task->report({PortraitStage::Saving,"裁切校验完成，正在烘焙 GLB",0,0});
-                result=AI::finish_model_artifact(source,destination,output_options,[canceled]{return canceled->load();});
-            } catch(const std::exception& e) { result.error=e.what();result.canceled=canceled->load(); }
+                if(color_block_contract) {
+                    // Keep the canonical mesh and original texture intact. The
+                    // verified semantic layer and block cache carry appearance;
+                    // native import consumes the same face/subface overrides.
+                    result.source_sha256=AI::model_artifact_sha256(source);
+                    if(result.source_sha256.empty() || canceled->load())throw std::runtime_error("颜色块来源已变化或保存已取消");
+                    boost::filesystem::copy_file(source,destination);
+                    result.output_sha256=AI::model_artifact_sha256(destination);
+                    if(result.output_sha256!=result.source_sha256 || AI::model_artifact_sha256(source)!=result.source_sha256)
+                        throw std::runtime_error("颜色块版本来源校验失败");
+                    TriangleMesh mesh;ObjInfo appearance;std::string error;
+                    if(!AI::load_model_artifact(destination,mesh,appearance,error))throw std::runtime_error(error);
+                    result.faces_before=result.faces_after=mesh.its.indices.size();result.vertices=mesh.its.vertices.size();
+                    const auto size=mesh.bounding_box().size();
+                    for(size_t c=0;c<3;++c)result.dimensions[c]=size[c];
+                    result.changed_edit_record=true;result.success=true;
+                } else result=AI::finish_model_artifact(source,destination,output_options,[canceled]{return canceled->load();});
+            } catch(const std::exception& e) {
+                result.error=e.what();result.canceled=canceled->load();result.success=false;
+                if(color_block_contract) {boost::system::error_code ec;boost::filesystem::remove(destination,ec);}
+            }
             if (portrait_task && result.success) portrait_task->report({PortraitStage::Preview,"候选已写出，解析预览模型",0,0});
             auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
             std::string preview_error;
@@ -260,15 +287,18 @@ void ModelGenerationPanel::export_semantic_candidate()
                     [canceled] { return canceled->load(); }); }
                 catch (const std::exception& e) { preview_error = e.what(); }
             }
-            const auto baked=AI::baked_portrait_appearance(result.output_sha256,baked_semantic,cell_colors,
+            const auto baked=color_block_contract ? nlohmann::json() : AI::baked_portrait_appearance(result.output_sha256,baked_semantic,cell_colors,
                 saved_shapes && saved_shapes->surface_partition ? saved_shapes->surface_partition->at("partition_sha256").get<std::string>() : std::string());
-            wxGetApp().CallAfter([weak, source, destination, result, sequence, canceled, prepared, preview_error, color_state, before, region_evidence, secondary_evidence, shape_details=saved_shapes, shapes_unlocked,leaf_edits=saved_edits,leaf_revision,partition_snapshot,portrait_task,draft_snapshot,output_options,baked] {
+            wxGetApp().CallAfter([weak, source, destination, result, sequence, canceled, prepared, preview_error, color_state, before, region_evidence, secondary_evidence, shape_details=saved_shapes, shapes_unlocked,leaf_edits=saved_edits,leaf_revision,partition_snapshot,portrait_task,draft_snapshot,output_options,baked,printer_restore_snapshot] {
                 if (!weak || weak->m_shutdown || sequence != weak->m_sequence) {
                     if (result.success) { boost::system::error_code ignored; boost::filesystem::remove(destination, ignored); }
                     return;
                 }
                 auto* self = weak.get();
-                if (portrait_task && self->m_portrait_task != portrait_task) return;
+                if (portrait_task && self->m_portrait_task != portrait_task) {
+                    if(result.success) {boost::system::error_code ignored;boost::filesystem::remove(destination,ignored);}
+                    return;
+                }
                 if (self->m_finishing_worker.joinable()) self->m_finishing_worker.join();
                 self->m_finishing_running = false;
                 self->m_busy = false;
@@ -334,6 +364,8 @@ void ModelGenerationPanel::export_semantic_candidate()
                         self->m_finishing_candidate_secondary_evidence = self->m_model_preview->secondary_region_evidence();
                         self->m_finishing_candidate_secondary_error = self->m_model_preview->secondary_region_evidence_error();
                         self->m_model_preview->restore_color_trial_without_recognition(color_state);
+                        self->m_model_preview->restore_portrait_color_blocks(draft_snapshot->color_blocks,false);
+                        self->m_model_preview->restore_printer_restore_snapshot(printer_restore_snapshot);
                         const bool semantic_restored = self->m_model_preview->set_saved_semantic_result(
                             self->m_finishing_candidate_semantic_faces,
                             self->m_finishing_candidate_semantic_subfaces);

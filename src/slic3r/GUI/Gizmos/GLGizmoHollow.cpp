@@ -507,7 +507,7 @@ RENDER_AGAIN:
 
     if (m_imgui->button(m_desc["preview"]))
         hollow_mesh();
-    
+
     bool config_changed = false;
 
     ImGui::Separator();

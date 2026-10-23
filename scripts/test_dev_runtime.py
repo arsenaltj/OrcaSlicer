@@ -80,7 +80,6 @@ class RuntimeTests(unittest.TestCase):
             self.write(prefix + "orca_ai_runtime_dependencies.json", '{"portrait_recognition":{"enabled":false}}')
         dev.verify_runtime(self.root, self.build, [])
         for name, retired in (("resources/beauty-runtime/python/python.exe", "resources/beauty-runtime"),
-                              ("ai/portrait_semantics/libmediapipe.dll", "ai/portrait_semantics"),
                               ("resources/tools/ai/portrait_parent_cleanup_partition.json",
                                "resources/tools/ai/portrait_parent_cleanup_partition.json")):
             with self.subTest(resource=name):
@@ -90,6 +89,10 @@ class RuntimeTests(unittest.TestCase):
                 target = self.runtime / retired
                 if target.is_dir(): shutil.rmtree(target)
                 else: target.unlink()
+        self.write(".tmp/dev/run/ai/portrait_semantics/libmediapipe.dll", "incomplete lightweight runtime")
+        with self.assertRaisesRegex(ValueError, "runtime-manifest"):
+            dev.verify_runtime(self.root, self.build, [])
+        shutil.rmtree(self.runtime / "ai")
         self.write(".tmp/build/orca_ai_runtime_dependencies.json", '{"portrait_recognition":{"enabled":true}}')
         self.write(".tmp/dev/run/resources/tools/ai/orca_ai_runtime_dependencies.json", '{"portrait_recognition":{"enabled":true}}')
         with self.assertRaisesRegex(ValueError, "inconsistent portrait capabilities"):

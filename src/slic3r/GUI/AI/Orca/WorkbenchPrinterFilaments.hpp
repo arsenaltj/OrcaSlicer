@@ -235,14 +235,33 @@ inline bool trim_unused_physical_slots(PresetBundle& staged, std::vector<size_t>
     }
 }
 
-// Keep a color-card draft bounded to the card entries after recipe generation.
-// Mixed slots are native suffix entries, so removing from the tail preserves
-// every physical nozzle slot and lets the existing remap transaction update
-// model, painting, and plate references atomically.
+// Keep a color-card draft bounded to its physical slots plus the recipes used
+// by the logical card. Mixed slots are native suffix entries, so removing from
+// the tail preserves every physical nozzle slot and lets the existing remap
+// transaction update model, painting, and plate references atomically.
 inline bool trim_unused_mixed_slots(PresetBundle& staged, std::vector<size_t>& bindings,
-    size_t desired_total, std::vector<PrinterFilamentSlotRemap::Change>& changes, std::string& error)
+    size_t logical_target_count, std::vector<PrinterFilamentSlotRemap::Change>& changes, std::string& error)
 {
     std::set<size_t> retained(bindings.begin(), bindings.end());
+    if (!bindings.empty() && bindings.size() != logical_target_count) {
+        error = "色卡目标与槽位绑定数量不一致，配置草稿保持原状";
+        return false;
+    }
+    size_t physical_count = 0;
+    size_t retained_mixed_count = 0;
+    for (size_t i = 0; i < staged.filament_presets.size(); ++i)
+        if (!staged.is_mixed_filament(i)) ++physical_count;
+    for (const size_t slot : retained) {
+        if (slot >= staged.filament_presets.size()) {
+            error = "色卡包含无效槽位绑定，配置草稿保持原状";
+            return false;
+        }
+        if (staged.is_mixed_filament(slot)) ++retained_mixed_count;
+    }
+    // Color-pack import leaves bindings empty when every target is a physical
+    // slot. In that case retain its historical exact-card-size cleanup.
+    const size_t desired_total = bindings.empty()
+        ? logical_target_count : physical_count + retained_mixed_count;
     while (staged.filament_presets.size() > desired_total) {
         const size_t at = staged.filament_presets.size() - 1;
         if (!staged.is_mixed_filament(at)) {

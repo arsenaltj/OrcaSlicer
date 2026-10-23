@@ -350,7 +350,13 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         // deferred path retain its native selection history. Once ready, the
         // controller owns the operation-level history entry.
         const bool deferred = !m_model_preview->beauty_editor();
-        const size_t count = m_model_preview->select_semantic_region(region, deferred);
+        // ColorRegionMajorityV2 establishes boundaries from color first and
+        // only then attaches semantic roles by majority vote.  Keep the
+        // workbench selection on that exact region identity; the legacy
+        // semantic-face selector would split the same-color garment again.
+        const size_t count = m_model_preview->has_modern_portrait_color_blocks()
+            ? m_model_preview->select_portrait_color_region(region, deferred)
+            : m_model_preview->select_semantic_region(region, deferred);
         if (count) m_model_preview->set_selection_preview_suppressed(false);
         if (count && m_beauty_transactions) {
             const auto after = m_model_preview->selection_state();
@@ -367,8 +373,10 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         if (!m_model_preview) return size_t(0);
         const auto before = m_model_preview->selection_state();
         const bool deferred = !m_model_preview->beauty_editor();
-        const size_t count = m_model_preview->select_semantic_detail(
-            detail, deferred, m_beauty_controls && m_beauty_controls->preview_protected_details());
+        const size_t count = m_model_preview->has_modern_portrait_color_blocks()
+            ? m_model_preview->select_portrait_color_region(detail, deferred)
+            : m_model_preview->select_semantic_detail(
+                detail, deferred, m_beauty_controls && m_beauty_controls->preview_protected_details());
         if (count) m_model_preview->set_selection_preview_suppressed(false);
         if (count && m_beauty_transactions) {
             const auto after = m_model_preview->selection_state();
@@ -423,7 +431,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         }
         refresh_model_finishing();
     };
-    m_beauty_controls->on_reoptimize = [this](wxString& reason) { return request_portrait_optimization(reason); };
+    m_beauty_controls->on_reoptimize = {};
     m_beauty_controls->on_save = [this] {
         request_save_and_return();
     };
@@ -494,6 +502,22 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         if (!m_beauty_controls) return;
         if (redo) m_beauty_controls->on_redo(); else m_beauty_controls->on_undo();
     });
+    m_beauty_controls->on_color_blocks_change=[this](bool before) {
+        if(before) {
+            if(!m_beauty_session_source && m_finishing_candidate.empty()) {
+                m_beauty_session_source=std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
+                m_beauty_session_undo_base=m_beauty_transactions ? m_beauty_transactions->undo_count() : 0;
+                m_beauty_session_file_base=m_beauty_candidate_files.size();
+            }
+            return;
+        }
+        m_beauty_manual_color_dirty=m_beauty_controls && m_beauty_controls->has_changes();
+        if(!m_finishing_candidate.empty()) {
+            m_finishing_candidate_semantic_faces=m_model_preview->import_face_color_overrides(true);
+            m_finishing_candidate_semantic_subfaces=m_model_preview->import_subface_color_overrides(true);
+        }
+        refresh_model_finishing();
+    };
     m_beauty_controls->on_record = [this](const std::string& label,
         std::function<void()> undo, std::function<void()> redo) {
         if (m_beauty_transactions) m_beauty_transactions->record({

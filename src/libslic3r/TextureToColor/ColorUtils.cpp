@@ -1,18 +1,32 @@
 #include "ColorUtils.hpp"
 
+#include <CGAL/Aff_transformation_3.h>
+#include <CGAL/boost/graph/graph_traits_Surface_mesh.h>
+#include <Eigen/Core>
+#include <CGAL/Surface_mesh/Surface_mesh.h>
+#include <CGAL/Origin.h>
+#include <CGAL/centroid.h>
+#include <CGAL/Named_function_parameters.h>
+#include <CGAL/boost/graph/helpers.h>
+#include <Eigen/Eigenvalues>
+#include <CGAL/Polygon_mesh_processing/measure.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <functional>
 #include <iostream>
+#include <limits>
+#include <map>
 #include <numeric>
 
 #include <boost/next_prior.hpp>
 
 #include <CGAL/AABB_face_graph_triangle_primitive.h>
-#include <CGAL/AABB_traits.h>
+#include <CGAL/AABB_traits_3.h>
 #include <CGAL/AABB_tree.h>
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/Point_3.h>
@@ -23,11 +37,19 @@
 #include <CGAL/Polygon_mesh_processing/self_intersections.h>
 #include <CGAL/Surface_mesh.h>
 #include <CGAL/mesh_segmentation.h>
+#include <string>
 #include <tbb/parallel_for.h>
 
 #include "CgalUtils.hpp"
+#include "TriMesh.hpp"
+#include "libslic3r/Point.hpp"
 #include "libslic3r/AABBTreeIndirect.hpp"
 #include <boost/log/trivial.hpp>
+#include <vector>
+#include <utility>
+#include <unordered_map>
+#include <unordered_set>
+#include <queue>
 
 namespace Slic3r { namespace tex2color {
 namespace color_utils {
@@ -76,7 +98,7 @@ typedef boost::graph_traits<CGALMesh>::halfedge_descriptor halfedge_descriptor;
 typedef boost::graph_traits<CGALMesh>::edge_descriptor edge_descriptor;
 typedef boost::graph_traits<CGALMesh>::vertex_descriptor vertex_descriptor;
 typedef CGAL::AABB_face_graph_triangle_primitive<CGALMesh> Primitive;
-typedef CGAL::AABB_traits<CGALKernel, Primitive> Traits;
+typedef CGAL::AABB_traits_3<CGALKernel, Primitive> Traits;
 typedef CGAL::AABB_tree<Traits> Tree;
 typedef CGALMesh::template Property_map<vertex_descriptor, CGALKernel::Vector_3> VNMap;
 
@@ -297,8 +319,17 @@ static bool smooth_region_geom_boundary(CGALMesh& mesh, std::vector<std::size_t>
     }
 
     // 3. smooth boundary
-    Tree boundary_tree(mesh.faces().begin(), mesh.faces().end(), mesh);
-    boundary_tree.accelerate_distance_queries();
+    // AABB face primitives keep a reference to the mesh geometry. Keep that
+    // geometry immutable while the working mesh is moved by the smoothing
+    // loop; CGAL 6.x may otherwise retain stale primitive bounds and abort
+    // while querying or destroying the accelerated tree.
+    if (polylines.empty())
+        return true;
+    const CGALMesh projection_mesh = mesh;
+    Tree boundary_tree(projection_mesh.faces().begin(), projection_mesh.faces().end(), projection_mesh);
+    // CGAL's optional Kd-tree is not needed for the exact AABB projection and
+    // its destruction is unstable for some imported meshes on Windows.
+    boundary_tree.do_not_accelerate_distance_queries();
 
     constexpr std::size_t max_iters = 5;
     const double smooth_weight = smooth_parameters.smooth_weight;  // Controls smoothing intensity; larger values produce smoother results. Range: 0.1~1.0.

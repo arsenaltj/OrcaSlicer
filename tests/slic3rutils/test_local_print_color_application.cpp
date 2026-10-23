@@ -115,8 +115,8 @@ TEST_CASE("working copy placement accepts native spacing between curved model si
     arrangement::ArrangePolygon result;
     instance->get_arrange_polygon(&result, fixture.bundle.full_config());
     // Independent physical clearance check, away from integer contact rounding.
-    CHECK(intersection_ex(offset_ex(result.transformed_poly(), scale_(.99), ClipperLib::jtRound),
-        offset_ex(fixed.transformed_poly(), scale_(.99), ClipperLib::jtRound)).empty());
+    CHECK(intersection_ex(offset_ex(result.transformed_poly(), scale_(.99), jtRound),
+        offset_ex(fixed.transformed_poly(), scale_(.99), jtRound)).empty());
     CHECK(diff_ex({result.transformed_poly()}, {ExPolygon(bed)}).empty());
     CHECK((instance->get_offset().head<2>() - Vec2d(175, 175)).norm() > 1.);
     CHECK(instance->get_matrix().matrix().block<3, 3>(0, 0) == before.matrix().block<3, 3>(0, 0));

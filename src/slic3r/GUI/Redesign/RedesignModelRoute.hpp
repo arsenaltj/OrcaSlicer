@@ -3,11 +3,39 @@
 #include "../AI/ModelGeneration/ModelGenerationHost.hpp"
 #include "../AI/ModelGeneration/PostGenerationUiState.hpp"
 
+#include <optional>
+
 namespace Slic3r::GUI {
 
 enum class RedesignModelRouteAction { Ignore, Refresh, Model, Image };
 
 enum class RedesignPrimaryAction { Design, Model };
+
+class PreviewAutoFitState
+{
+public:
+    void request() { m_pending = true; }
+
+    bool consume(unsigned int result_id, bool preview_loaded, bool paths_ready, bool viewport_ready)
+    {
+        if (!m_pending || !preview_loaded || !paths_ready || !viewport_ready)
+            return false;
+
+        m_pending = false;
+        if (m_last_result_id && *m_last_result_id == result_id)
+            return false;
+
+        m_last_result_id = result_id;
+        return true;
+    }
+
+    bool pending() const { return m_pending; }
+    const std::optional<unsigned int>& last_result_id() const { return m_last_result_id; }
+
+private:
+    bool m_pending {false};
+    std::optional<unsigned int> m_last_result_id;
+};
 
 inline RedesignPrimaryAction redesign_primary_action(const ModelGenerationUIState& state,
     ModelGenerationUIStage effective_stage)

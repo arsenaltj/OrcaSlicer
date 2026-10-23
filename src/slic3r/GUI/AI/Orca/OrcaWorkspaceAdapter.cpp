@@ -4,6 +4,7 @@
 #include "OrcaFilamentSelection.hpp"
 #include "WorkbenchPrinterFilaments.hpp"
 #include "ModelColorUpdate.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitColorBlockCache.hpp"
 #include "OrcaPaletteSnapshotBuilder.hpp"
 #include "OrcaPrintPaletteSnapshot.hpp"
 #include "AIImportSeamRepair.hpp"
@@ -392,7 +393,7 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
         }
         for (const auto& override : request.subface_color_overrides) {
             if (override.face_id >= semantic_source_its->indices.size() || override.depth == 0 ||
-                override.depth > 2 || unsigned(override.path) >= (1u << (2u * override.depth)) ||
+                override.depth > 4 || unsigned(override.path) >= (1u << (2u * override.depth)) ||
                 std::any_of(override.color.begin(), override.color.end(), [](float channel) {
                     return !std::isfinite(channel) || channel < 0.f || channel > 1.f;
                 })) {
@@ -586,7 +587,8 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
         result.mapped_color_count = 1;
     }
     bool subface_import_incomplete = false;
-    if (result.color_mode != AI::ImportColorMode::SingleColor && !request.subface_color_overrides.empty()) {
+    const bool matched_children = request.matched_colors && !request.matched_colors->subface_slots.empty();
+    if (result.color_mode != AI::ImportColorMode::SingleColor && (matched_children || !request.subface_color_overrides.empty())) {
         std::string subface_error;
         ModelVolume* volume = nullptr;
         if (!semantic_source_its || loaded.size() != 1 || loaded.front() >= m_plater->model().objects.size()) {
@@ -603,8 +605,11 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
         }
         if (volume != nullptr) {
             auto painting = volume->mmu_segmentation_facets.get_data();
-            if (apply_subface_color_overrides(*semantic_source_its, volume->mesh().its, painting,
-                    request.face_color_overrides, request.subface_color_overrides, subface_error)) {
+            const bool applied = matched_children
+                ? apply_matched_subface_slots(*semantic_source_its, volume->mesh().its, painting, *request.matched_colors, subface_error)
+                : apply_subface_color_overrides(*semantic_source_its, volume->mesh().its, painting,
+                    request.face_color_overrides, request.subface_color_overrides, subface_error);
+            if (applied) {
                 volume->mmu_segmentation_facets.set_data(std::move(painting));
                 result.subface_colors_applied = true;
                 result.colors_applied = true;
@@ -614,6 +619,13 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
         subface_import_incomplete = !result.subface_colors_applied;
         if (subface_import_incomplete)
             BOOST_LOG_TRIVIAL(warning) << "Semantic subfaces retained safe whole-face colors: " << subface_error;
+        if (matched_children && subface_import_incomplete) {
+            if (m_plater->undo_redo_stack_main().active_snapshot_time() != before_snapshot) m_plater->undo();
+            result.outcome = AI::ModelImportOutcome::ImportFailed;
+            result.error = "已保存的子面耗材绑定无法安全导入，已撤销本次导入。" + subface_error;
+            workflow.finish_ai_workflow(false, _L("子面耗材绑定未通过校验，原工程保持不变。"));
+            return result;
+        }
     }
 
     workflow.update_ai_workflow_step(Sidebar::AIImportModel, Sidebar::AIWorkflowStatus::Success);
@@ -720,6 +732,17 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
         return result;
     }
 
+    if(!request.portrait_color_block_references.empty()) {
+        try {
+            PortraitColorBlocks::archive(request.portrait_color_block_references,
+                boost::filesystem::path(Slic3r::data_dir())/"cache"/"portrait-color-blocks",
+                m_plater->model().get_auxiliary_file_temp_path());
+        } catch(const std::exception& e) {
+            // Native paint is already complete. Optional cache corruption
+            // discards only the new candidates, never the imported colors.
+            BOOST_LOG_TRIVIAL(warning)<<"Portrait color block archive unavailable: "<<e.what();
+        }
+    }
     m_on_import_succeeded();
     if (request.suggest_base_preparation) {
         auto* preparation = dynamic_cast<OrcaModelPreparationPanel*>(

@@ -11,6 +11,10 @@ from pathlib import Path
 # additions. Every other libslic3r implementation file must be listed in the
 # shared core manifest so an upstream source addition cannot be silently omitted.
 NON_CORE_SOURCES = {
+    # Upstream keeps these legacy/optional units outside its core target.
+    "Clipper2Utils.cpp",
+    "MeshRepair.cpp",
+    "clipper.cpp",
     "CutSurface.cpp",
     "ExPolygonCollection.cpp",
     "Format/ModelIO.mm",

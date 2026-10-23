@@ -85,8 +85,8 @@ namespace BicubicInternal {
 	template<class T>
 	inline T clamp(T a, T lower, T upper)
 	{
-		return (a < lower) ? lower : 
-	   		   (a > upper) ? upper : a;
+		return (a < lower) ? lower :
+			   (a > upper) ? upper : a;
 	}
 }
 
@@ -119,7 +119,7 @@ struct CubicKernel
 		const FloatType  x3 = x*x*x;
 		return f0*(KERNEL::a00() + KERNEL::a01() * x + KERNEL::a02() * x2 + KERNEL::a03() * x3) +
 			   f1*(KERNEL::a10() + KERNEL::a11() * x + KERNEL::a12() * x2 + KERNEL::a13() * x3) +
-			   f2*(KERNEL::a20() + KERNEL::a21() * x + KERNEL::a22() * x2 + KERNEL::a23() * x3) + 
+			   f2*(KERNEL::a20() + KERNEL::a21() * x + KERNEL::a22() * x2 + KERNEL::a23() * x3) +
 			   f3*(KERNEL::a30() + KERNEL::a31() * x + KERNEL::a32() * x2 + KERNEL::a33() * x3);
 	}
 };

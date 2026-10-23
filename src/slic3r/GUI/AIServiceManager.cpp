@@ -3,6 +3,7 @@
 #include "AISidecarClient.hpp"
 #include "AIModelOutputDirectory.hpp"
 #include "GUI_App.hpp"
+#include "I18N.hpp"
 #include "libslic3r/Utils.hpp"
 #include "slic3r/Utils/Http.hpp"
 

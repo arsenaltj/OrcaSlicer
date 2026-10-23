@@ -1,13 +1,29 @@
 #include "Thumbnails.hpp"
-#include "../miniz_extension.hpp"
+#include "libslic3r/GCode/ThumbnailData.hpp"
+#include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/Point.hpp"
+#include "libslic3r/Config.hpp"
+#include "libslic3r/enum_bitmask.hpp"
 #include "format.hpp"
+#include "libslic3r/I18N.hpp"
 
 #include <boost/algorithm/string/case_conv.hpp>
 #include <qoi/qoi.h>
+#include <cstdlib>
+#include <cstring>
+#include <cstddef>
+#include <cstdint>
+#include <ios>
 #ifndef ORCA_MOBILE_ANDROID
 #include <jpeglib.h>
 #include <jerror.h>
 #endif
+#include <miniz.h>
+#include <string_view>
+#include <memory>
+#include <sstream>
+#include <string>
+#include <utility>
 #include <vector>
 #include <boost/algorithm/string.hpp>
 
@@ -56,40 +72,59 @@ std::unique_ptr<CompressedImageBuffer> compress_thumbnail_png(const ThumbnailDat
 
 std::unique_ptr<CompressedImageBuffer> compress_thumbnail_jpg(const ThumbnailData& data)
 {
-#ifndef ORCA_MOBILE_ANDROID
-    // Take vector of RGBA pixels and flip the image vertically
-    std::vector<unsigned char> rgba_pixels(data.pixels.size());
-    const unsigned int row_size = data.width * 4;
-    for (unsigned int y = 0; y < data.height; ++y)
-        ::memcpy(rgba_pixels.data() + (data.height - y - 1) * row_size, data.pixels.data() + y * row_size, row_size);
+#ifdef ORCA_MOBILE_ANDROID
+    return compress_thumbnail_png(data);
+#else
+    // JPEG has no alpha channel. Convert RGBA pixels to RGB while flipping the image vertically.
+    const unsigned int row_size = data.width * 3;
+    std::vector<unsigned char> rgb_pixels(size_t(data.width) * data.height * 3);
+    for (unsigned int y = 0; y < data.height; ++y) {
+        const unsigned char *src = data.pixels.data() + size_t(y) * data.width * 4;
+        unsigned char *dst = rgb_pixels.data() + size_t(data.height - y - 1) * row_size;
+        for (unsigned int x = 0; x < data.width; ++x) {
+            dst[x * 3 + 0] = src[x * 4 + 0];
+            dst[x * 3 + 1] = src[x * 4 + 1];
+            dst[x * 3 + 2] = src[x * 4 + 2];
+        }
+    }
+
+    // Store pointers to scanlines start for later use
     std::vector<unsigned char*> rows_ptrs;
     rows_ptrs.reserve(data.height);
-    for (unsigned int y = 0; y < data.height; ++y) rows_ptrs.emplace_back(&rgba_pixels[y * row_size]);
+    for (unsigned int y = 0; y < data.height; ++y) {
+        rows_ptrs.emplace_back(&rgb_pixels[size_t(y) * row_size]);
+    }
+
     std::vector<unsigned char> compressed_data(data.pixels.size());
     unsigned char* compressed_data_ptr = compressed_data.data();
-    unsigned long compressed_data_size = data.pixels.size();
+    unsigned long compressed_data_size = static_cast<unsigned long>(compressed_data.size());
+
     jpeg_error_mgr err;
     jpeg_compress_struct info;
     info.err = jpeg_std_error(&err);
     jpeg_create_compress(&info);
     jpeg_mem_dest(&info, &compressed_data_ptr, &compressed_data_size);
+
     info.image_width = data.width;
     info.image_height = data.height;
-    info.input_components = 4;
-    info.in_color_space = JCS_EXT_RGBA;
+    info.input_components = 3;
+    info.in_color_space = JCS_RGB;
+
     jpeg_set_defaults(&info);
     jpeg_set_quality(&info, 85, TRUE);
     jpeg_start_compress(&info, TRUE);
+
     jpeg_write_scanlines(&info, rows_ptrs.data(), data.height);
     jpeg_finish_compress(&info);
     jpeg_destroy_compress(&info);
+
+    // FIXME -> Add error checking
+
     auto out = std::make_unique<CompressedJPG>();
     out->data = malloc(compressed_data_size);
     out->size = size_t(compressed_data_size);
-    ::memcpy(out->data, compressed_data.data(), out->size);
+    ::memcpy(out->data, (const void*)compressed_data.data(), out->size);
     return out;
-#else
-    return compress_thumbnail_png(data);
 #endif
 }
 
@@ -590,11 +625,11 @@ std::string get_error_string(const ThumbnailErrors& errors)
     std::string error_str;
 
     if (errors.has(ThumbnailError::InvalidVal))
-        error_str += "\n - " + Slic3r::format("Invalid input format. Expected vector of dimensions in the following format: \"%1%\"", "XxY/EXT, XxY/EXT, ...");
+        error_str += "\n - " + Slic3r::format(_u8L("Invalid input format. Expected vector of dimensions in the following format: \"%1%\""), "XxY/EXT, XxY/EXT, ...");
     if (errors.has(ThumbnailError::OutOfRange))
-        error_str += "\n - Input value is out of range";
+        error_str += "\n - " + _u8L("Input value is out of range");
     if (errors.has(ThumbnailError::InvalidExt))
-        error_str += "\n - Some extension in the input is invalid";
+        error_str += "\n - " + _u8L("Some extension in the input is invalid");
 
     return error_str;
 }
