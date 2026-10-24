@@ -95,6 +95,13 @@ public:
     void set_secondary_face(const wxColour& colour) { m_secondary_face = colour; Refresh(); }
     void set_alignment(int alignment) { m_alignment = alignment; Refresh(); }
     void set_icon(const wxBitmap& icon) { m_icon = icon; Refresh(); }
+    void set_icon_on_left(bool value) { m_icon_on_left = value; Refresh(); }
+    void set_horizontal_padding(int padding)
+    {
+        m_horizontal_padding = std::max(0, padding);
+        m_icon_horizontal_padding = m_horizontal_padding;
+        Refresh();
+    }
     void set_text_colour(const wxColour& colour) { m_text_colour = colour; Refresh(); }
 
 private:
@@ -129,16 +136,26 @@ private:
         dc.SetFont(GetFont());
         if (IsEnabled() && m_text_colour.IsOk()) foreground = m_text_colour;
         dc.SetTextForeground(foreground);
+        const int horizontal_padding = FromDIP(m_horizontal_padding);
+        const int icon_horizontal_padding = FromDIP(m_icon_horizontal_padding);
+        const int icon_gap = m_icon.IsOk() ? FromDIP(7) : 0;
         const int icon_width = m_icon.IsOk() ? m_icon.GetLogicalWidth() + FromDIP(12) : 0;
         const auto caption = wxControl::Ellipsize(GetLabel(), dc, wxELLIPSIZE_END,
-            std::max(0, size.x - FromDIP(32) - icon_width));
+            std::max(0, size.x - 2 * horizontal_padding - icon_width));
         const wxSize extent = dc.GetTextExtent(caption);
-        dc.DrawText(caption, m_alignment == wxALIGN_LEFT ? FromDIP(16) : (size.x - extent.x) / 2,
-                    (size.y - extent.y) / 2);
+        int text_x = m_alignment == wxALIGN_LEFT ? horizontal_padding : (size.x - extent.x) / 2;
+        if (m_icon.IsOk() && m_icon_on_left) {
+            const int group_width = m_icon.GetLogicalWidth() + icon_gap + extent.x;
+            const int group_x = m_alignment == wxALIGN_LEFT ? icon_horizontal_padding : (size.x - group_width) / 2;
+            dc.DrawBitmap(m_icon, group_x, (size.y - m_icon.GetLogicalHeight()) / 2, true);
+            text_x = group_x + m_icon.GetLogicalWidth() + icon_gap;
+        }
+        dc.DrawText(caption, text_x, (size.y - extent.y) / 2);
         if (m_icon.IsOk()) {
-            const int x = GetLabel().empty() ? (size.x - m_icon.GetLogicalWidth()) / 2 :
-                size.x - m_icon.GetLogicalWidth() - FromDIP(12);
-            dc.DrawBitmap(m_icon, x, (size.y - m_icon.GetLogicalHeight()) / 2, true);
+            const int x = m_icon_on_left ? -1 : GetLabel().empty() ? (size.x - m_icon.GetLogicalWidth()) / 2 :
+                size.x - m_icon.GetLogicalWidth() - icon_horizontal_padding;
+            if (x >= 0)
+                dc.DrawBitmap(m_icon, x, (size.y - m_icon.GetLogicalHeight()) / 2, true);
         }
     }
 
@@ -146,7 +163,10 @@ private:
     wxColour m_text_colour;
     wxBitmap m_icon;
     int m_alignment { wxALIGN_CENTER };
+    int m_horizontal_padding { 16 };
+    int m_icon_horizontal_padding { 12 };
     bool m_primary { false };
+    bool m_icon_on_left { false };
     bool m_hovered { false };
     bool m_pressed { false };
 };

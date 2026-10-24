@@ -128,18 +128,18 @@ class GenerationOptionsRecoveryTests(unittest.TestCase):
         image = io.BytesIO()
         Image.new("RGB", (512, 512), "gray").save(image, format="PNG")
         for source in ("text", "image"):
-            for provider, geometry, texture in (("tripo", "standard", "standard"),
-                                                 ("tripo", "detailed", "extreme"),
-                                                 ("hunyuan", "detailed", "extreme")):
+            for provider, face_limit, geometry, texture in (("tripo", 2000000, "standard", "standard"),
+                                                             ("tripo", 2000000, "detailed", "extreme"),
+                                                             ("yoyoclaw", 1000000, "standard", "standard")):
                 with self.subTest(source=source, provider=provider, geometry=geometry):
-                    options = {"provider": provider, "face_limit": 2000000,
+                    options = {"provider": provider, "face_limit": face_limit,
                                "geometry_quality": geometry, "texture_quality": texture, "output_format": "obj"}
                     handler = object.__new__(sidecar.Handler)
                     handler._read_model_json = mock.Mock(return_value={
                         "request_id": "offline-design", "prompt": "test object", **options})
                     handler._read_image_multipart = mock.Mock(return_value=({
                         "request_id": "offline-design", "instruction": "test object", **options,
-                        "face_limit": "2000000"}, image.getvalue(), "image/png"))
+                        "face_limit": str(face_limit)}, image.getvalue(), "image/png"))
                     handler.send_json = mock.Mock()
                     with mock.patch.object(sidecar, "image_provider_status", return_value={"available": True}), \
                          mock.patch.object(sidecar, "_submit") as submit, \
@@ -283,8 +283,8 @@ class GenerationOptionsRecoveryTests(unittest.TestCase):
     def test_invalid_route_options_do_not_authorize_or_change_job(self):
         for options in ({"geometry_quality": "standard", "face_limit": 2000000},
                         {"texture_quality": "low"}, {"output_format": "stl"},
-                        {"provider": "hunyuan", "face_limit": 2000000},
-                        {"provider": "hunyuan", "geometry_quality": "detailed"}):
+                        {"provider": "yoyoclaw", "face_limit": 2000000},
+                        {"provider": "yoyoclaw", "geometry_quality": "detailed"}):
             with self.subTest(options=options):
                 self.job.state = "awaiting_confirmation"
                 before = (self.job.directory / sidecar.JOB_STATE_FILENAME).read_bytes()

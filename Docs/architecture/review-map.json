@@ -25,6 +25,7 @@
         "src/slic3r/GUI",
         "src/slic3r/GUI/AI/AIDesktopFeatureHost.cpp",
         "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
+        "src/slic3r/GUI/AI/Text",
         "src/slic3r/GUI/Redesign/RedesignShell.cpp",
         "src/slic3r/GUI/Redesign/RedesignShell.hpp",
         "src/slic3r/GUI/Redesign"
@@ -130,6 +131,21 @@
       "id": "desktop_host",
       "path": "src/slic3r/GUI/AI/AIDesktopFeatureHost.cpp",
       "needle": "struct AIDesktopFeatureHost::Impl"
+    },
+    {
+      "id": "text_capability_host",
+      "path": "src/slic3r/GUI/AI/Text/AITextFeatureHost.hpp",
+      "needle": "class AITextFeatureHost final"
+    },
+    {
+      "id": "text_capability_application",
+      "path": "tools/ai/text_capability_application.py",
+      "needle": "class TextCapabilityApplication:"
+    },
+    {
+      "id": "text_capability_transport",
+      "path": "tools/ai/text_capability_transport.py",
+      "needle": "def parse_text_capability_multipart("
     },
     {
       "id": "generation_host",

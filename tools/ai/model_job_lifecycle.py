@@ -107,6 +107,9 @@ class ModelJobLifecycle:
             custom_style=custom_style,
             print_settings=print_settings or asdict(PrintSettings()),
             provider=provider,
+            design_provider=("gpt" if options.get("design_provider", "gpt") == "image2" else str(options.get("design_provider", "gpt"))),
+            design_model=str(options.get("design_model", "")) if isinstance(options.get("design_model", ""), str) else "",
+            geometry_model=str(options.get("geometry_model", "")) if isinstance(options.get("geometry_model", ""), str) else "",
             face_limit=face_limit,
             generation_profile="quality" if face_limit >= 500000 else "performance",
             geometry_quality=geometry,
@@ -144,7 +147,9 @@ class ModelJobLifecycle:
                          custom_style=source.custom_style, print_settings=dict(source.print_settings),
                          provider=source.provider, generation_options={
                              "face_limit": source.face_limit, "geometry_quality": source.geometry_quality or "standard",
-                             "texture_quality": source.texture_quality, "output_format": source.output_format})
+                             "texture_quality": source.texture_quality, "output_format": source.output_format,
+                             "design_provider": source.design_provider, "design_model": source.design_model,
+                             "geometry_model": source.geometry_model})
         child.source_design_job_id = source.source_design_job_id or source.id
         child.user_prompt = source.user_prompt
         child.prepared_prompt = source.prepared_prompt
@@ -244,11 +249,6 @@ class ModelJobLifecycle:
                     "Four-view portrait preparation stopped before any paid Tripo task was created. "
                     "The approved preview is preserved and can be retried."
                 ), "legacy_prepaid_multiview_failure")
-            if self.can_manually_retry_hunyuan(job):
-                job.state = "awaiting_confirmation"
-                job.phase = "model_retry"
-                job.message = "The previous Hunyuan submission was rejected. Review the saved design and explicitly confirm a new paid submission."
-                job.progress = 15
             recoverable_error = str(latest_attempt.get("error", "")).lower()
             can_retry_download = (
                 job.state == "failed"
@@ -276,12 +276,6 @@ class ModelJobLifecycle:
                 job.phase = "resuming"
                 job.message = "Retrying the existing remote artifact download after restart."
                 job.progress = max(75, job.progress)
-            if (job.provider == "hunyuan" and job.state == "failed" and has_paid_model_task
-                    and latest_attempt.get("provider_error_retryable") is True
-                    and latest_attempt.get("provider_error_ambiguous") is not True):
-                job.state = "queued"
-                job.phase = "resuming"
-                job.message = "Resuming the existing Hunyuan task after a temporary query or download failure."
             if job.state in {"preprocessing", "recommending_palette"}:
                 job.state = "failed"
                 job.phase = "failed"
@@ -452,11 +446,16 @@ class ModelJobLifecycle:
             ),
             {},
         )
-        provider_tasks = {
-            "provider": job.provider,
-            "generation_task_id": str(provider_attempt.get("generation_task_id", "")),
-            "conversion_task_id": str(provider_attempt.get("conversion_task_id", "")),
-        } if provider_attempt else {}
+        if provider_attempt:
+            provider_tasks = {
+                "provider": job.provider,
+                "generation_task_id": str(provider_attempt.get("generation_task_id", "")),
+                "conversion_task_id": str(provider_attempt.get("conversion_task_id", "")),
+            }
+            if job.geometry_model:
+                provider_tasks["model"] = job.geometry_model
+        else:
+            provider_tasks = {}
         code = latest_attempt.get("provider_error_code")
         if isinstance(code, str) and code:
             category = latest_attempt.get("provider_error_category")
@@ -484,6 +483,9 @@ class ModelJobLifecycle:
             "texture_quality": job.texture_quality,
             "output_format": job.output_format,
             "provider": job.provider,
+            "design_provider": job.design_provider,
+            "design_model": job.design_model,
+            "geometry_model": job.geometry_model,
             "state": job.state,
             "phase": job.phase,
             "message": job.message,
@@ -621,20 +623,6 @@ class ModelJobLifecycle:
     def fail_preprocess_job(self, job: Job, error: OpenAIPreprocessorError) -> None:
         job.preprocess_failure = preprocess_failure_payload(error)
         self.fail_job(job, str(error))
-
-    def can_manually_retry_hunyuan(self, job: Job) -> bool:
-        """A confirmed rejection may be retried only by a new user confirmation."""
-        return (
-            job.provider == "hunyuan" and (job.state == "failed" or
-                (job.state == "awaiting_confirmation" and job.phase == "model_retry")) and bool(job.attempts)
-            and all(attempt.get("status") == "rejected"
-                    and attempt.get("provider") == "hunyuan"
-                    and attempt.get("provider_error_category") == "validation"
-                    and attempt.get("provider_error_ambiguous") is False
-                    and not attempt.get("generation_task_id")
-                    and not attempt.get("conversion_task_id") for attempt in job.attempts)
-            and _model_generation_reference(job) is not None
-        )
 
     def latest_generation_task_id(self, job: Job) -> str:
         """Return the newest persisted provider task without creating a new one."""

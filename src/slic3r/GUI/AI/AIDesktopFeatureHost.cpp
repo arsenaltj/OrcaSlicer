@@ -1,6 +1,7 @@
 #include "AIDesktopFeatureHost.hpp"
 
 #include "ModelGeneration/ModelGenerationFeatureHost.hpp"
+#include "Text/AITextFeatureHost.hpp"
 #include "slic3r/GUI/AISidecarClient.hpp"
 #include "slic3r/GUI/AIServiceManager.hpp"
 #include "slic3r/GUI/Plater.hpp"
@@ -49,6 +50,7 @@ struct AIDesktopFeatureHost::Impl final : wxEvtHandler
     Impl(wxWindow* parent, Plater* plater, NavigateAfterImportFn navigate_after_import,
          SmartSlicingAvailableFn smart_slicing_available)
         : model_generation(parent, plater, navigate_after_import, [this] { retry_now(); })
+        , text(AISidecarClient::default_endpoint())
         , service_manager(AISidecarClient::default_endpoint())
         , retry_timer(this)
         , on_smart_slicing_available(std::move(smart_slicing_available))
@@ -156,6 +158,7 @@ struct AIDesktopFeatureHost::Impl final : wxEvtHandler
     }
 
     ModelGenerationFeatureHost model_generation;
+    AITextFeatureHost text;
     AIServiceManager service_manager;
     wxTimer retry_timer;
     SmartSlicingAvailableFn on_smart_slicing_available;
@@ -192,6 +195,11 @@ void AIDesktopFeatureHost::initialize_model_generation_for_shell()
 ModelGenerationFeatureHost* AIDesktopFeatureHost::model_generation_host() const
 {
     return &m_impl->model_generation;
+}
+
+AITextFeatureHost* AIDesktopFeatureHost::text_feature_host() const
+{
+    return &m_impl->text;
 }
 
 void AIDesktopFeatureHost::set_service_status_handler(ServiceStatusFn handler)

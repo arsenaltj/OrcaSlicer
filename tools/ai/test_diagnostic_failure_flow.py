@@ -128,7 +128,7 @@ class DiagnosticFailureFlowTests(unittest.TestCase):
                     "package_revision": "diagnostic-test",
                     "distribution_channel": "internal",
                     "sidecar_protocol_version": 2,
-                    "sidecar_version": "orcaslicer-ai-sidecar-v9",
+                    "sidecar_version": "orcaslicer-ai-sidecar-v11",
                 }),
                 encoding="utf-8",
             )

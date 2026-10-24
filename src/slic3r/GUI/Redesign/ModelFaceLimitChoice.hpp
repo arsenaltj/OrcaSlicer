@@ -7,7 +7,7 @@ namespace Slic3r::GUI {
 inline std::vector<int> model_face_limit_choices(const ModelGenerationUIOptions& options)
 {
     std::vector<int> choices {1000000};
-    if (options.provider != "hunyuan")
+    if (options.provider == "tripo")
         choices.push_back(2000000);
     // Keep legacy records truthful without offering 300k for new generations.
     if (options.face_limit == 300000)
@@ -18,9 +18,9 @@ inline std::vector<int> model_face_limit_choices(const ModelGenerationUIOptions&
 inline ModelGenerationUIOptions model_generation_options_for_face_limit(ModelGenerationUIOptions options,
                                                                        int face_limit)
 {
-    options.face_limit = options.provider == "hunyuan" && face_limit > 1000000 ? 1000000 : face_limit;
+    options.face_limit = options.provider != "tripo" && face_limit > 1000000 ? 1000000 : face_limit;
     options.geometry_quality = options.face_limit == 2000000 ? "detailed" : "standard";
-    if (options.provider == "hunyuan")
+    if (options.provider != "tripo")
         options.texture_quality = "standard";
     return options;
 }

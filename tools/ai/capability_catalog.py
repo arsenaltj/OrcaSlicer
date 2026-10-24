@@ -16,6 +16,8 @@ ATOMIC_MODULES = (
     "model_job_application", "model_job_lifecycle", "model_job_repository", "model_mesh_repair",
     "model_obj_io", "model_quality_workflow", "model_request", "model_texture_baking",
     "portrait_geometry_reference", "portrait_model_materials", "portrait_multiview_workflow",
+    "text_capability_application", "text_capability_transport", "yoyoclaw_client", "yoyoclaw_provider_gateway",
+    "yoyoclaw_text_gateway",
 )
 
 

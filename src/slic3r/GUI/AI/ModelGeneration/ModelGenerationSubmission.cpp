@@ -96,7 +96,7 @@ void classify_submission_error(const std::string& error, std::string& code, std:
 
 void ModelGenerationPanel::on_generate(wxCommandEvent&)
 {
-    if (!input_editable() || !m_generation_available) return;
+    if (!input_editable() || !generation_provider_available("geometry")) return;
     if (!generation_options_valid()) {
         show_input_hint(_L("200 万面需要选择精细几何。"));
         return;
@@ -113,7 +113,7 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
     }
     const auto confirmed_options = current_generation_options();
     const auto confirmed_profile = current_generation_profile();
-    const wxString provider_label = confirmed_options.provider == "hunyuan" ? _L("腾讯混元3D") : wxString("Tripo");
+    const wxString provider_label = confirmed_options.provider == "yoyoclaw" ? wxString("YOYOClaw") : wxString("Tripo");
     wxString message = wxString::Format(image_mode
         ? _L("要根据当前 AI 设计图创建 1 个付费 %s 生成任务吗？")
         : _L("要根据已确认的提示词创建 1 个付费 %s 生成任务吗？"), provider_label);
@@ -129,10 +129,11 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
     // changed the job while the user was reading the confirmation.
     const auto current_options = current_generation_options();
     const auto option_values = [](const AIModelGenerationClient::GenerationOptions& options) {
-        return std::tie(options.provider, options.face_limit, options.geometry_quality,
+        return std::tie(options.provider, options.design_provider, options.design_model, options.geometry_model,
+                        options.face_limit, options.geometry_quality,
                         options.texture_quality, options.output_format);
     };
-    if (!input_editable() || !m_generation_available ||
+    if (!input_editable() || !generation_provider_available("geometry") ||
         (!m_awaiting_confirmation && !can_reuse_ready_model_design()) || !job_inputs_match() ||
         use_printable_colors() != m_job_use_printable_colors || current_palette() != m_job_palette ||
         option_values(current_options) != option_values(confirmed_options) ||
@@ -282,7 +283,7 @@ void ModelGenerationPanel::submit_confirmed_model()
 
 bool ModelGenerationPanel::request_retry_model()
 {
-    if (m_shutdown || !m_page_initialized || !m_generation_available || m_busy || m_job_id.empty() ||
+    if (m_shutdown || !m_page_initialized || !generation_provider_available("geometry", &m_job_generation_options) || m_busy || m_job_id.empty() ||
         (m_job_state != "failed" && m_job_state != "stopped"))
         return false;
     if (m_provider_error_ambiguous && m_job_provider_task_id.empty()) {

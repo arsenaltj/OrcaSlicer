@@ -49,6 +49,7 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertEqual(
             {
                 "desktop": "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
+                "text": "src/slic3r/GUI/AI/Text/AITextFeatureHost.hpp",
                 "model_generation": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp",
                 "smart_slicing": "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp",
             },
@@ -481,6 +482,14 @@ class IntegrationGuardrailTests(unittest.TestCase):
     def test_requires_every_shared_runtime_owner(self) -> None:
         document = copy.deepcopy(self.document)
         document["boundaries"]["shared_runtime_owned_paths"].remove("src/slic3r/Utils/Http.cpp")
+
+        errors = GUARDRAILS.validate_document(document)
+
+        self.assertTrue(any(error["code"] == "boundary.shared_runtime" for error in errors))
+
+    def test_requires_text_capability_shared_runtime_ownership(self) -> None:
+        document = copy.deepcopy(self.document)
+        document["boundaries"]["shared_runtime_owned_paths"].remove("src/slic3r/GUI/AI/Text")
 
         errors = GUARDRAILS.validate_document(document)
 
