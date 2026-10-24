@@ -1,3 +1,13 @@
+# MERGE-PR40-20261024：GUI 工作区恢复修改已合入本地最新 integration（已构建验证，未推送）
+
+目标与范围：用户要求把尚未合入的 PR #40 代码先合并到本地，后续重新提交，并由用户关闭旧 PR。2026-10-24 再次抓取远端后，本地 `codex/team/integration` 与 `origin/codex/team/integration` 均为 `48c451a0fb92cf6db786785d9e5f0731e533be96`，该提交已经包含 YOYOClaw PR #42。PR #40 的远端分支已更新为 `d31acd3759a961be4a298439ce6e8c233166f05b`，其父提交同时包含旧 GUI 候选 `afaf351e49` 和最新 integration `48c451a0fb`；因此本地使用 `git merge --ff-only` 直接快进到 `d31acd3759`，没有冲突或手工选边。
+
+实际代码差异：相对远端 integration 仍为 PR #40 的 14 个文件、449 行新增和 55 行删除，覆盖切片模式入口、参数面板私有滚动条、Redesign 工作流与按钮视觉、启动项目延迟恢复及 `UiRedesign` 回归；YOYOClaw 生成和多模态 AI 润色通过最新 integration 父节点完整保留。本轮没有修改 AI provider、文本模型策略、2D/3D 生成规则、SmartSlicing 算法或共享契约。
+
+验证：`git diff --check` 通过，`scripts/verify_ai_integration.py --json` 和 `scripts/verify_mobile_sdk_boundary.py --json` 均返回 `ok: true`。合并后 `UiRedesign` 86/86 通过，记录为 [`20261024-211419-437`](../../.tmp/dev/logs/20261024-211419-437/result.json)。Windows `dev.ps1 Run -NoLaunch -Jobs 2` 的 catalogs、build、install、runtime-check、python-check 五步通过，状态 `PREPARED`、源码身份 `a156c523ebec5fdbb38aed57ae7fca4474d6d7d87871a8588bee2f73fa249c92`，记录为 [`20261024-220414-940`](../../.tmp/dev/logs/20261024-220414-940/result.json)；最新 EXE 位于 `.tmp/dev/run/orca-slicer.exe`，SHA256 为 `DC57E1A74EED5C1CABCFEA3706C4915348282493CD3565AA6EA1208AB9FE21ED`。
+
+交付边界：本地 `codex/team/integration` 当前包含组合代码，但未推送到远端 integration，也未修改或关闭 PR #40；未跟踪 `.planning/` 未纳入。此次没有启动真实主窗口，因此构建和自动回归不替代最终 GUI 视觉/交互验收。用户关闭旧 PR 后，后续重新提交应从当前本地组合 head 建立独立 `codex/task/...` 分支并以远端 integration 为目标，不直接推送集成分支。
+
 # BUILD-20261022：同步远端最新代码，仅保留两个本地提交（合并与 Windows EXE 构建通过）
 
 目标与授权：本轮用户明确要求更新远程分支最新代码，本地仅保留 `74ab5b60ce90237b96a4265ffe2578a399a9dbdc`、`fc3148970ca339d6ca2669743d829d5c3f7cef70`，其它本地修改全部删除，并在合并后构建 Windows EXE；后续“继续任务”沿此范围恢复。负责会话为本轮本机同步会话，checkout `D:/OrcaSlicer-version/OrcaSlicer`，沿 `codex/team/integration`，不接管另一台电脑的验收任务。
