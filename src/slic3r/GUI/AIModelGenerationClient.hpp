@@ -152,6 +152,9 @@ public:
     struct GenerationOptions
     {
         std::string provider { "tripo" };
+        std::string design_provider { "gpt" };
+        std::string design_model;
+        std::string geometry_model;
         int face_limit { 1000000 };
         std::string geometry_quality { "standard" };
         std::string texture_quality { "standard" };
@@ -226,12 +229,47 @@ public:
         PaletteRecommendation palette_recommendation;
     };
 
+    struct ProviderCatalogModel
+    {
+        std::string id;
+        std::string name;
+        bool        available { false };
+    };
+
+    struct ProviderCatalog
+    {
+        std::string role;
+        std::string provider;
+        std::string state;
+        std::string default_model;
+        std::vector<ProviderCatalogModel> models;
+        std::string error_code;
+        std::string error_message;
+        bool        retryable { false };
+        std::string connection_state;
+
+        bool ready() const {
+            if (state != "ready") return false;
+            for (const auto& model : models) if (model.available) return true;
+            return false;
+        }
+        bool remotely_connected() const { return ready() && connection_state == "connected"; }
+        bool supports_model(const std::string& model_id) const {
+            if (!ready()) return false;
+            if (provider != "yoyoclaw" && model_id.empty()) return true;
+            for (const auto& model : models)
+                if (model.available && model.id == model_id) return true;
+            return false;
+        }
+    };
+
     using StatusFn = std::function<void(JobStatus)>;
     using PathFn = std::function<void(boost::filesystem::path)>;
     using CompleteFn = std::function<void()>;
     using ErrorFn = std::function<void(std::string)>;
     using LatestFn = std::function<void(std::optional<JobStatus>)>;
     using StyleRecommendationFn = std::function<void(StyleRecommendation)>;
+    using CatalogFn = std::function<void(ProviderCatalog)>;
 
     explicit AIModelGenerationClient(std::string endpoint);
     ~AIModelGenerationClient();
@@ -276,6 +314,8 @@ public:
                    StatusFn on_complete, ErrorFn on_error);
     void get_status(const std::string& job_id, StatusFn on_complete, ErrorFn on_error);
     void get_latest(LatestFn on_complete, ErrorFn on_error);
+    void get_provider_catalog(const std::string& role, const std::string& provider,
+                              CatalogFn on_complete, ErrorFn on_error);
     void recheck(const std::string& job_id, StatusFn on_complete, ErrorFn on_error);
     void check_saved_artifact(const std::string& asset_id, const std::string& sha256,
                               StatusFn on_complete, ErrorFn on_error, bool read_only = false);
@@ -309,6 +349,8 @@ private:
     std::string url(const std::string& path) const;
     void post_json(const std::string& path, const json& body, StatusFn on_complete, ErrorFn on_error,
                    long timeout_seconds = 130, bool preserve_downloads = false);
+    void get_json(const std::string& path, std::function<void(std::string)> on_complete,
+                  ErrorFn on_error, long timeout_seconds = 30);
     void parse_status_response(std::string body, StatusFn on_complete, ErrorFn on_error);
     static std::optional<JobStatus> parse_job(const json& job);
     static json serialize_print_settings(const ImagePrintSettings& settings);
@@ -318,6 +360,7 @@ private:
 
     std::string           m_endpoint;
     std::shared_ptr<Http> m_active_request;
+    std::shared_ptr<Http> m_catalog_request;
     std::vector<std::shared_ptr<Http>> m_download_requests;
     std::vector<std::shared_ptr<Http>> m_background_requests;
 };

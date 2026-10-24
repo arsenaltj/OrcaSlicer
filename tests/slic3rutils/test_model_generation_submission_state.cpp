@@ -8,7 +8,7 @@ TEST_CASE("Submission rejection survives unchanged preview recovery and repeated
           "[ModelGenerationSubmissionState][SidecarRecovery]")
 {
     SubmissionState state;
-    const SubmissionContext request {"design-a", "hunyuan", 7};
+    const SubmissionContext request {"design-a", "yoyoclaw", 7};
     state.begin(request);
     const std::string error = "Model generation is not configured.";
     REQUIRE(state.retain_error(request, error));
@@ -29,7 +29,7 @@ TEST_CASE("Old job provider and submission callbacks cannot replace the current 
     state.begin(current);
     REQUIRE(state.retain_error(current, "Current rejection"));
     for (const SubmissionContext& old : {SubmissionContext {"design-b", "tripo", 8},
-                                        SubmissionContext {"design-a", "hunyuan", 8},
+                                        SubmissionContext {"design-a", "yoyoclaw", 8},
                                         SubmissionContext {"design-a", "tripo", 7}}) {
         CHECK_FALSE(old.matches(current.job_id, current.provider, current.sequence));
         CHECK_FALSE(state.retain_error(old, "Old rejection"));
@@ -43,10 +43,10 @@ TEST_CASE("Explicit retry and switching provider discard the previous submission
           "[ModelGenerationSubmissionState][SidecarRecovery]")
 {
     SubmissionState state;
-    const SubmissionContext first {"design-a", "hunyuan", 7};
+    const SubmissionContext first {"design-a", "yoyoclaw", 7};
     state.begin(first);
     state.retain_error(first, "Model generation is not configured.");
-    const SubmissionContext retry {"design-a", "hunyuan", 8};
+    const SubmissionContext retry {"design-a", "yoyoclaw", 8};
     state.begin(retry);
     CHECK(state.error(retry).empty());
     CHECK_FALSE(state.retain_error(first, "Late failure"));
@@ -66,7 +66,7 @@ TEST_CASE("Authoritative task advancement replaces rejection while preflight rec
 {
     for (const std::string terminal_or_active : {"queued", "running", "ready", "failed", "stopping", "stopped"}) {
         SubmissionState state;
-        const SubmissionContext request {"design-a", "hunyuan", 7};
+        const SubmissionContext request {"design-a", "yoyoclaw", 7};
         state.begin(request);
         state.retain_error(request, "The generated image is not suitable for 3D input");
         state.reconcile(request, "awaiting_confirmation");
@@ -81,7 +81,7 @@ TEST_CASE("Configuration rejection is distinguished from ambiguous transport and
 {
     CHECK(is_model_provider_not_configured("Model generation is not configured."));
     CHECK(is_model_provider_not_configured("feature_unavailable: Model generation is not configured."));
-    CHECK(is_model_provider_not_configured("provider_not_configured: Hunyuan credentials are missing."));
+    CHECK(is_model_provider_not_configured("provider_not_configured: YOYOClaw credentials are missing."));
     CHECK_FALSE(is_model_provider_not_configured("feature_unavailable: Image generation is not configured."));
     CHECK_FALSE(is_model_provider_not_configured("image_provider_not_configured: Image credentials are missing."));
     CHECK_FALSE(is_model_provider_not_configured("AI sidecar request timed out."));

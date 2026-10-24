@@ -9,6 +9,7 @@ if(ORCA_AI_WINDOWS_INSTALLER)
     # executes them while staging the NSIS payload, so a package cannot be
     # produced unless its own isolated Python can import the pinned local stack.
     install(DIRECTORY "${ORCA_AI_PILLOW_STAGE_DIR}/" DESTINATION "python/Lib/site-packages")
+    install(DIRECTORY "${ORCA_AI_YOYOCLAW_STAGE_DIR}/" DESTINATION "python/Lib/site-packages")
     if(ORCA_PORTRAIT_STAGE_DIR)
         install(DIRECTORY "${ORCA_PORTRAIT_STAGE_DIR}/" DESTINATION "resources/beauty-runtime")
         if(ORCA_BEAUTY_RASTER_BINARY)
@@ -39,6 +40,7 @@ if(ORCA_AI_WINDOWS_INSTALLER)
                 --python-root \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/python\"
                 --expect-python \"${_bundled_python_version}\"
                 --expect-pillow \"${ORCA_AI_PILLOW_VERSION}\"
+                --expect-yoyoclaw
             RESULT_VARIABLE _orca_ai_pillow_import_result
             OUTPUT_QUIET
             ERROR_QUIET)

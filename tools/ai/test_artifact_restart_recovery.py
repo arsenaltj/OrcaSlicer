@@ -75,9 +75,10 @@ class ArtifactRestartRecoveryTests(unittest.TestCase):
                 self.assertEqual(restored.state, state)
                 submit.assert_not_called()
 
-    def test_hunyuan_obj_retry_keeps_partial_extractions_and_reuses_remote_task(self):
-        self.job.provider, self.job.output_format = 'hunyuan', 'obj'
-        self.job.attempts = [{'attempt': 1, 'provider': 'hunyuan', 'generation_task_id': 'paid-hunyuan'}]
+    def test_yoyoclaw_obj_retry_keeps_partial_extractions_and_reuses_remote_task(self):
+        self.job.provider, self.job.output_format = 'yoyoclaw', 'obj'
+        self.job.geometry_model = '3d-model-library/Hy-3D-3.1-PC-YOYO'
+        self.job.attempts = [{'attempt': 1, 'provider': 'yoyoclaw', 'generation_task_id': 'paid-yoyoclaw'}]
         attempt = self.job.directory / 'attempt-01'
         package = attempt / 'package'
         package.mkdir(parents=True)
@@ -98,14 +99,15 @@ class ArtifactRestartRecoveryTests(unittest.TestCase):
             # Exercise the real safe extractor; geometry processing is unrelated.
             return sidecar._extract_obj_package(raw, directory / 'package')
 
-        with mock.patch.object(sidecar, '_HUNYUAN_PROVIDER_GATEWAY', gateway), \
+        with mock.patch.object(sidecar, '_YOYOCLAW_PROVIDER_GATEWAY', gateway), \
              mock.patch.object(sidecar, '_prepare_obj_artifact', side_effect=extract_only):
-            result = sidecar._download_generation_artifact(self.job, 'paid-hunyuan', 1, True)
+            result = sidecar._download_generation_artifact(self.job, 'paid-yoyoclaw', 1, True)
         self.assertEqual(result, attempt / 'recovery-02' / 'package' / 'model.obj')
         self.assertTrue(result.read_text().endswith('f 1 2 3\n'))
         self.assertEqual(partial.read_bytes(), b'partial previous extraction')
         self.assertEqual(previous_artifact.read_bytes(), b'previous recovery')
-        gateway.wait_for_task.assert_called_once_with('paid-hunyuan', stop_event=self.job.stop_event)
+        gateway.wait_for_task.assert_called_once_with(
+            'paid-yoyoclaw', stop_event=self.job.stop_event, model_id=self.job.geometry_model)
         gateway.start_or_reuse_model_task.assert_not_called()
         gateway.start_or_reuse_conversion.assert_not_called()
 

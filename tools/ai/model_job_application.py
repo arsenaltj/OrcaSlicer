@@ -23,8 +23,11 @@ from model_job_support import file_info as _file_info, image_type as _image_type
 from model_provider_gateway import PaidTaskAuthorization
 from model_request import (
     _boolean_field,
+    _design_model,
+    _design_provider,
     _generation_options,
     _generation_provider,
+    _geometry_model,
     _normalize_custom_style,
     _normalize_face_limit,
     _normalize_generation_profile,
@@ -54,7 +57,6 @@ class ModelJobApplicationPorts:
     present: Callable[[Job], dict[str, Any]]
     fallback_enabled: Callable[[], bool]
     image_provider_status: Callable[[], dict[str, Any]]
-    can_retry_hunyuan: Callable[..., Any]
     can_retry_unsubmitted: Callable[..., Any]
     clear_artifact: Callable[..., Any]
     latest_task_id: Callable[..., Any]
@@ -78,10 +80,12 @@ class ModelJobApplication:
     def __init__(self, ports: ModelJobApplicationPorts):
         self.ports = ports
 
-    def require_design_source(self, source: str) -> None:
-        available = self.ports.image_provider_status()["available"]
-        if not available and (source != "text" or not self.ports.fallback_enabled()):
-            raise RequestError("feature_unavailable", "AI style preview generation is not configured.", 503)
+    def _design_status(self, provider: str, model: str = "") -> dict[str, Any]:
+        try:
+            return self.ports.image_provider_status(provider, model)
+        except TypeError:
+            # Compatibility with older composition roots and unit-test ports.
+            return self.ports.image_provider_status()
 
     def execute_job(self, command: str, job_id: str, request: dict[str, Any]) -> ApplicationResult:
         """Compose only named commands; callers cannot execute arbitrary entrypoints."""
@@ -101,7 +105,11 @@ class ModelJobApplication:
         return handler(job_id, request)
 
     def create_text_job(self, request: dict[str, Any]) -> ApplicationResult:
-        if not self.ports.image_provider_status()["available"] and not self.ports.fallback_enabled():
+        design_provider = _design_provider(request)
+        design_model = _design_model(request)
+        if not self._design_status(design_provider, design_model).get("available", False) and (
+            design_provider == "yoyoclaw" or not self.ports.fallback_enabled()
+        ):
             raise RequestError("feature_unavailable", "AI style preview generation is not configured.", 503)
         _text_field(request.get("request_id"), "request_id")
         prompt = _text_field(request.get("prompt"), "prompt")
@@ -116,6 +124,8 @@ class ModelJobApplication:
             request.get("palette_recommendation_confirmed"), "palette_recommendation_confirmed"
         )
         job.user_prompt = prompt
+        job.design_provider = design_provider
+        job.design_model = design_model
         self.ports.persist(job)
         with self.ports.lock:
             self.ports.jobs[job.id] = job
@@ -147,7 +157,9 @@ class ModelJobApplication:
         return ApplicationResult(200, {"recommendation": recommendation})
 
     def create_image_job(self, fields: dict[str, str], image: bytes, declared_type: str) -> ApplicationResult:
-        if not self.ports.image_provider_status()["available"]:
+        design_provider = _design_provider(fields)
+        design_model = _design_model(fields)
+        if not self._design_status(design_provider, design_model).get("available", False):
             raise RequestError("feature_unavailable", "AI style preview generation is not configured.", 503)
         _text_field(fields.get("request_id"), "request_id")
         user_instruction = _user_image_instruction(fields.get("instruction"))
@@ -179,6 +191,8 @@ class ModelJobApplication:
                        provider=_generation_provider(fields), generation_options=fields)
         job.palette_recommendation_confirmed = palette_recommendation_confirmed
         job.user_prompt = user_instruction
+        job.design_provider = design_provider
+        job.design_model = design_model
         job.image_metrics["source_filename"] = fields.get("_source_filename", "")
         suffix = ".png" if detected_type == "image/png" else ".jpg"
         input_path = job.directory / f"input-{uuid.uuid4().hex}{suffix}"
@@ -238,7 +252,10 @@ class ModelJobApplication:
         return ApplicationResult(200, {"job": response})
 
     def set_generation_options(self, job_id: str, request: dict[str, Any]) -> ApplicationResult:
-        if set(request) != {"provider", "face_limit", "geometry_quality", "texture_quality", "output_format"}:
+        legacy_keys = {"provider", "face_limit", "geometry_quality", "texture_quality", "output_format"}
+        model_keys = legacy_keys | {"design_provider", "design_model", "geometry_model"}
+        request_keys = set(request)
+        if request_keys != legacy_keys and request_keys != model_keys:
             raise RequestError("invalid_request", "Complete generation options are required.", 400)
         provider = _generation_provider(request)
         face_limit = _normalize_face_limit(request["face_limit"])
@@ -247,14 +264,17 @@ class ModelJobApplication:
             job = self.ports.get_job(job_id)
             if job is None:
                 raise RequestError("job_not_found", "Model job not found.", 404)
-            retry_design = self.ports.can_retry_hunyuan(job)
-            if (job.state != "awaiting_confirmation" or job.attempts) and not retry_design:
+            if job.state != "awaiting_confirmation" or job.attempts:
                 raise RequestError("invalid_job_state", "Only an unsubmitted design can change generation options.", 409)
-            if retry_design and provider != job.provider:
-                raise RequestError("invalid_request", "A rejected Hunyuan design must keep its provider for retry.", 409)
-            names = ("provider", "face_limit", "generation_profile", "geometry_quality", "texture_quality", "output_format")
+            names = ("provider", "face_limit", "generation_profile", "geometry_quality", "texture_quality", "output_format",
+                     "design_provider", "design_model", "geometry_model")
             previous = tuple(getattr(job, name) for name in names)
-            values = (provider, face_limit, "quality" if face_limit >= 500000 else "performance", geometry, texture, output)
+            values = (
+                provider, face_limit, "quality" if face_limit >= 500000 else "performance", geometry, texture, output,
+                _design_provider(request) if "design_provider" in request else job.design_provider,
+                _design_model(request) if "design_model" in request else job.design_model,
+                _geometry_model(request) if "geometry_model" in request else job.geometry_model,
+            )
             for name, value in zip(names, values):
                 setattr(job, name, value)
             try:
@@ -298,8 +318,8 @@ class ModelJobApplication:
             generation_profile = "quality" if face_limit >= 500000 else "performance"
         geometry_quality, texture_quality, output_format = _generation_options(request, face_limit)
         provider = _generation_provider(request)
+        requested_geometry_model = _geometry_model(request)
         with self.ports.lock:
-            manual_retry = self.ports.can_retry_hunyuan(job)
             provider_task_id = self.ports.latest_task_id(job)
             unsubmitted_retry = self.ports.can_retry_unsubmitted(job)
             if resume_existing:
@@ -317,19 +337,20 @@ class ModelJobApplication:
                     "A provider task already exists. Resume the saved task instead of creating another one.",
                     409,
                 )
-            elif (job.state != "awaiting_confirmation" and not manual_retry and not unsubmitted_retry and
+            elif (job.state != "awaiting_confirmation" and not unsubmitted_retry and
                   not (job.state == "failed" and not provider_task_id)):
                 raise RequestError("invalid_job_state", "Job is not awaiting confirmation or an explicit safe retry.", 409)
-            if job.state == "failed" and not provider_task_id and not resume_existing and not unsubmitted_retry and not manual_retry:
+            if job.state == "failed" and not provider_task_id and not resume_existing and not unsubmitted_retry:
                 raise RequestError(
                     "provider_task_ambiguous",
                     "The submission result is ambiguous and no provider task reference was saved. Confirm the provider task before retrying.",
                     409,
                 )
-            if manual_retry and provider != job.provider:
-                raise RequestError("invalid_request", "A rejected Hunyuan design must keep its provider for retry.", 409)
             if resume_existing and provider != job.provider:
                 raise RequestError("invalid_request", "A resumed provider task must keep its original provider.", 409)
+            geometry_model = requested_geometry_model or job.geometry_model
+            if provider == "yoyoclaw" and not geometry_model:
+                raise RequestError("model_required", "A YOYOClaw 3D model must be selected.", 409)
             _use_unrestricted_creation(job)
             prepared_prompt = raw_prompt.strip()
             reference = _model_generation_reference(job)
@@ -356,6 +377,7 @@ class ModelJobApplication:
                 f"{job.id}:model:{next_attempt}", provider
             )
             job.provider = provider
+            job.geometry_model = geometry_model
             job.prepared_prompt = prepared_prompt if job.source == "text" else ""
             job.face_limit = face_limit
             job.generation_profile = generation_profile
@@ -375,7 +397,7 @@ class ModelJobApplication:
             self.ports.submit(job, self.ports.generate, prepared_prompt, resume_existing, authorization)
         except RequestError:
             with self.ports.lock:
-                job.state = "failed" if (manual_retry or unsubmitted_retry or resume_existing) else "awaiting_confirmation"
+                job.state = "failed" if (unsubmitted_retry or resume_existing) else "awaiting_confirmation"
                 job.phase = "failed" if job.state == "failed" else "awaiting_confirmation"
                 job.message = (
                     "The saved provider task could not be resumed."
@@ -414,7 +436,7 @@ class ModelJobApplication:
             raise RequestError("job_not_found", "The reference or geometry model job was not found.", 404)
         if geometry_job.provider != "tripo":
             raise RequestError("unsupported_provider_operation",
-                               "Hunyuan history does not support preserved-geometry texturing.", 400)
+                               "Preserved-geometry texturing requires a Tripo model.", 400)
         with self.ports.lock:
             if reference_job.state not in {"awaiting_confirmation", "ready"}:
                 raise RequestError(

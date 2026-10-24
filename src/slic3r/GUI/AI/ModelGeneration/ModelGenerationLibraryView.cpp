@@ -374,7 +374,7 @@ void ModelGenerationPanel::persist_generation_options()
             weak->m_job_generation_options = options;
             weak->m_job_face_limit = options.face_limit;
             weak->m_job_generation_profile = options.face_limit <= 300000 ? "performance" : "quality";
-            weak->m_provider->SetSelection(options.provider == "hunyuan" ? 1 : 0);
+            weak->m_provider->SetSelection(options.provider == "yoyoclaw" ? 1 : 0);
             weak->refresh_provider_options();
             weak->m_quality->SetSelection(options.face_limit <= 300000 ? 0 : options.face_limit == 2000000 && weak->m_quality->GetCount() == 3 ? 2 : 1);
             weak->m_geometry_quality->SetSelection(weak->m_geometry_quality->GetCount() > 1 && options.geometry_quality == "detailed" ? 1 : 0);
@@ -752,6 +752,49 @@ wxWindow* ModelGenerationPanel::create_library_card(const GeneratedModelEntry& e
         bind_load(title);
         bind_load(details);
         return card;
+}
+
+bool ModelGenerationPanel::generation_provider_available(const std::string& role,
+    const AIModelGenerationClient::GenerationOptions* retained_options) const
+{
+    if (!m_service_available) return false;
+    const auto options = retained_options ? *retained_options : current_generation_options();
+    const std::string provider = role == "image" ? options.design_provider : options.provider;
+    const auto found = m_provider_catalogs.find(role + ":" + provider);
+    // Preserve the legacy panel until its provider has been probed. YoYoClaw
+    // always needs a successful role catalog and an explicitly selected model.
+    if (found == m_provider_catalogs.end()) return provider != "yoyoclaw" && m_generation_available;
+    return found->second.supports_model(role == "image" ? options.design_model : options.geometry_model);
+}
+
+void ModelGenerationPanel::get_provider_catalog(const std::string& role, const std::string& provider,
+    AIModelGenerationClient::CatalogFn on_complete, AIModelGenerationClient::ErrorFn on_error)
+{
+    const std::string key = role + ":" + provider;
+    const auto sequence = ++m_provider_catalog_sequences[key];
+    m_provider_catalogs[key] = {role, provider, "checking", "", {}, "", "", false};
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    m_client.get_provider_catalog(role, provider,
+        [weak, key, sequence, on_complete = std::move(on_complete)](AIModelGenerationClient::ProviderCatalog catalog) mutable {
+            if (!weak) return;
+            wxGetApp().CallAfter([weak, key, sequence, catalog = std::move(catalog), on_complete = std::move(on_complete)]() mutable {
+                if (!weak || weak->m_shutdown || weak->m_provider_catalog_sequences[key] != sequence) return;
+                weak->m_provider_catalogs[key] = catalog;
+                // Let the Shell synchronize its new provider/model before
+                // publishing host state, so an old snapshot cannot undo it.
+                if (on_complete) on_complete(std::move(catalog));
+                weak->refresh_controls();
+            });
+        },
+        [weak, key, sequence, role, provider, on_error = std::move(on_error)](std::string error) mutable {
+            if (!weak) return;
+            wxGetApp().CallAfter([weak, key, sequence, role, provider, error = std::move(error), on_error = std::move(on_error)]() mutable {
+                if (!weak || weak->m_shutdown || weak->m_provider_catalog_sequences[key] != sequence) return;
+                weak->m_provider_catalogs[key] = {role, provider, "error", "", {}, "", error, false};
+                if (on_error) on_error(std::move(error));
+                weak->refresh_controls();
+            });
+        });
 }
 
 } // namespace Slic3r::GUI

@@ -9,7 +9,9 @@ bool ModelGenerationUIInput::operator==(const ModelGenerationUIInput& other) con
 
 bool ModelGenerationUIOptions::operator==(const ModelGenerationUIOptions& other) const
 {
-    return provider == other.provider && face_limit == other.face_limit &&
+    return provider == other.provider && design_provider == other.design_provider &&
+           design_model == other.design_model && geometry_model == other.geometry_model &&
+           face_limit == other.face_limit &&
            geometry_quality == other.geometry_quality && texture_quality == other.texture_quality &&
            output_format == other.output_format;
 }

@@ -16,6 +16,16 @@
 
 PR 补充授权与候选：用户随后明确要求将本地新增代码修改提交一个 PR，挂在 BUILD-20261022 下继续。由于本地当前分支即目标集成分支，创建 `codex/task/gui-workspace-recovery-20261022` 功能分支承载现有两个原始提交及合并结果，PR 目标为 `codex/team/integration`；原本地集成分支及已构建产物保留。PR 准备仅补充本节与短状态，不改变经过构建和 84 项 UiRedesign 回归的程序源码；不重新构建文档变动。范围为切片模式入口、参数面板/滚动条、Redesign 延迟项目恢复及对应测试，未改 Contracts、供应商、运行时或依赖配方。架构影响按本仓库 Review/PR Actions 生成，业务映射未变；远端检查按 PR 当前 head/base 为准，不能用本地结果替代。可通过[候选分支 PR](https://github.com/arsenaltj/OrcaSlicer/pulls?q=is%3Apr+head%3Acodex%2Ftask%2Fgui-workspace-recovery-20261022)核对实际提交状态。因当前版本真实主窗口验收尚未执行，按团队 SOP 使用 Draft，等待 CI、实际界面验收及非作者复核；本轮授权为推送候选与创建 PR，不包含合入、发布或团队私信通知。
 
+# YOYOCLAW-20261024-PR：生成能力与多模态 AI 润色 PR 已创建（待复核与 CI）
+
+目标：将已完成的 YOYOClaw 2D/3D provider 接入和可复用文本能力提交到 `codex/team/integration`。文本能力默认按实时白名单选择 Auto；缺少 Auto 时依次选择首个合格 Qwen、GLM。有参考图时同时发送图片与描述给多模态文本模型，没有参考图时发送纯文本；润色结果只用于下一步 2D 设计图生成或编辑。请求期间锁定描述和相关输入，成功后直接替换描述并允许恢复首次原文；已有 2D 时按既有输入一致性规则要求重新生成 2D。2D/3D 生成、确认、轮询、下载、历史、产物和 SmartSlicing 规则保持既有边界。
+
+集成范围：2026-10-24 已抓取远端，`origin/codex/team/integration` 为 `47fabfb0658b41de14f1dcbe400a7b07128612ac`，没有待同步的新提交。已有 Draft PR #40 从 `codex/task/gui-workspace-recovery-20261022` 合入 GUI 恢复相关修改；为避免重复，本项使用独立分支 `codex/task/yoyoclaw-generation-polish-20261024`，从上述远端基线仅移植原 YOYOClaw 提交 `9f8fe7592b`、`04524d7110`，不包含 PR #40 的提交。
+
+验收：当前独立分支已重新验证。`scripts/verify_ai_integration.py --json` 返回 `ok: true`；Python 的 YOYOClaw 14/14、文本能力 24/24、Sidecar 78/78、集成守卫 53/53、生成选项 16/16、provider gateway 25/25 通过，测试均使用离线受控传输，未调用真实服务。C++ 筛选 `AIText|ModelGenerationClient|ModelGenerationSubmissionState|UiRedesign|ServiceAvailability` 为 104/104，通过记录为 [`20261024-143459-603`](../../.tmp/dev/logs/20261024-143459-603/result.json)。Windows `dev.ps1 Run -NoLaunch` 的 catalogs、build、install、runtime-check、python-check 五步通过，状态 `PREPARED`、源码身份 `0db012ab31a290c7944aed73db9a306f84d379d4501ee62453d8aae5819280aa`，记录为 [`20261024-152739-825`](../../.tmp/dev/logs/20261024-152739-825/result.json)。`git diff --check` 通过，README 架构生成区为 `README_CURRENT`。本轮未启动应用，旧组合分支上的 GUI 和真实服务结果只作历史参考。
+
+当前状态：再次抓取确认远端基线仍为 `47fabfb0658b41de14f1dcbe400a7b07128612ac`；两笔提交为 `14574f91fe` 和当前多模态 AI 润色提交，冲突已清零且上述验证全部通过。分支已推送到 `origin/codex/task/yoyoclaw-generation-polish-20261024`，并创建目标为 `codex/team/integration` 的 [PR #42](https://github.com/arsenaltj/OrcaSlicer/pull/42)。未跟踪 `.planning/` 未纳入提交。下一步等待候选 CI 和至少一位非作者复核，由维护者按团队 SOP 决定合入；本轮不自动合并。
+
 # 2026-10-22 PR #38：候选推送与 integration 冲突处理
 
 候选提交 `6427e784ac4c53129216269e5a580eab7d4221e2` 已推送到 `origin/codex/upstream-v2.5.0-alpha-portrait-preserved`，PR #38 的目标为 `codex/team/integration`，固定目标 SHA 为 `aee65644545f2746ea08f6efccb73bc853a3db5f`。GitHub 首次计算发现四个共享文件冲突；合并提交 `177c61bfde25384bfd8105c9ce2f57e35d845fbb` 保留候选的 Redesign 防闪烁更新与 `LibDataChannel` 链接，并合并远端 SDK/连接器、SmartSlicing、测试和文档。合并后 Release 增量构建、`verify_ai_integration.py`、`verify_mobile_sdk_boundary.py` 均通过；`ModelGenerationPresentation` 65/8879、`SmartSlicing` 289/3848，组合人像/工作台/颜色/Redesign 测试 343/37693 全部通过。

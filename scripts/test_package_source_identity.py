@@ -172,7 +172,7 @@ class SourceIdentityTests(unittest.TestCase):
             "ORCA_AI_PACKAGE_REVISION:STRING=fixture", "ORCA_AI_INTERNAL_DEFAULTS_FILE:FILEPATH=", ""]))
         self.write(".tmp/build/orca_ai_build_info.json", json.dumps({"schema_version": 1,
             "application_commit": self.head, "package_revision": "fixture", "distribution_channel": "internal",
-            "sidecar_protocol_version": 2, "sidecar_version": "orcaslicer-ai-sidecar-v9"}))
+            "sidecar_protocol_version": 2, "sidecar_version": "orcaslicer-ai-sidecar-v11"}))
         powershell = shutil.which("pwsh") or shutil.which("powershell")
         for script in ("scripts/package_internal_fast.ps1", "release/build_internal.ps1"):
             with self.subTest(script=script):

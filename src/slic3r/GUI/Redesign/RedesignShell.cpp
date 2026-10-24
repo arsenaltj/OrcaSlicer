@@ -18,6 +18,7 @@
 #include "../AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "../AI/ModelGeneration/ModelPreview3D.hpp"
 #include "../AI/SmartSlicing/SmartSlicingFeatureHost.hpp"
+#include "../AI/Text/AITextFeatureHost.hpp"
 #include "../Plater.hpp"
 #include "../Widgets/Label.hpp"
 
@@ -164,6 +165,14 @@ wxString text(const char* value)
     return wxString::FromUTF8(value);
 }
 
+wxString provider_display_name(const std::string& provider)
+{
+    if (provider == "gpt") return text("GPT");
+    if (provider == "tripo") return text("Tripo");
+    if (provider == "yoyoclaw") return text("YOYOClaw");
+    return wxString::FromUTF8(provider.c_str());
+}
+
 constexpr const char* kRedesignAssetsTabId = "REDESIGN_ASSETS";
 
 void style_text(wxWindow* window, const wxColour& colour, int point_size, bool bold = false)
@@ -214,6 +223,8 @@ public:
 
     wxStaticText* label() const { return m_label; }
 
+    void set_geometry_mode(bool geometry_mode) { m_geometry_mode = geometry_mode; }
+
     void set_status(AIServiceStatus status)
     {
         wxColour colour(156, 156, 163);
@@ -233,14 +244,14 @@ public:
         case AIServiceStatus::GenerationUnavailable:
             description = text("生成不可用，请检查服务配置");
             colour = accent_colour();
-            tooltip = text("AI 图片生成服务已连接，但生成功能暂不可用，请检查服务配置。");
+            tooltip = service_name() + text("已连接，但生成功能暂不可用，请检查服务配置。");
             break;
         case AIServiceStatus::Connected:
             description = text("已连接");
             colour = wxColour(122, 205, 153);
             break;
         }
-        m_label->SetLabel(text("AI 图片生成服务: ") + description);
+        m_label->SetLabel(service_name() + text(": ") + description);
         m_label->SetForegroundColour(colour);
         m_indicator->SetForegroundColour(colour);
         for (wxWindow* control : {static_cast<wxWindow*>(this),
@@ -257,9 +268,27 @@ public:
         GetParent()->Layout();
     }
 
+    void set_provider_status(const wxString& provider, const wxString& description, bool ready)
+    {
+        const wxColour colour = ready ? wxColour(122, 205, 153) : accent_colour();
+        m_label->SetLabel(service_name() + text("（") + provider + text("）: ") + description);
+        m_label->SetForegroundColour(colour);
+        m_indicator->SetForegroundColour(colour);
+        m_indicator->Refresh();
+        m_label->Refresh();
+        Layout();
+        GetParent()->Layout();
+    }
+
 private:
+    wxString service_name() const
+    {
+        return m_geometry_mode ? text("AI 3D 模型生成服务") : text("AI 图片生成服务");
+    }
+
     wxPanel* m_indicator { nullptr };
     wxStaticText* m_label { nullptr };
+    bool m_geometry_mode { false };
 };
 
 wxBitmap scaled_bitmap(const wxImage& image, const wxSize& bounds, bool allow_upscale = false)
@@ -1154,11 +1183,13 @@ private:
     int m_spinner_frame { 0 };
 };
 
-RedesignShell::RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model_generation_host, Plater* plater)
+RedesignShell::RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model_generation_host, Plater* plater,
+                             AITextFeatureHost* text_feature_host)
     : wxPanel(parent)
     , m_sizer(new wxBoxSizer(wxVERTICAL))
     , m_preview_resize_timer(this)
     , m_model_generation_host(model_generation_host)
+    , m_text_feature_host(text_feature_host)
 {
     m_plater = plater;
     SetBackgroundColour(background_colour());
@@ -1171,6 +1202,9 @@ RedesignShell::RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model
 
 RedesignShell::~RedesignShell()
 {
+    cancel_prompt_polish(true);
+    if (m_text_availability_request)
+        m_text_availability_request->cancel();
     if (m_print_page != nullptr)
         m_print_page->set_active(false);
     disconnect_model_generation_host();
@@ -1248,9 +1282,25 @@ void RedesignShell::disconnect_model_generation_host()
 
 void RedesignShell::set_service_status(AIServiceStatus status)
 {
+    m_last_service_status = static_cast<int>(status);
+    refresh_text_capability(status == AIServiceStatus::Connected ||
+                            status == AIServiceStatus::GenerationUnavailable);
     if (!m_sidecar_status)
         return;
-    static_cast<ImageServiceStatusRow*>(m_sidecar_status->GetParent())->set_status(status);
+    if (m_provider_choice != nullptr) {
+        // A successful local discovery does not describe the selected provider.
+        if (status == AIServiceStatus::Connected || status == AIServiceStatus::GenerationUnavailable) {
+            m_provider_catalog_role.clear();
+            refresh_provider_catalog();
+            return;
+        }
+        ++m_provider_catalog_sequence;
+        m_provider_catalog_role.clear();
+        m_provider_catalog.state = "checking";
+    }
+    auto* row = static_cast<ImageServiceStatusRow*>(m_sidecar_status->GetParent());
+    row->set_geometry_mode(m_generation_geometry_mode);
+    row->set_status(status);
 }
 
 void RedesignShell::build_image_workspace()
@@ -1388,9 +1438,37 @@ void RedesignShell::build_image_workspace()
         if (target != m_upload_thumbnail) bind_upload_click(target);
     }
 
+    auto* prompt_header = new wxBoxSizer(wxHORIZONTAL);
     auto* prompt_label = new wxStaticText(settings_content_host, wxID_ANY, text("描述"));
     style_text(prompt_label, primary_text_colour(), 13, true);
-    settings_content->Add(prompt_label, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    prompt_header->Add(prompt_label, 0, wxALIGN_CENTER_VERTICAL);
+    prompt_header->AddSpacer(FromDIP(12));
+    m_prompt_polish_button = new RoundedActionButton(settings_content_host, text("AI润色"), true, 32);
+    m_prompt_polish_button->SetMinSize(wxSize(FromDIP(96), FromDIP(32)));
+    m_prompt_polish_button->set_horizontal_padding(10);
+    m_prompt_polish_button->set_icon(create_scaled_bitmap("redesign_ai_polish", m_prompt_polish_button, 14));
+    m_prompt_polish_button->set_icon_on_left(true);
+    m_prompt_polish_button->SetToolTip(text("优化当前描述"));
+    m_prompt_polish_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { request_prompt_polish(); });
+    prompt_header->Add(m_prompt_polish_button, 0, wxALIGN_CENTER_VERTICAL);
+    prompt_header->AddStretchSpacer(1);
+    settings_content->Add(prompt_header, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+
+    auto* polish_feedback = new wxBoxSizer(wxVERTICAL);
+    polish_feedback->AddSpacer(FromDIP(8));
+    m_prompt_polish_status = new wxStaticText(settings_content_host, wxID_ANY, wxEmptyString);
+    style_text(m_prompt_polish_status, secondary_text_colour(), 9);
+    m_prompt_polish_status->Hide();
+    polish_feedback->Add(m_prompt_polish_status, 0, wxEXPAND);
+    m_restore_prompt = new wxStaticText(settings_content_host, wxID_ANY, text("恢复原文"));
+    style_text(m_restore_prompt, accent_colour(), 9, true);
+    m_restore_prompt->SetCursor(wxCursor(wxCURSOR_HAND));
+    m_restore_prompt->SetToolTip(text("恢复首次润色前的描述"));
+    m_restore_prompt->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent&) { restore_original_prompt(); });
+    m_restore_prompt->Hide();
+    polish_feedback->Add(m_restore_prompt, 0, wxTOP, FromDIP(4));
+    settings_content->Add(polish_feedback, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(21));
+
     auto* prompt_surface = new RoundedPanel(settings_content_host, wxDefaultSize, control_colour(), panel_colour(), 8);
     prompt_surface->SetBackgroundColour(control_colour());
     auto* prompt_sizer = new wxBoxSizer(wxVERTICAL);
@@ -1410,12 +1488,12 @@ void RedesignShell::build_image_workspace()
             synchronize_generation_input();
         event.Skip();
     });
-    settings_content->Add(prompt_surface, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    settings_content->Add(prompt_surface, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
 
-    m_provider_label = new wxStaticText(settings_content_host, wxID_ANY, text("3D模型选择"));
+    m_provider_label = new wxStaticText(settings_content_host, wxID_ANY, text("图像模型选择"));
     style_text(m_provider_label, primary_text_colour(), 13, true);
     settings_content->Add(m_provider_label, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
-    const wxArrayString provider_choices {text("Tripo"), text("腾讯混元3D")};
+    const wxArrayString provider_choices {text("GPT"), text("YOYOClaw")};
     auto* provider_picker = new StylePicker(settings_content_host, provider_choices, [this](int) {
                                                 if (!m_applying_model_generation_state)
                                                     on_generation_option_changed();
@@ -1437,8 +1515,10 @@ void RedesignShell::build_image_workspace()
     face_limit_picker->SetName("model-face-limit-choice");
     face_limit_picker->SetWindowStyleFlag(face_limit_picker->GetWindowStyleFlag() | wxWANTS_CHARS);
     m_face_limit_choice = face_limit_picker;
-    settings_content->AddSpacer(FromDIP(12));
-    settings_content->Add(face_limit_picker, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(21));
+    face_limit_picker->Hide();
+    auto* face_limit_row = new wxBoxSizer(wxVERTICAL);
+    face_limit_row->Add(face_limit_picker, 0, wxEXPAND | wxTOP, FromDIP(12));
+    settings_content->Add(face_limit_row, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(21));
 
     auto* style_label_control = new wxStaticText(settings_content_host, wxID_ANY, text("风格"));
     style_text(style_label_control, primary_text_colour(), 13, true);
@@ -1510,6 +1590,16 @@ void RedesignShell::build_image_workspace()
     });
     settings_content->Add(m_custom_style_panel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
     settings_content->AddSpacer(FromDIP(16));
+
+    // Keep style controls above provider selection in the sidebar. The
+    // controls are built together with the rest of the form, then moved as a
+    // group so their existing callbacks and state remain unchanged.
+    settings_content->Detach(m_provider_label);
+    settings_content->Detach(m_provider_choice);
+    settings_content->Detach(face_limit_row);
+    settings_content->Add(m_provider_label, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    settings_content->Add(m_provider_choice, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    settings_content->Add(face_limit_row, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(21));
     update_generation_style_controls();
 
     settings_scroll->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
@@ -1765,6 +1855,9 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     if (route_action == RedesignModelRouteAction::Ignore)
         return;
     const bool restore_input = image_design_restores_input(state, m_model_generation_state);
+    if (restore_input && state.job_id != m_model_generation_state.job_id &&
+        (!m_model_generation_state.job_id.empty() || !(current_generation_input() == state.input)))
+        cancel_prompt_polish(true);
     if (restore_input)
         restore_image_input(state.input);
     m_image_design_draft.observe(state);
@@ -1809,6 +1902,7 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     }
     if (m_custom_style != nullptr && m_custom_style->GetValue().ToStdString(wxConvUTF8) != state.input.custom_style)
         m_custom_style->ChangeValue(wxString::FromUTF8(state.input.custom_style));
+    m_generation_geometry_mode = redesign_primary_action(state, image_stage) == RedesignPrimaryAction::Model;
     apply_generation_options(state.options);
     m_applying_model_generation_state = false;
     m_input_sync_ok = m_model_generation_host != nullptr && current_generation_input() == state.input;
@@ -1847,16 +1941,28 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     if (m_face_limit_choice != nullptr) {
         auto* picker = static_cast<StylePicker*>(m_face_limit_choice);
         const bool face_limit_editable = options_editable && picker->choice_count() > 1;
-        picker->Show(provider_visible);
+        picker->Show(provider_visible && m_generation_geometry_mode && state.options.provider == "tripo");
         picker->Enable(face_limit_editable);
         picker->set_interactive(face_limit_editable);
     }
+    const auto selected_provider_ready = [this]() {
+        if (m_provider_choice == nullptr)
+            return true;
+        const int selection = static_cast<StylePicker*>(m_provider_choice)->selection();
+        const bool yoyoclaw = selection == 1;
+        const auto& model = m_generation_geometry_mode ? m_generation_options.geometry_model :
+                                                         m_generation_options.design_model;
+        return m_provider_catalog.role == (m_generation_geometry_mode ? "geometry" : "image") &&
+            m_provider_catalog.provider == (m_generation_geometry_mode ? m_generation_options.provider : m_generation_options.design_provider) &&
+            m_provider_catalog.supports_model(yoyoclaw ? model : std::string());
+    };
 
     wxString primary_label = m_image_design_draft.replaces_design()
         ? text("重新生成 2D 设计图") : text("生成 2D 设计图");
     // The host validates both prompt-only and image inputs; editability still
     // blocks submission while an image is loading.
-    bool primary_enabled = m_input_sync_ok && state.can_generate_design && editable;
+    bool primary_enabled = m_input_sync_ok && m_option_sync_ok && state.can_generate_design && editable &&
+                           selected_provider_ready();
     m_secondary_action = SecondaryAction::None;
     wxString secondary_label;
     wxString placeholder = text("等待生成");
@@ -1919,7 +2025,8 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
             update_design_preview();
         else {
             primary_label = text("重新生成 2D 设计图");
-            primary_enabled = m_input_sync_ok && state.can_generate_design && editable;
+            primary_enabled = m_input_sync_ok && m_option_sync_ok && state.can_generate_design && editable &&
+                              selected_provider_ready();
             placeholder = text("生成已停止");
             placeholder_mode = ImagePreview::PlaceholderMode::Stopped;
         }
@@ -1935,7 +2042,8 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         } else {
             primary_label = text("生成 3D 模型");
             primary_enabled = m_option_sync_ok && state.can_generate_model &&
-                              m_design_image_state == ImageState::Ready && editable;
+                              m_design_image_state == ImageState::Ready && editable &&
+                              selected_provider_ready();
             update_design_preview();
             if (state.can_restart) {
                 m_secondary_action = SecondaryAction::Restart;
@@ -1962,10 +2070,12 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         if (redesign_primary_action(state, image_stage) == RedesignPrimaryAction::Model) {
             primary_label = text("生成 3D 模型");
             primary_enabled = m_input_sync_ok && m_option_sync_ok && state.can_generate_model &&
-                              m_design_image_state == ImageState::Ready && editable;
+                              m_design_image_state == ImageState::Ready && editable &&
+                              selected_provider_ready();
         } else {
             primary_label = state.design_image_path.empty() ? text("生成 2D 设计图") : text("重新生成 2D 设计图");
-            primary_enabled = m_input_sync_ok && state.can_generate_design && editable;
+            primary_enabled = m_input_sync_ok && m_option_sync_ok && state.can_generate_design && editable &&
+                              selected_provider_ready();
         }
         update_design_preview();
         break;
@@ -2010,6 +2120,7 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
 
     // Connection presentation is owned by set_service_status(). Generation
     // availability only gates actions; it must not overwrite a connected service.
+    refresh_prompt_polish_controls();
     update_model_page(state);
     update_image_state();
     if (route_action == RedesignModelRouteAction::Model)
@@ -2081,9 +2192,12 @@ ModelGenerationUIOptions RedesignShell::current_generation_options() const
     ModelGenerationUIOptions options = m_generation_options;
     if (m_provider_choice != nullptr) {
         const int provider = static_cast<StylePicker*>(m_provider_choice)->selection();
-        options.provider = provider == 1 ? "hunyuan" : "tripo";
+        if (m_generation_geometry_mode)
+            options.provider = provider == 1 ? "yoyoclaw" : "tripo";
+        else
+            options.design_provider = provider == 1 ? "yoyoclaw" : "gpt";
     }
-    if (options.provider == "hunyuan") {
+    if (options.provider == "yoyoclaw") {
         options.face_limit = std::min(options.face_limit, 1000000);
         options.geometry_quality = "standard";
         options.texture_quality = "standard";
@@ -2094,8 +2208,18 @@ ModelGenerationUIOptions RedesignShell::current_generation_options() const
 void RedesignShell::apply_generation_options(const ModelGenerationUIOptions& options)
 {
     m_generation_options = options;
-    if (m_provider_choice != nullptr)
-        static_cast<StylePicker*>(m_provider_choice)->set_selection(options.provider == "hunyuan" ? 1 : 0);
+    refresh_provider_choice(m_generation_geometry_mode);
+    if (m_provider_choice != nullptr) {
+        auto* provider = static_cast<StylePicker*>(m_provider_choice);
+        const int selection = m_generation_geometry_mode
+            ? options.provider == "yoyoclaw" ? 1 : 0
+            : options.design_provider == "yoyoclaw" ? 1 : 0;
+        provider->set_selection(selection);
+    }
+    refresh_provider_catalog();
+    if (m_provider_catalog.state != "checking" &&
+        m_provider_catalog_role == (m_generation_geometry_mode ? "geometry" : "image"))
+        apply_provider_catalog(m_provider_catalog);
     if (m_face_limit_choice != nullptr) {
         auto* picker = static_cast<StylePicker*>(m_face_limit_choice);
         wxArrayString choices;
@@ -2110,12 +2234,114 @@ void RedesignShell::apply_generation_options(const ModelGenerationUIOptions& opt
     }
 }
 
+void RedesignShell::refresh_provider_choice(bool geometry_mode)
+{
+    if (m_provider_choice == nullptr)
+        return;
+    m_generation_geometry_mode = geometry_mode;
+    const wxArrayString choices = geometry_mode
+        ? wxArrayString {text("Tripo"), text("YOYOClaw")}
+        : wxArrayString {text("GPT"), text("YOYOClaw")};
+    auto* provider = static_cast<StylePicker*>(m_provider_choice);
+    const int current = provider->selection();
+    const int selection = current == 1 ? 1 : 0;
+    provider->set_choices(choices, selection);
+    if (m_provider_label != nullptr)
+        m_provider_label->SetLabel(geometry_mode ? text("3D模型选择") : text("图像模型选择"));
+}
+
+void RedesignShell::refresh_provider_catalog()
+{
+    if (m_provider_choice == nullptr)
+        return;
+    if (m_sidecar_status != nullptr) {
+        auto* row = dynamic_cast<ImageServiceStatusRow*>(m_sidecar_status->GetParent());
+        if (row != nullptr) row->set_geometry_mode(m_generation_geometry_mode);
+    }
+    const auto* provider = static_cast<StylePicker*>(m_provider_choice);
+    const int selection = provider->selection();
+    const std::string selected_provider = m_generation_geometry_mode
+        ? selection == 1 ? "yoyoclaw" : "tripo"
+        : selection == 1 ? "yoyoclaw" : "gpt";
+    const std::string role = m_generation_geometry_mode ? "geometry" : "image";
+    if (role == m_provider_catalog_role && selected_provider == m_provider_catalog_provider &&
+        (m_provider_catalog.state == "checking" || m_provider_catalog.state == "ready" || m_provider_catalog.state == "empty" ||
+         m_provider_catalog.state == "not_configured" || m_provider_catalog.state == "error")) {
+        return;
+    }
+    m_provider_catalog_role = role;
+    m_provider_catalog_provider = selected_provider;
+    const std::uint64_t sequence = ++m_provider_catalog_sequence;
+    m_provider_catalog = {role, selected_provider, "checking", "", {}, "", "", false};
+    if (m_sidecar_status != nullptr) {
+        auto* row = dynamic_cast<ImageServiceStatusRow*>(m_sidecar_status->GetParent());
+        if (row != nullptr) row->set_provider_status(provider_display_name(selected_provider), text("检测中"), false);
+    }
+    if (m_model_generation_host == nullptr) {
+        apply_provider_catalog(m_provider_catalog, "Model generation host is unavailable.");
+        return;
+    }
+    wxWeakRef<RedesignShell> weak(this);
+    m_model_generation_host->get_provider_catalog(
+        role, selected_provider,
+        [weak, sequence, role, selected_provider](AIModelGenerationClient::ProviderCatalog catalog) mutable {
+            // The feature host delivers catalog callbacks on the UI thread.
+            if (!weak || sequence != weak->m_provider_catalog_sequence ||
+                role != weak->m_provider_catalog_role || selected_provider != weak->m_provider_catalog_provider)
+                return;
+            weak->apply_provider_catalog(catalog);
+        },
+        [weak, sequence, role, selected_provider](std::string error) {
+            if (!weak || sequence != weak->m_provider_catalog_sequence ||
+                role != weak->m_provider_catalog_role || selected_provider != weak->m_provider_catalog_provider)
+                return;
+            weak->apply_provider_catalog(
+                AIModelGenerationClient::ProviderCatalog{role, selected_provider, "error", "", {}, "", "", false}, error);
+        });
+}
+
+void RedesignShell::apply_provider_catalog(const AIModelGenerationClient::ProviderCatalog& catalog,
+                                           const std::string& error)
+{
+    m_provider_catalog = catalog;
+    const bool geometry = m_generation_geometry_mode;
+    const bool ready = error.empty() && catalog.ready();
+    if (catalog.provider == "yoyoclaw") {
+        const std::string model = ready && catalog.supports_model(catalog.default_model)
+            ? catalog.default_model : std::string();
+        if (geometry) m_generation_options.geometry_model = model;
+        else m_generation_options.design_model = model;
+    }
+    if (catalog.provider != "yoyoclaw") {
+        if (geometry) m_generation_options.geometry_model.clear();
+        else m_generation_options.design_model.clear();
+    }
+    if (m_sidecar_status != nullptr) {
+        auto* row = dynamic_cast<ImageServiceStatusRow*>(m_sidecar_status->GetParent());
+        if (row != nullptr) {
+            row->set_geometry_mode(geometry);
+            const wxString description = ready ? (catalog.remotely_connected() ? text("已连接") : text("已配置")) :
+                catalog.state == "not_configured" ? text("未配置") :
+                catalog.state == "empty" ? text("无可用模型") : text("不可用");
+            row->set_provider_status(provider_display_name(catalog.provider), description, ready);
+        }
+    }
+    if (m_model_generation_host != nullptr && !m_applying_model_generation_state)
+        synchronize_generation_options();
+    if (m_image_settings_content != nullptr) {
+        m_image_settings_content->Layout();
+        layout_image_settings();
+    }
+}
+
 void RedesignShell::on_generation_option_changed()
 {
     if (m_model_generation_host == nullptr || m_applying_model_generation_state || m_provider_choice == nullptr)
         return;
+    refresh_provider_choice(m_generation_geometry_mode);
     const auto options = current_generation_options();
     m_generation_options = options;
+    refresh_provider_catalog();
     const bool valid = options.face_limit != 2000000 || options.geometry_quality == "detailed";
     if (!valid) {
         m_option_sync_ok = false;
@@ -2158,6 +2384,268 @@ void RedesignShell::refresh_prompt_count()
     m_prompt_count->SetForegroundColour(over_limit ? wxColour(255, 128, 112) : secondary_text_colour());
     m_prompt_count->SetToolTip(text("中文通常占3字节。超限时保留完整文字，请精简后生成。"));
     m_prompt_count->GetParent()->Layout();
+    refresh_prompt_polish_controls();
+}
+
+void RedesignShell::refresh_text_capability(bool sidecar_compatible)
+{
+    const std::uint64_t sequence = ++m_text_availability_sequence;
+    if (m_text_availability_request) {
+        m_text_availability_request->cancel();
+        m_text_availability_request.reset();
+    }
+    if (!sidecar_compatible || m_text_feature_host == nullptr) {
+        m_prompt_polish_available = false;
+        m_prompt_polish_unavailable_reason = "sidecar_unavailable";
+        cancel_prompt_polish(true);
+        refresh_prompt_polish_controls();
+        return;
+    }
+
+    m_prompt_polish_available = false;
+    m_prompt_polish_unavailable_reason = "checking";
+    refresh_prompt_polish_controls();
+    wxWeakRef<RedesignShell> weak(this);
+    m_text_availability_request = m_text_feature_host->request_image_prompt_polish_availability(
+        [weak, sequence](AITextClient::Availability availability) mutable {
+            if (!weak)
+                return;
+            weak->CallAfter([weak, sequence, availability = std::move(availability)]() mutable {
+                if (!weak || sequence != weak->m_text_availability_sequence)
+                    return;
+                weak->m_text_availability_request.reset();
+                weak->m_prompt_polish_available = availability.available;
+                weak->m_prompt_polish_unavailable_reason = availability.reason;
+                weak->refresh_prompt_polish_controls();
+            });
+        },
+        [weak, sequence](AITextClient::Error error) mutable {
+            if (!weak)
+                return;
+            weak->CallAfter([weak, sequence, error = std::move(error)]() mutable {
+                if (!weak || sequence != weak->m_text_availability_sequence)
+                    return;
+                weak->m_text_availability_request.reset();
+                weak->m_prompt_polish_available = false;
+                weak->m_prompt_polish_unavailable_reason = error.code;
+                weak->refresh_prompt_polish_controls();
+            });
+        });
+}
+
+void RedesignShell::request_prompt_polish()
+{
+    if (m_text_feature_host == nullptr || m_prompt == nullptr || !m_prompt_polish_available ||
+        m_prompt_polish_state.active() || m_image_state == ImageState::Loading ||
+        !generation_input_editable())
+        return;
+    const wxScopedCharBuffer encoded = m_prompt->GetValue().ToUTF8();
+    const std::string prompt = encoded ? std::string(encoded.data(), encoded.length()) : std::string();
+    if (prompt.find_first_not_of(" \t\r\n") == std::string::npos) {
+        m_prompt_polish_status->SetLabel(text("请先填写描述内容。"));
+        refresh_prompt_polish_controls();
+        return;
+    }
+    if (prompt.size() > ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES) {
+        m_prompt_polish_status->SetLabel(text("描述超过 2000 UTF-8 字节，请精简后再润色。"));
+        refresh_prompt_polish_controls();
+        return;
+    }
+
+    const std::uint64_t sequence = m_prompt_polish_state.begin();
+    const std::uint64_t image_generation = m_image_request_generation;
+    const bool has_reference_image = m_image_state == ImageState::Ready;
+    const boost::filesystem::path reference_image_path =
+        has_reference_image ? m_selected_image_path : boost::filesystem::path();
+    const std::string job_id = m_model_generation_state.job_id;
+    const std::uint64_t model_session = m_model_generation_state.model_generation_session;
+    m_prompt_polish_status->SetLabel(text("正在优化描述..."));
+    refresh_prompt_polish_controls();
+
+    wxWeakRef<RedesignShell> weak(this);
+    m_prompt_polish_request = m_text_feature_host->polish_image_prompt(
+        {has_reference_image, reference_image_path, prompt},
+        [weak, sequence, prompt, image_generation, has_reference_image, job_id, model_session]
+        (AITextClient::PolishResult result) mutable {
+            if (!weak)
+                return;
+            weak->CallAfter([weak, sequence, prompt, image_generation, has_reference_image,
+                             job_id, model_session, result = std::move(result)]() mutable {
+                if (weak)
+                    weak->finish_prompt_polish(sequence, prompt, image_generation, has_reference_image,
+                                               job_id, model_session, std::move(result));
+            });
+        },
+        [weak, sequence, prompt, image_generation, has_reference_image, job_id, model_session]
+        (AITextClient::Error error) mutable {
+            if (!weak)
+                return;
+            weak->CallAfter([weak, sequence, prompt, image_generation, has_reference_image,
+                             job_id, model_session, error = std::move(error)]() mutable {
+                if (weak)
+                    weak->fail_prompt_polish(sequence, prompt, image_generation, has_reference_image,
+                                             job_id, model_session, std::move(error));
+            });
+        });
+}
+
+void RedesignShell::finish_prompt_polish(
+    std::uint64_t sequence, const std::string& prompt, std::uint64_t image_generation,
+    bool has_reference_image, const std::string& job_id, std::uint64_t model_session,
+    AITextClient::PolishResult result)
+{
+    if (m_prompt == nullptr)
+        return;
+    if (!m_prompt_polish_state.active() || sequence != m_prompt_polish_state.sequence())
+        return;
+    if (!prompt_polish_request_matches(prompt, image_generation, has_reference_image, job_id, model_session)) {
+        const bool task_changed = job_id != m_model_generation_state.job_id ||
+            model_session != m_model_generation_state.model_generation_session;
+        discard_stale_prompt_polish(sequence, task_changed);
+        return;
+    }
+
+    m_prompt_polish_request.reset();
+    wxString feedback;
+    for (const auto& warning : result.warnings) {
+        if (!feedback.empty())
+            feedback += "\n";
+        feedback += wxString::FromUTF8(warning);
+    }
+    if (result.status == "success") {
+        if (!m_prompt_polish_state.finish(sequence, prompt))
+            return;
+        m_prompt->ChangeValue(wxString::FromUTF8(result.optimized_prompt));
+        synchronize_generation_input();
+        if (feedback.empty())
+            feedback = text("已完成润色。");
+    } else {
+        m_prompt_polish_state.fail(sequence);
+        if (feedback.empty())
+            feedback = result.status == "needs_input" ? text("请补充描述内容。") :
+                                                        text("描述存在歧义，请补充后重试。");
+    }
+    m_prompt_polish_status->SetLabel(feedback);
+    refresh_prompt_count();
+    refresh_prompt_polish_controls();
+}
+
+void RedesignShell::fail_prompt_polish(
+    std::uint64_t sequence, const std::string& prompt, std::uint64_t image_generation,
+    bool has_reference_image, const std::string& job_id, std::uint64_t model_session,
+    AITextClient::Error error)
+{
+    if (!m_prompt_polish_state.active() || sequence != m_prompt_polish_state.sequence())
+        return;
+    if (!prompt_polish_request_matches(prompt, image_generation, has_reference_image, job_id, model_session)) {
+        const bool task_changed = job_id != m_model_generation_state.job_id ||
+            model_session != m_model_generation_state.model_generation_session;
+        discard_stale_prompt_polish(sequence, task_changed);
+        return;
+    }
+    if (!m_prompt_polish_state.fail(sequence))
+        return;
+    m_prompt_polish_request.reset();
+    wxString message = wxString::FromUTF8(error.message);
+    if (!error.diagnostic_id.empty())
+        message += text(" 诊断编号：") + wxString::FromUTF8(error.diagnostic_id);
+    m_prompt_polish_status->SetLabel(message);
+    refresh_prompt_polish_controls();
+}
+
+bool RedesignShell::prompt_polish_request_matches(
+    const std::string& prompt, std::uint64_t image_generation, bool has_reference_image,
+    const std::string& job_id, std::uint64_t model_session) const
+{
+    if (m_prompt == nullptr)
+        return false;
+    const wxScopedCharBuffer encoded = m_prompt->GetValue().ToUTF8();
+    const std::string current = encoded ? std::string(encoded.data(), encoded.length()) : std::string();
+    return current == prompt && image_generation == m_image_request_generation &&
+        has_reference_image == (m_image_state == ImageState::Ready) &&
+        job_id == m_model_generation_state.job_id &&
+        model_session == m_model_generation_state.model_generation_session;
+}
+
+void RedesignShell::discard_stale_prompt_polish(std::uint64_t sequence, bool clear_original)
+{
+    if (!m_prompt_polish_state.active() || sequence != m_prompt_polish_state.sequence())
+        return;
+    m_prompt_polish_request.reset();
+    m_prompt_polish_state.cancel(clear_original);
+    if (m_prompt_polish_status)
+        m_prompt_polish_status->SetLabel(wxEmptyString);
+    refresh_prompt_polish_controls();
+}
+
+void RedesignShell::cancel_prompt_polish(bool clear_original)
+{
+    if (m_prompt_polish_request) {
+        m_prompt_polish_request->cancel();
+        m_prompt_polish_request.reset();
+    }
+    m_prompt_polish_state.cancel(clear_original);
+    if (m_prompt_polish_status)
+        m_prompt_polish_status->SetLabel(wxEmptyString);
+    refresh_prompt_polish_controls();
+}
+
+void RedesignShell::restore_original_prompt()
+{
+    if (m_prompt_polish_state.active() || m_prompt == nullptr || !generation_input_editable())
+        return;
+    const auto original = m_prompt_polish_state.restore();
+    if (!original)
+        return;
+    m_prompt->ChangeValue(wxString::FromUTF8(*original));
+    m_prompt_polish_status->SetLabel(wxEmptyString);
+    synchronize_generation_input();
+    refresh_prompt_count();
+    refresh_prompt_polish_controls();
+}
+
+void RedesignShell::refresh_prompt_polish_controls()
+{
+    if (m_prompt == nullptr || m_prompt_polish_button == nullptr)
+        return;
+    const bool active = m_prompt_polish_state.active();
+    const bool editable = generation_input_editable();
+    const wxScopedCharBuffer encoded = m_prompt->GetValue().ToUTF8();
+    const std::string value = encoded ? std::string(encoded.data(), encoded.length()) : std::string();
+    const bool valid_prompt = value.size() <= ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES &&
+        value.find_first_not_of(" \t\r\n") != std::string::npos;
+
+    m_prompt_polish_button->SetLabel(active ? text("润色中...") : text("AI润色"));
+    m_prompt_polish_button->Enable(!active && editable && m_image_state != ImageState::Loading &&
+                                   m_prompt_polish_available && valid_prompt);
+    m_prompt_polish_button->SetToolTip(m_prompt_polish_available ? text("优化当前描述") :
+        m_prompt_polish_unavailable_reason == "preferred_text_model_unavailable"
+            ? text("YOYOClaw 文本白名单中没有可用的 Auto、Qwen 或 GLM 模型")
+            : text("YOYOClaw 文本能力当前不可用"));
+    m_prompt->Enable(editable);
+    m_prompt->SetEditable(editable && !active);
+    if (m_upload_surface)
+        m_upload_surface->Enable(editable && !active);
+    if (m_generate_button && active)
+        m_generate_button->Enable(false);
+    if (m_restore_prompt)
+        m_restore_prompt->Show(m_prompt_polish_state.can_restore() && !active);
+    if (m_prompt_polish_status) {
+        m_prompt_polish_status->Show(!m_prompt_polish_status->GetLabel().empty());
+        const int width = m_image_settings_content ? m_image_settings_content->GetClientSize().x : FromDIP(330);
+        wxClientDC dc(m_prompt_polish_status);
+        dc.SetFont(m_prompt_polish_status->GetFont());
+        wxString wrapped;
+        const wxSize extent = Label::split_lines(dc, std::max(FromDIP(160), width - FromDIP(42)),
+                                                 m_prompt_polish_status->GetLabel(), wrapped);
+        m_prompt_polish_status->SetLabel(wrapped);
+        m_prompt_polish_status->SetMinSize(wxSize(-1, extent.y + FromDIP(2)));
+        m_prompt_polish_status->InvalidateBestSize();
+    }
+    m_prompt_polish_button->Refresh(false);
+    if (m_image_settings_content)
+        m_image_settings_content->Layout();
+    layout_image_settings();
 }
 
 bool RedesignShell::generation_input_editable() const
@@ -2172,6 +2660,7 @@ bool RedesignShell::request_open_history(const std::string& job_id)
 {
     if (!generation_input_editable() || job_id.empty() || !m_model_generation_host ||
         !m_model_generation_host->request_open_image_history(job_id)) return false;
+    cancel_prompt_polish(true);
     const auto state = m_model_generation_host->snapshot();
     m_pending_workbench_job.clear();
     apply_model_generation_state(state);
@@ -2198,11 +2687,11 @@ void RedesignShell::restore_image_input(const ModelGenerationUIInput& input)
 
 void RedesignShell::request_generate_design()
 {
-    if (m_submit_in_progress || !generation_input_editable())
+    if (m_prompt_polish_state.active() || m_submit_in_progress || !generation_input_editable())
         return;
     m_submit_in_progress = true;
     apply_model_generation_state(m_model_generation_state);
-    if (!synchronize_generation_input()) {
+    if (!synchronize_generation_options() || !synchronize_generation_input()) {
         m_submit_in_progress = false;
         apply_model_generation_state(m_model_generation_host->snapshot());
         return;
@@ -2223,7 +2712,8 @@ void RedesignShell::request_generate_model()
 {
     const bool model_ready_reuse = m_model_generation_state.stage == ModelGenerationUIStage::ModelReady &&
         m_model_generation_state.inputs_match_job && !m_model_generation_state.model_options_match;
-    if (m_submit_in_progress || m_image_design_draft.pending() || !generation_input_editable() ||
+    if (m_prompt_polish_state.active() || m_submit_in_progress || m_image_design_draft.pending() ||
+        !generation_input_editable() ||
         (!model_ready_reuse && m_model_generation_state.stage != ModelGenerationUIStage::DesignReady) ||
         !m_model_generation_state.inputs_match_job || m_design_image_state != ImageState::Ready)
         return;
@@ -2784,14 +3274,14 @@ wxString RedesignShell::active_tab_id() const
 void RedesignShell::bind_upload_click(wxWindow* window)
 {
     window->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent&) {
-        if (m_image_state != ImageState::Loading && generation_input_editable())
+        if (!m_prompt_polish_state.active() && m_image_state != ImageState::Loading && generation_input_editable())
             choose_image();
     });
 }
 
 void RedesignShell::choose_image()
 {
-    if (!generation_input_editable()) {
+    if (m_prompt_polish_state.active() || !generation_input_editable()) {
         BOOST_LOG_TRIVIAL(info) << "[ImageUpload] stage=picker_ignored reason=input_not_editable";
         return;
     }
@@ -2819,7 +3309,7 @@ void RedesignShell::choose_image()
 
 void RedesignShell::accept_image(const wxString& path)
 {
-    if (m_image_state == ImageState::Loading || !generation_input_editable()) {
+    if (m_prompt_polish_state.active() || m_image_state == ImageState::Loading || !generation_input_editable()) {
         BOOST_LOG_TRIVIAL(info) << "[ImageUpload] stage=load_ignored reason=input_not_editable"
             << " already_loading=" << (m_image_state == ImageState::Loading);
         return;
@@ -2892,7 +3382,7 @@ void RedesignShell::accept_image(const wxString& path)
 
 void RedesignShell::clear_image()
 {
-    if (!generation_input_editable())
+    if (m_prompt_polish_state.active() || !generation_input_editable())
         return;
     ++m_image_request_generation;
     m_preview_resize_timer.Stop();
