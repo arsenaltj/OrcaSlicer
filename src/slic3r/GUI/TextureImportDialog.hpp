@@ -13,6 +13,7 @@
 #include <wx/scrolwin.h>
 #include <wx/string.h>
 #include <wx/textctrl.h>
+#include <wx/timer.h>
 #include "Widgets/SpinInput.hpp"
 #include <wx/checkbox.h>
 #include <wx/button.h>
@@ -273,6 +274,7 @@ private:
     void on_computation_progress(wxCommandEvent& evt);
     void on_computation_error(wxCommandEvent& evt);
     void on_mesh_repair_decision_required(wxCommandEvent& evt);
+    void on_external_cancel_timer(wxTimerEvent& evt);
 
     void rebuild_mapping_rows();
     void do_auto_match();
@@ -392,6 +394,7 @@ private:
     Slic3r::PaintedMesh               m_pending_result;
     std::function<bool()>              m_initial_cancel_callback;
     std::function<bool(int)>           m_initial_progress_callback;
+    wxTimer                            m_external_cancel_timer;
     bool                               m_current_computation_initial = false;
     bool                               m_initial_computation_pending = false;
     bool                               m_initial_computation_cancelled = false;

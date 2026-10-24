@@ -82,11 +82,6 @@ void apply_workbench_theme(wxWindow* window, bool enabled,
     if (auto* toggle = dynamic_cast<WorkbenchSwitch*>(window)) toggle->rescale_workbench();
 }
 
-void apply_workbench_parameter_theme(wxWindow* parameters)
-{
-    apply_workbench_theme(parameters, true, wxColour(40, 40, 43));
-}
-
 void repaint_workbench_surface(wxWindow* window)
 {
     if (!window || !window->IsShownOnScreen() || window->IsFrozen()) return;
@@ -107,7 +102,7 @@ bool ModelGenerationPanel::finishing_workbench_layout_ready(bool enabled) const
         m_preview_message && m_result_summary && m_preview_kind && m_model_decision_panel;
     if (!common_ready) return false;
     return enabled ? m_local_recolor_toggle != nullptr :
-        m_workbench_model_info && m_workbench_history_toggle && m_finishing_gray;
+        m_workbench_model_status && m_workbench_edit && m_workbench_history_toggle && m_finishing_gray;
 }
 
 void ModelGenerationPanel::set_finishing_workbench(bool enabled)
@@ -143,7 +138,6 @@ void ModelGenerationPanel::set_finishing_workbench(bool enabled)
          m_displayed_model_path == m_finishing_accepted_path)));
     m_model_preview->set_beauty_view(enabled);
     if (!enabled) {
-        m_workbench_model_info->Hide();
         m_workbench_history_toggle->Hide();
     }
     m_model_preview->set_color_controls_visible(!enabled);
@@ -151,8 +145,6 @@ void ModelGenerationPanel::set_finishing_workbench(bool enabled)
     m_front_model_view->Show(!enabled);
     m_reset_model_view->Show(!enabled);
     apply_workbench_theme(m_finishing_panel, enabled);
-    // The parameter surface can be reparented outside the inspector while hidden.
-    apply_workbench_parameter_theme(m_workbench_parameters);
     apply_workbench_theme(m_workbench_footer, enabled);
     apply_workbench_theme(m_workbench_history_panel, enabled);
     if (enabled && m_workbench_history_search) {
@@ -281,12 +273,16 @@ void ModelGenerationPanel::refresh_model_finishing()
     const bool transaction_busy = (m_portrait_task && m_portrait_task->snapshot().running()) || m_workbench_check_running || (m_beauty_transactions && m_beauty_transactions->processing()) ||
         m_model_preview->semantic_processing() ||
         (m_finishing_workbench && m_model_preview->selection_busy());
+    const bool show_beauty_actions = m_finishing_workbench && m_workbench_editing && !m_workbench_check_running &&
+        !(m_workbench_auto_repair && (m_finishing_running || pending));
+    const bool show_finishing_panel = m_finishing_workbench && m_workbench_editing &&
+        (ready || m_finishing_running || pending);
     const bool repaint_layout = m_finishing_workbench &&
-        (m_finishing_panel->IsShown() != m_workbench_editing ||
+        (m_finishing_panel->IsShown() != show_finishing_panel ||
          m_workbench_history_panel->IsShown() != (!m_workbench_editing && !m_workbench_history_collapsed) ||
-         m_workbench_footer->IsShown() != (m_workbench_editing || m_finishing_running || pending ||
-                                          (m_beauty_transactions && m_beauty_transactions->processing())));
-    m_finishing_panel->Show(m_finishing_workbench && m_workbench_editing && (ready || m_finishing_running || pending));
+         m_workbench_footer->IsShown() != show_beauty_actions);
+    m_finishing_panel->Show(show_finishing_panel);
+    m_workbench_footer->Show(show_beauty_actions);
     const auto beauty_source = pending ? m_finishing_candidate : m_displayed_model_path;
     if (m_beauty_controls)
         m_beauty_controls->synchronize(beauty_source, ready && !m_busy && !transaction_busy &&
@@ -300,7 +296,6 @@ void ModelGenerationPanel::refresh_model_finishing()
     if (!m_finishing_workbench || m_workbench_editing)
         m_model_preview->set_color_controls_visible(!m_finishing_workbench || tool == 2);
     const bool selection_visible = local || tool == 4;
-    const bool geometry_smoothing_enabled = m_finishing_workbench && tool == 0;
     m_finishing_selection_section->Show(m_finishing_workbench && selection_visible);
     m_finishing_selection_section->SetLabel(m_finishing_selection_open ? _L("收起选择区域") : _L("选择区域"));
     m_finishing_selection_controls->Show(selection_visible && (!m_finishing_workbench || m_finishing_selection_open));
@@ -308,13 +303,11 @@ void ModelGenerationPanel::refresh_model_finishing()
     m_finishing_overlay->Enable(editable && !pending);
     const bool beauty_editable = m_finishing_workbench && editable;
     m_finishing_selection_controls->Enable((editable && !pending) || beauty_editable);
-    m_workbench_smoothing_iterations->Enable(beauty_editable && !pending && geometry_smoothing_enabled);
-    m_workbench_preserve_hard_edges->Enable(beauty_editable && !pending && geometry_smoothing_enabled);
     m_finishing_tool->Enable(editable && !pending);
     m_finishing_preset->Show(!m_finishing_workbench && !color && tool != 3 && !cleanup);
     m_finishing_smooth->Show(!m_finishing_workbench && !color && tool != 3 && !cleanup);
-    m_finishing_strength->Show(!color && tool != 3 && !(m_finishing_workbench && m_beauty_controls && m_beauty_controls->geometry_deform_selected()));
-    m_finishing_strength_value->Show(!color && tool != 3 && !(m_finishing_workbench && m_beauty_controls && m_beauty_controls->geometry_deform_selected()));
+    m_finishing_strength->Show(!m_finishing_workbench && !color && tool != 3);
+    m_finishing_strength_value->Show(!m_finishing_workbench && !color && tool != 3);
     m_finishing_strength_value->SetLabel(wxString::Format(_L("处理强度：%d%%"), m_finishing_strength->GetValue()));
     m_finishing_cleanup_hint->Show(cleanup);
     m_finishing_gray->Show(!m_finishing_workbench && !color && !cleanup);
@@ -322,8 +315,11 @@ void ModelGenerationPanel::refresh_model_finishing()
         ? _L("力度越大，可合并的杂色块越大。仅处理选区内部；不会自动识别五官、纽扣或花纹。")
         : _L("强度越高，柔化越明显。保护轮廓与细小结构；可随时调整并重新预览。"));
     m_finishing_repair->Show(!m_finishing_workbench && tool == 3);
-    m_finishing_compare_model->Show(pending);
-    m_finishing_compare_model->Enable(editable);
+    // Automatic topology repairs are committed without a user candidate
+    // review.  Keep the footer free of the legacy compare affordance while
+    // that save transaction is running; manual beauty candidates retain it.
+    m_finishing_compare_model->Show(m_finishing_workbench || (pending && !m_workbench_auto_repair));
+    m_finishing_compare_model->Enable(editable && pending && !m_workbench_auto_repair);
     m_finishing_compare_model->SetLabel(m_finishing_workbench
         ? (m_finishing_before ? _L("查看处理后") : _L("查看处理前"))
         : (m_finishing_before ? _L("当前为处理前") : _L("按住查看处理前")));
@@ -372,10 +368,11 @@ void ModelGenerationPanel::refresh_model_finishing()
         m_recheck_model->SetToolTip(_L("本地处理版本请导入准备页，检查实际打印条件。"));
     }
     wrap_workbench_text(m_finishing_status,
-        std::max(FromDIP(80), m_finishing_panel->GetClientSize().x - FromDIP(34)));
+        std::max(FromDIP(80), m_finishing_scroll->GetClientSize().x - FromDIP(34)));
     wrap_workbench_text(m_finishing_selection_status, FromDIP(240));
     m_finishing_panel->Layout();
-    static_cast<wxScrolledWindow*>(m_finishing_panel)->FitInside();
+    m_finishing_scroll->Layout();
+    m_finishing_scroll->FitInside();
     if (auto* page = dynamic_cast<wxScrolledWindow*>(m_finishing_panel->GetParent())) {
         page->Layout(); page->FitInside();
     }
@@ -420,6 +417,8 @@ void ModelGenerationPanel::reset_beauty_asset()
     m_workbench_check_path.clear();
     m_workbench_check_result = {};
     m_workbench_operation_notice.clear();
+    m_workbench_printer_filament_notice.clear();
+    m_workbench_printer_filament_notice_error = false;
     m_applied_filaments_saved_model.clear();
     m_applied_filaments_saved_signature.clear();
     clear_unaccepted_beauty_candidates();
@@ -583,6 +582,7 @@ bool ModelGenerationPanel::restore_beauty_candidate(const BeautyCandidateSnapsho
             m_workbench_operation_notice = "无法恢复耗材配置：" + config_error; return false;
         }
     }
+    invalidate_printer_filament_trial_for_model_change();
     if (!m_model_preview->load_prepared_model(std::move(prepared), {}, triangles, dimensions, colors, error)) {
         // Only undo the configuration action just committed above; a no-op
         // restoration must never undo an unrelated project action.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "LocalPrintColorCommit.hpp"
+#include "OrcaModelPreparation.hpp"
 #include "libslic3r/Arrange.hpp"
 #include "libslic3r/ClipperUtils.hpp"
 #include <functional>
@@ -10,7 +11,7 @@ namespace Slic3r::GUI::LocalPrintModelImport {
 // This route owns one already decoded/color-assigned model, not the ordinary
 // file importer. Placement is completed before taking the project's snapshot.
 inline bool prepare(const ModelObject& source, const Vec2d& placement, const Vec2d& bed_size,
-    std::unique_ptr<Model>& destination, std::string& error)
+    std::unique_ptr<Model>& destination, std::string& error, bool apply_round_base_preparation = false)
 {
     auto fail = [&](const char* message) { error = message; return false; };
     error.clear();
@@ -34,6 +35,17 @@ inline bool prepare(const ModelObject& source, const Vec2d& placement, const Vec
     // Ordinary file import retains its existing scale prompt and behavior.
     if (!size.allFinite() || (size.head<2>().array() / bed_size.array() > 10).any())
         return fail("Scale this model before matching colors; confirmed color import does not rescale it.");
+    if (apply_round_base_preparation) {
+        if (size.z() <= 3.0)
+            return fail("当前模型尺寸无效，无法安全生成 3 mm 底座。");
+        try {
+            const auto proposal = GUI::prepare_model(*object,
+                {double(size.z()), true, 3.0, ModelBaseTemplate::Round});
+            apply_model_preparation(*object, proposal);
+        } catch (const std::exception&) {
+            return fail("无法为当前模型安全生成 3 mm 底座。");
+        }
+    }
     object->ensure_on_bed(false);
     auto offset = instance->get_offset(); offset.x() = placement.x(); offset.y() = placement.y();
     instance->set_offset(offset);
@@ -145,9 +157,10 @@ struct PlacementSnapshot {
     DynamicPrintConfig config;
     double height {0.};
 
-    bool prepare_model(const ModelObject& source, std::unique_ptr<Model>& model, std::string& error) const
+    bool prepare_model(const ModelObject& source, std::unique_ptr<Model>& model, std::string& error,
+        bool apply_round_base_preparation = false) const
     {
-        return prepare(source, placement, bed_size, model, error) &&
+        return prepare(source, placement, bed_size, model, error, apply_round_base_preparation) &&
             place(*model->objects.front(), bed, obstacles, config, height, error);
     }
 };

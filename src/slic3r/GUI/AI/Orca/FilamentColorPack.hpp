@@ -31,6 +31,20 @@ struct FilamentColorPack {
         });
     }
 
+    // Workbench previews may contain virtual mixed slots in addition to the
+    // legacy six physical colors. Keep valid() unchanged for saved/generated
+    // card compatibility and use this wider contract only for direct import.
+    bool valid_for_workbench_import() const {
+        if (name.empty() || colors.empty() || colors.size() > 32 || labels.size() != colors.size() ||
+            (!presets.empty() && presets.size() != colors.size()) ||
+            (!multi_colors.empty() && multi_colors.size() != colors.size()) ||
+            (!color_types.empty() && color_types.size() != colors.size())) return false;
+        return std::all_of(colors.begin(), colors.end(), [](const std::string& color) {
+            return color.size() == 7 && color[0] == '#' &&
+                std::all_of(color.begin() + 1, color.end(), [](unsigned char c) { return std::isxdigit(c) != 0; });
+        });
+    }
+
     bool valid_physical() const {
         if (name.empty() || colors.empty() || colors.size() > 32 || labels.size() != colors.size() ||
             presets.size() != colors.size() ||

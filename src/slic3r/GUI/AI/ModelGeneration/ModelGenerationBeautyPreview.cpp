@@ -107,7 +107,7 @@ void ModelGenerationPanel::preview_model_finishing()
         }
         const auto palette=local_recolor_palette();
         if (m_region_color_index<0 || size_t(m_region_color_index)>=palette.size()) return;
-        const wxColour target(from_u8(palette[m_region_color_index]));
+        const wxColour target(from_u8(palette[m_region_color_index].color));
         if (!target.IsOk()) return;
         const auto before=m_model_preview->leaf_edit_metadata();
         if (!m_model_preview->paint_selected_leaves({target.Red()/255.f,target.Green()/255.f,target.Blue()/255.f,1.f})) return;
@@ -129,7 +129,7 @@ void ModelGenerationPanel::preview_model_finishing()
         }
         const auto palette=local_recolor_palette();
         if (m_region_color_index<0 || size_t(m_region_color_index)>=palette.size()) return;
-        const wxColour target(from_u8(palette[m_region_color_index]));
+        const wxColour target(from_u8(palette[m_region_color_index].color));
         if (!target.IsOk()) return;
         const auto before=m_model_preview->leaf_edit_metadata();
         if (!m_model_preview->paint_selected_leaves({target.Red()/255.f,target.Green()/255.f,target.Blue()/255.f,1.f})) return;
@@ -158,8 +158,9 @@ void ModelGenerationPanel::preview_model_finishing()
             : recolor ? _L("请先圈选要换色的区域；涂抹保护可排除需要保留的细节。")
             : _L("请先在模型上选择要柔化的区域；未选区域不会改变。"));
         wrap_workbench_text(m_finishing_status,
-            std::max(FromDIP(80), m_finishing_panel->GetClientSize().x - FromDIP(34)));
-        m_finishing_panel->Layout();
+            std::max(FromDIP(80), m_finishing_scroll->GetClientSize().x - FromDIP(34)));
+        m_finishing_scroll->Layout();
+        m_finishing_scroll->FitInside();
         return;
     }
     const auto source = m_finishing_workbench && !m_finishing_candidate.empty()
@@ -187,9 +188,9 @@ void ModelGenerationPanel::preview_model_finishing()
     const bool smooth = m_finishing_workbench ? (tool == 0 || tool == 1) : m_finishing_smooth->GetValue();
     const bool repair = m_finishing_workbench ? tool == 3 : m_finishing_repair->GetValue();
     AI::ModelFinishingOptions options {!cleanup && !recolor && smooth, !local && repair, m_finishing_strength->GetValue() / 100.0};
-    if (m_finishing_workbench && m_workbench_smoothing_iterations && m_workbench_preserve_hard_edges) {
-        options.smoothing_iterations = geometry_smoothing ? m_workbench_smoothing_iterations->GetValue() : 0;
-        options.preserve_hard_edges = !geometry_smoothing || m_workbench_preserve_hard_edges->GetValue();
+    if (m_finishing_workbench) {
+        options.smoothing_iterations = geometry_smoothing ? 4 : 0;
+        options.preserve_hard_edges = true;
     }
     options.selected_faces = selected_faces;
     if (m_finishing_workbench && m_model_preview->active_shape_locks()) {
@@ -207,12 +208,16 @@ void ModelGenerationPanel::preview_model_finishing()
             ? _L("GLB 的保真保存暂不支持清理杂点。可圈选后统一这块颜色，并保留原版用于对照。")
             : _L("为保留 GLB 原始贴图，请在这里选择表面柔化。需要修复网格时，可先导入准备页，再使用修复功能。"));
         wrap_workbench_text(m_finishing_status,
-            std::max(FromDIP(80), m_finishing_panel->GetClientSize().x - FromDIP(34)));
-        m_finishing_panel->Layout();
+            std::max(FromDIP(80), m_finishing_scroll->GetClientSize().x - FromDIP(34)));
+        m_finishing_scroll->Layout();
+        m_finishing_scroll->FitInside();
         return;
     }
     if (recolor) {
-        m_finishing_color_palette = local_recolor_palette();
+        const auto palette = local_recolor_palette();
+        m_finishing_color_palette.clear();
+        m_finishing_color_palette.reserve(palette.size());
+        for (const auto& item : palette) m_finishing_color_palette.push_back(item.color);
         if (m_region_color_index < 0 || size_t(m_region_color_index) >= m_finishing_color_palette.size()) {
             m_finishing_status->SetLabel(_L("请先选择一个可用耗材颜色。")); return;
         }
@@ -393,6 +398,7 @@ void ModelGenerationPanel::preview_model_finishing()
             } else {
                 const auto view = self->m_model_preview->view_state();
                 size_t triangles = 0, colors = 0; Vec3d dimensions; std::string error = preview_error;
+                self->invalidate_printer_filament_trial_for_model_change();
                 if (!error.empty() || !self->m_model_preview->load_prepared_model(
                     std::move(*prepared), {}, triangles, dimensions, colors, error)) {
                     self->m_save_and_return = false;

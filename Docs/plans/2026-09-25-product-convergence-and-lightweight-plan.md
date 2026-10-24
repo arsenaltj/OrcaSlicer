@@ -1,3 +1,132 @@
+# 2026-10-25 PR #43：生成后 3D 工作台完整整改提交
+
+目标与范围：按用户授权，将 `codex/upstream-v2.5.0-alpha-portrait-preserved` 的全部本地提交与远端最新 `codex/team/integration` 对比，提交已验收的生成后 3D 工作台整改并创建详细 PR。范围包含工作台布局与防闪烁、原色对照和底座、自动修复与 3D 美颜、实体/叠色耗材、历史模型操作、原子页面切换及耗材/模型双向映射；不推送用户资产、`.tmp` 产物、凭据或本机配置，不自动合入、打包或发布。
+
+远端对比与提交：2026-10-25 重新抓取确认目标基线为 `48c451a0fb92cf6db786785d9e5f0731e533be96`。已验收的 19 个未提交文件先保存为 `80e19a534b feat: map printer filaments to workbench models`，随后以普通 merge 同步最新 integration，生成 `dffa47dea4`，过程无冲突且同步前后源码树相同。远端同名特性分支由 `177c61bfde` fast-forward 更新，未强推；已创建目标为 `codex/team/integration` 的 [PR #43](https://github.com/arsenaltj/OrcaSlicer/pull/43)。相对最新目标，PR 当前包含 6 个功能提交和 2 个同步提交、69 个文件、`+5580/-1352`；PR #42 已存在于目标分支，不作为本 PR 新增功能重复申报。
+
+变更与验证：PR 正文按用户可见工作流完整列出六轮实现、共享模块、兼容边界、失败回滚和提交清单。当前候选继续对应组合 C++ `243/243`、Windows VS 2022 x64 Release 五阶段和捆绑 Python `157/157` 通过的源码树；最终 HEAD 上 `scripts/verify_ai_integration.py --json` 返回 `ok: true`，相对目标的 `git diff --check` 通过且工作树干净。本机已在忽略目录安装固定架构解析依赖，但官方 Archify 2.16.0 下载连续两次被远端断开/超时，本地 HTML 报告未生成，等待 PR 的 `PR architecture impact` CI，未将失败写成通过。
+
+未结与边界：PR #43 的远端 CI、架构影响检查和至少一位非作者复核待完成；本次推送后没有重新启动 GUI。各轮匹配版本真实 GUI 与用户验收记录继续有效，但 100%/125%/150% DPI 全矩阵、所有人为失败/超时分支、真实 YOYOClaw 服务、安装包和实体打印色彩保真仍分别未验证。后续只在 PR #43 源分支处理评审或 CI 反馈，由维护者按团队 SOP 决定合入，不自动合并。
+
+# 2026-10-25 PR #42：YOYOClaw 合入 3D 工作台分支（本地完成）
+
+目标与范围：将 PR #42 的 YOYOClaw 2D/3D provider 与多模态文本润色能力合入 `codex/upstream-v2.5.0-alpha-portrait-preserved`，同时保留该分支尚未提交的 3D 工作台耗材映射工作。只进行本地合并、冲突处理、源码/运行时自动验证；不推送、不打包、不启动 GUI、不调用真实服务，也不把代码测试等同于视觉或实体打印验收。
+
+集成结果：远端 PR #42 head 为 `dda490e56c`，以 `3250594c591` 为当前分支父线完成 merge commit `450b48adc1`。冲突仅出现在本主计划和 `docs/coordination/current-development.md`，处理时保留双方有效记录并移除短状态中的悬空旧标题。合并前 19 个未提交文件已按原清单恢复、无恢复冲突并继续保持未暂存；历史 `stash@{0}` 未删除。
+
+组合验证：源码身份 `ef5fc2b971e36d7f7f86cd8977ba42a7704f8c6579e75c1d16fa51b6c291a3db` 下，工作台、耗材、模型预览、UI、AI 文本与生成链路的组合 C++ 回归 243/243 通过，证据为 [`20261024-222849-798`](../../.tmp/dev/logs/20261024-222849-798/result.json)。固定 `.tmp/dev/build` 的 VS 2022 x64 Release [`Run -NoLaunch`](../../.tmp/dev/logs/20261025-000001-731/result.json) 五步全部通过并安装到 `.tmp/dev/run`，未启动程序。使用该捆绑 Python 执行 YOYOClaw 14、文本能力 24、Sidecar 78、生成选项 16、provider gateway 25，共 157 项离线测试全部通过，证据为 [`20261025-004632-977`](../../.tmp/dev/logs/20261025-004632-977/result.json)。`scripts/verify_ai_integration.py --json` 返回 `ok: true`，`git diff --check`、暂存区检查和未合并索引检查通过。
+
+本机运行时恢复：PR #42 将 Windows Python staging 改为 `--include-stable` 并要求 `python3.dll`；既有依赖安装树早于该规则，只含 `python312.dll`，导致 cryptography `_rust.pyd` 初次导入失败。固定依赖下载受 GitHub 连接中断影响后，没有降低 TLS 或哈希要求；最终从另一份本机 Orca 构建中复用 CPython 3.12.13 stable ABI DLL，并确认其配套 `python312.dll` SHA256 与当前依赖树完全一致。安装后的 `python3.dll`/`python312.dll` SHA256 分别为 `78CA62E373247DAB56BFB9DF84B82C377BEED2EC74BEF4855B04188F8F5085BB` / `A89345E1C69D36938F3F480136FBAA619FD9B6B2E993C5C1361A1C96EE512DBB`；最终检查确认 Python 3.12.13、Pillow 12.2.0、cryptography native roundtrip 与 YOYOClaw native roundtrip 正常。干净依赖构建仍应由当前 staging 自行生成 stable ABI DLL，不能把本机缓存复用当成跨机依赖来源。
+
+未结与边界：本轮没有真实主窗口、真实 YOYOClaw 服务、安装包、用户视觉接受或实体打印色彩证据。后续 GUI 验收可复用已准备的 `.tmp/dev/run`，但不得将上述自动测试提升为视觉、服务或实物验收通过。计划状态由“PR #42 待复核”更新为“已在当前本地工作台分支合并并完成组合代码验证”，远端分支和 PR 状态未由本轮修改。
+
+# 2026-10-24 3D 工作台耗材与模型双向映射整改
+
+目标与范围：基于已提交的 `3250594c591 feat: refine 3d model history and atomic transitions`，只调整生成后 3D 工作台的耗材到模型映射、模型到耗材入口、工作台切片配色握手及暗色圆角提示框。普通 Orca 模型导入流程、提供商协议、工程/历史持久化和外部 API 不变；本轮修改在用户 GUI 验收前保持未提交，不推送、不打包。
+
+双向映射：在“打印机耗材”一级标题下纵向放置两个同宽主按钮。“将耗材色映射到模型”读取当前全部有效实体耗材和叠色槽，最多保留 32 个稳定槽位身份；通过已有自动颜色基底与 Hungarian 最小代价匹配生成面级分区，区域少于耗材槽时保留未使用逻辑槽而不制造小色块。映射完成后自动保存新的已接受模型版本；模型、配置或保存状态漂移及任何处理失败都会恢复原模型与配置，不留下候选或部分映射。“将模型配色导入到耗材”沿用已有实体槽、叠色配方生成和打印机耗材试色流程，试色激活后仍切换为退出操作。
+
+直接导入：工作台导入切片固定使用 `NativeMatch`，只从最终表面实际使用的面色、局部涂色和子面色建立大写 RGB8 集合。模型颜色是实体与叠色集合的严格子集时，优先复用既有绑定，其次选择实体槽、最后按原生槽号选择，并直接构造包含实体槽、叠色配方、面槽及子面槽的完整 `ModelMatchedColors`；不再进入 `TextureImportDialog`。颜色缺失时停止导入，使用暗色双操作提示框提供两种映射方向；关闭、Esc 或执行任一操作后均停留工作台，不隐式继续导入。NativeMatch 缺少完整面级绑定时直接报告错误，不回退旧配色窗口；异步与普通工作区适配器均应用子面槽绑定。
+
+界面与刷新：耗材区域会同步显示映射保存的成功或失败结果，按钮对无效状态给出明确原因。圆角提示框删除半透明白色描边，深色内容采用双缓冲自绘并关闭背景擦除；Windows 原生边框同步切换深色，DPI 或尺寸变化后重设圆角形状。没有增加长期整窗 bitmap，也未改变工作台 GL 的 GPU 缓存与 `SwapBuffers()`。
+
+自动验证：固定 `.tmp/dev/build` 已复核为本 checkout、Visual Studio 17 2022、x64、Release。`slic3rutils_tests` 与完整 `OrcaSlicer` 增量构建通过；工作台、耗材、耗材预览/导入、模型配色、模型预览状态和新版 UI 最终联合回归 `223/223` 通过。新增覆盖 RGB8 大小写与往返、严格颜色子集和真实缺色、重复 RGB 的既有身份优先、实体槽优先、实体与叠色共同覆盖、1/4/9/32 槽自动基底、区域少于槽位时不制造额外表面区域、隐式语义色板槽位补全、旧状态修复、打印机改色同步、保存期间双按钮互斥、试色来源恢复，以及 9 槽候选烘焙回载时保留具体状态类型和原生槽位身份且不重复套色。`scripts/verify_ai_integration.py --json` 返回 `ok: true`，`git diff --check` 通过；最终测试证据为 [20261024-210502-545](../../.tmp/dev/logs/20261024-210502-545/result.json)，build/run DLL SHA256 均为 `CA61C8BBA47A92A894342436C807F01F063E19712479EC413068DB4E3277E966`。
+
+GUI 与接受边界：匹配版本已使用现有人像完成双按钮和导入关键链路复验。首次“将耗材色映射到模型”把历史从 14 增至 15，保存候选成功激活耗材预览；同模型、同耗材签名再次点击时历史保持 15。进入模型配色导入试色后再执行耗材到模型映射，保存期间反向按钮不可重入，成功后历史由 15 增至 16；再次点击仍保持 16。切换相邻历史再返回后，进入前恢复快照仍有效；“将模型配色导入到耗材”导入的是恢复后的 4 色模型配色，不会把当前打印机试色误导回自身，退出试色后恢复“手动试色 4 色”且已提交耗材配置保留。当前运行日志有 7 次成功预览激活、2 次保存候选回载 `printer_preview=true`，`preview activation failed` 为 0。精确覆盖导入仍不出现旧配色窗口；原色缺失分支保持暗色双操作框和原样取消。用户视觉接受及实体打印色彩保真继续独立待验，后者不以屏幕试色替代。
+
+计划变更：新增“耗材与模型双向映射”工程项，当前状态为源码实现、失败回滚实证、候选回载缺陷修复、旧槽位门禁移除、重复应用幂等保护、保存期双按钮互斥、定向自动测试、集成守卫、diff 静态检查、完整应用构建和匹配 GUI 关键链路通过。“激活模型预览失败”的根因是普通不超过 6 色的隐式语义色板缺少 `project_semantic_slots`，500 ms 项目颜色同步因状态校验失败而关闭预览；现已在新建及旧状态恢复两条路径补齐相同原生槽绑定，并同步维护色卡目标色。[`Run -NoLaunch`](../../.tmp/dev/logs/20261024-204936-196/result.json) 的 catalogs/build/install/runtime-check/python-check 五步均为退出码 0，源码身份 `b76c90584f089d5024bb8ea54cabf4655dd561cd3e6696014af29d8637c0ce09`，build/run DLL SHA256 均为 `CA61C8BBA47A92A894342436C807F01F063E19712479EC413068DB4E3277E966`。匹配实例 PID `7268` 使用固定 `.tmp/dev/run` 与 `.tmp/dev/data` 运行，供用户继续视觉验收；本轮共 19 个文件保持未提交，不推送、不打包或提升候选。
+
+# 2026-10-24 3D 模型历史菜单与原子页面切换整改
+
+目标与范围：基于已提交的 `da2948c0e5 feat: refine 3d workbench details and thumbnails`，只整改新版资产、图像、3D 模型、打印主流程中的历史模型操作和页面切换观感。旧版 Orca 标签页、普通弹窗、模型导入协议、项目/历史格式和撤销数据不变；本轮修改在 GUI 验收前保持未提交，不推送、不打包。
+
+历史模型操作：删除工作台“选择模型”下方的“打开历史资产”按钮和临时从 notebook 重挂历史页的对话框。历史模型卡及全部子控件绑定鼠标与键盘上下文菜单，提供“导出模型”和“删除模型”；菜单保存 `workbench_history_key()`，动作执行前从当前列表重新解析，刷新后失效的旧操作被拒绝且右键不会加载模型。导出继续生成独立副本并保留模型材质/贴图、设计图、参考图和任务身份；删除继续执行依赖、目录边界和不可撤销确认。删除当前模型时按当前筛选排序优先加载下一项，其次上一项，最后进入空模型状态；删除非当前项不改变正在展示的模型。共享目录判断按具体模型版本而非仅按任务 ID 排除，避免一个保存版本误删同目录兄弟版本。
+
+导入切片：原全画布深色层改为模型区域中央的无边框深灰加载卡，直接保留原 `wxActivityIndicator` 动态转圈、实时阶段文字、耗时和取消按钮。导入期间 `ModelPreview3D` 始终可见，仅锁定编辑/相机/历史/导航并停止自动旋转。项目提交后将切片页暂时脱离主 sizer，在工作台后方完成最终尺寸、布局、相机适配和适配后首帧；随后在一个 `wxWindowUpdateLocker` 批次内更新页面、导航、侧栏和活动标签。提交前失败或取消保持工作台和模型不变；项目已提交但首帧 15 秒超时时回滚视图并提供“进入切片重试”，重试只准备视图、不再次导入模型。浮动卡事件和所有异步回调使用弱窗口引用、会话与事务序号三重校验，关闭路径先失效会话并复位临时 sizer 关系。
+
+页面事务：新增桌面内部 `RedesignPageTransition`，以递增序号实现“保留源页 -> 准备目标 -> 标记就绪 -> 一次提交/回滚”，拒绝重叠事务和迟到回调。新版主页面保持驻留，普通 wx 页面先隐藏布局，明确内容或加载/错误占位均可作为就绪；模型工作台、Prepare/Preview 路由和打印子页不再先显示旧子页再二次跳转。普通容器使用 `wxCLIP_CHILDREN`，Windows 启用原生双缓冲；目标切片 GL 继续使用现有 GPU 缓存与 `SwapBuffers()`，没有增加长期整窗 bitmap。源页的计时器、打印媒体和后台刷新仅在成功提交后停用，驻留控件自然保留滚动、筛选、分页、选择、相机、打印子页和焦点上下文。
+
+自动验证：固定 `.tmp/dev/build` 的 `CMAKE_HOME_DIRECTORY` 为当前 checkout，生成器为 Visual Studio 2022、平台 x64、配置 Release。`slic3rutils_tests` 和完整 `OrcaSlicer` 增量构建通过，后者完成隔离 Python 3.12.13 / Pillow 12.2.0 校验。首轮 `PostGenerationWorkbench` 62 cases / 2199 assertions、完整 `UiRedesign` 87 / 1353、历史/导出/导入呈现定向集合 9 / 64 全部通过；加载卡修复后再次执行工作台、完整 UI、历史导出、导入呈现和耗材导入联合回归，153/153 cases、3157 assertions 通过。最终 GL 父容器合成修复后再跑完整 `[UiRedesign]`，99/99 通过。覆盖历史邻近选择、导出原子性、浮动卡边界、提交前取消和页面事务的防重入、迟到回调及回滚。`scripts/verify_ai_integration.py --json` 返回 `ok: true`，`git diff --check` 通过。安装五个步骤全部成功，build/run DLL SHA256 均为 `DCD407356AD3264B569841C487DAEE6A327D7101B25240F594F70C63AA704E2C`。
+
+GUI 与接受边界：匹配运行时已验证“打开历史资产”按钮消失，当前历史卡右键不会触发加载并显示“导出模型/删除模型”，导出入口可正常打开独立副本目录选择；本轮未实际删除用户资产。人像模型在 GL 画布正常显示，工作台往返图像、资产、打印页均无黑帧、白闪、半布局或旧控件混入。导入切片时模型最后一帧持续作为背景，黄色点状 `wxActivityIndicator`、实时阶段、耗时和取消均保留；颜色匹配提交后仍显示工作台加载卡，直到切片模型加载、相机适配并完成首帧才原子替换，返回后工作台模型与滚动状态保留。导出的可丢弃模型位于 `.tmp/dev/data/models/exports/Orca-finish-3f26e457-bfd4-4a66-9804-2882239e48f9`；原始 GLB/修复 OBJ 哈希仍为 `9AFF12F77DDB416ADCBD4D487ED943C61D2861D68C018CE0D1A31B6426C99477` / `4D17776BD2B80025E9547815669A08F396722762640E0FCC1A936B35B06333F3`。提交前取消、15 秒超时重试、删除当前项回退、键盘菜单、窄窗口及 100%/125%/150% DPI 全矩阵仍待专项复验；实体打印色彩保真继续单独标记为未验证。
+
+计划变更：本项已推进为源码实现、定向自动测试、集成守卫、完整 Release 构建、固定运行目录安装和关键匹配 GUI 链路通过。Windows 父容器原生双缓冲遮蔽嵌套 GL 的问题已修复，GL 页面保留 `wxCLIP_CHILDREN` 并由自身 `SwapBuffers()` 双缓冲；普通 wx 页面仍保留原生双缓冲。本轮源码、测试及两份状态文档保持未提交，等待用户视觉验收；不推送、不打包。
+
+# 2026-10-23 3D 工作台细节修复与历史缩略图整改
+
+目标与范围：上一轮用户已验收并本地提交为 `b1a417baea feat: refine 3d workbench beauty and filament workflow`。本轮仅调整生成后 3D 工作台的检查卡片、历史缩略图、美颜操作区、检查摘要和耗材槽容器；不改变模型状态、提供商请求、外部 API 或持久化格式。本轮修改在用户 GUI 验收前保持未提交，不推送、不打包。
+
+检查卡片与交互锁：检查、修复和复检改为主窗口拥有的无边框灰色浮动卡片，跟随模型区域和窗口尺寸居中，不再绘制外围遮罩、隐藏 GL 或暂停出帧。卡片存续期间通过工作台预览输入锁拒绝编辑、旋转和工作台切换；关闭后直接恢复交互，不缓存整幅后台 bitmap。检查修复侧栏只显示一句状态，详情图标打开统一暗色诊断窗，内容包含检查说明、修复前后统计、拓扑指标、错误和风险。详情 RichEdit 在写入文本前设置前景、背景和默认样式，并对全文显式应用浅色样式，避免 Windows 控件回落为暗字。
+
+历史缩略图：历史加载器获得图库根目录后解析模型缩略图清单，按“3D 模型缩略图 -> AI 图 -> 参考图”选择来源；来源签名包含缩略图清单、图片文件身份和二维回退源。新缩略图发布后触发历史项增量刷新，模型或图片文件变化会使旧缓存失效。所有来源在固定 96 DIP 预览区内按比例完整适配，横竖图均以暗色留边，不裁切或拉伸。
+
+美颜与耗材布局：删除“光照立体展示、模型美化、自动补洞、保留硬边、面数”等旧浮动参数卡及其布局。美颜面板使用滚动参数区加固定底栏；预览修改、查看处理前、接受候选、放弃候选/修改、取消处理、撤销、重做、保存并返回八项始终创建，不可用时禁用但保留位置。底栏按八项动作计算四行 36 DIP 高度，最大化和窗口模式下均不裁切。打印机耗材槽容器改为普通面板，移除内部滚动条、46 至 216 DIP 高度限制和内部 `FitInside()`，4/9 槽按实际高度展开并仅随主设置栏滚动。
+
+自动验证：固定 `.tmp/dev/build` 已复核为本 checkout、Visual Studio 17 2022、x64。最终 Release catalogs/build/install/runtime-check/python-check 五步通过，证据为 [`Run`](../../.tmp/dev/logs/20261023-180256-312/result.json)，构建时源码身份为 `74a93cc5db7d3cb480114bc437b312454fb22b3236ae1be0ca49003a7ef590bf`。指定测试共 177 cases / 4169 assertions：`AtomicModelCapabilities + WorkbenchHistory` 3/21、`PostGenerationWorkbench` 62/2199、`WorkbenchTopology` 8/361、`PrinterFilaments` 18/248、`UiRedesign` 86/1340，全部通过；交叉标签聚合 [`CppTest`](../../.tmp/dev/logs/20261023-181319-874/result.json) 另确认 183/183 个已注册 CTest 用例通过。`scripts/verify_ai_integration.py --json` 返回 `ok: true`。缩略图测试覆盖 3D 优先、二维回退、缩略图/模型变化失效、等比适配和紧凑摘要/详情生成。
+
+GUI 与接受边界：匹配版本使用现有人像模型验证，修复卡片外围可见模型且背景输入锁定，自动关闭无白闪；历史项显示完整人像并暗色留边；检查摘要为一句话，详情窗正文为清晰浅色；旧参数浮层不再出现；耗材区域只有主侧栏滚动；美颜八项操作在最大化和窗口模式下完整显示。首次验证发现详情正文暗字及底栏只分配一行，已分别通过显式 RichEdit 全文样式和四行固定高度修复，并在最终安装版本复核。验证实例 PID `11412` 已正常退出且未出现保存/丢弃提示；恢复工程保留于 `.tmp/dev/data/models/projects/orcaslicer-ai-finish-3f26e457-bfd4-4a66-9804-2882239e48f9.3mf`。100%/125%/150% 系统 DPI、检查失败/轻微风险分支和实体打印色彩保真仍分别未验证。
+
+计划变更：本项推进为源码实现、Release 构建安装、指定自动测试和真实 GUI 关键路径通过；当前源码、测试及两份状态文档保持未提交，等待用户视觉验收后再决定提交。不推送、不打包或提升候选。
+
+# 2026-10-23 3D 美颜工作台与色卡直导整改
+
+目标与范围：基于已提交的 `5891dbd592 feat: refine 3d workbench repair and filament workflow` 继续整改生成后 3D 工作台。范围为检查遮罩、色卡直导、候选操作区和美颜颜色来源；不改变外部 API、提供商请求或历史持久化格式。本轮修改在用户 GUI 验收前保持未提交，不推送、不打包。
+
+检查与候选交互：检查、修复和复检继续复用单一 GL 画布 overlay，标题与说明统一为深灰卡片同底自绘白字，避免 Windows 系统画刷产生白色文字底块。模型画布底部全局候选栏已删除；3D 美颜面板改为可滚动参数区加固定操作区，集中承载预览修改、查看处理前、接受候选、放弃候选/修改、取消处理、撤销、重做和保存返回。自动检查、修复、复检及自动接受阶段不显示该操作区；手动检查生成候选时自动进入美颜面板完成处理。
+
+色卡直导：`FilamentColorPack::valid()` 继续保持旧色卡最多 6 色，新增仅供工作台直导使用的 1 至 32 色校验。导入先克隆当前 `PresetBundle`，按打印机实际实体容量选择基础色，清理旧叠色槽，为剩余颜色生成一色一槽的合法叠色配方并验证完整绑定；随后先激活暂存预览、复核来源签名，再通过 Orca 原生配置入口一次提交。全流程不打开配置或替代槽确认窗，失败不修改工程和预览。缩减槽位使用 Lab 最近色且原生槽号最小者优先；重复 RGB 仍保留独立原生槽身份，已有合法同色配方优先按首选槽复用，确无可用身份时才克隆或合成配方。按钮对 1 至 32 色有效卡启用，并在正下方显示明确的禁用、失败或“已导入 N 色：X 个实体槽 + Y 个叠色槽，已进入试色”反馈。9 色配 4 个实体槽稳定生成 4 个实体槽和 5 个叠色槽。
+
+美颜颜色：颜色项由裸 RGB 扩展为包含颜色、显示名、原生槽号和实体/叠色类型的内部结构。下拉框按原生顺序先列“耗材 N”，再列“叠色 N”，均显示色块与十六进制颜色；配置刷新时按 `(类型, 原生槽号)` 保留选择，已删除槽位回退到首个有效项。填充、画笔、撤销和导入继续使用既有打印机试色的逻辑色到原生槽位绑定，不新增持久化字段。
+
+自动验证：固定 `.tmp/dev/build` 已再次确认属于本 checkout，生成器为 Visual Studio 2022、平台 x64。Release GUI 增量构建通过，证据为 [`Build`](../../.tmp/dev/logs/20261023-141740-812/result.json)。工作台组合标签 163/163 通过，其中 `PostGenerationWorkbench` 61、`WorkbenchTopology` 10、`WorkbenchImportEligibility` 2、`UiRedesign` 98，证据为 [`CppTest`](../../.tmp/dev/logs/20261023-141141-685/result.json)。耗材组合 42/42 通过，其中 `PrinterFilaments` 18、`PrinterFilamentRecipes` 13、`PrinterFilamentPreview` 2、`PrinterFilamentImport` 19，证据为 [`CppTest`](../../.tmp/dev/logs/20261023-141410-533/result.json)。覆盖 6/7/9/12/32 色、33 色拒绝、9 色/4 实体、重复 RGB、连续 `9 -> 6 -> 9 -> 4`、最近 Lab 替代、失败不写入及已有同色配方身份复用。`scripts/verify_ai_integration.py --json` 返回 `ok: true`。首次安装后的启动崩溃定位到 `BeautyWorkbenchControls::attach_actions()`：按钮已经从原布局脱离，`GetContainingSizer()` 返回空值；增加空值保护并保留必要的 `Reparent()` 后，修复版五步构建安装通过，证据为 [`Run`](../../.tmp/dev/logs/20261023-142454-228/result.json)，原始崩溃栈保留于 [crash log](../../.tmp/dev/data/log/crash_Fri_Oct_23_14_23_28_0.log)。修复后 `PostGenerationWorkbench` 与 `UiRedesign` 共 152/152 通过，证据为 [`CppTest`](../../.tmp/dev/logs/20261023-143423-216/result.json)。
+
+GUI 与接受边界：修复后的匹配版本已安装并以 PID `14272` 从 `.tmp/dev/run/orca-slicer.exe --datadir .tmp/dev/data` 运行。使用现有人像模型副本完成关键路径验证：深灰白字自动修复模态无白块或可见白闪，自动检查/修复/保存期间没有全局候选操作；9 色直导显示“已导入 9 色：4 个实体槽 + 5 个叠色槽，已进入试色”且没有配置或替代槽确认窗；美颜颜色列表包含耗材 1 至 4 和叠色 5 至 9，叠色 5 可完成临时绘制并通过 `Ctrl+Z` 完整撤销；候选操作位于美颜内部固定区。连续三个跨 500 ms 帧未见无意义变化，最大化布局无重叠。当前窗口保留在 9 色打印机耗材试色状态供用户验收；自动修复新增一个已接受历史版本，原始模型资产未修改。系统 DPI 未实际切换，100%/125%/150% 尚未完整验证；手动检查候选和失败分支未逐项触发；实体打印色彩保真继续单独标记为未验证。
+
+计划变更：本项推进为源码实现、Release 编译、指定自动测试及匹配版本 GUI 关键路径验证通过；用户视觉接受、DPI/失败分支补验和实体打印仍分别未结。本轮继续保持未提交，不推送、不打包或提升候选。
+
+# 2026-10-23 3D 工作台侧栏、自动修复、耗材试色与底座整改
+
+目标与范围：承接生成后 3D 工作台的界面整改，只调整该工作台的侧栏、首次拓扑检查、打印机耗材试色和底座预览/导入，不改变提供商请求或持久化格式。上一轮对照 UI 已独立提交为 `5f80495bfb feat: refine 3d model workbench comparison ui`；本轮 41 个源码/测试文件与两份状态文档随本地提交 `feat: refine 3d workbench repair and filament workflow` 落地，不推送、不打包或启用新生产入口。
+
+侧栏与自动检查：删除完整“3D 美颜”分组及其中的人像保护、四项配色模式；底层美颜能力和旧记录兼容读取保持。首次导入检查使用既有画布 overlay 宿主显示“检查 → 修复 → 复检”模态流程，正常结果或安全修复自动接受并保存，自动流程不暴露候选接受/放弃按钮。只有 `Attention` 轻微风险可选择“仍要继续”，忽略许可绑定当前模型哈希、检查结果和版本；`Invalid`、`Failed`、取消、文件变化和检查不可用只允许返回 2D。模态层改为显式双缓冲的深灰遮罩和紧凑灰色卡片，自绘标签及非百分比进度条使用固定卡片填充色，避免 Windows 主题将子控件背景改回白色；显示期间暂停 GL 子窗口，恢复帧完成后再撤下遮罩。
+
+色卡与耗材：多色来源界面隐藏“打印机耗材”但保留原内部来源编号和旧历史兼容；色卡详情移除“查看原色/预览试色”，色槽固定尺寸且不横向拉伸。自动建议与滑杆之间使用 1 DIP 浅灰普通面板分隔线。“打印机耗材”提升为一级标题；同“导入切片”风格的“将当前色卡导入到打印机耗材”紧贴标题，下方一行一个槽位。实体槽、叠色配方和导入/退出试色按钮统一为 28 DIP 行高；实体名称打开 Orca 原生预设下拉层，颜色和更多菜单复用原生交互，叠色槽映射原生混合耗材编辑器。区域级“更多”和“应用打印机耗材”均已删除。
+
+试色与刷新：耗材配置只有点击完成才一次提交，取消不修改工程；提交后进入内存态打印机耗材试色，颜色或预设变化实时映射模型，退出恢复进入前外观，已提交耗材配置不回滚。试色导入切片直接写入既有 `ModelImportRequest::matched_colors`。布局签名与显示颜色签名分离，普通颜色/预设变化保留面到槽位绑定并原位更新控件，只有结构变化才重建布局；安全的未绑定尾部增删可重绑，影响已绑定槽位的变化明确失效。500 ms 兜底只在颜色或绑定实际变化时刷新，不因相同配置反复销毁控件、布局或重绘。
+
+底座：底部开关顺序固定为“增加底座 → 原色对照 → 网格”，底座默认关闭；底座和网格事件均将最终业务值立即回写自绘开关，解决功能生效但滑块不刷新的问题。预览与导入共用变换后包围盒规则，直径为 `max(X 宽度, Y 深度) + 4 mm`，即圆周四周各留 2 mm 径向余量；底座高 3 mm、与主体重叠 0.2 mm、继承首个模型部件耗材并保持模型总高度。原色对照仅左侧当前模型显示底座；状态绑定当前几何，新模型、清空、历史切换或几何变化时自动关闭。导入请求仅新增桌面内部布尔值，失败保持原子回滚，不写回源 GLB/修复 OBJ/历史 JSON。
+
+自动验证：固定 `.tmp/dev/build` 已核对属于当前 checkout，VS 2022 x64 Release `slic3rutils_tests` 和 `OrcaSlicer` 增量构建通过。`OrcaModelPreparation` 10 cases / 157 assertions、`WorkbenchTopology` 8 / 361、`WorkbenchImportEligibility` 2 / 30、`PrinterFilaments` 18 / 248、`PrinterFilamentPreview` 2 / 24、`PrinterFilamentImport` 13 / 708、`PostGenerationWorkbench` 55 / 1982、`UiRedesign` 86 / 1340 全部通过；`scripts/verify_ai_integration.py --json` 返回 `ok: true`，`git diff --check` 通过。证据位于 [`round-base-fix`](../../.tmp/dev/logs/20261023-workbench-round-base-fix) 和 [`modal-theme-fix`](../../.tmp/dev/logs/20261023-workbench-modal-theme-fix)。固定 [`Run`](../../.tmp/dev/logs/20261023-122515-666/result.json) 五步退出码均为 0，source identity `9ed5747f40c83779b43dbe39efaa52fcdaafef2aa326d666368a82fe010db803`；build/run EXE SHA256 均为 `A3CE64715716D44D2209C2663568EB4152F13DB074C2EA0006E36F3982D80CED`，DLL 均为 `0651B2665ED71C259F7B11D8CD643D115DAF4BEFAF6702C9E098C85E66989114`。
+
+GUI 与接受边界：匹配 PID `28428` 从固定 `.tmp/dev/run`、`.tmp/dev/data` 运行。真实人像源 GLB SHA256 为 `9AFF12F77DDB416ADCBD4D487ED943C61D2861D68C018CE0D1A31B6426C99477`，自动修复 OBJ 为 `4D17776BD2B80025E9547815669A08F396722762640E0FCC1A936B35B06333F3`。真实窗口逐阶段观察到深灰检查/修复/复检/保存模态，标题、说明和进度区域无白色矩形或可见整窗白闪，安全修复自动接受并关闭。底座开关开启后立即变蓝并显示覆盖最长 XY 投影且留有余量的底座，关闭后立即恢复灰色并移除；此前同一构建已验证原色对照只在左栏显示底座和实体耗材名称打开原生下拉层。先前耗材试色实时改色、取消不写入、控件原位复用及跨 500 ms 周期稳定帧证据继续有效。
+
+计划变更：本项推进为代码实现、定向自动测试、Release 增量构建、固定运行目录安装、真实人像模态和底座 GUI 往返通过，并随本地提交收尾。失败模态的每个真实分支、混合耗材对话框完整人工交互、100%/125%/150% DPI、窄窗口及实体打印颜色保真仍独立未验证；当前实例保留给用户复核，不推送、不打包。
+
+# 2026-10-22 3D 模型工作台原色对照开关刷新修复
+
+目标与范围：承接生成后 3D 模型工作台底栏和原色对照整改，修复“点击原色对照后双栏渲染已切换，但开关滑块/轨道仍显示旧状态”。仅修改底栏自绘开关的事件到视觉状态同步，不改比较渲染、源外观判断、编辑命中、相机共享、GPU 缓存、外部 API、状态模型或持久化格式。
+
+根因与实现：`WorkbenchSwitch` 的位图在其自定义 `SetValue()` 中重建；Windows 用户点击由原生 `wxBitmapToggleButton` 先改值并发出 `wxEVT_TOGGLEBUTTON`，不会自动进入派生类 `SetValue()`。新增的原色对照处理器只在预览层拒绝请求时才回写，因此请求成功时业务状态与双栏画面已变化，开关位图没有刷新。现在原色对照使用 `event.IsChecked()` 发起切换，并始终以 `original_comparison_enabled()` 最终值调用 `SetValue()`；同一底栏的网格开关也按事件值显式调用 `SetValue()`，防止相同问题。
+
+自动验证：固定 `.tmp/dev/build` 的 `CMAKE_HOME_DIRECTORY` 已核对为当前 checkout，VS 2022 x64 Release `OrcaSlicer`、`slic3rutils_tests` 增量构建通过；[`PostGenerationWorkbench`](../../.tmp/dev/logs/20261022-workbench-switch-refresh/post-generation-workbench.log) 49 cases / 1917 assertions、[`UiRedesign`](../../.tmp/dev/logs/20261022-workbench-switch-refresh/ui-redesign.log) 86 cases / 1340 assertions 均通过，[`verify_ai_integration.py --json`](../../.tmp/dev/logs/20261022-workbench-switch-refresh/verify-ai-integration.json) 为 `ok: true`。固定 [`Run -NoLaunch`](../../.tmp/dev/logs/20261022-143242-433/result.json) 的 catalogs/build/install/runtime-check/python-check 五步通过，source identity `55d08a0ed2527dc53d3f729366be014f35cd1f947c1d9aeb1ee828fad05248f5`，build/run DLL SHA256 均为 `AD561F5F3AC5010C29CB2BC7BB9B60E1B40FBA3862FC543C6261572B36ED4CAB`。未新增整幅后台 bitmap，也未改变 500 ms 差异刷新策略。
+
+GUI 与接受边界：匹配 PID `25588` 从固定 `.tmp/dev/run` 和隔离 datadir `workbench-bottom-original-compare-20261022-data` 启动。未加载状态下原色对照正确禁用；载入含纹理的基准模型后，开启原色对照立即显示蓝色右位开关及“当前模型 / 原贴图”双栏，关闭立即恢复灰色左位及单栏。网格开关也完成关闭/开启位图往返并恢复默认开启。日志 `debug_Thu_Oct_22_14_34_15_25588.log.0` 记录 `comparison=false → true → false`，对照态 GL viewport 为半宽且 `gl_error=0`。该烟测确认本缺陷已修复，不替代真实人像整体观感的用户接受或实体打印颜色保真。
+
+计划变更：将该问题作为既有“3D 模型工作台底栏、状态与原色对照整改”的显示刷新缺陷闭环；代码、编译、安装、专项测试、集成边界和限定真实 GUI 往返均已通过。真实人像用户视觉接受与实体打印颜色保真仍单独未结；不提交、不推送、不打包或提升候选。
+
+# 2026-10-22 3D 模型工作台顶栏与防闪烁整改（已实施、实机烟测通过）
+
+目标与范围：按用户本轮计划仅调整生成后 3D 模型工作台，不改其他页面的独立美颜入口，不改变外部 API、状态模型或持久化格式。工作树固定为 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha`、分支 `codex/upstream-v2.5.0-alpha-portrait-preserved`、HEAD `7d2e40776c38599a7296811329d452fb15079196`；构建目录继续为 `.tmp/dev/build`，运行目录为 `.tmp/dev/run`。
+
+实现：`PostGenerationWorkbenchView.cpp` 删除顶栏模型名、结果对照、画布左上信息卡和左侧美颜入口，建立带 `wxCLIP_CHILDREN`/Windows 原生双缓冲的顶栏宿主，固定排列“状态 → 返回图像设计 → 3D 美颜工作台”。两个命令按钮统一 140×38 DIP、黄色背景、深色文字及 8 DIP 圆角；美颜按钮固定文案，复用 `request_enter_beauty()`，不可编辑或编辑中禁用。`PostGenerationWorkbenchPresentation.cpp` 删除已移除控件的更新路径，保留完整状态映射和底部模型信息弹窗，按标签、tooltip、启用、显隐、尺寸、父级和顺序差异决定写入及 `Layout()`/`FitInside()`。`ModelPreview3D.hpp` 将 500 ms 耗材颜色同步改为数据变化才 `Refresh(false)`；颜色控件和圆角区域同样跳过无变化写入。GL 画布继续使用既有 GPU 资源缓存与 `SwapBuffers()`，未新增整幅后台 bitmap。
+
+自动验证：[`PostGenerationWorkbench`](../../.tmp/dev/logs/20261022-workbench-ui-refresh/post-generation-workbench.log) 47/47、1902 assertions；[`UiRedesign`](../../.tmp/dev/logs/20261022-workbench-ui-refresh/ui-redesign.log) 84/84、1325 assertions；`scripts/verify_ai_integration.py --json` 为 `ok: true`，`git diff --check` 通过。固定 VS 2022 x64 Release [`Run -NoLaunch`](../../.tmp/dev/logs/20261022-113558-620/result.json) 的 catalogs/build/install/runtime-check/python-check 五步均为 0，source identity `5b408c2741dc2f14cad2cb84ccb4b352ebbe41bce1eee578777d1a5ec8700e73`；build/run EXE SHA256 均为 `A3CE64715716D44D2209C2663568EB4152F13DB074C2EA0006E36F3982D80CED`，DLL SHA256 均为 `EEBFED7E2ECDF01365A9DB2CC67750401F86F53232B8605A95FD451D559F5122`。
+
+GUI 证据：从原候选数据完整克隆独立 datadir `workbench-ui-refresh-20261022-data`，用固定工程副本启动匹配 PID `11236`。真实主窗口验证未加载和就绪/已接受状态、顶栏顺序及等尺寸按钮；顶栏模型名、结果对照、左侧美颜入口和左上信息卡均消失；底部“模型信息”图标可打开面数/顶点/尺寸详情。旋转、缩放、原始/美颜历史切换、进入/退出美颜以及返回图像设计均正常出帧；进入美颜后顶栏保持固定文案、原尺寸和禁用态，重复点击不触发。移除鼠标悬停噪声后连续采集 8 帧、约 4.2 秒，整窗 data URL 完全一致（`unique_images=1`），覆盖至少 8 个 500 ms 同步机会。首次整窗比较受真实鼠标位置和悬停高亮变化干扰，不作为后台重绘结论。
+
+接受边界：加载中、处理中、候选就绪和加载失败的真实可见瞬间未通过付费生成或人为破坏资产来制造，状态文案/许可仍由定向测试覆盖。GUI 烟测不等同用户视觉接受；真实人像的五官、眉眼、耳发、衣肤边界和整体观感继续待用户确认，实体打印颜色保真继续待实物验证。当前实例保持响应；未提交、推送、打包、提升候选或启用生产入口。
+
+计划变更：新增并完成“3D 模型工作台顶栏与防闪烁整改”工程项，状态更新为代码、Release 构建、定向自动测试和限定真实 GUI 烟测通过；人工视觉与实物打印接受项仍保持独立未结。
 # YOYOCLAW-20261024-PR：生成能力与多模态 AI 润色 PR 已创建（待复核与 CI）
 
 目标：将已完成的 YOYOClaw 2D/3D provider 接入和可复用文本能力提交到 `codex/team/integration`。文本能力默认按实时白名单选择 Auto；缺少 Auto 时依次选择首个合格 Qwen、GLM。有参考图时同时发送图片与描述给多模态文本模型，没有参考图时发送纯文本；润色结果只用于下一步 2D 设计图生成或编辑。请求期间锁定描述和相关输入，成功后直接替换描述并允许恢复首次原文；已有 2D 时按既有输入一致性规则要求重新生成 2D。2D/3D 生成、确认、轮询、下载、历史、产物和 SmartSlicing 规则保持既有边界。

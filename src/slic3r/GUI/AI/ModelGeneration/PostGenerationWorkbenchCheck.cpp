@@ -18,10 +18,10 @@ void ModelGenerationPanel::ensure_workbench_check()
         !m_finishing_candidate.empty() || (m_beauty_controls && m_beauty_controls->has_changes())) return;
     if (m_workbench_check_path == m_displayed_model_path.string() && m_workbench_check_revision == m_sequence &&
         m_workbench_check_result.status != WorkbenchCheckStatus::NotRun) return;
-    request_check_workbench();
+    request_check_workbench(true);
 }
 
-bool ModelGenerationPanel::request_check_workbench()
+bool ModelGenerationPanel::request_check_workbench(bool automatic)
 {
     if (m_shutdown || !m_model_preview_ready || m_workbench_check_running || m_busy || m_finishing_running ||
         !post_generation_ui_state().can_edit || !m_finishing_candidate.empty() ||
@@ -48,18 +48,24 @@ bool ModelGenerationPanel::request_check_workbench()
     const auto previous_result = m_workbench_check_result;
     m_workbench_check_path = source.string();
     m_workbench_check_revision = revision;
+    m_workbench_check_source = automatic ? WorkbenchCheckSource::Automatic : WorkbenchCheckSource::Manual;
+    m_workbench_force_import_ack_hash.clear();
+    m_workbench_force_import_ack_revision = 0;
     m_workbench_check_result = {};
+    m_workbench_check_result.source = m_workbench_check_source;
     m_workbench_check_result.status = WorkbenchCheckStatus::Running;
     m_workbench_check_result.phase = WorkbenchCheckPhase::Inspecting;
     m_workbench_check_result.summary = "正在检查模型……";
     m_workbench_check_running = true;
+    m_workbench_check_card_visible = automatic;
     update_finishing_selection();
     refresh_model_finishing();
     wxWeakRef<ModelGenerationPanel> weak(this);
     try {
         m_workbench_check_worker = std::thread([weak, source, destination, revision, asset, id, canceled,
-            attempts, previous_result, repair_allowed, bound_edits] {
+            attempts, previous_result, repair_allowed, bound_edits, automatic, check_source = m_workbench_check_source] {
             auto result = inspect_workbench_model(source, [canceled] { return canceled->load(); });
+            result.source = check_source;
             const auto source_check = result;
             const auto source_hash = result.model_sha256;
             const std::string key = asset + "|" + source_hash;
@@ -75,6 +81,8 @@ bool ModelGenerationPanel::request_check_workbench()
                         source != weak->m_displayed_model_path || weak->m_workbench_check_cancel != canceled) return;
                     weak->m_workbench_check_result.phase = phase;
                     weak->m_workbench_check_result.summary = text;
+                    if (phase == WorkbenchCheckPhase::Repairing || phase == WorkbenchCheckPhase::Rechecking)
+                        weak->m_workbench_check_card_visible = true;
                     weak->refresh_post_generation_workbench();
                 });
             };
@@ -87,6 +95,7 @@ bool ModelGenerationPanel::request_check_workbench()
                     progress(WorkbenchCheckPhase::Rechecking, "正在复检安全修复后的模型……");
                     const auto before_faces = result.before_faces, before_vertices = result.before_vertices;
                     result = inspect_workbench_model(destination, [canceled] { return canceled->load(); });
+                    result.source = check_source;
                     const auto after_faces = result.before_faces, after_vertices = result.before_vertices;
                     const auto candidate_hash = result.model_sha256;
                     result.source_sha256 = source_hash;
@@ -160,6 +169,7 @@ bool ModelGenerationPanel::request_check_workbench()
             }
             if (canceled->load()) { boost::system::error_code ec; boost::filesystem::remove(destination, ec); }
             wxGetApp().CallAfter([weak, source, destination, revision, asset, id, canceled, attempted, key, source_hash,
+                automatic, check_source,
                 result = std::move(result), repair, options, prepared, error] () mutable {
                 auto cleanup = [&destination] { boost::system::error_code ec; boost::filesystem::remove(destination, ec); };
                 if (!weak || weak->m_shutdown || revision != weak->m_sequence || source != weak->m_displayed_model_path ||
@@ -168,6 +178,7 @@ bool ModelGenerationPanel::request_check_workbench()
                 if (self->m_workbench_check_worker.joinable()) self->m_workbench_check_worker.join();
                 self->m_workbench_check_running = false;
                 result.phase = WorkbenchCheckPhase::Idle;
+                result.source = check_source;
                 if (canceled->load()) {
                     cleanup();
                     result.status = WorkbenchCheckStatus::Failed;
@@ -175,18 +186,42 @@ bool ModelGenerationPanel::request_check_workbench()
                     result.candidate_path.clear();
                     result.summary = "已取消检查与修复，当前模型保持不变。";
                     result.repair_reason.clear();
+                    result.force_import_risk = false;
                 } else if (attempted) self->m_workbench_repair_attempts.insert(key);
+                result.force_import_risk = result.status == WorkbenchCheckStatus::Attention &&
+                    result.boundary_edges > 0 && result.nonmanifold_edges == 0 &&
+                    result.nonmanifold_vertices == 0 && result.degenerate_faces == 0 &&
+                    result.duplicate_faces == 0 && result.inconsistent_edges == 0 &&
+                    result.self_intersections == 0;
                 self->m_workbench_check_result = result;
                 if (!canceled->load() && !source_hash.empty() && AI::model_artifact_sha256(source) != source_hash) {
                     cleanup();
                     self->m_workbench_check_result = {};
                     self->m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
+                    self->m_workbench_check_result.source = check_source;
                     self->m_workbench_check_result.summary = "模型文件在检查期间已变化，已丢弃结果，请重新加载。";
+                    self->m_workbench_check_result.force_import_risk = false;
                     self->m_status->SetLabel(wxString::FromUTF8(self->m_workbench_check_result.summary));
                     self->refresh_controls();
                     return;
                 }
-                if (!canceled->load() && repair.success && repair.changed() && error.empty() &&
+                if (!canceled->load() && automatic && repair.success && repair.changed() && error.empty() &&
+                    result.candidate_status == RepairCandidateStatus::Ready &&
+                    (!workbench_topology_safe(result) || !result.appearance_mapped || result.appearance_confidence < 0.99)) {
+                    // Automatic checks may only publish a fully verified,
+                    // appearance-preserving repair. Keep the source visible
+                    // and discard anything that would need human review.
+                    cleanup();
+                    result.status = WorkbenchCheckStatus::Failed;
+                    result.candidate_status = RepairCandidateStatus::Failed;
+                    result.candidate_path.clear();
+                    result.candidate_sha256.clear();
+                    result.summary = "自动修复无法安全接受，原模型保留；请手动检查后决定。";
+                    result.repair_reason = result.appearance_reason.empty()
+                        ? "修复候选需要人工确认，自动流程未加载候选。" : result.appearance_reason;
+                    result.force_import_risk = false;
+                    self->m_workbench_check_result = result;
+                } else if (!canceled->load() && repair.success && repair.changed() && error.empty() &&
                     result.candidate_status == RepairCandidateStatus::Ready &&
                     result.status != WorkbenchCheckStatus::Failed) {
                     auto before = std::make_shared<BeautyCandidateSnapshot>(self->capture_beauty_candidate());
@@ -203,6 +238,7 @@ bool ModelGenerationPanel::request_check_workbench()
                     Vec3d dimensions;
                     std::string load_error;
                     const auto view = self->m_model_preview->view_state();
+                    self->invalidate_printer_filament_trial_for_model_change();
                     if (!self->m_model_preview->load_prepared_model(std::move(*prepared), {}, triangles, dimensions, colors, load_error)) {
                         self->m_finishing_candidate.clear();
                         self->m_beauty_session_source.reset();
@@ -220,7 +256,7 @@ bool ModelGenerationPanel::request_check_workbench()
                         // Reuse the normal AcceptCandidate transaction so the
                         // original file, history, undo and rollback paths stay
                         // identical to an explicit user acceptance.
-                        self->m_workbench_auto_repair =
+                        self->m_workbench_auto_repair = automatic &&
                             workbench_topology_safe(self->m_workbench_check_result) &&
                             self->m_workbench_check_result.appearance_mapped &&
                             self->m_workbench_check_result.appearance_confidence >= 0.99;
@@ -233,6 +269,11 @@ bool ModelGenerationPanel::request_check_workbench()
                             self->refresh_controls();
                             self->accept_model_finishing();
                         } else {
+                            // Manual repair candidates are reviewed in the
+                            // Beauty inspector. Its fixed action dock owns
+                            // accept/discard; the canvas no longer has a
+                            // global candidate bar.
+                            self->m_workbench_editing = true;
                             self->m_workbench_check_result.summary += "\n修复候选已生成，请预览后接受或保留原模型。";
                         }
                     }
@@ -252,6 +293,8 @@ bool ModelGenerationPanel::request_check_workbench()
     } catch (const std::exception& error) {
         m_workbench_check_running = false;
         m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
+        m_workbench_check_result.source = automatic ? WorkbenchCheckSource::Automatic : WorkbenchCheckSource::Manual;
+        m_workbench_check_result.force_import_risk = false;
         m_workbench_check_result.phase = WorkbenchCheckPhase::Idle;
         m_workbench_check_result.summary = error.what();
         m_status->SetLabel(wxString::FromUTF8(m_workbench_check_result.summary));

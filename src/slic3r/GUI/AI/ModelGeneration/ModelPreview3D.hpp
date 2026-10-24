@@ -1,6 +1,7 @@
 #pragma once
 
 #include "slic3r/GUI/3DScene.hpp"
+#include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 #include "slic3r/GUI/AI/Model/VertexColorRegionEditor.hpp"
 #include "slic3r/GUI/AI/Model/SurfaceSelection.hpp"
 #include "slic3r/GUI/AI/Model/SurfaceSelectionRefinement.hpp"
@@ -19,6 +20,7 @@
 #include "ModelHistoryMetadata.hpp"
 #include "ModelPreviewPalette.hpp"
 #include "ModelPreviewColorControls.hpp"
+#include "WorkbenchRoundBasePreview.hpp"
 #include "ModelSemanticColoring.hpp"
 #include "PortraitColorBlockCache.hpp"
 #include "PrinterFilamentRestoreSnapshot.hpp"
@@ -51,6 +53,7 @@
 #include <wx/stattext.h>
 #include <wx/timer.h>
 #include <wx/stdpaths.h>
+#include <wx/wupdlock.h>
 
 #include <algorithm>
 #include <atomic>
@@ -79,7 +82,26 @@ public:
     using SelectionState = AI::SurfaceSelectionPersistence::SelectionState;
     using FaceColorOverrides = AI::SurfaceSelectionPersistence::FaceColorOverrides;
     using SubfaceColorOverrides = AI::SemanticColoring::SubfaceColors;
+    struct WorkbenchSurfaceColor {
+        PreviewPalette::Color color {};
+        std::optional<size_t> preferred_slot;
+    };
+    struct WorkbenchSurfaceSubface : WorkbenchSurfaceColor {
+        size_t face_id {0};
+        uint8_t depth {0}, path {0};
+    };
+    struct WorkbenchSurfacePalette {
+        std::vector<WorkbenchSurfaceColor> faces;
+        std::vector<WorkbenchSurfaceSubface> subfaces;
+    };
+    struct PrinterFilamentMatchResult {
+        std::optional<AI::ModelMatchedColors> matched;
+        std::vector<std::string> missing_colors;
+        std::string error;
+    };
     wxWindow* workbench_overlay_parent() const { return m_preview_host; }
+    wxWindow* workbench_viewport_window() const { return m_canvas; }
+    int workbench_viewport_top() const { return m_canvas ? m_canvas->GetPosition().y : 0; }
     explicit ModelPreview3D(wxWindow* parent, bool retain_surface_attributes = false)
         : wxPanel(parent), m_retain_surface_attributes(retain_surface_attributes)
     {
@@ -102,6 +124,25 @@ public:
         m_canvas = OpenGLManager::create_wxglcanvas(*m_preview_host);
         m_canvas->SetMinSize(wxSize(FromDIP(360), FromDIP(260)));
         m_overlay_top = preview_sizer->AddSpacer(0);
+        m_comparison_header = new wxPanel(m_preview_host, wxID_ANY, wxDefaultPosition,
+            FromDIP(wxSize(-1, 30)), wxBORDER_NONE | wxCLIP_CHILDREN);
+        m_comparison_header->SetBackgroundColour(GetBackgroundColour());
+#ifdef __WXMSW__
+        m_comparison_header->SetDoubleBuffered(true);
+#endif
+        auto* comparison_labels = new wxBoxSizer(wxHORIZONTAL);
+        for (const auto& text : {_L("当前模型"), _L("原贴图")}) {
+            auto* label = new wxStaticText(m_comparison_header, wxID_ANY, text,
+                wxDefaultPosition, wxDefaultSize, wxALIGN_CENTER_HORIZONTAL | wxST_NO_AUTORESIZE);
+            label->SetFont(wxGetApp().bold_font());
+            label->SetForegroundColour(wxColour(220, 220, 224));
+            label->SetBackgroundColour(GetBackgroundColour());
+            comparison_labels->Add(label, 1, wxALIGN_CENTER_VERTICAL);
+            m_comparison_labels.push_back(label);
+        }
+        m_comparison_header->SetSizer(comparison_labels);
+        m_comparison_header->Hide();
+        preview_sizer->Add(m_comparison_header, 0, wxEXPAND);
         preview_sizer->Add(m_canvas, 1, wxEXPAND);
         m_overlay_bottom = preview_sizer->AddSpacer(0);
         m_preview_host->SetSizer(preview_sizer);
@@ -128,7 +169,8 @@ public:
             const auto now=std::chrono::steady_clock::now();
             const double seconds=std::chrono::duration<double>(now-m_rotation_tick).count();
             m_rotation_tick=now;
-            if (!IsShownOnScreen() || !m_has_model || m_dragging || m_drawing_selection) {
+            if (!IsShownOnScreen() || !m_has_model || m_workbench_input_locked ||
+                m_dragging || m_drawing_selection) {
                 set_auto_rotation(false);return;
             }
             m_yaw=std::remainder(m_yaw+std::min(seconds,0.1)*0.35,6.283185307179586);
@@ -190,8 +232,10 @@ public:
             event.Skip();
         });
         m_canvas->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
+            if (m_workbench_input_locked) return;
             set_auto_rotation(false);
-            if (m_selection_enabled && !selection_busy() && !event.AltDown() &&
+            const bool edit_view = point_in_edit_view(event.GetPosition());
+            if (edit_view && m_selection_enabled && !selection_busy() && !event.AltDown() &&
                 m_selection_gesture != SelectionGesture::Orbit &&
                 m_selection_gesture != SelectionGesture::Similar)
                 set_selection_preview_suppressed(false);
@@ -199,11 +243,12 @@ public:
             m_drag_moved = false;
             m_drag_start = event.GetPosition();
             m_last_mouse = event.GetPosition();
-            m_drawing_selection = m_selection_enabled && !selection_busy() && !event.AltDown() &&
+            m_drawing_selection = edit_view && m_selection_enabled && !selection_busy() && !event.AltDown() &&
                 m_selection_gesture != SelectionGesture::Orbit && m_selection_gesture != SelectionGesture::Similar;
             if (m_drawing_selection) {
                 m_stroke.clear();
-                m_stroke.emplace_back(event.GetX(), event.GetY());
+                const wxPoint point = edit_view_point(event.GetPosition());
+                m_stroke.emplace_back(point.x, point.y);
                 m_canvas->Refresh(false);
             }
             if (!m_canvas->HasCapture())
@@ -211,11 +256,13 @@ public:
             m_canvas->SetFocus();
         });
         m_canvas->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent& event) {
+            if (m_workbench_input_locked) return;
             if (m_drawing_selection) {
-                m_stroke.emplace_back(event.GetX(), event.GetY());
+                const wxPoint point = edit_view_point(event.GetPosition());
+                m_stroke.emplace_back(point.x, point.y);
                 submit_surface_selection();
             } else if (m_selection_enabled && !m_drag_moved && !event.AltDown() &&
-                       m_selection_gesture == SelectionGesture::Similar) {
+                       m_selection_gesture == SelectionGesture::Similar && point_in_edit_view(event.GetPosition())) {
                 set_selection_preview_suppressed(false);
                 select_at(event.GetPosition());
             }
@@ -226,10 +273,11 @@ public:
                 finish_drag();
         });
         m_canvas->Bind(wxEVT_MOTION, [this](wxMouseEvent& event) {
+            if (m_workbench_input_locked) return;
             if (event.RightIsDown() && m_canvas->HasCapture()) {
                 const wxPoint current = event.GetPosition();
                 const double radius = std::max(0.001, 0.5 * m_bounds.size().norm());
-                const double scale = 2.0 * fitted_half_height(m_canvas->GetClientSize().x, m_canvas->GetClientSize().y)
+                const double scale = 2.0 * fitted_half_height(edit_view_width(), m_canvas->GetClientSize().y)
                     / std::max(1, m_canvas->GetClientSize().y) / radius;
                 m_pan_x += (current.x - m_last_mouse.x) * scale;
                 m_pan_y -= (current.y - m_last_mouse.y) * scale;
@@ -239,8 +287,9 @@ public:
                 return;
             const wxPoint current = event.GetPosition();
             if (m_drawing_selection) {
-                if ((Vec2d(current.x, current.y) - m_stroke.back()).squaredNorm() >= 4.0)
-                    m_stroke.emplace_back(current.x, current.y);
+                const wxPoint point = edit_view_point(current);
+                if ((Vec2d(point.x, point.y) - m_stroke.back()).squaredNorm() >= 4.0)
+                    m_stroke.emplace_back(point.x, point.y);
                 m_canvas->Refresh(false);
                 return;
             }
@@ -258,6 +307,7 @@ public:
             m_canvas->Refresh(false);
         });
         m_canvas->Bind(wxEVT_MOUSEWHEEL, [this](wxMouseEvent& event) {
+            if (m_workbench_input_locked) return;
             if (m_drawing_selection) return;
             const int delta = event.GetWheelDelta();
             if (delta == 0)
@@ -267,16 +317,20 @@ public:
             m_canvas->Refresh(false);
         });
         m_canvas->Bind(wxEVT_RIGHT_DOWN, [this](wxMouseEvent& event) {
+            if (m_workbench_input_locked) return;
             set_auto_rotation(false);
             if (m_drawing_selection) finish_drag();
             m_last_mouse = event.GetPosition();
             if (!m_canvas->HasCapture()) m_canvas->CaptureMouse();
         });
-        m_canvas->Bind(wxEVT_RIGHT_UP, [this](wxMouseEvent&) { finish_drag(); });
+        m_canvas->Bind(wxEVT_RIGHT_UP, [this](wxMouseEvent&) {
+            if (!m_workbench_input_locked) finish_drag();
+        });
         m_canvas->Bind(wxEVT_MOUSE_CAPTURE_LOST, [this](wxMouseCaptureLostEvent&) {
             m_dragging = false; m_drawing_selection = false; m_stroke.clear(); m_canvas->Refresh(false);
         });
         m_canvas->Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
+            if (m_workbench_input_locked) return;
             if (!event.ControlDown() && (event.GetKeyCode() == 'F' || event.GetKeyCode() == 'f')) {
                 focus_selection(); return;
             }
@@ -399,6 +453,7 @@ public:
         std::string secondary_region_evidence_error;
         std::shared_ptr<const PortraitShapeDetails> shape_details;
         bool shapes_unlocked {false};
+        bool has_source_appearance {false};
         nlohmann::json leaf_edits;
     };
 
@@ -533,6 +588,8 @@ public:
         }
         const bool has_vertex_colors = obj_info.vertex_colors.size() == its.vertices.size();
         const bool has_face_colors = obj_info.face_colors.size() == its.indices.size();
+        prepared.has_source_appearance = preview_has_source_appearance(
+            has_vertex_colors, has_face_colors, prepared.texture_surface);
         if (has_vertex_colors || has_face_colors) {
             auto source = std::make_shared<AI::SemanticColoring::MeshSnapshot>();
             source->mesh = its;
@@ -681,7 +738,10 @@ public:
                     observed_colors.insert(packed);
                     counted_vertices[vertex_index] = 1;
                 }
-                const uint32_t shown = lock == locked_colors.end() ? packed
+                // Keep source appearance in the shared base model whenever a
+                // real source exists. Current saved edits are a sparse overlay,
+                // so the comparison viewport can reuse this exact GPU buffer.
+                const uint32_t shown = prepared.has_source_appearance || lock == locked_colors.end() ? packed
                     : preview_rgb8(lock->second[0], lock->second[1], lock->second[2]);
                 geometry.add_vertex(its.vertices[indices[corner]], corner_normals[face_index * 3 + corner],
                     Vec2f(float(shown), lock == locked_colors.end() ? color[3] : -1.0f));
@@ -719,7 +779,7 @@ public:
         prepared.stamp = file_stamp(path);
         if (!same_stamp(initial_stamp, prepared.stamp))
             prepared.stamp.valid = false;
-        if (has_vertex_colors || has_face_colors || !prepared.texture_surface.faces.empty() || !restore_saved_edits) {
+        if (prepared.has_source_appearance || !restore_saved_edits) {
             prepared.mesh = std::move(mesh.its);
             prepared.vertex_colors = std::move(obj_info.vertex_colors);
         }
@@ -760,7 +820,7 @@ public:
         try {
             if (!prepared.texture_surface.faces.empty())
                 texture_model = std::make_unique<ModelPreviewTexture>(prepared.texture_surface,
-                    prepared.mesh, prepared.corner_normals, prepared.face_color_overrides);
+                    prepared.mesh, prepared.corner_normals);
             if (prepared.render_geometry)
                 model->init_from(std::move(*prepared.render_geometry));
             else
@@ -776,6 +836,7 @@ public:
         m_pending_mesh = std::move(prepared.mesh);
         m_pending_vertex_colors = std::move(prepared.vertex_colors);
         m_geometry_id = std::move(prepared.geometry_id);
+        m_round_base_preview.reset(m_geometry_id);
         m_printer_filament_restore = std::move(prepared.printer_filament_restore);
         auto loaded_color_blocks = std::move(prepared.color_blocks);
         m_face_color_overrides = std::move(prepared.face_color_overrides);
@@ -794,6 +855,7 @@ public:
         m_triangle_count = prepared.triangles;
         m_vertex_count = prepared.vertices;
         m_color_count = prepared.colors;
+        m_has_source_appearance = prepared.has_source_appearance;
         m_trial_palette = std::move(prepared.trial_palette);
         m_trial_histogram = std::move(prepared.trial_histogram);
         triangle_count = m_triangle_count;
@@ -816,6 +878,12 @@ public:
         if (prepared.color_trial) synchronize_project_bound_semantics(*prepared.color_trial, m_color_trial->state());
         if (loaded_color_blocks)
             BOOST_LOG_TRIVIAL(info) << "Legacy portrait color-block metadata loaded read-only; native palette remains active";
+        if (m_has_source_appearance && !m_face_color_overrides.empty() &&
+            !restore_beauty_face_colors(m_face_color_overrides)) {
+            error = "Unable to restore the current model appearance.";
+            clear_current_preview();
+            return false;
+        }
         if(m_portrait_shapes && m_portrait_shapes->derived_boundary()) ensure_region_editor();
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
@@ -841,6 +909,7 @@ public:
         m_pending_mesh = std::move(cached->mesh);
         m_pending_vertex_colors = std::move(cached->vertex_colors);
         m_geometry_id = std::move(cached->geometry_id);
+        m_round_base_preview.reset(m_geometry_id);
         m_face_color_overrides = std::move(cached->face_color_overrides);
         m_printer_filament_restore = std::move(cached->printer_filament_restore);
         auto loaded_color_blocks = std::move(cached->color_blocks);
@@ -863,6 +932,7 @@ public:
         m_vertex_count = cached->vertices;
         if (m_region_evidence) restore_semantic_region_evidence(m_region_evidence);
         m_color_count = color_count = cached->colors;
+        m_has_source_appearance = cached->has_source_appearance;
         m_trial_palette = std::move(cached->trial_palette);
         m_trial_histogram = std::move(cached->trial_histogram);
         dimensions = m_model_dimensions = cached->dimensions;
@@ -938,6 +1008,8 @@ private:
         m_protected_faces.clear();
         m_foreground_faces.clear(); m_selection_domain.clear();
         m_pending_selection.reset(); m_geometry_id.clear(); m_face_color_overrides.clear();
+        m_round_base_preview.clear();
+        m_round_base_model.reset();
         m_printer_filament_restore.reset();
         m_color_blocks.reset(); m_selected_color_block.reset();
         m_selection_redo.clear();
@@ -958,6 +1030,7 @@ private:
         m_exact_surface_display = false;
         m_workbench_grid.reset();
         m_workbench_grid_geometry.clear();
+        m_comparison_divider.reset();
         m_semantic_model.reset();
         m_residual_preview_model.reset();
         m_partition_model.reset();
@@ -970,6 +1043,8 @@ private:
         m_selection_history.clear();
         m_palette.clear();
         m_has_model = false;
+        m_has_source_appearance = false;
+        set_original_comparison(false);
         m_vertex_count = 0;
         m_color_trial_enabled = false;
         m_trial_palette.clear();
@@ -988,6 +1063,9 @@ private:
 
 public:
     void set_library_thumbnail_root(const boost::filesystem::path& root) { m_library_thumbnail_root = root; }
+    void set_library_thumbnail_published_callback(std::function<void()> callback) {
+        m_library_thumbnail_published = std::move(callback);
+    }
     void set_preview_background(const wxColour& color)
     {
         m_preview_background = color;
@@ -1131,6 +1209,8 @@ public:
         if (m_models.size() != 1 || m_surface_vertices.size() != expected ||
             m_original_surface_colors.size() != m_triangle_count * 3)
             return false;
+        if (!m_canvas || !m_context || !m_canvas->SetCurrent(*m_context))
+            return false;
         for (size_t vertex = 0; vertex < m_original_surface_colors.size(); ++vertex) {
             const auto& original = m_original_surface_colors[vertex];
             m_surface_vertices[vertex * 8 + 6] = original.x();
@@ -1143,21 +1223,46 @@ public:
     // Make printer-filament application the visible source of truth for the
     // current workbench frame.  This is intentionally separate from matching
     // and persistence so a failed save can still roll the model back.
-    bool activate_printer_filament_preview() {
-        if (!m_color_trial || m_color_trial->state().source != 1 ||
-            !m_color_trial->state().enabled || m_color_trial->colors().empty())
+    bool activate_printer_filament_preview(std::string* error = nullptr) {
+        if (error) error->clear();
+        const auto state = m_color_trial ? m_color_trial->state() : ModelPreviewColorControls::State {};
+        if (!m_color_trial) {
+            if (error) *error = "color controls unavailable";
             return false;
-        if (!clear_surface_color_display()) return false;
-        m_beauty_original_view = false;
+        }
+        if (state.source != 1) {
+            if (error) *error = "restored color source is not printer filaments";
+            return false;
+        }
+        if (!state.enabled) {
+            if (error) *error = "restored printer-filament preview is disabled";
+            return false;
+        }
+        if (m_color_trial->colors().empty() ||
+            m_color_trial->colors().size() != m_color_trial->mapping_colors().size()) {
+            if (error) *error = "restored printer-filament palette is incomplete";
+            return false;
+        }
+        if (!m_color_trial->project_matching_valid()) {
+            if (error) *error = "restored printer-filament slot identity is stale";
+            return false;
+        }
+        if (!clear_surface_color_display()) {
+            if (error) *error = "exact surface display could not be cleared";
+            return false;
+        }
         m_color_trial_enabled = true;
         m_trial_palette = m_color_trial->colors();
         if (m_semantic_ready) rebuild_semantic_preview_from_cached_result();
-        else if (!m_face_color_overrides.empty() && !restore_beauty_face_colors(m_face_color_overrides)) return false;
+        else if (!m_face_color_overrides.empty() && !restore_beauty_face_colors(m_face_color_overrides)) {
+            if (error) *error = "manual face-color preview could not be restored";
+            return false;
+        }
         BOOST_LOG_TRIVIAL(info) << "AI printer-filament preview activated: source="
             << m_color_trial->state().source << ", colors=" << m_trial_palette.size()
             << ", semantic_ready=" << m_semantic_ready
             << ", exact_surface_display=" << m_exact_surface_display
-            << ", original_view=" << m_beauty_original_view;
+            << ", original_comparison=" << m_original_comparison;
         if (m_canvas) m_canvas->Refresh(false);
         return true;
     }
@@ -1930,21 +2035,39 @@ public:
         m_canvas->Refresh(false);
     }
     void set_beauty_lighting(bool enabled) {
+        if (m_beauty_lighting == enabled) return;
         m_beauty_lighting = enabled;
         if (m_canvas) m_canvas->Refresh(false);
     }
     bool beauty_lighting() const { return m_beauty_lighting; }
-    bool beauty_original_view() const { return m_beauty_original_view; }
-    void set_beauty_original_view(bool enabled) {
-        m_beauty_original_view = enabled;
+    bool original_comparison_available() const {
+        return m_has_model && m_has_source_appearance;
+    }
+    bool original_comparison_enabled() const { return m_original_comparison; }
+    void set_original_comparison(bool enabled) {
+        enabled = enabled && original_comparison_available();
+        if (m_original_comparison == enabled) return;
+        wxWindowUpdateLocker updates(m_preview_host);
+        m_original_comparison = enabled;
+        if (m_comparison_header && m_comparison_header->IsShown() != enabled) {
+            m_comparison_header->Show(enabled);
+            m_preview_host->Layout();
+        }
+        m_render_diagnostics_logged = false;
         if (m_canvas) m_canvas->Refresh(false);
     }
     void set_beauty_view(bool enabled) {
+        if (m_beauty_view == enabled) return;
         m_beauty_view = enabled;
         const wxColour background = enabled ? wxColour(49, 49, 54) : wxGetApp().get_window_default_clr();
         SetBackgroundColour(background);
         m_splitter->SetBackgroundColour(background);
         m_preview_host->SetBackgroundColour(background);
+        m_comparison_header->SetBackgroundColour(background);
+        for (wxStaticText* label : m_comparison_labels) {
+            label->SetBackgroundColour(background);
+            label->SetForegroundColour(enabled ? wxColour(220, 220, 224) : *wxBLACK);
+        }
         m_region_prepare_status->SetBackgroundColour(background);
         m_region_prepare_status->SetForegroundColour(enabled ? wxColour(220, 220, 222) : *wxBLACK);
         Refresh(false);
@@ -1953,8 +2076,47 @@ public:
         if (m_canvas) m_canvas->Refresh(false);
     }
     void set_workbench_grid_visible(bool visible) {
+        if (m_workbench_grid_visible == visible) return;
         m_workbench_grid_visible = visible;
         if (m_canvas) m_canvas->Refresh(false);
+    }
+    bool workbench_grid_visible() const { return m_workbench_grid_visible; }
+    bool has_model() const { return m_has_model; }
+    bool round_base_preview_available(std::string* reason = nullptr) const {
+        return m_round_base_preview.available(m_bounds, reason);
+    }
+    bool round_base_preview_enabled() const {
+        return m_round_base_preview.enabled(m_geometry_id);
+    }
+    bool set_round_base_preview(bool enabled, std::string& error) {
+        if (!m_round_base_preview.set_enabled(enabled, m_bounds, error)) return false;
+        if (!enabled) {
+            m_round_base_model.reset();
+            if (m_canvas) m_canvas->Refresh(false);
+            return true;
+        }
+        const auto layout = m_round_base_preview.layout(m_geometry_id, m_bounds);
+        if (!layout || !m_context || !m_canvas || !m_context->IsOK() ||
+            !m_canvas->SetCurrent(*m_context) || !wxGetApp().init_opengl()) {
+            std::string ignored;
+            m_round_base_preview.set_enabled(false, m_bounds, ignored);
+            error = "OpenGL 预览暂不可用，底座未开启。";
+            return false;
+        }
+        try {
+            auto base = std::make_unique<GLModel>();
+            base->init_from(its_make_cylinder(layout->radius, layout->height));
+            base->set_color(ColorRGBA(0.72f, 0.72f, 0.74f, 1.0f));
+            m_round_base_model = std::move(base);
+        } catch (const std::exception& failure) {
+            std::string ignored;
+            m_round_base_preview.set_enabled(false, m_bounds, ignored);
+            error = std::string("底座预览生成失败：") + failure.what();
+            return false;
+        }
+        m_render_diagnostics_logged = false;
+        m_canvas->Refresh(false);
+        return true;
     }
     size_t triangle_count() const { return m_triangle_count; }
     size_t vertex_count() const { return m_vertex_count; }
@@ -2302,6 +2464,23 @@ public:
     }
     const std::vector<PreviewPalette::Color>& project_colors() const { return m_color_trial->project_colors(); }
     std::vector<FilamentColorPack> configuration_color_sources() const { return m_color_trial->configuration_color_sources(); }
+    std::optional<FilamentColorPack> current_color_pack() const { return m_color_trial->current_color_pack(); }
+    std::optional<FilamentColorPack> model_color_pack_for_filament_import() const {
+        if (!m_color_trial) return std::nullopt;
+        const auto current = m_color_trial->state();
+        if (current.source != 1)
+            return PrinterFilamentPreview::model_color_pack(current);
+        if (!m_printer_filament_restore ||
+            m_printer_filament_restore->geometry_id != m_geometry_id)
+            return std::nullopt;
+        return PrinterFilamentPreview::model_color_pack(
+            m_printer_filament_restore->color_trial);
+    }
+    std::optional<AI::ModelMatchedColors> printer_filament_match(const PresetBundle& bundle,
+        const std::string& source_sha256) const;
+    PrinterFilamentMatchResult printer_filament_match_result(const PresetBundle& bundle,
+        const std::string& source_sha256) const;
+    WorkbenchSurfacePalette workbench_surface_palette() const;
     void refresh_saved_color_packs() { m_color_trial->refresh_saved_color_packs(); }
     void set_project_filament_edit_handler(std::function<void(size_t)> handler) {
         m_color_trial->on_project_color_edit = std::move(handler);
@@ -2312,8 +2491,10 @@ public:
     // otherwise the previous printer colors would become the new input.
     bool restore_printer_filament_input_source();
     bool restore_printer_filament_preview_source();
+    bool exit_printer_filament_trial();
     nlohmann::json printer_filament_restore_metadata() const;
     bool apply_project_filament_palette(const std::vector<size_t>* bindings = nullptr);
+    bool apply_project_filament_basis();
     void set_project_configuration_override(std::shared_ptr<const PresetBundle> bundle) { m_color_trial->set_project_configuration_override(std::move(bundle)); }
     bool project_matching_valid() const { return m_color_trial->project_matching_valid(); }
     FaceColorOverrides printer_filament_export_faces() const;
@@ -2327,6 +2508,18 @@ public:
     void set_portrait_progress(std::shared_ptr<PortraitOptimizationTask> task) { m_portrait_progress = std::move(task); }
     void set_portrait_input_changed(std::function<void()> fn) { m_portrait_input_changed = std::move(fn); }
     void after_next_preview_frame(std::function<void()> fn) { m_after_preview_frame = std::move(fn); m_canvas->Refresh(false); }
+    void set_workbench_input_locked(bool locked) {
+        if (m_workbench_input_locked == locked) return;
+        m_workbench_input_locked = locked;
+        if (locked) {
+            set_auto_rotation(false);
+            if (m_canvas && m_canvas->HasCapture()) m_canvas->ReleaseMouse();
+            m_dragging = false;
+            m_drawing_selection = false;
+            m_stroke.clear();
+            if (m_canvas) m_canvas->Refresh(false);
+        }
+    }
     void synchronize_project_colors(bool activate = false) {
         const auto before = m_color_trial->state();
         m_suppress_semantic_change = true;
@@ -2336,7 +2529,7 @@ public:
         m_trial_palette = m_color_trial->colors();
         if (changed && m_portrait_input_changed) m_portrait_input_changed();
         if (changed) synchronize_project_bound_semantics(before, m_color_trial->state());
-        m_canvas->Refresh(false);
+        if (changed) m_canvas->Refresh(false);
     }
     void set_project_color_sync_suspended(bool suspended) { m_project_color_sync_suspended = suspended; }
     void synchronize_project_bound_semantics(const ModelPreviewColorControls::State& before,
@@ -2615,6 +2808,7 @@ private:
         std::string secondary_region_evidence_error;
         std::shared_ptr<const PortraitShapeDetails> shape_details;
         bool shapes_unlocked {false};
+        bool has_source_appearance {false};
         nlohmann::json leaf_edits;
     };
 
@@ -2664,6 +2858,7 @@ private:
             return;
         m_cached_preview = std::make_unique<CachedPreview>();
         m_cached_preview->geometry_id = m_geometry_id;
+        m_cached_preview->has_source_appearance = m_has_source_appearance;
         m_cached_preview->face_color_overrides = m_face_color_overrides;
         m_cached_preview->printer_filament_restore = m_printer_filament_restore;
         m_cached_preview->color_blocks=m_color_blocks;
@@ -2733,6 +2928,24 @@ private:
 
     bool current_region_preparation() const {
         return m_region_preparation && m_region_preparation->generation == m_region_generation;
+    }
+
+    int edit_view_width() const
+    {
+        const int width = m_canvas ? std::max(1, m_canvas->GetClientSize().x) : 1;
+        return m_original_comparison ? std::max(1, width / 2) : width;
+    }
+
+    bool point_in_edit_view(const wxPoint& point) const
+    {
+        return point.x >= 0 && point.y >= 0 && m_canvas &&
+            point.x < edit_view_width() && point.y < m_canvas->GetClientSize().y;
+    }
+
+    wxPoint edit_view_point(const wxPoint& point) const
+    {
+        return wxPoint(std::clamp(point.x, 0, edit_view_width() - 1),
+                       std::clamp(point.y, 0, std::max(0, m_canvas->GetClientSize().y - 1)));
     }
 
     void show_region_preparation_status(const wxString& message) {
@@ -2915,12 +3128,14 @@ private:
             show_region_preparation_status(_L("正在计算选区；可按 Esc 取消，完成后继续补选。"));
             return;
         }
-        const int width = std::max(1, m_canvas->GetClientSize().x);
+        const int width = edit_view_width();
         const int height = std::max(1, m_canvas->GetClientSize().y);
         const double radius = std::max(0.001, 0.5 * m_bounds.size().norm());
         const double half_height = fitted_half_height(width, height);
-        const Transform3d view = Geometry::translation_transform(Vec3d(m_pan_x * radius, m_pan_y * radius, -3.0 * radius)) *
+        Transform3d view = Geometry::translation_transform(Vec3d(m_pan_x * radius, m_pan_y * radius, -3.0 * radius)) *
             view_rotation() * Geometry::translation_transform(-m_bounds.center().cast<double>());
+        if (const auto base = m_round_base_preview.layout(m_geometry_id, m_bounds))
+            view = view * base->body_transform;
         auto request = [this, stroke = selection_outline(), gesture = m_selection_gesture,
                         brush_radius = m_brush_radius, view, half_height, width, height] {
             start_surface_selection(stroke, gesture, brush_radius, view, half_height, width, height);
@@ -3054,6 +3269,7 @@ private:
         int width = 0;
         int height = 0;
         m_canvas->GetClientSize(&width, &height);
+        width = edit_view_width();
         if (width <= 0 || height <= 0)
             return;
         const Vec3d size = m_bounds.size().cast<double>();
@@ -3063,10 +3279,12 @@ private:
         const double screen_x = 2.0 * double(point.x) / double(width) - 1.0;
         const double screen_y = 1.0 - 2.0 * double(point.y) / double(height);
         const Vec3d center = m_bounds.center().cast<double>();
-        const Transform3d view_model =
+        Transform3d view_model =
             Geometry::translation_transform(Vec3d(m_pan_x * radius, m_pan_y * radius, -3.0 * radius)) *
             view_rotation() *
             Geometry::translation_transform(-center);
+        if (const auto base = m_round_base_preview.layout(m_geometry_id, m_bounds))
+            view_model = view_model * base->body_transform;
         const Transform3d inverse = view_model.inverse();
         const Vec3d origin = inverse * Vec3d(screen_x * half_width, screen_y * half_height, 0.0);
         const Vec3d direction = inverse.linear() * Vec3d(0.0, 0.0, -1.0);
@@ -3262,6 +3480,10 @@ private:
             if (::glGetError() != GL_NO_ERROR || !same_stamp(m_model_stamp, file_stamp(m_model_path))) return;
             publish_library_model_thumbnail(m_library_thumbnail_root, m_model_path,
                 {sha, m_model_stamp.bytes, static_cast<int64_t>(m_model_stamp.modified.time_since_epoch().count())}, width, height, pixels);
+            if (m_library_thumbnail_published) {
+                const auto callback = m_library_thumbnail_published;
+                CallAfter([callback] { callback(); });
+            }
         } catch (const std::exception& error) {
             BOOST_LOG_TRIVIAL(warning) << "Model library thumbnail unavailable: " << error.what();
         }
@@ -3334,32 +3556,22 @@ private:
             if (shader != nullptr) {
                 glsafe(::glEnable(GL_DEPTH_TEST));
                 glsafe(::glDisable(GL_CULL_FACE));
-                shader->start_using();
-
                 const Vec3d size = m_bounds.size().cast<double>();
                 const double radius = std::max(0.001, 0.5 * size.norm());
-                const double aspect = double(width) / double(height);
-                const double half_height = fitted_half_height(width, height);
-                const double half_width = half_height * aspect;
                 const double near_z = 0.01 * radius;
                 const double far_z = 8.0 * radius;
-                Transform3d projection = Transform3d::Identity();
-                projection.matrix().setZero();
-                projection.matrix()(0, 0) = 1.0 / half_width;
-                projection.matrix()(1, 1) = 1.0 / half_height;
-                projection.matrix()(2, 2) = -2.0 / (far_z - near_z);
-                projection.matrix()(2, 3) = -(far_z + near_z) / (far_z - near_z);
-                projection.matrix()(3, 3) = 1.0;
-
                 const Vec3d center = m_bounds.center().cast<double>();
                 const Transform3d view_model =
                     Geometry::translation_transform(Vec3d(m_pan_x * radius, m_pan_y * radius, -3.0 * radius)) *
                     view_rotation() *
                     Geometry::translation_transform(-center);
                 const Matrix3d normal_matrix = view_model.matrix().block(0, 0, 3, 3).inverse().transpose();
-                shader->set_uniform("view_model_matrix", view_model);
-                shader->set_uniform("projection_matrix", projection);
-                shader->set_uniform("view_normal_matrix", normal_matrix);
+                const auto round_base = m_round_base_preview.layout(m_geometry_id, m_bounds);
+                if (round_base && m_round_base_model) {
+                    const auto color = !m_trial_palette.empty()
+                        ? m_trial_palette.front() : PreviewPalette::Color {0.72f, 0.72f, 0.74f};
+                    m_round_base_model->set_color(ColorRGBA(color[0], color[1], color[2], 1.0f));
+                }
                 if (m_beauty_view && m_workbench_grid_visible) {
                     if (!m_workbench_grid || m_workbench_grid_geometry != m_geometry_id) {
                         GLModel::Geometry grid;
@@ -3380,76 +3592,139 @@ private:
                         m_workbench_grid->set_color(ColorRGBA(0.30f, 0.30f, 0.32f, 1.f));
                         m_workbench_grid_geometry = m_geometry_id;
                     }
-                    shader->set_uniform("use_uniform_color", true);
-                    shader->set_uniform("preview_color_count", 0);
-                    shader->set_uniform("preview_lighting", false);
-                    shader->set_uniform("beauty_unlit", true);
-                    shader->set_uniform("gray_view", false);
-                    m_workbench_grid->render(shader);
                 }
-                shader->set_uniform("use_uniform_color", false);
-                shader->set_uniform("preview_texture_enabled", false);
-                shader->set_uniform("preview_unlit_overlay", false);
-                shader->set_uniform("preview_boundary_stroke", false);
-                shader->set_uniform("exact_surface_colors", m_exact_surface_display);
-                shader->set_uniform("gray_view", m_gray_view);
-                shader->set_uniform("preview_lighting", m_beauty_view ? m_beauty_lighting : m_color_trial->lighting());
-                shader->set_uniform("beauty_unlit", m_beauty_view && !m_beauty_lighting);
-                shader->set_uniform("preview_lightness_weight", PreviewPalette::lightness_weight);
-                shader->set_uniform("preview_color_count", m_color_trial_enabled && !m_gray_view &&
-                    !(m_beauty_view && m_beauty_original_view) ? int(m_trial_palette.size()) : 0);
-                if (m_color_trial_enabled) for (size_t i = 0; i < m_trial_palette.size(); ++i) {
-                    shader->set_uniform(("preview_rgb[" + std::to_string(i) + "]").c_str(), m_trial_palette[i]);
-                    shader->set_uniform(("preview_lab[" + std::to_string(i) + "]").c_str(), PreviewPalette::to_lab(m_color_trial->mapping_colors()[i]));
-                }
-                // Display antialiasing never feeds back into material ownership.
-                const bool pure_separation = m_color_trial_enabled && !m_gray_view && !m_color_trial->lighting();
-                const bool dither = pure_separation && ::glIsEnabled(GL_DITHER);
-                if (pure_separation) {
-                    glsafe(::glDisable(GL_DITHER));
-                }
-                GLint polygon_mode[2]={GL_FILL,GL_FILL};
-                ::glGetIntegerv(GL_POLYGON_MODE,polygon_mode);
-                if(m_wireframe_view)glsafe(::glPolygonMode(GL_FRONT_AND_BACK,GL_LINE));
-                if(m_residual_preview_model) {
-                    shader->set_uniform("preview_color_count",0);
-                    m_residual_preview_model->render(shader);
-                } else if (m_semantic_ready && m_semantic_model &&
-                    m_leaf_editing && (!m_manual_leaf_colors.empty() || !m_manual_cell_colors.empty()) &&
-                    !m_gray_view && !(m_beauty_view && m_beauty_original_view))
-                    m_semantic_model->render(shader);
-                else if (m_texture_model && !m_gray_view && !m_exact_surface_display)
-                    m_texture_model->render(shader, view_model);
-                else for (const std::unique_ptr<GLModel>& model : m_models)
-                    model->render(shader);
-                if(m_wireframe_view)glsafe(::glPolygonMode(GL_FRONT_AND_BACK,polygon_mode[0]));
-                if (m_manual_color_model && !m_residual_preview_model && m_beauty_view && !m_gray_view && !m_beauty_original_view) {
+
+                const bool comparing = m_original_comparison && m_has_source_appearance;
+                const int current_width = comparing ? std::max(1, width / 2) : width;
+                const int source_width = std::max(1, width - current_width);
+                const auto projection_for = [&](int viewport_width) {
+                    const double aspect = double(std::max(1, viewport_width)) / double(height);
+                    const double half_height = fitted_half_height(viewport_width, height);
+                    const double half_width = half_height * aspect;
+                    Transform3d projection = Transform3d::Identity();
+                    projection.matrix().setZero();
+                    projection.matrix()(0, 0) = 1.0 / half_width;
+                    projection.matrix()(1, 1) = 1.0 / half_height;
+                    projection.matrix()(2, 2) = -2.0 / (far_z - near_z);
+                    projection.matrix()(2, 3) = -(far_z + near_z) / (far_z - near_z);
+                    projection.matrix()(3, 3) = 1.0;
+                    return projection;
+                };
+                const auto render_view = [&](int x, int viewport_width, bool source_view) {
+                    glsafe(::glViewport(x, 0, viewport_width, height));
+                    shader->set_uniform("view_model_matrix", view_model);
+                    shader->set_uniform("projection_matrix", projection_for(viewport_width));
+                    shader->set_uniform("view_normal_matrix", normal_matrix);
+                    if (m_beauty_view && m_workbench_grid_visible && m_workbench_grid) {
+                        shader->set_uniform("use_uniform_color", true);
+                        shader->set_uniform("preview_texture_enabled", false);
+                        shader->set_uniform("preview_color_count", 0);
+                        shader->set_uniform("preview_lighting", false);
+                        shader->set_uniform("beauty_unlit", true);
+                        shader->set_uniform("gray_view", false);
+                        m_workbench_grid->render(shader);
+                    }
+
+                    if (!source_view && round_base && m_round_base_model) {
+                        const Transform3d base_view = view_model * round_base->base_transform;
+                        shader->set_uniform("view_model_matrix", base_view);
+                        shader->set_uniform("view_normal_matrix",
+                            Matrix3d(base_view.matrix().block(0, 0, 3, 3).inverse().transpose()));
+                        shader->set_uniform("use_uniform_color", true);
+                        shader->set_uniform("preview_texture_enabled", false);
+                        shader->set_uniform("preview_unlit_overlay", false);
+                        shader->set_uniform("preview_boundary_stroke", false);
+                        shader->set_uniform("preview_color_count", 0);
+                        shader->set_uniform("preview_lighting", m_beauty_view ? m_beauty_lighting : m_color_trial->lighting());
+                        shader->set_uniform("beauty_unlit", m_beauty_view && !m_beauty_lighting);
+                        shader->set_uniform("gray_view", false);
+                        shader->set_uniform("exact_surface_colors", false);
+                        m_round_base_model->render(shader);
+                    }
+
+                    const Transform3d body_view = !source_view && round_base
+                        ? view_model * round_base->body_transform : view_model;
+                    shader->set_uniform("view_model_matrix", body_view);
+                    shader->set_uniform("view_normal_matrix",
+                        Matrix3d(body_view.matrix().block(0, 0, 3, 3).inverse().transpose()));
+
+                    const bool gray_view = !source_view && m_gray_view;
+                    shader->set_uniform("use_uniform_color", false);
                     shader->set_uniform("preview_texture_enabled", false);
-                    GLint depth_func = GL_LESS;
-                    glsafe(::glGetIntegerv(GL_DEPTH_FUNC, &depth_func));
-                    glsafe(::glDepthFunc(GL_LEQUAL));
-                    m_manual_color_model->render(shader);
-                    glsafe(::glDepthFunc(depth_func));
-                }
-                if (dither) glsafe(::glEnable(GL_DITHER));
-                if ((m_selection_model || m_protection_model) && m_selection_enabled &&
-                    m_selection_overlay_visible && !m_selection_preview_suppressed) {
-                    shader->set_uniform("gray_view", false);
-                    shader->set_uniform("use_uniform_color", true);
-                    shader->set_uniform("preview_color_count", 0);
-                    glsafe(::glEnable(GL_POLYGON_OFFSET_FILL));
-                    glsafe(::glPolygonOffset(-1.0f, -1.0f));
-                    if (m_selection_model) m_selection_model->render(shader);
-                    if (m_protection_model) m_protection_model->render(shader);
-                    glsafe(::glDisable(GL_POLYGON_OFFSET_FILL));
-                }
-                if (m_beauty_view && m_partition_model && !m_selection_preview_suppressed) {
-                    shader->set_uniform("gray_view", false);
-                    shader->set_uniform("use_uniform_color", true);
-                    shader->set_uniform("preview_color_count", 0);
-                    shader->set_uniform("preview_lighting", false);
-                    m_partition_model->render(shader);
-                }
+                    shader->set_uniform("preview_unlit_overlay", false);
+                    shader->set_uniform("preview_boundary_stroke", false);
+                    shader->set_uniform("exact_surface_colors", !source_view && m_exact_surface_display);
+                    shader->set_uniform("gray_view", gray_view);
+                    shader->set_uniform("preview_lighting", m_beauty_view ? m_beauty_lighting : m_color_trial->lighting());
+                    shader->set_uniform("beauty_unlit", m_beauty_view && !m_beauty_lighting);
+                    shader->set_uniform("preview_lightness_weight", PreviewPalette::lightness_weight);
+                    const int palette_count = !source_view && m_color_trial_enabled && !gray_view
+                        ? int(m_trial_palette.size()) : 0;
+                    shader->set_uniform("preview_color_count", palette_count);
+                    if (palette_count > 0) for (size_t i = 0; i < m_trial_palette.size(); ++i) {
+                        shader->set_uniform(("preview_rgb[" + std::to_string(i) + "]").c_str(), m_trial_palette[i]);
+                        shader->set_uniform(("preview_lab[" + std::to_string(i) + "]").c_str(),
+                                            PreviewPalette::to_lab(m_color_trial->mapping_colors()[i]));
+                    }
+
+                    const bool pure_separation = !source_view && m_color_trial_enabled &&
+                        !gray_view && !m_color_trial->lighting();
+                    const bool restore_dither = pure_separation && ::glIsEnabled(GL_DITHER);
+                    if (pure_separation) glsafe(::glDisable(GL_DITHER));
+                    GLint polygon_mode[2] = {GL_FILL, GL_FILL};
+                    ::glGetIntegerv(GL_POLYGON_MODE, polygon_mode);
+                    if (!source_view && m_wireframe_view)
+                        glsafe(::glPolygonMode(GL_FRONT_AND_BACK, GL_LINE));
+                    if (source_view) {
+                        if (m_texture_model) m_texture_model->render(shader, body_view);
+                        else for (const std::unique_ptr<GLModel>& model : m_models) model->render(shader);
+                    } else if (m_residual_preview_model) {
+                        shader->set_uniform("preview_color_count", 0);
+                        m_residual_preview_model->render(shader);
+                    } else if (m_semantic_ready && m_semantic_model && m_leaf_editing &&
+                               (!m_manual_leaf_colors.empty() || !m_manual_cell_colors.empty()) && !gray_view) {
+                        m_semantic_model->render(shader);
+                    } else if (m_texture_model && !gray_view && !m_exact_surface_display) {
+                        m_texture_model->render(shader, body_view);
+                    } else {
+                        for (const std::unique_ptr<GLModel>& model : m_models) model->render(shader);
+                    }
+                    if (!source_view && m_wireframe_view)
+                        glsafe(::glPolygonMode(GL_FRONT_AND_BACK, polygon_mode[0]));
+
+                    if (!source_view && m_manual_color_model && !m_residual_preview_model && !gray_view) {
+                        shader->set_uniform("preview_texture_enabled", false);
+                        GLint depth_func = GL_LESS;
+                        glsafe(::glGetIntegerv(GL_DEPTH_FUNC, &depth_func));
+                        glsafe(::glDepthFunc(GL_LEQUAL));
+                        m_manual_color_model->render(shader);
+                        glsafe(::glDepthFunc(depth_func));
+                    }
+                    if (restore_dither) glsafe(::glEnable(GL_DITHER));
+
+                    if (!source_view && (m_selection_model || m_protection_model) && m_selection_enabled &&
+                        m_selection_overlay_visible && !m_selection_preview_suppressed) {
+                        shader->set_uniform("gray_view", false);
+                        shader->set_uniform("use_uniform_color", true);
+                        shader->set_uniform("preview_color_count", 0);
+                        glsafe(::glEnable(GL_POLYGON_OFFSET_FILL));
+                        glsafe(::glPolygonOffset(-1.0f, -1.0f));
+                        if (m_selection_model) m_selection_model->render(shader);
+                        if (m_protection_model) m_protection_model->render(shader);
+                        glsafe(::glDisable(GL_POLYGON_OFFSET_FILL));
+                    }
+                    if (!source_view && m_beauty_view && m_partition_model && !m_selection_preview_suppressed) {
+                        shader->set_uniform("gray_view", false);
+                        shader->set_uniform("use_uniform_color", true);
+                        shader->set_uniform("preview_color_count", 0);
+                        shader->set_uniform("preview_lighting", false);
+                        m_partition_model->render(shader);
+                    }
+                };
+
+                shader->start_using();
+                render_view(0, current_width, false);
+                if (comparing) render_view(current_width, source_width, true);
                 if (!m_render_diagnostics_logged || m_render_diagnostics_size != wxSize(width,height) ||
                     m_render_diagnostics_zoom != m_zoom) {
                     const GLenum error = ::glGetError();
@@ -3463,6 +3738,8 @@ private:
                                             << ", dpi=" << m_canvas->GetDPIScaleFactor()
                                             << ", content_scale=" << m_canvas->GetContentScaleFactor()
                                             << ", gl_viewport=" << viewport[2] << "x" << viewport[3]
+                                            << ", comparison=" << comparing
+                                            << ", round_base=" << bool(round_base)
                                             << ", zoom=" << m_zoom;
                     m_render_diagnostics_logged = true;
                     m_render_diagnostics_size = wxSize(width,height);
@@ -3471,9 +3748,10 @@ private:
                 shader->stop_using();
                 glsafe(::glDisable(GL_DEPTH_TEST));
                 if (m_drawing_selection && !m_stroke.empty()) {
+                    glsafe(::glViewport(0, 0, current_width, height));
                     GLModel::Geometry line;
                     line.format = {GLModel::Geometry::EPrimitiveType::Lines, GLModel::Geometry::EVertexLayout::P3N3};
-                    const double cw = std::max(1, m_canvas->GetClientSize().x), ch = std::max(1, m_canvas->GetClientSize().y);
+                    const double cw = edit_view_width(), ch = std::max(1, m_canvas->GetClientSize().y);
                     auto add_point = [&](const Vec2d& p) {
                         line.add_vertex(Vec3f(float(2*p.x()/cw-1), float(1-2*p.y()/ch), 0), Vec3f(0, 0, 1));
                     };
@@ -3502,6 +3780,29 @@ private:
                         shader->set_uniform("preview_lighting", false);
                         feedback.render(shader); shader->stop_using();
                     }
+                }
+                if (comparing) {
+                    glsafe(::glViewport(0, 0, width, height));
+                    if (!m_comparison_divider) {
+                        GLModel::Geometry divider;
+                        divider.format = {GLModel::Geometry::EPrimitiveType::Lines, GLModel::Geometry::EVertexLayout::P3N3};
+                        divider.add_vertex(Vec3f(0.f, -1.f, 0.f), Vec3f(0, 0, 1));
+                        divider.add_vertex(Vec3f(0.f, 1.f, 0.f), Vec3f(0, 0, 1));
+                        divider.add_line(0, 1);
+                        m_comparison_divider = std::make_unique<GLModel>();
+                        m_comparison_divider->init_from(std::move(divider));
+                        m_comparison_divider->set_color(ColorRGBA(0.48f, 0.48f, 0.52f, 1.f));
+                    }
+                    shader->start_using();
+                    shader->set_uniform("view_model_matrix", Transform3d::Identity());
+                    shader->set_uniform("projection_matrix", Transform3d::Identity());
+                    shader->set_uniform("use_uniform_color", true);
+                    shader->set_uniform("preview_texture_enabled", false);
+                    shader->set_uniform("preview_color_count", 0);
+                    shader->set_uniform("preview_lighting", false);
+                    shader->set_uniform("gray_view", false);
+                    m_comparison_divider->render(shader);
+                    shader->stop_using();
                 }
             } else if (!m_render_diagnostics_logged) {
                 BOOST_LOG_TRIVIAL(error) << "AI model preview render: vertex-color shader is unavailable";
@@ -3534,7 +3835,10 @@ private:
 
     boost::filesystem::path m_library_thumbnail_root;
     std::string m_pending_library_thumbnail_sha;
+    std::function<void()> m_library_thumbnail_published;
     wxGLCanvas* m_canvas {nullptr};
+    wxPanel* m_comparison_header {nullptr};
+    std::vector<wxStaticText*> m_comparison_labels;
     wxSizerItem* m_overlay_top {nullptr};
     wxSizerItem* m_overlay_bottom {nullptr};
     bool m_retain_surface_attributes {false};
@@ -3593,8 +3897,12 @@ private:
     bool m_workbench_grid_visible {true};
     std::unique_ptr<GLModel> m_workbench_grid;
     std::string m_workbench_grid_geometry;
+    WorkbenchRoundBasePreviewState m_round_base_preview;
+    std::unique_ptr<GLModel> m_round_base_model;
     bool m_beauty_lighting {true};
-    bool m_beauty_original_view {false};
+    bool m_original_comparison {false};
+    bool m_has_source_appearance {false};
+    std::unique_ptr<GLModel> m_comparison_divider;
     bool m_gray_view {false};
     bool m_wireframe_view {false};
     wxTimer m_rotation_timer;
@@ -3677,6 +3985,7 @@ private:
     double m_zoom {1.0};
     bool m_dragging {false};
     bool m_drag_moved {false};
+    bool m_workbench_input_locked {false};
     bool m_selection_enabled {false};
     bool m_selection_overlay_visible {true};
     bool m_selection_preview_suppressed {false};

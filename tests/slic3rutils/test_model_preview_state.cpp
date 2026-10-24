@@ -188,8 +188,7 @@ TEST_CASE("Repeated preview RGB keeps each vertex alpha and local face overrides
         CHECK(prepared.colors == 2);
         bool colors_match = true, alpha_matches = true;
         for (size_t vertex = 0; vertex < 9; ++vertex) {
-            const uint32_t expected = override_face && vertex < 3 ? 255u
-                : vertex >= 3 && vertex < 6 ? 65280u : 16711680u;
+            const uint32_t expected = vertex >= 3 && vertex < 6 ? 65280u : 16711680u;
             const float expected_rgb = float(expected);
             const float expected_alpha = override_face && vertex < 3 ? -1.f : prepared.vertex_colors[vertex][3];
             // Packed shader attributes must retain their exact bytes, including alpha.
@@ -198,6 +197,7 @@ TEST_CASE("Repeated preview RGB keeps each vertex alpha and local face overrides
         }
         CHECK(colors_match);
         CHECK(alpha_matches);
+        CHECK(prepared.face_color_overrides == overrides);
     }
 }
 

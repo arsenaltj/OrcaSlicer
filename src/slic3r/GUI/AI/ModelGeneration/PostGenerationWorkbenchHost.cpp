@@ -8,6 +8,7 @@
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
 #include "WorkbenchModelInspection.hpp"
+#include "WorkbenchImportEligibility.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include <wx/weakref.h>
@@ -46,7 +47,10 @@ void ModelGenerationPanel::unmount_workbench()
     m_workbench_shell->Hide();
 }
 
-wxWindow* ModelGenerationPanel::workbench_import_viewport() const { return m_workbench_view_host; }
+wxWindow* ModelGenerationPanel::workbench_import_viewport() const
+{
+    return m_model_preview ? m_model_preview->workbench_viewport_window() : m_workbench_view_host;
+}
 wxWindow* ModelGenerationPanel::workbench_import_history() const { return m_workbench_history_panel; }
 
 void ModelGenerationPanel::mount_workbench_import_history(wxWindow* parent)
@@ -78,21 +82,39 @@ void ModelGenerationPanel::set_workbench_import_feedback(bool active)
     if (active) m_workbench_import_history_was_shown = m_workbench_history_panel->IsShown();
     m_workbench_import_feedback = active;
     m_workbench_settings->Enable(!active);
-    m_workbench_view_host->Enable(!active);
-    // The Windows GL surface can overpaint a sibling loading panel. Keep its
-    // CPU model and camera, but suspend the preview window until import ends.
-    if (m_model_preview) m_model_preview->Show(!active);
+    if (m_model_preview) m_model_preview->set_workbench_input_locked(active);
     m_workbench_history_toggle->Enable(!active);
     refresh_workbench_history();
 }
 
-std::vector<std::string> ModelGenerationPanel::local_recolor_palette() const
+std::vector<BeautyColorItem> ModelGenerationPanel::local_recolor_palette() const
 {
-    std::vector<std::string> palette = project_palette();
-    if (palette.empty())
-        palette = !m_displayed_model_palette.empty() ? m_displayed_model_palette : m_job_palette;
-    if (palette.size() > Slic3r::AI::kMaxPhysicalColorChannels)
-        palette.resize(Slic3r::AI::kMaxPhysicalColorChannels);
+    std::vector<BeautyColorItem> palette;
+    if (wxGetApp().preset_bundle) {
+        const auto filaments = PrinterFilamentConfig::capture(*wxGetApp().preset_bundle);
+        for (const auto& slot : filaments.slots) {
+            if (!slot.exists || !slot.configured || !slot.compatible || !AI::is_rgb_hex_color(slot.color)) continue;
+            palette.push_back({slot.color, u8"耗材 " + std::to_string(slot.slot + 1),
+                               slot.slot, BeautyColorSource::Physical});
+        }
+        for (const auto& slot : filaments.mixed) {
+            if (!slot.valid || !AI::is_rgb_hex_color(slot.color)) continue;
+            palette.push_back({slot.color, u8"叠色 " + std::to_string(slot.slot + 1),
+                               slot.slot, BeautyColorSource::Mixed});
+        }
+    }
+    if (!palette.empty()) return palette;
+
+    auto fallback = project_palette();
+    if (fallback.empty())
+        fallback = !m_displayed_model_palette.empty() ? m_displayed_model_palette : m_job_palette;
+    if (fallback.size() > PreviewPalette::max_preview_colors)
+        fallback.resize(PreviewPalette::max_preview_colors);
+    for (size_t slot = 0; slot < fallback.size(); ++slot) {
+        if (!AI::is_rgb_hex_color(fallback[slot])) continue;
+        palette.push_back({fallback[slot], u8"耗材 " + std::to_string(slot + 1),
+                           slot, BeautyColorSource::Physical});
+    }
     return palette;
 }
 
@@ -115,7 +137,7 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
     state.asset_id = m_displayed_model_job_id;
     state.model_path = m_displayed_model_path.string();
     state.candidate_path = m_finishing_candidate.string();
-    state.palette = local_recolor_palette();
+    for (const auto& color : local_recolor_palette()) state.palette.push_back(color.color);
     state.editing = m_workbench_editing;
     state.semantic_mode = m_semantic_mode;
     if (m_portrait_task) state.portrait_optimization = m_portrait_task->snapshot();
@@ -161,19 +183,23 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
         state.check.candidate_status == RepairCandidateStatus::Ready;
     const bool topology_safe = workbench_topology_safe(state.check);
     state.can_import_for_slicing = state.actions.can_import && !candidate_pending && !state.dirty && topology_safe;
+    state.force_import_acknowledged = !state.check.model_sha256.empty() &&
+        state.check.status == WorkbenchCheckStatus::Attention &&
+        state.check.force_import_risk &&
+        m_workbench_force_import_ack_revision == state.revision &&
+        m_workbench_force_import_ack_hash == state.check.model_sha256;
     state.can_force_import = state.actions.can_import && !candidate_pending && !state.dirty &&
-        !state.can_import_for_slicing && state.check.status != WorkbenchCheckStatus::Running;
+        !state.can_import_for_slicing && state.check.status == WorkbenchCheckStatus::Attention &&
+        state.check.force_import_risk && state.force_import_acknowledged;
     state.import_has_topology_risk = state.can_force_import;
-    if (state.can_force_import)
+    if (state.check.status == WorkbenchCheckStatus::Attention && state.check.force_import_risk)
         state.import_topology_reason = state.check.summary.empty() ? "模型尚未通过闭合拓扑检查；继续导入仅允许尝试切片。" : state.check.summary;
-    if (m_model_preview && !m_model_preview->project_matching_valid()) {
-        // A slot deletion or replacement invalidates the saved match.  Keep
-        // applying enabled so the user can explicitly rebuild it from the
-        // current native slots; only the old import snapshot is blocked.
-        state.actions.can_import = false;
-        state.can_import_for_slicing = false;
-        state.can_force_import = false;
-        state.apply_filaments_reason = "旧匹配已失效，点击应用打印机耗材将按当前槽位重新匹配";
+    if (m_model_preview && !m_model_preview->project_matching_valid() &&
+        state.printer_filaments.ready && state.can_edit_project_colors) {
+        // The old slot identity is only a preference. Import rebuilds an exact
+        // RGB8 binding from the current physical and mixed slots, so a changed
+        // layout must reach that coverage check instead of being disabled here.
+        state.apply_filaments_reason = "耗材配置已变化；导入时将按当前颜色重新校验，也可重新映射模型";
     }
     if (m_model_preview) {
         state.faces = m_model_preview->triangle_count();
@@ -272,13 +298,6 @@ bool ModelGenerationPanel::request_workbench_color_matching()
         refresh_post_generation_workbench();
         return false;
     }
-    if (state.can_force_import && !state.can_import_for_slicing) {
-        const wxString reason = wxString::FromUTF8(state.import_topology_reason);
-        if (show_redesign_confirmation(m_workbench_shell,
-            reason + "\n" + _L("仍要导入并尝试切片？切片结果将带有拓扑风险标记。"),
-            _L("拓扑风险"), {wxYES_NO | wxNO_DEFAULT}) != wxID_YES)
-            return false;
-    }
     AI::GeneratedModelArtifact artifact;
     artifact.local_path = m_displayed_model_path.string();
     artifact.job_id = m_displayed_model_job_id;
@@ -288,30 +307,64 @@ bool ModelGenerationPanel::request_workbench_color_matching()
     if (m_workbench_import) {
         AI::ModelImportRequest request;
         request.artifact = artifact;
-        const int mode = m_import_color_mode ? m_import_color_mode->GetSelection() : 0;
-        request.color_mode = mode == 1 ? AI::ImportColorMode::AutoMap : mode == 2 ? AI::ImportColorMode::SingleColor :
-            mode == 3 ? AI::ImportColorMode::ManualMatch : AI::ImportColorMode::NativeMatch;
-        const auto trial_state = m_model_preview->color_trial_state();
-        request.use_saved_printer_match = request.color_mode == AI::ImportColorMode::NativeMatch &&
-            trial_state.source == 1 && trial_state.enabled && m_model_preview->project_matching_valid();
-        if (request.color_mode == AI::ImportColorMode::NativeMatch &&
-            trial_state.source == 1 &&
-            (m_beauty_manual_color_dirty || (m_beauty_controls && m_beauty_controls->has_changes()))) {
-            m_workbench_operation_notice = "应用打印机耗材后存在未保存的局部改色，请先重新应用打印机耗材再导入。";
+        request.color_mode = AI::ImportColorMode::NativeMatch;
+        request.use_saved_printer_match = false;
+        auto* bundle = wxGetApp().preset_bundle;
+        const auto match = bundle ? m_model_preview->printer_filament_match_result(
+            *bundle, AI::model_artifact_sha256(m_displayed_model_path)) : ModelPreview3D::PrinterFilamentMatchResult{};
+        if (!match.matched) {
+            if (!match.error.empty() || match.missing_colors.empty()) {
+                m_workbench_operation_notice = match.error.empty()
+                    ? "当前没有可用的打印机耗材配置。" : match.error;
+                refresh_post_generation_workbench();
+                return false;
+            }
+
+            wxString missing;
+            const size_t visible = std::min<size_t>(match.missing_colors.size(), 8);
+            for (size_t index = 0; index < visible; ++index) {
+                if (index) missing += _L("、");
+                missing += wxString::FromUTF8(match.missing_colors[index]);
+            }
+            if (match.missing_colors.size() > visible)
+                missing += wxString::Format(_L(" 等 %llu 色"),
+                    static_cast<unsigned long long>(match.missing_colors.size()));
+            const wxString message = _L("当前模型配色和打印机耗材不匹配。\n\n缺少：") + missing +
+                _L("\n\n请选择将耗材色映射到模型，或将模型配色导入到耗材。处理完成后请再次点击“导入切片”。");
+            const int map_to_model = wxWindow::NewControlId();
+            const int import_to_filaments = wxWindow::NewControlId();
+            RedesignConfirmationOptions options;
+            options.style = wxCANCEL | wxCANCEL_DEFAULT;
+            options.dismiss_result = wxID_CANCEL;
+            options.actions = {{map_to_model, _L("将耗材色映射到模型"), true},
+                               {import_to_filaments, _L("将模型配色导入到耗材"), false}};
+            const int answer = show_redesign_confirmation(this, message, _L("配色不匹配"), options);
+            if (answer == map_to_model) apply_workbench_printer_filaments();
+            else if (answer == import_to_filaments) toggle_printer_filament_trial();
+            return false;
+        }
+        request.matched_colors = *match.matched;
+        if (m_beauty_manual_color_dirty || (m_beauty_controls && m_beauty_controls->has_changes())) {
+            m_workbench_operation_notice = "模型存在未保存的局部改色，请先保存后再导入。";
             refresh_post_generation_workbench();
             return false;
         }
-        const auto trial = m_model_preview->import_color_mapping(true);
-        AI::ModelColorTrial choice {trial.mapping_colors, trial.target_colors};
-        if (trial.enabled && choice.valid()) request.color_trial = std::move(choice);
-        request.face_color_overrides = m_model_preview->import_face_color_overrides(true);
-        for (const auto& item : m_model_preview->import_subface_color_overrides(true))
-            request.subface_color_overrides.push_back({item.face_id, item.path.depth, item.path.value, item.color});
         request.face_color_geometry_id = m_model_preview->geometry_id();
-        request.topology_risk_confirmed = state.can_force_import && !state.can_import_for_slicing;
+        request.topology_risk_confirmed = state.force_import_acknowledged && !state.can_import_for_slicing;
         request.topology_risk_reason = state.import_topology_reason;
         request.topology_check_sha256 = state.check.model_sha256;
-        try { prepare_portrait_import(request); BeautyWorkbenchControls::prepare_import(m_displayed_model_path, request); }
+        request.apply_round_base_preparation = m_model_preview->round_base_preview_enabled();
+        if (!workbench_import_request_allowed(state, request)) {
+            m_workbench_operation_notice = state.check.status == WorkbenchCheckStatus::Attention
+                ? "请先在检查提示中确认继续导入；当前检查结果只绑定本次模型。"
+                : "当前模型未通过可导入检查，无法进入切片。";
+            refresh_post_generation_workbench();
+            return false;
+        }
+        try {
+            prepare_portrait_import(request);
+            BeautyWorkbenchControls::prepare_import(m_displayed_model_path, request);
+        }
         catch (const std::exception& error) {
             wxMessageBox(wxString::FromUTF8(error.what()), _L("配色确认"), wxOK | wxICON_ERROR, this);
             return false;
@@ -351,9 +404,9 @@ bool ModelGenerationPanel::request_save_and_return()
     // protected by commit_printer_filament_application()'s source signature
     // check and rolls back on any failure.
     if (!m_apply_filaments_saving && !m_model_preview->project_matching_valid()) {
-        m_finishing_status->SetLabel(_L("打印机或槽位已变化，请重新应用打印机耗材后保存。"));
+        m_finishing_status->SetLabel(_L("打印机或槽位已变化，请重新进入打印机耗材试色后保存。"));
         m_status->SetLabel(m_finishing_status->GetLabel());
-        m_workbench_operation_notice = "打印机或槽位已变化，请重新应用打印机耗材后保存。";
+        m_workbench_operation_notice = "打印机或槽位已变化，请重新进入打印机耗材试色后保存。";
         refresh_controls();
         publish_workbench_state();
         return false;
@@ -380,7 +433,7 @@ bool ModelGenerationPanel::request_save_and_return()
         } else preview_model_finishing();
         if (!m_finishing_running) m_save_and_return = false;
     }
-    else { m_save_and_return = false; request_return_overview(); request_check_workbench(); }
+    else { m_save_and_return = false; request_return_overview(); request_check_workbench(true); }
     return true;
 }
 
@@ -393,7 +446,7 @@ void ModelGenerationPanel::finish_workbench_save()
     } else if (m_finishing_result.success && (!m_beauty_controls || !m_beauty_controls->has_changes())) {
         m_save_and_return = false;
         request_return_overview();
-        request_check_workbench();
+        request_check_workbench(true);
     } else m_save_and_return = false;
 }
 
