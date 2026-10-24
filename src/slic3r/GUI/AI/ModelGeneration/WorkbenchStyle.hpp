@@ -331,10 +331,11 @@ inline wxColour workbench_owned_surface(wxWindow* parent)
 // background and foreground.
 class WorkbenchLabel final : public wxControl {
 public:
-    WorkbenchLabel(wxWindow* parent, const wxString& label = wxEmptyString)
+    WorkbenchLabel(wxWindow* parent, const wxString& label = wxEmptyString,
+                   int alignment = wxALIGN_LEFT | wxALIGN_TOP)
         : wxControl(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
                     wxBORDER_NONE | wxCLIP_CHILDREN),
-          m_background(workbench_owned_surface(parent)) {
+          m_background(workbench_owned_surface(parent)), m_alignment(alignment) {
         SetBackgroundStyle(wxBG_STYLE_PAINT);
         SetBackgroundColour(m_background);
 #ifdef __WXMSW__
@@ -347,7 +348,7 @@ public:
             dc.SetFont(GetFont());
             dc.SetTextForeground(GetForegroundColour());
             dc.SetBackgroundMode(wxBRUSHSTYLE_TRANSPARENT);
-            dc.DrawLabel(m_display, GetClientRect(), wxALIGN_LEFT | wxALIGN_TOP);
+            dc.DrawLabel(m_display, GetClientRect(), m_alignment);
         });
         Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
             Refresh(false);
@@ -414,6 +415,7 @@ private:
     wxSize m_best_size {1, 1};
     int m_wrap_width {-1};
     wxColour m_background;
+    int m_alignment {wxALIGN_LEFT | wxALIGN_TOP};
 };
 
 class WorkbenchIndeterminateProgress final : public wxPanel {

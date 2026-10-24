@@ -11,6 +11,7 @@
 #include <wx/notebook.h>
 #include <wx/dialog.h>
 #include <wx/dcbuffer.h>
+#include <wx/menu.h>
 #include <wx/sizer.h>
 #include <wx/wupdlock.h>
 #include <cstring>
@@ -71,9 +72,11 @@ private:
 
 class WorkbenchHistoryCard final : public wxPanel {
 public:
-    WorkbenchHistoryCard(wxWindow* parent, std::function<void(const ModelLibraryEntry&)> open)
+    WorkbenchHistoryCard(wxWindow* parent, std::function<void(const std::string&)> open,
+                         std::function<void(const std::string&, bool)> action)
         : wxPanel(parent)
     {
+        SetCanFocus(true);
         SetBackgroundColour(wxColour(22, 22, 25));
         m_surface = new WorkbenchPanel(this, true);
         m_surface->SetBackgroundColour(GetBackgroundColour());
@@ -91,14 +94,37 @@ public:
             wxST_ELLIPSIZE_END | wxST_NO_AUTORESIZE);
         row->Add(m_state, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
         m_surface->SetSizer(row);
-        for (wxWindow* window : std::array<wxWindow*, 5>{{this, m_surface, m_visual, m_name, m_state}})
-            window->Bind(wxEVT_LEFT_UP, [this, open](wxMouseEvent&) { open(m_entry); });
+        for (wxWindow* window : std::array<wxWindow*, 5>{{this, m_surface, m_visual, m_name, m_state}}) {
+            window->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
+                SetFocus();
+                event.Skip();
+            });
+            window->Bind(wxEVT_LEFT_UP, [this, open](wxMouseEvent&) { open(m_key); });
+            window->Bind(wxEVT_CONTEXT_MENU, [this, action](wxContextMenuEvent& event) {
+                const std::string key = m_key;
+                if (key.empty()) return;
+                wxMenu menu;
+                const int export_id = wxWindow::NewControlId();
+                const int remove_id = wxWindow::NewControlId();
+                menu.Append(export_id, _L("导出模型"));
+                menu.AppendSeparator();
+                menu.Append(remove_id, _L("删除模型"));
+                menu.Bind(wxEVT_MENU, [action, key, remove_id](wxCommandEvent& command) {
+                    action(key, command.GetId() == remove_id);
+                });
+                wxPoint position = event.GetPosition();
+                position = position == wxDefaultPosition ? wxPoint(GetClientSize().x / 2, GetClientSize().y / 2)
+                                                        : ScreenToClient(position);
+                PopupMenu(&menu, position);
+            });
+        }
     }
 
     void update(const ModelLibraryEntry& entry, const ModelGenerationUIHistoryEntry* image,
                 bool current, bool can_switch)
     {
-        m_entry = entry; // Clicks always read the latest authoritative projection.
+        m_entry = entry;
+        m_key = workbench_history_key(entry);
         for (wxWindow* window : std::array<wxWindow*, 5>{{this, m_surface, m_visual, m_name, m_state}})
             if (window->GetBackgroundColour() != wxColour(22, 22, 25)) window->SetBackgroundColour(wxColour(22, 22, 25));
         const auto size = FromDIP(wxSize(112, 162));
@@ -153,12 +179,28 @@ public:
     }
 private:
     ModelLibraryEntry m_entry;
+    std::string m_key;
     WorkbenchPanel* m_surface;
     WorkbenchHistoryThumbnail* m_visual;
     wxStaticText *m_name, *m_state;
     uint64_t m_thumbnail_revision {0};
     bool m_initialized {false}, m_current {false};
 };
+
+std::vector<const ModelLibraryEntry*> filtered_workbench_history_entries(
+    const std::vector<ModelLibraryEntry>& library, const wxString& query, int filter)
+{
+    std::vector<const ModelLibraryEntry*> entries;
+    for (const auto& entry : library) {
+        if (entry.design_only || entry.model_path.empty() || !is_nonempty_model(entry.model_path) ||
+            (!query.empty() && !entry.title.Lower().Contains(query))) continue;
+        if ((filter == 1 && entry.palette.size() != 1) ||
+            (filter == 2 && entry.palette.size() < 2) ||
+            (filter == 3 && !entry.palette.empty())) continue;
+        entries.push_back(&entry);
+    }
+    return entries;
+}
 }
 
 void ModelGenerationPanel::update_workbench_history_actions()
@@ -273,40 +315,7 @@ wxWindow* ModelGenerationPanel::build_workbench_history(wxWindow* parent)
     }
     pages->AddStretchSpacer();
     root->Add(pages, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
-    auto* assets = workbench_button(panel, _L("打开历史资产"));
-    assets->SetIcon("workbench_assets");
-    assets->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        if (m_workbench_import_feedback || m_workbench_import_running) return;
-        if (!m_preview_book || m_preview_book->GetPageCount() < 2) return;
-        auto* library = m_preview_book->GetPage(1);
-        const auto label = m_preview_book->GetPageText(1);
-        wxDialog dialog(m_workbench_shell, wxID_ANY, _L("历史资产"), wxDefaultPosition, wxDefaultSize,
-                        wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER);
-        dialog.SetName("ai_content_color");
-        dialog.SetBackgroundColour(wxColour(32, 32, 35));
-        auto* layout = new wxBoxSizer(wxVERTICAL);
-        dialog.SetSizer(layout);
-        m_preview_book->RemovePage(1);
-        library->Reparent(&dialog);
-        layout->Add(library, 1, wxEXPAND | wxALL, FromDIP(12));
-        auto* close = workbench_button(&dialog, _L("关闭"));
-        close->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_OK); });
-        layout->Add(close, 0, wxALIGN_RIGHT | wxALL, FromDIP(12));
-        WorkbenchAppearanceScope appearance(library);
-        m_library_appearance_handler = [&appearance](wxWindow* card) { appearance.include(card); };
-        dialog.SetClientSize(FromDIP(wxSize(900, 650)));
-        dialog.CentreOnParent();
-        library->Show();
-        dialog.CallAfter([this] { load_library_entries(); });
-        dialog.ShowModal();
-        m_library_appearance_handler = {};
-        layout->Detach(library);
-        library->Reparent(m_preview_book);
-        m_preview_book->InsertPage(1, library, label, false);
-        request_library_thumbnails(true);
-        refresh_workbench_history();
-    });
-    root->Add(assets, 0, wxEXPAND | wxALL, FromDIP(12));
+    root->AddSpacer(FromDIP(12));
     panel->SetSizer(root);
     panel->Hide();
     return panel;
@@ -318,15 +327,8 @@ void ModelGenerationPanel::refresh_workbench_history()
     const int scroll_y = m_workbench_history_scroller->GetViewStart().y;
     const bool can_switch = !m_workbench_import_feedback && can_replace_model_asset();
     const auto query = m_workbench_history_search->GetValue().Lower();
-    std::vector<const GeneratedModelEntry*> entries;
-    for (const auto& entry : m_library_entries) {
-        if (entry.design_only || entry.model_path.empty() || !is_nonempty_model(entry.model_path) ||
-            (!query.empty() && !entry.title.Lower().Contains(query))) continue;
-        if ((m_workbench_history_filter == 1 && entry.palette.size() != 1) ||
-            (m_workbench_history_filter == 2 && entry.palette.size() < 2) ||
-            (m_workbench_history_filter == 3 && !entry.palette.empty())) continue;
-        entries.push_back(&entry);
-    }
+    const auto entries = filtered_workbench_history_entries(
+        m_library_entries, query, m_workbench_history_filter);
     constexpr size_t page_size = 10;
     const size_t pages = std::max<size_t>(1, (entries.size() + page_size - 1) / page_size);
     m_workbench_history_pages = pages;
@@ -350,12 +352,12 @@ void ModelGenerationPanel::refresh_workbench_history()
         const bool current = entry.model_path == m_displayed_model_path;
         auto& cached = m_workbench_history_cards[key];
         if (!cached) {
-            cached = new WorkbenchHistoryCard(m_workbench_history_scroller, [this](const auto& selected) {
-                if (m_workbench_import_feedback || !can_replace_model_asset() || selected.model_path == m_displayed_model_path) return;
-                load_library_entry(selected.model_path, selected.reference_image_path, selected.ai_image_path,
-                    selected.palette, selected.palette_roles, selected.use_printable_colors, selected.color_intent_path,
-                    selected.color_intent_schema, selected.color_intent_sha256, selected.job_id, selected.title);
-            });
+            cached = new WorkbenchHistoryCard(m_workbench_history_scroller,
+                [this](const auto& selected_key) { open_workbench_history_entry(selected_key); },
+                [this](const auto& selected_key, bool remove) {
+                    if (remove) delete_workbench_history_entry(selected_key);
+                    else export_workbench_history_entry(selected_key);
+                });
             cached->Hide();
         }
         const auto found = std::find_if(m_ui_history_entries.begin(), m_ui_history_entries.end(),
@@ -388,6 +390,65 @@ void ModelGenerationPanel::refresh_workbench_history()
         !m_ui_history_error.empty() ? wxString::FromUTF8(m_ui_history_error.c_str()) :
         wxString::Format(_L("%llu 个模型"), static_cast<unsigned long long>(entries.size()));
     if (m_workbench_history_status->GetLabel() != status) m_workbench_history_status->SetLabel(status);
+}
+
+void ModelGenerationPanel::open_workbench_history_entry(const std::string& key)
+{
+    if (m_workbench_import_feedback || !can_replace_model_asset()) return;
+    const auto found = std::find_if(m_library_entries.begin(), m_library_entries.end(),
+        [&](const auto& entry) { return workbench_history_key(entry) == key; });
+    if (found == m_library_entries.end()) {
+        m_workbench_history_status->SetLabel(_L("模型列表已变化，请刷新后重试。"));
+        return;
+    }
+    if (found->model_path == m_displayed_model_path) return;
+    load_library_entry(found->model_path, found->reference_image_path, found->ai_image_path,
+        found->palette, found->palette_roles, found->use_printable_colors, found->color_intent_path,
+        found->color_intent_schema, found->color_intent_sha256, found->job_id, found->title);
+}
+
+void ModelGenerationPanel::export_workbench_history_entry(const std::string& key)
+{
+    if (m_workbench_import_feedback || !can_replace_model_asset()) return;
+    const auto found = std::find_if(m_library_entries.begin(), m_library_entries.end(),
+        [&](const auto& entry) { return workbench_history_key(entry) == key; });
+    if (found == m_library_entries.end()) {
+        m_workbench_history_status->SetLabel(_L("模型列表已变化，旧菜单操作已取消。"));
+        return;
+    }
+    export_library_entry(*found);
+}
+
+void ModelGenerationPanel::delete_workbench_history_entry(const std::string& key)
+{
+    if (m_workbench_import_feedback || !can_replace_model_asset()) return;
+    const auto found = std::find_if(m_library_entries.begin(), m_library_entries.end(),
+        [&](const auto& entry) { return workbench_history_key(entry) == key; });
+    if (found == m_library_entries.end()) {
+        m_workbench_history_status->SetLabel(_L("模型列表已变化，旧菜单操作已取消。"));
+        return;
+    }
+
+    const bool current = found->model_path == m_displayed_model_path;
+    std::optional<GeneratedModelEntry> fallback;
+    if (current) {
+        const auto filtered = filtered_workbench_history_entries(
+            m_library_entries, m_workbench_history_search->GetValue().Lower(), m_workbench_history_filter);
+        std::vector<std::string> ordered_keys;
+        ordered_keys.reserve(filtered.size());
+        for (const auto* entry : filtered) ordered_keys.push_back(workbench_history_key(*entry));
+        if (const auto fallback_key = workbench_history_fallback_key(ordered_keys, key)) {
+            const auto neighbor = std::find_if(m_library_entries.begin(), m_library_entries.end(),
+                [&](const auto& entry) { return workbench_history_key(entry) == *fallback_key; });
+            if (neighbor != m_library_entries.end()) fallback = *neighbor;
+        }
+    }
+
+    const GeneratedModelEntry selected = *found;
+    if (!delete_library_entry(selected) || !current || !fallback) return;
+    load_library_entry(fallback->model_path, fallback->reference_image_path, fallback->ai_image_path,
+        fallback->palette, fallback->palette_roles, fallback->use_printable_colors, fallback->color_intent_path,
+        fallback->color_intent_schema, fallback->color_intent_sha256, fallback->job_id, fallback->title);
 }
 
 } // namespace Slic3r::GUI

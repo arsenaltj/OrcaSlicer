@@ -1,3 +1,15 @@
+# 2026-10-24 3D 模型历史菜单与原子页面切换整改（匹配构建与关键 GUI 链路通过，待用户验收）
+
+主线：基于干净提交 `da2948c0e5 feat: refine 3d workbench details and thumbnails` 继续在 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha` / `codex/upstream-v2.5.0-alpha-portrait-preserved` 完善新版 3D 工作流。本轮源码、测试和状态文档保持未提交，不推送、不打包。
+
+本轮：删除“选择模型”下方“打开历史资产”按钮及临时重挂历史页逻辑；历史模型卡及子控件增加右键/键盘菜单，按 `workbench_history_key()` 重新解析后执行独立副本导出或受保护删除。删除当前项按当前筛选排序选择下一项、再上一项、最后空状态，删除非当前项不替换模型。导入切片期间工作台 GL 模型持续可见，只锁定输入和自动旋转；中央无边框加载卡保留原 `wxActivityIndicator` 动态转圈、实时阶段、耗时和取消。项目提交后，切片页在工作台后方完成布局、相机适配和适配后首帧再一次提交；超时回到工作台并允许只重试视图，不重复导入。新版主页面、模型子路由及打印子页使用序号校验的页面事务和 `wxWindowUpdateLocker` 批量切换，重叠请求、迟到回调和窗口销毁后的浮层回调均被拒绝；页面驻留以保留滚动、筛选、选择、相机和打印子页状态。首次 GUI 发现的深色卡片白底、模态 z-order 和取消轮询问题已修复；随后又定位到 Windows 父容器原生双缓冲会遮住嵌套 `wxGLCanvas`，现仅从包含 GL 的工作台、切片与模型页根容器移除 `SetDoubleBuffered(true)`，保留 `wxCLIP_CHILDREN`，由 GL 自身 `SwapBuffers()` 负责双缓冲。
+
+未结：真实 GUI 已覆盖匹配版本下的模型加载、图像/资产/打印页往返、历史卡右键不触发加载、导出入口、导入加载卡和切片首帧提交；删除当前项会触发不可撤销确认，本轮未实际删除用户资产。提交前取消、15 秒首帧超时重试、键盘上下文菜单、窄窗口及 100%/125%/150% DPI 全矩阵仍待专项复验；实体打印色彩保真独立未验证。
+
+下一步：保留当前未提交修改和固定验证入口，交由用户复验右键导出/删除、导入背景与动态转圈及页面切换观感；收到 GUI 验收后再按用户指示提交。本轮不推送、不打包。
+
+计划变更：固定 `.tmp/dev/build` 已复核为当前 checkout、Visual Studio 2022 x64 Release。工作台、完整 UI、历史导出、导入呈现和耗材导入联合回归 153/153（3157 assertions）通过；最终 GL 合成修复后再次执行完整 `[UiRedesign]`，99/99 通过。`scripts/verify_ai_integration.py --json` 返回 `ok: true`，`git diff --check` 通过。安装五个步骤全部成功，build/run `OrcaSlicer.dll` SHA256 均为 `DCD407356AD3264B569841C487DAEE6A327D7101B25240F594F70C63AA704E2C`。匹配 GUI 中人像模型正常显示，工作台往返图像、资产和打印页均无空白帧或旧控件混入；加载卡持续显示模型背景、动态转圈、实时阶段、耗时与取消，目标切片画布完成相机适配和首帧后才切换。原始 GLB 与修复 OBJ 哈希仍为 `9AFF12F77DDB416ADCBD4D487ED943C61D2861D68C018CE0D1A31B6426C99477` / `4D17776BD2B80025E9547815669A08F396722762640E0FCC1A936B35B06333F3`。
+
 # 2026-10-23 3D 工作台细节修复与历史缩略图整改（代码与 GUI 关键路径通过，待用户验收）
 
 主线：上一轮已验收内容已独立提交为 `b1a417baea feat: refine 3d workbench beauty and filament workflow`。本轮继续在 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha` / `codex/upstream-v2.5.0-alpha-portrait-preserved` 整改生成后 3D 工作台；源码、测试和状态文档保持未提交，不推送、不打包。

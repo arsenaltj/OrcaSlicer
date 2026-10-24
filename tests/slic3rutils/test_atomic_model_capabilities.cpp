@@ -36,6 +36,17 @@ TEST_CASE("Saved versions in one task retain independent asset and thumbnail ide
     CHECK_FALSE(retain_workbench_thumbnail(next, previous));
 }
 
+TEST_CASE("Deleting a displayed history version selects its next neighbor before its previous neighbor",
+          "[AtomicModelCapabilities][WorkbenchHistory]")
+{
+    const std::vector<std::string> keys {"first", "current", "next"};
+    REQUIRE(workbench_history_fallback_key(keys, "current"));
+    CHECK(*workbench_history_fallback_key(keys, "current") == "next");
+    CHECK(*workbench_history_fallback_key({"first", "current"}, "current") == "first");
+    CHECK_FALSE(workbench_history_fallback_key({"current"}, "current"));
+    CHECK_FALSE(workbench_history_fallback_key(keys, "stale"));
+}
+
 TEST_CASE("Changed thumbnail sources DPI and unfinished decodes invalidate only their cached image", "[AtomicModelCapabilities][WorkbenchHistory]")
 {
     ModelGenerationUIHistoryEntry previous, next;
@@ -111,6 +122,12 @@ TEST_CASE("Import feedback remains inside the center viewport across sidebar siz
     CHECK(workbench_import_feedback_bounds(wxRect(-100, 10, 600, 780), content) == wxRect(0, 10, 500, 780));
     CHECK(workbench_import_feedback_bounds(wxRect(280, 0, 900, 900), wxRect(0, 0, 900, 600)) == wxRect(280, 0, 620, 600));
     CHECK(workbench_import_feedback_bounds(wxRect(1300, 0, 100, 100), content).IsEmpty());
+
+    CHECK(workbench_import_card_bounds(wxRect(280, 12, 628, 776), content, wxSize(410, 184)) ==
+          wxRect(389, 308, 410, 184));
+    CHECK(workbench_import_card_bounds(wxRect(-100, 10, 300, 150), content, wxSize(410, 184)) ==
+          wxRect(0, 10, 200, 150));
+    CHECK(workbench_import_card_bounds(wxRect(1300, 0, 100, 100), content, wxSize(410, 184)).IsEmpty());
 }
 namespace Matching = LocalPrintColorMatching;
 

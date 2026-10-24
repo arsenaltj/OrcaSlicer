@@ -4,13 +4,27 @@
 #include "ModelLibraryModelThumbnail.hpp"
 #include "ModelGenerationHost.hpp"
 #include <boost/filesystem.hpp>
+#include <algorithm>
 #include <cmath>
+#include <iterator>
+#include <optional>
 
 namespace Slic3r::GUI {
 inline std::string workbench_history_key(const ModelLibraryEntry& entry)
 {
     // A task can have multiple saved versions. Neither title nor RGB identifies one.
     return std::to_string(entry.job_id.size()) + ":" + entry.job_id + entry.model_path.generic_string();
+}
+
+inline std::optional<std::string> workbench_history_fallback_key(
+    const std::vector<std::string>& ordered_keys, const std::string& removed_key)
+{
+    const auto found = std::find(ordered_keys.begin(), ordered_keys.end(), removed_key);
+    if (found == ordered_keys.end()) return std::nullopt;
+    const auto next = std::next(found);
+    if (next != ordered_keys.end()) return *next;
+    if (found != ordered_keys.begin()) return *std::prev(found);
+    return std::nullopt;
 }
 
 inline std::string workbench_thumbnail_source(const ModelLibraryEntry& entry,

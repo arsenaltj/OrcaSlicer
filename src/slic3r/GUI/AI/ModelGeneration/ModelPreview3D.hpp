@@ -83,6 +83,7 @@ public:
     using FaceColorOverrides = AI::SurfaceSelectionPersistence::FaceColorOverrides;
     using SubfaceColorOverrides = AI::SemanticColoring::SubfaceColors;
     wxWindow* workbench_overlay_parent() const { return m_preview_host; }
+    wxWindow* workbench_viewport_window() const { return m_canvas; }
     int workbench_viewport_top() const { return m_canvas ? m_canvas->GetPosition().y : 0; }
     explicit ModelPreview3D(wxWindow* parent, bool retain_surface_attributes = false)
         : wxPanel(parent), m_retain_surface_attributes(retain_surface_attributes)

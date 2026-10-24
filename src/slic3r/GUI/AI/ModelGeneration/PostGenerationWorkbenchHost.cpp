@@ -47,7 +47,10 @@ void ModelGenerationPanel::unmount_workbench()
     m_workbench_shell->Hide();
 }
 
-wxWindow* ModelGenerationPanel::workbench_import_viewport() const { return m_workbench_view_host; }
+wxWindow* ModelGenerationPanel::workbench_import_viewport() const
+{
+    return m_model_preview ? m_model_preview->workbench_viewport_window() : m_workbench_view_host;
+}
 wxWindow* ModelGenerationPanel::workbench_import_history() const { return m_workbench_history_panel; }
 
 void ModelGenerationPanel::mount_workbench_import_history(wxWindow* parent)
@@ -79,10 +82,7 @@ void ModelGenerationPanel::set_workbench_import_feedback(bool active)
     if (active) m_workbench_import_history_was_shown = m_workbench_history_panel->IsShown();
     m_workbench_import_feedback = active;
     m_workbench_settings->Enable(!active);
-    m_workbench_view_host->Enable(!active);
-    // The Windows GL surface can overpaint a sibling loading panel. Keep its
-    // CPU model and camera, but suspend the preview window until import ends.
-    if (m_model_preview) m_model_preview->Show(!active);
+    if (m_model_preview) m_model_preview->set_workbench_input_locked(active);
     m_workbench_history_toggle->Enable(!active);
     refresh_workbench_history();
 }

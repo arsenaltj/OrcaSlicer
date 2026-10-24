@@ -31,6 +31,7 @@
 #include <wx/stattext.h>
 #include <wx/utils.h>
 #include <wx/weakref.h>
+#include <wx/wupdlock.h>
 
 namespace Slic3r::GUI {
 namespace {
@@ -480,7 +481,6 @@ bool PrinterWorkspace::monitoring() const { return m_view != View::Prepare; }
 
 void PrinterWorkspace::set_view(View view)
 {
-    m_view = view;
     const bool monitor = view == View::Monitor;
     if (monitor && !m_media_ctrl) {
         m_media_ctrl = new wxMediaCtrl3(m_video_panel);
@@ -498,6 +498,8 @@ void PrinterWorkspace::set_view(View view)
         m_video_panel->GetSizer()->Add(m_media_ctrl, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
         m_video_panel->GetSizer()->Add(m_media_play, 0, wxEXPAND | wxALL, FromDIP(16));
     }
+    wxWindowUpdateLocker lock(this);
+    m_view = view;
     if (!monitor && m_media_play) m_media_play->SetMachineObject(nullptr);
     if (view != View::Media) {
         m_file_media_requested = false;

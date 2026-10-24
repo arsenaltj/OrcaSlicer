@@ -421,6 +421,9 @@ private:
     wxWindow* build_workbench_history(wxWindow* parent);
     void refresh_workbench_history();
     void update_workbench_history_actions();
+    void open_workbench_history_entry(const std::string& key);
+    void export_workbench_history_entry(const std::string& key);
+    void delete_workbench_history_entry(const std::string& key);
     void rescale_post_generation_workbench();
     void preview_model_finishing();
     void paint_beauty_color(const std::vector<size_t>& faces);
@@ -452,7 +455,7 @@ private:
                              const std::string& color_intent_schema,
                              const std::string& color_intent_sha256,
                              const std::string& job_id, const wxString& title, bool new_asset = false);
-    void delete_library_entry(const GeneratedModelEntry& entry);
+    bool delete_library_entry(const GeneratedModelEntry& entry);
     void export_library_entry(const GeneratedModelEntry& entry);
     void update_library_provider_tasks(const std::string& job_id,
                                        const AIModelGenerationClient::JobStatus& status);
