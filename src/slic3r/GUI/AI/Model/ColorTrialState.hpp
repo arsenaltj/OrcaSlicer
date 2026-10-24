@@ -437,6 +437,11 @@ inline bool synchronize_project_targets(State& state, const std::vector<size_t>&
     bindings.insert(bindings.end(), state.project_semantic_slots.begin(), state.project_semantic_slots.end());
     if (!detail::project_slot_identity_rebindable(state.project_slot_identity, identity, bindings)) return false;
     auto updated = state;
+    for (size_t i = 0; i < updated.color_card_target_slot_ids.size(); ++i) {
+        const auto found = std::find(slots.begin(), slots.end(), updated.color_card_target_slot_ids[i]);
+        if (found == slots.end()) return false;
+        updated.color_card_target_palette[i] = colors[size_t(found - slots.begin())];
+    }
     for (const auto& item : {std::make_pair(&updated.colors, &state.project_color_slots),
                              std::make_pair(&updated.semantic_palette, &state.project_semantic_slots)}) {
         for (size_t i = 0; i < item.second->size(); ++i) {

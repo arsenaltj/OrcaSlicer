@@ -313,7 +313,10 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
     const ImportStageTiming total_timing("import_wall_including_dialogs");
     AI::ModelImportResult result;
     result.color_mode = request.color_mode;
-    result.subface_color_count = request.subface_color_overrides.size();
+    result.subface_color_count = request.matched_colors &&
+        request.color_mode == AI::ImportColorMode::NativeMatch
+        ? request.matched_colors->subface_slots.size()
+        : request.subface_color_overrides.size();
     result.topology_risk = request.topology_risk_confirmed;
     result.topology_risk_reason = request.topology_risk_reason;
     TriangleMesh semantic_source_mesh;

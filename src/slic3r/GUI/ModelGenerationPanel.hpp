@@ -269,6 +269,7 @@ private:
     std::vector<PrinterFilamentSlotRemap::Change> m_apply_filaments_changes;
     std::string m_apply_filaments_source_identity;
     std::optional<AI::ModelMatchedColors> m_apply_filaments_match;
+    bool m_apply_filaments_before_trial_active {false};
     boost::filesystem::path m_applied_filaments_saved_model;
     std::string m_applied_filaments_saved_signature;
     bool m_printer_filament_trial_active {false};

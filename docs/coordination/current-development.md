@@ -1,3 +1,27 @@
+# 2026-10-25 PR #42 本地合并与组合验证（完成，未推送）
+
+主线：在 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha` 的 `codex/upstream-v2.5.0-alpha-portrait-preserved` 上，将远端 PR #42 head `dda490e56c` 合入既有 3D 工作台基线 `3250594c591`。本轮只做本地集成与验证，不推送、不打包、不启动 GUI，也不调用真实 YOYOClaw 服务。
+
+本轮：本地 merge commit 为 `450b48adc1`。两处冲突位于主计划和短状态，已同时保留当前 3D 工作台记录及 PR #42 的 YOYOClaw 记录；合并前 19 个未提交文件已完整恢复且继续保持未暂存，`stash@{0}` 仍保留。组合 C++ 标签回归 243/243 通过；捆绑 Python 离线回归共 157 项通过（YOYOClaw 14、文本能力 24、Sidecar 78、生成选项 16、provider gateway 25）；`scripts/verify_ai_integration.py --json` 返回 `ok: true`，暂存区/工作树 `git diff --check` 均通过且无未解决冲突。
+
+未结：本轮未做真实主窗口 GUI、真实服务请求、安装包或实体打印色彩验证。PR #42 要求 stable ABI `python3.dll`，当前固定依赖树原有 staging 仅含 `python312.dll`；本机从另一份同批 Orca 构建中复用与当前 `python312.dll` 哈希完全配对的 CPython 3.12.13 `python3.dll`，未修改源码或跳过运行时校验。后续干净依赖构建仍应由 PR #42 的 `--include-stable` staging 自行生成该文件。
+
+下一步：继续保留 19 个工作台修改、用户资产和旧 stash；如需 GUI 验收，可使用已准备但未启动的 `.tmp/dev/run`。本轮不再自动提交、推送、打包或发起真实服务请求。
+
+计划变更：`YOYOCLAW-20261024-PR` 从“PR #42 待复核”推进为“已合入当前本地 3D 工作台分支并完成组合代码验证”。证据为 [`CppTest 243/243`](../../.tmp/dev/logs/20261024-222849-798/result.json)、[`Run -NoLaunch`](../../.tmp/dev/logs/20261025-000001-731/result.json) 和 [`Python 157`](../../.tmp/dev/logs/20261025-004632-977/result.json)；`Run` 的 catalogs/build/install/runtime-check/python-check 五步均通过，捆绑运行时确认 Python 3.12.13、Pillow 12.2.0、cryptography native roundtrip 和 YOYOClaw native roundtrip 正常。
+
+# 2026-10-24 3D 工作台耗材与模型双向映射整改（预览缺陷已修复，双按钮逻辑审计通过，待用户验收）
+
+主线：基于干净提交 `3250594c591 feat: refine 3d model history and atomic transitions`，继续在 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha` / `codex/upstream-v2.5.0-alpha-portrait-preserved` 完善生成后 3D 工作台。本轮源码、测试和状态文档保持未提交，不推送、不打包。
+
+本轮：在“打印机耗材”标题下纵向加入同宽的“将耗材色映射到模型”和“将模型配色导入到耗材”。前者读取全部有效实体与叠色槽（最多 32 槽），用自动颜色基底和最小代价匹配重建模型区域；实际区域少于槽数时保留逻辑空槽，不制造表面小色块，成功后自动保存新的已接受模型版本，失败原子恢复。后者保留既有色卡直导、叠色配方和试色流程，并强制从打印机状态恢复进入前的模型色卡，避免把耗材试色再次导回自身。工作台“导入切片”固定走 NativeMatch，仅统计最终表面实际使用的面色与子面色，按 RGB8 精确覆盖生成完整槽位绑定；可覆盖时直接导入且不再打开旧配色窗口，缺色时显示暗色双操作提示框，任一处理完成后仍留在工作台，由用户再次发起导入。圆角提示框去除半透明白描边，关闭背景擦除并在 Windows/DPI 变化时重设深色原生边框。
+
+未结：匹配 GUI 已完成当前桌面 DPI 下的双按钮、历史重载、重复点击、保存期互斥、试色进入/退出和直接导入复验；100%/125%/150% DPI 全矩阵与实体打印色彩保真仍分别待视觉和实物验收，自动测试与屏幕试色不能替代实物验收。
+
+下一步：当前匹配实例 PID `7268` 从 `.tmp/dev/run/orca-slicer.exe --datadir .tmp/dev/data` 运行并停留在已退出耗材试色的稳定人像版本，供用户直接验收。保持本轮 19 个文件未提交，不推送、不打包；后续仅按视觉反馈增量修正。
+
+计划变更：GUI 早期失败包括两条独立状态缺陷：保存后的候选已经烘焙目标色，回载却再次使用保存前源色中心套用打印机映射；普通不超过 6 色的隐式语义色板又缺少 `project_semantic_slots`，500 ms 同步因此把有效耗材预览关闭并报“激活模型预览失败”。现将烘焙候选显示中心规范为目标色自身，在新建及旧状态恢复两条路径补齐隐式语义槽绑定，同时保留原生槽位身份、未使用逻辑槽、色卡目标和独立面/子面绑定。槽位身份变化不再提前禁用导入，而是进入当前实体/叠色槽的 RGB8 精确覆盖检查；重复点击同一已保存模型和耗材签名时在恢复颜色或创建候选前直接返回；模型到耗材按钮在耗材到模型保存期间不可重入，任何预览、保存或配置漂移失败均回滚到点击前模型/试色状态。固定 `.tmp/dev/build` 的 `slic3rutils_tests` 与完整 `OrcaSlicer` Release 构建通过；最终计划标签联合回归 `223/223` 通过，证据为 [20261024-210502-545](../../.tmp/dev/logs/20261024-210502-545/result.json)，`scripts/verify_ai_integration.py --json` 返回 `ok: true`，`git diff --check` 通过。[`Run -NoLaunch`](../../.tmp/dev/logs/20261024-204936-196/result.json) 五步均通过，build/run DLL SHA256 均为 `CA61C8BBA47A92A894342436C807F01F063E19712479EC413068DB4E3277E966`。真实人像首次映射历史由 14 增至 15，重复点击仍为 15；试色中再次映射历史由 15 增至 16，保存期间反向按钮不可操作，再次点击仍为 16。切换历史并重载后恢复快照有效，模型配色导入得到原模型 4 色，退出后恢复“手动试色 4 色”；当前 PID 7268 日志记录 7 次预览激活成功、2 次候选回载 `printer_preview=true`，`preview activation failed` 为 0。
+
 # 2026-10-24 3D 模型历史菜单与原子页面切换整改（匹配构建与关键 GUI 链路通过，待用户验收）
 
 主线：基于干净提交 `da2948c0e5 feat: refine 3d workbench details and thumbnails` 继续在 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha` / `codex/upstream-v2.5.0-alpha-portrait-preserved` 完善新版 3D 工作流。本轮源码、测试和状态文档保持未提交，不推送、不打包。

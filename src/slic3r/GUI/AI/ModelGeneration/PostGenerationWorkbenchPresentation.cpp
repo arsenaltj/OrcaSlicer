@@ -496,21 +496,31 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         m_workbench_check_running || (state.can_edit && m_finishing_candidate.empty() && !snapshot.dirty));
     for (wxWindow* color : m_workbench_project_colors->GetChildren())
         set_workbench_enabled(color, snapshot.can_edit_project_colors);
+    if (m_workbench_apply_project_filaments) {
+        const bool can_map = snapshot.can_apply_printer_filaments && !m_apply_filaments_saving;
+        set_workbench_enabled(m_workbench_apply_project_filaments, can_map);
+        set_workbench_tooltip(m_workbench_apply_project_filaments, can_map
+            ? _L("以当前实体耗材与叠色槽为完整逻辑色卡，重建模型配色并自动保存新版本。")
+            : wxString::FromUTF8(snapshot.apply_filaments_reason.empty()
+                ? "模型正在保存或处理，请稍候。" : snapshot.apply_filaments_reason));
+    }
     if (m_workbench_printer_filament_trial) {
-        const auto card = m_model_preview ? m_model_preview->current_color_pack() : std::nullopt;
+        const auto card = m_model_preview
+            ? m_model_preview->model_color_pack_for_filament_import() : std::nullopt;
         const bool has_card = card && card->valid_for_workbench_import();
-        const bool can_trial = m_printer_filament_trial_active ||
-            (snapshot.can_edit_project_colors && has_card);
+        const bool can_trial = workbench_printer_trial_action_allowed(
+            m_printer_filament_trial_active, m_apply_filaments_saving,
+            snapshot.can_edit_project_colors, has_card);
         set_workbench_enabled(m_workbench_printer_filament_trial, can_trial);
         layout_changed = set_workbench_label(m_workbench_printer_filament_trial,
-            m_printer_filament_trial_active ? _L("退出打印机耗材试色") : _L("将当前色卡导入到打印机耗材")) || layout_changed;
+            m_printer_filament_trial_active ? _L("退出打印机耗材试色") : _L("将模型配色导入到耗材")) || layout_changed;
         const wxString disabled_reason = !has_card
             ? _L("当前没有 1 至 32 色的有效色卡，请先生成自动建议或完成试色。")
             : !snapshot.can_edit_project_colors
                 ? _L("模型处理中或存在未接受候选，请先完成当前操作。") : wxString{};
         set_workbench_tooltip(m_workbench_printer_filament_trial, m_printer_filament_trial_active
             ? _L("退出试色并恢复进入前的模型外观；已提交的耗材配置保留。")
-            : can_trial ? _L("直接生成实体耗材与叠色配方；成功后一次提交并进入试色，不打开配置确认窗。")
+            : can_trial ? _L("将模型配色直接生成实体耗材与叠色配方；成功后一次提交并进入试色。")
                         : disabled_reason);
         if (m_workbench_printer_filament_feedback) {
             const wxString feedback = !m_workbench_printer_filament_notice.empty()

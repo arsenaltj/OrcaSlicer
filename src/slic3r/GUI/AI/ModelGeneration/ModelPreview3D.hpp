@@ -82,6 +82,23 @@ public:
     using SelectionState = AI::SurfaceSelectionPersistence::SelectionState;
     using FaceColorOverrides = AI::SurfaceSelectionPersistence::FaceColorOverrides;
     using SubfaceColorOverrides = AI::SemanticColoring::SubfaceColors;
+    struct WorkbenchSurfaceColor {
+        PreviewPalette::Color color {};
+        std::optional<size_t> preferred_slot;
+    };
+    struct WorkbenchSurfaceSubface : WorkbenchSurfaceColor {
+        size_t face_id {0};
+        uint8_t depth {0}, path {0};
+    };
+    struct WorkbenchSurfacePalette {
+        std::vector<WorkbenchSurfaceColor> faces;
+        std::vector<WorkbenchSurfaceSubface> subfaces;
+    };
+    struct PrinterFilamentMatchResult {
+        std::optional<AI::ModelMatchedColors> matched;
+        std::vector<std::string> missing_colors;
+        std::string error;
+    };
     wxWindow* workbench_overlay_parent() const { return m_preview_host; }
     wxWindow* workbench_viewport_window() const { return m_canvas; }
     int workbench_viewport_top() const { return m_canvas ? m_canvas->GetPosition().y : 0; }
@@ -1192,6 +1209,8 @@ public:
         if (m_models.size() != 1 || m_surface_vertices.size() != expected ||
             m_original_surface_colors.size() != m_triangle_count * 3)
             return false;
+        if (!m_canvas || !m_context || !m_canvas->SetCurrent(*m_context))
+            return false;
         for (size_t vertex = 0; vertex < m_original_surface_colors.size(); ++vertex) {
             const auto& original = m_original_surface_colors[vertex];
             m_surface_vertices[vertex * 8 + 6] = original.x();
@@ -1204,15 +1223,41 @@ public:
     // Make printer-filament application the visible source of truth for the
     // current workbench frame.  This is intentionally separate from matching
     // and persistence so a failed save can still roll the model back.
-    bool activate_printer_filament_preview() {
-        if (!m_color_trial || m_color_trial->state().source != 1 ||
-            !m_color_trial->state().enabled || m_color_trial->colors().empty())
+    bool activate_printer_filament_preview(std::string* error = nullptr) {
+        if (error) error->clear();
+        const auto state = m_color_trial ? m_color_trial->state() : ModelPreviewColorControls::State {};
+        if (!m_color_trial) {
+            if (error) *error = "color controls unavailable";
             return false;
-        if (!clear_surface_color_display()) return false;
+        }
+        if (state.source != 1) {
+            if (error) *error = "restored color source is not printer filaments";
+            return false;
+        }
+        if (!state.enabled) {
+            if (error) *error = "restored printer-filament preview is disabled";
+            return false;
+        }
+        if (m_color_trial->colors().empty() ||
+            m_color_trial->colors().size() != m_color_trial->mapping_colors().size()) {
+            if (error) *error = "restored printer-filament palette is incomplete";
+            return false;
+        }
+        if (!m_color_trial->project_matching_valid()) {
+            if (error) *error = "restored printer-filament slot identity is stale";
+            return false;
+        }
+        if (!clear_surface_color_display()) {
+            if (error) *error = "exact surface display could not be cleared";
+            return false;
+        }
         m_color_trial_enabled = true;
         m_trial_palette = m_color_trial->colors();
         if (m_semantic_ready) rebuild_semantic_preview_from_cached_result();
-        else if (!m_face_color_overrides.empty() && !restore_beauty_face_colors(m_face_color_overrides)) return false;
+        else if (!m_face_color_overrides.empty() && !restore_beauty_face_colors(m_face_color_overrides)) {
+            if (error) *error = "manual face-color preview could not be restored";
+            return false;
+        }
         BOOST_LOG_TRIVIAL(info) << "AI printer-filament preview activated: source="
             << m_color_trial->state().source << ", colors=" << m_trial_palette.size()
             << ", semantic_ready=" << m_semantic_ready
@@ -2420,8 +2465,22 @@ public:
     const std::vector<PreviewPalette::Color>& project_colors() const { return m_color_trial->project_colors(); }
     std::vector<FilamentColorPack> configuration_color_sources() const { return m_color_trial->configuration_color_sources(); }
     std::optional<FilamentColorPack> current_color_pack() const { return m_color_trial->current_color_pack(); }
+    std::optional<FilamentColorPack> model_color_pack_for_filament_import() const {
+        if (!m_color_trial) return std::nullopt;
+        const auto current = m_color_trial->state();
+        if (current.source != 1)
+            return PrinterFilamentPreview::model_color_pack(current);
+        if (!m_printer_filament_restore ||
+            m_printer_filament_restore->geometry_id != m_geometry_id)
+            return std::nullopt;
+        return PrinterFilamentPreview::model_color_pack(
+            m_printer_filament_restore->color_trial);
+    }
     std::optional<AI::ModelMatchedColors> printer_filament_match(const PresetBundle& bundle,
         const std::string& source_sha256) const;
+    PrinterFilamentMatchResult printer_filament_match_result(const PresetBundle& bundle,
+        const std::string& source_sha256) const;
+    WorkbenchSurfacePalette workbench_surface_palette() const;
     void refresh_saved_color_packs() { m_color_trial->refresh_saved_color_packs(); }
     void set_project_filament_edit_handler(std::function<void(size_t)> handler) {
         m_color_trial->on_project_color_edit = std::move(handler);
@@ -2435,6 +2494,7 @@ public:
     bool exit_printer_filament_trial();
     nlohmann::json printer_filament_restore_metadata() const;
     bool apply_project_filament_palette(const std::vector<size_t>* bindings = nullptr);
+    bool apply_project_filament_basis();
     void set_project_configuration_override(std::shared_ptr<const PresetBundle> bundle) { m_color_trial->set_project_configuration_override(std::move(bundle)); }
     bool project_matching_valid() const { return m_color_trial->project_matching_valid(); }
     FaceColorOverrides printer_filament_export_faces() const;

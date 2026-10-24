@@ -331,14 +331,21 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     });
     controls->Add(m_workbench_palette_status, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     heading(_L("打印机耗材"));
-    m_workbench_printer_filament_trial = new WorkbenchButton(scroll, _L("将当前色卡导入到打印机耗材"));
-    // Keep the primary action directly below the section heading and match
-    // the import-to-slicing action's neutral surface and disabled state.
-    m_workbench_apply_project_filaments = m_workbench_printer_filament_trial;
+    m_workbench_apply_project_filaments = new WorkbenchButton(scroll, _L("将耗材色映射到模型"));
+    apply_slice_action_style(m_workbench_apply_project_filaments);
+    m_workbench_apply_project_filaments->SetName("workbench_apply_project_filaments");
+    m_workbench_apply_project_filaments->SetIcon("workbench_printer");
+    m_workbench_apply_project_filaments->SetToolTip(_L("按当前实体耗材与叠色槽重建模型配色，并自动保存为新版本。"));
+    m_workbench_apply_project_filaments->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        apply_workbench_printer_filaments();
+    });
+    controls->Add(m_workbench_apply_project_filaments, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
+
+    m_workbench_printer_filament_trial = new WorkbenchButton(scroll, _L("将模型配色导入到耗材"));
     apply_slice_action_style(m_workbench_printer_filament_trial);
     m_workbench_printer_filament_trial->SetName("workbench_printer_filament_trial");
     m_workbench_printer_filament_trial->SetIcon("workbench_printer");
-    m_workbench_printer_filament_trial->SetToolTip(_L("直接生成实体耗材与叠色配方，原子提交后进入打印机耗材试色。"));
+    m_workbench_printer_filament_trial->SetToolTip(_L("将当前模型配色生成实体耗材与叠色配方，原子提交后进入试色。"));
     m_workbench_printer_filament_trial->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         toggle_printer_filament_trial();
     });

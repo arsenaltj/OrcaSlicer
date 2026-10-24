@@ -21,15 +21,20 @@ namespace {
 
 enum class NativeFilamentControl { Color, Preset, Actions };
 
-std::optional<AI::ModelMatchedColors> capture_applied_filament_match(
+ModelPreview3D::PrinterFilamentMatchResult capture_applied_filament_match(
     const PresetBundle& bundle, const ModelPreview3D& preview,
     const std::string& source_sha256)
 {
+    ModelPreview3D::PrinterFilamentMatchResult result;
     const auto state = PrinterFilamentConfig::capture(bundle);
-    if (source_sha256.empty() || preview.geometry_id().empty() || state.slots.empty()) return {};
-    const auto trial = preview.color_trial_state();
-    if (trial.source != 1 || trial.project_slot_identity.empty() ||
-        trial.project_color_slots.size() != trial.colors.size() || trial.colors.empty()) return {};
+    if (source_sha256.empty() || preview.geometry_id().empty()) {
+        result.error = "当前模型身份无效，请重新载入模型。";
+        return result;
+    }
+    if (!state.ready) {
+        result.error = state.reason.empty() ? "请先配置当前打印机耗材。" : state.reason;
+        return result;
+    }
 
     AI::ModelMatchedColors matched;
     matched.source_sha256 = source_sha256;
@@ -38,39 +43,72 @@ std::optional<AI::ModelMatchedColors> capture_applied_filament_match(
     matched.material_fingerprint = native_palette.material_fingerprint;
     matched.process_fingerprint = native_palette.process_fingerprint;
     matched.mixed_recipes = native_palette.mixed_recipes;
-    for (const auto& slot : state.slots) {
-        if (!slot.exists || !slot.configured || !AI::is_rgb_hex_color(slot.color)) continue;
-        matched.palette.push_back({slot.slot, slot.color, slot.material, slot.compatible});
+    matched.palette = native_palette.physical_channels;
+    if (!AI::valid_native_mixed_palette(matched.palette, matched.mixed_recipes)) {
+        result.error = "当前打印机耗材或叠色配方无效，请先完成配置。";
+        return result;
     }
-    if (!AI::valid_native_mixed_palette(matched.palette, matched.mixed_recipes)) return {};
 
-    std::vector<PreviewPalette::Color> logical_colors;
-    std::vector<size_t> logical_slots;
-    if (trial.semantic_palette.size() == trial.project_semantic_slots.size() && !trial.semantic_palette.empty()) {
-        logical_colors.insert(logical_colors.end(), trial.semantic_palette.begin(), trial.semantic_palette.end());
-        logical_slots.insert(logical_slots.end(), trial.project_semantic_slots.begin(), trial.project_semantic_slots.end());
+    std::vector<PrinterFilamentPreview::NativeColorSlot> candidates;
+    auto append = [&candidates](size_t slot, const std::string& color, bool mixed) {
+        const auto key = PrinterFilamentPreview::rgb8(color);
+        if (key) candidates.push_back({slot, PrinterFilamentPreview::rgb8_color(*key), mixed});
+    };
+    std::vector<AI::PhysicalFilamentChannel> physical = matched.palette;
+    std::sort(physical.begin(), physical.end(), [](const auto& first, const auto& second) {
+        return first.slot < second.slot;
+    });
+    for (const auto& slot : physical)
+        if (slot.compatible) append(slot.slot, slot.display_color, false);
+    auto recipes = matched.mixed_recipes;
+    std::sort(recipes.begin(), recipes.end(), [](const auto& first, const auto& second) {
+        return first.existing_virtual_slot.value_or(size_t(-1)) < second.existing_virtual_slot.value_or(size_t(-1));
+    });
+    for (const auto& recipe : recipes)
+        if (recipe.existing_virtual_slot) append(*recipe.existing_virtual_slot, recipe.target_color, true);
+    if (candidates.empty()) {
+        result.error = "当前没有可用于模型配色的兼容耗材槽。";
+        return result;
     }
-    logical_colors.insert(logical_colors.end(), trial.colors.begin(), trial.colors.end());
-    logical_slots.insert(logical_slots.end(), trial.project_color_slots.begin(), trial.project_color_slots.end());
-    if (logical_colors.empty() || logical_colors.size() != logical_slots.size()) return {};
 
-    const auto face_colors = preview.printer_filament_export_faces();
-    matched.face_slots.assign(preview.triangle_count(), size_t(-1));
-    for (const auto& item : face_colors) {
-        if (item.first >= matched.face_slots.size()) return {};
-        const size_t index = PrinterFilamentPreview::nearest(item.second, logical_colors);
-        if (index >= logical_slots.size() || !AI::native_palette_has_slot(matched.palette, matched.mixed_recipes, logical_slots[index]))
-            return {};
-        matched.face_slots[item.first] = logical_slots[index];
+    const auto surface = preview.workbench_surface_palette();
+    if (surface.faces.size() != preview.triangle_count()) {
+        result.error = "无法读取当前模型的完整表面配色。";
+        return result;
     }
-    for (const auto& child : preview.import_subface_color_overrides(true)) {
-        const size_t index = PrinterFilamentPreview::nearest(child.color, logical_colors);
-        if (index >= logical_slots.size()) return {};
-        matched.subface_slots.push_back({child.face_id, child.path.depth, child.path.value, logical_slots[index]});
+    std::vector<PreviewPalette::Color> face_colors, subface_colors;
+    std::vector<std::optional<size_t>> preferred_faces, preferred_subfaces;
+    face_colors.reserve(surface.faces.size());
+    preferred_faces.reserve(surface.faces.size());
+    for (const auto& face : surface.faces) {
+        face_colors.push_back(face.color);
+        preferred_faces.push_back(face.preferred_slot);
     }
-    if (std::any_of(matched.face_slots.begin(), matched.face_slots.end(), [](size_t slot) { return slot == size_t(-1); }) ||
-        !matched.valid()) return {};
-    return matched;
+    subface_colors.reserve(surface.subfaces.size());
+    preferred_subfaces.reserve(surface.subfaces.size());
+    for (const auto& subface : surface.subfaces) {
+        subface_colors.push_back(subface.color);
+        preferred_subfaces.push_back(subface.preferred_slot);
+    }
+    const auto faces = PrinterFilamentPreview::bind_exact_colors(face_colors, candidates, preferred_faces);
+    const auto subfaces = PrinterFilamentPreview::bind_exact_colors(subface_colors, candidates, preferred_subfaces);
+    result.missing_colors = faces.missing_colors;
+    result.missing_colors.insert(result.missing_colors.end(), subfaces.missing_colors.begin(), subfaces.missing_colors.end());
+    std::sort(result.missing_colors.begin(), result.missing_colors.end());
+    result.missing_colors.erase(std::unique(result.missing_colors.begin(), result.missing_colors.end()), result.missing_colors.end());
+    if (!faces.complete(face_colors.size()) || !subfaces.complete(subface_colors.size())) return result;
+
+    matched.face_slots = faces.slots;
+    for (size_t index = 0; index < surface.subfaces.size(); ++index) {
+        const auto& child = surface.subfaces[index];
+        matched.subface_slots.push_back({child.face_id, child.depth, child.path, subfaces.slots[index]});
+    }
+    if (!matched.valid()) {
+        result.error = "当前耗材映射没有生成完整的面级和子面级绑定。";
+        return result;
+    }
+    result.matched = std::move(matched);
+    return result;
 }
 
 std::string workbench_filament_layout(const WorkbenchPrinterFilaments& state, const PresetBundle* bundle)
@@ -93,12 +131,18 @@ std::string workbench_filament_layout(const WorkbenchPrinterFilaments& state, co
 std::optional<AI::ModelMatchedColors> ModelPreview3D::printer_filament_match(
     const PresetBundle& bundle, const std::string& source_sha256) const
 {
+    return capture_applied_filament_match(bundle, *this, source_sha256).matched;
+}
+
+ModelPreview3D::PrinterFilamentMatchResult ModelPreview3D::printer_filament_match_result(
+    const PresetBundle& bundle, const std::string& source_sha256) const
+{
     return capture_applied_filament_match(bundle, *this, source_sha256);
 }
 
 void ModelGenerationPanel::toggle_printer_filament_trial()
 {
-    if (m_shutdown || !m_model_preview || !wxGetApp().plater()) return;
+    if (m_shutdown || m_apply_filaments_saving || !m_model_preview || !wxGetApp().plater()) return;
     if (m_printer_filament_trial_active) {
         exit_printer_filament_trial();
         return;
@@ -115,23 +159,12 @@ void ModelGenerationPanel::toggle_printer_filament_trial()
         report("模型处理中或存在未接受候选，请先完成当前操作。", true);
         return;
     }
-    // A previously persisted printer source may still be visible after a
-    // history restore.  Return to its captured appearance before taking a new
-    // trial snapshot, otherwise the old native palette would become the input.
-    if (m_model_preview->color_trial_state().source == 1 &&
-        !m_model_preview->restore_printer_filament_input_source()) {
-        report("无法恢复进入试色前的模型外观，请重新载入模型后再试。", true);
-        return;
-    }
-    // Read the card only after restoring a persisted printer source.  The
-    // restored source may be automatic or a saved card, and that appearance
-    // is the one the user explicitly asked to import into the native palette.
-    const auto card = m_model_preview->current_color_pack();
+    const auto entry = capture_beauty_candidate();
+    const auto card = m_model_preview->model_color_pack_for_filament_import();
     if (!card) {
-        report("当前没有可导入的色卡，请先生成自动建议或完成试色。", true);
+        report("当前没有可导入的模型配色，请先生成自动建议或完成试色。", true);
         return;
     }
-
     auto* bundle = wxGetApp().preset_bundle;
     auto* plater = wxGetApp().plater();
     if (!bundle || !plater) {
@@ -145,17 +178,40 @@ void ModelGenerationPanel::toggle_printer_filament_trial()
         return;
     }
 
-    const auto before = capture_beauty_candidate();
+    auto rollback_entry = [&] {
+        const bool restored = restore_beauty_candidate(entry);
+        if (!restored)
+            BOOST_LOG_TRIVIAL(error) << "AI model-color import failed to restore its entry preview state";
+        return restored;
+    };
+    // A previously persisted printer source may still be visible after a
+    // history restore. Restore the captured model appearance only after all
+    // read-only staging has succeeded, so early failures cannot change it.
+    if (m_model_preview->color_trial_state().source == 1 &&
+        !m_model_preview->restore_printer_filament_input_source()) {
+        const bool restored = rollback_entry();
+        report(restored ? "无法恢复进入试色前的模型外观，请重新载入模型后再试。" :
+            "无法恢复进入试色前的模型外观，且点击前状态恢复失败；请重新载入模型。", true);
+        return;
+    }
+
     set_project_color_sync_suspended(true);
     m_model_preview->set_project_configuration_override(staged.configuration);
     auto rollback_preview = [&] {
         m_model_preview->set_project_configuration_override({});
         set_project_color_sync_suspended(false);
-        restore_beauty_candidate(before);
+        rollback_entry();
     };
-    if (!m_model_preview->apply_project_filament_palette(&staged.bindings) ||
-        !m_model_preview->activate_printer_filament_preview()) {
+    if (!m_model_preview->apply_project_filament_palette(&staged.bindings)) {
         rollback_preview();
+        report("色卡暂存成功，但模型配色无法绑定到耗材；工程和模型预览均保持原状。", true);
+        return;
+    }
+    std::string preview_error;
+    if (!m_model_preview->activate_printer_filament_preview(&preview_error)) {
+        rollback_preview();
+        BOOST_LOG_TRIVIAL(error) << "AI model-color import preview activation failed: "
+            << preview_error;
         report("色卡暂存成功，但模型试色无法激活；工程和模型预览均保持原状。", true);
         return;
     }
@@ -219,62 +275,97 @@ void ModelGenerationPanel::invalidate_printer_filament_trial_for_model_change()
 void ModelGenerationPanel::apply_workbench_printer_filaments()
 {
     if (m_shutdown || m_apply_filaments_saving || !m_model_preview || !workbench_snapshot().can_apply_printer_filaments) return;
+    auto report = [this](std::string message, bool error) {
+        m_workbench_operation_notice = message;
+        m_workbench_printer_filament_notice = std::move(message);
+        m_workbench_printer_filament_notice_error = error;
+        refresh_controls();
+        publish_workbench_state();
+    };
     m_apply_filaments_match.reset();
     auto* bundle = wxGetApp().preset_bundle;
-    if (!bundle) return;
+    if (!bundle) {
+        report("当前打印机耗材配置不可用", true);
+        return;
+    }
+    const auto state = PrinterFilamentConfig::capture(*bundle);
+    if (!state.ready) {
+        report(state.reason.empty() ? "请先配置当前打印机耗材" : state.reason, true);
+        return;
+    }
+    auto trial = m_model_preview->color_trial_state();
+    if (m_applied_filaments_saved_model == m_displayed_model_path &&
+        m_applied_filaments_saved_signature == state.signature && trial.source == 1 &&
+        trial.enabled && m_model_preview->project_matching_valid() &&
+        !m_beauty_manual_color_dirty && (!m_beauty_controls || !m_beauty_controls->has_changes())) {
+        report("已应用并保存，可直接导入", false);
+        return;
+    }
+    const bool trial_was_active = m_printer_filament_trial_active;
+    const std::string trial_geometry = m_printer_filament_trial_geometry;
+    const std::string trial_signature = m_printer_filament_trial_signature;
     auto before = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
     before->project_config = std::make_shared<DynamicPrintConfig>(bundle->project_config);
     before->project_presets = bundle->filament_presets;
+    auto rollback_model = [&] {
+        auto rollback = *before;
+        rollback.project_config.reset();
+        rollback.project_presets.clear();
+        const bool restored = restore_beauty_candidate(rollback);
+        if (restored && trial_was_active) {
+            m_printer_filament_trial_active = true;
+            m_printer_filament_trial_geometry = trial_geometry;
+            m_printer_filament_trial_signature = trial_signature;
+        }
+        return restored;
+    };
     // Applying printer filaments is a read-only match against the live native
     // palette. Never stage color-card targets here: doing so changes the
     // printer slot count and invents recipes from the card.
     auto staged = std::make_shared<PresetBundle>(*bundle);
     std::vector<PrinterFilamentSlotRemap::Change> changes;
-    std::string error;
-    const auto state = PrinterFilamentConfig::capture(*bundle);
-    if (!state.ready) {
-        m_workbench_operation_notice = state.reason.empty() ? "请先配置当前打印机耗材" : state.reason;
-        refresh_controls(); publish_workbench_state(); return;
-    }
-    auto trial = m_model_preview->color_trial_state();
     if (trial.source == 1 && !m_model_preview->restore_printer_filament_input_source()) {
-        m_workbench_operation_notice = "无法恢复应用前的模型颜色，请重新加载模型后再试";
-        refresh_controls(); publish_workbench_state(); return;
-    }
-    trial = m_model_preview->color_trial_state();
-    if (m_applied_filaments_saved_model == m_displayed_model_path &&
-        m_applied_filaments_saved_signature == state.signature && trial.source == 1 &&
-        trial.enabled && m_model_preview->project_matching_valid() &&
-        !m_beauty_manual_color_dirty && (!m_beauty_controls || !m_beauty_controls->has_changes())) {
-        m_workbench_operation_notice = "已应用并保存，可直接导入";
-        refresh_controls(); return;
+        const bool restored = rollback_model();
+        report(restored ? "无法恢复应用前的模型颜色，请重新加载模型后再试" :
+            "无法恢复应用前的模型颜色，且点击前状态恢复失败；请重新加载模型", true);
+        return;
     }
     m_model_preview->set_project_configuration_override(staged);
-    if (!m_model_preview->apply_project_filament_palette()) {
+    if (!m_model_preview->apply_project_filament_basis()) {
         m_model_preview->set_project_configuration_override({});
-        restore_beauty_candidate(*before);
-        m_workbench_operation_notice = "耗材匹配失败，原模型和工程配置保持不变";
-        refresh_controls(); return;
+        const bool restored = rollback_model();
+        report(restored ? "耗材匹配失败，原模型和工程配置保持不变" :
+            "耗材匹配失败，且点击前模型状态恢复失败；请重新加载模型", true);
+        return;
     }
-    if (!m_model_preview->activate_printer_filament_preview()) {
+    std::string preview_error;
+    if (!m_model_preview->activate_printer_filament_preview(&preview_error)) {
         m_model_preview->set_project_configuration_override({});
-        restore_beauty_candidate(*before);
-        m_workbench_operation_notice = "耗材已匹配，但预览刷新失败，原模型和工程配置保持不变";
-        refresh_controls(); return;
+        const bool restored = rollback_model();
+        BOOST_LOG_TRIVIAL(error) << "AI printer-to-model preview activation failed: "
+            << preview_error;
+        report(restored ? "耗材已匹配，但预览刷新失败，原模型和工程配置保持不变" :
+            "耗材已匹配，但预览与点击前模型状态均恢复失败；请重新加载模型", true);
+        return;
     }
     if (m_beauty_controls) m_beauty_controls->synchronize_preview_options();
-    m_apply_filaments_match = capture_applied_filament_match(
+    auto captured_match = capture_applied_filament_match(
         *staged, *m_model_preview, AI::model_artifact_sha256(m_displayed_model_path));
+    m_apply_filaments_match = std::move(captured_match.matched);
     if (!m_apply_filaments_match) {
         m_model_preview->set_project_configuration_override({});
-        restore_beauty_candidate(*before);
-        m_workbench_operation_notice = "耗材应用没有生成完整面级匹配，原模型和工程配置保持不变";
-        refresh_controls(); return;
+        const bool restored = rollback_model();
+        report(!restored ? "耗材应用未生成完整绑定，且点击前模型状态恢复失败；请重新加载模型" :
+            captured_match.error.empty()
+            ? "耗材应用没有生成完整面级匹配，原模型和工程配置保持不变"
+            : captured_match.error + " 原模型和工程配置保持不变", true);
+        return;
     }
     m_apply_filaments_before = before;
     m_apply_filaments_staged = staged;
     m_apply_filaments_changes = std::move(changes);
     m_apply_filaments_source_identity = state.signature;
+    m_apply_filaments_before_trial_active = trial_was_active;
     m_apply_filaments_saving = true;
     m_beauty_session_source = before;
     m_beauty_session_undo_base = m_beauty_transactions ? m_beauty_transactions->undo_count() : 0;
@@ -282,6 +373,8 @@ void ModelGenerationPanel::apply_workbench_printer_filaments()
     m_beauty_manual_color_dirty = true;
     if (m_beauty_controls) m_beauty_controls->set_dirty(true);
     m_workbench_operation_notice = "正在应用并自动保存……";
+    m_workbench_printer_filament_notice = m_workbench_operation_notice;
+    m_workbench_printer_filament_notice_error = false;
     if (!request_save_and_return()) finish_printer_filament_application(false);
     refresh_controls();
     publish_workbench_state();
@@ -310,15 +403,31 @@ void ModelGenerationPanel::finish_printer_filament_application(bool success)
         // the model draft, without overwriting an external configuration change.
         auto before = *m_apply_filaments_before;
         before.project_config.reset(); before.project_presets.clear();
-        restore_beauty_candidate(before);
+        const bool restored = restore_beauty_candidate(before);
+        if (restored && m_apply_filaments_before_trial_active) {
+            m_printer_filament_trial_active = true;
+            m_printer_filament_trial_geometry = before.geometry_id;
+            m_printer_filament_trial_signature = m_apply_filaments_source_identity;
+        }
         if (m_beauty_transactions) m_beauty_transactions->truncate_to(m_beauty_session_undo_base);
         clear_unaccepted_beauty_candidates(m_beauty_session_file_base);
         m_beauty_session_source.reset();
         m_workbench_operation_notice = "应用未保存，原模型和工程配置保留。 " + m_workbench_operation_notice;
+        m_workbench_printer_filament_notice = m_workbench_operation_notice;
+        m_workbench_printer_filament_notice_error = true;
     } else if (success) {
+        // A printer-to-model application publishes a saved model version, not
+        // a temporary filament trial. If it started while a trial was active,
+        // retire only the panel flag while preserving the source snapshot that
+        // lets the opposite action recover the original model palette later.
+        m_printer_filament_trial_active = false;
+        m_printer_filament_trial_geometry.clear();
+        m_printer_filament_trial_signature.clear();
         m_applied_filaments_saved_model = m_displayed_model_path;
         m_applied_filaments_saved_signature = PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature;
         m_workbench_operation_notice = "已应用并保存，可直接导入";
+        m_workbench_printer_filament_notice = m_workbench_operation_notice;
+        m_workbench_printer_filament_notice_error = false;
         m_finishing_status->SetLabel(_L("已应用并保存，可直接导入。"));
         m_status->SetLabel(m_finishing_status->GetLabel());
     }
@@ -326,6 +435,7 @@ void ModelGenerationPanel::finish_printer_filament_application(bool success)
     m_apply_filaments_changes.clear();
     m_apply_filaments_source_identity.clear();
     m_apply_filaments_match.reset();
+    m_apply_filaments_before_trial_active = false;
     synchronize_workbench_project_palette(false);
 }
 

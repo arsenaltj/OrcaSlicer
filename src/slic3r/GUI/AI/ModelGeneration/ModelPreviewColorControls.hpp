@@ -563,12 +563,22 @@ public:
         const bool binding_change = saved.project_slot_identity != m_bound_project_identity ||
             saved.project_color_slots != m_project_color_slots ||
             saved.project_semantic_slots != m_project_semantic_slots;
-        if (!visual_change && !binding_change) return false;
+        const bool card_change = saved.color_card_target_palette != m_color_card_remap.target_palette ||
+            saved.color_card_target_slot_ids != m_color_card_remap.target_slot_ids ||
+            saved.source_to_target_slot != m_color_card_remap.source_to_target_slot;
+        if (!visual_change && !binding_change && !card_change) return false;
         m_colors = std::move(saved.colors);
         m_semantic_colors = std::move(saved.semantic_palette);
         m_bound_project_identity = std::move(saved.project_slot_identity);
         m_project_color_slots = std::move(saved.project_color_slots);
         m_project_semantic_slots = std::move(saved.project_semantic_slots);
+        if (card_change) {
+            m_color_card_remap.target_palette = std::move(saved.color_card_target_palette);
+            m_color_card_remap.target_slot_ids = std::move(saved.color_card_target_slot_ids);
+            m_color_card_remap.source_to_target_slot = std::move(saved.source_to_target_slot);
+            m_color_card_remap.weighted_error = saved.color_card_weighted_error;
+            m_color_card_palette = m_color_card_remap.target_palette;
+        }
         if (m_count->GetValue() != int(m_colors.size())) m_count->SetValue(int(m_colors.size()));
         if (!visual_change) return false;
         m_notice = _L("打印机耗材已同步，原有区域对应关系保留。");
@@ -613,6 +623,19 @@ public:
         // captured and saved.
         saved.enabled = true;
         saved.notice = _L("已将模型预览匹配到打印机耗材；保存或导入后提交，可撤销。");
+        restore(saved);
+        return true;
+    }
+    bool apply_project_filament_basis() {
+        read_project();
+        if (!m_histogram || !m_project_error.empty() || m_project_colors.empty()) return false;
+        const auto basis = PreviewPalette::make_automatic_color_basis(*m_histogram, m_project_colors.size(),
+            m_geometry_id, m_fidelity->GetValue(), m_automatic_units.get());
+        auto saved = state();
+        if (!PrinterFilamentPreview::apply_automatic_basis(saved, basis, m_project_slots,
+                m_project_colors, m_project_slot_identity)) return false;
+        saved.notice = wxString::Format(_L("已按 %llu 个打印机耗材与叠色槽重建模型配色；空槽不会制造额外色块。"),
+            static_cast<unsigned long long>(m_project_colors.size()));
         restore(saved);
         return true;
     }
@@ -686,6 +709,7 @@ public:
             saved.project_slot_identity = m_bound_project_identity;
             saved.project_color_slots = m_project_color_slots;
             if (!saved.semantic_palette.empty()) saved.project_semantic_slots = m_project_semantic_slots;
+            PrinterFilamentPreview::bind_implicit_semantic_palette(saved);
         }
         return saved;
     }
@@ -754,8 +778,8 @@ private:
         PreviewPalette::attach_automatic_color_units(m_automatic_basis, m_automatic_units.get());
         m_automatic_basis.basis_signature = PreviewPalette::automatic_basis_signature(m_automatic_basis);
     }
-    // Same source as the native textured import: logical project slots. Existing
-    // mixed recipes are excluded, never misreported as physical loaded materials.
+    // Same source as the native textured import: configured physical slots first,
+    // followed by valid mixed recipes. Their native slot ids remain authoritative.
     std::shared_ptr<const PresetBundle> m_project_configuration_override;
     bool read_project() {
         std::vector<Color> colors; std::vector<wxString> names; std::vector<size_t> slots;

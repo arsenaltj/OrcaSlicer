@@ -28,10 +28,12 @@
 #include "slic3r/GUI/AI/Orca/LocalPrintModelImport.hpp"
 #include "slic3r/GUI/AI/Orca/SlicingModelPalette.hpp"
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelPreviewColorState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PrinterFilamentPreview.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchPrinterFilaments.hpp"
 #include "slic3r/GUI/PrinterFilamentSlotRemap.hpp"
 #include <future>
+#include <limits>
 #include <memory>
 #include <type_traits>
 #include <vector>
@@ -1048,6 +1050,17 @@ TEST_CASE("ordinary region optimization remains available without portrait prote
     CHECK_FALSE(state.can_print);
 }
 
+TEST_CASE("Printer trial actions cannot interrupt model palette publication",
+          "[PostGenerationWorkbench][PrinterFilamentPreview]")
+{
+    CHECK(workbench_printer_trial_action_allowed(false, false, true, true));
+    CHECK(workbench_printer_trial_action_allowed(true, false, false, false));
+    CHECK_FALSE(workbench_printer_trial_action_allowed(false, false, true, false));
+    CHECK_FALSE(workbench_printer_trial_action_allowed(false, false, false, true));
+    CHECK_FALSE(workbench_printer_trial_action_allowed(false, true, true, true));
+    CHECK_FALSE(workbench_printer_trial_action_allowed(true, true, true, true));
+}
+
 TEST_CASE("project color changes use physical slot identity and preserve unrelated config", "[PostGenerationWorkbench][ProjectConfigUndo]")
 {
     using namespace Slic3r;
@@ -1544,6 +1557,199 @@ TEST_CASE("printer matching preserves source groups and semantic bindings and ca
     CHECK(restored.project_color_slots==state.project_color_slots);CHECK(restored.mapping_colors==state.mapping_colors);
 }
 
+TEST_CASE("Exact printer coverage normalizes RGB8 and preserves duplicate slot identity",
+          "[PrinterFilamentPreview][PrinterFilamentImport][PostGenerationWorkbench]")
+{
+    using Color = PreviewPalette::Color;
+    const auto red_key = PrinterFilamentPreview::rgb8("#aA0011");
+    const auto blue_key = PrinterFilamentPreview::rgb8("#0000fF");
+    REQUIRE(red_key);
+    REQUIRE(blue_key);
+    CHECK(PrinterFilamentPreview::rgb8_hex(*red_key) == "#AA0011");
+    CHECK(PrinterFilamentPreview::rgb8(PrinterFilamentPreview::rgb8_color(*red_key)) == *red_key);
+
+    const Color red = PrinterFilamentPreview::rgb8_color(*red_key);
+    const Color blue = PrinterFilamentPreview::rgb8_color(*blue_key);
+    const Color missing = PrinterFilamentPreview::rgb8_color(0x010203);
+    const std::vector<PrinterFilamentPreview::NativeColorSlot> candidates {
+        {2, red, false}, {7, red, false}, {11, blue, true}
+    };
+    const auto covered = PrinterFilamentPreview::bind_exact_colors(
+        {red, blue}, candidates, {std::optional<size_t>{7}, {}});
+    REQUIRE(covered.complete(2));
+    CHECK(covered.slots == std::vector<size_t>{7, 11});
+
+    const auto binding = PrinterFilamentPreview::bind_exact_colors(
+        {red, red, blue, missing, missing}, candidates,
+        {std::optional<size_t>{7}, std::optional<size_t>{99}, std::optional<size_t>{11}, {}, {}});
+
+    CHECK_FALSE(binding.complete(5));
+    REQUIRE(binding.slots.size() == 5);
+    CHECK(binding.slots[0] == 7);
+    CHECK(binding.slots[1] == 2);
+    CHECK(binding.slots[2] == 11);
+    CHECK(binding.slots[3] == size_t(-1));
+    CHECK(binding.slots[4] == size_t(-1));
+    CHECK(binding.missing_colors == std::vector<std::string>{"#010203"});
+}
+
+TEST_CASE("Printer color basis retains every native logical slot without inventing model regions",
+          "[PrinterFilamentPreview][ModelPreviewPalette][PostGenerationWorkbench]")
+{
+    using Color = PreviewPalette::Color;
+    for (const size_t count : {size_t(1), size_t(4), size_t(9), size_t(32)}) {
+        INFO("native slot count = " << count);
+        PreviewPalette::AutomaticColorBasis basis;
+        basis.geometry_id = "geometry";
+        basis.source_color_signature = "source";
+        basis.requested_count = count;
+        basis.source_palette = count == 1
+            ? std::vector<Color>{{1.f, 0.f, 0.f}}
+            : std::vector<Color>{{1.f, 0.f, 0.f}, {0.f, 0.f, 1.f}};
+        basis.source_area.assign(basis.source_palette.size(), 1.0);
+        basis.basis_signature = PreviewPalette::automatic_basis_signature(basis);
+        REQUIRE(basis.valid());
+
+        std::vector<Color> native_colors;
+        std::vector<size_t> native_slots;
+        native_colors.reserve(count);
+        native_slots.reserve(count);
+        for (size_t index = 0; index < count; ++index) {
+            const float value = count == 1 ? 0.f : float(index) / float(count - 1);
+            native_colors.push_back({value, 1.f - value, float((index * 37) % count) / float(count)});
+            native_slots.push_back(index);
+        }
+
+        Slic3r::AI::ColorTrialPersistence::State state;
+        state.colors = basis.source_palette;
+        state.mapping_colors = basis.source_palette;
+        state.count = int(basis.source_palette.size());
+        state.source = 2;
+        REQUIRE(PrinterFilamentPreview::apply_automatic_basis(
+            state, basis, native_slots, native_colors, "printer-layout"));
+        CHECK(state.source == 1);
+        CHECK(state.enabled);
+        CHECK(state.count == int(count));
+        CHECK(state.project_count == int(count));
+        CHECK(state.colors.size() == basis.source_palette.size());
+        CHECK(state.mapping_colors == basis.source_palette);
+        CHECK(state.project_color_slots.size() == basis.source_palette.size());
+        CHECK(state.semantic_palette == state.colors);
+        CHECK(state.semantic_mapping_palette == state.mapping_colors);
+        CHECK(state.project_semantic_slots == state.project_color_slots);
+        CHECK(state.color_card_target_palette.size() == count);
+        CHECK(state.color_card_target_slot_ids == native_slots);
+        CHECK(Slic3r::AI::ColorTrialPersistence::detail::valid_state(state));
+
+        auto changed_colors = native_colors;
+        changed_colors.front() = {0.25f, 0.5f, 0.75f};
+        REQUIRE(Slic3r::AI::ColorTrialPersistence::synchronize_project_targets(
+            state, native_slots, changed_colors, "printer-layout"));
+        CHECK(state.enabled);
+        CHECK(state.color_card_target_palette.front() == changed_colors.front());
+        CHECK(Slic3r::AI::ColorTrialPersistence::detail::valid_state(state));
+    }
+}
+
+TEST_CASE("Printer mappings bind implicit semantic colors to the same native slots",
+          "[PrinterFilamentPreview][PrinterFilamentImport][PostGenerationWorkbench]")
+{
+    using Color = PreviewPalette::Color;
+    const std::vector<Color> source {{0.9f, 0.1f, 0.1f}, {0.1f, 0.1f, 0.9f}};
+    const std::vector<Color> targets {{0.8f, 0.2f, 0.2f}, {0.2f, 0.2f, 0.8f}};
+    const std::vector<size_t> slots {3, 7};
+
+    for (const bool explicit_binding : {false, true}) {
+        INFO("explicit binding = " << explicit_binding);
+        Slic3r::AI::ColorTrialPersistence::State state;
+        state.colors = source;
+        state.mapping_colors = source;
+        state.count = 2;
+        state.source = 2;
+        const bool applied = explicit_binding
+            ? PrinterFilamentPreview::apply_bound(state, slots, targets, "printer-layout")
+            : PrinterFilamentPreview::apply(state, slots, targets, "printer-layout");
+        REQUIRE(applied);
+        CHECK(state.semantic_palette == state.colors);
+        CHECK(state.semantic_mapping_palette == state.mapping_colors);
+        CHECK(state.project_semantic_slots == state.project_color_slots);
+        CHECK(Slic3r::AI::ColorTrialPersistence::detail::valid_state(state));
+    }
+}
+
+TEST_CASE("Legacy printer previews repair missing implicit semantic slot bindings",
+          "[PrinterFilamentPreview][ModelPreviewState][PostGenerationWorkbench]")
+{
+    Slic3r::AI::ColorTrialPersistence::State state;
+    state.source = 1;
+    state.enabled = true;
+    state.count = 2;
+    state.colors = {{0.8f, 0.1f, 0.1f}, {0.1f, 0.1f, 0.8f}};
+    state.mapping_colors = {{0.7f, 0.2f, 0.2f}, {0.2f, 0.2f, 0.7f}};
+    state.semantic_palette = state.colors;
+    state.semantic_mapping_palette = state.mapping_colors;
+    state.project_slot_identity = "printer-layout";
+    state.project_color_slots = {2, 6};
+    REQUIRE_FALSE(Slic3r::AI::ColorTrialPersistence::detail::valid_state(state));
+
+    PrinterFilamentPreview::bind_implicit_semantic_palette(state);
+
+    CHECK(state.project_semantic_slots == state.project_color_slots);
+    CHECK(Slic3r::AI::ColorTrialPersistence::detail::valid_state(state));
+}
+
+TEST_CASE("Baked printer candidates keep slot identity without applying their mapping twice",
+          "[PrinterFilamentPreview][ModelPreviewPalette][PostGenerationWorkbench]")
+{
+    using Color = PreviewPalette::Color;
+    PreviewPalette::AutomaticColorBasis basis;
+    basis.geometry_id = "geometry";
+    basis.source_color_signature = "source";
+    basis.requested_count = 9;
+    basis.source_palette = {{0.15f, 0.20f, 0.25f}, {0.70f, 0.55f, 0.40f},
+                            {0.85f, 0.75f, 0.65f}, {0.10f, 0.05f, 0.02f}};
+    basis.source_area.assign(basis.source_palette.size(), 1.0);
+    basis.basis_signature = PreviewPalette::automatic_basis_signature(basis);
+    REQUIRE(basis.valid());
+
+    std::vector<Color> native_colors;
+    std::vector<size_t> native_slots;
+    for (size_t index = 0; index < 9; ++index) {
+        native_colors.push_back({float(index) / 9.f, float(8 - index) / 9.f,
+                                 float((index * 5) % 9) / 9.f});
+        native_slots.push_back(index);
+    }
+    ModelPreviewColorState state;
+    state.colors = basis.source_palette;
+    state.mapping_colors = basis.source_palette;
+    state.count = int(basis.source_palette.size());
+    state.source = 2;
+    REQUIRE(PrinterFilamentPreview::apply_automatic_basis(
+        state, basis, native_slots, native_colors, "printer-layout"));
+    REQUIRE(state.mapping_colors != state.colors);
+
+    const auto baked = PrinterFilamentPreview::normalize_baked_candidate_state(state);
+    STATIC_REQUIRE((std::is_same_v<std::decay_t<decltype(baked)>, ModelPreviewColorState>));
+    CHECK(baked.mapping_colors == baked.colors);
+    CHECK(baked.project_color_slots == state.project_color_slots);
+    CHECK(baked.project_slot_identity == state.project_slot_identity);
+    CHECK(baked.color_card_target_palette == state.color_card_target_palette);
+    CHECK(baked.color_card_target_slot_ids == native_slots);
+    CHECK(baked.count == 9);
+    CHECK(Slic3r::AI::ColorTrialPersistence::detail::valid_state(baked));
+
+    auto ordinary = state;
+    ordinary.source = 2;
+    ordinary.project_color_slots.clear();
+    ordinary.project_slot_identity.clear();
+    ordinary.color_card_target_palette.clear();
+    ordinary.color_card_target_slot_ids.clear();
+    ordinary.source_to_target_slot.clear();
+    ordinary.color_card_weighted_error = 0.0;
+    CHECK(PrinterFilamentPreview::normalize_baked_candidate_state(ordinary).mapping_colors ==
+        ordinary.mapping_colors);
+}
+
 TEST_CASE("deleting a filament remaps object support painting and layer references without moving geometry", "[PrinterFilaments][PostGenerationWorkbench]")
 {
     using namespace Slic3r;
@@ -1634,6 +1840,32 @@ TEST_CASE("workbench cards accept up to thirty two colors without widening legac
 
     const auto oversized = filament_import_card(33);
     CHECK_FALSE(oversized.valid_for_workbench_import());
+}
+
+TEST_CASE("model color import recovers the pre-printer palette without importing printer state",
+          "[PrinterFilamentImport][PrinterFilamentPreview][PostGenerationWorkbench]")
+{
+    Slic3r::AI::ColorTrialPersistence::State state;
+    state.source = 0;
+    state.count = 3;
+    state.colors = {{{1.f, 0.f, 0.f}}, {{0.f, 1.f, 0.f}}, {{1.f, 0.f, 0.f}}};
+    state.mapping_colors = state.colors;
+
+    const auto card = PrinterFilamentPreview::model_color_pack(state);
+    REQUIRE(card);
+    CHECK(card->colors == std::vector<std::string>{"#FF0000", "#00FF00", "#FF0000"});
+    CHECK(card->labels.size() == 3);
+
+    state.source = 1;
+    CHECK_FALSE(PrinterFilamentPreview::model_color_pack(state));
+
+    state.source = 2;
+    state.mapping_colors.pop_back();
+    CHECK_FALSE(PrinterFilamentPreview::model_color_pack(state));
+
+    state.mapping_colors = state.colors;
+    state.colors.front()[0] = std::numeric_limits<float>::quiet_NaN();
+    CHECK_FALSE(PrinterFilamentPreview::model_color_pack(state));
 }
 
 TEST_CASE("direct workbench card import creates one unique native identity per color",

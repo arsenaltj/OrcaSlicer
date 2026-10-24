@@ -154,6 +154,11 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                 } else if (!obj_match) {
                     priv::TextureImportResult mapping;
                     bool accepted = false;
+                    if (request.color_mode == AI::ImportColorMode::NativeMatch && options.matched_face_slots.empty()) {
+                        fail("工作台导入缺少完整耗材绑定，请返回工作台重新匹配。",
+                            AI::ModelImportOutcome::InvalidArtifact);
+                        return;
+                    }
                     if (!options.matched_face_slots.empty()) {
                         ui([&] {
                             apply_matched_texture_colors(detached, options, prepared->filaments);
@@ -185,17 +190,29 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                         for (const auto& match : mapping.matches) used.insert(match.filament_index);
                         prepared->result.mapped_color_count = used.size();
                     }
-                    if (prepared->result.colors_applied && !request.subface_color_overrides.empty()) {
+                    const bool matched_subfaces = request.matched_colors &&
+                        !request.matched_colors->subface_slots.empty();
+                    if (prepared->result.colors_applied &&
+                        (matched_subfaces || !request.subface_color_overrides.empty())) {
                         auto* volume = object.volumes.front();
-                        if (!LocalPrintColorApplication::same_surface_partition(source.its, volume->mesh().its, false)) {
+                        const indexed_triangle_set* expected = options.matched_source
+                            ? options.matched_source.get() : &source.its;
+                        if (!expected || !LocalPrintColorApplication::same_surface_partition(
+                                *expected, volume->mesh().its, false)) {
                             fail("The native loader changed the local color topology."); return;
                         }
                         auto painting = volume->mmu_segmentation_facets.get_data();
-                        if (!apply_subface_color_overrides(volume->mesh().its, volume->mesh().its, painting,
-                            request.face_color_overrides, request.subface_color_overrides, prepared->result.error)) return;
+                        const bool applied = matched_subfaces
+                            ? apply_matched_subface_slots(*expected, volume->mesh().its, painting,
+                                *request.matched_colors, prepared->result.error)
+                            : apply_subface_color_overrides(*expected, volume->mesh().its, painting,
+                                request.face_color_overrides, request.subface_color_overrides, prepared->result.error);
+                        if (!applied) return;
                         ui([&] { volume->mmu_segmentation_facets.set_data(std::move(painting)); });
                         prepared->result.subface_colors_applied = true;
-                        prepared->result.subface_color_count = request.subface_color_overrides.size();
+                        prepared->result.subface_color_count = matched_subfaces
+                            ? request.matched_colors->subface_slots.size()
+                            : request.subface_color_overrides.size();
                     }
                 }
                 if (!notify(WorkbenchImportPhase::Colors, "正在复检最终网格")) return;

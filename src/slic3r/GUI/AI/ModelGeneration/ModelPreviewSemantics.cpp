@@ -205,6 +205,109 @@ bool ModelPreview3D::apply_project_filament_palette(const std::vector<size_t>* b
     return true;
 }
 
+bool ModelPreview3D::apply_project_filament_basis()
+{
+    capture_printer_filament_restore_snapshot();
+    const auto before = m_color_trial->state();
+    m_suppress_semantic_change = true;
+    const bool applied = m_color_trial->apply_project_filament_basis();
+    m_suppress_semantic_change = false;
+    if (!applied) return false;
+
+    m_color_blocks.reset();
+    m_selected_color_block.reset();
+    const auto after = m_color_trial->state();
+    auto recolor = [&after](auto& color) {
+        if (after.mapping_colors.empty() || after.colors.size() != after.mapping_colors.size()) return;
+        const size_t target = PrinterFilamentPreview::nearest(
+            {color[0], color[1], color[2]}, after.mapping_colors);
+        if (target >= after.colors.size()) return;
+        for (size_t channel = 0; channel < 3; ++channel) color[channel] = after.colors[target][channel];
+    };
+    for (auto& item : m_face_color_overrides) recolor(item.second);
+    for (auto& item : m_automatic_face_colors) recolor(item.second);
+    for (auto& item : m_automatic_subface_colors) recolor(item.color);
+    for (auto& item : m_manual_leaf_colors) recolor(item.second);
+    for (auto& item : m_manual_cell_colors) recolor(item.second);
+    if (m_portrait_shapes) {
+        auto shapes = std::make_shared<PortraitShapeDetails>(*m_portrait_shapes);
+        for (auto& item : shapes->cell_colors) recolor(item.second);
+        m_portrait_shapes = std::move(shapes);
+    }
+    if (!m_face_color_overrides.empty() && !restore_beauty_face_colors(m_face_color_overrides)) return false;
+    ++m_leaf_edit_revision;
+    if (m_leaf_editing) refresh_leaf_colors();
+    else m_semantic_model.reset();
+    m_canvas->Refresh(false);
+    return true;
+}
+
+ModelPreview3D::WorkbenchSurfacePalette ModelPreview3D::workbench_surface_palette() const
+{
+    WorkbenchSurfacePalette result;
+    const auto& mesh = m_semantic_source ? m_semantic_source->mesh :
+        m_region_editor->ready() ? m_region_editor->mesh() : m_pending_mesh;
+    const auto& vertex = m_semantic_source ? m_semantic_source->vertex_colors :
+        m_region_editor->ready() ? m_region_editor->vertex_colors() : m_pending_vertex_colors;
+    if (mesh.indices.empty()) return result;
+
+    const auto trial = m_color_trial->state();
+    auto preferred_target = [&trial](const PreviewPalette::Color& color) -> std::optional<size_t> {
+        if (trial.source != 1) return {};
+        const uint32_t key = PrinterFilamentPreview::rgb8(color);
+        for (const auto& item : {std::make_pair(&trial.colors, &trial.project_color_slots),
+                                 std::make_pair(&trial.semantic_palette, &trial.project_semantic_slots)}) {
+            for (size_t index = 0; index < item.first->size() && index < item.second->size(); ++index)
+                if (PrinterFilamentPreview::rgb8((*item.first)[index]) == key) return (*item.second)[index];
+        }
+        return {};
+    };
+    auto map_source = [&trial](const PreviewPalette::Color& source) {
+        WorkbenchSurfaceColor mapped {source, {}};
+        if (!trial.enabled || trial.mapping_colors.empty() || trial.mapping_colors.size() != trial.colors.size())
+            return mapped;
+        const size_t index = PrinterFilamentPreview::nearest(source, trial.mapping_colors);
+        if (index >= trial.colors.size()) return mapped;
+        mapped.color = trial.colors[index];
+        if (trial.source == 1 && index < trial.project_color_slots.size())
+            mapped.preferred_slot = trial.project_color_slots[index];
+        return mapped;
+    };
+
+    result.faces.reserve(mesh.indices.size());
+    for (size_t face = 0; face < mesh.indices.size(); ++face) {
+        PreviewPalette::Color color {.7f, .7f, .7f};
+        if (m_semantic_source && m_semantic_source->face_colors.size() == mesh.indices.size()) {
+            const auto& rgba = m_semantic_source->face_colors[face];
+            color = {rgba[0], rgba[1], rgba[2]};
+        } else if (vertex.size() == mesh.vertices.size()) {
+            color = {0.f, 0.f, 0.f};
+            for (const int point : mesh.indices[face])
+                for (size_t channel = 0; channel < 3; ++channel)
+                    color[channel] += vertex[size_t(point)][channel] / 3.f;
+        }
+        result.faces.push_back(map_source(color));
+    }
+    for (const auto& item : import_face_color_overrides(true)) {
+        if (item.first >= result.faces.size()) {
+            result.faces.clear();
+            result.subfaces.clear();
+            return result;
+        }
+        result.faces[item.first] = {item.second, preferred_target(item.second)};
+    }
+    for (const auto& item : import_subface_color_overrides(true)) {
+        if (item.face_id >= result.faces.size()) {
+            result.faces.clear();
+            result.subfaces.clear();
+            return result;
+        }
+        result.subfaces.push_back({{item.color, preferred_target(item.color)},
+            item.face_id, item.path.depth, item.path.value});
+    }
+    return result;
+}
+
 ModelPreview3D::FaceColorOverrides ModelPreview3D::printer_filament_export_faces() const
 {
     auto result = import_face_color_overrides(true);

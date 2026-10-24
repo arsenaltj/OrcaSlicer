@@ -177,6 +177,13 @@ inline bool workbench_region_optimization_allowed(const PostGenerationUiState& a
     return actions.can_edit && !candidate_ready && semantic_available;
 }
 
+inline bool workbench_printer_trial_action_allowed(bool trial_active, bool application_saving,
+    bool can_edit_project_colors, bool has_valid_model_card)
+{
+    return !application_saving &&
+        (trial_active || (can_edit_project_colors && has_valid_model_card));
+}
+
 inline bool workbench_physical_slot_exists(const std::vector<AI::PhysicalFilamentChannel>& channels, size_t slot)
 {
     return std::any_of(channels.begin(), channels.end(),
