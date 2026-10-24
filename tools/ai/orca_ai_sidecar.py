@@ -251,6 +251,8 @@ from model_request import (
 from model_texture_baking import _bake_obj_texture_to_vertex_colors, _quantize_vertex_color_obj
 from network_policy import network_diagnostics
 from nonportrait_reference import review_nonportrait_reference
+from text_capability_application import TextCapabilityApplication, TextCapabilityError
+from text_capability_transport import parse_text_capability_multipart
 from openai_preprocessor import (
     IDENTITY_FIRST_PORTRAIT_STYLES,
     OpenAIPreprocessorError,
@@ -444,7 +446,8 @@ def _edit_design_image_for_job(
 
 HOST = os.environ.get("ORCASLICER_AI_SIDECAR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ORCASLICER_AI_SIDECAR_PORT", "18764"))
-SIDECAR_VERSION = "orcaslicer-ai-sidecar-v9"
+SIDECAR_VERSION = "orcaslicer-ai-sidecar-v11"
+_TEXT_CAPABILITIES = TextCapabilityApplication()
 SIDECAR_INSTANCE_ID = str(uuid.uuid4())
 SIDECAR_SESSION_NONCE = secrets.token_hex(32)
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -1355,6 +1358,16 @@ class Handler(BaseHTTPRequestHandler):
             raise RequestError("invalid_request", "Request body must be a JSON object.", 400)
         return parsed
 
+    def _read_text_capability_request(self) -> tuple[dict[str, Any], bytes | None]:
+        content_type = self.headers.get("Content-Type", "")
+        media_type = content_type.split(";", 1)[0].strip().lower()
+        if media_type == "application/json":
+            return self._read_model_json(), None
+        body = self._read_body(MAX_MULTIPART_BYTES)
+        return parse_text_capability_multipart(
+            content_type, body, max_request_bytes=MAX_REQUEST_BYTES, max_image_bytes=MAX_IMAGE_BYTES
+        )
+
     def _read_image_multipart(self) -> tuple[dict[str, str], bytes, str]:
         content_type = self.headers.get("Content-Type", "")
         if len(content_type) > 1024 or not content_type.lower().startswith("multipart/form-data;"):
@@ -1466,6 +1479,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed_path = urlsplit(self.path)
+        if parsed_path.path == "/v1/orcaslicer/text-capabilities/image_prompt_polish":
+            if not self._require_native_client():
+                return
+            self.send_json(200, _TEXT_CAPABILITIES.availability())
+            return
         if parsed_path.path == "/v1/orcaslicer/model-provider-catalog":
             if not self._require_native_client():
                 return
@@ -1688,6 +1706,20 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(201, {"event": record})
             except RequestError as exc:
                 self._model_error(exc.status, exc.code, exc.message, exc.retryable)
+            return
+
+        if self.path == "/v1/orcaslicer/text-capabilities/image_prompt_polish":
+            if not self._require_native_client():
+                return
+            try:
+                request, image = self._read_text_capability_request()
+                self.send_json(200, _TEXT_CAPABILITIES.execute("image_prompt_polish", request, image=image))
+            except RequestError as exc:
+                self._model_error(exc.status, exc.code, exc.message, exc.retryable)
+            except TextCapabilityError as exc:
+                self.send_json(exc.status, {"error": {"code": exc.code, "message": exc.message,
+                                                       "retryable": exc.retryable},
+                                            "diagnostic_id": exc.diagnostic_id})
             return
 
         if self.path == "/v1/orcaslicer/model-check":

@@ -75,7 +75,7 @@
   },
   "runtime_contract": {
     "protocol_version": 2,
-    "sidecar_version": "orcaslicer-ai-sidecar-v9",
+    "sidecar_version": "orcaslicer-ai-sidecar-v11",
     "product_port": 18764,
     "development_ports": {
       "model_generation": 18765,
@@ -90,6 +90,7 @@
     "target_contract_root": "src/slic3r/AI/Contracts",
     "feature_hosts": {
       "desktop": "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
+      "text": "src/slic3r/GUI/AI/Text/AITextFeatureHost.hpp",
       "model_generation": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp",
       "smart_slicing": "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp"
     },
@@ -116,8 +117,8 @@
         "max_net_added_lines": 38
       },
       "src/slic3r/CMakeLists.txt": {
-        "max_added_lines": 55,
-        "max_net_added_lines": 55
+        "max_added_lines": 60,
+        "max_net_added_lines": 58
       },
       "src/slic3r/GUI/MainFrame.cpp": {
         "max_added_lines": 70,
@@ -176,6 +177,7 @@
       "src/slic3r/GUI/TroubleshootDialog.cpp"
     ],
     "shared_runtime_owned_paths": [
+      "src/slic3r/GUI/AI/Text",
       "src/slic3r/GUI/AIServiceManager.cpp",
       "src/slic3r/GUI/AIServiceManager.hpp",
       "src/slic3r/GUI/AISidecarClient.cpp",
@@ -187,7 +189,11 @@
       "tools/ai/orca_ai_build_info.json.in",
       "tools/ai/orca_ai_installed_bootstrap.py",
       "tools/ai/orca_ai_runtime_dependencies.json.in",
-      "tools/ai/verify_bundled_runtime.py"
+      "tools/ai/verify_bundled_runtime.py",
+      "tools/ai/text_capability_application.py",
+      "tools/ai/text_capability_transport.py",
+      "tools/ai/yoyoclaw_client.py",
+      "tools/ai/yoyoclaw_text_gateway.py"
     ],
     "model_generation_owned_paths": [
       "src/slic3r/AI/ModelGeneration",

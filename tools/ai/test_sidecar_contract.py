@@ -101,6 +101,143 @@ def temporary_environment(**values):
 
 
 class SidecarHealthContractTests(unittest.TestCase):
+    def test_text_capability_routes_require_native_client_and_keep_contract_separate(self):
+        endpoint = "/v1/orcaslicer/text-capabilities/image_prompt_polish"
+        availability = {
+            "capability": "image_prompt_polish", "available": True,
+            "reason": "", "diagnostic_id": str(uuid.uuid4()),
+        }
+        result = {
+            "status": "success", "optimized_prompt": "一只完整的猫。",
+            "warnings": [], "diagnostic_id": str(uuid.uuid4()),
+        }
+        with temporary_environment(ORCASLICER_AI_SESSION_TOKEN=None, ORCASLICER_AI_REQUIRE_SESSION=None), \
+             mock.patch.object(PRODUCTION._TEXT_CAPABILITIES, "availability", return_value=availability) as status, \
+             mock.patch.object(PRODUCTION._TEXT_CAPABILITIES, "execute", return_value=result) as execute, \
+             sidecar_server(PRODUCTION.Handler) as port:
+            url = f"http://127.0.0.1:{port}{endpoint}"
+            with self.assertRaises(urllib.error.HTTPError) as denied:
+                urllib.request.urlopen(url, timeout=5)
+            self.assertEqual(denied.exception.code, 401)
+
+            headers = {"X-OrcaSlicer-Client": "native"}
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=5) as response:
+                self.assertEqual(json.load(response), availability)
+
+            body = {
+                "has_reference_image": False,
+                "user_description": "猫", "intended_use": "generate_2d_design_image",
+                "constraints": ["主体完整呈现", "背景使用纯色", "尽量减少主体被遮挡"],
+            }
+            request = urllib.request.Request(
+                url, data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                headers={**headers, "Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                self.assertEqual(json.load(response), result)
+
+        status.assert_called_once_with()
+        execute.assert_called_once_with("image_prompt_polish", body, image=None)
+
+    def test_text_capability_multipart_passes_reference_image_without_a_local_path(self):
+        body = {
+            "has_reference_image": True,
+            "user_description": "把衣服改成蓝色",
+            "intended_use": "generate_2d_design_image",
+            "constraints": ["主体完整呈现", "背景使用纯色", "尽量减少主体被遮挡"],
+        }
+        image = valid_png_bytes()
+        request_body, content_type = multipart_image_request(
+            {"request": json.dumps(body, ensure_ascii=False)}, image
+        )
+        result = {
+            "status": "success", "optimized_prompt": "把参考图中的衣服改成蓝色。",
+            "warnings": [], "diagnostic_id": str(uuid.uuid4()),
+        }
+        with temporary_environment(ORCASLICER_AI_SESSION_TOKEN=None, ORCASLICER_AI_REQUIRE_SESSION=None), \
+             mock.patch.object(PRODUCTION._TEXT_CAPABILITIES, "execute", return_value=result) as execute, \
+             sidecar_server(PRODUCTION.Handler) as port:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/orcaslicer/text-capabilities/image_prompt_polish",
+                data=request_body,
+                headers={"X-OrcaSlicer-Client": "native", "Content-Type": content_type},
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                self.assertEqual(json.load(response), result)
+
+        execute.assert_called_once_with("image_prompt_polish", body, image=image)
+
+    def test_text_capability_multipart_rejects_missing_request_oversized_and_unsupported_images(self):
+        endpoint = "/v1/orcaslicer/text-capabilities/image_prompt_polish"
+        body = {
+            "has_reference_image": True,
+            "user_description": "改成蓝色",
+            "intended_use": "generate_2d_design_image",
+            "constraints": ["主体完整呈现", "背景使用纯色", "尽量减少主体被遮挡"],
+        }
+        with temporary_environment(ORCASLICER_AI_SESSION_TOKEN=None, ORCASLICER_AI_REQUIRE_SESSION=None), \
+             sidecar_server(PRODUCTION.Handler) as port:
+            url = f"http://127.0.0.1:{port}{endpoint}"
+
+            missing_body, missing_type = multipart_image_request({}, valid_png_bytes())
+            missing = urllib.request.Request(
+                url, data=missing_body,
+                headers={"X-OrcaSlicer-Client": "native", "Content-Type": missing_type},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as missing_error:
+                urllib.request.urlopen(missing, timeout=5)
+            self.assertEqual(missing_error.exception.code, 400)
+            self.assertEqual(json.loads(missing_error.exception.read())["error"]["code"], "invalid_request")
+
+            oversized_body, oversized_type = multipart_image_request(
+                {"request": json.dumps(body, ensure_ascii=False)}, valid_png_bytes()
+            )
+            oversized = urllib.request.Request(
+                url, data=oversized_body,
+                headers={"X-OrcaSlicer-Client": "native", "Content-Type": oversized_type},
+            )
+            with mock.patch.object(PRODUCTION, "MAX_IMAGE_BYTES", 4), \
+                 self.assertRaises(urllib.error.HTTPError) as oversized_error:
+                urllib.request.urlopen(oversized, timeout=5)
+            self.assertEqual(oversized_error.exception.code, 413)
+            self.assertEqual(json.loads(oversized_error.exception.read())["error"]["code"], "request_too_large")
+
+            gif = BytesIO()
+            Image.new("RGB", (32, 32), "red").save(gif, format="GIF")
+            unsupported_body, unsupported_type = multipart_image_request(
+                {"request": json.dumps(body, ensure_ascii=False)}, gif.getvalue()
+            )
+            unsupported = urllib.request.Request(
+                url, data=unsupported_body,
+                headers={"X-OrcaSlicer-Client": "native", "Content-Type": unsupported_type},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as unsupported_error:
+                urllib.request.urlopen(unsupported, timeout=5)
+            self.assertEqual(unsupported_error.exception.code, 415)
+            self.assertEqual(
+                json.loads(unsupported_error.exception.read())["error"]["code"],
+                "unsupported_reference_image",
+            )
+
+    def test_text_capability_errors_include_diagnostic_id(self):
+        diagnostic_id = str(uuid.uuid4())
+        error = PRODUCTION.TextCapabilityError(
+            "preferred_text_model_unavailable", "YOYOClaw 文本能力当前不可用。", 503, False, diagnostic_id
+        )
+        with temporary_environment(ORCASLICER_AI_SESSION_TOKEN=None, ORCASLICER_AI_REQUIRE_SESSION=None), \
+             mock.patch.object(PRODUCTION._TEXT_CAPABILITIES, "execute", side_effect=error), \
+             sidecar_server(PRODUCTION.Handler) as port:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/orcaslicer/text-capabilities/image_prompt_polish",
+                data=b"{}", headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(request, timeout=5)
+            payload = json.loads(raised.exception.read())
+        self.assertEqual(raised.exception.code, 503)
+        self.assertEqual(payload["error"]["code"], "preferred_text_model_unavailable")
+        self.assertEqual(payload["diagnostic_id"], diagnostic_id)
+
     def test_provider_catalogs_probe_each_role_without_cross_provider_dependencies(self):
         token = "a5" * 32
         proof = hmac.new(token.encode(), f"client:{PRODUCTION.SIDECAR_SESSION_NONCE}".encode(), hashlib.sha256).hexdigest()

@@ -317,7 +317,7 @@ $sourceHead = (& git -C $repoRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $sourceHead -notmatch '^[a-f0-9]{40}$') { throw 'Cannot determine source commit.' }
 if ($identity.schema_version -ne 1 -or $identity.application_commit -ne $sourceHead -or
     $identity.package_revision -ne $Revision -or $identity.distribution_channel -ne 'internal' -or
-    $identity.sidecar_protocol_version -ne 2 -or $identity.sidecar_version -ne 'orcaslicer-ai-sidecar-v9') {
+    $identity.sidecar_protocol_version -ne 2 -or $identity.sidecar_version -ne 'orcaslicer-ai-sidecar-v11') {
     throw 'Installed AI build identity does not match this local source and revision.'
 }
 foreach ($name in @('orca_ai_build_info.json', 'orca_ai_runtime_dependencies.json')) {

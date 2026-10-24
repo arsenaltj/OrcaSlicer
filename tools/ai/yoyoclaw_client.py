@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import hmac
+import json
 import os
 from pathlib import Path
 import secrets
@@ -91,6 +92,10 @@ def _require_aesgcm() -> Any:
 
 def _is_requests_error(error: BaseException) -> bool:
     return requests is not None and isinstance(error, requests.RequestException)
+
+
+def _is_requests_timeout(error: BaseException) -> bool:
+    return requests is not None and isinstance(error, requests.Timeout)
 
 
 @dataclass(frozen=True)
@@ -402,7 +407,7 @@ class YoYoClawClient:
         )
 
     def whitelist_catalog(self, library: str) -> dict[str, Any]:
-        if library not in {"image-model-library", "3d-model-library"}:
+        if library not in {"model-library", "image-model-library", "3d-model-library"}:
             raise YoYoClawError("Unsupported YOYOClaw model library.", code="invalid_model_request", category="validation")
         data = self.api("GET", f"/yoyoclaw/model/{library}/whitelist", timeout=60)
         if isinstance(data, list):
@@ -432,6 +437,184 @@ class YoYoClawClient:
     def whitelist(self, library: str) -> list[dict[str, Any]]:
         """Return the model rows while keeping the legacy client contract."""
         return self.whitelist_catalog(library)["models"]
+
+    @staticmethod
+    def _text_from_non_stream_response(result: Any) -> str:
+        if not isinstance(result, Mapping):
+            raise YoYoClawError(
+                "YOYOClaw returned an invalid text response.",
+                code="invalid_provider_response", category="provider",
+            )
+        if result.get("code") not in (None, "OK"):
+            raise YoYoClawError(
+                "YOYOClaw text request failed.",
+                code=str(result.get("code") or "provider_http_error")[:100],
+                category="provider",
+            )
+        value = result.get("data", result)
+        choices = value.get("choices", []) if isinstance(value, Mapping) else []
+        chunks: list[str] = []
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, Mapping):
+                    continue
+                message = choice.get("message", choice.get("delta", {}))
+                content = message.get("content") if isinstance(message, Mapping) else None
+                if isinstance(content, str):
+                    chunks.append(content)
+        if not chunks:
+            raise YoYoClawError(
+                "YOYOClaw text response did not contain message content.",
+                code="invalid_provider_response", category="provider",
+            )
+        return "".join(chunks)
+
+    @staticmethod
+    def _text_from_sse_response(response: Any) -> str:
+        answer: list[str] = []
+        event_data: list[str] = []
+        saw_done = False
+
+        def consume(data: str) -> None:
+            nonlocal saw_done
+            if not data:
+                return
+            if data.strip() == "[DONE]":
+                saw_done = True
+                return
+            try:
+                event = json.loads(data)
+            except (TypeError, json.JSONDecodeError):
+                raise YoYoClawError(
+                    "YOYOClaw returned malformed SSE data.",
+                    code="invalid_provider_response", category="provider",
+                ) from None
+            if not isinstance(event, Mapping):
+                raise YoYoClawError(
+                    "YOYOClaw returned an invalid SSE event.",
+                    code="invalid_provider_response", category="provider",
+                )
+            if event.get("code") not in (None, "OK"):
+                raise YoYoClawError(
+                    "YOYOClaw text stream reported an error.",
+                    code=str(event.get("code") or "provider_http_error")[:100],
+                    category="provider",
+                )
+            value = event.get("data", event)
+            choices = value.get("choices", []) if isinstance(value, Mapping) else []
+            if not isinstance(choices, list):
+                return
+            for choice in choices:
+                if not isinstance(choice, Mapping):
+                    continue
+                delta = choice.get("delta", {})
+                content = delta.get("content") if isinstance(delta, Mapping) else None
+                if isinstance(content, str) and content:
+                    answer.append(content)
+
+        try:
+            lines = response.iter_lines(decode_unicode=True)
+            for raw_line in lines:
+                if raw_line is None:
+                    continue
+                line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else str(raw_line)
+                if line == "":
+                    consume("\n".join(event_data))
+                    event_data.clear()
+                    continue
+                if line.startswith(":"):
+                    continue
+                if line.startswith("data:"):
+                    event_data.append(line[5:].lstrip())
+            if event_data:
+                consume("\n".join(event_data))
+        except YoYoClawError:
+            raise
+        except Exception as exc:
+            if _is_requests_error(exc):
+                raise YoYoClawError(
+                    "YOYOClaw text stream timed out." if _is_requests_timeout(exc)
+                    else "YOYOClaw text stream was interrupted.",
+                    code="provider_timeout" if _is_requests_timeout(exc) else "provider_connection_failed",
+                    category="availability" if _is_requests_timeout(exc) else "network",
+                ) from None
+            raise
+        if not saw_done:
+            raise YoYoClawError(
+                "YOYOClaw text stream ended before its completion marker.",
+                code="incomplete_provider_response", category="network",
+            )
+        if not answer:
+            raise YoYoClawError(
+                "YOYOClaw text stream did not contain answer content.",
+                code="invalid_provider_response", category="provider",
+            )
+        return "".join(answer)
+
+    def text_chat(self, model: str, messages: list[dict[str, Any]], *, timeout: float = 180.0) -> str:
+        self._ensure_token()
+        payload = {
+            "provider": "model-library",
+            "model": model,
+            "messages": messages,
+            "stream": True,
+        }
+        session = self._session
+        if session is None:
+            _require_requests()
+            raise AssertionError("requests session initialization failed")
+        headers = {
+            "Accept": "text/event-stream, application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._access_token}",
+        }
+        if self._fingerprint:
+            headers["X-HCLAW-Device-Fingerprint"] = self._fingerprint
+        try:
+            response = session.request(
+                "POST", self.base_url + "/yoyoclaw/model/chat/completions",
+                data=_json_bytes(payload), headers=headers, timeout=(15, timeout),
+                allow_redirects=False, stream=True,
+            )
+        except Exception as exc:
+            if _is_requests_error(exc):
+                raise YoYoClawError(
+                    "YOYOClaw text request timed out." if _is_requests_timeout(exc)
+                    else "YOYOClaw text request failed.",
+                    code="provider_timeout" if _is_requests_timeout(exc) else "provider_connection_failed",
+                    category="availability" if _is_requests_timeout(exc) else "network",
+                ) from None
+            raise
+
+        try:
+            status = int(getattr(response, "status_code", 0) or 0)
+            if not 200 <= status < 300:
+                try:
+                    result = response.json()
+                except (ValueError, TypeError):
+                    result = {}
+                error = result.get("error") if isinstance(result, Mapping) and isinstance(result.get("error"), Mapping) else {}
+                provider_code = error.get("code") or (result.get("code") if isinstance(result, Mapping) else None)
+                provider_code = provider_code if isinstance(provider_code, str) and len(provider_code) <= 100 else "provider_http_error"
+                category = "authentication" if status in {401, 403} else "rate_limit" if status == 429 else "network" if status >= 500 else "provider"
+                raise YoYoClawError(
+                    f"YOYOClaw text request failed (HTTP {status}, code={provider_code}).",
+                    code=provider_code, category=category, retryable=False, status=status,
+                )
+            content_type = str(getattr(response, "headers", {}).get("Content-Type", "")).lower()
+            if "json" in content_type:
+                try:
+                    return self._text_from_non_stream_response(response.json())
+                except (ValueError, TypeError):
+                    raise YoYoClawError(
+                        "YOYOClaw returned a non-JSON text response.",
+                        code="invalid_provider_response", category="provider",
+                    ) from None
+            return self._text_from_sse_response(response)
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
 
     def generate_image(self, model: str, prompt: str, image_path: Path | None = None) -> str:
         content: list[dict[str, str]] = []
