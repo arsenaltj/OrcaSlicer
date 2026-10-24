@@ -1,5 +1,6 @@
 #pragma once
 
+#include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "ModelGenerationHost.hpp"
 #include "PostGenerationWorkbenchState.hpp"
 #include "WorkbenchImportSession.hpp"
@@ -41,6 +42,9 @@ public:
     void set_state_listener(ModelGenerationUIStateListener listener);
     bool synchronize_input(const ModelGenerationUIInput& input);
     bool synchronize_options(const ModelGenerationUIOptions& options);
+    void get_provider_catalog(const std::string& role, const std::string& provider,
+                              AIModelGenerationClient::CatalogFn on_complete,
+                              AIModelGenerationClient::ErrorFn on_error);
     bool request_generate_design();
     bool request_generate_model();
     bool request_retry_model();

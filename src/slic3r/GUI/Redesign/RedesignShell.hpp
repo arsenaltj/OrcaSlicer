@@ -8,6 +8,8 @@
 #include "../AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "../AI/ModelGeneration/WorkbenchImportSession.hpp"
 #include "../AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
+#include "../AI/Text/AITextClient.hpp"
+#include "../AI/Text/AITextPolishState.hpp"
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 
 #include <boost/filesystem/path.hpp>
@@ -42,6 +44,8 @@ class WorkbenchLabel;
 
 enum class AIServiceStatus;
 class ModelGenerationFeatureHost;
+class AITextFeatureHost;
+class RoundedActionButton;
 class UploadThumbnail;
 class ImagePreview;
 class ModelPreview3D;
@@ -61,7 +65,7 @@ public:
     enum class Page { Assets, Image, Model, Print };
 
     explicit RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model_generation_host = nullptr,
-                           Plater* plater = nullptr);
+                           Plater* plater = nullptr, AITextFeatureHost* text_feature_host = nullptr);
     ~RedesignShell() override;
     void disconnect_model_generation_host();
 
@@ -98,8 +102,29 @@ private:
     bool synchronize_generation_options();
     bool generation_input_editable() const;
     void refresh_prompt_count();
+    void refresh_text_capability(bool sidecar_compatible);
+    void request_prompt_polish();
+    void finish_prompt_polish(std::uint64_t sequence, const std::string& prompt,
+                              std::uint64_t image_generation, bool has_reference_image,
+                              const std::string& job_id,
+                              std::uint64_t model_session, AITextClient::PolishResult result);
+    void fail_prompt_polish(std::uint64_t sequence, const std::string& prompt,
+                            std::uint64_t image_generation, bool has_reference_image,
+                            const std::string& job_id,
+                            std::uint64_t model_session, AITextClient::Error error);
+    bool prompt_polish_request_matches(const std::string& prompt,
+                                       std::uint64_t image_generation, bool has_reference_image,
+                                       const std::string& job_id, std::uint64_t model_session) const;
+    void discard_stale_prompt_polish(std::uint64_t sequence, bool clear_original);
+    void cancel_prompt_polish(bool clear_original);
+    void restore_original_prompt();
+    void refresh_prompt_polish_controls();
     void apply_generation_options(const ModelGenerationUIOptions& options);
     void on_generation_option_changed();
+    void refresh_provider_catalog();
+    void apply_provider_catalog(const AIModelGenerationClient::ProviderCatalog& catalog,
+                                const std::string& error = {});
+    void refresh_provider_choice(bool geometry_mode);
     bool request_open_history(const std::string& job_id);
     void request_generate_design();
     void request_generate_model();
@@ -274,6 +299,9 @@ private:
     UploadThumbnail* m_upload_thumbnail { nullptr };
     wxTextCtrl* m_prompt { nullptr };
     wxStaticText* m_prompt_count { nullptr };
+    RoundedActionButton* m_prompt_polish_button { nullptr };
+    wxStaticText* m_prompt_polish_status { nullptr };
+    wxStaticText* m_restore_prompt { nullptr };
     wxPanel* m_guide_panel { nullptr };
     wxPanel* m_preview_host { nullptr };
     wxPanel* m_source_preview_card { nullptr };
@@ -311,9 +339,22 @@ private:
     std::uint64_t m_model_preview_request_generation { 0 };
     std::thread m_model_preview_worker;
     ModelGenerationFeatureHost* m_model_generation_host { nullptr };
+    AITextFeatureHost* m_text_feature_host { nullptr };
+    std::shared_ptr<AITextClient::RequestHandle> m_text_availability_request;
+    std::shared_ptr<AITextClient::RequestHandle> m_prompt_polish_request;
+    AITextPolishState m_prompt_polish_state;
+    std::uint64_t m_text_availability_sequence { 0 };
+    bool m_prompt_polish_available { false };
+    std::string m_prompt_polish_unavailable_reason;
     ModelGenerationUIState m_model_generation_state;
     ImageDesignDraft m_image_design_draft;
     ModelGenerationUIOptions m_generation_options;
+    AIModelGenerationClient::ProviderCatalog m_provider_catalog;
+    std::uint64_t m_provider_catalog_sequence { 0 };
+    std::string m_provider_catalog_role;
+    std::string m_provider_catalog_provider;
+    bool m_generation_geometry_mode { false };
+    int m_last_service_status { 0 };
     Page m_active_page { Page::Image };
     // Keep the semantic workspace request, not only the visual host. Several
     // legacy requests (Prepare, Preview, Monitor and Multi-device) currently

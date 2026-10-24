@@ -63,7 +63,7 @@ function Assert-NoVerifiedMarker($Fixture) {
 
 function Add-MinimalRuntime($Fixture) {
     foreach ($name in @('orca-slicer.exe', 'OrcaSlicer.dll', 'python/python.exe', 'python/pythonw.exe',
-        'python/python312.dll', 'resources/tools/uv/uv.exe',
+        'python/python312.dll', 'python/python3.dll', 'resources/tools/uv/uv.exe',
         'resources/images/OrcaSlicer_gradient_circle.svg', 'resources/i18n/zh_CN/OrcaSlicer.mo',
         'resources/i18n/zh_TW/OrcaSlicer.mo', 'resources/tools/ai/orca_ai_build_info.json',
         'resources/tools/ai/orca_ai_runtime_dependencies.json')) {
@@ -125,7 +125,7 @@ try {
         Assert-Rejected $fx 'Required runtime file is missing: orca-slicer.exe'
         Assert-NoVerifiedMarker $fx
     }
-    foreach ($missing in @('OrcaSlicer.dll', 'python/python312.dll', 'resources/tools/uv/uv.exe',
+    foreach ($missing in @('OrcaSlicer.dll', 'python/python312.dll', 'python/python3.dll', 'resources/tools/uv/uv.exe',
         'resources/images/OrcaSlicer_gradient_circle.svg', 'resources/i18n/zh_CN/OrcaSlicer.mo',
         'resources/tools/ai/orca_ai_build_info.json')) {
         $caseName = 'missing-' + $missing.Replace('/', '-').Replace('.', '-')

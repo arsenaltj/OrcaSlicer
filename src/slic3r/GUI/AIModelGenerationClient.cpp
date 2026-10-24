@@ -292,6 +292,8 @@ void AIModelGenerationClient::preprocess_text(const std::string& request_id, con
     post_json("/v1/orcaslicer/model-jobs/text",
               json::object({ { "request_id", request_id }, { "prompt", prompt }, { "palette", palette },
                              { "provider", options.provider }, { "face_limit", options.face_limit },
+                             { "design_provider", options.design_provider }, { "design_model", options.design_model },
+                             { "geometry_model", options.geometry_model },
                              { "geometry_quality", options.geometry_quality }, { "texture_quality", options.texture_quality },
                              { "output_format", options.output_format },
                              { "palette_roles", palette_roles }, { "style", style },
@@ -325,6 +327,9 @@ void AIModelGenerationClient::preprocess_image(const std::string& request_id, co
         .size_limit(1024 * 1024)
         .form_add("request_id", request_id)
         .form_add("provider", options.provider)
+        .form_add("design_provider", options.design_provider)
+        .form_add("design_model", options.design_model)
+        .form_add("geometry_model", options.geometry_model)
         .form_add("face_limit", std::to_string(options.face_limit))
         .form_add("geometry_quality", options.geometry_quality)
         .form_add("texture_quality", options.texture_quality)
@@ -357,6 +362,8 @@ void AIModelGenerationClient::recommend_text_palette(const std::string& request_
     post_json("/v1/orcaslicer/model-jobs/recommend-text-palette",
               json::object({ { "request_id", request_id }, { "prompt", prompt }, { "style", style },
                              { "provider", options.provider }, { "face_limit", options.face_limit },
+                             { "design_provider", options.design_provider }, { "design_model", options.design_model },
+                             { "geometry_model", options.geometry_model },
                              { "geometry_quality", options.geometry_quality }, { "texture_quality", options.texture_quality },
                              { "output_format", options.output_format },
                              { "custom_style", custom_style },
@@ -387,6 +394,9 @@ void AIModelGenerationClient::recommend_image_palette(const std::string& request
         .size_limit(1024 * 1024)
         .form_add("request_id", request_id)
         .form_add("provider", options.provider)
+        .form_add("design_provider", options.design_provider)
+        .form_add("design_model", options.design_model)
+        .form_add("geometry_model", options.geometry_model)
         .form_add("face_limit", std::to_string(options.face_limit))
         .form_add("geometry_quality", options.geometry_quality)
         .form_add("texture_quality", options.texture_quality)
@@ -488,6 +498,7 @@ void AIModelGenerationClient::generate(const std::string& job_id, const std::str
     post_json("/v1/orcaslicer/model-jobs/" + job_id + "/generate",
                json::object({ { "prepared_prompt", prepared_prompt }, { "palette", palette },
                               { "provider", options.provider },
+                              { "geometry_model", options.geometry_model },
                               { "face_limit", options.face_limit },
                               { "geometry_quality", options.geometry_quality },
                               { "texture_quality", options.texture_quality },
@@ -501,6 +512,8 @@ void AIModelGenerationClient::update_generation_options(const std::string& job_i
 {
     post_json("/v1/orcaslicer/model-jobs/" + job_id + "/generation-options",
               json::object({ { "provider", options.provider }, { "face_limit", options.face_limit },
+                             { "design_provider", options.design_provider }, { "design_model", options.design_model },
+                             { "geometry_model", options.geometry_model },
                              { "geometry_quality", options.geometry_quality },
                              { "texture_quality", options.texture_quality },
                              { "output_format", options.output_format } }),
@@ -573,6 +586,72 @@ void AIModelGenerationClient::get_latest(LatestFn on_complete, ErrorFn on_error)
         if (on_error) on_error(error_message(body, error, status));
     });
     m_active_request = http.perform();
+}
+
+void AIModelGenerationClient::get_provider_catalog(const std::string& role, const std::string& provider,
+                                                   CatalogFn on_complete, ErrorFn on_error)
+{
+    if (!is_loopback_endpoint(m_endpoint)) {
+        if (on_error)
+            on_error("Model generation requires a loopback AI sidecar endpoint.");
+        return;
+    }
+    if (role != "image" && role != "geometry") {
+        if (on_error)
+            on_error("The provider catalog role is invalid.");
+        return;
+    }
+    if ((role == "image" && provider != "gpt" && provider != "yoyoclaw") ||
+        (role == "geometry" && provider != "tripo" && provider != "yoyoclaw")) {
+        if (on_error) on_error("The provider is invalid for this catalog role.");
+        return;
+    }
+    const std::string path = "/v1/orcaslicer/model-provider-catalog?role=" + role + "&provider=" + provider;
+    get_json(path,
+             [role, provider, on_complete = std::move(on_complete), on_error](std::string body) mutable {
+                 const auto parsed = json::parse(body, nullptr, false);
+                 if (parsed.is_discarded() || !parsed.is_object()) {
+                     if (on_error) on_error("AI sidecar returned an invalid provider catalog.");
+                     return;
+                 }
+                 ProviderCatalog catalog;
+                 catalog.role = parsed.value("role", std::string());
+                 catalog.provider = parsed.value("provider", std::string());
+                 catalog.state = parsed.value("state", std::string("error"));
+                 catalog.default_model = parsed.value("default_model", std::string());
+                 catalog.connection_state = parsed.value("connection_state", std::string());
+                 if (catalog.connection_state.empty()) {
+                     catalog.connection_state = catalog.state == "ready"
+                         ? (provider == "yoyoclaw" ? "connected" : "configured")
+                         : catalog.state;
+                 }
+                 if (parsed.contains("error") && parsed["error"].is_object()) {
+                     catalog.error_code = parsed["error"].value("code", std::string());
+                     catalog.error_message = parsed["error"].value("message", std::string());
+                     catalog.retryable = parsed["error"].value("retryable", false);
+                 }
+                 if (parsed.contains("models") && parsed["models"].is_array()) {
+                     for (const auto& item : parsed["models"]) {
+                         if (!item.is_object()) continue;
+                         const std::string id = item.value("id", std::string());
+                         const std::string name = item.value("name", std::string());
+                         if (id.empty() || id.size() > 256 || name.empty() || name.size() > 256) continue;
+                         catalog.models.push_back({id, name, item.value("available", true)});
+                         if (catalog.models.size() >= 64) break;
+                     }
+                 }
+                 const bool valid_connection_state = catalog.connection_state == "connected" ||
+                     catalog.connection_state == "configured" || catalog.connection_state == "not_configured" ||
+                     catalog.connection_state == "checking" || catalog.connection_state == "empty" ||
+                     catalog.connection_state == "error";
+                 if (catalog.role != role || catalog.provider != provider || catalog.state.empty() ||
+                     !valid_connection_state) {
+                     if (on_error) on_error("AI sidecar returned an incomplete provider catalog.");
+                     return;
+                 }
+                 if (on_complete) on_complete(std::move(catalog));
+             },
+             std::move(on_error), 30);
 }
 
 void AIModelGenerationClient::recheck(const std::string& job_id, StatusFn on_complete, ErrorFn on_error)
@@ -744,6 +823,21 @@ void AIModelGenerationClient::post_json(const std::string& path, const json& bod
     m_active_request = http.perform();
 }
 
+void AIModelGenerationClient::get_json(const std::string& path, std::function<void(std::string)> on_complete,
+                                       ErrorFn on_error, long timeout_seconds)
+{
+    auto http = Http::get(url(path));
+    AISidecarClient::configure_native_request(http);
+    http.timeout_connect(5).timeout_max(timeout_seconds).size_limit(256 * 1024);
+    http.on_complete([on_complete = std::move(on_complete)](std::string response, unsigned) mutable {
+        if (on_complete) on_complete(std::move(response));
+    });
+    http.on_error([on_error = std::move(on_error)](std::string response, std::string error, unsigned status) {
+        if (on_error) on_error(error_message(response, error, status));
+    });
+    m_catalog_request = http.perform();
+}
+
 void AIModelGenerationClient::parse_status_response(std::string body, StatusFn on_complete, ErrorFn on_error)
 {
     auto parsed = json::parse(body, nullptr, false);
@@ -768,8 +862,17 @@ AIModelGenerationClient::GenerationOptions AIModelGenerationClient::restore_gene
     GenerationOptions options;
     if (!saved.is_object())
         return options;
-    if (saved.contains("provider") && saved["provider"].is_string())
-        options.provider = saved["provider"].get<std::string>();
+    if (saved.contains("provider") && saved["provider"].is_string()) {
+        const std::string provider = saved["provider"].get<std::string>();
+        if (provider == "tripo" || provider == "yoyoclaw")
+            options.provider = provider;
+    }
+    if (saved.contains("design_provider") && saved["design_provider"].is_string())
+        options.design_provider = saved["design_provider"].get<std::string>();
+    if (saved.contains("design_model") && saved["design_model"].is_string())
+        options.design_model = saved["design_model"].get<std::string>();
+    if (saved.contains("geometry_model") && saved["geometry_model"].is_string())
+        options.geometry_model = saved["geometry_model"].get<std::string>();
     if (saved.contains("face_limit")) {
         const auto& face_limit = saved["face_limit"];
         // JSON integers may be stored as either signed or unsigned values.
@@ -958,9 +1061,11 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
         const std::string provider = tasks.value("provider", std::string());
         const std::string generation_task_id = tasks.value("generation_task_id", std::string());
         const std::string conversion_task_id = tasks.value("conversion_task_id", std::string());
-        if ((provider == "tripo" || provider == "hunyuan") && valid_provider_task_id(generation_task_id)) {
+        if ((provider == "tripo" || provider == "yoyoclaw") && valid_provider_task_id(generation_task_id)) {
             status.provider_name = provider;
             status.generation_options.provider = provider;
+            if (tasks.contains("model") && tasks["model"].is_string())
+                status.generation_options.geometry_model = tasks["model"].get<std::string>();
             status.provider_task_id = generation_task_id;
             if (valid_provider_task_id(conversion_task_id))
                 status.provider_conversion_task_id = conversion_task_id;

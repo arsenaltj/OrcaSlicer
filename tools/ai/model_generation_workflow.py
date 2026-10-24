@@ -169,7 +169,7 @@ class ModelGenerationWorkflow:
                         provider=job.provider,
                         provider_operation="model_generation",
                         provider_request_id=authorization.request_id,
-                        provider_model="hy-3d-3.1" if job.provider == "hunyuan" else "",
+                        provider_model=job.geometry_model,
                         status="creating",
                         error="",
                     )
@@ -185,6 +185,7 @@ class ModelGenerationWorkflow:
                         geometry_quality=job.geometry_quality,
                         texture_quality=job.texture_quality,
                         output_format=job.output_format,
+                        model_id=job.geometry_model,
                     ),
                     existing_task_id=generation_id,
                     authorization=authorization,
@@ -211,6 +212,7 @@ class ModelGenerationWorkflow:
                     generation_id,
                     stop_event=job.stop_event,
                     progress=self.ports.progress_callback(job, 20, 70),
+                    model_id=job.geometry_model,
                 )
                 self.ports.stop_boundary(job)
                 try:

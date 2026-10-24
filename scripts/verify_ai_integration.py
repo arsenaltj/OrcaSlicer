@@ -92,7 +92,7 @@ EXPECTED_INTEGRATION_RECEIPTS = {
     },
 }
 EXPECTED_PROTOCOL_VERSION = 2
-EXPECTED_SIDECAR_VERSION = "orcaslicer-ai-sidecar-v9"
+EXPECTED_SIDECAR_VERSION = "orcaslicer-ai-sidecar-v11"
 EXPECTED_PRODUCT_PORT = 18764
 EXPECTED_DEVELOPMENT_PORTS = {
     "model_generation": 18765,
@@ -106,6 +106,7 @@ EXPECTED_ARCHITECTURE = {
 }
 EXPECTED_FEATURE_HOSTS = {
     "desktop": "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
+    "text": "src/slic3r/GUI/AI/Text/AITextFeatureHost.hpp",
     "model_generation": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp",
     "smart_slicing": "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp",
 }
@@ -156,6 +157,7 @@ REQUIRED_INTEGRATION_PATHS = {
     "src/slic3r/GUI/Plater.hpp",
 }
 REQUIRED_SHARED_RUNTIME_PATHS = {
+    "src/slic3r/GUI/AI/Text",
     "src/slic3r/GUI/AIServiceManager.cpp",
     "src/slic3r/GUI/AIServiceManager.hpp",
     "src/slic3r/GUI/AISidecarClient.cpp",
@@ -167,7 +169,11 @@ REQUIRED_SHARED_RUNTIME_PATHS = {
     "tools/ai/orca_ai_build_info.json.in",
     "tools/ai/orca_ai_installed_bootstrap.py",
     "tools/ai/orca_ai_runtime_dependencies.json.in",
+    "tools/ai/text_capability_application.py",
+    "tools/ai/text_capability_transport.py",
     "tools/ai/verify_bundled_runtime.py",
+    "tools/ai/yoyoclaw_client.py",
+    "tools/ai/yoyoclaw_text_gateway.py",
 }
 REQUIRED_MODEL_GENERATION_PATHS = {
     "src/slic3r/AI/ModelGeneration",
@@ -216,6 +222,10 @@ SMART_SLICING_CORE_SOURCES = (
 GUI_FEATURE_FILES = (
     "src/slic3r/GUI/AI/AIDesktopFeatureHost.cpp",
     "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
+    "src/slic3r/GUI/AI/Text/AITextClient.cpp",
+    "src/slic3r/GUI/AI/Text/AITextClient.hpp",
+    "src/slic3r/GUI/AI/Text/AITextFeatureHost.cpp",
+    "src/slic3r/GUI/AI/Text/AITextFeatureHost.hpp",
     "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp",
     "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp",
     "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.cpp",

@@ -35,6 +35,7 @@ execute_process(
             --arch "${PYTHON_LAYOUT_ARCH}"
             --copy "${PYTHON_DEST_DIR}"
             --include-dev
+            --include-stable
     WORKING_DIRECTORY "${PYTHON_SOURCE_DIR}"
     RESULT_VARIABLE _layout_result
 )
@@ -47,6 +48,7 @@ set(_required_files
     "${PYTHON_DEST_DIR}/Lib/encodings/__init__.py"
     "${PYTHON_DEST_DIR}/include/Python.h"
     "${PYTHON_DEST_DIR}/python.exe"
+    "${PYTHON_DEST_DIR}/python3.dll"
     "${PYTHON_DEST_DIR}/python${_python_abi}.dll"
     "${PYTHON_DEST_DIR}/libs/python${_python_abi}.lib"
 )

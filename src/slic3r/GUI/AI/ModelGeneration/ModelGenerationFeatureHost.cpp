@@ -222,6 +222,18 @@ bool ModelGenerationFeatureHost::synchronize_options(const ModelGenerationUIOpti
     return m_impl->model_generation != nullptr && m_impl->model_generation->synchronize_ui_options(options);
 }
 
+void ModelGenerationFeatureHost::get_provider_catalog(
+    const std::string& role, const std::string& provider,
+    AIModelGenerationClient::CatalogFn on_complete,
+    AIModelGenerationClient::ErrorFn on_error)
+{
+    if (m_impl->model_generation != nullptr)
+        m_impl->model_generation->get_provider_catalog(role, provider,
+                                                       std::move(on_complete), std::move(on_error));
+    else if (on_error)
+        on_error("Model generation panel is unavailable.");
+}
+
 bool ModelGenerationFeatureHost::request_generate_design()
 {
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_generate_design();

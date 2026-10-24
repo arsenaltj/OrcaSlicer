@@ -89,6 +89,15 @@ GUI 证据：从原候选数据完整克隆独立 datadir `workbench-ui-refresh-
 接受边界：加载中、处理中、候选就绪和加载失败的真实可见瞬间未通过付费生成或人为破坏资产来制造，状态文案/许可仍由定向测试覆盖。GUI 烟测不等同用户视觉接受；真实人像的五官、眉眼、耳发、衣肤边界和整体观感继续待用户确认，实体打印颜色保真继续待实物验证。当前实例保持响应；未提交、推送、打包、提升候选或启用生产入口。
 
 计划变更：新增并完成“3D 模型工作台顶栏与防闪烁整改”工程项，状态更新为代码、Release 构建、定向自动测试和限定真实 GUI 烟测通过；人工视觉与实物打印接受项仍保持独立未结。
+# YOYOCLAW-20261024-PR：生成能力与多模态 AI 润色 PR 已创建（待复核与 CI）
+
+目标：将已完成的 YOYOClaw 2D/3D provider 接入和可复用文本能力提交到 `codex/team/integration`。文本能力默认按实时白名单选择 Auto；缺少 Auto 时依次选择首个合格 Qwen、GLM。有参考图时同时发送图片与描述给多模态文本模型，没有参考图时发送纯文本；润色结果只用于下一步 2D 设计图生成或编辑。请求期间锁定描述和相关输入，成功后直接替换描述并允许恢复首次原文；已有 2D 时按既有输入一致性规则要求重新生成 2D。2D/3D 生成、确认、轮询、下载、历史、产物和 SmartSlicing 规则保持既有边界。
+
+集成范围：2026-10-24 已抓取远端，`origin/codex/team/integration` 为 `47fabfb0658b41de14f1dcbe400a7b07128612ac`，没有待同步的新提交。已有 Draft PR #40 从 `codex/task/gui-workspace-recovery-20261022` 合入 GUI 恢复相关修改；为避免重复，本项使用独立分支 `codex/task/yoyoclaw-generation-polish-20261024`，从上述远端基线仅移植原 YOYOClaw 提交 `9f8fe7592b`、`04524d7110`，不包含 PR #40 的提交。
+
+验收：当前独立分支已重新验证。`scripts/verify_ai_integration.py --json` 返回 `ok: true`；Python 的 YOYOClaw 14/14、文本能力 24/24、Sidecar 78/78、集成守卫 53/53、生成选项 16/16、provider gateway 25/25 通过，测试均使用离线受控传输，未调用真实服务。C++ 筛选 `AIText|ModelGenerationClient|ModelGenerationSubmissionState|UiRedesign|ServiceAvailability` 为 104/104，通过记录为 [`20261024-143459-603`](../../.tmp/dev/logs/20261024-143459-603/result.json)。Windows `dev.ps1 Run -NoLaunch` 的 catalogs、build、install、runtime-check、python-check 五步通过，状态 `PREPARED`、源码身份 `0db012ab31a290c7944aed73db9a306f84d379d4501ee62453d8aae5819280aa`，记录为 [`20261024-152739-825`](../../.tmp/dev/logs/20261024-152739-825/result.json)。`git diff --check` 通过，README 架构生成区为 `README_CURRENT`。本轮未启动应用，旧组合分支上的 GUI 和真实服务结果只作历史参考。
+
+当前状态：再次抓取确认远端基线仍为 `47fabfb0658b41de14f1dcbe400a7b07128612ac`；两笔提交为 `14574f91fe` 和当前多模态 AI 润色提交，冲突已清零且上述验证全部通过。分支已推送到 `origin/codex/task/yoyoclaw-generation-polish-20261024`，并创建目标为 `codex/team/integration` 的 [PR #42](https://github.com/arsenaltj/OrcaSlicer/pull/42)。未跟踪 `.planning/` 未纳入提交。下一步等待候选 CI 和至少一位非作者复核，由维护者按团队 SOP 决定合入；本轮不自动合并。
 
 # 2026-10-22 PR #38：候选推送与 integration 冲突处理
 

@@ -546,10 +546,15 @@ class ModelArtifactWorkflow:
             job.progress = 75
             self.ports.persist(job)
         gateway = self.ports.model_gateway(job.provider)
-        result = gateway.wait_for_task(generation_id, stop_event=job.stop_event)
+        wait_kwargs = {"stop_event": job.stop_event}
+        # YoYoClaw needs the selected model when a task is restored after a
+        # sidecar restart. Tripo retains its existing call shape.
+        if job.provider == "yoyoclaw" and job.geometry_model:
+            wait_kwargs["model_id"] = job.geometry_model
+        result = gateway.wait_for_task(generation_id, **wait_kwargs)
         self.ports.stop_boundary(job)
         raw = directory / "artifact-raw.download"
-        if job.provider == "hunyuan":
+        if job.provider == "yoyoclaw":
             gateway.download_artifact(result, raw, MAX_ARTIFACT_BYTES, output_format=job.output_format)
         else:
             gateway.download_artifact(result, raw, MAX_ARTIFACT_BYTES)

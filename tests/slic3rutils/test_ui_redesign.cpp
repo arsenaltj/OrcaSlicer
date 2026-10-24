@@ -9,6 +9,7 @@
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
 #include "slic3r/GUI/Redesign/ImageDesignDraft.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/DesignGenerationAvailability.hpp"
+#include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "slic3r/GUI/Redesign/RedesignPageTransition.hpp"
 
@@ -18,6 +19,54 @@
 #include <string>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("Design inputs follow the selected provider catalog independently of other providers", "[UiRedesign][GenerationProviderAvailability]")
+{
+    AIModelGenerationClient::ProviderCatalog yoyo {"image", "yoyoclaw", "ready", "image-a",
+        {{"image-a", "Image A", true}, {"image-b", "Image B", true}, {"disabled", "Disabled", false}}, "", "", false};
+    AIModelGenerationClient::ProviderCatalog gpt {"image", "gpt", "not_configured", "", {}, "", "", false};
+    yoyo.connection_state = "connected";
+    gpt.connection_state = "not_configured";
+    PostGenerationUiState workbench;
+    ModelGenerationUIInput input;
+    input.image_path = "reference.png";
+    CHECK(design_generation_available(input, yoyo.supports_model("image-a"), false, workbench, true));
+    CHECK_FALSE(design_generation_available(input, gpt.supports_model(""), false, workbench, true));
+    CHECK(yoyo.supports_model("image-b"));
+    CHECK_FALSE(yoyo.supports_model("disabled"));
+    CHECK_FALSE(yoyo.supports_model("missing"));
+    CHECK_FALSE(yoyo.supports_model(""));
+    CHECK(yoyo.remotely_connected());
+    input.image_path.clear();
+    CHECK_FALSE(design_generation_available(input, yoyo.supports_model("image-a"), false, workbench, true));
+    input.prompt = "a small sculpture";
+    CHECK(design_generation_available(input, yoyo.supports_model("image-a"), false, workbench, true));
+    CHECK_FALSE(design_generation_available(input, yoyo.supports_model("image-a"), true, workbench, true));
+    gpt = {"image", "gpt", "ready", "gpt", {{"gpt", "GPT", true}}, "", "", false};
+    gpt.connection_state = "configured";
+    yoyo.state = "error";
+    CHECK(design_generation_available(input, gpt.supports_model(""), false, workbench, true));
+    CHECK(gpt.ready());
+    CHECK_FALSE(gpt.remotely_connected());
+    CHECK_FALSE(yoyo.supports_model("image-a"));
+}
+
+TEST_CASE("Geometry catalogs require an available model and remain independent of image catalogs", "[UiRedesign][GenerationProviderAvailability]")
+{
+    AIModelGenerationClient::ProviderCatalog geometry {"geometry", "yoyoclaw", "ready", "mesh",
+        {{"mesh", "Mesh", true}}, "", "", false};
+    AIModelGenerationClient::ProviderCatalog image {"image", "yoyoclaw", "empty", "", {}, "", "", false};
+    geometry.connection_state = "connected";
+    CHECK(geometry.supports_model("mesh"));
+    CHECK_FALSE(geometry.supports_model("image-a"));
+    CHECK_FALSE(image.ready());
+    geometry.models[0].available = false;
+    CHECK_FALSE(geometry.ready());
+    CHECK_FALSE(geometry.supports_model("mesh"));
+    geometry.state = "checking";
+    geometry.models[0].available = true;
+    CHECK_FALSE(geometry.supports_model("mesh"));
+}
 
 TEST_CASE("Preview auto-fit waits for a ready viewport and frames each result once", "[UiRedesign][PreviewAutoFit]")
 {
@@ -122,6 +171,14 @@ TEST_CASE("Primary action separates changed 2D inputs from changed 3D options", 
     state.stage = ModelGenerationUIStage::DesignReady;
     state.inputs_match_job = false;
     CHECK(redesign_primary_action(state, state.stage) == RedesignPrimaryAction::Design);
+
+    state.stage = ModelGenerationUIStage::Saving3DOptions;
+    state.design_ready = true;
+    state.inputs_match_job = true;
+    CHECK(redesign_primary_action(state, state.stage) == RedesignPrimaryAction::Model);
+
+    state.inputs_match_job = false;
+    CHECK(redesign_primary_action(state, state.stage) == RedesignPrimaryAction::Design);
 }
 
 TEST_CASE("Historical face targets are displayed without rewriting retained generation options", "[UiRedesign][ModelFaceLimitChoice]")
@@ -140,18 +197,29 @@ TEST_CASE("Historical face targets are displayed without rewriting retained gene
     CHECK(historical.geometry_quality == "detailed");
 }
 
-TEST_CASE("Hunyuan face choices exclude unsupported detailed geometry", "[UiRedesign][ModelFaceLimitChoice]")
+TEST_CASE("Non-Tripo face choices exclude unsupported detailed geometry and retain provider models", "[UiRedesign][ModelFaceLimitChoice]")
 {
     ModelGenerationUIOptions options;
-    options.provider = "hunyuan";
+    options.provider = "yoyoclaw";
+    options.design_provider = "yoyoclaw";
+    options.design_model = "retained-image-model";
+    options.geometry_model = "retained-geometry-model";
+    options.output_format = "obj";
     CHECK(model_face_limit_choices(options) == std::vector<int> {1000000});
     options.texture_quality = "detailed";
     const auto compatible = model_generation_options_for_face_limit(options, 2000000);
     CHECK(compatible.face_limit == 1000000);
     CHECK(compatible.geometry_quality == "standard");
     CHECK(compatible.texture_quality == "standard");
+    CHECK(compatible.provider == options.provider);
+    CHECK(compatible.design_provider == options.design_provider);
+    CHECK(compatible.design_model == options.design_model);
+    CHECK(compatible.geometry_model == options.geometry_model);
+    CHECK(compatible.output_format == options.output_format);
     options.face_limit = 300000;
+    const auto retained = options;
     CHECK((model_face_limit_choices(options) == std::vector<int> {1000000, 300000}));
+    CHECK(options == retained);
 }
 
 TEST_CASE("A retained model candidate permits a new design but active work and unavailable services do not", "[UiRedesign][ImageDesignDraft]")

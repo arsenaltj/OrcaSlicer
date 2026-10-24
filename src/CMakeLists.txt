@@ -300,11 +300,14 @@ if (WIN32)
             COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:OrcaSlicer>/python/Lib/site-packages"
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${ORCA_AI_PILLOW_STAGE_DIR}" "$<TARGET_FILE_DIR:OrcaSlicer>/python/Lib/site-packages"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${ORCA_AI_YOYOCLAW_STAGE_DIR}" "$<TARGET_FILE_DIR:OrcaSlicer>/python/Lib/site-packages"
             COMMAND "$<TARGET_FILE_DIR:OrcaSlicer>/python/python.exe" -I
                 "${CMAKE_SOURCE_DIR}/tools/ai/verify_bundled_runtime.py"
                 --python-root "$<TARGET_FILE_DIR:OrcaSlicer>/python"
                 --expect-python "${_bundled_python_version}"
                 --expect-pillow "${ORCA_AI_PILLOW_VERSION}"
+                --expect-yoyoclaw
             COMMENT "Staging and verifying the isolated local AI runtime"
             VERBATIM)
     endif()

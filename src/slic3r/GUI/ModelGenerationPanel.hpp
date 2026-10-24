@@ -98,6 +98,9 @@ public:
     ModelGenerationUIState ui_state_snapshot() const { return m_ui_state; }
     bool synchronize_ui_input(const ModelGenerationUIInput& input);
     bool synchronize_ui_options(const ModelGenerationUIOptions& options);
+    void get_provider_catalog(const std::string& role, const std::string& provider,
+                              AIModelGenerationClient::CatalogFn on_complete,
+                              AIModelGenerationClient::ErrorFn on_error);
     bool request_generate_design();
     bool request_generate_model();
     bool request_retry_model();
@@ -362,6 +365,8 @@ private:
     void refresh_provider_options();
     void persist_generation_options();
     bool generation_options_valid() const;
+    bool generation_provider_available(const std::string& role,
+        const AIModelGenerationClient::GenerationOptions* retained_options = nullptr) const;
     wxString generation_options_summary(bool image_mode) const;
     int current_face_limit() const;
     AIModelGenerationClient::ImagePrintSettings current_print_settings() const;
@@ -806,6 +811,9 @@ private:
     int m_job_face_limit { 1000000 };
     std::string m_job_generation_profile { "quality" };
     AIModelGenerationClient::GenerationOptions m_job_generation_options;
+    std::string m_selected_design_provider { "gpt" };
+    std::string m_selected_design_model;
+    std::string m_selected_geometry_model;
     bool           m_legacy_generation_defaults { false };
     std::string m_job_id;
     std::string m_job_state;
@@ -842,6 +850,8 @@ private:
     bool m_history_model_design_reusable { false };
     bool m_service_available { false };
     bool m_generation_available { false };
+    std::map<std::string, AIModelGenerationClient::ProviderCatalog> m_provider_catalogs;
+    std::map<std::string, std::uint64_t> m_provider_catalog_sequences;
     bool m_service_availability_known { false };
     bool m_page_initialized { false };
     bool m_library_refresh_pending { true };
