@@ -1,3 +1,15 @@
+# 2026-10-25 生成后 3D 工作台 PR #43（已提交并推送，待复核）
+
+主线：将当前分支全部已验收的生成后 3D 工作台提交与远端最新 `codex/team/integration` 对比，形成一份完整团队 PR；不自动合入、打包或发布。
+
+本轮：目标基线确认是 `48c451a0fb92`。19 个待提交文件已保存为 `80e19a534b feat: map printer filaments to workbench models`，随后无冲突 merge 最新 integration；远端同名分支以 fast-forward 更新并创建 [PR #43](https://github.com/arsenaltj/OrcaSlicer/pull/43)。PR 相对目标包含 6 个功能提交和 2 个同步提交、69 个文件、`+5580/-1352`，正文已逐项说明工作台 UI、防闪烁、修复、美颜、耗材/叠色、历史、原子切换和双向配色映射。PR #42 已在目标分支，不计入本 PR 新增差异。
+
+未结：PR CI、`PR architecture impact` 和非作者复核待完成。本机固定架构解析依赖已安装，但 Archify 2.16.0 官方下载两次超时，未生成本地 HTML 报告；本次推送后未重新启动 GUI。DPI 全矩阵、全部失败/超时分支、真实 YOYOClaw、安装包和实体打印色彩仍未验证。
+
+下一步：等待 PR #43 检查与评审；如源或目标 HEAD 变化，在同一分支重新同步并验证，更新 PR 证据，不自动合入。
+
+计划变更：最终候选沿用源码树一致的组合验证：C++ `243/243`、Windows Release 五阶段、捆绑 Python `157/157`；最终 HEAD 的 `scripts/verify_ai_integration.py --json` 为 `ok: true`，相对目标的 diff 检查通过。保留 `stash@{0}`、用户模型、历史、配置和 `.tmp` 证据，不纳入提交。
+
 # 2026-10-25 PR #42 本地合并与组合验证（完成，未推送）
 
 主线：在 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha` 的 `codex/upstream-v2.5.0-alpha-portrait-preserved` 上，将远端 PR #42 head `dda490e56c` 合入既有 3D 工作台基线 `3250594c591`。本轮只做本地集成与验证，不推送、不打包、不启动 GUI，也不调用真实 YOYOClaw 服务。
