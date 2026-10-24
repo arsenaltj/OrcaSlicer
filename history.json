@@ -1,5 +1,15 @@
 [
   {
+    "pr": 42,
+    "run": 40074929393,
+    "head": "dda490e56c36650e436883378578346aa2185f88",
+    "base": "47fabfb0658b41de14f1dcbe400a7b07128612ac",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "Integrate YOYOClaw generation and multimodal prompt polishing",
+    "path": "pr/42/dda490e56c36650e436883378578346aa2185f88/40074929393",
+    "created": "2026-10-24T07:42:21+00:00"
+  },
+  {
     "pr": 40,
     "run": 39794007498,
     "head": "afaf351e4959c368336b1498110aea633cdc1f22",
