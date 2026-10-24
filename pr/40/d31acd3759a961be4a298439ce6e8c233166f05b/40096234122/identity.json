@@ -1,0 +1,25 @@
+{
+  "pr": 40,
+  "run": 40096234122,
+  "head": "d31acd3759a961be4a298439ce6e8c233166f05b",
+  "base": "48c451a0fb92cf6db786785d9e5f0731e533be96",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "fix(gui): refine slicing controls and defer recovery until workspace is visible",
+  "path": "pr/40/d31acd3759a961be4a298439ce6e8c233166f05b/40096234122",
+  "created": "2026-10-24T13:02:12+00:00",
+  "files": {
+    "index.html": "6816711d51f5557e8853bcdfe2659a1baaab5b4ed27e0f94a0e1fb047684311f",
+    "details.html": "a29d77f5030c5fa45a302fabb3412916231eef2b860681c5c17a14a19a3e29bc",
+    "report.json": "a685b75ae93085cf6b8e1de15bc688a50ead74424cc12e219a4f3811d5ec6261",
+    "summary.md": "8d14b9d2bb0e8ae57871d108836c2aabb6a07b824a3f794cef9a4263a7f98815",
+    "archify-receipts.json": "ce76d11729b74c406dfcf8c5fe3df63cbb8af12f8ae170e5624988e1a1ae51ca",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l1-modules.html": "56fee7b1b50cb1f068a036d770d688409b55bf2633d9e730da12ffb7cc5a9445",
+    "l1-modules.json": "1880fad0176f07335cedfde35c5e972d591f92eb173e39db0906c8d31d414015",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}

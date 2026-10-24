@@ -1,5 +1,15 @@
 [
   {
+    "pr": 40,
+    "run": 40096234122,
+    "head": "d31acd3759a961be4a298439ce6e8c233166f05b",
+    "base": "48c451a0fb92cf6db786785d9e5f0731e533be96",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "fix(gui): refine slicing controls and defer recovery until workspace is visible",
+    "path": "pr/40/d31acd3759a961be4a298439ce6e8c233166f05b/40096234122",
+    "created": "2026-10-24T13:02:12+00:00"
+  },
+  {
     "pr": 42,
     "run": 40074929393,
     "head": "dda490e56c36650e436883378578346aa2185f88",

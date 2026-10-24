@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "L2 · 智能切片主路径",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [
+      980,
+      630
+    ]
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "业务阶段（归并状态，不是实时进度）"
+    },
+    {
+      "id": "waiting",
+      "label": "等待与恢复条件（支线状态清单）"
+    },
+    {
+      "id": "terminal",
+      "label": "中断与失败（能否重新开始由条件决定）"
+    }
+  ],
+  "states": [
+    {
+      "id": "inspect",
+      "type": "start",
+      "label": "采集与预检",
+      "sublabel": "检查工作区与风险",
+      "lane": "main",
+      "col": 0,
+      "step": "1"
+    },
+    {
+      "id": "plan",
+      "type": "active",
+      "label": "规划候选",
+      "sublabel": "版本与预算检查",
+      "lane": "main",
+      "col": 1,
+      "step": "2"
+    },
+    {
+      "id": "trial",
+      "type": "active",
+      "label": "试切与比较",
+      "sublabel": "基线及候选方案",
+      "lane": "main",
+      "col": 2,
+      "step": "3"
+    },
+    {
+      "id": "decision",
+      "type": "waiting",
+      "label": "等待用户应用",
+      "sublabel": "ReadyToApply",
+      "lane": "main",
+      "col": 3,
+      "step": "4"
+    },
+    {
+      "id": "commit",
+      "type": "success",
+      "label": "正式切片完成",
+      "sublabel": "应用、切片、完成",
+      "lane": "main",
+      "col": 4,
+      "step": "5"
+    },
+    {
+      "id": "state-AwaitingRiskDecision",
+      "type": "waiting",
+      "label": "等待风险处理",
+      "sublabel": "AwaitingRiskDecision",
+      "lane": "waiting",
+      "col": 0
+    },
+    {
+      "id": "state-ApplyFailed",
+      "type": "neutral",
+      "label": "应用失败待处理",
+      "sublabel": "ApplyFailed",
+      "lane": "waiting",
+      "col": 1
+    },
+    {
+      "id": "state-Stale",
+      "type": "neutral",
+      "label": "工作区已失效",
+      "sublabel": "Stale",
+      "lane": "waiting",
+      "col": 2
+    },
+    {
+      "id": "state-Canceling",
+      "type": "active",
+      "label": "取消处理中",
+      "sublabel": "Canceling",
+      "lane": "terminal",
+      "col": 0
+    },
+    {
+      "id": "state-Canceled",
+      "type": "neutral",
+      "label": "已取消",
+      "sublabel": "Canceled",
+      "lane": "terminal",
+      "col": 1
+    },
+    {
+      "id": "state-Failed",
+      "type": "neutral",
+      "label": "预检或试切失败",
+      "sublabel": "Failed",
+      "lane": "terminal",
+      "col": 2
+    }
+  ],
+  "transitions": [],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "关键条件",
+      "items": [
+        "风险未解决不能规划",
+        "显式选择与应用"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "异常及等待",
+      "items": [
+        "17 个源码状态见分层入口的状态表",
+        "未连线的支线状态是清单，触发与恢复条件见分层入口"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "源码依据",
+      "items": [
+        "阶段顺序为维护的业务说明，不是自动推导的完整状态机",
+        "未执行真实生成或切片；验收状态未知"
+      ]
+    }
+  ]
+}
