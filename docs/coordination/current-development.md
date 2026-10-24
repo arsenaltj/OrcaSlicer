@@ -1,14 +1,14 @@
-# 2026-10-25 生成后 3D 工作台 PR #43（CI 修复已验证，待远端复跑）
+# 2026-10-25 生成后 3D 工作台 PR #43（远端门禁通过，待复核）
 
 主线：将当前分支全部已验收的生成后 3D 工作台提交与远端最新 `codex/team/integration` 对比，形成一份完整团队 PR；不自动合入、打包或发布。
 
-本轮：目标基线确认是 `48c451a0fb92`。19 个待提交文件已保存为 `80e19a534b feat: map printer filaments to workbench models`，随后无冲突 merge 最新 integration；远端同名分支以 fast-forward 更新并创建 [PR #43](https://github.com/arsenaltj/OrcaSlicer/pull/43)。PR 正文已逐项说明工作台 UI、防闪烁、修复、美颜、耗材/叠色、历史、原子切换和双向配色映射。首次 `AI integration checks` run `40118122151` 暴露两项候选收尾问题：CI 未安装 YOYOClaw 固定加密依赖，以及集成守卫仍锚定美颜控件改版前的父容器和色板局部变量。现已提交 `bebef13b8f ci: fix AI integration guardrails`，按 runtime 固定版本安装 `cryptography==46.0.3`，并将守卫更新到 `scroll` 容器和当前结构化色板回退契约。PR #42 已在目标分支，不计入本 PR 新增功能差异。
+本轮：目标基线确认是 `48c451a0fb92`。19 个待提交文件已保存为 `80e19a534b feat: map printer filaments to workbench models`，随后无冲突 merge 最新 integration；远端同名分支以 fast-forward 更新并创建 [PR #43](https://github.com/arsenaltj/OrcaSlicer/pull/43)。PR 正文已逐项说明工作台 UI、防闪烁、修复、美颜、耗材/叠色、历史、原子切换和双向配色映射。首次 `AI integration checks` run `40118122151` 暴露两项候选收尾问题：CI 未安装 YOYOClaw 固定加密依赖，以及集成守卫仍锚定美颜控件改版前的父容器和色板局部变量。提交 `bebef13b8f` 按 runtime 固定版本安装 `cryptography==46.0.3`，并将守卫更新到 `scroll` 容器和当前结构化色板回退契约；包含该修复的源 SHA `64c5d13b47` 已由远端 `AI integration checks` run `40119251044`、架构影响 run `40119250899` 和 PR 图表检查全部验证成功。PR #42 已在目标分支，不计入本 PR 新增功能差异。
 
-未结：CI 修复尚待推送后的远端复跑，非作者复核仍待完成。本机固定架构解析依赖已安装，但 Archify 2.16.0 官方下载两次超时，未生成本地 HTML 报告；远端架构检查此前已成功。本次 PR 收尾没有重新启动 GUI。DPI 全矩阵、全部失败/超时分支、真实 YOYOClaw、安装包和实体打印色彩仍未验证。
+未结：至少一位非作者复核仍待完成。本机固定架构解析依赖已安装，但 Archify 2.16.0 官方下载两次超时，未生成本地 HTML 报告；远端架构检查和图表已成功补足。本次 PR 收尾没有重新启动 GUI。DPI 全矩阵、全部失败/超时分支、真实 YOYOClaw、安装包和实体打印色彩仍未验证。
 
-下一步：推送 CI 修复和本状态记录，更新 PR 的最终 SHA、统计及验证证据，等待 PR #43 门禁与评审；如源或目标 HEAD 变化，在同一分支重新同步并验证，不自动合入。
+下一步：等待 PR #43 非作者评审；如源或目标 HEAD 变化，在同一分支重新同步并验证，更新 PR 证据，不自动合入。
 
-计划变更：最终候选沿用源码树一致的组合验证：C++ `243/243`、Windows Release 五阶段、捆绑 Python `157/157`。CI 修复后，集成守卫 `53/53`、YOYOClaw `14/14`、与 workflow 依赖一致的完整离线套件 `1189/1189` 均通过；`scripts/verify_ai_integration.py --json` 为 `ok: true`，差异检查通过。保留 `stash@{0}`、用户模型、历史、配置和 `.tmp` 证据，不纳入提交。
+计划变更：最终候选沿用源码树一致的组合验证：C++ `243/243`、Windows Release 五阶段、捆绑 Python `157/157`。CI 修复后，本地集成守卫 `53/53`、YOYOClaw `14/14`、与 workflow 依赖一致的完整离线套件 `1189/1189` 均通过；`scripts/verify_ai_integration.py --json` 为 `ok: true`，差异检查通过。远端相同 AI 门禁、架构影响和 PR 图表也已成功。保留 `stash@{0}`、用户模型、历史、配置和 `.tmp` 证据，不纳入提交。
 
 # 2026-10-25 PR #42 本地合并与组合验证（完成，未推送）
 
