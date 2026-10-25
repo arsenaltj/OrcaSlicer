@@ -1918,3 +1918,8 @@ PR 作者报告已有新控件的真实窗口、预览、前后对比和保存�
 共享修改范围：libslic3r CMake/统一源清单、Android 平台编译适配、移动 SDK 包装及针对性回归；保留上游 CAD/CGAL/OpenCASCADE/GUI 依赖和旧 libslic3r alias。Android SHA-256 后端移至 SDK 平台目录，桌面 SHA-256 源码恢复到远端实现。
 
 验收依据：源码清单、C ABI/JNI 边界、SDK-only 主机测试与 Android 构建/符号/身份校验；完整结果、失败与未验项以该工作区任务报告为准，原验收结果不迁移为新提交通过。桌面完整构建用户决定跳过，iOS 验收搁置。原830/840验收现场保持，其他 worktree 仅只读盘点，不自动合入旧架构候选。此专项不改变原产品主线的延期或用户验收状态。
+
+
+### SDK-BASE-01 补充：原生 Moonraker 候选适配（2026-10-26）
+
+用户要求原归档的014f8e3456/cce3e6210c/377526d5bc三个提交也需要适配并提交。接续同一独立集成任务及分支，在当前392a1e12fa基线迁移到MobileDevice命名空间；实际网络后端作为可选MoonrakerTransport静态目标，Device C ABI目标保持不链接网络库。旧同步Beast超时/并发路径改为每连接串行异步执行与显式deadline，修正实际SSLstream验证模式和Adapter旧生命周期关闭新连接的问题，更新loopback fixture并增加TLS/超时/UTF8上传回归。验证和交付范围以任务证据为准，原830/840验收现场及APK保持，桌面完整构建跳过/iOS搁置。

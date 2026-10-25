@@ -164,3 +164,8 @@ STL、OBJ、3MF、本地配置、场景、推荐、切片、预览、G-code、�
 SDK 制品应记录 sdk_name、sdk_version、abi_version、contract_version、core_source_commit、sdk_source_commit、target_platform、architectures、minimum_os_version、compiler_or_ndk_version 与 artifact_sha256。正式二进制走 Release/制品存储，移动公共仓按锁消费。
 
 本轮桌面完整 configure/build 按用户决定跳过，iOS 验收搁置；工程结构和公开头存在不等于这些平台编译或实机通过。Android 构建、ABI/符号/16KiB 与设备验收各自记录，不互相替代。
+
+
+## Optional native Moonraker host implementation
+
+C++ 宿主可显式链接 `OrcaSlicer::MoonrakerTransport`，入口为 `orca/connectivity/moonraker/MoonrakerTransport.hpp`，命名空间为 `Orca::MobileDevice`。该独立目标提供 HTTP/HTTPS、上传、WS/WSS、超时、取消与连接代次隔离，依赖 CURL、Boost.Beast 和 OpenSSL。Device C ABI 的20个公开符号和纯协议依赖保持；新目标不会进入移动 JNI、Core 或 Slicing 目标。默认 OFF，可选 AUTO/ON，不为宿主静默下载依赖。构建和生命周期说明见 [native transport guide](../../src/orca_connectivity_moonraker/README.md)。

@@ -2,7 +2,13 @@
 
 #include "orca/connectivity/moonraker/MoonrakerAdapter.hpp"
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <functional>
+#include <future>
+#include <mutex>
+#include <thread>
 #include <initializer_list>
 #include <map>
 #include <memory>
@@ -17,20 +23,29 @@ using Catch::Matchers::WithinRel;
 namespace {
 
 struct FakeHttp final : IMoonrakerHttpTransport {
+    mutable std::mutex mutex;
     std::vector<MoonrakerHttpRequest> requests;
     std::function<MoonrakerHttpResponse(const MoonrakerHttpRequest&)> handler;
 
     MoonrakerHttpResponse perform(const MoonrakerHttpRequest& request) override
     {
+        std::lock_guard<std::mutex> lock(mutex);
         requests.push_back(request);
         return handler ? handler(request) : MoonrakerHttpResponse{500, {}, "no fake response"};
     }
 };
 
 struct FakeWebSocket final : IMoonrakerWebSocketTransport {
+    mutable std::mutex mutex;
+    std::condition_variable condition;
     bool connect_result{true};
     bool send_result{true};
     bool connected{false};
+    bool block_connect{false};
+    bool connect_entered{false};
+    bool release_connect{false};
+    bool disconnect_on_send{false};
+    int close_count{0};
     std::string url;
     std::map<std::string, std::string> headers;
     std::vector<std::string> sent;
@@ -42,34 +57,88 @@ struct FakeWebSocket final : IMoonrakerWebSocketTransport {
                  MessageHandler message_handler,
                  CloseHandler close_handler) override
     {
+        std::unique_lock<std::mutex> lock(mutex);
         url = target;
         headers = request_headers;
         on_message = std::move(message_handler);
         on_close = std::move(close_handler);
+        connect_entered = true;
+        condition.notify_all();
+        condition.wait(lock, [&]() { return !block_connect || release_connect; });
         connected = connect_result;
         return connect_result;
     }
 
     bool send(const std::string& payload) override
     {
-        sent.push_back(payload);
-        return send_result && connected;
+        CloseHandler close_callback;
+        bool result = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            sent.push_back(payload);
+            result = send_result && connected;
+            if (result && disconnect_on_send) {
+                connected = false;
+                close_callback = on_close;
+            }
+        }
+        if (close_callback) close_callback();
+        return result;
     }
 
     void close() override
     {
+        std::lock_guard<std::mutex> lock(mutex);
         connected = false;
+        ++close_count;
+    }
+
+    void wait_for_connect()
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        condition.wait(lock, [&]() { return connect_entered; });
+    }
+
+    void release_blocked_connect()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            release_connect = true;
+        }
+        condition.notify_all();
+    }
+
+    bool is_connected() const
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        return connected;
+    }
+
+    int close_calls() const
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        return close_count;
     }
 
     void emit(const std::string& payload)
     {
-        if (on_message) on_message(payload);
+        MessageHandler callback;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            callback = on_message;
+        }
+        if (callback) callback(payload);
     }
 
     void disconnect_from_server()
     {
-        connected = false;
-        if (on_close) on_close();
+        CloseHandler callback;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            connected = false;
+            callback = on_close;
+        }
+        if (callback) callback();
     }
 };
 
@@ -193,6 +262,63 @@ TEST_CASE("Moonraker subscribes only to objects reported by objects list", "[Moo
     REQUIRE(status.current_file == "pause.gcode");
 }
 
+TEST_CASE("Moonraker close callback cannot restore a failed subscription", "[Moonraker][MobileDeviceSDK][Concurrency]")
+{
+    auto http = std::make_shared<FakeHttp>();
+    install_standard_http(http);
+    auto websocket = std::make_shared<FakeWebSocket>();
+    websocket->disconnect_on_send = true;
+    MoonrakerAdapter adapter(http, websocket);
+
+    REQUIRE(adapter.probe(endpoint()));
+    REQUIRE_FALSE(adapter.subscribe_status());
+    REQUIRE_FALSE(adapter.websocket_connected());
+    REQUIRE(adapter.polling_fallback());
+    REQUIRE(websocket->sent.size() == 1);
+}
+
+TEST_CASE("Moonraker serializes endpoint replacement after an in-flight subscription", "[Moonraker][MobileDeviceSDK][Concurrency]")
+{
+    auto http = std::make_shared<FakeHttp>();
+    install_standard_http(http);
+    auto websocket = std::make_shared<FakeWebSocket>();
+    websocket->block_connect = true;
+    MoonrakerAdapter adapter(http, websocket);
+    REQUIRE(adapter.probe(endpoint("first.local")));
+    auto subscription=std::async(std::launch::async,[&]{return adapter.subscribe_status();});
+    websocket->wait_for_connect();
+    std::promise<void> started;auto began=started.get_future();
+    auto replacement=std::async(std::launch::async,[&]{started.set_value();return adapter.probe(endpoint("second.local"));});
+    began.wait();
+    // A new probe cannot replace the shared transport while the older connect/send is active.
+    const bool serialized=replacement.wait_for(std::chrono::milliseconds(30))==std::future_status::timeout;
+    websocket->release_blocked_connect();
+    CHECK(serialized);
+    CHECK(subscription.get());
+    CHECK(replacement.get());
+    REQUIRE_FALSE(adapter.websocket_connected());
+    REQUIRE_FALSE(websocket->is_connected());
+    REQUIRE(adapter.subscribe_status());
+    REQUIRE(adapter.websocket_connected());
+    REQUIRE(websocket->is_connected());
+    REQUIRE(websocket->url == "ws://second.local:7125/websocket");
+}
+
+TEST_CASE("Concurrent Moonraker subscriptions do not let an old lifecycle close a new connection", "[Moonraker][MobileDeviceSDK][Concurrency]")
+{
+    auto http=std::make_shared<FakeHttp>();install_standard_http(http);
+    auto websocket=std::make_shared<FakeWebSocket>();websocket->block_connect=true;
+    MoonrakerAdapter adapter(http,websocket);REQUIRE(adapter.probe(endpoint()));
+    auto first=std::async(std::launch::async,[&]{return adapter.subscribe_status();});
+    websocket->wait_for_connect();
+    std::promise<void> started;auto began=started.get_future();
+    auto second=std::async(std::launch::async,[&]{started.set_value();return adapter.subscribe_status();});
+    began.wait();const bool serialized=second.wait_for(std::chrono::milliseconds(30))==std::future_status::timeout;
+    websocket->release_blocked_connect();
+    CHECK(serialized);CHECK(first.get());CHECK(second.get());
+    CHECK(adapter.websocket_connected());CHECK(websocket->is_connected());
+}
+
 TEST_CASE("Moonraker clamps progress to the SDK range and maps cancelled states", "[Moonraker][MobileDeviceSDK]")
 {
     SECTION("progress values remain in 0..1")
@@ -252,6 +378,16 @@ TEST_CASE("Moonraker falls back to polling and reconciles after reconnect", "[Mo
 
 TEST_CASE("Moonraker WebSocket faults switch to polling fallback", "[Moonraker][MobileDeviceSDK]")
 {
+    SECTION("cancelled request")
+    {
+        auto http = std::make_shared<FakeHttp>();
+        http->handler = [](const MoonrakerHttpRequest&) { return MoonrakerHttpResponse{0, "", "Moonraker HTTP request cancelled"}; };
+        MoonrakerAdapter adapter(http);
+        REQUIRE_FALSE(adapter.probe(endpoint()));
+        REQUIRE(adapter.last_result().code == "moonraker.cancelled");
+        REQUIRE_FALSE(adapter.last_result().retryable);
+    }
+
     SECTION("invalid JSON")
     {
         auto http = std::make_shared<FakeHttp>();
@@ -378,6 +514,7 @@ TEST_CASE("Moonraker upload and print commands use stable transport requests", "
     REQUIRE(http->requests[1].form_fields.at("root") == "gcodes");
     REQUIRE(http->requests[1].upload_source == "file:///tmp/benchy.gcode");
     REQUIRE(http->requests[1].upload_filename == "benchy.gcode");
+    REQUIRE(http->requests[1].upload_sha256 == "sha256");
     REQUIRE(nlohmann::json::parse(http->requests[2].body).at("filename") == "gcodes/uploaded.gcode");
     REQUIRE(nlohmann::json::parse(http->requests[3].body).at("script") == "PAUSE");
     REQUIRE(nlohmann::json::parse(http->requests[4].body).at("script") == "RESUME");
@@ -404,6 +541,16 @@ TEST_CASE("Moonraker maps HTTP and JSON fault matrix to stable errors", "[Moonra
         REQUIRE_FALSE(adapter.probe(endpoint()));
         REQUIRE(adapter.last_result().code == "moonraker.transport_error");
         REQUIRE(adapter.last_result().retryable);
+    }
+
+    SECTION("cancelled request")
+    {
+        auto http = std::make_shared<FakeHttp>();
+        http->handler = [](const MoonrakerHttpRequest&) { return MoonrakerHttpResponse{0, "", "Moonraker HTTP request cancelled"}; };
+        MoonrakerAdapter adapter(http);
+        REQUIRE_FALSE(adapter.probe(endpoint()));
+        REQUIRE(adapter.last_result().code == "moonraker.cancelled");
+        REQUIRE_FALSE(adapter.last_result().retryable);
     }
 
     SECTION("invalid JSON")
@@ -441,4 +588,46 @@ TEST_CASE("Moonraker maps HTTP and JSON fault matrix to stable errors", "[Moonra
         REQUIRE_FALSE(adapter.poll_status());
         REQUIRE(adapter.last_result().code == "moonraker.protocol_error");
     }
+}
+
+TEST_CASE("Moonraker adapter serializes callbacks with synchronous operations and teardown", "[Moonraker][MobileDeviceSDK][Concurrency]")
+{
+    auto http = std::make_shared<FakeHttp>();
+    install_standard_http(http, "printing", 0.25);
+    auto websocket = std::make_shared<FakeWebSocket>();
+    auto adapter = std::make_unique<MoonrakerAdapter>(http, websocket, "concurrent-key");
+    REQUIRE(adapter->probe(endpoint()));
+    REQUIRE(adapter->subscribe_status());
+    websocket->emit(R"({"jsonrpc":"2.0","method":"notify_status_update","params":[{"print_stats":{"state":"printing","progress":0.7}}]})");
+    REQUIRE(adapter->get_status().state == PrinterState::Printing);
+
+    std::atomic_bool start{false};
+    std::atomic_bool all_status_ok{true};
+    std::vector<std::thread> workers;
+    for (int index = 0; index < 3; ++index) {
+        workers.emplace_back([&]() {
+            while (!start.load()) std::this_thread::yield();
+            for (int count = 0; count < 50; ++count) {
+                websocket->emit(R"({"jsonrpc":"2.0","method":"notify_status_update","params":[{"print_stats":{"state":"printing","progress":0.7}}]})");
+            }
+        });
+    }
+    workers.emplace_back([&]() {
+        while (!start.load()) std::this_thread::yield();
+        for (int count = 0; count < 50; ++count) {
+            const auto status = adapter->get_status();
+            if (status.state != PrinterState::Printing) all_status_ok.store(false);
+        }
+    });
+    start.store(true);
+    for (auto& worker : workers) worker.join();
+
+    REQUIRE(all_status_ok.load());
+    REQUIRE(adapter->get_status().state == PrinterState::Printing);
+    adapter.reset();
+
+    // The transport can retain callback functors after close. They must become
+    // no-ops once the adapter lifetime has ended.
+    websocket->emit(R"({"jsonrpc":"2.0","method":"notify_status_update","params":[{"print_stats":{"state":"error"}}]})");
+    websocket->disconnect_from_server();
 }
