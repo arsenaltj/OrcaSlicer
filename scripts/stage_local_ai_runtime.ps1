@@ -243,7 +243,7 @@ if (-not $VerifyOnly) {
 
 if ((Read-CacheValue 'ORCA_AI_WINDOWS_INSTALLER') -ne 'ON') { throw 'AI runtime packaging is not enabled in this build.' }
 Assert-PlainTree $outputPath
-$required = @('orca-slicer.exe', 'OrcaSlicer.dll', 'python/python.exe', 'python/pythonw.exe', 'python/python312.dll',
+$required = @('orca-slicer.exe', 'OrcaSlicer.dll', 'python/python.exe', 'python/pythonw.exe', 'python/python312.dll', 'python/python3.dll',
     'resources/tools/uv/uv.exe',
     'resources/images/OrcaSlicer_gradient_circle.svg', 'resources/i18n/zh_CN/OrcaSlicer.mo',
     'resources/i18n/zh_TW/OrcaSlicer.mo', 'resources/tools/ai/orca_ai_build_info.json',
@@ -317,7 +317,7 @@ $sourceHead = (& git -C $repoRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $sourceHead -notmatch '^[a-f0-9]{40}$') { throw 'Cannot determine source commit.' }
 if ($identity.schema_version -ne 1 -or $identity.application_commit -ne $sourceHead -or
     $identity.package_revision -ne $Revision -or $identity.distribution_channel -ne 'internal' -or
-    $identity.sidecar_protocol_version -ne 2 -or $identity.sidecar_version -ne 'orcaslicer-ai-sidecar-v9') {
+    $identity.sidecar_protocol_version -ne 2 -or $identity.sidecar_version -ne 'orcaslicer-ai-sidecar-v11') {
     throw 'Installed AI build identity does not match this local source and revision.'
 }
 foreach ($name in @('orca_ai_build_info.json', 'orca_ai_runtime_dependencies.json')) {
@@ -341,7 +341,7 @@ foreach ($name in @('orca-slicer.exe', 'OrcaSlicer.dll')) {
 }
 Invoke-Logged (Require-File 'python/python.exe') @('-I', '-B',
     (Require-File 'resources/tools/ai/verify_bundled_runtime.py'), '--python-root',
-    (Join-Path $outputPath 'python'), '--expect-python', '3.12.13', '--expect-pillow', '12.2.0', '--json') 'verify.log'
+    (Join-Path $outputPath 'python'), '--expect-python', '3.12.13', '--expect-pillow', '12.2.0', '--expect-yoyoclaw', '--json') 'verify.log'
 
 $hashes = [ordered]@{}
 foreach ($relative in $required + @($runtimeFiles + $runtimeNativeFiles | ForEach-Object { "resources/tools/ai/$_" })) {

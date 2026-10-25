@@ -23,6 +23,7 @@
 #include <wx/settings.h>
 #include <wx/wrapsizer.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <exception>
 
@@ -261,7 +262,6 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
     };
     m_lighting = switch_row(_L("光照立体展示"), m_lighting_row);
     m_lighting->SetToolTip(_L("只改变预览明暗，不改变模型颜色或耗材槽位。"));
-    m_original_view = switch_row(_L("查看模型原色"), m_original_view_row);
     m_displacement = new WorkbenchSlider(this, wxID_ANY, 2, -20, 20, wxColour(61, 127, 255), "workbench_parameter_thumb");
     m_displacement->SetToolTip(_L("局部表面推拉距离，单位 0.1 mm；负值向内。"));
     m_displacement_label = new wxStaticText(this, wxID_ANY, _L("推拉距离 · 0.1 mm/格"));
@@ -272,6 +272,9 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
     m_falloff_label = new wxStaticText(this, wxID_ANY, _L("边缘衰减 · 0.1 mm/格"));
     root->Add(m_falloff_label, 0);
     root->Add(m_falloff, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
+    for (wxWindow* control : std::array<wxWindow*, 5> {{m_lighting_row, m_displacement_label,
+             m_displacement, m_falloff_label, m_falloff}})
+        control->Hide();
     auto* semantic_row = new wxBoxSizer(wxHORIZONTAL);
     m_auto_region = dark_choice();
     m_auto_region->Append(_L("头发"));
@@ -346,11 +349,6 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
     m_lighting->Bind(wxEVT_TOGGLEBUTTON, [this](wxCommandEvent& event) {
         m_lighting->SetValue(event.IsChecked());
         if (m_preview) m_preview->set_beauty_lighting(event.IsChecked());
-    });
-    m_original_view->Bind(wxEVT_TOGGLEBUTTON, [this](wxCommandEvent& event) {
-        m_original_view->SetValue(event.IsChecked());
-        if (m_preview) m_preview->set_beauty_original_view(event.IsChecked());
-        if (on_original_view_changed) on_original_view_changed(event.IsChecked());
     });
     m_operation->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&) {
         if (on_operation_changed && m_operation->GetSelection() >= 0)
@@ -464,7 +462,6 @@ void BeautyWorkbenchControls::synchronize_preview_options()
 {
     if (m_preview) {
         m_lighting->SetValue(m_preview->beauty_lighting());
-        m_original_view->SetValue(m_preview->beauty_original_view());
     }
 }
 
@@ -639,10 +636,14 @@ void BeautyWorkbenchControls::update_text()
     if (on_available_colors) {
         const auto colors = on_available_colors();
         if (colors != m_palette_colors) {
+            std::optional<BeautyColorItem> selected;
+            const int previous_selection = m_color_slot->GetSelection();
+            if (previous_selection >= 0 && size_t(previous_selection) < m_palette_colors.size())
+                selected = m_palette_colors[size_t(previous_selection)];
             m_palette_colors = colors;
             m_color_slot->Clear();
             for (size_t slot = 0; slot < colors.size(); ++slot) {
-                const wxString hex = wxString::FromUTF8(colors[slot]);
+                const wxString hex = wxString::FromUTF8(colors[slot].color);
                 wxColour color(hex);
                 if (!color.IsOk()) color = wxColour(128, 128, 128);
                 const int swatch_width = FromDIP(30), swatch_height = FromDIP(16);
@@ -654,12 +655,17 @@ void BeautyWorkbenchControls::update_text()
                 dc.SetPen(wxPen(wxColour(80, 80, 80), FromDIP(1)));
                 dc.DrawRoundedRectangle(0, 0, swatch_width, swatch_height, FromDIP(2));
                 dc.SelectObject(wxNullBitmap);
-                m_color_slot->Append(wxString::Format(_L("耗材 %llu · "),
-                    static_cast<unsigned long long>(slot + 1)) + hex, swatch);
+                m_color_slot->Append(wxString::FromUTF8(colors[slot].label) + " · " + hex, swatch);
             }
             if (!colors.empty()) {
-                m_color_slot->SetSelection(0);
-                if (on_color_slot_changed) on_color_slot_changed(0);
+                size_t next = 0;
+                if (selected) {
+                    const auto found = std::find_if(colors.begin(), colors.end(),
+                        [&](const BeautyColorItem& item) { return item.same_identity(*selected); });
+                    if (found != colors.end()) next = size_t(std::distance(colors.begin(), found));
+                }
+                m_color_slot->SetSelection(int(next));
+                if (on_color_slot_changed) on_color_slot_changed(next);
             }
         }
     }
@@ -702,24 +708,29 @@ void BeautyWorkbenchControls::update_text()
     m_reoptimize->SetToolTip(m_preview && !m_preview->semantic_reoptimization_available()
         ? m_preview->semantic_reoptimization_reason()
         : _L("显式重新识别人像区域；选区与保护区保持不变。"));
-    const bool deform = geometry_deform_selected();
     m_displacement_label->SetLabel(wxString::Format(_L("推拉距离 · %.1f mm"), displacement_mm()));
     m_falloff_label->SetLabel(wxString::Format(_L("边缘衰减 · %.1f mm"), falloff_mm()));
-    m_displacement->Show(deform);
-    m_falloff->Show(deform);
-    m_displacement_label->Show(deform);
-    m_falloff_label->Show(deform);
+    m_lighting_row->Hide();
+    m_displacement->Hide();
+    m_falloff->Hide();
+    m_displacement_label->Hide();
+    m_falloff_label->Hide();
     m_displacement->Enable(active);
     m_falloff->Enable(active);
     const int operation = m_operation->GetSelection();
     const bool unsupported_glb_operation = AI::model_artifact_format(m_source) == "glb" &&
         (operation == 2 || operation == 3);
-    m_preview_button->Enable(active && !unsupported_glb_operation);
-    m_preview_button->Show(m_operation->GetSelection() != 0);
+    m_preview_button->Enable(active && operation != 0 && !unsupported_glb_operation);
+    m_preview_button->Show();
     m_accept->Enable(available && m_candidate_ready);
+    m_accept->Show();
     m_discard->Enable(available && (m_candidate_ready || m_dirty));
+    m_discard->Show();
     m_discard->SetLabel(m_candidate_ready ? _L("放弃候选") : _L("放弃修改"));
     m_cancel->Enable(m_processing || bool(m_partition_task) || selection_calculating);
+    m_cancel->Show();
+    m_undo->Show();
+    m_redo->Show();
     m_details_toggle->SetLabel(m_details_open ? _L("收起高级语义工具") : _L("高级语义工具"));
     for (wxWindow* control : std::initializer_list<wxWindow*>{m_secondary_status, m_import_secondary,
              m_regenerate_evidence,
@@ -793,24 +804,17 @@ void BeautyWorkbenchControls::wrap_status(wxStaticText* label)
 bool BeautyWorkbenchControls::geometry_deform_selected() const { return m_operation && m_operation->GetSelection() == 4; }
 int BeautyWorkbenchControls::operation_index() const { return m_operation ? m_operation->GetSelection() : 0; }
 
-void BeautyWorkbenchControls::attach_parameters(wxWindow* surface, wxWindow* strength_label, wxWindow* strength)
-{
-    auto* parameters = surface->GetSizer();
-    for (wxWindow* control : std::initializer_list<wxWindow*>{
-             m_displacement_label, m_displacement, m_falloff_label, m_falloff,
-             strength_label, strength, m_lighting_row, m_original_view_row}) {
-        control->GetContainingSizer()->Detach(control);
-        control->Reparent(surface);
-        parameters->Add(control, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, surface->FromDIP(12));
-    }
-}
-
-void BeautyWorkbenchControls::attach_actions(wxWindow* footer)
+void BeautyWorkbenchControls::attach_actions(wxWindow* footer, Button* compare)
 {
     auto* actions = new wxWrapSizer(wxHORIZONTAL, wxREMOVE_LEADING_SPACES);
-    for (Button* button : {m_preview_button, m_accept, m_discard, m_cancel, m_undo, m_redo, m_save}) {
-        button->GetContainingSizer()->Detach(button);
-        button->Reparent(footer);
+    size_t action_count = 0;
+    for (Button* button : {m_preview_button, compare, m_accept, m_discard, m_cancel, m_undo, m_redo, m_save}) {
+        if (!button) continue;
+        ++action_count;
+        if (auto* containing_sizer = button->GetContainingSizer())
+            containing_sizer->Detach(button);
+        if (button->GetParent() != footer)
+            button->Reparent(footer);
         if (button == m_undo || button == m_redo) {
             const wxString label = button->GetLabel();
             button->SetName(label);
@@ -824,6 +828,13 @@ void BeautyWorkbenchControls::attach_actions(wxWindow* footer)
         }
         actions->Add(button, 0, wxRIGHT | wxBOTTOM, FromDIP(4));
     }
+    // wxWrapSizer reports a single-row minimum even after the fixed side rail
+    // wraps its children. Reserve two controls per row so later rows are not
+    // clipped by the non-scrolling footer.
+    const int rows = int((action_count + 1) / 2);
+    const int min_height = FromDIP(rows * 36);
+    actions->SetMinSize(wxSize(1, min_height));
+    footer->SetMinSize(wxSize(-1, min_height));
     footer->SetSizer(actions);
 }
 
@@ -1344,15 +1355,25 @@ void BeautyWorkbenchControls::prepare_import(const boost::filesystem::path& path
         request.portrait_color_block_references.push_back(metadata["portrait_color_blocks"]);
     if(metadata.contains("printer_filament_restore") && metadata["printer_filament_restore"].contains("portrait_color_blocks"))
         request.portrait_color_block_references.push_back(metadata["printer_filament_restore"]["portrait_color_blocks"]);
+    // A live workbench match is already bound to the current source hash and
+    // native palette.  Do not replace it with an older accepted-version
+    // metadata record while preparing the import request.
+    if (request.color_mode == AI::ImportColorMode::NativeMatch && request.matched_colors &&
+        !request.use_saved_printer_match) {
+        request.color_trial.reset();
+        request.face_color_overrides.clear();
+        request.subface_color_overrides.clear();
+        return;
+    }
     if (request.color_mode == AI::ImportColorMode::NativeMatch && request.use_saved_printer_match &&
         metadata.contains("applied_printer_filament_match")) {
         if (!metadata.contains("model_sha256") || !metadata["model_sha256"].is_string() ||
             metadata["model_sha256"].get<std::string>() != AI::model_artifact_sha256(path))
-            throw std::runtime_error("已应用的打印机耗材匹配与当前模型文件不一致，请重新应用打印机耗材。");
+            throw std::runtime_error("已保存的打印机耗材匹配与当前模型文件不一致，请重新进入打印机耗材试色。");
         AI::ModelMatchedColors matched;
         std::string error;
         if (!AI::decode_model_matched_colors(metadata["applied_printer_filament_match"], matched, error))
-            throw std::runtime_error("已保存的打印机耗材匹配无效，请回工作台重新应用。" + error);
+            throw std::runtime_error("已保存的打印机耗材匹配无效，请回工作台重新进入试色。" + error);
         request.matched_colors = std::move(matched);
         // The accepted artifact already contains the applied appearance. The
         // per-face slot snapshot is authoritative and must not be rematched

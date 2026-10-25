@@ -3,10 +3,13 @@
 #include "ImageDesignDraft.hpp"
 #include "NativeWorkspaceTheme.hpp"
 #include "RedesignModelRoute.hpp"
+#include "RedesignPageTransition.hpp"
 #include "../AI/ModelGeneration/ModelGenerationHost.hpp"
 #include "../AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "../AI/ModelGeneration/WorkbenchImportSession.hpp"
 #include "../AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
+#include "../AI/Text/AITextClient.hpp"
+#include "../AI/Text/AITextPolishState.hpp"
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 
 #include <boost/filesystem/path.hpp>
@@ -16,14 +19,18 @@
 #include <string>
 #include <thread>
 #include <chrono>
+#include <optional>
 #include <vector>
 
 #include <wx/image.h>
 
 #include <wx/panel.h>
 #include <wx/timer.h>
+#include <wx/weakref.h>
 
 class wxBoxSizer;
+class wxActivityIndicator;
+class wxDialog;
 class wxPanel;
 class wxScrolledWindow;
 class wxStaticBitmap;
@@ -33,8 +40,12 @@ class wxWindow;
 
 namespace Slic3r::GUI {
 
+class WorkbenchLabel;
+
 enum class AIServiceStatus;
 class ModelGenerationFeatureHost;
+class AITextFeatureHost;
+class RoundedActionButton;
 class UploadThumbnail;
 class ImagePreview;
 class ModelPreview3D;
@@ -54,7 +65,7 @@ public:
     enum class Page { Assets, Image, Model, Print };
 
     explicit RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model_generation_host = nullptr,
-                           Plater* plater = nullptr);
+                           Plater* plater = nullptr, AITextFeatureHost* text_feature_host = nullptr);
     ~RedesignShell() override;
     void disconnect_model_generation_host();
 
@@ -91,8 +102,29 @@ private:
     bool synchronize_generation_options();
     bool generation_input_editable() const;
     void refresh_prompt_count();
+    void refresh_text_capability(bool sidecar_compatible);
+    void request_prompt_polish();
+    void finish_prompt_polish(std::uint64_t sequence, const std::string& prompt,
+                              std::uint64_t image_generation, bool has_reference_image,
+                              const std::string& job_id,
+                              std::uint64_t model_session, AITextClient::PolishResult result);
+    void fail_prompt_polish(std::uint64_t sequence, const std::string& prompt,
+                            std::uint64_t image_generation, bool has_reference_image,
+                            const std::string& job_id,
+                            std::uint64_t model_session, AITextClient::Error error);
+    bool prompt_polish_request_matches(const std::string& prompt,
+                                       std::uint64_t image_generation, bool has_reference_image,
+                                       const std::string& job_id, std::uint64_t model_session) const;
+    void discard_stale_prompt_polish(std::uint64_t sequence, bool clear_original);
+    void cancel_prompt_polish(bool clear_original);
+    void restore_original_prompt();
+    void refresh_prompt_polish_controls();
     void apply_generation_options(const ModelGenerationUIOptions& options);
     void on_generation_option_changed();
+    void refresh_provider_catalog();
+    void apply_provider_catalog(const AIModelGenerationClient::ProviderCatalog& catalog,
+                                const std::string& error = {});
+    void refresh_provider_choice(bool geometry_mode);
     bool request_open_history(const std::string& job_id);
     void request_generate_design();
     void request_generate_model();
@@ -116,14 +148,19 @@ private:
     void build_model_workflow();
     bool open_model_workbench();
     void return_model_overview();
-    void show_model_view(ModelView view);
+    bool show_model_view(ModelView view);
     void apply_workbench_state(const PostGenerationWorkbenchState& state);
     void apply_slicing_state(const SmartSlicingWorkbenchState& state);
     void confirm_workbench_import(const AI::ModelImportRequest& request);
     void select_slicing_tab(bool native);
     void start_workbench_slice();
     void update_import_loading(WorkbenchImportPhase phase, const std::string& message = {});
-    void finish_import_loading();
+    void show_import_loading();
+    void stage_import_target_view();
+    void rollback_import_target_view();
+    void commit_import_target_view();
+    void retry_import_target_view();
+    void finish_import_loading(bool retain_view_retry = false);
     void layout_import_loading();
     void check_import_first_frame();
     void open_print_preparation();
@@ -138,6 +175,11 @@ private:
     void refresh_native_theme();
     bool slicing_mode_switch_allowed() const;
     bool navigate_to_impl(Page page, bool allow_locked_image_view);
+    wxWindow* page_route_root(Page page, ModelView view) const;
+    wxWindow* active_page_focus_root() const;
+    void present_active_page();
+    void remember_active_page_focus();
+    void restore_active_page_focus();
     // User navigation to the image page may inspect the current design while
     // a model submission still owns the route. This path keeps the route lock
     // and exposes the image workspace as read-only.
@@ -207,20 +249,27 @@ private:
     PreviewAutoFitState m_preview_auto_fit;
     bool m_slice_completion_retry_pending {false};
     bool m_import_in_progress {false};
-    bool m_import_switching_view {false};
     bool m_import_awaiting_frame {false};
+    bool m_import_target_staged {false};
+    bool m_import_target_detached {false};
+    bool m_import_waiting_post_fit_frame {false};
+    bool m_import_project_committed {false};
+    bool m_import_view_retry_available {false};
     size_t m_import_frame_baseline {0};
     std::shared_ptr<WorkbenchImportSession> m_import_session;
-    wxPanel* m_import_loading {nullptr};
-    wxPanel* m_import_history_host {nullptr};
-    wxStaticText* m_import_stage {nullptr};
-    wxStaticText* m_import_elapsed {nullptr};
+    wxDialog* m_import_loading {nullptr};
+    wxActivityIndicator* m_import_activity {nullptr};
+    WorkbenchLabel* m_import_stage {nullptr};
+    WorkbenchLabel* m_import_elapsed {nullptr};
     wxWindow* m_import_cancel {nullptr};
     wxTimer m_import_timer;
     wxTimer m_slice_camera_retry_timer;
     int m_slice_camera_retry_attempts {0};
     std::chrono::steady_clock::time_point m_import_started;
     std::chrono::steady_clock::time_point m_import_view_started;
+    boost::filesystem::path m_import_committed_model_path;
+    RedesignPageTransition m_page_transition;
+    std::optional<RedesignPageTransition::Token> m_import_transition;
     bool m_saved_sidebar_collapsed {false};
     std::optional<bool> m_saved_collapse_toolbar;
     std::string m_pending_workbench_job;
@@ -250,6 +299,9 @@ private:
     UploadThumbnail* m_upload_thumbnail { nullptr };
     wxTextCtrl* m_prompt { nullptr };
     wxStaticText* m_prompt_count { nullptr };
+    RoundedActionButton* m_prompt_polish_button { nullptr };
+    wxStaticText* m_prompt_polish_status { nullptr };
+    wxStaticText* m_restore_prompt { nullptr };
     wxPanel* m_guide_panel { nullptr };
     wxPanel* m_preview_host { nullptr };
     wxPanel* m_source_preview_card { nullptr };
@@ -272,6 +324,8 @@ private:
     std::array<wxPanel*, 4> m_nav_markers { nullptr, nullptr, nullptr, nullptr };
     std::array<wxStaticText*, 4> m_nav_labels { nullptr, nullptr, nullptr, nullptr };
     std::array<wxPanel*, 4> m_pages { nullptr, nullptr, nullptr, nullptr };
+    std::array<wxWeakRef<wxWindow>, 4> m_page_focus;
+    std::array<wxWeakRef<wxWindow>, 4> m_model_view_focus;
     wxImage m_selected_image;
     wxImage m_design_image;
     boost::filesystem::path m_selected_image_path;
@@ -285,9 +339,22 @@ private:
     std::uint64_t m_model_preview_request_generation { 0 };
     std::thread m_model_preview_worker;
     ModelGenerationFeatureHost* m_model_generation_host { nullptr };
+    AITextFeatureHost* m_text_feature_host { nullptr };
+    std::shared_ptr<AITextClient::RequestHandle> m_text_availability_request;
+    std::shared_ptr<AITextClient::RequestHandle> m_prompt_polish_request;
+    AITextPolishState m_prompt_polish_state;
+    std::uint64_t m_text_availability_sequence { 0 };
+    bool m_prompt_polish_available { false };
+    std::string m_prompt_polish_unavailable_reason;
     ModelGenerationUIState m_model_generation_state;
     ImageDesignDraft m_image_design_draft;
     ModelGenerationUIOptions m_generation_options;
+    AIModelGenerationClient::ProviderCatalog m_provider_catalog;
+    std::uint64_t m_provider_catalog_sequence { 0 };
+    std::string m_provider_catalog_role;
+    std::string m_provider_catalog_provider;
+    bool m_generation_geometry_mode { false };
+    int m_last_service_status { 0 };
     Page m_active_page { Page::Image };
     // Keep the semantic workspace request, not only the visual host. Several
     // legacy requests (Prepare, Preview, Monitor and Multi-device) currently

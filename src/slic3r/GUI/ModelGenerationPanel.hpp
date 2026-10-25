@@ -55,6 +55,7 @@ class wxCollapsiblePane;
 class wxColourPickerCtrl;
 class wxGauge;
 class wxGridSizer;
+class wxDialog;
 class wxNotebook;
 class wxScrolledWindow;
 class wxSpinCtrlDouble;
@@ -67,6 +68,10 @@ namespace Slic3r::GUI {
 
 class ModelPreview3D;
 class BeautyWorkbenchControls;
+class WorkbenchButton;
+class WorkbenchIndeterminateProgress;
+class WorkbenchLabel;
+struct BeautyColorItem;
 struct BeautyPartitionSnapshot;
 struct SemanticRegionEvidence;
 struct SecondaryRegionEvidence;
@@ -93,6 +98,9 @@ public:
     ModelGenerationUIState ui_state_snapshot() const { return m_ui_state; }
     bool synchronize_ui_input(const ModelGenerationUIInput& input);
     bool synchronize_ui_options(const ModelGenerationUIOptions& options);
+    void get_provider_catalog(const std::string& role, const std::string& provider,
+                              AIModelGenerationClient::CatalogFn on_complete,
+                              AIModelGenerationClient::ErrorFn on_error);
     bool request_generate_design();
     bool request_generate_model();
     bool request_retry_model();
@@ -130,7 +138,7 @@ public:
     void restore_portrait_draft();
     void clear_portrait_draft();
     void prepare_portrait_import(AI::ModelImportRequest& request);
-    bool request_check_workbench();
+    bool request_check_workbench(bool automatic = false);
     bool request_save_and_return();
     bool request_workbench_results();
     void set_workbench_results_handler(std::function<void()> handler) { m_workbench_results = std::move(handler); }
@@ -191,6 +199,24 @@ private:
     bool m_workbench_check_running {false};
     bool m_workbench_import_running {false};
     bool m_workbench_auto_repair {false};
+    WorkbenchCheckSource m_workbench_check_source {WorkbenchCheckSource::Automatic};
+    std::string m_workbench_force_import_ack_hash;
+    std::uint64_t m_workbench_force_import_ack_revision {0};
+    wxDialog* m_workbench_check_card {nullptr};
+    wxPanel* m_workbench_check_modal {nullptr};
+    WorkbenchLabel* m_workbench_check_phase {nullptr};
+    WorkbenchLabel* m_workbench_check_message {nullptr};
+    WorkbenchIndeterminateProgress* m_workbench_check_progress {nullptr};
+    WorkbenchButton* m_workbench_check_cancel_button {nullptr};
+    WorkbenchButton* m_workbench_check_continue_button {nullptr};
+    WorkbenchButton* m_workbench_check_return_button {nullptr};
+    bool m_workbench_check_card_visible {false};
+    void update_workbench_check_card();
+    void hide_workbench_check_card();
+    void position_workbench_check_card();
+    void show_workbench_check_details();
+    void cancel_workbench_check();
+    void acknowledge_workbench_risk();
     void ensure_workbench_check();
     std::function<void(size_t)> m_project_color_edit;
     std::function<void(size_t)> m_project_filament_delete;
@@ -198,13 +224,42 @@ private:
     AI::PrintablePaletteSnapshot m_workbench_project_palette;
     std::vector<AI::PhysicalFilamentChannel> m_workbench_project_channels;
     std::string m_workbench_filament_signature;
+    std::string m_workbench_filament_layout;
+    struct WorkbenchFilamentRowView {
+        size_t slot {0};
+        bool mixed {false};
+        wxPanel* panel {nullptr};
+        WorkbenchButton* swatch {nullptr};
+        WorkbenchButton* preset {nullptr};
+        WorkbenchButton* actions {nullptr};
+        wxPanel* components {nullptr};
+        std::vector<size_t> component_slots;
+        std::vector<WorkbenchButton*> component_swatches;
+        std::vector<wxStaticText*> component_ratios;
+        std::string color;
+        wxString label;
+        wxString tooltip;
+        std::vector<std::string> component_colors;
+        std::vector<wxString> component_tooltips;
+        std::vector<int> component_percentages;
+        bool enabled {false};
+    };
+    std::vector<WorkbenchFilamentRowView> m_workbench_filament_rows;
+    wxStaticText* m_workbench_mixed_filament_title {nullptr};
     wxPanel* m_workbench_project_colors {nullptr};
     wxStaticText* m_workbench_project_summary {nullptr};
+    wxStaticText* m_workbench_printer_filament_feedback {nullptr};
     WorkbenchButton* m_workbench_apply_project_filaments {nullptr};
+    WorkbenchButton* m_workbench_printer_filament_trial {nullptr};
     WorkbenchButton* m_workbench_configure_filaments {nullptr};
     WorkbenchButton* m_workbench_add_filament {nullptr};
     WorkbenchButton* m_workbench_sync_filaments {nullptr};
     void apply_workbench_printer_filaments();
+    void toggle_printer_filament_trial();
+    void exit_printer_filament_trial(const wxString& reason = wxString());
+    // Invalidate the in-memory trial before replacing or clearing preview data.
+    // This deliberately avoids publishing a transient UI state mid-operation.
+    void invalidate_printer_filament_trial_for_model_change();
     wxTimer m_workbench_sync_timer;
     bool m_save_and_return {false};
     std::string m_workbench_operation_notice;
@@ -214,8 +269,14 @@ private:
     std::vector<PrinterFilamentSlotRemap::Change> m_apply_filaments_changes;
     std::string m_apply_filaments_source_identity;
     std::optional<AI::ModelMatchedColors> m_apply_filaments_match;
+    bool m_apply_filaments_before_trial_active {false};
     boost::filesystem::path m_applied_filaments_saved_model;
     std::string m_applied_filaments_saved_signature;
+    bool m_printer_filament_trial_active {false};
+    std::string m_printer_filament_trial_geometry;
+    std::string m_printer_filament_trial_signature;
+    std::string m_workbench_printer_filament_notice;
+    bool m_workbench_printer_filament_notice_error {false};
     void finish_printer_filament_application(bool success);
     bool commit_printer_filament_application(std::string& error);
     std::function<void()> m_workbench_results;
@@ -305,6 +366,8 @@ private:
     void refresh_provider_options();
     void persist_generation_options();
     bool generation_options_valid() const;
+    bool generation_provider_available(const std::string& role,
+        const AIModelGenerationClient::GenerationOptions* retained_options = nullptr) const;
     wxString generation_options_summary(bool image_mode) const;
     int current_face_limit() const;
     AIModelGenerationClient::ImagePrintSettings current_print_settings() const;
@@ -359,11 +422,14 @@ private:
     void redo_model_finishing();
     void undo_model_finishing();
     void export_semantic_candidate();
-    std::vector<std::string> local_recolor_palette() const;
+    std::vector<BeautyColorItem> local_recolor_palette() const;
     void update_region_mode();
     wxWindow* build_workbench_history(wxWindow* parent);
     void refresh_workbench_history();
     void update_workbench_history_actions();
+    void open_workbench_history_entry(const std::string& key);
+    void export_workbench_history_entry(const std::string& key);
+    void delete_workbench_history_entry(const std::string& key);
     void rescale_post_generation_workbench();
     void preview_model_finishing();
     void paint_beauty_color(const std::vector<size_t>& faces);
@@ -395,7 +461,7 @@ private:
                              const std::string& color_intent_schema,
                              const std::string& color_intent_sha256,
                              const std::string& job_id, const wxString& title, bool new_asset = false);
-    void delete_library_entry(const GeneratedModelEntry& entry);
+    bool delete_library_entry(const GeneratedModelEntry& entry);
     void export_library_entry(const GeneratedModelEntry& entry);
     void update_library_provider_tasks(const std::string& job_id,
                                        const AIModelGenerationClient::JobStatus& status);
@@ -411,6 +477,7 @@ private:
     ModelGenerationUIState m_ui_state;
 
     wxPanel* m_finishing_panel {nullptr};
+    wxScrolledWindow* m_finishing_scroll {nullptr};
     wxWindow* m_finishing_selection_section {nullptr};
     bool m_finishing_selection_open {false};
     wxWindow* build_post_generation_workbench(wxWindow* parent);
@@ -429,21 +496,13 @@ private:
     bool m_workbench_settings_editing {false};
     wxStaticText* m_workbench_beauty_heading {nullptr};
     wxStaticText* m_workbench_palette_heading {nullptr};
-    wxStaticBitmap* m_workbench_check_info {nullptr};
+    WorkbenchButton* m_workbench_check_info {nullptr};
     wxStaticBitmap* m_workbench_beauty_info {nullptr};
-    wxWindow* m_workbench_base {nullptr};
+    wxToggleButton* m_workbench_base {nullptr};
+    wxToggleButton* m_workbench_grid {nullptr};
     wxPanel* m_workbench_footer {nullptr};
-    wxPanel* m_workbench_parameters {nullptr};
-    wxPanel* m_workbench_model_info {nullptr};
-    std::array<wxStaticText*, 4> m_workbench_model_info_values {};
-    wxStaticText* m_workbench_parameter_faces {nullptr};
-    wxStaticText* m_workbench_parameter_output {nullptr};
-    wxStaticBitmap* m_workbench_parameter_divider {nullptr};
-    wxSlider* m_workbench_smoothing_iterations {nullptr};
-    wxToggleButton* m_workbench_preserve_hard_edges {nullptr};
-    void layout_workbench_parameters();
+    void layout_workbench_history_toggle(bool force = false);
     wxStaticText* m_workbench_state_status {nullptr};
-    wxStaticText* m_workbench_model_name {nullptr};
     wxStaticText* m_workbench_model_status {nullptr};
     wxStaticText* m_workbench_check_status {nullptr};
     wxStaticText* m_workbench_palette_status {nullptr};
@@ -753,6 +812,9 @@ private:
     int m_job_face_limit { 1000000 };
     std::string m_job_generation_profile { "quality" };
     AIModelGenerationClient::GenerationOptions m_job_generation_options;
+    std::string m_selected_design_provider { "gpt" };
+    std::string m_selected_design_model;
+    std::string m_selected_geometry_model;
     bool           m_legacy_generation_defaults { false };
     std::string m_job_id;
     std::string m_job_state;
@@ -789,6 +851,8 @@ private:
     bool m_history_model_design_reusable { false };
     bool m_service_available { false };
     bool m_generation_available { false };
+    std::map<std::string, AIModelGenerationClient::ProviderCatalog> m_provider_catalogs;
+    std::map<std::string, std::uint64_t> m_provider_catalog_sequences;
     bool m_service_availability_known { false };
     bool m_page_initialized { false };
     bool m_library_refresh_pending { true };

@@ -214,7 +214,7 @@ try {
         $dependencies = Get-Content -LiteralPath (Join-Path $runtime 'resources/tools/ai/orca_ai_runtime_dependencies.json') -Raw | ConvertFrom-Json
         $pillow = @($dependencies.packages | Where-Object name -eq 'Pillow')
         if ($pillow.Count -ne 1) { throw 'Runtime dependency record must contain one Pillow version.' }
-        Invoke-Step 'python-check' $runtimePython @('-I', (Join-Path $runtime 'resources/tools/ai/verify_bundled_runtime.py'), '--python-root', (Join-Path $runtime 'python'), '--expect-python', $dependencies.python.version, '--expect-pillow', $pillow[0].version, '--json')
+        Invoke-Step 'python-check' $runtimePython @('-I', (Join-Path $runtime 'resources/tools/ai/verify_bundled_runtime.py'), '--python-root', (Join-Path $runtime 'python'), '--expect-python', $dependencies.python.version, '--expect-pillow', $pillow[0].version, '--expect-yoyoclaw', '--json')
         New-Item -ItemType Directory -Path $data -Force | Out-Null
         if (-not $NoLaunch) {
             Assert-LaunchPortAvailable

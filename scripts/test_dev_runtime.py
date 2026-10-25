@@ -471,13 +471,13 @@ class OfflineSelectionTests(unittest.TestCase):
             "import os, socket, unittest\n"
             "class Selected(unittest.TestCase):\n"
             " def test_credentials_and_network(self):\n"
-            "  self.assertNotIn('HY3D_API', os.environ)\n"
-            "  self.assertNotIn('HUNYUAN3D_API_KEY', os.environ)\n"
+            "  self.assertNotIn('YOYOCLAW_HMAC_ACCESS_KEY', os.environ)\n"
+            "  self.assertNotIn('YOYOCLAW_ROOT_SECRET', os.environ)\n"
             "  with self.assertRaisesRegex(RuntimeError, 'external networking'):\n"
             "   socket.create_connection(('example.invalid', 443))\n")
 
     def run_selection(self, pattern):
-        env = dict(os.environ, HY3D_API="fixture-only", HUNYUAN3D_API_KEY="fixture-only")
+        env = dict(os.environ, YOYOCLAW_HMAC_ACCESS_KEY="fixture-only", YOYOCLAW_ROOT_SECRET="fixture-only")
         return subprocess.run([sys.executable, "-I", str(self.runner), "--pattern", pattern],
                               env=env, capture_output=True, text=True, timeout=30)
 

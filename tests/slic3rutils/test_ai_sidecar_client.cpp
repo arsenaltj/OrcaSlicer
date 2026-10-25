@@ -21,7 +21,7 @@ namespace {
 nlohmann::json health_response()
 {
     return {
-        {"ok", true}, {"protocol_version", 2}, {"sidecar_version", "orcaslicer-ai-sidecar-v9"},
+        {"ok", true}, {"protocol_version", 2}, {"sidecar_version", "orcaslicer-ai-sidecar-v11"},
         {"runtime", {{"health_schema_version", 2}, {"session_protected", true}, {"build", nlohmann::json::object()}}},
         {"capabilities", {
             {"config_proposal", {{"available", false}}},

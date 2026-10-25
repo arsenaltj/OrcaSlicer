@@ -67,6 +67,7 @@ class DesignWorkflow:
             self.ports.generate_image(
                 prompt, raw_preview, job.style, job.custom_style,
                 palette=job.palette, palette_roles=job.palette_roles,
+                job=job, provider=job.design_provider, model=job.design_model,
             )
             self.ports.validate_image(
                 raw_preview,
@@ -170,6 +171,7 @@ class DesignWorkflow:
                 geometry_reference,
                 print_settings=job.print_settings,
                 preprocessing_options=options,
+                job=job, provider=job.design_provider, model=job.design_model,
             )
             # Test adapters and older compatible preprocessors may not implement
             # the optional sculptural snapshot yet. Preserve the previous behavior
@@ -290,7 +292,12 @@ class DesignWorkflow:
     def begin_timing(self, job: Job) -> None:
         if job.design_started_monotonic is not None:
             return
-        key = timing_key(self.ports.image_provider_status(), os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2"),
+        try:
+            status = self.ports.image_provider_status(job.design_provider)
+        except TypeError:
+            status = self.ports.image_provider_status()
+        model = job.design_model or os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2")
+        key = timing_key(status, model,
                          os.environ.get("OPENAI_IMAGE_QUALITY", "high").strip().lower(), job.source, job.style)
         job.design_started_monotonic = time.monotonic()
         job.image_metrics["design_timing"] = {

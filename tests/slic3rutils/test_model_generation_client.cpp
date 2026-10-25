@@ -30,7 +30,7 @@ TEST_CASE("Legacy Tripo choices restore the same standard face cap without editi
 TEST_CASE("Explicit model choices survive restoration for review without changing cost or face target",
           "[ModelGenerationClient][Regression]")
 {
-    for (const std::string provider : {"tripo", "hunyuan"}) {
+    for (const std::string provider : {"tripo", "yoyoclaw"}) {
         for (const std::string geometry : {"standard", "detailed"}) {
             DYNAMIC_SECTION(provider << " " << geometry) {
                 const nlohmann::json saved = {{"provider", provider}, {"face_limit", 2000000},
@@ -46,12 +46,22 @@ TEST_CASE("Explicit model choices survive restoration for review without changin
     }
 }
 
-TEST_CASE("Tripo legacy restoration does not change another provider's choices",
+TEST_CASE("Tripo legacy restoration does not change YOYOClaw choices",
           "[ModelGenerationClient][Regression]")
 {
     const auto options = AIModelGenerationClient::restore_generation_options(
-        {{"provider", "hunyuan"}, {"face_limit", 2000000}, {"geometry_quality", nullptr}});
-    CHECK(options.provider == "hunyuan");
-    CHECK(options.face_limit == 2000000);
+        {{"provider", "yoyoclaw"}, {"face_limit", 1000000}, {"geometry_quality", nullptr}});
+    CHECK(options.provider == "yoyoclaw");
+    CHECK(options.face_limit == 1000000);
     CHECK(options.geometry_quality == "standard");
+}
+
+TEST_CASE("Unsupported saved providers fall back to Tripo",
+          "[ModelGenerationClient][Regression]")
+{
+    const auto options = AIModelGenerationClient::restore_generation_options(
+        {{"provider", "removed-provider"}, {"face_limit", 2000000}, {"geometry_quality", "detailed"}});
+    CHECK(options.provider == "tripo");
+    CHECK(options.face_limit == 2000000);
+    CHECK(options.geometry_quality == "detailed");
 }

@@ -142,7 +142,7 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
             const std::string provider_task_id = metadata.value("provider_task_id", std::string());
             const std::string provider_conversion_task_id =
                 metadata.value("provider_conversion_task_id", std::string());
-            if ((provider == "tripo" || provider == "hunyuan") && valid_provider_task_id(provider_task_id)) {
+            if ((provider == "tripo" || provider == "yoyoclaw") && valid_provider_task_id(provider_task_id)) {
                 entry.provider_name = provider;
                 entry.provider_task_id = provider_task_id;
                 if (valid_provider_task_id(provider_conversion_task_id))

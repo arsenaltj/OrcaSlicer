@@ -392,6 +392,11 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/Orca/OrcaWorkspaceAdapter.hpp
     GUI/AI/AIDesktopFeatureHost.cpp
     GUI/AI/AIDesktopFeatureHost.hpp
+    GUI/AI/Text/AITextClient.cpp
+    GUI/AI/Text/AITextClient.hpp
+    GUI/AI/Text/AITextFeatureHost.cpp
+    GUI/AI/Text/AITextFeatureHost.hpp
+    GUI/AI/Text/AITextPolishState.hpp
     ${ORCA_DESKTOP_WORKSPACE_SOURCES}
     GUI/AI/SmartSlicing/SmartSlicingFeatureHost.cpp
     GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp

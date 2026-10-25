@@ -52,16 +52,16 @@ struct ModelGenerationFeatureHost::Impl
                     _L("打印机耗材"), wxOK | wxICON_WARNING, owner);
                 return;
             }
-            show_orca_filament_selection(owner, *wxGetApp().plater(), slot, false,
-                model_generation->project_filament_color_sources());
-            model_generation->synchronize_workbench_project_palette(true);
+            if (show_orca_filament_selection(owner, *wxGetApp().plater(), slot, false,
+                model_generation->project_filament_color_sources()))
+                model_generation->synchronize_workbench_project_palette(true);
         }, [this] { return workspace->project_filament_channels(); });
         model_generation->set_project_filament_edit_handler([this](size_t slot) {
             auto* owner = wxGetTopLevelParent(model_generation);
             if (!model_generation->workbench_snapshot().can_edit_project_colors) return;
-            show_orca_filament_selection(owner, *wxGetApp().plater(), slot, false,
-                model_generation->project_filament_color_sources());
-            model_generation->synchronize_workbench_project_palette(true);
+            if (show_orca_filament_selection(owner, *wxGetApp().plater(), slot, false,
+                model_generation->project_filament_color_sources()))
+                model_generation->synchronize_workbench_project_palette(true);
         });
         model_generation->set_project_filament_delete_handler([this](size_t slot) {
             auto* owner = wxGetTopLevelParent(model_generation);
@@ -220,6 +220,18 @@ bool ModelGenerationFeatureHost::synchronize_input(const ModelGenerationUIInput&
 bool ModelGenerationFeatureHost::synchronize_options(const ModelGenerationUIOptions& options)
 {
     return m_impl->model_generation != nullptr && m_impl->model_generation->synchronize_ui_options(options);
+}
+
+void ModelGenerationFeatureHost::get_provider_catalog(
+    const std::string& role, const std::string& provider,
+    AIModelGenerationClient::CatalogFn on_complete,
+    AIModelGenerationClient::ErrorFn on_error)
+{
+    if (m_impl->model_generation != nullptr)
+        m_impl->model_generation->get_provider_catalog(role, provider,
+                                                       std::move(on_complete), std::move(on_error));
+    else if (on_error)
+        on_error("Model generation panel is unavailable.");
 }
 
 bool ModelGenerationFeatureHost::request_generate_design()

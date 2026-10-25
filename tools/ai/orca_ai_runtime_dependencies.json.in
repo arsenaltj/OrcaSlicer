@@ -14,6 +14,20 @@
       "sha256": "@ORCA_AI_PILLOW_WHEEL_SHA256@"
     }
   ],
+  "yoyoclaw": {
+    "enabled": @ORCA_AI_YOYOCLAW_ENABLED_JSON@,
+    "architecture": "@ORCA_AI_YOYOCLAW_ARCHITECTURE@",
+    "packages": [
+      {"name": "requests", "version": "@ORCA_AI_YOYOCLAW_REQUESTS_VERSION@"},
+      {"name": "cryptography", "version": "@ORCA_AI_YOYOCLAW_CRYPTOGRAPHY_VERSION@"},
+      {"name": "cffi", "version": "@ORCA_AI_YOYOCLAW_CFFI_VERSION@"},
+      {"name": "charset-normalizer", "version": "@ORCA_AI_YOYOCLAW_CHARSET_VERSION@"},
+      {"name": "idna", "version": "@ORCA_AI_YOYOCLAW_IDNA_VERSION@"},
+      {"name": "urllib3", "version": "@ORCA_AI_YOYOCLAW_URLLIB3_VERSION@"},
+      {"name": "certifi", "version": "@ORCA_AI_YOYOCLAW_CERTIFI_VERSION@"},
+      {"name": "pycparser", "version": "@ORCA_AI_YOYOCLAW_PYCPARSER_VERSION@"}
+    ]
+  },
   "portrait_recognition": {
     "enabled": @ORCA_AI_PORTRAIT_ENABLED_JSON@,
     "dependencies_manifest": "resources/beauty-runtime/runtime-manifest.json"

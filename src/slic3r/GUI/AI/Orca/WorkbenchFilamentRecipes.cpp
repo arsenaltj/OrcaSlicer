@@ -172,6 +172,41 @@ bool stage_targets(PresetBundle& staged, const std::vector<std::string>& targets
         }
         physical.push_back({candidate.project_config.opt_string("filament_colour", unsigned(i)), preset->name, type->get_at(0), false, unsigned(i + 1)});
     }
+    auto append_identity_recipe = [&](const std::vector<unsigned>& ids, const std::vector<double>& ratios,
+                                      const std::string& appearance) -> std::optional<size_t> {
+        const size_t slot = candidate.filament_presets.size();
+        if (slot >= 32) {
+            error = "叠色配方超过原生32槽上限";
+            return {};
+        }
+        if (ids.size() != ratios.size() || ids.size() < 2 ||
+            std::any_of(ratios.begin(), ratios.end(), [](double ratio) { return ratio <= 0.; }) ||
+            !compatible_components(candidate, ids)) {
+            error = "重复颜色没有可用的材料/温度兼容叠色配方";
+            return {};
+        }
+        const auto multi = candidate.project_config.option<ConfigOptionStrings>("filament_multi_colour")->values;
+        candidate.set_num_filaments(unsigned(slot + 1), appearance);
+        std::copy(multi.begin(), multi.end(),
+            candidate.project_config.option<ConfigOptionStrings>("filament_multi_colour")->values.begin());
+        candidate.filament_presets[slot] = candidate.filament_presets[ids.front() - 1];
+        candidate.project_config.option<ConfigOptionBools>("filament_is_mixed")->values[slot] = true;
+        std::string component_text, ratio_text;
+        for (size_t i = 0; i < ids.size(); ++i) {
+            if (i) { component_text += ','; ratio_text += ','; }
+            component_text += std::to_string(ids[i]);
+            ratio_text += std::to_string(ratios[i]);
+        }
+        candidate.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[slot] = component_text;
+        candidate.project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[slot] = ratio_text;
+        candidate.project_config.option<ConfigOptionStrings>("filament_colour")->values[slot] = appearance;
+        candidate.project_config.option<ConfigOptionStrings>("filament_multi_colour")->values[slot] = appearance;
+        if (!valid_recipe(candidate, slot)) {
+            error = "新叠色配方验证失败";
+            return {};
+        }
+        return slot;
+    };
     // Use the same computation as the native sidebar after base colours change.
     for (size_t i = 0; i < candidate.filament_presets.size(); ++i) if (valid_recipe(candidate, i)) {
         const auto ids = parse_mixed_components(candidate.project_config.opt_string("filament_mixed_components", unsigned(i)));
@@ -199,6 +234,81 @@ bool stage_targets(PresetBundle& staged, const std::vector<std::string>& targets
                 exact = preferred[target_index];
         }
         if (exact) { used_slots.insert(*exact); result.push_back(*exact); continue; }
+
+        // Reuse an unused exact virtual identity before cloning a duplicate.
+        // This matters when a saved configuration already contains multiple
+        // legal recipes with the same displayed RGB: preferred bindings must
+        // keep those native slot identities stable.
+        std::optional<size_t> exact_recipe;
+        for (size_t i = 0; i < candidate.filament_presets.size(); ++i) {
+            if (used_slots.count(i) || !valid_recipe(candidate, i) ||
+                distance(target, candidate.project_config.opt_string("filament_colour", unsigned(i))) != 0.)
+                continue;
+            exact_recipe = i;
+            if (target_index < preferred.size() && preferred[target_index] == i) break;
+        }
+        if (exact_recipe) {
+            used_slots.insert(*exact_recipe);
+            result.push_back(*exact_recipe);
+            continue;
+        }
+
+        // Equal RGB entries are distinct workbench identities. Once the only
+        // exact physical slot is consumed, clone the preceding legal recipe or
+        // synthesize a near-pure two-spool recipe instead of binding the same
+        // native slot twice. The latter is needed because the native
+        // recommender intentionally returns a one-component exact match.
+        std::optional<size_t> duplicate_slot;
+        for (size_t earlier = target_index; earlier-- > 0;) {
+            if (targets[earlier] == target && earlier < result.size()) {
+                duplicate_slot = result[earlier];
+                break;
+            }
+        }
+        if (duplicate_slot && *duplicate_slot < candidate.filament_presets.size()) {
+            std::optional<size_t> appended;
+            if (candidate.is_mixed_filament(*duplicate_slot) && valid_recipe(candidate, *duplicate_slot)) {
+                const auto ids = parse_mixed_components(
+                    candidate.project_config.opt_string("filament_mixed_components", unsigned(*duplicate_slot)));
+                const auto ratios = parse_mixed_ratios(
+                    candidate.project_config.opt_string("filament_mixed_sublayer_ratios", unsigned(*duplicate_slot)), ids.size());
+                appended = append_identity_recipe(ids, ratios,
+                    candidate.project_config.opt_string("filament_colour", unsigned(*duplicate_slot)));
+            } else if (!candidate.is_mixed_filament(*duplicate_slot)) {
+                const auto primary = std::find_if(physical.begin(), physical.end(), [&](const auto& spool) {
+                    return spool.filament_index - 1 == *duplicate_slot;
+                });
+                std::optional<unsigned> partner;
+                std::string estimated;
+                double best_delta = std::numeric_limits<double>::max();
+                if (primary != physical.end()) for (const auto& spool : physical) {
+                    if (spool.filament_index == primary->filament_index ||
+                        !compatible_components(candidate, {primary->filament_index, spool.filament_index})) continue;
+                    const bool same = distance(primary->color_hex, spool.color_hex) == 0.;
+                    const std::vector<int> percentages = same ? std::vector<int>{50, 50} : std::vector<int>{99, 1};
+                    const auto blended = blend_color_multi({primary->color_hex, spool.color_hex}, percentages);
+                    const double delta = distance(target, blended);
+                    if (!partner || delta < best_delta - 1e-7 ||
+                        (std::abs(delta - best_delta) <= 1e-7 && spool.filament_index < *partner)) {
+                        partner = spool.filament_index;
+                        estimated = blended;
+                        best_delta = delta;
+                    }
+                }
+                if (primary != physical.end() && partner) {
+                    const bool same = distance(primary->color_hex,
+                        candidate.project_config.opt_string("filament_colour", *partner - 1)) == 0.;
+                    appended = append_identity_recipe({primary->filament_index, *partner},
+                        same ? std::vector<double>{0.5, 0.5} : std::vector<double>{0.99, 0.01}, estimated);
+                }
+            }
+            if (appended) {
+                used_slots.insert(*appended);
+                result.push_back(*appended);
+                continue;
+            }
+            if (!error.empty()) return false;
+        }
         ColorDecomposeRecipeResult best;
         double best_error = std::numeric_limits<double>::max();
         for (size_t seed = 0; seed < physical.size(); ++seed) {
@@ -237,7 +347,7 @@ bool stage_targets(PresetBundle& staged, const std::vector<std::string>& targets
         for (const auto& component : best.components) normalized.emplace_back(component.filament_index, component.ratio);
         std::sort(normalized.begin(), normalized.end());
         std::optional<size_t> reused;
-        for (size_t i = 0; i < candidate.filament_presets.size(); ++i) if (valid_recipe(candidate, i)) {
+        for (size_t i = 0; i < candidate.filament_presets.size(); ++i) if (!used_slots.count(i) && valid_recipe(candidate, i)) {
             const auto ids = parse_mixed_components(candidate.project_config.opt_string("filament_mixed_components", unsigned(i)));
             const auto ratios = parse_mixed_ratios(candidate.project_config.opt_string("filament_mixed_sublayer_ratios", unsigned(i)), ids.size());
             std::vector<std::pair<unsigned, int>> stored;

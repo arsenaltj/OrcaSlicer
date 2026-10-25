@@ -240,7 +240,8 @@ void MainFrame::update_layout()
             m_ai_feature_host->initialize_model_generation_for_shell();
         if (m_redesign_shell == nullptr) {
             m_redesign_shell = new RedesignShell(
-                this, m_ai_feature_host != nullptr ? m_ai_feature_host->model_generation_host() : nullptr, m_plater);
+                this, m_ai_feature_host != nullptr ? m_ai_feature_host->model_generation_host() : nullptr,
+                m_plater, m_ai_feature_host != nullptr ? m_ai_feature_host->text_feature_host() : nullptr);
             if (m_ai_feature_host != nullptr)
                 m_ai_feature_host->set_service_status_handler([this](AIServiceStatus status) {
                     if (m_redesign_shell != nullptr)

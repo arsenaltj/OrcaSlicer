@@ -18,6 +18,29 @@ struct PostGenerationUiState
     bool can_import {false};
 };
 
+enum class PostGenerationStatusTone { Neutral, Accent, Success, Information, Error };
+
+inline PostGenerationStatusTone post_generation_status_tone(PostGenerationUiState::Status status,
+                                                             bool original_comparison = false)
+{
+    if (original_comparison && status != PostGenerationUiState::Status::Loading &&
+        status != PostGenerationUiState::Status::Processing &&
+        status != PostGenerationUiState::Status::CandidateReady &&
+        status != PostGenerationUiState::Status::Error)
+        return PostGenerationStatusTone::Information;
+    switch (status) {
+    case PostGenerationUiState::Status::Empty: return PostGenerationStatusTone::Neutral;
+    case PostGenerationUiState::Status::Loading:
+    case PostGenerationUiState::Status::Processing:
+    case PostGenerationUiState::Status::CandidateReady: return PostGenerationStatusTone::Accent;
+    case PostGenerationUiState::Status::Ready: return PostGenerationStatusTone::Success;
+    case PostGenerationUiState::Status::Editing:
+    case PostGenerationUiState::Status::ComparingBefore: return PostGenerationStatusTone::Information;
+    case PostGenerationUiState::Status::Error: return PostGenerationStatusTone::Error;
+    }
+    return PostGenerationStatusTone::Neutral;
+}
+
 inline bool post_generation_asset_switch_allowed(bool busy, bool finishing_running,
     bool transaction_processing, bool candidate_ready, bool comparing_before, bool has_changes)
 {

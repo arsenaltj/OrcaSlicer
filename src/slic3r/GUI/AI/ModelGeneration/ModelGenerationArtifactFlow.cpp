@@ -113,6 +113,7 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
                 }
                 if(local_cancel) complete_local_model_import(self->m_library_import,local_cancel,false);
                 size_t triangles = 0, colors = 0; Vec3d dimensions;
+                self->invalidate_printer_filament_trial_for_model_change();
                 if (!error.empty() || !self->m_model_preview->load_prepared_model(
                     std::move(*prepared), palette, triangles, dimensions, colors, error)) {
                     failed(error); return;

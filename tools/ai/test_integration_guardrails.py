@@ -49,6 +49,7 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertEqual(
             {
                 "desktop": "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
+                "text": "src/slic3r/GUI/AI/Text/AITextFeatureHost.hpp",
                 "model_generation": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp",
                 "smart_slicing": "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp",
             },
@@ -212,12 +213,12 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertIn("kMinPhysicalColorChannels = 1;", color_contract)
         self.assertIn("kMaxPhysicalColorChannels = 6;", color_contract)
         self.assertIn("BeautyWorkbenchControls* m_beauty_controls", panel_header)
-        self.assertIn("new BeautyWorkbenchControls(m_finishing_panel, m_model_preview, m_palette_provider", beauty_view)
+        self.assertIn("new BeautyWorkbenchControls(scroll, m_model_preview, m_palette_provider", beauty_view)
         # The new control facade delegates color reads to the workbench host;
         # native import still validates physical channels and filters unavailable ones.
         self.assertIn("on_available_colors = [this] { return local_recolor_palette(); }", beauty_view)
         self.assertIn("const auto colors = on_available_colors();", beauty_controls)
-        self.assertIn("std::vector<std::string> palette = project_palette();", workbench_host)
+        self.assertIn("auto fallback = project_palette();", workbench_host)
         self.assertIn("m_palette_provider.printable_palette().compatible_colors", panel_source)
         self.assertIn("AI::is_valid_physical_channel_set(result.physical_channels)", native_matching)
         self.assertIn("if (!result.physical_channels[p].compatible) continue;", native_matching)
@@ -481,6 +482,14 @@ class IntegrationGuardrailTests(unittest.TestCase):
     def test_requires_every_shared_runtime_owner(self) -> None:
         document = copy.deepcopy(self.document)
         document["boundaries"]["shared_runtime_owned_paths"].remove("src/slic3r/Utils/Http.cpp")
+
+        errors = GUARDRAILS.validate_document(document)
+
+        self.assertTrue(any(error["code"] == "boundary.shared_runtime" for error in errors))
+
+    def test_requires_text_capability_shared_runtime_ownership(self) -> None:
+        document = copy.deepcopy(self.document)
+        document["boundaries"]["shared_runtime_owned_paths"].remove("src/slic3r/GUI/AI/Text")
 
         errors = GUARDRAILS.validate_document(document)
 

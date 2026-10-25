@@ -137,6 +137,10 @@ void ModelGenerationPanel::export_semantic_candidate()
     const auto cell_colors=m_model_preview->import_cell_color_overrides();
     const auto baked_semantic=m_model_preview->semantic_result_metadata();
     const auto color_state = m_model_preview->color_trial_state();
+    const bool printer_filament_application = m_apply_filaments_saving && color_state.source == 1;
+    const auto candidate_color_state = printer_filament_application
+        ? PrinterFilamentPreview::normalize_baked_candidate_state(color_state)
+        : color_state;
     // Automatic semantic colors are baked into the candidate appearance. Keep
     // only explicit manual face locks as preview overrides so a later explicit
     // re-optimization can still replace automatic colors without overriding
@@ -227,7 +231,7 @@ void ModelGenerationPanel::export_semantic_candidate()
     const uint64_t sequence = m_sequence;
     const auto cache_root=boost::filesystem::path(Slic3r::data_dir())/"cache";
     try {
-        m_finishing_worker = std::thread([weak, source, destination, options, canceled, sequence, manual_overrides, color_state, before, region_evidence, secondary_evidence, shape_details, shapes_unlocked,leaf_edits,leaf_revision,partition_snapshot,portrait_task,cell_colors,cache_root,draft_snapshot,baked_semantic,color_block_contract,printer_restore_snapshot] {
+        m_finishing_worker = std::thread([weak, source, destination, options, canceled, sequence, manual_overrides, color_state=candidate_color_state, printer_filament_application, before, region_evidence, secondary_evidence, shape_details, shapes_unlocked,leaf_edits,leaf_revision,partition_snapshot,portrait_task,cell_colors,cache_root,draft_snapshot,baked_semantic,color_block_contract,printer_restore_snapshot] {
             auto saved_shapes=shape_details;
             auto saved_edits=leaf_edits;
             auto output_options=options;
@@ -289,7 +293,7 @@ void ModelGenerationPanel::export_semantic_candidate()
             }
             const auto baked=color_block_contract ? nlohmann::json() : AI::baked_portrait_appearance(result.output_sha256,baked_semantic,cell_colors,
                 saved_shapes && saved_shapes->surface_partition ? saved_shapes->surface_partition->at("partition_sha256").get<std::string>() : std::string());
-            wxGetApp().CallAfter([weak, source, destination, result, sequence, canceled, prepared, preview_error, color_state, before, region_evidence, secondary_evidence, shape_details=saved_shapes, shapes_unlocked,leaf_edits=saved_edits,leaf_revision,partition_snapshot,portrait_task,draft_snapshot,output_options,baked,printer_restore_snapshot] {
+            wxGetApp().CallAfter([weak, source, destination, result, sequence, canceled, prepared, preview_error, color_state, printer_filament_application, before, region_evidence, secondary_evidence, shape_details=saved_shapes, shapes_unlocked,leaf_edits=saved_edits,leaf_revision,partition_snapshot,portrait_task,draft_snapshot,output_options,baked,printer_restore_snapshot] {
                 if (!weak || weak->m_shutdown || sequence != weak->m_sequence) {
                     if (result.success) { boost::system::error_code ignored; boost::filesystem::remove(destination, ignored); }
                     return;
@@ -342,6 +346,7 @@ void ModelGenerationPanel::export_semantic_candidate()
                     if (keep_contour_draft) self->preserve_portrait_draft();
                 } else {
                     size_t triangles = 0, colors = 0; Vec3d dimensions; std::string error;
+                    self->invalidate_printer_filament_trial_for_model_change();
                     if (!self->m_model_preview->load_prepared_model(std::move(*prepared), {}, triangles,
                             dimensions, colors, error)) {
                         self->m_save_and_return = false;
@@ -366,11 +371,30 @@ void ModelGenerationPanel::export_semantic_candidate()
                         self->m_model_preview->restore_color_trial_without_recognition(color_state);
                         self->m_model_preview->restore_portrait_color_blocks(draft_snapshot->color_blocks,false);
                         self->m_model_preview->restore_printer_restore_snapshot(printer_restore_snapshot);
-                        const bool semantic_restored = self->m_model_preview->set_saved_semantic_result(
-                            self->m_finishing_candidate_semantic_faces,
-                            self->m_finishing_candidate_semantic_subfaces);
-                        const bool printer_preview_restored = color_state.source != 1 ||
-                            self->m_model_preview->activate_printer_filament_preview();
+                        // Native printer application persists its authoritative
+                        // face/subface-to-slot snapshot separately. The output
+                        // artifact is already baked, so requiring a semantic
+                        // preview source here incorrectly rejects textured or
+                        // otherwise non-semantic candidates.
+                        const bool semantic_restored = printer_filament_application ||
+                            self->m_model_preview->set_saved_semantic_result(
+                                self->m_finishing_candidate_semantic_faces,
+                                self->m_finishing_candidate_semantic_subfaces);
+                        std::string printer_preview_error;
+                        const bool printer_preview_restored = !printer_filament_application ||
+                            self->m_model_preview->activate_printer_filament_preview(&printer_preview_error);
+                        const auto restored_color_state = self->m_model_preview->color_trial_state();
+                        BOOST_LOG_TRIVIAL(info) << "AI candidate preview restore: printer_application="
+                            << printer_filament_application << ", requested_source=" << color_state.source
+                            << ", restored_source=" << restored_color_state.source
+                            << ", enabled=" << restored_color_state.enabled
+                            << ", colors=" << restored_color_state.colors.size()
+                            << ", mappings=" << restored_color_state.mapping_colors.size()
+                            << ", project_identity_matches="
+                            << (restored_color_state.project_slot_identity == color_state.project_slot_identity)
+                            << ", edits=" << edits_restored << ", semantic=" << semantic_restored
+                            << ", printer_preview=" << printer_preview_restored
+                            << (printer_preview_error.empty() ? std::string() : ", error=" + printer_preview_error);
                         if (!edits_restored || !semantic_restored || !printer_preview_restored) {
                             self->m_save_and_return = false;
                             boost::system::error_code ignored;
@@ -380,17 +404,16 @@ void ModelGenerationPanel::export_semantic_candidate()
                             self->preserve_portrait_draft();
                             if (self->m_beauty_transactions) self->m_beauty_transactions->finish(false, false,
                                 "semantic result preview unavailable");
-                            self->m_finishing_status->SetLabel(_L("语义候选预览失败，已保留处理前版本。"));
+                            const wxString reason = !edits_restored ? _L("局部编辑状态无法恢复")
+                                : !semantic_restored ? _L("语义结果无法恢复")
+                                : from_u8(printer_preview_error.empty() ? "打印机耗材预览无法恢复" : printer_preview_error);
+                            self->m_finishing_status->SetLabel(_L("候选预览失败，已保留处理前版本：") + reason);
                             self->finish_portrait_optimization(PortraitOutcome::DraftOnly,self->m_finishing_status->GetLabel());
                             self->refresh_controls();
                             return;
                         }
                         self->m_model_preview->synchronize_project_bound_semantics(
                             color_state, self->m_model_preview->color_trial_state());
-                        if (color_state.source == 1) {
-                            if (self->m_workbench_original) self->m_workbench_original->SetValue(false);
-                            if (self->m_beauty_controls) self->m_beauty_controls->synchronize_preview_options();
-                        }
                         self->m_finishing_candidate = destination;
                         self->m_beauty_manual_color_dirty = false;
                         self->m_finishing_candidate_baked_appearance = baked;
