@@ -1,5 +1,15 @@
 [
   {
+    "pr": 41,
+    "run": 40218889940,
+    "head": "6371f468651275fd8d3ecb4bc92f7b1d115f6aed",
+    "base": "392a1e12fa419dc8188bf3c391bc4556379981ac",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "统一移动SDK核心目标并适配原生Moonraker传输（已同步最新集成基线）",
+    "path": "pr/41/6371f468651275fd8d3ecb4bc92f7b1d115f6aed/40218889940",
+    "created": "2026-10-25T18:00:49+00:00"
+  },
+  {
     "pr": 43,
     "run": 40119733560,
     "head": "51ce403d0690659131947bb4efc66c7d0194a9ad",

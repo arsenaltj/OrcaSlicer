@@ -1,0 +1,25 @@
+{
+  "pr": 41,
+  "run": 40218889940,
+  "head": "6371f468651275fd8d3ecb4bc92f7b1d115f6aed",
+  "base": "392a1e12fa419dc8188bf3c391bc4556379981ac",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "统一移动SDK核心目标并适配原生Moonraker传输（已同步最新集成基线）",
+  "path": "pr/41/6371f468651275fd8d3ecb4bc92f7b1d115f6aed/40218889940",
+  "created": "2026-10-25T18:00:49+00:00",
+  "files": {
+    "index.html": "998da6ec9e71bb196f23cb003c94cb03c8c44e97a8fc178004b36e7dfb3ee110",
+    "details.html": "9ef827e2cf0f0cae3105d87c06d29b372111c045fa7d557e999ffea4f69fdd6d",
+    "report.json": "360623a711799481e2e6b3b6d4f3fb21d985892c502faf2d2303f82970023bfe",
+    "summary.md": "fbea8eeb4ddcd00217eb237942d5691c4ef30e9f781fda128371ff041e7f9657",
+    "archify-receipts.json": "6e82c9bfcfe82d4e3d06216dcc43885468e7e737a195f1078124bd877234e54c",
+    "l0-context.html": "1d742e505e138b9657d732bb8bac4fc47020a3410322ebce835625cfb7695435",
+    "l0-context.json": "0242951b01e35ecae376d9334116e4de3b3e7c498ae8968d8f845bde7e4d8953",
+    "l1-modules.html": "0e2299f620a8e302911a79f70e4b2db4d605d042a313233b1863981f5f74ff37",
+    "l1-modules.json": "a2ada7c6ead1e589246bdf24e3747d47b7905fd42fbcf71f3f10b8ba828fcde6",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
