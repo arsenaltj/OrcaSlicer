@@ -1,3 +1,51 @@
+# 2026-10-26 一键修复稳定性与纯净打包门禁同步默认分支
+
+目标与范围：PR #43 已由远端合入默认分支 `codex/team/integration`，合入提交为 `89f610d65c42fa76ce2bbbdd1ee0ae9bd64481c7`，其源码树与本地提交前基线一致。按用户本轮明确授权，将当前工作树的全部最新代码分成“工作台一键修复稳定性”和“内部包内容门禁及交付记录”两个可审查提交，直接推送到远端默认分支；不提交 `.tmp`、包文件、用户模型、历史、配置、凭据或日志。
+
+提交内容：产品提交包含 CGAL self-union 后 polygon soup 规范化、孤立顶点/非流形/开口网格的体积遍历前门禁、失败保真，以及自动检查只在 3D 工作台已打开后启动、检查卡片圆角窗口裁剪和同色 Windows 原生边框；配套覆盖孤立顶点不崩溃、工作台打开门禁和检查/修复/复检卡片状态。发布提交包含固定 `cryptography 46.0.3` 协议字面量与 YOYOClaw 占位值的精确路径、整文件和字面量哈希审计，以及 NSIS/portable ZIP 根目录差异回归；计划与短状态一并记录实际证据。
+
+验证：产品代码沿用完全相同运行时代码身份下的 `[MeshBoolean]` 6/6、`[AtomicModelCapabilities]|[PostGenerationWorkbench]|[UiRedesign]` 182/182、Release 五阶段和真实主窗口检查/修复/复检复核；最终内部包流程又通过集成守卫 53 项、`[ModelGenerationPresentation]` 65 项与 `[AI][SmartSlicing]` 259 项。发布扫描器 23/23、`scripts/verify_ai_integration.py --json` 和 `git diff --check` 通过，两份包内容报告均为 0 findings / 0 gaps。推送前重新核对暂存内容和远端默认分支，推送后以远端实际 SHA 与 CI 状态为准。
+
+边界：此前包 `60730875c6da0a233edc104c3ac6e34b65e4d4317741e213119fb27ad18cd5ad` 覆盖相同产品与发布工具代码；本条同步记录是包生成后的文档增量，不重新打包。100%/125%/150% DPI 全矩阵、标准用户安装旅程、异常模型剩余 1 处自交的可修复性和实体打印色彩保真继续分别标记为未验证。
+
+# 2026-10-25 当前 3D 工作台版本纯净内部包交付
+
+目标与范围：按用户明确要求，将当前 `codex/upstream-v2.5.0-alpha-portrait-preserved` 工作树同时制作成 Windows 安装包和纯净便携 ZIP。打包锁定当前 HEAD 与全部已跟踪修改的完整文件哈希清单，不提交、推送或发布，不纳入用户模型、历史、配置、凭据、日志、缓存及 `.tmp/dev/data`。
+
+打包与校验：使用固定 `.tmp/dev/build` 和 `release/build_internal.ps1` 的标准内部流程，在新的空候选目录生成 EXE、portable ZIP、SHA-256、源码快照、集成检查和 schema-4 manifest。正式交付前分别执行内容扫描与归档完整性检查；只有安装包和便携包均通过、源码身份在全过程未变化时，才替换 `D:/TEST/packages/current`，随后清理上一版大文件和遗留 `_CPack_Packages`。
+
+内容门禁修复：第一份候选被内容扫描器正确阻止交付，命中固定 `cryptography 46.0.3` 的 PKCS#9 OID 名和 OpenSSH 私钥格式标记，以及 YOYOClaw 源码中的两个 `change-...` 占位值。未放宽字段或令牌扫描；审计改为同时校验固定包内路径、整文件 SHA-256 和具体公开/占位字面量 SHA-256，便携 ZIP 只额外识别固定 CPack 根目录 `OrcaAI_x64/`。扫描器 23 项回归通过，且失败候选的 EXE 与 ZIP 在新规则下均为 `NOT_DETECTED_WITHIN_SCOPE`；任意文件、路径、字面量变化或追加真实令牌仍会阻断。正式交付须使用包含该门禁修复的新源码快照重新生成，旧候选不复用。
+
+交付结果：标准内部流程已生成并校验安装包与纯净便携 ZIP，最新版统一位于 `D:/TEST/packages/current`；精确文件名、大小、SHA-256、源码身份和内容报告以同目录 schema-4 manifest 为准。两份实际包内容扫描均为 `NOT_DETECTED_WITHIN_SCOPE` 且 0 findings / 0 gaps，安装包和 ZIP 的 7-Zip 完整性检查通过，归档路径检查未发现 `.tmp`、AppData、模型历史、用户配置或日志目录。目录只保留本版 EXE/ZIP 大文件，旧版来源清单、哈希和验证报告保留，旧 EXE/ZIP 与 `_CPack_Packages` 已清理。
+
+已复用证据：同一运行时代码的 `[AtomicModelCapabilities]|[PostGenerationWorkbench]|[UiRedesign]` 回归为 `182/182`，Release catalogs/build/install/runtime-check/python-check 五阶段通过，`scripts/verify_ai_integration.py --json` 为 `ok: true`。发布扫描器回归为 `23/23`。文档和发布门禁修复会纳入最终源码快照；打包脚本仍重新执行自身集成检查、内容扫描和产物哈希验证，不用上述证据替代包级检查。
+
+边界：本次只交付本机内部验证包，不自动安装、启动、上传或发布，不携带生产凭据。此前真实 GUI 已覆盖本机当前 DPI 的检查、修复、复检和圆角卡片；本轮没有从安装包执行标准用户安装旅程。100%/125%/150% DPI 全矩阵、标准用户安装到 `Program Files` 后的人工旅程及实体打印色彩保真继续分别标记为未验证。
+
+# 2026-10-25 3D 工作台自动检查弹窗时机与圆角修复
+
+目标与范围：按用户对真实窗口的反馈，使自动模型检查只在生成后 3D 工作台已经打开且模型就绪后启动，不在结果页模型载入期间提前弹出；同时修复 Windows 浮动卡片四角露出白色方边。本项不改变检查、修复、复检、自动接受或导入门禁语义，不修改外部 API、历史格式和原始模型，不提交、不推送、不打包。
+
+实现：`ensure_workbench_check()` 和自动请求入口增加工作台打开门禁，卡片呈现也拒绝工作台外的迟到状态；纯状态助手覆盖“工作台关闭/模型未就绪/各检查阶段”的启动与显示条件。浮动卡片使用 `wxFRAME_SHAPED`、无背景擦除和显式深灰双缓冲绘制；Windows 通过 `SetWindowRgn` 按 8 DIP 裁剪顶级窗口，并把 DWM 原生边框设为卡片同色。首次显示、内容触发布局、窗口尺寸和 DPI 变化后均重设窗口形状，子面板仍保留统一暗色圆角描边。
+
+自动验证：固定 `.tmp/dev/build` 已确认属于本 checkout、Visual Studio 2022 x64 Release。联合 `[AtomicModelCapabilities]|[PostGenerationWorkbench]|[UiRedesign]` 回归 `182/182` 通过，标签汇总为 `AtomicModelCapabilities 20`、`PostGenerationWorkbench 70`、`UiRedesign 102`，证据为 [`20261025-210736-818`](../../.tmp/dev/logs/20261025-210736-818/result.json)。Release 运行准备的 catalogs/build/install/runtime-check/python-check 五步全部通过，证据为 [`20261025-215600-866`](../../.tmp/dev/logs/20261025-215600-866/result.json)；`scripts/verify_ai_integration.py --json` 为 `ok: true`，`git diff --check` 通过。
+
+GUI 验收证据：匹配版本 PID `31352` 使用 `.tmp/dev/data` 启动并持续响应。真实窗口先完整进入无模型工作台且不显示卡片；选择历史模型后，模型完成载入并可见，再出现检查卡片。另一原始历史模型完整覆盖“检查 → 修复 → 复检 → 自动接受并关闭”，卡片在动态内容和尺寸重排后四角均为圆角，模型背景直接透出，未见白色方角或关闭白闪；自动流程新增一个已接受版本，未覆盖原始模型，也未新增崩溃日志。
+
+未结与边界：当前只完成本机当前 DPI 的代码与真实 GUI 复核，100%/125%/150% DPI 全矩阵和用户最终视觉接受仍待反馈；实体打印色彩保真与本项无关且未验证。保持 PID `31352` 作为验证入口，不自动关闭、提交或推送。
+
+# 2026-10-25 3D 工作台 CGAL 自动修复崩溃整改
+
+目标与范围：修复生成后 3D 工作台首次自动检查人像模型时的 Windows 原生访问冲突。只收紧 `MeshBoolean::cgal::repair()` 的 self-union 回转与体积检查边界，不改变模型格式、工作台状态机、自动接受规则或提供商协议；保留原始模型、崩溃日志、用户历史和 `stash@{0}`，本轮不提交、不推送、不打包。
+
+根因与修复：PID `33268` 在 2026-10-25 19:41:27 以 `0xc0000005` 崩溃，调用栈为 `CGAL::is_border -> volume_connected_components -> MeshBoolean::cgal::repair -> finish_model_artifact`。触发 GLB 含 512058 点/958006 面；局部自交修复失败后，libigl self-union 输出保留了未引用顶点和重复/非流形面。旧代码用 `Surface_mesh::add_face()` 静默拒绝其中 50 面，却仍把带空 halfedge 的网格交给 `does_bound_a_volume()`，CGAL 随后解引用空描述符。现增加安全闭合体检查，公共 `does_bound_a_volume()` 在空面、损坏结构、孤立顶点或非闭合网格上直接返回 false；self-union 输出先经过 polygon-soup 去重、定向、可构网格检查、孤立点清理和垃圾压缩，验证完整后才允许体积遍历。任何失败保留调用者原模型并返回明确错误。
+
+自动验证：新增“闭合立方体 + 未引用顶点”回归，证明过去会访问空 halfedge 的输入现在安全拒绝。最终 Release `[MeshBoolean]` 6/6 通过，证据为 [`20261025-204110-907`](../../.tmp/dev/logs/20261025-204110-907/result.json)；`[PostGenerationWorkbench]|[WorkbenchTopology]` 79/79 通过，证据为 [`20261025-204246-194`](../../.tmp/dev/logs/20261025-204246-194/result.json)。真实触发 GLB 的隐藏 QA 完整走过原崩溃阶段并正常退出，源文件前后 SHA256 均为 `06795DBE3A7C631079BCB20DEFF4228743F8B2E8384C319DB236B9EBDC8A39FE`；该模型最终 float 网格仍有 1 处自交，因此“必须修复成功”的断言按设计失败，程序返回 `Repair failed: exported mesh ... self-intersections=1`，不得把这项安全失败表述为修复候选通过。
+
+GUI 复核：固定 `.tmp/dev/run` 的匹配 Release 应用已用真实主窗口重载触发模型。自动修复完整运行约 69.7 秒并越过原 `solid_self_union` 崩溃点，PID `32296` 持续响应；原模型全程可见并保留，最终以“检查未通过”卡片和“返回 2D 设计图”受控收尾。复核后没有新增 `crash_*.log`，源 GLB SHA256 仍为 `06795DBE3A7C631079BCB20DEFF4228743F8B2E8384C319DB236B9EBDC8A39FE`。匹配验证入口保持开启，供用户继续检查。
+
+未结与边界：该模型自身仍有 1 处 float-space 自交，因此本轮只确认崩溃保护与失败保真，未生成可发布的修复候选。若后续需要让该模型继续导入，应另行评估几何容差或人工忽略策略，不能通过放宽闭合/自交发布门禁来掩盖。本轮没有实体打印色彩证据，也不把本次工程侧 GUI 复核表述为用户视觉验收。
+
 # 2026-10-25 PR #43：生成后 3D 工作台完整整改与 CI 收尾
 
 目标与范围：按用户授权，将 `codex/upstream-v2.5.0-alpha-portrait-preserved` 的全部本地提交与远端最新 `codex/team/integration` 对比，提交已验收的生成后 3D 工作台整改并创建详细 PR。范围包含工作台布局与防闪烁、原色对照和底座、自动修复与 3D 美颜、实体/叠色耗材、历史模型操作、原子页面切换及耗材/模型双向映射；不推送用户资产、`.tmp` 产物、凭据或本机配置，不自动合入、打包或发布。

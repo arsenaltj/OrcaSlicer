@@ -220,17 +220,9 @@ void ModelGenerationPanel::update_workbench_check_card()
 {
     if (!m_workbench_check_card || !m_workbench_check_modal) return;
     const auto& result = m_workbench_check_result;
-    const bool automatic = result.source == WorkbenchCheckSource::Automatic;
-    const bool repair_phase = result.phase == WorkbenchCheckPhase::Repairing ||
-        result.phase == WorkbenchCheckPhase::Rechecking;
-    bool show = m_workbench_check_card_visible;
-    if (m_workbench_check_running && (automatic || repair_phase)) show = true;
-    if (m_workbench_auto_repair && m_finishing_running) show = true;
-    if (!m_workbench_check_running && !m_workbench_auto_repair && !automatic &&
-        result.candidate_status == RepairCandidateStatus::Ready) show = false;
-    if (!m_workbench_check_running && !m_workbench_auto_repair && automatic &&
-        (result.status == WorkbenchCheckStatus::Normal || result.status == WorkbenchCheckStatus::NotRun) &&
-        result.candidate_status != RepairCandidateStatus::Ready) show = false;
+    const bool show = workbench_check_card_should_show(m_finishing_workbench,
+        m_workbench_check_card_visible, m_workbench_check_running,
+        m_workbench_auto_repair && m_finishing_running, result);
     if (!show) {
         hide_workbench_check_card();
         return;
@@ -246,6 +238,7 @@ void ModelGenerationPanel::update_workbench_check_card()
     if (m_model_preview) m_model_preview->set_workbench_input_locked(true);
     if (m_workbench_shell && m_workbench_shell->IsEnabled()) m_workbench_shell->Disable();
     if (!m_workbench_check_card->IsShown()) {
+        apply_workbench_floating_card_shape(m_workbench_check_card, 8, wxColour(45, 45, 49));
         m_workbench_check_card->Show();
         m_workbench_check_card->Raise();
     }
@@ -285,6 +278,7 @@ void ModelGenerationPanel::update_workbench_check_card()
     if (modal_layout_changed) {
         m_workbench_check_modal->Layout();
         m_workbench_check_card->Fit();
+        apply_workbench_floating_card_shape(m_workbench_check_card, 8, wxColour(45, 45, 49));
     }
     position_workbench_check_card();
 }
@@ -308,6 +302,7 @@ void ModelGenerationPanel::rescale_post_generation_workbench()
     rescale(rescale, m_workbench_check_card);
     if (m_workbench_check_card) {
         m_workbench_check_card->Fit();
+        apply_workbench_floating_card_shape(m_workbench_check_card, 8, wxColour(45, 45, 49));
         position_workbench_check_card();
     }
     if (m_workbench_logo) {

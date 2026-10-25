@@ -13,7 +13,9 @@ namespace Slic3r::GUI {
 
 void ModelGenerationPanel::ensure_workbench_check()
 {
-    if (m_shutdown || m_workbench_import_running || !m_model_preview_ready || m_workbench_check_running || m_finishing_running ||
+    if (m_shutdown || m_workbench_import_running ||
+        !workbench_automatic_check_should_start(m_finishing_workbench, m_model_preview_ready) ||
+        m_workbench_check_running || m_finishing_running ||
         m_busy || m_model_preview->semantic_processing() || m_model_preview->selection_busy() ||
         !m_finishing_candidate.empty() || (m_beauty_controls && m_beauty_controls->has_changes())) return;
     if (m_workbench_check_path == m_displayed_model_path.string() && m_workbench_check_revision == m_sequence &&
@@ -23,7 +25,8 @@ void ModelGenerationPanel::ensure_workbench_check()
 
 bool ModelGenerationPanel::request_check_workbench(bool automatic)
 {
-    if (m_shutdown || !m_model_preview_ready || m_workbench_check_running || m_busy || m_finishing_running ||
+    if (m_shutdown || (automatic && !m_finishing_workbench) || !m_model_preview_ready ||
+        m_workbench_check_running || m_busy || m_finishing_running ||
         !post_generation_ui_state().can_edit || !m_finishing_candidate.empty() ||
         (m_beauty_controls && m_beauty_controls->has_changes())) return false;
     if (m_beauty_transactions && m_beauty_transactions->processing()) return false;

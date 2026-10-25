@@ -34,5 +34,21 @@
   "resources/beauty-runtime/python/Lib/site-packages/huggingface_hub/inference/_generated/_async_client.py": {
     "file_sha256": "435a2cc267f7539e31f21e99eaafb00b99802fee5b69e2d009846f69a07e2cd8",
     "fields": {"api_key": ["3a677c572e24c21f1fa21af9f0ef58f21ca9c1e40e8171d46a1e54f163106c8e", "b37d355271d6e98cd067260259f1a336a299a5581c8c2b17fba581b0f5fdf541"]}
+  },
+  "resources/beauty-runtime/python/Lib/site-packages/cryptography/hazmat/_oid.py": {
+    "file_sha256": "a7c4e18f0241e7a0a2feb008ae3c89d5ff158e00fa7b7f5eb36761f0921404ec",
+    "fields": {"AttributeOID.CHALLENGE_PASSWORD": ["3625089b90c92d38977a882443164b65937e5b30b3fac0a38bc6d76b809e2c89"]}
+  },
+  "resources/beauty-runtime/python/Lib/site-packages/cryptography/hazmat/primitives/serialization/ssh.py": {
+    "file_sha256": "84f579a1b1739f3d108457d714f39e43ccba32cbab034c5531088b9cb11212cf",
+    "fields": {},
+    "tokens": ["03d104c669e3c7b6be7f989db8b12c8b910d3be8c1e2a73c9369d3cc0ba803b5"]
+  },
+  "resources/tools/ai/yoyoclaw_client.py": {
+    "file_sha256": "a09cba3748fca175277d95c7b59552b99ffdb6ed9543d59a787557cea2b1f325",
+    "fields": {
+      "DEFAULT_ROOT_SECRET": ["4c3fb3fbaaa8549af82a359148dae076c5277670de4f3cab69ace092565a240f"],
+      "DEFAULT_HMAC_SECRET": ["b15e70201f0d46e5350ae8db4f78a5a7ca053e15c8c0b97506185f8ccb623f2d"]
+    }
   }
 }
