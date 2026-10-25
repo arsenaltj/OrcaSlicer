@@ -913,7 +913,39 @@ PlaterPresetComboBox::PlaterPresetComboBox(wxWindow *parent, Preset::Type preset
 #ifdef __WXGTK__
         RemoveButtonBorder(clr_picker);
 #endif
-        clr_picker->Bind(wxEVT_BUTTON, [this](wxCommandEvent& e) {
+        clr_picker->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+            show_color_picker(clr_picker);
+        });
+    }
+    else {
+        edit_btn = new ScalableButton(parent, wxID_ANY, "cog");
+        edit_btn->SetToolTip(_L("Click to edit preset"));
+
+        edit_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent)
+            {
+                // In a case of a physical printer, for its editing open PhysicalPrinterDialog
+                if (m_type == Preset::TYPE_PRINTER
+#ifdef __linux__
+                    // To edit extruder color from the sidebar
+                    || m_type == Preset::TYPE_FILAMENT
+#endif //__linux__
+                    )
+                    show_edit_menu();
+                else
+                    switch_to_tab();
+            });
+#ifdef __linux__
+        edit_btn->Hide();
+#endif //__linux__
+    }
+    Bind(wxEVT_COMBOBOX_CLOSEUP, [this](wxCommandEvent& event) {
+        restore_external_dropdown_position();
+        event.Skip();
+    });
+}
+
+void PlaterPresetComboBox::show_color_picker(wxWindow* anchor)
+{
             // Check if it's an official filament
             auto fila_type = Preset::remove_suffix_modified(GetValue().ToUTF8().data());
             bool is_official = boost::algorithm::starts_with(fila_type, "Bambu");
@@ -935,7 +967,7 @@ PlaterPresetComboBox::PlaterPresetComboBox(wxWindow *parent, Preset::Type preset
 
                 if (!dialog.IsDataLoaded()) {
                     // If FilamentPicker fails, fallback to default color picker
-                    show_default_color_picker();
+                    show_default_color_picker(anchor);
                 } else if (dialog.ShowModal() == wxID_OK && dialog.HasSelectionChanged()) {
                     if (const auto& custom = dialog.GetCustomColorSelection()) {
                         const auto value = filament_color_picker_result(*custom);
@@ -965,44 +997,55 @@ PlaterPresetComboBox::PlaterPresetComboBox(wxWindow *parent, Preset::Type preset
                     }
                 }
             } else {
-                show_default_color_picker();
+                show_default_color_picker(anchor);
             }
             wxCommandEvent *evt = new wxCommandEvent(EVT_FILAMENT_COLOR_CHANGED);
             evt->SetInt(m_filament_idx);
             wxQueueEvent(wxGetApp().plater(), evt);
-        });
-    }
-    else {
-        edit_btn = new ScalableButton(parent, wxID_ANY, "cog");
-        edit_btn->SetToolTip(_L("Click to edit preset"));
-
-        edit_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent)
-            {
-                // In a case of a physical printer, for its editing open PhysicalPrinterDialog
-                if (m_type == Preset::TYPE_PRINTER
-#ifdef __linux__
-                    // To edit extruder color from the sidebar
-                    || m_type == Preset::TYPE_FILAMENT
-#endif //__linux__
-                    )
-                    show_edit_menu();
-                else
-                    switch_to_tab();
-            });
-#ifdef __linux__
-        edit_btn->Hide();
-#endif //__linux__
-    }
 }
 
 PlaterPresetComboBox::~PlaterPresetComboBox()
 {
+    restore_external_dropdown_position();
     if (edit_btn)
         edit_btn->Destroy();
 
     // BBS.
     if (clr_picker)
         clr_picker->Destroy();
+}
+
+bool PlaterPresetComboBox::show_dropdown_at(wxWindow* anchor)
+{
+    if (!anchor || !GetParent() || !IsEnabled()) return false;
+    if (is_drop_down() || m_external_dropdown_pending) return true;
+    restore_external_dropdown_position();
+    m_external_dropdown_previous_rect = GetRect();
+    const wxPoint position = GetParent()->ScreenToClient(anchor->ClientToScreen(wxPoint(0, 0)));
+    const wxSize size(std::max(anchor->GetSize().x, m_external_dropdown_previous_rect.width),
+                      std::max(anchor->GetSize().y, m_external_dropdown_previous_rect.height));
+    m_external_dropdown_target_rect = wxRect(position, size);
+    m_external_dropdown_pending = true;
+    // Opening from inside another button's mouse handler lets the release and
+    // focus events dismiss the popup immediately on MSW. Defer one event turn,
+    // and keep the native combo at the visible row until CLOSEUP.
+    CallAfter([this] {
+        if (!m_external_dropdown_pending) return;
+        m_external_dropdown_pending = false;
+        if (!GetParent() || !IsEnabled()) return;
+        SetSize(m_external_dropdown_target_rect);
+        m_external_dropdown_active = true;
+        ForceDropdownOpen();
+        if (!is_drop_down()) restore_external_dropdown_position();
+    });
+    return true;
+}
+
+void PlaterPresetComboBox::restore_external_dropdown_position()
+{
+    m_external_dropdown_pending = false;
+    if (m_external_dropdown_active && GetParent()) SetSize(m_external_dropdown_previous_rect);
+    m_external_dropdown_active = false;
 }
 
 static void run_wizard(ConfigWizard::StartPage sp)
@@ -1617,11 +1660,11 @@ FilamentColor PlaterPresetComboBox::get_cur_color_info()
     return fila_color;
 }
 
-void PlaterPresetComboBox::show_default_color_picker()
+void PlaterPresetComboBox::show_default_color_picker(wxWindow* anchor)
 {
     const auto value = filament_color_picker_value(wxGetApp().preset_bundle->project_config, m_filament_idx);
     const auto initial = filament_color_picker_initial(value);
-    ColorPickerDialog dialog(this, initial, {true, true}, !filament_color_picker_selection(value), clr_picker);
+    ColorPickerDialog dialog(this, initial, {true, true}, !filament_color_picker_selection(value), anchor ? anchor : clr_picker);
     if (dialog.ShowModal() == wxID_OK && filament_color_picker_changed(initial, dialog.selection())) {
         const auto selected = filament_color_picker_result(*dialog.selection());
         sync_colour_config(selected.colors, selected.gradient);

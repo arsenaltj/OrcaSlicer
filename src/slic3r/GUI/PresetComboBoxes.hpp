@@ -29,6 +29,7 @@ class ScalableButton;
 class wxBoxSizer;
 class wxComboBox;
 class wxStaticBitmap;
+class wxWindow;
 
 namespace Slic3r {
 
@@ -216,14 +217,26 @@ public:
     void set_sync_badge(bool show);
 
     FilamentColor get_cur_color_info();
-    void show_default_color_picker();
+    // Open the native preset popup at a workbench control while retaining this
+    // hidden sidebar combo as the selection owner.
+    bool show_dropdown_at(wxWindow* anchor);
+    // Reuse the native picker flow while allowing workbench controls to
+    // provide a visible popup anchor instead of the hidden sidebar swatch.
+    void show_color_picker(wxWindow* anchor = nullptr);
+    void show_default_color_picker(wxWindow* anchor = nullptr);
     void sync_colour_config(const std::vector<std::string> &clrs, bool is_gradient);
     void sys_color_changed() override;
 
 private:
+    void restore_external_dropdown_position();
+
     // BBS
     wxColor m_color;
     bool    m_sync_badge{false};
+    wxRect  m_external_dropdown_previous_rect;
+    wxRect  m_external_dropdown_target_rect;
+    bool    m_external_dropdown_pending{false};
+    bool    m_external_dropdown_active{false};
 };
 
 

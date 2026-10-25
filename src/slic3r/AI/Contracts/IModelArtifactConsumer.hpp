@@ -210,6 +210,9 @@ struct ModelImportRequest
     // Desktop preparation intent only. Never serialized into a provider job or
     // applied to geometry by importing; the user must confirm in preparation.
     bool suggest_base_preparation {false};
+    // Desktop workbench-only intent. Apply the fixed 3 mm round-base
+    // preparation to the detached import copy before it enters the project.
+    bool apply_round_base_preparation {false};
     // Explicit exception path for an unchecked/open model. This metadata is
     // retained by the native preparation flow and never means slicing passed.
     bool topology_risk_confirmed {false};

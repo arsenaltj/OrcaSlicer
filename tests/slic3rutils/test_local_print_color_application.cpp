@@ -272,6 +272,51 @@ TEST_CASE("failed color import history registration removes only the new object 
     CHECK(GUI::LocalPrintRecipeApplication::identity(fixture.bundle) == before);
 }
 
+TEST_CASE("failed round-base import registration rolls back both detached parts atomically",
+          "[LocalPrintModelImport][OrcaModelPreparation][PrinterFilamentImport]")
+{
+    Test::RecipeApplicationFixture fixture(2);
+    Model source;
+    auto* incoming = source.add_object();
+    incoming->input_file = "portrait.glb";
+    auto* body = incoming->add_volume(TriangleMesh(its_make_cube(20, 30, 40)));
+    body->source.input_file = incoming->input_file;
+    body->config.set("extruder", 2);
+    std::unique_ptr<Model> prepared;
+    std::string error;
+    REQUIRE(GUI::LocalPrintModelImport::prepare(
+        *incoming, {75, 85}, {250, 250}, prepared, error, true));
+    REQUIRE(prepared->objects.front()->volumes.size() == 2);
+
+    Model live;
+    auto* existing = live.add_object();
+    existing->name = "Retain this";
+    existing->add_volume(TriangleMesh(its_make_cube(5, 6, 7)));
+    const auto existing_id = existing->id();
+    const auto config_before = fixture.bundle.project_config;
+    const auto filaments_before = fixture.bundle.filament_presets;
+    UndoRedo::ProjectConfigUndo::Prepared config {
+        fixture.bundle.project_config, fixture.bundle.filament_presets, true};
+    auto cache = GUI::ProjectConfigRestore::prepare_cache(
+        config.filament_presets.size(), fixture.bundle);
+    size_t index = 999;
+
+    CHECK_FALSE(GUI::LocalPrintModelImport::adopt(
+        live, *prepared->objects.front(), config, cache, fixture.bundle,
+        [] { return false; }, index, error));
+    REQUIRE_FALSE(error.empty());
+    REQUIRE(live.objects.size() == 1);
+    CHECK(live.objects.front() == existing);
+    CHECK(existing->id() == existing_id);
+    CHECK(index == 999);
+    CHECK(config.changed);
+    CHECK(fixture.bundle.project_config == config_before);
+    CHECK(fixture.bundle.filament_presets == filaments_before);
+    REQUIRE(prepared->objects.front()->volumes.size() == 2);
+    CHECK(incoming->instances.empty());
+    REQUIRE(incoming->volumes.size() == 1);
+}
+
 
 TEST_CASE("a rejected native material history registration can retry the same color model without stale failure state", "[LocalPrintModelImport][LocalPrintImportRetry]")
 {

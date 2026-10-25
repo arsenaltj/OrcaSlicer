@@ -108,11 +108,13 @@ AI::ModelImportResult Plater::import_workbench_model(const AI::ModelImportReques
             return fail(result.error, AI::ModelImportOutcome::RepairFailed);
         object.volumes.front()->set_mesh(std::move(final_mesh));
         object.volumes.front()->set_new_unique_id();
+        object.invalidate_bounding_box();
         detached.texture_mesh.reset();
         if (source_hash != AI::model_artifact_sha256(path) || !workspace_unchanged())
             return fail("The model, materials or project changed during confirmation. Reopen color matching.");
         size_t index = 0;
-        if (!adopt_local_print_model(object, staged.get(), index, result.error)) return fail(result.error);
+        if (!adopt_local_print_model(object, staged.get(), index, result.error,
+            request.apply_round_base_preparation)) return fail(result.error);
         result.outcome = AI::ModelImportOutcome::Imported;
         return result;
     } catch (const std::exception& exception) { return fail(exception.what()); }

@@ -108,6 +108,7 @@ bool ModelGenerationPanel::show_finishing_version(const boost::filesystem::path&
         path == m_beauty_session_source->source;
     const auto explicit_overrides = path == m_finishing_candidate ? m_finishing_candidate_face_overrides
         : session_source ? m_beauty_session_source->face_overrides : ModelPreview3D::FaceColorOverrides {};
+    invalidate_printer_filament_trial_for_model_change();
     if (!m_model_preview->load_model(path, {}, triangles, dimensions, colors, error, explicit_overrides)) {
         m_finishing_status->SetLabel(_L("预览加载失败，原件仍保留：") + from_u8(error));
         return false;
