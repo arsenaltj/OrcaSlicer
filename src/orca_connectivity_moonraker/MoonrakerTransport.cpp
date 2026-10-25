@@ -446,6 +446,17 @@ struct MoonrakerHttpTransport::Impl {
         if(input.bad()) return CURL_READFUNC_ABORT;
         return static_cast<std::size_t>(input.gcount());
     }
+    static int seek_upload(void* userp,curl_off_t offset,int origin) noexcept
+    {
+        if(origin!=SEEK_SET||offset<0) return CURL_SEEKFUNC_CANTSEEK;
+        try {
+            auto& input=*static_cast<std::ifstream*>(userp);
+            input.clear();
+            input.seekg(static_cast<std::streamoff>(offset),std::ios::beg);
+            return input?CURL_SEEKFUNC_OK:CURL_SEEKFUNC_FAIL;
+        } catch(...) { return CURL_SEEKFUNC_FAIL; }
+    }
+
     static int progress(void* userp,
                         curl_off_t,
                         curl_off_t,
@@ -596,7 +607,7 @@ struct MoonrakerHttpTransport::Impl {
                 if(!upload_stream) throw std::runtime_error("Moonraker upload source cannot be read");
                 const auto upload_size=std::filesystem::file_size(path);
                 if (!file_part || curl_mime_name(file_part, "file") != CURLE_OK ||
-                    curl_mime_data_cb(file_part,static_cast<curl_off_t>(upload_size),&read_upload,nullptr,nullptr,&upload_stream) != CURLE_OK ||
+                    curl_mime_data_cb(file_part,static_cast<curl_off_t>(upload_size),&read_upload,&seek_upload,nullptr,&upload_stream) != CURLE_OK ||
                     curl_mime_filename(file_part, filename.c_str()) != CURLE_OK ||
                     !setopt(CURLOPT_MIMEPOST, mime.get())) {
                     response.error = "Moonraker multipart file setup failed";

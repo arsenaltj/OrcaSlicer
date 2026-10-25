@@ -203,6 +203,80 @@ private:
     net::io_context io;tcp::acceptor acceptor;std::thread thread;std::vector<std::shared_ptr<tcp::socket>> sockets;
 };
 
+// Reproduce libcurl's automatic 417 retry only after MIME file bytes have
+// already been read. The successful retry must carry the whole file again.
+class ExpectRetryServer {
+    struct First {
+        explicit First(net::io_context& io):socket(io),parser() {parser.body_limit(32*1024*1024);}
+        tcp::socket socket;beast::flat_buffer buffer;http::request_parser<http::buffer_body> parser;
+        std::array<char,1024> bytes{};std::size_t body_bytes{0};std::string tail;
+        std::string response{"HTTP/1.1 100 Continue\r\n\r\n"};
+    };
+public:
+    ExpectRetryServer():acceptor(io,{net::ip::make_address("127.0.0.1"),0}) {accept_next();thread=std::thread([this]{io.run();});}
+    ~ExpectRetryServer(){io.stop();if(thread.joinable())thread.join();}
+    unsigned short port()const{return acceptor.local_endpoint().port();}
+    bool consumed_file_bytes()const{return consumed.load();}
+    std::string retried_body()const{std::lock_guard<std::mutex> lock(mutex);return retry_body;}
+private:
+    void read_retry(const std::shared_ptr<First>& peer) {
+        peer->socket.async_read_some(net::buffer(peer->bytes),[this,peer](error_code ec,std::size_t count){
+            if(ec)return;peer->tail.append(peer->bytes.data(),count);
+            auto at=peer->tail.find("POST /upload HTTP/1.1\r\n");
+            if(at==std::string::npos){if(peer->tail.size()>4096)peer->tail.erase(0,peer->tail.size()-4096);return read_retry(peer);}
+            peer->buffer.consume(peer->buffer.size());
+            auto copy=peer->tail.substr(at);net::buffer_copy(peer->buffer.prepare(copy.size()),net::buffer(copy));peer->buffer.commit(copy.size());
+            auto parser=std::make_shared<http::request_parser<http::string_body>>();parser->body_limit(32*1024*1024);
+            http::async_read(peer->socket,peer->buffer,*parser,[this,peer,parser](error_code ec,std::size_t){
+                if(ec)return;{std::lock_guard<std::mutex> lock(mutex);retry_body=parser->get().body();}
+                auto reply=std::make_shared<http::response<http::string_body>>(http::status::ok,11);
+                reply->body()="{}";reply->prepare_payload();reply->keep_alive(false);
+                http::async_write(peer->socket,*reply,[peer,reply](error_code,std::size_t){});
+            });
+        });
+    }
+    void read_prefix(const std::shared_ptr<First>& peer) {
+        peer->parser.get().body().data=peer->bytes.data();peer->parser.get().body().size=peer->bytes.size();
+        http::async_read_some(peer->socket,peer->buffer,peer->parser,[this,peer](error_code ec,std::size_t){
+            if(ec && ec!=http::error::need_buffer)return;
+            peer->body_bytes+=peer->bytes.size()-peer->parser.get().body().size;
+            if(peer->body_bytes<2048)return read_prefix(peer);
+            consumed.store(true);
+            auto reply=std::make_shared<http::response<http::string_body>>(http::status::expectation_failed,11);
+            reply->keep_alive(true);reply->prepare_payload();
+            http::async_write(peer->socket,*reply,[this,peer,reply](error_code ec,std::size_t){if(!ec)read_retry(peer);});
+        });
+    }
+    void accept_next(){
+        auto socket=std::make_shared<tcp::socket>(io);
+        acceptor.async_accept(*socket,[this,socket](error_code ec){
+            if(ec)return;bool first=connections++==0;accept_next();
+            if(first){
+                auto peer=std::make_shared<First>(io);peer->socket=std::move(*socket);held.push_back(peer);
+                http::async_read_header(peer->socket,peer->buffer,peer->parser,[this,peer](error_code ec,std::size_t){
+                    if(ec)return;
+                    net::async_write(peer->socket,net::buffer(peer->response),[this,peer](error_code ec,std::size_t){
+                        if(ec)return;
+                        read_prefix(peer);
+                    });
+                });
+            }else{
+                auto buffer=std::make_shared<beast::flat_buffer>();
+                auto parser=std::make_shared<http::request_parser<http::string_body>>();parser->body_limit(32*1024*1024);
+                http::async_read(*socket,*buffer,*parser,[this,socket,buffer,parser](error_code ec,std::size_t){
+                    if(ec)return;{std::lock_guard<std::mutex> lock(mutex);retry_body=parser->get().body();}
+                    auto reply=std::make_shared<http::response<http::string_body>>(http::status::ok,11);
+                    reply->body()="{}";reply->keep_alive(false);reply->prepare_payload();
+                    http::async_write(*socket,*reply,[socket,reply](error_code,std::size_t){});
+                });
+            }
+        });
+    }
+    net::io_context io;tcp::acceptor acceptor;std::thread thread;unsigned connections{0};
+    std::atomic_bool consumed{false};mutable std::mutex mutex;std::string retry_body;
+    std::vector<std::shared_ptr<First>> held;
+};
+
 http::response<http::string_body> json_response(unsigned status, std::string body)
 {
     http::response<http::string_body> response{http::status(status), 11};
@@ -527,4 +601,20 @@ TEST_CASE("Native Moonraker upload reads UTF8 file URI paths through the host fi
     MoonrakerHttpTransport transport;auto result=transport.perform(request);
     std::error_code ignored;std::filesystem::remove(file,ignored);
     INFO(result.error);CHECK(result.status_code==200);CHECK(uploaded.find("hello")!=std::string::npos);
+}
+
+
+TEST_CASE("Native Moonraker multipart rewinds consumed file data for an automatic Expect retry", "[Moonraker][Transport][Loopback][UploadRetry]")
+{
+    ExpectRetryServer server;
+    const auto file=std::filesystem::temp_directory_path()/"orca-moonraker-rewind.gcode";
+    const std::string payload(16*1024*1024,'A');
+    {std::ofstream output(file,std::ios::binary);output<<payload;}
+    MoonrakerTransportOptions options;options.total_timeout=3s;
+    MoonrakerHttpTransport transport(options);MoonrakerHttpRequest request;
+    request.method="POST";request.url="http://127.0.0.1:"+std::to_string(server.port())+"/upload";
+    request.upload_source=file.u8string();request.upload_filename="retry.gcode";
+    const auto result=transport.perform(request);std::error_code ignored;std::filesystem::remove(file,ignored);
+    INFO(result.error);CHECK(server.consumed_file_bytes());CHECK(result.status_code==200);
+    CHECK(server.retried_body().find(payload)!=std::string::npos);
 }
