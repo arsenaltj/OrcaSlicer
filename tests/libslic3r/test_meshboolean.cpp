@@ -27,6 +27,16 @@ TEST_CASE("CGAL and TriangleMesh conversions", "[MeshBoolean]") {
     REQUIRE(! MeshBoolean::cgal::does_self_intersect(M));
 }
 
+TEST_CASE("CGAL volume checks reject isolated vertices without crashing", "[MeshBoolean][WorkbenchTopology][Regression]") {
+    TriangleMesh mesh = make_cube(10., 10., 10.);
+    mesh.its.vertices.emplace_back(100.f, 100.f, 100.f);
+
+    auto cgal_mesh = MeshBoolean::cgal::triangle_mesh_to_cgal(mesh);
+
+    REQUIRE(cgal_mesh);
+    CHECK_FALSE(MeshBoolean::cgal::does_bound_a_volume(*cgal_mesh));
+}
+
 TEST_CASE("Canceled CGAL repair leaves source geometry and diagnostics untouched", "[MeshBoolean][MeshRepairCancel][Regression]") {
     // First check cancels before conversion; fifth check cancels after soup cleanup.
     const int cancel_at = GENERATE(1, 5);

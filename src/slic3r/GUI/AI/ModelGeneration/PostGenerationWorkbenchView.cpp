@@ -230,9 +230,19 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         auto* card_owner = wxGetTopLevelParent(m_workbench_shell);
         m_workbench_check_card = new wxDialog(card_owner, wxID_ANY, wxEmptyString,
             wxDefaultPosition, wxDefaultSize,
-            wxBORDER_NONE | wxFRAME_NO_TASKBAR | wxFRAME_FLOAT_ON_PARENT);
+            wxBORDER_NONE | wxFRAME_NO_TASKBAR | wxFRAME_FLOAT_ON_PARENT | wxFRAME_SHAPED);
         m_workbench_check_card->SetName("ai_content_color");
         m_workbench_check_card->SetBackgroundColour(wxColour(45, 45, 49));
+        m_workbench_check_card->SetBackgroundStyle(wxBG_STYLE_PAINT);
+#ifdef __WXMSW__
+        m_workbench_check_card->SetDoubleBuffered(true);
+#endif
+        m_workbench_check_card->Bind(wxEVT_ERASE_BACKGROUND, [](wxEraseEvent&) {});
+        m_workbench_check_card->Bind(wxEVT_PAINT, [card = m_workbench_check_card](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(card);
+            dc.SetBackground(wxBrush(card->GetBackgroundColour()));
+            dc.Clear();
+        });
         auto* card_root = new wxBoxSizer(wxVERTICAL);
         m_workbench_check_modal = new WorkbenchPaintedPanel(
             m_workbench_check_card, wxColour(45, 45, 49), 8, wxColour(72, 72, 78));
@@ -275,7 +285,12 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         m_workbench_check_modal->SetSizer(modal_root);
         card_root->Add(m_workbench_check_modal, 1, wxEXPAND);
         m_workbench_check_card->SetSizerAndFit(card_root);
+        apply_workbench_floating_card_shape(m_workbench_check_card, 8, wxColour(45, 45, 49));
         m_workbench_check_card->Hide();
+        m_workbench_check_card->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+            apply_workbench_floating_card_shape(m_workbench_check_card, 8, wxColour(45, 45, 49));
+            event.Skip();
+        });
         m_workbench_check_card->Bind(wxEVT_CHAR_HOOK, [](wxKeyEvent& event) {
             if (event.GetKeyCode() != WXK_ESCAPE) event.Skip();
         });

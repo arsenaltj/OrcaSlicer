@@ -92,6 +92,36 @@ TEST_CASE("Workbench check summary stays compact while details retain diagnostic
     CHECK(workbench_check_status_line(result, true) == "已忽略轻微问题，可继续导入切片");
 }
 
+TEST_CASE("Automatic checks wait for the workbench and keep one progress card through every phase",
+          "[AtomicModelCapabilities][PostGenerationWorkbench][UiRedesign]")
+{
+    CHECK_FALSE(workbench_automatic_check_should_start(false, true));
+    CHECK_FALSE(workbench_automatic_check_should_start(true, false));
+    CHECK(workbench_automatic_check_should_start(true, true));
+
+    WorkbenchCheckResult result;
+    result.source = WorkbenchCheckSource::Automatic;
+    result.status = WorkbenchCheckStatus::Running;
+    for (const auto phase : {WorkbenchCheckPhase::Inspecting, WorkbenchCheckPhase::Repairing,
+                             WorkbenchCheckPhase::Rechecking}) {
+        result.phase = phase;
+        CHECK_FALSE(workbench_check_card_should_show(false, true, true, false, result));
+        CHECK(workbench_check_card_should_show(true, true, true, false, result));
+    }
+
+    result.status = WorkbenchCheckStatus::Normal;
+    result.phase = WorkbenchCheckPhase::Idle;
+    CHECK_FALSE(workbench_check_card_should_show(true, true, false, false, result));
+    CHECK(workbench_check_card_should_show(true, true, false, true, result));
+
+    result.source = WorkbenchCheckSource::Manual;
+    result.status = WorkbenchCheckStatus::Running;
+    result.phase = WorkbenchCheckPhase::Inspecting;
+    CHECK_FALSE(workbench_check_card_should_show(true, false, true, false, result));
+    result.phase = WorkbenchCheckPhase::Repairing;
+    CHECK(workbench_check_card_should_show(true, false, true, false, result));
+}
+
 TEST_CASE("Partial thumbnail requests publish into their original asset slots", "[AtomicModelCapabilities][WorkbenchHistory]")
 {
     ModelLibraryLoader loader({{}, [](const auto&, const auto&, int, const auto&) {

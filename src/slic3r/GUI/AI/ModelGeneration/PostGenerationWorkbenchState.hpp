@@ -16,8 +16,9 @@ namespace Slic3r::GUI {
 enum class WorkbenchCheckStatus { NotRun, Running, Normal, Attention, Invalid, Failed };
 enum class WorkbenchCheckPhase { Idle, Inspecting, Repairing, Rechecking };
 enum class RepairCandidateStatus { None, Generating, Ready, Accepted, Rejected, Failed };
-// Automatic checks are run when a model first becomes visible; manual checks
-// are initiated from the sidebar and retain the existing candidate workflow.
+// Automatic checks are run when a model first becomes visible in the 3D
+// workbench; manual checks are initiated from the sidebar and retain the
+// existing candidate workflow.
 enum class WorkbenchCheckSource { Automatic, Manual };
 
 struct WorkbenchCheckResult {
@@ -51,6 +52,30 @@ struct WorkbenchCheckResult {
     std::string appearance_reason;
     bool force_import_risk {false};
 };
+
+inline bool workbench_automatic_check_should_start(bool workbench_open, bool model_ready)
+{
+    return workbench_open && model_ready;
+}
+
+inline bool workbench_check_card_should_show(bool workbench_open, bool requested_visible,
+                                             bool check_running, bool automatic_repair_saving,
+                                             const WorkbenchCheckResult& result)
+{
+    if (!workbench_open) return false;
+    const bool automatic = result.source == WorkbenchCheckSource::Automatic;
+    const bool repair_phase = result.phase == WorkbenchCheckPhase::Repairing ||
+        result.phase == WorkbenchCheckPhase::Rechecking;
+    bool show = requested_visible;
+    if (check_running && (automatic || repair_phase)) show = true;
+    if (automatic_repair_saving) show = true;
+    if (!check_running && !automatic_repair_saving && !automatic &&
+        result.candidate_status == RepairCandidateStatus::Ready) show = false;
+    if (!check_running && !automatic_repair_saving && automatic &&
+        (result.status == WorkbenchCheckStatus::Normal || result.status == WorkbenchCheckStatus::NotRun) &&
+        result.candidate_status != RepairCandidateStatus::Ready) show = false;
+    return show;
+}
 
 inline std::string workbench_check_status_line(const WorkbenchCheckResult& check,
                                                bool risk_acknowledged = false)

@@ -2,9 +2,11 @@
 
 #include <wx/panel.h>
 #include <wx/control.h>
+#include <wx/dialog.h>
 #include <wx/dcbuffer.h>
 #include <wx/dcmemory.h>
 #include <wx/dcgraph.h>
+#include <wx/region.h>
 #include <wx/slider.h>
 #include <wx/tglbtn.h>
 #include <wx/timer.h>
@@ -317,6 +319,47 @@ private:
     wxColour m_border;
     int m_radius_dip {0};
 };
+
+inline void apply_workbench_floating_card_shape(wxDialog* card, int radius_dip,
+                                                const wxColour& border_colour)
+{
+    if (!card) return;
+    const wxSize size = card->GetSize();
+    if (size.x <= 0 || size.y <= 0) return;
+    const int radius = std::max(1, card->FromDIP(radius_dip));
+#ifdef __WXMSW__
+    if (card->GetHandle()) {
+        HRGN region = ::CreateRoundRectRgn(0, 0, size.x + 1, size.y + 1,
+                                           2 * radius, 2 * radius);
+        if (region && !::SetWindowRgn(static_cast<HWND>(card->GetHandle()), region, TRUE))
+            ::DeleteObject(region);
+
+        HMODULE library = ::LoadLibraryW(L"dwmapi.dll");
+        if (library) {
+            using SetAttribute = HRESULT (WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
+            auto* set_attribute = reinterpret_cast<SetAttribute>(
+                ::GetProcAddress(library, "DwmSetWindowAttribute"));
+            if (set_attribute) {
+                constexpr DWORD border_color_attribute = 34;
+                const COLORREF border = RGB(border_colour.Red(), border_colour.Green(), border_colour.Blue());
+                set_attribute(static_cast<HWND>(card->GetHandle()), border_color_attribute,
+                              &border, sizeof(border));
+            }
+            ::FreeLibrary(library);
+        }
+    }
+#else
+    wxBitmap mask(size.x, size.y, 1);
+    wxMemoryDC dc(mask);
+    dc.SetBackground(*wxBLACK_BRUSH);
+    dc.Clear();
+    dc.SetPen(*wxTRANSPARENT_PEN);
+    dc.SetBrush(*wxWHITE_BRUSH);
+    dc.DrawRoundedRectangle(0, 0, size.x, size.y, radius);
+    dc.SelectObject(wxNullBitmap);
+    card->SetShape(wxRegion(mask, *wxBLACK));
+#endif
+}
 
 inline wxColour workbench_owned_surface(wxWindow* parent)
 {
