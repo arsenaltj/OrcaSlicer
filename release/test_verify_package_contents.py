@@ -170,11 +170,30 @@ class PackageInspectionTests(unittest.TestCase):
             self.assertEqual(clean["config_fields"][0]["category"], "AUDITED_PUBLIC_LIBRARY_LITERAL")
             dependency_path = "python/Lib/site-packages/library.py"
             self.assertEqual(self.check({dependency_path: data})["status"], "NOT_DETECTED_WITHIN_SCOPE")
+            self.assertEqual(self.check({"OrcaAI_x64/" + dependency_path: data})["status"], "NOT_DETECTED_WITHIN_SCOPE")
             self.assertEqual(self.check({dependency_path: data + b'\npassword="opaque-value"'})["status"], "BLOCKED_FINDINGS")
             self.assertEqual(self.check({"unrelated/" + dependency_path: data})["status"], "BLOCKED_FINDINGS")
             self.assertEqual(self.check({"config.py": data})["status"], "BLOCKED_FINDINGS")
             self.assertEqual(self.check({name: data + b'\npassword="opaque-value"'})["status"], "BLOCKED_FINDINGS")
             record["fields"]["api_key"] = []
+            self.assertEqual(self.check({name: data})["status"], "BLOCKED_FINDINGS")
+
+    def test_audited_protocol_token_requires_exact_path_file_and_token(self):
+        name = "resources/beauty-runtime/python/Lib/site-packages/library.py"
+        marker = b"-" * 5 + b"BEGIN " + b"OPENSSH " + b"PRIVATE KEY" + b"-" * 5
+        data = b'_START = b"' + marker + b'"\n'
+        record = {"file_sha256": hashlib.sha256(data).hexdigest(), "fields": {},
+                  "tokens": [hashlib.sha256(marker).hexdigest()]}
+        with patch.object(inspection, "AUDITED_LIBRARY_LITERALS", {name: record}):
+            clean = self.check({name: data})
+            self.assertEqual(clean["status"], "NOT_DETECTED_WITHIN_SCOPE")
+            self.assertEqual(clean["config_fields"][0]["category"], "AUDITED_PUBLIC_PROTOCOL_LITERAL")
+            dependency_path = "python/Lib/site-packages/library.py"
+            self.assertEqual(self.check({dependency_path: data})["status"], "NOT_DETECTED_WITHIN_SCOPE")
+            self.assertEqual(self.check({"OrcaAI_x64/" + dependency_path: data})["status"], "NOT_DETECTED_WITHIN_SCOPE")
+            self.assertEqual(self.check({name: data + b"# changed\n"})["status"], "BLOCKED_FINDINGS")
+            self.assertEqual(self.check({"unrelated/" + dependency_path: data})["status"], "BLOCKED_FINDINGS")
+            record["tokens"] = []
             self.assertEqual(self.check({name: data})["status"], "BLOCKED_FINDINGS")
 
 
