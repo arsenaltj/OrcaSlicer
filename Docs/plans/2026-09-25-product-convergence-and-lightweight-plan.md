@@ -1,5 +1,7 @@
 # SMARTSLICE-CLOUD-20261024：智能切片增加本地与 YOYOClaw 云端推荐来源（三目标保留，底部布局统一已构建并完成本地界面检查）
 
+2026-10-27 合并后定向回归首跑：`2abcd097c3` 编译和链接通过，252 项中 250 通过、2 项材料计划用例失败，见 `.tmp/dev/logs/20261027-003027-677/result.json` / `cpp-tests.log`。当前 `validate_material_plan` 明确仅在 `ORCA_MOBILE_ANDROID` 下限制单材料，桌面为 no-op，测试仍无条件要求 Android 拒绝行为。调整两用例为平台对应断言：Android 原拒绝断言完整保留，桌面断言允许材料路由；既有 `validate_material_assignments` 越界/支撑/表面选择器失败用例保持并已通过，不把 Android 限制施加到桌面产品，不跳过测试或改产品逻辑。继续相关标签回归及 Windows 构建；Android 真机未重验。
+
 2026-10-27 测试目标链接补齐：路径修正提交 `493a48de27` 后所有源文件编译结束，`slic3rutils_tests` 链接报缺少 `Engine` / `describe_warning` 四个符号，均实现在未列入该目标的移动切片 `engine.cpp`。参照已有 `fff_print_tests` 列表补齐同一实现，不改产品逻辑或测试断言；失败证据 `.tmp/dev/logs/20261027-002158-589/result.json` 保留，测试尚未运行，继续增量构建。
 
 2026-10-27 合并测试路径兼容：`c4167bd60a` 后完整 GUI 库编译通过；测试目标随后报两份测试仍引用远端改名前的 `orca_slicing/...`（C1083），已停止本轮失败 MSBuild 子树并保留 `.tmp/dev/logs/20261026-235606-347/result.json`。只将 `test_orca_slicing_support.cpp`、`test_orca_slicing_preview.cpp` 的头文件引用改为当前 `orca_mobile_slicing_sdk/...`，不修改断言或跳过测试；继续增量验证及程序构建。
