@@ -19,4 +19,5 @@ target_include_directories(admesh SYSTEM
 
 target_link_libraries(admesh 
     PUBLIC Eigen3::Eigen
+    PRIVATE boost_headeronly
 )

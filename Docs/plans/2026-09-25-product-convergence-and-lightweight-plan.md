@@ -1,5 +1,7 @@
 # SMARTSLICE-CLOUD-20261024：智能切片增加本地与 YOYOClaw 云端推荐来源（三目标保留，底部布局统一已构建并完成本地界面检查）
 
+2026-10-26 合并验证修正：普通 merge 提交 `31d6b43084` 保留父提交 `9e9362fdae` 与远端 `96b70a4ab2`。AI/SDK 边界、核心来源清单及 README 检查通过，离线集成守卫 53/53；首轮 C++ 构建在 `admesh` 缺 Boost 头文件失败（`.tmp/dev/logs/20261026-233708-336/result.json`），已恢复 `PRIVATE boost_headeronly`，兼容桌面既有 target 与移动入口同名 alias。新增移动目录的 6 项 Python 回归发现 11 处源哈希/生成内容失配，当前文件 LF 归一化后与 Git blob 一致，非 Windows 换行差异；用原生成器基于当前版本预设与 PrintConfig 重生成 JSON/内嵌头（包含现有耗材变体流量数组及不支持字段披露），不改预设原件或生成规则。修正后生成检查及 6/6 回归通过，日志 `.tmp/dev/merge-mobile-catalog-fixed.log`；待重跑 C++ 和 Windows 构建，失败证据保留，不把首轮视为通过。
+
 2026-10-26 本地归档与远端合并中：侧栏修复已提交为 `9e9362fdae`（承接 `4c43382e30`）；已 fetch `origin/codex/team/integration` 最新 `96b70a4ab2c9a185deb9e2dc9ceb749313128279`，包含远端 3D 工作台、修复/包门禁及 MobileDeviceSDK/移动切片更新。沿当前本机 `codex/team/integration` 普通 merge，4 处文本冲突已解决：主计划保留双方完整记录，短状态只保留本轮焦点（远端各项仍在主计划）；切片页面保留远端移除旧美颜入口的决定及本地推荐来源控件，UI 测试合并双方头文件与用例。Windows 因远端 `Docs/docs` 去重折叠而缺失的两份规范 `Docs/mobile-sdk/tools` 文件已从索引恢复，未改远端 SDK/原生算法。旧 `.planning/`、忽略运行数据及原件保留。下一步按合并后的新版本执行相关定向回归、AI/SDK/核心来源门禁和 Windows 增量构建；最终功能验收由用户承接，不沿用旧 GUI 结果冒充新合并版本通过，不推送或新建 PR。
 
 2026-10-26 后续同步授权：用户要求先将上述侧栏修改形成本地 Git 提交，再获取远端最新代码、合并处理冲突并构建等待用户测试。沿当前 `codex/team/integration` 单代理推进；提交前核对受测快照，除两份协调文档外全部源码匹配，现无运行中的 Orca 实例。侧栏代码、新详情头文件、定向测试及两份协调文档一并归档，旧未跟踪 `.planning/` 保留不纳入；随后同步当前 upstream `origin/codex/team/integration`，不推送、不创建或合入远端 PR、不新增付费请求。合并后按实际范围完成相关验证并构建 Windows 程序，最终功能测试由用户承接；既有证据、边界及 PR #40 返回点保留。

@@ -94,7 +94,12 @@ inline constexpr char kOfflinePresetCatalog[] = R"ORCAPRESET({
           "0"
         ],
         "filament_max_volumetric_speed": [
-          "12"
+          "12",
+          "21",
+          "40",
+          "12",
+          "21",
+          "30"
         ],
         "filament_minimal_purge_on_wipe_tower": [
           "15"
@@ -188,6 +193,14 @@ inline constexpr char kOfflinePresetCatalog[] = R"ORCAPRESET({
         ],
         "nozzle_temperature_range_high": [
           "240"
+        ],
+        "filament_extruder_variant": [
+          "Direct Drive Standard",
+          "Direct Drive High Flow",
+          "Direct Drive Extra High Flow",
+          "Bowden Standard",
+          "Bowden High Flow",
+          "Bowden Extra High Flow"
         ]
       },
       "sourceRefs": [
@@ -203,19 +216,19 @@ inline constexpr char kOfflinePresetCatalog[] = R"ORCAPRESET({
         },
         {
           "path": "resources/profiles/OrcaFilamentLibrary/filament/base/fdm_filament_pla.json",
-          "sha256": "1f099f22c73d09404b17e040675520d2c67632613e029199023e2171f50cc2bb",
+          "sha256": "3eca9d67192a14939a523c098a2ad17df13018e76a2590f3133098d3d870215f",
           "hashFormat": "utf8-lf"
         },
         {
           "path": "resources/profiles/OrcaFilamentLibrary/filament/Generic PLA @System.json",
-          "sha256": "53884fd5b73f524f2abc62c3d8175196d741f15662bec5387cf564e0d78bae00",
+          "sha256": "37494b202e9b636270ad8f08ac9cd28843cbbb547847473e41e7590afa1ce9a0",
           "hashFormat": "utf8-lf"
         }
       ],
       "defaultMaterialId": "generic/pla",
       "schemaSourceRef": {
         "path": "src/libslic3r/PrintConfig.cpp",
-        "sha256": "ce12dc7360f2d94f82910887b7d03f7b83703a41b16ba62e0fc684cc6a7522ae",
+        "sha256": "35ffc428b1a2a95264858149cafde8d9b6b06f21aa62711ce6040850db6859fd",
         "hashFormat": "utf8-lf"
       },
       "unsupportedSourceOptions": {
@@ -339,7 +352,12 @@ inline constexpr char kOfflinePresetCatalog[] = R"ORCAPRESET({
           "0"
         ],
         "filament_max_volumetric_speed": [
-          "12"
+          "12",
+          "21",
+          "40",
+          "12",
+          "21",
+          "30"
         ],
         "filament_minimal_purge_on_wipe_tower": [
           "15"
@@ -433,6 +451,14 @@ inline constexpr char kOfflinePresetCatalog[] = R"ORCAPRESET({
         ],
         "nozzle_temperature_range_high": [
           "240"
+        ],
+        "filament_extruder_variant": [
+          "Direct Drive Standard",
+          "Direct Drive High Flow",
+          "Direct Drive Extra High Flow",
+          "Bowden Standard",
+          "Bowden High Flow",
+          "Bowden Extra High Flow"
         ]
       },
       "sourceRefs": [
@@ -443,18 +469,18 @@ inline constexpr char kOfflinePresetCatalog[] = R"ORCAPRESET({
         },
         {
           "path": "resources/profiles/OrcaFilamentLibrary/filament/base/fdm_filament_pla.json",
-          "sha256": "1f099f22c73d09404b17e040675520d2c67632613e029199023e2171f50cc2bb",
+          "sha256": "3eca9d67192a14939a523c098a2ad17df13018e76a2590f3133098d3d870215f",
           "hashFormat": "utf8-lf"
         },
         {
           "path": "resources/profiles/OrcaFilamentLibrary/filament/Generic PLA @System.json",
-          "sha256": "53884fd5b73f524f2abc62c3d8175196d741f15662bec5387cf564e0d78bae00",
+          "sha256": "37494b202e9b636270ad8f08ac9cd28843cbbb547847473e41e7590afa1ce9a0",
           "hashFormat": "utf8-lf"
         }
       ],
       "schemaSourceRef": {
         "path": "src/libslic3r/PrintConfig.cpp",
-        "sha256": "ce12dc7360f2d94f82910887b7d03f7b83703a41b16ba62e0fc684cc6a7522ae",
+        "sha256": "35ffc428b1a2a95264858149cafde8d9b6b06f21aa62711ce6040850db6859fd",
         "hashFormat": "utf8-lf"
       },
       "unsupportedSourceOptions": {
@@ -568,7 +594,12 @@ inline constexpr char kOfflinePresetCatalog[] = R"ORCAPRESET({
           "0"
         ],
         "filament_max_volumetric_speed": [
-          "10"
+          "10",
+          "18",
+          "21",
+          "10",
+          "15",
+          "15"
         ],
         "filament_minimal_purge_on_wipe_tower": [
           "15"
@@ -659,6 +690,14 @@ inline constexpr char kOfflinePresetCatalog[] = R"ORCAPRESET({
         ],
         "nozzle_temperature_range_low": [
           "220"
+        ],
+        "filament_extruder_variant": [
+          "Direct Drive Standard",
+          "Direct Drive High Flow",
+          "Direct Drive Extra High Flow",
+          "Bowden Standard",
+          "Bowden High Flow",
+          "Bowden Extra High Flow"
         ]
       },
       "sourceRefs": [
@@ -669,18 +708,18 @@ inline constexpr char kOfflinePresetCatalog[] = R"ORCAPRESET({
         },
         {
           "path": "resources/profiles/OrcaFilamentLibrary/filament/base/fdm_filament_pet.json",
-          "sha256": "7886d178d745748d725fd1330b2ecd54465d18fcc80e14881468e437f77db9e2",
+          "sha256": "cf7f17f0c6b8dbb2fe476384bd409e41b7dd740a81f9f5abc5d0f4aff59d9916",
           "hashFormat": "utf8-lf"
         },
         {
           "path": "resources/profiles/OrcaFilamentLibrary/filament/Generic PETG @System.json",
-          "sha256": "da1c4e1702a7c1fab4f73371a7b6f42c3635c9d76b9698aa10602bb6613bcfe5",
+          "sha256": "b9f148756e5f0d656c5bc516b4faf48c068b5bb1af64e7d86447ab253ca629c1",
           "hashFormat": "utf8-lf"
         }
       ],
       "schemaSourceRef": {
         "path": "src/libslic3r/PrintConfig.cpp",
-        "sha256": "ce12dc7360f2d94f82910887b7d03f7b83703a41b16ba62e0fc684cc6a7522ae",
+        "sha256": "35ffc428b1a2a95264858149cafde8d9b6b06f21aa62711ce6040850db6859fd",
         "hashFormat": "utf8-lf"
       },
       "unsupportedSourceOptions": {
@@ -749,7 +788,7 @@ inline constexpr char kOfflinePresetCatalog[] = R"ORCAPRESET({
     },
     {
       "path": "src/libslic3r/PrintConfig.cpp",
-      "sha256": "ce12dc7360f2d94f82910887b7d03f7b83703a41b16ba62e0fc684cc6a7522ae",
+      "sha256": "35ffc428b1a2a95264858149cafde8d9b6b06f21aa62711ce6040850db6859fd",
       "hashFormat": "utf8-lf"
     },
     {
@@ -759,22 +798,22 @@ inline constexpr char kOfflinePresetCatalog[] = R"ORCAPRESET({
     },
     {
       "path": "resources/profiles/OrcaFilamentLibrary/filament/base/fdm_filament_pla.json",
-      "sha256": "1f099f22c73d09404b17e040675520d2c67632613e029199023e2171f50cc2bb",
+      "sha256": "3eca9d67192a14939a523c098a2ad17df13018e76a2590f3133098d3d870215f",
       "hashFormat": "utf8-lf"
     },
     {
       "path": "resources/profiles/OrcaFilamentLibrary/filament/Generic PLA @System.json",
-      "sha256": "53884fd5b73f524f2abc62c3d8175196d741f15662bec5387cf564e0d78bae00",
+      "sha256": "37494b202e9b636270ad8f08ac9cd28843cbbb547847473e41e7590afa1ce9a0",
       "hashFormat": "utf8-lf"
     },
     {
       "path": "resources/profiles/OrcaFilamentLibrary/filament/base/fdm_filament_pet.json",
-      "sha256": "7886d178d745748d725fd1330b2ecd54465d18fcc80e14881468e437f77db9e2",
+      "sha256": "cf7f17f0c6b8dbb2fe476384bd409e41b7dd740a81f9f5abc5d0f4aff59d9916",
       "hashFormat": "utf8-lf"
     },
     {
       "path": "resources/profiles/OrcaFilamentLibrary/filament/Generic PETG @System.json",
-      "sha256": "da1c4e1702a7c1fab4f73371a7b6f42c3635c9d76b9698aa10602bb6613bcfe5",
+      "sha256": "b9f148756e5f0d656c5bc516b4faf48c068b5bb1af64e7d86447ab253ca629c1",
       "hashFormat": "utf8-lf"
     }
   ]
