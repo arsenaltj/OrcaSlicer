@@ -4,6 +4,7 @@
 #include "libslic3r/Config.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include "libslic3r/Technologies.hpp"
 #include "libslic3r/Color.hpp"
@@ -70,7 +71,7 @@ namespace Slic3r {
 
 class BuildVolume;
 class MachineObject;
-enum class BuildVolume_Type : char;
+enum class BuildVolume_Type : int8_t;
 class Model;
 class ModelObject;
 class ModelInstance;
