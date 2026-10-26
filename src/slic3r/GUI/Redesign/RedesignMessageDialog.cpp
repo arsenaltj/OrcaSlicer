@@ -534,11 +534,12 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
                                              const std::vector<RedesignDialogAction>& actions,
                                              const wxString& checkbox_label,
                                              bool checkbox_checked,
-                                             ContentMode content_mode)
+                                             ContentMode content_mode, bool inline_confirmation_footer)
     : DPIDialog(parent, wxID_ANY, caption, wxDefaultPosition, wxDefaultSize,
                 wxBORDER_NONE | wxFRAME_NO_TASKBAR | wxFRAME_SHAPED)
     , m_appearance(appearance), m_content_mode(content_mode), m_original_message(message)
 {
+    m_inline_confirmation_footer = inline_confirmation_footer;
     const bool design = appearance == Appearance::GenerationConfirmation;
     const bool compact = appearance != Appearance::Standard;
     m_dialog_width = design ? 480 : compact ? 400 : 560;
@@ -583,7 +584,7 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
 
     auto* divider = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(-1, FromDIP(1)), wxBORDER_NONE);
     divider->SetBackgroundColour(RedesignTheme::divider_colour());
-    if (!compact) root->Add(divider, 0, wxEXPAND);
+    if (!compact && !inline_confirmation_footer) root->Add(divider, 0, wxEXPAND);
     else divider->Hide();
 
     auto* content_sizer = new wxBoxSizer(wxHORIZONTAL);
@@ -636,11 +637,12 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
         m_checkbox = new wxCheckBox(this, wxID_ANY, checkbox_label);
         m_checkbox->SetValue(checkbox_checked);
         RedesignTheme::style_text(m_checkbox, RedesignTheme::secondary_text_colour(), 10);
-        root->Add(m_checkbox, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(24));
+        if (!inline_confirmation_footer)
+            root->Add(m_checkbox, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(24));
     }
 
     m_action_sizer = new wxBoxSizer(m_stacked_actions ? wxVERTICAL : wxHORIZONTAL);
-    if ((!compact || design) && !m_stacked_actions) m_action_sizer->AddStretchSpacer(1);
+    if ((!compact || design) && !m_stacked_actions && !inline_confirmation_footer) m_action_sizer->AddStretchSpacer(1);
     if (!actions.empty()) {
         for (const auto& action : actions)
             add_action_button(action.id, action.label, action.primary);
@@ -661,6 +663,12 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
         root->AddSpacer(FromDIP(16));
         root->Add(m_action_sizer, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(24));
         root->AddSpacer(FromDIP(20));
+    } else if (inline_confirmation_footer) {
+        auto* footer = new wxBoxSizer(wxHORIZONTAL);
+        if (m_checkbox) footer->Add(m_checkbox, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(16));
+        footer->AddStretchSpacer(1);
+        footer->Add(m_action_sizer, 0, wxALIGN_CENTER_VERTICAL);
+        root->Add(footer, 0, wxEXPAND | wxALL, FromDIP(24));
     } else {
         root->Add(m_action_sizer, 0, wxEXPAND | wxALL, FromDIP(24));
     }
@@ -668,7 +676,8 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
     SetSizer(root);
     SetMinSize(wxSize(FromDIP(m_dialog_width), -1));
     root->SetSizeHints(this);
-    SetSize(wxSize(FromDIP(m_dialog_width), GetSize().y));
+    SetSize(wxSize(m_inline_confirmation_footer ?
+        std::max(FromDIP(m_dialog_width), GetSizer()->GetMinSize().x) : FromDIP(m_dialog_width), GetSize().y));
     if (m_message_view) {
         wxWindow* scroll_host = m_details_viewport ? static_cast<wxWindow*>(m_details_viewport) :
             static_cast<wxWindow*>(m_message_view);
@@ -725,7 +734,7 @@ void RedesignMessageDialog::add_action_button(wxWindowID id, const wxString& lab
     const bool design = m_appearance == Appearance::GenerationConfirmation;
     const bool compact = m_appearance != Appearance::Standard;
     auto* button = new RedesignDialogActionButton(this, id, label, primary,
-        m_stacked_actions ? 432 : design ? 200 : compact ? 170 : 112, design);
+        m_stacked_actions ? 432 : design ? 200 : compact ? 170 : m_inline_confirmation_footer ? 96 : 112, design);
     if (design) button->SetName(primary ? "generation-confirm-yes" : "generation-confirm-no");
     button->Bind(wxEVT_BUTTON, [this, id](wxCommandEvent&) { finish_with(id); });
     m_action_sizer->Add(button, 0, m_stacked_actions ? wxTOP : wxLEFT,
@@ -816,7 +825,8 @@ void RedesignMessageDialog::on_dpi_changed(const wxRect& suggested_rect)
         button->rescale();
     SetMinSize(wxSize(FromDIP(m_dialog_width), -1));
     GetSizer()->SetSizeHints(this);
-    SetSize(wxSize(FromDIP(m_dialog_width), GetSize().y));
+    SetSize(wxSize(m_inline_confirmation_footer ?
+        std::max(FromDIP(m_dialog_width), GetSizer()->GetMinSize().x) : FromDIP(m_dialog_width), GetSize().y));
     Layout();
     if (m_details_viewport) {
         m_details_viewport->FitInside();
@@ -881,7 +891,8 @@ int show_redesign_confirmation(wxWindow* parent, const wxString& message,
         message, caption, options.style,
         options.standard_layout ? RedesignMessageDialog::Appearance::Standard :
             RedesignMessageDialog::Appearance::GenerationConfirmation,
-        options.minimum_message_height, false, options.actions, options.checkbox_label, options.checkbox_checked);
+        options.minimum_message_height, false, options.actions, options.checkbox_label, options.checkbox_checked,
+        RedesignMessageDialog::ContentMode::Native, options.inline_confirmation_footer);
     if (options.dismiss_result != wxID_NONE) dialog.set_dismiss_result(options.dismiss_result);
     const int result = dialog.ShowModal();
     if (options.checkbox_state != nullptr)

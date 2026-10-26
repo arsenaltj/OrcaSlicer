@@ -16,7 +16,7 @@ from text_capability_application import (
     TextCapabilityApplication,
     TextCapabilityError,
 )
-from yoyoclaw_client import YoYoClawClient, YoYoClawError
+from yoyoclaw_client import TextRequestDiagnostics, YoYoClawClient, YoYoClawError
 from yoyoclaw_text_gateway import (
     TEXT_LIBRARY,
     YoYoClawTextGateway,
@@ -196,6 +196,142 @@ class TextModelSelectionTests(unittest.TestCase):
 
 
 class TextTransportTests(unittest.TestCase):
+    def test_diagnostics_separate_first_answer_streaming_and_connection_close(self):
+        now = [0.0]
+        events = []
+        diagnostics = TextRequestDiagnostics(lambda stage, fields: events.append((stage, fields)), monotonic=lambda: now[0])
+
+        class TimedResponse(_StreamResponse):
+            def iter_lines(self, decode_unicode=False):
+                for at, event in (
+                    (10, {"model": "Qwen-concrete", "choices": [{"delta": {"reasoning_content": "private-reasoning"}}]}),
+                    (13, {"choices": [{"delta": {"content": "private-answer"}}]}),
+                    (15, {"choices": [{"delta": {"content": "!"}}]}),
+                    (16, {"usage": {"prompt_tokens": 50, "completion_tokens": 10, "total_tokens": 60,
+                                     "completion_tokens_details": {"reasoning_tokens": 4}, "private": "do-not-log"}}),
+                ):
+                    now[0] = at
+                    yield "data: " + json.dumps(event)
+                    yield ""
+                yield "data: [DONE]"
+                yield ""
+                now[0] = 21
+
+        response = TimedResponse()
+        client, session = self.make_client(response)
+        original_request = session.request
+
+        def headers(*args, **kwargs):
+            now[0] = 2
+            return original_request(*args, **kwargs)
+
+        session.request = headers
+        answer = client.text_chat("auto", [{"role": "user", "content": "private-prompt"}], diagnostics=diagnostics)
+        self.assertEqual(answer, "private-answer!")
+        metrics = diagnostics.metrics
+        self.assertEqual(metrics["requested_model"], "auto")
+        self.assertEqual(metrics["reported_model"], "Qwen-concrete")
+        self.assertEqual(metrics["headers_wait_ms"], 2000)
+        self.assertEqual(metrics["first_event_ms"], 10000)
+        self.assertEqual(metrics["first_reasoning_ms"], 10000)
+        self.assertEqual(metrics["first_content_ms"], 13000)
+        self.assertEqual(metrics["content_receive_ms"], 2000)
+        self.assertEqual(metrics["done_to_eof_ms"], 5000)
+        self.assertEqual(metrics["stream_eof_ms"], 21000)
+        self.assertEqual(metrics["total_tokens"], 60)
+        self.assertEqual(metrics["reasoning_tokens"], 4)
+        for private in ("private-prompt", "private-answer", "private-reasoning", "do-not-log"):
+            self.assertNotIn(private, repr(events))
+        self.assertEqual(len(session.requests), 1)
+        self.assertTrue(response.closed)
+
+    def test_diagnostics_keep_partial_timings_on_failed_stream_without_inventing_a_model(self):
+        now = [0.0]
+        diagnostics = TextRequestDiagnostics(lambda *_: None, monotonic=lambda: now[0])
+
+        class IncompleteResponse(_StreamResponse):
+            def iter_lines(self, decode_unicode=False):
+                now[0] = 7
+                yield 'data: {"choices":[{"delta":{"content":"partial"}}]}'
+                yield ""
+
+        response = IncompleteResponse()
+        client, session = self.make_client(response)
+        with self.assertRaises(YoYoClawError) as caught:
+            client.text_chat("auto", [], diagnostics=diagnostics)
+        self.assertEqual(caught.exception.code, "incomplete_provider_response")
+        self.assertEqual(diagnostics.metrics["first_content_ms"], 7000)
+        self.assertIsNone(diagnostics.metrics["reported_model"])
+        self.assertNotIn("done_ms", diagnostics.metrics)
+        self.assertEqual(len(session.requests), 1)
+        self.assertTrue(response.closed)
+
+    def test_json_response_reports_nested_model_and_diagnostic_sink_cannot_break_request(self):
+        def broken_sink(*_):
+            raise RuntimeError("logging unavailable")
+
+        diagnostics = TextRequestDiagnostics(broken_sink)
+        response = _StreamResponse(payload={"code": "OK", "data": {
+            "model": "GLM-concrete", "choices": [{"message": {"content": "answer"}}],
+            "usage": {"total_tokens": 32, "prompt_tokens": "private", "completion_tokens": True},
+        }}, content_type="application/json")
+        client, _session = self.make_client(response)
+        self.assertEqual(client.text_chat("auto", [], diagnostics=diagnostics), "answer")
+        self.assertEqual(diagnostics.metrics["reported_model"], "GLM-concrete")
+        self.assertEqual(diagnostics.metrics["total_tokens"], 32)
+        self.assertNotIn("prompt_tokens", diagnostics.metrics)
+        self.assertNotIn("completion_tokens", diagnostics.metrics)
+        self.assertIn("json_body_complete_ms", diagnostics.metrics)
+
+    def test_gateway_diagnostics_measure_authentication_and_whitelist_separately(self):
+        now = [0.0]
+        diagnostics = TextRequestDiagnostics(lambda *_: None, monotonic=lambda: now[0])
+
+        class TimedClient(_GatewayClient):
+            authenticated = False
+
+            def login(self):
+                self.calls.append(("login",))
+                now[0] += 1
+                self.authenticated = True
+
+            def whitelist_catalog(self, library):
+                now[0] += 3
+                return super().whitelist_catalog(library)
+
+            def text_chat(self, model, messages, timeout, diagnostics):
+                self.calls.append(("chat", model))
+                now[0] += 20
+                return "answer"
+
+        client = TimedClient(rows=[_auto_row("Auto", "Auto")])
+        self.assertEqual(YoYoClawTextGateway(lambda: client).complete([], diagnostics=diagnostics), "answer")
+        self.assertEqual(diagnostics.metrics["authentication_ms"], 1000)
+        self.assertEqual(diagnostics.metrics["whitelist_ms"], 3000)
+        self.assertEqual(diagnostics.metrics["requested_model"], "Auto")
+        self.assertEqual(client.calls, [("login",), ("whitelist", TEXT_LIBRARY), ("chat", "Auto")])
+        self.assertTrue(client.closed)
+
+    def test_failed_authentication_retains_timing_and_never_submits_chat(self):
+        now = [0.0]
+        diagnostics = TextRequestDiagnostics(lambda *_: None, monotonic=lambda: now[0])
+
+        class DeniedClient(_GatewayClient):
+            authenticated = False
+
+            def login(self):
+                self.calls.append(("login",))
+                now[0] = 6
+                raise YoYoClawError("private-auth-error", code="denied", category="authentication")
+
+        client = DeniedClient()
+        with self.assertRaises(YoYoClawError) as caught:
+            YoYoClawTextGateway(lambda: client).complete([], diagnostics=diagnostics)
+        self.assertEqual(caught.exception.code, "denied")
+        self.assertEqual(diagnostics.metrics["authentication_ms"], 6000)
+        self.assertEqual(client.calls, [("login",)])
+        self.assertTrue(client.closed)
+
     def make_client(self, response):
         session = _Session(response)
         client = YoYoClawClient(session=session)

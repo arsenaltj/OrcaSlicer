@@ -16,6 +16,7 @@ ATOMIC_MODULES = (
     "model_job_application", "model_job_lifecycle", "model_job_repository", "model_mesh_repair",
     "model_obj_io", "model_quality_workflow", "model_request", "model_texture_baking",
     "portrait_geometry_reference", "portrait_model_materials", "portrait_multiview_workflow",
+    "slicing_recommendation_application",
     "text_capability_application", "text_capability_transport", "yoyoclaw_client", "yoyoclaw_provider_gateway",
     "yoyoclaw_text_gateway",
 )
@@ -93,6 +94,10 @@ CAPABILITIES = (
                ("root", "workspace_adapter", "action_ports"), "native_views", ("create_windows",), False, "native", "native_adapter"),
     Capability("slice.inspect", "打印风险检查", "src/slic3r/AI/SmartSlicing/Application/PrintabilityInspector.hpp", "PrintabilityInspector",
                ("workspace_revision",), "PrintabilityReport", availability="native", isolation="native_port"),
+    Capability("slice.recommend.cloud", "云端 AI 切片参数推荐", "tools/ai/slicing_recommendation_application.py",
+               "SlicingRecommendationApplication.execute", ("deidentified_model_metrics", "machine_limits", "material_limits", "local_baselines"),
+               "bounded_parameter_recommendations", ("remote_text_request",), True, "text",
+               route="POST /v1/orcaslicer/text-capabilities/slicing_parameter_recommendation"),
     Capability("slice.trial", "候选试切片与比较", "src/slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp", "begin_candidate_trials",
                ("workspace_revision", "proposals"), "candidate_comparison", ("trial_slice",), availability="native", isolation="native_port"),
     Capability("slice.apply", "应用选定切片候选", "src/slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp", "apply_selected_candidate",

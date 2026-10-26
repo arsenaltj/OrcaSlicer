@@ -18,6 +18,7 @@ set(ORCA_MODEL_CAPABILITY_RUNTIME_FILES
     "${CMAKE_SOURCE_DIR}/tools/ai/model_quality_workflow.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/model_request.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/model_texture_baking.py"
+    "${CMAKE_SOURCE_DIR}/tools/ai/slicing_recommendation_application.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/text_capability_application.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/text_capability_transport.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/yoyoclaw_client.py"

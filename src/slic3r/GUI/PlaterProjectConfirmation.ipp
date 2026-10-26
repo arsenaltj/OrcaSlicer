@@ -18,6 +18,7 @@ int GUI::Plater::close_with_confirm(std::function<bool(bool)> second_check)
         options.checkbox_label = _L("记住我的选择。");
         options.checkbox_state = &remember_choice;
         options.standard_layout = true;
+        options.inline_confirmation_footer = true;
         result = show_redesign_confirmation(static_cast<wxWindow*>(this),
             _L("当前项目包含未保存的修改，是否先保存？"), _L("保存"), options);
     } else {

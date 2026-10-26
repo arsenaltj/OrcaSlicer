@@ -1052,7 +1052,9 @@ TEST_CASE("native slicing rejects late completions and retains an active run unt
     NativeSliceSession session;
     const WorkspaceRevision original {1, 2, 3, "original"};
     const WorkspaceRevision changed {2, 2, 3, "changed"};
+    CHECK_FALSE(session.completed_for(original));
     session.start(original);
+    CHECK_FALSE(session.completed_for(original));
     CHECK_FALSE(session.reset());
     session.refresh(changed);
     CHECK(session.pending());
@@ -1060,13 +1062,17 @@ TEST_CASE("native slicing rejects late completions and retains an active run unt
     CHECK(session.result().diagnostic_code == "workspace_changed");
     session.complete(true, changed, {});
     CHECK_FALSE(session.pending());
+    CHECK_FALSE(session.completed_for(changed));
     CHECK(session.result().phase == OfficialSlicePhase::Failed);
     CHECK_FALSE(session.result().can_print);
     REQUIRE(session.reset());
     session.start(changed);
     session.complete(true, changed, {});
     CHECK(session.result().phase == OfficialSlicePhase::Completed);
+    CHECK(session.completed_for(changed));
+    CHECK_FALSE(session.completed_for(original));
     session.refresh(original);
+    CHECK_FALSE(session.completed_for(changed));
     CHECK(session.result().phase == OfficialSlicePhase::Failed);
     CHECK_FALSE(session.result().can_print);
 }

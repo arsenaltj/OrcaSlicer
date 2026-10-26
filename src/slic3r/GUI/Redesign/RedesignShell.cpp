@@ -510,7 +510,7 @@ public:
         Refresh();
     }
 
-    void set_selection(int selection)
+    void set_selection(int selection, bool notify = true)
     {
         if (selection < 0 || selection >= static_cast<int>(m_choices.size()))
             return;
@@ -518,7 +518,7 @@ public:
             return;
         m_selection = selection;
         Refresh();
-        if (m_on_selection)
+        if (notify && m_on_selection)
             m_on_selection(m_selection);
     }
 
@@ -1182,6 +1182,21 @@ private:
     PlaceholderMode m_placeholder_mode { PlaceholderMode::Idle };
     int m_spinner_frame { 0 };
 };
+
+wxPanel* RedesignShell::create_slicing_recommendation_source(wxWindow* parent)
+{
+    auto* picker = new StylePicker(parent, {_L("本地智能推荐"), _L("云端 AI 推荐")},
+        [this](int selection) { on_slicing_recommendation_source_changed(selection); }, false, 32);
+    picker->SetMinSize(FromDIP(wxSize(164, 32)));
+    picker->SetName("slicing-recommendation-source");
+    return picker;
+}
+
+void RedesignShell::set_slicing_recommendation_source_selection(int selection)
+{
+    if (m_slice_recommendation_source)
+        static_cast<StylePicker*>(m_slice_recommendation_source)->set_selection(selection, false);
+}
 
 RedesignShell::RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model_generation_host, Plater* plater,
                              AITextFeatureHost* text_feature_host)

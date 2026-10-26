@@ -11,10 +11,53 @@
 #include <algorithm>
 #include <functional>
 #include <optional>
+#include <tuple>
 
 namespace Slic3r::GUI {
 
 enum class WorkbenchSliceRoute { Unavailable, AiRetry, AiCandidate, Native };
+enum class SlicingRecommendationSource { Local, Cloud };
+enum class CloudRecommendationStatus { Idle, Preparing, Requesting, Ready, Failed };
+
+class CloudRecommendationGate
+{
+public:
+    uint64_t begin(const AI::SmartSlicing::WorkspaceRevision& revision)
+    {
+        m_revision = revision;
+        return ++m_attempt;
+    }
+
+    void cancel()
+    {
+        ++m_attempt;
+        m_revision.reset();
+    }
+
+    bool accepts(uint64_t attempt, const AI::SmartSlicing::WorkspaceRevision& current) const
+    {
+        return m_revision && m_revision->valid() && attempt == m_attempt && *m_revision == current;
+    }
+
+    uint64_t attempt() const { return m_attempt; }
+    const std::optional<AI::SmartSlicing::WorkspaceRevision>& revision() const { return m_revision; }
+
+private:
+    uint64_t m_attempt {0};
+    std::optional<AI::SmartSlicing::WorkspaceRevision> m_revision;
+};
+
+struct CloudRecommendationView
+{
+    CloudRecommendationStatus status {CloudRecommendationStatus::Idle};
+    std::string diagnostic;
+    std::string diagnostic_id;
+    std::string failed_goal;
+    std::string failed_parameter;
+    std::string failed_value;
+    std::array<std::string, 3> summaries;
+    std::vector<std::string> warnings;
+};
 
 // The native worker and the SmartSlice state are updated by different event
 // paths.  Keep the UI locked while either source still reports an active
@@ -131,6 +174,12 @@ public:
     const AI::SmartSlicing::OfficialSliceResult& result() const { return m_result; }
     const std::optional<AI::SmartSlicing::WorkspaceRevision>& revision() const { return m_revision; }
 
+    bool completed_for(const AI::SmartSlicing::WorkspaceRevision& current) const
+    {
+        return !m_pending && current.valid() && m_revision && *m_revision == current &&
+            m_result.phase == AI::SmartSlicing::OfficialSlicePhase::Completed;
+    }
+
     void start(const AI::SmartSlicing::WorkspaceRevision& revision)
     {
         m_revision = revision;
@@ -188,7 +237,27 @@ struct ExactEstimateView
     std::optional<size_t> tool_changes;
     std::string source;
     std::string diagnostic;
+    std::optional<AI::SmartSlicing::SliceRecommendation> parameters;
 };
+
+inline bool same_slice_parameters(const AI::SmartSlicing::SliceRecommendation& a,
+                                  const AI::SmartSlicing::SliceRecommendation& b)
+{
+    const auto key = [](const auto& p) {
+        return std::tie(p.mode, p.layer_height_mm, p.wall_loops, p.sparse_infill_density_percent,
+            p.sparse_infill_pattern, p.outer_wall_speed_mm_s, p.enable_support, p.support_type,
+            p.support_threshold_angle_deg, p.adaptive_layer_height, p.arachne_wall_generator, p.line_width_mm);
+    };
+    return key(a) == key(b);
+}
+
+inline bool exact_estimate_matches(const ExactEstimateView& estimate,
+    const AI::SmartSlicing::WorkspaceRevision& revision, AI::SmartSlicing::RecommendationGoal goal,
+    const AI::SmartSlicing::SliceRecommendation& parameters)
+{
+    return estimate.revision == revision && estimate.goal == goal && estimate.parameters &&
+        same_slice_parameters(*estimate.parameters, parameters);
+}
 
 struct SmartSlicingWorkbenchState
 {
@@ -213,7 +282,10 @@ struct SmartSlicingWorkbenchState
     bool can_start_native {false};
     std::string native_blocked_reason;
     bool native_execution {false};
+    bool official_statistics_ready {false};
     bool can_keep_current_mesh {false};
+    SlicingRecommendationSource recommendation_source {SlicingRecommendationSource::Local};
+    CloudRecommendationView cloud_recommendation;
 
     // Lightweight, millisecond-scale recommendations are the user-facing
     // SmartSlice plans.  Once selected they are translated into the native
@@ -225,6 +297,81 @@ struct SmartSlicingWorkbenchState
     bool lightweight_stale {false};
     ExactEstimateView exact_estimate;
 };
+
+enum class RecommendationPresentationStage {
+    Idle, PreparingCloud, RequestingCloud, Analyzing, EstimatingCloud, EstimatingLocal, CloudReady, LocalReady, CloudFailed
+};
+
+inline bool workbench_estimate_pending(const SmartSlicingWorkbenchState& state,
+                                      AI::SmartSlicing::RecommendationGoal goal)
+{
+    if (state.official_statistics_ready && goal == state.selected_goal)
+        return false;
+    const auto& estimate = state.exact_estimate;
+    if (estimate.status == ExactEstimateStatus::None || estimate.status == ExactEstimateStatus::Running ||
+        estimate.goal != goal ||
+        (state.session.workspace_revision.valid() && estimate.revision != state.session.workspace_revision))
+        return true;
+    if (state.lightweight_analysis && state.lightweight_analysis->completed) {
+        const auto mode = goal == AI::SmartSlicing::RecommendationGoal::Speed ? AI::SmartSlicing::SliceMode::SPEED :
+            goal == AI::SmartSlicing::RecommendationGoal::Quality ? AI::SmartSlicing::SliceMode::QUALITY :
+            AI::SmartSlicing::SliceMode::BALANCED;
+        if (const auto* parameters = state.lightweight_analysis->find(mode))
+            return !exact_estimate_matches(estimate, state.session.workspace_revision, goal, *parameters);
+    }
+    return false;
+}
+
+inline RecommendationPresentationStage workbench_recommendation_stage(
+    const SmartSlicingWorkbenchState& state, AI::SmartSlicing::RecommendationGoal displayed_goal)
+{
+    const bool cloud = state.recommendation_source == SlicingRecommendationSource::Cloud;
+    if (cloud && state.cloud_recommendation.status == CloudRecommendationStatus::Preparing)
+        return RecommendationPresentationStage::PreparingCloud;
+    if (cloud && state.cloud_recommendation.status == CloudRecommendationStatus::Requesting)
+        return RecommendationPresentationStage::RequestingCloud;
+    if (state.analyzing)
+        return RecommendationPresentationStage::Analyzing;
+    if (state.cloud_recommendation.status == CloudRecommendationStatus::Failed)
+        return RecommendationPresentationStage::CloudFailed;
+    if (cloud) {
+        if (state.cloud_recommendation.status != CloudRecommendationStatus::Ready)
+            return RecommendationPresentationStage::Idle;
+        if (workbench_estimate_pending(state, displayed_goal))
+            return RecommendationPresentationStage::EstimatingCloud;
+        return RecommendationPresentationStage::CloudReady;
+    }
+    if (state.lightweight_analysis && state.lightweight_analysis->completed)
+        return workbench_estimate_pending(state, displayed_goal) ?
+            RecommendationPresentationStage::EstimatingLocal : RecommendationPresentationStage::LocalReady;
+    return RecommendationPresentationStage::Idle;
+}
+
+inline bool workbench_recommendation_parameters_ready(const SmartSlicingWorkbenchState& state)
+{
+    return state.recommendation_source != SlicingRecommendationSource::Cloud ||
+        state.cloud_recommendation.status == CloudRecommendationStatus::Ready;
+}
+
+inline bool workbench_analysis_busy(const SmartSlicingWorkbenchState& state)
+{
+    if (state.official_statistics_ready) return false;
+    return state.analyzing || state.cloud_recommendation.status == CloudRecommendationStatus::Preparing ||
+        state.cloud_recommendation.status == CloudRecommendationStatus::Requesting ||
+        state.exact_estimate.status == ExactEstimateStatus::Running ||
+        (state.lightweight_analysis &&
+         state.lightweight_analysis->completed &&
+         (state.recommendation_source == SlicingRecommendationSource::Local ||
+          state.cloud_recommendation.status == CloudRecommendationStatus::Ready) &&
+         workbench_estimate_pending(state, state.selected_goal));
+}
+
+inline bool workbench_show_reanalyze(const SmartSlicingWorkbenchState& state)
+{
+    return state.can_analyze && !workbench_analysis_busy(state) &&
+        (state.lightweight_analysis.has_value() || !state.diagnostic.empty() ||
+         state.cloud_recommendation.status == CloudRecommendationStatus::Failed);
+}
 
 inline bool workbench_goal_is_currently_selected(
     const SmartSlicingWorkbenchState& state, AI::SmartSlicing::RecommendationGoal goal)

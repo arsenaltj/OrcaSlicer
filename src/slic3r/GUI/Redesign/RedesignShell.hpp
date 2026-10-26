@@ -144,6 +144,9 @@ private:
     void show_model_view(ModelView view);
     void apply_workbench_state(const PostGenerationWorkbenchState& state);
     void apply_slicing_state(const SmartSlicingWorkbenchState& state);
+    wxPanel* create_slicing_recommendation_source(wxWindow* parent);
+    void set_slicing_recommendation_source_selection(int selection);
+    void on_slicing_recommendation_source_changed(int selection);
     void confirm_workbench_import(const AI::ModelImportRequest& request);
     void select_slicing_tab(bool native);
     void start_workbench_slice();
@@ -185,6 +188,7 @@ private:
     wxPanel* m_ai_slicing_controls { nullptr };
     wxWindow* m_ai_slicing_tab { nullptr };
     wxWindow* m_native_slicing_tab { nullptr };
+    wxPanel* m_slice_recommendation_source { nullptr };
     wxWindow* m_slice_start { nullptr };
     wxWindow* m_slice_analyze { nullptr };
     wxWindow* m_slice_cancel { nullptr };
