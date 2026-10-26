@@ -3,6 +3,7 @@
 #include <wx/panel.h>
 #include <wx/control.h>
 #include <wx/dialog.h>
+#include <wx/clipbrd.h>
 #include <wx/dcbuffer.h>
 #include <wx/dcmemory.h>
 #include <wx/dcgraph.h>
@@ -11,9 +12,12 @@
 #include <wx/tglbtn.h>
 #include <wx/timer.h>
 #include <wx/scrolwin.h>
+#include <wx/toplevel.h>
 #include <wx/weakref.h>
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <optional>
 #include <vector>
 #ifdef __WXMSW__
 #include <wx/msw/dc.h>
@@ -361,6 +365,20 @@ inline void apply_workbench_floating_card_shape(wxDialog* card, int radius_dip,
 #endif
 }
 
+inline void raise_workbench_floating_card(wxDialog* card)
+{
+    if (!card || !card->IsShown()) return;
+    auto* owner = dynamic_cast<wxTopLevelWindow*>(card->GetParent());
+    if (owner && !owner->IsActive() && !card->IsActive()) return;
+    card->Raise();
+#ifdef __WXMSW__
+    if (card->GetHandle()) {
+        ::SetWindowPos(static_cast<HWND>(card->GetHandle()), HWND_TOP, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    }
+#endif
+}
+
 inline wxColour workbench_owned_surface(wxWindow* parent)
 {
     if (auto* painted = dynamic_cast<WorkbenchPaintedPanel*>(parent))
@@ -488,6 +506,15 @@ public:
             dc.SetPen(*wxTRANSPARENT_PEN);
             dc.SetBrush(wxBrush(wxColour(76, 76, 82)));
             dc.DrawRoundedRectangle(track, height / 2.0);
+            if (m_progress) {
+                const int width = track.width * std::clamp(*m_progress, 0, 100) / 100;
+                if (width > 0) {
+                    dc.SetBrush(wxBrush(wxColour(255, 194, 39)));
+                    dc.DrawRoundedRectangle(track.x, track.y, width, track.height,
+                                            track.height / 2.0);
+                }
+                return;
+            }
             const int segment = std::max(FromDIP(42), track.width / 4);
             const int travel = std::max(1, track.width + segment);
             const int x = track.x - segment + (travel * m_phase) / 120;
@@ -499,23 +526,45 @@ public:
     ~WorkbenchIndeterminateProgress() override { m_timer.Stop(); }
 
     void set_running(bool running) {
-        if (m_running == running) return;
-        m_running = running;
-        if (running) {
-            m_phase = 0;
-            m_timer.Start(70);
-        } else {
-            m_timer.Stop();
+        if (m_running == running) {
+            update_timer();
+            return;
         }
+        m_running = running;
+        if (running) m_phase = 0;
+        update_timer();
+        Refresh(false);
+    }
+
+    void set_progress(std::optional<int> progress) {
+        if (progress) progress = std::clamp(*progress, 0, 100);
+        if (m_progress == progress) return;
+        m_progress = progress;
+        update_timer();
         Refresh(false);
     }
 
 private:
+    void update_timer() {
+        const bool animate = m_running && !m_progress;
+        if (animate && !m_timer.IsRunning()) m_timer.Start(70);
+        else if (!animate && m_timer.IsRunning()) m_timer.Stop();
+    }
+
     wxTimer m_timer;
     int m_phase {0};
     bool m_running {false};
+    std::optional<int> m_progress;
     wxColour m_background;
 };
+
+#ifdef __WXMSW__
+inline bool workbench_slider_owns_custom_draw(WXHWND slider, const NMHDR& notification)
+{
+    return notification.code == NM_CUSTOMDRAW &&
+           notification.hwndFrom == reinterpret_cast<HWND>(slider);
+}
+#endif
 
 class WorkbenchSlider final : public wxSlider {
 public:
@@ -539,9 +588,10 @@ protected:
         return handled;
     }
     bool MSWOnNotify(int id, WXLPARAM parameter, WXLPARAM* result) override {
-        auto* draw = reinterpret_cast<NMCUSTOMDRAW*>(parameter);
-        if (draw->hdr.code != NM_CUSTOMDRAW)
+        const auto* header = reinterpret_cast<const NMHDR*>(parameter);
+        if (!workbench_slider_owns_custom_draw(GetHwnd(), *header))
             return wxSlider::MSWOnNotify(id, parameter, result);
+        auto* draw = reinterpret_cast<NMCUSTOMDRAW*>(parameter);
         if (draw->dwDrawStage == CDDS_PREPAINT) {
             wxDCTemp dc(draw->hdc, GetClientSize());
             dc.SetPen(*wxTRANSPARENT_PEN);
@@ -748,6 +798,242 @@ private:
     int m_minimum_height {42};
     int m_corner_radius {9};
     wxColour m_text_colour {235, 235, 235};
+};
+
+// Compact editable integer control used below workbench sliders. The value,
+// focus and arrows share one owner-drawn surface so Windows cannot introduce
+// a native edit background or non-client border into the dark workbench.
+class WorkbenchNumberStepper final : public wxControl {
+public:
+    WorkbenchNumberStepper(wxWindow* parent, int value, int minimum, int maximum)
+        : wxControl(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+                    wxBORDER_NONE | wxWANTS_CHARS),
+          m_minimum(minimum), m_maximum(std::max(minimum, maximum)),
+          m_value(std::clamp(value, minimum, std::max(minimum, maximum)))
+    {
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+#ifdef __WXMSW__
+        SetDoubleBuffered(true);
+#endif
+        m_edit_text = wxString::Format("%d", m_value);
+
+        Bind(wxEVT_PAINT, &WorkbenchNumberStepper::paint, this);
+        Bind(wxEVT_ERASE_BACKGROUND, [](wxEraseEvent&) {});
+        Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
+            if (!IsEnabled()) return;
+            const wxSize size = GetClientSize();
+            if (event.GetX() >= size.x - arrow_width()) {
+                step(event.GetY() < size.y / 2 ? 1 : -1);
+                return;
+            }
+            SetFocus();
+            m_editing = true;
+            m_select_all = true;
+            Refresh(false);
+        });
+        Bind(wxEVT_SET_FOCUS, [this](wxFocusEvent& event) {
+            m_editing = true;
+            m_select_all = true;
+            Refresh(false);
+            event.Skip();
+        });
+        Bind(wxEVT_KILL_FOCUS, [this](wxFocusEvent& event) {
+            commit_input();
+            m_editing = false;
+            m_select_all = false;
+            Refresh(false);
+            event.Skip();
+        });
+        Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
+            if (event.GetKeyCode() == WXK_UP) { step(1); return; }
+            if (event.GetKeyCode() == WXK_DOWN) { step(-1); return; }
+            if (event.GetKeyCode() == WXK_RETURN || event.GetKeyCode() == WXK_NUMPAD_ENTER) {
+                commit_input();
+                m_select_all = true;
+                Refresh(false);
+                return;
+            }
+            if (event.GetKeyCode() == WXK_ESCAPE) {
+                restore_input();
+                m_select_all = true;
+                Refresh(false);
+                return;
+            }
+            if (event.CmdDown() && (event.GetKeyCode() == 'A' || event.GetKeyCode() == 'a')) {
+                m_select_all = true;
+                Refresh(false);
+                return;
+            }
+            if (event.CmdDown() && (event.GetKeyCode() == 'V' || event.GetKeyCode() == 'v')) {
+                paste_input();
+                return;
+            }
+            if (event.GetKeyCode() == WXK_BACK || event.GetKeyCode() == WXK_DELETE) {
+                if (m_select_all) m_edit_text.clear();
+                else if (!m_edit_text.empty()) m_edit_text.RemoveLast();
+                m_editing = true;
+                m_select_all = false;
+                Refresh(false);
+                return;
+            }
+            event.Skip();
+        });
+        Bind(wxEVT_CHAR, [this](wxKeyEvent& event) {
+            const int code = event.GetUnicodeKey();
+            if (code < '0' || code > '9' || event.CmdDown() || event.AltDown()) {
+                event.Skip();
+                return;
+            }
+            const size_t limit = std::max<size_t>(1, wxString::Format("%d", m_maximum).length());
+            if (m_select_all) m_edit_text.clear();
+            if (m_edit_text.length() < limit) m_edit_text += wxUniChar(code);
+            m_editing = true;
+            m_select_all = false;
+            Refresh(false);
+        });
+        rescale_workbench();
+    }
+
+    int GetValue() const { return m_value; }
+    void SetValue(int value) { set_value(value, false); }
+    void set_change_handler(std::function<void(int)> handler) { m_changed = std::move(handler); }
+
+    bool Enable(bool enable = true) override
+    {
+        const bool changed = IsEnabled() != enable;
+        if (!changed) return false;
+        if (!enable) {
+            restore_input();
+            m_editing = false;
+            m_select_all = false;
+        }
+        wxControl::Enable(enable);
+        if (changed) Refresh(false);
+        return changed;
+    }
+
+    void rescale_workbench()
+    {
+        const wxImage arrow = ScalableBitmap(this, "workbench_palette_arrow", 8).bmp().ConvertToImage();
+        m_down = wxBitmap(arrow.Rotate90());
+        m_up = wxBitmap(arrow.Rotate90().Mirror(false));
+        m_disabled_down = wxBitmap(arrow.Rotate90().ConvertToGreyscale());
+        m_disabled_up = wxBitmap(arrow.Rotate90().Mirror(false).ConvertToGreyscale());
+#ifdef __WXMSW__
+        const double scale = GetDPIScaleFactor();
+        m_down.SetScaleFactor(scale); m_up.SetScaleFactor(scale);
+        m_disabled_down.SetScaleFactor(scale); m_disabled_up.SetScaleFactor(scale);
+#endif
+        wxFont number_font = GetParent() ? GetParent()->GetFont() : GetFont();
+        if (number_font.IsOk())
+            number_font.SetPointSize(std::max(1, number_font.GetPointSize() + 1));
+        SetFont(number_font);
+        SetMinSize(FromDIP(wxSize(82, 32)));
+        SetMaxSize(FromDIP(wxSize(82, 32)));
+        Refresh(false);
+    }
+
+private:
+    int arrow_width() const { return FromDIP(24); }
+
+    void set_value(int value, bool notify)
+    {
+        value = std::clamp(value, m_minimum, m_maximum);
+        const bool changed = value != m_value;
+        m_value = value;
+        const wxString text = wxString::Format("%d", m_value);
+        const bool text_changed = m_edit_text != text;
+        m_edit_text = text;
+        if (changed || text_changed) Refresh(false);
+        if (notify && changed && m_changed) m_changed(m_value);
+    }
+
+    void restore_input() { m_edit_text = wxString::Format("%d", m_value); }
+
+    void commit_input()
+    {
+        long parsed = 0;
+        if (m_edit_text.empty() || !m_edit_text.ToLong(&parsed)) {
+            restore_input();
+            return;
+        }
+        set_value(int(std::clamp<long>(parsed, m_minimum, m_maximum)), true);
+    }
+
+    void step(int direction)
+    {
+        if (!IsEnabled()) return;
+        long parsed = m_value;
+        if (!m_edit_text.ToLong(&parsed)) parsed = m_value;
+        const int base = int(std::clamp<long>(parsed, m_minimum, m_maximum));
+        set_value(base + direction, true);
+        SetFocus();
+        m_editing = true;
+        m_select_all = true;
+    }
+
+    void paste_input()
+    {
+        if (!wxTheClipboard || !wxTheClipboard->Open()) return;
+        wxTextDataObject data;
+        const bool read = wxTheClipboard->IsSupported(wxDF_TEXT) && wxTheClipboard->GetData(data);
+        wxTheClipboard->Close();
+        if (!read) return;
+        const wxString text = data.GetText();
+        const size_t limit = std::max<size_t>(1, wxString::Format("%d", m_maximum).length());
+        const bool valid = !text.empty() && text.length() <= limit &&
+            std::all_of(text.begin(), text.end(), [](wxUniChar ch) { return ch >= '0' && ch <= '9'; });
+        if (!valid) restore_input();
+        else m_edit_text = text;
+        m_editing = true;
+        m_select_all = valid;
+        Refresh(false);
+    }
+
+    void paint(wxPaintEvent&)
+    {
+        wxAutoBufferedPaintDC buffer(this);
+        buffer.SetBackground(wxBrush(GetParent()->GetBackgroundColour()));
+        buffer.Clear();
+        wxGCDC dc(buffer);
+        const wxSize size = GetClientSize();
+        const bool focused = HasFocus();
+        dc.SetPen(wxPen(focused ? wxColour(105, 105, 112) : wxColour(58, 58, 64), FromDIP(1)));
+        dc.SetBrush(wxBrush(wxColour(22, 22, 25)));
+        dc.DrawRoundedRectangle(0, 0, std::max(0, size.x - 1), std::max(0, size.y - 1), FromDIP(7));
+        const int divider = size.x - arrow_width();
+        dc.SetFont(GetFont());
+        dc.SetTextForeground(IsEnabled() ? wxColour(235, 235, 235) : wxColour(105, 105, 110));
+        dc.DrawLabel(m_edit_text, wxRect(FromDIP(2), FromDIP(1),
+            std::max(1, divider - FromDIP(4)), std::max(1, size.y - FromDIP(2))), wxALIGN_CENTER);
+        dc.SetPen(wxPen(wxColour(58, 58, 64), FromDIP(1)));
+        dc.DrawLine(divider, FromDIP(3), divider, size.y - FromDIP(3));
+        dc.DrawLine(divider, size.y / 2, size.x - FromDIP(3), size.y / 2);
+
+        const bool can_up = IsEnabled() && m_value < m_maximum;
+        const bool can_down = IsEnabled() && m_value > m_minimum;
+        const wxBitmap& up = can_up ? m_up : m_disabled_up;
+        const wxBitmap& down = can_down ? m_down : m_disabled_down;
+        if (up.IsOk()) {
+            const wxSize edge = up.GetLogicalSize();
+            dc.DrawBitmap(up, divider + (arrow_width() - edge.x) / 2,
+                          (size.y / 2 - edge.y) / 2, true);
+        }
+        if (down.IsOk()) {
+            const wxSize edge = down.GetLogicalSize();
+            dc.DrawBitmap(down, divider + (arrow_width() - edge.x) / 2,
+                          size.y / 2 + (size.y - size.y / 2 - edge.y) / 2, true);
+        }
+    }
+
+    int m_minimum {1};
+    int m_maximum {32};
+    int m_value {1};
+    wxString m_edit_text;
+    bool m_editing {false};
+    bool m_select_all {false};
+    std::function<void(int)> m_changed;
+    wxBitmap m_up, m_down, m_disabled_up, m_disabled_down;
 };
 
 // Custom Button caches pixel metrics and bitmap-only icons. Keep the workbench's

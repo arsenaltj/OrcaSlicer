@@ -310,6 +310,27 @@ bool ModelGenerationPanel::request_workbench_color_matching()
         request.color_mode = AI::ImportColorMode::NativeMatch;
         request.use_saved_printer_match = false;
         auto* bundle = wxGetApp().preset_bundle;
+        if (const auto* honor_suite = m_model_preview->active_honor_filament_suite()) {
+            const auto compatibility = bundle
+                ? PrinterFilamentConfig::honor_suite_compatibility(*bundle, *honor_suite)
+                : PrinterFilamentConfig::HonorSuiteCompatibility{};
+            if (!compatibility.compatible) {
+                const wxString reason = wxString::FromUTF8(compatibility.reason.empty()
+                    ? "当前打印机不支持六实体色荣耀耗材套装" : compatibility.reason);
+                const wxString message = _L("当前模型使用荣耀六实体色耗材套装，但打印机配置不兼容。\n\n") + reason +
+                    _L("\n\n可将当前真实耗材色重新映射到模型；完成后请确认预览并再次点击“导入切片”。");
+                const int map_to_model = wxWindow::NewControlId();
+                const int return_to_workbench = wxWindow::NewControlId();
+                RedesignConfirmationOptions options;
+                options.style = 0;
+                options.dismiss_result = return_to_workbench;
+                options.actions = {{map_to_model, _L("将耗材色映射到模型"), true},
+                                   {return_to_workbench, _L("返回工作台"), false}};
+                const int answer = show_redesign_confirmation(this, message, _L("套装与打印机不兼容"), options);
+                if (answer == map_to_model) apply_workbench_printer_filaments(true);
+                return false;
+            }
+        }
         const auto match = bundle ? m_model_preview->printer_filament_match_result(
             *bundle, AI::model_artifact_sha256(m_displayed_model_path)) : ModelPreview3D::PrinterFilamentMatchResult{};
         if (!match.matched) {

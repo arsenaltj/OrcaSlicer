@@ -522,6 +522,8 @@ void ModelGenerationPanel::load_design_library_entry(const std::string& job_id)
                     boost::system::error_code ignored;
                     boost::filesystem::remove(weak->m_finishing_candidate, ignored);
                     weak->m_finishing_candidate.clear();
+                    weak->m_finishing_candidate_original_appearance = {};
+                    weak->m_finishing_candidate_original_appearance_error.clear();
                 }
                 weak->m_finishing_options.selected_faces.clear();
                 weak->m_finishing_before = false;

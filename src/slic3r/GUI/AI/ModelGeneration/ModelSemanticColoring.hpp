@@ -86,7 +86,9 @@ public:
                  std::shared_ptr<const SavedAppearance> saved_appearance = {},
                  size_t automatic_color_count = 6,
                  bool analysis_only = false,
-                 bool color_block_postprocess = false);
+                 bool color_block_postprocess = false,
+                 std::map<std::string, size_t> fixed_role_slots = {},
+                 std::string request_context = {});
     void cancel();
     std::unique_ptr<Result> poll();
     bool busy() const;

@@ -289,6 +289,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         m_workbench_check_card->Hide();
         m_workbench_check_card->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
             apply_workbench_floating_card_shape(m_workbench_check_card, 8, wxColour(45, 45, 49));
+            raise_workbench_check_card();
             event.Skip();
         });
         m_workbench_check_card->Bind(wxEVT_CHAR_HOOK, [](wxKeyEvent& event) {
@@ -301,16 +302,12 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
             hide_workbench_check_card();
             if (m_workbench_return_to_design) m_workbench_return_to_design();
         });
-        overlay_host->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
-            position_workbench_check_card();
-            event.Skip();
-        });
+        m_workbench_card_overlay_host = overlay_host;
+        overlay_host->Bind(wxEVT_SIZE, &ModelGenerationPanel::on_workbench_card_overlay_size, this);
         if (card_owner) {
-            wxWeakRef<ModelGenerationPanel> weak(this);
-            card_owner->Bind(wxEVT_MOVE, [weak](wxMoveEvent& event) {
-                if (weak) weak->position_workbench_check_card();
-                event.Skip();
-            });
+            m_workbench_card_owner = card_owner;
+            card_owner->Bind(wxEVT_MOVE, &ModelGenerationPanel::on_workbench_card_owner_move, this);
+            card_owner->Bind(wxEVT_ACTIVATE, &ModelGenerationPanel::on_workbench_card_owner_activate, this);
         }
     }
     section_parent = scroll;
@@ -327,12 +324,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     });
     m_workbench_palette_status = new wxStaticText(scroll, wxID_ANY, wxEmptyString);
     m_workbench_palette_status->SetForegroundColour(wxColour(170, 170, 176));
-    m_model_preview->set_color_trial_changed_callback([this](size_t count) {
-        if (m_workbench_palette_status)
-            m_workbench_palette_status->SetLabel(
-                m_printer_filament_trial_active
-                    ? wxString::Format(_L("打印机耗材试色 · %llu 色"), static_cast<unsigned long long>(count))
-                    : wxString::Format(_L("当前色卡 · %llu 色"), static_cast<unsigned long long>(count)));
+    m_model_preview->set_color_trial_changed_callback([this](size_t) {
         if (m_printer_filament_trial_active && m_model_preview &&
             m_model_preview->color_trial_state().source != 1) {
             m_printer_filament_trial_active = false;
@@ -343,7 +335,44 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         if (m_beauty_controls && m_model_preview)
             m_beauty_controls->synchronize_automatic_basis(
                 m_model_preview->automatic_color_basis_signature());
+        refresh_post_generation_workbench();
     });
+    {
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        m_model_preview->set_honor_suite_semantic_progress_callback(
+            [weak](const ModelPreview3D::HonorSuiteSemanticPresentation& state) {
+                if (!weak || weak->m_shutdown) return;
+                if (state.active) {
+                    if (!weak->m_finishing_workbench || state.request_context.empty()) return;
+                    const bool started = !weak->m_workbench_honor_semantic_active ||
+                        weak->m_workbench_honor_semantic_context != state.request_context;
+                    weak->m_workbench_honor_semantic_active = true;
+                    weak->m_workbench_honor_semantic_progress = std::clamp(state.progress, 0, 100);
+                    weak->m_workbench_honor_semantic_context = state.request_context;
+                    weak->m_workbench_honor_semantic_geometry = state.geometry_id;
+                    weak->m_workbench_honor_semantic_message = state.message;
+                    weak->update_workbench_check_card();
+                    if (started) {
+                        weak->update_finishing_selection();
+                        weak->refresh_model_finishing();
+                        weak->publish_workbench_state();
+                    }
+                    return;
+                }
+                if (!weak->m_workbench_honor_semantic_active ||
+                    (!state.request_context.empty() &&
+                     weak->m_workbench_honor_semantic_context != state.request_context)) return;
+                weak->m_workbench_honor_semantic_active = false;
+                weak->m_workbench_honor_semantic_progress = 0;
+                weak->m_workbench_honor_semantic_context.clear();
+                weak->m_workbench_honor_semantic_geometry.clear();
+                weak->m_workbench_honor_semantic_message.clear();
+                weak->update_finishing_selection();
+                weak->refresh_model_finishing();
+                weak->refresh_post_generation_workbench();
+                weak->publish_workbench_state();
+            });
+    }
     controls->Add(m_workbench_palette_status, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     heading(_L("打印机耗材"));
     m_workbench_apply_project_filaments = new WorkbenchButton(scroll, _L("将耗材色映射到模型"));

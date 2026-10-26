@@ -5,8 +5,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <boost/nowide/cstdlib.hpp>
+#include <cmath>
 #include <cstring>
 #include <future>
 #include <string_view>
@@ -15,6 +17,305 @@ using Slic3r::GUI::ModelPreview3D;
 using Slic3r::Vec3d;
 namespace selection = Slic3r::AI::SurfaceSelectionPersistence;
 namespace trial = Slic3r::AI::ColorTrialPersistence;
+
+namespace {
+indexed_triangle_set original_appearance_fixture_mesh()
+{
+    indexed_triangle_set mesh;
+    mesh.vertices.push_back(Slic3r::Vec3f(0.f, 0.f, 0.f));
+    constexpr float tau = 6.2831853071795864769f;
+    for (size_t index = 0; index < 7; ++index) {
+        const float angle = tau * float(index) / 7.f;
+        mesh.vertices.emplace_back(std::cos(angle), std::sin(angle), 0.f);
+    }
+    for (int index = 1; index <= 7; ++index)
+        mesh.indices.emplace_back(0, index, index == 7 ? 1 : index + 1);
+    return mesh;
+}
+
+std::vector<Slic3r::RGBA> original_appearance_fixture_colors(size_t count)
+{
+    const std::array<Slic3r::RGBA, 8> colors {{
+        Slic3r::RGBA {1.f, 0.f, 0.f, 1.f}, Slic3r::RGBA {0.f, 1.f, 0.f, 1.f},
+        Slic3r::RGBA {0.f, 0.f, 1.f, 1.f}, Slic3r::RGBA {1.f, 1.f, 0.f, 1.f},
+        Slic3r::RGBA {1.f, 0.f, 1.f, 1.f}, Slic3r::RGBA {0.f, 1.f, 1.f, 1.f},
+        Slic3r::RGBA {.25f, .5f, .75f, 1.f}, Slic3r::RGBA {.8f, .35f, .1f, 1.f}
+    }};
+    std::vector<Slic3r::RGBA> result;
+    result.reserve(count);
+    for (size_t index = 0; index < count; ++index) result.push_back(colors[index % colors.size()]);
+    return result;
+}
+
+void write_original_appearance_json(const boost::filesystem::path& path, const nlohmann::json& value)
+{
+    boost::filesystem::create_directories(path.parent_path());
+    boost::filesystem::ofstream output(path, std::ios::binary);
+    output << value.dump();
+    REQUIRE(output.good());
+}
+}
+
+TEST_CASE("Saved low-color versions retain the immutable original palette source",
+          "[ModelPreviewState][ModelPreviewPalette][OriginalAppearance][Regression]")
+{
+    ScopedTemporaryDir temporary("orca-original-appearance-palette");
+    const auto root = temporary.path();
+    const auto models = root / "models";
+    const auto downloads = root / "downloads";
+    boost::filesystem::create_directories(models);
+    boost::filesystem::create_directories(downloads);
+    const auto original = models / "original.obj";
+    const auto saved = models / "saved-four.obj";
+    const auto record = downloads / "saved-four.json";
+    const auto mesh = original_appearance_fixture_mesh();
+    const auto original_colors = original_appearance_fixture_colors(mesh.vertices.size());
+    auto saved_colors = original_colors;
+    for (size_t index = 4; index < saved_colors.size(); ++index) saved_colors[index] = saved_colors[index - 4];
+    std::string error;
+    REQUIRE(Slic3r::AI::write_model_artifact(original, mesh, original_colors, error));
+    REQUIRE(Slic3r::AI::write_model_artifact(saved, mesh, saved_colors, error));
+    write_original_appearance_json(record, {
+        {"source_model", "models/original.obj"},
+        {"source_sha256", Slic3r::AI::model_artifact_sha256(original)}
+    });
+
+    ModelPreview3D::PreparedModel prepared;
+    const bool loaded = ModelPreview3D::prepare_model(saved, prepared, error, {}, record);
+    INFO(error);
+    REQUIRE(loaded);
+    REQUIRE(prepared.has_source_appearance);
+    REQUIRE(prepared.current_appearance_distinct);
+    REQUIRE(prepared.trial_histogram);
+    CHECK(prepared.original_appearance.carrier_model == boost::filesystem::canonical(original));
+    CHECK(prepared.original_appearance.origin_model == boost::filesystem::canonical(original));
+    CHECK(prepared.colors == 8);
+    CHECK(prepared.trial_histogram->trial_palette(8, {}, true).size() == 8);
+}
+
+TEST_CASE("Explicit original appearance references validate identity and topology",
+          "[ModelPreviewState][OriginalAppearance]")
+{
+    ScopedTemporaryDir temporary("orca-original-appearance-explicit");
+    const auto root = temporary.path();
+    boost::filesystem::create_directories(root / "models");
+    const auto carrier = root / "models" / "carrier.obj";
+    const auto mesh = original_appearance_fixture_mesh();
+    std::string error;
+    REQUIRE(Slic3r::AI::write_model_artifact(carrier, mesh,
+        original_appearance_fixture_colors(mesh.vertices.size()), error));
+    const auto hash = Slic3r::AI::model_artifact_sha256(carrier);
+    const auto topology = selection::topology_fingerprint(mesh);
+    Slic3r::GUI::OriginalAppearanceReference reference {
+        boost::filesystem::canonical(carrier), hash, topology,
+        boost::filesystem::canonical(carrier), hash
+    };
+    Slic3r::GUI::ResolvedOriginalAppearance resolved;
+    REQUIRE(Slic3r::GUI::resolve_original_appearance_reference(reference, mesh, root, resolved, error));
+    CHECK(resolved.reference.carrier_sha256 == hash);
+    CHECK(resolved.carrier_appearance.vertex_colors.size() == mesh.vertices.size());
+
+    auto wrong_topology = mesh;
+    std::swap(wrong_topology.indices.front(), wrong_topology.indices.back());
+    CHECK_FALSE(Slic3r::GUI::resolve_original_appearance_reference(
+        reference, wrong_topology, root, resolved, error));
+    CHECK(error.find("拓扑") != std::string::npos);
+
+    auto bad_hash = reference;
+    bad_hash.carrier_sha256.assign(64, '0');
+    CHECK_FALSE(Slic3r::GUI::resolve_original_appearance_reference(
+        bad_hash, mesh, root, resolved, error));
+    CHECK(error.find("哈希") != std::string::npos);
+}
+
+TEST_CASE("Original appearance mapping inherits coordinate-only changes and publishes topology carriers",
+          "[ModelPreviewState][OriginalAppearance]")
+{
+    ScopedTemporaryDir temporary("orca-original-appearance-remap");
+    const auto root = temporary.path();
+    const auto models = root / "models";
+    boost::filesystem::create_directories(models);
+    indexed_triangle_set source_mesh;
+    source_mesh.vertices = {
+        Slic3r::Vec3f(0.f, 0.f, 0.f),
+        Slic3r::Vec3f(1.f, 0.f, 0.f),
+        Slic3r::Vec3f(0.f, 1.f, 0.f)};
+    source_mesh.indices.emplace_back(0, 1, 2);
+    const std::vector<Slic3r::RGBA> source_colors {
+        {1.f, 0.f, 0.f, 1.f}, {0.f, 1.f, 0.f, 1.f}, {0.f, 0.f, 1.f, 1.f}};
+    const auto source = models / "source.obj";
+    std::string error;
+    REQUIRE(Slic3r::AI::write_model_artifact(source, source_mesh, source_colors, error));
+    const auto source_hash = Slic3r::AI::model_artifact_sha256(source);
+    const auto canonical_source = boost::filesystem::canonical(source);
+    const Slic3r::GUI::OriginalAppearanceReference inherited {
+        canonical_source, source_hash, selection::topology_fingerprint(source_mesh),
+        canonical_source, source_hash
+    };
+
+    auto deformed_mesh = source_mesh;
+    deformed_mesh.vertices[1].x() = 1.25f;
+    const auto deformed = models / "deformed.obj";
+    REQUIRE(Slic3r::AI::write_model_artifact(deformed, deformed_mesh, source_colors, error));
+    const auto unused_carrier = models / "deformed.source-appearance.obj";
+    Slic3r::GUI::OriginalAppearanceReference result;
+    REQUIRE(Slic3r::GUI::prepare_original_appearance_for_candidate(
+        source, deformed, source_hash, inherited, unused_carrier, root, result, error));
+    CHECK(result.carrier_model == canonical_source);
+    CHECK(result.topology_sha256 == inherited.topology_sha256);
+    CHECK_FALSE(boost::filesystem::exists(unused_carrier));
+
+    auto repaired_mesh = source_mesh;
+    repaired_mesh.vertices.emplace_back(1.f / 3.f, 1.f / 3.f, 0.f);
+    repaired_mesh.indices.clear();
+    repaired_mesh.indices.emplace_back(0, 1, 3);
+    repaired_mesh.indices.emplace_back(1, 2, 3);
+    repaired_mesh.indices.emplace_back(2, 0, 3);
+    const auto repaired = models / "repaired.obj";
+    REQUIRE(Slic3r::AI::write_model_artifact(repaired, repaired_mesh,
+        std::vector<Slic3r::RGBA>(repaired_mesh.vertices.size(), Slic3r::RGBA {0.f, 0.f, 0.f, 1.f}), error));
+    const auto carrier = models / "repaired.source-appearance.obj";
+    REQUIRE(Slic3r::GUI::prepare_original_appearance_for_candidate(
+        source, repaired, source_hash, inherited, carrier, root, result, error));
+    REQUIRE(boost::filesystem::is_regular_file(carrier));
+    CHECK(result.carrier_sha256 == Slic3r::AI::model_artifact_sha256(carrier));
+    CHECK(result.topology_sha256 == selection::topology_fingerprint(repaired_mesh));
+    CHECK(result.origin_model == canonical_source);
+    CHECK(result.origin_sha256 == source_hash);
+
+    Slic3r::TriangleMesh mapped_mesh;
+    Slic3r::ObjInfo mapped_appearance;
+    REQUIRE(Slic3r::AI::load_model_artifact(carrier, mapped_mesh, mapped_appearance, error));
+    REQUIRE(mapped_appearance.vertex_colors.size() == repaired_mesh.vertices.size());
+    CHECK_THAT(mapped_appearance.vertex_colors[3][0], Catch::Matchers::WithinAbs(1.f / 3.f, 0.02f));
+    CHECK_THAT(mapped_appearance.vertex_colors[3][1], Catch::Matchers::WithinAbs(1.f / 3.f, 0.02f));
+    CHECK_THAT(mapped_appearance.vertex_colors[3][2], Catch::Matchers::WithinAbs(1.f / 3.f, 0.02f));
+
+    const auto rejected_carrier = models / "rejected.source-appearance.obj";
+    CHECK_FALSE(Slic3r::GUI::prepare_original_appearance_for_candidate(
+        source, repaired, std::string(64, '0'), inherited, rejected_carrier, root, result, error));
+    CHECK(error.find("发生变化") != std::string::npos);
+    CHECK_FALSE(boost::filesystem::exists(rejected_carrier));
+}
+
+TEST_CASE("Original appearance topology mapping follows preview color precedence",
+          "[ModelPreviewState][OriginalAppearance]")
+{
+    indexed_triangle_set source;
+    source.vertices = {
+        Slic3r::Vec3f(0.f, 0.f, 0.f),
+        Slic3r::Vec3f(1.f, 0.f, 0.f),
+        Slic3r::Vec3f(0.f, 1.f, 0.f)};
+    source.indices.emplace_back(0, 1, 2);
+    indexed_triangle_set target = source;
+    target.vertices.emplace_back(1.f / 3.f, 1.f / 3.f, 0.f);
+    target.indices.clear();
+    target.indices.emplace_back(0, 1, 3);
+    target.indices.emplace_back(1, 2, 3);
+    target.indices.emplace_back(2, 0, 3);
+    Slic3r::ObjInfo appearance;
+    appearance.vertex_colors = {
+        {1.f, 0.f, 0.f, 1.f}, {0.f, 1.f, 0.f, 1.f}, {0.f, 0.f, 1.f, 1.f}};
+    appearance.face_colors = {{0.f, 0.f, 0.f, 1.f}};
+    std::vector<Slic3r::RGBA> mapped;
+    std::string error;
+    REQUIRE(Slic3r::GUI::original_appearance_detail::map_appearance_to_vertices(
+        source, appearance, target, mapped, error));
+    REQUIRE(mapped.size() == target.vertices.size());
+    CHECK_THAT(mapped[3][0], Catch::Matchers::WithinAbs(1.f / 3.f, 0.0001f));
+    CHECK_THAT(mapped[3][1], Catch::Matchers::WithinAbs(1.f / 3.f, 0.0001f));
+    CHECK_THAT(mapped[3][2], Catch::Matchers::WithinAbs(1.f / 3.f, 0.0001f));
+
+    appearance.vertex_colors.clear();
+    REQUIRE(Slic3r::GUI::original_appearance_detail::map_appearance_to_vertices(
+        source, appearance, target, mapped, error));
+    REQUIRE(mapped.size() == target.vertices.size());
+    CHECK_THAT(mapped[3][0], Catch::Matchers::WithinAbs(0.f, 0.0001f));
+    CHECK_THAT(mapped[3][1], Catch::Matchers::WithinAbs(0.f, 0.0001f));
+    CHECK_THAT(mapped[3][2], Catch::Matchers::WithinAbs(0.f, 0.0001f));
+}
+
+TEST_CASE("Legacy appearance recovery rejects cycles traversal and excessive ancestry",
+          "[ModelPreviewState][OriginalAppearance]")
+{
+    ScopedTemporaryDir temporary("orca-original-appearance-chain");
+    const auto root = temporary.path();
+    const auto models = root / "models";
+    boost::filesystem::create_directories(models);
+    const auto mesh = original_appearance_fixture_mesh();
+    const auto colors = original_appearance_fixture_colors(mesh.vertices.size());
+    std::string error;
+    const auto write_model = [&](const std::string& name) {
+        const auto path = models / name;
+        REQUIRE(Slic3r::AI::write_model_artifact(path, mesh, colors, error));
+        return path;
+    };
+    const auto current = write_model("current.obj");
+    const auto parent = write_model("parent.obj");
+    const auto current_metadata = nlohmann::json {
+        {"source_model", "models/parent.obj"},
+        {"source_sha256", Slic3r::AI::model_artifact_sha256(parent)}
+    };
+    write_original_appearance_json(parent.parent_path() / "parent.json", {
+        {"source_model", "models/current.obj"},
+        {"source_sha256", Slic3r::AI::model_artifact_sha256(current)}
+    });
+    Slic3r::GUI::ResolvedOriginalAppearance resolved;
+    CHECK_FALSE(Slic3r::GUI::resolve_original_appearance(
+        current, mesh, current_metadata, root, resolved, error));
+    CHECK(error.find("循环") != std::string::npos);
+
+    const nlohmann::json traversal {
+        {"source_model", "../outside.obj"}, {"source_sha256", std::string(64, '0')}
+    };
+    CHECK_FALSE(Slic3r::GUI::resolve_original_appearance(
+        current, mesh, traversal, root, resolved, error));
+    CHECK(error.find("路径") != std::string::npos);
+
+    std::vector<boost::filesystem::path> versions;
+    versions.reserve(65);
+    for (size_t index = 0; index < 65; ++index)
+        versions.push_back(write_model("chain-" + std::to_string(index) + ".obj"));
+    for (size_t index = 1; index < versions.size(); ++index) {
+        write_original_appearance_json(versions[index].parent_path() /
+            (versions[index].stem().string() + ".json"), {
+                {"source_model", "models/" + versions[index - 1].filename().string()},
+                {"source_sha256", Slic3r::AI::model_artifact_sha256(versions[index - 1])}
+            });
+    }
+    const nlohmann::json long_chain {
+        {"source_model", "models/" + versions.back().filename().string()},
+        {"source_sha256", Slic3r::AI::model_artifact_sha256(versions.back())}
+    };
+    CHECK_FALSE(Slic3r::GUI::resolve_original_appearance(
+        current, mesh, long_chain, root, resolved, error));
+    CHECK(error.find("安全上限") != std::string::npos);
+}
+
+TEST_CASE("Original appearance rejects a symlink in any path component",
+          "[ModelPreviewState][OriginalAppearance]")
+{
+    ScopedTemporaryDir temporary("orca-original-appearance-symlink");
+    const auto root = temporary.path();
+    const auto models = root / "models";
+    boost::filesystem::create_directories(models);
+    const auto carrier = models / "carrier.obj";
+    const auto mesh = original_appearance_fixture_mesh();
+    std::string error;
+    REQUIRE(Slic3r::AI::write_model_artifact(carrier, mesh,
+        original_appearance_fixture_colors(mesh.vertices.size()), error));
+    boost::system::error_code link_error;
+    boost::filesystem::create_directory_symlink(models, root / "linked-models", link_error);
+    if (link_error) SKIP("symlinks unavailable on this filesystem: " + link_error.message());
+    const nlohmann::json metadata {
+        {"source_model", "linked-models/carrier.obj"},
+        {"source_sha256", Slic3r::AI::model_artifact_sha256(carrier)}
+    };
+    Slic3r::GUI::ResolvedOriginalAppearance resolved;
+    CHECK_FALSE(Slic3r::GUI::resolve_original_appearance(
+        carrier, mesh, metadata, root, resolved, error));
+    CHECK(error.find("路径") != std::string::npos);
+}
 
 TEST_CASE("Legacy semantic colors do not replace the displayed manual import palette", "[ModelPreviewState][ManualTrialImport][Regression]")
 {
