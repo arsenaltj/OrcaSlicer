@@ -1,5 +1,7 @@
 # SMARTSLICE-CLOUD-20261024：智能切片增加本地与 YOYOClaw 云端推荐来源（三目标保留，底部布局统一已构建并完成本地界面检查）
 
+2026-10-27 合并测试路径兼容：`c4167bd60a` 后完整 GUI 库编译通过；测试目标随后报两份测试仍引用远端改名前的 `orca_slicing/...`（C1083），已停止本轮失败 MSBuild 子树并保留 `.tmp/dev/logs/20261026-235606-347/result.json`。只将 `test_orca_slicing_support.cpp`、`test_orca_slicing_preview.cpp` 的头文件引用改为当前 `orca_mobile_slicing_sdk/...`，不修改断言或跳过测试；继续增量验证及程序构建。
+
 2026-10-26 Windows 合并续验：兼容修正提交 `ced139b428` 后，核心库已编译，GUI 暴露远端 `BuildVolume_Type : int8_t` 与 `Plater.hpp` 旧 `: char` 前置声明不一致（C3433）。已停止仅本轮失败构建的 MSBuild 子树，保留 `.tmp/dev/logs/20261026-233959-336/result.json` 及全部错误日志；测试尚未执行，不记通过。GUI 声明改为与核心一致的 `int8_t` 并显式包含 `<cstdint>`，不改变核心枚举数值或表示；随后继续增量构建及定向回归。远端只读复核仍为 `96b70a4ab2`。
 
 2026-10-26 合并验证修正：普通 merge 提交 `31d6b43084` 保留父提交 `9e9362fdae` 与远端 `96b70a4ab2`。AI/SDK 边界、核心来源清单及 README 检查通过，离线集成守卫 53/53；首轮 C++ 构建在 `admesh` 缺 Boost 头文件失败（`.tmp/dev/logs/20261026-233708-336/result.json`），已恢复 `PRIVATE boost_headeronly`，兼容桌面既有 target 与移动入口同名 alias。新增移动目录的 6 项 Python 回归发现 11 处源哈希/生成内容失配，当前文件 LF 归一化后与 Git blob 一致，非 Windows 换行差异；用原生成器基于当前版本预设与 PrintConfig 重生成 JSON/内嵌头（包含现有耗材变体流量数组及不支持字段披露），不改预设原件或生成规则。修正后生成检查及 6/6 回归通过，日志 `.tmp/dev/merge-mobile-catalog-fixed.log`；待重跑 C++ 和 Windows 构建，失败证据保留，不把首轮视为通过。
