@@ -162,7 +162,7 @@ void ModelGenerationPanel::toggle_printer_filament_trial()
     const auto entry = capture_beauty_candidate();
     const auto card = m_model_preview->model_color_pack_for_filament_import();
     if (!card) {
-        report("当前没有可导入的模型配色，请先生成自动建议或完成试色。", true);
+        report("当前没有可导入的模型配色，请先生成 AI配色或完成试色。", true);
         return;
     }
     auto* bundle = wxGetApp().preset_bundle;
@@ -171,11 +171,39 @@ void ModelGenerationPanel::toggle_printer_filament_trial()
         report("当前没有可用的打印机耗材配置。", true);
         return;
     }
+    const auto* honor_suite = m_model_preview->active_honor_filament_suite();
     PrinterFilamentConfig::StagedColorPackImport staged;
     std::string error;
-    if (!PrinterFilamentConfig::stage_workbench_color_pack_import(*bundle, *card, staged, error)) {
-        report(error.empty() ? "色卡无法生成可用的实体耗材与叠色配方，工程保持原状。" : error, true);
+    const bool staged_ok = honor_suite
+        ? PrinterFilamentConfig::stage_honor_physical_suite_import(*bundle, *honor_suite, staged, error)
+        : PrinterFilamentConfig::stage_workbench_color_pack_import(*bundle, *card, staged, error);
+    if (!staged_ok) {
+        report(error.empty() ? honor_suite
+            ? "荣耀耗材套装无法生成六个实体耗材槽，工程保持原状。"
+            : "色卡无法生成可用的实体耗材与叠色配方，工程保持原状。" : error, true);
         return;
+    }
+
+    std::vector<size_t> preview_bindings = staged.bindings;
+    if (honor_suite) {
+        const auto trial = m_model_preview->color_trial_state();
+        std::vector<size_t> used;
+        if (!trial.source_to_target_slot.empty()) {
+            used.reserve(trial.source_to_target_slot.size());
+            for (const size_t suite_slot : trial.source_to_target_slot) {
+                if (suite_slot >= staged.bindings.size()) {
+                    report("荣耀套装区域与实体槽绑定不完整，工程保持原状。", true);
+                    return;
+                }
+                used.push_back(staged.bindings[suite_slot]);
+            }
+        } else if (trial.colors.size() == staged.bindings.size()) {
+            used = staged.bindings;
+        } else {
+            report("荣耀套装没有可用于当前模型区域的完整槽位映射，工程保持原状。", true);
+            return;
+        }
+        preview_bindings = std::move(used);
     }
 
     auto rollback_entry = [&] {
@@ -202,7 +230,7 @@ void ModelGenerationPanel::toggle_printer_filament_trial()
         set_project_color_sync_suspended(false);
         rollback_entry();
     };
-    if (!m_model_preview->apply_project_filament_palette(&staged.bindings)) {
+    if (!m_model_preview->apply_project_filament_palette(&preview_bindings)) {
         rollback_preview();
         report("色卡暂存成功，但模型配色无法绑定到耗材；工程和模型预览均保持原状。", true);
         return;
@@ -231,9 +259,11 @@ void ModelGenerationPanel::toggle_printer_filament_trial()
     m_printer_filament_trial_active = true;
     m_printer_filament_trial_geometry = m_model_preview->geometry_id();
     m_printer_filament_trial_signature = PrinterFilamentConfig::capture(*bundle).signature;
-    const std::string success = "已导入 " + std::to_string(card->colors.size()) + " 色：" +
-        std::to_string(staged.physical_count) + " 个实体槽 + " +
-        std::to_string(staged.mixed_count) + " 个叠色槽，已进入试色";
+    const std::string success = honor_suite
+        ? "已应用荣耀耗材套装：6 个实体耗材、0 个叠色槽，已进入试色"
+        : "已导入 " + std::to_string(card->colors.size()) + " 色：" +
+            std::to_string(staged.physical_count) + " 个实体槽 + " +
+            std::to_string(staged.mixed_count) + " 个叠色槽，已进入试色";
     m_workbench_printer_filament_notice = success;
     m_workbench_printer_filament_notice_error = false;
     m_workbench_operation_notice = success;
@@ -272,7 +302,7 @@ void ModelGenerationPanel::invalidate_printer_filament_trial_for_model_change()
     m_printer_filament_trial_signature.clear();
 }
 
-void ModelGenerationPanel::apply_workbench_printer_filaments()
+void ModelGenerationPanel::apply_workbench_printer_filaments(bool physical_only)
 {
     if (m_shutdown || m_apply_filaments_saving || !m_model_preview || !workbench_snapshot().can_apply_printer_filaments) return;
     auto report = [this](std::string message, bool error) {
@@ -331,7 +361,7 @@ void ModelGenerationPanel::apply_workbench_printer_filaments()
         return;
     }
     m_model_preview->set_project_configuration_override(staged);
-    if (!m_model_preview->apply_project_filament_basis()) {
+    if (!m_model_preview->apply_project_filament_basis(physical_only)) {
         m_model_preview->set_project_configuration_override({});
         const bool restored = rollback_model();
         report(restored ? "耗材匹配失败，原模型和工程配置保持不变" :

@@ -6,9 +6,11 @@
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <algorithm>
 #include <cstdint>
 #include <chrono>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 
@@ -23,26 +25,108 @@ public:
     ~ModelLibraryMetadata() { persist(); }
     ModelLibraryMetadata(const ModelLibraryMetadata&) = delete;
     ModelLibraryMetadata& operator=(const ModelLibraryMetadata&) = delete;
-    // Used only by the deletion preflight; skip large editing arrays while
-    // preserving both the accepted document and any newer draft dependency.
-    static bool references_base(std::istream& input, const std::string& filename)
+    // Used only by deletion preflight. Skip large editing arrays while retaining
+    // every model dependency that can keep an original or appearance carrier
+    // alive. Returned paths are normalized relative to the model-library root.
+    static std::set<std::string> model_dependencies(
+        std::istream& input, const boost::filesystem::path& owning_model = {})
     {
         using Json = nlohmann::json;
         const auto record = Json::parse(input, [](int depth, Json::parse_event_t event, Json& value) {
             if (event != Json::parse_event_t::key) return true;
             const auto& key = value.get_ref<const std::string&>();
-            if (depth == 1) return key == "beauty_workbench" || key == "beauty_puzzle_draft";
-            if (depth == 2) return key == "puzzle_base_file";
+            if (depth == 1) return key == "source_model" || key == "model_path" ||
+                key == "original_appearance" || key == "beauty_workbench" ||
+                key == "beauty_puzzle_draft";
+            if (depth == 2) return key == "carrier_model" || key == "origin_model" ||
+                key == "puzzle_base_file";
             return false;
         }, false);
         if (!record.is_object()) throw std::runtime_error("Unreadable history metadata");
+        const auto normalize = [](const std::string& text) {
+            const boost::filesystem::path path(text);
+            if (path.empty() || path.is_absolute() || path.has_root_path())
+                throw std::runtime_error("Invalid model dependency path");
+            const auto normalized = path.lexically_normal();
+            if (normalized.empty() || normalized == "." ||
+                std::any_of(normalized.begin(), normalized.end(), [](const auto& part) { return part == ".."; }))
+                throw std::runtime_error("Invalid model dependency path");
+            return normalized.generic_string();
+        };
+        std::set<std::string> dependencies;
+        const auto add = [&](const Json& object, const char* key) {
+            const auto value = object.find(key);
+            if (value != object.end()) {
+                if (!value->is_string()) throw std::runtime_error("Invalid model dependency field");
+                dependencies.insert(normalize(value->get<std::string>()));
+            }
+        };
+        add(record, "source_model");
+        const auto appearance = record.find("original_appearance");
+        if (appearance != record.end()) {
+            if (!appearance->is_object()) throw std::runtime_error("Invalid original appearance dependency");
+            add(*appearance, "carrier_model");
+            add(*appearance, "origin_model");
+        }
+        boost::filesystem::path owner = owning_model;
+        if (!owner.empty())
+            owner = boost::filesystem::path(normalize(owner.generic_string())).parent_path();
+        const auto model = record.find("model_path");
+        if (model != record.end()) {
+            if (!model->is_string()) throw std::runtime_error("Invalid history model path");
+            owner = boost::filesystem::path(normalize(model->get<std::string>())).parent_path();
+        }
         for (const char* key : {"beauty_workbench", "beauty_puzzle_draft"}) {
             const auto it = record.find(key);
             if (it == record.end() || !it->is_object()) continue;
             const auto base = it->find("puzzle_base_file");
-            if (base != it->end() && base->is_string() && base->get<std::string>() == filename) return true;
+            if (base == it->end()) continue;
+            if (!base->is_string() || owner.empty())
+                throw std::runtime_error("Puzzle dependency has no owning model path");
+            dependencies.insert(normalize((owner / base->get<std::string>()).generic_string()));
         }
-        return false;
+        return dependencies;
+    }
+
+    static bool references_model(std::istream& input, const boost::filesystem::path& relative_model,
+                                 const boost::filesystem::path& owning_model = {})
+    {
+        if (relative_model.empty() || relative_model.is_absolute() || relative_model.has_root_path() ||
+            std::any_of(relative_model.begin(), relative_model.end(), [](const auto& part) { return part == ".."; }))
+            throw std::runtime_error("Invalid deletion target path");
+        const auto target = relative_model.lexically_normal().generic_string();
+        const auto dependencies = model_dependencies(input, owning_model);
+        return dependencies.count(target) != 0;
+    }
+
+    static std::optional<boost::filesystem::path> owned_original_appearance_companion(
+        const nlohmann::json& metadata, const boost::filesystem::path& root)
+    {
+        if (!metadata.is_object() || !metadata.contains("original_appearance") ||
+            !metadata["original_appearance"].is_object()) return std::nullopt;
+        const auto carrier = metadata["original_appearance"].find("carrier_model");
+        if (carrier == metadata["original_appearance"].end() || !carrier->is_string()) return std::nullopt;
+        const boost::filesystem::path relative(carrier->get<std::string>());
+        constexpr const char suffix[] = ".source-appearance.obj";
+        const std::string filename = relative.filename().string();
+        if (filename.size() < sizeof(suffix) - 1 ||
+            filename.compare(filename.size() - (sizeof(suffix) - 1), sizeof(suffix) - 1, suffix) != 0 ||
+            relative.empty() || relative.is_absolute() || relative.has_root_path() ||
+            std::any_of(relative.begin(), relative.end(), [](const auto& part) { return part == ".."; }))
+            return std::nullopt;
+        boost::system::error_code error;
+        const auto canonical_root = boost::filesystem::canonical(root, error);
+        if (error) return std::nullopt;
+        auto candidate = canonical_root;
+        for (const auto& part : relative.lexically_normal()) {
+            candidate /= part;
+            if (boost::filesystem::is_symlink(candidate, error) || error) return std::nullopt;
+        }
+        const auto resolved = boost::filesystem::canonical(candidate, error);
+        if (error) return std::nullopt;
+        const auto within = resolved.lexically_relative(canonical_root);
+        if (within.empty() || within.is_absolute() || *within.begin() == "..") return std::nullopt;
+        return resolved;
     }
 
     static nlohmann::json parse(std::istream& input)

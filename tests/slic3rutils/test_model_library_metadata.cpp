@@ -11,16 +11,63 @@
 using Slic3r::GUI::ModelLibraryMetadata;
 using Json = nlohmann::json;
 
-TEST_CASE("Saved beauty versions and drafts protect their original model", "[ModelLibraryMetadata]")
+TEST_CASE("Saved versions and drafts protect every referenced model", "[ModelLibraryMetadata]")
 {
-    for (const std::string key : {"beauty_workbench", "beauty_puzzle_draft"}) {
-        std::istringstream input("{\""+key+"\":{\"puzzle_base_file\":\"original.glb\",\"piece_runs\":[[1,2]]}}");
-        CHECK(ModelLibraryMetadata::references_base(input,"original.glb"));
-    }
-    std::istringstream unrelated(R"({"prompt":"original.glb","beauty_workbench":{"puzzle_base_file":"other.glb"}})");
-    CHECK_FALSE(ModelLibraryMetadata::references_base(unrelated,"original.glb"));
+    std::istringstream saved(R"({"model_path":"downloads/version.obj","source_model":"models/original.glb",
+        "original_appearance":{"carrier_model":"models/version.source-appearance.obj","origin_model":"models/original.glb"},
+        "beauty_workbench":{"puzzle_base_file":"version-base.obj","piece_runs":[[1,2]]}})");
+    const auto dependencies = ModelLibraryMetadata::model_dependencies(saved);
+    CHECK(dependencies.count("models/original.glb") == 1);
+    CHECK(dependencies.count("models/version.source-appearance.obj") == 1);
+    CHECK(dependencies.count("downloads/version-base.obj") == 1);
+
+    std::istringstream draft(R"({"beauty_puzzle_draft":{"puzzle_base_file":"version-base.obj"}})");
+    CHECK(ModelLibraryMetadata::references_model(draft, "downloads/version-base.obj",
+        "downloads/version.obj"));
+
+    std::istringstream unrelated(R"({"prompt":"original.glb","model_path":"downloads/version.obj",
+        "beauty_workbench":{"puzzle_base_file":"other.glb"}})");
+    CHECK_FALSE(ModelLibraryMetadata::references_model(unrelated, "models/original.glb"));
     std::istringstream malformed("{\"beauty_workbench\":[1,]}");
-    CHECK_THROWS(ModelLibraryMetadata::references_base(malformed,"original.glb"));
+    CHECK_THROWS(ModelLibraryMetadata::references_model(malformed, "models/original.glb"));
+
+    std::istringstream ownerless(R"({"beauty_puzzle_draft":{"puzzle_base_file":"original.glb"}})");
+    CHECK_THROWS(ModelLibraryMetadata::references_model(ownerless, "original.glb"));
+}
+
+TEST_CASE("Model dependency paths are normalized and cannot escape the library", "[ModelLibraryMetadata]")
+{
+    std::istringstream normalized(R"({"source_model":"models/portraits/../original.glb"})");
+    CHECK(ModelLibraryMetadata::references_model(normalized, "models/original.glb"));
+    for (const std::string value : {"../outside.glb", "/absolute.glb"}) {
+        std::istringstream invalid("{\"source_model\":" + Json(value).dump() + "}");
+        CHECK_THROWS(ModelLibraryMetadata::model_dependencies(invalid));
+    }
+}
+
+TEST_CASE("Only an owned original appearance companion is eligible for cleanup", "[ModelLibraryMetadata]")
+{
+    ScopedTemporaryDir temporary("orca-original-appearance-companion");
+    const auto root = temporary.path();
+    const auto models = root / "models";
+    boost::filesystem::create_directories(models);
+    const auto companion = models / "version.source-appearance.obj";
+    {
+        boost::filesystem::ofstream output(companion, std::ios::binary);
+        output << "appearance";
+    }
+    const Json metadata {{"original_appearance", {
+        {"carrier_model", "models/version.source-appearance.obj"}}}};
+    const auto owned = ModelLibraryMetadata::owned_original_appearance_companion(metadata, root);
+    REQUIRE(owned);
+    CHECK(*owned == boost::filesystem::canonical(companion));
+
+    for (const std::string carrier : {
+            "models/original.obj", "../outside.source-appearance.obj",
+            "models/missing.source-appearance.obj"}) {
+        const Json rejected {{"original_appearance", {{"carrier_model", carrier}}}};
+        CHECK_FALSE(ModelLibraryMetadata::owned_original_appearance_companion(rejected, root));
+    }
 }
 
 TEST_CASE("History summaries skip full editing arrays without borrowing nested fields", "[ModelLibraryMetadata]")

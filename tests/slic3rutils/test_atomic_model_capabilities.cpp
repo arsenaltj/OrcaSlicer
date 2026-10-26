@@ -107,12 +107,23 @@ TEST_CASE("Automatic checks wait for the workbench and keep one progress card th
         result.phase = phase;
         CHECK_FALSE(workbench_check_card_should_show(false, true, true, false, result));
         CHECK(workbench_check_card_should_show(true, true, true, false, result));
+        CHECK(workbench_floating_card_mode(true, false, true, true, false, result) ==
+              WorkbenchFloatingCardMode::ModelCheck);
+        CHECK(workbench_floating_card_mode(true, true, true, true, false, result) ==
+              WorkbenchFloatingCardMode::HonorSuiteSemantic);
     }
+
+    CHECK(workbench_floating_card_mode(false, true, true, true, false, result) ==
+          WorkbenchFloatingCardMode::None);
 
     result.status = WorkbenchCheckStatus::Normal;
     result.phase = WorkbenchCheckPhase::Idle;
     CHECK_FALSE(workbench_check_card_should_show(true, true, false, false, result));
     CHECK(workbench_check_card_should_show(true, true, false, true, result));
+    CHECK(workbench_floating_card_mode(true, false, true, false, false, result) ==
+          WorkbenchFloatingCardMode::None);
+    CHECK(workbench_floating_card_mode(true, false, true, false, true, result) ==
+          WorkbenchFloatingCardMode::ModelCheck);
 
     result.source = WorkbenchCheckSource::Manual;
     result.status = WorkbenchCheckStatus::Running;

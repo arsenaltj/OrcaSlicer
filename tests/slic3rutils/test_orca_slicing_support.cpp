@@ -1,5 +1,5 @@
-#include "orca_slicing/recommendation_support.hpp"
-#include "orca_slicing/engine.hpp"
+#include "orca_mobile_slicing_sdk/recommendation_support.hpp"
+#include "orca_mobile_slicing_sdk/engine.hpp"
 #include "libslic3r/PrintBase.hpp"
 #include "libslic3r/Print.hpp"
 #include <miniz.h>

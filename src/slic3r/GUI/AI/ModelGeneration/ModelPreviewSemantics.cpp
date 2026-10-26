@@ -61,7 +61,7 @@ bool ModelPreview3D::restore_printer_filament_preview_source()
     } else {
         m_manual_color_model.reset();
     }
-    m_semantic_model.reset();
+    if (!rebuild_semantic_preview_from_color_blocks()) m_semantic_model.reset();
     if (m_canvas) m_canvas->Refresh(false);
     m_printer_filament_restore.reset();
     BOOST_LOG_TRIVIAL(info) << "AI restored pre-printer appearance: source="
@@ -110,7 +110,7 @@ bool ModelPreview3D::restore_printer_filament_input_source()
     } else {
         m_manual_color_model.reset();
     }
-    m_semantic_model.reset();
+    if (!rebuild_semantic_preview_from_color_blocks()) m_semantic_model.reset();
     m_color_trial_enabled = m_color_trial->enabled();
     m_trial_palette = m_color_trial->colors();
     if (m_canvas) m_canvas->Refresh(false);
@@ -168,13 +168,22 @@ bool ModelPreview3D::apply_project_filament_palette(const std::vector<size_t>* b
 {
     capture_printer_filament_restore_snapshot();
     const auto before = m_color_trial->state();
+    const bool honor_v2 = active_honor_filament_suite() && m_color_blocks &&
+        m_color_blocks->strategy == PortraitColorBlocks::Strategy::ColorRegionMajorityV2;
     m_suppress_semantic_change = true;
     const bool applied = bindings ? m_color_trial->apply_project_filament_bindings(*bindings) : m_color_trial->apply_project_filament_palette();
     m_suppress_semantic_change = false;
     if (!applied) return false;
-    m_color_blocks.reset();m_selected_color_block.reset();
+    if (!honor_v2) m_color_blocks.reset();
+    m_selected_color_block.reset();
     const auto& palette = m_color_trial->project_colors();
     const auto after = m_color_trial->state();
+    if (honor_v2 && m_color_blocks && !after.semantic_palette.empty()) {
+        auto blocks = std::make_shared<PortraitColorBlocks::Result>(*m_color_blocks);
+        if (!PortraitColorBlocks::remap_to_palette(*blocks, after.semantic_palette, true,
+                blocks->role_slot_locks)) return false;
+        m_color_blocks = std::move(blocks);
+    }
     auto recolor = [&palette, &before, &after, bindings](auto& color) {
         const auto& target = bindings
             ? after.colors[PrinterFilamentPreview::nearest({color[0], color[1], color[2]}, before.colors)]
@@ -199,18 +208,20 @@ bool ModelPreview3D::apply_project_filament_palette(const std::vector<size_t>* b
     }
     if (!m_face_color_overrides.empty() && !restore_beauty_face_colors(m_face_color_overrides)) return false;
     ++m_leaf_edit_revision;
-    if (m_leaf_editing) refresh_leaf_colors();
+    if (honor_v2) {
+        if (!rebuild_semantic_preview_from_color_blocks()) return false;
+    } else if (m_leaf_editing) refresh_leaf_colors();
     else m_semantic_model.reset();
     m_canvas->Refresh(false);
     return true;
 }
 
-bool ModelPreview3D::apply_project_filament_basis()
+bool ModelPreview3D::apply_project_filament_basis(bool physical_only)
 {
     capture_printer_filament_restore_snapshot();
     const auto before = m_color_trial->state();
     m_suppress_semantic_change = true;
-    const bool applied = m_color_trial->apply_project_filament_basis();
+    const bool applied = m_color_trial->apply_project_filament_basis(physical_only);
     m_suppress_semantic_change = false;
     if (!applied) return false;
 
@@ -252,6 +263,22 @@ ModelPreview3D::WorkbenchSurfacePalette ModelPreview3D::workbench_surface_palett
     if (mesh.indices.empty()) return result;
 
     const auto trial = m_color_trial->state();
+    std::map<size_t, size_t> honor_face_slots;
+    std::map<std::tuple<size_t, uint8_t, uint8_t>, size_t> honor_subface_slots;
+    if (trial.source == 1 && honor_suite_v2_appearance_active() &&
+        trial.project_color_slots.size() == trial.colors.size()) {
+        const auto& track = m_color_blocks->current();
+        for (size_t unit_index = 0; unit_index < m_color_blocks->units.size(); ++unit_index) {
+            if (unit_index >= track.unit_blocks.size() ||
+                track.unit_blocks[unit_index] >= track.blocks.size()) continue;
+            const auto& unit = m_color_blocks->units[unit_index];
+            const auto slot = track.blocks[track.unit_blocks[unit_index]].display_slot;
+            if (slot < 0 || size_t(slot) >= trial.project_color_slots.size()) continue;
+            const size_t native_slot = trial.project_color_slots[size_t(slot)];
+            if (unit.path.depth == 0) honor_face_slots[unit.face] = native_slot;
+            else honor_subface_slots[{unit.face, unit.path.depth, unit.path.value}] = native_slot;
+        }
+    }
     auto preferred_target = [&trial](const PreviewPalette::Color& color) -> std::optional<size_t> {
         if (trial.source != 1) return {};
         const uint32_t key = PrinterFilamentPreview::rgb8(color);
@@ -294,7 +321,9 @@ ModelPreview3D::WorkbenchSurfacePalette ModelPreview3D::workbench_surface_palett
             result.subfaces.clear();
             return result;
         }
-        result.faces[item.first] = {item.second, preferred_target(item.second)};
+        const auto fixed = honor_face_slots.find(item.first);
+        result.faces[item.first] = {item.second, fixed == honor_face_slots.end()
+            ? preferred_target(item.second) : std::optional<size_t>(fixed->second)};
     }
     for (const auto& item : import_subface_color_overrides(true)) {
         if (item.face_id >= result.faces.size()) {
@@ -302,7 +331,9 @@ ModelPreview3D::WorkbenchSurfacePalette ModelPreview3D::workbench_surface_palett
             result.subfaces.clear();
             return result;
         }
-        result.subfaces.push_back({{item.color, preferred_target(item.color)},
+        const auto fixed = honor_subface_slots.find({item.face_id, item.path.depth, item.path.value});
+        result.subfaces.push_back({{item.color, fixed == honor_subface_slots.end()
+                ? preferred_target(item.color) : std::optional<size_t>(fixed->second)},
             item.face_id, item.path.depth, item.path.value});
     }
     return result;
@@ -409,9 +440,15 @@ size_t ModelPreview3D::paint_beauty_faces(const std::vector<size_t>& faces, cons
 bool ModelPreview3D::restore_portrait_color_blocks(std::shared_ptr<const PortraitColorBlocks::Result> blocks,bool refresh)
 {
     if(blocks && (blocks->geometry_id!=m_geometry_id || blocks->face_count!=m_triangle_count))return false;
-    (void)refresh;
+    const auto previous = m_color_blocks;
     m_color_blocks=std::move(blocks);
     m_selected_color_block.reset();
+    if (refresh && active_honor_filament_suite() && m_color_blocks &&
+        m_color_blocks->strategy == PortraitColorBlocks::Strategy::ColorRegionMajorityV2 &&
+        !rebuild_semantic_preview_from_color_blocks()) {
+        m_color_blocks = previous;
+        return false;
+    }
     return true;
 }
 
@@ -501,8 +538,23 @@ nlohmann::json ModelPreview3D::portrait_color_blocks_metadata() const
 
 void ModelPreview3D::update_semantic_coloring()
 {
-    if (!portrait_recognition_enabled() || !m_has_model || !m_semantic_source || !m_color_trial_enabled || !m_color_trial->color_block_postprocess_enabled()) {
+    const bool honor_request = m_color_trial && m_color_trial->honor_suite_request_pending();
+    if (!portrait_recognition_enabled() || !m_has_model || !m_semantic_source ||
+        (!honor_request && (!m_color_trial_enabled || !m_color_trial->color_block_postprocess_enabled()))) {
         if (m_semantic_controller) m_semantic_controller->cancel();
+        if (honor_request) {
+            const wxString reason = !portrait_recognition_enabled()
+                ? _L("本地人物语义识别不可用，已回退为全局相近色匹配。")
+                : !m_semantic_source
+                ? _L("当前模型缺少可靠人物语义输入，已回退为全局相近色匹配。")
+                : _L("当前模型无法启动人物语义识别，已回退为全局相近色匹配。");
+            apply_honor_suite_fallback(reason);
+            if (m_semantic_completion) {
+                auto callback = std::move(m_semantic_completion);
+                callback(false);
+            }
+            return;
+        }
         m_color_trial->set_semantic_region_availability({});
         m_color_trial->set_semantic_status(wxEmptyString, false);
         if (m_semantic_completion) {
@@ -520,37 +572,126 @@ void ModelPreview3D::update_semantic_coloring()
     }
     auto saved=std::make_shared<ModelSemanticColoring::SavedAppearance>();
     saved->geometry_id=m_semantic_source->geometry_id;saved->face_count=m_semantic_source->mesh.indices.size();
-    if(m_color_blocks) {
+    if(!honor_request && m_color_blocks) {
         auto baseline=*m_color_blocks;baseline.active=PortraitColorBlocks::Track::ProcessedFaceColor;
         for(auto& b:baseline.tracks[1].blocks)b.display=b.original;
         baseline.appearance(saved->faces,saved->subfaces);
         saved->color_blocks=m_color_blocks;
-    } else if(m_semantic_ready) {
+    } else if(!honor_request && m_semantic_ready) {
         saved->faces=import_face_color_overrides(true);saved->subfaces=import_subface_color_overrides(true);
     }
-    AI::compose_leaf_colors(saved->faces,saved->subfaces,m_manual_leaf_colors);
-    if (m_semantic_controller->request(m_semantic_source, m_color_trial->mapping_colors(), m_color_trial->colors(),
-                                      m_color_trial->semantic_portrait_card(), m_face_color_overrides,
-                                      std::filesystem::path(m_model_path.native()), m_portrait_shapes,m_color_trial->semantic_palette_roles(),
+    if (!honor_request) AI::compose_leaf_colors(saved->faces,saved->subfaces,m_manual_leaf_colors);
+    const auto& mapping = honor_request
+        ? m_color_trial->honor_suite_request_palette() : m_color_trial->mapping_colors();
+    const auto& targets = honor_request
+        ? m_color_trial->honor_suite_request_palette() : m_color_trial->colors();
+    const auto& portrait_card = honor_request
+        ? m_color_trial->honor_suite_request_palette() : m_color_trial->semantic_portrait_card();
+    const auto& palette_roles = honor_request
+        ? m_color_trial->honor_suite_request_roles() : m_color_trial->semantic_palette_roles();
+    const auto fixed_role_slots = honor_request
+        ? m_color_trial->honor_suite_request_role_slots() : std::map<std::string, size_t>{};
+    const std::string request_context = honor_request
+        ? m_color_trial->honor_suite_request_context() : std::string{};
+    if (m_semantic_controller->request(m_semantic_source, mapping, targets,
+                                      portrait_card, honor_request ? FaceColorOverrides{} : m_face_color_overrides,
+                                      std::filesystem::path(m_model_path.native()), m_portrait_shapes, palette_roles,
                                       !m_shapes_unlocked && m_manual_leaf_colors.empty() && m_manual_cell_colors.empty(),
-                                       m_manual_cell_colors, m_portrait_progress,std::move(saved),
-                                       size_t(std::clamp(m_color_trial->automatic_count(), 1, int(PreviewPalette::max_preview_colors))))) {
+                                       honor_request ? std::map<std::string, AI::SemanticColoring::Color>{} : m_manual_cell_colors,
+                                       m_portrait_progress,std::move(saved),
+                                       honor_request ? targets.size() :
+                                           size_t(std::clamp(m_color_trial->automatic_count(), 1, int(PreviewPalette::max_preview_colors))),
+                                       false, honor_request, fixed_role_slots, request_context)) {
         m_semantic_submission_edit_revision = m_leaf_edit_revision;
         m_semantic_submission_manual = m_face_color_overrides;
         m_semantic_submission_unlocked = m_shapes_unlocked;
+        m_semantic_submission_context = request_context;
+        m_semantic_submission_geometry = m_geometry_id;
         // Retain the current immutable preview throughout recognition. Adoption
         // below is transactional; a failed job leaves it untouched.
-        m_color_trial->set_semantic_status(_L("正在本机识别人像区域，可旋转模型或取消……"), true);
+        m_color_trial->set_semantic_status(honor_request
+            ? _L("正在识别人像区域并应用荣耀套装")
+            : _L("正在本机识别人像区域，可旋转模型或取消……"), true);
+        if (honor_request) {
+            publish_honor_suite_semantic_progress(true, 0,
+                _L("正在识别人像区域并匹配肤色、头发、眼白、牙齿和嘴唇，请稍候……"),
+                request_context, m_geometry_id);
+        }
         m_semantic_timer.Start(100);
-    } else if (m_semantic_completion) {
-        m_semantic_error = _L("相同的自动划区语义识别请求已存在，请等待完成或取消后重试。");
-        auto callback = std::move(m_semantic_completion);
-        callback(false);
+    } else {
+        if (honor_request && m_semantic_controller->busy()) {
+            publish_honor_suite_semantic_progress(true, m_semantic_controller->progress(),
+                _L("正在识别人像区域并匹配肤色、头发、眼白、牙齿和嘴唇，请稍候……"),
+                request_context, m_geometry_id);
+        }
+        if (m_semantic_completion) {
+            m_semantic_error = _L("相同的自动划区语义识别请求已存在，请等待完成或取消后重试。");
+            auto callback = std::move(m_semantic_completion);
+            callback(false);
+        }
     }
+}
+
+bool ModelPreview3D::rebuild_semantic_preview_from_color_blocks()
+{
+    if (!m_color_blocks || !m_semantic_source || !m_context || !m_canvas ||
+        !m_context->IsOK() || !m_canvas->SetCurrent(*m_context)) return false;
+    FaceColorOverrides automatic_faces;
+    SubfaceColorOverrides automatic_subfaces;
+    m_color_blocks->appearance(automatic_faces, automatic_subfaces);
+    auto faces = AI::SemanticColoring::compose(
+        automatic_faces, m_face_color_overrides, true);
+    auto subfaces = AI::SemanticColoring::compose_subfaces(
+        automatic_subfaces, m_face_color_overrides, true);
+    AI::compose_leaf_colors(faces, subfaces, m_manual_leaf_colors);
+    faces = implicit_cell_colors(std::move(faces));
+    subfaces = contour_subfaces(std::move(subfaces));
+    const auto cells = import_cell_color_overrides();
+    auto geometry = build_semantic_colored_geometry(*m_semantic_source, faces, subfaces, {},
+        m_portrait_shapes ? m_portrait_shapes->surface_partition.get() : nullptr, &cells);
+    if (geometry.is_empty()) return false;
+    try {
+        auto model = std::make_unique<GLModel>();
+        model->init_from(std::move(geometry));
+        m_automatic_face_colors = std::move(automatic_faces);
+        m_automatic_subface_colors = std::move(automatic_subfaces);
+        m_semantic_model = std::move(model);
+        m_semantic_ready = true;
+        m_canvas->Refresh(false);
+        return true;
+    } catch (const std::exception& error) {
+        BOOST_LOG_TRIVIAL(warning) << "Honor portrait V2 preview rebuild failed: " << error.what();
+        return false;
+    }
+}
+
+bool ModelPreview3D::apply_honor_suite_fallback(const wxString& reason)
+{
+    if (!m_color_trial || !m_color_trial->honor_suite_request_pending()) return false;
+    m_suppress_semantic_change = true;
+    const bool applied = m_color_trial->commit_honor_suite_fallback(reason);
+    m_suppress_semantic_change = false;
+    if (!applied) return false;
+    m_color_blocks.reset();
+    m_selected_color_block.reset();
+    m_automatic_face_colors.clear();
+    m_automatic_subface_colors.clear();
+    m_semantic_model.reset();
+    m_semantic_ready = false;
+    m_semantic_submission_context.clear();
+    m_semantic_submission_geometry.clear();
+    m_color_trial_enabled = m_color_trial->enabled();
+    m_trial_palette = m_color_trial->colors();
+    m_color_trial->set_semantic_status(reason, false);
+    if (m_canvas) m_canvas->Refresh(false);
+    return true;
 }
 
 void ModelPreview3D::rebuild_semantic_preview_from_cached_result()
 {
+    if (honor_suite_v2_appearance_active()) {
+        if (rebuild_semantic_preview_from_color_blocks()) return;
+    }
     if (m_leaf_editing && (!m_manual_leaf_colors.empty() || !m_manual_cell_colors.empty())) {
         refresh_leaf_colors();
         return;
@@ -562,20 +703,84 @@ void ModelPreview3D::rebuild_semantic_preview_from_cached_result()
 
 void ModelPreview3D::finish_semantic_coloring()
 {
-    if (!m_semantic_controller) { m_semantic_timer.Stop(); return; }
+    if (!m_semantic_controller) {
+        publish_honor_suite_semantic_progress(false, 0, wxEmptyString,
+            m_semantic_submission_context, m_semantic_submission_geometry);
+        m_semantic_submission_context.clear();
+        m_semantic_submission_geometry.clear();
+        m_semantic_timer.Stop();
+        return;
+    }
     if (auto result = m_semantic_controller->poll()) {
+        const bool honor_submission = !m_semantic_submission_context.empty();
+        const std::string honor_context = m_semantic_submission_context;
+        const std::string honor_geometry = m_semantic_submission_geometry;
+        if (honor_submission && (!m_color_trial->honor_suite_request_pending() ||
+            m_semantic_submission_geometry != m_geometry_id ||
+            m_semantic_submission_context != m_color_trial->honor_suite_request_context())) {
+            m_semantic_controller->cancel();
+            m_semantic_timer.Stop();
+            publish_honor_suite_semantic_progress(false, 0, wxEmptyString,
+                honor_context, honor_geometry);
+            m_semantic_submission_context.clear();
+            m_semantic_submission_geometry.clear();
+            return;
+        }
         if (m_semantic_submission_edit_revision != m_leaf_edit_revision ||
             m_semantic_submission_manual != m_face_color_overrides ||
             m_semantic_submission_unlocked != m_shapes_unlocked) {
             m_semantic_controller->cancel();
             m_semantic_timer.Stop();
-            m_semantic_error = _L("已保留新的手工编辑，过期的人像优化结果未应用。");
-            m_color_trial->set_semantic_status(m_semantic_error, false);
+            m_semantic_error = honor_submission
+                ? _L("识别期间模型编辑已变化，已保留编辑并回退为全局相近色匹配。")
+                : _L("已保留新的手工编辑，过期的人像优化结果未应用。");
+            if (honor_submission) apply_honor_suite_fallback(m_semantic_error);
+            else m_color_trial->set_semantic_status(m_semantic_error, false);
+            if (honor_submission)
+                publish_honor_suite_semantic_progress(false, 0, m_semantic_error,
+                    honor_context, honor_geometry);
             if (m_semantic_completion) {
                 auto callback = std::move(m_semantic_completion);
                 callback(false);
             }
             return;
+        }
+        if (honor_submission) {
+            const size_t reliable_roles = result->color_blocks
+                ? PortraitColorBlocks::reliable_fixed_role_blocks(*result->color_blocks,
+                    m_color_trial->honor_suite_request_role_slots()) : 0;
+            wxString fallback_reason;
+            if (!result->error.empty())
+                fallback_reason = _L("本地人物语义识别不可用，已回退为全局相近色匹配。");
+            else if (!result->person_detected)
+                fallback_reason = _L("未检测到人物，已回退为全局相近色匹配。");
+            else if (!result->color_blocks || reliable_roles == 0)
+                fallback_reason = _L("未找到置信度达到 0.70 的人物区域，已回退为全局相近色匹配。");
+            else if (result->geometry.is_empty())
+                fallback_reason = _L("人物语义预览无法建立，已回退为全局相近色匹配。");
+            if (!fallback_reason.empty()) {
+                if (result->analysis) {
+                    m_semantic_analysis = std::move(result->analysis);
+                    m_region_runtime_identity = std::move(result->region_runtime_identity);
+                    m_person_detected = result->person_detected;
+                    auto evidence = SemanticRegionEvidence::from_analysis(
+                        *m_semantic_analysis, m_region_runtime_identity);
+                    if (evidence) restore_semantic_region_evidence(std::move(evidence));
+                }
+                m_semantic_error = fallback_reason;
+                apply_honor_suite_fallback(fallback_reason);
+                publish_honor_suite_semantic_progress(false, 0, fallback_reason,
+                    honor_context, honor_geometry);
+                BOOST_LOG_TRIVIAL(info) << "Honor suite semantic match fell back: person="
+                    << result->person_detected << ", reliable_roles=" << reliable_roles
+                    << ", error=" << result->error;
+                if (m_semantic_completion) {
+                    auto callback = std::move(m_semantic_completion);
+                    callback(false);
+                }
+                m_semantic_timer.Stop();
+                return;
+            }
         }
         bool completed = false;
         if (!result->error.empty()) {
@@ -608,20 +813,21 @@ void ModelPreview3D::finish_semantic_coloring()
             m_semantic_error.clear();
             auto model = std::make_unique<GLModel>();
             model->init_from(std::move(result->geometry));
-        if (result->error.empty()) restore_portrait_shapes(std::move(result->shape_details), m_shapes_unlocked);
-        m_semantic_analysis = std::move(result->analysis);
-        m_region_runtime_identity = std::move(result->region_runtime_identity);
-        m_person_detected = result->person_detected;
-        if (m_semantic_analysis && result->error.empty()) {
-            auto evidence = SemanticRegionEvidence::from_analysis(*m_semantic_analysis, m_region_runtime_identity);
-            if (evidence && restore_semantic_region_evidence(std::move(evidence))) {
-                std::string detail_error;
-                auto details = SecondaryRegionEvidence::from_primary(*m_region_evidence,
-                    AI::model_artifact_sha256(m_model_path), m_semantic_source->content_id, detail_error,
-                    result->verified_original_source);
-                restore_secondary_region_evidence(std::move(details), detail_error);
+            if (result->error.empty())
+                restore_portrait_shapes(std::move(result->shape_details), m_shapes_unlocked);
+            m_semantic_analysis = std::move(result->analysis);
+            m_region_runtime_identity = std::move(result->region_runtime_identity);
+            m_person_detected = result->person_detected;
+            if (m_semantic_analysis && result->error.empty()) {
+                auto evidence = SemanticRegionEvidence::from_analysis(*m_semantic_analysis, m_region_runtime_identity);
+                if (evidence && restore_semantic_region_evidence(std::move(evidence))) {
+                    std::string detail_error;
+                    auto details = SecondaryRegionEvidence::from_primary(*m_region_evidence,
+                        AI::model_artifact_sha256(m_model_path), m_semantic_source->content_id, detail_error,
+                        result->verified_original_source);
+                    restore_secondary_region_evidence(std::move(details), detail_error);
+                }
             }
-        }
 
             m_semantic_model = std::move(model);
             m_color_blocks=std::move(result->color_blocks);
@@ -636,7 +842,34 @@ void ModelPreview3D::finish_semantic_coloring()
                 m_color_trial->semantic_region_slots().begin(), m_color_trial->semantic_region_slots().end(),
                 [](int slot) { return slot >= 0; });
             if (has_region_override) rebuild_semantic_preview_from_cached_result();
-            if(m_color_blocks) {
+            if (honor_submission) {
+                const size_t used = honor_suite_used_color_count();
+                m_suppress_semantic_change = true;
+                const bool committed = m_color_trial->commit_honor_suite_semantic(used);
+                m_suppress_semantic_change = false;
+                if (!committed) {
+                    m_semantic_model.reset();
+                    m_color_blocks.reset();
+                    m_automatic_face_colors.clear();
+                    m_automatic_subface_colors.clear();
+                    m_semantic_ready = false;
+                    m_semantic_error = _L("荣耀套装请求已失效，识别结果未应用。");
+                    m_color_trial->set_semantic_status(m_semantic_error, false);
+                    publish_honor_suite_semantic_progress(false, 0, m_semantic_error,
+                        honor_context, honor_geometry);
+                    m_semantic_submission_context.clear();
+                    m_semantic_submission_geometry.clear();
+                    m_semantic_timer.Stop();
+                    return;
+                }
+                m_color_trial_enabled = m_color_trial->enabled();
+                m_trial_palette = m_color_trial->colors();
+                m_color_trial->set_semantic_status(wxString::Format(
+                    _L("荣耀耗材套装语义配色完成 · 当前使用 %llu/6 色。"),
+                    static_cast<unsigned long long>(used)), false);
+                m_semantic_submission_context.clear();
+                m_semantic_submission_geometry.clear();
+            } else if(m_color_blocks) {
                 m_color_trial->set_semantic_status(wxString::Format(_L("自动划区语义识别完成 · 已读取 %llu 个兼容旧区域。"),
                     static_cast<unsigned long long>(m_color_blocks->unresolved_count())),false);
             } else if (result->parent_repair_cells) {
@@ -654,8 +887,14 @@ void ModelPreview3D::finish_semantic_coloring()
             // do not keep the timer alive or reuse an older semantic surface.
             m_semantic_controller->cancel();
             // Keep the previous immutable appearance if GPU adoption fails.
-            m_color_trial->set_semantic_status(_L("自动划区语义预览暂不可用；原生配色保持不变。"), false);
+            if (honor_submission)
+                apply_honor_suite_fallback(_L("人物语义预览无法加载，已回退为全局相近色匹配。"));
+            else
+                m_color_trial->set_semantic_status(_L("自动划区语义预览暂不可用；原生配色保持不变。"), false);
         }
+        if (honor_submission)
+            publish_honor_suite_semantic_progress(false, completed ? 100 : 0,
+                m_semantic_error, honor_context, honor_geometry);
         BOOST_LOG_TRIVIAL(info) << "Local semantic coloring completed: ms=" << result->elapsed_ms
             << ", cache_hit=" << result->cache_hit << ", auto_faces=" << m_automatic_face_colors.size()
             << ", auto_subfaces=" << m_automatic_subface_colors.size()
@@ -675,7 +914,21 @@ void ModelPreview3D::finish_semantic_coloring()
             callback(completed);
         }
     }
-    if (!m_semantic_controller->busy()) m_semantic_timer.Stop();
-    else m_color_trial->set_semantic_status(wxString::Format(_L("正在本机识别人像区域 · %d%%"), m_semantic_controller->progress()), true);
+    if (!m_semantic_controller->busy()) {
+        if (!m_semantic_submission_context.empty()) {
+            publish_honor_suite_semantic_progress(false, 0, wxEmptyString,
+                m_semantic_submission_context, m_semantic_submission_geometry);
+            m_semantic_submission_context.clear();
+            m_semantic_submission_geometry.clear();
+        }
+        m_semantic_timer.Stop();
+    } else if (m_semantic_submission_context.empty()) {
+        m_color_trial->set_semantic_status(
+            wxString::Format(_L("正在本机识别人像区域 · %d%%"), m_semantic_controller->progress()), true);
+    } else {
+        m_color_trial->set_semantic_status(_L("正在识别人像区域并应用荣耀套装"), true);
+        publish_honor_suite_semantic_progress(true, m_semantic_controller->progress(),
+            _L("正在识别人像区域并匹配肤色、头发、眼白、牙齿和嘴唇，请稍候……"));
+    }
 }
 } // namespace Slic3r::GUI

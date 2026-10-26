@@ -11,6 +11,13 @@
 
 using namespace Slic3r::GUI::PreviewPalette;
 
+TEST_CASE("Workbench AI palette starts with six colors",
+          "[ModelPreviewPalette]")
+{
+    CHECK(initial_trial_color_count() == 6);
+    CHECK(initial_trial_color_count() <= max_preview_colors);
+}
+
 TEST_CASE("Approved project portrait colors retain eye and brow roles beside the inherited skin preset",
           "[PortraitPaletteRoles][Regression]")
 {

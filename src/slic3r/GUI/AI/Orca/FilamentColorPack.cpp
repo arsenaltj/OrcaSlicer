@@ -39,7 +39,6 @@ FilamentColorPack current_pack() {
     }
     return pack;
 }
-
 void save_pack(const FilamentColorPack& pack) {
     nlohmann::json json = nlohmann::json::array();
     if (boost::filesystem::exists(pack_file())) {

@@ -20,6 +20,13 @@ class OfflineCatalogTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(path.read_text(encoding='utf-8'), content)
 
+    def test_native_catalog_literals_fit_msvc_and_reconstruct_json(self):
+        header = (ROOT / 'src/orca_mobile_slicing_sdk/preset_catalog.generated.hpp').read_text(encoding='utf-8')
+        chunks = re.findall(r'R"ORCAPRESET\((.*?)\)ORCAPRESET"', header, re.DOTALL)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk.encode('utf-8')) <= GEN.CPP_LITERAL_MAX_BYTES for chunk in chunks))
+        self.assertEqual(''.join(chunks), (ROOT / 'mobile-slicing/preset-catalog-v1.json').read_text(encoding='utf-8'))
+
     def test_all_provenance_hashes_match_the_actual_versioned_sources(self):
         self.assertTrue(self.catalog['sourceRefs'])
         for entry in self.catalog['devices'] + self.catalog['materials']:

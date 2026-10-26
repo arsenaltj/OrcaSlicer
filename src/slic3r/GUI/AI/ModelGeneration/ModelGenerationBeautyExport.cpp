@@ -287,8 +287,15 @@ void ModelGenerationPanel::export_semantic_candidate()
             auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
             std::string preview_error;
             if (result.success && !canceled->load()) {
-                try { ModelPreview3D::prepare_model(destination, *prepared, preview_error, manual_overrides, {}, true,
-                    [canceled] { return canceled->load(); }); }
+                try {
+                    const std::optional<OriginalAppearanceReference> appearance_override =
+                        draft_snapshot->original_appearance.valid() || !draft_snapshot->original_appearance_error.empty()
+                            ? std::optional<OriginalAppearanceReference>(draft_snapshot->original_appearance) : std::nullopt;
+                    ModelPreview3D::prepare_model(destination, *prepared, preview_error, manual_overrides, {}, true,
+                        [canceled] { return canceled->load(); }, nullptr, appearance_override);
+                    if (!draft_snapshot->original_appearance_error.empty() && !prepared->has_source_appearance)
+                        prepared->original_appearance_error = draft_snapshot->original_appearance_error;
+                }
                 catch (const std::exception& e) { preview_error = e.what(); }
             }
             const auto baked=color_block_contract ? nlohmann::json() : AI::baked_portrait_appearance(result.output_sha256,baked_semantic,cell_colors,
@@ -415,6 +422,10 @@ void ModelGenerationPanel::export_semantic_candidate()
                         self->m_model_preview->synchronize_project_bound_semantics(
                             color_state, self->m_model_preview->color_trial_state());
                         self->m_finishing_candidate = destination;
+                        self->m_finishing_candidate_original_appearance =
+                            self->m_model_preview->original_appearance_reference();
+                        self->m_finishing_candidate_original_appearance_error =
+                            self->m_model_preview->original_appearance_error();
                         self->m_beauty_manual_color_dirty = false;
                         self->m_finishing_candidate_baked_appearance = baked;
                         self->m_finishing_before = false;

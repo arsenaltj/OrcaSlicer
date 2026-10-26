@@ -48,6 +48,8 @@ void require_same(const trial::State& a, const trial::State& b)
     REQUIRE(a.color_card_target_slot_ids == b.color_card_target_slot_ids);
     REQUIRE(a.source_to_target_slot == b.source_to_target_slot);
     REQUIRE(a.color_card_weighted_error == b.color_card_weighted_error);
+    REQUIRE(a.suite_id == b.suite_id);
+    REQUIRE(a.suite_revision == b.suite_revision);
 }
 
 TEST_CASE("Project-bound trials update physical slots without rebuilding source assignments", "[ColorTrialState][PostGenerationWorkbench]")
@@ -164,6 +166,34 @@ TEST_CASE("Dynamic color cards persist as exact-count manual snapshots", "[Color
     trial::normalize_for_persistence(project);
     CHECK(project.source == 1);
     CHECK(project.project_slot_identity == "valid-project-binding");
+}
+
+TEST_CASE("Honor suite identity round trips as an optional manual snapshot", "[ColorTrialState][ModelPreviewPalette]")
+{
+    auto suite = saved_trial();
+    suite.source = 2;
+    suite.count = 6;
+    suite.manual_count = 6;
+    suite.suite_id = "honor.people.young-six";
+    suite.suite_revision = "1";
+    trial::normalize_for_persistence(suite);
+    REQUIRE(suite.source == 2);
+
+    const auto encoded = trial::encode(suite, 20, geometry_id);
+    REQUIRE(encoded["schema"] == "orca.color-trial/v2");
+    REQUIRE(encoded["suite_id"] == suite.suite_id);
+    REQUIRE(encoded["suite_revision"] == suite.suite_revision);
+    trial::State restored;
+    std::string error;
+    REQUIRE(trial::decode(encoded, 20, geometry_id, restored, error));
+    require_same(suite, restored);
+
+    auto incomplete = encoded;
+    incomplete.erase("suite_revision");
+    CHECK_FALSE(trial::decode(incomplete, 20, geometry_id, restored, error));
+    auto wrong_source = encoded;
+    wrong_source["source"] = 0;
+    CHECK_FALSE(trial::decode(wrong_source, 20, geometry_id, restored, error));
 }
 
 TEST_CASE("Legacy trials keep their existing assignments until semantic optimization is enabled", "[ColorTrialState][SemanticColoring]")
