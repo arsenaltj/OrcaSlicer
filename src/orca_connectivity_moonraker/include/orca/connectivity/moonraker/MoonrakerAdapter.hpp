@@ -1,16 +1,17 @@
 #pragma once
 
-#include "orca/sdk/Connectivity.hpp"
+#include "orca/mobile/device/Connectivity.hpp"
 
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
 
-namespace Orca::SDK {
+namespace Orca::MobileDevice {
 
 struct MoonrakerHttpRequest {
     std::string method;
@@ -21,6 +22,7 @@ struct MoonrakerHttpRequest {
     std::map<std::string, std::string> form_fields;
     std::string upload_source;
     std::string upload_filename;
+    std::string upload_sha256;
 };
 
 struct MoonrakerHttpResponse {
@@ -33,6 +35,7 @@ class IMoonrakerHttpTransport {
 public:
     virtual ~IMoonrakerHttpTransport() = default;
     virtual MoonrakerHttpResponse perform(const MoonrakerHttpRequest& request) = 0;
+    virtual void cancel() {}
 };
 
 class IMoonrakerWebSocketTransport {
@@ -79,17 +82,20 @@ public:
     bool reconnect_and_reconcile();
     bool poll_status();
 
-    bool websocket_connected() const { return m_websocket_connected; }
-    bool polling_fallback() const { return m_polling_fallback; }
-    bool connected() const { return m_connected; }
-    const std::set<std::string>& available_objects() const { return m_available_objects; }
-    const MoonrakerServerInfo& server_info() const { return m_server_info; }
-    const PrinterOperationResult& last_result() const { return m_last_result; }
-    const std::string& last_uploaded_path() const { return m_last_uploaded_path; }
+    bool websocket_connected() const;
+    bool polling_fallback() const;
+    bool connected() const;
+    std::set<std::string> available_objects() const;
+    MoonrakerServerInfo server_info() const;
+    PrinterOperationResult last_result() const;
+    std::string last_uploaded_path() const;
 
 private:
     MoonrakerAdapter(const MoonrakerAdapter&) = delete;
     MoonrakerAdapter& operator=(const MoonrakerAdapter&) = delete;
+
+    struct CallbackGuard;
+    struct ConnectionIdentity;
 
     static std::string endpoint_url(const DeviceEndpoint& endpoint, const std::string& path);
     static std::string websocket_url(const DeviceEndpoint& endpoint);
@@ -112,17 +118,25 @@ private:
                                   std::string body = {},
                                   std::map<std::string, std::string> form_fields = {},
                                   std::string upload_source = {},
-                                  std::string upload_filename = {}) const;
+                                  std::string upload_filename = {},
+                                  std::string upload_sha256 = {}) const;
     PrinterOperationResult result_from_response(const MoonrakerHttpResponse& response,
                                                 bool parse_json_envelope = true) const;
     bool parse_server_info(const MoonrakerHttpResponse& response);
     bool parse_object_list(const MoonrakerHttpResponse& response);
     bool parse_status(const MoonrakerHttpResponse& response);
+    bool handle_websocket_message_for_generation(const std::string& payload,
+                                                 std::uint64_t generation,
+                                                 const std::shared_ptr<ConnectionIdentity>& identity = {});
     bool apply_status_update(const nlohmann::json& status);
     bool send_gcode(const std::string& script);
     bool send_print_start(const std::string& filename);
     bool set_failure(std::string code, std::string message, bool retryable);
 
+    // Serialize complete transport lifecycles; callbacks take only m_mutex.
+    std::mutex m_transport_mutex;
+    mutable std::recursive_mutex m_mutex;
+    std::shared_ptr<CallbackGuard> m_callback_guard;
     std::shared_ptr<IMoonrakerHttpTransport> m_http;
     std::shared_ptr<IMoonrakerWebSocketTransport> m_websocket;
     DeviceEndpoint m_endpoint;
@@ -133,6 +147,8 @@ private:
     std::string m_last_uploaded_path;
     PrinterOperationResult m_last_result{success_result()};
     std::uint64_t m_next_rpc_id{1};
+    std::uint64_t m_websocket_generation{0};
+    std::shared_ptr<ConnectionIdentity> m_websocket_connection_identity;
     bool m_has_endpoint{false};
     bool m_connected{false};
     bool m_websocket_connected{false};
@@ -140,4 +156,4 @@ private:
     bool m_objects_loaded{false};
 };
 
-} // namespace Orca::SDK
+} // namespace Orca::MobileDevice

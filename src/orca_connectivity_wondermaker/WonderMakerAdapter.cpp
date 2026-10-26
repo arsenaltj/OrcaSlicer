@@ -7,7 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace Orca::SDK::WonderMaker {
+namespace Orca::MobileDevice::WonderMaker {
 
 namespace {
 
@@ -830,4 +830,4 @@ WonderMakerHttpResponse WonderMakerSimulator::failure(int status_code, const std
             true};
 }
 
-} // namespace Orca::SDK::WonderMaker
+} // namespace Orca::MobileDevice::WonderMaker

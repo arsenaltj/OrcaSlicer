@@ -143,7 +143,9 @@ using namespace std::literals::string_view_literals;
 #include "Extruder.hpp"
 #include "ExtrusionEntityCollection.hpp"
 #include "FilamentMixer.hpp"
+#ifndef ORCA_MOBILE_ANDROID
 #include "Format/STEP.hpp"
+#endif
 #include "Model.hpp"
 #include "MultiNozzleUtils.hpp"
 #include "Slicing.hpp"
@@ -4180,6 +4182,7 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
             file.write_format("; first_layer_temperature = %d\n", compat_first_layer_nozzle_temp);
             file.write("; CONFIG_BLOCK_END\n\n");
         } else if (thumbnail_cb != nullptr) {
+#ifndef ORCA_MOBILE_ANDROID
             // generate the thumbnails
             auto [thumbnails, errors] = GCodeThumbnails::make_and_check_thumbnail_list(print.full_print_config());
 
@@ -4192,6 +4195,7 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
             if (!thumbnails.empty())
                 GCodeThumbnails::export_thumbnails_to_file(
                     thumbnail_cb, print.get_plate_index(), thumbnails, [&file](const char* sz) { file.write(sz); }, [&print]() { print.throw_if_canceled(); });
+#endif
         }
     }
 

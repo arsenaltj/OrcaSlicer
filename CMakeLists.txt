@@ -15,7 +15,7 @@ endif()
 # It just lets you later do `set_property(TARGET foo PROPERTY FOLDER "bar")`
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
-option(ORCA_MOBILE_SDK_ONLY "Configure only the public MobileSDK and its open-source contract tests" OFF)
+option(ORCA_MOBILE_DEVICE_SDK_ONLY "Configure only the public MobileDeviceSDK and its open-source contract tests" OFF)
 
 if (WIN32)
     # Detect known CI environments
@@ -173,13 +173,13 @@ option(SLIC3R_ASAN              "Enable ASan on Clang and GCC" 0)
 # Python stubgen module
 option(ORCA_BUILD_PYTHON_STUBGEN_MODULE "Build importable Python module for pybind11-stubgen" ON)
 set(ORCA_BUNDLED_UV_EXECUTABLE "" CACHE FILEPATH "Path to a uv executable to bundle for Python package installation. Leave empty to auto-download.")
-if (ORCA_MOBILE_SDK_ONLY)
+if (ORCA_MOBILE_DEVICE_SDK_ONLY)
     set(CMAKE_CXX_STANDARD 17)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
     option(BUILD_TESTS "Build unit tests" OFF)
     enable_testing()
     add_subdirectory(deps_src/nlohmann)
-    add_subdirectory(src/orca_sdk)
+    add_subdirectory(src/orca_mobile_device_sdk)
     add_subdirectory(src/orca_connectivity_moonraker)
     if (BUILD_TESTS)
         add_subdirectory(tests/catch2)
@@ -363,8 +363,8 @@ option(SLIC3R_BUILD_SANDBOXES   "Build development sandboxes" OFF)
 option(BUILD_TESTS       "Build unit tests" OFF)
 option(ORCA_TOOLS       "Build Orca tools" OFF)
 
-if (ORCA_MOBILE_SDK_ONLY AND SLIC3R_GUI)
-    message(FATAL_ERROR "ORCA_MOBILE_SDK_ONLY requires SLIC3R_GUI=OFF")
+if (ORCA_MOBILE_DEVICE_SDK_ONLY AND SLIC3R_GUI)
+    message(FATAL_ERROR "ORCA_MOBILE_DEVICE_SDK_ONLY requires SLIC3R_GUI=OFF")
 endif ()
 
 if (FLATPAK)

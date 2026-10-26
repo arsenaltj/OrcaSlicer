@@ -171,14 +171,18 @@ typename boost::polygon::enable_if<
     VoronoiDiagram::IssueType>::type
 VoronoiDiagram::detect_known_issues(const VoronoiDiagram &voronoi_diagram, SegmentIterator segment_begin, SegmentIterator segment_end)
 {
-    if (const IssueType edge_issue_type = detect_known_voronoi_edge_issues(voronoi_diagram); edge_issue_type != IssueType::NO_ISSUE_DETECTED) {
+    if (const IssueType edge_issue_type = detect_known_voronoi_edge_issues(voronoi_diagram); edge_issue_type != IssueType::NO_ISSUE_DETECTED)
         return edge_issue_type;
-    } else if (const IssueType cell_issue_type = detect_known_voronoi_cell_issues(voronoi_diagram, segment_begin, segment_end); cell_issue_type != IssueType::NO_ISSUE_DETECTED) {
+
+    if (const IssueType cell_issue_type = detect_known_voronoi_cell_issues(voronoi_diagram, segment_begin, segment_end); cell_issue_type != IssueType::NO_ISSUE_DETECTED)
         return cell_issue_type;
-    } else if (!VoronoiUtilsCgal::is_voronoi_diagram_planar_angle(voronoi_diagram, segment_begin, segment_end)) {
+
+#ifndef ORCA_MOBILE_ANDROID
+    if (!VoronoiUtilsCgal::is_voronoi_diagram_planar_angle(voronoi_diagram, segment_begin, segment_end)) {
         // Detection of non-planar Voronoi diagram detects at least GH issues #8474, #8514 and #8446.
         return IssueType::NON_PLANAR_VORONOI_DIAGRAM;
     }
+#endif
 
     return IssueType::NO_ISSUE_DETECTED;
 }
