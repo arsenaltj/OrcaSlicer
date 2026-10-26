@@ -1,0 +1,6 @@
+{
+  global:
+    orca_mobile_slicing_*;
+  local:
+    *;
+};

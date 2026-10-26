@@ -1009,7 +1009,7 @@ else()
     set(_opengl_link_lib OpenGL::GL)
 endif()
 
-target_link_libraries(libslic3r_gui libslic3r OrcaSlicer::MobileSDK OrcaSlicer::AIContracts OrcaSlicer::SmartSlicing cereal::cereal imgui imguizmo minilzo libvgcode md4c-html glad ${_opengl_link_lib} hidapi mdns ${wxWidgets_LIBRARIES} glfw libcurl OpenSSL::SSL OpenSSL::Crypto LibDataChannel::LibDataChannel noise::noise pybind11::embed)
+target_link_libraries(libslic3r_gui OrcaSlicer::Core OrcaSlicer::MobileDeviceSDK OrcaSlicer::AIContracts OrcaSlicer::SmartSlicing cereal::cereal imgui imguizmo minilzo libvgcode md4c-html glad ${_opengl_link_lib} hidapi mdns ${wxWidgets_LIBRARIES} glfw libcurl OpenSSL::SSL OpenSSL::Crypto LibDataChannel::LibDataChannel noise::noise pybind11::embed)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Linux finds wxWidgets in module mode, whose include dirs and definitions

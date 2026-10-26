@@ -724,6 +724,8 @@ bool bbs_is_valid_object_type(const std::string& type)
 }
 
 namespace Slic3r {
+static thread_local std::string g_last_bbs_error;
+
 
 bool is_published_3mf_flag(const std::string &value)
 {
@@ -817,7 +819,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         mutable std::vector<std::string> m_errors;
 
     protected:
-        void add_error(const std::string& error) const { boost::unique_lock l(mutex); m_errors.push_back(error); }
+        void add_error(const std::string& error) const { boost::unique_lock l(mutex); m_errors.push_back(error); g_last_bbs_error += error + "\n"; }
         void clear_errors() { m_errors.clear(); }
 
     public:
@@ -2642,7 +2644,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         mz_uint num_entries = mz_zip_reader_get_num_files(&archive);
         mz_zip_archive_file_stat stat;
         std::string path2 = path;
-        if (path2.front() == '/') path2 = path2.substr(1);
+        while (!path2.empty() && (path2.front() == '/' || path2.front() == '\\'))
+            path2.erase(path2.begin());
+        std::replace(path2.begin(), path2.end(), '\\', '/');
         // try utf8 encoding
         int index = mz_zip_reader_locate_file(&archive, path2.c_str(), nullptr, 0);
         if (index < 0) {
@@ -2660,6 +2664,26 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                     break;
                 }
             }
+        }
+        if (index < 0) {
+            const std::string tail = path2.substr(path2.find_last_of('/') == std::string::npos ? 0 : path2.find_last_of('/') + 1);
+            int candidate_index = -1;
+            for (mz_uint candidate = 0; candidate < archive.m_total_files; ++candidate) {
+                mz_zip_archive_file_stat candidate_stat;
+                if (!mz_zip_reader_file_stat(&archive, candidate, &candidate_stat))
+                    continue;
+                const std::string candidate_name(candidate_stat.m_filename);
+                if (candidate_name == path2 || candidate_name == tail ||
+                    (candidate_name.size() > tail.size() && candidate_name.compare(candidate_name.size() - tail.size(), tail.size(), tail) == 0 && candidate_name[candidate_name.size() - tail.size() - 1] == '/')) {
+                    if (candidate_index >= 0) {
+                        candidate_index = -1;
+                        break;
+                    }
+                    candidate_index = static_cast<int>(candidate);
+                }
+            }
+            if (candidate_index >= 0)
+                index = candidate_index;
         }
         if (index < 0 || !mz_zip_reader_file_stat(&archive, index, &stat)) {
             if (restore) {
@@ -2941,7 +2965,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             mz_bool res = mz_zip_reader_extract_to_file(&archive, stat.m_file_index, dest_zip_file.c_str(), 0);
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", extract  %1% from 3mf %2%, ret %3%\n") % dest_file % stat.m_filename % res;
             if (res == 0) {
-                add_error("Error while extract project config file to file");
+                add_error("Error while extract project config file to file: " + dest_file);
                 return;
             }
             std::map<std::string, std::string> key_values;
@@ -3124,7 +3148,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             mz_bool res = mz_zip_reader_extract_to_file(&archive, stat.m_file_index, dest_zip_file.c_str(), 0);
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", extract  %1% from 3mf %2%, ret %3%\n") % dest_path % stat.m_filename % res;
             if (res == 0) {
-                add_error("Error while extract file to temp directory");
+                add_error("Error while extract file to temp directory: " + dest_path.string());
                 return;
             }
         }
@@ -6238,6 +6262,12 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
     static mz_bool bbs_extract_object_with_read_ahead(mz_zip_archive& archive,
         const mz_zip_archive_file_stat& stat, mz_file_write_func callback, void* opaque)
     {
+#ifdef ORCA_MOBILE_ANDROID
+        // Android P1 uses the bounded serial extractor for large 3MF object XML.
+        // The desktop read-ahead pipe can return a false extraction result on mobile
+        // for large deflated entries even when the source archive is intact.
+        return mz_zip_reader_extract_to_callback(&archive, stat.m_file_index, callback, opaque, 0);
+#endif
         if (stat.m_uncomp_size < 8 * 1024 * 1024 || stat.m_method != MZ_DEFLATED ||
             std::thread::hardware_concurrency() <= 1)
             return mz_zip_reader_extract_to_callback(&archive, stat.m_file_index, callback, opaque, 0);
@@ -9880,6 +9910,7 @@ private:
 bool load_bbs_3mf(const char* path, DynamicPrintConfig* config, ConfigSubstitutionContext* config_substitutions, Model* model, PlateDataPtrs* plate_data_list, std::vector<Preset*>* project_presets,
                     bool* is_bbl_3mf, bool* is_orca_3mf, Semver* file_version, Import3mfProgressFn proFn, LoadStrategy strategy, BBLProject *project, int plate_id)
 {
+    g_last_bbs_error.clear();
     if (path == nullptr || config == nullptr || model == nullptr)
         return false;
 
@@ -9892,6 +9923,8 @@ bool load_bbs_3mf(const char* path, DynamicPrintConfig* config, ConfigSubstituti
     //handle_legacy_project_loaded(importer.version(), *config);
     return res;
 }
+
+std::string bbs_3mf_last_error() { return g_last_bbs_error; }
 
 std::string bbs_3mf_get_thumbnail(const char *path)
 {

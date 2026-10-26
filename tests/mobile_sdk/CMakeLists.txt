@@ -6,11 +6,6 @@ if (NOT COMMAND orcaslicer_discover_tests)
     endfunction()
 endif()
 
-# ORCA_MOBILE_SDK_ONLY bypasses src/CMakeLists.txt; register the adapter here for the SDK-only test graph.
-if (NOT TARGET OrcaSlicer::WonderMakerAdapter)
-    add_subdirectory(${CMAKE_SOURCE_DIR}/src/orca_connectivity_wondermaker ${CMAKE_BINARY_DIR}/orca_connectivity_wondermaker)
-endif()
-
 add_executable(${_TEST_NAME}_tests
     test_mobile_sdk_contracts.cpp
     test_moonraker_adapter.cpp
@@ -18,9 +13,7 @@ add_executable(${_TEST_NAME}_tests
 )
 
 target_link_libraries(${_TEST_NAME}_tests PRIVATE
-    OrcaSlicer::MobileSDK
-    OrcaSlicer::MoonrakerAdapter
-    OrcaSlicer::WonderMakerAdapter
+    OrcaSlicer::MobileDeviceSDK
     Catch2::Catch2WithMain
 )
 set_property(TARGET ${_TEST_NAME}_tests PROPERTY FOLDER "tests")
@@ -33,7 +26,7 @@ add_executable(${_TEST_NAME}_cabi_tests
     test_mobile_sdk_threading.cpp
 )
 target_link_libraries(${_TEST_NAME}_cabi_tests PRIVATE
-    OrcaSlicer::MobileSDKShared
+    OrcaSlicer::MobileDeviceSDKShared
     Catch2::Catch2WithMain
 )
 target_compile_features(${_TEST_NAME}_cabi_tests PRIVATE c_std_11 cxx_std_17)
@@ -45,10 +38,55 @@ set_target_properties(${_TEST_NAME}_cabi_tests PROPERTIES
     CXX_STANDARD_REQUIRED YES
     FOLDER "tests"
 )
-target_compile_definitions(${_TEST_NAME}_cabi_tests PRIVATE ORCA_SDK_BUILD_SHARED)
+target_compile_definitions(${_TEST_NAME}_cabi_tests PRIVATE ORCA_MOBILE_DEVICE_BUILD_SHARED)
 add_custom_command(TARGET ${_TEST_NAME}_cabi_tests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:orca_mobile_sdk_ffi>
+            $<TARGET_FILE:orca_mobile_device_sdk_ffi>
             $<TARGET_FILE_DIR:${_TEST_NAME}_cabi_tests>
 )
 orcaslicer_discover_tests(${_TEST_NAME}_cabi_tests)
+
+# Run the shared digest contract against the Android backend on the host,
+# without pulling desktop/OpenSSL dependencies into the SDK-only build.
+add_executable(mobile_slicing_platform_digest_tests
+    ../libslic3r/test_sha256_digest.cpp
+    ../../src/orca_mobile_slicing_sdk/platform/AndroidSha256Digest.cpp)
+target_include_directories(mobile_slicing_platform_digest_tests PRIVATE ../../src)
+target_link_libraries(mobile_slicing_platform_digest_tests PRIVATE Catch2::Catch2WithMain)
+target_compile_features(mobile_slicing_platform_digest_tests PRIVATE cxx_std_17)
+orcaslicer_discover_tests(mobile_slicing_platform_digest_tests)
+
+# Optional pinned Boost headers let the SDK-only host build validate the Android
+# MD5 compatibility adapter without adding Boost to the Device SDK dependency graph.
+if(ORCA_PLATFORM_TEST_BOOST_SOURCE_DIR)
+    file(GLOB _orca_test_boost_headers LIST_DIRECTORIES true
+         "${ORCA_PLATFORM_TEST_BOOST_SOURCE_DIR}/libs/*/include")
+    add_executable(mobile_slicing_platform_md5_tests test_mobile_digest.cpp)
+    target_compile_features(mobile_slicing_platform_md5_tests PRIVATE cxx_std_17)
+    target_compile_definitions(mobile_slicing_platform_md5_tests PRIVATE ORCA_MOBILE_ANDROID=1)
+    target_include_directories(mobile_slicing_platform_md5_tests PRIVATE ../../src
+        ../../src/orca_mobile_slicing_sdk/platform
+        ${_orca_test_boost_headers}
+        "${ORCA_PLATFORM_TEST_BOOST_SOURCE_DIR}/libs/numeric/conversion/include")
+    target_link_libraries(mobile_slicing_platform_md5_tests PRIVATE Catch2::Catch2WithMain)
+    orcaslicer_discover_tests(mobile_slicing_platform_md5_tests)
+endif()
+
+if(TARGET OrcaSlicer::MoonrakerTransport)
+    find_package(OpenSSL REQUIRED)
+    find_package(Threads REQUIRED)
+    add_executable(moonraker_transport_tests test_moonraker_transport.cpp)
+    target_compile_features(moonraker_transport_tests PRIVATE cxx_std_17)
+    target_compile_definitions(moonraker_transport_tests PRIVATE BOOST_ERROR_CODE_HEADER_ONLY)
+    target_include_directories(moonraker_transport_tests SYSTEM PRIVATE
+        $<TARGET_PROPERTY:orca_moonraker_transport,INCLUDE_DIRECTORIES>)
+    target_link_libraries(moonraker_transport_tests PRIVATE OrcaSlicer::MoonrakerTransport
+        Catch2::Catch2WithMain OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+    if(MSVC)
+        target_compile_options(moonraker_transport_tests PRIVATE /bigobj)
+    endif()
+    if(WIN32)
+        target_link_libraries(moonraker_transport_tests PRIVATE ws2_32)
+    endif()
+    orcaslicer_discover_tests(moonraker_transport_tests)
+endif()

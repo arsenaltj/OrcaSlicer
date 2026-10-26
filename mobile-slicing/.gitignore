@@ -1,0 +1,3 @@
+# Generated Android build trees and downloaded dependency sources stay outside Git.
+build-android-arm64/
+build-first-gate/

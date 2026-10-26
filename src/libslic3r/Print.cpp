@@ -53,6 +53,9 @@
 #include <boost/thread/lock_types.hpp>
 #include <iterator>
 #include "TriangleMesh.hpp"
+#ifdef ORCA_MOBILE_ANDROID
+#include "orca_mobile_nozzle_resources.hpp"
+#endif
 #include "Config.hpp"
 #include "Exception.hpp"
 #include "IMEXHelpers.hpp"
@@ -105,7 +108,9 @@
 #include "GCode/ConflictChecker.hpp"
 
 #include <codecvt>
+#ifndef ORCA_MOBILE_ANDROID
 #include "Format/STEP.hpp"
+#endif
 #include "PlaceholderParser.hpp"
 #include "SurfaceCollection.hpp"
 #include "BeltBrim.hpp"
@@ -4386,7 +4391,11 @@ int Print::get_hrc_by_nozzle_type(const NozzleType&type)
         //std::ifstream in(file_path.string());
         json j;
         try {
+#ifdef ORCA_MOBILE_ANDROID
+            j = json::parse(orca_mobile_resources::nozzle_info);
+#else
             j = json::parse(in);
+#endif
             in.close();
             for (const auto& elem : j["nozzle_hrc"].items())
                 nozzle_type_to_hrc[elem.key()] = elem.value();
@@ -4418,7 +4427,11 @@ std::vector<std::string> Print::get_incompatible_filaments_by_nozzle(const float
         boost::nowide::ifstream in(file_path.string());
         json j;
         try {
+#ifdef ORCA_MOBILE_ANDROID
+            j = json::parse(orca_mobile_resources::nozzle_incompatibles);
+#else
             j = json::parse(in);
+#endif
             for(auto& [volume_type, diameter_list] : j["incompatible_nozzles"].items()) {
                 for(auto& [diameter, filaments]: diameter_list.items()){
                     incompatible_filaments[volume_type][diameter] = filaments.get<std::vector<std::string>>();
@@ -4511,7 +4524,11 @@ void Print::update_filament_maps_to_config(std::vector<int> f_maps, std::vector<
         auto* ori_volume_map = m_ori_full_print_config.option<ConfigOptionInts>("filament_volume_map", true);
         for (int index = 0; opt_extruder_type && opt_nozzle_volume_type && index < f_maps.size(); index++)
         {
-            ExtruderType extruder_type = (ExtruderType)(opt_extruder_type->get_at(f_maps[index] - 1));
+            const int physical = f_maps[index] - 1;
+            if (physical < 0 || size_t(physical) >= opt_extruder_type->values.size() ||
+                size_t(physical) >= opt_nozzle_volume_type->values.size())
+                continue; // Keep seeded physical slot for absent/empty variant columns.
+            ExtruderType extruder_type = (ExtruderType)(opt_extruder_type->get_at(physical));
             NozzleVolumeType nozzle_volume_type = (NozzleVolumeType)(opt_nozzle_volume_type->get_at(f_maps[index] - 1));
             if (f_volume_maps.empty()) {
                 // No per-filament map supplied: backfill from the extruder's own volume type.

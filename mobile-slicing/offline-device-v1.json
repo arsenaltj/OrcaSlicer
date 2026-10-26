@@ -1,0 +1,35 @@
+{
+  "id": "generic/fff-0.4-200",
+  "name": "Generic FFF · 0.4 mm · 200 × 200 × 200 mm",
+  "summary": "Offline full machine reset: resets machine, material to repository Generic PLA, and process to native defaults. Verify G-code against the real printer before use.",
+  "requiresConfirmation": true,
+  "resetScopes": [
+    "device",
+    "material",
+    "process"
+  ],
+  "config": {
+    "printer_technology": "FFF",
+    "printer_settings_id": "Generic offline FFF 0.4 / 200",
+    "nozzle_diameter": [
+      "0.4"
+    ],
+    "filament_map": [
+      "1"
+    ],
+    "printable_area": [
+      "0x0",
+      "200x0",
+      "200x200",
+      "0x200"
+    ],
+    "bed_exclude_area": [],
+    "printable_height": "200",
+    "enable_prime_tower": "0",
+    "single_extruder_multi_material": "0",
+    "use_relative_e_distances": "1",
+    "machine_start_gcode": "G90\nM83\n",
+    "machine_end_gcode": "",
+    "before_layer_change_gcode": ";BEFORE_LAYER_CHANGE\n;[layer_z]\nG92 E0\n"
+  }
+}

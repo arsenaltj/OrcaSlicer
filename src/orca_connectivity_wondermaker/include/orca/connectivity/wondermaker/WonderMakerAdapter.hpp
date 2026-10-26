@@ -1,6 +1,6 @@
 #pragma once
 
-#include "orca/sdk/Connectivity.hpp"
+#include "orca/mobile/device/Connectivity.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -11,7 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace Orca::SDK::WonderMaker {
+namespace Orca::MobileDevice::WonderMaker {
 
 // These values describe canonical operations at the adapter boundary. A concrete
 // transport owns all wire paths, headers, topics, and authentication details.
@@ -297,4 +297,4 @@ private:
 const char* monitor_state_name(MonitorState state);
 const char* control_operation_name(ControlOperation operation);
 
-} // namespace Orca::SDK::WonderMaker
+} // namespace Orca::MobileDevice::WonderMaker
