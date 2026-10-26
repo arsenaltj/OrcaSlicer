@@ -1,5 +1,7 @@
 # SMARTSLICE-CLOUD-20261024：智能切片增加本地与 YOYOClaw 云端推荐来源（三目标保留，底部布局统一已构建并完成本地界面检查）
 
+2026-10-27 测试目标链接补齐：路径修正提交 `493a48de27` 后所有源文件编译结束，`slic3rutils_tests` 链接报缺少 `Engine` / `describe_warning` 四个符号，均实现在未列入该目标的移动切片 `engine.cpp`。参照已有 `fff_print_tests` 列表补齐同一实现，不改产品逻辑或测试断言；失败证据 `.tmp/dev/logs/20261027-002158-589/result.json` 保留，测试尚未运行，继续增量构建。
+
 2026-10-27 合并测试路径兼容：`c4167bd60a` 后完整 GUI 库编译通过；测试目标随后报两份测试仍引用远端改名前的 `orca_slicing/...`（C1083），已停止本轮失败 MSBuild 子树并保留 `.tmp/dev/logs/20261026-235606-347/result.json`。只将 `test_orca_slicing_support.cpp`、`test_orca_slicing_preview.cpp` 的头文件引用改为当前 `orca_mobile_slicing_sdk/...`，不修改断言或跳过测试；继续增量验证及程序构建。
 
 2026-10-26 Windows 合并续验：兼容修正提交 `ced139b428` 后，核心库已编译，GUI 暴露远端 `BuildVolume_Type : int8_t` 与 `Plater.hpp` 旧 `: char` 前置声明不一致（C3433）。已停止仅本轮失败构建的 MSBuild 子树，保留 `.tmp/dev/logs/20261026-233959-336/result.json` 及全部错误日志；测试尚未执行，不记通过。GUI 声明改为与核心一致的 `int8_t` 并显式包含 `<cstdint>`，不改变核心枚举数值或表示；随后继续增量构建及定向回归。远端只读复核仍为 `96b70a4ab2`。
