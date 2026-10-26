@@ -845,7 +845,7 @@ void ModelGenerationPanel::shutdown()
 {
     if (m_shutdown)
         return;
-    hide_workbench_check_card();
+    detach_workbench_floating_card();
     if (m_workbench_check_card) {
         m_workbench_check_card->Destroy();
         m_workbench_check_card = nullptr;
@@ -4708,17 +4708,54 @@ bool ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
 {
     if (m_busy || m_finishing_running || !m_finishing_candidate.empty())
         return false;
-    // Saved beauty versions and drafts require their original GLB. Read fresh
-    // metadata rather than relying on a possibly older asynchronous list.
+    const boost::filesystem::path root = generated_models_root();
+    const auto asset_path = entry.design_only ? entry.preview_path : entry.model_path;
+    boost::system::error_code ec;
+    if (!boost::filesystem::is_directory(root, ec) || !path_is_inside(root, asset_path)) {
+        m_status->SetLabel(_L("删除已阻止：模型路径不在模型文件夹中。"));
+        return false;
+    }
+    const auto canonical_root = boost::filesystem::canonical(root, ec);
+    const auto canonical_model = boost::filesystem::canonical(asset_path, ec);
+    if (ec) {
+        m_status->SetLabel(_L("无法确认模型路径，已保留文件；请刷新历史后重试。"));
+        return false;
+    }
+    const auto relative_model = canonical_model.lexically_relative(canonical_root).lexically_normal();
+    const auto current_metadata = read_json(library_metadata_path(entry.job_id));
+    const auto owned_appearance_carrier =
+        ModelLibraryMetadata::owned_original_appearance_companion(current_metadata, root);
+    bool appearance_carrier_referenced = false;
+    // Saved versions and drafts may depend on a direct parent, immutable
+    // appearance carrier, origin model or puzzle base. Read fresh metadata
+    // instead of relying on a possibly older asynchronous list.
     try {
         const auto records = library_metadata_path(entry.job_id).parent_path();
         for (boost::filesystem::directory_iterator it(records), end; it != end; ++it) {
             if ((it->path().extension() != ".json" && it->path().extension() != ".draft") ||
                 it->path() == library_metadata_path(entry.job_id)) continue;
+            boost::filesystem::path draft_owner;
+            if (it->path().extension() == ".draft") {
+                auto owner_record = it->path();
+                owner_record.replace_extension();
+                const auto owner_metadata = read_json(owner_record);
+                if (!owner_metadata.is_object() || !owner_metadata.contains("model_path") ||
+                    !owner_metadata["model_path"].is_string())
+                    throw std::runtime_error("Unable to identify beauty draft owner");
+                draft_owner = boost::filesystem::path(owner_metadata["model_path"].get<std::string>());
+            }
             boost::filesystem::ifstream input(it->path());
-            if (!input || ModelLibraryMetadata::references_base(input, entry.model_path.filename().string())) {
+            if (!input || (!entry.design_only &&
+                ModelLibraryMetadata::references_model(input, relative_model, draft_owner))) {
                 m_status->SetLabel(_L("无法删除：其他美颜版本或草稿仍需要这个原始模型，请先保留原件。"));
                 return false;
+            }
+            if (owned_appearance_carrier) {
+                const auto carrier_relative = owned_appearance_carrier->lexically_relative(canonical_root).lexically_normal();
+                boost::filesystem::ifstream carrier_input(it->path());
+                if (!carrier_input) throw std::runtime_error("Unable to inspect appearance dependency");
+                appearance_carrier_referenced = appearance_carrier_referenced ||
+                    ModelLibraryMetadata::references_model(carrier_input, carrier_relative, draft_owner);
             }
         }
     } catch (...) {
@@ -4730,9 +4767,6 @@ bool ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
         _L("删除本地资产")) != wxID_YES)
         return false;
 
-    const boost::filesystem::path root = generated_models_root();
-    const auto asset_path = entry.design_only ? entry.preview_path : entry.model_path;
-    boost::system::error_code ec;
     if (!boost::filesystem::is_directory(root, ec) || !path_is_inside(root, asset_path)) {
         m_status->SetLabel(_L("删除已阻止：模型路径不在模型文件夹中。"));
         return false;
@@ -4779,6 +4813,8 @@ bool ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
         temp_path(entry.job_id + "-heatmap", "png"),
         temp_path(entry.job_id + "-input", "png")
     };
+    if (owned_appearance_carrier && !appearance_carrier_referenced)
+        targets.push_back(*owned_appearance_carrier);
     if (entry.design_only) {
         targets.push_back(model_parent / "job.json");
         for (const auto& path : {entry.preview_path, entry.ai_image_path, entry.reference_image_path})

@@ -1,5 +1,6 @@
 #pragma once
 #include "ModelPreviewColorState.hpp"
+#include "ModelOriginalAppearance.hpp"
 #include "PortraitColorBlockPostprocess.hpp"
 #include "PrinterFilamentRestoreSnapshot.hpp"
 #include <optional>
@@ -23,6 +24,8 @@ struct BeautyCandidateSnapshot {
     boost::filesystem::path candidate;
     std::string model_sha256;
     std::string geometry_id;
+    OriginalAppearanceReference original_appearance;
+    std::string original_appearance_error;
     std::string id;
     AI::ModelFinishingResult result;
     AI::ModelFinishingOptions options;

@@ -155,7 +155,7 @@ void ModelGenerationPanel::queue_portrait_reoptimization()
     m_portrait_reoptimization_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(450);
     if (m_portrait_status)
         m_portrait_status->SetLabel(wxString::Format(
-            _L("自动建议已调整至 %d 色，等待自动重新优化……"), m_portrait_reoptimization_count));
+            _L("AI配色已调整至 %d 色，等待自动重新优化……"), m_portrait_reoptimization_count));
     BOOST_LOG_TRIVIAL(info) << "Portrait reoptimization queued: geometry="
         << m_model_preview->geometry_id() << ", colors=" << m_portrait_reoptimization_count;
 }
@@ -373,7 +373,7 @@ void ModelGenerationPanel::update_portrait_optimization()
     gauge->Show(task.running() || (task.percent == 100 && !m_finishing_candidate.empty()));
     wxString text;
     if (m_portrait_reoptimization_pending && !task.running()) {
-        text = wxString::Format(_L("自动建议已调整至 %d 色，等待自动重新优化……"),
+        text = wxString::Format(_L("AI配色已调整至 %d 色，等待自动重新优化……"),
             m_portrait_reoptimization_count);
         m_portrait_time->SetLabel(wxEmptyString);
     } else if (task.running()) {

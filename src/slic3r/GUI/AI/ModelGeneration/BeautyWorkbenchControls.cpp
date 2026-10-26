@@ -956,7 +956,7 @@ void BeautyWorkbenchControls::start_partition(const nlohmann::json& saved)
                 } else {
                     stage = "automatic_slot_partition";
                     if (task->automatic_basis_signature.empty() || source_slots.empty())
-                        throw std::runtime_error("当前没有可用的原生自动建议配色基准。");
+                        throw std::runtime_error("当前没有可用的原生 AI 配色基准。");
                     task->result = AI::BeautyPuzzle::create_slot_regions(*task->surface, source_slots,
                         task->automatic_basis_signature, labels, semantic_confidence,
                         [task] { return task->canceled.load(); });

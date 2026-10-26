@@ -188,6 +188,8 @@ inline bool apply_automatic_basis(AI::ColorTrialPersistence::State& state,
     updated.project_semantic_slots.clear();
     bind_implicit_semantic_palette(updated);
     updated.source = 1;
+    updated.suite_id.clear();
+    updated.suite_revision.clear();
     updated.enabled = true;
     updated.count = int(colors.size());
     updated.project_count = int(colors.size());
@@ -247,6 +249,8 @@ inline bool apply_bound(AI::ColorTrialPersistence::State& state, const std::vect
         updated.project_semantic_slots.assign(bindings.begin() + color_count, bindings.end());
     }
     updated.source = 1; updated.enabled = true; updated.count = int(updated.colors.size());
+    updated.suite_id.clear();
+    updated.suite_revision.clear();
     updated.project_slot_identity = identity;
     updated.color_card_target_palette.clear();
     updated.color_card_target_slot_ids.clear();
@@ -281,6 +285,8 @@ inline bool apply(AI::ColorTrialPersistence::State& state, const std::vector<siz
     match(updated.colors, updated.project_color_slots);
     match(updated.semantic_palette, updated.project_semantic_slots);
     updated.source = 1; updated.enabled = true; updated.count = int(updated.colors.size());
+    updated.suite_id.clear();
+    updated.suite_revision.clear();
     updated.project_slot_identity = identity;
     updated.color_card_target_palette.clear();
     updated.color_card_target_slot_ids.clear();

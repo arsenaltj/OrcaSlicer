@@ -561,6 +561,174 @@ struct StagedColorPackImport {
     size_t mixed_count {0};
 };
 
+struct HonorSuiteCompatibility {
+    bool compatible {false};
+    size_t nozzle_count {0};
+    std::string reason;
+};
+
+inline bool honor_material_category_matches(std::string actual, std::string expected)
+{
+    const auto uppercase = [](unsigned char value) { return char(std::toupper(value)); };
+    std::transform(actual.begin(), actual.end(), actual.begin(), uppercase);
+    std::transform(expected.begin(), expected.end(), expected.begin(), uppercase);
+    return !actual.empty() && actual == expected;
+}
+
+inline HonorSuiteCompatibility honor_suite_compatibility(const PresetBundle& bundle,
+    const HonorFilamentSuite& suite)
+{
+    HonorSuiteCompatibility result;
+    if (!suite.valid()) {
+        result.reason = "荣耀耗材套装数据无效";
+        return result;
+    }
+    const auto& printer = bundle.printers.get_edited_preset().config;
+    const auto* nozzles = printer.option<ConfigOptionFloats>("nozzle_diameter");
+    result.nozzle_count = nozzles ? nozzles->values.size() : 0;
+    const size_t required = suite.physical_slots.size();
+    if (!result.nozzle_count) {
+        result.reason = "请选择 FFF 打印机";
+        return result;
+    }
+    if (printer.opt_bool("single_extruder_multi_material")) {
+        result.reason = "当前打印机为单喷嘴多材料模式，此套装需要 6 个真实独立喷头";
+        return result;
+    }
+    const auto snapshot = capture(bundle);
+    if (result.nozzle_count < required || snapshot.physical_capacity < required) {
+        result.reason = "当前打印机为 " + std::to_string(result.nozzle_count) +
+            " 头，此套装需要 6 个实体耗材";
+        return result;
+    }
+    result.compatible = true;
+    return result;
+}
+
+// Honor suites are physical hardware definitions, not generic color cards.
+// This path never selects bases or creates/removes mixed recipes. It prepares
+// six real slots in a copy and leaves every unrelated physical or mixed slot
+// untouched until the caller commits the complete transaction.
+inline bool stage_honor_physical_suite_import(const PresetBundle& live,
+    const HonorFilamentSuite& suite, StagedColorPackImport& result, std::string& error)
+{
+    result = {};
+    error.clear();
+    const auto compatibility = honor_suite_compatibility(live, suite);
+    if (!compatibility.compatible) {
+        error = compatibility.reason;
+        return false;
+    }
+    const auto source = capture(live);
+    if (!source.ready) {
+        error = source.reason.empty() ? "当前实体耗材配置不可用" : source.reason;
+        return false;
+    }
+
+    auto staged = std::make_shared<PresetBundle>(live);
+    std::vector<SlotChange> changes;
+    const size_t required = suite.physical_slots.size();
+    constexpr size_t missing_slot = std::numeric_limits<size_t>::max();
+    const auto collect_bindings = [&](const WorkbenchPrinterFilaments& state) {
+        std::vector<size_t> bindings(required, missing_slot);
+        std::set<size_t> used;
+        for (size_t index = 0; index < required; ++index) {
+            const auto found = std::find_if(state.slots.begin(), state.slots.end(), [&](const auto& slot) {
+                return slot.exists && slot.configured && slot.compatible && !slot.preset.empty() &&
+                    used.find(slot.slot) == used.end() &&
+                    honor_material_category_matches(slot.material,
+                        suite.physical_slots[index].material_category);
+            });
+            if (found != state.slots.end()) {
+                bindings[index] = found->slot;
+                used.insert(found->slot);
+            }
+        }
+        return bindings;
+    };
+    const auto reusable_preset = [&](const std::string& material_category) {
+        const auto found = std::find_if(source.slots.begin(), source.slots.end(), [&](const auto& slot) {
+            return slot.exists && slot.configured && slot.compatible && !slot.preset.empty() &&
+                honor_material_category_matches(slot.material, material_category);
+        });
+        return found == source.slots.end() ? std::string{} : found->preset;
+    };
+
+    auto staged_state = capture(*staged);
+    auto bindings = collect_bindings(staged_state);
+    while (std::find(bindings.begin(), bindings.end(), missing_slot) != bindings.end()) {
+        const size_t missing = size_t(std::find(bindings.begin(), bindings.end(), missing_slot) - bindings.begin());
+        const std::string preset = reusable_preset(suite.physical_slots[missing].material_category);
+        if (preset.empty()) {
+            error = "当前没有可复用的 " + suite.physical_slots[missing].material_category +
+                " 兼容实体耗材预设";
+            return false;
+        }
+        if (staged_state.physical_count >= staged_state.physical_capacity) {
+            error = "当前打印机没有足够的兼容实体喷头槽位，无法应用荣耀耗材套装";
+            return false;
+        }
+        if (staged->filament_presets.size() >= size_t(EnforcerBlockerType::ExtruderMax)) {
+            error = "原生槽位已满，无法补齐六个实体耗材";
+            return false;
+        }
+        const size_t before = staged_state.physical_count;
+        const size_t at = add(*staged);
+        staged->filament_presets[at] = preset;
+        staged->project_config.option<ConfigOptionStrings>("filament_colour")->values[at] =
+            suite.physical_slots[missing].color;
+        staged->project_config.option<ConfigOptionStrings>("filament_multi_colour")->values[at] =
+            suite.physical_slots[missing].color;
+        staged->project_config.option<ConfigOptionStrings>("filament_colour_type")->values[at] = "1";
+        changes.push_back({{at}, -1, -1});
+        staged_state = capture(*staged);
+        if (staged_state.physical_count != before + 1) {
+            error = "无法补齐六个实体耗材槽位，工程保持原状";
+            return false;
+        }
+        bindings = collect_bindings(staged_state);
+    }
+
+    auto& colors = staged->project_config.option<ConfigOptionStrings>("filament_colour")->values;
+    auto& multi = staged->project_config.option<ConfigOptionStrings>("filament_multi_colour")->values;
+    auto& types = staged->project_config.option<ConfigOptionStrings>("filament_colour_type")->values;
+    for (size_t index = 0; index < required; ++index) {
+        const size_t slot = bindings[index];
+        colors[slot] = suite.physical_slots[index].color;
+        multi[slot] = suite.physical_slots[index].color;
+        types[slot] = "1";
+    }
+
+    const auto imported = capture(*staged);
+    if (!imported.ready || imported.physical_count < required ||
+        !ProjectConfigRestore::validate(staged->project_config, staged->filament_presets, *staged, error) ||
+        !PrinterFilamentSlotRemap::validate(changes, live.filament_presets.size(), staged->filament_presets.size())) {
+        if (error.empty()) error = !imported.reason.empty()
+            ? imported.reason : "荣耀耗材套装暂存结果不完整，工程保持原状";
+        return false;
+    }
+    for (size_t index = 0; index < required; ++index) {
+        const size_t slot = bindings[index];
+        const auto imported_slot = std::find_if(imported.slots.begin(), imported.slots.end(),
+            [slot](const auto& candidate) { return candidate.slot == slot; });
+        if (slot >= staged->filament_presets.size() || staged->is_mixed_filament(slot) ||
+            colors[slot] != suite.physical_slots[index].color || imported_slot == imported.slots.end() ||
+            !honor_material_category_matches(imported_slot->material,
+                suite.physical_slots[index].material_category)) {
+            error = "荣耀套装未生成完整的六实体槽绑定，工程保持原状";
+            return false;
+        }
+    }
+
+    result.configuration = std::move(staged);
+    result.changes = std::move(changes);
+    result.bindings = std::move(bindings);
+    result.source_signature = source.signature;
+    result.physical_count = required;
+    result.mixed_count = 0;
+    return true;
+}
+
 inline bool stage_workbench_color_pack_import(const PresetBundle& live,
     const FilamentColorPack& pack, StagedColorPackImport& result, std::string& error)
 {
@@ -603,4 +771,5 @@ inline bool stage_workbench_color_pack_import(const PresetBundle& live,
     result.mixed_count = imported.mixed.size();
     return true;
 }
+
 } // namespace Slic3r::GUI::PrinterFilamentConfig

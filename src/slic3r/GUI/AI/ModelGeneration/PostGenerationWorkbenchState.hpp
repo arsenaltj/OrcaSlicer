@@ -16,6 +16,7 @@ namespace Slic3r::GUI {
 enum class WorkbenchCheckStatus { NotRun, Running, Normal, Attention, Invalid, Failed };
 enum class WorkbenchCheckPhase { Idle, Inspecting, Repairing, Rechecking };
 enum class RepairCandidateStatus { None, Generating, Ready, Accepted, Rejected, Failed };
+enum class WorkbenchFloatingCardMode { None, ModelCheck, HonorSuiteSemantic };
 // Automatic checks are run when a model first becomes visible in the 3D
 // workbench; manual checks are initiated from the sidebar and retain the
 // existing candidate workflow.
@@ -58,6 +59,15 @@ inline bool workbench_automatic_check_should_start(bool workbench_open, bool mod
     return workbench_open && model_ready;
 }
 
+inline bool workbench_ai_palette_should_apply(bool pending, WorkbenchCheckSource source,
+                                              bool topology_safe, RepairCandidateStatus candidate_status,
+                                              bool repair_candidate_loaded)
+{
+    if (!pending || source != WorkbenchCheckSource::Automatic || !topology_safe) return false;
+    return repair_candidate_loaded ? candidate_status == RepairCandidateStatus::Ready
+                                   : candidate_status == RepairCandidateStatus::None;
+}
+
 inline bool workbench_check_card_should_show(bool workbench_open, bool requested_visible,
                                              bool check_running, bool automatic_repair_saving,
                                              const WorkbenchCheckResult& result)
@@ -75,6 +85,17 @@ inline bool workbench_check_card_should_show(bool workbench_open, bool requested
         (result.status == WorkbenchCheckStatus::Normal || result.status == WorkbenchCheckStatus::NotRun) &&
         result.candidate_status != RepairCandidateStatus::Ready) show = false;
     return show;
+}
+
+inline WorkbenchFloatingCardMode workbench_floating_card_mode(bool workbench_open,
+    bool honor_semantic_active, bool requested_check_visible, bool check_running,
+    bool automatic_repair_saving, const WorkbenchCheckResult& result)
+{
+    if (!workbench_open) return WorkbenchFloatingCardMode::None;
+    if (honor_semantic_active) return WorkbenchFloatingCardMode::HonorSuiteSemantic;
+    return workbench_check_card_should_show(workbench_open, requested_check_visible,
+        check_running, automatic_repair_saving, result)
+        ? WorkbenchFloatingCardMode::ModelCheck : WorkbenchFloatingCardMode::None;
 }
 
 inline std::string workbench_check_status_line(const WorkbenchCheckResult& check,

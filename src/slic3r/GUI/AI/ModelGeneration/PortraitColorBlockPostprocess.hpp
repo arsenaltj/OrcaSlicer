@@ -59,10 +59,11 @@ inline constexpr size_t maximum_units = 2000000;
 // this is shared by the UI, worker and cache migration code.
 inline constexpr size_t portrait_postprocess_min_colors = 4;
 inline constexpr size_t portrait_postprocess_max_colors = 6;
+inline constexpr float fixed_role_minimum_confidence = .70f;
 // V2 region membership now uses a fixed source-seed comparison.  Bump the
 // persisted algorithm contract so candidates produced by the chained-gradient
 // traversal are rebuilt instead of being interpreted as valid regions.
-inline constexpr uint32_t portrait_postprocess_algorithm_version = 5;
+inline constexpr uint32_t portrait_postprocess_algorithm_version = 6;
 inline constexpr bool portrait_color_postprocess_supported(size_t count) {
     return count >= portrait_postprocess_min_colors && count <= portrait_postprocess_max_colors;
 }
@@ -163,6 +164,9 @@ struct Input {
     // Immutable previous candidate; only explicit manual confirmations survive
     // a rerun. Temporary suggestions never become ordinary input or seeds.
     std::shared_ptr<const Result> previous;
+    // Optional product-card role locks. Unlike the ordinary V2 allocator,
+    // these slots may be shared by several confirmed anatomy roles.
+    std::map<std::string, size_t> fixed_role_slots;
 };
 std::shared_ptr<Result> build(const Input&, const SC::Cancel& = {});
 // Rebind an existing color-region result to a new color card.  The region and
@@ -170,7 +174,12 @@ std::shared_ptr<Result> build(const Input&, const SC::Cancel& = {});
 // whenever the target card has enough legal colors.  Ordinary regions use
 // nearest-color matching, while manual confirmations remain hard locks.
 bool remap_to_palette(Result&, const std::vector<SC::Color>& target,
-    bool preserve_regions = true);
+    bool preserve_regions = true,
+    const std::map<std::string, size_t>& fixed_role_slots = {});
+size_t reliable_fixed_role_blocks(const Result&,
+    const std::map<std::string, size_t>& fixed_role_slots,
+    float minimum_confidence = fixed_role_minimum_confidence);
+std::vector<size_t> used_display_slots(const Result&);
 std::string controls_signature(const std::vector<SC::Color>& mapping,const std::vector<SC::Color>& targets);
 nlohmann::json encode(const Result&);
 std::shared_ptr<Result> decode(const nlohmann::json&, const std::string& geometry,

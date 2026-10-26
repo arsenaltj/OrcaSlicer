@@ -340,6 +340,8 @@ struct ModelSemanticColoring::Impl {
         size_t automatic_color_count {6};
         bool analysis_only {false};
         bool color_block_postprocess {false};
+        std::map<std::string, size_t> fixed_role_slots;
+        std::string request_context;
     } request;
     struct Job {
         Request request;
@@ -475,6 +477,7 @@ struct ModelSemanticColoring::Impl {
                             input.mapping=task->request.palette; input.targets=task->request.targets;
                             input.intermediate_palette = portrait_intermediate_palette(source);
                             input.final_color_count = task->request.automatic_color_count;
+                            input.fixed_role_slots = task->request.fixed_role_slots;
                             if(task->request.saved_appearance) {
                                 // V2 must migrate from the original appearance,
                                 // never expand an already compressed V1/V2
@@ -498,10 +501,28 @@ struct ModelSemanticColoring::Impl {
                                 << " historical_locked=" << diagnostic.historical_locked_edges;
                             result->color_blocks->appearance(result->automatic,result->automatic_subfaces);
                             result->shape_details=task->request.shapes;
+                            std::map<std::string, SC::Color> cell_colors = task->request.manual_cells;
+                            if (strategy == PortraitColorBlocks::Strategy::ColorRegionMajorityV2 &&
+                                result->shape_details && result->shape_details->surface_partition &&
+                                !task->request.palette_roles.empty()) {
+                                auto details = std::make_shared<PortraitShapeDetails>(*result->shape_details);
+                                std::set<std::string> missing_roles;
+                                const auto contour_colors = portrait_contour_colors(*details->surface_partition,
+                                    task->request.palette_roles, task->request.targets, &missing_roles);
+                                for (const auto& entry : contour_colors) details->cell_colors[entry.first] = entry.second;
+                                for (const auto& entry : task->request.manual_cells) details->cell_colors[entry.first] = entry.second;
+                                details->color_diagnostic.clear();
+                                for (const auto& role : missing_roles) {
+                                    if (!details->color_diagnostic.empty()) details->color_diagnostic += ", ";
+                                    details->color_diagnostic += role;
+                                }
+                                cell_colors = details->cell_colors;
+                                result->shape_details = std::move(details);
+                            }
                             result->geometry=build_semantic_colored_geometry(*task->request.source,
                                 result->automatic,result->automatic_subfaces,cancel,
-                                task->request.shapes ? task->request.shapes->surface_partition.get() : nullptr,
-                                &task->request.manual_cells);
+                                result->shape_details ? result->shape_details->surface_partition.get() : nullptr,
+                                &cell_colors);
                             contour_evidence="双轨颜色块后处理；旧父级修复、扩张和全局传播冻结。";
                         } else {
                         const auto source_automatic = SC::map_palette(
@@ -989,7 +1010,9 @@ bool ModelSemanticColoring::request(std::shared_ptr<const Snapshot> source, std:
                                     std::shared_ptr<const SavedAppearance> saved_appearance,
                                     size_t automatic_color_count,
                                     bool analysis_only,
-                                    bool color_block_postprocess)
+                                    bool color_block_postprocess,
+                                    std::map<std::string, size_t> fixed_role_slots,
+                                    std::string request_context)
 {
     auto& state = *m_impl;
     auto configuration = provider_configuration(state.runtime);
@@ -1009,12 +1032,14 @@ bool ModelSemanticColoring::request(std::shared_ptr<const Snapshot> source, std:
         state.request.allow_boundary_upgrade == allow_boundary_upgrade && state.request.manual_cells == manual_cells &&
         state.request.automatic_color_count == automatic_color_count && state.request.analysis_only == analysis_only &&
         state.request.color_block_postprocess == color_block_postprocess &&
+        state.request.fixed_role_slots == fixed_role_slots && state.request.request_context == request_context &&
         same_appearance()) return false;
     if (state.job) state.job->canceled.store(true);
     state.request = {std::move(source), std::move(palette), std::move(targets), std::move(portrait_card),std::move(palette_roles),
         std::move(manual), std::move(configuration), ++state.generation, std::move(source_path), std::move(shapes),
         allow_boundary_upgrade, std::move(manual_cells), std::move(progress),std::move(saved_appearance),
-        automatic_color_count, analysis_only, color_block_postprocess};
+        automatic_color_count, analysis_only, color_block_postprocess,
+        std::move(fixed_role_slots), std::move(request_context)};
     state.wanted = true; state.pending = true; state.start(); return true;
 }
 void ModelSemanticColoring::cancel() {

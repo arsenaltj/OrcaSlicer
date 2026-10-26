@@ -150,12 +150,61 @@ void ModelGenerationPanel::position_workbench_check_card()
     m_workbench_check_card->Move(
         viewport.x + std::max(0, (viewport.width - card_size.x) / 2),
         viewport.y + std::max(0, (viewport.height - card_size.y) / 2));
+    raise_workbench_check_card();
+}
+
+void ModelGenerationPanel::raise_workbench_check_card()
+{
+    raise_workbench_floating_card(m_workbench_check_card);
+}
+
+void ModelGenerationPanel::detach_workbench_floating_card()
+{
+    if (m_model_preview) m_model_preview->set_honor_suite_semantic_progress_callback({});
+    m_workbench_honor_semantic_active = false;
+    if (m_workbench_card_overlay_host) {
+        m_workbench_card_overlay_host->Unbind(wxEVT_SIZE,
+            &ModelGenerationPanel::on_workbench_card_overlay_size, this);
+        m_workbench_card_overlay_host = nullptr;
+    }
+    if (m_workbench_card_owner) {
+        m_workbench_card_owner->Unbind(wxEVT_MOVE,
+            &ModelGenerationPanel::on_workbench_card_owner_move, this);
+        m_workbench_card_owner->Unbind(wxEVT_ACTIVATE,
+            &ModelGenerationPanel::on_workbench_card_owner_activate, this);
+        m_workbench_card_owner = nullptr;
+    }
+    hide_workbench_check_card();
+}
+
+void ModelGenerationPanel::on_workbench_card_owner_move(wxMoveEvent& event)
+{
+    position_workbench_check_card();
+    event.Skip();
+}
+
+void ModelGenerationPanel::on_workbench_card_owner_activate(wxActivateEvent& event)
+{
+    if (event.GetActive()) position_workbench_check_card();
+    event.Skip();
+}
+
+void ModelGenerationPanel::on_workbench_card_overlay_size(wxSizeEvent& event)
+{
+    position_workbench_check_card();
+    event.Skip();
 }
 
 void ModelGenerationPanel::hide_workbench_check_card()
 {
     m_workbench_check_card_visible = false;
+    if (m_workbench_honor_semantic_active) {
+        update_workbench_check_card();
+        return;
+    }
+    m_workbench_floating_card_mode = WorkbenchFloatingCardMode::None;
     if (m_workbench_check_progress) m_workbench_check_progress->set_running(false);
+    if (m_workbench_check_progress) m_workbench_check_progress->set_progress(std::nullopt);
     if (m_model_preview) m_model_preview->set_workbench_input_locked(false);
     if (m_workbench_shell && !m_workbench_shell->IsEnabled()) m_workbench_shell->Enable();
     if (m_workbench_check_card && m_workbench_check_card->IsShown())
@@ -220,14 +269,16 @@ void ModelGenerationPanel::update_workbench_check_card()
 {
     if (!m_workbench_check_card || !m_workbench_check_modal) return;
     const auto& result = m_workbench_check_result;
-    const bool show = workbench_check_card_should_show(m_finishing_workbench,
-        m_workbench_check_card_visible, m_workbench_check_running,
-        m_workbench_auto_repair && m_finishing_running, result);
-    if (!show) {
+    const auto mode = workbench_floating_card_mode(m_finishing_workbench,
+        m_workbench_honor_semantic_active, m_workbench_check_card_visible,
+        m_workbench_check_running, m_workbench_auto_repair && m_finishing_running, result);
+    if (mode == WorkbenchFloatingCardMode::None) {
         hide_workbench_check_card();
         return;
     }
-    m_workbench_check_card_visible = true;
+    m_workbench_floating_card_mode = mode;
+    const bool honor_semantic = mode == WorkbenchFloatingCardMode::HonorSuiteSemantic;
+    if (!honor_semantic) m_workbench_check_card_visible = true;
     const wxColour modal_text(238, 240, 244);
     for (auto* label : {m_workbench_check_phase, m_workbench_check_message}) {
         if (label->GetForegroundColour() != modal_text) {
@@ -240,10 +291,10 @@ void ModelGenerationPanel::update_workbench_check_card()
     if (!m_workbench_check_card->IsShown()) {
         apply_workbench_floating_card_shape(m_workbench_check_card, 8, wxColour(45, 45, 49));
         m_workbench_check_card->Show();
-        m_workbench_check_card->Raise();
     }
     wxString phase;
-    if (m_workbench_check_running) {
+    if (honor_semantic) phase = _L("正在应用荣耀耗材套装");
+    else if (m_workbench_check_running) {
         switch (result.phase) {
         case WorkbenchCheckPhase::Repairing: phase = _L("修复模型"); break;
         case WorkbenchCheckPhase::Rechecking: phase = _L("复检模型"); break;
@@ -252,28 +303,39 @@ void ModelGenerationPanel::update_workbench_check_card()
     } else if (m_workbench_auto_repair && m_finishing_running) phase = _L("保存修复结果");
     else phase = result.status == WorkbenchCheckStatus::Attention ? _L("检查完成") : _L("检查未通过");
     bool modal_layout_changed = set_workbench_label(m_workbench_check_phase, phase);
-    wxString message = from_u8(result.summary);
-    if (m_workbench_auto_repair && m_finishing_running)
+    wxString message = honor_semantic
+        ? m_workbench_honor_semantic_message : from_u8(result.summary);
+    if (honor_semantic && message.empty())
+        message = _L("正在识别人像区域并匹配肤色、头发、眼白、牙齿和嘴唇，请稍候……");
+    else if (!honor_semantic && m_workbench_auto_repair && m_finishing_running)
         message = _L("安全修复已通过复检，正在自动接受并保存……");
-    else if (!m_workbench_check_running && result.status == WorkbenchCheckStatus::Attention && result.force_import_risk)
+    else if (!honor_semantic && !m_workbench_check_running &&
+             result.status == WorkbenchCheckStatus::Attention && result.force_import_risk)
         message += _L("\n这是轻微开放边界风险；可忽略后继续导入切片，也可以返回 2D 设计图。\n导入许可仅绑定当前模型版本。")
             ;
-    else if (!m_workbench_check_running && result.status != WorkbenchCheckStatus::Attention)
+    else if (!honor_semantic && !m_workbench_check_running &&
+             result.status != WorkbenchCheckStatus::Attention)
         message += _L("\n当前结果不能强制导入，只能返回 2D 设计图。")
             ;
     if (set_workbench_label(m_workbench_check_message, message)) {
         m_workbench_check_message->Wrap(FromDIP(376));
         modal_layout_changed = true;
     }
-    const bool running = m_workbench_check_running || (m_workbench_auto_repair && m_finishing_running);
-    modal_layout_changed = set_workbench_shown(m_workbench_check_cancel_button, m_workbench_check_running) || modal_layout_changed;
+    const bool running = honor_semantic || m_workbench_check_running ||
+        (m_workbench_auto_repair && m_finishing_running);
+    modal_layout_changed = set_workbench_shown(m_workbench_check_cancel_button,
+        !honor_semantic && m_workbench_check_running) || modal_layout_changed;
     set_workbench_enabled(m_workbench_check_cancel_button, m_workbench_check_running &&
         (!m_workbench_check_cancel || !m_workbench_check_cancel->load()));
-    const bool attention = !m_workbench_check_running && result.status == WorkbenchCheckStatus::Attention &&
+    const bool attention = !honor_semantic && !m_workbench_check_running &&
+        result.status == WorkbenchCheckStatus::Attention &&
         result.force_import_risk;
     modal_layout_changed = set_workbench_shown(m_workbench_check_continue_button, attention) || modal_layout_changed;
-    modal_layout_changed = set_workbench_shown(m_workbench_check_return_button, !running && !attention) || modal_layout_changed;
+    modal_layout_changed = set_workbench_shown(m_workbench_check_return_button,
+        !honor_semantic && !running && !attention) || modal_layout_changed;
     modal_layout_changed = set_workbench_shown(m_workbench_check_progress, running) || modal_layout_changed;
+    m_workbench_check_progress->set_progress(honor_semantic && m_workbench_honor_semantic_progress > 0
+        ? std::optional<int>(m_workbench_honor_semantic_progress) : std::nullopt);
     m_workbench_check_progress->set_running(running);
     if (modal_layout_changed) {
         m_workbench_check_modal->Layout();
@@ -290,6 +352,7 @@ void ModelGenerationPanel::rescale_post_generation_workbench()
         window->SetFont(window->GetFont());
         if (auto* button = dynamic_cast<WorkbenchButton*>(window)) button->rescale_workbench();
         else if (auto* toggle = dynamic_cast<WorkbenchSwitch*>(window)) toggle->rescale_workbench();
+        else if (auto* stepper = dynamic_cast<WorkbenchNumberStepper*>(window)) stepper->rescale_workbench();
         else if (auto* button = dynamic_cast<Button*>(window)) button->Rescale();
         if (auto* choice = dynamic_cast<ComboBox*>(window)) choice->Rescale();
         else if (auto* input = dynamic_cast<TextInput*>(window)) input->Rescale();
@@ -500,22 +563,34 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
                 ? "模型正在保存或处理，请稍候。" : snapshot.apply_filaments_reason));
     }
     if (m_workbench_printer_filament_trial) {
+        const auto* honor_suite = m_model_preview ? m_model_preview->active_honor_filament_suite() : nullptr;
+        const auto* bundle = wxGetApp().preset_bundle;
+        const auto suite_compatibility = honor_suite && bundle
+            ? PrinterFilamentConfig::honor_suite_compatibility(*bundle, *honor_suite)
+            : PrinterFilamentConfig::HonorSuiteCompatibility{};
         const auto card = m_model_preview
             ? m_model_preview->model_color_pack_for_filament_import() : std::nullopt;
         const bool has_card = card && card->valid_for_workbench_import();
+        const bool suite_allowed = !honor_suite || suite_compatibility.compatible;
         const bool can_trial = workbench_printer_trial_action_allowed(
             m_printer_filament_trial_active, m_apply_filaments_saving,
-            snapshot.can_edit_project_colors, has_card);
+            snapshot.can_edit_project_colors, has_card) &&
+            (m_printer_filament_trial_active || suite_allowed);
         set_workbench_enabled(m_workbench_printer_filament_trial, can_trial);
         layout_changed = set_workbench_label(m_workbench_printer_filament_trial,
             m_printer_filament_trial_active ? _L("退出打印机耗材试色") : _L("将模型配色导入到耗材")) || layout_changed;
-        const wxString disabled_reason = !has_card
-            ? _L("当前没有 1 至 32 色的有效色卡，请先生成自动建议或完成试色。")
+        const wxString disabled_reason = honor_suite && !suite_allowed
+            ? wxString::FromUTF8(suite_compatibility.reason.empty()
+                ? "当前打印机不支持六实体色荣耀耗材套装" : suite_compatibility.reason)
+            : !has_card
+            ? _L("当前没有 1 至 32 色的有效色卡，请先生成 AI配色或完成试色。")
             : !snapshot.can_edit_project_colors
                 ? _L("模型处理中或存在未接受候选，请先完成当前操作。") : wxString{};
         set_workbench_tooltip(m_workbench_printer_filament_trial, m_printer_filament_trial_active
             ? _L("退出试色并恢复进入前的模型外观；已提交的耗材配置保留。")
-            : can_trial ? _L("将模型配色直接生成实体耗材与叠色配方；成功后一次提交并进入试色。")
+            : can_trial ? honor_suite
+                ? _L("按套装顺序绑定六个真实实体耗材；不生成叠色配方。")
+                : _L("将模型配色直接生成实体耗材与叠色配方；成功后一次提交并进入试色。")
                         : disabled_reason);
         if (m_workbench_printer_filament_feedback) {
             const wxString feedback = !m_workbench_printer_filament_notice.empty()
@@ -534,7 +609,15 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
                 !feedback.empty()) || layout_changed;
         }
     }
-    set_workbench_enabled(m_workbench_palette_details, state.can_edit && m_finishing_candidate.empty());
+    const bool original_appearance_available = m_model_preview->original_comparison_available();
+    const wxString original_appearance_reason = original_appearance_available
+        ? wxString{} : from_u8(m_model_preview->original_appearance_error().empty()
+            ? "原始配色证据不可用" : m_model_preview->original_appearance_error());
+    m_model_preview->set_workbench_original_appearance_error(original_appearance_reason);
+    set_workbench_enabled(m_workbench_palette_details,
+        state.can_edit && m_finishing_candidate.empty() && original_appearance_available);
+    set_workbench_tooltip(m_workbench_palette_details, original_appearance_available
+        ? _L("查看和调整当前模型配色") : original_appearance_reason);
     m_model_preview->set_workbench_palette_editable(state.can_edit && m_finishing_candidate.empty());
     if (m_workbench_base) {
         std::string base_reason;
@@ -555,7 +638,7 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         set_workbench_enabled(m_workbench_original, comparison_available);
         set_workbench_tooltip(m_workbench_original, comparison_available
             ? _L("并排显示当前模型与导入时的原贴图、顶点色或材质色")
-            : _L("当前模型没有可用的原贴图、顶点色或材质色"));
+            : original_appearance_reason);
     }
     if (m_workbench_grid) {
         const bool grid_visible = m_model_preview->workbench_grid_visible();
@@ -649,9 +732,22 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
             has_details ? _L("查看检查详情") : _L("完成一次模型检查后可查看详情"));
     }
     const auto trial = m_model_preview->color_trial_state();
-    layout_changed = set_workbench_label(m_workbench_palette_status,
-        wxString::Format(_L("当前色卡 · %llu 色"),
-            static_cast<unsigned long long>(trial.colors.size()))) || layout_changed;
+    const bool honor_suite_active = m_model_preview->active_honor_filament_suite() != nullptr;
+    const wxString palette_status = original_appearance_available
+        ? honor_suite_active
+            ? wxString::Format(_L("荣耀耗材套装 · 模型当前使用 %llu/6 色"),
+                static_cast<unsigned long long>(m_model_preview->honor_suite_used_color_count()))
+            : wxString::Format(_L("当前色卡 · %llu 色"), static_cast<unsigned long long>(trial.colors.size()))
+        : _L("原始配色证据不可用");
+    const wxColour palette_status_color = original_appearance_available
+        ? wxColour(170, 170, 176) : wxColour(255, 150, 146);
+    if (m_workbench_palette_status->GetForegroundColour() != palette_status_color) {
+        m_workbench_palette_status->SetForegroundColour(palette_status_color);
+        m_workbench_palette_status->Refresh(false);
+    }
+    set_workbench_tooltip(m_workbench_palette_status, original_appearance_available
+        ? _L("当前预览使用的逻辑颜色数量") : original_appearance_reason);
+    layout_changed = set_workbench_label(m_workbench_palette_status, palette_status) || layout_changed;
     if (layout_changed) {
         m_workbench_settings_scroll->Layout();
         m_comparison_panel->Layout();

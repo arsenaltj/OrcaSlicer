@@ -11,6 +11,28 @@
 
 namespace Slic3r::GUI {
 
+void ModelGenerationPanel::clear_pending_workbench_ai_palette()
+{
+    m_workbench_auto_palette_pending = false;
+    m_workbench_auto_palette_revision = 0;
+    m_workbench_auto_palette_path.clear();
+}
+
+bool ModelGenerationPanel::apply_pending_workbench_ai_palette(const boost::filesystem::path& source,
+                                                               std::uint64_t revision)
+{
+    if (!m_workbench_auto_palette_pending || revision != m_workbench_auto_palette_revision ||
+        source != m_workbench_auto_palette_path || revision != m_sequence || source != m_displayed_model_path ||
+        !m_model_preview_ready || m_model_preview->restored_persisted_color_trial()) {
+        clear_pending_workbench_ai_palette();
+        return false;
+    }
+    clear_pending_workbench_ai_palette();
+    if (m_model_preview->activate_current_ai_palette()) return true;
+    m_workbench_operation_notice = "模型检查已完成，但当前模型无法应用 AI配色。";
+    return false;
+}
+
 void ModelGenerationPanel::ensure_workbench_check()
 {
     if (m_shutdown || m_workbench_import_running ||
@@ -39,6 +61,11 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     // it.  GLB repairs are exported as a colour-carrying OBJ because topology
     // changes cannot be represented by the texture-preserving GLB editor.
     const auto destination = source.parent_path() / ("orcaslicer-ai-" + id + ".obj");
+    auto appearance_carrier = destination;
+    appearance_carrier.replace_extension(".source-appearance.obj");
+    const auto appearance_root = ModelGenerationPresentation::generated_models_root();
+    const auto source_appearance = m_model_preview->original_appearance_reference();
+    const auto source_appearance_error = m_model_preview->original_appearance_error();
     const auto partition = m_beauty_controls ? m_beauty_controls->capture_partition() : nullptr;
     const bool bound_edits = !m_model_preview->face_color_overrides().empty() || m_model_preview->leaf_editing() ||
         m_model_preview->semantic_result_active() || bool(m_model_preview->semantic_region_evidence()) ||
@@ -49,6 +76,14 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     const auto canceled = m_workbench_check_cancel = std::make_shared<std::atomic<bool>>(false);
     const auto attempts = m_workbench_repair_attempts;
     const auto previous_result = m_workbench_check_result;
+    m_workbench_auto_repair = false;
+    if (automatic && !m_model_preview->restored_persisted_color_trial()) {
+        m_workbench_auto_palette_pending = true;
+        m_workbench_auto_palette_revision = revision;
+        m_workbench_auto_palette_path = source;
+    } else {
+        clear_pending_workbench_ai_palette();
+    }
     m_workbench_check_path = source.string();
     m_workbench_check_revision = revision;
     m_workbench_check_source = automatic ? WorkbenchCheckSource::Automatic : WorkbenchCheckSource::Manual;
@@ -66,7 +101,9 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     wxWeakRef<ModelGenerationPanel> weak(this);
     try {
         m_workbench_check_worker = std::thread([weak, source, destination, revision, asset, id, canceled,
-            attempts, previous_result, repair_allowed, bound_edits, automatic, check_source = m_workbench_check_source] {
+            attempts, previous_result, repair_allowed, bound_edits, automatic, appearance_carrier,
+            appearance_root, source_appearance, source_appearance_error,
+            check_source = m_workbench_check_source] {
             auto result = inspect_workbench_model(source, [canceled] { return canceled->load(); });
             result.source = check_source;
             const auto source_check = result;
@@ -165,16 +202,52 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
             }
             auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
             std::string error;
+            OriginalAppearanceReference candidate_appearance = source_appearance;
             if (repair.success && repair.changed() && result.candidate_status == RepairCandidateStatus::Ready && !canceled->load()) {
-                try { ModelPreview3D::prepare_model(destination, *prepared, error, {}, {}, true,
-                    [canceled] { return canceled->load(); }); }
+                if (source_appearance.valid() && !prepare_original_appearance_for_candidate(
+                        source, destination, repair.source_sha256, source_appearance, appearance_carrier,
+                        appearance_root, candidate_appearance, error,
+                        [canceled] { return canceled->load(); })) {
+                    result.appearance_mapped = false;
+                    result.appearance_confidence = 0.0;
+                    result.appearance_reason = error;
+                } else try {
+                    const std::optional<OriginalAppearanceReference> appearance_override =
+                        candidate_appearance.valid() || !source_appearance_error.empty()
+                            ? std::optional<OriginalAppearanceReference>(candidate_appearance) : std::nullopt;
+                    ModelPreview3D::prepare_model(destination, *prepared, error, {}, {}, true,
+                        [canceled] { return canceled->load(); }, nullptr, appearance_override);
+                    if (!source_appearance_error.empty() && !prepared->has_source_appearance)
+                        prepared->original_appearance_error = source_appearance_error;
+                    if (source_appearance.valid()) {
+                        result.appearance_mapped = prepared->has_source_appearance && !bound_edits;
+                        result.appearance_confidence = result.appearance_mapped ? 1.0 : 0.0;
+                        if (!result.appearance_mapped && result.appearance_reason.empty())
+                            result.appearance_reason = prepared->original_appearance_error;
+                    }
+                    if (automatic && !prepared->has_source_appearance) {
+                        result.appearance_mapped = false;
+                        result.appearance_confidence = 0.0;
+                        result.appearance_reason = prepared->original_appearance_error.empty()
+                            ? "原始配色证据不可用，自动流程未保存修复候选。"
+                            : prepared->original_appearance_error;
+                    }
+                }
                 catch (const std::exception& e) { error = e.what(); }
             }
-            if (canceled->load()) { boost::system::error_code ec; boost::filesystem::remove(destination, ec); }
+            if (canceled->load()) {
+                boost::system::error_code ec;
+                boost::filesystem::remove(destination, ec);
+                boost::filesystem::remove(appearance_carrier, ec);
+            }
             wxGetApp().CallAfter([weak, source, destination, revision, asset, id, canceled, attempted, key, source_hash,
-                automatic, check_source,
+                automatic, check_source, appearance_carrier,
                 result = std::move(result), repair, options, prepared, error] () mutable {
-                auto cleanup = [&destination] { boost::system::error_code ec; boost::filesystem::remove(destination, ec); };
+                auto cleanup = [&destination, &appearance_carrier] {
+                    boost::system::error_code ec;
+                    boost::filesystem::remove(destination, ec);
+                    boost::filesystem::remove(appearance_carrier, ec);
+                };
                 if (!weak || weak->m_shutdown || revision != weak->m_sequence || source != weak->m_displayed_model_path ||
                     weak->m_workbench_check_cancel != canceled) { cleanup(); return; }
                 auto* self = weak.get();
@@ -199,6 +272,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                 self->m_workbench_check_result = result;
                 if (!canceled->load() && !source_hash.empty() && AI::model_artifact_sha256(source) != source_hash) {
                     cleanup();
+                    self->clear_pending_workbench_ai_palette();
                     self->m_workbench_check_result = {};
                     self->m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
                     self->m_workbench_check_result.source = check_source;
@@ -244,6 +318,8 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                     self->invalidate_printer_filament_trial_for_model_change();
                     if (!self->m_model_preview->load_prepared_model(std::move(*prepared), {}, triangles, dimensions, colors, load_error)) {
                         self->m_finishing_candidate.clear();
+                        self->m_finishing_candidate_original_appearance = {};
+                        self->m_finishing_candidate_original_appearance_error.clear();
                         self->m_beauty_session_source.reset();
                         cleanup();
                         self->m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
@@ -251,7 +327,13 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                     } else {
                         self->m_model_preview->restore_view(view);
                         self->m_model_preview->restore_color_trial_without_recognition(before->color_trial);
+                        self->m_finishing_candidate_original_appearance =
+                            self->m_model_preview->original_appearance_reference();
+                        self->m_finishing_candidate_original_appearance_error =
+                            self->m_model_preview->original_appearance_error();
                         self->m_beauty_candidate_files.push_back(destination);
+                        if (boost::filesystem::is_regular_file(appearance_carrier))
+                            self->m_beauty_candidate_files.push_back(appearance_carrier);
                         if (self->m_beauty_transactions) self->m_beauty_transactions->mark_preview_ready();
                         self->m_workbench_repair_attempts.insert(id + "|" + repair.output_sha256);
                         // A fully rechecked topology candidate with no bound
@@ -262,11 +344,20 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                         self->m_workbench_auto_repair = automatic &&
                             workbench_topology_safe(self->m_workbench_check_result) &&
                             self->m_workbench_check_result.appearance_mapped &&
-                            self->m_workbench_check_result.appearance_confidence >= 0.99;
+                            self->m_workbench_check_result.appearance_confidence >= 0.99 &&
+                            (!self->m_workbench_auto_palette_pending ||
+                             self->m_model_preview->original_comparison_available());
                         self->m_workbench_check_result.candidate_status = RepairCandidateStatus::Ready;
                         self->m_workbench_check_result.candidate_path = destination.string();
                         self->m_workbench_check_result.candidate_sha256 = repair.output_sha256;
                         if (self->m_workbench_auto_repair) {
+                            if (workbench_ai_palette_should_apply(self->m_workbench_auto_palette_pending,
+                                    self->m_workbench_check_result.source,
+                                    workbench_topology_safe(self->m_workbench_check_result),
+                                    self->m_workbench_check_result.candidate_status, true))
+                                self->apply_pending_workbench_ai_palette(source, revision);
+                            else
+                                self->clear_pending_workbench_ai_palette();
                             self->m_workbench_check_result.summary += "\n修复复检通过，正在自动接受并保存。";
                             self->m_status->SetLabel(wxString::FromUTF8(self->m_workbench_check_result.summary));
                             self->refresh_controls();
@@ -287,6 +378,15 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                         self->m_workbench_check_result.summary = "安全修复预览失败，原模型保留：" + error;
                     }
                 }
+                if (automatic && !self->m_workbench_auto_repair) {
+                    if (workbench_ai_palette_should_apply(self->m_workbench_auto_palette_pending,
+                            self->m_workbench_check_result.source,
+                            workbench_topology_safe(self->m_workbench_check_result),
+                            self->m_workbench_check_result.candidate_status, false))
+                        self->apply_pending_workbench_ai_palette(source, revision);
+                    else
+                        self->clear_pending_workbench_ai_palette();
+                }
                 self->m_status->SetLabel(wxString::FromUTF8(self->m_workbench_check_result.summary));
                 self->refresh_controls();
                 self->update_finishing_selection();
@@ -294,6 +394,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
             });
         });
     } catch (const std::exception& error) {
+        clear_pending_workbench_ai_palette();
         m_workbench_check_running = false;
         m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
         m_workbench_check_result.source = automatic ? WorkbenchCheckSource::Automatic : WorkbenchCheckSource::Manual;

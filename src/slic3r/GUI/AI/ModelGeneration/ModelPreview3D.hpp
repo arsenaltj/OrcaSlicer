@@ -18,6 +18,7 @@
 #include "ModelPreviewGeometry.hpp"
 #include "BeautySourceSnapshot.hpp"
 #include "ModelHistoryMetadata.hpp"
+#include "ModelOriginalAppearance.hpp"
 #include "ModelPreviewPalette.hpp"
 #include "ModelPreviewColorControls.hpp"
 #include "WorkbenchRoundBasePreview.hpp"
@@ -98,6 +99,13 @@ public:
         std::optional<AI::ModelMatchedColors> matched;
         std::vector<std::string> missing_colors;
         std::string error;
+    };
+    struct HonorSuiteSemanticPresentation {
+        bool active {false};
+        int progress {0};
+        std::string geometry_id;
+        std::string request_context;
+        wxString message;
     };
     wxWindow* workbench_overlay_parent() const { return m_preview_host; }
     wxWindow* workbench_viewport_window() const { return m_canvas; }
@@ -206,7 +214,7 @@ public:
                 m_automatic_subface_colors.clear();
                 m_semantic_ready = false;
                 m_color_trial->set_semantic_mode(false);
-                m_color_trial->set_semantic_status(_L("已使用原生自动建议区域；语义只在自动划区时作为选区标签。"), false);
+                m_color_trial->set_semantic_status(_L("已使用原生 AI 配色区域；语义只在自动划区时作为选区标签。"), false);
             }
             m_canvas->Refresh(false);
             if (m_color_trial_changed) m_color_trial_changed(m_trial_palette.size());
@@ -216,6 +224,25 @@ public:
         m_color_trial->on_source_changed = [this](int previous, int next) {
             if (!m_restoring_printer_input && previous == 1 && next != 1)
                 restore_printer_filament_preview_source();
+            if (next == ModelPreviewColorControls::honor_suite_source) {
+                update_semantic_coloring();
+            } else if (previous == ModelPreviewColorControls::honor_suite_source) {
+                const std::string request_context = m_semantic_submission_context;
+                const std::string geometry_id = m_semantic_submission_geometry;
+                if (m_semantic_controller) m_semantic_controller->cancel();
+                m_semantic_timer.Stop();
+                publish_honor_suite_semantic_progress(false, 0, wxEmptyString,
+                    request_context, geometry_id);
+                m_color_blocks.reset();
+                m_selected_color_block.reset();
+                m_automatic_face_colors.clear();
+                m_automatic_subface_colors.clear();
+                m_semantic_model.reset();
+                m_semantic_ready = false;
+                m_semantic_submission_context.clear();
+                m_semantic_submission_geometry.clear();
+                m_canvas->Refresh(false);
+            }
         };
         trace_stage("color_controls");
         m_color_trial->on_region_changed = [this] {
@@ -362,6 +389,8 @@ public:
         if (m_region_preparation) m_region_preparation->canceled = true;
         m_rotation_timer.Stop();
         m_semantic_timer.Stop();
+        publish_honor_suite_semantic_progress(false, 0, wxEmptyString,
+            m_semantic_submission_context, m_semantic_submission_geometry);
         m_semantic_controller.reset();
         cancel_surface_selection();
         m_surface_timer.Stop();
@@ -405,6 +434,8 @@ public:
     struct PreparedModel {
         GLModel::Geometry geometry;
         std::optional<GLModel::PreparedGeometry> render_geometry;
+        GLModel::Geometry current_appearance_geometry;
+        std::optional<GLModel::PreparedGeometry> current_appearance_render_geometry;
 
         // Freeze CPU geometry and its exact bounds before the GUI adopts it.
         // Synchronous consumers can still use the unprepared geometry.
@@ -416,15 +447,22 @@ public:
                     auto frozen = GLModel::prepare_geometry(std::move(*shared), canceled);
                     render_geometry.emplace(std::move(frozen));
                     geometry = {}; // Release expanded storage on this worker.
+                    if (!current_appearance_geometry.is_empty())
+                        current_appearance_render_geometry.emplace(
+                            GLModel::prepare_geometry(std::move(current_appearance_geometry), canceled));
                     return;
                 }
             }
             render_geometry.emplace(GLModel::prepare_geometry(std::move(geometry), canceled));
+            if (!current_appearance_geometry.is_empty())
+                current_appearance_render_geometry.emplace(
+                    GLModel::prepare_geometry(std::move(current_appearance_geometry), canceled));
         }
         const GLModel::Geometry& render_data() const
         { return render_geometry ? render_geometry->geometry() : geometry; }
 
         AI::ModelArtifactTextureSurface texture_surface;
+        AI::ModelArtifactTextureSurface current_appearance_texture_surface;
         indexed_triangle_set mesh;
         std::vector<RGBA> vertex_colors;
         BoundingBoxf3 bounds;
@@ -454,13 +492,17 @@ public:
         std::shared_ptr<const PortraitShapeDetails> shape_details;
         bool shapes_unlocked {false};
         bool has_source_appearance {false};
+        bool current_appearance_distinct {false};
+        OriginalAppearanceReference original_appearance;
+        std::string original_appearance_error;
         nlohmann::json leaf_edits;
     };
 
     static bool prepare_model(const boost::filesystem::path& path, PreparedModel& prepared,
                               std::string& error, const FaceColorOverrides& explicit_overrides = {},
                               const boost::filesystem::path& metadata_path = {}, bool restore_saved_edits = true,
-                              const std::function<bool()>& canceled = {}, ModelHistoryMetadata* history_metadata = nullptr)
+                              const std::function<bool()>& canceled = {}, ModelHistoryMetadata* history_metadata = nullptr,
+                              const std::optional<OriginalAppearanceReference>& original_appearance_override = std::nullopt)
     {
         if (history_metadata) history_metadata->clear();
         const auto started = std::chrono::steady_clock::now();
@@ -486,8 +528,9 @@ public:
         if (stop_if_canceled()) return false;
         const FileStamp initial_stamp = file_stamp(path);
         TriangleMesh mesh;
-        ObjInfo obj_info;
-        if (!AI::load_model_artifact(path, mesh, obj_info, error, canceled, &prepared.texture_surface) || mesh.empty()) {
+        ObjInfo current_appearance;
+        AI::ModelArtifactTextureSurface current_texture_surface;
+        if (!AI::load_model_artifact(path, mesh, current_appearance, error, canceled, &current_texture_surface) || mesh.empty()) {
             if (error == "Model loading canceled.") error = "Model preview loading canceled.";
             else stop_if_canceled();
             return false;
@@ -501,6 +544,7 @@ public:
         if (stop_if_canceled()) return false;
         trace_stage("geometry_fingerprint");
         nlohmann::json region_reference, secondary_region_reference, shape_reference, restore_shape_reference, block_reference, restore_block_reference;
+        nlohmann::json restoration_metadata;
         std::string block_semantic_signature;
         prepared.face_color_overrides = explicit_overrides;
         auto record = metadata_path;
@@ -516,6 +560,7 @@ public:
             const auto& metadata = frozen_history ? history_metadata->restoration_fields() : fallback;
             std::string state_error;
             if (metadata.is_object()) {
+                restoration_metadata = metadata;
                 if (metadata.contains("portrait_color_blocks")) block_reference=metadata["portrait_color_blocks"];
                 if(metadata.contains("semantic_color_state") && metadata["semantic_color_state"].is_object())
                     block_semantic_signature=metadata["semantic_color_state"].value("signature",std::string{});
@@ -581,20 +626,63 @@ public:
         }
         if (stop_if_canceled()) return false;
         trace_stage("saved_state");
+        const std::string current_hash = AI::model_artifact_sha256(path);
+        const std::string topology = AI::SurfaceSelectionPersistence::topology_fingerprint(its);
+        const bool requires_original_resolution = original_appearance_override.has_value() ||
+            (restoration_metadata.is_object() &&
+             (restoration_metadata.contains("source_model") || restoration_metadata.contains("original_appearance")));
+        ResolvedOriginalAppearance resolved_appearance;
+        bool source_is_current = !requires_original_resolution;
+        if (requires_original_resolution) {
+            const auto library_root = original_appearance_library_root(path, record);
+            const bool resolved = !library_root.empty() && (original_appearance_override
+                ? resolve_original_appearance_reference(*original_appearance_override, its, library_root,
+                    resolved_appearance, prepared.original_appearance_error, canceled)
+                : resolve_original_appearance(path, its, restoration_metadata, library_root,
+                    resolved_appearance, prepared.original_appearance_error, canceled));
+            if (!resolved) {
+                prepared.has_source_appearance = false;
+                source_is_current = true; // Render the saved artifact, but never use it as AI evidence.
+                if (prepared.original_appearance_error.empty())
+                    prepared.original_appearance_error = "原始配色证据不可用。";
+            } else {
+                prepared.original_appearance = resolved_appearance.reference;
+                prepared.has_source_appearance = true;
+                source_is_current = resolved_appearance.reference.carrier_sha256 == current_hash;
+            }
+        } else {
+            prepared.has_source_appearance = preview_has_source_appearance(
+                current_appearance.vertex_colors.size() == its.vertices.size(),
+                current_appearance.face_colors.size() == its.indices.size(), current_texture_surface);
+            const auto library_root = original_appearance_library_root(path, record);
+            if (prepared.has_source_appearance && !library_root.empty() &&
+                AI::SurfaceSelectionPersistence::detail::valid_fingerprint(current_hash) &&
+                AI::SurfaceSelectionPersistence::detail::valid_fingerprint(topology)) {
+                boost::system::error_code canonical_error;
+                const auto canonical = boost::filesystem::canonical(path, canonical_error);
+                if (!canonical_error)
+                    prepared.original_appearance = {canonical, current_hash, topology, canonical, current_hash};
+            }
+        }
+        const ObjInfo& source_appearance = source_is_current
+            ? current_appearance : resolved_appearance.carrier_appearance;
+        prepared.current_appearance_distinct = prepared.has_source_appearance && !source_is_current;
+        if (prepared.current_appearance_distinct)
+            prepared.current_appearance_texture_surface = std::move(current_texture_surface);
+        prepared.texture_surface = source_is_current
+            ? std::move(current_texture_surface) : std::move(resolved_appearance.carrier_texture);
         std::unordered_map<size_t, PreviewPalette::Color> locked_colors;
         for (const auto& item : prepared.face_color_overrides) {
             if (item.first >= its.indices.size()) { error = "Local face color no longer matches this model."; return false; }
             locked_colors[item.first] = item.second;
         }
-        const bool has_vertex_colors = obj_info.vertex_colors.size() == its.vertices.size();
-        const bool has_face_colors = obj_info.face_colors.size() == its.indices.size();
-        prepared.has_source_appearance = preview_has_source_appearance(
-            has_vertex_colors, has_face_colors, prepared.texture_surface);
-        if (has_vertex_colors || has_face_colors) {
+        const bool has_vertex_colors = source_appearance.vertex_colors.size() == its.vertices.size();
+        const bool has_face_colors = source_appearance.face_colors.size() == its.indices.size();
+        if (prepared.has_source_appearance && (has_vertex_colors || has_face_colors)) {
             auto source = std::make_shared<AI::SemanticColoring::MeshSnapshot>();
             source->mesh = its;
-            source->vertex_colors = obj_info.vertex_colors;
-            source->face_colors = obj_info.face_colors;
+            source->vertex_colors = source_appearance.vertex_colors;
+            source->face_colors = source_appearance.face_colors;
             source->geometry_id = prepared.geometry_id;
             source->content_id = AI::SemanticColoring::content_fingerprint(*source);
             prepared.semantic_source = std::move(source);
@@ -668,38 +756,15 @@ public:
                 prepared.secondary_region_evidence_error, !region_reference.is_null());
         }
         const RGBA fallback {ColorRGBA::ORCA().r(), ColorRGBA::ORCA().g(), ColorRGBA::ORCA().b(), 1.0f};
-        GLModel::Geometry geometry;
-        geometry.format = {GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3N3T2};
-        geometry.reserve_vertices(its.indices.size() * 3);
-        geometry.reserve_indices(its.indices.size() * 3);
         std::unordered_set<uint32_t> observed_colors;
-        auto trial_histogram = std::make_shared<PreviewPalette::Histogram>();
-        auto automatic_color_units = std::make_shared<PreviewPalette::AutomaticColorUnits>();
-        automatic_color_units->colors.reserve(its.indices.size());
-        automatic_color_units->area.reserve(its.indices.size());
-        // Shared OBJ vertices often occur in six triangles. Pack/count their color
-        // once while retaining all original face corners and the exact RGB8 output.
-        std::vector<uint32_t> packed_vertex_colors;
-        std::vector<uint8_t> counted_vertices;
-        if (has_vertex_colors) {
-            packed_vertex_colors.reserve(obj_info.vertex_colors.size());
-            counted_vertices.assign(obj_info.vertex_colors.size(), 0);
-            std::array<float, 3> previous_rgb {};
-            uint32_t previous_packed = 0;
-            bool previous_rgb_valid = false;
-            for (const RGBA& color : obj_info.vertex_colors) {
-                // Repeated face-corner colors need the RGB8 conversion once.
-                // Alpha stays in the original per-vertex array used by rendering.
-                if (!previous_rgb_valid || std::memcmp(color.data(), previous_rgb.data(), sizeof(previous_rgb)) != 0) {
-                    previous_packed = preview_rgb8(color[0], color[1], color[2]);
-                    std::copy_n(color.data(), previous_rgb.size(), previous_rgb.begin());
-                    previous_rgb_valid = std::all_of(previous_rgb.begin(), previous_rgb.end(), [](float value) { return std::isfinite(value); });
-                }
-                packed_vertex_colors.push_back(previous_packed);
-            }
+        auto trial_histogram = prepared.has_source_appearance
+            ? std::make_shared<PreviewPalette::Histogram>() : std::shared_ptr<PreviewPalette::Histogram>();
+        auto automatic_color_units = prepared.has_source_appearance
+            ? std::make_shared<PreviewPalette::AutomaticColorUnits>() : std::shared_ptr<PreviewPalette::AutomaticColorUnits>();
+        if (automatic_color_units) {
+            automatic_color_units->colors.reserve(its.indices.size());
+            automatic_color_units->area.reserve(its.indices.size());
         }
-        if (stop_if_canceled()) return false;
-        trace_stage("packed_colors");
         std::function<void(const char*)> normal_trace;
         auto normal_tick = trace_prepare ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
         if (trace_prepare) normal_trace = [&](const char* stage) {
@@ -711,49 +776,83 @@ public:
         const auto corner_normals = ModelPreviewNormals::corner_normals(its, 45.f, normal_trace);
         if (stop_if_canceled()) return false;
         trace_stage("normals");
-        for (size_t face_index = 0; face_index < its.indices.size(); ++face_index) {
-            if ((face_index & 4095) == 0 && stop_if_canceled()) return false;
-            const auto lock = locked_colors.find(face_index);
-            const auto& indices = its.indices[face_index];
-            const Vec3f& a = its.vertices[indices[0]];
-            const Vec3f& b = its.vertices[indices[1]];
-            const Vec3f& c = its.vertices[indices[2]];
-            const double area_weight = (b - a).cross(c - a).norm();
-            const auto base = static_cast<unsigned int>(geometry.vertices_count());
-            const RGBA uniform_color = has_face_colors ? obj_info.face_colors[face_index] : fallback;
-            const uint32_t uniform_packed = has_vertex_colors ? 0 :
-                preview_rgb8(uniform_color[0], uniform_color[1], uniform_color[2]);
-            if (!has_vertex_colors)
-                observed_colors.insert(uniform_packed);
-            PreviewPalette::Color unit_color {};
-            for (size_t corner = 0; corner < 3; ++corner) {
-                const auto vertex_index = indices[corner];
-                const RGBA& color = has_vertex_colors ? obj_info.vertex_colors[vertex_index] : uniform_color;
-                const uint32_t packed = has_vertex_colors ? packed_vertex_colors[vertex_index] : uniform_packed;
-                trial_histogram->add(packed, area_weight);
-                unit_color[0] += float((packed >> 16) & 255) / (3.f * 255.f);
-                unit_color[1] += float((packed >> 8) & 255) / (3.f * 255.f);
-                unit_color[2] += float(packed & 255) / (3.f * 255.f);
-                if (has_vertex_colors && !counted_vertices[vertex_index]) {
-                    observed_colors.insert(packed);
-                    counted_vertices[vertex_index] = 1;
+        const auto build_geometry = [&](const ObjInfo& appearance, bool collect_evidence,
+                                        std::unordered_set<uint32_t>* observed) {
+            GLModel::Geometry geometry;
+            geometry.format = {GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3N3T2};
+            geometry.reserve_vertices(its.indices.size() * 3);
+            geometry.reserve_indices(its.indices.size() * 3);
+            const bool vertex_colors = appearance.vertex_colors.size() == its.vertices.size();
+            const bool face_colors = appearance.face_colors.size() == its.indices.size();
+            std::vector<uint32_t> packed_vertex_colors;
+            std::vector<uint8_t> counted_vertices;
+            if (vertex_colors) {
+                packed_vertex_colors.reserve(appearance.vertex_colors.size());
+                counted_vertices.assign(appearance.vertex_colors.size(), 0);
+                std::array<float, 3> previous_rgb {};
+                uint32_t previous_packed = 0;
+                bool previous_rgb_valid = false;
+                for (const RGBA& color : appearance.vertex_colors) {
+                    if (!previous_rgb_valid || std::memcmp(color.data(), previous_rgb.data(), sizeof(previous_rgb)) != 0) {
+                        previous_packed = preview_rgb8(color[0], color[1], color[2]);
+                        std::copy_n(color.data(), previous_rgb.size(), previous_rgb.begin());
+                        previous_rgb_valid = std::all_of(previous_rgb.begin(), previous_rgb.end(),
+                            [](float value) { return std::isfinite(value); });
+                    }
+                    packed_vertex_colors.push_back(previous_packed);
                 }
-                // Keep source appearance in the shared base model whenever a
-                // real source exists. Current saved edits are a sparse overlay,
-                // so the comparison viewport can reuse this exact GPU buffer.
-                const uint32_t shown = prepared.has_source_appearance || lock == locked_colors.end() ? packed
-                    : preview_rgb8(lock->second[0], lock->second[1], lock->second[2]);
-                geometry.add_vertex(its.vertices[indices[corner]], corner_normals[face_index * 3 + corner],
-                    Vec2f(float(shown), lock == locked_colors.end() ? color[3] : -1.0f));
             }
-            automatic_color_units->colors.push_back(unit_color);
-            automatic_color_units->area.push_back(area_weight * 0.5);
-            geometry.add_triangle(base, base + 1, base + 2);
-        }
+            for (size_t face_index = 0; face_index < its.indices.size(); ++face_index) {
+                if ((face_index & 4095) == 0 && stop_if_canceled()) return GLModel::Geometry {};
+                const auto lock = locked_colors.find(face_index);
+                const auto& indices = its.indices[face_index];
+                const Vec3f& a = its.vertices[indices[0]];
+                const Vec3f& b = its.vertices[indices[1]];
+                const Vec3f& c = its.vertices[indices[2]];
+                const double area_weight = (b - a).cross(c - a).norm();
+                const auto base = static_cast<unsigned int>(geometry.vertices_count());
+                const RGBA uniform_color = face_colors ? appearance.face_colors[face_index] : fallback;
+                const uint32_t uniform_packed = vertex_colors ? 0 :
+                    preview_rgb8(uniform_color[0], uniform_color[1], uniform_color[2]);
+                if (observed && !vertex_colors) observed->insert(uniform_packed);
+                PreviewPalette::Color unit_color {};
+                for (size_t corner = 0; corner < 3; ++corner) {
+                    const auto vertex_index = indices[corner];
+                    const RGBA& color = vertex_colors ? appearance.vertex_colors[vertex_index] : uniform_color;
+                    const uint32_t packed = vertex_colors ? packed_vertex_colors[vertex_index] : uniform_packed;
+                    if (collect_evidence) {
+                        trial_histogram->add(packed, area_weight);
+                        unit_color[0] += float((packed >> 16) & 255) / (3.f * 255.f);
+                        unit_color[1] += float((packed >> 8) & 255) / (3.f * 255.f);
+                        unit_color[2] += float(packed & 255) / (3.f * 255.f);
+                    }
+                    if (observed && vertex_colors && !counted_vertices[vertex_index]) {
+                        observed->insert(packed);
+                        counted_vertices[vertex_index] = 1;
+                    }
+                    const uint32_t shown = prepared.has_source_appearance || lock == locked_colors.end() ? packed
+                        : preview_rgb8(lock->second[0], lock->second[1], lock->second[2]);
+                    geometry.add_vertex(its.vertices[indices[corner]], corner_normals[face_index * 3 + corner],
+                        Vec2f(float(shown), lock == locked_colors.end() ? color[3] : -1.0f));
+                }
+                if (collect_evidence) {
+                    automatic_color_units->colors.push_back(unit_color);
+                    automatic_color_units->area.push_back(area_weight * 0.5);
+                }
+                geometry.add_triangle(base, base + 1, base + 2);
+            }
+            return geometry;
+        };
+        GLModel::Geometry geometry = build_geometry(source_appearance, prepared.has_source_appearance, &observed_colors);
         if (geometry.is_empty()) {
+            if (stop_if_canceled()) return false;
             error = "The OBJ contains no renderable triangles.";
             return false;
         }
+        if (prepared.current_appearance_distinct)
+            prepared.current_appearance_geometry = build_geometry(current_appearance, false, nullptr);
+        if (stop_if_canceled()) return false;
+        trace_stage("packed_colors");
 
         if (stop_if_canceled()) return false;
         trace_stage("render");
@@ -762,27 +861,30 @@ public:
         prepared.vertices = its.vertices.size();
         prepared.colors = observed_colors.size();
         const auto palette_started = std::chrono::steady_clock::now();
-        const size_t preview_color_count = std::clamp(prepared.colors, size_t(1), PreviewPalette::max_preview_colors);
-        prepared.trial_palette = trial_histogram->palette(preview_color_count, {}, true);
-        prepared.trial_histogram = std::move(trial_histogram);
-        prepared.automatic_color_units = std::move(automatic_color_units);
+        if (trial_histogram) {
+            const size_t preview_color_count = std::clamp(prepared.colors, size_t(1), PreviewPalette::max_preview_colors);
+            prepared.trial_palette = trial_histogram->palette(preview_color_count, {}, true);
+            prepared.trial_histogram = std::move(trial_histogram);
+            prepared.automatic_color_units = std::move(automatic_color_units);
+        }
         if (stop_if_canceled()) return false;
         trace_stage("palette");
         BOOST_LOG_TRIVIAL(info) << "AI color trial palette: colors=" << prepared.trial_palette.size()
             << ", clustering_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - palette_started).count();
         prepared.geometry = std::move(geometry);
-        if (!prepared.texture_surface.faces.empty()) prepared.corner_normals = corner_normals;
+        if (!prepared.texture_surface.faces.empty() || !prepared.current_appearance_texture_surface.faces.empty())
+            prepared.corner_normals = corner_normals;
         prepared.path = path;
         try { prepared.artifact_sha256 = AI::model_artifact_sha256(path); }
         catch (...) { /* A cache failure must not reject a valid model. */ }
         prepared.stamp = file_stamp(path);
         if (!same_stamp(initial_stamp, prepared.stamp))
             prepared.stamp.valid = false;
-        if (prepared.has_source_appearance || !restore_saved_edits) {
-            prepared.mesh = std::move(mesh.its);
-            prepared.vertex_colors = std::move(obj_info.vertex_colors);
-        }
+        prepared.mesh = std::move(mesh.its);
+        prepared.vertex_colors = source_is_current
+            ? std::move(current_appearance.vertex_colors)
+            : std::move(resolved_appearance.carrier_appearance.vertex_colors);
         trace_stage("publish");
         BOOST_LOG_TRIVIAL(info) << "AI model preview CPU prepare: triangles=" << prepared.triangles
             << ", elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -816,11 +918,23 @@ public:
             return false;
         }
         std::unique_ptr<ModelPreviewTexture> texture_model;
+        std::unique_ptr<ModelPreviewTexture> current_appearance_texture_model;
+        std::unique_ptr<GLModel> current_appearance_model;
         auto model = std::make_unique<GLModel>();
         try {
             if (!prepared.texture_surface.faces.empty())
                 texture_model = std::make_unique<ModelPreviewTexture>(prepared.texture_surface,
                     prepared.mesh, prepared.corner_normals);
+            if (prepared.current_appearance_distinct) {
+                if (!prepared.current_appearance_texture_surface.faces.empty())
+                    current_appearance_texture_model = std::make_unique<ModelPreviewTexture>(
+                        prepared.current_appearance_texture_surface, prepared.mesh, prepared.corner_normals);
+                current_appearance_model = std::make_unique<GLModel>();
+                if (prepared.current_appearance_render_geometry)
+                    current_appearance_model->init_from(std::move(*prepared.current_appearance_render_geometry));
+                else
+                    current_appearance_model->init_from(std::move(prepared.current_appearance_geometry));
+            }
             if (prepared.render_geometry)
                 model->init_from(std::move(*prepared.render_geometry));
             else
@@ -831,6 +945,8 @@ public:
         m_surface_vertices = std::move(surface_vertices);
         m_original_surface_colors = std::move(surface_colors);
         m_texture_model = std::move(texture_model);
+        m_current_appearance_texture_model = std::move(current_appearance_texture_model);
+        m_current_appearance_model = std::move(current_appearance_model);
         m_models.emplace_back(std::move(model));
         m_bounds = prepared.bounds;
         m_pending_mesh = std::move(prepared.mesh);
@@ -856,6 +972,9 @@ public:
         m_vertex_count = prepared.vertices;
         m_color_count = prepared.colors;
         m_has_source_appearance = prepared.has_source_appearance;
+        m_original_appearance = std::move(prepared.original_appearance);
+        m_original_appearance_error = std::move(prepared.original_appearance_error);
+        m_model_sha256 = prepared.artifact_sha256;
         m_trial_palette = std::move(prepared.trial_palette);
         m_trial_histogram = std::move(prepared.trial_histogram);
         triangle_count = m_triangle_count;
@@ -863,6 +982,7 @@ public:
         color_count = m_color_count;
         m_palette = palette;
         m_has_model = true;
+        m_restored_persisted_color_trial = prepared.color_trial.has_value();
         m_color_trial->load(m_trial_histogram, m_trial_palette, m_geometry_id,
             std::move(prepared.automatic_color_units));
         if (prepared.color_trial) {
@@ -876,8 +996,17 @@ public:
         m_saved_semantic_faces = std::move(prepared.saved_semantic_faces);
         m_saved_semantic_subfaces = std::move(prepared.saved_semantic_subfaces);
         if (prepared.color_trial) synchronize_project_bound_semantics(*prepared.color_trial, m_color_trial->state());
-        if (loaded_color_blocks)
-            BOOST_LOG_TRIVIAL(info) << "Legacy portrait color-block metadata loaded read-only; native palette remains active";
+        if (loaded_color_blocks) {
+            if (active_honor_filament_suite() &&
+                loaded_color_blocks->strategy == PortraitColorBlocks::Strategy::ColorRegionMajorityV2 &&
+                restore_portrait_color_blocks(std::move(loaded_color_blocks), true)) {
+                const size_t used = honor_suite_used_color_count();
+                m_color_trial->set_honor_suite_used_color_count(used);
+                BOOST_LOG_TRIVIAL(info) << "Honor portrait V2 color blocks restored: used_slots=" << used;
+            } else {
+                BOOST_LOG_TRIVIAL(info) << "Legacy portrait color-block metadata loaded read-only; native palette remains active";
+            }
+        }
         if (m_has_source_appearance && !m_face_color_overrides.empty() &&
             !restore_beauty_face_colors(m_face_color_overrides)) {
             error = "Unable to restore the current model appearance.";
@@ -900,11 +1029,21 @@ public:
             !same_stamp(m_cached_preview->stamp, file_stamp(path)) ||
             m_context == nullptr || !m_context->IsOK() || !m_canvas->SetCurrent(*m_context))
             return false;
+        if (m_cached_preview->artifact_sha256.empty() ||
+            AI::model_artifact_sha256(path) != m_cached_preview->artifact_sha256)
+            return false;
+        const auto& appearance = m_cached_preview->original_appearance;
+        if (appearance.valid() &&
+            (AI::model_artifact_sha256(appearance.carrier_model) != appearance.carrier_sha256 ||
+             AI::model_artifact_sha256(appearance.origin_model) != appearance.origin_sha256))
+            return false;
         auto cached = std::move(m_cached_preview);
         cache_current_preview();
         clear_current_preview();
         m_models = std::move(cached->models);
         m_texture_model = std::move(cached->texture_model);
+        m_current_appearance_model = std::move(cached->current_appearance_model);
+        m_current_appearance_texture_model = std::move(cached->current_appearance_texture_model);
         m_manual_color_model = std::move(cached->manual_color_model);
         m_pending_mesh = std::move(cached->mesh);
         m_pending_vertex_colors = std::move(cached->vertex_colors);
@@ -933,11 +1072,15 @@ public:
         if (m_region_evidence) restore_semantic_region_evidence(m_region_evidence);
         m_color_count = color_count = cached->colors;
         m_has_source_appearance = cached->has_source_appearance;
+        m_original_appearance = std::move(cached->original_appearance);
+        m_original_appearance_error = std::move(cached->original_appearance_error);
+        m_model_sha256 = std::move(cached->artifact_sha256);
         m_trial_palette = std::move(cached->trial_palette);
         m_trial_histogram = std::move(cached->trial_histogram);
         dimensions = m_model_dimensions = cached->dimensions;
         m_palette = palette;
         m_has_model = true;
+        m_restored_persisted_color_trial = cached->restored_persisted_color_trial;
         m_color_trial->load(m_trial_histogram, m_trial_palette, m_geometry_id,
             std::move(cached->automatic_color_units));
         if (cached->color_trial) {
@@ -948,8 +1091,17 @@ public:
         m_saved_semantic_faces = saved_faces;
         m_saved_semantic_subfaces = saved_subfaces;
         if (cached->color_trial) synchronize_project_bound_semantics(*cached->color_trial, m_color_trial->state());
-        if (loaded_color_blocks)
-            BOOST_LOG_TRIVIAL(info) << "Cached portrait color-block metadata ignored for rendering; native palette remains active";
+        if (loaded_color_blocks) {
+            if (active_honor_filament_suite() &&
+                loaded_color_blocks->strategy == PortraitColorBlocks::Strategy::ColorRegionMajorityV2 &&
+                restore_portrait_color_blocks(std::move(loaded_color_blocks), true)) {
+                const size_t used = honor_suite_used_color_count();
+                m_color_trial->set_honor_suite_used_color_count(used);
+                BOOST_LOG_TRIVIAL(info) << "Cached Honor portrait V2 color blocks restored: used_slots=" << used;
+            } else {
+                BOOST_LOG_TRIVIAL(info) << "Cached portrait color-block metadata ignored for rendering; native palette remains active";
+            }
+        }
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
         default_view();
@@ -971,16 +1123,20 @@ public:
     bool load_model(const boost::filesystem::path& path, const std::vector<std::string>& palette,
                     size_t& triangle_count, Vec3d& dimensions, size_t& color_count, std::string& error,
                     const FaceColorOverrides& explicit_overrides = {},
-                    const boost::filesystem::path& metadata_path = {})
+                    const boost::filesystem::path& metadata_path = {},
+                    const std::optional<OriginalAppearanceReference>& original_appearance_override = std::nullopt)
     {
         // Accepting an already displayed preview should not reparse the OBJ or
         // rebuild GPU buffers. The file stamp still invalidates external edits.
-        if (try_use_current_model(path, palette, triangle_count, dimensions, color_count))
+        if (!original_appearance_override &&
+            try_use_current_model(path, palette, triangle_count, dimensions, color_count))
             return true;
-        if (try_load_cached_model(path, palette, triangle_count, dimensions, color_count))
+        if (!original_appearance_override &&
+            try_load_cached_model(path, palette, triangle_count, dimensions, color_count))
             return true;
         PreparedModel prepared;
-        return prepare_model(path, prepared, error, explicit_overrides, metadata_path) && load_prepared_model(std::move(prepared), palette,
+        return prepare_model(path, prepared, error, explicit_overrides, metadata_path, true, {}, nullptr,
+            original_appearance_override) && load_prepared_model(std::move(prepared), palette,
             triangle_count, dimensions, color_count, error);
     }
 
@@ -995,7 +1151,12 @@ private:
     void clear_current_preview()
     {
         cancel_surface_selection();
+        const std::string semantic_context = m_semantic_submission_context;
+        const std::string semantic_geometry = m_semantic_submission_geometry;
         if (m_semantic_controller) m_semantic_controller->cancel();
+        m_semantic_timer.Stop();
+        publish_honor_suite_semantic_progress(false, 0, wxEmptyString,
+            semantic_context, semantic_geometry);
         m_semantic_source.reset(); m_automatic_face_colors.clear(); m_automatic_subface_colors.clear();
         m_portrait_shapes.reset(); m_shapes_unlocked = false; m_leaf_editing.reset();
         m_manual_leaf_colors.clear(); m_manual_cell_colors.clear(); m_pending_leaf_edits=nullptr;
@@ -1003,6 +1164,8 @@ private:
         m_semantic_analysis.reset(); m_semantic_ready = false;
         m_person_detected = false;
         m_semantic_error.clear();
+        m_semantic_submission_context.clear();
+        m_semantic_submission_geometry.clear();
         m_region_evidence.reset(); m_region_runtime_identity.clear(); m_region_evidence_error.clear();
         m_secondary_region_evidence.reset(); m_secondary_region_evidence_error.clear();
         m_protected_faces.clear();
@@ -1024,6 +1187,8 @@ private:
             m_canvas->SetCurrent(*m_context);
         m_models.clear();
         m_texture_model.reset();
+        m_current_appearance_model.reset();
+        m_current_appearance_texture_model.reset();
         m_manual_color_model.reset(); m_manual_corner_normals.clear();
         m_surface_vertices.clear();
         m_original_surface_colors.clear();
@@ -1044,6 +1209,10 @@ private:
         m_palette.clear();
         m_has_model = false;
         m_has_source_appearance = false;
+        m_restored_persisted_color_trial = false;
+        m_original_appearance = {};
+        m_original_appearance_error.clear();
+        m_model_sha256.clear();
         set_original_comparison(false);
         m_vertex_count = 0;
         m_color_trial_enabled = false;
@@ -1926,7 +2095,7 @@ public:
         if (!m_has_model) return _L("当前没有已加载模型。");
         if (!m_semantic_source) return _L("当前模型缺少可用于人像识别的面颜色输入。");
         if (!m_color_trial || m_color_trial->colors().empty()) return _L("当前没有有效色卡。");
-        if (!m_color_trial->portrait_color_count_supported()) return _L("人像颜色块后处理仅支持自动建议四至六色；当前将使用普通配色。");
+        if (!m_color_trial->portrait_color_count_supported()) return _L("人像颜色块后处理仅支持 AI配色四至六色；当前将使用普通配色。");
         return m_semantic_error;
     }
     const wxString& semantic_error() const { return m_semantic_error; }
@@ -2042,6 +2211,14 @@ public:
     bool beauty_lighting() const { return m_beauty_lighting; }
     bool original_comparison_available() const {
         return m_has_model && m_has_source_appearance;
+    }
+    const OriginalAppearanceReference& original_appearance_reference() const { return m_original_appearance; }
+    const std::string& original_appearance_error() const { return m_original_appearance_error; }
+    void set_workbench_original_appearance_error(const wxString& reason) {
+        m_color_trial->set_original_appearance_error(reason);
+    }
+    nlohmann::json original_appearance_metadata(const boost::filesystem::path& root) const {
+        return m_original_appearance.valid() ? m_original_appearance.encode(root) : nlohmann::json();
     }
     bool original_comparison_enabled() const { return m_original_comparison; }
     void set_original_comparison(bool enabled) {
@@ -2218,9 +2395,15 @@ public:
     }
     void cancel_semantic_request() {
         m_semantic_error = _L("用户已取消自动划区语义识别。");
+        const std::string request_context = m_semantic_submission_context;
+        const std::string geometry_id = m_semantic_submission_geometry;
         if (m_semantic_controller) m_semantic_controller->cancel();
         m_semantic_timer.Stop();
         m_color_trial->set_semantic_status(m_semantic_error, false);
+        publish_honor_suite_semantic_progress(false, 0, m_semantic_error,
+            request_context, geometry_id);
+        m_semantic_submission_context.clear();
+        m_semantic_submission_geometry.clear();
         if (m_semantic_completion) {
             auto callback = std::move(m_semantic_completion);
             callback(false);
@@ -2246,15 +2429,20 @@ public:
     bool has_portrait_color_block_contract() const {return bool(m_color_blocks) || (m_printer_filament_restore && bool(m_printer_filament_restore->color_blocks));}
     FaceColorOverrides import_face_color_overrides(bool use_current_trial = true) const {
         (void)use_current_trial;
-        auto result = m_face_color_overrides;
+        const bool suite_v2 = honor_suite_v2_appearance_active();
+        auto result = AI::SemanticColoring::compose(
+            m_automatic_face_colors, m_face_color_overrides, suite_v2);
         auto children = SubfaceColorOverrides {};
         AI::compose_leaf_colors(result, children, m_manual_leaf_colors);
         return implicit_cell_colors(std::move(result));
     }
     SubfaceColorOverrides import_subface_color_overrides(bool use_current_trial = true) const {
         (void)use_current_trial;
-        auto roots = m_face_color_overrides;
-        auto result = SubfaceColorOverrides {};
+        const bool suite_v2 = honor_suite_v2_appearance_active();
+        auto roots = AI::SemanticColoring::compose(
+            m_automatic_face_colors, m_face_color_overrides, suite_v2);
+        auto result = AI::SemanticColoring::compose_subfaces(
+            m_automatic_subface_colors, m_face_color_overrides, suite_v2);
         AI::compose_leaf_colors(roots, result, m_manual_leaf_colors);
         return contour_subfaces(std::move(result));
     }
@@ -2387,6 +2575,11 @@ public:
     {
         m_color_trial_changed = std::move(callback);
     }
+    void set_honor_suite_semantic_progress_callback(
+        std::function<void(const HonorSuiteSemanticPresentation&)> callback)
+    {
+        m_honor_suite_semantic_progress = std::move(callback);
+    }
     void set_selection_commit_callback(std::function<void(const SelectionState&, const SelectionState&)> callback)
     {
         m_selection_commit = std::move(callback);
@@ -2465,6 +2658,41 @@ public:
     const std::vector<PreviewPalette::Color>& project_colors() const { return m_color_trial->project_colors(); }
     std::vector<FilamentColorPack> configuration_color_sources() const { return m_color_trial->configuration_color_sources(); }
     std::optional<FilamentColorPack> current_color_pack() const { return m_color_trial->current_color_pack(); }
+    const HonorFilamentSuite* active_honor_filament_suite() const {
+        return m_color_trial ? m_color_trial->active_honor_suite() : nullptr;
+    }
+    bool honor_suite_v2_appearance_active() const {
+        if (!m_color_blocks || !m_semantic_ready ||
+            m_color_blocks->strategy != PortraitColorBlocks::Strategy::ColorRegionMajorityV2) return false;
+        if (active_honor_filament_suite()) return true;
+        return m_color_trial && m_color_trial->state().source == 1 && m_printer_filament_restore &&
+            m_printer_filament_restore->geometry_id == m_geometry_id &&
+            find_honor_filament_suite(m_printer_filament_restore->color_trial.suite_id,
+                m_printer_filament_restore->color_trial.suite_revision) != nullptr;
+    }
+    size_t honor_suite_used_color_count() const {
+        if (!active_honor_filament_suite()) return 0;
+        std::set<size_t> used;
+        if (m_color_blocks && m_color_blocks->strategy == PortraitColorBlocks::Strategy::ColorRegionMajorityV2) {
+            const auto slots = PortraitColorBlocks::used_display_slots(*m_color_blocks);
+            used.insert(slots.begin(), slots.end());
+        }
+        const auto* suite = active_honor_filament_suite();
+        if (suite && m_portrait_shapes) {
+            for (const auto& item : m_portrait_shapes->cell_colors) {
+                for (size_t slot = 0; slot < suite->physical_slots.size(); ++slot) {
+                    const wxColour color(wxString::FromUTF8(suite->physical_slots[slot].color));
+                    const PreviewPalette::Color expected {color.Red() / 255.f, color.Green() / 255.f,
+                        color.Blue() / 255.f};
+                    if (PrinterFilamentPreview::rgb8(item.second) == PrinterFilamentPreview::rgb8(expected)) {
+                        used.insert(slot);
+                        break;
+                    }
+                }
+            }
+        }
+        return used.empty() && m_color_trial ? m_color_trial->honor_suite_used_color_count() : used.size();
+    }
     std::optional<FilamentColorPack> model_color_pack_for_filament_import() const {
         if (!m_color_trial) return std::nullopt;
         const auto current = m_color_trial->state();
@@ -2494,11 +2722,15 @@ public:
     bool exit_printer_filament_trial();
     nlohmann::json printer_filament_restore_metadata() const;
     bool apply_project_filament_palette(const std::vector<size_t>* bindings = nullptr);
-    bool apply_project_filament_basis();
+    bool apply_project_filament_basis(bool physical_only = false);
     void set_project_configuration_override(std::shared_ptr<const PresetBundle> bundle) { m_color_trial->set_project_configuration_override(std::move(bundle)); }
     bool project_matching_valid() const { return m_color_trial->project_matching_valid(); }
     FaceColorOverrides printer_filament_export_faces() const;
     wxWindow* build_workbench_palette(wxWindow* parent) { return m_color_trial->build_workbench_palette(parent); }
+    bool activate_current_ai_palette() {
+        return m_has_model && m_color_trial && m_color_trial->activate_current_ai_palette();
+    }
+    bool restored_persisted_color_trial() const { return m_restored_persisted_color_trial; }
     wxWindow* build_workbench_mode(wxWindow* parent, std::function<void(bool)> mode, std::function<void()> cancel) {
         m_color_trial->on_semantic_mode = std::move(mode); m_color_trial->on_semantic_cancel = std::move(cancel);
         return m_color_trial->build_workbench_mode(parent);
@@ -2535,6 +2767,12 @@ public:
     void synchronize_project_bound_semantics(const ModelPreviewColorControls::State& before,
         const ModelPreviewColorControls::State& after) {
         if (before.semantic_palette == after.semantic_palette) return;
+        if (honor_suite_v2_appearance_active() && !after.semantic_palette.empty()) {
+            auto blocks = std::make_shared<PortraitColorBlocks::Result>(*m_color_blocks);
+            if (PortraitColorBlocks::remap_to_palette(*blocks, after.semantic_palette, true,
+                    blocks->role_slot_locks))
+                m_color_blocks = std::move(blocks);
+        }
         auto recolor = [&before, &after](auto& color) {
             const auto replacement = AI::ColorTrialPersistence::project_target_replacement(before, after,
                 {color[0], color[1], color[2]});
@@ -2780,6 +3018,8 @@ private:
     struct CachedPreview {
         std::vector<std::unique_ptr<GLModel>> models;
         std::unique_ptr<ModelPreviewTexture> texture_model;
+        std::unique_ptr<GLModel> current_appearance_model;
+        std::unique_ptr<ModelPreviewTexture> current_appearance_texture_model;
         std::unique_ptr<GLModel> manual_color_model;
         indexed_triangle_set mesh;
         std::vector<RGBA> vertex_colors;
@@ -2794,6 +3034,7 @@ private:
         std::shared_ptr<const PreviewPalette::Histogram> trial_histogram;
         std::shared_ptr<const PreviewPalette::AutomaticColorUnits> automatic_color_units;
         std::string geometry_id;
+        std::string artifact_sha256;
         FaceColorOverrides face_color_overrides;
         std::optional<SelectionState> selection;
         std::optional<ModelPreviewColorControls::State> color_trial;
@@ -2809,6 +3050,9 @@ private:
         std::shared_ptr<const PortraitShapeDetails> shape_details;
         bool shapes_unlocked {false};
         bool has_source_appearance {false};
+        OriginalAppearanceReference original_appearance;
+        std::string original_appearance_error;
+        bool restored_persisted_color_trial {false};
         nlohmann::json leaf_edits;
     };
 
@@ -2851,6 +3095,10 @@ private:
         for (const auto& model : m_models)
             bytes += model->cpu_memory_used() + model->gpu_memory_used();
         if (m_texture_model) bytes += m_texture_model->memory_used();
+        if (m_current_appearance_model)
+            bytes += m_current_appearance_model->cpu_memory_used() + m_current_appearance_model->gpu_memory_used();
+        if (m_current_appearance_texture_model)
+            bytes += m_current_appearance_texture_model->memory_used();
         if (m_manual_color_model) bytes += m_manual_color_model->cpu_memory_used() + m_manual_color_model->gpu_memory_used();
         constexpr size_t cache_limit = size_t(384) * 1024 * 1024;
         if(m_color_blocks) bytes+=m_color_blocks->memory_bytes();
@@ -2858,7 +3106,11 @@ private:
             return;
         m_cached_preview = std::make_unique<CachedPreview>();
         m_cached_preview->geometry_id = m_geometry_id;
+        m_cached_preview->artifact_sha256 = m_model_sha256;
         m_cached_preview->has_source_appearance = m_has_source_appearance;
+        m_cached_preview->original_appearance = m_original_appearance;
+        m_cached_preview->original_appearance_error = m_original_appearance_error;
+        m_cached_preview->restored_persisted_color_trial = m_restored_persisted_color_trial;
         m_cached_preview->face_color_overrides = m_face_color_overrides;
         m_cached_preview->printer_filament_restore = m_printer_filament_restore;
         m_cached_preview->color_blocks=m_color_blocks;
@@ -2878,6 +3130,8 @@ private:
         m_cached_preview->color_trial = m_color_trial->state();
         m_cached_preview->models = std::move(m_models);
         m_cached_preview->texture_model = std::move(m_texture_model);
+        m_cached_preview->current_appearance_model = std::move(m_current_appearance_model);
+        m_cached_preview->current_appearance_texture_model = std::move(m_current_appearance_texture_model);
         if (canonical->ready()) {
             // Retain only compact source arrays, never the adjacency/BVH. This
             // keeps the first local before/after comparison free of OBJ parsing.
@@ -3681,9 +3935,15 @@ private:
                     } else if (m_residual_preview_model) {
                         shader->set_uniform("preview_color_count", 0);
                         m_residual_preview_model->render(shader);
-                    } else if (m_semantic_ready && m_semantic_model && m_leaf_editing &&
-                               (!m_manual_leaf_colors.empty() || !m_manual_cell_colors.empty()) && !gray_view) {
+                    } else if (m_semantic_ready && m_semantic_model && !gray_view &&
+                               (honor_suite_v2_appearance_active() || (m_leaf_editing &&
+                                (!m_manual_leaf_colors.empty() || !m_manual_cell_colors.empty())))) {
                         m_semantic_model->render(shader);
+                    } else if (!m_color_trial_enabled && m_current_appearance_model && !gray_view && !m_exact_surface_display) {
+                        if (m_current_appearance_texture_model)
+                            m_current_appearance_texture_model->render(shader, body_view);
+                        else
+                            m_current_appearance_model->render(shader);
                     } else if (m_texture_model && !gray_view && !m_exact_surface_display) {
                         m_texture_model->render(shader, body_view);
                     } else {
@@ -3852,9 +4112,25 @@ private:
     void update_semantic_coloring();
     void finish_semantic_coloring();
     void rebuild_semantic_preview_from_cached_result();
+    bool rebuild_semantic_preview_from_color_blocks();
+    bool apply_honor_suite_fallback(const wxString& reason);
+    void publish_honor_suite_semantic_progress(bool active, int progress,
+        const wxString& message, const std::string& request_context = {},
+        const std::string& geometry_id = {})
+    {
+        if (!m_honor_suite_semantic_progress) return;
+        const std::string& context = request_context.empty()
+            ? m_semantic_submission_context : request_context;
+        if (context.empty()) return;
+        const std::string& geometry = geometry_id.empty()
+            ? m_semantic_submission_geometry : geometry_id;
+        m_honor_suite_semantic_progress({active, std::clamp(progress, 0, 100),
+            geometry, context, message});
+    }
     wxTimer m_semantic_timer;
     std::unique_ptr<ModelSemanticColoring> m_semantic_controller;
     std::function<void(bool)> m_semantic_completion;
+    std::function<void(const HonorSuiteSemanticPresentation&)> m_honor_suite_semantic_progress;
     std::shared_ptr<PortraitOptimizationTask> m_portrait_progress;
     std::function<void()> m_portrait_input_changed, m_after_preview_frame;
     std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> m_semantic_source;
@@ -3867,6 +4143,8 @@ private:
     uint64_t m_semantic_submission_edit_revision{0};
     FaceColorOverrides m_semantic_submission_manual;
     bool m_semantic_submission_unlocked{false};
+    std::string m_semantic_submission_context;
+    std::string m_semantic_submission_geometry;
     bool m_shapes_unlocked {false};
     std::shared_ptr<const AI::SemanticColoring::Analysis> m_semantic_analysis;
     std::shared_ptr<const SemanticRegionEvidence> m_region_evidence;
@@ -3912,6 +4190,8 @@ private:
     wxGLContext* m_context {nullptr};
     std::vector<std::unique_ptr<GLModel>> m_models;
     std::unique_ptr<ModelPreviewTexture> m_texture_model;
+    std::unique_ptr<GLModel> m_current_appearance_model;
+    std::unique_ptr<ModelPreviewTexture> m_current_appearance_texture_model;
     std::unique_ptr<GLModel> m_selection_model;
     std::unique_ptr<GLModel> m_manual_color_model;
     std::vector<Vec3f> m_manual_corner_normals;
@@ -3933,10 +4213,14 @@ private:
     std::vector<RGBA> m_pending_vertex_colors;
     std::unique_ptr<CachedPreview> m_cached_preview;
     boost::filesystem::path m_model_path;
+    std::string m_model_sha256;
     FileStamp m_model_stamp;
     size_t m_triangle_count {0};
     size_t m_vertex_count {0};
     size_t m_color_count {0};
+    bool m_restored_persisted_color_trial {false};
+    OriginalAppearanceReference m_original_appearance;
+    std::string m_original_appearance_error;
     std::vector<SelectionState> m_selection_history, m_selection_redo;
     std::vector<uint8_t> m_protected_faces;
     std::vector<uint8_t> m_foreground_faces, m_selection_domain;

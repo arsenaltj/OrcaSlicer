@@ -1,5 +1,7 @@
 # SMARTSLICE-CLOUD-20261024：智能切片增加本地与 YOYOClaw 云端推荐来源（三目标保留，底部布局统一已构建并完成本地界面检查）
 
+2026-10-27 构建交付前追加同步 PR #45：上一合并版 `85cea95f7f` 的 Windows catalogs/build/install/runtime-check/python-check 五步通过，源码身份 `74899ec15cef404bda8f57fd4905a5636a4bec85c43fae8a39e67c8abc9df9b1`，19198 个运行文件核验，证据 `.tmp/dev/logs/20261027-004708-063/result.json`；程序未启动。交付前远端复核发现新增 `502014b3b3383467102412ee584c6c867ef535df`（PR #45，工作台配色/外观及桌面验证修复），按“最新代码”授权追加普通合并，不推送。4处冲突：主计划拼接保留双方完整记录，短状态改为本轮焦点；枚举保留本机已验证的 `int8_t`（远端 `signed char` 在该平台等价）；生成头由远端新分段生成器重建。清理自动合并产生的 engine.cpp/Boost 依赖重复，采用远端条件 Boost 写法。远端明确将材料计划守卫恢复为桌面/Android通用，因此先前平台分支测试决定由最新远端规则替代，用例采用远端原拒绝断言，不改产品规则。目录生成检查及7/7 Python回归通过。下一步完成追加 merge、受影响定向回归及 Windows 构建；旧版 GUI、云端/视觉/打印边界保留，不冒充新合并版功能验收。
+
 2026-10-27 最终构建前复核：原生预览 5/5、MobileDeviceSDK/C ABI/Android SHA 摘要宿主回归 53/53 通过，见 `.tmp/dev/logs/20261027-004338-855/result.json` 和 `.tmp/dev/logs/20261027-mobile-sdk/`。最终 AI 守卫发现 `Plater.hpp` 新增 `<cstdint>` 使原差异预算 net 50 超出 1 行；该头已直接包含 `PrintConfig.hpp`（自含 `<cstdint>`）及 `libslic3r.h`（自含 `<stdint.h>`），移除冗余包含、保留与核心一致的 `int8_t` 声明，不调整预算或弱化检查。失败 `.tmp/dev/merge-ai-check-final.json` 保留；随后复核守卫并构建最终程序。此调整只删重复包含，无新产品行为；前述功能回归范围保留，最终构建独立核对源码/产物身份。
 
 2026-10-27 续验：`ed3f981496` 的相关 C++ 回归 252/252 通过，源码身份 `58f7b5b3f87924a35a5cd51856df89202cea4cd2a9025a2bf8a7668aee5fc097`，证据 `.tmp/dev/logs/20261027-003619-263/result.json`。追加原生预览验证时，`fff_print_tests` 编译通过、链接发现试切执行器调用 `SmartSliceApplier::BuildConfig` 却未列实现；补齐该目标已有消费者需要的 `SmartSliceApplier.cpp`，不引入 GUI 库或改产品逻辑。失败记录 `.tmp/dev/logs/20261027-003920-961/result.json` 保留，随后继续增量构建/预览验证。
@@ -159,6 +161,94 @@ Windows 交付及实窗：用户确认旧实例已正常关闭后，`dev.ps1 Run
 
 PR 补充授权与候选：用户随后明确要求将本地新增代码修改提交一个 PR，挂在 BUILD-20261022 下继续。由于本地当前分支即目标集成分支，创建 `codex/task/gui-workspace-recovery-20261022` 功能分支承载现有两个原始提交及合并结果，PR 目标为 `codex/team/integration`；原本地集成分支及已构建产物保留。PR 准备仅补充本节与短状态，不改变经过构建和 84 项 UiRedesign 回归的程序源码；不重新构建文档变动。范围为切片模式入口、参数面板/滚动条、Redesign 延迟项目恢复及对应测试，未改 Contracts、供应商、运行时或依赖配方。架构影响按本仓库 Review/PR Actions 生成，业务映射未变；远端检查按 PR 当前 head/base 为准，不能用本地结果替代。可通过[候选分支 PR](https://github.com/arsenaltj/OrcaSlicer/pulls?q=is%3Apr+head%3Acodex%2Ftask%2Fgui-workspace-recovery-20261022)核对实际提交状态。因当前版本真实主窗口验收尚未执行，按团队 SOP 使用 Draft，等待 CI、实际界面验收及非作者复核；本轮授权为推送候选与创建 PR，不包含合入、发布或团队私信通知。
 
+
+# 2026-10-26 工作台 AI 配色与荣耀套装同步 PR #45
+
+目标与范围：按用户授权，将功能分支自上次远端提交 `2df9231567aa368c6eb14967e5da7c4702f79490` 以来的全部本地提交与最新 `origin/codex/team/integration` 对齐，并以详细 Draft PR 交付。同步范围包含不可变原始外观证据、AI 1–32 色和默认六色、荣耀六实体耗材套装、单一路径 V2 人像语义约束、牙齿白优先、语义进度卡、自绘数字步进器和滑杆 tooltip 重绘修复；不纳入包、用户模型、历史、配置、凭据、日志或 `.tmp`。
+
+远端同步：功能工作汇总为 `ccced707810166dde9efeab2f76265e98812e739`。重新抓取后，集成基线稳定在 `96b70a4ab2c9a185deb9e2dc9ceb749313128279`；通过普通 merge 生成 `03f4ba42e16b4af6b618f94675f49b499a5c821b`。唯一文本冲突是 `docs/coordination/current-development.md`，解决时完整保留工作台与 SDK 两边记录，没有选择性丢弃任一主线。远端同名分支原先停在 `2df9231567`，现已通过快进推送更新；未使用强推，也未直接写入集成分支。
+
+合并后兼容修复：移动 SDK 重构暴露了五项桌面集成问题，统一在 `4e9813abb88d0426f5e63241c206eb164f02ad4f` 修复。`admesh` 在存在 `boost_headeronly` 目标时恢复私有链接；GUI 前置声明的 `BuildVolume_Type` 改为与共享定义一致的 `signed char`；桌面切片测试切换到 `orca_mobile_slicing_sdk` include 并编入 `engine.cpp`；`validate_material_plan()` 不再在非 Android 宿主变为空函数；离线预设目录按 12 KB UTF-8 字节上限拆分原始字符串，并通过测试证明片段可无损重建 JSON。生成目录同时刷新合并后资源哈希。此前工作树中缺失的 `Docs/mobile-sdk/tools/README.md` 和 `verify-requirements.test.cjs` 经树对象、blob 哈希和历史确认仍属于 `HEAD`，已按原 blob 恢复，没有把误删带入提交。
+
+验证：固定 `.tmp/dev/build` 已确认来源为本 checkout、生成器为 Visual Studio 17 2022、平台 x64、配置 Release。合并与兼容修复后，`slic3rutils_tests` 和完整 `OrcaSlicer` 构建通过。本轮复跑 `[PostGenerationWorkbench],[WorkbenchTopology],[WorkbenchImportEligibility],[PrinterFilaments],[PrinterFilamentRecipes],[PrinterFilamentPreview],[PrinterFilamentImport],[ModelPreviewPalette],[ColorTrialState],[PortraitColorBlocks],[ModelPreviewState],[UiRedesign]` 得到 `310` 通过、`1` 个因当前 Windows 账户缺少符号链接权限跳过、`8003/8003` assertions；`[OrcaSlicingSupport]` 为 `47/47`、1480 assertions；离线预设目录 Python 测试 `7/7`。`mobile-slicing/generate_preset_catalog.py --check`、560 项共享核心源清单、`scripts/verify_ai_integration.py --json` 和 `git diff --check` 均通过。
+
+交付与边界：Draft PR [#45](https://github.com/arsenaltj/OrcaSlicer/pull/45) 目标为 `codex/team/integration`，说明按功能域完整记录上次提交后的实现、合并兼容修复、自动测试和 GUI 边界。合并前匹配 GUI 已覆盖原始外观 4→8 色恢复、默认六色、荣耀四头预览/门禁、V2 成功与回退、自绘色数输入和应用内最上层语义卡。最新滑杆悬停修复尚未在匹配 GUI 中复验；PID `11140` 的旧运行实例未结束，运行目录未覆盖。125%/150% DPI、可见牙齿模型、真实六头打印机及实体打印色彩保真仍未验证，因此 PR 保持 Draft。
+
+# 2026-10-26 AI 配色色数滑杆悬停重复绘制修复
+
+问题与根因：用户在真实工作台悬停 AI 配色色数滑杆时，滑杆下方会出现一条越过侧栏边界的浮动副本。Windows 上 `SetToolTip()` 创建的 tooltip 子窗口与原生 trackbar 都可能向滑杆宿主发送 `NM_CUSTOMDRAW`；`WorkbenchSlider::MSWOnNotify()` 过去只判断 `hdr.code`，随后使用滑杆自身尺寸在通知携带的 HDC 上绘制轨道。因此 tooltip 首次显示时被误绘成完整滑杆，而不是正常文字提示。这不是重复创建色数控件，也不涉及色数状态或配色重算。
+
+实现：新增 `workbench_slider_owns_custom_draw()`，要求通知同时满足 `NM_CUSTOMDRAW` 且 `hdr.hwndFrom` 等于滑杆本体 HWND。只有本体通知进入黄色已选轨道、灰色余量和白色滑块的现有自绘路径；tooltip 及其他子窗口通知继续交给 `wxSlider::MSWOnNotify()`。没有删除现有帮助文字 tooltip，也没有改变鼠标拖动、滚轮/键盘、焦点、自绘背景、DPI 尺寸或任何配色回调。
+
+回归与构建：增加 Windows 专项用例，分别验证滑杆本体 custom draw 被接受、tooltip HWND 被拒绝、非 custom-draw 通知被拒绝；`1/1` case、`3/3` assertions 通过。相关 `[PostGenerationWorkbench]|[ModelPreviewPalette]|[UiRedesign]` 联合回归 `186/186`、3922 assertions 通过；固定 VS 2022 x64 Release `OrcaSlicer` 增量构建成功，`scripts/verify_ai_integration.py --json` 返回 `ok: true`，`git diff --check` 通过。
+
+GUI 与边界：PID `11140` 仍运行安装前的 `.tmp/dev/run/orca-slicer.exe`，其 DLL 是上一版，因此没有用旧进程冒充修复后的视觉验证，也未在进程运行时覆盖 runtime。用户关闭后需执行固定运行目录安装，并在匹配版本中验证静止悬停、显示文字 tooltip、按下/拖动/释放、侧栏滚动和 100%/125%/150% DPI。本项不影响实体打印色彩；本轮继续不提交、不推送、不打包。
+
+# 2026-10-26 色数输入、荣耀语义进度与浮动卡层级修复
+
+目标与范围：修复“当前色数”数字偏位、Windows 原生编辑控件偶发白底/白边，以及荣耀套装 V2 语义处理期间缺少可见进度的问题；模型检查/修复卡和荣耀语义卡统一维持 OrcaSlicer 应用内最上层，但不得遮挡其他软件。继续保留当前原始外观、默认六色、荣耀六实体套装和 V2 语义约束的全部未提交工作，不清理、提交、推送或打包。
+
+色数控件：`WorkbenchNumberStepper` 不再创建可见 `wxTextCtrl`，改为完整自绘 `wxControl`。固定 `82 x 32 DIP` 的同一双缓冲画布负责背景、圆角边框、焦点/禁用颜色、数字和上下箭头；数字使用工作台字体加 `1 pt`，在扣除右侧 24 DIP 箭头区后水平、垂直居中。控件继续支持数字直接输入、Ctrl+V、Enter/失焦提交、Esc 恢复、键盘上下键和鼠标上下按钮；空值/非法粘贴恢复原值，越界收敛到 1 或 32，边界箭头禁用。`SetValue` 与用户提交均做差异判断，单次有效变更只通知一次上层重算并调用一次差异刷新。
+
+荣耀语义进度：既有修复浮动卡增加 `HonorSuiteSemantic` 展示类型，不创建第二识别器、工作线程、定时器或异步语义入口。套装请求仍由 `ModelSemanticColoring` 和 `ColorRegionMajorityV2` 处理，卡片直接读取现有 `m_semantic_timer` 的 `progress()`，显示“正在应用荣耀耗材套装”、人物区域说明和黄色确定进度条。处理期间保留当前 GL 模型，锁定编辑、相机、历史、配色来源及页面导航；卡片不显示取消，关闭按钮和 Esc 无效。成功、无人物/低置信回退、识别不可用或应用失败都沿既有请求身份与原子提交边界收口，完成后自动关闭并在色卡状态区保留结果或回退原因；模型生命周期结束仍执行内部安全取消。
+
+浮动层级：模型检查、自动修复和荣耀语义模式共用 owned `wxFRAME_FLOAT_ON_PARENT`、定位、圆角和销毁解绑逻辑。卡片显示、内容更新、主窗口激活、移动、模型区域尺寸及 DPI 变化时重新居中并提升层级。Windows 仅使用 `SetWindowPos(HWND_TOP, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER)`，且宿主不活动时不主动抢前台；没有 `wxSTAY_ON_TOP` 或 `HWND_TOPMOST`，因此其他应用仍可正常覆盖 OrcaSlicer。
+
+自动验证：计划中的 `[PostGenerationWorkbench]`、`[ModelPreviewPalette]`、`[ColorTrialState]`、`[PortraitColorBlocks]`、`[ModelPreviewState]`、`[UiRedesign]` 联合回归共 291 个 case，其中 290 个通过、1 个既有 Windows 符号链接权限测试跳过，`7488/7488` assertions 通过。`scripts/verify_ai_integration.py --json` 返回 `ok: true`；固定 `.tmp/dev/build` 的 `slic3rutils_tests` 和完整 `OrcaSlicer` VS 2022 x64 Release 增量构建通过。最新 catalogs/build/install/runtime-check/python-check 五阶段 [`20261026-202944-261`](../../.tmp/dev/logs/20261026-202944-261/result.json) 全部成功，源码身份为 `43ed8cc09fefb86bb2abe7a292f06d9cb62643b7ca564171f5db53295c54558e`，build/run DLL 大小均为 `128813056`，SHA-256 均为 `886A10C98CD154E9B6AA90AF97F404AF1C414E53E74DB8F4C913B909AE97696D`。
+
+GUI 验证：PID `11140` 从匹配的 `.tmp/dev/run/orca-slicer.exe` 与 `.tmp/dev/data` 运行。当前 DPI 下直接输入 `12`、键盘上键 `12 -> 13`、鼠标 `13 -> 14 -> 13`、输入 `31` 后 Esc 恢复、输入 `15` 后失焦提交，以及禁用/恢复均通过；数字在可编辑区严格居中，聚焦和禁用状态没有白底或白边。荣耀套装已真实触发三次，浮动卡始终位于模型、GL、侧栏和历史内容之上，模型背景保持可见，没有取消按钮，完成后自动关闭并得到 `5/6` 色结果；日志三次均为缓存命中、`person=true`、`auto_faces=943000`，最近耗时约 4.2–4.5 秒。切换到飞书可以正常覆盖 Orca，证明卡片不是系统全局置顶；重新激活 Orca 后内容和卡片层级逻辑正常。未发现新增崩溃或致命日志。
+
+未结与边界：125%/150% DPI、窗口移动/缩放期间的完整视觉矩阵及实体打印色彩保真尚未验证；当前 DPI 的屏幕结果和自动测试不能替代这些验收。运行实例保留供用户继续检查，本轮工作树继续保持未提交。
+
+# 2026-10-26 荣耀人物套装 V2 语义约束配色（代码、构建及 GUI 成功/回退分支已验证）
+
+目标与决定：将“人物 → 年轻向六色”升级为 `revision=2` 的语义约束六实体色套装，肤色由 `#F7E2DA` 调整为 `#ECC3B2`，柔炭黑、奶白、蜜桃粉、牛仔蓝和灰棕保持不变。按用户最终决定，人物语义只复用现有 `ModelSemanticColoring` 控制器及 `ColorRegionMajorityV2` 的 `request()/poll()` 生命周期；套装选择只建立带套装上下文的 V2 请求，不新增识别器、第二工作线程、独立定时器或另一套异步回调。普通 AI配色、手动试色和用户保存色卡的语义后处理门禁保持关闭。
+
+语义规则：V2 继续先按不可变原始外观的颜色与拓扑形成区域，再以面积和置信度投票附加语义，不按语义重新切割边界。仅 `Confirmed` 且置信度 `>= 0.70` 的角色启用固定槽：`FaceSkin/BodySkin → #ECC3B2`，`Hair/Iris/Eyebrow → #282629`，`EyeSclera/Teeth → #F6F7F9`，`Lips/MouthInterior → #EA9A92`。衣服、配饰、未知及低置信区域不占用排他槽，而是按自身 canonical 原色在全部六色中独立选择最近 Oklab 色；黑、白、粉色可被多个区域复用。已有可信轮廓单元中，`teeth` 明确绑定奶白且优先于口腔蜜桃粉，不制造没有证据的牙齿区域。
+
+执行与回退：套装选择先保留当前预览，由既有 V2 控制器复用与当前几何、原始外观和运行时身份一致的缓存，或执行同一条本地识别生命周期。请求上下文绑定几何 ID、套装 ID、修订号和原始外观自动基准签名；模型、来源或请求变化后，迟到结果不得写回。识别成功时一次提交 V2 `display_slot`、角色槽锁、轮廓单元颜色和模型预览；状态中的 `N/6` 按实际唯一物理槽统计。无人物、无置信度达到 0.70 的固定角色、运行时不可用或 GPU 预览采用失败时，保持现有模型并回退全局最近色匹配，界面明确说明原因。完整六实体套装定义仍用于打印机应用，即使模型表面只实际使用部分槽。
+
+持久化与兼容：`role_slot_locks` 和每个颜色块的 `display_slot` 继续随 V2 颜色块缓存保存，切片和耗材试色优先读取稳定物理槽身份。套装修订不改变 `orca.color-trial/v2` schema；revision 1 历史保留其已保存六色外观并回退手动试色，不按 revision 2 静默重解释。六头/四头门禁、六实体专用暂存、原始外观证据和外部协议均不改变。
+
+自动验证：固定 `.tmp/dev/build` 已复核为本 checkout 的 Visual Studio 2022 x64 Release。`[ModelPreviewPalette]|[ColorTrialState]|[PrinterFilaments]|[PrinterFilamentImport]|[PostGenerationWorkbench]|[UiRedesign]|[PortraitColorBlocks]` 联合运行 `269/269` 通过，证据为 [`20261026-182131-383`](../../.tmp/dev/logs/20261026-182131-383/result.json)。补充的 `[BeautyCellDomain]|[ModelSemanticColoring]|[PortraitShapeDetails]` `41/41` 通过，直接覆盖牙齿奶白、嘴唇蜜桃粉、既有控制器取消/切模和轮廓恢复，证据为 [`20261026-182525-746`](../../.tmp/dev/logs/20261026-182525-746/result.json)。`scripts/verify_ai_integration.py --json` 返回 `ok: true`。回退分支由未随包 runtime 的较早匹配 GUI 验证。随后复用本机已验证的 x64 CPU runtime，将 `ORCA_AI_PORTRAIT_RECOGNITION` 和 `ORCA_ENABLE_MEDIAPIPE_NATIVE` 启用；8 个 `ai/portrait_semantics` 文件通过 CMake 哈希门禁，随包清单为 `portrait_recognition.enabled=true`。启用版 OrcaSlicer Release catalogs/build/install/runtime-check/python-check 五阶段 [`20261026-190303-812`](../../.tmp/dev/logs/20261026-190303-812/result.json) 通过，源码身份为 `2a416f64449f2618020680e674a76a08465fe4e71d4147c98de1a0c2577daa51`。
+
+GUI 成功路径：PID `35512` 从 `.tmp/dev/run/orca-slicer.exe --datadir .tmp/dev/data` 加载同一现有人像，选择“荣耀耗材套装”后用既有 V2 入口完成本地人物识别。运行日志记录 `Local semantic coloring completed`，耗时约 `8174 ms`、`cache_hit=false`、`person=true`、`auto_faces=943000`；色卡详情显示“荣耀耗材套装语义配色已完成”和 `5/6` 实际槽使用。六个固定 HEX 为 `#ECC3B2 #282629 #F6F7F9 #EA9A92 #668CB6 #958B86`，屏幕上肤色、头发、眼白和嘴唇角色对应正确；四头机型门禁仍正确禁用六实体耗材落地。本次未保存模型、导入切片、删除资产或修改打印机配置，进程响应正常且没有新增崩溃日志。
+
+未结与边界：当前人像闭口，牙齿白没有视觉证据；保存重开、打印机试色进入/改色/退出以及切片后的物理槽绑定仍待验证。现有 V2 轮廓 `cell_colors` 可在工作台精确渲染任意多边形牙齿单元，但 `ModelMatchedColors` 目前只表达面槽和 midpoint 子面槽，任意多边形单元的直接切片身份仍是待实测风险；本轮遵循“先修改 V2、后续按问题增量处理”，不为该风险提前引入第二条语义路径或更广的拓扑烘焙。100%/125%/150% DPI 和实体打印色彩保真未验证，不能用代码测试或屏幕预览替代。本轮保留全部未提交修改，不提交、推送或打包。
+
+# 2026-10-26 荣耀耗材套装六实体色（实施完成，四头 GUI 已验证）
+
+产品决定：当前开发机型为六头打印机，“人物 · 年轻向六色”对应六个可实际安装的实体耗材，不是“四个实体耗材 + 两个叠色配方”。四头机型属于上一代兼容机型，不能把缺少的两个实体通道静默转换为叠色、虚拟槽或自动降色。本项替代并取消尚未完成的 4+2 套装方案；叠色继续作为独立能力存在，但不属于荣耀六色套装定义。
+
+实施结果：仅撤销旧 4+2 新增内容，保留进入本轮前全部原始外观证据、AI 色数输入/步进、修复后自动应用、默认六色及其他未提交工作。新增稳定 `HonorFilamentSuite`/`HonorPhysicalSlot` 目录；工作台可见来源为 `AI配色、手动试色、荣耀耗材套装` 及非内置用户保存色卡，内部 `source=1` 打印机耗材编号和旧保存色卡索引保持不变。旧“人物基础 · 年轻向六色”继续用于兼容，但不再在来源菜单重复显示。
+
+界面：首版目录只展示非空路径“人物 → 年轻向六色”。选择“荣耀耗材套装”后隐藏 1–32 色滑杆、输入框和步进按钮，显示只读摘要“6 个实体耗材 · 共 6 色”；色卡详情只展示六个等尺寸实体耗材槽，不显示叠色配方。状态立即同步为“荣耀耗材套装 · 模型当前使用 N/6 色”。AI配色和手动试色切回后恢复 1–32 色编辑，初次进入模型仍默认六色 AI配色。
+
+预览与映射：套装六色冻结为 `#F7E2DA #282629 #F6F7F9 #EA9A92 #668CB6 #958B86`，不随当前打印机配置重新求解。选择套装时，以不可变原始外观证据建立最多六个受支持区域，再与六个套装槽做稳定一对一匹配；不得制造无证据的小色块。证据不足时允许部分实体槽在模型表面未使用，但套装和打印机绑定仍保留六个独立实体槽身份。重复 RGB 也不合并。切换来源只重算一次并保留单画布、GPU 缓存和差异刷新。
+
+机型门禁与工程应用：套装预览不依赖当前打印机，因此四头机型也可查看；“将模型配色导入到耗材”和工作台直接落地则要求打印机预设提供至少六个真实独立喷头、不是单喷嘴多材料模式，并且存在足够兼容的 PLA 实体耗材预设。六头机型当前只配置四个实体槽时，配置副本补齐两个真实实体槽并按套装顺序绑定；专用路径不调用 `select_bases()`，不创建或删除任何混合槽。多于六个实体槽时只绑定前六个兼容实体槽，不删除其他用户槽位。暂存配置、绑定、模型试色和提交保持原子，失败不留下部分修改。
+
+上一代四头行为：当前打印机只有四个真实喷头时，套装入口显示“当前打印机为 4 头，此套装需要 6 个实体耗材”，应用按钮禁用并给出同一原因；导入切片不打开旧配色窗，也不生成 4+2，只显示暗色提示框及“将耗材色映射到模型”“返回工作台”。选择映射后仍留在工作台，不自动继续导入。未来如需支持上一代机型，应新增独立四色套装并单独实物标定。
+
+持久化兼容：`orca.color-trial/v2` 增加可选稳定 `suite_id` 和 `suite_revision`，不提升 schema、不挪动既有来源整数或动态保存色卡索引。套装快照继续编码为兼容的 `source=2`；新版按套装身份恢复，套装缺失或版本不匹配时保留六个实际颜色并回退手动试色，不重新聚类。既有普通色卡、用户保存色卡和旧历史不批量迁移。
+
+自动验证：荣耀专项 `11/11`、127 assertions；联合 `[ModelPreviewPalette],[ColorTrialState],[PrinterFilaments],[PrinterFilamentImport],[PostGenerationWorkbench],[UiRedesign]` `208/208`、6366 assertions；`scripts/verify_ai_integration.py --json` 返回 `ok: true`。固定 `.tmp/dev/build` 的 `slic3rutils_tests` 与完整 `OrcaSlicer` Release 增量构建成功，标准 catalogs/build/install/runtime-check/python-check 五阶段 [`20261026-163914-614`](../../.tmp/dev/logs/20261026-163914-614/result.json) 通过。
+
+真实 GUI：匹配版本从 `.tmp/dev/run/orca-slicer.exe --datadir .tmp/dev/data` 加载既有人像模型。四头配置可预览套装，来源菜单无旧内置色卡重复项；选择套装后两级选择、只读摘要、`6/6` 状态和六槽详情正确，关闭详情后色数控件未重现；“将模型配色导入到耗材”立即禁用并显示四头原因。导入切片只出现专用双操作提示，返回后模型和套装预览不变。切回 AI配色后 1–32 色控件恢复。四个相邻 650 ms 整窗帧 SHA-256 相同，未见周期闪烁。真实六头 GUI、100%/125%/150% DPI 全矩阵及实体打印色彩尚未验证，不能由自动测试或屏幕预览替代。
+
+# 2026-10-26 原始外观证据与 AI 配色恢复整改
+
+目标与范围：修复已保存低色数版本把烘焙后的当前外观误当作后续 AI 配色输入，导致四色版本重开后无法增加到 5–32 色的问题。当前显示外观继续代表已保存结果；AI 聚类、自动区域匹配和“原色对照”统一使用不可变原始外观证据。基于 `2df9231567aa368c6eb14967e5da7c4702f79490` 保留全部现有修改，本轮不清理、提交、推送或打包。
+
+实现：历史元数据新增可选 `orca.model-original-appearance/v1`，记录受模型库路径边界保护的原始外观载体、原始模型、文件哈希和仅由顶点数及有序三角面索引组成的拓扑指纹。当前保存版本仍通过 `source_model` 指向直接父版本；旧记录最多回溯 64 层恢复最早且拓扑兼容的可靠外观，并在下一次成功保存时写入显式引用。预览准备结果同时携带当前外观和原始外观；两者共享当前几何、法线、相机、单一 GL 画布和 GPU 几何缓存，仅分离颜色、UV、材质和纹理资源。AI 色数直方图、自动颜色单元、语义输入和原色对照不再从低色数当前文件重建。新模型首次进入及用户执行配色重置时固定请求 6 色 AI 配色，不再随当前打印机实体槽数或模型初始建议数变化；有效历史配色仍优先恢复，原始证据不足 6 个可区分颜色时按真实数量降级并提示。
+
+拓扑与安全：仅坐标形变直接继承原始引用；首次修复或再次改变拓扑时，按现有最近源三角形和重心插值生成不可变 `*.source-appearance.obj`，候选、载体和元数据同一发布事务提交。取消、映射失败、源哈希漂移或写入失败会回滚全部临时产物。解析拒绝绝对路径、`..` 越界、符号链接、缺失文件、哈希漂移、循环、超过 64 层和拓扑不匹配；无可靠证据时仍加载当前模型，但禁用 AI 重算和原色对照并给出原因。历史删除依赖检查扩展到 `source_model`、外观载体、原始模型及既有拼图依赖，伴随文件仅在无其他引用时删除。
+
+自动验证：`git diff --check` 和 `scripts/verify_ai_integration.py --json` 通过。固定 `.tmp/dev/build` 的 Release `slic3rutils_tests` 构建及计划标签联合回归通过：245 个 case 中 244 通过、1 个仅因当前 Windows 账户无符号链接权限跳过，6945/6945 assertions 通过；原始外观专项为 5 通过、1 个符号链接权限跳过，189/189 assertions 通过。默认六色增量复核的 `[ModelPreviewPalette]`、`[PostGenerationWorkbench]` 和 `[ColorTrialState]` 共 113 个 case、5116/5116 assertions 通过。完整 `OrcaSlicer` Release 增量构建成功；最新标准运行准备的 catalogs/build/install/runtime-check/python-check 五阶段全部通过，证据为 [`20261026-142115-652`](../../.tmp/dev/logs/20261026-142115-652/result.json)。
+
+真实 GUI 复核：匹配版本使用 `.tmp/dev/run/orca-slicer.exe --datadir .tmp/dev/data` 加载既有人像高色模型，自动修复后按 4 色 AI 配色保存；发布得到当前模型 `1881C8F95AFE627717905E7D68A30E34321C053C8F9DFF92F79145A99A8E500B` 和独立原始外观载体 `39D13098C39EBA91FBDC6C62DCCE9A10D3EA591032A707F90421B26AB3A81C7D`。关闭并重启后，已保存四色模型可切回 AI 配色并实际生成 8 个颜色区域，界面同步显示“当前色卡 · 8 色”；原色对照右侧保持与保存前相同的原贴图外观。静止对照画面跨 4 个相邻 650 ms 采样的整窗 SHA-256 完全一致，未观察到 500 ms 周期闪烁或无效重绘。默认六色增量复核重新选择没有持久化配色的原始模型，在 4 个实体耗材槽条件下完成检查、修复和复检后，来源保持“AI配色”，输入框为 `6`，状态为“当前色卡 · 6 色”。
+
+未结与边界：Windows 符号链接拒绝用逻辑和条件测试覆盖，但当前账户无法执行真实符号链接 case；100%/125%/150% DPI 全矩阵及更多纹理/顶点色真实模型仍待用户视觉验收。GUI 复核只证明屏幕预览与持久化行为，不代表实体打印色彩保真；实体打印继续标记为未验证。当前源码和状态文档保持未提交，匹配验证实例保留给用户继续检查。
 
 # 2026-10-26 一键修复稳定性与纯净打包门禁同步默认分支
 

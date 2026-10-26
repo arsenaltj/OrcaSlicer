@@ -4,6 +4,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/PortraitShapeDetails.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitContourProposal.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelSemanticColoring.hpp"
+#include "slic3r/GUI/AI/Orca/FilamentColorPack.hpp"
 #include "../test_utils.hpp"
 
 using namespace Slic3r;
@@ -102,6 +103,26 @@ TEST_CASE("Three to six portrait colors keep both brows dark and eye white light
     REQUIRE(missing_roles==std::set<std::string>{"portrait-dark"});
     for(const auto& face:f.partition.at("faces")) for(const auto& cell:face.at("cells"))
         if(cell.at("label")=="lb" || cell.at("label")=="rb") REQUIRE(missing.count(cell.at("id"))==0);
+}
+
+TEST_CASE("Honor portrait contours keep teeth white while mouth details use peach",
+          "[BeautyCellDomain][PortraitShapeDetails][HonorFilamentSuite]") {
+    Json cells = Json::array();
+    cells.push_back({{"id", "teeth-detail"}, {"label", "teeth"}});
+    cells.push_back({{"id", "upper-lip"}, {"label", "ulip"}});
+    cells.push_back({{"id", "lower-lip"}, {"label", "llip"}});
+    const Json partition = {{"faces", Json::array({Json{{"cells", std::move(cells)}}})}};
+    const std::vector<SemanticColoring::Color> palette {
+        {236.f / 255, 195.f / 255, 178.f / 255}, {40.f / 255, 38.f / 255, 41.f / 255},
+        {246.f / 255, 247.f / 255, 249.f / 255}, {234.f / 255, 154.f / 255, 146.f / 255},
+        {102.f / 255, 140.f / 255, 182.f / 255}, {149.f / 255, 139.f / 255, 134.f / 255}};
+    const auto colors = GUI::portrait_contour_colors(partition,
+        GUI::young_portrait_honor_suite().portrait_palette_roles(), palette);
+
+    REQUIRE(colors.at("teeth-detail") == palette[2]);
+    REQUIRE(colors.at("upper-lip") == palette[3]);
+    REQUIRE(colors.at("lower-lip") == palette[3]);
+    REQUIRE(colors.at("teeth-detail") != colors.at("upper-lip"));
 }
 
 TEST_CASE("Cell colors and exact selections restore without changing boundary identity", "[BeautyCellDomain][BeautyShapeLock]") {
