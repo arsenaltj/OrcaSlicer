@@ -99,7 +99,11 @@ target_link_libraries(orcaslicer_ai_contracts INTERFACE boost_headeronly)
 
 add_library(orcaslicer_ai_smart_slicing STATIC ${ORCA_AI_SMART_SLICING_SOURCES})
 add_library(OrcaSlicer::SmartSlicing ALIAS orcaslicer_ai_smart_slicing)
+# Stable production/mobile name; keep the desktop alias for source compatibility.
+add_library(OrcaSlicer::SmartSlicingCore ALIAS orcaslicer_ai_smart_slicing)
 target_include_directories(orcaslicer_ai_smart_slicing PRIVATE ${CMAKE_SOURCE_DIR}/deps_src)
 target_link_libraries(orcaslicer_ai_smart_slicing PUBLIC OrcaSlicer::AIContracts)
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${ORCA_AI_SMART_SLICING_SOURCES})
-encoding_check(orcaslicer_ai_smart_slicing)
+if(COMMAND encoding_check)
+    encoding_check(orcaslicer_ai_smart_slicing)
+endif()

@@ -54,6 +54,10 @@ struct MachinePreset
     double nozzle_diameter_mm{0.4};
     double minimum_layer_height_mm{0.05};
     double maximum_layer_height_mm{0.28};
+    // Machine-wide speed ceiling and the independent outer-wall policy cap.
+    // Keep maximum_outer_wall_speed_mm_s below as a source-compatible fallback.
+    double machine_max_speed_mm_s{0.0};
+    double outer_wall_speed_cap_mm_s{0.0};
     double maximum_outer_wall_speed_mm_s{80.0};
     double maximum_volumetric_speed_mm3_s{12.0};
 
@@ -69,6 +73,7 @@ struct MachinePreset
     double travel_speed_mm_s{180.0};
     double default_acceleration_mm_s2{1000.0};
     double outer_wall_acceleration_mm_s2{1000.0};
+    double travel_acceleration_mm_s2{0.0};
 
     // The current Orca process is used as a calibration reference whenever a
     // valid native G-code result is already available for this exact plate.
@@ -80,6 +85,9 @@ struct MachinePreset
     bool baseline_support_enabled{false};
     double native_baseline_time_seconds{0.0};
     double native_baseline_material_grams{0.0};
+    std::string profile_hash;
+    std::string capability_hash;
+    std::string effective_config_hash;
 };
 
 struct FilamentPreset
@@ -133,6 +141,13 @@ struct SmartAnalysisResult
     bool calibrated_to_native_baseline{false};
     double native_baseline_time_seconds{0.0};
     double native_baseline_material_grams{0.0};
+
+    // Optional identity metadata. Empty values preserve the desktop call shape.
+    std::string profile_hash;
+    std::string capability_hash;
+    std::string effective_config_hash;
+    std::string algorithm_version{"smart-slicing-core/1"};
+    std::string source_commit;
 
     const SliceRecommendation* find(SliceMode mode) const;
     SliceRecommendation* find(SliceMode mode);
