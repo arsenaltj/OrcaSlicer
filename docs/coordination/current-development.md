@@ -1,3 +1,15 @@
+# 2026-10-26 工作台配色分支同步与 Draft PR #45（合并、验证及推送完成）
+
+主线：将 `codex/upstream-v2.5.0-alpha-portrait-preserved` 自上次远端提交 `2df9231567` 以来的原始外观证据、AI 配色色数、荣耀六实体套装、V2 人像语义和工作台交互修复同步到最新集成基线，并通过 Draft PR [#45](https://github.com/arsenaltj/OrcaSlicer/pull/45) 交付评审。
+
+本轮：功能汇总提交为 `ccced70781`；普通合并 `origin/codex/team/integration@96b70a4ab2` 后生成 `03f4ba42e1`，唯一文本冲突位于本短状态文档，已同时保留工作台与移动 SDK 两侧记录。合并后补充桌面兼容修复 `4e9813abb8`：恢复 admesh 的 Boost 头依赖、对齐 `BuildVolume_Type` 底层类型、修正移动切片桌面测试源和 include、让材料计划校验在桌面生效，并把离线预设目录拆成不超过 12 KB UTF-8 的 C++ 原始字符串片段。分支已普通快进推送，没有强推、打包或覆盖运行目录。
+
+未结：最新“滑杆悬停不重复绘制”修复尚未在匹配 GUI 中复验；PID `11140` 仍运行旧 `.tmp/dev/run`，本轮没有结束该进程。125%/150% DPI、可见牙齿模型、真实六头打印机和实体打印色彩保真仍未验证；Windows 符号链接权限用例仍按环境跳过。
+
+下一步：PR #45 保持 Draft，由评审和匹配 GUI/设备验收确认后再决定是否转为 Ready；如集成分支继续前进，先普通合并并复跑受影响门禁，不直接向默认分支提交。
+
+计划变更：合并后 VS 2022 x64 Release 的 `slic3rutils_tests` 与完整 `OrcaSlicer` 构建通过；本轮复跑工作台联合回归 `310` 通过、`1` 跳过、`8003/8003` assertions，`[OrcaSlicingSupport]` `47/47`、1480 assertions，离线预设目录 `7/7`，共享核心源清单、`scripts/verify_ai_integration.py --json` 和 `git diff --check` 均通过。PR 说明已按功能域列出从上次提交至今的全部改动与验收边界。
+
 # 2026-10-26 色数滑杆悬停重复绘制修复（源码、构建与回归通过，待匹配 GUI）
 
 主线：修复 AI 配色色数滑杆悬停时出现第二条浮动滑杆的问题；继续保留正常文字 tooltip、滑杆取值、拖动、键盘和自绘轨道行为，不改配色逻辑。

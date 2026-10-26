@@ -1,3 +1,15 @@
+# 2026-10-26 工作台 AI 配色与荣耀套装同步 PR #45
+
+目标与范围：按用户授权，将功能分支自上次远端提交 `2df9231567aa368c6eb14967e5da7c4702f79490` 以来的全部本地提交与最新 `origin/codex/team/integration` 对齐，并以详细 Draft PR 交付。同步范围包含不可变原始外观证据、AI 1–32 色和默认六色、荣耀六实体耗材套装、单一路径 V2 人像语义约束、牙齿白优先、语义进度卡、自绘数字步进器和滑杆 tooltip 重绘修复；不纳入包、用户模型、历史、配置、凭据、日志或 `.tmp`。
+
+远端同步：功能工作汇总为 `ccced707810166dde9efeab2f76265e98812e739`。重新抓取后，集成基线稳定在 `96b70a4ab2c9a185deb9e2dc9ceb749313128279`；通过普通 merge 生成 `03f4ba42e16b4af6b618f94675f49b499a5c821b`。唯一文本冲突是 `docs/coordination/current-development.md`，解决时完整保留工作台与 SDK 两边记录，没有选择性丢弃任一主线。远端同名分支原先停在 `2df9231567`，现已通过快进推送更新；未使用强推，也未直接写入集成分支。
+
+合并后兼容修复：移动 SDK 重构暴露了五项桌面集成问题，统一在 `4e9813abb88d0426f5e63241c206eb164f02ad4f` 修复。`admesh` 在存在 `boost_headeronly` 目标时恢复私有链接；GUI 前置声明的 `BuildVolume_Type` 改为与共享定义一致的 `signed char`；桌面切片测试切换到 `orca_mobile_slicing_sdk` include 并编入 `engine.cpp`；`validate_material_plan()` 不再在非 Android 宿主变为空函数；离线预设目录按 12 KB UTF-8 字节上限拆分原始字符串，并通过测试证明片段可无损重建 JSON。生成目录同时刷新合并后资源哈希。此前工作树中缺失的 `Docs/mobile-sdk/tools/README.md` 和 `verify-requirements.test.cjs` 经树对象、blob 哈希和历史确认仍属于 `HEAD`，已按原 blob 恢复，没有把误删带入提交。
+
+验证：固定 `.tmp/dev/build` 已确认来源为本 checkout、生成器为 Visual Studio 17 2022、平台 x64、配置 Release。合并与兼容修复后，`slic3rutils_tests` 和完整 `OrcaSlicer` 构建通过。本轮复跑 `[PostGenerationWorkbench],[WorkbenchTopology],[WorkbenchImportEligibility],[PrinterFilaments],[PrinterFilamentRecipes],[PrinterFilamentPreview],[PrinterFilamentImport],[ModelPreviewPalette],[ColorTrialState],[PortraitColorBlocks],[ModelPreviewState],[UiRedesign]` 得到 `310` 通过、`1` 个因当前 Windows 账户缺少符号链接权限跳过、`8003/8003` assertions；`[OrcaSlicingSupport]` 为 `47/47`、1480 assertions；离线预设目录 Python 测试 `7/7`。`mobile-slicing/generate_preset_catalog.py --check`、560 项共享核心源清单、`scripts/verify_ai_integration.py --json` 和 `git diff --check` 均通过。
+
+交付与边界：Draft PR [#45](https://github.com/arsenaltj/OrcaSlicer/pull/45) 目标为 `codex/team/integration`，说明按功能域完整记录上次提交后的实现、合并兼容修复、自动测试和 GUI 边界。合并前匹配 GUI 已覆盖原始外观 4→8 色恢复、默认六色、荣耀四头预览/门禁、V2 成功与回退、自绘色数输入和应用内最上层语义卡。最新滑杆悬停修复尚未在匹配 GUI 中复验；PID `11140` 的旧运行实例未结束，运行目录未覆盖。125%/150% DPI、可见牙齿模型、真实六头打印机及实体打印色彩保真仍未验证，因此 PR 保持 Draft。
+
 # 2026-10-26 AI 配色色数滑杆悬停重复绘制修复
 
 问题与根因：用户在真实工作台悬停 AI 配色色数滑杆时，滑杆下方会出现一条越过侧栏边界的浮动副本。Windows 上 `SetToolTip()` 创建的 tooltip 子窗口与原生 trackbar 都可能向滑杆宿主发送 `NM_CUSTOMDRAW`；`WorkbenchSlider::MSWOnNotify()` 过去只判断 `hdr.code`，随后使用滑杆自身尺寸在通知携带的 HDC 上绘制轨道。因此 tooltip 首次显示时被误绘成完整滑杆，而不是正常文字提示。这不是重复创建色数控件，也不涉及色数状态或配色重算。
