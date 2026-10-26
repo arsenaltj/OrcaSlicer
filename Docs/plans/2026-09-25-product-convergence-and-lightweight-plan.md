@@ -1,5 +1,7 @@
 # SMARTSLICE-CLOUD-20261024：智能切片增加本地与 YOYOClaw 云端推荐来源（三目标保留，底部布局统一已构建并完成本地界面检查）
 
+2026-10-27 最终构建前复核：原生预览 5/5、MobileDeviceSDK/C ABI/Android SHA 摘要宿主回归 53/53 通过，见 `.tmp/dev/logs/20261027-004338-855/result.json` 和 `.tmp/dev/logs/20261027-mobile-sdk/`。最终 AI 守卫发现 `Plater.hpp` 新增 `<cstdint>` 使原差异预算 net 50 超出 1 行；该头已直接包含 `PrintConfig.hpp`（自含 `<cstdint>`）及 `libslic3r.h`（自含 `<stdint.h>`），移除冗余包含、保留与核心一致的 `int8_t` 声明，不调整预算或弱化检查。失败 `.tmp/dev/merge-ai-check-final.json` 保留；随后复核守卫并构建最终程序。此调整只删重复包含，无新产品行为；前述功能回归范围保留，最终构建独立核对源码/产物身份。
+
 2026-10-27 续验：`ed3f981496` 的相关 C++ 回归 252/252 通过，源码身份 `58f7b5b3f87924a35a5cd51856df89202cea4cd2a9025a2bf8a7668aee5fc097`，证据 `.tmp/dev/logs/20261027-003619-263/result.json`。追加原生预览验证时，`fff_print_tests` 编译通过、链接发现试切执行器调用 `SmartSliceApplier::BuildConfig` 却未列实现；补齐该目标已有消费者需要的 `SmartSliceApplier.cpp`，不引入 GUI 库或改产品逻辑。失败记录 `.tmp/dev/logs/20261027-003920-961/result.json` 保留，随后继续增量构建/预览验证。
 
 2026-10-27 合并后定向回归首跑：`2abcd097c3` 编译和链接通过，252 项中 250 通过、2 项材料计划用例失败，见 `.tmp/dev/logs/20261027-003027-677/result.json` / `cpp-tests.log`。当前 `validate_material_plan` 明确仅在 `ORCA_MOBILE_ANDROID` 下限制单材料，桌面为 no-op，测试仍无条件要求 Android 拒绝行为。调整两用例为平台对应断言：Android 原拒绝断言完整保留，桌面断言允许材料路由；既有 `validate_material_assignments` 越界/支撑/表面选择器失败用例保持并已通过，不把 Android 限制施加到桌面产品，不跳过测试或改产品逻辑。继续相关标签回归及 Windows 构建；Android 真机未重验。
