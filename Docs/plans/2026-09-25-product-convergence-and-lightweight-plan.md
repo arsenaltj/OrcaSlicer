@@ -1,5 +1,7 @@
 # SMARTSLICE-CLOUD-20261024：智能切片增加本地与 YOYOClaw 云端推荐来源（三目标保留，底部布局统一已构建并完成本地界面检查）
 
+2026-10-27 续验：`ed3f981496` 的相关 C++ 回归 252/252 通过，源码身份 `58f7b5b3f87924a35a5cd51856df89202cea4cd2a9025a2bf8a7668aee5fc097`，证据 `.tmp/dev/logs/20261027-003619-263/result.json`。追加原生预览验证时，`fff_print_tests` 编译通过、链接发现试切执行器调用 `SmartSliceApplier::BuildConfig` 却未列实现；补齐该目标已有消费者需要的 `SmartSliceApplier.cpp`，不引入 GUI 库或改产品逻辑。失败记录 `.tmp/dev/logs/20261027-003920-961/result.json` 保留，随后继续增量构建/预览验证。
+
 2026-10-27 合并后定向回归首跑：`2abcd097c3` 编译和链接通过，252 项中 250 通过、2 项材料计划用例失败，见 `.tmp/dev/logs/20261027-003027-677/result.json` / `cpp-tests.log`。当前 `validate_material_plan` 明确仅在 `ORCA_MOBILE_ANDROID` 下限制单材料，桌面为 no-op，测试仍无条件要求 Android 拒绝行为。调整两用例为平台对应断言：Android 原拒绝断言完整保留，桌面断言允许材料路由；既有 `validate_material_assignments` 越界/支撑/表面选择器失败用例保持并已通过，不把 Android 限制施加到桌面产品，不跳过测试或改产品逻辑。继续相关标签回归及 Windows 构建；Android 真机未重验。
 
 2026-10-27 测试目标链接补齐：路径修正提交 `493a48de27` 后所有源文件编译结束，`slic3rutils_tests` 链接报缺少 `Engine` / `describe_warning` 四个符号，均实现在未列入该目标的移动切片 `engine.cpp`。参照已有 `fff_print_tests` 列表补齐同一实现，不改产品逻辑或测试断言；失败证据 `.tmp/dev/logs/20261027-002158-589/result.json` 保留，测试尚未运行，继续增量构建。
