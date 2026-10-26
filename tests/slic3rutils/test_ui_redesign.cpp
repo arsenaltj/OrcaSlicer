@@ -12,13 +12,135 @@
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
+#include "slic3r/GUI/Redesign/RedesignSlicingDetails.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <cstdlib>
 #include <string>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("Reviewed estimates survive trial cancellation only for their bound native input and goal", "[UiRedesign][SliceDetails]")
+{
+    using namespace Slic3r::AI::SmartSlicing;
+    const WorkspaceRevision reviewed{1, 2, 3, "reviewed"};
+    const WorkspaceRevision applied{1, 4, 5, "applied"};
+    SliceRecommendation plan;
+    plan.mode = SliceMode::SPEED;
+    plan.layer_height_mm = 0.26;
+    ExactEstimateView trial;
+    trial.status = ExactEstimateStatus::Ready;
+    trial.revision = reviewed;
+    trial.goal = RecommendationGoal::Speed;
+    trial.parameters = plan;
+    trial.estimated_time_seconds = 7200.0;
+    trial.material_grams = 110.42;
+    WorkbenchSliceEstimate display;
+    display.capture(trial, reviewed, applied, trial.goal, plan);
+    trial = {}; // Cancellation clears the worker view, not the reviewed display.
+    const auto retained = display.for_slice(applied, RecommendationGoal::Speed, plan);
+    REQUIRE(retained);
+    CHECK(retained->revision == reviewed);
+    CHECK(retained->status == ExactEstimateStatus::Ready);
+    REQUIRE(retained->estimated_time_seconds);
+    CHECK_THAT(*retained->estimated_time_seconds, Catch::Matchers::WithinAbs(7200.0, 0.001));
+    REQUIRE(retained->material_grams);
+    CHECK_THAT(*retained->material_grams, Catch::Matchers::WithinAbs(110.42, 0.001));
+    CHECK_FALSE(display.for_slice(reviewed, RecommendationGoal::Speed, plan));
+    CHECK_FALSE(display.for_slice(applied, RecommendationGoal::Quality, plan));
+    auto edited = applied;
+    ++edited.model_revision;
+    CHECK_FALSE(display.for_slice(edited, RecommendationGoal::Speed, plan));
+    edited = applied;
+    ++edited.config_revision;
+    CHECK_FALSE(display.for_slice(edited, RecommendationGoal::Speed, plan));
+    edited = applied;
+    ++edited.plate_revision;
+    CHECK_FALSE(display.for_slice(edited, RecommendationGoal::Speed, plan));
+    plan.layer_height_mm = 0.12;
+    CHECK_FALSE(display.for_slice(applied, RecommendationGoal::Speed, plan));
+}
+
+TEST_CASE("Only completed estimates for the reviewed recommendation can be retained", "[UiRedesign][SliceDetails]")
+{
+    using namespace Slic3r::AI::SmartSlicing;
+    const WorkspaceRevision revision{1, 2, 3, "current"};
+    SliceRecommendation plan;
+    ExactEstimateView trial;
+    trial.status = ExactEstimateStatus::Ready;
+    trial.revision = revision;
+    trial.parameters = plan;
+    WorkbenchSliceEstimate display;
+    display.capture(trial, revision, revision, trial.goal, plan);
+    REQUIRE(display.for_slice(revision, trial.goal, plan));
+    for (const auto status : {ExactEstimateStatus::None, ExactEstimateStatus::Running, ExactEstimateStatus::Failed}) {
+        trial.status = status;
+        display.capture(trial, revision, revision, trial.goal, plan);
+        CHECK_FALSE(display.for_slice(revision, trial.goal, plan));
+    }
+    trial.status = ExactEstimateStatus::Ready;
+    trial.revision.fingerprint = "stale";
+    display.capture(trial, revision, revision, trial.goal, plan);
+    CHECK_FALSE(display.for_slice(revision, trial.goal, plan));
+    trial.revision = revision;
+    plan.wall_loops += 1;
+    display.capture(trial, revision, revision, trial.goal, plan);
+    CHECK_FALSE(display.for_slice(revision, trial.goal, plan));
+}
+
+TEST_CASE("Formal statistics update the metrics while every recommendation detail remains visible", "[UiRedesign][SliceDetails]")
+{
+    Slic3r::AI::SmartSlicing::SliceRecommendation plan;
+    plan.layer_height_mm = 0.26;
+    plan.wall_loops = 2;
+    plan.sparse_infill_density_percent = 10;
+    plan.sparse_infill_pattern = "grid";
+    plan.outer_wall_speed_mm_s = 200;
+    plan.enable_support = true;
+    plan.support_threshold_angle_deg = 60;
+    plan.adaptive_layer_height = false;
+    plan.arachne_wall_generator = true;
+    ExactEstimateView estimate;
+    estimate.status = ExactEstimateStatus::Ready;
+    estimate.estimated_time_seconds = 7200;
+    estimate.material_grams = 100;
+    const auto before = exact_estimate_detail_rows(plan, estimate);
+    const auto slicing = exact_estimate_detail_rows(plan, estimate, {}, true, true);
+    const std::vector<SliceDetailRow> statistics{
+        {_L("打印时间"), _L("6 小时 9 分钟"), _L("正式切片结果")},
+        {_L("实际耗材"), "110.42 g", _L("正式切片结果")}};
+    // Even a cancelled/missing trial must not add AI fallback rows to a formal result.
+    estimate.status = ExactEstimateStatus::Failed;
+    const auto completed = exact_estimate_detail_rows(plan, estimate, statistics);
+    REQUIRE(before.size() == 12);
+    REQUIRE(slicing.size() == before.size());
+    REQUIRE(completed.size() == before.size());
+    CHECK(slicing[0].value == before[0].value);
+    CHECK(slicing[1].value == before[1].value);
+    CHECK(slicing[0].label == _L("切片前预计时间"));
+    for (size_t i = 0; i < statistics.size(); ++i) {
+        CHECK(completed[i].label == statistics[i].label);
+        CHECK(completed[i].value == statistics[i].value);
+    }
+    for (size_t i = 2; i < before.size(); ++i) {
+        CHECK(slicing[i].label == before[i].label);
+        CHECK(slicing[i].value == before[i].value);
+        CHECK(completed[i].label == before[i].label);
+        CHECK(completed[i].value == before[i].value);
+        CHECK(completed[i].section == before[i].section);
+    }
+}
+
+TEST_CASE("A native slice without completed estimates waits for its own result", "[UiRedesign][SliceDetails]")
+{
+    Slic3r::AI::SmartSlicing::SliceRecommendation plan;
+    const auto rows = exact_estimate_detail_rows(plan, {}, {}, false, true);
+    REQUIRE(rows.size() == 12);
+    CHECK(rows[0].value == _L("等待切片结果"));
+    CHECK(rows[1].value == _L("等待切片结果"));
+}
 
 TEST_CASE("Pending cloud recommendations do not inherit completion from local baselines", "[UiRedesign][CloudRecommendationPresentation]")
 {

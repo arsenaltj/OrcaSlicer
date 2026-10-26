@@ -259,6 +259,43 @@ inline bool exact_estimate_matches(const ExactEstimateView& estimate,
         same_slice_parameters(*estimate.parameters, parameters);
 }
 
+// Keep the reviewed numbers separate from the cancellable trial task. Internal
+// plan application may change the revision; this binds the old reference to
+// that specific native run without making it a valid estimate for new inputs.
+class WorkbenchSliceEstimate
+{
+public:
+    void capture(const ExactEstimateView& estimate,
+                 const AI::SmartSlicing::WorkspaceRevision& reviewed,
+                 const AI::SmartSlicing::WorkspaceRevision& applied,
+                 AI::SmartSlicing::RecommendationGoal goal,
+                 const AI::SmartSlicing::SliceRecommendation& parameters)
+    {
+        m_estimate.reset();
+        if (reviewed.valid() && applied.valid() && estimate.status == ExactEstimateStatus::Ready &&
+            exact_estimate_matches(estimate, reviewed, goal, parameters)) {
+            m_estimate = estimate;
+            m_applied = applied;
+        }
+    }
+
+    std::optional<ExactEstimateView> for_slice(
+        const AI::SmartSlicing::WorkspaceRevision& current,
+        AI::SmartSlicing::RecommendationGoal goal,
+        const AI::SmartSlicing::SliceRecommendation& parameters) const
+    {
+        if (!m_estimate || !current.valid() || m_applied != current ||
+            m_estimate->goal != goal || !m_estimate->parameters ||
+            !same_slice_parameters(*m_estimate->parameters, parameters))
+            return std::nullopt;
+        return m_estimate;
+    }
+
+private:
+    std::optional<ExactEstimateView> m_estimate;
+    AI::SmartSlicing::WorkspaceRevision m_applied;
+};
+
 struct SmartSlicingWorkbenchState
 {
     AI::SmartSlicing::RecommendationSessionSnapshot session;
@@ -296,6 +333,7 @@ struct SmartSlicingWorkbenchState
     bool lightweight_analyzing {false};
     bool lightweight_stale {false};
     ExactEstimateView exact_estimate;
+    std::optional<ExactEstimateView> slice_estimate;
 };
 
 enum class RecommendationPresentationStage {

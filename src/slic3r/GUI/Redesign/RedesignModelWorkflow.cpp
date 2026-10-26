@@ -7,6 +7,7 @@
 #include "AssetsWorkspace.hpp"
 #include "AssetsWorkspacePolicy.hpp"
 #include "RedesignSlicingControls.hpp"
+#include "RedesignSlicingDetails.hpp"
 #include "RedesignSlicingTools.hpp"
 #include "PrinterWorkspace.hpp"
 #include "OrcaPrinterAdapter.hpp"
@@ -239,21 +240,13 @@ wxString parameter_value(const ConfigPatchEntry& entry)
         ? " " + _(definition->sidetext) : wxString());
 }
 
-struct SliceDetailRow
-{
-    wxString label;
-    wxString value;
-    wxString section;
-};
-
-wxString format_estimated_time(double seconds);
-
 std::vector<SliceDetailRow> candidate_detail_rows(
-    const std::vector<ConfigPatchEntry>& parameters, const std::optional<TrialMetrics>& metrics)
+    const std::vector<ConfigPatchEntry>& parameters, const std::optional<TrialMetrics>& metrics,
+    const std::vector<SliceDetailRow>& official = {})
 {
-    std::vector<SliceDetailRow> rows;
+    std::vector<SliceDetailRow> rows = official;
     rows.reserve(parameters.size() + 3);
-    if (metrics) {
+    if (official.empty() && metrics) {
         if (metrics->estimated_time_seconds.known())
             rows.push_back({_L("预计打印时间"), format_estimated_time(*metrics->estimated_time_seconds.value), _L("原生试切结果")});
         if (metrics->total_material_volume_mm3.known())
@@ -266,53 +259,6 @@ std::vector<SliceDetailRow> candidate_detail_rows(
             parameter_value(entry),
             definition ? _(definition->category) : wxString()});
     }
-    return rows;
-}
-
-wxString format_estimated_time(double seconds)
-{
-    const auto minutes = static_cast<long long>(std::llround(std::max(0.0, seconds) / 60.0));
-    if (minutes >= 60)
-        return wxString::Format(_L("%lld 小时 %lld 分钟"), minutes / 60, minutes % 60);
-    return wxString::Format(_L("%lld 分钟"), minutes);
-}
-
-std::vector<SliceDetailRow> exact_estimate_detail_rows(
-    const SliceRecommendation& recommendation, const ExactEstimateView& estimate)
-{
-    const auto support = recommendation.enable_support ? _L("树状") : _L("关闭");
-    const auto adaptive = recommendation.adaptive_layer_height ? _L("启用") : _L("关闭");
-    const auto wall_generator = recommendation.arachne_wall_generator ? _L("Arachne") : _L("经典");
-    std::vector<SliceDetailRow> rows;
-    if (estimate.status == ExactEstimateStatus::Ready) {
-        rows.push_back({_L("预计打印时间"), estimate.estimated_time_seconds ?
-            format_estimated_time(*estimate.estimated_time_seconds) : _L("暂无"), _L("原生模拟结果")});
-        rows.push_back({_L("预计耗材"), estimate.material_grams ?
-            wxString::Format(_L("%.2f g"), *estimate.material_grams) : _L("暂无"), _L("原生模拟结果")});
-    } else {
-        rows.push_back({_L("预计打印时间"), estimate.status == ExactEstimateStatus::Failed ?
-            _L("暂无准确时间") : _L("计算中..."), _L("原生模拟结果")});
-        if (estimate.status == ExactEstimateStatus::Failed)
-            rows.push_back({_L("AI快速参考"),
-                wxString::Format(_L("约 %.0f 分钟（可能存在较大偏差）"), recommendation.estimated_time_seconds / 60.0),
-                _L("辅助参考")});
-        rows.push_back({_L("预计耗材"), estimate.status == ExactEstimateStatus::Failed ?
-            wxString::Format(_L("%.1f g（AI估算）"), recommendation.estimated_material_grams) :
-            _L("计算中..."), _L("辅助参考")});
-    }
-    rows.push_back({_L("表面质量"), wxString::Format(_L("%s (%.0f/100)"),
-                                         wxString::FromUTF8(recommendation.surface_quality_rating),
-                                         recommendation.surface_quality_score), _L("预估指标")});
-    rows.push_back({_L("悬垂风险"), wxString::Format(_L("%.0f/100"), recommendation.overhang_risk_score * 100.0), _L("预估指标")});
-    rows.push_back({_L("层高"), wxString::Format(_L("%.2f mm"), recommendation.layer_height_mm), _L("推荐参数")});
-    rows.push_back({_L("墙数"), wxString::Format("%d", recommendation.wall_loops), _L("推荐参数")});
-    rows.push_back({_L("填充率"), wxString::Format(_L("%.0f%% · %s"), recommendation.sparse_infill_density_percent,
-                                      wxString::FromUTF8(recommendation.sparse_infill_pattern)), _L("推荐参数")});
-    rows.push_back({_L("外壁速度"), wxString::Format(_L("%.0f mm/s"), recommendation.outer_wall_speed_mm_s), _L("推荐参数")});
-    rows.push_back({_L("支撑"), support, _L("推荐参数")});
-    rows.push_back({_L("支撑角度"), wxString::Format(_L("%.0f°"), recommendation.support_threshold_angle_deg), _L("推荐参数")});
-    rows.push_back({_L("自适应层高"), adaptive, _L("推荐参数")});
-    rows.push_back({_L("墙生成器"), wall_generator, _L("推荐参数")});
     return rows;
 }
 
@@ -1709,16 +1655,22 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
                                  _L("自适应层高"), _L("墙生成器")})
             detail_rows.push_back({label, value, {}});
     }
-    else if (official_ready)
-        detail_rows = official_detail_rows(plate);
     else if (has_parameters)
-        detail_rows = candidate_detail_rows(state.effective_parameters[selected], state.metrics[selected]);
+        detail_rows = candidate_detail_rows(state.effective_parameters[selected], state.metrics[selected],
+            official_ready ? official_detail_rows(plate) : std::vector<SliceDetailRow>{});
     else if (selected_quick != nullptr) {
         ExactEstimateView estimate = state.exact_estimate;
         if (!exact_estimate_matches(estimate, state.session.workspace_revision, display_goal, *selected_quick))
             estimate.status = ExactEstimateStatus::None;
-        detail_rows = exact_estimate_detail_rows(*selected_quick, estimate);
+        const bool use_slice_estimate = state.slice_estimate && estimate.status != ExactEstimateStatus::Ready;
+        if (use_slice_estimate)
+            estimate = *state.slice_estimate;
+        detail_rows = exact_estimate_detail_rows(*selected_quick, estimate,
+            official_ready ? official_detail_rows(plate) : std::vector<SliceDetailRow>{},
+            use_slice_estimate && estimate.revision != state.session.workspace_revision, running);
     }
+    else if (official_ready)
+        detail_rows = official_detail_rows(plate);
 
     const bool has_details = !detail_rows.empty();
     layout_changed = m_slice_parameter_panel->Show(has_details) || layout_changed;
@@ -1745,6 +1697,8 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
                 label_text) || parameter_layout_changed;
             parameter_layout_changed = set_control_label(m_slice_parameter_values[i],
                 value_text) || parameter_layout_changed;
+            set_control_tooltip(m_slice_parameter_labels[i], visible ? detail_rows[i].section : wxEmptyString);
+            set_control_tooltip(m_slice_parameter_values[i], visible ? detail_rows[i].section : wxEmptyString);
         }
         if (parameter_layout_changed) {
             parameters->Layout();

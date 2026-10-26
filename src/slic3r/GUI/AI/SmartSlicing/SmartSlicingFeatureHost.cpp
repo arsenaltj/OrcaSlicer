@@ -1813,6 +1813,11 @@ struct SmartSlicingFeatureHost::Impl
             std::lock_guard<std::mutex> lock(exact_estimate_mutex);
             state.exact_estimate = exact_estimate;
         }
+        if (native_session.has_result() && native_session.revision() == current_revision &&
+            sliced_recommendation && state.lightweight_analysis) {
+            if (const auto* plan = state.lightweight_analysis->find(slice_mode_for_goal(selected_goal)))
+                state.slice_estimate = slice_estimate.for_slice(current_revision, selected_goal, *plan);
+        }
         state.analyzing = state.analyzing || state.lightweight_analyzing ||
             state.cloud_recommendation.status == CloudRecommendationStatus::Preparing ||
             state.cloud_recommendation.status == CloudRecommendationStatus::Requesting;
@@ -1971,6 +1976,7 @@ struct SmartSlicingFeatureHost::Impl
     WorkbenchGoalSelection goal_selection;
     std::optional<AI::SmartSlicing::WorkspaceRevision> observed_workbench_revision;
     std::optional<AI::SmartSlicing::SliceRecommendation> sliced_recommendation;
+    WorkbenchSliceEstimate slice_estimate;
     std::function<void()> auto_analyze;
     NativeSliceSession native_session;
     uint64_t workbench_command_sequence {0};
@@ -2095,6 +2101,7 @@ bool SmartSlicingFeatureHost::analyze_workbench()
     if (!m_impl->native_session.reset()) return false;
     m_impl->workbench_official = {};
     m_impl->goal_selection.select(m_impl->selected_goal, m_impl->current_native_revision());
+    m_impl->slice_estimate = {};
     m_impl->estimate_cache = {};
     m_impl->observed_workbench_revision = m_impl->current_native_revision();
     m_impl->workspace->set_usage_purpose(UsagePurpose::General);
@@ -2139,6 +2146,7 @@ bool SmartSlicingFeatureHost::set_recommendation_source(SlicingRecommendationSou
 
     m_impl->cancel_exact_estimate();
     m_impl->cancel_cloud_request();
+    m_impl->slice_estimate = {};
     bool needs_analysis = false;
     {
         std::lock_guard<std::mutex> lock(m_impl->lightweight_mutex);
@@ -2190,6 +2198,7 @@ bool SmartSlicingFeatureHost::select_goal(AI::SmartSlicing::RecommendationGoal g
     if (!m_impl->goal_selection.select(goal, revision)) return false;
     m_impl->cancel_exact_estimate();
     m_impl->native_session.reset();
+    m_impl->slice_estimate = {};
     m_impl->workbench_official = {};
     m_impl->selected_goal = goal;
     m_impl->publish_workbench();
@@ -2221,6 +2230,11 @@ AI::SmartSlicing::OfficialSliceResult SmartSlicingFeatureHost::start_workbench_s
             current.session.workspace_revision != reviewed.session.workspace_revision)
             return {OfficialSlicePhase::Rejected, "reviewed_candidate_changed"};
 
+        // Native slicing is a no-op when this exact input already has results.
+        // Keep the matching completed result instead of treating that as failure.
+        if (current.official_statistics_ready)
+            return current.official;
+
         SliceMode selected_mode = SliceMode::BALANCED;
         if (current.selected_goal == RecommendationGoal::Speed)
             selected_mode = SliceMode::SPEED;
@@ -2247,6 +2261,8 @@ AI::SmartSlicing::OfficialSliceResult SmartSlicingFeatureHost::start_workbench_s
             // Applying the reviewed plan changes the plate config and may
             // reposition the wipe tower. It is not a new recommendation input.
             const auto applied_revision = m_impl->current_native_revision();
+            m_impl->slice_estimate.capture(current.exact_estimate, current.session.workspace_revision,
+                applied_revision, current.selected_goal, *lightweight_plan);
             m_impl->goal_selection.select(current.selected_goal, applied_revision);
             m_impl->observed_workbench_revision = applied_revision;
             m_impl->sliced_recommendation = *lightweight_plan;
@@ -2287,6 +2303,8 @@ bool SmartSlicingFeatureHost::start_native_slice()
         }
         return false;
     }
+    if (!m_impl->slice_goal_history.pending_goal())
+        m_impl->slice_estimate = {};
     cancel_workbench_analysis();
     if (!m_impl->versioned_apply_workflow->retire_completed_transaction()) {
         m_impl->workbench_official = {AI::SmartSlicing::OfficialSlicePhase::Rejected, "请先完成或撤销已应用的 AI 方案。"};
