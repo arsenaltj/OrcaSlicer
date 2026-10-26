@@ -6,12 +6,25 @@
 #include "FilamentColorPack.hpp"
 #include "WorkbenchFilamentRecipes.hpp"
 #include <functional>
+#include <cmath>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <numeric>
 #include <cctype>
 #include <set>
 
 namespace Slic3r::GUI::PrinterFilamentConfig {
+
+inline constexpr int workbench_row_height_dip = 28;
+
+inline std::optional<size_t> mixed_panel_index(
+    const std::vector<size_t>& mixed_config_indices, size_t config_slot)
+{
+    const auto found = std::find(mixed_config_indices.begin(), mixed_config_indices.end(), config_slot);
+    if (found == mixed_config_indices.end()) return {};
+    return size_t(std::distance(mixed_config_indices.begin(), found));
+}
 
 inline GUI::WorkbenchPrinterFilaments capture(const PresetBundle& bundle)
 {
@@ -24,6 +37,7 @@ inline GUI::WorkbenchPrinterFilaments capture(const PresetBundle& bundle)
         !bundle.is_bbl_vendor() ? state.nozzles : 32;
     nlohmann::json identity = {{"printer", state.printer}, {"nozzles", nozzles ? nozzles->serialize() : ""},
         {"slots", nlohmann::json::array()}};
+    nlohmann::json layout = {{"slots", nlohmann::json::array()}};
     const auto* colors = bundle.project_config.option<ConfigOptionStrings>("filament_colour");
     const size_t count = bundle.filament_presets.size();
     std::vector<std::string> types;
@@ -31,6 +45,7 @@ inline GUI::WorkbenchPrinterFilaments capture(const PresetBundle& bundle)
     for (size_t i = 0; i < count; ++i) {
         const bool mixed = bundle.is_mixed_filament(i);
         identity["slots"].push_back({i, mixed, bundle.filament_presets[i]});
+        layout["slots"].push_back({i, mixed});
         if (mixed) {
             WorkbenchMixedFilament recipe;
             recipe.slot = i;
@@ -76,6 +91,10 @@ inline GUI::WorkbenchPrinterFilaments capture(const PresetBundle& bundle)
     for (const auto& slot : state.slots) identity["loaded"].push_back({slot.slot, slot.color, slot.material, slot.compatible});
     for (const auto& recipe : state.mixed) identity["recipes"].push_back({recipe.slot, recipe.color, recipe.recipe, recipe.valid});
     state.identity = identity.dump();
+    // The settings rail uses this value to decide whether its native-style
+    // rows must be rebuilt. Colors, material presets and recipe ratios are
+    // deliberately excluded so ordinary edits can update controls in place.
+    state.layout = layout.dump();
     nlohmann::json signature = identity;
     for (const auto& key : bundle.project_config.keys())
         signature["project"][key] = bundle.project_config.option(key)->serialize();
@@ -191,6 +210,28 @@ inline bool remove(PresetBundle& staged, size_t slot, size_t replacement, std::s
     staged.project_config = std::move(candidate.project_config);
     staged.filament_presets = std::move(candidate.filament_presets);
     return true;
+}
+
+inline std::optional<size_t> nearest_replacement_slot(const std::string& source_color,
+    const std::vector<WorkbenchFilamentSlot>& targets)
+{
+    std::optional<size_t> best;
+    double best_distance = std::numeric_limits<double>::max();
+    const bool source_valid = AI::is_rgb_hex_color(source_color);
+    for (const auto& target : targets) {
+        if (!target.exists || !target.configured || !target.compatible) continue;
+        double distance = std::numeric_limits<double>::max();
+        if (source_valid && AI::is_rgb_hex_color(target.color)) {
+            try { distance = WorkbenchFilamentRecipes::distance(source_color, target.color); }
+            catch (...) { distance = std::numeric_limits<double>::max(); }
+        }
+        if (!best || distance < best_distance - 1e-7 ||
+            (std::abs(distance - best_distance) <= 1e-7 && target.slot < *best)) {
+            best = target.slot;
+            best_distance = distance;
+        }
+    }
+    return best;
 }
 
 // The workbench application path receives a logical card directly, without
@@ -317,16 +358,20 @@ inline bool trim_unused_mixed_slots(PresetBundle& staged, std::vector<size_t>& b
             changes.push_back({{}, int(at), int(destination)});
             continue;
         }
-        size_t replacement = size_t(-1);
+        std::vector<WorkbenchFilamentSlot> replacements;
         const auto current = capture(staged);
-        if (!current.slots.empty()) replacement = current.slots.front().slot;
-        for (const size_t slot : retained) if (slot != at) { replacement = slot; break; }
-        if (replacement == size_t(-1)) {
+        for (const auto& slot : current.slots)
+            if (slot.exists && slot.configured && slot.compatible) replacements.push_back(slot);
+        const auto source = std::find_if(current.mixed.begin(), current.mixed.end(),
+            [at](const auto& item) { return item.slot == at; });
+        const auto replacement = nearest_replacement_slot(
+            source == current.mixed.end() ? std::string{} : source->color, replacements);
+        if (!replacement) {
             error = "色卡切换缺少可用替代槽位，配置草稿保持原状";
             return false;
         }
         staged.update_num_filaments(unsigned(at));
-        changes.push_back({{}, int(at), int(replacement)});
+        changes.push_back({{}, int(at), int(*replacement)});
         std::set<size_t> shifted;
         for (const size_t slot : retained)
             if (slot != at) shifted.insert(slot > at ? slot - 1 : slot);
@@ -381,7 +426,9 @@ using ChooseReplacement = std::function<std::optional<size_t>(const WorkbenchFil
 // Shared by the real dialog and regressions. All edits, including structural
 // changes and replacement choices, publish to the draft only after success.
 inline bool import_color_pack(PresetBundle& staged, const FilamentColorPack& pack,
-    std::vector<SlotChange>& changes, std::string& error, const ChooseReplacement& choose = {})
+    std::vector<SlotChange>& changes, std::string& error, const ChooseReplacement& choose = {},
+    std::vector<size_t>* imported_bindings = nullptr,
+    std::optional<size_t> physical_capacity_override = {})
 {
     error.clear();
     const size_t limit = size_t(EnforcerBlockerType::ExtruderMax);
@@ -395,7 +442,17 @@ inline bool import_color_pack(PresetBundle& staged, const FilamentColorPack& pac
     PresetBundle candidate(staged);
     auto pending_changes = changes;
     auto state = capture(candidate);
-    const auto bases = WorkbenchFilamentRecipes::select_bases(pack.colors, state.physical_capacity);
+    // Retire old virtual recipes before growing physical slots. Otherwise a
+    // stale recipe can consume the 32nd native slot and reject a valid card.
+    if (!state.mixed.empty()) {
+        std::vector<size_t> unused;
+        if (!trim_unused_mixed_slots(candidate, unused, state.physical_count,
+                pending_changes, error)) return false;
+        state = capture(candidate);
+    }
+    const size_t physical_capacity = std::min(limit,
+        physical_capacity_override.value_or(state.physical_capacity));
+    const auto bases = WorkbenchFilamentRecipes::select_bases(pack.colors, physical_capacity);
     const size_t target = bases.size();
     if (!state.nozzles || target > limit || candidate.filament_presets.size() > limit ||
         (target > state.physical_count && target - state.physical_count > limit - candidate.filament_presets.size())) {
@@ -414,9 +471,11 @@ inline bool import_color_pack(PresetBundle& staged, const FilamentColorPack& pac
         }
         pending_changes.push_back({{at}, -1, -1});
     }
+    std::vector<size_t> preferred_bindings(pack.colors.size(), size_t(-1));
     for (size_t i = 0; i < bases.size(); ++i) {
         const size_t source_index = bases[i];
         const size_t at = state.slots[i].slot;
+        preferred_bindings[source_index] = at;
         auto& name = candidate.filament_presets[at];
         const std::string desired = pack.presets.empty() ? name : pack.presets[source_index];
         const auto* preset = candidate.filaments.find_preset(desired, false);
@@ -458,10 +517,12 @@ inline bool import_color_pack(PresetBundle& staged, const FilamentColorPack& pac
         }
         pending_changes.push_back({{}, int(source.slot), int(*replacement)});
     }
-    std::vector<size_t> bindings;
+    std::vector<size_t> bindings = pack.colors.size() == target
+        ? preferred_bindings : std::vector<size_t>{};
     if (pack.colors.size() > target && capture(candidate).ready) {
         const size_t old_count = candidate.filament_presets.size();
-        if (!WorkbenchFilamentRecipes::stage_targets(candidate, pack.colors, bindings, error)) return false;
+        if (!WorkbenchFilamentRecipes::stage_targets(candidate, pack.colors, bindings, error,
+                preferred_bindings)) return false;
         for (size_t at = old_count; at < candidate.filament_presets.size(); ++at)
             pending_changes.push_back({{at}, -1, -1});
     }
@@ -469,6 +530,12 @@ inline bool import_color_pack(PresetBundle& staged, const FilamentColorPack& pac
         !trim_unused_mixed_slots(candidate, bindings, pack.colors.size(), pending_changes, error)) return false;
     if (candidate.filament_presets.size() != pack.colors.size()) {
         error = "色卡切换后槽位数量无法与色卡保持一致，配置草稿保持原状"; return false;
+    }
+    if (bindings.size() != pack.colors.size() ||
+        std::any_of(bindings.begin(), bindings.end(), [&](size_t slot) {
+            return slot >= candidate.filament_presets.size();
+        })) {
+        error = "色卡未生成完整的原生槽位绑定，配置草稿保持原状"; return false;
     }
     // A staged card may intentionally leave a slot without a compatible
     // material preset.  The dialog will keep that color and ask the user to
@@ -481,6 +548,59 @@ inline bool import_color_pack(PresetBundle& staged, const FilamentColorPack& pac
     staged.project_config = std::move(candidate.project_config);
     staged.filament_presets = std::move(candidate.filament_presets);
     changes = std::move(pending_changes);
+    if (imported_bindings) *imported_bindings = std::move(bindings);
+    return true;
+}
+
+struct StagedColorPackImport {
+    std::shared_ptr<PresetBundle> configuration;
+    std::vector<SlotChange> changes;
+    std::vector<size_t> bindings;
+    std::string source_signature;
+    size_t physical_count {0};
+    size_t mixed_count {0};
+};
+
+inline bool stage_workbench_color_pack_import(const PresetBundle& live,
+    const FilamentColorPack& pack, StagedColorPackImport& result, std::string& error)
+{
+    result = {};
+    if (!pack.valid_for_workbench_import()) {
+        error = "工作台色卡必须包含 1 至 32 个有效颜色";
+        return false;
+    }
+    const auto source = capture(live);
+    // A SEMM/single-nozzle profile permits up to 32 logical physical rows, but
+    // direct workbench import must use the actually configured spools as its
+    // physical base. Fixed multi-nozzle printers may additionally fill idle
+    // nozzles up to their hardware capacity.
+    const size_t physical_capacity = source.physical_capacity == size_t(EnforcerBlockerType::ExtruderMax)
+        ? source.physical_count : source.physical_capacity;
+    auto staged = std::make_shared<PresetBundle>(live);
+    std::vector<SlotChange> changes;
+    std::vector<size_t> bindings;
+    const ChooseReplacement choose = [](const WorkbenchFilamentSlot& slot,
+        const std::vector<WorkbenchFilamentSlot>& targets) {
+        return nearest_replacement_slot(slot.color, targets);
+    };
+    if (!import_color_pack(*staged, pack, changes, error, choose, &bindings, physical_capacity)) return false;
+    const auto imported = capture(*staged);
+    const size_t expected_physical = std::min(pack.colors.size(), physical_capacity);
+    if (!imported.ready || imported.physical_count != expected_physical ||
+        imported.mixed.size() != pack.colors.size() - expected_physical ||
+        bindings.size() != pack.colors.size() ||
+        std::set<size_t>(bindings.begin(), bindings.end()).size() != bindings.size() ||
+        !PrinterFilamentSlotRemap::validate(changes, live.filament_presets.size(), staged->filament_presets.size())) {
+        error = !imported.ready && !imported.reason.empty()
+            ? imported.reason : "色卡暂存结果不完整，工程保持原状";
+        return false;
+    }
+    result.configuration = std::move(staged);
+    result.changes = std::move(changes);
+    result.bindings = std::move(bindings);
+    result.source_signature = source.signature;
+    result.physical_count = imported.physical_count;
+    result.mixed_count = imported.mixed.size();
     return true;
 }
 } // namespace Slic3r::GUI::PrinterFilamentConfig

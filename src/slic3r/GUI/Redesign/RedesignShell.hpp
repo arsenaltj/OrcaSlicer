@@ -3,6 +3,7 @@
 #include "ImageDesignDraft.hpp"
 #include "NativeWorkspaceTheme.hpp"
 #include "RedesignModelRoute.hpp"
+#include "RedesignPageTransition.hpp"
 #include "../AI/ModelGeneration/ModelGenerationHost.hpp"
 #include "../AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "../AI/ModelGeneration/WorkbenchImportSession.hpp"
@@ -18,14 +19,18 @@
 #include <string>
 #include <thread>
 #include <chrono>
+#include <optional>
 #include <vector>
 
 #include <wx/image.h>
 
 #include <wx/panel.h>
 #include <wx/timer.h>
+#include <wx/weakref.h>
 
 class wxBoxSizer;
+class wxActivityIndicator;
+class wxDialog;
 class wxPanel;
 class wxScrolledWindow;
 class wxStaticBitmap;
@@ -34,6 +39,8 @@ class wxTextCtrl;
 class wxWindow;
 
 namespace Slic3r::GUI {
+
+class WorkbenchLabel;
 
 enum class AIServiceStatus;
 class ModelGenerationFeatureHost;
@@ -141,7 +148,7 @@ private:
     void build_model_workflow();
     bool open_model_workbench();
     void return_model_overview();
-    void show_model_view(ModelView view);
+    bool show_model_view(ModelView view);
     void apply_workbench_state(const PostGenerationWorkbenchState& state);
     void apply_slicing_state(const SmartSlicingWorkbenchState& state);
     wxPanel* create_slicing_recommendation_source(wxWindow* parent);
@@ -151,7 +158,12 @@ private:
     void select_slicing_tab(bool native);
     void start_workbench_slice();
     void update_import_loading(WorkbenchImportPhase phase, const std::string& message = {});
-    void finish_import_loading();
+    void show_import_loading();
+    void stage_import_target_view();
+    void rollback_import_target_view();
+    void commit_import_target_view();
+    void retry_import_target_view();
+    void finish_import_loading(bool retain_view_retry = false);
     void layout_import_loading();
     void check_import_first_frame();
     void open_print_preparation();
@@ -166,6 +178,11 @@ private:
     void refresh_native_theme();
     bool slicing_mode_switch_allowed() const;
     bool navigate_to_impl(Page page, bool allow_locked_image_view);
+    wxWindow* page_route_root(Page page, ModelView view) const;
+    wxWindow* active_page_focus_root() const;
+    void present_active_page();
+    void remember_active_page_focus();
+    void restore_active_page_focus();
     // User navigation to the image page may inspect the current design while
     // a model submission still owns the route. This path keeps the route lock
     // and exposes the image workspace as read-only.
@@ -236,20 +253,27 @@ private:
     PreviewAutoFitState m_preview_auto_fit;
     bool m_slice_completion_retry_pending {false};
     bool m_import_in_progress {false};
-    bool m_import_switching_view {false};
     bool m_import_awaiting_frame {false};
+    bool m_import_target_staged {false};
+    bool m_import_target_detached {false};
+    bool m_import_waiting_post_fit_frame {false};
+    bool m_import_project_committed {false};
+    bool m_import_view_retry_available {false};
     size_t m_import_frame_baseline {0};
     std::shared_ptr<WorkbenchImportSession> m_import_session;
-    wxPanel* m_import_loading {nullptr};
-    wxPanel* m_import_history_host {nullptr};
-    wxStaticText* m_import_stage {nullptr};
-    wxStaticText* m_import_elapsed {nullptr};
+    wxDialog* m_import_loading {nullptr};
+    wxActivityIndicator* m_import_activity {nullptr};
+    WorkbenchLabel* m_import_stage {nullptr};
+    WorkbenchLabel* m_import_elapsed {nullptr};
     wxWindow* m_import_cancel {nullptr};
     wxTimer m_import_timer;
     wxTimer m_slice_camera_retry_timer;
     int m_slice_camera_retry_attempts {0};
     std::chrono::steady_clock::time_point m_import_started;
     std::chrono::steady_clock::time_point m_import_view_started;
+    boost::filesystem::path m_import_committed_model_path;
+    RedesignPageTransition m_page_transition;
+    std::optional<RedesignPageTransition::Token> m_import_transition;
     bool m_saved_sidebar_collapsed {false};
     std::optional<bool> m_saved_collapse_toolbar;
     std::string m_pending_workbench_job;
@@ -304,6 +328,8 @@ private:
     std::array<wxPanel*, 4> m_nav_markers { nullptr, nullptr, nullptr, nullptr };
     std::array<wxStaticText*, 4> m_nav_labels { nullptr, nullptr, nullptr, nullptr };
     std::array<wxPanel*, 4> m_pages { nullptr, nullptr, nullptr, nullptr };
+    std::array<wxWeakRef<wxWindow>, 4> m_page_focus;
+    std::array<wxWeakRef<wxWindow>, 4> m_model_view_focus;
     wxImage m_selected_image;
     wxImage m_design_image;
     boost::filesystem::path m_selected_image_path;

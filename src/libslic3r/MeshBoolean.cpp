@@ -205,6 +205,50 @@ struct CGALMesh {
     CGALMesh(const _EpicMesh& _m) :m(_m) {}
 };
 
+namespace {
+
+bool is_valid_closed_volume_candidate(const _EpicMesh &mesh)
+{
+    if (num_faces(mesh) == 0 || !mesh.is_valid())
+        return false;
+
+    const auto null_halfedge = boost::graph_traits<_EpicMesh>::null_halfedge();
+    for (const auto vertex : vertices(mesh))
+        if (halfedge(vertex, mesh) == null_halfedge)
+            return false;
+
+    return CGAL::is_valid_polygon_mesh(mesh) && CGAL::is_closed(mesh);
+}
+
+bool triangle_mesh_to_repaired_polygon_mesh(const TriangleMesh &source, _EpicMesh &mesh)
+{
+    if (source.empty())
+        return false;
+
+    std::vector<_EpicMesh::Point> points;
+    std::vector<std::array<std::size_t, 3>> polygons;
+    points.reserve(source.its.vertices.size());
+    polygons.reserve(source.its.indices.size());
+    for (const auto &vertex : source.its.vertices)
+        points.emplace_back(vertex.x(), vertex.y(), vertex.z());
+    for (const auto &face : source.its.indices)
+        polygons.push_back({size_t(face[0]), size_t(face[1]), size_t(face[2])});
+
+    CGALProc::repair_polygon_soup(points, polygons);
+    CGALProc::orient_polygon_soup(points, polygons);
+    if (polygons.empty() || !CGALProc::is_polygon_soup_a_polygon_mesh(polygons))
+        return false;
+
+    mesh.clear();
+    const size_t normalized_faces = polygons.size();
+    CGALProc::polygon_soup_to_polygon_mesh(points, polygons, mesh);
+    CGALProc::remove_isolated_vertices(mesh);
+    mesh.collect_garbage();
+    return num_faces(mesh) == normalized_faces && is_valid_closed_volume_candidate(mesh);
+}
+
+} // namespace
+
 void save_CGALMesh(const std::string& fname, const CGALMesh& cgal_mesh) {
     std::ofstream os(fname);
     os << cgal_mesh.m;
@@ -697,7 +741,7 @@ void CGALMeshDeleter::operator()(CGALMesh *ptr) { delete ptr; }
 
 bool does_bound_a_volume(const CGALMesh &mesh)
 {
-    return CGAL::is_closed(mesh.m) && CGALProc::does_bound_a_volume(mesh.m);
+    return is_valid_closed_volume_candidate(mesh.m) && CGALProc::does_bound_a_volume(mesh.m);
 }
 
 bool empty(const CGALMesh &mesh)
@@ -892,8 +936,14 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
                     if (error) *error = "Repair failed: self-intersections remain after solid union.";
                     return false;
                 }
-                cgal_mesh.clear();
-                triangle_mesh_to_cgal(solid.its.vertices, solid.its.indices, cgal_mesh);
+                // libigl's exact self-union can retain unreferenced vertices
+                // and duplicate faces. Direct Surface_mesh insertion rejects
+                // those faces, leaving an open mesh whose isolated vertices
+                // make CGAL's volume traversal dereference a null halfedge.
+                if (!triangle_mesh_to_repaired_polygon_mesh(solid, cgal_mesh)) {
+                    if (error) *error = "Repair failed: solid union could not form a polygon mesh.";
+                    return false;
+                }
                 union_stage.finish(num_vertices(cgal_mesh), num_faces(cgal_mesh));
             }
         }
@@ -901,6 +951,10 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
         // 9) Ensure outward orientation
         if (canceled())
             return false;
+        if (!is_valid_closed_volume_candidate(cgal_mesh)) {
+            if (error) *error = "Repair failed: repaired mesh topology is invalid.";
+            return false;
+        }
         if (!PMP::does_bound_a_volume(cgal_mesh)) {
             CgalRepairStageTimer stage("orient_to_bound_a_volume", num_vertices(cgal_mesh), num_faces(cgal_mesh));
             PMP::orient_to_bound_a_volume(cgal_mesh);
@@ -941,10 +995,13 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
             if (canceled()) return false;
             CgalRepairStageTimer stage("repair_float_intersections", candidate.its.vertices.size(), candidate.its.indices.size());
             _EpicMesh rounded;
-            triangle_mesh_to_cgal(candidate.its.vertices, candidate.its.indices, rounded);
-            if (!PMP::experimental::remove_self_intersections(rounded,
-                CGAL::parameters::number_of_iterations(7).apply_per_connected_component(false)
-                    .use_smoothing(true).preserve_genus(false)) || !CGAL::is_closed(rounded)) break;
+            if (!triangle_mesh_to_repaired_polygon_mesh(candidate, rounded))
+                break;
+            if (PMP::does_self_intersect(rounded) &&
+                (!PMP::experimental::remove_self_intersections(rounded,
+                    CGAL::parameters::number_of_iterations(7).apply_per_connected_component(false)
+                        .use_smoothing(true).preserve_genus(false)) || !is_valid_closed_volume_candidate(rounded)))
+                break;
             rounded.collect_garbage();
             candidate = TriangleMesh(cgal_to_indexed_triangle_set(rounded), errs);
             if (candidate.volume() < 0.f) candidate.flip_triangles();

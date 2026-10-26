@@ -9,7 +9,7 @@ bool apply_local_print_colors(ModelVolume& volume, LocalPrintColorCommit::Prepar
     const PresetBundle* staged, std::string& error);
 // One new color-assigned model and its optional material table share an Action.
 bool adopt_local_print_model(const ModelObject& object, const PresetBundle* staged,
-    size_t& index, std::string& error);
+    size_t& index, std::string& error, bool apply_round_base_preparation = false);
 void finish_local_print_model_import(size_t index);
 AI::ModelImportResult import_workbench_model(const AI::ModelImportRequest& request);
 bool capture_local_print_placement(LocalPrintModelImport::PlacementSnapshot& placement, std::string& error);

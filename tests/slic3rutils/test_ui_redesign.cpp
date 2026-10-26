@@ -13,6 +13,7 @@
 #include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
 #include "slic3r/GUI/Redesign/RedesignSlicingDetails.hpp"
+#include "slic3r/GUI/Redesign/RedesignPageTransition.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -315,6 +316,28 @@ TEST_CASE("Slicing navigation waits for analysis and workspace operations to fin
     CHECK_FALSE(workbench_mode_switch_allowed(false, true, false, false, false));
     CHECK_FALSE(workbench_mode_switch_allowed(false, false, true, false, false));
     CHECK_FALSE(workbench_mode_switch_allowed(false, false, false, true, false));
+}
+
+TEST_CASE("Redesign page transitions reject overlap and ignore late readiness callbacks",
+          "[UiRedesign][WorkbenchNavigation]")
+{
+    RedesignPageTransition transition;
+    const auto first = transition.begin({1, 0}, {2, 1});
+    REQUIRE(first);
+    CHECK(transition.active());
+    CHECK_FALSE(transition.begin({1, 0}, {3, 0}));
+    CHECK_FALSE(transition.commit(*first));
+    REQUIRE(transition.mark_ready(*first));
+    CHECK(transition.commit(*first));
+    CHECK_FALSE(transition.active());
+
+    const auto second = transition.begin({2, 1}, {3, 0});
+    REQUIRE(second);
+    CHECK(*second > *first);
+    CHECK_FALSE(transition.mark_ready(*first));
+    CHECK_FALSE(transition.rollback(*first));
+    CHECK(transition.rollback(*second));
+    CHECK_FALSE(transition.current(*second));
 }
 
 TEST_CASE("Changing the model face target selects compatible geometry and retains other options", "[UiRedesign][ModelFaceLimitChoice]")

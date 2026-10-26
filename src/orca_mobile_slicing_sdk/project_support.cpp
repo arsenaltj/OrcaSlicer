@@ -1,0 +1,1262 @@
+#include "project_support.hpp"
+#include "preset_catalog.generated.hpp"
+#include "three_mf_inspection.hpp"
+#include "libslic3r/Format/bbs_3mf.hpp"
+#include "libslic3r/Preset.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <limits>
+#include <sstream>
+#include <set>
+#include <map>
+#include <memory>
+#include <cstring>
+#include "libslic3r/GCode/GCodeProcessor.hpp"
+#include "libslic3r/ClipperUtils.hpp"
+#include "libslic3r/Format/objparser.hpp"
+#include <stdexcept>
+#include <unordered_map>
+#include <utility>
+
+#include "libslic3r/Sha256Digest.hpp"
+#include "libslic3r/Utils.hpp"
+
+namespace orca::mobile::slicing {
+namespace {
+
+using namespace Slic3r;
+void orient_instance(ModelObject& object,size_t ii,const Json& command,const DynamicPrintConfig& config);
+const std::array<Vec3d,6>& cardinal_rotations();
+
+std::unique_ptr<ConfigOption> enum_option_with_definition(const DynamicPrintConfig& config,
+    const std::string& key, const ConfigOption& option)
+{
+    std::unique_ptr<ConfigOption> copy(option.clone());
+    const auto* definition=config.def()->get(key);
+    const auto* mapping=definition ? definition->enum_keys_map : nullptr;
+    if (auto* value=dynamic_cast<ConfigOptionEnumGeneric*>(copy.get())) {
+        if (!value->keys_map) value->keys_map=mapping;
+        if (!value->keys_map) throw std::invalid_argument("ENUM_DEFINITION_MISSING:"+key);
+    }
+    if (auto* value=dynamic_cast<ConfigOptionEnumsGeneric*>(copy.get())) {
+        if (!value->keys_map) value->keys_map=mapping;
+        if (!value->keys_map && !value->values.empty()) throw std::invalid_argument("ENUM_DEFINITION_MISSING:"+key);
+    }
+    if (auto* value=dynamic_cast<ConfigOptionEnumsGenericNullable*>(copy.get())) {
+        if (!value->keys_map) value->keys_map=mapping;
+        if (!value->keys_map && !value->values.empty()) throw std::invalid_argument("ENUM_DEFINITION_MISSING:"+key);
+    }
+    return copy;
+}
+std::string serialized_option(const DynamicPrintConfig& config,const std::string& key,const ConfigOption& option)
+{
+    if (option.type()==coEnum || option.type()==coEnums)
+        return enum_option_with_definition(config,key,option)->serialize();
+    return option.serialize();
+}
+
+std::string native_value(const Json& value)
+{
+    if (value.is_string())
+        return value.get<std::string>();
+    if (value.is_boolean())
+        return value.get<bool>() ? "1" : "0";
+    if (value.is_number())
+        return value.dump();
+    if (value.is_array()) {
+        std::string result;
+        for (size_t i = 0; i < value.size(); ++i) {
+            if (i != 0)
+                result.push_back(',');
+            result += native_value(value[i]);
+        }
+        return result;
+    }
+    throw std::invalid_argument("configuration override must be a scalar or array: " + value.dump());
+}
+
+std::string sha256_file(const std::string& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        throw std::runtime_error("cannot open project: " + path);
+
+    Sha256Digest digest;
+    std::array<char, 64 * 1024> buffer{};
+    while (input) {
+        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const std::streamsize count = input.gcount();
+        if (count > 0 && !digest.update(buffer.data(), static_cast<size_t>(count)))
+            throw std::runtime_error("cannot hash project: " + path);
+    }
+    if (!input.eof())
+        throw std::runtime_error("cannot read project: " + path);
+    const std::string result = digest.final_hex();
+    if (result.empty())
+        throw std::runtime_error("cannot finalize project hash: " + path);
+    return result;
+}
+
+Vec3d json_vec3(const Json& value, const Vec3d& fallback)
+{
+    if (!value.is_array() || value.size() != 3)
+        throw std::invalid_argument("TRANSFORM_REQUIRES_THREE_COMPONENTS");
+    Vec3d result(value[0].get<double>(), value[1].get<double>(), value[2].get<double>());
+    if (!result.allFinite()) throw std::invalid_argument("NONFINITE_TRANSFORM");
+    return result;
+}
+
+void apply_transforms(Model& model, const Json& transforms)
+{
+    if (transforms.is_null() || transforms.empty())
+        return;
+    if (!transforms.is_array())
+        throw std::invalid_argument("transforms must be an array");
+
+    for (const Json& entry : transforms) {
+        if (!entry.is_object())
+            throw std::invalid_argument("each transform must be an object");
+        const int object_index = entry.value("objectIndex", -1);
+        const int instance_index = entry.value("instanceIndex", -1);
+        const size_t object_begin = object_index < 0 ? 0 : static_cast<size_t>(object_index);
+        const size_t object_end = object_index < 0 ? model.objects.size() : object_begin + 1;
+        if (object_end > model.objects.size())
+            throw std::out_of_range("transform objectIndex is outside the project");
+
+        for (size_t oi = object_begin; oi < object_end; ++oi) {
+            ModelObject* object = model.objects[oi];
+            const size_t instance_begin = instance_index < 0 ? 0 : static_cast<size_t>(instance_index);
+            const size_t instance_end = instance_index < 0 ? object->instances.size() : instance_begin + 1;
+            if (instance_end > object->instances.size())
+                throw std::out_of_range("transform instanceIndex is outside the object");
+            for (size_t ii = instance_begin; ii < instance_end; ++ii) {
+                ModelInstance* instance = object->instances[ii];
+                if (entry.contains("translation"))
+                    instance->set_offset(json_vec3(entry["translation"], instance->get_offset()));
+                if (entry.contains("rotation"))
+                    instance->set_rotation(json_vec3(entry["rotation"], instance->get_rotation()));
+                if (entry.contains("scale"))
+                    {
+                    const Vec3d scale = json_vec3(entry["scale"], instance->get_scaling_factor());
+                    if (scale.minCoeff() <= 0) throw std::invalid_argument("SCALE_MUST_BE_POSITIVE");
+                    instance->set_scaling_factor(scale);
+                }
+            }
+            object->invalidate_bounding_box();
+        }
+    }
+}
+
+Json bounds_json(const BoundingBoxf3& bounds)
+{
+    if (!bounds.defined)
+        return Json{{"min", Json::array({0.0, 0.0, 0.0})}, {"max", Json::array({0.0, 0.0, 0.0})}};
+    return Json{{"min", Json::array({bounds.min.x(), bounds.min.y(), bounds.min.z()})},
+                {"max", Json::array({bounds.max.x(), bounds.max.y(), bounds.max.z()})}};
+}
+
+Json colors_json(const DynamicPrintConfig& config)
+{
+    Json colors = Json::array();
+    if (const auto* option = config.option<ConfigOptionStrings>("filament_colour"))
+        for (const auto& color : option->values)
+            colors.push_back(color);
+    return colors;
+}
+
+Json filament_map_json(const DynamicPrintConfig& config)
+{
+    Json result = Json::array();
+    if (const auto* option = config.option<ConfigOptionInts>("filament_map"))
+        for (const int value : option->values)
+            result.push_back(value);
+    return result;
+}
+
+std::array<std::uint8_t, 4> parse_color(std::string value)
+{
+    if (!value.empty() && value.front() == '#')
+        value.erase(value.begin());
+    if (value.size() == 8) {
+        // Orca color strings are normally RGB; accept RGBA for imported projects.
+    } else if (value.size() == 6) {
+        value += "ff";
+    } else {
+        return {255, 255, 255, 255};
+    }
+    std::array<std::uint8_t, 4> rgba{};
+    for (size_t i = 0; i < rgba.size(); ++i) {
+        unsigned int byte = 0;
+        std::istringstream stream(value.substr(i * 2, 2));
+        stream >> std::hex >> byte;
+        if (stream.fail())
+            return {255, 255, 255, 255};
+        rgba[i] = static_cast<std::uint8_t>(byte);
+    }
+    return rgba;
+}
+
+
+#ifdef ORCA_MOBILE_ANDROID
+Model load_mobile_obj(const std::string& path, Json& unsupported)
+{
+    ObjParser::ObjData data{};
+    if (!ObjParser::objparse(path.c_str(),data)) throw std::runtime_error("OBJ_PARSE_FAILED");
+    indexed_triangle_set mesh;
+    for (size_t i=0;i+OBJ_VERTEX_LENGTH<=data.coordinates.size();i+=OBJ_VERTEX_LENGTH) {
+        const Vec3f vertex(data.coordinates[i],data.coordinates[i+1],data.coordinates[i+2]);
+        if (!vertex.allFinite()) throw std::runtime_error("OBJ_NONFINITE_VERTEX");
+        mesh.vertices.push_back(vertex);
+    }
+    std::vector<int> face;
+    auto flush=[&] {
+        if (face.empty()) return;
+        if (face.size()<3 || face.size()>4) throw std::runtime_error("OBJ_REQUIRES_TRIANGLES_OR_QUADS");
+        for (size_t i=1;i+1<face.size();++i) mesh.indices.emplace_back(face[0],face[i],face[i+1]);
+        face.clear();
+    };
+    for (const auto& vertex:data.vertices) {
+        if (vertex.coordIdx==-1) {flush();continue;}
+        if (vertex.coordIdx<0 || size_t(vertex.coordIdx)>=mesh.vertices.size()) throw std::runtime_error("OBJ_VERTEX_INDEX_OUT_OF_RANGE");
+        face.push_back(vertex.coordIdx);
+    }
+    flush();
+    if (mesh.vertices.empty() || mesh.indices.empty()) throw std::runtime_error("OBJ_EMPTY_GEOMETRY");
+    TriangleMesh geometry(std::move(mesh));
+    if (geometry.volume()<0) geometry.flip_triangles();
+    Model model;
+    auto* object=model.add_object(); object->name=std::filesystem::u8path(path).stem().u8string(); object->input_file=path;
+    object->add_volume(std::move(geometry),ModelVolumeType::MODEL_PART,false);
+    model.add_default_instances();
+    if (data.has_vertex_color) unsupported.push_back("OBJ_VERTEX_COLOR_IMPORT");
+    if (!data.textureCoordinates.empty() || !data.mtllibs.empty()) unsupported.push_back("OBJ_TEXTURE_OR_MATERIAL_SIDECAR");
+    return model;
+}
+#endif
+
+} // namespace
+
+Json inspect_three_mf(const std::string& inputPath) {return detail::inspect_archive(inputPath);}
+
+LoadedProject load_project(const std::string& inputPath, const Json& configOverrides,
+                           const Json& transforms, const std::string& workspaceRoot, const Json& projectCommands)
+{
+    if (inputPath.empty())
+        throw std::invalid_argument("inputPath is empty");
+    if (!std::filesystem::is_regular_file(std::filesystem::u8path(inputPath)))
+        throw std::runtime_error("project file does not exist: " + inputPath);
+
+    DynamicPrintConfig config;
+    ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::EnableSilent};
+    Model model;
+    Json unsupported=Json::array();
+    Json inspection;
+    PlateDataPtrs plates;std::vector<Preset*> presets;
+    struct SourceData {PlateDataPtrs& plates;std::vector<Preset*>& presets;
+        ~SourceData(){release_PlateData_list(plates);for(auto* preset:presets) delete preset;}
+    } sourceData{plates,presets};
+    std::string sourceExtension=std::filesystem::u8path(inputPath).extension().u8string();
+    std::transform(sourceExtension.begin(),sourceExtension.end(),sourceExtension.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+    if(sourceExtension==".3mf") {
+        inspection=inspect_three_mf(inputPath);
+        substitutions.rule=ForwardCompatibilitySubstitutionRule::Enable; // retain default-substitution evidence
+    }
+    if (!workspaceRoot.empty())
+        set_temporary_dir((std::filesystem::u8path(workspaceRoot) / "native-temp").u8string());
+    try {
+#ifdef ORCA_MOBILE_ANDROID
+        std::string extension=std::filesystem::u8path(inputPath).extension().u8string();
+        std::transform(extension.begin(),extension.end(),extension.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+        if (extension==".obj") model=load_mobile_obj(inputPath,unsupported);
+        else
+#endif
+        model = Model::read_from_file(inputPath, &config, &substitutions,
+                                      LoadStrategy::AddDefaultInstances | LoadStrategy::LoadModel |
+                                      LoadStrategy::LoadConfig | LoadStrategy::LoadAuxiliary,&plates,&presets);
+    } catch (const std::exception& error) {
+        const std::string detail = bbs_3mf_last_error();
+        throw std::runtime_error(std::string(error.what()) + (detail.empty() ? std::string() : "; " + detail) +
+            (inspection.is_object() && !inspection["blockedFeatures"].empty()?"; 3MF_FEATURES:"+inspection["blockedFeatures"].dump():std::string()));
+    }
+    if (model.objects.empty()) {
+        const std::string detail = bbs_3mf_last_error();
+        throw std::runtime_error("project contains no model objects: " + inputPath + (detail.empty() ? std::string() : "; " + detail) +
+            (inspection.is_object() && !inspection["blockedFeatures"].empty()?"; 3MF_FEATURES:"+inspection["blockedFeatures"].dump():std::string()));
+    }
+
+    // Single-plate settings are part of the original profile, before user
+    // overrides. Multi-plate projects are inspected but never silently flattened.
+    if(sourceExtension==".3mf" && plates.size()==1) config.apply(plates.front()->config);
+    if(sourceExtension==".3mf") {
+        if(!bbs_3mf_last_error().empty()) {
+            Json feature{{"id","native_import_warning"},{"status","blocked"},{"path",inputPath},{"message",bbs_3mf_last_error()}};
+            inspection["features"].push_back(feature);inspection["blockedFeatures"].push_back(feature);
+        }
+        for(const auto& key:substitutions.unrecogized_keys) {
+            const bool retiredDisabled=key=="silent_mode" && std::any_of(inspection["features"].begin(),inspection["features"].end(),[](const Json& feature){return feature.at("id")=="retired_disabled_silent_mode";});
+            if(retiredDisabled) continue;
+            Json feature{{"id","unknown_import_setting:"+key},{"status","blocked"},{"path",inputPath},
+                {"message","Native importer could not preserve this source setting"}};
+            inspection["features"].push_back(feature);inspection["blockedFeatures"].push_back(feature);
+        }
+        for(const auto& changed:substitutions.substitutions) {
+            Json feature{{"id","substituted_import_setting:"+(changed.opt_def?changed.opt_def->opt_key:std::string("unknown"))},
+                {"status","blocked"},{"path",inputPath},{"message","Unknown source value was substituted; output is blocked"}};
+            inspection["features"].push_back(feature);inspection["blockedFeatures"].push_back(feature);
+        }
+    }
+    DynamicPrintConfig complete = DynamicPrintConfig::full_print_config();
+    std::string extension=std::filesystem::u8path(inputPath).extension().u8string();
+    std::transform(extension.begin(),extension.end(),extension.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+    const bool offlinePreset=extension==".stl" || extension==".obj";
+    if (offlinePreset) {
+        // The generated bundle and catalog metadata have identical versioned sources.
+        apply_config_overrides(complete, offline_presets()["devices"][1]["config"]);
+    }
+    complete.apply(config);
+    config = std::move(complete);
+    const Json sourceColors = colors_json(config);
+    const Json sourceConfig = config_json(config);
+    apply_config_overrides(config, configOverrides);
+    apply_transforms(model, transforms);
+
+    LoadedProject project{std::move(model), std::move(config), inputPath, sha256_file(inputPath), Json::object()};
+    project.sourceConfig=sourceConfig;
+    if (offlinePreset) {
+        const Json catalog=offline_presets();
+        project.metadata["basePreset"]=catalog["devices"][1];
+        project.metadata["basePreset"]["version"]=catalog.at("version");
+    }
+    project.metadata["sourceInspectionVersion"]=1;
+    project.metadata["unsupportedFeatures"] = unsupported;
+    project.metadata["blockingFeatures"]=Json::array();
+    project.metadata["unsupportedOutputFeatures"]=Json::array();
+    for(const auto& id:unsupported) project.metadata["unsupportedOutputFeatures"].push_back(Json{{"id",id},{"status","requires_single_material"},{"path",inputPath},
+        {"message","OBJ appearance is retained in the original source; geometry-only output requires explicit consent"},{"blocksAllOutputModes",false},{"requiresExplicitSingleMaterial",true}});
+    if(!inspection.is_null()) {
+        project.metadata["threeMfInspection"]=inspection;
+        for(auto& feature:inspection["features"]) {
+            const auto status=feature.value("status",std::string());
+            feature["blocksAllOutputModes"]=status=="blocked";feature["requiresExplicitSingleMaterial"]=status=="requires_single_material";
+            if(status=="blocked" || status=="requires_single_material") {
+                project.metadata["unsupportedFeatures"].push_back(feature.at("id"));
+                project.metadata["unsupportedOutputFeatures"].push_back(feature);
+                if(status=="blocked") project.metadata["blockingFeatures"].push_back(feature);
+            }
+        }
+        inspection["blockedFeatures"]=project.metadata["blockingFeatures"];
+        project.metadata["threeMfInspection"]=inspection;
+        project.metadata["plateCount"]=inspection["plateCount"];
+        project.metadata["currentPlate"]=inspection["currentPlate"];
+        project.metadata["plates"]=inspection["plates"];
+        project.metadata["previewCompleteness"]=inspection["blockedFeatures"].empty()?"native-model":"partial-unsupported-content";
+    }
+    project.metadata["sourceColors"] = sourceColors;
+    project.metadata["workspaceRoot"] = workspaceRoot;
+    project.metadata["transforms"] = transforms.is_null() ? Json::array() : transforms;
+    project.metadata["sourceFormat"] = sourceExtension;
+    project.metadata["colors"] = colors_json(project.config);
+    project.metadata["filamentMap"] = filament_map_json(project.config);
+    apply_project_commands(project, projectCommands);
+    for(const char* key:{"post_process","plugins","slicing_pipeline_plugin","print_plugin_config_overrides","printer_plugin_config_overrides","filament_plugin_config_overrides"}) {
+        bool active=false;
+        const ConfigOption* rawOption=project.config.option(key);
+        if(const auto* scripts=dynamic_cast<const ConfigOptionStrings*>(rawOption)) {
+            for(const auto& script:scripts->values) active=active||detail::ThreeMfScan::active(Json(script));
+        } else if(const auto* script=dynamic_cast<const ConfigOptionString*>(rawOption)) active=detail::ThreeMfScan::active(Json(script->value));
+        const std::string id=std::string("external_processing:")+key;
+        if(active && std::none_of(project.metadata["blockingFeatures"].begin(),project.metadata["blockingFeatures"].end(),[&](const Json& item){return item.value("id",std::string())==id;})) {
+            Json feature{{"id",id},{"status","blocked"},{"path",inputPath},{"message","Android does not execute external scripts/Python plugins"},
+                {"blocksAllOutputModes",true},{"requiresExplicitSingleMaterial",false}};
+            project.metadata["unsupportedFeatures"].push_back(id);project.metadata["blockingFeatures"].push_back(feature);
+            project.metadata["unsupportedOutputFeatures"].push_back(feature);
+        }
+    }
+    return project;
+}
+
+
+Json offline_presets()
+{
+    // Function-local immutable data is safe for synchronous reads while a slice
+    // owns global workerMutex. No source files, workspace, temp dirs or TBB calls.
+    static const Json catalog=Json::parse(kOfflinePresetCatalog);
+    return catalog;
+}
+Json print_volume(const DynamicPrintConfig& config)
+{
+    Json result{{"polygon",Json::array()},{"exclusions",Json::array()},{"height",0.0}};
+    if (const auto* area=config.option<ConfigOptionPoints>("printable_area"))
+        for (const auto& point:area->values) result["polygon"].push_back({point.x(),point.y()});
+    if (const auto* excluded=config.option<ConfigOptionPoints>("bed_exclude_area"); excluded && excluded->values.size()>=3) {
+        // The native bounds gate interprets each successive four points as an
+        // independent rectangle, not one polygon joining unrelated exclusions.
+        const size_t stride=excluded->values.size()%4==0?4:excluded->values.size();
+        for(size_t first=0;first<excluded->values.size();first+=stride) {
+            Json polygon=Json::array();
+            for(size_t n=first;n<first+stride;++n) polygon.push_back({excluded->values[n].x(),excluded->values[n].y()});
+            result["exclusions"].push_back(polygon);
+        }
+    }
+    if (const auto* height=config.option<ConfigOptionFloat>("printable_height")) result["height"]=height->value;
+    return result;
+}
+void validate_material_assignments(const LoadedProject& project)
+{
+    const auto* colors=project.config.option<ConfigOptionStrings>("filament_colour");
+    const auto* density=project.config.option<ConfigOptionFloats>("filament_density");
+    const auto* diameters=project.config.option<ConfigOptionFloats>("nozzle_diameter");
+    const size_t slots=density?density->values.size():0;
+    if(!slots || !colors || colors->values.size()!=slots) throw std::runtime_error("MATERIAL_REMAP_REQUIRED:palette/density slot mismatch");
+    const auto* maps=project.config.option<ConfigOptionInts>("filament_map");
+    if(maps && !maps->values.empty()) {
+        if(maps->values.size()!=slots) throw std::runtime_error("MATERIAL_REMAP_REQUIRED:logical slot map mismatch");
+        for(int physical:maps->values) if(physical<1 || !diameters || size_t(physical)>diameters->values.size())
+            throw std::runtime_error("MATERIAL_REMAP_REQUIRED:physical tool out of range");
+    }
+    std::map<std::pair<size_t,size_t>,int> assignments;
+    for(const auto& assignment:project.metadata.value("materialAssignments",Json::array()))
+        assignments[{assignment.at("objectIndex").get<size_t>(),assignment.at("volumeIndex").get<size_t>()}]=assignment.at("filamentIndex").get<int>();
+    for(const auto& assignment:assignments)
+        if(assignment.second<0 || size_t(assignment.second)>=slots) throw std::runtime_error("MATERIAL_REMAP_REQUIRED:assigned slot out of range");
+    const auto allMapped=[&assignments](const Slic3r::ModelObject& object,size_t oi) {
+        bool any=false;for(size_t vi=0;vi<object.volumes.size();++vi) if(object.volumes[vi]->is_model_part()) {any=true;if(!assignments.count({oi,vi})) return false;}return any;
+    };
+    bool allPartsMapped=!project.model.objects.empty();
+    for(size_t oi=0;oi<project.model.objects.size();++oi) allPartsMapped=allPartsMapped&&allMapped(*project.model.objects[oi],oi);
+    // PrintObject/PrintRegion normalize invalid selectors to material 1. Reject
+    // raw global/object/part/range values before Print::apply can hide them.
+    const auto validateRoutes=[slots](const DynamicPrintConfig& config,const std::string& scope,bool baseExplicitlyRemapped=false) {
+        for(const char* key:{"extruder","support_filament","support_interface_filament","sparse_infill_filament_id","internal_solid_filament_id","top_surface_filament_id","bottom_surface_filament_id","outer_wall_filament_id","inner_wall_filament_id"}) {
+            if(baseExplicitlyRemapped && std::string_view(key)=="extruder") continue;
+            const auto* raw=config.option(key);if(!raw) continue;
+            const auto* selector=dynamic_cast<const ConfigOptionInt*>(raw);
+            if(!selector || selector->value<0 || size_t(selector->value)>slots)
+                throw std::runtime_error("MATERIAL_ROUTE_OUT_OF_RANGE:"+scope+":"+key+" (0 inherits; logical slots="+std::to_string(slots)+")");
+        }
+    };
+    validateRoutes(project.config,"global",allPartsMapped);
+    for(size_t oi=0;oi<project.model.objects.size();++oi) {
+        const auto* object=project.model.objects[oi];const std::string scope="object/"+std::to_string(oi);
+        validateRoutes(object->config.get(),scope,allMapped(*object,oi));
+        for(size_t vi=0;vi<object->volumes.size();++vi) validateRoutes(object->volumes[vi]->config.get(),scope+"/part/"+std::to_string(vi),object->volumes[vi]->is_model_part()&&assignments.count({oi,vi}));
+        for(const auto& range:object->layer_config_ranges) validateRoutes(range.second.get(),scope+"/height-range");
+    }
+
+    // Scene palette size is not active material usage. Explicit per-part user
+    // assignments replace paint only on the slicing copy; unused source colors
+    // must stay visible and must not create false material index errors.
+    for(size_t oi=0;oi<project.model.objects.size();++oi) {
+        const auto* object=project.model.objects[oi];
+        for(size_t vi=0;vi<object->volumes.size();++vi) {
+            const auto* volume=object->volumes[vi]; if(!volume->is_model_part()) continue;
+            if(assignments.count({oi,vi})) continue;
+            const int logical=std::max(1,volume->extruder_id()>0?volume->extruder_id():object->config.extruder());
+            if(size_t(logical)>slots) throw std::runtime_error("MATERIAL_REMAP_REQUIRED:part slot out of range");
+            for(const auto state:TriangleSelector::extract_used_facet_states(volume->mmu_segmentation_facets.get_data()))
+                if(int(state)>int(slots)) throw std::runtime_error("MATERIAL_REMAP_REQUIRED:painted slot out of range; explicitly reassign or consent to singleMaterial");
+        }
+    }
+}
+
+namespace {
+Json common_parameter_metadata()
+{
+    Json result{{"version","p1-common-v1"},{"parameters",Json::object()}};
+#ifdef ORCA_MOBILE_SLICING_SOURCE_COMMIT
+    result["sourceCommit"]=ORCA_MOBILE_SLICING_SOURCE_COMMIT;
+#endif
+    // Schema references are the same pinned source used by the offline catalog.
+    const Json catalog=offline_presets();
+    for(const auto& source:catalog["sourceRefs"])
+        if(source.at("path")=="src/libslic3r/PrintConfig.cpp") result["sourceRef"]=source;
+    const auto type_name=[](ConfigOptionType type)->const char* {
+        switch(type) {
+        case coFloat:return "coFloat";case coFloats:return "coFloats";case coInt:return "coInt";case coInts:return "coInts";
+        case coPercent:return "coPercent";case coPercents:return "coPercents";case coBool:return "coBool";case coBools:return "coBools";
+        case coString:return "coString";case coStrings:return "coStrings";case coEnum:return "coEnum";case coEnums:return "coEnums";
+        case coFloatOrPercent:return "coFloatOrPercent";case coFloatsOrPercents:return "coFloatsOrPercents";default:return nullptr;
+        }
+    };
+    DynamicPrintConfig schema; // Definition lookup only, no full-config clone or worker state.
+    for(const char* key:{"layer_height","wall_loops","top_shell_layers","bottom_shell_layers","sparse_infill_density","enable_support",
+        "support_type","support_threshold_angle","nozzle_diameter","nozzle_temperature","nozzle_temperature_initial_layer",
+        "filament_density","filament_flow_ratio","inner_wall_acceleration","machine_max_acceleration_extruding","outer_wall_acceleration"}) {
+        const auto* definition=print_config_def.get(key);if(!definition) continue;
+        const char* type=type_name(definition->type);if(!type) continue;
+        Json item{{"key",key},{"type",type},{"typeId",int(definition->type)},{"nullable",definition->nullable},
+            {"vector",!definition->is_scalar()},{"readonly",definition->readonly},{"sidetext",definition->sidetext}};
+        if(!definition->label.empty()) item["label"]=definition->label;
+        if(!definition->sidetext.empty()) item["unit"]=definition->sidetext;
+        // FLT_MAX is the schema's unset-limit sentinel, not an invented edit limit.
+        if(definition->min>-std::numeric_limits<float>::max()) item["min"]=definition->min;
+        if(definition->max<std::numeric_limits<float>::max()) item["max"]=definition->max;
+        if(!definition->ratio_over.empty()) item["ratioOver"]=definition->ratio_over;
+        if(definition->nullable) item["nilToken"]="nil";
+        if(!definition->enum_values.empty()) item["enumValues"]=definition->enum_values;
+        if(!definition->enum_labels.empty()) item["enumLabels"]=definition->enum_labels;
+        if(const auto* option=definition->default_value.get()) {
+            item["defaultSerialized"]=serialized_option(schema,key,*option);
+            if(definition->type==coEnum) item["default"]=item["defaultSerialized"];
+            else if(const auto* values=dynamic_cast<const ConfigOptionVector<double>*>(option)) {
+                Json array=Json::array();const auto* vector=dynamic_cast<const ConfigOptionVectorBase*>(option);
+                for(size_t i=0;i<values->values.size();++i) array.push_back(vector->is_nil(i)?Json():Json(values->values[i]));
+                item["default"]=array;
+            } else if(const auto* values=dynamic_cast<const ConfigOptionVector<int>*>(option)) {
+                Json array=Json::array();const auto* vector=dynamic_cast<const ConfigOptionVectorBase*>(option);
+                for(size_t i=0;i<values->values.size();++i) array.push_back(vector->is_nil(i)?Json():Json(values->values[i]));
+                item["default"]=array;
+            } else if(const auto* values=dynamic_cast<const ConfigOptionVector<unsigned char>*>(option)) {
+                Json array=Json::array();const auto* vector=dynamic_cast<const ConfigOptionVectorBase*>(option);
+                for(size_t i=0;i<values->values.size();++i) array.push_back(vector->is_nil(i)?Json():Json(values->values[i]!=0));
+                item["default"]=array;
+            } else if(const auto* value=dynamic_cast<const ConfigOptionFloatOrPercent*>(option)) item["default"]=Json{{"value",value->value},{"percent",value->percent}};
+            else if(const auto* value=dynamic_cast<const ConfigOptionSingle<double>*>(option)) item["default"]=value->value;
+            else if(const auto* value=dynamic_cast<const ConfigOptionSingle<int>*>(option)) item["default"]=value->value;
+            else if(const auto* value=dynamic_cast<const ConfigOptionSingle<bool>*>(option)) item["default"]=value->value;
+            else if(const auto* value=dynamic_cast<const ConfigOptionSingle<std::string>*>(option)) item["default"]=value->value;
+        }
+        result["parameters"][key]=std::move(item);
+    }
+    return result;
+}
+Json source_material_options(const Json& original)
+{
+    Json options=Json::object();
+    const Json catalog=offline_presets();
+    for(const auto& material:catalog["materials"]) if(material.contains("config"))
+        for(auto it=material["config"].begin();it!=material["config"].end();++it)
+            if(original.contains(it.key())) options[it.key()]=original.at(it.key());
+    for(const char* key:{"filament_colour","filament_map"})
+        if(original.contains(key)) options[key]=original.at(key);
+    return options;
+}
+}
+Json project_presets(const Json& request)
+{
+    Json result=offline_presets();
+    result["parameterMetadata"]=common_parameter_metadata();
+    for(const char* group:{"devices","materials"}) {
+        result[group][0]["available"]=false;
+        result[group][0]["reason"]="Refresh this project to capture the original source profile before restoring it.";
+    }
+    if(!request.contains("sourceProfilePath") || !request["sourceProfilePath"].is_string() || request["sourceProfilePath"].get<std::string>().empty()) return result;
+    const auto path=request.at("sourceProfilePath").get<std::string>();
+    if(!request.contains("sourceProfileSha256") || file_sha256(path)!=request.at("sourceProfileSha256"))
+        throw std::runtime_error("SOURCE_PROFILE_IDENTITY_MISMATCH");
+    Json source; std::ifstream input(std::filesystem::u8path(path));
+    if(!input) throw std::runtime_error("SOURCE_PROFILE_NOT_FOUND"); input>>source;
+    if(source.value("schemaVersion",0)!=2 || !source.contains("config") || !source["config"].is_object() ||
+       !request.contains("inputSha256") || source.at("inputSha256")!=request.at("inputSha256") ||
+       source.at("configSha256")!=json_sha256(source.at("config"))) throw std::runtime_error("SOURCE_PROFILE_IDENTITY_MISMATCH");
+    const Json refs=Json::array({Json{{"path",source.at("inputPath")},{"sha256",source.at("inputSha256")},{"hashFormat","binary"}}});
+    for(const char* group:{"devices","materials"}) {
+        auto& entry=result[group][0];entry["available"]=true;entry.erase("reason");entry["sourceRefs"]=refs;
+        entry["config"]=std::string(group)=="devices"?source.at("config"):source_material_options(source.at("config"));
+    }
+    return result;
+}
+
+void apply_preset(LoadedProject& project,const std::string& kind,const std::string& presetId)
+{
+    if(kind!="device" && kind!="material") throw std::invalid_argument("PRESET_KIND_UNSUPPORTED");
+    const Json catalog=offline_presets();
+    const Json& entries=catalog.at(kind=="device"?"devices":"materials");
+    auto match=std::find_if(entries.begin(),entries.end(),[&](const Json& item){return item.at("id")==presetId;});
+    if(match==entries.end()) throw std::invalid_argument("PRESET_NOT_FOUND:"+presetId);
+    Json provenance=match->value("sourceRefs",Json::array());
+    if(presetId=="source/current") {
+        // Reload unchanged source; do not use the current overrides as a source.
+        const auto source=load_project(project.inputPath,Json::object(),Json::array(),project.metadata.value("workspaceRoot",std::string()));
+        if(kind=="device") project.config=source.config;
+        else {
+            const Json options=source_material_options(config_json(source.config));
+            apply_config_overrides(project.config,options);
+        }
+        provenance=Json::array({Json{{"path",project.inputPath},{"sha256",project.inputSha256}}});
+    } else if(kind=="device") {
+        auto config=DynamicPrintConfig::full_print_config();
+        apply_config_overrides(config,match->at("config"));
+        project.config=std::move(config);
+        // A real device reset replaces machine, material AND process. The UI
+        // must confirm resetScopes; this is never silently applied as a rename.
+        project.metadata["quality"]="standard";
+        project.metadata["applyQualityPreset"]=false;
+    } else {
+        // This bundle replaces one logical slot set. Keep geometry/paint intact.
+        // Existing nonzero assignments must be remapped explicitly, not clamped.
+        apply_config_overrides(project.config,match->at("config"));
+    }
+    if(presetId!="source/current") {
+        // The generated material is a one-slot profile; preserve a usable source
+        // color for this slot, while scene/sourceColors remains the original set.
+        const auto source=project.metadata.value("sourceColors",Json::array());
+        project.config.set_key_value("filament_colour",new ConfigOptionStrings({source.empty()?"#FFFFFF":source.front().get<std::string>()}));
+        int physical=1;
+        if(kind=="material") if(const auto* maps=project.config.option<ConfigOptionInts>("filament_map"); maps && !maps->values.empty()) physical=maps->values.front();
+        project.config.set_key_value("filament_map",new ConfigOptionInts({physical}));
+    }
+    // Retain user consent across a profile reset, but never manufacture it.
+    if(project.metadata.value("outputMode",std::string())=="singleMaterial") project.config.set("enable_prime_tower",false,true);
+    validate_material_assignments(project);
+    project.metadata[kind+"PresetId"]=presetId;
+    project.metadata[kind+"PresetSourceRefs"]=provenance;
+    project.metadata[kind+"PresetUnsupportedSourceOptions"]=match->value("unsupportedSourceOptions",Json::object());
+    project.metadata["colors"]=colors_json(project.config);
+    project.metadata["filamentMap"]=filament_map_json(project.config);
+    project.metadata["presetCatalogVersion"]=catalog.at("version");
+    project.metadata["executeEffectiveConfig"]=false;
+}
+Json orientation_preview(LoadedProject& temporary,const Json& request)
+{
+    const int oi=request.value("objectIndex",0), ii=request.value("instanceIndex",0);
+    if(oi<0 || size_t(oi)>=temporary.model.objects.size()) throw std::out_of_range("COMMAND_OBJECT_NOT_FOUND");
+    auto& object=*temporary.model.objects[oi];
+    if(ii<0 || size_t(ii)>=object.instances.size()) throw std::out_of_range("COMMAND_INSTANCE_NOT_FOUND");
+    auto* instance=object.instances[ii];
+    const Vec3d originalRotation=instance->get_rotation(), originalOffset=instance->get_offset();
+    Json candidates=Json::array();
+    const std::array<const char*,6> labels{{"Object +Z up","Object +Y up","Object -Y up","Object -Z up","Object -X up","Object +X up"}};
+    size_t lowest=0;bool hasValid=false;
+    for(size_t n=0;n<cardinal_rotations().size();++n) {
+        instance->set_rotation(originalRotation);instance->set_offset(originalOffset);object.invalidate_bounding_box();
+        Json command{{"type","orient"},{"objectIndex",oi},{"instanceIndex",ii},{"candidateIndex",n}};
+        Json candidate{{"index",n},{"label",labels[n]},{"command",command},{"valid",false}};
+        try {
+            orient_instance(object,size_t(ii),command,temporary.config);
+            validate_project_bounds(temporary);
+            candidate["valid"]=true;
+        } catch(const std::exception& error) {candidate["error"]=error.what();}
+        const double height=object.instance_bounding_box(ii).size().z();candidate["height"]=height;
+        candidates.push_back(candidate);
+        if(candidate["valid"].get<bool>() && (!hasValid||height<candidates[lowest]["height"].get<double>()-1e-6)) {
+            lowest=n;hasValid=true;
+        }
+    }
+    instance->set_rotation(originalRotation);instance->set_offset(originalOffset);object.invalidate_bounding_box();
+    int selected=-1;Json command;
+    if(request.contains("normal")) command=Json{{"type","faceOrient"},{"objectIndex",oi},{"instanceIndex",ii},{"normal",request.at("normal")}};
+    else {
+        selected=request.value("candidateIndex",hasValid?int(lowest):-1);
+        if(selected<0) throw std::runtime_error("NO_VALID_ORIENTATION");
+        if(selected>=int(candidates.size())) throw std::out_of_range("ORIENTATION_CANDIDATE_NOT_FOUND");
+        if(!candidates[size_t(selected)]["valid"].get<bool>()) throw std::runtime_error(candidates[size_t(selected)]["error"].get<std::string>());
+        command=candidates[size_t(selected)]["command"];
+    }
+    orient_instance(object,size_t(ii),command,temporary.config);
+    validate_project_bounds(temporary);
+    Json commands=temporary.metadata.value("projectCommands",Json::array()); commands.push_back(command);
+    temporary.metadata["projectCommands"]=commands;
+    return Json{{"projectId",temporary.metadata.value("projectId",Json())},{"sourceRevision",temporary.metadata.value("revision",Json())},
+        {"inputSha256",temporary.inputSha256},{"candidates",candidates},{"selectedIndex",selected},{"command",command}};
+}
+Json filament_cost(const DynamicPrintConfig& config,const Json& volumePerFilament,const std::string& currency)
+{
+    const auto* densities=config.option<ConfigOptionFloats>("filament_density");
+    const auto* prices=config.option<ConfigOptionFloats>("filament_cost");
+    bool missingPrice=false; double amount=0;
+    for(auto usage=volumePerFilament.begin();usage!=volumePerFilament.end();++usage) {
+        const size_t index=std::stoull(usage.key()); const double volume=usage.value().get<double>();
+        if(!std::isfinite(volume) || volume<0) throw std::invalid_argument("INVALID_FILAMENT_USAGE");
+        if(volume==0) continue;
+        if(!densities || index>=densities->values.size() || !std::isfinite(densities->values[index]) || densities->values[index]<=0)
+            throw std::runtime_error("FILAMENT_DENSITY_REQUIRED_FOR_COST");
+        if(!prices || index>=prices->values.size() || !std::isfinite(prices->values[index]) || prices->values[index]<=0) {missingPrice=true;continue;}
+        // mm3 * (g/cm3) / 1e6 = kg; prices are configured currency/kg.
+        amount+=volume*densities->values[index]*prices->values[index]/1000000.0;
+    }
+    Json result{{"costStatus",missingPrice?(currency.empty()?"missing_price_and_currency":"missing_price"):(currency.empty()?"missing_currency":"estimated")}};
+    if(!currency.empty()) result["costCurrency"]=currency;
+    if(!missingPrice) result["filamentCost"]=amount;
+    return result;
+}
+
+Json config_json(const DynamicPrintConfig& config)
+{
+    Json result = Json::object();
+    for (const auto& key : config.keys()) {
+        if (const ConfigOption* option = config.option(key))
+            result[key] = serialized_option(config,key,*option);
+    }
+    return result;
+}
+
+Json describe_project(const LoadedProject& project)
+{
+    size_t vertices = 0;
+    size_t triangles = 0;
+    for (const ModelObject* object : project.model.objects) {
+        for (const ModelVolume* volume : object->volumes) {
+            if (!volume->is_model_part())
+                continue;
+            vertices += volume->mesh().its.vertices.size();
+            triangles += volume->mesh().its.indices.size();
+        }
+    }
+
+    Json result = project.metadata.is_object() ? project.metadata : Json::object();
+    result["schemaVersion"] = 2;
+    result["inputPath"] = project.inputPath;
+    result["inputSha256"] = project.inputSha256;
+    result["name"] = project.model.objects.empty() ? std::filesystem::u8path(project.inputPath).stem().u8string()
+                                                    : project.model.objects.front()->name;
+    result["model"] = Json{{"vertices", vertices}, {"triangles", triangles},
+                            {"bounds", bounds_json(project.model.bounding_box_exact())},
+                            {"colors", project.metadata.value("sourceColors",colors_json(project.config))},
+                            {"filamentMap", filament_map_json(project.config)}};
+    result["objects"] = Json::array();
+    for (size_t oi = 0; oi < project.model.objects.size(); ++oi) {
+        const auto* object = project.model.objects[oi];
+        Json item{{"objectId", "object-" + std::to_string(oi)}, {"objectIndex", oi},
+                  {"name", object->name}, {"bounds", bounds_json(object->bounding_box_exact())},
+                  {"parts", Json::array()}, {"instances", Json::array()}};
+        for (size_t vi = 0; vi < object->volumes.size(); ++vi) {
+            const auto* volume = object->volumes[vi];
+            item["parts"].push_back(Json{{"volumeIndex", vi}, {"name", volume->name},
+                {"material", volume->extruder_id()}, {"isModelPart", volume->is_model_part()},
+                {"painted", !volume->mmu_segmentation_facets.empty()},
+                {"bounds", bounds_json(volume->mesh().transformed_bounding_box(volume->get_matrix()))},{"boundsSpace","object"}});
+        }
+        for (size_t ii = 0; ii < object->instances.size(); ++ii) {
+            const auto* instance = object->instances[ii];
+            auto vector_json = [](const Vec3d& v) { return Json::array({v.x(),v.y(),v.z()}); };
+            item["instances"].push_back(Json{{"instanceIndex", ii},
+                {"instanceId", "object-" + std::to_string(oi) + "-instance-" + std::to_string(ii)},
+                {"translation", vector_json(instance->get_offset())},
+                {"rotation", vector_json(instance->get_rotation())},
+                {"scale", vector_json(instance->get_scaling_factor())},
+                {"bounds", bounds_json(object->instance_bounding_box(ii))}});
+        }
+        result["objects"].push_back(std::move(item));
+    }
+    result["printVolume"] = print_volume(project.config);
+    result["config"] = config_json(project.config);
+    result["configSha256"] = json_sha256(result["config"]);
+    if (!result.contains("transforms"))
+        result["transforms"] = Json::array();
+    return result;
+}
+
+Json write_scene(const LoadedProject& project, const std::string& outputPath)
+{
+    if (outputPath.empty())
+        throw std::invalid_argument("outputPath is empty");
+    const Json colors = project.metadata.value("sourceColors",colors_json(project.config));
+    const size_t palette_count = std::max<size_t>(1, colors.size());
+    std::vector<std::array<std::uint8_t, 4>> palette;
+    palette.reserve(palette_count);
+    for (const auto& color : colors)
+        palette.push_back(parse_color(color.get<std::string>()));
+    while (palette.size() < palette_count)
+        palette.push_back({255, 255, 255, 255});
+
+    std::vector<stl_vertex> vertices;
+    std::vector<stl_triangle_vertex_indices> triangles;
+    std::vector<std::uint16_t> face_palettes;
+    Json ranges=Json::array();
+    for (size_t oi=0;oi<project.model.objects.size();++oi) {
+        const ModelObject* object=project.model.objects[oi];
+        const size_t instance_count = object->instances.empty() ? 1 : object->instances.size();
+        for (size_t ii = 0; ii < instance_count; ++ii) {
+            const Transform3d instance_matrix = object->instances.empty() ? Transform3d::Identity() : object->instances[ii]->get_matrix();
+            for (size_t vi=0;vi<object->volumes.size();++vi) {
+                const ModelVolume* volume=object->volumes[vi];
+                if (!volume->is_model_part())
+                    continue;
+                const size_t firstTriangle=triangles.size();
+                const Transform3d matrix = instance_matrix * volume->get_matrix();
+                const bool reverseWinding=matrix.linear().determinant()<0;
+                const int defaultMaterial=std::max(1,volume->extruder_id());
+                auto append_mesh = [&](const indexed_triangle_set& mesh, size_t color) {
+                    if (mesh.vertices.size()>UINT32_MAX-vertices.size() || mesh.indices.size()>UINT32_MAX-triangles.size())
+                        throw std::overflow_error("SCENE_TOO_LARGE");
+                    const uint32_t vertex_offset=static_cast<uint32_t>(vertices.size());
+                    for (const auto& vertex:mesh.vertices) {
+                        const Vec3d transformed=matrix*vertex.cast<double>();
+                        vertices.emplace_back(transformed.cast<float>());
+                    }
+                    for (const auto& triangle:mesh.indices) {
+                        stl_triangle_vertex_indices output_triangle;
+                        output_triangle << static_cast<int>(triangle[0]+vertex_offset),static_cast<int>(triangle[1]+vertex_offset),static_cast<int>(triangle[2]+vertex_offset);
+                        // A reflection reverses geometric winding. Restore the
+                        // outward normal used by GPU picking without touching
+                        // source meshes, painted leaf identity or face palettes.
+                        if(reverseWinding) std::swap(output_triangle[1],output_triangle[2]);
+                        triangles.push_back(output_triangle);
+                        face_palettes.push_back(static_cast<uint16_t>(std::min(color,palette_count-1)));
+                    }
+                };
+                if (volume->mmu_segmentation_facets.empty()) {
+                    append_mesh(volume->mesh().its,size_t(defaultMaterial-1));
+                } else {
+                    // Render the real painted leaf triangles, including split
+                    // facets. Matching painted leaves back to original vertices
+                    // silently lost partial-face colors. Source mesh stays intact.
+                    std::vector<indexed_triangle_set> groups;
+                    volume->mmu_segmentation_facets.get_facets(*volume,groups);
+                    for (size_t state=0;state<groups.size();++state)
+                        if (!groups[state].indices.empty()) append_mesh(groups[state],state==0?size_t(defaultMaterial-1):state-1);
+                }
+                if (triangles.size()>firstTriangle) ranges.push_back(Json{{"firstTriangle",firstTriangle},
+                    {"triangleCount",triangles.size()-firstTriangle},{"objectIndex",oi},{"instanceIndex",ii},{"volumeIndex",vi},
+                    {"bounds",bounds_json(volume->mesh().transformed_bounding_box(matrix))},{"boundsSpace","world"}});
+            }
+        }
+    }
+    if (vertices.size() > std::numeric_limits<std::uint32_t>::max() || triangles.size() > std::numeric_limits<std::uint32_t>::max())
+        throw std::overflow_error("scene exceeds ORCASC01 uint32 limits");
+
+    const std::filesystem::path path = std::filesystem::u8path(outputPath);
+    if (path.has_parent_path())
+        std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output)
+        throw std::runtime_error("cannot create scene: " + outputPath);
+    const char magic[8] = {'O', 'R', 'C', 'A', 'S', 'C', '0', '1'};
+    output.write(magic, sizeof(magic));
+    const std::uint32_t vertex_count = static_cast<std::uint32_t>(vertices.size());
+    const std::uint32_t triangle_count = static_cast<std::uint32_t>(triangles.size());
+    const std::uint32_t palette_size = static_cast<std::uint32_t>(palette.size());
+    const std::uint32_t flags = 1u;
+    const std::uint64_t reserved = 0;
+    output.write(reinterpret_cast<const char*>(&vertex_count), sizeof(vertex_count));
+    output.write(reinterpret_cast<const char*>(&triangle_count), sizeof(triangle_count));
+    output.write(reinterpret_cast<const char*>(&palette_size), sizeof(palette_size));
+    output.write(reinterpret_cast<const char*>(&flags), sizeof(flags));
+    output.write(reinterpret_cast<const char*>(&reserved), sizeof(reserved));
+    for (const auto& vertex : vertices)
+        output.write(reinterpret_cast<const char*>(vertex.data()), sizeof(float) * 3);
+    for (const auto& triangle : triangles)
+        output.write(reinterpret_cast<const char*>(triangle.data()), sizeof(std::uint32_t) * 3);
+    for (const std::uint16_t value : face_palettes)
+        output.write(reinterpret_cast<const char*>(&value), sizeof(value));
+    for (const auto& color : palette)
+        output.write(reinterpret_cast<const char*>(color.data()), color.size());
+    if (!output)
+        throw std::runtime_error("cannot write scene: " + outputPath);
+
+    return Json{{"scenePath", outputPath}, {"vertexCount", vertex_count}, {"triangleCount", triangle_count},
+                {"paletteCount", palette_size}, {"flags", flags}, {"bounds", bounds_json(project.model.bounding_box_exact())},
+                {"sceneRanges",ranges},{"printVolume",print_volume(project.config)}};
+}
+
+
+std::string file_sha256(const std::string& path) { return sha256_file(path); }
+std::string json_sha256(const Json& value)
+{
+    const std::string text = value.dump();
+    Sha256Digest digest;
+    if (!digest.update(text.data(), text.size())) throw std::runtime_error("HASH_FAILED");
+    const auto result = digest.final_hex();
+    if (result.empty()) throw std::runtime_error("HASH_FAILED");
+    return result;
+}
+
+void apply_config_overrides(DynamicPrintConfig& config, const Json& overrides)
+{
+    if (overrides.is_null()) return;
+    if (!overrides.is_object()) throw std::invalid_argument("CONFIG_MUST_BE_OBJECT");
+    ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Disable};
+    for (auto it = overrides.begin(); it != overrides.end(); ++it) {
+        const std::string value=native_value(it.value());
+        const bool physicalVariant=it.key()=="extruder_type" || it.key()=="nozzle_volume_type";
+        if (physicalVariant && it.value().is_array() && it.value().empty())
+            throw std::invalid_argument("EMPTY_EXTRUDER_VARIANT:"+it.key());
+        // Preserve concrete option types for an unchanged serialized snapshot.
+        // Re-deserializing optional empty enum vectors can create generic options
+        // where legacy Print code expects an absent/typed variant column.
+        const ConfigOption* existing=config.option(it.key());
+        if (existing && serialized_option(config,it.key(),*existing)==value) continue;
+        if (physicalVariant && value.empty()) throw std::invalid_argument("EMPTY_EXTRUDER_VARIANT:"+it.key());
+        if (!config.option(it.key(), true)) throw std::invalid_argument("UNKNOWN_CONFIG:" + it.key());
+        if (const ConfigOption* target=config.option(it.key()); target && (target->type()==coEnum || target->type()==coEnums))
+            config.set_key_value(it.key(),enum_option_with_definition(config,it.key(),*target).release());
+        config.set_deserialize(it.key(), value, substitutions);
+    }
+}
+
+namespace {
+void place_on_bed(ModelObject& object, size_t ii)
+{
+    const auto bounds = object.instance_bounding_box(ii);
+    auto* instance = object.instances.at(ii);
+    Vec3d offset = instance->get_offset();
+    offset.z() -= bounds.min.z();
+    instance->set_offset(offset);
+    object.invalidate_bounding_box();
+}
+
+
+const std::array<Vec3d,6>& cardinal_rotations()
+{
+    constexpr double pi=3.14159265358979323846;
+    static const std::array<Vec3d,6> rotations{{{0,0,0},{pi/2,0,0},{-pi/2,0,0},{pi,0,0},{0,pi/2,0},{0,-pi/2,0}}};
+    return rotations;
+}
+void orient_instance(ModelObject& object,size_t ii,const Json& command,const DynamicPrintConfig& config)
+{
+    auto* instance=object.instances.at(ii);
+    const Vec3d originalCenter=object.instance_bounding_box(ii).center();
+    if (command.value("type",std::string())=="faceOrient") {
+        const Vec3d normal=json_vec3(command.at("normal"),Vec3d::Zero());
+        if (!normal.allFinite() || normal.norm()<1e-9) throw std::invalid_argument("INVALID_FACE_NORMAL");
+        // The picked normal is already in WORLD space. Pre-multiply the current
+        // rotation, preserving nonuniform scale/mirror and the selected instance.
+        const Matrix3d delta=Eigen::Quaterniond::FromTwoVectors(normal.normalized(),-Vec3d::UnitZ()).toRotationMatrix();
+        const Matrix3d current=instance->get_transformation().get_rotation_matrix().linear();
+        const Vec3d zyx=(delta*current).eulerAngles(2,1,0);
+        instance->set_rotation(Vec3d(zyx.z(),zyx.y(),zyx.x()));
+    } else {
+        const auto& rotations=cardinal_rotations();
+        int selected=command.value("candidateIndex",-1);
+        if (selected<-1 || selected>=int(rotations.size())) throw std::out_of_range("ORIENTATION_CANDIDATE_NOT_FOUND");
+        if (selected<0) {
+            double height=std::numeric_limits<double>::infinity();
+            for (size_t n=0;n<rotations.size();++n) {
+                instance->set_rotation(rotations[n]); object.invalidate_bounding_box();
+                const double z=object.instance_bounding_box(ii).size().z();
+                if(z<height-1e-6) {height=z;selected=int(n);}
+            }
+        }
+        instance->set_rotation(rotations.at(size_t(selected)));
+    }
+    object.invalidate_bounding_box();
+    const Vec3d rotatedCenter=object.instance_bounding_box(ii).center();
+    Vec3d offset=instance->get_offset();
+    offset.x()+=originalCenter.x()-rotatedCenter.x();
+    offset.y()+=originalCenter.y()-rotatedCenter.y();
+    instance->set_offset(offset);object.invalidate_bounding_box();place_on_bed(object,ii);
+    // Preserve the user's center whenever possible. On a rectangular bed,
+    // clamping the final footprint applies the minimum necessary XY translation.
+    // Nonrectangular beds/exclusions remain subject to the existing bounds gate.
+    if(const auto* bed=config.option<ConfigOptionPoints>("printable_area");bed && bed->values.size()==4) {
+        Vec2d lo=bed->values.front(),hi=lo;
+        for(const auto& point:bed->values) {lo=lo.cwiseMin(point);hi=hi.cwiseMax(point);}
+        std::set<int> corners;
+        bool rectangle=(hi-lo).minCoeff()>0;
+        for(size_t n=0;n<4;++n) {
+            const auto& point=bed->values[n];const auto edge=bed->values[(n+1)%4]-point;
+            const bool xLow=std::abs(point.x()-lo.x())<1e-9,xHigh=std::abs(point.x()-hi.x())<1e-9;
+            const bool yLow=std::abs(point.y()-lo.y())<1e-9,yHigh=std::abs(point.y()-hi.y())<1e-9;
+            rectangle=rectangle && (xLow||xHigh) && (yLow||yHigh) && (std::abs(edge.x())<1e-9||std::abs(edge.y())<1e-9);
+            corners.insert((xHigh?1:0)+(yHigh?2:0));
+        }
+        if(rectangle && corners.size()==4) {
+            const auto bounds=object.instance_bounding_box(ii);offset=instance->get_offset();
+            for(int axis=0;axis<2;++axis) {
+                const double size=bounds.size()[axis];
+                if(size>hi[axis]-lo[axis]+1e-9) throw std::runtime_error("ORIENTATION_DOES_NOT_FIT_PRINTABLE_AREA");
+                const double target=std::clamp(bounds.min[axis],lo[axis],std::max(lo[axis],hi[axis]-size));
+                offset[axis]+=target-bounds.min[axis];
+            }
+            instance->set_offset(offset);object.invalidate_bounding_box();
+        }
+    }
+}
+
+bool inside_polygon(const Vec2d& p, const Pointfs& polygon)
+{
+    bool inside = false;
+    if (polygon.size() < 3) return false;
+    for (size_t i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++) {
+        const auto& a = polygon[i]; const auto& b = polygon[j];
+        const Vec2d ab = b-a, ap = p-a;
+        const double cross = ab.x()*ap.y()-ab.y()*ap.x();
+        if (std::abs(cross) < 1e-6 && ap.dot(ab) >= -1e-6 && ap.dot(ab) <= ab.squaredNorm()+1e-6) return true;
+        if ((a.y() > p.y()) != (b.y() > p.y()) &&
+            p.x() < (b.x()-a.x())*(p.y()-a.y())/(b.y()-a.y())+a.x()) inside = !inside;
+    }
+    return inside;
+}
+
+void arrange_project(LoadedProject& project, double gap)
+{
+    const auto* bed = project.config.option<ConfigOptionPoints>("printable_area");
+    if (!bed || bed->values.size() < 3 || !std::isfinite(gap) || gap < 0)
+        throw std::invalid_argument("ARRANGE_REQUIRES_VALID_BED_AND_GAP");
+    Vec2d lo = bed->values.front(), hi = lo;
+    for (const auto& p : bed->values) { lo = lo.cwiseMin(p); hi = hi.cwiseMax(p); }
+    double x = lo.x()+gap, y = lo.y()+gap, row = 0;
+    struct Placement { ModelObject* object; size_t instance; Vec3d offset; };
+    std::vector<Placement> placements;
+    for (auto* object : project.model.objects) for (size_t ii=0; ii<object->instances.size(); ++ii) {
+        const auto bb = object->instance_bounding_box(ii);
+        const Vec3d size = bb.size();
+        if (x+size.x() > hi.x()-gap) { x=lo.x()+gap; y+=row+gap; row=0; }
+        if (y+size.y() > hi.y()-gap) throw std::runtime_error("ARRANGE_BED_OVERFLOW");
+        for (const Vec2d& corner : std::array<Vec2d,4>{{{x,y},{x+size.x(),y},{x,y+size.y()},{x+size.x(),y+size.y()}}})
+            if (!inside_polygon(corner, bed->values)) throw std::runtime_error("ARRANGE_BED_OVERFLOW");
+        // Rectangular shelf packing is deterministic; reject bed exclusion regions too.
+        if (const auto* excluded = project.config.option<ConfigOptionPoints>("bed_exclude_area")) {
+            if (excluded->values.size() >= 3) {
+                Vec2d elo=excluded->values.front(), ehi=elo;
+                for (const auto& p : excluded->values) { elo=elo.cwiseMin(p); ehi=ehi.cwiseMax(p); }
+                if (x<ehi.x() && x+size.x()>elo.x() && y<ehi.y() && y+size.y()>elo.y())
+                    throw std::runtime_error("ARRANGE_EXCLUDED_AREA");
+            }
+        }
+        placements.push_back({object,ii,object->instances[ii]->get_offset()+Vec3d(x-bb.min.x(),y-bb.min.y(),-bb.min.z())});
+        x+=size.x()+gap; row=std::max(row,size.y());
+    }
+    for (const auto& p : placements) {
+        p.object->instances[p.instance]->set_offset(p.offset); p.object->invalidate_bounding_box();
+    }
+}
+}
+
+void apply_project_commands(LoadedProject& project, const Json& commands)
+{
+    if (!commands.is_array()) throw std::invalid_argument("PROJECT_COMMANDS_MUST_BE_ARRAY");
+    project.metadata["projectCommands"] = commands;
+    project.metadata["materialAssignments"] = Json::array();
+    for (const auto& raw : commands) {
+        const Json cmd = raw.is_string() ? Json{{"type",raw}} : raw;
+        if (!cmd.is_object()) throw std::invalid_argument("INVALID_PROJECT_COMMAND");
+        const std::string type = cmd.value("type", std::string());
+        if (type == "arrange") { arrange_project(project,cmd.value("gapMm",5.0)); continue; }
+        if (type == "singleMaterial") {
+            const int filament=cmd.value("filamentIndex",-1);
+            if (filament<0) throw std::out_of_range("INVALID_FILAMENT_INDEX");
+            for (size_t oi=0;oi<project.model.objects.size();++oi)
+                for (size_t vi=0;vi<project.model.objects[oi]->volumes.size();++vi)
+                    if (project.model.objects[oi]->volumes[vi]->is_model_part())
+                        project.metadata["materialAssignments"].push_back(Json{{"objectIndex",oi},{"volumeIndex",vi},{"filamentIndex",filament}});
+            // This is an explicit persisted USER COMMAND. Never call on import,
+            // quality changes or a failed multi-material validation as fallback.
+            project.config.set("enable_prime_tower",false,true);
+            project.metadata["outputMode"]="singleMaterial";
+            project.metadata["singleMaterialFilamentIndex"]=filament;
+            continue;
+        }
+        const int oi=cmd.value("objectIndex",0);
+        if (oi<0 || size_t(oi)>=project.model.objects.size()) throw std::out_of_range("COMMAND_OBJECT_NOT_FOUND");
+        auto& object=*project.model.objects[oi];
+        const int ii=cmd.value("instanceIndex",0);
+        if (ii<0 || size_t(ii)>=object.instances.size()) throw std::out_of_range("COMMAND_INSTANCE_NOT_FOUND");
+        auto* instance=object.instances[ii];
+        if (type == "transform") {
+            Json transform=cmd; transform["objectIndex"]=oi; transform["instanceIndex"]=ii;
+            apply_transforms(project.model,Json::array({transform}));
+            if (cmd.contains("sizeMm")) {
+                const Vec3d wanted=json_vec3(cmd["sizeMm"],Vec3d::Zero());
+                const Vec3d current=object.instance_bounding_box(ii).size();
+                if (wanted.minCoeff()<=0 || current.minCoeff()<=0) throw std::invalid_argument("INVALID_SIZE_MM");
+                // World-axis dimensions are only independent for cardinal rotations.
+                const auto r=instance->get_rotation();
+                constexpr double halfPi=1.57079632679489661923;
+                for (int axis=0;axis<3;++axis)
+                    if (std::abs(r[axis]/halfPi-std::round(r[axis]/halfPi))>1e-6)
+                        throw std::invalid_argument("SIZE_REQUIRES_CARDINAL_ROTATION_USE_SCALE");
+                Vec3d factors=wanted.cwiseQuotient(current);
+                const Matrix3d rotation=instance->get_transformation().get_rotation_matrix().linear().cwiseAbs();
+                instance->set_scaling_factor(instance->get_scaling_factor().cwiseProduct(rotation.transpose()*factors));
+            }
+        } else if (type == "duplicate") {
+            Vec3d shift(object.instance_bounding_box(ii).size().x()+5.0,0,0);
+            if (cmd.contains("offset")) shift=json_vec3(cmd["offset"],shift);
+            auto* copy=object.add_instance(*instance);
+            copy->set_offset(instance->get_offset()+shift);
+        } else if (type == "orient" || type == "faceOrient") {
+            orient_instance(object,size_t(ii),cmd,project.config);
+        } else if (type == "assignMaterial" || type == "material") {
+            const int vi=cmd.value("volumeIndex",-1), filament=cmd.value("filamentIndex",-1);
+            if (filament<0) throw std::out_of_range("INVALID_FILAMENT_INDEX");
+            if (vi < -1 || (vi>=0 && size_t(vi)>=object.volumes.size())) throw std::out_of_range("COMMAND_VOLUME_NOT_FOUND");
+            for (size_t v=0;v<object.volumes.size();++v) if (vi<0 || int(v)==vi) {
+                object.volumes[v]->config.set("extruder",filament+1);
+                project.metadata["materialAssignments"].push_back(Json{{"objectIndex",oi},{"volumeIndex",v},{"filamentIndex",filament}});
+            }
+        } else throw std::invalid_argument("PROJECT_COMMAND_UNSUPPORTED:"+type);
+        object.invalidate_bounding_box();
+    }
+    std::map<std::pair<size_t,size_t>,int> finalAssignments;
+    for(const auto& assignment:project.metadata["materialAssignments"])
+        finalAssignments[{assignment.at("objectIndex").get<size_t>(),assignment.at("volumeIndex").get<size_t>()}]=assignment.at("filamentIndex").get<int>();
+    project.metadata["materialAssignments"]=Json::array();
+    for(const auto& assignment:finalAssignments)
+        project.metadata["materialAssignments"].push_back(Json{{"objectIndex",assignment.first.first},{"volumeIndex",assignment.first.second},{"filamentIndex",assignment.second}});
+    if(!finalAssignments.empty()) validate_material_assignments(project);
+}
+
+Model slicing_model(const LoadedProject& project)
+{
+    Model model(project.model);
+    for (const auto& assignment : project.metadata.value("materialAssignments",Json::array())) {
+        auto* volume=model.objects.at(assignment.at("objectIndex").get<size_t>())->volumes.at(assignment.at("volumeIndex").get<size_t>());
+        volume->mmu_segmentation_facets.reset();
+        volume->config.set("extruder",assignment.at("filamentIndex").get<int>()+1);
+    }
+    return model;
+}
+
+void validate_material_plan(const LoadedProject& project,const std::vector<unsigned int>& logicalIds)
+{
+#ifdef ORCA_MOBILE_ANDROID
+    const std::set<unsigned int> used(logicalIds.begin(),logicalIds.end());
+    if(used.empty()) throw std::runtime_error("NO_EXTRUSION_MATERIAL:No actual printable material usage");
+    const auto* colors=project.config.option<Slic3r::ConfigOptionStrings>("filament_colour");
+    for(const auto id:used) if(!colors || id>=colors->values.size())
+        throw std::runtime_error("MATERIAL_ROUTE_OUT_OF_RANGE:Support/surface/custom tool exceeds the logical material slots");
+    if(used.size()!=1) throw std::runtime_error("UNSUPPORTED_MATERIAL_SWITCH:Support, surface or custom routing uses multiple materials; select a supported single-material configuration");
+    if(project.metadata.value("outputMode",std::string())=="singleMaterial" &&
+        *used.begin()!=project.metadata.at("singleMaterialFilamentIndex").get<unsigned int>())
+        throw std::runtime_error("SINGLE_MATERIAL_ROUTE_MISMATCH:Support/surface routing differs from the explicitly selected material");
+#else
+    (void)project;(void)logicalIds;
+#endif
+}
+
+void validate_output_capabilities(const LoadedProject& project)
+{
+    // Geometry/project semantics never become safe merely by assigning one
+    // material. Derive this list from the original archive on every load.
+    if(!project.metadata.value("blockingFeatures",Json::array()).empty())
+        throw std::runtime_error("UNSUPPORTED_3MF_OUTPUT:"+project.metadata.at("blockingFeatures").dump());
+    for(const char* key:{"post_process","plugins","slicing_pipeline_plugin","print_plugin_config_overrides","printer_plugin_config_overrides","filament_plugin_config_overrides"}) {
+        const ConfigOption* rawOption=project.config.option(key);
+        if(const auto* scripts=dynamic_cast<const ConfigOptionStrings*>(rawOption)) {
+            for(const auto& script:scripts->values) if(detail::ThreeMfScan::active(Json(script)))
+                throw std::runtime_error(std::string("UNSUPPORTED_EXTERNAL_PROCESSING:")+key);
+        } else if(const auto* script=dynamic_cast<const ConfigOptionString*>(rawOption);script && detail::ThreeMfScan::active(Json(script->value)))
+            throw std::runtime_error(std::string("UNSUPPORTED_EXTERNAL_PROCESSING:")+key);
+    }
+#ifdef ORCA_MOBILE_ANDROID
+    if (project.metadata.value("sourceFormat",std::string())==".obj" &&
+        !project.metadata.value("unsupportedFeatures",Json::array()).empty() &&
+        project.metadata.value("outputMode",std::string())!="singleMaterial")
+        throw std::runtime_error("UNSUPPORTED_OBJ_APPEARANCE:Original is preserved; explicitly confirm geometry-only single-material output");
+    if (const auto* prime=project.config.option<ConfigOptionBool>("enable_prime_tower"))
+        if (prime->value) throw std::runtime_error("UNSUPPORTED_PRIME_TOWER:Android triangulation is unavailable; explicitly configure a supported single-material job");
+    const Model model=slicing_model(project);
+    std::set<int> materials;
+    for (const auto* object:model.objects) for (const auto* volume:object->volumes) if (volume->is_model_part()) {
+        if (!volume->mmu_segmentation_facets.empty())
+            throw std::runtime_error("UNSUPPORTED_PAINTED_MATERIAL_SWITCH:Assign an explicit single material to each part to export; original colors are retained");
+        int material=volume->extruder_id();
+        if (material<=0) material=object->config.extruder();
+        materials.insert(std::max(1,material));
+    }
+    if (materials.size()>1) throw std::runtime_error("UNSUPPORTED_MATERIAL_SWITCH:Android P1 requires explicit single-material assignment");
+#endif
+}
+
+
+
+void validate_project_bounds(const LoadedProject& project)
+{
+    const auto* bed=project.config.option<ConfigOptionPoints>("printable_area");
+    const auto* height=project.config.option<ConfigOptionFloat>("printable_height");
+    if (!bed || bed->values.size()<3 || !height || !std::isfinite(height->value) || height->value<=0)
+        throw std::runtime_error("INVALID_PRINT_VOLUME");
+    Polygon printable=Polygon::new_scale(bed->values); printable.make_counter_clockwise();
+    Polygons excluded;
+    if (const auto* areas=project.config.option<ConfigOptionPoints>("bed_exclude_area")) {
+        // Orca encodes exclusion rectangles as successive groups of four points.
+        // FullPrintConfig uses a single origin point as the disabled-area sentinel.
+        const bool disabled = areas->values.size()==1 && areas->values.front().isZero();
+        if (!disabled && !areas->values.empty() && areas->values.size()%4!=0) throw std::runtime_error("INVALID_EXCLUDED_AREAS");
+        for (size_t i=0;!disabled && i<areas->values.size();i+=4) {
+            Pointfs region(areas->values.begin()+i,areas->values.begin()+i+4);
+            Polygon polygon=Polygon::new_scale(region); polygon.make_counter_clockwise(); excluded.push_back(std::move(polygon));
+        }
+    }
+    for (size_t oi=0;oi<project.model.objects.size();++oi) {
+        const auto& object=*project.model.objects[oi];
+        for (size_t ii=0;ii<object.instances.size();++ii) {
+            const auto bounds=object.instance_bounding_box(ii);
+            if (!bounds.defined || !bounds.min.allFinite() || !bounds.max.allFinite()) throw std::runtime_error("INVALID_MODEL_BOUNDS");
+            if (bounds.min.z() < -0.001) throw std::runtime_error("MODEL_BELOW_BED");
+            if (bounds.max.z() > height->value+0.001) throw std::runtime_error("MODEL_EXCEEDS_PRINTABLE_HEIGHT");
+            for (const auto* volume:object.volumes) if (volume->is_model_part()) {
+                // Conservatively validate the complete projected volume hull.
+                // No outside instance/part may be silently dropped by Print.
+                const Polygon& footprint=volume->get_convex_hull_2d(object.instances[ii]->get_matrix());
+                if (footprint.points.size()<3) throw std::runtime_error("DEGENERATE_PRINT_FOOTPRINT");
+                if (!diff(footprint,printable).empty()) throw std::runtime_error("MODEL_OUTSIDE_PRINTABLE_AREA");
+                if (!excluded.empty() && !intersection(Polygons{footprint},excluded).empty())
+                    throw std::runtime_error("MODEL_INTERSECTS_EXCLUDED_AREA");
+            }
+        }
+    }
+}
+
+Json write_preview(const GCodeProcessorResult& gcode, const std::string& path)
+{
+    struct Layer { float z=0; std::vector<std::pair<size_t,size_t>> moves; uint32_t first=0; };
+    std::map<unsigned int,Layer> layers;
+    for (size_t i=1; i<gcode.moves.size(); ++i) {
+        const auto& m=gcode.moves[i];
+        if (m.type==EMoveType::Extrude && !m.internal_only && m.extrusion_role!=erCustom &&
+            m.extrusion_role!=erNone && m.delta_extruder>0 && m.width>0 && m.position.allFinite()) {
+            auto& layer=layers[m.layer_id];
+            const float z=m.print_z>0 ? m.print_z : m.position.z();
+            if (layer.z==0 || z<layer.z) layer.z=z;
+        }
+    }
+    if (layers.empty()) throw std::runtime_error("PREVIEW_NO_PRINT_LAYERS");
+    size_t previousIndex=0;
+    for (size_t i=1; i<gcode.moves.size(); ++i) {
+        const auto& m=gcode.moves[i];
+        if (m.internal_only || (m.type!=EMoveType::Travel && m.type!=EMoveType::Wipe && m.type!=EMoveType::Extrude)) continue;
+        const size_t from=previousIndex; previousIndex=i;
+        const auto& previous=gcode.moves[from];
+        auto layer=layers.find(m.layer_id);
+        if (layer==layers.end() || !m.position.allFinite() || !previous.position.allFinite() ||
+            (m.position-previous.position).squaredNorm()<1e-12f) continue;
+        if (m.type==EMoveType::Travel || m.type==EMoveType::Wipe ||
+            (m.type==EMoveType::Extrude && m.extrusion_role!=erNone && m.extrusion_role!=erCustom && m.delta_extruder>0))
+            layer->second.moves.emplace_back(i,from);
+    }
+    uint64_t total=0;
+    Json heights=Json::array();
+    for (auto& entry:layers) {
+        auto& layer=entry.second;
+        if (total>UINT32_MAX || layer.moves.size()>UINT32_MAX-total) throw std::overflow_error("PREVIEW_TOO_LARGE");
+        layer.first=static_cast<uint32_t>(total); total+=layer.moves.size(); heights.push_back(layer.z);
+    }
+    const auto outputPath=std::filesystem::u8path(path);
+    if (outputPath.has_parent_path()) std::filesystem::create_directories(outputPath.parent_path());
+    std::ofstream output(outputPath,std::ios::binary|std::ios::trunc);
+    if (!output) throw std::runtime_error("PREVIEW_CREATE_FAILED");
+    auto integer=[&](uint64_t value,size_t bytes) { for (size_t i=0;i<bytes;++i) output.put(static_cast<char>((value>>(8*i))&255)); };
+    auto real=[&](float value) { uint32_t bits; std::memcpy(&bits,&value,4); integer(bits,4); };
+    output.write("ORCAPV01",8); integer(layers.size(),4); integer(total,4); integer(32,8); integer(32+16*layers.size(),8);
+    for (const auto& entry:layers) {
+        const auto& layer=entry.second;
+        real(layer.z); integer(layer.first,4); integer(layer.moves.size(),4); integer(0,4);
+    }
+    for (const auto& entry:layers) for (const auto& indices:entry.second.moves) {
+        const auto& m=gcode.moves[indices.first]; const auto& a=gcode.moves[indices.second].position;
+        for (int axis=0;axis<3;++axis) real(a[axis]);
+        for (int axis=0;axis<3;++axis) real(m.position[axis]);
+        real(m.width); integer(m.extruder_id,2); integer(static_cast<uint8_t>(m.extrusion_role),1);
+        integer(m.type==EMoveType::Extrude?1:m.type==EMoveType::Travel?2:4,1);
+    }
+    output.flush();
+    if (!output) throw std::runtime_error("PREVIEW_WRITE_FAILED");
+    output.close();
+    return Json{{"previewPath",path},{"previewSize",std::filesystem::file_size(outputPath)},
+        {"previewSha256",file_sha256(path)},{"layerCount",layers.size()},{"layerHeights",heights},
+        {"segmentCount",total},{"previewFlags",{{"extrusion",1},{"travel",2},{"wipe",4}}}};
+}
+
+DynamicPrintConfig quality_config(const DynamicPrintConfig& base, const std::string& quality)
+{
+    if (quality != "standard" && quality != "fine" && quality != "fast")
+        throw std::invalid_argument("QUALITY_REQUIRES_CONFIRMED_EFFECTIVE_CONFIG");
+    double nozzle = 0.4;
+    if (const auto* diameters = base.option<ConfigOptionFloats>("nozzle_diameter"))
+        if (!diameters->values.empty()) nozzle = diameters->values.front();
+    if (!std::isfinite(nozzle) || nozzle <= 0) throw std::invalid_argument("INVALID_NOZZLE_DIAMETER");
+    DynamicPrintConfig result(base);
+    result.set("layer_height", nozzle * (quality == "fine" ? 0.30 : quality == "fast" ? 0.70 : 0.50), true);
+    return result;
+}
+
+} // namespace orca::mobile::slicing

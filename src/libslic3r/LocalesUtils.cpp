@@ -1,4 +1,5 @@
 #include "LocalesUtils.hpp"
+#include <sstream>
 #include <locale.h>
 #include <cstdio>
 #include <string_view>
@@ -6,6 +7,11 @@
 #include <string>
 #include <ios>
 
+#ifdef _WIN32
+    #include <charconv>
+#endif
+#include <stdexcept>
+#include <sstream>
 #include <charconv>
 #include <iomanip>
 #include <sstream>
@@ -141,4 +147,3 @@ std::string float_to_string_decimal_point(double value, int precision/* = -1*/)
 
 
 } // namespace Slic3r
-

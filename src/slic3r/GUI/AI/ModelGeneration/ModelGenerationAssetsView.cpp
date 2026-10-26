@@ -95,7 +95,7 @@ bool ModelGenerationPanel::request_library_action(ModelLibraryCommand command, c
         return result.imported();
     }
     case ModelLibraryCommand::Retexture: on_retexture_from_library(entry.job_id, entry.title); return true;
-    case ModelLibraryCommand::Remove: delete_library_entry(entry); return true;
+    case ModelLibraryCommand::Remove: return delete_library_entry(entry);
     case ModelLibraryCommand::MatchColors: return false; // Provided by the independent color host.
     }
     return false;

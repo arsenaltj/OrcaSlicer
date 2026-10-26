@@ -30,6 +30,7 @@
 #include <functional>
 #include <memory>
 #include <wx/dcbuffer.h>
+#include <wx/activityindicator.h>
 #include <wx/graphics.h>
 
 #include <boost/log/trivial.hpp>
@@ -55,6 +56,7 @@
 #include <wx/tglbtn.h>
 #include <wx/weakref.h>
 #include <wx/window.h>
+#include <wx/wupdlock.h>
 #ifdef __WXMSW__
 #include <wx/msw/wrapwin.h>
 #endif
@@ -1258,15 +1260,20 @@ void RedesignShell::disconnect_model_generation_host()
     }
     m_import_timer.Stop();
     m_slice_camera_retry_timer.Stop();
+    m_import_in_progress = false;
+    m_import_awaiting_frame = false;
     m_slice_camera_loading_pending = false;
     m_slice_camera_waiting_for_frame = false;
     if (m_import_session) m_import_session->invalidate();
-    // The native Plater outlives this shell. Return its temporary loading
-    // child before detaching it so paint handlers cannot retain this shell.
+    rollback_import_target_view();
+    if (m_import_transition) m_page_transition.rollback(*m_import_transition);
+    m_import_transition.reset();
     if (m_import_loading) {
+        if (m_import_activity) m_import_activity->Stop();
         m_import_loading->Hide();
-        if (m_import_loading->GetParent() != m_content_host)
-            m_import_loading->Reparent(m_content_host);
+        m_import_loading->Destroy();
+        m_import_loading = nullptr;
+        m_import_activity = nullptr;
     }
     if (m_print_page != nullptr)
         m_print_page->set_active(false);
@@ -1644,13 +1651,15 @@ void RedesignShell::build_image_workspace()
                       FromDIP(21));
     settings_sizer->Add(action_panel, 0, wxEXPAND);
 
-    m_content_host = new wxPanel(this, wxID_ANY);
+    m_content_host = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+                                 wxTAB_TRAVERSAL | wxCLIP_CHILDREN);
     m_content_host->SetBackgroundColour(background_colour());
     workspace->Add(m_content_host, 1, wxEXPAND);
     auto* content_host_sizer = new wxBoxSizer(wxVERTICAL);
     m_content_host->SetSizer(content_host_sizer);
 
-    m_image_page = new wxPanel(m_content_host, wxID_ANY);
+    m_image_page = new wxPanel(m_content_host, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+                               wxTAB_TRAVERSAL | wxCLIP_CHILDREN);
     m_image_page->SetBackgroundColour(background_colour());
     // The guide and previews alternate in the flexible center; history stays
     // beside either view and stretches vertically, never below the content.
@@ -1720,12 +1729,19 @@ void RedesignShell::build_image_workspace()
     update_image_state();
 
     m_assets_page = m_assets_workspace = new AssetsWorkspace(m_content_host, [this] { save_print_project(); });
+#ifdef __WXMSW__
+    m_image_page->SetDoubleBuffered(true);
+    m_assets_page->SetDoubleBuffered(true);
+#endif
     m_content_host->GetSizer()->Add(m_assets_page, 1, wxEXPAND);
     m_assets_page->Hide();
     m_pages[static_cast<std::size_t>(Page::Assets)] = m_assets_page;
     m_pages[static_cast<std::size_t>(Page::Image)] = m_image_page;
     m_pages[static_cast<std::size_t>(Page::Model)] = build_model_workspace();
     m_print_page = new PrinterWorkspace(m_content_host, m_plater);
+#ifdef __WXMSW__
+    m_print_page->SetDoubleBuffered(true);
+#endif
     m_pages[static_cast<std::size_t>(Page::Print)] = m_print_page;
     m_content_host->GetSizer()->Add(m_print_page, 1, wxEXPAND);
     m_print_page->Hide();
@@ -1734,8 +1750,11 @@ void RedesignShell::build_image_workspace()
 
 wxPanel* RedesignShell::build_model_workspace()
 {
-    m_model_page = new wxPanel(m_content_host, wxID_ANY);
+    m_model_page = new wxPanel(m_content_host, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+                               wxTAB_TRAVERSAL | wxCLIP_CHILDREN);
     m_model_page->SetBackgroundColour(background_colour());
+    // ModelPreview3D supplies the GL swap-chain. Native parent buffering on
+    // Windows may obscure that child even though the frame was submitted.
     auto* outer = new wxBoxSizer(wxVERTICAL);
     m_model_page->SetSizer(outer);
 
@@ -3151,58 +3170,122 @@ bool RedesignShell::navigate_to(Page page)
     return navigate_to_impl(page, false);
 }
 
+wxWindow* RedesignShell::page_route_root(Page page, ModelView view) const
+{
+    const auto index = static_cast<std::size_t>(page);
+    if (index >= m_pages.size()) return nullptr;
+    if (page != Page::Model) return m_pages[index];
+    switch (view) {
+    case ModelView::Result: return m_model_page;
+    case ModelView::Workbench: return m_workbench_page;
+    case ModelView::Slicing:
+    case ModelView::Preview: return m_slicing_page;
+    }
+    return nullptr;
+}
+
+wxWindow* RedesignShell::active_page_focus_root() const
+{
+    return page_route_root(m_active_page, m_model_view);
+}
+
+void RedesignShell::remember_active_page_focus()
+{
+    auto* root = active_page_focus_root();
+    auto* focus = wxWindow::FindFocus();
+    if (!root || !focus || (focus != root && !root->IsDescendant(focus))) return;
+    if (m_active_page == Page::Model)
+        m_model_view_focus[static_cast<std::size_t>(m_model_view)] = focus;
+    else
+        m_page_focus[static_cast<std::size_t>(m_active_page)] = focus;
+}
+
+void RedesignShell::restore_active_page_focus()
+{
+    auto* root = active_page_focus_root();
+    auto* focus = m_active_page == Page::Model
+        ? m_model_view_focus[static_cast<std::size_t>(m_model_view)].get()
+        : m_page_focus[static_cast<std::size_t>(m_active_page)].get();
+    if (root && focus && focus->IsEnabled() && focus->IsShownOnScreen() &&
+        (focus == root || root->IsDescendant(focus)))
+        focus->SetFocus();
+}
+
 bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
 {
-    if (m_import_in_progress && !m_import_switching_view) return false;
+    if (m_import_in_progress || m_page_transition.active()) return false;
     if (page == Page::Image && m_model_route_locked && !allow_locked_image_view) return false;
     const std::size_t index = static_cast<std::size_t>(page);
     if (index >= m_pages.size() || m_pages[index] == nullptr)
         return false;
 
-    if (page == Page::Image)
-        m_image_page_view_only = allow_locked_image_view && m_model_route_locked;
-    else
-        m_image_page_view_only = false;
-    m_active_page = page;
-    switch (page) {
-    case Page::Assets:
-        m_active_tab_id = wxString::FromUTF8(kRedesignAssetsTabId);
-        refresh_project_save_actions();
-        if (m_model_generation_host) m_model_generation_host->request_refresh_history();
-        break;
-    case Page::Image:
-        m_active_tab_id = TAB_ID_HOME;
-        break;
-    case Page::Model:
-        m_active_tab_id = owns_model_workflow() && m_model_view == ModelView::Preview ? TAB_ID_PREVIEW :
-            owns_model_workflow() && m_model_view == ModelView::Slicing ? TAB_ID_PREPARE : TAB_ID_GENERATE_3D;
-        break;
-    case Page::Print:
-        m_active_tab_id = TAB_ID_MONITOR;
-        break;
+    remember_active_page_focus();
+    const auto transition = m_page_transition.begin(
+        {int(m_active_page), m_active_page == Page::Model ? int(m_model_view) : -1},
+        {int(page), page == Page::Model ? int(m_model_view) : -1});
+    if (!transition) return false;
+    // Retained pages own their business state. A completed hidden layout (or
+    // its already-painted empty/error placeholder) is enough to commit.
+    auto* target_root = page_route_root(page, m_model_view);
+    if (!target_root) {
+        m_page_transition.rollback(*transition);
+        return false;
     }
-    for (std::size_t i = 0; i < m_pages.size(); ++i) {
-        const bool active = i == index;
-        if (m_pages[i] != nullptr)
-            m_pages[i]->Show(active);
-        if (m_nav_markers[i] != nullptr)
-            m_nav_markers[i]->Show(active);
-        if (m_nav_labels[i] != nullptr)
-            style_text(m_nav_labels[i], active ? primary_text_colour() : secondary_text_colour(), 9);
+    if (m_content_host) target_root->SetSize(m_content_host->GetClientRect());
+    target_root->Layout();
+    if (!m_page_transition.mark_ready(*transition)) {
+        m_page_transition.rollback(*transition);
+        return false;
     }
-    if (m_image_settings_panel != nullptr)
-        m_image_settings_panel->Show(page == Page::Image);
 
-    if (m_content_host != nullptr)
-        m_content_host->Layout();
-    if (m_content_host != nullptr && m_content_host->GetParent() != nullptr)
-        m_content_host->GetParent()->Layout();
-    Layout();
-    refresh_workflow_layout();
-    if (page == Page::Image)
-        m_preview_resize_timer.StartOnce(1);
+    {
+        wxWindowUpdateLocker lock(this);
+        m_image_page_view_only = page == Page::Image && allow_locked_image_view && m_model_route_locked;
+        m_active_page = page;
+        switch (page) {
+        case Page::Assets:
+            m_active_tab_id = wxString::FromUTF8(kRedesignAssetsTabId);
+            refresh_project_save_actions();
+            break;
+        case Page::Image:
+            m_active_tab_id = TAB_ID_HOME;
+            break;
+        case Page::Model:
+            m_active_tab_id = owns_model_workflow() && m_model_view == ModelView::Preview ? TAB_ID_PREVIEW :
+                owns_model_workflow() && m_model_view == ModelView::Slicing ? TAB_ID_PREPARE : TAB_ID_GENERATE_3D;
+            break;
+        case Page::Print:
+            m_active_tab_id = TAB_ID_MONITOR;
+            break;
+        }
+        const auto model_index = static_cast<std::size_t>(Page::Model);
+        for (std::size_t i = 0; i < m_pages.size(); ++i) {
+            const bool active = i == index;
+            const bool show_page = active && (i != model_index || m_model_view == ModelView::Result);
+            if (m_pages[i] != nullptr) m_pages[i]->Show(show_page);
+            if (m_nav_markers[i] != nullptr) m_nav_markers[i]->Show(active);
+            if (m_nav_labels[i] != nullptr)
+                style_text(m_nav_labels[i], active ? primary_text_colour() : secondary_text_colour(), 9);
+        }
+        if (m_image_settings_panel != nullptr) m_image_settings_panel->Show(page == Page::Image);
+        if (m_content_host != nullptr) m_content_host->Layout();
+        if (m_content_host != nullptr && m_content_host->GetParent() != nullptr)
+            m_content_host->GetParent()->Layout();
+        Layout();
+        refresh_workflow_layout();
+    }
     if (m_print_page != nullptr)
         m_print_page->set_active(page == Page::Print);
+    present_active_page();
+    if (!m_page_transition.commit(*transition)) {
+        m_page_transition.rollback(*transition);
+        return false;
+    }
+    if (page == Page::Assets && m_model_generation_host)
+        m_model_generation_host->request_refresh_history();
+    if (page == Page::Image)
+        m_preview_resize_timer.StartOnce(1);
+    restore_active_page_focus();
     return true;
 }
 
@@ -3216,14 +3299,11 @@ bool RedesignShell::navigate_to_image_view()
 
 bool RedesignShell::navigate_to_tab(const wxString& id)
 {
-    if (m_import_in_progress && !m_import_switching_view) return false;
+    if (m_import_in_progress || m_page_transition.active()) return false;
     if (id.empty())
         return true;
     if (owns_model_workflow() && (id == TAB_ID_PREPARE || id == TAB_ID_PREVIEW)) {
-        navigate_to(Page::Model);
-        show_model_view(id == TAB_ID_PREVIEW ? ModelView::Preview : ModelView::Slicing);
-        m_active_tab_id = id;
-        return true;
+        return show_model_view(id == TAB_ID_PREVIEW ? ModelView::Preview : ModelView::Slicing);
     }
 
     Page page;
@@ -3246,6 +3326,12 @@ bool RedesignShell::navigate_to_tab(const wxString& id)
         page = Page::Assets;
     }
 
+    if (page == Page::Print && m_print_page != nullptr) {
+        if (id == TAB_ID_PREPARE || id == TAB_ID_PREVIEW)
+            m_print_page->show_prepare();
+        else if (id == TAB_ID_MONITOR || id == TAB_ID_MONITOR_WEB)
+            m_print_page->show_monitor();
+    }
     const bool navigated = page == Page::Image ? navigate_to_image_view() : navigate_to(page);
     if (!navigated)
         return false;
@@ -3254,19 +3340,14 @@ bool RedesignShell::navigate_to_tab(const wxString& id)
     // mistake Preview/Monitor/Multi-device for Prepare merely because they
     // share the same migration host.
     m_active_tab_id = id;
-    if (page == Page::Print && m_print_page != nullptr) {
-        if (id == TAB_ID_PREPARE || id == TAB_ID_PREVIEW)
-            m_print_page->show_prepare();
-        else if (id == TAB_ID_MONITOR || id == TAB_ID_MONITOR_WEB)
-            m_print_page->show_monitor();
-    }
     return true;
 }
 
 void RedesignShell::show_printer_media()
 {
-    if (navigate_to(Page::Print) && m_print_page != nullptr)
-        m_print_page->show_media();
+    if (m_import_in_progress || m_page_transition.active() || !m_print_page) return;
+    m_print_page->show_media();
+    navigate_to(Page::Print);
 }
 
 void RedesignShell::refresh_printer_state()

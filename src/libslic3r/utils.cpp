@@ -46,6 +46,9 @@
 #include <iomanip>
 #include <algorithm>
 #include <cmath>
+#include <iterator>
+#include <boost/algorithm/hex.hpp>
+#include <boost/uuid/detail/md5.hpp>
 #include <string>
 #include <system_error>
 #include <string_view>
@@ -1900,23 +1903,21 @@ bool makedir(const std::string path) {
 
 bool bbl_calc_md5(std::string &filename, std::string &md5_out)
 {
-    unsigned char digest[16];
-    MD5_CTX       ctx;
-    MD5_Init(&ctx);
+    using boost::uuids::detail::md5;
+    md5 hash;
     boost::nowide::ifstream ifs(filename, std::ios::binary);
-    std::string                 buf(64 * 1024, 0);
-    const std::size_t &         size      = boost::filesystem::file_size(filename);
-    std::size_t                 left_size = size;
+    if (!ifs) return false;
+    std::string buf(64 * 1024, 0);
     while (ifs) {
         ifs.read(buf.data(), buf.size());
-        int read_bytes = ifs.gcount();
-        MD5_Update(&ctx, (unsigned char *) buf.data(), read_bytes);
+        const std::streamsize read_bytes = ifs.gcount();
+        if (read_bytes > 0) hash.process_bytes(buf.data(), static_cast<size_t>(read_bytes));
     }
-    MD5_Final(digest, &ctx);
-    char md5_str[33];
-    for (int j = 0; j < 16; j++) { sprintf(&md5_str[j * 2], "%02X", (unsigned int) digest[j]); }
-    md5_out = std::string(md5_str);
-    return true;
+    md5::digest_type digest{};
+    hash.get_digest(digest);
+    md5_out.clear();
+    boost::algorithm::hex(digest, digest + std::size(digest), std::back_inserter(md5_out));
+    return md5_out.size() == 32;
 }
 
 // SoftFever: copy directory recursively

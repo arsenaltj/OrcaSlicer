@@ -10,13 +10,14 @@
 
 #include <array>
 #include <string_view>
+#include <cstdint>
 #include <vector>
 #include <utility>
 
 namespace Slic3r {
 
 struct GCodeProcessorResult;
-enum class BuildVolume_Type : char {
+enum class BuildVolume_Type : int8_t {
   // Not set yet or undefined.
   Invalid = -1,
   // Rectangular print bed. Most common, cheap to work with.

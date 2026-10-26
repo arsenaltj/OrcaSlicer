@@ -16,10 +16,14 @@ inline bool workbench_import_request_allowed(const PostGenerationWorkbenchState&
         state.check.candidate_status == RepairCandidateStatus::Generating ||
         state.check.candidate_status == RepairCandidateStatus::Ready)
         return false;
-    // A confirmation belongs to the topology evidence presented to the user.
-    // An empty digest is allowed only when that snapshot was itself unchecked.
     if (request.topology_check_sha256 != state.check.model_sha256) return false;
-    return state.can_import_for_slicing || (state.can_force_import && request.topology_risk_confirmed);
+    if (state.can_import_for_slicing) return true;
+    // Only a confirmed, low-severity boundary risk can use the exception path.
+    // Invalid, failed, unchecked and changed reports are never force-importable.
+    return state.can_force_import && state.force_import_acknowledged &&
+        state.check.status == WorkbenchCheckStatus::Attention &&
+        state.check.force_import_risk && request.topology_risk_confirmed &&
+        !state.check.model_sha256.empty();
 }
 
 } // namespace Slic3r::GUI

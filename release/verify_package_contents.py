@@ -54,6 +54,8 @@ def dependency_classification_path(member):
     normalized = member.replace("\\", "/")
     # Build-dependency ZIPs carry this same stack at the archive root. Reuse the
     # existing exact-file/exact-literal audits; do not allowlist whole packages.
+    if normalized.startswith("OrcaAI_x64/python/Lib/site-packages/"):
+        normalized = normalized[len("OrcaAI_x64/"):]
     if normalized.startswith("python/Lib/site-packages/"):
         return "resources/beauty-runtime/" + normalized
     return normalized
@@ -67,6 +69,21 @@ def public_dependency_literal(member, data, key, value):
                 and hashlib.sha256(data).hexdigest() == entry["sha256"]):
             return True
     return False
+
+
+def audited_library_record(member, data):
+    normalized = dependency_classification_path(member)
+    record = next((record for path, record in AUDITED_LIBRARY_LITERALS.items()
+                   if normalized == path or normalized.endswith("/" + path)), None)
+    if record and hashlib.sha256(data).hexdigest() == record["file_sha256"]:
+        return record
+    return None
+
+
+def audited_token_patterns(member, data, matches):
+    record = audited_library_record(member, data)
+    allowed = set(record.get("tokens", [])) if record else set()
+    return bool(matches) and all(hashlib.sha256(match).hexdigest() in allowed for match in matches)
 
 
 def category(value):
@@ -261,8 +278,14 @@ class Inspection:
         if lower.endswith((".7z", ".rar")):
             self.gap(member, "unsupported_nested_archive")
         # Scan binary byte strings too; UTF-16 configs are decoded separately.
-        if TOKEN.search(data) or TOKEN.search(data.replace(b"\x00", b"")):
-            self.findings.append({"member": member, "category": "TOKEN_OR_PRIVATE_KEY_PATTERN_VALIDITY_UNKNOWN"})
+        token_matches = set(TOKEN.findall(data)) | set(TOKEN.findall(data.replace(b"\x00", b"")))
+        if token_matches:
+            if audited_token_patterns(member, data, token_matches):
+                self.config_fields.append({"member": member, "field": "token_pattern",
+                                           "category": "AUDITED_PUBLIC_PROTOCOL_LITERAL",
+                                           "evidence": "exact_file_and_token_sha256"})
+            else:
+                self.findings.append({"member": member, "category": "TOKEN_OR_PRIVATE_KEY_PATTERN_VALIDITY_UNKNOWN"})
         if not member.lower().endswith(TEXT_EXTENSIONS):
             return
         encoding = "utf-16" if data.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
@@ -288,8 +311,6 @@ class Inspection:
                             walk(value)
                 walk(parsed)
         else:
-            file_hash = hashlib.sha256(data).hexdigest()
-            normalized = dependency_classification_path(member)
             for match in ASSIGNMENT.finditer(text):
                 if (match[1] == "secret" and match[2] == "\u3299\ufe0f"
                         and member.replace("\\", "/").endswith("resources/tooltip/main.js")
@@ -303,9 +324,8 @@ class Inspection:
                                                "category": "PUBLIC_DEPENDENCY_EXAMPLE_OR_PROTOCOL_LITERAL",
                                                "evidence": "exact_audited_dependency_sha256_and_literal"})
                     continue
-                audited = next((record for path, record in AUDITED_LIBRARY_LITERALS.items()
-                    if normalized == path or normalized.endswith("/" + path)), None)
-                if (audited and file_hash == audited["file_sha256"] and
+                audited = audited_library_record(member, data)
+                if (audited and
                         hashlib.sha256(match[2].encode("utf-8")).hexdigest() in audited["fields"].get(match[1], [])):
                     self.config_fields.append({"member": member, "field": match[1],
                         "category": "AUDITED_PUBLIC_LIBRARY_LITERAL", "evidence": "exact_file_and_literal_sha256"})

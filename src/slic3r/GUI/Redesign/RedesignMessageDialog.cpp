@@ -19,7 +19,30 @@
 #include <wx/scrolwin.h>
 #include <wx/utils.h>
 
+#ifdef __WXMSW__
+#include <windows.h>
+#endif
+
 namespace Slic3r::GUI {
+
+namespace {
+#ifdef __WXMSW__
+void set_dark_dialog_border(wxWindow* window, const wxColour& color)
+{
+    if (!window || !window->GetHandle()) return;
+    HMODULE library = ::LoadLibraryW(L"dwmapi.dll");
+    if (!library) return;
+    using SetAttribute = HRESULT (WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
+    auto* set_attribute = reinterpret_cast<SetAttribute>(::GetProcAddress(library, "DwmSetWindowAttribute"));
+    if (set_attribute) {
+        constexpr DWORD border_color_attribute = 34; // DWMWA_BORDER_COLOR on Windows 11.
+        const COLORREF border = RGB(color.Red(), color.Green(), color.Blue());
+        set_attribute(static_cast<HWND>(window->GetHandle()), border_color_attribute, &border, sizeof(border));
+    }
+    ::FreeLibrary(library);
+}
+#endif
+}
 
 class RedesignDetailsContentPanel final : public wxPanel
 {
@@ -557,14 +580,19 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
     if (design) {
         SetName("generation-confirmation");
         SetBackgroundStyle(wxBG_STYLE_PAINT);
+#ifdef __WXMSW__
+        SetDoubleBuffered(true);
+        set_dark_dialog_border(this, GetBackgroundColour());
+#endif
+        Bind(wxEVT_ERASE_BACKGROUND, [](wxEraseEvent&) {});
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
             wxAutoBufferedPaintDC dc(this); dc.SetBackground(wxBrush(GetBackgroundColour())); dc.Clear();
             auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
             if (!gc) return;
             const auto size = GetClientSize();
-            gc->SetBrush(*wxTRANSPARENT_BRUSH);
-            gc->SetPen(wxPen(wxColour(255, 255, 255, 35), std::max(1, FromDIP(1))));
-            gc->DrawRoundedRectangle(0.5, 0.5, size.x - 1.0, size.y - 1.0, FromDIP(12));
+            gc->SetBrush(wxBrush(GetBackgroundColour()));
+            gc->SetPen(*wxTRANSPARENT_PEN);
+            gc->DrawRoundedRectangle(0, 0, size.x, size.y, FromDIP(12));
         });
     }
 
@@ -832,6 +860,10 @@ void RedesignMessageDialog::on_dpi_changed(const wxRect& suggested_rect)
         m_details_viewport->FitInside();
     }
     update_shape();
+#ifdef __WXMSW__
+    if (m_appearance == Appearance::GenerationConfirmation)
+        set_dark_dialog_border(this, GetBackgroundColour());
+#endif
 }
 
 void RedesignMessageDialog::wrap_message()

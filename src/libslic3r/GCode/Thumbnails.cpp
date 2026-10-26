@@ -14,8 +14,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <ios>
+#ifndef ORCA_MOBILE_ANDROID
 #include <jpeglib.h>
 #include <jerror.h>
+#endif
 #include <miniz.h>
 #include <string_view>
 #include <memory>
@@ -35,11 +37,13 @@ struct CompressedPNG : CompressedImageBuffer
     std::string_view tag() const override { return "thumbnail"sv; }
 };
 
+#ifndef ORCA_MOBILE_ANDROID
 struct CompressedJPG : CompressedImageBuffer
 {
     ~CompressedJPG() override { free(data); }
     std::string_view tag() const override { return "thumbnail_JPG"sv; }
 };
+#endif
 
 struct CompressedQOI : CompressedImageBuffer
 {
@@ -68,6 +72,9 @@ std::unique_ptr<CompressedImageBuffer> compress_thumbnail_png(const ThumbnailDat
 
 std::unique_ptr<CompressedImageBuffer> compress_thumbnail_jpg(const ThumbnailData& data)
 {
+#ifdef ORCA_MOBILE_ANDROID
+    return compress_thumbnail_png(data);
+#else
     // JPEG has no alpha channel. Convert RGBA pixels to RGB while flipping the image vertically.
     const unsigned int row_size = data.width * 3;
     std::vector<unsigned char> rgb_pixels(size_t(data.width) * data.height * 3);
@@ -118,6 +125,7 @@ std::unique_ptr<CompressedImageBuffer> compress_thumbnail_jpg(const ThumbnailDat
     out->size = size_t(compressed_data_size);
     ::memcpy(out->data, (const void*)compressed_data.data(), out->size);
     return out;
+#endif
 }
 
 std::unique_ptr<CompressedImageBuffer> compress_thumbnail_qoi(const ThumbnailData &data)

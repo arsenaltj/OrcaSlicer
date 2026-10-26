@@ -167,7 +167,7 @@ TEST_CASE("Native preparation preserves source and targets total world height", 
     CHECK_NOTHROW(prepare_model(*based, {130, false, 3}));
 }
 
-TEST_CASE("Display base templates use bounded footprint dimensions", "[ai][OrcaModelPreparation]")
+TEST_CASE("Display base templates cover their intended footprint dimensions", "[ai][OrcaModelPreparation]")
 {
     Model model;
     auto* object = model.add_object("wide figurine", "original.obj", TriangleMesh(its_make_cube(20, 60, 40)));
@@ -186,10 +186,17 @@ TEST_CASE("Display base templates use bounded footprint dimensions", "[ai][OrcaM
     const Vec3d oval_size = dimensions(oval);
     const Vec3d rectangle_size = dimensions(rectangle);
 
-    // The round template follows the shorter projected dimension, avoiding
-    // the old diagonal-radius behaviour for a wide pose.
+    const double body_scale = (120.0 - (3.0 - 0.2)) / 40.0;
+    const double expected_short_span = 20.0 * body_scale + 4.0;
+    const double expected_long_span = 60.0 * body_scale + 4.0;
+    // The round template uses the longest transformed XY span as its diameter,
+    // providing exactly 2 mm of radial clearance around the whole footprint.
     CHECK_THAT(round_size.x(), Catch::Matchers::WithinAbs(round_size.y(), 0.001));
-    CHECK(round_size.x() < oval_size.y() * 0.6);
+    CHECK_THAT(round_size.x(), Catch::Matchers::WithinAbs(expected_long_span, 0.001));
+    CHECK_THAT(std::min(oval_size.x(), oval_size.y()),
+        Catch::Matchers::WithinAbs(expected_short_span, 0.001));
+    CHECK_THAT(std::max(oval_size.x(), oval_size.y()),
+        Catch::Matchers::WithinAbs(expected_long_span, 0.001));
     CHECK_THAT(std::min(oval_size.x(), oval_size.y()),
         Catch::Matchers::WithinAbs(std::min(rectangle_size.x(), rectangle_size.y()), 0.001));
     CHECK_THAT(std::max(oval_size.x(), oval_size.y()),

@@ -6,8 +6,8 @@
 #include <memory>
 #include <string>
 
-using namespace Orca::SDK;
-using namespace Orca::SDK::WonderMaker;
+using namespace Orca::MobileDevice;
+using namespace Orca::MobileDevice::WonderMaker;
 
 namespace {
 
@@ -58,7 +58,7 @@ PrinterStatus printing_status()
 
 } // namespace
 
-TEST_CASE("WonderMaker simulator supports discovery, manual endpoint and canonical onboarding", "[WonderMaker][MobileSDK][Simulator]")
+TEST_CASE("WonderMaker simulator supports discovery, manual endpoint and canonical onboarding", "[WonderMaker][MobileDeviceSDK][Simulator]")
 {
     Fixture fixture;
     const auto candidates = fixture.adapter.discover();
@@ -77,7 +77,7 @@ TEST_CASE("WonderMaker simulator supports discovery, manual endpoint and canonic
     REQUIRE(fixture.simulator->status_subscription_active());
 }
 
-TEST_CASE("WonderMaker simulator maps status events and HTTP query fallback", "[WonderMaker][MobileSDK][Simulator]")
+TEST_CASE("WonderMaker simulator maps status events and HTTP query fallback", "[WonderMaker][MobileDeviceSDK][Simulator]")
 {
     Fixture fixture;
     fixture.onboard();
@@ -100,7 +100,7 @@ TEST_CASE("WonderMaker simulator maps status events and HTTP query fallback", "[
     REQUIRE_FALSE(fixture.adapter.status_snapshot().stale);
 }
 
-TEST_CASE("WonderMaker simulator enters stale state after ten seconds and reconciles within fifteen", "[WonderMaker][MobileSDK][Simulator]")
+TEST_CASE("WonderMaker simulator enters stale state after ten seconds and reconciles within fifteen", "[WonderMaker][MobileDeviceSDK][Simulator]")
 {
     Fixture fixture;
     fixture.onboard();
@@ -122,7 +122,7 @@ TEST_CASE("WonderMaker simulator enters stale state after ten seconds and reconc
     REQUIRE(fixture.adapter.last_reconciled_at_epoch_seconds() - 1000 <= 15);
 }
 
-TEST_CASE("WonderMaker simulator deduplicates non-idempotent control command ids", "[WonderMaker][MobileSDK][Simulator]")
+TEST_CASE("WonderMaker simulator deduplicates non-idempotent control command ids", "[WonderMaker][MobileDeviceSDK][Simulator]")
 {
     Fixture fixture;
     fixture.onboard();
@@ -138,7 +138,7 @@ TEST_CASE("WonderMaker simulator deduplicates non-idempotent control command ids
     REQUIRE(fixture.simulator->status().state == PrinterState::Printing);
 }
 
-TEST_CASE("WonderMaker simulator resumes file transfer and verifies canonical digest", "[WonderMaker][MobileSDK][Simulator]")
+TEST_CASE("WonderMaker simulator resumes file transfer and verifies canonical digest", "[WonderMaker][MobileDeviceSDK][Simulator]")
 {
     Fixture fixture;
     fixture.onboard();
@@ -158,7 +158,7 @@ TEST_CASE("WonderMaker simulator resumes file transfer and verifies canonical di
     REQUIRE(fixture.simulator->accepted_file_offset() == 10);
 }
 
-TEST_CASE("WonderMaker simulator restart requires reconnect and preserves canonical status", "[WonderMaker][MobileSDK][Simulator]")
+TEST_CASE("WonderMaker simulator restart requires reconnect and preserves canonical status", "[WonderMaker][MobileDeviceSDK][Simulator]")
 {
     Fixture fixture;
     fixture.onboard();

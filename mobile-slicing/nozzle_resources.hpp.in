@@ -1,0 +1,5 @@
+#pragma once
+namespace orca_mobile_resources {
+inline constexpr const char nozzle_info[] = R"ORCAP1(@ORCA_MOBILE_NOZZLE_INFO@)ORCAP1";
+inline constexpr const char nozzle_incompatibles[] = R"ORCAP1(@ORCA_MOBILE_NOZZLE_INCOMPATIBLES@)ORCAP1";
+}

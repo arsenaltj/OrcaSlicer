@@ -3,6 +3,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/ModelWorkspaceCapabilities.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryLoader.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySnapshot.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportPresentation.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchSession.hpp"
 #include "slic3r/GUI/AI/ColorMatching/ColorMatchingComputation.hpp"
@@ -35,6 +36,17 @@ TEST_CASE("Saved versions in one task retain independent asset and thumbnail ide
     CHECK_FALSE(retain_workbench_thumbnail(next, previous));
 }
 
+TEST_CASE("Deleting a displayed history version selects its next neighbor before its previous neighbor",
+          "[AtomicModelCapabilities][WorkbenchHistory]")
+{
+    const std::vector<std::string> keys {"first", "current", "next"};
+    REQUIRE(workbench_history_fallback_key(keys, "current"));
+    CHECK(*workbench_history_fallback_key(keys, "current") == "next");
+    CHECK(*workbench_history_fallback_key({"first", "current"}, "current") == "first");
+    CHECK_FALSE(workbench_history_fallback_key({"current"}, "current"));
+    CHECK_FALSE(workbench_history_fallback_key(keys, "stale"));
+}
+
 TEST_CASE("Changed thumbnail sources DPI and unfinished decodes invalidate only their cached image", "[AtomicModelCapabilities][WorkbenchHistory]")
 {
     ModelGenerationUIHistoryEntry previous, next;
@@ -47,15 +59,72 @@ TEST_CASE("Changed thumbnail sources DPI and unfinished decodes invalidate only 
     CHECK_FALSE(retain_workbench_thumbnail(next, previous));
     ModelLibraryEntry entry;
     entry.ai_image_path = "missing-primary.png"; entry.reference_image_path = "missing-fallback.png";
-    const auto signature = workbench_thumbnail_source(entry, 72);
-    CHECK(workbench_thumbnail_source(entry, 96) != signature);
+    const auto signature = workbench_thumbnail_source(entry, "library", 72);
+    CHECK(workbench_thumbnail_source(entry, "library", 96) != signature);
     entry.reference_image_path = "different.png";
-    CHECK(workbench_thumbnail_source(entry, 72) != signature);
+    CHECK(workbench_thumbnail_source(entry, "library", 72) != signature);
+    CHECK(fit_workbench_thumbnail_size(640, 480, 96, 96) == wxSize(96, 72));
+    CHECK(fit_workbench_thumbnail_size(480, 640, 96, 96) == wxSize(72, 96));
+    CHECK(fit_workbench_thumbnail_size(0, 640, 96, 96) == wxSize());
+}
+
+TEST_CASE("Workbench check summary stays compact while details retain diagnostics",
+          "[AtomicModelCapabilities][PostGenerationWorkbench]")
+{
+    WorkbenchCheckResult result;
+    CHECK(workbench_check_status_line(result) == "模型尚未检查");
+    result.status = WorkbenchCheckStatus::Running;
+    result.phase = WorkbenchCheckPhase::Repairing;
+    CHECK(workbench_check_status_line(result) == "正在修复模型……");
+    result.status = WorkbenchCheckStatus::Normal;
+    result.phase = WorkbenchCheckPhase::Idle;
+    result.summary = "开放边 0；非流形边 0。";
+    CHECK(workbench_check_status_line(result) == "模型检查已完成，未发现问题");
+    result.repair_reason = "已清理 2 个面。";
+    result.before_faces = 10; result.after_faces = 8;
+    result.before_vertices = 12; result.after_vertices = 11;
+    result.removed_faces = 2;
+    CHECK(workbench_check_status_line(result) == "模型修复已完成");
+    const auto details = workbench_check_detail_text(result);
+    CHECK(details.find("修复前：10 面 / 12 点") != std::string::npos);
+    CHECK(details.find("拓扑指标") != std::string::npos);
+    result.status = WorkbenchCheckStatus::Attention;
+    CHECK(workbench_check_status_line(result, true) == "已忽略轻微问题，可继续导入切片");
+}
+
+TEST_CASE("Automatic checks wait for the workbench and keep one progress card through every phase",
+          "[AtomicModelCapabilities][PostGenerationWorkbench][UiRedesign]")
+{
+    CHECK_FALSE(workbench_automatic_check_should_start(false, true));
+    CHECK_FALSE(workbench_automatic_check_should_start(true, false));
+    CHECK(workbench_automatic_check_should_start(true, true));
+
+    WorkbenchCheckResult result;
+    result.source = WorkbenchCheckSource::Automatic;
+    result.status = WorkbenchCheckStatus::Running;
+    for (const auto phase : {WorkbenchCheckPhase::Inspecting, WorkbenchCheckPhase::Repairing,
+                             WorkbenchCheckPhase::Rechecking}) {
+        result.phase = phase;
+        CHECK_FALSE(workbench_check_card_should_show(false, true, true, false, result));
+        CHECK(workbench_check_card_should_show(true, true, true, false, result));
+    }
+
+    result.status = WorkbenchCheckStatus::Normal;
+    result.phase = WorkbenchCheckPhase::Idle;
+    CHECK_FALSE(workbench_check_card_should_show(true, true, false, false, result));
+    CHECK(workbench_check_card_should_show(true, true, false, true, result));
+
+    result.source = WorkbenchCheckSource::Manual;
+    result.status = WorkbenchCheckStatus::Running;
+    result.phase = WorkbenchCheckPhase::Inspecting;
+    CHECK_FALSE(workbench_check_card_should_show(true, false, true, false, result));
+    result.phase = WorkbenchCheckPhase::Repairing;
+    CHECK(workbench_check_card_should_show(true, false, true, false, result));
 }
 
 TEST_CASE("Partial thumbnail requests publish into their original asset slots", "[AtomicModelCapabilities][WorkbenchHistory]")
 {
-    ModelLibraryLoader loader({{}, [](const auto&, int, const auto&) {
+    ModelLibraryLoader loader({{}, [](const auto&, const auto&, int, const auto&) {
         ModelLibraryLoader::Thumbnail result {0, 0}; result.width = result.height = 1; result.rgb = {4, 5, 6}; return result;
     }});
     auto request = std::make_shared<ModelLibraryLoader::Request>();
@@ -83,6 +152,12 @@ TEST_CASE("Import feedback remains inside the center viewport across sidebar siz
     CHECK(workbench_import_feedback_bounds(wxRect(-100, 10, 600, 780), content) == wxRect(0, 10, 500, 780));
     CHECK(workbench_import_feedback_bounds(wxRect(280, 0, 900, 900), wxRect(0, 0, 900, 600)) == wxRect(280, 0, 620, 600));
     CHECK(workbench_import_feedback_bounds(wxRect(1300, 0, 100, 100), content).IsEmpty());
+
+    CHECK(workbench_import_card_bounds(wxRect(280, 12, 628, 776), content, wxSize(410, 184)) ==
+          wxRect(389, 308, 410, 184));
+    CHECK(workbench_import_card_bounds(wxRect(-100, 10, 300, 150), content, wxSize(410, 184)) ==
+          wxRect(0, 10, 200, 150));
+    CHECK(workbench_import_card_bounds(wxRect(1300, 0, 100, 100), content, wxSize(410, 184)).IsEmpty());
 }
 namespace Matching = LocalPrintColorMatching;
 
@@ -204,7 +279,7 @@ TEST_CASE("Library read failures preserve the request identity", "[AtomicModelCa
 
 TEST_CASE("Malformed library thumbnails preserve assets and cancellation rejects deferred publication", "[AtomicModelCapabilities]")
 {
-    ModelLibraryLoader loader({{}, [](const auto&, int, const auto&) -> ModelLibraryLoader::Thumbnail {
+    ModelLibraryLoader loader({{}, [](const auto&, const auto&, int, const auto&) -> ModelLibraryLoader::Thumbnail {
         throw std::runtime_error("malformed image");
     }});
     auto request = std::make_shared<ModelLibraryLoader::Request>(); request->revision = 9;

@@ -49,6 +49,7 @@
 #include <wx/dcbuffer.h>
 #include <wx/dcclient.h>
 #include <wx/datetime.h>
+#include <wx/dialog.h>
 #include <wx/filedlg.h>
 #include <wx/gauge.h>
 #include <wx/glcanvas.h>
@@ -844,6 +845,12 @@ void ModelGenerationPanel::shutdown()
 {
     if (m_shutdown)
         return;
+    hide_workbench_check_card();
+    if (m_workbench_check_card) {
+        m_workbench_check_card->Destroy();
+        m_workbench_check_card = nullptr;
+        m_workbench_check_modal = nullptr;
+    }
     if (m_portrait_draft_before && !(m_portrait_task && m_portrait_task->snapshot().running())) preserve_portrait_draft();
     m_shutdown = true;
     if (m_workbench_check_cancel) m_workbench_check_cancel->store(true);
@@ -1591,6 +1598,14 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         color = new wxToggleButton(m_local_recolor_controls, wxID_ANY, wxEmptyString);
     m_local_recolor_panel->Hide();
     m_model_preview = new ModelPreview3D(model_card);
+    {
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        m_model_preview->set_library_thumbnail_published_callback([weak] {
+            if (!weak || weak->m_shutdown || !weak->m_finishing_workbench) return;
+            weak->cancel_library_loading();
+            weak->request_library_thumbnails(true);
+        });
+    }
     m_model_preview->SetMinSize(wxSize(FromDIP(420), wxDefaultCoord));
     model_card_sizer->Add(m_model_preview, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
     model_card->SetSizer(model_card_sizer);
@@ -2421,6 +2436,7 @@ void ModelGenerationPanel::on_retexture_from_library(const std::string& geometry
     m_displayed_model_palette.clear();
     m_displayed_model_palette_roles.clear();
     clear_model_quality();
+    invalidate_printer_filament_trial_for_model_change();
     if (m_model_preview != nullptr)
         m_model_preview->clear();
     const uint64_t sequence = m_sequence;
@@ -4190,6 +4206,7 @@ void ModelGenerationPanel::reset(bool remove_remote)
     m_displayed_model_palette.clear();
     m_displayed_model_palette_roles.clear();
     clear_model_quality();
+    invalidate_printer_filament_trial_for_model_change();
     if (m_model_preview != nullptr)
         m_model_preview->clear();
     if (m_preview_book != nullptr)
@@ -4687,10 +4704,10 @@ void ModelGenerationPanel::record_library_print_feedback(const std::string& job_
     load_library_entries();
 }
 
-void ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry)
+bool ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry)
 {
     if (m_busy || m_finishing_running || !m_finishing_candidate.empty())
-        return;
+        return false;
     // Saved beauty versions and drafts require their original GLB. Read fresh
     // metadata rather than relying on a possibly older asynchronous list.
     try {
@@ -4701,28 +4718,28 @@ void ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
             boost::filesystem::ifstream input(it->path());
             if (!input || ModelLibraryMetadata::references_base(input, entry.model_path.filename().string())) {
                 m_status->SetLabel(_L("无法删除：其他美颜版本或草稿仍需要这个原始模型，请先保留原件。"));
-                return;
+                return false;
             }
         }
     } catch (...) {
         m_status->SetLabel(_L("无法确认美颜版本的原件依赖，已保留文件；请刷新历史后重试。"));
-        return;
+        return false;
     }
     if (show_redesign_confirmation(this,
         _L("要删除这个历史资产的本地文件、预览和元数据吗？\n\n此操作不会取消远端任务，也无法撤销。"),
         _L("删除本地资产")) != wxID_YES)
-        return;
+        return false;
 
     const boost::filesystem::path root = generated_models_root();
     const auto asset_path = entry.design_only ? entry.preview_path : entry.model_path;
     boost::system::error_code ec;
     if (!boost::filesystem::is_directory(root, ec) || !path_is_inside(root, asset_path)) {
         m_status->SetLabel(_L("删除已阻止：模型路径不在模型文件夹中。"));
-        return;
+        return false;
     }
     if (entry.design_only && !read_design_history_entry(root, entry.job_id, false)) {
         m_status->SetLabel(_L("设计记录已变化，请刷新历史后重试。"));
-        return;
+        return false;
     }
 
     bool displayed_model_deleted = false;
@@ -4739,7 +4756,9 @@ void ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
     size_t removed_count = 0;
     const bool shared_directory = std::any_of(m_library_entries.begin(), m_library_entries.end(),
         [&](const GeneratedModelEntry& other) {
-            return other.job_id != entry.job_id && (path_is_inside(model_parent, other.model_path) ||
+            const bool same_entry = other.job_id == entry.job_id && other.model_path == entry.model_path &&
+                other.design_only == entry.design_only;
+            return !same_entry && (path_is_inside(model_parent, other.model_path) ||
                 path_is_inside(model_parent, other.preview_path) || path_is_inside(model_parent, other.reference_image_path) ||
                 path_is_inside(model_parent, other.ai_image_path) || path_is_inside(model_parent, other.color_intent_path));
         });
@@ -4771,7 +4790,8 @@ void ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
     }
     for (const boost::filesystem::path& target : targets) {
         if (std::any_of(m_library_entries.begin(), m_library_entries.end(), [&](const GeneratedModelEntry& other) {
-            if (other.job_id == entry.job_id) return false;
+            if (other.job_id == entry.job_id && other.model_path == entry.model_path &&
+                other.design_only == entry.design_only) return false;
             for (const auto& shared : {other.model_path, other.preview_path, other.reference_image_path,
                                       other.ai_image_path, other.color_intent_path}) {
                 boost::system::error_code shared_ec;
@@ -4798,9 +4818,10 @@ void ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
     if (ec) {
         m_status->SetLabel(_L("本地模型删除不完整，请检查文件权限。"));
         load_library_entries();
-        return;
+        return false;
     }
     if (displayed_model_deleted) {
+        invalidate_printer_filament_trial_for_model_change();
         if (m_model_preview != nullptr)
             m_model_preview->clear();
         m_displayed_model_path.clear();
@@ -4839,6 +4860,7 @@ void ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
         : _L("没有找到可删除的本地文件。"));
     load_library_entries();
     refresh_controls();
+    return true;
 }
 
 void ModelGenerationPanel::show_selected_image_preview()

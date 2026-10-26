@@ -1968,6 +1968,9 @@ TextureImportDialog::TextureImportDialog(
     Bind(EVT_TEXTURE_COMPUTE_PROGRESS, &TextureImportDialog::on_computation_progress, this);
     Bind(EVT_TEXTURE_COMPUTE_ERROR,    &TextureImportDialog::on_computation_error,    this);
     Bind(EVT_TEXTURE_MESH_REPAIR_DECISION, &TextureImportDialog::on_mesh_repair_decision_required, this);
+    m_external_cancel_timer.SetOwner(this, wxWindow::NewControlId());
+    Bind(wxEVT_TIMER, &TextureImportDialog::on_external_cancel_timer, this,
+         m_external_cancel_timer.GetId());
 
     build_ui();
     m_preview_canvas->set_z_up(m_options.z_up);
@@ -2091,6 +2094,7 @@ TextureImportDialog::TextureImportDialog(
 
 TextureImportDialog::~TextureImportDialog()
 {
+    m_external_cancel_timer.Stop();
     dismiss_auto_mix_popup();
     dismiss_filament_popup();
     m_cancel_flag = true;
@@ -2122,6 +2126,9 @@ int TextureImportDialog::ShowModal()
         if (m_initial_computation_cancelled || m_initial_computation_failed)
             return wxID_CANCEL;
     }
+
+    if (m_initial_cancel_callback && m_initial_cancel_callback())
+        return wxID_CANCEL;
 
     ScopedInteractiveBusyCursorSuspender busy_cursor_suspender;
     if (!m_options.workbench_review) return DPIDialog::ShowModal();
@@ -2159,10 +2166,19 @@ int TextureImportDialog::ShowModal()
         if (shade.SetTransparent(140)) shade.ShowWithoutActivating();
     }
     Refresh();
+    if (m_initial_cancel_callback) m_external_cancel_timer.Start(50);
     const int result = DPIDialog::ShowModal();
+    m_external_cancel_timer.Stop();
     shade.Hide();
     m_review_background = wxNullBitmap;
     return result;
+}
+
+void TextureImportDialog::on_external_cancel_timer(wxTimerEvent&)
+{
+    if (!m_initial_cancel_callback || !m_initial_cancel_callback()) return;
+    m_cancel_flag = true;
+    if (IsModal()) EndModal(wxID_CANCEL);
 }
 
 void TextureImportDialog::update_workbench_review_shape()

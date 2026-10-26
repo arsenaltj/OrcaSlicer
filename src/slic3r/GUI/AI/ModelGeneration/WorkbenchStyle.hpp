@@ -1,11 +1,15 @@
 #pragma once
 
 #include <wx/panel.h>
+#include <wx/control.h>
+#include <wx/dialog.h>
 #include <wx/dcbuffer.h>
 #include <wx/dcmemory.h>
 #include <wx/dcgraph.h>
+#include <wx/region.h>
 #include <wx/slider.h>
 #include <wx/tglbtn.h>
+#include <wx/timer.h>
 #include <wx/scrolwin.h>
 #include <wx/weakref.h>
 #include <algorithm>
@@ -128,6 +132,7 @@ public:
         Bind(wxEVT_SIZE, [this](wxSizeEvent& event) { update_bar(); update_shape(); event.Skip(); });
     }
     void set_rounded_corners(bool rounded) {
+        if (m_rounded == rounded) return;
         m_rounded = rounded;
         update_shape();
     }
@@ -273,6 +278,243 @@ public:
         SetMaxSize(size);
         Refresh(false);
     }
+};
+
+class WorkbenchPaintedPanel final : public wxPanel {
+public:
+    WorkbenchPaintedPanel(wxWindow* parent, const wxColour& fill, int radius_dip = 0,
+                          const wxColour& border = wxColour())
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+                  wxBORDER_NONE | wxCLIP_CHILDREN),
+          m_fill(fill), m_border(border), m_radius_dip(radius_dip) {
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetBackgroundColour(fill);
+#ifdef __WXMSW__
+        SetDoubleBuffered(true);
+#endif
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            const wxColour outside = m_radius_dip > 0 && GetParent()
+                ? GetParent()->GetBackgroundColour() : m_fill;
+            dc.SetBackground(wxBrush(outside));
+            dc.Clear();
+            const wxRect bounds = GetClientRect();
+            if (bounds.IsEmpty()) return;
+            dc.SetBrush(wxBrush(m_fill));
+            dc.SetPen(m_border.IsOk() ? wxPen(m_border, std::max(1, FromDIP(1))) : *wxTRANSPARENT_PEN);
+            const int inset = m_border.IsOk() ? std::max(1, FromDIP(1)) : 0;
+            wxRect face(bounds);
+            face.Deflate(inset);
+            if (m_radius_dip > 0)
+                dc.DrawRoundedRectangle(face, FromDIP(m_radius_dip));
+            else
+                dc.DrawRectangle(bounds);
+        });
+    }
+    bool HasTransparentBackground() override { return false; }
+    const wxColour& fill_colour() const { return m_fill; }
+
+private:
+    wxColour m_fill;
+    wxColour m_border;
+    int m_radius_dip {0};
+};
+
+inline void apply_workbench_floating_card_shape(wxDialog* card, int radius_dip,
+                                                const wxColour& border_colour)
+{
+    if (!card) return;
+    const wxSize size = card->GetSize();
+    if (size.x <= 0 || size.y <= 0) return;
+    const int radius = std::max(1, card->FromDIP(radius_dip));
+#ifdef __WXMSW__
+    if (card->GetHandle()) {
+        HRGN region = ::CreateRoundRectRgn(0, 0, size.x + 1, size.y + 1,
+                                           2 * radius, 2 * radius);
+        if (region && !::SetWindowRgn(static_cast<HWND>(card->GetHandle()), region, TRUE))
+            ::DeleteObject(region);
+
+        HMODULE library = ::LoadLibraryW(L"dwmapi.dll");
+        if (library) {
+            using SetAttribute = HRESULT (WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
+            auto* set_attribute = reinterpret_cast<SetAttribute>(
+                ::GetProcAddress(library, "DwmSetWindowAttribute"));
+            if (set_attribute) {
+                constexpr DWORD border_color_attribute = 34;
+                const COLORREF border = RGB(border_colour.Red(), border_colour.Green(), border_colour.Blue());
+                set_attribute(static_cast<HWND>(card->GetHandle()), border_color_attribute,
+                              &border, sizeof(border));
+            }
+            ::FreeLibrary(library);
+        }
+    }
+#else
+    wxBitmap mask(size.x, size.y, 1);
+    wxMemoryDC dc(mask);
+    dc.SetBackground(*wxBLACK_BRUSH);
+    dc.Clear();
+    dc.SetPen(*wxTRANSPARENT_PEN);
+    dc.SetBrush(*wxWHITE_BRUSH);
+    dc.DrawRoundedRectangle(0, 0, size.x, size.y, radius);
+    dc.SelectObject(wxNullBitmap);
+    card->SetShape(wxRegion(mask, *wxBLACK));
+#endif
+}
+
+inline wxColour workbench_owned_surface(wxWindow* parent)
+{
+    if (auto* painted = dynamic_cast<WorkbenchPaintedPanel*>(parent))
+        return painted->fill_colour();
+    return parent ? parent->GetBackgroundColour() : wxColour(45, 45, 49);
+}
+
+// Native wxStaticText may erase itself with the system window brush on MSW,
+// leaving white rectangles over a dark, owner-painted card. Keep modal text
+// in the same buffered paint path as the card so every frame has one explicit
+// background and foreground.
+class WorkbenchLabel final : public wxControl {
+public:
+    WorkbenchLabel(wxWindow* parent, const wxString& label = wxEmptyString,
+                   int alignment = wxALIGN_LEFT | wxALIGN_TOP)
+        : wxControl(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+                    wxBORDER_NONE | wxCLIP_CHILDREN),
+          m_background(workbench_owned_surface(parent)), m_alignment(alignment) {
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetBackgroundColour(m_background);
+#ifdef __WXMSW__
+        SetDoubleBuffered(true);
+#endif
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(m_background));
+            dc.Clear();
+            dc.SetFont(GetFont());
+            dc.SetTextForeground(GetForegroundColour());
+            dc.SetBackgroundMode(wxBRUSHSTYLE_TRANSPARENT);
+            dc.DrawLabel(m_display, GetClientRect(), m_alignment);
+        });
+        Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+            Refresh(false);
+            event.Skip();
+        });
+        SetLabel(label);
+    }
+
+    void SetLabel(const wxString& label) override {
+        if (wxControl::GetLabel() == label) return;
+        wxControl::SetLabel(label);
+        rebuild();
+    }
+
+    bool SetFont(const wxFont& font) override {
+        const bool changed = wxControl::SetFont(font);
+        if (changed) rebuild();
+        return changed;
+    }
+
+    void Wrap(int width) {
+        if (m_wrap_width == width) return;
+        m_wrap_width = width;
+        rebuild();
+    }
+
+protected:
+    wxSize DoGetBestClientSize() const override { return m_best_size; }
+
+private:
+    void rebuild() {
+        wxString source = wxControl::GetLabel();
+        source.Replace("\r", "");
+        if (m_wrap_width > 0) {
+            wxString line, wrapped;
+            for (wxUniChar character : source) {
+                if (character == '\n') {
+                    wrapped += line + "\n";
+                    line.clear();
+                    continue;
+                }
+                wxString next = line;
+                next += character;
+                if (!line.empty() && GetTextExtent(next).x > m_wrap_width) {
+                    wrapped += line + "\n";
+                    line.clear();
+                }
+                line += character;
+            }
+            m_display = wrapped + line;
+        } else {
+            m_display = source;
+        }
+        wxClientDC dc(this);
+        dc.SetFont(GetFont());
+        const wxSize measured = dc.GetMultiLineTextExtent(m_display);
+        m_best_size = wxSize(std::max(FromDIP(1), measured.x),
+                             std::max(FromDIP(1), measured.y + FromDIP(2)));
+        InvalidateBestSize();
+        Refresh(false);
+    }
+
+    wxString m_display;
+    wxSize m_best_size {1, 1};
+    int m_wrap_width {-1};
+    wxColour m_background;
+    int m_alignment {wxALIGN_LEFT | wxALIGN_TOP};
+};
+
+class WorkbenchIndeterminateProgress final : public wxPanel {
+public:
+    explicit WorkbenchIndeterminateProgress(wxWindow* parent)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, parent->FromDIP(wxSize(-1, 8)),
+                  wxBORDER_NONE | wxCLIP_CHILDREN),
+          m_background(workbench_owned_surface(parent)) {
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetBackgroundColour(m_background);
+#ifdef __WXMSW__
+        SetDoubleBuffered(true);
+#endif
+        m_timer.SetOwner(this);
+        Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
+            m_phase = (m_phase + 1) % 120;
+            Refresh(false);
+        }, m_timer.GetId());
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(m_background));
+            dc.Clear();
+            const wxRect client = GetClientRect();
+            if (client.IsEmpty()) return;
+            const int height = std::max(FromDIP(4), std::min(client.height, FromDIP(6)));
+            const wxRect track(0, (client.height - height) / 2, client.width, height);
+            dc.SetPen(*wxTRANSPARENT_PEN);
+            dc.SetBrush(wxBrush(wxColour(76, 76, 82)));
+            dc.DrawRoundedRectangle(track, height / 2.0);
+            const int segment = std::max(FromDIP(42), track.width / 4);
+            const int travel = std::max(1, track.width + segment);
+            const int x = track.x - segment + (travel * m_phase) / 120;
+            wxDCClipper clip(dc, track);
+            dc.SetBrush(wxBrush(wxColour(255, 194, 39)));
+            dc.DrawRoundedRectangle(x, track.y, segment, track.height, track.height / 2.0);
+        });
+    }
+    ~WorkbenchIndeterminateProgress() override { m_timer.Stop(); }
+
+    void set_running(bool running) {
+        if (m_running == running) return;
+        m_running = running;
+        if (running) {
+            m_phase = 0;
+            m_timer.Start(70);
+        } else {
+            m_timer.Stop();
+        }
+        Refresh(false);
+    }
+
+private:
+    wxTimer m_timer;
+    int m_phase {0};
+    bool m_running {false};
+    wxColour m_background;
 };
 
 class WorkbenchSlider final : public wxSlider {

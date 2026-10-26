@@ -4,6 +4,10 @@ add_executable(${_TEST_NAME}_tests
 	../../src/slic3r/GUI/AI/Orca/OrcaParameterProposalAdapter.cpp
 	../../src/slic3r/GUI/AI/Orca/OrcaTrialSliceExecutor.cpp
 	${_TEST_NAME}_tests.cpp
+	test_orca_slicing_preview.cpp
+	../../src/orca_mobile_slicing_sdk/project_support.cpp
+	../../src/orca_mobile_slicing_sdk/engine.cpp
+	../../src/orca_mobile_slicing_sdk/recommendation_support.cpp
 	test_helpers.cpp
 	test_helpers.hpp
 	test_cooling.cpp
