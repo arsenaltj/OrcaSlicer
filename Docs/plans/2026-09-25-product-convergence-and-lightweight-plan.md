@@ -2231,3 +2231,14 @@ PR 作者报告已有新控件的真实窗口、预览、前后对比和保存�
 ### SDK-BASE-01 补充：原生 Moonraker 候选适配（2026-10-26）
 
 用户要求原归档的014f8e3456/cce3e6210c/377526d5bc三个提交也需要适配并提交。接续同一独立集成任务及分支，在当前392a1e12fa基线迁移到MobileDevice命名空间；实际网络后端作为可选MoonrakerTransport静态目标，Device C ABI目标保持不链接网络库。旧同步Beast超时/并发路径改为每连接串行异步执行与显式deadline，修正实际SSLstream验证模式和Adapter旧生命周期关闭新连接的问题，更新loopback fixture并增加TLS/超时/UTF8上传回归。验证和交付范围以任务证据为准，原830/840验收现场及APK保持，桌面完整构建跳过/iOS搁置。
+
+
+## SDK-SMART-PR47：共享 SmartSlice PR 冲突同步（2026-10-27）
+
+承接移动 SDK 共享 recommendation 目标，按用户“解冲突后重新提交”授权，在 `task/task-20261026073432344-584f56` 合并 `origin/codex/team/integration` 的 `47f91d1e1d398c647ea18b460ac07590f92b4ed5`，更新现有 Draft PR #47，不直接合入 integration。保留 `b7544577fced1a26c9b4961c518e616d37a5ab82` 原验收历史和已有 SDK/APK。
+
+冲突只涉及 `tests/slic3rutils/test_smart_slice_engine.cpp` 的末尾新增用例：完整保留远端多模型聚合测试和本分支固定机型速度/流量/hash 测试，修正后者把实际 DTO 字段 `id` 误写成 `material_id` 的编译错误。算法和 DTO 自动合并后保留双方修改。
+
+验证：本 checkout `.tmp/dev/pr47-smartslice-check` 使用 MSVC 19.44、C++17，直接 add_subdirectory 实际 AI target 和仓库 Catch2；共享静态库编译成功，SmartSlicingEngine 5 个测试用例共 58 条断言通过。AI integration 边界、核心 manifest（560 条目/257 实现文件）和 diff 检查通过。此定向结果不代表桌面完整 GUI 构建、Android SDK/APK 重建或实机回归。合并后源码发生变化，既有 SDK Release 仍锁定 b7544577，不能据此声称新合并提交的二进制验收完成。
+
+未结：PR 维持 Draft，后续继续最终源码的 SDK/APK 重建、native printer client 连接阻塞修复及 Mock Android 全量闭环验收；真实打印机和 iOS 实机仍未验收。

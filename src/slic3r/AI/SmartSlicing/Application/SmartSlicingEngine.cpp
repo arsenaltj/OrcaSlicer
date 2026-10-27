@@ -222,8 +222,14 @@ SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
     const double maximum_layer = std::max(
         minimum_layer, clamp_finite(machine.maximum_layer_height_mm, minimum_layer,
                                     MAX_SAFE_LAYER_MM, nozzle * 0.70));
-    const double maximum_speed = clamp_finite(machine.maximum_outer_wall_speed_mm_s,
-                                              MIN_SAFE_SPEED_MM_S, 500.0, 80.0);
+    // Zero-valued additive fields preserve the existing desktop policy. The
+    // machine motion limit is never a substitute for a process wall speed.
+    const double legacy_wall = clamp_finite(machine.maximum_outer_wall_speed_mm_s,
+                                             MIN_SAFE_SPEED_MM_S, 500.0, 80.0);
+    const double machine_speed = positive_or(machine.machine_max_speed_mm_s, legacy_wall);
+    const double wall_speed_cap = positive_or(machine.outer_wall_speed_cap_mm_s, legacy_wall);
+    const double maximum_speed = std::max(MIN_SAFE_SPEED_MM_S,
+        std::min({machine_speed, wall_speed_cap, 500.0}));
     const double machine_flow = clamp_finite(machine.maximum_volumetric_speed_mm3_s,
                                              0.1, 200.0, 12.0);
     const double filament_flow = clamp_finite(filament.maximum_volumetric_speed_mm3_s,
@@ -245,6 +251,12 @@ SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
     result.calibrated_to_native_baseline = machine.native_baseline_time_seconds > 0.0;
     result.native_baseline_time_seconds = machine.native_baseline_time_seconds;
     result.native_baseline_material_grams = machine.native_baseline_material_grams;
+    result.profile_hash = machine.profile_hash;
+    result.capability_hash = machine.capability_hash;
+    result.effective_config_hash = machine.effective_config_hash;
+#if defined(ORCA_SMART_SLICING_SOURCE_COMMIT)
+    result.source_commit = ORCA_SMART_SLICING_SOURCE_COMMIT;
+#endif
 
     struct ModeDefaults {
         SliceMode mode;
@@ -321,8 +333,13 @@ SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
             12.0, (metrics.bounding_box.width_mm() + metrics.bounding_box.depth_mm()) * 0.85);
         const double travel_time = layer_count * travel_distance_per_layer /
             std::max(MIN_SAFE_SPEED_MM_S, machine.travel_speed_mm_s);
+        const double effective_acceleration = machine.travel_acceleration_mm_s2 > 0.0
+            ? std::max(1.0, (machine.default_acceleration_mm_s2 +
+                            machine.outer_wall_acceleration_mm_s2 +
+                            machine.travel_acceleration_mm_s2) / 3.0)
+            : machine.default_acceleration_mm_s2;
         const double acceleration_factor = std::clamp(
-            1.12 - machine.default_acceleration_mm_s2 * 0.00008,
+            1.12 - effective_acceleration * 0.00008,
             0.92, 1.12);
         const double layer_overhead = layer_count *
             (0.18 + (support ? 0.04 : 0.0) + (adaptive ? 0.02 : 0.0));

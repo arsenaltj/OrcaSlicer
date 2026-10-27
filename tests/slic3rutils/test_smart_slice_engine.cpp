@@ -99,6 +99,40 @@ TEST_CASE("smart slice estimates preserve native baseline scale and mode orderin
     CHECK(result.recommendations[2].estimated_material_grams >= result.recommendations[1].estimated_material_grams);
 }
 
+
+TEST_CASE("smart slice separates machine speed, wall cap, flow and identity metadata",
+          "[SmartSlice][SmartSlicingEngine][FixedFFF270]")
+{
+    ModelMetrics metrics;
+    metrics.bounding_box = {0.0, 0.0, 0.0, 40.0, 40.0, 40.0};
+    metrics.volume_mm3 = 50'000.0;
+    metrics.surface_area_mm2 = 8'000.0;
+    metrics.closed_mesh = true;
+
+    MachinePreset machine;
+    machine.nozzle_diameter_mm = 0.4;
+    machine.machine_max_speed_mm_s = 1000.0;
+    machine.outer_wall_speed_cap_mm_s = 500.0;
+    machine.maximum_volumetric_speed_mm3_s = 100.0;
+    machine.default_acceleration_mm_s2 = 20'000.0;
+    machine.outer_wall_acceleration_mm_s2 = 25'000.0;
+    machine.travel_acceleration_mm_s2 = 20'000.0;
+    machine.profile_hash = "profile-fixed-fff-270";
+    machine.capability_hash = "capability-mock";
+    machine.effective_config_hash = "config-v1";
+    FilamentPreset filament;
+    filament.id = "PLA";
+    filament.maximum_volumetric_speed_mm3_s = 12.0;
+
+    const SmartAnalysisResult result = SmartSlicingEngine().AnalyzeAndPrecompute(metrics, machine, filament);
+    REQUIRE(result.completed);
+    CHECK(result.profile_hash == machine.profile_hash);
+    CHECK(result.capability_hash == machine.capability_hash);
+    CHECK(result.effective_config_hash == machine.effective_config_hash);
+    CHECK(result.recommendations[1].outer_wall_speed_mm_s <= 500.0);
+    CHECK(result.recommendations[1].outer_wall_speed_mm_s < 1000.0);
+}
+
 TEST_CASE("smart slice aggregates all plate meshes while preserving the single-mesh result",
           "[SmartSlice][SmartSlicingEngine]")
 {

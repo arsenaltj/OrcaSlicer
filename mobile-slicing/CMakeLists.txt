@@ -89,6 +89,9 @@ endif()
 
 set(EXPAT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory("${ORCA_DEPS_SOURCE}/nlohmann" "deps/nlohmann")
+# Reuse the desktop pure SmartSlicing core; this subdirectory has no GUI/JNI sources.
+set(SLIC3R_ENC_CHECK OFF CACHE BOOL "" FORCE)
+add_subdirectory("${ORCA_SOURCE_ROOT}/src/slic3r/AI" "orca_ai")
 add_subdirectory("${ORCA_DEPS_SOURCE}/fast_float" "deps/fast_float")
 add_subdirectory("${ORCA_DEPS_SOURCE}/admesh" "deps/admesh")
 target_include_directories(admesh SYSTEM PUBLIC "${ORCA_SOURCE_ROOT}/src")
@@ -186,6 +189,7 @@ if(EXISTS "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/c_api.cpp" AND EXISTS
         "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/engine.cpp"
         "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/project_support.cpp"
         "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/recommendation_support.cpp"
+        "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/smart_slice_bridge.cpp"
 )
     execute_process(COMMAND git -C "${ORCA_SOURCE_ROOT}" rev-parse HEAD
         OUTPUT_VARIABLE ORCA_MOBILE_SLICING_SOURCE_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -195,8 +199,9 @@ if(EXISTS "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/c_api.cpp" AND EXISTS
     endif()
     target_compile_definitions(orca_mobile_slicing_sdk PRIVATE ORCA_MOBILE_ANDROID=1
         ORCA_MOBILE_SLICING_SOURCE_COMMIT="${ORCA_MOBILE_SLICING_SOURCE_COMMIT}")
+    target_compile_definitions(orcaslicer_ai_smart_slicing PRIVATE ORCA_SMART_SLICING_SOURCE_COMMIT="${ORCA_MOBILE_SLICING_SOURCE_COMMIT}")
     target_include_directories(orca_mobile_slicing_sdk PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/include" "${ORCA_SOURCE_ROOT}/src")
-    target_link_libraries(orca_mobile_slicing_sdk PRIVATE OrcaSlicer::Core log)
+    target_link_libraries(orca_mobile_slicing_sdk PRIVATE OrcaSlicer::Core OrcaSlicer::SmartSlicingCore log)
     set_target_properties(orca_mobile_slicing_sdk PROPERTIES OUTPUT_NAME orca_mobile_slicing_sdk_c CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
     target_link_options(orca_mobile_slicing_sdk PRIVATE "-Wl,--version-script=${CMAKE_CURRENT_LIST_DIR}/exports/slicing.map")
     add_executable(orca_mobile_slicing_json_gate "${CMAKE_CURRENT_LIST_DIR}/slicing_json_gate.cpp")
