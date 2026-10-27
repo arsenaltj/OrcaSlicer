@@ -757,6 +757,24 @@ TEST_CASE("Confirmation defaults retain risk refusal and explicit cancellation",
     CHECK(redesign_dialog_default_result(wxOK | wxCANCEL | wxCANCEL_DEFAULT) == wxID_CANCEL);
 }
 
+TEST_CASE("Confirmation message sizing expands before it enables scrolling", "[UiRedesign][ConfirmationDialog]")
+{
+    const auto short_message = redesign_dialog_message_heights(105, 84, 240);
+    CHECK(short_message.content == 105);
+    CHECK(short_message.viewport == 105);
+    CHECK_FALSE(short_message.scrollable);
+
+    const auto wrapped_message = redesign_dialog_message_heights(105, 156, 240);
+    CHECK(wrapped_message.content == 156);
+    CHECK(wrapped_message.viewport == 156);
+    CHECK_FALSE(wrapped_message.scrollable);
+
+    const auto long_message = redesign_dialog_message_heights(105, 312, 240);
+    CHECK(long_message.content == 312);
+    CHECK(long_message.viewport == 240);
+    CHECK(long_message.scrollable);
+}
+
 TEST_CASE("The model gallery embeds only its installed page and delegates external links", "[UiRedesign][AssetsWorkspace]")
 {
     CHECK(gallery_navigation("file", "", true) == GalleryNavigation::Embedded);

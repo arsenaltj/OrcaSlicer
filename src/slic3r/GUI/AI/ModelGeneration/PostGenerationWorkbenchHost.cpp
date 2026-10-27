@@ -22,6 +22,18 @@
 
 namespace Slic3r::GUI {
 
+namespace {
+
+void style_workbench_color_confirmation(RedesignConfirmationOptions& options)
+{
+    options.message_point_size = 11;
+    options.action_point_size = 11;
+    options.fit_message_to_content = true;
+    options.maximum_message_height = 240;
+}
+
+}
+
 std::vector<FilamentColorPack> ModelGenerationPanel::project_filament_color_sources() const
 {
     return m_model_preview ? m_model_preview->configuration_color_sources() : std::vector<FilamentColorPack>{};
@@ -354,12 +366,13 @@ bool ModelGenerationPanel::request_workbench_color_matching()
                 const wxString reason = wxString::FromUTF8(compatibility.reason.empty()
                     ? "当前打印机不支持六实体色荣耀耗材套装" : compatibility.reason);
                 const wxString message = _L("当前模型使用荣耀六实体色耗材套装，但打印机配置不兼容。\n\n") + reason +
-                    _L("\n\n可将当前真实耗材色重新映射到模型；完成后请确认预览并再次点击“导入切片”。");
+                    _L("\n\n推荐将当前真实耗材色映射到模型，此操作不会改变打印机耗材配置。完成后请确认预览并再次点击“导入切片”。");
                 const int map_to_model = wxWindow::NewControlId();
                 const int return_to_workbench = wxWindow::NewControlId();
                 RedesignConfirmationOptions options;
                 options.style = 0;
                 options.dismiss_result = return_to_workbench;
+                style_workbench_color_confirmation(options);
                 options.actions = {{map_to_model, _L("将耗材色映射到模型"), true},
                                    {return_to_workbench, _L("返回工作台"), false}};
                 const int answer = show_redesign_confirmation(this, message, _L("套装与打印机不兼容"), options);
@@ -387,12 +400,15 @@ bool ModelGenerationPanel::request_workbench_color_matching()
                 missing += wxString::Format(_L(" 等 %llu 色"),
                     static_cast<unsigned long long>(match.missing_colors.size()));
             const wxString message = _L("当前模型配色和打印机耗材不匹配。\n\n缺少：") + missing +
-                _L("\n\n请选择将耗材色映射到模型，或将模型配色导入到耗材。处理完成后请再次点击“导入切片”。");
+                _L("\n\n推荐“将耗材色映射到模型”，此操作不会改变当前打印机耗材配置。\n") +
+                _L("如需保留模型当前配色，请选择“将模型配色导入到耗材”。\n") +
+                _L("处理完成后请再次点击“导入切片”。");
             const int map_to_model = wxWindow::NewControlId();
             const int import_to_filaments = wxWindow::NewControlId();
             RedesignConfirmationOptions options;
             options.style = wxCANCEL | wxCANCEL_DEFAULT;
             options.dismiss_result = wxID_CANCEL;
+            style_workbench_color_confirmation(options);
             options.actions = {{map_to_model, _L("将耗材色映射到模型"), true},
                                {import_to_filaments, _L("将模型配色导入到耗材"), false}};
             const int answer = show_redesign_confirmation(this, message, _L("配色不匹配"), options);

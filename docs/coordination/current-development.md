@@ -1,3 +1,27 @@
+# 2026-10-27 配色不匹配向导排版与滚动条修复（200% GUI 通过）
+
+主线：保持 `c50065dd347901367e6eb5111635473d24054010` 及既有打包审计修改不变，仅修复工作台“配色不匹配”和“套装与打印机不兼容”两个向导；其他确认弹窗继续沿用原字号和高度策略。
+
+本轮：为确认框增加显式 opt-in 的正文/按钮字号、正文自动适高和最大正文高度配置。两个向导的正文与按钮统一为 11 pt，正文按 `Label::split_lines()` 的真实换行结果扩展，超过 240 DIP 后才使用暗色滚动区域；短内容不再建立滚动视口。首次实机验收暴露的右侧黑色原生槽道已由自绘滑块覆盖，宽度、颜色和圆角与左侧工作台侧栏一致：`10 DIP` 交互带、`4 DIP` 滑块、`RGB(105,105,112)`、`2 DIP` 圆角。黄色推荐映射耗材色到模型，灰色保留模型配色并导入耗材，动作和关闭语义未改变。
+
+未结：长翻译正文触发滚动后的真实拖动/滚到底验收，以及精确 100%/125%/150% DPI 核对仍未完成；实体打印色彩不在本轮范围。
+
+下一步：需要时用匹配的固定 Release 产物构造长翻译正文，确认窄灰滑块可拖动并能滚到底；再分别切换 100%/125%/150% DPI 做精确截图核对。
+
+计划变更：三个定向标签合计 84/84（2,494 assertions）通过；`slic3rutils_tests` 与 `OrcaSlicer_app_gui` Release 目标编译成功，`scripts/verify_ai_integration.py --json` 返回 `ok: true`。匹配运行树 PID `27332` 在 `AppliedDPI=192`（200%）下完成两个向导的真实 GUI 验收：正文完整、按钮文字不裁切、黄灰层级清晰且右侧黑条消失。本轮未提交、未推送、未打包，也未执行耗材映射。
+
+# 2026-10-27 当前版本纯净 Windows 安装包（已交付）
+
+主线：将 `c50065dd347901367e6eb5111635473d24054010` 加两项精确打包审计修改打包为内部验证版 x64 安装程序。完整源码快照由 manifest `55f425eb4e66bae3645acd2db205bef37d40242353c50b3b1e6bda3a985d64a7` 和 source identity `2a3a5d62eb618310243ca1f1ddbd5b6fb6e71528861a3406d47186590b99fdc4` 锁定；包内版本明确标记 `c50065dd34-dirty`，不冒充干净提交。
+
+本轮：首次候选的纯净扫描仅命中 YOYOClaw 两个固定公开协议占位值，确认不是实际凭据；更新精确文件 SHA 审计记录，并增加路径、文件、字面量哈希及未知 secret 继续阻断的测试。第二次候选的 EXE/ZIP 分别扫描 `19,395`/`19,386` 个成员，均为 `NOT_DETECTED_WITHIN_SCOPE`、零 findings、零 gaps；包内恰好 8 个 `mediapipe.cpu.v1` 语义文件，共 `64,989,390` bytes，FaRL/Torch/`resources/beauty-runtime` 命中为零。
+
+验证：发布脚本测试 53/53、`[ModelGenerationPresentation]` 65/65（8,879 assertions）、`[AI][SmartSlicing]` 259/259（3,622 assertions）通过；7-Zip 对 NSIS 返回 `Everything is Ok`。最终安装包大小 `255,214,469` bytes，SHA-256 `AAA217FFB3547B66F94B52F828941A23EC595AA8283B0B7D9463EEB4B8852524`，签名状态 `NotSigned`。portable ZIP 只用于对照验证，未交付并已删除。
+
+交付：安装包位于 `D:/TEST/packages/current/OrcaSlicer_AI_Internal_Fast_V2.5.0-alpha_20261027-c50065dd34-mediapipe-auditfix_x64.exe`。上一版大安装程序已删除，小型证据归档到 `.retired-20261027-a02806d457-mediapipe`；两次候选的 `_CPack_Packages`、EXE 和 ZIP 已清理，共释放约 4.59 GB，诊断报告保留。
+
+未结：未执行标准用户安装/卸载 GUI 旅程，未验证 `Program Files` 权限、100%/125%/150% DPI、真实六头打印机或实体打印色彩保真。打包审计修复与本节状态文档保持未提交、未推送。
+
 # 2026-10-27 远端 integration 同步与冲突复核（代码回归通过，GUI待验）
 
 主线：已 fetch `origin/codex/team/integration`，远端最新为 `0aa70a59225c063174332053d7b13c58356c78cf`，已包含在本地合并提交 `6ae03531326c5288cff5a6a636435c29fa972b83`；当前分支相对远端无落后提交，保留原有工作台门禁与轻量 MediaPipe 未提交修改。
