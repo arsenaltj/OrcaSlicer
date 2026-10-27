@@ -1,5 +1,15 @@
 [
   {
+    "pr": 47,
+    "run": 40436045579,
+    "head": "ab5ef4cdd3a2be9561ffadf37c09c0ebd0a246ba",
+    "base": "47f91d1e1d398c647ea18b460ac07590f92b4ed5",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "Share SmartSlice core with mobile slicing recommendation",
+    "path": "pr/47/ab5ef4cdd3a2be9561ffadf37c09c0ebd0a246ba/40436045579",
+    "created": "2026-10-27T02:05:26+00:00"
+  },
+  {
     "pr": 46,
     "run": 40434275332,
     "head": "48d57ad13151ed62ff1d143fe597c4977729dabc",
