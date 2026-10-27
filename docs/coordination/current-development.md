@@ -2,10 +2,10 @@
 
 主线：SMARTSLICE-CLOUD-20261024；已交付侧栏修复及最新远端合并版本，检查入口反馈保持仅分析。
 
-本轮：用户授权将本地新增代码提交PR。远端基线 `502014b3b3`，受测产品源码 `ba94c318ee`，从本地HEAD建立 `codex/task/smart-slicing-local-integration-20261027`，目标 `codex/team/integration`；包含全部本地差异，旧PR #40已关闭未合入，不重复重开。
+本轮：已按用户授权推送 `codex/task/smart-slicing-local-integration-20261027` 并创建/挂载 [Draft PR #46](https://github.com/arsenaltj/OrcaSlicer/pull/46)，目标 `codex/team/integration`。远端基线 `502014b3b3`，受测产品源码 `ba94c318ee`，候选49文件包含全部本地差异；旧PR #40已关闭未合入，其本地相关修改已纳入。127项Python离线回归、AI/SDK边界、README及diff检查通过；提交模式架构报告4图均9/9，完整版本与证据见主计划。
 
-未结：待候选检查/推送与Draft PR创建；最终合并版GUI/视觉未完成，检查入口触发遗漏与汇总展示问题仍未修复；历史未验边界和1项Windows符号链接跳过保留。
+未结：PR创建时GitHub判断无文本冲突，候选CI已启动但未完成；非作者复核、最终合并版GUI/用户视觉验收及人工合入待完成。检查入口触发遗漏与汇总展示问题仍未修复；历史未验边界和1项Windows符号链接跳过保留。
 
-下一步：检查提交差异、AI/架构边界及已有构建身份，准备PR说明，推送候选并创建/挂载PR。不直接推送integration或自动合入，不包含用户配置、模型、产物及旧 `.planning/`。
+下一步：用户测试已构建版本，按PR候选CI结果及非作者复核处理；本轮只补交付记录，不直接推送integration或自动合入，不启动未授权的检查入口修复。用户配置、模型、产物及旧 `.planning/` 保留于本机。
 
 计划变更：原“不推送/不创建PR”边界被本轮明确PR授权替代；不将检查分析转为实现，不启动历史额外任务。完整版本与验证范围见主计划。
