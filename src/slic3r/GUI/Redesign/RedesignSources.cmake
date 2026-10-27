@@ -1,5 +1,7 @@
 # Assemble the redesigned workflows on the existing native GUI target.
+include(${CMAKE_CURRENT_LIST_DIR}/../../Utils/HonorAccount/HonorAccountSources.cmake)
 set(ORCA_REDESIGN_WORKFLOW_SOURCES
+    ${ORCA_HONOR_ACCOUNT_SOURCES}
     GUI/AI/ModelGeneration/ModelGenerationAssetsView.cpp
     GUI/AI/SmartSlicing/SmartSlicingPanel.cpp
     GUI/AI/SmartSlicing/SmartSlicingPanel.hpp
@@ -41,6 +43,12 @@ set(ORCA_REDESIGN_WORKFLOW_SOURCES
     GUI/Redesign/AssetsWorkspace.cpp
     GUI/Redesign/AssetsWorkspace.hpp
     GUI/Redesign/AssetsWorkspacePolicy.hpp
+    GUI/Redesign/AccountWorkspace.cpp
+    GUI/Redesign/AccountWorkspace.hpp
+    GUI/Redesign/AccountAvatar.hpp
+    GUI/Redesign/HonorBrowserProfile.cpp
+    GUI/Redesign/HonorBrowserProfile.hpp
+    GUI/Redesign/HonorAccountWebTheme.hpp
     GUI/Redesign/RedesignModelRoute.hpp
     GUI/Redesign/RedesignShell.cpp
     GUI/Redesign/RedesignModelWorkflow.cpp

@@ -12,9 +12,21 @@
     "tools/ai",
     "tests/slic3rutils",
     "src/slic3r/GUI/Redesign",
+    "src/slic3r/Utils/HonorAccount",
     "tests/ui_redesign"
   ],
   "modules": [
+    {
+      "id": "honor_account",
+      "label": "荣耀账号",
+      "ownership": [],
+      "paths": [
+        "src/slic3r/Utils/HonorAccount",
+        "src/slic3r/GUI/Redesign/AccountWorkspace.cpp",
+        "src/slic3r/GUI/Redesign/AccountWorkspace.hpp"
+      ],
+      "purpose": "官方 OAuth 身份校验、本机会话与独立账号页，不承接打印机或 AI 供应商凭据"
+    },
     {
       "id": "desktop",
       "label": "桌面与运行时",
