@@ -100,7 +100,8 @@ bool SmartSliceApplier::BuildConfig(
                        std::clamp(selected_plan.support_threshold_angle_deg, 25.0, 75.0)))), diagnostic);
 
     int pattern = 0;
-    if (!enum_value<InfillPattern>(selected_plan.sparse_infill_pattern, pattern)) {
+    const auto& infill_id = selected_plan.sparse_infill_pattern;
+    if (!enum_value<InfillPattern>(infill_id == "lines" ? "line" : infill_id, pattern)) {
         set_diagnostic(diagnostic, "smart_slice_infill_pattern_unavailable");
         return false;
     }

@@ -13,6 +13,7 @@
 #include "PrinterWorkspace.hpp"
 #include "../MainFrame.hpp"
 #include "../GUI_App.hpp"
+#include "../ParamsPanelScrollbar.hpp"
 #include "../AI/AIDesktopFeatureHost.hpp"
 #include "../AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "../AI/ModelGeneration/ModelPreview3D.hpp"
@@ -511,7 +512,7 @@ public:
         Refresh();
     }
 
-    void set_selection(int selection)
+    void set_selection(int selection, bool notify = true)
     {
         if (selection < 0 || selection >= static_cast<int>(m_choices.size()))
             return;
@@ -519,7 +520,7 @@ public:
             return;
         m_selection = selection;
         Refresh();
-        if (m_on_selection)
+        if (notify && m_on_selection)
             m_on_selection(m_selection);
     }
 
@@ -1184,6 +1185,21 @@ private:
     int m_spinner_frame { 0 };
 };
 
+wxPanel* RedesignShell::create_slicing_recommendation_source(wxWindow* parent)
+{
+    auto* picker = new StylePicker(parent, {_L("本地智能推荐"), _L("云端 AI 推荐")},
+        [this](int selection) { on_slicing_recommendation_source_changed(selection); }, false, 32);
+    picker->SetMinSize(FromDIP(wxSize(164, 32)));
+    picker->SetName("slicing-recommendation-source");
+    return picker;
+}
+
+void RedesignShell::set_slicing_recommendation_source_selection(int selection)
+{
+    if (m_slice_recommendation_source)
+        static_cast<StylePicker*>(m_slice_recommendation_source)->set_selection(selection, false);
+}
+
 RedesignShell::RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model_generation_host, Plater* plater,
                              AITextFeatureHost* text_feature_host)
     : wxPanel(parent)
@@ -1219,6 +1235,8 @@ void RedesignShell::disconnect_model_generation_host()
     // shutdown(), MainFrame's destructor and this panel's destructor share
     // this cleanup. Child windows may already be gone on subsequent calls.
     if (!m_model_generation_host && !m_slicing_host && !m_plater_original_parent) return;
+    if (auto* parameters = wxGetApp().params_panel())
+        set_parameter_scrollbar_theme(parameters->get_paged_view(), false);
     m_native_theme.restore();
     m_slice_tools.reset();
     if (m_slice_stats_overlay) { m_slice_stats_overlay->Destroy(); m_slice_stats_overlay=nullptr; }

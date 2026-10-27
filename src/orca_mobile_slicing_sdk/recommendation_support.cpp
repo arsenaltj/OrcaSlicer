@@ -1,4 +1,5 @@
 #include "recommendation_support.hpp"
+#include "smart_slice_bridge.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -70,57 +71,25 @@ double metric(const Json& trial, const char* key)
 
 } // namespace
 
-std::vector<RecommendationCandidate> recommendation_candidates(const LoadedProject& project)
+std::vector<RecommendationCandidate> recommendation_candidates(const LoadedProject& project, const Json& request)
 {
     std::vector<RecommendationCandidate> result;
-    result.reserve(4);
-    result.push_back(make_candidate(project, "baseline", "standard",
-                                    Json::array({"Current native project configuration is the baseline."})));
-    result.push_back(make_candidate(project, "balanced", "standard",
-                                    Json::array({"Uses the native standard 0.4 mm layer height of 0.20 mm.",
-                                                 "All other machine, material, paint and model settings remain native."})));
-    result.push_back(make_candidate(project, "speed", "fast",
-                                    Json::array({"Uses the native fast 0.4 mm layer height of 0.28 mm.",
-                                                 "The coordinator must validate the real Print result before presenting metrics."})));
-    result.push_back(make_candidate(project, "quality", "fine",
-                                    Json::array({"Uses the native fine 0.4 mm layer height of 0.12 mm.",
-                                                 "The coordinator must validate the real Print result before presenting metrics."})));
-    // Rules are based on real geometry and persisted machine/material context;
-    // only the following real Print trials may provide performance metrics.
-    const auto bounds=project.model.bounding_box_exact();
-    const auto* nozzles=project.config.option<Slic3r::ConfigOptionFloats>("nozzle_diameter");
-    const double nozzle=nozzles && !nozzles->values.empty()?nozzles->values.front():0.4;
-    const auto* material=project.config.option<Slic3r::ConfigOptionStrings>("filament_type");
-    const std::string materialName=material && !material->values.empty()?material->values.front():"unspecified";
-    size_t triangles=0,downward=0;
-    for (const auto* object:project.model.objects) for (const auto* volume:object->volumes) if (volume->is_model_part()) {
-        const auto& mesh=volume->mesh().its;
-        triangles+=mesh.indices.size();
-        for (const auto& face:mesh.indices) {
-            const auto a=mesh.vertices[face[0]], b=mesh.vertices[face[1]], c=mesh.vertices[face[2]];
-            const auto normal=(b-a).cross(c-a);
-            if (normal.z()<0 && std::abs(normal.z())>0.5f*normal.norm()) ++downward;
-        }
-    }
-    for (auto& candidate:result) {
-        candidate.reasons.push_back("Nozzle " + std::to_string(nozzle) + " mm; material " + materialName + "; triangles " + std::to_string(triangles));
-        if (bounds.defined) {
-            candidate.reasons.push_back("Geometry bounds mm: " + std::to_string(bounds.size().x()) + " x " + std::to_string(bounds.size().y()) + " x " + std::to_string(bounds.size().z()));
-            if (bounds.size().minCoeff()<4*nozzle) {
-                candidate.warnings.push_back("Thin geometry: inspect the true layer paths before confirming the fast candidate.");
-                if (candidate.candidateId=="speed") {
-                    const double safeLayer=std::min(nozzle*0.70,std::max(nozzle*0.30,bounds.size().minCoeff()/4));
-                    candidate.config.set("layer_height",safeLayer,true);
-                    candidate.reasons.push_back("Fast layer height is bounded by the smallest model dimension.");
-                }
-            }
-        }
-        if (downward) candidate.warnings.push_back("Downward-facing facets detected; support settings are preserved and must be reviewed.");
-        if (materialName.find("TPU")!=std::string::npos && candidate.candidateId=="speed") {
-            candidate.config=quality_config(project.config,"standard");
-            candidate.reasons.push_back("Flexible material uses the standard layer height; material speed limits are retained.");
-        }
+    auto baseline=make_candidate(project,"baseline","standard",Json::array({"Current native project baseline."}));
+    result.push_back(std::move(baseline));
+    const auto analysis=smart_slice_plans(project,request);
+    for(const auto& plan:analysis.at("plans")) {
+        RecommendationCandidate candidate;
+        candidate.candidateId=plan.at("mode").get<std::string>();
+        candidate.quality=candidate.candidateId=="speed"?"fast":candidate.candidateId=="quality"?"fine":"standard";
+        candidate.config=project.config;
+        apply_config_overrides(candidate.config,plan.at("patch"));
         candidate.configDiff=diff_json(project.config,candidate.config);
+        candidate.reasons=Json::array({"Desktop SmartSlicingCore immutable model analysis; validated by real native Print trial.",
+            "Algorithm: "+std::string(SMART_SLICE_ALGORITHM_VERSION)});
+        candidate.warnings=plan.at("warnings");
+        if(plan.value("adaptiveLayerHeightRequested",false))
+            candidate.warnings.push_back("Adaptive layer profile application is unavailable; candidate uses the disclosed uniform layer height.");
+        result.push_back(std::move(candidate));
     }
     return result;
 }

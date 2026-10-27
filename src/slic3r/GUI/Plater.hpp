@@ -70,7 +70,7 @@ namespace Slic3r {
 
 class BuildVolume;
 class MachineObject;
-enum class BuildVolume_Type : signed char;
+enum class BuildVolume_Type : int8_t;
 class Model;
 class ModelObject;
 class ModelInstance;

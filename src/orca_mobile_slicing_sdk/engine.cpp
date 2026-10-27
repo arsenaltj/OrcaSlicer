@@ -1,6 +1,7 @@
 #include "engine.hpp"
 #include "project_support.hpp"
 #include "recommendation_support.hpp"
+#include "smart_slice_bridge.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/Exception.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
@@ -131,7 +132,7 @@ LoadedProject load(const Json& request,const std::string& workspace)
     project.metadata["projectId"]=request.value("projectId",Json());
     project.metadata["revision"]=request.value("projectRevision",request.value("revision",Json(1)));
     project.metadata["quality"]=text(request,"quality","standard");
-    for(const char* key:{"devicePresetId","materialPresetId","devicePresetSourceRefs","materialPresetSourceRefs","devicePresetUnsupportedSourceOptions","materialPresetUnsupportedSourceOptions","presetCatalogVersion","costCurrency"})
+    for(const char* key:{"devicePresetId","materialPresetId","devicePresetSourceRefs","materialPresetSourceRefs","devicePresetUnsupportedSourceOptions","materialPresetUnsupportedSourceOptions","presetCatalogVersion","costCurrency","smartSliceContext"})
         if(request.contains(key)) project.metadata[key]=request[key];
     return project;
 }
@@ -283,6 +284,10 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
         {"singleMaterialFilamentIndex",project.metadata.value("singleMaterialFilamentIndex",Json())},
         {"sourceColorCount",description["model"]["colors"].size()},
         {"engineVersion","orca-mobile-slicing-sdk/1.0.0"},{"sourceCommit",ORCA_MOBILE_SLICING_SOURCE_COMMIT},
+        {"algorithmVersion",SMART_SLICE_ALGORITHM_VERSION},
+        {"profileHash",request.value("smartSliceContext",Json::object()).value("profileHash",std::string())},
+        {"capabilityHash",request.value("smartSliceContext",Json::object()).value("capabilityHash",std::string())},
+        {"effectiveConfigHash",json_sha256(config_json(project.config))},
         {"sourceIdentityValidated",std::string(ORCA_MOBILE_SLICING_SOURCE_COMMIT)!="unknown"},
         {"gcodePath",gcodeFinal.u8string()},{"gcodeSize",stdfs::file_size(gcodeFinal)},
         {"gcodeSha256",file_sha256(gcodeFinal.u8string())},{"scenePath",description.at("scenePath")},
@@ -294,6 +299,11 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
         {"printTimeSeconds",gcode.print_statistics.modes[size_t(Slic3r::PrintEstimatedStatistics::ETimeMode::Normal)].time},
         {"calculationElapsedMs",std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now()-started).count()},
         {"warnings",Json::array()},{"project",description}});
+    out["algorithmVersion"]=SMART_SLICE_ALGORITHM_VERSION;
+    out["effectiveConfigHash"]=out.at("configSha256");
+    const auto smartContext=request.value("smartSliceContext",Json::object());
+    out["profileHash"]=smartContext.value("profileHash",std::string());
+    out["capabilityHash"]=smartContext.value("capabilityHash",std::string());
     if(const auto* colors=project.config.option<Slic3r::ConfigOptionStrings>("filament_colour"))
         out["palette"]=colors->values;
     Json usages=Json::object();
@@ -384,7 +394,7 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
         // cannot commit invalid placement and slicing always enforces the gate.
         if (operation=="update" || operation=="projectCommand") validate_project_bounds(project);
         if (request.value("applyQualityPreset",false) && !request.value("executeEffectiveConfig",false))
-            project.config=quality_config(project.config,text(request,"quality","standard"));
+            project.config=smart_slice_config(project,request,text(request,"quality","standard"));
         Json description=scene_and_snapshot(project,root(request,workspace_)/artifact_key(request,project));
         description["applyQualityPreset"]=false;
         budget.check();
@@ -396,20 +406,27 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
         if (quality!="standard" && quality!="fine" && quality!="fast" && quality!="smart") throw std::invalid_argument("QUALITY_UNSUPPORTED");
         if (quality=="smart" && !request.value("executeEffectiveConfig",false))
             throw std::invalid_argument("SMART_REQUIRES_CONFIRMED_EFFECTIVE_CONFIG");
-        if (!request.value("executeEffectiveConfig",false)) project.config=quality_config(project.config,quality);
+        if (!request.value("executeEffectiveConfig",false)) project.config=smart_slice_config(project,request,quality);
         return slice_one(project,request,sink,budget,workspace_);
     }
     if (operation=="recommend") {
+        const Json analysis=smart_slice_plans(project,request);
         const Json baselineConfig=config_json(project.config);
         const auto baselineConfigSha=json_sha256(baselineConfig);
         Json out{{"schemaVersion",2},{"jobId",text(request,"jobId")},{"attemptId",text(request,"attemptId")},
             {"state","succeeded"},{"recommendationState","proposed"},{"projectId",request.value("projectId",Json())},
             {"sourceRevision",project.metadata.at("revision")},{"inputSha256",project.inputSha256},
             {"sourceConfigSha256",baselineConfigSha},{"candidates",Json::array()}};
-        const auto candidates=recommendation_candidates(project);
+        out["smartSliceAnalysis"]=analysis;
+        out["algorithmVersion"]=SMART_SLICE_ALGORITHM_VERSION;
+        out["profileHash"]=analysis.at("profileHash");out["capabilityHash"]=analysis.at("capabilityHash");
+        out["effectiveConfigHash"]=analysis.at("effectiveConfigHash");
+        const auto candidates=recommendation_candidates(project,request);
         for (const auto& plan:candidates) {
             budget.check();
             Json trial=describe_candidate(plan);
+            trial["algorithmVersion"]=SMART_SLICE_ALGORITHM_VERSION;
+            trial["profileHash"]=analysis.at("profileHash");trial["capabilityHash"]=analysis.at("capabilityHash");
             trial["sourceRevision"]=project.metadata.at("revision"); trial["sourceConfigSha256"]=baselineConfigSha;
             trial["inputSha256"]=project.inputSha256; trial["configSha256"]=json_sha256(config_json(plan.config));
             trial["schemaVersion"]=2; trial["sourceCommit"]=ORCA_MOBILE_SLICING_SOURCE_COMMIT;
@@ -425,6 +442,7 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
                 // manifest. The aggregate transports each effective config once.
                 trial["requestedConfigSha256"]=result.at("requestedConfigSha256");
                 trial["config"]=result.at("effectiveConfig"); trial["configSha256"]=result.at("configSha256");
+                trial["effectiveConfigHash"]=result.at("configSha256");
                 trial["configDiff"]=Json::object();
                 for (auto option=trial["config"].begin();option!=trial["config"].end();++option)
                     if (!baselineConfig.contains(option.key()) || baselineConfig[option.key()]!=option.value())

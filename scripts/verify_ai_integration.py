@@ -181,6 +181,11 @@ REQUIRED_MODEL_GENERATION_PATHS = {
     "src/slic3r/GUI/AI/Model/ModelFinishing.cpp",
     "src/slic3r/GUI/AI/Model/ModelFinishing.hpp",
 }
+REQUIRED_SMART_SLICING_PATHS = {
+    "src/slic3r/AI/SmartSlicing",
+    "src/slic3r/GUI/AI/SmartSlicing",
+    "tools/ai/slicing_recommendation_application.py",
+}
 REQUIRED_CONTRACT_PATHS = {
     "src/slic3r/AI/Contracts/GeneratedModelArtifact.hpp",
     "src/slic3r/AI/Contracts/IModelArtifactConsumer.hpp",
@@ -611,6 +616,14 @@ def validate_document(document: Any) -> list[dict[str, str]]:
             _issue(
                 "boundary.model_generation",
                 f"model generation ownership is missing: {', '.join(missing_model_generation)}",
+            )
+        )
+    missing_smart_slicing = sorted(REQUIRED_SMART_SLICING_PATHS - slicing_paths)
+    if missing_smart_slicing:
+        errors.append(
+            _issue(
+                "boundary.smart_slicing",
+                f"smart slicing ownership is missing: {', '.join(missing_smart_slicing)}",
             )
         )
     missing_contracts = sorted(REQUIRED_CONTRACT_PATHS - contract_paths)

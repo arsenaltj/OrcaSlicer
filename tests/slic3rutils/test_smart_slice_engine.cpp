@@ -1,5 +1,6 @@
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingEngine.hpp"
 
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 using namespace Slic3r::AI::SmartSlicing;
@@ -96,4 +97,69 @@ TEST_CASE("smart slice estimates preserve native baseline scale and mode orderin
     CHECK(result.recommendations[2].estimated_time_seconds < 8.0 * 60.0 * 60.0);
     CHECK(result.recommendations[0].estimated_material_grams > 0.0);
     CHECK(result.recommendations[2].estimated_material_grams >= result.recommendations[1].estimated_material_grams);
+}
+
+
+TEST_CASE("smart slice separates machine speed, wall cap, flow and identity metadata",
+          "[SmartSlice][SmartSlicingEngine][FixedFFF270]")
+{
+    ModelMetrics metrics;
+    metrics.bounding_box = {0.0, 0.0, 0.0, 40.0, 40.0, 40.0};
+    metrics.volume_mm3 = 50'000.0;
+    metrics.surface_area_mm2 = 8'000.0;
+    metrics.closed_mesh = true;
+
+    MachinePreset machine;
+    machine.nozzle_diameter_mm = 0.4;
+    machine.machine_max_speed_mm_s = 1000.0;
+    machine.outer_wall_speed_cap_mm_s = 500.0;
+    machine.maximum_volumetric_speed_mm3_s = 100.0;
+    machine.default_acceleration_mm_s2 = 20'000.0;
+    machine.outer_wall_acceleration_mm_s2 = 25'000.0;
+    machine.travel_acceleration_mm_s2 = 20'000.0;
+    machine.profile_hash = "profile-fixed-fff-270";
+    machine.capability_hash = "capability-mock";
+    machine.effective_config_hash = "config-v1";
+    FilamentPreset filament;
+    filament.id = "PLA";
+    filament.maximum_volumetric_speed_mm3_s = 12.0;
+
+    const SmartAnalysisResult result = SmartSlicingEngine().AnalyzeAndPrecompute(metrics, machine, filament);
+    REQUIRE(result.completed);
+    CHECK(result.profile_hash == machine.profile_hash);
+    CHECK(result.capability_hash == machine.capability_hash);
+    CHECK(result.effective_config_hash == machine.effective_config_hash);
+    CHECK(result.recommendations[1].outer_wall_speed_mm_s <= 500.0);
+    CHECK(result.recommendations[1].outer_wall_speed_mm_s < 1000.0);
+}
+
+TEST_CASE("smart slice aggregates all plate meshes while preserving the single-mesh result",
+          "[SmartSlice][SmartSlicingEngine]")
+{
+    TriangleMeshSnapshot first;
+    first.vertices = {{0.0, 0.0, 0.0}, {10.0, 0.0, 0.0}, {0.0, 10.0, 0.0}, {0.0, 0.0, 10.0}};
+    first.triangles = {{{0, 2, 1}}, {{0, 1, 3}}, {{1, 2, 3}}, {{2, 0, 3}}};
+    TriangleMeshSnapshot second = first;
+    for (auto& vertex : second.vertices) vertex.x += 30.0;
+
+    const SmartSlicingEngine engine;
+    const auto original = engine.AnalyzeAndPrecompute(first, MachinePreset{}, FilamentPreset{});
+    const auto single = engine.AnalyzeAndPrecompute(
+        std::vector<TriangleMeshSnapshot>{first}, MachinePreset{}, FilamentPreset{});
+    REQUIRE(original.completed);
+    REQUIRE(single.completed);
+    CHECK(single.metrics.volume_mm3 == original.metrics.volume_mm3);
+    CHECK(single.metrics.surface_area_mm2 == original.metrics.surface_area_mm2);
+    CHECK(single.recommendations[0].layer_height_mm == original.recommendations[0].layer_height_mm);
+
+    const auto combined = engine.AnalyzeAndPrecompute(
+        std::vector<TriangleMeshSnapshot>{first, second}, MachinePreset{}, FilamentPreset{});
+    REQUIRE(combined.completed);
+    CHECK(combined.metrics.triangle_count == first.triangles.size() + second.triangles.size());
+    CHECK_THAT(combined.metrics.volume_mm3,
+               Catch::Matchers::WithinRel(original.metrics.volume_mm3 * 2.0, 1e-12));
+    CHECK(combined.metrics.surface_area_mm2 == original.metrics.surface_area_mm2 * 2.0);
+    CHECK(combined.metrics.bounding_box.min_x_mm == 0.0);
+    CHECK(combined.metrics.bounding_box.max_x_mm == 40.0);
+    CHECK(combined.metrics.closed_mesh);
 }

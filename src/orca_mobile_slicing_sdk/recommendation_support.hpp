@@ -17,7 +17,7 @@ struct RecommendationCandidate {
 
 // Deterministic baseline + at most balanced/speed/quality plans, for SERIAL native
 // Print trials by the caller. Planning never fabricates time, mass or validation.
-std::vector<RecommendationCandidate> recommendation_candidates(const LoadedProject& project);
+std::vector<RecommendationCandidate> recommendation_candidates(const LoadedProject& project, const Json& request = Json::object());
 Json describe_candidate(const RecommendationCandidate& candidate);
 
 // completedTrials is an array of CONTRACT-v1 candidate snapshots from real Print

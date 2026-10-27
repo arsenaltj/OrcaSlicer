@@ -21,6 +21,187 @@
 验证与纯净度：发布集成检查为 `PASSED / 0 findings`；集成守卫 `53/53`、`[ModelGenerationPresentation]` `65/65`（8879 assertions）、`[AI][SmartSlicing]` `259/259`（3622 assertions）通过。安装 EXE 内容扫描覆盖 `50,526` 个文件，临时 ZIP 对照扫描覆盖 `50,517` 个文件，两者均为 `NOT_DETECTED_WITHIN_SCOPE`、`0 findings / 0 gaps`；NSIS 归档经 7-Zip 检查 `Everything is Ok`。最终 EXE 大小 `1,130,724,380` bytes，SHA-256 `04F0E4CFD4AEEE44A49A3EA730F54E5EE91A2BAABA17BDCCB7AFE8845A8F7E1B`，位于 `D:/TEST/packages/current/OrcaSlicer_AI_Internal_Fast_V2.5.0-alpha_20261027-a02806d457_x64.exe`。
 
 存储与边界：新包成功并核验后，旧 `packages/current` 的小型证据迁至 `.retired-20261025-60730875c6`，旧 EXE/ZIP 被删除；成功候选的 EXE副本、临时 ZIP和三轮 `_CPack_Packages` 均删除。`packages` 下现仅 `current` 中保留这一份大文件。PID `11140` 的旧 `.tmp/dev/run/orca-slicer.exe` 全程保留并响应，本轮没有执行新包。标准用户安装/卸载、`Program Files` 权限、GUI、DPI、真实六头设备和实体打印色彩均未验证；内部包未签名，这些边界不能由源码测试或内容扫描替代。
+# SMARTSLICE-CLOUD-20261024：智能切片增加本地与 YOYOClaw 云端推荐来源（三目标保留，底部布局统一已构建并完成本地界面检查）
+
+2026-10-27 PR交付：已推送 `codex/task/smart-slicing-local-integration-20261027`，创建并挂载 [Draft PR #46](https://github.com/arsenaltj/OrcaSlicer/pull/46)，目标 `codex/team/integration`，集成基线 `502014b3b3383467102412ee584c6c867ef535df`；初始候选 `356115ee15924e37bae8b8a0d066cc8e75158386`，49文件/18个本地提交，随后仅补本计划与短状态交付记录。该候选相对受测产品提交 `ba94c318ee3cc4685c52d72243c31974d386a980` 仅两份协调文档差异，产品代码及既有构建身份未改变。旧#40已关闭未合入，相关本地改动纳入本候选。GitHub创建后判断 `mergeable:true`，CI运行中，未标为通过；最终版本/候选结果以PR当前head及检查为准，CI和至少一位非作者复核、最终合并版GUI/用户验收仍未结，保留Draft等待处理。不直接推送integration、不自动合入、不请求评审或发送团队私信，不上传本机完整日志/模型/配置/运行产物。
+
+本轮PR准备验证：`./dev.ps1 Test -PythonPath .tmp/dev/run/python/python.exe -TestPattern test_slicing_recommendation.py,test_text_capabilities.py,test_sidecar_contract.py` 共127项通过（18/29/80），证据 `.tmp/dev/logs/20261027-093622-306/result.json`。AI完整Git守卫及SDK边界通过（`.tmp/dev/pr-local-ai-check.json`、`pr-local-mobile-check.json`），`--readme check` 为README_CURRENT，候选diff空白检查通过、无未合并索引。`./dev.ps1 Review -Committed` 基于 `502014b3b3`→`356115ee15` 生成49文件提交报告，四张图均9/9布局检查通过，`.tmp/architecture-review/report/index.html` / `report.json` 及 `.tmp/architecture-review/latest.log` 保留；19个改动文件未做代码关系解析，静态报告不代替运行验收。原生测试/Windows构建沿用下方 `ba94c318ee` 精确证据，不为文档重复构建；未新增GUI或付费请求。切片页自动检查调度及汇总缺口仍仅分析未修复，不计入本PR修复项。恢复方案为按实际合入版本经独立revert PR评估撤回，不对含merge历史盲目逐提交回滚。
+
+2026-10-27 用户明确授权远端 PR：用户要求将本地新增修改相对远端分支提交PR，供合入远端使用。已 fetch 确认目标 `origin/codex/team/integration` 为 `502014b3b3383467102412ee584c6c867ef535df`，是本地HEAD祖先；当前已提交差异49文件，覆盖本地/YOYOClaw三目标推荐及状态、正式估算/12项明细保留、重复点击保护、原生/AI入口/参数滚动/恢复和测试目标兼容。旧PR #40实际已关闭未合入，不重开/更改其状态，本地既有相关提交一并纳入此次候选。因当前本地分支本身为integration，沿受测HEAD建立 `codex/task/smart-slicing-local-integration-20261027` 承载候选，不直接推送integration，不改写已提交历史。仅两份协调文档有分析增量，随授权归档；`.planning/`、忽略配置/模型/完整日志/构建产物不纳入。目标以Draft创建（最终合并版GUI/用户验收尚未完成），说明本机已验证范围、源码/产物身份与已知检查入口缺口；用户刚才询问的自动检查遗漏本轮仅分析，不冒充修复。候选完成后以实际PR链接记录，CI和非作者复核/人工合入仍为后续步骤；本轮授权不包含自动合入、发布、团队私信或付费调用。
+
+2026-10-27 用户试用反馈之检查入口分析（仅分析，未授权新修复）：用户截图切片页“一键检查/未检查”，询问未自动检查及与工作台检查的区别。本轮只读核对当前源码与已有构建身份，HEAD仅比受测 `ba94c318ee` 多交付文档，产品代码一致；未操作用户窗口/模型、未构建/测试、未改产品源码。
+
+确认的触发遗漏：普通 `show_model_view(Slicing)` 在非原生且NotRun时调用 `m_slice_tools->request_check()`（RedesignModelWorkflow.cpp:977），但工作台异步导入经 `stage_import_target_view` / `commit_import_target_view` 直接赋值 `m_model_view=Slicing`（:1430），未经过前述请求。`update_slicing_tools`仅刷新；后台忙/无模型的拒绝无待重试状态，同页幂等返回也不补调度。拓扑guard因几何/实例/板成员变化失效后 `refresh()`清为NotRun，同样未自动补检；切片参数变化本身不会使拓扑guard失效（OrcaWorkspaceAdapter.cpp:234）。截图若由工作台导入进入，正好命中该确定遗漏；未从当前实例日志逐次重放，不冒充GUI复现。
+
+两处共用 `WorkbenchModelInspection.hpp::inspect_workbench_mesh`：开放边、非流形边/顶点、退化/重复面、方向、边界环/连通组件及前置拓扑满足时CGAL自交判断。工作台以显示模型文件+哈希为输入，持有独立revision/结果，带安全修复候选/复检和导入门禁；切片页以当前板所属对象的各model_part局部mesh副本分别检查，只读且另存状态，不承接工作台结果，不检查实例世界变换/跨部件相交/壁厚/支撑/板范围。切片页汇总只复制五项计数及status，漏非流形顶点/自交/边界环/连通组件等已计算信息，并错误追加“自交未检查”；可能显示异常却缺少原因。标题虽叫检查修复，此入口只检查，不执行修复。悬垂风险和时间/耗材来自另一条智能切片分析/估算，不会更新这张检查卡。建议后续统一拓扑结果结构和可复用身份，补导入完成/失效后的可靠调度、忙态延后，参数无关变化不重检；将拓扑检查与真正工程打印前检查明确区分。不启动修复或擅自复用文件报告，上一交付待用户验收和PR #40返回点保留。
+
+2026-10-27 本轮本地同步构建已交付（等待用户功能测试）：侧栏代码先归档为 `9e9362fdae`；首次合并 `31d6b43084`，构建期间新增 PR #45 后追加合并 `ba94c318ee3cc4685c52d72243c31974d386a980`，远端同步基线 `502014b3b3383467102412ee584c6c867ef535df`。4处追加冲突与自动重复依赖已解决，双方完整任务记录保留。兼容修正与失败/修复过程均有独立本地提交；未推送、发布或创建远端 PR，旧 `.planning/` 保持未跟踪。
+
+最终验证：`.tmp/dev/logs/20261027-011123-775/result.json` 选中421项（420通过、1项Windows符号链接场景跳过、0失败）；排除上述标签后的元数据/语义/表面选择补充143/143（`.tmp/dev/merge45-supplement-tests.log`）；原生预览5/5（`.tmp/dev/logs/20261027-013935-247/result.json`）；SDK/C ABI/Android SHA宿主53/53（`.tmp/dev/logs/20261027-mobile-sdk-merge45/`）。AI完整Git守卫及SDK边界通过（`.tmp/dev/merge45-ai-check.json`、`merge45-mobile-check.json`），README_CURRENT；离线集成守卫53/53（`merge45-guardrails.log`），更新后的目录生成检查及7/7 Python回归通过。仅相关源码变化后复验对应消费者，不把历史结果相加冒充本轮全量或Android真机验收。
+
+最终 Windows catalogs/build/install/runtime-check/python-check 五步通过，见 `.tmp/dev/logs/20261027-014132-727/result.json`；构建源码为 `ba94c318ee`，源码身份 `f3b6f584fb0d6c4edad1366fa3d25309dc73a95ba3620276333801e2d32da67c`，运行目录19198文件核验。入口 `.tmp/dev/run/orca-slicer.exe` SHA256 `dc57e1a74eed5c1cabcfea3706c4915348282493cd3565aa6ea1208ab9fe21ed`；同目录 `OrcaSlicer.dll` SHA256 `b3d1e693c9a9defcefe0ea77f1491c9d7b70406734f8eea844188093d1c6914f`。匹配EXE/DLL/资源/sidecar完整安装，独立配置 `.tmp/dev/data`；程序未启动，模型和工程原件保留。最终仅补充本计划与短状态，作为独立文档提交，不重建文档差异或改写受测产物身份。下一步由用户实测开始切片估算连续显示、完成全部参数及合并后的工作台；新版本GUI/视觉/云端真实调用/实物/安装包仍未验，前轮实窗证据仅属于原版本，PR #40返回点保留且不自动启动。
+
+2026-10-27 构建交付前追加同步 PR #45：上一合并版 `85cea95f7f` 的 Windows catalogs/build/install/runtime-check/python-check 五步通过，源码身份 `74899ec15cef404bda8f57fd4905a5636a4bec85c43fae8a39e67c8abc9df9b1`，19198 个运行文件核验，证据 `.tmp/dev/logs/20261027-004708-063/result.json`；程序未启动。交付前远端复核发现新增 `502014b3b3383467102412ee584c6c867ef535df`（PR #45，工作台配色/外观及桌面验证修复），按“最新代码”授权追加普通合并，不推送。4处冲突：主计划拼接保留双方完整记录，短状态改为本轮焦点；枚举保留本机已验证的 `int8_t`（远端 `signed char` 在该平台等价）；生成头由远端新分段生成器重建。清理自动合并产生的 engine.cpp/Boost 依赖重复，采用远端条件 Boost 写法。远端明确将材料计划守卫恢复为桌面/Android通用，因此先前平台分支测试决定由最新远端规则替代，用例采用远端原拒绝断言，不改产品规则。目录生成检查及7/7 Python回归通过。下一步完成追加 merge、受影响定向回归及 Windows 构建；旧版 GUI、云端/视觉/打印边界保留，不冒充新合并版功能验收。
+
+2026-10-27 最终构建前复核：原生预览 5/5、MobileDeviceSDK/C ABI/Android SHA 摘要宿主回归 53/53 通过，见 `.tmp/dev/logs/20261027-004338-855/result.json` 和 `.tmp/dev/logs/20261027-mobile-sdk/`。最终 AI 守卫发现 `Plater.hpp` 新增 `<cstdint>` 使原差异预算 net 50 超出 1 行；该头已直接包含 `PrintConfig.hpp`（自含 `<cstdint>`）及 `libslic3r.h`（自含 `<stdint.h>`），移除冗余包含、保留与核心一致的 `int8_t` 声明，不调整预算或弱化检查。失败 `.tmp/dev/merge-ai-check-final.json` 保留；随后复核守卫并构建最终程序。此调整只删重复包含，无新产品行为；前述功能回归范围保留，最终构建独立核对源码/产物身份。
+
+2026-10-27 续验：`ed3f981496` 的相关 C++ 回归 252/252 通过，源码身份 `58f7b5b3f87924a35a5cd51856df89202cea4cd2a9025a2bf8a7668aee5fc097`，证据 `.tmp/dev/logs/20261027-003619-263/result.json`。追加原生预览验证时，`fff_print_tests` 编译通过、链接发现试切执行器调用 `SmartSliceApplier::BuildConfig` 却未列实现；补齐该目标已有消费者需要的 `SmartSliceApplier.cpp`，不引入 GUI 库或改产品逻辑。失败记录 `.tmp/dev/logs/20261027-003920-961/result.json` 保留，随后继续增量构建/预览验证。
+
+2026-10-27 合并后定向回归首跑：`2abcd097c3` 编译和链接通过，252 项中 250 通过、2 项材料计划用例失败，见 `.tmp/dev/logs/20261027-003027-677/result.json` / `cpp-tests.log`。当前 `validate_material_plan` 明确仅在 `ORCA_MOBILE_ANDROID` 下限制单材料，桌面为 no-op，测试仍无条件要求 Android 拒绝行为。调整两用例为平台对应断言：Android 原拒绝断言完整保留，桌面断言允许材料路由；既有 `validate_material_assignments` 越界/支撑/表面选择器失败用例保持并已通过，不把 Android 限制施加到桌面产品，不跳过测试或改产品逻辑。继续相关标签回归及 Windows 构建；Android 真机未重验。
+
+2026-10-27 测试目标链接补齐：路径修正提交 `493a48de27` 后所有源文件编译结束，`slic3rutils_tests` 链接报缺少 `Engine` / `describe_warning` 四个符号，均实现在未列入该目标的移动切片 `engine.cpp`。参照已有 `fff_print_tests` 列表补齐同一实现，不改产品逻辑或测试断言；失败证据 `.tmp/dev/logs/20261027-002158-589/result.json` 保留，测试尚未运行，继续增量构建。
+
+2026-10-27 合并测试路径兼容：`c4167bd60a` 后完整 GUI 库编译通过；测试目标随后报两份测试仍引用远端改名前的 `orca_slicing/...`（C1083），已停止本轮失败 MSBuild 子树并保留 `.tmp/dev/logs/20261026-235606-347/result.json`。只将 `test_orca_slicing_support.cpp`、`test_orca_slicing_preview.cpp` 的头文件引用改为当前 `orca_mobile_slicing_sdk/...`，不修改断言或跳过测试；继续增量验证及程序构建。
+
+2026-10-26 Windows 合并续验：兼容修正提交 `ced139b428` 后，核心库已编译，GUI 暴露远端 `BuildVolume_Type : int8_t` 与 `Plater.hpp` 旧 `: char` 前置声明不一致（C3433）。已停止仅本轮失败构建的 MSBuild 子树，保留 `.tmp/dev/logs/20261026-233959-336/result.json` 及全部错误日志；测试尚未执行，不记通过。GUI 声明改为与核心一致的 `int8_t` 并显式包含 `<cstdint>`，不改变核心枚举数值或表示；随后继续增量构建及定向回归。远端只读复核仍为 `96b70a4ab2`。
+
+2026-10-26 合并验证修正：普通 merge 提交 `31d6b43084` 保留父提交 `9e9362fdae` 与远端 `96b70a4ab2`。AI/SDK 边界、核心来源清单及 README 检查通过，离线集成守卫 53/53；首轮 C++ 构建在 `admesh` 缺 Boost 头文件失败（`.tmp/dev/logs/20261026-233708-336/result.json`），已恢复 `PRIVATE boost_headeronly`，兼容桌面既有 target 与移动入口同名 alias。新增移动目录的 6 项 Python 回归发现 11 处源哈希/生成内容失配，当前文件 LF 归一化后与 Git blob 一致，非 Windows 换行差异；用原生成器基于当前版本预设与 PrintConfig 重生成 JSON/内嵌头（包含现有耗材变体流量数组及不支持字段披露），不改预设原件或生成规则。修正后生成检查及 6/6 回归通过，日志 `.tmp/dev/merge-mobile-catalog-fixed.log`；待重跑 C++ 和 Windows 构建，失败证据保留，不把首轮视为通过。
+
+2026-10-26 本地归档与远端合并中：侧栏修复已提交为 `9e9362fdae`（承接 `4c43382e30`）；已 fetch `origin/codex/team/integration` 最新 `96b70a4ab2c9a185deb9e2dc9ceb749313128279`，包含远端 3D 工作台、修复/包门禁及 MobileDeviceSDK/移动切片更新。沿当前本机 `codex/team/integration` 普通 merge，4 处文本冲突已解决：主计划保留双方完整记录，短状态只保留本轮焦点（远端各项仍在主计划）；切片页面保留远端移除旧美颜入口的决定及本地推荐来源控件，UI 测试合并双方头文件与用例。Windows 因远端 `Docs/docs` 去重折叠而缺失的两份规范 `Docs/mobile-sdk/tools` 文件已从索引恢复，未改远端 SDK/原生算法。旧 `.planning/`、忽略运行数据及原件保留。下一步按合并后的新版本执行相关定向回归、AI/SDK/核心来源门禁和 Windows 增量构建；最终功能验收由用户承接，不沿用旧 GUI 结果冒充新合并版本通过，不推送或新建 PR。
+
+2026-10-26 后续同步授权：用户要求先将上述侧栏修改形成本地 Git 提交，再获取远端最新代码、合并处理冲突并构建等待用户测试。沿当前 `codex/team/integration` 单代理推进；提交前核对受测快照，除两份协调文档外全部源码匹配，现无运行中的 Orca 实例。侧栏代码、新详情头文件、定向测试及两份协调文档一并归档，旧未跟踪 `.planning/` 保留不纳入；随后同步当前 upstream `origin/codex/team/integration`，不推送、不创建或合入远端 PR、不新增付费请求。合并后按实际范围完成相关验证并构建 Windows 程序，最终功能测试由用户承接；既有证据、边界及 PR #40 返回点保留。
+
+2026-10-26 两处侧栏修复已交付：用户明确“授权实施并进行功能验证”，并确认原 PID 23928 已正常关闭、可更新验证。沿本会话/`codex/team/integration`、HEAD `4c43382e30` 单代理完成 GUI SmartSlicing 工作台/宿主、详情展示及定向回归。切片前已完成估算独立绑定正式输入/目标/参数，保留原 revision、不放宽后台过期校验；正式统计只替换两项指标，完整参数和预估质量/风险保留，并增加已有分类提示。无已完成估算时显示等待正式结果。首版 QA 还发现同一完成输入再次点击会触发原生 no-op、误报启动失败并再试算，已补严格匹配正式结果直接返回的入口保护，最终实窗重复点击验证通过。未扩展缓存或复用试切产物，试切 Print 与正式原生 Print 仍分别执行。
+
+最终源码/构建：身份 `c1be8dd87fc1fa63b7357b83582a5e5a0e8d454b1b491b185251c3ddbf0e3cee`；`UiRedesign|CloudRecommendation` 106/106 通过，见 [C++ 结果](../../.tmp/dev/logs/20261026-211408-905/result.json)，覆盖估算快照、过期/编辑/换目标/参数不匹配拒绝、无估算等待及正式完成全部详情。AI 集成检查 `ok:true` 且 Git 检查未跳过，`git diff --check` 通过；Windows catalogs/build/install/runtime-check/python-check 五步通过，见 [构建结果](../../.tmp/dev/logs/20261026-211830-346/result.json)。主 DLL SHA256 `babc93726463edd60d653d4d20091e6883aab13e651788eda85b3254b98fbd93`，真实 PID 33596 / Sidecar 8936 加载匹配 `.tmp/dev/run` 文件，独立 `.tmp/dev/data`。实窗结束核对构建快照全部 30 个文件一致，此后仅更新本计划与短状态，无需文档重建。
+
+真实本地主窗口验收：工程副本 `.tmp/dev/slice-sidebar-qa/sidebar-copy.3mf` 速度切片前 6 小时 9 分钟 /110.42g，正式 21:28:05.747866–21:28:18.698558 期间保持数值、标注切片前参考且无新增试算；完成后全部 12 项仍可见，与原生预览一致。21:28:51 重复点击保持完成/预览，到 21:29:30 无新 reslice 或试算。换质量目标后旧速度统计未冒充质量结果；质量切片于 21:30:53.811043 实际取消（phase5），随后估算恢复且可重新开始，重试于 21:32:27.806332 成功，15 小时 8 分钟 /162.67g、12 项完整且原生预览一致。21:33:56 临时移动模型使旧正式统计失效并重新计算，21:34:41 Ctrl+Z 撤销移动后新估算于 21:35:14.003379 完成，恢复重新分析/开始入口。实例留开为质量方案就绪态，当前重新分析基于已应用配置，104mm/s、15 小时 15 分钟 /162.67g；仅撤销临时移动，未把此前应用参数也声称已撤销，内存未保存标记保留。原件/副本均未保存覆盖且 SHA256 仍为 `510e38cf5725c61b01aaa96399151cd965627fec00914597677b406a441f595b`。
+
+完整两版原生/侧车日志、源码/产物/模型身份、观察与边界见 [verification.json](../../.tmp/dev/logs/20261026-211830-346/verification.json)。首版结果保留于 `20261026-205547-396` / `20261026-210003-675`，其重复点击失败已由上述最终版本修正并复验。云端共享展示由源码和定向回归覆盖，本轮没有新真实云端/付费请求、实际打印、安装包、提交、推送或发布；不冒充云端远端 E2E 或用户主观视觉确认。本项无待实施缺口，用户视觉试用及既有其他未验边界保留，PR #40 返回点保留且不自动启动。
+
+2026-10-26 切片开始/完成两处显示反馈（本轮仅分析，未授权实施）：用户要求分析“开始切片后时间/耗材重新显示计算中”和“完成后参数缩减为两项”。沿本会话/`codex/team/integration`、HEAD `4c43382e30` 只读检查当前调用链、既有运行日志和测试范围；三份相关 GUI 源文件与 `.tmp/dev/runtime-state.json` 的构建输入哈希一致。未修改产品代码、运行目录或工程，未启动构建/测试/GUI 操作或真实云端请求；本段及短状态仅登记分析结论，既有交付、视觉待反馈及 PR #40 返回点保留。
+
+问题一：`SmartSlicingFeatureHost.cpp` 的 lightweight 正式入口先经 `apply_lightweight_plan` 将已选推荐写入板配置并重算擦料塔位置，再进入 `start_native_slice`；后者无条件调用 `cancel_workbench_analysis`，经 `cancel_recommendation_session` / `cancel_exact_estimate` 清空当前估算数值，再标为 Failed。应用后 revision 可能变化，`RedesignModelWorkflow.cpp:1718` 的严格匹配会将旧估算的展示状态置 None，`exact_estimate_detail_rows` 随即输出“计算中...”；即使实际输入相同，取消也未区分已完成结果与运行任务。六槽缓存未在此清空，但正式切片期间没有恢复用于显示。真实试算调度和入口均有 native pending/background/official Slicing 门禁，不能把该占位文案等同于新增后台试算。当前实例日志 `.tmp/dev/data/log/debug_Mon_Oct_26_20_25_28_23928.log.0` 中速度试算 20:36:50.234635 开始、20:37:20.159742 完成，正式 reslice 于 20:37:26.444805 开始、20:37:41.453351 完成，随后 20:37:41.459982 使用正式统计；正式区间无新增 `[SmartSlicingEstimate] started`。现有架构的预估仍会独立 `Print.process`/临时 G-code 导出，正式切片另走原生 Print，未复用试切产物；该架构事实与本次显示退回等待需区分。建议取消活动任务与保留已完成展示快照分开；输入等价时保留数值，真实变化时明确标注旧参考/等待正式结果，完成后替换统计，不放宽过期结果校验。
+
+问题二：`RedesignModelWorkflow.cpp:1712` 的 official_ready 分支直接以 `official_detail_rows(plate)` 替换整组详情。该函数只返回打印时间/实际耗材两行，控件循环再按新列表长度隐藏其他行；不是滚动/DPI 截断或推荐数据丢失。完成快照仍复制 lightweight_analysis，故应保留原有推荐参数和标明为预估的质量/风险，只替换前两项为本次正式统计；不得为恢复明细再发云端请求或重新分析。当前定向用例覆盖估算终态/正式结果就绪等状态辅助逻辑，没有直接覆盖上述 GUI 详情组装及正式启动时已完成数值的连续显示。后续若获实施授权，最小验收应覆盖本地/云端共享显示、无输入变更启动保持数值、真实变更正常失效、切片完成全部详情仍可见及失败/取消路径。此次仅提出建议，不启动修复或扩展缓存架构；既有其他未验边界保持原状态。
+
+2026-10-26 本地提交归档：用户明确要求“提交本地修改的代码，形成git提交记录”。沿当前 `codex/team/integration`，将本项云端三目标推荐、文本请求计时/Qwen Max 选择、分析与估算状态、正式统计复用、填充枚举兼容、保存确认弹窗及底部布局和相关测试/架构登记合并为一个本地 Git 提交（编号见本条对应 Git 历史）。提交前核对已验证构建快照 59 个文件，差异仅为两份协调文档；产品源码未再变化，沿用前述对应版本的测试、构建和 GUI 证据，不重复运行。旧 `.planning/` 记录保留未跟踪，不纳入提交；不包含忽略目录中的运行配置、日志、模型或构建产物。此次只创建本地提交，不推送、合并或新增调用，既有未验边界和 PR #40 返回点保留。
+
+2026-10-26 底部布局补充已交付：用户确认实施，以截图2完成态为基准，统一本地/云端推荐的分析中、估算中及终态操作区。产品增量仅为 RedesignModelWorkflow.cpp 中移动取消操作到状态控件上方，并与重新分析统一使用 8 DIP 外边距和同一种 24 DIP 最小高度按钮；互斥动作居中、状态在其下左对齐、开始切片沿用 16 DIP 外边距。两来源继续共用同一状态控件，原事件绑定、显示/启用规则、请求、推荐及取消业务保持现状。沿本会话/`codex/team/integration`、HEAD `65087d7cc87cf7c39e5b436fbb4848f09dbc75ee` 保留既有未提交工作及原件，单代理完成构建和当前 diff 复核，未提交推送，前轮枚举兼容交付、历史待验与 PR #40 返回点保留。
+
+本轮构建及界面证据：源码身份 `e3cde070938976ec15c01204ed979183235e4ed39f74d40e58ce6f7b37d2e117`，`dev.ps1 Run -NoLaunch -Jobs 8` 的 catalogs/build/install/runtime-check/python-check 五步通过，见 [构建结果](../../.tmp/dev/logs/20261026-202032-905/result.json)；主 DLL SHA256 `a5befbba9b1c46e6a248a43f640a94881078fae5ff32660cc26f7cbc12e08f60`。真实主程序 PID 23928 / Sidecar PID 15852，独立 `.tmp/dev/data`，加载匹配运行目录 DLL。使用既有 `.tmp/dev/official-statistics-qa/official-statistics-copy.3mf`；本地初始分析、重新分析、速度/质量估算及终态均观察到取消或重新分析→状态→开始切片的统一顺序。参数可见且滚动位置相同时，取消/重新分析中心约 y760、状态约 y788、开始切片顶部约 y812，忙态与完成态位置/间距一致。综合、速度、质量原生估算均完成，最终质量显示 15 小时 7 分钟 /162.67g，重新分析和开始切片正常可见，实例留开。工程原件/副本未保存覆盖且 SHA256 均仍为 `510e38cf5725c61b01aaa96399151cd965627fec00914597677b406a441f595b`。实窗后构建快照 59 个文件全部匹配，此后仅更新两份协调文档。
+
+验证边界：本轮纯布局调整未新增或重跑逻辑测试，不把前轮 104 项回归表述为本轮重跑；无架构/契约变化，不重复架构门禁。未追加云端付费请求或实窗触发云端状态，各来源的共用布局由源码复核、本地忙态/终态实窗验证；两次尝试点击取消时估算已结束并触发重新分析，屏外可访问性点击未确认效果，不计为取消回调通过，原回调未修改。本地初始分析仍沿用参数区收起规则，长状态仍按既有规则换行，不承诺整屏绝对坐标在所有阶段固定；其他 DPI、正式切片和安装包未重复验证。完整原生/侧车日志、观察与哈希见 [verification.json](../../.tmp/dev/logs/20261026-202032-905/verification.json)。本轮布局无待实施项，用户主观视觉反馈待试用，不自动扩展既有业务或历史待验。
+
+2026-10-26 最新授权“授权实施”已交付：本会话沿 `codex/team/integration`、HEAD `65087d7cc87cf7c39e5b436fbb4848f09dbc75ee` 和既有脏工作树修复下述枚举兼容缺口，范围为 Python 推荐应用、C++ 推荐客户端/宿主/工作台错误展示、Orca SmartSliceApplier 及对应离线回归。请求允许列表、基线、模型响应及原生入口统一使用 line，仅兼容旧 lines，未知值继续拒绝。错误链保留诊断 ID，增加失败目标/参数/有界标量值，原生拒绝及接收日志可关联请求，界面增加填充/支撑兼容的可读原因。保持一次请求三目标、严格校验与整组失败回退本地；单代理完成实现、相关验证和当前 diff 复核，未改环境变量、未新增付费请求、未提交推送，其他已有改动及未跟踪 `.planning/` 保留。
+
+本轮验证：最终源码身份 `edd29dcf210a2dc82b6d497a3b706eca039e60eb66a758d06c41941eedc6fb1a`。Python 切片推荐 18/18 通过，见 [结果](../../.tmp/dev/logs/20261026-194824-577/result.json)；Sidecar 契约 80/80 通过，见 [结果](../../.tmp/dev/logs/20261026-193554-348/result.json)，其后仅 Python 格式及 C++ 测试/错误上下文调整，最终 Python 切片已另重跑。首次依赖 Python 缺 Pillow 的导入失败记录保留于 `20261026-193535-498`，改用完整 runtime Python 验证通过，未修改系统环境或依赖。C++ `CloudRecommendation|SmartSliceApplier|UiRedesign` 104/104 通过，见 [结果](../../.tmp/dev/logs/20261026-193636-741/result.json)；新增回归遍历真实 policy 全部填充/支撑枚举与三目标，经 parse_result 后逐套执行原生 BuildConfig，覆盖 line/lines 兼容、未知值拒绝及失败上下文。AI 集成检查已执行且 `ok:true`、Git 检查未跳过，原始结果仅保留于会话工具输出；`git diff --check` 通过。
+
+Windows 交付及实窗：用户确认旧实例已正常关闭后，`dev.ps1 Run -NoLaunch` 的 catalogs/build/install/runtime-check/python-check 五步全部成功，见 [构建结果](../../.tmp/dev/logs/20261026-194342-630/result.json)。完整运行入口为 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run/orca-slicer.exe`，主 DLL SHA256 `2b7493b9a3560d3a2176e3a40129e2fd1acf32cf0b758940ffde08257bf4c7e0`。新 QA 主程序 PID 34656 / Sidecar PID 13664，独立 `.tmp/dev/data`，真实加载匹配运行目录的 DLL。打开既有工程副本 `.tmp/dev/official-statistics-qa/official-statistics-copy.3mf`，本地综合估算于 19:48:53.165931 开始、19:49:10.015275 完成，显示 8 小时 49 分钟 / 137.61g；完成文案及重新分析入口正常、取消隐藏，来源菜单显示两种来源，Escape 关闭后保持本地。未点击云端、未保存覆盖工程；原件和副本 SHA256 均仍为 `510e38cf5725c61b01aaa96399151cd965627fec00914597677b406a441f595b`。实窗结束核对构建快照 59 个文件全部匹配，随后仅更新两份协调文档，无需为文档重建。
+
+证据及限制：完整原生/Sidecar 日志、GUI 观察、源码/产物/工程身份和验证范围见 [verification.json](../../.tmp/dev/logs/20261026-194342-630/verification.json)。本轮未重新执行远端 E2E，也未实窗触发新的云端失败详情；枚举与失败上下文由离线跨层回归覆盖，不能表述为已重试原云端任务成功。没有新增 2D/3D 生成、实际打印或安装包验收。QA 实例留开供试用，本轮无待实施项，远端实际重试由用户承接；前轮本地状态/正式结果复用证据、历史全标签停滞和样本擦料塔待验及 PR #40 返回点均保留，不自动扩展任务。
+
+2026-10-26 后续云端失败分析（仅分析，未授权修复）：用户截图显示“云端推荐未完成 · 查看原因”，本轮沿本会话/分支只读核对当前源码、用户日志及主窗口原因弹窗，未修改业务代码/运行目录、未构建测试或重发真实请求。当前用户实例 PID 20612 / Sidecar PID 8660，日志位于 `C:/Users/mooreb/AppData/Roaming/OrcaSlicer/log/`。`orca-ai-sidecar.log:6524–6544` 的 request_id `smart-slicing-5`、diagnostic_id `e3c68457-1c61-4bc9-ae82-1a397838c808` 于本地 19:22:16.860–19:23:32.747 执行成功，耗时 75891 ms，模型请求/报告均为 Qwen3.8-Max-PC-YOYO、HTTP 200、服务端响应校验通过。原生界面点击“查看原因”明确显示 `smart_slice_infill_pattern_unavailable` 并已回退本地；弹窗阅读后关闭，未改变工程或推荐来源。启动早期 challenge 超时与该次已成功的云端请求不是同一失败阶段。
+
+根因与边界：Python `slicing_recommendation_application.py:29` 和 C++ `SlicingRecommendationClient.cpp:29` 均将 `lines` 列为允许填充枚举，但 Orca 原生 `PrintConfig.cpp` 的 InfillPattern 表只定义 `line`，其余六项允许值均可映射；`SmartSliceApplier.cpp:103–105` 原样枚举查找失败即返回上述错误。宿主 `validate_cloud_analysis` 对三套方案逐一调用 BuildConfig，任一失败则整组三目标拒绝并回退本地（`drain_cloud_recommendation`），与截图顶部“本地智能推荐”和当前本地参数一致。该缺口属于本地允许值与原生映射不一致，前轮实窗使用其他枚举成功不能证明全值兼容。现有日志未保存本次三套响应正文/失败目标及值，因此不能指认具体哪套目标使用了 lines；从允许枚举与原生表核对已确认唯一不兼容项为 lines。建议统一 Python 提示/校验、C++ 契约到原生 line，边界兼容既有 lines，保留未知值拒绝；补遍历允许枚举并实际 BuildConfig 的离线回归，失败诊断增加目标/值及可读说明，保留原生检查、三目标批量与不自动付费重试。待用户明确实施，不自动启动；本轮仅更新主计划和短状态，前次已完成两项修复及证据、历史待验与 PR #40 返回点保留。
+
+2026-10-26 本次两项修复交付：用户“开始实施修改”授权内工作已完成。沿用本会话、`codex/team/integration`、HEAD `65087d7cc87cf7c39e5b436fbb4848f09dbc75ee` 及已有脏工作树；本次增量限于 GUI SmartSlicing 宿主/状态、RedesignModelWorkflow 和两处定向回归，不改变现有一次云端请求三目标、供应商、环境变量、2D/3D 生成或原生切片算法。主计划既有云端开发改动、未跟踪 `.planning/` 及 PR #40 返回点保留；未提交、推送、发布。
+
+实现：本地推荐参数完成但匹配估算未终态时统一为 EstimatingLocal，明确显示“推荐参数已生成，正在计算打印时间和耗材…”，时间/耗材仍为“计算中...”，保留取消、隐藏重新分析，终态后再显示完成/重新分析。正式完成后按当前 revision、有效板结果、目标及实际已应用推荐参数匹配，界面直接读取原生 `print_statistics`；匹配结果阻止定时和入口试切，并令旧试切回调失效。lightweight 正式应用参数/擦料塔后同步 observed revision，避免内部应用被误判为用户编辑；定时器先处理真实输入失效再补算，换目标/改输入仍正常恢复估算。
+
+源码与验证：源码身份 `45989249f70ae95c81bccc24f3fe8404b248b557860bb73577f1596df87db643`。`UiRedesign|CloudRecommendation` 99/99 通过，覆盖本地估算终态、正式结果匹配、过期 revision、其他目标不能免算及编辑后忙态，见 [C++ 结果](../../.tmp/dev/logs/20261026-175001-483/result.json)。AI 集成检查 `ok:true` 且保留 Git 检查，见同目录 `ai-integration-check.json`；`git diff --check` 通过。Windows catalogs/build/install/runtime-check/python-check 五步成功，见 [构建结果](../../.tmp/dev/logs/20261026-175529-626/result.json)。真实操作结束核对构建快照全部文件一致，此后仅更新本计划及短状态，不为文档重建。
+
+真实主窗口：完整匹配 `.tmp/dev/run/orca-slicer.exe`，独立 `.tmp/dev/data`、主程序 PID 24164、Sidecar PID 11596。使用 `.tmp/dev/cloud-timing-qa/cloud-timing-model.3mf` 的副本 `.tmp/dev/official-statistics-qa/official-statistics-copy.3mf`，两者 SHA256 均为 `510e38cf5725c61b01aaa96399151cd965627fec00914597677b406a441f595b`，原件/副本均未保存覆盖。本地综合/质量估算等待及终态显示正确；质量方案经主窗口“开始切片”于 18:06:38.648680 正式成功，phase=4，18:06:38.655692 记录 using official statistics，左栏 15 小时 8 分钟/162.67g 与原生预览一致。到首次真实移动 18:08:19.747793，连续 101.092 秒无新 `[SmartSlicingEstimate] started` 或 orca-trial 导出；返回模型视图及选中模型也未触发试切。移动后 18:08:21.083791 启动合法新估算，旧正式统计不再使用，18:08:50.020846 成功；Ctrl+Z 于 18:08:51.967830 撤销临时移动，重新估算于 18:09:26.016567 成功，最终本地方案就绪、重新分析恢复。正式参数应用造成的内存未保存标记保留，没有将其误说为所有改动均撤销。
+
+范围与证据：本轮没有新增云端/付费推荐、2D/3D 生成、实际打印或安装包验收；三目标云端沿用之前真实服务证据，本次共享状态/匹配由定向回归覆盖，不冒充重新远端 E2E。历史全标签停滞及云端质量样本擦料塔越界仍保留，不纳入本次已修复。完整原生日志、Sidecar 日志、观察、EXE/DLL/侧车/工程/G-code 哈希及观测区间见 [本次 GUI 验收](../../.tmp/dev/logs/20261026-175529-626/gui-verification.json)。QA 实例留开，最终处于撤销后的新本地估算就绪状态；正式 G-code 原路径保留。本轮两项无剩余实施阻塞，后续由用户试用反馈，PR #40 不自动启动。
+
+2026-10-26 最新授权：用户明确“开始实施修改”，实施以下两处分析结论，沿用本会话、integration 分支和 GUI SmartSlicing 工作台/宿主、RedesignModelWorkflow 及定向回归范围。单代理完成实现、失败修正、Windows 增量构建及真实主窗口验证；不改三目标批量请求、不追加付费云端请求或提交推送。验收覆盖本地估算文案、正式完成后复用统计且不自动试切、真实编辑后重新失效。
+
+2026-10-26 后续问题分析（本轮仅分析，未授权实施）：用户反馈本地时间/耗材仍计算中且显示取消分析时，状态却写“本地推荐方案已生成”；另反馈正式切片完成后再次后台试切。本轮只读核对源码及日志，未修改业务代码、运行目录，未启动 GUI 操作、构建、测试或付费调用。此前交付证据仍适用其实际覆盖范围，但未覆盖本地估算阶段的完成文案及正式切片完成后的自动调度；不能将下文原验收概括为这两个场景已通过。
+
+分析结论一：`SmartSlicingWorkbenchState.hpp:313` 的阶段判定只在 Cloud 分支检查 `workbench_estimate_pending`，本地只要 lightweight_analysis.completed 就返回 LocalReady；`RedesignModelWorkflow.cpp:1845` 随即显示“本地推荐方案已生成”。取消按钮却按 `workbench_analysis_busy` 显示，后者包含精确估算 Running/待计算，导致同屏完成/等待矛盾。建议统一两种来源的估算阶段；本地参数已生成而估算中时明确显示“推荐参数已生成，正在计算打印时间和耗材…”，对应按钮及成功/失败终态使用同一状态来源。
+
+分析结论二：`SmartSlicingFeatureHost.cpp:1157` 的定时补算只检查 !native_session.pending，`start_exact_estimate:723` 仅排除正式 Slicing 而不排除有效 Completed；正式开始会经过 `cancel_workbench_analysis` / `cancel_exact_estimate` 清空当前估算状态，`notify_slice_completed:1960` 仅更新正式完成和目标历史，未将正式统计接入估算调度或阻止补算。此外 lightweight 路径在应用参数后提前返回，未同步 observed_workbench_revision；板配置/擦料塔变化计入 revision，正式完成后定时器可能把内部应用视为用户输入变化，清缓存并 auto_analyze，再引发试切（云端来源还存在重新请求风险）。试切实际执行独立 Print.process/export_gcode，并非简单统计读取。界面已有 `official_detail_rows:319` 读取正式 print_statistics，但展示优先级并不阻止后台任务。建议正式完成后以匹配当前输入/板/目标的有效原生结果为权威，复用正式时间耗材，取消/忽略旧试切并禁止该输入自动补算；同步内部参数应用的 revision 基线，用户后续真实编辑仍正常失效，不全局屏蔽变化检测。保持一次请求三目标不变。
+
+日志边界：用户实际日志 `C:/Users/mooreb/AppData/Roaming/OrcaSlicer/log/debug_Mon_Oct_26_17_23_51_3464.log.0` 截至 17:37:14 包含 7 次 orca-trial 导出，例 17:25:39.792810 导出、17:25:43.325240 完成（PrivateBytes 2610MB）；本次读取中无 `[ModelWorkflow] slice completed success` / `completion phase` 正式完成标记。因此可以确认真实后台试切和源码的重复触发缺口，不能据此声称七次均为正式完成后自动重算，或已还原用户第二项操作的完整时序。后续获准实施时补定向回归及真实正式切片完成后观察，无须为文案/调度修复追加云端付费请求。原 PR #40 返回点、分支/文件范围及未提交改动保留。
+
+2026-10-26 最新正式变更及交付：用户明确第 3 点仍保留一次请求综合最优/速度优先/质量优先三模式，不实施单目标请求及分目标云端缓存；已重新审视本地部分实现并恢复 C++/Python 批量请求、三基线提示及三目标完整响应校验。云端推理期间三卡及参数值显示“AI推理中...”，时间/耗材统一“计算中...”；参数返回后展示推荐值，估算另等匹配当前参数/目标/revision 的本地结果。本地与云端分析/估算忙态隐藏“重新分析”，保留取消，成功或失败终态恢复入口；重新分析保持当前目标并刷新三种方案。保存确认弹窗局部去标题线，复选框左、是/否/取消右同一底行，不改其他弹窗布局。保留 Qwen Max/Auto、严格校验、取消和旧响应门禁；已有六槽本地精确估算缓存按来源/目标/参数/输入匹配，不是分目标云端请求缓存。下文单目标实施记录已被此决定替代，历史证据保留。
+
+本轮负责会话/分支/范围：沿用本会话、`codex/team/integration`、HEAD `65087d7cc87cf7c39e5b436fbb4848f09dbc75ee` 与既有脏工作树。修改限于 GUI SmartSlicing 客户端/宿主/工作台状态、RedesignModelWorkflow、保存确认弹窗及对应 Python 推荐应用和回归；不改供应商策略、环境变量或 2D/3D 生成。单代理完成实现、验证及 diff 复核；未提交、推送、发布，未跟踪 `.planning/` 和其他已有改动保留。原 PR #40 返回点继续保留，不因本项交付自动启动。
+
+本轮验证：Python 切片推荐 15/15、文本 29/29、Sidecar 80/80 通过，见 [离线结果](../../.tmp/dev/logs/20261026-164738-304/result.json)；最后文案调整后的切片 15/15 见 [补充结果](../../.tmp/dev/logs/20261026-170813-957/result.json)。`UiRedesign|CloudRecommendation` 97/97 通过，见 [C++ 结果](../../.tmp/dev/logs/20261026-165424-832/result.json)；首轮一项测试未绑定估算参数而失败的记录保留于 `20261026-164916-263`，修正测试后通过。其后只将弹窗宽度扩展限定局部选项，最终构建和实窗已覆盖。AI 集成校验 `ok:true`、`git diff --check` 通过。Windows catalogs/build/install/runtime-check/python-check 五步成功，见 [构建记录](../../.tmp/dev/logs/20261026-165809-503/result.json)，运行时源码身份 `1212aebc11eb829427dc72c495655d5bc68740f9d82172d444c1d989b1e85a4b`。实窗结束核对构建快照内文件无变化、相关 Python 源码与运行文件哈希相同；此后只更新本计划和短状态。
+
+本轮真实主窗口：独立 `.tmp/dev/data` 配置，完整匹配的 `.tmp/dev/run/orca-slicer.exe`，主程序 PID 18672、Sidecar PID 34132。工程副本 `.tmp/dev/cloud-timing-qa/cloud-timing-model.3mf` 与原件 `.tmp/dev/wipe-tower-import-qa/user-before-fix.3mf` 均保留 SHA256 `510e38cf5725c61b01aaa96399151cd965627fec00914597677b406a441f595b`。实际只发一次请求 `smart-slicing-13`，诊断 ID `4b7bdaf8-0549-48fd-a55c-5e10570400ff`；17:07:10.316–17:08:16.126，65812 ms，HTTP 200，三目标通过双端校验并被界面接收。请求/报告模型均为 `Qwen3.8-Max-PC-YOYO`；认证 141 ms、白名单 62 ms、响应头 750 ms、首推理 750 ms、首正文 57094 ms、正文接收 8375 ms、DONE→EOF 0 ms、校验 0 ms，reasoning_tokens 3075/completion_tokens 3502。首正文等从 POST 累计，不能将所有计时直接相加。
+
+实窗结果与限制：本地分析和重新分析、云端推理、参数返回后的估算、终态按钮均按预期；云端综合墙数 3→4，估算成功显示 9 小时 5 分钟/148.61g；切到质量方案直接显示同次返回的 0.08mm/4 墙/144mm/s，未新增云端请求。该质量方案的原生精确估算在 17:09:57.277180 因样本擦料塔 footprint `[161.789,225.436]-[192.211,275.835]` 超出打印区域 `[0,0]-[300,270]` 失败；界面正确结束等待、明确无准确时间并标注 AI 估算、恢复重新分析，不无限重试，不宣称该目标精确估算成功，不扩散修改样本摆放。保存弹窗暗色布局、同一底行、鼠标取消和 Escape 取消均通过；为触发弹窗的内存模型移动已 Ctrl+Z 撤销、未保存标记清除，原件/副本均未覆盖。其他 DPI 与“是/否”保存动作本轮未重复验证；历史 SmartSlicing 全标签停滞仍未解决。完整日志、哈希及观察见 [GUI 验收证据](../../.tmp/dev/logs/20261026-165809-503/gui-verification.json)。无付费重试、正式切片、打印或 2D/3D 新生成；QA 实例留开供用户测试，本轮范围无待实现项。
+
+2026-10-26 历史授权（单目标方向已被上段三目标决定替代）：用户曾明确“确认执行方案”：实施下述四项方案，包括当前目标单请求、分目标会话缓存、输入失效和参数绑定估算、防重复/过期覆盖、请求中锁目标并可取消、等待占位及终态重新分析、保存弹窗局部底行布局。负责会话/分支及修改范围沿用本项；当时本地定向测试、Windows 构建和主窗口验证尚待完成，未提交推送。旧证据继续作为历史版本记录，当前状态以上段交付为准。
+
+2026-10-26 后续需求讨论（尚未授权实施）：用户指出云端等待时参数区仍显示旧值、“重新分析”忙态仍显示，以及未保存工程确认弹窗分隔线/底部布局问题；最新明确要求恢复单目标方向：切换云端请求当前已选目标，三目标分别存结果、输入未变复用、“重新分析”只刷新当前目标、防重复及过期覆盖。本次仅源码核对和输出方案，等待用户确认，不修改业务代码/运行目录、不构建或追加真实调用。现三目标版的验收与运行身份保留为上一版本证据，不能表述为本次四项已修复。
+
+核对及拟议范围：RedesignModelWorkflow.cpp 的参数读取未以云端等待状态遮蔽 local_lightweight_analysis；重新分析 Show 条件包含 analyzing，只在 Enable 层禁用，exact_estimate Running 也未算入 can_analyze 忙态。SmartSlicingFeatureHost.cpp 当前仅有一份批量 cloud_view 和整组三目标结果；切换来源会回填本地分析，analyze_workbench 清空目标选择，select_goal 不请求云端。C++ SlicingRecommendationClient 与 Python slicing_recommendation_application 均强制三目标。保存弹窗从 PlaterProjectConfirmation.ipp 使用 standard_layout，RedesignMessageDialog 为 Standard 添加标题分隔线，复选框和按钮分别加入垂直布局。截图中“已生成”后的相同数值本身不能证明未更新，但等待阶段缺少遮蔽已从代码确认。
+
+待确认方案：参数推理中显示 AI推理中...，时间/耗材统一计算中...；AI 结果校验通过后显示该目标参数并计算对应估算；重新分析在当前方案分析/估算忙态隐藏，终态提供重新分析或失败重试入口，不等待尚未请求的其他目标。本地模式保留原分析算法。云端按目标缓存状态/结果/诊断与估算，保留当前选择；缓存绑定当前工程输入（模型/板/机型喷嘴/材料/相关配置/规则版本），精确估算另绑定实际推荐参数，改变输入则失效；缓存仅限当前工程会话，暂无跨启动持久化。建议一次只运行一个云端请求，AI 请求中保持目标锁定及取消入口，重复触发忽略；保留 request_id/revision 门禁并增加 goal/attempt 对应，过期/取消响应不覆盖新结果，不静默付费重试。请求/提示/双端校验同步改为只含当前目标及其基线，保留 Qwen Max/Auto 选择和既有参数范围。保存弹窗增加局部样式选项：去标题分隔线，复选框左、是/否/取消右，同一底行；保留原保存/不保存/取消及记忆语义，不全局改其他对话框。确认后覆盖单目标契约、缓存/重复/过期/估算、失败终态与保存/取消/缩放场景，并在匹配 Windows 实窗验收。
+
+
+2026-10-26 最新明确变更：用户暂不修改“目标 1”，继续保持切换云端后一次请求综合最优、速度优先、质量优先三套参数；此前单目标按需请求及目标独立状态延期，恢复条件为用户重新授权，原诊断结论和历史要求保留下文。本轮授权仅实施并验证：云端切片从当前可用文本白名单优先选择 Qwen Max，缺少时选择 Auto（不对付费失败自动换模型重试，不影响 AI 润色）；按真实请求/本地精确估算阶段显示状态，修复请求未完成即报“已生成”；推荐来源菜单直接复用图像页风格控件。沿用本会话、codex/team/integration 与现有文件范围，验证含定向离线回归、Windows 增量构建、独立配置真实主窗口；真实云端调用控制为一次，无隐式重试。原 PR #40 返回点、未提交云端改动和 .planning/ 保留。本轮实现与验收已完成，结果如下。
+
+
+2026-10-26 本轮交付：云端切片通过独立的白名单选择策略优先匹配当前可用 Qwen Max（实际 name/display_name、版本不固定），无兼容 Max 时选 Auto，两者均不可用则明确不可用；可用性探测和实际请求使用同一策略，AI 润色仍沿用原策略。来源菜单直接复用图像风格 StylePicker，深色弹出层、金色选中与焦点、等宽；程序同步选项不触发回调。新增可测试的展示阶段区分本地结果、云端准备/请求、参数返回后的匹配目标/revision 精确估算及最终就绪，保留正式切片及诊断优先级。没有改三目标提示词、请求/响应契约、切换来源的触发时机或供应商传输参数。
+
+本轮验证：Python 切片推荐 13/13、文本能力 29/29、Sidecar 契约 80/80 通过，见 [离线结果](../../.tmp/dev/logs/20261026-153328-502/result.json)；UiRedesign 88/88（含两个云端展示回归）通过，见 [C++ 结果](../../.tmp/dev/logs/20261026-153412-170/result.json)；AI 集成边界返回 ok:true、diff 空白检查通过。Windows catalogs/build/install/runtime-check/python-check 五步成功，见 [构建记录](../../.tmp/dev/logs/20261026-153848-560/result.json)，运行时源码身份 `34eebb0090600dbbb16e0d6b0e1126317b9762db8230fbe75564b988c1566d71`。沿用 HEAD `65087d7cc87c` 与现有脏工作树；后续仅更新本节和短状态，不代表程序二次变更。
+
+本轮真实主窗口：使用相同隔离配置及未改动的工程副本，经主窗口选择云端，实际只发一次请求，无重试。diagnostic_id `d9733d93-87fe-4a8a-929c-c4214d0d435f`，request_id `smart-slicing-11`；15:46:49.721–15:48:44.003，云端共 114280 ms。requested_model 与 reported_model 均为 `Qwen3.8-Max-PC-YOYO`；认证 125 ms、白名单 62 ms、响应头 1047 ms、首正文 100438 ms、正文接收 13546 ms、DONE 到 EOF 0 ms、校验 0 ms；服务端报告 reasoning_tokens 4739/ completion_tokens 5340。仍主要等待模型答案前推理；本样本较先前 Auto 的 157.2 秒短，但单次不同响应不能作为固定性能承诺。三套结果通过校验并被接收，质量方案层高从 0.12 变为 0.08 mm；本地综合方案精确试切 15:48:44.690–15:49:00.333（15643 ms）成功，预计时间/耗材恢复，三卡和开始切片可用。
+
+实窗验收：图像风格菜单与推荐来源菜单均已展开核对，深色/金色和弹出宽度一致；请求期间实窗显示“正在获取云端 AI 推荐…”，云端完成后显示“云端参数已返回，正在精确计算…”，精确估算结束才显示“云端 AI 推荐已生成”。完整日志快照、UI 观察、模型原件保护、EXE/DLL/侧车哈希与耗时见 [验收证据](../../.tmp/dev/logs/20261026-153848-560/cloud-recommendation-verification.json)。Auto 保底与缺少兼容模型由离线测试覆盖；没有额外真实回退调用，也没有正式切片、打印或 2D/3D 新生成。QA 主程序 PID 31512、Sidecar PID 26432 留开供用户检查；程序位于 `.tmp/dev/run/orca-slicer.exe`。本轮范围无剩余阻塞；单目标延期和历史全标签停滞保留，不转为本轮已完成。未提交、推送或发布，PR #40 返回点保留。
+
+
+2026-10-26 真实复测：用户关闭旧实例并明确要求直接打开程序测试、分析日志后，执行 `dev.ps1 Sidecar -NoLaunch`，模块刷新及完整 Python 检查均通过，见 [刷新记录](../../.tmp/dev/logs/20261026-145238-127/result.json)。匹配运行时源码身份 `10db8bc25ab673c90756c13a27c6d06cf6c17c2ba07d71240614a7d5c6788466`，HEAD 仍为 `65087d7cc87c`。随后以独立 `.tmp/dev/data` 启动真实 Windows 主窗口，使用既有人像工程的副本 `.tmp/dev/cloud-timing-qa/cloud-timing-model.3mf`；原件和副本 SHA256 均为 `510e38cf5725c61b01aaa96399151cd965627fec00914597677b406a441f595b`。本次样本是此前本地人像回归工程，不声明与用户上午截图中的白外套模型相同。经主窗口打开工程、本地分析完成、切换云端并确认数据说明，实际仅发起一次 YOYOClaw 推荐请求，无重试。
+
+分段结果：15:01:38.940 开始、15:04:16.114 成功返回，诊断 ID `7fdd96ef-6c71-45b6-b653-34a0712f5871`、request_id `smart-slicing-11`，总计 157186 ms。认证 203 ms、白名单 62 ms；聊天 POST 后 485 ms 即收到 HTTP 200、首 SSE 与首段 reasoning，但直到 149297 ms 才收到首段正式正文；正文接收 7610 ms，DONE 到 EOF 0 ms，本地响应校验 0 ms（毫秒分辨率）。服务端报告 prompt_tokens=1435、completion_tokens=6386，其中 reasoning_tokens=5922，即约 92.7% 输出 token 为推理。请求模型和服务端报告模型都只有 `Auto`，仍不能识别具体上游型号。首正文/首推理时间从聊天 POST 累计，不能与响应头时间重复相加。
+
+真实 GUI 结果与结论：等待期间复现三卡禁用、预计时间/耗材显示“精确计算中…”，同时状态错误地提前显示“云端 AI 推荐已生成”。成功后速度方案层高从本地 0.26 mm 更新为云端 0.24 mm，证明结果被客户端接收；15:04:16.493–15:04:32.047 又执行本地精确试切（15554 ms），结束后三卡和开始切片恢复可用。一次从点击到精确估算就绪约 173 秒。此样本的主要延迟为 Auto 在正式答案前的长推理阶段，认证/白名单、建立响应、结果校验及 DONE 后等待均不是主要瓶颈；三套目标增加请求任务量，但本次没有单目标对照，不能保证仅减少目标即可消除长推理。
+
+证据与剩余：完整 Sidecar/原生日志快照、受测 EXE/DLL/Python 哈希、模型保护、事件时间线和 GUI 观察均记入 [真实测量证据](../../.tmp/dev/logs/20261026-145238-127/cloud-recommendation-measurement.json)，原始日志继续位于 `.tmp/dev/data/log`。本轮没有修改业务源码或重编 C++，没有正式切片、发送打印或新增 2D/3D 生成；保留测试程序 PID 19880、Sidecar PID 19888 供用户检查。最新单目标按需请求、目标独立状态及正确忙态文案仍待实施；快速/非推理模型或推理预算方案需先核实 YOYOClaw 支持，不能向现请求盲加参数，也不自动追加付费比较。原 PR #40 返回点及其他未结保持原状态。
+
+2026-10-26 补充核对与诊断：用户明确实际需求为“切换云端推荐后，点击综合最优/速度优先/质量优先中的一个，才请求该目标的一套参数”，不能在切换来源时自动请求全部三套。下文原三目标批量方案保留为历史实现记录，不再代表最新目标。源码核对确认存在差异：`SmartSlicingFeatureHost::set_recommendation_source()` 自动启动云端请求；`SlicingRecommendationClient::build_request_json()` 发送三套基线，Python 提示及校验强制返回三目标；`select_goal()` 只切换既有结果并启动本地精确试切，不发起对应目标的云端请求。本轮范围为核对和增加诊断，尚未改变该交互或请求/响应契约；单目标触发、目标独立结果状态、请求中/就绪文案与卡片忙态仍待实施，不能写成需求已满足。
+
+耗时证据：真实用户日志 `C:/Users/mooreb/AppData/Roaming/OrcaSlicer/log/orca-ai-sidecar.log` 中 2026-10-26 11:29–11:39 的四次 `slicing_recommendation.completed` 均为 success，总用时分别为 163640、120265、198907、130717 ms；这是四次独立请求，每次要求返回三套方案，不能表述为一次操作必发三个请求。对应诊断 ID 为 `f1a42e24-c33a-4816-99d6-8696d935f000`、`e8c0649d-89f7-44e7-a2b1-e7b33f00d5a5`、`9270a24f-6c58-406b-ad3f-c783b3c74ebc`、`b91f4ce0-309e-4c5d-ad0f-d6126a972481`。最后一次云端完成后，原生日志 `debug_Mon_Oct_26_10_53_01_9352.log.0` 记录 11:39:21.806–11:39:36.905 的精确试切，另约 15 秒。旧日志没有认证/白名单/首输出/实际模型字段，不能据此断言排队、推理或网络中的具体瓶颈。C++ 总超时为 190 秒，Python 180 秒读超时约束的是单次读取等待，不是流式请求总时长；198907 ms 的服务端完成不证明客户端仍接收或应用成功。
+
+本轮实现：在 `tools/ai/slicing_recommendation_application.py`、`yoyoclaw_text_gateway.py`、`yoyoclaw_client.py` 增加可选诊断链，使用同一诊断 ID 与经过校验的 request_id 关联 started/stage/completed。记录认证、白名单、HTTP 响应头等待、首 SSE 事件、首 reasoning 出现时刻、首正文、正文接收、DONE 到连接结束、供应商总耗时和本地结果校验；记录请求模型、服务端报告模型、允许的数值 token 用量及输入/输出字节数，不记录提示、正文、推理内容、凭据或几何摘要。首输出等时间从聊天 POST 开始累计，认证/白名单/结果校验为独立阶段，不能将全部字段相加。若服务端不报告具体模型，reported_model 为 null；Auto 名称不能作为实际后端模型的证明。保持原模型选择、请求内容、超时、无付费重试及生成/润色路径的既有行为。解析器收到 DONE 后仍等 EOF 的现有行为仅增加计时，尚无真实证据证明它造成了这次延迟。
+
+验证与交付：沿用 `codex/team/integration`，HEAD `65087d7cc87c`，保留原有未提交云端实现和未跟踪 `.planning/`。Python capability 8/8、文本能力 29/29、Sidecar 契约 80/80 通过，见 [本轮离线结果](../../.tmp/dev/logs/20261026-143807-949/result.json)；YOYOClaw 14/14 见 [传输回归](../../.tmp/dev/logs/20261026-143606-014/result.json)，[受测源码 SHA256](../../.tmp/dev/logs/20261026-143807-949/diagnostic-source-hashes.json) 绑定本轮五个 Python 文件。默认依赖 Python 缺 Pillow 的一次测试失败已保留；改用现有完整运行目录 Python 的显式 `-PythonPath` 后通过，未安装依赖或改变机器配置。`scripts/verify_ai_integration.py --json` 返回 `ok: true`。测试全部通过离线网络防护，未新发真实或付费 AI 请求；本轮没有 C++ 修改、构建或 GUI 验收，也未提交、推送或发布。
+
+运行与恢复点：最后检查发现用户主程序 PID 20376、Sidecar PID 27528 仍使用 `.tmp/dev/run`，按运行目录保护规则保留实例，未覆盖其 Python 文件；新增分段日志仍只在源码中，不能声称当前实例已经启用。正常关闭该运行目录的实例后可执行 `./dev.ps1 Sidecar -NoLaunch` 安装诊断，再通过下一次用户真实请求确定瓶颈；不自动发起付费测量。原 PR #40 组合代码的重新提交返回点保留，不因本项补充自动启动远程操作。
+
+目标与授权：用户确认在切片标题右侧增加推荐方式下拉菜单，选项为“本地智能推荐”和“云端 AI 推荐”，默认本地；现有“AI 智能切片”页签改为“智能切片”。本地模式继续使用当前 SmartSlice；云端模式把当前打印板的脱敏模型分析摘要、打印机/喷嘴/材料能力、当前参数和三套本地安全基线上传给 YOYOClaw 文本模型，返回综合、速度、质量三种参数建议。首次选择云端模式展示数据说明并保存说明版本的确认，模式本身不跨启动保存。
+
+实现边界：新增独立 `slicing_parameter_recommendation` capability，复用 YOYOClaw 文本白名单的 Auto、Qwen、GLM 选择顺序；供应商代码保持在 `tools/ai`，SmartSlicing 只认识本地/云端推荐来源。首版云端只允许调整层高、墙数、填充率、填充样式、外墙速度、支撑开关和支撑类型；支撑角度、线宽、墙生成器和自适应层高沿用本地基线。服务端和 C++ 双重校验字段、类型、枚举、范围、工作区 revision 及 Orca 原生配置，非法或过期响应整体拒绝。模型文件、网格、本地路径、自定义名称、凭据和身份信息不上传；模型变化、配置变化、切换模式或取消时旧响应不得更新 UI；网络失败不影响本地推荐和 Orca 原生切片。
+
+实现结果：新增 `slicing_parameter_recommendation` capability、严格请求/响应校验和 C++ 客户端；SmartSlicing 支持本地与云端推荐来源、全板多对象分析、工作区 revision/attempt 失效门禁、主动取消和失败回退本地。界面页签显示“智能切片”，切片标题旁提供“本地智能推荐 / 云端 AI 推荐”，默认本地且模式不跨启动保存；首次选择云端显示脱敏数据说明，请求期间禁用切换和开始切片，Orca 原生模式隐藏该控件。云端只覆盖七类允许参数，最终仍由既有 Orca 原生切片路径执行；2D/3D 生成、AI 润色、普通 Orca 手动流程和本地 SmartSlice 规则未改。
+
+验证与证据：Python capability 6/6 通过（[`20261024-231842-442`](../../.tmp/dev/logs/20261024-231842-442/result.json)），Sidecar 契约 80/80 通过；最终 `CloudRecommendation` 5/5（[`20261024-234725-860`](../../.tmp/dev/logs/20261024-234725-860/result.json)）和 `UiRedesign` 86/86（[`20261024-235617-601`](../../.tmp/dev/logs/20261024-235617-601/result.json)）通过。`SmartSlicing` 全标签本轮执行到 298/304 均通过，随后既有 `fff_print_tests` 实切用例无 CPU 活动并由本会话停止，记录为 [`20261024-234940-693`](../../.tmp/dev/logs/20261024-234940-693/result.json)；新增云端、批量分析、旧响应失效和 UI 状态均已由上述独立集合覆盖，不能据此宣称该全标签通过。`scripts/verify_ai_integration.py --json` 返回 `ok: true`，架构 README 当前，`git diff --check` 通过。最终 Windows `Run -NoLaunch -Jobs 8` 的 catalogs、build、install、runtime-check、python-check 五步通过，源码身份 `ca059f0b3bb4604450467d87b8d8165e58d6e3fb1c83c8065adb15d69e5ac363`，记录为 [`20261024-235755-784`](../../.tmp/dev/logs/20261024-235755-784/result.json)，运行入口为 `.tmp/dev/run/orca-slicer.exe`。
+
+本机实窗：使用隔离数据目录导入既有模型，确认默认本地推荐、两项下拉菜单、首次云端说明、取消后保持本地、Orca 原生模式隐藏下拉及返回后恢复，布局无截断或重叠；QA 实例及其 Sidecar 已正常关闭。未发送真实 YOYOClaw 请求，真实服务认证、网络与返回质量仍待取得付费调用授权后验证。当前 checkout 为 `D:/OrcaSlicer-version/OrcaSlicer`，分支 `codex/team/integration`，HEAD 仍为 `65087d7cc87c`；未跟踪 `.planning/` 保留且不纳入，也未提交、推送、创建 PR 或发布。原 PR #40 重新提交事项仍为下一返回点。
+
+# MERGE-PR40-20261024：GUI 工作区恢复修改已合入本地最新 integration（已构建验证，未推送）
+
+目标与范围：用户要求把尚未合入的 PR #40 代码先合并到本地，后续重新提交，并由用户关闭旧 PR。2026-10-24 再次抓取远端后，本地 `codex/team/integration` 与 `origin/codex/team/integration` 均为 `48c451a0fb92cf6db786785d9e5f0731e533be96`，该提交已经包含 YOYOClaw PR #42。PR #40 的远端分支已更新为 `d31acd3759a961be4a298439ce6e8c233166f05b`，其父提交同时包含旧 GUI 候选 `afaf351e49` 和最新 integration `48c451a0fb`；因此本地使用 `git merge --ff-only` 直接快进到 `d31acd3759`，没有冲突或手工选边。
+
+实际代码差异：相对远端 integration 仍为 PR #40 的 14 个文件、449 行新增和 55 行删除，覆盖切片模式入口、参数面板私有滚动条、Redesign 工作流与按钮视觉、启动项目延迟恢复及 `UiRedesign` 回归；YOYOClaw 生成和多模态 AI 润色通过最新 integration 父节点完整保留。本轮没有修改 AI provider、文本模型策略、2D/3D 生成规则、SmartSlicing 算法或共享契约。
+
+验证：`git diff --check` 通过，`scripts/verify_ai_integration.py --json` 和 `scripts/verify_mobile_sdk_boundary.py --json` 均返回 `ok: true`。合并后 `UiRedesign` 86/86 通过，记录为 [`20261024-211419-437`](../../.tmp/dev/logs/20261024-211419-437/result.json)。Windows `dev.ps1 Run -NoLaunch -Jobs 2` 的 catalogs、build、install、runtime-check、python-check 五步通过，状态 `PREPARED`、源码身份 `a156c523ebec5fdbb38aed57ae7fca4474d6d7d87871a8588bee2f73fa249c92`，记录为 [`20261024-220414-940`](../../.tmp/dev/logs/20261024-220414-940/result.json)；最新 EXE 位于 `.tmp/dev/run/orca-slicer.exe`，SHA256 为 `DC57E1A74EED5C1CABCFEA3706C4915348282493CD3565AA6EA1208AB9FE21ED`。
+
+交付边界：本地 `codex/team/integration` 当前包含组合代码，但未推送到远端 integration，也未修改或关闭 PR #40；未跟踪 `.planning/` 未纳入。此次没有启动真实主窗口，因此构建和自动回归不替代最终 GUI 视觉/交互验收。用户关闭旧 PR 后，后续重新提交应从当前本地组合 head 建立独立 `codex/task/...` 分支并以远端 integration 为目标，不直接推送集成分支。
+
+# BUILD-20261022：同步远端最新代码，仅保留两个本地提交（合并与 Windows EXE 构建通过）
+
+目标与授权：本轮用户明确要求更新远程分支最新代码，本地仅保留 `74ab5b60ce90237b96a4265ffe2578a399a9dbdc`、`fc3148970ca339d6ca2669743d829d5c3f7cef70`，其它本地修改全部删除，并在合并后构建 Windows EXE；后续“继续任务”沿此范围恢复。负责会话为本轮本机同步会话，checkout `D:/OrcaSlicer-version/OrcaSlicer`，沿 `codex/team/integration`，不接管另一台电脑的验收任务。
+
+清理与版本：原本地 HEAD `39f6bfb658a703bbda0933c5f74eb7c054c4e755` 已按授权退回 `fc3148970c`，旧 SmartSlice stash `38355b0012f1800d07e57ececabf2fcde65b1e11` 已删除；工作树原无未提交或非忽略的未跟踪文件。`39f6bfb658` 的擦料塔修复不再属于当前本地交付，原故障工程、原件、运行配置、构建缓存和日志保留；此前该项的待验结论不转移为本版本通过，也不自动恢复其开发。
+
+远程基线：`origin/codex/team/integration` 已获取至 `47fabfb0658b41de14f1dcbe400a7b07128612ac`（PR #39 / v2.5.0-alpha）。因普通 SSH 下载历史 blob 很慢、HTTPS 连接重置，本轮使用 Git `--filter=blob:none` 获取完整提交/目录历史，并以 GitHub 对应提交源码归档补齐当前树；23,374 个文件逐个核对 Git SHA-1 且本地对象齐全，七个 BAT 仅在哈希精确匹配时还原 CRLF 为 LF，证据 [remote-archive-check.json](../../.tmp/dev/remote-archive-check.json)。未截断历史，旧历史 blob 后续可按需取回。没有使用源码归档伪造提交或替换远程引用。
+
+合并范围：普通三方合并保留两个本地提交原身份；解决七处冲突。启动恢复继续使用新 UX 宿主和延迟恢复弹框，同时保留远程显式文件/G-code 启动优先与功能开关；两模式入口保留 `SlicingModeButton`，其既有 `SetValue()` 值相同即返回，保留远程的差异更新防闪烁策略；参数区合并双方必需头文件；UiRedesign 用例同步三参数入口并保留远程环境开关回归。主计划保留两边历史，短状态仅保留本轮焦点。
+
+构建与依赖：复用本 checkout `.tmp/dev/build`，以 `dev.ps1 Run -NoLaunch -Jobs 8` 完成 Windows x64 Release 编译、安装和运行目录校验。已在忽略的 `.tmp/dev/deps/OrcaSlicer_dep/usr/local` 补齐仓库固定的 CGAL 6.2.1、OCCT 8.0.1（含 ModelingAlgorithms）、SLVS 和 LibDataChannel 0.24.5；归档校验与依赖构建日志保存在 `.tmp/dev/`。LibDataChannel 使用固定 tag 对应的 `443f6934d9007eb7076ab7825ba330f355fcbead` 及其固定子模块。旧依赖混用 cereal 头文件导致首次编译重复定义，已重新安装 SHA-256 匹配仓库配方的 cereal 1.3.0 后通过。未降低版本检查或关闭 CAD/GUI 新功能，未复制其他工作树的编译缓存。
+
+验证证据：完整构建、安装、EXE/DLL/资源/sidecar 一致性及 Python 3.12.13 / Pillow 12.2.0 PNG 往返校验均通过，首轮成功记录 [result.json](../../.tmp/dev/logs/20261022-201346-862/result.json)。`dev.ps1 CppTest -TestSuite slic3rutils_tests -TestLabel UiRedesign -Jobs 8` 的 84 个测试全部通过，见 [测试记录](../../.tmp/dev/logs/20261022-210203-812/result.json)；`verify_ai_integration.py --json`（未跳过 Git 检查）、`verify_mobile_sdk_boundary.py --json` 及合并增量 `git diff --check` 均通过，见 [AI 守卫](../../.tmp/dev/verify-ai-sync-20261022.json)、[SDK 边界](../../.tmp/dev/verify-sdk-sync-20261022.json)。另补编译安装清单中的 `orca_mobile_sdk_ffi`，见 [SDK 构建日志](../../.tmp/dev/sdk-ffi-build-20261022.log)，交付运行目录用同一 `dev.ps1 Run -NoLaunch` 入口刷新。
+
+版本与交付：初始受测合并为 `da323c561e6e0147363477c39f882072533f413d`，此后仅补充本节与短状态的验证记录并纳入同一个合并提交，不增加功能提交。两个指定提交原身份均为最终分支祖先，已移除的 `39f6bfb658` 不是祖先；远端再次核对仍为 `47fabfb065`。运行入口为 [orca-slicer.exe](../../.tmp/dev/run/orca-slicer.exe)，完整匹配文件保存在同一运行目录，构建交付源码 `ff890b771be4ceea504f055c4c36345ef0dfd252` 与文件哈希见 [.tmp/dev/runtime-state.json](../../.tmp/dev/runtime-state.json)，最终成功记录为 [result.json](../../.tmp/dev/logs/20261022-211431-871/result.json)。本项代码同步和 EXE 构建验收已完成；该次构建未启动 GUI，不能将编译或自动测试等同真实主窗口、视觉或实物验收。构建交付时未生成安装包、推送或发布，后续 PR 补充授权见下文；历史待验仍按各自版本保留。
+
+PR 补充授权与候选：用户随后明确要求将本地新增代码修改提交一个 PR，挂在 BUILD-20261022 下继续。由于本地当前分支即目标集成分支，创建 `codex/task/gui-workspace-recovery-20261022` 功能分支承载现有两个原始提交及合并结果，PR 目标为 `codex/team/integration`；原本地集成分支及已构建产物保留。PR 准备仅补充本节与短状态，不改变经过构建和 84 项 UiRedesign 回归的程序源码；不重新构建文档变动。范围为切片模式入口、参数面板/滚动条、Redesign 延迟项目恢复及对应测试，未改 Contracts、供应商、运行时或依赖配方。架构影响按本仓库 Review/PR Actions 生成，业务映射未变；远端检查按 PR 当前 head/base 为准，不能用本地结果替代。可通过[候选分支 PR](https://github.com/arsenaltj/OrcaSlicer/pulls?q=is%3Apr+head%3Acodex%2Ftask%2Fgui-workspace-recovery-20261022)核对实际提交状态。因当前版本真实主窗口验收尚未执行，按团队 SOP 使用 Draft，等待 CI、实际界面验收及非作者复核；本轮授权为推送候选与创建 PR，不包含合入、发布或团队私信通知。
+
 
 # 2026-10-26 工作台 AI 配色与荣耀套装同步 PR #45
 
@@ -328,6 +509,44 @@ GUI 烟测使用独立 datadir `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha/.tmp/de
 方案卡闪烁处理：根因是 SmartSlice 的一秒 revision 发布会重复进入 UI 应用路径，而该路径曾无条件重写卡片/徽标/参数行/页签颜色/多行按钮、浮层位置、tooltip 和原生页主题，Windows 因此反复使控件失效重绘；鼠标停在方案卡上时，tooltip 的周期性重建还会扩大闪烁。更新链现按内容、颜色、可见性、尺寸、父级和 tooltip 实际差异写入，保留原 revision timer 和业务状态发布。稳定结果态 14 帧、约 5.85 秒的整窗像素完全一致。最终 tooltip 补丁已随最新 DLL 安装并以 PID `33908` 启动、载入回归 3MF；由于当前 CUA 未暴露原生窗口，最终产物的重新分析运行态和悬停态仍待用户视觉确认。
 
 接受状态：构建、自动测试、普通 Orca 回归、架构门禁、四槽/叠色主窗口往返和正常退出均已通过。方案卡最终运行态/悬停态、真实人像五官、眉眼、耳发、衣肤边界及整体观感仍待用户视觉验收，实体打印颜色保真仍待实物验证；各项分别记录，不能由代码或其他 GUI 功能证据替代。完成前保持候选为本地评估工作树，不提交、不推送、不合并、不打包，也不更新 `codex/team/integration`；试验分支继续不动。
+
+# 2026-10-20 UI-08 补充：Tab 与方案卡片视觉间距、选中边框（已修改并构建，待用户 GUI 验收）
+
+用户确认实施两个视觉调整：AI 智能切片/Orca 原生 Tab 与下方三张方案卡片之间增加空隙；三张卡片选中时的黄色外圈统一粗细并改善绘制观感。负责会话为本会话，沿 `codex/team/integration` 当前 checkout 修改，不操作用户原始模型和配置。
+
+实现范围：`RedesignModelWorkflow.cpp` 在 Tab 行后增加 `8 DIP` 垂直间距；`RedesignSlicingControls.hpp` 以黄色外层填充和内缩卡片背景绘制选中态，统一四边 `1 DIP` 边框厚度；`m_recently_sliced` 只绘制右上角勾选标记，避免最近成功状态与当前选中状态叠加成第二圈黄色边框。未改变方案选择、参数应用、正式 Orca 原生切片和历史状态契约。
+
+验证：Windows `dev.ps1 Run -NoLaunch -Jobs 8` 的 `catalogs/build/install/runtime-check/python-check` 五步通过，结果 [`20261020-231831-547`](../../.tmp/dev/logs/20261020-231831-547/result.json)，运行入口 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run/orca-slicer.exe`；`git diff --check` 通过。已启动并关闭隔离 QA 实例，候选分析未完成，未将卡片视觉写成已验收。
+
+验收边界：用户在最新运行目录中确认 Tab 与卡片之间的间距、三张卡片切换时黄色外框四边一致、最近成功方案只显示勾选；不同 DPI/GPU、短窗口及忙时禁用状态继续保留为未验。
+
+下一步：用户直接运行匹配 EXE 完成视觉验收；如反馈不符，沿当前未提交源码继续修正和构建。本轮不提交、不推送、不发布。
+
+# 2026-10-20 UI-08 补充：模式入口、原生标题栏与参数滚动条（已实现、构建及本机实窗验证）
+
+授权与版本：用户提供三张当前主窗口截图，先分析方案，随后明确“开始修复，并使用 computer use 技能测试真实 GUI 效果，如果测试有问题不符合预期，持续修改代码”，已授权三项整体实施、构建与真实窗口复测。负责会话为本会话，分支 `codex/team/integration`，HEAD `aee65644545f2746ea08f6efccb73bc853a3db5f`；保留此前 BUILD-20261020 的准备证据，使用本 checkout 增量构建和独立 QA 配置，不改用户原件或运行实例。
+
+1. 模式入口：`RedesignSlicingControls.hpp` 新增 `SlicingModeButton`，复用原 Button 输入状态；`RedesignModelWorkflow.cpp` 将两入口改为等宽点击区，中间加入深色竖分隔，选中使用略亮底色和黄色短下划线，并提供悬停、手型、键盘焦点及禁用绘制。文案为“AI 智能切片 / Orca 原生”，原切换回调保留。本轮未独立读取 Figma 原稿，不声明像素一致。
+
+2. 原生标题栏：`BBLTopbar.cpp/.hpp` 将弹性标题项前置、完整宿主后置，最终顺序为基础工具 → 左对齐工程标题 → “← AI 智能切片、返回模型总览、准备、预览、切片单盘、导出 G-code 文件” → 窗口控制。六项原实例、事件及下拉入口保留；标题吸收余宽、右侧省略，设置完整名称 tooltip；离开内嵌原生页恢复标题居中。按用户最新决定，早期“居中标题＋仅两个按钮靠右”方案已被替代。
+
+3. 参数区滚动条：`ParamsPanel.cpp` 在原 `PageScrolledWindow` 外增加兄弟滚动条和私有视口，保留原滚动对象、滚动单位及 `EnsureVisible()`；`ParamsPanelScrollbar.hpp` 提供局部主题入口。深色轨道、灰色滑块及悬停/拖动反馈仅在嵌入原生页启用，离开及 Shell 清理时恢复系统滚动条。首轮实窗发现拖到底部会出现参数空白，原因是隐藏系统滚动条后默认布局没有展开全部虚拟内容；第二次构建补充主题模式下完整虚拟页布局，复测中部、底部、搜索和焦点定位均正常。未改切片算法、参数业务或全局主题。
+
+构建证据：最终 `dev.ps1 Run -NoLaunch -Jobs 8` 的 catalogs/build/install/runtime-check/python-check 五步通过，结果 [20261020-211815-589](../../.tmp/dev/logs/20261020-211815-589/result.json)，源码快照身份 `8f3c5872d030dd6ad3735a31d9e1ce228df7991c8dec3a17d8e9242854417133`；完整运行入口 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run/orca-slicer.exe`。首轮构建 [20261020-205514-204](../../.tmp/dev/logs/20261020-205514-204/result.json) 仅保留过程证据，滚动条缺陷以最终版本复验替代。收尾仅改状态文档，生产源码与构建快照核对匹配；`git diff --check` 通过。本轮 UI 变化以真实 GUI 为主要验证，不新增镜像实现的单元测试，不触发无关架构门禁。
+
+真实 GUI：使用 computer-use 技能的 `node_repl + @oai/sky`，在 `.tmp/dev/slicing-chrome-qa/` 独立配置和已有立方体历史副本完成。首轮验证分隔、选中、悬停、Tab 焦点及 Space 激活、长标题省略、标题拖动/双击最大化；最终版本 PID 19968 验证历史恢复→显式导入→AI/原生往返、六项按钮位置、参数滚轮/滑块中底部/轨道翻页/分类/搜索定位/屏外焦点自动滚动、主题重入，以及单盘切片完成→预览→导出菜单和保存对话框→取消→准备→返回总览，标题恢复居中。再以 `ORCASLICER_UI_REDESIGN=0` 的独立 PID 18192 重开已保存工程，普通浅色参数页仍使用系统滚动条，滚轮和拖到底部正常。两实例均正常退出，原模型哈希保护检查、产物/源码身份和具体限制见 [verification.json](../../.tmp/dev/slicing-chrome-qa/verification.json)。未提交付费生成、发送打印、提交或推送。
+
+剩余与恢复条件：本机为 Windows、200% DPI、Intel Arc 140T；其他 DPI/GPU、跨平台、短窗口极限布局、忙时 Tab 禁用和完整名称 tooltip 的可见悬停尚未实测，不能记为通过。缩窗尝试受现有最小尺寸限制。G-code 验证截至保存对话框及取消，未导出实际文件或实物打印；用户主观视觉验收仍待反馈。旧 SmartSlice、N5 及其他历史待验事项保留，不因本项局部通过改为整体通过。
+
+# 2026-10-20 BUILD-20261020：最新集成代码 Windows EXE（已完成）
+
+目标与授权：用户已更新远端代码，要求编译构建 EXE。负责会话为本会话，沿用 `codex/team/integration`，源码提交 `aee65644545f2746ea08f6efccb73bc853a3db5f`；开始及构建完成时工作区均干净。复用本 checkout 的 `.tmp/dev/build`、`.tmp/dev/run` 与本机工具链，未修改产品源码或构建脚本；收尾只更新主计划和短状态。
+
+构建与失败修正：首次双并行构建在确认本机 16 逻辑处理器、约 32 GB 内存后主动中止，记录 [20261020-194045-347](../../.tmp/dev/logs/20261020-194045-347/result.json)；改用 `dev.ps1 Run -NoLaunch -Jobs 8`，主程序 Release 编译成功，但安装清单还要求 GUI 目标未依赖的 `orca_mobile_sdk_ffi`，因缺少 `orca_mobile_sdk_c.dll` 失败，原始证据为 [20261020-195038-808](../../.tmp/dev/logs/20261020-195038-808/result.json)。在同一构建锁下补编 `orca_mobile_sdk_ffi` 成功，日志 [sdk-ffi-build.log](../../.tmp/dev/logs/20261020-195038-808/sdk-ffi-build.log)，随后重新执行原 Run 命令。此项记录构建入口的现有依赖缺口，本轮未扩展修改 SDK 或桌面构建关系。
+
+验收与产物：最终 [20261020-202414-680](../../.tmp/dev/logs/20261020-202414-680/result.json) 为 `PREPARED`，catalogs/build/install/runtime-check/python-check 五步全部退出码 0；完整运行目录含 17147 个已核对安装文件，入口 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run/orca-slicer.exe`。构建源码身份为 `719f0184ac182773b9ff5fe4f0cb7ff0d800f26fba2dd7d52f17dd669b25535f`；EXE 构建/安装 SHA256 均为 `50e52f01e4015000241fc648ed03df5004b1f6446dcb79e0872dd4ed23ae4c39`，主 DLL 均为 `f0984365632f36810bf504b2ed88ddf865ad71fe1313590f9124ba1aba19754f`，SDK DLL 均为 `007aa059a6f342fcf7b27c3df67dd216223dd4c03ad11cbff79bcd2824e51114`。内置 Python 3.12.13、Pillow 12.2.0 和隔离原生 PNG 往返检查通过。
+
+范围与剩余：本轮完成本地 EXE 构建及完整运行目录准备，未启动应用、生成安装包、提交、推送或发布；未新增逻辑测试，编译与运行文件检查不替代真实 GUI 验收。既有 Redesign、SmartSlice 和模型生成待验事项继续保留，按匹配新版本由用户承接。
 
 # 2026-10-19 Redesign 智能切片详情内嵌（已实施、已安装，待用户 GUI 验收）
 
@@ -2035,3 +2254,14 @@ PR 作者报告已有新控件的真实窗口、预览、前后对比和保存�
 ### SDK-BASE-01 补充：原生 Moonraker 候选适配（2026-10-26）
 
 用户要求原归档的014f8e3456/cce3e6210c/377526d5bc三个提交也需要适配并提交。接续同一独立集成任务及分支，在当前392a1e12fa基线迁移到MobileDevice命名空间；实际网络后端作为可选MoonrakerTransport静态目标，Device C ABI目标保持不链接网络库。旧同步Beast超时/并发路径改为每连接串行异步执行与显式deadline，修正实际SSLstream验证模式和Adapter旧生命周期关闭新连接的问题，更新loopback fixture并增加TLS/超时/UTF8上传回归。验证和交付范围以任务证据为准，原830/840验收现场及APK保持，桌面完整构建跳过/iOS搁置。
+
+
+## SDK-SMART-PR47：共享 SmartSlice PR 冲突同步（2026-10-27）
+
+承接移动 SDK 共享 recommendation 目标，按用户“解冲突后重新提交”授权，在 `task/task-20261026073432344-584f56` 合并 `origin/codex/team/integration` 的 `47f91d1e1d398c647ea18b460ac07590f92b4ed5`，更新现有 Draft PR #47，不直接合入 integration。保留 `b7544577fced1a26c9b4961c518e616d37a5ab82` 原验收历史和已有 SDK/APK。
+
+冲突只涉及 `tests/slic3rutils/test_smart_slice_engine.cpp` 的末尾新增用例：完整保留远端多模型聚合测试和本分支固定机型速度/流量/hash 测试，修正后者把实际 DTO 字段 `id` 误写成 `material_id` 的编译错误。算法和 DTO 自动合并后保留双方修改。
+
+验证：本 checkout `.tmp/dev/pr47-smartslice-check` 使用 MSVC 19.44、C++17，直接 add_subdirectory 实际 AI target 和仓库 Catch2；共享静态库编译成功，SmartSlicingEngine 5 个测试用例共 58 条断言通过。AI integration 边界、核心 manifest（560 条目/257 实现文件）和 diff 检查通过。此定向结果不代表桌面完整 GUI 构建、Android SDK/APK 重建或实机回归。合并后源码发生变化，既有 SDK Release 仍锁定 b7544577，不能据此声称新合并提交的二进制验收完成。
+
+未结：PR 维持 Draft，后续继续最终源码的 SDK/APK 重建、native printer client 连接阻塞修复及 Mock Android 全量闭环验收；真实打印机和 iOS 实机仍未验收。
