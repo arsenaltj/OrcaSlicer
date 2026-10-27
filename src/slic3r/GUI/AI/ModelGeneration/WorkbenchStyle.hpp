@@ -1,6 +1,7 @@
 #pragma once
 
 #include <wx/panel.h>
+#include <wx/app.h>
 #include <wx/control.h>
 #include <wx/dialog.h>
 #include <wx/clipbrd.h>
@@ -368,13 +369,12 @@ inline void apply_workbench_floating_card_shape(wxDialog* card, int radius_dip,
 inline void raise_workbench_floating_card(wxDialog* card)
 {
     if (!card || !card->IsShown()) return;
-    auto* owner = dynamic_cast<wxTopLevelWindow*>(card->GetParent());
-    if (owner && !owner->IsActive() && !card->IsActive()) return;
+    if (!wxTheApp || !wxTheApp->IsActive()) return;
     card->Raise();
 #ifdef __WXMSW__
     if (card->GetHandle()) {
         ::SetWindowPos(static_cast<HWND>(card->GetHandle()), HWND_TOP, 0, 0, 0, 0,
-                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 #endif
 }

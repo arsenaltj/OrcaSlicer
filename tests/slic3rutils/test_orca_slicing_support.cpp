@@ -23,6 +23,15 @@ TEST_CASE("Recommendation planner emits baseline and three native quality plans"
         "fixture.3mf",
         "",
         nlohmann::json::object()};
+    auto* object = project.model.add_object();
+    object->name = "recommendation cube";
+    object->add_volume(
+        Slic3r::make_cube(10.0, 20.0, 30.0), Slic3r::ModelVolumeType::MODEL_PART, false);
+    object->add_instance();
+    project.config.set_key_value("nozzle_diameter", new Slic3r::ConfigOptionFloats({0.4}));
+    project.config.set_key_value("min_layer_height", new Slic3r::ConfigOptionFloats({0.04}));
+    // Zero is Orca's automatic maximum-layer-height sentinel.
+    project.config.set_key_value("max_layer_height", new Slic3r::ConfigOptionFloats({0.0}));
 
     const auto candidates = orca::mobile::slicing::recommendation_candidates(project);
     REQUIRE(candidates.size() == 4);
@@ -30,8 +39,10 @@ TEST_CASE("Recommendation planner emits baseline and three native quality plans"
     CHECK(candidates[1].candidateId == "balanced");
     CHECK(candidates[2].candidateId == "speed");
     CHECK(candidates[3].candidateId == "quality");
-    CHECK(std::abs(candidates[2].config.option<Slic3r::ConfigOptionFloat>("layer_height")->value - 0.28) < 1e-9);
-    CHECK(std::abs(candidates[3].config.option<Slic3r::ConfigOptionFloat>("layer_height")->value - 0.12) < 1e-9);
+    CHECK_THAT(candidates[2].config.option<Slic3r::ConfigOptionFloat>("layer_height")->value,
+               Catch::Matchers::WithinAbs(0.26, 1e-9));
+    CHECK_THAT(candidates[3].config.option<Slic3r::ConfigOptionFloat>("layer_height")->value,
+               Catch::Matchers::WithinAbs(0.12, 1e-9));
 }
 
 TEST_CASE("Recommendation selection consumes only validated native trial metrics", "[OrcaSlicingSupport]")

@@ -10,7 +10,7 @@ if(ORCA_AI_WINDOWS_INSTALLER)
     # produced unless its own isolated Python can import the pinned local stack.
     install(DIRECTORY "${ORCA_AI_PILLOW_STAGE_DIR}/" DESTINATION "python/Lib/site-packages")
     install(DIRECTORY "${ORCA_AI_YOYOCLAW_STAGE_DIR}/" DESTINATION "python/Lib/site-packages")
-    if(ORCA_PORTRAIT_STAGE_DIR)
+    if(ORCA_AI_LEGACY_FARL_RUNTIME AND ORCA_PORTRAIT_STAGE_DIR)
         install(DIRECTORY "${ORCA_PORTRAIT_STAGE_DIR}/" DESTINATION "resources/beauty-runtime")
         if(ORCA_BEAUTY_RASTER_BINARY)
             set(_portrait_raster "${ORCA_BEAUTY_RASTER_BINARY}")

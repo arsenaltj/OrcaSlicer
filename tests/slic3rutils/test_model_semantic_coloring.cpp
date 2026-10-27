@@ -5,6 +5,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/ModelSemanticColoring.hpp"
 #include <nlohmann/json.hpp>
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <fstream>
 #include <thread>
@@ -131,7 +132,92 @@ void check_color(const SC::Color& actual, const SC::Color& expected)
     for (size_t channel = 0; channel < 3; ++channel)
         CHECK_THAT(actual[channel], WithinAbs(expected[channel], 1e-6f));
 }
+
+#if defined(ORCA_TEST_SEMANTIC_RUNTIME_DIR)
+constexpr std::array<const char*, 8> native_runtime_files {{
+    "libmediapipe.dll", "selfie_multiclass_256x256.tflite", "face_landmarker.task",
+    "LICENSE", "NOTICE", "runtime-manifest.json", "MODEL_LICENSES.md", "providers.json"
+}};
+
+struct LinkedNativeRuntime {
+    std::filesystem::path source {ORCA_TEST_SEMANTIC_RUNTIME_DIR};
+    std::filesystem::path root;
+
+    LinkedNativeRuntime()
+    {
+        const auto checkout = std::filesystem::path(TEST_DATA_DIR).parent_path().parent_path();
+        root = checkout / ".tmp" / "dev" /
+            boost::filesystem::unique_path("native-runtime-test-%%%%-%%%%-%%%%").string();
+        std::filesystem::create_directories(root);
+        for (const char* name : native_runtime_files)
+            std::filesystem::create_hard_link(source / name, root / name);
+    }
+
+    ~LinkedNativeRuntime()
+    {
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
+    }
+
+    void replace(const char* name, const std::string& contents)
+    {
+        std::filesystem::remove(root / name);
+        std::ofstream output(root / name, std::ios::binary | std::ios::trunc);
+        output.write(contents.data(), std::streamsize(contents.size()));
+        output.close();
+        REQUIRE(output.good());
+    }
+};
+#endif
 } // namespace
+
+#if defined(ORCA_TEST_SEMANTIC_RUNTIME_DIR)
+TEST_CASE("Native portrait recognition requires the complete sealed MediaPipe runtime", "[ModelSemanticColoring]")
+{
+    const std::filesystem::path source_runtime {ORCA_TEST_SEMANTIC_RUNTIME_DIR};
+    const auto complete = Slic3r::GUI::inspect_portrait_recognition_runtime(source_runtime);
+    REQUIRE(complete.enabled);
+    CHECK(complete.provider == "mediapipe.cpu.v1");
+    CHECK(complete.runtime_identity.size() == 64);
+    CHECK(complete.failure_reason.empty());
+
+    SECTION("missing artifact") {
+        LinkedNativeRuntime runtime;
+        std::filesystem::remove(runtime.root / "face_landmarker.task");
+        const auto status = Slic3r::GUI::inspect_portrait_recognition_runtime(runtime.root);
+        CHECK_FALSE(status.enabled);
+        CHECK(status.failure_reason == "face_landmarker.task_size_mismatch");
+    }
+    SECTION("wrong artifact size") {
+        LinkedNativeRuntime runtime;
+        runtime.replace("face_landmarker.task", "truncated");
+        const auto status = Slic3r::GUI::inspect_portrait_recognition_runtime(runtime.root);
+        CHECK_FALSE(status.enabled);
+        CHECK(status.failure_reason == "face_landmarker.task_size_mismatch");
+    }
+    SECTION("wrong artifact hash") {
+        LinkedNativeRuntime runtime;
+        runtime.replace("MODEL_LICENSES.md", std::string(2053, 'x'));
+        const auto status = Slic3r::GUI::inspect_portrait_recognition_runtime(runtime.root);
+        CHECK_FALSE(status.enabled);
+        CHECK(status.failure_reason == "MODEL_LICENSES.md_hash_mismatch");
+    }
+    SECTION("wrong provider") {
+        LinkedNativeRuntime runtime;
+        runtime.replace("providers.json", R"({"body_provider":"other","face_provider":"mediapipe.cpu.v1"})");
+        const auto status = Slic3r::GUI::inspect_portrait_recognition_runtime(runtime.root);
+        CHECK_FALSE(status.enabled);
+        CHECK(status.failure_reason == "native_provider_configuration_mismatch");
+    }
+    SECTION("wrong manifest") {
+        LinkedNativeRuntime runtime;
+        runtime.replace("runtime-manifest.json", R"({"schema":"orcaslicer.portrait-semantics-runtime/v1","platform":"windows-x86_64","provider":"other"})");
+        const auto status = Slic3r::GUI::inspect_portrait_recognition_runtime(runtime.root);
+        CHECK_FALSE(status.enabled);
+        CHECK(status.failure_reason == "native_runtime_manifest_mismatch");
+    }
+}
+#endif
 
 TEST_CASE("Switching models and recognizers during inference discards the previous semantic result", "[ModelSemanticColoring][Regression]")
 {
@@ -243,7 +329,7 @@ TEST_CASE("Cancelled semantic work cannot return when optimization is enabled ag
     CHECK_FALSE(coordinator.busy());
 }
 
-TEST_CASE("Explicit portrait optimization reports missing local evidence instead of generic success", "[ModelSemanticColoring][PortraitOptimization]")
+TEST_CASE("Explicit portrait optimization no longer requires retired FaRL evidence", "[ModelSemanticColoring][PortraitOptimization]")
 {
     Fixture fixture;
     auto provider=fixture.add_providers("-required-local");
@@ -260,9 +346,10 @@ TEST_CASE("Explicit portrait optimization reports missing local evidence instead
         fixture.runtime/"missing-source.glb", {}, {}, true, {}, progress));
     auto result=await_result(coordinator);
     REQUIRE(result);
-    REQUIRE_FALSE(result->error.empty());
-    REQUIRE(result->geometry.is_empty());
-    REQUIRE(progress->snapshot().percent != 100);
+    REQUIRE(result->error.empty());
+    REQUIRE_FALSE(result->geometry.is_empty());
+    CHECK_FALSE(result->shape_details);
+    CHECK_FALSE(progress->snapshot().evidence.empty());
 }
 
 TEST_CASE("Semantic preview emits the same sparse midpoint leaves used by MMU persistence",

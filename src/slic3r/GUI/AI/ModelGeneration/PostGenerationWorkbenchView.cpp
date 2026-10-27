@@ -343,7 +343,9 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
             [weak](const ModelPreview3D::HonorSuiteSemanticPresentation& state) {
                 if (!weak || weak->m_shutdown) return;
                 if (state.active) {
-                    if (!weak->m_finishing_workbench || state.request_context.empty()) return;
+                    if (!weak->m_finishing_workbench || !weak->m_workbench_presented ||
+                        !weak->m_model_preview || state.request_context.empty() || state.geometry_id.empty() ||
+                        state.geometry_id != weak->m_model_preview->geometry_id()) return;
                     const bool started = !weak->m_workbench_honor_semantic_active ||
                         weak->m_workbench_honor_semantic_context != state.request_context;
                     weak->m_workbench_honor_semantic_active = true;

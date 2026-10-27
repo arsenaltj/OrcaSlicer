@@ -34,7 +34,9 @@ Json smart_slice_plans(const LoadedProject& project,const Json& request) {
     MachinePreset machine;FilamentPreset filament;
     machine.nozzle_diameter_mm=number(cfg,"nozzle_diameter",0.4);
     machine.minimum_layer_height_mm=number(cfg,"min_layer_height",machine.nozzle_diameter_mm*0.1);
-    machine.maximum_layer_height_mm=number(cfg,"max_layer_height",machine.nozzle_diameter_mm*0.7);
+    const double configured_maximum_layer=number(cfg,"max_layer_height",machine.nozzle_diameter_mm*0.7);
+    machine.maximum_layer_height_mm=configured_maximum_layer>0.0?
+        configured_maximum_layer:machine.nozzle_diameter_mm*0.7;
     machine.maximum_outer_wall_speed_mm_s=number(cfg,"outer_wall_speed",80);
     machine.machine_max_speed_mm_s=number(m,"machineMaxSpeed",number(cfg,"machine_max_speed_x",machine.maximum_outer_wall_speed_mm_s));
     machine.outer_wall_speed_cap_mm_s=number(m,"smartSliceOuterWallSpeedCap",machine.maximum_outer_wall_speed_mm_s);

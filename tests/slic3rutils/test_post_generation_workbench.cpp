@@ -3,6 +3,7 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationUiState.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelPreviewTextureColor.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportSession.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportEligibility.hpp"
@@ -42,6 +43,18 @@
 #include <vector>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("Workbench palette status keeps Honor fallback reasons visible",
+          "[PostGenerationWorkbench][ModelPreviewPalette][UiRedesign]")
+{
+    CHECK(workbench_palette_status_line(false, true, 4, 4) == "原始配色证据不可用");
+    CHECK(workbench_palette_status_line(true, false, 0, 6) == "当前色卡 · 6 色");
+    CHECK(workbench_palette_status_line(true, true, 5, 6) ==
+        "荣耀耗材套装 · 模型当前使用 5/6 色");
+    CHECK(workbench_palette_status_line(true, true, 4, 4,
+        "未检测到人物，已回退为全局相近色匹配。") ==
+        "未检测到人物，已回退为全局相近色匹配。\n模型当前使用 4/6 色");
+}
 
 #ifdef __WXMSW__
 TEST_CASE("Workbench slider custom draw ignores tooltip window notifications",

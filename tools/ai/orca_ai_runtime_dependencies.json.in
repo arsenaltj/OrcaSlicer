@@ -30,7 +30,11 @@
   },
   "portrait_recognition": {
     "enabled": @ORCA_AI_PORTRAIT_ENABLED_JSON@,
-    "dependencies_manifest": "resources/beauty-runtime/runtime-manifest.json"
+    "provider": "mediapipe.cpu.v1",
+    "runtime_manifest": "ai/portrait_semantics/runtime-manifest.json",
+    "dependencies_manifest": "ai/portrait_semantics/runtime-manifest.json",
+    "legacy_farl_enabled": @ORCA_AI_LEGACY_FARL_ENABLED_JSON@,
+    "legacy_dependencies_manifest": "resources/beauty-runtime/runtime-manifest.json"
   },
   "network": "offline",
   "provider_calls": false,

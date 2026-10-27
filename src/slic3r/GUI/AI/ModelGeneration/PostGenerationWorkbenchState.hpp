@@ -54,9 +54,10 @@ struct WorkbenchCheckResult {
     bool force_import_risk {false};
 };
 
-inline bool workbench_automatic_check_should_start(bool workbench_open, bool model_ready)
+inline bool workbench_automatic_check_should_start(bool workbench_open, bool workbench_presented,
+                                                   bool model_ready)
 {
-    return workbench_open && model_ready;
+    return workbench_open && workbench_presented && model_ready;
 }
 
 inline bool workbench_ai_palette_should_apply(bool pending, WorkbenchCheckSource source,
@@ -68,11 +69,12 @@ inline bool workbench_ai_palette_should_apply(bool pending, WorkbenchCheckSource
                                    : candidate_status == RepairCandidateStatus::None;
 }
 
-inline bool workbench_check_card_should_show(bool workbench_open, bool requested_visible,
+inline bool workbench_check_card_should_show(bool workbench_open, bool workbench_presented,
+                                             bool requested_visible,
                                              bool check_running, bool automatic_repair_saving,
                                              const WorkbenchCheckResult& result)
 {
-    if (!workbench_open) return false;
+    if (!workbench_open || !workbench_presented) return false;
     const bool automatic = result.source == WorkbenchCheckSource::Automatic;
     const bool repair_phase = result.phase == WorkbenchCheckPhase::Repairing ||
         result.phase == WorkbenchCheckPhase::Rechecking;
@@ -88,14 +90,30 @@ inline bool workbench_check_card_should_show(bool workbench_open, bool requested
 }
 
 inline WorkbenchFloatingCardMode workbench_floating_card_mode(bool workbench_open,
+    bool workbench_presented, bool honor_semantic_active, bool requested_check_visible,
+    bool check_running, bool automatic_repair_saving, const WorkbenchCheckResult& result)
+{
+    if (!workbench_open || !workbench_presented) return WorkbenchFloatingCardMode::None;
+    if (honor_semantic_active) return WorkbenchFloatingCardMode::HonorSuiteSemantic;
+    return workbench_check_card_should_show(workbench_open, workbench_presented, requested_check_visible,
+        check_running, automatic_repair_saving, result)
+        ? WorkbenchFloatingCardMode::ModelCheck : WorkbenchFloatingCardMode::None;
+}
+
+inline bool workbench_modal_navigation_blocked(bool workbench_open, bool workbench_presented,
     bool honor_semantic_active, bool requested_check_visible, bool check_running,
     bool automatic_repair_saving, const WorkbenchCheckResult& result)
 {
-    if (!workbench_open) return WorkbenchFloatingCardMode::None;
-    if (honor_semantic_active) return WorkbenchFloatingCardMode::HonorSuiteSemantic;
-    return workbench_check_card_should_show(workbench_open, requested_check_visible,
-        check_running, automatic_repair_saving, result)
-        ? WorkbenchFloatingCardMode::ModelCheck : WorkbenchFloatingCardMode::None;
+    if (!workbench_open || !workbench_presented) return false;
+    return check_running || automatic_repair_saving ||
+        workbench_floating_card_mode(workbench_open, workbench_presented, honor_semantic_active,
+            requested_check_visible, check_running, automatic_repair_saving, result) !=
+            WorkbenchFloatingCardMode::None;
+}
+
+inline bool workbench_navigation_allowed(bool modal_blocking, bool leaves_workbench)
+{
+    return !modal_blocking || !leaves_workbench;
 }
 
 inline std::string workbench_check_status_line(const WorkbenchCheckResult& check,
@@ -164,6 +182,21 @@ inline std::string workbench_check_detail_text(const WorkbenchCheckResult& check
     return text.str();
 }
 
+inline std::string workbench_palette_status_line(bool original_appearance_available,
+                                                 bool honor_suite_active,
+                                                 size_t honor_suite_used_colors,
+                                                 size_t palette_color_count,
+                                                 const std::string& honor_fallback_reason = {})
+{
+    if (!original_appearance_available) return "原始配色证据不可用";
+    if (!honor_suite_active)
+        return "当前色卡 · " + std::to_string(palette_color_count) + " 色";
+    const std::string usage = "模型当前使用 " + std::to_string(honor_suite_used_colors) + "/6 色";
+    return honor_fallback_reason.empty()
+        ? "荣耀耗材套装 · " + usage
+        : honor_fallback_reason + "\n" + usage;
+}
+
 // Native workbench configuration is independent of the six-channel AI port.
 // An absent slot is a UI placeholder; it is never a fabricated loaded spool.
 struct WorkbenchFilamentSlot {
@@ -191,6 +224,8 @@ struct PostGenerationWorkbenchState {
     std::string model_path;
     std::string candidate_path;
     bool editing {false};
+    bool workbench_presented {false};
+    bool modal_blocking {false};
     SemanticMode semantic_mode {SemanticMode::General};
     PortraitOptimizationState portrait_optimization;
     bool portrait_enabled {false};

@@ -18,10 +18,12 @@
 #include <cmath>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <numeric>
 #include <thread>
 #include <boost/dll/runtime_symbol_info.hpp>
 #include <boost/log/trivial.hpp>
+#include <openssl/evp.h>
 
 namespace Slic3r::GUI {
 namespace SC = AI::SemanticColoring;
@@ -131,11 +133,12 @@ std::filesystem::path semantic_region_runtime_directory()
 
 bool portrait_recognition_enabled()
 {
-    return LocalSemanticWorker::portrait_recognition_enabled(boost::filesystem::path(Slic3r::resources_dir()));
+    return portrait_recognition_capability().enabled;
 }
 
 std::string portrait_shape_runtime_fingerprint()
 {
+#if defined(ORCA_ENABLE_LEGACY_FARL_RUNTIME)
     LocalSemanticWorker::Configuration config;
     std::string reason;
     const auto modules = LocalSemanticWorker::runtime_modules_directory(boost::filesystem::path(Slic3r::resources_dir()));
@@ -164,25 +167,103 @@ std::string portrait_shape_runtime_fingerprint()
     const auto raster = modules / "local_semantic_raster.dll";
     if (boost::filesystem::exists(raster)) identity += AI::model_artifact_sha256(raster);
     return PortraitShapeCache::digest(identity);
+#else
+    return {};
+#endif
+}
+
+PortraitRecognitionCapability inspect_portrait_recognition_runtime(const std::filesystem::path& runtime)
+{
+    PortraitRecognitionCapability result;
+    try {
+        if (runtime.empty() || !std::filesystem::is_directory(runtime))
+            throw std::runtime_error("native_runtime_missing");
+        const auto read_json = [&](const char* name) {
+            const auto file = runtime / name;
+            std::error_code error;
+            const auto bytes = std::filesystem::file_size(file, error);
+            if (error || bytes == 0 || bytes > 65536)
+                throw std::runtime_error(std::string(name) + "_invalid");
+            std::ifstream input(file, std::ios::binary);
+            auto value = nlohmann::json::parse(input, nullptr, false);
+            if (value.is_discarded() || !value.is_object())
+                throw std::runtime_error(std::string(name) + "_invalid");
+            return value;
+        };
+        const auto manifest = read_json("runtime-manifest.json");
+        if (manifest.value("schema", std::string()) != "orcaslicer.portrait-semantics-runtime/v1" ||
+            manifest.value("platform", std::string()) != "windows-x86_64" ||
+            manifest.value("provider", std::string()) != result.provider)
+            throw std::runtime_error("native_runtime_manifest_mismatch");
+        const auto providers = read_json("providers.json");
+        if (providers.value("body_provider", std::string()) != result.provider ||
+            providers.value("face_provider", std::string()) != result.provider)
+            throw std::runtime_error("native_provider_configuration_mismatch");
+
+        struct Artifact { const char* name; uintmax_t bytes; const char* sha256; };
+        constexpr Artifact artifacts[] = {
+            {"libmediapipe.dll", 43301376,
+             "a8970c645c8c87c25ec9965cb5c898e803c6c42f7192b7de9a0541c62ae48cef"},
+            {"selfie_multiclass_256x256.tflite", 16371837,
+             "c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0"},
+            {"face_landmarker.task", 3758596,
+             "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"},
+            {"LICENSE", 12331,
+             "8707eef0533987efc5b155d64761eeb6e20793f50b9bd1a68dad1cf4719d0ed8"},
+            {"NOTICE", 1540836,
+             "d3b4a80a24a01fd445d4b70a610fd836ec3547c3a62eb835a1041956c38d9f56"},
+            {"runtime-manifest.json", 2276,
+             "e3a3cf149163a263f5ac0e10a045a6a474096263170b65eba2d01f547728f588"},
+            {"MODEL_LICENSES.md", 2053,
+             "da2614c3402f4f88478800032e61bb5a8004a5ce75073412f2043902d7e2bb28"},
+            {"providers.json", 85,
+             "07c9b971c5bda8db4007d2396cdb9fb221c6328220f89d77159468b002dc9298"},
+        };
+        std::string identity = std::string(SC::pipeline_version) + providers.dump();
+        for (const auto& artifact : artifacts) {
+            const auto file = runtime / artifact.name;
+            std::error_code error;
+            const auto size = std::filesystem::file_size(file, error);
+            if (error || size != artifact.bytes)
+                throw std::runtime_error(std::string(artifact.name) + "_size_mismatch");
+            const auto hash = AI::model_artifact_sha256(boost::filesystem::path(file.native()));
+            if (hash != artifact.sha256)
+                throw std::runtime_error(std::string(artifact.name) + "_hash_mismatch");
+            identity += std::string(artifact.name) + hash;
+        }
+        identity += manifest.dump();
+        unsigned char bytes[EVP_MAX_MD_SIZE];
+        unsigned int length = 0;
+        if (EVP_Digest(identity.data(), identity.size(), bytes, &length, EVP_sha256(), nullptr) != 1 || length != 32)
+            throw std::runtime_error("native_runtime_identity_failed");
+        constexpr char hex[] = "0123456789abcdef";
+        for (unsigned int i = 0; i < length; ++i) {
+            result.runtime_identity += hex[bytes[i] >> 4];
+            result.runtime_identity += hex[bytes[i] & 15];
+        }
+        result.enabled = true;
+    } catch (const std::exception& error) {
+        result.failure_reason = error.what();
+        result.runtime_identity.clear();
+    }
+    return result;
+}
+
+PortraitRecognitionCapability portrait_recognition_capability()
+{
+    const auto runtime = semantic_region_runtime_directory();
+    static std::mutex mutex;
+    static std::map<std::filesystem::path, PortraitRecognitionCapability> cache;
+    std::lock_guard<std::mutex> lock(mutex);
+    auto found = cache.find(runtime);
+    if (found == cache.end())
+        found = cache.emplace(runtime, inspect_portrait_recognition_runtime(runtime)).first;
+    return found->second;
 }
 
 std::string semantic_region_runtime_identity(const std::filesystem::path& runtime)
 {
-    if (runtime.empty()) return {};
-    std::string identity = std::string(SC::pipeline_version) + provider_configuration(runtime);
-    for (const char* name : {"runtime-manifest.json", "libmediapipe.dll", "face_landmarker.task",
-                             "selfie_multiclass_256x256.tflite"}) {
-        const auto hash = AI::model_artifact_sha256(boost::filesystem::path((runtime / name).native()));
-        if (hash.empty()) return {};
-        identity += std::string(name) + hash;
-    }
-    unsigned char bytes[EVP_MAX_MD_SIZE];
-    unsigned int length = 0;
-    if (EVP_Digest(identity.data(), identity.size(), bytes, &length, EVP_sha256(), nullptr) != 1 || length != 32) return {};
-    constexpr char hex[] = "0123456789abcdef";
-    std::string result;
-    for (unsigned int i = 0; i < length; ++i) { result += hex[bytes[i] >> 4]; result += hex[bytes[i] & 15]; }
-    return result;
+    return inspect_portrait_recognition_runtime(runtime).runtime_identity;
 }
 
 std::shared_ptr<const SemanticRegionEvidence> load_legacy_semantic_region_evidence(
@@ -369,8 +450,11 @@ struct ModelSemanticColoring::Impl {
             auto result = std::make_unique<Result>();
             result->analysis_only = task->request.analysis_only;
             const auto portrait = task->request.portrait_progress;
-            std::string contour_evidence = task->request.shapes
-                ? " 连续边界：恢复已保存的同源细节；父级证据独立校验。" : std::string();
+            std::string contour_evidence;
+#if defined(ORCA_ENABLE_LEGACY_FARL_RUNTIME)
+            if (task->request.shapes)
+                contour_evidence = " 连续边界：恢复已保存的同源细节；父级证据独立校验。";
+#endif
             const auto report = [portrait](const PortraitProgress& progress) { if (portrait) portrait->report(progress); };
             report({PortraitStage::Preparing, "校验模型、原始贴图与运行时", 0, 0});
             const SC::Cancel cancel = [task] { return task->canceled.load(); };
@@ -408,8 +492,6 @@ struct ModelSemanticColoring::Impl {
                     result->verified_original_source = true;
                 }
                 const auto& source = original_source ? *original_source : *task->request.source;
-                const auto semantic_modules = LocalSemanticWorker::runtime_modules_directory(
-                    boost::filesystem::path(Slic3r::resources_dir()));
                 const auto key = SC::analysis_cache_key(source, providers.body->identity(), providers.face->identity());
                 auto analysis = std::make_shared<SC::Analysis>();
                 const auto cache_file = cache / (key + ".json");
@@ -500,7 +582,14 @@ struct ModelSemanticColoring::Impl {
                                 << " nonmanifold=" << diagnostic.nonmanifold_edges
                                 << " historical_locked=" << diagnostic.historical_locked_edges;
                             result->color_blocks->appearance(result->automatic,result->automatic_subfaces);
+#if defined(ORCA_ENABLE_LEGACY_FARL_RUNTIME)
                             result->shape_details=task->request.shapes;
+#else
+                            // Saved contours remain readable on their historical
+                            // appearance. Fresh native V2 work starts only from
+                            // current model colors, manual edits and native labels.
+                            result->shape_details.reset();
+#endif
                             std::map<std::string, SC::Color> cell_colors = task->request.manual_cells;
                             if (strategy == PortraitColorBlocks::Strategy::ColorRegionMajorityV2 &&
                                 result->shape_details && result->shape_details->surface_partition &&
@@ -668,13 +757,16 @@ struct ModelSemanticColoring::Impl {
                         result->native_automatic = result->automatic;
                         result->native_automatic_subfaces = result->automatic_subfaces;
                         const auto fingerprint = portrait_shape_runtime_fingerprint();
+                        PortraitParentCleanup::Result parent_cleanup;
+#if defined(ORCA_ENABLE_LEGACY_FARL_RUNTIME)
                         const auto previous_shapes = task->request.shapes && task->request.shapes->compatible(
                             source.geometry_id, source.mesh.indices.size()) ? task->request.shapes : nullptr;
                         result->shape_details = task->request.shapes;
                         if (result->shape_details && (!result->shape_details->compatible(source.geometry_id, source.mesh.indices.size()) ||
                                 (!result->shape_details->surface_partition && (fingerprint.empty() ||
                                  result->shape_details->runtime_fingerprint != fingerprint)))) result->shape_details.reset();
-                        PortraitParentCleanup::Result parent_cleanup;
+                        const auto semantic_modules = LocalSemanticWorker::runtime_modules_directory(
+                            boost::filesystem::path(Slic3r::resources_dir()));
                         const auto cleanup_roots = std::array<boost::filesystem::path,2>{semantic_modules,
                             boost::filesystem::path(Slic3r::resources_dir()) / "beauty-runtime" / "modules"};
                         const auto source_hash = previous_shapes ? previous_shapes->locks.source_sha256 :
@@ -840,6 +932,7 @@ struct ModelSemanticColoring::Impl {
                                 throw std::runtime_error("Local portrait evidence failed: " + result->shape_error);
                             }
                         }
+#endif
                         report({PortraitStage::Coloring, "校验连续裁切，合成手工颜色、受保护细节和父级配色", 0, 0});
                         SC::FaceColors locked_colors;
                         const bool contour_plan=result->shape_details && result->shape_details->surface_partition;

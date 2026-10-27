@@ -98,6 +98,13 @@ inline bool model_generation_preserves_workbench(const ModelGenerationUIState& s
         !state.model_asset_id.empty();
 }
 
+inline bool model_generation_route_revokes_workbench_presentation(
+    RedesignModelRouteAction action, bool preserve_workbench)
+{
+    return !preserve_workbench &&
+        (action == RedesignModelRouteAction::Model || action == RedesignModelRouteAction::Image);
+}
+
 inline RedesignModelRouteAction model_generation_route_action(
     const ModelGenerationUIState& state, const ModelGenerationUIState& current,
     bool locked, std::uint64_t route_session, const std::string& route_id)

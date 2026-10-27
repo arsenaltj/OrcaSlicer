@@ -39,6 +39,7 @@ void ModelGenerationPanel::mount_workbench(wxWindow* parent)
 
 void ModelGenerationPanel::unmount_workbench()
 {
+    set_workbench_presented(false);
     restore_workbench_import_history();
     if (!m_workbench_shell || m_workbench_shell->GetParent() == this) return;
     if (auto* sizer = m_workbench_shell->GetContainingSizer()) sizer->Detach(m_workbench_shell);
@@ -139,6 +140,11 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
     state.candidate_path = m_finishing_candidate.string();
     for (const auto& color : local_recolor_palette()) state.palette.push_back(color.color);
     state.editing = m_workbench_editing;
+    state.workbench_presented = m_workbench_presented;
+    state.modal_blocking = workbench_modal_navigation_blocked(m_finishing_workbench,
+        m_workbench_presented, m_workbench_honor_semantic_active, m_workbench_check_card_visible,
+        m_workbench_check_running, m_workbench_auto_repair && m_finishing_running,
+        m_workbench_check_result);
     state.semantic_mode = m_semantic_mode;
     if (m_portrait_task) state.portrait_optimization = m_portrait_task->snapshot();
     state.portrait_enabled = m_portrait_mode;
@@ -235,6 +241,37 @@ void ModelGenerationPanel::publish_workbench_state()
     if (!m_shutdown && m_workbench_listener) m_workbench_listener(workbench_snapshot());
 }
 
+void ModelGenerationPanel::set_workbench_presented(bool presented)
+{
+    const bool active = presented && !m_shutdown && m_finishing_workbench &&
+        m_workbench_shell && m_workbench_shell->IsShownOnScreen();
+    if (m_workbench_presented == active) {
+        if (active) {
+            ensure_workbench_check();
+            update_workbench_check_card();
+        }
+        return;
+    }
+
+    m_workbench_presented = active;
+    ++m_workbench_presentation_sequence;
+    if (!active) {
+        if (m_workbench_check_running && m_workbench_check_cancel)
+            m_workbench_check_cancel->store(true);
+        m_workbench_check_card_visible = false;
+        m_workbench_honor_semantic_active = false;
+        m_workbench_honor_semantic_progress = 0;
+        m_workbench_honor_semantic_context.clear();
+        m_workbench_honor_semantic_geometry.clear();
+        m_workbench_honor_semantic_message.clear();
+        hide_workbench_check_card();
+    } else {
+        ensure_workbench_check();
+        update_workbench_check_card();
+    }
+    publish_workbench_state();
+}
+
 bool ModelGenerationPanel::request_open_workbench()
 {
     if (m_shutdown) return false;
@@ -261,7 +298,6 @@ bool ModelGenerationPanel::request_open_workbench()
     load_library_entries(true);
     refresh_post_generation_workbench();
     synchronize_workbench_project_palette();
-    ensure_workbench_check();
     publish_workbench_state();
     return true;
 }
@@ -408,7 +444,10 @@ bool ModelGenerationPanel::request_enable_portrait(bool enabled)
 
 bool ModelGenerationPanel::request_workbench_results()
 {
-    if (m_shutdown || m_finishing_running) return false;
+    if (m_shutdown || m_finishing_running || workbench_snapshot().modal_blocking) {
+        raise_workbench_modal();
+        return false;
+    }
     set_finishing_workbench(false);
     if (m_workbench_results) m_workbench_results();
     return true;

@@ -9,6 +9,7 @@ add_executable(${_TEST_NAME}_tests
 	../../src/orca_mobile_slicing_sdk/project_support.cpp
 	../../src/orca_mobile_slicing_sdk/engine.cpp
 	../../src/orca_mobile_slicing_sdk/recommendation_support.cpp
+	../../src/orca_mobile_slicing_sdk/smart_slice_bridge.cpp
 	test_helpers.cpp
 	test_helpers.hpp
 	test_cooling.cpp

@@ -4,6 +4,7 @@ add_executable(${_TEST_NAME}_tests
     ../../src/orca_mobile_slicing_sdk/engine.cpp
     ../../src/orca_mobile_slicing_sdk/project_support.cpp
     ../../src/orca_mobile_slicing_sdk/recommendation_support.cpp
+    ../../src/orca_mobile_slicing_sdk/smart_slice_bridge.cpp
     test_portrait_color_blocks.cpp
     test_beauty_cell_domain.cpp
     test_parent_surface_visibility.cpp
@@ -155,6 +156,10 @@ endif ()
 
 target_link_libraries(${_TEST_NAME}_tests test_common libslic3r_gui libslic3r OrcaSlicer::AIContracts OrcaSlicer::SmartSlicing pybind11::embed Catch2::Catch2WithMain)
 target_include_directories(${_TEST_NAME}_tests PRIVATE ${PROJECT_SOURCE_DIR}/src/libslic3r)
+if (ORCA_SEMANTIC_RUNTIME_DIR)
+    target_compile_definitions(${_TEST_NAME}_tests PRIVATE
+        ORCA_TEST_SEMANTIC_RUNTIME_DIR=R"\(${ORCA_SEMANTIC_RUNTIME_DIR}\)")
+endif()
 set_property(TARGET ${_TEST_NAME}_tests PROPERTY FOLDER "tests")
 
 orcaslicer_copy_test_dlls(${_TEST_NAME}_tests)
