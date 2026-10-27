@@ -1097,7 +1097,6 @@ Model slicing_model(const LoadedProject& project)
 
 void validate_material_plan(const LoadedProject& project,const std::vector<unsigned int>& logicalIds)
 {
-#ifdef ORCA_MOBILE_ANDROID
     const std::set<unsigned int> used(logicalIds.begin(),logicalIds.end());
     if(used.empty()) throw std::runtime_error("NO_EXTRUSION_MATERIAL:No actual printable material usage");
     const auto* colors=project.config.option<Slic3r::ConfigOptionStrings>("filament_colour");
@@ -1107,9 +1106,6 @@ void validate_material_plan(const LoadedProject& project,const std::vector<unsig
     if(project.metadata.value("outputMode",std::string())=="singleMaterial" &&
         *used.begin()!=project.metadata.at("singleMaterialFilamentIndex").get<unsigned int>())
         throw std::runtime_error("SINGLE_MATERIAL_ROUTE_MISMATCH:Support/surface routing differs from the explicitly selected material");
-#else
-    (void)project;(void)logicalIds;
-#endif
 }
 
 void validate_output_capabilities(const LoadedProject& project)

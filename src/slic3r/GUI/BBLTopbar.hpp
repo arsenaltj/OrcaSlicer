@@ -23,6 +23,7 @@ class CenteredTitle : public wxControl
 public:
     CenteredTitle(wxWindow* parent);
     void SetTitle(const wxString& title);
+    void SetLeftAligned(bool left) { m_left_aligned = left; Refresh(); }
 
     wxSize DoGetBestSize() const override;
 
@@ -33,6 +34,7 @@ protected:
 
 private:
     wxString m_title;
+    bool m_left_aligned {false};
 };
 
 class BBLTopbar : public wxAuiToolBar

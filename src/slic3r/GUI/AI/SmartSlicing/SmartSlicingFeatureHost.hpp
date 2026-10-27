@@ -32,6 +32,7 @@ public:
     void set_workbench_active(bool active, bool ai_mode = true);
     bool analyze_workbench();
     bool keep_current_mesh_and_analyze(const AI::SmartSlicing::WorkspaceRevision& reviewed_revision);
+    bool set_recommendation_source(SlicingRecommendationSource source);
     bool select_goal(AI::SmartSlicing::RecommendationGoal goal);
     AI::SmartSlicing::OfficialSliceResult start_workbench_slice(
         const SmartSlicingWorkbenchState& reviewed,

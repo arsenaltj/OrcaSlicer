@@ -32,6 +32,9 @@
 #include "slic3r/GUI/AI/ModelGeneration/PrinterFilamentPreview.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchPrinterFilaments.hpp"
 #include "slic3r/GUI/PrinterFilamentSlotRemap.hpp"
+#ifdef __WXMSW__
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchStyle.hpp"
+#endif
 #include <future>
 #include <limits>
 #include <memory>
@@ -39,6 +42,46 @@
 #include <vector>
 
 using namespace Slic3r::GUI;
+
+#ifdef __WXMSW__
+TEST_CASE("Workbench slider custom draw ignores tooltip window notifications",
+          "[PostGenerationWorkbench][UiRedesign]")
+{
+    int slider_storage = 0;
+    int tooltip_storage = 0;
+    const WXHWND slider = reinterpret_cast<WXHWND>(&slider_storage);
+    NMHDR notification {};
+    notification.code = NM_CUSTOMDRAW;
+    notification.hwndFrom = reinterpret_cast<HWND>(slider);
+    CHECK(workbench_slider_owns_custom_draw(slider, notification));
+
+    notification.hwndFrom = reinterpret_cast<HWND>(&tooltip_storage);
+    CHECK_FALSE(workbench_slider_owns_custom_draw(slider, notification));
+    notification.code = NM_CUSTOMDRAW + 1;
+    notification.hwndFrom = reinterpret_cast<HWND>(slider);
+    CHECK_FALSE(workbench_slider_owns_custom_draw(slider, notification));
+}
+#endif
+
+TEST_CASE("AI palette auto-application waits for a safe automatic check completion",
+          "[PostGenerationWorkbench][ModelPreviewPalette]")
+{
+    CHECK(workbench_ai_palette_should_apply(true, WorkbenchCheckSource::Automatic, true,
+        RepairCandidateStatus::None, false));
+    CHECK(workbench_ai_palette_should_apply(true, WorkbenchCheckSource::Automatic, true,
+        RepairCandidateStatus::Ready, true));
+
+    CHECK_FALSE(workbench_ai_palette_should_apply(false, WorkbenchCheckSource::Automatic, true,
+        RepairCandidateStatus::None, false));
+    CHECK_FALSE(workbench_ai_palette_should_apply(true, WorkbenchCheckSource::Manual, true,
+        RepairCandidateStatus::None, false));
+    CHECK_FALSE(workbench_ai_palette_should_apply(true, WorkbenchCheckSource::Automatic, false,
+        RepairCandidateStatus::None, false));
+    CHECK_FALSE(workbench_ai_palette_should_apply(true, WorkbenchCheckSource::Automatic, true,
+        RepairCandidateStatus::Ready, false));
+    CHECK_FALSE(workbench_ai_palette_should_apply(true, WorkbenchCheckSource::Automatic, true,
+        RepairCandidateStatus::Failed, true));
+}
 
 TEST_CASE("Round base preview is reversible and bound to one geometry identity",
           "[PostGenerationWorkbench][OrcaModelPreparation]")
@@ -1205,7 +1248,9 @@ TEST_CASE("native slicing rejects late completions and retains an active run unt
     NativeSliceSession session;
     const WorkspaceRevision original {1, 2, 3, "original"};
     const WorkspaceRevision changed {2, 2, 3, "changed"};
+    CHECK_FALSE(session.completed_for(original));
     session.start(original);
+    CHECK_FALSE(session.completed_for(original));
     CHECK_FALSE(session.reset());
     session.refresh(changed);
     CHECK(session.pending());
@@ -1213,13 +1258,17 @@ TEST_CASE("native slicing rejects late completions and retains an active run unt
     CHECK(session.result().diagnostic_code == "workspace_changed");
     session.complete(true, changed, {});
     CHECK_FALSE(session.pending());
+    CHECK_FALSE(session.completed_for(changed));
     CHECK(session.result().phase == OfficialSlicePhase::Failed);
     CHECK_FALSE(session.result().can_print);
     REQUIRE(session.reset());
     session.start(changed);
     session.complete(true, changed, {});
     CHECK(session.result().phase == OfficialSlicePhase::Completed);
+    CHECK(session.completed_for(changed));
+    CHECK_FALSE(session.completed_for(original));
     session.refresh(original);
+    CHECK_FALSE(session.completed_for(changed));
     CHECK(session.result().phase == OfficialSlicePhase::Failed);
     CHECK_FALSE(session.result().can_print);
 }
@@ -1827,6 +1876,171 @@ static FilamentColorPack filament_import_card(size_t count)
     pack.colors.resize(count, "#123456");
     pack.labels.resize(count, "extra spool");
     return pack;
+}
+
+TEST_CASE("Honor young portrait suite is a frozen six physical color catalog entry",
+          "[HonorFilamentSuite][PrinterFilaments][ModelPreviewPalette][PostGenerationWorkbench]")
+{
+    const auto& suite = young_portrait_honor_suite();
+    REQUIRE(suite.valid());
+    CHECK(suite.id == "honor.people.young-six");
+    CHECK(suite.revision == "2");
+    CHECK(suite.category == u8"人物");
+    CHECK(suite.name == u8"年轻向六色");
+    REQUIRE(suite.physical_slots.size() == 6);
+    CHECK(suite.color_pack().colors == std::vector<std::string>{
+        "#ECC3B2", "#282629", "#F6F7F9", "#EA9A92", "#668CB6", "#958B86"});
+    CHECK(suite.color_pack().colors == young_portrait_color_pack().colors);
+    CHECK(suite.semantic_role_slots == std::map<std::string, std::string>{
+        {"Skin", "skin-light"}, {"Hair", "charcoal"}, {"Iris", "charcoal"},
+        {"Eyebrow", "charcoal"}, {"EyeSclera", "milk-white"},
+        {"Teeth", "milk-white"}, {"Lips", "peach"}, {"MouthInterior", "peach"}});
+    CHECK(suite.semantic_role_slot_indices() == std::map<std::string, size_t>{
+        {"Skin", 0}, {"Hair", 1}, {"Iris", 1}, {"Eyebrow", 1},
+        {"EyeSclera", 2}, {"Teeth", 2}, {"Lips", 3}, {"MouthInterior", 3}});
+    CHECK(find_honor_filament_suite(suite.id, "1") == nullptr);
+    const auto* catalog_suite = find_honor_filament_suite(suite.id, suite.revision);
+    REQUIRE(catalog_suite);
+    CHECK(catalog_suite->physical_slots.size() == suite.physical_slots.size());
+    CHECK(catalog_suite->semantic_role_slots == suite.semantic_role_slots);
+    std::set<std::string> identities;
+    for (const auto& slot : suite.physical_slots) identities.insert(slot.id);
+    CHECK(identities.size() == 6);
+}
+
+TEST_CASE("Honor suite stages six real slots without creating mixed recipes",
+          "[PrinterFilamentImport][PrinterFilaments][PostGenerationWorkbench]")
+{
+    auto live = printer_filament_fixture(6, 4);
+    const auto config_before = live.project_config;
+    const auto presets_before = live.filament_presets;
+    PrinterFilamentConfig::StagedColorPackImport staged;
+    std::string error;
+
+    REQUIRE(PrinterFilamentConfig::stage_honor_physical_suite_import(
+        live, young_portrait_honor_suite(), staged, error));
+    REQUIRE(staged.configuration);
+    REQUIRE(staged.bindings.size() == 6);
+    CHECK(std::set<size_t>(staged.bindings.begin(), staged.bindings.end()).size() == 6);
+    CHECK(staged.physical_count == 6);
+    CHECK(staged.mixed_count == 0);
+    const auto imported = PrinterFilamentConfig::capture(*staged.configuration);
+    REQUIRE(imported.ready);
+    CHECK(imported.physical_count == 6);
+    CHECK(imported.mixed.empty());
+    for (size_t index = 0; index < staged.bindings.size(); ++index) {
+        const size_t slot = staged.bindings[index];
+        CHECK_FALSE(staged.configuration->is_mixed_filament(slot));
+        CHECK(staged.configuration->project_config.opt_string("filament_colour", unsigned(slot)) ==
+            young_portrait_honor_suite().physical_slots[index].color);
+    }
+    CHECK(live.project_config == config_before);
+    CHECK(live.filament_presets == presets_before);
+}
+
+TEST_CASE("Honor suite preserves extra physical slots and independent duplicate identities",
+          "[PrinterFilamentImport][PrinterFilaments][PostGenerationWorkbench]")
+{
+    auto live = printer_filament_fixture(8, 7);
+    auto suite = young_portrait_honor_suite();
+    suite.physical_slots[5].color = suite.physical_slots[4].color;
+    const auto seventh_color = live.project_config.opt_string("filament_colour", unsigned(6));
+    PrinterFilamentConfig::StagedColorPackImport staged;
+    std::string error;
+
+    REQUIRE(PrinterFilamentConfig::stage_honor_physical_suite_import(live, suite, staged, error));
+    REQUIRE(staged.configuration);
+    CHECK(staged.configuration->filament_presets.size() == live.filament_presets.size());
+    CHECK(staged.configuration->project_config.opt_string("filament_colour", unsigned(6)) == seventh_color);
+    REQUIRE(staged.bindings.size() == 6);
+    CHECK(staged.bindings[4] != staged.bindings[5]);
+    CHECK(staged.mixed_count == 0);
+}
+
+TEST_CASE("Honor suite keeps existing mixed recipes outside its six physical bindings",
+          "[PrinterFilamentImport][PrinterFilaments][PrinterFilamentRecipes][PostGenerationWorkbench]")
+{
+    auto live = printer_filament_fixture(6, 5);
+    live.project_config.option<Slic3r::ConfigOptionBools>("filament_is_mixed")->values[4] = true;
+    live.project_config.option<Slic3r::ConfigOptionStrings>("filament_mixed_components")->values[4] = "1,2";
+    live.project_config.option<Slic3r::ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[4] = "0.5,0.5";
+    const auto config_before = live.project_config;
+    const auto presets_before = live.filament_presets;
+    PrinterFilamentConfig::StagedColorPackImport staged;
+    std::string error;
+
+    REQUIRE(PrinterFilamentConfig::stage_honor_physical_suite_import(
+        live, young_portrait_honor_suite(), staged, error));
+    REQUIRE(staged.configuration);
+    const auto imported = PrinterFilamentConfig::capture(*staged.configuration);
+    REQUIRE(imported.ready);
+    CHECK(imported.physical_count == 6);
+    REQUIRE(imported.mixed.size() == 1);
+    CHECK(imported.mixed.front().slot == 6);
+    CHECK(imported.mixed.front().valid);
+    CHECK(staged.configuration->project_config.option<Slic3r::ConfigOptionStrings>(
+        "filament_mixed_components")->values[6] == "1,2");
+    CHECK(staged.bindings == std::vector<size_t>{0, 1, 2, 3, 4, 5});
+    CHECK(staged.mixed_count == 0);
+    CHECK(live.project_config == config_before);
+    CHECK(live.filament_presets == presets_before);
+}
+
+TEST_CASE("Four-head and single-nozzle printers cannot apply a six-physical Honor suite",
+          "[PrinterFilamentImport][PrinterFilaments][PostGenerationWorkbench]")
+{
+    const auto& suite = young_portrait_honor_suite();
+    auto four = printer_filament_fixture(4, 4);
+    const auto four_before = four.project_config;
+    const auto four_presets = four.filament_presets;
+    auto compatibility = PrinterFilamentConfig::honor_suite_compatibility(four, suite);
+    CHECK_FALSE(compatibility.compatible);
+    CHECK(compatibility.reason == u8"当前打印机为 4 头，此套装需要 6 个实体耗材");
+    PrinterFilamentConfig::StagedColorPackImport staged;
+    std::string error;
+    CHECK_FALSE(PrinterFilamentConfig::stage_honor_physical_suite_import(four, suite, staged, error));
+    CHECK_FALSE(staged.configuration);
+    CHECK(four.project_config == four_before);
+    CHECK(four.filament_presets == four_presets);
+
+    auto semm = printer_filament_fixture(6, 4);
+    semm.printers.get_edited_preset().config.option<Slic3r::ConfigOptionBool>(
+        "single_extruder_multi_material")->value = true;
+    compatibility = PrinterFilamentConfig::honor_suite_compatibility(semm, suite);
+    CHECK_FALSE(compatibility.compatible);
+    CHECK(compatibility.reason.find(u8"单喷嘴多材料") != std::string::npos);
+}
+
+TEST_CASE("Honor suite staging rejects incompatible material without touching the live project",
+          "[PrinterFilamentImport][PrinterFilaments][PostGenerationWorkbench]")
+{
+    auto live = printer_filament_fixture(6, 4);
+    live.filaments.find_preset("Loaded PLA", false)->is_compatible = false;
+    const auto config_before = live.project_config;
+    const auto presets_before = live.filament_presets;
+    PrinterFilamentConfig::StagedColorPackImport staged;
+    std::string error;
+    CHECK_FALSE(PrinterFilamentConfig::stage_honor_physical_suite_import(
+        live, young_portrait_honor_suite(), staged, error));
+    CHECK_FALSE(error.empty());
+    CHECK_FALSE(staged.configuration);
+    CHECK(live.project_config == config_before);
+    CHECK(live.filament_presets == presets_before);
+
+    live = printer_filament_fixture(6, 6);
+    auto petg = live.filaments.find_preset("Loaded PLA", false)->config;
+    petg.option<Slic3r::ConfigOptionStrings>("filament_type")->values = {"PETG"};
+    live.filaments.load_preset("", "Loaded PETG", petg, false);
+    live.filament_presets.assign(6, "Loaded PETG");
+    REQUIRE(PrinterFilamentConfig::capture(live).ready);
+    const auto petg_config_before = live.project_config;
+    const auto petg_presets_before = live.filament_presets;
+    CHECK_FALSE(PrinterFilamentConfig::stage_honor_physical_suite_import(
+        live, young_portrait_honor_suite(), staged, error));
+    CHECK(error.find("PLA") != std::string::npos);
+    CHECK_FALSE(staged.configuration);
+    CHECK(live.project_config == petg_config_before);
+    CHECK(live.filament_presets == petg_presets_before);
 }
 
 TEST_CASE("workbench cards accept up to thirty two colors without widening legacy saved cards",

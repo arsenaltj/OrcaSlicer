@@ -96,6 +96,40 @@ inline std::string geometry_fingerprint(const indexed_triangle_set& mesh)
     return digest.final_hex();
 }
 
+// Connectivity identity intentionally excludes vertex positions and colors.
+// A smoothing/deformation pass may move vertices while keeping every material
+// corner bound to the same source appearance. Reordered or reindexed faces are
+// different topology and must not borrow UVs or vertex colors by position.
+inline std::string topology_fingerprint(const indexed_triangle_set& mesh)
+{
+    Sha256Digest digest;
+    constexpr char schema[] = "orca.surface-selection.topology/v1";
+    if (!digest.update(schema, sizeof(schema))) return {};
+    const auto append_u64 = [&digest](uint64_t value) {
+        std::array<unsigned char, 8> bytes {};
+        for (size_t i = 0; i < bytes.size(); ++i)
+            bytes[i] = static_cast<unsigned char>(value >> (i * 8));
+        return digest.update(bytes.data(), bytes.size());
+    };
+    if (!append_u64(mesh.vertices.size()) || !append_u64(mesh.indices.size())) return {};
+    std::array<unsigned char, 1024 * 3 * 4> buffer {};
+    size_t used = 0;
+    for (const auto& face : mesh.indices) {
+        for (int vertex : face) {
+            if (vertex < 0 || size_t(vertex) >= mesh.vertices.size()) return {};
+            const uint32_t value = static_cast<uint32_t>(vertex);
+            for (size_t byte = 0; byte < 4; ++byte)
+                buffer[used++] = static_cast<unsigned char>(value >> (byte * 8));
+        }
+        if (used == buffer.size()) {
+            if (!digest.update(buffer.data(), used)) return {};
+            used = 0;
+        }
+    }
+    if (used && !digest.update(buffer.data(), used)) return {};
+    return digest.final_hex();
+}
+
 // Empty optional masks mean all zero. Nonempty masks must have exactly the
 // actual face count and binary values. All four labels are preserved as given;
 // their product meaning is owned by the editor, not inferred by serialization.

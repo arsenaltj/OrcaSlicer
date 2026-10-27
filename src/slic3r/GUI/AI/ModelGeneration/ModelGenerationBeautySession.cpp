@@ -265,7 +265,10 @@ void ModelGenerationPanel::refresh_model_finishing()
         m_finishing_candidate_secondary_evidence.reset();
         m_finishing_candidate_secondary_error.clear();
         if (m_beauty_transactions) m_beauty_transactions->reset();
-        m_finishing_candidate.clear(); m_finishing_source.clear(); m_finishing_undo_path.clear();
+        m_finishing_candidate.clear();
+        m_finishing_candidate_original_appearance = {};
+        m_finishing_candidate_original_appearance_error.clear();
+        m_finishing_source.clear(); m_finishing_undo_path.clear();
         m_model_preview->set_selection_preview_suppressed(false);
     }
     const bool pending = !m_finishing_candidate.empty();
@@ -414,6 +417,7 @@ void ModelGenerationPanel::reset_beauty_asset()
     if (m_workbench_check_worker.joinable()) m_workbench_check_worker.join();
     m_workbench_check_cancel.reset();
     m_workbench_check_running = m_workbench_auto_repair = false;
+    clear_pending_workbench_ai_palette();
     m_workbench_check_path.clear();
     m_workbench_check_result = {};
     m_workbench_operation_notice.clear();
@@ -443,6 +447,8 @@ void ModelGenerationPanel::reset_beauty_asset()
     m_finishing_candidate_baked_appearance = nullptr;
     m_finishing_candidate_region_evidence.reset();
     m_finishing_candidate_secondary_evidence.reset();
+    m_finishing_candidate_original_appearance = {};
+    m_finishing_candidate_original_appearance_error.clear();
     m_beauty_session_source.reset();
     m_beauty_reoptimization_before.reset();
     m_beauty_accepted_files.clear();
@@ -492,6 +498,8 @@ BeautyCandidateSnapshot ModelGenerationPanel::capture_beauty_candidate() const
             : AI::model_artifact_sha256(snapshot.candidate));
     snapshot.id = m_finishing_id;
     snapshot.geometry_id = m_model_preview->geometry_id();
+    snapshot.original_appearance = m_model_preview->original_appearance_reference();
+    snapshot.original_appearance_error = m_model_preview->original_appearance_error();
     snapshot.result = m_finishing_result;
     snapshot.options = m_finishing_options;
     snapshot.selection = m_model_preview->selection_state();
@@ -562,7 +570,11 @@ bool ModelGenerationPanel::restore_beauty_candidate(const BeautyCandidateSnapsho
     // Prepare without retiring the current preview. A native commit rejection
     // must leave both the model and its unsaved appearance unchanged.
     ModelPreview3D::PreparedModel prepared;
-    if (!ModelPreview3D::prepare_model(path, prepared, error, snapshot.face_overrides, metadata)) {
+    const std::optional<OriginalAppearanceReference> appearance_override =
+        snapshot.original_appearance.valid() || !snapshot.original_appearance_error.empty()
+            ? std::optional<OriginalAppearanceReference>(snapshot.original_appearance) : std::nullopt;
+    if (!ModelPreview3D::prepare_model(path, prepared, error, snapshot.face_overrides, metadata,
+            true, {}, nullptr, appearance_override)) {
         m_finishing_status->SetLabel(_L("版本恢复失败，当前模型保持不变：") + from_u8(error));
         return false;
     }
@@ -609,6 +621,10 @@ bool ModelGenerationPanel::restore_beauty_candidate(const BeautyCandidateSnapsho
     m_finishing_candidate_region_error = snapshot.region_evidence_error;
     m_finishing_candidate_secondary_evidence = snapshot.secondary_evidence;
     m_finishing_candidate_secondary_error = snapshot.secondary_evidence_error;
+    m_finishing_candidate_original_appearance = snapshot.candidate.empty()
+        ? OriginalAppearanceReference {} : snapshot.original_appearance;
+    m_finishing_candidate_original_appearance_error = snapshot.candidate.empty()
+        ? std::string {} : snapshot.original_appearance_error;
     m_model_preview->restore_semantic_region_evidence(snapshot.region_evidence, snapshot.region_evidence_error);
     m_model_preview->restore_secondary_region_evidence(snapshot.secondary_evidence, snapshot.secondary_evidence_error);
     m_model_preview->restore_portrait_shapes(snapshot.shape_details, snapshot.shapes_unlocked);

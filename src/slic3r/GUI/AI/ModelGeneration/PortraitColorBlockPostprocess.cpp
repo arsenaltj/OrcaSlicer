@@ -669,7 +669,7 @@ std::shared_ptr<Result> build(const Input& in, const SC::Cancel& cancel) {
             // or reorder those slots. This keeps 4/5/6-color identity stable
             // across ordinary preview, portrait optimization and persistence.
             if (!in.targets.empty() && in.targets.size() != final_count)
-                throw std::runtime_error("人像颜色区域的自动建议槽位数量不一致");
+                throw std::runtime_error("人像颜色区域的 AI 配色槽位数量不一致");
             std::vector<RGB> palette;
             if (!in.targets.empty()) {
                 palette = in.targets;
@@ -687,7 +687,7 @@ std::shared_ptr<Result> build(const Input& in, const SC::Cancel& cancel) {
                 while (palette.size() < final_count) palette.push_back(palette.back());
             }
             for (const auto& color : palette)
-                if (!color_valid(color)) throw std::runtime_error("人像颜色区域包含无效自动建议颜色");
+                if (!color_valid(color)) throw std::runtime_error("人像颜色区域包含无效 AI 配色值");
             result->final_slot_indices.resize(palette.size());
             std::iota(result->final_slot_indices.begin(), result->final_slot_indices.end(), size_t(0));
             std::vector<RGB> palette_lab;
@@ -718,34 +718,47 @@ std::shared_ptr<Result> build(const Input& in, const SC::Cancel& cancel) {
                 }
                 return selected < palette.size() ? std::optional<size_t>(selected) : std::nullopt;
             };
-            // Core anatomy roles are hard slots.  Use the role vote first and
-            // then a legal target candidate if the source colors collide;
-            // silently reusing the eye-white slot for the iris is not safe.
-            // A missing independent legal color is a failed candidate, not a
-            // reason to merge two protected roles.
-            for (const auto &[role, vote] : roles) {
-                if (!core_role(role)) continue;
-                const auto selected = choose_slot(vote.color, is_dark_role(role));
-                if (!selected) throw std::runtime_error("当前色卡无法提供四个独立保护颜色");
-                role_slots[role] = *selected;
-                used_core_slots.push_back(*selected);
-            }
-            if (role_slots.size() > final_count)
-                throw std::runtime_error("人像核心角色数量超过最终色数");
-            // Hair and eyebrows keep their semantic identity but share the
-            // darkest original suggestion slot. This prevents a
-            // brown source region from displacing a legal black slot while
-            // keeping the two semantic roles independently editable.
-            for (const auto &[role, vote] : roles) {
-                if (core_role(role)) continue;
-                if (is_dark_role(role)) {
-                    const auto darkest = std::min_element(palette_lab.begin(), palette_lab.end(),
-                        [](const RGB& a, const RGB& b) { return a[0] < b[0]; });
-                    role_slots[role] = size_t(darkest - palette_lab.begin());
-                } else {
-                    const auto nearest = PreviewPalette::nearest_lab_index(
-                        PreviewPalette::to_lab(vote.color), palette_lab);
-                    role_slots[role] = nearest < palette.size() ? nearest : 0;
+            if (!in.fixed_role_slots.empty()) {
+                for (const auto& [role, slot] : in.fixed_role_slots)
+                    if (role.empty() || slot >= palette.size())
+                        throw std::runtime_error("荣耀套装语义槽位引用无效");
+                // Product-card locks are deliberately non-exclusive. Hair,
+                // iris and eyebrow share charcoal; sclera and teeth share
+                // white. Only roles actually confirmed by V2 are persisted.
+                for (const auto& [role, vote] : roles) {
+                    const auto fixed = in.fixed_role_slots.find(role);
+                    if (fixed != in.fixed_role_slots.end()) role_slots[role] = fixed->second;
+                    else {
+                        const auto nearest = PreviewPalette::nearest_lab_index(
+                            PreviewPalette::to_lab(vote.color), palette_lab);
+                        role_slots[role] = nearest < palette.size() ? nearest : 0;
+                    }
+                }
+            } else {
+                // Core anatomy roles are hard slots.  Use the role vote first
+                // and then a legal target candidate if source colors collide.
+                for (const auto &[role, vote] : roles) {
+                    if (!core_role(role)) continue;
+                    const auto selected = choose_slot(vote.color, is_dark_role(role));
+                    if (!selected) throw std::runtime_error("当前色卡无法提供四个独立保护颜色");
+                    role_slots[role] = *selected;
+                    used_core_slots.push_back(*selected);
+                }
+                if (role_slots.size() > final_count)
+                    throw std::runtime_error("人像核心角色数量超过最终色数");
+                // Hair and eyebrows keep their semantic identity but share the
+                // darkest original suggestion slot.
+                for (const auto &[role, vote] : roles) {
+                    if (core_role(role)) continue;
+                    if (is_dark_role(role)) {
+                        const auto darkest = std::min_element(palette_lab.begin(), palette_lab.end(),
+                            [](const RGB& a, const RGB& b) { return a[0] < b[0]; });
+                        role_slots[role] = size_t(darkest - palette_lab.begin());
+                    } else {
+                        const auto nearest = PreviewPalette::nearest_lab_index(
+                            PreviewPalette::to_lab(vote.color), palette_lab);
+                        role_slots[role] = nearest < palette.size() ? nearest : 0;
+                    }
                 }
             }
             if (ti == 1) {
@@ -761,7 +774,10 @@ std::shared_ptr<Result> build(const Input& in, const SC::Cancel& cancel) {
                     continue;
                 }
                 auto index = PreviewPalette::nearest_lab_index(PreviewPalette::to_lab(block.canonical), palette_lab);
-                if (const auto role = role_name(block.semantic)) {
+                if (const auto role = role_name(block.semantic);
+                    role && (in.fixed_role_slots.empty() ||
+                        (block.status == Status::Confirmed &&
+                         block.confidence >= fixed_role_minimum_confidence))) {
                     const auto lock = role_slots.find(role);
                     if (lock != role_slots.end()) index = lock->second;
                 }
@@ -808,7 +824,8 @@ std::shared_ptr<Result> build(const Input& in, const SC::Cancel& cancel) {
     return result;
 }
 
-bool remap_to_palette(Result& result, const std::vector<SC::Color>& target, bool preserve_regions)
+bool remap_to_palette(Result& result, const std::vector<SC::Color>& target, bool preserve_regions,
+                      const std::map<std::string, size_t>& fixed_role_slots)
 {
     if (target.empty() || target.size() > PreviewPalette::max_preview_colors)
         return false;
@@ -839,35 +856,46 @@ bool remap_to_palette(Result& result, const std::vector<SC::Color>& target, bool
         const int ap = role_priority(a), bp = role_priority(b);
         return ap != bp ? ap < bp : a < b;
     });
-    if (target.size() < roles.size()) return false;
-    for (const auto& role : roles) {
-        const auto desired = PreviewPalette::to_lab(source_roles[role]);
-        size_t best = target.size(); float distance = std::numeric_limits<float>::max();
-        float lightness = std::numeric_limits<float>::max();
-        for (size_t i = 0; i < target.size(); ++i) {
-            if (std::find(used.begin(), used.end(), i) != used.end()) continue;
-            if (std::any_of(used.begin(), used.end(), [&](size_t used_slot) {
-                return delta(target[i], target[used_slot]) < 1e-8f;
-            })) continue;
-            const float d = PreviewPalette::distance(desired, target_labs[i]);
-            const bool dark = role == "Iris" || role == "Hair" || role == "Eyebrow";
-            const float candidate_lightness = target_labs[i][0];
-            if (best == target.size() || (dark && (candidate_lightness < lightness - 1e-7f ||
-                    (std::abs(candidate_lightness - lightness) <= 1e-7f && d < distance))) ||
-                (!dark && d < distance)) {
-                distance = d; lightness = candidate_lightness; best = i;
-            }
+    if (!fixed_role_slots.empty()) {
+        for (const auto& [role, slot] : fixed_role_slots)
+            if (role.empty() || slot >= target.size()) return false;
+        for (const auto& [role, color] : source_roles) {
+            const auto fixed = fixed_role_slots.find(role);
+            if (fixed == fixed_role_slots.end()) continue;
+            role_slots[role] = fixed->second;
+            result.role_locks[role] = target[fixed->second];
         }
-        if (best == target.size()) return false;
-        role_slots[role] = best; used.push_back(best); result.role_locks[role] = target[best];
-    }
-    for (const auto& [role, color] : source_roles) {
-        if (core_role(role) || !(role == "Hair" || role == "Eyebrow")) continue;
-        const auto darkest = std::min_element(target_labs.begin(), target_labs.end(),
-            [](const RGB& lhs, const RGB& rhs) { return lhs[0] < rhs[0]; });
-        const size_t slot = size_t(darkest - target_labs.begin());
-        role_slots[role] = slot;
-        result.role_locks[role] = target[slot];
+    } else {
+        if (target.size() < roles.size()) return false;
+        for (const auto& role : roles) {
+            const auto desired = PreviewPalette::to_lab(source_roles[role]);
+            size_t best = target.size(); float distance = std::numeric_limits<float>::max();
+            float lightness = std::numeric_limits<float>::max();
+            for (size_t i = 0; i < target.size(); ++i) {
+                if (std::find(used.begin(), used.end(), i) != used.end()) continue;
+                if (std::any_of(used.begin(), used.end(), [&](size_t used_slot) {
+                    return delta(target[i], target[used_slot]) < 1e-8f;
+                })) continue;
+                const float d = PreviewPalette::distance(desired, target_labs[i]);
+                const bool dark = role == "Iris" || role == "Hair" || role == "Eyebrow";
+                const float candidate_lightness = target_labs[i][0];
+                if (best == target.size() || (dark && (candidate_lightness < lightness - 1e-7f ||
+                        (std::abs(candidate_lightness - lightness) <= 1e-7f && d < distance))) ||
+                    (!dark && d < distance)) {
+                    distance = d; lightness = candidate_lightness; best = i;
+                }
+            }
+            if (best == target.size()) return false;
+            role_slots[role] = best; used.push_back(best); result.role_locks[role] = target[best];
+        }
+        for (const auto& [role, color] : source_roles) {
+            if (core_role(role) || !(role == "Hair" || role == "Eyebrow")) continue;
+            const auto darkest = std::min_element(target_labs.begin(), target_labs.end(),
+                [](const RGB& lhs, const RGB& rhs) { return lhs[0] < rhs[0]; });
+            const size_t slot = size_t(darkest - target_labs.begin());
+            role_slots[role] = slot;
+            result.role_locks[role] = target[slot];
+        }
     }
     result.role_slot_locks = role_slots;
     for (auto& track : result.tracks) {
@@ -879,7 +907,9 @@ bool remap_to_palette(Result& result, const std::vector<SC::Color>& target, bool
                 continue;
             }
             const auto role = role_name(block.semantic);
-            if (preserve_regions && role) {
+            if (preserve_regions && role && (fixed_role_slots.empty() ||
+                    (block.status == Status::Confirmed &&
+                     block.confidence >= fixed_role_minimum_confidence))) {
                 const auto slot = role_slots.find(role);
                 if (slot != role_slots.end()) {
                     block.display = target[slot->second];
@@ -898,11 +928,36 @@ bool remap_to_palette(Result& result, const std::vector<SC::Color>& target, bool
     return true;
 }
 
+size_t reliable_fixed_role_blocks(const Result& result,
+                                  const std::map<std::string, size_t>& fixed_role_slots,
+                                  float minimum_confidence)
+{
+    if (fixed_role_slots.empty() || !std::isfinite(minimum_confidence)) return 0;
+    return size_t(std::count_if(result.current().blocks.begin(), result.current().blocks.end(),
+        [&](const Block& block) {
+            const auto role = role_name(block.semantic);
+            return role && fixed_role_slots.count(role) && block.status == Status::Confirmed &&
+                block.confidence >= minimum_confidence;
+        }));
+}
+
+std::vector<size_t> used_display_slots(const Result& result)
+{
+    std::vector<size_t> slots;
+    for (const auto& block : result.current().blocks) {
+        if (block.display_slot < 0 || size_t(block.display_slot) >= result.final_palette.size()) continue;
+        slots.push_back(size_t(block.display_slot));
+    }
+    std::sort(slots.begin(), slots.end());
+    slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
+    return slots;
+}
+
 std::string controls_signature(const std::vector<SC::Color>& mapping,const std::vector<SC::Color>& targets) {
     // Bump the cache contract when connected-color behavior changes. Existing
     // saved candidates must be rebuilt instead of silently reusing fragmented
     // regions produced by an older traversal rule.
-    return PortraitShapeCache::digest(nlohmann::json({{"strategy_revision",6},
+    return PortraitShapeCache::digest(nlohmann::json({{"strategy_revision",7},
         {"mapping",mapping},{"targets",targets}}).dump());
 }
 nlohmann::json encode(const Result& r) {

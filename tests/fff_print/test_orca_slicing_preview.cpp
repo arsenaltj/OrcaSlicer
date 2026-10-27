@@ -1,5 +1,5 @@
-#include "orca_slicing/project_support.hpp"
-#include "orca_slicing/engine.hpp"
+#include "orca_mobile_slicing_sdk/project_support.hpp"
+#include "orca_mobile_slicing_sdk/engine.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/Format/STL.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"

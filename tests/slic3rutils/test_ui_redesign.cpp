@@ -11,14 +11,230 @@
 #include "slic3r/GUI/AI/ModelGeneration/DesignGenerationAvailability.hpp"
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
+#include "slic3r/GUI/AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
+#include "slic3r/GUI/Redesign/RedesignSlicingDetails.hpp"
 #include "slic3r/GUI/Redesign/RedesignPageTransition.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <cstdlib>
 #include <string>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("Reviewed estimates survive trial cancellation only for their bound native input and goal", "[UiRedesign][SliceDetails]")
+{
+    using namespace Slic3r::AI::SmartSlicing;
+    const WorkspaceRevision reviewed{1, 2, 3, "reviewed"};
+    const WorkspaceRevision applied{1, 4, 5, "applied"};
+    SliceRecommendation plan;
+    plan.mode = SliceMode::SPEED;
+    plan.layer_height_mm = 0.26;
+    ExactEstimateView trial;
+    trial.status = ExactEstimateStatus::Ready;
+    trial.revision = reviewed;
+    trial.goal = RecommendationGoal::Speed;
+    trial.parameters = plan;
+    trial.estimated_time_seconds = 7200.0;
+    trial.material_grams = 110.42;
+    WorkbenchSliceEstimate display;
+    display.capture(trial, reviewed, applied, trial.goal, plan);
+    trial = {}; // Cancellation clears the worker view, not the reviewed display.
+    const auto retained = display.for_slice(applied, RecommendationGoal::Speed, plan);
+    REQUIRE(retained);
+    CHECK(retained->revision == reviewed);
+    CHECK(retained->status == ExactEstimateStatus::Ready);
+    REQUIRE(retained->estimated_time_seconds);
+    CHECK_THAT(*retained->estimated_time_seconds, Catch::Matchers::WithinAbs(7200.0, 0.001));
+    REQUIRE(retained->material_grams);
+    CHECK_THAT(*retained->material_grams, Catch::Matchers::WithinAbs(110.42, 0.001));
+    CHECK_FALSE(display.for_slice(reviewed, RecommendationGoal::Speed, plan));
+    CHECK_FALSE(display.for_slice(applied, RecommendationGoal::Quality, plan));
+    auto edited = applied;
+    ++edited.model_revision;
+    CHECK_FALSE(display.for_slice(edited, RecommendationGoal::Speed, plan));
+    edited = applied;
+    ++edited.config_revision;
+    CHECK_FALSE(display.for_slice(edited, RecommendationGoal::Speed, plan));
+    edited = applied;
+    ++edited.plate_revision;
+    CHECK_FALSE(display.for_slice(edited, RecommendationGoal::Speed, plan));
+    plan.layer_height_mm = 0.12;
+    CHECK_FALSE(display.for_slice(applied, RecommendationGoal::Speed, plan));
+}
+
+TEST_CASE("Only completed estimates for the reviewed recommendation can be retained", "[UiRedesign][SliceDetails]")
+{
+    using namespace Slic3r::AI::SmartSlicing;
+    const WorkspaceRevision revision{1, 2, 3, "current"};
+    SliceRecommendation plan;
+    ExactEstimateView trial;
+    trial.status = ExactEstimateStatus::Ready;
+    trial.revision = revision;
+    trial.parameters = plan;
+    WorkbenchSliceEstimate display;
+    display.capture(trial, revision, revision, trial.goal, plan);
+    REQUIRE(display.for_slice(revision, trial.goal, plan));
+    for (const auto status : {ExactEstimateStatus::None, ExactEstimateStatus::Running, ExactEstimateStatus::Failed}) {
+        trial.status = status;
+        display.capture(trial, revision, revision, trial.goal, plan);
+        CHECK_FALSE(display.for_slice(revision, trial.goal, plan));
+    }
+    trial.status = ExactEstimateStatus::Ready;
+    trial.revision.fingerprint = "stale";
+    display.capture(trial, revision, revision, trial.goal, plan);
+    CHECK_FALSE(display.for_slice(revision, trial.goal, plan));
+    trial.revision = revision;
+    plan.wall_loops += 1;
+    display.capture(trial, revision, revision, trial.goal, plan);
+    CHECK_FALSE(display.for_slice(revision, trial.goal, plan));
+}
+
+TEST_CASE("Formal statistics update the metrics while every recommendation detail remains visible", "[UiRedesign][SliceDetails]")
+{
+    Slic3r::AI::SmartSlicing::SliceRecommendation plan;
+    plan.layer_height_mm = 0.26;
+    plan.wall_loops = 2;
+    plan.sparse_infill_density_percent = 10;
+    plan.sparse_infill_pattern = "grid";
+    plan.outer_wall_speed_mm_s = 200;
+    plan.enable_support = true;
+    plan.support_threshold_angle_deg = 60;
+    plan.adaptive_layer_height = false;
+    plan.arachne_wall_generator = true;
+    ExactEstimateView estimate;
+    estimate.status = ExactEstimateStatus::Ready;
+    estimate.estimated_time_seconds = 7200;
+    estimate.material_grams = 100;
+    const auto before = exact_estimate_detail_rows(plan, estimate);
+    const auto slicing = exact_estimate_detail_rows(plan, estimate, {}, true, true);
+    const std::vector<SliceDetailRow> statistics{
+        {_L("打印时间"), _L("6 小时 9 分钟"), _L("正式切片结果")},
+        {_L("实际耗材"), "110.42 g", _L("正式切片结果")}};
+    // Even a cancelled/missing trial must not add AI fallback rows to a formal result.
+    estimate.status = ExactEstimateStatus::Failed;
+    const auto completed = exact_estimate_detail_rows(plan, estimate, statistics);
+    REQUIRE(before.size() == 12);
+    REQUIRE(slicing.size() == before.size());
+    REQUIRE(completed.size() == before.size());
+    CHECK(slicing[0].value == before[0].value);
+    CHECK(slicing[1].value == before[1].value);
+    CHECK(slicing[0].label == _L("切片前预计时间"));
+    for (size_t i = 0; i < statistics.size(); ++i) {
+        CHECK(completed[i].label == statistics[i].label);
+        CHECK(completed[i].value == statistics[i].value);
+    }
+    for (size_t i = 2; i < before.size(); ++i) {
+        CHECK(slicing[i].label == before[i].label);
+        CHECK(slicing[i].value == before[i].value);
+        CHECK(completed[i].label == before[i].label);
+        CHECK(completed[i].value == before[i].value);
+        CHECK(completed[i].section == before[i].section);
+    }
+}
+
+TEST_CASE("A native slice without completed estimates waits for its own result", "[UiRedesign][SliceDetails]")
+{
+    Slic3r::AI::SmartSlicing::SliceRecommendation plan;
+    const auto rows = exact_estimate_detail_rows(plan, {}, {}, false, true);
+    REQUIRE(rows.size() == 12);
+    CHECK(rows[0].value == _L("等待切片结果"));
+    CHECK(rows[1].value == _L("等待切片结果"));
+}
+
+TEST_CASE("Pending cloud recommendations do not inherit completion from local baselines", "[UiRedesign][CloudRecommendationPresentation]")
+{
+    SmartSlicingWorkbenchState state;
+    state.lightweight_analysis.emplace();
+    state.lightweight_analysis->completed = true;
+    const auto goal = Slic3r::AI::SmartSlicing::RecommendationGoal::Balanced;
+    using Stage = RecommendationPresentationStage;
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::EstimatingLocal);
+    state.recommendation_source = SlicingRecommendationSource::Cloud;
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::Idle);
+    state.cloud_recommendation.status = CloudRecommendationStatus::Preparing;
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::PreparingCloud);
+    state.cloud_recommendation.status = CloudRecommendationStatus::Requesting;
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::RequestingCloud);
+    state.analyzing = true;
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::RequestingCloud);
+    state.cloud_recommendation.status = CloudRecommendationStatus::Ready;
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::Analyzing);
+    state.analyzing = false;
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::EstimatingCloud);
+    state.exact_estimate.status = ExactEstimateStatus::Ready;
+    state.exact_estimate.parameters = state.lightweight_analysis->recommendations[0];
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::CloudReady);
+    state.cloud_recommendation.status = CloudRecommendationStatus::Failed;
+    state.recommendation_source = SlicingRecommendationSource::Local;
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::CloudFailed);
+}
+
+TEST_CASE("Cloud readiness distinguishes the current exact estimate from unrelated trials", "[UiRedesign][CloudRecommendationPresentation]")
+{
+    SmartSlicingWorkbenchState state;
+    state.recommendation_source = SlicingRecommendationSource::Cloud;
+    state.cloud_recommendation.status = CloudRecommendationStatus::Ready;
+    state.session.workspace_revision = {1, 2, 3, "current"};
+    state.exact_estimate.revision = state.session.workspace_revision;
+    state.exact_estimate.status = ExactEstimateStatus::Running;
+    const auto goal = state.exact_estimate.goal;
+    using Stage = RecommendationPresentationStage;
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::EstimatingCloud);
+    state.exact_estimate.revision.fingerprint = "old";
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::EstimatingCloud);
+    state.exact_estimate.revision = state.session.workspace_revision;
+    CHECK(workbench_recommendation_stage(state, Slic3r::AI::SmartSlicing::RecommendationGoal::Speed) == Stage::EstimatingCloud);
+    state.exact_estimate.status = ExactEstimateStatus::Ready;
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::CloudReady);
+    state.exact_estimate.status = ExactEstimateStatus::Failed;
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::CloudReady);
+}
+
+TEST_CASE("Local recommendations remain estimating until their matching preview reaches a terminal state", "[UiRedesign][CloudRecommendationPresentation]")
+{
+    SmartSlicingWorkbenchState state;
+    state.session.workspace_revision = {1, 2, 3, "current"};
+    state.lightweight_analysis.emplace();
+    state.lightweight_analysis->completed = true;
+    const auto goal = state.selected_goal;
+    using Stage = RecommendationPresentationStage;
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::EstimatingLocal);
+    CHECK_FALSE(workbench_show_reanalyze(state));
+    state.exact_estimate.status = ExactEstimateStatus::Running;
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::EstimatingLocal);
+    state.exact_estimate.revision = state.session.workspace_revision;
+    state.exact_estimate.parameters = state.lightweight_analysis->recommendations[0];
+    state.exact_estimate.status = ExactEstimateStatus::Ready;
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::LocalReady);
+    CHECK(workbench_show_reanalyze(state));
+    state.exact_estimate.status = ExactEstimateStatus::Failed;
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::LocalReady);
+    CHECK(workbench_show_reanalyze(state));
+    state.exact_estimate.revision.fingerprint = "old";
+    CHECK(workbench_recommendation_stage(state, goal) == Stage::EstimatingLocal);
+}
+
+TEST_CASE("Matching official statistics end preview busy state without waiting for a discarded trial", "[UiRedesign][CloudRecommendationPresentation]")
+{
+    SmartSlicingWorkbenchState state;
+    state.lightweight_analysis.emplace();
+    state.lightweight_analysis->completed = true;
+    state.exact_estimate.status = ExactEstimateStatus::Running;
+    state.official.phase = Slic3r::AI::SmartSlicing::OfficialSlicePhase::Completed;
+    state.official_statistics_ready = true;
+    CHECK_FALSE(workbench_estimate_pending(state, state.selected_goal));
+    CHECK_FALSE(workbench_analysis_busy(state));
+    CHECK(workbench_show_reanalyze(state));
+    CHECK(workbench_recommendation_stage(state, state.selected_goal) == RecommendationPresentationStage::LocalReady);
+    CHECK(workbench_estimate_pending(state, Slic3r::AI::SmartSlicing::RecommendationGoal::Quality));
+    // The host clears this binding for changed input or a different recommendation.
+    state.official_statistics_ready = false;
+    CHECK(workbench_analysis_busy(state));
+    CHECK_FALSE(workbench_show_reanalyze(state));
+    CHECK(workbench_recommendation_stage(state, state.selected_goal) == RecommendationPresentationStage::EstimatingLocal);
+}
 
 TEST_CASE("Design inputs follow the selected provider catalog independently of other providers", "[UiRedesign][GenerationProviderAvailability]")
 {
@@ -701,7 +917,7 @@ TEST_CASE("Image home is the default surface with an explicit legacy fallback", 
     CHECK(RedesignFeatureFlags::surface_enabled("IMAGE_HOME"));
 }
 
-TEST_CASE("Image home startup requires no pending 3D work", "[UiRedesign]")
+TEST_CASE("Image home startup respects explicit 3D routes", "[UiRedesign]")
 {
     ScopedEnvironment global("ORCASLICER_UI_REDESIGN");
     ScopedEnvironment shell("ORCASLICER_UI_REDESIGN_SHELL");
@@ -713,15 +929,14 @@ TEST_CASE("Image home startup requires no pending 3D work", "[UiRedesign]")
     const bool shell_active = RedesignFeatureFlags::shell_on_startup(true);
     CHECK(shell_active);
     CHECK_FALSE(RedesignFeatureFlags::shell_on_startup(false));
-    CHECK(RedesignFeatureFlags::image_home_on_startup(shell_active, false, false, false));
-    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(false, false, false, false));
-    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(shell_active, true, false, false));
-    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(shell_active, false, true, false));
-    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(shell_active, false, false, true));
+    CHECK(RedesignFeatureFlags::image_home_on_startup(shell_active, false, false));
+    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(false, false, false));
+    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(shell_active, true, false));
+    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(shell_active, false, true));
 
     set_environment("ORCASLICER_UI_REDESIGN_IMAGE_HOME", "0");
     CHECK(RedesignFeatureFlags::shell_on_startup(true));
-    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(true, false, false, false));
+    CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(true, false, false));
     set_environment("ORCASLICER_UI_REDESIGN_IMAGE_HOME", nullptr);
     set_environment("ORCASLICER_UI_REDESIGN", "0");
     CHECK_FALSE(RedesignFeatureFlags::shell_on_startup(true));
@@ -1217,4 +1432,57 @@ TEST_CASE("Returning to the design page is preserved until a new model session s
 
     ++update.model_generation_session;
     CHECK(model_generation_route_action(update, current, false, 0, {}) == RedesignModelRouteAction::Model);
+}
+
+TEST_CASE("Reanalysis stays hidden until current analysis and estimate reach a terminal state", "[UiRedesign][CloudRecommendationPresentation]")
+{
+    SmartSlicingWorkbenchState state;
+    state.lightweight_analysis.emplace();
+    state.lightweight_analysis->completed = true;
+    state.can_analyze = true;
+    state.recommendation_source = SlicingRecommendationSource::Cloud;
+    state.cloud_recommendation.status = CloudRecommendationStatus::Requesting;
+    state.analyzing = true;
+    CHECK_FALSE(workbench_recommendation_parameters_ready(state));
+    CHECK_FALSE(workbench_show_reanalyze(state));
+    state.cloud_recommendation.status = CloudRecommendationStatus::Ready;
+    state.analyzing = false;
+    CHECK(workbench_recommendation_parameters_ready(state));
+    CHECK_FALSE(workbench_show_reanalyze(state));
+    state.exact_estimate.status = ExactEstimateStatus::Running;
+    CHECK_FALSE(workbench_show_reanalyze(state));
+    state.exact_estimate.status = ExactEstimateStatus::Ready;
+    state.exact_estimate.parameters = state.lightweight_analysis->recommendations[0];
+    CHECK(workbench_show_reanalyze(state));
+    state.exact_estimate.status = ExactEstimateStatus::Failed;
+    CHECK(workbench_show_reanalyze(state));
+    state.cloud_recommendation.status = CloudRecommendationStatus::Failed;
+    state.exact_estimate = {};
+    CHECK(workbench_show_reanalyze(state));
+    state.recommendation_source = SlicingRecommendationSource::Local;
+    state.cloud_recommendation = {};
+    CHECK_FALSE(workbench_show_reanalyze(state));
+    state.exact_estimate.status = ExactEstimateStatus::Ready;
+    state.exact_estimate.parameters = state.lightweight_analysis->recommendations[0];
+    CHECK(workbench_show_reanalyze(state));
+}
+
+TEST_CASE("Changed recommendation parameters hide reanalysis until their own estimate finishes", "[UiRedesign][CloudRecommendationPresentation]")
+{
+    SmartSlicingWorkbenchState state;
+    state.session.workspace_revision = {1, 2, 3, "current"};
+    state.lightweight_analysis.emplace();
+    state.lightweight_analysis->completed = true;
+    auto& parameters = state.lightweight_analysis->recommendations[0];
+    state.exact_estimate.status = ExactEstimateStatus::Ready;
+    state.exact_estimate.revision = state.session.workspace_revision;
+    state.exact_estimate.parameters = parameters;
+    CHECK(workbench_show_reanalyze(state));
+    parameters.layer_height_mm += 0.04;
+    CHECK_FALSE(workbench_show_reanalyze(state));
+    state.exact_estimate.parameters = parameters;
+    CHECK(workbench_show_reanalyze(state));
+    state.lightweight_analyzing = true;
+    state.analyzing = true;
+    CHECK_FALSE(workbench_show_reanalyze(state));
 }

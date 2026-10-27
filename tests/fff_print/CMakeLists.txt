@@ -3,6 +3,7 @@ add_executable(${_TEST_NAME}_tests
 	../local_print_recipe_fixture.hpp
 	../../src/slic3r/GUI/AI/Orca/OrcaParameterProposalAdapter.cpp
 	../../src/slic3r/GUI/AI/Orca/OrcaTrialSliceExecutor.cpp
+	../../src/slic3r/GUI/AI/Orca/SmartSliceApplier.cpp
 	${_TEST_NAME}_tests.cpp
 	test_orca_slicing_preview.cpp
 	../../src/orca_mobile_slicing_sdk/project_support.cpp

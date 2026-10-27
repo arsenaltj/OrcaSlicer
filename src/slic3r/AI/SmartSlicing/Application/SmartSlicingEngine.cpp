@@ -158,6 +158,54 @@ SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
 }
 
 SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
+    const std::vector<TriangleMeshSnapshot>& meshes,
+    const MachinePreset& machine, const FilamentPreset& filament) const
+{
+    if (meshes.empty())
+        return {SmartAnalysisResult::CONTRACT_VERSION, false, "smart_slice_geometry_unavailable", {}, {}};
+    if (meshes.size() == 1)
+        return AnalyzeAndPrecompute(meshes.front(), machine, filament);
+
+    ModelMetrics combined;
+    combined.bounding_box.min_x_mm = combined.bounding_box.min_y_mm =
+        combined.bounding_box.min_z_mm = std::numeric_limits<double>::max();
+    combined.bounding_box.max_x_mm = combined.bounding_box.max_y_mm =
+        combined.bounding_box.max_z_mm = std::numeric_limits<double>::lowest();
+    combined.closed_mesh = true;
+    double overhang_45_area = 0.0;
+    double overhang_60_area = 0.0;
+    double top_micro_area = 0.0;
+    double thin_wall_area = 0.0;
+    for (const TriangleMeshSnapshot& mesh : meshes) {
+        const ModelMetrics metrics = metrics_from_snapshot(mesh);
+        if (!metrics.usable())
+            return AnalyzeAndPrecompute(metrics, machine, filament);
+        combined.bounding_box.min_x_mm = std::min(combined.bounding_box.min_x_mm, metrics.bounding_box.min_x_mm);
+        combined.bounding_box.min_y_mm = std::min(combined.bounding_box.min_y_mm, metrics.bounding_box.min_y_mm);
+        combined.bounding_box.min_z_mm = std::min(combined.bounding_box.min_z_mm, metrics.bounding_box.min_z_mm);
+        combined.bounding_box.max_x_mm = std::max(combined.bounding_box.max_x_mm, metrics.bounding_box.max_x_mm);
+        combined.bounding_box.max_y_mm = std::max(combined.bounding_box.max_y_mm, metrics.bounding_box.max_y_mm);
+        combined.bounding_box.max_z_mm = std::max(combined.bounding_box.max_z_mm, metrics.bounding_box.max_z_mm);
+        combined.volume_mm3 += metrics.volume_mm3;
+        combined.surface_area_mm2 += metrics.surface_area_mm2;
+        combined.triangle_count += metrics.triangle_count;
+        combined.closed_mesh = combined.closed_mesh && metrics.closed_mesh;
+        combined.finite_geometry = combined.finite_geometry && metrics.finite_geometry;
+        overhang_45_area += metrics.high_overhang_area_ratio_45_deg * metrics.surface_area_mm2;
+        overhang_60_area += metrics.severe_overhang_area_ratio_60_deg * metrics.surface_area_mm2;
+        top_micro_area += metrics.top_micro_slope_surface_ratio * metrics.surface_area_mm2;
+        thin_wall_area += metrics.thin_wall_feature_ratio * metrics.surface_area_mm2;
+    }
+    if (combined.surface_area_mm2 > 0.0) {
+        combined.high_overhang_area_ratio_45_deg = overhang_45_area / combined.surface_area_mm2;
+        combined.severe_overhang_area_ratio_60_deg = overhang_60_area / combined.surface_area_mm2;
+        combined.top_micro_slope_surface_ratio = top_micro_area / combined.surface_area_mm2;
+        combined.thin_wall_feature_ratio = thin_wall_area / combined.surface_area_mm2;
+    }
+    return AnalyzeAndPrecompute(combined, machine, filament);
+}
+
+SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
     const ModelMetrics& metrics, const MachinePreset& machine, const FilamentPreset& filament) const
 {
     SmartAnalysisResult result;

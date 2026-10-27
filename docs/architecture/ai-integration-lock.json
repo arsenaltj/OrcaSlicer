@@ -256,7 +256,8 @@
     ],
     "smart_slicing_owned_paths": [
       "src/slic3r/AI/SmartSlicing",
-      "src/slic3r/GUI/AI/SmartSlicing"
+      "src/slic3r/GUI/AI/SmartSlicing",
+      "tools/ai/slicing_recommendation_application.py"
     ],
     "allowed_cross_feature_contracts": [
       "src/slic3r/AI/Contracts/GeneratedModelArtifact.hpp",

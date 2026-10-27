@@ -108,8 +108,16 @@ bool ModelGenerationPanel::show_finishing_version(const boost::filesystem::path&
         path == m_beauty_session_source->source;
     const auto explicit_overrides = path == m_finishing_candidate ? m_finishing_candidate_face_overrides
         : session_source ? m_beauty_session_source->face_overrides : ModelPreview3D::FaceColorOverrides {};
+    std::optional<OriginalAppearanceReference> appearance_override;
+    if (path == m_finishing_candidate &&
+        (m_finishing_candidate_original_appearance.valid() || !m_finishing_candidate_original_appearance_error.empty()))
+        appearance_override = m_finishing_candidate_original_appearance;
+    else if (session_source && (m_beauty_session_source->original_appearance.valid() ||
+                               !m_beauty_session_source->original_appearance_error.empty()))
+        appearance_override = m_beauty_session_source->original_appearance;
     invalidate_printer_filament_trial_for_model_change();
-    if (!m_model_preview->load_model(path, {}, triangles, dimensions, colors, error, explicit_overrides)) {
+    if (!m_model_preview->load_model(path, {}, triangles, dimensions, colors, error, explicit_overrides, {},
+            appearance_override)) {
         m_finishing_status->SetLabel(_L("预览加载失败，原件仍保留：") + from_u8(error));
         return false;
     }
@@ -236,6 +244,17 @@ void ModelGenerationPanel::accept_model_finishing()
     }
     const auto source = m_finishing_source;
     const auto candidate = m_finishing_candidate;
+    std::vector<boost::filesystem::path> topology_publication_artifacts;
+    if (topology_candidate) {
+        topology_publication_artifacts.push_back(candidate);
+        auto expected_carrier = candidate;
+        expected_carrier.replace_extension(".source-appearance.obj");
+        boost::system::error_code equivalent_error;
+        if (after->original_appearance.valid() && boost::filesystem::is_regular_file(expected_carrier) &&
+            boost::filesystem::equivalent(expected_carrier,
+                after->original_appearance.carrier_model, equivalent_error) && !equivalent_error)
+            topology_publication_artifacts.push_back(expected_carrier);
+    }
     const auto source_hash = before && before->source == source
         ? before->model_sha256 : m_finishing_result.source_sha256;
     const auto metadata_path = library_metadata_path(m_finishing_id);
@@ -340,7 +359,8 @@ void ModelGenerationPanel::accept_model_finishing()
     try {
         m_finishing_worker = std::thread([weak, revision, canceled, committed, metadata_path,
             source, candidate, before, after, source_context, cache_root, region_cache_unsaved,
-            topology_candidate, verified_check, filament_application,
+            topology_candidate, verified_check, filament_application, root,
+            topology_publication_artifacts = std::move(topology_publication_artifacts),
             metadata = std::move(metadata), history_index = std::move(history_index)]() mutable {
             std::string error;
             auto final_check = verified_check;
@@ -357,6 +377,21 @@ void ModelGenerationPanel::accept_model_finishing()
                 }
                 if(after->color_blocks)metadata["portrait_color_blocks"]=PortraitColorBlocks::save(*after->color_blocks,
                     cache_root/"portrait-color-blocks");
+                if (after->original_appearance.valid()) {
+                    TriangleMesh saved_mesh;
+                    ObjInfo saved_appearance;
+                    std::string appearance_error;
+                    if (!AI::load_model_artifact(candidate, saved_mesh, saved_appearance, appearance_error,
+                            [canceled] { return canceled->load(); }) || saved_mesh.empty())
+                        throw std::runtime_error(appearance_error.empty()
+                            ? "无法校验原始配色证据。" : appearance_error);
+                    ResolvedOriginalAppearance resolved;
+                    if (!resolve_original_appearance_reference(after->original_appearance, saved_mesh.its,
+                            root, resolved, appearance_error, [canceled] { return canceled->load(); }))
+                        throw std::runtime_error(appearance_error.empty()
+                            ? "原始配色证据校验失败。" : appearance_error);
+                    metadata["original_appearance"] = resolved.reference.encode(root);
+                }
                 nlohmann::json document;
                 const auto& options = after->options;
                 if (options.beauty_appearance || options.beauty_deform || options.beauty_puzzle) {
@@ -375,9 +410,17 @@ void ModelGenerationPanel::accept_model_finishing()
                 AI::publish_beauty_version_record(metadata_path, candidate, source, metadata,
                     &encoded, [canceled] { return canceled->load(); }, &history_index);
                 committed->store(true);
-            } catch (const std::exception& e) { error = e.what(); }
+            } catch (const std::exception& e) {
+                error = e.what();
+                if (topology_candidate) {
+                    boost::system::error_code ignored;
+                    for (const auto& artifact : topology_publication_artifacts)
+                        boost::filesystem::remove(artifact, ignored);
+                }
+            }
             wxGetApp().CallAfter([weak, revision, canceled, committed, candidate, before, after,
-                source_context, region_cache_unsaved, topology_candidate, filament_application, final_check, metadata_path, error]() mutable {
+                source, source_context, region_cache_unsaved, topology_candidate, filament_application,
+                final_check, metadata_path, error]() mutable {
                 if (!weak || weak->m_shutdown || revision != weak->m_sequence ||
                     weak->m_beauty_publication_committed != committed) return;
                 auto* self = weak.get();
@@ -387,18 +430,33 @@ void ModelGenerationPanel::accept_model_finishing()
                     self->m_save_and_return = false;
                     if (self->m_beauty_transactions)
                         self->m_beauty_transactions->finish(false, false, error);
-                    self->m_finishing_status->SetLabel(canceled->load()
-                        ? _L("已取消保存，候选和草稿保留，可再次保存。")
-                        : _L("版本保存失败，候选和草稿保留：") + from_u8(error));
-                    if (self->m_workbench_auto_repair) {
+                    if (topology_candidate) {
+                        const bool save_canceled = canceled->load();
                         const auto hash = self->m_finishing_result.source_sha256;
                         self->m_workbench_auto_repair = false;
+                        // A topology candidate and its immutable appearance
+                        // carrier are one publication. Never leave either as a
+                        // retryable draft after metadata publication failed.
+                        self->m_workbench_check_result.candidate_status = RepairCandidateStatus::Failed;
                         self->discard_model_finishing();
-                        self->m_workbench_check_result.status = WorkbenchCheckStatus::NotRun;
+                        self->m_workbench_check_result = {};
+                        self->m_workbench_check_result.source = final_check.source;
+                        self->m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
+                        self->m_workbench_check_result.phase = WorkbenchCheckPhase::Idle;
                         self->m_workbench_check_result.model_sha256 = hash;
-                        self->m_workbench_check_result.repair_reason = "安全修复保存失败，已恢复原模型：" + error;
+                        self->m_workbench_check_result.source_sha256 = hash;
+                        self->m_workbench_check_result.candidate_status = RepairCandidateStatus::Failed;
+                        self->m_workbench_check_result.summary = save_canceled
+                            ? "已取消保存，修复候选和原始外观载体已回滚。"
+                            : "修复版本保存失败，候选和原始外观载体已回滚。";
+                        self->m_workbench_check_result.repair_reason = self->m_workbench_check_result.summary;
+                        if (!error.empty()) self->m_workbench_check_result.repair_reason += " " + error;
+                        self->m_workbench_check_path = source.string();
+                        self->m_workbench_check_revision = self->m_sequence;
                         self->m_finishing_status->SetLabel(from_u8(self->m_workbench_check_result.repair_reason));
-                    }
+                    } else self->m_finishing_status->SetLabel(canceled->load()
+                        ? _L("已取消保存，候选和草稿保留，可再次保存。")
+                        : _L("版本保存失败，候选和草稿保留：") + from_u8(error));
                     self->m_workbench_operation_notice = into_u8(self->m_finishing_status->GetLabel());
                     self->finish_printer_filament_application(false);
                     self->refresh_controls();
@@ -421,9 +479,15 @@ void ModelGenerationPanel::accept_model_finishing()
                 self->m_finishing_restore_context = source_context;
                 self->m_finishing_accepted_path = candidate;
                 self->m_beauty_accepted_files.push_back(candidate);
+                if (after->original_appearance.valid() &&
+                    std::find(self->m_beauty_candidate_files.begin(), self->m_beauty_candidate_files.end(),
+                              after->original_appearance.carrier_model) != self->m_beauty_candidate_files.end())
+                    self->m_beauty_accepted_files.push_back(after->original_appearance.carrier_model);
                 self->select_local_finishing_version(candidate, self->m_finishing_id);
                 const auto accepted_context = self->capture_model_context();
                 self->m_finishing_candidate.clear();
+                self->m_finishing_candidate_original_appearance = {};
+                self->m_finishing_candidate_original_appearance_error.clear();
                 after->source = candidate;
                 after->candidate.clear();
                 after->options = {};
@@ -502,17 +566,27 @@ void ModelGenerationPanel::accept_model_finishing()
     } catch (const std::exception& error) {
         m_finishing_running = m_busy = m_save_and_return = false;
         if (m_beauty_transactions) m_beauty_transactions->finish(false, false, error.what());
-        m_finishing_status->SetLabel(_L("暂时无法启动保存，候选保留：") + from_u8(error.what()));
-        m_workbench_operation_notice = into_u8(m_finishing_status->GetLabel());
-        finish_printer_filament_application(false);
-        if (m_workbench_auto_repair) {
+        if (topology_candidate) {
             const auto hash = m_finishing_result.source_sha256;
             m_workbench_auto_repair = false;
+            m_workbench_check_result.candidate_status = RepairCandidateStatus::Failed;
             discard_model_finishing();
-            m_workbench_check_result.status = WorkbenchCheckStatus::NotRun;
+            m_workbench_check_result = {};
+            m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
+            m_workbench_check_result.phase = WorkbenchCheckPhase::Idle;
             m_workbench_check_result.model_sha256 = hash;
-            m_workbench_check_result.repair_reason = "安全修复保存失败，已恢复原模型：" + std::string(error.what());
+            m_workbench_check_result.source_sha256 = hash;
+            m_workbench_check_result.candidate_status = RepairCandidateStatus::Failed;
+            m_workbench_check_result.summary = "无法启动修复版本保存，候选和原始外观载体已回滚。";
+            m_workbench_check_result.repair_reason = m_workbench_check_result.summary + " " + error.what();
+            m_workbench_check_path = source.string();
+            m_workbench_check_revision = m_sequence;
+            m_finishing_status->SetLabel(from_u8(m_workbench_check_result.repair_reason));
+        } else {
+            m_finishing_status->SetLabel(_L("暂时无法启动保存，候选保留：") + from_u8(error.what()));
         }
+        m_workbench_operation_notice = into_u8(m_finishing_status->GetLabel());
+        finish_printer_filament_application(false);
         refresh_controls();
     }
 }
@@ -534,6 +608,8 @@ void ModelGenerationPanel::discard_model_finishing()
     }
     m_beauty_session_source.reset();
     m_finishing_candidate.clear();
+    m_finishing_candidate_original_appearance = {};
+    m_finishing_candidate_original_appearance_error.clear();
     if (m_workbench_check_result.candidate_status == RepairCandidateStatus::Ready) {
         m_workbench_check_result = {};
         ensure_workbench_check();
@@ -610,6 +686,11 @@ void ModelGenerationPanel::stop_model_finishing()
 
         m_beauty_accepted_files.push_back(m_finishing_candidate);
 
+        if (m_finishing_candidate_original_appearance.valid() &&
+            std::find(m_beauty_candidate_files.begin(), m_beauty_candidate_files.end(),
+                      m_finishing_candidate_original_appearance.carrier_model) != m_beauty_candidate_files.end())
+            m_beauty_accepted_files.push_back(m_finishing_candidate_original_appearance.carrier_model);
+
     }
 
     clear_unaccepted_beauty_candidates();
@@ -621,6 +702,8 @@ void ModelGenerationPanel::stop_model_finishing()
     }
 
     m_finishing_candidate.clear();
+    m_finishing_candidate_original_appearance = {};
+    m_finishing_candidate_original_appearance_error.clear();
 
 }
 

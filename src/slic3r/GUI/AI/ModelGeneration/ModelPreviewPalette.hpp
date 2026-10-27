@@ -16,9 +16,10 @@
 namespace Slic3r::GUI::PreviewPalette {
 using Color = std::array<float, 3>;
 inline constexpr size_t max_preview_colors = 32;
-inline size_t initial_trial_color_count(size_t project_filaments, size_t model_suggestion)
+inline constexpr size_t default_ai_palette_colors = 6;
+inline constexpr size_t initial_trial_color_count()
 {
-    return std::clamp(project_filaments ? project_filaments : model_suggestion, size_t(1), max_preview_colors);
+    return default_ai_palette_colors;
 }
 struct ColorTrialMapping {
     bool enabled {false};

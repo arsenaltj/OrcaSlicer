@@ -25,6 +25,12 @@ public:
                                              const MachinePreset& machine,
                                              const FilamentPreset& filament) const;
 
+    // Aggregates every printable object on the current plate. A single input
+    // delegates to the original overload so its established result is unchanged.
+    SmartAnalysisResult AnalyzeAndPrecompute(const std::vector<TriangleMeshSnapshot>& meshes,
+                                             const MachinePreset& machine,
+                                             const FilamentPreset& filament) const;
+
     // Owner-thread convenience overload.  The implementation lives in the
     // Orca GUI target so the AI static library remains free of native GUI code.
     SmartAnalysisResult AnalyzeAndPrecompute(const ModelObject* model,

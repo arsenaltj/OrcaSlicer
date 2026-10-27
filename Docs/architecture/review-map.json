@@ -507,6 +507,26 @@
       "id": "slicing_goal_selection",
       "path": "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingWorkbenchState.hpp",
       "needle": "class WorkbenchGoalSelection"
+    },
+    {
+      "id": "slicing_cloud_application",
+      "path": "tools/ai/slicing_recommendation_application.py",
+      "needle": "class SlicingRecommendationApplication:"
+    },
+    {
+      "id": "slicing_cloud_client",
+      "path": "src/slic3r/GUI/AI/SmartSlicing/SlicingRecommendationClient.hpp",
+      "needle": "class SlicingRecommendationClient final"
+    },
+    {
+      "id": "slicing_cloud_source",
+      "path": "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.cpp",
+      "needle": "bool SmartSlicingFeatureHost::set_recommendation_source("
+    },
+    {
+      "id": "slicing_cloud_ui",
+      "path": "src/slic3r/GUI/Redesign/RedesignModelWorkflow.cpp",
+      "needle": "slicing-recommendation-source"
     }
   ],
   "journeys": [
@@ -713,7 +733,11 @@
             "PlanningCandidates"
           ],
           "evidence": [
-            "slicing_plan"
+            "slicing_plan",
+            "slicing_cloud_application",
+            "slicing_cloud_client",
+            "slicing_cloud_source",
+            "slicing_cloud_ui"
           ]
         },
         {
@@ -805,6 +829,16 @@
           "evidence": [
             "slicing_states",
             "slicing_cancel"
+          ]
+        },
+        {
+          "title": "云端推荐受本地基线和版本门禁约束",
+          "detail": "默认使用本地智能推荐；云端仅接收脱敏统计并调整七类白名单参数，响应需经 Sidecar、C++ 和 Orca 配置校验。取消、模式切换或工作区变化会使旧响应失效，失败时回到本地推荐。",
+          "evidence": [
+            "slicing_cloud_application",
+            "slicing_cloud_client",
+            "slicing_cloud_source",
+            "slicing_cloud_ui"
           ]
         }
       ],
@@ -1226,6 +1260,11 @@
         "label": "设计预处理与模型适配",
         "detail": "OpenAI 兼容预处理 · 提供商网关",
         "module": "generation"
+      },
+      {
+        "label": "YOYOClaw 云端推荐",
+        "detail": "脱敏模型统计与设备约束 · 白名单参数建议 · 本地复验",
+        "module": "slicing"
       }
     ],
     "native": [
@@ -1324,10 +1363,10 @@
         {
           "id": "parameter-ai",
           "label": "参数智能调优",
-          "detail": "接通大模型建议到校验、试切和应用闭环",
+          "detail": "首版已接通 YOYOClaw 建议、本地双重校验和原生精确预估；后续扩展结果驱动迭代",
           "input": "模型、打印机、材料与优化目标",
           "output": "通过校验、可试切比较的参数候选",
-          "status": "未做"
+          "status": "首版已实现"
         },
         {
           "id": "result-optimize",
@@ -1406,6 +1445,14 @@
         "target": "智能切片",
         "label": "工作区与约束 ↑ 风险检查",
         "detail": "采集工作区和版本，检查风险；版本失效后必须重新采集。",
+        "planned": false
+      },
+      {
+        "id": "cloud-slicing-recommendation",
+        "source": "智能切片",
+        "target": "YOYOClaw 云端推荐",
+        "label": "脱敏统计与本地基线 → 七类参数建议",
+        "detail": "用户首次确认后发送结构化摘要；返回建议经本地策略、工作区版本和 Orca 配置校验，失败回退本地推荐。",
         "planned": false
       },
       {

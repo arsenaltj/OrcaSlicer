@@ -193,7 +193,7 @@ bool show_orca_filament_selection(wxWindow* parent, Plater& plater, size_t selec
     if (!import_sources.empty()) {
         auto* import_row = new wxBoxSizer(wxHORIZONTAL);
         import_choice = new wxChoice(&dialog, wxID_ANY);
-        import_choice->Append(_L("选择自动建议、手动试色或已保存色卡"));
+        import_choice->Append(_L("选择 AI配色、手动试色或已保存色卡"));
         for (const auto& source : import_sources) import_choice->Append(from_u8(source.name));
         import_choice->SetSelection(0);
         import_button = new Button(&dialog, _L("导入到配置草稿"));

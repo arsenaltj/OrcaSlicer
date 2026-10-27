@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -44,6 +45,11 @@ struct State {
     std::vector<size_t> color_card_target_slot_ids;
     std::vector<size_t> source_to_target_slot;
     double color_card_weighted_error {0.0};
+    // Honor suites persist as a manual snapshot for old readers. New readers
+    // use these optional stable identifiers to restore the suite UI without
+    // changing the historical numeric source contract.
+    std::string suite_id;
+    std::string suite_revision;
 };
 
 // Saved color-card entries use the persisted manual source because dynamic
@@ -82,8 +88,22 @@ inline bool valid_basis_signature(const std::string& value)
     });
 }
 
+inline bool valid_suite_token(const std::string& value)
+{
+    return !value.empty() && value.size() <= 128 &&
+        std::all_of(value.begin(), value.end(), [](unsigned char c) {
+            return std::isalnum(c) || c == '.' || c == '-' || c == '_';
+        });
+}
+
 inline bool valid_state(const State& state)
 {
+    const bool has_suite_id = !state.suite_id.empty();
+    const bool has_suite_revision = !state.suite_revision.empty();
+    if (has_suite_id != has_suite_revision ||
+        (has_suite_id && (state.source != 2 || !valid_suite_token(state.suite_id) ||
+                          !valid_suite_token(state.suite_revision))))
+        return false;
     if (!valid_basis_signature(state.automatic_basis_signature) ||
         !std::isfinite(state.color_card_weighted_error) || state.color_card_weighted_error < 0.0)
         return false;
@@ -213,6 +233,10 @@ inline nlohmann::json encode(const State& state, size_t actual_face_count, const
         doc["source_to_target_slot"] = state.source_to_target_slot;
         doc["color_card_weighted_error"] = state.color_card_weighted_error;
     }
+    if (!state.suite_id.empty()) {
+        doc["suite_id"] = state.suite_id;
+        doc["suite_revision"] = state.suite_revision;
+    }
     return doc;
 }
 
@@ -253,6 +277,16 @@ inline bool decode(const nlohmann::json& doc, size_t actual_face_count, const st
         return fail("Trial colors require normalized RGB palettes within the preview limit.");
     restored.source = int(source);
     restored.count = int(count);
+    const bool has_suite_id = doc.contains("suite_id");
+    const bool has_suite_revision = doc.contains("suite_revision");
+    if (has_suite_id != has_suite_revision)
+        return fail("Honor suite identity must include both id and revision.");
+    if (has_suite_id) {
+        if (!doc["suite_id"].is_string() || !doc["suite_revision"].is_string())
+            return fail("Invalid Honor suite identity.");
+        restored.suite_id = doc["suite_id"].get<std::string>();
+        restored.suite_revision = doc["suite_revision"].get<std::string>();
+    }
     auto read_count = [&](const char* name, int fallback, int& target) {
         if (!doc.contains(name)) { target = fallback; return true; }
         uint64_t value;

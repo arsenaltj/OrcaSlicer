@@ -35,6 +35,7 @@ struct RedesignConfirmationOptions {
     bool checkbox_checked { false };
     bool* checkbox_state { nullptr };
     bool standard_layout { false };
+    bool inline_confirmation_footer { false };
 };
 
 inline int redesign_dialog_dismiss_result(long style)
@@ -69,7 +70,8 @@ public:
                           const std::vector<RedesignDialogAction>& actions = {},
                           const wxString& checkbox_label = wxEmptyString,
                           bool checkbox_checked = false,
-                          ContentMode content_mode = ContentMode::Native);
+                          ContentMode content_mode = ContentMode::Native,
+                          bool inline_confirmation_footer = false);
     bool checkbox_checked() const;
     void set_dismiss_result(int result) { m_cancel_result = result; }
 
@@ -87,6 +89,7 @@ private:
     int m_message_width { 408 };
     int m_message_min_height { -1 };
     bool m_stacked_actions { false };
+    bool m_inline_confirmation_footer { false };
     Appearance m_appearance { Appearance::Standard };
     ContentMode m_content_mode { ContentMode::Native };
     wxString m_original_message;

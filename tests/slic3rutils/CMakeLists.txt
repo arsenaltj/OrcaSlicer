@@ -1,6 +1,7 @@
 get_filename_component(_TEST_NAME ${CMAKE_CURRENT_LIST_DIR} NAME)
 add_executable(${_TEST_NAME}_tests
     test_orca_slicing_support.cpp
+    ../../src/orca_mobile_slicing_sdk/engine.cpp
     ../../src/orca_mobile_slicing_sdk/project_support.cpp
     ../../src/orca_mobile_slicing_sdk/recommendation_support.cpp
     test_portrait_color_blocks.cpp
@@ -140,6 +141,7 @@ add_executable(${_TEST_NAME}_tests
     test_smart_slicing_six_nozzle_validation.cpp
     test_smart_slice_engine.cpp
     test_smart_slice_applier.cpp
+    test_slicing_recommendation_client.cpp
     ../fff_print/test_helpers.cpp
     )
 

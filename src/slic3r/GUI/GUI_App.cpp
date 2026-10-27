@@ -175,6 +175,7 @@
 #include "3DScene.hpp"
 #include "MainFrame.hpp"
 #include "Redesign/RedesignFeatureFlags.hpp"
+#include "Redesign/RedesignMessageDialog.hpp"
 #include "Redesign/StartupSplashView.hpp"
 #include "Redesign/StartupBufferView.hpp"
 #include "Redesign/StartupSetupDialog.hpp"
@@ -1159,7 +1160,7 @@ bool GUI_App::should_start_with_redesign_shell() const
         restore_available = Slic3r::has_restore_data(restore_path, origin_file);
     }
     const bool image_home = RedesignFeatureFlags::image_home_on_startup(
-        true, has_input_files, default_prepare, restore_available);
+        true, has_input_files, default_prepare);
     const char* initial_surface = image_home ? "image_home" :
         has_input_files ? (init_params->input_gcode ? "gcode" : "file") :
         restore_available ? "restore" : "prepare";
@@ -1215,15 +1216,9 @@ void GUI_App::advance_startup(wxTimerEvent&)
             if (is_closing() || !m_startup_frame)
                 return;
             {
-                bool restore_available = false;
-                if (mainframe->is_redesign_shell_active()) {
-                    std::string restore_path = app_config->get_last_backup_dir();
-                    std::string origin_file;
-                    restore_available = Slic3r::has_restore_data(restore_path, origin_file);
-                }
                 if (RedesignFeatureFlags::image_home_on_startup(
                         mainframe->is_redesign_shell_active(), init_params->input_files.size() != 0,
-                        app_config->get("default_page") == "1", restore_available)) {
+                        app_config->get("default_page") == "1")) {
                     log_stage("runtime_redesign_image_home");
                     schedule_startup(StartupStage::Finish, _L("Opening the workspace..."));
                     break;
@@ -1349,6 +1344,8 @@ void GUI_App::advance_startup(wxTimerEvent&)
             mainframe->Refresh();
             update_publish_status();
             log_startup_timing("workspace_revealed");
+            if (m_redesign_restore_pending && mainframe->is_redesign_shell_active())
+                mainframe->CallAfter([this] { show_pending_redesign_restore_prompt(); });
             // Event delivery gaps include OS scheduling and nested/modal loops;
             // they are not frame time or proof of uninterrupted computation.
             // Keep this off for normal users and correlate with operation logs.
@@ -1477,11 +1474,25 @@ void GUI_App::finish_post_init()
             mainframe->select_tab(TAB_ID_PREPARE);
     }
 
-    // A queued restore event treats a pure G-code session as an empty project
-    // because it has no model objects. Do not let it replace an explicit
-    // startup input after that input has already selected and loaded Preview.
-    if (init_params->input_files.empty())
-        plater_->trigger_restore_project(1);
+    // Explicit startup files, including pure G-code sessions, take precedence
+    // over recovery in both redesigned and legacy startup routes.
+    if (init_params->input_files.empty()) {
+        if (mainframe->is_redesign_shell_active()) {
+            const std::string restore_dir = app_config->get_last_backup_dir();
+            std::string restore_path = restore_dir;
+            std::string origin_file;
+            if (Slic3r::has_restore_data(restore_path, origin_file)) {
+                m_redesign_restore_pending = true;
+                m_redesign_restore_dir = restore_dir;
+                m_redesign_restore_path = std::move(restore_path);
+                m_redesign_restore_origin = std::move(origin_file);
+                BOOST_LOG_TRIVIAL(info) << "[UiRedesign] queued project restore prompt path="
+                                         << m_redesign_restore_path << " origin=" << m_redesign_restore_origin;
+            }
+        } else {
+            plater_->trigger_restore_project(1);
+        }
+    }
     if (is_closing() || !m_startup_frame)
         return;
     //#endif
@@ -1715,6 +1726,50 @@ GUI_App::GUI_App()
     // It now runs in post_init(), before the first WebView (the setup wizard) is created.
 
     reset_to_active();
+}
+
+void GUI_App::show_pending_redesign_restore_prompt()
+{
+    if (!m_redesign_restore_pending || is_closing() || !mainframe || !plater_ ||
+        !mainframe->is_redesign_shell_active())
+        return;
+
+    m_redesign_restore_pending = false;
+    const std::string restore_dir = std::move(m_redesign_restore_dir);
+    const std::string restore_path = std::move(m_redesign_restore_path);
+    const std::string origin_file = std::move(m_redesign_restore_origin);
+
+    RedesignConfirmationOptions options;
+    options.actions = {
+        {wxID_NO, _L("放弃恢复"), false},
+        {wxID_YES, _L("恢复项目"), true}
+    };
+    const int result = show_redesign_confirmation(
+        mainframe,
+        _L("检测到上次未保存的项目，是否恢复？"),
+        _L("恢复项目"), options);
+    if (result == wxID_YES) {
+        try {
+            plater_->load_project(from_path(restore_path), from_path(origin_file));
+            Slic3r::backup_soon();
+            // load_project reports import errors itself and returns no success status.
+            BOOST_LOG_TRIVIAL(info) << "[UiRedesign] project restore request finished path="
+                                     << restore_path << " objects=" << plater_->model().objects.size();
+        } catch (const std::exception& error) {
+            BOOST_LOG_TRIVIAL(error) << "[UiRedesign] project restore failed: " << error.what();
+        }
+        return;
+    }
+
+    if (origin_file != "<lock>") {
+        try {
+            boost::filesystem::remove_all(restore_dir);
+            BOOST_LOG_TRIVIAL(info) << "[UiRedesign] discarded project restore data at " << restore_dir;
+        } catch (const std::exception& error) {
+            BOOST_LOG_TRIVIAL(warning) << "[UiRedesign] failed to discard project restore data: "
+                                       << error.what();
+        }
+    }
 }
 
 void GUI_App::shutdown()
@@ -9091,7 +9146,7 @@ bool GUI_App::load_language(wxString language, bool initial)
         message += _L("\nYou may need to reconfigure the missing locales, likely by running the \"locale-gen\" and \"dpkg-reconfigure locales\" commands.\n");
 #endif
         if (initial)
-        	message += "\n\n" + _L("Application will close.");
+            message += "\n\n" + _L("Application will close.");
         wxMessageBox(message, _L("Orca Slicer - Switching language failed"), wxOK | wxICON_ERROR);
         if (initial)
 			std::exit(EXIT_FAILURE);

@@ -8,6 +8,7 @@ submitting a second task.
 from __future__ import annotations
 
 import base64
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -30,6 +31,69 @@ try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 except ImportError:  # pragma: no cover - exercised by the minimal bundled runtime
     AESGCM = None  # type: ignore[assignment,misc]
+
+
+class _TextRequestTiming:
+    def __init__(self, diagnostics: TextRequestDiagnostics, stage: str) -> None:
+        self._diagnostics = diagnostics
+        self._stage = stage
+
+    def __enter__(self) -> None:
+        self._started = self._diagnostics.clock()
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        # Do not rewrite the traceback: application errors may be frozen dataclasses.
+        self._diagnostics.record(self._stage, **{self._stage + "_ms": self._diagnostics.elapsed_ms(self._started)})
+
+
+class TextRequestDiagnostics:
+    """Opt-in timings and allowlisted metadata; never retain message content."""
+
+    def __init__(self, observer: Callable[[str, dict[str, Any]], None], *, monotonic=time.monotonic):
+        self.clock = monotonic
+        self.metrics: dict[str, Any] = {}
+        self._observer = observer
+
+    def elapsed_ms(self, started: float) -> int:
+        return max(0, round((self.clock() - started) * 1000))
+
+    def record(self, stage: str, **fields: Any) -> None:
+        self.metrics.update(fields)
+        try:
+            self._observer(stage, fields)
+        except Exception:
+            pass  # Diagnostics must not affect a paid request's outcome.
+
+    def measure(self, stage: str) -> _TextRequestTiming:
+        return _TextRequestTiming(self, stage)
+
+    def mark(self, stage: str, started: float) -> None:
+        key = stage + "_ms"
+        if key not in self.metrics:
+            self.record(stage, **{key: self.elapsed_ms(started)})
+
+    def response_metadata(self, value: Any) -> None:
+        if not isinstance(value, Mapping):
+            return
+        model = value.get("model")
+        if isinstance(model, str) and model.strip() and len(model) <= 200:
+            model = model.strip()
+            if model != self.metrics.get("reported_model"):
+                self.record("provider_model", reported_model=model)
+        usage = value.get("usage")
+        if isinstance(usage, Mapping):
+            counts = {}
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                count = usage.get(key)
+                if type(count) is int and 0 <= count <= 1_000_000_000:
+                    counts[key] = count
+            details = usage.get("completion_tokens_details")
+            if isinstance(details, Mapping):
+                count = details.get("reasoning_tokens")
+                if type(count) is int and 0 <= count <= 1_000_000_000:
+                    counts["reasoning_tokens"] = count
+            if counts:
+                self.record("usage", **counts)
 
 
 DEFAULT_BASE_URL = "https://all-scenario-device-mirror.test.honor.com"
@@ -439,7 +503,7 @@ class YoYoClawClient:
         return self.whitelist_catalog(library)["models"]
 
     @staticmethod
-    def _text_from_non_stream_response(result: Any) -> str:
+    def _text_from_non_stream_response(result: Any, diagnostics: TextRequestDiagnostics | None = None) -> str:
         if not isinstance(result, Mapping):
             raise YoYoClawError(
                 "YOYOClaw returned an invalid text response.",
@@ -452,6 +516,10 @@ class YoYoClawClient:
                 category="provider",
             )
         value = result.get("data", result)
+        if diagnostics is not None:
+            diagnostics.response_metadata(result)
+            if value is not result:
+                diagnostics.response_metadata(value)
         choices = value.get("choices", []) if isinstance(value, Mapping) else []
         chunks: list[str] = []
         if isinstance(choices, list):
@@ -470,7 +538,9 @@ class YoYoClawClient:
         return "".join(chunks)
 
     @staticmethod
-    def _text_from_sse_response(response: Any) -> str:
+    def _text_from_sse_response(
+        response: Any, diagnostics: TextRequestDiagnostics | None = None, started: float = 0.0,
+    ) -> str:
         answer: list[str] = []
         event_data: list[str] = []
         saw_done = False
@@ -479,8 +549,12 @@ class YoYoClawClient:
             nonlocal saw_done
             if not data:
                 return
+            if diagnostics is not None:
+                diagnostics.mark("first_event", started)
             if data.strip() == "[DONE]":
                 saw_done = True
+                if diagnostics is not None:
+                    diagnostics.mark("done", started)
                 return
             try:
                 event = json.loads(data)
@@ -501,6 +575,10 @@ class YoYoClawClient:
                     category="provider",
                 )
             value = event.get("data", event)
+            if diagnostics is not None:
+                diagnostics.response_metadata(event)
+                if value is not event:
+                    diagnostics.response_metadata(value)
             choices = value.get("choices", []) if isinstance(value, Mapping) else []
             if not isinstance(choices, list):
                 return
@@ -509,7 +587,12 @@ class YoYoClawClient:
                     continue
                 delta = choice.get("delta", {})
                 content = delta.get("content") if isinstance(delta, Mapping) else None
+                if diagnostics is not None and isinstance(delta, Mapping) and delta.get("reasoning_content"):
+                    diagnostics.mark("first_reasoning", started)
                 if isinstance(content, str) and content:
+                    if diagnostics is not None:
+                        diagnostics.mark("first_content", started)
+                        diagnostics.metrics["last_content_ms"] = diagnostics.elapsed_ms(started)
                     answer.append(content)
 
         try:
@@ -528,6 +611,14 @@ class YoYoClawClient:
                     event_data.append(line[5:].lstrip())
             if event_data:
                 consume("\n".join(event_data))
+            if diagnostics is not None:
+                eof_ms = diagnostics.elapsed_ms(started)
+                fields = {"stream_eof_ms": eof_ms}
+                if "first_content_ms" in diagnostics.metrics:
+                    fields["content_receive_ms"] = diagnostics.metrics["last_content_ms"] - diagnostics.metrics["first_content_ms"]
+                if "done_ms" in diagnostics.metrics:
+                    fields["done_to_eof_ms"] = max(0, eof_ms - diagnostics.metrics["done_ms"])
+                diagnostics.record("stream_finished", **fields)
         except YoYoClawError:
             raise
         except Exception as exc:
@@ -551,7 +642,10 @@ class YoYoClawClient:
             )
         return "".join(answer)
 
-    def text_chat(self, model: str, messages: list[dict[str, Any]], *, timeout: float = 180.0) -> str:
+    def text_chat(
+        self, model: str, messages: list[dict[str, Any]], *, timeout: float = 180.0,
+        diagnostics: TextRequestDiagnostics | None = None,
+    ) -> str:
         self._ensure_token()
         payload = {
             "provider": "model-library",
@@ -570,12 +664,16 @@ class YoYoClawClient:
         }
         if self._fingerprint:
             headers["X-HCLAW-Device-Fingerprint"] = self._fingerprint
+        started = diagnostics.clock() if diagnostics is not None else 0.0
+        if diagnostics is not None:
+            diagnostics.record("chat_started", requested_model=model, reported_model=None)
         try:
-            response = session.request(
-                "POST", self.base_url + "/yoyoclaw/model/chat/completions",
-                data=_json_bytes(payload), headers=headers, timeout=(15, timeout),
-                allow_redirects=False, stream=True,
-            )
+            with diagnostics.measure("headers_wait") if diagnostics is not None else nullcontext():
+                response = session.request(
+                    "POST", self.base_url + "/yoyoclaw/model/chat/completions",
+                    data=_json_bytes(payload), headers=headers, timeout=(15, timeout),
+                    allow_redirects=False, stream=True,
+                )
         except Exception as exc:
             if _is_requests_error(exc):
                 raise YoYoClawError(
@@ -588,6 +686,8 @@ class YoYoClawClient:
 
         try:
             status = int(getattr(response, "status_code", 0) or 0)
+            if diagnostics is not None:
+                diagnostics.record("http_response", http_status=status)
             if not 200 <= status < 300:
                 try:
                     result = response.json()
@@ -604,13 +704,16 @@ class YoYoClawClient:
             content_type = str(getattr(response, "headers", {}).get("Content-Type", "")).lower()
             if "json" in content_type:
                 try:
-                    return self._text_from_non_stream_response(response.json())
+                    result = self._text_from_non_stream_response(response.json(), diagnostics)
+                    if diagnostics is not None:
+                        diagnostics.mark("json_body_complete", started)
+                    return result
                 except (ValueError, TypeError):
                     raise YoYoClawError(
                         "YOYOClaw returned a non-JSON text response.",
                         code="invalid_provider_response", category="provider",
                     ) from None
-            return self._text_from_sse_response(response)
+            return self._text_from_sse_response(response, diagnostics, started)
         finally:
             close = getattr(response, "close", None)
             if callable(close):
