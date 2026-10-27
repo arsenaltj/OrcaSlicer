@@ -1,3 +1,25 @@
+# 2026-10-27 远端 integration 同步与冲突复核（代码回归通过，GUI待验）
+
+主线：已 fetch `origin/codex/team/integration`，远端最新为 `0aa70a59225c063174332053d7b13c58356c78cf`，已包含在本地合并提交 `6ae03531326c5288cff5a6a636435c29fa972b83`；当前分支相对远端无落后提交，保留原有工作台门禁与轻量 MediaPipe 未提交修改。
+
+本轮：复核合并冲突仅涉及两份协调文档，已保留双方记录。远端 SmartSlice 桥接测试原先用空模型触发 `smart_slice_geometry_non_finite`，测试改为真实立方体；桥接恢复 Orca `max_layer_height=0` 自动上限语义（喷嘴直径 × 0.7）。同时修正版本化试切执行器的会话分支括号错误，避免准备好的会话被误报不可用、清空会话后反向调用 GUI provider。
+
+验证：固定 `.tmp/dev/build` CMAKE 源目录仍为本 checkout、VS 2022 x64 Release。`[OrcaSlicingSupport]` 47/47、`[D5T3]` 14/14、工作台/路由联合定向测试 115/115 通过；`scripts/verify_ai_integration.py --json` 返回 `ok: true`；`OrcaSlicer` Release 增量构建成功，仅保留已有 MSVC/LNK 警告。未执行真实生成 GUI 验收，未覆盖 `.tmp/dev/run`，不打包；用户已在后续指令明确授权将当前本地内容提交、推送并创建面向 `codex/team/integration` 的 PR。
+
+未结：用户要求的“生成新模型但尚未进入工作台时不显示修复弹窗”已由代码门禁和离线测试覆盖，仍需在匹配构建的真实主窗口中用无计费回放确认；实体打印色彩保真不在本轮范围。
+
+# 2026-10-27 新模型结果页修复卡门禁（代码与回归通过，待匹配 GUI）
+
+主线：已将轻量 MediaPipe 工作树完整提交为本地基线 `967f94ea2653aba9975537e14af6d4bc4c3962de`；其后只修复工作台浮动卡回归。验收场景固定为“新模型生成完成后仍停留 3D 结果页、尚未进入工作台”，此时不得启动检查或显示修复卡；历史模型已在工作台内加载不替代该场景。
+
+本轮：工作台前台呈现状态与内部编辑状态分离；自动检查、手动检查、修复/复检、自动保存和荣耀语义卡均要求工作台页面事务已提交且宿主实际可见。新模型或图像路由不保留工作台时，壳层现在会在修改/呈现结果页之前先撤销 `workbench_presented`，取消旧检查、隐藏卡片并递增呈现序号；迟到回调因序号、模型路径、几何和前台资格不匹配而丢弃。卡片活动期间的跨页导航继续被阻止，卡片只做 OrcaSlicer 应用内置顶。
+
+未结：匹配 GUI 尚未执行精确的新生成路径。PID `21560` 仍从旧 `.tmp/dev/run/orca-slicer.exe` 运行，未结束且运行目录未覆盖；真实远端生成可能计费，本轮未擅自发起。需在安装新构建后确认结果页跨多个刷新周期无卡片，随后点击进入工作台才恰好启动一次检查。
+
+下一步：用户关闭 PID `21560` 后，将固定 `.tmp/dev/build` 安装到 `.tmp/dev/run`，优先使用已有无计费回放；若只能走真实生成，则在明确预算授权后执行。记录结果页、点击进入工作台和首次检查三个连续阶段，不能用历史模型工作台路径冒充验收。
+
+计划变更：新增结果路由前置撤销及对应 `ModelGenerationRoute` 回归；`[PostGenerationWorkbench]|[UiRedesign]|[ModelPreviewState]` 联合测试 `217/217` 通过，另有 1 个既有 Windows 符号链接权限用例跳过。`scripts/verify_ai_integration.py --json` 返回 `ok: true`，固定 VS 2022 x64 Release 的 `slic3rutils_tests` 和完整 `OrcaSlicer` 增量构建通过；本轮修复保持未提交、未推送、未打包。
+
 # 2026-10-27 本地语义模型轻量化（实现、GUI 与轻量安装包通过）
 
 主线：正常交付只使用原生 `mediapipe.cpu.v1` 双模型和单一 `ModelSemanticColoring / ColorRegionMajorityV2` 路径；FaRL/Torch 降为默认关闭的研究能力，旧历史只读兼容，新请求不再调用 Python/FaRL 后备链。

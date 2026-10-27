@@ -177,6 +177,7 @@ private:
     void layout_slicing_camera_loading();
     void refresh_native_theme();
     bool slicing_mode_switch_allowed() const;
+    bool block_workbench_navigation(bool leaves_workbench = true);
     bool navigate_to_impl(Page page, bool allow_locked_image_view);
     wxWindow* page_route_root(Page page, ModelView view) const;
     wxWindow* active_page_focus_root() const;

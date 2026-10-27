@@ -74,6 +74,8 @@ public:
         std::shared_ptr<WorkbenchImportSession> session, WorkbenchImportProgress progress,
         WorkbenchImportCompletion completion);
     bool request_open_workbench();
+    void set_workbench_presented(bool presented);
+    void raise_workbench_modal();
     bool request_enter_beauty();
     bool request_return_overview();
     bool request_workbench_color_matching();

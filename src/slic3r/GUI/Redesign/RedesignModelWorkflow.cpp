@@ -923,7 +923,18 @@ bool RedesignShell::open_model_workbench()
 {
     if (m_import_in_progress || m_page_transition.active() || !owns_model_workflow() ||
         !m_model_generation_host->request_open_workbench()) return false;
-    return show_model_view(ModelView::Workbench);
+    if (show_model_view(ModelView::Workbench)) return true;
+    m_model_generation_host->set_workbench_presented(false);
+    return false;
+}
+
+bool RedesignShell::block_workbench_navigation(bool leaves_workbench)
+{
+    bool modal_blocking = m_workbench_state.modal_blocking;
+    if (m_model_generation_host) modal_blocking = m_model_generation_host->workbench_snapshot().modal_blocking;
+    if (workbench_navigation_allowed(modal_blocking, leaves_workbench)) return false;
+    if (m_model_generation_host) m_model_generation_host->raise_workbench_modal();
+    return true;
 }
 
 void RedesignShell::return_model_overview()
@@ -934,6 +945,7 @@ void RedesignShell::return_model_overview()
 
 bool RedesignShell::show_model_view(ModelView view)
 {
+    if (block_workbench_navigation(view != ModelView::Workbench)) return false;
     if (!owns_model_workflow() || m_import_in_progress || m_page_transition.active()) return false;
     if (view == ModelView::Preview) m_preview_auto_fit.request();
 
@@ -959,6 +971,8 @@ bool RedesignShell::show_model_view(ModelView view)
         present_active_page();
         if (view == ModelView::Result)
             update_model_page(m_model_generation_state);
+        if (m_model_generation_host)
+            m_model_generation_host->set_workbench_presented(view == ModelView::Workbench);
         return true;
     }
 
@@ -1017,6 +1031,8 @@ bool RedesignShell::show_model_view(ModelView view)
         m_page_transition.rollback(*transition);
         return false;
     }
+    if (m_model_generation_host)
+        m_model_generation_host->set_workbench_presented(view == ModelView::Workbench);
     restore_active_page_focus();
     if (view == ModelView::Result) update_model_page(m_model_generation_state);
     return true;
@@ -1175,13 +1191,14 @@ void RedesignShell::apply_workbench_state(const PostGenerationWorkbenchState& st
 
 bool RedesignShell::can_return_to_image_design() const
 {
-    return model_generation_return_to_design_allowed(
+    return !m_workbench_state.modal_blocking && model_generation_return_to_design_allowed(
         m_model_generation_state, m_workbench_state.actions,
         m_import_in_progress || m_submit_in_progress || m_model_preview_loading);
 }
 
 bool RedesignShell::return_to_image_design()
 {
+    if (block_workbench_navigation()) return false;
     if (!can_return_to_image_design())
         return false;
 
@@ -1538,7 +1555,7 @@ void RedesignShell::check_import_first_frame()
 
 void RedesignShell::open_print_preparation()
 {
-    if (m_import_in_progress || m_page_transition.active() || !m_print_page ||
+    if (block_workbench_navigation() || m_import_in_progress || m_page_transition.active() || !m_print_page ||
         !OrcaPrinterAdapter(m_plater).snapshot().gcode_ready) return;
     m_print_page->show_prepare();
     navigate_to(Page::Print);

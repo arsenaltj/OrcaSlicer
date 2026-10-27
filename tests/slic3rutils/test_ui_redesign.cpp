@@ -9,6 +9,7 @@
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
 #include "slic3r/GUI/Redesign/ImageDesignDraft.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/DesignGenerationAvailability.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
@@ -316,6 +317,9 @@ TEST_CASE("Slicing navigation waits for analysis and workspace operations to fin
     CHECK_FALSE(workbench_mode_switch_allowed(false, true, false, false, false));
     CHECK_FALSE(workbench_mode_switch_allowed(false, false, true, false, false));
     CHECK_FALSE(workbench_mode_switch_allowed(false, false, false, true, false));
+    CHECK(workbench_navigation_allowed(false, true));
+    CHECK(workbench_navigation_allowed(true, false));
+    CHECK_FALSE(workbench_navigation_allowed(true, true));
 }
 
 TEST_CASE("Redesign page transitions reject overlap and ignore late readiness callbacks",
@@ -1328,7 +1332,35 @@ TEST_CASE("A newly submitted model still leaves the design page for its result v
     const auto action = model_generation_route_action(
         submitted, design, false, design.model_generation_session, design.job_id);
     CHECK(action == RedesignModelRouteAction::Model);
-    CHECK_FALSE(model_generation_preserves_workbench(submitted, action, true));
+    const bool preserves_workbench = model_generation_preserves_workbench(submitted, action, true);
+    CHECK_FALSE(preserves_workbench);
+    CHECK(model_generation_route_revokes_workbench_presentation(action, preserves_workbench));
+
+    WorkbenchCheckResult running_check;
+    running_check.source = WorkbenchCheckSource::Automatic;
+    running_check.status = WorkbenchCheckStatus::Running;
+    running_check.phase = WorkbenchCheckPhase::Inspecting;
+    CHECK_FALSE(workbench_automatic_check_should_start(true, false, true));
+    CHECK_FALSE(workbench_check_card_should_show(
+        true, false, true, true, false, running_check));
+
+    // Result-page polls do not change presentation ownership. Only an explicit
+    // workbench page commit can set it again.
+    CHECK_FALSE(model_generation_route_revokes_workbench_presentation(
+        RedesignModelRouteAction::Refresh, false));
+}
+
+TEST_CASE("Saved model versions keep an already presented workbench", "[UiRedesign][ModelGenerationRoute]")
+{
+    ModelGenerationUIState saved;
+    saved.stage = ModelGenerationUIStage::ModelReady;
+    saved.model_generation_context = true;
+    saved.model_asset_id = "saved-version";
+    const bool preserves_workbench = model_generation_preserves_workbench(
+        saved, RedesignModelRouteAction::Model, true);
+    CHECK(preserves_workbench);
+    CHECK_FALSE(model_generation_route_revokes_workbench_presentation(
+        RedesignModelRouteAction::Model, preserves_workbench));
 }
 
 TEST_CASE("Returning to image design is available only after model work is stable", "[UiRedesign][ModelGenerationRoute]")

@@ -36,7 +36,8 @@ bool ModelGenerationPanel::apply_pending_workbench_ai_palette(const boost::files
 void ModelGenerationPanel::ensure_workbench_check()
 {
     if (m_shutdown || m_workbench_import_running ||
-        !workbench_automatic_check_should_start(m_finishing_workbench, m_model_preview_ready) ||
+        !workbench_automatic_check_should_start(m_finishing_workbench, m_workbench_presented,
+            m_model_preview_ready) ||
         m_workbench_check_running || m_finishing_running ||
         m_busy || m_model_preview->semantic_processing() || m_model_preview->selection_busy() ||
         !m_finishing_candidate.empty() || (m_beauty_controls && m_beauty_controls->has_changes())) return;
@@ -47,7 +48,7 @@ void ModelGenerationPanel::ensure_workbench_check()
 
 bool ModelGenerationPanel::request_check_workbench(bool automatic)
 {
-    if (m_shutdown || (automatic && !m_finishing_workbench) || !m_model_preview_ready ||
+    if (m_shutdown || !m_finishing_workbench || !m_workbench_presented || !m_model_preview_ready ||
         m_workbench_check_running || m_busy || m_finishing_running ||
         !post_generation_ui_state().can_edit || !m_finishing_candidate.empty() ||
         (m_beauty_controls && m_beauty_controls->has_changes())) return false;
@@ -55,6 +56,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     if (m_workbench_check_worker.joinable()) m_workbench_check_worker.join();
     const auto source = m_displayed_model_path;
     const auto revision = m_sequence;
+    const auto presentation = m_workbench_presentation_sequence;
     const auto asset = m_displayed_model_job_id;
     const auto id = "finish-" + ModelGenerationPresentation::new_request_id();
     // Candidates are deliberately written beside the source and never replace
@@ -100,7 +102,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     refresh_model_finishing();
     wxWeakRef<ModelGenerationPanel> weak(this);
     try {
-        m_workbench_check_worker = std::thread([weak, source, destination, revision, asset, id, canceled,
+        m_workbench_check_worker = std::thread([weak, source, destination, revision, presentation, asset, id, canceled,
             attempts, previous_result, repair_allowed, bound_edits, automatic, appearance_carrier,
             appearance_root, source_appearance, source_appearance_error,
             check_source = m_workbench_check_source] {
@@ -115,9 +117,11 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
             options.repair_mesh = true;
             const bool attempted = result.status != WorkbenchCheckStatus::Failed && !source_hash.empty() &&
                 !workbench_topology_safe(result) && repair_allowed && !attempts.count(key) && !canceled->load();
-            auto progress = [weak, source, revision, canceled](WorkbenchCheckPhase phase, const std::string& text) {
-                wxGetApp().CallAfter([weak, source, revision, canceled, phase, text] {
+            auto progress = [weak, source, revision, presentation, canceled](WorkbenchCheckPhase phase, const std::string& text) {
+                wxGetApp().CallAfter([weak, source, revision, presentation, canceled, phase, text] {
                     if (!weak || weak->m_shutdown || canceled->load() || revision != weak->m_sequence ||
+                        presentation != weak->m_workbench_presentation_sequence ||
+                        !weak->m_finishing_workbench || !weak->m_workbench_presented ||
                         source != weak->m_displayed_model_path || weak->m_workbench_check_cancel != canceled) return;
                     weak->m_workbench_check_result.phase = phase;
                     weak->m_workbench_check_result.summary = text;
@@ -240,7 +244,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                 boost::filesystem::remove(destination, ec);
                 boost::filesystem::remove(appearance_carrier, ec);
             }
-            wxGetApp().CallAfter([weak, source, destination, revision, asset, id, canceled, attempted, key, source_hash,
+            wxGetApp().CallAfter([weak, source, destination, revision, presentation, asset, id, canceled, attempted, key, source_hash,
                 automatic, check_source, appearance_carrier,
                 result = std::move(result), repair, options, prepared, error] () mutable {
                 auto cleanup = [&destination, &appearance_carrier] {
@@ -252,6 +256,19 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                     weak->m_workbench_check_cancel != canceled) { cleanup(); return; }
                 auto* self = weak.get();
                 if (self->m_workbench_check_worker.joinable()) self->m_workbench_check_worker.join();
+                if (presentation != self->m_workbench_presentation_sequence ||
+                    !self->m_finishing_workbench || !self->m_workbench_presented) {
+                    self->m_workbench_check_running = false;
+                    self->clear_pending_workbench_ai_palette();
+                    self->m_workbench_check_result = {};
+                    self->m_workbench_check_path.clear();
+                    self->m_workbench_check_revision = 0;
+                    cleanup();
+                    self->refresh_post_generation_workbench();
+                    self->publish_workbench_state();
+                    if (self->m_workbench_presented) self->ensure_workbench_check();
+                    return;
+                }
                 self->m_workbench_check_running = false;
                 result.phase = WorkbenchCheckPhase::Idle;
                 result.source = check_source;

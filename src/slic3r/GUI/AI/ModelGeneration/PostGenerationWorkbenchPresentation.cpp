@@ -30,6 +30,7 @@
 #include <wx/menu.h>
 #include <wx/textctrl.h>
 #include <wx/tglbtn.h>
+#include <wx/toplevel.h>
 #include <wx/scrolwin.h>
 #include <wx/settings.h>
 #include <wx/sizer.h>
@@ -44,6 +45,27 @@ namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
 namespace {
 constexpr int beauty_finishing_tools[] = {4, 1, 3, 5, 1};
+
+class WorkbenchFloatingCardEventFilter final : public wxEventFilter {
+public:
+    explicit WorkbenchFloatingCardEventFilter(ModelGenerationPanel* panel) : m_panel(panel) {}
+
+    int FilterEvent(wxEvent& event) override
+    {
+        if (!m_panel) return wxEventFilter::Event_Skip;
+        auto* window = dynamic_cast<wxTopLevelWindow*>(event.GetEventObject());
+        if (!window) return wxEventFilter::Event_Skip;
+        if (event.GetEventType() == wxEVT_SHOW) {
+            if (static_cast<wxShowEvent&>(event).IsShown()) m_panel->raise_workbench_modal();
+        } else if (event.GetEventType() == wxEVT_ACTIVATE) {
+            if (static_cast<wxActivateEvent&>(event).GetActive()) m_panel->raise_workbench_modal();
+        }
+        return wxEventFilter::Event_Skip;
+    }
+
+private:
+    wxWeakRef<ModelGenerationPanel> m_panel;
+};
 
 wxColour workbench_status_colour(PostGenerationStatusTone tone)
 {
@@ -158,8 +180,45 @@ void ModelGenerationPanel::raise_workbench_check_card()
     raise_workbench_floating_card(m_workbench_check_card);
 }
 
+void ModelGenerationPanel::install_workbench_card_layer_guard()
+{
+    if (m_workbench_card_event_filter) return;
+    m_workbench_card_event_filter = new WorkbenchFloatingCardEventFilter(this);
+    wxEvtHandler::AddFilter(m_workbench_card_event_filter);
+}
+
+void ModelGenerationPanel::remove_workbench_card_layer_guard()
+{
+    m_workbench_card_raise_pending = false;
+    if (!m_workbench_card_event_filter) return;
+    wxEvtHandler::RemoveFilter(m_workbench_card_event_filter);
+    delete m_workbench_card_event_filter;
+    m_workbench_card_event_filter = nullptr;
+}
+
+void ModelGenerationPanel::raise_workbench_modal()
+{
+    if (m_shutdown || !m_workbench_presented || !m_workbench_check_card ||
+        !m_workbench_check_card->IsShown() || m_workbench_card_raise_pending) return;
+    if (!wxGetApp().IsActive()) return;
+    m_workbench_card_raise_pending = true;
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    wxGetApp().CallAfter([weak] {
+        if (!weak) return;
+        weak->m_workbench_card_raise_pending = false;
+        if (weak->m_shutdown || !weak->m_workbench_presented || !weak->m_workbench_check_card ||
+            !weak->m_workbench_check_card->IsShown() || !wxGetApp().IsActive()) return;
+        weak->position_workbench_check_card();
+    });
+}
+
 void ModelGenerationPanel::detach_workbench_floating_card()
 {
+    m_workbench_presented = false;
+    ++m_workbench_presentation_sequence;
+    if (m_workbench_check_running && m_workbench_check_cancel)
+        m_workbench_check_cancel->store(true);
+    remove_workbench_card_layer_guard();
     if (m_model_preview) m_model_preview->set_honor_suite_semantic_progress_callback({});
     m_workbench_honor_semantic_active = false;
     if (m_workbench_card_overlay_host) {
@@ -185,7 +244,7 @@ void ModelGenerationPanel::on_workbench_card_owner_move(wxMoveEvent& event)
 
 void ModelGenerationPanel::on_workbench_card_owner_activate(wxActivateEvent& event)
 {
-    if (event.GetActive()) position_workbench_check_card();
+    if (event.GetActive()) raise_workbench_modal();
     event.Skip();
 }
 
@@ -198,10 +257,11 @@ void ModelGenerationPanel::on_workbench_card_overlay_size(wxSizeEvent& event)
 void ModelGenerationPanel::hide_workbench_check_card()
 {
     m_workbench_check_card_visible = false;
-    if (m_workbench_honor_semantic_active) {
+    if (m_workbench_honor_semantic_active && m_finishing_workbench && m_workbench_presented) {
         update_workbench_check_card();
         return;
     }
+    remove_workbench_card_layer_guard();
     m_workbench_floating_card_mode = WorkbenchFloatingCardMode::None;
     if (m_workbench_check_progress) m_workbench_check_progress->set_running(false);
     if (m_workbench_check_progress) m_workbench_check_progress->set_progress(std::nullopt);
@@ -269,10 +329,11 @@ void ModelGenerationPanel::update_workbench_check_card()
 {
     if (!m_workbench_check_card || !m_workbench_check_modal) return;
     const auto& result = m_workbench_check_result;
-    const auto mode = workbench_floating_card_mode(m_finishing_workbench,
+    const auto mode = workbench_floating_card_mode(m_finishing_workbench, m_workbench_presented,
         m_workbench_honor_semantic_active, m_workbench_check_card_visible,
         m_workbench_check_running, m_workbench_auto_repair && m_finishing_running, result);
-    if (mode == WorkbenchFloatingCardMode::None) {
+    if (mode == WorkbenchFloatingCardMode::None || !m_workbench_shell ||
+        !m_workbench_shell->IsShownOnScreen()) {
         hide_workbench_check_card();
         return;
     }
@@ -292,6 +353,7 @@ void ModelGenerationPanel::update_workbench_check_card()
         apply_workbench_floating_card_shape(m_workbench_check_card, 8, wxColour(45, 45, 49));
         m_workbench_check_card->Show();
     }
+    install_workbench_card_layer_guard();
     wxString phase;
     if (honor_semantic) phase = _L("正在应用荣耀耗材套装");
     else if (m_workbench_check_running) {

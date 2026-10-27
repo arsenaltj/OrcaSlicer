@@ -95,9 +95,10 @@ TEST_CASE("Workbench check summary stays compact while details retain diagnostic
 TEST_CASE("Automatic checks wait for the workbench and keep one progress card through every phase",
           "[AtomicModelCapabilities][PostGenerationWorkbench][UiRedesign]")
 {
-    CHECK_FALSE(workbench_automatic_check_should_start(false, true));
-    CHECK_FALSE(workbench_automatic_check_should_start(true, false));
-    CHECK(workbench_automatic_check_should_start(true, true));
+    CHECK_FALSE(workbench_automatic_check_should_start(false, true, true));
+    CHECK_FALSE(workbench_automatic_check_should_start(true, false, true));
+    CHECK_FALSE(workbench_automatic_check_should_start(true, true, false));
+    CHECK(workbench_automatic_check_should_start(true, true, true));
 
     WorkbenchCheckResult result;
     result.source = WorkbenchCheckSource::Automatic;
@@ -105,32 +106,37 @@ TEST_CASE("Automatic checks wait for the workbench and keep one progress card th
     for (const auto phase : {WorkbenchCheckPhase::Inspecting, WorkbenchCheckPhase::Repairing,
                              WorkbenchCheckPhase::Rechecking}) {
         result.phase = phase;
-        CHECK_FALSE(workbench_check_card_should_show(false, true, true, false, result));
-        CHECK(workbench_check_card_should_show(true, true, true, false, result));
-        CHECK(workbench_floating_card_mode(true, false, true, true, false, result) ==
+        CHECK_FALSE(workbench_check_card_should_show(false, true, true, true, false, result));
+        CHECK_FALSE(workbench_check_card_should_show(true, false, true, true, false, result));
+        CHECK(workbench_check_card_should_show(true, true, true, true, false, result));
+        CHECK(workbench_floating_card_mode(true, true, false, true, true, false, result) ==
               WorkbenchFloatingCardMode::ModelCheck);
-        CHECK(workbench_floating_card_mode(true, true, true, true, false, result) ==
+        CHECK(workbench_floating_card_mode(true, true, true, true, true, false, result) ==
               WorkbenchFloatingCardMode::HonorSuiteSemantic);
     }
 
-    CHECK(workbench_floating_card_mode(false, true, true, true, false, result) ==
+    CHECK(workbench_floating_card_mode(false, true, true, true, true, false, result) ==
+          WorkbenchFloatingCardMode::None);
+    CHECK(workbench_floating_card_mode(true, false, true, true, true, false, result) ==
           WorkbenchFloatingCardMode::None);
 
     result.status = WorkbenchCheckStatus::Normal;
     result.phase = WorkbenchCheckPhase::Idle;
-    CHECK_FALSE(workbench_check_card_should_show(true, true, false, false, result));
-    CHECK(workbench_check_card_should_show(true, true, false, true, result));
-    CHECK(workbench_floating_card_mode(true, false, true, false, false, result) ==
+    CHECK_FALSE(workbench_check_card_should_show(true, true, true, false, false, result));
+    CHECK(workbench_check_card_should_show(true, true, true, false, true, result));
+    CHECK(workbench_floating_card_mode(true, true, false, true, false, false, result) ==
           WorkbenchFloatingCardMode::None);
-    CHECK(workbench_floating_card_mode(true, false, true, false, true, result) ==
+    CHECK(workbench_floating_card_mode(true, true, false, true, false, true, result) ==
           WorkbenchFloatingCardMode::ModelCheck);
 
     result.source = WorkbenchCheckSource::Manual;
     result.status = WorkbenchCheckStatus::Running;
     result.phase = WorkbenchCheckPhase::Inspecting;
-    CHECK_FALSE(workbench_check_card_should_show(true, false, true, false, result));
+    CHECK_FALSE(workbench_check_card_should_show(true, true, false, true, false, result));
+    CHECK_FALSE(workbench_modal_navigation_blocked(true, false, false, false, true, false, result));
+    CHECK(workbench_modal_navigation_blocked(true, true, false, false, true, false, result));
     result.phase = WorkbenchCheckPhase::Repairing;
-    CHECK(workbench_check_card_should_show(true, false, true, false, result));
+    CHECK(workbench_check_card_should_show(true, true, false, true, false, result));
 }
 
 TEST_CASE("Partial thumbnail requests publish into their original asset slots", "[AtomicModelCapabilities][WorkbenchHistory]")

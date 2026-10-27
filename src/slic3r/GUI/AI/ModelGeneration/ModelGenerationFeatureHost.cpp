@@ -311,6 +311,11 @@ void ModelGenerationFeatureHost::set_workbench_return_to_design_handler(std::fun
 }
 
 bool ModelGenerationFeatureHost::request_open_workbench() { return m_impl->model_generation->request_open_workbench(); }
+void ModelGenerationFeatureHost::set_workbench_presented(bool presented)
+{
+    m_impl->model_generation->set_workbench_presented(presented);
+}
+void ModelGenerationFeatureHost::raise_workbench_modal() { m_impl->model_generation->raise_workbench_modal(); }
 void ModelGenerationFeatureHost::mount_workbench(wxWindow* parent) { m_impl->model_generation->mount_workbench(parent); }
 wxWindow* ModelGenerationFeatureHost::workbench_import_viewport() const { return m_impl->model_generation->workbench_import_viewport(); }
 wxWindow* ModelGenerationFeatureHost::workbench_import_history() const { return m_impl->model_generation->workbench_import_history(); }

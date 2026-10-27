@@ -1290,6 +1290,7 @@ void RedesignShell::disconnect_model_generation_host()
         m_plater_original_parent = nullptr;
     }
     if (m_model_generation_host != nullptr) {
+        m_model_generation_host->set_workbench_presented(false);
         m_model_generation_host->set_workbench_listener({});
         m_model_generation_host->set_workbench_results_handler({});
         m_model_generation_host->set_workbench_return_to_design_handler({});
@@ -1898,6 +1899,12 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     const auto image_stage = m_image_design_draft.stage(state);
     const bool preserve_model_workbench = model_generation_preserves_workbench(state, route_action,
         m_active_page == Page::Model && m_model_view == ModelView::Workbench);
+    // Revoke foreground ownership before mutating or presenting the result route.
+    // Otherwise a check started for the previous workbench can briefly keep its
+    // floating card alive while a newly generated model is still on Result.
+    if (m_model_generation_host &&
+        model_generation_route_revokes_workbench_presentation(route_action, preserve_model_workbench))
+        m_model_generation_host->set_workbench_presented(false);
     const bool history_changed = image_design_refreshes_history(state, m_model_generation_state);
     // An invalid draft must survive a host snapshot while the user edits it.
     // Loading another job still replaces the form with that job's input.
@@ -3213,6 +3220,9 @@ void RedesignShell::restore_active_page_focus()
 
 bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
 {
+    const bool keeps_presented_workbench = page == Page::Model &&
+        m_active_page == Page::Model && m_model_view == ModelView::Workbench;
+    if (block_workbench_navigation(!keeps_presented_workbench)) return false;
     if (m_import_in_progress || m_page_transition.active()) return false;
     if (page == Page::Image && m_model_route_locked && !allow_locked_image_view) return false;
     const std::size_t index = static_cast<std::size_t>(page);
@@ -3281,6 +3291,9 @@ bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
         m_page_transition.rollback(*transition);
         return false;
     }
+    if (m_model_generation_host)
+        m_model_generation_host->set_workbench_presented(page == Page::Model &&
+            m_model_view == ModelView::Workbench);
     if (page == Page::Assets && m_model_generation_host)
         m_model_generation_host->request_refresh_history();
     if (page == Page::Image)
@@ -3302,6 +3315,9 @@ bool RedesignShell::navigate_to_tab(const wxString& id)
     if (m_import_in_progress || m_page_transition.active()) return false;
     if (id.empty())
         return true;
+    const bool keeps_presented_workbench = id == TAB_ID_GENERATE_3D &&
+        m_active_page == Page::Model && m_model_view == ModelView::Workbench;
+    if (block_workbench_navigation(!keeps_presented_workbench)) return false;
     if (owns_model_workflow() && (id == TAB_ID_PREPARE || id == TAB_ID_PREVIEW)) {
         return show_model_view(id == TAB_ID_PREVIEW ? ModelView::Preview : ModelView::Slicing);
     }
@@ -3345,7 +3361,7 @@ bool RedesignShell::navigate_to_tab(const wxString& id)
 
 void RedesignShell::show_printer_media()
 {
-    if (m_import_in_progress || m_page_transition.active() || !m_print_page) return;
+    if (block_workbench_navigation() || m_import_in_progress || m_page_transition.active() || !m_print_page) return;
     m_print_page->show_media();
     navigate_to(Page::Print);
 }

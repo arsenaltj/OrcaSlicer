@@ -4,6 +4,7 @@ add_executable(${_TEST_NAME}_tests
     ../../src/orca_mobile_slicing_sdk/engine.cpp
     ../../src/orca_mobile_slicing_sdk/project_support.cpp
     ../../src/orca_mobile_slicing_sdk/recommendation_support.cpp
+    ../../src/orca_mobile_slicing_sdk/smart_slice_bridge.cpp
     test_portrait_color_blocks.cpp
     test_beauty_cell_domain.cpp
     test_parent_surface_visibility.cpp

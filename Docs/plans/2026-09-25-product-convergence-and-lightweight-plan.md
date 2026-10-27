@@ -1,3 +1,15 @@
+# 2026-10-27 新模型结果页修复卡显示时机整改
+
+目标与范围：以本地基线提交 `967f94ea2653aba9975537e14af6d4bc4c3962de` 为起点，仅修复工作台浮动卡显示时机与应用内层级。核心验收不是历史模型加载，而是新模型生成进入 `ModelView::Result` 后，在用户尚未点击进入 3D 工作台的全部时间内，检查不得启动、修复卡不得出现；只有工作台页面事务成功提交后才允许启动一次自动检查。
+
+实现：增加独立的 `workbench_presented` 和呈现序号。`request_open_workbench()` 只准备工作台；`show_model_view(ModelView::Workbench)` 成功提交页面事务后才授予前台资格。所有检查、修复/复检、自动保存和荣耀语义展示同时校验工作台模式、前台资格、可见宿主、模型路径、几何身份和请求序号。进入新模型或图像路由且不保留当前工作台时，`apply_model_generation_state()` 在改变结果视图和更新控件之前先撤销前台资格，从而立即隐藏卡片、取消旧检查并使迟到回调失效。保存版本、撤销或重做留在已呈现工作台时继续保留工作台，不误触发结果页切换。
+
+模态与层级：活动卡片向壳层发布 `modal_blocking`，资产、图像、打印、结果、切片、预览、顶部标签和快捷入口的离开操作均被拒绝并重新提升卡片，完成或允许取消后解锁。owned `wxFRAME_FLOAT_ON_PARENT` 继续使用非激活式 `HWND_TOP` 维护 OrcaSlicer 应用内最上层，不使用系统级 `TOPMOST`；隐藏、宿主销毁和卸载时解除层级守卫并阻止回调复现。
+
+自动验证：固定 `.tmp/dev/build` 已复核为本 checkout、Visual Studio 17 2022、x64、Release，`ORCA_AI_PORTRAIT_RECOGNITION=ON`、`ORCA_AI_LEGACY_FARL_RUNTIME=OFF`。新增测试覆盖新模型路由必须撤销前台资格、`presented=false` 时自动检查与卡片硬门禁，以及保存版本仍保留已呈现工作台；计划标签 `[PostGenerationWorkbench]|[UiRedesign]|[ModelPreviewState]` 共 `217/217` 通过，另有 1 个既有符号链接权限用例因当前账户权限跳过。`scripts/verify_ai_integration.py --json` 为 `ok: true`，`slic3rutils_tests` 与完整 `OrcaSlicer` Release 增量构建通过。
+
+GUI 与边界：PID `21560` 仍运行安装前的 `.tmp/dev/run`，因此没有覆盖运行目录，也不把旧实例或历史模型工作台加载当作本轮 GUI 通过。下一步在进程退出后安装匹配构建，使用已有无计费回放优先验证“新生成结果页稳定无卡 → 显式进入工作台 → 只启动一次检查”；若真实生成不可避免，必须先取得明确预算授权。当前代码测试通过不替代该 GUI 验收，实体打印色彩保真继续单独标记为未验证。
+
 # 2026-10-27 本地语义模型轻量化与纯净包交付
 
 目标与范围：正常 Windows 开发、安装和发布只交付现有原生 MediaPipe V2 双模型；FaRL/Torch 运行时降为默认关闭的研究能力 `ORCA_AI_LEGACY_FARL_RUNTIME`。人物语义仍通过单一 `ModelSemanticColoring / ColorRegionMajorityV2` 路径进入工作台，不增加第二个识别线程或异步入口；旧 FaRL 历史只读兼容，用户模型、历史和缓存不清理。
@@ -2265,3 +2277,10 @@ PR 作者报告已有新控件的真实窗口、预览、前后对比和保存�
 验证：本 checkout `.tmp/dev/pr47-smartslice-check` 使用 MSVC 19.44、C++17，直接 add_subdirectory 实际 AI target 和仓库 Catch2；共享静态库编译成功，SmartSlicingEngine 5 个测试用例共 58 条断言通过。AI integration 边界、核心 manifest（560 条目/257 实现文件）和 diff 检查通过。此定向结果不代表桌面完整 GUI 构建、Android SDK/APK 重建或实机回归。合并后源码发生变化，既有 SDK Release 仍锁定 b7544577，不能据此声称新合并提交的二进制验收完成。
 
 未结：PR 维持 Draft，后续继续最终源码的 SDK/APK 重建、native printer client 连接阻塞修复及 Mock Android 全量闭环验收；真实打印机和 iOS 实机仍未验收。
+# 2026-10-27 远端 integration 同步与冲突修复
+
+同步基线：重新 fetch 后，`origin/codex/team/integration` 最新提交为 `0aa70a59225c063174332053d7b13c58356c78cf`，本地合并提交 `6ae03531326c5288cff5a6a636435c29fa972b83` 已包含该提交；冲突仅在 `Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md` 与 `docs/coordination/current-development.md`，按本地工作台主线和远端 SmartSlice 记录合并，无未解决索引。
+
+本轮修复：远端新增桥接测试改用有效立方体输入，保留生产侧对空/非有限几何的拒绝；桥接把 Orca 的 `max_layer_height=0` 哨兵还原为喷嘴直径的 0.7 倍自动上限。版本化试切执行器修正会话输入分支的错误括号归属，准备会话、显式清空会话和 GUI provider 的契约恢复一致。现有工作台浮动卡前台门禁未被改写。
+
+验证记录：`[OrcaSlicingSupport]` 47/47、`[D5T3]` 14/14、工作台/路由定向 115/115 通过；`scripts/verify_ai_integration.py --json` 为 `ok: true`；固定 VS 2022 x64 Release 的 `OrcaSlicer` 增量构建成功。真实 GUI 的新模型结果页稳定帧、实体打印色彩及安装包交付仍未验证；用户已在后续指令授权提交、推送并创建集成 PR，本轮仍不打包。

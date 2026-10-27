@@ -117,6 +117,7 @@ void ModelGenerationPanel::set_finishing_workbench(bool enabled)
             << ", workbench_shell=" << bool(m_workbench_shell);
         return;
     }
+    if (!enabled) set_workbench_presented(false);
     // Reparent, theme and lay out the shared viewport before exposing the new mode.
     wxWindowUpdateLocker mode_updates(this);
     m_finishing_workbench = enabled;

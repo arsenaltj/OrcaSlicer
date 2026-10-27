@@ -507,10 +507,10 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice_impl(
                         if (matches)
                             prepared_parameters = prepared;
                     }
+                }
             } else if (versioned_task != nullptr) {
-                    result.diagnostic_code = "versioned_trial_session_input_unavailable";
-                    return result;
-            }
+                result.diagnostic_code = "versioned_trial_session_input_unavailable";
+                return result;
             }
         }
         if (supplied_input || !prepared_session) {
