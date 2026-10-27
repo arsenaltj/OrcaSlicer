@@ -1,3 +1,27 @@
+# 2026-10-27 本地语义模型轻量化与纯净包交付
+
+目标与范围：正常 Windows 开发、安装和发布只交付现有原生 MediaPipe V2 双模型；FaRL/Torch 运行时降为默认关闭的研究能力 `ORCA_AI_LEGACY_FARL_RUNTIME`。人物语义仍通过单一 `ModelSemanticColoring / ColorRegionMajorityV2` 路径进入工作台，不增加第二个识别线程或异步入口；旧 FaRL 历史只读兼容，用户模型、历史和缓存不清理。
+
+实现：`ORCA_AI_PORTRAIT_RECOGNITION=ON` 时只校验并安装 `ai/portrait_semantics`，正常包不再包含 `OrcaPortraitOfflineDependencies.cmake`、`resources/beauty-runtime`、FaRL 权重或 Torch/torchvision/facer/NumPy/SciPy/OpenCV Python 运行时。能力清单固定声明 `mediapipe.cpu.v1`、原生清单路径和 `legacy_farl_enabled=false`，启动校验同时核对 provider、文件大小与 SHA-256。生产请求关闭 `LocalSemanticWorker::analyze()` 及父级/轮廓 FaRL 刷新，新 V2 计算不读取旧自动轮廓；手工确认颜色和旧外观仍可恢复。原生运行时缺失、损坏或识别失败时不再尝试 Python/FaRL，荣耀套装明确说明原因并回退全局近色，普通 AI 配色保持原预览。没有可信牙齿证据时不制造牙齿白，已有可信牙齿细节仍优先覆盖口腔粉色。
+
+代码与 GUI 验证：Python runtime `33/33`、packaged sidecar `3/3`、`[ModelSemanticColoring]` `12/12`，其余计划标签合计 `296/296` 通过；最新 `[PostGenerationWorkbench]|[ModelPreviewPalette]|[UiRedesign]` 通过，`scripts/verify_ai_integration.py --json` 返回 `ok: true`，完整 VS 2022 x64 Release 构建与固定 `.tmp/dev/run` 安装通过。真实主窗口验证了非人物明确回退、人像荣耀套装语义进度卡、肤色/头发/眉眼/嘴唇/衣服映射、闭嘴样本不虚构牙齿以及四头机型门禁。当前人像缓存命中为 `4799.22 ms`，已有同模型冷处理为 `8173.87 ms`，低于 15 秒目标；本轮 GUI 自动修复产生的已接受历史版本 `finish-14fa3a89-32cc-4fc4-b858-3839c6380ef5` 保留。
+
+交付：脏工作树以 21 文件完整 manifest 锁定，`source_identity_sha256=0d2387769dbe13d42cd86a1d861b5ec6bbb20383e591eeb51a230fb94e0b55d6`。最终 NSIS 安装包大小 `255,139,350` bytes，SHA-256 `D4C8E6D9FC4BBC27A38AA20E888EE6EB61FE9A3ADD997323A2C4779DED9524B5`；相对旧 `1,130,724,380` bytes 包缩小约 77.4%。EXE/ZIP 分别扫描 `19,394`/`19,385` 个成员，均为 `NOT_DETECTED_WITHIN_SCOPE`、零 findings、零 gaps，定向回归 `53/53`、`65/65`、`259/259` 和 7-Zip 完整性检查通过。两种载荷均恰好包含 8 个 `ai/portrait_semantics` 文件、合计 `64,989,390` bytes，禁用路径命中为零。
+
+存储与边界：新安装包及清单位于 `D:/TEST/packages/current`；旧 1.13 GB 二进制和候选 ZIP、`_CPack_Packages` 已删除，旧包的小型来源、哈希和扫描证据保存在 `D:/TEST/packages/.retired-20261027-a02806d457-heavy`。PID `3316` 的匹配 `.tmp/dev/run/orca-slicer.exe` 全程保留且未被覆盖。标准用户安装/卸载、125%/150% DPI、可见牙齿样本、真实六头打印机和实体打印色彩保真仍未验证；安装包未签名，屏幕预览不能替代实物色准。
+
+# 2026-10-27 当前提交纯净安装包交付
+
+目标与范围：按用户明确请求，将当前功能分支的干净提交 `a02806d45786e3ce7a76e0aba14c88de22b7f6ca` 制作为纯净 Windows x64 内部安装包。交付仅包含 NSIS EXE及小型来源/哈希/内容审计证据；打包流程生成的 ZIP只用于同载荷扫描，验证后不交付。不安装、不启动、不上传，不携带提供商凭据、用户模型、历史、配置、日志或 `.tmp/dev/data`。
+
+构建身份：固定 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha/.tmp/dev/build` 的 `CMAKE_HOME_DIRECTORY`、Visual Studio 17 2022、x64 和 Release 均匹配本 checkout。源码在全过程保持 clean，`source_identity_sha256=aee443daae5e738a4a2a8d17603441f4bab158a436e0e817b7fe55b90f1bf1fb`，包修订为 `20261027-a02806d457`，分发通道为 `internal`，提供商配置仅来自机器或用户环境。可选 `uv` 下载因本机 SSL 证书/超时警告失败，但既有固定离线运行时完成 Python 3.12.13、Pillow 12.2.0、PNG round-trip、YOYOClaw 和人物语义资源校验，未触发网络模型下载或提供商调用。
+
+打包诊断：首次候选在 CPack 安装阶段发现 `orca_mobile_device_sdk_c.dll` 未构建。移动 SDK 的安装规则包含 `orca_mobile_device_sdk_ffi`，但当前 `OrcaSlicer_app_gui` 目标不依赖它；显式构建 `orca_mobile_device_sdk_ffi` 后生成的 DLL SHA-256 为 `CCD819363CA708D84913596170112479B0B3FF420612B2ADAB739C6C104CD3FF`。第二次候选包含该 DLL，但长候选路径令 NSIS 在深层 `jedi/third_party/django-stubs/.../remove_stale_contenttypes.pyi` 上超过 Windows 可用路径；缩短候选根目录、将预测深路径降至 227 字符后第三轮通过。失败候选的 `_CPack_Packages` 与成功候选的临时装配目录均已删除，只保留小型诊断记录。源码未为这两个构建环境问题新增产品改动；未来应补齐 FFI 打包依赖链。
+
+验证与纯净度：发布集成检查为 `PASSED / 0 findings`；集成守卫 `53/53`、`[ModelGenerationPresentation]` `65/65`（8879 assertions）、`[AI][SmartSlicing]` `259/259`（3622 assertions）通过。安装 EXE 内容扫描覆盖 `50,526` 个文件，临时 ZIP 对照扫描覆盖 `50,517` 个文件，两者均为 `NOT_DETECTED_WITHIN_SCOPE`、`0 findings / 0 gaps`；NSIS 归档经 7-Zip 检查 `Everything is Ok`。最终 EXE 大小 `1,130,724,380` bytes，SHA-256 `04F0E4CFD4AEEE44A49A3EA730F54E5EE91A2BAABA17BDCCB7AFE8845A8F7E1B`，位于 `D:/TEST/packages/current/OrcaSlicer_AI_Internal_Fast_V2.5.0-alpha_20261027-a02806d457_x64.exe`。
+
+存储与边界：新包成功并核验后，旧 `packages/current` 的小型证据迁至 `.retired-20261025-60730875c6`，旧 EXE/ZIP 被删除；成功候选的 EXE副本、临时 ZIP和三轮 `_CPack_Packages` 均删除。`packages` 下现仅 `current` 中保留这一份大文件。PID `11140` 的旧 `.tmp/dev/run/orca-slicer.exe` 全程保留并响应，本轮没有执行新包。标准用户安装/卸载、`Program Files` 权限、GUI、DPI、真实六头设备和实体打印色彩均未验证；内部包未签名，这些边界不能由源码测试或内容扫描替代。
+
 # 2026-10-26 工作台 AI 配色与荣耀套装同步 PR #45
 
 目标与范围：按用户授权，将功能分支自上次远端提交 `2df9231567aa368c6eb14967e5da7c4702f79490` 以来的全部本地提交与最新 `origin/codex/team/integration` 对齐，并以详细 Draft PR 交付。同步范围包含不可变原始外观证据、AI 1–32 色和默认六色、荣耀六实体耗材套装、单一路径 V2 人像语义约束、牙齿白优先、语义进度卡、自绘数字步进器和滑杆 tooltip 重绘修复；不纳入包、用户模型、历史、配置、凭据、日志或 `.tmp`。

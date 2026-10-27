@@ -733,12 +733,10 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     }
     const auto trial = m_model_preview->color_trial_state();
     const bool honor_suite_active = m_model_preview->active_honor_filament_suite() != nullptr;
-    const wxString palette_status = original_appearance_available
-        ? honor_suite_active
-            ? wxString::Format(_L("荣耀耗材套装 · 模型当前使用 %llu/6 色"),
-                static_cast<unsigned long long>(m_model_preview->honor_suite_used_color_count()))
-            : wxString::Format(_L("当前色卡 · %llu 色"), static_cast<unsigned long long>(trial.colors.size()))
-        : _L("原始配色证据不可用");
+    const wxString palette_status = from_u8(workbench_palette_status_line(
+        original_appearance_available, honor_suite_active,
+        m_model_preview->honor_suite_used_color_count(), trial.colors.size(),
+        into_u8(trial.honor_suite_fallback_reason)));
     const wxColour palette_status_color = original_appearance_available
         ? wxColour(170, 170, 176) : wxColour(255, 150, 146);
     if (m_workbench_palette_status->GetForegroundColour() != palette_status_color) {
@@ -746,8 +744,11 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         m_workbench_palette_status->Refresh(false);
     }
     set_workbench_tooltip(m_workbench_palette_status, original_appearance_available
-        ? _L("当前预览使用的逻辑颜色数量") : original_appearance_reason);
-    layout_changed = set_workbench_label(m_workbench_palette_status, palette_status) || layout_changed;
+        ? trial.honor_suite_fallback_reason.empty()
+            ? _L("当前预览使用的逻辑颜色数量") : trial.honor_suite_fallback_reason
+        : original_appearance_reason);
+    layout_changed = set_wrapped_workbench_text(m_workbench_palette_status, palette_status,
+        FromDIP(210), false) || layout_changed;
     if (layout_changed) {
         m_workbench_settings_scroll->Layout();
         m_comparison_panel->Layout();

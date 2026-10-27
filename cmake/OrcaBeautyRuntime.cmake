@@ -1,4 +1,4 @@
-if(WIN32)
+if(WIN32 AND ORCA_AI_LEGACY_FARL_RUNTIME)
     set(ORCA_BEAUTY_RASTER_BINARY "" CACHE FILEPATH "Verified offline raster binary for preserved Beauty evidence")
     set(ORCA_BEAUTY_RASTER_SHA256 "" CACHE STRING "SHA256 of the preserved offline raster binary")
     if(ORCA_BEAUTY_RASTER_BINARY)
@@ -22,7 +22,7 @@ if(WIN32)
 endif()
 
 set(ORCA_BEAUTY_RUNTIME_ROOT "" CACHE PATH "Prepared portable beauty recognition runtime (no downloads)")
-if(ORCA_BEAUTY_RUNTIME_ROOT AND ORCA_AI_PORTRAIT_RECOGNITION)
+if(ORCA_BEAUTY_RUNTIME_ROOT AND ORCA_AI_LEGACY_FARL_RUNTIME)
     if(NOT EXISTS "${ORCA_BEAUTY_RUNTIME_ROOT}/runtime-manifest.json" OR
        NOT EXISTS "${ORCA_BEAUTY_RUNTIME_ROOT}/python/python.exe")
         message(FATAL_ERROR "Incomplete portable beauty runtime")

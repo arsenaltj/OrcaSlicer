@@ -14,6 +14,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from package_source_identity import git, git_paths, source_path
 
 
+NATIVE_PORTRAIT_ARTIFACTS = {
+    "libmediapipe.dll": (43301376, "a8970c645c8c87c25ec9965cb5c898e803c6c42f7192b7de9a0541c62ae48cef"),
+    "selfie_multiclass_256x256.tflite": (16371837, "c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0"),
+    "face_landmarker.task": (3758596, "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"),
+    "LICENSE": (12331, "8707eef0533987efc5b155d64761eeb6e20793f50b9bd1a68dad1cf4719d0ed8"),
+    "NOTICE": (1540836, "d3b4a80a24a01fd445d4b70a610fd836ec3547c3a62eb835a1041956c38d9f56"),
+    "runtime-manifest.json": (2276, "e3a3cf149163a263f5ac0e10a045a6a474096263170b65eba2d01f547728f588"),
+    "MODEL_LICENSES.md": (2053, "da2614c3402f4f88478800032e61bb5a8004a5ce75073412f2043902d7e2bb28"),
+    "providers.json": (85, "07c9b971c5bda8db4007d2396cdb9fb221c6328220f89d77159468b002dc9298"),
+}
+
+
 def digest(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
@@ -53,19 +65,21 @@ def verify_lightweight_portrait_runtime(root: Path, runtime: Path) -> None:
     for key in ("schema", "platform", "provider", "execution", "source_commit"):
         if staged.get(key) != expected.get(key):
             raise ValueError(f"lightweight portrait runtime manifest mismatch: {key}")
-    specs = list(expected.get("wheel_entries", [])) + [
-        item for item in expected.get("downloads", []) if item.get("key") != "wheel"
-    ]
-    for spec in specs:
-        name = spec.get("filename")
-        path = native / name if isinstance(name, str) else None
-        if path is None or not path.is_file():
+    files = {path.relative_to(native).as_posix() for path in native.rglob("*") if path.is_file()}
+    if files != set(NATIVE_PORTRAIT_ARTIFACTS):
+        raise ValueError("lightweight portrait runtime must contain exactly the eight sealed native files")
+    try:
+        providers = read_json(native / "providers.json")
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("lightweight portrait runtime has invalid providers.json") from exc
+    if providers != {"body_provider": "mediapipe.cpu.v1", "face_provider": "mediapipe.cpu.v1"}:
+        raise ValueError("lightweight portrait runtime has an invalid provider configuration")
+    for name, (size, sha256) in NATIVE_PORTRAIT_ARTIFACTS.items():
+        path = native / name
+        if not path.is_file():
             raise ValueError(f"lightweight portrait runtime is missing {name}")
-        if path.stat().st_size != int(spec.get("bytes", -1)) or digest(path) != spec.get("sha256"):
+        if path.stat().st_size != size or digest(path) != sha256:
             raise ValueError(f"lightweight portrait runtime checksum mismatch: {name}")
-    for name in ("MODEL_LICENSES.md", "providers.json"):
-        if not (native / name).is_file():
-            raise ValueError(f"lightweight portrait runtime is missing {name}")
 
 
 def identity(root: Path) -> dict:
@@ -131,15 +145,16 @@ def modules(root: Path, build: Path | None = None) -> list[str]:
         if marker in block:
             component = root / relative_path
             content = component.read_text(encoding="utf-8")
-            portrait = re.compile(
-                r"^if\(ORCA_AI_PORTRAIT_RECOGNITION\)\s*\n(.*?)^endif\(\)[ \t]*$",
-                re.MULTILINE | re.DOTALL)
-            if portrait.search(content):
-                cache = (build / "CMakeCache.txt").read_text(encoding="utf-8") if build else ""
-                enabled = re.search(r"^ORCA_AI_PORTRAIT_RECOGNITION:BOOL=(ON|OFF)$", cache, re.MULTILINE)
-                if enabled is None:
-                    raise ValueError("Cannot resolve configured portrait runtime files")
-                content = portrait.sub(lambda match: match[1] if enabled[1] == "ON" else "", content)
+            cache = (build / "CMakeCache.txt").read_text(encoding="utf-8") if build else ""
+            for option in ("ORCA_AI_PORTRAIT_RECOGNITION", "ORCA_AI_LEGACY_FARL_RUNTIME"):
+                conditional = re.compile(
+                    rf"^if\({option}\)\s*\n(.*?)^endif\(\)[ \t]*$",
+                    re.MULTILINE | re.DOTALL)
+                if conditional.search(content):
+                    enabled = re.search(rf"^{option}:BOOL=(ON|OFF)$", cache, re.MULTILINE)
+                    if enabled is None:
+                        raise ValueError(f"Cannot resolve configured runtime option: {option}")
+                    content = conditional.sub(lambda match: match[1] if enabled[1] == "ON" else "", content)
             if re.search(r"^[ \t]*(?:if|elseif|else|endif)\s*\(", content, re.MULTILINE):
                 raise ValueError("Unsupported sidecar runtime condition; update modules() before refreshing")
             block = block.replace(marker, content)
@@ -222,33 +237,43 @@ def verify_runtime(root: Path, build: Path, installed: list[str], runtime: Path 
     pairs["resources/tools/ai/orca_ai_build_info.json"] = build / "orca_ai_build_info.json"
     pairs["resources/tools/ai/orca_ai_runtime_dependencies.json"] = build / "orca_ai_runtime_dependencies.json"
     cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
-    if re.search(r"^ORCA_AI_PORTRAIT_RECOGNITION:BOOL=OFF$", cache, re.MULTILINE):
-        metadata = read_json(build / "orca_ai_runtime_dependencies.json")
-        if metadata.get("portrait_recognition", {}).get("enabled") is not False:
-            raise ValueError("Partition-only runtime has inconsistent portrait capabilities")
-        # The heavy Python/weights bundle is still forbidden in a partition
-        # build.  A separately staged, pinned native MediaPipe runtime is the
-        # supported lightweight portrait capability and is validated above.
-        if (runtime / "ai/portrait_semantics").exists():
-            verify_lightweight_portrait_runtime(root, runtime)
+    portrait_enabled = bool(re.search(r"^ORCA_AI_PORTRAIT_RECOGNITION:BOOL=ON$", cache, re.MULTILINE))
+    legacy_farl_enabled = bool(re.search(r"^ORCA_AI_LEGACY_FARL_RUNTIME:BOOL=ON$", cache, re.MULTILINE))
+    metadata = read_json(build / "orca_ai_runtime_dependencies.json")
+    portrait_metadata = metadata.get("portrait_recognition", {})
+    if portrait_metadata.get("enabled") is not portrait_enabled:
+        raise ValueError("Installed runtime has inconsistent portrait capabilities")
+    if portrait_metadata.get("legacy_farl_enabled", False) is not legacy_farl_enabled:
+        raise ValueError("Installed runtime has inconsistent legacy FaRL capability")
+    native = runtime / "ai/portrait_semantics"
+    if portrait_enabled:
+        if portrait_metadata.get("provider") != "mediapipe.cpu.v1" or \
+                portrait_metadata.get("runtime_manifest") != "ai/portrait_semantics/runtime-manifest.json":
+            raise ValueError("Installed runtime has invalid native portrait metadata")
+        verify_lightweight_portrait_runtime(root, runtime)
+    elif native.exists():
+        raise ValueError("Portrait-disabled runtime contains native portrait resources")
+    if not legacy_farl_enabled:
         leftovers = ("resources/beauty-runtime",
+                     "resources/tools/ai/local_semantic_raster.dll",
                      *("resources/tools/ai/portrait_parent_cleanup_" + name + ".json"
                        for name in ("catalog", "fangfei", "partition", "locks")))
         if any((runtime / name).exists() for name in leftovers):
-            raise ValueError("Partition-only runtime contains retired portrait resources")
+            raise ValueError("Native-only runtime contains retired portrait resources")
     raster = re.search(r"^ORCA_BEAUTY_RASTER_BINARY:FILEPATH=(.+)$", cache, re.MULTILINE)
-    if raster:
+    if legacy_farl_enabled and raster:
         source = Path(raster[1].strip())
         expected = re.search(r"^ORCA_BEAUTY_RASTER_SHA256:STRING=([0-9a-f]{64})$", cache, re.MULTILINE)
         if expected is None or not source.is_file() or digest(source) != expected[1]:
             raise ValueError("Preserved Beauty raster binary identity changed")
         pairs["resources/tools/ai/local_semantic_raster.dll"] = source
-    else:
+    elif legacy_farl_enabled:
         source = build / "Release/local_semantic_raster.dll"
-    for name in ("resources/tools/ai/local_semantic_raster.dll",
-                 "resources/beauty-runtime/modules/local_semantic_raster.dll"):
-        if name in installed:
-            pairs[name] = source
+    if legacy_farl_enabled:
+        for name in ("resources/tools/ai/local_semantic_raster.dll",
+                     "resources/beauty-runtime/modules/local_semantic_raster.dll"):
+            if name in installed:
+                pairs[name] = source
     # uv is installed from CMake's configured/downloaded tool, not resources/.
     uv_name = "resources/tools/uv/uv.exe"
     if uv_name in installed:
@@ -265,7 +290,7 @@ def verify_runtime(root: Path, build: Path, installed: list[str], runtime: Path 
             raise ValueError(f"Runtime does not match the build/source: {name}")
         checks[name] = digest(target)
     # The install manifest proves membership; compare resource bytes as well.
-    beauty = re.search(r"^ORCA_BEAUTY_RUNTIME_ROOT:PATH=(.+)$", cache, re.MULTILINE)
+    beauty = re.search(r"^ORCA_BEAUTY_RUNTIME_ROOT:PATH=(.+)$", cache, re.MULTILINE) if legacy_farl_enabled else None
     beauty_root = Path(beauty[1].strip()) if beauty else None
     sealed_manifest = "resources/beauty-runtime/runtime-manifest.json"
     if beauty_root is None and any(name.startswith("resources/beauty-runtime/") for name in installed):

@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import re
 from unittest import mock
 
 import dev_runtime as dev
@@ -36,7 +37,9 @@ class RuntimeTests(unittest.TestCase):
             f"CMAKE_COMMAND:INTERNAL={sys.executable}",
             f"Python3_EXECUTABLE:FILEPATH={sys.executable}",
             "CMAKE_GENERATOR:INTERNAL=Visual Studio 17 2022",
-            "ORCA_AI_WINDOWS_INSTALLER:BOOL=ON")))
+            "ORCA_AI_WINDOWS_INSTALLER:BOOL=ON",
+            "ORCA_AI_PORTRAIT_RECOGNITION:BOOL=OFF",
+            "ORCA_AI_LEGACY_FARL_RUNTIME:BOOL=OFF")))
 
     def write(self, name, text):
         path = self.root / name
@@ -47,9 +50,11 @@ class RuntimeTests(unittest.TestCase):
         for name in ("orca-slicer.exe", "OrcaSlicer.dll"):
             self.write(".tmp/build/src/Release/" + name, name)
             self.write(".tmp/dev/run/" + name, name)
-        for name in ("orca_ai_build_info.json", "orca_ai_runtime_dependencies.json"):
-            self.write(".tmp/build/" + name, "{}")
-            self.write(".tmp/dev/run/resources/tools/ai/" + name, "{}")
+        self.write(".tmp/build/orca_ai_build_info.json", "{}")
+        self.write(".tmp/dev/run/resources/tools/ai/orca_ai_build_info.json", "{}")
+        dependencies = {"portrait_recognition": {"enabled": False, "legacy_farl_enabled": False}}
+        self.write(".tmp/build/orca_ai_runtime_dependencies.json", json.dumps(dependencies))
+        self.write(".tmp/dev/run/resources/tools/ai/orca_ai_runtime_dependencies.json", json.dumps(dependencies))
         for name in ("python/python.exe", "python/pythonw.exe", "resources/i18n/zh_CN/OrcaSlicer.mo"):
             self.write(".tmp/dev/run/" + name, "fixture")
         self.write("resources/i18n/zh_CN/OrcaSlicer.mo", "fixture")
@@ -57,6 +62,57 @@ class RuntimeTests(unittest.TestCase):
         self.write(".tmp/dev/run/resources/tools/ai/provider.py", (self.root / "tools/ai/provider.py").read_text())
         self.write(".tmp/build/install_manifest.txt", "\n".join(str(p) for p in self.runtime.rglob("*") if p.is_file()))
         return dev.finish_install(self.root, self.build, dev.preflight(self.root, self.build))
+
+    def set_runtime_capabilities(self, portrait: bool, legacy_farl: bool):
+        cache = self.build / "CMakeCache.txt"
+        contents = cache.read_text(encoding="utf-8")
+        for option, enabled in (("ORCA_AI_PORTRAIT_RECOGNITION", portrait),
+                                ("ORCA_AI_LEGACY_FARL_RUNTIME", legacy_farl)):
+            replacement = f"{option}:BOOL={'ON' if enabled else 'OFF'}"
+            pattern = rf"^{option}:BOOL=(?:ON|OFF)$"
+            if re.search(pattern, contents, re.MULTILINE):
+                contents = re.sub(pattern, replacement, contents, flags=re.MULTILINE)
+            else:
+                contents += "\n" + replacement + "\n"
+        cache.write_text(contents, encoding="utf-8")
+        metadata = {"portrait_recognition": {
+            "enabled": portrait,
+            "provider": "mediapipe.cpu.v1",
+            "runtime_manifest": "ai/portrait_semantics/runtime-manifest.json",
+            "legacy_farl_enabled": legacy_farl,
+        }}
+        for name in (".tmp/build/orca_ai_runtime_dependencies.json",
+                     ".tmp/dev/run/resources/tools/ai/orca_ai_runtime_dependencies.json"):
+            self.write(name, json.dumps(metadata))
+
+    def prepare_native_portrait(self):
+        manifest = {
+            "schema": "orcaslicer.portrait-semantics-runtime/v1",
+            "platform": "windows-x86_64",
+            "provider": "mediapipe.cpu.v1",
+            "execution": "fixture",
+            "source_commit": "fixture-source",
+        }
+        providers = {"body_provider": "mediapipe.cpu.v1", "face_provider": "mediapipe.cpu.v1"}
+        payloads = {
+            "libmediapipe.dll": b"fixture-dll",
+            "selfie_multiclass_256x256.tflite": b"fixture-body",
+            "face_landmarker.task": b"fixture-face",
+            "LICENSE": b"fixture-license",
+            "NOTICE": b"fixture-notice",
+            "runtime-manifest.json": json.dumps(manifest).encode(),
+            "MODEL_LICENSES.md": b"fixture-model-licenses",
+            "providers.json": json.dumps(providers).encode(),
+        }
+        self.write("cmake/semantic_runtime_manifest.json", json.dumps(manifest))
+        native = self.runtime / "ai/portrait_semantics"
+        for name, payload in payloads.items():
+            path = native / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+        seals = {name: (len(payload), dev.digest(native / name)) for name, payload in payloads.items()}
+        self.set_runtime_capabilities(True, False)
+        return native, seals
 
     def test_separate_trial_checks_its_own_bytes_and_preserves_the_open_runtime(self):
         self.prepare()
@@ -74,10 +130,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_partition_runtime_rejects_stale_heavy_resources_and_capability_mismatch(self):
         self.prepare()
-        cache = self.build / "CMakeCache.txt"
-        cache.write_text(cache.read_text() + "\nORCA_AI_PORTRAIT_RECOGNITION:BOOL=OFF\n")
-        for prefix in (".tmp/build/", ".tmp/dev/run/resources/tools/ai/"):
-            self.write(prefix + "orca_ai_runtime_dependencies.json", '{"portrait_recognition":{"enabled":false}}')
+        self.set_runtime_capabilities(False, False)
         dev.verify_runtime(self.root, self.build, [])
         for name, retired in (("resources/beauty-runtime/python/python.exe", "resources/beauty-runtime"),
                               ("resources/tools/ai/portrait_parent_cleanup_partition.json",
@@ -90,7 +143,7 @@ class RuntimeTests(unittest.TestCase):
                 if target.is_dir(): shutil.rmtree(target)
                 else: target.unlink()
         self.write(".tmp/dev/run/ai/portrait_semantics/libmediapipe.dll", "incomplete lightweight runtime")
-        with self.assertRaisesRegex(ValueError, "runtime-manifest"):
+        with self.assertRaisesRegex(ValueError, "Portrait-disabled runtime"):
             dev.verify_runtime(self.root, self.build, [])
         shutil.rmtree(self.runtime / "ai")
         self.write(".tmp/build/orca_ai_runtime_dependencies.json", '{"portrait_recognition":{"enabled":true}}')
@@ -98,8 +151,28 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inconsistent portrait capabilities"):
             dev.verify_runtime(self.root, self.build, [])
 
+    def test_native_portrait_runtime_requires_all_sealed_files_and_expected_providers(self):
+        self.prepare()
+        native, seals = self.prepare_native_portrait()
+        with mock.patch.object(dev, "NATIVE_PORTRAIT_ARTIFACTS", seals):
+            dev.verify_runtime(self.root, self.build, [])
+            (native / "face_landmarker.task").unlink()
+            with self.assertRaisesRegex(ValueError, "exactly the eight sealed native files"):
+                dev.verify_runtime(self.root, self.build, [])
+            (native / "face_landmarker.task").write_bytes(b"fixture-face")
+            (native / "face_landmarker.task").write_bytes(b"changed-face")
+            with self.assertRaisesRegex(ValueError, "checksum mismatch: face_landmarker.task"):
+                dev.verify_runtime(self.root, self.build, [])
+            (native / "face_landmarker.task").write_bytes(b"fixture-face")
+            (native / "providers.json").write_text(
+                json.dumps({"body_provider": "other", "face_provider": "mediapipe.cpu.v1"}),
+                encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid provider configuration"):
+                dev.verify_runtime(self.root, self.build, [])
+
     def test_installed_beauty_runtime_is_checked_against_configured_source(self):
         self.prepare()
+        self.set_runtime_capabilities(False, True)
         cache = self.build / 'CMakeCache.txt'
         cache.write_text(cache.read_text()+f'\nORCA_BEAUTY_RUNTIME_ROOT:PATH={self.root}/.tmp/beauty\n')
         self.write('.tmp/beauty/python/DLLs/test.dll', 'pinned dependency')
@@ -112,6 +185,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_preserved_raster_rejects_changed_dependency_or_installed_bytes(self):
         self.prepare()
+        self.set_runtime_capabilities(False, True)
         source = self.root / ".tmp/frozen/local_semantic_raster.dll"
         self.write(".tmp/frozen/local_semantic_raster.dll", "verified raster")
         cache = self.build / "CMakeCache.txt"
@@ -129,6 +203,7 @@ class RuntimeTests(unittest.TestCase):
 
     def prepare_cpu_portrait(self):
         self.prepare()
+        self.set_runtime_capabilities(False, True)
         stage = self.build / "_deps/portrait-offline-fixture"
         self.write(".tmp/build/src/cmake_install.cmake",
                    'file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/resources/beauty-runtime" '
@@ -396,19 +471,21 @@ class RuntimeTests(unittest.TestCase):
                    '${ORCA_LOCAL_SEMANTIC_RUNTIME_FILES}\n)\ninstall(FILES)\n')
         self.write("tools/ai/local_semantic_runtime_files.cmake",
                    'set(ORCA_LOCAL_SEMANTIC_RUNTIME_FILES)\n'
-                   'if(ORCA_AI_PORTRAIT_RECOGNITION)\n'
+                   'if(ORCA_AI_LEGACY_FARL_RUNTIME)\n'
                    'list(APPEND ORCA_LOCAL_SEMANTIC_RUNTIME_FILES '
                    '"${CMAKE_SOURCE_DIR}/tools/ai/portrait_parent_cleanup_catalog.json")\nendif()\n')
         self.write("tools/ai/portrait_parent_cleanup_catalog.json", '{"version":1}')
         if enabled is not None:
+            self.set_runtime_capabilities(False, enabled == "ON")
+        else:
             cache = self.build / "CMakeCache.txt"
-            cache.write_text(cache.read_text() + "\nORCA_AI_PORTRAIT_RECOGNITION:BOOL=" + enabled + "\n")
+            cache.write_text(re.sub(
+                r"^ORCA_AI_LEGACY_FARL_RUNTIME:BOOL=(?:ON|OFF)\r?\n?", "",
+                cache.read_text(encoding="utf-8"), flags=re.MULTILINE), encoding="utf-8")
 
     def test_disabled_portrait_data_is_neither_required_nor_refreshed(self):
         self.prepare()
         self.configure_conditional_data("OFF")
-        for prefix in (".tmp/build/", ".tmp/dev/run/resources/tools/ai/"):
-            self.write(prefix + "orca_ai_runtime_dependencies.json", '{"portrait_recognition":{"enabled":false}}')
         self.assertEqual(dev.modules(self.root, self.build), ["provider.py"])
         dev.finish_install(self.root, self.build, dev.preflight(self.root, self.build))
         self.write("tools/ai/provider.py", "updated")
@@ -433,10 +510,10 @@ class RuntimeTests(unittest.TestCase):
     def test_unresolved_runtime_conditions_fail_closed(self):
         self.configure_conditional_data(None)
         for build in (None, self.build):
-            with self.assertRaisesRegex(ValueError, "Cannot resolve configured portrait"):
+            with self.assertRaisesRegex(ValueError, "Cannot resolve configured runtime option"):
                 dev.modules(self.root, build)
         path = self.root / "tools/ai/local_semantic_runtime_files.cmake"
-        path.write_text(path.read_text().replace("ORCA_AI_PORTRAIT_RECOGNITION", "UNKNOWN_OPTION"))
+        path.write_text(path.read_text().replace("ORCA_AI_LEGACY_FARL_RUNTIME", "UNKNOWN_OPTION"))
         with self.assertRaisesRegex(ValueError, "Unsupported sidecar runtime condition"):
             dev.modules(self.root, self.build)
 

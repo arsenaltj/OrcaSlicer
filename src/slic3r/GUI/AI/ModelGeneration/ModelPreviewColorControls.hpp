@@ -406,6 +406,7 @@ public:
             remember_source_count(previous);
             for (auto* lock : m_locks) lock->SetValue(false);
             m_notice.clear();
+            m_honor_suite_fallback_reason.clear();
             if (next == 1) {
                 read_project(); m_enabled = false;
                 m_bound_project_identity.clear(); m_project_color_slots.clear(); m_project_semantic_slots.clear();
@@ -697,6 +698,7 @@ public:
         m_count->SetValue(int(request.palette.size()));
         m_honor_suite_used_colors = used_slots;
         m_honor_suite_request.reset();
+        m_honor_suite_fallback_reason.clear();
         m_enabled = true;
         m_notice = wxString::Format(_L("荣耀耗材套装语义配色已完成，模型当前使用 %llu/6 色。"),
             static_cast<unsigned long long>(used_slots));
@@ -725,9 +727,10 @@ public:
         m_honor_suite_used_colors = used.size();
         m_honor_suite_request.reset();
         m_enabled = true;
-        m_notice = reason.empty()
+        m_honor_suite_fallback_reason = reason.empty()
             ? _L("未检测到可靠人物语义，已回退为全局相近色匹配。")
             : reason;
+        m_notice = m_honor_suite_fallback_reason;
         sync_active_palette_state();
         changed();
         return true;
@@ -923,6 +926,7 @@ public:
         }
         saved.enabled = m_enabled; saved.fidelity = m_fidelity->GetValue(); saved.lighting = lighting();
         saved.project_signature = m_project_signature; saved.notice = m_notice;
+        saved.honor_suite_fallback_reason = m_honor_suite_fallback_reason;
         saved.manual_colors = m_manual_colors;
         if (honor_suite_active()) {
             saved.suite_id = m_active_suite_id;
@@ -988,6 +992,7 @@ public:
         m_enabled = saved.enabled; m_notice = saved.notice;
         m_honor_suite_request.reset();
         m_honor_suite_used_colors = restored_suite ? saved.colors.size() : 0;
+        m_honor_suite_fallback_reason = restored_suite ? saved.honor_suite_fallback_reason : wxString{};
         if (!restored_suite && !saved.suite_id.empty())
             m_notice = _L("保存的荣耀耗材套装版本不可用，已保留实际六色外观并恢复为手动试色。");
         m_bound_project_identity = saved.project_slot_identity;
@@ -1059,6 +1064,7 @@ private:
         request.context = request.suite_id + "@" + request.suite_revision + ":" +
             request.geometry_id + ":" + request.automatic_basis.basis_signature;
         m_honor_suite_used_colors = 0;
+        m_honor_suite_fallback_reason.clear();
         m_honor_suite_request = std::move(request);
         m_notice = _L("正在识别人像区域并应用荣耀套装，当前模型预览保持不变。 ");
         update();
@@ -1631,6 +1637,7 @@ private:
     std::string m_active_suite_revision;
     std::optional<HonorSuiteRequest> m_honor_suite_request;
     size_t m_honor_suite_used_colors {0};
+    wxString m_honor_suite_fallback_reason;
     std::vector<std::string> m_semantic_roles;
     std::vector<wxString> m_project_names;
     std::vector<size_t> m_project_slots;

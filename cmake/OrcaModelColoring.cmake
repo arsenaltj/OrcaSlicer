@@ -11,3 +11,6 @@ target_sources(libslic3r_gui PRIVATE
 )
 include("${CMAKE_SOURCE_DIR}/cmake/OrcaSemanticRuntime.cmake")
 orca_configure_semantic_recognizers(libslic3r_gui)
+if(ORCA_AI_LEGACY_FARL_RUNTIME)
+    target_compile_definitions(libslic3r_gui PRIVATE ORCA_ENABLE_LEGACY_FARL_RUNTIME=1)
+endif()

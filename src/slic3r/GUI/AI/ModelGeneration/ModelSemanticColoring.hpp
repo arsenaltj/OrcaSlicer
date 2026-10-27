@@ -13,6 +13,14 @@ namespace Slic3r::GUI {
 
 std::string semantic_region_runtime_identity(const std::filesystem::path& runtime);
 std::filesystem::path semantic_region_runtime_directory();
+struct PortraitRecognitionCapability {
+    bool enabled {false};
+    std::string provider {"mediapipe.cpu.v1"};
+    std::string runtime_identity;
+    std::string failure_reason;
+};
+PortraitRecognitionCapability inspect_portrait_recognition_runtime(const std::filesystem::path& runtime);
+PortraitRecognitionCapability portrait_recognition_capability();
 std::string portrait_shape_runtime_fingerprint();
 bool portrait_recognition_enabled();
 std::shared_ptr<const SemanticRegionEvidence> load_legacy_semantic_region_evidence(

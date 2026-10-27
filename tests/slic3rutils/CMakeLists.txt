@@ -154,6 +154,10 @@ endif ()
 
 target_link_libraries(${_TEST_NAME}_tests test_common libslic3r_gui libslic3r OrcaSlicer::AIContracts OrcaSlicer::SmartSlicing pybind11::embed Catch2::Catch2WithMain)
 target_include_directories(${_TEST_NAME}_tests PRIVATE ${PROJECT_SOURCE_DIR}/src/libslic3r)
+if (ORCA_SEMANTIC_RUNTIME_DIR)
+    target_compile_definitions(${_TEST_NAME}_tests PRIVATE
+        ORCA_TEST_SEMANTIC_RUNTIME_DIR=R"\(${ORCA_SEMANTIC_RUNTIME_DIR}\)")
+endif()
 set_property(TARGET ${_TEST_NAME}_tests PROPERTY FOLDER "tests")
 
 orcaslicer_copy_test_dlls(${_TEST_NAME}_tests)

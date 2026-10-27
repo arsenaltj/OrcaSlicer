@@ -15,29 +15,32 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_AI = REPO_ROOT / "tools" / "ai"
 
 
-def packaged_runtime_files(portrait_enabled: bool = False) -> list[Path]:
+def packaged_runtime_files(portrait_enabled: bool = False,
+                           legacy_farl_enabled: bool = False) -> list[Path]:
     from scripts.dev_runtime import modules
     # Source-only CI has no configured application build. Specify the tested
     # capability explicitly without weakening the runtime's cache requirement.
     with tempfile.TemporaryDirectory(prefix="orca-packaged-config-") as directory:
         build = Path(directory)
         (build / "CMakeCache.txt").write_text(
-            f"ORCA_AI_PORTRAIT_RECOGNITION:BOOL={'ON' if portrait_enabled else 'OFF'}\n",
+            f"ORCA_AI_PORTRAIT_RECOGNITION:BOOL={'ON' if portrait_enabled else 'OFF'}\n"
+            f"ORCA_AI_LEGACY_FARL_RUNTIME:BOOL={'ON' if legacy_farl_enabled else 'OFF'}\n",
             encoding="utf-8",
         )
         return [TOOLS_AI / name for name in modules(REPO_ROOT, build)]
 
 
 class PackagedSidecarTests(unittest.TestCase):
-    def test_portrait_catalogs_follow_the_configured_capability(self) -> None:
-        for enabled in (False, True):
-            with self.subTest(portrait_enabled=enabled):
-                names = {path.name for path in packaged_runtime_files(enabled)}
+    def test_retired_portrait_modules_follow_only_the_legacy_research_capability(self) -> None:
+        for portrait_enabled, legacy_enabled in ((False, False), (True, False), (True, True)):
+            with self.subTest(portrait_enabled=portrait_enabled, legacy_enabled=legacy_enabled):
+                names = {path.name for path in packaged_runtime_files(portrait_enabled, legacy_enabled)}
                 for name in ("portrait_parent_cleanup_catalog.json",
                              "portrait_parent_cleanup_fangfei.json",
                              "portrait_parent_cleanup_partition.json",
                              "portrait_parent_cleanup_locks.json"):
-                    self.assertEqual(name in names, enabled)
+                    self.assertEqual(name in names, legacy_enabled)
+                self.assertEqual("local_semantic_worker.py" in names, legacy_enabled)
 
     def test_runtime_list_contains_all_local_imports(self) -> None:
         files = packaged_runtime_files()

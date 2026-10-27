@@ -164,6 +164,21 @@ inline std::string workbench_check_detail_text(const WorkbenchCheckResult& check
     return text.str();
 }
 
+inline std::string workbench_palette_status_line(bool original_appearance_available,
+                                                 bool honor_suite_active,
+                                                 size_t honor_suite_used_colors,
+                                                 size_t palette_color_count,
+                                                 const std::string& honor_fallback_reason = {})
+{
+    if (!original_appearance_available) return "原始配色证据不可用";
+    if (!honor_suite_active)
+        return "当前色卡 · " + std::to_string(palette_color_count) + " 色";
+    const std::string usage = "模型当前使用 " + std::to_string(honor_suite_used_colors) + "/6 色";
+    return honor_fallback_reason.empty()
+        ? "荣耀耗材套装 · " + usage
+        : honor_fallback_reason + "\n" + usage;
+}
+
 // Native workbench configuration is independent of the six-channel AI port.
 // An absent slot is a UI placeholder; it is never a fabricated loaded spool.
 struct WorkbenchFilamentSlot {
