@@ -1,0 +1,25 @@
+{
+  "pr": 46,
+  "run": 40434275332,
+  "head": "48d57ad13151ed62ff1d143fe597c4977729dabc",
+  "base": "502014b3b3383467102412ee584c6c867ef535df",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "集成本地智能切片推荐、侧栏修复及工作区恢复",
+  "path": "pr/46/48d57ad13151ed62ff1d143fe597c4977729dabc/40434275332",
+  "created": "2026-10-27T01:47:43+00:00",
+  "files": {
+    "index.html": "98e1143bbf2469e4e66bdd6876e5876a05e823a1563f9b88b27303a797b9b471",
+    "details.html": "f4da844482cb0d37227847b503854f678d1a8907181d7b35a3ff45b0f8bd55f4",
+    "report.json": "f4e22413825079b2eb488fae0e18e0f7c381dd1a82a1d290f13865b15991db5f",
+    "summary.md": "5c3a392746b0d8988944193f63d6f0d85767f3d5c461c7f1056e8854512d3311",
+    "archify-receipts.json": "6eba869abbe81cf07c599d1305eb1d132f77d16640d1aba12b1e61a48bc8b8a3",
+    "l0-context.html": "2ed041164aacf3ff25a8a692a4c0ef3fbe9c6ab95c990bb078b8481aa5852760",
+    "l0-context.json": "ed8d5b43ab8fc730068db05ec4fcd3ea481c1da8b90533fe8efcf31f31188d28",
+    "l1-modules.html": "87c0bbf555d685e276096f8558df725fdc29481de307afede65c1ca6061f2b12",
+    "l1-modules.json": "a4ce0538186badec1690ec2b2bf83a994939fb1c1f65fbec8a5d92335718a77d",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "46ca7ade63fcd50bac8b2ce3984ac1c6d157f5b65f429a70dbc13a449aa8d4d3",
+    "l2-slicing.json": "5c1db02b393a0d36f5f2dce03383c8ae2d4b4804b8b1eea056636a5de1fe1fa8"
+  }
+}
