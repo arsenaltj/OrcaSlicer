@@ -8,6 +8,8 @@ set(ORCA_DESKTOP_WORKSPACE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/Orca/WorkbenchFilamentRecipes.cpp
     ${CMAKE_CURRENT_LIST_DIR}/Orca/OrcaFilamentSelection.cpp
     ${CMAKE_CURRENT_LIST_DIR}/Orca/OrcaFilamentSelection.hpp
+    ${CMAKE_CURRENT_LIST_DIR}/SmartSlicing/SlicingRecommendationClient.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/SmartSlicing/SlicingRecommendationClient.hpp
     ${CMAKE_CURRENT_LIST_DIR}/../Redesign/PrinterWorkspace.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../Redesign/PrinterWorkspace.hpp
     ${CMAKE_CURRENT_LIST_DIR}/../Redesign/PrinterWorkspaceState.hpp

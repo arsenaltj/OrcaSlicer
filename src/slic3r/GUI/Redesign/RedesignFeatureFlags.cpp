@@ -47,10 +47,10 @@ bool RedesignFeatureFlags::shell_on_startup(bool editor)
 }
 
 bool RedesignFeatureFlags::image_home_on_startup(bool shell_active, bool has_input_files,
-                                                  bool default_prepare, bool restore_available)
+                                                  bool default_prepare)
 {
     return shell_active && surface_enabled("IMAGE_HOME") && !has_input_files &&
-           !default_prepare && !restore_available;
+           !default_prepare;
 }
 
 }

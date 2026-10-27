@@ -253,6 +253,7 @@ from network_policy import network_diagnostics
 from nonportrait_reference import review_nonportrait_reference
 from text_capability_application import TextCapabilityApplication, TextCapabilityError
 from text_capability_transport import parse_text_capability_multipart
+from slicing_recommendation_application import SlicingRecommendationApplication, SlicingRecommendationError
 from openai_preprocessor import (
     IDENTITY_FIRST_PORTRAIT_STYLES,
     OpenAIPreprocessorError,
@@ -443,11 +444,10 @@ def _edit_design_image_for_job(
         palette_roles, custom_style, geometry_output_path,
         print_settings=print_settings, preprocessing_options=preprocessing_options,
     )
-
 HOST = os.environ.get("ORCASLICER_AI_SIDECAR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ORCASLICER_AI_SIDECAR_PORT", "18764"))
 SIDECAR_VERSION = "orcaslicer-ai-sidecar-v11"
-_TEXT_CAPABILITIES = TextCapabilityApplication()
+_TEXT_CAPABILITIES = TextCapabilityApplication(); _SLICING_RECOMMENDATIONS = SlicingRecommendationApplication()
 SIDECAR_INSTANCE_ID = str(uuid.uuid4())
 SIDECAR_SESSION_NONCE = secrets.token_hex(32)
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -458,8 +458,6 @@ _DESIGN_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="orca-de
 _MODEL_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="orca-model-job")
 _SHUTDOWN_LOCK = threading.Lock()
 _SHUT_DOWN = False
-
-
 def _environment_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -1479,10 +1477,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed_path = urlsplit(self.path)
-        if parsed_path.path == "/v1/orcaslicer/text-capabilities/image_prompt_polish":
+        text_path, slicing_path = "/v1/orcaslicer/text-capabilities/image_prompt_polish", "/v1/orcaslicer/text-capabilities/slicing_parameter_recommendation"
+        if parsed_path.path in {text_path, slicing_path}:
             if not self._require_native_client():
                 return
-            self.send_json(200, _TEXT_CAPABILITIES.availability())
+            application = _TEXT_CAPABILITIES if parsed_path.path == text_path else _SLICING_RECOMMENDATIONS
+            self.send_json(200, application.availability())
             return
         if parsed_path.path == "/v1/orcaslicer/model-provider-catalog":
             if not self._require_native_client():
@@ -1708,15 +1708,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._model_error(exc.status, exc.code, exc.message, exc.retryable)
             return
 
-        if self.path == "/v1/orcaslicer/text-capabilities/image_prompt_polish":
+        text_path, slicing_path = "/v1/orcaslicer/text-capabilities/image_prompt_polish", "/v1/orcaslicer/text-capabilities/slicing_parameter_recommendation"
+        if self.path in {text_path, slicing_path}:
             if not self._require_native_client():
                 return
             try:
-                request, image = self._read_text_capability_request()
-                self.send_json(200, _TEXT_CAPABILITIES.execute("image_prompt_polish", request, image=image))
+                if self.path == text_path:
+                    request, image = self._read_text_capability_request()
+                    result = _TEXT_CAPABILITIES.execute("image_prompt_polish", request, image=image)
+                else:
+                    result = _SLICING_RECOMMENDATIONS.execute(self._read_model_json())
+                self.send_json(200, result)
             except RequestError as exc:
                 self._model_error(exc.status, exc.code, exc.message, exc.retryable)
-            except TextCapabilityError as exc:
+            except (TextCapabilityError, SlicingRecommendationError) as exc:
                 self.send_json(exc.status, {"error": {"code": exc.code, "message": exc.message,
                                                        "retryable": exc.retryable},
                                             "diagnostic_id": exc.diagnostic_id})

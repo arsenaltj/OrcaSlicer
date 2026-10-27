@@ -167,6 +167,59 @@ class SidecarHealthContractTests(unittest.TestCase):
 
         execute.assert_called_once_with("image_prompt_polish", body, image=image)
 
+    def test_slicing_recommendation_route_is_native_only_and_uses_json_contract(self):
+        endpoint = "/v1/orcaslicer/text-capabilities/slicing_parameter_recommendation"
+        availability = {
+            "capability": "slicing_parameter_recommendation", "available": True,
+            "reason": "", "diagnostic_id": str(uuid.uuid4()),
+        }
+        body = {"request_id": "smart-slicing-9"}
+        result = {
+            "request_id": body["request_id"], "status": "success",
+            "recommendations": [], "warnings": [], "diagnostic_id": str(uuid.uuid4()),
+        }
+        with temporary_environment(ORCASLICER_AI_SESSION_TOKEN=None, ORCASLICER_AI_REQUIRE_SESSION=None), \
+             mock.patch.object(PRODUCTION._SLICING_RECOMMENDATIONS, "availability", return_value=availability) as status, \
+             mock.patch.object(PRODUCTION._SLICING_RECOMMENDATIONS, "execute", return_value=result) as execute, \
+             sidecar_server(PRODUCTION.Handler) as port:
+            url = f"http://127.0.0.1:{port}{endpoint}"
+            with self.assertRaises(urllib.error.HTTPError) as denied:
+                urllib.request.urlopen(url, timeout=5)
+            self.assertEqual(denied.exception.code, 401)
+
+            headers = {"X-OrcaSlicer-Client": "native"}
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=5) as response:
+                self.assertEqual(json.load(response), availability)
+
+            post = urllib.request.Request(
+                url, data=json.dumps(body).encode("utf-8"),
+                headers={**headers, "Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(post, timeout=5) as response:
+                self.assertEqual(json.load(response), result)
+
+        status.assert_called_once_with()
+        execute.assert_called_once_with(body)
+
+    def test_slicing_recommendation_error_includes_diagnostic_id(self):
+        diagnostic_id = str(uuid.uuid4())
+        error = PRODUCTION.SlicingRecommendationError(
+            "invalid_provider_response", "云端 AI 返回格式无效。", 502, False, diagnostic_id
+        )
+        with temporary_environment(ORCASLICER_AI_SESSION_TOKEN=None, ORCASLICER_AI_REQUIRE_SESSION=None), \
+             mock.patch.object(PRODUCTION._SLICING_RECOMMENDATIONS, "execute", side_effect=error), \
+             sidecar_server(PRODUCTION.Handler) as port:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/orcaslicer/text-capabilities/slicing_parameter_recommendation",
+                data=b"{}", headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(request, timeout=5)
+            payload = json.loads(raised.exception.read())
+        self.assertEqual(raised.exception.code, 502)
+        self.assertEqual(payload["error"]["code"], "invalid_provider_response")
+        self.assertEqual(payload["diagnostic_id"], diagnostic_id)
+
     def test_text_capability_multipart_rejects_missing_request_oversized_and_unsupported_images(self):
         endpoint = "/v1/orcaslicer/text-capabilities/image_prompt_polish"
         body = {

@@ -85,6 +85,7 @@ struct MachinePreset
 struct FilamentPreset
 {
     std::string id;
+    std::vector<std::string> material_types {"UNKNOWN"};
     double density_g_cm3{1.24};
     double extrusion_multiplier{1.0};
     double maximum_volumetric_speed_mm3_s{12.0};
