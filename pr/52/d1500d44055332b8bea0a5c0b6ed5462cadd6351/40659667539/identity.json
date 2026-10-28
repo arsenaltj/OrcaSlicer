@@ -1,0 +1,25 @@
+{
+  "pr": 52,
+  "run": 40659667539,
+  "head": "d1500d44055332b8bea0a5c0b6ed5462cadd6351",
+  "base": "9f1655520cebf0b316645e0cae73eccacec28cc7",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "集成荣耀账号登录、会话保持与账号工作区",
+  "path": "pr/52/d1500d44055332b8bea0a5c0b6ed5462cadd6351/40659667539",
+  "created": "2026-10-28T08:53:31+00:00",
+  "files": {
+    "index.html": "596ce7b04d37191e20ba4df1b58a0e40c49b04e966e54bd0cd93189e62580d51",
+    "details.html": "f3460fb268c05b4256a838c092fbf1327fa7d310815f5ffdd5a78e7f7a43794b",
+    "report.json": "01defe6a67067fe411fd21d366cf6883c45fb81163c3c4b247c66a471aa14ad0",
+    "summary.md": "75b136c5919bed04345bc081f95e5c536d65df137a43466f049d8b618e1fadef",
+    "archify-receipts.json": "54bb3b4e3cce6cbbdde04fda851728555b54f8a31fcdadca9b61a848d522f1cd",
+    "l0-context.html": "2ed041164aacf3ff25a8a692a4c0ef3fbe9c6ab95c990bb078b8481aa5852760",
+    "l0-context.json": "ed8d5b43ab8fc730068db05ec4fcd3ea481c1da8b90533fe8efcf31f31188d28",
+    "l1-modules.html": "75f3c0d5e9f5b6398e71812ebb9fe31a76a798241d73ade143d2bc844a63c6e1",
+    "l1-modules.json": "fe37dc14f1142e18aa102c15bb6b2f3f67b2e040138b325c990dd378d9c0ea9b",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "46ca7ade63fcd50bac8b2ce3984ac1c6d157f5b65f429a70dbc13a449aa8d4d3",
+    "l2-slicing.json": "5c1db02b393a0d36f5f2dce03383c8ae2d4b4804b8b1eea056636a5de1fe1fa8"
+  }
+}

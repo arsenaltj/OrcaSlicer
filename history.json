@@ -1,6 +1,16 @@
 [
   {
     "pr": 52,
+    "run": 40659667539,
+    "head": "d1500d44055332b8bea0a5c0b6ed5462cadd6351",
+    "base": "9f1655520cebf0b316645e0cae73eccacec28cc7",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "集成荣耀账号登录、会话保持与账号工作区",
+    "path": "pr/52/d1500d44055332b8bea0a5c0b6ed5462cadd6351/40659667539",
+    "created": "2026-10-28T08:53:31+00:00"
+  },
+  {
+    "pr": 52,
     "run": 40656716702,
     "head": "fd7f163b9a48af27facc5c9c8cba6f90761a8a42",
     "base": "9f1655520cebf0b316645e0cae73eccacec28cc7",
