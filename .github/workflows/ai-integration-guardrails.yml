@@ -49,24 +49,34 @@ jobs:
         run: python scripts/verify_ai_integration.py --json
       - name: Run AI tests with external Python networking blocked
         run: python scripts/run_ai_offline_tests.py
+      - name: Test whitespace ranges with real Git histories
+        run: python -m unittest discover -s scripts -p test_ci_whitespace.py -v
       - name: Check committed whitespace errors
         shell: pwsh
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_SHA: ${{ github.sha }}
           BEFORE_SHA: ${{ github.event.before }}
         run: |
           $checkBase = $env:BASE_SHA
           $checkHead = $env:HEAD_SHA
           if ($env:EVENT_NAME -eq 'pull_request' -and $env:PR_HEAD_SHA) {
-            # An upstream candidate may import pre-existing whitespace from the
-            # official alpha. Check the candidate's own delta after its oldest
-            # first-parent merge, then check the synthetic merge resolution below.
             $checkHead = $env:PR_HEAD_SHA
-            $candidateMerge = git log --first-parent --merges --format=%H "$checkHead" --not "$env:BASE_SHA" | Select-Object -Last 1
-            if ($candidateMerge) { $checkBase = $candidateMerge.Trim() }
+            # A feature may have synced several integration versions. Check its
+            # own delta from the shared base, including changes made in merges.
+            $checkBase = git merge-base "$env:BASE_SHA" "$checkHead"
+            if ($LASTEXITCODE -ne 0 -or -not $checkBase) { throw "Cannot resolve PR whitespace baseline." }
+            $checkBase = $checkBase.Trim()
+            # Dedicated upstream imports keep the existing exception for
+            # official whitespace; subsequent fixes and merge results are checked.
+            if ($env:PR_HEAD_REF -like 'codex/upstream-*') {
+              $candidateMerge = git log --first-parent --merges --format=%H "$checkHead" --not "$env:BASE_SHA" | Select-Object -Last 1
+              if ($LASTEXITCODE -ne 0) { throw "Cannot resolve upstream whitespace baseline." }
+              if ($candidateMerge) { $checkBase = $candidateMerge.Trim() }
+            }
           }
           if ($checkBase -and $checkHead) {
             git -c core.whitespace=cr-at-eol diff --check "$checkBase" "$checkHead"
