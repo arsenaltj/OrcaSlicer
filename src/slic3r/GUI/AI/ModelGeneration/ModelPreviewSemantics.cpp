@@ -282,12 +282,17 @@ ModelPreview3D::WorkbenchSurfacePalette ModelPreview3D::workbench_surface_palett
     auto preferred_target = [&trial](const PreviewPalette::Color& color) -> std::optional<size_t> {
         if (trial.source != 1) return {};
         const uint32_t key = PrinterFilamentPreview::rgb8(color);
+        std::optional<size_t> matched_slot;
         for (const auto& item : {std::make_pair(&trial.colors, &trial.project_color_slots),
                                  std::make_pair(&trial.semantic_palette, &trial.project_semantic_slots)}) {
             for (size_t index = 0; index < item.first->size() && index < item.second->size(); ++index)
-                if (PrinterFilamentPreview::rgb8((*item.first)[index]) == key) return (*item.second)[index];
+                if (PrinterFilamentPreview::rgb8((*item.first)[index]) == key) {
+                    const size_t slot = (*item.second)[index];
+                    if (matched_slot && *matched_slot != slot) return {};
+                    matched_slot = slot;
+                }
         }
-        return {};
+        return matched_slot;
     };
     auto map_source = [&trial](const PreviewPalette::Color& source) {
         WorkbenchSurfaceColor mapped {source, {}};
@@ -405,36 +410,135 @@ bool ModelPreview3D::restore_beauty_face_colors(const FaceColorOverrides& colors
     }
 }
 
-size_t ModelPreview3D::paint_beauty_faces(const std::vector<size_t>& faces, const RGBA& color)
+ModelPreview3D::BeautyPaintResult ModelPreview3D::paint_beauty_faces(
+    const std::vector<size_t>& faces, const RGBA& color, size_t native_slot)
 {
+    BeautyPaintResult painted;
     if (!m_beauty_view || !m_region_editor->ready() || selection_busy() || semantic_processing() ||
-        !same_stamp(m_model_stamp, file_stamp(m_model_path))) return 0;
+        !same_stamp(m_model_stamp, file_stamp(m_model_path))) return painted;
     auto selection = selection_state();
     selection.selected.assign(editing_face_count(), 0);
     for (size_t face : faces) if (face < selection.selected.size()) selection.selected[face] = 1;
     constrain_shape_selection(selection);
     const std::array<float, 3> target {color[0], color[1], color[2]};
     if (!m_leaf_editing) {
+        const std::map<size_t, std::array<float, 3>> before(
+            m_face_color_overrides.begin(), m_face_color_overrides.end());
         const auto result = paint_beauty_face_colors(m_face_color_overrides, selection, faces, target);
-        return result.changed && restore_beauty_face_colors(result.colors) ? result.changed : 0;
+        if (!result.changed || !restore_beauty_face_colors(result.colors)) return painted;
+        // restore_beauty_face_colors already installed result.colors. The
+        // operation's eligible list is the authoritative changed domain.
+        for (size_t face : faces) {
+            if (face >= selection.selected.size() || !selection.selected[face] ||
+                (face < selection.protected_faces.size() && selection.protected_faces[face])) continue;
+            const auto found = before.find(face);
+            if (found == before.end() || found->second != target) painted.faces.push_back(face);
+        }
+        std::sort(painted.faces.begin(), painted.faces.end());
+        painted.faces.erase(std::unique(painted.faces.begin(), painted.faces.end()), painted.faces.end());
+        painted.changed = painted.faces.size();
+        return painted;
     }
+    // Arbitrary contour cells do not have a representation in the existing
+    // applied-printer-filament-match schema. Keep this P0 path read-only until
+    // it can preserve a native slot without inventing a new external format.
+    if (cell_editing()) return painted;
     const auto eligible = paint_beauty_face_colors({}, selection, faces, target);
-    if (!eligible.changed || !m_semantic_source || !m_context || !m_canvas->SetCurrent(*m_context)) return 0;
+    if (!eligible.changed || !m_semantic_source || !m_context || !m_canvas->SetCurrent(*m_context)) return painted;
     auto colors = m_manual_leaf_colors;
-    size_t changed = 0;
     for (const auto& item : eligible.colors) {
         const auto& key = m_leaf_editing->keys[item.first];
         const auto found = colors.find(key);
         if (found != colors.end() && found->second == target) continue;
         colors[key] = target;
-        ++changed;
+        if (key.depth == 0) painted.faces.push_back(key.source_face_id);
+        else painted.subfaces.push_back({key.source_face_id, key.depth, key.path, native_slot});
     }
-    if (!changed) return 0;
+    painted.changed = painted.faces.size() + painted.subfaces.size();
+    if (!painted.changed) return {};
     AI::BeautyLeafEdits::capture(*m_leaf_editing, m_portrait_shapes->locks, colors, selection_state());
     m_manual_leaf_colors = std::move(colors);
     ++m_leaf_edit_revision;
     refresh_leaf_colors();
-    return changed;
+    return painted;
+}
+
+ModelPreview3D::BeautyPaintResult ModelPreview3D::restore_beauty_region(
+    const std::vector<size_t>& faces, const FaceColorOverrides& baseline_faces,
+    const nlohmann::json& baseline_leaf_edits)
+{
+    BeautyPaintResult restored;
+    if (!m_beauty_view || !m_region_editor->ready() || selection_busy() || semantic_processing() ||
+        !same_stamp(m_model_stamp, file_stamp(m_model_path))) return restored;
+    auto selection = selection_state();
+    selection.selected.assign(editing_face_count(), 0);
+    for (size_t face : faces) if (face < selection.selected.size()) selection.selected[face] = 1;
+    constrain_shape_selection(selection);
+    auto eligible = [&](size_t face) {
+        return face < selection.selected.size() && selection.selected[face] &&
+            (face >= selection.protected_faces.size() || !selection.protected_faces[face]);
+    };
+
+    if (!m_leaf_editing) {
+        std::map<size_t, std::array<float, 3>> current(
+            m_face_color_overrides.begin(), m_face_color_overrides.end());
+        const std::map<size_t, std::array<float, 3>> baseline(
+            baseline_faces.begin(), baseline_faces.end());
+        for (size_t face : faces) {
+            if (!eligible(face)) continue;
+            const auto source = baseline.find(face);
+            const auto existing = current.find(face);
+            if (source == baseline.end()) {
+                if (existing == current.end()) continue;
+                current.erase(existing);
+            } else {
+                if (existing != current.end() && existing->second == source->second) continue;
+                current[face] = source->second;
+            }
+            restored.faces.push_back(face);
+        }
+        std::sort(restored.faces.begin(), restored.faces.end());
+        restored.faces.erase(std::unique(restored.faces.begin(), restored.faces.end()), restored.faces.end());
+        if (restored.faces.empty()) return restored;
+        FaceColorOverrides colors(current.begin(), current.end());
+        if (!restore_beauty_face_colors(colors)) return {};
+        restored.changed = restored.faces.size();
+        return restored;
+    }
+    if (cell_editing() || !m_portrait_shapes) return restored;
+
+    std::map<AI::BeautyLeafKey, AI::SemanticColoring::Color> baseline;
+    try {
+        if (!baseline_leaf_edits.is_null() && !baseline_leaf_edits.empty())
+            baseline = AI::BeautyLeafEdits::decode(
+                baseline_leaf_edits, *m_leaf_editing, m_portrait_shapes->locks).colors;
+    } catch (const std::exception& error) {
+        BOOST_LOG_TRIVIAL(warning) << "Beauty entry-color restore rejected: " << error.what();
+        return restored;
+    }
+    auto colors = m_manual_leaf_colors;
+    for (size_t face : faces) {
+        if (!eligible(face) || face >= m_leaf_editing->keys.size()) continue;
+        const auto& key = m_leaf_editing->keys[face];
+        const auto source = baseline.find(key);
+        const auto existing = colors.find(key);
+        if (source == baseline.end()) {
+            if (existing == colors.end()) continue;
+            colors.erase(existing);
+        } else {
+            if (existing != colors.end() && existing->second == source->second) continue;
+            colors[key] = source->second;
+        }
+        if (key.depth == 0) restored.faces.push_back(key.source_face_id);
+        else restored.subfaces.push_back({key.source_face_id, key.depth, key.path, 0});
+    }
+    restored.changed = restored.faces.size() + restored.subfaces.size();
+    if (!restored.changed) return restored;
+    AI::BeautyLeafEdits::capture(*m_leaf_editing, m_portrait_shapes->locks, colors, selection_state());
+    m_manual_leaf_colors = std::move(colors);
+    ++m_leaf_edit_revision;
+    refresh_leaf_colors();
+    return restored;
 }
 
 bool ModelPreview3D::restore_portrait_color_blocks(std::shared_ptr<const PortraitColorBlocks::Result> blocks,bool refresh)

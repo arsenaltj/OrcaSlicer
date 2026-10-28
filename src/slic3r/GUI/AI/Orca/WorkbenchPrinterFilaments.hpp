@@ -13,6 +13,7 @@
 #include <numeric>
 #include <cctype>
 #include <set>
+#include <nlohmann/json.hpp>
 
 namespace Slic3r::GUI::PrinterFilamentConfig {
 

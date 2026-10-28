@@ -1,5 +1,6 @@
 #include "IMSlider.hpp"
 #include "GUI_App.hpp"
+#include "GUI.hpp"
 #include "MainFrame.hpp"
 #include "NotificationManager.hpp"
 #include "Widgets/StateColor.hpp"

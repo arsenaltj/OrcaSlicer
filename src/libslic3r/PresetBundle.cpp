@@ -88,6 +88,7 @@
 #include <tbb/partitioner.h>
 #include <vector>
 #include <utility>
+#include <nlohmann/json.hpp>
 
 namespace fs = boost::filesystem;
 
@@ -4480,7 +4481,7 @@ size_t PresetBundle::num_mixed_filaments() const
     return size_t(std::count(opt->values.begin(), opt->values.begin() + std::min(slot_count, opt->values.size()), true));
 }
 
-// Colours describe actual slots; filament_presets can be topped up to the nozzle count alone.
+// Colours describe actual slots; on a tool changer filament_presets can be topped up to the tool count alone.
 // Imported projects may have fewer mixed flags than slots. Missing flags mean physical filaments.
 size_t PresetBundle::num_physical_filaments() const
 {
@@ -5422,14 +5423,21 @@ int PresetBundle::get_printer_extruder_count() const
     return count;
 }
 
+size_t PresetBundle::min_filament_count() const
+{
+    if (printers.get_edited_preset().config.opt_bool("single_extruder_multi_material"))
+        return 1;
+    return static_cast<size_t>(get_printer_extruder_count());
+}
+
 void PresetBundle::update_filament_count()
 {
     if (printers.get_edited_preset().printer_technology() != ptFFF)
         return;
-    const size_t num_extruders = 1; // Nozzle count is independent of loaded filament count.
-    if (filament_presets.size() >= num_extruders)
+    const size_t min_filaments = min_filament_count();
+    if (filament_presets.size() >= min_filaments)
         return;
-    filament_presets.resize(num_extruders, filament_presets.empty()
+    filament_presets.resize(min_filaments, filament_presets.empty()
         ? filaments.first_visible().name
         : filament_presets.back());
 }
@@ -8436,17 +8444,13 @@ void PresetBundle::update_multi_material_filament_presets(size_t to_delete_filam
     if (printers.get_edited_preset().printer_technology() != ptFFF)
         return;
 
-    // Loaded materials may leave hardware nozzles idle.
+    // A tool may be idle even when the printer has a nozzle for it.
     size_t num_filaments = this->filament_presets.size();
-
-    auto* nozzle_diameter = static_cast<const ConfigOptionFloats*>(printers.get_edited_preset().config.option("nozzle_diameter"));
-    size_t num_extruders  = nozzle_diameter->values.size();
-    if (num_filaments == 0) { // Keep one material; additional nozzles may remain idle.
-        for (size_t i = 0; i < std::min(this->filament_presets.size(), num_extruders); ++i)
+    if (num_filaments == 0) {
+        for (size_t i = 0; i < this->filament_presets.size(); ++i)
             this->filament_presets[i] = this->filaments.find_preset(this->filament_presets[i], true)->name;
-        // Append the rest of filament presets.
         this->filament_presets.resize(1, this->filament_presets.empty() ? this->filaments.first_visible().name :
-                                                                                      this->filament_presets.back());
+                                                                                  this->filament_presets.back());
         num_filaments = this->filament_presets.size();
     }
     if (to_delete_filament_id == -1)

@@ -956,7 +956,14 @@ public:
     // Same-workpiece comparison/editing keeps the user's assignments. A new
     // library model still uses load() and starts with its own suggestions.
     void restore(const State& saved) {
-        if (!m_histogram || saved.colors.empty() || saved.colors.size() > PreviewPalette::max_preview_colors ||
+        // Textured candidates can have no vertex/face histogram after their
+        // printer colors are baked. Restore only the already-normalized,
+        // identity-bound printer state in that case; every other source still
+        // requires the model's own color evidence.
+        const bool baked_printer_state = !m_histogram &&
+            PrinterFilamentPreview::can_restore_baked_candidate_without_histogram(saved);
+        if ((!m_histogram && !baked_printer_state) || saved.colors.empty() ||
+            saved.colors.size() > PreviewPalette::max_preview_colors ||
             saved.colors.size() != saved.mapping_colors.size()) return;
         const auto* restored_suite = saved.source == 2
             ? find_honor_filament_suite(saved.suite_id, saved.suite_revision) : nullptr;

@@ -10,6 +10,8 @@
 #include "MsgDialog.hpp"
 #include "Widgets/Button.hpp"
 #include "MainFrame.hpp"
+#include "Plater.hpp"
+#include "PartPlate.hpp"
 #include "libslic3r/Config.hpp"
 #include "BitmapComboBox.hpp"
 #include "Widgets/ComboBox.hpp"

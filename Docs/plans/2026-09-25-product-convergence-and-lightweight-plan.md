@@ -2284,3 +2284,37 @@ PR 作者报告已有新控件的真实窗口、预览、前后对比和保存�
 本轮修复：远端新增桥接测试改用有效立方体输入，保留生产侧对空/非有限几何的拒绝；桥接把 Orca 的 `max_layer_height=0` 哨兵还原为喷嘴直径的 0.7 倍自动上限。版本化试切执行器修正会话输入分支的错误括号归属，准备会话、显式清空会话和 GUI provider 的契约恢复一致。现有工作台浮动卡前台门禁未被改写。
 
 验证记录：`[OrcaSlicingSupport]` 47/47、`[D5T3]` 14/14、工作台/路由定向 115/115 通过；`scripts/verify_ai_integration.py --json` 为 `ok: true`；固定 VS 2022 x64 Release 的 `OrcaSlicer` 增量构建成功。真实 GUI 的新模型结果页稳定帧、实体打印色彩及安装包交付仍未验证；用户已在后续指令授权提交、推送并创建集成 PR，本轮仍不打包。
+
+# 2026-10-27 c500 纯净轻量安装包交付
+
+范围与身份：固定 `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha/.tmp/dev/build`、VS 2022 x64 Release、`ORCA_AI_PORTRAIT_RECOGNITION=ON`、`ORCA_AI_LEGACY_FARL_RUNTIME=OFF`。源码基线为 `c50065dd347901367e6eb5111635473d24054010`；打包前为两项未提交审计修复，完整源码清单 SHA-256 为 `55f425eb4e66bae3645acd2db205bef37d40242353c50b3b1e6bda3a985d64a7`，source identity 为 `2a3a5d62eb618310243ca1f1ddbd5b6fb6e71528861a3406d47186590b99fdc4`。manifest 明确记录 `source_clean=false`，不能将该包描述为仅由干净 HEAD 生成。
+
+纯净扫描修复：首次候选扫描到 `resources/tools/ai/yoyoclaw_client.py` 的 `change-client-root-secret` 和 `change-hmac-secret`。两者是既有公开占位协议字面量，值哈希与审计记录一致，但合并后的源文件哈希发生变化；本轮只更新精确文件 SHA，并新增测试锁定 Windows 随包换行字节、路径、两个字面量哈希，同时证明追加未知 secret 仍返回阻断。扫描器测试 24/24 和发布脚本测试 53/53 通过。
+
+构建与自动验证：完整 Release 打包成功；EXE 扫描 `19,395` 个成员、ZIP 扫描 `19,386` 个成员，均为 `NOT_DETECTED_WITHIN_SCOPE`、零 findings、零 gaps。`[ModelGenerationPresentation]` 65/65（8,879 assertions）和 `[AI][SmartSlicing]` 259/259（3,622 assertions）通过；测试日志中的空 `info/nozzle_info.json` 解析错误为既有 fixture 日志，测试最终通过。7-Zip 验证 NSIS 为 `Everything is Ok`。
+
+轻量运行时审计：NSIS 与 ZIP 载荷分别恰好包含 8 个 `ai/portrait_semantics` 文件，总计 `64,989,390` bytes；provider 为 `mediapipe.cpu.v1`，`legacy_farl_enabled=false`。`resources/beauty-runtime`、FaRL、Torch、torchvision 等重型路径命中为零。portable ZIP 仅作独立内容扫描和归档对照，成功后按磁盘规则删除，不作为用户交付。
+
+最终交付：`D:/TEST/packages/current/OrcaSlicer_AI_Internal_Fast_V2.5.0-alpha_20261027-c50065dd34-mediapipe-auditfix_x64.exe`，大小 `255,214,469` bytes，SHA-256 `AAA217FFB3547B66F94B52F828941A23EC595AA8283B0B7D9463EEB4B8852524`，`SignatureStatus=NotSigned`。目录同时保留 installer manifest、SHA、EXE 内容扫描、集成检查、源码快照、交付清单和语义运行时审计。上一版大 EXE 已删除，证据移到 `D:/TEST/packages/.retired-20261027-a02806d457-mediapipe`；两次候选的 `_CPack_Packages` 和临时大载荷已删除，共释放 `4,594,731,330` bytes。
+
+验收边界：上述结果证明源码快照、自动测试、载荷内容扫描和安装归档结构通过；没有启动安装程序，不能据此宣称标准用户安装/卸载、`Program Files` 权限、GUI、100%/125%/150% DPI、真实六头打印机或实体打印色彩通过。本轮不提交、不推送。
+
+# 2026-10-27 配色不匹配向导排版与操作层级修复
+
+范围：只调整 3D 工作台的“配色不匹配”和“套装与打印机不兼容”向导。为 `RedesignConfirmationOptions` 增加默认关闭的正文/按钮字号、正文自动适高和最大正文高度配置，其他确认弹窗的既有行为保持不变。
+
+实现：两个向导的标题保持 12 pt，正文和按钮统一为 11 pt，按钮仍为 200 x 48 DIP。正文使用实际字体和 `Label::split_lines()` 结果测量，视口高度为 `max(105 DIP, 实际高度 + 4 DIP)`，上限 240 DIP；短内容不创建滚动视口，超出上限时才启用暗色滚动。首次 GUI 验收发现滚动容器右侧残留 Windows 原生黑色槽道，现由自绘滑块覆盖原生槽道，并逐项复用左侧工作台侧栏参数：`10 DIP` 交互带、`4 DIP` 滑块、`RGB(105,105,112)` 和 `2 DIP` 圆角。DPI 变化后重新换行、测高、布局和设置圆角。说明文字明确黄色“将耗材色映射到模型”为推荐操作且不修改打印机耗材配置，灰色“将模型配色导入到耗材”用于保留模型当前配色；按钮顺序、回调、关闭及 Esc 语义不变。
+
+验证：`git diff --check` 通过；`[UiRedesign][ConfirmationDialog]`、`[UiRedesign][WorkbenchNavigation]` 和 `[PostGenerationWorkbench]` 合计 84 个用例/2,494 条断言通过；固定 VS 2022 x64 Release 的 `slic3rutils_tests` 与 `OrcaSlicer_app_gui` 目标编译成功，仅保留既有 `LNK4098` 警告；`scripts/verify_ai_integration.py --json` 返回 `ok: true`。匹配运行树 PID `27332` 在本机 `AppliedDPI=192`（200%）下完成真实 GUI 核对：“配色不匹配”和“套装与打印机不兼容”正文均完整显示，按钮字号与正文一致，黄色/灰色主次层级清晰，右侧黑条已消失。
+
+未结：长翻译正文触发滚动后的真实拖动/滚到底验收，以及精确 100%/125%/150% DPI 核对仍未执行；当前实机结果只覆盖 200% DPI 的两个正常长度向导。代码测试、GUI 观感和实体打印色彩继续分别报告；本轮未提交、未推送、未打包，也未执行任何耗材映射。
+
+# 2026-10-28 官方 v2.5.0-beta 升级候选
+
+目标与状态：指定 checkout `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha`、分支 `codex/upstream-v2.5.0-alpha-portrait-preserved`，以官方 `v2.5.0-beta` `345efec64c7b95a05ce5cf96df0dde66a158835c` 为来源。隔离合并结果 HEAD `80adaf901bdf5049f7092dc92955129989a9790c` 包含该标签；原 18 个已修改文件和 1 个未跟踪头文件已快照、恢复并融合，快照位于 `.tmp/dev/beta-upgrade-20261028/`，`stash@{0}` 保留。工作树仍有在研修改，不能把候选描述为干净提交。
+
+合并与构建：按 alpha 的来源固定、隔离冲突、分层复测方法处理 JPEG/PNG/OpenCV 更新及工作台与 Orca 共享界面。beta 独立依赖前缀为 `.tmp/dev/deps-beta-build/OrcaSlicer_dep/usr/local`，包含 OpenCV 4.14.0、libpng 1.6.59、libjpeg-turbo 3.2.0，旧前缀保留。固定 `.tmp/dev/build` 的 CMake 源码归属为本 checkout；Release 应用、`libslic3r_tests`、`fff_print_tests`、`slic3rutils_tests` 构建成功。`./dev.ps1 Run -NoLaunch` 的 catalogs/build/install/runtime-check/python-check 五步通过，见 `.tmp/dev/logs/20261028-143121-911/result.json`；源码身份 `cea623ecb16f0a626d4d66f4be3edb5c18ed5e24df2c70f40ba4ec1bf332e003`，运行树 19,600 文件。安装的 `OrcaSlicer.dll` 与构建 DLL SHA-256 均为 `C8E69E005884D409FC2476984A7CBEAE7006985880B3E06762E13B2692C0479C`，运行入口 EXE 为 `60BA6CF3984DFF953060DAE2B0316B2AA1E7326DD9988DFC7A8B0A4FD6A1C5E3`。
+
+自动验收：`[Preset]|[3MF]|[AMF]` 140/140；纹理/颜色/网格/工作台/人像联合标签 1,280 项无失败、1 项 Windows 符号链接跳过；擦料塔/G-code/切片/预览标签 749 项无失败、1 项同类跳过。各组有重叠，不相加。`verify_ai_integration.py --json`、`verify_mobile_sdk_boundary.py --json` 和 `git diff --check` 通过。合并回归修正保留空闲喷嘴语义，避免为每个喷嘴虚构已加载耗材；新 beta 测试按此产品契约验证。人像色卡测试改用既定 revision 2 肤色 `#ECC3B2`。
+
+GUI 与剩余验收：PID 2084 从匹配运行树用独立数据目录 `.tmp/dev/beta-gui-20261028/data` 启动；完成首次设置、四槽 3MF 副本加载、实际切片/G-code/擦料塔预览、另存和重开，重开后的模型几何及颜色可见。桌面后来切到其他应用，自动操作暂停。JPEG 贴图 OBJ 真实导入、4/5/6 色映射与耗材应用、撤销重做、正常退出尚未完成；用户人像视觉接受和实体打印色准均待验。此为 Windows beta 本机候选，不是正式发布版；不打包、推送、创建 PR 或更新 integration。

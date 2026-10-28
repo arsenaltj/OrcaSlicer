@@ -3,6 +3,7 @@
 #include "AIModelGenerationClient.hpp"
 #include "AI/ModelGeneration/BeautyCandidateSnapshot.hpp"
 #include "AI/ModelGeneration/BeautyWorkbenchSession.hpp"
+#include "AI/ModelGeneration/BeautyWorkbenchColorGate.hpp"
 #include "AI/ModelGeneration/ModelLibraryEntry.hpp"
 #include "AI/ModelGeneration/ModelLibraryApplication.hpp"
 #include "AI/ModelGeneration/ModelLibraryLoader.hpp"
@@ -285,6 +286,15 @@ private:
     WorkbenchButton* m_workbench_add_filament {nullptr};
     WorkbenchButton* m_workbench_sync_filaments {nullptr};
     void apply_workbench_printer_filaments(bool physical_only = false);
+    bool request_beauty_color_gate(bool enter_after_success);
+    void finish_beauty_color_gate(std::uint64_t request_id, std::uint64_t model_sequence,
+                                  boost::filesystem::path source, BeautyColorGateIdentity identity,
+                                  BeautyColorGateResult result);
+    void show_beauty_color_gate_guide(const BeautyColorGateResult& result);
+    void cancel_beauty_color_gate();
+    bool beauty_color_match_current() const;
+    bool beauty_session_has_changes() const;
+    void complete_return_overview();
     void toggle_printer_filament_trial();
     void exit_printer_filament_trial(const wxString& reason = wxString());
     // Invalidate the in-memory trial before replacing or clearing preview data.
@@ -299,6 +309,18 @@ private:
     std::vector<PrinterFilamentSlotRemap::Change> m_apply_filaments_changes;
     std::string m_apply_filaments_source_identity;
     std::optional<AI::ModelMatchedColors> m_apply_filaments_match;
+    std::optional<AI::ModelMatchedColors> m_beauty_matched_colors;
+    BeautyColorGateState m_beauty_color_gate_state {BeautyColorGateState::Unchecked};
+    std::string m_beauty_color_gate_message;
+    bool m_beauty_entry_pending {false};
+    std::uint64_t m_beauty_color_gate_request {0};
+    std::thread m_beauty_color_gate_worker;
+    std::shared_ptr<std::atomic<bool>> m_beauty_color_gate_cancel;
+    std::string m_beauty_color_gate_expected_key;
+    std::string m_beauty_color_gate_cache_key;
+    std::string m_beauty_color_gate_configuration_signature;
+    std::optional<BeautyColorGateResult> m_beauty_color_gate_cache;
+    std::shared_ptr<BeautyCandidateSnapshot> m_beauty_compare_draft;
     bool m_apply_filaments_before_trial_active {false};
     boost::filesystem::path m_applied_filaments_saved_model;
     std::string m_applied_filaments_saved_signature;
@@ -463,6 +485,7 @@ private:
     void rescale_post_generation_workbench();
     void preview_model_finishing();
     void paint_beauty_color(const std::vector<size_t>& faces);
+    void restore_beauty_entry_color();
     bool show_finishing_version(const boost::filesystem::path& path);
     wxButton* m_finishing_color_match { nullptr };
     void accept_model_finishing();
