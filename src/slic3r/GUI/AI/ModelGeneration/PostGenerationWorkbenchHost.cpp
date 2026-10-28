@@ -4,6 +4,7 @@
 #include "BeautyWorkbenchTransactionController.hpp"
 #include "ModelPreview3D.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchPrinterFilaments.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaPrintPaletteSnapshot.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
@@ -116,7 +117,10 @@ std::vector<BeautyColorItem> ModelGenerationPanel::local_recolor_palette() const
                                slot.slot, BeautyColorSource::Mixed});
         }
     }
-    if (!palette.empty()) return palette;
+    // Beauty editing is print-bound: an unavailable live native palette must
+    // stay unavailable instead of silently exposing arbitrary project/model
+    // RGB values. The entry gate will explain how to restore compatibility.
+    if (!palette.empty() || (m_finishing_workbench && m_workbench_editing)) return palette;
 
     auto fallback = project_palette();
     if (fallback.empty())
@@ -129,6 +133,36 @@ std::vector<BeautyColorItem> ModelGenerationPanel::local_recolor_palette() const
                            slot, BeautyColorSource::Physical});
     }
     return palette;
+}
+
+bool ModelGenerationPanel::beauty_color_match_current() const
+{
+    if (!m_model_preview || !m_beauty_matched_colors ||
+        !m_beauty_matched_colors->valid() ||
+        m_beauty_color_gate_state != BeautyColorGateState::Compatible)
+        return false;
+    const auto* bundle = wxGetApp().preset_bundle;
+    if (!bundle) return false;
+    const auto configuration = PrinterFilamentConfig::capture(*bundle);
+    const auto native = OrcaPrintPaletteSnapshot::capture(*bundle);
+    const auto& matched = *m_beauty_matched_colors;
+    const std::string source_sha256 = m_beauty_session_source
+        ? m_beauty_session_source->model_sha256
+        : AI::model_artifact_sha256(m_displayed_model_path);
+    const std::string geometry_id = m_beauty_session_source
+        ? m_beauty_session_source->geometry_id : m_model_preview->geometry_id();
+    return matched.source_sha256 == source_sha256 && matched.geometry_id == geometry_id &&
+        configuration.signature == m_beauty_color_gate_configuration_signature &&
+        matched.material_fingerprint == native.material_fingerprint &&
+        matched.process_fingerprint == native.process_fingerprint;
+}
+
+bool ModelGenerationPanel::beauty_session_has_changes() const
+{
+    if (!m_workbench_editing) return false;
+    return beauty_workbench_has_unsaved_changes(
+        !m_finishing_candidate.empty(), m_beauty_manual_color_dirty,
+        m_beauty_controls && m_beauty_controls->has_changes(), bool(m_beauty_compare_draft));
 }
 
 void ModelGenerationPanel::update_region_mode()
@@ -317,21 +351,79 @@ bool ModelGenerationPanel::request_open_workbench()
 bool ModelGenerationPanel::request_enter_beauty()
 {
     if (!post_generation_ui_state().can_edit) return false;
-    m_workbench_editing = true;
-    update_finishing_selection();
-    refresh_model_finishing();
-    refresh_post_generation_workbench();
-    return true;
+    return request_beauty_color_gate(true);
 }
 
 bool ModelGenerationPanel::request_return_overview()
 {
     if (m_shutdown) return false;
+    const auto ui = post_generation_ui_state();
+    const bool processing = ui.status == PostGenerationUiState::Status::Loading ||
+        ui.status == PostGenerationUiState::Status::Processing ||
+        m_beauty_color_gate_state == BeautyColorGateState::Checking ||
+        (m_beauty_controls && m_beauty_controls->partitioning());
+    const auto leave = derive_beauty_workbench_leave_state(processing, beauty_session_has_changes());
+    if (m_workbench_editing && leave == BeautyWorkbenchLeaveState::Processing) {
+        m_workbench_operation_notice = "当前处理尚未结束，请先等待完成或取消处理。";
+        if (m_finishing_status) m_finishing_status->SetLabel(_L("当前处理尚未结束，请先等待完成或取消处理。"));
+        refresh_model_finishing();
+        return false;
+    }
+
+    // Comparison is a display-only state. Restore the draft before asking what
+    // to do with it so Save always operates on the edited version.
+    if (m_workbench_editing && m_finishing_before) {
+        bool restored = false;
+        if (m_beauty_compare_draft)
+            restored = restore_beauty_candidate(*m_beauty_compare_draft);
+        else if (!m_finishing_candidate.empty())
+            restored = show_finishing_version(m_finishing_candidate);
+        if (!restored) {
+            m_workbench_operation_notice = "无法恢复修改后预览，已留在美颜工作台。";
+            refresh_model_finishing();
+            return false;
+        }
+        m_beauty_compare_draft.reset();
+        m_finishing_before = false;
+    }
+
+    if (m_workbench_editing && leave == BeautyWorkbenchLeaveState::ConfirmChanges) {
+        const bool can_save = beauty_color_match_current();
+        RedesignConfirmationOptions options;
+        options.style = wxYES_NO | wxCANCEL | wxCANCEL_DEFAULT;
+        options.dismiss_result = wxID_CANCEL;
+        style_workbench_color_confirmation(options);
+        if (can_save)
+            options.actions = {{wxID_YES, _L("保存并返回"), true},
+                               {wxID_NO, _L("放弃修改并返回"), false},
+                               {wxID_CANCEL, _L("留在此处"), false}};
+        else
+            options.actions = {{wxID_NO, _L("放弃修改并返回"), false},
+                               {wxID_CANCEL, _L("留在此处"), false}};
+        const int answer = show_redesign_confirmation(this,
+            can_save
+                ? _L("当前修改尚未保存。保存会生成新版本，原模型不会被覆盖。")
+                : _L("当前耗材配置与模型配色不兼容，无法保存。可以放弃修改并返回，或留在此处恢复兼容配置。"),
+            _L("返回模型总览"), options);
+        if (can_save && answer == wxID_YES) return request_save_and_return();
+        if (answer != wxID_NO) return false;
+        discard_model_finishing();
+        if (beauty_session_has_changes()) return false;
+    }
+    complete_return_overview();
+    return true;
+}
+
+void ModelGenerationPanel::complete_return_overview()
+{
+    m_beauty_entry_pending = false;
+    m_beauty_compare_draft.reset();
+    m_beauty_session_source.reset();
+    m_finishing_before = false;
     m_workbench_editing = false;
     update_finishing_selection();
     refresh_model_finishing();
     refresh_post_generation_workbench();
-    return true;
 }
 
 bool ModelGenerationPanel::request_workbench_color_matching()
@@ -472,6 +564,14 @@ bool ModelGenerationPanel::request_workbench_results()
 bool ModelGenerationPanel::request_save_and_return()
 {
     if (!post_generation_ui_state().can_edit) return false;
+    if (m_workbench_editing) {
+        if (!beauty_color_match_current()) {
+            m_finishing_status->SetLabel(_L("当前模型配色尚未完整绑定到耗材；已暂停保存，请恢复兼容配置后重试。"));
+            m_workbench_operation_notice = m_finishing_status->GetLabel().ToUTF8().data();
+            refresh_controls();
+            return false;
+        }
+    }
     m_model_preview->synchronize_project_colors();
     // Applying printer filaments deliberately starts from an invalidated
     // project match: the staged bundle contains the new slot identities and
@@ -509,7 +609,11 @@ bool ModelGenerationPanel::request_save_and_return()
         } else preview_model_finishing();
         if (!m_finishing_running) m_save_and_return = false;
     }
-    else { m_save_and_return = false; request_return_overview(); request_check_workbench(true); }
+    else {
+        m_save_and_return = false;
+        complete_return_overview();
+        request_check_workbench(true);
+    }
     return true;
 }
 
@@ -521,7 +625,7 @@ void ModelGenerationPanel::finish_workbench_save()
         if (!m_finishing_running) m_save_and_return = false;
     } else if (m_finishing_result.success && (!m_beauty_controls || !m_beauty_controls->has_changes())) {
         m_save_and_return = false;
-        request_return_overview();
+        complete_return_overview();
         request_check_workbench(true);
     } else m_save_and_return = false;
 }

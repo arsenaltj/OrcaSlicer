@@ -222,6 +222,16 @@ inline State normalize_baked_candidate_state(State state)
     return state;
 }
 
+template<class State>
+inline bool can_restore_baked_candidate_without_histogram(const State& state)
+{
+    static_assert(std::is_base_of_v<AI::ColorTrialPersistence::State, State>);
+    return state.source == 1 && state.enabled && !state.project_slot_identity.empty() &&
+        state.colors == state.mapping_colors &&
+        (state.semantic_palette.empty() || state.semantic_palette == state.semantic_mapping_palette) &&
+        AI::ColorTrialPersistence::detail::valid_state(state);
+}
+
 // Explicit native identities chosen by the compatible recipe planner.
 inline bool apply_bound(AI::ColorTrialPersistence::State& state, const std::vector<size_t>& bindings,
     const std::vector<Color>& matched, const std::string& identity)

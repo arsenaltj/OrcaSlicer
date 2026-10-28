@@ -3149,6 +3149,19 @@ bool GUI_App::init_opengl()
 #endif
 }
 
+GLShaderProgram* GUI_App::get_shader(const std::string& shader_name) { return m_opengl_mgr->get_shader(shader_name); }
+GLShaderProgram* GUI_App::get_current_shader() { return m_opengl_mgr->get_current_shader(); }
+
+bool GUI_App::is_gl_version_greater_or_equal_to(unsigned int major, unsigned int minor) const
+{
+    return m_opengl_mgr->get_gl_info().is_version_greater_or_equal_to(major, minor);
+}
+
+bool GUI_App::is_glsl_version_greater_or_equal_to(unsigned int major, unsigned int minor) const
+{
+    return m_opengl_mgr->get_gl_info().is_glsl_version_greater_or_equal_to(major, minor);
+}
+
 // gets path to PrusaSlicer.ini, returns semver from first line comment
 static boost::optional<Semver> parse_semver_from_ini(std::string path)
 {

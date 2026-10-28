@@ -8444,17 +8444,13 @@ void PresetBundle::update_multi_material_filament_presets(size_t to_delete_filam
     if (printers.get_edited_preset().printer_technology() != ptFFF)
         return;
 
-    // Loaded materials may leave hardware nozzles idle.
+    // A tool may be idle even when the printer has a nozzle for it.
     size_t num_filaments = this->filament_presets.size();
-
-    auto* nozzle_diameter = static_cast<const ConfigOptionFloats*>(printers.get_edited_preset().config.option("nozzle_diameter"));
-    size_t num_extruders  = nozzle_diameter->values.size();
-    if (num_filaments == 0) { // Keep one material; additional nozzles may remain idle.
-        for (size_t i = 0; i < std::min(this->filament_presets.size(), num_extruders); ++i)
+    if (num_filaments == 0) {
+        for (size_t i = 0; i < this->filament_presets.size(); ++i)
             this->filament_presets[i] = this->filaments.find_preset(this->filament_presets[i], true)->name;
-        // Append the rest of filament presets.
         this->filament_presets.resize(1, this->filament_presets.empty() ? this->filaments.first_visible().name :
-                                                                                      this->filament_presets.back());
+                                                                                  this->filament_presets.back());
         num_filaments = this->filament_presets.size();
     }
     if (to_delete_filament_id == -1)

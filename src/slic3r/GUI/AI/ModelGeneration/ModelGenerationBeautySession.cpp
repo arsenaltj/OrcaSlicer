@@ -4,6 +4,8 @@
 #include "BeautyWorkbenchControls.hpp"
 #include "BeautyWorkbenchTransactionController.hpp"
 #include "WorkbenchStyle.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaPrintPaletteSnapshot.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchPrinterFilaments.hpp"
 #include "slic3r/GUI/AI/Model/BeautyDocument.hpp"
 #include "slic3r/GUI/AI/Model/BeautyMetadata.hpp"
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
@@ -225,6 +227,17 @@ PostGenerationUiState ModelGenerationPanel::post_generation_ui_state() const
         !m_finishing_redo_path.empty() || (m_model_preview && m_model_preview->can_redo_selection()) ||
             (m_beauty_transactions && m_beauty_transactions->redo_count() > 0),
         m_workbench_load_error);
+    if (m_finishing_workbench && m_workbench_editing && !beauty_color_match_current()) {
+        // A live filament edit invalidates the saved native-slot identity
+        // immediately, before the asynchronous recheck has had a chance to
+        // publish Checking/Blocked into the sidebar.
+        state.can_edit = false;
+        state.can_switch_version = false;
+        state.can_preview = false;
+        state.can_accept = false;
+        state.can_redo = false;
+        state.can_import = false;
+    }
     const int tool = m_finishing_tool ? m_finishing_tool->GetSelection() : -1;
     if (AI::model_artifact_format(m_displayed_model_path) == "glb" && (tool == 3 || tool == 5))
         state.can_preview = false;
@@ -234,7 +247,8 @@ PostGenerationUiState ModelGenerationPanel::post_generation_ui_state() const
 void ModelGenerationPanel::update_finishing_selection()
 {
     const bool local = m_finishing_workbench && m_workbench_editing && (m_finishing_tool->GetSelection() == 1 || m_finishing_tool->GetSelection() == 4 || m_finishing_tool->GetSelection() == 5);
-    m_model_preview->set_selection_enabled(local && !m_busy && !m_workbench_check_running && !m_model_preview->semantic_processing() &&
+    m_model_preview->set_selection_enabled(local && post_generation_ui_state().can_edit &&
+        !m_workbench_check_running && !m_model_preview->semantic_processing() &&
         (m_finishing_candidate.empty() || m_finishing_workbench));
     if (!local) return;
     const auto selected = m_model_preview->selected_face_count();
@@ -288,11 +302,13 @@ void ModelGenerationPanel::refresh_model_finishing()
     m_finishing_panel->Show(show_finishing_panel);
     m_workbench_footer->Show(show_beauty_actions);
     const auto beauty_source = pending ? m_finishing_candidate : m_displayed_model_path;
-    if (m_beauty_controls)
-        m_beauty_controls->synchronize(beauty_source, ready && !m_busy && !transaction_busy &&
-            !m_finishing_before && !m_finishing_compare_held,
+    const auto ui_state = post_generation_ui_state();
+    if (m_beauty_controls) {
+        m_beauty_controls->set_color_gate(m_beauty_color_gate_state, m_beauty_color_gate_message);
+        m_beauty_controls->synchronize(beauty_source, ui_state.can_edit,
             m_finishing_workbench, m_busy || m_finishing_running || transaction_busy, pending, generated_models_root());
-    const bool editable = ready && !m_busy && !transaction_busy && !m_model_preview->selection_busy();
+    }
+    const bool editable = ui_state.can_edit && !m_model_preview->selection_busy();
     const int tool = m_finishing_tool->GetSelection();
     const bool cleanup = tool == 5;
     const bool local = tool == 1 || cleanup || tool == 4;
@@ -300,10 +316,14 @@ void ModelGenerationPanel::refresh_model_finishing()
     if (!m_finishing_workbench || m_workbench_editing)
         m_model_preview->set_color_controls_visible(!m_finishing_workbench || tool == 2);
     const bool selection_visible = local || tool == 4;
-    m_finishing_selection_section->Show(m_finishing_workbench && selection_visible);
+    const bool show_more_selection = !m_finishing_workbench ||
+        (m_beauty_controls && m_beauty_controls->more_tools_open());
+    m_finishing_selection_section->Show(m_finishing_workbench && selection_visible && show_more_selection);
     m_finishing_selection_section->SetLabel(m_finishing_selection_open ? _L("收起选择区域") : _L("选择区域"));
-    m_finishing_selection_controls->Show(selection_visible && (!m_finishing_workbench || m_finishing_selection_open));
-    m_finishing_overlay_row->Show(selection_visible && (!m_finishing_workbench || m_finishing_selection_open));
+    m_finishing_selection_controls->Show(selection_visible && show_more_selection &&
+        (!m_finishing_workbench || m_finishing_selection_open));
+    m_finishing_overlay_row->Show(selection_visible && show_more_selection &&
+        (!m_finishing_workbench || m_finishing_selection_open));
     m_finishing_overlay->Enable(editable && !pending);
     const bool beauty_editable = m_finishing_workbench && editable;
     m_finishing_selection_controls->Enable((editable && !pending) || beauty_editable);
@@ -322,10 +342,20 @@ void ModelGenerationPanel::refresh_model_finishing()
     // Automatic topology repairs are committed without a user candidate
     // review.  Keep the footer free of the legacy compare affordance while
     // that save transaction is running; manual beauty candidates retain it.
-    m_finishing_compare_model->Show(m_finishing_workbench || (pending && !m_workbench_auto_repair));
-    m_finishing_compare_model->Enable(editable && pending && !m_workbench_auto_repair);
+    const bool beauty_comparable = m_beauty_session_source && beauty_session_has_changes();
+    const bool beauty_footer_processing = transaction_busy || m_finishing_running ||
+        m_beauty_color_gate_state == BeautyColorGateState::Checking ||
+        (m_beauty_controls && m_beauty_controls->partitioning());
+    const bool beauty_compare_available = beauty_workbench_compare_available(
+        ready, beauty_footer_processing, m_beauty_color_gate_state, pending, beauty_comparable);
+    m_finishing_compare_model->Show(m_finishing_workbench
+        ? !beauty_footer_processing
+        : (pending && !m_workbench_auto_repair));
+    m_finishing_compare_model->Enable(m_finishing_workbench
+        ? beauty_compare_available
+        : editable && pending && !m_workbench_auto_repair);
     m_finishing_compare_model->SetLabel(m_finishing_workbench
-        ? (m_finishing_before ? _L("查看处理后") : _L("查看处理前"))
+        ? (m_finishing_before ? _L("查看修改后") : _L("修改前后对比"))
         : (m_finishing_before ? _L("当前为处理前") : _L("按住查看处理前")));
     m_finishing_compare_model->GetParent()->Layout();
     m_finishing_preview->Enable(editable);
@@ -414,6 +444,7 @@ void ModelGenerationPanel::refresh_model_finishing()
 void ModelGenerationPanel::reset_beauty_asset()
 {
     reset_portrait_session();
+    cancel_beauty_color_gate();
     if (m_workbench_check_cancel) m_workbench_check_cancel->store(true);
     if (m_workbench_check_worker.joinable()) m_workbench_check_worker.join();
     m_workbench_check_cancel.reset();
@@ -451,10 +482,17 @@ void ModelGenerationPanel::reset_beauty_asset()
     m_finishing_candidate_original_appearance = {};
     m_finishing_candidate_original_appearance_error.clear();
     m_beauty_session_source.reset();
+    m_beauty_compare_draft.reset();
     m_beauty_reoptimization_before.reset();
     m_beauty_accepted_files.clear();
     m_beauty_session_undo_base = m_beauty_session_file_base = 0;
     m_beauty_manual_color_dirty = false;
+    m_beauty_matched_colors.reset();
+    m_beauty_color_gate_state = BeautyColorGateState::Unchecked;
+    m_beauty_color_gate_message.clear();
+    m_beauty_color_gate_cache.reset();
+    m_beauty_color_gate_cache_key.clear();
+    m_beauty_color_gate_configuration_signature.clear();
     m_finishing_before = m_finishing_compare_held = m_save_and_return = false;
     m_portrait_mode = false;
     if (m_beauty_controls) m_beauty_controls->reset_asset();
@@ -519,6 +557,8 @@ BeautyCandidateSnapshot ModelGenerationPanel::capture_beauty_candidate() const
     snapshot.secondary_evidence_error = m_model_preview->secondary_region_evidence_error();
     snapshot.color_blocks=m_model_preview->portrait_color_blocks();
     snapshot.printer_restore=m_model_preview->printer_restore_snapshot();
+    snapshot.matched_colors = m_beauty_matched_colors;
+    snapshot.matched_configuration_signature = m_beauty_color_gate_configuration_signature;
     snapshot.shape_details = m_model_preview->portrait_shape_details();
     snapshot.shapes_unlocked = m_model_preview->portrait_shapes_unlocked();
     snapshot.leaf_edits=m_model_preview->leaf_edit_metadata();
@@ -640,8 +680,27 @@ bool ModelGenerationPanel::restore_beauty_candidate(const BeautyCandidateSnapsho
     }
     m_model_preview->restore_portrait_color_blocks(snapshot.color_blocks);
     m_model_preview->restore_printer_restore_snapshot(snapshot.printer_restore);
+    m_beauty_matched_colors = snapshot.matched_colors;
+    m_beauty_color_gate_configuration_signature = snapshot.matched_configuration_signature;
+    if (snapshot.matched_colors && snapshot.matched_colors->valid() && wxGetApp().preset_bundle) {
+        const auto configuration = PrinterFilamentConfig::capture(*wxGetApp().preset_bundle);
+        const auto native = OrcaPrintPaletteSnapshot::capture(*wxGetApp().preset_bundle);
+        const bool compatible = snapshot.matched_colors->source_sha256 == snapshot.model_sha256 &&
+            snapshot.matched_colors->geometry_id == m_model_preview->geometry_id() &&
+            configuration.signature == snapshot.matched_configuration_signature &&
+            snapshot.matched_colors->material_fingerprint == native.material_fingerprint &&
+            snapshot.matched_colors->process_fingerprint == native.process_fingerprint;
+        m_beauty_color_gate_state = compatible
+            ? BeautyColorGateState::Compatible : BeautyColorGateState::Blocked;
+        m_beauty_color_gate_message = compatible
+            ? "模型颜色已逐面绑定到当前耗材，可安全编辑。"
+            : "恢复的版本与当前耗材配置不兼容；新增编辑和保存已暂停。";
+    } else if (m_workbench_editing) {
+        m_beauty_color_gate_state = BeautyColorGateState::Blocked;
+        m_beauty_color_gate_message = "恢复的版本没有完整耗材槽位记录；请重新完成配色检查。";
+    }
     if (snapshot.geometry_id == m_model_preview->geometry_id() &&
-        snapshot.selection.selected.size() == m_model_preview->triangle_count())
+        snapshot.selection.selected.size() == m_model_preview->editing_face_count())
         m_model_preview->restore_selection_state(snapshot.selection);
     m_finishing_selection_state = snapshot.selection;
     m_finishing_before = false;

@@ -7,6 +7,7 @@
 #include "slic3r/GUI/GUI_ObjectList.hpp"
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/Plater.hpp"
+#include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/Selection.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include "slic3r/GUI/GUI.hpp"

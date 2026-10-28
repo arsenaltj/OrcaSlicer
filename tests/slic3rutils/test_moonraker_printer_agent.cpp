@@ -10,6 +10,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -36,6 +37,10 @@
 #include <boost/beast/websocket/ssl.hpp>
 #include <boost/beast/websocket/stream.hpp>
 #include <nlohmann/json.hpp>
+#include <openssl/evp.h>
+#include <openssl/rsa.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
 
 #include "slic3r/GUI/DeviceCore/DevStorage.h"
 #include "slic3r/Utils/IPrinterAgent.hpp"
@@ -53,25 +58,31 @@ namespace ssl       = net::ssl;
 using tcp           = net::ip::tcp;
 using namespace std::chrono_literals;
 
-// A self-signed certificate for 127.0.0.1, valid until 2126; the agent does not verify it.
-const char* const TEST_CERTIFICATE = R"(-----BEGIN CERTIFICATE-----
-MIIBfjCCASWgAwIBAgIUQ6GXkNGttqdwgzP8jnIbjZmbmsUwCgYIKoZIzj0EAwIw
-FDESMBAGA1UEAwwJMTI3LjAuMC4xMCAXDTI2MTAyNTIyMzQzNloYDzIxMjYxMDAx
-MjIzNDM2WjAUMRIwEAYDVQQDDAkxMjcuMC4wLjEwWTATBgcqhkjOPQIBBggqhkjO
-PQMBBwNCAAQzyTk4fzS67d2QTOgff5VZdiFu6zfRKL1j1XrmZRdSNSQ+A/ecb+RA
-wYLxO+ImIhC9nfFDz83gN6HMdIDhKZqvo1MwUTAdBgNVHQ4EFgQUqLCEdBHexenh
-R0myp07v6RmToacwHwYDVR0jBBgwFoAUqLCEdBHexenhR0myp07v6RmToacwDwYD
-VR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNHADBEAiBtuziYmXx6OICr8OZ/ljgW
-206TTprzJEsote+V0YwmawIgCTzg5n5sn/JH8DSUh7udfljYTtgIwlfqiqLZ9Y79
-Xz8=
------END CERTIFICATE-----
-)";
-const char* const TEST_PRIVATE_KEY = R"(-----BEGIN PRIVATE KEY-----
-MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgvrE3Z+AMBnG/JEQl
-PP9feoILjFkSRm5XAYES7mSg6JWhRANCAAQzyTk4fzS67d2QTOgff5VZdiFu6zfR
-KL1j1XrmZRdSNSQ+A/ecb+RAwYLxO+ImIhC9nfFDz83gN6HMdIDhKZqv
------END PRIVATE KEY-----
-)";
+void install_test_certificate(ssl::context &context)
+{
+    std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> key_context(EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr), EVP_PKEY_CTX_free);
+    EVP_PKEY *raw_key = nullptr;
+    if (!key_context || EVP_PKEY_keygen_init(key_context.get()) != 1 ||
+        EVP_PKEY_CTX_set_rsa_keygen_bits(key_context.get(), 2048) != 1 ||
+        EVP_PKEY_keygen(key_context.get(), &raw_key) != 1)
+        throw std::runtime_error("Could not generate TLS test key");
+    std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> key(raw_key, EVP_PKEY_free);
+    std::unique_ptr<X509, decltype(&X509_free)> certificate(X509_new(), X509_free);
+    if (!certificate || X509_set_version(certificate.get(), 2) != 1 ||
+        ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), 1) != 1 ||
+        !X509_gmtime_adj(X509_get_notBefore(certificate.get()), 0) ||
+        !X509_gmtime_adj(X509_get_notAfter(certificate.get()), 60 * 60 * 24) ||
+        X509_set_pubkey(certificate.get(), key.get()) != 1)
+        throw std::runtime_error("Could not prepare TLS test certificate");
+    X509_NAME *name = X509_get_subject_name(certificate.get());
+    if (!name || X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                                            reinterpret_cast<const unsigned char *>("127.0.0.1"), -1, -1, 0) != 1 ||
+        X509_set_issuer_name(certificate.get(), name) != 1 ||
+        X509_sign(certificate.get(), key.get(), EVP_sha256()) <= 0 ||
+        SSL_CTX_use_certificate(context.native_handle(), certificate.get()) != 1 ||
+        SSL_CTX_use_PrivateKey(context.native_handle(), key.get()) != 1)
+        throw std::runtime_error("Could not install TLS test certificate");
+}
 
 class DiscoveryAgent : public MoonrakerPrinterAgent
 {
@@ -157,8 +168,8 @@ class FakePrinter
 public:
     explicit FakePrinter(Behavior behavior, bool tls = false) : m_behavior(behavior), m_tls(tls)
     {
-        m_tls_context.use_certificate_chain(net::buffer(std::string_view(TEST_CERTIFICATE)));
-        m_tls_context.use_private_key(net::buffer(std::string_view(TEST_PRIVATE_KEY)), ssl::context::pem);
+        if (m_tls)
+            install_test_certificate(m_tls_context);
         m_accept_thread = std::thread([this] { accept_loop(); });
     }
 

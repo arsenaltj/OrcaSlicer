@@ -4451,7 +4451,6 @@ void GLCanvas3D::on_key(wxKeyEvent& evt)
         }
     }
 
-    auto imgui = wxGetApp().imgui();
     if (imgui->update_key_data(evt))
         render();
     if (!imgui_claimed)
@@ -10005,6 +10004,7 @@ void GLCanvas3D::_render_gcode(int canvas_width, int canvas_height)
         glsafe(::glBindTexture(GL_TEXTURE_2D, m_shadow_map_texture_id));
         glsafe(::glActiveTexture(GL_TEXTURE0));
         m_gcode_viewer.set_shadow_map(4, m_shadow_light_vp, 0.35f, 1.0f / static_cast<float>(m_shadow_map_size));
+    }
     else
         m_gcode_viewer.set_shadow_map(4, Transform3d::Identity(), 0.0f, 0.0f);
 

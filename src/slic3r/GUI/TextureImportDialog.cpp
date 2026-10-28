@@ -91,6 +91,28 @@ wxColour review_surface_colour() { return wxColour(53, 53, 55); }
 wxColour review_preview_colour() { return wxColour(23, 23, 25); }
 wxColour review_secondary_colour() { return wxColour(174, 174, 178); }
 
+static void apply_accent_button_colours(Button* btn)
+{
+    btn->SetBackgroundColor(StateColor(
+        std::pair<wxColour, int>(wxColour("#CECECE"), StateColor::Disabled),
+        std::pair<wxColour, int>(wxColour(0, 137, 123), StateColor::Pressed),
+        std::pair<wxColour, int>(wxColour(38, 166, 154), StateColor::Hovered),
+        std::pair<wxColour, int>(wxColour(0, 150, 136), StateColor::Normal)));
+    btn->SetBorderColor(StateColor(
+        std::pair<wxColour, int>(wxColour("#CECECE"), StateColor::Disabled),
+        std::pair<wxColour, int>(wxColour(0, 150, 136), StateColor::Normal)));
+    btn->SetTextColor(StateColor(
+        std::pair<wxColour, int>(wxColour("#6B6B6A"), StateColor::Disabled),
+        std::pair<wxColour, int>(wxColour("#FFFFFE"), StateColor::Normal)));
+}
+
+static void apply_muted_button_colours(Button* btn)
+{
+    btn->SetBackgroundColor(wxColour("#CECECE"));
+    btn->SetBorderColor(wxColour("#CECECE"));
+    btn->SetTextColor(wxColour("#6B6B6A"));
+}
+
 void layout_review_spin(SpinInput* spin)
 {
     for (auto* child : spin->GetChildren())
@@ -1105,6 +1127,7 @@ private:
     wxPanel* create_item_row(wxWindow* parent, TextureAutoMixMode mode, int row_h)
     {
         wxColour row_bg = m_workbench_review ? RedesignTheme::panel_colour() : StateColor::darkModeColorFor(*wxWHITE);
+        wxColour checked_bg = m_workbench_review ? wxColour(77, 77, 79) : StateColor::darkModeColorFor(wxColour("#BFE1DE"));
         wxColour hover_bg = m_workbench_review ? wxColour(77, 77, 79) : StateColor::darkModeColorFor(wxColour("#F4F4F4"));
         wxColour text_fg = m_workbench_review ? RedesignTheme::primary_text_colour() : texture_import_text_colour();
         wxColour accent = m_workbench_review ? RedesignTheme::accent_colour() : StateColor::darkModeColorFor(wxColour("#009688"));
@@ -4921,6 +4944,7 @@ void TextureImportDialog::style_confirm_button(bool dirty)
         apply_muted_button_colours(m_btn_ok);
         m_btn_ok->SetToolTip(texture_import_label("Parameters changed. Click Update preview to refresh.", "参数已修改，请点击“更新分色预览”。"));
     } else {
+        apply_accent_button_colours(m_btn_ok);
         m_btn_ok->UnsetToolTip();
     }
     if (m_hint_label)

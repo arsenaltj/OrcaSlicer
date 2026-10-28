@@ -534,6 +534,7 @@ public:
     void pop_combo_style();
 
     void invalidate_legend() { /*TODO: m_legend_resizer.reset();*/ }
+    void render_translucent_toolpaths(int canvas_width, int canvas_height);
 
 #if VGCODE_ENABLE_COG_AND_TOOL_MARKERS
     float get_cog_marker_scale_factor() const { return m_viewer.get_cog_marker_scale_factor(); }

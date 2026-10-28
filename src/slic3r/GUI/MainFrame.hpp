@@ -68,6 +68,7 @@ class wxBookCtrlBase;
 class wxProgressDialog;
 
 namespace Slic3r {
+class MachineObject;
 
 namespace GUI
 {

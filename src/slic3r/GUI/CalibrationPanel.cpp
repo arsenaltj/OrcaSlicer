@@ -31,6 +31,7 @@
 #include "GUI.hpp"
 #include "GUI_App.hpp"
 #include "MainFrame.hpp"
+#include "slic3r/Utils/NetworkAgent.hpp"
 #include "CalibrationPanel.hpp"
 #include "I18N.hpp"
 #include "SelectMachine.hpp"

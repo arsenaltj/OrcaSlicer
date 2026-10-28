@@ -20,6 +20,7 @@
 #include "../AI/SmartSlicing/SmartSlicingFeatureHost.hpp"
 #include "../AI/Text/AITextFeatureHost.hpp"
 #include "../Plater.hpp"
+#include "../ParamsPanel.hpp"
 #include "../Widgets/Label.hpp"
 
 #include <array>

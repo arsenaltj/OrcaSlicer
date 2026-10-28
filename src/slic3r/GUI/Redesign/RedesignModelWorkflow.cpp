@@ -22,6 +22,7 @@
 #include "../BBLTopbar.hpp"
 #include "../ParamsPanelScrollbar.hpp"
 #include "../Plater.hpp"
+#include "../ParamsPanel.hpp"
 #include "../GLCanvas3D.hpp"
 #include "../BackgroundSlicingProcess.hpp"
 #include "../NotificationManager.hpp"

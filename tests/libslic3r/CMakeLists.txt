@@ -7,6 +7,11 @@ target_sources(libslic3r_cgal PRIVATE texture_import_cgal.cpp)
 add_executable(${_TEST_NAME}_tests
     ${_TEST_NAME}_tests.cpp
     test_3mf.cpp
+    test_amf.cpp
+    test_precise_seam_3mf.cpp
+    test_precise_seam.cpp
+    test_seam_contour.cpp
+    test_mesh_repair.cpp
     test_sha256_digest.cpp
     test_aabbindirect.cpp
     test_appconfig.cpp
@@ -85,6 +90,8 @@ add_executable(${_TEST_NAME}_tests
     test_instance_lock.cpp
     ../libnest2d/printer_parts.cpp
     )
+
+target_compile_definitions(${_TEST_NAME}_tests PRIVATE CGAL_LINKED_WITH_TBB)
 
 if (SLIC3R_CAD)
     target_sources(${_TEST_NAME}_tests PRIVATE

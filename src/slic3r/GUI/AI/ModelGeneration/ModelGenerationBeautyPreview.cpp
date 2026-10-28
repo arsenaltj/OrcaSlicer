@@ -98,49 +98,21 @@ void repaint_workbench_surface(wxWindow* window)
 void ModelGenerationPanel::preview_model_finishing()
 {
     if (m_busy || m_shutdown || m_workbench_check_running || !m_model_preview_ready) return;
-    if (m_model_preview->selection_busy()) {
-        m_finishing_status->SetLabel(_L("正在更新选区，完成后即可预览；可按 Esc 取消选区计算。")); return;
-    }
-    if (m_model_preview->leaf_editing()) {
-        if (m_finishing_tool->GetSelection()!=4) {
-            m_finishing_status->SetLabel(_L("子面草稿保留原几何；当前可选择颜色，几何处理需要先解除锁定并返回原面。")); return;
-        }
-        const auto palette=local_recolor_palette();
-        if (m_region_color_index<0 || size_t(m_region_color_index)>=palette.size()) return;
-        const wxColour target(from_u8(palette[m_region_color_index].color));
-        if (!target.IsOk()) return;
-        const auto before=m_model_preview->leaf_edit_metadata();
-        if (!m_model_preview->paint_selected_leaves({target.Red()/255.f,target.Green()/255.f,target.Blue()/255.f,1.f})) return;
-        const auto after=m_model_preview->leaf_edit_metadata();
-        if (m_beauty_controls && m_beauty_controls->on_record)
-            m_beauty_controls->on_record("leaf color draft",[this,before]{m_model_preview->restore_leaf_edits(before);},
-                [this,after]{m_model_preview->restore_leaf_edits(after);});
-        if (m_beauty_controls) m_beauty_controls->set_dirty(true);
-        m_model_preview->set_selection_preview_suppressed(true);
-        m_finishing_status->SetLabel(_L("子面颜色草稿已更新，原面和未选子面保持不变。"));
-        refresh_model_finishing(); return;
+    if (m_finishing_workbench && m_workbench_editing && !post_generation_ui_state().can_edit) {
+        m_finishing_status->SetLabel(_L("当前耗材配置正在复检或不兼容；已暂停新增处理，请先恢复兼容配置。"));
+        return;
     }
     if (m_model_preview->selection_busy()) {
         m_finishing_status->SetLabel(_L("正在更新选区，完成后即可预览；可按 Esc 取消选区计算。")); return;
     }
     if (m_model_preview->leaf_editing()) {
-        if (m_finishing_tool->GetSelection()!=4) {
+        if (m_finishing_tool->GetSelection() == 4) {
+            paint_beauty_color(m_model_preview->selected_face_indices());
+            return;
+        }
+        if (m_finishing_tool->GetSelection() != 4) {
             m_finishing_status->SetLabel(_L("子面草稿保留原几何；当前可选择颜色，几何处理需要先解除锁定并返回原面。")); return;
         }
-        const auto palette=local_recolor_palette();
-        if (m_region_color_index<0 || size_t(m_region_color_index)>=palette.size()) return;
-        const wxColour target(from_u8(palette[m_region_color_index].color));
-        if (!target.IsOk()) return;
-        const auto before=m_model_preview->leaf_edit_metadata();
-        if (!m_model_preview->paint_selected_leaves({target.Red()/255.f,target.Green()/255.f,target.Blue()/255.f,1.f})) return;
-        const auto after=m_model_preview->leaf_edit_metadata();
-        if (m_beauty_controls && m_beauty_controls->on_record)
-            m_beauty_controls->on_record("leaf color draft",[this,before]{m_model_preview->restore_leaf_edits(before);},
-                [this,after]{m_model_preview->restore_leaf_edits(after);});
-        if (m_beauty_controls) m_beauty_controls->set_dirty(true);
-        m_model_preview->set_selection_preview_suppressed(true);
-        m_finishing_status->SetLabel(_L("子面颜色草稿已更新，原面和未选子面保持不变。"));
-        refresh_model_finishing(); return;
     }
     if (m_model_preview->selection_busy()) {
         m_finishing_status->SetLabel(_L("正在更新选区，完成后即可预览；可按 Esc 取消选区计算。")); return;
@@ -153,7 +125,16 @@ void ModelGenerationPanel::preview_model_finishing()
     // while a candidate is pending.
     auto selected_faces = local ? ((m_finishing_workbench || m_finishing_candidate.empty())
         ? m_model_preview->selected_face_indices() : m_finishing_options.selected_faces) : std::vector<size_t>{};
-    if (local && selected_faces.empty()) {
+    const bool selection_was_present = !selected_faces.empty();
+    if (m_finishing_workbench && selection_was_present) {
+        const auto selection = m_model_preview->selection_state();
+        selected_faces = beauty_unprotected_selected_faces(selected_faces, selection.protected_faces);
+        if (selected_faces.empty()) {
+            m_finishing_status->SetLabel(_L("所选区域全部受到保护；请取消部分保护后再处理，未选区域保持不变。"));
+            return;
+        }
+    }
+    if ((cleanup || recolor) && selected_faces.empty()) {
         m_finishing_status->SetLabel(cleanup ? _L("请先圈住杂点及周围主色，涂抹保护花纹等细节；未选区域不会改变。")
             : recolor ? _L("请先圈选要换色的区域；涂抹保护可排除需要保留的细节。")
             : _L("请先在模型上选择要柔化的区域；未选区域不会改变。"));
@@ -198,8 +179,14 @@ void ModelGenerationPanel::preview_model_finishing()
         m_model_preview->constrain_shape_selection(constrained);
         options.selected_faces.clear();
         for (size_t face = 0; face < constrained.selected.size(); ++face)
-            if (constrained.selected[face]) options.selected_faces.push_back(face);
+            if (constrained.selected[face] &&
+                (face >= constrained.protected_faces.size() || !constrained.protected_faces[face]))
+                options.selected_faces.push_back(face);
         selected_faces = options.selected_faces;
+        if (local && selection_was_present && selected_faces.empty()) {
+            m_finishing_status->SetLabel(_L("所选区域均为受保护细节；当前模型保持不变。"));
+            return;
+        }
     }
     options.clean_color_spots = cleanup;
     options.recolor_selected = recolor;

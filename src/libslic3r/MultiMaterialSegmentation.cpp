@@ -2420,7 +2420,70 @@ std::vector<ExPolygons> SegmentationDetail::segment_colored_contours(const std::
     return regions;
 }
 
-static std::vector<std::vector<ExPolygons>> merge_segmented_layers(const std::vector<std::vector<ExPolygons>> &segmented_regions,
+namespace {
+class IslandLocator
+{
+public:
+    explicit IslandLocator(const ExPolygons &islands) : m_islands(islands)
+    {
+        m_bboxes.reserve(islands.size());
+        for (const ExPolygon &island : islands) {
+            m_bboxes.emplace_back(get_extents(island));
+            m_extent.merge(m_bboxes.back());
+        }
+        if (!m_extent.defined)
+            return;
+        const Point size = m_extent.size();
+        m_cell_w = std::max<coord_t>(1, size.x() / GRID + 1);
+        m_cell_h = std::max<coord_t>(1, size.y() / GRID + 1);
+        m_grid.assign(GRID * GRID, {});
+        for (size_t i = 0; i < m_bboxes.size(); ++i)
+            for_cells(m_bboxes[i], [&](int cell) { m_grid[cell].emplace_back(i); });
+    }
+
+    void find(const ExPolygon &piece, std::vector<size_t> &out) const
+    {
+        out.clear();
+        const BoundingBox bbox = get_extents(piece);
+        if (!m_extent.defined || !m_extent.overlap(bbox))
+            return;
+        for_cells(bbox, [&](int cell) {
+            for (size_t i : m_grid[cell])
+                if (m_bboxes[i].overlap(bbox))
+                    out.emplace_back(i);
+        });
+        sort_remove_duplicates(out);
+        if (out.size() > 1)
+            out.erase(std::remove_if(out.begin(), out.end(), [&](size_t i) {
+                const BoundingBox common(m_bboxes[i].min.cwiseMax(bbox.min), m_bboxes[i].max.cwiseMin(bbox.max));
+                return intersection(ClipperUtils::clip_clipper_polygons_with_subject_bbox(piece, common.inflated(SCALED_EPSILON)),
+                                    ClipperUtils::clip_clipper_polygons_with_subject_bbox(m_islands[i], common.inflated(SCALED_EPSILON))).empty();
+            }), out.end());
+    }
+
+private:
+    static constexpr int GRID = 64;
+    template<typename Fn> void for_cells(const BoundingBox &bb, Fn &&fn) const
+    {
+        const int x0 = std::clamp(int((bb.min.x() - m_extent.min.x()) / m_cell_w), 0, GRID - 1);
+        const int x1 = std::clamp(int((bb.max.x() - m_extent.min.x()) / m_cell_w), 0, GRID - 1);
+        const int y0 = std::clamp(int((bb.min.y() - m_extent.min.y()) / m_cell_h), 0, GRID - 1);
+        const int y1 = std::clamp(int((bb.max.y() - m_extent.min.y()) / m_cell_h), 0, GRID - 1);
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x)
+                fn(y * GRID + x);
+    }
+
+    const ExPolygons &m_islands;
+    std::vector<BoundingBox> m_bboxes;
+    BoundingBox m_extent;
+    coord_t m_cell_w = 1, m_cell_h = 1;
+    std::vector<std::vector<size_t>> m_grid;
+};
+} // namespace
+
+static std::vector<std::vector<ExPolygons>> merge_segmented_layers(const std::vector<ExPolygons> &input_expolygons,
+                                                                   const std::vector<std::vector<ExPolygons>> &segmented_regions,
                                                                    std::vector<std::vector<ExPolygons>>      &&top_and_bottom_layers,
                                                                    const size_t                                num_facets_states,
                                                                    const std::function<void()>                &throw_on_cancel_callback)
@@ -2838,35 +2901,6 @@ std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject 
                     segmented_regions[layer_idx] = SegmentationDetail::segment_colored_contours(color_poly, num_facets_states, layer_idx);
                     //segmented_regions[layer_idx] = extract_colored_segments(color_poly, num_extruders, layer_idx);
                 }
-                std::vector<std::vector<ExPolygons>> island_regions(islands.size());
-                tbb::parallel_for(size_t(0), islands.size(), [&](size_t island_idx) {
-                    const auto [first, last] = island_contours[island_idx];
-                    if (first == last)
-                        return;
-                    const std::vector<ColoredLines> island_poly(color_poly.begin() + first, color_poly.begin() + last);
-                    std::vector<ExPolygons>        &regions = island_regions[island_idx];
-                    if (has_layer_only_one_color(island_poly)) {
-                        regions.assign(num_facets_states, ExPolygons());
-                        regions[size_t(island_poly.front().front().color)].emplace_back(islands[island_idx]);
-                    } else {
-                        MMU_Graph graph = build_graph(layer_idx, island_poly);
-                        remove_multiple_edges_in_vertices(graph, island_poly);
-                        graph.remove_nodes_with_one_arc();
-                        regions = extract_colored_segments(graph, num_facets_states);
-                        // The faces of one colour tile it without overlapping; merged here, where an island is small,
-                        // every later boolean gets a few regions instead of thousands of faces sharing their edges. An
-                        // island with many holes keeps its faces: merged, each colour would be one region with thousands
-                        // of holes, and subtracting from that is far slower than from the faces one at a time.
-                        if (island_poly.size() <= 64)
-                            for (ExPolygons &faces : regions)
-                                if (faces.size() > 1)
-                                    faces = union_ex(faces);
-                    }
-                });
-                for (std::vector<ExPolygons> &regions : island_regions)
-                    for (size_t color_idx = 0; color_idx < regions.size(); ++color_idx)
-                        append(segmented_regions[layer_idx][color_idx], std::move(regions[color_idx]));
-
                 trace.regions("unrestored-sides",layer_idx,segmented_regions[layer_idx]);
                 if(trace.enabled)trace.colors(layer_idx,{source_cuts[layer_idx]},"source-cuts");
                 auto restored_contours=color_poly;
@@ -2901,7 +2935,7 @@ std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject 
         throw_on_cancel_callback();
     }
 
-    std::vector<std::vector<ExPolygons>> segmented_regions_merged = merge_segmented_layers(segmented_regions, std::move(top_and_bottom_layers), num_facets_states, throw_on_cancel_callback);
+    std::vector<std::vector<ExPolygons>> segmented_regions_merged = merge_segmented_layers(input_expolygons, segmented_regions, std::move(top_and_bottom_layers), num_facets_states, throw_on_cancel_callback);
     if (trace.enabled)
         for (size_t layer_idx = 0; layer_idx < num_layers; ++layer_idx)
             trace.regions("merged", layer_idx, segmented_regions_merged[layer_idx]);

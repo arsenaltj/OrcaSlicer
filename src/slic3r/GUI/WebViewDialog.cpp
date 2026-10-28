@@ -4,6 +4,9 @@
 #include "I18N.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/MainFrame.hpp"
+#include "slic3r/GUI/GUI.hpp"
+#include "slic3r/GUI/Plater.hpp"
+#include "slic3r/Utils/NetworkAgent.hpp"
 #include "libslic3r_version.h"
 
 #include <boost/filesystem/path.hpp>

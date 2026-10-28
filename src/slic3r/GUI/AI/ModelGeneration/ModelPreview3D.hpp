@@ -2414,7 +2414,15 @@ public:
     }
     void restore_manual_face_colors(FaceColorOverrides colors) { m_face_color_overrides = std::move(colors); }
     const FaceColorOverrides& face_color_overrides() const { return m_face_color_overrides; }
-    size_t paint_beauty_faces(const std::vector<size_t>& faces, const RGBA& color);
+    struct BeautyPaintResult {
+        size_t changed {0};
+        std::vector<size_t> faces;
+        std::vector<AI::ModelSubfaceSlot> subfaces;
+    };
+    BeautyPaintResult paint_beauty_faces(const std::vector<size_t>& faces, const RGBA& color,
+                                         size_t native_slot);
+    BeautyPaintResult restore_beauty_region(const std::vector<size_t>& faces,
+        const FaceColorOverrides& baseline_faces, const nlohmann::json& baseline_leaf_edits);
     bool restore_beauty_face_colors(const FaceColorOverrides& colors);
     void set_paint_commit_callback(std::function<void(const std::vector<size_t>&)> callback) { m_paint_commit = std::move(callback); }
     void set_beauty_history_callback(std::function<void(bool)> callback) { m_beauty_history = std::move(callback); }

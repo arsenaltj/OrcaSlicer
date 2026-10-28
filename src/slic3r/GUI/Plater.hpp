@@ -29,6 +29,7 @@
 #include <wx/notebook.h>
 #include <wx/sizer.h>
 #include <wx/string.h>
+#include <wx/stattext.h>
 
 #include "Selection.hpp"
 #include "AI/AIDesktopFeatureHost.hpp"
@@ -765,8 +766,7 @@ public:
     wxWindow* get_select_machine_dialog();
 
     bool arrange();
-    // Queue an arrange job for an AI import and keep the workflow status
-    // pending until the UI worker has finalized the job.
+    // Keep AI arrange pending until the UI worker finishes.
     bool arrange_for_ai_workflow();
     void notify_ai_arrange_finished(bool success);
 

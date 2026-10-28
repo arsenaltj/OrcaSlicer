@@ -234,7 +234,7 @@ TEST_CASE("The portrait color pack preserves the supplied physical slot order", 
 {
     const auto pack = Slic3r::GUI::young_portrait_color_pack();
     REQUIRE(pack.valid());
-    REQUIRE(pack.colors == std::vector<std::string>{"#F7E2DA", "#282629", "#F6F7F9", "#EA9A92", "#668CB6", "#958B86"});
+    REQUIRE(pack.colors == std::vector<std::string>{"#ECC3B2", "#282629", "#F6F7F9", "#EA9A92", "#668CB6", "#958B86"});
     REQUIRE(pack.labels.size() == pack.colors.size());
 }
 

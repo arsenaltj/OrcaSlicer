@@ -1050,7 +1050,7 @@ void PlaterPresetComboBox::restore_external_dropdown_position()
     m_external_dropdown_active = false;
 }
 
-static void run_wizard(ConfigWizard::StartPage sp)
+static void run_wizard(StartPage sp)
 {
     wxGetApp().run_wizard(RunReason::RR_USER, sp);
 }

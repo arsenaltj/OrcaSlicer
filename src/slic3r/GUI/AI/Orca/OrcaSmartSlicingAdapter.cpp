@@ -409,7 +409,7 @@ OrcaSmartSlicingAdapter::candidate_proposals(const AI::SmartSlicing::WorkspaceRe
     input.arrange_params = init_arrange_params(m_plater);
     input.plate_locked   = plate->is_locked();
     const bool enable_wrapping = input.config.opt_bool("enable_wrapping_detection");
-    plates.preprocess_exclude_areas(input.arrange_params.excluded_regions, enable_wrapping, 1, scale_(1));
+    plates.preprocess_exclude_areas(input.arrange_params.excluded_regions, input.config, enable_wrapping, 1, scale_(1));
     if (const auto wipe_tower = get_wipe_tower_arrangepoly(*m_plater))
         input.fixed_regions.push_back(*wipe_tower);
     std::vector<AI::SmartSlicing::SliceCandidate> candidates =

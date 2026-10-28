@@ -2673,9 +2673,8 @@ TEST_CASE("Deleting a filament on a shared-nozzle printer keeps it deleted", "[P
     CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values.size() == 1);
 }
 
-// Each tool of a tool changer carries its own filament, so the filament list never drops below the
-// tool count.
-TEST_CASE("A tool changer keeps a filament for every tool", "[Preset][Bundle]")
+// A tool changer may have idle nozzles; normalizing purge volumes must not add loaded materials.
+TEST_CASE("A tool changer keeps idle nozzles without adding filaments", "[Preset][Bundle]")
 {
     PresetBundle bundle;
     select_multi_nozzle_printer(bundle, 4, false);
@@ -2683,7 +2682,7 @@ TEST_CASE("A tool changer keeps a filament for every tool", "[Preset][Bundle]")
 
     bundle.update_multi_material_filament_presets();
 
-    CHECK(bundle.filament_presets.size() == 4);
+    CHECK(bundle.filament_presets.size() == 1);
 }
 
 // The app config keeps each printer's filament list. The next start (load_selections) and a switch

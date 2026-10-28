@@ -2308,3 +2308,13 @@ PR 作者报告已有新控件的真实窗口、预览、前后对比和保存�
 验证：`git diff --check` 通过；`[UiRedesign][ConfirmationDialog]`、`[UiRedesign][WorkbenchNavigation]` 和 `[PostGenerationWorkbench]` 合计 84 个用例/2,494 条断言通过；固定 VS 2022 x64 Release 的 `slic3rutils_tests` 与 `OrcaSlicer_app_gui` 目标编译成功，仅保留既有 `LNK4098` 警告；`scripts/verify_ai_integration.py --json` 返回 `ok: true`。匹配运行树 PID `27332` 在本机 `AppliedDPI=192`（200%）下完成真实 GUI 核对：“配色不匹配”和“套装与打印机不兼容”正文均完整显示，按钮字号与正文一致，黄色/灰色主次层级清晰，右侧黑条已消失。
 
 未结：长翻译正文触发滚动后的真实拖动/滚到底验收，以及精确 100%/125%/150% DPI 核对仍未执行；当前实机结果只覆盖 200% DPI 的两个正常长度向导。代码测试、GUI 观感和实体打印色彩继续分别报告；本轮未提交、未推送、未打包，也未执行任何耗材映射。
+
+# 2026-10-28 官方 v2.5.0-beta 升级候选
+
+目标与状态：指定 checkout `D:/TEST/OrcaSlicer-upstream-v2.5.0-alpha`、分支 `codex/upstream-v2.5.0-alpha-portrait-preserved`，以官方 `v2.5.0-beta` `345efec64c7b95a05ce5cf96df0dde66a158835c` 为来源。隔离合并结果 HEAD `80adaf901bdf5049f7092dc92955129989a9790c` 包含该标签；原 18 个已修改文件和 1 个未跟踪头文件已快照、恢复并融合，快照位于 `.tmp/dev/beta-upgrade-20261028/`，`stash@{0}` 保留。工作树仍有在研修改，不能把候选描述为干净提交。
+
+合并与构建：按 alpha 的来源固定、隔离冲突、分层复测方法处理 JPEG/PNG/OpenCV 更新及工作台与 Orca 共享界面。beta 独立依赖前缀为 `.tmp/dev/deps-beta-build/OrcaSlicer_dep/usr/local`，包含 OpenCV 4.14.0、libpng 1.6.59、libjpeg-turbo 3.2.0，旧前缀保留。固定 `.tmp/dev/build` 的 CMake 源码归属为本 checkout；Release 应用、`libslic3r_tests`、`fff_print_tests`、`slic3rutils_tests` 构建成功。`./dev.ps1 Run -NoLaunch` 的 catalogs/build/install/runtime-check/python-check 五步通过，见 `.tmp/dev/logs/20261028-143121-911/result.json`；源码身份 `cea623ecb16f0a626d4d66f4be3edb5c18ed5e24df2c70f40ba4ec1bf332e003`，运行树 19,600 文件。安装的 `OrcaSlicer.dll` 与构建 DLL SHA-256 均为 `C8E69E005884D409FC2476984A7CBEAE7006985880B3E06762E13B2692C0479C`，运行入口 EXE 为 `60BA6CF3984DFF953060DAE2B0316B2AA1E7326DD9988DFC7A8B0A4FD6A1C5E3`。
+
+自动验收：`[Preset]|[3MF]|[AMF]` 140/140；纹理/颜色/网格/工作台/人像联合标签 1,280 项无失败、1 项 Windows 符号链接跳过；擦料塔/G-code/切片/预览标签 749 项无失败、1 项同类跳过。各组有重叠，不相加。`verify_ai_integration.py --json`、`verify_mobile_sdk_boundary.py --json` 和 `git diff --check` 通过。合并回归修正保留空闲喷嘴语义，避免为每个喷嘴虚构已加载耗材；新 beta 测试按此产品契约验证。人像色卡测试改用既定 revision 2 肤色 `#ECC3B2`。
+
+GUI 与剩余验收：PID 2084 从匹配运行树用独立数据目录 `.tmp/dev/beta-gui-20261028/data` 启动；完成首次设置、四槽 3MF 副本加载、实际切片/G-code/擦料塔预览、另存和重开，重开后的模型几何及颜色可见。桌面后来切到其他应用，自动操作暂停。JPEG 贴图 OBJ 真实导入、4/5/6 色映射与耗材应用、撤销重做、正常退出尚未完成；用户人像视觉接受和实体打印色准均待验。此为 Windows beta 本机候选，不是正式发布版；不打包、推送、创建 PR 或更新 integration。
