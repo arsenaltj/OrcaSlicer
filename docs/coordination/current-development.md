@@ -1,3 +1,11 @@
+# 2026-10-28 v2.5.0-beta 团队集成
+
+主线：本地 beta 候选和在研改动已通过 PR #49 合入 `codex/team/integration`；官方 beta 标签抓取修复经 PR #50 合入。两次合并均由 GitHub 判定无文本冲突，本地分支与 PR #50 合并后的集成源码树一致。
+
+本轮：PR #49 合并后的 AI CI 暴露缺少 beta 标签；补充两份工作流标签抓取后，CI 继续暴露 `tools/ai/test_integration_guardrails.py` 仍断言 alpha 基线。测试期望已改为官方 beta 标签与固定 SHA，定向用例、`verify_ai_integration.py --json` 和 `git diff --check` 在本地通过；后续云端结果以对应集成提交的 Actions 为准。
+
+未结：JPEG 贴图 OBJ 导入、4/5/6 色映射与耗材应用、撤销重做、正常退出的 beta 主窗口验收仍待完成；用户人像视觉接受和实体打印色准分别待验。下一步：核对后续 PR 的集成 CI，再继续独立数据目录的 GUI 验收。计划变更：用户已明确授权本轮提交、推送并创建面向 `codex/team/integration` 的 PR；仍不打包或发布正式版。
+
 # 2026-10-28 v2.5.0-beta 本机候选（构建通过，GUI 部分验收）
 
 主线：指定分支 HEAD `80adaf901bdf5049f7092dc92955129989a9790c` 已包含官方 beta 标签 `345efec64c7b95a05ce5cf96df0dde66a158835c`，原在研改动及 `.tmp/dev/beta-upgrade-20261028/` 快照保留。运行树源码身份 `cea623ecb16f0a626d4d66f4be3edb5c18ed5e24df2c70f40ba4ec1bf332e003`。
