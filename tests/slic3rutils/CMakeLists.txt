@@ -111,6 +111,9 @@ add_executable(${_TEST_NAME}_tests
     test_sequential_clearance.cpp
     test_object_list.cpp
     test_ui_redesign.cpp
+    test_honor_account.cpp
+    test_account_avatar.cpp
+    test_honor_browser_profile.cpp
     test_startup_setup.cpp
     test_vertex_color_region_editor.cpp
     test_surface_selection.cpp

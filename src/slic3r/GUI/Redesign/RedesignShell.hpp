@@ -58,11 +58,12 @@ class RedesignSlicingTools;
 class SlicingCanvasOverlay;
 class WorkbenchPaletteChoice;
 class WorkbenchSlider;
+class AccountWorkspace;
 
 class RedesignShell final : public wxPanel
 {
 public:
-    enum class Page { Assets, Image, Model, Print };
+    enum class Page { Assets, Image, Model, Print, Account };
 
     explicit RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model_generation_host = nullptr,
                            Plater* plater = nullptr, AITextFeatureHost* text_feature_host = nullptr);
@@ -328,8 +329,13 @@ private:
     wxWindow* m_model_stop_button { nullptr };
     std::array<wxPanel*, 4> m_nav_markers { nullptr, nullptr, nullptr, nullptr };
     std::array<wxStaticText*, 4> m_nav_labels { nullptr, nullptr, nullptr, nullptr };
-    std::array<wxPanel*, 4> m_pages { nullptr, nullptr, nullptr, nullptr };
-    std::array<wxWeakRef<wxWindow>, 4> m_page_focus;
+    std::array<wxPanel*, 5> m_pages {};
+    std::array<wxWeakRef<wxWindow>, 5> m_page_focus;
+    AccountWorkspace* m_account_workspace {nullptr};
+    RoundedActionButton* m_account_nav {nullptr};
+    bool m_account_started {false};
+    bool m_account_startup {true};
+    bool m_account_was_exchanging {false};
     std::array<wxWeakRef<wxWindow>, 4> m_model_view_focus;
     wxImage m_selected_image;
     wxImage m_design_image;
@@ -360,7 +366,7 @@ private:
     std::string m_provider_catalog_provider;
     bool m_generation_geometry_mode { false };
     int m_last_service_status { 0 };
-    Page m_active_page { Page::Image };
+    Page m_active_page { Page::Account };
     // Keep the semantic workspace request, not only the visual host. Several
     // legacy requests (Prepare, Preview, Monitor and Multi-device) currently
     // share the Print host while their business meaning still differs.

@@ -1,6 +1,7 @@
 #include "RedesignShell.hpp"
 #include "ImageHistorySidebar.hpp"
 #include "AssetsWorkspace.hpp"
+#include "AccountWorkspace.hpp"
 #include "ModelFaceLimitChoice.hpp"
 #include "RedesignTheme.hpp"
 #include "RedesignSlicingTools.hpp"
@@ -57,6 +58,7 @@
 #include <wx/tglbtn.h>
 #include <wx/weakref.h>
 #include <wx/window.h>
+#include <wx/access.h>
 #include <wx/wupdlock.h>
 #ifdef __WXMSW__
 #include <wx/msw/wrapwin.h>
@@ -66,6 +68,40 @@
 
 namespace Slic3r::GUI {
 namespace {
+
+#if wxUSE_ACCESSIBILITY
+class AccountAvatarAccessible final : public wxAccessible
+{
+public:
+    explicit AccountAvatarAccessible(wxWindow* window) : wxAccessible(window) {}
+    wxAccStatus GetName(int child, wxString* name) override
+    {
+        if (child != 0) return wxACC_NOT_IMPLEMENTED;
+        *name = GetWindow()->GetName();
+        return wxACC_OK;
+    }
+    wxAccStatus GetRole(int child, wxAccRole* role) override
+    {
+        if (child != 0) return wxACC_NOT_IMPLEMENTED;
+        *role = wxROLE_SYSTEM_PUSHBUTTON;
+        return wxACC_OK;
+    }
+    wxAccStatus GetDefaultAction(int child, wxString* action) override
+    {
+        if (child != 0) return wxACC_NOT_IMPLEMENTED;
+        *action = wxString::FromUTF8("打开账号");
+        return wxACC_OK;
+    }
+    wxAccStatus DoDefaultAction(int child) override
+    {
+        if (child != 0 || !GetWindow()->IsEnabled()) return wxACC_NOT_SUPPORTED;
+        wxCommandEvent event(wxEVT_BUTTON, GetWindow()->GetId());
+        event.SetEventObject(GetWindow());
+        wxPostEvent(GetWindow(), event);
+        return wxACC_OK;
+    }
+};
+#endif
 
 using ImageDiagnosticClock = std::chrono::steady_clock;
 
@@ -1216,6 +1252,8 @@ RedesignShell::RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model
     build_image_workspace();
     connect_model_generation_host();
     build_model_workflow();
+    m_account_started = true;
+    m_account_workspace->start();
 }
 
 RedesignShell::~RedesignShell()
@@ -1379,7 +1417,7 @@ void RedesignShell::build_image_workspace()
         m_nav_markers[index]->Bind(wxEVT_LEFT_UP, navigate);
     }
     navigation_sizer->AddStretchSpacer(1);
-    const std::array<const char*, 4> footer_icons = {"redesign_avatar.png", "redesign_nav_notification.png",
+    const std::array<const char*, 4> footer_icons = {"account_guest_avatar.png", "redesign_nav_notification.png",
                                                       "redesign_nav_settings.png", "redesign_nav_help.png"};
     const std::array<wxSize, 4> footer_sizes = {
         wxSize(32, 32),
@@ -1387,6 +1425,31 @@ void RedesignShell::build_image_workspace()
         wxSize(31, 31),
         wxSize(31, 31)};
     for (std::size_t index = 0; index < footer_icons.size(); ++index) {
+        if (index == 0) {
+            m_account_nav = new RoundedActionButton(navigation, wxEmptyString, false, 48);
+            m_account_nav->SetMinSize(FromDIP(wxSize(48, 48)));
+            m_account_nav->SetMaxSize(FromDIP(wxSize(48, 48)));
+            m_account_nav->SetBackgroundColour(wxColour(33, 33, 35));
+            m_account_nav->set_secondary_face(wxColour(33, 33, 35));
+            m_account_nav->set_icon(resource_bitmap(navigation, footer_icons[index], wxSize(32, 32)));
+            m_account_nav->SetName(text("我的账号"));
+#if wxUSE_ACCESSIBILITY
+            m_account_nav->SetAccessible(new AccountAvatarAccessible(m_account_nav));
+#endif
+            m_account_nav->SetToolTip(text("我的账号 · 未登录"));
+            m_account_nav->SetCursor(wxCursor(wxCURSOR_HAND));
+            m_account_nav->Bind(wxEVT_CHAR_HOOK, [this](wxKeyEvent& event) {
+                if (m_account_nav->IsEnabled() && event.GetModifiers() == wxMOD_NONE &&
+                    (event.GetKeyCode() == WXK_RETURN || event.GetKeyCode() == WXK_NUMPAD_ENTER)) {
+                    navigate_to(Page::Account);
+                    return;
+                }
+                event.Skip();
+            });
+            m_account_nav->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { navigate_to(Page::Account); });
+            navigation_sizer->Add(m_account_nav, 0, wxALIGN_CENTER | wxBOTTOM, FromDIP(24));
+            continue;
+        }
         auto* item = new wxStaticBitmap(navigation, wxID_ANY,
                                         resource_bitmap(navigation, footer_icons[index], footer_sizes[index]));
         // RoundedPanel paints its face separately from its inherited surrounding colour.
@@ -1747,7 +1810,30 @@ void RedesignShell::build_image_workspace()
     m_pages[static_cast<std::size_t>(Page::Print)] = m_print_page;
     m_content_host->GetSizer()->Add(m_print_page, 1, wxEXPAND);
     m_print_page->Hide();
-    navigate_to(Page::Image);
+    m_account_workspace = new AccountWorkspace(m_content_host,
+        [this](const HonorAccount::Snapshot& state, const wxBitmap& avatar) {
+            const bool initial_ready = m_account_startup && !state.busy();
+            const bool login_completed = m_account_was_exchanging && state.state == HonorAccount::State::SignedIn;
+            m_account_was_exchanging = state.state == HonorAccount::State::Exchanging;
+            const wxString label = text(state.has_identity() ?
+                (state.identity.name.empty() ? "荣耀用户" : state.identity.name.c_str()) : "未登录");
+            m_account_nav->SetName(text("我的账号 · ") + label);
+            m_account_nav->SetToolTip(text("我的账号 · ") + label +
+                (state.state == HonorAccount::State::Offline ? text("（离线，待验证）") : wxEmptyString));
+            if (avatar.IsOk())
+                m_account_nav->set_icon(wxBitmap(avatar.ConvertToImage().Scale(FromDIP(32), FromDIP(32), wxIMAGE_QUALITY_HIGH)));
+            if (initial_ready) {
+                m_account_startup = false;
+                if (state.state == HonorAccount::State::SignedIn || state.state == HonorAccount::State::Offline)
+                    navigate_to_image_view();
+            } else if (login_completed && m_active_page == Page::Account) {
+                navigate_to_image_view();
+            }
+        }, [this] { navigate_to_image_view(); });
+    m_pages[static_cast<std::size_t>(Page::Account)] = m_account_workspace;
+    m_content_host->GetSizer()->Add(m_account_workspace, 1, wxEXPAND);
+    m_account_workspace->Hide();
+    navigate_to(Page::Account);
 }
 
 wxPanel* RedesignShell::build_model_workspace()
@@ -3268,16 +3354,20 @@ bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
         case Page::Print:
             m_active_tab_id = TAB_ID_MONITOR;
             break;
+        case Page::Account:
+            m_active_tab_id = "honor-account";
+            break;
         }
         const auto model_index = static_cast<std::size_t>(Page::Model);
         for (std::size_t i = 0; i < m_pages.size(); ++i) {
             const bool active = i == index;
             const bool show_page = active && (i != model_index || m_model_view == ModelView::Result);
             if (m_pages[i] != nullptr) m_pages[i]->Show(show_page);
-            if (m_nav_markers[i] != nullptr) m_nav_markers[i]->Show(active);
-            if (m_nav_labels[i] != nullptr)
+            if (i < m_nav_markers.size() && m_nav_markers[i] != nullptr) m_nav_markers[i]->Show(active);
+            if (i < m_nav_labels.size() && m_nav_labels[i] != nullptr)
                 style_text(m_nav_labels[i], active ? primary_text_colour() : secondary_text_colour(), 9);
         }
+        if (m_account_nav) m_account_nav->set_secondary_face(page == Page::Account ? wxColour(77, 65, 32) : wxColour(33, 33, 35));
         if (m_image_settings_panel != nullptr) m_image_settings_panel->Show(page == Page::Image);
         if (m_content_host != nullptr) m_content_host->Layout();
         if (m_content_host != nullptr && m_content_host->GetParent() != nullptr)
@@ -3300,6 +3390,7 @@ bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
     if (page == Page::Image)
         m_preview_resize_timer.StartOnce(1);
     restore_active_page_focus();
+    if (m_account_started) m_account_startup = false;
     return true;
 }
 
@@ -3326,6 +3417,8 @@ bool RedesignShell::navigate_to_tab(const wxString& id)
     Page page;
     if (id == wxString::FromUTF8(kRedesignAssetsTabId))
         page = Page::Assets;
+    else if (id == "honor-account")
+        page = Page::Account;
     else if (id == TAB_ID_HOME)
         page = Page::Image;
     else if (id == TAB_ID_GENERATE_3D)

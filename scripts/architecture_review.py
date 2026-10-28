@@ -604,7 +604,7 @@ def archify_spec(report):
     positions = {"desktop": [60, 60], "generation": [60, 260], "contracts": [470, 260],
                  "slicing": [880, 260], "adapter": [470, 60], "tests": [470, 460],
                  "core": [880, 60], "engineering": [60, 460], "assets": [880, 460],
-                 "unknown": [60, 660]}
+                 "unknown": [60, 660], "honor_account": [470, 660]}
     components = []
     for module in report["modules"]:
         key = module["id"]
