@@ -2,6 +2,7 @@
 
 #include "../GUI_Utils.hpp"
 
+#include <algorithm>
 #include <vector>
 
 #include <wx/msgdlg.h>
@@ -36,7 +37,28 @@ struct RedesignConfirmationOptions {
     bool* checkbox_state { nullptr };
     bool standard_layout { false };
     bool inline_confirmation_footer { false };
+    int message_point_size { 0 };
+    int action_point_size { 0 };
+    bool fit_message_to_content { false };
+    int maximum_message_height { 0 };
 };
+
+struct RedesignDialogMessageHeights {
+    int content { 0 };
+    int viewport { 0 };
+    bool scrollable { false };
+};
+
+inline RedesignDialogMessageHeights redesign_dialog_message_heights(int minimum_height,
+                                                                     int measured_height,
+                                                                     int maximum_height)
+{
+    RedesignDialogMessageHeights result;
+    result.content = std::max(0, std::max(minimum_height, measured_height));
+    result.viewport = maximum_height > 0 ? std::min(result.content, maximum_height) : result.content;
+    result.scrollable = result.viewport < result.content;
+    return result;
+}
 
 inline int redesign_dialog_dismiss_result(long style)
 {
@@ -71,7 +93,11 @@ public:
                           const wxString& checkbox_label = wxEmptyString,
                           bool checkbox_checked = false,
                           ContentMode content_mode = ContentMode::Native,
-                          bool inline_confirmation_footer = false);
+                          bool inline_confirmation_footer = false,
+                          int message_point_size = 0,
+                          int action_point_size = 0,
+                          bool fit_message_to_content = false,
+                          int maximum_message_height = 0);
     bool checkbox_checked() const;
     void set_dismiss_result(int result) { m_cancel_result = result; }
 
@@ -79,6 +105,8 @@ private:
     void add_action_button(wxWindowID id, const wxString& label, bool primary);
     void bind_title_drag(wxWindow* window);
     void finish_with(int result);
+    int message_text_width() const;
+    void fit_message_layout();
     void update_shape();
     void wrap_message();
     void on_dpi_changed(const wxRect& suggested_rect) override;
@@ -88,8 +116,15 @@ private:
     int m_dialog_width { 560 };
     int m_message_width { 408 };
     int m_message_min_height { -1 };
+    int m_message_point_size { 0 };
+    int m_action_point_size { 0 };
+    int m_message_content_height { -1 };
+    int m_message_view_height { -1 };
+    int m_maximum_message_height { 0 };
     bool m_stacked_actions { false };
     bool m_inline_confirmation_footer { false };
+    bool m_fit_message_to_content { false };
+    bool m_message_scrollable { false };
     Appearance m_appearance { Appearance::Standard };
     ContentMode m_content_mode { ContentMode::Native };
     wxString m_original_message;

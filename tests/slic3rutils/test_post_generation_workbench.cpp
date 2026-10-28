@@ -31,6 +31,9 @@
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelPreviewColorState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PrinterFilamentPreview.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/BeautyCandidateSnapshot.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchColorGate.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchPrinterFilaments.hpp"
 #include "slic3r/GUI/PrinterFilamentSlotRemap.hpp"
 #ifdef __WXMSW__
@@ -787,6 +790,105 @@ TEST_CASE("manual strokes undo independently and a new stroke replaces the redo 
     REQUIRE(history.undo());
     REQUIRE(history.undo());
     CHECK(current.empty());
+}
+
+TEST_CASE("a canceled Beauty transaction releases the editing lock without changing history",
+          "[BeautyWorkbench][BeautySidebar][PostGenerationWorkbench]")
+{
+    BeautyWorkbenchTransactionController history;
+    int value = 1;
+    history.record({BeautyWorkbenchTransactionController::OperationKind::AppearanceRecolor,
+        "existing edit", [&] { value = 0; }, [&] { value = 1; }});
+    REQUIRE(history.begin(BeautyWorkbenchTransactionController::OperationKind::Selection));
+    history.request_cancel();
+    REQUIRE(history.processing());
+    CHECK_FALSE(history.capabilities().can_edit_selection);
+
+    history.finish(false, false, "orphaned operation cancelled");
+    CHECK_FALSE(history.processing());
+    CHECK(history.capabilities().can_edit_selection);
+    CHECK(history.undo_count() == 1);
+    CHECK(value == 1);
+    REQUIRE(history.undo());
+    CHECK(value == 0);
+}
+
+TEST_CASE("Beauty comparison keeps current editor context without changing entry appearance",
+          "[BeautyWorkbench][BeautySidebar][PostGenerationWorkbench]")
+{
+    BeautyCandidateSnapshot baseline;
+    baseline.geometry_id = std::string(64, 'a');
+    baseline.face_overrides = {{0, {0.1f, 0.2f, 0.3f}}};
+    baseline.leaf_edits = {{"entry", true}};
+    baseline.selection.selected = {0, 0};
+    baseline.partition = std::make_shared<BeautyPartitionSnapshot>();
+
+    BeautyCandidateSnapshot current;
+    current.geometry_id = baseline.geometry_id;
+    current.face_overrides = {{0, {0.8f, 0.7f, 0.6f}}};
+    current.leaf_edits = {{"draft", true}};
+    current.selection.selected = {1, 0};
+    current.selection.protected_faces = {0, 1};
+    current.manual_color_dirty = true;
+    current.dirty = true;
+    current.partition = std::make_shared<BeautyPartitionSnapshot>();
+
+    const auto comparison = beauty_comparison_baseline(baseline, current);
+    CHECK(comparison.face_overrides == baseline.face_overrides);
+    CHECK(comparison.leaf_edits == baseline.leaf_edits);
+    CHECK(comparison.selection.selected == current.selection.selected);
+    CHECK(comparison.selection.protected_faces == current.selection.protected_faces);
+    CHECK(comparison.manual_color_dirty == current.manual_color_dirty);
+    CHECK(comparison.dirty == current.dirty);
+    CHECK(comparison.partition == current.partition);
+
+    current.geometry_id = std::string(64, 'b');
+    const auto stale = beauty_comparison_baseline(baseline, current);
+    CHECK(stale.selection.selected == baseline.selection.selected);
+    CHECK(stale.partition == baseline.partition);
+}
+
+TEST_CASE("Beauty semantic completion refreshes stale processing state before partition resume",
+          "[BeautyWorkbench][BeautySidebar][PostGenerationWorkbench]")
+{
+    bool sidebar_processing = true;
+    bool current_asset = true;
+    bool partition_started = false;
+    std::vector<std::string> calls;
+
+    REQUIRE(continue_beauty_partition_after_semantics(
+        true,
+        [&] { calls.emplace_back("refresh"); sidebar_processing = false; },
+        [&] { return current_asset; },
+        [&] {
+            calls.emplace_back("resume");
+            partition_started = !sidebar_processing;
+        }));
+    CHECK(calls == std::vector<std::string>{"refresh", "resume"});
+    CHECK(partition_started);
+
+    calls.clear();
+    current_asset = false;
+    CHECK_FALSE(continue_beauty_partition_after_semantics(
+        true,
+        [&] { calls.emplace_back("refresh"); },
+        [&] { return current_asset; },
+        [&] { calls.emplace_back("resume"); }));
+    CHECK(calls == std::vector<std::string>{"refresh"});
+
+    calls.clear();
+    CHECK_FALSE(continue_beauty_partition_after_semantics(
+        false,
+        [&] { calls.emplace_back("refresh"); },
+        [] { return true; },
+        [&] { calls.emplace_back("resume"); }));
+    CHECK(calls.empty());
+
+    CHECK_FALSE(beauty_workbench_has_active_processing(false, false, false, false));
+    CHECK(beauty_workbench_has_active_processing(true, false, false, false));
+    CHECK(beauty_workbench_has_active_processing(false, true, false, false));
+    CHECK(beauty_workbench_has_active_processing(false, false, true, false));
+    CHECK(beauty_workbench_has_active_processing(false, false, false, true));
 }
 
 TEST_CASE("background workbench decoding preserves native geometry units and texture handoff", "[PostGenerationWorkbench][UiRedesign][TextureImport]")
@@ -1655,6 +1757,249 @@ TEST_CASE("Exact printer coverage normalizes RGB8 and preserves duplicate slot i
     CHECK(binding.missing_colors == std::vector<std::string>{"#010203"});
 }
 
+TEST_CASE("Beauty color gate covers every face and subface without merging duplicate RGB slots",
+          "[BeautyWorkbench][BeautyColorGate][PostGenerationWorkbench]")
+{
+    BeautyColorGateRequest request;
+    request.source_sha256 = std::string(64, 'a');
+    request.geometry_id = std::string(64, 'b');
+    request.material_fingerprint = std::string(64, 'c');
+    request.process_fingerprint = std::string(64, 'd');
+    request.configuration_signature = "printer-configuration";
+    request.palette = {{2, "#AA0011", "PLA", true}, {7, "#AA0011", "PLA", true},
+                       {9, "#0000FF", "PLA", true}};
+    const auto red = PrinterFilamentPreview::rgb8_color(*PrinterFilamentPreview::rgb8("#AA0011"));
+    const auto blue = PrinterFilamentPreview::rgb8_color(*PrinterFilamentPreview::rgb8("#0000FF"));
+    request.faces = {{red, 7}, {blue, 9}};
+    request.subfaces = {{{red, 2}, 1, 1, 0}};
+
+    const auto result = match_beauty_workbench_colors(request);
+    REQUIRE(result.compatible());
+    CHECK(result.matched->face_slots == std::vector<size_t>{7, 9});
+    REQUIRE(result.matched->subface_slots.size() == 1);
+    CHECK(result.matched->subface_slots.front().slot == 2);
+
+    request.faces.front().preferred_slot.reset();
+    const auto ambiguous = match_beauty_workbench_colors(request);
+    CHECK_FALSE(ambiguous.compatible());
+    CHECK(ambiguous.missing_colors.empty());
+    CHECK(ambiguous.ambiguous_colors == std::vector<std::string>{"#AA0011"});
+    CHECK_FALSE(ambiguous.error.empty());
+    request.faces.front().preferred_slot = 7;
+
+    request.subfaces.push_back({{PrinterFilamentPreview::rgb8_color(0x010203), {}}, 0, 1, 1});
+    const auto incomplete = match_beauty_workbench_colors(request);
+    CHECK_FALSE(incomplete.compatible());
+    CHECK(incomplete.error.empty());
+    CHECK(incomplete.missing_colors == std::vector<std::string>{"#010203"});
+}
+
+TEST_CASE("Beauty color gate rejects unavailable and stale inputs without publishing a partial match",
+          "[BeautyWorkbench][BeautyColorGate][PostGenerationWorkbench]")
+{
+    BeautyColorGateRequest request;
+    request.source_sha256 = std::string(64, 'a');
+    request.geometry_id = std::string(64, 'b');
+    request.material_fingerprint = std::string(64, 'c');
+    request.process_fingerprint = std::string(64, 'd');
+    request.configuration_signature = "printer-A";
+    request.palette = {{2, "#AA0011", "PLA", false}};
+    request.faces = {{PrinterFilamentPreview::rgb8_color(0xAA0011), {}}};
+
+    const auto no_compatible_slot = match_beauty_workbench_colors(request);
+    CHECK_FALSE(no_compatible_slot.compatible());
+    CHECK(no_compatible_slot.error == "当前没有可用于模型配色的兼容耗材槽。");
+    CHECK_FALSE(no_compatible_slot.matched.has_value());
+
+    request.unavailable_reason = "当前没有可用的打印机耗材配置。";
+    const auto unavailable = match_beauty_workbench_colors(request);
+    CHECK_FALSE(unavailable.compatible());
+    CHECK(unavailable.error == request.unavailable_reason);
+    CHECK_FALSE(unavailable.matched.has_value());
+
+    request.unavailable_reason.clear();
+    request.palette.front().compatible = true;
+    std::atomic<bool> canceled {true};
+    const auto stopped = match_beauty_workbench_colors(request, &canceled);
+    CHECK(stopped.canceled);
+    CHECK_FALSE(stopped.compatible());
+    CHECK_FALSE(stopped.matched.has_value());
+}
+
+TEST_CASE("Beauty color gate cache identity changes with model colors and filament configuration",
+          "[BeautyWorkbench][BeautyColorGate][PostGenerationWorkbench]")
+{
+    BeautyColorGateRequest request;
+    request.source_sha256 = std::string(64, 'a');
+    request.geometry_id = std::string(64, 'b');
+    request.material_fingerprint = std::string(64, 'c');
+    request.process_fingerprint = std::string(64, 'd');
+    request.configuration_signature = "printer-A";
+    request.faces = {{PrinterFilamentPreview::rgb8_color(0xAA0011), 2}};
+    request.subfaces = {{{PrinterFilamentPreview::rgb8_color(0x0000FF), 9}, 0, 1, 1}};
+    const std::string original = request.cache_key();
+
+    auto changed = request;
+    changed.source_sha256 = std::string(64, 'e');
+    CHECK(changed.cache_key() != original);
+    changed = request;
+    changed.geometry_id = std::string(64, 'f');
+    CHECK(changed.cache_key() != original);
+    changed = request;
+    changed.faces.front().color = PrinterFilamentPreview::rgb8_color(0xAA0012);
+    CHECK(changed.cache_key() != original);
+    changed = request;
+    changed.subfaces.front().preferred_slot = 7;
+    CHECK(changed.cache_key() != original);
+    changed = request;
+    changed.configuration_signature = "printer-B";
+    CHECK(changed.cache_key() != original);
+}
+
+TEST_CASE("Beauty paint slot changes update roots and leaves atomically",
+          "[BeautyWorkbench][BeautyColorGate][PostGenerationWorkbench]")
+{
+    Slic3r::AI::ModelMatchedColors matched;
+    matched.source_sha256 = std::string(64, 'a');
+    matched.geometry_id = std::string(64, 'b');
+    matched.material_fingerprint = std::string(64, 'c');
+    matched.process_fingerprint = std::string(64, 'd');
+    matched.palette = {{2, "#AA0011", "PLA", true}, {7, "#AA0011", "PLA", true},
+                       {9, "#0000FF", "PLA", true}};
+    matched.face_slots = {2, 2, 9};
+    matched.subface_slots = {{1, 1, 0, 2}};
+    REQUIRE(matched.valid());
+    const auto baseline = matched;
+
+    BeautyPaintSlotChanges changes;
+    changes.faces = {0};
+    changes.subfaces = {{1, 1, 0, 0}, {2, 2, 3, 0}};
+    REQUIRE(apply_beauty_paint_slot(matched, changes, 7));
+    CHECK(matched.face_slots == std::vector<size_t>{7, 2, 9});
+    REQUIRE(matched.subface_slots.size() == 2);
+    CHECK(matched.subface_slots[0].face_id == 1);
+    CHECK(matched.subface_slots[0].depth == 1);
+    CHECK(matched.subface_slots[0].path == 0);
+    CHECK(matched.subface_slots[0].slot == 7);
+    CHECK(matched.subface_slots[1].face_id == 2);
+    CHECK(matched.subface_slots[1].depth == 2);
+    CHECK(matched.subface_slots[1].path == 3);
+    CHECK(matched.subface_slots[1].slot == 7);
+
+    const auto painted = matched;
+    CHECK_FALSE(apply_beauty_paint_slot(matched, BeautyPaintSlotChanges{{99}, {}}, 2));
+    CHECK(Slic3r::AI::encode_model_matched_colors(matched) ==
+          Slic3r::AI::encode_model_matched_colors(painted));
+    CHECK_FALSE(apply_beauty_paint_slot(matched, changes, 42));
+    CHECK(Slic3r::AI::encode_model_matched_colors(matched) ==
+          Slic3r::AI::encode_model_matched_colors(painted));
+
+    REQUIRE(restore_beauty_paint_slots(matched, baseline, changes));
+    CHECK(Slic3r::AI::encode_model_matched_colors(matched) ==
+          Slic3r::AI::encode_model_matched_colors(baseline));
+}
+
+TEST_CASE("Beauty sidebar freezes edits on a stale filament match while preserving escape actions",
+          "[BeautyWorkbench][BeautySidebar][PostGenerationWorkbench]")
+{
+    BeautyWorkbenchSidebarInput input;
+    input.model_editable = true;
+    input.color_gate = BeautyColorGateState::Compatible;
+    input.can_undo = input.can_redo = input.dirty = true;
+    auto state = derive_beauty_workbench_sidebar_state(input);
+    CHECK(state.can_start_edit);
+    CHECK(state.can_save);
+    CHECK(state.can_undo);
+    CHECK(state.can_redo);
+    CHECK(state.show_recolor);
+    CHECK(state.show_region_shortcuts);
+    CHECK_FALSE(state.show_more_repairs);
+    CHECK_FALSE(state.show_repair_actions);
+
+    input.more_tools = true;
+    state = derive_beauty_workbench_sidebar_state(input);
+    CHECK(state.show_more_repairs);
+    CHECK_FALSE(state.show_repair_actions);
+    input.more_repairs = true;
+    state = derive_beauty_workbench_sidebar_state(input);
+    CHECK(state.show_repair_actions);
+
+    input.task = BeautyWorkbenchTask::Soften;
+    state = derive_beauty_workbench_sidebar_state(input);
+    CHECK(state.show_soften);
+    CHECK_FALSE(state.show_region_shortcuts);
+    input.task = BeautyWorkbenchTask::Recolor;
+
+    input.candidate_ready = true;
+    state = derive_beauty_workbench_sidebar_state(input);
+    CHECK_FALSE(state.can_start_edit);
+    CHECK(state.can_accept_candidate);
+    CHECK(state.can_compare);
+    input.candidate_ready = false;
+
+    input.color_gate = BeautyColorGateState::Checking;
+    state = derive_beauty_workbench_sidebar_state(input);
+    CHECK_FALSE(state.can_start_edit);
+    CHECK_FALSE(state.can_save);
+    CHECK_FALSE(state.can_leave);
+    CHECK_FALSE(state.can_undo);
+    CHECK_FALSE(state.can_redo);
+    CHECK(state.show_progress);
+
+    input.color_gate = BeautyColorGateState::Blocked;
+    state = derive_beauty_workbench_sidebar_state(input);
+    CHECK_FALSE(state.can_start_edit);
+    CHECK_FALSE(state.can_save);
+    CHECK(state.can_leave);
+    CHECK(state.can_undo);
+    CHECK_FALSE(state.can_redo);
+
+    input.processing = true;
+    state = derive_beauty_workbench_sidebar_state(input);
+    CHECK_FALSE(state.can_leave);
+    CHECK_FALSE(state.can_undo);
+    CHECK(state.show_progress);
+}
+
+TEST_CASE("Beauty local operations exclude protected faces without falling back to the whole model",
+          "[BeautyWorkbench][BeautySidebar][PostGenerationWorkbench]")
+{
+    CHECK(beauty_unprotected_selected_faces({0, 1, 3, 4}, {0, 1, 0, 1}) ==
+          std::vector<size_t>{0, 4});
+    CHECK(beauty_unprotected_selected_faces({1, 3}, {0, 1, 0, 1}).empty());
+    CHECK(derive_beauty_workbench_leave_state(false, false) == BeautyWorkbenchLeaveState::Ready);
+    CHECK(derive_beauty_workbench_leave_state(false, true) == BeautyWorkbenchLeaveState::ConfirmChanges);
+    CHECK(derive_beauty_workbench_leave_state(true, false) == BeautyWorkbenchLeaveState::Processing);
+
+    CHECK_FALSE(beauty_workbench_has_unsaved_changes(false, false, false, false));
+    CHECK(beauty_workbench_has_unsaved_changes(false, false, false, true));
+    CHECK(beauty_workbench_compare_available(true, false, BeautyColorGateState::Compatible,
+                                             false, true));
+    CHECK_FALSE(beauty_workbench_compare_available(true, true, BeautyColorGateState::Compatible,
+                                                   false, true));
+    CHECK_FALSE(beauty_workbench_compare_available(true, false, BeautyColorGateState::Blocked,
+                                                   false, true));
+}
+
+TEST_CASE("Beauty smoothing keeps a filament match only while face correspondence is stable",
+          "[BeautyWorkbench][BeautyColorGate][PostGenerationWorkbench]")
+{
+    CHECK_FALSE(beauty_candidate_requires_filament_rematch(false, 10, 10, 0, 0));
+    CHECK_FALSE(beauty_candidate_requires_filament_rematch(true, 10, 10, 0, 0));
+    CHECK(beauty_candidate_requires_filament_rematch(true, 10, 9, 0, 0));
+    CHECK(beauty_candidate_requires_filament_rematch(true, 10, 10, 1, 0));
+    CHECK(beauty_candidate_requires_filament_rematch(true, 10, 10, 0, 1));
+}
+
+TEST_CASE("Printer filament application bakes portrait color-block models",
+          "[BeautyWorkbench][BeautyColorGate][PostGenerationWorkbench]")
+{
+    CHECK(beauty_preserve_color_block_artifact(true, false));
+    CHECK_FALSE(beauty_preserve_color_block_artifact(true, true));
+    CHECK_FALSE(beauty_preserve_color_block_artifact(false, false));
+    CHECK_FALSE(beauty_preserve_color_block_artifact(false, true));
+}
+
 TEST_CASE("Printer color basis retains every native logical slot without inventing model regions",
           "[PrinterFilamentPreview][ModelPreviewPalette][PostGenerationWorkbench]")
 {
@@ -1799,6 +2144,8 @@ TEST_CASE("Baked printer candidates keep slot identity without applying their ma
     CHECK(baked.color_card_target_slot_ids == native_slots);
     CHECK(baked.count == 9);
     CHECK(Slic3r::AI::ColorTrialPersistence::detail::valid_state(baked));
+    CHECK(PrinterFilamentPreview::can_restore_baked_candidate_without_histogram(baked));
+    CHECK_FALSE(PrinterFilamentPreview::can_restore_baked_candidate_without_histogram(state));
 
     auto ordinary = state;
     ordinary.source = 2;
@@ -1810,6 +2157,17 @@ TEST_CASE("Baked printer candidates keep slot identity without applying their ma
     ordinary.color_card_weighted_error = 0.0;
     CHECK(PrinterFilamentPreview::normalize_baked_candidate_state(ordinary).mapping_colors ==
         ordinary.mapping_colors);
+    CHECK_FALSE(PrinterFilamentPreview::can_restore_baked_candidate_without_histogram(ordinary));
+
+    auto disabled = baked;
+    disabled.enabled = false;
+    CHECK_FALSE(PrinterFilamentPreview::can_restore_baked_candidate_without_histogram(disabled));
+
+    auto unbound = baked;
+    unbound.project_slot_identity.clear();
+    unbound.project_color_slots.clear();
+    unbound.project_semantic_slots.clear();
+    CHECK_FALSE(PrinterFilamentPreview::can_restore_baked_candidate_without_histogram(unbound));
 }
 
 TEST_CASE("deleting a filament remaps object support painting and layer references without moving geometry", "[PrinterFilaments][PostGenerationWorkbench]")
@@ -1930,6 +2288,7 @@ TEST_CASE("Honor suite stages six real slots without creating mixed recipes",
     PrinterFilamentConfig::StagedColorPackImport staged;
     std::string error;
 
+    INFO(error);
     REQUIRE(PrinterFilamentConfig::stage_honor_physical_suite_import(
         live, young_portrait_honor_suite(), staged, error));
     REQUIRE(staged.configuration);
@@ -1961,6 +2320,7 @@ TEST_CASE("Honor suite preserves extra physical slots and independent duplicate 
     PrinterFilamentConfig::StagedColorPackImport staged;
     std::string error;
 
+    INFO(error);
     REQUIRE(PrinterFilamentConfig::stage_honor_physical_suite_import(live, suite, staged, error));
     REQUIRE(staged.configuration);
     CHECK(staged.configuration->filament_presets.size() == live.filament_presets.size());
@@ -2436,6 +2796,9 @@ TEST_CASE("color card imports shrink extra slots and allow idle nozzles", "[Prin
     std::vector<PrinterFilamentConfig::SlotChange> changes;
     std::string error;
     size_t choices = 0;
+    INFO(error);
+    INFO(nozzles);
+    INFO(colors);
     REQUIRE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(colors), changes, error,
         [&](const auto& source, const auto& targets) -> std::optional<size_t> {
             CHECK(source.removable);

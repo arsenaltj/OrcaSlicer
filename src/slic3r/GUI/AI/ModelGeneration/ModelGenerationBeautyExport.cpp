@@ -118,7 +118,10 @@ void ModelGenerationPanel::export_semantic_candidate()
     const auto secondary_evidence = m_model_preview->secondary_region_evidence();
     const auto shape_details = m_model_preview->portrait_shape_details();
     const auto printer_restore_snapshot=m_model_preview->printer_restore_snapshot();
-    const bool color_block_contract=m_model_preview->has_portrait_color_block_contract();
+    const auto color_state = m_model_preview->color_trial_state();
+    const bool printer_filament_application = m_apply_filaments_saving && color_state.source == 1;
+    const bool color_block_contract = beauty_preserve_color_block_artifact(
+        m_model_preview->has_portrait_color_block_contract(), printer_filament_application);
     const bool shapes_unlocked = m_model_preview->portrait_shapes_unlocked();
     const auto leaf_edits=m_model_preview->leaf_edit_metadata();
     const auto leaf_revision=m_model_preview->leaf_edit_revision();
@@ -136,8 +139,6 @@ void ModelGenerationPanel::export_semantic_candidate()
     const auto subfaces = m_model_preview->import_subface_color_overrides(true);
     const auto cell_colors=m_model_preview->import_cell_color_overrides();
     const auto baked_semantic=m_model_preview->semantic_result_metadata();
-    const auto color_state = m_model_preview->color_trial_state();
-    const bool printer_filament_application = m_apply_filaments_saving && color_state.source == 1;
     const auto candidate_color_state = printer_filament_application
         ? PrinterFilamentPreview::normalize_baked_candidate_state(color_state)
         : color_state;

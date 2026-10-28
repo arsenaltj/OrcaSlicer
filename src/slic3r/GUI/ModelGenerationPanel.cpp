@@ -853,6 +853,7 @@ void ModelGenerationPanel::shutdown()
     }
     if (m_portrait_draft_before && !(m_portrait_task && m_portrait_task->snapshot().running())) preserve_portrait_draft();
     m_shutdown = true;
+    cancel_beauty_color_gate();
     if (m_workbench_check_cancel) m_workbench_check_cancel->store(true);
     m_workbench_sync_timer.Stop();
     m_portrait_timer.Stop();

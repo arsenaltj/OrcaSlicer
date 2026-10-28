@@ -8,6 +8,7 @@
 #include "slic3r/GUI/AI/Model/SurfaceSelectionState.hpp"
 #include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
+#include "BeautyWorkbenchColorGate.hpp"
 #include <boost/filesystem/path.hpp>
 #include <wx/panel.h>
 #include <wx/timer.h>
@@ -76,6 +77,11 @@ public:
     void mark_saved();
     void attach_actions(wxWindow* footer, Button* compare);
     void set_history_permissions(bool undo, bool redo);
+    void set_color_gate(BeautyColorGateState state, std::string message) {
+        if (m_color_gate == state && m_color_gate_message == message) return;
+        m_color_gate = state; m_color_gate_message = std::move(message); update_text();
+    }
+    bool more_tools_open() const { return m_details_open; }
     void request_secondary_partition(const boost::filesystem::path& source);
     void set_dirty(bool dirty) { m_dirty = dirty; update_text(); }
     bool has_changes() const { return m_dirty; }
@@ -101,6 +107,7 @@ public:
     std::function<void()> on_boundary_adjust;
     // Beauty operation index: recolor, soften, repair, cleanup.
     std::function<void(int)> on_operation_changed;
+    std::function<void(int)> on_surface_strength_changed;
     std::function<void()> on_undo;
     std::function<void()> on_redo;
     std::function<void()> on_save;
@@ -119,9 +126,14 @@ public:
     std::function<void()> on_accept;
     std::function<void()> on_discard;
     std::function<void()> on_cancel;
+    std::function<void()> on_partition_semantics_finished;
     std::function<bool()> on_partition_started;
     std::function<void(bool)> on_partition_finished;
     std::function<void()> on_pick_mode;
+    std::function<void()> on_add_mode;
+    std::function<void()> on_protect_mode;
+    std::function<void()> on_restore_region_color;
+    std::function<void(int)> on_more_repair;
     std::function<void()> on_fill_color;
     std::function<void()> on_paint_mode;
     std::function<void(const std::string&, std::function<void()>, std::function<void()>)> on_record;
@@ -185,6 +197,7 @@ private:
     wxStaticText* m_operation_label {nullptr};
     Button* m_details_toggle {nullptr};
     ComboBox* m_color_slot {nullptr};
+    ComboBox* m_surface_strength {nullptr};
     Button* m_fill_color {nullptr};
     Button* m_paint_color {nullptr};
     std::vector<BeautyColorItem> m_palette_colors;
@@ -201,9 +214,16 @@ private:
     Button* m_accept {nullptr};
     Button* m_discard {nullptr};
     Button* m_cancel {nullptr};
+    Button* m_compare {nullptr};
     Button* m_auto_partition {nullptr};
     Button* m_pick_partition {nullptr};
+    Button* m_add_region {nullptr};
+    Button* m_protect_region {nullptr};
+    Button* m_restore_region_color {nullptr};
     Button* m_apply_partition {nullptr};
+    Button* m_repair_mesh {nullptr};
+    Button* m_cleanup_spots {nullptr};
+    Button* m_more_repairs_toggle {nullptr};
     WorkbenchSwitch* m_lighting {nullptr};
     wxPanel* m_lighting_row {nullptr};
     wxSlider* m_displacement {nullptr};
@@ -220,6 +240,7 @@ private:
     uint32_t m_selected_piece {0};
     std::shared_ptr<PartitionTask> m_partition_task;
     bool m_partition_semantics_attempted {false};
+    bool m_automatic_partition_started {false};
     std::thread m_partition_worker;
     wxTimer m_partition_timer;
     AI::BeautyDocument m_document;
@@ -232,6 +253,9 @@ private:
     bool m_can_undo {false};
     bool m_can_redo {false};
     bool m_details_open {false};
+    bool m_more_repairs_open {false};
+    BeautyColorGateState m_color_gate {BeautyColorGateState::Unchecked};
+    std::string m_color_gate_message;
     bool m_portrait_enabled {false};
     size_t m_semantic_selection_protected {0};
     size_t m_semantic_selection_low_confidence {0};

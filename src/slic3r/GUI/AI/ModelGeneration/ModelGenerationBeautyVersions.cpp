@@ -9,6 +9,7 @@
 #include "slic3r/GUI/AI/Model/BeautyMetadata.hpp"
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchPrinterFilaments.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/GUI_Utils.hpp"
@@ -203,6 +204,11 @@ void ModelGenerationPanel::accept_model_finishing()
     if (m_finishing_candidate.empty()) {
         report(_L("没有可接受的候选，请先检查或生成候选。")); return;
     }
+    if (m_finishing_workbench && m_workbench_editing && !beauty_color_match_current()) {
+        m_save_and_return = false;
+        report(_L("当前模型配色尚未完整绑定到耗材；候选保留，请恢复兼容配置后再保留效果。"));
+        return;
+    }
     const bool topology_candidate = m_workbench_check_result.candidate_status == RepairCandidateStatus::Ready &&
         m_finishing_options.repair_mesh && !m_finishing_options.smooth_surface;
     if (topology_candidate && !workbench_topology_safe(m_workbench_check_result)) {
@@ -300,19 +306,51 @@ void ModelGenerationPanel::accept_model_finishing()
         for (const auto& key : m_apply_filaments_staged->project_config.keys())
             metadata["printer_filament_configuration"]["project"][key] = m_apply_filaments_staged->project_config.option(key)->serialize();
     }
-    if (filament_application && m_apply_filaments_match) {
-        auto matched = *m_apply_filaments_match;
-        // The applied preview is captured before publication; bind the saved
-        // face assignments to the exact accepted artifact that import opens.
-        matched.source_sha256 = m_finishing_result.output_sha256;
-        matched.geometry_id = m_model_preview->geometry_id();
-        if (!matched.valid()) {
+    std::optional<AI::ModelMatchedColors> saved_match = filament_application
+        ? m_apply_filaments_match : after->matched_colors;
+    const bool requires_filament_rematch = beauty_candidate_requires_filament_rematch(
+        topology_candidate, m_finishing_result.faces_before, m_finishing_result.faces_after,
+        m_finishing_result.removed_degenerate_faces, m_finishing_result.removed_duplicate_faces);
+    const bool stable_face_mapping = saved_match &&
+        saved_match->face_slots.size() == m_finishing_result.faces_after &&
+        !requires_filament_rematch;
+    if (saved_match && !stable_face_mapping) {
+        auto* bundle = wxGetApp().preset_bundle;
+        const auto rematched = bundle ? m_model_preview->printer_filament_match_result(
+            *bundle, m_finishing_result.output_sha256) : ModelPreview3D::PrinterFilamentMatchResult {};
+        saved_match = rematched.matched;
+        if (!saved_match) {
             m_save_and_return = false;
-            if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "invalid printer-filament match snapshot");
-            report(_L("耗材匹配快照无效，未保存本次应用。"));
+            if (m_beauty_transactions)
+                m_beauty_transactions->finish(false, false, "topology candidate lost exact filament coverage");
+            report(_L("处理后的面对应关系已变化，且无法重新完整匹配当前耗材；候选保留但不能接受。"));
             return;
         }
-        metadata["applied_printer_filament_match"] = AI::encode_model_matched_colors(matched);
+    }
+    if (saved_match) {
+        // Appearance-only edits and smoothing retain face correspondence. Bind
+        // the same slot snapshot to the newly published file identity. A
+        // topology-changing candidate reached this point only after rematch.
+        saved_match->source_sha256 = m_finishing_result.output_sha256;
+        saved_match->geometry_id = m_model_preview->geometry_id();
+        if (!saved_match->valid()) {
+            m_save_and_return = false;
+            if (m_beauty_transactions)
+                m_beauty_transactions->finish(false, false, "invalid printer-filament match snapshot");
+            report(_L("耗材匹配快照无效，候选保留但未保存。"));
+            return;
+        }
+        after->matched_colors = saved_match;
+        after->matched_configuration_signature = filament_application && m_apply_filaments_staged
+            ? PrinterFilamentConfig::capture(*m_apply_filaments_staged).signature
+            : m_beauty_color_gate_configuration_signature;
+        metadata["applied_printer_filament_match"] = AI::encode_model_matched_colors(*saved_match);
+    } else if (m_finishing_workbench && m_workbench_editing) {
+        m_save_and_return = false;
+        if (m_beauty_transactions)
+            m_beauty_transactions->finish(false, false, "missing printer-filament match snapshot");
+        report(_L("当前美颜版本没有完整耗材匹配，候选保留但不能接受。"));
+        return;
     }
     const auto provenance = m_model_preview->semantic_color_metadata();
     metadata["semantic_color_state"] = provenance.empty()
@@ -493,6 +531,17 @@ void ModelGenerationPanel::accept_model_finishing()
                 after->options = {};
                 after->manual_color_dirty = false;
                 after->dirty = false;
+                if (after->matched_colors) {
+                    self->m_beauty_matched_colors = after->matched_colors;
+                    self->m_beauty_color_gate_configuration_signature =
+                        after->matched_configuration_signature;
+                    self->m_beauty_color_gate_cache.reset();
+                    self->m_beauty_color_gate_cache_key.clear();
+                    self->m_beauty_color_gate_expected_key.clear();
+                    self->m_beauty_color_gate_state = BeautyColorGateState::Compatible;
+                    self->m_beauty_color_gate_message =
+                        "模型颜色已逐面绑定到当前耗材，可安全编辑。";
+                }
                 if (self->m_finishing_workbench) {
                     self->m_model_preview->set_selection_preview_suppressed(true);
                     self->m_finishing_source.clear();
@@ -502,6 +551,7 @@ void ModelGenerationPanel::accept_model_finishing()
                     self->m_finishing_restore_context = {};
                     self->m_finishing_restore_selection = {};
                     self->m_beauty_session_source.reset();
+                    self->m_beauty_compare_draft.reset();
                 }
                 self->m_beauty_manual_color_dirty = false;
                 if (self->m_beauty_controls) self->m_beauty_controls->mark_saved();
@@ -594,7 +644,7 @@ void ModelGenerationPanel::accept_model_finishing()
 void ModelGenerationPanel::discard_model_finishing()
 {
     if (m_busy || m_workbench_check_running || (m_finishing_candidate.empty() &&
-        !(m_beauty_session_source && m_beauty_controls && m_beauty_controls->has_changes()))) return;
+        !beauty_session_has_changes())) return;
     const auto discarded = m_finishing_candidate;
     const bool beauty = bool(m_beauty_session_source);
     if (m_beauty_session_source) {
@@ -607,6 +657,7 @@ void ModelGenerationPanel::discard_model_finishing()
         boost::filesystem::remove(discarded, ignored);
     }
     m_beauty_session_source.reset();
+    m_beauty_compare_draft.reset();
     m_finishing_candidate.clear();
     m_finishing_candidate_original_appearance = {};
     m_finishing_candidate_original_appearance_error.clear();

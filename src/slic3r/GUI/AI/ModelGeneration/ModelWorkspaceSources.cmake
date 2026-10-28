@@ -12,6 +12,7 @@ set(ORCA_MODEL_WORKSPACE_SOURCES
     GUI/AI/ModelGeneration/ModelLibraryPanel.cpp
     GUI/AI/ModelGeneration/BeautyWorkbenchSession.hpp
     GUI/AI/ModelGeneration/BeautyCandidateSnapshot.hpp
+    GUI/AI/ModelGeneration/BeautyWorkbenchColorGate.hpp
     GUI/AI/ModelGeneration/ModelWorkspaceCapabilities.hpp
     GUI/AI/ModelGeneration/ModelWorkspaceFeatureHost.hpp
     GUI/AI/ModelGeneration/ModelWorkspaceFeatureHost.cpp

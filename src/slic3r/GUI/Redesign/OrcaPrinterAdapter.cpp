@@ -9,6 +9,7 @@
 #include "../DeviceCore/DevHMS.h"
 #include "../DeviceCore/DevStorage.h"
 #include "../Plater.hpp"
+#include "../PartPlate.hpp"
 #include "../GLCanvas3D.hpp"
 #include "../ImGuiWrapper.hpp"
 #include "libslic3r/BuildVolume.hpp"

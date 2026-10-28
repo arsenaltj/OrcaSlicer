@@ -37,6 +37,8 @@
 #include "slic3r/GUI/GUI_Utils.hpp"
 #include "libslic3r/TexturePainting.hpp"
 #include "slic3r/GUI/Widgets/SpinInput.hpp"
+#include <slic3r/GUI/Widgets/Button.hpp>
+#include <slic3r/GUI/Widgets/Label.hpp>
 #include "libslic3r/TriangleMesh.hpp"
 #include <memory>
 #include <mutex>
@@ -88,6 +90,28 @@ namespace {
 wxColour review_surface_colour() { return wxColour(53, 53, 55); }
 wxColour review_preview_colour() { return wxColour(23, 23, 25); }
 wxColour review_secondary_colour() { return wxColour(174, 174, 178); }
+
+static void apply_accent_button_colours(Button* btn)
+{
+    btn->SetBackgroundColor(StateColor(
+        std::pair<wxColour, int>(wxColour("#CECECE"), StateColor::Disabled),
+        std::pair<wxColour, int>(wxColour(0, 137, 123), StateColor::Pressed),
+        std::pair<wxColour, int>(wxColour(38, 166, 154), StateColor::Hovered),
+        std::pair<wxColour, int>(wxColour(0, 150, 136), StateColor::Normal)));
+    btn->SetBorderColor(StateColor(
+        std::pair<wxColour, int>(wxColour("#CECECE"), StateColor::Disabled),
+        std::pair<wxColour, int>(wxColour(0, 150, 136), StateColor::Normal)));
+    btn->SetTextColor(StateColor(
+        std::pair<wxColour, int>(wxColour("#6B6B6A"), StateColor::Disabled),
+        std::pair<wxColour, int>(wxColour("#FFFFFE"), StateColor::Normal)));
+}
+
+static void apply_muted_button_colours(Button* btn)
+{
+    btn->SetBackgroundColor(wxColour("#CECECE"));
+    btn->SetBorderColor(wxColour("#CECECE"));
+    btn->SetTextColor(wxColour("#6B6B6A"));
+}
 
 void layout_review_spin(SpinInput* spin)
 {
@@ -223,34 +247,6 @@ static constexpr const char* SEPARATOR_COLOUR_KEY = "#CECECE";
 static wxColour texture_import_separator_colour()
 {
     return StateColor::darkModeColorFor(wxColour(SEPARATOR_COLOUR_KEY));
-}
-
-// Orca's confirm palette, applied here rather than through Button::SetStyle because these buttons
-// keep custom pill geometry that SetStyle resets. The Disabled entries are load-bearing: without
-// one, StateColor::colorForStates falls through to the Normal entry and a disabled button paints
-// as a live accent button.
-static void apply_accent_button_colours(Button* btn)
-{
-    btn->SetBackgroundColor(StateColor(
-        std::pair<wxColour, int>(wxColour("#CECECE"), StateColor::Disabled),
-        std::pair<wxColour, int>(wxColour(0, 137, 123), StateColor::Pressed),
-        std::pair<wxColour, int>(wxColour(38, 166, 154), StateColor::Hovered),
-        std::pair<wxColour, int>(wxColour(0, 150, 136), StateColor::Normal)));
-    btn->SetBorderColor(StateColor(
-        std::pair<wxColour, int>(wxColour("#CECECE"), StateColor::Disabled),
-        std::pair<wxColour, int>(wxColour(0, 150, 136), StateColor::Normal)));
-    btn->SetTextColor(StateColor(
-        std::pair<wxColour, int>(wxColour("#6B6B6A"), StateColor::Disabled),
-        std::pair<wxColour, int>(wxColour("#FFFFFE"), StateColor::Normal)));
-}
-
-// The same button while the parameters behind it are dirty: still clickable, but reading as
-// "what you see is not what this button would apply".
-static void apply_muted_button_colours(Button* btn)
-{
-    btn->SetBackgroundColor(wxColour("#CECECE"));
-    btn->SetBorderColor(wxColour("#CECECE"));
-    btn->SetTextColor(wxColour("#6B6B6A"));
 }
 
 static wxFont texture_import_section_title_font(wxWindow* win)
@@ -687,6 +683,14 @@ public:
         wxColour pop_bg = m_workbench_review ? RedesignTheme::panel_colour() : StateColor::darkModeColorFor(*wxWHITE);
         SetBackgroundColour(pop_bg);
 
+        // ORCA add border for popups. it required to add this controls because it covers all background
+        Bind(wxEVT_PAINT, [this](wxPaintEvent& evt) {
+            wxPaintDC dc(this);
+            dc.SetPen(wxPen(StateColor::darkModeColorFor(wxColour("#DBDBDB")), FromDIP(1)));
+            dc.SetBrush(*wxTRANSPARENT_BRUSH);
+            dc.DrawRoundedRectangle(0, 0, GetSize().x, GetSize().y, 0);
+        });
+
         m_content = new wxScrolledWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
         m_content->SetBackgroundColour(pop_bg);
         m_content->SetScrollRate(0, FromDIP(20));
@@ -696,7 +700,7 @@ public:
         const int row_h   = FromDIP(32);
         const int pad     = FromDIP(8);
         const int max_visible_rows = 10;
-        const wxColour header_clr = StateColor::darkModeColorFor(wxColour("#ACACAC"));
+        const wxColour header_clr = StateColor::darkModeColorFor(wxColour("#363636"));
 
         auto add_section_header = [&](const wxString& label) {
             auto* hdr = new wxStaticText(m_content, wxID_ANY, label);
@@ -707,7 +711,7 @@ public:
             outer->Add(hdr, 0, wxLEFT | wxRIGHT | wxTOP, pad);
             auto* line = new StaticLine(m_content);
             line->SetLineColour(wxColour(SEPARATOR_COLOUR_KEY));
-            outer->Add(line, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM, pad);
+            outer->Add(line, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, pad);
         };
 
         auto add_section = [&](const wxString& label, TextureFilamentKind kind) {
@@ -802,7 +806,7 @@ public:
             list_h -= ((int)m_colors_rgba.size() - max_visible_rows) * row_h;
         m_content->SetMinSize(wxSize(pop_w, list_h));
         m_content->SetMaxSize(wxSize(pop_w, list_h));
-        top_sizer->Add(m_content, 0, wxEXPAND);
+        top_sizer->Add(m_content, 0, wxEXPAND | wxALL, FromDIP(1));
 
         top_sizer->AddSpacer(FromDIP(4));
         auto* sep_line = new StaticLine(this);
@@ -860,8 +864,8 @@ private:
         row->SetBackgroundStyle(wxBG_STYLE_PAINT);
         row->SetCursor(wxCursor(wxCURSOR_HAND));
 
-        const int sq     = row->FromDIP(24);
-        const int sq_r   = row->FromDIP(2);
+        const int sq     = row->FromDIP(20); // ORCA match color swatch sizes
+        const int sq_r   = row->FromDIP(0);
         const int sq_x   = row->FromDIP(4);
         const int gap1   = row->FromDIP(8);
 
@@ -900,7 +904,7 @@ private:
                 wxFont nf = p->GetFont();
                 nf.SetPointSize(9);
                 dc.SetFont(nf);
-                dc.SetTextForeground(paint_clr.GetLuminance() < 0.6 ? *wxWHITE : texture_import_gray9000());
+                dc.SetTextForeground(paint_clr.GetLuminance() < 0.51 ? *wxWHITE : *wxBLACK); // ORCA match used foreground color with other swatches
                 wxString ns = wxString::Format("%d", display_number((int)idx));
                 wxSize tsz = dc.GetTextExtent(ns);
                 dc.DrawText(ns, sq_x + (sq - tsz.x) / 2, sq_y + (sq - tsz.y) / 2);
@@ -969,9 +973,9 @@ private:
             wxFont font = p->GetFont();
             font.SetPointSize(9);
             dc.SetFont(font);
-            int x = p->FromDIP(2);
-            const int sw = p->FromDIP(22);
-            const int sw_r = p->FromDIP(2);
+            int x = p->FromDIP(6); // ORCA Match left margins
+            const int sw = p->FromDIP(20); // ORCA Match color swatch sizes
+            const int sw_r = 0; //p->FromDIP(2);
             const int y = (sz.y - sw) / 2;
 
             for (size_t ci = 0; ci < entry.mixed_components.size() && ci < entry.mixed_ratios.size(); ++ci) {
@@ -1085,12 +1089,20 @@ public:
         wxColour pop_bg = m_workbench_review ? RedesignTheme::panel_colour() : StateColor::darkModeColorFor(*wxWHITE);
         SetBackgroundColour(pop_bg);
 
+        // ORCA add border for popups. it required to add this controls because it covers all background
+        Bind(wxEVT_PAINT, [this](wxPaintEvent& evt) {
+            wxPaintDC dc(this);
+            dc.SetPen(wxPen(StateColor::darkModeColorFor(wxColour("#DBDBDB")), FromDIP(1)));
+            dc.SetBrush(*wxTRANSPARENT_BRUSH);
+            dc.DrawRoundedRectangle(0, 0, GetSize().x, GetSize().y, 0);
+        });
+
         auto* content = new wxPanel(this, wxID_ANY);
         content->SetBackgroundColour(pop_bg);
         content->SetBackgroundStyle(wxBG_STYLE_PAINT);
 
         auto* sizer = new wxBoxSizer(wxVERTICAL);
-        const int row_h = FromDIP(36);
+        const int row_h = FromDIP(32);
         const int pop_w = std::max(FromDIP(216), popup_width);
         sizer->Add(create_item_row(content, TextureAutoMixMode::CMYW, row_h), 0, wxEXPAND);
         sizer->Add(create_item_row(content, TextureAutoMixMode::RYBW, row_h), 0, wxEXPAND);
@@ -1115,6 +1127,7 @@ private:
     wxPanel* create_item_row(wxWindow* parent, TextureAutoMixMode mode, int row_h)
     {
         wxColour row_bg = m_workbench_review ? RedesignTheme::panel_colour() : StateColor::darkModeColorFor(*wxWHITE);
+        wxColour checked_bg = m_workbench_review ? wxColour(77, 77, 79) : StateColor::darkModeColorFor(wxColour("#BFE1DE"));
         wxColour hover_bg = m_workbench_review ? wxColour(77, 77, 79) : StateColor::darkModeColorFor(wxColour("#F4F4F4"));
         wxColour text_fg = m_workbench_review ? RedesignTheme::primary_text_colour() : texture_import_text_colour();
         wxColour accent = m_workbench_review ? RedesignTheme::accent_colour() : StateColor::darkModeColorFor(wxColour("#009688"));
@@ -1126,15 +1139,16 @@ private:
         row->SetCursor(wxCursor(wxCURSOR_HAND));
 
         const int row_idx = mode == TextureAutoMixMode::CMYW ? 0 : 1;
-        row->Bind(wxEVT_PAINT, [this, row_bg, hover_bg, text_fg, accent, mode, row_idx](wxPaintEvent& e) {
+        row->Bind(wxEVT_PAINT, [this, row_bg, checked_bg, text_fg, accent, mode, row_idx](wxPaintEvent& e) {
             auto* p = static_cast<wxPanel*>(e.GetEventObject());
             wxAutoBufferedPaintDC dc(p);
             wxSize sz = p->GetClientSize();
             const bool hovered = (m_hover_idx == row_idx);
             const bool selected = (m_current_mode == mode);
 
-            dc.SetBrush(wxBrush(hovered ? hover_bg : row_bg));
-            dc.SetPen(*wxTRANSPARENT_PEN);
+            // ORCA Match look with combo box dropdown
+            dc.SetBrush(wxBrush(selected ? checked_bg : row_bg));
+            dc.SetPen(hovered ? wxPen(accent) : *wxTRANSPARENT_PEN);
             dc.DrawRectangle(0, 0, sz.x, sz.y);
 
             wxFont font = p->GetFont();
@@ -1145,6 +1159,7 @@ private:
             wxSize tsz = dc.GetTextExtent(label);
             dc.DrawText(label, p->FromDIP(12), (sz.y - tsz.y) / 2);
 
+            /*
             if (selected) {
                 wxFont check_font = p->GetFont();
                 check_font.SetPointSize(12);
@@ -1155,6 +1170,7 @@ private:
                 wxSize csz = dc.GetTextExtent(check);
                 dc.DrawText(check, sz.x - p->FromDIP(16) - csz.x, (sz.y - csz.y) / 2);
             }
+            */
         });
 
         row->Bind(wxEVT_MOTION, [this, row, row_idx](wxMouseEvent& evt) {
@@ -2206,7 +2222,7 @@ void TextureImportDialog::build_ui()
 {
     const wxColour dialog_bg = StateColor::darkModeColorFor(*wxWHITE);
     SetBackgroundColour(dialog_bg);
-    SetForegroundColour(StateColor::darkModeColorFor(wxColour("#323A3D")));
+    SetForegroundColour(StateColor::darkModeColorFor(wxColour("#363636")));
 
     wxBoxSizer* root_sizer = new wxBoxSizer(wxVERTICAL);
 
@@ -2353,9 +2369,6 @@ void TextureImportDialog::build_preview_panel(wxWindow* parent, wxSizer* sizer)
     m_btn_view_filaments = new Button(m_tab_panel, texture_import_label("Filament colors", "耗材配色"));
 
     const int view_button_height = FromDIP(27);
-    m_btn_view_original->SetCornerRadius(view_button_height / 2);
-    m_btn_view_original->SetMinSize(wxSize(FromDIP(57), view_button_height));
-    m_btn_view_original->SetFont(m_btn_view_original->GetFont().Bold());
     m_btn_view_original->SetToolTip(_L("Your input texture model"));
     m_btn_view_filaments->SetCornerRadius(view_button_height / 2);
     m_btn_view_filaments->SetMinSize(wxSize(FromDIP(57), view_button_height));
@@ -2405,13 +2418,13 @@ void TextureImportDialog::build_preview_panel(wxWindow* parent, wxSizer* sizer)
 
 void TextureImportDialog::build_params_panel(wxWindow* parent, wxSizer* sizer)
 {
-    wxColour label_fg = StateColor::darkModeColorFor(wxColour("#323A3D"));
+    wxColour label_fg = StateColor::darkModeColorFor(wxColour("#363636"));
 
     wxBoxSizer* color_header_sizer = new wxBoxSizer(wxHORIZONTAL);
     wxStaticText* lbl_colors = new wxStaticText(parent, wxID_ANY, texture_import_label("Target color count", "目标分色数量"));
     lbl_colors->SetToolTip(texture_import_label("Number of model color regions, not physical filament slots", "模型目标颜色数量，不等于实体耗材槽位数量"));
     lbl_colors->SetForegroundColour(label_fg);
-    lbl_colors->SetFont(lbl_colors->GetFont().Bold());
+    lbl_colors->SetFont(Label::Head_14);
     color_header_sizer->Add(lbl_colors, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
 
     m_btn_color_4    = new Button(parent, "4");
@@ -2451,6 +2464,7 @@ void TextureImportDialog::build_params_panel(wxWindow* parent, wxSizer* sizer)
 
     update_color_count_preset_buttons();
 
+    color_header_sizer->AddStretchSpacer();
     color_header_sizer->Add(m_btn_color_4,  0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(2));
     color_header_sizer->Add(m_btn_color_6,  0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(2));
     color_header_sizer->Add(m_btn_color_8,  0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(2));
@@ -2506,27 +2520,7 @@ void TextureImportDialog::build_params_panel(wxWindow* parent, wxSizer* sizer)
 
     m_btn_apply = new Button(parent, texture_import_label("Update preview", "更新分色预览"));
     m_btn_apply->SetId(ID_BTN_APPLY);
-
-    {
-        StateColor btn_bg_white(
-            std::pair<wxColour, int>(wxColour("#CECECE"), StateColor::Pressed),
-            std::pair<wxColour, int>(wxColour("#EEEEEE"), StateColor::Hovered),
-            std::pair<wxColour, int>(*wxWHITE, StateColor::Normal));
-        const wxColour btn_bd_accent = wxColour(0, 150, 136);
-        const wxColour btn_text_accent = wxColour(0, 150, 136);
-
-        m_btn_color_auto->SetCornerRadius(FromDIP(12));
-        m_btn_color_auto->SetMinSize(wxSize(FromDIP(60), FromDIP(28)));
-        m_btn_color_auto->SetBackgroundColor(btn_bg_white);
-        m_btn_color_auto->SetBorderColor(btn_bd_accent);
-        m_btn_color_auto->SetTextColor(btn_text_accent);
-
-        m_btn_apply->SetCornerRadius(FromDIP(12));
-        m_btn_apply->SetMinSize(wxSize(FromDIP(60), FromDIP(28)));
-        m_btn_apply->SetBackgroundColor(btn_bg_white);
-        m_btn_apply->SetBorderColor(btn_bd_accent);
-        m_btn_apply->SetTextColor(btn_text_accent);
-    }
+    m_btn_apply->SetStyle(ButtonStyle::Regular, ButtonType::Window);
 
     // Defer attaching the Auto/Apply tooltips until the dialog has actually
     // been shown. On macOS, AppKit creates NSTrackingArea and dispatches a
@@ -2550,7 +2544,7 @@ void TextureImportDialog::build_params_panel(wxWindow* parent, wxSizer* sizer)
     wxBoxSizer* apply_sizer = new wxBoxSizer(wxHORIZONTAL);
     apply_sizer->Add(m_btn_color_auto, 0, wxRIGHT, FromDIP(4));
     apply_sizer->Add(m_btn_apply, 0);
-    sizer->Add(apply_sizer, 0, wxALIGN_RIGHT | wxBOTTOM, FromDIP(8));
+    sizer->Add(apply_sizer, 0, wxALIGN_RIGHT | wxBOTTOM | wxTOP, FromDIP(8));
 
     m_hint_label = new wxStaticText(parent, wxID_ANY,
         texture_import_label("Parameters changed. Click Update preview to refresh.", "参数已修改，请点击“更新分色预览”。"));
@@ -2566,7 +2560,7 @@ void TextureImportDialog::build_params_panel(wxWindow* parent, wxSizer* sizer)
 
 void TextureImportDialog::build_mapping_panel(wxWindow* parent, wxSizer* sizer)
 {
-    wxColour secondary_fg = StateColor::darkModeColorFor(wxColour("#6B6B6B"));
+    wxColour secondary_fg = StateColor::darkModeColorFor(wxColour("#363636"));
 
     wxBoxSizer* header_sizer = new wxBoxSizer(wxHORIZONTAL);
 
@@ -2574,21 +2568,13 @@ void TextureImportDialog::build_mapping_panel(wxWindow* parent, wxSizer* sizer)
         texture_import_label("Target color → Print filament", "目标色 → 打印耗材") :
         texture_import_label("Choose filament colors", "给模型选耗材颜色"));
     lbl_mapping->SetForegroundColour(secondary_fg);
-    lbl_mapping->SetFont(texture_import_section_title_font(parent));
+    lbl_mapping->SetFont(Label::Head_14);
     m_auto_mix_font_point_size = lbl_mapping->GetFont().GetPointSize();
     header_sizer->Add(lbl_mapping, 0, wxALIGN_CENTER_VERTICAL);
 
     m_btn_mix_reset = new Button(parent, "", "revert_btn", wxBORDER_NONE, 16);
     m_btn_mix_reset->SetCanFocus(false);
-    m_btn_mix_reset->SetPaddingSize(wxSize(FromDIP(2), FromDIP(2)));
-    {
-        StateColor reset_bg(
-            std::pair<wxColour, int>(wxColour("#F4F4F4"), StateColor::Pressed),
-            std::pair<wxColour, int>(wxColour("#F8F8F8"), StateColor::Hovered),
-            std::pair<wxColour, int>(*wxWHITE, StateColor::Normal));
-        m_btn_mix_reset->SetBackgroundColor(reset_bg);
-        m_btn_mix_reset->SetBorderColor(StateColor());
-    }
+    m_btn_mix_reset->SetStyle(ButtonStyle::Regular, ButtonType::Icon);
     m_btn_mix_reset->SetToolTip(_L("Reset filament mapping to the state before one-click mixing"));
     m_btn_mix_reset->Bind(wxEVT_BUTTON, [this](wxCommandEvent& evt) {
         reset_auto_mix();
@@ -4451,12 +4437,12 @@ void TextureImportDialog::rebuild_mapping_rows()
             wxPen dash_pen(dash_clr, 1, m_options.workbench_review ? wxPENSTYLE_SOLID : wxPENSTYLE_SHORT_DASH);
             dc.SetPen(dash_pen);
             dc.SetBrush(wxBrush(p->GetParent()->GetBackgroundColour()));
-            int r = p->FromDIP(8);
+            int r = 0; //p->FromDIP(8);
             dc.DrawRoundedRectangle(0, 0, sz.x, sz.y, r);
 
-            // Color circle 24px
-            int cd = p->FromDIP(24);
-            int cx = p->FromDIP(10);
+            // Color circle 20px
+            int cd = p->FromDIP(20); // ORCA match size of swatches
+            int cx = p->FromDIP(6); // ORCA match margins
             int cy = (sz.y - cd) / 2;
             dc.SetPen(*wxTRANSPARENT_PEN);
             dc.SetBrush(wxBrush(src_wx_color));
@@ -4547,7 +4533,7 @@ void TextureImportDialog::rebuild_mapping_rows()
             if (ci >= m_mapping_rows.size()) return;
             int fil_idx = m_mapping_rows[ci].target_filament_idx;
 
-            int r = p->FromDIP(8);
+            int r = 0; //p->FromDIP(8);
             dc.SetBrush(wxBrush(card_bg));
             dc.SetPen(wxPen(card_bd, 1));
             dc.DrawRoundedRectangle(0, 0, sz.x, sz.y, r);
@@ -4559,9 +4545,9 @@ void TextureImportDialog::rebuild_mapping_rows()
                 mixed_font.SetPointSize(10);
                 dc.SetFont(mixed_font);
 
-                int x = p->FromDIP(10);
-                const int sw = p->FromDIP(28);
-                const int sw_r = p->FromDIP(6);
+                int x = p->FromDIP(6);// ORCA Match left margins
+                const int sw = p->FromDIP(20); // ORCA match size of swatches
+                const int sw_r = 0; //p->FromDIP(6);
                 const int sw_y = (sz.y - sw) / 2;
                 for (size_t mi = 0; mi < entry.mixed_components.size() && mi < entry.mixed_ratios.size(); ++mi) {
                     if (mi > 0) {
@@ -4589,7 +4575,7 @@ void TextureImportDialog::rebuild_mapping_rows()
 
                     wxString num_str = wxString::Format("%d", display_number(comp_idx));
                     wxSize nsz = dc.GetTextExtent(num_str);
-                    dc.SetTextForeground(comp_clr.GetLuminance() < 0.6 ? *wxWHITE : texture_import_gray9000());
+                    dc.SetTextForeground(comp_clr.GetLuminance() < 0.51 ? *wxWHITE : *wxBLACK); // ORCA match used foreground color with other swatches
                     dc.DrawText(num_str, x + (sw - nsz.x) / 2, sw_y + (sw - nsz.y) / 2);
                     x += sw + p->FromDIP(5);
 
@@ -4613,10 +4599,10 @@ void TextureImportDialog::rebuild_mapping_rows()
             }
 
             // Numbered color square 32x32, rounded 6px
-            int sq = p->FromDIP(32);
-            int sq_x = p->FromDIP(6);
+            int sq = p->FromDIP(20); // ORCA match size of swatches
+            int sq_x = p->FromDIP(6);// ORCA Match left margins
             int sq_y = (sz.y - sq) / 2;
-            int sq_r = p->FromDIP(6);
+            int sq_r = 0; //p->FromDIP(6);
             wxColour fil_clr = get_target_wxcolor(fil_idx);
             dc.SetPen(*wxTRANSPARENT_PEN);
             dc.SetBrush(wxBrush(fil_clr));
@@ -4627,7 +4613,7 @@ void TextureImportDialog::rebuild_mapping_rows()
                 wxFont num_font = p->GetFont();
                 num_font.SetPointSize(10);
                 dc.SetFont(num_font);
-                dc.SetTextForeground(fil_clr.GetLuminance() < 0.6 ? *wxWHITE : texture_import_gray9000());
+                dc.SetTextForeground(fil_clr.GetLuminance() < 0.51 ? *wxWHITE : *wxBLACK); // ORCA match used foreground color with other swatches
                 wxString num_str = wxString::Format("%d", display_number(fil_idx));
                 wxSize nsz = dc.GetTextExtent(num_str);
                 dc.DrawText(num_str, sq_x + (sq - nsz.x) / 2, sq_y + (sq - nsz.y) / 2);
@@ -4845,27 +4831,9 @@ void TextureImportDialog::highlight_view_button(int view_index)
         return;
     }
 
-    // The inactive pill lies on m_tab_panel, which is preview_bg (#EEEEEE -> #4C4C55), and has to
-    // read as raised above that strip in both themes — so its fill steps away from the strip in
-    // opposite directions. gDarkColors pairs one light tone with one dark tone and cannot express
-    // an inversion, so the two are picked here the way filament_swatch_border_colour() does.
-    const bool dark_pill = is_dark();
-    StateColor inactive_bg(
-        std::pair<wxColour, int>(dark_pill ? wxColour(0x5C, 0x5C, 0x64) : wxColour("#F4F4F4"), StateColor::Pressed),
-        std::pair<wxColour, int>(dark_pill ? wxColour(0x66, 0x66, 0x6E) : wxColour("#F8F8F8"), StateColor::Hovered),
-        std::pair<wxColour, int>(dark_pill ? wxColour(0x54, 0x54, 0x5B) : *wxWHITE,            StateColor::Normal));
-    const wxColour inactive_bd = dark_pill ? wxColour(0x54, 0x54, 0x5B) : *wxWHITE;
-    const wxColour inactive_text = wxColour("#6B6B6A");
-
     for (int i = 0; i < 2; ++i) {
         if (!btns[i]) continue;
-        if (i == view_index) {
-            apply_accent_button_colours(btns[i]);
-        } else {
-            btns[i]->SetBackgroundColor(inactive_bg);
-            btns[i]->SetBorderColor(inactive_bd);
-            btns[i]->SetTextColor(inactive_text);
-        }
+        btns[i]->SetStyle(i == view_index ? ButtonStyle::Confirm : ButtonStyle::Regular, ButtonType::Parameter);
         btns[i]->Refresh();
     }
 }

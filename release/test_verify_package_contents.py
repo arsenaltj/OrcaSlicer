@@ -178,6 +178,23 @@ class PackageInspectionTests(unittest.TestCase):
             record["fields"]["api_key"] = []
             self.assertEqual(self.check({name: data})["status"], "BLOCKED_FINDINGS")
 
+    def test_checked_in_yoyoclaw_placeholders_match_windows_package_bytes(self):
+        name = "resources/tools/ai/yoyoclaw_client.py"
+        source = (Path(__file__).resolve().parents[1] / "tools/ai/yoyoclaw_client.py").read_bytes()
+        windows_bytes = source.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+        record = inspection.AUDITED_LIBRARY_LITERALS[name]
+        self.assertEqual(hashlib.sha256(windows_bytes).hexdigest(), record["file_sha256"])
+
+        clean = self.check({name: windows_bytes})
+        self.assertEqual(clean["status"], "NOT_DETECTED_WITHIN_SCOPE")
+        audited = {row["field"]: row["category"] for row in clean["config_fields"]}
+        self.assertEqual(audited["DEFAULT_ROOT_SECRET"], "AUDITED_PUBLIC_LIBRARY_LITERAL")
+        self.assertEqual(audited["DEFAULT_HMAC_SECRET"], "AUDITED_PUBLIC_LIBRARY_LITERAL")
+        self.assertEqual(
+            self.check({name: windows_bytes + b'\r\nNEW_SECRET="fixture-opaque-value"\r\n'})["status"],
+            "BLOCKED_FINDINGS",
+        )
+
     def test_audited_protocol_token_requires_exact_path_file_and_token(self):
         name = "resources/beauty-runtime/python/Lib/site-packages/library.py"
         marker = b"-" * 5 + b"BEGIN " + b"OPENSSH " + b"PRIVATE KEY" + b"-" * 5

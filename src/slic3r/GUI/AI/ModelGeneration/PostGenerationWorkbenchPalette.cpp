@@ -2,7 +2,9 @@
 #include "ModelPreview3D.hpp"
 #include "BeautyWorkbenchControls.hpp"
 #include "BeautyWorkbenchTransactionController.hpp"
+#include "ModelGenerationPresentation.hpp"
 #include "WorkbenchStyle.hpp"
+#include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/GUI/PresetComboBoxes.hpp"
@@ -13,6 +15,7 @@
 #include <wx/weakref.h>
 #include <wx/wupdlock.h>
 #include <wx/wrapsizer.h>
+#include <boost/filesystem/fstream.hpp>
 #include <cctype>
 
 namespace Slic3r::GUI {
@@ -21,93 +24,104 @@ namespace {
 
 enum class NativeFilamentControl { Color, Preset, Actions };
 
+void style_beauty_color_confirmation(RedesignConfirmationOptions& options)
+{
+    options.message_point_size = 11;
+    options.action_point_size = 11;
+    options.fit_message_to_content = true;
+    options.maximum_message_height = 260;
+}
+
+std::optional<AI::ModelMatchedColors> saved_beauty_filament_match(
+    const boost::filesystem::path& model, const boost::filesystem::path& root)
+{
+    const auto path = AI::beauty_metadata_path(model, root);
+    boost::system::error_code error;
+    if (!boost::filesystem::is_regular_file(path, error) || error ||
+        boost::filesystem::file_size(path, error) > 128ULL * 1024 * 1024 || error) return {};
+    boost::filesystem::ifstream input(path, std::ios::binary);
+    if (!input) return {};
+    const auto metadata = nlohmann::json::parse(input, [](int depth, nlohmann::json::parse_event_t event,
+                                                          nlohmann::json& value) {
+        if (event != nlohmann::json::parse_event_t::key || depth != 1) return true;
+        const auto& key = value.get_ref<const std::string&>();
+        return key == "model_sha256" || key == "applied_printer_filament_match";
+    }, false);
+    if (!metadata.is_object() || !metadata.contains("model_sha256") ||
+        !metadata["model_sha256"].is_string() ||
+        metadata["model_sha256"].get<std::string>() != AI::model_artifact_sha256(model) ||
+        !metadata.contains("applied_printer_filament_match")) return {};
+    AI::ModelMatchedColors matched;
+    std::string decode_error;
+    if (!AI::decode_model_matched_colors(metadata["applied_printer_filament_match"], matched, decode_error))
+        return {};
+    return matched;
+}
+
+BeautyColorGateRequest capture_beauty_color_gate_request(
+    const PresetBundle& bundle, const ModelPreview3D& preview,
+    const std::string& source_sha256,
+    const std::optional<AI::ModelMatchedColors>& preferred = {})
+{
+    BeautyColorGateRequest request;
+    request.source_sha256 = source_sha256;
+    request.geometry_id = preview.geometry_id();
+    const auto state = PrinterFilamentConfig::capture(bundle);
+    request.configuration_signature = state.signature;
+    if (source_sha256.empty() || request.geometry_id.empty()) {
+        request.unavailable_reason = "当前模型身份无效，请重新载入模型。";
+        return request;
+    }
+    if (!state.ready) {
+        request.unavailable_reason = state.reason.empty() ? "请先配置当前打印机耗材。" : state.reason;
+        return request;
+    }
+    const auto native_palette = OrcaPrintPaletteSnapshot::capture(bundle);
+    request.material_fingerprint = native_palette.material_fingerprint;
+    request.process_fingerprint = native_palette.process_fingerprint;
+    request.palette = native_palette.physical_channels;
+    request.mixed_recipes = native_palette.mixed_recipes;
+
+    const auto surface = preview.workbench_surface_palette();
+    if (surface.faces.size() != preview.triangle_count()) {
+        request.unavailable_reason = "无法读取当前模型的完整表面配色。";
+        return request;
+    }
+    request.faces.reserve(surface.faces.size());
+    for (const auto& face : surface.faces)
+        request.faces.push_back({face.color, face.preferred_slot});
+    request.subfaces.reserve(surface.subfaces.size());
+    for (const auto& child : surface.subfaces)
+        request.subfaces.push_back({{child.color, child.preferred_slot}, child.face_id, child.depth, child.path});
+
+    if (preferred && preferred->valid() && preferred->source_sha256 == request.source_sha256 &&
+        preferred->geometry_id == request.geometry_id &&
+        preferred->material_fingerprint == request.material_fingerprint &&
+        preferred->process_fingerprint == request.process_fingerprint &&
+        preferred->face_slots.size() == request.faces.size()) {
+        for (size_t face = 0; face < request.faces.size(); ++face)
+            request.faces[face].preferred_slot = preferred->face_slots[face];
+        std::map<std::tuple<size_t, uint8_t, uint8_t>, size_t> leaves;
+        for (const auto& child : preferred->subface_slots)
+            leaves[{child.face_id, child.depth, child.path}] = child.slot;
+        for (auto& child : request.subfaces) {
+            const auto found = leaves.find({child.face_id, child.depth, child.path});
+            if (found != leaves.end()) child.preferred_slot = found->second;
+        }
+    }
+    return request;
+}
+
 ModelPreview3D::PrinterFilamentMatchResult capture_applied_filament_match(
     const PresetBundle& bundle, const ModelPreview3D& preview,
     const std::string& source_sha256)
 {
     ModelPreview3D::PrinterFilamentMatchResult result;
-    const auto state = PrinterFilamentConfig::capture(bundle);
-    if (source_sha256.empty() || preview.geometry_id().empty()) {
-        result.error = "当前模型身份无效，请重新载入模型。";
-        return result;
-    }
-    if (!state.ready) {
-        result.error = state.reason.empty() ? "请先配置当前打印机耗材。" : state.reason;
-        return result;
-    }
-
-    AI::ModelMatchedColors matched;
-    matched.source_sha256 = source_sha256;
-    matched.geometry_id = preview.geometry_id();
-    const auto native_palette = OrcaPrintPaletteSnapshot::capture(bundle);
-    matched.material_fingerprint = native_palette.material_fingerprint;
-    matched.process_fingerprint = native_palette.process_fingerprint;
-    matched.mixed_recipes = native_palette.mixed_recipes;
-    matched.palette = native_palette.physical_channels;
-    if (!AI::valid_native_mixed_palette(matched.palette, matched.mixed_recipes)) {
-        result.error = "当前打印机耗材或叠色配方无效，请先完成配置。";
-        return result;
-    }
-
-    std::vector<PrinterFilamentPreview::NativeColorSlot> candidates;
-    auto append = [&candidates](size_t slot, const std::string& color, bool mixed) {
-        const auto key = PrinterFilamentPreview::rgb8(color);
-        if (key) candidates.push_back({slot, PrinterFilamentPreview::rgb8_color(*key), mixed});
-    };
-    std::vector<AI::PhysicalFilamentChannel> physical = matched.palette;
-    std::sort(physical.begin(), physical.end(), [](const auto& first, const auto& second) {
-        return first.slot < second.slot;
-    });
-    for (const auto& slot : physical)
-        if (slot.compatible) append(slot.slot, slot.display_color, false);
-    auto recipes = matched.mixed_recipes;
-    std::sort(recipes.begin(), recipes.end(), [](const auto& first, const auto& second) {
-        return first.existing_virtual_slot.value_or(size_t(-1)) < second.existing_virtual_slot.value_or(size_t(-1));
-    });
-    for (const auto& recipe : recipes)
-        if (recipe.existing_virtual_slot) append(*recipe.existing_virtual_slot, recipe.target_color, true);
-    if (candidates.empty()) {
-        result.error = "当前没有可用于模型配色的兼容耗材槽。";
-        return result;
-    }
-
-    const auto surface = preview.workbench_surface_palette();
-    if (surface.faces.size() != preview.triangle_count()) {
-        result.error = "无法读取当前模型的完整表面配色。";
-        return result;
-    }
-    std::vector<PreviewPalette::Color> face_colors, subface_colors;
-    std::vector<std::optional<size_t>> preferred_faces, preferred_subfaces;
-    face_colors.reserve(surface.faces.size());
-    preferred_faces.reserve(surface.faces.size());
-    for (const auto& face : surface.faces) {
-        face_colors.push_back(face.color);
-        preferred_faces.push_back(face.preferred_slot);
-    }
-    subface_colors.reserve(surface.subfaces.size());
-    preferred_subfaces.reserve(surface.subfaces.size());
-    for (const auto& subface : surface.subfaces) {
-        subface_colors.push_back(subface.color);
-        preferred_subfaces.push_back(subface.preferred_slot);
-    }
-    const auto faces = PrinterFilamentPreview::bind_exact_colors(face_colors, candidates, preferred_faces);
-    const auto subfaces = PrinterFilamentPreview::bind_exact_colors(subface_colors, candidates, preferred_subfaces);
-    result.missing_colors = faces.missing_colors;
-    result.missing_colors.insert(result.missing_colors.end(), subfaces.missing_colors.begin(), subfaces.missing_colors.end());
-    std::sort(result.missing_colors.begin(), result.missing_colors.end());
-    result.missing_colors.erase(std::unique(result.missing_colors.begin(), result.missing_colors.end()), result.missing_colors.end());
-    if (!faces.complete(face_colors.size()) || !subfaces.complete(subface_colors.size())) return result;
-
-    matched.face_slots = faces.slots;
-    for (size_t index = 0; index < surface.subfaces.size(); ++index) {
-        const auto& child = surface.subfaces[index];
-        matched.subface_slots.push_back({child.face_id, child.depth, child.path, subfaces.slots[index]});
-    }
-    if (!matched.valid()) {
-        result.error = "当前耗材映射没有生成完整的面级和子面级绑定。";
-        return result;
-    }
-    result.matched = std::move(matched);
+    const auto matched = match_beauty_workbench_colors(
+        capture_beauty_color_gate_request(bundle, preview, source_sha256));
+    result.matched = matched.matched;
+    result.missing_colors = matched.missing_colors;
+    result.error = matched.error;
     return result;
 }
 
@@ -138,6 +152,207 @@ ModelPreview3D::PrinterFilamentMatchResult ModelPreview3D::printer_filament_matc
     const PresetBundle& bundle, const std::string& source_sha256) const
 {
     return capture_applied_filament_match(bundle, *this, source_sha256);
+}
+
+bool ModelGenerationPanel::request_beauty_color_gate(bool enter_after_success)
+{
+    if (m_shutdown || !m_model_preview || !m_model_preview_ready ||
+        !ModelGenerationPresentation::is_nonempty_model(m_displayed_model_path)) return false;
+    if (enter_after_success) m_beauty_entry_pending = true;
+
+    if (m_beauty_color_gate_cancel) m_beauty_color_gate_cancel->store(true);
+    if (m_beauty_color_gate_worker.joinable()) m_beauty_color_gate_worker.join();
+    m_beauty_color_gate_cancel = std::make_shared<std::atomic<bool>>(false);
+    const auto cancel = m_beauty_color_gate_cancel;
+    const std::uint64_t request_id = ++m_beauty_color_gate_request;
+    const std::uint64_t model_sequence = m_sequence;
+    const auto source = m_displayed_model_path;
+    const auto source_sha256 = AI::model_artifact_sha256(source);
+    auto* bundle = wxGetApp().preset_bundle;
+    if (!bundle) {
+        BeautyColorGateResult unavailable;
+        unavailable.error = "当前没有可用的打印机耗材配置。";
+        finish_beauty_color_gate(request_id, model_sequence, source, {}, std::move(unavailable));
+        return m_workbench_editing;
+    }
+    auto preferred = m_beauty_matched_colors;
+    if (!preferred)
+        preferred = saved_beauty_filament_match(
+            source, ModelGenerationPresentation::generated_models_root());
+    auto request = capture_beauty_color_gate_request(*bundle, *m_model_preview, source_sha256, preferred);
+    const auto identity = beauty_color_gate_identity(request);
+    const std::string key = identity.cache_key();
+    m_beauty_color_gate_expected_key = key;
+    if (m_beauty_color_gate_cache && key == m_beauty_color_gate_cache_key) {
+        finish_beauty_color_gate(request_id, model_sequence, source, identity, *m_beauty_color_gate_cache);
+        return m_workbench_editing;
+    }
+
+    m_beauty_color_gate_state = BeautyColorGateState::Checking;
+    m_beauty_color_gate_message = "正在核对模型每个区域与当前耗材……";
+    refresh_model_finishing();
+    refresh_post_generation_workbench();
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    m_beauty_color_gate_worker = std::thread([weak, request_id, model_sequence, source, identity,
+                                               request = std::move(request), cancel] () mutable {
+        auto result = match_beauty_workbench_colors(request, cancel.get());
+        wxGetApp().CallAfter([weak, request_id, model_sequence, source, identity,
+                              result = std::move(result)] () mutable {
+            if (!weak) return;
+            auto* self = weak.get();
+            // A previous worker may post after a replacement request has
+            // already installed its own thread. Never join that newer worker.
+            if (request_id != self->m_beauty_color_gate_request ||
+                model_sequence != self->m_sequence || source != self->m_displayed_model_path)
+                return;
+            if (self->m_beauty_color_gate_worker.joinable()) self->m_beauty_color_gate_worker.join();
+            self->finish_beauty_color_gate(request_id, model_sequence, source, identity, std::move(result));
+        });
+    });
+    return false;
+}
+
+void ModelGenerationPanel::finish_beauty_color_gate(
+    std::uint64_t request_id, std::uint64_t model_sequence,
+    boost::filesystem::path source, BeautyColorGateIdentity identity, BeautyColorGateResult result)
+{
+    if (m_shutdown || result.canceled || request_id != m_beauty_color_gate_request ||
+        model_sequence != m_sequence || source != m_displayed_model_path) return;
+    auto* bundle = wxGetApp().preset_bundle;
+    if (!m_model_preview || !ModelGenerationPresentation::is_nonempty_model(source)) return;
+
+    std::string current_configuration_signature;
+    if (bundle) {
+        const auto configuration = PrinterFilamentConfig::capture(*bundle);
+        const auto native = OrcaPrintPaletteSnapshot::capture(*bundle);
+        current_configuration_signature = configuration.signature;
+        const bool native_changed =
+            (!identity.material_fingerprint.empty() &&
+             identity.material_fingerprint != native.material_fingerprint) ||
+            (!identity.process_fingerprint.empty() &&
+             identity.process_fingerprint != native.process_fingerprint);
+        const bool stale = identity.cache_key() != m_beauty_color_gate_expected_key ||
+            identity.source_sha256 != AI::model_artifact_sha256(source) ||
+            identity.geometry_id != m_model_preview->geometry_id() ||
+            identity.configuration_signature != configuration.signature ||
+            native_changed;
+        if (stale) {
+            // Model and configuration identity are cheap to recheck here. The
+            // full surface palette was captured once before the worker and is
+            // not scanned again on the UI thread when matching completes.
+            if (m_beauty_entry_pending || m_workbench_editing)
+                request_beauty_color_gate(m_beauty_entry_pending);
+            return;
+        }
+    } else {
+        // A missing bundle is itself a stable blocked result. Do not leave an
+        // entry request suspended merely because there is nothing to capture.
+        result.matched.reset();
+        result.missing_colors.clear();
+        result.ambiguous_colors.clear();
+        result.error = "当前没有可用的打印机耗材配置。";
+        identity = {};
+    }
+
+    m_beauty_color_gate_cache_key = identity.cache_key();
+    m_beauty_color_gate_cache = result;
+    if (result.compatible()) {
+        m_beauty_matched_colors = std::move(result.matched);
+        m_beauty_color_gate_state = BeautyColorGateState::Compatible;
+        m_beauty_color_gate_configuration_signature = std::move(current_configuration_signature);
+        m_beauty_color_gate_message = "模型颜色已逐面绑定到当前耗材，可安全编辑。";
+        if (m_beauty_entry_pending) {
+            m_beauty_entry_pending = false;
+            // The session baseline is established before any selection or
+            // appearance input. Region restore, discard and history therefore
+            // all share the same colors, native slots and protected selection.
+            m_beauty_compare_draft.reset();
+            m_beauty_session_source =
+                std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
+            m_beauty_session_undo_base = m_beauty_transactions
+                ? m_beauty_transactions->undo_count() : 0;
+            m_beauty_session_file_base = m_beauty_candidate_files.size();
+            m_workbench_editing = true;
+            m_finishing_selection_open = false;
+            update_finishing_selection();
+        }
+        refresh_model_finishing();
+        refresh_post_generation_workbench();
+        return;
+    }
+
+    m_beauty_color_gate_state = BeautyColorGateState::Blocked;
+    m_beauty_color_gate_configuration_signature.clear();
+    m_beauty_color_gate_message = result.error.empty()
+        ? "模型仍有颜色未绑定到当前耗材，新增编辑和保存已暂停。" : result.error;
+    refresh_model_finishing();
+    refresh_post_generation_workbench();
+    if (m_beauty_entry_pending && !m_workbench_editing) show_beauty_color_gate_guide(result);
+}
+
+void ModelGenerationPanel::show_beauty_color_gate_guide(const BeautyColorGateResult& result)
+{
+    wxString missing;
+    const size_t visible = std::min<size_t>(result.missing_colors.size(), 8);
+    for (size_t index = 0; index < visible; ++index) {
+        if (index) missing += _L("、");
+        missing += wxString::FromUTF8(result.missing_colors[index]);
+    }
+    if (result.missing_colors.size() > visible)
+        missing += wxString::Format(_L(" 等 %llu 色"),
+            static_cast<unsigned long long>(result.missing_colors.size()));
+    wxString message = result.error.empty()
+        ? _L("进入美颜前，需要让模型全部颜色对应当前可打印耗材。")
+        : wxString::FromUTF8(result.error);
+    if (!missing.empty()) message += _L("\n\n尚未匹配：") + missing;
+    if (!result.ambiguous_colors.empty()) {
+        wxString ambiguous;
+        const size_t count = std::min<size_t>(result.ambiguous_colors.size(), 8);
+        for (size_t index = 0; index < count; ++index) {
+            if (index) ambiguous += _L("、");
+            ambiguous += wxString::FromUTF8(result.ambiguous_colors[index]);
+        }
+        if (result.ambiguous_colors.size() > count) ambiguous += _L(" 等");
+        message += _L("\n\n槽位身份不明确：") + ambiguous;
+    }
+    message += _L("\n\n推荐“用当前耗材适配模型”，会保存一个新模型版本，原模型不会被覆盖。\n") +
+               _L("也可以保留模型配色，并按它配置当前耗材。");
+
+    const int adapt_model = wxWindow::NewControlId();
+    const int configure_filaments = wxWindow::NewControlId();
+    RedesignConfirmationOptions options;
+    options.style = wxCANCEL | wxCANCEL_DEFAULT;
+    options.dismiss_result = wxID_CANCEL;
+    style_beauty_color_confirmation(options);
+    options.actions = {{adapt_model, _L("用当前耗材适配模型"), true},
+                       {configure_filaments, _L("按模型配色配置耗材"), false}};
+    const int answer = show_redesign_confirmation(this, message, _L("先完成打印配色"), options);
+    if (answer == adapt_model) {
+        apply_workbench_printer_filaments();
+        if (!m_apply_filaments_saving) m_beauty_entry_pending = false;
+    } else if (answer == configure_filaments) {
+        if (m_printer_filament_trial_active) exit_printer_filament_trial();
+        toggle_printer_filament_trial();
+        if (m_printer_filament_trial_active) request_beauty_color_gate(true);
+        else m_beauty_entry_pending = false;
+    } else {
+        m_beauty_entry_pending = false;
+        m_beauty_color_gate_state = BeautyColorGateState::Blocked;
+        m_workbench_operation_notice = "已取消进入美颜，模型和耗材配置保持不变。";
+        refresh_controls();
+    }
+}
+
+void ModelGenerationPanel::cancel_beauty_color_gate()
+{
+    m_beauty_entry_pending = false;
+    ++m_beauty_color_gate_request;
+    if (m_beauty_color_gate_cancel) m_beauty_color_gate_cancel->store(true);
+    if (m_beauty_color_gate_worker.joinable()) m_beauty_color_gate_worker.join();
+    m_beauty_color_gate_cancel.reset();
+    m_beauty_color_gate_expected_key.clear();
+    if (m_beauty_color_gate_state == BeautyColorGateState::Checking)
+        m_beauty_color_gate_state = BeautyColorGateState::Unchecked;
 }
 
 void ModelGenerationPanel::toggle_printer_filament_trial()
@@ -425,6 +640,7 @@ bool ModelGenerationPanel::commit_printer_filament_application(std::string& erro
 void ModelGenerationPanel::finish_printer_filament_application(bool success)
 {
     if (!m_apply_filaments_saving) return;
+    const bool resume_beauty_entry = success && m_beauty_entry_pending;
     m_apply_filaments_saving = false;
     m_save_and_return = false;
     m_model_preview->set_project_configuration_override({});
@@ -467,6 +683,8 @@ void ModelGenerationPanel::finish_printer_filament_application(bool success)
     m_apply_filaments_match.reset();
     m_apply_filaments_before_trial_active = false;
     synchronize_workbench_project_palette(false);
+    if (resume_beauty_entry) request_beauty_color_gate(true);
+    else if (!success) m_beauty_entry_pending = false;
 }
 
 void ModelGenerationPanel::synchronize_workbench_project_palette(bool activate_preview)
@@ -494,6 +712,7 @@ void ModelGenerationPanel::synchronize_workbench_project_palette(bool activate_p
     m_workbench_filament_signature = state.signature;
     m_workbench_project_palette = snapshot.project_palette;
     m_workbench_project_channels = snapshot.project_channels;
+    const bool revalidate_beauty = m_workbench_editing;
     const auto* bundle = wxGetApp().preset_bundle;
     const std::string layout = workbench_filament_layout(state, bundle);
     const bool rebuild = layout != m_workbench_filament_layout ||
@@ -794,8 +1013,20 @@ void ModelGenerationPanel::synchronize_workbench_project_palette(bool activate_p
         m_workbench_settings_scroll->Layout();
         m_workbench_settings_scroll->FitInside();
     }
+    if (revalidate_beauty && !beauty_color_match_current()) {
+        m_beauty_color_gate_state = BeautyColorGateState::Checking;
+        m_beauty_color_gate_message = "耗材配置已变化，正在重新核对；新增编辑和保存已暂停。";
+        refresh_model_finishing();
+    }
     refresh_post_generation_workbench();
     publish_workbench_state();
+    if (revalidate_beauty) {
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        wxGetApp().CallAfter([weak] {
+            if (weak && !weak->m_shutdown && weak->m_workbench_editing)
+                weak->request_beauty_color_gate(false);
+        });
+    }
 }
 
 } // namespace Slic3r::GUI
