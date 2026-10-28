@@ -33,8 +33,10 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
-      - name: Fetch pinned candidate baseline tag
-        run: git fetch --no-tags --no-recurse-submodules https://github.com/OrcaSlicer/OrcaSlicer.git refs/tags/v2.5.0-alpha:refs/tags/v2.5.0-alpha
+      - name: Fetch pinned candidate baseline tags
+        run: |
+          git fetch --no-tags --no-recurse-submodules https://github.com/OrcaSlicer/OrcaSlicer.git refs/tags/v2.5.0-alpha:refs/tags/v2.5.0-alpha
+          git fetch --no-tags --no-recurse-submodules https://github.com/OrcaSlicer/OrcaSlicer.git refs/tags/v2.5.0-beta:refs/tags/v2.5.0-beta
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
         with:
