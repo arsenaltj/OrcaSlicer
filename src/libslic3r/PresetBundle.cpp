@@ -88,6 +88,7 @@
 #include <tbb/partitioner.h>
 #include <vector>
 #include <utility>
+#include <nlohmann/json.hpp>
 
 namespace fs = boost::filesystem;
 
@@ -4480,7 +4481,7 @@ size_t PresetBundle::num_mixed_filaments() const
     return size_t(std::count(opt->values.begin(), opt->values.begin() + std::min(slot_count, opt->values.size()), true));
 }
 
-// Colours describe actual slots; filament_presets can be topped up to the nozzle count alone.
+// Colours describe actual slots; on a tool changer filament_presets can be topped up to the tool count alone.
 // Imported projects may have fewer mixed flags than slots. Missing flags mean physical filaments.
 size_t PresetBundle::num_physical_filaments() const
 {
@@ -5422,14 +5423,21 @@ int PresetBundle::get_printer_extruder_count() const
     return count;
 }
 
+size_t PresetBundle::min_filament_count() const
+{
+    if (printers.get_edited_preset().config.opt_bool("single_extruder_multi_material"))
+        return 1;
+    return static_cast<size_t>(get_printer_extruder_count());
+}
+
 void PresetBundle::update_filament_count()
 {
     if (printers.get_edited_preset().printer_technology() != ptFFF)
         return;
-    const size_t num_extruders = 1; // Nozzle count is independent of loaded filament count.
-    if (filament_presets.size() >= num_extruders)
+    const size_t min_filaments = min_filament_count();
+    if (filament_presets.size() >= min_filaments)
         return;
-    filament_presets.resize(num_extruders, filament_presets.empty()
+    filament_presets.resize(min_filaments, filament_presets.empty()
         ? filaments.first_visible().name
         : filament_presets.back());
 }

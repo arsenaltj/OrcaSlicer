@@ -353,6 +353,19 @@ if (APPLE)
     # Type"); Ninja/-Wall does not, and under -Werror it fails Xcode builds on code CI accepts.
     set(CMAKE_XCODE_ATTRIBUTE_GCC_WARN_64_TO_32_BIT_CONVERSION "NO")
 
+    # The Xcode generator ignores CMAKE_<LANG>_COMPILER_LAUNCHER, so hand the launcher to
+    # Xcode's own Compiler Launcher setting, which wraps every clang compile (C, C++,
+    # Objective-C++ and the precompiled header) with one program: the C++ launcher wins when
+    # both are set. The setting takes a single program path, not a CMake launcher list.
+    # Xcode versions without it ignore it and build uncached.
+    if (CMAKE_GENERATOR STREQUAL "Xcode")
+        if (CMAKE_CXX_COMPILER_LAUNCHER)
+            set(CMAKE_XCODE_ATTRIBUTE_C_COMPILER_LAUNCHER "${CMAKE_CXX_COMPILER_LAUNCHER}")
+        elseif (CMAKE_C_COMPILER_LAUNCHER)
+            set(CMAKE_XCODE_ATTRIBUTE_C_COMPILER_LAUNCHER "${CMAKE_C_COMPILER_LAUNCHER}")
+        endif ()
+    endif ()
+
     message(STATUS "Orca: IS_CROSS_COMPILE: ${IS_CROSS_COMPILE}")
 elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(CMAKE_INSTALL_RPATH "$ORIGIN")
@@ -375,6 +388,14 @@ endif ()
 if (IS_CROSS_COMPILE)
     message("Detected cross compilation setup. Tests and encoding checks will be forcedly disabled!")
     set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+endif ()
+
+# With a precompiled header, clang-cl can omit an exception type's copy constructor from its throw info,
+# so copies of the exception share and double-free their data: https://github.com/llvm/llvm-project/issues/53486
+if (MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    message(STATUS "clang-cl: building without the precompiled header (llvm/llvm-project#53486)")
+    set_property(CACHE SLIC3R_PCH PROPERTY HELPSTRING "Use precompiled headers (ignored with clang-cl, llvm/llvm-project#53486)")
+    set(SLIC3R_PCH OFF)
 endif ()
 
 # Print out the SLIC3R_* cache options
@@ -866,7 +887,6 @@ find_package(TBB REQUIRED)
 
 find_package(OpenSSL REQUIRED)
 find_package(CURL REQUIRED)
-find_package(Freetype REQUIRED)
 
 if (SLIC3R_GUI)
     # LibDataChannel's installed export references its bundled dependencies,
@@ -1185,7 +1205,6 @@ function(orcaslicer_copy_dlls target config postfix output_dlls)
             "SLIC3R_CAD setting as this project.")
     endif ()
     file(COPY ${_occt_dlls}
-            ${CMAKE_PREFIX_PATH}/bin/freetype.dll
             ${CMAKE_PREFIX_PATH}/bin/avformat-61.dll
             ${CMAKE_PREFIX_PATH}/bin/avcodec-61.dll
             ${CMAKE_PREFIX_PATH}/bin/swresample-5.dll
@@ -1198,7 +1217,6 @@ function(orcaslicer_copy_dlls target config postfix output_dlls)
         ${_out_dir}/libmpfr-4.dll
         ${_out_dir}/WebView2Loader.dll
 
-        ${_out_dir}/freetype.dll
         ${_out_dir}/avformat-61.dll
         ${_out_dir}/avcodec-61.dll
         ${_out_dir}/swresample-5.dll

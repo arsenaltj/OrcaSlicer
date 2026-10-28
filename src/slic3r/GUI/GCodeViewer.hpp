@@ -87,6 +87,8 @@ public:
             float m_model_z_offset{ 0.5f };
             bool m_visible{ true };
             bool m_is_dark = false;
+            // the G-code was exported with high_precision_gcode, so positions are shown with one more decimal
+            bool m_high_precision_gcode{ false };
             float m_scale_factor{ 1.0f };
 #if ENABLE_ACTUAL_SPEED_DEBUG
             ActualSpeedImguiWidget m_actual_speed_imgui_widget;
@@ -102,6 +104,7 @@ public:
             void set_world_position(const Vec3f& position) { m_world_position = position; }
             void set_world_offset(const Vec3f& offset) { m_world_offset = offset; }
             void set_z_offset(float z_offset) { m_z_offset = z_offset; }
+            void set_high_precision_gcode(bool high_precision) { m_high_precision_gcode = high_precision; }
 
 #if ENABLE_ACTUAL_SPEED_DEBUG
             void set_actual_speed_y_range(const std::pair<float, float>& y_range) {
@@ -413,6 +416,8 @@ public:
     void set_tone(float exposure, float saturation);
     void set_clipping_plane(const ClippingPlane& plane);
     void set_light_top_dir(const Vec3d& direction);
+    // ORCA: the untinted highlight of the filaments, which the canvas gives them in realistic view only
+    void set_gloss(bool gloss) { m_viewer.set_gloss(gloss); }
     //BBS
     // void _render_calibration_thumbnail_internal(ThumbnailData& thumbnail_data, const ThumbnailsParams& thumbnail_params, PartPlateList& partplate_list, OpenGLManager& opengl_manager);
     // void _render_calibration_thumbnail_framebuffer(ThumbnailData& thumbnail_data, unsigned int w, unsigned int h, const ThumbnailsParams& thumbnail_params, PartPlateList& partplate_list, OpenGLManager& opengl_manager);
@@ -507,6 +512,8 @@ public:
     // ORCA: brightness of those darkened layers, 1.0 = unchanged, 0.0 = black
     void set_dim_previous_layers_brightness(float value) { m_viewer.set_dim_previous_layers_brightness(value); }
     float get_dim_previous_layers_brightness() const { return m_viewer.get_dim_previous_layers_brightness(); }
+    // ORCA: draw the toolpaths of translucent filament colors translucent
+    void set_translucent_filaments(bool value) { m_viewer.set_translucent_filaments(value); }
 
     void set_layers_z_range(const std::array<unsigned int, 2>& layers_z_range);
 
@@ -539,7 +546,11 @@ private:
     // Canvas height minus the room the horizontal slider takes.
     int sequential_view_height(int canvas_height) const;
     void render_toolpaths();
+    // The sequential markers and the IDEX/IQEX toolhead boxes.
+    void render_markers(int canvas_width, int canvas_height);
     void render_shells(int canvas_width, int canvas_height);
+    // ORCA: a filament color as the toolpaths show it, opaque unless translucent filaments are shown
+    ColorRGBA shown_filament_color(ColorRGBA color) const;
 
     //BBS: GUI refactor: add canvas size
     void render_legend(float &legend_height, int canvas_width, int canvas_height, int right_margin);
