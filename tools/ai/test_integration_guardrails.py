@@ -35,8 +35,8 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertEqual(
             {
                 "remote": "upstream",
-                "tag": "v2.5.0-alpha",
-                "sha": "3880f2c58ec392ed2bd5938ab31c9c7c496c0eb2",
+                "tag": "v2.5.0-beta",
+                "sha": "345efec64c7b95a05ce5cf96df0dde66a158835c",
                 "purpose": "official_tag_candidate_diff_base",
             },
             self.document["candidate_baseline"],
