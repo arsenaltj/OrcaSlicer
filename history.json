@@ -1,5 +1,15 @@
 [
   {
+    "pr": 52,
+    "run": 40656716702,
+    "head": "fd7f163b9a48af27facc5c9c8cba6f90761a8a42",
+    "base": "9f1655520cebf0b316645e0cae73eccacec28cc7",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "Integrate HONOR account login, persistent sessions and themed account workspace",
+    "path": "pr/52/fd7f163b9a48af27facc5c9c8cba6f90761a8a42/40656716702",
+    "created": "2026-10-28T08:29:12+00:00"
+  },
+  {
     "pr": 47,
     "run": 40436045579,
     "head": "ab5ef4cdd3a2be9561ffadf37c09c0ebd0a246ba",
