@@ -1161,7 +1161,7 @@ bool GUI_App::should_start_with_redesign_shell() const
     }
     const bool image_home = RedesignFeatureFlags::image_home_on_startup(
         true, has_input_files, default_prepare);
-    const char* initial_surface = image_home ? "image_home" :
+    const char* initial_surface = image_home ? "account_check" :
         has_input_files ? (init_params->input_gcode ? "gcode" : "file") :
         restore_available ? "restore" : "prepare";
     BOOST_LOG_TRIVIAL(info) << "[UiRedesign] initial surface="
@@ -1219,7 +1219,7 @@ void GUI_App::advance_startup(wxTimerEvent&)
                 if (RedesignFeatureFlags::image_home_on_startup(
                         mainframe->is_redesign_shell_active(), init_params->input_files.size() != 0,
                         app_config->get("default_page") == "1")) {
-                    log_stage("runtime_redesign_image_home");
+                    log_stage("runtime_redesign_account_check");
                     schedule_startup(StartupStage::Finish, _L("Opening the workspace..."));
                     break;
                 }
@@ -1468,7 +1468,8 @@ void GUI_App::finish_post_init()
     if (is_closing() || !m_startup_frame)
         return;
     if (init_params->input_files.empty()) {
-        if (is_editor())
+        // The redesign shell chooses Account/Image from its HONOR session.
+        if (is_editor() && !mainframe->is_redesign_shell_active())
             mainframe->select_tab(TAB_ID_HOME);
         if (app_config->get("default_page") == "1")
             mainframe->select_tab(TAB_ID_PREPARE);
@@ -4211,7 +4212,7 @@ bool GUI_App::on_init_inner()
     if (is_editor()) {
         if (starts_on_prepare()) {
             mainframe->select_tab(TAB_ID_PREPARE);
-        } else {
+        } else if (!mainframe->is_redesign_shell_active()) {
             mainframe->select_tab(TAB_ID_HOME);
         }
     }
