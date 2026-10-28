@@ -1,3 +1,13 @@
+# 2026-10-28 UX/N-HONOR-AUTH-20261024：荣耀账号 PR #52 远端提交
+
+用户明确要求创建并提交PR，将本地新增代码合入远端集成。已复用 `codex/task/smart-slicing-local-integration-20261027`，将账号来源 `088a48cf14e0cd9abfd1e42b558b2382a47050e4` 及本地已验证合并 `4117437dc7d41078c81af221fa6b4fb29f4c2941` 推送并创建 [Draft PR #52](https://github.com/arsenaltj/OrcaSlicer/pull/52)，目标 `codex/team/integration`；最新明确授权取代前轮“不推送/不开PR”边界，不授权绕过保护、非作者评审或维护者人工合入。负责会话为本会话，PR源分支如上；当前本机集成工作区及已安装试用版保留原构建代码与用户数据。
+
+版本与同步：远端在前轮构建后通过PR #49/#50/#51进入beta基线，最新已抓取目标为 `9f1655520cebf0b316645e0cae73eccacec28cc7`。部分克隆普通checkout补齐对象遭SSH停滞及HTTPS重置；已恢复本轮中断造成的16处工作区删除，并仅清理确认属于本轮、已无进程持有的空index锁，无用户原有变更或资产损失。后续使用Git树合并、独立临时index和标准双父merge提交将最新基线纳入PR源分支，不要求完整检出beta资源，也不覆盖 `.tmp/dev/run`。冲突文档按本轮焦点收敛，双方完整历史保留在主计划；最终提交SHA、两父关系和目标基线以PR当前head及忽略的 `.tmp/dev/honor-pr-20261028/submission.json` 为准，不将旧构建或Git对象合并当作本机beta编译/GUI通过。
+
+PR架构检查发现新 `honor_account` 模块缺少Archify固定位置，已仅在 `scripts/architecture_review.py` 补 `[470, 660]`，未修改软件UX或账号原生代码。架构脚本现有回归20/20通过，预检报告四张图各9/9布局检查通过且零警告/错误；最终PR版本报告及云端检查须按对应base/head核实，旧失败/预检证据保留。账号原生构建和206项C++、33项Python及19,166文件校验只证明前轮 `c5a40c3a01` 基线上的明确范围，本轮产品代码不再额外修改或重建，最新beta候选的编译、GUI与CI保持待验。协调记录与图位置补充不改变原试用程序身份。
+
+待合入：集成分支受保护，当前Draft PR等待最新候选检查、非作者复核及维护者按 [团队SOP](../coordination/team-integration-sop.md) 人工合入；不得自审、直接push集成或绕过保护。不发送额外团队通知/评审消息，不提交 `.tmp/`、旧 `.planning/`、凭据、私人配置、日志或构建产物。原账号验收及验证频率/注册末尾边界、另一台PC的beta GUI/打印待验项保持，不自动启动生成、清理账号或历史扩展。
+
 # 2026-10-28 UX/N-HONOR-AUTH-20261024：最新集成分支与荣耀账号本地合并构建
 
 阶段交付：本地 `codex/team/integration` 已同步远端 `c5a40c3a014f30030240c6d9272da6b9bb0ee76a` 并以普通merge承接 `088a48cf14e0cd9abfd1e42b558b2382a47050e4`；两父关系及最终合并SHA以本地Git和 `.tmp/dev/integration-20261028/validation.json` 为准，不推送。冲突仅为两份协调记录，主计划保留双方历史，22份独立账号文件与用户验收提交的Git对象一致；自动合并的导航壳层和测试清单已复核。最终构建后只补两份协调文档，不再改产品源码；受测树与最终提交的差异仅限这两份文档，完整关系保存于同目录证据。
