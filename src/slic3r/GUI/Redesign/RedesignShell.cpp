@@ -4,6 +4,7 @@
 #include "AccountWorkspace.hpp"
 #include "ModelFaceLimitChoice.hpp"
 #include "RedesignTheme.hpp"
+#include "RedesignFlowGuide.hpp"
 #include "RedesignSlicingTools.hpp"
 #include "RedesignSlicingControls.hpp"
 #include "../BBLTopbar.hpp"
@@ -44,7 +45,6 @@
 #include <wx/colour.h>
 #include <wx/font.h>
 #include <wx/fontenum.h>
-#include <wx/gauge.h>
 #include <wx/image.h>
 #include <wx/msgdlg.h>
 #include <wx/panel.h>
@@ -68,6 +68,8 @@
 
 namespace Slic3r::GUI {
 namespace {
+
+constexpr int model_details_heading_point_size = 12;
 
 #if wxUSE_ACCESSIBILITY
 class AccountAvatarAccessible final : public wxAccessible
@@ -878,178 +880,6 @@ private:
     wxImage m_rear, m_front;
 };
 
-// The guide is authored at the 1920px Figma canvas size.  Paint the complete
-// composition in one responsive surface so the shell can shrink it as a unit
-// when the main window is narrower than that reference canvas.
-class FlowGuideCanvas final : public wxPanel {
-public:
-    explicit FlowGuideCanvas(wxWindow* parent)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(-1, parent->FromDIP(259)),
-                  wxTAB_TRAVERSAL | wxFULL_REPAINT_ON_RESIZE)
-        , m_design(resource_image("redesign_flow_design.png"))
-        , m_model_rear(resource_image("redesign_flow_model_mono.png"))
-        , m_model_front(resource_image("redesign_flow_model_blue.png"))
-        , m_arrow(resource_image("redesign_flow_arrow_right.png"))
-    {
-        SetMinSize(wxSize(-1, FromDIP(259)));
-        SetBackgroundStyle(wxBG_STYLE_PAINT);
-        SetBackgroundColour(flow_background_colour());
-        Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
-            Refresh(false);
-            event.Skip();
-        });
-        Bind(wxEVT_PAINT, [this](wxPaintEvent&) { paint(); });
-    }
-
-private:
-    static wxFont flow_font(int point_size, bool medium, double scale = 1.0)
-    {
-        const wxString family = wxFontEnumerator::IsValidFacename("HONOR Sans Design") ? "HONOR Sans Design" :
-                                wxFontEnumerator::IsValidFacename("HarmonyOS Sans SC") ? "HarmonyOS Sans SC" :
-                                wxFontEnumerator::IsValidFacename("Microsoft YaHei UI") ? "Microsoft YaHei UI" :
-                                wxString();
-        wxFontInfo info(std::max(1, static_cast<int>(std::round(point_size * scale))));
-        info.Family(wxFONTFAMILY_SWISS);
-        info.Weight(medium ? wxFONTWEIGHT_MEDIUM : wxFONTWEIGHT_NORMAL);
-        if (!family.empty())
-            info.FaceName(family);
-        return wxFont(info);
-    }
-
-    static void draw_centered_text(wxDC& dc, const wxString& value, const wxFont& font,
-                                   const wxColour& colour, int centre_x, int top_y)
-    {
-        dc.SetFont(font);
-        dc.SetTextForeground(colour);
-        wxCoord text_width = 0, text_height = 0;
-        dc.GetTextExtent(value, &text_width, &text_height);
-        const int x = centre_x - static_cast<int>(text_width) / 2;
-        dc.DrawText(value, x, top_y);
-    }
-
-    static wxBitmap scaled_bitmap(const wxImage& image, int width, int height)
-    {
-        if (!image.IsOk() || width <= 0 || height <= 0)
-            return wxNullBitmap;
-        return wxBitmap(image.Scale(width, height, wxIMAGE_QUALITY_HIGH));
-    }
-
-    void draw_card(wxDC& dc, int x, int y, int width, int height, double scale)
-    {
-        dc.SetPen(wxPen(wxColour(98, 98, 101), std::max(1, FromDIP(scale)), wxPENSTYLE_SHORT_DASH));
-        dc.SetBrush(wxBrush(wxColour(32, 32, 35)));
-        dc.DrawRoundedRectangle(x, y, width, height, FromDIP(12 * scale));
-        dc.SetFont(flow_font(11, false, scale));
-        dc.SetTextForeground(wxColour(166, 166, 167));
-        dc.DrawText(text("生成一只可爱的小怪兽手办。"), x + FromDIP(12 * scale),
-                    y + FromDIP(12 * scale));
-        wxCoord count_width = 0, count_height = 0;
-        dc.GetTextExtent(text("13/800"), &count_width, &count_height);
-        dc.DrawText(text("13/800"), x + width - FromDIP(12 * scale) - count_width,
-                    y + height - FromDIP(12 * scale) - count_height);
-    }
-
-    void draw_rotated_design(wxAutoBufferedPaintDC& dc, int x, int y, int width, int height)
-    {
-        // The exported PNG contains a 264x344 opaque card inside transparent
-        // shadow padding. Match that card to Figma's rotated 132x172 inner
-        // frame so its 2.3-degree bounds fit the existing 139x177 slot.
-        constexpr double source_width = 328.0;
-        constexpr double source_height = 392.0;
-        constexpr double card_x = 0.0;
-        constexpr double card_y = 20.0;
-        constexpr double card_width = 264.0;
-        constexpr double card_height = 344.0;
-        constexpr double figma_slot_width = 138.736;
-        constexpr double figma_slot_height = 176.896;
-        constexpr double figma_card_width = 131.95;
-        constexpr double figma_card_height = 171.739;
-        const double target_card_width = width * figma_card_width / figma_slot_width;
-        const double target_card_height = height * figma_card_height / figma_slot_height;
-        const int image_width = std::max(1, static_cast<int>(std::floor(
-            target_card_width * source_width / card_width)));
-        const int image_height = std::max(1, static_cast<int>(std::floor(
-            target_card_height * source_height / card_height)));
-        const wxBitmap bitmap = scaled_bitmap(m_design, image_width, image_height);
-        if (!bitmap.IsOk())
-            return;
-        const double card_centre_x = (card_x + card_width / 2.0) * image_width / source_width;
-        const double card_centre_y = (card_y + card_height / 2.0) * image_height / source_height;
-        dc.SetClippingRegion(x, y, width, height);
-        auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
-        if (gc) {
-            gc->Translate(x + width / 2.0, y + height / 2.0);
-            gc->Rotate(2.3 * M_PI / 180.0);
-            gc->DrawBitmap(bitmap, -card_centre_x, -card_centre_y, image_width, image_height);
-        }
-        dc.DestroyClippingRegion();
-    }
-
-    void paint()
-    {
-        wxAutoBufferedPaintDC dc(this);
-        dc.SetBackground(wxBrush(flow_background_colour()));
-        dc.Clear();
-        const wxSize client = GetClientSize();
-        if (client.x <= 0 || client.y <= 0)
-            return;
-
-        // The Figma pane containing this surface is 1427px wide.  Scale the
-        // 1067px guide composition against that pane, then center it locally.
-        const double scale = std::min(1.0, double(client.x) / double(FromDIP(1427)));
-        const int flow_width = FromDIP(1067 * scale);
-        const int flow_height = FromDIP(259 * scale);
-        const int left = (client.x - flow_width) / 2;
-        const int top = std::max(0, (client.y - flow_height) / 2);
-        const auto dip = [this, scale](double value) { return FromDIP(value * scale); };
-
-        const int prompt_x = left + dip(11), prompt_y = top + dip(7);
-        const int prompt_w = dip(276), prompt_h = dip(160);
-        draw_card(dc, prompt_x, prompt_y, prompt_w, prompt_h, scale);
-
-        const int arrow_size = dip(93);
-        const wxBitmap arrow = scaled_bitmap(m_arrow, arrow_size, arrow_size);
-        if (arrow.IsOk()) {
-            dc.DrawBitmap(arrow, left + dip(328), top + dip(56), true);
-            dc.DrawBitmap(arrow, left + dip(697), top + dip(56), true);
-        }
-
-        const int design_x = left + dip(493), design_y = top;
-        draw_rotated_design(dc, design_x, design_y, dip(139), dip(177));
-
-        const int model_x = left + dip(840), model_y = top;
-        const wxBitmap rear = scaled_bitmap(m_model_rear, dip(126), dip(145));
-        const wxBitmap front = scaled_bitmap(m_model_front, dip(146), dip(167));
-        if (rear.IsOk()) dc.DrawBitmap(rear, model_x, model_y + dip(11), true);
-        if (front.IsOk()) dc.DrawBitmap(front, model_x + dip(62), model_y, true);
-
-        const wxColour heading_colour(226, 226, 227);
-        const wxColour subtitle_colour(162, 162, 164);
-        const wxFont heading_font = flow_font(14, true, scale);
-        const wxFont subtitle_font = flow_font(12, false, scale);
-        draw_centered_text(dc, text("上传图片或输入提示词生成图片"), heading_font, heading_colour,
-                           left + dip(150), top + dip(207));
-        draw_centered_text(dc, text("生成图片"), heading_font, heading_colour,
-                           left + dip(563), top + dip(207));
-        draw_centered_text(dc, text("转为3D"), heading_font, heading_colour,
-                           left + dip(939), top + dip(207));
-        constexpr double subtitle_top = 234.0;
-        draw_centered_text(dc, text("描述想创作的图片"), subtitle_font, subtitle_colour,
-                           left + dip(150), top + dip(subtitle_top));
-        draw_centered_text(dc, text("生成图片并完善"), subtitle_font, subtitle_colour,
-                           left + dip(563), top + dip(subtitle_top));
-        draw_centered_text(dc, text("获得可打印的专属 3D模型"), subtitle_font, subtitle_colour,
-                           left + dip(939), top + dip(subtitle_top));
-    }
-
-    wxImage m_design;
-    wxImage m_model_rear;
-    wxImage m_model_front;
-    wxImage m_arrow;
-};
-
-
-
 }
 
 // Draw image and badge in one control, avoiding native sibling overlap and square button chrome.
@@ -1154,6 +984,10 @@ public:
                                m_bitmap.GetWidth(), m_bitmap.GetHeight());
                 return;
             }
+            if (m_model_generating) {
+                draw_model_progress(dc, *gc, size);
+                return;
+            }
             dc.SetFont(GetFont());
             dc.SetTextForeground(foreground);
             wxString placeholder = m_placeholder;
@@ -1181,6 +1015,7 @@ public:
     {
         m_animation_timer.Stop();
         m_design_wait.clear();
+        m_model_generating = false;
         m_bitmap = bitmap;
         m_placeholder_mode = PlaceholderMode::Idle;
         Refresh();
@@ -1188,11 +1023,14 @@ public:
 
     void SetPlaceholder(const wxString& placeholder, PlaceholderMode mode)
     {
-        if (!m_bitmap.IsOk() && m_placeholder == placeholder && m_placeholder_mode == mode)
+        const bool was_model_generating = m_model_generating;
+        m_model_generating = false;
+        if (!was_model_generating && !m_bitmap.IsOk() && m_placeholder == placeholder && m_placeholder_mode == mode)
             return;
         m_bitmap = wxNullBitmap;
         m_placeholder = placeholder;
         m_placeholder_mode = mode;
+        SetName(placeholder);
         if (mode == PlaceholderMode::Generating) {
             if (!m_animation_timer.IsRunning())
                 m_animation_timer.Start(90);
@@ -1203,6 +1041,21 @@ public:
         Refresh(false);
     }
 
+    // Opt in only for the model page; 2D previews keep their existing spinner
+    // and elapsed-time presentation.
+    void SetModelGenerationProgress(const wxString& status, int progress)
+    {
+        SetPlaceholder(text("正在生成3D模型..."), PlaceholderMode::Generating);
+        m_model_generating = true;
+        m_model_status = status;
+        m_model_progress = progress;
+        if (progress >= 0)
+            m_animation_timer.Stop();
+        SetName(m_placeholder + "\n" + status + "\n" +
+            (progress >= 0 ? wxString::Format("%d%%", progress) : text("处理中")));
+        Refresh(false);
+    }
+
     void SetDesignTiming(const std::string& job_id, double elapsed, double estimate)
     {
         m_design_wait.synchronize(job_id, elapsed, estimate, monotonic_seconds());
@@ -1210,6 +1063,64 @@ public:
     void ClearDesignTiming() { m_design_wait.clear(); }
 
 private:
+    void draw_model_progress(wxDC& dc, wxGraphicsContext& gc, const wxSize& size)
+    {
+        const int text_width = std::max(1, std::min(FromDIP(480), size.x - FromDIP(48)));
+        wxFont title_font = GetFont();
+        title_font.SetPointSize(model_details_heading_point_size);
+        title_font.SetWeight(wxFONTWEIGHT_BOLD);
+        wxFont detail_font = GetFont();
+        detail_font.SetPointSize(11);
+        wxString title, status;
+        dc.SetFont(title_font);
+        const wxSize title_size = Label::split_lines(dc, text_width, m_placeholder, title);
+        dc.SetFont(detail_font);
+        const wxSize status_size = Label::split_lines(dc, text_width, m_model_status, status);
+        const wxString percentage = m_model_progress >= 0
+            ? wxString::Format("%d%%", m_model_progress) : text("处理中");
+        // Reserve a stable number column, including the unknown-progress label.
+        const int number_width = std::max(dc.GetTextExtent("100%").x, dc.GetTextExtent(text("处理中")).x);
+        const int row_height = std::max(dc.GetCharHeight(), FromDIP(8));
+        const int number_gap = FromDIP(12);
+        // Center the bar itself. Reserve matching side margins so the label
+        // attached to its right still fits when the viewport is narrow.
+        const int bar_width = std::max(1, std::min(FromDIP(280),
+            size.x - FromDIP(48) - 2 * (number_width + number_gap)));
+        const int title_gap = FromDIP(12), progress_gap = FromDIP(20);
+        const int total_height = title_size.y + title_gap + status_size.y + progress_gap + row_height;
+        const int top = (size.y - total_height) / 2;
+        const int text_left = (size.x - text_width) / 2;
+        dc.SetFont(title_font);
+        dc.SetTextForeground(primary_text_colour());
+        dc.DrawLabel(title, wxRect(text_left, top, text_width, title_size.y), wxALIGN_CENTER_HORIZONTAL);
+        dc.SetFont(detail_font);
+        dc.SetTextForeground(secondary_text_colour());
+        dc.DrawLabel(status, wxRect(text_left, top + title_size.y + title_gap, text_width, status_size.y),
+                     wxALIGN_CENTER_HORIZONTAL);
+        const int bar_left = (size.x - bar_width) / 2;
+        const int row_top = top + total_height - row_height;
+        const int bar_height = FromDIP(6);
+        const int bar_top = row_top + (row_height - bar_height) / 2;
+        gc.SetPen(*wxTRANSPARENT_PEN);
+        gc.SetBrush(wxBrush(wxColour(73, 73, 78)));
+        gc.DrawRoundedRectangle(bar_left, bar_top, bar_width, bar_height, bar_height / 2.0);
+        gc.SetBrush(wxBrush(accent_colour()));
+        if (m_model_progress >= 0) {
+            const double filled = bar_width * std::clamp(m_model_progress, 0, 100) / 100.0;
+            if (filled > 0)
+                gc.DrawRoundedRectangle(bar_left, bar_top, filled, bar_height,
+                                        std::min(filled, double(bar_height)) / 2.0);
+        } else {
+            // Animate activity without inventing a numerical completion value.
+            const double segment = bar_width / 4.0;
+            const double offset = (bar_width - segment) * (1.0 - std::cos(m_spinner_frame * std::acos(-1.0) / 6.0)) / 2.0;
+            gc.DrawRoundedRectangle(bar_left + offset, bar_top, segment, bar_height, bar_height / 2.0);
+        }
+        dc.SetTextForeground(primary_text_colour());
+        dc.DrawLabel(percentage, wxRect(bar_left + bar_width + number_gap, row_top, number_width, row_height),
+                     wxALIGN_LEFT | wxALIGN_CENTER_VERTICAL);
+    }
+
     static double monotonic_seconds()
     {
         return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -1219,6 +1130,9 @@ private:
     wxString m_placeholder;
     wxTimer m_animation_timer;
     PlaceholderMode m_placeholder_mode { PlaceholderMode::Idle };
+    bool m_model_generating { false };
+    wxString m_model_status;
+    int m_model_progress { -1 };
     int m_spinner_frame { 0 };
 };
 
@@ -1738,10 +1652,16 @@ void RedesignShell::build_image_workspace()
     auto* guide_sizer = new wxBoxSizer(wxVERTICAL);
     m_guide_panel->SetSizer(guide_sizer);
     auto* title = label(m_guide_panel, "上传图片创建你的专属模型吧！", 28);
+    title->SetWindowStyleFlag(title->GetWindowStyleFlag() | wxALIGN_CENTER_HORIZONTAL);
+    title->SetMinSize(wxSize(1, -1));
     guide_sizer->AddStretchSpacer(1);
-    guide_sizer->Add(title, 0, wxALIGN_CENTER | wxBOTTOM, FromDIP(76));
+    guide_sizer->Add(title, 0, wxEXPAND | wxBOTTOM, FromDIP(76));
 
-    auto* flow_canvas = new FlowGuideCanvas(m_guide_panel);
+    auto* flow_canvas = new RedesignArtwork::FlowGuideCanvas(m_guide_panel, [this] {
+        // The history drawer leaves a 24 DIP handle and 12 DIP sizer border
+        // when closed. This width is independent of its current open state.
+        return std::max(1, m_image_page->GetClientSize().x - FromDIP(36));
+    }, "13/800");
     guide_sizer->Add(flow_canvas, 0, wxEXPAND);
     guide_sizer->AddStretchSpacer(1);
     content_sizer->Add(m_guide_panel, 1, wxEXPAND);
@@ -1782,9 +1702,13 @@ void RedesignShell::build_image_workspace()
     content_sizer->Add(m_image_history, 0, wxEXPAND | wxLEFT, FromDIP(12));
     // Run after native child repositioning finishes. Sizers can emit forced
     // size events without a size change: ignore those to avoid a layout loop.
-    auto resize_center = [this, last_size = wxDefaultSize](wxSizeEvent& event) mutable {
+    auto resize_center = [this, title, last_size = wxDefaultSize](wxSizeEvent& event) mutable {
         if (event.GetSize() != last_size) {
             last_size = event.GetSize();
+            wxClientDC title_dc(title);
+            title_dc.SetFont(title->GetFont());
+            title->SetLabel(RedesignArtwork::wrap_text(title_dc, text("上传图片创建你的专属模型吧！"),
+                std::max(1, m_guide_panel->GetClientSize().x - FromDIP(32))));
             m_preview_resize_timer.StartOnce(1);
         }
         event.Skip();
@@ -1851,10 +1775,6 @@ wxPanel* RedesignShell::build_model_workspace()
     auto* header = new wxBoxSizer(wxHORIZONTAL);
     header->Add(m_model_stage_title, 0, wxALIGN_CENTER_VERTICAL);
     outer->Add(header, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(42));
-    m_model_stage_status = new wxStaticText(m_model_page, wxID_ANY, text("完成 2D 设计后可开始生成 3D 模型"));
-    style_text(m_model_stage_status, secondary_text_colour(), 11);
-    m_model_stage_status->Wrap(FromDIP(760));
-    outer->Add(m_model_stage_status, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(42));
 
     auto* body = new wxBoxSizer(wxHORIZONTAL);
     m_model_visual_host = new wxPanel(m_model_page, wxID_ANY);
@@ -1879,17 +1799,12 @@ wxPanel* RedesignShell::build_model_workspace()
     status_column->SetBackgroundColour(background_colour());
     auto* status_sizer = new wxBoxSizer(wxVERTICAL);
     status_column->SetSizer(status_sizer);
-    auto* progress_heading = new wxStaticText(status_column, wxID_ANY, text("任务状态"));
-    style_text(progress_heading, primary_text_colour(), 12, true);
+    auto* progress_heading = new wxStaticText(status_column, wxID_ANY, text("详情信息"));
+    style_text(progress_heading, primary_text_colour(), model_details_heading_point_size, true);
     status_sizer->Add(progress_heading, 0, wxBOTTOM, FromDIP(12));
-    m_model_progress_label = new wxStaticText(status_column, wxID_ANY, text("尚未开始"));
-    style_text(m_model_progress_label, primary_text_colour(), 11);
-    status_sizer->Add(m_model_progress_label, 0, wxEXPAND | wxBOTTOM, FromDIP(10));
-    auto* gauge = new wxGauge(status_column, wxID_ANY, 100, wxDefaultPosition,
-                              wxSize(-1, FromDIP(7)), wxGA_HORIZONTAL | wxBORDER_NONE);
-    gauge->SetValue(0);
-    m_model_progress = gauge;
-    status_sizer->Add(gauge, 0, wxEXPAND | wxBOTTOM, FromDIP(20));
+    m_model_task_status = new wxStaticText(status_column, wxID_ANY, text("尚未开始"));
+    style_text(m_model_task_status, primary_text_colour(), 11);
+    status_sizer->Add(m_model_task_status, 0, wxEXPAND | wxBOTTOM, FromDIP(20));
     m_model_stage_summary = new Label(status_column, wxGetApp().normal_font(), wxEmptyString,
                                       LB_AUTO_WRAP, FromDIP(wxSize(300, -1)));
     style_text(m_model_stage_summary, secondary_text_colour(), 10);
@@ -2943,8 +2858,7 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
     wxString action_label;
     wxString visual_label = text("等待 3D 生成");
     ImagePreview::PlaceholderMode visual_mode = ImagePreview::PlaceholderMode::Idle;
-    bool show_progress = false;
-    int progress = 0;
+    int progress = -1;
     bool show_stop = false;
 
     if (state.stage == ModelGenerationUIStage::LoadingModel) {
@@ -2962,14 +2876,15 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
         visual_label = text("正在生成 3D 模型");
         visual_mode = ImagePreview::PlaceholderMode::Generating;
         if (state.progress > 0 && state.progress < 100) {
-            show_progress = true;
             progress = state.progress;
-            progress_label = wxString::Format(text("当前进度  %d%%"), state.progress);
+            progress_label = text("生成中");
         } else {
             progress_label = text("处理中");
         }
         summary = !state.workflow_guidance.empty() ? wxString::FromUTF8(state.workflow_guidance.c_str())
                                                    : text("页面切换不会取消任务。停止只终止本地等待，远端任务可能继续运行并计费。");
+        if (summary == _L("正在生成 3D 模型，可在这里查看进度"))
+            summary = _L("正在生成 3D 模型。");
         show_stop = state.can_stop;
     } else if (state.stage == ModelGenerationUIStage::Failed && state.model_generation_context) {
         title = text("3D 模型生成未完成");
@@ -3024,9 +2939,7 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
         title = text("3D 模型已生成");
         status = !state.status_text.empty() ? wxString::FromUTF8(state.status_text.c_str())
                                             : text("生成结果已就绪");
-        progress_label = text("完成  100%");
-        show_progress = true;
-        progress = 100;
+        progress_label = text("完成");
         visual_label = text("正在加载 3D 模型预览");
         visual_mode = ImagePreview::PlaceholderMode::Generating;
         summary = !state.summary_text.empty() ? wxString::FromUTF8(state.summary_text.c_str()) : wxString();
@@ -3054,18 +2967,25 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
     }
 
     m_model_stage_title->SetLabel(title);
-    m_model_stage_status->SetLabel(status);
-    m_model_stage_status->Wrap(FromDIP(760));
-    m_model_progress_label->SetLabel(progress_label);
-    static_cast<wxGauge*>(m_model_progress)->SetValue(progress);
-    m_model_progress->Show(show_progress);
+    const bool generating_model = state.stage == ModelGenerationUIStage::GeneratingModel;
+    // The header status row is gone. Keep loading/error/stop diagnostics in
+    // Details; generation status already appears in the center, and a ready
+    // result has its own summary and model details.
+    if (!generating_model && state.stage != ModelGenerationUIStage::ModelReady &&
+        !status.empty() && summary.Find(status) == wxNOT_FOUND)
+        summary = summary.empty() ? status : status + "\n\n" + summary;
+    m_model_task_status->SetLabel(progress_label);
     m_model_stage_summary->SetLabel(summary);
     const bool show_model_preview = state.stage == ModelGenerationUIStage::ModelReady &&
                                     !m_loaded_model_path.empty() && !m_model_preview_failed;
     m_model_stage_visual->Show(!show_model_preview);
     m_model_preview_3d->Show(show_model_preview);
-    if (!show_model_preview)
-        m_model_stage_visual->SetPlaceholder(visual_label, visual_mode);
+    if (!show_model_preview) {
+        if (generating_model)
+            m_model_stage_visual->SetModelGenerationProgress(status, progress);
+        else
+            m_model_stage_visual->SetPlaceholder(visual_label, visual_mode);
+    }
     if (m_model_preview_details != nullptr)
         m_model_preview_details->Show(show_model_preview);
     if (m_model_view_controls != nullptr)

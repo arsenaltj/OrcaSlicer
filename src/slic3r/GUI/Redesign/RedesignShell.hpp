@@ -319,11 +319,9 @@ private:
     wxPanel* m_model_visual_host { nullptr };
     wxPanel* m_model_view_controls { nullptr };
     wxStaticText* m_model_stage_title { nullptr };
-    wxStaticText* m_model_stage_status { nullptr };
     wxStaticText* m_model_stage_summary { nullptr };
     wxStaticText* m_model_preview_details { nullptr };
-    wxStaticText* m_model_progress_label { nullptr };
-    wxWindow* m_model_progress { nullptr };
+    wxStaticText* m_model_task_status { nullptr };
     wxWindow* m_model_action_button { nullptr };
     wxWindow* m_model_back_to_design_button { nullptr };
     wxWindow* m_model_stop_button { nullptr };
