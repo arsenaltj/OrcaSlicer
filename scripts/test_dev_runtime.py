@@ -26,6 +26,7 @@ class RuntimeTests(unittest.TestCase):
         self.write(".gitignore", ".tmp/\n")
         self.write("CMakeLists.txt", 'set(ORCA_AI_SIDECAR_RUNTIME_FILES\n"${CMAKE_SOURCE_DIR}/tools/ai/provider.py"\n)\ninstall(FILES)\n')
         self.write("src/main.cpp", "native original")
+        self.write("config/product.json", json.dumps({"display_name": "Honor Fixture", "version": "1.0.0", "build_number": 0}))
         self.write("tools/ai/provider.py", "value = 1\n")
         for args in (("init", "-q"), ("config", "user.name", "Local fixture"),
                      ("config", "user.email", "fixture@example.invalid"),
@@ -47,7 +48,7 @@ class RuntimeTests(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
 
     def prepare(self):
-        for name in ("orca-slicer.exe", "OrcaSlicer.dll"):
+        for name in ("Honor Fixture.exe", "Honor Fixture.dll"):
             self.write(".tmp/build/src/Release/" + name, name)
             self.write(".tmp/dev/run/" + name, name)
         self.write(".tmp/build/orca_ai_build_info.json", "{}")
@@ -62,6 +63,12 @@ class RuntimeTests(unittest.TestCase):
         self.write(".tmp/dev/run/resources/tools/ai/provider.py", (self.root / "tools/ai/provider.py").read_text())
         self.write(".tmp/build/install_manifest.txt", "\n".join(str(p) for p in self.runtime.rglob("*") if p.is_file()))
         return dev.finish_install(self.root, self.build, dev.preflight(self.root, self.build))
+
+    def test_product_version_edit_requires_a_native_rebuild(self):
+        self.prepare()
+        self.write("config/product.json", json.dumps({"display_name": "Honor Fixture", "version": "1.0.1", "build_number": 0}))
+        with self.assertRaisesRegex(ValueError, "Native sources/resources/build configuration changed"):
+            dev.update_sidecar(self.root, self.build)
 
     def set_runtime_capabilities(self, portrait: bool, legacy_farl: bool):
         cache = self.build / "CMakeCache.txt"
@@ -121,7 +128,7 @@ class RuntimeTests(unittest.TestCase):
         installed = [p.relative_to(trial).as_posix() for p in trial.rglob("*") if p.is_file()]
         original = dev.verify_runtime(self.root, self.build, installed)
         self.assertEqual(dev.verify_runtime(self.root, self.build, installed, trial), original)
-        (trial / "OrcaSlicer.dll").write_text("mismatched new trial")
+        (trial / "Honor Fixture.dll").write_text("mismatched new trial")
         with self.assertRaisesRegex(ValueError, "Runtime does not match"):
             dev.verify_runtime(self.root, self.build, installed, trial)
         self.assertEqual(dev.verify_runtime(self.root, self.build, installed), original)
@@ -292,13 +299,13 @@ class RuntimeTests(unittest.TestCase):
 
     def test_sidecar_updates_dirty_python_and_preserves_native_and_history(self):
         self.prepare()
-        original = dev.digest(self.runtime / "OrcaSlicer.dll")
+        original = dev.digest(self.runtime / "Honor Fixture.dll")
         self.write(".tmp/dev/data/generated_models/history.json", "existing history")
         self.write("tools/ai/provider.py", "value = 2\n")
         result = dev.update_sidecar(self.root, self.build)
         self.assertEqual(result["updated_modules"], ["provider.py"])
         self.assertEqual((self.runtime / "resources/tools/ai/provider.py").read_text(), "value = 2\n")
-        self.assertEqual(original, dev.digest(self.runtime / "OrcaSlicer.dll"))
+        self.assertEqual(original, dev.digest(self.runtime / "Honor Fixture.dll"))
         self.assertEqual((self.root / ".tmp/dev/data/generated_models/history.json").read_text(), "existing history")
         self.assertEqual(dev.update_sidecar(self.root, self.build)["updated_modules"], [])
 
@@ -321,7 +328,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_changed_binary_or_configuration_requires_rebuild(self):
         self.prepare()
-        self.write(".tmp/build/src/Release/OrcaSlicer.dll", "new binary")
+        self.write(".tmp/build/src/Release/Honor Fixture.dll", "new binary")
         with self.assertRaisesRegex(ValueError, "Native binaries"):
             dev.update_sidecar(self.root, self.build)
         self.prepare()

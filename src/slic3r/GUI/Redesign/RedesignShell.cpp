@@ -1,4 +1,5 @@
 #include "RedesignShell.hpp"
+#include <wx/frame.h>
 #include "ImageHistorySidebar.hpp"
 #include "AssetsWorkspace.hpp"
 #include "AccountWorkspace.hpp"
@@ -12,6 +13,7 @@
 #include "RedesignMessageDialog.hpp"
 #include "RedesignModelRoute.hpp"
 #include "RedesignWidgets.hpp"
+#include "ModelGenerationStarfieldRenderer.hpp"
 #include "PrinterWorkspace.hpp"
 #include "../MainFrame.hpp"
 #include "../GUI_App.hpp"
@@ -56,6 +58,7 @@
 #include <wx/stdpaths.h>
 #include <wx/textctrl.h>
 #include <wx/tglbtn.h>
+#include <wx/toplevel.h>
 #include <wx/weakref.h>
 #include <wx/window.h>
 #include <wx/access.h>
@@ -955,9 +958,34 @@ public:
             event.Skip();
         });
         Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
-            m_spinner_frame = (m_spinner_frame + 1) % 12;
+            synchronize_animation();
+            if (!m_animation_timer.IsRunning())
+                return;
+            m_spinner_frame = m_model_generating
+                ? static_cast<int>(m_starfield_clock.elapsed(monotonic_seconds()) / 0.09) % 12
+                : (m_spinner_frame + 1) % 12;
             Refresh(false);
         }, m_animation_timer.GetId());
+        // Parent page visibility changes do not always send Show to the child.
+        // Weak references also make these ancestor bindings safe during teardown.
+        wxWeakRef<ImagePreview> weak(this);
+        auto refresh_animation = [weak] {
+            if (weak) weak->CallAfter([weak] {
+                if (weak) weak->synchronize_animation();
+            });
+        };
+        for (auto* ancestor = static_cast<wxWindow*>(this); ancestor != nullptr; ancestor = ancestor->GetParent()) {
+            ancestor->Bind(wxEVT_SHOW, [refresh_animation](wxShowEvent& event) {
+                event.Skip();
+                refresh_animation();
+            });
+        }
+        if (auto* top = wxDynamicCast(wxGetTopLevelParent(this), wxTopLevelWindow)) {
+            top->Bind(wxEVT_ICONIZE, [refresh_animation](wxIconizeEvent& event) {
+                event.Skip();
+                refresh_animation();
+            });
+        }
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
             wxAutoBufferedPaintDC dc(this);
             dc.SetBackground(wxBrush(background_colour()));
@@ -1013,11 +1041,11 @@ public:
 
     void SetBitmap(const wxBitmap& bitmap)
     {
-        m_animation_timer.Stop();
         m_design_wait.clear();
         m_model_generating = false;
         m_bitmap = bitmap;
         m_placeholder_mode = PlaceholderMode::Idle;
+        synchronize_animation();
         Refresh();
     }
 
@@ -1031,13 +1059,9 @@ public:
         m_placeholder = placeholder;
         m_placeholder_mode = mode;
         SetName(placeholder);
-        if (mode == PlaceholderMode::Generating) {
-            if (!m_animation_timer.IsRunning())
-                m_animation_timer.Start(90);
-        } else {
-            m_animation_timer.Stop();
+        if (mode != PlaceholderMode::Generating)
             m_spinner_frame = 0;
-        }
+        synchronize_animation();
         Refresh(false);
     }
 
@@ -1045,12 +1069,15 @@ public:
     // and elapsed-time presentation.
     void SetModelGenerationProgress(const wxString& status, int progress)
     {
-        SetPlaceholder(text("正在生成3D模型..."), PlaceholderMode::Generating);
+        // Do not go through SetPlaceholder: repeated progress updates must not
+        // leave model mode and reset the independent animation clock.
+        m_bitmap = wxNullBitmap;
+        m_placeholder = text("正在生成3D模型...");
+        m_placeholder_mode = PlaceholderMode::Generating;
         m_model_generating = true;
         m_model_status = status;
         m_model_progress = progress;
-        if (progress >= 0)
-            m_animation_timer.Stop();
+        synchronize_animation();
         SetName(m_placeholder + "\n" + status + "\n" +
             (progress >= 0 ? wxString::Format("%d%%", progress) : text("处理中")));
         Refresh(false);
@@ -1063,6 +1090,26 @@ public:
     void ClearDesignTiming() { m_design_wait.clear(); }
 
 private:
+    void synchronize_animation()
+    {
+        const auto* top = wxDynamicCast(wxGetTopLevelParent(this), wxTopLevelWindow);
+        const bool visible = IsShownOnScreen() && (top == nullptr || !top->IsIconized());
+        const bool generating = m_placeholder_mode == PlaceholderMode::Generating && !m_bitmap.IsOk();
+        m_starfield_clock.synchronize(m_model_generating && generating, visible, monotonic_seconds());
+        // Keep the existing 2D spinner cadence. Only 3D uses a visible 24 FPS
+        // starfield; its timer stops while the page is hidden or minimized.
+        const bool animate = generating && (!m_model_generating || visible);
+        const int interval = m_model_generating ? 42 : 90;
+        if (animate) {
+            if (!m_animation_timer.IsRunning() || m_animation_interval != interval) {
+                m_animation_interval = interval;
+                m_animation_timer.Start(interval);
+            }
+        } else {
+            m_animation_timer.Stop();
+        }
+    }
+
     void draw_model_progress(wxDC& dc, wxGraphicsContext& gc, const wxSize& size)
     {
         const int text_width = std::max(1, std::min(FromDIP(480), size.x - FromDIP(48)));
@@ -1090,6 +1137,10 @@ private:
         const int total_height = title_size.y + title_gap + status_size.y + progress_gap + row_height;
         const int top = (size.y - total_height) / 2;
         const int text_left = (size.x - text_width) / 2;
+        const wxRect quiet_area(text_left - FromDIP(12), top - FromDIP(12),
+                                 text_width + FromDIP(24), total_height + FromDIP(24));
+        draw_model_generation_starfield(gc, m_starfield, m_starfield_clock.elapsed(monotonic_seconds()),
+                                         size, quiet_area, double(FromDIP(100)) / 100.0);
         dc.SetFont(title_font);
         dc.SetTextForeground(primary_text_colour());
         dc.DrawLabel(title, wxRect(text_left, top, text_width, title_size.y), wxALIGN_CENTER_HORIZONTAL);
@@ -1129,6 +1180,9 @@ private:
     wxBitmap m_bitmap;
     wxString m_placeholder;
     wxTimer m_animation_timer;
+    ModelGenerationStarfield m_starfield;
+    ModelGenerationAnimationClock m_starfield_clock;
+    int m_animation_interval {0};
     PlaceholderMode m_placeholder_mode { PlaceholderMode::Idle };
     bool m_model_generating { false };
     wxString m_model_status;
@@ -1227,6 +1281,11 @@ void RedesignShell::disconnect_model_generation_host()
         m_import_loading->Destroy();
         m_import_loading = nullptr;
         m_import_activity = nullptr;
+    }
+    if (m_import_transition_cover) {
+        m_import_transition_cover->Hide();
+        m_import_transition_cover->Destroy();
+        m_import_transition_cover = nullptr;
     }
     if (m_print_page != nullptr)
         m_print_page->set_active(false);
@@ -1757,7 +1816,10 @@ void RedesignShell::build_image_workspace()
     m_pages[static_cast<std::size_t>(Page::Account)] = m_account_workspace;
     m_content_host->GetSizer()->Add(m_account_workspace, 1, wxEXPAND);
     m_account_workspace->Hide();
-    navigate_to(Page::Account);
+    // Start on the image workspace while the account session refreshes in
+    // the background; its initial result must not change the selected page.
+    m_account_startup = false;
+    navigate_to(Page::Image);
 }
 
 wxPanel* RedesignShell::build_model_workspace()
@@ -1794,28 +1856,33 @@ wxPanel* RedesignShell::build_model_workspace()
 
     auto* status_column = new wxPanel(m_model_page, wxID_ANY, wxDefaultPosition,
                                       wxSize(FromDIP(340), -1));
+    m_model_details_column = status_column;
     status_column->SetMinSize(wxSize(FromDIP(300), -1));
     status_column->SetMaxSize(wxSize(FromDIP(380), -1));
     status_column->SetBackgroundColour(background_colour());
     auto* status_sizer = new wxBoxSizer(wxVERTICAL);
     status_column->SetSizer(status_sizer);
+    // Keep the description, statistics and camera actions together. Only the
+    // space between this content group and the primary actions may stretch.
+    auto* details_sizer = new wxBoxSizer(wxVERTICAL);
+    status_sizer->Add(details_sizer, 0, wxEXPAND);
     auto* progress_heading = new wxStaticText(status_column, wxID_ANY, text("详情信息"));
     style_text(progress_heading, primary_text_colour(), model_details_heading_point_size, true);
-    status_sizer->Add(progress_heading, 0, wxBOTTOM, FromDIP(12));
+    details_sizer->Add(progress_heading, 0, wxBOTTOM, FromDIP(12));
     m_model_task_status = new wxStaticText(status_column, wxID_ANY, text("尚未开始"));
     style_text(m_model_task_status, primary_text_colour(), 11);
-    status_sizer->Add(m_model_task_status, 0, wxEXPAND | wxBOTTOM, FromDIP(20));
+    details_sizer->Add(m_model_task_status, 0, wxEXPAND | wxBOTTOM, FromDIP(20));
     m_model_stage_summary = new Label(status_column, wxGetApp().normal_font(), wxEmptyString,
                                       LB_AUTO_WRAP, FromDIP(wxSize(300, -1)));
     style_text(m_model_stage_summary, secondary_text_colour(), 10);
     m_model_stage_summary->SetMinSize(wxSize(1, -1));
-    status_sizer->Add(m_model_stage_summary, 0, wxEXPAND);
+    details_sizer->Add(m_model_stage_summary, 0, wxEXPAND);
     m_model_preview_details = new Label(status_column, wxGetApp().normal_font(), wxEmptyString,
                                         LB_AUTO_WRAP, FromDIP(wxSize(300, -1)));
     style_text(m_model_preview_details, secondary_text_colour(), 9);
     m_model_preview_details->SetMinSize(wxSize(1, -1));
     m_model_preview_details->Hide();
-    status_sizer->Add(m_model_preview_details, 0, wxEXPAND | wxTOP, FromDIP(14));
+    details_sizer->Add(m_model_preview_details, 0, wxEXPAND | wxTOP, FromDIP(6));
     m_model_view_controls = new wxPanel(status_column, wxID_ANY);
     m_model_view_controls->SetBackgroundColour(background_colour());
     auto* view_controls_sizer = new wxBoxSizer(wxHORIZONTAL);
@@ -1833,7 +1900,7 @@ wxPanel* RedesignShell::build_model_workspace()
     });
     view_controls_sizer->Add(reset_view, 1);
     m_model_view_controls->Hide();
-    status_sizer->Add(m_model_view_controls, 0, wxEXPAND | wxTOP, FromDIP(14));
+    details_sizer->Add(m_model_view_controls, 0, wxEXPAND | wxTOP, FromDIP(14));
     status_sizer->AddStretchSpacer(1);
     m_model_action_button = new RoundedActionButton(status_column, wxEmptyString, true, 46);
     m_model_action_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { request_model_page_action(); });
@@ -1850,6 +1917,10 @@ wxPanel* RedesignShell::build_model_workspace()
     });
     m_model_stop_button->Hide();
     status_sizer->Add(m_model_stop_button, 0, wxEXPAND | wxTOP, FromDIP(10));
+    status_column->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+        event.Skip();
+        layout_model_details();
+    });
     body->Add(status_column, 0, wxEXPAND);
     outer->Add(body, 1, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM, FromDIP(42));
 
@@ -2875,16 +2946,16 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
                                             : text("任务已提交，正在等待现有生成流程完成");
         visual_label = text("正在生成 3D 模型");
         visual_mode = ImagePreview::PlaceholderMode::Generating;
-        if (state.progress > 0 && state.progress < 100) {
-            progress = state.progress;
-            progress_label = text("生成中");
-        } else {
-            progress_label = text("处理中");
-        }
-        summary = !state.workflow_guidance.empty() ? wxString::FromUTF8(state.workflow_guidance.c_str())
-                                                   : text("页面切换不会取消任务。停止只终止本地等待，远端任务可能继续运行并计费。");
-        if (summary == _L("正在生成 3D 模型，可在这里查看进度"))
-            summary = _L("正在生成 3D 模型。");
+        progress = ModelGenerationPresentation::ModelGenerationProgress::viewport_progress(state.progress, false);
+        progress_label = text("生成中");
+        if (state.model_progress_estimated)
+            status += wxString::Format(text(" · 估算进度（已等待 %d 秒）"), state.model_elapsed_seconds);
+        summary = wxString::FromUTF8(state.workflow_guidance.c_str());
+        summary.Trim(true).Trim(false);
+        // The center already describes generation. Reserve Details for useful
+        // guidance, including later updates, rather than repeating that title.
+        if (summary == _L("正在生成 3D 模型，可在这里查看进度") || summary == _L("正在生成 3D 模型。"))
+            summary.clear();
         show_stop = state.can_stop;
     } else if (state.stage == ModelGenerationUIStage::Failed && state.model_generation_context) {
         title = text("3D 模型生成未完成");
@@ -2944,7 +3015,14 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
         visual_mode = ImagePreview::PlaceholderMode::Generating;
         summary = !state.summary_text.empty() ? wxString::FromUTF8(state.summary_text.c_str()) : wxString();
         ensure_model_preview(state);
-        if (m_model_preview_failed) {
+        const bool host_preview_unavailable = !state.busy &&
+            !(owns_model_workflow() ? state.can_open_workbench : state.can_import);
+        if (host_preview_unavailable) {
+            visual_label = text("3D 模型预览未就绪");
+            visual_mode = ImagePreview::PlaceholderMode::Error;
+            progress_label = text("预览不可用");
+            summary = status + (summary.empty() ? wxString() : "\n\n" + summary);
+        } else if (m_model_preview_failed) {
             visual_label = text("3D 模型预览加载失败");
             visual_mode = ImagePreview::PlaceholderMode::Error;
             progress_label = text("预览不可用");
@@ -2975,17 +3053,30 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
         !status.empty() && summary.Find(status) == wxNOT_FOUND)
         summary = summary.empty() ? status : status + "\n\n" + summary;
     m_model_task_status->SetLabel(progress_label);
+    summary.Trim(true).Trim(false);
     m_model_stage_summary->SetLabel(summary);
-    const bool show_model_preview = state.stage == ModelGenerationUIStage::ModelReady &&
-                                    !m_loaded_model_path.empty() && !m_model_preview_failed;
+    m_model_stage_summary->Show(!summary.empty());
+    const bool show_model_preview = state.stage == ModelGenerationUIStage::ModelReady && !state.busy &&
+        !m_loaded_model_path.empty() && !m_model_preview_loading && !m_model_preview_failed &&
+        m_loaded_model_path == boost::filesystem::path(wxString::FromUTF8(state.model_path.c_str()).ToStdWstring());
+    const bool showing_model_progress = generating_model || state.stage == ModelGenerationUIStage::LoadingModel ||
+        (state.stage == ModelGenerationUIStage::ModelReady && !show_model_preview && !m_model_preview_failed &&
+         (state.busy || m_model_preview_loading || (owns_model_workflow() ? state.can_open_workbench : state.can_import)));
+    if (showing_model_progress)
+        progress = ModelGenerationPresentation::ModelGenerationProgress::viewport_progress(state.progress, false);
     m_model_stage_visual->Show(!show_model_preview);
     m_model_preview_3d->Show(show_model_preview);
     if (!show_model_preview) {
-        if (generating_model)
+        if (showing_model_progress)
             m_model_stage_visual->SetModelGenerationProgress(status, progress);
         else
             m_model_stage_visual->SetPlaceholder(visual_label, visual_mode);
+    } else {
+        // Completion ends the animation session; a later task starts afresh.
+        m_model_stage_visual->SetPlaceholder(wxEmptyString, ImagePreview::PlaceholderMode::Idle);
     }
+    if (show_model_preview)
+        m_model_preview_3d->SetName(text("3D 模型预览 · 100%"));
     if (m_model_preview_details != nullptr)
         m_model_preview_details->Show(show_model_preview);
     if (m_model_view_controls != nullptr)
@@ -3003,6 +3094,27 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
     m_model_page->Layout();
     if (m_model_visual_host != nullptr)
         m_model_visual_host->Layout();
+    layout_model_details();
+}
+
+void RedesignShell::layout_model_details()
+{
+    if (m_model_details_column == nullptr || m_model_details_column->GetClientSize().x <= 0)
+        return;
+    const int width = m_model_details_column->GetClientSize().x;
+    for (auto* label : {m_model_stage_summary, m_model_preview_details}) {
+        if (label == nullptr || !label->IsShown())
+            continue;
+        // Measure the displayed lines with their actual font. A static text
+        // control's best size can include more height than the visible text.
+        static_cast<Label*>(label)->Wrap(width);
+        wxClientDC dc(label);
+        dc.SetFont(label->GetFont());
+        label->SetMinSize(wxSize(1, dc.GetMultiLineTextExtent(label->GetLabel()).y + FromDIP(2)));
+    }
+    m_model_details_column->Layout();
+    if (m_model_view_controls != nullptr && m_model_view_controls->IsShown())
+        m_model_view_controls->Layout();
 }
 
 void RedesignShell::ensure_model_preview(const ModelGenerationUIState& state)

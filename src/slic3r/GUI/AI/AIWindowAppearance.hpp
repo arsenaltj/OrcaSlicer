@@ -16,7 +16,8 @@ public:
 // Only for AI feature subtrees. Palette swatches are content, not theme tokens.
 inline void refresh_ai_appearance(wxWindow* window, bool update_fonts = true)
 {
-    if (window == nullptr || window->GetName() == "ai_content_color")
+    if (window == nullptr || window->GetName() == "ai_content_color" ||
+        window->GetName() == "ai_workbench_surface")
         return;
     if (auto* owner = dynamic_cast<AIThemeOwner*>(window)) {
         owner->apply_ai_theme(update_fonts);

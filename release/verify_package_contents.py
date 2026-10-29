@@ -54,8 +54,10 @@ def dependency_classification_path(member):
     normalized = member.replace("\\", "/")
     # Build-dependency ZIPs carry this same stack at the archive root. Reuse the
     # existing exact-file/exact-literal audits; do not allowlist whole packages.
-    if normalized.startswith("OrcaAI_x64/python/Lib/site-packages/"):
-        normalized = normalized[len("OrcaAI_x64/"):]
+    for root in ("OrcaAI_x64/", "HonorForge_x64/", "HonorForge_arm64/"):
+        if normalized.startswith(root + "python/Lib/site-packages/"):
+            normalized = normalized[len(root):]
+            break
     if normalized.startswith("python/Lib/site-packages/"):
         return "resources/beauty-runtime/" + normalized
     return normalized

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RedesignTheme.hpp"
+#include "HonorBrandMark.hpp"
 #include "../I18N.hpp"
 #include "../BitmapCache.hpp"
 #include "../Widgets/Button.hpp"
@@ -30,6 +31,7 @@ public:
         m_toolbar = new wxPanel(this, wxID_ANY);
         m_toolbar->SetBackgroundColour(wxColour(29, 29, 32));
         auto* actions = new wxBoxSizer(wxHORIZONTAL);
+        actions->Add(new HonorBrandMark(m_toolbar), 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(12));
         actions->AddStretchSpacer();
         add_action(actions, "redesign_startup_minimize", _L("Minimize"), [this] {
             if (frame_available()) m_frame->Iconize();
@@ -158,14 +160,17 @@ private:
             dc.DrawBitmap(m_logo, (bounds.x - m_logo.GetWidth()) / 2, top, true);
         const auto label = [&](const wxString& text, int pixels, int offset,
                                const wxColour& colour, wxFontWeight weight) {
-            dc.SetFont(font(pixels, weight));
+            int fitted_pixels = pixels;
+            dc.SetFont(font(fitted_pixels, weight));
+            while (dc.GetTextExtent(text).x > bounds.x - FromDIP(48) && fitted_pixels > 16)
+                dc.SetFont(font(--fitted_pixels, weight));
             dc.SetTextForeground(colour);
             const wxString fitted = wxControl::Ellipsize(text, dc, wxELLIPSIZE_END,
                 std::max(1, bounds.x - FromDIP(48)));
             const wxSize extent = dc.GetTextExtent(fitted);
             dc.DrawText(fitted, (bounds.x - extent.x) / 2, top + FromDIP(offset));
         };
-        label("Name", 44, 232, *wxWHITE, wxFONTWEIGHT_SEMIBOLD);
+        label(wxString::FromUTF8(SLIC3R_APP_NAME), 44, 232, *wxWHITE, wxFONTWEIGHT_SEMIBOLD);
         label(m_message, 20, 312, wxColour(127, 127, 130), wxFONTWEIGHT_NORMAL);
     }
 

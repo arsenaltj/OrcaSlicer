@@ -10,7 +10,9 @@ $workflowRoot = Split-Path $PSScriptRoot -Parent
 $runtime = if ($RuntimeDir) { [IO.Path]::GetFullPath($RuntimeDir) } else { Join-Path $workflowRoot '.tmp/dev/run' }
 if (-not $DataDir) { $DataDir = Join-Path $workflowRoot '.tmp/dev/workflow-review' }
 $DataDir = [IO.Path]::GetFullPath($DataDir)
-$application = Join-Path $runtime 'orca-slicer.exe'
+. (Join-Path $workflowRoot 'scripts/ProductConfig.ps1')
+$product = Get-ProductIdentity -Root $workflowRoot
+$application = Join-Path $runtime $product.Exe
 $python = Join-Path $runtime 'python/pythonw.exe'
 $bootstrap = Join-Path $runtime 'resources/tools/ai/orca_ai_installed_bootstrap.py'
 foreach ($file in @($application, $python, $bootstrap)) {

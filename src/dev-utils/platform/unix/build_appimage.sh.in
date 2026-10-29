@@ -4,7 +4,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
 
 
-APP_IMAGE="@SLIC3R_APP_KEY@_Linux_V@SoftFever_VERSION@.AppImage"
+APP_IMAGE="@HONOR_PRODUCT_PACKAGE_STEM@_Linux_@HONOR_PRODUCT_DISPLAY_VERSION@.AppImage"
 
 wget ${APPIMAGETOOLURL} -O ../appimagetool.AppImage
 chmod +x ../appimagetool.AppImage
@@ -21,7 +21,7 @@ mkdir -p usr/share/icons/hicolor/192x192/apps
 cp resources/images/@SLIC3R_APP_KEY@_192px.png usr/share/icons/hicolor/192x192/apps/@SLIC3R_APP_KEY@.png
 cat <<EOF > com.orcaslicer.@SLIC3R_APP_KEY@.desktop
 [Desktop Entry]
-Name=@SLIC3R_APP_KEY@
+Name=@SLIC3R_APP_NAME@
 Exec=AppRun %F
 Icon=@SLIC3R_APP_KEY@
 Type=Application
@@ -42,10 +42,9 @@ cp "${REPO_ROOT}/scripts/flatpak/com.orcaslicer.@SLIC3R_APP_KEY@.metainfo.xml" \
 export ARCH=$(uname -m)
 
 if [ -f /.dockerenv ] ; then # Only run if inside of a Docker Container
-  ../appimagetool.AppImage --appimage-extract-and-run . $([ -n "${container}" ] && echo '--appimage-extract-and-run')
+  ../appimagetool.AppImage --appimage-extract-and-run . "${APP_IMAGE}" $([ -n "${container}" ] && echo '--appimage-extract-and-run')
 else
-  ../appimagetool.AppImage . $([ -n "${container}" ] && echo '--appimage-extract-and-run')
+  ../appimagetool.AppImage . "${APP_IMAGE}" $([ -n "${container}" ] && echo '--appimage-extract-and-run')
 fi
 
-mv @SLIC3R_APP_KEY@-$(uname -m).AppImage ${APP_IMAGE}
-chmod +x ${APP_IMAGE}
+chmod +x "${APP_IMAGE}"

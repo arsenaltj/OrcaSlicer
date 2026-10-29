@@ -97,6 +97,8 @@ struct ModelGenerationUIState
     // face/quality/provider setting can fork a new model task.
     bool model_options_match { true };
     int progress { 0 };
+    bool model_progress_estimated { false };
+    int model_elapsed_seconds { 0 };
     double design_elapsed_seconds { -1.0 };
     double design_estimated_seconds { 0.0 };
     std::string job_id;

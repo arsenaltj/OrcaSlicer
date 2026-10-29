@@ -33,6 +33,8 @@ function New-Fixture([string] $Name) {
     New-Item -ItemType Directory -Path (Join-Path $repo 'scripts'), $build, $output, $deps -Force | Out-Null
     $scriptPath = Join-Path $repo 'scripts/stage_local_ai_runtime.ps1'
     Copy-Item -LiteralPath $stageScript -Destination $scriptPath
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'ProductConfig.ps1') -Destination (Join-Path $repo 'scripts/ProductConfig.ps1')
+    Write-FixtureFile (Join-Path $repo 'config/product.json') '{"display_name":"Honor Forge Studio","version":"1.0.0","build_number":0}'
     $cache = @("CMAKE_HOME_DIRECTORY:INTERNAL=$repo", "CMAKE_PREFIX_PATH:PATH=$deps",
         "CMAKE_COMMAND:INTERNAL=$((Get-Process -Id $PID).Path)", 'ORCA_AI_WINDOWS_INSTALLER:BOOL=ON') -join "`n"
     Write-FixtureFile (Join-Path $build 'CMakeCache.txt') $cache
@@ -62,7 +64,7 @@ function Assert-NoVerifiedMarker($Fixture) {
 }
 
 function Add-MinimalRuntime($Fixture) {
-    foreach ($name in @('orca-slicer.exe', 'OrcaSlicer.dll', 'python/python.exe', 'python/pythonw.exe',
+    foreach ($name in @('Honor Forge Studio.exe', 'Honor Forge Studio.dll', 'python/python.exe', 'python/pythonw.exe',
         'python/python312.dll', 'python/python3.dll', 'resources/tools/uv/uv.exe',
         'resources/images/OrcaSlicer_gradient_circle.svg', 'resources/i18n/zh_CN/OrcaSlicer.mo',
         'resources/i18n/zh_TW/OrcaSlicer.mo', 'resources/tools/ai/orca_ai_build_info.json',
@@ -73,7 +75,7 @@ function Add-MinimalRuntime($Fixture) {
 
 function Add-BuildReceipt($Fixture) {
     Add-MinimalRuntime $Fixture
-    $sourceNames = @('CMakeLists.txt', 'src/CMakeLists.txt', 'src/slic3r/CMakeLists.txt',
+    $sourceNames = @('config/product.json', 'cmake/ProductIdentity.cmake', 'version.inc', 'CMakeLists.txt', 'src/CMakeLists.txt', 'src/slic3r/CMakeLists.txt',
         'src/slic3r/GUI/GUI_App.cpp', 'src/slic3r/GUI/GUI_App.hpp',
         'src/slic3r/GUI/GLCanvas3D.cpp', 'src/slic3r/GUI/GLCanvas3D.hpp',
         'src/slic3r/GUI/ImGuiWrapper.cpp', 'src/slic3r/GUI/ImGuiWrapper.hpp',
@@ -82,7 +84,7 @@ function Add-BuildReceipt($Fixture) {
         'localization/i18n/zh_CN/OrcaSlicer_zh_CN.po', 'localization/i18n/zh_TW/OrcaSlicer_zh_TW.po')
     $sources = @{}
     foreach ($relative in $sourceNames) {
-        Write-FixtureFile (Join-Path $Fixture.Repo $relative)
+        if ($relative -ne 'config/product.json') { Write-FixtureFile (Join-Path $Fixture.Repo $relative) }
         $sources[$relative] = (Get-FileHash -LiteralPath (Join-Path $Fixture.Repo $relative)).Hash
     }
     $resources = @{}
@@ -92,7 +94,7 @@ function Add-BuildReceipt($Fixture) {
         $resources[$relative] = (Get-FileHash -LiteralPath (Join-Path $Fixture.Repo $relative)).Hash
     }
     $binaries = @{}
-    foreach ($relative in @('orca-slicer.exe', 'OrcaSlicer.dll')) {
+    foreach ($relative in @('Honor Forge Studio.exe', 'Honor Forge Studio.dll')) {
         Write-FixtureFile (Join-Path $Fixture.Build "src/Release/$relative")
         $binaries[$relative] = (Get-FileHash -LiteralPath (Join-Path $Fixture.Output $relative)).Hash
     }
@@ -122,10 +124,10 @@ function Run-Case([string] $Name, [scriptblock] $Body) {
 
 try {
     Run-Case 'missing-executable-clears-success' { param($fx)
-        Assert-Rejected $fx 'Required runtime file is missing: orca-slicer.exe'
+        Assert-Rejected $fx 'Required runtime file is missing: Honor Forge Studio.exe'
         Assert-NoVerifiedMarker $fx
     }
-    foreach ($missing in @('OrcaSlicer.dll', 'python/python312.dll', 'python/python3.dll', 'resources/tools/uv/uv.exe',
+    foreach ($missing in @('Honor Forge Studio.dll', 'python/python312.dll', 'python/python3.dll', 'resources/tools/uv/uv.exe',
         'resources/images/OrcaSlicer_gradient_circle.svg', 'resources/i18n/zh_CN/OrcaSlicer.mo',
         'resources/tools/ai/orca_ai_build_info.json')) {
         $caseName = 'missing-' + $missing.Replace('/', '-').Replace('.', '-')

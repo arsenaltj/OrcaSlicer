@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
+import io
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -11,6 +14,7 @@ from tools.ai.model_provider_gateway import (
     PaidTaskAuthorization,
     ProviderGatewayError,
 )
+from tools.ai.ai_diagnostics import diagnostic_context
 from tools.ai.yoyoclaw_client import (
     YoYoClawClient,
     YoYoClawConfig,
@@ -67,12 +71,15 @@ class _FakeYoYoClawClient:
 
 
 class _TransportResponse:
-    def __init__(self, status_code, payload, chunks=()):
+    def __init__(self, status_code, payload, chunks=(), headers=None):
         self.status_code = status_code
         self._payload = payload
         self._chunks = tuple(chunks)
+        self.headers = headers or {}
 
     def json(self):
+        if isinstance(self._payload, Exception):
+            raise self._payload
         return self._payload
 
     def iter_content(self, _chunk_size):
@@ -88,7 +95,10 @@ class _TransportSession:
 
     def request(self, method, url, **kwargs):
         self.requests.append((method, url, kwargs))
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
     def get(self, url, **kwargs):
         self.gets.append((url, kwargs))
@@ -106,6 +116,19 @@ def _configured_yoyoclaw_config():
         serial_number="serial",
         user_id="user",
     )
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
 
 
 class YoYoClawConfigTests(unittest.TestCase):
@@ -365,6 +388,32 @@ class YoYoClawGenerationTests(unittest.TestCase):
 
 
 class YoYoClawTransportTests(unittest.TestCase):
+    def test_download_reports_bytes_and_keeps_unknown_or_encoded_lengths_unknown(self):
+        for headers, expected in (({"Content-Length": "4"}, 4), ({}, None),
+                                  ({"Content-Length": "4", "Content-Encoding": "gzip"}, None)):
+            with self.subTest(headers=headers), tempfile.TemporaryDirectory() as directory:
+                response = _TransportResponse(200, {}, chunks=(b"ab", b"cd"), headers=headers)
+                client = YoYoClawClient(session=_TransportSession([], download_response=response))
+                reports = []
+                destination = Path(directory) / "model.glb"
+                client.download_result_artifact({"data": [{"url": "https://cdn.example.invalid/model.glb"}]},
+                    destination, 4, progress=lambda received, total: reports.append((received, total)))
+                self.assertEqual(destination.read_bytes(), b"abcd")
+                self.assertEqual(reports, [(0, expected), (2, expected), (4, expected)])
+
+    def test_download_failure_never_reports_a_complete_file(self):
+        response = _TransportResponse(200, {}, chunks=(b"abc", b"def"), headers={"Content-Length": "6"})
+        client = YoYoClawClient(session=_TransportSession([], download_response=response))
+        reports = []
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "model.glb"
+            with self.assertRaises(YoYoClawError):
+                client.download("https://cdn.example.invalid/model.glb", destination, 4,
+                                progress=lambda received, total: reports.append((received, total)))
+            self.assertEqual(reports, [(0, 6), (3, 6)])
+            self.assertFalse(destination.exists())
+            self.assertFalse(destination.with_name("model.glb.part").exists())
+
     def test_transport_auth_catalog_generation_poll_and_download(self):
         session = _TransportSession([
             _TransportResponse(200, {"code": "OK", "data": {
@@ -422,6 +471,257 @@ class YoYoClawTransportTests(unittest.TestCase):
             with self.assertRaises(YoYoClawError) as raised:
                 client.download("file:///secret/model.glb", Path(directory) / "model.glb", 100)
         self.assertEqual(raised.exception.code, "unsafe_artifact")
+
+
+class YoYoClawTaskQueryTests(unittest.TestCase):
+    def client(self, responses, *, authenticated=True):
+        clock = _Clock()
+        session = _TransportSession(responses)
+        client = YoYoClawClient(
+            _configured_yoyoclaw_config(), session=session,
+            monotonic=clock.monotonic, sleep=clock.sleep,
+        )
+        if authenticated:
+            client._access_token = "private-access-token"
+            client._expires_at = 3600
+        return client, session, clock
+
+    @staticmethod
+    def completed():
+        return _TransportResponse(200, {"code": "OK", "data": {"status": "completed"}})
+
+    def test_non_json_and_network_errors_recover_using_only_the_same_task_get(self):
+        from tools.ai.yoyoclaw_client import requests
+
+        for failure in (
+            _TransportResponse(200, ValueError("private response body")),
+            _TransportResponse(503, ValueError("private response body")),
+            _TransportResponse(429, {"code": "too_many_requests"}),
+            requests.ConnectionError("private connection detail"),
+            requests.Timeout("private timeout detail"),
+        ):
+            with self.subTest(failure=type(failure).__name__):
+                client, session, clock = self.client([failure, self.completed()])
+                result = client.wait_3d("3d-model-library/test-model", "saved-task")
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(clock.sleeps, [2])
+                self.assertEqual([r[0] for r in session.requests], ["GET", "GET"])
+                self.assertEqual(session.requests[0][1], session.requests[1][1])
+                self.assertIn("/tasks/saved-task?", session.requests[0][1])
+                self.assertEqual(session.gets, [])
+
+    def test_consecutive_failure_budget_is_bounded_and_exhaustion_preserves_http_status(self):
+        client, session, clock = self.client([
+            _TransportResponse(503, ValueError("not JSON")) for _ in range(4)
+        ])
+        with self.assertRaises(YoYoClawError) as raised:
+            client.wait_3d("model", "saved-task")
+        self.assertEqual(clock.sleeps, [2, 4, 8])
+        self.assertEqual(len(session.requests), 4)
+        self.assertEqual(raised.exception.status, 503)
+        self.assertEqual(raised.exception.category, "network")
+        self.assertTrue(raised.exception.retryable)
+        self.assertFalse(raised.exception.ambiguous)
+        self.assertIn("resume the existing task", str(raised.exception))
+
+    def test_valid_running_response_resets_consecutive_retry_budget(self):
+        client, session, clock = self.client([
+            *[_TransportResponse(502, None) for _ in range(3)],
+            _TransportResponse(200, {"status": "running", "progress": 45}),
+            *[_TransportResponse(504, None) for _ in range(3)],
+            self.completed(),
+        ])
+        progress = []
+        self.assertEqual(client.wait_3d("model", "saved-task", progress=progress.append)["status"], "completed")
+        self.assertEqual(progress, [45])
+        self.assertEqual(clock.sleeps, [2, 4, 8, 10, 2, 4, 8])
+        self.assertEqual(len(session.requests), 8)
+
+    def test_authentication_validation_and_terminal_failures_are_not_retried(self):
+        for response, category in (
+            (_TransportResponse(401, ValueError("not JSON")), "authentication"),
+            (_TransportResponse(403, None), "authentication"),
+            (_TransportResponse(400, {"code": "bad_request"}), "provider"),
+            (_TransportResponse(404, ValueError("not JSON")), "provider"),
+            (_TransportResponse(200, {"code": "invalid_model"}), "provider"),
+            *[(_TransportResponse(200, {"status": status}), "provider")
+              for status in ("failed", "error", "cancelled", "canceled", "expired")],
+        ):
+            with self.subTest(status=response.status_code, payload_type=type(response._payload).__name__):
+                client, session, clock = self.client([response])
+                with self.assertRaises(YoYoClawError) as raised:
+                    client.wait_3d("model", "saved-task")
+                self.assertEqual(raised.exception.category, category)
+                self.assertFalse(raised.exception.retryable)
+                self.assertEqual(len(session.requests), 1)
+                self.assertEqual(clock.sleeps, [])
+
+    def test_malformed_successful_status_responses_are_retried(self):
+        for payload in (None, [], {"data": []}, {"status": " "}, {"status": ["completed"]}):
+            with self.subTest(payload=payload):
+                client, session, clock = self.client([_TransportResponse(200, payload), self.completed()])
+                self.assertEqual(client.wait_3d("model", "saved-task")["status"], "completed")
+                self.assertEqual(len(session.requests), 2)
+                self.assertEqual(clock.sleeps, [2])
+
+    def test_temporary_authentication_failure_retries_without_generation_submission(self):
+        client, session, clock = self.client([
+            _TransportResponse(503, ValueError("not JSON")),
+            _TransportResponse(200, {"access_token": "private-access-token"}),
+            self.completed(),
+        ], authenticated=False)
+        with mock.patch.object(client, "_login_payload", return_value={}):
+            self.assertEqual(client.wait_3d("model", "saved-task")["status"], "completed")
+        self.assertEqual(clock.sleeps, [2])
+        self.assertEqual([r[0] for r in session.requests], ["POST", "POST", "GET"])
+        self.assertTrue(all(r[1].endswith("/auth/login") for r in session.requests[:2]))
+        self.assertIn("/tasks/saved-task?", session.requests[2][1])
+
+    def test_temporary_refresh_failure_can_reauthenticate_and_continue_same_task(self):
+        client, session, clock = self.client([
+            _TransportResponse(502, ValueError("not JSON")),
+            _TransportResponse(200, {"access_token": "new-access-token"}),
+            self.completed(),
+        ])
+        client._refresh_token = "private-refresh-token"
+        client._expires_at = 30
+        with mock.patch.object(client, "_login_payload", return_value={}):
+            self.assertEqual(client.wait_3d("model", "saved-task")["status"], "completed")
+        self.assertTrue(session.requests[0][1].endswith("/auth/refresh"))
+        self.assertTrue(session.requests[1][1].endswith("/auth/login"))
+        self.assertIn("/tasks/saved-task?", session.requests[2][1])
+        self.assertEqual(clock.sleeps, [2])
+
+    def test_cancel_during_backoff_and_before_query(self):
+        for already_cancelled in (True, False):
+            with self.subTest(already_cancelled=already_cancelled):
+                client, session, clock = self.client([_TransportResponse(503, None)])
+                stop = threading.Event()
+                if already_cancelled:
+                    stop.set()
+                with mock.patch.object(stop, "wait", side_effect=lambda _seconds: stop.set()) as wait:
+                    with self.assertRaises(YoYoClawError) as raised:
+                        client.wait_3d("model", "saved-task", stop_event=stop)
+                    if not already_cancelled:
+                        wait.assert_called_once_with(2)
+                self.assertEqual(raised.exception.code, "provider_cancelled")
+                self.assertEqual(len(session.requests), 0 if already_cancelled else 1)
+                self.assertEqual(clock.sleeps, [])
+
+    def test_cancel_while_request_is_in_flight_prevents_further_queries(self):
+        client, session, clock = self.client([self.completed()])
+        stop = threading.Event()
+        request = session.request
+
+        def cancel_in_request(*args, **kwargs):
+            stop.set()
+            return request(*args, **kwargs)
+
+        session.request = cancel_in_request
+        with self.assertRaises(YoYoClawError) as raised:
+            client.wait_3d("model", "saved-task", stop_event=stop)
+        self.assertEqual(raised.exception.code, "provider_cancelled")
+        self.assertEqual(len(session.requests), 1)
+        self.assertEqual(clock.sleeps, [])
+
+    def test_expired_deadline_does_not_authenticate_or_query(self):
+        client, session, clock = self.client([], authenticated=False)
+        with self.assertRaises(YoYoClawError) as raised:
+            client.wait_3d("model", "saved-task", timeout=0)
+        self.assertEqual(raised.exception.code, "provider_timeout")
+        self.assertEqual(session.requests, [])
+        self.assertEqual(clock.sleeps, [])
+
+    def test_backoff_and_regular_poll_wait_respect_remaining_deadline(self):
+        for response in (_TransportResponse(503, None), _TransportResponse(200, {"status": "running"})):
+            with self.subTest(status=response.status_code):
+                client, session, clock = self.client([response])
+                with self.assertRaises(YoYoClawError) as raised:
+                    client.wait_3d("model", "saved-task", timeout=1)
+                self.assertEqual(raised.exception.code, "provider_timeout")
+                self.assertEqual(clock.sleeps, [1])
+                self.assertEqual(len(session.requests), 1)
+                self.assertEqual(session.requests[0][2]["timeout"], (0.5, 0.5))
+
+    def test_authentication_uses_query_budget_and_cannot_start_get_after_deadline(self):
+        client, session, clock = self.client([
+            _TransportResponse(200, {"access_token": "private-access-token"}),
+        ], authenticated=False)
+        request = session.request
+
+        def slow_auth(*args, **kwargs):
+            response = request(*args, **kwargs)
+            clock.now += 1
+            return response
+
+        session.request = slow_auth
+        with mock.patch.object(client, "_login_payload", return_value={}):
+            with self.assertRaises(YoYoClawError) as raised:
+                client.wait_3d("model", "saved-task", timeout=1)
+        self.assertEqual(raised.exception.code, "provider_timeout")
+        self.assertEqual(len(session.requests), 1)
+        self.assertTrue(session.requests[0][1].endswith("/auth/login"))
+        self.assertEqual(session.requests[0][2]["timeout"], (0.5, 0.5))
+
+    def test_failed_generation_submission_remains_single_and_ambiguous(self):
+        for status in (200, 408, 503):
+            with self.subTest(status=status):
+                client, session, clock = self.client([_TransportResponse(status, ValueError("not JSON"))])
+                with tempfile.TemporaryDirectory() as directory:
+                    reference = Path(directory) / "confirmed.png"
+                    reference.write_bytes(b"confirmed-design")
+                    with self.assertRaises(YoYoClawError) as raised:
+                        client.submit_3d("model", reference)
+                self.assertTrue(raised.exception.ambiguous)
+                self.assertFalse(raised.exception.retryable)
+                self.assertEqual(len(session.requests), 1)
+                self.assertEqual(session.requests[0][0], "POST")
+                self.assertTrue(session.requests[0][1].endswith("/model/chat/completions"))
+                self.assertEqual(clock.sleeps, [])
+
+    def test_diagnostics_include_context_and_bounded_metadata_without_private_content(self):
+        client, session, clock = self.client([
+            _TransportResponse(503, ValueError("private-body"), headers={
+                "Content-Type": "text/html; private-header=secret",
+                "Content-Length": "123", "Set-Cookie": "private-cookie",
+            }), self.completed(),
+        ])
+        output = io.StringIO()
+        with mock.patch("sys.stderr", output), diagnostic_context("diagnostic-job"):
+            client.wait_3d("private-query-model", "saved-task")
+        encoded = output.getvalue()
+        events = [json.loads(line) for line in encoded.splitlines()]
+        self.assertEqual([e["event"] for e in events], [
+            "yoyoclaw.request.failed", "yoyoclaw.task_query.retry", "yoyoclaw.task_query.recovered",
+        ])
+        failure = events[0]
+        self.assertEqual(failure["http_status"], 503)
+        self.assertEqual(failure["response_type"], "non_json")
+        self.assertEqual(failure["content_type"], "text/html")
+        self.assertEqual(failure["response_bytes"], 123)
+        self.assertEqual(failure["method"], "GET")
+        self.assertTrue(all(e["job_id"] == "diagnostic-job" for e in events))
+        self.assertTrue(all(e["endpoint"].endswith("/tasks/saved-task") for e in events))
+        for private in ("private-body", "private-header", "private-cookie", "private-query-model",
+                        "private-access-token", "root-secret", "hmac-secret", "access-key"):
+            self.assertNotIn(private, encoded)
+
+    def test_untrusted_mime_length_and_error_code_are_not_copied_to_diagnostics(self):
+        client, session, clock = self.client([
+            _TransportResponse(400, {"code": "https://private.invalid/?secret=value"}, headers={
+                "Content-Type": "private-mime", "Content-Length": "private-length",
+            }),
+        ])
+        output = io.StringIO()
+        with mock.patch("sys.stderr", output):
+            with self.assertRaises(YoYoClawError) as raised:
+                client.wait_3d("model", "saved-task")
+        self.assertEqual(raised.exception.code, "provider_http_error")
+        self.assertNotIn("private", str(raised.exception))
+        event = json.loads(output.getvalue())
+        self.assertEqual(event["content_type"], "other")
+        self.assertNotIn("response_bytes", event)
+        self.assertNotIn("private", output.getvalue())
 
 
 if __name__ == "__main__":

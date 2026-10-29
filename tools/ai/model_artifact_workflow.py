@@ -524,6 +524,18 @@ class ModelArtifactWorkflow:
                 raise TripoError(f"The GLB could not be read for model checks: {exc}") from None
         return analysis
 
+    def download_progress(self, job: Job) -> Callable[[int, int | None], None]:
+        def report(received: int, total: int | None) -> None:
+            self.ports.stop_boundary(job)
+            if not total or total <= 0:
+                return  # Keep the current milestone for unknown lengths.
+            value = 75 + 20 * min(max(received, 0), total) // total
+            with self.ports.lock:
+                if job.phase == "downloading_artifact" and value > job.progress:
+                    job.progress = value
+                    self.ports.persist(job)
+        return report
+
     def download_generation_artifact(self, job: Job, generation_id: str, attempt_number: int = 1, resume: bool = False) -> Path:
         existing = job.attempts[attempt_number - 1] if len(job.attempts) >= attempt_number else {}
         # GLB consumes the original generation result. OBJ explicitly includes one
@@ -555,9 +567,10 @@ class ModelArtifactWorkflow:
         self.ports.stop_boundary(job)
         raw = directory / "artifact-raw.download"
         if job.provider == "yoyoclaw":
-            gateway.download_artifact(result, raw, MAX_ARTIFACT_BYTES, output_format=job.output_format)
+            gateway.download_artifact(result, raw, MAX_ARTIFACT_BYTES, output_format=job.output_format,
+                                      progress=self.download_progress(job))
         else:
-            gateway.download_artifact(result, raw, MAX_ARTIFACT_BYTES)
+            gateway.download_artifact(result, raw, MAX_ARTIFACT_BYTES, progress=self.download_progress(job))
         self.ports.stop_boundary(job)
         with raw.open("rb") as stream:
             is_glb = stream.read(4) == b"glTF"
@@ -644,7 +657,7 @@ class ModelArtifactWorkflow:
         with self.ports.lock:
             job.phase = "downloading_artifact"
             job.message = "Preparing the generated artifact."
-            job.progress = 95
+            job.progress = 75
             self.ports.persist(job)
         work_directory = attempt_directory
         if resume:
@@ -654,7 +667,8 @@ class ModelArtifactWorkflow:
             work_directory = attempt_directory / f"recovery-{recovery_number:02d}"
             work_directory.mkdir(parents=False, exist_ok=False)
         destination = work_directory / "artifact-raw.download"
-        self.ports.tripo_gateway().download_artifact(result, destination, MAX_ARTIFACT_BYTES)
+        self.ports.tripo_gateway().download_artifact(result, destination, MAX_ARTIFACT_BYTES,
+                                                   progress=self.download_progress(job))
         self.ports.stop_boundary(job)
         if format_name == "obj":
             portrait_cleanup = job.image_metrics.get("portrait_skin_cleanup", {})

@@ -31,6 +31,7 @@
 class wxBoxSizer;
 class wxActivityIndicator;
 class wxDialog;
+class wxFrame;
 class wxPanel;
 class wxScrolledWindow;
 class wxStaticBitmap;
@@ -135,6 +136,7 @@ private:
     bool can_return_to_image_design() const;
     bool return_to_image_design();
     void update_model_page(const ModelGenerationUIState& state);
+    void layout_model_details();
     void ensure_model_preview(const ModelGenerationUIState& state);
     void clear_model_preview();
     void ensure_design_image(const std::string& path);
@@ -166,6 +168,8 @@ private:
     void retry_import_target_view();
     void finish_import_loading(bool retain_view_retry = false);
     void layout_import_loading();
+    void layout_import_transition_cover();
+    void restore_import_source_page();
     void check_import_first_frame();
     void open_print_preparation();
     bool can_save_print_project() const;
@@ -182,7 +186,7 @@ private:
     bool navigate_to_impl(Page page, bool allow_locked_image_view);
     wxWindow* page_route_root(Page page, ModelView view) const;
     wxWindow* active_page_focus_root() const;
-    void present_active_page();
+    void present_active_page(bool flush_children = false);
     void remember_active_page_focus();
     void restore_active_page_focus();
     // User navigation to the image page may inspect the current design while
@@ -257,13 +261,15 @@ private:
     bool m_import_in_progress {false};
     bool m_import_awaiting_frame {false};
     bool m_import_target_staged {false};
-    bool m_import_target_detached {false};
+    bool m_import_target_presenting {false};
     bool m_import_waiting_post_fit_frame {false};
     bool m_import_project_committed {false};
     bool m_import_view_retry_available {false};
     size_t m_import_frame_baseline {0};
+    wxSize m_import_fitted_viewport;
     std::shared_ptr<WorkbenchImportSession> m_import_session;
     wxDialog* m_import_loading {nullptr};
+    wxFrame* m_import_transition_cover {nullptr};
     wxActivityIndicator* m_import_activity {nullptr};
     WorkbenchLabel* m_import_stage {nullptr};
     WorkbenchLabel* m_import_elapsed {nullptr};
@@ -317,6 +323,7 @@ private:
     ImagePreview* m_model_stage_visual { nullptr };
     ModelPreview3D* m_model_preview_3d { nullptr };
     wxPanel* m_model_visual_host { nullptr };
+    wxPanel* m_model_details_column { nullptr };
     wxPanel* m_model_view_controls { nullptr };
     wxStaticText* m_model_stage_title { nullptr };
     wxStaticText* m_model_stage_summary { nullptr };

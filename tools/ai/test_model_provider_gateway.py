@@ -147,6 +147,14 @@ class ModelTaskGatewayTests(unittest.TestCase):
         self.assertEqual(result, Path("artifact.obj"))
         dependencies["download_task_artifact"].assert_called_once_with(task_result, destination, 12345)
 
+    def test_download_forwards_optional_byte_progress_without_submitting_tasks(self):
+        gateway, dependencies = self.gateway()
+        progress = mock.Mock()
+        gateway.download_artifact({}, Path("artifact.download"), 100, progress=progress)
+        dependencies["download_task_artifact"].assert_called_once_with({}, Path("artifact.download"), 100, progress=progress)
+        dependencies["create_text_task"].assert_not_called()
+        dependencies["create_conversion"].assert_not_called()
+
     def test_unsafe_artifact_error_is_classified_without_model_fallback(self):
         download = mock.Mock(side_effect=TripoError("Tripo returned an unsafe artifact location."))
         gateway, dependencies = self.gateway(download_task_artifact=download)

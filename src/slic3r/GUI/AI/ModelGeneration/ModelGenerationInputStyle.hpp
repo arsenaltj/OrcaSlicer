@@ -78,7 +78,8 @@ inline void apply_control(wxWindow* window, Role role, bool update_fonts = false
 // colors retain their own owners. Never recolor material swatches as UI chrome.
 inline void apply(wxWindow* window, bool update_fonts = true)
 {
-    if (!window || window->GetName() == "ai_content_color") return;
+    if (!window || window->GetName() == "ai_content_color" ||
+        window->GetName() == "ai_workbench_surface") return;
     if (window->GetName() == "ai_native_theme") {
         refresh_ai_appearance(window, update_fonts);
         return;

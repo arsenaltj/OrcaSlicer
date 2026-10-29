@@ -827,10 +827,13 @@ REM summary - what was produced, and what to do with it next. A dry run says
 REM so rather than claiming the files exist, but every line below that is
 REM worked out the same way in either run.
 :summary
+    for /f "usebackq delims=" %%n in (`powershell -NoProfile -Command "(Get-Content -LiteralPath '.\config\product.json' -Raw | ConvertFrom-Json).display_name"`) do set "product_name=%%n"
+    if not defined product_name goto :die
+    set "product_package=!product_name: =_!"
     for %%p in ("!DEP_TREE!") do set "dep_full=%%~fp"
     REM The binary only leaves the build tree when it is installed.
-    set "slicer_exe=%build_dir%\src\%build_type%\orca-slicer.exe"
-    if "%install_slicer%" == "ON" set "slicer_exe=%build_dir%\OrcaSlicer\orca-slicer.exe"
+    set "slicer_exe=%build_dir%\src\%build_type%\!product_name!.exe"
+    if "%install_slicer%" == "ON" set "slicer_exe=%build_dir%\OrcaSlicer\!product_name!.exe"
     for %%p in ("!slicer_exe!") do set "slicer_full=%%~fp"
     REM The 2026 generator writes OrcaSlicer.slnx, the releases before it
     REM OrcaSlicer.sln. A file already there wins, in case an older CMake
@@ -855,7 +858,7 @@ REM worked out the same way in either run.
     )
 
     if "%build_deps%" == "ON" echo   Dependencies  !dep_full!
-    if "%build_slicer%" == "ON" if "%linked%" == "ON" echo   OrcaSlicer    !slicer_full!
+    if "%build_slicer%" == "ON" if "%linked%" == "ON" echo   !product_name!    !slicer_full!
     if "%build_slicer%" == "ON" if not "%linked%" == "ON" echo   Target        %slicer_target%
     if "%build_slicer%" == "ON" if not "%using_ninja%" == "ON" echo   Solution      %build_full%\!solution!
     if "%pack_deps%" == "ON" if defined bundle echo   Bundle        !bundle!
@@ -863,10 +866,10 @@ REM worked out the same way in either run.
         REM The file name carries the version, which only CMake knows, so name
         REM the newest match, or the pattern when there is none yet.
         set "installer="
-        for /f "delims=" %%f in ('dir /b /o-d "!build_full!\OrcaSlicer_Windows_Installer_*.exe" 2^>nul') do (
+        for /f "delims=" %%f in ('dir /b /o-d "!build_full!\!product_package!_Windows_Installer_*.exe" 2^>nul') do (
             if not defined installer set "installer=!build_full!\%%f"
         )
-        if not defined installer set "installer=!build_full!\OrcaSlicer_Windows_Installer_*.exe"
+        if not defined installer set "installer=!build_full!\!product_package!_Windows_Installer_*.exe"
         echo   Installer     !installer!
     )
 

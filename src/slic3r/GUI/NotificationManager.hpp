@@ -8,9 +8,11 @@
 #include "I18N.hpp"
 #include "Jobs/ProgressIndicator.hpp"
 #include "Downloader.hpp"
+#include "CanvasNotificationLayout.hpp"
 
 #include <cstdint>
 #include <cstddef>
+#include <cmath>
 #include <imgui.h>
 #include <libslic3r/ObjectID.hpp>
 #include "libslic3r/PrintBase.hpp"
@@ -42,6 +44,7 @@ using PresetUpdateAvailableClickedEvent = SimpleEvent;
 wxDECLARE_EVENT(EVT_PRESET_UPDATE_AVAILABLE_CLICKED, PresetUpdateAvailableClickedEvent);
 using PrinterConfigUpdateAvailableClickedEvent = SimpleEvent;
 wxDECLARE_EVENT(EVT_PRINTER_CONFIG_UPDATE_AVAILABLE_CLICKED, PrinterConfigUpdateAvailableClickedEvent);
+wxDECLARE_EVENT(EVT_NOTIFICATION_LAYOUT_CHANGED, wxCommandEvent);
 
 using CancelFn = std::function<void()>;
 
@@ -363,6 +366,7 @@ public:
 	void device_ejected();
 	// renders notifications in queue and deletes expired ones
     void render_notifications(GLCanvas3D &canvas, float overlay_width, float bottom_margin, float right_margin);
+    const std::vector<wxRect>& visible_notification_bounds(GLCanvas3D& canvas) const;
 	// finds and closes all notifications of given type
 	void close_notification_of_type(const NotificationType type);
 	// True while a notification of this type is on screen (not closed or finished).
@@ -504,6 +508,13 @@ private:
 		float                  get_bottom() const { return m_bottom_y; }
 		//returns top in actual frame
 		float                  get_current_top() const { return m_top_y; }
+        wxRect layout_bounds(const Size& canvas, float right_gap) const
+        {
+            return wxRect(int(std::floor(canvas.get_width() - right_gap - m_window_width)),
+                int(std::floor(canvas.get_height() - m_top_y)),
+                int(std::ceil(m_window_width)), int(std::ceil(m_window_height)));
+        }
+        float overlay_gap() const { return m_line_height * 5; }
 		const NotificationType get_type() const { return m_data.type; }
 		const NotificationData& get_data() const { return m_data; }
         std::string             get_text1() const { return m_text1; }
@@ -1069,6 +1080,7 @@ private:
 	// in ImGuiWrapper::new_frame() on the first GL render, so updating a notification before that
 	// (PopNotification::init -> count_spaces -> ImGui::CalcTextSize) dereferences a null font.
 	bool m_imgui_ready{ false };
+    CanvasNotificationLayout m_canvas_layout;
 	// Target for wxWidgets events sent by clicking on the hyperlink available at some notifications.
 	wxEvtHandler*                m_evt_handler;
 	// Cache of IDs to identify and reuse ImGUI windows.

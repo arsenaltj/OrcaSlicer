@@ -16,11 +16,17 @@ import hmac
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import time
 from email.utils import format_datetime
 from typing import Any, Callable, Mapping
 from urllib.parse import quote, urlencode, urlsplit
+
+try:
+    from .ai_diagnostics import event as diagnostic_event, safe_endpoint
+except ImportError:  # pragma: no cover - direct sidecar execution
+    from ai_diagnostics import event as diagnostic_event, safe_endpoint
 
 try:
     import requests
@@ -113,6 +119,7 @@ MAX_IMAGE_BASE64_BYTES = 6 * 1024 * 1024
 MAX_MODEL_BYTES = 512 * 1024 * 1024
 DEFAULT_POLL_INTERVAL_SECONDS = 10.0
 DEFAULT_TASK_TIMEOUT_SECONDS = 1800.0
+TASK_QUERY_RETRY_DELAYS = (2.0, 4.0, 8.0)
 
 
 class YoYoClawError(RuntimeError):
@@ -134,6 +141,27 @@ class YoYoClawError(RuntimeError):
         self.retryable = retryable
         self.ambiguous = ambiguous
         self.status = status
+
+
+def _poll_timeout_error() -> YoYoClawError:
+    return YoYoClawError(
+        "YOYOClaw 3D task polling timed out; resume the existing task before retrying.",
+        code="provider_timeout", category="availability", retryable=True,
+    )
+
+
+def _response_metadata(response: Any) -> dict[str, Any]:
+    # Only record allowlisted MIME types and a numeric length, never headers or bodies.
+    headers = getattr(response, "headers", {})
+    mime = str(headers.get("Content-Type", "")).split(";", 1)[0].strip().lower()
+    fields: dict[str, Any] = {"content_type": mime if mime in {
+        "application/json", "application/problem+json", "text/html", "text/plain",
+        "application/octet-stream",
+    } else "other" if mime else "missing"}
+    length = str(headers.get("Content-Length", ""))
+    if re.fullmatch(r"[0-9]{1,12}", length):
+        fields["response_bytes"] = int(length)
+    return fields
 
 
 def _require_requests() -> Any:
@@ -360,15 +388,13 @@ class YoYoClawClient:
         }
 
     @staticmethod
-    def _response_data(response: Any) -> tuple[int, Any]:
+    def _response_data(response: Any) -> tuple[int, Any, str]:
         status = int(getattr(response, "status_code", 0) or 0)
         try:
             result = response.json()
         except (ValueError, TypeError):
-            raise YoYoClawError("YOYOClaw returned a non-JSON response.", code="invalid_provider_response", category="provider", status=status) from None
-        if not isinstance(result, Mapping):
-            raise YoYoClawError("YOYOClaw returned an invalid JSON object.", code="invalid_provider_response", category="provider", status=status)
-        return status, result
+            return status, None, "non_json"
+        return status, result, "json_object" if isinstance(result, Mapping) else "json_other"
 
     def _request(
         self,
@@ -380,6 +406,7 @@ class YoYoClawClient:
         timeout: float = 180.0,
         creation: bool = False,
         stream: bool = False,
+        deadline: float | None = None,
     ) -> Any:
         request_headers = {"Accept": "application/json", "Content-Type": "application/json"}
         if self._fingerprint:
@@ -390,31 +417,58 @@ class YoYoClawClient:
         if session is None:
             _require_requests()
             raise AssertionError("requests session initialization failed")
+        if deadline is not None:
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise _poll_timeout_error()
+            # Connect and read share the remaining query budget, including authentication.
+            timeout = min(timeout, remaining / 2)
+        started = self._monotonic()
+        endpoint = safe_endpoint(self.base_url + path)
         try:
             response = session.request(
                 method, self.base_url + path, data=body, headers=request_headers,
-                timeout=(15, timeout), allow_redirects=False, stream=stream,
+                timeout=(min(15, timeout), timeout), allow_redirects=False, stream=stream,
             )
         except Exception as exc:
             if _is_requests_error(exc):
+                diagnostic_event(
+                    "yoyoclaw.request.failed", level="WARNING", endpoint=endpoint, method=method,
+                    elapsed_ms=max(0, round((self._monotonic() - started) * 1000)),
+                    error_code="provider_connection_failed", category="network",
+                    retryable=not creation, ambiguous=creation,
+                )
                 raise YoYoClawError(
                     "YOYOClaw network request failed; the operation may have been accepted remotely.",
                     code="provider_connection_failed", category="network", retryable=not creation,
                     ambiguous=creation,
                 ) from None
             raise
-        status, result = self._response_data(response)
-        if not 200 <= status < 300 or (result.get("code") not in (None, "OK")):
-            error = result.get("error") if isinstance(result.get("error"), Mapping) else {}
-            provider_code = error.get("code") or result.get("code") or "provider_http_error"
-            if not isinstance(provider_code, str) or len(provider_code) > 100:
+        status, result, response_type = self._response_data(response)
+        valid_object = isinstance(result, Mapping)
+        if not 200 <= status < 300 or not valid_object or result.get("code") not in (None, "OK"):
+            temporary = status in {408, 429} or 500 <= status < 600
+            invalid = 200 <= status < 300 and not valid_object
+            error = result.get("error") if valid_object and isinstance(result.get("error"), Mapping) else {}
+            provider_code = error.get("code") or (result.get("code") if valid_object else None) or "provider_http_error"
+            if not isinstance(provider_code, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", provider_code):
                 provider_code = "provider_http_error"
-            category = "authentication" if status in {401, 403} else "rate_limit" if status == 429 else "network" if status >= 500 else "provider"
-            retryable = status == 429 or status >= 500
+            category = "authentication" if status in {401, 403} else "rate_limit" if status == 429 else "network" if temporary else "provider"
+            retryable = (temporary or invalid) and not creation
+            ambiguous = creation and (invalid or 500 <= status < 600 or status in {0, 408, 409})
+            code = "invalid_provider_response" if invalid else provider_code
+            diagnostic_event(
+                "yoyoclaw.request.failed", level="WARNING", endpoint=endpoint, method=method,
+                http_status=status, response_type=response_type, **_response_metadata(response),
+                elapsed_ms=max(0, round((self._monotonic() - started) * 1000)),
+                error_code="invalid_provider_response" if invalid else "provider_http_error",
+                category=category, retryable=retryable, ambiguous=ambiguous,
+            )
+            message = (f"YOYOClaw returned an invalid JSON response (HTTP {status})." if invalid else
+                       f"YOYOClaw request failed (HTTP {status}, code={provider_code}).")
             raise YoYoClawError(
-                f"YOYOClaw request failed (HTTP {status}, code={provider_code}).",
-                code=provider_code, category=category, retryable=(retryable and not creation),
-                ambiguous=creation and (status >= 500 or status in {408, 409}), status=status,
+                message, code=code, category=category, retryable=retryable,
+                ambiguous=ambiguous, status=status,
             )
         if stream:
             return response
@@ -433,41 +487,42 @@ class YoYoClawClient:
             expires = 3600.0
         self._expires_at = self._monotonic() + max(60.0, expires)
 
-    def login(self) -> None:
+    def login(self, *, deadline: float | None = None) -> None:
         if not self.config.configured:
             raise YoYoClawError("YOYOClaw credentials are not configured.", code="provider_not_configured", category="configuration")
         _require_http_url(self.base_url, https=True)
         self._fingerprint = hashlib.sha256(self.config.user_id.encode("utf-8")).hexdigest()
         body = _json_bytes(self._login_payload())
-        data = self._request("POST", "/yoyoclaw/auth/login", body=body, headers=self._login_headers(body), timeout=60, creation=False)
+        data = self._request("POST", "/yoyoclaw/auth/login", body=body, headers=self._login_headers(body), timeout=60, creation=False, deadline=deadline)
         self._set_tokens(data)
 
-    def _refresh(self) -> None:
+    def _refresh(self, *, deadline: float | None = None) -> None:
         if not self._refresh_token:
-            self.login()
+            self.login(deadline=deadline)
             return
         try:
-            data = self._request("POST", "/yoyoclaw/auth/refresh", body=_json_bytes({"refresh_token": self._refresh_token}), timeout=60)
+            data = self._request("POST", "/yoyoclaw/auth/refresh", body=_json_bytes({"refresh_token": self._refresh_token}), timeout=60, deadline=deadline)
             self._set_tokens(data)
         except YoYoClawError:
             self._access_token = ""
             self._refresh_token = ""
             raise
 
-    def _ensure_token(self) -> None:
+    def _ensure_token(self, *, deadline: float | None = None) -> None:
         if not self._access_token:
-            self.login()
+            self.login(deadline=deadline)
         elif self._monotonic() >= self._expires_at - 60:
-            self._refresh()
+            self._refresh(deadline=deadline)
 
-    def api(self, method: str, path: str, payload: Mapping[str, Any] | None = None, *, timeout: float = 180, creation: bool = False) -> Any:
-        self._ensure_token()
+    def api(self, method: str, path: str, payload: Mapping[str, Any] | None = None, *, timeout: float = 180, creation: bool = False, deadline: float | None = None) -> Any:
+        self._ensure_token(deadline=deadline)
         return self._request(
             method, path,
             body=None if payload is None else _json_bytes(payload),
             headers={"Authorization": f"Bearer {self._access_token}"},
             timeout=timeout,
             creation=creation,
+            deadline=deadline,
         )
 
     def whitelist_catalog(self, library: str) -> dict[str, Any]:
@@ -771,13 +826,63 @@ class YoYoClawClient:
             raise YoYoClawError("A YOYOClaw task reference is required.", code="invalid_task_reference", category="validation")
         path = "/yoyoclaw/model/3d-model-library/tasks/" + quote(task_id, safe="") + "?" + urlencode({"model": model})
         deadline = self._monotonic() + timeout
-        while self._monotonic() < deadline:
+        endpoint = safe_endpoint(self.base_url + path)
+        retries = 0
+
+        def check_cancelled() -> None:
             if stop_event is not None and stop_event.is_set():
                 raise YoYoClawError("YOYOClaw task polling was cancelled locally.", code="provider_cancelled", category="cancellation")
-            result = self.api("GET", path, timeout=60)
-            if not isinstance(result, Mapping):
-                raise YoYoClawError("YOYOClaw 3D task response is invalid.", code="invalid_provider_response", category="provider")
-            status = str(result.get("status", "")).strip().lower()
+
+        def pause(seconds: float) -> None:
+            check_cancelled()
+            seconds = min(seconds, max(0, deadline - self._monotonic()))
+            if stop_event is not None:
+                stop_event.wait(seconds)
+            else:
+                self._sleep(seconds)
+            check_cancelled()
+
+        while self._monotonic() < deadline:
+            check_cancelled()
+            try:
+                result = self.api("GET", path, timeout=60, deadline=deadline)
+                status = result.get("status") if isinstance(result, Mapping) else None
+                if not isinstance(status, str) or not status.strip():
+                    raise YoYoClawError(
+                        "YOYOClaw 3D task response omitted a valid status.",
+                        code="invalid_provider_response", category="provider", retryable=True,
+                    )
+                status = status.strip().lower()
+            except YoYoClawError as error:
+                check_cancelled()
+                if not error.retryable:
+                    raise
+                if self._monotonic() >= deadline:
+                    break
+                if retries >= len(TASK_QUERY_RETRY_DELAYS):
+                    diagnostic_event(
+                        "yoyoclaw.task_query.exhausted", level="WARNING", endpoint=endpoint,
+                        retries=retries, http_status=error.status, category=error.category,
+                    )
+                    raise YoYoClawError(
+                        f"{error} Status queries stopped after repeated temporary errors; resume the existing task.",
+                        code=error.code, category=error.category, retryable=True, status=error.status,
+                    ) from None
+                delay = min(TASK_QUERY_RETRY_DELAYS[retries], max(0, deadline - self._monotonic()))
+                retries += 1
+                diagnostic_event(
+                    "yoyoclaw.task_query.retry", level="WARNING", endpoint=endpoint,
+                    retry=retries, max_retries=len(TASK_QUERY_RETRY_DELAYS), delay_seconds=delay,
+                    http_status=error.status, category=error.category,
+                )
+                pause(delay)
+                continue
+            check_cancelled()
+            if self._monotonic() >= deadline:
+                break
+            if retries:
+                diagnostic_event("yoyoclaw.task_query.recovered", endpoint=endpoint, retries=retries)
+                retries = 0
             if progress is not None:
                 value = result.get("progress")
                 if isinstance(value, (int, float)):
@@ -786,14 +891,12 @@ class YoYoClawClient:
                 return dict(result)
             if status in {"failed", "error", "cancelled", "canceled", "expired"}:
                 raise YoYoClawError(f"YOYOClaw 3D task failed ({status}).", code="provider_task_failed", category="provider")
-            if not status:
-                raise YoYoClawError("YOYOClaw 3D task response omitted its status.", code="invalid_provider_response", category="provider")
-            if stop_event is not None and stop_event.wait(interval):
-                raise YoYoClawError("YOYOClaw task polling was cancelled locally.", code="provider_cancelled", category="cancellation")
-            self._sleep(0 if stop_event is not None else interval)
-        raise YoYoClawError("YOYOClaw 3D task polling timed out; resume the existing task before retrying.", code="provider_timeout", category="availability", retryable=True)
+            pause(interval)
+        diagnostic_event("yoyoclaw.task_query.timed_out", level="WARNING", endpoint=endpoint)
+        raise _poll_timeout_error()
 
-    def download(self, url: str, destination: str | os.PathLike[str], max_bytes: int) -> Path:
+    def download(self, url: str, destination: str | os.PathLike[str], max_bytes: int,
+                 *, progress: Callable[[int, int | None], None] | None = None) -> Path:
         try:
             target_url = _require_http_url(url)
         except ValueError:
@@ -810,6 +913,15 @@ class YoYoClawClient:
             status = int(getattr(response, "status_code", 0) or 0)
             if status != 200:
                 raise YoYoClawError(f"YOYOClaw artifact download failed (HTTP {status}).", code="artifact_download_failed", category="network", retryable=status >= 500)
+            headers = getattr(response, "headers", {})
+            length = str(headers.get("Content-Length", ""))
+            expected_size = int(length) if length.isascii() and length.isdigit() and len(length) <= 20 else 0
+            # requests may decode the body, so an encoded wire length cannot
+            # measure decoded file progress.
+            if headers.get("Content-Encoding", "identity").lower() != "identity":
+                expected_size = 0
+            if progress is not None:
+                progress(0, expected_size or None)
             path.parent.mkdir(parents=True, exist_ok=True)
             temporary.unlink(missing_ok=True)
             with temporary.open("wb") as stream:
@@ -820,6 +932,8 @@ class YoYoClawClient:
                     if total > max_bytes:
                         raise YoYoClawError("YOYOClaw artifact exceeds the local size limit.", code="artifact_too_large", category="validation")
                     stream.write(chunk)
+                    if progress is not None:
+                        progress(total, expected_size or None)
             if total == 0:
                 raise YoYoClawError("YOYOClaw artifact is empty.", code="invalid_provider_result", category="validation")
             temporary.replace(path)
@@ -840,6 +954,7 @@ class YoYoClawClient:
         max_bytes: int = MAX_MODEL_BYTES,
         *,
         output_format: str = "glb",
+        progress: Callable[[int, int | None], None] | None = None,
     ) -> Path:
         assets = task_result.get("data") if isinstance(task_result, Mapping) else None
         if not isinstance(assets, list):
@@ -857,4 +972,5 @@ class YoYoClawClient:
                 candidates.append(url)
         if not candidates:
             raise YoYoClawError("YOYOClaw did not return the selected model format.", code="invalid_provider_result", category="validation")
-        return self.download(candidates[0], output_path, max_bytes)
+        options = {"progress": progress} if progress is not None else {}
+        return self.download(candidates[0], output_path, max_bytes, **options)

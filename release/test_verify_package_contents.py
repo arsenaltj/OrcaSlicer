@@ -171,6 +171,10 @@ class PackageInspectionTests(unittest.TestCase):
             dependency_path = "python/Lib/site-packages/library.py"
             self.assertEqual(self.check({dependency_path: data})["status"], "NOT_DETECTED_WITHIN_SCOPE")
             self.assertEqual(self.check({"OrcaAI_x64/" + dependency_path: data})["status"], "NOT_DETECTED_WITHIN_SCOPE")
+            for root in ("HonorForge_x64/", "HonorForge_arm64/"):
+                with self.subTest(root=root):
+                    self.assertEqual(self.check({root + dependency_path: data})["status"], "NOT_DETECTED_WITHIN_SCOPE")
+                    self.assertEqual(self.check({root + dependency_path: data + b'\npassword="opaque-value"'})["status"], "BLOCKED_FINDINGS")
             self.assertEqual(self.check({dependency_path: data + b'\npassword="opaque-value"'})["status"], "BLOCKED_FINDINGS")
             self.assertEqual(self.check({"unrelated/" + dependency_path: data})["status"], "BLOCKED_FINDINGS")
             self.assertEqual(self.check({"config.py": data})["status"], "BLOCKED_FINDINGS")
@@ -208,6 +212,10 @@ class PackageInspectionTests(unittest.TestCase):
             dependency_path = "python/Lib/site-packages/library.py"
             self.assertEqual(self.check({dependency_path: data})["status"], "NOT_DETECTED_WITHIN_SCOPE")
             self.assertEqual(self.check({"OrcaAI_x64/" + dependency_path: data})["status"], "NOT_DETECTED_WITHIN_SCOPE")
+            for root in ("HonorForge_x64/", "HonorForge_arm64/"):
+                with self.subTest(root=root):
+                    self.assertEqual(self.check({root + dependency_path: data})["status"], "NOT_DETECTED_WITHIN_SCOPE")
+                    self.assertEqual(self.check({root + dependency_path: data + b"# changed\n"})["status"], "BLOCKED_FINDINGS")
             self.assertEqual(self.check({name: data + b"# changed\n"})["status"], "BLOCKED_FINDINGS")
             self.assertEqual(self.check({"unrelated/" + dependency_path: data})["status"], "BLOCKED_FINDINGS")
             record["tokens"] = []

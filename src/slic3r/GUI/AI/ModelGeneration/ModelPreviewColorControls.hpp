@@ -40,10 +40,10 @@ class ModelPreviewColorControls final : public wxPanel {
 public:
     using Color = PreviewPalette::Color;
     static constexpr int honor_suite_source = -1;
-    void set_original_appearance_error(const wxString& reason) {
-        if (m_original_appearance_error == reason) return;
-        m_original_appearance_error = reason;
-        sync_original_appearance_tooltips();
+    void set_workbench_palette_hint(const wxString& hint) {
+        if (m_workbench_palette_hint == hint) return;
+        m_workbench_palette_hint = hint;
+        sync_workbench_palette_tooltips();
     }
     void set_workbench_detail_choices(bool enabled) {
         if (enabled == !m_detail_choices.empty()) return;
@@ -226,7 +226,7 @@ public:
         m_workbench_suite_panel->SetBackgroundColour(panel->GetBackgroundColour());
         auto* suite_layout = new wxBoxSizer(wxVERTICAL);
         auto add_suite_choice = [&](const wxString& label, WorkbenchPaletteChoice*& choice) {
-            auto* title = new wxStaticText(m_workbench_suite_panel, wxID_ANY, label);
+            auto* title = new WorkbenchStaticText(m_workbench_suite_panel, wxID_ANY, label);
             title->SetForegroundColour(wxColour(190, 190, 196));
             suite_layout->Add(title, 0, wxBOTTOM, FromDIP(4));
             choice = new WorkbenchPaletteChoice(m_workbench_suite_panel);
@@ -240,7 +240,7 @@ public:
         m_workbench_suite_category->SetSelection(0);
         m_workbench_suite_choice->Append(wxString::FromUTF8(young_portrait_honor_suite().name));
         m_workbench_suite_choice->SetSelection(0);
-        m_workbench_suite_summary = new wxStaticText(m_workbench_suite_panel, wxID_ANY,
+        m_workbench_suite_summary = new WorkbenchStaticText(m_workbench_suite_panel, wxID_ANY,
             _L("6 个实体耗材 · 共 6 色"));
         m_workbench_suite_summary->SetForegroundColour(wxColour(235, 235, 235));
         suite_layout->Add(m_workbench_suite_summary, 0, wxTOP, FromDIP(2));
@@ -253,7 +253,7 @@ public:
         auto* count_row = new wxPanel(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
         count_row->SetBackgroundColour(panel->GetBackgroundColour());
         auto* count_layout = new wxBoxSizer(wxHORIZONTAL);
-        m_workbench_count_label = new wxStaticText(count_row, wxID_ANY, _L("当前色数"));
+        m_workbench_count_label = new WorkbenchStaticText(count_row, wxID_ANY, _L("当前色数"));
         m_workbench_count_label->SetForegroundColour(wxColour(235, 235, 235));
         count_layout->Add(m_workbench_count_label, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
         m_workbench_count_input = new WorkbenchNumberStepper(count_row, m_count->GetValue(), 1,
@@ -275,7 +275,7 @@ public:
             set_workbench_count(m_workbench_count->GetValue());
         });
         m_workbench_count_input->set_change_handler([this](int value) { set_workbench_count(value); });
-        sync_original_appearance_tooltips();
+        sync_workbench_palette_tooltips();
         panel->SetSizer(root);
         contents->Add(panel, 0, wxEXPAND);
         container->SetSizer(contents); update(); return container;
@@ -1556,9 +1556,8 @@ private:
             m_detail_count_value->SetLabel(wxString::Format("%d", m_count->GetValue()));
         }
     }
-    void sync_original_appearance_tooltips() {
-        const wxString unavailable = m_original_appearance_error.empty()
-            ? wxString{} : _L("原始配色证据不可用：") + m_original_appearance_error;
+    void sync_workbench_palette_tooltips() {
+        const wxString& unavailable = m_workbench_palette_hint;
         if (m_workbench_source)
             m_workbench_source->SetToolTip(unavailable.empty()
                 ? _L("选择 AI配色、手动试色或已保存色卡") : unavailable);
@@ -1651,7 +1650,7 @@ private:
     std::vector<size_t> m_project_color_slots, m_project_semantic_slots;
     std::string m_project_slot_identity, m_bound_project_identity;
     wxString m_notice, m_project_error, m_project_signature;
-    wxString m_original_appearance_error;
+    wxString m_workbench_palette_hint;
     int m_initial_count {6};
     bool m_enabled {false};
     std::chrono::steady_clock::time_point m_last_check {};

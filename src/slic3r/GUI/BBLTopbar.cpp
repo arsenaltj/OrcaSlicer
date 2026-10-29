@@ -25,6 +25,7 @@
 #include "Plater.hpp"
 #include "MainFrame.hpp"
 #include "Redesign/RedesignTheme.hpp"
+#include "Redesign/HonorBrandMark.hpp"
 #include "WebViewDialog.hpp"
 #include "PartPlate.hpp"
 #ifdef SLIC3R_CAD
@@ -141,6 +142,12 @@ public:
 void BBLTopbarArt::DrawBackground(wxDC& dc, wxWindow* wnd, const wxRect& rect)
 {
     const auto* frame = wxGetApp().mainframe;
+    if (frame && frame->is_redesign_shell_active()) {
+        dc.SetPen(*wxTRANSPARENT_PEN);
+        dc.SetBrush(wxBrush(RedesignTheme::panel_colour()));
+        dc.DrawRectangle(rect);
+        return;
+    }
     dc.SetBrush(wxBrush(frame && frame->is_redesign_shell_active()
         ? RedesignTheme::panel_colour() : wxColour(38, 46, 48)));
     wxRect clipRect = rect;
@@ -314,6 +321,10 @@ void BBLTopbar::Init(wxFrame* parent)
     logo_item->SetHoverBitmap(logo_bitmap);
     logo_item->SetActive(false);*/
 
+    m_brand_mark = new HonorBrandMark(this);
+    AddControl(m_brand_mark);
+    m_brand_mark->Hide();
+    m_legacy_tools_begin = GetToolCount();
     wxBitmap file_bitmap = create_scaled_bitmap("topbar_file", nullptr, TOPBAR_ICON_SIZE);
     m_file_menu_item = this->AddTool(ID_TOP_FILE_MENU, _L("File"), file_bitmap, wxEmptyString, wxITEM_NORMAL);
 
@@ -361,6 +372,7 @@ void BBLTopbar::Init(wxFrame* parent)
     this->AddSpacer(FromDIP(25));
     //this->AddStretchSpacer(1);
 
+    m_legacy_tools_end = GetToolCount();
     m_title_ctrl = new CenteredTitle(this);
     m_title_ctrl->SetFont(Label::Body_12);
     // The title is a child control of the AUI toolbar. Keep a small amount of
@@ -457,6 +469,7 @@ void BBLTopbar::Init(wxFrame* parent)
     this->Bind(wxEVT_AUITOOLBAR_TOOL_DROPDOWN, &BBLTopbar::OnRedo, this, wxID_REDO);
     this->Bind(wxEVT_AUITOOLBAR_TOOL_DROPDOWN, &BBLTopbar::OnUndo, this, wxID_UNDO);
     //this->Bind(wxEVT_AUITOOLBAR_TOOL_DROPDOWN, &BBLTopbar::OnModelStoreClicked, this, ID_MODEL_STORE);
+    UpdateCompactSlicingVisibility();
 }
 
 BBLTopbar::~BBLTopbar()
@@ -530,6 +543,7 @@ void BBLTopbar::SaveNormalRect()
 
 void BBLTopbar::ShowCalibrationButton(bool show)
 {
+    show = show && !m_honor_branding;
     m_calib_item->GetSizerItem()->Show(show);
     m_sizer->Layout();
     if (!show)
@@ -545,7 +559,7 @@ void BBLTopbar::ShowCompactSlicingTitlebar(bool compact)
         if (!m_compact_context_bound) {
             m_compact_context_bound = true;
             Bind(wxEVT_CONTEXT_MENU, [this](wxContextMenuEvent& event) {
-                if (m_compact_slicing && m_file_menu) PopupMenu(m_file_menu);
+                if (m_compact_slicing && !m_honor_branding && m_file_menu) PopupMenu(m_file_menu);
                 else event.Skip();
             });
         }
@@ -560,6 +574,21 @@ void BBLTopbar::ShowCompactSlicingTitlebar(bool compact)
     UpdateCompactSlicingVisibility();
 }
 
+void BBLTopbar::ShowHonorBranding(bool show)
+{
+    if (m_honor_branding == show) return;
+    m_honor_branding = show;
+    // The title control is 30 DIP high. AUI's default 2 DIP top/bottom margins
+    // otherwise reserve a taller slot than the manually sized titlebar paints.
+    SetMargins(FromDIP(5), FromDIP(5), show ? 0 : FromDIP(2), show ? 0 : FromDIP(2));
+    if (!show) {
+        m_toolbar_h = FromDIP(30);
+        SetMinSize(wxDefaultSize);
+    }
+    SetBackgroundColour(show ? RedesignTheme::panel_colour() : wxColour(38, 46, 48));
+    UpdateCompactSlicingVisibility();
+}
+
 void BBLTopbar::UpdateCompactSlicingVisibility()
 {
     // Realize recreates AUI sizer items. Apply visibility to those new items,
@@ -569,6 +598,15 @@ void BBLTopbar::UpdateCompactSlicingVisibility()
         auto* item = saved.first->GetSizerItem(); if (!item) continue;
         item->Show(!m_compact_slicing && saved.second);
     }
+    if (m_honor_branding) for (size_t index = m_legacy_tools_begin; index < m_legacy_tools_end; ++index) {
+        auto* tool = FindToolByIndex(index);
+        if (tool && tool->GetSizerItem()) tool->GetSizerItem()->Show(false);
+    }
+    if (m_brand_mark) {
+        if (auto* tool = FindTool(m_brand_mark->GetId()))
+            if (tool->GetSizerItem()) tool->GetSizerItem()->Show(m_honor_branding);
+        m_brand_mark->Show(m_honor_branding);
+    }
     if (m_title_ctrl) m_title_ctrl->Show(!m_compact_slicing && m_saved_slicing_title_visible);
     if (m_native_workspace_host) {
         if (auto* item = FindTool(m_native_workspace_host->GetId()))
@@ -576,12 +614,22 @@ void BBLTopbar::UpdateCompactSlicingVisibility()
         m_native_workspace_host->Show(m_native_workspace_tools);
     }
     m_sizer->Layout();
+    if (m_honor_branding) for (size_t index = m_legacy_tools_begin; index < m_legacy_tools_end; ++index)
+        if (auto* item = FindToolByIndex(index)->GetSizerItem()) item->SetDimension({-1000,0},{0,0});
     if (m_compact_slicing) for (auto& saved : m_saved_slicing_commands)
         if (auto* item = saved.first->GetSizerItem()) item->SetDimension({-1000,0},{0,0});
     // Realize may shrink the toolbar to its tool minimum. Both slicing modes
     // still need a frame-wide titlebar and window controls at the right edge.
+    if (m_honor_branding) {
+        SetMinSize(wxDefaultSize);
+        InvalidateBestSize();
+        m_toolbar_h = GetBestSize().y;
+        SetMinSize(wxSize(-1, m_toolbar_h));
+    }
     if (GetParent())
         SetSize(GetParent()->GetClientSize().GetWidth(), m_toolbar_h);
+    if (m_honor_branding && GetParent() && GetParent()->GetSizer())
+        GetParent()->GetSizer()->Layout();
     Refresh();
 }
 
@@ -707,8 +755,8 @@ void BBLTopbar::Rescale() {
     item = this->FindTool(wxID_CLOSE_FRAME);
     item->SetBitmap(create_scaled_bitmap("topbar_close", this, TOPBAR_ICON_SIZE));
 
-    Realize();
-    if (m_compact_slicing) UpdateCompactSlicingVisibility();
+    if (m_brand_mark) static_cast<HonorBrandMark*>(m_brand_mark)->Rescale();
+    UpdateCompactSlicingVisibility();
 }
 
 void BBLTopbar::OnIconize(wxAuiToolBarEvent& event)
@@ -750,7 +798,7 @@ void BBLTopbar::OnMouseLeftDClock(wxMouseEvent& mouse)
     wxPoint mouse_pos = this->ClientToScreen(mouse.GetPosition());
     wxAuiToolBarItem* item = this->FindToolByPosition(mouse.GetX(), mouse.GetY());
     // check whether mouse is not on any tool item
-    if (item != NULL && item->GetWindow() != m_title_ctrl) {
+    if (item != NULL && item->GetWindow() != m_title_ctrl && item->GetWindow() != m_brand_mark) {
         mouse.Skip();
         return;
     }
@@ -835,7 +883,7 @@ void BBLTopbar::OnMouseLeftDown(wxMouseEvent& event)
                                  << " title=" << (item != nullptr && item->GetWindow() == m_title_ctrl);
     }
 
-    if (item == NULL || item->GetWindow() == m_title_ctrl)
+    if (item == NULL || item->GetWindow() == m_title_ctrl || item->GetWindow() == m_brand_mark)
     {
 #ifdef __WXMSW__
         // WM_NCLBUTTONDOWN starts the native move loop. Do not capture the

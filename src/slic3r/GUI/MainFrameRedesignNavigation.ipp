@@ -1,4 +1,5 @@
     bool is_redesign_shell_active() const { return m_redesign_shell_active; }
+    void SetTitle(const wxString& title) override;
     void show_redesign_shell(bool show);
     wxString selected_tab_id() const;
     // Focus the active navigation surface without exposing the legacy notebook.

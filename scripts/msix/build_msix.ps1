@@ -9,30 +9,29 @@ Requires the Windows SDK (makeappx.exe) unless -StageOnly is used.
 #>
 param(
     [string]$InstallDir = "build/OrcaSlicer",
-    [string]$OutputPath = "build/OrcaSlicer_Windows_MSIX.msix",
+    [string]$OutputPath = "",
     [ValidateSet("x64", "arm64")]
     [string]$Architecture = "x64",
     [string]$StagingDir = "",
     [switch]$StageOnly,
     [string]$IdentityName = "OrcaSlicer.OrcaSlicer",
     [string]$Publisher = "CN=38F7EA55-C73B-4072-B3B2-C8E0EA15BB82",
-    [string]$PublisherDisplayName = "OrcaSlicer"
+    [string]$PublisherDisplayName = ""
 )
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 
-# MSIX version = MAJOR.MINOR.PATCH.0 from the SoftFever_VERSION semver triplet
-# (Store requires the revision field to be 0).
-$versionContent = Get-Content (Join-Path $repoRoot 'version.inc') -Raw
-if ($versionContent -notmatch 'set\(SoftFever_VERSION "(\d+)\.(\d+)\.(\d+)') {
-    throw "Could not parse SoftFever_VERSION from version.inc"
-}
-$msixVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
+. (Join-Path $repoRoot 'scripts/ProductConfig.ps1')
+$product = Get-ProductIdentity -Root $repoRoot
+# Store requires the revision field to be zero; the product triplet stays shared.
+$msixVersion = "$($product.Version).0"
+if (-not $OutputPath) { $OutputPath = "build/$($product.PackageStem)_Windows_MSIX.msix" }
+if (-not $PublisherDisplayName) { $PublisherDisplayName = $product.Name }
 Write-Output "MSIX version: $msixVersion"
 
-if (-not (Test-Path (Join-Path $InstallDir 'orca-slicer.exe'))) {
-    throw "orca-slicer.exe not found in '$InstallDir' - build the install tree first"
+if (-not (Test-Path (Join-Path $InstallDir $product.Exe))) {
+    throw "$($product.Exe) not found in '$InstallDir' - build the install tree first"
 }
 
 if ([string]::IsNullOrEmpty($StagingDir)) {
@@ -50,6 +49,9 @@ $manifest = $manifest.Replace('@MSIX_IDENTITY_NAME@', $IdentityName)
 $manifest = $manifest.Replace('@MSIX_PUBLISHER@', $Publisher)
 $manifest = $manifest.Replace('@MSIX_PUBLISHER_DISPLAY_NAME@', $PublisherDisplayName)
 $manifest = $manifest.Replace('@MSIX_ARCH@', $Architecture)
+$manifest = $manifest.Replace('@PRODUCT_NAME@', $product.Name)
+$manifest = $manifest.Replace('@PRODUCT_EXE@', $product.Exe)
+$manifest = $manifest.Replace('@PRODUCT_ALIAS@', "$($product.Command).exe")
 Set-Content -Path (Join-Path $StagingDir 'AppxManifest.xml') -Value $manifest -Encoding utf8
 
 if ($StageOnly) {

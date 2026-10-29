@@ -31,6 +31,26 @@ class ArtifactRestartRecoveryTests(unittest.TestCase):
         self.job.attempts = [{'attempt': 1, 'generation_task_id': 'existing-generation',
                               'status': 'rejected', 'error': 'artifact could not be downloaded'}]
 
+    def test_download_progress_ignores_unknown_lengths_and_does_not_regress_on_resume(self):
+        self.job.phase = 'downloading_artifact'
+        self.job.progress = 75
+        report = sidecar._model_artifact_workflow().download_progress(self.job)
+        with mock.patch.object(sidecar, '_persist_job') as persist:
+            report(1024, None)
+            self.assertEqual(self.job.progress, 75)
+            persist.assert_not_called()
+            report(50, 100)
+            self.assertEqual(self.job.progress, 85)
+            report(20, 100)
+            self.assertEqual(self.job.progress, 85)
+            report(999, 100)
+            self.assertEqual(self.job.progress, 95)
+            self.assertEqual(persist.call_count, 2)
+            self.job.phase = 'checking_model'
+            report(100, 100)
+            self.assertEqual(persist.call_count, 2)
+
+
     def test_restart_recovers_direct_glb_without_creating_any_paid_task(self):
         self.failed_direct_glb()
         sidecar._persist_job(self.job)
@@ -45,7 +65,7 @@ class ArtifactRestartRecoveryTests(unittest.TestCase):
         gateway = mock.Mock()
         gateway.start_or_reuse_model_task.return_value = ProviderTaskRef('tripo', 'existing-generation', True)
         gateway.wait_for_task.return_value = {'model': 'mock-only'}
-        gateway.download_artifact.side_effect = lambda result, path, maximum: path.write_bytes(raw)
+        gateway.download_artifact.side_effect = lambda result, path, maximum, **options: path.write_bytes(raw)
         with mock.patch.object(sidecar, '_MODEL_PROVIDER_GATEWAY', gateway), \
              mock.patch.object(sidecar, '_automatic_visual_review'):
             sidecar._generate_job(restored, 'synthetic object', True)

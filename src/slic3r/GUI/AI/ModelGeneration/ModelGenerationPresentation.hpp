@@ -96,6 +96,28 @@ wxString palette_role_label(const std::string& role);
 double minimum_palette_distance(const std::vector<std::string>& palette);
 int remap_progress(int value, int input_start, int input_end, int output_start, int output_end);
 int display_progress(const AIModelGenerationClient::JobStatus& status);
+// Independent 3D presentation. Service progress remains unchanged; estimated
+// progress never becomes a provider measurement or crosses a phase boundary.
+class ModelGenerationProgress
+{
+public:
+    static double clock_seconds();
+    void begin(const std::string& job_id, double now = clock_seconds());
+    int synchronize(const AIModelGenerationClient::JobStatus& status, double now = clock_seconds());
+    int download(size_t received, size_t total);
+    int loading();
+    int complete();
+    void pause() { m_estimated = false; }
+    int value() const { return m_value; }
+    bool estimated() const { return m_estimated; }
+    int elapsed_seconds() const;
+    static int viewport_progress(int progress, bool loaded);
+private:
+    std::string m_job_id;
+    int m_value { 0 };
+    bool m_estimated { false };
+    double m_elapsed { 0.0 }, m_last_update { 0.0 };
+};
 // The caller supplies a monotonic clock so polling and page changes cannot
 // restart a countdown. Zero estimate means insufficient history.
 class DesignGenerationWait

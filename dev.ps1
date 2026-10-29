@@ -34,6 +34,8 @@ if ($Action -eq 'Test' -and -not $TestPattern.Count) { throw 'Test requires -Tes
 if ($Action -eq 'CppTest' -and (-not $TestSuite -or -not $TestLabel)) { throw 'CppTest requires -TestSuite and -TestLabel; select affected tests explicitly.' }
 if ($Configure -and $Action -in @('Sidecar', 'Test', 'Check', 'Setup')) { throw 'Use Run -Configure for native configuration changes.' }
 $root = $PSScriptRoot
+. (Join-Path $root 'scripts/ProductConfig.ps1')
+$product = Get-ProductIdentity -Root $root
 if ($Action -eq 'Review') {
     $reviewPython = Join-Path $root '.tmp/architecture-review/tool-env/Scripts/python.exe'
     if (-not (Test-Path -LiteralPath $reviewPython -PathType Leaf)) {
@@ -219,7 +221,7 @@ try {
         if (-not $NoLaunch) {
             Assert-LaunchPortAvailable
             # This is the interactive trial the user needs to see and operate.
-            $app = Start-Process -FilePath (Join-Path $runtime 'orca-slicer.exe') -ArgumentList @('--datadir', ('"' + $data + '"')) -WorkingDirectory $runtime -WindowStyle Normal -PassThru
+            $app = Start-Process -FilePath (Join-Path $runtime $product.Exe) -ArgumentList @('--datadir', ('"' + $data + '"')) -WorkingDirectory $runtime -WindowStyle Normal -PassThru
             if ($app.WaitForExit(1500)) { throw "Trial application exited during startup (exit $($app.ExitCode)); inspect $data/log." }
             $result.application_pid = $app.Id
         }

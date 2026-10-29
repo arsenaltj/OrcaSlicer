@@ -327,7 +327,8 @@ public:
                                const boost::filesystem::path& path, PathFn on_complete, ErrorFn on_error);
     void download_input(const std::string& job_id, const boost::filesystem::path& path, PathFn on_complete, ErrorFn on_error);
     void download_artifact(const std::string& job_id, const std::string& format,
-                           const boost::filesystem::path& path, PathFn on_complete, ErrorFn on_error);
+                           const boost::filesystem::path& path, PathFn on_complete, ErrorFn on_error,
+                           std::function<void(size_t, size_t)> on_progress = {});
     void download_color_intent(const std::string& job_id, const std::string& schema,
                                const std::string& sha256, const boost::filesystem::path& artifact_path,
                                const boost::filesystem::path& path, PathFn on_complete, ErrorFn on_error);
@@ -355,7 +356,8 @@ private:
     static std::optional<JobStatus> parse_job(const json& job);
     static json serialize_print_settings(const ImagePrintSettings& settings);
     void download(const std::string& path, const boost::filesystem::path& destination, size_t size_limit,
-                  PathFn on_complete, ErrorFn on_error, DownloadValidator validator = {});
+                  PathFn on_complete, ErrorFn on_error, DownloadValidator validator = {},
+                  std::function<void(size_t, size_t)> on_progress = {});
     void cancel_active_request();
 
     std::string           m_endpoint;

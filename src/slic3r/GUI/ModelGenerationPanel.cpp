@@ -428,6 +428,8 @@ void ModelGenerationPanel::publish_ui_state()
     state.can_open_workbench = state.model_ready && !state.busy &&
         m_model_preview_ready && is_nonempty_model(m_displayed_model_path);
     state.progress = m_generation_progress->GetValue();
+    state.model_progress_estimated = m_model_progress.estimated();
+    state.model_elapsed_seconds = m_model_progress.elapsed_seconds();
     state.job_id = m_job_id;
     state.model_asset_id = m_displayed_model_job_id;
     if (!m_job_id.empty() && m_design_timing_job_id == m_job_id) {
@@ -2441,7 +2443,8 @@ void ModelGenerationPanel::on_retexture_from_library(const std::string& geometry
     if (m_model_preview != nullptr)
         m_model_preview->clear();
     const uint64_t sequence = m_sequence;
-    update_progress(40, 3, _L("保留造型并上色"));
+    m_model_progress.begin(m_job_id);
+    update_progress(0, 3, _L("保留造型并上色"));
     m_workflow_phase->SetLabel(_L("保留造型并上色"));
     m_status->SetLabel(_L("正在提交保留造型的纹理任务..."));
     refresh_controls();
@@ -2522,6 +2525,7 @@ void ModelGenerationPanel::on_stop(wxCommandEvent&)
         return;
     }
     m_ui_stopping = true;
+    m_model_progress.pause();
     m_status->SetLabel(_L("正在停止本地任务；已提交的远端任务可能仍会继续运行并计费。"));
     m_result_summary->SetLabel(_L("正在停止"));
     refresh_controls();
@@ -5059,30 +5063,6 @@ void ModelGenerationPanel::set_preview_zoom(double zoom)
     refresh_controls();
 }
 
-void ModelGenerationPanel::update_progress(int value, int step, const wxString& phase)
-{
-    m_generation_progress->Show();
-    m_progress_percent->Show();
-    value = std::clamp(value, 0, 100);
-    step = std::clamp(step, 1, 4);
-    m_generation_progress->SetValue(value);
-    m_workflow_phase->SetLabel(phase);
-    m_workflow_phase->SetToolTip(wxString::Format(_L("第 %d 步，共 4 步"), step));
-    m_progress_percent->SetLabel(wxString::Format("%d%%", value));
-    for (size_t index = 0; index < m_step_labels.size(); ++index) {
-        if (m_step_labels[index] == nullptr)
-            continue;
-        const int label_step = int(index) + 1;
-        const bool active = label_step == step;
-        const bool complete = label_step < step;
-        m_step_labels[index]->SetForegroundColour(active || complete ? wxColour(24, 112, 105)
-                                                                     : wxColour(132, 143, 145));
-        wxFont font = m_step_labels[index]->GetFont();
-        font.SetWeight(active ? wxFONTWEIGHT_BOLD : wxFONTWEIGHT_NORMAL);
-        m_step_labels[index]->SetFont(font);
-    }
-}
-
 void ModelGenerationPanel::update_workflow(const AIModelGenerationClient::JobStatus* status)
 {
     const bool image_mode = m_job_preview_expected ||
@@ -5092,7 +5072,8 @@ void ModelGenerationPanel::update_workflow(const AIModelGenerationClient::JobSta
     int step = 1;
     int progress = 0;
     if (status != nullptr) {
-        progress = display_progress(*status);
+        progress = m_ui_model_generation_context || m_journey_model_submitted
+            ? m_model_progress.synchronize(*status) : display_progress(*status);
         if (status->state == "recommending_palette") {
             phase = _L("推荐打印配色");
             guidance = _L("AI 正在分析主体、风格和适合打印的大色区");

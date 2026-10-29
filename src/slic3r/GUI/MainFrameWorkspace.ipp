@@ -249,6 +249,9 @@ void MainFrame::update_layout()
                 });
         }
         m_redesign_shell_active = true;
+#ifndef __APPLE__
+        if (m_topbar) m_topbar->ShowHonorBranding(true);
+#endif
         m_redesign_shell->Show();
         m_tabpanel->Hide();
         m_plater->Hide();
@@ -370,6 +373,13 @@ void MainFrame::show_redesign_shell(bool show)
     m_redesign_shell_requested = show;
     if (m_loaded)
         update_layout();
+}
+
+void MainFrame::SetTitle(const wxString& title)
+{
+    const wxString legacy_suffix = " - OrcaSlicer";
+    DPIFrame::SetTitle(title.EndsWith(legacy_suffix)
+        ? title.Left(title.length() - legacy_suffix.length()) + " - " + SLIC3R_APP_NAME : title);
 }
 
 wxString MainFrame::selected_tab_id() const

@@ -178,8 +178,8 @@ endif ()
 
 if (NOT WIN32 AND NOT APPLE)
     # Binary name on unix like systems (Linux, Unix)
-    set_target_properties(OrcaSlicer PROPERTIES OUTPUT_NAME "orca-slicer")
-    set(SLIC3R_APP_CMD "orca-slicer")
+    set_target_properties(OrcaSlicer PROPERTIES OUTPUT_NAME "${HONOR_PRODUCT_COMMAND}")
+    set(SLIC3R_APP_CMD "${HONOR_PRODUCT_COMMAND}")
     configure_file(${CMAKE_CURRENT_SOURCE_DIR}/dev-utils/platform/unix/build_linux_image.sh.in ${CMAKE_CURRENT_BINARY_DIR}/build_linux_image.sh USE_SOURCE_PERMISSIONS @ONLY)
 endif ()
 
@@ -233,11 +233,11 @@ if (WIN32)
     target_compile_definitions(OrcaSlicer_app_gui PRIVATE "$<$<NOT:$<CONFIG:RelWithDebInfo>>:SLIC3R_WRAPPER_NOCONSOLE>")
     add_dependencies(OrcaSlicer_app_gui OrcaSlicer)
     set_target_properties(OrcaSlicer_app_gui PROPERTIES
-        OUTPUT_NAME "orca-slicer"
         WIN32_EXECUTABLE "$<NOT:$<CONFIG:RelWithDebInfo>>"
     )
     target_link_libraries(OrcaSlicer_app_gui PRIVATE boost_headeronly)
 endif ()
+include("${CMAKE_SOURCE_DIR}/cmake/HonorProductTargets.cmake")
 
 # Link the resources dir to where Slic3r GUI expects it
 set(output_dlls_Release "")
@@ -348,7 +348,7 @@ else ()
     if (APPLE AND NOT CMAKE_MACOSX_BUNDLE)
         # On OSX, the name of the binary matches the name of the Application.
         add_custom_command(TARGET OrcaSlicer POST_BUILD
-            COMMAND ln -sf OrcaSlicer orca-slicer
+            COMMAND ln -sf "${HONOR_PRODUCT_NAME}" "${HONOR_PRODUCT_COMMAND}"
             WORKING_DIRECTORY "$<TARGET_FILE_DIR:OrcaSlicer>"
             VERBATIM)
     endif ()
@@ -363,15 +363,13 @@ else ()
     endif ()
     if (CMAKE_MACOSX_BUNDLE)
         if (CMAKE_CONFIGURATION_TYPES)
-            set(BIN_RESOURCES_DIR "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/OrcaSlicer.app/Contents/Resources")
-            set(BIN_DIR "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/OrcaSlicer.app/Contents/MacOS")
+            set(BIN_RESOURCES_DIR "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/${HONOR_PRODUCT_NAME}.app/Contents/Resources")
+            set(BIN_DIR "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/${HONOR_PRODUCT_NAME}.app/Contents/MacOS")
         else()
-            set(BIN_RESOURCES_DIR "${CMAKE_CURRENT_BINARY_DIR}/OrcaSlicer.app/Contents/Resources")
-            set(BIN_DIR "${CMAKE_CURRENT_BINARY_DIR}/OrcaSlicer.app/Contents/MacOS")
+            set(BIN_RESOURCES_DIR "${CMAKE_CURRENT_BINARY_DIR}/${HONOR_PRODUCT_NAME}.app/Contents/Resources")
+            set(BIN_DIR "${CMAKE_CURRENT_BINARY_DIR}/${HONOR_PRODUCT_NAME}.app/Contents/MacOS")
         endif()
         set(MACOSX_BUNDLE_ICON_FILE Icon.icns)
-        set(MACOSX_BUNDLE_BUNDLE_NAME "OrcaSlicer")
-        set(MACOSX_BUNDLE_SHORT_VERSION_STRING ${SoftFever_VERSION})
         set(MACOSX_BUNDLE_COPYRIGHT "Copyright(C) 2022-2024 Li Jiang All Rights Reserved")
         if (XCODE)
             # Xcode's CodeSign phase fails on the bundled Python runtime's dotted

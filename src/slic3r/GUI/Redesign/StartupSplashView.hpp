@@ -1,6 +1,8 @@
 #pragma once
 
 #include "RedesignTheme.hpp"
+#include "HonorBrandMark.hpp"
+#include "libslic3r_version.h"
 
 #include <algorithm>
 #include <memory>
@@ -50,18 +52,24 @@ inline void paint(wxWindow* window, wxDC& dc, const wxString& version,
         dc.DrawBitmap(logo, (bounds.x - logo.GetWidth()) / 2, y(98), true);
 
     const auto draw_label = [&](const wxString& label, int pixels, int top, const wxColour& colour) {
-        dc.SetFont(font(window, pixels));
+        int fitted_pixels = pixels;
+        dc.SetFont(font(window, fitted_pixels));
+        while (dc.GetTextExtent(label).x > bounds.x - window->FromDIP(48) && fitted_pixels > 16)
+            dc.SetFont(font(window, --fitted_pixels));
         dc.SetTextForeground(colour);
         const wxString fitted = wxControl::Ellipsize(label, dc, wxELLIPSIZE_END,
                                                      std::max(1, bounds.x - window->FromDIP(48)));
         const wxSize extent = dc.GetTextExtent(fitted);
-        // Match Figma's normal line-box leading with native font metrics.
-        const int line_padding = window->FromDIP(pixels == 56 ? 5 : 2);
-        dc.DrawText(fitted, (bounds.x - extent.x) / 2, y(top) + line_padding);
+        dc.DrawText(fitted, (bounds.x - extent.x) / 2, top);
+        return extent.y;
     };
-    draw_label("NAME", 56, 282, wxColour(255, 204, 48));
-    draw_label(version, 32, 426, wxColour(117, 117, 118));
-    draw_label(message, 20, 516, wxColour(117, 117, 118));
+    // Keep the name and version together using the rendered logo and text heights.
+    const int logo_bottom = y(98) + (logo.IsOk() ? logo.GetHeight() : std::max(0, icon_size));
+    const int name_top = logo_bottom + y(40);
+    const int name_height = draw_label(wxString::FromUTF8(SLIC3R_APP_NAME), 40, name_top,
+                                      wxColour(255, 204, 48));
+    draw_label(version, 24, name_top + name_height + y(18), wxColour(117, 117, 118));
+    draw_label(message, 20, y(516) + window->FromDIP(2), wxColour(117, 117, 118));
 
     const int bar_height = window->FromDIP(8);
     dc.SetPen(*wxTRANSPARENT_PEN);

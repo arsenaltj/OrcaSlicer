@@ -35,7 +35,7 @@ Write-Dump "$work\clean.txt" @($copy, $trivial)
 Write-Dump "$work\empty.txt" @()
 Write-Dump "$work\a dir, with a comma\clean.txt" @($copy)
 
-# A build directory whose compiler has an llvm-pdbutil beside it but no OrcaSlicer.pdb.
+# A build directory whose compiler has an llvm-pdbutil beside it but no Honor Forge Studio.pdb.
 # Nothing runs the stand-in; the check stops before it gets there.
 $build = "$work\build"
 New-Item -ItemType Directory -Force -Path "$build\bin", "$build\src\Release" | Out-Null
@@ -57,8 +57,8 @@ $cases = @(
        Exit = 1; Contains = @('broken.txt: 2 exception classes', 'clean.txt: 2 exception classes') }
     @{ Name = 'a path with a comma stays whole'; Args = @('-Dump', "$work\a dir, with a comma\clean.txt")
        Exit = 0; Contains = @('clean.txt: 1 exception classes') }
-    @{ Name = 'a build without OrcaSlicer.pdb fails'; Args = @('-BuildDir', $build)
-       Exit = 1; Contains = @('No OrcaSlicer.pdb in') }
+    @{ Name = 'a build without Honor Forge Studio.pdb fails'; Args = @('-BuildDir', $build)
+       Exit = 1; Contains = @('No Honor Forge Studio.pdb in') }
     @{ Name = 'a compiler that is not on PATH is named'; Args = @('-BuildDir', $bare)
        Exit = 1; Contains = @('no-such-clang-cl.exe, the compiler in') }
     @{ Name = 'a missing build directory is named'; Args = @('-BuildDir', "$work\nowhere")
@@ -70,7 +70,8 @@ $cases = @(
 $failed = 0
 foreach ($case in $cases) {
     $ErrorActionPreference = 'Continue'
-    $output = (& powershell -NoProfile -File $check @($case.Args) 2>&1 | Out-String)
+    $shell = if (Get-Command pwsh -ErrorAction SilentlyContinue) { 'pwsh' } else { 'powershell' }
+    $output = (& $shell -NoProfile -File $check @($case.Args) 2>&1 | Out-String)
     $code = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
     $problems = @()

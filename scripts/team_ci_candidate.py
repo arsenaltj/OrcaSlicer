@@ -28,7 +28,7 @@ def git(root: Path, *args: str) -> str:
 def scope(paths: list[str], *, initial: bool = False, upstream: bool = False) -> dict:
     cross = initial or upstream or any(
         p.startswith(("deps/", "deps_src/", "cmake/", ".github/actions/", ".github/workflows/"))
-        or p.endswith("CMakeLists.txt") or p == "version.inc"
+        or p.endswith("CMakeLists.txt") or p in {"version.inc", "config/product.json"}
         or p.startswith(("build_linux", "build_release_macos", "scripts/build_", "scripts/run_unit_tests")) for p in paths)
     # Every current candidate needs its own Windows build and C++ test receipt.
     # Path-only changes cannot inherit an old green check for another SHA.

@@ -855,7 +855,7 @@ void ModelGenerationPanel::synchronize_workbench_project_palette(bool activate_p
             m_workbench_filament_rows.push_back(std::move(view));
         }
         if (!state.mixed.empty()) {
-            m_workbench_mixed_filament_title = new wxStaticText(
+            m_workbench_mixed_filament_title = new WorkbenchStaticText(
                 m_workbench_project_colors, wxID_ANY, _L("叠色配方"));
             m_workbench_mixed_filament_title->SetForegroundColour(wxColour(190, 190, 196));
             contents->Add(m_workbench_mixed_filament_title, 0, wxTOP | wxBOTTOM, FromDIP(5));
@@ -889,7 +889,7 @@ void ModelGenerationPanel::synchronize_workbench_project_palette(bool activate_p
                     view.components->SetSizer(wrap);
                     for (size_t i = 0; i < ids.size(); ++i) {
                         if (i) {
-                            auto* plus = new wxStaticText(view.components, wxID_ANY, "+");
+                            auto* plus = new WorkbenchStaticText(view.components, wxID_ANY, "+");
                             plus->SetForegroundColour(wxColour(190, 190, 196));
                             wrap->Add(plus, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(2));
                         }
@@ -903,7 +903,7 @@ void ModelGenerationPanel::synchronize_workbench_project_palette(bool activate_p
                                 weak->workbench_snapshot().can_edit_project_colors) weak->m_project_color_edit(id);
                         });
                         wrap->Add(chip, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(2));
-                        auto* ratio = new wxStaticText(view.components, wxID_ANY, wxEmptyString);
+                        auto* ratio = new WorkbenchStaticText(view.components, wxID_ANY, wxEmptyString);
                         ratio->SetMinSize(FromDIP(wxSize(30, -1)));
                         ratio->SetForegroundColour(wxColour(190, 190, 196));
                         wrap->Add(ratio, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(3));

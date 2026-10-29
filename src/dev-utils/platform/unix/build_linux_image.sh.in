@@ -196,6 +196,7 @@ echo -n "[9/9] Generating Linux app..."
         exit 1
     fi
     cp -fl "${ORIGINAL_BINARY_LOCATION}" "$BIN_DIR/@SLIC3R_APP_CMD@"
+    ln -sfn "@SLIC3R_APP_CMD@" "$BIN_DIR/orca-slicer"
 
     # Bundle the embedded Python runtime (interpreter + stdlib) that CMake staged
     # next to the binary. OrcaSlicer resolves PYTHONHOME at <resources_dir>/../lib/python,
@@ -457,7 +458,7 @@ echo -n "Creating Appimage for distribution..."
     chmod +x ../build_appimage.sh
     if ../build_appimage.sh; then
         popd > /dev/null
-        mv package_appimage/"@SLIC3R_APP_KEY@_Linux_V@SoftFever_VERSION@.AppImage" "@SLIC3R_APP_KEY@_Linux_V@SoftFever_VERSION@.AppImage"
+        mv package_appimage/"@HONOR_PRODUCT_PACKAGE_STEM@_Linux_@HONOR_PRODUCT_DISPLAY_VERSION@.AppImage" "@HONOR_PRODUCT_PACKAGE_STEM@_Linux_@HONOR_PRODUCT_DISPLAY_VERSION@.AppImage"
         rm -fR package_appimage
     else
         popd > /dev/null

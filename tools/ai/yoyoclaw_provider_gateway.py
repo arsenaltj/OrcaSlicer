@@ -319,9 +319,11 @@ class YoYoClawModelProviderGateway:
         max_bytes: int,
         *,
         output_format: str = "glb",
+        progress: Any = None,
     ) -> Path:
         try:
-            return self._client().download_result_artifact(task_result, output_path, max_bytes, output_format=output_format)
+            options = {"progress": progress} if progress is not None else {}
+            return self._client().download_result_artifact(task_result, output_path, max_bytes, output_format=output_format, **options)
         except YoYoClawError as exc:
             raise _error(exc, "artifact_download") from None
 

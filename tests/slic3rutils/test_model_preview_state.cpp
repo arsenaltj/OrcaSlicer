@@ -1,5 +1,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/ModelPreview3D.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp"
+#include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
+#include "slic3r/GUI/AI/Model/BeautyDocument.hpp"
 #include "../test_utils.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -233,6 +235,150 @@ TEST_CASE("Original appearance topology mapping follows preview color precedence
     CHECK_THAT(mapped[3][0], Catch::Matchers::WithinAbs(0.f, 0.0001f));
     CHECK_THAT(mapped[3][1], Catch::Matchers::WithinAbs(0.f, 0.0001f));
     CHECK_THAT(mapped[3][2], Catch::Matchers::WithinAbs(0.f, 0.0001f));
+}
+
+TEST_CASE("Whole-face colour exports preserve original corners after saving and reopening",
+          "[ModelPreviewState][OriginalAppearance][Regression]")
+{
+    ScopedTemporaryDir temporary("orca-original-appearance-colour-export");
+    const auto root = temporary.path();
+    const auto models = root / "models";
+    boost::filesystem::create_directories(models);
+    const auto mesh = original_appearance_fixture_mesh();
+    const auto colors = original_appearance_fixture_colors(mesh.vertices.size());
+    const auto original = models / "original.obj";
+    const auto source = models / "source.obj";
+    const auto candidate = models / "candidate.obj";
+    std::string error;
+    REQUIRE(Slic3r::AI::write_model_artifact(original, mesh, colors, error));
+    REQUIRE(Slic3r::AI::write_model_artifact(source, mesh,
+        std::vector<Slic3r::RGBA>(mesh.vertices.size(), {0.f, 0.f, 0.f, 1.f}), error));
+    const auto origin_hash = Slic3r::AI::model_artifact_sha256(original);
+    const Slic3r::GUI::OriginalAppearanceReference inherited {
+        boost::filesystem::canonical(original), origin_hash, selection::topology_fingerprint(mesh),
+        boost::filesystem::canonical(original), origin_hash
+    };
+    Slic3r::AI::ModelFinishingOptions options;
+    options.beauty_appearance = true;
+    options.smooth_surface = options.repair_mesh = false;
+    options.appearance.face_weights.assign(mesh.indices.size(), 1.f);
+    options.appearance.face_target_colors.assign(mesh.indices.size(), {.2f, .2f, .2f});
+    Slic3r::AI::BeautyDocument document;
+    document.geometry_id = selection::geometry_fingerprint(mesh);
+    document.face_count = mesh.indices.size();
+    document.face_patch.assign(mesh.indices.size(), 0);
+    options.beauty_document = document.encode();
+    for (size_t face = 0; face < mesh.indices.size(); ++face) options.selected_faces.push_back(face);
+    const auto finished = Slic3r::AI::finish_model_artifact(source, candidate, options);
+    INFO(finished.error);
+    REQUIRE(finished.success);
+    Slic3r::TriangleMesh saved;
+    Slic3r::ObjInfo saved_colors;
+    REQUIRE(Slic3r::AI::load_model_artifact(candidate, saved, saved_colors, error));
+    REQUIRE(saved.its.vertices.size() == mesh.indices.size() * 3);
+    CHECK(selection::topology_fingerprint(saved.its) != inherited.topology_sha256);
+    CHECK(selection::geometry_fingerprint(saved.its) == document.geometry_id);
+
+    const auto source_record = models / "source.json";
+    write_original_appearance_json(source_record, {{"original_appearance", inherited.encode(root)}});
+    const auto record = root / "downloads" / "candidate.json";
+    nlohmann::json metadata {{"source_model", "models/source.obj"},
+        {"source_sha256", finished.source_sha256}};
+    SECTION("new saves publish and reuse an immutable companion") {
+        auto carrier = candidate;
+        carrier.replace_extension(".source-appearance.obj");
+        Slic3r::GUI::OriginalAppearanceReference mapped;
+        REQUIRE(Slic3r::GUI::prepare_original_appearance_for_candidate(source, candidate,
+            finished.source_sha256, inherited, carrier, root, mapped, error));
+        REQUIRE(mapped.valid());
+        CHECK(mapped.topology_sha256 == selection::topology_fingerprint(saved.its));
+        CHECK(mapped.origin_sha256 == origin_hash);
+        const auto carrier_hash = Slic3r::AI::model_artifact_sha256(carrier);
+        REQUIRE(Slic3r::GUI::prepare_original_appearance_for_candidate(source, candidate,
+            finished.source_sha256, inherited, carrier, root, mapped, error));
+        CHECK(Slic3r::AI::model_artifact_sha256(carrier) == carrier_hash);
+        metadata["original_appearance"] = mapped.encode(root);
+    }
+    SECTION("legacy histories recover the ancestor's explicit original evidence") {
+        // The saved parent colours are black. Its explicit carrier, rather than
+        // those edited colours, must supply the recovered original palette.
+        CHECK_FALSE(metadata.contains("original_appearance"));
+    }
+    write_original_appearance_json(record, metadata);
+    const auto record_hash = Slic3r::AI::model_artifact_sha256(record);
+    for (int reopen = 0; reopen < 2; ++reopen) {
+        ModelPreview3D::PreparedModel prepared;
+        REQUIRE(ModelPreview3D::prepare_model(candidate, prepared, error, {}, record));
+        INFO(prepared.original_appearance_error);
+        REQUIRE(prepared.has_source_appearance);
+        CHECK(prepared.original_appearance.origin_sha256 == origin_hash);
+        Slic3r::TriangleMesh evidence;
+        Slic3r::ObjInfo evidence_colors;
+        REQUIRE(Slic3r::AI::load_model_artifact(prepared.original_appearance.carrier_model,
+            evidence, evidence_colors, error));
+        REQUIRE(evidence_colors.vertex_colors.size() == saved.its.vertices.size());
+        for (size_t face = 0; face < mesh.indices.size(); ++face)
+            for (int corner = 0; corner < 3; ++corner)
+                for (int channel = 0; channel < 4; ++channel)
+                    CHECK_THAT(evidence_colors.vertex_colors[evidence.its.indices[face][corner]][channel],
+                        Catch::Matchers::WithinAbs(colors[mesh.indices[face][corner]][channel], 0.00001f));
+    }
+    CHECK(Slic3r::AI::model_artifact_sha256(record) == record_hash);
+    CHECK(Slic3r::AI::model_artifact_sha256(original) == origin_hash);
+    CHECK(Slic3r::AI::model_artifact_sha256(source) == finished.source_sha256);
+}
+
+TEST_CASE("Original colour recovery rejects changed geometry and preserves conflicting companions",
+          "[ModelPreviewState][OriginalAppearance][Regression]")
+{
+    ScopedTemporaryDir temporary("orca-original-appearance-colour-failure");
+    const auto root = temporary.path();
+    const auto models = root / "models";
+    boost::filesystem::create_directories(models);
+    const auto mesh = original_appearance_fixture_mesh();
+    const auto colors = original_appearance_fixture_colors(mesh.vertices.size());
+    const auto source = models / "source.obj";
+    const auto target = models / "target.obj";
+    const auto companion = models / "target.source-appearance.obj";
+    std::string error;
+    REQUIRE(Slic3r::AI::write_model_artifact(source, mesh, colors, error));
+    const auto hash = Slic3r::AI::model_artifact_sha256(source);
+    const Slic3r::GUI::OriginalAppearanceReference reference {
+        boost::filesystem::canonical(source), hash, selection::topology_fingerprint(mesh),
+        boost::filesystem::canonical(source), hash};
+    write_original_appearance_json(models / "source.json", {{"original_appearance", reference.encode(root)}});
+    indexed_triangle_set split;
+    std::vector<Slic3r::RGBA> split_colors;
+    for (const auto& face : mesh.indices) {
+        const int offset = int(split.vertices.size());
+        for (int vertex : face) { split.vertices.push_back(mesh.vertices[vertex]); split_colors.push_back(colors[vertex]); }
+        split.indices.emplace_back(offset, offset + 1, offset + 2);
+    }
+    SECTION("changed corner positions cannot borrow original evidence") {
+        split.vertices.front().x() += 0.1f;
+        REQUIRE(Slic3r::AI::write_model_artifact(target, split, split_colors, error));
+        Slic3r::GUI::ResolvedOriginalAppearance resolved;
+        CHECK_FALSE(Slic3r::GUI::resolve_original_appearance(target, split,
+            {{"source_model", "models/source.obj"}, {"source_sha256", hash}}, root, resolved, error));
+        CHECK_FALSE(boost::filesystem::exists(companion));
+    }
+    SECTION("cancellation leaves no companion") {
+        REQUIRE(Slic3r::AI::write_model_artifact(target, split, split_colors, error));
+        Slic3r::GUI::OriginalAppearanceReference mapped;
+        CHECK_FALSE(Slic3r::GUI::prepare_original_appearance_for_candidate(source, target,
+            hash, reference, companion, root, mapped, error, [] { return true; }));
+        CHECK_FALSE(boost::filesystem::exists(companion));
+    }
+    SECTION("different companion bytes remain untouched") {
+        REQUIRE(Slic3r::AI::write_model_artifact(target, split, split_colors, error));
+        REQUIRE(Slic3r::AI::write_model_artifact(companion, mesh, colors, error));
+        const auto before = Slic3r::AI::model_artifact_sha256(companion);
+        Slic3r::GUI::OriginalAppearanceReference mapped;
+        CHECK_FALSE(Slic3r::GUI::prepare_original_appearance_for_candidate(source, target,
+            hash, reference, companion, root, mapped, error));
+        CHECK_FALSE(mapped.valid());
+        CHECK(Slic3r::AI::model_artifact_sha256(companion) == before);
+    }
 }
 
 TEST_CASE("Legacy appearance recovery rejects cycles traversal and excessive ancestry",

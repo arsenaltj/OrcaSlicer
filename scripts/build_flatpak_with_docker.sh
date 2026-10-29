@@ -77,14 +77,15 @@ esac
 # ---------- version & commit ----------
 cd "$PROJECT_ROOT"
 
-VER_PURE=$(grep 'set(SoftFever_VERSION' version.inc | cut -d '"' -f2)
+VER_PURE=$(python3 scripts/product_config.py --field version)
+PRODUCT_STEM=$(python3 scripts/product_config.py --field package_stem)
 if [ -z "$VER_PURE" ]; then
-    echo "Error: could not extract version from version.inc" >&2
+    echo "Error: could not read config/product.json" >&2
     exit 1
 fi
 VER="V${VER_PURE}"
 GIT_COMMIT_HASH=$(git rev-parse HEAD)
-BUNDLE_NAME="OrcaSlicer-Linux-flatpak_${VER}_${ARCH}.flatpak"
+BUNDLE_NAME="${PRODUCT_STEM}-Linux-flatpak_${VER}_${ARCH}.flatpak"
 
 echo "=== OrcaSlicer Flatpak Build ==="
 echo "  Version:    ${VER} (${VER_PURE})"

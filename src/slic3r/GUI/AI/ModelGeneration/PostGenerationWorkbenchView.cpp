@@ -1,4 +1,5 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
+#include "slic3r/GUI/Widgets/Label.hpp"
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaFilamentSelection.hpp"
 #include "ModelGenerationPresentation.hpp"
@@ -7,6 +8,7 @@
 #include "BeautyWorkbenchTransactionController.hpp"
 #include "WorkbenchStyle.hpp"
 #include "slic3r/GUI/Redesign/RedesignFeatureFlags.hpp"
+#include "slic3r/GUI/Redesign/HonorBrandMark.hpp"
 #include "slic3r/GUI/AI/Model/BeautyDocument.hpp"
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
@@ -47,6 +49,8 @@
 #include <wx/wupdlock.h>
 
 namespace Slic3r::GUI {
+
+
 using namespace ModelGenerationPresentation;
 namespace {
 constexpr int beauty_finishing_tools[] = {4, 1, 3, 5, 1};
@@ -106,7 +110,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     shell->SetMinSize(wxSize(1, 1));
     shell->SetScrollRate(FromDIP(12), 0);
     shell->ShowScrollbars(wxSHOW_SB_DEFAULT, wxSHOW_SB_NEVER);
-    shell->SetName("ai_content_color");
+    shell->SetName("ai_workbench_surface");
     shell->SetBackgroundColour(wxColour(49, 49, 54));
     shell->SetFont(wxFontInfo(9).FaceName("HONOR Sans Design"));
     auto* row = new wxBoxSizer(wxHORIZONTAL);
@@ -161,7 +165,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     wxWindow* section_parent = check_host;
     auto heading = [this, &section_parent, &controls](const wxString& label,
         wxStaticBitmap** info = nullptr, const wxString& tooltip = wxEmptyString) {
-        auto* text = new wxStaticText(section_parent, wxID_ANY, label);
+        auto* text = new WorkbenchStaticText(section_parent, wxID_ANY, label);
         text->SetForegroundColour(wxColour(220, 220, 222));
         text->SetFont(wxGetApp().bold_font());
         auto* title_row = new wxBoxSizer(wxHORIZONTAL);
@@ -183,7 +187,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     check_panel->SetBackgroundColour(wxColour(22, 22, 25));
     check_panel->SetMinSize(FromDIP(wxSize(-1, 42)));
     auto* check_row = new wxBoxSizer(wxHORIZONTAL);
-    auto* check_label = new wxStaticText(check_panel, wxID_ANY, _L("一键检查"));
+    auto* check_label = new WorkbenchStaticText(check_panel, wxID_ANY, _L("一键检查"));
     check_label->SetForegroundColour(wxColour(220, 220, 222));
     check_row->Add(check_label, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(12));
     auto* check_button = command(check_panel, check_row, _L("开始"), [this](wxCommandEvent& event) {
@@ -201,7 +205,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     check_row->GetItem(m_workbench_check)->SetBorder(FromDIP(12));
     check_panel->SetSizer(check_row);
     controls->Add(check_panel, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    m_workbench_check_status = new wxStaticText(check_host, wxID_ANY, _L("尚未检查"));
+    m_workbench_check_status = new WorkbenchStaticText(check_host, wxID_ANY, _L("尚未检查"));
     m_workbench_check_status->SetForegroundColour(wxColour(170, 170, 176));
     auto* check_status_row = new wxBoxSizer(wxHORIZONTAL);
     check_status_row->Add(m_workbench_check_status, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
@@ -228,21 +232,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     // the explicit preview input lock blocks click-through editing.
     if (auto* overlay_host = m_model_preview->workbench_overlay_parent()) {
         auto* card_owner = wxGetTopLevelParent(m_workbench_shell);
-        m_workbench_check_card = new wxDialog(card_owner, wxID_ANY, wxEmptyString,
-            wxDefaultPosition, wxDefaultSize,
-            wxBORDER_NONE | wxFRAME_NO_TASKBAR | wxFRAME_FLOAT_ON_PARENT | wxFRAME_SHAPED);
-        m_workbench_check_card->SetName("ai_content_color");
-        m_workbench_check_card->SetBackgroundColour(wxColour(45, 45, 49));
-        m_workbench_check_card->SetBackgroundStyle(wxBG_STYLE_PAINT);
-#ifdef __WXMSW__
-        m_workbench_check_card->SetDoubleBuffered(true);
-#endif
-        m_workbench_check_card->Bind(wxEVT_ERASE_BACKGROUND, [](wxEraseEvent&) {});
-        m_workbench_check_card->Bind(wxEVT_PAINT, [card = m_workbench_check_card](wxPaintEvent&) {
-            wxAutoBufferedPaintDC dc(card);
-            dc.SetBackground(wxBrush(card->GetBackgroundColour()));
-            dc.Clear();
-        });
+        m_workbench_check_card = new WorkbenchFloatingCard(card_owner);
         auto* card_root = new wxBoxSizer(wxVERTICAL);
         m_workbench_check_modal = new WorkbenchPaintedPanel(
             m_workbench_check_card, wxColour(45, 45, 49), 8, wxColour(72, 72, 78));
@@ -253,8 +243,11 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         m_workbench_check_phase->SetName("ai_content_color");
         m_workbench_check_phase->SetFont(wxGetApp().bold_font());
         m_workbench_check_phase->SetForegroundColour(wxColour(238, 240, 244));
-        modal_root->Add(m_workbench_check_phase, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM,
-                        FromDIP(16));
+        auto* modal_header = new wxBoxSizer(wxHORIZONTAL);
+        modal_header->Add(new HonorBrandMark(m_workbench_check_modal), 0,
+                          wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(10));
+        modal_header->Add(m_workbench_check_phase, 1, wxALIGN_CENTER_VERTICAL);
+        modal_root->Add(modal_header, 0, wxEXPAND | wxALL, FromDIP(16));
         m_workbench_check_message = new WorkbenchLabel(m_workbench_check_modal);
         m_workbench_check_message->SetName("ai_content_color");
         m_workbench_check_message->SetForegroundColour(wxColour(238, 240, 244));
@@ -268,6 +261,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         m_workbench_check_return_button = new WorkbenchButton(m_workbench_check_modal, _L("返回 2D 设计图"));
         for (auto* button : {m_workbench_check_cancel_button, m_workbench_check_continue_button,
                              m_workbench_check_return_button}) {
+            button->use_parent_surface();
             button->SetMinSize(FromDIP(wxSize(124, 32)));
             button->SetMaxSize(FromDIP(wxSize(156, 32)));
             button->SetCornerRadius(FromDIP(7));
@@ -322,7 +316,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
             refresh_post_generation_workbench();
         }
     });
-    m_workbench_palette_status = new wxStaticText(scroll, wxID_ANY, wxEmptyString);
+    m_workbench_palette_status = new WorkbenchStaticText(scroll, wxID_ANY, wxEmptyString);
     m_workbench_palette_status->SetForegroundColour(wxColour(170, 170, 176));
     m_model_preview->set_color_trial_changed_callback([this](size_t) {
         if (m_printer_filament_trial_active && m_model_preview &&
@@ -380,7 +374,6 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     m_workbench_apply_project_filaments = new WorkbenchButton(scroll, _L("将耗材色映射到模型"));
     apply_slice_action_style(m_workbench_apply_project_filaments);
     m_workbench_apply_project_filaments->SetName("workbench_apply_project_filaments");
-    m_workbench_apply_project_filaments->SetIcon("workbench_printer");
     m_workbench_apply_project_filaments->SetToolTip(_L("按当前实体耗材与叠色槽重建模型配色，并自动保存为新版本。"));
     m_workbench_apply_project_filaments->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         apply_workbench_printer_filaments();
@@ -390,13 +383,19 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     m_workbench_printer_filament_trial = new WorkbenchButton(scroll, _L("将模型配色导入到耗材"));
     apply_slice_action_style(m_workbench_printer_filament_trial);
     m_workbench_printer_filament_trial->SetName("workbench_printer_filament_trial");
-    m_workbench_printer_filament_trial->SetIcon("workbench_printer");
     m_workbench_printer_filament_trial->SetToolTip(_L("将当前模型配色生成实体耗材与叠色配方，原子提交后进入试色。"));
     m_workbench_printer_filament_trial->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         toggle_printer_filament_trial();
     });
     controls->Add(m_workbench_printer_filament_trial, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    m_workbench_printer_filament_feedback = new wxStaticText(scroll, wxID_ANY, wxEmptyString,
+    for (auto* control : {m_workbench_apply_project_filaments, m_workbench_printer_filament_trial}) {
+        auto* button = static_cast<WorkbenchButton*>(control);
+        button->SetFont(Label::Body_14);
+        button->SetPaddingSize(FromDIP(wxSize(8, 4)));
+        button->SetIconSpacing(FromDIP(5));
+        button->set_scaled_icon("workbench_printer", 20);
+    }
+    m_workbench_printer_filament_feedback = new WorkbenchStaticText(scroll, wxID_ANY, wxEmptyString,
         wxDefaultPosition, wxDefaultSize, wxST_NO_AUTORESIZE);
     m_workbench_printer_filament_feedback->SetForegroundColour(wxColour(190, 190, 196));
     m_workbench_printer_filament_feedback->Hide();
@@ -406,7 +405,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     m_workbench_project_colors->SetBackgroundColour(scroll->GetBackgroundColour());
     m_workbench_project_colors->SetSizer(new wxBoxSizer(wxVERTICAL));
     controls->Add(m_workbench_project_colors, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    m_workbench_project_summary = new wxStaticText(scroll, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxST_NO_AUTORESIZE);
+    m_workbench_project_summary = new WorkbenchStaticText(scroll, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxST_NO_AUTORESIZE);
     m_workbench_project_summary->SetForegroundColour(wxColour(190, 190, 196));
     controls->Add(m_workbench_project_summary, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
     auto filament_action = [&](const wxString& label, auto handler) {
@@ -464,7 +463,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     auto* slice_panel = new WorkbenchPanel(scroll);
     slice_panel->SetBackgroundColour(wxColour(22, 22, 25));
     auto* slice_root = new wxBoxSizer(wxVERTICAL);
-    auto* slice_title = new wxStaticText(slice_panel, wxID_ANY, _L("AI 智能切片"));
+    auto* slice_title = new WorkbenchStaticText(slice_panel, wxID_ANY, _L("AI 智能切片"));
     slice_title->SetForegroundColour(wxColour(220, 220, 222));
     slice_root->Add(slice_title, 0, wxEXPAND | wxALL, FromDIP(12));
     auto* slice_grid = new wxFlexGridSizer(2, FromDIP(12), FromDIP(12));
@@ -472,10 +471,10 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     const std::array<wxString, 7> slice_labels {{_L("层高"), _L("墙厚"), _L("填充率"), _L("打印速度"),
         _L("支撑"), _L("预计耗时"), _L("耗材")}};
     for (size_t index = 0; index < slice_labels.size(); ++index) {
-        auto* label = new wxStaticText(slice_panel, wxID_ANY, slice_labels[index]);
+        auto* label = new WorkbenchStaticText(slice_panel, wxID_ANY, slice_labels[index]);
         label->SetForegroundColour(wxColour(170, 170, 176));
         slice_grid->Add(label, 0, wxALIGN_CENTER_VERTICAL);
-        auto* value = m_workbench_slice_values[index] = new wxStaticText(slice_panel, wxID_ANY, "--");
+        auto* value = m_workbench_slice_values[index] = new WorkbenchStaticText(slice_panel, wxID_ANY, "--");
         value->SetForegroundColour(wxColour(220, 220, 222));
         slice_grid->Add(value, 0, wxALIGN_RIGHT | wxALIGN_CENTER_VERTICAL);
     }
@@ -569,7 +568,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         request_enter_beauty();
     });
     m_workbench_edit->SetToolTip(_L("打开美颜工具，预览后接受修改；原件保留。"));
-    m_workbench_model_status = new wxStaticText(toolbar_host, wxID_ANY, wxEmptyString,
+    m_workbench_model_status = new WorkbenchStaticText(toolbar_host, wxID_ANY, wxEmptyString,
         wxDefaultPosition, FromDIP(wxSize(100, 24)), wxALIGN_CENTER_HORIZONTAL | wxST_NO_AUTORESIZE);
     m_workbench_model_status->SetFont(wxGetApp().bold_font());
     m_workbench_model_status->SetMinSize(FromDIP(wxSize(100, 24)));
@@ -585,7 +584,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         refresh_model_finishing(); refresh_post_generation_workbench();
     });
     workspace_sizer->Add(toolbar_host, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
-    m_workbench_state_status = new wxStaticText(workspace, wxID_ANY, wxEmptyString);
+    m_workbench_state_status = new WorkbenchStaticText(workspace, wxID_ANY, wxEmptyString);
     m_workbench_state_status->SetForegroundColour(wxColour(255, 194, 39));
     workspace_sizer->Add(m_workbench_state_status, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
     m_workbench_state_status->Hide();
@@ -614,7 +613,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     auto* switches = new wxBoxSizer(wxHORIZONTAL);
     switches_host->SetSizer(switches);
     auto add_switch = [this, switches_host, switches](const wxString& label) {
-        auto* text = new wxStaticText(switches_host, wxID_ANY, label);
+        auto* text = new WorkbenchStaticText(switches_host, wxID_ANY, label);
         text->SetForegroundColour(wxColour(220, 220, 222));
         switches->Add(text, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(8));
         auto* toggle = new WorkbenchSwitch(switches_host, label);
