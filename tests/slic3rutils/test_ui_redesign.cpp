@@ -15,6 +15,8 @@
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
 #include "slic3r/GUI/Redesign/RedesignSlicingDetails.hpp"
 #include "slic3r/GUI/Redesign/RedesignPageTransition.hpp"
+#include "slic3r/GUI/Redesign/ModelGenerationStarfield.hpp"
+#include "slic3r/GUI/CanvasNotificationLayout.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -23,6 +25,100 @@
 #include <string>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("Slicing progress keeps its position until the notification column reaches it", "[UiRedesign][CanvasNotificationLayout]")
+{
+    const wxRect preferred(560, 700, 320, 46);
+    const wxSize canvas(1000, 800);
+    REQUIRE(progress_above_notifications(preferred, canvas, {}, 8, 10));
+    CHECK(*progress_above_notifications(preferred, canvas, {}, 8, 10) == preferred);
+    CHECK(*progress_above_notifications(preferred, canvas, {{600, 770, 380, 20}}, 8, 10) == preferred);
+    const auto moved = progress_above_notifications(preferred, canvas, {{600, 720, 380, 60}}, 8, 10);
+    REQUIRE(moved);
+    CHECK(moved->GetBottom() + 8 < 720);
+}
+
+TEST_CASE("Slicing progress clears the full notification stack and ignores other columns", "[UiRedesign][CanvasNotificationLayout]")
+{
+    const wxRect preferred(560, 700, 320, 46);
+    const auto moved = progress_above_notifications(preferred, {1000, 800},
+        {{600, 720, 380, 60}, {600, 630, 380, 80}, {0, 10, 100, 200}, {600, -200, 380, 80}}, 8, 10);
+    REQUIRE(moved);
+    CHECK(moved->GetBottom() + 8 < 630);
+    CHECK(moved->x == preferred.x);
+    CHECK(moved->GetSize() == preferred.GetSize());
+    CHECK_FALSE(progress_above_notifications(preferred, {1000, 800}, {{600, 20, 380, 760}}, 8, 10));
+}
+
+TEST_CASE("Notification occupancy expires on canvas or size changes and clears when closed", "[UiRedesign][CanvasNotificationLayout]")
+{
+    CanvasNotificationLayout layout;
+    int prepare = 0, preview = 0;
+    CHECK(layout.update(&prepare, {1000, 800}, {{600, 720, 380, 60}}));
+    CHECK_FALSE(layout.update(&prepare, {1000, 800}, {{600, 720, 380, 60}}));
+    CHECK(layout.bounds(&prepare, {1000, 800}).size() == 1);
+    CHECK(layout.bounds(&preview, {1000, 800}).empty());
+    CHECK(layout.bounds(&prepare, {1200, 900}).empty());
+    CHECK(layout.update(&prepare, {1000, 800}, {}));
+    CHECK(layout.bounds(&prepare, {1000, 800}).empty());
+}
+
+TEST_CASE("Generation animation continues across progress refreshes and pauses outside the visible page",
+          "[UiRedesign][ModelGenerationStarfield]")
+{
+    ModelGenerationAnimationClock clock;
+    clock.synchronize(true, true, 10.0);
+    CHECK(clock.running());
+    CHECK_THAT(clock.elapsed(14.0), Catch::Matchers::WithinAbs(4.0, 1e-9));
+    clock.synchronize(true, true, 14.0); // A progress poll must not restart the animation.
+    CHECK_THAT(clock.elapsed(15.0), Catch::Matchers::WithinAbs(5.0, 1e-9));
+    clock.synchronize(true, false, 15.0); // Hidden page or minimized frame.
+    CHECK_FALSE(clock.running());
+    CHECK_THAT(clock.elapsed(100.0), Catch::Matchers::WithinAbs(5.0, 1e-9));
+    clock.synchronize(true, true, 100.0);
+    CHECK_THAT(clock.elapsed(102.0), Catch::Matchers::WithinAbs(7.0, 1e-9));
+    clock.synchronize(false, false, 102.0); // Completion, failure or an explicit stop.
+    CHECK_FALSE(clock.running());
+    CHECK_THAT(clock.elapsed(200.0), Catch::Matchers::WithinAbs(0.0, 1e-9));
+    clock.synchronize(true, true, 200.0); // Another task starts a fresh session.
+    CHECK_THAT(clock.elapsed(201.0), Catch::Matchers::WithinAbs(1.0, 1e-9));
+}
+
+TEST_CASE("The starfield gathers toward the center and disperses without a loop boundary jump",
+          "[UiRedesign][ModelGenerationStarfield]")
+{
+    ModelGenerationStarfield stars;
+    double dispersed_radius = 0.0, gathered_radius = 0.0;
+    for (std::size_t i = 0; i < ModelGenerationStarfield::particle_count; ++i) {
+        const auto dispersed = stars.sample(i, 0.0);
+        const auto gathered = stars.sample(i, ModelGenerationStarfield::cycle_seconds / 2.0);
+        dispersed_radius += std::hypot(dispersed.x - 0.5, dispersed.y - 0.5);
+        gathered_radius += std::hypot(gathered.x - 0.5, gathered.y - 0.5);
+        const auto before = stars.sample(i, ModelGenerationStarfield::cycle_seconds - 0.00001);
+        const auto after = stars.sample(i, ModelGenerationStarfield::cycle_seconds + 0.00001);
+        CHECK(std::hypot(before.x - after.x, before.y - after.y) < 0.0001);
+    }
+    CHECK(gathered_radius < dispersed_radius * 0.6);
+}
+
+TEST_CASE("Star positions stay finite and inside the viewport during a long generation",
+          "[UiRedesign][ModelGenerationStarfield]")
+{
+    ModelGenerationStarfield stars;
+    for (double time : {0.0, 0.1, 4.49, 4.5, 8.99, 9.0, 60.0, 300.0, 1800.0}) {
+        for (std::size_t i = 0; i < ModelGenerationStarfield::particle_count; ++i) {
+            const auto point = stars.sample(i, time);
+            CHECK(std::isfinite(point.x));
+            CHECK(std::isfinite(point.y));
+            CHECK(point.x > 0.0);
+            CHECK(point.x < 1.0);
+            CHECK(point.y > 0.0);
+            CHECK(point.y < 1.0);
+            CHECK(point.opacity > 0.0);
+            CHECK(point.opacity <= 1.0);
+        }
+    }
+}
 
 TEST_CASE("Reviewed estimates survive trial cancellation only for their bound native input and goal", "[UiRedesign][SliceDetails]")
 {
@@ -1150,6 +1246,19 @@ TEST_CASE("Design timing changes are published even when progress stays unchange
     CHECK(current.same_content(updated));
     updated.design_estimated_seconds = 60;
     CHECK_FALSE(current.same_content(updated));
+}
+
+TEST_CASE("Model estimates refresh the view while service progress stays unchanged", "[UiRedesign][ModelGenerationPresentation]")
+{
+    ModelGenerationUIState current;
+    auto updated = current;
+    updated.model_progress_estimated = true;
+    CHECK_FALSE(current.same_content(updated));
+    current = updated;
+    updated.model_elapsed_seconds = 30;
+    CHECK_FALSE(current.same_content(updated));
+    current = updated;
+    CHECK(current.same_content(updated));
 }
 
 TEST_CASE("Displayed model asset changes are published without an active generation job", "[UiRedesign][ModelGenerationRoute]")

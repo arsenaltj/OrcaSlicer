@@ -74,7 +74,7 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual({"native": True, "cross_platform": False}, ci.scope(["src/slic3r/GUI/MainFrame.cpp"]))
         for paths in (["deps/Boost/Boost.cmake"], ["src/slic3r/CMakeLists.txt"], ["build_release_macos.sh"],
                       ["cmake/modules/example.cmake"], [".github/actions/apt-install-deps/action.yml"],
-                      [".github/workflows/unit_tests.yml"], ["scripts/run_unit_tests.sh"]):
+                      [".github/workflows/unit_tests.yml"], ["scripts/run_unit_tests.sh"], ["config/product.json"]):
             self.assertEqual({"native": True, "cross_platform": True}, ci.scope(paths))
         self.assertTrue(ci.scope([], upstream=True)["cross_platform"])
 

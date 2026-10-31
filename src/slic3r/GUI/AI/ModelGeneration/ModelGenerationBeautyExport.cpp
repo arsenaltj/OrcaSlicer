@@ -216,6 +216,9 @@ void ModelGenerationPanel::export_semantic_candidate()
     const bool needs_glb_appearance = !color_block_contract && (!subfaces.empty() || !cell_colors.empty());
     const auto destination = temp_path(m_finishing_id,
         AI::model_artifact_format(source) == "obj" && !needs_glb_appearance ? "obj" : "glb");
+    auto appearance_carrier = destination;
+    appearance_carrier.replace_extension(".source-appearance.obj");
+    const auto appearance_root = generated_models_root();
     m_finishing_canceled = std::make_shared<std::atomic<bool>>(false);
     m_beauty_publication_committed.reset();
     const auto canceled = m_finishing_canceled;
@@ -232,7 +235,7 @@ void ModelGenerationPanel::export_semantic_candidate()
     const uint64_t sequence = m_sequence;
     const auto cache_root=boost::filesystem::path(Slic3r::data_dir())/"cache";
     try {
-        m_finishing_worker = std::thread([weak, source, destination, options, canceled, sequence, manual_overrides, color_state=candidate_color_state, printer_filament_application, before, region_evidence, secondary_evidence, shape_details, shapes_unlocked,leaf_edits,leaf_revision,partition_snapshot,portrait_task,cell_colors,cache_root,draft_snapshot,baked_semantic,color_block_contract,printer_restore_snapshot] {
+        m_finishing_worker = std::thread([weak, source, destination, appearance_carrier, appearance_root, options, canceled, sequence, manual_overrides, color_state=candidate_color_state, printer_filament_application, before, region_evidence, secondary_evidence, shape_details, shapes_unlocked,leaf_edits,leaf_revision,partition_snapshot,portrait_task,cell_colors,cache_root,draft_snapshot,baked_semantic,color_block_contract,printer_restore_snapshot] {
             auto saved_shapes=shape_details;
             auto saved_edits=leaf_edits;
             auto output_options=options;
@@ -289,11 +292,20 @@ void ModelGenerationPanel::export_semantic_candidate()
             std::string preview_error;
             if (result.success && !canceled->load()) {
                 try {
+                    OriginalAppearanceReference candidate_appearance = draft_snapshot->original_appearance;
+                    if (candidate_appearance.valid() && !prepare_original_appearance_for_candidate(
+                            source, destination, result.source_sha256, draft_snapshot->original_appearance,
+                            appearance_carrier, appearance_root, candidate_appearance, preview_error,
+                            [canceled] { return canceled->load(); }))
+                        throw std::runtime_error(preview_error);
                     const std::optional<OriginalAppearanceReference> appearance_override =
                         draft_snapshot->original_appearance.valid() || !draft_snapshot->original_appearance_error.empty()
-                            ? std::optional<OriginalAppearanceReference>(draft_snapshot->original_appearance) : std::nullopt;
+                            ? std::optional<OriginalAppearanceReference>(candidate_appearance) : std::nullopt;
                     ModelPreview3D::prepare_model(destination, *prepared, preview_error, manual_overrides, {}, true,
                         [canceled] { return canceled->load(); }, nullptr, appearance_override);
+                    if (draft_snapshot->original_appearance.valid() && !prepared->has_source_appearance && preview_error.empty())
+                        preview_error = prepared->original_appearance_error.empty()
+                            ? "配色候选未保留可验证的原始配色。" : prepared->original_appearance_error;
                     if (!draft_snapshot->original_appearance_error.empty() && !prepared->has_source_appearance)
                         prepared->original_appearance_error = draft_snapshot->original_appearance_error;
                 }
@@ -301,14 +313,19 @@ void ModelGenerationPanel::export_semantic_candidate()
             }
             const auto baked=color_block_contract ? nlohmann::json() : AI::baked_portrait_appearance(result.output_sha256,baked_semantic,cell_colors,
                 saved_shapes && saved_shapes->surface_partition ? saved_shapes->surface_partition->at("partition_sha256").get<std::string>() : std::string());
-            wxGetApp().CallAfter([weak, source, destination, result, sequence, canceled, prepared, preview_error, color_state, printer_filament_application, before, region_evidence, secondary_evidence, shape_details=saved_shapes, shapes_unlocked,leaf_edits=saved_edits,leaf_revision,partition_snapshot,portrait_task,draft_snapshot,output_options,baked,printer_restore_snapshot] {
+            wxGetApp().CallAfter([weak, source, destination, appearance_carrier, result, sequence, canceled, prepared, preview_error, color_state, printer_filament_application, before, region_evidence, secondary_evidence, shape_details=saved_shapes, shapes_unlocked,leaf_edits=saved_edits,leaf_revision,partition_snapshot,portrait_task,draft_snapshot,output_options,baked,printer_restore_snapshot] {
+                const auto cleanup_candidate = [&] {
+                    boost::system::error_code ignored;
+                    boost::filesystem::remove(destination, ignored);
+                    boost::filesystem::remove(appearance_carrier, ignored);
+                };
                 if (!weak || weak->m_shutdown || sequence != weak->m_sequence) {
-                    if (result.success) { boost::system::error_code ignored; boost::filesystem::remove(destination, ignored); }
+                    cleanup_candidate();
                     return;
                 }
                 auto* self = weak.get();
                 if (portrait_task && self->m_portrait_task != portrait_task) {
-                    if(result.success) {boost::system::error_code ignored;boost::filesystem::remove(destination,ignored);}
+                    cleanup_candidate();
                     return;
                 }
                 if (self->m_finishing_worker.joinable()) self->m_finishing_worker.join();
@@ -316,7 +333,7 @@ void ModelGenerationPanel::export_semantic_candidate()
                 self->m_busy = false;
                 if (self->m_model_preview->leaf_edit_revision()!=leaf_revision) {
                     self->m_save_and_return = false;
-                    if (result.success) { boost::system::error_code ignored; boost::filesystem::remove(destination,ignored); }
+                    cleanup_candidate();
                     if (self->m_beauty_transactions) self->m_beauty_transactions->finish(false,false,"leaf draft changed during export");
                     self->m_finishing_status->SetLabel(_L("草稿在保存期间已更新，已丢弃过期输出；请重新保存。"));
                     self->m_portrait_draft_before = before;
@@ -328,7 +345,7 @@ void ModelGenerationPanel::export_semantic_candidate()
                 self->m_finishing_options=output_options;
                 if (result.canceled || canceled->load()) {
                     self->m_save_and_return = false;
-                    if (result.success) { boost::system::error_code ignored; boost::filesystem::remove(destination, ignored); }
+                    cleanup_candidate();
                     self->restore_beauty_candidate(*draft_snapshot);
                     self->m_portrait_draft_before=before;
                     if (self->m_beauty_transactions) self->m_beauty_transactions->finish(false, false, "cancelled");
@@ -337,7 +354,7 @@ void ModelGenerationPanel::export_semantic_candidate()
                     self->preserve_portrait_draft();
                 } else if (!result.success || !preview_error.empty()) {
                     self->m_save_and_return = false;
-                    if (result.success) { boost::system::error_code ignored; boost::filesystem::remove(destination, ignored); }
+                    cleanup_candidate();
                     const bool keep_contour_draft=shape_details && shape_details->surface_partition;
                     if(!keep_contour_draft) self->restore_beauty_candidate(*before);
                     else {
@@ -358,7 +375,7 @@ void ModelGenerationPanel::export_semantic_candidate()
                     if (!self->m_model_preview->load_prepared_model(std::move(*prepared), {}, triangles,
                             dimensions, colors, error)) {
                         self->m_save_and_return = false;
-                        boost::system::error_code ignored; boost::filesystem::remove(destination, ignored);
+                        cleanup_candidate();
                         self->restore_beauty_candidate(*draft_snapshot);
                         self->m_portrait_draft_before=before;
                         self->preserve_portrait_draft();
@@ -405,8 +422,7 @@ void ModelGenerationPanel::export_semantic_candidate()
                             << (printer_preview_error.empty() ? std::string() : ", error=" + printer_preview_error);
                         if (!edits_restored || !semantic_restored || !printer_preview_restored) {
                             self->m_save_and_return = false;
-                            boost::system::error_code ignored;
-                            boost::filesystem::remove(destination, ignored);
+                            cleanup_candidate();
                             self->restore_beauty_candidate(*draft_snapshot);
                             self->m_portrait_draft_before=before;
                             self->preserve_portrait_draft();
@@ -443,6 +459,8 @@ void ModelGenerationPanel::export_semantic_candidate()
                             before->manual_color_dirty
                                 ? BeautyWorkbenchTransactionController::OperationKind::AppearanceRecolor
                                 : BeautyWorkbenchTransactionController::OperationKind::SemanticReoptimization, before);
+                        if (boost::filesystem::is_regular_file(appearance_carrier))
+                            self->m_beauty_candidate_files.push_back(boost::filesystem::canonical(appearance_carrier));
                         if (self->m_beauty_controls && self->m_model_preview->secondary_regions_ready())
                             self->m_beauty_controls->request_secondary_partition(destination);
                         self->m_finishing_status->SetLabel(before->manual_color_dirty

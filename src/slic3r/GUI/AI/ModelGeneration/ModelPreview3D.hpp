@@ -2214,8 +2214,8 @@ public:
     }
     const OriginalAppearanceReference& original_appearance_reference() const { return m_original_appearance; }
     const std::string& original_appearance_error() const { return m_original_appearance_error; }
-    void set_workbench_original_appearance_error(const wxString& reason) {
-        m_color_trial->set_original_appearance_error(reason);
+    void set_workbench_palette_hint(const wxString& hint) {
+        m_color_trial->set_workbench_palette_hint(hint);
     }
     nlohmann::json original_appearance_metadata(const boost::filesystem::path& root) const {
         return m_original_appearance.valid() ? m_original_appearance.encode(root) : nlohmann::json();

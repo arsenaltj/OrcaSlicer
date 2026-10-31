@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <chrono>
 #include <limits>
 #include <map>
 #include <set>
@@ -251,6 +252,88 @@ int display_progress(const AIModelGenerationClient::JobStatus& status)
     if (status.state == "failed" && status.progress >= 10)
         return 40;
     return 0;
+}
+
+double ModelGenerationProgress::clock_seconds()
+{
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void ModelGenerationProgress::begin(const std::string& job_id, double now)
+{
+    m_job_id = job_id;
+    m_value = 0;
+    m_estimated = false;
+    m_elapsed = 0.0;
+    m_last_update = std::isfinite(now) ? now : 0.0;
+}
+
+int ModelGenerationProgress::synchronize(const AIModelGenerationClient::JobStatus& status, double now)
+{
+    if (m_job_id != status.id)
+        begin(status.id, now);
+    if (!std::isfinite(now)) now = m_last_update;
+    if (m_estimated)
+        m_elapsed += std::max(0.0, now - m_last_update);
+    m_last_update = std::max(m_last_update, now);
+    m_estimated = false;
+    if (status.state == "failed" || status.state == "stopping" || status.state == "stopped" || status.state == "cancelled")
+        return m_value;
+    int value = 0;
+    if (status.phase == "preparing_multiview" || status.phase == "multiview_retry") {
+        value = remap_progress(status.progress, 10, 20, 0, 5);
+    } else if (status.phase == "generating" || status.phase == "texturing") {
+        if (status.provider_task_id.empty()) {
+            value = 2;
+        } else if (status.provider_name == "yoyoclaw") {
+            // A phase estimate, not a duration promise. Slow down as time
+            // passes and reserve 85% for actual remote completion.
+            value = 5 + static_cast<int>(79.0 * -std::expm1(-m_elapsed / 180.0));
+            m_estimated = m_value < 85;
+        } else {
+            value = remap_progress(status.progress, 20, 70, 5, 85);
+        }
+    } else if (status.phase == "converting") {
+        value = remap_progress(status.progress, 75, 95, 85, 90);
+    } else if (status.phase == "downloading_artifact") {
+        value = remap_progress(status.progress, 75, 95, 90, 95);
+    } else if (status.phase == "checking_model") {
+        value = remap_progress(status.progress, 96, 99, 95, 96);
+    } else if (status.phase == "checking_visual" || status.state == "ready") {
+        value = 96;
+    }
+    m_value = std::max(m_value, value);
+    return m_value;
+}
+
+int ModelGenerationProgress::download(size_t received, size_t total)
+{
+    m_estimated = false;
+    const int value = total == 0 ? 96 : 96 + static_cast<int>(
+        2.0L * std::min(received, total) / total);
+    return m_value = std::max(m_value, value);
+}
+
+int ModelGenerationProgress::loading()
+{
+    m_estimated = false;
+    return m_value = std::max(m_value, 99);
+}
+
+int ModelGenerationProgress::complete()
+{
+    m_estimated = false;
+    return m_value = 100;
+}
+
+int ModelGenerationProgress::elapsed_seconds() const
+{
+    return static_cast<int>(std::min(m_elapsed, static_cast<double>(std::numeric_limits<int>::max())));
+}
+
+int ModelGenerationProgress::viewport_progress(int progress, bool loaded)
+{
+    return loaded ? 100 : std::clamp(progress, 0, 99);
 }
 
 bool is_supported_style(const std::string& style)

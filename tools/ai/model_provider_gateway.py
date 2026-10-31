@@ -527,6 +527,7 @@ class ModelProviderGateway:
         task_result: Mapping[str, Any],
         output_path: str | os.PathLike[str],
         max_bytes: int,
+        *, progress: Callable[[int, int | None], None] | None = None,
     ) -> Path:
         if max_bytes <= 0:
             raise ProviderGatewayError(
@@ -537,6 +538,7 @@ class ModelProviderGateway:
                 operation="artifact_download",
             )
         try:
-            return self._download_task_artifact(task_result, output_path, max_bytes)
+            options = {"progress": progress} if progress is not None else {}
+            return self._download_task_artifact(task_result, output_path, max_bytes, **options)
         except TripoError as error:
             raise _classify_tripo_error(error, "artifact_download") from None

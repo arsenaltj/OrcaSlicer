@@ -12,6 +12,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from package_source_identity import git, git_paths, source_path
+from product_config import load_product
 
 
 NATIVE_PORTRAIT_ARTIFACTS = {
@@ -89,14 +90,14 @@ def identity(root: Path) -> dict:
     untracked = git_paths(root, "ls-files", "--others", "--exclude-standard", "-z")
     # Untracked research/images are not program inputs. Packaged snapshots still
     # use package_source_identity.py's stricter, complete manifest contract.
-    program = {p for p in untracked if p.startswith(("src/", "tools/", "scripts/", "cmake/", "deps/", "deps_src/", "resources/", "localization/", "tests/"))
+    program = {p for p in untracked if p.startswith(("src/", "tools/", "scripts/", "cmake/", "config/", "deps/", "deps_src/", "resources/", "localization/", "tests/"))
                or p in {"CMakeLists.txt", "dev.ps1"}}
     # Generated catalogs are ignored by Git, but are installed application inputs.
     catalogs = {p.relative_to(root).as_posix() for p in (root / "resources/i18n").rglob("*.mo")}
     files = [{"path": name, "sha256": digest(path) if path.is_file() else None}
              for name in sorted(changed | program | catalogs) for path in [source_path(root, name)]]
     native = [f for f in files if f["path"].startswith(("src/", "cmake/", "deps/", "deps_src/", "resources/", "localization/"))
-              or f["path"] == "CMakeLists.txt" or f["path"].endswith(".cmake")]
+              or f["path"] in {"CMakeLists.txt", "version.inc", "config/product.json"} or f["path"].endswith(".cmake")]
     return {"source_commit": head, "source_clean": not bool(changed or untracked), "files": files,
             "source_identity": json_digest([head, files]), "native_identity": json_digest([head, native])}
 
@@ -232,7 +233,8 @@ def verify_runtime(root: Path, build: Path, installed: list[str], runtime: Path 
         if not source_path(runtime, name).is_file():
             raise ValueError(f"Runtime is incomplete: {name}; run dev.ps1 again")
     checks = {name: digest(source_path(runtime, name)) for name in installed}
-    pairs = {name: build / "src/Release" / name for name in ("orca-slicer.exe", "OrcaSlicer.dll")}
+    product = load_product(root)
+    pairs = {name: build / "src/Release" / name for name in (product["exe"], product["dll"])}
     pairs.update({"resources/tools/ai/" + name: root / "tools/ai" / name for name in modules(root, build)})
     pairs["resources/tools/ai/orca_ai_build_info.json"] = build / "orca_ai_build_info.json"
     pairs["resources/tools/ai/orca_ai_runtime_dependencies.json"] = build / "orca_ai_runtime_dependencies.json"
@@ -354,7 +356,8 @@ def update_sidecar(root: Path, build: Path) -> dict:
             raise ValueError(f"Runtime is incomplete: {name}; use dev.ps1 Run")
         if name not in refreshable and digest(target) != state["hashes"].get(name):
             raise ValueError(f"Installed runtime file changed: {name}; use dev.ps1 Run")
-    for name in ("orca-slicer.exe", "OrcaSlicer.dll"):
+    product = load_product(root)
+    for name in (product["exe"], product["dll"]):
         if digest(runtime / name) != state["hashes"][name] or digest(build / "src/Release" / name) != state["hashes"][name]:
             raise ValueError("Native binaries changed; use dev.ps1 Run")
     copied = []

@@ -208,6 +208,7 @@ echo
 # fi
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PRODUCT_NAME=$(python3 "$PROJECT_DIR/scripts/product_config.py" --field display_name)
 PROJECT_BUILD_DIR="$PROJECT_DIR/build/$ARCH"
 DEPS_DIR="$PROJECT_DIR/deps"
 
@@ -296,7 +297,7 @@ function verify_python_runtime() {
     fi
     echo "  Verifying bundled Python runtime in $(basename "$app")..."
     local bad
-    bad=$(otool -arch all -L "$pybin" "$app/Contents/MacOS/OrcaSlicer" | grep "libpython" | grep -v "@rpath/" || true)
+    bad=$(otool -arch all -L "$pybin" "$app/Contents/MacOS/${PRODUCT_NAME}" | grep "libpython" | grep -v "@rpath/" || true)
     if [ -n "$bad" ]; then
         echo "ERROR: a bundled binary references libpython by absolute path (relocation regression):" >&2
         echo "$bad" >&2
@@ -304,7 +305,7 @@ function verify_python_runtime() {
     fi
     # otool -L shows load commands only; assert the consumer rpath separately.
     # Its loss is masked on the build host by CMake's absolute build-tree rpath.
-    if ! otool -arch all -l "$app/Contents/MacOS/OrcaSlicer" | grep -q "path @executable_path/python/lib "; then
+    if ! otool -arch all -l "$app/Contents/MacOS/${PRODUCT_NAME}" | grep -q "path @executable_path/python/lib "; then
         echo "ERROR: OrcaSlicer lacks the @executable_path/python/lib rpath (relocation regression)" >&2
         exit 1
     fi
@@ -365,21 +366,21 @@ function build_slicer() {
             mkdir -p OrcaSlicer
             cd OrcaSlicer
             # remove previously built app
-            rm -rf ./OrcaSlicer.app
+            rm -rf "./${PRODUCT_NAME}.app"
             # fully copy newly built app
-            cp -pR "../src$BUILD_DIR_CONFIG_SUBDIR/OrcaSlicer.app" ./OrcaSlicer.app
+            cp -pR "../src$BUILD_DIR_CONFIG_SUBDIR/${PRODUCT_NAME}.app" "./${PRODUCT_NAME}.app"
             # fix resources
-            resources_path=$(readlink ./OrcaSlicer.app/Contents/Resources)
-            rm ./OrcaSlicer.app/Contents/Resources
-            cp -R "$resources_path" ./OrcaSlicer.app/Contents/Resources
+            resources_path=$(readlink "./${PRODUCT_NAME}.app/Contents/Resources")
+            rm "./${PRODUCT_NAME}.app/Contents/Resources"
+            cp -R "$resources_path" "./${PRODUCT_NAME}.app/Contents/Resources"
             # Source maps are only needed by browser devtools, not the shipped WebView.
             # Keep the source tree intact; remove them from this copied bundle only.
-            find ./OrcaSlicer.app/Contents/Resources/web -type f -name '*.js.map' -delete
-            relocate_python_runtime ./OrcaSlicer.app
+            find "./${PRODUCT_NAME}.app/Contents/Resources/web" -type f -name '*.js.map' -delete
+            relocate_python_runtime "./${PRODUCT_NAME}.app"
             # delete .DS_Store file
-            find ./OrcaSlicer.app/ -name '.DS_Store' -delete
+            find "./${PRODUCT_NAME}.app/" -name '.DS_Store' -delete
 
-            verify_python_runtime ./OrcaSlicer.app
+            verify_python_runtime "./${PRODUCT_NAME}.app"
             
             # Copy OrcaSlicer_profile_validator.app if it exists
             if [ -f "../src$BUILD_DIR_CONFIG_SUBDIR/OrcaSlicer_profile_validator.app/Contents/MacOS/OrcaSlicer_profile_validator" ]; then
@@ -401,7 +402,7 @@ function build_slicer() {
         #     ver=${ver}_dev
         # fi
 
-        # zip -FSr OrcaSlicer${ver}_Mac_${_ARCH}.zip OrcaSlicer.app
+        # zip -FSr OrcaSlicer${ver}_Mac_${_ARCH}.zip ${PRODUCT_NAME}.app
 
     fi
     done
@@ -433,17 +434,17 @@ function build_universal() {
     echo "Building universal binary..."
 
     PROJECT_BUILD_DIR="$PROJECT_DIR/build/$ARCH"
-    ARM64_APP="$PROJECT_DIR/build/arm64/OrcaSlicer/OrcaSlicer.app"
-    X86_64_APP="$PROJECT_DIR/build/x86_64/OrcaSlicer/OrcaSlicer.app"
+    ARM64_APP="$PROJECT_DIR/build/arm64/OrcaSlicer/${PRODUCT_NAME}.app"
+    X86_64_APP="$PROJECT_DIR/build/x86_64/OrcaSlicer/${PRODUCT_NAME}.app"
 
     mkdir -p "$PROJECT_BUILD_DIR/OrcaSlicer"
-    UNIVERSAL_APP="$PROJECT_BUILD_DIR/OrcaSlicer/OrcaSlicer.app"
+    UNIVERSAL_APP="$PROJECT_BUILD_DIR/OrcaSlicer/${PRODUCT_NAME}.app"
     rm -rf "$UNIVERSAL_APP"
     cp -R "$ARM64_APP" "$UNIVERSAL_APP"
 
-    echo "Creating universal binaries for OrcaSlicer.app..."
+    echo "Creating universal binaries for ${PRODUCT_NAME}.app..."
     lipo_dir "$UNIVERSAL_APP" "$X86_64_APP"
-    echo "Universal OrcaSlicer.app created at $UNIVERSAL_APP"
+    echo "Universal ${PRODUCT_NAME}.app created at $UNIVERSAL_APP"
     verify_python_runtime "$UNIVERSAL_APP"
 
     # Create universal binary for profile validator if it exists

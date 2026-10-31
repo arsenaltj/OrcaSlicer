@@ -8,6 +8,7 @@
 #include "slic3r/GUI/I18N.hpp"
 #include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 
+#include <wx/gauge.h>
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
 #include <wx/weakref.h>
@@ -199,6 +200,30 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
     submit_confirmed_model();
 }
 
+void ModelGenerationPanel::update_progress(int value, int step, const wxString& phase)
+{
+    m_generation_progress->Show();
+    m_progress_percent->Show();
+    value = std::clamp(value, 0, 100);
+    step = std::clamp(step, 1, 4);
+    m_generation_progress->SetValue(value);
+    m_workflow_phase->SetLabel(phase);
+    m_workflow_phase->SetToolTip(wxString::Format(_L("第 %d 步，共 4 步"), step));
+    m_progress_percent->SetLabel(wxString::Format("%d%%", value));
+    for (size_t index = 0; index < m_step_labels.size(); ++index) {
+        if (m_step_labels[index] == nullptr)
+            continue;
+        const int label_step = int(index) + 1;
+        const bool active = label_step == step;
+        const bool complete = label_step < step;
+        m_step_labels[index]->SetForegroundColour(active || complete ? wxColour(24, 112, 105)
+                                                                     : wxColour(132, 143, 145));
+        wxFont font = m_step_labels[index]->GetFont();
+        font.SetWeight(active ? wxFONTWEIGHT_BOLD : wxFONTWEIGHT_NORMAL);
+        m_step_labels[index]->SetFont(font);
+    }
+}
+
 void ModelGenerationPanel::submit_confirmed_model()
 {
     const bool image_mode = m_job_preview_expected;
@@ -227,7 +252,8 @@ void ModelGenerationPanel::submit_confirmed_model()
     const uint64_t sequence = ++m_sequence;
     const SubmissionContext submission {m_job_id, m_job_generation_options.provider, sequence};
     m_submission_state.begin(submission);
-    update_progress(40, 3, _L("生成模型"));
+    m_model_progress.begin(m_job_id);
+    update_progress(0, 3, _L("生成模型"));
     m_workflow_phase->SetLabel(_L("生成模型"));
     m_status->SetLabel(_L("正在提交 3D 生成请求..."));
     refresh_controls();
@@ -309,6 +335,10 @@ bool ModelGenerationPanel::request_retry_model()
     m_ui_model_generation_context = true;
     m_ui_stopping = false;
     ++m_model_generation_session;
+    if (m_job_provider_task_id.empty()) {
+        m_model_progress.begin(m_job_id);
+        update_progress(0, 3, _L("生成模型"));
+    }
     m_status->SetLabel(m_job_provider_task_id.empty()
         ? _L("正在安全重试当前任务…") : _L("正在恢复原 Provider 任务…"));
     m_result_summary->SetLabel(m_job_provider_task_id.empty()
@@ -361,6 +391,7 @@ void ModelGenerationPanel::handle_error(const std::string& error, uint64_t seque
     // provider failures so the diagnostic and safe-retry action are visible.
     m_job_state = "failed";
     m_job_phase = "failed";
+    m_model_progress.pause();
     const bool paid_preflight_rejected =
         error.find("large square cutout") != std::string::npos ||
         error.find("missing body region") != std::string::npos ||

@@ -39,6 +39,8 @@ bool ModelGenerationUIState::same_content(const ModelGenerationUIState& other) c
            model_generation_session == other.model_generation_session && inputs_match_job == other.inputs_match_job &&
            model_options_match == other.model_options_match &&
            progress == other.progress && job_id == other.job_id && model_asset_id == other.model_asset_id &&
+           model_progress_estimated == other.model_progress_estimated &&
+           model_elapsed_seconds == other.model_elapsed_seconds &&
            job_state == other.job_state &&
            design_elapsed_seconds == other.design_elapsed_seconds &&
            design_estimated_seconds == other.design_estimated_seconds &&

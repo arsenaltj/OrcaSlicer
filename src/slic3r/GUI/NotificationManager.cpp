@@ -1,4 +1,5 @@
 #include "NotificationManager.hpp"
+#include <wx/glcanvas.h>
 
 #include "HintNotification.hpp"
 #include "SlicingProgressNotification.hpp"
@@ -74,6 +75,7 @@ wxDEFINE_EVENT(EVT_EJECT_DRIVE_NOTIFICAION_CLICKED, EjectDriveNotificationClicke
 wxDEFINE_EVENT(EVT_EXPORT_GCODE_NOTIFICAION_CLICKED, ExportGcodeNotificationClickedEvent);
 wxDEFINE_EVENT(EVT_PRESET_UPDATE_AVAILABLE_CLICKED, PresetUpdateAvailableClickedEvent);
 wxDEFINE_EVENT(EVT_PRINTER_CONFIG_UPDATE_AVAILABLE_CLICKED, PrinterConfigUpdateAvailableClickedEvent);
+wxDEFINE_EVENT(EVT_NOTIFICATION_LAYOUT_CHANGED, wxCommandEvent);
 
 namespace {
 	/* // not used?
@@ -3173,6 +3175,12 @@ void NotificationManager::stop_delayed_notifications_of_type(const NotificationT
 	}
 }
 
+const std::vector<wxRect>& NotificationManager::visible_notification_bounds(GLCanvas3D& canvas) const
+{
+    auto* window = canvas.get_wxglcanvas();
+    return m_canvas_layout.bounds(window, window->GetClientSize());
+}
+
 void NotificationManager::render_notifications(GLCanvas3D &canvas, float overlay_width, float bottom_margin, float right_margin)
 {
 	// Notifications render inside an ImGui frame, so the font atlas is built from this point on
@@ -3204,6 +3212,21 @@ void NotificationManager::render_notifications(GLCanvas3D &canvas, float overlay
 			;// assert(i <= 1);
 		}
 	}
+    std::vector<wxRect> visible_bounds;
+    for (const auto& notification : m_pop_notifications) {
+        if (notification->get_state() == PopNotification::EState::Hidden || notification->is_finished()) continue;
+        const float right_gap = right_margin + (m_move_from_overlay && !m_in_preview
+            ? overlay_width * m_scale + notification->overlay_gap() : 0);
+        const auto bounds = notification->layout_bounds(canvas.get_canvas_size(), right_gap);
+        if (!bounds.IsEmpty()) visible_bounds.push_back(bounds);
+    }
+    auto* window = canvas.get_wxglcanvas();
+    if (m_canvas_layout.update(window, window->GetClientSize(), std::move(visible_bounds))) {
+        // Reposition wx overlays after this GL/ImGui frame has finished drawing.
+        wxCommandEvent event(EVT_NOTIFICATION_LAYOUT_CHANGED);
+        event.SetEventObject(window);
+        wxPostEvent(window, event);
+    }
     if (m_to_delete_after_finish_render) {
         close_and_delete_self(m_to_delete_after_finish_render);
         m_to_delete_after_finish_render = nullptr;

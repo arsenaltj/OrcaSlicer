@@ -143,6 +143,53 @@ inline bool load_carrier(const boost::filesystem::path& path, const std::string&
     return true;
 }
 
+// Colour-only writers may split coincident vertices. Preserve the ordered
+// corner binding exactly; a nearest-face query can borrow colour from a touching
+// surface or the other side of a material seam.
+inline bool map_ordered_corner_appearance(const indexed_triangle_set& source,
+                                          const ObjInfo& appearance,
+                                          const indexed_triangle_set& target,
+                                          std::vector<RGBA>& colors,
+                                          std::string& error,
+                                          const std::function<bool()>& canceled = {})
+{
+    const bool vertex_colors = appearance.vertex_colors.size() == source.vertices.size();
+    const bool face_colors = appearance.face_colors.size() == source.indices.size();
+    if ((!vertex_colors && !face_colors) || source.indices.size() != target.indices.size()) {
+        error = "原始配色缺少可验证的面角点对应关系。";
+        return false;
+    }
+    colors.assign(target.vertices.size(), RGBA {1.f, 1.f, 1.f, 1.f});
+    std::vector<bool> bound(target.vertices.size(), false);
+    for (size_t face = 0; face < source.indices.size(); ++face) {
+        if ((face & 4095) == 0 && stopped(canceled)) {
+            error = "Original appearance mapping canceled.";
+            return false;
+        }
+        for (int corner = 0; corner < 3; ++corner) {
+            const int from = source.indices[face][corner], to = target.indices[face][corner];
+            if (from < 0 || size_t(from) >= source.vertices.size() ||
+                to < 0 || size_t(to) >= target.vertices.size() ||
+                source.vertices[from] != target.vertices[to]) {
+                error = "原始配色的有序面角点与候选模型不匹配。";
+                return false;
+            }
+            const RGBA& color = vertex_colors ? appearance.vertex_colors[from] : appearance.face_colors[face];
+            if (bound[to] && colors[to] != color) {
+                error = "候选模型合并了不同的原始面角点颜色。";
+                return false;
+            }
+            colors[to] = color;
+            bound[to] = true;
+        }
+    }
+    if (std::find(bound.begin(), bound.end(), false) != bound.end()) {
+        error = "候选模型包含无法绑定原始配色的顶点。";
+        return false;
+    }
+    return true;
+}
+
 inline bool map_appearance_to_vertices(const indexed_triangle_set& source,
                                        const ObjInfo& appearance,
                                        const indexed_triangle_set& target,
@@ -321,13 +368,19 @@ inline bool prepare_original_appearance_for_candidate(
         }
 
         std::vector<RGBA> colors;
-        if (!map_appearance_to_vertices(current_mesh.its, resolved.carrier_appearance,
-                candidate_mesh.its, colors, error, canceled))
+        const bool ordered_surface = AI::SurfaceSelectionPersistence::geometry_fingerprint(current_mesh.its) ==
+            AI::SurfaceSelectionPersistence::geometry_fingerprint(candidate_mesh.its);
+        const bool mapped = ordered_surface
+            ? map_ordered_corner_appearance(current_mesh.its, resolved.carrier_appearance,
+                candidate_mesh.its, colors, error, canceled)
+            : map_appearance_to_vertices(current_mesh.its, resolved.carrier_appearance,
+                candidate_mesh.its, colors, error, canceled);
+        if (!mapped)
             return false;
         if (AI::model_artifact_sha256(current_model) != expected_current_sha256)
             throw std::runtime_error("当前模型在原始配色映射期间发生变化。");
-        if (boost::filesystem::exists(carrier_destination) || boost::filesystem::is_symlink(carrier_destination))
-            throw std::runtime_error("原始配色伴随文件已存在，未覆盖现有资产。");
+        if (boost::filesystem::is_symlink(carrier_destination))
+            throw std::runtime_error("原始配色伴随文件路径无效。");
         boost::system::error_code path_error;
         const auto canonical_root = boost::filesystem::canonical(root, path_error);
         const auto canonical_parent = boost::filesystem::canonical(carrier_destination.parent_path(), path_error);
@@ -342,9 +395,18 @@ inline bool prepare_original_appearance_for_candidate(
             return false;
         }
         if (stopped(canceled)) throw std::runtime_error("Original appearance mapping canceled.");
-        boost::filesystem::rename(temporary, carrier_destination);
-        temporary.clear();
-        carrier_published = true;
+        // Legacy restoration can encounter the same companion on a later open.
+        // Reuse only identical bytes; never replace an existing asset.
+        if (boost::filesystem::exists(carrier_destination)) {
+            if (AI::model_artifact_sha256(temporary) != AI::model_artifact_sha256(carrier_destination))
+                throw std::runtime_error("原始配色伴随文件已存在且内容不同，未覆盖现有资产。");
+            boost::filesystem::remove(temporary);
+            temporary.clear();
+        } else {
+            boost::filesystem::rename(temporary, carrier_destination);
+            temporary.clear();
+            carrier_published = true;
+        }
         const auto carrier_hash = AI::model_artifact_sha256(carrier_destination);
         if (!AI::SurfaceSelectionPersistence::detail::valid_fingerprint(carrier_hash))
             throw std::runtime_error("原始配色伴随文件校验失败。");
@@ -359,8 +421,8 @@ inline bool prepare_original_appearance_for_candidate(
     }
 }
 
-// Resolve an explicit v1 reference first. Legacy history is walked without
-// modifying it; the oldest topology-compatible ancestor becomes the carrier.
+// Resolve explicit references first. Legacy records and source artifacts stay
+// unchanged; a verified colour-only vertex split may publish a new companion.
 inline bool resolve_original_appearance(const boost::filesystem::path& current_model,
                                         const indexed_triangle_set& current_mesh,
                                         const nlohmann::json& current_metadata,
@@ -373,6 +435,7 @@ inline bool resolve_original_appearance(const boost::filesystem::path& current_m
     output = {};
     error.clear();
     const std::string topology = AI::SurfaceSelectionPersistence::topology_fingerprint(current_mesh);
+    const std::string geometry = AI::SurfaceSelectionPersistence::geometry_fingerprint(current_mesh);
     if (!AI::SurfaceSelectionPersistence::detail::valid_fingerprint(topology)) {
         error = "无法建立当前模型的拓扑身份。";
         return false;
@@ -387,6 +450,7 @@ inline bool resolve_original_appearance(const boost::filesystem::path& current_m
     const bool has_parent = current_metadata.is_object() && current_metadata.contains("source_model");
     boost::filesystem::path candidate;
     std::string candidate_hash;
+    std::string candidate_topology = topology;
     boost::filesystem::path origin = current_model;
     std::string origin_hash = AI::model_artifact_sha256(current_model);
     nlohmann::json metadata = current_metadata;
@@ -426,15 +490,32 @@ inline bool resolve_original_appearance(const boost::filesystem::path& current_m
             error = load_error.empty() ? "无法读取历史来源模型。" : load_error;
             return false;
         }
-        if (AI::SurfaceSelectionPersistence::topology_fingerprint(mesh.its) == topology &&
+        const std::string source_topology = AI::SurfaceSelectionPersistence::topology_fingerprint(mesh.its);
+        const bool compatible = source_topology == topology || (!geometry.empty() &&
+            AI::SurfaceSelectionPersistence::geometry_fingerprint(mesh.its) == geometry);
+        const auto record = AI::beauty_metadata_path(source, root);
+        auto source_metadata = read_record(record);
+        if (compatible && source_metadata.is_object() && source_metadata.contains("original_appearance")) {
+            const auto inherited = decode_reference(source_metadata["original_appearance"], root, source_topology, error);
+            if (!inherited) return false;
+            auto companion = current_model;
+            companion.replace_extension(".source-appearance.obj");
+            OriginalAppearanceReference mapped;
+            if (!prepare_original_appearance_for_candidate(source, current_model, expected_hash,
+                    *inherited, companion, root, mapped, error, canceled)) return false;
+            output.restored_legacy_chain = true;
+            output.reference = mapped;
+            return load_carrier(mapped.carrier_model, mapped.carrier_sha256, topology, output, error, canceled);
+        }
+        if (compatible &&
             has_appearance(mesh.its, appearance, texture)) {
             candidate = source;
             candidate_hash = expected_hash;
+            candidate_topology = source_topology;
         }
         origin = source;
         origin_hash = expected_hash;
-        const auto record = AI::beauty_metadata_path(source, root);
-        metadata = read_record(record);
+        metadata = std::move(source_metadata);
         if (!metadata.is_object()) break;
         if (depth == 63 && metadata.contains("source_model")) {
             error = "历史版本的来源模型链超过安全上限。";
@@ -451,9 +532,16 @@ inline bool resolve_original_appearance(const boost::filesystem::path& current_m
         return false;
     }
     output.reference = {candidate, candidate_hash, topology, origin, origin_hash};
+    if (candidate_topology != topology) {
+        auto companion = current_model;
+        companion.replace_extension(".source-appearance.obj");
+        const OriginalAppearanceReference inherited {candidate, candidate_hash, candidate_topology, origin, origin_hash};
+        if (!prepare_original_appearance_for_candidate(candidate, current_model, candidate_hash,
+                inherited, companion, root, output.reference, error, canceled)) return false;
+    }
     if (!output.reference.valid()) { error = "原始配色证据身份无效。"; return false; }
     output.restored_legacy_chain = has_parent;
-    return load_carrier(candidate, candidate_hash, topology, output, error, canceled);
+    return load_carrier(output.reference.carrier_model, output.reference.carrier_sha256, topology, output, error, canceled);
 }
 
 inline boost::filesystem::path original_appearance_library_root(

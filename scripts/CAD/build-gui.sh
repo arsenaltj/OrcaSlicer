@@ -22,7 +22,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROJECT="$(sed -n 's/^project(\([A-Za-z_0-9]*\)).*/\1/p' "$REPO/CMakeLists.txt" | head -1)"
 case "$PROJECT" in
     Snapmaker_Orca) PREFIX=snapmaker; BIN=snapmaker-orca ;;
-    OrcaSlicer)     PREFIX=orcacad;  BIN=orca-slicer    ;;
+    OrcaSlicer)     PREFIX=orcacad;  BIN="$(python3 "$REPO/scripts/product_config.py" --field command)" ;;
     *) echo "FATAL: unrecognised project($PROJECT) in $REPO/CMakeLists.txt" >&2; exit 2 ;;
 esac
 TARGET="$PROJECT"
@@ -68,6 +68,7 @@ docker run --rm \
     -v "$REPO/src":/OrcaSlicer/src \
     -v "$REPO/resources":/OrcaSlicer/resources \
     -v "$REPO/cmake":/OrcaSlicer/cmake \
+    -v "$REPO/config":/OrcaSlicer/config \
     -v "$REPO/deps_src":/OrcaSlicer/deps_src \
     -v "$REPO/localization":/OrcaSlicer/localization \
     -v "$REPO/CMakeLists.txt":/OrcaSlicer/CMakeLists.txt \

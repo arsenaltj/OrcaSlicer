@@ -83,6 +83,7 @@ public:
 
     void ShowCalibrationButton(bool show = true);
     void ShowCompactSlicingTitlebar(bool compact);
+    void ShowHonorBranding(bool show);
     wxControl* NativeWorkspaceHost() const { return m_native_workspace_host; }
     void ShowNativeWorkspaceTools(bool show);
 
@@ -121,6 +122,10 @@ private:
     bool m_skip_popup_dropdown_menu;
     bool m_skip_popup_calib_menu;
     bool m_compact_slicing {false};
+    bool m_honor_branding {false};
+    wxControl* m_brand_mark {nullptr};
+    size_t m_legacy_tools_begin {0};
+    size_t m_legacy_tools_end {0};
     wxControl* m_native_workspace_host {nullptr};
     bool m_native_workspace_tools {false};
     bool m_compact_context_bound {false};

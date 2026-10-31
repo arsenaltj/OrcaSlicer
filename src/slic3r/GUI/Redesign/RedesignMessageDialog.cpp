@@ -2,6 +2,7 @@
 #include "../AI/ModelGeneration/ModelGenerationConfirmation.hpp"
 
 #include "RedesignTheme.hpp"
+#include "HonorBrandMark.hpp"
 #include "../I18N.hpp"
 #include "../Widgets/Label.hpp"
 
@@ -603,10 +604,12 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
     m_title_bar->SetMinSize(wxSize(-1, FromDIP(52)));
     auto* title_sizer = new wxBoxSizer(wxHORIZONTAL);
     m_title_bar->SetSizer(title_sizer);
+    title_sizer->Add(new HonorBrandMark(m_title_bar), 0, wxALIGN_CENTER_VERTICAL | wxLEFT,
+                     FromDIP(design ? 24 : 20));
     m_title = new wxStaticText(m_title_bar, wxID_ANY, caption, wxDefaultPosition, wxDefaultSize,
                                wxST_ELLIPSIZE_END);
     RedesignTheme::style_medium_text(m_title, RedesignTheme::primary_text_colour(), 12);
-    title_sizer->Add(m_title, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(design ? 24 : 20));
+    title_sizer->Add(m_title, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(10));
     m_close_button = new RedesignDialogCloseButton(m_title_bar);
     title_sizer->Add(m_close_button, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(design ? 20 : 10));
     root->Add(m_title_bar, 0, wxEXPAND | (design ? wxLEFT | wxRIGHT | wxTOP : 0), design ? FromDIP(1) : 0);

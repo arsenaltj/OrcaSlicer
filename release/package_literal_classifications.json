@@ -45,7 +45,7 @@
     "tokens": ["03d104c669e3c7b6be7f989db8b12c8b910d3be8c1e2a73c9369d3cc0ba803b5"]
   },
   "resources/tools/ai/yoyoclaw_client.py": {
-    "file_sha256": "98174984f21aca6300d12e3b1ec7c58cfd6d63fa81aa714fb04ed51d91c30ab9",
+    "file_sha256": "57b48b9644d82f3b76d7ce6950286e2cefb1488a28dacfb3c9777103d61f2d16",
     "fields": {
       "DEFAULT_ROOT_SECRET": ["4c3fb3fbaaa8549af82a359148dae076c5277670de4f3cab69ace092565a240f"],
       "DEFAULT_HMAC_SECRET": ["b15e70201f0d46e5350ae8db4f78a5a7ca053e15c8c0b97506185f8ccb623f2d"]

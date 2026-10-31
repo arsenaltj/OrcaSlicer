@@ -19,12 +19,15 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')).TrimEnd('\', '/')
+. (Join-Path $PSScriptRoot 'ProductConfig.ps1')
+$product = Get-ProductIdentity -Root $repoRoot
 $markerName = '.local-runtime-verified.json'
 $ownerName = '.local-runtime-owner.json'
 $receiptName = '.local-runtime-build.json'
 # This deliberately bounded receipt covers the startup changes, not every C++
 # source file in Orca. It cannot certify arbitrary unrelated working-tree edits.
-$startupSources = @('CMakeLists.txt', 'src/CMakeLists.txt', 'src/slic3r/CMakeLists.txt',
+$startupSources = @('config/product.json', 'cmake/ProductIdentity.cmake', 'version.inc',
+    'CMakeLists.txt', 'src/CMakeLists.txt', 'src/slic3r/CMakeLists.txt',
     'src/slic3r/GUI/GUI_App.cpp', 'src/slic3r/GUI/GUI_App.hpp',
     'src/slic3r/GUI/GLCanvas3D.cpp', 'src/slic3r/GUI/GLCanvas3D.hpp',
     'src/slic3r/GUI/ImGuiWrapper.cpp', 'src/slic3r/GUI/ImGuiWrapper.hpp',
@@ -141,7 +144,7 @@ function Get-InstallInventory {
     # Keep all installed paths, and hash the complete native/Python runtime.
     # This catches missing DLLs even when the verifier itself can still start.
     $criticalFiles = @($installedFiles | Where-Object { $_ -match '(?i)\.(dll|exe|pyd)$|^python/' })
-    if ('OrcaSlicer.dll' -notin $criticalFiles -or 'python/python312.dll' -notin $criticalFiles -or
+    if ($product.Dll -notin $criticalFiles -or 'python/python312.dll' -notin $criticalFiles -or
         'resources/tools/uv/uv.exe' -notin $criticalFiles) { throw 'CMake install manifest is missing required native/Python runtime entries.' }
     return @{ installed_files = $installedFiles.ToArray(); runtime_sha256 = (Get-Fingerprints $script:outputPath $criticalFiles) }
 }
@@ -236,14 +239,14 @@ if (-not $VerifyOnly) {
         source_scope = 'startup files listed by stage_local_ai_runtime.ps1; not the entire C++ working tree';
         startup_source_sha256 = $sourcesBeforeBuild;
         startup_resource_sha256 = (Get-Fingerprints $repoRoot $startupResources);
-        desktop_binary_sha256 = (Get-Fingerprints (Join-Path $buildPath 'src/Release') @('orca-slicer.exe', 'OrcaSlicer.dll'));
+        desktop_binary_sha256 = (Get-Fingerprints (Join-Path $buildPath 'src/Release') @($product.Exe, $product.Dll));
         installed_files = $inventory.installed_files; runtime_sha256 = $inventory.runtime_sha256 } |
         ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $receiptPath -Encoding UTF8
 }
 
 if ((Read-CacheValue 'ORCA_AI_WINDOWS_INSTALLER') -ne 'ON') { throw 'AI runtime packaging is not enabled in this build.' }
 Assert-PlainTree $outputPath
-$required = @('orca-slicer.exe', 'OrcaSlicer.dll', 'python/python.exe', 'python/pythonw.exe', 'python/python312.dll', 'python/python3.dll',
+$required = @($product.Exe, $product.Dll, 'python/python.exe', 'python/pythonw.exe', 'python/python312.dll', 'python/python3.dll',
     'resources/tools/uv/uv.exe',
     'resources/images/OrcaSlicer_gradient_circle.svg', 'resources/i18n/zh_CN/OrcaSlicer.mo',
     'resources/i18n/zh_TW/OrcaSlicer.mo', 'resources/tools/ai/orca_ai_build_info.json',
@@ -333,7 +336,7 @@ if ($dependencies.schema_version -ne 1 -or $dependencies.python.version -ne '3.1
     $dependencies.python.isolation_flag -ne '-I' -or $pillow.Count -ne 1 -or
     $pillow[0].version -ne '12.2.0' -or -not $pillowHashes.ContainsKey($pillow[0].architecture) -or
     $pillow[0].sha256 -ne $pillowHashes[$pillow[0].architecture]) { throw 'Pinned Python/Pillow dependency metadata is invalid.' }
-foreach ($name in @('orca-slicer.exe', 'OrcaSlicer.dll')) {
+foreach ($name in @($product.Exe, $product.Dll)) {
     if ((Get-FileHash -LiteralPath (Require-File $name) -Algorithm SHA256).Hash -ne
         (Get-FileHash -LiteralPath (Join-Path $buildPath "src/Release/$name") -Algorithm SHA256).Hash) {
         throw "Installed binary differs from the current build: $name"

@@ -616,7 +616,8 @@ def _artifact_response_size(response: Any, offset: int, resumed: bool) -> int | 
 
 
 def download_task_artifact(
-    task_result: Mapping[str, Any], output_path: str | os.PathLike[str], max_bytes: int = 500 * 1024 * 1024
+    task_result: Mapping[str, Any], output_path: str | os.PathLike[str], max_bytes: int = 500 * 1024 * 1024,
+    *, progress: Callable[[int, int | None], None] | None = None,
 ) -> Path:
     if max_bytes <= 0:
         raise TripoError("The artifact size limit must be positive.")
@@ -653,12 +654,16 @@ def download_task_artifact(
                 if expected_size is not None and expected_size > max_bytes:
                     raise TripoError("The artifact exceeds the configured size limit.")
                 total = offset
+                if progress is not None:
+                    progress(total, expected_size)
                 with part.open("ab" if resumed else "wb") as stream:
                     while chunk := response.read(min(64 * 1024, max_bytes + 1 - total)):
                         total += len(chunk)
                         if total > max_bytes:
                             raise TripoError("The artifact exceeds the configured size limit.")
                         stream.write(chunk)
+                        if progress is not None:
+                            progress(total, expected_size)
             if expected_size is not None and total != expected_size:
                 raise _ArtifactDownloadInterrupted(
                     f"The artifact download stopped at {total} of {expected_size} bytes."

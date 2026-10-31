@@ -114,7 +114,14 @@ class GlbArtifactTests(unittest.TestCase):
             gateway = mock.Mock()
             gateway.start_or_reuse_model_task.return_value = mock.Mock(task_id='generated-model', provider='tripo', reused=False)
             gateway.wait_for_task.return_value = {'model': 'mock-only'}
-            gateway.download_artifact.side_effect = lambda result, path, maximum: path.write_bytes(raw)
+            def download(result, path, maximum, **options):
+                options['progress'](len(raw) // 2, len(raw))
+                self.assertGreater(job.progress, 75)
+                self.assertLess(job.progress, 95)
+                options['progress'](len(raw), len(raw))
+                self.assertEqual(job.progress, 95)
+                path.write_bytes(raw)
+            gateway.download_artifact.side_effect = download
             with mock.patch.object(sidecar, '_MODEL_PROVIDER_GATEWAY', gateway), \
                  mock.patch.object(sidecar, '_automatic_visual_review'):
                 sidecar._generate_job(job, 'synthetic model', False, sidecar.PaidTaskAuthorization.confirmed(f'{job.id}:model:1'))

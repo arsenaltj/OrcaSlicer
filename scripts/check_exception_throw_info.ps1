@@ -39,6 +39,8 @@ param(
     [string[]] $Dump
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'ProductConfig.ps1')
+$product = Get-ProductIdentity
 
 # powershell -File passes "a.pdb,b.pdb" as one string. A path that exists as given stays whole.
 function Split-PathList([string[]] $values) {
@@ -78,8 +80,8 @@ if (-not $Dump) {
     if (-not $Pdb) {
         # OrcaSlicer.dll holds the slicer itself, so a check without it proves nothing.
         $pdbDir = Join-Path $BuildDir "src\$Config"
-        if (-not (Test-Path (Join-Path $pdbDir 'OrcaSlicer.pdb'))) {
-            throw "No OrcaSlicer.pdb in $pdbDir."
+        if (-not (Test-Path (Join-Path $pdbDir $product.Pdb))) {
+            throw "No $($product.Pdb) in $pdbDir."
         }
         $Pdb = @(Get-ChildItem $pdbDir -Filter *.pdb | ForEach-Object FullName)
     }

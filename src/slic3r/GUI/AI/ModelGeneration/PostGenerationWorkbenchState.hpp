@@ -182,13 +182,49 @@ inline std::string workbench_check_detail_text(const WorkbenchCheckResult& check
     return text.str();
 }
 
-inline std::string workbench_palette_status_line(bool original_appearance_available,
+enum class WorkbenchOriginalAppearanceState { Empty, Loading, Available, Uncolored, Invalid, ModelError };
+
+// Availability alone also returns false before a model has finished loading.
+// Only diagnose its original appearance after the current model is ready;
+// a replacement load may still have the previous model in the preview.
+inline WorkbenchOriginalAppearanceState workbench_original_appearance_state(
+    PostGenerationUiState::Status status, bool preview_loading, bool model_ready,
+    bool original_appearance_available, bool has_original_appearance_error)
+{
+    if (preview_loading || status == PostGenerationUiState::Status::Loading)
+        return WorkbenchOriginalAppearanceState::Loading;
+    if (status == PostGenerationUiState::Status::Error)
+        return WorkbenchOriginalAppearanceState::ModelError;
+    if (!model_ready || status == PostGenerationUiState::Status::Empty)
+        return WorkbenchOriginalAppearanceState::Empty;
+    if (original_appearance_available) return WorkbenchOriginalAppearanceState::Available;
+    return has_original_appearance_error ? WorkbenchOriginalAppearanceState::Invalid
+                                         : WorkbenchOriginalAppearanceState::Uncolored;
+}
+
+inline std::string workbench_original_appearance_hint(WorkbenchOriginalAppearanceState state)
+{
+    switch (state) {
+    case WorkbenchOriginalAppearanceState::Empty: return "请从右侧选择或打开3D模型";
+    case WorkbenchOriginalAppearanceState::Loading: return "正在加载模型…";
+    case WorkbenchOriginalAppearanceState::Uncolored: return "当前模型不含原始颜色，原色对照不可用";
+    case WorkbenchOriginalAppearanceState::Invalid: return "原始配色证据不可用";
+    case WorkbenchOriginalAppearanceState::ModelError: return "模型加载失败，请重新打开模型";
+    case WorkbenchOriginalAppearanceState::Available: return {};
+    }
+    return {};
+}
+
+inline std::string workbench_palette_status_line(WorkbenchOriginalAppearanceState appearance,
                                                  bool honor_suite_active,
                                                  size_t honor_suite_used_colors,
                                                  size_t palette_color_count,
                                                  const std::string& honor_fallback_reason = {})
 {
-    if (!original_appearance_available) return "原始配色证据不可用";
+    // The existing load-error surface already explains model failures.
+    if (appearance == WorkbenchOriginalAppearanceState::ModelError) return {};
+    if (appearance != WorkbenchOriginalAppearanceState::Available)
+        return workbench_original_appearance_hint(appearance);
     if (!honor_suite_active)
         return "当前色卡 · " + std::to_string(palette_color_count) + " 色";
     const std::string usage = "模型当前使用 " + std::to_string(honor_suite_used_colors) + "/6 色";

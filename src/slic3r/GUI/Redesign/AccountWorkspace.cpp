@@ -2,6 +2,7 @@
 #include "RedesignWidgets.hpp"
 #include "RedesignTheme.hpp"
 #include "HonorAccountWebTheme.hpp"
+#include "HonorBrandMark.hpp"
 #include "AccountAvatar.hpp"
 #include "HonorBrowserProfile.hpp"
 #include "libslic3r/Utils.hpp"
@@ -230,7 +231,10 @@ void AccountWorkspace::edit_avatar()
     dialog.SetBackgroundColour(panel_colour());
     auto* layout=new wxBoxSizer(wxVERTICAL);dialog.SetSizer(layout);
     auto* title=new wxStaticText(&dialog,wxID_ANY,text("更换头像"));style_text(title,primary_text_colour(),18,true);
-    layout->Add(title,0,wxALL,FromDIP(24));
+    auto* header=new wxBoxSizer(wxHORIZONTAL);
+    header->Add(new HonorBrandMark(&dialog),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,FromDIP(10));
+    header->Add(title,1,wxALIGN_CENTER_VERTICAL);
+    layout->Add(header,0,wxEXPAND|wxALL,FromDIP(24));
     wxImage candidate=m_avatar_image;
     auto preview_bitmap=[&] {
         wxBitmap bitmap(AccountAvatar::circle(candidate,dialog.FromDIP(128)));

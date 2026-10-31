@@ -481,7 +481,7 @@ public:
             size.y = std::min(size.y, std::max(1, area.height - margin * 2));
             SetClientSize(size);
             m_window->SetSize(GetClientSize());
-            SetTitle("NAME - Startup");
+            SetTitle(wxString::FromUTF8(SLIC3R_APP_NAME) + " - Startup");
             Bind(wxEVT_CLOSE_WINDOW, [this](wxCloseEvent& event) {
                 if (m_review_loop && event.CanVeto()) {
                     event.Veto();
@@ -514,6 +514,11 @@ public:
         }
 
         m_window->Bind(wxEVT_PAINT, &SplashScreen::OnPaint, this);
+        if (m_redesign) {
+            m_window->SetBackgroundColour(wxColour(32, 32, 34));
+            auto* brand = new HonorBrandMark(m_window);
+            brand->Move(FromDIP(wxPoint(12, 12)));
+        }
         m_window->Refresh();
         m_window->Update();
     }
@@ -1166,7 +1171,7 @@ bool GUI_App::should_start_with_redesign_shell() const
     }
     const bool image_home = RedesignFeatureFlags::image_home_on_startup(
         true, has_input_files, default_prepare);
-    const char* initial_surface = image_home ? "account_check" :
+    const char* initial_surface = image_home ? "image" :
         has_input_files ? (init_params->input_gcode ? "gcode" : "file") :
         restore_available ? "restore" : "prepare";
     BOOST_LOG_TRIVIAL(info) << "[UiRedesign] initial surface="
@@ -3249,7 +3254,7 @@ void GUI_App::init_app_config()
     SetAppName(SLIC3R_APP_KEY);
 //	SetAppName(SLIC3R_APP_KEY "-alpha");
 //  SetAppName(SLIC3R_APP_KEY "-beta");
-//	SetAppDisplayName(SLIC3R_APP_NAME);
+    SetAppDisplayName(SLIC3R_APP_NAME);
 
 	// Set the Slic3r data directory at the Slic3r XS module.
 	// Unix: ~/ .Slic3r
@@ -3857,7 +3862,7 @@ bool GUI_App::on_init_inner()
             RichMessageDialog
                 dlg(nullptr,
                     wxString::Format(_L("%s\nDo you want to continue?"), msg),
-                    "OrcaSlicer", wxICON_QUESTION | wxYES_NO);
+                    SLIC3R_APP_NAME, wxICON_QUESTION | wxYES_NO);
             dlg.ShowCheckBox(_L("Remember my choice"));
             if (dlg.ShowModal() != wxID_YES) return false;
 
@@ -5206,6 +5211,10 @@ static bool is_default(wxWindow* win)
 
 void GUI_App::UpdateDarkUI(wxWindow* window, bool highlited/* = false*/, bool just_font/* = false*/)
 {
+    // The workbench owns its fixed dark surfaces, including native children.
+    // Applying Orca's light palette here turns #2d2d31 into white during import.
+    for (auto* owner = window; owner; owner = owner->GetParent())
+        if (owner->GetName() == "ai_workbench_surface") return;
     if (wxButton *btn = dynamic_cast<wxButton*>(window)) {
         if (btn->GetWindowStyleFlag() & wxBU_AUTODRAW)
             return;
@@ -5306,6 +5315,7 @@ static void update_dark_children_ui(wxWindow* window, bool just_buttons_update =
     /*bool is_btn = dynamic_cast<wxButton*>(window) != nullptr;
     is_btn = false;*/
     if (!window) return;
+    if (window->GetName() == "ai_workbench_surface") return;
 
     if (ScalableButton* btn = dynamic_cast<ScalableButton*>(window)) {
         btn->UpdateDarkUI();
@@ -7581,7 +7591,7 @@ std::string GUI_App::format_display_version()
 {
     if (!version_display.empty()) return version_display;
 
-    version_display = SoftFever_VERSION;
+    version_display = HONOR_PRODUCT_DISPLAY_VERSION;
     return version_display;
 }
 
@@ -10884,7 +10894,7 @@ void GUI_App::associate_files(std::wstring extend)
 
     std::wstring prog_path = L"\"" + std::wstring(app_path) + L"\"";
     std::wstring prog_id = L" Orca.Slicer.1";
-    std::wstring prog_desc = L"OrcaSlicer";
+    std::wstring prog_desc = wxString::FromUTF8(SLIC3R_APP_NAME).ToStdWstring();
     std::wstring prog_command = prog_path + L" \"%1\"";
     std::wstring reg_base = L"Software\\Classes";
     std::wstring reg_extension = reg_base + L"\\." + extend;
@@ -10911,7 +10921,7 @@ void GUI_App::disassociate_files(std::wstring extend)
 
     std::wstring prog_path = L"\"" + std::wstring(app_path) + L"\"";
     std::wstring prog_id = L" Orca.Slicer.1";
-    std::wstring prog_desc = L"OrcaSlicer";
+    std::wstring prog_desc = wxString::FromUTF8(SLIC3R_APP_NAME).ToStdWstring();
     std::wstring prog_command = prog_path + L" \"%1\"";
     std::wstring reg_base = L"Software\\Classes";
     std::wstring reg_extension = reg_base + L"\\." + extend;

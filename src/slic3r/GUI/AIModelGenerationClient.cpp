@@ -736,7 +736,8 @@ void AIModelGenerationClient::download_input(const std::string& job_id, const bo
 
 void AIModelGenerationClient::download_artifact(const std::string& job_id, const std::string& format,
                                                  const boost::filesystem::path& path,
-                                                 PathFn on_complete, ErrorFn on_error)
+                                                 PathFn on_complete, ErrorFn on_error,
+                                                 std::function<void(size_t, size_t)> on_progress)
 {
     if (format != "obj" && format != "glb" && format != "3mf" && format != "stl") {
         if (on_error)
@@ -744,7 +745,7 @@ void AIModelGenerationClient::download_artifact(const std::string& job_id, const
         return;
     }
     download("/v1/orcaslicer/model-jobs/" + job_id + "/artifact", path, MAX_ARTIFACT_SIZE,
-             std::move(on_complete), std::move(on_error));
+             std::move(on_complete), std::move(on_error), {}, std::move(on_progress));
 }
 
 void AIModelGenerationClient::download_color_intent(
@@ -1339,7 +1340,7 @@ AIModelGenerationClient::json AIModelGenerationClient::serialize_print_settings(
 
 void AIModelGenerationClient::download(const std::string& path, const boost::filesystem::path& destination,
                                        size_t size_limit, PathFn on_complete, ErrorFn on_error,
-                                       DownloadValidator validator)
+                                       DownloadValidator validator, std::function<void(size_t, size_t)> on_progress)
 {
     if (!is_loopback_endpoint(m_endpoint)) {
         if (on_error)
@@ -1351,6 +1352,16 @@ void AIModelGenerationClient::download(const std::string& path, const boost::fil
     auto http = Http::get(url(path));
     AISidecarClient::configure_native_request(http);
     http.timeout_connect(5).timeout_max(180).size_limit(size_limit);
+    if (on_progress) {
+        http.on_progress([on_progress = std::move(on_progress), last_percent = -1](Http::Progress progress, bool&) mutable {
+            const int percent = progress.dltotal == 0 ? 0 : static_cast<int>(
+                100.0L * std::min(progress.dlnow, progress.dltotal) / progress.dltotal);
+            if (percent != last_percent) {
+                last_percent = percent;
+                on_progress(progress.dlnow, progress.dltotal);
+            }
+        });
+    }
     http.on_complete([partial, destination, on_complete = std::move(on_complete), on_error,
                       validator = std::move(validator)](std::string body, unsigned) {
         boost::system::error_code ec;

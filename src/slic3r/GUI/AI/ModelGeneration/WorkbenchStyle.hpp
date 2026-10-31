@@ -10,6 +10,7 @@
 #include <wx/dcgraph.h>
 #include <wx/region.h>
 #include <wx/slider.h>
+#include <wx/stattext.h>
 #include <wx/tglbtn.h>
 #include <wx/timer.h>
 #include <wx/scrolwin.h>
@@ -316,6 +317,10 @@ public:
                 dc.DrawRectangle(bounds);
         });
     }
+    bool SetBackgroundColour(const wxColour&) override {
+        // This surface is deliberately dark even when Orca uses its light theme.
+        return wxPanel::SetBackgroundColour(m_fill);
+    }
     bool HasTransparentBackground() override { return false; }
     const wxColour& fill_colour() const { return m_fill; }
 
@@ -323,6 +328,30 @@ private:
     wxColour m_fill;
     wxColour m_border;
     int m_radius_dip {0};
+};
+
+class WorkbenchFloatingCard final : public wxDialog {
+public:
+    explicit WorkbenchFloatingCard(wxWindow* owner)
+        : wxDialog(owner, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize,
+                   wxBORDER_NONE | wxFRAME_NO_TASKBAR | wxFRAME_FLOAT_ON_PARENT | wxFRAME_SHAPED) {
+        SetName("ai_workbench_surface");
+        SetBackgroundColour(wxColour(45, 45, 49));
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+#ifdef __WXMSW__
+        SetDoubleBuffered(true);
+#endif
+        Bind(wxEVT_ERASE_BACKGROUND, [](wxEraseEvent&) {});
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(GetBackgroundColour()));
+            dc.Clear();
+        });
+    }
+    bool SetBackgroundColour(const wxColour&) override {
+        // The global light-theme conversion maps #2d2d31 back to white.
+        return wxDialog::SetBackgroundColour(wxColour(45, 45, 49));
+    }
 };
 
 inline void apply_workbench_floating_card_shape(wxDialog* card, int radius_dip,
@@ -334,6 +363,16 @@ inline void apply_workbench_floating_card_shape(wxDialog* card, int radius_dip,
     const int radius = std::max(1, card->FromDIP(radius_dip));
 #ifdef __WXMSW__
     if (card->GetHandle()) {
+        const auto hwnd = static_cast<HWND>(card->GetHandle());
+        // wxDialog may retain native dialog-frame styles despite wxBORDER_NONE.
+        const LONG_PTR style = ::GetWindowLongPtr(hwnd, GWL_STYLE);
+        const LONG_PTR extended = ::GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+        if ((style & (WS_BORDER | WS_DLGFRAME)) || (extended & WS_EX_DLGMODALFRAME)) {
+            ::SetWindowLongPtr(hwnd, GWL_STYLE, style & ~(WS_BORDER | WS_DLGFRAME));
+            ::SetWindowLongPtr(hwnd, GWL_EXSTYLE, extended & ~WS_EX_DLGMODALFRAME);
+            ::SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                           SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
         HRGN region = ::CreateRoundRectRgn(0, 0, size.x + 1, size.y + 1,
                                            2 * radius, 2 * radius);
         if (region && !::SetWindowRgn(static_cast<HWND>(card->GetHandle()), region, TRUE))
@@ -346,9 +385,12 @@ inline void apply_workbench_floating_card_shape(wxDialog* card, int radius_dip,
                 ::GetProcAddress(library, "DwmSetWindowAttribute"));
             if (set_attribute) {
                 constexpr DWORD border_color_attribute = 34;
+                // Windows 11 can suppress its outline; older DWM versions keep
+                // the borderless window region and owner-painted dark edge.
+                constexpr COLORREF no_border = 0xfffffffe;
                 const COLORREF border = RGB(border_colour.Red(), border_colour.Green(), border_colour.Blue());
-                set_attribute(static_cast<HWND>(card->GetHandle()), border_color_attribute,
-                              &border, sizeof(border));
+                if (FAILED(set_attribute(hwnd, border_color_attribute, &no_border, sizeof(no_border))))
+                    set_attribute(hwnd, border_color_attribute, &border, sizeof(border));
             }
             ::FreeLibrary(library);
         }
@@ -385,6 +427,39 @@ inline wxColour workbench_owned_surface(wxWindow* parent)
         return painted->fill_colour();
     return parent ? parent->GetBackgroundColour() : wxColour(45, 45, 49);
 }
+
+// Keep wxStaticText's sizing, wrapping and accessibility, but own the paint
+// palette. MSW's native disabled text adds a light embossed shadow when the
+// global theme is light, even though this workbench always has a dark surface.
+class WorkbenchStaticText final : public wxStaticText {
+public:
+    WorkbenchStaticText(wxWindow* parent, wxWindowID id, const wxString& label,
+                        const wxPoint& position = wxDefaultPosition,
+                        const wxSize& size = wxDefaultSize, long style = 0)
+        : wxStaticText(parent, id, label, position, size, style) {
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+#ifdef __WXMSW__
+        SetDoubleBuffered(true);
+#endif
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(workbench_owned_surface(GetParent())));
+            dc.Clear();
+            dc.SetFont(GetFont());
+            dc.SetTextForeground(IsEnabled() ? GetForegroundColour() : wxColour(150, 150, 156));
+            dc.SetBackgroundMode(wxBRUSHSTYLE_TRANSPARENT);
+            const long style = GetWindowStyleFlag();
+            const int alignment = style & wxALIGN_RIGHT ? wxALIGN_RIGHT :
+                style & wxALIGN_CENTER_HORIZONTAL ? wxALIGN_CENTER_HORIZONTAL : wxALIGN_LEFT;
+            dc.DrawLabel(GetLabelText(), GetClientRect(), alignment | wxALIGN_TOP);
+        });
+        Bind(wxEVT_SIZE, [this](wxSizeEvent& event) { Refresh(false); event.Skip(); });
+    }
+    void SetLabel(const wxString& label) override {
+        wxStaticText::SetLabel(label);
+        Refresh(false);
+    }
+};
 
 // Native wxStaticText may erase itself with the system window brush on MSW,
 // leaving white rectangles over a dark, owner-painted card. Keep modal text
@@ -1043,6 +1118,16 @@ public:
     WorkbenchButton(wxWindow* parent, const wxString& label) : Button(parent, label) {
         SetPaddingSize(FromDIP(wxSize(8, 6)));
     }
+    void use_parent_surface() {
+        m_parent_surface = true;
+        SetBackgroundColour(workbench_owned_surface(GetParent()));
+        SetBorderWidth(0);
+        Bind(wxEVT_SET_FOCUS, [this](wxFocusEvent& event) { Refresh(false); event.Skip(); });
+        Bind(wxEVT_KILL_FOCUS, [this](wxFocusEvent& event) { Refresh(false); event.Skip(); });
+    }
+    bool SetBackgroundColour(const wxColour& colour) override {
+        return Button::SetBackgroundColour(m_parent_surface ? workbench_owned_surface(GetParent()) : colour);
+    }
     void SetLabel(const wxString& label) override {
         if (!m_multiline) { Button::SetLabel(label); return; }
         if (wxWindow::GetLabel() == label) return;
@@ -1151,8 +1236,18 @@ public:
         if (m_drawer) refresh_drawer_assets();
         Button::Rescale();
     }
-#ifdef __WXMSW__
 protected:
+    void doRender(wxDC& dc) override {
+        StaticBox::doRender(dc);
+        if (m_parent_surface && IsEnabled() && HasFocus()) {
+            wxRect focus = GetClientRect();
+            focus.Deflate(FromDIP(3));
+            dc.SetBrush(*wxTRANSPARENT_BRUSH);
+            dc.SetPen(wxPen(wxColour(155, 124, 55), std::max(1, FromDIP(1))));
+            dc.DrawRoundedRectangle(focus, std::max(1, FromDIP(m_radius - 2)));
+        }
+    }
+#ifdef __WXMSW__
     WXLRESULT MSWWindowProc(WXUINT message, WXWPARAM parameter, WXLPARAM data) override {
         // Alt+Space belongs to the native system menu, not Button's Space activation.
         if ((message == WM_SYSKEYDOWN || message == WM_SYSKEYUP) && parameter == WXK_SPACE)
@@ -1196,6 +1291,7 @@ private:
     std::string m_navigation_leading, m_navigation_trailing;
     wxBitmap m_navigation_leading_bitmap, m_navigation_trailing_bitmap;
     bool m_drawer {false};
+    bool m_parent_surface {false};
     bool m_multiline {false};
     bool m_drawer_open {true};
     wxBitmap m_drawer_background, m_drawer_arrow;
@@ -1204,6 +1300,7 @@ private:
 inline WorkbenchButton* workbench_button(wxWindow* parent, const wxString& label)
 {
     auto* button = new WorkbenchButton(parent, label);
+    button->use_parent_surface();
     button->SetCornerRadius(parent->FromDIP(8));
     button->SetBorderWidth(0);
     button->SetBackgroundColor(StateColor(

@@ -50,13 +50,74 @@ using namespace Slic3r::GUI;
 TEST_CASE("Workbench palette status keeps Honor fallback reasons visible",
           "[PostGenerationWorkbench][ModelPreviewPalette][UiRedesign]")
 {
-    CHECK(workbench_palette_status_line(false, true, 4, 4) == "原始配色证据不可用");
-    CHECK(workbench_palette_status_line(true, false, 0, 6) == "当前色卡 · 6 色");
-    CHECK(workbench_palette_status_line(true, true, 5, 6) ==
+    CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, false, 0, 6) == "当前色卡 · 6 色");
+    CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, true, 5, 6) ==
         "荣耀耗材套装 · 模型当前使用 5/6 色");
-    CHECK(workbench_palette_status_line(true, true, 4, 4,
+    CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, true, 4, 4,
         "未检测到人物，已回退为全局相近色匹配。") ==
         "未检测到人物，已回退为全局相近色匹配。\n模型当前使用 4/6 色");
+}
+
+TEST_CASE("Workbench defers original appearance diagnostics until the current model is loaded",
+          "[PostGenerationWorkbench][ModelPreviewPalette]")
+{
+    using Status = PostGenerationUiState::Status;
+    using Appearance = WorkbenchOriginalAppearanceState;
+    const bool previous_appearance_available = GENERATE(false, true);
+    const bool previous_appearance_error = GENERATE(false, true);
+    auto appearance = workbench_original_appearance_state(Status::Empty, false, false,
+        previous_appearance_available, previous_appearance_error);
+    CHECK(appearance == Appearance::Empty);
+    CHECK(workbench_palette_status_line(appearance, false, 0, 0) == "请从右侧选择或打开3D模型");
+
+    appearance = workbench_original_appearance_state(Status::Loading, false, false,
+        previous_appearance_available, previous_appearance_error);
+    CHECK(appearance == Appearance::Loading);
+    CHECK(workbench_palette_status_line(appearance, false, 0, 0) == "正在加载模型…");
+
+    // A replacement load may keep the previous ready model and diagnostics.
+    appearance = workbench_original_appearance_state(Status::Processing, true, true,
+        previous_appearance_available, previous_appearance_error);
+    CHECK(appearance == Appearance::Loading);
+    CHECK(workbench_palette_status_line(appearance, true, 6, 6) == "正在加载模型…");
+}
+
+TEST_CASE("Loaded workbench distinguishes uncolored models from invalid original appearance",
+          "[PostGenerationWorkbench][ModelPreviewPalette]")
+{
+    using Status = PostGenerationUiState::Status;
+    using Appearance = WorkbenchOriginalAppearanceState;
+    const auto status = GENERATE(Status::Ready, Status::Processing, Status::Editing,
+        Status::CandidateReady, Status::ComparingBefore);
+    auto appearance = workbench_original_appearance_state(status, false, true, false, false);
+    CHECK(appearance == Appearance::Uncolored);
+    CHECK(workbench_palette_status_line(appearance, false, 0, 0) ==
+        "当前模型不含原始颜色，原色对照不可用");
+
+    appearance = workbench_original_appearance_state(status, false, true, false, true);
+    CHECK(appearance == Appearance::Invalid);
+    CHECK(workbench_palette_status_line(appearance, false, 0, 0) == "原始配色证据不可用");
+
+    appearance = workbench_original_appearance_state(status, false, true, true, false);
+    CHECK(appearance == Appearance::Available);
+    CHECK(workbench_original_appearance_hint(appearance).empty());
+    CHECK(workbench_palette_status_line(appearance, false, 0, 6) == "当前色卡 · 6 色");
+}
+
+TEST_CASE("Workbench load failure suppresses secondary original appearance diagnostics",
+          "[PostGenerationWorkbench][ModelPreviewPalette]")
+{
+    using Status = PostGenerationUiState::Status;
+    using Appearance = WorkbenchOriginalAppearanceState;
+    const bool previous_model_ready = GENERATE(false, true);
+    const auto appearance = workbench_original_appearance_state(Status::Error, false,
+        previous_model_ready, false, true);
+    CHECK(appearance == Appearance::ModelError);
+    CHECK(workbench_palette_status_line(appearance, true, 6, 6).empty());
+    CHECK(workbench_original_appearance_hint(appearance) == "模型加载失败，请重新打开模型");
+    // Retrying still shows loading while the old failure is being cleared.
+    CHECK(workbench_original_appearance_state(Status::Error, true, previous_model_ready,
+        false, true) == Appearance::Loading);
 }
 
 #ifdef __WXMSW__

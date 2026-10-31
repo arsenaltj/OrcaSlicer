@@ -207,11 +207,9 @@ foreach ($catalog in $requiredCatalogs) {
     }
 }
 
-$versionLine = Select-String -LiteralPath (Join-Path $repoRoot 'version.inc') -Pattern '^\s*set\(SoftFever_VERSION\s+"([^"]+)"\)' | Select-Object -First 1
-if (-not $versionLine) {
-    throw 'Unable to determine OrcaSlicer version from version.inc.'
-}
-$version = $versionLine.Matches[0].Groups[1].Value
+. (Join-Path $PSScriptRoot 'ProductConfig.ps1')
+$product = Get-ProductIdentity -Root $repoRoot
+$version = $product.Version
 
 . (Join-Path $PSScriptRoot 'package_windows_architecture.ps1')
 $architecture = Resolve-PackageWindowsArchitecture -BuildDir $resolvedBuildDir
@@ -239,7 +237,7 @@ if ($runtimeDependencies.schema_version -ne 1 -or $runtimeDependencies.python.ve
     throw 'Pinned AI runtime dependency metadata does not match the supported Python/Pillow runtime.'
 }
 # A short CPack name keeps the NSIS staging path below the Windows path limit.
-$shortPackageName = "OrcaAI_$architecture"
+$shortPackageName = "HonorForge_$architecture"
 & $cpackExecutable --config $cpackConfig -G NSIS -C Release -B $resolvedOutputDir -D "CPACK_PACKAGE_FILE_NAME=$shortPackageName" -D 'CPACK_NSIS_COMPRESSOR=zlib'
 if ($LASTEXITCODE -ne 0) {
     throw "CPack failed with exit code $LASTEXITCODE."
@@ -250,7 +248,7 @@ if (-not (Test-Path -LiteralPath $generatedInstaller -PathType Leaf)) {
     throw "Expected installer was not created: $generatedInstaller"
 }
 
-$finalName = "OrcaSlicer_AI_Internal_Fast_V$version`_$Revision`_$architecture.exe"
+$finalName = "$($product.PackageStem)_Internal_V$version`_$Revision`_$architecture.exe"
 $finalInstaller = Join-Path $resolvedOutputDir $finalName
 Move-Item -LiteralPath $generatedInstaller -Destination $finalInstaller -Force
 
@@ -258,7 +256,7 @@ $hash = (Get-FileHash -LiteralPath $finalInstaller -Algorithm SHA256).Hash
 $hashFile = "$finalInstaller.sha256"
 Set-Content -LiteralPath $hashFile -Value "$hash  $finalName" -Encoding ascii
 
-$shortPortableName = "OrcaAI_$architecture"
+$shortPortableName = "HonorForge_$architecture"
 & $cpackExecutable --config $cpackConfig -G ZIP -C Release -B $resolvedOutputDir -D "CPACK_PACKAGE_FILE_NAME=$shortPortableName"
 if ($LASTEXITCODE -ne 0) {
     throw "Portable CPack failed with exit code $LASTEXITCODE."
@@ -267,7 +265,7 @@ $generatedPortable = Join-Path $resolvedOutputDir "$shortPortableName.zip"
 if (-not (Test-Path -LiteralPath $generatedPortable -PathType Leaf)) {
     throw "Expected portable package was not created: $generatedPortable"
 }
-$portableName = "OrcaSlicer_AI_Internal_Fast_V$version`_$Revision`_$architecture`_portable.zip"
+$portableName = "$($product.PackageStem)_Internal_V$version`_$Revision`_$architecture`_portable.zip"
 $portablePackage = Join-Path $resolvedOutputDir $portableName
 Move-Item -LiteralPath $generatedPortable -Destination $portablePackage -Force
 $portableHash = (Get-FileHash -LiteralPath $portablePackage -Algorithm SHA256).Hash

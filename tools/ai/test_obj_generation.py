@@ -326,8 +326,11 @@ class TripoArtifactSecurityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch.object(TRIPO, "_validate_artifact_url"), \
              mock.patch.object(TRIPO.urllib.request, "build_opener", return_value=opener):
-            output = TRIPO.download_task_artifact(task, Path(directory) / "model.zip", max_bytes=16)
+            reports = []
+            output = TRIPO.download_task_artifact(task, Path(directory) / "model.zip", max_bytes=16,
+                progress=lambda received, total: reports.append((received, total)))
             self.assertEqual(output.read_bytes(), b"abcdefgh")
+            self.assertEqual(reports, [(0, 8), (3, 8), (3, 8), (8, 8)])
 
         self.assertEqual(opener.open.call_count, 2)
         resumed_request = opener.open.call_args_list[1].args[0]
@@ -948,7 +951,7 @@ class ObjGenerationTests(unittest.TestCase):
             "conversion_task_id": "existing-conversion",
         }]
 
-        def write_download(_result, destination, _limit):
+        def write_download(_result, destination, _limit, **_options):
             destination.write_bytes(b"download")
 
         recovered = attempt_directory / "recovery-01" / "model-vertex-color.obj"
@@ -2301,7 +2304,7 @@ class ObjGenerationTests(unittest.TestCase):
         }
         self.job.image_metrics = {"portrait_skin_cleanup": {"activated": 1}}
         gateway = self._provider_gateway()
-        gateway.download_artifact.side_effect = lambda result, path, limit: path.write_text(
+        gateway.download_artifact.side_effect = lambda result, path, limit, **options: path.write_text(
             destination.read_text(encoding="ascii"), encoding="ascii"
         )
         with (

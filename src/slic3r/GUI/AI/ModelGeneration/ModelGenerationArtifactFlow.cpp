@@ -152,7 +152,7 @@ void ModelGenerationPanel::download_model_preview(uint64_t sequence)
     m_artifact_path = temp_path(m_job_id, m_artifact_format);
     m_color_intent_path.clear();
     m_busy = true;
-    update_progress(94, 4, _L("下载模型"));
+    update_progress(m_model_progress.download(0, 0), 4, _L("下载模型"));
     m_status->SetLabel(_L("正在下载并校验生成的模型..."));
     m_model_stats->SetLabel(_L("正在加载模型..."));
     m_model_preview_message->SetLabel(_L("下载完成后将在此处显示彩色 3D 预览。"));
@@ -215,6 +215,15 @@ void ModelGenerationPanel::download_model_preview(uint64_t sequence)
                 weak->m_model_stats->SetLabel(_L("模型尚未下载"));
                 weak->refresh_controls();
             });
+        },
+        [weak, sequence](size_t received, size_t total) {
+            if (!weak) return;
+            wxGetApp().CallAfter([weak, sequence, received, total] {
+                if (!weak || weak->m_shutdown || sequence != weak->m_sequence || !weak->m_busy ||
+                    weak->m_preview_loading || weak->m_model_preview_ready) return;
+                weak->update_progress(weak->m_model_progress.download(received, total), 4, _L("下载模型"));
+                weak->publish_ui_state();
+            });
         });
 }
 
@@ -230,6 +239,7 @@ void ModelGenerationPanel::finish_model_preview_download(const boost::filesystem
         m_result_summary->SetLabel(_L("颜色清单不匹配，将使用模型自身颜色继续。"));
     }
 
+    update_progress(m_model_progress.loading(), 4, _L("加载模型"));
     load_model_preview_async(path, m_job_palette,
         [this, path](size_t triangle_count, Vec3d dimensions, size_t color_count, double load_seconds) {
     m_artifact_path = path;
@@ -242,7 +252,7 @@ void ModelGenerationPanel::finish_model_preview_download(const boost::filesystem
     refresh_model_quality_card();
     show_model_comparison();
     m_library_model_loaded = false;
-    update_progress(100, 4, _L("查看模型"));
+    update_progress(m_model_progress.complete(), 4, _L("查看模型"));
     const bool visual_gate_blocked = m_visual_quality.available && !m_visual_quality.import_recommended;
     m_status->SetLabel(visual_gate_blocked
         ? _L("模型已生成，但人脸相似度或材料归属未通过；建议重新优化。")

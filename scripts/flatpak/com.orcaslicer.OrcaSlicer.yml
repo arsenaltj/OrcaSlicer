@@ -402,6 +402,9 @@ modules:
         path: ../../cmake
         dest: cmake
       - type: dir
+        path: ../../config
+        dest: config
+      - type: dir
         path: ../../deps_src
         dest: deps_src
       - type: dir

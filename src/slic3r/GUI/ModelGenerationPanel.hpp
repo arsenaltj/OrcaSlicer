@@ -8,6 +8,7 @@
 #include "AI/ModelGeneration/ModelLibraryApplication.hpp"
 #include "AI/ModelGeneration/ModelLibraryLoader.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationHost.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 #include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
@@ -874,6 +875,7 @@ private:
     std::string m_job_id;
     std::string m_job_state;
     std::string m_job_phase;
+    ModelGenerationPresentation::ModelGenerationProgress m_model_progress;
     std::string m_design_timing_job_id;
     double m_design_elapsed_seconds { -1.0 };
     double m_design_estimated_seconds { 0.0 };

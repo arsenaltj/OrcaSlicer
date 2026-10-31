@@ -16,7 +16,7 @@
             ProcessorArchitecture="@MSIX_ARCH@" />
 
   <Properties>
-    <DisplayName>OrcaSlicer</DisplayName>
+    <DisplayName>@PRODUCT_NAME@</DisplayName>
     <PublisherDisplayName>@MSIX_PUBLISHER_DISPLAY_NAME@</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
     <!-- Keep config in the real %APPDATA%\OrcaSlicer so it survives uninstall and
@@ -40,9 +40,9 @@
   </Resources>
 
   <Applications>
-    <Application Id="OrcaSlicer" Executable="orca-slicer.exe" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="OrcaSlicer" Executable="@PRODUCT_EXE@" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
-        DisplayName="OrcaSlicer"
+        DisplayName="@PRODUCT_NAME@"
         Description="Open-source slicer for FDM 3D printers"
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.png"
@@ -77,7 +77,7 @@
         </uap:Extension>
         <uap3:Extension Category="windows.appExecutionAlias" EntryPoint="Windows.FullTrustApplication">
           <uap3:AppExecutionAlias>
-            <desktop:ExecutionAlias Alias="orca-slicer.exe" />
+            <desktop:ExecutionAlias Alias="@PRODUCT_ALIAS@" />
           </uap3:AppExecutionAlias>
         </uap3:Extension>
       </Extensions>

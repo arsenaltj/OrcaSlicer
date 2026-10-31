@@ -871,6 +871,114 @@ TEST_CASE("model-generation progress maps service phases to stable UI milestones
     REQUIRE(display_progress(status) == 100);
 }
 
+TEST_CASE("New 3D generation starts at zero and provider progress cannot regress", "[ModelGenerationPresentation]")
+{
+    ModelGenerationProgress progress;
+    progress.begin("model-a", 10.0);
+    CHECK(progress.value() == 0);
+    AIModelGenerationClient::JobStatus status;
+    status.id = "model-a";
+    status.state = "running";
+    status.phase = "generating";
+    status.provider_name = "tripo";
+    status.provider_task_id = "remote-a";
+    status.progress = 20;
+    CHECK(progress.synchronize(status, 11.0) == 5);
+    status.progress = 45;
+    CHECK(progress.synchronize(status, 12.0) == 45);
+    status.progress = 20;
+    CHECK(progress.synchronize(status, 13.0) == 45);
+    status.progress = 70;
+    CHECK(progress.synchronize(status, 14.0) == 85);
+    CHECK_FALSE(progress.estimated());
+    progress.begin("model-b", 15.0);
+    CHECK(progress.value() == 0);
+}
+
+TEST_CASE("YOYOClaw progress estimates advance locally and stay below remote completion", "[ModelGenerationPresentation]")
+{
+    ModelGenerationProgress progress;
+    AIModelGenerationClient::JobStatus status;
+    status.id = "model-yoyo";
+    status.state = "running";
+    status.phase = "generating";
+    status.provider_name = "yoyoclaw";
+    status.provider_task_id = "saved-remote-id";
+    status.progress = 20;
+    CHECK(progress.synchronize(status, 0.0) == 5);
+    CHECK(progress.estimated());
+    const int estimated = progress.synchronize(status, 120.0);
+    CHECK(estimated > 5);
+    CHECK(estimated < 85);
+    CHECK(progress.elapsed_seconds() == 120);
+    CHECK(progress.synchronize(status, 1e10) < 85);
+    CHECK(progress.estimated());
+    status.phase = "downloading_artifact";
+    status.progress = 75;
+    CHECK(progress.synchronize(status, 1e10 + 1) == 90);
+    CHECK_FALSE(progress.estimated());
+}
+
+TEST_CASE("Stopping and resuming the same model preserves progress without completing it", "[ModelGenerationPresentation]")
+{
+    ModelGenerationProgress progress;
+    AIModelGenerationClient::JobStatus status;
+    status.id = "same-task";
+    status.state = "running";
+    status.phase = "generating";
+    status.provider_name = "yoyoclaw";
+    status.provider_task_id = "same-provider-id";
+    progress.synchronize(status, 0.0);
+    const int value = progress.synchronize(status, 60.0);
+    for (const auto& state : {"failed", "stopping", "stopped", "cancelled"}) {
+        status.state = state;
+        CHECK(progress.synchronize(status, 60.0) == value);
+        CHECK_FALSE(progress.estimated());
+        CHECK(progress.synchronize(status, 1000.0) == value);
+    }
+    status.state = "running";
+    CHECK(progress.synchronize(status, 1000.0) == value);
+    CHECK(progress.estimated());
+    CHECK(progress.synchronize(status, 1030.0) > value);
+}
+
+TEST_CASE("Download bytes and successful viewport loading own the final 3D milestones", "[ModelGenerationPresentation]")
+{
+    ModelGenerationProgress progress;
+    CHECK(progress.download(10, 0) == 96);
+    CHECK(progress.download(50, 100) == 97);
+    CHECK(progress.download(20, 100) == 97);
+    CHECK(progress.download(500, 100) == 98);
+    CHECK(progress.loading() == 99);
+    AIModelGenerationClient::JobStatus status;
+    status.state = "ready";
+    status.progress = 100;
+    CHECK(progress.synchronize(status, 0.0) == 99);
+    CHECK(progress.complete() == 100);
+    CHECK(ModelGenerationProgress::viewport_progress(100, false) == 99);
+    CHECK(ModelGenerationProgress::viewport_progress(0, false) == 0);
+    CHECK(ModelGenerationProgress::viewport_progress(99, true) == 100);
+}
+
+TEST_CASE("Invalid clocks and different task identities cannot corrupt estimated progress", "[ModelGenerationPresentation]")
+{
+    ModelGenerationProgress progress;
+    AIModelGenerationClient::JobStatus status;
+    status.id = "first-task";
+    status.state = "running";
+    status.phase = "generating";
+    status.provider_name = "yoyoclaw";
+    status.provider_task_id = "remote";
+    progress.synchronize(status, 10.0);
+    const int value = progress.synchronize(status, 70.0);
+    CHECK(progress.synchronize(status, 20.0) == value);
+    CHECK(progress.synchronize(status, std::numeric_limits<double>::quiet_NaN()) == value);
+    status.id = "second-task";
+    status.provider_task_id.clear();
+    CHECK(progress.synchronize(status, 80.0) < value);
+    CHECK_FALSE(progress.estimated());
+}
+
 TEST_CASE("loaded model remains importable when generation inputs become stale",
           "[ModelGenerationPresentation][ModelImportAction]")
 {
