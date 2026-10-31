@@ -1,0 +1,25 @@
+{
+  "pr": 53,
+  "run": 41166359083,
+  "head": "d6c2c4eb66af3f79a8c7f3de1f5da78f07a187fc",
+  "base": "73bd9a98b47caaa2b602c2a7059b359e7fb07e76",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "统一 Honor Forge Studio 品牌与版本，完善模型生成和工作台交互",
+  "path": "pr/53/d6c2c4eb66af3f79a8c7f3de1f5da78f07a187fc/41166359083",
+  "created": "2026-10-31T03:58:15+00:00",
+  "files": {
+    "index.html": "458b2656a616ce9ac534cede8bdc1f059f511c6fc3b6ec4f325518f6316bcf39",
+    "details.html": "b2c1669996ab0364c62193bcac83ba0ef60761cedf463239ae26f58f62d11f8f",
+    "report.json": "8da9634dd75aa49744ab0b58b7d240ea37289ba3ed4186fcdc79b2addcafd230",
+    "summary.md": "0f4f73fd7a0e1ec35cfb864dc9faf0b5010503d72cdb11bb3815ec0fc8defa38",
+    "archify-receipts.json": "899c37b0874a2dac3b603bfe9e93785564bddd94f5b19dbecc22e4664cff9c40",
+    "l0-context.html": "2ed041164aacf3ff25a8a692a4c0ef3fbe9c6ab95c990bb078b8481aa5852760",
+    "l0-context.json": "ed8d5b43ab8fc730068db05ec4fcd3ea481c1da8b90533fe8efcf31f31188d28",
+    "l1-modules.html": "e628a908c8bb615d371044b2c926b9c46128725adbb0e3d5de9fc7645b97075c",
+    "l1-modules.json": "0e344cd72aa54e0d0102fc292dc0e7aa5341d3e0ca830ba996dddafa69208851",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "46ca7ade63fcd50bac8b2ce3984ac1c6d157f5b65f429a70dbc13a449aa8d4d3",
+    "l2-slicing.json": "5c1db02b393a0d36f5f2dce03383c8ae2d4b4804b8b1eea056636a5de1fe1fa8"
+  }
+}

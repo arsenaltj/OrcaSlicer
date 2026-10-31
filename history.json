@@ -1,5 +1,15 @@
 [
   {
+    "pr": 53,
+    "run": 41166359083,
+    "head": "d6c2c4eb66af3f79a8c7f3de1f5da78f07a187fc",
+    "base": "73bd9a98b47caaa2b602c2a7059b359e7fb07e76",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "统一 Honor Forge Studio 品牌与版本，完善模型生成和工作台交互",
+    "path": "pr/53/d6c2c4eb66af3f79a8c7f3de1f5da78f07a187fc/41166359083",
+    "created": "2026-10-31T03:58:15+00:00"
+  },
+  {
     "pr": 52,
     "run": 40659667539,
     "head": "d1500d44055332b8bea0a5c0b6ed5462cadd6351",
