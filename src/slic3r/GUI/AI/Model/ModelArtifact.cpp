@@ -48,6 +48,12 @@ std::vector<RGBA> remap_model_vertex_colors(const indexed_triangle_set& original
 }
 namespace {
 constexpr uint64_t max_bytes = 512ull * 1024 * 1024;
+std::array<float, 3> glb_position_from_millimetres(float x, float y, float z)
+{
+    // Round after scaling, not before: a float .001 coefficient moves even
+    // otherwise representable corners and can intersect near-contact surfaces.
+    return {float(double(x) * .001), float(double(z) * .001), float(-double(y) * .001)};
+}
 float linear(float v) { return v <= .04045f ? v / 12.92f : std::pow((v + .055f) / 1.055f, 2.4f); }
 float srgb(float v) {
     v = std::clamp(v, 0.f, 1.f);
@@ -621,7 +627,7 @@ static bool write_model_artifact_impl(const boost::filesystem::path& path, const
             std::array<float, 3> minimum {INFINITY, INFINITY, INFINITY}, maximum {-INFINITY, -INFINITY, -INFINITY};
             binary.reserve(mesh.vertices.size() * 24 + mesh.indices.size() * 12);
             for (const auto& v : mesh.vertices) {
-                const std::array<float, 3> p {v.x() * .001f, v.z() * .001f, -v.y() * .001f};
+                const auto p = glb_position_from_millimetres(v.x(), v.y(), v.z());
                 for (size_t c = 0; c < 3; ++c) { append_float(binary, p[c]); minimum[c] = std::min(minimum[c], p[c]); maximum[c] = std::max(maximum[c], p[c]); }
             }
             const size_t colors_offset = binary.size();
@@ -745,6 +751,21 @@ bool archive_local_model(const boost::filesystem::path& source,const boost::file
         boost::filesystem::create_directories(destination.parent_path());
         if(model_artifact_format(source)=="glb") {boost::filesystem::copy_file(source,staged);owned=true;}
         else {
+            TriangleMesh vertex_mesh; ObjInfo vertex_info; std::string vertex_error;
+            const bool bare_vertex_color = load_obj(source.string().c_str(),&vertex_mesh,vertex_info,vertex_error) &&
+                !vertex_info.vertex_colors.empty() && vertex_info.vertex_colors.size()==vertex_mesh.its.vertices.size() &&
+                vertex_info.usemtls.empty() && !vertex_info.has_uv_png;
+            if (bare_vertex_color) {
+                // OBJ vertex RGB is already sRGB. Assimp supplies a gray default
+                // material even when the file assigns none; baking that factor
+                // would darken every local import and change its source groups.
+                if(vertex_mesh.its.indices.size()>2000000 || vertex_mesh.its.vertices.size()>6000000)
+                    throw std::runtime_error("模型超过当前工作台支持的 200 万三角面。");
+                if(!write_model_artifact_impl(staged,vertex_mesh.its,vertex_info.vertex_colors,error,nullptr))
+                    throw std::runtime_error(error);
+                owned=true;
+            } else {
+            vertex_mesh=TriangleMesh(); vertex_info=ObjInfo();
             TexturedMesh mesh;std::vector<RGBA> colors;
             if(!load_assimp_textured_model(source.string(),mesh,&error,&colors))throw std::runtime_error(error);
             if(mesh.indices.empty() || mesh.indices.size()>2000000 || mesh.vertices.size()>6000000 || colors.size()!=mesh.vertices.size())
@@ -765,7 +786,7 @@ bool archive_local_model(const boost::filesystem::path& source,const boost::file
             };
             std::array<float,3> minimum{INFINITY,INFINITY,INFINITY},maximum{-INFINITY,-INFINITY,-INFINITY};
             for(const auto& v:mesh.vertices) {
-                const std::array<float,3> p{v[0]*.001f,v[2]*.001f,-v[1]*.001f};
+                const auto p = glb_position_from_millimetres(v[0], v[1], v[2]);
                 for(size_t c=0;c<3;++c) {
                     if(!std::isfinite(p[c]))throw std::runtime_error("模型含无效坐标。");
                     append_float(bytes,p[c]);minimum[c]=std::min(minimum[c],p[c]);maximum[c]=std::max(maximum[c],p[c]);
@@ -822,6 +843,7 @@ bool archive_local_model(const boost::filesystem::path& source,const boost::file
             write_u32(out,uint32_t(json.size()));write_u32(out,0x4e4f534a);out.write(json.data(),json.size());
             write_u32(out,uint32_t(bytes.size()));write_u32(out,0x004e4942);out.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());out.close();
             if(!out)throw std::runtime_error("无法写入本地模型，请检查磁盘空间。");
+            }
         }
         TriangleMesh verified;ObjInfo sampled;
         if(!load_model_artifact(staged,verified,sampled,error))throw std::runtime_error(error);

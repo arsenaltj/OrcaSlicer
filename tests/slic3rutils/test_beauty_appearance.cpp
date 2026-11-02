@@ -1545,6 +1545,107 @@ TEST_CASE("An unpaintable texture selection cannot silently save only its vertex
     }
 }
 
+TEST_CASE("Unused and reordered equal RGB materials preserve independent regional corner edits", "[BeautyAppearance][BeautyMaterialMapping]") {
+    for (bool reversed : {false, true}) for (bool repeated : {false, true}) {
+        INFO(reversed); INFO(repeated);
+        Fixture fixture; const auto source = make_fixture(fixture, false, false, true);
+        auto original = read_glb(source);
+        for (size_t mi = 0; mi < 2; ++mi) {
+            auto& material = original.doc["materials"][mi];
+            material["name"] = "same";
+            material["pbrMetallicRoughness"].erase("baseColorTexture");
+            material["pbrMetallicRoughness"]["baseColorFactor"] = {.2, .2, .2, mi == 0 ? .4 : .8};
+        }
+        if (repeated) original.doc["meshes"][0]["primitives"].push_back(original.doc["meshes"][0]["primitives"][0]);
+        const auto used = original.doc["materials"];
+        original.doc["materials"] = Json::array({used[0], used[reversed ? 1 : 0], used[reversed ? 0 : 1]});
+        for (auto& primitive : original.doc["meshes"][0]["primitives"]) {
+            const auto old = primitive["material"].get<size_t>();
+            primitive["material"] = 1 + (reversed ? 1 - old : old);
+        }
+        write_glb(source, original.doc, original.binary);
+        const auto hash = model_artifact_sha256(source);
+        TriangleMesh before, after; ObjInfo before_colors, after_colors; std::string error;
+        REQUIRE(load_model_artifact(source, before, before_colors, error));
+        BeautyAppearanceOptions options;
+        options.face_weights.assign(before.its.indices.size(), 0);
+        options.face_weights[0] = options.face_weights[2] = 1;
+        options.face_target_colors.assign(options.face_weights.size(), {.9f, .2f, .1f});
+        const auto destination = fixture.directory / "recolored.glb";
+        const auto result = edit_glb_appearance(source, destination, options);
+        INFO(result.error); REQUIRE(result.success);
+        REQUIRE(load_model_artifact(destination, after, after_colors, error));
+        REQUIRE(after.its.indices.size() == before.its.indices.size());
+        for (size_t face = 0; face < before.its.indices.size(); ++face) for (size_t corner = 0; corner < 3; ++corner) {
+            const int a = after.its.indices[face][corner], b = before.its.indices[face][corner];
+            for (size_t ch = 0; ch < 3; ++ch) {
+                CHECK(std::abs(after.its.vertices[a][ch] - before.its.vertices[b][ch]) < 1e-5);
+                const float expected = face == 0 || face == 2 ? options.face_target_colors[face][ch] : before_colors.vertex_colors[b][ch];
+                CHECK(std::abs(after_colors.vertex_colors[a][ch] - expected) < 1e-5);
+            }
+            CHECK(std::abs(after_colors.vertex_colors[a][3] - before_colors.vertex_colors[b][3]) < 1e-6);
+        }
+        const auto saved = read_glb(destination);
+        for (size_t mi = 0; mi < 3; ++mi) CHECK(saved.doc["materials"][mi] == original.doc["materials"][mi]);
+        const auto& primitives = saved.doc["meshes"][0]["primitives"];
+        CHECK(primitives[0]["material"] != primitives[1]["material"]);
+        if (repeated) CHECK(primitives[2] == original.doc["meshes"][0]["primitives"][2]);
+        CHECK(model_artifact_sha256(source) == hash);
+    }
+}
+
+TEST_CASE("Appearance output is invariant to material table permutations with unused entries", "[BeautyAppearance][BeautyMaterialMapping]") {
+    for (const std::string mode : {"textured", "relative", "mixed", "gradient"}) {
+        INFO(mode);
+        Fixture fixture; const auto source = make_fixture(fixture, false, false, true);
+        auto original = read_glb(source);
+        if (mode == "mixed") original.doc["materials"][0]["pbrMetallicRoughness"].erase("baseColorTexture");
+        if (mode == "gradient") {
+            while (original.binary.size() % 4) original.binary.push_back(0);
+            const size_t offset = original.binary.size(), view = original.doc["bufferViews"].size(), accessor = original.doc["accessors"].size();
+            for (size_t v = 0; v < 8; ++v) for (float channel : {v % 2 ? .8f : .3f, .5f, .6f, .7f}) append_float(original.binary, channel);
+            original.doc["bufferViews"].push_back({{"buffer", 0}, {"byteOffset", offset}, {"byteLength", 128}});
+            original.doc["accessors"].push_back({{"bufferView", view}, {"componentType", 5126}, {"count", 8}, {"type", "VEC4"}});
+            for (auto& primitive : original.doc["meshes"][0]["primitives"]) primitive["attributes"]["COLOR_0"] = accessor;
+        }
+        write_glb(source, original.doc, original.binary);
+        BeautyAppearanceOptions options; options.face_weights = {1, 0, 1, 0};
+        if (mode == "relative") options.brightness = .12;
+        else options.face_target_colors.assign(4, {.9f, .2f, .1f});
+        const auto reference = fixture.directory / "reference.glb";
+        const auto baseline = edit_glb_appearance(source, reference, options);
+        INFO(baseline.error); REQUIRE(baseline.success);
+        const auto used = original.doc["materials"];
+        original.doc["materials"] = Json::array({used[1], used[1], used[0]});
+        for (auto& material : original.doc["materials"]) material["name"] = "same";
+        for (auto& primitive : original.doc["meshes"][0]["primitives"])
+            primitive["material"] = 2 - primitive["material"].get<size_t>();
+        const auto permuted = fixture.directory / "permuted.glb";
+        write_glb(permuted, original.doc, original.binary);
+        const auto hash = model_artifact_sha256(permuted);
+        const auto destination = fixture.directory / "permuted-edited.glb";
+        const auto result = edit_glb_appearance(permuted, destination, options);
+        INFO(result.error); REQUIRE(result.success);
+        TriangleMesh expected, actual; ObjInfo expected_colors, actual_colors; std::string error;
+        REQUIRE(load_model_artifact(reference, expected, expected_colors, error));
+        REQUIRE(load_model_artifact(destination, actual, actual_colors, error));
+        REQUIRE(expected.its.indices.size() == actual.its.indices.size());
+        for (size_t face = 0; face < expected.its.indices.size(); ++face) for (size_t corner = 0; corner < 3; ++corner) {
+            const auto a = actual.its.indices[face][corner], e = expected.its.indices[face][corner];
+            for (size_t ch = 0; ch < 3; ++ch) CHECK(std::abs(actual.its.vertices[a][ch] - expected.its.vertices[e][ch]) < 1e-5);
+            for (size_t ch = 0; ch < 4; ++ch) CHECK(std::abs(actual_colors.vertex_colors[a][ch] - expected_colors.vertex_colors[e][ch]) < 1e-5);
+        }
+        const auto saved = read_glb(destination);
+        for (const char* field : {"nodes", "scene", "scenes", "samplers"}) CHECK(saved.doc[field] == original.doc[field]);
+        CHECK(saved.doc["materials"][0] == original.doc["materials"][0]); // Never discard the unused material.
+        const auto canceled_path = fixture.directory / "canceled.glb";
+        int checkpoints = 0;
+        const auto canceled = edit_glb_appearance(permuted, canceled_path, options, [&] { return ++checkpoints == 20; });
+        CHECK(canceled.canceled); CHECK_FALSE(canceled.success); CHECK_FALSE(boost::filesystem::exists(canceled_path));
+        CHECK(model_artifact_sha256(permuted) == hash);
+    }
+}
+
 TEST_CASE("Primitive appearance mapping rejects reordered triangles materials and additional instances", "[BeautyAppearance][GlbGeometryEditing]") {
     Fixture fixture; const auto source = make_fixture(fixture, false, false, true);
     auto doc = read_glb(source);
@@ -1563,6 +1664,77 @@ TEST_CASE("Primitive appearance mapping rejects reordered triangles materials an
     CHECK_THROWS(read_glb_geometry_source(source, geometry)); // Geometry-writing scope remains unchanged.
     doc.doc["nodes"].push_back({{"mesh", 0}}); doc.doc["scenes"][0]["nodes"].push_back(1);
     CHECK_THROWS(verify_glb_appearance_layout(doc.doc, doc.binary, geometry, imported.material_ids));
+}
+
+TEST_CASE("Unchanged material identities retain relative texture editing across static instances", "[BeautyAppearance][BeautyMaterialMapping]") {
+    for (bool equal_materials : {false, true}) {
+        INFO(equal_materials);
+        Fixture fixture; const auto source = make_fixture(fixture, false, false, true);
+        auto original = read_glb(source);
+        if (equal_materials) original.doc["materials"][1] = original.doc["materials"][0];
+        original.doc["nodes"] = Json::array({{{"children", {1, 2}}},
+            {{"mesh", 0}, {"scale", {2, 1, 1}}}, {{"mesh", 0}, {"scale", {-1, 1, 1}}, {"translation", {0, 2, 0}}}});
+        write_glb(source, original.doc, original.binary);
+        const auto hash = model_artifact_sha256(source);
+        TriangleMesh before, after; ObjInfo before_colors, after_colors; std::string error;
+        REQUIRE(load_model_artifact(source, before, before_colors, error));
+        REQUIRE(before.its.indices.size() == 8);
+        BeautyAppearanceOptions options; options.face_weights.assign(8, 1); options.brightness = -.1;
+        const auto destination = fixture.directory / "darkened-instances.glb";
+        const auto result = edit_glb_appearance(source, destination, options);
+        INFO(result.error); REQUIRE(result.success); CHECK(result.changed_pixels > 0);
+        require_preserved_geometry(original, read_glb(destination));
+        REQUIRE(load_model_artifact(destination, after, after_colors, error));
+        REQUIRE(after.its.indices.size() == before.its.indices.size());
+        size_t darker = 0;
+        for (size_t face = 0; face < before.its.indices.size(); ++face) for (size_t corner = 0; corner < 3; ++corner) {
+            const auto a = after.its.indices[face][corner], b = before.its.indices[face][corner];
+            for (size_t ch = 0; ch < 3; ++ch) {
+                CHECK(std::abs(after.its.vertices[a][ch] - before.its.vertices[b][ch]) < 1e-5);
+                if (after_colors.vertex_colors[a][ch] < before_colors.vertex_colors[b][ch] - 1e-4) ++darker;
+            }
+            CHECK(std::abs(after_colors.vertex_colors[a][3] - before_colors.vertex_colors[b][3]) < 1e-6);
+        }
+        CHECK(darker > 0); CHECK(model_artifact_sha256(source) == hash);
+    }
+}
+
+TEST_CASE("Ambiguous tiny corners preserve the consistent winding of the remaining surface", "[BeautyAppearance][GlbGeometryEditing]") {
+    for (size_t tiny_face : {0u, 1u, 2u}) for (bool reverse : {false, true}) {
+        INFO(tiny_face); INFO(reverse);
+        std::vector<unsigned char> binary;
+        indexed_triangle_set geometry;
+        for (size_t face = 0; face < 3; ++face) {
+            const float x = .01f + float(face) * .02f;
+            const std::array<Vec3f, 3> positions = face == tiny_face
+                ? std::array<Vec3f, 3>{Vec3f(x, .02f, 0), Vec3f(x + .000001f, .02f, 0), Vec3f(x + .000001f, .020000005f, 0)}
+                : std::array<Vec3f, 3>{Vec3f(x, 0, 0), Vec3f(x + .01f, 0, 0), Vec3f(x, .01f, 0)};
+            for (const auto& p : positions) {
+                for (int axis = 0; axis < 3; ++axis) append_float(binary, p[axis]);
+                geometry.vertices.emplace_back(p.x() * 1000.f, -p.z() * 1000.f, p.y() * 1000.f);
+            }
+            const int first = int(face * 3);
+            geometry.indices.emplace_back(first, first + (reverse ? 2 : 1), first + (reverse ? 1 : 2));
+        }
+        const Json doc = {
+            {"scene", 0}, {"scenes", {{{"nodes", {0}}}}}, {"nodes", {{{"mesh", 0}}}},
+            {"buffers", {{{"byteLength", binary.size()}}}},
+            {"bufferViews", {{{"buffer", 0}, {"byteLength", binary.size()}}}},
+            {"accessors", {{{"bufferView", 0}, {"componentType", 5126}, {"count", 9}, {"type", "VEC3"}}}},
+            {"meshes", {{{"primitives", {{{"attributes", {{"POSITION", 0}}}, {"mode", 4}, {"material", 0}}}}}}}
+        };
+        const std::vector<int> materials(3, 0);
+        const std::vector<size_t> expected_counts {3};
+        CHECK(verify_glb_appearance_layout(doc, binary, geometry, materials) == expected_counts);
+        auto flipped = geometry;
+        const size_t regular_face = (tiny_face + 1) % 3;
+        std::swap(flipped.indices[regular_face][1], flipped.indices[regular_face][2]);
+        CHECK_THROWS(verify_glb_appearance_layout(doc, binary, flipped, materials));
+        auto reordered = geometry; std::swap(reordered.indices[0], reordered.indices[1]);
+        CHECK_THROWS(verify_glb_appearance_layout(doc, binary, reordered, materials));
+        auto moved = geometry; moved.vertices[tiny_face * 3].x() += .001f;
+        CHECK_THROWS(verify_glb_appearance_layout(doc, binary, moved, materials));
+    }
 }
 
 TEST_CASE("Shared vertex painting cancels and rejects a changed source without a partial asset", "[BeautyAppearance][BeautyPuzzle][BeautyVertexColors]") {

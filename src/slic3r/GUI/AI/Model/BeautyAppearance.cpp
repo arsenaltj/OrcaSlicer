@@ -225,6 +225,100 @@ std::vector<Material> materials(const Document& doc) {
     }
     return result;
 }
+
+// Assimp's material table follows referenced objects and can differ from the
+// document array (for example when the first material is unused). Recover the
+// document identities from complete primitive face runs, never from RGB/name
+// equality. Both directions must be unique, and the existing ordered-geometry
+// verifier plus material factors/images must agree before anything is changed.
+void restore_document_material_indices(const Document& doc, const std::vector<Material>& material,
+    TexturedMesh& mesh, const std::function<bool()>& canceled) {
+    // The importer loads referenced materials in first-use order. If that
+    // order already is the document's index prefix, verify the imported table
+    // directly. Relative texture edits may then keep their existing support
+    // for multiple static instances without acquiring the corner writer's
+    // one-instance restriction. Equal RGB values never establish identity.
+    std::set<size_t> referenced;
+    bool unchanged = true;
+    for (const auto& item : doc.json.at("meshes")) for (const auto& primitive : item.at("primitives")) {
+        const size_t mi = integer(primitive, "material");
+        if (referenced.insert(mi).second && mi != referenced.size() - 1) unchanged = false;
+    }
+    for (size_t mi : referenced) {
+        if (mi >= material.size() || mi >= mesh.material_colors.size() || mi >= mesh.material_texture_map.size()) {
+            unchanged = false; break;
+        }
+        for (size_t ch = 0; ch < 4; ++ch)
+            unchanged = unchanged && std::isfinite(mesh.material_colors[mi][ch]) &&
+                std::abs(mesh.material_colors[mi][ch] - material[mi].factor[ch]) <= 1e-6;
+        if (material[mi].textured) {
+            const int texture = mesh.material_texture_map[mi];
+            unchanged = unchanged && texture >= 0 && size_t(texture) < mesh.textures.size() &&
+                mesh.textures[texture].data == image_bytes(doc, material[mi].image);
+        } else unchanged = unchanged && mesh.material_texture_map[mi] < 0;
+    }
+    if (unchanged && !referenced.empty() && std::all_of(mesh.material_ids.begin(), mesh.material_ids.end(),
+            [&](int mi) { return mi >= 0 && referenced.count(size_t(mi)); })) return;
+    std::vector<int> imported_to_document(mesh.material_colors.size(), -1);
+    std::vector<int> document_to_imported(material.size(), -1);
+    std::vector<int> face_materials;
+    face_materials.reserve(mesh.indices.size());
+    size_t offset = 0;
+    for (const auto& item : doc.json.at("meshes")) for (const auto& primitive : item.at("primitives")) {
+        checkpoint(canceled);
+        const size_t mi = integer(primitive, "material");
+        require(mi < material.size(), "Invalid GLB primitive material.");
+        const size_t source = primitive.contains("indices") ? integer(primitive, "indices") :
+            integer(primitive.at("attributes"), "POSITION");
+        const size_t corners = integer(doc.json.at("accessors").at(source), "count");
+        require(corners > 0 && corners % 3 == 0 && corners / 3 <= mesh.indices.size() - offset,
+            "Appearance triangle mapping changed during import.");
+        const size_t end = offset + corners / 3;
+        for (; offset < end; ++offset) {
+            if ((offset & 4095) == 0) checkpoint(canceled);
+            const int imported = mesh.material_ids[offset];
+            require(imported >= 0 && size_t(imported) < imported_to_document.size() &&
+                size_t(imported) < mesh.material_texture_map.size(), "Invalid imported appearance material.");
+            require((imported_to_document[imported] < 0 || imported_to_document[imported] == int(mi)) &&
+                (document_to_imported[mi] < 0 || document_to_imported[mi] == imported),
+                "Appearance material mapping changed during import.");
+            imported_to_document[imported] = int(mi);
+            document_to_imported[mi] = imported;
+            face_materials.push_back(int(mi));
+        }
+    }
+    require(offset == mesh.indices.size(), "Appearance surface contains unmapped triangles.");
+    if (face_materials == mesh.material_ids) return;
+
+    indexed_triangle_set geometry;
+    geometry.vertices.reserve(mesh.vertices.size()); geometry.indices.reserve(mesh.indices.size());
+    for (const auto& v : mesh.vertices) geometry.vertices.emplace_back(v[0] * 1000.f, -v[2] * 1000.f, v[1] * 1000.f);
+    for (const auto& f : mesh.indices) geometry.indices.emplace_back(f[0], f[1], f[2]);
+    verify_glb_appearance_layout(doc.json, doc.binary, geometry, face_materials, [&] { checkpoint(canceled); });
+
+    std::vector<int> texture_map(material.size(), -1);
+    std::vector<std::array<float, 4>> colors(material.size());
+    for (size_t mi = 0; mi < material.size(); ++mi) {
+        checkpoint(canceled);
+        for (size_t ch = 0; ch < 4; ++ch) colors[mi][ch] = float(material[mi].factor[ch]);
+        const int imported = document_to_imported[mi];
+        if (imported < 0) continue; // Unreferenced document materials stay intact.
+        for (size_t ch = 0; ch < 4; ++ch)
+            require(std::isfinite(mesh.material_colors[imported][ch]) &&
+                std::abs(mesh.material_colors[imported][ch] - material[mi].factor[ch]) <= 1e-6,
+                "The GLB material color mapping cannot be verified.");
+        const int texture = mesh.material_texture_map[imported];
+        if (material[mi].textured)
+            require(texture >= 0 && size_t(texture) < mesh.textures.size() &&
+                mesh.textures[texture].data == image_bytes(doc, material[mi].image),
+                "The GLB material/image mapping cannot be verified.");
+        else require(texture < 0, "The GLB material/image mapping cannot be verified.");
+        texture_map[mi] = texture;
+    }
+    mesh.material_ids = std::move(face_materials);
+    mesh.material_texture_map = std::move(texture_map);
+    mesh.material_colors = std::move(colors);
+}
 using Point = std::array<double, 2>;
 std::array<Point, 3> face_uvs(const TexturedMesh& mesh, size_t face, const Material& material, int width, int height) {
     std::array<Point, 3> triangle;
@@ -1055,6 +1149,7 @@ BeautyAppearanceResult edit_glb_appearance(const boost::filesystem::path& source
             }
         }
         require(model_artifact_sha256(source) == result.source_sha256, "The source GLB changed during loading; reload it first.");
+        restore_document_material_indices(doc, material, mesh, canceled);
         // Verify original material/image correspondence before private baked
         // images or new corner material references are appended to the document.
         std::vector<bool> used_materials(material.size(),false);
@@ -1136,8 +1231,11 @@ BeautyAppearanceResult edit_glb_appearance(const boost::filesystem::path& source
         }
         require(edited_images.empty() ? result.changed_vertices > 0 : has_editable_pixel,
             "This selection only contains shared UV texels or is too small at this texture resolution. Expand the selection or unwrap overlapping UVs first.");
+        std::set<size_t> referenced_materials;
+        for (const auto& item : doc.json.at("meshes")) for (const auto& primitive : item.at("primitives"))
+            if (primitive.contains("material")) referenced_materials.insert(integer(primitive, "material"));
         std::map<size_t,size_t> replacement_textures;
-        for (size_t mi = 0; mi < material.size(); ++mi) if (material[mi].textured) {
+        for (size_t mi = 0; mi < material.size(); ++mi) if (material[mi].textured && referenced_materials.count(material[mi].document_index)) {
             const auto image = edited_images.find(material[mi].image);
             if (image == edited_images.end() || image->first == image->second) continue;
             const size_t original = material[mi].texture;
