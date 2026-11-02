@@ -1,0 +1,25 @@
+{
+  "pr": 55,
+  "run": 41385804889,
+  "head": "8003a5df96f53f9b9ae9e085dc97bf563b88759a",
+  "base": "4cb78f488f40e4f429a12b2c6fef69a875249417",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "受控验收：独立脚本的空工作量进度处理",
+  "path": "pr/55/8003a5df96f53f9b9ae9e085dc97bf563b88759a/41385804889",
+  "created": "2026-11-02T04:00:38+00:00",
+  "files": {
+    "index.html": "76a8962749df66d1dfb33f13163ab4c6d679ea29ef2105756134630faabba8ae",
+    "details.html": "85ffcd8bb414cf8e03be85ce9ac9190734ce14eeaf50506c64b0e562202ba28d",
+    "report.json": "36f4735691cc62384d67ec521e06579bcebfd57cc849d3791098970ef22f7e81",
+    "summary.md": "bef80d4d5cf3a8cadf9b8c19ec58468270c5d15b066e8d6f868285e2fedba688",
+    "archify-receipts.json": "54073e914a5575a8289e4ac0a538c0f53f119dfd8662bf75a8e8beb25f7eb438",
+    "l0-context.html": "2ed041164aacf3ff25a8a692a4c0ef3fbe9c6ab95c990bb078b8481aa5852760",
+    "l0-context.json": "ed8d5b43ab8fc730068db05ec4fcd3ea481c1da8b90533fe8efcf31f31188d28",
+    "l1-modules.html": "9626983a824a1c33b8fd4210ea4b0ba59ec2f995b291c7e2b4a1f94e162a2f4a",
+    "l1-modules.json": "0d6443814f138e1742fbf781681e3381e7ccc3361ca2cf4e57bff70a4f82ddcf",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "46ca7ade63fcd50bac8b2ce3984ac1c6d157f5b65f429a70dbc13a449aa8d4d3",
+    "l2-slicing.json": "5c1db02b393a0d36f5f2dce03383c8ae2d4b4804b8b1eea056636a5de1fe1fa8"
+  }
+}

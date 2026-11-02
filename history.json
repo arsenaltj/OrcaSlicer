@@ -1,5 +1,15 @@
 [
   {
+    "pr": 55,
+    "run": 41385804889,
+    "head": "8003a5df96f53f9b9ae9e085dc97bf563b88759a",
+    "base": "4cb78f488f40e4f429a12b2c6fef69a875249417",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "受控验收：独立脚本的空工作量进度处理",
+    "path": "pr/55/8003a5df96f53f9b9ae9e085dc97bf563b88759a/41385804889",
+    "created": "2026-11-02T04:00:38+00:00"
+  },
+  {
     "pr": 54,
     "run": 41376429480,
     "head": "2288173c18f0dbb1cb68f1d951d9ff224a2575e4",
