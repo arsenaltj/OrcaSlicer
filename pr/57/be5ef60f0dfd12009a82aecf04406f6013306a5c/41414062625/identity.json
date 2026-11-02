@@ -1,0 +1,25 @@
+{
+  "pr": 57,
+  "run": 41414062625,
+  "head": "be5ef60f0dfd12009a82aecf04406f6013306a5c",
+  "base": "09bd370e0dc6e2572069469036d81863591bbab3",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "受控验收：空工作量进度的低风险自动修复",
+  "path": "pr/57/be5ef60f0dfd12009a82aecf04406f6013306a5c/41414062625",
+  "created": "2026-11-02T08:38:20+00:00",
+  "files": {
+    "index.html": "3fb3555c1b11c84d7761751c1c1ee847ebd0b2a4f2501f7978d846fd92806954",
+    "details.html": "0e93954a1c882f05300c42c89dd34b07b0a2cf18e857a551c0fd4f80ae014aa5",
+    "report.json": "6d2d2969622f4d272b5356a72cde644dc1c345fabdf6957f635dbbbfd89df637",
+    "summary.md": "365b7c1cea7857a0d7eedbfa0be78568c3580149d73646cc293e4269054efa32",
+    "archify-receipts.json": "fed0e02c015df1f9cfb1421956340c400d46f05025425728ce87fcbcc41f1591",
+    "l0-context.html": "2ed041164aacf3ff25a8a692a4c0ef3fbe9c6ab95c990bb078b8481aa5852760",
+    "l0-context.json": "ed8d5b43ab8fc730068db05ec4fcd3ea481c1da8b90533fe8efcf31f31188d28",
+    "l1-modules.html": "9ebbcf4f9db4530b04ed0352127e02c6e13c04caed8e50a03e6408f044ffae44",
+    "l1-modules.json": "2c6e54bb22e8a04f75e411b2dee049a12f957be6802f225202ee9cd6756eac2e",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "46ca7ade63fcd50bac8b2ce3984ac1c6d157f5b65f429a70dbc13a449aa8d4d3",
+    "l2-slicing.json": "5c1db02b393a0d36f5f2dce03383c8ae2d4b4804b8b1eea056636a5de1fe1fa8"
+  }
+}

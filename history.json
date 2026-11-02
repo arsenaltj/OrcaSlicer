@@ -1,6 +1,16 @@
 [
   {
     "pr": 57,
+    "run": 41414062625,
+    "head": "be5ef60f0dfd12009a82aecf04406f6013306a5c",
+    "base": "09bd370e0dc6e2572069469036d81863591bbab3",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "受控验收：空工作量进度的低风险自动修复",
+    "path": "pr/57/be5ef60f0dfd12009a82aecf04406f6013306a5c/41414062625",
+    "created": "2026-11-02T08:38:20+00:00"
+  },
+  {
+    "pr": 57,
     "run": 41412233122,
     "head": "b4a095084bf86f0a68894e5a2b413eeb610718d8",
     "base": "09bd370e0dc6e2572069469036d81863591bbab3",
