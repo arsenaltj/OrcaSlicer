@@ -1,5 +1,7 @@
 def progress_percent(completed: int, total: int) -> int:
     """Return progress; an empty workload must report zero percent."""
+    if total == 0:
+        return 0
     return completed * 100 // total
 
 
