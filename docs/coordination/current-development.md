@@ -1,3 +1,17 @@
+# 2026-11-02 当前：三项UX修复本地代码提交
+
+主线：`UX/N-WORKBENCH-STYLE-20261029` / 本会话 / `codex/team/integration`；用户明确“提交代码形成记录”。
+
+本轮：将暂停旧应用更新、修复分页箭头和退出美颜覆盖层及协调记录形成普通本地提交，标题`fix: hide legacy updates and correct workbench overlays`，哈希以Git记录为准。33项产品/资源快照与已验构建逐项匹配；复用164/164定向C++、Windows构建、19466文件安装校验、含Git的AI集成检查及200% DPI实窗结果，不重复构建。证据`.tmp/dev/ux-three-20261102/validation.json`。
+
+未结：精确100/125/150%及跨屏DPI、放弃返回和刻意迟到回调未单独实窗验收；原实物打印、套装保存重开后新耗材边界、2D网络细因、PR和暂停事项保持。
+
+下一步：可直接试用`.tmp/dev/run/honor-forge-validation/Honor Forge Studio.exe`；独立QA及侧车已正常关闭，用户配置/原件保留。
+
+计划变更：本轮新增明确本地提交授权；旧`.planning/`及忽略的私人配置/模型/运行产物不纳入，不扩大为推送、PR或发布。
+
+---
+
 # 2026-11-02 当前：人物/萌宠六色套装本地代码提交
 
 主线：`UX/N-WORKBENCH-STYLE-20261029` / 本会话 / `codex/team/integration`；用户明确要求“提交代码，形成代码提交记录”。

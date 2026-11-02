@@ -1277,7 +1277,11 @@ private:
         auto icon = ScalableBitmap(this, m_asset, m_edge).bmp().ConvertToImage();
         if (m_lighten) icon.Replace(0, 0, 0, 255, 255, 255);
         if (m_mirror) icon = icon.Mirror();
-        Button::SetIcon(wxBitmap(icon));
+        wxBitmap bitmap(icon);
+#ifdef __WXMSW__
+        bitmap.SetScaleFactor(GetDPIScaleFactor());
+#endif
+        Button::SetIcon(bitmap);
     }
     wxSize m_minimum {wxDefaultSize};
     wxSize m_maximum {wxDefaultSize};

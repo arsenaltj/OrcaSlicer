@@ -2236,6 +2236,12 @@ public:
         m_render_diagnostics_logged = false;
         if (m_canvas) m_canvas->Refresh(false);
     }
+    void set_beauty_editing_active(bool active) {
+        if (m_beauty_editing_active == active) return;
+        m_beauty_editing_active = active;
+        // Keep partition, paint and history data; only its editing overlay ends.
+        if (m_canvas) m_canvas->Refresh(false);
+    }
     void set_beauty_view(bool enabled) {
         if (m_beauty_view == enabled) return;
         m_beauty_view = enabled;
@@ -3593,7 +3599,7 @@ private:
             m_deferred_selection = [this, origin, direction, operation, settings] { select_ray(origin, direction, operation, settings); };
             return;
         }
-        if (m_beauty_view && m_beauty_pick && m_selection_gesture == SelectionGesture::Similar) {
+        if (m_beauty_view && m_beauty_editing_active && m_beauty_pick && m_selection_gesture == SelectionGesture::Similar) {
             m_beauty_pick(*face);
             return;
         }
@@ -3980,7 +3986,8 @@ private:
                     }
                     if (restore_dither) glsafe(::glEnable(GL_DITHER));
 
-                    if (!source_view && (m_selection_model || m_protection_model) && m_selection_enabled &&
+                    if (!source_view && (!m_beauty_view || m_beauty_editing_active) &&
+                        (m_selection_model || m_protection_model) && m_selection_enabled &&
                         m_selection_overlay_visible && !m_selection_preview_suppressed) {
                         shader->set_uniform("gray_view", false);
                         shader->set_uniform("use_uniform_color", true);
@@ -3991,7 +3998,8 @@ private:
                         if (m_protection_model) m_protection_model->render(shader);
                         glsafe(::glDisable(GL_POLYGON_OFFSET_FILL));
                     }
-                    if (!source_view && m_beauty_view && m_partition_model && !m_selection_preview_suppressed) {
+                    if (!source_view && m_beauty_view && m_beauty_editing_active &&
+                        m_partition_model && !m_selection_preview_suppressed) {
                         shader->set_uniform("gray_view", false);
                         shader->set_uniform("use_uniform_color", true);
                         shader->set_uniform("preview_color_count", 0);
@@ -4190,6 +4198,7 @@ private:
     std::shared_ptr<const PreviewPalette::Histogram> m_trial_histogram;
     bool m_color_trial_enabled {false};
     bool m_beauty_view {false};
+    bool m_beauty_editing_active {false};
     wxColour m_preview_background;
     bool m_workbench_grid_visible {true};
     std::unique_ptr<GLModel> m_workbench_grid;

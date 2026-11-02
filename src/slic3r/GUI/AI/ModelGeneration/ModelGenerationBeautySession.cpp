@@ -246,6 +246,7 @@ PostGenerationUiState ModelGenerationPanel::post_generation_ui_state() const
 
 void ModelGenerationPanel::update_finishing_selection()
 {
+    m_model_preview->set_beauty_editing_active(m_finishing_workbench && m_workbench_editing);
     const bool local = m_finishing_workbench && m_workbench_editing && (m_finishing_tool->GetSelection() == 1 || m_finishing_tool->GetSelection() == 4 || m_finishing_tool->GetSelection() == 5);
     m_model_preview->set_selection_enabled(local && post_generation_ui_state().can_edit &&
         !m_workbench_check_running && !m_model_preview->semantic_processing() &&
@@ -306,7 +307,8 @@ void ModelGenerationPanel::refresh_model_finishing()
     if (m_beauty_controls) {
         m_beauty_controls->set_color_gate(m_beauty_color_gate_state, m_beauty_color_gate_message);
         m_beauty_controls->synchronize(beauty_source, ui_state.can_edit,
-            m_finishing_workbench, m_busy || m_finishing_running || transaction_busy, pending, generated_models_root());
+            m_finishing_workbench && m_workbench_editing,
+            m_busy || m_finishing_running || transaction_busy, pending, generated_models_root());
     }
     const bool editable = ui_state.can_edit && !m_model_preview->selection_busy();
     const int tool = m_finishing_tool->GetSelection();

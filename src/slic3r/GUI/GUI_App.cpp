@@ -6,6 +6,7 @@
 #include "libslic3r/Technologies.hpp"
 #include "libslic3r/Platform.hpp"
 #include "GUI_App.hpp"
+#include "ApplicationUpdatePolicy.hpp"
 #include "BBLTopbar.hpp"
 #include "Shortcuts.hpp"
 #include "DeviceCore/DevConfigUtil.h"
@@ -4001,6 +4002,7 @@ bool GUI_App::on_init_inner()
 
         preset_updater = new PresetUpdater();
         Bind(EVT_SLIC3R_VERSION_ONLINE, [this](const wxCommandEvent& evt) {
+            if (!application_updates_enabled()) return;
             if (this->plater_ != nullptr) {
                 // this->plater_->get_notification_manager()->push_notification(NotificationType::NewAppAvailable);
                 //BBS show msg box to download new version
@@ -7179,6 +7181,7 @@ void maybe_attach_updater_signature(Http& http, const std::string& canonical_que
 
 void GUI_App::check_new_version_sf(bool show_tips, int by_user)
 {
+    if (!application_updates_enabled()) return;
     AppConfig* app_config = wxGetApp().app_config;
     bool       check_stable_only = app_config->get_bool("check_stable_update_only");
     auto version_check_url = app_config->version_check_url();
@@ -7439,6 +7442,7 @@ bool GUI_App::process_network_msg(std::string dev_id, std::string msg)
 //BBS pop up a dialog and download files
 void GUI_App::request_new_version(int by_user)
 {
+    if (!application_updates_enabled()) return;
     wxCommandEvent* evt = new wxCommandEvent(EVT_SLIC3R_VERSION_ONLINE);
     evt->SetString(GUI::from_u8(version_info.version_str));
     evt->SetInt(by_user);
