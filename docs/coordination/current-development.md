@@ -1,4 +1,18 @@
-# 2026-11-02 当前：独立配置与Honor Forge六头代码本地提交
+# 2026-11-02 当前：人物/萌宠六色套装本地代码提交
+
+主线：`UX/N-WORKBENCH-STYLE-20261029` / 本会话 / `codex/team/integration`；用户明确要求“提交代码，形成代码提交记录”。
+
+本轮：将人物/萌宠六色、删除旧年轻向套装、自动同步/回滚/撤销、运行时准备修复及相关测试和协调记录形成新的普通本地提交；标题`feat: add Honor people and pet six-color suites`，哈希以Git记录为准。产品与测试沿用已验证快照。
+
+未结：实物打印、全面视觉质量、GUI取消及保存重开后不覆盖新耗材尚未完整验收；持久化/双白/支撑绑定有定向自动回归。2D网络细因、原PR及暂停事项保持。
+
+下一步：可直接试用已更新的`.tmp/dev/run/honor-forge-validation/Honor Forge Studio.exe`。Windows构建、19466文件安装校验、131/131定向C++、34项runtime回归及含Git的AI集成检查通过；最终EXE实窗已验两类目录、ABS→PLA、人物语义/萌宠近色自动同步、失败回滚及模型/耗材撤销重做，QA已正常关闭。证据`.tmp/dev/honor-palettes-20261102/validation.json`。
+
+计划变更：本轮增加明确的本地提交授权，不扩大为推送、PR、发布或其他事项；旧未跟踪`.planning/`及忽略的私人资产/配置/构建证据不纳入提交。
+
+---
+
+# 2026-11-02 返回点：独立配置与Honor Forge六头代码本地提交
 
 主线：`UX/N-WORKBENCH-STYLE-20261029` / 本会话 / `codex/team/integration`；用户明确授权形成新的本地代码提交记录。
 

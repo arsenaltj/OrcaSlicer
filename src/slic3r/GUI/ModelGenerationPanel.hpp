@@ -297,6 +297,10 @@ private:
     bool beauty_session_has_changes() const;
     void complete_return_overview();
     void toggle_printer_filament_trial();
+    bool apply_model_palette_to_filaments();
+    std::shared_ptr<BeautyCandidateSnapshot> m_honor_suite_before;
+    std::string m_honor_suite_source_signature;
+    uint64_t m_honor_suite_edit_revision {0};
     void exit_printer_filament_trial(const wxString& reason = wxString());
     // Invalidate the in-memory trial before replacing or clearing preview data.
     // This deliberately avoids publishing a transient UI state mid-operation.

@@ -222,10 +222,13 @@ public:
                 << ", palette=" << m_trial_palette.size() << ", geometry_reloaded=false";
         };
         m_color_trial->on_source_changed = [this](int previous, int next) {
-            if (!m_restoring_printer_input && previous == 1 && next != 1)
+            if (!m_restoring_printer_input && previous == 1 && next != 1 &&
+                next != ModelPreviewColorControls::honor_suite_source)
                 restore_printer_filament_preview_source();
             if (next == ModelPreviewColorControls::honor_suite_source) {
-                update_semantic_coloring();
+                m_printer_filament_restore.reset();
+                if (m_color_trial->honor_suite_request_pending()) update_semantic_coloring();
+                else if (m_honor_suite_application_complete) m_honor_suite_application_complete(false);
             } else if (previous == ModelPreviewColorControls::honor_suite_source) {
                 const std::string request_context = m_semantic_submission_context;
                 const std::string geometry_id = m_semantic_submission_geometry;
@@ -2394,6 +2397,7 @@ public:
         return true;
     }
     void cancel_semantic_request() {
+        const bool honor_request = m_color_trial && m_color_trial->honor_suite_request_pending();
         m_semantic_error = _L("用户已取消自动划区语义识别。");
         const std::string request_context = m_semantic_submission_context;
         const std::string geometry_id = m_semantic_submission_geometry;
@@ -2408,6 +2412,7 @@ public:
             auto callback = std::move(m_semantic_completion);
             callback(false);
         }
+        if (honor_request) reject_honor_suite_application(m_semantic_error);
     }
     void set_semantic_completion_callback(std::function<void(bool)> callback) {
         m_semantic_completion = std::move(callback);
@@ -2587,6 +2592,11 @@ public:
         std::function<void(const HonorSuiteSemanticPresentation&)> callback)
     {
         m_honor_suite_semantic_progress = std::move(callback);
+    }
+    void set_honor_suite_application_callbacks(std::function<bool()> begin,
+                                               std::function<void(bool)> complete) {
+        m_color_trial->on_honor_suite_selection = std::move(begin);
+        m_honor_suite_application_complete = std::move(complete);
     }
     void set_selection_commit_callback(std::function<void(const SelectionState&, const SelectionState&)> callback)
     {
@@ -4121,7 +4131,7 @@ private:
     void finish_semantic_coloring();
     void rebuild_semantic_preview_from_cached_result();
     bool rebuild_semantic_preview_from_color_blocks();
-    bool apply_honor_suite_fallback(const wxString& reason);
+    bool reject_honor_suite_application(const wxString& reason);
     void publish_honor_suite_semantic_progress(bool active, int progress,
         const wxString& message, const std::string& request_context = {},
         const std::string& geometry_id = {})
@@ -4139,6 +4149,7 @@ private:
     std::unique_ptr<ModelSemanticColoring> m_semantic_controller;
     std::function<void(bool)> m_semantic_completion;
     std::function<void(const HonorSuiteSemanticPresentation&)> m_honor_suite_semantic_progress;
+    std::function<void(bool)> m_honor_suite_application_complete;
     std::shared_ptr<PortraitOptimizationTask> m_portrait_progress;
     std::function<void()> m_portrait_input_changed, m_after_preview_frame;
     std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> m_semantic_source;

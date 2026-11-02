@@ -333,6 +333,53 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     });
     {
         wxWeakRef<ModelGenerationPanel> weak(this);
+        m_model_preview->set_honor_suite_application_callbacks([weak] {
+            if (!weak || weak->m_shutdown || !weak->m_model_preview ||
+                !wxGetApp().preset_bundle || weak->m_workbench_honor_semantic_active) return false;
+            std::string error;
+            const auto compatibility = PrinterFilamentConfig::honor_suite_compatibility(
+                *wxGetApp().preset_bundle, honor_filament_suites().front());
+            if (!compatibility.compatible) {
+                error = compatibility.reason;
+                weak->m_workbench_operation_notice = error;
+                weak->refresh_post_generation_workbench();
+                return false;
+            }
+            weak->m_honor_suite_before = std::make_shared<BeautyCandidateSnapshot>(weak->capture_beauty_candidate());
+            weak->m_honor_suite_before->project_config = std::make_shared<DynamicPrintConfig>(wxGetApp().preset_bundle->project_config);
+            weak->m_honor_suite_before->project_presets = wxGetApp().preset_bundle->filament_presets;
+            weak->m_honor_suite_edit_revision = weak->m_model_preview->leaf_edit_revision();
+            weak->m_honor_suite_source_signature = PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature;
+            return true;
+        }, [weak](bool colored) {
+            if (!weak || weak->m_shutdown || !weak->m_model_preview || !weak->m_honor_suite_before) return;
+            auto before = std::move(weak->m_honor_suite_before);
+            if (before->geometry_id != weak->m_model_preview->geometry_id()) return;
+            const bool same_config = wxGetApp().preset_bundle &&
+                PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature == weak->m_honor_suite_source_signature;
+            // Close the recognition overlay before the normal import gate.
+            weak->m_workbench_honor_semantic_active = false;
+            weak->update_finishing_selection();
+            weak->refresh_model_finishing();
+            if (colored && same_config && weak->apply_model_palette_to_filaments()) {
+                weak->record_beauty_candidate(BeautyWorkbenchTransactionController::OperationKind::AppearanceRecolor, before);
+                return;
+            }
+            const std::string notice = !colored
+                ? "套装配色未完成或已取消，模型与耗材保持原状；人物套装需检测到可信的人物区域。"
+                : !same_config ? "识别期间打印机或耗材已变化，套装未提交；请重新选择。"
+                : weak->m_workbench_operation_notice;
+            if (weak->m_model_preview->leaf_edit_revision() == weak->m_honor_suite_edit_revision || colored) {
+                before->project_config.reset();
+                if (!weak->restore_beauty_candidate(*before))
+                    BOOST_LOG_TRIVIAL(error) << "Honor suite could not restore its previous appearance";
+            }
+            weak->m_workbench_operation_notice = notice;
+            weak->m_workbench_printer_filament_notice = notice;
+            weak->m_workbench_printer_filament_notice_error = true;
+            weak->refresh_controls();
+            weak->publish_workbench_state();
+        });
         m_model_preview->set_honor_suite_semantic_progress_callback(
             [weak](const ModelPreview3D::HonorSuiteSemanticPresentation& state) {
                 if (!weak || weak->m_shutdown) return;
@@ -438,7 +485,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         wxTextEntryDialog naming(wxGetTopLevelParent(m_workbench_shell), _L("为当前打印机耗材命名，之后可在配置窗口导入。"), _L("保存色卡组合"));
         if (naming.ShowModal() != wxID_OK || naming.GetValue().Strip(wxString::both).empty()) return;
         const std::string name = into_u8(naming.GetValue().Strip(wxString::both));
-        if (name == young_portrait_color_pack().name || name == u8"上次应用前色卡") {
+        if (is_honor_filament_suite_name(name) || name == u8"上次应用前色卡") {
             wxMessageBox(_L("请使用其他名称，预制色卡和恢复色卡由系统保留。"), _L("保存色卡组合"), wxOK | wxICON_INFORMATION, wxGetTopLevelParent(m_workbench_shell));
             return;
         }

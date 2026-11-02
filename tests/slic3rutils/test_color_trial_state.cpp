@@ -174,7 +174,7 @@ TEST_CASE("Honor suite identity round trips as an optional manual snapshot", "[C
     suite.source = 2;
     suite.count = 6;
     suite.manual_count = 6;
-    suite.suite_id = "honor.people.young-six";
+    suite.suite_id = "honor.people.six";
     suite.suite_revision = "1";
     trial::normalize_for_persistence(suite);
     REQUIRE(suite.source == 2);

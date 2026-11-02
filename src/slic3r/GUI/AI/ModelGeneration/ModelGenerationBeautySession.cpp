@@ -722,6 +722,10 @@ void ModelGenerationPanel::record_beauty_candidate(BeautyWorkbenchTransactionCon
 {
     if (!m_finishing_workbench || !m_beauty_transactions || !before) return;
     auto after = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
+    if (before->project_config && wxGetApp().preset_bundle) {
+        after->project_config = std::make_shared<DynamicPrintConfig>(wxGetApp().preset_bundle->project_config);
+        after->project_presets = wxGetApp().preset_bundle->filament_presets;
+    }
     m_beauty_session.record(kind, std::move(before), std::move(after), {
         [](const BeautyCandidateSnapshot& snapshot) {
             const auto& path = snapshot.candidate.empty() ? snapshot.source : snapshot.candidate;

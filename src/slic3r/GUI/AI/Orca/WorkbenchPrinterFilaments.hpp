@@ -632,19 +632,11 @@ inline bool stage_honor_physical_suite_import(const PresetBundle& live,
     constexpr size_t missing_slot = std::numeric_limits<size_t>::max();
     const auto collect_bindings = [&](const WorkbenchPrinterFilaments& state) {
         std::vector<size_t> bindings(required, missing_slot);
-        std::set<size_t> used;
-        for (size_t index = 0; index < required; ++index) {
-            const auto found = std::find_if(state.slots.begin(), state.slots.end(), [&](const auto& slot) {
-                return slot.exists && slot.configured && slot.compatible && !slot.preset.empty() &&
-                    used.find(slot.slot) == used.end() &&
-                    honor_material_category_matches(slot.material,
-                        suite.physical_slots[index].material_category);
-            });
-            if (found != state.slots.end()) {
-                bindings[index] = found->slot;
-                used.insert(found->slot);
-            }
-        }
+        // Excel slot order is physical nozzle order, even when a nozzle
+        // currently has a different material selected. Never skip it and bind
+        // the next PLA nozzle: that would change the meaning of slot six.
+        for (size_t index = 0; index < std::min(required, state.slots.size()); ++index)
+            bindings[index] = state.slots[index].slot;
         return bindings;
     };
     const auto reusable_preset = [&](const std::string& material_category) {
@@ -695,9 +687,24 @@ inline bool stage_honor_physical_suite_import(const PresetBundle& live,
     auto& types = staged->project_config.option<ConfigOptionStrings>("filament_colour_type")->values;
     for (size_t index = 0; index < required; ++index) {
         const size_t slot = bindings[index];
+        const auto& loaded = staged_state.slots[index];
+        if (!honor_material_category_matches(loaded.material, suite.physical_slots[index].material_category)) {
+            const auto preset = reusable_preset(suite.physical_slots[index].material_category);
+            if (preset.empty()) {
+                error = "当前没有可复用的 " + suite.physical_slots[index].material_category + " 兼容实体耗材预设";
+                return false;
+            }
+            staged->filament_presets[slot] = preset;
+        }
         colors[slot] = suite.physical_slots[index].color;
         multi[slot] = suite.physical_slots[index].color;
         types[slot] = "1";
+    }
+    if (const auto support = suite.support_slot_index()) {
+        // Project overrides share the native material undo/3MF transaction.
+        // Keep enable_support unchanged and retain the duplicate white spool.
+        for (const char* key : {"support_filament", "support_interface_filament"})
+            staged->project_config.set_key_value(key, new ConfigOptionInt(int(bindings[*support] + 1)));
     }
 
     const auto imported = capture(*staged);
