@@ -124,6 +124,52 @@ namespace Catch {
 
 using namespace Slic3r;
 
+TEST_CASE("Six head Honor Forge projects retain their printer tools and colours", "[3mf][HonorForge]")
+{
+    Model model;
+    model.add_object()->add_volume(make_cube(5, 5, 1));
+    model.add_default_instances();
+    ScopedTemporaryDir backup("honor-six-backup");
+    model.set_backup_path(backup.string());
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_num_extruders(6);
+    config.set_num_filaments(6);
+    config.set_deserialize_strict({{"printer_settings_id", "Honor Forge 0.4 nozzle"},
+        {"printer_model", "Honor Forge"}, {"single_extruder_multi_material", "0"},
+        {"nozzle_diameter", "0.4,0.4,0.4,0.4,0.4,0.4"}, {"filament_map", "1,2,3,4,5,6"},
+        {"filament_colour", "#FF0000;#00FF00;#0000FF;#FFFF00;#FF00FF;#00FFFF"}});
+    PlateData plate;
+    plate.plate_index = 0;
+    ScopedTemporaryFile file(".3mf");
+    const auto path = file.string();
+    StoreParams params;
+    params.path = path.c_str();
+    params.model = &model;
+    params.config = &config;
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence;
+    params.plate_data_list.push_back(&plate);
+    REQUIRE(store_bbs_3mf(params));
+    Model restored;
+    ScopedTemporaryDir restored_backup("honor-six-restored");
+    restored.set_backup_path(restored_backup.string());
+    DynamicPrintConfig restored_config;
+    ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs plates;
+    std::vector<Preset*> presets;
+    bool bbl = false, orca = false;
+    Semver version;
+    const bool loaded = load_bbs_3mf(path.c_str(), &restored_config, &substitutions, &restored,
+        &plates, &presets, &bbl, &orca, &version, nullptr, LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+    release_PlateData_list(plates);
+    for (auto* preset : presets) delete preset;
+    REQUIRE(loaded);
+    CHECK(restored.objects.size() == 1);
+    for (const char* key : {"printer_settings_id", "printer_model", "nozzle_diameter", "filament_colour", "filament_map"}) {
+        INFO(key);
+        CHECK(restored_config.opt_serialize(key) == config.opt_serialize(key));
+    }
+}
+
 TEST_CASE("Removed continuous-color projects cannot silently use ordinary slicing", "[3mf][LegacyImageMap]")
 {
     Model model;

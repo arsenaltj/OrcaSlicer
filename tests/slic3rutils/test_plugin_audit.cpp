@@ -76,6 +76,9 @@ TEST_CASE("Plugin audit denies host-managed filenames anywhere", "[audit]")
 
     SECTION("the seeded names are denied by their base name")
     {
+        CHECK(mgr.is_denied_filename(fs::path(HONOR_PRODUCT_DATA_KEY ".conf")));
+        CHECK(mgr.is_denied_filename(fs::path(HONOR_PRODUCT_VIEWER_DATA_KEY ".conf")));
+        CHECK(mgr.is_denied_filename(fs::path(HONOR_PRODUCT_DATA_KEY ".conf.bak")));
         CHECK(mgr.is_denied_filename(fs::path(SLIC3R_APP_KEY ".conf")));
         CHECK(mgr.is_denied_filename(fs::path(GCODEVIEWER_APP_KEY ".conf")));
         CHECK(mgr.is_denied_filename(fs::path(SLIC3R_APP_KEY ".ini")));

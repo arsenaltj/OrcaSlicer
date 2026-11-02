@@ -57,10 +57,10 @@ class ProductIdentityTests(unittest.TestCase):
         probe = self.root / "probe.cmake"
         probe.write_text('include("${CMAKE_CURRENT_LIST_DIR}/cmake/ProductIdentity.cmake")\n'
                          'file(WRITE "${CMAKE_CURRENT_LIST_DIR}/result.txt" '
-                         '"${HONOR_PRODUCT_EXE}|${HONOR_PRODUCT_DLL}|${HONOR_PRODUCT_DISPLAY_VERSION}|${HONOR_PRODUCT_FILE_VERSION}")\n')
+                         '"${HONOR_PRODUCT_EXE}|${HONOR_PRODUCT_DLL}|${HONOR_PRODUCT_DISPLAY_VERSION}|${HONOR_PRODUCT_FILE_VERSION}|${HONOR_PRODUCT_DATA_KEY}|${HONOR_PRODUCT_VIEWER_DATA_KEY}")\n')
         result = subprocess.run([cmake, "-P", str(probe)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((self.root / "result.txt").read_text(), "Honor Test Studio.exe|Honor Test Studio.dll|V3.12.7|3.12.7.42")
+        self.assertEqual((self.root / "result.txt").read_text(), "Honor Test Studio.exe|Honor Test Studio.dll|V3.12.7|3.12.7.42|Honor Test Studio|Honor Test Studio G-code Viewer")
         self.value["version"] = "65536.0.0"
         self.save()
         self.assertNotEqual(subprocess.run([cmake, "-P", str(probe)], capture_output=True).returncode, 0)

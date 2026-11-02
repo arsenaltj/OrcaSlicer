@@ -1,0 +1,11 @@
+{
+	"type": "process",
+	"name": "0.16mm Optimal @Honor Forge",
+	"inherits": "0.16mm Optimal @WonderMaker ZR Ultra",
+	"from": "system",
+	"setting_id": "HonorForgeProcess014",
+	"instantiation": "true",
+	"compatible_printers": [
+		"Honor Forge 0.4 nozzle"
+	]
+}

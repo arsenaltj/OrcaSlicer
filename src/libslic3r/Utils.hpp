@@ -212,7 +212,7 @@ std::string xdg_config_dir(const std::string &app_name);
 #endif
 #ifdef __linux__
 // The data directory a start without --datadir uses: a data_dir folder next to the executable
-// when one exists, otherwise xdg_config_dir(SLIC3R_APP_KEY). Does not throw.
+// when one exists, otherwise xdg_config_dir(HONOR_PRODUCT_DATA_KEY). Does not throw.
 std::string default_data_dir();
 #endif
 

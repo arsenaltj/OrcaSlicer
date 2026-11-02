@@ -588,11 +588,15 @@ std::vector<std::string> PluginAuditManager::default_denied_filenames()
 {
     // AppConfig::config_path() picks .conf vs .ini on the USE_JSON_CONFIG ifdef and the app key
     // on its mode, and is a non-static member we cannot call without an instance. Denying all
-    // four names is cheaper and more robust than replicating that; the two unused names cost one
-    // string comparison each. Keep the plugin install-state sidecar here too: it controls which
+    // product names plus upstream names also protects explicitly imported old configurations.
+    // Keep the plugin install-state sidecar here too: it controls which
     // packages load on startup and must remain host-managed. Single-sourced so install_hook() and
     // the tests seed from the same list and cannot drift apart.
     return {
+        HONOR_PRODUCT_DATA_KEY ".conf",
+        HONOR_PRODUCT_VIEWER_DATA_KEY ".conf",
+        HONOR_PRODUCT_DATA_KEY ".ini",
+        HONOR_PRODUCT_VIEWER_DATA_KEY ".ini",
         SLIC3R_APP_KEY ".conf",
         GCODEVIEWER_APP_KEY ".conf",
         SLIC3R_APP_KEY ".ini",
