@@ -1,0 +1,25 @@
+{
+  "pr": 54,
+  "run": 41376429480,
+  "head": "2288173c18f0dbb1cb68f1d951d9ff224a2575e4",
+  "base": "4cb78f488f40e4f429a12b2c6fef69a875249417",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "fix(model): 保留 OBJ 顶点色并修复 GLB 再次编辑",
+  "path": "pr/54/2288173c18f0dbb1cb68f1d951d9ff224a2575e4/41376429480",
+  "created": "2026-11-02T02:14:39+00:00",
+  "files": {
+    "index.html": "35cd8278eb13481b99b6e3c938dfff9b7ff7fce7b73c01d573777d34b8ef6560",
+    "details.html": "c0a0d712e187aeba936c7aa63c9e55f3bf3080eae84b244792e7e80ae06db047",
+    "report.json": "8beba35ef3c1184bc8d65bbac0b495d7141b2059bcf69659e67ebe84a61e6a6e",
+    "summary.md": "7cccb9102fcdd6f1d4bf80867a2a4b5272bd1e8c9c5a14aa431f4a5ef659fede",
+    "archify-receipts.json": "957250c2bdbe9f909b05e0919a99a89f726ea9a264e8bc1857a384ff63cc3d81",
+    "l0-context.html": "2ed041164aacf3ff25a8a692a4c0ef3fbe9c6ab95c990bb078b8481aa5852760",
+    "l0-context.json": "ed8d5b43ab8fc730068db05ec4fcd3ea481c1da8b90533fe8efcf31f31188d28",
+    "l1-modules.html": "28fdc31215c2fbe1fe0d8fe29c8240c5fd1c8480bc3542d041885c593738866f",
+    "l1-modules.json": "962cd421318e8ac0e85c500bcf941435b5248bb0feab1bf31dc198b78ad36cfd",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "46ca7ade63fcd50bac8b2ce3984ac1c6d157f5b65f429a70dbc13a449aa8d4d3",
+    "l2-slicing.json": "5c1db02b393a0d36f5f2dce03383c8ae2d4b4804b8b1eea056636a5de1fe1fa8"
+  }
+}

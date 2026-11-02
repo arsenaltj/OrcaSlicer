@@ -1,5 +1,15 @@
 [
   {
+    "pr": 54,
+    "run": 41376429480,
+    "head": "2288173c18f0dbb1cb68f1d951d9ff224a2575e4",
+    "base": "4cb78f488f40e4f429a12b2c6fef69a875249417",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "fix(model): 保留 OBJ 顶点色并修复 GLB 再次编辑",
+    "path": "pr/54/2288173c18f0dbb1cb68f1d951d9ff224a2575e4/41376429480",
+    "created": "2026-11-02T02:14:39+00:00"
+  },
+  {
     "pr": 53,
     "run": 41166359083,
     "head": "d6c2c4eb66af3f79a8c7f3de1f5da78f07a187fc",
