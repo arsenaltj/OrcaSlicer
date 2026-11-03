@@ -1,6 +1,16 @@
 [
   {
     "pr": 60,
+    "run": 41631793640,
+    "head": "5c19d2d4ef695474786a0efb5cc373bc4edc2f9e",
+    "base": "50247bb89ecb9d4af364242bc8c6ba037395e774",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "五层架构、PR文档门禁与已验候选会话边界",
+    "path": "pr/60/5c19d2d4ef695474786a0efb5cc373bc4edc2f9e/41631793640",
+    "created": "2026-11-03T12:03:30+00:00"
+  },
+  {
+    "pr": 60,
     "run": 41630498286,
     "head": "5c19d2d4ef695474786a0efb5cc373bc4edc2f9e",
     "base": "50247bb89ecb9d4af364242bc8c6ba037395e774",
