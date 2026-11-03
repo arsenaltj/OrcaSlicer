@@ -401,6 +401,112 @@ wxImage resource_image(const char* name)
     return wxImage(wxString::FromUTF8((Slic3r::resources_dir() + "/images/" + name).c_str()));
 }
 
+// Keep Button's mouse capture, keyboard activation and focus handling while
+// painting the small, retained navigation controls to match the design.
+class ShellNavigationButton final : public Button {
+public:
+    ShellNavigationButton(wxWindow* parent, const wxString& caption, const char* icon)
+        : Button(parent, caption), m_icon_name(icon)
+    {
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetName(caption);
+        SetPaddingSize(wxSize(0, 0));
+        SetMinSize(FromDIP(wxSize(60, 70)));
+        SetCursor(wxCursor(wxCURSOR_HAND));
+        style_text(this, secondary_text_colour(), 9);
+        m_icon = resource_bitmap(this, m_icon_name, wxSize(27, 27));
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            const auto size = GetClientSize();
+            const auto* navigation = static_cast<RoundedPanel*>(GetParent());
+            const wxColour face = navigation->face_colour();
+            dc.SetBackground(wxBrush(face));
+            dc.Clear();
+            if (GetValue()) {
+                dc.GradientFillLinear(GetClientRect(), wxColour(28, 43, 67),
+                                      face, wxEAST);
+                dc.SetPen(*wxTRANSPARENT_PEN);
+                dc.SetBrush(wxBrush(wxColour(37, 111, 255)));
+                dc.DrawRoundedRectangle(0, 0, FromDIP(2), size.y, FromDIP(1));
+            }
+            if (m_icon.IsOk())
+                dc.DrawBitmap(m_icon, (size.x - m_icon.GetLogicalWidth()) / 2, FromDIP(12), true);
+            dc.SetFont(GetFont());
+            dc.SetTextForeground(GetValue() ? wxColour(37, 111, 255) : wxColour(140, 140, 143));
+            dc.DrawLabel(GetLabel(), wxRect(0, FromDIP(43), size.x, FromDIP(20)), wxALIGN_CENTER);
+            if (HasFocus()) {
+                dc.SetPen(wxPen(wxColour(37, 111, 255), 1, wxPENSTYLE_DOT));
+                dc.SetBrush(*wxTRANSPARENT_BRUSH);
+                dc.DrawRectangle(GetClientRect().Deflate(FromDIP(3)));
+            }
+        });
+        Bind(wxEVT_DPI_CHANGED, [this](wxDPIChangedEvent& event) {
+            m_icon = resource_bitmap(this, m_icon_name, wxSize(27, 27));
+            SetMinSize(FromDIP(wxSize(60, 70)));
+            event.Skip();
+        });
+    }
+private:
+    const char* m_icon_name;
+    wxBitmap m_icon;
+};
+
+class ShellModeButton final : public Button {
+public:
+    ShellModeButton(wxWindow* parent, const wxString& caption) : Button(parent, caption)
+    {
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetName(caption);
+        SetPaddingSize(wxSize(0, 0));
+        SetMinSize(FromDIP(wxSize(0, 34)));
+        SetCursor(wxCursor(wxCURSOR_HAND));
+        style_text(this, primary_text_colour(), 10);
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(wxColour(28, 28, 30)));
+            dc.Clear();
+            const auto size = GetClientSize();
+            dc.SetPen(*wxTRANSPARENT_PEN);
+            dc.SetBrush(wxBrush(GetValue() ? wxColour(65, 65, 68) : wxColour(28, 28, 30)));
+            dc.DrawRoundedRectangle(0, 0, size.x, size.y, FromDIP(10));
+            dc.SetFont(GetFont());
+            dc.SetTextForeground(!IsEnabled() ? wxColour(111, 111, 115) :
+                GetValue() ? wxColour(255, 255, 255) : wxColour(180, 180, 187));
+            dc.DrawLabel(GetLabel(), GetClientRect(), wxALIGN_CENTER);
+            if (HasFocus() && IsEnabled()) {
+                dc.SetPen(wxPen(wxColour(37, 111, 255), 1, wxPENSTYLE_DOT));
+                dc.SetBrush(*wxTRANSPARENT_BRUSH);
+                dc.DrawRoundedRectangle(GetClientRect().Deflate(FromDIP(2)), FromDIP(8));
+            }
+        });
+        Bind(wxEVT_DPI_CHANGED, [this](wxDPIChangedEvent& event) {
+            SetMinSize(FromDIP(wxSize(0, 34)));
+            event.Skip();
+        });
+    }
+};
+
+wxPanel* build_workspace_modes(wxWindow* parent)
+{
+    auto* modes = new RoundedPanel(parent, wxDefaultSize,
+        wxColour(28, 28, 30), background_colour(), 12);
+    modes->SetMinSize(parent->FromDIP(wxSize(312, 40)));
+    auto* sizer = new wxBoxSizer(wxHORIZONTAL);
+    modes->SetSizer(sizer);
+    auto* smart = new ShellModeButton(modes, text("智能模式"));
+    smart->SetValue(true);
+    // The enabled mode retains the current page and all workflow state.
+    smart->Bind(wxEVT_BUTTON, [](wxCommandEvent&) {});
+    sizer->Add(smart, 1, wxALL, parent->FromDIP(3));
+    auto* advanced = new ShellModeButton(modes, text("高级模式"));
+    advanced->SetValue(false);
+    advanced->Enable(false);
+    advanced->SetCursor(wxCursor(wxCURSOR_ARROW));
+    advanced->SetToolTip(text("高级模式暂未开放"));
+    sizer->Add(advanced, 1, wxALL, parent->FromDIP(3));
+    return modes;
+}
+
 class ImageDropTarget final : public wxFileDropTarget
 {
 public:
@@ -1343,50 +1449,31 @@ void RedesignShell::build_image_workspace()
     m_sizer->Add(workspace, 1, wxEXPAND | wxALL, FromDIP(16));
 
     auto* navigation = new RoundedPanel(this, wxDefaultSize, wxColour(33, 33, 35), background_colour(), 12);
-    navigation->SetMinSize(wxSize(FromDIP(92), -1));
+    navigation->SetMinSize(wxSize(FromDIP(60), -1));
     auto* navigation_sizer = new wxBoxSizer(wxVERTICAL);
     navigation->SetSizer(navigation_sizer);
     workspace->Add(navigation, 0, wxEXPAND | wxRIGHT, FromDIP(12));
 
     auto* logo = new wxStaticBitmap(navigation, wxID_ANY,
-                                    resource_bitmap(navigation, "redesign_logo.png", wxSize(48, 48)));
+                                    resource_bitmap(navigation, "honor_navigation_logo.png", wxSize(36, 36)));
     navigation_sizer->Add(logo, 0, wxALIGN_CENTER | wxTOP, FromDIP(16));
-    navigation_sizer->AddSpacer(FromDIP(78));
+    navigation_sizer->AddStretchSpacer(1);
 
-    const std::array<const char*, 4> navigation_items = {"资产", "图像", "3D模型", "打印"};
-    const std::array<const char*, 4> navigation_icons = {"redesign_nav_assets.png", "redesign_nav_image.png",
-                                                          "redesign_nav_model.png", "redesign_nav_print.png"};
+    const std::array<const char*, 3> navigation_items = {"模型库", "AI创作", "工作台"};
+    const std::array<const char*, 3> navigation_icons = {"honor_navigation_library.png",
+        "honor_navigation_creation.png", "honor_navigation_workbench.png"};
+    const std::array<Page, 3> navigation_pages = {Page::Assets, Page::Image, Page::Model};
     for (std::size_t index = 0; index < navigation_items.size(); ++index) {
-        auto* item = new wxPanel(navigation, wxID_ANY, wxDefaultPosition, wxSize(-1, FromDIP(70)));
-        item->SetMinSize(wxSize(-1, FromDIP(70)));
-        item->SetBackgroundColour(wxColour(33, 33, 35));
-        auto* item_sizer = new wxBoxSizer(wxVERTICAL);
-        item->SetSizer(item_sizer);
-
-        m_nav_markers[index] = new wxPanel(item, wxID_ANY, wxPoint(0, 0), wxSize(FromDIP(3), FromDIP(70)));
-        m_nav_markers[index]->SetBackgroundColour(wxColour(255, 194, 39));
-        m_nav_markers[index]->Hide();
-
-        m_nav_labels[index] = new wxStaticText(item, wxID_ANY, text(navigation_items[index]),
-                                               wxDefaultPosition, wxDefaultSize, wxALIGN_CENTER);
-        auto* item_icon = new wxStaticBitmap(item, wxID_ANY,
-                                             resource_bitmap(item, navigation_icons[index], wxSize(24, 24)));
-        item_sizer->Add(item_icon, 0, wxALIGN_CENTER | wxTOP, FromDIP(12));
-        style_text(m_nav_labels[index], secondary_text_colour(), 9);
-        item_sizer->Add(m_nav_labels[index], 0, wxALIGN_CENTER | wxTOP, FromDIP(4));
-        navigation_sizer->Add(item, 0, wxEXPAND | wxBOTTOM, FromDIP(24));
-
-        const Page page = static_cast<Page>(index);
-        auto navigate = [this, page](wxMouseEvent&) {
+        auto* item = new ShellNavigationButton(navigation, text(navigation_items[index]), navigation_icons[index]);
+        m_nav_buttons[index] = item;
+        navigation_sizer->Add(item, 0, wxEXPAND | wxBOTTOM, FromDIP(index == 2 ? 0 : 12));
+        const Page page = navigation_pages[index];
+        item->Bind(wxEVT_BUTTON, [this, page](wxCommandEvent&) {
             if (page == Page::Image)
                 navigate_to_image_view();
             else
                 navigate_to(page);
-        };
-        item->Bind(wxEVT_LEFT_UP, navigate);
-        m_nav_labels[index]->Bind(wxEVT_LEFT_UP, navigate);
-        item_icon->Bind(wxEVT_LEFT_UP, navigate);
-        m_nav_markers[index]->Bind(wxEVT_LEFT_UP, navigate);
+        });
     }
     navigation_sizer->AddStretchSpacer(1);
     const std::array<const char*, 4> footer_icons = {"account_guest_avatar.png", "redesign_nav_notification.png",
@@ -1695,6 +1782,10 @@ void RedesignShell::build_image_workspace()
     auto* content_host_sizer = new wxBoxSizer(wxVERTICAL);
     m_content_host->SetSizer(content_host_sizer);
 
+    m_workbench_modes = build_workspace_modes(m_content_host);
+    content_host_sizer->Add(m_workbench_modes, 0, wxALIGN_CENTER | wxBOTTOM, FromDIP(12));
+    m_workbench_modes->Hide();
+
     m_image_page = new wxPanel(m_content_host, wxID_ANY, wxDefaultPosition, wxDefaultSize,
                                wxTAB_TRAVERSAL | wxCLIP_CHILDREN);
     m_image_page->SetBackgroundColour(background_colour());
@@ -1704,7 +1795,17 @@ void RedesignShell::build_image_workspace()
     m_image_page->SetSizer(content_sizer);
     content_host_sizer->Add(m_image_page, 1, wxEXPAND);
 
-    m_guide_panel = new wxPanel(m_image_page, wxID_ANY);
+    auto* image_center = new wxPanel(m_image_page, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+        wxTAB_TRAVERSAL | wxCLIP_CHILDREN);
+    image_center->SetBackgroundColour(background_colour());
+    image_center->SetMinSize(wxSize(0, 0));
+    auto* image_center_sizer = new wxBoxSizer(wxVERTICAL);
+    image_center->SetSizer(image_center_sizer);
+    content_sizer->Add(image_center, 1, wxEXPAND);
+    auto* creation_modes = build_workspace_modes(image_center);
+    image_center_sizer->Add(creation_modes, 0, wxALIGN_CENTER | wxBOTTOM, FromDIP(12));
+
+    m_guide_panel = new wxPanel(image_center, wxID_ANY);
     m_guide_panel->SetBackgroundColour(flow_background_colour());
     m_guide_panel->SetMinSize(wxSize(0, 0));
     auto* guide_sizer = new wxBoxSizer(wxVERTICAL);
@@ -1722,9 +1823,9 @@ void RedesignShell::build_image_workspace()
     }, "13/800");
     guide_sizer->Add(flow_canvas, 0, wxEXPAND);
     guide_sizer->AddStretchSpacer(1);
-    content_sizer->Add(m_guide_panel, 1, wxEXPAND);
+    image_center_sizer->Add(m_guide_panel, 1, wxEXPAND);
 
-    m_preview_host = new wxPanel(m_image_page, wxID_ANY);
+    m_preview_host = new wxPanel(image_center, wxID_ANY);
     m_preview_host->SetBackgroundColour(background_colour());
     m_preview_host->SetMinSize(wxSize(0, 0));
     auto* preview_sizer = new wxBoxSizer(wxVERTICAL);
@@ -1752,7 +1853,7 @@ void RedesignShell::build_image_workspace()
     create_preview_card("2D 设计图", "等待生成", &m_result_preview_card, &m_result_preview);
     preview_sizer->Add(preview_row, 0, wxALIGN_CENTER);
     preview_sizer->AddStretchSpacer(1);
-    content_sizer->Add(m_preview_host, 1, wxEXPAND);
+    image_center_sizer->Add(m_preview_host, 1, wxEXPAND);
     m_preview_host->Hide();
     m_image_history = new ImageHistorySidebar(m_image_page,
         [this](const std::string& id) { return request_open_history(id); },
@@ -3295,6 +3396,16 @@ bool RedesignShell::navigate_to(Page page)
     return navigate_to_impl(page, false);
 }
 
+void RedesignShell::update_navigation()
+{
+    const bool workbench = m_active_page == Page::Model || m_active_page == Page::Print;
+    const std::array<bool, 3> selected = {
+        m_active_page == Page::Assets, m_active_page == Page::Image, workbench};
+    for (std::size_t i = 0; i < m_nav_buttons.size(); ++i)
+        if (m_nav_buttons[i]) static_cast<Button*>(m_nav_buttons[i])->SetValue(selected[i]);
+    if (m_workbench_modes) m_workbench_modes->Show(workbench);
+}
+
 wxWindow* RedesignShell::page_route_root(Page page, ModelView view) const
 {
     const auto index = static_cast<std::size_t>(page);
@@ -3394,10 +3505,8 @@ bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
             const bool active = i == index;
             const bool show_page = active && (i != model_index || m_model_view == ModelView::Result);
             if (m_pages[i] != nullptr) m_pages[i]->Show(show_page);
-            if (i < m_nav_markers.size() && m_nav_markers[i] != nullptr) m_nav_markers[i]->Show(active);
-            if (i < m_nav_labels.size() && m_nav_labels[i] != nullptr)
-                style_text(m_nav_labels[i], active ? primary_text_colour() : secondary_text_colour(), 9);
         }
+        update_navigation();
         if (m_account_nav) m_account_nav->set_secondary_face(page == Page::Account ? wxColour(77, 65, 32) : wxColour(33, 33, 35));
         if (m_image_settings_panel != nullptr) m_image_settings_panel->Show(page == Page::Image);
         if (m_content_host != nullptr) m_content_host->Layout();

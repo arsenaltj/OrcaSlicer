@@ -1046,10 +1046,6 @@ bool RedesignShell::show_model_view(ModelView view)
             const bool active = i == model_index;
             const bool show_page = active && view == ModelView::Result;
             if (m_pages[i]) m_pages[i]->Show(show_page);
-            if (m_nav_markers[i]) m_nav_markers[i]->Show(active);
-            if (m_nav_labels[i])
-                RedesignTheme::style_text(m_nav_labels[i], active ? RedesignTheme::primary_text_colour()
-                                                                  : RedesignTheme::secondary_text_colour(), 9);
         }
         if (m_image_settings_panel) m_image_settings_panel->Hide();
         if (m_slicing_host)
@@ -1072,6 +1068,7 @@ bool RedesignShell::show_model_view(ModelView view)
 
 void RedesignShell::refresh_workflow_layout()
 {
+    update_navigation();
     if (!owns_model_workflow()) return;
     const bool model = m_active_page == Page::Model;
     const bool slicing = model && (m_model_view == ModelView::Slicing || m_model_view == ModelView::Preview);
@@ -1526,12 +1523,6 @@ void RedesignShell::commit_import_target_view()
             m_active_page = Page::Model;
             m_model_view = ModelView::Slicing;
             m_active_tab_id = TAB_ID_PREPARE;
-            for (std::size_t i = 0; i < m_nav_markers.size(); ++i) {
-                const bool active = i == static_cast<std::size_t>(Page::Model);
-                m_nav_markers[i]->Show(active);
-                RedesignTheme::style_text(m_nav_labels[i], active ? RedesignTheme::primary_text_colour()
-                                                                   : RedesignTheme::secondary_text_colour(), 9);
-            }
             if (m_image_settings_panel) m_image_settings_panel->Hide();
             refresh_workflow_layout();
             if (m_slicing_host) apply_slicing_state(m_slicing_host->workbench_snapshot());

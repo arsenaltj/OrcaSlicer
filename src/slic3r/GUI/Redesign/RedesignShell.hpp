@@ -89,6 +89,7 @@ private:
     enum class ModelPageAction { None, RetryService, RetryModel, RestoreLatest, BackToDesign, ReloadPreview, Import };
 
     void build_image_workspace();
+    void update_navigation();
     wxPanel* m_assets_page {nullptr};
     AssetsWorkspace* m_assets_workspace {nullptr};
     wxPanel* build_model_workspace();
@@ -332,8 +333,8 @@ private:
     wxWindow* m_model_action_button { nullptr };
     wxWindow* m_model_back_to_design_button { nullptr };
     wxWindow* m_model_stop_button { nullptr };
-    std::array<wxPanel*, 4> m_nav_markers { nullptr, nullptr, nullptr, nullptr };
-    std::array<wxStaticText*, 4> m_nav_labels { nullptr, nullptr, nullptr, nullptr };
+    std::array<wxWindow*, 3> m_nav_buttons {};
+    wxPanel* m_workbench_modes {nullptr};
     std::array<wxPanel*, 5> m_pages {};
     std::array<wxWeakRef<wxWindow>, 5> m_page_focus;
     AccountWorkspace* m_account_workspace {nullptr};
