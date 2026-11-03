@@ -259,8 +259,11 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         m_workbench_check_cancel_button = new WorkbenchButton(m_workbench_check_modal, _L("取消检查"));
         m_workbench_check_continue_button = new WorkbenchButton(m_workbench_check_modal, _L("仍要继续"));
         m_workbench_check_return_button = new WorkbenchButton(m_workbench_check_modal, _L("返回 2D 设计图"));
+        m_workbench_check_close_button = new WorkbenchButton(m_workbench_check_modal, _L("保留当前模型"));
+        m_workbench_check_details_button = new WorkbenchButton(m_workbench_check_modal, _L("查看问题详情"));
         for (auto* button : {m_workbench_check_cancel_button, m_workbench_check_continue_button,
-                             m_workbench_check_return_button}) {
+                             m_workbench_check_return_button, m_workbench_check_close_button,
+                             m_workbench_check_details_button}) {
             button->use_parent_surface();
             button->SetMinSize(FromDIP(wxSize(124, 32)));
             button->SetMaxSize(FromDIP(wxSize(156, 32)));
@@ -271,6 +274,10 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
                 std::pair<wxColour, int>(wxColour(82, 82, 88), StateColor::Disabled)));
             button->SetTextColor(StateColor(wxColour(35, 35, 30)));
         }
+        auto* review_actions = new wxBoxSizer(wxHORIZONTAL);
+        review_actions->Add(m_workbench_check_details_button, 0, wxRIGHT, FromDIP(8));
+        review_actions->Add(m_workbench_check_close_button, 0);
+        modal_root->Add(review_actions, 0, wxALIGN_RIGHT | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
         modal_actions->AddStretchSpacer(1);
         modal_actions->Add(m_workbench_check_cancel_button, 0, wxRIGHT, FromDIP(8));
         modal_actions->Add(m_workbench_check_continue_button, 0, wxRIGHT, FromDIP(8));
@@ -291,7 +298,17 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         });
         m_workbench_check_card->Bind(wxEVT_CLOSE_WINDOW, [](wxCloseEvent& event) { event.Veto(); });
         m_workbench_check_cancel_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { cancel_workbench_check(); });
-        m_workbench_check_continue_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { acknowledge_workbench_risk(); });
+        m_workbench_check_continue_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+            if (m_workbench_check_result.status == WorkbenchCheckStatus::Attention && m_workbench_check_result.force_import_risk)
+                acknowledge_workbench_risk();
+            else request_check_workbench(false);
+        });
+        m_workbench_check_details_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show_workbench_check_details(); });
+        m_workbench_check_close_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+            hide_workbench_check_card();
+            refresh_post_generation_workbench();
+            publish_workbench_state();
+        });
         m_workbench_check_return_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
             hide_workbench_check_card();
             if (m_workbench_return_to_design) m_workbench_return_to_design();

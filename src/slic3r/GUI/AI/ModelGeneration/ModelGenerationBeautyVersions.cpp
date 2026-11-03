@@ -286,7 +286,11 @@ void ModelGenerationPanel::accept_model_finishing()
             {"removed_duplicate_faces", m_finishing_result.removed_duplicate_faces},
             {"reversed_faces", m_finishing_result.reversed_faces},
             {"boundary_edges", m_finishing_result.boundary_edges}, {"nonmanifold_edges", m_finishing_result.nonmanifold_edges},
-            {"max_displacement_source_units", m_finishing_result.max_displacement}}}
+            {"max_displacement_source_units", m_finishing_result.max_displacement},
+            {"repair_geometry_verified", m_finishing_result.repair_geometry_verified},
+            {"repair_sampled_deviation", m_finishing_result.repair_sampled_deviation},
+            {"repair_area_change_ratio", m_finishing_result.repair_area_change_ratio},
+            {"repair_strategy", m_finishing_result.repair_strategy}}}
     };
     if (m_finishing_options.recolor_selected) {
         metadata["recolor_target_palette"] = m_finishing_color_palette;

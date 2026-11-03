@@ -14,6 +14,7 @@ param(
     [string] $SourceManifest,
 
     [string] $KnownIntegrationReport,
+    [ValidateSet('internal', 'commercial')][string] $DistributionChannel = 'internal',
 
     [switch] $ValidateOnly
 )
@@ -22,6 +23,9 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+if ($DistributionChannel -eq 'commercial' -and $KnownIntegrationReport) {
+    throw 'Commercial packages require a fresh release integration check; KnownIntegrationReport is internal-only.'
+}
 if ($SevenZipExecutable) {
     if (-not (Test-Path -LiteralPath $SevenZipExecutable -PathType Leaf)) { throw '7-Zip executable does not exist.' }
     $SevenZipExecutable = (Resolve-Path -LiteralPath $SevenZipExecutable).Path
@@ -61,6 +65,7 @@ $currentHead = $sourceIdentity.source_commit
 $currentBranch = $sourceIdentity.source_branch
 $teamConfig = Get-Content -LiteralPath (Join-Path $repoRoot '.github\team-collaboration.json') -Raw | ConvertFrom-Json
 $packageKind = if ($currentBranch -eq $teamConfig.integration_branch -and $sourceIdentity.source_clean) { 'integration' } else { 'internal-validation' }
+if ($DistributionChannel -eq 'commercial') { $packageKind = 'release-candidate' }
 # Optional provenance only: internal validation must not require a fetch or push.
 $integrationHead = & git -C $repoRoot rev-parse --verify --quiet "refs/remotes/origin/$($teamConfig.integration_branch)"
 if ($LASTEXITCODE -ne 0) { $integrationHead = $null }
@@ -93,8 +98,8 @@ if (-not [string]::Equals($configuredSource.TrimEnd('\'), $repoRoot.TrimEnd('\')
 if ($cacheText -notmatch '(?m)^ORCA_AI_WINDOWS_INSTALLER:BOOL=ON\s*$') {
     throw 'The selected build directory is not configured with ORCA_AI_WINDOWS_INSTALLER=ON.'
 }
-if ($cacheText -notmatch '(?m)^ORCA_AI_DISTRIBUTION_CHANNEL:STRING=internal\s*$') {
-    throw 'The fast internal packager requires ORCA_AI_DISTRIBUTION_CHANNEL=internal.'
+if ($cacheText -notmatch "(?m)^ORCA_AI_DISTRIBUTION_CHANNEL:STRING=$DistributionChannel\s*$") {
+    throw "The configured distribution channel must match $DistributionChannel."
 }
 $revisionMatch = [regex]::Match($cacheText, '(?m)^ORCA_AI_PACKAGE_REVISION:STRING=(.+)$')
 if (-not $revisionMatch.Success -or $revisionMatch.Groups[1].Value.Trim() -ne $Revision) {
@@ -116,7 +121,7 @@ try {
     throw 'AI build identity is not valid JSON. Reconfigure this build directory.'
 }
 if ($buildInfo.schema_version -ne 1 -or $buildInfo.application_commit -ne $currentHead -or
-    $buildInfo.package_revision -ne $Revision -or $buildInfo.distribution_channel -ne 'internal' -or
+    $buildInfo.package_revision -ne $Revision -or $buildInfo.distribution_channel -ne $DistributionChannel -or
     $buildInfo.sidecar_protocol_version -ne 2 -or $buildInfo.sidecar_version -ne 'orcaslicer-ai-sidecar-v11') {
     throw 'AI build identity does not match the current source, package revision, channel, or Sidecar contract. Reconfigure and rebuild.'
 }
@@ -143,8 +148,9 @@ $sourceRecordPath = Join-Path $resolvedOutputDir 'source-snapshot.json'
 $sourceIdentity | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $sourceRecordPath -Encoding utf8
 
 $integrationReportPath = Join-Path $resolvedOutputDir 'integration-check.json'
+$integrationChannel = if ($DistributionChannel -eq 'commercial') { 'release' } else { 'internal' }
 $integrationArguments = @('-I', (Join-Path $repoRoot 'scripts\package_integration_check.py'),
-    '--root', $repoRoot, '--report', $integrationReportPath, '--channel', 'internal')
+    '--root', $repoRoot, '--report', $integrationReportPath, '--channel', $integrationChannel)
 if ($SourceManifest) { $integrationArguments += @('--source-manifest', (Resolve-Path -LiteralPath $SourceManifest).Path) }
 if ($KnownIntegrationReport) { $integrationArguments += @('--known-report', $KnownIntegrationReport) }
 & $bundledPython @integrationArguments
@@ -248,7 +254,8 @@ if (-not (Test-Path -LiteralPath $generatedInstaller -PathType Leaf)) {
     throw "Expected installer was not created: $generatedInstaller"
 }
 
-$finalName = "$($product.PackageStem)_Internal_V$version`_$Revision`_$architecture.exe"
+$channelSuffix = if ($DistributionChannel -eq 'internal') { '_Internal' } else { '' }
+$finalName = "$($product.PackageStem)$($channelSuffix)_V$version`_$Revision`_$architecture.exe"
 $finalInstaller = Join-Path $resolvedOutputDir $finalName
 Move-Item -LiteralPath $generatedInstaller -Destination $finalInstaller -Force
 
@@ -265,7 +272,7 @@ $generatedPortable = Join-Path $resolvedOutputDir "$shortPortableName.zip"
 if (-not (Test-Path -LiteralPath $generatedPortable -PathType Leaf)) {
     throw "Expected portable package was not created: $generatedPortable"
 }
-$portableName = "$($product.PackageStem)_Internal_V$version`_$Revision`_$architecture`_portable.zip"
+$portableName = "$($product.PackageStem)$($channelSuffix)_V$version`_$Revision`_$architecture`_portable.zip"
 $portablePackage = Join-Path $resolvedOutputDir $portableName
 Move-Item -LiteralPath $generatedPortable -Destination $portablePackage -Force
 $portableHash = (Get-FileHash -LiteralPath $portablePackage -Algorithm SHA256).Hash
@@ -316,7 +323,7 @@ $releaseManifest = [ordered]@{
     build_id = "$packageKind-$($sourceIdentity.source_identity_sha256.Substring(0,12))-windows-$architecture-Release-$Revision"
     application_version = $version
     package_revision = $Revision
-    distribution_channel = 'internal'
+    distribution_channel = $DistributionChannel
     architecture = $architecture
     provider_configuration = [ordered]@{
         source = 'machine_or_user_environment'

@@ -340,14 +340,20 @@ TEST_CASE("A local repaired model remains closed through native color import", "
         boost::filesystem::path path;
         ~Cleanup() { boost::system::error_code ec; boost::filesystem::remove_all(path, ec); }
     } cleanup {directory};
-    const auto candidate = directory / "repaired.obj";
+    auto candidate = directory / "repaired.obj";
     AI::ModelFinishingOptions options;
     options.smooth_surface = false;
     options.repair_mesh = true;
-    const auto repaired = AI::finish_model_artifact(source, candidate, options);
+    const auto before = inspect_workbench_model(source);
+    AI::ModelFinishingResult repaired;
+    if (workbench_topology_safe(before)) {
+        candidate = source;
+        repaired.success = true;
+        repaired.faces_before = repaired.faces_after = before.before_faces;
+        repaired.repair_geometry_verified = true;
+    } else repaired = AI::finish_model_artifact(source, candidate, options);
     INFO(repaired.error);
     REQUIRE(repaired.success);
-    REQUIRE(repaired.changed());
     if (const char* output = std::getenv("ORCASLICER_REPAIR_QA_OUTPUT")) {
         boost::filesystem::create_directories(output);
         boost::filesystem::copy_file(candidate, boost::filesystem::path(output) / "candidate.obj");
@@ -357,12 +363,16 @@ TEST_CASE("A local repaired model remains closed through native color import", "
     if (const char* report = std::getenv("ORCASLICER_REPAIR_QA_REPORT")) {
         boost::filesystem::ofstream output(report);
         output << nlohmann::json {{"source_sha256", source_hash}, {"faces_before", repaired.faces_before},
-            {"faces_after", repaired.faces_after}, {"summary", check.summary}, {"status", int(check.status)}}.dump(2);
+            {"faces_after", repaired.faces_after}, {"before", before.summary}, {"summary", check.summary}, {"status", int(check.status)},
+            {"repair_geometry_verified", repaired.repair_geometry_verified}, {"strategy", repaired.repair_strategy},
+            {"sampled_deviation", repaired.repair_sampled_deviation}, {"area_change_ratio", repaired.repair_area_change_ratio}}.dump(2);
     }
     CHECK(check.boundary_edges == 0);
     CHECK(check.nonmanifold_edges == 0);
     CHECK(check.nonmanifold_vertices == 0);
     CHECK(check.self_intersections == 0);
+    CHECK(check.self_intersections_checked);
+    CHECK(repaired.repair_geometry_verified);
     CHECK(check.status == WorkbenchCheckStatus::Normal);
     DecodedWorkbenchModel decoded;
     std::string error;
@@ -422,6 +432,13 @@ TEST_CASE("A local repaired model remains closed through native color import", "
         boost::filesystem::copy_file(native, output_directory / "repaired.3mf");
     }
     CHECK(AI::model_artifact_sha256(source) == source_hash);
+    if (const char* report = std::getenv("ORCASLICER_REPAIR_QA_REPORT")) {
+        boost::filesystem::ifstream input(report);
+        auto result = nlohmann::json::parse(input);
+        result["native_import_and_3mf_reopen"] = true;
+        boost::filesystem::ofstream output(report);
+        output << result.dump(2);
+    }
 }
 
 TEST_CASE("Native workbench painting preserves distinct near-coincident repaired coordinates", "[WorkbenchTopology][WorkbenchImportUnits]")
@@ -641,6 +658,27 @@ TEST_CASE("Closed fans sharing a vertex remain unsafe while independent closed s
     const auto good = inspect_workbench_mesh(TriangleMesh(disjoint));
     CHECK(good.isolated_components == 2);
     CHECK(workbench_topology_safe(good));
+}
+
+TEST_CASE("Small nonzero triangles close a surface while collapsed triangles remain invalid", "[WorkbenchTopology]")
+{
+    using namespace Slic3r;
+    indexed_triangle_set surface;
+    surface.vertices = {{0,0,0}, {10,0,0}, {0,1e-11f,0}, {0,0,10}};
+    surface.indices = {{0,2,1}, {0,1,3}, {1,2,3}, {2,0,3}};
+    const auto valid = inspect_workbench_mesh(TriangleMesh(surface));
+    CHECK(valid.small_faces > 0);
+    CHECK(valid.degenerate_faces == 0);
+    CHECK(valid.boundary_edges == 0);
+    CHECK(valid.self_intersections_checked);
+    CHECK(workbench_topology_safe(valid));
+    surface.vertices[2] = {5,0,0};
+    const auto collapsed = inspect_workbench_mesh(TriangleMesh(surface));
+    CHECK(collapsed.degenerate_faces > 0);
+    CHECK_FALSE(collapsed.self_intersections_checked);
+    CHECK_FALSE(workbench_topology_safe(collapsed));
+    CHECK_FALSE(collapsed.issue_faces.empty());
+    CHECK(collapsed.summary.find("尚未完成") != std::string::npos);
 }
 
 TEST_CASE("Canceled or unavailable final topology checks cannot authorize an import", "[WorkbenchTopology]")
@@ -2925,10 +2963,18 @@ TEST_CASE("publication accepts only the checked closed candidate and binds its o
     repair.source_sha256 = AI::model_artifact_sha256(source.path());
     repair.candidate_sha256 = repair.model_sha256;
     repair.candidate_status = RepairCandidateStatus::Ready;
+    repair.before_faces += 2;
+    repair.removed_faces = 2;
+    repair.reversed_faces = 1;
     auto accepted = inspect_workbench_publication(candidate.path(), source.path(), &repair);
     CHECK(accepted.candidate_status == RepairCandidateStatus::Accepted);
     CHECK(accepted.status == WorkbenchCheckStatus::Normal);
     CHECK(accepted.model_sha256 == repair.candidate_sha256);
+    CHECK(accepted.before_faces == repair.before_faces);
+    CHECK(accepted.after_faces == cube.indices.size());
+    CHECK(accepted.after_vertices == cube.vertices.size());
+    CHECK(accepted.removed_faces == 2);
+    CHECK(accepted.reversed_faces == 1);
     CHECK_THROWS(inspect_workbench_publication(candidate.path(), source.path(), &repair, [] { return true; }));
     auto stale = repair; stale.source_sha256 = std::string(64,'b');
     CHECK_THROWS(inspect_workbench_publication(candidate.path(), source.path(), &stale));

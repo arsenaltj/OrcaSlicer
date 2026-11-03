@@ -221,6 +221,8 @@ private:
     WorkbenchButton* m_workbench_check_cancel_button {nullptr};
     WorkbenchButton* m_workbench_check_continue_button {nullptr};
     WorkbenchButton* m_workbench_check_return_button {nullptr};
+    WorkbenchButton* m_workbench_check_close_button {nullptr};
+    WorkbenchButton* m_workbench_check_details_button {nullptr};
     bool m_workbench_check_card_visible {false};
     bool m_workbench_presented {false};
     std::uint64_t m_workbench_presentation_sequence {0};

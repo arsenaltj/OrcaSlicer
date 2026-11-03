@@ -4420,19 +4420,6 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     std::map<std::string, std::string> encoded_fields;
     if (!history_metadata->take_if_current(library_metadata_path(job_id), metadata, encoded_fields))
         metadata = read_json(library_metadata_path(job_id));
-    // Accepted local finishing records already passed the repair candidate
-    // gate before they were published.  Older records do not carry a full
-    // topology report, but a saved repair with no boundary or non-manifold
-    // edges is still a stronger signal than re-running repair against the
-    // source GLB.  Re-running here creates a fresh unaccepted candidate and
-    // consequently disables the printer-filament controls for an otherwise
-    // editable historical version.
-    const bool accepted_repaired_history = metadata.is_object() &&
-        metadata.value("source", std::string()) == "local_finishing" &&
-        metadata.value("finishing", nlohmann::json::object()).is_object() &&
-        metadata["finishing"].value("repair_mesh", false) &&
-        metadata["finishing"].value("boundary_edges", size_t {1}) == 0 &&
-        metadata["finishing"].value("nonmanifold_edges", size_t {1}) == 0;
     if (metadata.is_object()) {
         metadata["schema_version"] = std::max(4, metadata.value("schema_version", 0));
         metadata["triangle_count"] = triangle_count;
@@ -4585,20 +4572,8 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         m_preview_book->SetSelection(0);
     apply_preview_stage(true);
     m_model_preview->refresh();
-    if (accepted_repaired_history) {
-        // Reuse the accepted version's persisted repair result.  This keeps
-        // the workbench editable immediately after reopening an old model;
-        // newly loaded or unaccepted models still go through ensure_workbench_check().
-        m_workbench_check_path = model_path.string();
-        m_workbench_check_revision = m_sequence;
-        m_workbench_check_result = {};
-        m_workbench_check_result.status = WorkbenchCheckStatus::Normal;
-        m_workbench_check_result.phase = WorkbenchCheckPhase::Idle;
-        m_workbench_check_result.model_sha256 = AI::model_artifact_sha256(model_path);
-        m_workbench_check_result.before_faces = triangle_count;
-        m_workbench_check_result.after_faces = triangle_count;
-        m_workbench_check_result.summary = "已接受版本，沿用保存时的安全修复结果。";
-    }
+    // Historical metadata is not a topology certificate. Recheck the actual
+    // loaded bytes, including accepted versions, through the normal workflow.
     refresh_controls();
     const uint64_t sequence = m_sequence;
     wxWeakRef<ModelGenerationPanel> weak(this);

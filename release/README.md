@@ -30,6 +30,13 @@ and NSIS. The wrapper reads its Python/CMake paths from that build and reconfigu
 it for the internal installer. It does not require Git remotes or website/SSH
 configuration.
 
+For an explicitly requested Windows release candidate, use
+`-DistributionChannel commercial`. This selects the commercial runtime identity,
+omits the Internal filename label, and requires a fresh strict release integration
+check; `-KnownIntegrationReport` exceptions are rejected. The default remains
+`internal`. Building a candidate does not sign, upload or publish it; installation
+and release acceptance must be recorded separately.
+
 ```powershell
 & .\release\build_internal.ps1 -BuildDir build-validation -SourceManifest <handoff/manifest.json> -OutputDir <new-empty-output-dir> -ValidateOnly
 & .\release\build_internal.ps1 -BuildDir build-validation -SourceManifest <handoff/manifest.json> -OutputDir <new-empty-output-dir>
