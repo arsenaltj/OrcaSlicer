@@ -5425,9 +5425,9 @@ int PresetBundle::get_printer_extruder_count() const
 
 size_t PresetBundle::min_filament_count() const
 {
-    if (printers.get_edited_preset().config.opt_bool("single_extruder_multi_material"))
-        return 1;
-    return static_cast<size_t>(get_printer_extruder_count());
+    // Loaded materials are independent of hardware capacity. Tool changers
+    // may leave nozzles idle, just as shared-nozzle printers may unload spools.
+    return 1;
 }
 
 void PresetBundle::update_filament_count()

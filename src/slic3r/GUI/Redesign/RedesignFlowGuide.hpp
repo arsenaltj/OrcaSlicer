@@ -1,5 +1,6 @@
 #pragma once
 #include "RedesignTheme.hpp"
+#include "RedesignPaintPanel.hpp"
 #include "libslic3r/Utils.hpp"
 #include <wx/panel.h>
 #include <wx/dcbuffer.h>
@@ -35,11 +36,11 @@ inline wxString wrap_text(wxDC& dc, const wxString& value, int width)
     return wrapped + line;
 }
 // Visual component migrated from 047af2b; no generation or model state is owned here.
-class FlowGuideCanvas final : public wxPanel {
+class FlowGuideCanvas final : public RedesignPaintPanel {
 public:
     explicit FlowGuideCanvas(wxWindow* parent, std::function<int()> reference_width = {},
                              wxString prompt_count = "13/2000")
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(-1, parent->FromDIP(259)),
+        : RedesignPaintPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(-1, parent->FromDIP(259)),
                   wxTAB_TRAVERSAL | wxFULL_REPAINT_ON_RESIZE)
         , m_reference_width(std::move(reference_width))
         , m_prompt_count(std::move(prompt_count))
@@ -201,7 +202,7 @@ private:
             }
         }
         const int gap = std::max(0, std::min((available - total_width()) / 2,
-                                            (dip(1067) - total_width()) / 2));
+            std::max(minimum_gap, (dip(1067) - total_width()) / 2)));
         const int flow_width = total_width() + 2 * gap;
         const int left = (client.x - flow_width) / 2;
         std::array<int, 3> centres {left + widths[0] / 2,

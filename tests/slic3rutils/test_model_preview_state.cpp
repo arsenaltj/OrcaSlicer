@@ -130,6 +130,103 @@ TEST_CASE("Explicit original appearance references validate identity and topolog
     CHECK(error.find("哈希") != std::string::npos);
 }
 
+TEST_CASE("Filament baking retains original evidence across split vertices and reopening",
+          "[ModelPreviewState][OriginalAppearance][Regression]")
+{
+    ScopedTemporaryDir temporary("orca-filament-original-appearance");
+    struct DataScope {
+        std::string previous = Slic3r::data_dir();
+        ~DataScope() { Slic3r::set_data_dir(previous); }
+    } scope;
+    Slic3r::set_data_dir(temporary.path().string());
+    const auto root = temporary.path() / "models";
+    const auto models = root / "job";
+    const auto downloads = root / "downloads";
+    boost::filesystem::create_directories(models);
+    boost::filesystem::create_directories(downloads);
+    const auto original = models / "original.obj";
+    const auto parent = models / "orcaslicer-ai-finish-repaired.obj";
+    const auto carrier = models / "orcaslicer-ai-finish-repaired.source-appearance.obj";
+    const auto mapped = downloads / "orcaslicer-ai-finish-semantic-mapped.obj";
+    const auto mesh = original_appearance_fixture_mesh();
+    auto original_mesh = mesh;
+    original_mesh.indices.pop_back();
+    const auto colors = original_appearance_fixture_colors(mesh.vertices.size());
+    std::string error;
+    REQUIRE(Slic3r::AI::write_model_artifact(original, original_mesh, colors, error));
+    REQUIRE(Slic3r::AI::write_model_artifact(carrier, mesh, colors, error));
+    REQUIRE(Slic3r::AI::write_model_artifact(parent, mesh,
+        std::vector<Slic3r::RGBA>(mesh.vertices.size(), {1.f, 0.f, 0.f, 1.f}), error));
+    const Slic3r::GUI::OriginalAppearanceReference reference {
+        boost::filesystem::canonical(carrier), Slic3r::AI::model_artifact_sha256(carrier),
+        selection::topology_fingerprint(mesh), boost::filesystem::canonical(original),
+        Slic3r::AI::model_artifact_sha256(original)
+    };
+    write_original_appearance_json(downloads / "orcaslicer-ai-finish-repaired.json", {
+        {"source_model", original.lexically_relative(root).generic_string()},
+        {"source_sha256", reference.origin_sha256},
+        {"original_appearance", reference.encode(root)}
+    });
+    ModelPreview3D::PreparedModel parent_preview;
+    REQUIRE(ModelPreview3D::prepare_model(parent, parent_preview, error));
+    REQUIRE(parent_preview.has_source_appearance);
+    REQUIRE(parent_preview.original_appearance.carrier_model == reference.carrier_model);
+    Slic3r::AI::ModelFinishingOptions options;
+    options.smooth_surface = options.repair_mesh = false;
+    options.beauty_appearance = true;
+    Slic3r::AI::BeautyDocument document;
+    document.geometry_id = selection::geometry_fingerprint(mesh);
+    document.face_count = mesh.indices.size();
+    document.face_patch.assign(document.face_count, 0);
+    options.beauty_document = document.encode();
+    options.appearance.face_weights.assign(document.face_count, 1.f);
+    for (size_t face = 0; face < document.face_count; ++face) {
+        options.selected_faces.push_back(face);
+        options.appearance.face_target_colors.push_back(face % 2
+            ? std::array<float, 3>{1.f, 0.f, 0.f} : std::array<float, 3>{0.f, 1.f, 0.f});
+    }
+    const auto baked = Slic3r::AI::finish_model_artifact(parent, mapped, options);
+    INFO(baked.error);
+    REQUIRE(baked.success);
+    REQUIRE(baked.vertices > mesh.vertices.size());
+    ModelPreview3D::PreparedModel incompatible;
+    REQUIRE(ModelPreview3D::prepare_model(mapped, incompatible, error, {}, {}, true, {}, nullptr, reference));
+    CHECK_FALSE(incompatible.has_source_appearance);
+    Slic3r::GUI::OriginalAppearanceReference mapped_reference;
+    const auto mapped_carrier = downloads / "orcaslicer-ai-finish-semantic-mapped.source-appearance.obj";
+    REQUIRE(Slic3r::GUI::prepare_original_appearance_for_candidate(
+        parent, mapped, baked.source_sha256, parent_preview.original_appearance,
+        mapped_carrier, root, mapped_reference, error));
+    REQUIRE(mapped_reference.carrier_model != reference.carrier_model);
+    CHECK(mapped_reference.origin_model == reference.origin_model);
+    ModelPreview3D::PreparedModel candidate;
+    REQUIRE(ModelPreview3D::prepare_model(mapped, candidate, error, {}, {}, true, {}, nullptr, mapped_reference));
+    REQUIRE(candidate.has_source_appearance);
+    write_original_appearance_json(downloads / "orcaslicer-ai-finish-semantic-mapped.json", {
+        {"source_model", parent.lexically_relative(root).generic_string()},
+        {"source_sha256", baked.source_sha256},
+        {"original_appearance", mapped_reference.encode(root)}
+    });
+    ModelPreview3D::PreparedModel reopened;
+    REQUIRE(ModelPreview3D::prepare_model(mapped, reopened, error));
+    INFO(reopened.original_appearance_error);
+    REQUIRE(reopened.has_source_appearance);
+    CHECK(reopened.original_appearance.carrier_model == mapped_reference.carrier_model);
+    CHECK(reopened.original_appearance.origin_model == reference.origin_model);
+    REQUIRE(reopened.trial_histogram);
+    CHECK(reopened.trial_histogram->trial_palette(8, {}, true).size() == 8);
+    {
+        boost::filesystem::ofstream modified(mapped_carrier, std::ios::app);
+        modified << "\n# modified original evidence\n";
+        modified.close();
+        REQUIRE(modified.good());
+    }
+    ModelPreview3D::PreparedModel rejected;
+    REQUIRE(ModelPreview3D::prepare_model(mapped, rejected, error));
+    CHECK_FALSE(rejected.has_source_appearance);
+    CHECK(rejected.original_appearance_error.find("哈希") != std::string::npos);
+}
+
 TEST_CASE("Original appearance mapping inherits coordinate-only changes and publishes topology carriers",
           "[ModelPreviewState][OriginalAppearance]")
 {

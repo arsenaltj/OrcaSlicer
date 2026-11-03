@@ -24,7 +24,8 @@ class StartupBufferView final : public wxPanel
 {
 public:
     StartupBufferView(wxWindow* parent, wxTopLevelWindow* frame, bool show_brand = true)
-        : wxPanel(parent, wxID_ANY), m_frame(frame), m_show_brand(show_brand)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL | wxCLIP_CHILDREN)
+        , m_frame(frame), m_show_brand(show_brand)
     {
         SetBackgroundColour(RedesignTheme::flow_background_colour());
         SetBackgroundStyle(wxBG_STYLE_PAINT);
@@ -54,7 +55,11 @@ public:
         Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
             if (frame_available())
                 m_maximize->SetToolTip(m_frame->IsMaximized() ? _L("Restore") : _L("Maximize"));
-            Refresh();
+            const auto size = GetClientSize();
+            if (size != m_surface_size) {
+                m_surface_size = size;
+                Refresh(false);
+            }
             event.Skip();
         });
 #ifdef __WXMSW__
@@ -73,11 +78,16 @@ public:
         });
     }
 
-    void set_message(const wxString& message)
+    bool set_message(const wxString& message)
     {
+        if (m_message == message) return false;
+        wxClientDC dc(this);
+        const auto previous = fitted_label(dc, m_message, 20, 312, wxFONTWEIGHT_NORMAL).bounds;
+        const auto next = fitted_label(dc, message, 20, 312, wxFONTWEIGHT_NORMAL).bounds;
         m_message = message;
-        Refresh();
-        Update();
+        const auto dirty = previous.Union(next).Inflate(FromDIP(2)).Intersect(GetClientRect());
+        if (!dirty.IsEmpty()) RefreshRect(dirty, false);
+        return true;
     }
 
 private:
@@ -123,7 +133,7 @@ private:
             button->SetMaxSize(FromDIP(wxSize(40, 40)));
         }
         Layout();
-        Refresh();
+        Refresh(false);
     }
 
     wxFont font(int pixels, wxFontWeight weight = wxFONTWEIGHT_NORMAL) const
@@ -135,6 +145,25 @@ private:
         wxFont result(info);
         result.SetPixelSize(wxSize(0, FromDIP(pixels)));
         return result;
+    }
+
+    struct FittedLabel {
+        wxString text;
+        wxRect bounds;
+    };
+
+    FittedLabel fitted_label(wxDC& dc, const wxString& text, int pixels, int offset,
+                             wxFontWeight weight) const
+    {
+        const auto bounds = GetClientSize();
+        const int top = std::max(FromDIP(64), bounds.y / 2 - FromDIP(176));
+        dc.SetFont(font(pixels, weight));
+        while (dc.GetTextExtent(text).x > bounds.x - FromDIP(48) && pixels > 16)
+            dc.SetFont(font(--pixels, weight));
+        const auto fitted = wxControl::Ellipsize(text, dc, wxELLIPSIZE_END,
+            std::max(1, bounds.x - FromDIP(48)));
+        const auto extent = dc.GetTextExtent(fitted);
+        return {fitted, wxRect((bounds.x - extent.x) / 2, top + FromDIP(offset), extent.x, extent.y)};
     }
 
     void paint()
@@ -160,15 +189,9 @@ private:
             dc.DrawBitmap(m_logo, (bounds.x - m_logo.GetWidth()) / 2, top, true);
         const auto label = [&](const wxString& text, int pixels, int offset,
                                const wxColour& colour, wxFontWeight weight) {
-            int fitted_pixels = pixels;
-            dc.SetFont(font(fitted_pixels, weight));
-            while (dc.GetTextExtent(text).x > bounds.x - FromDIP(48) && fitted_pixels > 16)
-                dc.SetFont(font(--fitted_pixels, weight));
+            const auto fitted = fitted_label(dc, text, pixels, offset, weight);
             dc.SetTextForeground(colour);
-            const wxString fitted = wxControl::Ellipsize(text, dc, wxELLIPSIZE_END,
-                std::max(1, bounds.x - FromDIP(48)));
-            const wxSize extent = dc.GetTextExtent(fitted);
-            dc.DrawText(fitted, (bounds.x - extent.x) / 2, top + FromDIP(offset));
+            dc.DrawText(fitted.text, fitted.bounds.GetPosition());
         };
         label(wxString::FromUTF8(SLIC3R_APP_NAME), 44, 232, *wxWHITE, wxFONTWEIGHT_SEMIBOLD);
         label(m_message, 20, 312, wxColour(127, 127, 130), wxFONTWEIGHT_NORMAL);
@@ -181,6 +204,7 @@ private:
     std::vector<Button*> m_actions;
     wxString m_message;
     wxBitmap m_logo;
+    wxSize m_surface_size;
     bool m_show_brand = true;
 };
 

@@ -2687,15 +2687,14 @@ TEST_CASE("A tool changer keeps idle nozzles without adding filaments", "[Preset
 
 // The app config keeps each printer's filament list. The next start (load_selections) and a switch
 // back to the printer with remember_printer_config on (update_selections) restore it from there: a
-// shared-nozzle printer gets back the one filament it was left with, a tool changer still gets one
-// per tool.
-TEST_CASE("A remembered one-filament list comes back at the printer's minimum length", "[Preset][Bundle]")
+// loaded spool counts remain independent of nozzle capacity in both printer types.
+TEST_CASE("Remembered material slots retain idle nozzles on startup and printer switches", "[Preset][Bundle][FilamentSlots]")
 {
     const bool   shared_nozzles = GENERATE(true, false);
     const bool   on_startup     = GENERATE(true, false);
     const size_t nozzle_count   = shared_nozzles ? 2 : 4;
-    const size_t expected       = shared_nozzles ? 1 : nozzle_count;
-    CAPTURE(shared_nozzles, on_startup);
+    const size_t expected       = GENERATE(size_t(1), size_t(2));
+    CAPTURE(shared_nozzles, on_startup, expected);
 
     AppConfig app_config;
     {
@@ -2703,9 +2702,9 @@ TEST_CASE("A remembered one-filament list comes back at the printer's minimum le
         select_multi_nozzle_printer(bundle, nozzle_count, shared_nozzles);
         add_inmemory_preset(bundle.filaments, "Test Filament");
         bundle.filaments.select_preset_by_name("Test Filament", true);
-        // Set the one-filament list directly: set_num_filaments() runs the padding under test.
-        bundle.filament_presets = { "Test Filament" };
-        bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values = { "#123456" };
+        bundle.set_num_filaments(unsigned(expected), "#123456");
+        bundle.filament_presets.assign(expected, "Test Filament");
+        bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values.assign(expected, "#123456");
         bundle.export_selections(app_config);
     }
 
@@ -2719,6 +2718,7 @@ TEST_CASE("A remembered one-filament list comes back at the printer's minimum le
 
     CHECK(bundle.filament_presets.size() == expected);
     CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values.size() == expected);
+    CHECK(bundle.get_printer_extruder_count() == nozzle_count);
 }
 
 // A one-colour print for a shared-nozzle printer, as Bambu Studio saves it for an H2D or X2D, opens

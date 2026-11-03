@@ -6,6 +6,7 @@
 #include <array>
 #include <chrono>
 #include <ctime>
+#include <functional>
 #include <map>
 #include <boost/shared_ptr.hpp>
 #include <wx/bitmap.h>
@@ -37,6 +38,7 @@ public:
     void show_monitor();
     void show_media();
     void refresh_state();
+    void set_return_to_preview_handler(std::function<void()> handler);
     bool monitoring() const;
     void apply_ai_theme(bool update_fonts) override;
 
@@ -125,6 +127,8 @@ private:
     RoundedActionButton* m_start { nullptr };
     RoundedActionButton* m_import { nullptr };
     RoundedActionButton* m_prepare_back { nullptr };
+    RoundedActionButton* m_preview_back { nullptr };
+    std::function<void()> m_return_to_preview;
     RoundedActionButton* m_file_toggle { nullptr };
     RoundedActionButton* m_pause { nullptr };
     RoundedActionButton* m_stop { nullptr };

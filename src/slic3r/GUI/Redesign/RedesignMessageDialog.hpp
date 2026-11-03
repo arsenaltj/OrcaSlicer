@@ -149,9 +149,11 @@ int show_redesign_confirmation(wxWindow* parent, const wxString& message,
 
 // Shows a read-only, scrollable details view using the same rounded dark
 // dialog and dimmed backdrop as the redesign workflow. The helper is intended
-// for long recommendation summaries and has a single localized close action.
+// for long recommendation summaries; callers may add result actions while
+// retaining the shared dark title and owner-drawn scrollbar.
 int show_redesign_details(wxWindow* parent, const wxString& message,
-                          const wxString& caption);
+                          const wxString& caption,
+                          const std::vector<RedesignDialogAction>& actions = {});
 
 // Returns wxID_YES only for an affirmative action. Closing/Escape return wxID_NO.
 int show_generation_confirmation(wxWindow* parent, const wxString& message,

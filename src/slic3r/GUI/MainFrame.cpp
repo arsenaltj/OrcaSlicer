@@ -8,6 +8,7 @@
 #include "slic3r/GUI/GUI_Utils.hpp"
 #include <wx/filehistory.h>
 #include "slic3r/GUI/BBLTopbar.hpp"
+#include "slic3r/GUI/Redesign/RedesignPaintPanel.hpp"
 #include "libslic3r/Format/bbs_3mf.hpp"
 #include <boost/lexical_cast.hpp>
 #include <optional>
@@ -611,27 +612,6 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
     //Bind(wxEVT_MENU, [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Copy", TAB_ID_PROJECT)) return; m_plater->copy_selection_to_clipboard(); }, wxID_HIGHEST + wxID_COPY);
     //Bind(wxEVT_MENU, [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Paste", TAB_ID_PROJECT)) return; m_plater->paste_from_clipboard(); }, wxID_HIGHEST + wxID_PASTE);
     //Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_plater->cut_selection_to_clipboard(); }, wxID_HIGHEST + wxID_CUT);
-    Bind(wxEVT_SIZE, [this](wxSizeEvent&) {
-            BOOST_LOG_TRIVIAL(trace) << "mainframe: size changed, is maximized = " << this->IsMaximized();
-#ifndef __APPLE__
-            if (this->IsMaximized()) {
-                m_topbar->SetWindowSize();
-            } else {
-                m_topbar->SetMaximizedSize();
-            }
-#endif
-        Refresh();
-        Layout();
-#ifdef __WXGTK__
-        update_edge_panels();
-#endif
-        if ((!m_redesign_shell_active || is_prepare_or_preview_tab()) && wxGetApp().plater() != nullptr) wxQueueEvent(wxGetApp().plater(), new SimpleEvent(EVT_NOTICE_CHILDE_SIZE_CHANGED));
-
-        fit_tab_labels(); // ORCA on resize
-        // Restarts the idle build so a hidden Prepare page is laid out at the new size.
-        if (m_prebuild_started)
-            m_idle.start();
-    });
 
     //BBS
     Bind(EVT_SELECT_TAB, [this](wxCommandEvent& evt) {

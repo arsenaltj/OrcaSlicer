@@ -1,5 +1,6 @@
 #include "ImageHistorySidebar.hpp"
 #include "ImageHistoryPagination.hpp"
+#include "ImageWorkspaceLayout.hpp"
 #include "RedesignWidgets.hpp"
 #include "../AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "../AI/ModelGeneration/ModelLibraryThumbnail.hpp"
@@ -102,6 +103,7 @@ struct ImageHistorySidebar::Impl {
     wxPanel* page_label;
     RoundedActionButton *first_page, *previous_page, *next_page, *last_page;
     ImageHistoryPagination pagination;
+    ImageWorkspaceLayout layout;
     wxStaticText* status;
     std::vector<DesignHistoryEntry> entries;
     std::vector<size_t> filtered;
@@ -182,7 +184,8 @@ struct ImageHistorySidebar::Impl {
         search_box->SetBackgroundColour(control_colour());
         auto* search_row = new wxBoxSizer(wxHORIZONTAL);
         search_box->SetSizer(search_row);
-        auto* icon = new wxPanel(search_box, wxID_ANY, wxDefaultPosition, {dip(20), dip(22)});
+        auto* icon = new RedesignPaintPanel(search_box, wxID_ANY, wxDefaultPosition, {dip(20), dip(22)});
+        icon->SetBackgroundColour(control_colour());
         icon->SetBackgroundStyle(wxBG_STYLE_PAINT);
         icon->Bind(wxEVT_PAINT, [this, icon](wxPaintEvent&) {
             wxAutoBufferedPaintDC dc(icon); dc.SetBackground(wxBrush(control_colour())); dc.Clear();
@@ -198,7 +201,7 @@ struct ImageHistorySidebar::Impl {
         status = new wxStaticText(panel, wxID_ANY, tr("正在读取历史图片…"));
         style_text(status, secondary_text_colour(), 10);
         column->Add(status, 0, wxLEFT | wxRIGHT | wxBOTTOM, dip(20));
-        canvas = new wxPanel(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+        canvas = new RedesignPaintPanel(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize,
                              wxBORDER_NONE | wxFULL_REPAINT_ON_RESIZE);
         canvas->SetName("my-images-grid");
         canvas->SetBackgroundColour(panel_colour()); canvas->SetBackgroundStyle(wxBG_STYLE_PAINT);
@@ -237,7 +240,7 @@ struct ImageHistorySidebar::Impl {
         first_page = add_page_button("my-images-first-page", "首页", -1, true, [this] { go_to_page(0); });
         previous_page = add_page_button("my-images-previous-page", "上一页", -1, false,
             [this] { if (pagination.page() > 0) go_to_page(pagination.page() - 1); });
-        page_label = new wxPanel(footer, wxID_ANY, wxDefaultPosition, {dip(64), dip(32)});
+        page_label = new RedesignPaintPanel(footer, wxID_ANY, wxDefaultPosition, {dip(64), dip(32)});
         page_label->SetName("my-images-page-number");
         page_label->SetBackgroundStyle(wxBG_STYLE_PAINT);
         style_text(page_label, primary_text_colour(), 10);
@@ -258,14 +261,8 @@ struct ImageHistorySidebar::Impl {
         column->Add(footer, 0, wxEXPAND | wxALL, dip(20));
         update_pager();
         toggle->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-            expanded = !expanded; panel->Show(expanded);
-            toggle->SetLabel(expanded ? tr("›") : tr("‹"));
-            toggle->SetName(expanded ? "my-images-collapse" : "my-images-expand");
-            toggle->SetToolTip(expanded ? tr("收起我的图片") : tr("展开我的图片"));
-            owner->SetMinSize({dip(expanded ? 376 : 24), -1});
-            owner->SetMaxSize({dip(expanded ? 376 : 24), -1});
-            owner->GetParent()->Layout(); layout_changed();
-            if (expanded) refresh();
+            layout.toggle();
+            apply_layout();
         });
         search->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { filter(true); });
         canvas->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) { resize(); event.Skip(); });
@@ -314,6 +311,24 @@ struct ImageHistorySidebar::Impl {
         refresh();
     }
     ~Impl() { timer.Stop(); }
+
+    void apply_layout() {
+        toggle->Enable(layout.can_expand());
+        toggle->SetToolTip(layout.expanded() ? tr("收起我的图片") : layout.can_expand()
+            ? tr("展开我的图片") : tr("放大窗口后可展开我的图片"));
+        if (expanded == layout.expanded()) return;
+        expanded = layout.expanded();
+        panel->Show(expanded);
+        toggle->SetLabel(expanded ? tr("›") : tr("‹"));
+        toggle->SetName(expanded ? "my-images-collapse" : "my-images-expand");
+        const int width = dip(expanded ? ImageWorkspaceLayout::history_width : ImageWorkspaceLayout::history_rail_width);
+        owner->SetMinSize({width, -1});
+        owner->SetMaxSize({width, -1});
+        owner->GetParent()->Layout();
+        layout_changed();
+        toggle->Refresh(false);
+        if (expanded) refresh();
+    }
 
     void refresh() {
         loading = true;
@@ -460,6 +475,11 @@ ImageHistorySidebar::ImageHistorySidebar(wxWindow* parent, Open open, std::funct
 ImageHistorySidebar::~ImageHistorySidebar() = default;
 void ImageHistorySidebar::refresh_history() { m_impl->refresh(); }
 void ImageHistorySidebar::set_busy(bool busy) { m_impl->busy = busy; }
+void ImageHistorySidebar::fit_to_page_width(int width)
+{
+    m_impl->layout.set_width(ToDIP(width));
+    m_impl->apply_layout();
+}
 void ImageHistorySidebar::set_selected(const std::string& id)
 {
     if (m_impl->selected != id) { m_impl->selected = id; m_impl->canvas->Refresh(false); }

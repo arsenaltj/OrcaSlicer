@@ -1,6 +1,7 @@
 #include "RedesignShell.hpp"
 #include <wx/frame.h>
 #include "ImageHistorySidebar.hpp"
+#include "ImageWorkspaceLayout.hpp"
 #include "AssetsWorkspace.hpp"
 #include "AccountWorkspace.hpp"
 #include "ModelFaceLimitChoice.hpp"
@@ -237,7 +238,7 @@ public:
         SetBackgroundColour(parent->GetBackgroundColour());
         auto* sizer = new wxBoxSizer(wxHORIZONTAL);
         SetSizer(sizer);
-        m_indicator = new wxPanel(this, wxID_ANY);
+        m_indicator = new RedesignPaintPanel(this, wxID_ANY);
         m_indicator->SetBackgroundColour(GetBackgroundColour());
         m_indicator->SetBackgroundStyle(wxBG_STYLE_PAINT);
         m_indicator->SetMinSize(FromDIP(wxSize(14, 14)));
@@ -466,13 +467,13 @@ private:
 
 class StylePickerPopup;
 
-class StylePicker final : public wxPanel {
+class StylePicker final : public RedesignPaintPanel {
 public:
     using SelectionChanged = std::function<void(int)>;
 
     StylePicker(wxWindow* parent, wxArrayString choices, SelectionChanged on_selection,
                 bool show_icon = false, int height = 48)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(-1, parent->FromDIP(height)))
+        : RedesignPaintPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(-1, parent->FromDIP(height)))
         , m_choices(std::move(choices))
         , m_on_selection(std::move(on_selection))
         , m_show_icon(show_icon)
@@ -748,10 +749,10 @@ void StylePicker::dismiss_popup()
         m_popup->Dismiss();
 }
 
-class FlowArrow final : public wxPanel {
+class FlowArrow final : public RedesignPaintPanel {
 public:
     explicit FlowArrow(wxWindow* parent)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(93), parent->FromDIP(259)))
+        : RedesignPaintPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(93), parent->FromDIP(259)))
         , m_bitmap(resource_bitmap(parent, "redesign_flow_arrow_right.png", wxSize(93, 93)))
     {
         SetMinSize(wxSize(FromDIP(93), FromDIP(259)));
@@ -772,10 +773,10 @@ private:
     wxBitmap m_bitmap;
 };
 
-class FlowPromptCard final : public wxPanel {
+class FlowPromptCard final : public RedesignPaintPanel {
 public:
     explicit FlowPromptCard(wxWindow* parent)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(276), parent->FromDIP(160)))
+        : RedesignPaintPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(276), parent->FromDIP(160)))
     {
         SetMinSize(wxSize(FromDIP(276), FromDIP(160)));
         SetMaxSize(wxSize(FromDIP(276), FromDIP(160)));
@@ -804,11 +805,11 @@ public:
     }
 };
 
-class FlowCardImage final : public wxPanel {
+class FlowCardImage final : public RedesignPaintPanel {
 public:
     FlowCardImage(wxWindow* parent, wxImage image, double rotation_degrees = 0.0,
                   double scale_x = 1.0, double scale_y = 1.0)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(139), parent->FromDIP(177)))
+        : RedesignPaintPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(139), parent->FromDIP(177)))
         , m_image(std::move(image)), m_rotation_degrees(rotation_degrees)
         , m_scale_x(scale_x), m_scale_y(scale_y)
     {
@@ -853,10 +854,10 @@ private:
     double m_scale_y { 1.0 };
 };
 
-class FlowCompositeImage final : public wxPanel {
+class FlowCompositeImage final : public RedesignPaintPanel {
 public:
     FlowCompositeImage(wxWindow* parent, wxImage rear, wxImage front)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(208), parent->FromDIP(167)))
+        : RedesignPaintPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(208), parent->FromDIP(167)))
         , m_rear(std::move(rear)), m_front(std::move(front))
     {
         const wxSize size(FromDIP(208), FromDIP(167));
@@ -886,11 +887,11 @@ private:
 }
 
 // Draw image and badge in one control, avoiding native sibling overlap and square button chrome.
-class UploadThumbnail final : public wxPanel
+class UploadThumbnail final : public RedesignPaintPanel
 {
 public:
     UploadThumbnail(wxWindow* parent, std::function<void()> remove, std::function<void()> choose)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(150), parent->FromDIP(150)))
+        : RedesignPaintPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(150), parent->FromDIP(150)))
         , m_remove(std::move(remove)), m_choose(std::move(choose))
     {
         SetMinSize(wxSize(FromDIP(150), FromDIP(150)));
@@ -940,13 +941,13 @@ private:
     std::function<void()> m_remove, m_choose;
 };
 
-class ImagePreview final : public wxPanel
+class ImagePreview final : public RedesignPaintPanel
 {
 public:
     enum class PlaceholderMode { Idle, Generating, Error, Stopped };
 
     ImagePreview(wxWindow* parent, const wxString& placeholder)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+        : RedesignPaintPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
                   wxTAB_TRAVERSAL | wxFULL_REPAINT_ON_RESIZE)
         , m_placeholder(placeholder)
         , m_animation_timer(this)
@@ -1215,6 +1216,7 @@ RedesignShell::RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model
 {
     m_plater = plater;
     SetBackgroundColour(background_colour());
+    SetBackgroundStyle(wxBG_STYLE_ERASE);
     SetSizer(m_sizer);
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) { update_preview_bitmap(); }, m_preview_resize_timer.GetId());
     build_image_workspace();
@@ -1266,6 +1268,14 @@ void RedesignShell::disconnect_model_generation_host()
     }
     m_import_timer.Stop();
     m_slice_camera_retry_timer.Stop();
+    m_preview_transition_timer.Stop();
+    if (m_preview_transition) m_page_transition.rollback(*m_preview_transition);
+    m_preview_transition.reset();
+    m_preview_frame_gate.finish();
+    if (m_preview_transition_cover) {
+        m_preview_transition_cover->Destroy();
+        m_preview_transition_cover = nullptr;
+    }
     m_import_in_progress = false;
     m_import_awaiting_frame = false;
     m_slice_camera_loading_pending = false;
@@ -1353,33 +1363,32 @@ void RedesignShell::build_image_workspace()
     navigation_sizer->Add(logo, 0, wxALIGN_CENTER | wxTOP, FromDIP(16));
     navigation_sizer->AddSpacer(FromDIP(78));
 
-    const std::array<const char*, 4> navigation_items = {"资产", "图像", "3D模型", "打印"};
-    const std::array<const char*, 4> navigation_icons = {"redesign_nav_assets.png", "redesign_nav_image.png",
-                                                          "redesign_nav_model.png", "redesign_nav_print.png"};
-    for (std::size_t index = 0; index < navigation_items.size(); ++index) {
+    for (std::size_t index = 0; index < redesign_navigation_items.size(); ++index) {
+        const auto& entry = redesign_navigation_items[index];
         auto* item = new wxPanel(navigation, wxID_ANY, wxDefaultPosition, wxSize(-1, FromDIP(70)));
         item->SetMinSize(wxSize(-1, FromDIP(70)));
         item->SetBackgroundColour(wxColour(33, 33, 35));
         auto* item_sizer = new wxBoxSizer(wxVERTICAL);
         item->SetSizer(item_sizer);
 
-        m_nav_markers[index] = new wxPanel(item, wxID_ANY, wxPoint(0, 0), wxSize(FromDIP(3), FromDIP(70)));
-        m_nav_markers[index]->SetBackgroundColour(wxColour(255, 194, 39));
+        m_nav_markers[index] = new NavigationSelectionMarker(item);
         m_nav_markers[index]->Hide();
 
-        m_nav_labels[index] = new wxStaticText(item, wxID_ANY, text(navigation_items[index]),
+        m_nav_labels[index] = new wxStaticText(item, wxID_ANY, text(entry.label),
                                                wxDefaultPosition, wxDefaultSize, wxALIGN_CENTER);
         auto* item_icon = new wxStaticBitmap(item, wxID_ANY,
-                                             resource_bitmap(item, navigation_icons[index], wxSize(24, 24)));
+                                             resource_bitmap(item, entry.icon, wxSize(24, 24)));
         item_sizer->Add(item_icon, 0, wxALIGN_CENTER | wxTOP, FromDIP(12));
         style_text(m_nav_labels[index], secondary_text_colour(), 9);
         item_sizer->Add(m_nav_labels[index], 0, wxALIGN_CENTER | wxTOP, FromDIP(4));
         navigation_sizer->Add(item, 0, wxEXPAND | wxBOTTOM, FromDIP(24));
 
-        const Page page = static_cast<Page>(index);
+        const Page page = entry.page;
         auto navigate = [this, page](wxMouseEvent&) {
             if (page == Page::Image)
                 navigate_to_image_view();
+            else if (page == Page::Model)
+                navigate_to_workbench();
             else
                 navigate_to(page);
         };
@@ -1691,6 +1700,7 @@ void RedesignShell::build_image_workspace()
     m_content_host = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxDefaultSize,
                                  wxTAB_TRAVERSAL | wxCLIP_CHILDREN);
     m_content_host->SetBackgroundColour(background_colour());
+    m_content_host->SetBackgroundStyle(wxBG_STYLE_ERASE);
     workspace->Add(m_content_host, 1, wxEXPAND);
     auto* content_host_sizer = new wxBoxSizer(wxVERTICAL);
     m_content_host->SetSizer(content_host_sizer);
@@ -1698,6 +1708,7 @@ void RedesignShell::build_image_workspace()
     m_image_page = new wxPanel(m_content_host, wxID_ANY, wxDefaultPosition, wxDefaultSize,
                                wxTAB_TRAVERSAL | wxCLIP_CHILDREN);
     m_image_page->SetBackgroundColour(background_colour());
+    m_image_page->SetBackgroundStyle(wxBG_STYLE_ERASE);
     // The guide and previews alternate in the flexible center; history stays
     // beside either view and stretches vertically, never below the content.
     auto* content_sizer = new wxBoxSizer(wxHORIZONTAL);
@@ -1706,7 +1717,7 @@ void RedesignShell::build_image_workspace()
 
     m_guide_panel = new wxPanel(m_image_page, wxID_ANY);
     m_guide_panel->SetBackgroundColour(flow_background_colour());
-    m_guide_panel->SetMinSize(wxSize(0, 0));
+    m_guide_panel->SetMinSize(wxSize(FromDIP(ImageWorkspaceLayout::center_min_width), 0));
     auto* guide_sizer = new wxBoxSizer(wxVERTICAL);
     m_guide_panel->SetSizer(guide_sizer);
     auto* title = label(m_guide_panel, "上传图片创建你的专属模型吧！", 28);
@@ -1726,7 +1737,7 @@ void RedesignShell::build_image_workspace()
 
     m_preview_host = new wxPanel(m_image_page, wxID_ANY);
     m_preview_host->SetBackgroundColour(background_colour());
-    m_preview_host->SetMinSize(wxSize(0, 0));
+    m_preview_host->SetMinSize(wxSize(FromDIP(ImageWorkspaceLayout::center_min_width), 0));
     auto* preview_sizer = new wxBoxSizer(wxVERTICAL);
     m_preview_host->SetSizer(preview_sizer);
     preview_sizer->AddStretchSpacer(1);
@@ -1758,6 +1769,15 @@ void RedesignShell::build_image_workspace()
         [this](const std::string& id) { return request_open_history(id); },
         [this] { m_preview_resize_timer.StartOnce(1); });
     content_sizer->Add(m_image_history, 0, wxEXPAND | wxLEFT, FromDIP(12));
+    // The drawer yields space before either the guide or the image previews
+    // become too narrow. Keep its expanded minimum out of the page minimum.
+    m_image_page->SetMinSize(wxSize(FromDIP(ImageWorkspaceLayout::center_min_width +
+        ImageWorkspaceLayout::history_rail_width + ImageWorkspaceLayout::history_gap), 0));
+    m_image_page->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+        m_image_history->fit_to_page_width(event.GetSize().x);
+        event.Skip();
+    });
+    m_image_history->fit_to_page_width(m_image_page->GetClientSize().x);
     // Run after native child repositioning finishes. Sizers can emit forced
     // size events without a size change: ignore those to avoid a layout loop.
     auto resize_center = [this, title, last_size = wxDefaultSize](wxSizeEvent& event) mutable {
@@ -1777,7 +1797,8 @@ void RedesignShell::build_image_workspace()
 
     m_assets_page = m_assets_workspace = new AssetsWorkspace(m_content_host, [this] { save_print_project(); });
 #ifdef __WXMSW__
-    m_image_page->SetDoubleBuffered(true);
+    // Individual image controls buffer their own paint. Whole-page Windows
+    // compositing exposes a pale intermediate surface when the page restores.
     m_assets_page->SetDoubleBuffered(true);
 #endif
     m_content_host->GetSizer()->Add(m_assets_page, 1, wxEXPAND);
@@ -1831,7 +1852,7 @@ wxPanel* RedesignShell::build_model_workspace()
     auto* outer = new wxBoxSizer(wxVERTICAL);
     m_model_page->SetSizer(outer);
 
-    m_model_stage_title = new wxStaticText(m_model_page, wxID_ANY, text("3D 模型"));
+    m_model_stage_title = new wxStaticText(m_model_page, wxID_ANY, text("工作台"));
     style_text(m_model_stage_title, primary_text_colour(), 24, true);
     auto* header = new wxBoxSizer(wxHORIZONTAL);
     header->Add(m_model_stage_title, 0, wxALIGN_CENTER_VERTICAL);
@@ -2921,7 +2942,7 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
     if (m_model_page == nullptr || m_model_stage_visual == nullptr)
         return;
     m_model_page_action = ModelPageAction::None;
-    wxString title = text("3D 模型");
+    wxString title = text("工作台");
     wxString status = text("完成 2D 设计后可开始生成 3D 模型");
     wxString progress_label = text("尚未开始");
     wxString summary;
@@ -3394,11 +3415,9 @@ bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
             const bool active = i == index;
             const bool show_page = active && (i != model_index || m_model_view == ModelView::Result);
             if (m_pages[i] != nullptr) m_pages[i]->Show(show_page);
-            if (i < m_nav_markers.size() && m_nav_markers[i] != nullptr) m_nav_markers[i]->Show(active);
-            if (i < m_nav_labels.size() && m_nav_labels[i] != nullptr)
-                style_text(m_nav_labels[i], active ? primary_text_colour() : secondary_text_colour(), 9);
         }
-        if (m_account_nav) m_account_nav->set_secondary_face(page == Page::Account ? wxColour(77, 65, 32) : wxColour(33, 33, 35));
+        refresh_navigation();
+        if (page == Page::Model || page == Page::Print) m_last_workbench_page = page;
         if (m_image_settings_panel != nullptr) m_image_settings_panel->Show(page == Page::Image);
         if (m_content_host != nullptr) m_content_host->Layout();
         if (m_content_host != nullptr && m_content_host->GetParent() != nullptr)
@@ -3423,6 +3442,30 @@ bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
     restore_active_page_focus();
     if (m_account_started) m_account_startup = false;
     return true;
+}
+
+void RedesignShell::refresh_navigation()
+{
+    const Page selected = redesign_navigation_page(m_active_page);
+    for (std::size_t i = 0; i < redesign_navigation_items.size(); ++i) {
+        const bool active = redesign_navigation_items[i].page == selected;
+        if (m_nav_markers[i]) m_nav_markers[i]->Show(active);
+        if (m_nav_labels[i])
+            style_text(m_nav_labels[i], active ? primary_text_colour() : secondary_text_colour(), 9);
+    }
+    if (m_account_nav) m_account_nav->set_secondary_face(m_active_page == Page::Account
+        ? wxColour(77, 65, 32) : wxColour(33, 33, 35));
+}
+
+bool RedesignShell::navigate_to_workbench()
+{
+    if (owns_model_workflow()) {
+        const bool ready = OrcaPrinterAdapter(m_plater).snapshot().gcode_ready;
+        const auto route = workbench_resume_route({m_last_workbench_page, m_model_view},
+            m_print_page && m_print_page->monitoring(), ready);
+        if (route.page == Page::Model) return show_model_view(route.view);
+    }
+    return navigate_to(m_last_workbench_page);
 }
 
 bool RedesignShell::navigate_to_image_view()

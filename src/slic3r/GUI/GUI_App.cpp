@@ -1005,9 +1005,17 @@ std::vector<std::string> GUI_App::split_str(std::string src, std::string separat
 class StartupLoadingPanel final : public wxPanel, public wxEventFilter
 {
 public:
-    explicit StartupLoadingPanel(wxWindow* parent) : wxPanel(parent, wxID_ANY)
+    explicit StartupLoadingPanel(wxWindow* parent)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL | wxCLIP_CHILDREN)
     {
         if (RedesignFeatureFlags::surface_enabled("STARTUP_BUFFER")) {
+            SetBackgroundColour(RedesignTheme::flow_background_colour());
+            SetBackgroundStyle(wxBG_STYLE_PAINT);
+            Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+                wxAutoBufferedPaintDC dc(this);
+                dc.SetBackground(wxBrush(GetBackgroundColour()));
+                dc.Clear();
+            });
             const char* review_env = std::getenv("ORCASLICER_UI_REDESIGN_STARTUP_BUFFER_REVIEW");
             m_review = review_env && std::string_view(review_env) == "1";
             auto* layout = new wxBoxSizer(wxVERTICAL);
@@ -1071,14 +1079,14 @@ public:
 
     void set_message(const wxString& message)
     {
-        if (m_buffer)
-            m_buffer->set_message(message);
-        else {
+        if (m_buffer) {
+            if (!m_buffer->set_message(message)) return;
+        } else {
+            if (m_message->GetLabel() == message) return;
             m_message->SetLabel(message);
             m_message->Wrap(FromDIP(480));
+            Layout();
         }
-        Layout();
-        Raise();
         paint_now();
     }
 
@@ -1087,9 +1095,15 @@ public:
 #ifdef __WXMSW__
         clip_siblings();
 #endif
-        paint_loading_content(this);
-        if (m_buffer)
-            paint_loading_content(m_buffer);
+        if (m_buffer) {
+            // Flush only invalidated regions. Erasing this host and its child
+            // again would temporarily remove the otherwise static brand.
+            Update();
+            m_buffer->Update();
+            for (auto* child : m_buffer->GetChildren()) child->Update();
+        } else {
+            paint_loading_content(this);
+        }
     }
 
 private:
@@ -4288,10 +4302,13 @@ bool GUI_App::on_init_inner()
     Bind(wxEVT_TIMER, &GUI_App::advance_startup, this, m_startup_timer.GetId());
     mainframe->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
         if (!is_closing() && m_startup_loading && m_startup_frame) {
-            m_startup_loading->SetSize(m_startup_frame->GetClientRect());
-            m_startup_loading->Layout();
-            m_startup_loading->Raise();
-            static_cast<StartupLoadingPanel*>(m_startup_loading.get())->paint_now();
+            const auto bounds = m_startup_frame->GetClientRect();
+            if (!bounds.IsEmpty() && m_startup_loading->GetRect() != bounds) {
+                m_startup_loading->SetSize(bounds);
+                m_startup_loading->Layout();
+                m_startup_loading->Raise();
+                static_cast<StartupLoadingPanel*>(m_startup_loading.get())->paint_now();
+            }
         }
         event.Skip();
     });

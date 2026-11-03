@@ -256,6 +256,12 @@ void PrinterWorkspace::build_workspace()
     auto* sections = new wxBoxSizer(wxVERTICAL);
     m_prepare = new wxPanel(m_settings_scroll); m_prepare->SetBackgroundColour(panel_colour());
     auto* prepare = new wxBoxSizer(wxVERTICAL);
+    m_preview_back = new RoundedActionButton(m_prepare, text("返回切片预览"), false, 40);
+    m_preview_back->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (m_return_to_preview) m_return_to_preview();
+    });
+    prepare->Add(m_preview_back, 0, wxEXPAND | wxBOTTOM, FromDIP(16));
+    m_preview_back->Hide();
     prepare->Add(label(m_prepare, text("打印机"), 14), 0, wxEXPAND | wxBOTTOM, FromDIP(20));
     m_printer_choice = new RoundedActionButton(m_prepare, text("选择打印机"), false, 56);
     m_printer_choice->set_alignment(wxALIGN_LEFT);
@@ -475,6 +481,12 @@ void PrinterWorkspace::update_compact_layout()
 }
 
 void PrinterWorkspace::show_prepare() { set_view(View::Prepare); refresh_state(); }
+void PrinterWorkspace::set_return_to_preview_handler(std::function<void()> handler)
+{
+    m_return_to_preview = std::move(handler);
+    m_preview_back->Show(bool(m_return_to_preview) && m_view == View::Prepare);
+    update_compact_layout();
+}
 void PrinterWorkspace::show_monitor() { set_view(View::Monitor); refresh_state(); }
 void PrinterWorkspace::show_media() { set_view(View::Media); refresh_state(); }
 bool PrinterWorkspace::monitoring() const { return m_view != View::Prepare; }
@@ -509,6 +521,7 @@ void PrinterWorkspace::set_view(View view)
     }
     m_prepare->Show(!monitor); m_monitor->Show(monitor);
     m_prepare_back->Show(view == View::Media);
+    m_preview_back->Show(bool(m_return_to_preview) && view == View::Prepare);
     m_start->Show(!monitor); m_pause->Show(monitor); m_stop->Show(monitor);
     m_prepare_visual->Show(view == View::Prepare); m_video_panel->Show(monitor); m_media_visual->Show(view == View::Media);
     m_gallery->Show(view == View::Media);

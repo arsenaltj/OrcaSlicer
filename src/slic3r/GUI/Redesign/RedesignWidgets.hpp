@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RedesignTheme.hpp"
+#include "RedesignPaintPanel.hpp"
 #include <algorithm>
 #include <memory>
 #include <wx/panel.h>
@@ -10,11 +11,32 @@
 
 namespace Slic3r::GUI {
 
-class RoundedPanel final : public wxPanel {
+class NavigationSelectionMarker final : public RedesignPaintPanel {
+public:
+    explicit NavigationSelectionMarker(wxWindow* parent)
+        : RedesignPaintPanel(parent, wxID_ANY, wxPoint(0, 0), parent->FromDIP(wxSize(3, 70)))
+    {
+        SetBackgroundColour(wxColour(255, 194, 39));
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        preserve_restore_colour();
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(GetBackgroundColour()));
+            dc.Clear();
+        });
+        Bind(wxEVT_DPI_CHANGED, [this](wxDPIChangedEvent& event) {
+            SetSize(FromDIP(wxSize(3, 70)));
+            Refresh(false);
+            event.Skip();
+        });
+    }
+};
+
+class RoundedPanel final : public RedesignPaintPanel {
 public:
     RoundedPanel(wxWindow* parent, const wxSize& size, const wxColour& face,
                  const wxColour& surrounding, int radius)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, size)
+        : RedesignPaintPanel(parent, wxID_ANY, wxDefaultPosition, size)
         , m_face(face), m_surrounding(surrounding), m_radius(radius)
     {
         SetBackgroundStyle(wxBG_STYLE_PAINT);
@@ -38,10 +60,10 @@ private:
     int m_radius;
 };
 
-class RoundedActionButton final : public wxPanel {
+class RoundedActionButton final : public RedesignPaintPanel {
 public:
     RoundedActionButton(wxWindow* parent, const wxString& caption, bool primary, int height)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(-1, parent->FromDIP(height)))
+        : RedesignPaintPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(-1, parent->FromDIP(height)))
         , m_primary(primary)
     {
         SetLabel(caption);

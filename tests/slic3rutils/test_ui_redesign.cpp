@@ -3,6 +3,7 @@
 #include "slic3r/GUI/Redesign/OrcaBusinessAdapter.hpp"
 #include "slic3r/GUI/Redesign/RedesignState.hpp"
 #include "slic3r/GUI/Redesign/ImageHistoryPagination.hpp"
+#include "slic3r/GUI/Redesign/ImageWorkspaceLayout.hpp"
 #include "slic3r/GUI/Redesign/AssetsWorkspacePolicy.hpp"
 #include "slic3r/GUI/Redesign/ModelFaceLimitChoice.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationHost.hpp"
@@ -15,6 +16,8 @@
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
 #include "slic3r/GUI/Redesign/RedesignSlicingDetails.hpp"
 #include "slic3r/GUI/Redesign/RedesignPageTransition.hpp"
+#include "slic3r/GUI/Redesign/RedesignPreviewPresentation.hpp"
+#include "slic3r/GUI/Redesign/RedesignWorkspaceNavigation.hpp"
 #include "slic3r/GUI/Redesign/ModelGenerationStarfield.hpp"
 #include "slic3r/GUI/CanvasNotificationLayout.hpp"
 
@@ -25,6 +28,100 @@
 #include <string>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("A workbench result batch publishes the final state once and commands remain immediate",
+          "[UiRedesign][SlicingRefresh]")
+{
+    WorkbenchPublicationBatch batch;
+    int state = 0;
+    std::vector<int> observed;
+    const auto publish = [&] { if (batch.request()) observed.push_back(state); };
+    batch.begin();
+    for (int next : {1, 2, 3}) { state = next; publish(); }
+    CHECK(observed.empty());
+    if (batch.finish()) publish();
+    REQUIRE(observed.size() == 1);
+    CHECK(observed.back() == 3);
+    state = 4;
+    publish();
+    REQUIRE(observed.size() == 2);
+    CHECK(observed.back() == 4);
+}
+
+TEST_CASE("Nested workbench result drains do not publish an intermediate state",
+          "[UiRedesign][SlicingRefresh]")
+{
+    WorkbenchPublicationBatch batch;
+    batch.begin();
+    batch.begin();
+    CHECK_FALSE(batch.request());
+    CHECK_FALSE(batch.finish());
+    CHECK_FALSE(batch.request());
+    CHECK(batch.finish());
+    CHECK(batch.request());
+    batch.begin();
+    CHECK_FALSE(batch.finish());
+}
+
+TEST_CASE("Repeated parameter visibility preserves layout while hiding and restoring rows changes it",
+          "[UiRedesign][SlicingRefresh]")
+{
+    wxBoxSizer rows(wxVERTICAL);
+    auto* first = rows.Add(10, 12);
+    auto* second = rows.Add(10, 18);
+    CHECK(rows.GetMinSize().y == 30);
+    for (int tick = 0; tick < 60; ++tick) {
+        CHECK_FALSE(set_slicing_detail_visible(*first, true));
+        CHECK_FALSE(set_slicing_detail_visible(*second, true));
+    }
+    CHECK(set_slicing_detail_visible(*second, false));
+    CHECK(rows.GetMinSize().y == 12);
+    CHECK_FALSE(set_slicing_detail_visible(*second, false));
+    CHECK(set_slicing_detail_visible(*second, true));
+    CHECK(rows.GetMinSize().y == 30);
+}
+
+TEST_CASE("Image history yields space to the center in a narrow window", "[UiRedesign][ImageWorkspaceLayout]")
+{
+    ImageWorkspaceLayout layout;
+    // A 1005 DIP frame leaves about 490 DIP after navigation and settings.
+    layout.set_width(490);
+    CHECK_FALSE(layout.expanded());
+    CHECK_FALSE(layout.can_expand());
+    layout.toggle();
+    CHECK_FALSE(layout.expanded());
+    CHECK(490 - layout.history_rail_width - layout.history_gap >= layout.center_min_width);
+    layout.set_width(layout.center_min_width + layout.history_gap + layout.history_width);
+    CHECK(layout.expanded());
+}
+
+TEST_CASE("Automatic image history collapse preserves the user's drawer preference", "[UiRedesign][ImageWorkspaceLayout]")
+{
+    ImageWorkspaceLayout layout;
+    layout.set_width(1100);
+    REQUIRE(layout.expanded());
+    layout.set_width(490);
+    CHECK_FALSE(layout.expanded());
+    layout.set_width(1100);
+    CHECK(layout.expanded());
+    layout.toggle();
+    CHECK_FALSE(layout.expanded());
+    layout.set_width(490);
+    layout.set_width(1100);
+    CHECK_FALSE(layout.expanded());
+    layout.toggle();
+    CHECK(layout.expanded());
+}
+
+TEST_CASE("Transient zero image page sizes do not alter drawer layout", "[UiRedesign][ImageWorkspaceLayout]")
+{
+    ImageWorkspaceLayout layout;
+    layout.set_width(1100);
+    layout.set_width(0);
+    CHECK(layout.expanded());
+    layout.set_width(-1);
+    CHECK(layout.expanded());
+}
 
 TEST_CASE("Slicing progress keeps its position until the notification column reaches it", "[UiRedesign][CanvasNotificationLayout]")
 {
@@ -438,6 +535,141 @@ TEST_CASE("Redesign page transitions reject overlap and ignore late readiness ca
     CHECK_FALSE(transition.rollback(*first));
     CHECK(transition.rollback(*second));
     CHECK_FALSE(transition.current(*second));
+}
+
+TEST_CASE("Model and printer pages share workbench navigation without taking the account route",
+          "[UiRedesign][WorkbenchNavigation]")
+{
+    using Page = RedesignWorkspacePage;
+    CHECK(redesign_navigation_page(Page::Model) == Page::Model);
+    CHECK(redesign_navigation_page(Page::Print) == Page::Model);
+    CHECK(redesign_navigation_page(Page::Assets) == Page::Assets);
+    CHECK(redesign_navigation_page(Page::Image) == Page::Image);
+    CHECK(redesign_navigation_page(Page::Account) == Page::Account);
+    for (const auto& entry : redesign_navigation_items) {
+        CHECK(entry.page != Page::Print);
+        CHECK(entry.page != Page::Account);
+    }
+}
+
+TEST_CASE("Reentering the workbench retains its stage and sends invalid print preparation back to slicing",
+          "[UiRedesign][WorkbenchNavigation]")
+{
+    using Page = RedesignWorkspacePage;
+    using View = RedesignModelView;
+    for (auto view : {View::Result, View::Workbench, View::Slicing, View::Preview}) {
+        const auto route = workbench_resume_route({Page::Model, view}, false, true);
+        CHECK(route.page == Page::Model);
+        CHECK(route.view == view);
+    }
+    const auto print = workbench_resume_route({Page::Print, View::Preview}, false, true);
+    CHECK(print.page == Page::Print);
+    CHECK(print.view == View::Preview);
+    const auto invalid_print = workbench_resume_route({Page::Print, View::Preview}, false, false);
+    CHECK(invalid_print.page == Page::Model);
+    CHECK(invalid_print.view == View::Slicing);
+    CHECK(workbench_resume_route({Page::Model, View::Preview}, false, false).view == View::Slicing);
+    CHECK(workbench_resume_route({Page::Model, View::Workbench}, false, false).view == View::Workbench);
+    CHECK(workbench_resume_route({Page::Print, View::Preview}, true, false).page == Page::Print);
+}
+
+TEST_CASE("Print preparation requires a valid result and returns to the matching slicing stage",
+          "[UiRedesign][WorkbenchNavigation]")
+{
+    CHECK(workbench_print_preparation_allowed(true, false));
+    CHECK_FALSE(workbench_print_preparation_allowed(false, false));
+    CHECK_FALSE(workbench_print_preparation_allowed(true, true));
+    CHECK_FALSE(workbench_print_preparation_allowed(false, true));
+    CHECK(workbench_return_view(true) == RedesignModelView::Preview);
+    CHECK(workbench_return_view(false) == RedesignModelView::Slicing);
+}
+
+TEST_CASE("Slicing completion presents each valid result once after Plater becomes idle",
+          "[UiRedesign][PreviewPresentation]")
+{
+    SliceCompletionPresentation state;
+    CHECK_FALSE(state.consume(false, true, false, 41));
+    CHECK_FALSE(state.consume(true, true, true, 41));
+    CHECK_FALSE(state.consume(true, false, false, 41));
+    CHECK(state.consume(true, false, true, 41));
+    CHECK_FALSE(state.consume(true, false, true, 41));
+    CHECK_FALSE(state.consume(false, true, true, 42));
+    CHECK(state.consume(true, false, true, 42));
+    CHECK_FALSE(state.consume(true, false, true, 42));
+}
+
+TEST_CASE("Preview waits for its loaded result and a new frame at the final viewport size",
+          "[UiRedesign][PreviewPresentation]")
+{
+    using Status = RedesignPreviewFrameGate::Status;
+    RedesignPreviewFrameGate gate;
+    const auto now = RedesignPreviewFrameGate::Clock::now();
+    gate.begin(7, 41, now);
+    CHECK(gate.observe(7, 40, true, true, 800, 600, 9, now) == Status::Waiting);
+    CHECK(gate.observe(7, 41, false, true, 800, 600, 10, now) == Status::Waiting);
+    CHECK(gate.observe(7, 41, true, false, 800, 600, 11, now) == Status::Waiting);
+    CHECK(gate.observe(7, 41, true, true, 0, 600, 12, now) == Status::Waiting);
+    CHECK(gate.observe(7, 41, true, true, 800, 0, 13, now) == Status::Waiting);
+    CHECK(gate.observe(7, 41, true, true, 800, 600, 14, now) == Status::Waiting);
+    CHECK(gate.observe(7, 41, true, true, 800, 600, 14, now) == Status::Waiting);
+    CHECK(gate.observe(7, 41, true, true, 1200, 900, 15, now) == Status::Waiting);
+    CHECK(gate.observe(7, 41, true, true, 1200, 900, 15, now) == Status::Waiting);
+    CHECK(gate.observe(7, 41, true, true, 1200, 900, 16, now) == Status::Ready);
+}
+
+TEST_CASE("Preview camera fitting requires a later frame and old route callbacks cannot reveal a new page",
+          "[UiRedesign][PreviewPresentation]")
+{
+    using Status = RedesignPreviewFrameGate::Status;
+    RedesignPreviewFrameGate gate;
+    RedesignPageTransition page;
+    const auto now = RedesignPreviewFrameGate::Clock::now();
+    const auto first = page.begin({2, 2}, {2, 3});
+    REQUIRE(first);
+    gate.begin(*first, 41, now);
+    CHECK(gate.observe(*first, 41, true, true, 800, 600, 14, now) == Status::Waiting);
+    gate.invalidate_frame();
+    CHECK(gate.observe(*first, 41, true, true, 800, 600, 15, now) == Status::Waiting);
+    REQUIRE(page.rollback(*first));
+    gate.finish();
+    const auto second = page.begin({2, 2}, {2, 3});
+    REQUIRE(second);
+    gate.begin(*second, 42, now);
+    CHECK(gate.observe(*first, 41, true, true, 800, 600, 16, now) == Status::Stale);
+    CHECK_FALSE(page.mark_ready(*first));
+    CHECK(gate.observe(*second, 41, true, true, 800, 600, 16, now) == Status::Waiting);
+    CHECK(gate.observe(*second, 42, true, true, 800, 600, 17, now) == Status::Waiting);
+    CHECK(gate.observe(*second, 42, true, true, 800, 600, 18, now) == Status::Ready);
+    REQUIRE(page.mark_ready(*second));
+    CHECK(page.commit(*second));
+}
+
+TEST_CASE("A stalled preview times out without committing and can retry the same G-code result",
+          "[UiRedesign][PreviewPresentation]")
+{
+    using Status = RedesignPreviewFrameGate::Status;
+    RedesignPreviewFrameGate gate;
+    RedesignPageTransition page;
+    const auto now = RedesignPreviewFrameGate::Clock::now();
+    const auto first = page.begin({2, 2}, {2, 3});
+    REQUIRE(first);
+    gate.begin(*first, 41, now);
+    CHECK(gate.observe(*first, 41, true, false, 800, 600, 14,
+        now + std::chrono::milliseconds(14999)) == Status::Waiting);
+    CHECK(gate.observe(*first, 41, true, false, 800, 600, 14,
+        now + std::chrono::seconds(15)) == Status::TimedOut);
+    CHECK_FALSE(page.commit(*first));
+    REQUIRE(page.rollback(*first));
+    gate.finish();
+    const auto retry = page.begin({2, 2}, {2, 3});
+    REQUIRE(retry);
+    gate.begin(*retry, 41, now + std::chrono::seconds(16));
+    CHECK(gate.observe(*retry, 41, true, true, 800, 600, 14,
+        now + std::chrono::seconds(16)) == Status::Waiting);
+    CHECK(gate.observe(*retry, 41, true, true, 800, 600, 15,
+        now + std::chrono::seconds(16)) == Status::Ready);
+    REQUIRE(page.mark_ready(*retry));
+    CHECK(page.commit(*retry));
 }
 
 TEST_CASE("Changing the model face target selects compatible geometry and retains other options", "[UiRedesign][ModelFaceLimitChoice]")

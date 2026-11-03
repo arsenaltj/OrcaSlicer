@@ -15,6 +15,7 @@
 #include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/Widgets/Button.hpp"
 #include "slic3r/GUI/Widgets/TextInput.hpp"
+#include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Print.hpp"
 #include "slic3r/GUI/I18N.hpp"
@@ -287,7 +288,7 @@ void ModelGenerationPanel::acknowledge_workbench_risk()
         !m_workbench_check_result.force_import_risk || m_workbench_check_result.model_sha256.empty()) return;
     m_workbench_force_import_ack_hash = m_workbench_check_result.model_sha256;
     m_workbench_force_import_ack_revision = m_sequence;
-    m_workbench_operation_notice = "已确认开放边界风险；导入后请复核逐层切片结果。";
+    m_workbench_operation_notice = "已确认开放边界风险；可点击“去切片”继续，导入后请复核逐层切片结果。";
     hide_workbench_check_card();
     refresh_post_generation_workbench();
     publish_workbench_state();
@@ -297,44 +298,14 @@ void ModelGenerationPanel::show_workbench_check_details()
 {
     if (!m_workbench_shell) return;
     hide_workbench_check_card();
-    wxDialog dialog(wxGetTopLevelParent(m_workbench_shell), wxID_ANY, _L("检查修复详情"),
-        wxDefaultPosition, FromDIP(wxSize(560, 480)), wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER);
-    dialog.SetName("ai_content_color");
-    dialog.SetBackgroundColour(wxColour(32, 32, 35));
-    dialog.SetForegroundColour(wxColour(238, 240, 244));
-    auto* root = new wxBoxSizer(wxVERTICAL);
     const wxString detail_text = from_u8(workbench_check_detail_text(m_workbench_check_result,
         workbench_snapshot().force_import_acknowledged));
-    auto* details = new wxTextCtrl(&dialog, wxID_ANY, wxEmptyString,
-        wxDefaultPosition, wxDefaultSize,
-        wxTE_MULTILINE | wxTE_READONLY | wxTE_RICH2 | wxBORDER_NONE);
-    details->SetName("ai_content_color");
-    const wxColour detail_background(40, 40, 43);
-    const wxColour detail_foreground(238, 240, 244);
-    details->SetBackgroundColour(detail_background);
-    details->SetForegroundColour(detail_foreground);
-    details->SetFont(m_workbench_shell->GetFont());
-    details->SetDefaultStyle(wxTextAttr(detail_foreground, detail_background));
-    details->ChangeValue(detail_text);
-    details->SetStyle(0, details->GetLastPosition(), wxTextAttr(detail_foreground, detail_background));
-    root->Add(details, 1, wxEXPAND | wxALL, FromDIP(12));
-    auto* actions = new wxBoxSizer(wxHORIZONTAL);
-    if (!m_workbench_check_result.issue_faces.empty()) {
-        auto* locate = workbench_button(&dialog, _L("定位问题区域"));
-        locate->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_APPLY); });
-        actions->Add(locate, 0, wxRIGHT, FromDIP(8));
-    }
-    actions->AddStretchSpacer(1);
-    auto* close = workbench_button(&dialog, _L("关闭"));
-    close->SetMinSize(FromDIP(wxSize(92, 32)));
-    close->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_OK); });
-    actions->Add(close, 0);
-    root->Add(actions, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
-    dialog.SetSizer(root);
-    dialog.CenterOnParent();
-    if (dialog.ShowModal() == wxID_APPLY && m_model_preview &&
-        AI::model_artifact_sha256(m_displayed_model_path) == m_workbench_check_result.model_sha256) {
-        hide_workbench_check_card();
+    std::vector<RedesignDialogAction> actions;
+    if (!m_workbench_check_result.issue_faces.empty())
+        actions.push_back({wxID_APPLY, _L("定位问题区域"), false});
+    actions.push_back({wxID_OK, _L("关闭"), false});
+    if (show_redesign_details(m_workbench_shell, detail_text, _L("检查修复详情"), actions) == wxID_APPLY &&
+        m_model_preview && AI::model_artifact_sha256(m_displayed_model_path) == m_workbench_check_result.model_sha256) {
         m_workbench_editing = true;
         refresh_post_generation_workbench();
         m_model_preview->select_face_evidence(m_workbench_check_result.issue_faces);
@@ -392,7 +363,7 @@ void ModelGenerationPanel::update_workbench_check_card()
         message = _L("安全修复已通过复检，正在自动接受并保存……");
     else if (!honor_semantic && !m_workbench_check_running &&
              result.status == WorkbenchCheckStatus::Attention && result.force_import_risk)
-        message += _L("\n模型仍有开放边界，自交检测尚未完成；确认风险后可导入并复核逐层切片。\n导入许可仅绑定当前模型版本。")
+        message += _L("\n模型仍有开放边界，自交检测尚未完成；确认风险后可点击“去切片”并复核逐层切片。\n导入许可仅绑定当前模型版本。")
             ;
     else if (!honor_semantic && !m_workbench_check_running &&
              result.status != WorkbenchCheckStatus::Attention)
@@ -752,7 +723,6 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
             m_workbench_grid->SetValue(grid_visible);
         set_workbench_enabled(m_workbench_grid, m_model_preview->has_model());
     }
-    set_workbench_enabled(m_workbench_print, false);
     const bool can_import = (snapshot.can_import_for_slicing || snapshot.can_force_import) && is_nonempty_model(m_displayed_model_path);
     if (auto* portrait = FindWindowByName("portrait_r6_entry", m_workbench_shell)) {
         set_workbench_enabled(portrait, snapshot.actions.can_edit && snapshot.portrait_available);
@@ -762,65 +732,7 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
             ? _L("可选人像保护；退出保留已保存的保护边界。")
             : wxString::FromUTF8(snapshot.portrait_unavailable_reason));
     }
-    if (m_workbench_print_navigation)
-        set_workbench_enabled(m_workbench_print_navigation, can_import);
     set_workbench_enabled(m_workbench_slicing, can_import);
-    if (wxGetApp().preset_bundle) {
-        const auto config = wxGetApp().preset_bundle->full_config();
-        size_t index = 0;
-        for (const auto& item : std::array<std::pair<const char*, wxString>, 5> {{
-                 {"layer_height", _L("层高")}, {"wall_loops", _L("墙层")},
-                 {"sparse_infill_density", _L("填充率")}, {"outer_wall_speed", _L("外墙速度")},
-                 {"enable_support", _L("支撑")} }}) {
-            const auto* option = config.option(item.first);
-            wxString value = option ? wxString::FromUTF8(option->serialize()) : "--";
-            if (const auto* toggle = dynamic_cast<const ConfigOptionBool*>(option))
-                value = toggle->value ? _L("开启") : _L("关闭");
-            else if (option && std::string(item.first) == "layer_height") value += " mm";
-            else if (option && std::string(item.first) == "wall_loops") value += _L(" 层");
-            else if (option && std::string(item.first) == "outer_wall_speed") {
-                if (const auto* speeds = dynamic_cast<const ConfigOptionFloats*>(option); speeds && !speeds->values.empty())
-                    value = wxString::Format("%.0f", speeds->values.front());
-                else if (const auto* speeds = dynamic_cast<const ConfigOptionFloatsNullable*>(option); speeds && !speeds->values.empty())
-                    value = wxString::Format("%.0f", speeds->values.front());
-                value += " mm/s";
-            }
-            layout_changed = set_workbench_label(m_workbench_slice_values[index++], value) || layout_changed;
-        }
-    }
-    wxString estimated_time = _L("未切片");
-    wxString estimated_filament = _L("未切片");
-    if (auto* plater = wxGetApp().plater(); plater &&
-        !m_displayed_model_path.empty() && m_last_imported_model_path == m_displayed_model_path &&
-        !plater->is_background_process_slicing()) {
-        auto* plate = plater->get_partplate_list().get_curr_plate();
-        if (plate && plate->is_slice_result_valid() && plate->fff_print()) {
-            // GLB imports use a content-addressed OBJ; unrelated plate results
-            // must never be presented as estimates for the displayed asset.
-            const bool glb = AI::model_artifact_format(m_displayed_model_path) == "glb";
-            const std::string hash = glb ? AI::model_artifact_sha256(m_displayed_model_path) : std::string();
-            const std::string imported_name = hash.empty() ? std::string() : "orcaslicer-ai-glb-" + hash + ".obj";
-            bool matching_source = false;
-            for (const auto* object : plate->get_objects_on_this_plate()) {
-                if (!object) continue;
-                boost::system::error_code error;
-                const boost::filesystem::path source(object->input_file);
-                matching_source = glb ? !imported_name.empty() && source.filename().string() == imported_name
-                    : !source.empty() && boost::filesystem::equivalent(source, m_displayed_model_path, error) && !error;
-                if (matching_source) break;
-            }
-            if (matching_source) {
-                const auto& statistics = plate->fff_print()->print_statistics();
-                if (!statistics.estimated_normal_print_time.empty())
-                    estimated_time = wxString::FromUTF8(statistics.estimated_normal_print_time);
-                if (statistics.total_used_filament > 0.0)
-                    estimated_filament = wxString::Format("%.1f m / %.0f g",
-                        statistics.total_used_filament / 1000.0, statistics.total_weight);
-            }
-        }
-    }
-    layout_changed = set_workbench_label(m_workbench_slice_values[5], estimated_time) || layout_changed;
-    layout_changed = set_workbench_label(m_workbench_slice_values[6], estimated_filament) || layout_changed;
     set_workbench_tooltip(m_workbench_check, topology_normal
         ? _L("拓扑正常；点击重新检查") : _L("检查拓扑并生成临时修复候选；原模型保留，接受前不会覆盖。"));
     const wxString check_text = from_u8(workbench_check_status_line(

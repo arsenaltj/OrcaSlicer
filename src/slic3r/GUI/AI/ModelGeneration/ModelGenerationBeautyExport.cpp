@@ -396,12 +396,10 @@ void ModelGenerationPanel::export_semantic_candidate()
                         self->m_model_preview->restore_color_trial_without_recognition(color_state);
                         self->m_model_preview->restore_portrait_color_blocks(draft_snapshot->color_blocks,false);
                         self->m_model_preview->restore_printer_restore_snapshot(printer_restore_snapshot);
-                        // Native printer application persists its authoritative
-                        // face/subface-to-slot snapshot separately. The output
-                        // artifact is already baked, so requiring a semantic
-                        // preview source here incorrectly rejects textured or
-                        // otherwise non-semantic candidates.
-                        const bool semantic_restored = printer_filament_application ||
+                        // Printer-trial colors are baked into the candidate even
+                        // when the user saved a manual recolor. Its new preview
+                        // may have no semantic source to restore.
+                        const bool semantic_restored = color_state.source == 1 ||
                             self->m_model_preview->set_saved_semantic_result(
                                 self->m_finishing_candidate_semantic_faces,
                                 self->m_finishing_candidate_semantic_subfaces);

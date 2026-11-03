@@ -567,7 +567,7 @@ public:
     // Orca: Ensure filament_presets has at least min_filament_count() slots on FFF printers.
     // Called from (load|update)_selections before the parallel project_config arrays
     // (filament_colour/colour_type/map) are sized off filament_presets.size(), so a
-    // short saved filament list doesn't truncate the loaded colors.
+    // empty saved filament list still has a usable material slot.
     void update_filament_count();
 
     // Load user configuration and store it into the user profiles.
@@ -740,10 +740,7 @@ public:
     std::vector<std::string> merge_presets(PresetBundle &&other);
 
 private:
-    // Orca: The fewest filaments the selected FFF printer runs with. A tool changer carries one
-    // filament per tool, so it needs one per nozzle. A printer feeding filaments through shared
-    // nozzles (single_extruder_multi_material, e.g. a Bambu Lab H2D) maps any number of them onto
-    // its nozzles, so one is enough, and the user may delete down to it.
+    // Keep at least one loaded material. Hardware nozzles may remain idle.
     size_t min_filament_count() const;
 
     // Move the presets and vendor profiles of `others` into this bundle, in one pass

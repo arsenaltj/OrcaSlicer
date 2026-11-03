@@ -551,7 +551,8 @@ public:
         std::string block_semantic_signature;
         prepared.face_color_overrides = explicit_overrides;
         auto record = metadata_path;
-        if (record.empty()) { record = path; record.replace_extension(".json"); }
+        if (record.empty())
+            record = AI::beauty_metadata_path(path, original_appearance_library_root(path, {}));
         boost::system::error_code record_error;
         const auto record_bytes = boost::filesystem::file_size(record, record_error);
         boost::filesystem::ifstream record_stream(record);

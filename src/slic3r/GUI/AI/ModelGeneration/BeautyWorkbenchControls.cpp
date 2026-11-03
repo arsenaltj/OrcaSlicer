@@ -1,4 +1,5 @@
 #include "BeautyWorkbenchControls.hpp"
+#include "BeautyPartitionSelection.hpp"
 #include "ModelPreview3D.hpp"
 #include "libslic3r/Utils.hpp"
 #include "WorkbenchStyle.hpp"
@@ -399,6 +400,8 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
         if (m_preview) m_preview->set_beauty_lighting(event.IsChecked());
     });
     m_operation->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&) {
+        if (m_preview) m_preview->clear_selection();
+        clear_partition_pick_state();
         if (on_operation_changed && m_operation->GetSelection() >= 0)
             on_operation_changed(m_operation->GetSelection());
         update_text();
@@ -411,12 +414,7 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
     m_color_slot->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&) {
         if (on_color_slot_changed && m_color_slot->GetSelection() >= 0)
             on_color_slot_changed(size_t(m_color_slot->GetSelection()));
-        if (m_preview && m_preview->selected_face_count() > 0) {
-            if (on_fill_color) on_fill_color();
-        } else {
-            m_status->SetLabel(_L("颜色已选好，请先点一下要改色的区域。"));
-            wrap_status(m_status);
-        }
+        update_text();
     });
     m_displacement->Bind(wxEVT_SLIDER, [this](wxCommandEvent&) { update_text(); });
     m_falloff->Bind(wxEVT_SLIDER, [this](wxCommandEvent&) { update_text(); });
@@ -545,6 +543,7 @@ void BeautyWorkbenchControls::synchronize(const boost::filesystem::path& source,
         m_document = AI::BeautyDocument {};
         m_partition.reset();
         m_selected_piece = 0;
+        m_selected_pieces.clear();
         m_preview->set_beauty_partition({}, {});
         m_dirty = false;
         m_automatic_partition_started = false;
@@ -613,6 +612,10 @@ void BeautyWorkbenchControls::update_color_blocks(bool editable)
 
 void BeautyWorkbenchControls::update_text()
 {
+    if (m_preview && !m_preview->selection_busy() && !m_preview->selected_face_count()) {
+        m_selected_piece = 0;
+        m_selected_pieces.clear();
+    }
     if (!m_status) return;
     if (!m_visible) m_status->SetLabel(_L("Beauty 工作台已关闭。"));
     else if (m_color_gate == BeautyColorGateState::Checking)
@@ -629,8 +632,11 @@ void BeautyWorkbenchControls::update_text()
     else if (m_operation->GetSelection() == 1)
         m_status->SetLabel(m_dirty ? _L("表面效果有未保存修改。")
             : _L("选择轻柔、均衡或加强；未选区域时处理整体。"));
-    else if (m_partition) m_status->SetLabel(wxString::Format(
-        _L("当前区域 %u · 点选区域后，点击耗材色即可预览。"), m_selected_piece));
+    else if (m_partition && m_selected_pieces.size() > 1)
+        m_status->SetLabel(wxString::Format(_L("已选 %llu 个分区；选择耗材后点击“应用到所选区域”。"),
+            static_cast<unsigned long long>(m_selected_pieces.size())));
+    else if (m_partition)
+        m_status->SetLabel(_L("点选区域并选择耗材，再点击“应用到所选区域”。"));
     else if (m_dirty) m_status->SetLabel(_L("颜色有未保存修改；保存后生成新版本。"));
     else m_status->SetLabel(_L("正在准备可点选区域；也可先选择颜色。"));
     if (m_secondary_status) {
@@ -763,7 +769,7 @@ void BeautyWorkbenchControls::update_text()
     m_color_slot->Enable(active && !m_palette_colors.empty());
     m_surface_strength->Show(m_operation->GetSelection() == 1);
     m_surface_strength->Enable(active);
-    m_fill_color->Hide();
+    m_fill_color->Show(m_operation->GetSelection() == 0);
     m_paint_color->Show(m_operation->GetSelection() == 0 && m_details_open);
     m_fill_color->Enable(active && !m_palette_colors.empty() && m_preview && m_preview->selected_face_count() > 0);
     m_paint_color->Enable(active && !m_palette_colors.empty());
@@ -778,7 +784,7 @@ void BeautyWorkbenchControls::update_text()
     m_protect_region->Enable(active);
     m_restore_region_color->Enable(active && m_preview && m_preview->selected_face_count() > 0);
     m_apply_partition->Show(m_details_open);
-    m_apply_partition->Enable(active && bool(m_partition));
+    m_apply_partition->Enable(active && bool(m_partition) && m_selected_pieces.size() <= 1);
     m_apply_partition->SetLabel(m_selected_piece ? _L("应用补选与边界调整") : _L("将选区划为新分区"));
     m_boundary->Enable(active);
     m_undo->Enable(sidebar.can_undo);
@@ -1159,6 +1165,7 @@ void BeautyWorkbenchControls::finish_partition()
         auto before = m_partition;
         m_partition = std::move(task->result);
         m_selected_piece = 0;
+        m_selected_pieces.clear();
         m_preview->set_beauty_partition(m_partition->face_piece, m_surface->face_neighbors);
         // Color-block partitions are an editing aid. Keep their green
         // boundary mesh hidden in the resting preview so dense clothing and
@@ -1195,6 +1202,7 @@ void BeautyWorkbenchControls::clear_partition(
 {
     m_partition.reset();
     m_selected_piece = 0;
+    m_selected_pieces.clear();
     m_preview->set_beauty_partition({}, {});
     if (selection.selected.size() == m_preview->editing_face_count())
         m_preview->restore_selection_state(selection);
@@ -1206,6 +1214,7 @@ void BeautyWorkbenchControls::restore_partition(const AI::BeautyPuzzle& puzzle, 
     if (!m_surface || puzzle.geometry_id != m_geometry_id) return;
     m_partition = puzzle;
     m_selected_piece = selected;
+    m_selected_pieces = selected ? std::vector<uint32_t>{selected} : std::vector<uint32_t>{};
     m_preview->set_beauty_partition(puzzle.face_piece, m_surface->face_neighbors);
     m_preview->set_beauty_pick_callback([this](size_t face) { select_piece(face); });
     if (selected) {
@@ -1220,38 +1229,51 @@ void BeautyWorkbenchControls::restore_partition(const AI::BeautyPuzzle& puzzle, 
     update_text();
 }
 
+void BeautyWorkbenchControls::clear_partition_pick_state()
+{
+    m_selected_piece = 0;
+    m_selected_pieces.clear();
+    update_text();
+}
+
 void BeautyWorkbenchControls::select_piece(size_t face)
 {
     if (!m_partition || m_partition_task || face >= m_partition->face_piece.size()) return;
     const auto before = m_preview->selection_state();
+    const auto picked = toggle_beauty_partition_pick(m_partition->face_piece,
+        before.protected_faces, before.selected, face);
+    if (!picked.valid) return;
     const uint32_t previous = m_selected_piece;
-    m_selected_piece = m_partition->face_piece[face];
+    const auto previous_pieces = m_selected_pieces;
+    m_selected_pieces = picked.complete_pieces;
+    m_selected_piece = m_selected_pieces.size() == 1 ? m_selected_pieces.front() : 0;
     auto state = before;
-    state.selected.assign(m_partition->face_piece.size(), 0);
-    for (size_t i = 0; i < state.selected.size(); ++i)
-        if (m_partition->face_piece[i] == m_selected_piece &&
-            (i >= state.protected_faces.size() || !state.protected_faces[i])) state.selected[i] = 1;
+    state.selected = picked.selected;
     state.foreground = state.selected;
     state.domain = state.selected;
     m_preview->restore_selection_state(std::move(state));
     const auto after = m_preview->selection_state();
     if (on_record && (before.selected != after.selected || previous != m_selected_piece)) {
         const uint32_t chosen = m_selected_piece;
+        const auto chosen_pieces = m_selected_pieces;
         on_record("select partition",
-            [this, before, previous] {
+            [this, before, previous, previous_pieces] {
                 m_selected_piece = previous;
+                m_selected_pieces = previous_pieces;
                 m_preview->restore_selection_state(before);
                 update_text();
             },
-            [this, after, chosen] {
+            [this, after, chosen, chosen_pieces] {
                 m_selected_piece = chosen;
+                m_selected_pieces = chosen_pieces;
                 m_preview->restore_selection_state(after);
                 update_text();
             });
     }
     update_text();
-    m_status->SetLabel(wxString::Format(_L("已选择分区 %u · %llu 个面；可补选、保护、改色或拉伸。"),
-        m_selected_piece, static_cast<unsigned long long>(m_preview->selected_face_count())));
+    m_status->SetLabel(wxString::Format(_L("已选择 %llu 个分区 · %llu 个面；可继续点选或应用颜色。"),
+        static_cast<unsigned long long>(m_selected_pieces.size()),
+        static_cast<unsigned long long>(m_preview->selected_face_count())));
 }
 
 size_t BeautyWorkbenchControls::select_partition_semantic(const std::string& region)
@@ -1285,15 +1307,18 @@ size_t BeautyWorkbenchControls::select_partition_semantic(const std::string& reg
     }
     if (!selected) return 0;
     const uint32_t previous = m_selected_piece;
+    const auto previous_pieces = m_selected_pieces;
     m_selected_piece = 0;
+    m_selected_pieces.clear();
     m_preview->set_selection_enabled(true);
     m_preview->set_selection_overlay_visible(true);
     m_preview->set_selection_preview_suppressed(false);
     m_preview->restore_selection_state(after);
     if (on_record) {
         on_record("select automatic semantic regions",
-            [this, before, previous] {
+            [this, before, previous, previous_pieces] {
                 m_selected_piece = previous;
+                m_selected_pieces = previous_pieces;
                 if (m_preview) m_preview->restore_selection_state(before);
                 update_text();
             },
@@ -1313,7 +1338,8 @@ size_t BeautyWorkbenchControls::select_partition_semantic(const std::string& reg
 
 void BeautyWorkbenchControls::apply_partition_selection()
 {
-    if (!m_partition || !m_surface || !m_editable || m_partition_task) return;
+    if (!m_partition || !m_surface || !m_editable || m_partition_task ||
+        m_selected_pieces.size() > 1) return;
     const auto state = m_preview->selection_state();
     if (state.selected.size() != m_partition->face_piece.size()) return;
     std::vector<size_t> selected, added, removed;
@@ -1328,11 +1354,13 @@ void BeautyWorkbenchControls::apply_partition_selection()
     if (selected.empty()) { m_status->SetLabel(_L("先在模型上圈选分区范围。")); return; }
     const auto before = *m_partition;
     const uint32_t previous = m_selected_piece;
+    const auto previous_pieces = m_selected_pieces;
     try {
         if (m_selected_piece && (!added.empty() || !removed.empty()))
             m_partition->reshape_region(m_selected_piece, added, removed, *m_surface, {}, true);
         else if (!m_selected_piece) m_selected_piece = m_partition->assign_region(selected, *m_surface);
         else return;
+        m_selected_pieces = {m_selected_piece};
         if (const auto locks = m_preview->active_editing_shape_locks(); locks && !locks->preserves(before, *m_partition))
             throw std::invalid_argument("Shape boundary is locked; unlock it before adjusting the region.");
         m_preview->set_beauty_partition(m_partition->face_piece, m_surface->face_neighbors);
@@ -1345,6 +1373,7 @@ void BeautyWorkbenchControls::apply_partition_selection()
     } catch (const std::exception& error) {
         *m_partition = before;
         m_selected_piece = previous;
+        m_selected_pieces = previous_pieces;
         m_status->SetLabel(_L("边界未修改：") + wxString::FromUTF8(error.what()));
         wrap_status(m_status);
         Layout();
@@ -1376,6 +1405,7 @@ void BeautyWorkbenchControls::reset_asset()
     m_partition.reset();
     m_document = AI::BeautyDocument {};
     m_selected_piece = 0;
+    m_selected_pieces.clear();
     m_semantic_selection_protected = 0;
     m_semantic_selection_low_confidence = 0;
     m_ready = m_dirty = m_portrait_enabled = false;
@@ -1431,6 +1461,7 @@ nlohmann::json BeautyWorkbenchControls::partition_metadata() const
 std::shared_ptr<const BeautyPartitionSnapshot> BeautyWorkbenchControls::capture_partition() const
 {
     auto snapshot=std::make_shared<BeautyPartitionSnapshot>(BeautyPartitionSnapshot{m_surface,m_partition,m_selected_piece});
+    snapshot->selected_pieces = m_selected_pieces;
     if (m_preview) {
         snapshot->canonical_geometry_id=m_preview->geometry_id();
         snapshot->selection=m_preview->selection_state();
@@ -1472,6 +1503,9 @@ void BeautyWorkbenchControls::restore_partition_snapshot(std::shared_ptr<const B
     else clear_partition(m_preview->selection_state());
     if (snapshot && snapshot->selection.selected.size()==m_preview->editing_face_count())
         m_preview->restore_selection_state(snapshot->selection);
+    m_selected_pieces = snapshot ? snapshot->selected_pieces : std::vector<uint32_t>{};
+    m_selected_piece = m_selected_pieces.size() == 1 ? m_selected_pieces.front() : 0;
+    update_text();
 }
 
 } // namespace Slic3r::GUI

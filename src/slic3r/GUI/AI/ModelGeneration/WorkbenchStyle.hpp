@@ -84,7 +84,8 @@ class WorkbenchScrolledWindow final : public wxScrolledWindow {
 public:
     WorkbenchScrolledWindow(wxWindow* parent, wxWindowID id, const wxPoint& position,
                             const wxSize& size, long style)
-        : wxScrolledWindow(parent, id, position, size, style | wxCLIP_CHILDREN) {
+        : wxScrolledWindow(parent, id, position, size, style | wxCLIP_CHILDREN),
+          m_horizontal((style & wxHSCROLL) && !(style & wxVSCROLL)) {
         SetBackgroundStyle(wxBG_STYLE_PAINT);
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
             wxAutoBufferedPaintDC dc(this);
@@ -94,6 +95,7 @@ public:
         ShowScrollbars(wxSHOW_SB_NEVER, wxSHOW_SB_NEVER);
         m_bar = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
         m_bar->SetName("ai_content_color");
+        m_bar->SetBackgroundColour(GetBackgroundColour());
         m_bar->SetBackgroundStyle(wxBG_STYLE_PAINT);
         m_bar->SetCursor(wxCURSOR_HAND);
         m_bar->Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
@@ -107,23 +109,34 @@ public:
         m_bar->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
             const auto thumb = thumb_rect();
             if (thumb.Contains(event.GetPosition())) {
-                m_drag_offset = event.GetY() - thumb.y;
+                m_drag_offset = m_horizontal ? event.GetX() - thumb.x : event.GetY() - thumb.y;
                 m_bar->CaptureMouse();
             } else {
                 int x, y, unit_x, unit_y;
                 GetViewStart(&x, &y); GetScrollPixelsPerUnit(&unit_x, &unit_y);
-                const int page = GetClientSize().y / std::max(1, unit_y);
-                Scroll(-1, std::max(0, y + (event.GetY() < thumb.y ? -page : page)));
+                const int page = m_horizontal ? GetClientSize().x / std::max(1, unit_x)
+                                              : GetClientSize().y / std::max(1, unit_y);
+                if (m_horizontal)
+                    Scroll(std::max(0, x + (event.GetX() < thumb.x ? -page : page)), -1);
+                else
+                    Scroll(-1, std::max(0, y + (event.GetY() < thumb.y ? -page : page)));
                 update_bar();
             }
         });
         m_bar->Bind(wxEVT_MOTION, [this](wxMouseEvent& event) {
             if (!m_bar->HasCapture()) return;
-            const int travel = m_bar->GetClientSize().y - thumb_rect().height;
+            const auto size = m_bar->GetClientSize();
+            const auto thumb = thumb_rect();
+            const int travel = m_horizontal ? size.x - thumb.width : size.y - thumb.height;
             int unit_x, unit_y; GetScrollPixelsPerUnit(&unit_x, &unit_y);
-            const int range = std::max(0, GetVirtualSize().y - GetClientSize().y);
-            const int position = std::clamp(event.GetY() - m_drag_offset, 0, std::max(0, travel));
-            Scroll(-1, travel > 0 ? int(double(position) * range / travel / std::max(1, unit_y) + .5) : 0);
+            const int range = std::max(0, m_horizontal ? GetVirtualSize().x - GetClientSize().x
+                                                     : GetVirtualSize().y - GetClientSize().y);
+            const int position = std::clamp((m_horizontal ? event.GetX() : event.GetY()) - m_drag_offset,
+                                            0, std::max(0, travel));
+            const int unit = std::max(1, m_horizontal ? unit_x : unit_y);
+            const int offset = travel > 0 ? int(double(position) * range / travel / unit + .5) : 0;
+            if (m_horizontal) Scroll(offset, -1);
+            else Scroll(-1, offset);
             update_bar();
         });
         m_bar->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent&) {
@@ -132,10 +145,28 @@ public:
         m_bar->Bind(wxEVT_MOUSE_CAPTURE_LOST, [](wxMouseCaptureLostEvent&) {});
         m_bar->Bind(wxEVT_MOUSEWHEEL, [this](wxMouseEvent& event) {
             event.Skip(false);
+            if (m_horizontal) {
+                int x, y, unit_x, unit_y;
+                GetViewStart(&x, &y); GetScrollPixelsPerUnit(&unit_x, &unit_y);
+                const int lines = event.IsPageScroll()
+                    ? GetClientSize().x / std::max(1, unit_x) : event.GetLinesPerAction();
+                const int direction = event.GetWheelAxis() == wxMOUSE_WHEEL_HORIZONTAL ? 1 : -1;
+                Scroll(std::max(0, x + direction * event.GetWheelRotation() /
+                    std::max(1, event.GetWheelDelta()) * lines), -1);
+                update_bar();
+                return;
+            }
             wxMouseEvent forwarded(event); forwarded.SetEventObject(this);
             GetEventHandler()->ProcessEvent(forwarded);
         });
         Bind(wxEVT_SIZE, [this](wxSizeEvent& event) { update_bar(); update_shape(); event.Skip(); });
+    }
+    bool SetBackgroundColour(const wxColour& colour) override {
+        const bool changed = wxScrolledWindow::SetBackgroundColour(colour);
+        // Native restore snapshots also ask for the indicator's background;
+        // its normal paint handler alone does not own those supplied DCs.
+        if (m_bar) m_bar->SetBackgroundColour(colour);
+        return changed;
     }
     void set_rounded_corners(bool rounded) {
         if (m_rounded == rounded) return;
@@ -152,12 +183,15 @@ public:
             ~LayoutGuard() { active = false; }
         } guard(m_laying_out);
         const auto client = GetClientSize();
-        const int height = std::max(client.y, GetSizer()->CalcMin().y);
-        if (GetVirtualSize() != wxSize(client.x, height)) SetVirtualSize(client.x, height);
+        const auto minimum = GetSizer()->CalcMin();
+        const int width = m_horizontal ? std::max(client.x, minimum.x) : client.x;
+        const int height = m_horizontal ? client.y : std::max(client.y, minimum.y);
+        if (GetVirtualSize() != wxSize(width, height)) SetVirtualSize(width, height);
         int x, y, unit_x, unit_y;
         GetViewStart(&x, &y); GetScrollPixelsPerUnit(&unit_x, &unit_y);
         GetSizer()->SetDimension(-x * unit_x, -y * unit_y,
-                                std::max(0, client.x - FromDIP(10)), height);
+            m_horizontal ? width : std::max(0, client.x - FromDIP(10)),
+            m_horizontal ? std::max(0, height - (width > client.x ? FromDIP(10) : 0)) : height);
         update_bar();
         refresh_controls();
         return true;
@@ -197,25 +231,32 @@ private:
         }
     }
     wxRect thumb_rect() const {
-        const int height = m_bar->GetClientSize().y;
-        const int virtual_height = std::max(1, GetVirtualSize().y);
-        const int visible_height = GetClientSize().y;
-        const int thumb_height = std::min(height, std::max(FromDIP(24), height * visible_height / virtual_height));
+        const int length = m_horizontal ? m_bar->GetClientSize().x : m_bar->GetClientSize().y;
+        const int virtual_length = std::max(1, m_horizontal ? GetVirtualSize().x : GetVirtualSize().y);
+        const int visible_length = m_horizontal ? GetClientSize().x : GetClientSize().y;
+        const int thumb_length = std::min(length, std::max(FromDIP(24), length * visible_length / virtual_length));
         int x, y, unit_x, unit_y;
         GetViewStart(&x, &y); GetScrollPixelsPerUnit(&unit_x, &unit_y);
-        const int range = std::max(1, virtual_height - visible_height);
-        const int top = std::clamp(int(double(y) * unit_y * (height - thumb_height) / range), 0, std::max(0, height - thumb_height));
-        return wxRect(FromDIP(3), top, FromDIP(4), thumb_height);
+        const int range = std::max(1, virtual_length - visible_length);
+        const int offset = m_horizontal ? x * unit_x : y * unit_y;
+        const int start = std::clamp(int(double(offset) * (length - thumb_length) / range),
+                                     0, std::max(0, length - thumb_length));
+        return m_horizontal ? wxRect(start, FromDIP(3), thumb_length, FromDIP(4))
+                            : wxRect(FromDIP(3), start, FromDIP(4), thumb_length);
     }
     void update_bar() {
         if (!m_bar) return;
         const auto size = GetClientSize();
-        const int width = FromDIP(10);
-        m_bar->SetSize(std::max(0, size.x - width), 0, width, std::max(0, size.y));
-        m_bar->Show(GetVirtualSize().y > size.y);
+        const int thickness = FromDIP(10);
+        if (m_horizontal)
+            m_bar->SetSize(0, std::max(0, size.y - thickness), std::max(0, size.x), thickness);
+        else
+            m_bar->SetSize(std::max(0, size.x - thickness), 0, thickness, std::max(0, size.y));
+        m_bar->Show(m_horizontal ? GetVirtualSize().x > size.x : GetVirtualSize().y > size.y);
         m_bar->Raise(); m_bar->Refresh(false);
     }
     wxPanel* m_bar {nullptr};
+    bool m_horizontal {false};
     int m_drag_offset {0};
     bool m_laying_out {false};
     bool m_rounded {false};
@@ -887,9 +928,8 @@ public:
           m_value(std::clamp(value, minimum, std::max(minimum, maximum)))
     {
         SetBackgroundStyle(wxBG_STYLE_PAINT);
-#ifdef __WXMSW__
-        SetDoubleBuffered(true);
-#endif
+        // paint() uses wxAutoBufferedPaintDC, avoiding the initially empty
+        // WS_EX_COMPOSITED surface shown by Windows while restoring.
         m_edit_text = wxString::Format("%d", m_value);
 
         Bind(wxEVT_PAINT, &WorkbenchNumberStepper::paint, this);

@@ -33,6 +33,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/PrinterFilamentPreview.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyCandidateSnapshot.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/BeautyPartitionSelection.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchColorGate.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchPrinterFilaments.hpp"
 #include "slic3r/GUI/PrinterFilamentSlotRemap.hpp"
@@ -931,7 +932,9 @@ TEST_CASE("Beauty comparison keeps current editor context without changing entry
     current.selection.protected_faces = {0, 1};
     current.manual_color_dirty = true;
     current.dirty = true;
-    current.partition = std::make_shared<BeautyPartitionSnapshot>();
+    auto partition = std::make_shared<BeautyPartitionSnapshot>();
+    partition->selected_pieces = {10, 20};
+    current.partition = partition;
 
     const auto comparison = beauty_comparison_baseline(baseline, current);
     CHECK(comparison.face_overrides == baseline.face_overrides);
@@ -941,11 +944,36 @@ TEST_CASE("Beauty comparison keeps current editor context without changing entry
     CHECK(comparison.manual_color_dirty == current.manual_color_dirty);
     CHECK(comparison.dirty == current.dirty);
     CHECK(comparison.partition == current.partition);
+    CHECK(comparison.partition->selected_pieces == std::vector<uint32_t>{10, 20});
 
     current.geometry_id = std::string(64, 'b');
     const auto stale = beauty_comparison_baseline(baseline, current);
     CHECK(stale.selection.selected == baseline.selection.selected);
     CHECK(stale.partition == baseline.partition);
+}
+
+TEST_CASE("Beauty partition picks accumulate, toggle, and skip protected faces",
+          "[BeautyWorkbench][PostGenerationWorkbench]")
+{
+    const std::vector<uint32_t> pieces {10, 10, 20, 20, 0};
+    const std::vector<uint8_t> protected_faces {0, 1, 0, 0, 0};
+    const std::vector<uint8_t> empty(5, 0);
+    const auto first = toggle_beauty_partition_pick(pieces, protected_faces, empty, 0);
+    REQUIRE(first.valid);
+    CHECK(first.selected == std::vector<uint8_t>{1, 0, 0, 0, 0});
+    CHECK(first.complete_pieces == std::vector<uint32_t>{10});
+
+    const auto second = toggle_beauty_partition_pick(pieces, protected_faces, first.selected, 2);
+    REQUIRE(second.valid);
+    CHECK(second.selected == std::vector<uint8_t>{1, 0, 1, 1, 0});
+    CHECK(second.complete_pieces == std::vector<uint32_t>{10, 20});
+
+    const auto remove = toggle_beauty_partition_pick(pieces, protected_faces, second.selected, 2);
+    CHECK(remove.selected == first.selected);
+    CHECK(remove.complete_pieces == first.complete_pieces);
+    CHECK(toggle_beauty_partition_pick(pieces, protected_faces, remove.selected, 0).selected == empty);
+    CHECK_FALSE(toggle_beauty_partition_pick(pieces, protected_faces, empty, 4).valid);
+    CHECK_FALSE(toggle_beauty_partition_pick(pieces, protected_faces, empty, 5).valid);
 }
 
 TEST_CASE("Beauty semantic completion refreshes stale processing state before partition resume",

@@ -4,6 +4,8 @@
 #include "NativeWorkspaceTheme.hpp"
 #include "RedesignModelRoute.hpp"
 #include "RedesignPageTransition.hpp"
+#include "RedesignPreviewPresentation.hpp"
+#include "RedesignWorkspaceNavigation.hpp"
 #include "../AI/ModelGeneration/ModelGenerationHost.hpp"
 #include "../AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "../AI/ModelGeneration/WorkbenchImportSession.hpp"
@@ -64,7 +66,7 @@ class AccountWorkspace;
 class RedesignShell final : public wxPanel
 {
 public:
-    enum class Page { Assets, Image, Model, Print, Account };
+    using Page = RedesignWorkspacePage;
 
     explicit RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model_generation_host = nullptr,
                            Plater* plater = nullptr, AITextFeatureHost* text_feature_host = nullptr);
@@ -80,6 +82,7 @@ public:
     bool native_slicing_visible() const { return native_workspace_visible() && m_native_slicing; }
     void start_slicing_from_workspace();
     void refresh_workflow_layout();
+    void request_viewport_frame();
     void show_printer_media();
     void refresh_printer_state();
 
@@ -147,7 +150,7 @@ private:
     void update_image_state();
     void update_preview_bitmap();
     void bind_upload_click(wxWindow* window);
-    enum class ModelView { Result, Workbench, Slicing, Preview };
+    using ModelView = RedesignModelView;
     void build_model_workflow();
     bool open_model_workbench();
     void return_model_overview();
@@ -172,6 +175,13 @@ private:
     void restore_import_source_page();
     void check_import_first_frame();
     void open_print_preparation();
+    void return_to_slice_preview();
+    bool navigate_to_workbench();
+    void refresh_navigation();
+    bool prepare_preview_transition();
+    void check_preview_first_frame(RedesignPageTransition::Token token);
+    void finish_preview_transition(RedesignPageTransition::Token token, bool ready);
+    void layout_preview_transition_cover();
     bool can_save_print_project() const;
     void refresh_project_save_actions();
     void save_print_project();
@@ -257,7 +267,12 @@ private:
     bool m_native_slicing {false};
     bool m_preview_toolpath_outside {false};
     PreviewAutoFitState m_preview_auto_fit;
+    SliceCompletionPresentation m_slice_completion;
     bool m_slice_completion_retry_pending {false};
+    RedesignPreviewFrameGate m_preview_frame_gate;
+    std::optional<RedesignPageTransition::Token> m_preview_transition;
+    wxFrame* m_preview_transition_cover {nullptr};
+    wxTimer m_preview_transition_timer;
     bool m_import_in_progress {false};
     bool m_import_awaiting_frame {false};
     bool m_import_target_staged {false};
@@ -332,8 +347,8 @@ private:
     wxWindow* m_model_action_button { nullptr };
     wxWindow* m_model_back_to_design_button { nullptr };
     wxWindow* m_model_stop_button { nullptr };
-    std::array<wxPanel*, 4> m_nav_markers { nullptr, nullptr, nullptr, nullptr };
-    std::array<wxStaticText*, 4> m_nav_labels { nullptr, nullptr, nullptr, nullptr };
+    std::array<wxPanel*, redesign_navigation_items.size()> m_nav_markers {};
+    std::array<wxStaticText*, redesign_navigation_items.size()> m_nav_labels {};
     std::array<wxPanel*, 5> m_pages {};
     std::array<wxWeakRef<wxWindow>, 5> m_page_focus;
     AccountWorkspace* m_account_workspace {nullptr};
@@ -372,6 +387,7 @@ private:
     bool m_generation_geometry_mode { false };
     int m_last_service_status { 0 };
     Page m_active_page { Page::Account };
+    Page m_last_workbench_page { Page::Model };
     // Keep the semantic workspace request, not only the visual host. Several
     // legacy requests (Prepare, Preview, Monitor and Multi-device) currently
     // share the Print host while their business meaning still differs.

@@ -103,13 +103,12 @@ void repaint_workbench_surface(wxWindow* window)
 }
 wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent)
 {
-    auto* shell = new wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
-                                       wxHSCROLL | wxBORDER_NONE | wxCLIP_CHILDREN);
+    auto* shell = new WorkbenchScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+                                             wxHSCROLL | wxBORDER_NONE | wxCLIP_CHILDREN);
     m_workbench_shell = shell;
     // Preserve the viewport and rail widths; narrow windows scroll the body.
     shell->SetMinSize(wxSize(1, 1));
     shell->SetScrollRate(FromDIP(12), 0);
-    shell->ShowScrollbars(wxSHOW_SB_DEFAULT, wxSHOW_SB_NEVER);
     shell->SetName("ai_workbench_surface");
     shell->SetBackgroundColour(wxColour(49, 49, 54));
     shell->SetFont(wxFontInfo(9).FaceName("HONOR Sans Design"));
@@ -521,46 +520,6 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     // Beauty remains available from the fixed top-bar entry, while the check
     // and palette sections retain their existing layout and state.
     controls = m_workbench_settings_groups[2];
-    controls = new wxBoxSizer(wxVERTICAL);
-    sections->Add(controls, 0, wxEXPAND);
-    heading(_L("切片"));
-    auto* slice_panel = new WorkbenchPanel(scroll);
-    slice_panel->SetBackgroundColour(wxColour(22, 22, 25));
-    auto* slice_root = new wxBoxSizer(wxVERTICAL);
-    auto* slice_title = new WorkbenchStaticText(slice_panel, wxID_ANY, _L("AI 智能切片"));
-    slice_title->SetForegroundColour(wxColour(220, 220, 222));
-    slice_root->Add(slice_title, 0, wxEXPAND | wxALL, FromDIP(12));
-    auto* slice_grid = new wxFlexGridSizer(2, FromDIP(12), FromDIP(12));
-    slice_grid->AddGrowableCol(1);
-    const std::array<wxString, 7> slice_labels {{_L("层高"), _L("墙厚"), _L("填充率"), _L("打印速度"),
-        _L("支撑"), _L("预计耗时"), _L("耗材")}};
-    for (size_t index = 0; index < slice_labels.size(); ++index) {
-        auto* label = new WorkbenchStaticText(slice_panel, wxID_ANY, slice_labels[index]);
-        label->SetForegroundColour(wxColour(170, 170, 176));
-        slice_grid->Add(label, 0, wxALIGN_CENTER_VERTICAL);
-        auto* value = m_workbench_slice_values[index] = new WorkbenchStaticText(slice_panel, wxID_ANY, "--");
-        value->SetForegroundColour(wxColour(220, 220, 222));
-        slice_grid->Add(value, 0, wxALIGN_RIGHT | wxALIGN_CENTER_VERTICAL);
-    }
-    m_workbench_slice_values[3]->SetToolTip(_L("当前工艺的外墙打印速度"));
-    for (size_t index : {size_t(5), size_t(6)})
-        m_workbench_slice_values[index]->SetToolTip(_L("当前模型所在打印板的切片合计；导入后在准备页显式切片。"));
-    slice_root->Add(slice_grid, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
-    auto* slicing = command(slice_panel, slice_root, _L("导入切片"), [this](wxCommandEvent&) {
-        request_workbench_color_matching();
-    });
-    slice_root->GetItem(slicing)->SetFlag(wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM);
-    slice_root->GetItem(slicing)->SetBorder(FromDIP(12));
-    apply_slice_action_style(static_cast<WorkbenchButton*>(slicing));
-    slice_panel->SetSizer(slice_root);
-    controls->Add(slice_panel, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    m_workbench_slicing = slicing;
-    slicing->SetToolTip(_L("导入当前模型到准备页，随后打开智能切片；候选比较与切片需在该页显式启动。"));
-    slicing->SetIcon("workbench_printer");
-    if (RedesignFeatureFlags::model_workflow_review_enabled()) {
-        slice_grid->ShowItems(false);
-        slice_title->SetLabel(_L("导入后选择切片方案"));
-    }
     auto* native_entry = command(scroll, controls, _L("orca原生"), [this](wxCommandEvent&) {
         request_workbench_color_matching();
     });
@@ -574,15 +533,17 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     scroll_content->Add(sections, 0, wxEXPAND | wxRIGHT, FromDIP(8));
     scroll->SetSizer(scroll_content);
     settings_root->Add(scroll, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
-    m_workbench_print = command(settings, settings_root, _L("去打印"), [](wxCommandEvent&) {});
-    m_workbench_print->Disable();
-    m_workbench_print->SetToolTip(_L("设备打印尚未接入，请在切片区域导入模型并预览、导出 G-code。"));
-    auto* print = static_cast<Button*>(m_workbench_print);
-    print->SetBackgroundColor(StateColor(std::pair<wxColour, int>(wxColour(75, 75, 80), StateColor::Disabled),
+    m_workbench_slicing = command(settings, settings_root, _L("去切片"), [this](wxCommandEvent&) {
+        request_workbench_color_matching();
+    });
+    m_workbench_slicing->Disable();
+    m_workbench_slicing->SetToolTip(_L("将当前模型导入切片设置；选择方案后显式启动切片。"));
+    auto* slicing = static_cast<Button*>(m_workbench_slicing);
+    slicing->SetBackgroundColor(StateColor(std::pair<wxColour, int>(wxColour(75, 75, 80), StateColor::Disabled),
         std::pair<wxColour, int>(wxColour(255, 194, 39), StateColor::Normal)));
-    print->SetTextColor(StateColor(wxColour(22, 22, 25)));
-    settings_root->GetItem(print)->SetBorder(FromDIP(12));
-    settings_root->GetItem(print)->SetFlag(wxEXPAND | wxALL);
+    slicing->SetTextColor(StateColor(wxColour(22, 22, 25)));
+    settings_root->GetItem(slicing)->SetBorder(FromDIP(12));
+    settings_root->GetItem(slicing)->SetFlag(wxEXPAND | wxALL);
     settings->SetSizer(settings_root);
     m_workbench_sync_timer.SetOwner(this, wxWindow::NewControlId());
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
@@ -601,9 +562,8 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         wxBORDER_NONE | wxCLIP_CHILDREN);
     toolbar_host->SetName("ai_content_color");
     toolbar_host->SetBackgroundColour(workspace->GetBackgroundColour());
-#ifdef __WXMSW__
-    toolbar_host->SetDoubleBuffered(true);
-#endif
+    // Buttons buffer their own paint. Windows compositing this container
+    // exposes its empty backing surface during a restore animation.
     auto* toolbar = new wxBoxSizer(wxHORIZONTAL);
     toolbar_host->SetSizer(toolbar);
     auto toolbar_command = [this, toolbar_host, toolbar](const wxString& label, auto action) {
@@ -656,9 +616,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         wxBORDER_NONE | wxCLIP_CHILDREN);
     view_tools_host->SetName("ai_content_color");
     view_tools_host->SetBackgroundColour(workspace->GetBackgroundColour());
-#ifdef __WXMSW__
-    view_tools_host->SetDoubleBuffered(true);
-#endif
+    // Keep this host opaque; its owner-painted children buffer individually.
     auto* view_tools = new wxBoxSizer(wxHORIZONTAL);
     view_tools_host->SetSizer(view_tools);
     auto tool_region = [view_tools_host, view_tools] {
