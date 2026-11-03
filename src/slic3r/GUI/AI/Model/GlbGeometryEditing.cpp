@@ -257,7 +257,10 @@ std::vector<size_t> verify_glb_appearance_layout(const Json& doc,
     const Eigen::Matrix4d world = model_transform(doc);
     std::vector<size_t> face_counts;
     size_t face_offset = 0;
-    int winding = 0;
+    // Near-coincident corners can match both orientations within the existing
+    // position tolerance. Keep every possible global orientation instead of
+    // letting the last tested permutation force an ambiguous face backwards.
+    unsigned possible_windings = 3;
     for (const auto& primitive : mesh.at("primitives")) {
         if (checkpoint) checkpoint();
         no_extensions(primitive);
@@ -297,7 +300,7 @@ std::vector<size_t> verify_glb_appearance_layout(const Json& doc,
                 actual[c] = editor_mesh.vertices[index].cast<double>();
                 require(expected[c].allFinite() && actual[c].allFinite(), "Invalid transformed appearance position.");
             }
-            int direction = 0;
+            unsigned matching_windings = 0;
             for (int sign : {1, -1}) for (size_t start = 0; start < 3; ++start) {
                 bool matches = true;
                 for (size_t c = 0; c < 3; ++c) {
@@ -305,10 +308,10 @@ std::vector<size_t> verify_glb_appearance_layout(const Json& doc,
                     const double tolerance = std::max(1e-5, p.cwiseAbs().maxCoeff() * 2e-6);
                     matches = matches && (actual[c] - p).norm() <= tolerance;
                 }
-                if (matches) direction = sign;
+                if (matches) matching_windings |= sign > 0 ? 1u : 2u;
             }
-            require(direction != 0 && (!winding || winding == direction), "Appearance triangle order or geometry could not be verified.");
-            winding = direction;
+            possible_windings &= matching_windings;
+            require(possible_windings != 0, "Appearance triangle order or geometry could not be verified.");
         }
         face_counts.push_back(faces);
         face_offset += faces;

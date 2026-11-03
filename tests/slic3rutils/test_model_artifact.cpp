@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <iomanip>
 #include <iterator>
 #include <map>
 #include <numeric>
@@ -160,6 +161,94 @@ TEST_CASE("Repeated GLB import reuses only a source and OBJ verified in this pro
     CHECK_FALSE(reused);
     CHECK(output.empty());
     CHECK_FALSE(error.empty());
+}
+
+TEST_CASE("Local vertex color OBJ archives preserve source RGB without an implicit gray material", "[ModelArtifact][LocalModelImport]") {
+    Fixture f; std::string error;
+    const auto source=f.directory/"vertex.obj",destination=f.directory/"archived.glb";
+    const auto geometry=its_make_cube(20,30,40);
+    std::vector<RGBA> expected;
+    for(size_t i=0;i<geometry.vertices.size();++i)
+        expected.push_back({.15f+.08f*float(i),.75f-.06f*float(i),.2f+.04f*float(i),1.f});
+    REQUIRE(write_model_artifact(source,geometry,expected,error));
+    const auto source_hash=model_artifact_sha256(source);
+    REQUIRE(archive_local_model(source,destination,error));
+    CHECK(model_artifact_sha256(source)==source_hash);
+    TriangleMesh original,archived; ObjInfo before,after;
+    REQUIRE(load_model_artifact(source,original,before,error));
+    REQUIRE(load_model_artifact(destination,archived,after,error));
+    REQUIRE(archived.its.indices.size()==original.its.indices.size());
+    REQUIRE(after.vertex_colors.size()==archived.its.vertices.size());
+    for(size_t face=0;face<original.its.indices.size();++face) for(size_t corner=0;corner<3;++corner) {
+        const int a=original.its.indices[face][corner],b=archived.its.indices[face][corner];
+        for(size_t c=0;c<3;++c) {
+            CHECK_THAT(archived.its.vertices[b][c],WithinAbs(original.its.vertices[a][c],1e-4));
+            CHECK_THAT(after.vertex_colors[b][c],WithinAbs(before.vertex_colors[a][c],1e-5));
+        }
+    }
+}
+
+TEST_CASE("GLB writers preserve exactly representable millimetre corners across scales", "[ModelArtifact][LocalModelImport][GlbCoordinatePrecision]")
+{
+    // Binary fractions away from metre float binade boundaries admit exact
+    // mm -> metre -> mm storage. A prematurely rounded float scale breaks it.
+    for (const int exponent : {-6, 0, 5, 9}) for (const int route : {0, 1, 2}) {
+        DYNAMIC_SECTION("scale exponent " << exponent << ", writer route " << route) {
+            Fixture fixture;
+            std::string error;
+            const auto mesh = its_make_cube(std::ldexp(0x1.45678p+0f, exponent),
+                std::ldexp(0x1.abcdep+0f, exponent + 1), std::ldexp(0x1.23456p+0f, exponent - 1));
+            const std::vector<RGBA> colors(mesh.vertices.size(), RGBA{.25f,.5f,.75f,1.f});
+            const auto destination = fixture.directory / "exact.glb";
+            if (route == 0) REQUIRE(write_model_artifact(destination, mesh, colors, error));
+            else {
+                const auto source = fixture.directory / "source.obj";
+                REQUIRE(write_model_artifact(source, mesh, colors, error));
+                if (route == 2) {
+                    // Force the material/texture-capable archive writer as
+                    // well as the bare vertex-color writer used by route 1.
+                    boost::filesystem::ifstream before(source, std::ios::binary);
+                    const std::string body{std::istreambuf_iterator<char>(before), std::istreambuf_iterator<char>()};
+                    before.close();
+                    { boost::filesystem::ofstream material(fixture.directory / "unit.mtl");
+                        material << "newmtl unit\nKd 1 1 1\n"; }
+                    { boost::filesystem::ofstream output(source, std::ios::binary | std::ios::trunc);
+                        output << "mtllib unit.mtl\nusemtl unit\n" << body; }
+                }
+                const auto hash = model_artifact_sha256(source);
+                const bool archived = archive_local_model(source, destination, error);
+                INFO(error);
+                REQUIRE(archived);
+                CHECK(model_artifact_sha256(source) == hash);
+            }
+            TriangleMesh restored;
+            ObjInfo restored_colors;
+            const bool loaded = load_model_artifact(destination, restored, restored_colors, error);
+            INFO(error);
+            REQUIRE(loaded);
+            REQUIRE(restored.its.indices.size() == mesh.indices.size());
+            for (size_t face = 0; face < mesh.indices.size(); ++face) for (int corner = 0; corner < 3; ++corner)
+                for (int axis = 0; axis < 3; ++axis)
+                    CHECK_THAT(double(restored.its.vertices[restored.its.indices[face][corner]][axis]),
+                        WithinAbs(double(mesh.vertices[mesh.indices[face][corner]][axis]), 0.));
+        }
+    }
+}
+
+TEST_CASE("Local OBJ archives retain explicitly assigned material factors on vertex colors", "[ModelArtifact][LocalModelImport]") {
+    Fixture f; std::string error;
+    const auto source=f.directory/"material.obj",destination=f.directory/"archived.glb";
+    { boost::filesystem::ofstream out(f.directory/"material.mtl"); out<<"newmtl DefaultMaterial\nKd 0.4 0.8 0.3\n"; }
+    { boost::filesystem::ofstream out(source); out<<"mtllib material.mtl\nv 0 0 0 0.8 0.4 0.2\nv 20 0 0 0.8 0.4 0.2\nv 0 20 0 0.8 0.4 0.2\nusemtl DefaultMaterial\nf 1 2 3\n"; }
+    REQUIRE(archive_local_model(source,destination,error));
+    TriangleMesh archived; ObjInfo info;
+    REQUIRE(load_model_artifact(destination,archived,info,error));
+    REQUIRE(info.vertex_colors.size()==archived.its.vertices.size());
+    const auto linear=[](float v){return v<=.04045f?v/12.92f:std::pow((v+.055f)/1.055f,2.4f);};
+    const auto srgb=[](float v){return v<=.0031308f?12.92f*v:1.055f*std::pow(v,1.f/2.4f)-.055f;};
+    const RGBA vertex{.8f,.4f,.2f,1.f},factor{.4f,.8f,.3f,1.f};
+    for(const auto& color:info.vertex_colors) for(size_t c=0;c<3;++c)
+        CHECK_THAT(color[c],WithinAbs(srgb(linear(vertex[c])*linear(factor[c])),1e-5));
 }
 
 TEST_CASE("Local OBJ import embeds texture bytes and retains printable size and UV orientation", "[ModelArtifact][LocalModelImport]") {
