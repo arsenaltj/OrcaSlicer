@@ -232,15 +232,16 @@ TEST_CASE("Portrait matching keeps gray and near-neutral ramps neutral and order
 
 TEST_CASE("The portrait color pack preserves the supplied physical slot order", "[FilamentColorPack]")
 {
-    const auto pack = Slic3r::GUI::young_portrait_color_pack();
+    const auto pack = Slic3r::GUI::honor_people_color_pack();
     REQUIRE(pack.valid());
-    REQUIRE(pack.colors == std::vector<std::string>{"#ECC3B2", "#282629", "#F6F7F9", "#EA9A92", "#668CB6", "#958B86"});
+    REQUIRE(pack.colors == std::vector<std::string>{"#000000", "#AF6E5E", "#ECC3B2", "#FFFFFF", "#A7A5A4", "#FFFFFF"});
     REQUIRE(pack.labels.size() == pack.colors.size());
 }
 
+
 TEST_CASE("Color packs reject incomplete and nonphysical color cards", "[FilamentColorPack]")
 {
-    auto pack = Slic3r::GUI::young_portrait_color_pack();
+    auto pack = Slic3r::GUI::honor_people_color_pack();
     SECTION("Incomplete slot metadata") { pack.labels.pop_back(); }
     SECTION("Non RGB color") { pack.colors[0] = "cmyk(5,14,14,0)"; }
     SECTION("Malformed channel") { pack.colors[0] = "#FFHHFF"; }
@@ -289,7 +290,7 @@ TEST_CASE("Saved physical color cards reload and replace all slots without mergi
     REQUIRE(save_filament_color_pack(pack));
     REQUIRE(boost::filesystem::exists(library.file()));
     auto cards = load_filament_color_packs();
-    REQUIRE(cards.size() == 2);
+    REQUIRE(cards.size() == honor_filament_suites().size() + 1);
     CHECK(cards.back().name == pack.name);
     CHECK(cards.back().colors == pack.colors);
     CHECK(cards.back().presets == pack.presets);
@@ -298,12 +299,12 @@ TEST_CASE("Saved physical color cards reload and replace all slots without mergi
     pack.colors[7] = "#112233";
     REQUIRE(save_filament_color_pack(pack));
     cards = load_filament_color_packs();
-    REQUIRE(cards.size() == 2);
+    REQUIRE(cards.size() == honor_filament_suites().size() + 1);
     CHECK(cards.back().colors == pack.colors);
     pack.name = "another card";
     REQUIRE(save_filament_color_pack(pack));
     cards = load_filament_color_packs();
-    REQUIRE(cards.size() == 3);
+    REQUIRE(cards.size() == honor_filament_suites().size() + 2);
     CHECK(cards.back().name == pack.name);
 }
 
@@ -322,9 +323,9 @@ TEST_CASE("Saving a physical card retains legacy cards and writes a complete v2 
     CHECK(saved[1]["schema"] == "orca.filament-pack/v2");
     CHECK(saved[1]["presets"] == pack.presets);
     const auto cards = load_filament_color_packs();
-    REQUIRE(cards.size() == 3);
-    CHECK(cards[1].name == "old trial");
-    CHECK(cards[2].presets == pack.presets);
+    REQUIRE(cards.size() == honor_filament_suites().size() + 2);
+    CHECK(cards[honor_filament_suites().size()].name == "old trial");
+    CHECK(cards[honor_filament_suites().size() + 1].presets == pack.presets);
 }
 
 TEST_CASE("Failed color card saves preserve the existing library", "[FilamentColorPack][Regression]")
@@ -337,7 +338,7 @@ TEST_CASE("Failed color card saves preserve the existing library", "[FilamentCol
         auto invalid = valid; invalid.presets.clear();
         CHECK_FALSE(save_filament_color_pack(invalid));
         const auto cards = load_filament_color_packs();
-        REQUIRE(cards.size() == 2);
+        REQUIRE(cards.size() == honor_filament_suites().size() + 1);
         CHECK(cards.back().presets == valid.presets);
     }
     SECTION("Malformed existing library") {
@@ -770,4 +771,18 @@ TEST_CASE("Preview color protection handles empty data invalid locks and small c
             REQUIRE(std::isfinite(c)); REQUIRE(c >= 0); REQUIRE(c <= 1);
         }
     }
+}
+
+TEST_CASE("The suite library removes the retired people card and retains unrelated saved colors", "[FilamentColorPack][HonorFilamentSuite]")
+{
+    using namespace Slic3r::GUI;
+    ScopedColorPackLibrary library;
+    const nlohmann::json old{{"name", u8"人物基础 · 年轻向六色"}, {"colors", {"#123456"}}, {"labels", {"old"}}};
+    const nlohmann::json custom{{"name", "my color"}, {"colors", {"#112233"}}, {"labels", {"one"}}};
+    { boost::filesystem::ofstream output(library.file()); output << nlohmann::json::array({old, custom}); }
+    const auto cards = load_filament_color_packs();
+    REQUIRE(cards.size() == 3);
+    CHECK(cards[0].name == u8"人物六色");
+    CHECK(cards[1].name == u8"萌宠六色");
+    CHECK(cards[2].name == "my color");
 }

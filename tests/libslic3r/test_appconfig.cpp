@@ -14,6 +14,29 @@
 
 using namespace Slic3r;
 
+TEST_CASE("Product configuration uses its own files and ignores upstream configuration", "[AppConfig][ProductData]")
+{
+    ScopedDataDir directory("honor-product-data");
+    save_main_thread_id();
+    const auto legacy = directory.dir / "OrcaSlicer.conf";
+    const std::string legacy_content = R"({"app":{"prefer_discrete_gpu":true}})";
+    std::ofstream(legacy.string()) << legacy_content;
+    AppConfig config;
+    CHECK_FALSE(config.exists());
+    CHECK_FALSE(AppConfig::peek_bool(directory.dir.string(), "prefer_discrete_gpu"));
+    CHECK(boost::filesystem::path(config.config_path()).filename().string() == "Honor Forge Studio.conf");
+    CHECK(boost::filesystem::path(AppConfig::config_path(directory.dir.string(), AppConfig::EAppMode::GCodeViewer))
+              .filename().string() == "Honor Forge Studio G-code Viewer.conf");
+    config.set_bool("prefer_discrete_gpu", false);
+    config.save();
+    REQUIRE(config.exists());
+    AppConfig restored;
+    REQUIRE(restored.load().empty());
+    CHECK_FALSE(restored.get_bool("prefer_discrete_gpu"));
+    std::ifstream old_file(legacy.string());
+    CHECK(std::string(std::istreambuf_iterator<char>(old_file), {}) == legacy_content);
+}
+
 TEST_CASE("Full collision-volume previews are opt-in and retain the user's preference", "[AppConfig][ExclusionVolume]")
 {
     AppConfig config;

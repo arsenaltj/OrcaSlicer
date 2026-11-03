@@ -117,7 +117,7 @@ TEST_CASE("Honor portrait contours keep teeth white while mouth details use peac
         {246.f / 255, 247.f / 255, 249.f / 255}, {234.f / 255, 154.f / 255, 146.f / 255},
         {102.f / 255, 140.f / 255, 182.f / 255}, {149.f / 255, 139.f / 255, 134.f / 255}};
     const auto colors = GUI::portrait_contour_colors(partition,
-        GUI::young_portrait_honor_suite().portrait_palette_roles(), palette);
+        std::vector<std::string>{"portrait-skin", "portrait-dark", "portrait-light", "portrait-lips", "portrait-cool", "portrait-mid"}, palette);
 
     REQUIRE(colors.at("teeth-detail") == palette[2]);
     REQUIRE(colors.at("upper-lip") == palette[3]);

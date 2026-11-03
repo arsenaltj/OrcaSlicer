@@ -196,17 +196,19 @@ TEST_CASE("Catalog reload rejects results from an earlier session revision", "[U
     CHECK(service.snapshot().error.empty());
 }
 
-TEST_CASE("The offline startup catalog contains exactly three 0.4 mm WonderMaker models", "[UiRedesign][StartupSetup]")
+TEST_CASE("The offline startup catalog includes the derived six head Honor Forge", "[UiRedesign][StartupSetup]")
 {
     SetupData data;
     const auto catalog = data.catalog();
-    REQUIRE(catalog.size() == 3);
+    REQUIRE(catalog.size() == 4);
     CHECK(catalog[0].model == "WonderMaker ZR");
     CHECK(catalog[1].model == "WonderMaker ZR Ultra");
     CHECK(catalog[2].model == "WonderMaker ZR Ultra S");
+    CHECK(catalog[3].model == "Honor Forge");
     CHECK(catalog[0].head_count == 1);
     CHECK(catalog[1].head_count == 4);
     CHECK(catalog[2].head_count == 4);
+    CHECK(catalog[3].head_count == 6);
     for (const auto& printer : catalog) {
         INFO(printer.model);
         CHECK(printer.error.empty());
@@ -220,10 +222,10 @@ TEST_CASE("The offline startup catalog contains exactly three 0.4 mm WonderMaker
 
 TEST_CASE("Startup setup persists each physical head and restores it on restart", "[UiRedesign][StartupSetup]")
 {
-    const auto model = GENERATE(size_t(0), size_t(1), size_t(2));
+    const auto model = GENERATE(size_t(0), size_t(1), size_t(2), size_t(3));
     SetupData data;
     const auto catalog = data.catalog();
-    REQUIRE(catalog.size() == 3);
+    REQUIRE(catalog.size() == 4);
     REQUIRE(catalog[model].error.empty());
     AppConfig config;
     config.set("unrelated_user_setting", std::string("keep"));
@@ -233,7 +235,7 @@ TEST_CASE("Startup setup persists each physical head and restores it on restart"
     REQUIRE(service.choose_printer(catalog[model].model));
     REQUIRE(service.next());
     service.choose_region(StartupSetupRegion::Europe);
-    const std::vector<std::string> head_colours = {"#123456", "#ABCDEF", "#654321", "#FEDCBA"};
+    const std::vector<std::string> head_colours = {"#123456", "#ABCDEF", "#654321", "#FEDCBA", "#102030", "#ABC123"};
     std::vector<std::string> materials;
     for (size_t index = 0; index < catalog[model].head_count; ++index) {
         REQUIRE(service.choose_head(index));

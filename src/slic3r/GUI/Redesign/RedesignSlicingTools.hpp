@@ -143,7 +143,7 @@ public:
                 if (source >= 3 && size_t(source-3) < packs.size()) {
                     for (const auto& hex : packs[source-3].colors) preferred.push_back(rgb(hex));
                 } else if (portrait && source == 0) {
-                    for (const auto& hex : young_portrait_color_pack().colors) preferred.push_back(rgb(hex));
+                    for (const auto& hex : honor_people_color_pack().colors) preferred.push_back(rgb(hex));
                 }
                 const auto targets = SlicingModelPalette::select_targets(histogram, colors, compatible,
                     count, source, manual, preferred);

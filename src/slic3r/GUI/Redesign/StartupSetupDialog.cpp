@@ -647,12 +647,6 @@ private:
             m_service.choose_region(region);
             refresh();
         });
-        for (size_t index = 0; index < m_cards.size(); ++index)
-            m_cards[index] = new SetupPrinterCard(m_panel, [this, index] {
-                const auto state = m_service.snapshot();
-                if (index < state.printers.size()) m_service.choose_printer(state.printers[index].model);
-                refresh();
-            });
         m_heads = new SetupList(m_panel, [this](size_t index) { m_service.choose_head(index); refresh(); });
         m_filaments = new SetupList(m_panel, [this](size_t index) {
             const auto state = m_service.snapshot();
@@ -801,6 +795,18 @@ private:
         m_globe->Show(region);
         m_region->Show(region);
         m_region->set_region(state.draft.region);
+        while (m_cards.size() < state.printers.size()) {
+            const size_t index = m_cards.size();
+            m_cards.push_back(new SetupPrinterCard(m_panel, [this, index] {
+                const auto current = m_service.snapshot();
+                if (index < current.printers.size()) m_service.choose_printer(current.printers[index].model);
+                refresh();
+            }));
+        }
+        while (m_cards.size() > state.printers.size()) {
+            m_cards.back()->Destroy();
+            m_cards.pop_back();
+        }
         for (size_t index = 0; index < m_cards.size(); ++index) {
             m_cards[index]->Show(printers && !state.loading);
             m_cards[index]->Enable(!state.loading && !state.submitting);
@@ -875,8 +881,11 @@ private:
         place(m_welcome, 24, 290, 644, 60);
         place(m_globe, 295, 125, 102, 102);
         place(m_region, 178, 260, 336, 56);
+        const int card_count = static_cast<int>(m_cards.size());
+        const int card_width = card_count > 0 ? std::min(149, (644 - (card_count - 1) * 16) / card_count) : 149;
+        const int cards_left = (692 - (card_count * (card_width + 16) - 16)) / 2;
         for (size_t index = 0; index < m_cards.size(); ++index)
-            place(m_cards[index], 106 + int(index) * 165, 126, 149, 216);
+            place(m_cards[index], cards_left + int(index) * (card_width + 16), 126, card_width, 216);
         place(m_header, 24, 98, 644, 32);
         place(m_heads, 25, 140, 212, 239);
         place(m_filaments, 239, 140, 213, 239);
@@ -949,7 +958,7 @@ private:
     wxBitmap m_welcome_logo;
     wxStaticBitmap* m_globe = nullptr;
     SetupRegionPicker* m_region = nullptr;
-    std::array<SetupPrinterCard*, 3> m_cards{};
+    std::vector<SetupPrinterCard*> m_cards;
     wxPanel* m_header = nullptr;
     SetupList* m_heads = nullptr;
     SetupList* m_filaments = nullptr;
