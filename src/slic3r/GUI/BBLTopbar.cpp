@@ -37,6 +37,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <algorithm>
 
 #ifdef __WXGTK__
 #include <gtk/gtk.h>
@@ -469,6 +470,14 @@ void BBLTopbar::Init(wxFrame* parent)
     this->Bind(wxEVT_AUITOOLBAR_TOOL_DROPDOWN, &BBLTopbar::OnRedo, this, wxID_REDO);
     this->Bind(wxEVT_AUITOOLBAR_TOOL_DROPDOWN, &BBLTopbar::OnUndo, this, wxID_UNDO);
     //this->Bind(wxEVT_AUITOOLBAR_TOOL_DROPDOWN, &BBLTopbar::OnModelStoreClicked, this, ID_MODEL_STORE);
+    if (ui_redesign_drag_trace_enabled()) {
+        Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+            BOOST_LOG_TRIVIAL(info) << "[UiRedesignTitlebar] size=" << GetSize().x << "," << GetSize().y
+                << " parent_width=" << GetParent()->GetClientSize().x
+                << " compact=" << m_compact_slicing << " native=" << m_native_workspace_tools;
+            event.Skip();
+        });
+    }
     UpdateCompactSlicingVisibility();
 }
 
@@ -551,11 +560,10 @@ void BBLTopbar::ShowCalibrationButton(bool show)
     Refresh();
 }
 
-void BBLTopbar::ShowCompactSlicingTitlebar(bool compact)
+void BBLTopbar::SetSlicingTitlebarMode(bool compact, bool native)
 {
-    if (m_compact_slicing == compact) return;
-    m_compact_slicing = compact;
-    if (compact) {
+    if (m_compact_slicing == compact && m_native_workspace_tools == native) return;
+    if (compact && !m_compact_slicing) {
         if (!m_compact_context_bound) {
             m_compact_context_bound = true;
             Bind(wxEVT_CONTEXT_MENU, [this](wxContextMenuEvent& event) {
@@ -571,13 +579,32 @@ void BBLTopbar::ShowCompactSlicingTitlebar(bool compact)
             m_saved_slicing_commands.emplace_back(item, item->GetSizerItem()->IsShown());
         }
     }
-    UpdateCompactSlicingVisibility();
+    m_compact_slicing = compact;
+    m_native_workspace_tools = native;
+    m_title_ctrl->SetLeftAligned(native);
+    bool rebuild = false;
+    if (native) {
+        m_native_workspace_host->GetSizer()->SetSizeHints(m_native_workspace_host);
+        // AddControl initially cached an empty host. Rebuild only when its
+        // contents actually change size, not on every page/mode transition.
+        if (auto* item = FindTool(m_native_workspace_host->GetId())) {
+            const wxSize size = m_native_workspace_host->GetEffectiveMinSize();
+            rebuild = item->GetMinSize() != size;
+            item->SetMinSize(size);
+        }
+        m_native_workspace_host->Layout();
+    }
+    UpdateCompactSlicingVisibility(rebuild);
 }
 
 void BBLTopbar::ShowHonorBranding(bool show)
 {
     if (m_honor_branding == show) return;
     m_honor_branding = show;
+    // The frame sizer owns the Honor titlebar's geometry. Realize must never
+    // expose a tool-width window before the frame stretches it back out.
+    const long style = GetWindowStyleFlag();
+    SetWindowStyleFlag(show ? style | wxAUI_TB_NO_AUTORESIZE : style & ~wxAUI_TB_NO_AUTORESIZE);
     // The title control is 30 DIP high. AUI's default 2 DIP top/bottom margins
     // otherwise reserve a taller slot than the manually sized titlebar paints.
     SetMargins(FromDIP(5), FromDIP(5), show ? 0 : FromDIP(2), show ? 0 : FromDIP(2));
@@ -586,14 +613,14 @@ void BBLTopbar::ShowHonorBranding(bool show)
         SetMinSize(wxDefaultSize);
     }
     SetBackgroundColour(show ? RedesignTheme::panel_colour() : wxColour(38, 46, 48));
-    UpdateCompactSlicingVisibility();
+    UpdateCompactSlicingVisibility(true);
 }
 
-void BBLTopbar::UpdateCompactSlicingVisibility()
+void BBLTopbar::UpdateCompactSlicingVisibility(bool rebuild)
 {
-    // Realize recreates AUI sizer items. Apply visibility to those new items,
-    // then move hidden commands after the layout has placed visible tools.
-    Realize();
+    // Ordinary navigation only changes visibility. Recreating AUI's sizer
+    // resets hidden tools and used to resize the titlebar to its hint width.
+    if (rebuild) Realize();
     for (auto& saved : m_saved_slicing_commands) {
         auto* item = saved.first->GetSizerItem(); if (!item) continue;
         item->Show(!m_compact_slicing && saved.second);
@@ -613,40 +640,33 @@ void BBLTopbar::UpdateCompactSlicingVisibility()
             if (item->GetSizerItem()) item->GetSizerItem()->Show(m_native_workspace_tools);
         m_native_workspace_host->Show(m_native_workspace_tools);
     }
-    m_sizer->Layout();
+    const wxSize size = GetClientSize();
+    m_sizer->SetDimension(0, 0, size.x, size.y);
     if (m_honor_branding) for (size_t index = m_legacy_tools_begin; index < m_legacy_tools_end; ++index)
         if (auto* item = FindToolByIndex(index)->GetSizerItem()) item->SetDimension({-1000,0},{0,0});
     if (m_compact_slicing) for (auto& saved : m_saved_slicing_commands)
         if (auto* item = saved.first->GetSizerItem()) item->SetDimension({-1000,0},{0,0});
-    // Realize may shrink the toolbar to its tool minimum. Both slicing modes
-    // still need a frame-wide titlebar and window controls at the right edge.
-    if (m_honor_branding) {
+    // Only a structural/DPI change needs a new height and a frame layout.
+    // Page transitions keep the existing frame-wide geometry throughout.
+    if (m_honor_branding && rebuild) {
         SetMinSize(wxDefaultSize);
         InvalidateBestSize();
-        m_toolbar_h = GetBestSize().y;
+        // A hidden title is omitted from AUI's hint size when leaving compact
+        // mode. Keep its 30 DIP slot even during that structural rebuild.
+        m_toolbar_h = std::max(FromDIP(30), GetBestSize().y);
         SetMinSize(wxSize(-1, m_toolbar_h));
     }
-    if (GetParent())
+    if (!m_honor_branding && GetParent())
         SetSize(GetParent()->GetClientSize().GetWidth(), m_toolbar_h);
-    if (m_honor_branding && GetParent() && GetParent()->GetSizer())
+    if (m_honor_branding && rebuild && GetParent() && GetParent()->GetSizer())
         GetParent()->GetSizer()->Layout();
-    Refresh();
-}
-
-void BBLTopbar::ShowNativeWorkspaceTools(bool show)
-{
-    if (m_native_workspace_tools == show) return;
-    m_native_workspace_tools = show;
-    m_title_ctrl->SetLeftAligned(show);
-    if (show) {
-        m_native_workspace_host->GetSizer()->SetSizeHints(m_native_workspace_host);
-        // AddControl cached the empty host's size before its buttons existed.
-        // Realize uses that cached size rather than the control's new minimum.
-        if (auto* item = FindTool(m_native_workspace_host->GetId()))
-            item->SetMinSize(m_native_workspace_host->GetEffectiveMinSize());
-        m_native_workspace_host->Layout();
+    if (ui_redesign_drag_trace_enabled()) {
+        BOOST_LOG_TRIVIAL(info) << "[UiRedesignTitlebar] layout rebuild=" << rebuild
+            << " size=" << GetSize().x << "," << GetSize().y
+            << " parent_width=" << GetParent()->GetClientSize().x
+            << " compact=" << m_compact_slicing << " native=" << m_native_workspace_tools;
     }
-    UpdateCompactSlicingVisibility();
+    Refresh(false);
 }
 
 void BBLTopbar::OnModelStoreClicked(wxAuiToolBarEvent& event)
@@ -756,7 +776,7 @@ void BBLTopbar::Rescale() {
     item->SetBitmap(create_scaled_bitmap("topbar_close", this, TOPBAR_ICON_SIZE));
 
     if (m_brand_mark) static_cast<HonorBrandMark*>(m_brand_mark)->Rescale();
-    UpdateCompactSlicingVisibility();
+    UpdateCompactSlicingVisibility(true);
 }
 
 void BBLTopbar::OnIconize(wxAuiToolBarEvent& event)
