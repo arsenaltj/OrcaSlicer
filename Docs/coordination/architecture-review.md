@@ -138,6 +138,8 @@ Archify 节点用文字标明直接修改及潜在关联数量，颜色不表示
 
 入口：<https://arsenaltj.github.io/OrcaSlicer/>；每个 PR 的最新成功报告在 `pr/<number>/`，每份报告的固定地址为 `pr/<number>/<head-sha>/<run-id>/`。页面显示版本，更新记录保留旧提交。README 提供固定表格入口，在线记录随成功发布自动追加，不产生自动回写源码分支的提交。
 
+2026-11-03五层平台图已随[PR #60](https://github.com/arsenaltj/OrcaSlicer/pull/60)加入[同一在线入口](https://arsenaltj.github.io/OrcaSlicer/pr/60/)，保留原业务画布、状态图和历史版本。本轮用通过检查的同版发布助手人工追加成功Actions制品；默认分支的可信助手须随本PR合入后才包含`l0-platform`白名单。Pages构建、文件完整性、图表布局与浏览器/业务验收分别记录。
+
 Pages 使用 `codex/architecture-pages` 的根目录，分支只保存已公开的报告产物与索引，不是业务开发分支。首次由有权限的维护者启用该 Pages 来源。不要替换已有网站或更改默认分支。源码与新增发布 workflow 仍通过团队 PR 审核。
 
 `architecture-pages.yml` 使用 `workflow_run` 接收成功的 `PR architecture impact`，因此须先合入默认分支才会自动触发。首次试用可由当前操作者使用同一 `architecture_site.py` 发布已经成功且来源对应的报告，并明确记录这次人工初始化；不能把初始化写成自动流程已验收。

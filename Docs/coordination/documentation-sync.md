@@ -72,7 +72,11 @@ python scripts/check_documentation_sync.py --base origin/codex/team/integration 
 
 ## 启用与维护
 
-脚本、测试、工作流、PR模板与本说明应一起纳入团队分支；已有PR需按团队SOP同步新基线并补填声明。首次远端生效以真实PR的Actions结果为准，本地通过不表示已在GitHub运行。若要强制作为合入门槛，维护者在现有分支保护/规则集中将`Documentation update check`设为必需；添加工作流文件本身不等于修改了分支保护。
+脚本、测试、工作流、PR模板与本说明应一起纳入团队分支；已有PR需按团队SOP同步新基线并补填声明。
+
+2026-11-03已在[PR #60](https://github.com/arsenaltj/OrcaSlicer/pull/60)验证创建和修改正文两种触发路径，并将`Documentation update check`设为`codex/team/integration`的必需检查，限定由实际GitHub Actions应用提供。回读确认其他原有保护字段保持不变；维护其他分支时分别核实实际保护与CI结果，添加工作流文件本身不改变分支保护。
+
+仓库的[bootstrap配置](../../.github/team-collaboration.json)、集成锁及[协作服务](../../tools/team_integration/README.md)保留原Windows构建策略并加入文档检查，配置回归防止重新生成规则时遗漏。文档声明只约束PR的HEAD；已合入基线没有PR正文，基线健康继续验证构建。本轮线上只追加用户授权的文档必需项，没有重新应用bootstrap的整套保护或启动协作服务；配置定义、实际设置和服务上线分别核实。
 
 维护源为[scripts/check_documentation_sync.py](../../scripts/check_documentation_sync.py)，回归为[test_documentation_sync.py](../../scripts/test_documentation_sync.py)。已有架构映射/README、集成与发布门禁继续各自验证；本检查不替换它们。
 

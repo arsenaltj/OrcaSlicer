@@ -38,6 +38,7 @@ EXPECTED_CI_CONTRACT = {
     "candidate_workflow": ".github/workflows/team-integration-candidate.yml",
     "required_checks": [
         "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer",
+        "Documentation update check",
     ],
     "merge_queue_event": "merge_group",
     "path_filters_allowed": False,
@@ -1120,6 +1121,11 @@ def _source_requirements(document: dict[str, Any]) -> tuple[tuple[str, str, str]
             document["ci_contract"]["guardrails_workflow"],
             r"^    name:\s*['\"]?AI integration checks['\"]?\s*$",
             "required AI integration check name",
+        ),
+        (
+            ".github/workflows/documentation-sync.yml",
+            r"^    name:\s*['\"]?Documentation update check['\"]?\s*$",
+            "required documentation check name",
         ),
         (
             document["ci_contract"]["candidate_workflow"],

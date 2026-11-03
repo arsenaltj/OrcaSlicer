@@ -26,10 +26,12 @@ C:\TeamIntegration\venv\Scripts\python.exe -m pip install -r tools/team_integrat
 | `users` | 恰好三位成员的飞书应用内稳定 `open_id` → GitHub 登录名，不使用显示名 |
 | `maintainer_ids` | 上述成员中的维护人，可重试/取消其他成员 PR |
 | `chat_id` / `bot_open_id` | 唯一团队群和机器人身份；其他群、无明确 @、其他用户全部忽略 |
-| `required_checks` | 至少 `AI integration checks`、`Team integration candidate`，每项必须填 API 验证的 GitHub Actions `app_id`；示例 0 故意不能运行 |
+| `required_checks` | Windows构建任务与`Documentation update check`，每项必须填API验证的GitHub Actions `app_id`；示例0故意不能运行。AI集成/候选报告继续提供复核信息 |
 | `required_approvals` | 当前完整 HEAD 的非作者团队审批数量，至少 1 |
 | `database_path` | 仓库外持久目录中的绝对 SQLite 路径，仅服务账号可读写；不要放网络共享盘 |
 | `*_env` | 环境变量名称；JSON 中不填任何 token、App Secret |
+
+文档声明在当前PR的HEAD上验证；合入后的基线没有对应PR正文，因此基线健康检查继续核对Windows构建，不要求重复生成文档声明检查。服务对PR仍严格核对该文档检查的成功状态、HEAD和可信App，缺失或失败不报告可合入。
 
 运行时环境使用 `TEAM_GITHUB_TOKEN`、`TEAM_FEISHU_APP_ID`、`TEAM_FEISHU_APP_SECRET`（或配置中指定的名称）。由操作系统服务凭据配置提供，勿写入仓库、命令历史、公开产物或日志。GitHub 凭据仅授予该仓库 `metadata:read`、`contents:read`、`pull_requests:read`、`checks:read`、`actions:read`、`administration:read`，最后一项只用于核对保护规则。安装 token 的刷新应由部署环境提供；服务不会自行签发/续期 GitHub token。
 

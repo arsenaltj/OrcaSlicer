@@ -2817,12 +2817,14 @@ TEST_CASE("failed direct workbench staging leaves the live preset bundle unchang
     CHECK(live.filament_presets == presets_before);
 }
 
-TEST_CASE("partially loaded printers retain their spools through native normalization", "[PrinterFilamentRecipes][PrinterFilaments]")
+TEST_CASE("partially loaded printers retain their spools through native purge normalization", "[PrinterFilamentRecipes][PrinterFilaments]")
 {
     const size_t nozzles = GENERATE(4u, 6u);
     const size_t spools = nozzles - 2;
     auto bundle = printer_filament_fixture(nozzles, spools);
-    bundle.update_filament_count();
+    // Runtime normalization operates on the already loaded project. The
+    // selection-restoration helper pads short saved preset lists before their
+    // parallel project arrays are loaded; it is not this workbench entry point.
     bundle.update_multi_material_filament_presets();
     const auto state = PrinterFilamentConfig::capture(bundle);
     CHECK(state.ready);
@@ -2830,6 +2832,21 @@ TEST_CASE("partially loaded printers retain their spools through native normaliz
     CHECK(state.idle_nozzles == 2);
     CHECK(bundle.filament_presets.size() == spools);
     CHECK(bundle.get_printer_extruder_count() == nozzles);
+    std::string error;
+    const bool valid = ProjectConfigRestore::validate(bundle.project_config, bundle.filament_presets, bundle, error);
+    INFO(error);
+    CHECK(valid);
+}
+
+TEST_CASE("restoring a short preset selection retains the native nozzle minimum", "[PrinterFilamentRecipes][PrinterFilaments]")
+{
+    const size_t nozzles = GENERATE(4u, 6u);
+    auto bundle = printer_filament_fixture(nozzles, nozzles);
+    bundle.filament_presets.resize(nozzles - 2);
+    bundle.update_filament_count();
+    CHECK(bundle.filament_presets.size() == nozzles);
+    CHECK(bundle.get_printer_extruder_count() == nozzles);
+    CHECK(PrinterFilamentConfig::capture(bundle).ready);
     std::string error;
     const bool valid = ProjectConfigRestore::validate(bundle.project_config, bundle.filament_presets, bundle, error);
     INFO(error);
