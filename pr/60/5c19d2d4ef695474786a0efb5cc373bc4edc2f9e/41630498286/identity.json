@@ -1,0 +1,25 @@
+{
+  "pr": 60,
+  "run": 41630498286,
+  "head": "5c19d2d4ef695474786a0efb5cc373bc4edc2f9e",
+  "base": "50247bb89ecb9d4af364242bc8c6ba037395e774",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "完善五层架构导航、候选会话边界与 PR 文档同步",
+  "path": "pr/60/5c19d2d4ef695474786a0efb5cc373bc4edc2f9e/41630498286",
+  "created": "2026-11-03T11:52:04+00:00",
+  "files": {
+    "index.html": "564e853b4a4e11af1abe2cdb5159ec8e298c8bab3eff67a904db13d1854ad99c",
+    "details.html": "76bb2479ab6499c7a9b6c8164dbb2ea831f0c2169e14c683fffaf4be6117a6ea",
+    "report.json": "4c141144e0454acbf5f9648b8f52a663916423cbb7bb14547b2c2335fa77733d",
+    "summary.md": "84bcc62a99b87b278b27f74fda7434d88516d3b0fd8d43240c04b8061e521aef",
+    "archify-receipts.json": "0947df5572c988753e22086f1cb2799d38cad446a7188df909b6b2da76a2194f",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l1-modules.html": "9f9ad369bc6172fae109e86fd6e8002cdc163dfe6dcc147577f245df41a41cb2",
+    "l1-modules.json": "aa44e203e5615e52836ba7d25e23f5c48b71a6f15a572f77eda0d4f93080ba97",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
