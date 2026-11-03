@@ -1,6 +1,16 @@
 [
   {
     "pr": 60,
+    "run": 41614151851,
+    "head": "1e761a8e07c90a2cdb5bee6824c5639589acc927",
+    "base": "50247bb89ecb9d4af364242bc8c6ba037395e774",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "五层平台架构、候选会话边界与PR文档同步",
+    "path": "pr/60/1e761a8e07c90a2cdb5bee6824c5639589acc927/41614151851",
+    "created": "2026-11-03T09:56:01+00:00"
+  },
+  {
+    "pr": 60,
     "run": 41614084860,
     "head": "1e761a8e07c90a2cdb5bee6824c5639589acc927",
     "base": "50247bb89ecb9d4af364242bc8c6ba037395e774",

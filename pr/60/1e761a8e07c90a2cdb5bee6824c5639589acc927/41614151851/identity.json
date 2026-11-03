@@ -1,0 +1,27 @@
+{
+  "pr": 60,
+  "run": 41614151851,
+  "head": "1e761a8e07c90a2cdb5bee6824c5639589acc927",
+  "base": "50247bb89ecb9d4af364242bc8c6ba037395e774",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "五层平台架构、候选会话边界与PR文档同步",
+  "path": "pr/60/1e761a8e07c90a2cdb5bee6824c5639589acc927/41614151851",
+  "created": "2026-11-03T09:56:01+00:00",
+  "files": {
+    "index.html": "0126a7359390032635830ca469ba2055755664b45c6529b43f1294bf8f0e5690",
+    "details.html": "6e0c07936c343e0366bbe6cf4821a80ff9d70442036a54e09babe549d3b4b09b",
+    "report.json": "0edfd179ccfb28d04730760a5e07fa5fd6b66ba684282d59d121fda3c3db28d9",
+    "summary.md": "66ca1ecb1f29f1ab4aeaa8f1327078e0cccec7e3538d02bb252e48cad68038d1",
+    "archify-receipts.json": "7d07a21f15f9445dd2567d6c8bdee8682d0a813d132cf1af139661f2b9195f46",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "1733df6d00de2958332891785db72c495e128f640211c1a00a6ad7c8b7c9e8dc",
+    "l1-modules.json": "f4fab31dee8ed8ab8d2ce7855e9018ff74e886bb7c6e56ac595d1438748bbe83",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
