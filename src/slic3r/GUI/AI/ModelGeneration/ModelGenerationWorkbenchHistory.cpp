@@ -287,9 +287,9 @@ wxWindow* ModelGenerationPanel::build_workbench_history(wxWindow* parent)
     root->Add(m_workbench_history_scroller, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
     auto* pages = new wxBoxSizer(wxHORIZONTAL);
     pages->AddStretchSpacer();
-    const auto page_button = [&](const wxString& icon, const wxString& label, auto action) {
+    const auto page_button = [&](const wxString& icon, const wxString& label, bool mirror, auto action) {
         auto* button = workbench_button(panel, wxEmptyString);
-        button->SetIcon(icon);
+        button->set_scaled_icon(icon.ToStdString(), 16, mirror);
         button->SetName(label);
         button->SetToolTip(label);
         button->SetMinSize(FromDIP(wxSize(28, 28)));
@@ -297,22 +297,17 @@ wxWindow* ModelGenerationPanel::build_workbench_history(wxWindow* parent)
         pages->Add(button, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(4));
         return button;
     };
-    m_workbench_history_first = page_button("workbench_page_edge", _L("首页"),
+    m_workbench_history_first = page_button("workbench_page_edge", _L("首页"), true,
         [this] { m_workbench_history_page = 0; });
-    m_workbench_history_previous = page_button("workbench_page_step", _L("上一页"),
+    m_workbench_history_previous = page_button("workbench_page_step", _L("上一页"), true,
         [this] { if (m_workbench_history_page) --m_workbench_history_page; });
     m_workbench_history_page_label = new wxStaticText(panel, wxID_ANY, "1 / 1");
     m_workbench_history_page_label->SetForegroundColour(wxColour(165, 165, 170));
     pages->Add(m_workbench_history_page_label, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, FromDIP(6));
-    m_workbench_history_next = page_button("workbench_page_step", _L("下一页"),
+    m_workbench_history_next = page_button("workbench_page_step", _L("下一页"), false,
         [this] { ++m_workbench_history_page; });
-    m_workbench_history_last = page_button("workbench_page_edge", _L("末页"),
+    m_workbench_history_last = page_button("workbench_page_edge", _L("末页"), false,
         [this] { m_workbench_history_page = m_workbench_history_pages - 1; });
-    for (auto* previous : {m_workbench_history_previous, m_workbench_history_first}) {
-        const wxString icon = previous == m_workbench_history_previous ? "workbench_page_step" : "workbench_page_edge";
-        auto bitmap = create_scaled_bitmap(icon.ToStdString(), previous, 16).ConvertToImage();
-        previous->SetIcon(wxBitmap(bitmap.Mirror()));
-    }
     pages->AddStretchSpacer();
     root->Add(pages, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
     root->AddSpacer(FromDIP(12));

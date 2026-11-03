@@ -13,10 +13,10 @@
 namespace Slic3r::GUI {
 namespace {
 
-constexpr std::array<const char*, 3> models = {
-    "WonderMaker ZR", "WonderMaker ZR Ultra", "WonderMaker ZR Ultra S"
+constexpr std::array<const char*, 4> models = {
+    "WonderMaker ZR", "WonderMaker ZR Ultra", "WonderMaker ZR Ultra S", "Honor Forge"
 };
-constexpr std::array<const char*, 3> labels = { "ZR", "ZR Ultra", "ZR Ultra S" };
+constexpr std::array<const char*, 4> labels = { "ZR", "ZR Ultra", "ZR Ultra S", "Honor Forge" };
 
 const StartupSetupFilament* find_filament(const StartupSetupPrinter& printer, const std::string& name)
 {
@@ -58,7 +58,7 @@ void copy_setup_bundle(PresetBundle& destination, PresetBundle& source)
                 destination.calibrate_filaments.insert(copied);
 }
 
-void save_checked(AppConfig& config)
+void save_checked(AppConfig& config, size_t head_count)
 {
     // AppConfig::save() returns void and can report a write failure only in its log.
     config.set_dirty();
@@ -72,10 +72,15 @@ void save_checked(AppConfig& config)
         persisted.get("presets", PRESET_PRINTER_NAME) != config.get("presets", PRESET_PRINTER_NAME))
         throw std::runtime_error("Could not verify the saved application configuration.");
     const auto printer = config.get("presets", PRESET_PRINTER_NAME);
-    for (const char* key : {PRESET_FILAMENT_NAME, "filament_01", "filament_02", "filament_03",
-                            "filament_colors", "extruder_ams_count"})
+    for (const char* key : {"filament_colors", "extruder_ams_count"})
         if (persisted.get_printer_setting(printer, key) != config.get_printer_setting(printer, key))
             throw std::runtime_error("Could not verify the saved filament selections.");
+    for (size_t index = 0; index < head_count; ++index) {
+        const auto key = index == 0 ? std::string(PRESET_FILAMENT_NAME) :
+            "filament_" + (index < 10 ? std::string("0") : std::string()) + std::to_string(index);
+        if (persisted.get_printer_setting(printer, key) != config.get_printer_setting(printer, key))
+            throw std::runtime_error("Could not verify the saved filament selections.");
+    }
 }
 
 }
@@ -397,7 +402,7 @@ bool StartupSetupService::complete(AppConfig& config, PresetBundle& bundle, Save
         copy_setup_bundle(*previous_bundle, bundle);
         persistence_started = true;
         if (save) save(staged_config);
-        else save_checked(staged_config);
+        else save_checked(staged_config, draft.heads.size());
         publication_started = true;
         copy_setup_bundle(bundle, staged_bundle);
         config = staged_config;

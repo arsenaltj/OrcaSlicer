@@ -2869,3 +2869,348 @@ GUI 与剩余验收：PID 2084 从匹配运行树用独立数据目录 `.tmp/dev
 - 修复规则：默认输出必须位于 `Slic3r::data_dir()/models`，早期启动尚未选定 `data_dir()` 时才回退到 wx 用户数据目录；仅显式设置 `ORCASLICER_AI_OUTPUT_DIR` 时允许使用其他路径。安装目录按只读资源处理。旧 `data_dir()/generated_models` 历史迁移到新用户目录时保留原文件，迁移失败不得删除原历史。
 - 打包验收：任何 Windows Release 安装包必须在标准用户、安装到 `Program Files` 的条件下启动并打开模型文件夹；检查实际路径不包含安装目录，且能创建 `models/downloads`、`models/exports`、`models/projects`。同时区分模型目录权限问题与 2D 图片服务的远端认证、网络、限流或下载失败，并要求后者提供 `orca-ai-sidecar.log` 和诊断 ID。
 - 相关实现与回归：`src/slic3r/GUI/AIModelOutputDirectory.hpp`、`src/slic3r/GUI/AIServiceManager.cpp`、`tests/slic3rutils/test_model_generation_presentation.cpp`。本次修复保留显式输出目录覆盖、旧历史迁移和用户运行实例，未改变安装位置或外部 API。
+
+
+<a id="record-146"></a>
+
+# 2026-10-30 UX/N-WORKBENCH-STYLE-20261029：切片浮层避让与标题栏白线（已实现，有限实窗验证；Windows包已构建，发布验收未完成）
+
+2026-11-03 用户指定 PR #54 门禁插队（承接原模型格式可靠性 R3 / 本会话限定 CI 修复 / codex/task/color-format-reliability-20261102）：PR #59 修复 head fd6dc0dcca 已通过完整云端 1233 项离线测试、13 项空白回归与架构检查，随后由维护者合入为 e99c0ccf54。用户要求解决 PR #54 的 run 41376429474 / job 125057558491；旧 head 2288173c18 同样仅因 CI 未装 requests，使 YOYOClaw 用例访问 None.ConnectionError 失败，非 OBJ/GLB 断言或原生编译失败。切换 PR #54 原分支并普通 merge 最新 integration e99c0ccf54 为 9108856958，无冲突；PR 相对新基线仍仅原五个产品/测试文件，五项 Git blob 与原 PR 完全一致，自动继承已合入的固定 requests==2.32.3。CI、tools/ai 与脚本输入和 PR #59 已验版本相同，复用对应本地 31/53/13 项回归，新 head 另做含 Git 集成检查、diff/README 核实并触发云端完整检查；两协调文件增量记录随普通提交推送原 PR。证据 .tmp/dev/pr54-gate-20261103/，云端结果以新 head 收据为准。PR 保持 Draft，旧原生/GUI历史证据不冒充最新 beta 验收，不自动启用候选工作流、编译、打包、付费生成、标 ready 或最终合入。原模型格式 R3 产品范围和原暂停/发布验收项保持，未接管另一台机器 UX；本会话 Honor 修复与 PR #59 返回点保留。
+
+2026-11-03 PR #59 门禁整改（同编号 / 本会话 / codex/task/honor-forge-ux-20261031）：用户要求解决 Actions run 41569447944 / job 125698882737 报错。准确 head 062883c753，固定历史/边界/runtime 检查通过，1233 项离线测试仅 YOYOClaw 网络恢复用例报错：工作流未安装 requests，客户端可选导入为 None，测试构造 requests.ConnectionError 失败。抓取日志并在本地阻断该库导入复现同一错误；此前 fetch 的 Empty reply 已由 checkout 自动重试成功，并非最终失败原因。范围限 .github/workflows/ai-integration-guardrails.yml 及两协调文件，补 requests==2.32.3，与 cmake/OrcaYoYoClawDependencies.cmake 固定版本一致，不跳过用例、不降低门禁或改产品 runtime。独立测试环境指定该版本后 YOYOClaw 31/31、集成守卫 53/53 和含 Git 的集成检查通过；以普通提交更新原 PR 后核实完整 Python 3.12 云端结果。远端 integration 仍为 3b49fd89badd7421cdb8b739bafc714134161a98，功能分支无他人新增提交。证据仅保存在忽略的 .tmp/dev/pr59-gate-20261103/；云端检查、非作者审批和最终合入仍待完成，不把本地定向通过称为新候选全量 CI 通过。既有 Windows/GUI/包证据复用，无产品改动、不重打包，原暂停及发布验收边界保持。
+
+2026-11-03 本地提交与远端同步交付（同编号 / 本会话 / codex/task/honor-forge-ux-20261031）：用户明确要求本地提交、fetch/merge远端最新代码、推送并提交PR。标题栏6文件修改形成普通提交bb84a88f58；远端integration从09bd370e0d更新到3b49fd89badd7421cdb8b739bafc714134161a98，5项历史为验收示例及后续清理，净文件变化为空，普通merge为c0888d31db8ae351c45da92fed87805788b9dc67，无冲突；前后Git tree均b396d7507deac3c547e64b45ea2657f5a51639c0，已验产品/测试/资源不变，不重复构建。含Git的集成检查、PR范围diff检查和本地架构影响（85文件，四视图各9项）通过，复用既有Windows构建、定向C++及真实GUI的源码一致结果。保留此前4项本地提交，沿用已合入PR #53的现有功能分支做普通快进push，创建[PR #59](https://github.com/arsenaltj/OrcaSlicer/pull/59)，目标codex/team/integration，GitHub确认mergeable，无直接push integration或强推。CI进行中、非作者审批及最终合入待维护者，随后仅追加本次协调记录，不将无冲突当作已合入/完整发布资格。当前head、核验及远端收据在忽略的.tmp/dev/submission-20261103/；本次不上传私人资产、快照、配置或安装包，不接管开放的#22/#54；先前DPI/安装/实物/签名和暂停项保持。
+
+2026-11-03 实施授权续记（同编号 / 本会话 / `codex/team/integration` / `72854fe575`）：用户明确“确认实施”，承接下方灰条分析方案。范围为BBLTopbar及Redesign两处调用：Honor启用NO_AUTORESIZE，普通显隐不Realize，compact/native合并更新，工具尺寸变化与DPI保留必要重建，局部Refresh(false)。复用既有拖动诊断开关记录标题栏尺寸/模式，用独立完整Windows运行树与配置验真实页面往返、窗口按钮、普通/最大化及拖动。最终Windows增量构建和实窗复验完成：首轮19466文件完整核验；最终CMake安装逐项确认同一清单，仅DLL更新，重新对照构建哈希，未变化资源复用首轮核验。两轮94/86条标题栏尺寸/布局记录均无宽度小于父窗口；首轮native重建60→54 px已补30 DIP最低高度，最终Honor记录全部60 px。200% DPI实窗验智能切片↔图像/资产/打印、原生↔图像、智能↔原生、普通/最大化、双击还原/拖动/最小化恢复/正常关闭，最终补改重点复验首次native高度和最大化页面往返；工具、标题和窗口按钮显示正常，六色3MF模型副本保留，原件哈希不变。未采集修复后30fps录屏，不把静态截图及尺寸日志当作全部合成帧的验收；100/125/150%及跨屏DPI未测。源码基线72854fe575加完整未提交快照，最终DLL SHA256 fcd5a5fdb21b84ea93112499bd94392c3b67b5fd667a6e9a23049e7b26d3c3db，运行树`.tmp/dev/run/titlebar-flash-20261103`，证据`.tmp/dev/titlebar-flash-20261103/validation.json`、`geometry-observations.json`、`runtime-validation.json`。QA及侧车正常退出，安装包未重打，仍不含本次修复；未新增C++逻辑测试（本次为GUI布局局部变更），未提交/推送。首次验证脚本因Windows PowerShell UTF-16输出失败，已修正BOM读取后通过；不是产品构建失败或平台拒绝。不自动提交/推送/重打安装包，旧Preview白屏仍暂停。
+
+2026-11-03 标题栏灰条录屏只读分析（原始分析，实施授权由上段承接）：用户提供`屏幕录制 2026-11-03 095009.mp4`，SHA256`98a4bc380f782f9c622b4a7b88dc9995c18de5a8c75253116e6b785e0c6ea6ba`，3074×1586、30fps、368帧、12.267秒。逐帧分析右上标题栏ROI，8次灰条区间0.300–0.533、0.967–1.133、4.800–5.300、5.800–6.067、6.967–7.300、7.833–8.067、9.133–9.400、10.000–10.167秒，按钮及有标题时的文字同步消失恢复，主要对应进入/离开保留的智能切片页面；普通图像/资产稳定区间未见该ROI灰条。`RedesignShell.cpp:3371`绘制锁仅锁shell，`refresh_workflow_layout`调用标题栏模式切换；`BBLTopbar.cpp:592`每次Realize，构造未设wxAUI_TB_NO_AUTORESIZE，本机wxWidgets `auibar.cpp:1987`会SetClientSize到hint，随后产品`:630`又SetSize回整窗宽。这是与右侧灰条边界/窗口控制消失一致的明确几何中间态风险，标题栏为shell兄弟未被该锁覆盖；不能以代码审查冒充视频实例精确WM消息/窗口尺寸时序复现，灰底具体来自父窗口/缓存的哪次绘制亦待打点。此前修复为纵向白线/高度，本次为水平布局/重绘中间态，不能称此前验收覆盖瞬间闪烁。
+
+原始建议方案（授权和实施结果由上方续记承接）：Honor标题栏由主窗口sizer稳定管理宽高，禁止AUI Realize自行缩宽；普通显隐不重建完整工具栏，必要结构/DPI变化才Realize并重新应用隐藏项；将compact/native状态合并一次更新，避免双次切换的中间态；仅在标题栏范围协调可见性、布局和绘制，暗底作兜底，不全窗强行双缓冲/Freeze影响GL或延时遮盖。验收用真实匹配EXE重复图像/资产/3D/打印、智能/原生、普通/最大化、多DPI切换并逐帧检查灰条及按钮连续性，同时验证拖动/双击最大化/窗口控制/工具状态。当前仅更新既有两份协调文档及忽略证据`.tmp/dev/titlebar-flash-20261103/`，未修改产品/测试、未启动应用、未构建或提交；安装包/实物/原PR边界保持，旧切片Preview白屏仍暂停。
+
+2026-11-03 本地提交续记（同编号 / 本会话 / `codex/team/integration`）：用户明确“提交代码形成提交记录”，承接下述已验模型修复和V1.0.1打包实现。20项文件均属于本轮；18项产品/测试/打包文件逐项匹配候选冻结快照，随后仅更新两份协调文档。普通本地提交标题`fix: strengthen model repair and prepare Honor Forge 1.0.1`，准确哈希以Git记录为准；不amend历史提交，不push、更新PR或上传发布。沿用下述12/12真实历史、301项定向C++及完整打包/GUI证据；本轮仅身份、diff和暂存范围核对，不重复编译。既有包的manifest继续保留原基线加快照来源，不改写成新提交构建。Program Files安装、签名、实物打印及其他暂停边界保持；提交证据`.tmp/dev/mesh-repair-20261103/submission.json`，忽略的资产/配置/产物/日志不纳入。
+
+2026-11-03 软件验证与候选安装包交付续记（同编号 / 本会话 / `codex/team/integration`，限定验证完成，Program Files验收待用户）：12项真实历史批量与实际GUI均通过，原件SHA不变，定向C++301/301通过；采样偏差最大0.012123mm，非完整Hausdorff/实物保证。最终包配套程序PID19312/sidecar39840用独立QA数据实窗复验：失败夹具四按钮完整、详情无浮层遮挡、正常accepted OBJ真实复检/990862面494881点/自交未发现；六色3MF重开几何、颜色、Honor Forge与六槽恢复。此前正常QA原生配色导入、显式导入、Ctrl+Z/Y、保存3MF、实际切片及478/250/30层预览通过；G-code 42,684,058字节、478层、T0–T5、1,089,563条挤出移动。仍提示悬空，需要支撑/方向，不能等同实体可打印。QA与侧车均正常退出，不覆盖用户原件、配置或运行树，无付费生成。
+
+Windows V1.0.1 commercial候选已由`release/build_internal.ps1`严格门禁成功生成：`.tmp/dev/packages/20261103-honor-v1.0.1-r2/Honor_Forge_Studio_V1.0.1_20261103_x64.exe`（282052477字节；SHA256 `ed6301616d91251fe4b23856153e3986066bb8b940e61b8d46ae3e13fe6f017c`）及同目录`Honor_Forge_Studio_V1.0.1_20261103_x64_portable.zip`（293816115字节；SHA256 `08bde298034e3bb0ad29c6dfcc20a5a55269ade36a6ad21ac0cec166a6e50ab4`）。完整源码基线`f6db0bf27e`加20文件快照，身份`6e8bb59edab7d27bcdd7f58eb66b291fb32670cfd0c8c8ac380cd1afb559018c`，不是干净提交。严格集成含Git通过、无内部例外；EXE/ZIP实际内容扫描19686/19678项，记录范围内未发现凭据且0 gaps；53项Python守卫、71项展示（8927断言）及259项智能切片（3622断言）通过。安装包7z完整性、便携全文件CRC通过；19572项payload与已验GUI运行树逐项核对，无不可解释差异（170项运行后pyc经代码等价核对；非UTF8中文资源名按GBK解码）。首次因临时7z缺DLL被门禁阻止，失败报告保留；换完整本机7z后在新r2输出目录走原严格流程成功，未弱化扫描/身份守卫。源码冻结期间无修改，交付后仅更新本主计划与短状态，产品/测试仍匹配包内快照。全部证据`.tmp/dev/mesh-repair-20261103/validation.json`及包内manifest。
+
+未结/下一步：安装包NotSigned；已请用户手动运行上述新包并处理UAC，安装至新`C:/Program Files/Honor Forge Studio V1.0.1 Validation`保留旧版，完成后由标准用户核对实际路径及用户models/downloads、exports、projects可写和模型文件夹入口。未完成前明确NOT_RUN，不声明完整发布资格；无外部上传/发布、commit/push或恢复暂停事项授权。硬件打印与历史PR/其他未验边界保持。
+
+2026-11-03 安装候选冻结前续记（同编号，仍在实施）：12项真实历史记录已全部在独立主窗口实际复检通过，必要修复均自动保存新版本；原批量12/12含原生配色导入/3MF重开，原件哈希不变。最终定向C++301/301通过（`.tmp/dev/logs/20261103-021103-930/`）；上一构建因仅主计划MD变化被身份守卫拒绝，已保留失败记录并重新构建通过，未绕过守卫。最新Windows应用及19466文件核验通过，QA PID8084/sidecar26852。无体积平面夹具正确拒绝；实窗发现失败卡片固定174DIP高度裁按钮，已改按可见sizer内容计算尺寸，四按钮、保留/重试/定位均已验；点击详情时浮层遮挡已补收起处理，待最终包内EXE复验。发布V1.0.1以完整未提交快照、commercial通道及严格release门禁构建，不自动提交/上传；仍待相关编辑/显式切片、最终详情/统计、包内容及安装启动验收，尚无新安装包。
+
+2026-11-03 实施授权续记（同编号 / 本会话 / `codex/team/integration` / 基线`f6db0bf27e`，进行中）：用户确认下述修复方案，要求修改并验证历史列表中的模型均能自动检查修复，完成后构建Windows安装程序供其发布。按实际12项历史资产逐一建立原件哈希和副本，覆盖诊断准确性、修复/复检、外观与局部编辑、失败恢复、导入/持久化/撤销及显式切片；任何失败不得靠弱化门禁或破坏形状冒充通过。源码冻结后复用本checkout构建与打包入口，记录EXE/DLL/资源身份、实际安装包扫描及安装启动验收范围；发布用途已明确，但签名/真实打印等资格必须据实报告。保留PID1660及用户资产/配置，不付费生成、自动提交/推送或上传发布；旧暂停事项保持。证据目录`.tmp/dev/mesh-repair-20261103/`，不另建进度台账。
+
+同轮实施进展（2026-11-03，未交付）：真实12条历史记录均已复制、建立SHA256，全部通过独立检查/必要修复、几何保护、原生配色导入、3MF保存重开及原件不变回归，详见`batch-results.json`。截图建筑SHA256`0825842c9923c4ad749250e907ef25fec04f88478624070805231f1fea182db7`已复现旧误报：有效极窄面被面积阈值排除，形成假退化1/开放边3；新算法保留正面积面，独立CGAL自交复检后990918→990862面全部缺陷为0，双向约8192面中心采样最大偏差0.012123mm、去重几何表面积变化0.000485%，原生导入/3MF重开通过。采样不是完整Hausdorff或实物保真证明。实施同时包含原生增强修复后备路径、几何保护、真实历史重检（删除伪Normal捷径）、失败保留/详情/定位/手动重试、输出文件所有权及dimensions修复。Windows构建与19466文件身份核验通过，独立QA PID38764已在真实窗口自动保存建筑和人像新版本；GUI发现最终复检丢修复统计及正常OBJ误显示已修复，已补修正与回归，正在复编译。首轮285/286定向通过，唯一失败是旧“轻微问题”文案断言，已修正待复跑；13项打包源码身份/14项门禁/24项内容扫描回归及完整AI集成已通过。产品版本按已告知默认V1.0.1准备；现有打包入口新增显式commercial候选通道，默认internal保留，commercial禁止内部例外并走严格release门禁。剩余：最终回归/匹配应用、完整GUI/显式切片、源码冻结及安装包/内容/安装启动验收；尚无新安装包，不声称已发布。
+
+2026-11-03 模型检查/修复只读分析（同编号 / 本会话 / `codex/team/integration` / `f6db0bf27ef199468292b5573df17fc999f2c875`；仅分析，实施待确认）：用户询问建筑模型检查未通过是否无法修复、是否影响切片，以及尽量完整修复的优化方案。截图开放边4、非流形边4、非流形顶点6、边界环2、连通组件3；其余显示0。`WorkbenchModelInspection.hpp:150`将非流形等置为Invalid，`PostGenerationWorkbenchCheck.cpp:284`仅允许纯开放边Attention确认导入，`WorkbenchImportEligibility.hpp`再次校验状态/哈希；因此当前是工作台门禁拦截，尚无该模型真实切片失败证据。连通组件数不参与安全判定，多个闭合部件不能盲目合并；边界环统计实际是边界图连通分量，不保证每个都是简单闭环。自交检查仅在开放/非流形/退化/方向指标均无问题时执行，截图这种输入会跳过却仍显示默认0，应明确显示未检测而非零风险；0/1本身亦为风险布尔，非交叉对数量。纯开放边路径未按缺口尺寸分级，却统一称“轻微”，也需修正。
+
+现有能力与缺口：`ModelFinishing.cpp:641`实际调用`MeshBoolean::cgal::repair`，已有soup清理、边界缝合、非流形顶点拆分、逐环补洞（最多256轮）、局部自交处理/实体自并及float导出复检，不是仅删除坏面。`PostGenerationWorkbenchCheck.cpp:118`允许Invalid进入修复，但按asset+hash记录一次尝试，手动检查亦受该尝试集合约束；失败不代表数学上无解，也不应重复相同策略无限重跑。候选拓扑/外观不满足条件时保留原件，修复原因写repair_reason，当前弹窗`PostGenerationWorkbenchPresentation.cpp:369`只显示summary和退出提示，未解释失败阶段/候选被拒原因。原生`ModelVolume::repair`调用另一条`MeshRepair.cpp::repair_mesh`，含有效壳体隔离、裂缝容差焊接、先定向/拆非流形再建网格及嵌套环补洞，值得作为后备候选评估；该路径保留部分可切片的壳体重叠/自交，不能直接替代工作台严格安全结果。原生切片有局部容错，不能据此保证所有坏网格可用，更不能将生成G-code等同形状正确/实物可打印。
+
+建议方案（待确认，不是执行队列）：①诊断状态区分已检测/未检测/失败，显示原件与候选指标、真实修复阶段及失败原因，定位问题区域；②在临时副本上渐进处理，先清理/精准缝合，再非流形拆分/受控补洞，评估复用原生repair_mesh为后备，必要的布尔/局部重构单独生成预览候选，有预算、取消及无进展停止；③每候选经同一独立拓扑和实际序列化复检、几何偏差/细节/颜色与局部编辑映射验证；高偏差或映射不可靠只能预览确认，不静默自动接受，保留原件、版本及撤销；④失败提供关闭提示留在当前模型、查看问题、继续增强修复/返回设计，导入仍按真实风险控制，避免唯一退出路径；⑤区分拓扑合格与切片可用性，显式验证真实层轮廓、空层/缺面、细节、材质和支撑，不自动静默切片、不单靠缺陷数量放宽门禁。当前建筑原件/哈希和该次repair_reason未取得，具体失败阶段与修复成功率待样本验证；后续验收用该建筑副本及裂缝/非流形/多壳/嵌套孔/带纹理和局部涂色样本，覆盖取消/失败保原件、保存重开/撤销与真实主窗口导入/显式切片/逐层预览。本轮仅源码/截图审查并增量更新两份协调文档，未改产品/测试、运行/构建/生成/提交；旧未验和暂停事项保持。
+
+2026-11-02 三项UX修复本地提交（同编号 / 本会话 / `codex/team/integration`）：用户明确“提交代码形成记录”。将下述已实现并验证的暂停旧应用更新、分页箭头及退出美颜覆盖层修复和协调记录形成普通本地提交，标题`fix: hide legacy updates and correct workbench overlays`，准确哈希以Git记录为准。33项产品/资源文件逐一匹配最终构建快照，沿用164项定向C++、Windows完整运行树及200% DPI实窗证据；本轮仅核对diff、暂存范围和提交结果，不重复构建。旧未跟踪`.planning/`和忽略的配置/模型/产物/日志保留，不纳入；不amend旧提交、不推送/更新PR或发布。下述未验边界和原暂停事项保持。
+
+2026-11-02 三项UX实施交付（同编号 / 本会话 / `codex/team/integration` / 基线`26a5273a84`）：用户明确“确认实施修改”，承接下述三项分析。新ApplicationUpdatePolicy暂停启动请求、旧提示事件及命令目录更新入口，删除主窗口旧更新菜单，预设/网络插件更新保持；分页单箭头统一浅色并使用可随DPI重建的镜像路径；美颜覆盖层增加独立编辑状态条件，返回不清除划区/改色/撤销数据，隐藏时不主动重新挂载分区。初次集成检查因MainFrame累计+79超既有+70预算失败，移除旧菜单块后原守卫通过，未修改预算/检查。
+
+验证：`BeautyWorkbench|BeautyPartition|WorkbenchHistory` 164/164通过（`.tmp/dev/logs/20261102-231019-757/`；随后仅精简已关闭的主窗口菜单块，最终应用重新构建及GUI验证）。最终Windows Build PREPARED（`20261102-232511-465`），完整运行树19466文件哈希及配套Python/Pillow/YOYOClaw原生模块核验通过，含Git的AI集成检查ok:true、diff检查通过。源码身份`f07f347b8b58267461b3e2d5c415092c68f8dfab7f2a6e9f88e7d361f5b9ab3d`、native身份`684f2f836dad058d1f20f5cc2a86f8b41a30c63584191f6cf89e8d29c1cb8874`，交付前35项快照逐项匹配；此后仅补两份协调MD。EXE SHA256`f1b6c28493290e64188f52ed3a6eb74bbab41871c6a856a798e1fd95b8331bab`、DLL`d27a013e2bce4538de9025edf41a92d7c7e2479efa74dd796b0306002a98f55f`。指定`.tmp/dev/run/honor-forge-validation/Honor Forge Studio.exe`已更新；完整身份及边界`.tmp/dev/ux-three-20261102/validation.json`。
+
+真实GUI：独立datadir`.tmp/dev/data/ux-three-20261102`、端口18778、PID38032及匹配侧车36552，DPI=2。启动及约15分钟操作无旧应用更新弹窗。21个明确标记QA的本地四面体仅作分页fixture，连同2个真实模型副本共23项：下一页1→2、上一页2→1、末页1→3、首中末箭头方向/可见性及焦点框可见，搜索缩至1/1时禁用箭头仍清晰；未冒充生成验收。几何正常的真实OBJ共961922面，自动1474分区，绿色边界可见；无修改返回即无边界/高亮，旋转重绘无残留，重入保留分区。局部选中区域1并将530121面改为第2槽颜色，取消返回保留改色，撤销/重做通过；保存并返回生成`finish-semantic-4a70cf9a-cbae-4d5f-bc8d-8abae79ac9db`新版本，概览保留改色无辅助线，重入保留区域/颜色。保存模型哈希与历史记录相符；原模型及副本哈希未变，QA/侧车正常退出，无新生成。首个GLB已有4连通组件/1自交风险，正常检查阻止其保存，未绕过该门禁。
+
+未结：精确100/125/150%与跨屏DPI、放弃修改返回及刻意迟到异步回调未单独GUI覆盖；原生帮助菜单缺项以源码核对，重设计侧栏帮助按钮未打开菜单，不冒充实窗菜单验收。未做实物打印或付费生成，不自动提交/推送；原套装保存重开后新耗材边界、网络诊断、PR及暂停事项保持。
+
+2026-11-02 三项UX问题分析（同编号 / 本会话 / `codex/team/integration` / `26a5273a84`，仅分析待确认）：用户要求先分析启动更新弹窗、模型历史前后页箭头不可见、退出3D美颜绿色划区残留，确认后再集中修改。①`GUI_App.cpp:1601`仍在启动调用`check_new_version_sf`，通过`AppConfig::version_check_url`默认访问上游`check-version.orcaslicer.com/latest`，使用SoftFever版本并发`EVT_SLIC3R_VERSION_ONLINE`，`GUI_App.cpp:4029`创建旧UpdateVersionDialog；Honor产品名/1.0.0未接管此链。建议集中应用更新策略默认暂停，启动不请求、事件不展示旧弹窗，并处理MainFrame/NativeCommands手动入口；保留预设同步/网络插件更新，后续适配新版UX时恢复。不能只写skip_version或仅改用户配置。②`ModelGenerationWorkbenchHistory.cpp:300`起四按钮有完整绑定/页码边界，截图1/1时禁用是正确行为；`workbench_page_step.svg`为black/0.55，`workbench_page_edge.svg`为white/0.55，深色背景导致单箭头几乎不可见。建议统一浅色、禁用仍可辨认，并用现有可重建的缩放/镜像图标路径保持DPI一致；验证单页/多页首中末与键盘焦点。③`complete_return_overview`只设置`m_workbench_editing=false`，`m_finishing_workbench`仍为true以保留模型总览主题；`refresh_model_finishing`向BeautyWorkbenchControls传递整个工作台显示状态，后者可重新挂载分区，`ModelPreview3D.hpp:3994`仅以主题标志`m_beauty_view`和selection suppression决定绿色GL边界渲染，没有真实编辑模式条件。确属编辑辅助覆盖层生命周期问题，绿色为独立GLModel，不是写入网格/纹理；建议独立编辑覆盖层显示条件，返回隐藏边界/高亮/点选，保留划区/手工改色/撤销数据，重入恢复；同步和异步完成均检查当前编辑模式，避免仅清一次后再次出现。验收覆盖无修改返回、保存/放弃/取消返回、重入、切模型、迟到回调及模型/耗材/持久化不变。当前仅更新协调记录，未改产品/配置、未构建启动或复测；前轮套装提交及原未验/暂停事项保持。
+
+2026-11-02 人物/萌宠代码本地提交（同编号 / 本会话 / `codex/team/integration`）：用户明确“提交代码，形成代码提交记录”。本轮把下述已实现并验证的两套六色、旧年轻向套装移除、自动同步/失败回滚/撤销/持久化、语义runtime准备及相关定向测试和协调记录形成新的普通本地提交，标题`feat: add Honor people and pet six-color suites`，准确哈希以Git记录为准。产品/测试与已验构建快照核对保持一致，复用131项C++、34项runtime、完整AI集成检查及Windows/实窗证据；仅检查diff、暂存内容和提交结果，不重复构建。旧未跟踪`.planning/`、忽略的配置/原始Excel/模型/运行产物及日志不纳入；不amend旧提交、不推送/更新PR或发布，原未验和暂停事项保持。
+
+2026-11-02 人物/萌宠实施交付（同编号 / 本会话 / `codex/team/integration`，实施完成、限定软件验证通过）：用户明确“开始实施并验证”；随后补充“不用保留旧的年轻向六色，删除掉即可”，该最新决定取代下方历史保留建议。内置目录及保存卡入口已移除旧年轻向套装，仅注册人物六色/萌宠六色；未删除用户自定义卡或重解释旧已保存外观。Excel顺序绑定六实体喷头，模型仅用前五槽、第六支撑且全部复用兼容PLA，双白身份独立；人物语义匹配，萌宠近色，最终选择成功后自动同步模型和耗材。保留额外实体/混色槽及支撑开关，不自动切片或生成；原件和用户默认配置保留。
+
+验证与产物：131/131定向C++（含六槽已满/中间或末槽ABS替换、双白、3MF/撤销/绑定恢复）及34项开发runtime回归通过，AI集成检查含Git通过；Windows主程序构建成功（`.tmp/dev/logs/20261102-214957-301/`），完整19466文件安装/哈希及Python3.12.13、Pillow12.2.0、YOYOClaw/原生人物识别runtime校验通过。用户指定`.tmp/dev/run/honor-forge-validation/Honor Forge Studio.exe`已更新。源码基线`301c0b8c8c8755435c87c3776e6c90b5aca7b4df`加本轮未提交修改，构建快照`aade3ae7f684618479a16acc928a663331a297fa8e2c17e03b77071033034453`、native身份`07bf94e0acc306a58ce56df970ebf107c13c17a95902f015bc4756b5497be016`；交付只追加协调文档，产品/测试与构建快照逐项核对。证据`.tmp/dev/logs/20261102-214525-712/`及`.tmp/dev/honor-palettes-20261102/validation.json`。
+
+最终EXE实窗（独立配置`.tmp/dev/data/honor-palettes-20261102`、PID33464/sidecar21124/端口18776）：首次展开目录完整、类型仅人物/萌宠、具体套装各一项；只打开目录/切类型不改外观或耗材。六槽已满且第6槽为ABS时，选萌宠六色自动换为兼容PLA并同步模型；旧异常红OBJ选人物六色因person=false拒绝，恢复此前萌宠外观/六耗材；原始长发GLB识别人像成功、肤/唇/黑白语义配色并自动导入人物六色，随后切萌宠、工作台撤销回人物及重做到萌宠均同时恢复模型/六耗材。目录首次裁切及ABS复用缺陷已修复并在最终版本复核；QA正常退出，未提交新生成。GLB已有4组件/1自交检查风险保持、未绕过打印导入门禁；配色结果不代表可打印验收。实物打印、全面视觉质量、GUI取消和保存重开不覆盖新耗材尚未完整验收；相关持久化逻辑由自动回归覆盖。未提交/推送/发布，2D网络诊断、PR #53及暂停事项不续跑。
+
+2026-11-02 人物/萌宠套装需求分析（同编号 / 本会话 / `codex/team/integration`，承接现有人物套装V2，当前仅分析、未授权产品实施）：用户要求“荣耀耗材套装”下适用类型为人物/萌宠，各自具体套装为人物六色/萌宠六色，选择后自动应用模型并完成原“将模型配色导入到耗材”操作。已只读提取用户Downloads的 `FDM六色调色板-人物与萌宠-1102.xlsx`，仅两sheet，D6:I11为颜色/HEX/RGB/用途。人物槽1–6为曜石黑#000000、自然唇色#AF6E5E、轻肤色#ECC3B2、纯白#FFFFFF、岩石灰#A7A5A4、纯白#FFFFFF；萌宠槽1–6为纯白#FFFFFF、曜石黑#000000、岩石棕#5E5145、虎橙#AC7443、柠檬黄#D5C451、纯白#FFFFFF。两套各5个唯一HEX，第6槽均标注支撑材料，不能按HEX合并白槽。用户已明确回答：第6槽专供支撑、模型只用前5槽；六槽均沿用兼容PLA；人物按肤/唇/黑白眼部用途匹配，萌宠按近色匹配。人物第2槽用途文本虽列深棕发色/木质配件/鞋履，但其名称为自然唇色，按用户已确认的用途匹配保留唇色角色，并可用于其他近色区域。
+
+建议实施行为：目录显示两条新路径，旧年轻向六色保存身份/外观保持兼容、不按新色板静默重解释；按Excel序号绑定六实体喷头，模型配色排除第6槽，两个白槽身份独立。人物复用既有人物语义控制器并核对当前随包识别能力（截图提示本地人物识别不可用；单改颜色不能保证灰肤问题消失），萌宠基于原始外观作近色匹配，不伪称具备动物语义识别。明确选择最终套装且配色成功后，复用已有暂存/绑定/原子工程提交路径执行一次模型与耗材同步；切换套装再次完整应用，避免调用toggle导致第二次变成退出。模型/套装身份变化使迟到结果失效，失败保留原模型与耗材，提供原生撤销；恢复历史/刷新/重启不自动覆盖新耗材。建议保持支撑启用开关不变，已启用时支撑/界面指向第6槽；不因选套装静默启用支撑或切片。四头/单喷嘴多料不能自动落地，清楚提示六独立喷头要求；Honor Forge符合头数。当前仅完成需求澄清与源码可行性分析，未改产品/Excel、未构建/启动GUI或生成/提交。需后续实施时覆盖目录/双白槽身份/支撑绑定/自动同步失败与撤销/六头切片和3MF恢复；本条不是执行授权。
+
+2026-11-02 本地提交授权（同编号 / 本会话 / `codex/team/integration`）：用户明确“提交本地代码，形成代码提交记录”。本轮将独立配置品牌、Honor Forge六独立喷头机型/工艺/耗材、动态向导及相关回归和现有协调记录形成一个新的普通本地提交，提交标题为 `feat: isolate Honor Forge settings and add six-head printer`，提交哈希以Git记录为准。不amend既有提交，不推送或更新PR；旧未跟踪.planning、忽略的构建/日志/私人配置和模型不纳入。产品与测试文件核对前轮已验快照保持一致，只做diff/暂存内容及提交结果核验，不重复构建。2D连接异常当前仅分析、实物打印及原PR/暂停事项继续保持原边界。
+
+2026-11-02 2D失败只读诊断（同编号 / 本会话，用户询问刚才失败原因，未授权生成重试或产品修正）：当前用户实例PID21788、自动侧车PID11028监听18764；应用17:57:51的首次challenge超时后17:57:52已记local service ready/online generation true，不能把启动瞬时失败当作生成根因。17:59任务 `0198c046-3567-4ada-bf81-bbcb39cf55c8` 的用户目录models/job.json记state/phase=failed、progress=11、design_provider=gpt、message=Could not connect to the preprocessing service.、preprocess_failure.code=image_connection_failed，retryable/ambiguous均true。源码openai_preprocessor.py对应URLError/TimeoutError/OSError/HTTPException连接异常分支，说明远端图像预处理请求未取得有效HTTP响应，不足以判定具体DNS/代理/TLS/超时，也不能据此判定密钥错误或服务已成功受理。可见orca-ai-sidecar.log仍为前一PID7792的验证记录，AppData存在包路径重定向差异，尚未取得当前请求底层exception_chain/diagnostic_id；不以旧日志归因。未操作照片、未提交新生成/远端探针、未改产品或配置、未构建；后续须当前实例诊断才能细分网络根因。前轮六头/配置验收与硬件未验边界保持。
+
+2026-11-02 实施交付（同编号 / 本会话 / 本地 `codex/team/integration`）：用户明确“确认实施并进行验证”，两项软件目标已实现并完成限定验证。数据品牌从翻译/格式标识解耦，修改 AppConfig、GUI默认路径、Linux默认数据入口、机器ID文件名及插件保护名单；默认路径为 `%APPDATA%/Honor Forge Studio/Honor Forge Studio.conf`，备份、锁与机器ID均使用新品牌，保留显式datadir/便携路径，不自动复制或回退旧 OrcaSlicer 数据。新增 Honor Forge 0.4 mm 六独立喷头机型、六份派生工艺、12份耗材兼容和 Ultra S基线封面，WonderMaker清单升02.04.00.06。向导按目录生成四张卡片，保存校验覆盖全部实际头数。仅改变独立数据标识，保留上游翻译域和项目格式标识；原机型保持兼容。
+
+验证：品牌Python5/5；StartupSetup/PluginAudit原生12/12（`.tmp/dev/logs/20261102-165159-351/`）；插件audit选中27项、24通过/3项Windows符号链接测试跳过（`.tmp/dev/honor-six-20261102/plugin-audit.log`）；AppConfig/六头3MF 14/14（`20261102-174252-909/`）；HonorForge标签2/2（`20261102-174814-898/`，含前述3MF重跑及实际预设六工具切片，擦料塔开/关均检查到T0–T5有效挤出）。AI集成守卫ok:true且未跳过Git，diff检查通过。Windows增量Build PREPARED（`20261102-173734-387/`），完整运行树19458文件核验、配套Python3.12.13/Pillow12.2.0及原生模块验证通过。源码身份 `6770e84ba11fd9a45f7020d397c10775ccf70fc97008cc5d64e59fa423669d7a`、HEAD `09bd370e0dc6e2572069469036d81863591bbab3`；交付前63项快照文件逐一匹配，此后只补主计划和短状态。EXE SHA256 `f1b6c28493290e64188f52ed3a6eb74bbab41871c6a856a798e1fd95b8331bab`，DLL `9a3786e44c26bde9835f01e39720c60368f4980560db88955d5c4f30b71a394f`。
+
+真实GUI：指定 `.tmp/dev/run/honor-forge-validation/Honor Forge Studio.exe` 不带datadir启动PID40848，确认新默认目录、品牌conf/bak/lock及机器ID，旧OrcaSlicer.conf SHA与启动前相同；中文及四张完整机器卡片、Honor Forge选择和六头耗材页可见。检测用户正在操作该默认窗口后原样保留，未替用户完成选择。另以独立 `.tmp/dev/data/honor-forge-six-validation-20261102`、真实匹配sidecar和隔离端口18775完成欢迎→地区→Honor Forge→六头→完成；第5/6头设不同颜色，第6头独立选ABS，打印页显示Honor Forge 0.4 nozzle。正常关闭后重启PID21820直接进入主界面、打印页仍为Honor Forge，保存配置保留六个槽及第5/6头颜色/耗材；两个QA实例均正常关闭。完整身份与脱敏观察记录 `.tmp/dev/honor-six-20261102/validation.json`；首次默认目录启动记录和完整安装校验在同目录。原运行实例未主动关闭、原模型/用户配置及旧.planning保留；不提交推送或打包。
+
+未结与恢复条件：硬件参数与封面沿Ultra S基线，真实T0–T5固件宏、喷头偏移、温控/净空及实体打印尚未验，须设备实测后确认；软件回归不作为硬件认证。当前默认配置窗口保留供用户继续向导；若用户已自行完成，不重置其选择。实窗另观察到既有欢迎文案“----”占位和上游更新提示，本轮未将配置/新机型任务扩为整包UI品牌清理。原PR #53、DPI/视觉及暂停的切片Preview白屏返回点保持，不自动续跑。
+
+2026-11-02 后续明确需求与方案（同编号 / 本会话 / 本地 `codex/team/integration`）：用户要求 EXE 默认配置文件及目录统一为 Honor Forge Studio，不再沿用 OrcaSlicer，并明确授权向导增加基于 WonderMaker Ultra S 的六独立喷头新型号 Honor Forge；末句限定本轮先分析两项修改方案，因此本轮不实现产品、不清理/迁移配置。该最新决定替代前条“名称/硬件类型未定、接入未授权”的条件，原分析证据保留。推荐在现有 product.json/ProductIdentity.cmake 品牌源导出独立数据标识，与现有 SLIC3R_APP_KEY 的翻译资源用途解耦；GUI 默认数据目录及 AppConfig 主文件改为 `%APPDATA%/Honor Forge Studio/Honor Forge Studio.conf`，连同备份/锁、G-code viewer 配置、账号/头像/WebView、日志/模型及子进程传递核对。默认不读取、自动复制或回退原 `%APPDATA%/OrcaSlicer`，原文件保留；显式 datadir/便携路径仍属于主动指定，脚本需核对不再隐式指定旧用户目录。现有合法新目录保留，不为了验收覆盖已有数据。不能全局替换 SLIC3R_APP_KEY 而遗漏 AddCatalog/GetBestTranslation 及平台资源消费者。
+
+六头接入推荐：现有 WonderMaker 供应商目录新增 machine_model=Honor Forge、实例 Honor Forge 0.4 nozzle，继承 Ultra S 并覆盖全部六头必要参数，保留旧机型；注册 manifest、新型号封面和默认工艺，补齐兼容耗材/工艺，核对 T0–T5 固件宏、偏移、床尺寸/净空及温控差异。新向导目录与 UI 从三机型/三卡片扩展，采用按目录生成卡片的布局，完整显示新卡片；现有头数和耗材列表可复用动态数组。另发现 StartupSetupService::save_checked 仅校验 filament/filament_01/02/03，需按全部实际头数核对持久化。验收至少包括新默认目录首次启动、旧目录未写入、中文翻译、四机型选择及六头耗材/颜色保存重启，六工具切片/G-code 和 3MF重开，以及失败/取消不残留半配置。Windows 用当前 dev 构建及完整匹配 EXE/DLL/资源运行树，不能只替换旧包 EXE；逻辑/GUI/实物打印分别记录，真实六头机器打印仍待实际设备验证。本轮仅协调文档增量及方案复核，不构建/启动、提交/推送或扩展原暂停事项。
+
+2026-11-02 补充只读分析（同编号；本会话 / 本地 `codex/team/integration`）：用户询问 `.tmp/dev/run/honor-forge-validation/Honor Forge Studio.exe` 实际配置目录、重走向导及基于 WonderMaker 新增六头新名称机型的可行性，未授权新机型实施或清理配置。该目录没有便携 `data_dir`，直接双击按 `GUI_App::init_app_config` 的 `SLIC3R_APP_KEY` 继续使用 `C:/Users/mooreb/AppData/Roaming/OrcaSlicer`；优先级为显式 `--datadir`、EXE 同级 `data_dir`、默认用户目录。旧 PID21472 日志同时包含指定 EXE 路径及该用户目录 `user/default/{machine,filament,process}` 加载记录；指定 DLL SHA256 仍为 `4f6cb041c5614987cac5bf9b02f46f1e360f009818e68214d98cd68773a028cc`。本轮进程快照仅有主运行目录的 `orca-slicer.exe` PID1660，不把旧 PID 写成当前运行实例。当前用户目录含 `OrcaSlicer.conf`、`system/WonderMaker.json`、`system/WonderMaker.opc`、`system/WonderMaker/` 和 `user/default`；普通预设加载及新向导已安装目录优先，故仅改运行包 `resources/profiles` 不保证现有配置随之更新。branding 验证脚本指定 `.tmp/dev/data/branding-20261030`，slicing-ux 脚本指定 `.tmp/dev/data/preview-loading-validation-20261030`，与双击行为区分。
+
+重走向导建议：仅重选可用帮助菜单 Setup Wizard；完整复现新首次向导使用未使用过的独立 `--datadir`，保留当前配置、账号及模型，不直接删除 AppData。源码 `StartupSetupService::needs_setup` 由配置不存在或无有效打印机触发，而非只检查 `firstguide.finish`。运行包和已安装 JSON 均确认 ZR 是单头、Ultra/Ultra S 是四头；当前源码 `MAXIMUM_EXTRUDER_NUMBER=64`，六头不受四头通用上限限制，但此常量不是指定旧运行包六头实测证据。新增用户预设可作为单机试用方向；若要在首次向导新增新名称机型，必须同步系统型号/实例注册、喷嘴及每工具参数、工艺/耗材兼容和固件 G-code，且当前 `StartupSetupService.cpp` 的三型号白名单、固定 WonderMaker 载入及 `StartupSetupDialog.cpp` 的三卡片布局需调整。头数和耗材列表本身按数组动态处理。实际六独立头与单喷嘴六进料须区分，前者需核对 T0–T5、偏移/换头/温度等，不能仅改名称或添加颜色槽。未构建、启动/退出应用、改配置、生成或提交；六头实际导入、切片/G-code、3MF重开及实物打印均待后续授权与验证。原 PR/发布/暂停边界保持。
+
+提交与远程同步续记（2026-10-31，用户明确授权3步操作）：沿用不提交Markdown的已确认范围，仅将7项未提交源码/测试文件（Config.cpp、GCodeProcessor.cpp、RedesignModelWorkflow.cpp、RedesignShell.cpp/.hpp、两份fff_print测试）执行`git commit --amend --no-edit`，原`fbad5cf7050d4348c48b52429f99e13123891c83`替换为`d6c2c4eb66af3f79a8c7f3de1f5da78f07a187fc`；父提交仍为`944f331a13733920ba17a428f74e60cdc631d9cd`，原2次本地提交数不变，提交说明保持。fetch origin后集成tip仍为`73bd9a98b47caaa2b602c2a7059b359e7fb07e76`，`git merge --no-edit origin/codex/team/integration`返回Already up to date，没有需要处理的新远端提交或冲突。当前原检出为本地integration，为按SOP走PR并保护共享历史，建立`codex/task/honor-forge-ux-20261031`并普通推送，未force push或直接写远端integration。
+
+已创建并附加[Draft PR #53](https://github.com/arsenaltj/OrcaSlicer/pull/53)，源d6c2c4eb66、目标73bd9a98b4，完整PR累计116文件/2提交，GitHub确认mergeable=true、无文本冲突，remote head与本地一致。当前源码与最后Windows构建快照的7项差异逐项验证，其他产品源码来自原fbad基线未变；未把amend作为重新编译记录。当前HEAD的`verify_ai_integration.py --json`（含完整Git校验）、提交差异空白、README映射检查通过；以精确base/head运行architecture_review生成116文件影响报告，四张Archify视图各9/9通过。远端架构分析/PR图评论、Shellcheck通过，AI integration checks仍运行中，非作者复核和维护者人工合入待完成。源push触发的build_all run41166343900失败且0job，集成基线同工作流run40661266839也失败且0job；未执行编译，不能归因为本次源码编译失败或宣称跨平台通过，未扩大为改门禁/启停CI。PR正文说明完整范围、业务行为变化、验证来源、GUI缺口、恢复方式和该阻塞，无隐私日志/模型/包上传；未联系他人或自动合入。证据`.tmp/dev/submission-20261031/{submission.json,pull-request.json,pr-final.json,check-runs-final.json,integration-check.json,architecture.log}`及同目录架构制品。两份协调MD和旧.planning继续留本地未提交；原测试EXE及白屏/发布未验边界保持，不重建或重打包。
+
+导入切片回跳实施（2026-10-31，用户“实施修复”授权，已实现/Windows构建及有限实窗验证）：沿用本会话/`codex/team/integration`/`fbad5cf705`，范围限定Honor工作台→切片准备显示，不恢复切片完成→Preview白屏。本次仅改`src/slic3r/GUI/Redesign/{RedesignModelWorkflow.cpp,RedesignShell.cpp,RedesignShell.hpp}`。将工作台源页暂托管到独立owned过渡窗口，避免原同父容器双GL页面的Show/Lower/Raise；目标留在最终sizer尺寸，路由/原生控件准备后再等待同尺寸相机适配后的新帧，一次性揭示，不在揭示时Hide/重挂目标。过渡窗口按内容区域跟随，owner最小化时隐藏；退出/回退恢复源页，未改变工程提交和只重试视图的边界。增加阶段/帧/尺寸日志，保留原模型导入、配色、追加/撤销、取消边界和切片引擎；此前G-code兼容修复保留，不提交、推送或打包。
+
+验证及产物：`./dev.ps1 CppTest -TestSuite slic3rutils_tests -TestLabel 'UiRedesign|WorkbenchImportUiGuard|WorkbenchImportPresentation' -Jobs 2`增量构建/114项测试通过，日志`.tmp/dev/logs/20261031-103530-815/`。首候选实窗第二次导入后观察到短暂原生侧栏文字补绘，最终在揭示后调用完整子控件刷新，保留首候选证据。最终`./dev.ps1 Build -Jobs 2`exit 0、272.47秒，`.tmp/dev/logs/20261031-105023-828/{before.json,build.log,result.json}`，source identity=`785e1ff85f59282495dae40313f57612e7ca01f25d6909e9e8ab1c98c706786d`（HEAD加完整未提交快照）；114项helper及其输入未因最后的GUI绘制收尾改变，未重复运行并冒称为新版本原生合成测试。完整安装/逐项验证19,449个匹配文件到`.tmp/dev/run/import-transition-20261031`，DLL SHA256=`678968d94a804c1abe6acb72523496b113d2320c0be9da4db251370b7988490d`；未改旧运行树根目录或旧安装包。交付后仅协调文档更新，不回填构建身份；源码3文件哈希逐项与before快照相同，`git diff --check`通过。
+
+最终真实Windows主窗口验收：用`.tmp/dev/import-transition-20261031/start-validation.ps1`、独立数据`.tmp/dev/data/import-transition-20261031`、GUI PID20988/sidecar PID22516，恢复本地历史OBJ副本`orcaslicer-ai-finish-semantic-776f70c5-5936-44d0-b867-221e4d317b48.obj`（961,922三角面），无新生成或付费调用。完成右栏展开/空工程导入、返回工作台、右栏收起后向已有工程追加；模型1→2、Ctrl+Z为1、Ctrl+Y加载完成后恢复2，返回工作台/重新展开历史均可操作。两次揭示后的观察画面，模型及左侧文字完整。日志`debug_Sat_Oct_31_10_59_30_20988.log.0`：token9提交431ms、11:02:49.288 staged(frame0)、50.370 route prepared(frame5)、50.570 revealed(frame9,2088×1856)；token11提交489ms、11:05:02.754 staged(frame18)、03.723 route prepared(frame23)、03.984 revealed(frame27,2052×1831)，各一次工程提交和一次揭示，无重复提交。另存`models/projects/import-transition-final.3mf`，读取真实3MF确认build含2个实例，正常退出及owned窗口清理完成；首候选工程和日志保留。完整证据`.tmp/dev/import-transition-20261031/{verification.json,final-import-events.log,runtime-validation.json,gui-fix.patch,samples.json}`。
+
+用户测试EXE交付续记（2026-10-31）：用户要求“构建exe程序让我测试”。核对当前全部非协调文档输入SHA256和原生配置与上述10:50构建快照一致、EXE/DLL逐字节匹配build，复用已构建和实窗验证的独立运行树，不因仅Markdown更新重复编译。真实EXE为`.tmp/dev/run/import-transition-20261031/Honor Forge Studio.exe`，最新实现位于同目录DLL；提供忽略目录内`.tmp/dev/Start-ImportTransitionTrial.cmd`供双击，调用已有已验启动脚本并使用独立配置/端口18771。不得单独搬走EXE；DLL/资源/Python保持完整。证据`.tmp/dev/import-transition-20261031/test-exe-delivery.json`；本轮未重新启动应用或重复测试、不改产品源码、不提交/打包，用户视觉验收待反馈。
+
+实窗边界及遗留：本轮使用复制的Voron 2.4配置，而非原WonderMaker场景，未执行正式切片；不能宣称验证切片质量。最终版未取得逐帧录屏，截图观察与单次揭示日志不证明消除每个短暂闪动；Snipping Tool录制选择层未暴露为可操作窗口，已取消，不换自制捕屏入口。普通/最大化尺寸下导入及导入后最大化可用，但未精确覆盖staged/reveal临界尺寸变化；多DPI/多屏、最小化/恢复、GUI取消/失败/15秒超时及只重试视图未诱发，helper覆盖不替代GUI矩阵。首次复制的测试配置缺少原格式checksum尾部而启动报错，补齐独立测试数据后正常启动；原失败日志保留，不将环境准备错误写成产品缺陷。用户原件/配置/工程未改。原r3安装包仍含已知旧G-code兼容问题且不含本修复，发布资格/此前拒绝边界保持；切片完成→Preview白屏继续暂停。
+
+导入切片录屏分析（2026-10-30，用户明确仅分析、不改代码）：输入`C:/Users/mooreb/Videos/屏幕录制/屏幕录制 2026-10-30 185050.mp4`，39.5333秒、3120×1984、30fps。逐帧可确认0基frame329/10.9667秒开始露出切片平台/模型，至frame343/11.4333秒；frame344–353/11.4667–11.7667秒又露出工作台大模型及右侧历史，约0.333秒；frame354/11.8秒后再次显示切片，355/11.8333秒已出现适配后相机，侧栏/标题仍有后续重绘残影。不是单纯白底，也不能把视觉回跳等同模型导入失败或工程回滚。抽帧和证据保存在`.tmp/dev/video-import-20261030/{frames.json,detail_metrics.json,analysis-evidence.json,keyframes.png}`；使用已有Python311/cv2离线解码，工程FFmpeg为裁剪版、没有image2输出，其抽帧失败属于工具能力不足，随后使用cv2成功，不是平台拒绝。
+
+源码/日志对应：既有`%APPDATA%/OrcaSlicer/log/debug_Fri_Oct_30_18_45_43_21472.log.0`明确启动`.tmp/dev/run/honor-forge-validation/Honor Forge Studio.exe`；该运行树DLL最后写入18:25:04，SHA256=`4F6CB041C5614987CAC5BF9B02F46F1E360F009818E68214D98CD68773A028CC`，与既有`.tmp/dev/slicing-ux-20261030/verification.json`匹配，相关RedesignModelWorkflow.cpp当前SHA256=`48AA35AC8005CC3A05C0682EE10AE0178F156DA7D281C67F74DC4D6EE6BFB357`也与该快照一致。日志18:50:08.017819反馈、21.121533准备完成、21.515025提交完成（366ms）、21.598556切换view3D、22.652920相机适配；该窗口没有第二次导入提交或失败/超时回滚，前一次18:46的独立导入不混同为本次重复提交。提交期间多次访问旧Preview缓存、随后场景失效更新，是显示准备顺序证据，不能据此认定切片引擎重复运行。视频早于23:02的G-code兼容修复，且该修复未改这些GUI文件，两者无因果关系。
+
+根因分析及边界：`stage_import_target_view`把切片页脱离sizer但仍在同一父容器同一区域Show并启用GL，仅Lower目标/Raise工作台；`refresh_workflow_layout`在staged阶段也让两个页面同时Show。GLCanvas3D通过独立SwapBuffers呈现，普通父窗口Freeze/Thaw不能提供两个GL页面及原生侧栏整体原子提交。`commit_import_target_view`又Hide目标、重挂sizer、再Layout/Show；适配后首帧检查只比较GL累计Swap计数，没有最终挂载布局代次/完整wx控件绘制就绪门槛，且此专用提交不走普通导航的`present_active_page`完整刷新路径。上述机制与视频目标提前露出、源页短暂回显、控件残影高度一致；缺少逐次Show/Hide/Z序/呈现日志，不能把某一帧精确归因于单条语句。核心预热/提交流程git blame来自`3250594c59`的2026-10-24原子切换整改；最近`fbad5cf705`仅为预热包上`wxWindowUpdateLocker(m_content_host)`等重绘调整，未消除机制缺口，且未做旧二进制同场景A/B，所以结论为原方案仍未覆盖完整显示链路，不能断言最近引入全新回归。既有页面事务单测只验证token/防重入，不验证Windows原生GL合成。
+
+建议方案仅讨论：保留源页最后一帧及加载卡，以能可靠遮挡Windows GL的短期过渡层隔离目标预热；目标提前完成最终挂载尺寸、场景加载、相机适配及对应首帧，最后一次性揭示，避免揭示阶段重新Hide/Show和sizer重挂，并统一异步导入与普通导航的呈现收尾。可先增加事务阶段/布局尺寸/显示层级/帧代次诊断定位具体间隙。保持模型解析、配色、追加工程、撤销、切片状态及异常/取消业务不变；未来验收覆盖空工程、已有工程/从Preview返回后二次导入、右栏展开收起、窗口/DPI变化及失败/取消，逐帧要求工作台→切片单向且无混合控件。不因本次讨论自动实施，先前切片完成→Preview白屏暂停仍保持；本轮未修改产品/测试源码、构建、启动应用、提交或打包，前轮未提交G-code修复保留。
+
+兼容回归修复（2026-10-30，用户审查后明确授权“开始修复”，已实现并完成定向验证）：沿用本会话/`codex/team/integration`/`fbad5cf705`，修改范围仅`src/libslic3r/Config.cpp`、`src/libslic3r/GCode/GCodeProcessor.cpp`与两份既有`tests/fff_print/test_gcode_processor.cpp`/`test_gcodeprocessor.cpp`。配置校验新增固定旧`; generated by OrcaSlicer`头并保留Honor当前品牌及旧简写头；预览器新增固定`OrcaSlicer`来源别名，恢复品牌更名前对`; OrcaSlicer`的识别，避免虽然打开但跳过内嵌配置。旧fixture保留，床/皮带和手动换料两个既有用例扩展三种头；新增真实切片导出后重读配置/预览以及无效来源、缺少配置分隔符、配置项不足的拒绝检查。`./dev.ps1 CppTest -TestSuite fff_print_tests -TestLabel GCodeProcessor -Jobs 2`增量构建exit 0、25/25项通过，原2项失败已消除；另用同一源码匹配的fff_print runner/CTest定向运行既有`An exported G-code's settings load back as the settings it was sliced with`，1/1通过，覆盖`PresetBundle::config_from_gcode`和预设恢复消费者。证据`.tmp/dev/logs/20261030-225715-267/{before.json,build.log,cpp-tests.log,preset-import-test.log,result.json}`，原失败日志保留供对照。
+
+Windows主程序验证：`./dev.ps1 Build -Jobs 2`复用同一`.tmp/dev/build`，Release主目标增量构建exit 0，105.18秒；日志`.tmp/dev/logs/20261030-230049-644/{before.json,build.log,result.json}`。测试和主程序构建均记录HEAD=`fbad5cf705`加未提交修复、source identity=`3a5ab286f59fe1b42bc4cf48b5cf2a9a6f4e723a4ba41899c23520ff8250b988`（交付后仅更新协调文档，产品/测试源码不再变化）。产物`.tmp/dev/build/src/Release/Honor Forge Studio.dll`为157,433,856 bytes，SHA256=`1178B61291EFB989AFD252454F0EB8283E092F76C127418D99613795D10F59FC`；启动EXE SHA256仍为`9529C436F7AEE2CD00B17EF0DBE880E6BD4EFF4DDAD04D62599D7364C119E505`，本次修复位于DLL。diff检查通过；未启动应用或覆盖`.tmp/dev/run`/用户实例，不将编译/自动测试冒充实窗验收。原色/供应商、切片算法/擦料塔及白屏暂停范围保持；未提交/推送/重打包。原r3安装包仍是旧字节且包含原问题，若继续发布须以修复源码重新打包，Program Files标准用户安装/模型目录/卸载、签名及此前拒绝的实窗启动边界继续保持。
+
+最近两次提交业务风险审查（2026-10-30，用户仅要求检查）：审查`944f331a13733920ba17a428f74e60cdc631d9cd`（3文件，主要绘制/布局）及`fbad5cf7050d4348c48b52429f99e13123891c83`（111文件，含业务行为修改）。未发现这两次直接改动切片算法、支撑/擦料塔计算、智能切片决策或应用适配器；`src/libslic3r`仅两个公共名称/版本头变化。但已确认P1兼容回归：`version.inc:5`将`SLIC3R_APP_NAME`改成Honor品牌，`Config.cpp:1415-1428`仍用该显示名构造唯一的`; generated by ...`头校验，而`GCodeProcessor.cpp:3873`在打开旧Orca G-code时调用该读取器；`; generated by OrcaSlicer`格式被误拒绝，影响旧G-code预览/配置读取，不等于切片计算算法发生改变。现有`; OrcaSlicer`旧式头仍有独立识别，不能泛化为所有历史格式均失败。当前源码经`./dev.ps1 CppTest -TestSuite fff_print_tests -TestLabel GCodeProcessor -Jobs 2`增量编译exit 0，定向23项中21通过、2失败，失败用例为旧G-code床/皮带参数恢复及手动换料注释读取，均抛出`Not a G-code file generated by Honor Forge Studio.`；完整证据`.tmp/dev/logs/20261030-223254-047/{before.json,build.log,cpp-tests.log,result.json}`，源码HEAD为fbad5cf705、source identity=`8883df887e623d82c8cffd39f793d363db9e1c396dde741c297e71d0f1b4025a`。因此原r3包虽然编译/扫描通过，仍包含该兼容回归，建议修复后再发布；不改写原包来源/哈希，也未重打包。
+
+其他行为变化与验证边界：Yoyoclaw临时查询错误新增2/4/8秒有界重试、鉴权/查询共用截止时间及下载字节回调，`model_artifact_workflow.py`还新增进度持久化，属于异常恢复/状态行为变更；原始配色新增有序角点映射、历史链恢复伴随文件，以及配色候选必须保留有效原色证据的保存条件，属于历史资产/保存行为变更，不能作为纯提示文案调整验收。保留原件/哈希校验和失败回退可降低风险；完整实窗保存/撤销/历史重开及贴图模型矩阵未由本轮覆盖。使用当前源码与最终包Python运行时、离线网络守卫运行`test_yoyoclaw.py`31项、`test_model_provider_gateway.py`26项、`test_artifact_restart_recovery.py`4项全部通过，未发真实生成请求；初始外部Python缺少cryptography/Pillow导致的测试环境错误保留在普通`.py.log`，切换包内匹配依赖后对应`.packaged-runtime.log`通过，不将其视为产品缺陷。源码匹配的r3 `slic3rutils_tests.exe [OriginalAppearance]`为7通过、1因符号链接权限不足跳过，593断言通过，日志同目录`original-appearance-tests.log`。`SLIC3R_APP_KEY=OrcaSlicer`、`SoftFever_VERSION=2.5.0-beta`及`SLIC3R_VERSION=02.08.01.55`仍不变，未发现品牌版本V1.0.0直接降级底层预设/3MF兼容版本。建议兼容读取同时支持旧Orca及Honor头，保留旧头测试并补新头覆盖，不以修改旧fixture掩盖回归。本轮仅审查、增量测试及协调记录，无产品/测试源码修改、提交、推送、应用启动或付费生成；修复待明确授权，原白屏暂停、冲突/擦料塔仅分析范围保持。
+
+本地合入记录（2026-10-30，安装包交付后）：用户明确要求代码合入最近一次提交、不新增提交记录；沿用此前不提交Markdown的范围。`git commit --amend --no-edit`将原`ed0a68dc8d16a11415b189146a85050336f60da5`替换为`fbad5cf7050d4348c48b52429f99e13123891c83`，分支仍为`codex/team/integration`，父提交仍为`944f331a13733920ba17a428f74e60cdc631d9cd`，提交说明逐字保持、提交数未增加。差异仅9项：`BBLTopbar.cpp`、`CanvasNotificationLayout.hpp`、`NotificationManager.cpp/.hpp`、`RedesignModelWorkflow.cpp`、`test_ui_redesign.cpp`及`release/{package_literal_classifications.json,verify_package_contents.py,test_verify_package_contents.py}`；均与r3已构建快照逐项SHA256相同，提交前后diff检查通过，暂存区为空，剩余仅两份协调Markdown和旧`.planning/`。本轮不改产品源码、不重建/重复测试、不提交Markdown、不推送或发布；复用下述原构建与验证证据。安装包仍保留原基线加未提交快照的真实构建身份，未将amend后的提交号回填为构建来源，包字节不变。发布未验、白屏暂停及冲突/擦料塔仅分析范围保持。
+
+最终安装包交付（2026-10-30）：r3在`.tmp/dev/build`执行`release/build_internal.ps1`完整流程exit 0，最终基础HEAD为`ed0a68dc8d16a11415b189146a85050336f60da5`，完整未提交快照source identity=`3ba299b60ec2e642a313ea278526556b3d4be2b47f8361d5466343178bbdb4e8`，`source_clean=false`；完整文件/补丁保存在`.tmp/dev/package-honor-20261030/source-r3`。交付`.tmp/dev/packages/20261030-honor-v1.0.0-r3/Honor Forge Studio_V1.0.0_20261030.exe`，247,960,783 bytes，SHA256=`FE136AC058DA1F6708319F82982DC4A2E930B59C4D8480D74A3EDC913B64D83B`；该文件为已通过完整流程的生成安装器同字节命名副本，原名/原始清单/内容报告均保留，交付清单补记原名和未验状态，未重签或修改EXE字节。随附`.sha256`及`.manifest.json`；回执`.tmp/dev/package-honor-20261030/delivery.json`。产品配置为Honor Forge Studio/V1.0.0，实际随包EXE/DLL产品名一致、Windows文件版本1.0.0.0；EXE SHA256=`9529c436f7aee2cd00b17ef0dbe880e6bd4eff4ddad04d62599d7364c119e505`，DLL SHA256=`c96462df1a55707614bf68f26f4067b9322ad27eecec382d1a20eb74f5341c2c`。
+
+最终自动验证：EXE/ZIP实际内容扫描分别19,669/19,661项，均`NOT_DETECTED_WITHIN_SCOPE`、零findings、零gaps；ZIP为`95D11EE32B5863D245618684E7B1C4C88FE0E6769B19A00590018ADAB42D5E1B`，保留为辅助验证产物。实际最终NSIS解出19,555应用文件、665,250,222 bytes，与CPack安装树逐项SHA256相同；7-Zip完整性通过。71项ModelGenerationPresentation（8,927断言）、259项AI/SmartSlicing（3,622断言）、53项Python集成守卫和24项包扫描器回归通过；完整日志`.tmp/dev/package-honor-20261030/package-r3.log`，载荷证据`payload-verification-r3.json`。集成门禁完整Git检查通过，未使用预算例外；冻结源码身份在包装末尾再次验证一致。构建后仅增量更新协调文档，不能将更新后的文档状态反写为原构建快照。
+
+发布边界：本地Windows x64安装包构建及自动检查已完成，发行channel仍为项目既定internal，不代表正式对外发布资格。未数字签名；新包实窗启动验收动作此前被自动审批明确拒绝（仅返回blocked by policy），未执行，不通过其他入口重试；Program Files标准用户安装/启动、模型目录创建/打开、卸载及最终视觉/真实打印未验。保留原PID1660、用户工程和配置，不自动恢复白屏、实施冲突提示/擦料塔优化或做付费生成。产品/测试/发布检查器与最终快照匹配；r1/r2失败候选和首轮扫描失败证据保留，不作为最终通过证据。未提交、推送、上传或发布到外部目的地；下一步人工完成发布前安装/实窗验收。
+
+安装包r2续记：完整快照`3473884694193e668b98124259d9c4783ef4ad6485dde84fd001861d8e4791cc`候选位于`.tmp/dev/packages/20261030-honor-v1.0.0-r2`。Release/集成门禁通过；EXE扫描19,669项、零findings/gaps，SHA256=`5493ffa3c861dfe08c99b92c1399e4406c3377d2d467a442cbcb61e9f9b5eee0`；19,555应用文件从实际NSIS解出并与安装树逐项一致，未启动。随后ZIP扫描因品牌更名后的`HonorForge_x64/python/Lib/site-packages`前缀未纳入既有精确依赖路径归一化，误报cryptography的两个公开协议字串，原生EXE无此前缀故已通过。`release/verify_package_contents.py`仅补充脚本实际使用的HonorForge_x64/arm64前缀，保留OrcaAI_x64兼容，不允许任意根目录；`release/test_verify_package_contents.py`扩展已有精确路径/字串及协议标记回归，覆盖新前缀和追加secret/修改文件仍阻断，24/24通过，旧无关路径阻断继续保持。证据`.tmp/dev/package-honor-20261030/{package-r2.log,payload-verification-r2.json,scanner-prefix-after.log}`。该候选完整包装流程仍未通过，不作为最终交付；冻结r3再跑完整门禁，GUI明确拒绝不重试。变化仅在打包检查器/审计记录及回归，不改切片/供应商业务。
+
+安装包授权与候选记录（2026-10-30）：用户明确要求将当前最新修改构建为Windows安装包，命名`Honor Forge Studio_V1.0.0_20261030.exe`。复用`.tmp/dev/build`，不提交、不推送或上传；`config/product.json`产品名/版本为Honor Forge Studio/1.0.0，未启用已明确关闭的人像识别实验。首候选`.tmp/dev/packages/20261030-honor-v1.0.0`按完整未提交快照`41d14078c7c7834c9577aec6d3efdbca09c1afb3e7126c58d7c20193278bc1c4`构建，集成门禁通过、NSIS/ZIP生成，实际EXE载荷19,555应用文件与CPack安装树逐项哈希一致；但内容扫描报两个`yoyoclaw_client.py`默认占位字串，未完成后续包装门禁，因此该候选不可交付。核实仅旧公开字串审计文件哈希过期，两个字串哈希仍完全匹配既有记录；`release/package_literal_classifications.json`只将该Windows文件指纹改为`57b48b9644d82f3b76d7ce6950286e2cefb1488a28dacfb3c9777103d61f2d16`，不改供应商代码或扫描规则。既有扫描器回归修前24项中1失败、修后24/24通过，仍验证追加未知secret返回阻断。证据`.tmp/dev/package-honor-20261030/{package.log,scanner-before.log,scanner-after.log,payload-verification.json}`。冻结新r2快照再打包，保留失败候选。实际解包程序使用独立datadir启动验收的exec动作被自动审批明确拒绝，原文仅`blocked by policy`；动作未执行，不换工具/入口重试或将其混同脚本内容扫描失败。最终新包实窗启动、标准用户Program Files模型目录与安装/卸载未验，未签名；不能据此宣称正式发布验收通过。此前白屏暂停及仅分析的冲突/擦料塔建议保持，不扩大实施。
+
+最新范围决定：用户明确暂停此前切片完成→Preview白屏修复，插入右下角切片进度遮住通知、顶部标题栏与内容之间白线两项，本轮只分析不改产品代码。负责本会话 / `codex/team/integration` / `ed0a68dc8d16a11415b189146a85050336f60da5`。停止前轮构建会话，未安装、替换或启动新构建产物，当前Git产品/测试文件无未提交差异；前轮未交付的白屏尝试及测试不得记为通过，也不自动恢复实施。保留运行实例、模型/配置及既有忽略目录，不操作正在使用的窗口。
+
+分析证据：`RedesignModelWorkflow.cpp:1720` 的Honor `m_slice_progress_overlay` 是wx子窗口，位置按画布大小、固定320×46 DIP及左下导航器128 DIP区域计算，与右下通知占用无关；`NotificationManager.cpp:3176` 对原生ImGui通知则从bottom_margin开始，按实际get_top()+GAP_WIDTH逐项向上堆叠。两套布局没有共享当前画布的可见占用，wx子窗口还会盖住下层GL绘制的文字/按钮；因此单纯Raise或固定向上挪动无法按通知数量/高度可靠避让。原生SlicingProgressNotification本身已使用initial_y，本轮不将其误判为完全没有堆叠实现。
+
+建议方案：保留现有切片进度来源和自绘控件，新增仅供显示布局使用的、当前canvas对应的可见通知实际边界信息；无通知维持原位置，有横向重叠通知时取其最上沿，令进度框顶部=min(原顶部, 通知最上沿-间距-进度框高度)。通知新增/关闭/折叠/换行及窗口/DPI变化同步重新布局，忽略Hidden/Finished及其他canvas的旧坐标，避免通知消失后留下空档；空间不足时约束在视口内并限制过长通知占用，不压住重要错误。只改变显示坐标/占用信息，不改切片算法、参数、进度值、取消回调及G-code、统计/保存/导出。后续验收覆盖0/1/多条通知、长文/折叠/关闭、智能和原生切片、窄窗与DPI。
+
+白线证据与限定：`BBLTopbar.cpp:129` 的CenteredTitle最佳高度30 DIP，`:440` 的m_toolbar_h固定30 DIP，`:583` Realize重新计算布局后`:611`又手动SetSize回该高度；本机wxWidgets auibar.cpp默认上下padding各2 DIP、DoGetBestSize返回Realize的hint。因此有AUI布局最佳高度与手动绘制高度不一致的明确风险，可能露出MainFrame浅色底；同时`:142` DrawBackground只设brush而未显式设pen，边缘绘制也应统一。MainFrame上下布局没有额外白色分隔控件。截图符合标题栏交界的显示瑕疵，尚无窗口几何/像素证据把具体白色全部归于某一来源，不宣称已实窗确认。
+
+白线建议：仅Honor新UX统一标题栏内容高度、AUI上下留白、best/min高度与实际Sizer分配，移除与布局冲突的强制尺寸；标题栏及交界背景连续填色，明确无浅色描边。保留Logo、拖动/双击最大化、最小化/关闭与旧Orca原生窗口行为，不修改Windows全局主题或GL/切片业务。后续同时验普通/最大化、智能/原生、页面切换及不同DPI。两项待用户确认实施；本轮只读源码及本地wxWidgets依赖，未构建/GUI验证这两项，仅更新既有协调记录，无提交/推送。下方账号与其他历史工作保留为背景，不自动接管。
+
+实施续记（2026-10-30，最新决定）：用户“实施修改”明确授权上述两项局部显示修复；本节前文保留为分析来源，原“待确认”状态由本段承接。白屏修复仍暂停。负责会话/分支/基线不变。`CanvasNotificationLayout.hpp`缓存当前canvas/尺寸的最近通知边界，NotificationManager在渲染后仅在几何变化时通知wx布局；RedesignShell按横向重叠通知最上沿加8 DIP间距避让，通知关闭/收起或画布变化后重新计算。通知占满视口时暂隐额外进度浮框，保留左侧原进度/取消与重要错误可见，未限制或改写原通知正文。Honor标题栏去掉AUI上下留白，统一best/min/实际高度并清除旧最小高度钳制，背景无描边完整填充；旧Orca非Honor绘制分支保持。修改不含切片算法、参数、任务状态、进度来源、取消回调、G-code和统计/保存/导出逻辑。
+
+源码/构建身份：基线`ed0a68dc8d16a11415b189146a85050336f60da5`加本轮未提交源码；最终Windows Release构建`.tmp/dev/logs/20261030-182349-945/result.json`通过，source identity=`8c581cbd2c12fc2d38162b8f967ebe963600906d1f2afe26bc4631bbe5c126d1`。`.tmp/dev/run/honor-forge-validation`完整19,449文件校验通过，构建/安装/加载DLL SHA-256均为`4f6cb041c5614987cac5bf9b02f46f1e360f009818e68214d98cd68773a028cc`。交付前仅更新协调文档，产品/测试文件逐项哈希与构建快照一致；不能将此运行程序标为干净HEAD提交版本。
+
+验证与边界：CanvasNotificationLayout定向3/3通过，见`.tmp/dev/logs/20261030-181759-738/cpp-tests.log`；随后仅标题栏最小高度复核补改，最终应用已重编译并实窗核对。独立数据`.tmp/dev/data/preview-loading-validation-20261030`、PID38628、sidecar18769，使用原本地3MF副本完成两次真实智能切片/G-code预览，主窗口实看无通知原位、模型信息展开时向上避让、收起时下移；通知运行中新增也上移，末次右侧部分被无关系统提示遮住，未据此宣称全部画面无遮挡。智能准备/最终Preview、智能↔原生往返及普通/最大化标题栏未再见截图中的浅色横条，Logo和窗口控制仍可见。启动日志dpi=2；多通知/长错误通知、100%/125%/150% DPI、运行中关闭通知后恢复原位的实窗瞬间及原生模式新切片未覆盖，关闭清空/多通知由定向自动测试覆盖，不冒称完整GUI矩阵或打印通过。完整身份、样本哈希和范围见`.tmp/dev/slicing-ux-20261030/verification.json`；原PID1660及其运行树/工程/配置保留。本轮无提交、推送、打包、付费生成或打印；用户视觉接受待反馈，白屏恢复须另有明确决定。
+
+2026-10-30 补充只读分析（同一编号，未授权新实施）：用户询问截图模型与擦料塔是否正常及开始/过程/完成逻辑。PID21472由用户直接运行现有`honor-forge-validation/Honor Forge Studio.exe`，未指定datadir，使用默认AppData配置；不同于前轮独立PID38628。冻结主日志至约18:51:36于`.tmp/dev/slicing-ux-20261030/slice-review-21472/application.log`，时间线为同目录`timeline.json`。截图对应首轮：18:46:41.715预估试切使用独立Print实例，18:46:45.441正式Print仅1对象，18:46:51.597路径冲突检查无冲突记录，18:46:53.786导出完成，53.797完成success=true，53.804采用正式统计，18:46:55.392预览fit完成。没有首轮重复模型/重复正式切片/旧统计冒充结果证据。瞬时读取原G-code核实500层、100mm、0.2mm、88.37g、5h54m52s、714切换及塔宽24mm/锥形15度/裙边配置3mm；该临时文件随后被用户重切覆盖并删除，未能保存逐层路径/实测塔深度，原解析脚本未完成，不能声称已逐层验证。相同结果的用户展开统计截图`codex-clipboard-9953acc8-b894-4be3-9819-da5598dd9e91.jpg`复核模型41.95g、支撑12.56g、塔33.86g，塔占总量38.3%；714是工具头切换、换料为0。
+
+规划依据与优化边界：当前WonderMaker ZR Ultra S四独立工具头，所选0.20mm Standard配置源码prime_volume=15、塔宽24，原G-code确认所选机型与四喷嘴；未冻结原G-code中的prime_volume/single_extruder_multi_material值，区分配置来源与当次完整配置证明。`Print.cpp:5510-5570`的Type2独立工具头分支按prime_volume规划，不应将单喷嘴换色flush矩阵/flush_multiplier当作本案塔大已证实根因；`ToolOrdering.cpp:1046`向下传播高层需要的塔分区，`WipeTower2.cpp:2314`按各层所需深度和最后塔层规划高度，锥形墙/稳定底座与无切换层结构也有开销。当前智能方案仅调整层高、墙/填充、速度、支撑等11项，不优化prime/tower/tool ordering，因此“综合最优”不代表已最小化塔耗材；大塔真实且高开销，但现有证据不足以认定规划算法错误或关闭塔安全。
+
+独立后续风险：18:50:08开始另次WorkbenchImport，18:50:21提交新增模型，18:50:30正式切片为2对象，18:50:39.766报告两同名OBJ路径冲突，44.533仍导出完成、44.542success=true。`PlaterUndoRedo.ipp:389`/LocalPrintModelImport追加对象，非替换既有导入；这解释对象数增长，不足以认定用户误操作或实现自动重复提交。当前摆放按导入时模型轮廓/障碍及2mm间距，不能保证随后生成的树支撑路径不相交；具体冲突位置未冻结，保留为待验证原因，日志并非模型与塔冲突。`Print.cpp:3955`存储冲突不终止，`GLCanvas3D.cpp:12411`走原生严重警告；`PartPlate.hpp:670`明确允许有conflict_result时打印/导出，`RedesignModelWorkflow.cpp:2120`及`OrcaPrinterAdapter.cpp:78`只承接越界/不可导出等状态，未单独将路径冲突提升到Honor完成摘要。此处存在风险信息承接缺口，但本轮没有实窗证据证明原生警告被隐藏，也未发送/打印。建议后续先补“切片完成但有路径冲突”的稳定摘要/确认与再次导入的追加/替换意图，再固定同一工程核对支撑间距、逐层切换和塔结构/prime开销，不直接关闭塔或盲目缩宽。本轮无产品/测试修改、构建、用户窗口操作或提交；前轮显示修复待反馈及暂停白屏的恢复点保持。
+
+<a id="upstream-state-50247bb89e"></a>
+
+## 上游短状态快照（50247bb89e，合并时保留）
+
+以下为上游提交当时的原始短状态，保留其返回点和未结边界；其中远端状态属于当时记录，不自动代表当前PR、审批或验收。当前工作以主计划和短状态的新入口为准。
+
+# 2026-11-03 当前：PR #54 门禁整改，同步已修复的集成基线
+
+主线：原模型格式可靠性 R3 / 本会话限定 CI 修复 / `codex/task/color-format-reliability-20261102`；用户明确要求分析并解决 PR #54 指定 Actions 失败。
+
+本轮：旧 head `2288173c18` 的 1233 项离线测试仅一项因缺 requests 失败，与 PR #59 相同。PR #59 的修复 head `fd6dc0dcca` 已通过云端 1233 项离线/13 项空白回归及架构检查，并已合入为 integration `e99c0ccf54`。切换到 PR #54 原分支，普通无冲突 merge 最新集成为 `9108856958`；模型格式修复五文件的最终 Git blob 保持原样，CI 从已合入基线继承 requests==2.32.3。仅补两份协调记录后更新原 PR；云端结果以新 head 为准。证据 `.tmp/dev/pr54-gate-20261103/`。
+
+未结：PR #54 保持 Draft；当前 beta 候选的原生编译、匹配 GUI、非作者审核及最终合入仍按原 PR 范围待验，不以 Python 门禁通过代替。
+
+下一步：核实新候选的完整 GitHub 门禁；保留原模型工作台/安装包及本机构建缓存，不执行原生构建或产品改动。
+
+计划变更：由 PR #59 已完成门禁修复切换至用户指定的 PR #54；范围仅正常同步集成、CI 核实与协调记录，不启用其他工作流、不标 ready 或自动合入。
+
+---
+
+# 2026-11-03 返回点：PR #59 的 CI 测试依赖补齐
+
+主线：`UX/N-WORKBENCH-STYLE-20261029` / 本会话 / `codex/task/honor-forge-ux-20261031`；承接用户要求解决 PR #59 门禁失败。
+
+本轮：run `41569447944` / job `125698882737` 在 1233 项离线测试中仅 1 项报错，YOYOClaw 网络恢复测试因 CI 未安装 requests 而访问 None.ConnectionError。隔离导入本地复现相同错误；仅在 guardrails 工作流补 `requests==2.32.3`，与 CMake 产品固定版本一致，不跳过测试或放松离线保护。补齐后的 31 项 YOYOClaw、53 项集成守卫及含 Git 的集成检查通过；完整 Python 3.12 云端结果须按更新后的 PR head 核实。证据 `.tmp/dev/pr59-gate-20261103/`。
+
+未结：新 head 云端检查、非作者审批和最终合入；原多 DPI、Program Files 安装、签名、实物及暂停项保持。
+
+下一步：完成 diff 复核后以普通提交更新原 PR，核实新候选的云端测试；不直接推送 integration 或自动合入。
+
+计划变更：同编号增加已授权 PR 门禁整改，仅工作流测试依赖及两份协调记录，不修改产品或重打包。
+
+---
+
+# 2026-11-03 返回点：本地提交与远端同步完成，PR #59 已创建
+
+主线：`UX/N-WORKBENCH-STYLE-20261029` / 本会话 / `codex/task/honor-forge-ux-20261031`；用户明确授权本地提交、同步远端并提交PR，已完成对应操作。
+
+本轮：标题栏修复形成普通提交`bb84a88f58`；远端integration最新`3b49fd89badd7421cdb8b739bafc714134161a98`的5项历史无冲突merge为`c0888d31db8ae351c45da92fed87805788b9dc67`，合并前后tree完全一致，保留此前4项本地功能提交。沿用原功能分支普通快进推送，创建[PR #59](https://github.com/arsenaltj/OrcaSlicer/pull/59)，目标integration，共85文件；未直接push integration。含Git集成检查、PR范围diff检查与四张架构视图各9项校验通过，已验Windows/定向回归/GUI因产品源码不变复用；最终追加仅本次协调记录。
+
+未结：GitHub CI正在运行、非作者审批和最终PR合入待维护者；无冲突不等于已合入。此前多DPI/逐帧录屏/Program Files安装/签名/实物和原暂停事项保持，已有安装包不含标题栏修复。
+
+下一步：按PR当前head查看CI与审核，维护者确认后合入；本机仍可试用已验titlebar-flash-20261103运行树。最终head和远端状态见任务附加PR及`.tmp/dev/submission-20261103/submission.json`。
+
+计划变更：本轮完成已授权本地提交、fetch/merge、功能分支push和PR创建；未执行PR最终合入或重打包。
+
+---
+
+# 2026-11-03 当前：标题栏灰条修复完成 Windows 构建及限定实窗验证
+
+主线：`UX/N-WORKBENCH-STYLE-20261029` / 本会话 / `codex/team/integration` / 基线`72854fe575`加未提交快照；用户已明确“确认实施”。
+
+本轮：Honor标题栏禁止AUI自动缩宽，compact/native合并更新，普通显隐不Realize，必要重建保留30 DIP最低高度及局部无擦除刷新。Windows构建、19466文件首轮完整核验及最终DLL差异核验通过；两轮94/86条尺寸/布局记录无缩宽，首轮发现native高度60→54 px后补改，最终全部60 px。200% DPI实窗完成相关页面/智能原生往返及窗口操作；六色3MF原件哈希不变，QA及侧车正常退出。完整证据`.tmp/dev/titlebar-flash-20261103/validation.json`。
+
+未结：100/125/150%及跨屏DPI未测，修复后30fps逐帧录屏未采集；用户视觉接受待反馈。此前Program Files安装/未签名/实物打印/原PR边界保持，旧Preview白屏暂停。既有V1.0.1安装包未重打，不含本次修复。
+
+下一步：试用已验证`.tmp/dev/run/titlebar-flash-20261103/Honor Forge Studio.exe`；遇复现再按对应页面/DPI采证。当前产品快照与最终构建匹配，仅构建后增量更新两份协调文档。
+
+计划变更：同编号由分析转为已授权实施并完成限定本机验证；无提交、推送或打包扩展。
+
+---
+
+# 2026-11-03 当前：页面切换标题栏灰条闪烁只读分析
+
+主线：`UX/N-WORKBENCH-STYLE-20261029` / 本会话 / `codex/team/integration` / `72854fe5754281504c41fd32e2ad4b959a7bfa1c`；用户提供09:50:09录屏，询问页面切换右上灰条原因。本轮仅分析，不授权实施。
+
+本轮：检查12.267秒/30fps/368帧视频，8次灰条约0.167–0.500秒；标题栏右侧区域及窗口按钮同步消失恢复，主要对应进入/离开保留的切片页。定位BBLTopbar::UpdateCompactSlicingVisibility每次Realize，AUI默认SetClientSize到工具hint宽，再由产品SetSize拉回整窗；页面locker只覆盖RedesignShell，标题栏为其兄弟。证据支持标题栏几何/绘制中间态暴露，精确WM消息和窗口宽度时序尚未对视频实例打点确认。证据`.tmp/dev/titlebar-flash-20261103/video-observations.json`和帧图，不含新GUI复现/构建。
+
+未结：建议Honor标题栏禁止AUI自动缩宽、合并模式更新并维持稳定高度/宽度，隐藏工具仅更新可见性，局部协调绘制及暗色兜底；需用户明确实施后复现、修复并验普通/最大化、智能/原生、100/125/150/200% DPI和窗口控制/拖动。此前Program Files安装、未签名与实物打印等边界保持。
+
+下一步：交付原因与方案；本轮未改产品/测试/包、未启动应用、未提交或推送。模型修复及V1.0.1本地提交已完成，返回点保留于下方。
+
+计划变更：同编号新增只读显示问题分析，旧Preview白屏仍暂停，不因本次分析恢复。
+
+---
+
+# 2026-11-03 当前：模型修复与V1.0.1打包代码本地提交
+
+主线：`UX/N-WORKBENCH-STYLE-20261029` / 本会话 / `codex/team/integration`；用户明确“提交代码形成提交记录”。
+
+本轮：将准确拓扑诊断、增强修复及几何保护、真实历史复检、失败详情/保留/定位/重试、弹层布局及V1.0.1 commercial打包入口、测试与协调记录形成普通本地提交，标题`fix: strengthen model repair and prepare Honor Forge 1.0.1`，准确哈希以Git记录为准。20项变更均属于本轮，18项产品/测试/打包文件与已验候选快照匹配；复用12/12历史批量及GUI、301项定向C++、53项Python守卫、71项展示/259项智能切片、Windows构建和实际包检查，不重复构建。
+
+未结：Program Files标准用户安装启动/模型目录验收待手动安装；安装包未签名，实物打印及原PR/暂停事项保持。既有候选仍记录构建时基线加完整快照，不冒充本次提交后重新构建的包。
+
+下一步：查阅本地提交记录；用户安装后按前轮返回点继续安装验收。完整提交证据`.tmp/dev/mesh-repair-20261103/submission.json`，包与验证证据保持不变。
+
+计划变更：增加明确本地提交授权，不扩大为push、PR、上传发布或其他暂停工作。忽略的用户配置、私人模型、构建产物和日志不纳入提交。
+
+---
+
+# 2026-11-03 当前：模型自动修复验证通过，Windows V1.0.1候选包已构建
+
+主线：`UX/N-WORKBENCH-STYLE-20261029` / 本会话 / `codex/team/integration` / 基线`f6db0bf27ef199468292b5573df17fc999f2c875`。用户授权模型检查修复、历史模型验证及Windows安装包，供其发布。
+
+本轮：修复准确诊断、CGAL/原生增强修复及几何保护、历史实际复检、失败保留/详情/定位/重试、详情遮挡和按钮裁切。12项真实历史批量及真实GUI均通过，原件哈希不变；301项定向C++通过。包内程序已实窗复验失败/正常详情和六色3MF重开，正常显示990862面/494881点。原生导入/撤销重做及显式切片通过，导出478层、T0–T5、1089563条挤出移动G-code；悬空警告保留，非实物打印通过。
+
+未结：标准用户安装到Program Files后的启动/打开模型目录验收待用户手动安装与UAC处理；已发出具体新包/独立安装目录说明。安装包未签名，实物打印、原PR及暂停事项保持。未上传发布、提交或推送。
+
+下一步：用户安装后核对新目录中程序身份、标准用户启动和用户数据models/downloads、exports、projects；若暂缓则按候选包交付，不声明完整发布资格。新包`.tmp/dev/packages/20261103-honor-v1.0.1-r2/`；EXE和ZIP、SHA256及完整manifest均已生成，commercial通道严格集成门禁、实际内容扫描、53项Python守卫、71项展示/259项智能切片及压缩完整性通过。证据`.tmp/dev/mesh-repair-20261103/validation.json`。独立QA正常退出，用户原件/配置/运行树未覆盖。
+
+计划变更：同编号由实施更新为限定软件验证和包构建完成；Program Files验收保留待办。包内冻结完整未提交快照身份`6e8bb59edab7d27bcdd7f58eb66b291fb32670cfd0c8c8ac380cd1afb559018c`，本次构建结束后仅增量更新两份协调文档，产品/测试仍与包内快照匹配。
+
+---
+
+# 2026-11-02 返回点：三项UX修复本地代码提交
+
+主线：`UX/N-WORKBENCH-STYLE-20261029` / 本会话 / `codex/team/integration`；用户明确“提交代码形成记录”。
+
+本轮：将暂停旧应用更新、修复分页箭头和退出美颜覆盖层及协调记录形成普通本地提交，标题`fix: hide legacy updates and correct workbench overlays`，哈希以Git记录为准。33项产品/资源快照与已验构建逐项匹配；复用164/164定向C++、Windows构建、19466文件安装校验、含Git的AI集成检查及200% DPI实窗结果，不重复构建。证据`.tmp/dev/ux-three-20261102/validation.json`。
+
+未结：精确100/125/150%及跨屏DPI、放弃返回和刻意迟到回调未单独实窗验收；原实物打印、套装保存重开后新耗材边界、2D网络细因、PR和暂停事项保持。
+
+下一步：可直接试用`.tmp/dev/run/honor-forge-validation/Honor Forge Studio.exe`；独立QA及侧车已正常关闭，用户配置/原件保留。
+
+计划变更：本轮新增明确本地提交授权；旧`.planning/`及忽略的私人配置/模型/运行产物不纳入，不扩大为推送、PR或发布。
+
+---
+
+# 2026-11-02 当前：人物/萌宠六色套装本地代码提交
+
+主线：`UX/N-WORKBENCH-STYLE-20261029` / 本会话 / `codex/team/integration`；用户明确要求“提交代码，形成代码提交记录”。
+
+本轮：将人物/萌宠六色、删除旧年轻向套装、自动同步/回滚/撤销、运行时准备修复及相关测试和协调记录形成新的普通本地提交；标题`feat: add Honor people and pet six-color suites`，哈希以Git记录为准。产品与测试沿用已验证快照。
+
+未结：实物打印、全面视觉质量、GUI取消及保存重开后不覆盖新耗材尚未完整验收；持久化/双白/支撑绑定有定向自动回归。2D网络细因、原PR及暂停事项保持。
+
+下一步：可直接试用已更新的`.tmp/dev/run/honor-forge-validation/Honor Forge Studio.exe`。Windows构建、19466文件安装校验、131/131定向C++、34项runtime回归及含Git的AI集成检查通过；最终EXE实窗已验两类目录、ABS→PLA、人物语义/萌宠近色自动同步、失败回滚及模型/耗材撤销重做，QA已正常关闭。证据`.tmp/dev/honor-palettes-20261102/validation.json`。
+
+计划变更：本轮增加明确的本地提交授权，不扩大为推送、PR、发布或其他事项；旧未跟踪`.planning/`及忽略的私人资产/配置/构建证据不纳入提交。
+
+---
+
+# 2026-11-02 返回点：独立配置与Honor Forge六头代码本地提交
+
+主线：`UX/N-WORKBENCH-STYLE-20261029` / 本会话 / `codex/team/integration`；用户明确授权形成新的本地代码提交记录。
+
+本轮：独立品牌数据目录/配置、Honor Forge六独立喷头预设/工艺/耗材、动态向导与回归及协调记录纳入普通提交；标题 `feat: isolate Honor Forge settings and add six-head printer`，准确哈希以Git记录为准。产品/测试与前轮验证快照保持一致，沿用已通过结果。
+
+未结：2D连接失败的网络细因、真实六头固件/偏移/实物打印仍未验；原PR #53及暂停事项保持。
+
+下一步：本地Git记录可查阅；不自动推送、更新PR或续跑其他事项。旧.planning及忽略的私人配置/资产保持原样。
+
+计划变更：本轮新增明确的本地提交授权，取代历史“不提交”阶段限制；未扩大为远端操作或产品修改。
+
+---
+
+# 2026-11-02 返回点：2D设计图失败原因只读诊断
+
+主线：`UX/N-WORKBENCH-STYLE-20261029` / 本会话 / `codex/team/integration`；前轮独立配置与六头软件验证已交付，当前仅承接用户询问失败原因。
+
+本轮：17:59任务0198c046-3567-4ada-bf81-bbcb39cf55c8记image_connection_failed、进度11%、无法连接预处理服务；对应GPT远端网络连接异常分支。当前本地侧车已恢复可达，启动瞬时超时不是此次根因。
+
+未结：当前请求底层exception_chain/诊断ID未取得，可见sidecar日志仍为旧验证实例；具体代理/DNS/TLS/超时未能细分。前轮实机打印及原PR/暂停事项保持。
+
+下一步：按当前实例诊断细分连接失败；本轮未重试付费生成、改产品/配置或构建。
+
+计划变更：原编号增量记录只读结论，不自动扩为实施或生成授权。
+
+---
+
+# 2026-11-02 返回点：Honor Forge Studio 独立配置与 Honor Forge 六头机型软件验证完成
+
+主线：`UX/N-WORKBENCH-STYLE-20261029` / 本会话 / 本地 `codex/team/integration`；用户已确认实施独立配置品牌和向导新增 Honor Forge 六头机型，并进行验证。
+
+本轮：独立数据目录/配置文件、机器ID及Honor Forge六独立喷头预设/工艺/耗材和向导已完成。Windows构建及完整运行树19458文件核验通过；Python5/5、向导/插件12/12、配置/3MF14/14、六工具切片/3MF2/2通过，audit27项含3项平台跳过。真实默认目录、四卡片、六头保存及独立配置重启恢复已验，旧OrcaSlicer.conf哈希未变。指定EXE已更新；完整结果与身份见主计划原项及 `.tmp/dev/honor-six-20261102/validation.json`。
+
+未结：实物打印未验，真实T0–T5宏、偏移、温控/净空仍须按硬件核对，当前继承Ultra S基线。既有欢迎占位/上游更新提示属于后续UI品牌范围。原PR #53及暂停事项保留于下方返回点。
+
+下一步：用户可继续默认配置窗口中的向导；QA实例已正常关闭，不重置用户选择。后续按实机参数做打印验证，原PR与暂停事项不自动续跑。
+
+计划变更：同编号两项由实施中更新为软件验证完成，保留硬件打印边界；未提交、推送或打包。
+
+---
+
+# 2026-10-31 返回点：本地代码已合入末次提交并推送 Draft PR #53
+
+主线：`UX/N-WORKBENCH-STYLE-20261029` / 本会话 / `codex/task/honor-forge-ux-20261031` / `d6c2c4eb66af3f79a8c7f3de1f5da78f07a187fc`。用户明确授权代码amend、同步远程并创建PR；[Draft PR #53](https://github.com/arsenaltj/OrcaSlicer/pull/53)指向`codex/team/integration`。
+
+本轮：仅7个新增源码/测试文件amend进最后一次提交，原fbad5cf705被d6c2c4eb66替换，父提交944f331a13及本地2次提交数量不变。fetch origin后integration仍为73bd9a98b47caaa2b602c2a7059b359e7fb07e76，merge返回Already up to date、无冲突。按SOP建立PR分支并普通push（远端head已核对），未强推integration。PR累计116个文件、2次提交，无Markdown/本地资产；两个协调MD及旧.planning保留未提交。
+
+未结：PR为草稿，未合入；非作者复核/维护者人工合入及AI integration checks尚待完成。远端架构分析/图评论、Shellcheck已成功；build_all push为失败且0 job，精确集成基线同工作流也失败且0 job，不能当作源码编译失败或跨平台构建通过，根因仍待独立排查。原多DPI/逐帧GUI矩阵、发布验收和旧r3包未含修复边界保持，切片完成→Preview白屏继续暂停。
+
+下一步：查看PR #53当前Checks，完成候选CI和非作者复核后由维护者人工合入。源码与已验Windows构建逐项对应，未因amend重复编译；用户仍可双击`.tmp/dev/Start-ImportTransitionTrial.cmd`试用独立测试版。本轮提交/同步/PR证据`.tmp/dev/submission-20261031/`；不自动合入、打包、发布或续跑暂停事项。
+
+计划变更：原编号由本地修复交付扩展为用户明确授权的代码提交/远程同步/PR；本地实施验收详情仍在主计划原项。PR分支是从本地integration承接待提交修改所需，不是新功能批次；原账号PR #52返回点保留于下方。
+
+---
+
+# 2026-10-28 保留返回点：荣耀账号 Draft PR #52，CI空白比较范围修复
+
+主线：`UX/N-HONOR-AUTH-20261024`，用户明确要求创建PR提交本地新增代码。已创建 [Draft PR #52](https://github.com/arsenaltj/OrcaSlicer/pull/52)，源 `codex/task/smart-slicing-local-integration-20261027`，目标 `codex/team/integration`；原账号验收及本机试用版保持。
+
+本轮：用户已授权修正。普通功能PR改用目标/源merge-base，原上游导入特殊处理仅保留给codex/upstream-*；push/合并队列及合并结果检查保留。13项真实Git历史/实际PowerShell回归通过，按原PR追加普通提交并核对云端结果；最终源/检查见 `.tmp/dev/ci-whitespace-20261028/submission.json`。产品源码、账号UX和原测试程序保持。
+
+未结：修复后新head的云端检查须核实；Team integration candidate被手动停用、build_all零job失败仍独立待处理。最新beta编译/GUI、非作者复核及维护者合入待完成；旧构建证据仅为c5a40c3a01基线，原账号与另一台PC未验边界保持。
+
+下一步：核对PR #52新提交的空白检查和相关回归结果，独立阻塞继续按团队SOP处理。现有 `.tmp/dev/Start-HonorTrial.cmd` 仍启动原试用版，保留用户数据与旧.planning；不自动启动其他扩展。
+
+计划变更：本轮明确授权空白门禁整改及原PR更新；范围限CI、回归和协调记录，不扩大为其他工作流启停或直接合入。

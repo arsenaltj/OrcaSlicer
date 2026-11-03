@@ -27,6 +27,7 @@
 #include "libslic3r/PrintBase.hpp"
 #include "libslic3r/CustomGCode.hpp"
 #include "libslic3r/Layer.hpp"
+#include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/libslic3r.h"
 #include <limits>
 #include <map>
@@ -41,6 +42,48 @@
 
 using namespace Slic3r;
 using namespace Slic3r::Test;
+
+TEST_CASE("Honor Forge slices extrusion on all six physical tools", "[MultiFilament][HonorForge]")
+{
+    const bool tower = GENERATE(false, true);
+    const auto profiles = boost::filesystem::path(TEST_DATA_DIR).parent_path().parent_path() / "resources/profiles";
+    PresetBundle library;
+    library.load_vendor_configs_from_json(profiles.string(), PresetBundle::ORCA_FILAMENT_LIBRARY,
+        PresetBundle::LoadSystem, ForwardCompatibilitySubstitutionRule::EnableSilent);
+    PresetBundle vendor;
+    vendor.load_vendor_configs_from_json(profiles.string(), "WonderMaker", PresetBundle::LoadSystem,
+        ForwardCompatibilitySubstitutionRule::EnableSilent, &library);
+    const auto* printer = vendor.printers.find_preset("Honor Forge 0.4 nozzle", false);
+    const auto* process = vendor.prints.find_preset("0.20mm Standard @Honor Forge", false);
+    REQUIRE(printer != nullptr);
+    REQUIRE(process != nullptr);
+    auto config = multifilament_config(6);
+    config.apply(printer->config);
+    config.apply(process->config);
+    config.set_deserialize_strict({{"filament_map_mode", "Manual"}, {"filament_map", "1,2,3,4,5,6"},
+        {"enable_prime_tower", tower ? "1" : "0"}, {"skirt_loops", "0"}, {"brim_type", "no_brim"}});
+    size_flush_to_nozzles(config);
+    std::vector<TriangleMesh> meshes;
+    std::vector<std::vector<ConfigBase::SetDeserializeItem>> overrides;
+    for (int tool = 1; tool <= 6; ++tool) {
+        meshes.push_back(make_cube(5, 5, 1));
+        overrides.push_back({{"extruder", std::to_string(tool)}});
+    }
+    Print print;
+    Model model;
+    init_print(std::move(meshes), print, model, config, &overrides);
+    const auto output = gcode(print);
+    std::set<int> extruding_tools;
+    int tool = -1;
+    GCodeReader reader;
+    reader.parse_buffer(output, [&](GCodeReader& self, const GCodeReader::GCodeLine& line) {
+        const std::string command(line.cmd());
+        if (command.size() > 1 && command[0] == 'T' && std::isdigit(static_cast<unsigned char>(command[1])))
+            tool = std::stoi(command.substr(1));
+        if (line.extruding(self)) extruding_tools.insert(tool);
+    });
+    CHECK(extruding_tools == std::set<int>{0, 1, 2, 3, 4, 5});
+}
 
 TEST_CASE("Restoring an automatic filament assignment invalidates cached toolpaths", "[MultiFilament][AutoMapRestore]")
 {

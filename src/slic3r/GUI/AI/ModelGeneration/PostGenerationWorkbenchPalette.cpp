@@ -354,11 +354,13 @@ void ModelGenerationPanel::cancel_beauty_color_gate()
 
 void ModelGenerationPanel::toggle_printer_filament_trial()
 {
-    if (m_shutdown || m_apply_filaments_saving || !m_model_preview || !wxGetApp().plater()) return;
-    if (m_printer_filament_trial_active) {
-        exit_printer_filament_trial();
-        return;
-    }
+    if (m_printer_filament_trial_active) exit_printer_filament_trial();
+    else apply_model_palette_to_filaments();
+}
+
+bool ModelGenerationPanel::apply_model_palette_to_filaments()
+{
+    if (m_shutdown || m_apply_filaments_saving || !m_model_preview || !wxGetApp().plater()) return false;
     auto report = [this](std::string message, bool error) {
         m_workbench_printer_filament_notice = message;
         m_workbench_printer_filament_notice_error = error;
@@ -369,19 +371,19 @@ void ModelGenerationPanel::toggle_printer_filament_trial()
     const auto snapshot = workbench_snapshot();
     if (!snapshot.can_edit_project_colors || m_finishing_candidate.size()) {
         report("模型处理中或存在未接受候选，请先完成当前操作。", true);
-        return;
+        return false;
     }
     const auto entry = capture_beauty_candidate();
     const auto card = m_model_preview->model_color_pack_for_filament_import();
     if (!card) {
         report("当前没有可导入的模型配色，请先生成 AI配色或完成试色。", true);
-        return;
+        return false;
     }
     auto* bundle = wxGetApp().preset_bundle;
     auto* plater = wxGetApp().plater();
     if (!bundle || !plater) {
         report("当前没有可用的打印机耗材配置。", true);
-        return;
+        return false;
     }
     const auto* honor_suite = m_model_preview->active_honor_filament_suite();
     PrinterFilamentConfig::StagedColorPackImport staged;
@@ -393,7 +395,7 @@ void ModelGenerationPanel::toggle_printer_filament_trial()
         report(error.empty() ? honor_suite
             ? "荣耀耗材套装无法生成六个实体耗材槽，工程保持原状。"
             : "色卡无法生成可用的实体耗材与叠色配方，工程保持原状。" : error, true);
-        return;
+        return false;
     }
 
     std::vector<size_t> preview_bindings = staged.bindings;
@@ -403,17 +405,30 @@ void ModelGenerationPanel::toggle_printer_filament_trial()
         if (!trial.source_to_target_slot.empty()) {
             used.reserve(trial.source_to_target_slot.size());
             for (const size_t suite_slot : trial.source_to_target_slot) {
-                if (suite_slot >= staged.bindings.size()) {
+                if (suite_slot >= honor_suite->model_slot_count) {
                     report("荣耀套装区域与实体槽绑定不完整，工程保持原状。", true);
-                    return;
+                    return false;
                 }
                 used.push_back(staged.bindings[suite_slot]);
             }
-        } else if (trial.colors.size() == staged.bindings.size()) {
-            used = staged.bindings;
         } else {
-            report("荣耀套装没有可用于当前模型区域的完整槽位映射，工程保持原状。", true);
-            return;
+            // People palettes are in physical order; pet nearest matching may
+            // reuse a model color. Resolve only against model slots so white
+            // never binds to the identically colored support spool.
+            for (const auto& color : trial.colors) {
+                size_t match = honor_suite->model_slot_count;
+                for (size_t i = 0; i < honor_suite->model_slot_count; ++i) {
+                    if (PrinterFilamentPreview::rgb8(color) ==
+                        PrinterFilamentPreview::rgb8(honor_suite->physical_slots[i].color)) {
+                        match = i; break;
+                    }
+                }
+                if (match >= honor_suite->model_slot_count) {
+                    report("荣耀套装模型颜色与实体槽不一致，工程保持原状。", true);
+                    return false;
+                }
+                used.push_back(staged.bindings[match]);
+            }
         }
         preview_bindings = std::move(used);
     }
@@ -432,7 +447,7 @@ void ModelGenerationPanel::toggle_printer_filament_trial()
         const bool restored = rollback_entry();
         report(restored ? "无法恢复进入试色前的模型外观，请重新载入模型后再试。" :
             "无法恢复进入试色前的模型外观，且点击前状态恢复失败；请重新载入模型。", true);
-        return;
+        return false;
     }
 
     set_project_color_sync_suspended(true);
@@ -445,7 +460,7 @@ void ModelGenerationPanel::toggle_printer_filament_trial()
     if (!m_model_preview->apply_project_filament_palette(&preview_bindings)) {
         rollback_preview();
         report("色卡暂存成功，但模型配色无法绑定到耗材；工程和模型预览均保持原状。", true);
-        return;
+        return false;
     }
     std::string preview_error;
     if (!m_model_preview->activate_printer_filament_preview(&preview_error)) {
@@ -453,18 +468,18 @@ void ModelGenerationPanel::toggle_printer_filament_trial()
         BOOST_LOG_TRIVIAL(error) << "AI model-color import preview activation failed: "
             << preview_error;
         report("色卡暂存成功，但模型试色无法激活；工程和模型预览均保持原状。", true);
-        return;
+        return false;
     }
     if (PrinterFilamentConfig::capture(*bundle).signature != staged.source_signature) {
         rollback_preview();
         report("提交前打印机或耗材配置已变化，请重新导入色卡。", true);
-        return;
+        return false;
     }
     if (!plater->apply_printer_filament_config(*staged.configuration, staged.changes, error)) {
         rollback_preview();
         report(error.empty() ? "色卡提交失败，工程和模型预览均保持原状。" :
             "色卡提交失败，工程和模型预览均保持原状：" + error, true);
-        return;
+        return false;
     }
     m_model_preview->set_project_configuration_override({});
     set_project_color_sync_suspended(false);
@@ -482,6 +497,7 @@ void ModelGenerationPanel::toggle_printer_filament_trial()
     synchronize_workbench_project_palette(true);
     refresh_controls();
     publish_workbench_state();
+    return true;
 }
 
 void ModelGenerationPanel::exit_printer_filament_trial(const wxString& reason)

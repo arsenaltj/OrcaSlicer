@@ -8,6 +8,7 @@ param(
     [string] $SevenZipExecutable,
     [string] $SourceManifest,
     [string] $KnownIntegrationReport,
+    [ValidateSet('internal', 'commercial')][string] $DistributionChannel = 'internal',
     [switch] $SkipTargetedTests,
     [switch] $ValidateOnly
 )
@@ -16,6 +17,9 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+if ($DistributionChannel -eq 'commercial' -and $KnownIntegrationReport) {
+    throw 'Commercial packages require a fresh release integration check; KnownIntegrationReport is internal-only.'
+}
 
 function Resolve-OperatorPath {
     param(
@@ -160,7 +164,7 @@ if ($ValidateOnly) {
 $revisionArg = "-DORCA_AI_PACKAGE_REVISION:STRING=$Revision"
 $defaultsArg = '-DORCA_AI_INTERNAL_DEFAULTS_FILE:FILEPATH='
 & $cmakePath -S $repoRoot -B $buildPath $revisionArg $defaultsArg `
-    '-DORCA_AI_DISTRIBUTION_CHANNEL:STRING=internal' `
+    "-DORCA_AI_DISTRIBUTION_CHANNEL:STRING=$DistributionChannel" `
     '-DORCA_AI_WINDOWS_INSTALLER:BOOL=ON'
 if ($LASTEXITCODE -ne 0) {
     throw "CMake reconfiguration failed with exit code $LASTEXITCODE."
@@ -170,6 +174,7 @@ $packageArguments = @{
     BuildDir = $buildPath
     OutputDir = $outputPath
     Revision = $Revision
+    DistributionChannel = $DistributionChannel
 }
 if ($nsisPath) {
     $packageArguments.NsisDir = $nsisPath
@@ -238,7 +243,7 @@ if ($manifestCandidates.Count -eq 0) {
 $manifestPath = $manifestCandidates[0].FullName
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 if ($manifest.source_commit -ne $sourceHead -or $manifest.source_identity_sha256 -ne $sourceIdentity.source_identity_sha256 -or $manifest.package_revision -ne $Revision -or
-    $manifest.distribution_channel -ne 'internal') {
+    $manifest.distribution_channel -ne $DistributionChannel) {
     throw 'The generated manifest does not match the locked source identity and revision.'
 }
 $installerPath = Join-Path $outputPath $manifest.installer

@@ -116,7 +116,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
             options.smooth_surface = false;
             options.repair_mesh = true;
             const bool attempted = result.status != WorkbenchCheckStatus::Failed && !source_hash.empty() &&
-                !workbench_topology_safe(result) && repair_allowed && !attempts.count(key) && !canceled->load();
+                !workbench_topology_safe(result) && repair_allowed && (!automatic || !attempts.count(key)) && !canceled->load();
             auto progress = [weak, source, revision, presentation, canceled](WorkbenchCheckPhase phase, const std::string& text) {
                 wxGetApp().CallAfter([weak, source, revision, presentation, canceled, phase, text] {
                     if (!weak || weak->m_shutdown || canceled->load() || revision != weak->m_sequence ||
@@ -181,6 +181,11 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                     result.repair_reason += " 修复前 " + std::to_string(before_faces) + " 面/" +
                         std::to_string(before_vertices) + " 点，修复后 " + std::to_string(after_faces) +
                         " 面/" + std::to_string(after_vertices) + " 点。";
+                    result.repair_reason += "\n策略：" + repair.repair_strategy +
+                        "；双向采样偏差 " + std::to_string(repair.repair_sampled_deviation) +
+                        "，表面积变化 " + std::to_string(repair.repair_area_change_ratio * 100.) + "%";
+                    if (!repair.repair_geometry_verified)
+                        result.repair_reason += "；几何变化超出自动接受范围，请预览后确认。";
                 } else if (!repair.success && !canceled->load()) {
                     result.candidate_status = RepairCandidateStatus::Failed;
                     result.candidate_path.clear();
@@ -192,7 +197,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                     result.repair_reason = "修复未产生可验证的拓扑变化，原模型保留。";
                 }
             } else if (result.status != WorkbenchCheckStatus::Failed) {
-                result.repair_reason = AI::model_artifact_format(source) == "glb"
+                result.repair_reason = workbench_topology_safe(result) ? "" : AI::model_artifact_format(source) == "glb"
                     ? result.status == WorkbenchCheckStatus::Normal ? "" : "GLB 修复候选将以保留顶点颜色的 OBJ 预览生成，原始 GLB 保留。"
                     : bound_edits ? "当前模型含选区、语义、保护或局部配色标注；无法安全重映射面身份，未自动修改。"
                     : "此版本已自动尝试安全修复；撤销后不会重新应用。";
@@ -357,6 +362,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                         // original file, history, undo and rollback paths stay
                         // identical to an explicit user acceptance.
                         self->m_workbench_auto_repair = automatic &&
+                            repair.repair_geometry_verified &&
                             workbench_topology_safe(self->m_workbench_check_result) &&
                             self->m_workbench_check_result.appearance_mapped &&
                             self->m_workbench_check_result.appearance_confidence >= 0.99 &&
@@ -383,6 +389,8 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                             // accept/discard; the canvas no longer has a
                             // global candidate bar.
                             self->m_workbench_editing = true;
+                            self->m_workbench_check_card_visible = false;
+                            self->m_workbench_check_result.source = WorkbenchCheckSource::Manual;
                             self->m_workbench_check_result.summary += "\n修复候选已生成，请预览后接受或保留原模型。";
                         }
                     }

@@ -99,7 +99,8 @@ bool save_filament_color_pack(const FilamentColorPack& pack)
 }
 
 std::vector<FilamentColorPack> load_filament_color_packs() {
-    std::vector<FilamentColorPack> packs{young_portrait_color_pack()};
+    std::vector<FilamentColorPack> packs;
+    for (const auto& suite : honor_filament_suites()) packs.push_back(suite.color_pack());
     try {
         boost::filesystem::ifstream input(pack_file());
         if (!input) return packs;
@@ -113,7 +114,8 @@ std::vector<FilamentColorPack> load_filament_color_packs() {
                 pack.multi_colors = item.value("multi_colors", std::vector<std::string>{});
                 pack.color_types = item.value("color_types", std::vector<std::string>{});
                 const bool physical = item.value("schema", std::string{}) == "orca.filament-pack/v2";
-                if ((physical ? pack.valid_physical() : pack.valid()) && pack.name != packs.front().name) packs.push_back(std::move(pack));
+                if ((physical ? pack.valid_physical() : pack.valid()) && pack.name != u8"人物基础 · 年轻向六色" &&
+                    std::none_of(packs.begin(), packs.end(), [&](const auto& existing) { return existing.name == pack.name; })) packs.push_back(std::move(pack));
             } catch (const std::exception&) { /* One bad card must not hide later valid cards. */ }
         }
     } catch (const std::exception&) { /* Malformed user cards never prevent opening Orca. */ }
@@ -155,7 +157,7 @@ bool show_filament_color_packs(wxWindow* parent) {
            "所有使用这些槽位的模型都会换色，局部涂色范围保留。\n"
            "切换前自动保存旧色卡；可再次应用恢复颜色，新增槽位保留。\n"
            "沿用现有材料打印参数；请按真实装料核对槽位。\n"
-           "年轻向配色含蓝色、不含绿色；色卡不代表实物色准或叠色标定。"));
+           "模型使用前五槽，第六槽专供支撑；色卡不代表实物色准或叠色标定。"));
     layout->Add(description, 0, wxEXPAND | wxALL, dialog.FromDIP(12));
     auto* save = new wxButton(&dialog, wxID_ANY, _L("保存当前工程实体耗材色卡…"));
     layout->Add(save, 0, wxLEFT | wxRIGHT | wxBOTTOM, dialog.FromDIP(12));
@@ -165,7 +167,7 @@ bool show_filament_color_packs(wxWindow* parent) {
         wxTextEntryDialog naming(&dialog, _L("给这组色卡命名，之后可快速切换。"), _L("保存当前工程色卡"));
         if (naming.ShowModal() != wxID_OK || naming.GetValue().Strip(wxString::both).empty()) return;
         pack.name = naming.GetValue().Strip(wxString::both).ToUTF8().data();
-        if (pack.name == young_portrait_color_pack().name || pack.name == u8"上次应用前色卡") { wxMessageBox(_L("请使用其他名称，预制色卡和恢复色卡由系统保留。"), _L("保存色卡"), wxOK, &dialog); return; }
+        if (is_honor_filament_suite_name(pack.name) || pack.name == u8"上次应用前色卡") { wxMessageBox(_L("请使用其他名称，预制色卡和恢复色卡由系统保留。"), _L("保存色卡"), wxOK, &dialog); return; }
         try {
             save_pack(pack); packs = load_filament_color_packs(); choice->Clear();
             for (const auto& item : packs) choice->Append(wxString::FromUTF8(item.name));

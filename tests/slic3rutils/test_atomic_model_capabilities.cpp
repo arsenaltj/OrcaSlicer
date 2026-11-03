@@ -80,6 +80,9 @@ TEST_CASE("Workbench check summary stays compact while details retain diagnostic
     result.phase = WorkbenchCheckPhase::Idle;
     result.summary = "开放边 0；非流形边 0。";
     CHECK(workbench_check_status_line(result) == "模型检查已完成，未发现问题");
+    result.before_faces = 10; result.before_vertices = 12;
+    CHECK(workbench_check_detail_text(result).find("当前模型：10 面 / 12 点") != std::string::npos);
+    CHECK(workbench_check_detail_text(result).find("修复后：0") == std::string::npos);
     result.repair_reason = "已清理 2 个面。";
     result.before_faces = 10; result.after_faces = 8;
     result.before_vertices = 12; result.after_vertices = 11;
@@ -89,7 +92,10 @@ TEST_CASE("Workbench check summary stays compact while details retain diagnostic
     CHECK(details.find("修复前：10 面 / 12 点") != std::string::npos);
     CHECK(details.find("拓扑指标") != std::string::npos);
     result.status = WorkbenchCheckStatus::Attention;
-    CHECK(workbench_check_status_line(result, true) == "已忽略轻微问题，可继续导入切片");
+    CHECK(workbench_check_status_line(result, true) == "已确认开放边界风险，可继续导入切片");
+    CHECK(workbench_check_detail_text(result).find("自交检测：尚未完成") != std::string::npos);
+    result.self_intersections_checked = true;
+    CHECK(workbench_check_detail_text(result).find("自交检测：未发现自交") != std::string::npos);
 }
 
 TEST_CASE("Automatic checks wait for the workbench and keep one progress card through every phase",

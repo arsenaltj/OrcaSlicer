@@ -411,7 +411,7 @@ std::string default_data_dir()
     const boost::filesystem::path portable = boost::dll::program_location(ec).parent_path() / "data_dir";
     if (!ec && boost::filesystem::exists(portable, ec))
         return portable.string();
-    return xdg_config_dir(SLIC3R_APP_KEY);
+    return xdg_config_dir(HONOR_PRODUCT_DATA_KEY);
 }
 #endif
 

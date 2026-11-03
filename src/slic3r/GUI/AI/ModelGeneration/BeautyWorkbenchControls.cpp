@@ -578,7 +578,7 @@ void BeautyWorkbenchControls::synchronize(const boost::filesystem::path& source,
             }
         }
     }
-    if (m_ready && m_partition && (source != previous_source || !m_preview->beauty_partition_visible())) {
+    if (m_visible && m_ready && m_partition && (source != previous_source || !m_preview->beauty_partition_visible())) {
         m_preview->set_beauty_partition(m_partition->face_piece, m_surface->face_neighbors);
         m_preview->set_beauty_pick_callback([this](size_t face) { select_piece(face); });
     }

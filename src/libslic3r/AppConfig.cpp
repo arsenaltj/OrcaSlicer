@@ -1916,7 +1916,7 @@ std::string AppConfig::config_path(const std::string &data_dir, EAppMode mode)
 #else
     const char *extension = ".ini";
 #endif
-    const char *name = (mode == EAppMode::Editor) ? SLIC3R_APP_KEY : GCODEVIEWER_APP_KEY;
+    const char *name = (mode == EAppMode::Editor) ? HONOR_PRODUCT_DATA_KEY : HONOR_PRODUCT_VIEWER_DATA_KEY;
     return (boost::filesystem::path(data_dir) / (std::string(name) + extension)).make_preferred().string();
 }
 

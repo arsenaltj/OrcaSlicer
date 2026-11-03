@@ -101,7 +101,7 @@ inline bool valid_state(const State& state)
     const bool has_suite_id = !state.suite_id.empty();
     const bool has_suite_revision = !state.suite_revision.empty();
     if (has_suite_id != has_suite_revision ||
-        (has_suite_id && (state.source != 2 || !valid_suite_token(state.suite_id) ||
+        (has_suite_id && ((state.source != 2 && state.source != 1) || !valid_suite_token(state.suite_id) ||
                           !valid_suite_token(state.suite_revision))))
         return false;
     if (!valid_basis_signature(state.automatic_basis_signature) ||

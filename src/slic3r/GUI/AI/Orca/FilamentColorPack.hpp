@@ -75,6 +75,17 @@ struct HonorFilamentSuite {
     // Stable semantic role -> physical slot identity. Multiple roles may
     // intentionally share one physical color (for example hair and iris).
     std::map<std::string, std::string> semantic_role_slots;
+    // Legacy suites color with all six slots. New cards reserve the last
+    // physical spool for support, even when its RGB duplicates a model spool.
+    size_t model_slot_count {6};
+    std::string support_slot_id;
+
+    bool semantic_coloring() const { return !semantic_role_slots.empty(); }
+    std::optional<size_t> support_slot_index() const {
+        for (size_t i = 0; i < physical_slots.size(); ++i)
+            if (physical_slots[i].id == support_slot_id) return i;
+        return {};
+    }
 
     bool valid() const {
         if (id.empty() || category.empty() || name.empty() || revision.empty() || physical_slots.size() != 6)
@@ -91,10 +102,14 @@ struct HonorFilamentSuite {
         }
         std::sort(identities.begin(), identities.end());
         if (std::adjacent_find(identities.begin(), identities.end()) != identities.end()) return false;
-        return !semantic_role_slots.empty() && std::all_of(semantic_role_slots.begin(), semantic_role_slots.end(),
+        if (model_slot_count == 0 || model_slot_count > physical_slots.size() ||
+            (!support_slot_id.empty() && (!support_slot_index() || *support_slot_index() < model_slot_count)))
+            return false;
+        return std::all_of(semantic_role_slots.begin(), semantic_role_slots.end(),
             [&](const auto& binding) {
-                return !binding.first.empty() && std::binary_search(
-                    identities.begin(), identities.end(), binding.second);
+                const auto found = std::find_if(physical_slots.begin(), physical_slots.begin() + model_slot_count,
+                    [&](const auto& slot) { return slot.id == binding.second; });
+                return !binding.first.empty() && found != physical_slots.begin() + model_slot_count;
             });
     }
 
@@ -127,7 +142,8 @@ struct HonorFilamentSuite {
         };
         std::vector<std::string> result;
         result.reserve(physical_slots.size());
-        for (const auto& slot : physical_slots) {
+        for (size_t i = 0; i < model_slot_count; ++i) {
+            const auto& slot = physical_slots[i];
             const auto found = roles.find(slot.id);
             if (found == roles.end()) return {};
             result.push_back(found->second);
@@ -136,33 +152,27 @@ struct HonorFilamentSuite {
     }
 };
 
-inline const HonorFilamentSuite& young_portrait_honor_suite() {
-    static const HonorFilamentSuite suite {
-        "honor.people.young-six", u8"人物", u8"年轻向六色", "2",
-        {
-            {"skin-light", u8"清透浅嫩肤色", "#ECC3B2", "PLA"},
-            {"charcoal", u8"柔炭黑", "#282629", "PLA"},
-            {"milk-white", u8"冷调奶白", "#F6F7F9", "PLA"},
-            {"peach", u8"蜜桃浅橘红", "#EA9A92", "PLA"},
-            {"denim-blue", u8"雾感浅牛仔蓝", "#668CB6", "PLA"},
-            {"gray-brown", u8"柔灰棕", "#958B86", "PLA"},
-        },
-        {
-            {"Skin", "skin-light"},
-            {"Hair", "charcoal"},
-            {"Iris", "charcoal"},
-            {"Eyebrow", "charcoal"},
-            {"EyeSclera", "milk-white"},
-            {"Teeth", "milk-white"},
-            {"Lips", "peach"},
-            {"MouthInterior", "peach"},
-        },
-    };
-    return suite;
-}
-
 inline const std::vector<HonorFilamentSuite>& honor_filament_suites() {
-    static const std::vector<HonorFilamentSuite> suites {young_portrait_honor_suite()};
+    static const std::vector<HonorFilamentSuite> suites {
+        {"honor.people.six", u8"人物", u8"人物六色", "1", {
+            {"charcoal", u8"曜石黑", "#000000", "PLA"},
+            {"peach", u8"自然唇色", "#AF6E5E", "PLA"},
+            {"skin-light", u8"轻肤色", "#ECC3B2", "PLA"},
+            {"milk-white", u8"纯白", "#FFFFFF", "PLA"},
+            {"gray-brown", u8"岩石灰", "#A7A5A4", "PLA"},
+            {"support-white", u8"纯白 · 支撑材料", "#FFFFFF", "PLA"},
+        }, {{"Skin", "skin-light"}, {"Hair", "charcoal"}, {"Iris", "charcoal"},
+            {"Eyebrow", "charcoal"}, {"EyeSclera", "milk-white"}, {"Teeth", "milk-white"},
+            {"Lips", "peach"}, {"MouthInterior", "peach"}}, 5, "support-white"},
+        {"honor.pets.six", u8"萌宠", u8"萌宠六色", "1", {
+            {"model-white", u8"纯白", "#FFFFFF", "PLA"},
+            {"model-black", u8"曜石黑", "#000000", "PLA"},
+            {"model-brown", u8"岩石棕", "#5E5145", "PLA"},
+            {"model-orange", u8"虎橙", "#AC7443", "PLA"},
+            {"model-yellow", u8"柠檬黄", "#D5C451", "PLA"},
+            {"support-white", u8"纯白 · 支撑材料", "#FFFFFF", "PLA"},
+        }, {}, 5, "support-white"},
+    };
     return suites;
 }
 
@@ -175,10 +185,11 @@ inline const HonorFilamentSuite* find_honor_filament_suite(const std::string& id
     return found == suites.end() ? nullptr : &*found;
 }
 
-inline FilamentColorPack young_portrait_color_pack() {
-    auto pack = young_portrait_honor_suite().color_pack();
-    pack.name = u8"人物基础 · 年轻向六色";
-    return pack;
+inline const HonorFilamentSuite& honor_people_suite() { return honor_filament_suites().front(); }
+inline FilamentColorPack honor_people_color_pack() { return honor_people_suite().color_pack(); }
+inline bool is_honor_filament_suite_name(const std::string& name) {
+    const auto& suites = honor_filament_suites();
+    return std::any_of(suites.begin(), suites.end(), [&](const auto& suite) { return suite.name == name; });
 }
 
 std::vector<FilamentColorPack> load_filament_color_packs();

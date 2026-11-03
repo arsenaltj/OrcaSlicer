@@ -15,7 +15,7 @@ inline bool workbench_topology_safe(const WorkbenchCheckResult& result)
     return result.status == WorkbenchCheckStatus::Normal && result.boundary_edges == 0 &&
         result.nonmanifold_edges == 0 && result.nonmanifold_vertices == 0 &&
         result.degenerate_faces == 0 && result.duplicate_faces == 0 &&
-        result.inconsistent_edges == 0 && result.self_intersections == 0;
+        result.inconsistent_edges == 0 && result.self_intersections_checked && result.self_intersections == 0;
 }
 
 inline WorkbenchCheckResult inspect_workbench_mesh(const TriangleMesh& mesh,
@@ -38,17 +38,23 @@ inline WorkbenchCheckResult inspect_workbench_mesh(const TriangleMesh& mesh,
         std::unordered_map<uint32_t, size_t> vertex_nonmanifold_edges, vertex_boundary_degree;
         std::vector<std::vector<size_t>> vertex_faces(mesh.its.vertices.size());
         const double area_limit = std::pow(mesh.bounding_box().size().cast<double>().norm(), 2) * 5e-13;
+        const auto issue = [&](size_t face) { if (result.issue_faces.size() < 4096) result.issue_faces.push_back(face); };
         for (size_t i = 0; i < mesh.its.indices.size(); ++i) {
             if ((i & 4095) == 0 && canceled && canceled()) throw std::runtime_error("Model inspection canceled.");
             const auto& face = mesh.its.indices[i];
             std::array<uint32_t, 3> ids = native_closed
                 ? std::array<uint32_t, 3> {uint32_t(face[0]), uint32_t(face[1]), uint32_t(face[2])}
                 : std::array<uint32_t, 3> {surface->vertex_class[face[0]], surface->vertex_class[face[1]], surface->vertex_class[face[2]]};
-            if (surface->areas[i] <= area_limit) { ++result.degenerate_faces; continue; }
+            // Small positive-area triangles still close the surface. Dropping
+            // them from incidence fabricates three open edges on a closed mesh.
+            // Only collapsed/collinear triangles are topology defects; CGAL's
+            // independent intersection predicate still checks narrow triangles.
+            if (surface->areas[i] <= 0.) { ++result.degenerate_faces; issue(i); continue; }
+            if (surface->areas[i] <= area_limit) ++result.small_faces;
             for (const uint32_t vertex : ids) vertex_faces[vertex].push_back(i);
             auto key = ids;
             std::sort(key.begin(), key.end());
-            if (!unique.insert(key).second) ++result.duplicate_faces;
+            if (!unique.insert(key).second) { ++result.duplicate_faces; issue(i); }
             for (size_t edge = 0; edge < 3; ++edge) {
                 const auto a = ids[edge], b = ids[(edge + 1) % 3];
                 const uint64_t id = (uint64_t(std::min(a, b)) << 32) | std::max(a, b);
@@ -62,6 +68,8 @@ inline WorkbenchCheckResult inspect_workbench_mesh(const TriangleMesh& mesh,
             if (item.second[0] + item.second[1] == 2 && (item.second[0] == 2 || item.second[1] == 2)) ++result.inconsistent_edges;
             const auto uses = edge_uses.find(item.first);
             const size_t count = uses == edge_uses.end() ? 0 : uses->second.size();
+            if (count != 2 || item.second[0] == 2 || item.second[1] == 2)
+                for (size_t face : edge_faces[item.first]) issue(face);
             if (count == 1) ++result.boundary_edges;
             else if (count > 2) ++result.nonmanifold_edges;
             if (count != 2) {
@@ -92,6 +100,7 @@ inline WorkbenchCheckResult inspect_workbench_mesh(const TriangleMesh& mesh,
             if ((bad != vertex_nonmanifold_edges.end() && bad->second > 0) ||
                 (boundary != vertex_boundary_degree.end() && boundary->second != 2)) {
                 ++result.nonmanifold_vertices;
+                for (size_t face : incident) issue(face);
                 continue;
             }
             vertex_stack.assign(1, incident.front());
@@ -108,7 +117,7 @@ inline WorkbenchCheckResult inspect_workbench_mesh(const TriangleMesh& mesh,
                     if (contains) { vertex_seen[neighbor] = vertex; vertex_stack.push_back(neighbor); }
                 }
             }
-            if (connected != incident.size()) ++result.nonmanifold_vertices;
+            if (connected != incident.size()) { ++result.nonmanifold_vertices; for (size_t face : incident) issue(face); }
         }
         std::vector<uint8_t> face_seen(mesh.its.indices.size(), 0);
         for (size_t face = 0; face < face_seen.size(); ++face) if (!face_seen[face]) {
@@ -145,8 +154,11 @@ inline WorkbenchCheckResult inspect_workbench_mesh(const TriangleMesh& mesh,
             if (!native_closed) its_merge_vertices(topology.its);
             // A failed predicate is an unavailable check, never zero risk.
             result.self_intersections = MeshBoolean::cgal::does_self_intersect(topology) ? 1 : 0;
+            result.self_intersections_checked = true;
         }
         if (canceled && canceled()) throw std::runtime_error("Model inspection canceled.");
+        std::sort(result.issue_faces.begin(), result.issue_faces.end());
+        result.issue_faces.erase(std::unique(result.issue_faces.begin(), result.issue_faces.end()), result.issue_faces.end());
         result.status = result.nonmanifold_edges || result.nonmanifold_vertices || result.degenerate_faces || result.duplicate_faces || result.inconsistent_edges || result.self_intersections
             ? WorkbenchCheckStatus::Invalid : result.boundary_edges
                 ? WorkbenchCheckStatus::Attention : WorkbenchCheckStatus::Normal;
@@ -156,7 +168,8 @@ inline WorkbenchCheckResult inspect_workbench_mesh(const TriangleMesh& mesh,
             "；重复面 " + std::to_string(result.duplicate_faces) + "；方向不一致 " +
             std::to_string(result.inconsistent_edges) + "；非流形顶点 " + std::to_string(result.nonmanifold_vertices) +
             "；边界环 " + std::to_string(result.boundary_loops) + "；连通组件 " +
-            std::to_string(result.isolated_components) + "；自交风险 " + std::to_string(result.self_intersections) + "。";
+            std::to_string(result.isolated_components) + "；自交检测：" +
+            (result.self_intersections_checked ? result.self_intersections ? "发现自交" : "未发现自交" : "尚未完成") + "。";
     } catch (const std::exception& error) {
         result.status = WorkbenchCheckStatus::Failed;
         result.summary = error.what();
@@ -200,6 +213,14 @@ inline WorkbenchCheckResult inspect_workbench_publication(const boost::filesyste
     if (!workbench_topology_safe(checked))
         throw std::runtime_error("候选最终拓扑检查未通过：" + checked.summary);
     if (repair) {
+        // Keep the operation's original counts while the final inspection
+        // supplies actual published geometry and fresh topology evidence.
+        checked.after_faces = checked.before_faces;
+        checked.after_vertices = checked.before_vertices;
+        checked.before_faces = repair->before_faces;
+        checked.before_vertices = repair->before_vertices;
+        checked.removed_faces = repair->removed_faces;
+        checked.reversed_faces = repair->reversed_faces;
         checked.candidate_status = RepairCandidateStatus::Accepted;
         checked.source_sha256 = repair->source_sha256;
         checked.candidate_sha256 = checked.model_sha256;

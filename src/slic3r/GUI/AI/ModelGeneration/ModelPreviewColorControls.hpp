@@ -183,13 +183,14 @@ public:
                 m_workbench_mode->Enable(mode_enabled);
         }
         const int source = current_source();
-        const bool count_enabled = source_enabled && !honor_suite_active() && (source == 0 || source == 2);
+        const bool suite_selector = honor_suite_active() || m_honor_suite_selector_open;
+        const bool count_enabled = source_enabled && !suite_selector && (source == 0 || source == 2);
         if (m_workbench_count->IsEnabled() != count_enabled)
             m_workbench_count->Enable(count_enabled);
         if (m_workbench_count_input && m_workbench_count_input->IsEnabled() != count_enabled)
             m_workbench_count_input->Enable(count_enabled);
-        if (m_workbench_suite_category) m_workbench_suite_category->Enable(source_enabled && honor_suite_active());
-        if (m_workbench_suite_choice) m_workbench_suite_choice->Enable(source_enabled && honor_suite_active());
+        if (m_workbench_suite_category) m_workbench_suite_category->Enable(source_enabled && suite_selector);
+        if (m_workbench_suite_choice) m_workbench_suite_choice->Enable(source_enabled && suite_selector);
     }
     wxWindow* build_workbench_mode(wxWindow* parent) {
         auto* container = new wxPanel(parent);
@@ -236,12 +237,31 @@ public:
         };
         add_suite_choice(_L("适用类型"), m_workbench_suite_category);
         add_suite_choice(_L("具体套装"), m_workbench_suite_choice);
-        m_workbench_suite_category->Append(wxString::FromUTF8(young_portrait_honor_suite().category));
+        for (const auto& suite : honor_filament_suites())
+            m_workbench_suite_category->Append(wxString::FromUTF8(suite.category));
         m_workbench_suite_category->SetSelection(0);
-        m_workbench_suite_choice->Append(wxString::FromUTF8(young_portrait_honor_suite().name));
+        m_workbench_suite_choice->Append(wxString::FromUTF8(honor_filament_suites().front().name));
         m_workbench_suite_choice->SetSelection(0);
+        m_workbench_suite_category->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&) {
+            const int index = m_workbench_suite_category->GetSelection();
+            if (index < 0 || size_t(index) >= honor_filament_suites().size()) return;
+            m_honor_suite_choice_index = size_t(index);
+            sync_honor_suite_choices(true);
+        });
+        m_workbench_suite_choice->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&) {
+            if (m_workbench_suite_choice->GetSelection() < 0) return;
+            if (on_honor_suite_selection && !on_honor_suite_selection()) { sync_honor_suite_choices(true); update(); return; }
+            const auto& suite = honor_filament_suites().at(m_honor_suite_choice_index);
+            const int previous = current_source();
+            m_active_suite_id = suite.id;
+            m_active_suite_revision = suite.revision;
+            set_source_internal(honor_suite_source);
+            m_last_source = honor_suite_source;
+            prepare_honor_suite_request();
+            if (on_source_changed) on_source_changed(previous, honor_suite_source);
+        });
         m_workbench_suite_summary = new WorkbenchStaticText(m_workbench_suite_panel, wxID_ANY,
-            _L("6 个实体耗材 · 共 6 色"));
+            _L("模型使用前 5 色 · 第 6 槽专供支撑"));
         m_workbench_suite_summary->SetForegroundColour(wxColour(235, 235, 235));
         suite_layout->Add(m_workbench_suite_summary, 0, wxTOP, FromDIP(2));
         m_workbench_suite_panel->SetSizer(suite_layout);
@@ -264,7 +284,7 @@ public:
         m_workbench_count_row = count_row;
         root->Add(count_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM, FromDIP(12));
         m_workbench_source->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&) {
-            set_source_internal(internal_source(m_workbench_source->GetSelection()));
+            m_source->SetSelection(m_workbench_source->GetSelection());
             wxCommandEvent event(wxEVT_CHOICE, m_source->GetId());
             event.SetEventObject(m_source); m_source->GetEventHandler()->ProcessEvent(event);
         });
@@ -294,7 +314,7 @@ public:
         m_source->Append(_L("荣耀耗材套装"));
         m_packs = load_filament_color_packs();
         for (size_t i = 0; i < m_packs.size(); ++i) {
-            if (m_packs[i].name == young_portrait_color_pack().name) continue;
+            if (is_honor_filament_suite_name(m_packs[i].name)) continue;
             m_source->Append(wxString::FromUTF8(m_packs[i].name));
             m_source_visible_to_internal.push_back(int(3 + i));
         }
@@ -321,11 +341,12 @@ public:
             choice->SetSelection(0);
             choice->Enable(false);
             suite_detail_layout->Add(choice, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+            m_suite_detail_choices.push_back(choice);
         };
-        add_detail_choice(_L("适用类型"), wxString::FromUTF8(young_portrait_honor_suite().category));
-        add_detail_choice(_L("具体套装"), wxString::FromUTF8(young_portrait_honor_suite().name));
+        add_detail_choice(_L("适用类型"), wxString::FromUTF8(honor_people_suite().category));
+        add_detail_choice(_L("具体套装"), wxString::FromUTF8(honor_people_suite().name));
         m_suite_detail_summary = new wxStaticText(m_suite_detail_panel, wxID_ANY,
-            _L("6 个实体耗材 · 共 6 色"));
+            _L("模型使用前 5 色 · 第 6 槽专供支撑"));
         m_suite_detail_summary->SetForegroundColour(wxColour(235, 235, 235));
         suite_detail_layout->Add(m_suite_detail_summary, 0, wxTOP, FromDIP(2));
         m_suite_detail_panel->SetSizer(suite_detail_layout);
@@ -401,7 +422,16 @@ public:
         });
         m_source->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) {
             const int previous = m_last_source;
-            set_source_internal(internal_source(m_source->GetSelection()));
+            const int requested = internal_source(m_source->GetSelection());
+            if (requested == honor_suite_source) {
+                // Opening the catalog is not an application. Wait for the
+                // final suite choice so pet models never start people recognition.
+                m_honor_suite_selector_open = true;
+                sync_honor_suite_choices(true);
+                update();
+                return;
+            }
+            set_source_internal(requested);
             const int next = current_source();
             remember_source_count(previous);
             for (auto* lock : m_locks) lock->SetValue(false);
@@ -417,20 +447,11 @@ public:
                 if (on_source_changed) on_source_changed(previous, next);
                 changed(); return;
             }
-            if (next == honor_suite_source) m_count->SetValue(int(young_portrait_honor_suite().physical_slots.size()));
-            else if (next == 0) m_count->SetValue(m_automatic_count);
+            if (next == 0) m_count->SetValue(m_automatic_count);
             else if (next == 2) m_count->SetValue(m_manual_count);
             else if (next >= 3 && size_t(next - 3) < m_packs.size())
                 m_count->SetValue(std::clamp(int(m_packs[next - 3].colors.size()), 1, int(PreviewPalette::max_preview_colors)));
             m_last_source = next;
-            if (next == honor_suite_source) {
-                if (!prepare_honor_suite_request()) {
-                    m_notice = _L("原始配色证据无法建立荣耀套装请求，已保留当前预览。");
-                    update();
-                }
-                if (on_source_changed) on_source_changed(previous, next);
-                return;
-            }
             clear_honor_suite_request();
             recompute();
             if (on_source_changed) on_source_changed(previous, next);
@@ -557,10 +578,13 @@ public:
     }
     void set_source_internal(int internal) {
         if (!m_source) return;
+        m_honor_suite_selector_open = false;
         if (internal == honor_suite_source) {
-            const auto& suite = young_portrait_honor_suite();
-            m_active_suite_id = suite.id;
-            m_active_suite_revision = suite.revision;
+            if (!active_honor_suite()) {
+                const auto& suite = honor_filament_suites().front();
+                m_active_suite_id = suite.id;
+                m_active_suite_revision = suite.revision;
+            }
         } else {
             m_active_suite_id.clear();
             m_active_suite_revision.clear();
@@ -607,7 +631,7 @@ public:
         return honor_suite_active() || source() >= 3;
     }
     bool honor_suite_active() const {
-        return current_source() == honor_suite_source && active_honor_suite() != nullptr;
+        return (current_source() == honor_suite_source || current_source() == 1) && active_honor_suite() != nullptr;
     }
     const HonorFilamentSuite* active_honor_suite() const {
         return find_honor_filament_suite(m_active_suite_id, m_active_suite_revision);
@@ -621,7 +645,7 @@ public:
                 [&](const FilamentColorPack& cached) { return cached.name == pack.name; });
             if (found != m_packs.end()) *found = std::move(pack);
             else {
-                const bool legacy_suite_card = pack.name == young_portrait_color_pack().name;
+                const bool legacy_suite_card = is_honor_filament_suite_name(pack.name);
                 if (!legacy_suite_card) {
                     m_source->Append(wxString::FromUTF8(pack.name));
                     m_source_visible_to_internal.push_back(int(3 + m_packs.size()));
@@ -647,12 +671,14 @@ public:
         if (!m_suggestion_colors.empty()) result.push_back(make(u8"AI配色", m_suggestion_colors));
         const auto manual = manual_import_palette(state());
         if (!manual.empty()) result.push_back(make(u8"手动试色", manual));
-        auto suite = young_portrait_honor_suite().color_pack();
-        suite.name = u8"荣耀耗材套装 · 人物 · 年轻向六色";
-        result.push_back(std::move(suite));
+        for (const auto& item : honor_filament_suites()) {
+            auto suite = item.color_pack();
+            suite.name = u8"荣耀耗材套装 · " + item.category + u8" · " + item.name;
+            result.push_back(std::move(suite));
+        }
         const auto saved = load_filament_color_packs();
         for (const auto& pack : saved)
-            if (pack.name != young_portrait_color_pack().name) result.push_back(pack);
+            if (!is_honor_filament_suite_name(pack.name)) result.push_back(pack);
         return result;
     }
     const std::vector<Color>& mapping_colors() const { return m_mapping_colors; }
@@ -693,53 +719,58 @@ public:
         m_color_card_palette = request.palette;
         m_semantic_colors = request.palette;
         m_semantic_mapping = request.palette;
-        m_semantic_card = request.palette;
+        m_semantic_card = request.palette.size() == 6 ? request.palette : std::vector<Color>{};
         m_semantic_roles = request.palette_roles;
         m_count->SetValue(int(request.palette.size()));
         m_honor_suite_used_colors = used_slots;
         m_honor_suite_request.reset();
         m_honor_suite_fallback_reason.clear();
         m_enabled = true;
-        m_notice = wxString::Format(_L("荣耀耗材套装语义配色已完成，模型当前使用 %llu/6 色。"),
+        m_notice = wxString::Format(_L("荣耀耗材套装语义配色已完成，模型当前使用 %llu/5 色，第 6 槽专供支撑。"),
             static_cast<unsigned long long>(used_slots));
         sync_active_palette_state();
         changed();
         return true;
     }
-    bool commit_honor_suite_fallback(const wxString& reason) {
-        if (!honor_suite_request_pending()) return false;
+    bool commit_honor_suite_nearest() {
+        if (!honor_suite_request_pending() || active_honor_suite()->semantic_coloring()) return false;
         const auto request = *m_honor_suite_request;
-        if (!request.fallback.valid(request.automatic_basis.source_palette.size())) return false;
         m_automatic_basis = request.automatic_basis;
-        m_color_card_remap = request.fallback;
-        m_color_card_palette = request.palette;
         m_mapping_colors = request.automatic_basis.source_palette;
-        m_colors = request.fallback.source_order_targets();
-        if (m_colors.empty() || m_colors.size() != m_mapping_colors.size()) return false;
+        m_colors.clear();
+        std::set<size_t> used;
+        for (const auto& source : m_mapping_colors) {
+            const size_t slot = PrinterFilamentPreview::nearest(source, request.palette);
+            if (slot >= request.palette.size()) return false;
+            used.insert(slot);
+            m_colors.push_back(request.palette[slot]);
+        }
+        m_color_card_remap = {};
+        m_color_card_palette.clear();
         m_semantic_colors = m_colors;
         m_semantic_mapping = m_mapping_colors;
         m_semantic_card.clear();
         m_semantic_roles.clear();
         m_count->SetValue(int(request.palette.size()));
-        auto used = request.fallback.source_to_target_slot;
-        std::sort(used.begin(), used.end());
-        used.erase(std::unique(used.begin(), used.end()), used.end());
         m_honor_suite_used_colors = used.size();
         m_honor_suite_request.reset();
+        m_honor_suite_fallback_reason.clear();
         m_enabled = true;
-        m_honor_suite_fallback_reason = reason.empty()
-            ? _L("未检测到可靠人物语义，已回退为全局相近色匹配。")
-            : reason;
-        m_notice = m_honor_suite_fallback_reason;
+        m_notice = _L("萌宠近色配色完成；模型只使用前 5 槽，第 6 槽专供支撑。");
         sync_active_palette_state();
         changed();
         return true;
+    }
+    void reject_honor_suite_request(const wxString& reason) {
+        m_honor_suite_request.reset();
+        m_notice = reason;
+        update();
     }
     size_t honor_suite_used_color_count() const {
         return honor_suite_active() ? m_honor_suite_used_colors : 0;
     }
     void set_honor_suite_used_color_count(size_t count) {
-        const size_t bounded = std::min(count, young_portrait_honor_suite().physical_slots.size());
+        const size_t bounded = std::min(count, active_honor_suite() ? active_honor_suite()->model_slot_count : size_t(6));
         if (m_honor_suite_used_colors == bounded) return;
         m_honor_suite_used_colors = bounded;
         update();
@@ -912,7 +943,7 @@ public:
         State saved;
         saved.colors = m_colors; saved.mapping_colors = m_mapping_colors;
         for (size_t i = 0; i < PreviewPalette::max_preview_colors; ++i) saved.locks[i] = m_locks[i]->GetValue();
-        saved.source = honor_suite_active() ? 2 : current_source();
+        saved.source = current_source() == honor_suite_source ? 2 : current_source();
         saved.count = m_count->GetValue();
         saved.automatic_count = m_automatic_count;
         saved.manual_count = m_manual_count;
@@ -965,14 +996,22 @@ public:
         if ((!m_histogram && !baked_printer_state) || saved.colors.empty() ||
             saved.colors.size() > PreviewPalette::max_preview_colors ||
             saved.colors.size() != saved.mapping_colors.size()) return;
-        const auto* restored_suite = saved.source == 2
+        const auto* restored_suite = (saved.source == 2 || saved.source == 1)
             ? find_honor_filament_suite(saved.suite_id, saved.suite_revision) : nullptr;
-        set_source_internal(restored_suite ? honor_suite_source : saved.source);
-        m_last_source = restored_suite ? honor_suite_source : saved.source;
+        set_source_internal(restored_suite && saved.source == 2 ? honor_suite_source : saved.source);
+        if (restored_suite) {
+            m_active_suite_id = restored_suite->id;
+            m_active_suite_revision = restored_suite->revision;
+            const auto& suites = honor_filament_suites();
+            for (size_t i = 0; i < suites.size(); ++i)
+                if (suites[i].id == restored_suite->id) m_honor_suite_choice_index = i;
+            sync_honor_suite_choices(false);
+        }
+        m_last_source = current_source();
         m_automatic_count = std::clamp(saved.automatic_count, 1, int(PreviewPalette::max_preview_colors));
         m_manual_count = std::clamp(saved.manual_count, 1, int(PreviewPalette::max_preview_colors));
         m_project_count = std::clamp(saved.project_count, 0, int(PreviewPalette::max_preview_colors));
-        m_count->SetValue(restored_suite ? int(restored_suite->physical_slots.size()) :
+        m_count->SetValue(restored_suite ? int(restored_suite->model_slot_count) :
             saved.source == 0 ? m_automatic_count : saved.source == 2 ? m_manual_count : saved.count);
         m_fidelity->SetValue(saved.fidelity); m_lighting->SetValue(saved.lighting);
         m_colors = saved.colors; m_mapping_colors = saved.mapping_colors;
@@ -998,7 +1037,9 @@ public:
         m_semantic->SetValue(false);
         m_enabled = saved.enabled; m_notice = saved.notice;
         m_honor_suite_request.reset();
-        m_honor_suite_used_colors = restored_suite ? saved.colors.size() : 0;
+        std::set<uint32_t> restored_colors;
+        for (const auto& color : saved.colors) restored_colors.insert(PrinterFilamentPreview::rgb8(color));
+        m_honor_suite_used_colors = restored_suite ? restored_colors.size() : 0;
         m_honor_suite_fallback_reason = restored_suite ? saved.honor_suite_fallback_reason : wxString{};
         if (!restored_suite && !saved.suite_id.empty())
             m_notice = _L("保存的荣耀耗材套装版本不可用，已保留实际六色外观并恢复为手动试色。");
@@ -1019,7 +1060,17 @@ public:
     std::function<void()> on_project_colors_changed;
     std::function<void(size_t)> on_project_color_edit;
     std::function<void(int, int)> on_source_changed;
+    std::function<bool()> on_honor_suite_selection;
 private:
+    void sync_honor_suite_choices(bool pending) {
+        if (!m_workbench_suite_category || !m_workbench_suite_choice) return;
+        const auto& suite = honor_filament_suites().at(m_honor_suite_choice_index);
+        m_workbench_suite_category->SetSelection(int(m_honor_suite_choice_index));
+        m_workbench_suite_choice->Clear();
+        m_workbench_suite_choice->Append(wxString::FromUTF8(suite.name));
+        m_workbench_suite_choice->SetSelection(pending ? wxNOT_FOUND : 0);
+        if (pending) m_workbench_suite_choice->SetValue(_L("请选择套装"));
+    }
     static wxColour wx_color(Color c) {
         return wxColour(int(std::lround(c[0]*255)), int(std::lround(c[1]*255)), int(std::lround(c[2]*255)));
     }
@@ -1043,7 +1094,6 @@ private:
         std::vector<std::string> palette_roles;
         std::map<std::string, size_t> fixed_role_slots;
         PreviewPalette::AutomaticColorBasis automatic_basis;
-        PreviewPalette::ColorCardRemap fallback;
     };
     bool prepare_honor_suite_request() {
         const auto* suite = active_honor_suite();
@@ -1054,20 +1104,17 @@ private:
         request.suite_revision = suite->revision;
         request.palette_roles = suite->portrait_palette_roles();
         request.fixed_role_slots = suite->semantic_role_slot_indices();
-        for (const auto& slot : suite->physical_slots) {
+        for (size_t i = 0; i < suite->model_slot_count; ++i) {
+            const auto& slot = suite->physical_slots[i];
             const wxColour color(wxString::FromUTF8(slot.color));
             if (!color.IsOk()) return false;
             request.palette.push_back({color.Red() / 255.f, color.Green() / 255.f, color.Blue() / 255.f});
         }
-        if (request.palette.size() != suite->physical_slots.size() ||
-            request.palette_roles.size() != request.palette.size() ||
-            request.fixed_role_slots.empty()) return false;
+        if (suite->semantic_coloring() && (request.palette_roles.size() != request.palette.size() ||
+            request.fixed_role_slots.empty())) return false;
         request.automatic_basis = PreviewPalette::make_automatic_color_basis(*m_histogram,
             request.palette.size(), m_geometry_id, m_fidelity->GetValue(), m_automatic_units.get());
-        request.fallback = PreviewPalette::minimum_cost_color_card_remap(
-            request.automatic_basis, request.palette);
-        if (!request.automatic_basis.valid() ||
-            !request.fallback.valid(request.automatic_basis.source_palette.size())) return false;
+        if (!request.automatic_basis.valid()) return false;
         request.context = request.suite_id + "@" + request.suite_revision + ":" +
             request.geometry_id + ":" + request.automatic_basis.basis_signature;
         m_honor_suite_used_colors = 0;
@@ -1136,7 +1183,8 @@ private:
         } else if (honor_suite_active()) {
             const auto* suite = active_honor_suite();
             std::vector<Color> card;
-            for (const auto& slot : suite->physical_slots) {
+            for (size_t i = 0; i < suite->model_slot_count; ++i) {
+                const auto& slot = suite->physical_slots[i];
                 const wxColour color(wxString::FromUTF8(slot.color));
                 card.push_back({color.Red()/255.f, color.Green()/255.f, color.Blue()/255.f});
             }
@@ -1151,10 +1199,10 @@ private:
             m_mapping_colors = m_automatic_basis.source_palette;
             m_colors = m_color_card_remap.source_order_targets();
             m_color_card_palette = std::move(card);
-            m_count->SetValue(int(suite->physical_slots.size()));
+            m_count->SetValue(int(suite->model_slot_count));
             m_semantic_colors = m_colors; m_semantic_mapping = m_colors; m_semantic_card.clear();
             m_semantic_roles.clear();
-            m_notice = wxString::Format(_L("荣耀耗材套装 · 模型当前使用 %llu/6 色。"),
+            m_notice = wxString::Format(_L("荣耀耗材套装 · 模型当前使用 %llu/5 色，第 6 槽专供支撑。"),
                 static_cast<unsigned long long>(m_mapping_colors.size()));
         } else if (source >= 3 && size_t(source - 3) < m_packs.size()) {
             m_semantic_roles.clear();
@@ -1317,14 +1365,14 @@ private:
     void region_changed() { update(); if (on_region_changed) on_region_changed(); }
     static std::vector<Color> portrait_card_colors() {
         std::vector<Color> colors;
-        for (const auto& hex : young_portrait_color_pack().colors) {
+        for (const auto& hex : honor_people_color_pack().colors) {
             const wxColour color(wxString::FromUTF8(hex));
             colors.push_back({color.Red()/255.f, color.Green()/255.f, color.Blue()/255.f});
         }
         return colors;
     }
     static bool is_portrait_card(const std::vector<Color>& colors) {
-        const auto card = young_portrait_color_pack();
+        const auto card = honor_people_color_pack();
         if (colors.size() != card.colors.size()) return false;
         for (size_t i = 0; i < colors.size(); ++i)
             if (wx_color(colors[i]).GetAsString(wxC2S_HTML_SYNTAX).CmpNoCase(wxString::FromUTF8(card.colors[i])) != 0) return false;
@@ -1386,6 +1434,9 @@ private:
     void update() {
         const int source = current_source();
         const bool suite_active = honor_suite_active();
+        const bool suite_selector = suite_active || m_honor_suite_selector_open;
+        const bool suite_layout_changed = m_workbench_suite_panel &&
+            m_workbench_suite_panel->IsShown() != suite_selector;
         // Semantic recognition is now an on-demand annotation step owned by
         // Beauty Workbench automatic partitioning.  Palette controls never
         // expose or start the frozen portrait recoloring workflow.
@@ -1397,7 +1448,7 @@ private:
                 m_workbench_mode->SetSelection(m_host_portrait_mode ? 1 : 0);
                 m_workbench_mode->Enable(m_workbench_editable && bool(m_histogram) && portrait_color_count_supported());
             }
-            m_workbench_source->SetSelection(visible_source(source));
+            m_workbench_source->SetSelection(visible_source(suite_selector ? honor_suite_source : source));
             m_workbench_source->Enable(m_workbench_editable && bool(m_histogram));
             m_workbench_count->SetValue(m_count->GetValue());
             m_workbench_count_input->SetValue(m_count->GetValue());
@@ -1405,13 +1456,32 @@ private:
                 (source == 0 || source == 2);
             if (m_workbench_count->IsEnabled() != count_enabled) m_workbench_count->Enable(count_enabled);
             if (m_workbench_count_input->IsEnabled() != count_enabled) m_workbench_count_input->Enable(count_enabled);
-            m_workbench_count->Show(!suite_active);
-            if (m_workbench_count_row) m_workbench_count_row->Show(!suite_active);
-            if (m_workbench_suite_panel) m_workbench_suite_panel->Show(suite_active);
+            m_workbench_count->Show(!suite_selector);
+            if (m_workbench_count_row) m_workbench_count_row->Show(!suite_selector);
+            if (m_workbench_suite_panel) m_workbench_suite_panel->Show(suite_selector);
             if (m_workbench_suite_category)
-                m_workbench_suite_category->Enable(suite_active && m_workbench_editable && bool(m_histogram));
+                m_workbench_suite_category->Enable(suite_selector && m_workbench_editable && bool(m_histogram));
             if (m_workbench_suite_choice)
-                m_workbench_suite_choice->Enable(suite_active && m_workbench_editable && bool(m_histogram));
+                m_workbench_suite_choice->Enable(suite_selector && m_workbench_editable && bool(m_histogram));
+        }
+        if (suite_layout_changed) {
+            // The workbench palette is hosted outside this hidden detail
+            // panel. Opening its catalog changes layout without recoloring.
+            for (wxWindow* owner = m_workbench_suite_panel; owner; owner = owner->GetParent()) {
+                owner->InvalidateBestSize();
+                owner->Layout();
+                if (auto* scroll = dynamic_cast<wxScrolledWindow*>(owner)) {
+                    scroll->FitInside();
+                    break;
+                }
+            }
+        }
+        if (suite_active && active_honor_suite() && m_suite_detail_choices.size() == 2) {
+            const auto* suite = active_honor_suite();
+            for (size_t i = 0; i < 2; ++i) {
+                m_suite_detail_choices[i]->SetString(0, wxString::FromUTF8(i == 0 ? suite->category : suite->name));
+            }
+            m_suite_detail_summary->SetLabel(_L("模型使用前 5 色 · 第 6 槽专供支撑"));
         }
         if (m_suite_detail_panel) m_suite_detail_panel->Show(suite_active);
         if (m_detail_count_panel) m_detail_count_panel->Show(!suite_active);
@@ -1488,7 +1558,7 @@ private:
             : _L("原色显示 · ");
         text += suite_active ? (m_honor_suite_request
                 ? _L("荣耀耗材套装；正在识别人像区域。")
-                : wxString::Format(_L("荣耀耗材套装；模型当前使用 %llu/6 色。"),
+                : wxString::Format(_L("荣耀耗材套装；模型当前使用 %llu/5 色，第 6 槽专供支撑。"),
                     static_cast<unsigned long long>(m_honor_suite_used_colors))) :
             source == 1 ? _L("使用打印机耗材色卡。") : source == 2 ? _L("手动试色。") :
             source >= 3 ? _L("已保存色卡试色。") : _L("可点击改色并勾选保留。");
@@ -1639,6 +1709,9 @@ private:
     // Printer-filament source id 1 is hidden from the card selector but is
     // still needed while the workbench is in native-material trial mode.
     int m_source_internal {0};
+    bool m_honor_suite_selector_open {false};
+    size_t m_honor_suite_choice_index {0};
+    std::vector<wxChoice*> m_suite_detail_choices;
     std::string m_active_suite_id;
     std::string m_active_suite_revision;
     std::optional<HonorSuiteRequest> m_honor_suite_request;
