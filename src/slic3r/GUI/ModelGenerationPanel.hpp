@@ -674,16 +674,13 @@ private:
     bool restore_beauty_candidate(const BeautyCandidateSnapshot& snapshot);
     void record_beauty_candidate(BeautyWorkbenchTransactionController::OperationKind kind,
                                  std::shared_ptr<BeautyCandidateSnapshot> before);
+    BeautyWorkbenchSession<BeautyCandidateSnapshot>::Ports beauty_session_ports();
     void clear_unaccepted_beauty_candidates(size_t start = 0);
-    // View aliases preserve one authoritative session during compatibility use.
-    std::vector<boost::filesystem::path>& m_beauty_candidate_files {m_beauty_session.draft().candidate_files};
-    std::vector<boost::filesystem::path>& m_beauty_accepted_files {m_beauty_session.draft().accepted_files};
-    std::shared_ptr<BeautyCandidateSnapshot>& m_beauty_session_source {m_beauty_session.draft().source};
+    // Remaining portrait/editor state is migrated separately. Candidate files,
+    // baselines and history checkpoints are private to the session.
     std::shared_ptr<BeautyCandidateSnapshot>& m_beauty_reoptimization_before {m_beauty_session.draft().reoptimization_before};
     std::shared_ptr<BeautyCandidateSnapshot>& m_portrait_draft_before {m_beauty_session.draft().portrait_before};
     std::shared_ptr<BeautyCandidateSnapshot>& m_portrait_preview_draft {m_beauty_session.draft().portrait_preview};
-    size_t& m_beauty_session_undo_base {m_beauty_session.draft().undo_base};
-    size_t& m_beauty_session_file_base {m_beauty_session.draft().file_base};
     bool& m_beauty_manual_color_dirty {m_beauty_session.draft().manual_color_dirty};
 
     std::thread m_library_import_worker;

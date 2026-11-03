@@ -319,9 +319,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                     result.candidate_status == RepairCandidateStatus::Ready &&
                     result.status != WorkbenchCheckStatus::Failed) {
                     auto before = std::make_shared<BeautyCandidateSnapshot>(self->capture_beauty_candidate());
-                    self->m_beauty_session_source = before;
-                    self->m_beauty_session_undo_base = self->m_beauty_transactions ? self->m_beauty_transactions->undo_count() : 0;
-                    self->m_beauty_session_file_base = self->m_beauty_candidate_files.size();
+                    self->m_beauty_session.start_draft(before);
                     self->m_finishing_source = source;
                     self->m_finishing_source_context = self->capture_model_context();
                     self->m_finishing_candidate = destination;
@@ -337,7 +335,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                         self->m_finishing_candidate.clear();
                         self->m_finishing_candidate_original_appearance = {};
                         self->m_finishing_candidate_original_appearance_error.clear();
-                        self->m_beauty_session_source.reset();
+                        self->m_beauty_session.clear_draft();
                         cleanup();
                         self->m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
                         self->m_workbench_check_result.summary = "安全修复版本加载失败，原模型保留：" + load_error;
@@ -348,9 +346,9 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                             self->m_model_preview->original_appearance_reference();
                         self->m_finishing_candidate_original_appearance_error =
                             self->m_model_preview->original_appearance_error();
-                        self->m_beauty_candidate_files.push_back(destination);
+                        self->m_beauty_session.track_candidate(destination);
                         if (boost::filesystem::is_regular_file(appearance_carrier))
-                            self->m_beauty_candidate_files.push_back(appearance_carrier);
+                            self->m_beauty_session.track_candidate(appearance_carrier);
                         if (self->m_beauty_transactions) self->m_beauty_transactions->mark_preview_ready();
                         self->m_workbench_repair_attempts.insert(id + "|" + repair.output_sha256);
                         // A fully rechecked topology candidate with no bound

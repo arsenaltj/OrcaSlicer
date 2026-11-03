@@ -73,6 +73,7 @@ add_executable(${_TEST_NAME}_tests
     test_beauty_document.cpp
     test_beauty_partition_bridge.cpp
     test_beauty_transaction_controller.cpp
+    test_beauty_workbench_session.cpp
     test_semantic_region_evidence.cpp
     test_beauty_leaf_domain.cpp
     test_beauty_leaf_editing.cpp

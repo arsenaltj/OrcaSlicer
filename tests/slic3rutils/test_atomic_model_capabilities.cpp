@@ -356,7 +356,7 @@ TEST_CASE("Beauty session keeps accepted files and failed restoration on the und
     session.record(BeautyWorkbenchTransactionController::OperationKind::AppearanceRecolor, before, after, ports);
     valid = false; CHECK_FALSE(session.transactions().undo()); CHECK(session.transactions().undo_count() == 1); CHECK(restored == 0);
     valid = true; REQUIRE(session.transactions().undo()); CHECK(restored == 1); REQUIRE(session.transactions().redo()); CHECK(restored == 2);
-    session.draft().accepted_files.push_back("candidate.glb"); session.draft().candidate_files.push_back("temporary.glb");
+    session.preserve_publication("candidate.glb"); session.track_candidate("temporary.glb");
     session.clear_candidates(0, "source.glb", ports); REQUIRE(removed.size() == 1); CHECK(removed[0] == "temporary.glb");
 }
 

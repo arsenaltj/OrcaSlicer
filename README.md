@@ -1,5 +1,5 @@
 <!-- architecture-overview:start -->
-## AI 产品架构与 PR 变动
+## 产品平台架构与 PR 变动
 
 [团队使用说明](Docs/coordination/architecture-review.md) · [PR 架构报告](https://github.com/arsenaltj/OrcaSlicer/actions/workflows/architecture-impact.yml?query=event%3Apull_request) · [开放 PR](https://github.com/arsenaltj/OrcaSlicer/pulls)
 
@@ -12,7 +12,19 @@
 
 在线表格由发布流程自动追加。页面注明实际提交；新报告发布前，PR 入口仍显示上一份成功版本。
 
-下图是本分支维护的业务主线，不是实时状态或验收结果；箭头表示业务衔接，执行仍受用户确认与状态约束。
+[平台分层与解耦路线](Docs/architecture/PLATFORM_ARCHITECTURE.md)。在线报告从平台分层下钻到能力、代码文件与验证入口。
+
+| 逻辑层 | 当前职责 |
+| --- | --- |
+| 业务工作区 | 桌面与原生工作区、AI 创作入口、3D 后处理工作台、模型库与我的作品、账号工作区、设备与打印工作区、原生编辑、配置与设备界面 |
+| 应用编排与业务状态 | AI 任务与工作流、后处理会话与事务、智能切片与候选决策、模型库应用与载入、OAuth 与本机会话、AI 共享叶子与宿主支持 |
+| 共享契约与接入适配 | 共享契约与领域数据、Orca 原生操作适配、AI 与文本供应商适配、设备协议与移动 SDK、移动端原生切片接口 |
+| Orca 原生内核 | 模型与几何算法、切片与 G-code 内核、3MF、预设与工程配置、3D 场景与预览、参数化 CAD 与草图、原生算法与内核支持 |
+| 运行与工程支撑 | 桌面与本地 Sidecar 运行、资产文件、历史与草稿、DFX 诊断与可靠性、构建、边界与发布保障、原生入口、网络与平台支持 |
+
+DFX 横跨各层。逻辑分层不代表独立进程、构建目标或状态已隔离。
+
+下图是本分支维护的 AI 业务主线，不是实时状态或验收结果；箭头表示业务衔接，执行仍受用户确认与状态约束。
 
 ```mermaid
 flowchart TB

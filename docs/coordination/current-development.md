@@ -1,11 +1,13 @@
-# 2026-10-28 当前：荣耀账号 Draft PR #52，CI空白比较范围修复
+# 2026-11-03 当前：ARCH-20261102 文档治理与PR同步机制
 
-主线：`UX/N-HONOR-AUTH-20261024`，用户明确要求创建PR提交本地新增代码。已创建 [Draft PR #52](https://github.com/arsenaltj/OrcaSlicer/pull/52)，源 `codex/task/smart-slicing-local-integration-20261027`，目标 `codex/team/integration`；原账号验收及本机试用版保持。
+主线：`ARCH-20261102`，继续既有模块化单体和侧车架构，先从一条后处理用例收紧边界。本会话checkout为`D:/Workspace/20_3DMaker/OrcaSlicer-current`，`codex/team/integration` / `09bd370e0dc6e2572069469036d81863591bbab3`，R0地图与旧历史保留。
 
-本轮：用户已授权修正。普通功能PR改用目标/源merge-base，原上游导入特殊处理仅保留给codex/upstream-*；push/合并队列及合并结果检查保留。13项真实Git历史/实际PowerShell回归通过，按原PR追加普通提交并核对云端结果；最终源/检查见 `.tmp/dev/ci-whitespace-20261028/submission.json`。产品源码、账号UX和原测试程序保持。
+本轮：用户明确授权直接优化文档并增加PR机制，已完成。AGENTS补齐状态所有者/依赖/消费者和同PR文档维护原则，工程导航补齐平台入口，快速开发清理固定模型/旧阶段约定。主计划旧正文迁入历史页，146个原标题与145个兼容跳转保留，未结和授权不变。PR模板、只读CI和本地检查核对声明与实际文档内容更新；25项回归、230处本地引用/跳转、README/映射与diff检查通过，证据`.tmp/architecture-audit/docs-refresh/`。
 
-未结：修复后新head的云端检查须核实；Team integration candidate被手动停用、build_all零job失败仍独立待处理。最新beta编译/GUI、非作者复核及维护者合入待完成；旧构建证据仅为c5a40c3a01基线，原账号与另一台PC未验边界保持。
+返回点：R1首个用例已交付，Session收口候选生命周期。Windows Release构建、相关286项回归、新增8项随机顺序109断言、独立安装19,642文件及运行树/Python检查通过。产物`.tmp/dev/architecture-r1-20261103/run/`，回执`.tmp/dev/architecture-r1-20261103/verification.json`；原在用目录保留，未启动新应用，完整版本和验收边界见主计划。
 
-下一步：核对PR #52新提交的空白检查和相关回归结果，独立阻塞继续按团队SOP处理。现有 `.tmp/dev/Start-HonorTrial.cmd` 仍启动原试用版，保留用户数据与旧.planning；不自动启动其他扩展。
+未结：新CI尚未取得远端运行证据；需将脚本/模板/工作流/文档一起进入团队分支，维护者配置必需检查后才强制阻止遗漏。R1其余生成/保存/视图耦合、主窗口实际操作、真实服务/打印及CRT警告保留；R2—R5与旧PR #52按原记录状态处理。R0交互图仍是2026-11-02快照，浏览器策略限制未解除。
 
-计划变更：本轮明确授权空白门禁整改及原PR更新；范围限CI、回归和协调记录，不扩大为其他工作流启停或直接合入。
+下一步：本轮已授权的文档治理与本地机制交付完成。远端提交/启用沿用用户后续授权；产品开发返回R1候选生成/持久化和视图边界，未把历史任务或后续路线自动列为执行队列。
+
+计划变更：ARCH-20261102追加DOCS-PR落地记录，主计划成为当前项与原记录索引，完整历史另存。R1代码/测试/产物与未结保留；本轮文档和CI工具及前轮修改均为本地未提交。

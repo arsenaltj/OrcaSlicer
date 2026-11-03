@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 
 FILES = ["index.html", "details.html", "report.json", "summary.md", "archify-receipts.json"]
-FILES += [view + suffix for view in ["l0-context", "l1-modules", "l2-generation", "l2-slicing"]
+FILES += [view + suffix for view in ["l0-context", "l0-platform", "l1-modules", "l2-generation", "l2-slicing"]
           for suffix in [".html", ".json"]]
 STYLE = "body{margin:0;background:#eef3f5;color:#173744;font:16px system-ui}main{max-width:1120px;margin:48px auto;padding:24px}a{color:#126777}table{border-collapse:collapse;width:100%;background:white}td,th{padding:15px;text-align:left;border-bottom:1px solid #d9e3e7}small{color:#57717c}header{padding:12px 24px;background:white;border-bottom:1px solid #ccd9dd}iframe{display:block;width:100%;height:calc(100vh - 65px);border:0}"
 
