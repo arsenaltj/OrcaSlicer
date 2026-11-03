@@ -1,0 +1,25 @@
+{
+  "pr": 59,
+  "run": 41569447918,
+  "head": "062883c7530a489ade615ab98df67adb7a5306db",
+  "base": "3b49fd89badd7421cdb8b739bafc714134161a98",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "Honor Forge V1.0.1：六头机型、六色套装与工作台修复",
+  "path": "pr/59/062883c7530a489ade615ab98df67adb7a5306db/41569447918",
+  "created": "2026-11-03T03:04:27+00:00",
+  "files": {
+    "index.html": "0c895aba7e86e84426928d1fd976cddff8a72d9c75e19acd09f5fb0e2e89c447",
+    "details.html": "ba1fec3736f772844b123277bcbc66c43fcd335b2a4b59af8ac2d39288132524",
+    "report.json": "313846508b492a3ce9607c35523dfdeb36fa30721be4dd2fc4aae9eb6ee591d3",
+    "summary.md": "e32933ac5b7e2ccff62ef0a399665c9a1fdd17f85ee3079b087a4e587a8db8ac",
+    "archify-receipts.json": "1a39daca2dc7104acfa8b686227feaa18de218f3dbfc437c5be9d85582bc9d12",
+    "l0-context.html": "2ed041164aacf3ff25a8a692a4c0ef3fbe9c6ab95c990bb078b8481aa5852760",
+    "l0-context.json": "ed8d5b43ab8fc730068db05ec4fcd3ea481c1da8b90533fe8efcf31f31188d28",
+    "l1-modules.html": "445958819e1f2f2021ebf658b7e8590269f9138521cdd9e85c79dd1a83af23fe",
+    "l1-modules.json": "1306ca394bc204244681e023a76fe25642e655952b19c23a8d9a58b852290c2b",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "46ca7ade63fcd50bac8b2ce3984ac1c6d157f5b65f429a70dbc13a449aa8d4d3",
+    "l2-slicing.json": "5c1db02b393a0d36f5f2dce03383c8ae2d4b4804b8b1eea056636a5de1fe1fa8"
+  }
+}

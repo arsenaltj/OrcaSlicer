@@ -1,5 +1,15 @@
 [
   {
+    "pr": 59,
+    "run": 41569447918,
+    "head": "062883c7530a489ade615ab98df67adb7a5306db",
+    "base": "3b49fd89badd7421cdb8b739bafc714134161a98",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "Honor Forge V1.0.1：六头机型、六色套装与工作台修复",
+    "path": "pr/59/062883c7530a489ade615ab98df67adb7a5306db/41569447918",
+    "created": "2026-11-03T03:04:27+00:00"
+  },
+  {
     "pr": 57,
     "run": 41414062625,
     "head": "be5ef60f0dfd12009a82aecf04406f6013306a5c",
