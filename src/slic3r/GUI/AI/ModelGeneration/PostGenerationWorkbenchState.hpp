@@ -39,6 +39,9 @@ struct WorkbenchCheckResult {
     std::vector<size_t> boundary_loop_sizes;
     size_t nonmanifold_vertices {0};
     size_t self_intersections {0};
+    bool self_intersections_checked {false};
+    size_t small_faces {0};
+    std::vector<size_t> issue_faces;
     size_t isolated_components {0};
     // A repair is always a temporary candidate.  The original check remains
     // available while the candidate is being reviewed.
@@ -120,7 +123,7 @@ inline std::string workbench_check_status_line(const WorkbenchCheckResult& check
                                                bool risk_acknowledged = false)
 {
     if (risk_acknowledged && check.status == WorkbenchCheckStatus::Attention)
-        return "已忽略轻微问题，可继续导入切片";
+        return "已确认开放边界风险，可继续导入切片";
     if (check.candidate_status == RepairCandidateStatus::Ready)
         return "修复候选已生成，等待确认";
     switch (check.status) {
@@ -135,7 +138,7 @@ inline std::string workbench_check_status_line(const WorkbenchCheckResult& check
         return !check.repair_reason.empty() || check.removed_faces || check.reversed_faces ||
                        (check.before_faces && check.after_faces && check.before_faces != check.after_faces)
             ? "模型修复已完成" : "模型检查已完成，未发现问题";
-    case WorkbenchCheckStatus::Attention: return "模型检查完成，存在轻微问题";
+    case WorkbenchCheckStatus::Attention: return "模型检查完成，存在开放边界风险";
     case WorkbenchCheckStatus::Invalid: return "模型检查未通过";
     case WorkbenchCheckStatus::Failed: return "模型检查失败";
     }
@@ -149,10 +152,12 @@ inline std::string workbench_check_detail_text(const WorkbenchCheckResult& check
     text << workbench_check_status_line(check, risk_acknowledged);
     if (!check.summary.empty()) text << "\n\n检查说明\n" << check.summary;
     if (!check.repair_reason.empty()) text << "\n\n修复说明\n" << check.repair_reason;
-    if (check.before_faces || check.before_vertices || check.after_faces || check.after_vertices) {
+    if (check.after_faces || check.after_vertices) {
         text << "\n\n修复统计\n修复前：" << check.before_faces << " 面 / " << check.before_vertices
              << " 点\n修复后：" << check.after_faces << " 面 / " << check.after_vertices << " 点"
              << "\n清理面：" << check.removed_faces << "\n校正面：" << check.reversed_faces;
+    } else if (check.before_faces || check.before_vertices) {
+        text << "\n\n模型统计\n当前模型：" << check.before_faces << " 面 / " << check.before_vertices << " 点";
     }
     text << "\n\n拓扑指标"
          << "\n开放边：" << check.boundary_edges
@@ -163,13 +168,21 @@ inline std::string workbench_check_detail_text(const WorkbenchCheckResult& check
          << "\n重复面：" << check.duplicate_faces
          << "\n方向不一致：" << check.inconsistent_edges
          << "\n孤立组件：" << check.isolated_components
-         << "\n自交风险：" << check.self_intersections;
+         << "\n微小但非退化面：" << check.small_faces
+         << "\n自交检测：" << (check.self_intersections_checked
+             ? (check.self_intersections ? "发现自交" : "未发现自交") : "尚未完成，需先修复拓扑");
     if (!check.boundary_loop_sizes.empty()) {
         text << "\n边界环规模：";
         for (size_t index = 0; index < check.boundary_loop_sizes.size(); ++index) {
             if (index) text << "、";
             text << check.boundary_loop_sizes[index];
         }
+    }
+    if (!check.issue_faces.empty()) {
+        text << "\n问题面序号（从1开始，最多定位4096面）：";
+        for (size_t i = 0; i < std::min(size_t(32), check.issue_faces.size()); ++i)
+            text << (i ? "、" : "") << check.issue_faces[i] + 1;
+        if (check.issue_faces.size() > 32) text << "…";
     }
     if (check.appearance_mapped || !check.appearance_reason.empty() || check.appearance_confidence > 0.0) {
         text << "\n\n外观映射\n状态：" << (check.appearance_mapped ? "已验证" : "未验证")
@@ -178,7 +191,7 @@ inline std::string workbench_check_detail_text(const WorkbenchCheckResult& check
         if (!check.appearance_reason.empty()) text << "\n说明：" << check.appearance_reason;
     }
     if (risk_acknowledged && check.status == WorkbenchCheckStatus::Attention)
-        text << "\n\n风险处理\n轻微问题已由用户忽略，许可仅绑定当前模型检查结果。";
+        text << "\n\n风险处理\n开放边界风险已由用户确认，许可仅绑定当前模型检查结果。";
     return text.str();
 }
 

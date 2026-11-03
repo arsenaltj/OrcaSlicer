@@ -643,16 +643,32 @@ nlohmann::json ModelPreview3D::portrait_color_blocks_metadata() const
 void ModelPreview3D::update_semantic_coloring()
 {
     const bool honor_request = m_color_trial && m_color_trial->honor_suite_request_pending();
+    if (honor_request && !active_honor_filament_suite()->semantic_coloring()) {
+        if (m_semantic_controller) m_semantic_controller->cancel();
+        m_semantic_timer.Stop();
+        m_suppress_semantic_change = true;
+        const bool applied = m_color_trial->commit_honor_suite_nearest();
+        m_suppress_semantic_change = false;
+        if (applied) {
+            m_color_blocks.reset();
+            m_automatic_face_colors.clear();
+            m_automatic_subface_colors.clear();
+            m_semantic_model.reset();
+            m_semantic_ready = false;
+        }
+        if (m_honor_suite_application_complete) m_honor_suite_application_complete(applied);
+        return;
+    }
     if (!portrait_recognition_enabled() || !m_has_model || !m_semantic_source ||
         (!honor_request && (!m_color_trial_enabled || !m_color_trial->color_block_postprocess_enabled()))) {
         if (m_semantic_controller) m_semantic_controller->cancel();
         if (honor_request) {
             const wxString reason = !portrait_recognition_enabled()
-                ? _L("本地人物语义识别不可用，已回退为全局相近色匹配。")
+                ? _L("本地人物语义识别不可用，未应用套装。")
                 : !m_semantic_source
-                ? _L("当前模型缺少可靠人物语义输入，已回退为全局相近色匹配。")
-                : _L("当前模型无法启动人物语义识别，已回退为全局相近色匹配。");
-            apply_honor_suite_fallback(reason);
+                ? _L("当前模型缺少可靠人物语义输入，未应用套装。")
+                : _L("当前模型无法启动人物语义识别，未应用套装。");
+            reject_honor_suite_application(reason);
             if (m_semantic_completion) {
                 auto callback = std::move(m_semantic_completion);
                 callback(false);
@@ -769,26 +785,14 @@ bool ModelPreview3D::rebuild_semantic_preview_from_color_blocks()
     }
 }
 
-bool ModelPreview3D::apply_honor_suite_fallback(const wxString& reason)
+bool ModelPreview3D::reject_honor_suite_application(const wxString& reason)
 {
     if (!m_color_trial || !m_color_trial->honor_suite_request_pending()) return false;
-    m_suppress_semantic_change = true;
-    const bool applied = m_color_trial->commit_honor_suite_fallback(reason);
-    m_suppress_semantic_change = false;
-    if (!applied) return false;
-    m_color_blocks.reset();
-    m_selected_color_block.reset();
-    m_automatic_face_colors.clear();
-    m_automatic_subface_colors.clear();
-    m_semantic_model.reset();
-    m_semantic_ready = false;
-    m_semantic_submission_context.clear();
-    m_semantic_submission_geometry.clear();
-    m_color_trial_enabled = m_color_trial->enabled();
-    m_trial_palette = m_color_trial->colors();
-    m_color_trial->set_semantic_status(reason, false);
-    if (m_canvas) m_canvas->Refresh(false);
-    return true;
+    const wxString message = _L("人物语义配色未完成，模型与耗材保持原状。") + "\n" + reason;
+    m_color_trial->reject_honor_suite_request(message);
+    m_color_trial->set_semantic_status(message, false);
+    if (m_honor_suite_application_complete) m_honor_suite_application_complete(false);
+    return false;
 }
 
 void ModelPreview3D::rebuild_semantic_preview_from_cached_result()
@@ -836,9 +840,9 @@ void ModelPreview3D::finish_semantic_coloring()
             m_semantic_controller->cancel();
             m_semantic_timer.Stop();
             m_semantic_error = honor_submission
-                ? _L("识别期间模型编辑已变化，已保留编辑并回退为全局相近色匹配。")
+                ? _L("识别期间模型编辑已变化，已保留编辑，套装未应用。")
                 : _L("已保留新的手工编辑，过期的人像优化结果未应用。");
-            if (honor_submission) apply_honor_suite_fallback(m_semantic_error);
+            if (honor_submission) reject_honor_suite_application(m_semantic_error);
             else m_color_trial->set_semantic_status(m_semantic_error, false);
             if (honor_submission)
                 publish_honor_suite_semantic_progress(false, 0, m_semantic_error,
@@ -855,13 +859,13 @@ void ModelPreview3D::finish_semantic_coloring()
                     m_color_trial->honor_suite_request_role_slots()) : 0;
             wxString fallback_reason;
             if (!result->error.empty())
-                fallback_reason = _L("本地人物语义识别不可用，已回退为全局相近色匹配。");
+                fallback_reason = _L("本地人物语义识别不可用，未应用套装。");
             else if (!result->person_detected)
-                fallback_reason = _L("未检测到人物，已回退为全局相近色匹配。");
+                fallback_reason = _L("未检测到人物，未应用套装。");
             else if (!result->color_blocks || reliable_roles == 0)
-                fallback_reason = _L("未找到置信度达到 0.70 的人物区域，已回退为全局相近色匹配。");
+                fallback_reason = _L("未找到置信度达到 0.70 的人物区域，未应用套装。");
             else if (result->geometry.is_empty())
-                fallback_reason = _L("人物语义预览无法建立，已回退为全局相近色匹配。");
+                fallback_reason = _L("人物语义预览无法建立，未应用套装。");
             if (!fallback_reason.empty()) {
                 if (result->analysis) {
                     m_semantic_analysis = std::move(result->analysis);
@@ -872,7 +876,7 @@ void ModelPreview3D::finish_semantic_coloring()
                     if (evidence) restore_semantic_region_evidence(std::move(evidence));
                 }
                 m_semantic_error = fallback_reason;
-                apply_honor_suite_fallback(fallback_reason);
+                reject_honor_suite_application(fallback_reason);
                 publish_honor_suite_semantic_progress(false, 0, fallback_reason,
                     honor_context, honor_geometry);
                 BOOST_LOG_TRIVIAL(info) << "Honor suite semantic match fell back: person="
@@ -969,7 +973,7 @@ void ModelPreview3D::finish_semantic_coloring()
                 m_color_trial_enabled = m_color_trial->enabled();
                 m_trial_palette = m_color_trial->colors();
                 m_color_trial->set_semantic_status(wxString::Format(
-                    _L("荣耀耗材套装语义配色完成 · 当前使用 %llu/6 色。"),
+                    _L("荣耀耗材套装语义配色完成 · 当前使用 %llu/5 色，第 6 槽专供支撑。"),
                     static_cast<unsigned long long>(used)), false);
                 m_semantic_submission_context.clear();
                 m_semantic_submission_geometry.clear();
@@ -992,7 +996,7 @@ void ModelPreview3D::finish_semantic_coloring()
             m_semantic_controller->cancel();
             // Keep the previous immutable appearance if GPU adoption fails.
             if (honor_submission)
-                apply_honor_suite_fallback(_L("人物语义预览无法加载，已回退为全局相近色匹配。"));
+                reject_honor_suite_application(_L("人物语义预览无法加载，未应用套装。"));
             else
                 m_color_trial->set_semantic_status(_L("自动划区语义预览暂不可用；原生配色保持不变。"), false);
         }
@@ -1017,6 +1021,8 @@ void ModelPreview3D::finish_semantic_coloring()
             auto callback = std::move(m_semantic_completion);
             callback(completed);
         }
+        if (honor_submission && completed && m_honor_suite_application_complete)
+            m_honor_suite_application_complete(true);
     }
     if (!m_semantic_controller->busy()) {
         if (!m_semantic_submission_context.empty()) {

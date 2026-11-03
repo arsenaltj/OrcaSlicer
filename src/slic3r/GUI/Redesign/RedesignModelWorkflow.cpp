@@ -1113,8 +1113,7 @@ void RedesignShell::refresh_workflow_layout()
     if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this))) {
         if (native) frame->show_option(true);
         if (frame->topbar()) {
-            frame->topbar()->ShowCompactSlicingTitlebar(compact);
-            frame->topbar()->ShowNativeWorkspaceTools(native);
+            frame->topbar()->SetSlicingTitlebarMode(compact, native);
         }
     }
     if (native) refresh_native_theme();

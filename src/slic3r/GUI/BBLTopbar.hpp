@@ -82,10 +82,9 @@ public:
     void SaveNormalRect();
 
     void ShowCalibrationButton(bool show = true);
-    void ShowCompactSlicingTitlebar(bool compact);
+    void SetSlicingTitlebarMode(bool compact, bool native);
     void ShowHonorBranding(bool show);
     wxControl* NativeWorkspaceHost() const { return m_native_workspace_host; }
-    void ShowNativeWorkspaceTools(bool show);
 
 protected:
 #ifdef __WXMSW__
@@ -93,7 +92,7 @@ protected:
 #endif
 
 private:
-    void UpdateCompactSlicingVisibility();
+    void UpdateCompactSlicingVisibility(bool rebuild = false);
     wxFrame* m_frame;
     wxAuiToolBarItem* m_file_menu_item;
     wxAuiToolBarItem* m_dropdown_menu_item;

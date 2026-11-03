@@ -198,6 +198,26 @@ class SourceIdentityTests(unittest.TestCase):
                 self.assertFalse(output.exists())
                 self.write("new.txt", "new\n")
 
+        cache_path = build / "CMakeCache.txt"
+        cache_path.write_text(cache_path.read_text().replace("STRING=internal", "STRING=commercial"))
+        info_path = build / "orca_ai_build_info.json"
+        info = json.loads(info_path.read_text())
+        info["distribution_channel"] = "commercial"
+        info_path.write_text(json.dumps(info))
+        for script in ("scripts/package_internal_fast.ps1", "release/build_internal.ps1"):
+            with self.subTest(script=script, channel="commercial"):
+                args = [powershell, "-NoProfile", "-File", str(self.root / script), "-BuildDir", str(build),
+                        "-OutputDir", str(output), "-Revision", "fixture", "-SourceManifest", str(self.manifest_path),
+                        "-DistributionChannel", "commercial", "-ValidateOnly"]
+                result = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=40)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(output.exists())
+                rejected = subprocess.run(args + ["-KnownIntegrationReport", "absent.json"], capture_output=True,
+                                          text=True, encoding="utf-8", errors="replace", timeout=40)
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("internal-only", rejected.stderr)
+                self.assertFalse(output.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

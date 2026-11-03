@@ -89,6 +89,10 @@ TEST_CASE("safe mesh repair is rechecked without mutating the original asset", "
     const auto repaired = finish_model_artifact(f.source, f.output, options);
     REQUIRE(repaired.success);
     REQUIRE(repaired.changed());
+    CHECK(repaired.repair_geometry_verified);
+    CHECK(repaired.repair_sampled_deviation < 1e-6);
+    CHECK(repaired.repair_area_change_ratio < 1e-6);
+    for (double dimension : repaired.dimensions) CHECK_THAT(dimension, WithinAbs(10, 1e-6));
     CHECK(repaired.removed_duplicate_faces == 1);
     CHECK(repaired.removed_degenerate_faces == 1);
     const auto inspected = GUI::inspect_workbench_model(f.output);
@@ -109,6 +113,26 @@ TEST_CASE("unrepairable planar geometry preserves the original and creates no pr
     const auto result = finish_model_artifact(f.source, f.output, options);
     CHECK_FALSE(result.success);
     CHECK_FALSE(result.error.empty());
+    CHECK_FALSE(boost::filesystem::exists(f.output));
+    CHECK(read(f.source) == original);
+}
+
+TEST_CASE("Topology repair never removes an existing destination or its source", "[ModelFinishing][WorkbenchTopology]")
+{
+    Fixture f; f.write(tetrahedron);
+    const auto original = read(f.source);
+    ModelFinishingOptions options;
+    options.smooth_surface = false;
+    options.repair_mesh = true;
+    CHECK_FALSE(finish_model_artifact(f.source, f.source, options).success);
+    REQUIRE(read(f.source) == original);
+    { boost::filesystem::ofstream sentinel(f.output); sentinel << "existing version"; }
+    CHECK_FALSE(finish_model_artifact(f.source, f.output, options).success);
+    CHECK(read(f.output) == "existing version");
+    CHECK(read(f.source) == original);
+    boost::filesystem::remove(f.output);
+    const auto canceled = finish_model_artifact(f.source, f.output, options, [] { return true; });
+    CHECK(canceled.canceled);
     CHECK_FALSE(boost::filesystem::exists(f.output));
     CHECK(read(f.source) == original);
 }

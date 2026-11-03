@@ -6,6 +6,7 @@
 
 #include "libslic3r/Point.hpp"
 #include "libslic3r/MeshBoolean.hpp"
+#include "libslic3r/MeshRepair.hpp"
 #include "libslic3r/AABBTreeIndirect.hpp"
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
@@ -25,6 +26,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Slic3r::AI {
@@ -642,6 +644,7 @@ ModelFinishingResult finish_model_artifact(const boost::filesystem::path& source
         (model_artifact_format(source) == "obj" || model_artifact_format(source) == "glb") &&
         model_artifact_format(destination) == "obj") {
         ModelFinishingResult result;
+        bool owns_output = false;
         try {
             if (boost::filesystem::exists(destination)) throw std::runtime_error("The output already exists; choose a new model version.");
             auto check_cancel = [&] { if (canceled && canceled()) throw Canceled {}; };
@@ -651,21 +654,101 @@ ModelFinishingResult finish_model_artifact(const boost::filesystem::path& source
             if (!load_model_artifact(source, mesh, info, error, canceled)) throw std::runtime_error(error);
             const auto original_vertices = mesh.its.vertices;
             const auto original_faces = mesh.its.indices;
+            const auto original_surface = mesh.its;
             auto original_colors = info.vertex_colors;
             result.faces_before = mesh.its.indices.size();
             result.vertices = mesh.its.vertices.size();
             if (original_colors.size() != original_vertices.size())
                 original_colors.assign(original_vertices.size(), RGBA {1.f, 1.f, 1.f, 1.f});
             RepairedMeshErrors repaired_errors;
+            result.repair_strategy = "CGAL局部修复与封闭复检";
             if (!MeshBoolean::cgal::repair(mesh, &repaired_errors, &error,
-                [&] { return canceled && canceled(); }))
-                throw std::runtime_error(error.empty() ? "CGAL mesh repair failed." : error);
+                [&] { return canceled && canceled(); })) {
+                check_cancel();
+                const auto first_error = error;
+                // Restart from the untouched source, never from a failed patch.
+                // Native repair can orient/split a non-manifold soup before
+                // building Surface_mesh and handles nested boundary loops.
+                mesh = TriangleMesh(original_surface);
+                MeshRepairStats stats;
+                error.clear();
+                if (!repair_mesh(mesh, &stats, &error, [&](int) { check_cancel(); }))
+                    throw std::runtime_error("局部修复：" + first_error + "；增强修复：" + error);
+                check_cancel();
+                // Native repair deliberately permits some shell overlaps. Its
+                // success alone never certifies a workbench candidate.
+                if (its_num_open_edges(mesh.its) != 0 || MeshBoolean::cgal::does_self_intersect(mesh)) {
+                    if (!MeshBoolean::cgal::repair(mesh, &repaired_errors, &error,
+                        [&] { return canceled && canceled(); })) {
+                        check_cancel();
+                        throw std::runtime_error("增强修复封闭/自交复检失败：" + error);
+                    }
+                }
+                repaired_errors.facets_removed = int(original_faces.size() > mesh.its.indices.size()
+                    ? original_faces.size() - mesh.its.indices.size() : 0);
+                result.repair_strategy = "原生裂缝/非流形增强修复与独立复检";
+            }
             check_cancel();
             result.removed_degenerate_faces = std::max(0, repaired_errors.degenerate_facets);
             result.removed_duplicate_faces = std::max(0, repaired_errors.facets_removed - repaired_errors.degenerate_facets);
             result.reversed_faces = std::max(0, repaired_errors.facets_reversed + repaired_errors.backwards_edges);
             result.faces_after = mesh.its.indices.size();
             result.vertices = mesh.its.vertices.size();
+            const auto extent = mesh.bounding_box().size();
+            result.dimensions = {extent.x(), extent.y(), extent.z()};
+            // Compare both directions: measuring only new vertices would miss
+            // a whole ornament or shell removed by a boolean operation. This
+            // bounded sample is an automatic-acceptance guard, not a claim of
+            // an exhaustive Hausdorff or physical-print quality assessment.
+            const auto area = [&](const indexed_triangle_set& surface) {
+                using FaceKey = std::array<std::array<float, 3>, 3>;
+                struct Hash {
+                    size_t operator()(const FaceKey& key) const {
+                        size_t h = 0;
+                        for (const auto& point : key) for (float coordinate : point)
+                            h ^= std::hash<float>{}(coordinate) + 0x9e3779b9 + (h << 6) + (h >> 2);
+                        return h;
+                    }
+                };
+                std::unordered_set<FaceKey, Hash> unique;
+                unique.reserve(surface.indices.size());
+                double sum = 0.;
+                for (const auto& f : surface.indices) {
+                    if ((unique.size() & 4095) == 0) check_cancel();
+                    FaceKey key;
+                    for (int i = 0; i < 3; ++i) for (int axis = 0; axis < 3; ++axis)
+                        key[i][axis] = surface.vertices[f[i]][axis];
+                    std::sort(key.begin(), key.end());
+                    if (!unique.insert(key).second) continue;
+                    const Vec3d a = surface.vertices[f[0]].cast<double>();
+                    sum += (surface.vertices[f[1]].cast<double>() - a).cross(
+                        surface.vertices[f[2]].cast<double>() - a).norm() * .5;
+                }
+                return sum;
+            };
+            const double source_area = area(original_surface);
+            result.repair_area_change_ratio = std::abs(area(mesh.its) - source_area) / std::max(source_area, 1e-30);
+            const auto deviation = [&](const indexed_triangle_set& from, const indexed_triangle_set& to) {
+                const auto tree = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(to.vertices, to.indices);
+                double maximum = 0.;
+                const size_t stride = std::max(size_t(1), from.indices.size() / 8192);
+                for (size_t f = 0; f < from.indices.size(); f += stride) {
+                    check_cancel();
+                    const auto& face = from.indices[f];
+                    const Vec3d query = (from.vertices[face[0]].cast<double>() +
+                        from.vertices[face[1]].cast<double>() + from.vertices[face[2]].cast<double>()) / 3.;
+                    size_t nearest_face = 0; Vec3d nearest;
+                    const double distance = AABBTreeIndirect::squared_distance_to_indexed_triangle_set(
+                        to.vertices, to.indices, tree, query, nearest_face, nearest);
+                    if (!std::isfinite(distance) || distance < 0.) throw std::runtime_error("修复几何偏差无法验证。");
+                    maximum = std::max(maximum, std::sqrt(distance));
+                }
+                return maximum;
+            };
+            result.repair_sampled_deviation = std::max(deviation(original_surface, mesh.its), deviation(mesh.its, original_surface));
+            const double source_diagonal = bounding_box(original_surface).size().cast<double>().norm();
+            result.repair_geometry_verified = result.repair_sampled_deviation <= source_diagonal * .002 &&
+                result.repair_area_change_ratio <= .02;
             // Exact source vertices retain their sampled appearance. Newly
             // created intersection/patch vertices sample the closest source
             // triangle; never silently copy vertex zero when a lookup misses.
@@ -721,6 +804,7 @@ ModelFinishingResult finish_model_artifact(const boost::filesystem::path& source
             if (file_hash(source, canceled) != result.source_sha256)
                 throw std::runtime_error("The source model changed during repair; the candidate was discarded.");
             if (!write_model_artifact(destination, mesh.its, colors, error)) throw std::runtime_error(error);
+            owns_output = true;
             result.output_sha256 = file_hash(destination, canceled);
             result.success = true;
             result.changed_edit_record = repaired_errors.repaired() ||
@@ -728,7 +812,9 @@ ModelFinishingResult finish_model_artifact(const boost::filesystem::path& source
             return result;
         } catch (const Canceled&) { result.canceled = true; }
           catch (const std::exception& error) { result.error = error.what(); }
-        boost::system::error_code ignored; boost::filesystem::remove(destination, ignored);
+        if (owns_output) {
+            boost::system::error_code ignored; boost::filesystem::remove(destination, ignored);
+        }
         return result;
     }
     if (model_artifact_format(source) == "obj" && model_artifact_format(destination) == "obj")

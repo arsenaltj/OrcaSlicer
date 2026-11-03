@@ -102,7 +102,7 @@ boost::filesystem::path storage_path()
     const std::string& base_dir = Slic3r::data_dir();
     if (base_dir.empty())
         return {};
-    return boost::filesystem::path(base_dir) / ".orcaslicer_machine_id";
+    return boost::filesystem::path(base_dir) / ("." HONOR_PRODUCT_COMMAND "-machine-id");
 }
 
 std::optional<std::string> read_storage_file()

@@ -93,8 +93,15 @@ foreach ($semanticSpec in $semanticManifest.downloads | Where-Object { $_.key -n
         Copy-Item -LiteralPath $semanticModelSource -Destination $semanticModelDestination -Force
     }
 }
-Copy-Item -LiteralPath $semanticManifestPath -Destination (Join-Path $semanticDestination 'runtime-manifest.json') -Force
-Copy-Item -LiteralPath (Join-Path $semanticSourceRoot 'cmake/semantic_model_licenses.md') -Destination (Join-Path $semanticDestination 'MODEL_LICENSES.md') -Force
+# Git may check these sources out as CRLF on Windows. The pinned runtime
+# contract hashes canonical UTF-8/LF bytes, independently of checkout settings.
+foreach ($semanticTextFile in @(
+    @{ Source = $semanticManifestPath; Name = 'runtime-manifest.json' },
+    @{ Source = (Join-Path $semanticSourceRoot 'cmake/semantic_model_licenses.md'); Name = 'MODEL_LICENSES.md' }
+)) {
+    $semanticText = [IO.File]::ReadAllText($semanticTextFile.Source).Replace("`r`n", "`n")
+    [IO.File]::WriteAllText((Join-Path $semanticDestination $semanticTextFile.Name), $semanticText, [Text.UTF8Encoding]::new($false))
+}
 $semanticProviderPath = Join-Path $semanticDestination 'providers.json'
 if (-not (Test-Path -LiteralPath $semanticProviderPath)) {
     $semanticProviderJson = $semanticManifest.default_providers | ConvertTo-Json

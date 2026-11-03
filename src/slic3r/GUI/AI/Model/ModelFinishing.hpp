@@ -75,6 +75,10 @@ struct ModelFinishingResult {
     size_t recolored_faces {0};
     size_t changed_texture_pixels {0};
     bool changed_edit_record {false};
+    bool repair_geometry_verified {false};
+    double repair_sampled_deviation {0.0};
+    double repair_area_change_ratio {0.0};
+    std::string repair_strategy;
     bool changed() const {
         return moved_vertices || removed_degenerate_faces || removed_duplicate_faces || reversed_faces || recolored_vertices || recolored_faces || changed_texture_pixels || changed_edit_record;
     }

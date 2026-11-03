@@ -259,8 +259,8 @@ inline bool apply_bound(AI::ColorTrialPersistence::State& state, const std::vect
         updated.project_semantic_slots.assign(bindings.begin() + color_count, bindings.end());
     }
     updated.source = 1; updated.enabled = true; updated.count = int(updated.colors.size());
-    updated.suite_id.clear();
-    updated.suite_revision.clear();
+    // Bound suite identity is retained for display/history; restoring it never
+    // re-applies a suite to the project.
     updated.project_slot_identity = identity;
     updated.color_card_target_palette.clear();
     updated.color_card_target_slot_ids.clear();

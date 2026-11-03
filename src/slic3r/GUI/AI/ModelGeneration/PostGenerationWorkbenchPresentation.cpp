@@ -287,7 +287,7 @@ void ModelGenerationPanel::acknowledge_workbench_risk()
         !m_workbench_check_result.force_import_risk || m_workbench_check_result.model_sha256.empty()) return;
     m_workbench_force_import_ack_hash = m_workbench_check_result.model_sha256;
     m_workbench_force_import_ack_revision = m_sequence;
-    m_workbench_operation_notice = "已忽略轻微拓扑风险；后续可正常导入切片。";
+    m_workbench_operation_notice = "已确认开放边界风险；导入后请复核逐层切片结果。";
     hide_workbench_check_card();
     refresh_post_generation_workbench();
     publish_workbench_state();
@@ -296,6 +296,7 @@ void ModelGenerationPanel::acknowledge_workbench_risk()
 void ModelGenerationPanel::show_workbench_check_details()
 {
     if (!m_workbench_shell) return;
+    hide_workbench_check_card();
     wxDialog dialog(wxGetTopLevelParent(m_workbench_shell), wxID_ANY, _L("检查修复详情"),
         wxDefaultPosition, FromDIP(wxSize(560, 480)), wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER);
     dialog.SetName("ai_content_color");
@@ -317,13 +318,28 @@ void ModelGenerationPanel::show_workbench_check_details()
     details->ChangeValue(detail_text);
     details->SetStyle(0, details->GetLastPosition(), wxTextAttr(detail_foreground, detail_background));
     root->Add(details, 1, wxEXPAND | wxALL, FromDIP(12));
+    auto* actions = new wxBoxSizer(wxHORIZONTAL);
+    if (!m_workbench_check_result.issue_faces.empty()) {
+        auto* locate = workbench_button(&dialog, _L("定位问题区域"));
+        locate->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_APPLY); });
+        actions->Add(locate, 0, wxRIGHT, FromDIP(8));
+    }
+    actions->AddStretchSpacer(1);
     auto* close = workbench_button(&dialog, _L("关闭"));
     close->SetMinSize(FromDIP(wxSize(92, 32)));
     close->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_OK); });
-    root->Add(close, 0, wxALIGN_RIGHT | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+    actions->Add(close, 0);
+    root->Add(actions, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
     dialog.SetSizer(root);
     dialog.CenterOnParent();
-    dialog.ShowModal();
+    if (dialog.ShowModal() == wxID_APPLY && m_model_preview &&
+        AI::model_artifact_sha256(m_displayed_model_path) == m_workbench_check_result.model_sha256) {
+        hide_workbench_check_card();
+        m_workbench_editing = true;
+        refresh_post_generation_workbench();
+        m_model_preview->select_face_evidence(m_workbench_check_result.issue_faces);
+        publish_workbench_state();
+    }
 }
 
 void ModelGenerationPanel::update_workbench_check_card()
@@ -368,17 +384,19 @@ void ModelGenerationPanel::update_workbench_check_card()
     bool modal_layout_changed = set_workbench_label(m_workbench_check_phase, phase);
     wxString message = honor_semantic
         ? m_workbench_honor_semantic_message : from_u8(result.summary);
+    if (!honor_semantic && !m_workbench_check_running && !result.repair_reason.empty())
+        message += "\n" + from_u8(result.repair_reason);
     if (honor_semantic && message.empty())
         message = _L("正在识别人像区域并匹配肤色、头发、眼白、牙齿和嘴唇，请稍候……");
     else if (!honor_semantic && m_workbench_auto_repair && m_finishing_running)
         message = _L("安全修复已通过复检，正在自动接受并保存……");
     else if (!honor_semantic && !m_workbench_check_running &&
              result.status == WorkbenchCheckStatus::Attention && result.force_import_risk)
-        message += _L("\n这是轻微开放边界风险；可忽略后继续导入切片，也可以返回 2D 设计图。\n导入许可仅绑定当前模型版本。")
+        message += _L("\n模型仍有开放边界，自交检测尚未完成；确认风险后可导入并复核逐层切片。\n导入许可仅绑定当前模型版本。")
             ;
     else if (!honor_semantic && !m_workbench_check_running &&
              result.status != WorkbenchCheckStatus::Attention)
-        message += _L("\n当前结果不能强制导入，只能返回 2D 设计图。")
+        message += _L("\n当前结果暂不能导入切片。可查看详情、重新检查修复，或保留当前模型。")
             ;
     if (set_workbench_label(m_workbench_check_message, message)) {
         m_workbench_check_message->Wrap(FromDIP(376));
@@ -393,7 +411,12 @@ void ModelGenerationPanel::update_workbench_check_card()
     const bool attention = !honor_semantic && !m_workbench_check_running &&
         result.status == WorkbenchCheckStatus::Attention &&
         result.force_import_risk;
-    modal_layout_changed = set_workbench_shown(m_workbench_check_continue_button, attention) || modal_layout_changed;
+    const bool review = !honor_semantic && !running && result.candidate_status != RepairCandidateStatus::Ready;
+    const bool retry = review && !attention && result.status != WorkbenchCheckStatus::Normal;
+    m_workbench_check_continue_button->SetLabel(attention ? _L("确认风险并继续") : _L("重新检查修复"));
+    modal_layout_changed = set_workbench_shown(m_workbench_check_continue_button, attention || retry) || modal_layout_changed;
+    modal_layout_changed = set_workbench_shown(m_workbench_check_close_button, review) || modal_layout_changed;
+    modal_layout_changed = set_workbench_shown(m_workbench_check_details_button, review) || modal_layout_changed;
     modal_layout_changed = set_workbench_shown(m_workbench_check_return_button,
         !honor_semantic && !running && !attention) || modal_layout_changed;
     modal_layout_changed = set_workbench_shown(m_workbench_check_progress, running) || modal_layout_changed;
@@ -401,8 +424,16 @@ void ModelGenerationPanel::update_workbench_check_card()
         ? std::optional<int>(m_workbench_honor_semantic_progress) : std::nullopt);
     m_workbench_check_progress->set_running(running);
     if (modal_layout_changed) {
-        m_workbench_check_modal->Layout();
+        // An explicit panel minimum bypasses wxPanel's sizer-derived best
+        // size. Recompute it from the visible contents before fitting the card.
+        wxSize content_size = m_workbench_check_modal->GetSizer()->GetMinSize();
+        content_size.IncTo(FromDIP(wxSize(410, 174)));
+        m_workbench_check_modal->SetMinSize(content_size);
+        m_workbench_check_modal->InvalidateBestSize();
+        m_workbench_check_card->InvalidateBestSize();
         m_workbench_check_card->Fit();
+        m_workbench_check_card->Layout();
+        m_workbench_check_modal->Layout();
         apply_workbench_floating_card_shape(m_workbench_check_card, 8, wxColour(45, 45, 49));
     }
     position_workbench_check_card();

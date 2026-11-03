@@ -30,7 +30,8 @@ const PC::Block& block(const PC::Result& r,size_t face,size_t track=1) {
 }
 std::vector<SC::Color> honor_palette() {
     std::vector<SC::Color> result;
-    for (const auto& slot : GUI::young_portrait_honor_suite().physical_slots) {
+    for (size_t i = 0; i < GUI::honor_people_suite().model_slot_count; ++i) {
+        const auto& slot = GUI::honor_people_suite().physical_slots[i];
         const auto channel = [&](size_t offset) {
             return float(std::stoul(slot.color.substr(offset, 2), nullptr, 16)) / 255.f;
         };
@@ -45,7 +46,7 @@ PC::Input honor_input(const Sample& sample) {
     input.mapping = input.intermediate_palette;
     input.targets = input.intermediate_palette;
     input.final_color_count = input.targets.size();
-    input.fixed_role_slots = GUI::young_portrait_honor_suite().semantic_role_slot_indices();
+    input.fixed_role_slots = GUI::honor_people_suite().semantic_role_slot_indices();
     return input;
 }
 }
@@ -86,18 +87,18 @@ TEST_CASE("Honor portrait V2 binds confirmed anatomy to its shared physical slot
     sample.analysis.face_labels = {SC::Label::FaceSkin, SC::Label::Hair,
         SC::Label::EyeSclera, SC::Label::MouthInterior};
     sample.analysis.face_confidence.assign(4, .95f);
-    sample.source.face_colors = {{palette[0][0], palette[0][1], palette[0][2], 1.f},
-        {palette[1][0], palette[1][1], palette[1][2], 1.f},
-        {palette[2][0], palette[2][1], palette[2][2], 1.f},
-        {palette[3][0], palette[3][1], palette[3][2], 1.f}};
+    sample.source.face_colors = {{palette[2][0], palette[2][1], palette[2][2], 1.f},
+        {palette[0][0], palette[0][1], palette[0][2], 1.f},
+        {palette[3][0], palette[3][1], palette[3][2], 1.f},
+        {palette[1][0], palette[1][1], palette[1][2], 1.f}};
 
     const auto result = PC::build(honor_input(sample));
-    REQUIRE(block(*result, 0).display_slot == 0);
-    REQUIRE(block(*result, 1).display_slot == 1);
-    REQUIRE(block(*result, 2).display_slot == 2);
-    REQUIRE(block(*result, 3).display_slot == 3);
+    REQUIRE(block(*result, 0).display_slot == 2);
+    REQUIRE(block(*result, 1).display_slot == 0);
+    REQUIRE(block(*result, 2).display_slot == 3);
+    REQUIRE(block(*result, 3).display_slot == 1);
     REQUIRE(PC::reliable_fixed_role_blocks(*result,
-        GUI::young_portrait_honor_suite().semantic_role_slot_indices()) == 4);
+        GUI::honor_people_suite().semantic_role_slot_indices()) == 4);
     REQUIRE(PC::used_display_slots(*result) == std::vector<size_t>{0, 1, 2, 3});
 
     const auto document = PC::encode(*result);
@@ -118,12 +119,12 @@ TEST_CASE("Honor portrait V2 lets hair iris and eyebrows share charcoal", "[Port
         {.22f, .16f, .12f, 1.f}, {.92f, .92f, .90f, 1.f}};
 
     const auto result = PC::build(honor_input(sample));
-    REQUIRE(block(*result, 0).display_slot == 1);
-    REQUIRE(block(*result, 1).display_slot == 1);
-    REQUIRE(block(*result, 2).display_slot == 1);
-    REQUIRE(block(*result, 3).display_slot == 2);
-    REQUIRE(block(*result, 0).display == palette[1]);
-    REQUIRE(block(*result, 3).display == palette[2]);
+    REQUIRE(block(*result, 0).display_slot == 0);
+    REQUIRE(block(*result, 1).display_slot == 0);
+    REQUIRE(block(*result, 2).display_slot == 0);
+    REQUIRE(block(*result, 3).display_slot == 3);
+    REQUIRE(block(*result, 0).display == palette[0]);
+    REQUIRE(block(*result, 3).display == palette[3]);
 }
 TEST_CASE("Honor portrait V2 leaves low confidence and non anatomy regions on nearest colors", "[PortraitColorBlocks][HonorFilamentSuite]") {
     Sample sample;
@@ -132,18 +133,18 @@ TEST_CASE("Honor portrait V2 leaves low confidence and non anatomy regions on ne
         SC::Label::Accessories, SC::Label::Unknown};
     sample.analysis.face_confidence = {.69f, .95f, .95f, .95f};
     sample.source.face_colors = {{palette[4][0], palette[4][1], palette[4][2], 1.f},
-        {palette[5][0], palette[5][1], palette[5][2], 1.f},
-        {palette[3][0], palette[3][1], palette[3][2], 1.f},
-        {palette[2][0], palette[2][1], palette[2][2], 1.f}};
+        {palette[0][0], palette[0][1], palette[0][2], 1.f},
+        {palette[1][0], palette[1][1], palette[1][2], 1.f},
+        {palette[3][0], palette[3][1], palette[3][2], 1.f}};
 
     const auto result = PC::build(honor_input(sample));
     REQUIRE(block(*result, 0).status == PC::Status::Unresolved);
     REQUIRE(block(*result, 0).display_slot == 4);
-    REQUIRE(block(*result, 1).display_slot == 5);
-    REQUIRE(block(*result, 2).display_slot == 3);
-    REQUIRE(block(*result, 3).display_slot == 2);
+    REQUIRE(block(*result, 1).display_slot == 0);
+    REQUIRE(block(*result, 2).display_slot == 1);
+    REQUIRE(block(*result, 3).display_slot == 3);
     REQUIRE(PC::reliable_fixed_role_blocks(*result,
-        GUI::young_portrait_honor_suite().semantic_role_slot_indices()) == 0);
+        GUI::honor_people_suite().semantic_role_slot_indices()) == 0);
 }
 TEST_CASE("Stale V2 algorithm caches are rejected", "[PortraitColorBlocks]") {
     Sample s; auto in = s.input(); in.strategy = PC::Strategy::ColorRegionMajorityV2;

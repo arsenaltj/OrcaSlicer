@@ -1260,8 +1260,7 @@ void RedesignShell::disconnect_model_generation_host()
     }
     if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this))) {
         if (frame->topbar()) {
-            frame->topbar()->ShowCompactSlicingTitlebar(false);
-            frame->topbar()->ShowNativeWorkspaceTools(false);
+            frame->topbar()->SetSlicingTitlebarMode(false, false);
         }
         frame->mount_native_workspace_tools(nullptr);
     }
