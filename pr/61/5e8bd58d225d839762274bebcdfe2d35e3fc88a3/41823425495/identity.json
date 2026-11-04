@@ -1,0 +1,27 @@
+{
+  "pr": 61,
+  "run": 41823425495,
+  "head": "5e8bd58d225d839762274bebcdfe2d35e3fc88a3",
+  "base": "abb26f03848dd2da99315fe9b779a3f21df945dd",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "feat(sdk): add standalone model SDK and native manufacturing bridge",
+  "path": "pr/61/5e8bd58d225d839762274bebcdfe2d35e3fc88a3/41823425495",
+  "created": "2026-11-04T11:48:15+00:00",
+  "files": {
+    "index.html": "b0c787b003fdf5384108d56d91f7b79234f74099b335956f967ccf416e5aee7b",
+    "details.html": "ceca386d7eb3af952fe54fc0791e23a36093f4fe9e9e9bc6e7aa461ec283dd33",
+    "report.json": "e691fff655c66e00edadff9bcbe214dcb744584320276871ccca59ed223073c0",
+    "summary.md": "993f3a2b6fd4b3637423399dc66faa1c74e77973b27a68c06ba2a4f044f81f37",
+    "archify-receipts.json": "eca3752fb0a2324cb3318dafeb6cb80d2248729b6c67e9b98bf16c4313355e77",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "0ffab16f9726b620912c653e9f7c0366b2cc52446160216201f2cfd82495204e",
+    "l1-modules.json": "20a86552368ab72de05c104cc59180832b87fb9eddf578776be3c3630d31bedb",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}

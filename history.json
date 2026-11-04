@@ -1,6 +1,16 @@
 [
   {
     "pr": 61,
+    "run": 41823425495,
+    "head": "5e8bd58d225d839762274bebcdfe2d35e3fc88a3",
+    "base": "abb26f03848dd2da99315fe9b779a3f21df945dd",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "feat(sdk): add standalone model SDK and native manufacturing bridge",
+    "path": "pr/61/5e8bd58d225d839762274bebcdfe2d35e3fc88a3/41823425495",
+    "created": "2026-11-04T11:48:15+00:00"
+  },
+  {
+    "pr": 61,
     "run": 41813166177,
     "head": "5e8bd58d225d839762274bebcdfe2d35e3fc88a3",
     "base": "abb26f03848dd2da99315fe9b779a3f21df945dd",
