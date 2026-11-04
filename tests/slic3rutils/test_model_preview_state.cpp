@@ -95,6 +95,93 @@ TEST_CASE("Saved low-color versions retain the immutable original palette source
     CHECK(prepared.trial_histogram->trial_palette(8, {}, true).size() == 8);
 }
 
+TEST_CASE("Original surface sampling survives face reorder winding and repaired triangles",
+          "[ModelPreviewState][OriginalAppearance]")
+{
+    const auto source=boost::filesystem::path(std::string(TEST_DATA_DIR))/"model_artifact"/"textured.glb";
+    Slic3r::TriangleMesh mesh;Slic3r::ObjInfo colors;std::string error;
+    REQUIRE(Slic3r::AI::load_model_artifact(source,mesh,colors,error));
+    const auto hash=Slic3r::AI::model_artifact_sha256(source);
+    const auto original=Slic3r::GUI::ModelOriginalSurfaceSampler::load(source,hash,mesh.its,error);
+    INFO(error);REQUIRE(original);
+    auto repaired=mesh.its;
+    std::reverse(repaired.indices.begin(),repaired.indices.end());
+    for (auto& face:repaired.indices) std::swap(face[0],face[2]);
+    const auto remapped=Slic3r::GUI::ModelOriginalSurfaceSampler::load(source,hash,repaired,error);
+    REQUIRE(remapped);
+    for (size_t face=0;face<repaired.indices.size();++face) {
+        const auto actual=remapped->sample(face,{.2f,.3f,.5f});
+        const auto expected=original->sample(repaired.indices.size()-1-face,{.5f,.3f,.2f});
+        for (size_t c=0;c<3;++c) CHECK_THAT(actual[c],Catch::Matchers::WithinAbs(expected[c],1e-5));
+    }
+    const auto face=mesh.its.indices.front();
+    const auto midpoint=(mesh.its.vertices[face[0]]+mesh.its.vertices[face[1]])*.5f;
+    repaired=mesh.its;const int mid=int(repaired.vertices.size());repaired.vertices.push_back(midpoint);
+    repaired.indices.front()={face[0],mid,face[2]};
+    const auto changed=Slic3r::GUI::ModelOriginalSurfaceSampler::load(source,hash,repaired,error);
+    INFO(error);REQUIRE(changed);
+    const auto expected=original->sample(0,{.35f,.15f,.5f});
+    const auto actual=changed->sample(0,{.2f,.3f,.5f});
+    for(size_t c=0;c<3;++c) CHECK_THAT(actual[c],Catch::Matchers::WithinAbs(expected[c],1e-4));
+    CHECK_FALSE(Slic3r::GUI::ModelOriginalSurfaceSampler::load(source,std::string(64,'0'),repaired,error));
+    CHECK_FALSE(Slic3r::GUI::ModelOriginalSurfaceSampler::load(source,hash,repaired,error,[]{return true;}));
+}
+
+TEST_CASE("AI source counts follow only hash verified model history", "[ModelPreviewState][OriginalAppearance]")
+{
+    ScopedTemporaryDir temporary("orca-source-color-history");const auto root=temporary.path();
+    boost::filesystem::create_directories(root/"models");
+    const auto original=root/"models"/"original.obj",saved=root/"models"/"saved.obj";
+    const auto mesh=original_appearance_fixture_mesh();std::string error;
+    REQUIRE(Slic3r::AI::write_model_artifact(original,mesh,original_appearance_fixture_colors(mesh.vertices.size()),error));
+    boost::filesystem::copy_file(original,saved);
+    const auto original_record=Slic3r::AI::beauty_metadata_path(original,root);
+    // Explicit finishing records use downloads so prepare_model can recover the
+    // same library root used to validate relative source-model references.
+    const auto record=root/"downloads"/"saved.json";
+    const auto hash=Slic3r::AI::model_artifact_sha256(original);
+    write_original_appearance_json(original_record,{{"model_sha256",hash},{"palette",{"#000000","#ffffff","#ff0000","#0000ff"}}});
+    write_original_appearance_json(record,{{"source_model","models/original.obj"},{"source_sha256",hash}});
+    using Slic3r::GUI::original_appearance_detail::ai_source_color_count;
+    CHECK(ai_source_color_count(saved,root,record)==4);
+    ModelPreview3D::PreparedModel prepared;
+    REQUIRE(ModelPreview3D::prepare_model(saved,prepared,error,{},record));
+    CHECK(prepared.ai_source_color_count==4);
+    write_original_appearance_json(record,{{"source_model","models/original.obj"},{"source_sha256","wrong"}});
+    CHECK(ai_source_color_count(saved,root,record)==0);
+    write_original_appearance_json(record,{{"source_model","../outside.obj"},{"source_sha256",hash}});
+    CHECK(ai_source_color_count(saved,root,record)==0);
+}
+
+TEST_CASE("Original texture sampling preserves UV wrapping and linear material factors",
+          "[ModelPreviewState][OriginalAppearance]")
+{
+    const auto path=boost::filesystem::path(std::string(TEST_DATA_DIR))/"model_artifact"/"textured.glb";
+    Slic3r::TriangleMesh mesh;Slic3r::ObjInfo colors;Slic3r::AI::ModelArtifactTextureSurface texture;std::string error;
+    REQUIRE(Slic3r::AI::load_model_artifact(path,mesh,colors,error,{},&texture));
+    REQUIRE_FALSE(texture.images.empty());REQUIRE(texture.faces.size()==mesh.its.indices.size());
+    auto& image=texture.images.front();image.width=2;image.height=2;
+    image.rgba={255,0,0,255,0,255,0,255,0,0,255,255,255,255,255,255};
+    auto& face=texture.faces.front();face.image=0;
+    for(auto& corner:face.corners){corner.uv={1.25f,.25f};corner.multiplier={.5f,.5f,.5f};}
+    const auto hash=Slic3r::AI::model_artifact_sha256(path);
+    for(const auto wrap:std::array<int,3>{10497,33648,33071}) {
+        face.wrap_s=wrap;
+        const auto sampler=Slic3r::GUI::ModelOriginalSurfaceSampler::load(path,hash,mesh.its,error,{},&mesh,&colors,&texture);
+        INFO(error);REQUIRE(sampler);
+        const auto sampled=sampler->sample(0,{.2f,.3f,.5f});
+        const size_t channel=wrap==10497?0:1;
+        for(size_t c=0;c<3;++c) CHECK_THAT(sampled[c],Catch::Matchers::WithinAbs(c==channel?.73535698f:0.f,1e-5));
+    }
+    namespace SC=Slic3r::AI::SemanticColoring;
+    SC::MeshSnapshot snapshot;snapshot.mesh=mesh.its;snapshot.vertex_colors=colors.vertex_colors;
+    snapshot.geometry_id=selection::geometry_fingerprint(mesh.its);snapshot.content_id=SC::content_fingerprint(snapshot);
+    const auto old_content=snapshot.content_id,old_key=SC::analysis_cache_key(snapshot,"body","face");
+    snapshot.sampling_signature="original-surface/v1:"+hash;
+    CHECK(SC::content_fingerprint(snapshot)==old_content);
+    CHECK(SC::analysis_cache_key(snapshot,"body","face")!=old_key);
+}
+
 TEST_CASE("Explicit original appearance references validate identity and topology",
           "[ModelPreviewState][OriginalAppearance]")
 {
@@ -128,6 +215,49 @@ TEST_CASE("Explicit original appearance references validate identity and topolog
     CHECK_FALSE(Slic3r::GUI::resolve_original_appearance_reference(
         bad_hash, mesh, root, resolved, error));
     CHECK(error.find("哈希") != std::string::npos);
+}
+
+TEST_CASE("Repaired carriers recover original UV evidence without mixing averaged vertex colors", "[ModelPreviewState][OriginalAppearance]")
+{
+    ScopedTemporaryDir temporary("orca-repaired-texture-evidence");
+    const auto root = temporary.path();
+    boost::filesystem::create_directories(root / "models");
+    const auto original = root / "models" / "original.glb";
+    const auto repaired = root / "models" / "repaired.obj";
+    const auto record = root / "downloads" / "repaired.json";
+    boost::filesystem::copy_file(boost::filesystem::path(std::string(TEST_DATA_DIR)) /
+        "model_artifact" / "textured.glb", original);
+    Slic3r::TriangleMesh mesh;
+    Slic3r::ObjInfo colors;
+    std::string error;
+    REQUIRE(Slic3r::AI::load_model_artifact(original, mesh, colors, error));
+    REQUIRE(Slic3r::AI::write_model_artifact(repaired, mesh.its,
+        std::vector<Slic3r::RGBA>(mesh.its.vertices.size(), {1.f, 0.f, 1.f, 1.f}), error));
+    REQUIRE(Slic3r::AI::load_model_artifact(repaired, mesh, colors, error));
+    const Slic3r::GUI::OriginalAppearanceReference reference {
+        boost::filesystem::canonical(repaired), Slic3r::AI::model_artifact_sha256(repaired),
+        selection::topology_fingerprint(mesh.its), boost::filesystem::canonical(original),
+        Slic3r::AI::model_artifact_sha256(original)
+    };
+    write_original_appearance_json(record, {{"original_appearance", reference.encode(root)}});
+    ModelPreview3D::PreparedModel prepared;
+    const bool loaded = ModelPreview3D::prepare_model(repaired, prepared, error, {}, record);
+    INFO(error);
+    REQUIRE(loaded);
+    REQUIRE(prepared.has_source_appearance);
+    REQUIRE_FALSE(prepared.texture_surface.images.empty());
+    REQUIRE(prepared.semantic_source);
+    REQUIRE(prepared.semantic_source->sample_original);
+    REQUIRE(prepared.trial_histogram);
+    Slic3r::GUI::PreviewPalette::Histogram expected;
+    for (size_t face = 0; face < mesh.its.indices.size(); ++face) {
+        const auto& triangle = mesh.its.indices[face];
+        const double area = (mesh.its.vertices[triangle[1]] - mesh.its.vertices[triangle[0]]).cross(
+            mesh.its.vertices[triangle[2]] - mesh.its.vertices[triangle[0]]).norm();
+        const auto sampled = prepared.semantic_source->sample_original(face, {1.f/3, 1.f/3, 1.f/3});
+        expected.add(Slic3r::GUI::preview_rgb8(sampled[0], sampled[1], sampled[2]), area * 3);
+    }
+    CHECK(prepared.trial_histogram->signature() == expected.signature());
 }
 
 TEST_CASE("Filament baking retains original evidence across split vertices and reopening",
@@ -959,6 +1089,93 @@ TEST_CASE("Historical preview cancellation measures avoided preparation work", "
     output.close();REQUIRE(output.good());
 }
 
+
+// Opt-in replay of a frozen user failure through the real CPU preparation and
+// partition code. Inputs must be copies; no GUI, provider or project is opened.
+TEST_CASE("Frozen workbench partitions report their exact preparation result", "[.PortraitPartitionReplay]")
+{
+    namespace SC = Slic3r::AI::SemanticColoring;
+    namespace PC = Slic3r::GUI::PortraitColorBlocks;
+    namespace P = Slic3r::GUI::PreviewPalette;
+    const auto env = [](const char* key) {
+        const auto* value = boost::nowide::getenv(key);
+        return value ? std::string(value) : std::string{};
+    };
+    const auto model = env("ORCA_PARTITION_REPLAY_MODEL");
+    const auto evidence = env("ORCA_PARTITION_REPLAY_ANALYSIS");
+    const auto report_path = env("ORCA_PARTITION_REPLAY_REPORT");
+    if (model.empty() || evidence.empty() || report_path.empty())
+        SKIP("Select frozen model/analysis copies and a fresh report path.");
+    REQUIRE_FALSE(boost::filesystem::exists(report_path));
+    auto record = boost::filesystem::path(model); record.replace_extension(".json");
+    ModelPreview3D::PreparedModel prepared;
+    std::string error;
+    REQUIRE(ModelPreview3D::prepare_model(model, prepared, error, {}, record));
+    INFO(error);
+    REQUIRE(prepared.semantic_source);
+    REQUIRE(prepared.trial_histogram);
+    boost::filesystem::ifstream input(evidence);
+    const auto doc = nlohmann::json::parse(input);
+    SC::Analysis analysis;
+    REQUIRE(SC::decode_analysis(doc, *prepared.semantic_source, doc.at("body_identity"),
+        doc.at("face_identity"), analysis, error));
+    const size_t count = size_t(prepared.ai_source_color_count);
+    const auto basis = P::make_automatic_color_basis(*prepared.trial_histogram, count,
+        prepared.geometry_id, true, prepared.automatic_color_units.get());
+    REQUIRE(basis.valid());
+    PC::Input partition{*prepared.semantic_source, analysis};
+    partition.strategy = PC::Strategy::ColorRegionMajorityV2;
+    partition.source_basis = &basis;
+    partition.intermediate_palette = basis.source_palette;
+    const auto& suite = Slic3r::GUI::honor_people_suite();
+    for (size_t slot = 0; slot < suite.model_slot_count; ++slot) {
+        const auto& hex = suite.physical_slots[slot].color;
+        partition.targets.push_back({float(std::stoul(hex.substr(1, 2), nullptr, 16)) / 255.f,
+            float(std::stoul(hex.substr(3, 2), nullptr, 16)) / 255.f,
+            float(std::stoul(hex.substr(5, 2), nullptr, 16)) / 255.f});
+    }
+    partition.mapping = partition.targets;
+    partition.final_color_count = partition.targets.size();
+    partition.fixed_role_slots = suite.semantic_role_slot_indices();
+    nlohmann::json report{{"source_sha256", prepared.artifact_sha256},
+        {"geometry_id", prepared.geometry_id}, {"content_id", prepared.semantic_source->content_id},
+        {"person_detected", analysis.person_detected}, {"source_count", count},
+        {"source_palette", basis.source_palette}, {"basis_signature", basis.basis_signature},
+        {"face_count", prepared.triangles}, {"semantic_subfaces", analysis.subface_labels.size()}};
+    const auto started = std::chrono::steady_clock::now();
+    try {
+        const auto result = PC::build(partition);
+        report["status"] = "partition_built";
+        report["units"] = result->units.size();
+        report["regions"] = result->current().blocks.size();
+        report["memory_bytes"] = result->memory_bytes();
+        SC::FaceColors faces; SC::SubfaceColors children;
+        result->appearance(faces, children);
+        const auto geometry = Slic3r::GUI::build_semantic_colored_geometry(*prepared.semantic_source, faces, children);
+        report["painted_faces"] = faces.size();
+        report["subfaces"] = children.size();
+        report["geometry_triangles"] = geometry.indices_count() / 3;
+        report["source_slots_preserved"] = result->unit_source_slots == basis.unit_source_slots;
+        report["used_model_slots"] = PC::used_display_slots(*result);
+        report["semantic_bound_regions"] = PC::reliable_fixed_role_blocks(*result, suite.semantic_role_slot_indices());
+    } catch (const std::exception& exception) {
+        report["status"] = "partition_rejected";
+        report["error"] = exception.what();
+    }
+    report["elapsed_ms"] = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - started).count();
+    boost::filesystem::ofstream output(report_path);
+    output << report.dump(2); output.close();
+    REQUIRE(output.good());
+    CHECK(Slic3r::AI::model_artifact_sha256(model) == prepared.artifact_sha256);
+    INFO(report.dump(2));
+    REQUIRE(report.at("status") == "partition_built");
+    CHECK(report.at("units").get<size_t>() == prepared.triangles);
+    CHECK(report.at("subfaces").get<size_t>() == 0);
+    CHECK(report.at("geometry_triangles").get<size_t>() == prepared.triangles);
+    CHECK(report.at("source_slots_preserved").get<bool>());
+    for (size_t slot : report.at("used_model_slots").get<std::vector<size_t>>()) CHECK(slot < 5);
+}
 
 TEST_CASE("Worker history preparation preserves editing state and complete metric records", "[ModelPreviewState]")
 {

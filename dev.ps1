@@ -23,6 +23,7 @@ param(
     [string[]]$TestPattern = @(),
     [switch]$Configure,
     [switch]$NoLaunch,
+    [switch]$SkipNativeStartupCheck,
     [string]$BaseRef = 'origin/codex/team/integration',
     [string]$HeadRef = 'HEAD',
     [switch]$Committed
@@ -32,6 +33,7 @@ Set-StrictMode -Version Latest
 if ($env:OS -ne 'Windows_NT') { throw 'dev.ps1 currently supports the Windows internal development runtime.' }
 if ($Action -eq 'Test' -and -not $TestPattern.Count) { throw 'Test requires -TestPattern test_<module>.py; select the affected offline tests explicitly.' }
 if ($Action -eq 'CppTest' -and (-not $TestSuite -or -not $TestLabel)) { throw 'CppTest requires -TestSuite and -TestLabel; select affected tests explicitly.' }
+if ($SkipNativeStartupCheck -and (-not $NoLaunch -or $Action -ne 'Run')) { throw 'SkipNativeStartupCheck requires Run -NoLaunch.' }
 if ($Configure -and $Action -in @('Sidecar', 'Test', 'Check', 'Setup')) { throw 'Use Run -Configure for native configuration changes.' }
 $root = $PSScriptRoot
 . (Join-Path $root 'scripts/ProductConfig.ps1')
@@ -207,7 +209,9 @@ try {
     }
     if ($Action -eq 'Run') {
         Invoke-Step 'install' $check.cmake @('--install', $check.build, '--config', 'Release', '--prefix', $runtime)
-        Invoke-Step 'runtime-check' $python @('-I', $helper, 'finish', '--root', $root, '--build', $build, '--before', (Join-Path $attempt 'before.json'))
+        $runtimeCheckArguments = @('-I', $helper, 'finish', '--root', $root, '--build', $build, '--before', (Join-Path $attempt 'before.json'))
+        if ($SkipNativeStartupCheck) { $runtimeCheckArguments += '--skip-native-startup' }
+        Invoke-Step 'runtime-check' $python $runtimeCheckArguments
     } elseif ($Action -eq 'Sidecar') {
         Invoke-Step 'sidecar-update' $python @('-I', $helper, 'sidecar', '--root', $root, '--build', $build)
     }

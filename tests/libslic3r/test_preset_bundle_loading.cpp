@@ -2738,6 +2738,36 @@ TEST_CASE("A one-filament project for a shared-nozzle printer opens with one fil
     CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values.size() == 1);
 }
 
+TEST_CASE("Reopening a project preserves explicit support spools across system preset rebasing",
+          "[Preset][Bundle][PortraitSupportBinding]")
+{
+    PresetBundle bundle;
+    select_multi_nozzle_printer(bundle, 6, false);
+    auto& process = add_inmemory_preset(bundle.prints, "System portrait process");
+    process.is_system = true;
+    process.config.set_key_value("support_filament", new ConfigOptionInt(0));
+    process.config.set_key_value("support_interface_filament", new ConfigOptionInt(0));
+    bundle.prints.select_preset_by_name(process.name, true);
+    bundle.set_num_filaments(6u, "#FFFFFF");
+
+    auto config = bundle.full_config();
+    const int support = GENERATE(3, 6);
+    const int interface = support == 6 ? 3 : 6;
+    config.set_key_value("support_filament", new ConfigOptionInt(support));
+    config.set_key_value("support_interface_filament", new ConfigOptionInt(interface));
+    // Older suite exports merged the project binding after collecting preset
+    // differences, so the file contains explicit spools but no dirty key for them.
+    config.set_key_value("different_settings_to_system", new ConfigOptionStrings(
+        std::vector<std::string>(8, "")));
+    Preset::normalize(config);
+    bundle.load_config_model("portrait-support.3mf", std::move(config));
+
+    CHECK(bundle.prints.get_edited_preset().config.opt_int("support_filament") == support);
+    CHECK(bundle.prints.get_edited_preset().config.opt_int("support_interface_filament") == interface);
+    CHECK(bundle.full_config().opt_int("support_filament") == support);
+    CHECK(bundle.full_config().opt_int("support_interface_filament") == interface);
+}
+
 // A "published" 3MF keeps the user's currently-selected presets and overlays only the
 // author-selected process keys onto the edited preset (mirrors the GUI load path: normalize
 // before load_config_model, then the overlay in load_config_file_config).

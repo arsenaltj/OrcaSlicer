@@ -56,6 +56,11 @@ inline RedesignPrimaryAction redesign_primary_action(const ModelGenerationUIStat
     return RedesignPrimaryAction::Design;
 }
 
+inline bool redesign_portrait_workbench_entry(const std::string& style, const ModelGenerationUIState& state)
+{
+    return style == "realistic" && state.stage == ModelGenerationUIStage::ModelReady && state.can_open_workbench;
+}
+
 inline bool workbench_mode_switch_allowed(bool importing, bool native_slicing, bool official_slicing, bool editing,
     bool analyzing = false)
 {

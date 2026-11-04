@@ -134,6 +134,13 @@ private:
     void request_generate_design();
     void request_generate_model();
     void request_primary_action();
+    void request_portrait_print();
+    void queue_portrait_print();
+    void run_portrait_print();
+    bool m_portrait_print_queued {false}, m_portrait_print_advancing {false};
+    bool m_portrait_import_requested {false}, m_portrait_analysis_requested {false};
+    std::string m_portrait_imported_object_id;
+    std::string m_portrait_active_id;
     void request_secondary_action();
     void request_model_page_action();
     bool can_return_to_image_design() const;
@@ -175,6 +182,7 @@ private:
     void restore_import_source_page();
     void check_import_first_frame();
     void open_print_preparation();
+    bool update_print_preview(bool active, bool layers, bool support);
     void return_to_slice_preview();
     bool navigate_to_workbench();
     void refresh_navigation();
@@ -218,6 +226,9 @@ private:
     wxWindow* m_native_preview {nullptr};
     NativeWorkspaceTheme m_native_theme;
     wxPanel* m_native_plater_host { nullptr };
+    bool m_print_canvas_mounted {false}, m_print_canvas_layers {false}, m_print_canvas_support {true};
+    std::function<bool()> m_print_preview_revision_current;
+    std::string m_print_preview_gcode;
     wxPanel* m_ai_slicing_controls { nullptr };
     wxWindow* m_ai_slicing_tab { nullptr };
     wxWindow* m_native_slicing_tab { nullptr };
@@ -289,6 +300,8 @@ private:
     WorkbenchLabel* m_import_stage {nullptr};
     WorkbenchLabel* m_import_elapsed {nullptr};
     wxWindow* m_import_cancel {nullptr};
+    WorkbenchLabel* m_portrait_import_status {nullptr};
+    bool m_portrait_import_inline {false};
     wxTimer m_import_timer;
     wxTimer m_slice_camera_retry_timer;
     int m_slice_camera_retry_attempts {0};

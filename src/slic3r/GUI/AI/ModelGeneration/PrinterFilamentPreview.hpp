@@ -190,6 +190,7 @@ inline bool apply_automatic_basis(AI::ColorTrialPersistence::State& state,
     updated.source = 1;
     updated.suite_id.clear();
     updated.suite_revision.clear();
+    updated.suite_region_binding.reset();
     updated.enabled = true;
     updated.count = int(colors.size());
     updated.project_count = int(colors.size());
@@ -297,6 +298,7 @@ inline bool apply(AI::ColorTrialPersistence::State& state, const std::vector<siz
     updated.source = 1; updated.enabled = true; updated.count = int(updated.colors.size());
     updated.suite_id.clear();
     updated.suite_revision.clear();
+    updated.suite_region_binding.reset();
     updated.project_slot_identity = identity;
     updated.color_card_target_palette.clear();
     updated.color_card_target_slot_ids.clear();

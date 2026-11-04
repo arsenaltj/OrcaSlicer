@@ -172,8 +172,10 @@ bool stage_targets(PresetBundle& staged, const std::vector<std::string>& targets
         }
         physical.push_back({candidate.project_config.opt_string("filament_colour", unsigned(i)), preset->name, type->get_at(0), false, unsigned(i + 1)});
     }
+    // A cloned appearance may reference filament_colour in candidate. Growing
+    // its slot arrays invalidates that reference, so retain an owned value.
     auto append_identity_recipe = [&](const std::vector<unsigned>& ids, const std::vector<double>& ratios,
-                                      const std::string& appearance) -> std::optional<size_t> {
+                                      std::string appearance) -> std::optional<size_t> {
         const size_t slot = candidate.filament_presets.size();
         if (slot >= 32) {
             error = "叠色配方超过原生32槽上限";

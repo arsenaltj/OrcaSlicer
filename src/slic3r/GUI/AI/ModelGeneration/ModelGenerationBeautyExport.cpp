@@ -1,4 +1,5 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
+#include "PortraitColorLayerPublication.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "ModelPreview3D.hpp"
 #include "BeautyWorkbenchControls.hpp"
@@ -103,7 +104,9 @@ void ModelGenerationPanel::export_semantic_candidate()
     if (portrait_task) portrait_task->report({PortraitStage::Saving, "校验颜色与连续裁切，准备保存候选",0,0});
     if (!m_model_preview || (!m_model_preview->semantic_regions_ready() && !m_model_preview->leaf_editing() &&
         m_model_preview->color_trial_state().source != 1 &&
-        m_model_preview->face_color_overrides().empty()) ||
+        m_model_preview->face_color_overrides().empty() &&
+        !(m_portrait_print.from_workbench() && m_portrait_print.running() &&
+          m_portrait_print.stage == PortraitPrint::Stage::SaveColor)) ||
         !is_nonempty_model(m_finishing_candidate.empty() ? m_displayed_model_path : m_finishing_candidate)) {
         if (auto before = std::move(m_beauty_reoptimization_before)) restore_beauty_candidate(*before);
         if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic candidate source unavailable");
@@ -207,7 +210,8 @@ void ModelGenerationPanel::export_semantic_candidate()
         m_finishing_source_context = capture_model_context();
         m_finishing_source = source;
     }
-    m_finishing_id = "finish-semantic-" + new_request_id();
+    m_finishing_id = m_portrait_print.from_workbench() && m_portrait_print.current(m_portrait_print.id, PortraitPrint::Stage::SaveColor)
+        ? m_portrait_print.color_asset_id() : "finish-semantic-" + new_request_id();
     m_finishing_candidate_baked_appearance = nullptr;
     // OBJ can carry only whole-face vertex colours. Semantic recognition also
     // emits subface/cell edits; route those candidates through the existing
@@ -272,7 +276,11 @@ void ModelGenerationPanel::export_semantic_candidate()
                     // native import consumes the same face/subface overrides.
                     result.source_sha256=AI::model_artifact_sha256(source);
                     if(result.source_sha256.empty() || canceled->load())throw std::runtime_error("颜色块来源已变化或保存已取消");
-                    boost::filesystem::copy_file(source,destination);
+                    // An interrupted v3 publication can leave this immutable
+                    // carrier behind. Reuse matching bytes on manual resume;
+                    // preserve a conflicting file instead of overwriting it.
+                    if (!boost::filesystem::exists(destination))
+                        boost::filesystem::copy_file(source,destination);
                     result.output_sha256=AI::model_artifact_sha256(destination);
                     if(result.output_sha256!=result.source_sha256 || AI::model_artifact_sha256(source)!=result.source_sha256)
                         throw std::runtime_error("颜色块版本来源校验失败");
@@ -281,7 +289,15 @@ void ModelGenerationPanel::export_semantic_candidate()
                     result.faces_before=result.faces_after=mesh.its.indices.size();result.vertices=mesh.its.vertices.size();
                     const auto size=mesh.bounding_box().size();
                     for(size_t c=0;c<3;++c)result.dimensions[c]=size[c];
-                    result.changed_edit_record=true;result.success=true;
+                    if (draft_snapshot->color_trial.suite_id == "honor.people.six") {
+                        if (!draft_snapshot->color_blocks)
+                            throw std::runtime_error("人物配色颜色层缺失，原网格副本不能作为已配色成果。");
+                        const auto layer = PortraitColorBlocks::publish_verified_color_layer(
+                            *draft_snapshot->color_blocks, cache_root / "portrait-color-blocks");
+                        result.recolored_faces = layer.painted_faces;
+                        result.changed_edit_record = layer.painted_subfaces != 0;
+                    } else result.changed_edit_record = true;
+                    result.success=true;
                 } else result=AI::finish_model_artifact(source,destination,output_options,[canceled]{return canceled->load();});
             } catch(const std::exception& e) {
                 result.error=e.what();result.canceled=canceled->load();result.success=false;
@@ -394,7 +410,6 @@ void ModelGenerationPanel::export_semantic_candidate()
                         self->m_finishing_candidate_secondary_evidence = self->m_model_preview->secondary_region_evidence();
                         self->m_finishing_candidate_secondary_error = self->m_model_preview->secondary_region_evidence_error();
                         self->m_model_preview->restore_color_trial_without_recognition(color_state);
-                        self->m_model_preview->restore_portrait_color_blocks(draft_snapshot->color_blocks,false);
                         self->m_model_preview->restore_printer_restore_snapshot(printer_restore_snapshot);
                         // Printer-trial colors are baked into the candidate even
                         // when the user saved a manual recolor. Its new preview
@@ -403,6 +418,13 @@ void ModelGenerationPanel::export_semantic_candidate()
                             self->m_model_preview->set_saved_semantic_result(
                                 self->m_finishing_candidate_semantic_faces,
                                 self->m_finishing_candidate_semantic_subfaces);
+                        // V2 preserves the original mesh carrier. Rebuild its
+                        // applied face/subface arrays after restoring the saved
+                        // result, which clears semantic preview readiness.
+                        // Keeping only the block pointer renders a trial but
+                        // leaves native import and publication without paint.
+                        const bool blocks_restored = self->m_model_preview->restore_portrait_color_blocks(
+                            draft_snapshot->color_blocks, true);
                         std::string printer_preview_error;
                         const bool printer_preview_restored = !printer_filament_application ||
                             self->m_model_preview->activate_printer_filament_preview(&printer_preview_error);
@@ -416,9 +438,10 @@ void ModelGenerationPanel::export_semantic_candidate()
                             << ", project_identity_matches="
                             << (restored_color_state.project_slot_identity == color_state.project_slot_identity)
                             << ", edits=" << edits_restored << ", semantic=" << semantic_restored
+                            << ", blocks=" << blocks_restored
                             << ", printer_preview=" << printer_preview_restored
                             << (printer_preview_error.empty() ? std::string() : ", error=" + printer_preview_error);
-                        if (!edits_restored || !semantic_restored || !printer_preview_restored) {
+                        if (!edits_restored || !semantic_restored || !blocks_restored || !printer_preview_restored) {
                             self->m_save_and_return = false;
                             cleanup_candidate();
                             self->restore_beauty_candidate(*draft_snapshot);
@@ -428,6 +451,7 @@ void ModelGenerationPanel::export_semantic_candidate()
                                 "semantic result preview unavailable");
                             const wxString reason = !edits_restored ? _L("局部编辑状态无法恢复")
                                 : !semantic_restored ? _L("语义结果无法恢复")
+                                : !blocks_restored ? _L("人物颜色区域的面或子面颜色无法恢复")
                                 : from_u8(printer_preview_error.empty() ? "打印机耗材预览无法恢复" : printer_preview_error);
                             self->m_finishing_status->SetLabel(_L("候选预览失败，已保留处理前版本：") + reason);
                             self->finish_portrait_optimization(PortraitOutcome::DraftOnly,self->m_finishing_status->GetLabel());
@@ -441,6 +465,18 @@ void ModelGenerationPanel::export_semantic_candidate()
                             self->m_model_preview->original_appearance_reference();
                         self->m_finishing_candidate_original_appearance_error =
                             self->m_model_preview->original_appearance_error();
+                        if (self->m_portrait_print.current(self->m_portrait_print.id, PortraitPrint::Stage::SaveColor) &&
+                            self->m_finishing_id == self->m_portrait_print.color_asset_id() &&
+                            result.source_sha256 == self->m_portrait_print.model_hash &&
+                            self->m_model_preview->geometry_id() == self->m_portrait_print.geometry_id) {
+                            // The source edit revision was checked before this
+                            // adoption. Loading our own verified candidate and
+                            // restoring its leaf edits creates a new local
+                            // revision; freeze that committed state before the
+                            // next flow tick checks for user changes.
+                            self->m_portrait_color_snapshot = self->m_model_preview->color_trial_metadata();
+                            self->m_portrait_color_edit_revision = self->m_model_preview->leaf_edit_revision();
+                        }
                         self->m_beauty_manual_color_dirty = false;
                         self->m_finishing_candidate_baked_appearance = baked;
                         self->m_finishing_before = false;
@@ -480,6 +516,7 @@ void ModelGenerationPanel::export_semantic_candidate()
                 self->m_status->SetLabel(self->m_finishing_status->GetLabel());
                 self->refresh_controls();
                 self->update_finishing_selection();
+                self->queue_portrait_print();
             });
         });
     } catch (const std::exception& e) {

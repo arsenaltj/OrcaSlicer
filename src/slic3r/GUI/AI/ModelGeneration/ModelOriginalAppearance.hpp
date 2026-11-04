@@ -104,6 +104,33 @@ inline nlohmann::json read_record(const boost::filesystem::path& path)
     return input ? nlohmann::json::parse(input, nullptr, false) : nlohmann::json();
 }
 
+// A finishing version inherits the final AI count from its verified model
+// history, never from the currently selected generation page or target suite.
+inline int ai_source_color_count(boost::filesystem::path model,
+                                 const boost::filesystem::path& root,
+                                 boost::filesystem::path record = {})
+{
+    try {
+        for (size_t depth = 0; depth < 64; ++depth) {
+            const auto doc = read_record(record.empty() ? AI::beauty_metadata_path(model, root) : record);
+            record.clear();
+            if (!doc.is_object()) break;
+            const auto hash = AI::model_artifact_sha256(model);
+            if (hash.empty() || (doc.contains("model_sha256") && doc.at("model_sha256") != hash)) break;
+            const auto palette = doc.find("palette");
+            const int count = doc.value("ai_source_color_count",
+                palette != doc.end() && palette->is_array() ? int(palette->size()) : 0);
+            if (count >= 4 && count <= 6) return count;
+            if (!doc.contains("source_model") || !doc.contains("source_sha256")) break;
+            boost::filesystem::path parent;
+            if (!safe_library_file(root, boost::filesystem::path(doc.at("source_model").get<std::string>()), parent) ||
+                AI::model_artifact_sha256(parent) != doc.at("source_sha256")) break;
+            model = std::move(parent);
+        }
+    } catch (const std::exception&) { /* Invalid history cannot authorize a source basis. */ }
+    return 0;
+}
+
 inline bool has_appearance(const indexed_triangle_set& mesh, const ObjInfo& appearance,
                            const AI::ModelArtifactTextureSurface& texture)
 {

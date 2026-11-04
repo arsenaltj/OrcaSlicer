@@ -4107,6 +4107,7 @@ void GLCanvas3D::on_idle(wxIdleEvent& evt)
 
 void GLCanvas3D::on_char(wxKeyEvent& evt)
 {
+    if (m_print_preview_read_only) return;
     if (!m_initialized)
         return;
 
@@ -4418,6 +4419,7 @@ void GLCanvas3D::release_held_modifiers()
 
 void GLCanvas3D::on_key(wxKeyEvent& evt)
 {
+    if (m_print_preview_read_only) return;
 #ifdef __APPLE__
     // A key the input method used for a composition must not also edit the text field: Esc would revert
     // it, Backspace delete a character, Enter add a line.
@@ -5099,7 +5101,7 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
         m_mouse.position = Vec2d(-1.0, -1.0);
         m_dirty = true;
     }
-    else if (evt.LeftDClick()) {
+    else if (evt.LeftDClick() && !m_print_preview_read_only) {
         // switch to object panel if double click on object, otherwise switch to global panel if double click on background
         if (selected_object_idx >= 0)
             post_event(SimpleEvent(EVT_GLCANVAS_SWITCH_TO_OBJECT));
@@ -5110,6 +5112,10 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
         // Orca: Retain the click position even if the first motion event crosses a surface edge.
         m_mouse.set_start_position_2D_as_invalid();
         m_mouse.drag.start_position_2D = pos;
+        // A display-only preview has no object move to anchor. Seed orbit on
+        // button-down so even coalesced drag events retain their full motion.
+        if (m_print_preview_read_only)
+            m_mouse.drag.start_position_3D = Vec3d(double(pos.x()), double(pos.y()), 0.0);
 
         //BBS: add orient deactivate logic
         if (!m_gizmos.on_mouse(evt)) {
@@ -5479,7 +5485,7 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                 if (m_gizmos.get_current_type() != GLGizmosManager::MeshBoolean && m_hover_volume_idxs.empty())
                     deselect_all();
         }
-        else if (evt.RightUp() && !is_layers_editing_enabled()) {
+        else if (evt.RightUp() && !is_layers_editing_enabled() && !m_print_preview_read_only) {
             // forces a frame render to ensure that m_hover_volume_idxs is updated even when the user right clicks while
             // the context menu is already shown
             render();
@@ -5558,7 +5564,7 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
 
     // Detection of doubleclick on text to open emboss edit window
     auto type = m_gizmos.get_current_type();
-    if (evt.LeftDClick() && !m_hover_volume_idxs.empty() &&
+    if (evt.LeftDClick() && !m_print_preview_read_only && !m_hover_volume_idxs.empty() &&
         (type == GLGizmosManager::EType::Undefined ||
          type == GLGizmosManager::EType::Move ||
          type == GLGizmosManager::EType::Rotate ||

@@ -95,8 +95,27 @@ void classify_submission_error(const std::string& error, std::string& code, std:
 
 } // namespace
 
+bool ModelGenerationPanel::request_stop()
+{
+    if (m_shutdown || !m_page_initialized || m_stop == nullptr || (!m_stop->IsEnabled() && !m_portrait_print.running()))
+        return false;
+    if (m_portrait_print.active()) {
+        pause_portrait_print("用户已暂停工作台自动流程，已保存成果保留。");
+        if (m_model_preview && m_portrait_print.stage == PortraitPrint::Stage::Color)
+            m_model_preview->cancel_semantic_request();
+        // Keep collecting the exact submitted task's result. Stopping the
+        // sidecar job would make a paused design impossible to continue
+        // without buying another image. The ledger blocks all next stages.
+        return true;
+    }
+    wxCommandEvent event;
+    on_stop(event);
+    return true;
+}
+
 void ModelGenerationPanel::on_generate(wxCommandEvent&)
 {
+    m_last_submission = PortraitPrint::Submission::Rejected;
     if (!input_editable() || !generation_provider_available("geometry")) return;
     if (!generation_options_valid()) {
         show_input_hint(_L("200 万面需要选择精细几何。"));
@@ -124,8 +143,9 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
     message += _L("\n停止：只停止本地等待；已提交的远端任务可能继续运行并计费。");
     const SubmissionContext confirmation_context {source_job_id, confirmed_options.provider, m_sequence};
     const auto confirmed_prompt = m_prepared_prompt->GetValue();
-    if (show_generation_confirmation(this, message, _L("确认生成3D模型"), 189) != wxID_YES)
-        return;
+    if (show_generation_confirmation(this, message, _L("确认生成3D模型"), 189) != wxID_YES) {
+        m_last_submission = PortraitPrint::Submission::Cancelled; return;
+    }
     // The modal pumps events: restore, service loss or a late status may have
     // changed the job while the user was reading the confirmation.
     const auto current_options = current_generation_options();
@@ -144,6 +164,7 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
         return;
     }
     if (m_local_image_history || can_reuse_ready_model) {
+        m_last_submission = PortraitPrint::Submission::Pending;
         m_design_history_loading = true;
         const uint64_t history_sequence = ++m_design_history_sequence;
         m_busy = true;
@@ -226,6 +247,7 @@ void ModelGenerationPanel::update_progress(int value, int step, const wxString& 
 
 void ModelGenerationPanel::submit_confirmed_model()
 {
+    m_last_submission = PortraitPrint::Submission::Submitted;
     const bool image_mode = m_job_preview_expected;
     if (image_mode)
         m_client.record_journey_event("preview_accepted", m_job_id);
@@ -374,6 +396,8 @@ void ModelGenerationPanel::handle_error(const std::string& error, uint64_t seque
 {
     if (m_shutdown || sequence != m_sequence)
         return;
+    if (m_portrait_print.running() && sequence == m_portrait_generation_sequence)
+        pause_portrait_print("生成服务返回失败或提交状态不明，已保留原任务和成果：" + error);
     m_submission_state.retain_error({m_job_id, current_generation_options().provider, sequence}, error);
     classify_submission_error(error, m_provider_error_code, m_provider_error_category,
                               m_provider_error_retryable, m_provider_error_ambiguous);
@@ -474,6 +498,7 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
 {
     if (m_shutdown || sequence != m_sequence)
         return;
+    if (!observe_portrait_status(status, sequence)) return;
     m_submission_state.reconcile({status.id, current_generation_options().provider, sequence}, status.state);
     m_poll_connection_failures = 0;
     const bool became_model_ready = !m_ready && status.state == "ready" && status.artifact_ready;

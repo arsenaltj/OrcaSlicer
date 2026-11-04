@@ -12,6 +12,11 @@ def _use_unrestricted_creation(job: Job) -> None:
     provider task never creates another task. Old pending palette previews can
     continue with their unquantized design image.
     """
+    if job.portrait_print:
+        # This palette is durable design intent. It never paints provider mesh
+        # regions: the native workbench builds them from original appearance.
+        job.image_metrics["creation_color_policy"] = "portrait-print-v1"
+        return
     job.palette = ()
     job.palette_roles = {}
     job.palette_recommendation = {}

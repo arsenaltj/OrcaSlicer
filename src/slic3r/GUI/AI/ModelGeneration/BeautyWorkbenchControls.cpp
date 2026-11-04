@@ -1066,10 +1066,11 @@ void BeautyWorkbenchControls::start_partition(const nlohmann::json& saved)
     auto source_slots = task->restoring ? std::vector<size_t>{} : m_preview->beauty_automatic_source_slots();
     auto labels = m_preview->beauty_semantic_labels();
     auto semantic_confidence = m_preview->beauty_semantic_confidence();
+    const auto color_regions=m_preview->portrait_color_blocks();
     try {
         m_partition_worker = std::thread([task, surface, editor, labels = std::move(labels),
                                           semantic_confidence = std::move(semantic_confidence),
-                                          source_slots = std::move(source_slots), started] {
+                                          source_slots = std::move(source_slots), color_regions, started] {
             std::string stage = "surface";
             try {
                 // Automatic color partitioning is intentionally independent of
@@ -1092,9 +1093,30 @@ void BeautyWorkbenchControls::start_partition(const nlohmann::json& saved)
                     stage = "automatic_slot_partition";
                     if (task->automatic_basis_signature.empty() || source_slots.empty())
                         throw std::runtime_error("当前没有可用的原生 AI 配色基准。");
-                    task->result = AI::BeautyPuzzle::create_slot_regions(*task->surface, source_slots,
-                        task->automatic_basis_signature, labels, semantic_confidence,
-                        [task] { return task->canceled.load(); });
+                    if (color_regions && !color_regions->source_palette.empty() &&
+                        color_regions->algorithm_version == PortraitColorBlocks::portrait_postprocess_algorithm_version &&
+                        color_regions->geometry_id == task->geometry &&
+                        color_regions->source_basis_signature == task->automatic_basis_signature) {
+                        // Adopt the same native slot regions that were bound and
+                        // painted. Do not build a second partition and replace it.
+                        task->result.geometry_id = task->surface->geometry_id;
+                        task->result.automatic_basis_signature = task->automatic_basis_signature;
+                        task->result.face_piece = color_regions->face_partition();
+                        task->result.next_id = uint32_t(color_regions->current().blocks.size() + 1);
+                        for (size_t face = 0; face < task->result.face_piece.size(); ++face)
+                            task->result.region_source_slots.emplace(task->result.face_piece[face],
+                                color_regions->unit_source_slots[face]);
+                        for (const auto& block : color_regions->current().blocks) {
+                            if (block.semantic == AI::SemanticColoring::Label::Unknown) continue;
+                            task->result.region_semantic_labels[block.id + 1] = int32_t(block.semantic);
+                            task->result.region_semantic_confidence[block.id + 1] = block.confidence;
+                        }
+                        task->result.validate(*task->surface);
+                    } else {
+                        task->result = AI::BeautyPuzzle::create_slot_regions(*task->surface, source_slots,
+                            task->automatic_basis_signature, labels, semantic_confidence,
+                            [task] { return task->canceled.load(); });
+                    }
                 }
                 if (task->locks && (!task->restoring || !task->locks->preserves(task->result, task->result))) {
                     stage = "shape_locks";

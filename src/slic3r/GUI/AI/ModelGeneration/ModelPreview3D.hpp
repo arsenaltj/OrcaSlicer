@@ -19,6 +19,7 @@
 #include "BeautySourceSnapshot.hpp"
 #include "ModelHistoryMetadata.hpp"
 #include "ModelOriginalAppearance.hpp"
+#include "ModelOriginalSurfaceSampler.hpp"
 #include "ModelPreviewPalette.hpp"
 #include "ModelPreviewColorControls.hpp"
 #include "WorkbenchRoundBasePreview.hpp"
@@ -476,6 +477,7 @@ public:
         size_t colors {0};
         std::vector<PreviewPalette::Color> trial_palette;
         std::shared_ptr<const PreviewPalette::Histogram> trial_histogram;
+        int ai_source_color_count {0};
         std::shared_ptr<PreviewPalette::AutomaticColorUnits> automatic_color_units;
         std::string geometry_id;
         std::string artifact_sha256;
@@ -496,6 +498,7 @@ public:
         bool shapes_unlocked {false};
         bool has_source_appearance {false};
         bool current_appearance_distinct {false};
+        bool round_base_enabled {false};
         OriginalAppearanceReference original_appearance;
         std::string original_appearance_error;
         nlohmann::json leaf_edits;
@@ -565,6 +568,12 @@ public:
             std::string state_error;
             if (metadata.is_object()) {
                 restoration_metadata = metadata;
+                if (metadata.contains("portrait_preparation") && metadata["portrait_preparation"].is_object()) {
+                    const auto& preparation = metadata["portrait_preparation"];
+                    prepared.round_base_enabled = preparation.value("schema", std::string{}) == "orca.portrait-preparation/v1" &&
+                        preparation.value("round_base", false) && preparation.value("height_mm", 0.0) == 3.0 &&
+                        preparation.value("overlap_mm", 0.0) == 0.2;
+                }
                 if (metadata.contains("portrait_color_blocks")) block_reference=metadata["portrait_color_blocks"];
                 if(metadata.contains("semantic_color_state") && metadata["semantic_color_state"].is_object())
                     block_semantic_signature=metadata["semantic_color_state"].value("signature",std::string{});
@@ -689,10 +698,28 @@ public:
             source->face_colors = source_appearance.face_colors;
             source->geometry_id = prepared.geometry_id;
             source->content_id = AI::SemanticColoring::content_fingerprint(*source);
+            const auto origin = prepared.original_appearance.valid() ? prepared.original_appearance.origin_model : path;
+            const auto origin_hash = prepared.original_appearance.valid() ? prepared.original_appearance.origin_sha256 : current_hash;
+            const bool decoded_origin = origin_hash == current_hash;
+            auto sampler = ModelOriginalSurfaceSampler::load(origin, origin_hash, its, error, canceled,
+                decoded_origin ? &mesh : nullptr, decoded_origin ? &current_appearance : nullptr,
+                decoded_origin ? &prepared.texture_surface : nullptr);
+            if (!sampler) return false;
+            source->sample_original = [sampler](size_t face, const auto& bary) { return sampler->sample(face,bary); };
+            source->sampling_signature = "original-surface/v1:" + origin_hash;
+            // A repaired file may itself be its appearance carrier while its
+            // verified origin still owns the UVs. Carrier equality does not
+            // mean the original textured surface is already loaded.
+            if (!decoded_origin) {
+                auto texture = sampler->texture_surface();
+                if (!texture.faces.empty()) prepared.texture_surface = std::move(texture);
+            }
             prepared.semantic_source = std::move(source);
         }
         if (stop_if_canceled()) return false;
         trace_stage("semantic_snapshot");
+        prepared.ai_source_color_count = original_appearance_detail::ai_source_color_count(
+            path, original_appearance_library_root(path, record), record);
         if(prepared.semantic_source) {
             const auto root=boost::filesystem::path(Slic3r::data_dir())/"cache"/"portrait-color-blocks";
             std::string block_error;
@@ -788,6 +815,8 @@ public:
             geometry.reserve_indices(its.indices.size() * 3);
             const bool vertex_colors = appearance.vertex_colors.size() == its.vertices.size();
             const bool face_colors = appearance.face_colors.size() == its.indices.size();
+            const bool texture_evidence = collect_evidence && prepared.semantic_source &&
+                prepared.semantic_source->sample_original && !prepared.texture_surface.images.empty();
             std::vector<uint32_t> packed_vertex_colors;
             std::vector<uint8_t> counted_vertices;
             if (vertex_colors) {
@@ -825,7 +854,7 @@ public:
                     const RGBA& color = vertex_colors ? appearance.vertex_colors[vertex_index] : uniform_color;
                     const uint32_t packed = vertex_colors ? packed_vertex_colors[vertex_index] : uniform_packed;
                     if (collect_evidence) {
-                        trial_histogram->add(packed, area_weight);
+                        if (!texture_evidence) trial_histogram->add(packed, area_weight);
                         unit_color[0] += float((packed >> 16) & 255) / (3.f * 255.f);
                         unit_color[1] += float((packed >> 8) & 255) / (3.f * 255.f);
                         unit_color[2] += float(packed & 255) / (3.f * 255.f);
@@ -840,6 +869,14 @@ public:
                         Vec2f(float(shown), lock == locked_colors.end() ? color[3] : -1.0f));
                 }
                 if (collect_evidence) {
+                    if (prepared.semantic_source && prepared.semantic_source->sample_original) {
+                        unit_color = prepared.semantic_source->sample_original(face_index, {1.f/3,1.f/3,1.f/3});
+                        const uint32_t sampled=preview_rgb8(unit_color[0],unit_color[1],unit_color[2]);
+                        // Texture samples replace the carrier's averaged
+                        // vertex evidence instead of giving both equal weight.
+                        if (texture_evidence)
+                            trial_histogram->add(sampled,area_weight*3);
+                    }
                     automatic_color_units->colors.push_back(unit_color);
                     automatic_color_units->area.push_back(area_weight * 0.5);
                 }
@@ -988,7 +1025,7 @@ public:
         m_has_model = true;
         m_restored_persisted_color_trial = prepared.color_trial.has_value();
         m_color_trial->load(m_trial_histogram, m_trial_palette, m_geometry_id,
-            std::move(prepared.automatic_color_units));
+            std::move(prepared.automatic_color_units), prepared.ai_source_color_count);
         if (prepared.color_trial) {
             m_suppress_semantic_change = m_beauty_view || !prepared.saved_semantic_faces.empty() || !prepared.saved_semantic_subfaces.empty();
             m_color_trial->restore(*prepared.color_trial);
@@ -1021,6 +1058,7 @@ public:
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
         default_view();
+        if (prepared.round_base_enabled && !set_round_base_preview(true, error)) return false;
         m_pending_library_thumbnail_sha = std::move(prepared.artifact_sha256);
         notify_selection_changed();
         return true;
@@ -1071,6 +1109,8 @@ public:
         m_model_path = std::move(cached->path);
         m_model_stamp = cached->stamp;
         m_bounds = cached->bounds;
+        std::string base_error;
+        if (cached->round_base_enabled && !set_round_base_preview(true, base_error)) return false;
         m_triangle_count = triangle_count = cached->triangles;
         m_vertex_count = cached->vertices;
         if (m_region_evidence) restore_semantic_region_evidence(m_region_evidence);
@@ -1521,6 +1561,8 @@ public:
             m_geometry_id, m_triangle_count, m_region_runtime_identity);
     }
     std::shared_ptr<const SemanticRegionEvidence> semantic_region_evidence() const { return m_region_evidence; }
+    bool portrait_person_detected() const { return m_person_detected; }
+    std::string semantic_source_content_id() const { return m_semantic_source ? m_semantic_source->content_id : std::string{}; }
     const std::string& semantic_region_evidence_error() const { return m_region_evidence_error; }
     bool restore_semantic_region_evidence(std::shared_ptr<const SemanticRegionEvidence> evidence,
                                          const std::string& previous_error = {}) {
@@ -2179,7 +2221,20 @@ public:
         GLModel::Geometry lines;
         lines.format = {GLModel::Geometry::EPrimitiveType::Lines, GLModel::Geometry::EVertexLayout::P3N3};
         const float offset = std::max(1e-5f, float(m_bounds.size().norm()) * 0.0001f);
-        if (m_leaf_editing) for (const auto& segment : m_leaf_editing->boundary_segments(pieces)) {
+        const bool actual_color_partition = m_color_blocks && !m_color_blocks->source_palette.empty() &&
+            m_color_blocks->face_partition(neighbors) == pieces;
+        if (actual_color_partition && m_color_blocks->algorithm_version == 7 &&
+            !m_color_blocks->borders.empty()) for (const auto& border:m_color_blocks->borders) {
+            const auto& face=m_semantic_source->mesh.indices[border.face];
+            Vec3f normal=(m_semantic_source->mesh.vertices[face[1]]-m_semantic_source->mesh.vertices[face[0]]).cross(
+                m_semantic_source->mesh.vertices[face[2]]-m_semantic_source->mesh.vertices[face[0]]);
+            if (normal.squaredNorm()<1e-20f) continue;
+            normal.normalize();const auto base=unsigned(lines.vertices_count());
+            lines.add_vertex(Vec3f(border.points[0],border.points[1],border.points[2])+offset*normal,normal);
+            lines.add_vertex(Vec3f(border.points[3],border.points[4],border.points[5])+offset*normal,normal);
+            lines.add_line(base,base+1);
+        }
+        else if (m_leaf_editing) for (const auto& segment : m_leaf_editing->boundary_segments(pieces)) {
             const auto base = unsigned(lines.vertices_count());
             lines.add_vertex(segment.a+offset*segment.normal,segment.normal);
             lines.add_vertex(segment.b+offset*segment.normal,segment.normal);
@@ -2752,8 +2807,28 @@ public:
     bool project_matching_valid() const { return m_color_trial->project_matching_valid(); }
     FaceColorOverrides printer_filament_export_faces() const;
     wxWindow* build_workbench_palette(wxWindow* parent) { return m_color_trial->build_workbench_palette(parent); }
-    bool activate_current_ai_palette() {
-        return m_has_model && m_color_trial && m_color_trial->activate_current_ai_palette();
+    bool activate_current_ai_palette(int count = 0) {
+        return m_has_model && m_color_trial && m_color_trial->activate_current_ai_palette(count);
+    }
+    bool request_honor_people_suite() {
+        return m_has_model && m_color_trial && m_color_trial->request_honor_suite("honor.people.six");
+    }
+    bool set_independent_base_slot(size_t slot) {
+        if (!m_has_model || !m_color_trial || !m_color_trial->set_base_slot(slot)) return false;
+        m_canvas->Refresh(false); return true;
+    }
+    void set_base_slot_changed_callback(std::function<void(size_t)> callback) {
+        m_color_trial->on_base_slot_change = std::move(callback);
+    }
+    bool apply_portrait_suite_binding(const PortraitSuite::Binding& binding) {
+        if (!m_has_model || !m_color_trial) return false;
+        m_suppress_semantic_change = true;
+        const bool applied = m_color_trial->apply_portrait_suite_binding(binding);
+        m_suppress_semantic_change = false;
+        m_color_trial_enabled = m_color_trial->enabled();
+        m_trial_palette = m_color_trial->colors();
+        m_canvas->Refresh(false);
+        return applied;
     }
     bool restored_persisted_color_trial() const { return m_restored_persisted_color_trial; }
     wxWindow* build_workbench_mode(wxWindow* parent, std::function<void(bool)> mode, std::function<void()> cancel) {
@@ -3078,6 +3153,7 @@ private:
         OriginalAppearanceReference original_appearance;
         std::string original_appearance_error;
         bool restored_persisted_color_trial {false};
+        bool round_base_enabled {false};
         nlohmann::json leaf_edits;
     };
 
@@ -3136,6 +3212,7 @@ private:
         m_cached_preview->original_appearance = m_original_appearance;
         m_cached_preview->original_appearance_error = m_original_appearance_error;
         m_cached_preview->restored_persisted_color_trial = m_restored_persisted_color_trial;
+        m_cached_preview->round_base_enabled = round_base_preview_enabled();
         m_cached_preview->face_color_overrides = m_face_color_overrides;
         m_cached_preview->printer_filament_restore = m_printer_filament_restore;
         m_cached_preview->color_blocks=m_color_blocks;
@@ -3847,8 +3924,13 @@ private:
                 const Matrix3d normal_matrix = view_model.matrix().block(0, 0, 3, 3).inverse().transpose();
                 const auto round_base = m_round_base_preview.layout(m_geometry_id, m_bounds);
                 if (round_base && m_round_base_model) {
-                    const auto color = !m_trial_palette.empty()
+                    auto color = !m_trial_palette.empty()
                         ? m_trial_palette.front() : PreviewPalette::Color {0.72f, 0.72f, 0.74f};
+                    const auto& binding = m_color_trial->base_binding();
+                    if (binding && binding->valid()) {
+                        const wxColour bound(wxString::FromUTF8(honor_people_suite().physical_slots[binding->physical_slot].color));
+                        color = {bound.Red()/255.f, bound.Green()/255.f, bound.Blue()/255.f};
+                    }
                     m_round_base_model->set_color(ColorRGBA(color[0], color[1], color[2], 1.0f));
                 }
                 if (m_beauty_view && m_workbench_grid_visible) {
@@ -4141,6 +4223,7 @@ private:
     void rebuild_semantic_preview_from_cached_result();
     bool rebuild_semantic_preview_from_color_blocks();
     bool reject_honor_suite_application(const wxString& reason);
+    bool fallback_honor_people_suite(const wxString& reason);
     void publish_honor_suite_semantic_progress(bool active, int progress,
         const wxString& message, const std::string& request_context = {},
         const std::string& geometry_id = {})

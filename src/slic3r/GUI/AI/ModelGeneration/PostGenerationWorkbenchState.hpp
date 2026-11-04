@@ -289,6 +289,8 @@ struct PostGenerationWorkbenchState {
     std::string reoptimization_reason;
     bool can_edit_project_colors {false};
     bool can_import_for_slicing {false};
+    bool deferred_native_repair {false};
+    std::string native_repair_source_sha256;
     bool can_force_import {false};
     bool force_import_acknowledged {false};
     bool import_has_topology_risk {false};

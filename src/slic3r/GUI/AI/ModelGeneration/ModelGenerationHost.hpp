@@ -4,6 +4,7 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include "PortraitPrintFlow.hpp"
 
 namespace Slic3r::GUI {
 
@@ -65,6 +66,7 @@ struct ModelGenerationUIHistoryEntry
 
 struct ModelGenerationUIState
 {
+    PortraitPrint::State portrait_print;
     std::uint64_t revision { 0 };
     ModelGenerationUIStage stage { ModelGenerationUIStage::Input };
     ModelGenerationUIInput input;

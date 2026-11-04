@@ -972,7 +972,7 @@ void RedesignMessageDialog::wrap_message()
 }
 
 int show_generation_confirmation(wxWindow* parent, const wxString& message,
-                                 const wxString& caption, int minimum_message_height)
+                                 const wxString& caption, int minimum_message_height, int maximum_message_height)
 {
     auto* top = wxGetTopLevelParent(parent);
     wxDialog shade(top, wxID_ANY, {}, wxDefaultPosition, wxDefaultSize,
@@ -983,7 +983,7 @@ int show_generation_confirmation(wxWindow* parent, const wxString& message,
     const bool dimmed = top && shade.SetTransparent(140);
     if (dimmed) shade.ShowWithoutActivating();
     ModelGenerationConfirmation dialog(dimmed ? static_cast<wxWindow*>(&shade) : parent,
-        message, caption, _L("Yes"), minimum_message_height);
+        message, caption, _L("Yes"), minimum_message_height, maximum_message_height);
     dialog.set_action_label(wxID_NO, _L("No"));
     return dialog.ShowModal();
 }

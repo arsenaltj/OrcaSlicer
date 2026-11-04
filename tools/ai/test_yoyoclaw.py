@@ -301,6 +301,19 @@ class YoYoClawCatalogTests(unittest.TestCase):
 
 
 class YoYoClawGenerationTests(unittest.TestCase):
+    def test_only_explicit_failed_status_authorizes_replacing_the_same_task(self):
+        for code, terminal in (("provider_task_failed", True), ("provider_timeout", False),
+                               ("provider_connection_failed", False)):
+            with self.subTest(code=code):
+                client = mock.Mock()
+                client.wait_3d.side_effect = YoYoClawError("provider response", code=code)
+                gateway = YoYoClawModelProviderGateway(lambda: client)
+                with self.assertRaises(ProviderGatewayError) as raised:
+                    gateway.wait_for_task("saved-task", model_id="hy-3d-3.1-yoyo")
+                self.assertEqual(raised.exception.terminal, terminal)
+                self.assertEqual(raised.exception.task_id, "saved-task")
+                client.submit_3d.assert_not_called()
+
     def test_image_generation_validates_whitelist_and_keeps_existing_output_path(self):
         client = _FakeYoYoClawClient(image_models=[{"name": "qwen-image-2.0"}])
         with tempfile.TemporaryDirectory() as directory:

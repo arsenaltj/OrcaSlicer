@@ -57,6 +57,8 @@ add_executable(${_TEST_NAME}_tests
     test_model_library_filter.cpp
     test_model_library_export.cpp
     test_model_generation_submission_state.cpp
+    test_portrait_print_flow.cpp
+    test_portrait_suite_binding.cpp
     test_local_print_color_matching.cpp
     test_local_print_color_recipes.cpp
     test_local_print_color_boundary.cpp

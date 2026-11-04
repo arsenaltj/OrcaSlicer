@@ -297,7 +297,20 @@ class ModelGenerationWorkflow:
                         provider_error_category=exc.category,
                         provider_error_retryable=exc.retryable,
                         provider_error_ambiguous=exc.ambiguous,
+                        provider_terminal_failure=exc.terminal and exc.task_id ==
+                            job.attempts[active_attempt - 1].get("generation_task_id"),
+                        terminal_task_id=exc.task_id if exc.terminal else "",
                     )
+                ledger = job.image_metrics.setdefault("portrait_attempts", {})
+                previous = job.attempts[active_attempt - 1] if active_attempt else {}
+                if (job.portrait_print and job.portrait_retry_authorized and not resume and
+                        not job.stop_event.is_set() and exc.terminal and not exc.ambiguous and
+                        exc.task_id == previous.get("generation_task_id") and int(ledger.get("model_retries", 0)) < 1):
+                    ledger["model_retries"] = 1
+                    self.ports.persist(job, required=True)
+                    self.generate(job, prepared_prompt, False, PaidTaskAuthorization.confirmed(
+                        f"{job.id}:model:automatic-retry", job.provider))
+                    return
                 self.ports.fail(job, str(exc))
         except TripoError as exc:
             if self.ports.is_shutting_down():

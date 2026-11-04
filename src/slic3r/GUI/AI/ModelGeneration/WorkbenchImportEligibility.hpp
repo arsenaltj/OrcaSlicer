@@ -16,7 +16,12 @@ inline bool workbench_import_request_allowed(const PostGenerationWorkbenchState&
         state.check.candidate_status == RepairCandidateStatus::Generating ||
         state.check.candidate_status == RepairCandidateStatus::Ready)
         return false;
-    if (request.topology_check_sha256 != state.check.model_sha256) return false;
+    if (request.native_repair_before_slice)
+        return state.deferred_native_repair && AI::is_lowercase_sha256(state.native_repair_source_sha256) &&
+            request.native_repair_source_sha256 == state.native_repair_source_sha256 &&
+            request.color_mode == AI::ImportColorMode::NativeMatch && request.matched_colors &&
+            request.matched_colors->source_sha256 == state.native_repair_source_sha256;
+    if (state.deferred_native_repair || request.topology_check_sha256 != state.check.model_sha256) return false;
     if (state.can_import_for_slicing) return true;
     // Only a confirmed, low-severity boundary risk can use the exception path.
     // Invalid, failed, unchecked and changed reports are never force-importable.

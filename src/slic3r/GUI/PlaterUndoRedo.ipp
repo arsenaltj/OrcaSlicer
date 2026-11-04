@@ -327,12 +327,13 @@ bool Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
 
 
 bool Plater::adopt_local_print_model(const ModelObject& object, const PresetBundle* staged,
-    size_t& index, std::string& error, bool apply_round_base_preparation)
+    size_t& index, std::string& error, bool apply_round_base_preparation,
+    const std::optional<AI::ModelBaseBinding>& base_binding)
 {
     LocalPrintModelImport::PlacementSnapshot placement;
     std::unique_ptr<Model> prepared;
     return capture_local_print_placement(placement, error) &&
-        placement.prepare_model(object, prepared, error, apply_round_base_preparation) &&
+        placement.prepare_model(object, prepared, error, apply_round_base_preparation, base_binding) &&
         commit_local_print_model(*prepared->objects.front(), staged, index, error);
 }
 

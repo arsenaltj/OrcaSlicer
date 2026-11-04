@@ -13,9 +13,11 @@ class ModelGenerationConfirmation final : public RedesignMessageDialog, public A
 public:
     ModelGenerationConfirmation(wxWindow* parent, const wxString& message,
                                 const wxString& title, const wxString& action,
-                                int minimum_message_height = 105)
+                                int minimum_message_height = 105, int maximum_message_height = 0)
         : RedesignMessageDialog(parent, message, title, wxYES_NO | wxNO_DEFAULT,
-            RedesignMessageDialog::Appearance::GenerationConfirmation, minimum_message_height, true),
+            RedesignMessageDialog::Appearance::GenerationConfirmation, minimum_message_height, true,
+            {}, wxEmptyString, false, RedesignMessageDialog::ContentMode::Native, false, 0, 0,
+            maximum_message_height > 0, maximum_message_height),
           m_release_timer(this) {
         set_action_label(wxID_YES, action);
         set_action_label(wxID_NO, _L("取消"));

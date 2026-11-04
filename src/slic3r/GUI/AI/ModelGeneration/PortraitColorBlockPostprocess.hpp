@@ -1,6 +1,7 @@
 #pragma once
 
 #include "slic3r/AI/ModelGeneration/SemanticColoring/SemanticColoring.hpp"
+#include "ModelPreviewPalette.hpp"
 #include <memory>
 #include <stdexcept>
 #include <map>
@@ -60,10 +61,9 @@ inline constexpr size_t maximum_units = 2000000;
 inline constexpr size_t portrait_postprocess_min_colors = 4;
 inline constexpr size_t portrait_postprocess_max_colors = 6;
 inline constexpr float fixed_role_minimum_confidence = .70f;
-// V2 region membership now uses a fixed source-seed comparison.  Bump the
-// persisted algorithm contract so candidates produced by the chained-gradient
-// traversal are rebuilt instead of being interpreted as valid regions.
-inline constexpr uint32_t portrait_postprocess_algorithm_version = 6;
+// Version 8 restores the native automatic-slot connected regions. Versions
+// 6/7 remain readable, but their automatic partitions are not reused.
+inline constexpr uint32_t portrait_postprocess_algorithm_version = 8;
 inline constexpr bool portrait_color_postprocess_supported(size_t count) {
     return count >= portrait_postprocess_min_colors && count <= portrait_postprocess_max_colors;
 }
@@ -108,9 +108,14 @@ struct ColorTrack {
     std::vector<uint32_t> unit_blocks;
 };
 struct Result {
+    struct Border { size_t face; std::array<float,6> points; };
     std::string geometry_id, source_signature, semantic_signature, palette_signature, control_signature;
     Strategy strategy = Strategy::ConnectedColorBlocksV1;
     uint32_t algorithm_version = 0;
+    std::string source_basis_signature;
+    std::vector<SC::Color> source_palette;
+    std::vector<size_t> unit_source_slots;
+    std::vector<Border> borders;
     // The ten-color palette is an internal analysis artifact. final_palette is
     // the user-visible four-to-six-color result after protected-role compaction.
     std::vector<SC::Color> intermediate_palette, final_palette;
@@ -167,6 +172,9 @@ struct Input {
     // Optional product-card role locks. Unlike the ordinary V2 allocator,
     // these slots may be shared by several confirmed anatomy roles.
     std::map<std::string, size_t> fixed_role_slots;
+    // Reuse the native suggestion's existing face assignments. No texture
+    // resampling, semantic evidence or target color can split these regions.
+    const PreviewPalette::AutomaticColorBasis* source_basis = nullptr;
 };
 std::shared_ptr<Result> build(const Input&, const SC::Cancel& = {});
 // Rebind an existing color-region result to a new color card.  The region and

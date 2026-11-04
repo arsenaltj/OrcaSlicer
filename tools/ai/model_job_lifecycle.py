@@ -318,6 +318,12 @@ class ModelJobLifecycle:
     def resume_restored_jobs(self, restored: list[Job]) -> None:
         for job in restored:
             if job.state == "queued" and job.phase == "resuming":
+                if job.portrait_print:
+                    job.state = "stopped"
+                    job.phase = "portrait_resume_required"
+                    job.message = "The saved portrait task requires manual continuation after restart. No new task was created."
+                    self.ports.persist_job(job)
+                    continue
                 latest_attempt = job.attempts[-1] if job.attempts else {}
                 if latest_attempt.get("provider_operation") == "model_texture":
                     source_job_id = str(latest_attempt.get("source_job_id", ""))
@@ -490,13 +496,19 @@ class ModelJobLifecycle:
             "phase": job.phase,
             "message": job.message,
             "progress": job.progress,
-            "attempt": len(job.attempts),
+            "attempt": next((index for index, attempt in reversed(list(enumerate(job.attempts, 1)))
+                if attempt.get("generation_task_id")), 0) if job.portrait_print else len(job.attempts),
+            "terminal_task_ids": sorted({task for attempt in job.attempts for task in
+                ([attempt.get("terminal_task_id", "")] + attempt.get("failed_conversion_task_ids", []))
+                if isinstance(task, str) and task}),
             "max_attempts": MAX_GENERATION_ATTEMPTS,
             "prepared_prompt": job.prepared_prompt if job.source == "text" else "",
             "user_prompt": "" if job.source == "image" and job.user_prompt == DEFAULT_IMAGE_INSTRUCTION else job.user_prompt,
             "palette": list(job.palette),
             "palette_roles": job.palette_roles,
             "palette_color_count": job.palette_color_count,
+            "portrait_print": job.portrait_print,
+            "creation_request_id": job.creation_request_id,
             "palette_recommendation": job.palette_recommendation,
             "palette_recommendation_confirmed": job.palette_recommendation_confirmed,
             "print": job.print_settings,

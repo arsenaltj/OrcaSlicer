@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -218,7 +219,27 @@ def refresh_catalogs(root: Path) -> dict:
     return {"updated_catalogs": updated}
 
 
-def verify_runtime(root: Path, build: Path, installed: list[str], runtime: Path | None = None) -> dict:
+def verify_windows_native_startup(runtime: Path, executable: str) -> None:
+    """Exercise the actual DLL loader without inheriting development tool paths."""
+    system_root = os.environ.get("SystemRoot")
+    if not system_root:
+        raise ValueError("Native runtime startup check requires SystemRoot")
+    environment = {key: value for key, value in os.environ.items() if key.upper() != "PATH"}
+    environment["PATH"] = os.pathsep.join((str(Path(system_root) / "System32"), system_root))
+    try:
+        result = subprocess.run([str(runtime / executable), "--help"], cwd=runtime,
+                                env=environment, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=30,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(f"Native runtime startup check failed: {exc}") from exc
+    if result.returncode != 0:
+        detail = (result.stdout + "\n" + result.stderr).strip()[-1600:]
+        raise ValueError(f"Native runtime cannot start with system PATH (exit {result.returncode}): {detail}")
+
+
+def verify_runtime(root: Path, build: Path, installed: list[str], runtime: Path | None = None,
+                   *, skip_native_startup: bool = False) -> dict:
     # A separate trial can retain an open older runtime while using the same
     # source/cache checks. Never accept an external or linked install directory.
     runtime = runtime if runtime is not None else root / ".tmp/dev/run"
@@ -320,10 +341,12 @@ def verify_runtime(root: Path, build: Path, installed: list[str], runtime: Path 
     for name in ("resources/tools/ai/orca_ai_internal_defaults.json", "resources/generated_models"):
         if (runtime / name).exists():
             raise ValueError(f"Private configuration/assets do not belong in the runtime: {name}")
+    if sys.platform == "win32" and not skip_native_startup:
+        verify_windows_native_startup(runtime, product["exe"])
     return checks
 
 
-def finish_install(root: Path, build: Path, before: dict) -> dict:
+def finish_install(root: Path, build: Path, before: dict, *, skip_native_startup: bool = False) -> dict:
     after = preflight(root, build)
     if any(after[key] != before[key] for key in ("source_identity", "native_configuration")):
         raise ValueError("Source changed while preparing the runtime; rerun after edits finish")
@@ -334,7 +357,9 @@ def finish_install(root: Path, build: Path, before: dict) -> dict:
     if not installed:
         raise ValueError("CMake did not record any installed runtime files")
     state = {"schema_version": 2, "build": str(build), "source": after,
-             "installed_files": installed, "hashes": verify_runtime(root, build, installed)}
+             "installed_files": installed, "hashes": verify_runtime(root, build, installed,
+                 skip_native_startup=skip_native_startup),
+             "native_startup_check": "skipped_by_request" if skip_native_startup else "performed"}
     write_json(root / ".tmp/dev/runtime-state.json", state)
     return {"status": "PREPARED", "source_identity": after["source_identity"],
             "installed_files": len(installed), "runtime": str(runtime)}
@@ -381,6 +406,8 @@ def main() -> None:
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--build", required=True, type=Path)
     parser.add_argument("--before", type=Path)
+    parser.add_argument("--skip-native-startup", action="store_true",
+                        help="Verify installed bytes without running the app, including --help.")
     args = parser.parse_args()
     root, build = args.root.resolve(), args.build.resolve()
     try:
@@ -391,7 +418,7 @@ def main() -> None:
         elif args.action == "catalogs":
             result = refresh_catalogs(root)
         elif args.action == "finish":
-            result = finish_install(root, build, read_json(args.before))
+            result = finish_install(root, build, read_json(args.before), skip_native_startup=args.skip_native_startup)
         elif args.action == "sidecar":
             result = update_sidecar(root, build)
         else:

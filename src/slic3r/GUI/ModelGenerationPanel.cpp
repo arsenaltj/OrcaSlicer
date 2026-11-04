@@ -135,21 +135,24 @@ bool ModelGenerationPanel::can_generate_design_from_shell() const
     return design_generation_available(input, generation_provider_available("image"), busy, post_generation_ui_state(), palette_ready);
 }
 
-bool ModelGenerationPanel::request_generate_design()
+PortraitPrint::Submission ModelGenerationPanel::request_generate_design()
 {
     if (!can_generate_design_from_shell())
-        return false;
+        return PortraitPrint::Submission::Rejected;
+    if (m_portrait_print.running()) pause_portrait_print("已切换到手动设计，本次自动流程暂停。");
+    m_last_submission = PortraitPrint::Submission::Rejected;
     wxCommandEvent event;
     on_preprocess(event);
-    return true;
+    return m_last_submission;
 }
 
-bool ModelGenerationPanel::request_generate_model()
+PortraitPrint::Submission ModelGenerationPanel::request_generate_model()
 {
     const bool reuse_ready_model = can_reuse_ready_model_design();
     if (m_shutdown || !m_page_initialized || m_generate == nullptr ||
         (!m_generate->IsEnabled() && !reuse_ready_model))
-        return false;
+        return PortraitPrint::Submission::Rejected;
+    m_last_submission = PortraitPrint::Submission::Rejected;
     wxCommandEvent event;
     on_generate(event);
     const bool submitted = m_journey_model_submitted;
@@ -160,22 +163,13 @@ bool ModelGenerationPanel::request_generate_model()
     // on_generate() may be cancelled by the confirmation dialog or rejected
     // by a final input/options check. Callers use this result to avoid
     // locking the Shell on a 3D page when no model task was actually started.
-    return submitted;
+    return m_last_submission;
 }
 
 bool ModelGenerationPanel::input_editable() const
 {
     return m_page_initialized && !m_shutdown && !m_busy && !m_preview_download_in_flight &&
            !m_preview_loading && !m_finishing_running && !m_design_history_loading && !m_saving_generation_options;
-}
-
-bool ModelGenerationPanel::request_stop()
-{
-    if (m_shutdown || !m_page_initialized || m_stop == nullptr || !m_stop->IsEnabled())
-        return false;
-    wxCommandEvent event;
-    on_stop(event);
-    return true;
 }
 
 bool ModelGenerationPanel::request_retry_service()
@@ -383,6 +377,7 @@ void ModelGenerationPanel::publish_ui_state()
     };
 
     ModelGenerationUIState state;
+    state.portrait_print = m_portrait_print;
     state.input.image_path = path_to_utf8(m_selected_image_path);
     state.input.prompt = text_to_utf8(m_prompt->GetValue());
     state.input.style = current_style();
@@ -396,6 +391,7 @@ void ModelGenerationPanel::publish_ui_state()
     state.options.geometry_quality = options.geometry_quality;
     state.options.texture_quality = options.texture_quality;
     state.options.output_format = options.output_format;
+    queue_portrait_print();
     state.service_available = m_service_available;
     state.service_availability_known = m_service_availability_known;
     state.busy = m_busy || m_preview_download_in_flight || m_saving_generation_options;
@@ -405,7 +401,7 @@ void ModelGenerationPanel::publish_ui_state()
     const bool can_reuse_model = can_reuse_ready_model_design() && !state.busy &&
         generation_provider_available("geometry") && generation_options_valid();
     state.can_generate_model = m_generate->IsEnabled() || can_reuse_model;
-    state.can_stop = m_stop->IsEnabled();
+    state.can_stop = m_stop->IsEnabled() || m_portrait_print.running();
     state.can_retry_service = m_retry_service->IsEnabled();
     state.can_retry_model = generation_provider_available("geometry", &m_job_generation_options) && !state.busy && (m_job_state == "failed" || m_job_state == "stopped") && !m_job_id.empty() &&
         !m_provider_error_ambiguous &&
@@ -446,6 +442,11 @@ void ModelGenerationPanel::publish_ui_state()
     state.provider_error_retryable = m_provider_error_retryable;
     state.provider_error_ambiguous = m_provider_error_ambiguous;
     state.status_text = wrapped_text_to_utf8(m_status->GetLabel());
+    if (m_portrait_print.active()) {
+        if (!m_portrait_print.reason.empty()) state.status_text = m_portrait_print.reason;
+        for (const auto& note : m_portrait_print.notices)
+            if (state.status_text.find(note) == std::string::npos) state.status_text += "\n" + note;
+    }
     state.summary_text = text_to_utf8(m_result_summary->GetLabel());
     state.workflow_phase = text_to_utf8(m_workflow_phase->GetLabel());
     state.workflow_guidance = wrapped_text_to_utf8(m_workflow_steps->GetLabel());
@@ -545,6 +546,7 @@ void ModelGenerationPanel::initialize_page(bool require_visible)
                             << (require_visible ? " for legacy host" : " for redesign shell host");
     build_page();
     m_page_initialized = true;
+    restore_portrait_print();
     Unbind(wxEVT_IDLE, &ModelGenerationPanel::on_first_visible_idle, this);
     m_status->SetLabel(_L("正在检查本地 3D 生成服务..."));
     m_result_summary->SetLabel(_L("本地服务就绪后即可使用 3D 生成功能。"));
@@ -616,6 +618,9 @@ void ModelGenerationPanel::show_input_hint(const wxString& message, wxWindow* fo
 
 void ModelGenerationPanel::restore_latest_job(bool require_visible)
 {
+    // A durable portrait flow owns an exact job identity. Ordinary latest-job
+    // restore must not replace it, even while it awaits manual continuation.
+    if (m_portrait_print.from_workbench() && m_portrait_print.active()) return;
     if (m_shutdown || !m_page_initialized || (require_visible && !IsShownOnScreen()) ||
         !m_service_available || m_restore_checked || !m_job_id.empty())
         return;
@@ -1391,7 +1396,10 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     m_clear_image->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_clear_image, this);
     m_use_printable_colors->Bind(wxEVT_CHECKBOX, &ModelGenerationPanel::on_printable_colors_toggled, this);
     m_palette_source->Bind(wxEVT_CHOICE, &ModelGenerationPanel::on_palette_source_changed, this);
-    m_palette_color_count->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { refresh_controls(); });
+    m_palette_color_count->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) {
+
+        refresh_controls();
+    });
     m_import_color_mode->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { refresh_controls(); });
     m_add_custom_color->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_add_custom_color, this);
     m_recommend_palette->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_recommend_palette, this);
@@ -2195,14 +2203,17 @@ void ModelGenerationPanel::on_recommend_palette(wxCommandEvent&)
             if (weak) weak->handle_error(error, sequence);
         });
     };
+    const std::string request_id = new_request_id();
+    m_last_submission = PortraitPrint::Submission::Submitted;
     if (image_mode) {
-        m_client.recommend_image_palette(new_request_id(), prompt, m_selected_image_path, m_job_style,
+        const auto image = m_selected_image_path;
+        m_client.recommend_image_palette(request_id, prompt, image, m_job_style,
                                          m_job_custom_style, m_job_palette_color_count, m_job_print_settings,
-                                         std::move(success), std::move(failure), true, m_job_generation_options);
+                                         std::move(success), std::move(failure), true, m_job_generation_options, false);
     } else {
-        m_client.recommend_text_palette(new_request_id(), prompt, m_job_style, m_job_custom_style,
+        m_client.recommend_text_palette(request_id, prompt, m_job_style, m_job_custom_style,
                                         m_job_palette_color_count, m_job_print_settings,
-                                        std::move(success), std::move(failure), true, m_job_generation_options);
+                                        std::move(success), std::move(failure), true, m_job_generation_options, false);
     }
 }
 
@@ -2230,6 +2241,7 @@ void ModelGenerationPanel::on_confirm_recommended_palette(wxCommandEvent& event)
     m_job_preview_expected = true;
     m_busy = true;
     m_client.record_journey_event("preview_requested", m_job_id);
+    m_last_submission = PortraitPrint::Submission::Submitted;
     const uint64_t sequence = m_sequence;
     update_progress(10, 2, _L("生成AI 设计图"));
     m_status->SetLabel(_L("正在根据当前配色生成 AI 设计图..."));
@@ -2253,6 +2265,7 @@ void ModelGenerationPanel::on_confirm_recommended_palette(wxCommandEvent& event)
 
 void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
 {
+    m_last_submission = PortraitPrint::Submission::Rejected;
     if (m_busy || m_shutdown || !generation_provider_available("image"))
         return;
     if (current_style().empty()) {
@@ -2304,15 +2317,17 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
         }
         if ((current_style() == "realistic" || current_style() == "portrait_sketch") && use_printable_colors())
             message << _L("\n若识别到真人，优先保留脸型、五官和姿态。");
-        if (show_generation_confirmation(this, message, _L("确认生成2D设计图")) != wxID_YES)
-            return;
+        if (show_generation_confirmation(this, message, _L("确认生成2D设计图")) != wxID_YES) {
+            m_last_submission = PortraitPrint::Submission::Cancelled; return;
+        }
     } else {
         const wxString message =
             use_printable_colors()
                 ? _L("要根据文字生成 AI 设计图吗？\n\n会生成适合 3D 建模的高质量设计图，并保留所选配色供后续模型使用。此操作消耗 API 额度。")
                 : _L("要根据文字生成 AI 设计图吗？\n\n会先生成并检查图片，再用于后续 3D 生成；此操作可能消耗 API 额度。");
-        if (show_generation_confirmation(this, message, _L("确认生成2D设计图")) != wxID_YES)
-            return;
+        if (show_generation_confirmation(this, message, _L("确认生成2D设计图")) != wxID_YES) {
+            m_last_submission = PortraitPrint::Submission::Cancelled; return;
+        }
     }
 
     // Palette recommendation can also reset the retained model and submit a
@@ -2393,6 +2408,7 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
                 weak->handle_error(error, sequence);
         });
     };
+    m_last_submission = PortraitPrint::Submission::Submitted;
     if (image_mode)
         m_client.preprocess_image(new_request_id(), prompt, m_selected_image_path, m_job_palette, m_job_palette_roles,
                                   m_palette_recommendation_confirmed, m_job_style, m_job_custom_style,
@@ -3766,7 +3782,7 @@ void ModelGenerationPanel::refresh_style_recommendation()
 
 bool ModelGenerationPanel::use_printable_colors() const
 {
-    // Color constraints belong to post-generation Orca material matching.
+    // Generation remains the original manual 2D -> confirmed 3D path.
     return false;
 }
 

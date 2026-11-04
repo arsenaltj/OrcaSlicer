@@ -1,10 +1,13 @@
 #include "slic3r/GUI/TextureImportDialog.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp"
 #include "slic3r/GUI/AI/Orca/AIImportSeamRepair.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchImportTopology.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchTextureImport.hpp"
 #include "slic3r/GUI/AI/Orca/ModelColorUpdate.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitColorBlockCache.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitSuiteBinding.hpp"
+#include "slic3r/GUI/AI/Orca/FilamentColorPack.hpp"
 #include "libslic3r/TexturePainting.hpp"
 #include "slic3r/GUI/ModelColorImportResult.hpp"
 #include "slic3r/GUI/TextureImportModel.hpp"
@@ -22,6 +25,82 @@
 
 using namespace Slic3r;
 using namespace Slic3r::GUI;
+
+TEST_CASE("Portrait source regions retain exact native slots and support exclusion through 3MF", "[PortraitSuiteBinding][ModelColorImport][BeautyWorkbench]")
+{
+    const size_t count = GENERATE(size_t(4), size_t(5), size_t(6));
+    namespace P = PreviewPalette;
+    namespace SC = AI::SemanticColoring;
+    const auto& suite = honor_people_suite();
+    std::vector<P::Color> targets;
+    for (size_t i = 0; i < 5; ++i) {
+        const auto rgb = std::stoul(suite.physical_slots[i].color.substr(1), nullptr, 16);
+        targets.push_back({float((rgb >> 16) & 255)/255.f, float((rgb >> 8) & 255)/255.f, float(rgb & 255)/255.f});
+    }
+    const auto mesh = its_make_cube(10, 10, 10);
+    P::AutomaticColorBasis basis;
+    basis.geometry_id = AI::SurfaceSelectionPersistence::geometry_fingerprint(mesh);
+    basis.source_color_signature = "original-provider-colors"; basis.requested_count = count;
+    basis.source_palette = targets;
+    basis.source_palette.push_back({.60f, .59f, .58f}); basis.source_palette.resize(count);
+    basis.source_area.assign(count, 0);
+    for (size_t face = 0; face < mesh.indices.size(); ++face) {
+        basis.unit_source_slots.push_back(face % count); basis.unit_area.push_back(1);
+        basis.source_area[face % count] += 1;
+    }
+    basis.basis_signature = P::automatic_basis_signature(basis);
+    PortraitSuite::Constraints constraints; constraints.reliable = true;
+    constraints.labels = {{SC::Label::Hair}, {SC::Label::Lips}, {SC::Label::FaceSkin},
+        {SC::Label::EyeSclera}, {SC::Label::Clothes}, {SC::Label::Clothes}};
+    const auto result = PortraitSuite::match(basis, targets, constraints, suite.id, suite.revision);
+    REQUIRE(result.binding.valid(count));
+    if (count == 6) CHECK(result.binding.source_to_model_slot[4] == result.binding.source_to_model_slot[5]);
+
+    Model model; auto* object = model.add_object("portrait", "portrait.obj", TriangleMesh(mesh)); object->add_instance();
+    model.texture_mesh = std::make_shared<TexturedMesh>();
+    AI::ModelMatchedColors matched; matched.source_sha256 = std::string(64, 'a'); matched.geometry_id = basis.geometry_id;
+    for (size_t slot = 0; slot < 6; ++slot)
+        matched.palette.push_back({slot, suite.physical_slots[slot].color, "PLA", true});
+    for (size_t source : basis.unit_source_slots) matched.face_slots.push_back(result.binding.source_to_model_slot[source]);
+    REQUIRE(matched.valid());
+    AI::ModelImportRequest request; request.matched_colors = matched;
+    auto options = model_import_color_options(request); options.matched_source = std::make_shared<indexed_triangle_set>(mesh);
+    apply_matched_texture_colors(model, options, options.matched_filaments);
+    auto* volume = object->volumes.front();
+    TriangleSelector expected(volume->mesh());
+    for (size_t f = 0; f < mesh.indices.size(); ++f) {
+        REQUIRE(matched.face_slots[f] < 5);
+        expected.set_facet(int(f), EnforcerBlockerType(int(matched.face_slots[f]) + int(EnforcerBlockerType::Extruder1)));
+    }
+    CHECK(volume->mmu_segmentation_facets.get_data() == expected.serialize());
+
+    PresetBundle filaments; filaments.set_num_filaments(6, "#808080");
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config(); config.apply(filaments.project_config);
+    auto& colors = config.option<ConfigOptionStrings>("filament_colour")->values;
+    for (size_t slot = 0; slot < 6; ++slot) colors[slot] = suite.physical_slots[slot].color;
+    config.set_key_value("support_filament", new ConfigOptionInt(6));
+    config.set_key_value("support_interface_filament", new ConfigOptionInt(6));
+    ScopedTemporaryDir backup("portrait-suite-source"); model.set_backup_path(backup.string());
+    ScopedTemporaryFile file(".3mf"); const auto path = file.string();
+    PlateData plate; plate.plate_index = 0;
+    StoreParams params; params.path = path.c_str(); params.model = &model; params.config = &config;
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence; params.plate_data_list.push_back(&plate);
+    REQUIRE(store_bbs_3mf(params));
+    Model reopened; ScopedTemporaryDir reopened_backup("portrait-suite-reopened"); reopened.set_backup_path(reopened_backup.string());
+    DynamicPrintConfig restored_config; ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs plates; std::vector<Preset*> presets; bool bbl = false, orca = false; Semver version;
+    const bool loaded = load_bbs_3mf(path.c_str(), &restored_config, &substitutions, &reopened, &plates,
+        &presets, &bbl, &orca, &version, nullptr, LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+    release_PlateData_list(plates); for (auto* preset : presets) delete preset;
+    REQUIRE(loaded); REQUIRE(reopened.objects.size() == 1);
+    auto* restored = reopened.objects.front()->volumes.front();
+    TriangleSelector actual(restored->mesh()); actual.deserialize(restored->mmu_segmentation_facets.get_data());
+    CHECK(actual.serialize() == expected.serialize());
+    CHECK(restored_config.opt_string("filament_colour", 3u) == "#FFFFFF");
+    CHECK(restored_config.opt_string("filament_colour", 5u) == "#FFFFFF");
+    CHECK(restored_config.opt_int("support_filament") == 6);
+    CHECK(restored_config.opt_int("support_interface_filament") == 6);
+}
 
 static void verify_source_frame_workbench_paint(const boost::filesystem::path& path, bool meters)
 {
@@ -625,6 +704,25 @@ TEST_CASE("explicit single-color import preserves geometry and uses the chosen n
     CHECK(volume->mmu_segmentation_facets.empty());
     CHECK(volume->mesh().its.vertices == before.vertices);
     CHECK(volume->mesh().its.indices == before.indices);
+}
+TEST_CASE("Native portrait repair closes an opening on a detached copy and retains painted slots", "[ModelColorImport][PortraitNativeRepair]")
+{
+    auto open=its_make_cube(10,10,10);open.indices.erase(open.indices.begin());
+    TriangleMesh source(open); TriangleSelector selector(source);
+    for(size_t f=0;f<open.indices.size();++f)selector.set_facet(int(f),f==5 ? EnforcerBlockerType::Extruder2 : EnforcerBlockerType::Extruder1);
+    const auto original=selector.serialize();
+    TriangleMesh repaired;TriangleSelector::TriangleSplittingData painting;
+    AI::ModelImportResult result;std::string error;
+    REQUIRE(prepare_native_portrait_repair(source,original,repaired,painting,result,error));
+    CHECK(result.native_repair_completed);CHECK(result.native_repair_changed_geometry);
+    CHECK(its_num_open_edges(repaired.its)==0);CHECK(source.its.indices==open.indices);
+    TriangleSelector after(repaired);after.deserialize(painting);
+    CHECK_FALSE(after.get_facets_strict(EnforcerBlockerType::Extruder1).indices.empty());
+    CHECK_FALSE(after.get_facets_strict(EnforcerBlockerType::Extruder2).indices.empty());
+    CHECK(after.get_facets_strict(EnforcerBlockerType::Extruder6).indices.empty());
+    AI::ModelImportResult cancelled;
+    CHECK_FALSE(prepare_native_portrait_repair(source,original,repaired,painting,cancelled,error,[]{return true;}));
+    CHECK_FALSE(cancelled.native_repair_completed);
 }
 TEST_CASE("missing single-color choice leaves the private model untouched", "[ModelColorImport][SingleColorImport]") {
     Model model;

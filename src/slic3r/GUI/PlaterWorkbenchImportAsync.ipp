@@ -217,13 +217,27 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                 }
                 if (!notify(WorkbenchImportPhase::Colors, "正在复检最终网格")) return;
                 TriangleMesh final_mesh = object.volumes.front()->mesh();
-                if (!prepare_workbench_import_topology(final_mesh, request.topology_risk_confirmed,
-                    prepared->result, prepared->result.error, stopped)) {
+                auto painting = object.volumes.front()->mmu_segmentation_facets.get_data();
+                const bool topology_ok = request.native_repair_before_slice
+                    ? request.native_repair_source_sha256 == source_hash &&
+                        prepare_native_portrait_repair(object.volumes.front()->mesh(), painting, final_mesh, painting,
+                            prepared->result, prepared->result.error, stopped, [&](int value) {
+                                notify(WorkbenchImportPhase::Colors, value >= 99 ? "正在复检原生修复网格…" :
+                                    value >= 96 ? "正在迁移并核验耗材颜色，复杂模型需要数分钟…" :
+                                    "Orca 原生修复 " + std::to_string(value) + "%");
+                            })
+                    : prepare_workbench_import_topology(final_mesh, request.topology_risk_confirmed,
+                        prepared->result, prepared->result.error, stopped);
+                if (!topology_ok) {
+                    if (prepared->result.error.empty()) prepared->result.error = "原生修复来源不匹配或已取消，已回滚导入。";
                     prepared->result.outcome = AI::ModelImportOutcome::RepairFailed;
                     return;
                 }
+                if (request.native_repair_before_slice) prepared->result.native_repair_source_sha256 = source_hash;
                 ui([&] {
                     object.volumes.front()->set_mesh(std::move(final_mesh));
+                    if (request.native_repair_before_slice)
+                        object.volumes.front()->mmu_segmentation_facets.set_data(std::move(painting));
                     object.volumes.front()->set_new_unique_id();
                     object.invalidate_bounding_box();
                 });
@@ -234,7 +248,7 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                 ui([&] {
                     created = LocalPrintModelImport::prepare(object, prepared->placement.placement,
                         prepared->placement.bed_size, prepared->model, prepared->result.error,
-                        request.apply_round_base_preparation);
+                        request.apply_round_base_preparation, request.base_binding);
                 });
                 if (!created || stopped()) return;
                 if (!LocalPrintModelImport::place(*prepared->model->objects.front(), prepared->placement.bed,

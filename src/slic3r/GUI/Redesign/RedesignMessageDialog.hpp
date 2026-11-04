@@ -157,6 +157,7 @@ int show_redesign_details(wxWindow* parent, const wxString& message,
 
 // Returns wxID_YES only for an affirmative action. Closing/Escape return wxID_NO.
 int show_generation_confirmation(wxWindow* parent, const wxString& message,
-                                 const wxString& caption, int minimum_message_height = 105);
+                                 const wxString& caption, int minimum_message_height = 105,
+                                 int maximum_message_height = 0);
 
 }

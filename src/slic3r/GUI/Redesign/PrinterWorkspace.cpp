@@ -375,6 +375,30 @@ void PrinterWorkspace::build_workspace()
     auto* stage = new wxBoxSizer(wxVERTICAL);
     m_prepare_visual = new wxPanel(m_stage); m_prepare_visual->SetBackgroundColour(flow_background_colour());
     auto* preview = new wxBoxSizer(wxVERTICAL);
+    m_preview_controls = new wxPanel(m_prepare_visual);
+    auto* controls = new wxBoxSizer(wxHORIZONTAL);
+    for (int mode = 0; mode < 2; ++mode) {
+        auto* button = new RoundedActionButton(m_preview_controls, mode ? text("逐层预览") : text("成品模型"), false, 36);
+        button->SetMinSize(FromDIP(wxSize(112, 36)));
+        button->Bind(wxEVT_BUTTON, [this, mode](wxCommandEvent&) { m_layer_preview = mode != 0; update_preview(); });
+        controls->Add(button, 0, wxRIGHT, FromDIP(8));
+    }
+    auto* supports = new RoundedActionButton(m_preview_controls, text("隐藏支撑"), false, 36);
+    supports->SetMinSize(FromDIP(wxSize(112, 36)));
+    supports->Bind(wxEVT_BUTTON, [this, supports](wxCommandEvent&) {
+        m_show_support = !m_show_support;
+        supports->SetLabel(m_show_support ? text("隐藏支撑") : text("显示支撑"));
+        m_layer_preview = true; update_preview();
+    });
+    controls->Add(supports, 0);
+    m_preview_controls->SetSizer(controls);
+    preview->Add(m_preview_controls, 0, wxEXPAND | wxALL, FromDIP(10));
+    m_preview_controls->Hide();
+    m_interactive_host = new wxPanel(m_prepare_visual);
+    m_interactive_host->SetMinSize(wxSize(1, 1));
+    m_interactive_host->SetSizer(new wxBoxSizer(wxVERTICAL));
+    preview->Add(m_interactive_host, 1, wxEXPAND);
+    m_interactive_host->Hide();
     m_model_image = new PrinterImage(m_prepare_visual, text("请先导入模型并完成切片"), true);
     preview->Add(m_model_image, 1, wxEXPAND);
     m_import = new RoundedActionButton(m_prepare_visual, text("导入模型"), false, 40);
@@ -452,6 +476,7 @@ void PrinterWorkspace::set_active(bool active)
     if (active) { m_preview_key.clear(); m_timer.Start(1000); refresh_state(); }
     else {
         m_timer.Stop();
+        if (m_interactive_preview) m_interactive_preview(false, m_layer_preview, m_show_support);
         if (m_media_play) m_media_play->SetMachineObject(nullptr);
         m_file_media_requested = false;
         if (m_file_media) m_file_media->Stop();
@@ -480,7 +505,17 @@ void PrinterWorkspace::update_compact_layout()
     m_gallery_scroll->FitInside();
 }
 
-void PrinterWorkspace::show_prepare() { set_view(View::Prepare); refresh_state(); }
+void PrinterWorkspace::show_prepare() { m_layer_preview = false; set_view(View::Prepare); refresh_state(); }
+void PrinterWorkspace::set_interactive_preview_handler(std::function<bool(bool, bool, bool)> handler)
+{
+    m_interactive_preview = std::move(handler);
+}
+void PrinterWorkspace::set_preparation_notice(const wxString& notice)
+{
+    if (m_preparation_notice == notice) return;
+    m_preparation_notice = notice;
+    set_error(m_action_error);
+}
 void PrinterWorkspace::set_return_to_preview_handler(std::function<void()> handler)
 {
     m_return_to_preview = std::move(handler);
@@ -493,6 +528,7 @@ bool PrinterWorkspace::monitoring() const { return m_view != View::Prepare; }
 
 void PrinterWorkspace::set_view(View view)
 {
+    if (view != View::Prepare && m_interactive_preview) m_interactive_preview(false, m_layer_preview, m_show_support);
     const bool monitor = view == View::Monitor;
     if (monitor && !m_media_ctrl) {
         m_media_ctrl = new wxMediaCtrl3(m_video_panel);
@@ -711,11 +747,29 @@ void PrinterWorkspace::request_option(int index, bool value)
 
 void PrinterWorkspace::set_error(const wxString& message)
 {
-    m_error->SetLabel(message); m_error->Wrap(FromDIP(325)); m_error->Show(!message.empty()); m_settings->Layout();
+    m_action_error = message;
+    wxString shown = m_preparation_notice;
+    if (!message.empty()) { if (!shown.empty()) shown += "\n"; shown += message; }
+    m_error->SetLabel(shown); m_error->Wrap(FromDIP(325)); m_error->Show(!shown.empty()); m_settings->Layout();
 }
 
 void PrinterWorkspace::update_preview()
 {
+    const bool interactive = m_interactive_preview && m_interactive_preview(
+        m_active && m_view == View::Prepare && m_state.gcode_ready && !m_state.slicing, m_layer_preview, m_show_support);
+    const bool changed = m_interactive_host->IsShown() != interactive;
+    m_interactive_host->Show(interactive);
+    m_preview_controls->Show(interactive);
+    m_model_image->Show(!interactive);
+    m_import->Show(!interactive && !m_state.gcode_ready && !m_state.can_slice && !m_state.slicing);
+    if (changed) {
+        m_prepare_visual->Layout(); m_stage->Layout(); Layout();
+        m_preview_controls->Layout(); m_interactive_host->Layout();
+        // Mounting happens while this host is hidden. Revisit the native
+        // canvas after its ancestors have their visible, final sizes.
+        if (interactive) m_interactive_preview(true, m_layer_preview, m_show_support);
+    }
+    if (interactive) return;
     const auto key = m_state.gcode_name + (m_state.gcode_ready ? ":ready" : ":unready") +
                      (m_state.slicing ? ":slicing" : "");
     if (key != m_preview_key || !m_model_image->has_image()) {

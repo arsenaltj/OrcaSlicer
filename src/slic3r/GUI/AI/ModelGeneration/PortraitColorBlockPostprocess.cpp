@@ -1,6 +1,7 @@
 #include "PortraitColorBlockPostprocess.hpp"
 #include "ModelPreviewPalette.hpp"
 #include "PortraitShapeDetails.hpp"
+#include "slic3r/GUI/AI/Model/BeautyPuzzle.hpp"
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -50,7 +51,6 @@ const char* role_name(SC::Label label) {
     default: return nullptr;
     }
 }
-bool protected_role(SC::Label label) { return role_name(label) != nullptr; }
 bool core_role(const std::string& role) {
     return role == "Skin" || role == "Lips" || role == "EyeSclera" || role == "Iris";
 }
@@ -142,6 +142,122 @@ void choose_primary_cause(BlockDiagnostic &diagnostic) {
     if (diagnostic.primary == BlockCause::None && diagnostic.boundary_count)
         diagnostic.primary = BlockCause::TopologyDisconnected;
 }
+
+std::shared_ptr<Result> build_automatic_regions(const Input& in, const SC::Cancel& cancel)
+{
+    const auto& source = in.source;
+    const auto& basis = *in.source_basis;
+    const size_t count = source.mesh.indices.size();
+    if (in.strategy != Strategy::ColorRegionMajorityV2 || !basis.valid() ||
+        basis.geometry_id != source.geometry_id || basis.basis_signature.empty() ||
+        basis.unit_source_slots.size() != count || !portrait_color_postprocess_supported(basis.requested_count) ||
+        !std::all_of(basis.source_palette.begin(), basis.source_palette.end(), color_valid))
+        throw std::runtime_error("AI 建议色归属与当前模型身份不匹配，原配色保留");
+
+    std::vector<int32_t> labels(count, -1);
+    for (size_t face = 0; face < count; ++face) {
+        checkpoint(cancel, face);
+        auto label = in.analysis.face_labels[face];
+        if (in.analysis.face_confidence[face] < SC::minimum_confidence ||
+            label == SC::Label::Unknown || label == SC::Label::Background) continue;
+        if (label == SC::Label::BodySkin) label = SC::Label::FaceSkin;
+        if (label == SC::Label::MouthInterior) label = SC::Label::Lips;
+        labels[face] = int32_t(label);
+    }
+    // The existing BeautyPuzzle implementation owns color connectivity.
+    // Surface patches are an editing substrate, never the color regions.
+    const auto surface = AI::BeautySurface::build_for_appearance(source.mesh, source.vertex_colors, {}, cancel);
+    const auto regions = AI::BeautyPuzzle::create_slot_regions(*surface, basis.unit_source_slots,
+        basis.basis_signature, labels, in.analysis.face_confidence, cancel);
+    auto result = std::make_shared<Result>();
+    result->face_count = count;
+    result->geometry_id = source.geometry_id;
+    result->source_signature = source.content_id;
+    result->semantic_signature = in.analysis.signature;
+    result->strategy = Strategy::ColorRegionMajorityV2;
+    result->algorithm_version = portrait_postprocess_algorithm_version;
+    result->source_basis_signature = basis.basis_signature;
+    result->source_palette = result->intermediate_palette = basis.source_palette;
+    result->unit_source_slots = basis.unit_source_slots;
+    result->control_signature = controls_signature(in.mapping, in.targets);
+    result->palette_signature = PortraitShapeCache::digest(nlohmann::json{
+        {"basis", basis.basis_signature}, {"algorithm", result->algorithm_version},
+        {"controls", result->control_signature}, {"role_slots", in.fixed_role_slots}}.dump());
+    result->units.reserve(count);
+    auto& track = result->tracks[0];
+    track.unit_blocks.resize(count);
+    track.blocks.resize(regions.next_id - 1);
+    std::vector<std::array<double, 3>> color_sum(track.blocks.size());
+    std::vector<double> area_sum(track.blocks.size(), 0.0);
+    for (size_t face = 0; face < count; ++face) {
+        checkpoint(cancel, face);
+        const uint32_t id = regions.face_piece[face] - 1;
+        result->units.push_back({face, {0, 0}});
+        track.unit_blocks[face] = id;
+        track.blocks[id].members.push_back(uint32_t(face));
+        RGB color{};
+        if (source.sample_original) color = source.sample_original(face, {1.f/3, 1.f/3, 1.f/3});
+        else if (source.face_colors.size() == count)
+            std::copy_n(source.face_colors[face].begin(), 3, color.begin());
+        else if (source.vertex_colors.size() == source.mesh.vertices.size()) {
+            for (const int vertex : source.mesh.indices[face])
+                for (size_t c = 0; c < 3; ++c) color[c] += source.vertex_colors[vertex][c] / 3.f;
+        } else color = basis.source_palette[basis.unit_source_slots[face]];
+        if (!color_valid(color)) throw std::runtime_error("人物区域原始颜色无效");
+        const double area = surface->areas[face];
+        area_sum[id] += area;
+        for (size_t c = 0; c < 3; ++c) color_sum[id][c] += double(color[c]) * area;
+    }
+    for (size_t id = 0; id < track.blocks.size(); ++id) {
+        auto& block = track.blocks[id];
+        block.id = uint32_t(id);
+        block.canonical = basis.source_palette[regions.region_source_slots.at(uint32_t(id + 1))];
+        if (area_sum[id] > 0)
+            for (size_t c = 0; c < 3; ++c) block.canonical[c] = float(color_sum[id][c] / area_sum[id]);
+        block.original = block.display = block.canonical;
+        const auto label = regions.region_semantic_labels.find(uint32_t(id + 1));
+        if (label != regions.region_semantic_labels.end()) {
+            block.semantic = SC::Label(label->second);
+            block.confidence = regions.region_semantic_confidence.at(uint32_t(id + 1));
+        }
+        block.status = block.confidence >= fixed_role_minimum_confidence ? Status::Confirmed : Status::Unresolved;
+        if (block.status == Status::Unresolved) block.reason = "unresolved_color_region";
+    }
+    result->tracks[1] = track;
+    if (in.previous) {
+        if (in.previous->geometry_id != source.geometry_id || in.previous->source_signature != source.content_id ||
+            in.previous->face_count != count) throw std::runtime_error("手工配色属于其他模型，已保留原成果");
+        for (size_t ti = 0; ti < 2; ++ti) {
+            std::map<size_t, RGB> manual;
+            for (const auto& block : in.previous->tracks[ti].blocks) if (block.status == Status::ManualConfirmed)
+                for (const auto member : block.members) {
+                    const auto& unit = in.previous->units.at(member);
+                    if (unit.path.depth) throw std::runtime_error("已有手工子面配色已保留，请先处理原有编辑再应用套装");
+                    manual[unit.face] = block.display;
+                }
+            for (auto& block : result->tracks[ti].blocks) {
+                const auto first = std::find_if(block.members.begin(), block.members.end(),
+                    [&](uint32_t face) { return manual.count(face) != 0; });
+                if (first == block.members.end()) continue;
+                const auto color = manual.at(*first);
+                if (!std::all_of(block.members.begin(), block.members.end(), [&](uint32_t face) {
+                    const auto found = manual.find(face);
+                    return found != manual.end() && found->second == color;
+                })) throw std::runtime_error("已有局部手工颜色与建议色区域冲突，原编辑已保留");
+                block.display = color;
+                block.status = Status::ManualConfirmed;
+                block.confidence = 1.f;
+                block.reason.clear();
+            }
+        }
+    }
+    if (!remap_to_palette(*result, in.targets, true, in.fixed_role_slots))
+        throw std::runtime_error("人物套装颜色绑定失败，原配色保留");
+    if (result->memory_bytes() > 256ULL * 1024 * 1024)
+        throw std::runtime_error("颜色区域超过安全内存预算，原配色保留");
+    checkpoint(cancel, 0);
+    return result;
+}
 }
 
 size_t Result::unresolved_count() const {
@@ -169,6 +285,19 @@ DiagnosticSummary Result::diagnostic_summary() const {
 }
 std::vector<uint32_t> Result::face_partition(
     const std::vector<std::vector<int32_t>>& face_neighbors) const {
+    if (algorithm_version == portrait_postprocess_algorithm_version && !source_palette.empty()) {
+        if (units.size() != face_count || current().unit_blocks.size() != face_count ||
+            (!face_neighbors.empty() && face_neighbors.size() != face_count))
+            throw std::runtime_error("建议色区域与模型面数不一致");
+        std::vector<uint32_t> pieces(face_count);
+        for (size_t face = 0; face < face_count; ++face) {
+            if (units[face].face != face || units[face].path.depth ||
+                current().unit_blocks[face] >= current().blocks.size())
+                throw std::runtime_error("建议色区域包含无效面归属");
+            pieces[face] = current().unit_blocks[face] + 1;
+        }
+        return pieces;
+    }
     std::vector<uint32_t> result(face_count, UINT32_MAX);
     std::vector<std::map<uint32_t, double>> weights(face_count);
     const auto &track = current();
@@ -239,7 +368,7 @@ bool Result::recolor(uint32_t id, const RGB& color) {
     b.display_slot=-1; b.reason.clear(); b.confidence=1; return true;
 }
 size_t Result::memory_bytes() const {
-    size_t bytes=sizeof(*this)+units.capacity()*sizeof(Unit);
+    size_t bytes=sizeof(*this)+units.capacity()*sizeof(Unit)+unit_source_slots.capacity()*sizeof(size_t)+borders.capacity()*sizeof(Border);
     for(const auto& t:tracks) {
         bytes+=t.unit_blocks.capacity()*sizeof(uint32_t)+t.blocks.capacity()*sizeof(Block);
         for(const auto& b:t.blocks) bytes+=b.members.capacity()*sizeof(uint32_t)+
@@ -255,6 +384,7 @@ std::shared_ptr<Result> build(const Input& in, const SC::Cancel& cancel) {
         in.analysis.content_id!=source.content_id || in.analysis.face_labels.size()!=count ||
         in.analysis.face_confidence.size()!=count || (!in.person_ids.empty() && in.person_ids.size()!=count))
         throw std::runtime_error("人像颜色块的几何或识别身份不一致");
+    if (in.source_basis) return build_automatic_regions(in, cancel);
     auto result=std::make_shared<Result>();
     result->face_count=count; result->geometry_id=source.geometry_id;
     result->strategy=in.strategy;
@@ -291,6 +421,7 @@ std::shared_ptr<Result> build(const Input& in, const SC::Cancel& cancel) {
     std::vector<RGB> raw, processed;
     std::vector<SC::Label> labels;
     std::vector<float> confidence;
+    std::vector<double> unit_areas;
     std::vector<uint32_t> people;
     std::array<std::vector<uint32_t>,2> manual_blocks;
     std::array<std::vector<RGB>,2> manual_colors;
@@ -351,6 +482,9 @@ std::shared_ptr<Result> build(const Input& in, const SC::Cancel& cancel) {
                 throw std::runtime_error("颜色块输入包含无效识别证据");
             if(conf<SC::minimum_confidence) label=SC::Label::Unknown;
             result->units.push_back({f,path}); raw.push_back(rgb); processed.push_back(mapped);
+            const auto& triangle=mesh.indices[f];
+            unit_areas.push_back(.5*double((mesh.vertices[triangle[1]]-mesh.vertices[triangle[0]]).cross(
+                mesh.vertices[triangle[2]]-mesh.vertices[triangle[0]]).norm())*std::ldexp(1.,-2*int(path.depth)));
             for(size_t ti=0;ti<2;++ti) {
                 uint32_t id=UINT32_MAX;RGB color{};
                 if(const auto it=manual[ti].find(f);it!=manual[ti].end())for(const auto& u:it->second)
@@ -475,8 +609,7 @@ std::shared_ptr<Result> build(const Input& in, const SC::Cancel& cancel) {
                     // the block seed; comparing to the most recently accepted
                     // face lets a gradual gradient drift across the whole mesh
                     // and can bind one semantic seed to an enormous region.
-                    (!locked && lab_delta(color_labs[n],
-                        color_labs[v2 ? i : block.members[q]]) > same_color_distance)) continue;
+                    (!locked && lab_delta(color_labs[n],color_labs[v2 ? i : block.members[q]]) > same_color_distance)) continue;
                 track.unit_blocks[n]=block.id;block.members.push_back(n);
             }
             for(const auto member:block.members) if(seed(labels[member])) {
@@ -490,7 +623,7 @@ std::shared_ptr<Result> build(const Input& in, const SC::Cancel& cancel) {
             if (v2) {
                 RGB canonical_color{}; double canonical_area = 0;
                 for (const auto member : block.members) {
-                    const double area = std::ldexp(1.0, -2 * int(result->units[member].path.depth));
+                    const double area = unit_areas[member];
                     canonical_area += area;
                     for (size_t c = 0; c < 3; ++c) canonical_color[c] += raw[member][c] * float(area);
                 }
@@ -563,7 +696,7 @@ std::shared_ptr<Result> build(const Input& in, const SC::Cancel& cancel) {
                 std::map<SC::Label, double> label_votes;
                 RGB average{}; double total_area = 0;
                 for (const auto member : block.members) {
-                    const double area = std::ldexp(1.0, -2 * int(result->units[member].path.depth));
+                    const double area = unit_areas[member];
                     total_area += area;
                     // Semantic votes and all palette decisions use the
                     // original source appearance.  The processed track is
@@ -820,6 +953,7 @@ std::shared_ptr<Result> build(const Input& in, const SC::Cancel& cancel) {
         }
         if(result->memory_bytes()>256ULL*1024*1024)throw std::runtime_error("颜色碎块超过安全内存预算，已保留普通配色");
     }
+    if(result->memory_bytes()>256ULL*1024*1024) throw std::runtime_error("颜色边界超过安全内存预算，已保留原配色");
     if(cancel && cancel())throw std::runtime_error("人像颜色块处理已取消");
     return result;
 }
@@ -957,7 +1091,7 @@ std::string controls_signature(const std::vector<SC::Color>& mapping,const std::
     // Bump the cache contract when connected-color behavior changes. Existing
     // saved candidates must be rebuilt instead of silently reusing fragmented
     // regions produced by an older traversal rule.
-    return PortraitShapeCache::digest(nlohmann::json({{"strategy_revision",7},
+    return PortraitShapeCache::digest(nlohmann::json({{"strategy_revision",portrait_postprocess_algorithm_version},
         {"mapping",mapping},{"targets",targets}}).dump());
 }
 nlohmann::json encode(const Result& r) {
@@ -971,6 +1105,15 @@ nlohmann::json encode(const Result& r) {
         doc["final_slot_indices"] = r.final_slot_indices;
         doc["role_slot_locks"] = r.role_slot_locks;
         doc["role_regions"] = r.role_regions; doc["role_confidence"] = r.role_confidence;
+        if (!r.source_palette.empty()) {
+            doc["source_palette"]=r.source_palette;doc["source_basis_signature"]=r.source_basis_signature;
+            doc["unit_source_slots"]=r.unit_source_slots;
+            // Retain legacy cache bytes; new slot regions generate no borders.
+            if (r.algorithm_version == 7) {
+                doc["borders"]=nlohmann::json::array();
+                for (const auto& border:r.borders) doc["borders"].push_back({border.face,border.points});
+            }
+        }
     }
     for(const auto& u:r.units)doc["units"].push_back({u.face,u.path.depth,u.path.value});
     for(const auto& t:r.tracks) {
@@ -1011,10 +1154,30 @@ std::shared_ptr<Result> decode(const nlohmann::json& doc,const std::string& geom
         r->strategy=v2 ? Strategy::ColorRegionMajorityV2 : Strategy::ConnectedColorBlocksV1;
         if (v2) {
             require(doc.contains("algorithm_version") && doc.at("algorithm_version").is_number_unsigned() &&
-                doc.at("algorithm_version").get<uint32_t>() == portrait_postprocess_algorithm_version &&
+                (doc.at("algorithm_version").get<uint32_t>() == portrait_postprocess_algorithm_version ||
+                 doc.at("algorithm_version").get<uint32_t>() == 6 ||
+                 doc.at("algorithm_version").get<uint32_t>() == 7) &&
                 doc.contains("intermediate_palette") && doc.contains("final_palette") && doc.contains("role_locks") &&
                 doc.contains("final_slot_indices") && doc.contains("role_slot_locks"));
             r->algorithm_version=doc.at("algorithm_version").get<uint32_t>();
+            if (doc.contains("source_palette")) {
+                r->source_palette=doc.at("source_palette").get<std::vector<RGB>>();
+                r->source_basis_signature=doc.at("source_basis_signature").get<std::string>();
+                r->unit_source_slots=doc.at("unit_source_slots").get<std::vector<size_t>>();
+                require(r->algorithm_version>=7 && !r->source_palette.empty() && r->source_palette.size()<=6 &&
+                    !r->source_basis_signature.empty() && r->unit_source_slots.size()==doc.at("units").size());
+                for (const auto& color:r->source_palette) require(color_valid(color));
+                for (size_t slot:r->unit_source_slots) require(slot<r->source_palette.size());
+                if (doc.contains("borders")) {
+                    require(doc.at("borders").is_array() && doc.at("borders").size()<=maximum_units*3);
+                    for (const auto& row:doc.at("borders")) {
+                        require(row.is_array() && row.size()==2);
+                        Result::Border border{size_t(bounded(row[0],faces-1)),row[1].get<std::array<float,6>>()};
+                        for (float point:border.points) require(std::isfinite(point));
+                        r->borders.push_back(border);
+                    }
+                }
+            }
             r->intermediate_palette=doc.at("intermediate_palette").get<std::vector<RGB>>();
             r->final_palette=doc.at("final_palette").get<std::vector<RGB>>();
             r->role_locks=doc.at("role_locks").get<std::map<std::string,RGB>>();
@@ -1120,6 +1283,16 @@ std::shared_ptr<Result> decode(const nlohmann::json& doc,const std::string& geom
                 t.blocks.push_back(std::move(block));
             }
             require(std::all_of(seen.begin(),seen.end(),[](auto v){return v==1;}));
+        }
+        if (r->algorithm_version == portrait_postprocess_algorithm_version && !r->source_palette.empty()) {
+            require(r->units.size() == faces);
+            require(r->tracks[0].unit_blocks == r->tracks[1].unit_blocks);
+            for (size_t face = 0; face < faces; ++face)
+                require(r->units[face].face == face && r->units[face].path.depth == 0);
+            for (const auto& track : r->tracks) for (const auto& block : track.blocks) {
+                const auto slot = r->unit_source_slots[block.members.front()];
+                for (const auto member : block.members) require(r->unit_source_slots[member] == slot);
+            }
         }
         error.clear();return r;
     } catch(const std::exception& e) {error=e.what();return {};}

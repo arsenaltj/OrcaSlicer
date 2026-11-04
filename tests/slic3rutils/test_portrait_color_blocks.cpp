@@ -1,6 +1,9 @@
 #include "slic3r/GUI/AI/ModelGeneration/PortraitColorBlockPostprocess.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitColorBlockCache.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitColorLayerPublication.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelPreviewPalette.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelSemanticColoring.hpp"
+#include "slic3r/GUI/AI/Model/BeautyPuzzle.hpp"
 #include "slic3r/GUI/AI/Orca/FilamentColorPack.hpp"
 #include <catch2/catch_all.hpp>
 #include <chrono>
@@ -151,11 +154,146 @@ TEST_CASE("Stale V2 algorithm caches are rejected", "[PortraitColorBlocks]") {
     in.intermediate_palette = {{.4f, .4f, .4f}}; in.final_color_count = 4;
     const auto result = PC::build(in);
     auto doc = PC::encode(*result);
-    doc["algorithm_version"] = PC::portrait_postprocess_algorithm_version - 1;
+    doc["algorithm_version"] = uint32_t(5);
     std::string error;
     REQUIRE_FALSE(PC::decode(doc, s.source.geometry_id, 4, s.source.content_id,
         s.analysis.signature, result->palette_signature, error));
     REQUIRE_FALSE(error.empty());
+}
+TEST_CASE("Version six color layers remain readable without becoming new source partitions", "[PortraitColorBlocks]") {
+    Sample s;auto in=honor_input(s);const auto result=PC::build(in);
+    auto doc=PC::encode(*result);doc["algorithm_version"]=uint32_t(6);
+    std::string error;const auto saved=PC::decode(doc,s.source.geometry_id,4,s.source.content_id,
+        s.analysis.signature,result->palette_signature,error);
+    REQUIRE(saved);CHECK(saved->source_palette.empty());CHECK(saved->algorithm_version==6);
+}
+
+namespace {
+GUI::PreviewPalette::AutomaticColorBasis frozen_basis(const Sample& s, std::vector<size_t> slots, size_t count = 4) {
+    GUI::PreviewPalette::AutomaticColorBasis basis;
+    basis.geometry_id = s.source.geometry_id;
+    basis.source_color_signature = "original-colors";
+    basis.requested_count = count;
+    basis.source_palette = {{.52f,.50f,.50f},{0,0,0},{1,1,1},{1,0,0},{0,1,0},{0,0,1}};
+    basis.source_palette.resize(count);
+    basis.unit_source_slots = std::move(slots);
+    basis.unit_area.assign(basis.unit_source_slots.size(), .5);
+    basis.source_area.assign(count, 0.);
+    for (size_t slot : basis.unit_source_slots) basis.source_area.at(slot) += .5;
+    basis.basis_signature = "native-source-" + std::to_string(count);
+    return basis;
+}
+}
+
+TEST_CASE("AI source counts reuse native connected regions without growing faces", "[PortraitColorBlocks][HonorFilamentSuite]") {
+    const size_t count = GENERATE(4u,5u,6u);
+    Sample s; s.source.mesh.vertices[4].z()=2; s.source.mesh.vertices[5].z()=2;
+    s.source.face_colors={{.50f,.50f,.50f,1},{.51f,.50f,.50f,1},{.52f,.50f,.50f,1},{.53f,.50f,.50f,1}};
+    auto basis = frozen_basis(s, {0,0,0,0}, count);
+    auto in = honor_input(s); in.source_basis = &basis;
+    const auto result = PC::build(in);
+    REQUIRE(result->source_palette.size() == count);
+    REQUIRE(result->final_palette.size() == 5);
+    CHECK(result->current().blocks.size() == 1);
+    CHECK(result->units.size() == s.source.mesh.indices.size());
+    CHECK(result->unit_source_slots == basis.unit_source_slots);
+    const auto surface = AI::BeautySurface::build(s.source.mesh,s.source.vertex_colors,{}, {},false);
+    const auto original = AI::BeautyPuzzle::create_slot_regions(*surface,basis.unit_source_slots,basis.basis_signature);
+    CHECK(result->face_partition(surface->face_neighbors) == original.face_piece);
+    for (const auto& unit : result->units) CHECK(unit.path.depth == 0);
+    for (const auto& b : result->current().blocks) CHECK(b.display_slot < 5);
+    const auto signature = result->palette_signature;
+    basis.basis_signature += "-changed";
+    CHECK(PC::build(in)->palette_signature != signature);
+}
+
+TEST_CASE("Semantic and subface evidence do not split an existing suggestion region", "[PortraitColorBlocks][HonorFilamentSuite]") {
+    Sample s;
+    s.analysis.face_labels.assign(4,SC::Label::FaceSkin);
+    s.analysis.subface_labels={{1,{4,255},SC::Label::Eyebrow,.99f},
+        {2,{4,255},SC::Label::Iris,.99f},{3,{4,255},SC::Label::Lips,.99f},
+        {0,{4,255},SC::Label::EyeSclera,.99f}};
+    const auto basis = frozen_basis(s, {0,0,0,0});
+    auto in = honor_input(s); in.source_basis = &basis;
+    const auto result = PC::build(in);
+    REQUIRE(result->current().blocks.size() == 1);
+    CHECK(result->current().blocks[0].semantic == SC::Label::FaceSkin);
+    CHECK(result->current().blocks[0].display_slot == 2);
+    CHECK(result->units.size() == 4);
+    SC::FaceColors faces; SC::SubfaceColors children; result->appearance(faces,children);
+    CHECK(children.empty());
+    const auto pieces = result->face_partition();
+    s.analysis.face_labels = {SC::Label::Hair,SC::Label::Iris,SC::Label::Eyebrow,SC::Label::Unknown};
+    const auto rebound = PC::build(in);
+    CHECK(rebound->face_partition() == pieces);
+    CHECK(rebound->current().blocks.size() == 1);
+}
+
+TEST_CASE("Source regions bind anatomy to fixed slots and allow shared target colors", "[PortraitColorBlocks][HonorFilamentSuite]") {
+    Sample s;
+    s.analysis.face_labels = {SC::Label::FaceSkin,SC::Label::Hair,SC::Label::EyeSclera,SC::Label::Lips};
+    auto basis = frozen_basis(s, {0,1,2,3});
+    auto in = honor_input(s); in.source_basis = &basis;
+    const auto result = PC::build(in);
+    CHECK(block(*result,0).display_slot == 2);
+    CHECK(block(*result,1).display_slot == 0);
+    CHECK(block(*result,2).display_slot == 3);
+    CHECK(block(*result,3).display_slot == 1);
+    s.analysis.face_labels = {SC::Label::Hair,SC::Label::Iris,SC::Label::Eyebrow,SC::Label::Unknown};
+    const auto shared = PC::build(in);
+    CHECK(block(*shared,0).display_slot == 0);
+    CHECK(block(*shared,1).display_slot == 0);
+    CHECK(block(*shared,2).display_slot == 0);
+    CHECK(shared->current().blocks.size() == 4);
+}
+
+TEST_CASE("Equal RGB source slots and disconnected islands retain separate identities", "[PortraitColorBlocks][HonorFilamentSuite]") {
+    Sample s; s.source.face_colors.assign(4,{.01f,.01f,.01f,1});
+    auto basis = frozen_basis(s, {0,1,0,0});
+    basis.source_palette[0] = basis.source_palette[1] = {0,0,0};
+    auto in = honor_input(s); in.source_basis = &basis;
+    const auto result = PC::build(in);
+    REQUIRE(result->current().blocks.size() == 3);
+    CHECK(block(*result,0).id != block(*result,1).id);
+    CHECK(block(*result,0).id != block(*result,2).id);
+    CHECK(block(*result,2).id == block(*result,3).id);
+    for (const auto& b : result->current().blocks) CHECK(b.display_slot == 0);
+    CHECK(result->unit_source_slots == basis.unit_source_slots);
+}
+
+TEST_CASE("Native suggestion regions export and reopen face colors without refinement", "[PortraitColorBlocks][HonorFilamentSuite]") {
+    Sample s;
+    s.source.sample_original=[](size_t face,const SC::Barycentric& bary)->SC::Color {
+        return face==1 && bary[0]>.37f ? SC::Color{0,0,0} : SC::Color{1,1,1};
+    };
+    auto basis = frozen_basis(s, {0,0,1,1});
+    auto in = honor_input(s); in.source_basis = &basis;
+    const auto result = PC::build(in);
+    REQUIRE(result->units.size() == s.source.mesh.indices.size());
+    CHECK(result->borders.empty());
+    SC::FaceColors faces; SC::SubfaceColors children; result->appearance(faces,children);
+    REQUIRE(children.empty());
+    const auto geometry = GUI::build_semantic_colored_geometry(s.source,faces,children);
+    CHECK(geometry.indices_count()/3 == s.source.mesh.indices.size());
+    const auto document = PC::encode(*result); std::string error;
+    CHECK_FALSE(document.contains("borders"));
+    const auto directory=boost::filesystem::temp_directory_path()/boost::filesystem::unique_path("orca-native-regions-%%%%-%%%%");
+    struct Remove {boost::filesystem::path path;~Remove(){boost::system::error_code ec;boost::filesystem::remove_all(path,ec);}} cleanup{directory};
+    const auto published = PC::publish_verified_color_layer(*result,directory);
+    CHECK(published.painted_subfaces == 0);
+    const auto saved = PC::decode(document,s.source.geometry_id,4,s.source.content_id,s.analysis.signature,result->palette_signature,error);
+    INFO(error); REQUIRE(saved);
+    SC::FaceColors reopened_faces; SC::SubfaceColors reopened_children; saved->appearance(reopened_faces,reopened_children);
+    CHECK(reopened_faces == faces); CHECK(reopened_children.empty());
+    CHECK(PC::encode(*saved) == document);
+    CHECK(PC::encode(*PC::build(in)) == document);
+    auto corrupt=document; corrupt["unit_source_slots"][0]=6;
+    CHECK_FALSE(PC::decode(corrupt,s.source.geometry_id,4,s.source.content_id,s.analysis.signature,result->palette_signature,error));
+    auto historical=document; historical["algorithm_version"]=uint32_t(7); historical["borders"]=nlohmann::json::array();
+    const auto legacy=PC::decode(historical,s.source.geometry_id,4,s.source.content_id,s.analysis.signature,result->palette_signature,error);
+    REQUIRE(legacy); CHECK(PC::encode(*legacy) == historical);
+    CHECK_THROWS(PC::build(in,[]{return true;}));
+    basis.geometry_id="other-model"; CHECK_THROWS(PC::build(in));
 }
 TEST_CASE("ColorRegionMajorityV2 keeps non protected semantic ownership on color blocks", "[PortraitColorBlocks]") {
     Sample s;
@@ -497,6 +635,26 @@ TEST_CASE("Addressed block cache preserves both tracks and rejects missing files
     REQUIRE_FALSE(PC::load(ref,root,s.source.geometry_id,4,s.source.content_id,error));
     boost::filesystem::remove(root);
 }
+TEST_CASE("Portrait publication reads back actual face and child colors and refuses a corrupt layer", "[PortraitColorBlocks][PortraitPrintFlow]") {
+    Sample sample;
+    auto input = honor_input(sample);
+    input.processed_subfaces = {{1, {1, 0}, {.95f, .1f, .1f}, 1.f}};
+    const auto state = PC::build(input);
+    const auto root = boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("orca-portrait-publication-%%%%-%%%%");
+    const auto layer = PC::publish_verified_color_layer(*state, root);
+    REQUIRE(layer.painted_faces > 0);
+    REQUIRE(layer.painted_subfaces > 0);
+    CHECK(layer.encode().at("schema") == "orca.portrait-applied-color-layer/v1");
+    const auto path = root / (layer.reference.at("content_id").get<std::string>() + ".json");
+    { boost::filesystem::ofstream corrupt(path, std::ios::binary | std::ios::app); corrupt << "corrupt"; }
+    CHECK_THROWS(PC::publish_verified_color_layer(*state, root));
+    PC::Result empty;
+    CHECK_THROWS(PC::publish_verified_color_layer(empty, root));
+    boost::filesystem::remove(path);
+    boost::filesystem::remove(root);
+}
+
 TEST_CASE("Canceled block generation never returns a partially colored candidate", "[PortraitColorBlocks]") {
     Sample s;REQUIRE_THROWS(PC::build(s.input(),[]{return true;}));
 }

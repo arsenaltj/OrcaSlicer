@@ -1,6 +1,7 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "ModelPreview3D.hpp"
+#include "PortraitColorLayerPublication.hpp"
 #include "BeautyWorkbenchControls.hpp"
 #include "BeautyWorkbenchTransactionController.hpp"
 #include "WorkbenchModelInspection.hpp"
@@ -197,6 +198,8 @@ void ModelGenerationPanel::accept_model_finishing()
         m_status->SetLabel(message);
         refresh_controls();
         publish_workbench_state();
+        if (m_portrait_print.running() && (m_portrait_print.stage == PortraitPrint::Stage::Check ||
+            m_portrait_print.stage == PortraitPrint::Stage::SaveColor)) pause_portrait_print(into_u8(message));
     };
     if (m_busy || m_finishing_running || m_workbench_check_running) {
         report(_L("正在处理模型，请等待完成后接受候选。")); return;
@@ -204,7 +207,12 @@ void ModelGenerationPanel::accept_model_finishing()
     if (m_finishing_candidate.empty()) {
         report(_L("没有可接受的候选，请先检查或生成候选。")); return;
     }
-    if (m_finishing_workbench && m_workbench_editing && !beauty_color_match_current()) {
+    const bool portrait_save = m_portrait_print.from_workbench() &&
+        m_portrait_print.current(m_portrait_print.id, PortraitPrint::Stage::SaveColor) &&
+        m_finishing_id == m_portrait_print.color_asset_id();
+    const bool portrait_repair = m_portrait_print.current(m_portrait_print.id, PortraitPrint::Stage::Check) &&
+        m_workbench_auto_repair;
+    if (!portrait_save && !portrait_repair && m_finishing_workbench && m_workbench_editing && !beauty_color_match_current()) {
         m_save_and_return = false;
         report(_L("当前模型配色尚未完整绑定到耗材；候选保留，请恢复兼容配置后再保留效果。"));
         return;
@@ -215,6 +223,7 @@ void ModelGenerationPanel::accept_model_finishing()
         report(_L("修复候选未通过拓扑复检，请保留原模型并重新检查。")); return;
     }
     if (topology_candidate && !m_workbench_check_result.appearance_mapped) {
+        if (portrait_repair) { pause_portrait_print("修复后的原始外观映射无法核验，未接受候选。"); return; }
         const auto answer = wxMessageBox(
             _L("修复改变了面身份，当前局部涂色、语义区域或人像保护无法安全映射。\n接受修复将清除这些无法验证的编辑；选择“否”保留原模型。"),
             _L("确认接受修复候选"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING,
@@ -296,6 +305,29 @@ void ModelGenerationPanel::accept_model_finishing()
         metadata["recolor_target_palette"] = m_finishing_color_palette;
         metadata["preserves_unselected_face_colors"] = true;
     }
+    const int ai_count = portrait_save || portrait_repair ? m_portrait_print.final_count :
+        original_appearance_detail::ai_source_color_count(source, root);
+    if (ai_count >= 4 && ai_count <= 6)
+        metadata["ai_source_color_count"] = ai_count;
+    if (portrait_repair) {
+        metadata["portrait_repair_flow_id"] = m_portrait_print.id;
+        metadata["portrait_repair_phase"] = "before_source_partition";
+    }
+    if (portrait_save) {
+        if ((m_model_preview->printer_filament_export_faces().empty() && m_model_preview->import_subface_color_overrides(true).empty()) ||
+            m_finishing_result.source_sha256 != m_portrait_print.model_hash ||
+            m_model_preview->geometry_id() != m_portrait_print.geometry_id) {
+            if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "portrait paint identity mismatch");
+            pause_portrait_print("配色面域身份无法核验，未发布成果。"); return;
+        }
+        metadata["portrait_print_id"] = m_portrait_print.id;
+        metadata["prompt"] = m_portrait_print.semantic_applied ? "人物六色 · 区域语义配色" : "人物六色 · 近色回退";
+        metadata["portrait_preparation"] = {{"schema", "orca.portrait-preparation/v1"}, {"round_base", true},
+            {"height_mm", 3.0}, {"overlap_mm", 0.2}, {"native_repair", true},
+            {"repair_before_partition", true}, {"repair_result_sha256", m_portrait_print.repair_result_hash},
+            {"source_basis_signature", m_portrait_print.basis_signature},
+            {"boundary_algorithm_version", m_portrait_print.boundary_algorithm_version}};
+    }
     metadata["face_color_intent"] = m_model_preview->face_color_metadata();
     if (m_finishing_candidate_baked_appearance.is_object() &&
         m_finishing_candidate_baked_appearance.value("model_sha256",std::string())==m_finishing_result.output_sha256)
@@ -349,7 +381,7 @@ void ModelGenerationPanel::accept_model_finishing()
             ? PrinterFilamentConfig::capture(*m_apply_filaments_staged).signature
             : m_beauty_color_gate_configuration_signature;
         metadata["applied_printer_filament_match"] = AI::encode_model_matched_colors(*saved_match);
-    } else if (m_finishing_workbench && m_workbench_editing) {
+    } else if (!portrait_save && m_finishing_workbench && m_workbench_editing) {
         m_save_and_return = false;
         if (m_beauty_transactions)
             m_beauty_transactions->finish(false, false, "missing printer-filament match snapshot");
@@ -400,7 +432,7 @@ void ModelGenerationPanel::accept_model_finishing()
     refresh_controls();
     try {
         m_finishing_worker = std::thread([weak, revision, canceled, committed, metadata_path,
-            source, candidate, before, after, source_context, cache_root, region_cache_unsaved,
+            source, source_hash, candidate, before, after, source_context, cache_root, region_cache_unsaved,
             topology_candidate, verified_check, filament_application, root,
             topology_publication_artifacts = std::move(topology_publication_artifacts),
             metadata = std::move(metadata), history_index = std::move(history_index)]() mutable {
@@ -417,8 +449,15 @@ void ModelGenerationPanel::accept_model_finishing()
                     metadata["portrait_shape_reference"] = std::move(shapes);
                     metadata["portrait_shapes_unlocked"] = after->shapes_unlocked;
                 }
-                if(after->color_blocks)metadata["portrait_color_blocks"]=PortraitColorBlocks::save(*after->color_blocks,
-                    cache_root/"portrait-color-blocks");
+                if (after->color_blocks) {
+                    if (after->color_trial.suite_id == "honor.people.six") {
+                        const auto layer = PortraitColorBlocks::publish_verified_color_layer(
+                            *after->color_blocks, cache_root / "portrait-color-blocks");
+                        metadata["portrait_color_blocks"] = layer.reference;
+                        metadata["portrait_applied_color_layer"] = layer.encode();
+                    } else metadata["portrait_color_blocks"] = PortraitColorBlocks::save(
+                        *after->color_blocks, cache_root / "portrait-color-blocks");
+                }
                 if (after->original_appearance.valid()) {
                     TriangleMesh saved_mesh;
                     ObjInfo saved_appearance;
@@ -461,7 +500,7 @@ void ModelGenerationPanel::accept_model_finishing()
                 }
             }
             wxGetApp().CallAfter([weak, revision, canceled, committed, candidate, before, after,
-                source, source_context, region_cache_unsaved, topology_candidate, filament_application,
+                source, source_hash, source_context, region_cache_unsaved, topology_candidate, filament_application,
                 final_check, metadata_path, error]() mutable {
                 if (!weak || weak->m_shutdown || revision != weak->m_sequence ||
                     weak->m_beauty_publication_committed != committed) return;
@@ -500,6 +539,9 @@ void ModelGenerationPanel::accept_model_finishing()
                         ? _L("已取消保存，候选和草稿保留，可再次保存。")
                         : _L("版本保存失败，候选和草稿保留：") + from_u8(error));
                     self->m_workbench_operation_notice = into_u8(self->m_finishing_status->GetLabel());
+                    if (self->m_portrait_print.running() && (self->m_portrait_print.stage == PortraitPrint::Stage::Check ||
+                        self->m_portrait_print.stage == PortraitPrint::Stage::SaveColor))
+                        self->pause_portrait_print(self->m_workbench_operation_notice);
                     self->finish_printer_filament_application(false);
                     self->refresh_controls();
                     return;
@@ -605,6 +647,9 @@ void ModelGenerationPanel::accept_model_finishing()
                     self->m_workbench_check_revision = self->m_sequence;
                 } else self->m_workbench_check_result = {};
                 self->m_workbench_operation_notice = topology_candidate ? "修复已接受并保存" : "新版本已保存";
+                if (topology_candidate)
+                    self->portrait_repair_published(source_hash, final_check.model_sha256, candidate);
+                self->portrait_color_published(candidate);
                 self->finish_printer_filament_application(true);
                 self->m_workbench_history_filter = self->m_workbench_history_page = 0;
                 if (self->m_workbench_history_search) self->m_workbench_history_search->ChangeValue(wxEmptyString);
@@ -640,6 +685,8 @@ void ModelGenerationPanel::accept_model_finishing()
             m_finishing_status->SetLabel(_L("暂时无法启动保存，候选保留：") + from_u8(error.what()));
         }
         m_workbench_operation_notice = into_u8(m_finishing_status->GetLabel());
+        if (m_portrait_print.running() && (m_portrait_print.stage == PortraitPrint::Stage::Check ||
+            m_portrait_print.stage == PortraitPrint::Stage::SaveColor)) pause_portrait_print(m_workbench_operation_notice);
         finish_printer_filament_application(false);
         refresh_controls();
     }

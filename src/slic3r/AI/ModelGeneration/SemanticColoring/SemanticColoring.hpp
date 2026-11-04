@@ -132,6 +132,10 @@ struct MeshSnapshot {
     std::vector<RGBA> face_colors;
     std::string geometry_id;
     std::string content_id;
+    // Optional immutable original-surface sampler. Geometry and face IDs stay
+    // canonical after repair; sampling may refer back to verified source UVs.
+    std::function<Color(size_t, const Barycentric&)> sample_original;
+    std::string sampling_signature;
 };
 // Geometry identity plus the ordered original face/corner sRGB float32 values.
 // Vertex duplication at color seams does not change this identity.

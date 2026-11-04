@@ -605,9 +605,11 @@ RenderedView render_region(const MeshSnapshot& source, float yaw_degrees, const 
             if (depth <= result.depth[pixel]) continue;
             result.depth[pixel] = depth; result.face_ids[pixel] = uint32_t(face);
             result.barycentric[pixel] = {wa, wb, wc};
+            const Color sampled = source.sample_original ? source.sample_original(face, {wa, wb, wc}) :
+                Color {wa*ca[0]+wb*cb[0]+wc*cc[0], wa*ca[1]+wb*cb[1]+wc*cc[1], wa*ca[2]+wb*cb[2]+wc*cc[2]};
             for (int channel = 0; channel < 3; ++channel)
                 result.image.pixels[pixel * 3 + channel] = uint8_t(std::lround(std::clamp(
-                    wa*ca[channel] + wb*cb[channel] + wc*cc[channel], 0.f, 1.f) * 255));
+                    sampled[channel], 0.f, 1.f) * 255));
         }
     }
     std::vector<uint8_t> directly_seen(source.mesh.indices.size(), 0);
@@ -715,8 +717,10 @@ static bool subfaces_share_edge(const SubfacePath& lhs, const SubfacePath& rhs)
 std::string analysis_cache_key(const MeshSnapshot& source, const std::string& body, const std::string& face)
 {
     if (source.geometry_id.empty() || source.content_id.empty() || body.empty() || face.empty()) return {};
-    return sha256(nlohmann::json::array({pipeline_version, source.geometry_id, source.content_id,
-        source.mesh.indices.size(), body, face, "cpu-zbuffer-8x512-face-roi512-visible-source-samples-v2"}).dump());
+    auto identity = nlohmann::json::array({pipeline_version, source.geometry_id, source.content_id,
+        source.mesh.indices.size(), body, face, "cpu-zbuffer-8x512-face-roi512-visible-source-samples-v2"});
+    if (!source.sampling_signature.empty()) identity.push_back(source.sampling_signature);
+    return sha256(identity.dump());
 }
 
 namespace {

@@ -235,6 +235,11 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
         state.check.candidate_status == RepairCandidateStatus::Ready;
     const bool topology_safe = workbench_topology_safe(state.check);
     state.can_import_for_slicing = state.actions.can_import && !candidate_pending && !state.dirty && topology_safe;
+    state.deferred_native_repair = m_portrait_print.running() &&
+        m_portrait_print.stage == PortraitPrint::Stage::Import && m_portrait_print.native_repair_required &&
+        PortraitPrint::same_model_path(state.model_path, m_portrait_print.model_path) &&
+        state.actions.can_import && !candidate_pending && !state.dirty;
+    if (state.deferred_native_repair) state.native_repair_source_sha256 = m_portrait_print.model_hash;
     state.force_import_acknowledged = !state.check.model_sha256.empty() &&
         state.check.status == WorkbenchCheckStatus::Attention &&
         state.check.force_import_risk &&
@@ -284,6 +289,7 @@ void ModelGenerationPanel::set_workbench_listener(PostGenerationWorkbenchListene
 
 void ModelGenerationPanel::publish_workbench_state()
 {
+    queue_portrait_print();
     if (!m_shutdown && m_workbench_listener) m_workbench_listener(workbench_snapshot());
 }
 
@@ -428,8 +434,11 @@ void ModelGenerationPanel::complete_return_overview()
 
 bool ModelGenerationPanel::request_workbench_color_matching()
 {
+    if (m_portrait_print.active() && m_portrait_print.paused && !m_portrait_print.failed)
+        return resume_portrait_print();
+    if (m_portrait_print.running() && m_portrait_print.stage != PortraitPrint::Stage::Import) return false;
     const auto state = workbench_snapshot();
-    if ((!state.can_import_for_slicing && !state.can_force_import) || (!m_color_matching && !m_workbench_import)) return false;
+    if ((!state.can_import_for_slicing && !state.can_force_import && !state.deferred_native_repair) || (!m_color_matching && !m_workbench_import)) return false;
     if (!state.check.model_sha256.empty() &&
         AI::model_artifact_sha256(m_displayed_model_path) != state.check.model_sha256) {
         m_workbench_check_result = {};
@@ -455,6 +464,7 @@ bool ModelGenerationPanel::request_workbench_color_matching()
                 ? PrinterFilamentConfig::honor_suite_compatibility(*bundle, *honor_suite)
                 : PrinterFilamentConfig::HonorSuiteCompatibility{};
             if (!compatibility.compatible) {
+                if (m_portrait_print.running()) { pause_portrait_print(compatibility.reason); return false; }
                 const wxString reason = wxString::FromUTF8(compatibility.reason.empty()
                     ? "当前打印机不支持六实体色荣耀耗材套装" : compatibility.reason);
                 const wxString message = _L("当前模型使用荣耀六实体色耗材套装，但打印机配置不兼容。\n\n") + reason +
@@ -495,6 +505,7 @@ bool ModelGenerationPanel::request_workbench_color_matching()
                 _L("\n\n推荐“将耗材色映射到模型”，此操作不会改变当前打印机耗材配置。\n") +
                 _L("如需保留模型当前配色，请选择“将模型配色导入到耗材”。\n") +
                 _L("处理完成后请再次点击“去切片”。");
+            if (m_portrait_print.running()) { pause_portrait_print(message.ToStdString(wxConvUTF8)); return false; }
             const int map_to_model = wxWindow::NewControlId();
             const int import_to_filaments = wxWindow::NewControlId();
             RedesignConfirmationOptions options;
@@ -518,7 +529,10 @@ bool ModelGenerationPanel::request_workbench_color_matching()
         request.topology_risk_confirmed = state.force_import_acknowledged && !state.can_import_for_slicing;
         request.topology_risk_reason = state.import_topology_reason;
         request.topology_check_sha256 = state.check.model_sha256;
+        request.native_repair_before_slice = state.deferred_native_repair;
+        request.native_repair_source_sha256 = state.native_repair_source_sha256;
         request.apply_round_base_preparation = m_model_preview->round_base_preview_enabled();
+        request.base_binding = m_model_preview->color_trial_state().base_binding;
         if (!workbench_import_request_allowed(state, request)) {
             m_workbench_operation_notice = state.check.status == WorkbenchCheckStatus::Attention
                 ? "请先在检查提示中确认继续导入；当前检查结果只绑定本次模型。"
@@ -531,7 +545,8 @@ bool ModelGenerationPanel::request_workbench_color_matching()
             BeautyWorkbenchControls::prepare_import(m_displayed_model_path, request);
         }
         catch (const std::exception& error) {
-            wxMessageBox(wxString::FromUTF8(error.what()), _L("配色确认"), wxOK | wxICON_ERROR, this);
+            if (m_portrait_print.running()) pause_portrait_print(error.what());
+            else wxMessageBox(wxString::FromUTF8(error.what()), _L("配色确认"), wxOK | wxICON_ERROR, this);
             return false;
         }
         m_workbench_import(request);

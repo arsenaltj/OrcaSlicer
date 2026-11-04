@@ -107,8 +107,15 @@ public:
     void get_provider_catalog(const std::string& role, const std::string& provider,
                               AIModelGenerationClient::CatalogFn on_complete,
                               AIModelGenerationClient::ErrorFn on_error);
-    bool request_generate_design();
-    bool request_generate_model();
+    PortraitPrint::Submission request_generate_design();
+    PortraitPrint::Submission request_generate_model();
+    PortraitPrint::Submission request_portrait_print_from_model(std::function<bool()> create_empty_project);
+    bool resume_portrait_print();
+    bool record_portrait_import(const std::string& id, const AI::ModelImportResult& result);
+    void add_portrait_notice(const std::string& id, const std::string& notice);
+    bool advance_portrait_print(const std::string& id, PortraitPrint::Stage expected,
+        PortraitPrint::Stage next, const std::string& revision = {}, const std::string& gcode = {});
+    void pause_portrait_print(const std::string& reason, bool hard = false);
     bool request_retry_model();
     bool request_stop();
     bool request_retry_service();
@@ -170,6 +177,26 @@ public:
     void synchronize_workbench_project_palette(bool activate_preview = false);
 
 private:
+    PortraitPrint::State m_portrait_print;
+    PortraitPrint::Submission m_last_submission {PortraitPrint::Submission::Rejected};
+    AIModelGenerationClient::JobStatus m_portrait_job_status;
+    std::uint64_t m_portrait_generation_sequence {0};
+    bool m_portrait_advance_queued {false}, m_portrait_advancing {false};
+    bool m_portrait_semantics_requested {false}, m_portrait_export_started {false};
+    nlohmann::json m_portrait_color_snapshot;
+    std::uint64_t m_portrait_color_edit_revision {0};
+    nlohmann::json portrait_inputs_snapshot() const;
+    bool validate_portrait_inputs();
+    bool restore_portrait_model();
+    bool save_portrait_print();
+    void restore_portrait_print();
+    void queue_portrait_print();
+    void run_portrait_print();
+    bool observe_portrait_status(const AIModelGenerationClient::JobStatus& status, uint64_t sequence);
+    void save_portrait_colored_model();
+    void portrait_color_published(const boost::filesystem::path& candidate);
+    void portrait_repair_published(const std::string& source_hash, const std::string& result_hash,
+        const boost::filesystem::path& accepted_path);
     using GeneratedModelEntry = ModelLibraryEntry;
     PostGenerationWorkbenchListener m_workbench_listener;
     wxWindow* m_assets_home_parent {nullptr};
@@ -199,6 +226,7 @@ private:
     wxWindow* m_portrait_mode_choice {nullptr};
     wxTimer m_portrait_timer;
     WorkbenchCheckResult m_workbench_check_result;
+    WorkbenchCheckResult m_portrait_verified_check;
     std::string m_workbench_check_path;
     std::uint64_t m_workbench_check_revision {0};
     std::thread m_workbench_check_worker;

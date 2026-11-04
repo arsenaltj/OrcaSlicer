@@ -1288,3 +1288,29 @@ TEST_CASE("substituted physical and mixed slots retain references after native 3
         REQUIRE(restored_config.option(key));CHECK(restored_config.option(key)->serialize()==config.option(key)->serialize());
     }
 }
+
+TEST_CASE("Portrait base uses an independent model slot while preserving body identity and painting", "[LocalPrintModelImport][OrcaModelPreparation][HonorFilamentSuite]")
+{
+    const size_t slot = GENERATE(size_t(0), size_t(3), size_t(4));
+    const std::array<const char*,5> names {{"charcoal","peach","skin-light","milk-white","gray-brown"}};
+    AI::ModelBaseBinding binding {"honor.people.six", "1", names[slot], slot};
+    Model source; auto* incoming = source.add_object(); incoming->input_file = "portrait.glb";
+    auto* body = incoming->add_volume(TriangleMesh(its_make_cube(20,30,40)));
+    body->source.input_file = incoming->input_file;
+    body->config.set("extruder", 3);
+    const auto source_mesh = body->mesh().its.indices;
+    const auto paint = body->mmu_segmentation_facets.get_data();
+    std::unique_ptr<Model> prepared; std::string error;
+    REQUIRE(GUI::LocalPrintModelImport::prepare(*incoming, {75,85}, {250,250}, prepared, error, true, binding));
+    const auto* object = prepared->objects.front();
+    REQUIRE(object->volumes.size() == 2);
+    CHECK(object->volumes[0]->extruder_id() == 3);
+    CHECK(object->volumes[1]->extruder_id() == int(slot + 1));
+    CHECK(object->volumes[0]->mesh().its.indices == source_mesh);
+    CHECK(object->volumes[0]->mmu_segmentation_facets.get_data() == paint);
+    CHECK(incoming->volumes.size() == 1);
+    std::unique_ptr<Model> duplicate;
+    CHECK_FALSE(GUI::LocalPrintModelImport::prepare(*object, {75,85}, {250,250}, duplicate, error, true, binding));
+    binding.physical_slot = 5; binding.slot_id = "support-white";
+    CHECK_FALSE(GUI::LocalPrintModelImport::prepare(*incoming, {75,85}, {250,250}, duplicate, error, true, binding));
+}

@@ -346,6 +346,33 @@ static DynamicPrintConfig tower_estimate_config(const char *wall_type, unsigned 
         { "raft_layers",                    "0"       } });
 }
 
+TEST_CASE("Conflict checking ignores an enabled tower without generated paths", "[WipeTower][Regression]")
+{
+    const DynamicPrintConfig config = multifilament_config(2, {
+        { "enable_prime_tower", true },
+        // Preserve the option while requesting no wrapping-detection tower layers.
+        { "enable_wrapping_detection", true },
+        { "wrapping_detection_layers", 0 },
+        { "timelapse_type", "0" },
+        { "layer_height", "0.2" },
+        { "outer_wall_filament_id", 1 },
+        { "inner_wall_filament_id", 1 },
+        { "sparse_infill_filament_id", 1 },
+        { "internal_solid_filament_id", 1 },
+        { "top_surface_filament_id", 1 },
+        { "bottom_surface_filament_id", 1 }
+    });
+    Print print;
+    Model model;
+    init_print({ cube(10) }, print, model, config);
+    print.apply(model, config);
+    REQUIRE(print.has_wipe_tower());
+    print.process();
+    REQUIRE(print.is_step_done(psWipeTower));
+    CHECK(print.wipe_tower_data().tool_changes.empty());
+    CHECK_FALSE(print.get_conflict_result().has_value());
+}
+
 TEST_CASE("The tower is sized for the thinnest layer any object on the plate is sliced at", "[WipeTower]")
 {
     // The tower has to survive its thinnest layer, so an override finer than the preset drives

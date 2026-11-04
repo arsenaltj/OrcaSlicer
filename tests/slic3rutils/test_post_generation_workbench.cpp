@@ -229,6 +229,20 @@ TEST_CASE("Workbench import keeps round base preparation opt-in",
     request.apply_round_base_preparation = true;
     CHECK(request.apply_round_base_preparation);
 }
+TEST_CASE("Deferred native repair only accepts its saved portrait source and exact binding", "[PostGenerationWorkbench][PortraitNativeRepair]")
+{
+    PostGenerationWorkbenchState state;state.actions.can_import=true;state.model_path="portrait.obj";
+    state.deferred_native_repair=true;state.native_repair_source_sha256=std::string(64,'a');
+    Slic3r::AI::ModelImportRequest request;request.artifact.local_path=state.model_path;
+    request.native_repair_before_slice=true;request.native_repair_source_sha256=state.native_repair_source_sha256;
+    request.matched_colors.emplace();request.matched_colors->source_sha256=state.native_repair_source_sha256;
+    REQUIRE(workbench_import_request_allowed(state,request));
+    CHECK_FALSE(state.can_import_for_slicing);
+    request.native_repair_source_sha256=std::string(64,'b');CHECK_FALSE(workbench_import_request_allowed(state,request));
+    request.native_repair_source_sha256=state.native_repair_source_sha256;
+    state.dirty=true;CHECK_FALSE(workbench_import_request_allowed(state,request));state.dirty=false;
+    state.deferred_native_repair=false;CHECK_FALSE(workbench_import_request_allowed(state,request));
+}
 
 TEST_CASE("Workbench placement adds a round base only to its detached import copy",
           "[PostGenerationWorkbench][OrcaModelPreparation][LocalPrintModelImport]")
@@ -1637,6 +1651,19 @@ static Slic3r::PresetBundle printer_filament_fixture(size_t nozzles, size_t slot
     return bundle;
 }
 
+static Slic3r::PresetBundle honor_suite_with_old_recipes(size_t physical_count)
+{
+    using namespace Slic3r;
+    auto bundle = printer_filament_fixture(6, physical_count + 2);
+    for (size_t slot = physical_count; slot < physical_count + 2; ++slot) {
+        bundle.project_config.option<ConfigOptionBools>("filament_is_mixed")->values[slot] = true;
+        bundle.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[slot] =
+            slot == physical_count ? "2,1" : "1,3";
+        bundle.project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[slot] = "0.8,0.2";
+    }
+    return bundle;
+}
+
 TEST_CASE("printer filament readiness validates loaded spools and permits idle nozzles", "[PrinterFilaments][PostGenerationWorkbench]")
 {
     using namespace Slic3r;
@@ -2455,15 +2482,17 @@ TEST_CASE("Honor people and pet cards keep model white separate from support thr
         [](const auto& slot) { return slot.color == "#FFFFFF"; });
     REQUIRE(white != suite.physical_slots.begin() + 5);
     CHECK(white->id != suite.physical_slots[5].id);
-    auto live = printer_filament_fixture(6, 4);
+    auto live = honor_suite_with_old_recipes(4);
     live.prints.get_edited_preset().config.set_key_value("enable_support", new ConfigOptionBool(false));
     live.project_config.set_key_value("support_filament", new ConfigOptionInt(2));
     live.project_config.set_key_value("support_interface_filament", new ConfigOptionInt(3));
     const auto original = live.project_config;
     PrinterFilamentConfig::StagedColorPackImport staged;
     std::string error;
-    REQUIRE(PrinterFilamentConfig::stage_honor_physical_suite_import(live, suite, staged, error));
+    const std::set<size_t> references;
+    REQUIRE(PrinterFilamentConfig::stage_honor_physical_suite_import(live, suite, staged, error, &references));
     REQUIRE(staged.bindings.size() == 6);
+    CHECK(staged.mixed_count == (index == 0 ? 0 : 2));
     const auto& config = staged.configuration->project_config;
     CHECK(config.opt_int("support_filament") == int(staged.bindings[5] + 1));
     CHECK(config.opt_int("support_interface_filament") == int(staged.bindings[5] + 1));
@@ -2506,7 +2535,10 @@ TEST_CASE("Honor people and pet cards keep model white separate from support thr
     CHECK(reopened_config.opt_int("support_interface_filament") == 6);
     CHECK_FALSE(reopened_config.opt_bool("enable_support"));
     REQUIRE(reopened_config.option<ConfigOptionStrings>("filament_colour"));
-    CHECK(reopened_config.option<ConfigOptionStrings>("filament_colour")->values == suite.color_pack().colors);
+    CHECK(reopened_config.option<ConfigOptionStrings>("filament_colour")->values ==
+        config.option<ConfigOptionStrings>("filament_colour")->values);
+    CHECK(reopened_config.option<ConfigOptionBools>("filament_is_mixed")->values ==
+        config.option<ConfigOptionBools>("filament_is_mixed")->values);
 }
 
 TEST_CASE("Bound Honor cards persist five model bindings and never alias support white",
@@ -2558,10 +2590,11 @@ TEST_CASE("Honor suite preserves extra physical slots and independent duplicate 
     CHECK(staged.configuration->project_config.opt_string("filament_colour", unsigned(6)) == seventh_color);
     REQUIRE(staged.bindings.size() == 6);
     CHECK(staged.bindings[4] != staged.bindings[5]);
+    CHECK(staged.physical_count == 7);
     CHECK(staged.mixed_count == 0);
 }
 
-TEST_CASE("Honor suite keeps existing mixed recipes outside its six physical bindings",
+TEST_CASE("Honor suite without reference context preserves recipes and reports their actual count",
           "[PrinterFilamentImport][PrinterFilaments][PrinterFilamentRecipes][PostGenerationWorkbench]")
 {
     auto live = printer_filament_fixture(6, 5);
@@ -2585,8 +2618,125 @@ TEST_CASE("Honor suite keeps existing mixed recipes outside its six physical bin
     CHECK(staged.configuration->project_config.option<Slic3r::ConfigOptionStrings>(
         "filament_mixed_components")->values[6] == "1,2");
     CHECK(staged.bindings == std::vector<size_t>{0, 1, 2, 3, 4, 5});
-    CHECK(staged.mixed_count == 0);
+    CHECK(staged.mixed_count == imported.mixed.size());
     CHECK(live.project_config == config_before);
+    CHECK(live.filament_presets == presets_before);
+}
+
+TEST_CASE("Honor people application removes unused old recipes and is idempotent",
+          "[HonorFilamentSuite][PrinterFilamentImport][PrinterFilamentRecipes][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    auto live = honor_suite_with_old_recipes(GENERATE(size_t(4), size_t(6)));
+    const auto before = live.project_config;
+    const auto presets_before = live.filament_presets;
+    Model model;
+    auto* object = model.add_object();
+    object->config.set("extruder", 1);
+    auto* volume = object->add_volume(TriangleMesh(its_make_cube(2., 2., 2.)));
+    TriangleSelector selector(volume->mesh());
+    selector.set_facet(0, EnforcerBlockerType::Extruder3);
+    volume->mmu_segmentation_facets.set(selector);
+    const auto geometry = volume->mesh().its.vertices;
+    const auto paint = volume->mmu_segmentation_facets.get_data();
+    const auto references = PrinterFilamentConfig::honor_suite_referenced_slots(model);
+    PrinterFilamentConfig::StagedColorPackImport staged;
+    std::string error;
+    INFO(error);
+    REQUIRE(PrinterFilamentConfig::stage_honor_physical_suite_import(
+        live, honor_people_suite(), staged, error, &references));
+    const auto imported = PrinterFilamentConfig::capture(*staged.configuration);
+    REQUIRE(imported.ready);
+    CHECK(imported.physical_count == 6);
+    CHECK(imported.mixed.empty());
+    CHECK(staged.mixed_count == imported.mixed.size());
+    CHECK(staged.configuration->filament_presets.size() == 6);
+    CHECK(staged.bindings == std::vector<size_t>{0, 1, 2, 3, 4, 5});
+    REQUIRE(PrinterFilamentSlotRemap::validate(staged.changes, presets_before.size(), 6));
+    PrinterFilamentSlotRemap::prepare(model, staged.changes, presets_before.size(),
+        before.option<ConfigOptionBools>("filament_is_mixed")->values);
+    CHECK(object->config.opt_int("extruder") == 1);
+    CHECK(volume->mmu_segmentation_facets.get_data() == paint);
+    CHECK(volume->mesh().its.vertices == geometry);
+    CHECK(live.project_config == before);
+    CHECK(live.filament_presets == presets_before);
+
+    PrinterFilamentConfig::StagedColorPackImport repeated;
+    REQUIRE(PrinterFilamentConfig::stage_honor_physical_suite_import(
+        *staged.configuration, honor_people_suite(), repeated, error, &references));
+    CHECK(repeated.changes.empty());
+    CHECK(repeated.configuration->project_config == staged.configuration->project_config);
+}
+
+TEST_CASE("Honor people cleanup retains referenced recipes and remaps their native identities",
+          "[HonorFilamentSuite][PrinterFilamentImport][PrinterFilamentRecipes][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    const int reference_kind = GENERATE(0, 1, 2, 3, 4, 5);
+    auto live = honor_suite_with_old_recipes(GENERATE(size_t(4), size_t(6)));
+    const int recipe_id = int(live.filament_presets.size());
+    Model model;
+    auto* object = model.add_object();
+    auto* volume = object->add_volume(TriangleMesh(its_make_cube(2., 2., 2.)));
+    DynamicPrintConfig plate;
+    if (reference_kind == 0) volume->config.set("extruder", recipe_id);
+    if (reference_kind == 1) object->config.set("support_filament", recipe_id);
+    if (reference_kind == 2) object->layer_config_ranges[{0., 1.}].set("extruder", recipe_id);
+    if (reference_kind == 3) {
+        TriangleSelector selector(volume->mesh());
+        selector.set_facet(0, EnforcerBlockerType(recipe_id));
+        volume->mmu_segmentation_facets.set(selector);
+        auto stale = volume->mmu_segmentation_facets.get_data();
+        stale.reset_used_states();
+        volume->mmu_segmentation_facets.set_data(std::move(stale));
+    }
+    if (reference_kind == 4) {
+        CustomGCode::Item code{};
+        code.type = CustomGCode::Type::ToolChange;
+        code.extruder = recipe_id;
+        model.plates_custom_gcodes[0].gcodes.push_back(code);
+    }
+    if (reference_kind == 5) plate.set_key_value("support_interface_filament", new ConfigOptionInt(recipe_id));
+    const auto references = PrinterFilamentConfig::honor_suite_referenced_slots(model, {&plate});
+    REQUIRE(references.count(size_t(recipe_id - 1)) == 1);
+    PrinterFilamentConfig::StagedColorPackImport staged;
+    std::string error;
+    INFO(error);
+    REQUIRE(PrinterFilamentConfig::stage_honor_physical_suite_import(
+        live, honor_people_suite(), staged, error, &references));
+    const auto imported = PrinterFilamentConfig::capture(*staged.configuration);
+    REQUIRE(imported.ready);
+    REQUIRE(imported.mixed.size() == 1);
+    CHECK(imported.mixed.front().slot == 6);
+    CHECK(imported.mixed.front().valid);
+    CHECK(staged.mixed_count == 1);
+    CHECK(staged.configuration->project_config.opt_string("filament_mixed_components", 6u) == "1,3");
+    CHECK(staged.configuration->project_config.opt_string("filament_mixed_sublayer_ratios", 6u) == "0.8,0.2");
+    REQUIRE(PrinterFilamentSlotRemap::validate(staged.changes, live.filament_presets.size(), 7));
+    PrinterFilamentSlotRemap::prepare(model, staged.changes, live.filament_presets.size(),
+        live.project_config.option<ConfigOptionBools>("filament_is_mixed")->values);
+    for (const auto& change : staged.changes) PrinterFilamentSlotRemap::plate_config(plate, change);
+    const auto remapped = PrinterFilamentConfig::honor_suite_referenced_slots(model, {&plate});
+    CHECK(remapped.count(6) == 1);
+    CHECK(remapped.count(7) == 0);
+    CHECK(staged.bindings == std::vector<size_t>{0, 1, 2, 3, 4, 5});
+}
+
+TEST_CASE("Honor people cleanup rejects invalid references without staging partial changes",
+          "[HonorFilamentSuite][PrinterFilamentImport][PostGenerationWorkbench]")
+{
+    auto live = honor_suite_with_old_recipes(4);
+    const auto before = live.project_config;
+    const auto presets_before = live.filament_presets;
+    const std::set<size_t> references {99};
+    PrinterFilamentConfig::StagedColorPackImport staged;
+    std::string error;
+    CHECK_FALSE(PrinterFilamentConfig::stage_honor_physical_suite_import(
+        live, honor_people_suite(), staged, error, &references));
+    CHECK_FALSE(error.empty());
+    CHECK_FALSE(staged.configuration);
+    CHECK(staged.changes.empty());
+    CHECK(live.project_config == before);
     CHECK(live.filament_presets == presets_before);
 }
 

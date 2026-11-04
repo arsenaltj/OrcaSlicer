@@ -1022,6 +1022,9 @@ public:
             wxString placeholder = m_placeholder;
             if (generating && m_design_wait.active())
                 placeholder += "\n" + m_design_wait.message(monotonic_seconds());
+            wxString wrapped;
+            Label::split_lines(dc, std::max(1, size.x - FromDIP(48)), placeholder, wrapped);
+            placeholder = std::move(wrapped);
             const wxSize extent = dc.GetMultiLineTextExtent(placeholder);
             int text_y = (size.y - extent.y) / 2;
             if (generating) {
@@ -1241,6 +1244,7 @@ RedesignShell::~RedesignShell()
 
 void RedesignShell::disconnect_model_generation_host()
 {
+    update_print_preview(false, false, true);
     // shutdown(), MainFrame's destructor and this panel's destructor share
     // this cleanup. Child windows may already be gone on subsequent calls.
     if (!m_model_generation_host && !m_slicing_host && !m_plater_original_parent) return;
@@ -1807,8 +1811,13 @@ void RedesignShell::build_image_workspace()
     m_pages[static_cast<std::size_t>(Page::Image)] = m_image_page;
     m_pages[static_cast<std::size_t>(Page::Model)] = build_model_workspace();
     m_print_page = new PrinterWorkspace(m_content_host, m_plater);
+    m_print_page->set_interactive_preview_handler([this](bool active, bool layers, bool support) {
+        return update_print_preview(active && m_active_page == Page::Print, layers, support);
+    });
 #ifdef __WXMSW__
-    m_print_page->SetDoubleBuffered(true);
+    // WS_EX_COMPOSITED hides the native OpenGL child after Plater is mounted
+    // here. The GL canvas and individual painted controls own their buffers.
+    m_print_page->SetDoubleBuffered(false);
 #endif
     m_pages[static_cast<std::size_t>(Page::Print)] = m_print_page;
     m_content_host->GetSizer()->Add(m_print_page, 1, wxEXPAND);
@@ -1962,7 +1971,10 @@ void RedesignShell::connect_model_generation_host()
     m_model_generation_host->set_history_navigation_handler([weak](bool design) {
         if (!weak || !weak->m_model_generation_host) return;
         weak->navigate_to(design ? Page::Image : Page::Model);
-        if (!design) weak->open_model_workbench();
+        // History first restores the completed model. Entering the workbench
+        // before its asynchronous load finishes would run the legacy check and
+        // skip the portrait transaction owned by the explicit workbench action.
+        if (!design) weak->show_model_view(ModelView::Result);
     });
     m_model_generation_host->set_state_listener([weak](const ModelGenerationUIState& state) {
         if (!weak || weak->m_model_generation_host == nullptr)
@@ -2014,6 +2026,14 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
             m_model_view = ModelView::Result;
     }
     m_model_generation_state = state;
+    if (state.portrait_print.active() && !state.portrait_print.running() &&
+        m_portrait_import_requested && m_import_session && m_import_session->can_cancel())
+        m_import_session->cancel();
+    if (state.portrait_print.paused) {
+        m_portrait_analysis_requested = false;
+        if (m_plater && m_plater->model().objects.empty()) m_portrait_import_requested = false;
+    }
+    queue_portrait_print();
     if (m_image_history) {
         m_image_history->set_busy(state.busy || m_submit_in_progress || m_image_page_view_only);
         if (state.design_ready) m_image_history->set_selected(state.job_id);
@@ -2831,7 +2851,7 @@ void RedesignShell::request_generate_design()
         return;
     }
     m_image_design_draft.begin_submission();
-    const bool requested = m_model_generation_host != nullptr && m_model_generation_host->request_generate_design();
+    const bool requested = m_model_generation_host != nullptr && PortraitPrint::accepted(m_model_generation_host->request_generate_design());
     m_image_design_draft.end_submission(m_model_generation_host != nullptr ? m_model_generation_host->snapshot() : ModelGenerationUIState());
     if (!requested) {
         m_submit_in_progress = false;
@@ -3772,7 +3792,8 @@ void RedesignShell::update_image_state()
     // Preserve text-only designs and active placeholders while retaining
     // the responsive workspace after its first use.
     const bool show_preview = ready || m_design_image_state == ImageState::Ready ||
-        m_model_generation_state.stage != ModelGenerationUIStage::Input || m_preview_host->IsShown();
+        m_model_generation_state.stage != ModelGenerationUIStage::Input ||
+        m_model_generation_state.portrait_print.active() || m_preview_host->IsShown();
     m_source_preview_card->Show(ready);
     m_source_preview_card->GetContainingSizer()->Show(size_t(1), ready);
     m_guide_panel->Show(!show_preview);

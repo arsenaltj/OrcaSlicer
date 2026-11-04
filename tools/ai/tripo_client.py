@@ -41,6 +41,10 @@ _ARTIFACT_DOWNLOAD_ATTEMPTS = 3
 class TripoError(RuntimeError):
     """A Tripo request or task failed safely."""
 
+    def __init__(self, message: str, *, task_id: str = "", terminal: bool = False, provider_code: str = ""):
+        super().__init__(message)
+        self.task_id, self.terminal, self.provider_code = task_id, terminal, provider_code
+
 
 class _ArtifactDownloadInterrupted(RuntimeError):
     """The CDN ended a successful response before its declared length."""
@@ -507,7 +511,10 @@ def wait_for_task(
         if state == "success":
             return result
         if state == "failed":
-            raise TripoError("The Tripo task failed.")
+            code = str(result.get("error_code", "unknown"))[:64]
+            reason = str(result.get("error_message", "Internal processing error"))[:500]
+            raise TripoError(f"Tripo task {task_id} failed ({code}): {reason}",
+                             task_id=task_id, terminal=True, provider_code=code)
         if state == "cancelled" or state == "canceled":
             raise TripoError("The Tripo task was cancelled.")
         if state not in {"queued", "running"}:

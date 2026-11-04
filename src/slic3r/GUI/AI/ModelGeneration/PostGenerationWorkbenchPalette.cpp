@@ -7,6 +7,7 @@
 #include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include "slic3r/GUI/Plater.hpp"
+#include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/PresetComboBoxes.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaPrintPaletteSnapshot.hpp"
@@ -391,8 +392,15 @@ bool ModelGenerationPanel::apply_model_palette_to_filaments()
     const auto* honor_suite = m_model_preview->active_honor_filament_suite();
     PrinterFilamentConfig::StagedColorPackImport staged;
     std::string error;
+    std::set<size_t> referenced_slots;
+    if (honor_suite && honor_suite->id == "honor.people.six") {
+        std::vector<const DynamicPrintConfig*> plate_configs;
+        for (int i = 0; i < plater->get_partplate_list().get_plate_count(); ++i)
+            plate_configs.push_back(plater->get_partplate_list().get_plate(i)->config());
+        referenced_slots = PrinterFilamentConfig::honor_suite_referenced_slots(plater->model(), plate_configs);
+    }
     const bool staged_ok = honor_suite
-        ? PrinterFilamentConfig::stage_honor_physical_suite_import(*bundle, *honor_suite, staged, error)
+        ? PrinterFilamentConfig::stage_honor_physical_suite_import(*bundle, *honor_suite, staged, error, &referenced_slots)
         : PrinterFilamentConfig::stage_workbench_color_pack_import(*bundle, *card, staged, error);
     if (!staged_ok) {
         report(error.empty() ? honor_suite
@@ -405,7 +413,15 @@ bool ModelGenerationPanel::apply_model_palette_to_filaments()
     if (honor_suite) {
         const auto trial = m_model_preview->color_trial_state();
         std::vector<size_t> used;
-        if (!trial.source_to_target_slot.empty()) {
+        if (trial.suite_region_binding) {
+            if (!trial.suite_region_binding->valid(trial.colors.size()) ||
+                trial.suite_region_binding->suite_id != honor_suite->id ||
+                trial.suite_region_binding->suite_revision != honor_suite->revision) {
+                report("人物套装区域绑定与当前模型不匹配，工程保持原状。", true); return false;
+            }
+            for (size_t suite_slot : trial.suite_region_binding->source_to_model_slot)
+                used.push_back(staged.bindings[suite_slot]);
+        } else if (!trial.source_to_target_slot.empty()) {
             used.reserve(trial.source_to_target_slot.size());
             for (const size_t suite_slot : trial.source_to_target_slot) {
                 if (suite_slot >= honor_suite->model_slot_count) {
@@ -490,7 +506,9 @@ bool ModelGenerationPanel::apply_model_palette_to_filaments()
     m_printer_filament_trial_geometry = m_model_preview->geometry_id();
     m_printer_filament_trial_signature = PrinterFilamentConfig::capture(*bundle).signature;
     const std::string success = honor_suite
-        ? "已应用荣耀耗材套装：6 个实体耗材、0 个叠色槽，已进入试色"
+        ? "已应用荣耀耗材套装：" + std::to_string(staged.physical_count) + " 个实体耗材、" +
+            std::to_string(staged.mixed_count) + " 个叠色槽" +
+            (staged.mixed_count ? "（保留工程原有配方）" : "") + "，已进入试色"
         : "已导入 " + std::to_string(card->colors.size()) + " 色：" +
             std::to_string(staged.physical_count) + " 个实体槽 + " +
             std::to_string(staged.mixed_count) + " 个叠色槽，已进入试色";

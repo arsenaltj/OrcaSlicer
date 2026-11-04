@@ -1,8 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "test_utils.hpp"
 #include "slic3r/AI/ModelGeneration/SemanticColoring/MediaPipeRegionRecognizers.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelSemanticColoring.hpp"
+#include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include <nlohmann/json.hpp>
 #include <atomic>
 #include <array>
@@ -350,6 +352,109 @@ TEST_CASE("Explicit portrait optimization no longer requires retired FaRL eviden
     REQUIRE_FALSE(result->geometry.is_empty());
     CHECK_FALSE(result->shape_details);
     CHECK_FALSE(progress->snapshot().evidence.empty());
+}
+
+TEST_CASE("Unavailable recognition never bypasses canonical portrait source validation", "[ModelSemanticColoring][HonorFilamentSuite][Regression]")
+{
+    // All cases lack a provider. The canonical source must still be checked
+    // before choosing a nearest-color fallback.
+    const int change = GENERATE(0, 1, 2, 3); // valid, missing, changed bytes, changed geometry
+    CAPTURE(change);
+    Fixture fixture;
+    fixture.configure("unregistered.canonical-source.body", "unregistered.canonical-source.face");
+    struct RestoreData {
+        std::string previous = Slic3r::data_dir();
+        ~RestoreData() { Slic3r::set_data_dir(previous); }
+    } restore_data;
+    Slic3r::set_data_dir(fixture.runtime.generic_string());
+
+    const auto original_file = fixture.directory.path() / "original.glb";
+    const auto original_mesh = source("canonical-fixture");
+    std::string error;
+    REQUIRE(AI::write_model_artifact(original_file, original_mesh->mesh, original_mesh->vertex_colors, error));
+    TriangleMesh loaded;
+    ObjInfo colors;
+    REQUIRE(AI::load_model_artifact(original_file, loaded, colors, error));
+    auto canonical = std::make_shared<SC::MeshSnapshot>();
+    canonical->mesh = std::move(loaded.its);
+    canonical->vertex_colors = std::move(colors.vertex_colors);
+    canonical->face_colors = std::move(colors.face_colors);
+    canonical->geometry_id = AI::SurfaceSelectionPersistence::geometry_fingerprint(canonical->mesh);
+    canonical->content_id = SC::content_fingerprint(*canonical);
+    const auto hash = AI::model_artifact_sha256(original_file);
+    const auto saved_source = Slic3r::GUI::PortraitShapeCache::preserve_source(
+        boost::filesystem::path(fixture.cache.native()), original_file, hash);
+
+    auto edited = std::make_shared<SC::MeshSnapshot>(*canonical);
+    edited->vertex_colors.assign(edited->mesh.vertices.size(), {1.f, 0.f, 1.f, 1.f});
+    edited->face_colors.assign(edited->mesh.indices.size(), {1.f, 0.f, 1.f, 1.f});
+    if (change == 3) {
+        edited->mesh.vertices.front().x() += .25f;
+        edited->geometry_id = AI::SurfaceSelectionPersistence::geometry_fingerprint(edited->mesh);
+    }
+    edited->content_id = SC::content_fingerprint(*edited);
+    REQUIRE(edited->content_id != canonical->content_id);
+    auto shapes = std::make_shared<Slic3r::GUI::PortraitShapeDetails>();
+    shapes->locks.geometry_id = edited->geometry_id;
+    shapes->locks.source_sha256 = hash;
+    shapes->locks.face_count = edited->mesh.indices.size();
+    shapes->locks.evidence_sha256 = std::string(64, 'a');
+    shapes->locks.runtime_sha256 = std::string(64, 'b');
+    shapes->locks.policy_sha256 = std::string(64, 'c');
+    shapes->base_colors.assign(edited->mesh.indices.size(), {skin[0], skin[1], skin[2], 1.f});
+    REQUIRE(shapes->compatible(edited->geometry_id, edited->mesh.indices.size()));
+    if (change == 1) REQUIRE(boost::filesystem::remove(saved_source));
+    if (change == 2) {
+        std::ofstream changed(std::filesystem::path(saved_source.native()), std::ios::binary | std::ios::app);
+        changed << ' ';
+        changed.close();
+        REQUIRE(changed.good());
+    }
+
+    Slic3r::GUI::PreviewPalette::AutomaticColorBasis basis;
+    basis.geometry_id = edited->geometry_id;
+    basis.source_color_signature = canonical->content_id;
+    basis.requested_count = 4;
+    basis.source_palette = {skin, gray, blue, {1.f, 1.f, 1.f}};
+    basis.unit_source_slots = {0};
+    basis.unit_area = {2.};
+    basis.source_area = {2., 0., 0., 0.};
+    basis.basis_signature = "canonical-source-fallback";
+    REQUIRE(basis.valid());
+    const std::vector<SC::Color> targets {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, skin,
+        {1.f, 1.f, 1.f}, blue};
+    Coordinator coordinator(fixture.runtime, fixture.cache);
+    REQUIRE(coordinator.request(edited, targets, targets, targets, {}, {}, shapes, {},
+        true, {}, {}, {}, 4, false, true, {}, "canonical-source-fallback", basis));
+    const auto result = await_result(coordinator);
+    REQUIRE(result);
+    CAPTURE(result->error);
+    if (change == 0) {
+        REQUIRE(result->error.empty());
+        CHECK(result->verified_original_source);
+        CHECK_FALSE(result->source_region_failure);
+        CHECK_FALSE(result->semantic_fallback_reason.empty());
+        REQUIRE(result->color_blocks);
+        REQUIRE(result->analysis);
+        CHECK(result->analysis->content_id == canonical->content_id);
+        REQUIRE(result->color_blocks->units.size() == 1);
+        CHECK(result->color_blocks->units.front().path.depth == 0);
+        REQUIRE(result->color_blocks->current().blocks.size() == 1);
+        CHECK(result->color_blocks->current().blocks.front().display_slot == 2);
+        REQUIRE(result->automatic.size() == 1);
+        check_color(result->automatic.front().second, skin);
+        CHECK(result->automatic_subfaces.empty());
+        CHECK_FALSE(result->geometry.is_empty());
+    } else {
+        CHECK_FALSE(result->error.empty());
+        CHECK(result->source_region_failure);
+        CHECK(result->semantic_fallback_reason.empty());
+        CHECK_FALSE(result->color_blocks);
+        CHECK(result->automatic.empty());
+        CHECK(result->geometry.is_empty());
+        if (change == 3) CHECK(result->error == "Original portrait face mapping changed.");
+        else CHECK(result->error == "Original portrait source is missing or changed.");
+    }
 }
 
 TEST_CASE("Semantic preview emits the same sparse midpoint leaves used by MMU persistence",

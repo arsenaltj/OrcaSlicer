@@ -228,6 +228,14 @@ class Job:
     palette_recommendation: dict[str, Any] = field(default_factory=dict)
     palette_recommendation_confirmed: bool = False
     generate_image: bool = False
+    # Explicit opt-in. Ordinary/legacy design routes keep unrestricted creation.
+    portrait_print: bool = False
+    creation_request_id: str = ""
+    creation_fingerprint: str = ""
+    design_submission_started: bool = False
+    model_submission_started: bool = False
+    # In-memory permission only: loading a saved job never authorizes a new paid retry.
+    portrait_retry_authorized: bool = field(default=False, repr=False)
     attempts: list[dict[str, Any]] = field(default_factory=list)
     updated_at: float = field(default_factory=time.time)
     design_started_monotonic: float | None = field(default=None, repr=False)

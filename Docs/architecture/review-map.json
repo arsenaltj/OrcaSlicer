@@ -165,6 +165,42 @@
       "needle": "struct ModelGenerationFeatureHost::Impl"
     },
     {
+      "id": "portrait_print_flow",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/PortraitPrintFlow.cpp",
+      "needle": "PP::Submission ModelGenerationPanel::request_portrait_print_from_model",
+      "detail": "v4 starts at Open Workbench: project backup, accepted and saved repair, model-history AI source basis, semantic region binding, saved painting, independent base, import and official slicing. Restored v1-v3 assets remain readable; continuation never submits generation tasks."
+    },
+    {
+      "id": "portrait_suite_binding",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelPreviewSemantics.cpp",
+      "needle": "void ModelPreview3D::update_semantic_coloring()",
+      "detail": "People six uses ColorRegionMajorityV2 with a frozen 4/5/6 source palette, original-surface sampling, adaptive boundary subfaces and protected tooth removal shared with BeautyPuzzle. Trusted semantic votes bind the first five physical slots; original-color fallback preserves regions. Support slot six and the independent base keep separate identities."
+    },
+    {
+      "id": "portrait_palette_provider",
+      "path": "tools/ai/openai_preprocessor.py",
+      "needle": "def complete_yoyoclaw_once(",
+      "detail": "Manual 2D generation and confirmed 3D submission retain baseline interactions and prompts. Historical portrait jobs stay readable; the workbench flow never submits a provider task."
+    },
+    {
+      "id": "portrait_print_preparation",
+      "path": "src/slic3r/GUI/Redesign/RedesignPortraitPrintFlow.cpp",
+      "needle": "void RedesignShell::run_portrait_print()",
+      "detail": "Single-portrait import, local Balanced recommendation and official Orca slicing bind the same project revision. Valid G-code opens print preparation; no print task is sent."
+    },
+    {
+      "id": "portrait_native_repair",
+      "path": "src/slic3r/GUI/AI/Orca/WorkbenchImportTopology.hpp",
+      "needle": "inline bool prepare_native_portrait_repair(",
+      "detail": "v4 repairs and verifies appearance in the workbench before partitioning, then disables duplicate topology repair at import. Historical import repair remains compatible. Import and painting failures roll back the detached candidate. The base is a separate volume outside source clustering."
+    },
+    {
+      "id": "portrait_print_preview",
+      "path": "src/slic3r/GUI/Redesign/RedesignModelWorkflow.cpp",
+      "needle": "bool RedesignShell::update_print_preview(",
+      "detail": "Print preparation mounts the existing Plater read-only for final filament colors and native layer/support preview, bound to valid official G-code and workspace revision; leaving restores the native host."
+    },
+    {
       "id": "generate_confirmation",
       "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationSubmission.cpp",
       "needle": "void ModelGenerationPanel::on_generate"
@@ -901,6 +937,30 @@
     }
   ],
   "business_flows": [
+    {
+      "id": "portrait_print",
+      "label": "人像一键至打印准备",
+      "detail": "仅多色写实：首次统一确认并备份当前工程，AI色板与单人半身2D核验后自动3D，按原始4/5/6源区域映射人物套装，保存配色，原子导入六实体耗材及单个人像；导入中原生保色修复并后加3mm底座，以本地综合最优正式切片并挂载交互打印预览",
+      "boundary": "正常路径无中途弹窗，风险页内保留；检测人物与证据完整度分开，证据不足自动标注近色回退，无安全六变五方案页内暂停；明确失败自动重试一次，未知查询原任务，重启只手动续行且不自动付费；同修订正式G-code有效才进入打印准备，不发送打印任务；其他模式保留手动流程",
+      "group": "设计与生成",
+      "evidence": [
+        "portrait_print_flow",
+        "portrait_suite_binding",
+        "portrait_palette_provider",
+        "portrait_print_preparation",
+        "portrait_native_repair",
+        "portrait_print_preview",
+        "provider_authorization",
+        "history"
+      ],
+      "modules": [
+        "generation",
+        "slicing",
+        "adapter",
+        "desktop"
+      ],
+      "impact_scope": "evidence"
+    },
     {
       "id": "design",
       "label": "设计准备",
