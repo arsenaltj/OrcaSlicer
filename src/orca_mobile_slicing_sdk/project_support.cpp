@@ -3,6 +3,8 @@
 #include "three_mf_inspection.hpp"
 #include "libslic3r/Format/bbs_3mf.hpp"
 #include "libslic3r/Preset.hpp"
+#include "libslic3r/MeshRepair.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaModelPreparation.hpp"
 
 #include <algorithm>
 #include <array>
@@ -245,7 +247,8 @@ Model load_mobile_obj(const std::string& path, Json& unsupported)
 Json inspect_three_mf(const std::string& inputPath) {return detail::inspect_archive(inputPath);}
 
 LoadedProject load_project(const std::string& inputPath, const Json& configOverrides,
-                           const Json& transforms, const std::string& workspaceRoot, const Json& projectCommands)
+                           const Json& transforms, const std::string& workspaceRoot, const Json& projectCommands,
+                           const std::string& selectedPlateId)
 {
     if (inputPath.empty())
         throw std::invalid_argument("inputPath is empty");
@@ -262,9 +265,27 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
         ~SourceData(){release_PlateData_list(plates);for(auto* preset:presets) delete preset;}
     } sourceData{plates,presets};
     std::string sourceExtension=std::filesystem::u8path(inputPath).extension().u8string();
+    int nativePlateId=0;
     std::transform(sourceExtension.begin(),sourceExtension.end(),sourceExtension.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
     if(sourceExtension==".3mf") {
         inspection=inspect_three_mf(inputPath);
+        if(!selectedPlateId.empty()) {
+            const auto& sourcePlates=inspection.at("plates");
+            const auto selected=std::find_if(sourcePlates.begin(),sourcePlates.end(),[&](const Json& plate){return plate.value("id",std::string())==selectedPlateId;});
+            if(selected==sourcePlates.end()) throw std::runtime_error("SELECTED_PLATE_NOT_FOUND");
+            size_t consumed=0;
+            try { nativePlateId=std::stoi(selectedPlateId,&consumed); }
+            catch(...) { throw std::runtime_error("SELECTED_PLATE_ID_NOT_NATIVE"); }
+            if(consumed!=selectedPlateId.size() || nativePlateId<1 || size_t(nativePlateId)>sourcePlates.size())
+                throw std::runtime_error("SELECTED_PLATE_ID_NOT_NATIVE");
+            for(const char* list:{"features","blockedFeatures"}) {
+                auto& features=inspection[list];
+                features.erase(std::remove_if(features.begin(),features.end(),[](const Json& feature){return feature.value("id",std::string())=="multiple_plates";}),features.end());
+            }
+            inspection["currentPlate"]=selectedPlateId;
+            inspection["selectedPlateId"]=selectedPlateId;
+            inspection["features"].push_back(Json{{"id","selected_plate"},{"status","supported_native"},{"path",inputPath},{"message","Native importer filters the explicitly selected source plate; all original source bytes and plate metadata retained"}});
+        }
         substitutions.rule=ForwardCompatibilitySubstitutionRule::Enable; // retain default-substitution evidence
     }
     if (!workspaceRoot.empty())
@@ -278,7 +299,8 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
 #endif
         model = Model::read_from_file(inputPath, &config, &substitutions,
                                       LoadStrategy::AddDefaultInstances | LoadStrategy::LoadModel |
-                                      LoadStrategy::LoadConfig | LoadStrategy::LoadAuxiliary,&plates,&presets);
+                                      LoadStrategy::LoadConfig | LoadStrategy::LoadAuxiliary,&plates,&presets,
+                                      nullptr,nullptr,nullptr,nullptr,nullptr,nativePlateId);
     } catch (const std::exception& error) {
         const std::string detail = bbs_3mf_last_error();
         throw std::runtime_error(std::string(error.what()) + (detail.empty() ? std::string() : "; " + detail) +
@@ -293,6 +315,12 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
     // Single-plate settings are part of the original profile, before user
     // overrides. Multi-plate projects are inspected but never silently flattened.
     if(sourceExtension==".3mf" && plates.size()==1) config.apply(plates.front()->config);
+    if(sourceExtension==".3mf" && nativePlateId>0) {
+        auto selected=std::find_if(plates.begin(),plates.end(),[&](const auto* plate){return plate && plate->plate_index==nativePlateId-1;});
+        if(selected==plates.end()) throw std::runtime_error("SELECTED_PLATE_NATIVE_METADATA_MISSING");
+        config.apply((*selected)->config);
+        model.curr_plate_index=nativePlateId-1;
+    }
     if(sourceExtension==".3mf") {
         if(!bbs_3mf_last_error().empty()) {
             Json feature{{"id","native_import_warning"},{"status","blocked"},{"path",inputPath},{"message",bbs_3mf_last_error()}};
@@ -354,6 +382,7 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
         project.metadata["threeMfInspection"]=inspection;
         project.metadata["plateCount"]=inspection["plateCount"];
         project.metadata["currentPlate"]=inspection["currentPlate"];
+        if(nativePlateId>0) project.metadata["selectedPlateId"]=selectedPlateId;
         project.metadata["plates"]=inspection["plates"];
         project.metadata["previewCompleteness"]=inspection["blockedFeatures"].empty()?"native-model":"partial-unsupported-content";
     }
@@ -466,9 +495,9 @@ void validate_material_assignments(const LoadedProject& project)
 }
 
 namespace {
-Json common_parameter_metadata()
+Json common_parameter_metadata(bool full=false)
 {
-    Json result{{"version","p1-common-v1"},{"parameters",Json::object()}};
+    Json result{{"version",full?"native-full-v1":"p1-common-v1"},{"parameters",Json::object()}};
 #ifdef ORCA_MOBILE_SLICING_SOURCE_COMMIT
     result["sourceCommit"]=ORCA_MOBILE_SLICING_SOURCE_COMMIT;
 #endif
@@ -481,17 +510,21 @@ Json common_parameter_metadata()
         case coFloat:return "coFloat";case coFloats:return "coFloats";case coInt:return "coInt";case coInts:return "coInts";
         case coPercent:return "coPercent";case coPercents:return "coPercents";case coBool:return "coBool";case coBools:return "coBools";
         case coString:return "coString";case coStrings:return "coStrings";case coEnum:return "coEnum";case coEnums:return "coEnums";
-        case coFloatOrPercent:return "coFloatOrPercent";case coFloatsOrPercents:return "coFloatsOrPercents";default:return nullptr;
+        case coFloatOrPercent:return "coFloatOrPercent";case coFloatsOrPercents:return "coFloatsOrPercents";default:return "nativeSerialized";
         }
     };
     DynamicPrintConfig schema; // Definition lookup only, no full-config clone or worker state.
-    for(const char* key:{"layer_height","wall_loops","top_shell_layers","bottom_shell_layers","sparse_infill_density","enable_support",
+    std::vector<std::string> keys={"layer_height","wall_loops","top_shell_layers","bottom_shell_layers","sparse_infill_density","enable_support",
         "support_type","support_threshold_angle","nozzle_diameter","nozzle_temperature","nozzle_temperature_initial_layer",
-        "filament_density","filament_flow_ratio","inner_wall_acceleration","machine_max_acceleration_extruding","outer_wall_acceleration"}) {
+        "filament_density","filament_flow_ratio","inner_wall_acceleration","machine_max_acceleration_extruding","outer_wall_acceleration"};
+    if(full) { keys.clear();for(const auto& definition:print_config_def.options) keys.push_back(definition.first); }
+    for(const auto& key:keys) {
         const auto* definition=print_config_def.get(key);if(!definition) continue;
         const char* type=type_name(definition->type);if(!type) continue;
         Json item{{"key",key},{"type",type},{"typeId",int(definition->type)},{"nullable",definition->nullable},
-            {"vector",!definition->is_scalar()},{"readonly",definition->readonly},{"sidetext",definition->sidetext}};
+            {"vector",!definition->is_scalar()},{"readonly",definition->readonly},{"sidetext",definition->sidetext},
+            {"mode",int(definition->mode)},{"isCode",definition->is_code},
+            {"editable",!definition->readonly&&!definition->is_code},{"nativeValidationRequired",true}};
         if(!definition->label.empty()) item["label"]=definition->label;
         if(!definition->sidetext.empty()) item["unit"]=definition->sidetext;
         // FLT_MAX is the schema's unset-limit sentinel, not an invented edit limit.
@@ -541,7 +574,7 @@ Json source_material_options(const Json& original)
 Json project_presets(const Json& request)
 {
     Json result=offline_presets();
-    result["parameterMetadata"]=common_parameter_metadata();
+    result["parameterMetadata"]=common_parameter_metadata(request.value("parameterScope",std::string("common"))=="all");
     for(const char* group:{"devices","materials"}) {
         result[group][0]["available"]=false;
         result[group][0]["reason"]="Refresh this project to capture the original source profile before restoring it.";
@@ -573,7 +606,7 @@ void apply_preset(LoadedProject& project,const std::string& kind,const std::stri
     Json provenance=match->value("sourceRefs",Json::array());
     if(presetId=="source/current") {
         // Reload unchanged source; do not use the current overrides as a source.
-        const auto source=load_project(project.inputPath,Json::object(),Json::array(),project.metadata.value("workspaceRoot",std::string()));
+        const auto source=load_project(project.inputPath,Json::object(),Json::array(),project.metadata.value("workspaceRoot",std::string()),Json::array(),project.metadata.value("selectedPlateId",std::string()));
         if(kind=="device") project.config=source.config;
         else {
             const Json options=source_material_options(config_json(source.config));
@@ -747,7 +780,10 @@ Json write_scene(const LoadedProject& project, const std::string& outputPath)
 {
     if (outputPath.empty())
         throw std::invalid_argument("outputPath is empty");
-    const Json colors = project.metadata.value("sourceColors",colors_json(project.config));
+    // SC01 renders the current logical material palette. Original colors stay
+    // in sourceColors metadata for provenance; they cannot override edits or
+    // an explicit host material palette used by the same manufacturing job.
+    const Json colors = colors_json(project.config);
     const size_t palette_count = std::max<size_t>(1, colors.size());
     std::vector<std::array<std::uint8_t, 4>> palette;
     palette.reserve(palette_count);
@@ -864,6 +900,13 @@ void apply_config_overrides(DynamicPrintConfig& config, const Json& overrides)
     if (!overrides.is_object()) throw std::invalid_argument("CONFIG_MUST_BE_OBJECT");
     ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Disable};
     for (auto it = overrides.begin(); it != overrides.end(); ++it) {
+        const auto* definition=print_config_def.get(it.key());
+        if(definition && definition->type==coStrings && it.value().is_array()) {
+            // Native string vectors use escaped semicolon serialization, not
+            // numeric comma-vector syntax. Preserve structured JSON values.
+            config.set_key_value(it.key(),new ConfigOptionStrings(it.value().get<std::vector<std::string>>()));
+            continue;
+        }
         const std::string value=native_value(it.value());
         const bool physicalVariant=it.key()=="extruder_type" || it.key()=="nozzle_volume_type";
         if (physicalVariant && it.value().is_array() && it.value().empty())
@@ -1040,7 +1083,76 @@ void apply_project_commands(LoadedProject& project, const Json& commands)
         const int ii=cmd.value("instanceIndex",0);
         if (ii<0 || size_t(ii)>=object.instances.size()) throw std::out_of_range("COMMAND_INSTANCE_NOT_FOUND");
         auto* instance=object.instances[ii];
-        if (type == "transform") {
+        if(type=="applyAppearance") {
+#ifdef ORCA_MOBILE_REAL_TRIANGULATION
+            const auto path=cmd.at("appearancePath").get<std::string>();
+            if(file_sha256(path)!=cmd.at("appearanceSha256").get<std::string>())
+                throw std::runtime_error("APPEARANCE_IDENTITY_MISMATCH");
+            if(std::filesystem::file_size(std::filesystem::u8path(path))>100ULL*1024*1024)
+                throw std::runtime_error("APPEARANCE_RESOURCE_LIMIT");
+            std::ifstream stream(std::filesystem::u8path(path));Json appearance;stream>>appearance;
+            if(appearance.value("schemaVersion",0)!=1 || appearance.value("units",std::string())!="mm" ||
+               appearance.value("upAxis",std::string())!="Z" || appearance.at("geometrySha256")!=project.inputSha256)
+                throw std::runtime_error("APPEARANCE_GEOMETRY_MISMATCH");
+            const auto vi=cmd.value("volumeIndex",0);
+            if(vi<0||size_t(vi)>=object.volumes.size())throw std::runtime_error("COMMAND_VOLUME_NOT_FOUND");
+            auto* volume=object.volumes[size_t(vi)];
+            const auto& ids=appearance.at("materialIds");
+            if(!ids.is_array() || ids.size()!=volume->mesh().its.indices.size())
+                throw std::runtime_error("APPEARANCE_FACE_COUNT_MISMATCH");
+            const auto* slots=project.config.option<ConfigOptionStrings>("filament_colour");
+            if(!slots||slots->values.empty())throw std::runtime_error("MATERIAL_REMAP_REQUIRED");
+            TriangleSelector selector(volume->mesh());
+            for(size_t face=0;face<ids.size();++face){
+                const auto material=ids.at(face).get<int>();
+                if(material<0||size_t(material)>=slots->values.size()||material+1>int(EnforcerBlockerType::ExtruderMax))
+                    throw std::runtime_error("APPEARANCE_MATERIAL_OUT_OF_RANGE");
+                selector.set_facet(int(face),static_cast<EnforcerBlockerType>(material+1));
+            }
+            volume->mmu_segmentation_facets.set(selector);
+            project.metadata["appearanceManifestPath"]=path;
+            project.metadata["appearanceManifestSha256"]=cmd.at("appearanceSha256");
+            project.metadata["appearanceGeometrySha256"]=project.inputSha256;
+#else
+            throw std::runtime_error("NATIVE_APPEARANCE_UNAVAILABLE");
+#endif
+        } else if(type=="prepareModel") {
+            if(ii!=0 || object.instances.size()!=1)throw std::runtime_error("PREPARATION_REQUIRES_SINGLE_INSTANCE");
+            Slic3r::GUI::ModelPreparationOptions options;
+            options.total_height_mm=cmd.value("totalHeightMm",120.0);
+            options.add_round_base=cmd.value("addBase",false);
+            options.base_height_mm=cmd.value("baseHeightMm",3.0);
+            const auto base=cmd.value("baseTemplate",std::string("round"));
+            if(base=="round")options.base_template=Slic3r::GUI::ModelBaseTemplate::Round;
+            else if(base=="oval")options.base_template=Slic3r::GUI::ModelBaseTemplate::Oval;
+            else if(base=="rectangle")options.base_template=Slic3r::GUI::ModelBaseTemplate::Rectangle;
+            else throw std::runtime_error("INVALID_BASE_TEMPLATE");
+            const auto proposal=Slic3r::GUI::prepare_model(object,options);
+            Slic3r::GUI::apply_model_preparation(object,proposal);
+        } else if(type=="repairMesh") {
+#ifdef ORCA_MOBILE_REAL_TRIANGULATION
+            if(!cmd.value("acceptTopologyChange",false))throw std::runtime_error("TOPOLOGY_CHANGE_CONFIRMATION_REQUIRED");
+            const auto vi=cmd.value("volumeIndex",0);
+            if(vi<0 || size_t(vi)>=object.volumes.size())throw std::runtime_error("COMMAND_VOLUME_NOT_FOUND");
+            auto* volume=object.volumes[size_t(vi)];
+            if((!volume->mmu_segmentation_facets.empty() || !volume->supported_facets.empty()) && !cmd.value("acceptAppearanceLoss",false))
+                throw std::runtime_error("REPAIR_ANNOTATION_REMAP_REQUIRED:Topology-changing repair needs explicit acknowledgement for painted/support regions");
+            TriangleMesh candidate(volume->mesh());MeshRepairStats stats;std::string error;
+            if(!repair_mesh(candidate,&stats,&error))throw std::runtime_error("NATIVE_REPAIR_FAILED:"+error);
+            volume->set_mesh(std::move(candidate));
+            volume->mmu_segmentation_facets.reset();volume->supported_facets.reset();
+            // The source manifest remains in the durable command history, but
+            // no face/region identity survives a topology-changing operation.
+            for(const char* key:{"appearanceManifestPath","appearanceManifestSha256","appearanceGeometrySha256"})
+                project.metadata.erase(key);
+            project.metadata["appearanceInvalidatedByTopologyChange"]=true;
+            project.metadata["repairReports"].push_back(Json{{"objectIndex",oi},{"volumeIndex",vi},{"modified",stats.modified},
+                {"weldedVertices",stats.welded_vertices},{"removedTriangles",stats.removed_triangles},{"filledHoles",stats.filled_holes},
+                {"selfIntersections",stats.self_intersections},{"topologyChanged",true},{"sourcePreserved",true}});
+#else
+            throw std::runtime_error("NATIVE_REPAIR_UNAVAILABLE");
+#endif
+        } else if (type == "transform") {
             Json transform=cmd; transform["objectIndex"]=oi; transform["instanceIndex"]=ii;
             apply_transforms(project.model,Json::array({transform}));
             if (cmd.contains("sizeMm")) {
@@ -1102,9 +1214,22 @@ void validate_material_plan(const LoadedProject& project,const std::vector<unsig
     const auto* colors=project.config.option<Slic3r::ConfigOptionStrings>("filament_colour");
     for(const auto id:used) if(!colors || id>=colors->values.size())
         throw std::runtime_error("MATERIAL_ROUTE_OUT_OF_RANGE:Support/surface/custom tool exceeds the logical material slots");
+#ifdef ORCA_MOBILE_REAL_TRIANGULATION
+    if(used.size()>1) {
+        if(!project.metadata.value("multiMaterialConfirmed",false))
+            throw std::runtime_error("MULTI_MATERIAL_CONFIRMATION_REQUIRED:Explicitly confirm the material/tool mapping before execution");
+        const auto* maps=project.config.option<ConfigOptionInts>("filament_map");
+        const auto* nozzles=project.config.option<ConfigOptionFloats>("nozzle_diameter");
+        if(!maps || maps->values.size()!=colors->values.size() || !nozzles || nozzles->values.empty())
+            throw std::runtime_error("MULTI_MATERIAL_MAPPING_REQUIRED");
+        for(auto id:used) if(maps->values[id]<1 || size_t(maps->values[id])>nozzles->values.size())
+            throw std::runtime_error("MULTI_MATERIAL_TOOL_OUT_OF_RANGE");
+    }
+#else
     if(used.size()!=1) throw std::runtime_error("UNSUPPORTED_MATERIAL_SWITCH:Support, surface or custom routing uses multiple materials; select a supported single-material configuration");
+#endif
     if(project.metadata.value("outputMode",std::string())=="singleMaterial" &&
-        *used.begin()!=project.metadata.at("singleMaterialFilamentIndex").get<unsigned int>())
+        (used.size()!=1 || *used.begin()!=project.metadata.at("singleMaterialFilamentIndex").get<unsigned int>()))
         throw std::runtime_error("SINGLE_MATERIAL_ROUTE_MISMATCH:Support/surface routing differs from the explicitly selected material");
 }
 
@@ -1127,6 +1252,7 @@ void validate_output_capabilities(const LoadedProject& project)
         !project.metadata.value("unsupportedFeatures",Json::array()).empty() &&
         project.metadata.value("outputMode",std::string())!="singleMaterial")
         throw std::runtime_error("UNSUPPORTED_OBJ_APPEARANCE:Original is preserved; explicitly confirm geometry-only single-material output");
+#ifndef ORCA_MOBILE_REAL_TRIANGULATION
     if (const auto* prime=project.config.option<ConfigOptionBool>("enable_prime_tower"))
         if (prime->value) throw std::runtime_error("UNSUPPORTED_PRIME_TOWER:Android triangulation is unavailable; explicitly configure a supported single-material job");
     const Model model=slicing_model(project);
@@ -1139,6 +1265,11 @@ void validate_output_capabilities(const LoadedProject& project)
         materials.insert(std::max(1,material));
     }
     if (materials.size()>1) throw std::runtime_error("UNSUPPORTED_MATERIAL_SWITCH:Android P1 requires explicit single-material assignment");
+#else
+    // Actual Print validation and planned/actual material validation run both
+    // before process() and after export_gcode(). No preview color implies a tool.
+    validate_material_assignments(project);
+#endif
 #endif
 }
 

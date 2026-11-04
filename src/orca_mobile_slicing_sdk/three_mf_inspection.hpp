@@ -158,7 +158,11 @@ struct ThreeMfScan {
         if(!ok&&why.empty()) {const char* reason=XML_ErrorString(XML_GetErrorCode(parser));why=reason?reason:"3MF_XML_PARSE_FAILED";}
         XML_ParserFree(parser);parser=nullptr;
         if(!ok) feature("xml_parse_failure","blocked",why);
+#ifdef ORCA_MOBILE_REAL_TRIANGULATION
+        if(paint) feature("paint_color","supported_native","Native painted facets retained; actual Print and G-code tool routes require explicit confirmation and validation");
+#else
         if(paint) feature("paint_color","requires_single_material","Original painted scene preserved; output needs an explicit supported material assignment");
+#endif
         if(support) feature("paint_supports","supported_native","Native support annotations retained");
         if(seam) feature("paint_seam","supported_native","Native seam annotations retained");
         if(fuzzy) feature("paint_fuzzy_skin","supported_native","Native fuzzy-skin annotations retained");
@@ -180,7 +184,13 @@ struct ThreeMfScan {
             if(it.key()=="inherits" && active(it.value())) feature("unresolved_profile_inheritance","blocked","External preset inheritance is not resolved by the mobile slicing contract");
             if(metadata.count(it.key())) continue;
             if(it.key()=="filament_colour" && it.value().is_array() && it.value().size()>1) feature("source_palette","supported_native","Source palette is preserved; its size alone is not a geometry/output blocker");
-            if(it.key()=="enable_prime_tower" && (it.value()==true || it.value()==1 || it.value()=="1")) feature("prime_tower","requires_single_material","Prime-tower output is unsupported; only an explicit user command may disable it");
+            if(it.key()=="enable_prime_tower" && (it.value()==true || it.value()==1 || it.value()=="1")) {
+#ifdef ORCA_MOBILE_REAL_TRIANGULATION
+                feature("prime_tower","supported_native","Executable Core triangulation is enabled; Print validation remains authoritative");
+#else
+                feature("prime_tower","requires_single_material","Prime-tower output is unsupported; only an explicit user command may disable it");
+#endif
+            }
             if(it.key()=="post_process" || it.key()=="plugins" || it.key()=="slicing_pipeline_plugin" || it.key().find("plugin_config_overrides")!=std::string::npos) {
                 if(active(it.value())) feature("external_processing:"+it.key(),"blocked","Android does not execute the required external script/Python plugin");
                 continue;
@@ -195,11 +205,49 @@ struct ThreeMfScan {
     }
     Json finish() {
         file=settingsFile.empty()?"Metadata/model_settings.config":settingsFile;
+        // Native 3MF stores these whitespace-separated per-filament vectors in
+        // plate metadata, then restores them to singular PrintConfig keys.
+        // Validate before the importer can clamp malformed routes/volume types.
+        const auto count=[&](const char* key)->size_t {
+            if(!sourceConfig.contains(key))return 0;
+            const auto& value=sourceConfig.at(key);
+            return value.is_array()?value.size():value.is_string()?1:0;
+        };
+        for(auto& source_plate:result["plates"]) {
+            const auto& directives=source_plate.at("directives");
+            const std::set<std::string> known{"locked","bed_type","print_sequence","first_layer_print_sequence","other_layers_print_sequence","other_layers_print_sequence_nums","spiral_mode","spiral_vase_mode","filament_map_mode","filament_maps","filament_volume_maps","thumbnail_file","thumbnail_no_light_file","top_file","pick_file"};
+            for(auto it=directives.begin();it!=directives.end();++it)
+                if(!known.count(it.key())&&active(it.value()))feature("plate_directive:"+it.key(),"blocked","Unknown per-plate directive cannot be dropped, including selected multi-plate projects");
+            for(const char* key:{"filament_maps","filament_volume_maps"}) {
+                if(!directives.contains(key))continue;
+                const auto& raw=directives.at(key);
+                Json values=Json::array();bool valid=raw.is_string();
+                if(valid) {
+                    std::istringstream words(raw.get<std::string>());std::string word;
+                    while(words>>word) {
+                        if(word.empty()||word.find_first_not_of("0123456789")!=std::string::npos){valid=false;break;}
+                        try {
+                            const auto value=std::stoull(word);
+                            const bool route=std::string_view(key)=="filament_maps";
+                            if((route&&(value<1||value>count("nozzle_diameter")))||(!route&&value>1)){valid=false;break;}
+                            values.push_back(value);
+                        } catch(...) {valid=false;break;}
+                    }
+                }
+                // Empty vector is the native default (no per-plate override).
+                // Nonempty overrides must cover each configured logical slot.
+                if(!values.empty() && (count("filament_density")==0||values.size()!=count("filament_density")))valid=false;
+                if(valid) {
+                    source_plate["validatedNativeMaterialMappings"][key]=values;
+                    feature(std::string("native_plate_mapping:")+key,"supported_native","Validated native material/tool or nozzle-volume mapping; importer restores PrintConfig unchanged");
+                } else feature(std::string("invalid_plate_mapping:")+key,"blocked","Malformed or out-of-range native plate mapping must not be clamped or discarded");
+            }
+        }
         if(result["plates"].size()>1) feature("multiple_plates","blocked","Multiple plates are retained in source; P1 has no selected-plate slicing contract");
         if(result["plates"].size()==1) {
             if(!result["plates"][0]["id"].is_string() || result["plates"][0]["id"].get<std::string>().empty()) feature("invalid_plate_identity","blocked","Current plate identity is missing");
             result["currentPlate"]=result["plates"][0]["id"];
-            const std::set<std::string> supportedDirectives{"locked","bed_type","print_sequence","first_layer_print_sequence","other_layers_print_sequence","other_layers_print_sequence_nums","spiral_mode","spiral_vase_mode","filament_map_mode","thumbnail_file","thumbnail_no_light_file","top_file","pick_file"};
+            const std::set<std::string> supportedDirectives{"locked","bed_type","print_sequence","first_layer_print_sequence","other_layers_print_sequence","other_layers_print_sequence_nums","spiral_mode","spiral_vase_mode","filament_map_mode","filament_maps","filament_volume_maps","thumbnail_file","thumbnail_no_light_file","top_file","pick_file"};
             for(auto it=result["plates"][0]["directives"].begin();it!=result["plates"][0]["directives"].end();++it)
                 if(!supportedDirectives.count(it.key()) && active(it.value())) feature("plate_directive:"+it.key(),"blocked","Unsupported per-plate directive must not be dropped");
             std::set<std::string> owned;

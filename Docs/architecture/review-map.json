@@ -26,9 +26,28 @@
     "src/slic3r/GUI/ModelGenerationPanel.hpp",
     "src/slic3r/GUI/MainFrame.hpp",
     "src/slic3r/GUI/Plater.hpp",
-    "src/slic3r/GUI/GLCanvas3D.hpp"
+    "src/slic3r/GUI/GLCanvas3D.hpp",
+    "src/orca_model_sdk"
   ],
   "modules": [
+    {
+      "id": "slicing_sdk",
+      "label": "独立切片 SDK",
+      "ownership": [],
+      "paths": [
+        "src/orca_mobile_slicing_sdk"
+      ],
+      "purpose": "无 GUI 的共享 Core 与 SmartSlicing 消费边界；保持已有 Device/Slicing ABI，声明工程、材料与平台支持范围"
+    },
+    {
+      "id": "model_sdk",
+      "label": "独立模型 SDK",
+      "ownership": [],
+      "paths": [
+        "src/orca_model_sdk"
+      ],
+      "purpose": "通过公开 C ABI 提供模型文档、场景、编辑、候选、制造快照及统一平台 API 适配；原生切片通过固定制品桥接"
+    },
     {
       "id": "honor_account",
       "label": "荣耀账号",

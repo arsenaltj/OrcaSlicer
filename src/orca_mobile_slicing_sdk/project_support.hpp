@@ -36,7 +36,8 @@ LoadedProject load_project(const std::string& inputPath,
                            const Json& configOverrides = Json::object(),
                            const Json& transforms = Json::array(),
                            const std::string& workspaceRoot = {},
-                           const Json& projectCommands = Json::array());
+                           const Json& projectCommands = Json::array(),
+                           const std::string& selectedPlateId = {});
 
 // Replay against the unchanged original, preserving deterministic object/instance IDs.
 void apply_project_commands(LoadedProject& project, const Json& commands);

@@ -1,5 +1,18 @@
 # 开发主计划与记录索引
 
+## SDK/MOBILE-WORKFLOW-20261104：独立模型与制造SDK
+
+目标：交付独立Model SDK、共享Core/SmartSlicing制造桥与公开ABI，供平台Worker和Android封装显式消费；与普通桌面构建解耦。
+
+状态：SDK08本地独立编译、消费者、公开符号、依赖和声明工程样本已由开发、独立检视、第三QA验证。Windows x64与Android arm64-v8a具备可消费制品；完整桌面GUI、iOS、手机真实JNI/EGL和实物打印未验，不以SDK编译替代产品验收。
+
+本轮：用户于2026-11-04授权提交远端PR，并要求基于最新远端。提交现场基于integration abb26f03848dd2da99315fe9b779a3f21df945dd，保留远端新架构/文档维护规则，移植已验SDK源码；平台与Android分别提交关联PR。原开发worktree和不可变包保留，不将旧包冒充最新远端重建。
+
+范围：src/orca_model_sdk、mobile-slicing独立构建、src/orca_mobile_slicing_sdk薄适配及VertexColorRegionEditor可关闭计算接点。公共ABI不泄露GUI/私有核心类型，不为SDK重写桌面工作流。未知工程语义/缺面身份映射的精确修改明确拒绝，原件只读。
+
+验收与下一步：保留已完成SDK编译、C消费者、ABI/架构/依赖和原生工程往返证据；同步后的源码及文档运行当前门禁。创建Draft PR后等待最新CI、非作者复核和维护者确认；不自动合并、发布或线上迁移。真实厂商和设备/实体质量后续联合验收。
+
+
 当前状态唯一入口为[短状态](../../docs/coordination/current-development.md)。本页保留当前工作项、稳定编号及既有标题跳转；完整旧记录在[既有开发记录](../history/development-records-20261103.md)。归档包含未结事项，不改变其状态、授权或恢复条件。
 
 | 入口 | 用途 |
