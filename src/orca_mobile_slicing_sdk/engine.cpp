@@ -5,6 +5,7 @@
 #include "libslic3r/Print.hpp"
 #include "libslic3r/Exception.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
+#include "libslic3r/Format/bbs_3mf.hpp"
 #include <tbb/global_control.h>
 #include <algorithm>
 #include <chrono>
@@ -127,12 +128,12 @@ Json request_snapshot(const Json& request)
 LoadedProject load(const Json& request,const std::string& workspace)
 {
     LoadedProject project=load_project(text(request,"inputPath"),request.value("config",Json::object()),
-        request.value("transforms",Json::array()),workspace,request.value("projectCommands",Json::array()));
+        request.value("transforms",Json::array()),workspace,request.value("projectCommands",Json::array()),text(request,"selectedPlateId"));
     if (request.contains("inputSha256") && request["inputSha256"]!=project.inputSha256) throw std::runtime_error("INPUT_IDENTITY_MISMATCH");
     project.metadata["projectId"]=request.value("projectId",Json());
     project.metadata["revision"]=request.value("projectRevision",request.value("revision",Json(1)));
     project.metadata["quality"]=text(request,"quality","standard");
-    for(const char* key:{"devicePresetId","materialPresetId","devicePresetSourceRefs","materialPresetSourceRefs","devicePresetUnsupportedSourceOptions","materialPresetUnsupportedSourceOptions","presetCatalogVersion","costCurrency","smartSliceContext"})
+    for(const char* key:{"devicePresetId","materialPresetId","devicePresetSourceRefs","materialPresetSourceRefs","devicePresetUnsupportedSourceOptions","materialPresetUnsupportedSourceOptions","presetCatalogVersion","costCurrency","smartSliceContext","multiMaterialConfirmed"})
         if(request.contains(key)) project.metadata[key]=request[key];
     return project;
 }
@@ -172,6 +173,43 @@ Json scene_and_snapshot(LoadedProject& project,const stdfs::path& prefix)
     description["engineVersion"]="orca-mobile-slicing-sdk/1.0.0";
     write_json(snapshot,description);
     return description;
+}
+
+Json export_native_project(LoadedProject& project,const Json& request,const std::string& workspace)
+{
+    if(!request.value("confirmDerivedProject",false))
+        throw std::runtime_error("DERIVED_PROJECT_CONFIRMATION_REQUIRED");
+    if(!project.metadata.value("blockingFeatures",Json::array()).empty())
+        throw std::runtime_error("UNSUPPORTED_3MF_EXPORT:"+project.metadata.at("blockingFeatures").dump());
+    auto directory=root(request,workspace);
+    const auto prefix=directory/artifact_key(request,project);
+    auto partial=prefix;partial+=".partial.3mf";
+    auto target=prefix;target+=".3mf";
+    // Save a detached native model/config through the existing 3MF writer.
+    // The unchanged source archive remains authoritative for excluded plates,
+    // auxiliary payloads and vendor presets that this derivative does not copy.
+    Slic3r::Model model(project.model);
+    Slic3r::PlateData plate;
+    plate.plate_index=0;
+    plate.config=project.config;
+    for(size_t oi=0;oi<model.objects.size();++oi)
+        for(size_t ii=0;ii<model.objects[oi]->instances.size();++ii)
+            plate.objects_and_instances.emplace_back(int(oi),int(ii));
+    Slic3r::StoreParams params;
+    params.path=partial.u8string();params.model=&model;params.config=&project.config;
+    params.plate_data_list={&plate};params.strategy=Slic3r::SaveStrategy::Zip64|Slic3r::SaveStrategy::Silence;
+    if(!Slic3r::store_bbs_3mf(params))
+        throw std::runtime_error("NATIVE_3MF_EXPORT_FAILED:"+Slic3r::bbs_3mf_last_error());
+    commit_file(partial,target);
+    const auto bytes=stdfs::file_size(target);
+    return Json{{"schemaVersion",2},{"state","succeeded"},{"projectId",request.value("projectId",Json())},
+        {"projectRevision",project.metadata.at("revision")},{"inputSha256",project.inputSha256},
+        {"sourceOriginalPreserved",true},{"derivative",true},
+        {"sourcePlateId",project.metadata.value("selectedPlateId",Json())},
+        {"exportScope","loaded-native-model-and-effective-config"},
+        {"warnings",Json::array({"DERIVED_PROJECT_EXCLUDES_UNLOADED_PLATES_AUXILIARY_AND_VENDOR_PRESET_PAYLOADS"})},
+        {"artifacts",Json::array({{{"kind","manufacturingProject"},{"format","3mf"},{"path",target.u8string()},
+                                   {"sha256",file_sha256(target.u8string())},{"sizeBytes",bytes}}})}};
 }
 
 void validate_material_compatibility(const LoadedProject& project)
@@ -258,6 +296,10 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
     for(const auto& usage:gcode.print_statistics.total_volumes_per_extruder)
         if(std::isfinite(usage.second) && usage.second>1e-9) activeMaterialIds.push_back(usage.first);
     validate_material_plan(project,activeMaterialIds);
+    const auto plannedMaterials=print.extruders(true);
+    for(const auto actual:activeMaterialIds)
+        if(std::find(plannedMaterials.begin(),plannedMaterials.end(),actual)==plannedMaterials.end())
+            throw std::runtime_error("UNPLANNED_EXTRUSION_MATERIAL:Actual output uses a logical material absent from the validated Print plan");
     Json preview=write_preview(gcode,previewPartial.u8string());
     budget.check();
     commit_file(stdfs::u8path(generated),gcodeFinal);
@@ -355,7 +397,11 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
     const Json request=request_snapshot(raw);
     const std::string operation=text(request,"operation","slice");
     if (operation=="capabilities") return Json{{"schemaVersion",2},{"available",true},{"nativeSlicing",true},
-        {"nativeRecommendation",true},{"remoteAI",false},{"nativeCheckpointResume",false},
+#ifdef ORCA_MOBILE_REAL_TRIANGULATION
+        {"executableTriangulation",true},{"multiMaterialRequiresConfirmation",true},{"selectedPlateId",true},
+#endif
+        {"nativeRecommendation",true},{"nativeProjectExport",true},{"fullParameterSchema",true},
+        {"remoteAI",false},{"nativeCheckpointResume",false},
         {"maxWorkers",1},{"maxThreads",4},{"qualities",Json::array({"standard","fine","fast","smart"})}};
     const int maxThreads=std::clamp(request.value("maxThreads",4),1,4);
     tbb::global_control threads(tbb::global_control::max_allowed_parallelism,size_t(maxThreads));
@@ -365,6 +411,7 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
     emit(sink,request,"importing",2,"读取工程快照");
     LoadedProject project=load(request,workspace_);
     budget.check();
+    if(operation=="exportProject") return export_native_project(project,request,workspace_);
     if(operation=="preset") {
         apply_preset(project,text(request,"kind"),text(request,"presetId"));
         budget.check();

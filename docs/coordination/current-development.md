@@ -1,3 +1,17 @@
+# 2026-11-04 当前：SDK/MOBILE-WORKFLOW-20261104远端PR交付
+
+主线：SDK/MOBILE-WORKFLOW-20261104；本次提交现场 task/task-20261104-pr-model-sdk，基于最新integration；原实施现场与SDK08保留。
+
+本轮：用户明确授权commit/push/PR；已移植独立Model SDK/制造桥并保留最新架构文档规则，公开契约和声明支持范围见src/orca_model_sdk/CONTRACT.md。
+
+未结：最新PR CI与非作者审核待验；完整桌面GUI、Android真实JNI/EGL、iOS及实物打印未验，不能以宿主编译通过代替。
+
+下一步：完成当前门禁并创建Draft PR，关联平台与Android消费PR，等待维护者审核；不自动合并/发布。
+
+计划变更：用户新授权替代此前仅本地不提交限制；改动仍限原SDK事项。完整状态见主计划SDK/MOBILE-WORKFLOW-20261104，其他暂停事项不续跑。
+
+---
+
 # 2026-11-03 当前：ARCH-20261102 PR与在线架构交付
 
 主线：ARCH-20261102；用户明确授权提交本轮PR、启用文档必需检查和将五层架构整合到现有GitHub站点。分支codex/task/architecture-maintenance-20261103，目标codex/team/integration；checkout沿用OrcaSlicer-current。
