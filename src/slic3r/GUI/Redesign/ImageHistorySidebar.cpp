@@ -36,6 +36,7 @@ struct ImageHistoryWorker {
     std::condition_variable wake;
     std::atomic<bool> stop {false};
     bool scan {false}, scanned {false}, failed {false};
+    bool models_only {false};
     boost::filesystem::path root;
     std::vector<DesignHistoryEntry> entries;
     std::deque<DesignHistoryEntry> pending;
@@ -60,7 +61,7 @@ struct ImageHistoryWorker {
                 if (scanning) {
                     std::vector<DesignHistoryEntry> result;
                     bool error = false;
-                    try { result = read_image_history(root); } catch (...) { error = true; }
+                    try { result = models_only ? read_smart_model_history(root) : read_image_history(root); } catch (...) { error = true; }
                     std::lock_guard<std::mutex> lock(mutex);
                     entries = std::move(result); failed = error; scanned = true;
                 } else {
@@ -109,7 +110,7 @@ struct ImageHistorySidebar::Impl {
     std::set<std::string> requested, hidden;
     std::string selected;
     int hovered {-1}, focused {-1};
-    bool expanded {true}, busy {false}, loading {false};
+    bool expanded {true}, busy {false}, loading {false}, models_only {false};
 
     int dip(int value) const { return owner->FromDIP(value); }
     ImageHistoryGrid grid() const {
@@ -135,10 +136,11 @@ struct ImageHistorySidebar::Impl {
             ? int(index) : -1;
     }
 
-    Impl(ImageHistorySidebar* parent, Open callback, std::function<void()> changed)
+    Impl(ImageHistorySidebar* parent, Open callback, std::function<void()> changed, bool models)
         : owner(parent), open(std::move(callback)), layout_changed(std::move(changed)), timer(parent)
     {
-        owner->SetName("my-images-sidebar");
+        models_only = models; worker.models_only = models;
+        owner->SetName(models ? "my-models-sidebar" : "my-images-sidebar");
         owner->SetBackgroundColour(background_colour());
         auto* outer = new wxBoxSizer(wxHORIZONTAL);
         owner->SetSizer(outer);
@@ -175,7 +177,7 @@ struct ImageHistorySidebar::Impl {
         outer->Add(panel, 1, wxEXPAND);
         auto* column = new wxBoxSizer(wxVERTICAL);
         panel->SetSizer(column);
-        auto* title = new wxStaticText(panel, wxID_ANY, tr("我的图片"));
+        auto* title = new wxStaticText(panel, wxID_ANY, models_only ? tr("我的3D模型") : tr("我的图片"));
         style_text(title, primary_text_colour(), 14, true);
         column->Add(title, 0, wxLEFT | wxRIGHT | wxTOP, dip(20));
         auto* search_box = new RoundedPanel(panel, {-1, dip(40)}, control_colour(), panel_colour(), 8);
@@ -191,7 +193,7 @@ struct ImageHistorySidebar::Impl {
         });
         search_row->Add(icon, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, dip(12));
         search = new wxTextCtrl(search_box, wxID_ANY, {}, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
-        search->SetName("my-images-search"); search->SetHint(tr("搜索图片"));
+        search->SetName("my-images-search"); search->SetHint(models_only ? tr("搜索3D模型") : tr("搜索图片"));
         search->SetBackgroundColour(control_colour()); style_text(search, primary_text_colour(), 10);
         search_row->Add(search, 1, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, dip(8));
         column->Add(search_box, 0, wxEXPAND | wxALL, dip(20));
@@ -276,7 +278,7 @@ struct ImageHistorySidebar::Impl {
                 hovered = index; canvas->Refresh(false);
                 if (index >= 0) {
                     const auto& entry = entries[filtered[index]];
-                    canvas->SetToolTip(tr(entry.prompt.c_str()) + "\n" + style_label(entry.style));
+                    canvas->SetToolTip(tr(entry.prompt.c_str()) + "\n" + style_label(entry.style) + (models_only ? "\n" + tr(entry.state.c_str()) : wxString()));
                 } else canvas->UnsetToolTip();
             }
         });
@@ -350,7 +352,7 @@ struct ImageHistorySidebar::Impl {
             if (image_history_matches(entries[i], search->GetValue())) filtered.push_back(i);
         hovered = -1; focused = -1;
         pagination.set_count(filtered.size(), reset_page);
-        status->SetLabel(entries.empty() ? tr("还没有保存的设计图") : tr("没有匹配的图片"));
+        status->SetLabel(entries.empty() ? (models_only ? tr("还没有3D模型任务") : tr("还没有保存的设计图")) : tr("没有匹配的记录"));
         status->Show(filtered.empty()); panel->Layout(); resize();
         for (size_t i = pagination.begin(); i < pagination.end(); ++i)
             if (entries[filtered[i]].job_id == selected) focused = int(i);
@@ -395,6 +397,7 @@ struct ImageHistorySidebar::Impl {
     void activate(int index, bool remove) {
         if (busy || index < 0 || size_t(index) >= filtered.size()) return;
         const auto id = entries[filtered[index]].job_id;
+        if (remove && models_only) return;
         if (remove) {
             RedesignMessageDialog confirm(owner, tr("从“我的图片”中移除此记录？\n原始图片、关联的 3D 模型和工程仍会保留。"),
                 tr("移除图片记录"), wxYES_NO | wxICON_QUESTION);
@@ -429,13 +432,13 @@ struct ImageHistorySidebar::Impl {
                 gc->DrawBitmap(image, rect.x + (rect.width - w) / 2, rect.y + (rect.height - h) / 2, w, h);
             } else {
                 dc.SetTextForeground(secondary_text_colour()); dc.SetFont(search->GetFont());
-                dc.DrawLabel(bitmap == bitmaps.end() ? tr("加载中…") : tr("图片不可用"), rect, wxALIGN_CENTER);
+                dc.DrawLabel(bitmap == bitmaps.end() ? tr("加载中…") : (models_only ? tr("3D模型任务") : tr("图片不可用")), rect, wxALIGN_CENTER);
             }
             if (requested.insert(entry.job_id).second) {
                 std::lock_guard<std::mutex> lock(worker.mutex);
                 worker.pending.push_back(entry); worker.wake.notify_one();
             }
-            if (int(i) == hovered || (int(i) == focused && canvas->HasFocus())) {
+            if (!models_only && (int(i) == hovered || (int(i) == focused && canvas->HasFocus()))) {
                 const auto box = trash(rect);
                 gc->SetPen(*wxTRANSPARENT_PEN); gc->SetBrush(wxBrush(wxColour(45, 45, 49, 230)));
                 gc->DrawRoundedRectangle(box.x, box.y, box.width, box.height, dip(5));
@@ -455,8 +458,8 @@ struct ImageHistorySidebar::Impl {
     }
 };
 
-ImageHistorySidebar::ImageHistorySidebar(wxWindow* parent, Open open, std::function<void()> changed)
-    : wxPanel(parent), m_impl(std::make_unique<Impl>(this, std::move(open), std::move(changed))) {}
+ImageHistorySidebar::ImageHistorySidebar(wxWindow* parent, Open open, std::function<void()> changed, bool models_only)
+    : wxPanel(parent), m_impl(std::make_unique<Impl>(this, std::move(open), std::move(changed), models_only)) {}
 ImageHistorySidebar::~ImageHistorySidebar() = default;
 void ImageHistorySidebar::refresh_history() { m_impl->refresh(); }
 void ImageHistorySidebar::set_busy(bool busy) { m_impl->busy = busy; }

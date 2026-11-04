@@ -65,6 +65,8 @@ struct ModelGenerationUIHistoryEntry
 
 struct ModelGenerationUIState
 {
+    bool smart_mode {false};
+    std::string smart_flow_id;
     std::uint64_t revision { 0 };
     ModelGenerationUIStage stage { ModelGenerationUIStage::Input };
     ModelGenerationUIInput input;

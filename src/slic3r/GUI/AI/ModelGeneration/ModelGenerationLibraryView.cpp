@@ -120,7 +120,7 @@ void ModelGenerationPanel::load_library_entries(bool for_shell)
 {
     if (m_shutdown) return;
     const bool legacy_visible = m_library_scroller != nullptr && m_library_scroller->IsShownOnScreen();
-    if (m_finishing_workbench && !legacy_visible) for_shell = true;
+    if ((m_finishing_workbench || m_workbench_history_sidebar_mounted) && !legacy_visible) for_shell = true;
     if (!m_page_initialized || (!for_shell && !legacy_visible)) {
         cancel_library_loading();
         return;
@@ -168,7 +168,7 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
         m_library_scan_pending = false;
         history_updated = true;
         if (snapshot->failed) {
-            if (snapshot->for_shell || m_finishing_workbench) {
+            if (snapshot->for_shell || m_finishing_workbench || m_workbench_history_sidebar_mounted) {
                 m_ui_history_loading = false;
                 m_ui_history_error = "历史资产读取失败，已保留当前列表。";
                 m_library_requested_by_shell = false;
@@ -192,14 +192,14 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
             if (!anchor.empty() && position != snapshot->entries.end())
                 m_library_page = size_t(position - snapshot->entries.begin()) / m_library_page_size;
             m_library_entries = std::move(snapshot->entries);
-            if (snapshot->for_shell || m_finishing_workbench) {
+            if (snapshot->for_shell || m_finishing_workbench || m_workbench_history_sidebar_mounted) {
                 const auto text_to_utf8 = [](const wxString& value) {
                     const wxScopedCharBuffer encoded = value.ToUTF8();
                     return encoded ? std::string(encoded.data(), encoded.length()) : std::string();
                 };
                 auto previous = std::move(m_ui_history_entries);
                 m_ui_history_entries.clear();
-                const size_t count = m_finishing_workbench ? m_library_entries.size() :
+                const size_t count = (m_finishing_workbench || m_workbench_history_sidebar_mounted) ? m_library_entries.size() :
                     std::min(m_library_page_size, m_library_entries.size());
                 m_ui_history_entries.reserve(count);
                 for (size_t index = 0; index < count; ++index) {
@@ -288,7 +288,7 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
         static_cast<LibraryThumbnail*>(m_library_thumbnails[thumbnail.index])->set_image(image);
     }
     if (history_updated) publish_ui_state();
-    if (history_updated && m_finishing_workbench) {
+    if (history_updated && (m_finishing_workbench || m_workbench_history_sidebar_mounted)) {
         refresh_workbench_history();
         if (workbench_metadata_updated) refresh_post_generation_workbench();
     }

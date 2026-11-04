@@ -53,6 +53,7 @@ void ModelGenerationPanel::mount_workbench(wxWindow* parent)
 void ModelGenerationPanel::unmount_workbench()
 {
     set_workbench_presented(false);
+    restore_workbench_history_sidebar();
     restore_workbench_import_history();
     if (!m_workbench_shell || m_workbench_shell->GetParent() == this) return;
     if (auto* sizer = m_workbench_shell->GetContainingSizer()) sizer->Detach(m_workbench_shell);
@@ -88,6 +89,111 @@ void ModelGenerationPanel::restore_workbench_import_history()
     m_workbench_history_panel->Show(m_workbench_import_history_was_shown);
     m_workbench_history_home->Layout();
     m_workbench_history_home = nullptr;
+}
+
+void ModelGenerationPanel::mount_workbench_history_sidebar(wxWindow* parent)
+{
+    initialize_for_shell_host();
+    if (!parent || !parent->GetSizer() || !m_workbench_history_panel || !m_workbench_history_toggle ||
+        m_workbench_history_home || m_workbench_history_sidebar_mounted)
+        return;
+
+    m_workbench_history_sidebar_mounted = true;
+    m_workbench_history_sidebar_host = parent;
+    m_workbench_history_home = m_workbench_history_panel->GetParent();
+    m_workbench_import_history_was_shown = m_workbench_history_panel->IsShown();
+    m_workbench_history_toggle_home = m_workbench_history_toggle->GetParent();
+    m_workbench_history_toggle_home_rect = m_workbench_history_toggle->GetRect();
+    m_workbench_history_toggle_home_min_size = m_workbench_history_toggle->GetMinSize();
+    m_workbench_history_toggle_home_max_size = m_workbench_history_toggle->GetMaxSize();
+    m_workbench_history_search_home_min_size = m_workbench_history_search->GetParent()->GetMinSize();
+    m_workbench_history_search_home_max_size = m_workbench_history_search->GetParent()->GetMaxSize();
+    m_workbench_history_toggle_was_shown = m_workbench_history_toggle->IsShown();
+
+    if (auto* sizer = m_workbench_history_panel->GetContainingSizer())
+        sizer->Detach(m_workbench_history_panel);
+    if (auto* sizer = m_workbench_history_toggle->GetContainingSizer())
+        sizer->Detach(m_workbench_history_toggle);
+    m_workbench_history_toggle->Reparent(parent);
+    m_workbench_history_panel->Reparent(parent);
+    parent->GetSizer()->Add(m_workbench_history_toggle, 0, wxALIGN_CENTER_VERTICAL);
+    parent->GetSizer()->Add(m_workbench_history_panel, 1, wxEXPAND);
+
+    m_workbench_history_collapsed = false;
+    m_workbench_history_user_open = true;
+    m_workbench_history_toggle->Show();
+    m_workbench_history_panel->Show();
+    auto* toggle = static_cast<WorkbenchButton*>(m_workbench_history_toggle);
+    toggle->set_drawer_open(true);
+    m_workbench_history_toggle->SetName(_L("收起历史模型"));
+    m_workbench_history_toggle->SetToolTip(_L("收起历史模型"));
+    layout_mounted_workbench_history_sidebar();
+    load_library_entries(true);
+    refresh_workbench_history();
+}
+
+void ModelGenerationPanel::layout_mounted_workbench_history_sidebar()
+{
+    if (!m_workbench_history_sidebar_mounted || !m_workbench_history_sidebar_host ||
+        !m_workbench_history_panel || !m_workbench_history_toggle || !m_workbench_history_search)
+        return;
+
+    const wxSize toggle_size = FromDIP(wxSize(18, 42));
+    m_workbench_history_toggle->SetMinSize(toggle_size);
+    m_workbench_history_toggle->SetMaxSize(toggle_size);
+    m_workbench_history_toggle->SetSize(toggle_size);
+
+    auto* search = m_workbench_history_search->GetParent();
+    search->SetMinSize(FromDIP(wxSize(212, 32)));
+    search->SetMaxSize(wxSize(-1, FromDIP(32)));
+    search->SetBackgroundColour(wxColour(49, 49, 54));
+    m_workbench_history_search->SetBackgroundColour(wxColour(49, 49, 54));
+    m_workbench_history_search->SetForegroundColour(wxColour(235, 235, 235));
+    search->Refresh(false);
+    m_workbench_history_search->Refresh(false);
+
+    const bool open = m_workbench_history_panel->IsShown();
+    const int panel_width = std::max(0, m_workbench_history_panel->GetMinSize().x);
+    m_workbench_history_sidebar_host->SetMinSize(wxSize(open ? toggle_size.x + panel_width : toggle_size.x, -1));
+    m_workbench_history_sidebar_host->InvalidateBestSize();
+    m_workbench_history_sidebar_host->Layout();
+    if (auto* parent = m_workbench_history_sidebar_host->GetParent()) {
+        parent->Layout();
+        parent->Refresh(false);
+    }
+}
+
+void ModelGenerationPanel::restore_workbench_history_sidebar()
+{
+    if (!m_workbench_history_sidebar_mounted)
+        return;
+
+    auto* sidebar_host = m_workbench_history_sidebar_host;
+    if (auto* sizer = m_workbench_history_toggle->GetContainingSizer())
+        sizer->Detach(m_workbench_history_toggle);
+    if (m_workbench_history_toggle_home) {
+        m_workbench_history_toggle->Reparent(m_workbench_history_toggle_home);
+        m_workbench_history_toggle->SetMinSize(m_workbench_history_toggle_home_min_size);
+        m_workbench_history_toggle->SetMaxSize(m_workbench_history_toggle_home_max_size);
+        m_workbench_history_toggle->SetSize(m_workbench_history_toggle_home_rect);
+        m_workbench_history_toggle->Show(m_workbench_history_toggle_was_shown);
+    }
+    if (m_workbench_history_search) {
+        auto* search = m_workbench_history_search->GetParent();
+        search->SetMinSize(m_workbench_history_search_home_min_size);
+        search->SetMaxSize(m_workbench_history_search_home_max_size);
+    }
+    m_workbench_history_toggle_home = nullptr;
+    m_workbench_history_sidebar_host = nullptr;
+    m_workbench_history_sidebar_mounted = false;
+    restore_workbench_import_history();
+    if (sidebar_host) {
+        sidebar_host->SetMinSize(wxDefaultSize);
+        sidebar_host->InvalidateBestSize();
+        sidebar_host->Layout();
+        if (sidebar_host->GetParent()) sidebar_host->GetParent()->Layout();
+    }
+    layout_workbench_history_toggle(true);
 }
 
 void ModelGenerationPanel::set_workbench_import_feedback(bool active)

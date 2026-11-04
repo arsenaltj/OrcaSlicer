@@ -203,6 +203,16 @@ class Job:
     design_provider: str = "gpt"
     design_model: str = ""
     geometry_model: str = ""
+    workflow_mode: str = "advanced"
+    flow_id: str = ""
+    request_id: str = ""
+    input_fingerprint: str = ""
+    smart_model_request_id: str = ""
+    smart_stop_intent: bool = False
+    smart_progress: int = 0
+    smart_phase: str = "preparation"
+    smart_started_at: float = 0.0
+    smart_elapsed_seconds: float = 0.0
     user_prompt: str = ""
     prepared_prompt: str = ""
     source_design_job_id: str = ""

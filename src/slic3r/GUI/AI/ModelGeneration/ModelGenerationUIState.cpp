@@ -26,7 +26,7 @@ bool ModelGenerationUIHistoryEntry::operator==(const ModelGenerationUIHistoryEnt
 
 bool ModelGenerationUIState::same_content(const ModelGenerationUIState& other) const
 {
-    return stage == other.stage && input == other.input && options == other.options &&
+    return smart_mode == other.smart_mode && smart_flow_id == other.smart_flow_id && stage == other.stage && input == other.input && options == other.options &&
            service_available == other.service_available &&
            service_availability_known == other.service_availability_known && busy == other.busy &&
            can_generate_design == other.can_generate_design && can_generate_model == other.can_generate_model &&

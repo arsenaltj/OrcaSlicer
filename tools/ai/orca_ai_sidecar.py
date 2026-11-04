@@ -1388,7 +1388,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise RequestError("invalid_multipart", "Nested or invalid multipart data is not supported.", 400)
             name = part.get_param("name", header="content-disposition")
             if name not in {
-                "request_id", "instruction", "palette", "palette_roles", "palette_recommendation_confirmed", "provider",
+                "workflow_mode", "flow_id", "request_id", "instruction", "palette", "palette_roles", "palette_recommendation_confirmed", "provider",
                 "design_provider", "design_model", "geometry_model", "face_limit", "geometry_quality",
                 "texture_quality", "output_format",
                 "palette_color_count", "style", "custom_style", "print", "image", "generate_image",
@@ -1456,7 +1456,7 @@ class Handler(BaseHTTPRequestHandler):
             parts[1] in {
                 "input", "raw-preview", "strict-preview", "preview", "model-reference", "heatmap", "metadata",
                 "background-mask", "subject-mask", "generate", "retexture", "stop", "artifact", "color-intent",
-                "recheck", "visual-review", "model-view-sheet", "confirm-palette", "generation-options", "reuse-design",
+                "recheck", "visual-review", "model-view-sheet", "confirm-palette", "generation-options", "reuse-design", "retry-preparation",
             }
             or re.fullmatch(r"mask-[a-z0-9_]+", parts[1])
         ):
@@ -1765,7 +1765,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             job_id, action = self._job_route(self.path)
             if not job_id or action not in {
-                "generate", "retexture", "stop", "recheck", "visual-review", "confirm-palette", "generation-options", "reuse-design"
+                "generate", "retexture", "stop", "recheck", "visual-review", "confirm-palette", "generation-options", "reuse-design", "retry-preparation"
             }:
                 self._model_error(404, "not_found", "Model job route not found.")
                 return
