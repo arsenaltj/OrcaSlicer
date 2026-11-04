@@ -14,7 +14,8 @@
     "integration": "codex/team/integration"
   },
   "required_checks": [
-    "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer"
+    "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer",
+    "Documentation update check"
   ],
   "automation": {"mode": "notify_and_preview", "auto_merge": false},
   "bootstrap": {"baseline_sha": null},

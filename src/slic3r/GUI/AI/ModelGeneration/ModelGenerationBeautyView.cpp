@@ -574,11 +574,8 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     });
     m_beauty_controls->on_color_blocks_change=[this](bool before) {
         if(before) {
-            if(!m_beauty_session_source && m_finishing_candidate.empty()) {
-                m_beauty_session_source=std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
-                m_beauty_session_undo_base=m_beauty_transactions ? m_beauty_transactions->undo_count() : 0;
-                m_beauty_session_file_base=m_beauty_candidate_files.size();
-            }
+            if (!m_beauty_session.source() && m_finishing_candidate.empty())
+                m_beauty_session.start_draft(std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate()));
             return;
         }
         m_beauty_manual_color_dirty=m_beauty_controls && m_beauty_controls->has_changes();
@@ -668,11 +665,11 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
             refresh_model_finishing();
             return;
         }
-        if (m_finishing_workbench && m_workbench_editing && m_beauty_session_source &&
+        if (m_finishing_workbench && m_workbench_editing && m_beauty_session.source() &&
             beauty_session_has_changes()) {
             if (!m_finishing_before) {
                 auto draft = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
-                const auto comparison = beauty_comparison_baseline(*m_beauty_session_source, *draft);
+                const auto comparison = beauty_comparison_baseline(*m_beauty_session.source(), *draft);
                 if (!restore_beauty_candidate(comparison)) return;
                 m_beauty_compare_draft = std::move(draft);
                 m_finishing_before = true;
@@ -756,7 +753,7 @@ void ModelGenerationPanel::paint_beauty_color(const std::vector<size_t>& faces)
     const bool before_dirty = m_beauty_controls && m_beauty_controls->has_changes();
     const bool before_manual_dirty = m_beauty_manual_color_dirty;
     const auto before_match = m_beauty_matched_colors;
-    auto session_source = !m_beauty_session_source && m_finishing_candidate.empty()
+    auto session_source = !m_beauty_session.source() && m_finishing_candidate.empty()
         ? std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate()) : nullptr;
     const auto painted = m_model_preview->paint_beauty_faces(faces,
         {color.Red() / 255.f, color.Green() / 255.f, color.Blue() / 255.f, 1.f},
@@ -776,11 +773,7 @@ void ModelGenerationPanel::paint_beauty_color(const std::vector<size_t>& faces)
         refresh_model_finishing();
         return;
     }
-    if (session_source) {
-        m_beauty_session_source = std::move(session_source);
-        m_beauty_session_undo_base = m_beauty_transactions ? m_beauty_transactions->undo_count() : 0;
-        m_beauty_session_file_base = m_beauty_candidate_files.size();
-    }
+    if (session_source) m_beauty_session.start_draft(std::move(session_source));
     const auto after_colors = m_model_preview->face_color_overrides();
     const auto after_leaves = m_model_preview->leaf_edit_metadata();
     const auto after_match = m_beauty_matched_colors;
@@ -831,7 +824,7 @@ void ModelGenerationPanel::restore_beauty_entry_color()
 {
     if (!m_finishing_workbench || !m_workbench_editing || !post_generation_ui_state().can_edit ||
         m_beauty_color_gate_state != BeautyColorGateState::Compatible || !m_model_preview ||
-        !m_beauty_session_source || !m_beauty_session_source->matched_colors ||
+        !m_beauty_session.source() || !m_beauty_session.source()->matched_colors ||
         !m_beauty_matched_colors) {
         if (m_finishing_status)
             m_finishing_status->SetLabel(_L("当前没有可恢复的进入时颜色，或耗材匹配已变化。"));
@@ -850,13 +843,13 @@ void ModelGenerationPanel::restore_beauty_entry_color()
     const bool before_dirty = m_beauty_controls && m_beauty_controls->has_changes();
     const bool before_manual_dirty = m_beauty_manual_color_dirty;
     const auto restored = m_model_preview->restore_beauty_region(
-        faces, m_beauty_session_source->face_overrides, m_beauty_session_source->leaf_edits);
+        faces, m_beauty_session.source()->face_overrides, m_beauty_session.source()->leaf_edits);
     if (!restored.changed) {
         m_finishing_status->SetLabel(_L("所选区域已经是进入工作台时的颜色。"));
         return;
     }
     if (!restore_beauty_paint_slots(*m_beauty_matched_colors,
-            *m_beauty_session_source->matched_colors,
+            *m_beauty_session.source()->matched_colors,
             BeautyPaintSlotChanges{restored.faces, restored.subfaces})) {
         if (leaves) m_model_preview->restore_leaf_edits(before_leaves);
         else m_model_preview->restore_beauty_face_colors(before_colors);

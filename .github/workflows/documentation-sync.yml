@@ -1,0 +1,31 @@
+name: PR documentation sync
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: documentation-sync-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  documentation:
+    name: Documentation update check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Test documentation declarations against real Git histories
+        run: python -m unittest discover -s scripts -p test_documentation_sync.py -v
+      - name: Check documentation updates for this PR
+        run: python scripts/check_documentation_sync.py --event "$GITHUB_EVENT_PATH" --summary "$GITHUB_STEP_SUMMARY"

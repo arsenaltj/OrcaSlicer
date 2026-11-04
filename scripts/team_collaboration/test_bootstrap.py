@@ -61,6 +61,7 @@ class ConfigTests(unittest.TestCase):
         required = repository_config["required_checks"]
         self.assertEqual(set(required), {
             "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer",
+            "Documentation update check",
         })
         self.assertEqual(required, bootstrap.CHECKS)
         self.assertEqual(required, example_config["required_checks"])
@@ -71,7 +72,7 @@ class ConfigTests(unittest.TestCase):
         service.validate_config(service_config())
         service.validate_config(service_config(required))
 
-    def test_extra_check_or_missing_windows_build_is_rejected(self):
+    def test_extra_or_missing_required_check_is_rejected(self):
         config = complete_config()
         config["required_checks"].append("Team integration candidate")
         with self.assertRaisesRegex(bootstrap.PreparationError, "required_checks"):
@@ -79,14 +80,16 @@ class ConfigTests(unittest.TestCase):
         service = repository_module("team_bootstrap_service_config", "tools/team_integration/config.py")
         with self.assertRaisesRegex(ValueError, "only the Windows build"):
             service.validate_config(service_config(config["required_checks"]))
-        config["required_checks"].remove("Team integration candidate")
-        config["required_checks"].remove("windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer")
-        with self.assertRaises(bootstrap.PreparationError):
-            bootstrap.validate_config(config)
-        with self.assertRaises(ValueError):
-            service.validate_config(service_config(config["required_checks"]))
+        for check in bootstrap.CHECKS:
+            config = complete_config()
+            config["required_checks"].remove(check)
+            with self.subTest(missing=check):
+                with self.assertRaises(bootstrap.PreparationError):
+                    bootstrap.validate_config(config)
+                with self.assertRaises(ValueError):
+                    service.validate_config(service_config(config["required_checks"]))
 
-    def test_generated_protection_matches_exactly_windows_build(self):
+    def test_generated_protection_matches_build_and_documentation_checks(self):
         adapter = repository_module("team_bootstrap_github", "tools/team_integration/github.py")
         for source in (EXAMPLE, REPOSITORY / ".github/team-collaboration.json"):
             config = bootstrap.read_json(source)

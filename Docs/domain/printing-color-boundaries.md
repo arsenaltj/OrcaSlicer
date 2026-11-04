@@ -16,14 +16,16 @@
 
 六通道不能自动解释为 C/M/Y/K/W/透明或其他固定组合；具体材料、通道映射、逐层/空间/同喷嘴混色方式和标定数据需要设备证据。[人像路线提案](../architecture/realistic-beautified-portrait-printing.md) 已明确这些未知项，它不是硬件规格。
 
+已加载工程的耗材/清洗矩阵标准化使用`update_multi_material_filament_presets`，允许硬件喷嘴闲置并保留实际装料。`update_filament_count`用于启动/切换时恢复保存的预设列表，会按原生最小数量补齐；不要将这个恢复入口混用于工作台运行态。两种边界由现有PresetBundle恢复测试和工作台耗材测试分别验证。
+
 ## 几何、颜色和文件交接
 
 - 图像、纹理 UV/材质、顶点颜色和打印区域是不同表示；屏幕上有彩色纹理，不保证导入后有正确可切片颜色区域。
-- 当前生成交接使用 OBJ 和关联的 `color-intent.v1.json`。客户端 schema/hash 校验只证明检查覆盖的文件关联，不证明 SmartSlicing 已使用意图生成配方。
-- 生成模型不等于 Orca 项目 3MF。项目 3MF 包含项目/配置语义，生成模块不应自行拥有这些状态；GLB/制造母版方案仍需区分提案与实际实现。
+- 当前生成请求默认输出GLB，本地模型加载与后处理支持OBJ/GLB；具体格式以任务产物元数据和实际文件为准。`color-intent.v1.json`是OBJ交接链路的伴随契约，不能假定每个GLB都具有该文件。客户端schema/hash校验只证明检查覆盖的文件关联，不证明SmartSlicing已使用意图生成配方。
+- 生成模型不等于Orca项目3MF。项目3MF包含项目/配置语义，生成模块不应自行拥有这些状态；已实现的GLB载入和候选导出，与制造母版的完整目标分别判断。
 - 生成阶段结束于产物交付；导入、试切、正式切片/G-code 和机器执行分别需要证据。导入成功不应隐式改变预设或触发切片。
 
-依据：[生成产物](../../src/slic3r/AI/Contracts/GeneratedModelArtifact.hpp)、[客户端校验](../../src/slic3r/GUI/AIModelGenerationClient.cpp)、[Orca 适配器](../../src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.cpp)。
+依据：[生成产物](../../src/slic3r/AI/Contracts/GeneratedModelArtifact.hpp)、[请求默认格式](../../src/slic3r/GUI/AIModelGenerationClient.hpp)、[客户端校验](../../src/slic3r/GUI/AIModelGenerationClient.cpp)、[OBJ/GLB载入](../../src/slic3r/GUI/AI/Model/ModelArtifact.cpp)、[候选导出](../../src/slic3r/GUI/AI/ModelGeneration/ModelGenerationBeautyExport.cpp)、[Orca适配器](../../src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.cpp)。
 
 ## 质量检查能证明什么
 

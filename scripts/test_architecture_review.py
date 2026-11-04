@@ -119,7 +119,7 @@ class ArchitectureReviewTests(unittest.TestCase):
         upload = next(step for step in config["jobs"]["analyze"]["steps"] if "upload-artifact" in step.get("uses", ""))["with"]
         self.assertEqual(upload["include-hidden-files"], "true")
         expected = ["index.html", "details.html", "archify-receipts.json", "report.json", "summary.md"]
-        expected += [view + suffix for view in ["l0-context", "l1-modules", "l2-generation", "l2-slicing"] for suffix in [".html", ".json"]]
+        expected += [view + suffix for view in ["l0-context", "l0-platform", "l1-modules", "l2-generation", "l2-slicing"] for suffix in [".html", ".json"]]
         self.assertEqual(set(upload["path"].split()), {f".tmp/architecture-review/report/{name}" for name in expected})
         publish = config["jobs"]["publish"]
         self.assertFalse(any("run" in step or "checkout" in step.get("uses", "") for step in publish["steps"]))
@@ -223,10 +223,13 @@ class ArchitectureReviewTests(unittest.TestCase):
         cache = self.root / "cache"
         first = ar.analyze(blobs, config, cache)
         second = ar.analyze(blobs, config, cache)
+        relabeled = ar.analyze(blobs, {"identity": "new-business-labels"}, cache)
         self.assertGreater(first["node_count"], len(blobs))
         self.assertTrue(any(e["source"] == "use.py" and e["target"] == "mod.py" for e in first["edges"]))
         self.assertTrue(any(e["source"] == "use.cpp" and e["target"] == "lib.hpp" for e in first["edges"]))
         self.assertTrue(second["cache_hit"])
+        self.assertTrue(relabeled["cache_hit"])
+        self.assertEqual(first["identity"], relabeled["identity"])
         revised = ar.analyze({k: v for k, v in blobs.items() if k != "mod.py"}, config, cache)
         self.assertNotEqual(revised["identity"], first["identity"])
         self.assertNotIn("mod.py", revised["files"])

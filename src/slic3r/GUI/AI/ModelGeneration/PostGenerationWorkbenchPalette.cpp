@@ -267,11 +267,8 @@ void ModelGenerationPanel::finish_beauty_color_gate(
             // appearance input. Region restore, discard and history therefore
             // all share the same colors, native slots and protected selection.
             m_beauty_compare_draft.reset();
-            m_beauty_session_source =
-                std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
-            m_beauty_session_undo_base = m_beauty_transactions
-                ? m_beauty_transactions->undo_count() : 0;
-            m_beauty_session_file_base = m_beauty_candidate_files.size();
+            m_beauty_session.start_draft(
+                std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate()));
             m_workbench_editing = true;
             m_finishing_selection_open = false;
             update_finishing_selection();
@@ -628,9 +625,7 @@ void ModelGenerationPanel::apply_workbench_printer_filaments(bool physical_only)
     m_apply_filaments_source_identity = state.signature;
     m_apply_filaments_before_trial_active = trial_was_active;
     m_apply_filaments_saving = true;
-    m_beauty_session_source = before;
-    m_beauty_session_undo_base = m_beauty_transactions ? m_beauty_transactions->undo_count() : 0;
-    m_beauty_session_file_base = m_beauty_candidate_files.size();
+    m_beauty_session.start_draft(before);
     m_beauty_manual_color_dirty = true;
     if (m_beauty_controls) m_beauty_controls->set_dirty(true);
     m_workbench_operation_notice = "正在应用并自动保存……";
@@ -663,18 +658,22 @@ void ModelGenerationPanel::finish_printer_filament_application(bool success)
     if (!success && m_apply_filaments_before) {
         // The live project was never modified before final publication. Restore
         // the model draft, without overwriting an external configuration change.
-        auto before = *m_apply_filaments_before;
+        // The retained session baseline is the same snapshot. Retire its
+        // uncommitted native payload too, so retrying Discard cannot restore
+        // an external configuration change after this restore failed.
+        auto& before = *m_apply_filaments_before;
         before.project_config.reset(); before.project_presets.clear();
-        const bool restored = restore_beauty_candidate(before);
+        auto ports = beauty_session_ports();
+        ports.restore = [this, &before](const BeautyCandidateSnapshot&) { return restore_beauty_candidate(before); };
+        const bool restored = m_beauty_session.discard(m_finishing_accepted_path, ports);
         if (restored && m_apply_filaments_before_trial_active) {
             m_printer_filament_trial_active = true;
             m_printer_filament_trial_geometry = before.geometry_id;
             m_printer_filament_trial_signature = m_apply_filaments_source_identity;
         }
-        if (m_beauty_transactions) m_beauty_transactions->truncate_to(m_beauty_session_undo_base);
-        clear_unaccepted_beauty_candidates(m_beauty_session_file_base);
-        m_beauty_session_source.reset();
-        m_workbench_operation_notice = "应用未保存，原模型和工程配置保留。 " + m_workbench_operation_notice;
+        m_workbench_operation_notice = (restored
+            ? "应用未保存，原模型和工程配置保留。 "
+            : "应用未保存，草稿恢复失败；候选及撤销记录保留，请重新加载模型后再试。 ") + m_workbench_operation_notice;
         m_workbench_printer_filament_notice = m_workbench_operation_notice;
         m_workbench_printer_filament_notice_error = true;
     } else if (success) {
