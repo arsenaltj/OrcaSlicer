@@ -210,6 +210,10 @@ class Service:
         checks = self.github.checks(base)
         waiting = []
         for required in self.config["required_checks"]:
+            # A documentation declaration belongs to a PR body, which is not
+            # an input to the merged branch's build-health checks.
+            if required["name"] == "Documentation update check":
+                continue
             matches = [check for check in checks if check.get("name") == required["name"] and
                        check.get("app", {}).get("id") == required["app_id"] and check.get("head_sha") == base]
             if not matches:
@@ -269,7 +273,7 @@ class Service:
             if baseline_state == "failed":
                 self.store.pause(True, baseline_detail)
             return "pending", baseline_detail
-        return "ready", "三项必需检查通过；维护人须核对产品验收证据并按分支保护人工合入。"
+        return "ready", "配置中的必需检查通过；维护人须核对产品验收证据并按分支保护人工合入。"
 
     def tick(self):
         self.process_inbox()

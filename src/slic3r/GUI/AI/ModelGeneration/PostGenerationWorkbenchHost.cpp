@@ -252,11 +252,11 @@ bool ModelGenerationPanel::beauty_color_match_current() const
     const auto configuration = PrinterFilamentConfig::capture(*bundle);
     const auto native = OrcaPrintPaletteSnapshot::capture(*bundle);
     const auto& matched = *m_beauty_matched_colors;
-    const std::string source_sha256 = m_beauty_session_source
-        ? m_beauty_session_source->model_sha256
+    const std::string source_sha256 = m_beauty_session.source()
+        ? m_beauty_session.source()->model_sha256
         : AI::model_artifact_sha256(m_displayed_model_path);
-    const std::string geometry_id = m_beauty_session_source
-        ? m_beauty_session_source->geometry_id : m_model_preview->geometry_id();
+    const std::string geometry_id = m_beauty_session.source()
+        ? m_beauty_session.source()->geometry_id : m_model_preview->geometry_id();
     return matched.source_sha256 == source_sha256 && matched.geometry_id == geometry_id &&
         configuration.signature == m_beauty_color_gate_configuration_signature &&
         matched.material_fingerprint == native.material_fingerprint &&
@@ -524,7 +524,7 @@ void ModelGenerationPanel::complete_return_overview()
 {
     m_beauty_entry_pending = false;
     m_beauty_compare_draft.reset();
-    m_beauty_session_source.reset();
+    m_beauty_session.clear_draft();
     m_finishing_before = false;
     m_workbench_editing = false;
     update_finishing_selection();

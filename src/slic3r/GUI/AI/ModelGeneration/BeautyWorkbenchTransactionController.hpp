@@ -8,9 +8,9 @@
 
 namespace Slic3r::GUI {
 
-// UI-independent coordinator for Beauty operations. The model panel owns the
-// actual files and preview; this class owns the transaction timeline and the
-// interaction lock so the two cannot silently drift apart.
+// UI-independent coordinator for Beauty operations. The session owns snapshot
+// and file lifetimes, the view restores previews, and this controller owns the
+// transaction timeline and interaction lock.
 class BeautyWorkbenchTransactionController final {
 public:
     enum class OperationKind {

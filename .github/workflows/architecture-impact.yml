@@ -31,11 +31,15 @@ jobs:
           node-version: '22'
       - name: Check versioned README architecture overview
         run: python scripts/architecture_review.py --readme check
+      - name: Check architecture anchors and capability scopes
+        run: python scripts/architecture_review.py --check-map
       - name: Install pinned graph parser
         run: |
           python -m pip install --only-binary=:all: -r scripts/architecture-review-requirements.txt
       - name: Check impact reporting regressions
         run: python -m unittest discover -s scripts -p 'test_architecture_*.py' -q
+      - name: Check platform explorer navigation offline
+        run: node scripts/test_architecture_platform.js
       - name: Prepare checksum-pinned Archify renderer
         run: python scripts/architecture_review.py --setup-archify
       - name: Generate exact PR impact and interactive HTML
@@ -54,6 +58,8 @@ jobs:
             .tmp/architecture-review/report/details.html
             .tmp/architecture-review/report/l0-context.html
             .tmp/architecture-review/report/l0-context.json
+            .tmp/architecture-review/report/l0-platform.html
+            .tmp/architecture-review/report/l0-platform.json
             .tmp/architecture-review/report/l1-modules.html
             .tmp/architecture-review/report/l1-modules.json
             .tmp/architecture-review/report/l2-generation.html

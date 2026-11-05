@@ -2,14 +2,21 @@
 
 ## 入口与计划连续性
 
-- 开始开发、恢复上下文或切换任务，读[短状态](docs/coordination/current-development.md)及[当前主计划](Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md)相关项。模块/命令查[工程导航](Docs/AI_ENGINEERING.md)与[快速开发](Docs/coordination/quick-development.md)，遵守目录内 AGENTS；不用通读历史文档。
+- 开始开发、恢复上下文或切换任务，读[短状态](docs/coordination/current-development.md)及[当前主计划](Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md)的当前焦点/索引，再按任务跳转原记录。模块/命令查[工程导航](Docs/AI_ENGINEERING.md)与[快速开发](Docs/coordination/quick-development.md)，遵守目录内AGENTS；不用通读历史文档。记录迁入历史页不改变原任务状态或授权。
 - 新指令分为继续、补充、插队、正式变更、讨论。范围内补充挂原编号；插队先记恢复点，完成后在已有授权内返回；仅讨论不授权实施，明确的本轮范围限制优先。“继续”按短状态恢复，不从聊天末尾重猜。
 - 最新明确决定优先，受影响旧任务不能静默消失。主计划保留稳定编号、目标、状态、验收、证据、负责会话/分支和修改范围；部分完成列剩余，延期列原因/恢复条件，取消或替代列决定/承接项。仅重大冲突且意图不明时询问。
 - 连续推进只适用于最新已授权范围；主计划中的历史审查建议、延期扩展和旧实验不是自动续跑授权。已放弃方向不复活，意图未核实的扩展保留来源并暂不启动；里程碑汇报不要求用户例行回复“继续”。
 - 可交付步骤结束或切换时增量更新主计划与短状态；短状态只留焦点、返回点、关键阻塞、下一步。完整状态仅维护于主计划，不新增 TODO/TASK/PLAN 台账。历史计划、报告及失败候选不是执行队列。
 - 每轮交付附五行：主线、本轮、未结、下一步、计划变更。专项日志只作证据，不重复维护进度表。
 - 默认沿用现有开发分支及其 PR，不按优化批次新建分支；仅确需隔离并行工作时另行说明。
-- 两台 PC 按计划登记的会话/分支/文件范围协作。本机解耦工作须对应主计划目标，不默认接管另一台 UX。跨机结果注明版本、可取得证据及未同步部分；共享契约修改先记录双方范围和兼容要求。
+- 跨机器/多工作区按计划登记会话、分支和文件范围。本机解耦工作须对应主计划目标，不默认接管另一台UX。跨机结果注明版本、可取得证据及未同步部分；共享契约修改先记录参与方范围和兼容要求。
+
+## 日常架构与文档维护
+
+- 修改需求或Bug前，先确认状态所有者、允许的依赖方向和受影响消费者，按[平台维护入口](Docs/architecture/PLATFORM_ARCHITECTURE.md#开发时怎样用)定位。业务规则在既有Application/Session/领域模块中维护，UI、HTTP和组合入口负责适配，避免第二份业务状态。
+- 沿已有Contracts/Ports/Adapter接缝渐进修改；不新增内核到GUI/供应商的反向依赖或跨模块循环。共享状态、持久化、撤销和异步结果的变更覆盖相关消费者及失败/取消/过期/恢复路径。文件拆分或图表分层本身不算完成解耦。
+- 改架构边界、契约或runtime时用`scripts/verify_ai_integration.py --json`，不弱化检查；业务阶段、能力、状态所有者、模块锚点改变时维护`Docs/architecture/review-map.json`，用`scripts/architecture_review.py --readme update`同步生成区。重大长期取舍记入既有ADR体系，普通Bug不另建架构报告。
+- 文档随相关代码在同一PR同步。每个PR填写[文档同步声明](Docs/coordination/documentation-sync.md)，列出实际更新的维护文档；无需更新时解释原因。提交PR前可用`python scripts/check_documentation_sync.py --base HEAD --worktree`定位候选文档；该模式只提示范围，PR检查还需声明。进度记录、时间戳或复制历史不能代替维护文档的内容更新。
 
 ## 开发与验证
 
@@ -21,21 +28,12 @@
 - 编译、自动测试、GUI、视觉质量、实物打印分别记录，不能互相替代。记录源码/产物身份及验证范围；仅相关输入、依赖、条件变化或有新失败时补测。用户明确承接的视觉验收保持待反馈，不冒充通过。
 - GUI 验证使用独立配置、模型副本和完整匹配的 EXE/DLL/资源/sidecar。真实生成经过软件主窗口的输入、确认、生成和历史恢复；离线 fixture 可测逻辑，不替代真实流程，不另建 mock 服务冒充验收。
 - 查看/编辑/恢复复用已有资产；新生成沿用明确预算，不隐式付费重试。保留原件、真实任务 ID、历史引用和失败证据；配色的材质固有色、显示光照和实物偏差分别评价。
-- 改架构边界、契约或 runtime 时用 `scripts/verify_ai_integration.py --json`，不弱化失败检查；阶段/能力/模块锚点变更更新 `Docs/architecture/review-map.json` 并用 `scripts/architecture_review.py --readme update` 同步生成区。文档整理不触发应用门禁。
 
 ## 产品与兼容边界
 
 - AI 生成与智能切片在 Orca 主窗口内；Orca 管项目、配置、切片、G-code 与预览。导入不静默切片或改预设，智能切片建议须显式应用、可比较及撤销。AI 离线/关闭时保留普通 Orca 行为。
 - C++17 / wxWidgets / CMake，保持可移植性、3MF、预设及手动流程兼容。`src/slic3r/AI/Contracts` 管跨模块契约，`src/slic3r/AI/SmartSlicing` 管决策，`src/slic3r/GUI/AI` 管宿主/适配器，`tools/ai` 管供应商；供应商策略不进入 libslic3r。共享边界另读 `docs/architecture/ai-integration-lock.json`。
-
-## 安装包模型目录权限回归记录（2026-10-13）
-
-- 根因：提交 `349d7df970` 为统一模型图库、我的资产、下载、导出和项目文件的入口，将 `AIModelOutputDirectory` 的默认路径从用户数据目录下的 `generated_models` 改成了“可执行文件所在目录/models”。这属于输出目录策略变更，不是 NSIS 安装目录本身必须可写的要求。
-- 触发条件：Windows 安装包通常位于 `C:\Program Files\...`。普通用户对该目录没有写权限；`AIServiceManager` 启动时会创建 `models/downloads`、`exports`、`projects` 并迁移历史，因此启动阶段弹出“无法写入安装目录下的 models 文件夹”。资产页的“打开模型文件夹”也会指向同一个不可写目录。
-- 影响范围：AI 模型历史、下载文件、导出副本、项目草稿及模型文件夹入口受影响；程序和只读资源本身不应写入安装目录。此问题与本地 AI 侧车是否连接无关，也不能用“服务已连接”证明远端图片生成请求成功。
-- 修复规则：默认输出必须位于 `Slic3r::data_dir()/models`，早期启动尚未选定 `data_dir()` 时才回退到 wx 用户数据目录；仅显式设置 `ORCASLICER_AI_OUTPUT_DIR` 时允许使用其他路径。安装目录按只读资源处理。旧 `data_dir()/generated_models` 历史迁移到新用户目录时保留原文件，迁移失败不得删除原历史。
-- 打包验收：任何 Windows Release 安装包必须在标准用户、安装到 `Program Files` 的条件下启动并打开模型文件夹；检查实际路径不包含安装目录，且能创建 `models/downloads`、`models/exports`、`models/projects`。同时区分模型目录权限问题与 2D 图片服务的远端认证、网络、限流或下载失败，并要求后者提供 `orca-ai-sidecar.log` 和诊断 ID。
-- 相关实现与回归：`src/slic3r/GUI/AIModelOutputDirectory.hpp`、`src/slic3r/GUI/AIServiceManager.cpp`、`tests/slic3rutils/test_model_generation_presentation.cpp`。本次修复保留显式输出目录覆盖、旧历史迁移和用户运行实例，未改变安装位置或外部 API。
+- 安装目录作为只读资源；默认模型输出用`Slic3r::data_dir()/models`，早期启动才回退wx用户目录，仅显式`ORCASLICER_AI_OUTPUT_DIR`允许覆盖。旧历史迁移保留原件。Windows安装包须验证标准用户在`Program Files`安装后能写用户模型目录；原因、源码和验收细节见[目录权限回归记录](Docs/history/development-records-20261103.md#asset-output-20261013)。
 
 ## 按需交付与操作边界
 

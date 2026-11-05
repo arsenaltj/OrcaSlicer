@@ -275,7 +275,7 @@ void ModelGenerationPanel::refresh_model_finishing()
         if (m_displayed_model_path != m_finishing_candidate)
             boost::filesystem::remove(m_finishing_candidate, ignored);
         clear_unaccepted_beauty_candidates();
-        m_beauty_session_source.reset();
+        m_beauty_session.clear_draft();
         m_beauty_reoptimization_before.reset();
         m_finishing_candidate_region_evidence.reset();
         m_finishing_candidate_secondary_evidence.reset();
@@ -344,7 +344,7 @@ void ModelGenerationPanel::refresh_model_finishing()
     // Automatic topology repairs are committed without a user candidate
     // review.  Keep the footer free of the legacy compare affordance while
     // that save transaction is running; manual beauty candidates retain it.
-    const bool beauty_comparable = m_beauty_session_source && beauty_session_has_changes();
+    const bool beauty_comparable = m_beauty_session.source() && beauty_session_has_changes();
     const bool beauty_footer_processing = transaction_busy || m_finishing_running ||
         m_beauty_color_gate_state == BeautyColorGateState::Checking ||
         (m_beauty_controls && m_beauty_controls->partitioning());
@@ -483,12 +483,7 @@ void ModelGenerationPanel::reset_beauty_asset()
     m_finishing_candidate_secondary_evidence.reset();
     m_finishing_candidate_original_appearance = {};
     m_finishing_candidate_original_appearance_error.clear();
-    m_beauty_session_source.reset();
     m_beauty_compare_draft.reset();
-    m_beauty_reoptimization_before.reset();
-    m_beauty_accepted_files.clear();
-    m_beauty_session_undo_base = m_beauty_session_file_base = 0;
-    m_beauty_manual_color_dirty = false;
     m_beauty_matched_colors.reset();
     m_beauty_color_gate_state = BeautyColorGateState::Unchecked;
     m_beauty_color_gate_message.clear();
@@ -498,7 +493,7 @@ void ModelGenerationPanel::reset_beauty_asset()
     m_finishing_before = m_finishing_compare_held = m_save_and_return = false;
     m_portrait_mode = false;
     if (m_beauty_controls) m_beauty_controls->reset_asset();
-    if (m_beauty_transactions) m_beauty_transactions->reset();
+    m_beauty_session.reset();
 }
 
 std::function<void()> ModelGenerationPanel::capture_model_context()
@@ -533,8 +528,8 @@ BeautyCandidateSnapshot ModelGenerationPanel::capture_beauty_candidate() const
     snapshot.source = m_finishing_source.empty() ? m_displayed_model_path : m_finishing_source;
     snapshot.candidate = m_finishing_candidate;
     snapshot.model_sha256 = snapshot.candidate.empty()
-        ? (m_beauty_session_source && m_beauty_session_source->source == snapshot.source
-            ? m_beauty_session_source->model_sha256 : AI::model_artifact_sha256(snapshot.source))
+        ? (m_beauty_session.source() && m_beauty_session.source()->source == snapshot.source
+            ? m_beauty_session.source()->model_sha256 : AI::model_artifact_sha256(snapshot.source))
         : (!m_finishing_result.output_sha256.empty() ? m_finishing_result.output_sha256
             : AI::model_artifact_sha256(snapshot.candidate));
     snapshot.id = m_finishing_id;
@@ -728,18 +723,23 @@ void ModelGenerationPanel::record_beauty_candidate(BeautyWorkbenchTransactionCon
         after->project_config = std::make_shared<DynamicPrintConfig>(wxGetApp().preset_bundle->project_config);
         after->project_presets = wxGetApp().preset_bundle->filament_presets;
     }
-    m_beauty_session.record(kind, std::move(before), std::move(after), {
+    m_beauty_session.record(kind, std::move(before), std::move(after), beauty_session_ports());
+}
+
+BeautyWorkbenchSession<BeautyCandidateSnapshot>::Ports ModelGenerationPanel::beauty_session_ports()
+{
+    return {
         [](const BeautyCandidateSnapshot& snapshot) {
             const auto& path = snapshot.candidate.empty() ? snapshot.source : snapshot.candidate;
             return is_nonempty_model(path) && !snapshot.model_sha256.empty() && AI::model_artifact_sha256(path) == snapshot.model_sha256;
         },
-        [this](const BeautyCandidateSnapshot& snapshot) { return restore_beauty_candidate(snapshot); }, {}});
+        [this](const BeautyCandidateSnapshot& snapshot) { return restore_beauty_candidate(snapshot); },
+        [](const boost::filesystem::path& path) { boost::system::error_code ignored; boost::filesystem::remove(path, ignored); }};
 }
 
 void ModelGenerationPanel::clear_unaccepted_beauty_candidates(size_t start)
 {
-    m_beauty_session.clear_candidates(start, m_finishing_accepted_path, {{}, {},
-        [](const boost::filesystem::path& path) { boost::system::error_code ignored; boost::filesystem::remove(path, ignored); }});
+    m_beauty_session.clear_candidates(start, m_finishing_accepted_path, beauty_session_ports());
 }
 
 } // namespace Slic3r::GUI

@@ -13,9 +13,41 @@
     "tests/slic3rutils",
     "src/slic3r/GUI/Redesign",
     "src/slic3r/Utils/HonorAccount",
-    "tests/ui_redesign"
+    "tests/ui_redesign",
+    "src/orca_mobile_device_sdk",
+    "src/orca_mobile_slicing_sdk",
+    "src/orca_connectivity_moonraker",
+    "src/orca_connectivity_wondermaker",
+    "src/libslic3r/Model.hpp",
+    "src/libslic3r/Print.hpp",
+    "src/libslic3r/PrintConfig.hpp",
+    "src/libslic3r/Config.hpp",
+    "src/slic3r/GUI/ModelGenerationPanel.cpp",
+    "src/slic3r/GUI/ModelGenerationPanel.hpp",
+    "src/slic3r/GUI/MainFrame.hpp",
+    "src/slic3r/GUI/Plater.hpp",
+    "src/slic3r/GUI/GLCanvas3D.hpp",
+    "src/orca_model_sdk"
   ],
   "modules": [
+    {
+      "id": "slicing_sdk",
+      "label": "独立切片 SDK",
+      "ownership": [],
+      "paths": [
+        "src/orca_mobile_slicing_sdk"
+      ],
+      "purpose": "无 GUI 的共享 Core 与 SmartSlicing 消费边界；保持已有 Device/Slicing ABI，声明工程、材料与平台支持范围"
+    },
+    {
+      "id": "model_sdk",
+      "label": "独立模型 SDK",
+      "ownership": [],
+      "paths": [
+        "src/orca_model_sdk"
+      ],
+      "purpose": "通过公开 C ABI 提供模型文档、场景、编辑、候选、制造快照及统一平台 API 适配；原生切片通过固定制品桥接"
+    },
     {
       "id": "honor_account",
       "label": "荣耀账号",
@@ -314,24 +346,24 @@
       "id": "library_export",
       "path": "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryExport.hpp",
       "needle": "inline bool export_model_library_copy",
-      "detail": "Accepted snapshots export GLB/images under installation/models/exports. Shared output storage and child environment use installation/models; old data-dir history is copied without replacing existing versions."
+      "detail": "Accepted snapshots export GLB/images under the user output models/exports directory. AIModelOutputDirectory defaults to data_dir()/models, supports an explicit environment override, and preserves legacy originals during migration."
     },
     {
       "id": "install_model_storage",
       "path": "src/slic3r/GUI/AIModelOutputDirectory.hpp",
       "needle": "bool migrate_legacy_history",
-      "detail": "Executable-relative models directory, preserved legacy data-dir originals, no replacement of existing install-local files, and an unchanged absolute child output environment."
+      "detail": "Default models storage is data_dir()/models (early startup: wx user data); an explicit ORCASLICER_AI_OUTPUT_DIR overrides it. Legacy generated_models originals remain; the installation directory is read-only resources."
     },
     {
       "id": "project_save",
       "path": "src/slic3r/GUI/Redesign/RedesignModelWorkflow.cpp",
       "needle": "void RedesignShell::save_print_project()",
-      "detail": "Explicit 3MF Save As delegates to Plater, retaining native colors, presets, placement and dirty-state handling; the default destination is installation/models/projects."
+      "detail": "Explicit 3MF Save As delegates to Plater, retaining native colors, presets, placement and dirty-state handling; the default destination is the user output models/projects directory."
     },
     {
       "id": "workbench_check",
       "path": "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchCheck.cpp",
-      "needle": "bool ModelGenerationPanel::request_check_workbench()"
+      "needle": "bool ModelGenerationPanel::request_check_workbench(bool automatic)"
     },
     {
       "id": "workbench_beauty",
@@ -362,6 +394,21 @@
       "id": "beauty_session",
       "path": "src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchSession.hpp",
       "needle": "class BeautyWorkbenchSession final"
+    },
+    {
+      "id": "beauty_session_draft",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchSession.hpp",
+      "needle": "void start_draft(std::shared_ptr<Snapshot> source)"
+    },
+    {
+      "id": "beauty_session_accept",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchSession.hpp",
+      "needle": "bool complete_accept(Revision revision,"
+    },
+    {
+      "id": "beauty_session_discard",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchSession.hpp",
+      "needle": "bool discard(const boost::filesystem::path& accepted,"
     },
     {
       "id": "workbench_import",
@@ -542,8 +589,68 @@
     },
     {
       "id": "slicing_cloud_ui",
-      "path": "src/slic3r/GUI/Redesign/RedesignModelWorkflow.cpp",
+      "path": "src/slic3r/GUI/Redesign/RedesignShell.cpp",
       "needle": "slicing-recommendation-source"
+    },
+    {
+      "id": "account_workspace",
+      "path": "src/slic3r/GUI/Redesign/AccountWorkspace.hpp",
+      "needle": "class AccountWorkspace"
+    },
+    {
+      "id": "honor_identity",
+      "path": "src/slic3r/Utils/HonorAccount/HonorSession.hpp",
+      "needle": "class Session"
+    },
+    {
+      "id": "artifact_contract",
+      "path": "src/slic3r/AI/Contracts/IModelArtifactConsumer.hpp",
+      "needle": "class IModelArtifactConsumer"
+    },
+    {
+      "id": "mobile_connectivity",
+      "path": "src/orca_mobile_device_sdk/Connectivity.cpp",
+      "needle": "namespace Orca::MobileDevice"
+    },
+    {
+      "id": "mobile_slicing_entry",
+      "path": "src/orca_mobile_slicing_sdk/include/orca/mobile/slicing_sdk_c.h",
+      "needle": "orca_mobile_slicing_execute("
+    },
+    {
+      "id": "native_model",
+      "path": "src/libslic3r/Model.hpp",
+      "needle": "class Model"
+    },
+    {
+      "id": "native_print",
+      "path": "src/libslic3r/Print.hpp",
+      "needle": "class Print"
+    },
+    {
+      "id": "native_3mf",
+      "path": "src/libslic3r/Format/3mf.cpp",
+      "needle": "namespace Slic3r"
+    },
+    {
+      "id": "native_scene",
+      "path": "src/slic3r/GUI/GLCanvas3D.hpp",
+      "needle": "class GLCanvas3D"
+    },
+    {
+      "id": "native_cad_document",
+      "path": "src/libslic3r/CAD/CadDocument.hpp",
+      "needle": "class CadDocument"
+    },
+    {
+      "id": "diagnostic_events",
+      "path": "tools/ai/ai_diagnostics.py",
+      "needle": "def event("
+    },
+    {
+      "id": "architecture_gate",
+      "path": "scripts/verify_ai_integration.py",
+      "needle": "def main("
     }
   ],
   "journeys": [
@@ -1254,7 +1361,7 @@
       "boundary": "下载交给默认浏览器；外部模型服务可用性未确认时明确提示，导入由用户另行操作",
       "group": "资产与图库",
       "evidence": [
-        "model_gallery"
+        "assets_workspace"
       ],
       "modules": [
         "desktop"
@@ -1498,5 +1605,953 @@
         "planned": false
       }
     ]
-  }
+  },
+  "landscape": {
+    "title": "Orca 产品平台 · 分层架构",
+    "source_roots": [
+      "src",
+      "tools/ai",
+      "scripts",
+      "tests",
+      "mobile-slicing",
+      "CMakeLists.txt"
+    ],
+    "layers": [
+      {
+        "id": "workspaces",
+        "label": "业务工作区",
+        "description": "用户实际完成什么任务",
+        "capabilities": [
+          "desktop",
+          "creation_ui",
+          "beauty_ui",
+          "assets_ui",
+          "account_ui",
+          "printer_ui",
+          "native_tools"
+        ]
+      },
+      {
+        "id": "application",
+        "label": "应用编排与业务状态",
+        "description": "任务、候选、会话及应用规则",
+        "capabilities": [
+          "model_jobs",
+          "beauty_session",
+          "smart_slicing",
+          "library_app",
+          "identity",
+          "ai_support"
+        ]
+      },
+      {
+        "id": "adapters",
+        "label": "共享契约与接入适配",
+        "description": "跨业务交接与具体平台接入",
+        "capabilities": [
+          "contracts",
+          "orca_adapter",
+          "providers",
+          "device_sdk",
+          "mobile_slicing"
+        ]
+      },
+      {
+        "id": "kernel",
+        "label": "Orca 原生内核",
+        "description": "模型、切片、配置、渲染和 CAD",
+        "capabilities": [
+          "geometry",
+          "native_slice",
+          "project_config",
+          "native_render",
+          "native_cad",
+          "core_support"
+        ]
+      },
+      {
+        "id": "foundation",
+        "label": "运行与工程支撑",
+        "description": "本地进程、资产存储与横切 DFX",
+        "capabilities": [
+          "runtime",
+          "storage",
+          "dfx",
+          "engineering",
+          "native_platform"
+        ]
+      }
+    ],
+    "capabilities": [
+      {
+        "id": "desktop",
+        "label": "桌面与原生工作区",
+        "paths": [
+          "src/slic3r/GUI/MainFrame*",
+          "src/slic3r/GUI/Plater*",
+          "src/slic3r/GUI/Redesign/RedesignShell*",
+          "src/slic3r/GUI/Redesign/RedesignModelWorkflow*",
+          "src/slic3r/GUI/GUI_App*"
+        ],
+        "evidence": [
+          "desktop_host",
+          "native_output"
+        ],
+        "tests": [
+          "tests/slic3rutils/test_orca_*",
+          "tests/ui_redesign/*"
+        ],
+        "state_owner": "Plater 持有当前工程；Shell 投影并导航",
+        "contract": "导入、应用、撤销与保存使用原生工作区",
+        "note": "逻辑入口集中；不是所有业务均已离开主窗口。",
+        "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
+      },
+      {
+        "id": "creation_ui",
+        "label": "AI 创作入口",
+        "paths": [
+          "src/slic3r/GUI/ModelGenerationPanel*",
+          "src/slic3r/GUI/AI/ModelGeneration/ModelGeneration*",
+          "src/slic3r/GUI/AIModelGenerationClient*",
+          "src/slic3r/GUI/AI/Text"
+        ],
+        "evidence": [
+          "generation_host",
+          "generate_confirmation"
+        ],
+        "tests": [
+          "tests/slic3rutils/test_model_generation*",
+          "tools/ai/test_atomic_capabilities.py"
+        ],
+        "state_owner": "ModelGenerationUIState 投影本地任务",
+        "contract": "确认后创建任务；完成产物显式交接",
+        "note": "与后处理共享 Panel，属于主要耦合点。",
+        "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
+      },
+      {
+        "id": "beauty_ui",
+        "label": "3D 后处理工作台",
+        "paths": [
+          "src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls*",
+          "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbench*",
+          "src/slic3r/GUI/AI/ModelGeneration/ModelPreview*"
+        ],
+        "evidence": [
+          "workbench_beauty",
+          "workbench_color_review"
+        ],
+        "tests": [
+          "tests/slic3rutils/test_beauty*",
+          "tests/slic3rutils/test_post_generation*"
+        ],
+        "state_owner": "工作台候选与预览；正式工程仍归 Plater",
+        "contract": "原始模型、候选、美颜结果与物理耗材分开",
+        "note": "能力存在；部分异步会话仍绑定 wxPanel。",
+        "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
+      },
+      {
+        "id": "assets_ui",
+        "label": "模型库与我的作品",
+        "paths": [
+          "src/slic3r/GUI/Redesign/AssetsWorkspace*",
+          "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryPanel*",
+          "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationAssetsView*",
+          "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationLibraryView*"
+        ],
+        "evidence": [
+          "assets_workspace",
+          "image_history"
+        ],
+        "tests": [
+          "tests/slic3rutils/test_model_library*",
+          "tests/ui_redesign/*"
+        ],
+        "state_owner": "图库为只读目录；作品与历史有独立身份",
+        "contract": "浏览、载入、导出不隐式生成或切片",
+        "note": "本地图册、生成历史与项目存储不是同一份数据。",
+        "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
+      },
+      {
+        "id": "account_ui",
+        "label": "账号工作区",
+        "paths": [
+          "src/slic3r/GUI/Redesign/Account*",
+          "src/slic3r/GUI/Redesign/HonorAccount*"
+        ],
+        "evidence": [
+          "account_workspace"
+        ],
+        "tests": [
+          "tests/slic3rutils/test_honor*",
+          "tests/ui_redesign/*"
+        ],
+        "state_owner": "投影 HonorAccount 会话状态",
+        "contract": "登录、取消、退出不改变打印与模型业务",
+        "note": "OAuth 身份不自动等价于 AI 权益或供应商凭据。",
+        "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
+      },
+      {
+        "id": "printer_ui",
+        "label": "设备与打印工作区",
+        "paths": [
+          "src/slic3r/GUI/Redesign/PrinterWorkspace*",
+          "src/slic3r/GUI/Redesign/OrcaPrinterAdapter*"
+        ],
+        "evidence": [
+          "printer_workspace",
+          "printer_task_guard"
+        ],
+        "tests": [
+          "tests/slic3rutils/test_printer*"
+        ],
+        "state_owner": "设备快照与打印任务状态",
+        "contract": "命令有设备版本与任务状态保护",
+        "note": "当前存在原生连接与新 SDK 两条接入面。",
+        "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
+      },
+      {
+        "id": "model_jobs",
+        "label": "AI 任务与工作流",
+        "paths": [
+          "tools/ai/model_job*",
+          "tools/ai/model_generation_workflow.py",
+          "tools/ai/design_workflow.py",
+          "tools/ai/model_contracts.py",
+          "tools/ai/text_capability_application.py"
+        ],
+        "evidence": [
+          "job_application",
+          "job_lifecycle",
+          "model_application",
+          "design_application"
+        ],
+        "tests": [
+          "tools/ai/test_atomic_capabilities.py",
+          "tools/ai/test_artifact_restart_recovery.py"
+        ],
+        "state_owner": "Job / JobRepository 持有任务与产物状态",
+        "contract": "确认、取消、恢复与幂等提交在应用入口处理",
+        "note": "已独立于 HTTP；装配回调仍较宽。",
+        "build_boundary": "本地 Python sidecar 内的模块；不具有独立部署边界。"
+      },
+      {
+        "id": "beauty_session",
+        "label": "后处理会话与事务",
+        "paths": [
+          "src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchSession*",
+          "src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchTransaction*",
+          "src/slic3r/GUI/AI/ModelGeneration/WorkbenchImport*",
+          "src/slic3r/GUI/AI/ModelGeneration/PortraitColor*",
+          "src/slic3r/GUI/AI/ColorMatching",
+          "src/slic3r/GUI/AI/Model"
+        ],
+        "evidence": [
+          "beauty_session",
+          "beauty_session_draft",
+          "beauty_session_accept",
+          "beauty_session_discard",
+          "workbench_portrait_color_blocks",
+          "beauty_physical_handoff"
+        ],
+        "tests": [
+          "tests/slic3rutils/test_beauty*",
+          "tests/slic3rutils/test_portrait*",
+          "tests/slic3rutils/test_model_color*"
+        ],
+        "state_owner": "Session私有持有候选基线、历史检查点、候选/已发布文件与草稿revision；TransactionController持有撤销时间线",
+        "contract": "保存成功才完成接受；过期回调不接受新草稿；恢复成功才清理待选文件/历史；原生交接保持明确应用",
+        "note": "配色候选生命周期通过Session操作；预览、持久化、耗材原生提交与人像编辑上下文仍由宿主适配。未宣称整个后处理已无GUI依赖。",
+        "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
+      },
+      {
+        "id": "smart_slicing",
+        "label": "智能切片与候选决策",
+        "paths": [
+          "src/slic3r/AI/SmartSlicing",
+          "src/slic3r/GUI/AI/SmartSlicing",
+          "tools/ai/slicing_recommendation*"
+        ],
+        "evidence": [
+          "slicing_start",
+          "slicing_apply",
+          "slicing_undo"
+        ],
+        "tests": [
+          "tests/slic3rutils/test_smart*",
+          "tests/slic3rutils/test_orca_slicing*"
+        ],
+        "state_owner": "Coordinator / WorkflowState + WorkspaceRevision",
+        "contract": "试切在隔离候选上；正式应用与撤销走 Orca",
+        "note": "按 ADR-002 保留唯一原生画布与工程真值。",
+        "build_boundary": "决策核心 OrcaSlicer::SmartSlicing/SmartSlicingCore STATIC；GUI host 在 libslic3r_gui，云建议在 Python sidecar。"
+      },
+      {
+        "id": "library_app",
+        "label": "模型库应用与载入",
+        "paths": [
+          "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryApplication*",
+          "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryRepository*",
+          "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryLoader*",
+          "src/slic3r/GUI/AI/ModelGeneration/ModelWorkspaceFeatureHost*"
+        ],
+        "evidence": [
+          "model_library_application",
+          "minimal_model_gui"
+        ],
+        "tests": [
+          "tests/slic3rutils/test_model_library*"
+        ],
+        "state_owner": "库条目、载入 token 与模型身份",
+        "contract": "载入结果需核对 token/revision 后才能展示",
+        "note": "库载入逻辑可复用；UI 主路径仍有旧面板装配。",
+        "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
+      },
+      {
+        "id": "identity",
+        "label": "OAuth 与本机会话",
+        "paths": [
+          "src/slic3r/Utils/HonorAccount"
+        ],
+        "evidence": [
+          "honor_identity"
+        ],
+        "tests": [
+          "tests/slic3rutils/test_honor*"
+        ],
+        "state_owner": "HonorAccount 本机会话与授权状态",
+        "contract": "校验回调、令牌与刷新；取消拒绝迟到结果",
+        "note": "应用接入配置与用户令牌应分开维护。",
+        "build_boundary": "HonorAccountSources.cmake 纳入 libslic3r_gui；本地系统凭据存储另有平台实现。"
+      },
+      {
+        "id": "contracts",
+        "label": "共享契约与领域数据",
+        "paths": [
+          "src/slic3r/AI/Contracts"
+        ],
+        "evidence": [
+          "protected_region_manifest",
+          "artifact_contract"
+        ],
+        "tests": [
+          "tests/slic3rutils/test_model_artifact*",
+          "tests/slic3rutils/test_beauty_protected*",
+          "tests/slic3rutils/test_smart_slicing_protected*"
+        ],
+        "state_owner": "DTO 只描述数据，不拥有当前工程",
+        "contract": "产物、可打印色板、重点区域与工作区修订",
+        "note": "契约的版本变化必须检查所有消费者。",
+        "build_boundary": "OrcaSlicer::AIContracts（orcaslicer_ai_contracts INTERFACE）；头文件契约。"
+      },
+      {
+        "id": "orca_adapter",
+        "label": "Orca 原生操作适配",
+        "paths": [
+          "src/slic3r/GUI/AI/Orca"
+        ],
+        "evidence": [
+          "model_feature_capture",
+          "workbench_import"
+        ],
+        "tests": [
+          "tests/slic3rutils/test_orca_*"
+        ],
+        "state_owner": "通过原生事务触达 Plater/Model/Config",
+        "contract": "AI 提议转为明确的原生操作与结果",
+        "note": "此处允许具体 Orca 依赖；领域逻辑避免反向依赖。",
+        "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
+      },
+      {
+        "id": "providers",
+        "label": "AI 与文本供应商适配",
+        "paths": [
+          "tools/ai/model_provider_gateway.py",
+          "tools/ai/tripo_client.py",
+          "tools/ai/openai*",
+          "tools/ai/text_capability_transport.py",
+          "tools/ai/yoyoclaw_client.py",
+          "tools/ai/network_policy.py"
+        ],
+        "evidence": [
+          "provider_authorization",
+          "image_reference_prompt"
+        ],
+        "tests": [
+          "tools/ai/test_model_provider_gateway.py",
+          "tools/ai/test_network_policy.py"
+        ],
+        "state_owner": "供应商 task id 与本地请求映射",
+        "contract": "授权、超时、重试和结果归一化",
+        "note": "本地 Provider Gateway 是路由适配，不是已部署的商业计费网关。",
+        "build_boundary": "本地 Python sidecar 内的供应商模块；远端服务是外部系统。"
+      },
+      {
+        "id": "device_sdk",
+        "label": "设备协议与移动 SDK",
+        "paths": [
+          "src/orca_mobile_device_sdk",
+          "src/orca_connectivity_moonraker",
+          "src/orca_connectivity_wondermaker",
+          "src/slic3r/Utils/PrintHost*",
+          "src/slic3r/Utils/Moonraker*"
+        ],
+        "evidence": [
+          "mobile_connectivity"
+        ],
+        "tests": [
+          "tests/mobile_sdk/*"
+        ],
+        "state_owner": "连接快照、CommandEnvelope 与设备能力",
+        "contract": "协议适配与业务命令分开；打印操作校验状态",
+        "note": "SDK 与桌面原生连接共同存在，不能用一个端口成功代替整链路验收。",
+        "build_boundary": "MobileDeviceSDK STATIC 与 MobileDeviceSDKShared SHARED；Moonraker/WonderMaker 适配各有 STATIC target，桌面还有原生 PrintHost 入口。"
+      },
+      {
+        "id": "mobile_slicing",
+        "label": "移动端原生切片接口",
+        "paths": [
+          "src/orca_mobile_slicing_sdk"
+        ],
+        "evidence": [
+          "mobile_slicing_entry"
+        ],
+        "tests": [
+          "tests/check_mobile_slicing_native.py",
+          "tests/test_mobile_preset_catalog.py"
+        ],
+        "state_owner": "调用方传入模型、预设与输出任务",
+        "contract": "通过原生核心目标复用切片",
+        "note": "不是另写一套切片算法；打包/平台验收独立。",
+        "build_boundary": "mobile-slicing/CMakeLists.txt 定义独立 SHARED SDK，链接 Core/SmartSlicingCore；本轮 Windows 桌面构建不证明 Android 产物可用。"
+      },
+      {
+        "id": "geometry",
+        "label": "模型与几何算法",
+        "paths": [
+          "src/libslic3r/Model*",
+          "src/libslic3r/TriangleMesh*",
+          "src/libslic3r/Mesh*",
+          "src/libslic3r/Geometry*",
+          "src/libslic3r/Polygon*",
+          "src/libslic3r/TextureToColor"
+        ],
+        "evidence": [
+          "native_model"
+        ],
+        "tests": [
+          "tests/libslic3r/test_model*",
+          "tests/libslic3r/test_trianglemesh*"
+        ],
+        "state_owner": "原生 Model / Mesh 与几何数据",
+        "contract": "纯几何运算不掌握供应商任务或账号令牌",
+        "note": "逻辑核心；目录内仍有多色/纹理算法，按用途维护。",
+        "build_boundary": "OrcaSlicer::Core（orca_slicer_core STATIC）；几何子目录不是独立组件。"
+      },
+      {
+        "id": "native_slice",
+        "label": "切片与 G-code 内核",
+        "paths": [
+          "src/libslic3r/Print*",
+          "src/libslic3r/GCode*",
+          "src/libslic3r/Fill",
+          "src/libslic3r/Support",
+          "src/libslic3r/Layer*",
+          "src/libslic3r/SLA"
+        ],
+        "evidence": [
+          "native_print"
+        ],
+        "tests": [
+          "tests/fff_print/*",
+          "tests/sla_print/*"
+        ],
+        "state_owner": "Print/PrintObject/Config 与原生切片结果",
+        "contract": "普通 Orca 行为在 AI 离线时仍可用",
+        "note": "不把全部 src/libslic3r 都当作 AI 模块。",
+        "build_boundary": "OrcaSlicer::Core（orca_slicer_core STATIC）；切片、G-code 共用该核心库。"
+      },
+      {
+        "id": "project_config",
+        "label": "3MF、预设与工程配置",
+        "paths": [
+          "src/libslic3r/Format",
+          "src/libslic3r/Preset*",
+          "src/libslic3r/Config*",
+          "src/libslic3r/AppConfig*",
+          "src/libslic3r/PrintConfig*"
+        ],
+        "evidence": [
+          "native_3mf"
+        ],
+        "tests": [
+          "tests/libslic3r/test_3mf*",
+          "tests/libslic3r/test_preset*",
+          "tests/libslic3r/test_config*"
+        ],
+        "state_owner": "原生工程文件与 preset/config",
+        "contract": "保存重开、作用域与兼容迁移保持可回归",
+        "note": "账号会话和 AI 任务诊断不混入 3MF。",
+        "build_boundary": "OrcaSlicer::Core（orca_slicer_core STATIC）；3MF、配置和预设不是独立进程。"
+      },
+      {
+        "id": "native_render",
+        "label": "3D 场景与预览",
+        "paths": [
+          "src/slic3r/GUI/GL*",
+          "src/slic3r/GUI/GCodeViewer*",
+          "src/slic3r/GUI/Scene*",
+          "src/libvgcode"
+        ],
+        "evidence": [
+          "native_scene"
+        ],
+        "tests": [
+          "tests/slic3rutils/test_model_preview*"
+        ],
+        "state_owner": "场景、相机、可视化缓存；不替代正式模型",
+        "contract": "模型与 G-code 的显示采用各自身份",
+        "note": "预览正确不证明生成质量或实体颜色正确。",
+        "build_boundary": "GLCanvas3D 等在 libslic3r_gui，另链接 libvgcode；依赖原生 OpenGL/窗口生命周期。"
+      },
+      {
+        "id": "native_cad",
+        "label": "参数化 CAD 与草图",
+        "paths": [
+          "src/libslic3r/CAD",
+          "src/slic3r/GUI/CAD"
+        ],
+        "evidence": [
+          "native_cad_document"
+        ],
+        "tests": [
+          "tests/libslic3r/test_sketch*",
+          "tests/slic3rutils/test_design*"
+        ],
+        "state_owner": "CadDocument / Sketch 与求解状态",
+        "contract": "依赖 SLVS/OCCT；输出回到原生模型",
+        "note": "当前默认 CAD 开启，依赖版本是构建契约的一部分。",
+        "build_boundary": "CAD 文档/算法在 OrcaSlicer::Core，CAD UI 在 libslic3r_gui；受 SLIC3R_CAD 构建选项控制。"
+      },
+      {
+        "id": "runtime",
+        "label": "桌面与本地 Sidecar 运行",
+        "paths": [
+          "src/slic3r/GUI/AIServiceManager*",
+          "src/slic3r/GUI/AISidecarClient*",
+          "tools/ai/orca_ai_sidecar.py"
+        ],
+        "evidence": [
+          "desktop_host",
+          "generation_transport"
+        ],
+        "tests": [
+          "tools/ai/test_sidecar_contract.py",
+          "tools/ai/test_sidecar_mock.py"
+        ],
+        "state_owner": "本地进程、连接认证与协议生命周期",
+        "contract": "C++ 桌面到 Python 的认证回环协议",
+        "note": "单个本地 Python 进程；不是拆成多个微服务。",
+        "build_boundary": "桌面 C++ 进程通过认证回环 HTTP 管理本地 Python sidecar；两侧协议和运行树需匹配。"
+      },
+      {
+        "id": "storage",
+        "label": "资产文件、历史与草稿",
+        "paths": [
+          "src/slic3r/GUI/AIModelOutputDirectory.hpp",
+          "tools/ai/model_job_repository.py",
+          "tools/ai/model_job_lifecycle.py",
+          "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryExport*",
+          "src/slic3r/GUI/AI/ModelGeneration/WorkbenchHistory*"
+        ],
+        "evidence": [
+          "history",
+          "restore",
+          "install_model_storage"
+        ],
+        "tests": [
+          "tools/ai/test_artifact_restart_recovery.py",
+          "tests/slic3rutils/test_model_generation*"
+        ],
+        "state_owner": "用户数据目录、任务身份与文件指纹",
+        "contract": "模型默认位于用户 data_dir/models，保留迁移原件",
+        "note": "模型库目录、草稿、正式作品、原生工程有不同生命周期。",
+        "build_boundary": "文件策略跨 C++ GUI 和 Python job repository；用户数据目录不是独立存储服务。"
+      },
+      {
+        "id": "dfx",
+        "label": "DFX 诊断与可靠性",
+        "paths": [
+          "tools/ai/ai_diagnostics.py",
+          "src/slic3r/GUI/AIServiceManager.cpp",
+          "src/slic3r/GUI/GUI_App.cpp",
+          "scripts/run_beauty_model_regression.py",
+          "scripts/beauty_color_quality.py",
+          "scripts/dev_runtime.py",
+          "src/libslic3r/Utils.hpp"
+        ],
+        "evidence": [
+          "diagnostic_events"
+        ],
+        "tests": [
+          "tools/ai/test_ai_diagnostics.py",
+          "tools/ai/test_diagnostic_failure_flow.py",
+          "scripts/test_dev_runtime.py"
+        ],
+        "state_owner": "AI 诊断 ID、原生日志、性能与回归证据分散在不同入口",
+        "contract": "记录失败和版本；不持有业务状态真值",
+        "note": "横切于全部业务。已有日志与回归入口；跨进程关联、性能基线和可靠性预算尚需统一，不能视为已完成的独立平台。",
+        "build_boundary": "横跨原生 C++、Python sidecar 与 scripts；没有单独 DFX 库/进程。"
+      },
+      {
+        "id": "engineering",
+        "label": "构建、边界与发布保障",
+        "paths": [
+          "scripts",
+          "src/CMakeLists.txt",
+          "src/libslic3r/CMakeLists.txt",
+          "src/slic3r/CMakeLists.txt",
+          "tools/ai/model_runtime_files.cmake",
+          "CMakeLists.txt",
+          "mobile-slicing"
+        ],
+        "evidence": [
+          "atomic_runtime",
+          "architecture_gate"
+        ],
+        "tests": [
+          "scripts/test_architecture*",
+          "scripts/test_package*"
+        ],
+        "state_owner": "源码、依赖、产物身份和检查结果",
+        "contract": "构建、安装、检查保持可复现；发布另按授权",
+        "note": "图和测试是不同证据。门禁应发现图谱失效与禁止依赖。",
+        "build_boundary": "构建/诊断脚本与 CI 工具，执行于开发机或 CI；不属于产品运行时服务。"
+      },
+      {
+        "id": "native_tools",
+        "label": "原生编辑、配置与设备界面",
+        "paths": [
+          "src/slic3r/GUI"
+        ],
+        "evidence": [],
+        "tests": [],
+        "directory_default": true,
+        "state_owner": "原生 GUI 的视图、交互及工作区状态；目录内还有多个细分系统",
+        "contract": "原生工具、预设面板、设备管理与共享控件的目录导航",
+        "build_boundary": "libslic3r_gui STATIC；其中多个 UI 子系统仍共同构建。",
+        "note": "按最长目录前缀兜底归属；明确能力优先。尚未逐文件审查，不能作为完整业务边界或独立可测试组件。"
+      },
+      {
+        "id": "ai_support",
+        "label": "AI 共享叶子与宿主支持",
+        "paths": [
+          "tools/ai",
+          "src/slic3r/AI",
+          "src/slic3r/GUI/AI"
+        ],
+        "evidence": [],
+        "tests": [],
+        "directory_default": true,
+        "state_owner": "各图像、模型处理或 GUI 叶子自行持有局部处理状态",
+        "contract": "尚未单独命名的 AI 叶子入口；后续随需求逐项细分",
+        "build_boundary": "tools/ai 在本地 Python sidecar；GUI/AI 在 libslic3r_gui，二者不是同一个部署边界。",
+        "note": "按最长目录前缀兜底归属；明确能力优先。尚未逐文件审查，不能作为完整业务边界或独立可测试组件。"
+      },
+      {
+        "id": "core_support",
+        "label": "原生算法与内核支持",
+        "paths": [
+          "src/libslic3r"
+        ],
+        "evidence": [],
+        "tests": [],
+        "directory_default": true,
+        "state_owner": "几何、路径、纹理、执行与算法的局部数据结构",
+        "contract": "原生内核中尚未独立细分的算法与公共设施",
+        "build_boundary": "主要进入 OrcaSlicer::Core；部分 CGAL 代码有辅助 STATIC target。",
+        "note": "按最长目录前缀兜底归属；明确能力优先。尚未逐文件审查，不能作为完整业务边界或独立可测试组件。"
+      },
+      {
+        "id": "native_platform",
+        "label": "原生入口、网络与平台支持",
+        "paths": [
+          "src"
+        ],
+        "evidence": [],
+        "tests": [],
+        "directory_default": true,
+        "state_owner": "应用启动、系统服务、网络与插件的各自状态",
+        "contract": "源码根及 Utils/plugin 等剩余平台目录的导航",
+        "build_boundary": "跨应用入口、GUI utility 及平台库；不能视为独立平台进程。",
+        "note": "按最长目录前缀兜底归属；明确能力优先。尚未逐文件审查，不能作为完整业务边界或独立可测试组件。"
+      }
+    ],
+    "scenarios": [
+      {
+        "id": "change_color",
+        "label": "修改 3D 配色／人像处理",
+        "capabilities": [
+          "beauty_ui",
+          "beauty_session",
+          "contracts",
+          "orca_adapter",
+          "geometry",
+          "native_render",
+          "storage"
+        ],
+        "verify": "先验证原始颜色、候选与物理耗材交接，再覆盖撤销、保存重开和历史恢复；真实视觉与实体打印分开验收。"
+      },
+      {
+        "id": "change_provider",
+        "label": "新增或修改 AI 供应商",
+        "capabilities": [
+          "model_jobs",
+          "providers",
+          "runtime",
+          "creation_ui",
+          "dfx"
+        ],
+        "verify": "覆盖确认、超时、取消、重复请求、下载与恢复；禁止隐式付费重试。"
+      },
+      {
+        "id": "change_account",
+        "label": "修改账号／登录",
+        "capabilities": [
+          "account_ui",
+          "identity",
+          "runtime",
+          "dfx"
+        ],
+        "verify": "覆盖回调校验、取消后的迟到结果、刷新与重启；确认未混用设备与供应商凭据。"
+      },
+      {
+        "id": "change_asset",
+        "label": "修改模型库／历史",
+        "capabilities": [
+          "assets_ui",
+          "library_app",
+          "storage",
+          "beauty_session",
+          "project_config"
+        ],
+        "verify": "覆盖模型身份、旧历史迁移、目录权限、导出副本、保存重开和失败恢复。"
+      },
+      {
+        "id": "change_slice",
+        "label": "修改切片／打印参数",
+        "capabilities": [
+          "smart_slicing",
+          "orca_adapter",
+          "native_slice",
+          "project_config",
+          "printer_ui"
+        ],
+        "verify": "覆盖 WorkspaceRevision 失效、候选隔离、显式应用、一次撤销、原生 G-code 与普通 Orca 回归。"
+      }
+    ],
+    "overview_spec": {
+      "schema_version": 1,
+      "diagram_type": "architecture",
+      "meta": {
+        "title": "Orca 产品平台 · 业务到内核",
+        "locale": "zh-CN",
+        "quality_profile": "showcase",
+        "viewBox": [
+          1180,
+          475
+        ],
+        "legend": {
+          "mode": "hidden"
+        }
+      },
+      "components": [
+        {
+          "id": "native_workspace",
+          "type": "frontend",
+          "label": "原生设计与打印",
+          "sublabel": "编辑 · 准备 · 切片 · 预览",
+          "pos": [
+            70,
+            42
+          ],
+          "size": [
+            290,
+            61
+          ]
+        },
+        {
+          "id": "ai_workspace",
+          "type": "frontend",
+          "label": "AI 创作与 3D 后处理",
+          "sublabel": "图文生成 · 美颜 · 配色",
+          "pos": [
+            445,
+            42
+          ],
+          "size": [
+            290,
+            61
+          ]
+        },
+        {
+          "id": "asset_account",
+          "type": "frontend",
+          "label": "模型库与账号",
+          "sublabel": "作品管理 · 登录与会话",
+          "pos": [
+            820,
+            42
+          ],
+          "size": [
+            290,
+            61
+          ]
+        },
+        {
+          "id": "application_state",
+          "type": "backend",
+          "label": "应用编排与状态",
+          "sublabel": "任务 · 会话 · 候选与撤销",
+          "pos": [
+            445,
+            154
+          ],
+          "size": [
+            290,
+            64
+          ]
+        },
+        {
+          "id": "diagnostics",
+          "type": "backend",
+          "label": "DFX 与工程保障",
+          "sublabel": "诊断 · 可靠性 · 定向回归",
+          "pos": [
+            70,
+            260
+          ],
+          "size": [
+            290,
+            64
+          ]
+        },
+        {
+          "id": "integration_ports",
+          "type": "backend",
+          "label": "共享契约与接入适配",
+          "sublabel": "产物 · 工作区 · 供应商 · 设备",
+          "pos": [
+            445,
+            260
+          ],
+          "size": [
+            290,
+            64
+          ]
+        },
+        {
+          "id": "native_kernel",
+          "type": "backend",
+          "label": "Orca 内核",
+          "sublabel": "几何 · CAD · 配置 · G-code",
+          "pos": [
+            70,
+            376
+          ],
+          "size": [
+            290,
+            61
+          ]
+        },
+        {
+          "id": "local_runtime",
+          "type": "backend",
+          "label": "本地运行与资产存储",
+          "sublabel": "Python Sidecar · 文件与历史",
+          "pos": [
+            445,
+            376
+          ],
+          "size": [
+            290,
+            61
+          ]
+        },
+        {
+          "id": "device_adapters",
+          "type": "external",
+          "label": "供应商与打印设备",
+          "sublabel": "外部 AI · OAuth · 打印协议",
+          "pos": [
+            820,
+            376
+          ],
+          "size": [
+            290,
+            61
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "from": "native_workspace",
+          "to": "application_state",
+          "label": "原生操作"
+        },
+        {
+          "from": "ai_workspace",
+          "to": "application_state",
+          "label": "创作与编辑",
+          "labelDy": 24
+        },
+        {
+          "from": "asset_account",
+          "to": "application_state",
+          "label": "资产与身份"
+        },
+        {
+          "from": "application_state",
+          "to": "integration_ports",
+          "label": "明确的命令和结果",
+          "labelDy": 24
+        },
+        {
+          "from": "application_state",
+          "to": "diagnostics",
+          "label": "诊断与验证"
+        },
+        {
+          "from": "integration_ports",
+          "to": "native_kernel",
+          "label": "显式应用与撤销"
+        },
+        {
+          "from": "integration_ports",
+          "to": "local_runtime",
+          "label": "认证本地调用",
+          "labelDy": 24
+        },
+        {
+          "from": "integration_ports",
+          "to": "device_adapters",
+          "label": "外部协议"
+        }
+      ],
+      "cards": [
+        {
+          "dot": "slate",
+          "title": "阅读方式",
+          "items": [
+            "逻辑职责分层；不表示已独立部署或编译。",
+            "具体源码、共享状态与验证入口在交互全景中下钻。"
+          ]
+        }
+      ]
+    }
+  },
+  "index_exclude": [
+    "tests/catch2",
+    "src/glad",
+    "scripts/experiments"
+  ]
 }

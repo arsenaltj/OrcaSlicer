@@ -151,11 +151,8 @@ void ModelGenerationPanel::preview_model_finishing()
     }
     auto before = m_finishing_workbench
         ? std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate()) : nullptr;
-    if (before && m_finishing_candidate.empty() && !m_beauty_session_source) {
-        m_beauty_session_source = before;
-        m_beauty_session_undo_base = m_beauty_transactions ? m_beauty_transactions->undo_count() : 0;
-        m_beauty_session_file_base = m_beauty_candidate_files.size();
-    }
+    if (before && m_finishing_candidate.empty() && !m_beauty_session.source())
+        m_beauty_session.start_draft(before);
     if (m_finishing_candidate.empty() || m_finishing_workbench) {
         m_finishing_selection_state = m_model_preview->selection_state();
         m_finishing_restore_selection = [this, selection_state = m_finishing_selection_state] {
@@ -461,7 +458,7 @@ void ModelGenerationPanel::preview_model_finishing()
                 self->m_finishing_candidate_original_appearance = self->m_model_preview->original_appearance_reference();
                 self->m_finishing_candidate_original_appearance_error = self->m_model_preview->original_appearance_error();
                 if (boost::filesystem::is_regular_file(appearance_carrier))
-                    self->m_beauty_candidate_files.push_back(appearance_carrier);
+                    self->m_beauty_session.track_candidate(appearance_carrier);
                 if (self->m_finishing_workbench)
                     self->m_model_preview->set_selection_preview_suppressed(true);
                 if (self->m_beauty_transactions) self->m_beauty_transactions->finish(true, true);

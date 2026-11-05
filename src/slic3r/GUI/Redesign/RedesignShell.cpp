@@ -583,6 +583,44 @@ private:
 
 class StylePickerPopup;
 
+wxFont provider_status_font(wxWindow* window)
+{
+    wxFont font = window->GetFont();
+    font.SetPointSize(9);
+    font.SetWeight(wxFONTWEIGHT_MEDIUM);
+    return font;
+}
+
+wxSize provider_status_size(wxWindow* window, const wxString& caption, bool ready)
+{
+    wxClientDC dc(window);
+    dc.SetFont(provider_status_font(window));
+    return wxSize(std::max(window->FromDIP(70), dc.GetTextExtent(caption).x +
+                          window->FromDIP(16 + (ready ? 18 : 0))), window->FromDIP(22));
+}
+
+void paint_provider_status(wxDC& dc, wxGraphicsContext& gc, wxWindow* window,
+                           const wxPoint& position, const wxString& caption, bool ready)
+{
+    // Figma 110:15802: 22 DIP capsule, 8 DIP padding, 14 DIP icon and 4 DIP gap.
+    const wxSize size = provider_status_size(window, caption, ready);
+    gc.SetPen(*wxTRANSPARENT_PEN);
+    gc.SetBrush(wxBrush(wxColour(40, 40, 41)));
+    gc.DrawRoundedRectangle(position.x, position.y, size.x, size.y, size.y / 2.0);
+    int text_x = position.x + window->FromDIP(8);
+    if (ready) {
+        static const wxImage icon = resource_image("redesign_provider_configured.png");
+        const int icon_size = window->FromDIP(14);
+        if (icon.IsOk())
+            gc.DrawBitmap(wxBitmap(icon.Scale(icon_size, icon_size, wxIMAGE_QUALITY_HIGH)),
+                          text_x, position.y + (size.y - icon_size) / 2.0, icon_size, icon_size);
+        text_x += window->FromDIP(18);
+    }
+    dc.SetFont(provider_status_font(window));
+    dc.SetTextForeground(wxColour(204, 204, 204));
+    dc.DrawText(caption, text_x, position.y + (size.y - dc.GetTextExtent(caption).y) / 2);
+}
+
 class StylePicker final : public wxPanel {
 public:
     using SelectionChanged = std::function<void(int)>;
@@ -664,6 +702,7 @@ public:
     int choice_count() const { return static_cast<int>(m_choices.size()); }
 
     void set_choices(wxArrayString choices, int selection);
+    void set_status(const wxString& caption, bool ready);
 
     void set_interactive(bool interactive)
     {
@@ -726,6 +765,12 @@ private:
         if (m_selection >= 0 && m_selection < static_cast<int>(m_choices.size())) {
             const wxSize extent = dc.GetTextExtent(m_choices[m_selection]);
             dc.DrawText(m_choices[m_selection], text_x, (size.y - extent.y) / 2);
+            if (!m_status_caption.empty()) {
+                const wxSize badge_size = provider_status_size(this, m_status_caption, m_status_ready);
+                paint_provider_status(dc, *gc, this,
+                    wxPoint(text_x + extent.x + FromDIP(12), (size.y - badge_size.y) / 2),
+                    m_status_caption, m_status_ready);
+            }
         }
 
         const int arrow_x = size.x - FromDIP(20);
@@ -741,6 +786,8 @@ private:
     void select_from_popup(int selection);
 
     wxArrayString m_choices;
+    wxString m_status_caption;
+    bool m_status_ready { false };
     SelectionChanged m_on_selection;
     int m_selection { 0 };
     StylePickerPopup* m_popup { nullptr };
@@ -774,23 +821,51 @@ public:
                                                wxALIGN_CENTER_VERTICAL);
             row_label->SetBackgroundColour(row_face);
             style_text(row_label, selected ? accent_colour() : primary_text_colour(), 10);
-            row_sizer->Add(row_label, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, owner->FromDIP(16));
+            const bool show_status = selected && !owner->m_status_caption.empty();
+            row_sizer->Add(row_label, show_status ? 0 : 1, wxALIGN_CENTER_VERTICAL | wxLEFT, owner->FromDIP(16));
+            wxPanel* badge = nullptr;
+            if (show_status) {
+                badge = new wxPanel(row, wxID_ANY, wxDefaultPosition,
+                                    provider_status_size(owner, owner->m_status_caption, owner->m_status_ready));
+                badge->SetBackgroundStyle(wxBG_STYLE_PAINT);
+                badge->SetBackgroundColour(row_face);
+                badge->SetFont(owner->GetFont());
+                badge->Bind(wxEVT_PAINT, [badge, caption = owner->m_status_caption,
+                                        ready = owner->m_status_ready](wxPaintEvent&) {
+                    wxAutoBufferedPaintDC dc(badge);
+                    dc.SetBackground(wxBrush(badge->GetBackgroundColour()));
+                    dc.Clear();
+                    auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
+                    if (gc) paint_provider_status(dc, *gc, badge, wxPoint(0, 0), caption, ready);
+                });
+                const int selection = static_cast<int>(index);
+                badge->Bind(wxEVT_LEFT_UP, [this, selection](wxMouseEvent&) { choose(selection); });
+                row_sizer->Add(badge, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, owner->FromDIP(12));
+            }
             row->SetSizer(row_sizer);
             const int selection = static_cast<int>(index);
             row->Bind(wxEVT_LEFT_UP, [this, selection](wxMouseEvent&) { choose(selection); });
             row_label->Bind(wxEVT_LEFT_UP, [this, selection](wxMouseEvent&) { choose(selection); });
-            auto set_hover = [row, row_label, selected](bool hover) {
+            auto set_hover = [row, row_label, badge, selected](bool hover) {
                 const wxColour face = hover ? wxColour(53, 53, 57) :
                                       selected ? wxColour(56, 52, 39) : wxColour(38, 38, 38);
                 row->SetBackgroundColour(face);
                 row_label->SetBackgroundColour(face);
                 row->Refresh();
                 row_label->Refresh();
+                if (badge) {
+                    badge->SetBackgroundColour(face);
+                    badge->Refresh();
+                }
             };
             row->Bind(wxEVT_ENTER_WINDOW, [set_hover](wxMouseEvent& event) { set_hover(true); event.Skip(); });
             row->Bind(wxEVT_LEAVE_WINDOW, [set_hover](wxMouseEvent& event) { set_hover(false); event.Skip(); });
             row_label->Bind(wxEVT_ENTER_WINDOW, [set_hover](wxMouseEvent& event) { set_hover(true); event.Skip(); });
             row_label->Bind(wxEVT_LEAVE_WINDOW, [set_hover](wxMouseEvent& event) { set_hover(false); event.Skip(); });
+            if (badge) {
+                badge->Bind(wxEVT_ENTER_WINDOW, [set_hover](wxMouseEvent& event) { set_hover(true); event.Skip(); });
+                badge->Bind(wxEVT_LEAVE_WINDOW, [set_hover](wxMouseEvent& event) { set_hover(false); event.Skip(); });
+            }
             content->Add(row, 0, wxEXPAND);
         }
         content->AddSpacer(owner->FromDIP(10));
@@ -856,6 +931,18 @@ void StylePicker::set_choices(wxArrayString choices, int selection)
         m_selection = -1;
     else
         m_selection = std::clamp(selection, 0, static_cast<int>(m_choices.size()) - 1);
+    Refresh();
+}
+
+void StylePicker::set_status(const wxString& caption, bool ready)
+{
+    if (m_status_caption == caption && m_status_ready == ready) return;
+    if (m_popup != nullptr) {
+        m_popup->Destroy();
+        m_popup = nullptr;
+    }
+    m_status_caption = caption;
+    m_status_ready = ready;
     Refresh();
 }
 
@@ -2676,9 +2763,10 @@ void RedesignShell::refresh_provider_choice(bool geometry_mode)
     auto* provider = static_cast<StylePicker*>(m_provider_choice);
     const int current = provider->selection();
     const int selection = current == 1 ? 1 : 0;
+    wxString status_text;
+    bool status_ready = false;
     if (m_smart_creation && geometry_mode) {
         const std::string selected_provider = selection == 1 ? "yoyoclaw" : "tripo";
-        wxString status_text;
         switch (static_cast<AIServiceStatus>(m_last_service_status)) {
         case AIServiceStatus::Checking: status_text = text("检测中"); break;
         case AIServiceStatus::Reconnecting: status_text = text("重新连接中"); break;
@@ -2688,8 +2776,10 @@ void RedesignShell::refresh_provider_choice(bool geometry_mode)
             if (m_provider_catalog.role != "geometry" || m_provider_catalog.provider != selected_provider ||
                 m_provider_catalog.state.empty() || m_provider_catalog.state == "checking")
                 status_text = text("检测中");
-            else if (m_provider_catalog.ready())
+            else if (m_provider_catalog.ready()) {
                 status_text = m_provider_catalog.remotely_connected() ? text("已连接") : text("已配置");
+                status_ready = true;
+            }
             else if (m_provider_catalog.state == "not_configured")
                 status_text = text("未配置");
             else if (m_provider_catalog.state == "empty")
@@ -2698,9 +2788,9 @@ void RedesignShell::refresh_provider_choice(bool geometry_mode)
                 status_text = text("不可用");
             break;
         }
-        if (!status_text.empty()) choices[selection] += text(" · ") + status_text;
     }
     provider->set_choices(choices, selection);
+    provider->set_status(status_text, status_ready);
     if (m_provider_label != nullptr)
         m_provider_label->SetLabel(geometry_mode ? text("3D模型选择") : text("图像模型选择"));
 }
