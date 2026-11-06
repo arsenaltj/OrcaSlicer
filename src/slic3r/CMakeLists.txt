@@ -368,8 +368,7 @@ set(SLIC3R_GUI_SOURCES
     GUI/Jobs/UpgradeNetworkJob.cpp
     GUI/Jobs/UpgradeNetworkJob.hpp
     GUI/Jobs/Worker.hpp
-    GUI/AIAssistantConfig.cpp
-    GUI/AIAssistantConfig.hpp
+    GUI/AIAssistantConfig.cpp GUI/AIAssistantConfig.hpp
     GUI/AIAssistantPanel.cpp
     GUI/AIAssistantPanel.hpp
     GUI/AI/Orca/OrcaOfficialSliceGateway.hpp
@@ -848,6 +847,7 @@ set(SLIC3R_GUI_SOURCES
     Utils/QidiPrinterAgent.hpp
     Utils/SnapmakerPrinterAgent.cpp
     Utils/SnapmakerPrinterAgent.hpp
+    Utils/HonorForgeDiscovery.cpp Utils/HonorForgeDiscovery.hpp Utils/HonorForgePrinterAgent.cpp Utils/HonorForgePrinterAgent.hpp
     Utils/MoonrakerPrinterAgent.cpp
     Utils/MoonrakerPrinterAgent.hpp
     Utils/Moonraker.cpp

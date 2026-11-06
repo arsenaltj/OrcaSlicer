@@ -10,6 +10,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -29,6 +30,7 @@ public:
 
     static AgentInfo get_agent_info_static();
     AgentInfo        get_agent_info() override { return get_agent_info_static(); }
+    PrinterAgentTraits get_traits() const override { return get_agent_info_static().traits; }
 
     // Cloud Agent Dependency
     void set_cloud_agent(std::shared_ptr<ICloudServiceAgent> cloud) override;
@@ -70,6 +72,8 @@ public:
     // Pull-mode agent (on-demand filament sync)
     FilamentSyncMode get_filament_sync_mode() const override { return FilamentSyncMode::pull; }
     bool fetch_filament_info(std::string dev_id, FilamentSyncMode sync_mode = FilamentSyncMode::pull) override;
+    CameraStreamMode get_camera_stream_mode() const override;
+    std::string get_camera_url() const override;
 
 protected:
     struct MoonrakerDeviceInfo
@@ -81,10 +85,23 @@ protected:
         std::string model_id;
         std::string model_name;
         std::string dev_name;
+        std::string name_source;
         std::string version;
         std::string klippy_state;
         bool        use_ssl = false;
     } device_info;
+
+    struct MoonrakerWebcamInfo
+    {
+        CameraStreamMode mode {CameraStreamMode::none};
+        std::string name;
+        std::string stream_url;
+        std::string snapshot_url;
+    };
+
+    static bool parse_webcam_info(const nlohmann::json& response, const std::string& base_url,
+                                  MoonrakerWebcamInfo& info);
+    std::string resolve_upload_filename(const PrintParams& params, const std::string& source_path);
 
     // Copied when the stream starts, so changes apply to the next start_status_stream()
     struct StatusStreamTimings
@@ -122,6 +139,15 @@ protected:
                                    MoonrakerDeviceInfo&         info,
                                    std::string&                 error,
                                    const std::function<bool()>& cancelled) const;
+    bool fetch_device_info_with_timeout(const std::string&           base_url,
+                                        const std::string&           api_key,
+                                        MoonrakerDeviceInfo&         info,
+                                        std::string&                 error,
+                                        const std::function<bool()>& cancelled,
+                                        long                         connect_timeout_seconds,
+                                        long                         total_timeout_seconds,
+                                        bool                         require_protocol_identity = false) const;
+    bool emit_discovered_device(const MoonrakerDeviceInfo& info, const std::string& source);
     void start_status_stream(const std::string& dev_id, const std::string& base_url, const std::string& api_key);
     void stop_status_stream();
 
@@ -130,7 +156,7 @@ protected:
 
     // Helpers
     bool        is_numeric(const std::string& value);
-    std::string normalize_base_url(bool use_ssl, const std::string& host, const std::string& port);
+    std::string normalize_base_url(bool use_ssl, const std::string& host, const std::string& port) const;
     std::string sanitize_filename(const std::string& filename);
     std::string join_url(const std::string& base_url, const std::string& path) const;
 
@@ -150,7 +176,9 @@ private:
                   const std::string&           api_key,
                   const std::function<bool()>& cancelled,
                   nlohmann::json&              json,
-                  std::string&                 error) const;
+                  std::string&                 error,
+                  long                         connect_timeout_seconds = 5,
+                  long                         total_timeout_seconds = 10) const;
     bool fetch_object_list(const std::string& base_url, const std::string& api_key, std::set<std::string>& objects, std::string& error) const;
     bool fetch_has_free_storage(const std::string& base_url, const std::string& api_key, bool& has_free, std::string& error) const;
     bool query_printer_status(const std::string&           base_url,
@@ -158,6 +186,9 @@ private:
                               nlohmann::json&              status,
                               std::string&                 error,
                               const std::function<bool()>& cancelled) const;
+    bool fetch_webcam_info(const std::string& base_url, const std::string& api_key,
+                           MoonrakerWebcamInfo& info, std::string& error,
+                           const std::function<bool()>& cancelled) const;
     bool send_gcode_sync(const std::string& dev_id, const std::string& gcode) const;
     void send_gcode_async(const std::string& dev_id, const std::string& gcode,
                           std::function<void(bool)> on_result = {}) const;
@@ -174,6 +205,7 @@ private:
     void dispatch_status(const std::string& dev_id);
     // Re-reads whether the gcodes root has free space, and returns whether the answer changed
     bool refresh_storage(const std::string& base_url, const std::string& api_key);
+    bool refresh_print_metadata(const std::string& dev_id, const std::string& base_url, const std::string& api_key);
     void update_status_cache(const nlohmann::json& updates);
     nlohmann::json build_print_payload_locked() const;
 
@@ -225,6 +257,11 @@ private:
 
     mutable std::recursive_mutex payload_mutex;
     nlohmann::json     status_cache;
+    std::string        metadata_filename;
+    std::optional<double> metadata_estimated_seconds;
+    std::chrono::steady_clock::time_point metadata_last_attempt;
+    mutable std::string active_extruder_log_key;
+    mutable std::string remaining_time_log_source;
 
     std::atomic<int>       next_jsonrpc_id{1};
     std::set<std::string>  available_objects;  // Track for feature detection
@@ -247,6 +284,7 @@ private:
     std::atomic<uint64_t>  connect_generation{0};
     std::thread            connect_thread;
     std::recursive_mutex   connect_mutex;
+    MoonrakerWebcamInfo    webcam_info;
 };
 
 } // namespace Slic3r

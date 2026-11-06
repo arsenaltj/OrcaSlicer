@@ -158,11 +158,20 @@ enum class CalibKind : int
 
 class MainFrame : public DPIFrame
 {
+    enum class ClosePhase {
+        Idle,
+        WaitingForPrinterTransfer,
+        ShuttingDown
+    };
+
 #ifdef __APPLE__
     bool     m_mac_fullscreen{false};
 #endif
     bool     m_loaded {false};
     wxTimer* m_reset_title_text_colour_timer{ nullptr };
+    wxTimer  m_close_poll_timer;
+    ClosePhase m_close_phase{ ClosePhase::Idle };
+    bool       m_close_confirmed{ false };
     IdleScheduler         m_idle;
     bool                  m_prebuild_started{ false };
     // Loads the Prepare canvas's GL resources while its page is hidden.

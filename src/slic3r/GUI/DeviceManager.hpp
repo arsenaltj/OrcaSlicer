@@ -246,6 +246,9 @@ public:
     // e.g. if the current printer agent is elegoo, we shouldn't show printers connected by BBL printer agent
     // under local machines.
     std::string printer_agent_id;
+    // Runtime-only evidence that this device arrived through the active agent's
+    // network discovery callback. A configured PrintHost does not set this flag.
+    bool discovered_on_network {false};
 
     std::string   get_show_printer_type() const;
     PrinterSeries get_printer_series() const;

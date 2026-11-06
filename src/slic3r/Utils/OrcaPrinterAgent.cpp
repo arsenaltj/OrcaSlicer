@@ -92,7 +92,11 @@ int OrcaPrinterAgent::set_user_selected_machine(std::string dev_id)
 // ============================================================================
 AgentInfo OrcaPrinterAgent::get_agent_info_static()
 {
-    return AgentInfo{ORCA_PRINTER_AGENT_ID, "Orca", OrcaPrinterAgent_VERSION, "Orca Printer Communication Protocol Agent"};
+    PrinterAgentTraits traits;
+    traits.supports_upload_only = false;
+    traits.supports_upload_and_print = false;
+    return AgentInfo{ORCA_PRINTER_AGENT_ID, "Orca", OrcaPrinterAgent_VERSION,
+                     "Orca Printer Communication Protocol Agent", traits};
 }
 
 // ============================================================================

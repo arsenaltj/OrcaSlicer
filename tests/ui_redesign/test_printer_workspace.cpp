@@ -23,6 +23,9 @@ PrinterWorkspaceSnapshot printing()
     state.can_stop = true;
     state.can_print = true;
     state.native_dispatch = true;
+    state.transfer_target_ready = true;
+    state.supports_upload_only = true;
+    state.supports_upload_and_print = true;
     state.gcode_ready = true;
     return state;
 }
@@ -64,9 +67,9 @@ TEST_CASE("Print review preserves offline export and requires a current slice", 
     CHECK_FALSE(printer_can_review(state));
     state.slicing = false;
     state.phase = PrinterTaskPhase::Printing;
-    CHECK_FALSE(printer_can_review(state));
+    CHECK(printer_can_review(state));
     state.phase = PrinterTaskPhase::Paused;
-    CHECK_FALSE(printer_can_review(state));
+    CHECK(printer_can_review(state));
     state.phase = PrinterTaskPhase::Complete;
     CHECK(printer_can_review(state));
     state.gcode_ready = false;
@@ -154,6 +157,65 @@ TEST_CASE("Configured print hosts retain the existing dispatch path", "[UiRedesi
     CHECK_FALSE(printer_can_start(state));
 }
 
+TEST_CASE("Printer transfer actions require a real ready device", "[UiRedesign][PrinterWorkspace]")
+{
+    auto state = printing();
+    REQUIRE(printer_can_upload(state));
+    CHECK_FALSE(printer_can_upload_and_print(state));
+    state.phase = PrinterTaskPhase::Idle;
+    REQUIRE(printer_can_upload(state));
+    REQUIRE(printer_can_upload_and_print(state));
+
+    state.device_id.clear();
+    state.transfer_target_ready = false;
+    CHECK_FALSE(printer_can_upload(state));
+    CHECK_FALSE(printer_can_upload_and_print(state));
+    state.device_id = "printer-a";
+    state.transfer_target_ready = true;
+    state.supports_upload_only = false;
+    CHECK_FALSE(printer_can_upload(state));
+    CHECK(printer_can_upload_and_print(state));
+    state.supports_upload_and_print = false;
+    CHECK_FALSE(printer_can_upload_and_print(state));
+}
+
+TEST_CASE("Upload-only stays available while a printer is busy", "[UiRedesign][PrinterWorkspace]")
+{
+    auto state = printing();
+    for (const auto phase : {PrinterTaskPhase::Preparing, PrinterTaskPhase::Printing, PrinterTaskPhase::Paused}) {
+        state.phase = phase;
+        CHECK(printer_can_review(state));
+        CHECK(printer_can_upload(state));
+        CHECK_FALSE(printer_can_upload_and_print(state));
+    }
+    state.connection.telemetry_age = std::chrono::milliseconds(15001);
+    CHECK_FALSE(printer_can_upload(state));
+}
+
+TEST_CASE("Print confirmation exposes upload choices only for the confirmed target", "[UiRedesign][PrinterWorkspace]")
+{
+    OrcaPrintTargetSnapshot target;
+    CHECK(orca_print_action_available(OrcaPrintAction::ExportLocal, target));
+    CHECK_FALSE(orca_print_action_available(OrcaPrintAction::UploadOnly, target));
+    CHECK_FALSE(orca_print_action_available(OrcaPrintAction::UploadAndPrint, target));
+
+    target.agent_id = "honor_forge";
+    target.device_id = "printer-a";
+    target.selected = target.online = target.connected = target.information_ready = true;
+    target.upload_only_available = true;
+    target.upload_and_print_available = true;
+    CHECK(orca_print_action_available(OrcaPrintAction::UploadOnly, target));
+    CHECK(orca_print_action_available(OrcaPrintAction::UploadAndPrint, target));
+    target.connected = false;
+    CHECK_FALSE(orca_print_action_available(OrcaPrintAction::UploadOnly, target));
+    CHECK_FALSE(orca_print_action_available(OrcaPrintAction::UploadAndPrint, target));
+
+    target = {};
+    target.legacy_print_host = true;
+    CHECK_FALSE(orca_print_action_available(OrcaPrintAction::UploadOnly, target));
+    CHECK(orca_print_action_available(OrcaPrintAction::UploadAndPrint, target));
+}
+
 TEST_CASE("Slice preparation never starts a printer job", "[UiRedesign][PrinterWorkspace]")
 {
     PrinterWorkspaceSnapshot state;
@@ -183,6 +245,16 @@ TEST_CASE("Printer status and missing telemetry stay explicit", "[UiRedesign][Pr
     CHECK_FALSE(state.remaining_seconds.has_value());
     CHECK_FALSE(state.filament_percent.has_value());
     CHECK_FALSE(state.nozzle_temperature.has_value());
+}
+
+TEST_CASE("Printer display names consistently include the discovered IP address", "[UiRedesign][PrinterWorkspace]")
+{
+    CHECK(printer_device_display_name("TM-T1", "10.80.218.120:7125") == "TM-T1 · 10.80.218.120");
+    CHECK(printer_device_display_name("TM-T1", "http://10.80.218.120:7125/") == "TM-T1 · 10.80.218.120");
+    CHECK(printer_device_display_name("", "10.80.218.120:7125") == "10.80.218.120");
+    CHECK(printer_device_display_name("TM-T1", "") == "TM-T1");
+    CHECK(printer_device_display_name("Honor Forge · 10.80.218.120", "10.80.218.120:7125") ==
+          "Honor Forge · 10.80.218.120");
 }
 
 TEST_CASE("Printer remaining time uses seconds and rounds partial minutes up", "[UiRedesign][PrinterWorkspace]")

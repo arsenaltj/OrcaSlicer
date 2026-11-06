@@ -3,10 +3,49 @@
 #include "slic3r/AI/SmartSlicing/Ports/IOrcaWorkspace.hpp"
 #include <optional>
 #include <chrono>
+#include <string>
 
 class wxWindow;
 namespace Slic3r::GUI {
 class Plater;
+enum class OrcaPrintAction { Cancel, ExportLocal, UploadOnly, UploadAndPrint };
+
+struct OrcaPrintTargetSnapshot {
+    std::string agent_id;
+    std::string device_id;
+    std::string device_name;
+    bool selected {false};
+    bool online {false};
+    bool connected {false};
+    bool information_ready {false};
+    bool printer_busy {false};
+    bool upload_only_available {false};
+    bool upload_and_print_available {false};
+    bool legacy_print_host {false};
+};
+
+inline bool orca_print_target_ready(const OrcaPrintTargetSnapshot& target) noexcept
+{
+    return target.selected && !target.agent_id.empty() && !target.device_id.empty() &&
+           target.online && target.connected && target.information_ready;
+}
+
+inline bool orca_print_action_available(OrcaPrintAction action,
+                                        const OrcaPrintTargetSnapshot& target) noexcept
+{
+    switch (action) {
+    case OrcaPrintAction::Cancel:
+    case OrcaPrintAction::ExportLocal:
+        return true;
+    case OrcaPrintAction::UploadOnly:
+        return !target.legacy_print_host && target.upload_only_available && orca_print_target_ready(target);
+    case OrcaPrintAction::UploadAndPrint:
+        return target.legacy_print_host ||
+               (target.upload_and_print_available && orca_print_target_ready(target));
+    }
+    return false;
+}
+
 enum class OrcaPrintConnectionState { Unconfigured, SelectionRequired, Unknown, Offline, Online };
 struct OrcaPrintConnectionFacts {
     bool native_backend {false};
@@ -80,7 +119,8 @@ inline bool orca_print_confirmation_revision_current(
     return current && *current == *confirmed;
 }
 
-// Read-only review followed by the existing native export/device confirmation.
-// This view owns no print job and never dispatches on opening.
-void show_orca_print_confirmation(wxWindow* parent, Plater& plater);
+// Read-only review that returns an explicit user action. This view owns no
+// print job and never dispatches on opening.
+OrcaPrintAction show_orca_print_confirmation(wxWindow* parent, Plater& plater,
+                                             const OrcaPrintTargetSnapshot& target);
 }

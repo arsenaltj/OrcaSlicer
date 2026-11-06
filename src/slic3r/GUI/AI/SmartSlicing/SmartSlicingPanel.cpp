@@ -1,8 +1,8 @@
 #include "SmartSlicingPanel.hpp"
 #include "slic3r/GUI/AI/AIWindowAppearance.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaModelPreparationPanel.hpp"
-#include "slic3r/GUI/AI/Orca/OrcaPrintConfirmation.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationInputStyle.hpp"
+#include "slic3r/GUI/Redesign/OrcaPrinterAdapter.hpp"
 #include "slic3r/GUI/Widgets/Label.hpp"
 #include <wx/statbmp.h>
 
@@ -509,7 +509,9 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
     if (plater) {
         m_confirm = action_button(m_footer, _L("查看打印确认…"));
         footer->Add(m_confirm, 0, wxEXPAND);
-        m_confirm->Bind(wxEVT_BUTTON, [this, plater](wxCommandEvent&) { show_orca_print_confirmation(this, *plater); });
+        m_confirm->Bind(wxEVT_BUTTON, [this, plater](wxCommandEvent&) {
+            OrcaPrinterAdapter(plater).review_print(this, true);
+        });
     }
     m_content->SetSizer(root);
     m_footer->SetSizer(footer);

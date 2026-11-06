@@ -22,6 +22,7 @@ add_executable(${_TEST_NAME}_tests
     test_creality_print.cpp
     test_dev_mapping.cpp
     test_device_access.cpp
+    test_honor_forge_discovery.cpp
     test_moonraker_printer_agent.cpp
     test_network_discovery.cpp
     test_filament_bitmap_utils.cpp

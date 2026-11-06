@@ -165,6 +165,14 @@ void PrintJob::process(Ctl &ctl)
     NetworkAgent* m_agent = wxGetApp().getAgent();
     AppConfig* config = wxGetApp().app_config;
 
+    if (!m_agent || !m_agent->get_printer_agent()) {
+        BOOST_LOG_TRIVIAL(error) << "[PrinterTransfer] upload_failed action=upload_and_print reason=agent_unavailable";
+        ctl.update_status(curr_percent, send_print_failed_str);
+        return;
+    }
+    const auto traits = m_agent->get_printer_agent()->get_traits();
+    const std::string agent_id = m_agent->get_printer_agent()->get_agent_info().id;
+
     if (this->connection_type == "lan") {
         msg = _u8L("Sending print job over LAN");
     }
@@ -231,6 +239,9 @@ void PrintJob::process(Ctl &ctl)
     }
 
     PartPlate* curr_plate = m_plater->get_partplate_list().get_curr_plate();
+    PartPlate* payload_plate = m_plater->get_partplate_list().get_plate(job_data.plate_idx);
+    if (!payload_plate)
+        payload_plate = curr_plate;
     if (curr_plate) {
         this->task_bed_type = bed_type_to_gcode_string(plate_data.is_valid ? plate_data.bed_type : curr_plate->get_bed_type(true));
     }
@@ -245,7 +256,8 @@ void PrintJob::process(Ctl &ctl)
     params.password = m_access_code;
 
     // check access code and ip address
-    if (this->connection_type == "lan" && m_print_type == "from_normal") {
+    if (this->connection_type == "lan" && m_print_type == "from_normal" &&
+        traits.requires_transfer_preflight) {
         bool emmc_ok = false;
         bool ftp_ok = false;
         if (could_emmc_print) {
@@ -292,6 +304,8 @@ void PrintJob::process(Ctl &ctl)
     params.dev_id               = m_dev_id;
     params.ftp_folder           = m_ftp_folder;
     params.filename             = job_data._3mf_path.string();
+    if (m_print_type == "from_normal" && payload_plate)
+        params.dst_file = payload_plate->get_tmp_gcode_path();
     params.config_filename      = job_data._3mf_config_path.string();
     params.plate_index          = curr_plate_idx;
     params.task_bed_leveling    = this->task_bed_leveling;
@@ -329,6 +343,13 @@ void PrintJob::process(Ctl &ctl)
     if (m_print_type == "from_sdcard_view") {
         params.dst_file = m_dst_path;
     }
+
+    const std::string payload_path = resolve_printer_job_payload_path(params, traits);
+    BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] payload_resolved action=upload_and_print agent=" << agent_id
+                            << " device_ref=" << std::hash<std::string>{}(m_dev_id)
+                            << " payload=" << printer_job_payload_name(traits.job_payload)
+                            << " storage_model=" << printer_storage_model_name(traits.storage_model)
+                            << " file=" << fs::path(payload_path).filename().string();
 
     if (wxGetApp().model().model_info && wxGetApp().model().model_info.get()) {
         ModelInfo* model_info = wxGetApp().model().model_info.get();
@@ -578,7 +599,23 @@ void PrintJob::process(Ctl &ctl)
             return true;
     };
 
-    if (m_print_type == "from_sdcard_view") {
+    if (m_print_type == "from_normal" &&
+        traits.storage_model == PrinterAgentTraits::StorageModel::VirtualGcodeRoot) {
+        ctl.update_status(curr_percent, _u8L("Sending print job over LAN"));
+        mark_lifecycle_started();
+        BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] upload_started action=upload_and_print agent=" << agent_id
+                                << " device_ref=" << std::hash<std::string>{}(m_dev_id);
+        result = m_agent->start_local_print(params, update_fn, cancel_fn);
+        if (result == BAMBU_NETWORK_SUCCESS) {
+            BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] print_start_result action=upload_and_print agent=" << agent_id
+                                    << " device_ref=" << std::hash<std::string>{}(m_dev_id)
+                                    << " result=" << result;
+        } else {
+            BOOST_LOG_TRIVIAL(error) << "[PrinterTransfer] print_start_result action=upload_and_print agent=" << agent_id
+                                     << " device_ref=" << std::hash<std::string>{}(m_dev_id)
+                                     << " result=" << result;
+        }
+    } else if (m_print_type == "from_sdcard_view") {
         BOOST_LOG_TRIVIAL(info) << "print_job: try to send with cloud, model is sdcard view";
         ctl.update_status(curr_percent, _u8L("Sending print job through cloud service"));
         mark_lifecycle_started();

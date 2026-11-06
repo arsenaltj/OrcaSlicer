@@ -3,6 +3,7 @@
 #include <boost/log/trivial.hpp>
 #include <mutex>
 #include <chrono>
+#include <cctype>
 #include "libslic3r/LifecycleEvents.hpp"
 #include <map>
 #include <cstdint>
@@ -17,6 +18,7 @@
 #include <utility>
 #include <vector>
 #include <set>
+#include <tuple>
 #include <wx/object.h>
 #include <wx/timer.h>
 #include "CloudProvider.hpp"
@@ -60,6 +62,39 @@ namespace {
             return code;
         }
         return "";
+    }
+
+    std::pair<std::string, int> honor_forge_endpoint(const std::string& address)
+    {
+        if (address.empty())
+            return {address, 0};
+        if (address.front() == '[') {
+            const size_t closing = address.find(']');
+            if (closing != std::string::npos && closing + 2 < address.size() && address[closing + 1] == ':') {
+                const std::string port_text = address.substr(closing + 2);
+                if (!port_text.empty() && std::all_of(port_text.begin(), port_text.end(),
+                        [](unsigned char value) { return std::isdigit(value) != 0; }))
+                    return {address.substr(1, closing - 1), std::stoi(port_text)};
+            }
+        }
+        const size_t separator = address.rfind(':');
+        if (separator != std::string::npos && separator + 1 < address.size()) {
+            const std::string port_text = address.substr(separator + 1);
+            if (std::all_of(port_text.begin(), port_text.end(),
+                    [](unsigned char value) { return std::isdigit(value) != 0; }))
+                return {address.substr(0, separator), std::stoi(port_text)};
+        }
+        return {address, 0};
+    }
+
+    std::tuple<bool, bool, bool, bool, int> honor_forge_device_rank(
+        Slic3r::MachineObject* machine, const std::string& id, const std::string& selected)
+    {
+        const auto endpoint = honor_forge_endpoint(machine && !machine->get_dev_ip().empty() ?
+            machine->get_dev_ip() : id);
+        const int port_rank = endpoint.second == 7125 ? 2 : endpoint.second == 80 ? 1 : 0;
+        return {id == selected, machine && machine->is_connected(),
+                machine && machine->m_push_count > 0, machine && machine->is_online(), port_rank};
     }
 }
 
@@ -275,14 +310,20 @@ namespace Slic3r
             std::string printer_signal  = j["dev_signal"].get<std::string>();
             std::string connect_type    = j["connect_type"].get<std::string>();
             std::string bind_state      = j["bind_state"].get<std::string>();
+            const bool discovered_on_network =
+                !j.contains("discovery_source") || j.value("discovery_source", std::string()) != "configured_host";
 
-            // Passive discovery must not replace another agent's saved binding.
-            if (get_current_printer_agent_id() == MOONRAKER_PRINTER_AGENT_ID) {
+            // Passive discovery must not replace another agent's saved binding when the
+            // active protocol family uses address-derived device identifiers.
+            const std::string active_agent_id = get_current_printer_agent_id();
+            const auto active_traits = NetworkAgentFactory::get_printer_agent_traits(active_agent_id);
+            if (active_traits.preserves_foreign_device_ownership) {
                 if (AppConfig* config = get_app_config()) {
                     const auto& machines = config->get_local_machines();
                     auto it = machines.find(dev_id);
-                    if (it != machines.end() && it->second.printer_agent_id != MOONRAKER_PRINTER_AGENT_ID) {
-                        BOOST_LOG_TRIVIAL(warning) << "Ignoring Moonraker discovery for a device owned by another agent: " << dev_id;
+                    if (it != machines.end() && it->second.printer_agent_id != active_agent_id) {
+                        BOOST_LOG_TRIVIAL(warning) << "Ignoring discovery for a device owned by another agent: agent="
+                                                   << active_agent_id << " device=" << dev_id;
                         return;
                     }
                 }
@@ -315,6 +356,7 @@ namespace Slic3r
                 // The response was obtained through the current agent, so move ownership with
                 // the entry; otherwise agent-scoped lists hide it after a preset switch.
                 it->second->printer_agent_id = get_current_printer_agent_id();
+                it->second->discovered_on_network = it->second->discovered_on_network || discovered_on_network;
                 if (it->second->get_dev_ip() != dev_ip ||
                     it->second->bind_state != bind_state ||
                     it->second->bind_sec_link != sec_link ||
@@ -350,6 +392,7 @@ namespace Slic3r
                 // A reused LAN entry may have been discovered while another printer agent was
                 // active. The current discovery message establishes ownership for this agent.
                 obj->printer_agent_id = get_current_printer_agent_id();
+                obj->discovered_on_network = obj->discovered_on_network || discovered_on_network;
 
                 if (obj->get_dev_ip().compare(dev_ip) != 0) {
                     if ( connection_name.empty() ) {
@@ -426,6 +469,7 @@ namespace Slic3r
                 obj = new MachineObject(this, m_agent, dev_name, dev_id, dev_ip);
                 obj->printer_type = _parse_printer_type(printer_type_str);
                 obj->printer_agent_id = get_current_printer_agent_id();
+                obj->discovered_on_network = discovered_on_network;
                 obj->wifi_signal = printer_signal;
                 obj->dev_connection_type = connect_type;
                 obj->bind_state     = bind_state;
@@ -848,6 +892,41 @@ namespace Slic3r
                 {
                     result.emplace(std::make_pair(it->first, it->second));
                 }
+            }
+        }
+
+        // Older Honor Forge discovery runs may have cached one entry for Moonraker's
+        // native 7125 endpoint and another for an HTTP proxy on port 80. They are one
+        // physical printer. Keep the selected/connected endpoint stable, otherwise
+        // prefer the native Moonraker endpoint. Other agents retain ID-level behavior.
+        if (agent_id == HONOR_FORGE_PRINTER_AGENT_ID && result.size() > 1) {
+            std::map<std::string, std::pair<std::string, MachineObject*>> by_host;
+            std::set<std::string> duplicates;
+            for (const auto& [id, machine] : result) {
+                const auto endpoint = honor_forge_endpoint(
+                    machine && !machine->get_dev_ip().empty() ? machine->get_dev_ip() : id);
+                const std::string host = endpoint.first.empty() ? id : endpoint.first;
+                auto current = by_host.find(host);
+                if (current == by_host.end()) {
+                    by_host.emplace(host, std::make_pair(id, machine));
+                    continue;
+                }
+                const auto candidate_rank = honor_forge_device_rank(machine, id, selected_machine);
+                const auto current_rank = honor_forge_device_rank(
+                    current->second.second, current->second.first, selected_machine);
+                if (candidate_rank > current_rank) {
+                    duplicates.insert(current->second.first);
+                    current->second = {id, machine};
+                } else {
+                    duplicates.insert(id);
+                }
+            }
+            for (const std::string& id : duplicates)
+                result.erase(id);
+            if (!duplicates.empty()) {
+                BOOST_LOG_TRIVIAL(debug) << "[PrinterDiscovery] cache_duplicates_filtered agent="
+                                         << agent_id << " removed_count=" << duplicates.size()
+                                         << " visible_count=" << result.size();
             }
         }
         return result;

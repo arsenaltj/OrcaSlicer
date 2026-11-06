@@ -30,7 +30,7 @@ DFX 按用户确认定义为**诊断、日志、故障定位、性能与可靠�
 | 智能切片 | `AI/SmartSlicing/{Domain,Application,Ports}`、`GUI/AI/SmartSlicing` | revision 约束候选；分析、试切、正式应用与撤销分开；AI 离线保留普通 Orca |
 | 账号 | `Redesign/AccountWorkspace*`、`Utils/HonorAccount/{HonorSession,HonorClient,HonorStore}*` | Session 管身份状态；异步 Task 隔离取消/晚到结果；应用配置和用户凭据分开 |
 | 模型库/资产 | `Redesign/AssetsWorkspace*`、`ModelLibraryApplication*`、Repository/Loader、`AIModelOutputDirectory.hpp` | 图库、任务产物、草稿、导出副本和 3MF 工程有不同生命周期；默认使用用户数据目录 |
-| 打印/设备 | 原生 Print/GCode、PrinterWorkspace/OrcaPrinterAdapter、`orca_mobile_device_sdk`、Moonraker/WonderMaker adapters | 导入、生成 G-code、传输和实物打印是不同结果；状态与协议能力独立校验 |
+| 打印/设备 | 原生 Print/GCode、PrinterWorkspace/OrcaPrinterAdapter、DeviceManager、SendJob/PrintJob、Honor Forge/Moonraker agent、`orca_mobile_device_sdk` | Honor Forge 使用独立 agent ID，mDNS/受控子网候选通过 Moonraker 探测后进入既有 DeviceManager；UI 只选择导出、仅上传或上传并打印，传输继续由既有 Job 和 agent 执行，raw G-code 与 3MF 能力按 agent 显式声明 |
 | CAD/原生编辑 | `libslic3r/CAD`、`GUI/CAD`、Model/Geometry、GLCanvas3D | CAD 文档与求解结果回到原生模型；SLVS/OCCT 版本和构建选项是依赖契约 |
 
 下面是业务语义链路，实际代码通过交互图中的锚点核对：

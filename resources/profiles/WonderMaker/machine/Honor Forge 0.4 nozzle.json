@@ -5,6 +5,7 @@
 	"from": "system",
 	"setting_id": "HonorForge6Head04",
 	"instantiation": "true",
+	"printer_agent": "honor_forge",
 	"printer_model": "Honor Forge",
 	"printer_variant": "0.4",
 	"nozzle_diameter": [
