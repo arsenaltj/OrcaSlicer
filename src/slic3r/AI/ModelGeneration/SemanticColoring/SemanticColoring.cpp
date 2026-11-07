@@ -718,7 +718,9 @@ std::string analysis_cache_key(const MeshSnapshot& source, const std::string& bo
 {
     if (source.geometry_id.empty() || source.content_id.empty() || body.empty() || face.empty()) return {};
     auto identity = nlohmann::json::array({pipeline_version, source.geometry_id, source.content_id,
-        source.mesh.indices.size(), body, face, "cpu-zbuffer-8x512-face-roi512-visible-source-samples-v2"});
+        source.mesh.indices.size(), body, face,
+        "cpu-zbuffer-8x" + std::to_string(global_view_size) + "-face-roi" +
+            std::to_string(production_face_roi_size) + "-visible-source-samples-v3"});
     if (!source.sampling_signature.empty()) identity.push_back(source.sampling_signature);
     return sha256(identity.dump());
 }
@@ -727,11 +729,12 @@ namespace {
 std::string diagnostic_analysis_key(const MeshSnapshot& source, const std::string& body,
                                     const std::string& face, int face_roi_size)
 {
-    if (face_roi_size == 512) return analysis_cache_key(source, body, face);
+    if (face_roi_size == production_face_roi_size) return analysis_cache_key(source, body, face);
     if (source.geometry_id.empty() || source.content_id.empty() || body.empty() || face.empty()) return {};
     return sha256(nlohmann::json::array({pipeline_version, source.geometry_id, source.content_id,
         source.mesh.indices.size(), body, face,
-        "cpu-zbuffer-8x512-face-roi" + std::to_string(face_roi_size) + "-visible-source-samples-v2-diagnostic"}).dump());
+        "cpu-zbuffer-8x" + std::to_string(global_view_size) + "-face-roi" +
+            std::to_string(face_roi_size) + "-visible-source-samples-v3-diagnostic"}).dump());
 }
 }
 
@@ -778,7 +781,7 @@ Analysis analyze_with_face_roi_size(const MeshSnapshot& source, IBodyRegionRecog
             if (stopped(cancel)) { result.canceled = true; return result; }
             if (progress) progress(view_index * 100 / 8, "Recognizing model regions");
             const float yaw_degrees = view_index * 45.f + yaw_offset;
-            auto view = render_view(source, yaw_degrees, 512, cancel);
+            auto view = render_view(source, yaw_degrees, global_view_size, cancel);
             if (view.canceled) { result.canceled = true; return result; }
             if (!view.error.empty()) { result.error = view.error; return result; }
             ++result.rendered_views;
@@ -804,6 +807,7 @@ Analysis analyze_with_face_roi_size(const MeshSnapshot& source, IBodyRegionRecog
                 weights[id] += weight; votes[id][size_t(label)] += weight * confidence;
             }
             const auto regions = face_regions(view, prediction);
+            result.candidate_face_regions[size_t(view_index)] = uint32_t(regions.size());
             if (regions.empty()) continue;
             ++result.face_views;
             for (const ViewRegion& region : regions) {
@@ -821,6 +825,7 @@ Analysis analyze_with_face_roi_size(const MeshSnapshot& source, IBodyRegionRecog
                     if (diagnostics) diagnostics->face_regions.push_back({view_index, region, false, {}});
                     continue;
                 }
+                ++result.detected_face_regions[size_t(view_index)];
                 result.person_detected = true;
                 view_detail_faces.clear();
                 std::unordered_map<uint64_t, LeafVotes> view_leaf_votes;
@@ -1008,7 +1013,7 @@ Analysis analyze_with_face_roi_size(const MeshSnapshot& source, IBodyRegionRecog
 Analysis analyze(const MeshSnapshot& source, IBodyRegionRecognizer& body, IFaceRegionRecognizer& face,
                  const Cancel& cancel, const Progress& progress)
 {
-    return analyze_with_face_roi_size(source, body, face, 512, cancel, progress);
+    return analyze_with_face_roi_size(source, body, face, production_face_roi_size, cancel, progress);
 }
 
 FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, const std::vector<Color>& palette,
@@ -1016,7 +1021,7 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
 {
     const size_t count = source.mesh.indices.size();
     if (!analysis.person_detected || analysis.canceled || !analysis.error.empty() ||
-        analysis.face_roi_size != 512 || palette.empty() || palette.size() > 6 ||
+        analysis.face_roi_size != production_face_roi_size || palette.empty() || palette.size() > 6 ||
         analysis.geometry_id != source.geometry_id || analysis.content_id != source.content_id ||
         analysis.signature != analysis_cache_key(source, analysis.body_identity, analysis.face_identity) ||
         analysis.face_labels.size() != count || analysis.face_confidence.size() != count || !validate_snapshot(source).empty()) return {};
@@ -2074,7 +2079,7 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
     error.clear();
     const size_t count = source.mesh.indices.size();
     if (!analysis.person_detected || analysis.canceled || !analysis.error.empty() ||
-        analysis.face_roi_size != 512 ||
+        analysis.face_roi_size != production_face_roi_size ||
         analysis.geometry_id != source.geometry_id || analysis.content_id != source.content_id ||
         analysis.signature != analysis_cache_key(source, analysis.body_identity, analysis.face_identity) ||
         analysis.face_labels.size() != count || analysis.face_confidence.size() != count ||
@@ -2805,10 +2810,22 @@ SubfaceColors compose_subfaces(const SubfaceColors& automatic, const FaceColors&
 
 nlohmann::json encode_analysis(const Analysis& analysis)
 {
-    if (analysis.canceled || !analysis.error.empty() || analysis.face_roi_size != 512 || analysis.signature.empty() ||
+    size_t candidate_views = 0;
+    uint64_t detected_regions = 0;
+    for (size_t view = 0; view < analysis.candidate_face_regions.size(); ++view) {
+        const auto candidates = analysis.candidate_face_regions[view];
+        const auto detected = analysis.detected_face_regions[view];
+        if (candidates > 4 || detected > candidates)
+            throw std::invalid_argument("Invalid semantic face-region diagnostics.");
+        candidate_views += candidates != 0;
+        detected_regions += detected;
+    }
+    if (analysis.canceled || !analysis.error.empty() ||
+        analysis.face_roi_size != production_face_roi_size || analysis.signature.empty() ||
         analysis.geometry_id.empty() || analysis.content_id.empty() || analysis.body_identity.empty() || analysis.face_identity.empty() ||
         analysis.rendered_views != 8 || analysis.face_views > 8 || analysis.face_labels.empty() ||
         analysis.observed_faces > analysis.face_labels.size() || (analysis.person_detected && analysis.face_views == 0) ||
+        candidate_views != analysis.face_views || analysis.person_detected != (detected_regions != 0) ||
         analysis.face_labels.size() != analysis.face_confidence.size() || analysis.face_labels.size() > maximum_faces)
         throw std::invalid_argument("Cannot cache incomplete semantic analysis.");
     constexpr char hex[] = "0123456789abcdef";
@@ -2855,7 +2872,9 @@ nlohmann::json encode_analysis(const Analysis& analysis)
         {"face_count", analysis.face_labels.size()}, {"labels", labels}, {"confidence_f32", confidence},
         {"subfaces", std::move(subfaces)},
         {"person_detected", analysis.person_detected}, {"rendered_views", analysis.rendered_views},
-        {"face_views", analysis.face_views}, {"observed_faces", analysis.observed_faces}};
+        {"face_views", analysis.face_views}, {"observed_faces", analysis.observed_faces},
+        {"candidate_face_regions", analysis.candidate_face_regions},
+        {"detected_face_regions", analysis.detected_face_regions}};
 }
 
 bool decode_analysis(const nlohmann::json& doc, const MeshSnapshot& source, const std::string& body,
@@ -2882,8 +2901,24 @@ bool decode_analysis(const nlohmann::json& doc, const MeshSnapshot& source, cons
         restored.rendered_views = doc.at("rendered_views").get<size_t>();
         restored.face_views = doc.at("face_views").get<size_t>();
         restored.observed_faces = doc.at("observed_faces").get<size_t>();
+        restored.face_roi_size = production_face_roi_size;
+        restored.candidate_face_regions =
+            doc.at("candidate_face_regions").get<std::array<uint32_t, 8>>();
+        restored.detected_face_regions =
+            doc.at("detected_face_regions").get<std::array<uint32_t, 8>>();
+        size_t candidate_views = 0;
+        uint64_t detected_regions = 0;
+        for (size_t view = 0; view < restored.candidate_face_regions.size(); ++view) {
+            const auto candidates = restored.candidate_face_regions[view];
+            const auto detected = restored.detected_face_regions[view];
+            if (candidates > 4 || detected > candidates)
+                throw std::invalid_argument("The cached semantic face-region diagnostics are invalid.");
+            candidate_views += candidates != 0;
+            detected_regions += detected;
+        }
         if (restored.rendered_views != 8 || restored.face_views > 8 || restored.observed_faces > count ||
-            (restored.person_detected && restored.face_views == 0))
+            candidate_views != restored.face_views ||
+            restored.person_detected != (detected_regions != 0))
             throw std::invalid_argument("The cached semantic analysis is incomplete.");
         restored.face_labels.reserve(count); restored.face_confidence.reserve(count);
         for (size_t i = 0; i < count; ++i) {

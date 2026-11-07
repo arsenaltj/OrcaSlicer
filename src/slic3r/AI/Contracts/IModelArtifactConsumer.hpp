@@ -209,6 +209,7 @@ struct ModelImportRequest
     bool use_saved_printer_match {false};
     // Desktop-only optional caches, archived through existing 3MF auxiliaries.
     std::vector<nlohmann::json> portrait_color_block_references;
+    std::vector<nlohmann::json> native_portrait_partition_references;
     // Desktop preparation intent only. Never serialized into a provider job or
     // applied to geometry by importing; the user must confirm in preparation.
     bool suggest_base_preparation {false};

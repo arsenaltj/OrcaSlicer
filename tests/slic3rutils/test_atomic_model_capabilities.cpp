@@ -115,34 +115,77 @@ TEST_CASE("Automatic checks wait for the workbench and keep one progress card th
         CHECK_FALSE(workbench_check_card_should_show(false, true, true, true, false, result));
         CHECK_FALSE(workbench_check_card_should_show(true, false, true, true, false, result));
         CHECK(workbench_check_card_should_show(true, true, true, true, false, result));
-        CHECK(workbench_floating_card_mode(true, true, false, true, true, false, result) ==
+        CHECK(workbench_floating_card_mode(true, true, false, true, true, false, false, result) ==
               WorkbenchFloatingCardMode::ModelCheck);
-        CHECK(workbench_floating_card_mode(true, true, true, true, true, false, result) ==
+        CHECK(workbench_floating_card_mode(true, true, true, true, true, false, false, result) ==
               WorkbenchFloatingCardMode::HonorSuiteSemantic);
     }
 
-    CHECK(workbench_floating_card_mode(false, true, true, true, true, false, result) ==
+    CHECK(workbench_floating_card_mode(false, true, true, true, true, false, false, result) ==
           WorkbenchFloatingCardMode::None);
-    CHECK(workbench_floating_card_mode(true, false, true, true, true, false, result) ==
+    CHECK(workbench_floating_card_mode(true, false, true, true, true, false, false, result) ==
           WorkbenchFloatingCardMode::None);
 
     result.status = WorkbenchCheckStatus::Normal;
     result.phase = WorkbenchCheckPhase::Idle;
     CHECK_FALSE(workbench_check_card_should_show(true, true, true, false, false, result));
     CHECK(workbench_check_card_should_show(true, true, true, false, true, result));
-    CHECK(workbench_floating_card_mode(true, true, false, true, false, false, result) ==
+    CHECK(workbench_floating_card_mode(true, true, false, true, false, false, false, result) ==
           WorkbenchFloatingCardMode::None);
-    CHECK(workbench_floating_card_mode(true, true, false, true, false, true, result) ==
+    CHECK(workbench_floating_card_mode(true, true, false, true, false, true, false, result) ==
           WorkbenchFloatingCardMode::ModelCheck);
 
     result.source = WorkbenchCheckSource::Manual;
     result.status = WorkbenchCheckStatus::Running;
     result.phase = WorkbenchCheckPhase::Inspecting;
     CHECK_FALSE(workbench_check_card_should_show(true, true, false, true, false, result));
-    CHECK_FALSE(workbench_modal_navigation_blocked(true, false, false, false, true, false, result));
-    CHECK(workbench_modal_navigation_blocked(true, true, false, false, true, false, result));
+    CHECK_FALSE(workbench_modal_navigation_blocked(true, false, false, false, true, false, false, result));
+    CHECK(workbench_modal_navigation_blocked(true, true, false, false, true, false, false, result));
     result.phase = WorkbenchCheckPhase::Repairing;
     CHECK(workbench_check_card_should_show(true, true, false, true, false, result));
+}
+
+TEST_CASE("Portrait source risk checks never become generic failure modals",
+          "[AtomicModelCapabilities][PostGenerationWorkbench][PortraitPrintFlow][P0]")
+{
+    WorkbenchCheckResult result;
+    result.source = WorkbenchCheckSource::Automatic;
+    result.purpose = WorkbenchCheckPurpose::PortraitSourceRisk;
+    result.status = WorkbenchCheckStatus::Invalid;
+    result.phase = WorkbenchCheckPhase::Idle;
+    CHECK(workbench_check_status_line(result) == "人物来源风险已记录");
+    CHECK_FALSE(workbench_check_card_should_show(true, true, true, false, false, result));
+
+    result.status = WorkbenchCheckStatus::Running;
+    result.phase = WorkbenchCheckPhase::Inspecting;
+    CHECK(workbench_check_card_should_show(true, true, true, true, false, result));
+
+    result.status = WorkbenchCheckStatus::Failed;
+    result.phase = WorkbenchCheckPhase::Idle;
+    CHECK_FALSE(workbench_check_card_should_show(true, true, true, false, false, result));
+}
+
+TEST_CASE("Native partition repair keeps the original repair modal above terminal checks",
+          "[AtomicModelCapabilities][PostGenerationWorkbench][PortraitNativePartition][P0]")
+{
+    WorkbenchCheckResult result;
+    result.source = WorkbenchCheckSource::Automatic;
+    result.purpose = WorkbenchCheckPurpose::GeneralImport;
+    result.status = WorkbenchCheckStatus::Invalid;
+    result.phase = WorkbenchCheckPhase::Idle;
+
+    CHECK_FALSE(workbench_check_card_should_show(true, true, true, false, false, result));
+    CHECK(workbench_floating_card_mode(true, true, true, true, false, false, true, result) ==
+          WorkbenchFloatingCardMode::ModelCheck);
+    CHECK(workbench_modal_navigation_blocked(true, true, true, true, false, false, true, result));
+
+    result.status = WorkbenchCheckStatus::Failed;
+    CHECK_FALSE(workbench_check_card_should_show(true, true, true, false, false, result));
+    CHECK(workbench_floating_card_mode(true, true, true, true, false, false, true, result) ==
+          WorkbenchFloatingCardMode::ModelCheck);
+
+    CHECK(workbench_floating_card_mode(true, true, true, true, false, false, false, result) ==
+          WorkbenchFloatingCardMode::HonorSuiteSemantic);
 }
 
 TEST_CASE("Partial thumbnail requests publish into their original asset slots", "[AtomicModelCapabilities][WorkbenchHistory]")
@@ -159,6 +202,7 @@ TEST_CASE("Partial thumbnail requests publish into their original asset slots", 
     std::vector<ModelLibraryLoader::Thumbnail> results, batch;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
     while (results.size() < 2 && std::chrono::steady_clock::now() < deadline) {
+        batch.clear();
         loader.take(snapshot, batch); results.insert(results.end(), batch.begin(), batch.end()); std::this_thread::yield();
     }
     loader.stop(); REQUIRE(results.size() == 2);

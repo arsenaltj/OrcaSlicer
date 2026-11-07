@@ -252,21 +252,6 @@ public:
             if (m_workbench_suite_choice->GetSelection() < 0) return;
             request_honor_suite(honor_filament_suites().at(m_honor_suite_choice_index).id);
         });
-        m_workbench_suite_summary = new WorkbenchStaticText(m_workbench_suite_panel, wxID_ANY,
-            _L("模型使用前 5 色 · 第 6 槽专供支撑"));
-        m_workbench_suite_summary->SetForegroundColour(wxColour(235, 235, 235));
-        suite_layout->Add(m_workbench_suite_summary, 0, wxTOP, FromDIP(2));
-        add_suite_choice(_L("底座独立颜色"), m_workbench_base_slot);
-        for (size_t i = 0; i < 5; ++i) {
-            const auto& slot = honor_people_suite().physical_slots[i];
-            m_workbench_base_slot->Append(wxString::Format("%u · ", unsigned(i + 1)) + wxString::FromUTF8(slot.name));
-        }
-        m_workbench_base_slot->SetSelection(wxNOT_FOUND);
-        m_workbench_base_slot->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&) {
-            const int slot = m_workbench_base_slot->GetSelection();
-            if (slot >= 0 && on_base_slot_change) on_base_slot_change(size_t(slot));
-            update();
-        });
         m_workbench_suite_panel->SetSizer(suite_layout);
         m_workbench_suite_panel->Hide();
         root->Add(m_workbench_suite_panel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM, FromDIP(12));
@@ -513,32 +498,29 @@ public:
     }
     void load(std::shared_ptr<const PreviewPalette::Histogram> histogram, std::vector<Color> colors,
               std::string geometry_id = {},
-              std::shared_ptr<const PreviewPalette::AutomaticColorUnits> automatic_units = {}, int ai_source_count = 0) {
+              std::shared_ptr<const PreviewPalette::AutomaticColorUnits> automatic_units = {}, int /*ai_source_count*/ = 0) {
         m_suite_region_binding.reset();
         m_base_binding.reset(); m_honor_semantic_applied = false;
         m_honor_suite_request.reset();
         m_honor_suite_used_colors = 0;
         m_geometry_id = std::move(geometry_id);
-        m_model_ai_source_count = ai_source_count >= 4 && ai_source_count <= 6 ? ai_source_count : 0;
         m_automatic_units = std::move(automatic_units);
         m_histogram = std::move(histogram); m_colors = std::move(colors); m_mapping_colors = m_colors;
         m_suggestion_colors = m_colors; m_manual_colors.clear();
         read_project();
-        m_initial_count = ai_source_count >= 4 && ai_source_count <= 6
-            ? ai_source_count : int(PreviewPalette::initial_trial_color_count());
+        m_initial_count = int(PreviewPalette::initial_trial_color_count());
         wxString initial_notice;
         if (m_histogram && m_colors.size() != size_t(m_initial_count)) {
             m_colors = m_histogram->trial_palette(size_t(m_initial_count), {}, true);
             m_mapping_colors = m_colors;
             if (m_colors.size() != size_t(m_initial_count)) {
                 const int requested = m_initial_count;
-                m_initial_count = std::max(1, int(m_colors.size()));
                 initial_notice = wxString::Format(
                     _L("原始配色证据只能形成 %d 个可区分颜色，未虚构第 %d 至 %d 色。"),
-                    m_initial_count, m_initial_count + 1, requested);
+                    int(m_colors.size()), int(m_colors.size()) + 1, requested);
             }
         }
-        set_current_automatic_basis(size_t(m_model_ai_source_count ? m_model_ai_source_count : m_initial_count), m_mapping_colors);
+        set_current_automatic_basis(size_t(m_initial_count), m_mapping_colors);
         m_color_card_remap = {};
         m_color_card_palette.clear();
         m_semantic_colors.clear(); m_semantic_mapping.clear(); m_semantic_card.clear(); m_semantic_roles.clear();
@@ -549,7 +531,6 @@ public:
         set_semantic_status(wxEmptyString, false);
         m_enabled = false; set_source_internal(0); m_count->SetValue(m_initial_count); m_fidelity->SetValue(true);
         m_automatic_count = m_initial_count; m_manual_count = m_initial_count; m_project_count = 0; m_last_source = 0;
-        if (m_model_ai_source_count) m_automatic_count = m_model_ai_source_count;
         m_lighting->SetValue(false);
         m_notice = initial_notice;
         for (auto* lock : m_locks) lock->SetValue(false);
@@ -828,7 +809,10 @@ public:
         m_count->SetValue(target);
         m_notice = wxString::Format(_L("模型检查已完成，已自动应用 %d 色 AI配色。"), target);
         recompute(true);
-        return m_enabled && current_source() == 0 && int(m_colors.size()) == target;
+        return m_enabled && current_source() == 0 &&
+            (int(m_colors.size()) == target ||
+             (m_automatic_basis.valid() && m_automatic_basis.requested_count == size_t(target) &&
+              m_automatic_basis.source_palette == m_colors));
     }
     bool apply_portrait_suite_binding(const PortraitSuite::Binding& binding) {
         const auto* suite = find_honor_filament_suite(binding.suite_id, binding.suite_revision);
@@ -837,7 +821,8 @@ public:
         const auto basis = m_automatic_basis;
         auto saved = state();
         saved.source = 2; saved.count = int(basis.source_palette.size());
-        saved.automatic_count = saved.manual_count = saved.count;
+        saved.automatic_count = m_automatic_count;
+        saved.manual_count = saved.count;
         saved.colors.clear(); saved.mapping_colors = basis.source_palette;
         for (size_t slot : binding.source_to_model_slot) {
             const wxColour color(wxString::FromUTF8(suite->physical_slots[slot].color));
@@ -1087,18 +1072,15 @@ public:
         m_base_binding = saved.base_binding;
         m_honor_semantic_applied = restored_suite && saved.semantic_optimization;
         m_automatic_count = std::clamp(saved.automatic_count, 1, int(PreviewPalette::max_preview_colors));
-        if (restored_suite && restored_suite->id == "honor.people.six" && m_model_ai_source_count)
-            m_automatic_count = m_model_ai_source_count;
         m_manual_count = std::clamp(saved.manual_count, 1, int(PreviewPalette::max_preview_colors));
         m_project_count = std::clamp(saved.project_count, 0, int(PreviewPalette::max_preview_colors));
         m_count->SetValue(saved.suite_region_binding ? saved.count : restored_suite ? int(restored_suite->model_slot_count) :
             saved.source == 0 ? m_automatic_count : saved.source == 2 ? m_manual_count : saved.count);
         m_fidelity->SetValue(saved.fidelity); m_lighting->SetValue(saved.lighting);
         m_colors = saved.colors; m_mapping_colors = saved.mapping_colors;
-        if (restored_suite && restored_suite->id == "honor.people.six" &&
-            m_histogram && m_automatic_count >= 4 && m_automatic_count <= 6)
+        if (restored_suite && restored_suite->id == "honor.people.six" && m_histogram)
             m_automatic_basis = PreviewPalette::make_automatic_color_basis(*m_histogram,
-                size_t(m_automatic_count), m_geometry_id, saved.fidelity, m_automatic_units.get());
+                restored_suite->model_slot_count, m_geometry_id, saved.fidelity, m_automatic_units.get());
         else set_current_automatic_basis(size_t(std::max(1, saved.count)), m_mapping_colors);
         m_suite_region_binding = saved.suite_region_binding;
         // The original appearance must reproduce the saved source assignment.
@@ -1153,6 +1135,8 @@ public:
     std::function<void(size_t)> on_project_color_edit;
     std::function<void(int, int)> on_source_changed;
     std::function<bool()> on_honor_suite_selection;
+    std::function<std::optional<PreviewPalette::AutomaticColorBasis>(size_t)>
+        on_native_automatic_basis;
     std::function<void(size_t)> on_base_slot_change;
 private:
     void sync_honor_suite_choices(bool pending) {
@@ -1206,9 +1190,11 @@ private:
         if (suite->semantic_coloring() && (request.palette_roles.size() != request.palette.size() ||
             request.fixed_role_slots.empty())) return false;
         const size_t source_count = suite->id == "honor.people.six"
-            ? size_t(m_model_ai_source_count ? m_model_ai_source_count : std::clamp(m_automatic_count,4,6))
-            : request.palette.size();
-        request.automatic_basis = m_automatic_basis.valid() && m_automatic_basis.geometry_id == m_geometry_id &&
+            ? suite->model_slot_count : request.palette.size();
+        const auto native_basis = on_native_automatic_basis
+            ? on_native_automatic_basis(source_count) : std::nullopt;
+        request.automatic_basis = native_basis && native_basis->valid()
+            ? *native_basis : m_automatic_basis.valid() && m_automatic_basis.geometry_id == m_geometry_id &&
             m_automatic_basis.requested_count == source_count ? m_automatic_basis :
             PreviewPalette::make_automatic_color_basis(*m_histogram, source_count,
                 m_geometry_id, m_fidelity->GetValue(), m_automatic_units.get());
@@ -1287,8 +1273,11 @@ private:
                 const wxColour color(wxString::FromUTF8(slot.color));
                 card.push_back({color.Red()/255.f, color.Green()/255.f, color.Blue()/255.f});
             }
-            m_automatic_basis = PreviewPalette::make_automatic_color_basis(*m_histogram, card.size(),
-                m_geometry_id, m_fidelity->GetValue(), m_automatic_units.get());
+            const auto native_basis = on_native_automatic_basis
+                ? on_native_automatic_basis(card.size()) : std::nullopt;
+            m_automatic_basis = native_basis && native_basis->valid() ? *native_basis :
+                PreviewPalette::make_automatic_color_basis(*m_histogram, card.size(),
+                    m_geometry_id, m_fidelity->GetValue(), m_automatic_units.get());
             m_color_card_remap = PreviewPalette::minimum_cost_color_card_remap(m_automatic_basis, card);
             if (!m_color_card_remap.valid(m_automatic_basis.source_palette.size())) {
                 m_notice = _L("原始配色证据无法建立荣耀套装区域映射，已保留当前预览。");
@@ -1329,6 +1318,24 @@ private:
                 m_notice = _L("已保留锁定颜色；如需更少颜色，请先取消部分保留。");
             }
             const int requested = m_count->GetValue();
+            const auto native_basis = locked.empty() && on_native_automatic_basis
+                ? on_native_automatic_basis(size_t(requested)) : std::nullopt;
+            if (native_basis && native_basis->valid() &&
+                native_basis->geometry_id == m_geometry_id &&
+                native_basis->requested_count == size_t(requested)) {
+                m_automatic_basis = *native_basis;
+                m_colors = m_automatic_basis.source_palette;
+                m_mapping_colors = m_colors;
+                m_suggestion_colors = m_colors;
+                m_semantic_colors = m_colors;
+                m_semantic_mapping = m_colors;
+                m_semantic_card.clear();
+                for (auto* lock : m_locks) lock->SetValue(false);
+                m_notice = m_colors.size() == size_t(requested)
+                    ? wxString::Format(_L("已切换到 %d 色原生原子分区映射。"), requested)
+                    : wxString::Format(_L("原生原子分区只有 %u 个可区分颜色，已使用实际色数。"),
+                        unsigned(m_colors.size()));
+            } else {
             auto candidate = m_histogram->trial_palette(size_t(requested), locked, m_fidelity->GetValue());
             if (candidate.size() != size_t(requested)) {
                 const int retained = std::clamp(m_automatic_count, 1, int(PreviewPalette::max_preview_colors));
@@ -1347,6 +1354,7 @@ private:
             m_semantic_colors = m_colors; m_semantic_mapping = m_colors; m_semantic_card.clear();
             for (size_t i = 0; i < PreviewPalette::max_preview_colors; ++i) m_locks[i]->SetValue(i < m_colors.size() &&
                 std::find(locked.begin(), locked.end(), m_colors[i]) != locked.end());
+            }
         } else {
             m_color_card_remap = {};
             m_color_card_palette.clear();
@@ -1534,10 +1542,6 @@ private:
         const int source = current_source();
         const bool suite_active = honor_suite_active();
         const bool suite_selector = suite_active || m_honor_suite_selector_open;
-        if (m_workbench_base_slot) {
-            m_workbench_base_slot->Enable(m_workbench_editable && m_base_binding.has_value());
-            m_workbench_base_slot->SetSelection(m_base_binding ? int(m_base_binding->physical_slot) : wxNOT_FOUND);
-        }
         const bool suite_layout_changed = m_workbench_suite_panel &&
             m_workbench_suite_panel->IsShown() != suite_selector;
         // Semantic recognition is now an on-demand annotation step owned by
@@ -1770,7 +1774,6 @@ private:
     wxPanel* m_workbench_suite_panel {nullptr};
     WorkbenchPaletteChoice* m_workbench_suite_category {nullptr};
     WorkbenchPaletteChoice* m_workbench_suite_choice {nullptr};
-    wxStaticText* m_workbench_suite_summary {nullptr};
     wxWeakRef<wxSlider> m_workbench_count;
     wxWeakRef<WorkbenchNumberStepper> m_workbench_count_input;
     wxWeakRef<wxStaticText> m_workbench_count_label;
@@ -1806,13 +1809,11 @@ private:
     std::optional<PortraitSuite::Binding> m_suite_region_binding;
     std::optional<AI::ModelBaseBinding> m_base_binding;
     bool m_honor_semantic_applied {false};
-    WorkbenchPaletteChoice* m_workbench_base_slot {nullptr};
     PreviewPalette::ColorCardRemap m_color_card_remap;
     std::vector<Color> m_color_card_palette;
     std::string m_geometry_id;
     std::vector<Color> m_suggestion_colors, m_manual_colors;
     int m_automatic_count {6}, m_manual_count {6}, m_project_count {0};
-    int m_model_ai_source_count {0};
     int m_last_source {0};
     // Printer-filament source id 1 is hidden from the card selector but is
     // still needed while the workbench is in native-material trial mode.

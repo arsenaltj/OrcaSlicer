@@ -1,3 +1,88 @@
+# 2026-11-07 PC-01 人像 v12 角色保留、五色减色与原子保存（开发验证完成，视觉待反馈）
+
+- 授权与边界：本会话继承 `portrait-native-partition-v9`，沿指定分支和全部未提交工作落实用户 v12 计划。保持几何、面序及原生原子区域不变；语义仅为独立面级着色覆盖。不改 UI 文案、布局、按钮、普通模型拓扑门禁、账号或切片算法。2026-11-07 用户后续明确授权“当前版本本地提交”，本次保存已验证的人像 v12 及此前合入的账号组合树，包含对应测试和计划；模型、缓存、构建产物和私人配置不纳入。仅本地提交，不推送、打包、清理证据或结束用户程序；不将本地提交许可扩大为打印色准或全部历史视觉验收。
+- 角色与颜色：完整区域角色支持度替代 0.70 整区赢家淘汰；高置信 Hair/Eyebrow/EyeSclera/Iris/Lips 按拓扑连通组件保护，双眉独立存活。去除跨颜色同角色 semantic must-link；减色仅依赖原生颜色组。每个减色组内全部原色按面积构成成本，组间等权，Hungarian 全局一对一分配五模型槽；Unknown 保留原生减色组。每区基础槽加稀疏面级角色覆盖独立持久化，source/processed 两轨均校验，手工确认例外显式保留。
+- 身份与事务：活动分区 v12、流程 `orca.portrait-print/v7`；旧 v11/v6 只读并从不可变原件重建。人物保存只在候选/载体 SHA-256、geometry、appearance、partition digest、topology hash 和严格修复证书全部匹配时复用证书，其余完整检查并关闭发布。版本文件、元数据、历史索引和双账本全部成功后才清草稿、接受并刷新模型库。任一步失败恢复 BeautyCandidateSnapshot，清候选/保存身份，回 Color `paused=true, authorized=false`，清配色发布字段并保留原生分区；详细错误只记诊断。显式选色/Save 可在精确身份约束下重试。
+- 自动与真实样本：基线 504 项定向 C++ 为 503 通过、1 Windows symlink 条件跳过、0 失败，日志 `20261107-190404-311`；本次历史恢复定向 103/103 全通过，日志 `20261107-194320-358`。相关原生纹理/顶点色/严格修复 43/43（2,842 断言）保持。真实 986,276 面样本 r4 从不可变 GLB 重建后 789 区域成员、面序和逐面簇不变，五组/五槽，229,957 高置信保护面保留，双眉主组件分别 462/839 面；1/1、5,174,071 断言通过。58,522,768 字节 OBJ 精确证书及一字节/摘要/分区篡改拒绝 1/1、12 断言，实际 volume 恢复原索引/paint 1/1、493,083 断言通过；普通无证自交拒绝保持。证据 `evidence/v12-real-replay-r4.json{,.log}`、`v12-real-certificate-r4.log`、`v12-real-import-r4.log`。本次只变恢复校验及测试，颜色/原生核心与 r4 构建逐文件同 SHA，沿用真实重放与六图，差异证明 `v12-gui-r4/reopen-fix-source-delta.json`。
+- 运行树：固定 checkout/build 的最终五步 NoLaunch `PREPARED`，日志 `20261107-195450-054`；源码身份 `9ab6c2e5d84db62a7d89c49bbeab81e0c4330046ec4fcd5c505adb2ba56a4d30`，build/run DLL SHA-256 均 `054eaedbff186ebe38e53fb8a735c043c9e1cd4223652dfb4f7cdd4c7fb5591c`。含 Git AI 门禁 `evidence/v12-ai-integration-reopen-checkpoint.json` 为 `ok:true`，diff check 通过。原 PID 46292 已退出；所有本轮自建验证实例均正常退出，最后 PID33304 在已保存工程后正常 Alt+F4 关闭，未结束用户程序。最终验证后仅更新协调文档，不回填构建源码身份。
+- 主窗口验证：独立 `evidence/v12-gui/data` 加真实原始 realistic 历史副本，显式打开工作台进入真实流程。保存目标同名空目录使来源校验拒绝，回现有 Ready，Color 暂停，无候选就绪或半成品库记录；冲突目录移至证据保留后，重选人物色卡保存成功，右侧新人物版本出现。切换历史再重开保留五色和全部角色，经现有“按模型配色配置耗材”绑定模型白/支撑白后能进入 Beauty Editing。成功版本的 OBJ、原生缓存、颜色缓存、证书和三份 v12 契约与 r3 精确一致；摘要 `v12-gui/saved-model-r3-identity-audit.json`。同名目录拒绝发生在输出来源复核，真实 metadata/history/ledger 提交点 I/O 失败由定向测试验证，不混称 GUI 注入。
+- 同根因导入补齐（已验证）：原失败来自同步/异步 Import 坐标焊接同一原生拆色 OBJ。现以内容寻址缓存保存严格修复闭合网格的 IEEE754 float bits 和有序索引，mesh SHA 独立绑定原生证书；导入逐面角精确比较后恢复原索引并保留 paint，预览仍使用拆色表示。实际 r4 缓存 44,057,759 字节、493,066 顶点/986,276 面，mesh SHA `623c49d6d7313b23f3cc3ba8d7205e2b63ced5a84b23b5554d0c59806c614569`。缺证、篡改、手改或面序变化仍完整检查并拒绝，独立底座不借用人物证书。
+- 真实 r4 自动与历史手工路径：隔离 `evidence/v12-gui-r4/data`，PID40344 完成真实保存入库、5/6、Import 和正式本地切片至 PrintReady（500层、11h21m，未发送打印）；实际工程 `auto-import-r4.3mf`。后发现历史恢复入口固定 `require_post_color=false`、只接受 commit 文档，清掉已接受 schema4 版本的原生引用，导致重开手工 Import 再次焊接失败。现生产/测试共用 `PortraitNativeCheckpoint.hpp`，互斥识别 commit schema6/source 与 saved 无schema/schema4/local_finishing；保存版强制三项 v12 配色契约及 post-color，未知/混合/损坏拒绝且清输出 reference。PID33304 用同一已保存版验证重开正常/5色、应用现有耗材匹配、手工 Import（6599ms准备、433ms提交）成功，人物与独立底座进入工程；另存 `manual-reopen-fixed-r4.3mf` 并通过真实 GUI 重开。新旧失败/成功截图及日志完整保留，最终 `evidence/v12-gui-r4/gui-session-r4-final.json`。
+- 实际3MF精确审计与范围：自动及手工工程均 10 项核心通过：人物计数、有序索引、topology fingerprint、float32位、逐角坐标、闭合有向边、全部986,276面paint、五槽和独立底座闭合。手工工程 SHA `3a1c25f398e9c00cb995118996bfa75586604bc719220c26100187603e3d0eeb`，`manual-reopen-fixed-r4-3mf-audit.json`。两份审计整体仍为 `failed/exit1`，唯一失败项 `archived_native_cache_bytes_match`：既有 workbench Import 分支未走普通导入尾部的可选 native/color Aux 归档；本轮未删除缓存、不扩大源码范围。普通3MF几何/paint正常，模型库同DATA恢复正常，跨数据目录语义续编不作通过声明；审计只记录变换不烘焙，不证明底座世界位置/高度。
+- 视觉与限制：正式六图 `evidence/v12-render/result-r3/` 为实际 C++ r3（不同于 r2 诊断重映射）；头发、双眉及五色恢复，大面积灰肤已消除，眼周、发际线、鼻翼/下巴和轮廓仍有原生灰边。用户视觉接受 `pending`、实体打印 `not_tested`，均不能由自动测试或代理看图替代。生产 SC::Analysis 未提供逐面人物 ID，真实接触多人物隔离尚未验收；合成 ID 隔离测试不代替该项。
+
+# 2026-11-07 PC-01 共享原生原子分区 v11 一键入口与六色保真（历史：由 v12 取代活动结果）
+
+- 入口与所有权：点击人物模型“打开工作台”并成功发布路径、源 SHA-256、几何 ID、外观 ID 和 generation 后，立即登记人物入口意图并在工作台呈现后创建状态机；不再等待实际聚类色数等于 6。临时繁忙会保留完整身份并重试，模型或 generation 变化会丢弃迟到入口。
+- 共享消费者事务：`ensure_native_workbench_partition()` 改为 `AutomaticPalette / PortraitFlow / HonorSuite` 消费者集合。同一上下文只构建一次；人物流程一次注册普通 AI 配色和人物消费者，冷构建与缓存恢复均先请求普通 AI 6 色，再继续人物 5 个模型色加 1 个固定支撑槽。请求色数和实际色数独立持久化，实际为 2/5/6 色均不会丢失人物入口。
+- v11 聚类：工作台专用原生链路固定最少 6、最多 32 个原子聚类，P99 Oklab 距离不高于 10、尾部最大距离不高于 18、`smooth_weight=0.5`、空固定色卡。来源至少有 6 个采样色但光顺后不足 6 个有效聚类时逐级重试到 k=32，仍不足则关闭发布并保留原纹理；真正少色来源允许返回实际色数。普通 Orca 纹理导入继续使用原默认最少 1、距离 25、无尾部约束。
+- 分区与语义边界：分区仍只由不可变原始 GLB 的纹理／材质解码、原生自适应细分、面采样、单次严格修复、修复后重采样、聚类、光顺和同色连通区生成。语义只读固定区域并绑定整区槽位，不改变顶点、索引、逐面聚类、区域成员或边界；原始 GLB 继续用于原贴图显示与语义采样。
+- 提交与失败保护：提交记录必须绑定非空人物流程 ID。普通 AI 先建立分区、人物消费者晚加入时，会重新签发检查证书并以可回滚原子替换补绑定提交；替换前、替换后或读回后中断均恢复原提交。自动配色或人物绑定失败会回滚模型、配色、检查证书和流程状态，已提交缓存保留供重试，不切换到不完整载体。
+- 兼容：活动原子分区、区域语义、减色映射和最终槽位身份升级为 v11；v10 及更旧记录只读保留并从不可变原件重建。旧两色 v10 缓存不能恢复成活动分区；手工面色、子面和轮廓编辑不作为 v11 输入。
+- 自动验证：工作台／人像／预览／导入相关去重标签 294 项为 292 通过、2 项环境条件跳过，6,345 条断言全通过；`PortraitPrintFlow` 46/46、741 条断言通过，包含三处晚到人物提交替换中断回滚。原生纹理、顶点色和修复 43/43、2,842 条断言通过。95.5 万面固定 GLB 隐藏回放 1/1、13 条断言通过，62.456 秒完成，普通 AI 请求／实际均为 6；源 SHA-256 前后均为 `8a1ac9657f237fbfe6413f8b19a01b1571c771bb2030fea0002b98465b0005ab`。完整日志位于 `D:/TEST/artifacts/portrait-native-partition-v9/evidence/v11-entry-color-20261107/`。
+- 门禁与运行树：`scripts/verify_ai_integration.py --json` 返回 `ok:true` 且未跳过 Git，`git diff --check` 通过。固定 `.tmp/dev/build` 的 `Run -NoLaunch -SkipNativeStartupCheck` 五步为 `PREPARED`，记录 `.tmp/dev/logs/20261107-134614-861/result.json`，源码身份 `ab599f8816a580b8d0d3960c5a8d6587e71b49dd458239806b445758252b8b86`。build/run EXE SHA-256 均为 `8d8a94d2c63c059e5904e0040d06b57d5683ee6ab2661a1a1b0718e758bf7af5`，主 DLL 均为 `06049d9c09f1e11fb4aa7301b88793fe4496048a8df4a47a39c398a799dabb43`；`application_pid=null`，未启动 GUI、未打包。
+- 验收边界：用户从当前 `.tmp/dev/run/Honor Forge Studio.exe` 手动验证真实一键入口、AI 建议 6 色、人物 5+1 槽和固定视角颜色边界。代码与离线回放已通过；用户视觉接受保持 `pending`，实体打印色准保持 `not_tested`。本轮不改 UI、普通导入、手动配色、BeautyPuzzle、切片或账号逻辑，不提交、推送或打包。
+
+# 2026-11-07 PC-01 v10 原始配色证据拓扑与失败状态闭合（实现、自动验证与运行树完成）
+
+- 根因：自动 AI 配色检查先执行通用修复，随后共享 v10 分区又执行严格修复，造成隐藏的重复拓扑处理。真实百万面样本由 969,328 面严格修复为 969,258 面后，外观发布仍用不可变原始 GLB 校验新载体拓扑，必然报“原始配色证据与当前模型拓扑不匹配”。分区异常虽释放内部 busy，工作台未在所有失败出口同步 controls、workbench 和 published state，因此界面可能继续显示“处理中”。
+- 检查与修复所有权：自动 AI 配色检查只保存来源身份和风险报告，`Normal/Attention/Invalid` 均可进入共享原生分区；开放边、非流形等风险只由分区内的严格修复处理一次。模型无法读取的 `Failed` 仍阻断。普通手动检查及非人像工作台的修复候选行为不变。
+- 外观身份：纹理、UV、材质解码和语义采样继续使用不可变原始 GLB，原始文件哈希仍独立强校验；严格修复后拓扑映射改为使用已发布的 `source_appearance.carrier_model/carrier_sha256`。原件身份与当前拓扑载体身份分离，不放宽哈希、几何或外观所有权，也不允许灰色载体冒充原贴图。
+- 状态闭合：分区取消、严格修复失败、预览失败及任务启动异常统一刷新 controls、workbench 和 published state；迟到回调仍受 generation 与完整模型身份约束。失败保留原件、候选、分区诊断和可重试状态，不发布部分元数据，不再残留“处理中”。
+- 自动验证：`PortraitNativePartition` 28/28；`OriginalAppearance` 12 通过、1 项 Windows symlink 权限条件跳过；`PostGenerationWorkbench|PortraitPrintFlow` 144/144。`scripts/verify_ai_integration.py --json` 返回 `ok:true` 且未跳过 Git，`git diff --check` 无错误，仅有既存 LF/CRLF 提示。
+- Windows 产物：固定 `.tmp/dev/build` 执行 `Run -NoLaunch -SkipNativeStartupCheck`，五阶段 `PREPARED`，记录 `.tmp/dev/logs/20261107-014136-231/result.json`，源码身份 `e039c5e25c4f9048ce29d1d2bb611b122cade199f871dbef9b7781a7dc652839`。运行库 `.tmp/dev/run/Honor Forge Studio.dll` SHA256 为 `3aa5d853d60678d13196445e12a92045125b1715ce870138dcc280f9948dc8e9`，入口 EXE SHA256 为 `8d8a94d2c63c059e5904e0040d06b57d5683ee6ab2661a1a1b0718e758bf7af5`；`application_pid=null`，未启动 GUI、未创建安装包。
+- 验收边界：用户从当前运行树手动复验真实 GLB。代码和离线结构测试不替代原贴图视觉、边缘观感与流程接受；用户视觉接受保持 `pending`，实体打印色准保持 `not_tested`。本轮不提交、推送、打包、清理旧成果或修改 UI。
+
+# 2026-11-07 PC-01 v10 生产入口、自动续行与跨模型隔离（实现、自动验证与运行树完成）
+
+- 根因：用户截图来自 v10 runtime，但界面“当前色数 6”只是默认控件值，日志实际仍为 `enabled=false`。生产入口在工作台发布精确模型所有权前启动人物流程；通用自动修复在候选尚未接受时尝试应用并清除六色意图；手动人物六色未先调用共享 v10 分区；Roaming 中其他模型的活动流程还会在所有权判断前拦截当前模型。
+- 入口顺序：`request_open_workbench()` 先发布路径、源 SHA-256、几何 ID、外观 ID 和 generation，再呈现工作台并启动检查。自动检查／修复完成后调用共享 `ensure_native_workbench_partition()`，只有实际自动源、请求数 6、无活动套装且存在原生 basis 时才把快照标记为“AI 建议 6 色已激活”；Shell 通过独立 UI 事件复核 revision 和模型路径后才启动人物一键流程。
+- 修复续行：自动修复预览保持六色意图，但候选未接受时禁止应用。正常接受事务完成、显示身份切到新候选后，把待执行 revision/path 重绑定到新载体，再建立／恢复共享分区并激活六色。失败保留原件和候选，不发布部分状态。手动“人物六色”缺少有效分区时加入同一构建任务，分区完成后自动重发套装请求；重复点击只合并消费者，不重复严格修复或分区。
+- 历史隔离：工作台入口按 `Current / Alias / Foreign / Available` 分类。规范来源别名只允许精确哈希、几何、外观和资产 ID 的暂停早期流程采用；外部活动工作台流程先保存为可恢复暂停记录，再解除当前内存所有权。旧生成流程不再在分类前永久返回 `Pending`：入口先撤销其自动授权、持久化暂停记录并完整保留 ID、阶段、远端任务和文件身份，再只解除当前指针。人物六色的 `CallAfter` 续行固定捕获路径、源哈希、几何、外观、generation 与分区摘要，并要求当前内存分区和持久化引用摘要同时一致；模型切换、引用变化或迟到回调只清除待执行标志，不应用套装。
+- 自动验证：受影响 GUI 与应用目标增量编译、链接成功。入口、人像流程、共享分区、工作台导入和颜色状态的去重标签全集 219/219；新增断言覆盖旧生成记录事务暂停且身份不变，以及人物六色延迟续行的路径、哈希、几何、外观、generation、当前／持久化分区摘要逐项拒绝。AI 集成门禁 `ok:true` 且未跳过 Git，`git diff --check` 无错误。
+- Windows 产物：用户关闭旧进程后，固定 `.tmp/dev/build` 执行 `Run -NoLaunch -SkipNativeStartupCheck`，五阶段 `PREPARED`，记录 `.tmp/dev/logs/20261107-001713-488/result.json`，源码身份 `e105c7674de7ff95f85819d2605390a2d7359b83c768579895eaf763ea765e85`。build/run 主 DLL SHA-256 均为 `3bc0402b9cac56686aa32f2c12b2a046ec9680035e863887e04ce7b555e62bdd`，运行 EXE 为 `8d8a94d2c63c059e5904e0040d06b57d5683ee6ab2661a1a1b0718e758bf7af5`；应用未启动，未使用 `computer-use`，未创建安装包。
+- 验收边界：用户从 `.tmp/dev/run/Honor Forge Studio.exe` 手动验证真实人像：检查／自动修复后必须实际进入 AI 建议 6 色并自动继续，一键与手动人物六色必须共用同一分区且不再报源色边界缺失。用户视觉接受保持 `pending`，实体打印色准保持 `not_tested`；本轮不提交、推送或打包。
+
+# 2026-11-06 PC-01 共享原生原子分区 v10（实现、自动验证与运行树完成）
+
+- 所有权与时机：点击“打开工作台”先发布当前路径、源 SHA-256、几何 ID、外观 ID 和 generation；普通工作台在自动检查完成并首次应用 AI 配色时、人物一键流程在 Partition 阶段，调用同一个 `ensure_native_workbench_partition()`。同一精确上下文只运行一个任务，两个消费者共同等待；模型切换取消并等待旧任务，迟到回调按完整身份丢弃。
+- 原子分区：活动内部类型为 `NativeWorkbenchPartition` v10；接口只接收原始纹理模型、严格修复和取消回调。固定使用空色卡、`target_colors_num=0`、`max_cluster_k=32`、`max_color_distance=25`、`smooth_weight=0.5` 和 Orca 自适应细分，顺序为解码、细分、面代表色、单次严格修复、修复后重采样、原生聚类、光顺及同色连通区枚举。着色后不再修复；语义、Honor 色卡和耗材槽均不参与分区。
+- 语义与减色：分区固化顶点、索引、原生聚类、逐面聚类、连通区域成员、邻接、面积与边界摘要。语义从分区之后按面积乘置信度只读投票，阈值 0.70；多人且无可靠实例 ID 时禁用语义强制归组。确定性面积加权合并树只输出 `region_id -> color_group`，1-32 色切换不重建分区且低一层只能合并上一层；原子色不足时返回实际颜色数，不虚构颜色。
+- 颜色与槽位：普通 AI 配色初始仍为 6 个模型色。人物六色记录拆为 `model_color_count=5`、`physical_slot_count=6`、`support_slot_count=1`；语义、近色回退、区域和面槽位只能使用前五槽，第六槽仅在耗材事务中写入支撑与支撑界面配置。每个原子区域只绑定一个模型槽，人物 `subface_slots` 始终为空。
+- 持久化与兼容：流程记录升级为 `orca.portrait-print/v6`，原子分区、区域语义、减色映射和最终槽位分别持久化并通过分区摘要和内容哈希绑定；3MF 辅助缓存继续内容寻址和元数据最后提交。旧 v9/v5 及更早记录只读，缺少 v10 分区时从不可变原始模型重建，不覆盖旧成果。手工面色、子面或轮廓编辑不会成为分区输入，相关消费者暂停并保留编辑。
+- 阻断验证：人像核心 106/106（1,400 条断言）；工作台／预览／语义／导入／Honor 套装 275/275（6,093 条断言），另 1 项 Windows symlink 权限条件跳过；原生纹理、严格修复和普通修复 25/25（153 条断言）。覆盖语义不改变分区、多人回退、4/5/6 及 1-32 色确定性嵌套、严格修复单次共享、五模型槽加一支撑槽、缓存恢复、旧记录和冲突候选保留。AI 集成门禁 `ok:true` 且未跳过 Git，`git diff --check` 无错误。
+- Windows 产物：固定 `.tmp/dev/build` 执行 `Run -NoLaunch -SkipNativeStartupCheck`，五阶段 `PREPARED`，记录 `.tmp/dev/logs/20261106-224457-385/result.json`，构建时源码身份 `fb4a17376301a989c56c73772eb62331fa481509940290ebce20d41b30b6e01d`。`.tmp/dev/run/Honor Forge Studio.exe` SHA-256 为 `8d8a94d2c63c059e5904e0040d06b57d5683ee6ab2661a1a1b0718e758bf7af5`，主 DLL 为 `054eaedbff186ebe38e53fb8a735c043c9e1cd4223652dfb4f7cdd4c7fb5591c`；应用未启动，未使用 `computer-use`，未创建安装包。
+- 验收边界：运行树可供用户手动验证普通六色、色数切换、人物五模型色加支撑槽、自动续行和历史切换。用户视觉接受仍为 `pending`，实体打印色准仍为 `not_tested`；自动测试和运行树准备不冒充这两层通过。不提交、推送、清理旧成果或回退语义裁切。
+
+# 2026-11-06 PC-01 人像开放边自动修复与二次修复隔离（真实流程复验通过）
+
+- 根因：严格修复并未因开放边失败；原流程在成功修复后读取暂存元数据时保持文件流存活，Windows 无法删除 `native-partition-*.tmp`，导致分区发布暂停。暂停后通用工作台检查又生成第二个人工修复候选，形成“首次导入修复失败、还需手动二次修复”的表象。
+- 修正：暂存元数据读流在删除前明确结束；人像流程接管时取消并等待旧通用检查并清空旧证书。只要当前模型由人像流程精确拥有，普通检查在运行、暂停和失败态都只读，不生成通用修复候选。唯一拓扑修复继续自动位于原生分区的聚类前，着色后只读复检，界面和其他业务逻辑不变。
+- 自动验证：`PortraitPrintFlow` 35/35，工作台／原生分区／完成链路 154/154，严格修复／普通修复／纹理导入／原生分区 59/59；AI 集成门禁 `ok:true`，`git diff --check` 通过，五步 NoLaunch `PREPARED`。相关结果位于 `.tmp/dev/logs/20261106-{124703-053,132139-300,132254-779,132353-248}/`。
+- 真实流程：固定样本经自动链路把细分后 62,481 条开放边修复为 0，输出非流形边为 0，自交完整复检通过；严格修复阶段 26.756 秒，分区总计 58.395 秒。事务最终状态为 committed/completed，非 pending、非 paused、非 failed；元数据发布和预览切换成功，载体／原始外观／内容寻址缓存哈希全部匹配，无临时文件残留或占用错误，也未出现“修复候选已生成，等待确认”。证据为 `.tmp/dev/data/models/projects/portrait-print/current.json` 与 `.tmp/dev/data/log/debug_Fri_Nov_06_13_26_15_29288.log.0`。
+- 验收边界：后续语义识别对该样本返回 `person=false` 并整区近色回退；原生分区已固定且不受其影响，该结果另属语义注释效果，不得再次触发拓扑修复。用户关闭验证窗口后未继续操作 GUI。用户视觉接受仍为 `pending`，实体打印色准为 `not_tested`；后续不要求手动二次修复。
+
+# 2026-11-06 PC-01 人像 v9 严格修复与历史模型隔离（实现、自动验证与实窗回归完成）
+
+- 严格修复：共享 `StrictMeshRepairResult` / `strict_repair_mesh()` 从不可变输入执行输入检查、首轮 CGAL、必要的旧增强修复和第二轮 CGAL，最后复检开放边、非流形、退化、重复、方向、自交、双向采样偏差及表面积变化。沿用包围盒对角线 0.2% 和表面积 2% 阈值；普通工作台可保留人工确认候选，自动人像超限即失败。
+- 原生分区门禁：人像为 `TexturePaintingSettings` 开启默认关闭的严格模式；严格回调缺失、失败、复检失败或半边不兼容时在聚类／光顺前返回，禁止内部 `RepairMesh` 后备。修复后仍由原生路径重采面色；Honor 色卡不参与修复、聚类或区域生成，着色后只读复检且不再修复。
+- 事务与诊断：`NativePortraitPartitionBuildReport` 覆盖解码、检查、两轮修复、重采样、细分、面采样、聚类、光顺、区域枚举、载体／外观／缓存／元数据发布、预览及总耗时；计时不进入分区摘要。发布先保存 pending checkpoint，再写入和校验内容寻址缓存、唯一最终载体及原始外观，最后原子发布提交标记并读回，验证后才切换预览；中断不留下活动元数据。
+- 持久化：流程记录为 `orca.portrait-print/v5`，`native_portrait_partition`、`semantic_binding` 和着色后检查身份独立，通过 `partition_digest` 与内容哈希绑定，v9 `subface_slots` 为空。3MF auxiliary 归档原生分区缓存；只有精确所属模型在用户显式点击继续且存在 v5 pending/committed checkpoint 时恢复，旧 v9/v4 或损坏引用从不可变原件重建并保留旧成果。
+- 历史隔离：活动流程必须同时匹配当前模型路径、文件哈希、几何和外观身份；切换历史模型会保存可恢复暂停状态、取消所属模型的检查／分区／语义／导出并使迟到回调失效，其他历史模型立即使用普通工作台。重启不自动加载或劫持所属模型，只有重新打开精确模型后可显式继续。
+- P0 与回归：最后恢复入口调整后定向 67/67，扩展工作台／预览／严格修复／分区／导入 250/250，另 1 项 Windows symlink 条件跳过；覆盖无／正常／冲突语义分区不变、严格失败后无聚类／发布／预览、聚类前单次修复、完整阶段报告、历史切换回调失效、原子发布中断点和真实 3MF 原生缓存恢复。AI 门禁 `ok:true` 且未跳过 Git；证据在 `artifacts/portrait-native-partition-v9/evidence/strict-history-20261105/`。
+- 构建／实窗：固定 `.tmp/dev/build` 的 `Run -NoLaunch` 五步 `PREPARED`（`.tmp/dev/logs/20261106-000738-695/result.json`），源码身份 `f19a02ed79e55823c6ea32f022e400b1b194666f5e4e3558feb2d9e2f3f115da`，主 DLL SHA256 `20ebf04e82c65d57b4db5de783663f578b71527c2bf8b101cc6a1f47e5578631`。Computer Use 在独立数据目录的 PID 41864 验证两个历史人像和一个四面旧模型均可进入普通工作台、检查正常、跨模型无流程残留；两个人像固定正面“当前模型／原贴图”对照及既有 UI 正常。旧交付 PID 9976 保留不动。
+- 验收边界：实窗结果是软件候选和历史切换回归，不替代用户视觉接受；后者仍为 `pending`，实体打印色准为 `not_tested`。阶段计时及重复修复消除已有代码和测试证据，但同一真实百万面样本的新旧端到端耗时数字尚未通过现成诊断入口复测，不能用小型单测时长代替。不提交、推送、打包或清理旧资产。
+
+# 2026-11-05 PC-01 人像原生分区链路 v9（代码与 NoLaunch 运行树完成，视觉待验）
+
+- 决策／边界：人像活动分区唯一来源改为 Orca 原生 `TextureToColor`：纹理或材质解码 → 原生自适应细分 → 面代表色 → 聚类前原生修复 → 颜色聚类 → 区域光顺 → 同最终聚类色的拓扑连通区。构建接口不接受语义、Honor 色卡或槽位；语义从固定连通区之后只读消费，不能反向改变顶点、索引、聚类中心、逐面聚类 ID、区域成员或边界。
+- 实现：新增内部 `NativePortraitPartition`、确定性分区／边界摘要和独立区域注释结果；4/5/6 色使用空固定色板、`smooth_weight=0.5` 及原生细分／修复／聚类／光顺。区域语义按三角面面积乘面置信度汇总，别名归一化后胜者占区域总面积至少 0.70 才确认，否则按聚类代表色整区近色回退。每区只能绑定一个槽，v9 只展开 `face_slots`，`subface_slots` 为空；最终载体按颜色边界拆分共享顶点，原始模型、纹理与材质引用继续供原表面采样。
+- 流程／兼容：Check 只做身份与风险检查，拓扑变化只在原生分区管线内发生，着色后不再二次修复。手工面色、子面或轮廓编辑存在时暂停并保留，不作为 v9 输入。v6-v8 数据只读，恢复时从原始模型重建；失败或原始外观缺失时保留原文件、旧候选和元数据。v8 保留历史 `finish-portrait-slots-<id>`，v9+ 使用 `finish-portrait-slots-v<algorithm>-<id>`，避免发布与崩溃恢复误认／覆盖旧成果。
+- 清理／范围：移除人像活动路径对旧自动区域、`AutomaticColorBasis.unit_source_slots` 和着色后二次修复的依赖；`AutomaticColorBasis` 仅保留普通预览与色数选择。普通纹理导入、手动配色、共享 `BeautyPuzzle::create_slot_regions()` 及外部接口保持。已审 UI 收尾为移除顶部专用进度分支并恢复居中卡、套装卡片止于具体套装；没有把人像算法变更扩展到其他界面逻辑。
+- 阻断验证：原生分区 11/11；受影响核心 234/234，另 1 项 Windows symlink 条件跳过；UI 43/43；原生 `TextureImport` 15/15。最终五标签批次 154 项为 153 通过、1 条件跳过、0 失败（`.tmp/dev/logs/20261105-133607-635`），含无／正常／冲突语义分区不变、整区单槽和低置信回退、4/5/6 色确定性、低面数细分、百万面预算、单次聚类前修复、v9 保存重开／3MF、旧版失效与失败保留。AI 集成门禁在最终源码身份 `8518e69a80d72b7a5455c74b92ec6ee14f5965330b77b94e4edd80771a6d1ef2` 上通过，`git diff --check` 通过。
+- Windows 产物：固定 `.tmp/dev/build` 增量 `Run -NoLaunch -SkipNativeStartupCheck` 五步通过（`.tmp/dev/logs/20261105-140724-553`），`application_pid=null`，未启动 EXE 或 `--help`。`.tmp/dev/run` native identity 为 `2c8c476e3aff0d2690bdeb78cc3ef8a370e9f5048f75ec92741d42255cb605aa`，主 DLL SHA256 为 `785a02ff93f3783c5379765b4242e041d32bf913fe5f528e6ee4aef5b95949aa`；安装清单 19,614 条，去重文件与哈希均 19,494。独立 `artifacts/portrait-native-partition-v9/delivery/{runtime,data}` 已冻结并全哈希核验，不覆盖旧配置或成果；桌面“荣耀人物六色（界面修正与人像v9）”只指向该 runtime 和独立 data，创建后未启动。
+- 验收边界：固定两个人像样本的真实主窗口视角 A/B 与用户视觉接受仍为 `pending`；实体打印色准为 `not_tested`。本轮按约束不执行 `computer-use`，代码／离线结构验证不冒充视觉或打印通过。不提交、推送、打包、清理旧证据或结束用户程序。
+
 # 2026-11-04 PC-01 当前试验版本本地与远端保存（用户明确授权）
 
 - 保存目标：现有 `codex/exp/honor-forge-beta-validation-20261103`，origin 为 `arsenaltj/OrcaSlicer`；从既有基线 `f4080b0c` 保存当前源码，不切换开发线。
@@ -2822,3 +2907,46 @@ Windows主程序验证：`./dev.ps1 Build -Jobs 2`复用同一`.tmp/dev/build`�
 规划依据与优化边界：当前WonderMaker ZR Ultra S四独立工具头，所选0.20mm Standard配置源码prime_volume=15、塔宽24，原G-code确认所选机型与四喷嘴；未冻结原G-code中的prime_volume/single_extruder_multi_material值，区分配置来源与当次完整配置证明。`Print.cpp:5510-5570`的Type2独立工具头分支按prime_volume规划，不应将单喷嘴换色flush矩阵/flush_multiplier当作本案塔大已证实根因；`ToolOrdering.cpp:1046`向下传播高层需要的塔分区，`WipeTower2.cpp:2314`按各层所需深度和最后塔层规划高度，锥形墙/稳定底座与无切换层结构也有开销。当前智能方案仅调整层高、墙/填充、速度、支撑等11项，不优化prime/tower/tool ordering，因此“综合最优”不代表已最小化塔耗材；大塔真实且高开销，但现有证据不足以认定规划算法错误或关闭塔安全。
 
 独立后续风险：18:50:08开始另次WorkbenchImport，18:50:21提交新增模型，18:50:30正式切片为2对象，18:50:39.766报告两同名OBJ路径冲突，44.533仍导出完成、44.542success=true。`PlaterUndoRedo.ipp:389`/LocalPrintModelImport追加对象，非替换既有导入；这解释对象数增长，不足以认定用户误操作或实现自动重复提交。当前摆放按导入时模型轮廓/障碍及2mm间距，不能保证随后生成的树支撑路径不相交；具体冲突位置未冻结，保留为待验证原因，日志并非模型与塔冲突。`Print.cpp:3955`存储冲突不终止，`GLCanvas3D.cpp:12411`走原生严重警告；`PartPlate.hpp:670`明确允许有conflict_result时打印/导出，`RedesignModelWorkflow.cpp:2120`及`OrcaPrinterAdapter.cpp:78`只承接越界/不可导出等状态，未单独将路径冲突提升到Honor完成摘要。此处存在风险信息承接缺口，但本轮没有实窗证据证明原生警告被隐藏，也未发送/打印。建议后续先补“切片完成但有路径冲突”的稳定摘要/确认与再次导入的追加/替换意图，再固定同一工程核对支撑间距、逐层切换和塔结构/prime开销，不直接关闭塔或盲目缩宽。本轮无产品/测试修改、构建、用户窗口操作或提交；前轮显示修复待反馈及暂停白屏的恢复点保持。
+# 2026-11-06 荣耀平台账号与人像 v9 组合入口修复完成
+
+主线：账号统一后端改造继续使用 `orca-platform` 平台 Session，人像 v9 差异完整保留；不回退桌面直连荣耀 OAuth，不修改后端、前端、手机端或人像算法。
+
+本轮：桌面组合入口的 `0xc0000374` 已定位为构建对象布局不一致。账号头文件从独立 worktree 机械合入时保留了早于既有对象的文件时间，MSBuild 未重新编译负责 `new AccountWorkspace` 的 `RedesignShell.obj`；非空浏览器 profile 配置使越界后的堆损坏稳定显现。强制重编译依赖对象并重链后问题消失，产品源码无需额外补丁；组合验证 runtime 只替换哈希核对后的主 DLL。
+
+验证：平台 origin 和非空浏览器 profile 条件下，重建运行树及桌面实际快捷方式均稳定创建真实主窗口；账号页已打开但未触发认证。账号/profile/头像定向测试 33/33、329 assertions，AI 门禁、diff check、五步 NoLaunch 及运行树零差异核验通过。主 DLL SHA256 为 `822f24a222702110333441b492573cabebf9eb80503a212a49d9c9eabe2ec815`，当前入口 PID 41556 正常响应。
+
+未结：真实荣耀登录、平台会话交换/刷新/恢复/撤销由用户本人完成后分别验收；当前只证明客户端启动和账号入口可用。人像视觉接受与实体打印仍分别为 `pending` / `not_tested`。
+
+下一步：用户从已打开的桌面组合验证窗口完成荣耀认证，再按组合验证说明验证平台 Session 与三个人像固定视角；任何真实认证失败按脱敏阶段记录，不绕过 TLS 或后端安全边界。
+
+计划变更：新增关联修复任务 `honor-account-gui-startup-crash`；以后使用保留时间戳的机械合入时，必须强制重编译所有直接或间接包含变更头文件的翻译单元，并以真实 GUI 启动验证二进制布局。
+
+---
+
+# 2026-11-06 荣耀登录页适配与软件信任文案实现完成
+
+主线：同一 `codex/exp/honor-forge-beta-validation-20261103` 组合树保留人像 v9 全部未提交差异；本项只改桌面账号 WebView 表现和客户端内嵌确认文案，不修改平台协议、后端、前端、手机端、人像算法或正式交付版。
+
+实现：按 WebView 可用 DIP 尺寸相对 `1600x900` 设计基准计算 `0.65-1.0` 缩放，并隐藏根页面滚动条但保留页面滚轮行为。信任文案只在已允许的荣耀 CAS/OAuth HTTPS 主机、顶层窗口和对话框选择器内精确替换用户截图中的两段原文；“信任 / 不信任 / 稍后再说”及认证逻辑不改。首次 GUI 候选在 `open_browser()` 布局期间触发 WebView2 尚未原生就绪的 `SetZoomFactor()`，产生 `c0000005`；修复以首次 `wxEVT_WEBVIEW_LOADED` 为门禁，加载前尺寸事件只记录布局而不调用原生缩放，销毁前复位门禁。
+
+验证：`HonorBrowserProfile` 6/6（`.tmp/dev/logs/20261106-105834-690/result.json`）和账号组合 35/35（`.tmp/dev/logs/20261106-110815-437/result.json`）通过；AI 集成门禁 `ok:true`，`git diff --check` 通过；五步 NoLaunch 为 `PREPARED`（`.tmp/dev/logs/20261106-110120-332/result.json`），源码身份 `925e33d6327b0610842cbafb19f59f65e4ee83acee5773cd4c4598b7a73b54ae`。两个全新隔离 data 的真实 Windows 主窗口复现登录 attempt；修复版在 `1190x795` 和最大化 `1560x992` 下表单、二维码和页脚完整，无可见页面级滚动条、重叠或再次崩溃。组合 runtime 的 `Honor Forge Studio.dll` 已更新并与构建树 SHA256 `0b3fdd976ac95917852092baae81e1f36582569a6b887b3c0a7475ec1ef16876` 一致。
+
+验收边界：用户截图已确认待改的是登录后的“是否信任此浏览器？”弹窗；源码精确命中该标题和说明，但助手不自动认证、不输入敏感信息，也不选择安全确认。因此信任弹窗最终实窗文案、真实荣耀授权、平台会话交换／恢复／刷新／撤销均保持 `pending`，不能由未登录页或自动测试替代。人像视觉接受与实体打印分别继续为 `pending` / `not_tested`。
+
+下一步：桌面“荣耀账号与人像v9（组合验证）”使用已更新 runtime，当前 PID `39732` 正常响应。用户本人完成认证后确认弹窗显示“是否信任 Honor Forge Studio？”及“信任该软件”，三个按钮不变；账号结果通过后继续既定人像固定视角 A/B。本任务释放 writer，允许“对比并优化人像处理路径”恢复认领同一 checkout。
+
+---
+
+# 2026-11-06 荣耀信任弹窗真实组件命中修正
+
+主线：用户新截图来自真实认证后的同一弹窗，仍显示“是否信任此浏览器？”及旧说明，因此上一节只能证明页面适配、自动回归和源码字符串存在，不能证明文案可视生效。人像任务按用户最新指令暂停，本项不向其会话发送命令。
+
+修正：荣耀当前测试站静态资源显示两套信任组件分别使用 `.pop-trust-browser-dialog` / `[ht="pop-trust-browser-dialog"]` 与 `[data-testid="trust-browser-container"]` / `.trust-browser`，文案来自 `rss_new.trustBrowser_label_DialogTitle`、`trustBrowser_label_content` 和 `trustBrowser_label_content_new`。首轮仅覆盖通用 `[role="dialog"]` 等选择器，实际组件未命中。现仍限定顶层、HTTPS、443 及既有 CAS/OAuth 主机和路径，在官方信任组件邻近祖先内改写精确原文，并同步更新这三个本地化字段；按钮文字、点击回调、Cookie、认证请求和平台 Session 协议均不改。
+
+验证：`HonorBrowserProfile` 6/6（`.tmp/dev/logs/20261106-112916-177/result.json`）和账号组合 35/35（`.tmp/dev/logs/20261106-113122-716/result.json`）通过；AI 集成门禁 `ok:true`，`git diff --check` 通过。五步 NoLaunch 为 `PREPARED`（`.tmp/dev/logs/20261106-113246-223/result.json`），产品／测试源码身份 `50957a351d841a83c0e4226f17eb633f6daa2a9707bdb5c10e3d024fa9f5d9a9`。组合 runtime 主 DLL SHA256 已更新为 `ac1c3529421558daf05aca1d291014dce4c916b66780e392642312785cfe48e8`，新 PID `40320` 正常响应并加载目标 DLL 路径。
+
+验收边界：自动测试检查官方组件锚点与本地化字段进入受限注入脚本，但不能替代真实弹窗。第二轮标题、说明及三个按钮的最终可视接受仍为 `pending`；助手不读取账号字段、不输入手机号／密码／验证码，也不选择安全确认。真实平台会话的 `/v1/me`、刷新、重启恢复和撤销继续分别记录，不由主窗口已打开替代。
+
+下一步：用户本人在桌面“荣耀账号与人像v9（组合验证）”再次触发截图中的弹窗，确认软件语境文案及三个按钮行为。人像任务保持暂停且不发送会话命令；账号实现和自动验证已完成，释放 checkout writer，复验失败时由本账号任务重新认领。
+
+---

@@ -28,19 +28,15 @@ void write(const wxString& path, const std::string& bytes)
 }
 }
 
-TEST_CASE("Account avatars remain separate across accounts applications and environments", "[AccountAvatar]")
+TEST_CASE("Account avatars use the platform account UUID as their stable local identity", "[AccountAvatar]")
 {
-    HA::Config config;
-    const auto first = Avatar::account_path("/user-data",config,"subject-one");
+    const auto first = Avatar::account_path("/user-data","subject-one");
     REQUIRE(first.Contains("/honor-avatars/"));
     REQUIRE_FALSE(first.Contains("subject-one"));
-    REQUIRE(Avatar::account_path("/user-data",config,"").empty());
-    REQUIRE(Avatar::account_path("",config,"subject-one").empty());
-    REQUIRE(first != Avatar::account_path("/user-data",config,"subject-two"));
-    config.client_id += "2";
-    REQUIRE(first != Avatar::account_path("/user-data",config,"subject-one"));
-    config = HA::Config{};config.environment = "production";
-    REQUIRE(first != Avatar::account_path("/user-data",config,"subject-one"));
+    REQUIRE(Avatar::account_path("/user-data","").empty());
+    REQUIRE(Avatar::account_path("","subject-one").empty());
+    REQUIRE(first != Avatar::account_path("/user-data","subject-two"));
+    REQUIRE(first == Avatar::account_path("/user-data","subject-one"));
 }
 
 TEST_CASE("Avatar previews crop the center and preserve transparent image appearance", "[AccountAvatar]")
@@ -104,9 +100,9 @@ TEST_CASE("Repeated avatar previews leave cached source pixels and alpha unchang
 
 TEST_CASE("Saved avatars survive source removal and reset without affecting another account", "[AccountAvatar]")
 {
-    Images files;HA::Config config;
-    const auto path=Avatar::account_path(files.directory,config,"first");
-    const auto other=Avatar::account_path(files.directory,config,"second");
+    Images files;
+    const auto path=Avatar::account_path(files.directory,"first");
+    const auto other=Avatar::account_path(files.directory,"second");
     REQUIRE(solid(100,200).SaveFile(files.path("source.png"),wxBITMAP_TYPE_PNG));
     REQUIRE(Avatar::save(path,Avatar::square(Avatar::read(files.path("source.png")))));
     REQUIRE(Avatar::save(other,Avatar::square(solid(60,30,200,0,0))));

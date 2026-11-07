@@ -5,6 +5,7 @@
 #include "WorkbenchPrinterFilaments.hpp"
 #include "ModelColorUpdate.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitColorBlockCache.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitNativePartitionCache.hpp"
 #include "OrcaPaletteSnapshotBuilder.hpp"
 #include "OrcaPrintPaletteSnapshot.hpp"
 #include "AIImportSeamRepair.hpp"
@@ -744,6 +745,16 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
             // Native paint is already complete. Optional cache corruption
             // discards only the new candidates, never the imported colors.
             BOOST_LOG_TRIVIAL(warning)<<"Portrait color block archive unavailable: "<<e.what();
+        }
+    }
+    if(!request.native_portrait_partition_references.empty()) {
+        try {
+            NativePortrait::archive_native_portrait_partitions(
+                request.native_portrait_partition_references,
+                boost::filesystem::path(Slic3r::data_dir()) / "cache" / "native-workbench-partitions",
+                m_plater->model().get_auxiliary_file_temp_path());
+        } catch(const std::exception& e) {
+            BOOST_LOG_TRIVIAL(warning) << "Native portrait partition archive unavailable: " << e.what();
         }
     }
     m_on_import_succeeded();

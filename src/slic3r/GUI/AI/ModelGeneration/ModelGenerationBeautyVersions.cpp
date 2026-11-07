@@ -23,6 +23,7 @@
 #include "slic3r/GUI/I18N.hpp"
 #include <boost/filesystem.hpp>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <wx/button.h>
 #include <wx/checkbox.h>
 #include <wx/choice.h>
@@ -47,6 +48,14 @@ namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
 namespace {
 constexpr int beauty_finishing_tools[] = {4, 1, 3, 5, 1};
+boost::filesystem::path portrait_metadata_path(const std::string& path)
+{
+    return boost::filesystem::path(wxString::FromUTF8(path).ToStdWstring());
+}
+std::string portrait_path_utf8(const boost::filesystem::path& path)
+{
+    return into_u8(wxString(path.wstring()));
+}
 // Native wrapping may keep an entire CJK sentence as one word. Measure the
 // displayed text so a narrow tool panel never truncates its instructions.
 void wrap_workbench_text(wxStaticText* label, int width, bool preserve_lines = false)
@@ -97,6 +106,32 @@ void repaint_workbench_surface(wxWindow* window)
     window->Update();
     for (wxWindow* child : window->GetChildren())
         repaint_workbench_surface(child);
+}
+
+nlohmann::json encode_portrait_post_color_check(
+    const WorkbenchCheckResult& check,
+    const nlohmann::json& partition_reference)
+{
+    if (!workbench_topology_safe(check) ||
+        !PortraitPrint::valid_native_partition_reference(partition_reference) ||
+        check.model_sha256 != partition_reference.at("carrier_sha256"))
+        throw std::runtime_error("着色后只读拓扑检查未通过。");
+    return {{"schema", "orca.portrait-post-color-check/v1"}, {"status", "normal"},
+        {"model_sha256", check.model_sha256},
+        {"geometry_id", partition_reference.at("geometry_id")},
+        {"partition_digest", partition_reference.at("partition_digest")},
+        {"topology_hash", partition_reference.at("topology_hash")},
+        {"faces", check.before_faces}, {"vertices", check.before_vertices},
+        {"boundary_edges", check.boundary_edges}, {"boundary_loops", check.boundary_loops},
+        {"boundary_loop_sizes", check.boundary_loop_sizes},
+        {"nonmanifold_edges", check.nonmanifold_edges},
+        {"nonmanifold_vertices", check.nonmanifold_vertices},
+        {"degenerate_faces", check.degenerate_faces},
+        {"duplicate_faces", check.duplicate_faces},
+        {"inconsistent_edges", check.inconsistent_edges},
+        {"isolated_components", check.isolated_components}, {"small_faces", check.small_faces},
+        {"self_intersections_checked", check.self_intersections_checked},
+        {"self_intersections", check.self_intersections}, {"issue_faces", check.issue_faces}};
 }
 }
 bool ModelGenerationPanel::show_finishing_version(const boost::filesystem::path& path)
@@ -172,6 +207,13 @@ bool ModelGenerationPanel::show_finishing_version(const boost::filesystem::path&
 
 void ModelGenerationPanel::select_local_finishing_version(const boost::filesystem::path& path, const std::string& id)
 {
+    if (m_native_workbench_partition_running)
+        cancel_native_workbench_partition();
+    m_native_workbench_context = {};
+    m_native_workbench_partition_reference = nullptr;
+    m_native_workbench_partition_report = nullptr;
+    m_native_workbench_partition_certificate = nullptr;
+    m_native_workbench_partition_commit = nullptr;
     ++m_sequence;
     ++m_model_generation_session;
     m_poll_timer.Stop();
@@ -190,15 +232,102 @@ void ModelGenerationPanel::select_local_finishing_version(const boost::filesyste
     m_model_refinement = {};
 }
 
+bool ModelGenerationPanel::portrait_color_save_snapshot_current() const
+{
+    return m_portrait_save_draft && m_portrait_print.from_workbench() &&
+        m_portrait_print.stage == PortraitPrint::Stage::SaveColor &&
+        m_portrait_save_flow_id == m_portrait_print.id &&
+        m_portrait_save_sequence == m_sequence &&
+        m_portrait_save_draft->model_sha256 == m_portrait_print.model_hash &&
+        m_portrait_save_draft->geometry_id == m_portrait_print.geometry_id;
+}
+
+void ModelGenerationPanel::rollback_portrait_color_save(const std::string& diagnostic, bool restore_draft)
+{
+    BOOST_LOG_TRIVIAL(error) << "portrait save rollback: " << diagnostic;
+    if (!portrait_color_save_snapshot_current()) {
+        BOOST_LOG_TRIVIAL(error) << "ignored stale portrait save rollback";
+        return;
+    }
+    // A user edit arriving during export/publication belongs to the current
+    // draft. Never replace it with the older save snapshot or truncate its undo.
+    restore_draft = restore_draft && m_model_preview &&
+        m_model_preview->leaf_edit_revision() == m_portrait_save_edit_revision;
+    const auto files = m_portrait_save_files;
+    const bool was_editing = m_portrait_save_was_editing;
+    m_finishing_running = m_busy = false;
+    cancel_beauty_color_gate();
+    if (m_beauty_transactions) {
+        m_beauty_transactions->finish(true);
+        if (restore_draft) m_beauty_transactions->truncate_to(m_portrait_save_undo_base);
+    }
+    if (restore_draft && !restore_beauty_candidate(*m_portrait_save_draft))
+        BOOST_LOG_TRIVIAL(error) << "portrait save draft restoration failed";
+    m_finishing_candidate.clear();
+    m_portrait_color_candidate_identity = {};
+    m_portrait_export_started = m_portrait_semantics_requested = false;
+    m_save_and_return = false;
+    m_workbench_operation_notice.clear();
+    m_finishing_status->SetLabel(wxString());
+    if (m_status) m_status->SetLabel(wxString());
+    m_portrait_print.rollback_color_save();
+    m_portrait_color_snapshot = m_model_preview->color_trial_metadata();
+    m_portrait_color_edit_revision = m_model_preview->leaf_edit_revision();
+    m_portrait_print.edit_revision = m_portrait_color_edit_revision;
+    // Automatic portrait coloring precedes filament application and may never
+    // have acquired a Beauty match. Keep the existing overview entry available;
+    // entering Beauty again must run its existing real compatibility check.
+    if (!beauty_color_match_current()) {
+        m_workbench_editing = false;
+        m_beauty_matched_colors.reset();
+        m_beauty_color_gate_state = BeautyColorGateState::Unchecked;
+        m_beauty_color_gate_message.clear();
+        m_beauty_color_gate_configuration_signature.clear();
+        m_beauty_color_gate_cache.reset();
+        m_beauty_color_gate_cache_key.clear();
+    } else m_workbench_editing = was_editing;
+    if (m_portrait_save_task && m_portrait_task == m_portrait_save_task) {
+        m_portrait_task->finish(PortraitOutcome::Cancelled);
+        m_portrait_task.reset();
+        if (m_portrait_preview_draft == m_portrait_save_draft) {
+            m_portrait_preview_draft.reset();
+            m_portrait_draft_before.reset();
+        }
+        m_portrait_entered = m_portrait_preview_drawn = m_portrait_cancel_requested = false;
+        m_auto_portrait_active = m_portrait_reoptimization_pending = false;
+    }
+    m_portrait_save_task.reset();
+    m_portrait_save_draft.reset();
+    m_portrait_save_flow_id.clear();
+    m_portrait_save_files.clear();
+    for (const auto& file : files) {
+        if (file == m_finishing_source || file == m_displayed_model_path ||
+            (m_model_preview && m_model_preview->showing_model(file))) continue;
+        boost::system::error_code ignored;
+        boost::filesystem::remove(file, ignored);
+        m_beauty_candidate_files.erase(std::remove(m_beauty_candidate_files.begin(),
+            m_beauty_candidate_files.end(), file), m_beauty_candidate_files.end());
+    }
+    // A failed rollback write is diagnostic only; the native partition survives.
+    save_portrait_print(true);
+    refresh_controls();
+    publish_ui_state();
+}
+
 void ModelGenerationPanel::accept_model_finishing()
 {
     auto report = [this](const wxString& message) {
+        if (m_portrait_save_draft && m_portrait_print.stage == PortraitPrint::Stage::SaveColor) {
+            rollback_portrait_color_save(into_u8(message)); return;
+        }
         m_workbench_operation_notice = into_u8(message);
         m_finishing_status->SetLabel(message);
         m_status->SetLabel(message);
         refresh_controls();
         publish_workbench_state();
-        if (m_portrait_print.running() && (m_portrait_print.stage == PortraitPrint::Stage::Check ||
+        if ((portrait_owns_display_context() || portrait_owns_save_candidate()) &&
+            m_portrait_print.running() &&
+            (m_portrait_print.stage == PortraitPrint::Stage::Check ||
             m_portrait_print.stage == PortraitPrint::Stage::SaveColor)) pause_portrait_print(into_u8(message));
     };
     if (m_busy || m_finishing_running || m_workbench_check_running) {
@@ -207,10 +336,12 @@ void ModelGenerationPanel::accept_model_finishing()
     if (m_finishing_candidate.empty()) {
         report(_L("没有可接受的候选，请先检查或生成候选。")); return;
     }
-    const bool portrait_save = m_portrait_print.from_workbench() &&
+    const bool portrait_save = portrait_owns_save_candidate() && m_portrait_print.from_workbench() &&
         m_portrait_print.current(m_portrait_print.id, PortraitPrint::Stage::SaveColor) &&
         m_finishing_id == m_portrait_print.color_asset_id();
-    const bool portrait_repair = m_portrait_print.current(m_portrait_print.id, PortraitPrint::Stage::Check) &&
+    const bool portrait_repair = portrait_owns_display_context() &&
+        m_portrait_print.record_version < 5 &&
+        m_portrait_print.current(m_portrait_print.id, PortraitPrint::Stage::Check) &&
         m_workbench_auto_repair;
     if (!portrait_save && !portrait_repair && m_finishing_workbench && m_workbench_editing && !beauty_color_match_current()) {
         m_save_and_return = false;
@@ -248,7 +379,7 @@ void ModelGenerationPanel::accept_model_finishing()
     }
     m_workbench_operation_notice = "正在接受候选并保存，可取消……";
     const auto root = generated_models_root();
-    const auto before = m_beauty_session_source;
+    const auto before = portrait_save ? m_portrait_save_draft : m_beauty_session_source;
     const auto source_context = m_finishing_source_context;
     auto after = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
     const auto verified_check = m_workbench_check_result;
@@ -305,7 +436,7 @@ void ModelGenerationPanel::accept_model_finishing()
         metadata["recolor_target_palette"] = m_finishing_color_palette;
         metadata["preserves_unselected_face_colors"] = true;
     }
-    const int ai_count = portrait_save || portrait_repair ? m_portrait_print.final_count :
+    const int ai_count = portrait_save || portrait_repair ? m_portrait_print.model_color_count :
         original_appearance_detail::ai_source_color_count(source, root);
     if (ai_count >= 4 && ai_count <= 6)
         metadata["ai_source_color_count"] = ai_count;
@@ -313,20 +444,101 @@ void ModelGenerationPanel::accept_model_finishing()
         metadata["portrait_repair_flow_id"] = m_portrait_print.id;
         metadata["portrait_repair_phase"] = "before_source_partition";
     }
+    std::optional<WorkbenchNativeTopologyCertificate> portrait_certificate;
     if (portrait_save) {
-        if ((m_model_preview->printer_filament_export_faces().empty() && m_model_preview->import_subface_color_overrides(true).empty()) ||
+        const auto exported_faces = m_model_preview->printer_filament_export_faces();
+        const auto exported_subfaces = m_model_preview->import_subface_color_overrides(true);
+        const auto native_partition = m_model_preview->native_portrait_partition();
+        const auto color_blocks = m_model_preview->portrait_color_blocks();
+        if (exported_faces.size() != m_finishing_result.faces_after || !exported_subfaces.empty() ||
             m_finishing_result.source_sha256 != m_portrait_print.model_hash ||
-            m_model_preview->geometry_id() != m_portrait_print.geometry_id) {
+            m_finishing_result.output_sha256 != m_portrait_print.model_hash ||
+            m_model_preview->geometry_id() != m_portrait_print.geometry_id ||
+            !m_portrait_print.partition_committed ||
+            !PortraitPrint::valid_native_partition_reference(
+                m_portrait_print.native_portrait_partition, m_portrait_print.basis_signature,
+                m_portrait_print.partition_topology_hash) ||
+            !native_partition || !native_partition->valid() ||
+            native_partition->partition_digest != m_portrait_print.basis_signature ||
+            !color_blocks || color_blocks->algorithm_version !=
+                PortraitColorBlocks::portrait_postprocess_algorithm_version ||
+            !color_blocks->native_partition_identity ||
+            color_blocks->native_partition_identity->partition_digest !=
+                native_partition->partition_digest) {
             if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "portrait paint identity mismatch");
-            pause_portrait_print("配色面域身份无法核验，未发布成果。"); return;
+            rollback_portrait_color_save("portrait paint identity mismatch"); return;
         }
         metadata["portrait_print_id"] = m_portrait_print.id;
         metadata["prompt"] = m_portrait_print.semantic_applied ? "人物六色 · 区域语义配色" : "人物六色 · 近色回退";
-        metadata["portrait_preparation"] = {{"schema", "orca.portrait-preparation/v1"}, {"round_base", true},
-            {"height_mm", 3.0}, {"overlap_mm", 0.2}, {"native_repair", true},
-            {"repair_before_partition", true}, {"repair_result_sha256", m_portrait_print.repair_result_hash},
-            {"source_basis_signature", m_portrait_print.basis_signature},
+        metadata["portrait_preparation"] = {{"schema", "orca.portrait-preparation/v2"},
+            {"round_base", true}, {"height_mm", 3.0}, {"overlap_mm", 0.2},
+            {"partition_digest", m_portrait_print.basis_signature},
+            {"partition_topology_hash", m_portrait_print.partition_topology_hash},
             {"boundary_algorithm_version", m_portrait_print.boundary_algorithm_version}};
+        try {
+            auto partition_reference = m_portrait_print.native_portrait_partition;
+            const auto commit_metadata_path =
+                portrait_metadata_path(partition_reference.at("metadata_path").get<std::string>());
+            boost::filesystem::ifstream commit_stream(commit_metadata_path, std::ios::binary);
+            const auto commit = nlohmann::json::parse(commit_stream);
+            const auto& certificate = commit.at("native_portrait_topology_certificate");
+            const bool flow_requested_partition =
+                commit.value("portrait_print_id", std::string{}).empty() &&
+                commit.value("requesting_portrait_print_id", std::string{}) == m_portrait_print.id;
+            if (commit.at("schema") != "orca.native-workbench-partition-commit/v1" ||
+                commit.at("transaction_status") != "committed" ||
+                (!flow_requested_partition &&
+                    commit.value("portrait_print_id", std::string{}) != m_portrait_print.id) ||
+                AI::beauty_leaf_digest(certificate.dump()) !=
+                    partition_reference.at("topology_hash") ||
+                certificate.at("carrier_sha256") != m_finishing_result.output_sha256 ||
+                certificate.at("geometry_id") != m_model_preview->geometry_id() ||
+                certificate.at("partition_digest") != m_portrait_print.basis_signature)
+                throw std::runtime_error("原生分区拓扑证书与配色载体不匹配。");
+            const auto& owner = m_portrait_color_candidate_identity;
+            WorkbenchNativeTopologyCertificate proof;
+            proof.partition_metadata = commit;
+            proof.partition_metadata_path = portrait_path_utf8(commit_metadata_path);
+            proof.native_reference = m_portrait_print.native_portrait_partition;
+            proof.candidate_sha256 = owner.candidate_sha256;
+            proof.carrier_sha256 = owner.source_sha256;
+            proof.geometry_id = owner.geometry_id;
+            proof.appearance_id = owner.appearance_id;
+            proof.partition_digest = owner.partition_digest;
+            proof.topology_hash = m_portrait_print.partition_topology_hash;
+            proof.face_count = m_finishing_result.faces_after;
+            portrait_certificate = std::move(proof);
+            partition_reference["carrier_path"] = portrait_path_utf8(candidate);
+            partition_reference["carrier_sha256"] = m_finishing_result.output_sha256;
+            partition_reference["metadata_path"] = portrait_path_utf8(metadata_path);
+            const auto encoded_blocks = PortraitColorBlocks::encode(*after->color_blocks);
+            const auto region_semantics = encoded_blocks.at("region_semantics");
+            const auto native_color_reduction = encoded_blocks.at("native_color_reduction");
+            const auto final_slot_binding = encoded_blocks.at("final_slot_binding");
+            const size_t region_count = region_semantics.at("regions").size();
+            if (!PortraitPrint::valid_native_partition_reference(partition_reference,
+                    m_portrait_print.basis_signature, m_portrait_print.partition_topology_hash) ||
+                !PortraitPrint::valid_region_semantics(
+                    region_semantics, m_portrait_print.basis_signature) ||
+                !PortraitPrint::valid_native_color_reduction(native_color_reduction,
+                    m_portrait_print.basis_signature, region_count) ||
+                !PortraitPrint::valid_final_slot_binding(final_slot_binding,
+                    m_portrait_print.basis_signature,
+                    native_color_reduction.at("mapping_digest").get<std::string>(),
+                    region_count, size_t(m_portrait_print.model_color_count)))
+                throw std::runtime_error("原生分区、区域语义、减色映射或整区槽位无法发布。");
+            metadata["native_portrait_partition"] = std::move(partition_reference);
+            metadata["native_portrait_topology_certificate"] = certificate;
+            metadata["region_semantics"] = region_semantics;
+            metadata["native_color_reduction"] = native_color_reduction;
+            metadata["final_slot_binding"] = final_slot_binding;
+            metadata["partition_build_report"] = m_portrait_print.partition_build_report;
+        } catch (const std::exception& failure) {
+            if (m_beauty_transactions)
+                m_beauty_transactions->finish(false, false, failure.what());
+            rollback_portrait_color_save(failure.what());
+            return;
+        }
     }
     metadata["face_color_intent"] = m_model_preview->face_color_metadata();
     if (m_finishing_candidate_baked_appearance.is_object() &&
@@ -364,6 +576,25 @@ void ModelGenerationPanel::accept_model_finishing()
         }
     }
     if (saved_match) {
+        const auto portrait_trial = portrait_save
+            ? m_model_preview->color_trial_state() : ModelPreviewColorControls::State {};
+        const bool portrait_model_slots_only = !portrait_save ||
+            (portrait_trial.project_color_slots.size() == size_t(m_portrait_print.model_color_count) &&
+             std::all_of(saved_match->face_slots.begin(), saved_match->face_slots.end(),
+                [&](size_t slot) {
+                    return std::find(portrait_trial.project_color_slots.begin(),
+                        portrait_trial.project_color_slots.end(), slot) !=
+                        portrait_trial.project_color_slots.end();
+                }));
+        if (portrait_save && (!saved_match->subface_slots.empty() ||
+            saved_match->face_slots.size() != m_finishing_result.faces_after ||
+            !portrait_model_slots_only)) {
+            m_save_and_return = false;
+            if (m_beauty_transactions)
+                m_beauty_transactions->finish(false, false, "portrait v9 requires face-only slot coverage");
+            report(_L("人物 v9 配色必须逐面完整绑定且不能包含子面槽位；候选已保留。"));
+            return;
+        }
         // Appearance-only edits and smoothing retain face correspondence. Bind
         // the same slot snapshot to the newly published file identity. A
         // topology-changing candidate reached this point only after rematch.
@@ -417,6 +648,11 @@ void ModelGenerationPanel::accept_model_finishing()
         {"prompt", metadata.at("prompt")},
         {"use_printable_colors", false}
     };
+    const auto publication_id = boost::filesystem::unique_path("portrait-publication-%%%%-%%%%-%%%%").string();
+    if (portrait_save) {
+        metadata["portrait_publication_id"] = publication_id;
+        history_index["portrait_publication_id"] = publication_id;
+    }
     for (const char* key : {"reference_image_path", "ai_image_path"})
         if (metadata.contains(key)) history_index[key] = metadata.at(key);
     if (m_finishing_worker.joinable()) m_finishing_worker.join();
@@ -424,8 +660,25 @@ void ModelGenerationPanel::accept_model_finishing()
     m_beauty_publication_committed = std::make_shared<std::atomic<bool>>(false);
     const auto canceled = m_finishing_canceled;
     const auto committed = m_beauty_publication_committed;
+    const auto portrait_save_flow_id = portrait_save ? m_portrait_save_flow_id : std::string{};
+    const auto portrait_save_snapshot = portrait_save ? m_portrait_save_draft : nullptr;
+    std::vector<std::pair<boost::filesystem::path, std::string>> portrait_owned_files;
+    if (portrait_save) for (const auto& file : m_portrait_save_files) {
+        // Ownership and an expected hash are both required. Reused files never
+        // enter this list, even when their bytes equal the current candidate.
+        const auto hash = file == candidate ? after->model_sha256 :
+            file == after->original_appearance.carrier_model
+                ? after->original_appearance.carrier_sha256 : std::string{};
+        if (!hash.empty()) portrait_owned_files.emplace_back(file, hash);
+    }
     const auto cache_root = boost::filesystem::path(Slic3r::data_dir()) / "cache";
     const auto revision = m_sequence;
+    const bool resume_automatic_palette_after_accept = topology_candidate &&
+        m_workbench_auto_palette_revision == revision &&
+        m_workbench_auto_palette_path == source &&
+        workbench_ai_palette_should_resume_after_accept(
+            m_workbench_auto_palette_pending, verified_check.source,
+            workbench_topology_safe(verified_check), verified_check.candidate_status);
     wxWeakRef<ModelGenerationPanel> weak(this);
     m_finishing_running = m_busy = true;
     m_finishing_status->SetLabel(_L("正在保存版本和编辑记录，可取消……"));
@@ -433,15 +686,23 @@ void ModelGenerationPanel::accept_model_finishing()
     try {
         m_finishing_worker = std::thread([weak, revision, canceled, committed, metadata_path,
             source, source_hash, candidate, before, after, source_context, cache_root, region_cache_unsaved,
-            topology_candidate, verified_check, filament_application, root,
+            topology_candidate, verified_check, filament_application, portrait_save, root,
+            publication_id, portrait_save_flow_id, portrait_save_snapshot,
+            portrait_owned_files = std::move(portrait_owned_files),
+            portrait_certificate = std::move(portrait_certificate),
+            resume_automatic_palette_after_accept,
             topology_publication_artifacts = std::move(topology_publication_artifacts),
             metadata = std::move(metadata), history_index = std::move(history_index)]() mutable {
             std::string error;
             auto final_check = verified_check;
             try {
-                if (topology_candidate || filament_application)
+                if (portrait_save && !portrait_certificate)
+                    throw std::runtime_error("Owned portrait publication certificate is missing.");
+                if (topology_candidate || filament_application || portrait_save)
                     final_check = inspect_workbench_publication(candidate, source,
-                        topology_candidate ? &verified_check : nullptr, [canceled] { return canceled->load(); });
+                        topology_candidate ? &verified_check : nullptr,
+                        [canceled] { return canceled->load(); },
+                        portrait_save ? &*portrait_certificate : nullptr);
 
                 if (after->shape_details && after->shape_details->compatible(after->geometry_id, after->result.faces_after)) {
                     auto shapes = PortraitShapeCache::save(*after->shape_details, cache_root);
@@ -453,6 +714,9 @@ void ModelGenerationPanel::accept_model_finishing()
                     if (after->color_trial.suite_id == "honor.people.six") {
                         const auto layer = PortraitColorBlocks::publish_verified_color_layer(
                             *after->color_blocks, cache_root / "portrait-color-blocks");
+                        if (portrait_save && (layer.painted_faces != after->color_blocks->face_count ||
+                            layer.painted_subfaces != 0))
+                            throw std::runtime_error("人物 v9 配色层不是完整逐面颜色层。");
                         metadata["portrait_color_blocks"] = layer.reference;
                         metadata["portrait_applied_color_layer"] = layer.encode();
                     } else metadata["portrait_color_blocks"] = PortraitColorBlocks::save(
@@ -487,9 +751,43 @@ void ModelGenerationPanel::accept_model_finishing()
                     document = beauty.encode();
                 }
                 document["model_sha256"] = after->model_sha256;
+                if (portrait_save) metadata["beauty_workbench"] = document;
+                if (portrait_save) {
+                    const auto& reference = metadata.at("native_portrait_partition");
+                    const auto encoded_blocks = PortraitColorBlocks::encode(*after->color_blocks);
+                    if (encoded_blocks.at("region_semantics") != metadata.at("region_semantics") ||
+                        encoded_blocks.at("native_color_reduction") !=
+                            metadata.at("native_color_reduction") ||
+                        encoded_blocks.at("final_slot_binding") !=
+                            metadata.at("final_slot_binding"))
+                        throw std::runtime_error("区域语义、减色映射或整区槽位在发布期间发生变化。");
+                    metadata["post_color_check"] =
+                        encode_portrait_post_color_check(final_check, reference);
+                    if (!PortraitPrint::valid_post_color_check(
+                            metadata.at("post_color_check"), reference))
+                        throw std::runtime_error("着色后拓扑证据无效。");
+                    metadata["workbench_check_certificate"] =
+                        PortraitPrint::encode_workbench_check_certificate(final_check,
+                            WorkbenchCheckPurpose::PortraitPostColorReadOnly,
+                            reference.at("geometry_id").get<std::string>(),
+                            reference.at("appearance_id").get<std::string>(),
+                            portrait_path_utf8(metadata_path), metadata,
+                            reference.at("partition_digest").get<std::string>(),
+                            reference.at("topology_hash").get<std::string>());
+                    if (!PortraitPrint::valid_workbench_check_certificate(
+                            metadata.at("workbench_check_certificate"),
+                            WorkbenchCheckPurpose::PortraitPostColorReadOnly,
+                            final_check.model_sha256,
+                            reference.at("geometry_id").get<std::string>(),
+                            reference.at("appearance_id").get<std::string>(),
+                            portrait_path_utf8(metadata_path), metadata,
+                            reference.at("partition_digest").get<std::string>(),
+                            reference.at("topology_hash").get<std::string>()))
+                        throw std::runtime_error("着色后检查证书无效。");
+                }
                 const auto encoded = document.dump();
                 AI::publish_beauty_version_record(metadata_path, candidate, source, metadata,
-                    &encoded, [canceled] { return canceled->load(); }, &history_index);
+                    portrait_save ? nullptr : &encoded, [canceled] { return canceled->load(); }, &history_index);
                 committed->store(true);
             } catch (const std::exception& e) {
                 error = e.what();
@@ -501,13 +799,65 @@ void ModelGenerationPanel::accept_model_finishing()
             }
             wxGetApp().CallAfter([weak, revision, canceled, committed, candidate, before, after,
                 source, source_hash, source_context, region_cache_unsaved, topology_candidate, filament_application,
-                final_check, metadata_path, error]() mutable {
+                portrait_save, resume_automatic_palette_after_accept,
+                final_check, metadata_path, publication_id, error, portrait_save_flow_id,
+                portrait_save_snapshot, portrait_owned_files = std::move(portrait_owned_files)]() mutable {
+                const auto cleanup_stale_portrait = [&] {
+                    if (!portrait_save) return;
+                    try {
+                        bool foreign_record = false;
+                        const auto retract_owned_record = [&](const boost::filesystem::path& path) {
+                            if (!boost::filesystem::exists(path)) return;
+                            if (boost::filesystem::is_symlink(path)) {
+                                foreign_record = true; return;
+                            }
+                            nlohmann::json record;
+                            { boost::filesystem::ifstream input(path); input >> record; }
+                            if (record.value("portrait_publication_id", std::string{}) != publication_id) {
+                                foreign_record = true; return;
+                            }
+                            boost::filesystem::remove(path);
+                        };
+                        auto index = metadata_path; index.replace_extension(".history.json");
+                        retract_owned_record(index);
+                        retract_owned_record(metadata_path);
+                        // A conflicting older record may reference a reused path.
+                        // Preserve its files rather than breaking existing history.
+                        if (foreign_record) return;
+                        committed->store(false);
+                        for (const auto& owned : portrait_owned_files) {
+                            const auto& file = owned.first;
+                            if (file == source || (weak && (file == weak->m_displayed_model_path ||
+                                file == weak->m_artifact_path || file == weak->m_finishing_source ||
+                                (weak->m_model_preview && weak->m_model_preview->showing_model(file))))) continue;
+                            if (boost::filesystem::is_symlink(file) ||
+                                AI::model_artifact_sha256(file) != owned.second) continue;
+                            boost::system::error_code ignored;
+                            boost::filesystem::remove(file, ignored);
+                            if (weak) weak->m_beauty_candidate_files.erase(std::remove(
+                                weak->m_beauty_candidate_files.begin(), weak->m_beauty_candidate_files.end(), file),
+                                weak->m_beauty_candidate_files.end());
+                        }
+                    } catch (const std::exception& failure) {
+                        BOOST_LOG_TRIVIAL(error) << "stale portrait publication cleanup: " << failure.what();
+                    }
+                };
                 if (!weak || weak->m_shutdown || revision != weak->m_sequence ||
-                    weak->m_beauty_publication_committed != committed) return;
+                    weak->m_beauty_publication_committed != committed ||
+                    (portrait_save && (!weak->portrait_color_save_snapshot_current() ||
+                        weak->m_portrait_save_flow_id != portrait_save_flow_id ||
+                        weak->m_portrait_save_draft != portrait_save_snapshot))) {
+                    cleanup_stale_portrait();
+                    return;
+                }
                 auto* self = weak.get();
                 if (self->m_finishing_worker.joinable()) self->m_finishing_worker.join();
                 self->m_finishing_running = self->m_busy = false;
                 if (!committed->load()) {
+                    if (portrait_save) {
+                        self->rollback_portrait_color_save(error);
+                        return;
+                    }
                     self->m_save_and_return = false;
                     if (self->m_beauty_transactions)
                         self->m_beauty_transactions->finish(false, false, error);
@@ -539,7 +889,9 @@ void ModelGenerationPanel::accept_model_finishing()
                         ? _L("已取消保存，候选和草稿保留，可再次保存。")
                         : _L("版本保存失败，候选和草稿保留：") + from_u8(error));
                     self->m_workbench_operation_notice = into_u8(self->m_finishing_status->GetLabel());
-                    if (self->m_portrait_print.running() && (self->m_portrait_print.stage == PortraitPrint::Stage::Check ||
+                    if ((self->portrait_owns_display_context() || self->portrait_owns_save_candidate()) &&
+                        self->m_portrait_print.running() &&
+                        (self->m_portrait_print.stage == PortraitPrint::Stage::Check ||
                         self->m_portrait_print.stage == PortraitPrint::Stage::SaveColor))
                         self->pause_portrait_print(self->m_workbench_operation_notice);
                     self->finish_printer_filament_application(false);
@@ -559,6 +911,22 @@ void ModelGenerationPanel::accept_model_finishing()
                     self->finish_printer_filament_application(false);
                     self->refresh_controls(); return;
                 }
+                if (portrait_save && !self->portrait_color_published(candidate, final_check)) {
+                    // The candidate and source stay intact, while the final
+                    // history markers are rolled back so no half-accepted
+                    // portrait version can appear after a ledger failure.
+                    boost::system::error_code ignored;
+                    boost::filesystem::remove(metadata_path, ignored);
+                    auto index = metadata_path; index.replace_extension(".history.json");
+                    boost::filesystem::remove(index, ignored);
+                    committed->store(false);
+                    if (self->m_beauty_transactions)
+                        self->m_beauty_transactions->finish(false, false,
+                            "portrait flow commit failed");
+                    self->m_save_and_return = false;
+                    self->rollback_portrait_color_save("portrait flow commit failed");
+                    return;
+                }
                 self->m_finishing_undo_path = self->m_finishing_source;
                 self->m_finishing_restore_context = source_context;
                 self->m_finishing_accepted_path = candidate;
@@ -568,8 +936,18 @@ void ModelGenerationPanel::accept_model_finishing()
                               after->original_appearance.carrier_model) != self->m_beauty_candidate_files.end())
                     self->m_beauty_accepted_files.push_back(after->original_appearance.carrier_model);
                 self->select_local_finishing_version(candidate, self->m_finishing_id);
+                if (resume_automatic_palette_after_accept) {
+                    self->m_workbench_auto_palette_pending = true;
+                    self->m_workbench_auto_palette_revision = self->m_sequence;
+                    self->m_workbench_auto_palette_path = candidate;
+                }
                 const auto accepted_context = self->capture_model_context();
                 self->m_finishing_candidate.clear();
+                self->m_portrait_color_candidate_identity = {};
+                self->m_portrait_save_draft.reset();
+                self->m_portrait_save_task.reset();
+                self->m_portrait_save_flow_id.clear();
+                self->m_portrait_save_files.clear();
                 self->m_finishing_candidate_original_appearance = {};
                 self->m_finishing_candidate_original_appearance_error.clear();
                 after->source = candidate;
@@ -633,7 +1011,7 @@ void ModelGenerationPanel::accept_model_finishing()
                     _L("区域缓存未保存，重新打开后需要重新识别。"));
                 self->m_status->SetLabel(self->m_finishing_status->GetLabel());
                 self->m_model_preview_message->SetLabel(_L("当前显示：已接受的三维处理版本。"));
-                if (topology_candidate || filament_application) {
+                if (topology_candidate || filament_application || portrait_save) {
                     if (topology_candidate) {
                         // The candidate is already the accepted model at this
                         // point. Do not leave Ready in the workbench state or
@@ -649,7 +1027,6 @@ void ModelGenerationPanel::accept_model_finishing()
                 self->m_workbench_operation_notice = topology_candidate ? "修复已接受并保存" : "新版本已保存";
                 if (topology_candidate)
                     self->portrait_repair_published(source_hash, final_check.model_sha256, candidate);
-                self->portrait_color_published(candidate);
                 self->finish_printer_filament_application(true);
                 self->m_workbench_history_filter = self->m_workbench_history_page = 0;
                 if (self->m_workbench_history_search) self->m_workbench_history_search->ChangeValue(wxEmptyString);
@@ -659,11 +1036,15 @@ void ModelGenerationPanel::accept_model_finishing()
                 self->update_finishing_selection();
                 self->finish_workbench_save();
                 self->m_workbench_auto_repair = false;
+                if (resume_automatic_palette_after_accept)
+                    self->apply_pending_workbench_ai_palette(candidate, self->m_sequence);
                 self->ensure_workbench_check();
+                self->queue_portrait_print();
             });
         });
     } catch (const std::exception& error) {
         m_finishing_running = m_busy = m_save_and_return = false;
+        if (portrait_save) { rollback_portrait_color_save(error.what()); return; }
         if (m_beauty_transactions) m_beauty_transactions->finish(false, false, error.what());
         if (topology_candidate) {
             const auto hash = m_finishing_result.source_sha256;
@@ -685,7 +1066,9 @@ void ModelGenerationPanel::accept_model_finishing()
             m_finishing_status->SetLabel(_L("暂时无法启动保存，候选保留：") + from_u8(error.what()));
         }
         m_workbench_operation_notice = into_u8(m_finishing_status->GetLabel());
-        if (m_portrait_print.running() && (m_portrait_print.stage == PortraitPrint::Stage::Check ||
+        if ((portrait_owns_display_context() || portrait_owns_save_candidate()) &&
+            m_portrait_print.running() &&
+            (m_portrait_print.stage == PortraitPrint::Stage::Check ||
             m_portrait_print.stage == PortraitPrint::Stage::SaveColor)) pause_portrait_print(m_workbench_operation_notice);
         finish_printer_filament_application(false);
         refresh_controls();
@@ -710,6 +1093,7 @@ void ModelGenerationPanel::discard_model_finishing()
     m_beauty_session_source.reset();
     m_beauty_compare_draft.reset();
     m_finishing_candidate.clear();
+    m_portrait_color_candidate_identity = {};
     m_finishing_candidate_original_appearance = {};
     m_finishing_candidate_original_appearance_error.clear();
     if (m_workbench_check_result.candidate_status == RepairCandidateStatus::Ready) {

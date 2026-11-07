@@ -558,6 +558,7 @@ BeautyCandidateSnapshot ModelGenerationPanel::capture_beauty_candidate() const
     snapshot.secondary_evidence = m_model_preview->secondary_region_evidence();
     snapshot.secondary_evidence_error = m_model_preview->secondary_region_evidence_error();
     snapshot.color_blocks=m_model_preview->portrait_color_blocks();
+    snapshot.native_portrait_partition=m_model_preview->native_portrait_partition();
     snapshot.printer_restore=m_model_preview->printer_restore_snapshot();
     snapshot.matched_colors = m_beauty_matched_colors;
     snapshot.matched_configuration_signature = m_beauty_color_gate_configuration_signature;
@@ -680,7 +681,9 @@ bool ModelGenerationPanel::restore_beauty_candidate(const BeautyCandidateSnapsho
         m_finishing_candidate_semantic_faces = m_model_preview->import_face_color_overrides(true);
         m_finishing_candidate_semantic_subfaces = m_model_preview->import_subface_color_overrides(true);
     }
-    m_model_preview->restore_portrait_color_blocks(snapshot.color_blocks);
+    if (!m_model_preview->restore_native_portrait_partition(snapshot.native_portrait_partition) ||
+        !m_model_preview->restore_portrait_color_blocks(snapshot.color_blocks))
+        return false;
     m_model_preview->restore_printer_restore_snapshot(snapshot.printer_restore);
     m_beauty_matched_colors = snapshot.matched_colors;
     m_beauty_color_gate_configuration_signature = snapshot.matched_configuration_signature;

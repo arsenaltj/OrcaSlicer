@@ -253,3 +253,45 @@ TEST_CASE("Progress is reported in order and throwing from it cancels the repair
     CHECK(canceled.its.vertices == original.its.vertices);
     CHECK(canceled.its.indices == original.its.indices);
 }
+
+TEST_CASE("Strict mesh repair certifies valid geometry without a second repair", "[MeshRepair][StrictMeshRepair]")
+{
+    const indexed_triangle_set source = cube(20.);
+    const StrictMeshRepairResult result = strict_repair_mesh(source);
+    REQUIRE(result.success);
+    CHECK_FALSE(result.canceled);
+    CHECK_FALSE(result.first_cgal_attempted);
+    CHECK_FALSE(result.enhanced_repair_attempted);
+    CHECK_FALSE(result.second_cgal_attempted);
+    CHECK(result.input_topology.safe());
+    CHECK(result.output_topology.safe());
+    CHECK(result.geometry_verified);
+    CHECK(result.repaired_mesh.vertices == source.vertices);
+    CHECK(result.repaired_mesh.indices == source.indices);
+}
+
+TEST_CASE("Strict mesh repair starts fallbacks from the immutable input and publishes only a certificate", "[MeshRepair][StrictMeshRepair]")
+{
+    const indexed_triangle_set source = soup(cube(20.));
+    std::vector<unsigned> progress;
+    const StrictMeshRepairResult result = strict_repair_mesh(source, {},
+        [&](const char*, unsigned value) { progress.push_back(value); });
+    REQUIRE(result.success);
+    CHECK_FALSE(result.input_topology.safe());
+    CHECK(result.first_cgal_attempted);
+    CHECK(result.output_topology.safe());
+    CHECK(result.geometry_verified);
+    CHECK_FALSE(result.repaired_mesh.empty());
+    CHECK_FALSE(progress.empty());
+    CHECK(progress.back() == 100);
+}
+
+TEST_CASE("Strict mesh repair rejects cancellation without publishing geometry", "[MeshRepair][StrictMeshRepair]")
+{
+    const indexed_triangle_set source = soup(cube(20.));
+    int checks = 0;
+    const StrictMeshRepairResult result = strict_repair_mesh(source, {}, {}, [&] { return ++checks >= 2; });
+    CHECK_FALSE(result.success);
+    CHECK(result.canceled);
+    CHECK(result.repaired_mesh.empty());
+}

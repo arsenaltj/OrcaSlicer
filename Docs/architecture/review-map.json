@@ -168,13 +168,13 @@
       "id": "portrait_print_flow",
       "path": "src/slic3r/GUI/AI/ModelGeneration/PortraitPrintFlow.cpp",
       "needle": "PP::Submission ModelGenerationPanel::request_portrait_print_from_model",
-      "detail": "v4 starts at Open Workbench: project backup, accepted and saved repair, model-history AI source basis, semantic region binding, saved painting, independent base, import and official slicing. Restored v1-v3 assets remain readable; continuation never submits generation tasks."
+      "detail": "v7 starts at the owned completed-model workbench: immutable original, one strict native repair and v12 atomic partition, five model colors with sparse protected-role overlays, atomic saved painting, independent base, import and official slicing. Legacy records remain readable but stale native checkpoints rebuild from origin; continuation never submits generation tasks."
     },
     {
       "id": "portrait_suite_binding",
       "path": "src/slic3r/GUI/AI/ModelGeneration/ModelPreviewSemantics.cpp",
       "needle": "void ModelPreview3D::update_semantic_coloring()",
-      "detail": "People six uses ColorRegionMajorityV2 with a frozen 4/5/6 source palette, original-surface sampling, adaptive boundary subfaces and protected tooth removal shared with BeautyPuzzle. Trusted semantic votes bind the first five physical slots; original-color fallback preserves regions. Support slot six and the independent base keep separate identities."
+      "detail": "People six preserves the v12 native geometry, ordered faces and atomic regions. Full regional role support and high-confidence connected face overlays preserve hair, bilateral eyebrows, sclera, irises and lips. Native color reduction is independent of semantics; global one-to-one slot matching uses five model slots. Unknown faces retain their native group. Support slot six and the independent base keep separate identities."
     },
     {
       "id": "portrait_palette_provider",
@@ -191,8 +191,8 @@
     {
       "id": "portrait_native_repair",
       "path": "src/slic3r/GUI/AI/Orca/WorkbenchImportTopology.hpp",
-      "needle": "inline bool prepare_native_portrait_repair(",
-      "detail": "v4 repairs and verifies appearance in the workbench before partitioning, then disables duplicate topology repair at import. Historical import repair remains compatible. Import and painting failures roll back the detached candidate. The base is a separate volume outside source clustering."
+      "needle": "inline bool prepare_workbench_import_topology(",
+      "detail": "Strict native repair precedes partitioning. Shared synchronous and asynchronous import validation verifies ordered face-corner float bits before restoring the certified closed native indices and preserving painting. Owned checkpoint restoration distinguishes the committed partition and accepted saved-version formats; saved versions require all final coloring contracts and the bound post-color certificate. Unknown formats, changed identity and ordinary models retain fail-closed inspection. Import and painting failures roll back the detached candidate. The base is a separate volume outside source clustering and the native body certificate."
     },
     {
       "id": "portrait_print_preview",

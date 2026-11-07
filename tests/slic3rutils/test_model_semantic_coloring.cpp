@@ -6,6 +6,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/ModelSemanticColoring.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <atomic>
 #include <array>
 #include <chrono>
@@ -369,7 +370,14 @@ TEST_CASE("Unavailable recognition never bypasses canonical portrait source vali
     Slic3r::set_data_dir(fixture.runtime.generic_string());
 
     const auto original_file = fixture.directory.path() / "original.glb";
-    const auto original_mesh = source("canonical-fixture");
+    auto original_mesh = std::make_shared<SC::MeshSnapshot>(*source("canonical-fixture"));
+    original_mesh->mesh.vertices = {
+        {-1.f, 0.f, -1.f}, {1.f, 0.f, -1.f}, {0.f, 0.f, 1.f}, {0.f, 1.f, 0.f}};
+    original_mesh->mesh.indices = {
+        {0, 2, 1}, {0, 1, 3}, {1, 2, 3}, {2, 0, 3}};
+    original_mesh->vertex_colors.assign(
+        original_mesh->mesh.vertices.size(), {skin[0], skin[1], skin[2], 1.f});
+    original_mesh->content_id = SC::content_fingerprint(*original_mesh);
     std::string error;
     REQUIRE(AI::write_model_artifact(original_file, original_mesh->mesh, original_mesh->vertex_colors, error));
     TriangleMesh loaded;
@@ -411,21 +419,21 @@ TEST_CASE("Unavailable recognition never bypasses canonical portrait source vali
         REQUIRE(changed.good());
     }
 
-    Slic3r::GUI::PreviewPalette::AutomaticColorBasis basis;
-    basis.geometry_id = edited->geometry_id;
-    basis.source_color_signature = canonical->content_id;
-    basis.requested_count = 4;
-    basis.source_palette = {skin, gray, blue, {1.f, 1.f, 1.f}};
-    basis.unit_source_slots = {0};
-    basis.unit_area = {2.};
-    basis.source_area = {2., 0., 0., 0.};
-    basis.basis_signature = "canonical-source-fallback";
-    REQUIRE(basis.valid());
+    PaintedMesh painted;
+    for (const auto& vertex : edited->mesh.vertices)
+        painted.vertices.push_back({vertex.x(), vertex.y(), vertex.z()});
+    for (const auto& face : edited->mesh.indices)
+        painted.indices.push_back({face[0], face[1], face[2]});
+    painted.cluster_colors = {{204,153,128},{128,128,128},{0,0,255},{255,255,255}};
+    painted.face_colors.assign(painted.indices.size(), painted.cluster_colors.front());
+    auto native_partition = std::make_shared<Slic3r::GUI::NativePortrait::NativePortraitPartition>(
+        Slic3r::GUI::NativePortrait::finalize_native_portrait_partition(std::move(painted)));
+    REQUIRE(native_partition->geometry_id == edited->geometry_id);
     const std::vector<SC::Color> targets {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, skin,
         {1.f, 1.f, 1.f}, blue};
     Coordinator coordinator(fixture.runtime, fixture.cache);
     REQUIRE(coordinator.request(edited, targets, targets, targets, {}, {}, shapes, {},
-        true, {}, {}, {}, 4, false, true, {}, "canonical-source-fallback", basis));
+        true, {}, {}, {}, 4, false, true, {}, "canonical-source-fallback", native_partition));
     const auto result = await_result(coordinator);
     REQUIRE(result);
     CAPTURE(result->error);
@@ -437,12 +445,15 @@ TEST_CASE("Unavailable recognition never bypasses canonical portrait source vali
         REQUIRE(result->color_blocks);
         REQUIRE(result->analysis);
         CHECK(result->analysis->content_id == canonical->content_id);
-        REQUIRE(result->color_blocks->units.size() == 1);
-        CHECK(result->color_blocks->units.front().path.depth == 0);
+        REQUIRE(result->color_blocks->units.size() == edited->mesh.indices.size());
+        CHECK(std::all_of(result->color_blocks->units.begin(),
+            result->color_blocks->units.end(), [](const auto& unit) {
+                return unit.path.depth == 0;
+            }));
         REQUIRE(result->color_blocks->current().blocks.size() == 1);
         CHECK(result->color_blocks->current().blocks.front().display_slot == 2);
-        REQUIRE(result->automatic.size() == 1);
-        check_color(result->automatic.front().second, skin);
+        REQUIRE(result->automatic.size() == edited->mesh.indices.size());
+        for (const auto& color : result->automatic) check_color(color.second, skin);
         CHECK(result->automatic_subfaces.empty());
         CHECK_FALSE(result->geometry.is_empty());
     } else {

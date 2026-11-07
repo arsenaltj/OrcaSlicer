@@ -25,6 +25,7 @@
 #include "WorkbenchRoundBasePreview.hpp"
 #include "ModelSemanticColoring.hpp"
 #include "PortraitColorBlockCache.hpp"
+#include "PortraitNativePartitionCache.hpp"
 #include "PrinterFilamentRestoreSnapshot.hpp"
 #include "PortraitResidualProposal.hpp"
 #include "PortraitResidualRequest.hpp"
@@ -198,6 +199,9 @@ public:
             // table; otherwise the old face/semantic caches can be walked
             // while their slot identities are being removed.
             if (!m_project_color_sync_suspended) synchronize_project_colors();
+        };
+        m_color_trial->on_native_automatic_basis = [this](size_t count) {
+            return native_workbench_automatic_basis(count);
         };
         m_color_trial->on_changed = [this] {
             m_trial_toggle_started = std::chrono::steady_clock::now();
@@ -440,11 +444,18 @@ public:
         std::optional<GLModel::PreparedGeometry> render_geometry;
         GLModel::Geometry current_appearance_geometry;
         std::optional<GLModel::PreparedGeometry> current_appearance_render_geometry;
+        GLModel::Geometry direct_original_geometry;
+        std::optional<GLModel::PreparedGeometry> direct_original_render_geometry;
 
         // Freeze CPU geometry and its exact bounds before the GUI adopts it.
         // Synchronous consumers can still use the unprepared geometry.
         void prepare_render_geometry(const std::function<bool()>& canceled = {}, bool share_exact_vertices = false)
         {
+            const auto prepare_direct_original = [&] {
+                if (!direct_original_geometry.is_empty())
+                    direct_original_render_geometry.emplace(
+                        GLModel::prepare_geometry(std::move(direct_original_geometry), canceled));
+            };
             if (share_exact_vertices) {
                 auto shared = ModelPreviewGeometry::share_exact_vertices(mesh, geometry, canceled);
                 if (shared) {
@@ -454,6 +465,7 @@ public:
                     if (!current_appearance_geometry.is_empty())
                         current_appearance_render_geometry.emplace(
                             GLModel::prepare_geometry(std::move(current_appearance_geometry), canceled));
+                    prepare_direct_original();
                     return;
                 }
             }
@@ -461,12 +473,19 @@ public:
             if (!current_appearance_geometry.is_empty())
                 current_appearance_render_geometry.emplace(
                     GLModel::prepare_geometry(std::move(current_appearance_geometry), canceled));
+            prepare_direct_original();
         }
         const GLModel::Geometry& render_data() const
         { return render_geometry ? render_geometry->geometry() : geometry; }
 
         AI::ModelArtifactTextureSurface texture_surface;
         AI::ModelArtifactTextureSurface current_appearance_texture_surface;
+        std::shared_ptr<ModelOriginalSurfaceSampler> direct_original_source;
+        std::vector<Vec3f> direct_original_corner_normals;
+        std::string direct_original_sha256;
+        std::string direct_original_geometry_id;
+        std::string direct_original_error;
+        bool direct_original_is_current {false};
         indexed_triangle_set mesh;
         std::vector<RGBA> vertex_colors;
         BoundingBoxf3 bounds;
@@ -487,6 +506,8 @@ public:
         std::optional<ModelPreviewColorControls::State> color_trial;
         std::optional<PrinterFilamentRestoreSnapshot> printer_filament_restore;
         std::shared_ptr<const PortraitColorBlocks::Result> color_blocks;
+        std::shared_ptr<const NativePortrait::NativePortraitPartition> native_portrait_partition;
+        nlohmann::json native_workbench_partition_reference;
         std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> semantic_source;
         FaceColorOverrides saved_semantic_faces;
         SubfaceColorOverrides saved_semantic_subfaces;
@@ -549,7 +570,9 @@ public:
         prepared.geometry_id = AI::SurfaceSelectionPersistence::geometry_fingerprint(its);
         if (stop_if_canceled()) return false;
         trace_stage("geometry_fingerprint");
-        nlohmann::json region_reference, secondary_region_reference, shape_reference, restore_shape_reference, block_reference, restore_block_reference;
+        nlohmann::json region_reference, secondary_region_reference, shape_reference, restore_shape_reference,
+            block_reference, restore_block_reference, native_partition_reference, region_semantics,
+            native_color_reduction, final_slot_binding;
         nlohmann::json restoration_metadata;
         std::string block_semantic_signature;
         prepared.face_color_overrides = explicit_overrides;
@@ -570,11 +593,21 @@ public:
                 restoration_metadata = metadata;
                 if (metadata.contains("portrait_preparation") && metadata["portrait_preparation"].is_object()) {
                     const auto& preparation = metadata["portrait_preparation"];
-                    prepared.round_base_enabled = preparation.value("schema", std::string{}) == "orca.portrait-preparation/v1" &&
+                    const auto preparation_schema = preparation.value("schema", std::string{});
+                    prepared.round_base_enabled =
+                        (preparation_schema == "orca.portrait-preparation/v1" ||
+                         preparation_schema == "orca.portrait-preparation/v2") &&
                         preparation.value("round_base", false) && preparation.value("height_mm", 0.0) == 3.0 &&
                         preparation.value("overlap_mm", 0.0) == 0.2;
                 }
                 if (metadata.contains("portrait_color_blocks")) block_reference=metadata["portrait_color_blocks"];
+                if (metadata.contains("native_portrait_partition"))
+                    native_partition_reference = metadata["native_portrait_partition"];
+                if (metadata.contains("region_semantics")) region_semantics = metadata["region_semantics"];
+                if (metadata.contains("native_color_reduction"))
+                    native_color_reduction = metadata["native_color_reduction"];
+                if (metadata.contains("final_slot_binding"))
+                    final_slot_binding = metadata["final_slot_binding"];
                 if(metadata.contains("semantic_color_state") && metadata["semantic_color_state"].is_object())
                     block_semantic_signature=metadata["semantic_color_state"].value("signature",std::string{});
                 if (metadata.contains("semantic_region_evidence")) region_reference = metadata["semantic_region_evidence"];
@@ -705,6 +738,12 @@ public:
                 decoded_origin ? &mesh : nullptr, decoded_origin ? &current_appearance : nullptr,
                 decoded_origin ? &prepared.texture_surface : nullptr);
             if (!sampler) return false;
+            prepared.direct_original_source = sampler;
+            prepared.direct_original_sha256 = origin_hash;
+            prepared.direct_original_geometry_id =
+                AI::SurfaceSelectionPersistence::geometry_fingerprint(sampler->origin_mesh().its);
+            prepared.direct_original_is_current = origin_hash == current_hash &&
+                prepared.direct_original_geometry_id == prepared.geometry_id;
             source->sample_original = [sampler](size_t face, const auto& bary) { return sampler->sample(face,bary); };
             source->sampling_signature = "original-surface/v1:" + origin_hash;
             // A repaired file may itself be its appearance carrier while its
@@ -721,10 +760,103 @@ public:
         prepared.ai_source_color_count = original_appearance_detail::ai_source_color_count(
             path, original_appearance_library_root(path, record), record);
         if(prepared.semantic_source) {
-            const auto root=boost::filesystem::path(Slic3r::data_dir())/"cache"/"portrait-color-blocks";
+            const auto cache_root = boost::filesystem::path(Slic3r::data_dir()) / "cache";
+            const auto root = cache_root / "portrait-color-blocks";
             std::string block_error;
+            if (!native_partition_reference.is_null()) try {
+                if (!native_partition_reference.is_object() ||
+                    native_partition_reference.at("schema") !=
+                        "orca.native-workbench-partition-reference/v2" ||
+                    native_partition_reference.at("algorithm").get<uint32_t>() !=
+                        NativePortrait::algorithm_version ||
+                    native_partition_reference.at("coordinate_units") != "mm" ||
+                    native_partition_reference.at("carrier_sha256") != current_hash ||
+                    native_partition_reference.at("geometry_id") != prepared.geometry_id ||
+                    native_partition_reference.at("appearance_id") !=
+                        prepared.semantic_source->content_id)
+                    throw std::runtime_error("原生工作台分区独立引用缺失或载体身份不匹配。");
+                NativePortrait::NativeMillimeterBounds source_bounds_mm, carrier_bounds_mm;
+                if (!NativePortrait::decode_native_workbench_bounds(
+                        native_partition_reference.at("source_bounds_mm"), source_bounds_mm) ||
+                    !NativePortrait::decode_native_workbench_bounds(
+                        native_partition_reference.at("carrier_bounds_mm"), carrier_bounds_mm) ||
+                    !NativePortrait::native_workbench_bounds_compatible(
+                        source_bounds_mm, carrier_bounds_mm, block_error) ||
+                    !NativePortrait::native_workbench_bounds_compatible(
+                        carrier_bounds_mm,
+                        NativePortrait::native_workbench_bounds(its), block_error))
+                    throw std::runtime_error(block_error.empty()
+                        ? "原生工作台分区毫米尺寸证书无效。" : block_error);
+
+                const auto& cache_reference = native_partition_reference.at("cache_reference");
+                if (!cache_reference.is_object() ||
+                    cache_reference.at("content_id") !=
+                        native_partition_reference.at("cache_sha256") ||
+                    cache_reference.at("partition_digest") !=
+                        native_partition_reference.at("partition_digest") ||
+                    cache_reference.at("geometry_id") != prepared.geometry_id)
+                    throw std::runtime_error("原生工作台分区缓存引用不匹配。");
+
+                NativePortrait::NativeWorkbenchPartitionIdentity identity;
+                TriangleMesh exact_native_mesh;
+                if (!NativePortrait::load_native_portrait_partition_cache(
+                        cache_reference, cache_root / "native-workbench-partitions",
+                        identity, block_error, &exact_native_mesh))
+                    throw std::runtime_error(block_error);
+                if (identity.partition_digest !=
+                        native_partition_reference.at("partition_digest"))
+                    throw std::runtime_error("原生工作台分区缓存摘要不一致。");
+
+                if (!NativePortrait::same_native_triangle_corners(its, exact_native_mesh.its, canceled))
+                    throw std::runtime_error("Native cached topology differs from the ordered carrier corners.");
+                auto partition = NativePortrait::restore_native_workbench_partition(
+                    exact_native_mesh.its, identity, block_error);
+                if (!partition.valid())
+                    throw std::runtime_error(block_error.empty()
+                        ? "原生工作台分区无法恢复。" : block_error);
+                prepared.native_portrait_partition =
+                    std::make_shared<NativePortrait::NativeWorkbenchPartition>(std::move(partition));
+                prepared.native_workbench_partition_reference = native_partition_reference;
+            } catch (const std::exception& failure) {
+                prepared.native_portrait_partition.reset();
+                prepared.native_workbench_partition_reference = nullptr;
+                block_error = failure.what();
+            }
             if(!block_reference.is_null()) prepared.color_blocks=PortraitColorBlocks::load(block_reference,root,
                 prepared.geometry_id,its.indices.size(),prepared.semantic_source->content_id,block_error);
+            if (prepared.color_blocks && prepared.color_blocks->strategy ==
+                    PortraitColorBlocks::Strategy::ColorRegionMajorityV2) {
+                if (prepared.color_blocks->algorithm_version !=
+                    PortraitColorBlocks::portrait_postprocess_algorithm_version) {
+                    prepared.color_blocks.reset();
+                    block_error = "旧版人物分区只读保留，需从原始模型重建 v11。";
+                } else try {
+                    if (!prepared.native_portrait_partition ||
+                        !prepared.color_blocks->native_partition_identity ||
+                        NativePortrait::encode_native_portrait_partition_identity(
+                            NativePortrait::native_workbench_partition_identity(
+                                *prepared.native_portrait_partition)) !=
+                            NativePortrait::encode_native_portrait_partition_identity(
+                                *prepared.color_blocks->native_partition_identity))
+                        throw std::runtime_error("配色缓存与独立原生分区身份不一致。");
+
+                    const auto encoded_blocks = PortraitColorBlocks::encode(*prepared.color_blocks);
+                    if (!region_semantics.is_object() || !native_color_reduction.is_object() ||
+                        !final_slot_binding.is_object() ||
+                        !encoded_blocks.contains("region_semantics") ||
+                        !encoded_blocks.contains("native_color_reduction") ||
+                        !encoded_blocks.contains("final_slot_binding") ||
+                        region_semantics != encoded_blocks.at("region_semantics") ||
+                        native_color_reduction != encoded_blocks.at("native_color_reduction") ||
+                        final_slot_binding != encoded_blocks.at("final_slot_binding") ||
+                        region_semantics.at("partition_digest") !=
+                            prepared.native_portrait_partition->partition_digest)
+                        throw std::runtime_error("区域语义、减色映射或最终槽位与原生分区摘要不一致。");
+                } catch (const std::exception& failure) {
+                    prepared.color_blocks.reset();
+                    block_error = failure.what();
+                }
+            }
             if(prepared.color_blocks && ((!block_semantic_signature.empty() &&
                 block_semantic_signature!=prepared.color_blocks->semantic_signature) ||
                 (prepared.color_trial && prepared.color_blocks->control_signature!=PortraitColorBlocks::controls_signature(
@@ -734,9 +866,32 @@ public:
             if(!block_reference.is_null() && !prepared.color_blocks) {
                 prepared.saved_semantic_faces.clear();prepared.saved_semantic_subfaces.clear();
             }
-            if(prepared.printer_filament_restore && !restore_block_reference.is_null())
-                prepared.printer_filament_restore->color_blocks=PortraitColorBlocks::load(restore_block_reference,root,
-                    prepared.geometry_id,its.indices.size(),prepared.semantic_source->content_id,block_error);
+            if(prepared.printer_filament_restore && !restore_block_reference.is_null()) {
+                auto restored_blocks = PortraitColorBlocks::load(restore_block_reference, root,
+                    prepared.geometry_id, its.indices.size(), prepared.semantic_source->content_id, block_error);
+                if (restored_blocks && restored_blocks->strategy ==
+                        PortraitColorBlocks::Strategy::ColorRegionMajorityV2) {
+                    const bool current_v11 = restored_blocks->algorithm_version ==
+                        PortraitColorBlocks::portrait_postprocess_algorithm_version;
+                    const bool same_partition = current_v11 && prepared.native_portrait_partition &&
+                        restored_blocks->native_partition_identity &&
+                        restored_blocks->native_partition_identity->partition_digest ==
+                            prepared.native_portrait_partition->partition_digest;
+                    const auto encoded = same_partition
+                        ? PortraitColorBlocks::encode(*restored_blocks) : nlohmann::json();
+                    if (!same_partition || !encoded.contains("region_semantics") ||
+                        !encoded.contains("native_color_reduction") ||
+                        !encoded.contains("final_slot_binding") ||
+                        encoded.at("region_semantics") != region_semantics ||
+                        encoded.at("native_color_reduction") != native_color_reduction ||
+                        encoded.at("final_slot_binding") != final_slot_binding) {
+                        restored_blocks.reset();
+                        block_error =
+                            "打印机恢复快照未绑定当前独立原生分区，已忽略旧人物配色。";
+                    }
+                }
+                prepared.printer_filament_restore->color_blocks = std::move(restored_blocks);
+            }
             if(!block_error.empty()) BOOST_LOG_TRIVIAL(warning)<<block_error;
         }
         const auto runtime = semantic_region_runtime_directory();
@@ -892,6 +1047,44 @@ public:
         }
         if (prepared.current_appearance_distinct)
             prepared.current_appearance_geometry = build_geometry(current_appearance, false, nullptr);
+        if (prepared.direct_original_source && !prepared.direct_original_is_current) {
+            try {
+                const auto& original_mesh = prepared.direct_original_source->origin_mesh().its;
+                const auto& original_colors = prepared.direct_original_source->origin_colors();
+                const auto& original_texture = prepared.direct_original_source->origin_texture_surface();
+                prepared.direct_original_corner_normals =
+                    ModelPreviewNormals::corner_normals(original_mesh, 45.f);
+                if (original_texture.faces.empty()) {
+                    auto& direct = prepared.direct_original_geometry;
+                    direct.format = {GLModel::Geometry::EPrimitiveType::Triangles,
+                        GLModel::Geometry::EVertexLayout::P3N3T2};
+                    direct.reserve_vertices(original_mesh.indices.size() * 3);
+                    direct.reserve_indices(original_mesh.indices.size() * 3);
+                    const bool vertex_colors =
+                        original_colors.vertex_colors.size() == original_mesh.vertices.size();
+                    const bool face_colors =
+                        original_colors.face_colors.size() == original_mesh.indices.size();
+                    for (size_t face = 0; face < original_mesh.indices.size(); ++face) {
+                        if ((face & 4095) == 0 && stop_if_canceled()) return false;
+                        const auto base = static_cast<unsigned int>(direct.vertices_count());
+                        const auto uniform = face_colors ? original_colors.face_colors[face] : fallback;
+                        for (size_t corner = 0; corner < 3; ++corner) {
+                            const auto vertex = original_mesh.indices[face][corner];
+                            const auto& color = vertex_colors ? original_colors.vertex_colors[vertex] : uniform;
+                            direct.add_vertex(original_mesh.vertices[vertex],
+                                prepared.direct_original_corner_normals[face * 3 + corner],
+                                Vec2f(float(preview_rgb8(color[0], color[1], color[2])), color[3]));
+                        }
+                        direct.add_triangle(base, base + 1, base + 2);
+                    }
+                }
+            } catch (const std::exception& failure) {
+                prepared.direct_original_error = failure.what();
+                prepared.direct_original_source.reset();
+                prepared.direct_original_corner_normals.clear();
+                prepared.direct_original_geometry = {};
+            }
+        }
         if (stop_if_canceled()) return false;
         trace_stage("packed_colors");
 
@@ -961,6 +1154,9 @@ public:
         std::unique_ptr<ModelPreviewTexture> texture_model;
         std::unique_ptr<ModelPreviewTexture> current_appearance_texture_model;
         std::unique_ptr<GLModel> current_appearance_model;
+        std::unique_ptr<ModelPreviewTexture> direct_original_texture_model;
+        std::unique_ptr<GLModel> direct_original_model;
+        bool direct_original_reuses_current = prepared.direct_original_is_current;
         auto model = std::make_unique<GLModel>();
         try {
             if (!prepared.texture_surface.faces.empty())
@@ -981,6 +1177,29 @@ public:
             else
                 model->init_from(std::move(prepared.geometry));
         } catch (const std::exception& failure) { error = failure.what(); return false; }
+        if (prepared.direct_original_source && !direct_original_reuses_current) {
+            try {
+                const auto& original_texture =
+                    prepared.direct_original_source->origin_texture_surface();
+                if (!original_texture.faces.empty()) {
+                    direct_original_texture_model = std::make_unique<ModelPreviewTexture>(
+                        original_texture, prepared.direct_original_source->origin_mesh().its,
+                        prepared.direct_original_corner_normals);
+                } else {
+                    direct_original_model = std::make_unique<GLModel>();
+                    if (prepared.direct_original_render_geometry)
+                        direct_original_model->init_from(
+                            std::move(*prepared.direct_original_render_geometry));
+                    else
+                        direct_original_model->init_from(
+                            std::move(prepared.direct_original_geometry));
+                }
+            } catch (const std::exception& failure) {
+                prepared.direct_original_error = failure.what();
+                direct_original_texture_model.reset();
+                direct_original_model.reset();
+            }
+        }
         cache_current_preview();
         clear_current_preview();
         m_surface_vertices = std::move(surface_vertices);
@@ -988,6 +1207,12 @@ public:
         m_texture_model = std::move(texture_model);
         m_current_appearance_texture_model = std::move(current_appearance_texture_model);
         m_current_appearance_model = std::move(current_appearance_model);
+        m_direct_original_texture_model = std::move(direct_original_texture_model);
+        m_direct_original_model = std::move(direct_original_model);
+        m_direct_original_reuses_current = direct_original_reuses_current;
+        m_direct_original_sha256 = std::move(prepared.direct_original_sha256);
+        m_direct_original_geometry_id = std::move(prepared.direct_original_geometry_id);
+        m_original_comparison_error = std::move(prepared.direct_original_error);
         m_models.emplace_back(std::move(model));
         m_bounds = prepared.bounds;
         m_pending_mesh = std::move(prepared.mesh);
@@ -996,6 +1221,9 @@ public:
         m_round_base_preview.reset(m_geometry_id);
         m_printer_filament_restore = std::move(prepared.printer_filament_restore);
         auto loaded_color_blocks = std::move(prepared.color_blocks);
+        m_native_portrait_partition = std::move(prepared.native_portrait_partition);
+        m_native_workbench_partition_reference =
+            std::move(prepared.native_workbench_partition_reference);
         m_face_color_overrides = std::move(prepared.face_color_overrides);
         m_semantic_source = std::move(prepared.semantic_source);
         m_portrait_shapes = std::move(prepared.shape_details);
@@ -1086,6 +1314,11 @@ public:
         m_texture_model = std::move(cached->texture_model);
         m_current_appearance_model = std::move(cached->current_appearance_model);
         m_current_appearance_texture_model = std::move(cached->current_appearance_texture_model);
+        m_direct_original_model = std::move(cached->direct_original_model);
+        m_direct_original_texture_model = std::move(cached->direct_original_texture_model);
+        m_direct_original_reuses_current = cached->direct_original_reuses_current;
+        m_direct_original_sha256 = std::move(cached->direct_original_sha256);
+        m_direct_original_geometry_id = std::move(cached->direct_original_geometry_id);
         m_manual_color_model = std::move(cached->manual_color_model);
         m_pending_mesh = std::move(cached->mesh);
         m_pending_vertex_colors = std::move(cached->vertex_colors);
@@ -1094,6 +1327,9 @@ public:
         m_face_color_overrides = std::move(cached->face_color_overrides);
         m_printer_filament_restore = std::move(cached->printer_filament_restore);
         auto loaded_color_blocks = std::move(cached->color_blocks);
+        m_native_portrait_partition = std::move(cached->native_portrait_partition);
+        m_native_workbench_partition_reference =
+            std::move(cached->native_workbench_partition_reference);
         m_semantic_source = std::move(cached->semantic_source);
         m_portrait_shapes = std::move(cached->shape_details);
         m_shapes_unlocked = cached->shapes_unlocked;
@@ -1118,6 +1354,7 @@ public:
         m_has_source_appearance = cached->has_source_appearance;
         m_original_appearance = std::move(cached->original_appearance);
         m_original_appearance_error = std::move(cached->original_appearance_error);
+        m_original_comparison_error = std::move(cached->original_comparison_error);
         m_model_sha256 = std::move(cached->artifact_sha256);
         m_trial_palette = std::move(cached->trial_palette);
         m_trial_histogram = std::move(cached->trial_histogram);
@@ -1197,8 +1434,9 @@ private:
         cancel_surface_selection();
         const std::string semantic_context = m_semantic_submission_context;
         const std::string semantic_geometry = m_semantic_submission_geometry;
-        if (m_semantic_controller) m_semantic_controller->cancel();
+        if (m_semantic_controller) m_semantic_controller->cancel_and_wait();
         m_semantic_timer.Stop();
+        m_semantic_completion = {};
         publish_honor_suite_semantic_progress(false, 0, wxEmptyString,
             semantic_context, semantic_geometry);
         m_semantic_source.reset(); m_automatic_face_colors.clear(); m_automatic_subface_colors.clear();
@@ -1219,6 +1457,8 @@ private:
         m_round_base_model.reset();
         m_printer_filament_restore.reset();
         m_color_blocks.reset(); m_selected_color_block.reset();
+        m_native_portrait_partition.reset();
+        m_native_workbench_partition_reference = nullptr;
         m_selection_redo.clear();
         m_stroke.clear();
         m_drawing_selection = false;
@@ -1233,6 +1473,12 @@ private:
         m_texture_model.reset();
         m_current_appearance_model.reset();
         m_current_appearance_texture_model.reset();
+        m_direct_original_model.reset();
+        m_direct_original_texture_model.reset();
+        m_direct_original_reuses_current = false;
+        m_direct_original_sha256.clear();
+        m_direct_original_geometry_id.clear();
+        m_original_comparison_error.clear();
         m_manual_color_model.reset(); m_manual_corner_normals.clear();
         m_surface_vertices.clear();
         m_original_surface_colors.clear();
@@ -2056,7 +2302,9 @@ public:
         return m_color_trial && m_color_trial->portrait_color_count_supported();
     }
     bool has_modern_portrait_color_blocks() const {
-        return m_color_blocks && m_color_blocks->strategy == PortraitColorBlocks::Strategy::ColorRegionMajorityV2;
+        return m_color_blocks && m_native_portrait_partition &&
+            m_color_blocks->strategy == PortraitColorBlocks::Strategy::ColorRegionMajorityV2 &&
+            m_color_blocks->algorithm_version == PortraitColorBlocks::portrait_postprocess_algorithm_version;
     }
     bool semantic_optimization_enabled() const {
         return m_color_trial_enabled && m_color_trial && m_color_trial->semantic_optimization();
@@ -2268,11 +2516,20 @@ public:
         if (m_canvas) m_canvas->Refresh(false);
     }
     bool beauty_lighting() const { return m_beauty_lighting; }
-    bool original_comparison_available() const {
+    bool original_evidence_available() const {
         return m_has_model && m_has_source_appearance;
     }
+    bool original_comparison_available() const {
+        return original_evidence_available() &&
+            ((m_direct_original_reuses_current && (m_texture_model || !m_models.empty())) ||
+             m_direct_original_texture_model || m_direct_original_model);
+    }
+    const std::string& direct_original_sha256() const { return m_direct_original_sha256; }
+    const std::string& direct_original_geometry_id() const { return m_direct_original_geometry_id; }
     const OriginalAppearanceReference& original_appearance_reference() const { return m_original_appearance; }
-    const std::string& original_appearance_error() const { return m_original_appearance_error; }
+    const std::string& original_appearance_error() const {
+        return m_original_appearance_error.empty() ? m_original_comparison_error : m_original_appearance_error;
+    }
     void set_workbench_palette_hint(const wxString& hint) {
         m_color_trial->set_workbench_palette_hint(hint);
     }
@@ -2476,11 +2733,32 @@ public:
         }
         if (honor_request) reject_honor_suite_application(m_semantic_error);
     }
+    void cancel_semantic_request_and_wait(bool notify_completion = true) {
+        const bool honor_request = m_color_trial && m_color_trial->honor_suite_request_pending();
+        const std::string request_context = m_semantic_submission_context;
+        const std::string geometry_id = m_semantic_submission_geometry;
+        if (m_semantic_controller) m_semantic_controller->cancel_and_wait();
+        m_semantic_timer.Stop();
+        m_semantic_error = _L("用户已取消自动划区语义识别。");
+        if (m_color_trial) m_color_trial->set_semantic_status(m_semantic_error, false);
+        publish_honor_suite_semantic_progress(false, 0, m_semantic_error,
+            request_context, geometry_id);
+        m_semantic_submission_context.clear();
+        m_semantic_submission_geometry.clear();
+        auto completion = std::move(m_semantic_completion);
+        if (honor_request) reject_honor_suite_application(m_semantic_error);
+        if (notify_completion && completion) completion(false);
+    }
     void set_semantic_completion_callback(std::function<void(bool)> callback) {
         m_semantic_completion = std::move(callback);
     }
     void restore_manual_face_colors(FaceColorOverrides colors) { m_face_color_overrides = std::move(colors); }
     const FaceColorOverrides& face_color_overrides() const { return m_face_color_overrides; }
+    bool has_native_portrait_partition_conflict() const {
+        return !m_face_color_overrides.empty() || !m_manual_leaf_colors.empty() ||
+            !m_manual_cell_colors.empty() || m_shapes_unlocked ||
+            (!m_pending_leaf_edits.is_null() && !m_pending_leaf_edits.empty());
+    }
     struct BeautyPaintResult {
         size_t changed {0};
         std::vector<size_t> faces;
@@ -2494,6 +2772,24 @@ public:
     void set_paint_commit_callback(std::function<void(const std::vector<size_t>&)> callback) { m_paint_commit = std::move(callback); }
     void set_beauty_history_callback(std::function<void(bool)> callback) { m_beauty_history = std::move(callback); }
     std::shared_ptr<const PortraitColorBlocks::Result> portrait_color_blocks() const {return m_color_blocks;}
+    std::shared_ptr<const NativePortrait::NativePortraitPartition> native_portrait_partition() const {
+        return m_native_portrait_partition;
+    }
+    const nlohmann::json& native_workbench_partition_reference() const {
+        return m_native_workbench_partition_reference;
+    }
+    bool restore_native_portrait_partition(
+        std::shared_ptr<const NativePortrait::NativePortraitPartition> partition) {
+        if (!partition) {
+            m_native_portrait_partition.reset();
+            return true;
+        }
+        if (!partition->valid() || partition->geometry_id != m_geometry_id ||
+            partition->painted.indices.size() != m_triangle_count)
+            return false;
+        m_native_portrait_partition = std::move(partition);
+        return true;
+    }
     bool restore_portrait_color_blocks(std::shared_ptr<const PortraitColorBlocks::Result>, bool refresh=true);
     bool switch_portrait_color_track(PortraitColorBlocks::Track);
     bool select_portrait_color_block(uint32_t);
@@ -2727,10 +3023,50 @@ public:
         return true;
     }
     bool showing_model(const boost::filesystem::path& path) const { return m_has_model && path == m_model_path && same_stamp(m_model_stamp, file_stamp(path)); }
+    const boost::filesystem::path& model_path() const { return m_model_path; }
+    const std::string& model_sha256() const { return m_model_sha256; }
     ModelPreviewColorControls::State color_trial_state() const { return m_color_trial->state(); }
     const PreviewPalette::AutomaticColorBasis& automatic_color_basis() const {
         static const PreviewPalette::AutomaticColorBasis empty;
         return m_color_trial ? m_color_trial->automatic_color_basis() : empty;
+    }
+    std::optional<PreviewPalette::AutomaticColorBasis>
+    native_workbench_automatic_basis(size_t requested_count) const {
+        if (!m_native_portrait_partition || !m_native_portrait_partition->valid() ||
+            m_native_portrait_partition->geometry_id != m_geometry_id ||
+            requested_count < NativePortrait::minimum_color_count ||
+            requested_count > NativePortrait::maximum_color_count)
+            return std::nullopt;
+        const auto reduction = NativePortrait::reduce_native_workbench_partition(
+            *m_native_portrait_partition, requested_count);
+        PreviewPalette::AutomaticColorBasis basis;
+        basis.geometry_id = m_geometry_id;
+        basis.source_color_signature = m_native_portrait_partition->partition_digest + ":" +
+            reduction.mapping_digest;
+        basis.requested_count = requested_count;
+        basis.source_palette.reserve(reduction.group_cluster_ids.size());
+        for (size_t cluster : reduction.group_cluster_ids) {
+            const auto& color = m_native_portrait_partition->painted.cluster_colors[cluster];
+            basis.source_palette.push_back({float(color[0]) / 255.f, float(color[1]) / 255.f,
+                float(color[2]) / 255.f});
+        }
+        basis.unit_source_slots.resize(m_triangle_count);
+        basis.unit_area.resize(m_triangle_count);
+        basis.source_area.assign(reduction.actual_color_count, 0.);
+        for (size_t region = 0; region < m_native_portrait_partition->region_members.size(); ++region) {
+            const size_t group = reduction.region_color_groups[region];
+            const auto& members = m_native_portrait_partition->region_members[region];
+            const double face_area = m_native_portrait_partition->region_areas[region] /
+                double(members.size());
+            basis.source_area[group] += m_native_portrait_partition->region_areas[region];
+            for (uint32_t face : members) {
+                basis.unit_source_slots[face] = group;
+                basis.unit_area[face] = face_area;
+            }
+        }
+        basis.basis_signature = PreviewPalette::automatic_basis_signature(basis);
+        return basis.valid() ? std::optional<PreviewPalette::AutomaticColorBasis>(std::move(basis))
+                             : std::nullopt;
     }
     std::string automatic_color_basis_signature() const {
         return m_color_trial ? m_color_trial->automatic_basis_signature() : std::string{};
@@ -2743,7 +3079,9 @@ public:
     }
     bool honor_suite_v2_appearance_active() const {
         if (!m_color_blocks || !m_semantic_ready ||
-            m_color_blocks->strategy != PortraitColorBlocks::Strategy::ColorRegionMajorityV2) return false;
+            !m_native_portrait_partition ||
+            m_color_blocks->strategy != PortraitColorBlocks::Strategy::ColorRegionMajorityV2 ||
+            m_color_blocks->algorithm_version != PortraitColorBlocks::portrait_postprocess_algorithm_version) return false;
         if (active_honor_filament_suite()) return true;
         return m_color_trial && m_color_trial->state().source == 1 && m_printer_filament_restore &&
             m_printer_filament_restore->geometry_id == m_geometry_id &&
@@ -3120,6 +3458,8 @@ private:
         std::unique_ptr<ModelPreviewTexture> texture_model;
         std::unique_ptr<GLModel> current_appearance_model;
         std::unique_ptr<ModelPreviewTexture> current_appearance_texture_model;
+        std::unique_ptr<GLModel> direct_original_model;
+        std::unique_ptr<ModelPreviewTexture> direct_original_texture_model;
         std::unique_ptr<GLModel> manual_color_model;
         indexed_triangle_set mesh;
         std::vector<RGBA> vertex_colors;
@@ -3140,6 +3480,8 @@ private:
         std::optional<ModelPreviewColorControls::State> color_trial;
         std::optional<PrinterFilamentRestoreSnapshot> printer_filament_restore;
         std::shared_ptr<const PortraitColorBlocks::Result> color_blocks;
+        std::shared_ptr<const NativePortrait::NativePortraitPartition> native_portrait_partition;
+        nlohmann::json native_workbench_partition_reference;
         std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> semantic_source;
         FaceColorOverrides saved_semantic_faces;
         SubfaceColorOverrides saved_semantic_subfaces;
@@ -3152,6 +3494,10 @@ private:
         bool has_source_appearance {false};
         OriginalAppearanceReference original_appearance;
         std::string original_appearance_error;
+        std::string original_comparison_error;
+        std::string direct_original_sha256;
+        std::string direct_original_geometry_id;
+        bool direct_original_reuses_current {false};
         bool restored_persisted_color_trial {false};
         bool round_base_enabled {false};
         nlohmann::json leaf_edits;
@@ -3200,6 +3546,10 @@ private:
             bytes += m_current_appearance_model->cpu_memory_used() + m_current_appearance_model->gpu_memory_used();
         if (m_current_appearance_texture_model)
             bytes += m_current_appearance_texture_model->memory_used();
+        if (m_direct_original_model)
+            bytes += m_direct_original_model->cpu_memory_used() + m_direct_original_model->gpu_memory_used();
+        if (m_direct_original_texture_model)
+            bytes += m_direct_original_texture_model->memory_used();
         if (m_manual_color_model) bytes += m_manual_color_model->cpu_memory_used() + m_manual_color_model->gpu_memory_used();
         constexpr size_t cache_limit = size_t(384) * 1024 * 1024;
         if(m_color_blocks) bytes+=m_color_blocks->memory_bytes();
@@ -3211,11 +3561,18 @@ private:
         m_cached_preview->has_source_appearance = m_has_source_appearance;
         m_cached_preview->original_appearance = m_original_appearance;
         m_cached_preview->original_appearance_error = m_original_appearance_error;
+        m_cached_preview->original_comparison_error = m_original_comparison_error;
+        m_cached_preview->direct_original_reuses_current = m_direct_original_reuses_current;
+        m_cached_preview->direct_original_sha256 = m_direct_original_sha256;
+        m_cached_preview->direct_original_geometry_id = m_direct_original_geometry_id;
         m_cached_preview->restored_persisted_color_trial = m_restored_persisted_color_trial;
         m_cached_preview->round_base_enabled = round_base_preview_enabled();
         m_cached_preview->face_color_overrides = m_face_color_overrides;
         m_cached_preview->printer_filament_restore = m_printer_filament_restore;
         m_cached_preview->color_blocks=m_color_blocks;
+        m_cached_preview->native_portrait_partition=m_native_portrait_partition;
+        m_cached_preview->native_workbench_partition_reference =
+            m_native_workbench_partition_reference;
         m_cached_preview->manual_color_model = std::move(m_manual_color_model);
         m_cached_preview->semantic_source = m_semantic_source;
         m_cached_preview->region_evidence = m_region_evidence;
@@ -3234,6 +3591,8 @@ private:
         m_cached_preview->texture_model = std::move(m_texture_model);
         m_cached_preview->current_appearance_model = std::move(m_current_appearance_model);
         m_cached_preview->current_appearance_texture_model = std::move(m_current_appearance_texture_model);
+        m_cached_preview->direct_original_model = std::move(m_direct_original_model);
+        m_cached_preview->direct_original_texture_model = std::move(m_direct_original_texture_model);
         if (canonical->ready()) {
             // Retain only compact source arrays, never the adjacency/BVH. This
             // keeps the first local before/after comparison free of OBJ parsing.
@@ -4037,8 +4396,14 @@ private:
                     if (!source_view && m_wireframe_view)
                         glsafe(::glPolygonMode(GL_FRONT_AND_BACK, GL_LINE));
                     if (source_view) {
-                        if (m_texture_model) m_texture_model->render(shader, body_view);
-                        else for (const std::unique_ptr<GLModel>& model : m_models) model->render(shader);
+                        if (m_direct_original_reuses_current) {
+                            if (m_texture_model) m_texture_model->render(shader, body_view);
+                            else for (const std::unique_ptr<GLModel>& model : m_models) model->render(shader);
+                        } else if (m_direct_original_texture_model) {
+                            m_direct_original_texture_model->render(shader, body_view);
+                        } else if (m_direct_original_model) {
+                            m_direct_original_model->render(shader);
+                        }
                     } else if (m_residual_preview_model) {
                         shader->set_uniform("preview_color_count", 0);
                         m_residual_preview_model->render(shader);
@@ -4266,6 +4631,8 @@ private:
     std::unique_ptr<GLModel> m_semantic_model;
     std::unique_ptr<GLModel> m_residual_preview_model;
     std::shared_ptr<const PortraitColorBlocks::Result> m_color_blocks;
+    std::shared_ptr<const NativePortrait::NativePortraitPartition> m_native_portrait_partition;
+    nlohmann::json m_native_workbench_partition_reference;
     std::optional<uint32_t> m_selected_color_block;
     bool m_semantic_ready {false};
     bool m_person_detected {false};
@@ -4304,6 +4671,9 @@ private:
     std::unique_ptr<ModelPreviewTexture> m_texture_model;
     std::unique_ptr<GLModel> m_current_appearance_model;
     std::unique_ptr<ModelPreviewTexture> m_current_appearance_texture_model;
+    std::unique_ptr<GLModel> m_direct_original_model;
+    std::unique_ptr<ModelPreviewTexture> m_direct_original_texture_model;
+    bool m_direct_original_reuses_current {false};
     std::unique_ptr<GLModel> m_selection_model;
     std::unique_ptr<GLModel> m_manual_color_model;
     std::vector<Vec3f> m_manual_corner_normals;
@@ -4333,6 +4703,9 @@ private:
     bool m_restored_persisted_color_trial {false};
     OriginalAppearanceReference m_original_appearance;
     std::string m_original_appearance_error;
+    std::string m_original_comparison_error;
+    std::string m_direct_original_sha256;
+    std::string m_direct_original_geometry_id;
     std::vector<SelectionState> m_selection_history, m_selection_redo;
     std::vector<uint8_t> m_protected_faces;
     std::vector<uint8_t> m_foreground_faces, m_selection_domain;

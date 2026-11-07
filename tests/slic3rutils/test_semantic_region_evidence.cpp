@@ -64,6 +64,10 @@ SC::Analysis analysis() {
     value.body_identity = "body-v1";
     value.face_identity = "face-v1";
     value.person_detected = true;
+    value.rendered_views = 8;
+    value.face_views = 1;
+    value.candidate_face_regions[0] = 1;
+    value.detected_face_regions[0] = 1;
     value.face_labels = {SC::Label::Hair, SC::Label::FaceSkin, SC::Label::BodySkin, SC::Label::EyeSclera,
         SC::Label::Iris, SC::Label::Eyebrow, SC::Label::Lips, SC::Label::Clothes, SC::Label::Hair};
     value.face_confidence.assign(value.face_labels.size(), .9f);

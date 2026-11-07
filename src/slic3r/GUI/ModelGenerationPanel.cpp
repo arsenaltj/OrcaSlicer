@@ -9,6 +9,7 @@
 #include "AI/Model/VertexColorRegionEditor.hpp"
 #include "AI/AIWindowAppearance.hpp"
 #include "AI/ModelGeneration/ModelGenerationPresentation.hpp"
+#include "AI/ModelGeneration/ModelLibraryObservations.hpp"
 #include "AI/ModelGeneration/ModelPreview3D.hpp"
 #include "AI/ModelGeneration/ModelImageDisplayCopy.hpp"
 #include "AI/ModelGeneration/ModelGenerationStatusText.hpp"
@@ -139,7 +140,8 @@ PortraitPrint::Submission ModelGenerationPanel::request_generate_design()
 {
     if (!can_generate_design_from_shell())
         return PortraitPrint::Submission::Rejected;
-    if (m_portrait_print.running()) pause_portrait_print("已切换到手动设计，本次自动流程暂停。");
+    if (portrait_owns_display_context() && m_portrait_print.running())
+        pause_portrait_print("已切换到手动设计，本次自动流程暂停。");
     m_last_submission = PortraitPrint::Submission::Rejected;
     wxCommandEvent event;
     on_preprocess(event);
@@ -376,8 +378,10 @@ void ModelGenerationPanel::publish_ui_state()
         return text_to_utf8(value);
     };
 
+    const bool portrait_context = portrait_owns_display_context();
+    if (portrait_context) queue_portrait_print();
     ModelGenerationUIState state;
-    state.portrait_print = m_portrait_print;
+    state.portrait_print = portrait_context ? m_portrait_print : PortraitPrint::State {};
     state.input.image_path = path_to_utf8(m_selected_image_path);
     state.input.prompt = text_to_utf8(m_prompt->GetValue());
     state.input.style = current_style();
@@ -391,7 +395,6 @@ void ModelGenerationPanel::publish_ui_state()
     state.options.geometry_quality = options.geometry_quality;
     state.options.texture_quality = options.texture_quality;
     state.options.output_format = options.output_format;
-    queue_portrait_print();
     state.service_available = m_service_available;
     state.service_availability_known = m_service_availability_known;
     state.busy = m_busy || m_preview_download_in_flight || m_saving_generation_options;
@@ -401,7 +404,7 @@ void ModelGenerationPanel::publish_ui_state()
     const bool can_reuse_model = can_reuse_ready_model_design() && !state.busy &&
         generation_provider_available("geometry") && generation_options_valid();
     state.can_generate_model = m_generate->IsEnabled() || can_reuse_model;
-    state.can_stop = m_stop->IsEnabled() || m_portrait_print.running();
+    state.can_stop = m_stop->IsEnabled() || (portrait_context && m_portrait_print.running());
     state.can_retry_service = m_retry_service->IsEnabled();
     state.can_retry_model = generation_provider_available("geometry", &m_job_generation_options) && !state.busy && (m_job_state == "failed" || m_job_state == "stopped") && !m_job_id.empty() &&
         !m_provider_error_ambiguous &&
@@ -442,7 +445,7 @@ void ModelGenerationPanel::publish_ui_state()
     state.provider_error_retryable = m_provider_error_retryable;
     state.provider_error_ambiguous = m_provider_error_ambiguous;
     state.status_text = wrapped_text_to_utf8(m_status->GetLabel());
-    if (m_portrait_print.active()) {
+    if (portrait_context && m_portrait_print.active()) {
         if (!m_portrait_print.reason.empty()) state.status_text = m_portrait_print.reason;
         for (const auto& note : m_portrait_print.notices)
             if (state.status_text.find(note) == std::string::npos) state.status_text += "\n" + note;
@@ -620,7 +623,7 @@ void ModelGenerationPanel::restore_latest_job(bool require_visible)
 {
     // A durable portrait flow owns an exact job identity. Ordinary latest-job
     // restore must not replace it, even while it awaits manual continuation.
-    if (m_portrait_print.from_workbench() && m_portrait_print.active()) return;
+    if (portrait_owns_display_context() && m_portrait_print.active()) return;
     if (m_shutdown || !m_page_initialized || (require_visible && !IsShownOnScreen()) ||
         !m_service_available || m_restore_checked || !m_job_id.empty())
         return;
@@ -861,6 +864,7 @@ void ModelGenerationPanel::shutdown()
     if (m_portrait_draft_before && !(m_portrait_task && m_portrait_task->snapshot().running())) preserve_portrait_draft();
     m_shutdown = true;
     cancel_beauty_color_gate();
+    cancel_native_workbench_partition();
     if (m_workbench_check_cancel) m_workbench_check_cancel->store(true);
     m_workbench_sync_timer.Stop();
     m_portrait_timer.Stop();
@@ -4387,10 +4391,9 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
                                                const std::string& color_intent_sha256,
                                                const std::string& job_id, const wxString& title, bool new_asset)
 {
-    if (!can_replace_model_asset() || m_model_preview == nullptr)
-        return;
+    if (m_model_preview == nullptr) return;
     if (model_path.empty()) {
-        load_design_library_entry(job_id);
+        if (can_replace_model_asset()) load_design_library_entry(job_id);
         return;
     }
     // Clicking a history entry is an explicit context switch.  Detach the
@@ -4405,6 +4408,7 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         refresh_controls();
         return;
     }
+    if (!can_replace_model_asset() || !prepare_for_model_asset_switch()) return;
 
     if (m_history_navigation) m_history_navigation(false);
     auto history_metadata = std::make_shared<ModelHistoryMetadata>();
@@ -4436,7 +4440,11 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     std::map<std::string, std::string> encoded_fields;
     if (!history_metadata->take_if_current(library_metadata_path(job_id), metadata, encoded_fields))
         metadata = read_json(library_metadata_path(job_id));
-    if (metadata.is_object()) {
+    if (ModelLibraryObservations::has_check_certificate(metadata)) {
+        if (!ModelLibraryObservations::write_observations(library_metadata_path(job_id), metadata,
+                {{"load_seconds", load_seconds}}))
+            BOOST_LOG_TRIVIAL(warning) << "Unable to update certified model load metrics for " << job_id;
+    } else if (metadata.is_object()) {
         metadata["schema_version"] = std::max(4, metadata.value("schema_version", 0));
         metadata["triangle_count"] = triangle_count;
         metadata["color_count"] = color_count;
@@ -4640,6 +4648,8 @@ void ModelGenerationPanel::update_library_provider_tasks(
     nlohmann::json metadata = read_json(metadata_path);
     if (!metadata.is_object())
         metadata = nlohmann::json::object();
+    // Local certified versions do not acquire provider provenance while viewed.
+    if (ModelLibraryObservations::has_check_certificate(metadata)) return;
     const bool unchanged = metadata.value("provider", std::string()) == status.provider_name &&
         metadata.value("provider_task_id", std::string()) == status.provider_task_id &&
         metadata.value("provider_conversion_task_id", std::string()) == status.provider_conversion_task_id;
@@ -4667,6 +4677,11 @@ void ModelGenerationPanel::update_library_import_status(const std::string& job_i
     if (!metadata.is_object())
         metadata = nlohmann::json::object();
     const std::time_t now = std::time(nullptr);
+    if (ModelLibraryObservations::has_check_certificate(metadata)) {
+        if (!ModelLibraryObservations::write_observations(metadata_path, metadata, {{"imported_at", now}}))
+            BOOST_LOG_TRIVIAL(warning) << "Unable to update certified model import status for " << job_id;
+        return;
+    }
     metadata["schema_version"] = std::max(4, metadata.value("schema_version", 0));
     metadata["job_id"] = job_id;
     metadata["imported_at"] = now;
@@ -4685,10 +4700,17 @@ void ModelGenerationPanel::record_library_print_feedback(const std::string& job_
     nlohmann::json metadata = read_json(metadata_path);
     if (!metadata.is_object())
         return;
-    metadata["schema_version"] = std::max(4, metadata.value("schema_version", 0));
-    metadata["print_feedback"] = feedback;
-    metadata["print_feedback_at"] = std::time(nullptr);
-    if (!write_json(metadata_path, metadata)) {
+    bool saved = false;
+    if (ModelLibraryObservations::has_check_certificate(metadata)) {
+        saved = ModelLibraryObservations::write_observations(metadata_path, metadata,
+            {{"print_feedback", feedback}, {"print_feedback_at", std::time(nullptr)}});
+    } else {
+        metadata["schema_version"] = std::max(4, metadata.value("schema_version", 0));
+        metadata["print_feedback"] = feedback;
+        metadata["print_feedback_at"] = std::time(nullptr);
+        saved = write_json(metadata_path, metadata);
+    }
+    if (!saved) {
         m_status->SetLabel(_L("无法保存打印结果，请检查模型文件夹是否可写。"));
         return;
     }
@@ -4721,6 +4743,8 @@ bool ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
     const auto current_metadata = read_json(library_metadata_path(entry.job_id));
     const auto owned_appearance_carrier =
         ModelLibraryMetadata::owned_original_appearance_companion(current_metadata, root);
+    const auto owned_observations = ModelLibraryObservations::owned_observations_companion(
+        library_metadata_path(entry.job_id), current_metadata);
     bool appearance_carrier_referenced = false;
     // Saved versions and drafts may depend on a direct parent, immutable
     // appearance carrier, origin model or puzzle base. Read fresh metadata
@@ -4728,6 +4752,8 @@ bool ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
     try {
         const auto records = library_metadata_path(entry.job_id).parent_path();
         for (boost::filesystem::directory_iterator it(records), end; it != end; ++it) {
+            // Optional display observations cannot own a model dependency.
+            if (it->path().extension() == ".json" && it->path().stem().extension() == ".observations") continue;
             if ((it->path().extension() != ".json" && it->path().extension() != ".draft") ||
                 it->path() == library_metadata_path(entry.job_id)) continue;
             boost::filesystem::path draft_owner;
@@ -4811,6 +4837,7 @@ bool ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
     };
     if (owned_appearance_carrier && !appearance_carrier_referenced)
         targets.push_back(*owned_appearance_carrier);
+    if (owned_observations) targets.push_back(*owned_observations);
     if (entry.design_only) {
         targets.push_back(model_parent / "job.json");
         for (const auto& path : {entry.preview_path, entry.ai_image_path, entry.reference_image_path})

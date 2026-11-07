@@ -7,6 +7,7 @@
 #include "RedesignPreviewPresentation.hpp"
 #include "RedesignWorkspaceNavigation.hpp"
 #include "../AI/ModelGeneration/ModelGenerationHost.hpp"
+#include "../AI/ModelGeneration/PortraitWorkbenchEntry.hpp"
 #include "../AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "../AI/ModelGeneration/WorkbenchImportSession.hpp"
 #include "../AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
@@ -134,10 +135,13 @@ private:
     void request_generate_design();
     void request_generate_model();
     void request_primary_action();
-    void request_portrait_print();
+    bool request_portrait_print();
+    void try_start_queued_portrait_print();
     void queue_portrait_print();
     void run_portrait_print();
     bool m_portrait_print_queued {false}, m_portrait_print_advancing {false};
+    PortraitPrint::WorkbenchEntryIntent m_portrait_entry_intent;
+    bool m_portrait_entry_dispatch_queued {false};
     bool m_portrait_import_requested {false}, m_portrait_analysis_requested {false};
     std::string m_portrait_imported_object_id;
     std::string m_portrait_active_id;
@@ -300,8 +304,6 @@ private:
     WorkbenchLabel* m_import_stage {nullptr};
     WorkbenchLabel* m_import_elapsed {nullptr};
     wxWindow* m_import_cancel {nullptr};
-    WorkbenchLabel* m_portrait_import_status {nullptr};
-    bool m_portrait_import_inline {false};
     wxTimer m_import_timer;
     wxTimer m_slice_camera_retry_timer;
     int m_slice_camera_retry_attempts {0};

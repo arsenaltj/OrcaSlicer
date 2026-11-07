@@ -21,11 +21,10 @@ constexpr int max_edge = 4096;
 constexpr int stored_edge = 256;
 
 // No raw account identifiers or original image paths in filenames/settings.
-inline wxString account_path(const wxString& data, const HonorAccount::Config& config, const std::string& subject)
+inline wxString account_path(const wxString& data, const std::string& subject)
 {
     if (data.empty() || subject.empty()) return {};
-    const auto key = HonorAccount::digest(std::to_string(config.environment.size()) + ":" + config.environment +
-        std::to_string(config.client_id.size()) + ":" + config.client_id + subject);
+    const auto key = HonorAccount::digest("orca-platform-account-avatar-v2\n" + subject);
     return data + "/honor-avatars/" + wxString::FromUTF8(key) + ".png";
 }
 

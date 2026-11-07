@@ -97,12 +97,13 @@ void classify_submission_error(const std::string& error, std::string& code, std:
 
 bool ModelGenerationPanel::request_stop()
 {
-    if (m_shutdown || !m_page_initialized || m_stop == nullptr || (!m_stop->IsEnabled() && !m_portrait_print.running()))
+    const bool portrait = portrait_owns_display_context() && m_portrait_print.running();
+    if (m_shutdown || !m_page_initialized || m_stop == nullptr || (!m_stop->IsEnabled() && !portrait))
         return false;
-    if (m_portrait_print.active()) {
+    if (portrait) {
         pause_portrait_print("用户已暂停工作台自动流程，已保存成果保留。");
         if (m_model_preview && m_portrait_print.stage == PortraitPrint::Stage::Color)
-            m_model_preview->cancel_semantic_request();
+            m_model_preview->cancel_semantic_request_and_wait(false);
         // Keep collecting the exact submitted task's result. Stopping the
         // sidecar job would make a paused design impossible to continue
         // without buying another image. The ledger blocks all next stages.

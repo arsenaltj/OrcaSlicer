@@ -79,3 +79,30 @@ TEST_CASE("An OBJ resolves its MTL and external JPEG through filament matching",
 {
     check_texture_import("two_color_sphere/test_two_color_sphere_textured.obj");
 }
+
+TEST_CASE("Native texture painting adaptively subdivides low-face inputs within the million-face budget", "[TextureImport][PortraitNativePartition]")
+{
+    Slic3r::TexturedMesh mesh;
+    mesh.vertices = {{1,1,1},{-1,-1,1},{-1,1,-1},{1,-1,-1}};
+    mesh.indices = {{0,2,1},{0,1,3},{0,3,2},{1,2,3}};
+    mesh.uvs = {{0,0},{1,0},{0,1},{1,1}};
+    Slic3r::TextureImage texture;
+    texture.width = 2;
+    texture.height = 2;
+    texture.channels = 4;
+    texture.data = {255,40,40,255, 40,255,40,255,
+                    40,40,255,255, 245,235,80,255};
+    mesh.textures.push_back(std::move(texture));
+
+    Slic3r::TexturePaintingSettings settings;
+    settings.target_colors_num = 4;
+    settings.smooth_weight = 0.5;
+    settings.oversampling_iters = 0;
+    settings.mesh_repair_decision = Slic3r::TexturePaintingSettings::MeshRepairDecision::ImportWithoutRepair;
+    Slic3r::PaintedMesh painted;
+    REQUIRE(Slic3r::texture_to_painting(mesh, painted, settings));
+    CHECK(painted.indices.size() > mesh.indices.size());
+    CHECK(painted.indices.size() <= 1000000);
+    CHECK(painted.face_colors.size() == painted.indices.size());
+    CHECK(painted.cluster_colors.size() == 4);
+}

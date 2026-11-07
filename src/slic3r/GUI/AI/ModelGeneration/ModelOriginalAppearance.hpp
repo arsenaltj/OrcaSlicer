@@ -178,7 +178,8 @@ inline bool map_ordered_corner_appearance(const indexed_triangle_set& source,
                                           const indexed_triangle_set& target,
                                           std::vector<RGBA>& colors,
                                           std::string& error,
-                                          const std::function<bool()>& canceled = {})
+                                          const std::function<bool()>& canceled = {},
+                                          bool require_same_positions = true)
 {
     const bool vertex_colors = appearance.vertex_colors.size() == source.vertices.size();
     const bool face_colors = appearance.face_colors.size() == source.indices.size();
@@ -197,7 +198,7 @@ inline bool map_ordered_corner_appearance(const indexed_triangle_set& source,
             const int from = source.indices[face][corner], to = target.indices[face][corner];
             if (from < 0 || size_t(from) >= source.vertices.size() ||
                 to < 0 || size_t(to) >= target.vertices.size() ||
-                source.vertices[from] != target.vertices[to]) {
+                (require_same_positions && source.vertices[from] != target.vertices[to])) {
                 error = "原始配色的有序面角点与候选模型不匹配。";
                 return false;
             }
@@ -356,7 +357,8 @@ inline bool prepare_original_appearance_for_candidate(
     const boost::filesystem::path& root,
     OriginalAppearanceReference& result,
     std::string& error,
-    const std::function<bool()>& canceled = {})
+    const std::function<bool()>& canceled = {},
+    bool force_candidate_geometry = false)
 {
     using namespace original_appearance_detail;
     result = {};
@@ -389,7 +391,7 @@ inline bool prepare_original_appearance_for_candidate(
         const std::string topology = AI::SurfaceSelectionPersistence::topology_fingerprint(candidate_mesh.its);
         if (!AI::SurfaceSelectionPersistence::detail::valid_fingerprint(topology))
             throw std::runtime_error("无法建立修复候选的拓扑身份。");
-        if (topology == inherited.topology_sha256) {
+        if (topology == inherited.topology_sha256 && !force_candidate_geometry) {
             result = resolved.reference;
             return true;
         }
@@ -397,9 +399,12 @@ inline bool prepare_original_appearance_for_candidate(
         std::vector<RGBA> colors;
         const bool ordered_surface = AI::SurfaceSelectionPersistence::geometry_fingerprint(current_mesh.its) ==
             AI::SurfaceSelectionPersistence::geometry_fingerprint(candidate_mesh.its);
-        const bool mapped = ordered_surface
+        const bool ordered_connectivity = topology == inherited.topology_sha256 &&
+            current_mesh.its.vertices.size() == candidate_mesh.its.vertices.size() &&
+            current_mesh.its.indices == candidate_mesh.its.indices;
+        const bool mapped = ordered_surface || ordered_connectivity
             ? map_ordered_corner_appearance(current_mesh.its, resolved.carrier_appearance,
-                candidate_mesh.its, colors, error, canceled)
+                candidate_mesh.its, colors, error, canceled, ordered_surface)
             : map_appearance_to_vertices(current_mesh.its, resolved.carrier_appearance,
                 candidate_mesh.its, colors, error, canceled);
         if (!mapped)

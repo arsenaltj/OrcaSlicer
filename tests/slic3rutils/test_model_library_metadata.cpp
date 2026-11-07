@@ -1,5 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryMetadata.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitPrintFlow.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelLibraryObservations.hpp"
 #include "test_utils.hpp"
 
 #include <boost/nowide/cstdlib.hpp>
@@ -219,4 +223,157 @@ TEST_CASE("Existing history summaries match full metadata", "[.][ModelLibraryMet
               << " cold_seconds=" << std::chrono::duration<double>(cold-start).count()
               << " warm_seconds=" << std::chrono::duration<double>(warm-cold).count()
               << " full_parse_once_seconds=" << std::chrono::duration<double>(Clock::now()-warm).count() << '\n';
+}
+
+namespace {
+struct ObservedLibraryCache {
+    ModelLibraryMetadata summaries;
+    Json read(const boost::filesystem::path& path) {
+        return Slic3r::GUI::ModelLibraryObservations::overlay(summaries.read(path), path);
+    }
+};
+Json certified_library_record()
+{
+    namespace PP = Slic3r::GUI::PortraitPrint;
+    Slic3r::GUI::WorkbenchCheckResult check;
+    check.status = Slic3r::GUI::WorkbenchCheckStatus::Normal;
+    check.purpose = Slic3r::GUI::WorkbenchCheckPurpose::PortraitPostColorReadOnly;
+    check.model_sha256 = std::string(64, '1');
+    check.before_faces = 789; check.before_vertices = 1200;
+    check.self_intersections_checked = true;
+    Json metadata {{"schema_version", 4}, {"model_sha256", check.model_sha256},
+        {"source", "local_finishing"}, {"job_id", "finish-portrait"},
+        {"triangle_count", 789}, {"dimensions", {1.0, 2.0, 3.0}}};
+    metadata["workbench_check_certificate"] = PP::encode_workbench_check_certificate(check,
+        check.purpose, "geometry", "appearance", "portrait.json", metadata,
+        std::string(64, '2'), std::string(64, '3'));
+    return metadata;
+}
+void write_library_record(const boost::filesystem::path& path, const Json& metadata)
+{
+    boost::filesystem::ofstream output(path, std::ios::binary);
+    output << metadata.dump(); output.close();
+    REQUIRE(output.good());
+}
+}
+
+TEST_CASE("Certified portrait observations preserve the authoritative certificate bytes",
+    "[ModelLibraryMetadata][PortraitPrintFlow][P0]")
+{
+    namespace PP = Slic3r::GUI::PortraitPrint;
+    ScopedTemporaryDir temporary("orca-certified-observations");
+    const auto path = temporary.path() / "portrait.json";
+    const auto metadata = certified_library_record();
+    write_library_record(path, metadata);
+    const auto hash = Slic3r::AI::model_artifact_sha256(path);
+    REQUIRE(Slic3r::GUI::ModelLibraryObservations::write_observations(path, metadata, {{"load_seconds", 2.75}}));
+    REQUIRE(Slic3r::GUI::ModelLibraryObservations::write_observations(path, metadata, {{"imported_at", 42}}));
+    REQUIRE(Slic3r::GUI::ModelLibraryObservations::write_observations(path, metadata,
+        {{"print_feedback", "issue"}, {"print_feedback_at", 43}}));
+    CHECK(Slic3r::AI::model_artifact_sha256(path) == hash);
+    boost::filesystem::ifstream input(path);
+    const auto reopened = Json::parse(input);
+    CHECK(reopened == metadata);
+    CHECK(PP::valid_workbench_check_certificate(reopened.at("workbench_check_certificate"),
+        Slic3r::GUI::WorkbenchCheckPurpose::PortraitPostColorReadOnly, std::string(64, '1'),
+        "geometry", "appearance", "portrait.json", reopened, std::string(64, '2'), std::string(64, '3')));
+    ObservedLibraryCache cache;
+    const auto summary = cache.read(path);
+    CHECK_THAT(summary.at("load_seconds").get<double>(), Catch::Matchers::WithinAbs(2.75, 1e-9));
+    CHECK(summary.at("imported_at") == 42);
+    CHECK(summary.at("print_feedback") == "issue");
+    CHECK(summary.at("print_feedback_at") == 43);
+    CHECK(summary.at("triangle_count") == 789);
+}
+
+TEST_CASE("Observation refresh and deletion bypass unchanged summary cache stamps",
+    "[ModelLibraryMetadata]")
+{
+    ScopedTemporaryDir temporary("orca-observations-cache");
+    const auto path = temporary.path() / "portrait.json";
+    const auto metadata = certified_library_record();
+    write_library_record(path, metadata);
+    const auto authority_stamp = boost::filesystem::last_write_time(path);
+    {
+        ObservedLibraryCache cache;
+        CHECK_FALSE(cache.read(path).contains("load_seconds"));
+        REQUIRE(Slic3r::GUI::ModelLibraryObservations::write_observations(path, metadata, {{"load_seconds", 1.25}}));
+        CHECK_THAT(cache.read(path).at("load_seconds").get<double>(), Catch::Matchers::WithinAbs(1.25, 1e-9));
+        REQUIRE(Slic3r::GUI::ModelLibraryObservations::write_observations(path, metadata, {{"load_seconds", 3.75}}));
+        CHECK_THAT(cache.read(path).at("load_seconds").get<double>(), Catch::Matchers::WithinAbs(3.75, 1e-9));
+        REQUIRE(boost::filesystem::remove(Slic3r::GUI::ModelLibraryObservations::observations_path(path)));
+        CHECK_FALSE(cache.read(path).contains("load_seconds"));
+        REQUIRE(Slic3r::GUI::ModelLibraryObservations::write_observations(path, metadata,
+            {{"print_feedback", "success"}, {"print_feedback_at", 99}}));
+    }
+    ObservedLibraryCache restarted;
+    CHECK(restarted.read(path).at("print_feedback") == "success");
+    CHECK(boost::filesystem::last_write_time(path) == authority_stamp);
+}
+
+TEST_CASE("Observations require exact model identity and reject geometry and coloring fields",
+    "[ModelLibraryMetadata][P0]")
+{
+    ScopedTemporaryDir temporary("orca-observations-identity");
+    const auto path = temporary.path() / "portrait.json";
+    auto metadata = certified_library_record();
+    write_library_record(path, metadata);
+    REQUIRE(Slic3r::GUI::ModelLibraryObservations::write_observations(path, metadata,
+        {{"print_feedback", "issue"}, {"print_feedback_at", 42}}));
+    const auto companion = Slic3r::GUI::ModelLibraryObservations::observations_path(path);
+    const auto original_hash = Slic3r::AI::model_artifact_sha256(companion);
+    for (const Json fields : {Json{{"geometry_id", "foreign"}}, Json{{"color_count", 3}},
+            Json{{"triangle_count", 1}}, Json{{"load_seconds", -1.0}}, Json{{"print_feedback", "other"}}}) {
+        CHECK_FALSE(Slic3r::GUI::ModelLibraryObservations::write_observations(path, metadata, fields));
+        CHECK(Slic3r::AI::model_artifact_sha256(companion) == original_hash);
+    }
+    REQUIRE(Slic3r::GUI::ModelLibraryObservations::owned_observations_companion(path, metadata));
+    auto replacement = metadata;
+    replacement["model_sha256"] = std::string(64, '9');
+    CHECK_FALSE(Slic3r::GUI::ModelLibraryObservations::owned_observations_companion(path, replacement));
+    write_library_record(path, replacement);
+    const auto changed_stamp = std::filesystem::last_write_time(std::filesystem::path(path.native()));
+    std::filesystem::last_write_time(std::filesystem::path(path.native()), changed_stamp + std::chrono::seconds(2));
+    ObservedLibraryCache cache;
+    CHECK_FALSE(cache.read(path).contains("print_feedback"));
+    CHECK_FALSE(Slic3r::GUI::ModelLibraryObservations::write_observations(path, replacement, {{"load_seconds", 0.5}}));
+    CHECK(Slic3r::AI::model_artifact_sha256(companion) == original_hash);
+    REQUIRE(boost::filesystem::remove(companion));
+    REQUIRE(Slic3r::GUI::ModelLibraryObservations::write_observations(path, replacement, {{"load_seconds", 0.5}}));
+    CHECK_FALSE(cache.read(path).contains("print_feedback"));
+    CHECK_THAT(cache.read(path).at("load_seconds").get<double>(), Catch::Matchers::WithinAbs(0.5, 1e-9));
+    auto malformed = Json{{"schema", "orca.model-library-observations/v1"},
+        {"model_sha256", std::string(64, '9')}, {"fields", {{"final_slot_binding", "foreign"}}}};
+    write_library_record(companion, malformed);
+    CHECK_FALSE(cache.read(path).contains("load_seconds"));
+    CHECK_FALSE(cache.read(path).contains("final_slot_binding"));
+    CHECK_FALSE(Slic3r::GUI::ModelLibraryObservations::owned_observations_companion(path, replacement));
+    const auto malformed_hash = Slic3r::AI::model_artifact_sha256(companion);
+    CHECK_FALSE(Slic3r::GUI::ModelLibraryObservations::write_observations(path, replacement, {{"imported_at", 43}}));
+    CHECK(Slic3r::AI::model_artifact_sha256(companion) == malformed_hash);
+}
+
+TEST_CASE("Observation companions never replace ordinary history or certify malformed proof",
+    "[ModelLibraryMetadata]")
+{
+    ScopedTemporaryDir temporary("orca-observations-ordinary");
+    const auto path = temporary.path() / "portrait.json";
+    Json ordinary {{"schema_version", 4}, {"model_sha256", std::string(64, '1')}, {"load_seconds", 0.25}};
+    write_library_record(path, ordinary);
+    CHECK_FALSE(Slic3r::GUI::ModelLibraryObservations::write_observations(path, ordinary, {{"load_seconds", 1.0}}));
+    CHECK_FALSE(boost::filesystem::exists(Slic3r::GUI::ModelLibraryObservations::observations_path(path)));
+    ObservedLibraryCache cache;
+    CHECK_THAT(cache.read(path).at("load_seconds").get<double>(), Catch::Matchers::WithinAbs(0.25, 1e-9));
+    ordinary["workbench_check_certificate"] = nullptr;
+    write_library_record(path, ordinary);
+    const auto hash = Slic3r::AI::model_artifact_sha256(path);
+    REQUIRE(Slic3r::GUI::ModelLibraryObservations::has_check_certificate(ordinary));
+    REQUIRE(Slic3r::GUI::ModelLibraryObservations::write_observations(path, ordinary, {{"load_seconds", 1.0}}));
+    CHECK(Slic3r::AI::model_artifact_sha256(path) == hash);
+    CHECK(ordinary.at("workbench_check_certificate").is_null());
+    const auto owned = Slic3r::GUI::ModelLibraryObservations::owned_observations_companion(path, ordinary);
+    REQUIRE(owned);
+    CHECK(*owned == Slic3r::GUI::ModelLibraryObservations::observations_path(path));
+    REQUIRE(boost::filesystem::remove(*owned));
+    CHECK_FALSE(Slic3r::GUI::ModelLibraryObservations::owned_observations_companion(path, ordinary));
 }

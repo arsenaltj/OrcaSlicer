@@ -240,6 +240,42 @@ TEST_CASE("Invalid explicit face colors fail before replacing a previous painted
     CHECK(previous.face_colors == std::vector<std::array<size_t,3>>{{1,2,3}});
 }
 
+TEST_CASE("Strict texture repair failure stops before clustering and never uses the internal fallback", "[ModelVertexColors][StrictMeshRepair]")
+{
+    const int callback_result = GENERATE(0, 1, 2); // failure, open result, verified closed result
+    TexturedMesh mesh;
+    mesh.vertices = {{0,0,0}, {10,0,0}, {0,10,0}, {0,0,10}};
+    mesh.indices = {{0,2,1}, {0,1,3}, {0,3,2}, {1,2,3}};
+    mesh.precomputed_face_colors = {{255,0,0}, {0,255,0}, {0,0,255}, {255,255,255}};
+    TexturePaintingSettings settings;
+    settings.target_colors_num = 4;
+    settings.strict_mesh_repair = true;
+    settings.mesh_repair_decision = TexturePaintingSettings::MeshRepairDecision::RepairAndImport;
+    int repair_calls = 0;
+    settings.mesh_repair_callback = [&](const indexed_triangle_set& source, indexed_triangle_set& repaired,
+        std::function<void(const char*, unsigned)>, std::function<bool()>, std::string* error) {
+        ++repair_calls;
+        if (callback_result == 0) {
+            if (error) *error = "injected strict repair failure";
+            return false;
+        }
+        repaired = source;
+        if (callback_result == 1) repaired.indices.pop_back();
+        return true;
+    };
+    std::vector<std::string> events;
+    PaintedMesh painted;
+    const bool success = face_colors_to_painting(mesh, painted, settings,
+        [&](int, const char* message) { events.emplace_back(message ? message : ""); });
+    CHECK(success == (callback_result == 2));
+    CHECK(repair_calls == 1);
+    const bool clustered = std::find(events.begin(), events.end(), "Color clustering") != events.end();
+    const bool smoothed = std::find(events.begin(), events.end(), "Smoothing colors") != events.end();
+    CHECK(clustered == success);
+    CHECK(smoothed == success);
+    if (!success) CHECK(painted.indices.empty());
+}
+
 TEST_CASE("Explicit face target colors resolve against current physical slot order", "[ModelVertexColors][FaceColorOverride]")
 {
     const std::array<size_t, 3> blue {102,140,182};

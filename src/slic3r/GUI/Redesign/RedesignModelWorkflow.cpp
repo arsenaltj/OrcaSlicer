@@ -381,12 +381,6 @@ void RedesignShell::build_model_workflow()
     m_workbench_page->SetSizer(new wxBoxSizer(wxVERTICAL));
     m_content_host->GetSizer()->Add(m_workbench_page, 1, wxEXPAND);
     m_workbench_page->Hide();
-    m_portrait_import_status = new WorkbenchLabel(m_workbench_page, wxEmptyString, wxALIGN_CENTER);
-    m_portrait_import_status->SetName("portrait-import-inline");
-    m_portrait_import_status->SetMinSize(FromDIP(wxSize(-1, 52)));
-    RedesignTheme::style_text(m_portrait_import_status, RedesignTheme::primary_text_colour(), 12);
-    m_workbench_page->GetSizer()->Add(m_portrait_import_status, 0, wxEXPAND | wxALL, FromDIP(8));
-    m_portrait_import_status->Hide();
     m_model_generation_host->mount_workbench(m_workbench_page);
 
     m_slicing_page = new wxPanel(m_content_host, wxID_ANY, wxDefaultPosition, wxDefaultSize,
@@ -832,8 +826,6 @@ void RedesignShell::build_model_workflow()
         const auto elapsed = wxString::Format(_L("已用时 %.1f 秒"),
             std::chrono::duration<double>(std::chrono::steady_clock::now() - m_import_started).count());
         if (m_import_elapsed->GetLabel() != elapsed) m_import_elapsed->SetLabel(elapsed);
-        if (m_portrait_import_inline)
-            m_portrait_import_status->SetLabel(m_import_stage->GetLabel() + "\n" + elapsed);
         layout_import_transition_cover();
         layout_import_loading();
         check_import_first_frame();
@@ -982,13 +974,25 @@ void RedesignShell::build_model_workflow()
 
 bool RedesignShell::open_model_workbench()
 {
-    if (!m_import_in_progress && !m_page_transition.active() && owns_model_workflow() &&
-        m_model_view == ModelView::Result &&
-        redesign_portrait_workbench_entry(m_model_generation_state.input.style, m_model_generation_state))
-        request_portrait_print();
+    const bool automatic_portrait_entry = !m_import_in_progress && !m_page_transition.active() &&
+        owns_model_workflow() && m_model_view == ModelView::Result &&
+        redesign_portrait_workbench_entry(m_model_generation_state.input.style, m_model_generation_state);
     if (m_import_in_progress || m_page_transition.active() || !owns_model_workflow() ||
         !m_model_generation_host->request_open_workbench()) return false;
-    if (show_model_view(ModelView::Workbench)) return true;
+    // The workbench publishes exact ownership before this point. Record the
+    // one-click intent immediately; the portrait state machine owns Check and
+    // registers both native-partition consumers itself.
+    const auto owner = m_model_generation_host->workbench_snapshot();
+    if (automatic_portrait_entry)
+        m_portrait_entry_intent = {owner.revision, owner.model_path, owner.source_sha256,
+            owner.geometry_id, owner.appearance_id};
+    else
+        m_portrait_entry_intent.clear();
+    if (show_model_view(ModelView::Workbench)) {
+        try_start_queued_portrait_print();
+        return true;
+    }
+    m_portrait_entry_intent.clear();
     m_model_generation_host->set_workbench_presented(false);
     return false;
 }
@@ -1337,7 +1341,7 @@ void RedesignShell::refresh_workflow_layout()
         m_slice_camera_waiting_for_frame = false;
         m_slice_camera_retry_timer.Stop();
     }
-    if (m_import_in_progress && m_import_loading && !m_portrait_import_inline) {
+    if (m_import_in_progress && m_import_loading) {
         layout_import_loading();
         if (m_import_loading->IsEnabled()) m_import_loading->Raise();
     }
@@ -1395,6 +1399,7 @@ void RedesignShell::present_active_page(bool flush_children)
 void RedesignShell::apply_workbench_state(const PostGenerationWorkbenchState& state)
 {
     m_workbench_state = state;
+    try_start_queued_portrait_print();
     queue_portrait_print();
     refresh_project_save_actions();
     if (m_model_back_to_design_button && m_model_back_to_design_button->IsShown())
@@ -1405,6 +1410,41 @@ void RedesignShell::apply_workbench_state(const PostGenerationWorkbenchState& st
         m_pending_workbench_job.clear();
         open_model_workbench();
     }
+}
+
+void RedesignShell::try_start_queued_portrait_print()
+{
+    if (!m_portrait_entry_intent.valid() || m_portrait_entry_dispatch_queued ||
+        !m_model_generation_host || m_active_page != Page::Model ||
+        m_model_view != ModelView::Workbench || !m_workbench_state.workbench_presented)
+        return;
+    if (!m_portrait_entry_intent.matches(m_workbench_state.revision,
+            m_workbench_state.model_path, m_workbench_state.source_sha256,
+            m_workbench_state.geometry_id, m_workbench_state.appearance_id)) {
+        m_portrait_entry_intent.clear();
+        return;
+    }
+
+    m_portrait_entry_dispatch_queued = true;
+    const auto intent = m_portrait_entry_intent;
+    wxWeakRef<RedesignShell> weak(this);
+    CallAfter([weak, intent] {
+        if (!weak) return;
+        weak->m_portrait_entry_dispatch_queued = false;
+        const auto current = weak->m_model_generation_host
+            ? weak->m_model_generation_host->workbench_snapshot()
+            : PostGenerationWorkbenchState{};
+        if (weak->m_active_page != Page::Model || weak->m_model_view != ModelView::Workbench ||
+            !current.workbench_presented || !intent.matches(current.revision, current.model_path,
+                current.source_sha256, current.geometry_id, current.appearance_id)) {
+            if (!intent.matches(current.revision, current.model_path, current.source_sha256,
+                    current.geometry_id, current.appearance_id))
+                weak->m_portrait_entry_intent.clear();
+            return;
+        }
+        if (weak->request_portrait_print())
+            weak->m_portrait_entry_intent.clear();
+    });
 }
 
 bool RedesignShell::can_return_to_image_design() const
@@ -1535,19 +1575,14 @@ void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& reque
 void RedesignShell::show_import_loading()
 {
     m_import_started = std::chrono::steady_clock::now();
-    m_portrait_import_inline = m_model_generation_host->snapshot().portrait_print.running();
-    m_portrait_import_status->Show(m_portrait_import_inline);
-    m_workbench_page->Layout();
     m_model_generation_host->set_workbench_import_feedback(true);
     m_slicing_settings->Disable();
     if (m_import_elapsed->GetLabel() != _L("已用时 0.0 秒"))
         m_import_elapsed->SetLabel(_L("已用时 0.0 秒"));
     if (m_import_activity && !m_import_activity->IsRunning()) m_import_activity->Start();
     layout_import_loading();
-    if (!m_portrait_import_inline) {
-        m_import_loading->Raise();
-        m_import_loading->Update();
-    }
+    m_import_loading->Raise();
+    m_import_loading->Update();
     m_import_timer.Start(100);
 }
 
@@ -1564,8 +1599,6 @@ void RedesignShell::update_import_loading(WorkbenchImportPhase phase, const std:
     default: break;
     }
     if (!message.empty()) label = wxString::FromUTF8(message);
-    if (m_portrait_import_inline)
-        m_portrait_import_status->SetLabel(label + "\n" + m_import_elapsed->GetLabel());
     bool layout_changed = false;
     if (!label.empty() && m_import_stage->GetLabel() != label) {
         m_import_stage->SetLabel(label);
@@ -1581,7 +1614,6 @@ void RedesignShell::update_import_loading(WorkbenchImportPhase phase, const std:
 void RedesignShell::layout_import_loading()
 {
     if (!m_import_in_progress || !m_import_loading || !m_model_generation_host) return;
-    if (m_portrait_import_inline) { m_import_loading->Hide(); return; }
     wxWindow* viewport = m_model_generation_host->workbench_import_viewport();
     if (!viewport) return;
     auto* owner = wxGetTopLevelParent(this);
@@ -1778,8 +1810,6 @@ void RedesignShell::commit_import_target_view()
     m_plater->Enable();
     if (m_slicing_host) apply_slicing_state(m_slicing_host->workbench_snapshot());
     m_import_loading->Hide();
-    m_portrait_import_status->Hide();
-    m_portrait_import_inline = false;
     restore_import_source_page();
     // Enable()/the last state snapshot may invalidate native labels. Flush
     // them after uncovering as well: Windows can clip GDI paints while the
@@ -1822,8 +1852,6 @@ void RedesignShell::finish_import_loading(bool retain_view_retry)
     m_import_session.reset();
     if (m_import_activity) m_import_activity->Stop();
     m_import_loading->Hide();
-    m_portrait_import_status->Hide();
-    m_portrait_import_inline = false;
     m_model_generation_host->restore_workbench_import_history();
     m_model_generation_host->set_workbench_import_feedback(false);
     m_slicing_settings->Enable();

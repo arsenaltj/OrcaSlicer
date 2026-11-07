@@ -49,6 +49,10 @@ class ModelOriginalSurfaceSampler {
     static float linear(float c) { return c<=.04045f ? c/12.92f : std::pow((c+.055f)/1.055f,2.4f); }
     static float srgb(float c) { return c<=.0031308f ? c*12.92f : 1.055f*std::pow(c,1.f/2.4f)-.055f; }
 public:
+    const TriangleMesh& origin_mesh() const noexcept { return m_origin; }
+    const ObjInfo& origin_colors() const noexcept { return m_colors; }
+    const AI::ModelArtifactTextureSurface& origin_texture_surface() const noexcept { return m_texture; }
+
     AI::ModelArtifactTextureSurface texture_surface() const {
         if (m_texture.faces.empty()) return {};
         AI::ModelArtifactTextureSurface result;
@@ -75,6 +79,7 @@ public:
         if (decoded_mesh && decoded_colors && decoded_texture) {
             result->m_origin=*decoded_mesh;result->m_colors=*decoded_colors;result->m_texture=*decoded_texture;
         } else if (!AI::load_model_artifact(origin,result->m_origin,result->m_colors,error,cancel,&result->m_texture)) return {};
+        if (AI::model_artifact_sha256(origin)!=hash) {error="原始外观模型在解码期间发生变化。";return {};}
         if (!original_appearance_detail::has_appearance(result->m_origin.its,result->m_colors,result->m_texture)) {
             error="原始模型没有可采样的外观。";return {};
         }

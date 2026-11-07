@@ -9,6 +9,7 @@ void ModelPreview3D::capture_printer_filament_restore_snapshot()
     if (m_printer_filament_restore || m_geometry_id.empty() || !m_color_trial) return;
     PrinterFilamentRestoreSnapshot snapshot;
     snapshot.color_blocks=m_color_blocks;
+    snapshot.native_portrait_partition=m_native_portrait_partition;
     snapshot.geometry_id = m_geometry_id;
     snapshot.color_trial = m_color_trial->state();
     // Keep the in-memory source verbatim.  The trial must be able to restore
@@ -37,6 +38,7 @@ bool ModelPreview3D::restore_printer_filament_preview_source()
     const auto& snapshot = *m_printer_filament_restore;
 
     m_color_blocks=snapshot.color_blocks;
+    m_native_portrait_partition=snapshot.native_portrait_partition;
     m_face_color_overrides = snapshot.face_color_overrides;
     m_automatic_face_colors = snapshot.automatic_face_colors;
     m_automatic_subface_colors = snapshot.automatic_subface_colors;
@@ -88,6 +90,7 @@ bool ModelPreview3D::restore_printer_filament_input_source()
     m_suppress_semantic_change = false;
     m_restoring_printer_input = false;
     m_color_blocks=snapshot.color_blocks;
+    m_native_portrait_partition=snapshot.native_portrait_partition;
     m_face_color_overrides = snapshot.face_color_overrides;
     m_automatic_face_colors = snapshot.automatic_face_colors;
     m_automatic_subface_colors = snapshot.automatic_subface_colors;
@@ -278,6 +281,12 @@ ModelPreview3D::WorkbenchSurfacePalette ModelPreview3D::workbench_surface_palett
             if (unit.path.depth == 0) honor_face_slots[unit.face] = native_slot;
             else honor_subface_slots[{unit.face, unit.path.depth, unit.path.value}] = native_slot;
         }
+        if (m_color_blocks->active == PortraitColorBlocks::Track::ProcessedFaceColor)
+            for (const auto& overlay : m_color_blocks->face_overrides) {
+                if (overlay.face >= track.unit_blocks.size() || overlay.slot >= trial.project_color_slots.size()) continue;
+                if (track.blocks.at(track.unit_blocks[overlay.face]).status == PortraitColorBlocks::Status::ManualConfirmed) continue;
+                honor_face_slots[overlay.face] = trial.project_color_slots[overlay.slot];
+            }
     }
     auto preferred_target = [&trial](const PreviewPalette::Color& color) -> std::optional<size_t> {
         if (trial.source != 1) return {};
@@ -550,6 +559,9 @@ ModelPreview3D::BeautyPaintResult ModelPreview3D::restore_beauty_region(
 bool ModelPreview3D::restore_portrait_color_blocks(std::shared_ptr<const PortraitColorBlocks::Result> blocks,bool refresh)
 {
     if(blocks && (blocks->geometry_id!=m_geometry_id || blocks->face_count!=m_triangle_count))return false;
+    if (blocks && (blocks->algorithm_version != PortraitColorBlocks::portrait_postprocess_algorithm_version ||
+        !blocks->native_partition_identity || !m_native_portrait_partition ||
+        blocks->native_partition_identity->partition_digest != m_native_portrait_partition->partition_digest)) return false;
     const auto previous = m_color_blocks;
     m_color_blocks=std::move(blocks);
     m_selected_color_block.reset();
@@ -665,7 +677,9 @@ void ModelPreview3D::update_semantic_coloring()
         if (m_honor_suite_application_complete) m_honor_suite_application_complete(applied);
         return;
     }
-    if ((!honor_request && !portrait_recognition_enabled()) || !m_has_model || !m_semantic_source ||
+    if ((!honor_request && !portrait_recognition_enabled()) ||
+        (honor_request && !portrait_recognition_enabled() && !m_native_portrait_partition) ||
+        !m_has_model || !m_semantic_source ||
         (!honor_request && (!m_color_trial_enabled || !m_color_trial->color_block_postprocess_enabled()))) {
         if (m_semantic_controller) m_semantic_controller->cancel();
         if (honor_request) {
@@ -728,7 +742,7 @@ void ModelPreview3D::update_semantic_coloring()
                                        honor_request ? m_color_trial->honor_suite_source_basis().requested_count :
                                            size_t(std::clamp(m_color_trial->automatic_count(), 1, int(PreviewPalette::max_preview_colors))),
                                        false, honor_request, fixed_role_slots, request_context,
-                                       honor_request ? m_color_trial->honor_suite_source_basis() : PreviewPalette::AutomaticColorBasis{})) {
+                                       honor_request ? m_native_portrait_partition : nullptr)) {
         m_semantic_submission_edit_revision = m_leaf_edit_revision;
         m_semantic_submission_manual = m_face_color_overrides;
         m_semantic_submission_unlocked = m_shapes_unlocked;

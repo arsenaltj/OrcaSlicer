@@ -1,25 +1,75 @@
 #include "slic3r/GUI/Redesign/HonorBrowserProfile.hpp"
+#include "slic3r/GUI/Redesign/HonorAccountWebTheme.hpp"
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <wx/filename.h>
 
 namespace Profile = Slic3r::GUI::HonorBrowserProfile;
 namespace HA = Slic3r::HonorAccount;
 
-TEST_CASE("Honor browser data stays separate across application configurations", "[HonorBrowserProfile]")
+TEST_CASE("Honor account web presentation fits the available client area", "[HonorBrowserProfile]")
+{
+    using Catch::Matchers::WithinAbs;
+    using Slic3r::GUI::honor_account_zoom_factor;
+    using Slic3r::GUI::honor_account_zoom_factor_if_ready;
+    REQUIRE_FALSE(honor_account_zoom_factor_if_ready(false, wxSize(1366, 800)).has_value());
+    REQUIRE_THAT(*honor_account_zoom_factor_if_ready(true, wxSize(1366, 800)),
+                 WithinAbs(0.85375f, 0.0001f));
+    REQUIRE_THAT(honor_account_zoom_factor(wxSize(1600, 900)), WithinAbs(1.0f, 0.0001f));
+    REQUIRE_THAT(honor_account_zoom_factor(wxSize(1366, 800)), WithinAbs(0.85375f, 0.0001f));
+    REQUIRE_THAT(honor_account_zoom_factor(wxSize(800, 450)), WithinAbs(0.65f, 0.0001f));
+    REQUIRE_THAT(honor_account_zoom_factor(wxSize(2560, 1440)), WithinAbs(1.0f, 0.0001f));
+    REQUIRE_THAT(honor_account_zoom_factor(wxSize(0, 0)), WithinAbs(1.0f, 0.0001f));
+}
+
+TEST_CASE("Honor trust copy names the software without changing dialog actions", "[HonorBrowserProfile]")
+{
+    const auto copy = Slic3r::GUI::honor_account_trust_copy();
+    REQUIRE(std::string(copy[0].source) == "是否信任此浏览器？");
+    REQUIRE(std::string(copy[0].replacement) == "是否信任 Honor Forge Studio？");
+    REQUIRE(std::string(copy[1].replacement).find("信任该软件") != std::string::npos);
+
+    const auto script = Slic3r::GUI::honor_account_theme_script();
+    REQUIRE(script.Contains("[role=\"dialog\"]"));
+    REQUIRE(script.Contains(".pop-trust-browser-dialog"));
+    REQUIRE(script.Contains("[data-testid=\"trust-browser-container\"]"));
+    REQUIRE(script.Contains("trustBrowser_label_DialogTitle"));
+    REQUIRE(script.Contains("scrollbar-width: none"));
+    REQUIRE(script.Contains("Honor Forge Studio"));
+    REQUIRE(script.Contains("MutationObserver"));
+    REQUIRE(script.Contains("if (next !== catalog[key])"));
+    REQUIRE(script.Contains("if (next !== node.nodeValue)"));
+    REQUIRE(script.Contains("queueMicrotask"));
+    REQUIRE(script.Contains("pendingRoots"));
+
+    const auto submit = Slic3r::GUI::honor_account_submit_watchdog_script();
+    REQUIRE(submit.Contains("document.addEventListener('submit'"));
+    REQUIRE(submit.Contains("postMessage('honor-submit-v1')"));
+    REQUIRE_FALSE(submit.Contains("preventDefault"));
+    REQUIRE_FALSE(submit.Contains("stopPropagation"));
+    REQUIRE_FALSE(submit.Contains("document.cookie"));
+    REQUIRE_FALSE(submit.Contains("localStorage"));
+    REQUIRE_FALSE(submit.Contains("sessionStorage"));
+    REQUIRE_FALSE(submit.Contains("FormData"));
+    REQUIRE_FALSE(submit.Contains("fetch("));
+    REQUIRE_FALSE(submit.Contains("XMLHttpRequest"));
+}
+
+TEST_CASE("Honor browser data follows the platform origin and preserved legacy profile", "[HonorBrowserProfile]")
 {
     HA::Config config;
+    config.api_url = "https://platform.example.test";
     const auto original = Profile::path("/user-data", config);
     REQUIRE_FALSE(original.empty());
     REQUIRE(original == Profile::path("/user-data", config));
-    config.client_secret = "fixture-only-secret";
-    REQUIRE(original == Profile::path("/user-data", config));
-    REQUIRE_FALSE(original.Contains(config.client_secret));
-    config.client_id += "2";
+    config.api_url = "https://other-platform.example.test";
     REQUIRE(original != Profile::path("/user-data", config));
-    config = HA::Config{}; config.environment = "production";
-    REQUIRE(original != Profile::path("/user-data", config));
-    config = HA::Config{}; config.authorize_url += "/changed";
-    REQUIRE(original != Profile::path("/user-data", config));
+
+    config.browser_profile_key = HA::digest("legacy-browser-profile");
+    const auto migrated = Profile::path("/user-data", config);
+    config.api_url = "https://third-platform.example.test";
+    REQUIRE(migrated == Profile::path("/user-data", config));
+    REQUIRE_FALSE(migrated.Contains("legacy-browser-profile"));
     REQUIRE(original != Profile::path("/other-user-data", HA::Config{}));
     REQUIRE(Profile::path({}, config).empty());
     REQUIRE_FALSE(Profile::configuration({}, config).has_value());
@@ -121,7 +171,7 @@ TEST_CASE("Honor browser storage survives view recreation and explicit reset rem
     browser = runtime.open();
     REQUIRE(marker(browser).Contains("retained-marker"));
 
-    HA::Config other; other.client_id += "2";
+    HA::Config other; other.api_url = "https://other-platform.example.test";
     auto* isolated = runtime.open(other);
     REQUIRE_FALSE(marker(isolated).Contains("retained-marker"));
     runtime.close(isolated);

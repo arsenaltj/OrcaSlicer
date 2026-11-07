@@ -72,6 +72,14 @@ struct TexturePaintingSettings {
     std::size_t target_colors_num  = 4;
     double      smooth_weight      = 0.5;
     std::size_t oversampling_iters = 0;
+    // Used only when target_colors_num is zero. Defaults mirror
+    // TextureToColorSettings so existing callers keep the same behavior.
+    double      max_color_distance = 25.0;
+    std::size_t min_cluster_k      = 1;
+    std::size_t max_cluster_k      = 32;
+    // Optional absolute tail bound for adaptive clustering. Zero keeps the
+    // ordinary Orca P99-only behavior.
+    double      max_tail_color_distance = 0.0;
     enum class MeshRepairDecision {
         Ask,
         ImportWithoutRepair,
@@ -80,6 +88,10 @@ struct TexturePaintingSettings {
     MeshRepairDecision mesh_repair_decision = MeshRepairDecision::ImportWithoutRepair;
     bool* mesh_repair_decision_required = nullptr;
     PaintMeshRepairCallback mesh_repair_callback;
+    // Automatic callers may require the callback to be the only repair path.
+    // Failure, an open result, or a halfedge-incompatible result aborts before
+    // clustering. Ordinary texture import keeps the legacy fallback by default.
+    bool strict_mesh_repair = false;
     // Explicit target colors bypass clustering. Empty preserves legacy behavior.
     std::vector<std::array<std::size_t, 3>> fixed_palette;
     std::vector<std::array<std::size_t, 3>> fixed_mapping_palette;

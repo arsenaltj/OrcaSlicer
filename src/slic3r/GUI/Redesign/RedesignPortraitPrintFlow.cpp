@@ -22,16 +22,17 @@ std::string revision_key(const AI::SmartSlicing::WorkspaceRevision& revision) {
 struct AdvanceGuard { bool& flag; explicit AdvanceGuard(bool& f) : flag(f) { flag = true; } ~AdvanceGuard() { flag = false; } };
 }
 
-void RedesignShell::request_portrait_print()
+bool RedesignShell::request_portrait_print()
 {
-    if (!m_model_generation_host || !m_plater || m_submit_in_progress) return;
+    if (!m_model_generation_host || !m_plater || m_submit_in_progress) return false;
     m_submit_in_progress = true;
-    m_model_generation_host->request_portrait_print_from_model([this] {
+    const auto submission = m_model_generation_host->request_portrait_print_from_model([this] {
         // The feature has already published a verified project recovery copy.
         return m_plater->new_project(true, true, {}, false) != wxID_CANCEL && m_plater->model().objects.empty();
     });
     m_submit_in_progress = false;
     apply_model_generation_state(m_model_generation_host->snapshot());
+    return PP::accepted(submission);
 }
 
 void RedesignShell::queue_portrait_print()

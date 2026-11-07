@@ -1,9 +1,13 @@
 #pragma once
 
 #include "PostGenerationWorkbenchState.hpp"
+#include "PortraitPrintFlow.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
 #include "libslic3r/MeshBoolean.hpp"
+#include "libslic3r/MeshRepair.hpp"
+#include <boost/filesystem.hpp>
+#include <cmath>
 #include <stdexcept>
 #include <set>
 #include <unordered_map>
@@ -199,12 +203,178 @@ inline WorkbenchCheckResult inspect_workbench_model(const boost::filesystem::pat
     return result;
 }
 
+// Expected identities and native_reference are frozen from an owned live
+// portrait candidate. The original commit is evidence, never its own authority.
+struct WorkbenchNativeTopologyCertificate {
+    nlohmann::json partition_metadata;
+    std::string partition_metadata_path;
+    nlohmann::json native_reference;
+    std::string candidate_sha256;
+    std::string carrier_sha256;
+    std::string geometry_id;
+    std::string appearance_id;
+    std::string partition_digest;
+    std::string topology_hash;
+    size_t face_count {0};
+};
+
+inline bool decode_native_publication_certificate(
+    const boost::filesystem::path& candidate,
+    const boost::filesystem::path& source,
+    const WorkbenchNativeTopologyCertificate& proof,
+    WorkbenchCheckResult& result,
+    std::string& rejection,
+    const std::function<bool()>& canceled = {})
+{
+    try {
+        const auto require = [](bool valid, const char* error) {
+            if (!valid) throw std::runtime_error(error);
+        };
+        const auto checkpoint = [&] {
+            if (canceled && canceled())
+                throw std::runtime_error("Native publication verification canceled.");
+        };
+        const auto verify_files = [&] {
+            checkpoint();
+            require(boost::filesystem::is_regular_file(candidate) &&
+                    !boost::filesystem::is_symlink(candidate) &&
+                    boost::filesystem::is_regular_file(source) &&
+                    !boost::filesystem::is_symlink(source),
+                    "Native publication files are unavailable.");
+            require(AI::model_artifact_sha256(candidate) == proof.candidate_sha256 &&
+                    AI::model_artifact_sha256(source) == proof.carrier_sha256,
+                    "Native publication file identity changed.");
+            checkpoint();
+        };
+
+        checkpoint();
+        require(PortraitPrint::valid_sha256(proof.candidate_sha256) &&
+                PortraitPrint::valid_sha256(proof.carrier_sha256) &&
+                proof.candidate_sha256 == proof.carrier_sha256 &&
+                !proof.geometry_id.empty() && !proof.appearance_id.empty() &&
+                proof.face_count > 0,
+                "Native publication expected identity is invalid.");
+
+        const auto& reference = proof.native_reference;
+        const auto& metadata = proof.partition_metadata;
+        require(PortraitPrint::valid_native_partition_reference(
+                    reference, proof.partition_digest, proof.topology_hash) &&
+                PortraitPrint::native_partition_has_exact_mesh(reference) &&
+                reference.at("carrier_sha256") == proof.carrier_sha256 &&
+                reference.at("geometry_id") == proof.geometry_id &&
+                reference.at("appearance_id") == proof.appearance_id &&
+                PortraitPrint::same_model_path(
+                    reference.at("metadata_path").get<std::string>(),
+                    proof.partition_metadata_path) &&
+                reference.at("cache_reference").at("face_count").get<size_t>() ==
+                    proof.face_count,
+                "Native publication reference identity mismatch.");
+        require(metadata.at("schema") ==
+                    "orca.native-workbench-partition-commit/v1" &&
+                metadata.at("transaction_status") == "committed" &&
+                metadata.at("native_portrait_partition") == reference &&
+                metadata.at("model_sha256") == proof.carrier_sha256 &&
+                PortraitPrint::same_model_path(
+                    metadata.at("model_path").get<std::string>(),
+                    reference.at("carrier_path").get<std::string>()),
+                "Native publication commit mismatch.");
+        verify_files();
+
+        const auto& native = metadata.at("native_portrait_topology_certificate");
+        require(native.at("schema") ==
+                    "orca.native-workbench-topology-certificate/v1" &&
+                AI::beauty_leaf_digest(native.dump()) == proof.topology_hash &&
+                native.at("carrier_sha256") == proof.carrier_sha256 &&
+                native.at("geometry_id") == proof.geometry_id &&
+                native.at("native_mesh_sha256") ==
+                    reference.at("cache_reference").at("native_mesh_sha256") &&
+                native.at("partition_digest") == proof.partition_digest &&
+                native.at("coordinate_units") == reference.at("coordinate_units") &&
+                native.at("source_bounds_mm") == reference.at("source_bounds_mm") &&
+                native.at("carrier_bounds_mm") == reference.at("carrier_bounds_mm"),
+                "Native topology certificate identity mismatch.");
+
+        const auto& report = metadata.at("partition_build_report");
+        const auto& strict = report.at("strict_repair");
+        require(report.at("schema") ==
+                    "orca.native-workbench-partition-build-report/v1" &&
+                report.at("success").get<bool>() &&
+                strict.at("success").get<bool>() &&
+                !strict.at("canceled").get<bool>() &&
+                strict.at("geometry_verified").get<bool>() &&
+                strict.at("output_topology") == native.at("topology"),
+                "Native strict repair certificate mismatch.");
+        const double deviation = strict.at("sampled_deviation_ratio").get<double>();
+        const double area_change = strict.at("area_change_ratio").get<double>();
+        const StrictMeshRepairOptions limits;
+        require(std::isfinite(deviation) && deviation >= 0.0 &&
+                deviation <= limits.maximum_sampled_deviation_ratio &&
+                std::isfinite(area_change) && area_change >= 0.0 &&
+                area_change <= limits.maximum_area_change_ratio &&
+                native.at("sampled_deviation_ratio").get<double>() == deviation &&
+                native.at("area_change_ratio").get<double>() == area_change,
+                "Native strict geometry certificate mismatch.");
+
+        const auto& certificate = metadata.at("workbench_check_certificate");
+        WorkbenchCheckResult checked;
+        require(PortraitPrint::valid_workbench_check_certificate(
+                    certificate, WorkbenchCheckPurpose::PortraitPostColorReadOnly,
+                    proof.carrier_sha256, proof.geometry_id, proof.appearance_id,
+                    proof.partition_metadata_path, metadata,
+                    proof.partition_digest, proof.topology_hash) &&
+                PortraitPrint::decode_workbench_check_certificate(certificate, checked) &&
+                workbench_topology_safe(checked) &&
+                checked.before_faces == proof.face_count,
+                "Native workbench certificate mismatch.");
+        const auto& topology = native.at("topology");
+        require(checked.boundary_edges == topology.at("open_edges").get<size_t>() &&
+                checked.nonmanifold_edges == topology.at("nonmanifold_edges").get<size_t>() &&
+                checked.nonmanifold_vertices == topology.at("nonmanifold_vertices").get<size_t>() &&
+                checked.degenerate_faces == topology.at("degenerate_faces").get<size_t>() &&
+                checked.duplicate_faces == topology.at("duplicate_faces").get<size_t>() &&
+                checked.inconsistent_edges == topology.at("inconsistent_edges").get<size_t>() &&
+                checked.self_intersections_checked ==
+                    topology.at("self_intersections_checked").get<bool>() &&
+                (checked.self_intersections != 0) == topology.at("self_intersects").get<bool>(),
+                "Native topology reports disagree.");
+
+        verify_files();
+        checked.model_sha256 = proof.candidate_sha256;
+        checked.source_sha256 = proof.carrier_sha256;
+        checked.candidate_status = RepairCandidateStatus::None;
+        result = std::move(checked);
+        rejection.clear();
+        return true;
+    } catch (const std::exception& error) {
+        result = {};
+        rejection = error.what();
+        return false;
+    }
+}
+
 // Publication is the last topology gate, shared by explicit repair acceptance
 // and automatic filament saving. Candidate statistics never certify the source.
 inline WorkbenchCheckResult inspect_workbench_publication(const boost::filesystem::path& candidate,
     const boost::filesystem::path& source, const WorkbenchCheckResult* repair,
-    const std::function<bool()>& canceled = {})
+    const std::function<bool()>& canceled = {},
+    const WorkbenchNativeTopologyCertificate* native = nullptr)
 {
+    if (native) {
+        WorkbenchCheckResult certified;
+        std::string rejection;
+        if (!repair && decode_native_publication_certificate(
+                candidate, source, *native, certified, rejection, canceled))
+            return certified;
+        // Invalid proof always takes the full path, but safe geometry alone
+        // cannot authorize changed publication identities.
+        const auto full_check = inspect_workbench_model(candidate, canceled);
+        if (!workbench_topology_safe(full_check))
+            throw std::runtime_error(
+                "Native publication certificate rejected; full inspection failed: " +
+                full_check.summary);
+        throw std::runtime_error("Native publication certificate identity mismatch: " +
+            (rejection.empty() ? std::string("incompatible repair candidate") : rejection));
+    }
     if (repair && (!workbench_topology_safe(*repair) ||
         AI::model_artifact_sha256(candidate) != repair->candidate_sha256 ||
         AI::model_artifact_sha256(source) != repair->source_sha256))

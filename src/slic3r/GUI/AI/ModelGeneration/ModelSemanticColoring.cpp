@@ -423,7 +423,7 @@ struct ModelSemanticColoring::Impl {
         bool color_block_postprocess {false};
         std::map<std::string, size_t> fixed_role_slots;
         std::string request_context;
-        PreviewPalette::AutomaticColorBasis source_basis;
+        std::shared_ptr<const NativePortrait::NativePortraitPartition> native_partition;
     } request;
     struct Job {
         Request request;
@@ -466,7 +466,7 @@ struct ModelSemanticColoring::Impl {
                     // Source identity is a hard prerequisite even when the
                     // recognizer is unavailable. Never turn a missing or
                     // changed canonical model into a nearest-color success.
-                    result->source_region_failure = !task->request.source_basis.basis_signature.empty();
+                    result->source_region_failure = bool(task->request.native_partition);
                     const auto original = PortraitShapeCache::verified_source(
                         boost::filesystem::path(Slic3r::data_dir()) / "cache", task->request.shapes->locks.source_sha256);
                     TriangleMesh mesh;
@@ -540,7 +540,7 @@ struct ModelSemanticColoring::Impl {
                         // The V2 portrait allocator is opt-in and bounded to
                         // four, five or six automatic colors. Ordinary semantic
                         // requests must keep using the palette matcher.
-                        const auto strategy = task->request.color_block_postprocess &&
+                        const auto strategy = task->request.color_block_postprocess && task->request.native_partition &&
                             PortraitColorBlocks::portrait_color_postprocess_supported(task->request.automatic_color_count)
                             ? PortraitColorBlocks::Strategy::ColorRegionMajorityV2
                             : PortraitColorBlocks::Strategy::LegacyReadOnly;
@@ -563,10 +563,8 @@ struct ModelSemanticColoring::Impl {
                             PortraitColorBlocks::Input input{source, *analysis};
                             input.strategy = strategy;
                             input.mapping=task->request.palette; input.targets=task->request.targets;
-                            input.intermediate_palette = task->request.source_basis.basis_signature.empty()
-                                ? portrait_intermediate_palette(source) : task->request.source_basis.source_palette;
-                            input.source_basis = task->request.source_basis.basis_signature.empty()
-                                ? nullptr : &task->request.source_basis;
+                            input.intermediate_palette = portrait_intermediate_palette(source);
+                            input.native_partition = task->request.native_partition.get();
                             input.final_color_count = task->request.targets.size();
                             input.fixed_role_slots = task->request.fixed_role_slots;
                             if(task->request.saved_appearance) {
@@ -580,7 +578,7 @@ struct ModelSemanticColoring::Impl {
                                 input.previous=task->request.saved_appearance->color_blocks;
                             }
                             input.processed_faces=SC::compose(input.processed_faces,task->request.manual,true);
-                            result->source_region_failure = input.source_basis != nullptr;
+                            result->source_region_failure = input.native_partition != nullptr;
                             result->color_blocks=PortraitColorBlocks::build(input,cancel);
                             const auto diagnostic=result->color_blocks->diagnostic_summary();
                             BOOST_LOG_TRIVIAL(info) << "[PortraitColorBlocks] units="
@@ -1084,7 +1082,7 @@ struct ModelSemanticColoring::Impl {
             // independent. Preserve the exact same source regions on a
             // nearest-color fallback; a region/budget error is never hidden
             // behind a successful unrefined shader fallback.
-            if (!cancel() && !task->request.source_basis.basis_signature.empty() && !result->source_region_failure &&
+            if (!cancel() && task->request.native_partition && !result->source_region_failure &&
                 (!result->error.empty() || !result->analysis || !result->person_detected)) {
                 result->semantic_fallback_reason = !result->error.empty() ? "本地识别器不可用，近色回退：" + result->error :
                     "未检测到人物，保留 AI 源色区域并近色匹配。";
@@ -1094,14 +1092,17 @@ struct ModelSemanticColoring::Impl {
                         auto analysis=std::make_shared<SC::Analysis>();
                         analysis->geometry_id=source.geometry_id;
                         analysis->content_id=source.content_id;
-                        analysis->signature="unavailable:"+task->request.source_basis.basis_signature;
+                        analysis->signature="unavailable:"+task->request.native_partition->partition_digest;
                         analysis->face_labels.assign(source.mesh.indices.size(),SC::Label::Unknown);
                         analysis->face_confidence.assign(analysis->face_labels.size(),0.f);
                         PortraitColorBlocks::Input input{source,*analysis};
                         input.strategy=PortraitColorBlocks::Strategy::ColorRegionMajorityV2;
                         input.mapping=task->request.palette;input.targets=task->request.targets;
-                        input.intermediate_palette=task->request.source_basis.source_palette;
-                        input.source_basis=&task->request.source_basis;
+                        input.native_partition=task->request.native_partition.get();
+                        input.intermediate_palette.reserve(task->request.native_partition->painted.cluster_colors.size());
+                        for (const auto& color : task->request.native_partition->painted.cluster_colors)
+                            input.intermediate_palette.push_back({float(color[0]) / 255.f,
+                                float(color[1]) / 255.f, float(color[2]) / 255.f});
                         input.final_color_count=task->request.targets.size();
                         result->source_region_failure=true;
                         result->color_blocks=PortraitColorBlocks::build(input,cancel);
@@ -1137,7 +1138,7 @@ struct ModelSemanticColoring::Impl {
 
 ModelSemanticColoring::ModelSemanticColoring(std::filesystem::path runtime, std::filesystem::path cache)
     : m_impl(std::make_unique<Impl>()) { m_impl->runtime = std::move(runtime); m_impl->cache = std::move(cache); }
-ModelSemanticColoring::~ModelSemanticColoring() { cancel(); if (m_impl->worker.joinable()) m_impl->worker.join(); }
+ModelSemanticColoring::~ModelSemanticColoring() { cancel_and_wait(); }
 bool ModelSemanticColoring::request(std::shared_ptr<const Snapshot> source, std::vector<Color> palette, std::vector<Color> targets,
                                    std::vector<Color> portrait_card, FaceColors manual, std::filesystem::path source_path,
                                    std::shared_ptr<const PortraitShapeDetails> shapes,std::vector<std::string> palette_roles,
@@ -1149,7 +1150,7 @@ bool ModelSemanticColoring::request(std::shared_ptr<const Snapshot> source, std:
                                     bool color_block_postprocess,
                                     std::map<std::string, size_t> fixed_role_slots,
                                     std::string request_context,
-                                    PreviewPalette::AutomaticColorBasis source_basis)
+                                    std::shared_ptr<const NativePortrait::NativePortraitPartition> native_partition)
 {
     auto& state = *m_impl;
     auto configuration = provider_configuration(state.runtime);
@@ -1170,22 +1171,28 @@ bool ModelSemanticColoring::request(std::shared_ptr<const Snapshot> source, std:
         state.request.automatic_color_count == automatic_color_count && state.request.analysis_only == analysis_only &&
         state.request.color_block_postprocess == color_block_postprocess &&
         state.request.fixed_role_slots == fixed_role_slots && state.request.request_context == request_context &&
-        state.request.source_basis.basis_signature == source_basis.basis_signature &&
-        state.request.source_basis.geometry_id == source_basis.geometry_id &&
-        state.request.source_basis.unit_source_slots == source_basis.unit_source_slots &&
+        ((!state.request.native_partition && !native_partition) ||
+         (state.request.native_partition && native_partition &&
+          state.request.native_partition->partition_digest == native_partition->partition_digest)) &&
         same_appearance()) return false;
     if (state.job) state.job->canceled.store(true);
     state.request = {std::move(source), std::move(palette), std::move(targets), std::move(portrait_card),std::move(palette_roles),
         std::move(manual), std::move(configuration), ++state.generation, std::move(source_path), std::move(shapes),
         allow_boundary_upgrade, std::move(manual_cells), std::move(progress),std::move(saved_appearance),
         automatic_color_count, analysis_only, color_block_postprocess,
-        std::move(fixed_role_slots), std::move(request_context),std::move(source_basis)};
+        std::move(fixed_role_slots), std::move(request_context),std::move(native_partition)};
     state.wanted = true; state.pending = true; state.start(); return true;
 }
 void ModelSemanticColoring::cancel() {
     auto& state = *m_impl;
     state.wanted = false; state.pending = false; ++state.generation;
     if (state.job) state.job->canceled.store(true);
+}
+void ModelSemanticColoring::cancel_and_wait() {
+    cancel();
+    auto& state = *m_impl;
+    if (state.worker.joinable()) state.worker.join();
+    state.job.reset();
 }
 std::unique_ptr<ModelSemanticColoring::Result> ModelSemanticColoring::poll() {
     auto& state = *m_impl;

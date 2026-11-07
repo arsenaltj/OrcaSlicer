@@ -1540,6 +1540,10 @@ void BeautyWorkbenchControls::prepare_import(const boost::filesystem::path& path
     const auto metadata = read_metadata(path, false);
     if(metadata.contains("portrait_color_blocks"))
         request.portrait_color_block_references.push_back(metadata["portrait_color_blocks"]);
+    if(metadata.contains("native_portrait_partition") &&
+        metadata["native_portrait_partition"].contains("cache_reference"))
+        request.native_portrait_partition_references.push_back(
+            metadata["native_portrait_partition"]["cache_reference"]);
     if(metadata.contains("printer_filament_restore") && metadata["printer_filament_restore"].contains("portrait_color_blocks"))
         request.portrait_color_block_references.push_back(metadata["printer_filament_restore"]["portrait_color_blocks"]);
     // A live workbench match is already bound to the current source hash and

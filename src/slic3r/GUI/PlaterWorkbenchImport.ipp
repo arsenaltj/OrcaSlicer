@@ -104,16 +104,10 @@ AI::ModelImportResult Plater::import_workbench_model(const AI::ModelImportReques
             }
         }
         TriangleMesh final_mesh = object.volumes.front()->mesh();
-        auto painting = object.volumes.front()->mmu_segmentation_facets.get_data();
-        const bool topology_ok = request.native_repair_before_slice
-            ? request.native_repair_source_sha256 == source_hash &&
-                prepare_native_portrait_repair(object.volumes.front()->mesh(), painting, final_mesh, painting, result, result.error)
-            : prepare_workbench_import_topology(final_mesh, request.topology_risk_confirmed, result, result.error);
-        if (!topology_ok)
+        if (!prepare_workbench_import_topology(
+                final_mesh, request.topology_risk_confirmed, result, result.error, {}, &request))
             return fail(result.error, AI::ModelImportOutcome::RepairFailed);
-        if (request.native_repair_before_slice) result.native_repair_source_sha256 = source_hash;
         object.volumes.front()->set_mesh(std::move(final_mesh));
-        if (request.native_repair_before_slice) object.volumes.front()->mmu_segmentation_facets.set_data(std::move(painting));
         object.volumes.front()->set_new_unique_id();
         object.invalidate_bounding_box();
         detached.texture_mesh.reset();

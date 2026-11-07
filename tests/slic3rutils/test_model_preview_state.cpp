@@ -1,5 +1,8 @@
 #include "slic3r/GUI/AI/ModelGeneration/ModelPreview3D.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitNativePartition.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitNativePartitionCache.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
 #include "slic3r/GUI/AI/Model/BeautyDocument.hpp"
 #include "../test_utils.hpp"
@@ -411,6 +414,31 @@ TEST_CASE("Original appearance mapping inherits coordinate-only changes and publ
     CHECK(result.topology_sha256 == selection::topology_fingerprint(repaired_mesh));
     CHECK(result.origin_model == canonical_source);
     CHECK(result.origin_sha256 == source_hash);
+
+    // A later shared partition still decodes the immutable origin, but must
+    // map geometry from the carrier matching the current evidence topology.
+    // Passing the origin as the mapping mesh reproduces the production
+    // topology-mismatch regression after a previous repair.
+    auto repartitioned_mesh = repaired_mesh;
+    repartitioned_mesh.vertices.emplace_back(.5f, 0.f, 0.f);
+    repartitioned_mesh.indices.front() = {0, 4, 3};
+    repartitioned_mesh.indices.emplace_back(4, 1, 3);
+    const auto repartitioned = models / "repartitioned.obj";
+    REQUIRE(Slic3r::AI::write_model_artifact(repartitioned, repartitioned_mesh,
+        std::vector<Slic3r::RGBA>(repartitioned_mesh.vertices.size(),
+            Slic3r::RGBA {0.f, 0.f, 0.f, 1.f}), error));
+    const auto repartitioned_carrier = models / "repartitioned.source-appearance.obj";
+    Slic3r::GUI::OriginalAppearanceReference remapped;
+    CHECK_FALSE(Slic3r::GUI::prepare_original_appearance_for_candidate(
+        result.origin_model, repartitioned, result.origin_sha256, result,
+        repartitioned_carrier, root, remapped, error));
+    CHECK(error.find("拓扑") != std::string::npos);
+    REQUIRE(Slic3r::GUI::prepare_original_appearance_for_candidate(
+        result.carrier_model, repartitioned, result.carrier_sha256, result,
+        repartitioned_carrier, root, remapped, error));
+    CHECK(remapped.topology_sha256 == selection::topology_fingerprint(repartitioned_mesh));
+    CHECK(remapped.origin_model == canonical_source);
+    CHECK(remapped.origin_sha256 == source_hash);
 
     Slic3r::TriangleMesh mapped_mesh;
     Slic3r::ObjInfo mapped_appearance;
@@ -1123,9 +1151,22 @@ TEST_CASE("Frozen workbench partitions report their exact preparation result", "
     const auto basis = P::make_automatic_color_basis(*prepared.trial_histogram, count,
         prepared.geometry_id, true, prepared.automatic_color_units.get());
     REQUIRE(basis.valid());
+    Slic3r::PaintedMesh painted;
+    for (const auto& vertex : prepared.semantic_source->mesh.vertices)
+        painted.vertices.push_back({vertex.x(), vertex.y(), vertex.z()});
+    for (const auto& face : prepared.semantic_source->mesh.indices)
+        painted.indices.push_back({face[0], face[1], face[2]});
+    for (const auto& color : basis.source_palette)
+        painted.cluster_colors.push_back({size_t(std::lround(color[0] * 255.f)),
+            size_t(std::lround(color[1] * 255.f)), size_t(std::lround(color[2] * 255.f))});
+    for (const size_t slot : basis.unit_source_slots)
+        painted.face_colors.push_back(painted.cluster_colors.at(slot));
+    const auto native_partition =
+        Slic3r::GUI::NativePortrait::finalize_native_portrait_partition(std::move(painted));
+    REQUIRE(native_partition.geometry_id == prepared.geometry_id);
     PC::Input partition{*prepared.semantic_source, analysis};
     partition.strategy = PC::Strategy::ColorRegionMajorityV2;
-    partition.source_basis = &basis;
+    partition.native_partition = &native_partition;
     partition.intermediate_palette = basis.source_palette;
     const auto& suite = Slic3r::GUI::honor_people_suite();
     for (size_t slot = 0; slot < suite.model_slot_count; ++slot) {
@@ -1141,6 +1182,7 @@ TEST_CASE("Frozen workbench partitions report their exact preparation result", "
         {"geometry_id", prepared.geometry_id}, {"content_id", prepared.semantic_source->content_id},
         {"person_detected", analysis.person_detected}, {"source_count", count},
         {"source_palette", basis.source_palette}, {"basis_signature", basis.basis_signature},
+        {"partition_digest", native_partition.partition_digest},
         {"face_count", prepared.triangles}, {"semantic_subfaces", analysis.subface_labels.size()}};
     const auto started = std::chrono::steady_clock::now();
     try {
@@ -1155,7 +1197,7 @@ TEST_CASE("Frozen workbench partitions report their exact preparation result", "
         report["painted_faces"] = faces.size();
         report["subfaces"] = children.size();
         report["geometry_triangles"] = geometry.indices_count() / 3;
-        report["source_slots_preserved"] = result->unit_source_slots == basis.unit_source_slots;
+        report["source_slots_preserved"] = result->unit_source_slots == native_partition.face_cluster_ids;
         report["used_model_slots"] = PC::used_display_slots(*result);
         report["semantic_bound_regions"] = PC::reliable_fixed_role_blocks(*result, suite.semantic_role_slot_indices());
     } catch (const std::exception& exception) {
@@ -1175,6 +1217,47 @@ TEST_CASE("Frozen workbench partitions report their exact preparation result", "
     CHECK(report.at("geometry_triangles").get<size_t>() == prepared.triangles);
     CHECK(report.at("source_slots_preserved").get<bool>());
     for (size_t slot : report.at("used_model_slots").get<std::vector<size_t>>()) CHECK(slot < 5);
+}
+
+TEST_CASE("Frozen native workbench sources retain six effective clusters",
+          "[.NativeWorkbenchPartitionReplay][PortraitNativePartition][P0]")
+{
+    const auto* replay_model = boost::nowide::getenv("ORCA_NATIVE_WORKBENCH_REPLAY_MODEL");
+    if (!replay_model || !*replay_model)
+        SKIP("Set ORCA_NATIVE_WORKBENCH_REPLAY_MODEL to an immutable local GLB copy.");
+
+    const boost::filesystem::path source(replay_model);
+    REQUIRE(boost::filesystem::is_regular_file(source));
+    const auto source_sha256 = Slic3r::AI::model_artifact_sha256(source);
+    REQUIRE(source_sha256.size() == 64);
+
+    Slic3r::GUI::DecodedWorkbenchModel decoded;
+    std::string error;
+    REQUIRE(Slic3r::GUI::decode_workbench_model(source, decoded, error));
+    INFO(error);
+    REQUIRE(decoded.texture);
+    REQUIRE(Slic3r::GUI::normalize_decoded_workbench_model_to_millimeters(decoded, error));
+
+    Slic3r::GUI::NativePortrait::NativePortraitPartitionBuildReport report;
+    const auto partition = Slic3r::GUI::NativePortrait::build_native_workbench_partition(
+        *decoded.texture,
+        Slic3r::GUI::NativePortrait::native_mesh_repair_callback(&report.strict_repair),
+        {}, &report);
+    REQUIRE(report.success);
+    REQUIRE(partition.valid());
+    CHECK(partition.painted.cluster_colors.size() >=
+        Slic3r::GUI::NativePortrait::default_model_color_count);
+    CHECK(partition.painted.cluster_colors.size() <=
+        Slic3r::GUI::NativePortrait::maximum_color_count);
+
+    const auto automatic = Slic3r::GUI::NativePortrait::reduce_native_workbench_partition(
+        partition, Slic3r::GUI::NativePortrait::default_model_color_count);
+    REQUIRE(automatic.valid_for(partition));
+    CHECK(automatic.requested_color_count ==
+        Slic3r::GUI::NativePortrait::default_model_color_count);
+    CHECK(automatic.actual_color_count ==
+        Slic3r::GUI::NativePortrait::default_model_color_count);
+    CHECK(Slic3r::AI::model_artifact_sha256(source) == source_sha256);
 }
 
 TEST_CASE("Worker history preparation preserves editing state and complete metric records", "[ModelPreviewState]")
@@ -1741,4 +1824,183 @@ TEST_CASE("Saved color blocks validate normal palette and discard only stale can
     REQUIRE(ModelPreview3D::prepare_model(fixture.model,stale,error));REQUIRE_FALSE(stale.color_blocks);
     REQUIRE(stale.saved_semantic_faces.empty());REQUIRE(stale.face_color_overrides==fixture.intent);
     REQUIRE(stale.semantic_source->content_id==source.content_id);
+}
+
+TEST_CASE("Saved v11 native workbench partitions reopen by identity and preserve failed candidates",
+          "[PortraitNativePartition][PortraitColorBlocks][ModelPreviewState]")
+{
+    namespace NP = Slic3r::GUI::NativePortrait;
+    namespace PC = Slic3r::GUI::PortraitColorBlocks;
+    namespace SC = Slic3r::AI::SemanticColoring;
+    SavedPreview fixture;
+    ScopedTemporaryDir cache("workbench-v11-preview-cache");
+    struct DataScope {
+        std::string previous = Slic3r::data_dir();
+        ~DataScope() { Slic3r::set_data_dir(previous); }
+    } scope;
+    Slic3r::set_data_dir(cache.string());
+    REQUIRE(fixture.original.semantic_source);
+    const auto& source = *fixture.original.semantic_source;
+
+    Slic3r::PaintedMesh painted;
+    for (const auto& vertex : source.mesh.vertices)
+        painted.vertices.push_back({vertex.x(), vertex.y(), vertex.z()});
+    for (const auto& face : source.mesh.indices)
+        painted.indices.push_back({face[0], face[1], face[2]});
+    painted.cluster_colors = {{35,30,25},{220,160,120},{235,235,230},{170,45,55}};
+    for (size_t face = 0; face < painted.indices.size(); ++face)
+        painted.face_colors.push_back(painted.cluster_colors[face % painted.cluster_colors.size()]);
+    const auto partition = NP::finalize_native_portrait_partition(std::move(painted));
+    REQUIRE(partition.geometry_id == source.geometry_id);
+
+    SC::Analysis analysis;
+    analysis.geometry_id = source.geometry_id;
+    analysis.content_id = source.content_id;
+    analysis.signature = std::string(64, 'c');
+    analysis.face_labels.assign(source.mesh.indices.size(), SC::Label::Unknown);
+    analysis.face_confidence.assign(source.mesh.indices.size(), .95f);
+    const std::vector<SC::Color> palette {{.12f,.10f,.08f},{.86f,.62f,.47f},
+        {.94f,.94f,.91f},{.67f,.18f,.22f}};
+    PC::Input input {source, analysis};
+    input.strategy = PC::Strategy::ColorRegionMajorityV2;
+    input.mapping = input.targets = palette;
+    input.final_color_count = palette.size();
+    input.native_partition = &partition;
+    const auto blocks = PC::build(input);
+    REQUIRE(blocks->algorithm_version == PC::portrait_postprocess_algorithm_version);
+
+    fixture.colors.mapping_colors = fixture.colors.colors = palette;
+    fixture.colors.count = fixture.colors.manual_count = int(palette.size());
+    const auto cache_root = cache.path() / "cache" / "portrait-color-blocks";
+    const auto native_cache_root = cache.path() / "cache" / "native-workbench-partitions";
+    auto doc = fixture.metadata(source.geometry_id);
+    const auto valid_reference = PC::save(*blocks, cache_root);
+    const auto native_cache_reference = NP::save_native_portrait_partition_cache(
+        partition, native_cache_root);
+    REQUIRE(blocks->native_partition_identity);
+    NP::NativePortraitPartitionIdentity cached_identity;
+    std::string cache_error;
+    REQUIRE(NP::load_native_portrait_partition_cache(
+        native_cache_reference, native_cache_root, cached_identity, cache_error));
+    CHECK(NP::encode_native_portrait_partition_identity(cached_identity) ==
+          NP::encode_native_portrait_partition_identity(*blocks->native_partition_identity));
+    const auto directly_restored = NP::restore_native_workbench_partition(
+        fixture.original.mesh, cached_identity, cache_error);
+    REQUIRE(directly_restored.valid());
+    CHECK(NP::encode_native_portrait_partition_identity(
+              NP::native_workbench_partition_identity(directly_restored)) ==
+          NP::encode_native_portrait_partition_identity(*blocks->native_partition_identity));
+    const auto model_hash = Slic3r::AI::model_artifact_sha256(fixture.model);
+    const auto millimeter_bounds = NP::encode_native_workbench_bounds(
+        NP::native_workbench_bounds(partition));
+    const auto native_reference = nlohmann::json {
+        {"schema", "orca.native-workbench-partition-reference/v2"},
+        {"algorithm", NP::algorithm_version},
+        {"partition_digest", partition.partition_digest}, {"topology_hash", std::string(64, 'd')},
+        {"source_path", fixture.model.string()}, {"source_sha256", model_hash},
+        {"carrier_path", fixture.model.string()}, {"carrier_sha256", model_hash},
+        {"appearance_path", fixture.model.string()}, {"appearance_sha256", model_hash},
+        {"cache_path", (native_cache_root /
+            (native_cache_reference.at("content_id").get<std::string>() + ".json")).string()},
+        {"cache_sha256", native_cache_reference.at("content_id")},
+        {"metadata_path", fixture.adjacent.string()}, {"geometry_id", source.geometry_id},
+        {"appearance_id", source.content_id}, {"coordinate_units", "mm"},
+        {"source_bounds_mm", millimeter_bounds}, {"carrier_bounds_mm", millimeter_bounds},
+        {"cache_reference", native_cache_reference}};
+    doc["portrait_color_blocks"] = valid_reference;
+    doc["native_portrait_partition"] = native_reference;
+    const auto encoded_blocks = PC::encode(*blocks);
+    doc["region_semantics"] = encoded_blocks.at("region_semantics");
+    doc["native_color_reduction"] = encoded_blocks.at("native_color_reduction");
+    doc["final_slot_binding"] = encoded_blocks.at("final_slot_binding");
+    doc["semantic_color_state"] = {{"signature", analysis.signature}};
+    fixture.write(fixture.adjacent, doc);
+
+    std::string error;
+    ModelPreview3D::PreparedModel reopened;
+    REQUIRE(ModelPreview3D::prepare_model(fixture.model, reopened, error));
+    INFO(error);
+    CHECK(reopened.artifact_sha256 == model_hash);
+    CHECK(reopened.geometry_id == source.geometry_id);
+    REQUIRE(reopened.semantic_source);
+    CHECK(reopened.semantic_source->content_id == source.content_id);
+    NP::NativeMillimeterBounds reopened_bounds;
+    REQUIRE(NP::decode_native_workbench_bounds(
+        native_reference.at("carrier_bounds_mm"), reopened_bounds));
+    CHECK(NP::native_workbench_bounds_compatible(
+        reopened_bounds, NP::native_workbench_bounds(reopened.mesh), cache_error));
+    REQUIRE(reopened.native_portrait_partition);
+    CHECK(NP::encode_native_portrait_partition_identity(
+              NP::native_workbench_partition_identity(*reopened.native_portrait_partition)) ==
+          NP::encode_native_portrait_partition_identity(*blocks->native_partition_identity));
+    REQUIRE(reopened.color_blocks);
+    CHECK(reopened.color_blocks->algorithm_version == PC::portrait_postprocess_algorithm_version);
+    CHECK(reopened.native_portrait_partition->partition_digest == partition.partition_digest);
+    CHECK(reopened.native_portrait_partition->boundary_digest == partition.boundary_digest);
+    CHECK(reopened.native_portrait_partition->face_cluster_ids == partition.face_cluster_ids);
+    CHECK(reopened.native_portrait_partition->region_members == partition.region_members);
+
+    SECTION("old metadata without an independent v11 partition reference stays inactive") {
+        doc.erase("native_portrait_partition");
+        doc.erase("semantic_binding");
+        fixture.write(fixture.adjacent, doc);
+        ModelPreview3D::PreparedModel rejected;
+        REQUIRE(ModelPreview3D::prepare_model(fixture.model, rejected, error));
+        CHECK_FALSE(rejected.color_blocks);
+        CHECK_FALSE(rejected.native_portrait_partition);
+    }
+
+    SECTION("a conflicting embedded identity cannot replace the independent partition") {
+        auto conflicting_painted = partition.painted;
+        const auto original_color = conflicting_painted.cluster_colors.front();
+        const std::array<size_t, 3> replacement_color {1, 2, 3};
+        REQUIRE(std::find(conflicting_painted.cluster_colors.begin(),
+                    conflicting_painted.cluster_colors.end(), replacement_color) ==
+                conflicting_painted.cluster_colors.end());
+        conflicting_painted.cluster_colors.front() = replacement_color;
+        for (auto& face_color : conflicting_painted.face_colors)
+            if (face_color == original_color) face_color = replacement_color;
+        const auto conflicting_partition =
+            NP::finalize_native_portrait_partition(std::move(conflicting_painted));
+        REQUIRE(conflicting_partition.geometry_id == partition.geometry_id);
+        REQUIRE(conflicting_partition.partition_digest != partition.partition_digest);
+        auto conflicting_input = input;
+        conflicting_input.native_partition = &conflicting_partition;
+        const auto conflicting_blocks = PC::build(conflicting_input);
+        REQUIRE(conflicting_blocks->native_partition_identity);
+        REQUIRE(conflicting_blocks->native_partition_identity->partition_digest ==
+                conflicting_partition.partition_digest);
+        doc["portrait_color_blocks"] = PC::save(*conflicting_blocks, cache_root);
+        fixture.write(fixture.adjacent, doc);
+        ModelPreview3D::PreparedModel rejected;
+        REQUIRE(ModelPreview3D::prepare_model(fixture.model, rejected, error));
+        CHECK_FALSE(rejected.color_blocks);
+        REQUIRE(rejected.native_portrait_partition);
+        CHECK(rejected.native_portrait_partition->partition_digest == partition.partition_digest);
+        const auto stale = cache_root /
+            (doc.at("portrait_color_blocks").at("content_id").get<std::string>() + ".json");
+        CHECK(boost::filesystem::is_regular_file(stale));
+    }
+
+    SECTION("a damaged independent cache remains on disk but cannot activate") {
+        const auto native_cache = native_cache_root /
+            (native_cache_reference.at("content_id").get<std::string>() + ".json");
+        boost::filesystem::ofstream output(native_cache, std::ios::binary | std::ios::app);
+        output << "damage";
+        output.close();
+        REQUIRE(output.good());
+        fixture.write(fixture.adjacent, doc);
+        ModelPreview3D::PreparedModel rejected;
+        REQUIRE(ModelPreview3D::prepare_model(fixture.model, rejected, error));
+        CHECK_FALSE(rejected.color_blocks);
+        CHECK_FALSE(rejected.native_portrait_partition);
+        CHECK(boost::filesystem::is_regular_file(native_cache));
+        CHECK(Slic3r::AI::model_artifact_sha256(native_cache) !=
+            native_cache_reference.at("content_id").get<std::string>());
+    }
+
+    CHECK(Slic3r::AI::model_artifact_sha256(fixture.model) == model_hash);
+    const auto valid_cache = cache_root /
+        (valid_reference.at("content_id").get<std::string>() + ".json");
+    CHECK(boost::filesystem::is_regular_file(valid_cache));
 }

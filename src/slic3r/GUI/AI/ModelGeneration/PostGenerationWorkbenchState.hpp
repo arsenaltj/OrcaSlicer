@@ -17,6 +17,7 @@ enum class WorkbenchCheckStatus { NotRun, Running, Normal, Attention, Invalid, F
 enum class WorkbenchCheckPhase { Idle, Inspecting, Repairing, Rechecking };
 enum class RepairCandidateStatus { None, Generating, Ready, Accepted, Rejected, Failed };
 enum class WorkbenchFloatingCardMode { None, ModelCheck, HonorSuiteSemantic };
+enum class WorkbenchCheckPurpose { GeneralImport, PortraitSourceRisk, PortraitPostColorReadOnly };
 // Automatic checks are run when a model first becomes visible in the 3D
 // workbench; manual checks are initiated from the sidebar and retain the
 // existing candidate workflow.
@@ -25,6 +26,7 @@ enum class WorkbenchCheckSource { Automatic, Manual };
 struct WorkbenchCheckResult {
     WorkbenchCheckStatus status {WorkbenchCheckStatus::NotRun};
     WorkbenchCheckSource source {WorkbenchCheckSource::Automatic};
+    WorkbenchCheckPurpose purpose {WorkbenchCheckPurpose::GeneralImport};
     std::string model_sha256;
     std::string summary;
     size_t boundary_edges {0};
@@ -63,13 +65,46 @@ inline bool workbench_automatic_check_should_start(bool workbench_open, bool wor
     return workbench_open && workbench_presented && model_ready;
 }
 
-inline bool workbench_ai_palette_should_apply(bool pending, WorkbenchCheckSource source,
-                                              bool topology_safe, RepairCandidateStatus candidate_status,
-                                              bool repair_candidate_loaded)
+inline bool workbench_check_allows_topology_repair(bool portrait_owns_context,
+                                                    bool portrait_flow_active,
+                                                    bool native_partition_requested = false)
 {
-    if (!pending || source != WorkbenchCheckSource::Automatic || !topology_safe) return false;
-    return repair_candidate_loaded ? candidate_status == RepairCandidateStatus::Ready
-                                   : candidate_status == RepairCandidateStatus::None;
+    // The shared v11 partition owns the only automatic topology repair for
+    // both ordinary AI palettes and portrait flows. Manual checks retain the
+    // generic repair candidate workflow.
+    return !native_partition_requested && !(portrait_owns_context && portrait_flow_active);
+}
+
+inline bool workbench_native_partition_should_start(bool pending, WorkbenchCheckSource source,
+                                                     WorkbenchCheckStatus status,
+                                                     RepairCandidateStatus candidate_status,
+                                                     bool repair_candidate_loaded)
+{
+    const bool readable_terminal_check = status == WorkbenchCheckStatus::Normal ||
+        status == WorkbenchCheckStatus::Attention || status == WorkbenchCheckStatus::Invalid;
+    // Attention and Invalid are topology risks, not failures to read the
+    // source. The native partition must receive them so its strict pre-cluster
+    // repair can run exactly once.
+    return pending && source == WorkbenchCheckSource::Automatic && readable_terminal_check &&
+        !repair_candidate_loaded && candidate_status == RepairCandidateStatus::None;
+}
+
+inline bool workbench_ai_palette_should_resume_after_accept(bool pending,
+    WorkbenchCheckSource source, bool topology_safe, RepairCandidateStatus candidate_status)
+{
+    return pending && source == WorkbenchCheckSource::Automatic && topology_safe &&
+        candidate_status == RepairCandidateStatus::Ready;
+}
+
+inline bool workbench_default_ai_palette_ready(bool enabled, int source,
+    int requested_count, bool suite_active, bool has_native_basis)
+{
+    return enabled && source == 0 && requested_count == 6 && !suite_active && has_native_basis;
+}
+
+inline bool workbench_honor_suite_requires_native_partition(bool native_partition_valid)
+{
+    return !native_partition_valid;
 }
 
 inline bool workbench_check_card_should_show(bool workbench_open, bool workbench_presented,
@@ -78,6 +113,18 @@ inline bool workbench_check_card_should_show(bool workbench_open, bool workbench
                                              const WorkbenchCheckResult& result)
 {
     if (!workbench_open || !workbench_presented) return false;
+    // Portrait checks are internal gates. Their terminal result is represented
+    // in the sidebar and flow ledger, never as the generic import/repair modal.
+    if (!check_running && !automatic_repair_saving &&
+        result.purpose != WorkbenchCheckPurpose::GeneralImport)
+        return false;
+    // Failed/invalid general checks remain available in the inline status and
+    // details view. A terminal failure card looks like it stopped the strict
+    // native repair even when that separate operation is still progressing.
+    if (!check_running && !automatic_repair_saving &&
+        (result.status == WorkbenchCheckStatus::Invalid ||
+         result.status == WorkbenchCheckStatus::Failed))
+        return false;
     const bool automatic = result.source == WorkbenchCheckSource::Automatic;
     const bool repair_phase = result.phase == WorkbenchCheckPhase::Repairing ||
         result.phase == WorkbenchCheckPhase::Rechecking;
@@ -94,9 +141,11 @@ inline bool workbench_check_card_should_show(bool workbench_open, bool workbench
 
 inline WorkbenchFloatingCardMode workbench_floating_card_mode(bool workbench_open,
     bool workbench_presented, bool honor_semantic_active, bool requested_check_visible,
-    bool check_running, bool automatic_repair_saving, const WorkbenchCheckResult& result)
+    bool check_running, bool automatic_repair_saving, bool native_partition_running,
+    const WorkbenchCheckResult& result)
 {
     if (!workbench_open || !workbench_presented) return WorkbenchFloatingCardMode::None;
+    if (native_partition_running) return WorkbenchFloatingCardMode::ModelCheck;
     if (honor_semantic_active) return WorkbenchFloatingCardMode::HonorSuiteSemantic;
     return workbench_check_card_should_show(workbench_open, workbench_presented, requested_check_visible,
         check_running, automatic_repair_saving, result)
@@ -105,12 +154,14 @@ inline WorkbenchFloatingCardMode workbench_floating_card_mode(bool workbench_ope
 
 inline bool workbench_modal_navigation_blocked(bool workbench_open, bool workbench_presented,
     bool honor_semantic_active, bool requested_check_visible, bool check_running,
-    bool automatic_repair_saving, const WorkbenchCheckResult& result)
+    bool automatic_repair_saving, bool native_partition_running,
+    const WorkbenchCheckResult& result)
 {
     if (!workbench_open || !workbench_presented) return false;
-    return check_running || automatic_repair_saving ||
+    return check_running || automatic_repair_saving || native_partition_running ||
         workbench_floating_card_mode(workbench_open, workbench_presented, honor_semantic_active,
-            requested_check_visible, check_running, automatic_repair_saving, result) !=
+            requested_check_visible, check_running, automatic_repair_saving,
+            native_partition_running, result) !=
             WorkbenchFloatingCardMode::None;
 }
 
@@ -122,6 +173,11 @@ inline bool workbench_navigation_allowed(bool modal_blocking, bool leaves_workbe
 inline std::string workbench_check_status_line(const WorkbenchCheckResult& check,
                                                bool risk_acknowledged = false)
 {
+    if (check.purpose == WorkbenchCheckPurpose::PortraitSourceRisk &&
+        check.status != WorkbenchCheckStatus::NotRun &&
+        check.status != WorkbenchCheckStatus::Running &&
+        check.status != WorkbenchCheckStatus::Failed)
+        return "人物来源风险已记录";
     if (risk_acknowledged && check.status == WorkbenchCheckStatus::Attention)
         return "已确认开放边界风险，可继续导入切片";
     if (check.candidate_status == RepairCandidateStatus::Ready)
@@ -271,6 +327,9 @@ struct PostGenerationWorkbenchState {
     std::uint64_t revision {0};
     std::string asset_id;
     std::string model_path;
+    std::string source_sha256;
+    std::string geometry_id;
+    std::string appearance_id;
     std::string candidate_path;
     bool editing {false};
     bool workbench_presented {false};
@@ -282,6 +341,8 @@ struct PostGenerationWorkbenchState {
     std::string portrait_unavailable_reason;
     WorkbenchCheckResult check;
     std::vector<std::string> palette;
+    bool automatic_palette_active {false};
+    size_t automatic_palette_requested_count {0};
     size_t faces {0};
     size_t vertices {0};
     bool dirty {false};

@@ -3,7 +3,10 @@ set(ORCA_MODEL_WORKSPACE_SOURCES
     GUI/AI/ModelGeneration/ModelGenerationUIState.cpp
     GUI/AI/ModelGeneration/PortraitPrintFlow.cpp
     GUI/AI/ModelGeneration/PortraitPrintFlow.hpp
+    GUI/AI/ModelGeneration/PortraitNativeCheckpoint.hpp
     GUI/AI/ModelGeneration/ModelOriginalSurfaceSampler.hpp
+    GUI/AI/ModelGeneration/PortraitNativePartition.hpp
+    GUI/AI/ModelGeneration/PortraitNativePartition.cpp
     GUI/AI/ModelGeneration/PortraitSuiteBinding.hpp
     GUI/AI/ModelGeneration/ModelLibraryEntry.hpp
     GUI/AI/ModelGeneration/ModelLibraryRepository.hpp

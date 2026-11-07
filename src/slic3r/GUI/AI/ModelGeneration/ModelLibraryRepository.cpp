@@ -1,5 +1,6 @@
 #include "ModelLibraryRepository.hpp"
 #include "ModelLibraryMetadata.hpp"
+#include "ModelLibraryObservations.hpp"
 #include "ModelLibraryThumbnail.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
@@ -33,7 +34,7 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
     };
     thread_local ModelLibraryMetadata summaries;
     const auto read_json = [](const boost::filesystem::path& path) {
-        return summaries.read(path);
+        return ModelLibraryObservations::overlay(summaries.read(path), path);
     };
     boost::system::error_code ec;
     if (cancelled || !boost::filesystem::is_directory(root, ec)) return {};

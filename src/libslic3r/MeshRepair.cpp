@@ -1,6 +1,8 @@
 #include "MeshRepair.hpp"
 
+#include "AABBTreeIndirect.hpp"
 #include "I18N.hpp"
+#include "MeshBoolean.hpp"
 #include "TriangleMesh.hpp"
 
 #include <CGAL/AABB_face_graph_triangle_primitive.h>
@@ -56,6 +58,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -65,9 +68,13 @@
 #include <map>
 #include <memory>
 #include <numeric>
+#include <limits>
 #include <set>
+#include <sstream>
 #include <string>
 #include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -1210,6 +1217,365 @@ bool repair_mesh(TriangleMesh &mesh, MeshRepairStats *stats_out, std::string *er
     if (stats.modified)
         mesh = TriangleMesh(std::move(result));
     return true;
+}
+
+namespace {
+
+using StrictClock = std::chrono::steady_clock;
+
+std::uint64_t strict_elapsed_ms(const StrictClock::time_point &start)
+{
+    return std::uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(StrictClock::now() - start).count());
+}
+
+struct StrictCanceled {};
+
+void strict_check_canceled(const std::function<bool()> &canceled)
+{
+    if (canceled && canceled())
+        throw StrictCanceled {};
+}
+
+StrictMeshTopologyReport inspect_strict_topology(const indexed_triangle_set &mesh,
+                                                 const std::function<bool()> &canceled)
+{
+    if (mesh.vertices.empty() || mesh.indices.empty())
+        throw std::runtime_error("Strict mesh inspection requires non-empty geometry.");
+
+    struct EdgeUse {
+        std::size_t forward = 0;
+        std::size_t reverse = 0;
+        std::vector<std::size_t> faces;
+    };
+    StrictMeshTopologyReport report;
+    std::set<std::array<std::uint32_t, 3>> unique_faces;
+    std::unordered_map<std::uint64_t, EdgeUse> edges;
+    std::vector<std::vector<std::size_t>> vertex_faces(mesh.vertices.size());
+    edges.reserve(mesh.indices.size() * 2);
+    for (std::size_t face_index = 0; face_index < mesh.indices.size(); ++face_index) {
+        if ((face_index & 4095) == 0)
+            strict_check_canceled(canceled);
+        const auto &face = mesh.indices[face_index];
+        std::array<std::uint32_t, 3> ids;
+        for (int corner = 0; corner < 3; ++corner) {
+            if (face[corner] < 0 || std::size_t(face[corner]) >= mesh.vertices.size() ||
+                !mesh.vertices[std::size_t(face[corner])].allFinite())
+                throw std::runtime_error("Strict mesh inspection found an invalid triangle index or vertex.");
+            ids[std::size_t(corner)] = std::uint32_t(face[corner]);
+            vertex_faces[std::size_t(face[corner])].push_back(face_index);
+        }
+        const Vec3d a = mesh.vertices[ids[0]].cast<double>();
+        const Vec3d b = mesh.vertices[ids[1]].cast<double>();
+        const Vec3d c = mesh.vertices[ids[2]].cast<double>();
+        if (ids[0] == ids[1] || ids[1] == ids[2] || ids[2] == ids[0] ||
+            !std::isfinite((b - a).cross(c - a).squaredNorm()) || (b - a).cross(c - a).squaredNorm() == 0.)
+            ++report.degenerate_faces;
+        auto face_key = ids;
+        std::sort(face_key.begin(), face_key.end());
+        if (!unique_faces.insert(face_key).second)
+            ++report.duplicate_faces;
+        for (int corner = 0; corner < 3; ++corner) {
+            const std::uint32_t from = ids[std::size_t(corner)];
+            const std::uint32_t to = ids[std::size_t((corner + 1) % 3)];
+            const std::uint32_t low = std::min(from, to), high = std::max(from, to);
+            const std::uint64_t key = (std::uint64_t(low) << 32) | std::uint64_t(high);
+            auto &use = edges[key];
+            ++(from == low ? use.forward : use.reverse);
+            use.faces.push_back(face_index);
+        }
+    }
+
+    std::vector<std::vector<std::size_t>> face_neighbors(mesh.indices.size());
+    std::vector<std::size_t> boundary_degree(mesh.vertices.size(), 0);
+    std::vector<std::size_t> nonmanifold_degree(mesh.vertices.size(), 0);
+    for (const auto &[key, use] : edges) {
+        const std::size_t count = use.faces.size();
+        const std::uint32_t low = std::uint32_t(key >> 32), high = std::uint32_t(key & 0xffffffffu);
+        if (count == 1) {
+            ++report.open_edges;
+            ++boundary_degree[low];
+            ++boundary_degree[high];
+        } else if (count > 2) {
+            ++report.nonmanifold_edges;
+            ++nonmanifold_degree[low];
+            ++nonmanifold_degree[high];
+        }
+        if (count == 2) {
+            if (use.forward == 2 || use.reverse == 2)
+                ++report.inconsistent_edges;
+            face_neighbors[use.faces[0]].push_back(use.faces[1]);
+            face_neighbors[use.faces[1]].push_back(use.faces[0]);
+        }
+    }
+
+    std::vector<std::size_t> seen(mesh.indices.size(), std::numeric_limits<std::size_t>::max());
+    std::vector<std::size_t> stack;
+    for (std::size_t vertex = 0; vertex < vertex_faces.size(); ++vertex) {
+        if ((vertex & 4095) == 0)
+            strict_check_canceled(canceled);
+        const auto &incident = vertex_faces[vertex];
+        if (incident.empty())
+            continue;
+        if (nonmanifold_degree[vertex] != 0 ||
+            (boundary_degree[vertex] != 0 && boundary_degree[vertex] != 2)) {
+            ++report.nonmanifold_vertices;
+            continue;
+        }
+        stack.assign(1, incident.front());
+        seen[incident.front()] = vertex;
+        std::size_t connected = 0;
+        while (!stack.empty()) {
+            const std::size_t face_index = stack.back();
+            stack.pop_back();
+            ++connected;
+            for (std::size_t neighbor : face_neighbors[face_index]) {
+                if (seen[neighbor] == vertex)
+                    continue;
+                const auto &face = mesh.indices[neighbor];
+                if (std::size_t(face[0]) == vertex || std::size_t(face[1]) == vertex ||
+                    std::size_t(face[2]) == vertex) {
+                    seen[neighbor] = vertex;
+                    stack.push_back(neighbor);
+                }
+            }
+        }
+        if (connected != incident.size())
+            ++report.nonmanifold_vertices;
+    }
+
+    if (report.open_edges == 0 && report.nonmanifold_edges == 0 && report.nonmanifold_vertices == 0 &&
+        report.degenerate_faces == 0 && report.duplicate_faces == 0 && report.inconsistent_edges == 0) {
+        strict_check_canceled(canceled);
+        report.self_intersects = MeshBoolean::cgal::does_self_intersect(TriangleMesh(mesh));
+        report.self_intersections_checked = true;
+    }
+    strict_check_canceled(canceled);
+    return report;
+}
+
+double strict_surface_area(const indexed_triangle_set &surface, const std::function<bool()> &canceled)
+{
+    using FaceKey = std::array<std::array<float, 3>, 3>;
+    struct FaceHash {
+        std::size_t operator()(const FaceKey &key) const
+        {
+            std::size_t hash = 0;
+            for (const auto &point : key)
+                for (float coordinate : point)
+                    hash ^= std::hash<float>{}(coordinate) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+            return hash;
+        }
+    };
+    std::unordered_set<FaceKey, FaceHash> unique;
+    unique.reserve(surface.indices.size());
+    double area = 0.;
+    for (std::size_t index = 0; index < surface.indices.size(); ++index) {
+        if ((index & 4095) == 0)
+            strict_check_canceled(canceled);
+        const auto &face = surface.indices[index];
+        FaceKey key;
+        for (int corner = 0; corner < 3; ++corner)
+            for (int axis = 0; axis < 3; ++axis)
+                key[std::size_t(corner)][std::size_t(axis)] = surface.vertices[std::size_t(face[corner])][axis];
+        std::sort(key.begin(), key.end());
+        if (!unique.insert(key).second)
+            continue;
+        const Vec3d a = surface.vertices[std::size_t(face[0])].cast<double>();
+        area += (surface.vertices[std::size_t(face[1])].cast<double>() - a)
+                    .cross(surface.vertices[std::size_t(face[2])].cast<double>() - a).norm() * .5;
+    }
+    return area;
+}
+
+double strict_sampled_deviation(const indexed_triangle_set &from, const indexed_triangle_set &to,
+                                const std::function<bool()> &canceled)
+{
+    const auto tree = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(to.vertices, to.indices);
+    double maximum = 0.;
+    const std::size_t stride = std::max(std::size_t(1), from.indices.size() / 8192);
+    for (std::size_t face_index = 0; face_index < from.indices.size(); face_index += stride) {
+        strict_check_canceled(canceled);
+        const auto &face = from.indices[face_index];
+        const Vec3d query = (from.vertices[std::size_t(face[0])].cast<double>() +
+                             from.vertices[std::size_t(face[1])].cast<double>() +
+                             from.vertices[std::size_t(face[2])].cast<double>()) / 3.;
+        std::size_t nearest_face = 0;
+        Vec3d nearest;
+        const double squared_distance = AABBTreeIndirect::squared_distance_to_indexed_triangle_set(
+            to.vertices, to.indices, tree, query, nearest_face, nearest);
+        if (!std::isfinite(squared_distance) || squared_distance < 0.)
+            throw std::runtime_error("Strict mesh repair geometry deviation could not be verified.");
+        maximum = std::max(maximum, std::sqrt(squared_distance));
+    }
+    return maximum;
+}
+
+} // namespace
+
+StrictMeshRepairResult strict_repair_mesh(
+    const indexed_triangle_set &source,
+    const StrictMeshRepairOptions &options,
+    const std::function<void(const char *message, unsigned progress)> &progress,
+    const std::function<bool()> &canceled)
+{
+    StrictMeshRepairResult result;
+    const auto total_started = StrictClock::now();
+    auto finish = [&] {
+        result.timings.total_ms = strict_elapsed_ms(total_started);
+        BOOST_LOG_TRIVIAL(info) << "strict_repair_mesh: success=" << result.success
+            << " input_check=" << result.timings.input_check_ms
+            << " ms first_cgal=" << result.timings.first_cgal_ms
+            << " ms enhanced=" << result.timings.enhanced_repair_ms
+            << " ms second_cgal=" << result.timings.second_cgal_ms
+            << " ms final_check=" << result.timings.final_check_ms
+            << " ms geometry=" << result.timings.geometry_validation_ms
+            << " ms total=" << result.timings.total_ms << " ms";
+    };
+    auto report = [&](const char *message, unsigned value) {
+        if (progress)
+            progress(message, value);
+    };
+    try {
+        if (source.vertices.empty() || source.indices.empty())
+            throw std::runtime_error("Strict mesh repair requires non-empty geometry.");
+        if (!std::isfinite(options.maximum_sampled_deviation_ratio) ||
+            !std::isfinite(options.maximum_area_change_ratio) ||
+            options.maximum_sampled_deviation_ratio < 0. || options.maximum_area_change_ratio < 0.)
+            throw std::runtime_error("Strict mesh repair limits are invalid.");
+
+        strict_check_canceled(canceled);
+        report("Inspecting native portrait mesh", 0);
+        auto stage_started = StrictClock::now();
+        result.input_topology = inspect_strict_topology(source, canceled);
+        result.timings.input_check_ms = strict_elapsed_ms(stage_started);
+
+        TriangleMesh candidate(source);
+        StrictMeshTopologyReport candidate_topology;
+        bool candidate_topology_checked = false;
+        if (result.input_topology.safe()) {
+            result.strategy = "strict-inspection-no-repair";
+            candidate_topology = result.input_topology;
+            candidate_topology_checked = true;
+        } else {
+            result.first_cgal_attempted = true;
+            report("Repairing native portrait mesh with CGAL", 15);
+            stage_started = StrictClock::now();
+            std::string first_error;
+            RepairedMeshErrors first_errors;
+            const bool first_ok = MeshBoolean::cgal::repair(candidate, &first_errors, &first_error,
+                [&] { return canceled && canceled(); });
+            result.timings.first_cgal_ms = strict_elapsed_ms(stage_started);
+            strict_check_canceled(canceled);
+            bool needs_enhanced_repair = !first_ok;
+            if (first_ok) {
+                result.cgal_errors.merge(first_errors);
+                stage_started = StrictClock::now();
+                candidate_topology = inspect_strict_topology(candidate.its, canceled);
+                result.timings.final_check_ms += strict_elapsed_ms(stage_started);
+                candidate_topology_checked = candidate_topology.safe();
+                needs_enhanced_repair = !candidate_topology_checked;
+                if (candidate_topology_checked)
+                    result.strategy = "strict-cgal";
+                else
+                    first_error = "CGAL repair completed but topology verification remained unsafe";
+            }
+            if (needs_enhanced_repair) {
+                result.enhanced_repair_attempted = true;
+                report("Repairing native portrait mesh with enhanced repair", 40);
+                candidate = TriangleMesh(source);
+                candidate_topology_checked = false;
+                stage_started = StrictClock::now();
+                std::string enhanced_error;
+                const bool enhanced_ok = repair_mesh(candidate, &result.enhanced_stats, &enhanced_error,
+                    [&](int value) {
+                        report("Repairing native portrait mesh with enhanced repair",
+                            unsigned(std::clamp(40 + value / 4, 40, 65)));
+                        strict_check_canceled(canceled);
+                    });
+                result.timings.enhanced_repair_ms = strict_elapsed_ms(stage_started);
+                strict_check_canceled(canceled);
+                if (!enhanced_ok) {
+                    throw std::runtime_error("CGAL repair failed: " + first_error +
+                        "; enhanced repair failed: " + enhanced_error);
+                }
+                stage_started = StrictClock::now();
+                candidate_topology = inspect_strict_topology(candidate.its, canceled);
+                result.timings.final_check_ms += strict_elapsed_ms(stage_started);
+                candidate_topology_checked = candidate_topology.safe();
+                if (!candidate_topology_checked) {
+                    result.second_cgal_attempted = true;
+                    report("Rechecking enhanced repair with CGAL", 70);
+                    stage_started = StrictClock::now();
+                    std::string second_error;
+                    RepairedMeshErrors second_errors;
+                    const bool second_ok = MeshBoolean::cgal::repair(candidate, &second_errors, &second_error,
+                        [&] { return canceled && canceled(); });
+                    result.timings.second_cgal_ms = strict_elapsed_ms(stage_started);
+                    strict_check_canceled(canceled);
+                    if (!second_ok)
+                        throw std::runtime_error("Enhanced repair CGAL recheck failed: " + second_error);
+                    result.cgal_errors.merge(second_errors);
+                    result.strategy = "strict-enhanced-plus-cgal";
+                    candidate_topology_checked = false;
+                } else {
+                    result.strategy = "strict-enhanced";
+                }
+            }
+        }
+
+        report("Verifying repaired native portrait topology", 82);
+        if (!candidate_topology_checked) {
+            stage_started = StrictClock::now();
+            candidate_topology = inspect_strict_topology(candidate.its, canceled);
+            result.timings.final_check_ms += strict_elapsed_ms(stage_started);
+        }
+        result.output_topology = candidate_topology;
+        if (!result.output_topology.safe()) {
+            std::ostringstream message;
+            message << "Strict mesh repair topology verification failed: open=" << result.output_topology.open_edges
+                    << ", nonmanifold_edges=" << result.output_topology.nonmanifold_edges
+                    << ", nonmanifold_vertices=" << result.output_topology.nonmanifold_vertices
+                    << ", degenerate=" << result.output_topology.degenerate_faces
+                    << ", duplicate=" << result.output_topology.duplicate_faces
+                    << ", orientation=" << result.output_topology.inconsistent_edges
+                    << ", self_intersection_checked=" << result.output_topology.self_intersections_checked
+                    << ", self_intersects=" << result.output_topology.self_intersects << '.';
+            throw std::runtime_error(message.str());
+        }
+
+        report("Verifying repaired native portrait geometry", 92);
+        stage_started = StrictClock::now();
+        const double source_area = strict_surface_area(source, canceled);
+        const double repaired_area = strict_surface_area(candidate.its, canceled);
+        result.area_change_ratio = std::abs(repaired_area - source_area) / std::max(source_area, 1e-30);
+        result.sampled_deviation = std::max(strict_sampled_deviation(source, candidate.its, canceled),
+                                            strict_sampled_deviation(candidate.its, source, canceled));
+        const double diagonal = bounding_box(source).size().cast<double>().norm();
+        result.sampled_deviation_ratio = diagonal > 0. ? result.sampled_deviation / diagonal
+                                                       : std::numeric_limits<double>::infinity();
+        result.geometry_verified = result.sampled_deviation_ratio <= options.maximum_sampled_deviation_ratio &&
+                                   result.area_change_ratio <= options.maximum_area_change_ratio;
+        result.timings.geometry_validation_ms = strict_elapsed_ms(stage_started);
+        strict_check_canceled(canceled);
+        if (options.reject_geometry_change && !result.geometry_verified) {
+            std::ostringstream message;
+            message << "Strict mesh repair exceeded geometry limits: sampled deviation ratio="
+                    << result.sampled_deviation_ratio << ", area change ratio=" << result.area_change_ratio << '.';
+            throw std::runtime_error(message.str());
+        }
+        result.repaired_mesh = std::move(candidate.its);
+        result.success = true;
+        report("Native portrait mesh repair complete", 100);
+    } catch (const StrictCanceled &) {
+        result.canceled = true;
+        result.error = "Strict mesh repair canceled.";
+        result.repaired_mesh.clear();
+    } catch (const std::exception &error) {
+        result.error = error.what();
+        result.repaired_mesh.clear();
+    }
+    finish();
+    return result;
 }
 
 } // namespace Slic3r

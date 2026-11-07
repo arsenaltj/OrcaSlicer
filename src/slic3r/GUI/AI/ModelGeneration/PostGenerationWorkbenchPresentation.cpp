@@ -275,6 +275,13 @@ void ModelGenerationPanel::hide_workbench_check_card()
 
 void ModelGenerationPanel::cancel_workbench_check()
 {
+    if (m_native_workbench_partition_running && m_native_workbench_partition_cancel) {
+        m_native_workbench_partition_cancel->store(true);
+        if (m_workbench_check_message)
+            m_workbench_check_message->SetLabel(_L("正在取消严格修复，当前模型保持不变……"));
+        if (m_workbench_check_cancel_button) m_workbench_check_cancel_button->Disable();
+        return;
+    }
     if (!m_workbench_check_running || !m_workbench_check_cancel) return;
     m_workbench_check_cancel->store(true);
     if (m_workbench_check_message)
@@ -317,9 +324,11 @@ void ModelGenerationPanel::update_workbench_check_card()
 {
     if (!m_workbench_check_card || !m_workbench_check_modal) return;
     const auto& result = m_workbench_check_result;
+    const bool native_repair = m_native_workbench_partition_running;
     const auto mode = workbench_floating_card_mode(m_finishing_workbench, m_workbench_presented,
         m_workbench_honor_semantic_active, m_workbench_check_card_visible,
-        m_workbench_check_running, m_workbench_auto_repair && m_finishing_running, result);
+        m_workbench_check_running, m_workbench_auto_repair && m_finishing_running,
+        native_repair, result);
     if (mode == WorkbenchFloatingCardMode::None || !m_workbench_shell ||
         !m_workbench_shell->IsShownOnScreen()) {
         hide_workbench_check_card();
@@ -343,7 +352,8 @@ void ModelGenerationPanel::update_workbench_check_card()
     }
     install_workbench_card_layer_guard();
     wxString phase;
-    if (honor_semantic) phase = _L("正在应用荣耀耗材套装");
+    if (native_repair) phase = _L("修复模型");
+    else if (honor_semantic) phase = _L("正在应用荣耀耗材套装");
     else if (m_workbench_check_running) {
         switch (result.phase) {
         case WorkbenchCheckPhase::Repairing: phase = _L("修复模型"); break;
@@ -353,9 +363,10 @@ void ModelGenerationPanel::update_workbench_check_card()
     } else if (m_workbench_auto_repair && m_finishing_running) phase = _L("保存修复结果");
     else phase = result.status == WorkbenchCheckStatus::Attention ? _L("检查完成") : _L("检查未通过");
     bool modal_layout_changed = set_workbench_label(m_workbench_check_phase, phase);
-    wxString message = honor_semantic
-        ? m_workbench_honor_semantic_message : from_u8(result.summary);
-    if (!honor_semantic && !m_workbench_check_running && !result.repair_reason.empty())
+    wxString message = native_repair
+        ? _L("正在通过 Orca 原生纹理链路严格修复模型并建立固定原子色区，请稍候……")
+        : honor_semantic ? m_workbench_honor_semantic_message : from_u8(result.summary);
+    if (!native_repair && !honor_semantic && !m_workbench_check_running && !result.repair_reason.empty())
         message += "\n" + from_u8(result.repair_reason);
     if (honor_semantic && message.empty())
         message = _L("正在识别人像区域并匹配肤色、头发、眼白、牙齿和嘴唇，请稍候……");
@@ -373,12 +384,15 @@ void ModelGenerationPanel::update_workbench_check_card()
         m_workbench_check_message->Wrap(FromDIP(376));
         modal_layout_changed = true;
     }
-    const bool running = honor_semantic || m_workbench_check_running ||
+    const bool running = native_repair || honor_semantic || m_workbench_check_running ||
         (m_workbench_auto_repair && m_finishing_running);
     modal_layout_changed = set_workbench_shown(m_workbench_check_cancel_button,
-        !honor_semantic && m_workbench_check_running) || modal_layout_changed;
-    set_workbench_enabled(m_workbench_check_cancel_button, m_workbench_check_running &&
-        (!m_workbench_check_cancel || !m_workbench_check_cancel->load()));
+        native_repair || (!honor_semantic && m_workbench_check_running)) || modal_layout_changed;
+    const bool cancel_requested = native_repair
+        ? m_native_workbench_partition_cancel && m_native_workbench_partition_cancel->load()
+        : m_workbench_check_cancel && m_workbench_check_cancel->load();
+    set_workbench_enabled(m_workbench_check_cancel_button,
+        (native_repair || m_workbench_check_running) && !cancel_requested);
     const bool attention = !honor_semantic && !m_workbench_check_running &&
         result.status == WorkbenchCheckStatus::Attention &&
         result.force_import_risk;
@@ -732,17 +746,20 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
             ? _L("可选人像保护；退出保留已保存的保护边界。")
             : wxString::FromUTF8(snapshot.portrait_unavailable_reason));
     }
-    const bool resume_flow = m_portrait_print.active() && m_portrait_print.paused && !m_portrait_print.failed;
-    layout_changed = set_workbench_label(m_workbench_slicing, m_portrait_print.running() ? _L("暂停一键流程") :
+    const bool portrait_context = portrait_owns_display_context();
+    const bool portrait_running = portrait_context && m_portrait_print.running();
+    const bool resume_flow = portrait_context && m_portrait_print.active() &&
+        m_portrait_print.paused && !m_portrait_print.failed;
+    layout_changed = set_workbench_label(m_workbench_slicing, portrait_running ? _L("暂停一键流程") :
         resume_flow ? _L("继续一键流程") : _L("去切片")) || layout_changed;
-    set_workbench_enabled(m_workbench_slicing, m_portrait_print.running() ? true : resume_flow ? snapshot.actions.can_edit :
-        can_import && !m_portrait_print.running());
+    set_workbench_enabled(m_workbench_slicing, portrait_running ? true : resume_flow ? snapshot.actions.can_edit :
+        can_import && !portrait_running);
     if (resume_flow) set_workbench_tooltip(m_workbench_slicing, from_u8(m_portrait_print.reason));
     set_workbench_tooltip(m_workbench_check, topology_normal
         ? _L("拓扑正常；点击重新检查") : _L("检查拓扑并生成临时修复候选；原模型保留，接受前不会覆盖。"));
     wxString check_text = from_u8(workbench_check_status_line(
         snapshot.check, snapshot.force_import_acknowledged));
-    if (m_portrait_print.active()) {
+    if (portrait_context && m_portrait_print.active()) {
         check_text = m_portrait_print.paused ? from_u8(m_portrait_print.reason) :
             m_portrait_print.stage == PortraitPrint::Stage::Check ? _L("正在自动检查、修复并保存模型") :
             m_portrait_print.stage == PortraitPrint::Stage::Partition ? _L("正在按 AI 建议色建立源区域") :

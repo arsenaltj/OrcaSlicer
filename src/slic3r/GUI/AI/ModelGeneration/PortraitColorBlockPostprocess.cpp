@@ -1,7 +1,6 @@
 #include "PortraitColorBlockPostprocess.hpp"
 #include "ModelPreviewPalette.hpp"
 #include "PortraitShapeDetails.hpp"
-#include "slic3r/GUI/AI/Model/BeautyPuzzle.hpp"
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -143,32 +142,82 @@ void choose_primary_cause(BlockDiagnostic &diagnostic) {
         diagnostic.primary = BlockCause::TopologyDisconnected;
 }
 
-std::shared_ptr<Result> build_automatic_regions(const Input& in, const SC::Cancel& cancel)
+std::map<SC::Label, size_t> native_semantic_slots(const std::map<std::string, size_t>& roles)
+{
+    const std::array<std::pair<const char*, SC::Label>, 6> names {{{"Skin", SC::Label::FaceSkin},
+        {"Lips", SC::Label::Lips}, {"EyeSclera", SC::Label::EyeSclera}, {"Iris", SC::Label::Iris},
+        {"Hair", SC::Label::Hair}, {"Eyebrow", SC::Label::Eyebrow}}};
+    std::map<SC::Label, size_t> result;
+    for (const auto& [name, label] : names) {
+        const auto found = roles.find(name);
+        if (found != roles.end()) result[label] = found->second;
+    }
+    return result;
+}
+
+size_t nearest_palette_slot(const std::array<size_t, 3>& color,
+                            const std::vector<SC::Color>& palette)
+{
+    std::vector<SC::Color> centers;
+    centers.reserve(palette.size());
+    for (const auto& candidate : palette)
+        centers.push_back(PreviewPalette::to_lab(candidate));
+    const SC::Color rgb {float(color[0]) / 255.f, float(color[1]) / 255.f,
+        float(color[2]) / 255.f};
+    return PreviewPalette::nearest_lab_index(PreviewPalette::to_lab(rgb), centers);
+}
+
+std::shared_ptr<Result> build_native_regions(const Input& in, const SC::Cancel& cancel)
 {
     const auto& source = in.source;
-    const auto& basis = *in.source_basis;
+    const auto& partition = *in.native_partition;
     const size_t count = source.mesh.indices.size();
-    if (in.strategy != Strategy::ColorRegionMajorityV2 || !basis.valid() ||
-        basis.geometry_id != source.geometry_id || basis.basis_signature.empty() ||
-        basis.unit_source_slots.size() != count || !portrait_color_postprocess_supported(basis.requested_count) ||
-        !std::all_of(basis.source_palette.begin(), basis.source_palette.end(), color_valid))
-        throw std::runtime_error("AI 建议色归属与当前模型身份不匹配，原配色保留");
+    if (in.strategy != Strategy::ColorRegionMajorityV2 || !partition.valid() ||
+        partition.geometry_id != source.geometry_id || partition.painted.indices.size() != count ||
+        !portrait_color_postprocess_supported(in.final_color_count) ||
+        in.targets.size() != in.final_color_count)
+        throw std::runtime_error("Orca 原生工作台分区与当前模型身份不匹配，原配色保留");
 
-    std::vector<int32_t> labels(count, -1);
-    for (size_t face = 0; face < count; ++face) {
-        checkpoint(cancel, face);
-        auto label = in.analysis.face_labels[face];
-        if (in.analysis.face_confidence[face] < SC::minimum_confidence ||
-            label == SC::Label::Unknown || label == SC::Label::Background) continue;
-        if (label == SC::Label::BodySkin) label = SC::Label::FaceSkin;
-        if (label == SC::Label::MouthInterior) label = SC::Label::Lips;
-        labels[face] = int32_t(label);
+    NativePortrait::BindingOptions binding;
+    binding.target_palette = in.targets;
+    binding.semantic_slots = native_semantic_slots(in.fixed_role_slots);
+    binding.minimum_confidence = fixed_role_minimum_confidence;
+    binding.person_ids = in.person_ids;
+    auto annotations = NativePortrait::annotate_native_portrait_regions(partition, in.analysis, binding);
+    if (!annotations.subface_slots.empty())
+        throw std::runtime_error("v11 原生工作台分区不得生成子面槽位");
+
+    std::vector<uint32_t> region_person_ids;
+    if (!in.person_ids.empty()) {
+        region_person_ids.resize(partition.region_members.size(), 0);
+        for (size_t region = 0; region < partition.region_members.size(); ++region) {
+            const auto& members = partition.region_members[region];
+            const uint32_t person = in.person_ids[members.front()];
+            if (person != 0 && std::all_of(members.begin(), members.end(), [&](uint32_t face) {
+                    return in.person_ids[face] == person;
+                }))
+                region_person_ids[region] = person;
+        }
     }
-    // The existing BeautyPuzzle implementation owns color connectivity.
-    // Surface patches are an editing substrate, never the color regions.
-    const auto surface = AI::BeautySurface::build_for_appearance(source.mesh, source.vertex_colors, {}, cancel);
-    const auto regions = AI::BeautyPuzzle::create_slot_regions(*surface, basis.unit_source_slots,
-        basis.basis_signature, labels, in.analysis.face_confidence, cancel);
+    const bool multiple_people_without_reliable_ids = std::any_of(
+        in.analysis.detected_face_regions.begin(), in.analysis.detected_face_regions.end(),
+        [](uint32_t count) { return count > 1; });
+    const auto reduction = NativePortrait::reduce_native_workbench_partition(
+        partition, in.final_color_count, &annotations,
+        multiple_people_without_reliable_ids, region_person_ids);
+    const auto group_slots = NativePortrait::match_reduced_palette_slots(
+        NativePortrait::native_workbench_partition_identity(partition), reduction, in.targets);
+    for (size_t region = 0; region < annotations.regions.size(); ++region) {
+        auto& annotation = annotations.regions[region];
+        annotation.slot = group_slots[reduction.region_color_groups[region]];
+        for (uint32_t face : partition.region_members[region])
+            annotations.face_slots[face] = annotation.slot;
+    }
+    for (const auto& overlay : annotations.face_overrides)
+        annotations.face_slots[overlay.face] = overlay.slot;
+    if (!annotations.valid_for(partition))
+        throw std::runtime_error("v11 原生工作台分区的整区槽位绑定无效");
+
     auto result = std::make_shared<Result>();
     result->face_count = count;
     result->geometry_id = source.geometry_id;
@@ -176,51 +225,51 @@ std::shared_ptr<Result> build_automatic_regions(const Input& in, const SC::Cance
     result->semantic_signature = in.analysis.signature;
     result->strategy = Strategy::ColorRegionMajorityV2;
     result->algorithm_version = portrait_postprocess_algorithm_version;
-    result->source_basis_signature = basis.basis_signature;
-    result->source_palette = result->intermediate_palette = basis.source_palette;
-    result->unit_source_slots = basis.unit_source_slots;
+    result->source_basis_signature = partition.partition_digest;
+    result->native_partition_identity = NativePortrait::native_portrait_partition_identity(partition);
+    result->native_color_reduction = reduction;
+    result->semantic_annotations = annotations.regions;
+    result->protected_components = annotations.protected_components;
+    result->face_overrides = annotations.face_overrides;
+    result->final_region_slots.reserve(annotations.regions.size());
+    for (const auto& annotation : annotations.regions)
+        result->final_region_slots.push_back(annotation.slot);
+    result->source_palette.reserve(reduction.group_cluster_ids.size());
+    for (const size_t cluster : reduction.group_cluster_ids) {
+        const auto& color = partition.painted.cluster_colors[cluster];
+        result->source_palette.push_back({float(color[0]) / 255.f, float(color[1]) / 255.f, float(color[2]) / 255.f});
+    }
+    result->intermediate_palette = result->source_palette;
+    result->unit_source_slots.resize(count);
+    for (size_t face = 0; face < count; ++face)
+        result->unit_source_slots[face] =
+            reduction.region_color_groups[partition.face_region_ids[face]];
     result->control_signature = controls_signature(in.mapping, in.targets);
     result->palette_signature = PortraitShapeCache::digest(nlohmann::json{
-        {"basis", basis.basis_signature}, {"algorithm", result->algorithm_version},
+        {"partition", partition.partition_digest}, {"boundary", partition.boundary_digest},
+        {"reduction", reduction.mapping_digest},
+        {"algorithm", result->algorithm_version},
         {"controls", result->control_signature}, {"role_slots", in.fixed_role_slots}}.dump());
     result->units.reserve(count);
     auto& track = result->tracks[0];
     track.unit_blocks.resize(count);
-    track.blocks.resize(regions.next_id - 1);
-    std::vector<std::array<double, 3>> color_sum(track.blocks.size());
-    std::vector<double> area_sum(track.blocks.size(), 0.0);
+    track.blocks.resize(partition.region_members.size());
     for (size_t face = 0; face < count; ++face) {
         checkpoint(cancel, face);
-        const uint32_t id = regions.face_piece[face] - 1;
+        const uint32_t id = partition.face_region_ids[face];
         result->units.push_back({face, {0, 0}});
         track.unit_blocks[face] = id;
         track.blocks[id].members.push_back(uint32_t(face));
-        RGB color{};
-        if (source.sample_original) color = source.sample_original(face, {1.f/3, 1.f/3, 1.f/3});
-        else if (source.face_colors.size() == count)
-            std::copy_n(source.face_colors[face].begin(), 3, color.begin());
-        else if (source.vertex_colors.size() == source.mesh.vertices.size()) {
-            for (const int vertex : source.mesh.indices[face])
-                for (size_t c = 0; c < 3; ++c) color[c] += source.vertex_colors[vertex][c] / 3.f;
-        } else color = basis.source_palette[basis.unit_source_slots[face]];
-        if (!color_valid(color)) throw std::runtime_error("人物区域原始颜色无效");
-        const double area = surface->areas[face];
-        area_sum[id] += area;
-        for (size_t c = 0; c < 3; ++c) color_sum[id][c] += double(color[c]) * area;
     }
     for (size_t id = 0; id < track.blocks.size(); ++id) {
         auto& block = track.blocks[id];
         block.id = uint32_t(id);
-        block.canonical = basis.source_palette[regions.region_source_slots.at(uint32_t(id + 1))];
-        if (area_sum[id] > 0)
-            for (size_t c = 0; c < 3; ++c) block.canonical[c] = float(color_sum[id][c] / area_sum[id]);
+        block.canonical = result->source_palette[reduction.region_color_groups[id]];
         block.original = block.display = block.canonical;
-        const auto label = regions.region_semantic_labels.find(uint32_t(id + 1));
-        if (label != regions.region_semantic_labels.end()) {
-            block.semantic = SC::Label(label->second);
-            block.confidence = regions.region_semantic_confidence.at(uint32_t(id + 1));
-        }
-        block.status = block.confidence >= fixed_role_minimum_confidence ? Status::Confirmed : Status::Unresolved;
+        const auto& annotation = annotations.regions[id];
+        block.semantic = annotation.semantic;
+        block.confidence = annotation.confidence;
+        block.status = annotation.semantic_bound ? Status::Confirmed : Status::Unresolved;
         if (block.status == Status::Unresolved) block.reason = "unresolved_color_region";
     }
     result->tracks[1] = track;
@@ -359,6 +408,10 @@ void Result::appearance(SC::FaceColors& faces, SC::SubfaceColors& children) cons
         if (!u.path.depth) faces.emplace_back(u.face,b.display);
         else children.push_back({u.face,u.path,b.display,b.confidence});
     }
+    if (algorithm_version == portrait_postprocess_algorithm_version && active == Track::ProcessedFaceColor)
+        for (const auto& overlay : face_overrides)
+            if (t.blocks[t.unit_blocks[overlay.face]].status != Status::ManualConfirmed)
+                faces[overlay.face].second = final_palette.at(overlay.slot);
     std::sort(children.begin(),children.end(),[](const auto& a,const auto& b){return std::tie(a.face_id,a.path)<std::tie(b.face_id,b.path);});
 }
 bool Result::recolor(uint32_t id, const RGB& color) {
@@ -368,7 +421,16 @@ bool Result::recolor(uint32_t id, const RGB& color) {
     b.display_slot=-1; b.reason.clear(); b.confidence=1; return true;
 }
 size_t Result::memory_bytes() const {
-    size_t bytes=sizeof(*this)+units.capacity()*sizeof(Unit)+unit_source_slots.capacity()*sizeof(size_t)+borders.capacity()*sizeof(Border);
+    size_t bytes=sizeof(*this)+units.capacity()*sizeof(Unit)+unit_source_slots.capacity()*sizeof(size_t)+
+        final_region_slots.capacity()*sizeof(size_t)+borders.capacity()*sizeof(Border)+
+        face_overrides.capacity()*sizeof(NativePortrait::RoleFaceOverride)+
+        protected_components.capacity()*sizeof(NativePortrait::ProtectedRoleComponent);
+    for (const auto& component : protected_components) bytes += component.faces.capacity()*sizeof(uint32_t);
+    if (native_color_reduction) {
+        bytes += native_color_reduction->region_color_groups.capacity() * sizeof(size_t) +
+            native_color_reduction->group_cluster_ids.capacity() * sizeof(size_t) +
+            native_color_reduction->merge_order.capacity() * sizeof(NativePortrait::NativeColorMerge);
+    }
     for(const auto& t:tracks) {
         bytes+=t.unit_blocks.capacity()*sizeof(uint32_t)+t.blocks.capacity()*sizeof(Block);
         for(const auto& b:t.blocks) bytes+=b.members.capacity()*sizeof(uint32_t)+
@@ -384,12 +446,15 @@ std::shared_ptr<Result> build(const Input& in, const SC::Cancel& cancel) {
         in.analysis.content_id!=source.content_id || in.analysis.face_labels.size()!=count ||
         in.analysis.face_confidence.size()!=count || (!in.person_ids.empty() && in.person_ids.size()!=count))
         throw std::runtime_error("人像颜色块的几何或识别身份不一致");
-    if (in.source_basis) return build_automatic_regions(in, cancel);
+    if (in.native_partition) return build_native_regions(in, cancel);
     auto result=std::make_shared<Result>();
     result->face_count=count; result->geometry_id=source.geometry_id;
     result->strategy=in.strategy;
+    // Keep the old generic builder available to ordinary/manual consumers,
+    // but never label its semantic/color-derived boundaries as an active v9
+    // native partition. Saved v8 data is read-only in the preview restore gate.
     result->algorithm_version = in.strategy == Strategy::ColorRegionMajorityV2
-        ? portrait_postprocess_algorithm_version : 0;
+        ? legacy_color_region_algorithm_version : 0;
     result->source_signature=source.content_id; result->semantic_signature=in.analysis.signature;
     result->control_signature=controls_signature(in.mapping,in.targets);
     nlohmann::json palette={{"mapping",in.mapping},{"targets",in.targets},{"faces",in.processed_faces}};
@@ -959,11 +1024,55 @@ std::shared_ptr<Result> build(const Input& in, const SC::Cancel& cancel) {
 }
 
 bool remap_to_palette(Result& result, const std::vector<SC::Color>& target, bool preserve_regions,
-                      const std::map<std::string, size_t>& fixed_role_slots)
+                      const std::map<std::string, size_t>& fixed_role_slots_input)
 {
+    const auto fixed_role_slots = fixed_role_slots_input;
     if (target.empty() || target.size() > PreviewPalette::max_preview_colors)
         return false;
     for (const auto& color : target) if (!color_valid(color)) return false;
+
+    if (result.algorithm_version == portrait_postprocess_algorithm_version) {
+        if (!result.native_partition_identity || !result.native_color_reduction) return false;
+        const auto& identity = *result.native_partition_identity;
+        const auto& reduction = *result.native_color_reduction;
+        if (!reduction.valid_for(identity) || target.size() < reduction.actual_color_count) return false;
+        const auto group_slots = NativePortrait::match_reduced_palette_slots(identity, reduction, target);
+        for (const auto& [role, slot] : fixed_role_slots) if (slot >= target.size()) return false;
+        result.final_region_slots.resize(identity.region_cluster_ids.size());
+        result.role_locks.clear(); result.role_slot_locks.clear();
+        for (size_t region = 0; region < result.final_region_slots.size(); ++region) {
+            const size_t slot = group_slots[reduction.region_color_groups[region]];
+            result.final_region_slots[region] = slot;
+            result.semantic_annotations[region].slot = slot;
+            for (auto& track : result.tracks) {
+                auto& block = track.blocks[region];
+                if (block.status == Status::ManualConfirmed) {
+                    block.display_slot = -1;
+                } else { block.display_slot = int64_t(slot); block.display = target[slot]; }
+            }
+        }
+        for (auto& component : result.protected_components) {
+            const char* role = role_name(component.semantic);
+            const auto fixed = role ? fixed_role_slots.find(role) : fixed_role_slots.end();
+            if (fixed != fixed_role_slots.end()) component.slot = fixed->second;
+            else {
+                const auto region = identity.face_region_ids.at(component.faces.front());
+                component.slot = result.final_region_slots[region];
+            }
+            // Only an explicit role binding is a reusable role lock. A
+            // component's native fallback must remain local to that component.
+            if (fixed != fixed_role_slots.end()) {
+                result.role_slot_locks[role] = component.slot;
+                result.role_locks[role] = target[component.slot];
+            }
+        }
+        for (auto& overlay : result.face_overrides)
+            overlay.slot = result.protected_components.at(overlay.component_id).slot;
+        result.final_palette = target;
+        result.final_slot_indices.resize(target.size());
+        std::iota(result.final_slot_indices.begin(), result.final_slot_indices.end(), size_t(0));
+        return true;
+    }
 
     // Old V2 caches do not have role_regions.  Reconstruct it from the block
     // labels once, so the new card-switch path remains backward compatible.
@@ -1059,6 +1168,17 @@ bool remap_to_palette(Result& result, const std::vector<SC::Color>& target, bool
     result.final_palette = target;
     result.final_slot_indices.resize(target.size());
     std::iota(result.final_slot_indices.begin(), result.final_slot_indices.end(), size_t(0));
+    if (result.algorithm_version == portrait_postprocess_algorithm_version &&
+        result.native_partition_identity &&
+        result.tracks[0].blocks.size() == result.native_partition_identity->region_cluster_ids.size()) {
+        result.final_region_slots.resize(result.tracks[0].blocks.size());
+        for (size_t region = 0; region < result.tracks[0].blocks.size(); ++region) {
+            const auto slot = result.tracks[0].blocks[region].display_slot;
+            if (slot >= 0) result.final_region_slots[region] = size_t(slot);
+            if (region < result.semantic_annotations.size())
+                result.semantic_annotations[region].slot = result.final_region_slots[region];
+        }
+    }
     return true;
 }
 
@@ -1067,6 +1187,12 @@ size_t reliable_fixed_role_blocks(const Result& result,
                                   float minimum_confidence)
 {
     if (fixed_role_slots.empty() || !std::isfinite(minimum_confidence)) return 0;
+    if (result.algorithm_version == portrait_postprocess_algorithm_version)
+        return size_t(std::count_if(result.protected_components.begin(), result.protected_components.end(),
+            [&](const auto& component) {
+                const auto role = role_name(component.semantic);
+                return role && fixed_role_slots.count(role) && component.confidence >= minimum_confidence;
+            }));
     return size_t(std::count_if(result.current().blocks.begin(), result.current().blocks.end(),
         [&](const Block& block) {
             const auto role = role_name(block.semantic);
@@ -1078,6 +1204,21 @@ size_t reliable_fixed_role_blocks(const Result& result,
 std::vector<size_t> used_display_slots(const Result& result)
 {
     std::vector<size_t> slots;
+    if (result.algorithm_version == portrait_postprocess_algorithm_version &&
+        result.units.size() == result.face_count) {
+        std::vector<int64_t> faces(result.face_count, -1);
+        for (size_t face = 0; face < faces.size(); ++face)
+            faces[face] = result.current().blocks.at(result.current().unit_blocks.at(face)).display_slot;
+        if (result.active == Track::ProcessedFaceColor)
+            for (const auto& overlay : result.face_overrides)
+                if (result.current().blocks.at(result.current().unit_blocks.at(overlay.face)).status != Status::ManualConfirmed)
+                    faces.at(overlay.face) = int64_t(overlay.slot);
+        for (int64_t slot : faces)
+            if (slot >= 0 && size_t(slot) < result.final_palette.size()) slots.push_back(size_t(slot));
+        std::sort(slots.begin(), slots.end());
+        slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
+        return slots;
+    }
     for (const auto& block : result.current().blocks) {
         if (block.display_slot < 0 || size_t(block.display_slot) >= result.final_palette.size()) continue;
         slots.push_back(size_t(block.display_slot));
@@ -1105,6 +1246,10 @@ nlohmann::json encode(const Result& r) {
         doc["final_slot_indices"] = r.final_slot_indices;
         doc["role_slot_locks"] = r.role_slot_locks;
         doc["role_regions"] = r.role_regions; doc["role_confidence"] = r.role_confidence;
+        if (r.algorithm_version >= 10 && r.algorithm_version < portrait_postprocess_algorithm_version &&
+            r.legacy_native_metadata.is_object())
+            for (auto item = r.legacy_native_metadata.begin(); item != r.legacy_native_metadata.end(); ++item)
+                doc[item.key()] = item.value();
         if (!r.source_palette.empty()) {
             doc["source_palette"]=r.source_palette;doc["source_basis_signature"]=r.source_basis_signature;
             doc["unit_source_slots"]=r.unit_source_slots;
@@ -1113,6 +1258,46 @@ nlohmann::json encode(const Result& r) {
                 doc["borders"]=nlohmann::json::array();
                 for (const auto& border:r.borders) doc["borders"].push_back({border.face,border.points});
             }
+        }
+        if (r.algorithm_version == portrait_postprocess_algorithm_version) {
+            if (!r.native_partition_identity || !r.native_partition_identity->valid() ||
+                !r.native_color_reduction ||
+                !r.native_color_reduction->valid_for(*r.native_partition_identity) ||
+                r.semantic_annotations.size() != r.native_partition_identity->region_cluster_ids.size() ||
+                r.final_region_slots.size() != r.semantic_annotations.size())
+                throw std::invalid_argument("v11 原生分区身份无效");
+            doc["native_partition_identity"] = NativePortrait::encode_native_portrait_partition_identity(
+                *r.native_partition_identity);
+            nlohmann::json regions = nlohmann::json::array();
+            for (const auto& annotation : r.semantic_annotations)
+                regions.push_back({{"region_id", annotation.region_id}, {"semantic", int(annotation.semantic)},
+                    {"confidence", annotation.confidence}, {"semantic_bound", annotation.semantic_bound},
+                    {"role_support", annotation.role_support}, {"observed_area", annotation.observed_area}});
+            nlohmann::json components = nlohmann::json::array();
+            for (const auto& component : r.protected_components)
+                components.push_back({{"id", component.id}, {"person_id", component.person_id},
+                    {"semantic", int(component.semantic)}, {"confidence", component.confidence},
+                    {"slot", component.slot}, {"faces", component.faces}});
+            doc["region_semantics"] = {{"schema", "orca.native-workbench-region-semantics/v12"},
+                {"partition_digest", r.native_partition_identity->partition_digest},
+                {"face_count", r.face_count}, {"protected_components", std::move(components)},
+                {"regions", std::move(regions)}};
+            doc["native_color_reduction"] =
+                NativePortrait::encode_native_color_reduction(*r.native_color_reduction);
+            nlohmann::json slots = nlohmann::json::array();
+            for (size_t region = 0; region < r.final_region_slots.size(); ++region) {
+                if (r.final_region_slots[region] >= r.final_palette.size())
+                    throw std::invalid_argument("v11 原生分区最终槽位无效");
+                slots.push_back({{"region_id", region}, {"slot", r.final_region_slots[region]}});
+            }
+            doc["final_slot_binding"] = {{"schema", "orca.native-workbench-final-slot-binding/v12"},
+                {"partition_digest", r.native_partition_identity->partition_digest},
+                {"reduction_digest", r.native_color_reduction->mapping_digest},
+                {"face_count", r.face_count}, {"component_count", r.protected_components.size()}, {"regions", std::move(slots)},
+                {"face_overrides", nlohmann::json::array()}, {"subface_slots", nlohmann::json::array()}};
+            for (const auto& overlay : r.face_overrides)
+                doc["final_slot_binding"]["face_overrides"].push_back(
+                    {overlay.face, overlay.component_id, overlay.slot});
         }
     }
     for(const auto& u:r.units)doc["units"].push_back({u.face,u.path.depth,u.path.value});
@@ -1156,15 +1341,122 @@ std::shared_ptr<Result> decode(const nlohmann::json& doc,const std::string& geom
             require(doc.contains("algorithm_version") && doc.at("algorithm_version").is_number_unsigned() &&
                 (doc.at("algorithm_version").get<uint32_t>() == portrait_postprocess_algorithm_version ||
                  doc.at("algorithm_version").get<uint32_t>() == 6 ||
-                 doc.at("algorithm_version").get<uint32_t>() == 7) &&
+                 doc.at("algorithm_version").get<uint32_t>() == 7 ||
+                 doc.at("algorithm_version").get<uint32_t>() == 8 ||
+                 doc.at("algorithm_version").get<uint32_t>() == 9 ||
+                 doc.at("algorithm_version").get<uint32_t>() == 10 ||
+                 doc.at("algorithm_version").get<uint32_t>() == 11) &&
                 doc.contains("intermediate_palette") && doc.contains("final_palette") && doc.contains("role_locks") &&
                 doc.contains("final_slot_indices") && doc.contains("role_slot_locks"));
             r->algorithm_version=doc.at("algorithm_version").get<uint32_t>();
+            if (r->algorithm_version >= 10 && r->algorithm_version < portrait_postprocess_algorithm_version)
+                for (const char* key : {"native_partition_identity", "region_semantics", "native_color_reduction", "final_slot_binding", "semantic_binding"})
+                    if (doc.contains(key)) r->legacy_native_metadata[key] = doc.at(key);
+            if (r->algorithm_version == portrait_postprocess_algorithm_version) {
+                require(doc.contains("native_partition_identity") && doc.contains("region_semantics") &&
+                    doc.contains("native_color_reduction") && doc.contains("final_slot_binding") &&
+                    doc.contains("source_palette") && doc.contains("source_basis_signature") &&
+                    doc.contains("unit_source_slots"));
+                NativePortrait::NativePortraitPartitionIdentity identity;
+                std::string identity_error;
+                require(NativePortrait::decode_native_portrait_partition_identity(
+                    doc.at("native_partition_identity"), identity, identity_error));
+                require(identity.geometry_id == geometry && identity.face_count == faces);
+                NativePortrait::NativeColorReduction reduction;
+                std::string reduction_error;
+                require(NativePortrait::decode_native_color_reduction(
+                    doc.at("native_color_reduction"), identity, reduction, reduction_error));
+                const auto& semantics = doc.at("region_semantics");
+                require(semantics.is_object() &&
+                    semantics.at("schema") == "orca.native-workbench-region-semantics/v12" &&
+                    semantics.at("partition_digest") == identity.partition_digest &&
+                    semantics.at("regions").is_array() &&
+                    semantics.at("regions").size() == identity.region_cluster_ids.size());
+                for (size_t region = 0; region < semantics.at("regions").size(); ++region) {
+                    const auto& row = semantics.at("regions")[region];
+                    NativePortrait::RegionAnnotation annotation;
+                    annotation.region_id = uint32_t(bounded(row.at("region_id"), identity.region_cluster_ids.size() - 1));
+                    annotation.semantic = SC::Label(bounded(row.at("semantic"), SC::label_count - 1));
+                    annotation.confidence = row.at("confidence").get<float>();
+                    annotation.semantic_bound = row.at("semantic_bound").get<bool>();
+                    annotation.role_support = row.at("role_support").get<decltype(annotation.role_support)>();
+                    annotation.observed_area = row.at("observed_area").get<double>();
+                    require(std::isfinite(annotation.observed_area) && annotation.observed_area >= 0.);
+                    double support_sum = 0.;
+                    for (double support : annotation.role_support) {
+                        require(std::isfinite(support) && support >= 0.); support_sum += support;
+                    }
+                    require(support_sum <= annotation.observed_area * (1. + 1e-6) + 1e-9);
+                    require(annotation.region_id == region && std::isfinite(annotation.confidence) &&
+                        annotation.confidence >= 0.f && annotation.confidence <= 1.f);
+                    r->semantic_annotations.push_back(annotation);
+                }
+                const auto& slots = doc.at("final_slot_binding");
+                require(slots.is_object() &&
+                    slots.at("schema") == "orca.native-workbench-final-slot-binding/v12" &&
+                    slots.at("partition_digest") == identity.partition_digest &&
+                    slots.at("reduction_digest") == reduction.mapping_digest &&
+                    slots.at("subface_slots").is_array() && slots.at("subface_slots").empty() &&
+                    slots.at("regions").is_array() &&
+                    slots.at("regions").size() == identity.region_cluster_ids.size());
+                for (size_t region = 0; region < slots.at("regions").size(); ++region) {
+                    const auto& row = slots.at("regions")[region];
+                    require(size_t(bounded(row.at("region_id"), identity.region_cluster_ids.size() - 1)) == region);
+                    const auto slot = size_t(bounded(row.at("slot"), portrait_postprocess_max_colors - 1));
+                    r->final_region_slots.push_back(slot);
+                    r->semantic_annotations[region].slot = slot;
+                }
+                r->native_partition_identity = std::move(identity);
+                r->native_color_reduction = std::move(reduction);
+                require(semantics.at("face_count") == faces && slots.at("face_count") == faces);
+                const auto& components = semantics.at("protected_components");
+                require(components.is_array() && components.size() <= faces);
+                require(bounded(slots.at("component_count"), faces) == components.size());
+                std::vector<uint32_t> owners(faces, UINT32_MAX);
+                size_t protected_faces = 0;
+                for (const auto& row : components) {
+                    NativePortrait::ProtectedRoleComponent component;
+                    component.id = uint32_t(bounded(row.at("id"), faces - 1));
+                    component.person_id = uint32_t(bounded(row.at("person_id"), UINT32_MAX));
+                    component.semantic = SC::Label(bounded(row.at("semantic"), SC::label_count - 1));
+                    require(component.semantic == SC::Label::Hair || component.semantic == SC::Label::Eyebrow ||
+                        component.semantic == SC::Label::EyeSclera || component.semantic == SC::Label::Iris ||
+                        component.semantic == SC::Label::Lips);
+                    component.confidence = row.at("confidence").get<float>();
+                    require(std::isfinite(component.confidence) && component.confidence >= NativePortrait::minimum_semantic_confidence && component.confidence <= 1.f);
+                    component.slot = size_t(bounded(row.at("slot"), doc.at("final_palette").size() - 1));
+                    require(component.id == r->protected_components.size() && row.at("faces").is_array() && !row.at("faces").empty());
+                    uint32_t previous_face = 0;
+                    for (const auto& value : row.at("faces")) {
+                        const auto face = uint32_t(bounded(value, faces - 1));
+                        require(owners[face] == UINT32_MAX && (component.faces.empty() || face > previous_face));
+                        owners[face] = component.id; previous_face = face;
+                        component.faces.push_back(face); ++protected_faces;
+                    }
+                    r->protected_components.push_back(std::move(component));
+                }
+                require(slots.at("face_overrides").is_array() && slots.at("face_overrides").size() == protected_faces);
+                uint32_t previous_face = 0;
+                for (const auto& row : slots.at("face_overrides")) {
+                    require(row.is_array() && row.size() == 3);
+                    NativePortrait::RoleFaceOverride overlay;
+                    overlay.face = uint32_t(bounded(row[0], faces - 1));
+                    overlay.component_id = uint32_t(bounded(row[1], components.size() - 1));
+                    overlay.slot = size_t(bounded(row[2], doc.at("final_palette").size() - 1));
+                    require((r->face_overrides.empty() || overlay.face > previous_face) &&
+                        owners[overlay.face] == overlay.component_id &&
+                        r->protected_components[overlay.component_id].slot == overlay.slot);
+                    previous_face = overlay.face; r->face_overrides.push_back(overlay);
+                }
+            }
             if (doc.contains("source_palette")) {
                 r->source_palette=doc.at("source_palette").get<std::vector<RGB>>();
                 r->source_basis_signature=doc.at("source_basis_signature").get<std::string>();
                 r->unit_source_slots=doc.at("unit_source_slots").get<std::vector<size_t>>();
-                require(r->algorithm_version>=7 && !r->source_palette.empty() && r->source_palette.size()<=6 &&
+                const size_t maximum_source_colors = r->algorithm_version >= 10
+                    ? NativePortrait::maximum_color_count : size_t(6);
+                require(r->algorithm_version>=7 && !r->source_palette.empty() &&
+                    r->source_palette.size() <= maximum_source_colors &&
                     !r->source_basis_signature.empty() && r->unit_source_slots.size()==doc.at("units").size());
                 for (const auto& color:r->source_palette) require(color_valid(color));
                 for (size_t slot:r->unit_source_slots) require(slot<r->source_palette.size());
@@ -1199,6 +1491,12 @@ std::shared_ptr<Result> decode(const nlohmann::json& doc,const std::string& geom
                 const auto color=r->role_locks.find(role);
                 require(color!=r->role_locks.end() && delta(color->second,r->final_palette[slot])<1e-8f);
             }
+            if (r->algorithm_version == portrait_postprocess_algorithm_version)
+                for (const auto& component : r->protected_components) {
+                    const auto role = role_name(component.semantic);
+                    const auto lock = role ? r->role_slot_locks.find(role) : r->role_slot_locks.end();
+                    if (lock != r->role_slot_locks.end()) require(component.slot == lock->second);
+                }
             if (doc.contains("role_regions")) {
                 r->role_regions=doc.at("role_regions").get<std::map<std::string,std::vector<uint32_t>>>();
                 for (const auto &[role,ids]:r->role_regions) {
@@ -1284,14 +1582,49 @@ std::shared_ptr<Result> decode(const nlohmann::json& doc,const std::string& geom
             }
             require(std::all_of(seen.begin(),seen.end(),[](auto v){return v==1;}));
         }
-        if (r->algorithm_version == portrait_postprocess_algorithm_version && !r->source_palette.empty()) {
+        if (r->algorithm_version == portrait_postprocess_algorithm_version) {
+            require(r->native_partition_identity && r->native_partition_identity->partition_digest == r->source_basis_signature &&
+                r->native_color_reduction &&
+                r->native_color_reduction->valid_for(*r->native_partition_identity) &&
+                r->source_palette.size() == r->native_color_reduction->actual_color_count &&
+                r->semantic_annotations.size() == r->native_partition_identity->region_cluster_ids.size() &&
+                r->final_region_slots.size() == r->semantic_annotations.size());
             require(r->units.size() == faces);
             require(r->tracks[0].unit_blocks == r->tracks[1].unit_blocks);
-            for (size_t face = 0; face < faces; ++face)
-                require(r->units[face].face == face && r->units[face].path.depth == 0);
+            require(r->tracks[0].blocks.size() == r->native_partition_identity->region_cluster_ids.size());
+            const auto expected_group_slots = NativePortrait::match_reduced_palette_slots(
+                *r->native_partition_identity, *r->native_color_reduction, r->final_palette);
+            for (size_t group = 0; group < r->source_palette.size(); ++group) {
+                const auto& color = r->native_partition_identity->cluster_colors[
+                    r->native_color_reduction->group_cluster_ids[group]];
+                const RGB expected {float(color[0]) / 255.f, float(color[1]) / 255.f,
+                    float(color[2]) / 255.f};
+                require(delta(r->source_palette[group], expected) < 1e-8f);
+            }
+            for (size_t face = 0; face < faces; ++face) {
+                const size_t region = r->native_partition_identity->face_region_ids[face];
+                require(r->units[face].face == face && r->units[face].path.depth == 0 &&
+                    r->tracks[0].unit_blocks[face] == region &&
+                    r->unit_source_slots[face] ==
+                        r->native_color_reduction->region_color_groups[region]);
+            }
             for (const auto& track : r->tracks) for (const auto& block : track.blocks) {
                 const auto slot = r->unit_source_slots[block.members.front()];
                 for (const auto member : block.members) require(r->unit_source_slots[member] == slot);
+            }
+            for (size_t region = 0; region < r->semantic_annotations.size(); ++region) {
+                const auto& annotation = r->semantic_annotations[region];
+                require(region < r->tracks[0].blocks.size() && annotation.region_id == region &&
+                    r->final_region_slots[region] < r->final_palette.size() &&
+                    r->final_region_slots[region] == expected_group_slots[
+                        r->native_color_reduction->region_color_groups[region]] &&
+                    annotation.slot == r->final_region_slots[region] &&
+                    r->tracks[0].blocks[region].semantic == annotation.semantic &&
+                    (r->tracks[0].blocks[region].status == Status::ManualConfirmed ||
+                     std::abs(r->tracks[0].blocks[region].confidence - annotation.confidence) <= 1e-6f));
+                for (const auto& track : r->tracks)
+                    require(track.blocks[region].status == Status::ManualConfirmed ||
+                        track.blocks[region].display_slot == int64_t(r->final_region_slots[region]));
             }
         }
         error.clear();return r;
