@@ -92,7 +92,7 @@ MediaPlayCtrl::MediaPlayCtrl(wxWindow *parent, wxMediaCtrl3 *media_ctrl, const w
     SetLabel("MediaPlayCtrl");
     SetBackgroundColour(*wxWHITE);
     m_media_ctrl->Bind(wxEVT_MEDIA_STATECHANGED, &MediaPlayCtrl::onStateChanged, this);
-    m_media_ctrl->SetIdleImage(from_u8(resources_dir() + "/images/live_stream_default.png"));
+    SetIdleImage(from_u8(resources_dir() + "/images/live_stream_default.png"));
 
     m_button_play = new Button(this, "", "media_play", wxBORDER_NONE);
     m_button_play->SetCanFocus(false);
@@ -211,7 +211,18 @@ MediaPlayCtrl::~MediaPlayCtrl()
 void MediaPlayCtrl::SetWebMediaController(IMediaController *ctrl)
 {
     m_web_ctrl = ctrl;
+    if (auto* web_ctrl = dynamic_cast<WebMediaController*>(m_web_ctrl))
+        web_ctrl->set_idle_image(m_idle_image);
     set_active_media_controller(current_mode());
+}
+
+void MediaPlayCtrl::SetIdleImage(const wxString& image)
+{
+    m_idle_image = image;
+    if (m_media_ctrl)
+        m_media_ctrl->SetIdleImage(image);
+    if (auto* web_ctrl = dynamic_cast<WebMediaController*>(m_web_ctrl))
+        web_ctrl->set_idle_image(image);
 }
 
 void MediaPlayCtrl::set_active_media_controller(CameraStreamMode mode)
@@ -423,8 +434,17 @@ void MediaPlayCtrl::Play()
             return;
 
         m_failed_code = 0;
+        BOOST_LOG_TRIVIAL(info) << "[PrinterCamera] playback_precondition agent="
+                                << (printer_agent ? printer_agent->get_agent_info().id : "none")
+                                << " mode=" << static_cast<int>(mode)
+                                << " controller_ready=" << (m_active_media_controller != nullptr)
+                                << " machine_ready=" << !m_machine.empty()
+                                << " enabled=" << IsEnabled()
+                                << " camera_exists=" << m_camera_exists
+                                << " url_present=" << !m_url.IsEmpty();
         if (!m_active_media_controller || m_machine.empty() || !IsEnabled() || !m_camera_exists ||
             (!is_webrtc && m_url.IsEmpty())) {
+            BOOST_LOG_TRIVIAL(warning) << "[PrinterCamera] playback_rejected reason=precondition_failed";
             Stop(_L("Please confirm if the printer is connected."));
             return;
         }
@@ -446,6 +466,10 @@ void MediaPlayCtrl::Play()
             SetStatus(_L("Playing..."), false);
         }
 
+        BOOST_LOG_TRIVIAL(info) << "[PrinterCamera] playback_requested agent="
+                                << (printer_agent ? printer_agent->get_agent_info().id : "none")
+                                << " mode=" << static_cast<int>(mode)
+                                << " url_present=" << !m_url.IsEmpty();
         m_button_play->SetIcon("media_stop");
         if (m_active_media_controller == m_media_ctrl) {
             // wxMediaCtrl3 reports when it has a decoded frame; load() waits for
@@ -874,6 +898,43 @@ void MediaPlayCtrl::jump_to_play()
     if (m_last_state != MEDIASTATE_IDLE)
         return;
     TogglePlay();
+}
+
+bool MediaPlayCtrl::TryAutoPlay()
+{
+    if (m_web_user_stopped) {
+        BOOST_LOG_TRIVIAL(info) << "[PrinterCamera] autoplay_skipped reason=user_stopped";
+        return true;
+    }
+    if (m_last_state != MEDIASTATE_IDLE) {
+        BOOST_LOG_TRIVIAL(info) << "[PrinterCamera] autoplay_skipped reason=already_active";
+        return true;
+    }
+
+    const CameraStreamMode mode = current_mode();
+    set_active_media_controller(mode);
+    const auto agent = wxGetApp().getAgent();
+    const auto printer_agent = agent ? agent->get_printer_agent() : nullptr;
+    const bool is_bbl = (printer_agent ? printer_agent->get_agent_info().id : "") == BBL_PRINTER_AGENT_ID;
+    const bool url_required = !is_bbl && mode != CameraStreamMode::webrtc;
+    if (!IsShownOnScreen() || !m_active_media_controller || m_machine.empty() || !IsEnabled() ||
+        !m_camera_exists || (url_required && m_url.IsEmpty())) {
+        BOOST_LOG_TRIVIAL(info) << "[PrinterCamera] autoplay_skipped reason=not_ready"
+                                << " shown=" << IsShownOnScreen()
+                                << " controller_ready=" << (m_active_media_controller != nullptr)
+                                << " machine_ready=" << !m_machine.empty()
+                                << " enabled=" << IsEnabled()
+                                << " camera_exists=" << m_camera_exists
+                                << " url_present=" << !m_url.IsEmpty();
+        return false;
+    }
+
+    m_failed_retry = 0;
+    m_user_triggered = false;
+    m_next_retry = wxDateTime();
+    BOOST_LOG_TRIVIAL(info) << "[PrinterCamera] autoplay_requested mode=" << static_cast<int>(mode);
+    Play();
+    return m_last_state != MEDIASTATE_IDLE;
 }
 
 void MediaPlayCtrl::onStateChanged(wxMediaEvent &event)

@@ -234,6 +234,9 @@ void ModelGenerationFeatureHost::get_provider_catalog(
         on_error("Model generation panel is unavailable.");
 }
 
+bool ModelGenerationFeatureHost::request_generate_smart()
+{ return m_impl->model_generation->request_generate_smart(); }
+
 bool ModelGenerationFeatureHost::request_generate_design()
 {
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_generate_design();
@@ -290,6 +293,9 @@ bool ModelGenerationFeatureHost::request_open_history(const std::string& job_id)
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_open_history(job_id);
 }
 
+void ModelGenerationFeatureHost::set_smart_creation_presentation(bool smart)
+{ if (m_impl->model_generation) m_impl->model_generation->set_smart_creation_presentation(smart); }
+
 PostGenerationWorkbenchState ModelGenerationFeatureHost::workbench_snapshot() const
 {
     return m_impl->model_generation->workbench_snapshot();
@@ -321,6 +327,8 @@ wxWindow* ModelGenerationFeatureHost::workbench_import_viewport() const { return
 wxWindow* ModelGenerationFeatureHost::workbench_import_history() const { return m_impl->model_generation->workbench_import_history(); }
 void ModelGenerationFeatureHost::mount_workbench_import_history(wxWindow* parent) { m_impl->model_generation->mount_workbench_import_history(parent); }
 void ModelGenerationFeatureHost::restore_workbench_import_history() { m_impl->model_generation->restore_workbench_import_history(); }
+void ModelGenerationFeatureHost::mount_workbench_history_sidebar(wxWindow* parent) { m_impl->model_generation->mount_workbench_history_sidebar(parent); }
+void ModelGenerationFeatureHost::restore_workbench_history_sidebar() { m_impl->model_generation->restore_workbench_history_sidebar(); }
 void ModelGenerationFeatureHost::set_workbench_import_feedback(bool active) { m_impl->model_generation->set_workbench_import_feedback(active); }
 void ModelGenerationFeatureHost::mount_assets(wxWindow* parent) { m_impl->capabilities->mount_assets(parent); }
 void ModelGenerationFeatureHost::unmount_assets() { m_impl->capabilities->unmount_assets(); }

@@ -182,17 +182,21 @@ def _validate_image_data(
         raise ValueError("The image is empty or exceeds the 20 MB limit.")
     content_type = _image_type(data[:16])
     if content_type is None:
-        raise ValueError("The image must be PNG or JPEG.")
+        raise ValueError("The image must be PNG, JPEG or static WebP.")
     try:
         from PIL import Image, UnidentifiedImageError
     except ImportError:
         raise ValueError("Pillow is required to validate the image.") from None
     try:
         with Image.open(BytesIO(data)) as opened:
-            expected_format = "PNG" if content_type == "image/png" else "JPEG"
+            expected_format = {"image/png": "PNG", "image/jpeg": "JPEG", "image/webp": "WEBP"}[content_type]
             if opened.format != expected_format:
                 raise ValueError("The image format does not match its file signature.")
+            if content_type == "image/webp" and getattr(opened, "is_animated", False):
+                raise ValueError("Animated WebP is not supported; export a static image first.")
             width, height = opened.size
+            if content_type == "image/webp" and min(width, height) < minimum_edge:
+                raise ValueError(f"The image edges must be at least {minimum_edge} pixels.")
             if width * height > MAX_TEXTURE_PIXELS:
                 raise ValueError("The image must contain no more than 64 megapixels.")
             opened.load()

@@ -53,6 +53,8 @@ public:
 
     void SetWebMediaController(IMediaController *ctrl);
 
+    void SetIdleImage(const wxString& image);
+
     void StopWebStream();
 
     bool IsStreaming() const;
@@ -62,6 +64,8 @@ public:
     void msw_rescale();
 
     void jump_to_play();
+
+    bool TryAutoPlay();
 
 protected:
     void onStateChanged(wxMediaEvent & event);
@@ -105,6 +109,7 @@ private:
     CameraStreamMode m_last_mode = CameraStreamMode::none;
     std::uint64_t m_webrtc_epoch = 0;
     std::string m_agent_camera_url;
+    wxString m_idle_image;
     bool m_web_user_stopped = false;
     wxMediaState m_last_state = MEDIASTATE_IDLE;
     std::string m_machine;

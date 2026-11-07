@@ -34,6 +34,7 @@
 #include "Selection.hpp"
 #include "AI/AIDesktopFeatureHost.hpp"
 #include "AI/ModelGeneration/WorkbenchImportSession.hpp"
+#include "PrinterTransferPresentation.hpp"
 
 #include "libslic3r/enum_bitmask.hpp"
 #include "libslic3r/Preset.hpp"
@@ -617,6 +618,8 @@ public:
     void merge(size_t obj_idx, std::vector<int> &vol_indeces);
 
     void send_to_printer(bool isall = false);
+    bool request_printer_transfer_shutdown();
+    bool poll_printer_transfer_shutdown();
     void export_gcode(bool prefer_removable);
     void export_gcode_3mf(bool export_all = false);
     void send_gcode_finish(wxString name);
@@ -769,7 +772,9 @@ public:
     // Keep AI arrange pending until the UI worker finishes.
     bool arrange_for_ai_workflow();
     void notify_ai_arrange_finished(bool success);
-
+    void show_select_machine_dialog_for_current_plate();
+    void show_select_machine_dialog_for_current_plate(const PrinterTransferPresentationContext& presentation);
+    void show_send_to_printer_dialog_for_current_plate(const PrinterTransferPresentationContext& presentation);
     // Docked UV-editor pane used by GLGizmoTextureDisplacement's LSCM projection preview (see
     // UVEditorCanvas.hpp). Returns nullptr only before the main window is fully constructed.
     class UVEditorCanvas* get_uv_editor_canvas();

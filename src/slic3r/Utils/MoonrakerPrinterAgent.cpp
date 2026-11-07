@@ -55,6 +55,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cctype>
 #include <ios>
@@ -66,6 +67,7 @@
 #include <memory>
 #include <sstream>
 #include <set>
+#include <string_view>
 #include <thread>
 #include <vector>
 #include <type_traits>
@@ -153,6 +155,63 @@ uint64_t steady_now_ms()
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
+std::string connection_device_ref(const std::string& value)
+{
+    std::ostringstream output;
+    output << std::hex << std::hash<std::string>{}(value);
+    return output.str();
+}
+
+std::string optional_json_string(const nlohmann::json& object, const char* key)
+{
+    if (!object.is_object())
+        return {};
+    const auto value = object.find(key);
+    if (value == object.end() || !value->is_string())
+        return {};
+    std::string result = value->get<std::string>();
+    boost::algorithm::trim(result);
+    return result;
+}
+
+std::string absolute_camera_url(const std::string& base_url, const std::string& value)
+{
+    if (value.empty() || boost::istarts_with(value, "http://") || boost::istarts_with(value, "https://") ||
+        boost::istarts_with(value, "rtsp://"))
+        return value;
+    const bool secure = boost::istarts_with(base_url, "https://");
+    if (boost::istarts_with(value, "//"))
+        return std::string(secure ? "https:" : "http:") + value;
+
+    WsEndpoint endpoint;
+    if (!parse_ws_endpoint(base_url, endpoint))
+        return {};
+    // Relative webcam paths are normally served by the printer web proxy, not
+    // Moonraker's API listener on 7125.
+    const bool default_web_port = endpoint.port == "7125" && value.front() == '/';
+    std::string origin = std::string(secure ? "https://" : "http://") + endpoint.host;
+    if (!default_web_port && endpoint.port != (secure ? "443" : "80"))
+        origin += ":" + endpoint.port;
+    return origin + (value.front() == '/' ? value : "/" + value);
+}
+
+Slic3r::CameraStreamMode camera_mode_for_url(const std::string& url)
+{
+    if (boost::istarts_with(url, "https://")) return Slic3r::CameraStreamMode::https;
+    if (boost::istarts_with(url, "http://")) return Slic3r::CameraStreamMode::http;
+    if (boost::istarts_with(url, "rtsp://")) return Slic3r::CameraStreamMode::rtsp;
+    return Slic3r::CameraStreamMode::none;
+}
+
+bool is_extruder_object_name(const std::string& name)
+{
+    if (name == "extruder")
+        return true;
+    constexpr std::string_view prefix = "extruder";
+    return name.size() > prefix.size() && name.compare(0, prefix.size(), prefix) == 0 &&
+        std::all_of(name.begin() + prefix.size(), name.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; });
+}
+
 } // namespace
 
 namespace Slic3r {
@@ -176,7 +235,20 @@ MoonrakerPrinterAgent::~MoonrakerPrinterAgent()
 
 AgentInfo MoonrakerPrinterAgent::get_agent_info_static()
 {
-    return AgentInfo{MOONRAKER_PRINTER_AGENT_ID, "Moonraker", MoonrakerPrinterAgent_VERSION, "Klipper/Moonraker printer agent"};
+    PrinterAgentTraits traits;
+    traits.protocol_family = PrinterAgentTraits::ProtocolFamily::Moonraker;
+    traits.accepts_empty_access_code = true;
+    traits.uses_printhost_api_key = true;
+    traits.preserves_foreign_device_ownership = true;
+    traits.supports_monitoring_telemetry = true;
+    traits.supports_upload_only = true;
+    traits.supports_upload_and_print = true;
+    traits.requires_task_identity_for_control = false;
+    traits.job_payload = PrinterAgentTraits::JobPayload::RawGcode;
+    traits.storage_model = PrinterAgentTraits::StorageModel::VirtualGcodeRoot;
+    traits.requires_transfer_preflight = false;
+    return AgentInfo{MOONRAKER_PRINTER_AGENT_ID, "Moonraker", MoonrakerPrinterAgent_VERSION,
+                     "Klipper/Moonraker printer agent", traits};
 }
 
 void MoonrakerPrinterAgent::set_cloud_agent(std::shared_ptr<ICloudServiceAgent> cloud)
@@ -206,6 +278,12 @@ int MoonrakerPrinterAgent::connect_printer(const PrinterConnectionParams& params
         return BAMBU_NETWORK_ERR_INVALID_HANDLE;
     }
 
+    BOOST_LOG_TRIVIAL(info) << "[PrinterConnection] connect_started agent=" << get_agent_info().id
+                            << " device_ref=" << connection_device_ref(params.dev_id)
+                            << " host=" << params.host
+                            << " port=" << (params.port.empty() ? "default" : params.port)
+                            << " use_ssl=" << params.use_ssl;
+
     std::string base_url;
     std::string api_key;
     uint64_t gen;
@@ -222,11 +300,20 @@ int MoonrakerPrinterAgent::connect_printer(const PrinterConnectionParams& params
     {
         std::lock_guard<std::recursive_mutex> lock(payload_mutex);
         status_cache = nlohmann::json::object();
+        metadata_filename.clear();
+        metadata_estimated_seconds.reset();
+        metadata_last_attempt = {};
+        active_extruder_log_key.clear();
+        remaining_time_log_source.clear();
     }
     has_storage.store(false);
     ws_last_emit_ms.store(0);
     ws_last_dispatch_ms.store(0);
     last_print_state.clear();
+    {
+        std::lock_guard<std::recursive_mutex> lock(state_mutex);
+        webcam_info = MoonrakerWebcamInfo{};
+    }
 
     // Launch connection in background thread (capture by value to avoid data races)
     {
@@ -256,6 +343,10 @@ int MoonrakerPrinterAgent::disconnect_printer()
         std::lock_guard<std::recursive_mutex> lock(connect_mutex);
         device_info = MoonrakerDeviceInfo{};
         ++connect_generation;  // Invalidate any in-flight connection
+    }
+    {
+        std::lock_guard<std::recursive_mutex> lock(state_mutex);
+        webcam_info = MoonrakerWebcamInfo{};
     }
 
     stop_status_stream();
@@ -338,24 +429,40 @@ int MoonrakerPrinterAgent::start_send_gcode_to_sdcard(PrintParams      params,
     if (update_fn)
         update_fn(PrintingStageCreate, 0, _u8L("Preparing..."));
 
-    std::string filename = params.filename;
-    if (filename.empty()) {
-        filename = params.task_name;
+    const auto traits = get_traits();
+    const std::string gcode_path = resolve_printer_job_payload_path(params, traits);
+    namespace fs = boost::filesystem;
+    const fs::path source_path(gcode_path);
+    if (gcode_path.empty() || !fs::exists(source_path)) {
+        BOOST_LOG_TRIVIAL(error) << "[PrinterTransfer] upload_failed action=upload_only agent="
+                                 << get_agent_info().id
+                                 << " device_ref=" << connection_device_ref(params.dev_id)
+                                 << " reason=file_not_found file=" << source_path.filename().string();
+        return BAMBU_NETWORK_ERR_FILE_NOT_EXIST;
     }
-    if (!boost::iends_with(filename, ".gcode")) {
-        filename += ".gcode";
-    }
+    const std::string safe_filename = resolve_upload_filename(params, gcode_path);
 
-    // Sanitize filename to prevent path traversal attacks
-    std::string safe_filename = sanitize_filename(filename);
+    BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] upload_started action=upload_only agent="
+                            << get_agent_info().id
+                            << " device_ref=" << connection_device_ref(params.dev_id)
+                            << " payload=" << printer_job_payload_name(traits.job_payload)
+                            << " file=" << safe_filename;
 
     // Upload only, don't start print
-    if (!upload_gcode(params.filename, safe_filename, device_info.base_url, device_info.api_key, update_fn, cancel_fn)) {
+    if (!upload_gcode(gcode_path, safe_filename, device_info.base_url, device_info.api_key, update_fn, cancel_fn)) {
+        BOOST_LOG_TRIVIAL(error) << "[PrinterTransfer] upload_failed action=upload_only agent="
+                                 << get_agent_info().id
+                                 << " device_ref=" << connection_device_ref(params.dev_id)
+                                 << " reason=transport_failed file=" << safe_filename;
         return BAMBU_NETWORK_ERR_PRINT_SG_UPLOAD_FTP_FAILED;
     }
 
     if (update_fn)
         update_fn(PrintingStageFinished, 100, _u8L("File uploaded"));
+    BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] upload_finished action=upload_only agent="
+                            << get_agent_info().id
+                            << " device_ref=" << connection_device_ref(params.dev_id)
+                            << " file=" << safe_filename;
     return BAMBU_NETWORK_SUCCESS;
 }
 
@@ -370,33 +477,42 @@ int MoonrakerPrinterAgent::start_local_print(PrintParams params, OnUpdateStatusF
     }
     // Determine the G-code file to upload
     // params.filename may be .3mf, params.dst_file contains actual G-code
-    std::string gcode_path = params.filename;
-    if (!params.dst_file.empty()) {
-        gcode_path = params.dst_file;
-    }
+    const auto traits = get_traits();
+    const std::string gcode_path = resolve_printer_job_payload_path(params, traits);
 
     // Check if file exists and has .gcode extension
     namespace fs = boost::filesystem;
     fs::path source_path(gcode_path);
     if (!fs::exists(source_path)) {
         BOOST_LOG_TRIVIAL(error) << "MoonrakerPrinterAgent: G-code file does not exist: " << gcode_path;
+        BOOST_LOG_TRIVIAL(error) << "[PrinterTransfer] upload_failed action=upload_and_print agent="
+                                 << get_agent_info().id
+                                 << " device_ref=" << connection_device_ref(params.dev_id)
+                                 << " reason=file_not_found file=" << source_path.filename().string();
         return BAMBU_NETWORK_ERR_FILE_NOT_EXIST;
     }
 
-    // Extract filename for upload (relative to gcodes root)
-    std::string upload_filename = source_path.filename().string();
-    if (!boost::iends_with(upload_filename, ".gcode")) {
-        upload_filename += ".gcode";
-    }
-    // Sanitize filename to prevent path traversal attacks (extra safety)
-    upload_filename = sanitize_filename(upload_filename);
+    const std::string upload_filename = resolve_upload_filename(params, gcode_path);
 
     // Upload file
     if (update_fn)
         update_fn(PrintingStageUpload, 0, _u8L("Uploading G-code..."));
+    BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] upload_started action=upload_and_print agent="
+                            << get_agent_info().id
+                            << " device_ref=" << connection_device_ref(params.dev_id)
+                            << " payload=" << printer_job_payload_name(traits.job_payload)
+                            << " file=" << upload_filename;
     if (!upload_gcode(gcode_path, upload_filename, device_info.base_url, device_info.api_key, update_fn, cancel_fn)) {
+        BOOST_LOG_TRIVIAL(error) << "[PrinterTransfer] upload_failed action=upload_and_print agent="
+                                 << get_agent_info().id
+                                 << " device_ref=" << connection_device_ref(params.dev_id)
+                                 << " reason=transport_failed file=" << upload_filename;
         return BAMBU_NETWORK_ERR_PRINT_LP_UPLOAD_FTP_FAILED;
     }
+    BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] upload_finished action=upload_and_print agent="
+                            << get_agent_info().id
+                            << " device_ref=" << connection_device_ref(params.dev_id)
+                            << " file=" << upload_filename;
 
     // Check cancellation
     if (cancel_fn && cancel_fn()) {
@@ -407,12 +523,21 @@ int MoonrakerPrinterAgent::start_local_print(PrintParams params, OnUpdateStatusF
     if (update_fn)
         update_fn(PrintingStageSending, 0, _u8L("Starting print..."));
     std::string gcode = "SDCARD_PRINT_FILE FILENAME=" + upload_filename;
+    BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] print_start_requested agent=" << get_agent_info().id
+                            << " device_ref=" << connection_device_ref(params.dev_id)
+                            << " file=" << upload_filename;
     if (!send_gcode_sync(device_info.dev_id, gcode)) {
+        BOOST_LOG_TRIVIAL(error) << "[PrinterTransfer] print_start_result agent=" << get_agent_info().id
+                                 << " device_ref=" << connection_device_ref(params.dev_id)
+                                 << " success=false file=" << upload_filename;
         return BAMBU_NETWORK_ERR_PRINT_LP_PUBLISH_MSG_FAILED;
     }
 
     if (update_fn)
         update_fn(PrintingStageFinished, 100, _u8L("Print started"));
+    BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] print_start_result agent=" << get_agent_info().id
+                            << " device_ref=" << connection_device_ref(params.dev_id)
+                            << " success=true file=" << upload_filename;
     return BAMBU_NETWORK_SUCCESS;
 }
 
@@ -639,6 +764,19 @@ bool MoonrakerPrinterAgent::fetch_filament_info(std::string dev_id, FilamentSync
     // No MMU detected - this is normal for printers without MMU, not an error
     BOOST_LOG_TRIVIAL(info) << "MoonrakerPrinterAgent::fetch_filament_info: No MMU system detected (neither HH nor Moonraker)";
     return false;
+}
+
+CameraStreamMode MoonrakerPrinterAgent::get_camera_stream_mode() const
+{
+    std::lock_guard<std::recursive_mutex> lock(state_mutex);
+    return webcam_info.mode;
+}
+
+std::string MoonrakerPrinterAgent::get_camera_url() const
+{
+    std::lock_guard<std::recursive_mutex> lock(state_mutex);
+    return webcam_info.mode == CameraStreamMode::http_snapshot ? webcam_info.snapshot_url :
+        (webcam_info.stream_url.empty() ? webcam_info.snapshot_url : webcam_info.stream_url);
 }
 
 std::string MoonrakerPrinterAgent::trim_and_upper(const std::string& input)
@@ -1152,7 +1290,9 @@ bool MoonrakerPrinterAgent::get_json(const std::string&           url,
                                      const std::string&           api_key,
                                      const std::function<bool()>& cancelled,
                                      nlohmann::json&              json,
-                                     std::string&                 error) const
+                                     std::string&                 error,
+                                     long                         connect_timeout_seconds,
+                                     long                         total_timeout_seconds) const
 {
     std::string response_body;
     bool        success = false;
@@ -1162,8 +1302,8 @@ bool MoonrakerPrinterAgent::get_json(const std::string&           url,
     if (!api_key.empty()) {
         http.header("X-Api-Key", api_key);
     }
-    http.timeout_connect(5)
-        .timeout_max(10)
+    http.timeout_connect(connect_timeout_seconds)
+        .timeout_max(total_timeout_seconds)
         .on_progress(cancel_when(cancelled))
         .on_complete([&](std::string body, unsigned status) {
             if (status == 200) {
@@ -1200,15 +1340,61 @@ bool MoonrakerPrinterAgent::fetch_device_info(const std::string&           base_
                                               std::string&                 error,
                                               const std::function<bool()>& cancelled) const
 {
+    return fetch_device_info_with_timeout(base_url, api_key, info, error, cancelled, 5, 10);
+}
+
+bool MoonrakerPrinterAgent::fetch_device_info_with_timeout(const std::string&           base_url,
+                                                           const std::string&           api_key,
+                                                           MoonrakerDeviceInfo&         info,
+                                                           std::string&                 error,
+                                                           const std::function<bool()>& cancelled,
+                                                           long                         connect_timeout_seconds,
+                                                           long                         total_timeout_seconds,
+                                                           bool                         require_protocol_identity) const
+{
     nlohmann::json json;
-    if (!get_json(join_url(base_url, "/server/info"), api_key, cancelled, json, error)) {
+    if (!get_json(join_url(base_url, "/server/info"), api_key, cancelled, json, error,
+                  connect_timeout_seconds, total_timeout_seconds)) {
         return false;
     }
 
     nlohmann::json result = json.contains("result") ? json["result"] : json;
-    info.dev_name         = result.value("machine_name", result.value("hostname", ""));
-    info.version          = result.value("moonraker_version", "");
-    info.klippy_state     = result.value("klippy_state", "");
+    if (require_protocol_identity &&
+        (!result.is_object() || (!result.contains("moonraker_version") && !result.contains("klippy_state") &&
+                                 !result.contains("components")))) {
+        error = "Protocol mismatch: missing Moonraker server identity";
+        return false;
+    }
+    info.dev_name = optional_json_string(result, "machine_name");
+    if (!info.dev_name.empty())
+        info.name_source = "server_info.machine_name";
+    else {
+        info.dev_name = optional_json_string(result, "hostname");
+        if (!info.dev_name.empty())
+            info.name_source = "server_info.hostname";
+    }
+    info.version = optional_json_string(result, "moonraker_version");
+    info.klippy_state = optional_json_string(result, "klippy_state");
+
+    // Some Moonraker builds omit hostname from /server/info but expose it through
+    // Klippy's /printer/info endpoint. Failure here must not reject a server whose
+    // Moonraker identity has already been validated.
+    if (info.dev_name.empty() && !(cancelled && cancelled())) {
+        nlohmann::json printer_json;
+        std::string printer_error;
+        if (get_json(join_url(base_url, "/printer/info"), api_key, cancelled, printer_json, printer_error,
+                     std::min<long>(connect_timeout_seconds, 2), std::min<long>(total_timeout_seconds, 3))) {
+            const nlohmann::json printer_result = printer_json.contains("result") ? printer_json["result"] : printer_json;
+            info.dev_name = optional_json_string(printer_result, "machine_name");
+            if (!info.dev_name.empty())
+                info.name_source = "printer_info.machine_name";
+            else {
+                info.dev_name = optional_json_string(printer_result, "hostname");
+                if (!info.dev_name.empty())
+                    info.name_source = "printer_info.hostname";
+            }
+        }
+    }
 
     return true;
 }
@@ -1231,6 +1417,63 @@ bool MoonrakerPrinterAgent::query_printer_status(const std::string&           ba
     }
 
     status = json["result"]["status"];
+    return true;
+}
+
+bool MoonrakerPrinterAgent::parse_webcam_info(const nlohmann::json& response, const std::string& base_url,
+                                              MoonrakerWebcamInfo& info)
+{
+    info = {};
+    const nlohmann::json result = response.contains("result") ? response["result"] : response;
+    const nlohmann::json* webcams = nullptr;
+    if (result.is_object()) {
+        const auto items = result.find("webcams");
+        if (items != result.end() && items->is_array())
+            webcams = &*items;
+    } else if (result.is_array()) {
+        webcams = &result;
+    }
+    if (!webcams)
+        return false;
+
+    for (const auto& webcam : *webcams) {
+        if (!webcam.is_object() || (webcam.contains("enabled") && webcam["enabled"].is_boolean() &&
+                                    !webcam["enabled"].get<bool>()))
+            continue;
+        const std::string stream = absolute_camera_url(base_url, optional_json_string(webcam, "stream_url"));
+        const std::string snapshot = absolute_camera_url(base_url, optional_json_string(webcam, "snapshot_url"));
+        CameraStreamMode mode = camera_mode_for_url(stream);
+        const CameraStreamMode snapshot_mode = camera_mode_for_url(snapshot);
+        // Moonraker's common /webcam/?action=stream endpoint is multipart MJPEG,
+        // which Windows Media Foundation does not decode reliably. Prefer the
+        // existing WebView snapshot controller when the same camera exposes one.
+        if ((mode == CameraStreamMode::http || mode == CameraStreamMode::https) &&
+            snapshot_mode != CameraStreamMode::none)
+            mode = CameraStreamMode::http_snapshot;
+        else if (mode == CameraStreamMode::none && snapshot_mode != CameraStreamMode::none)
+            mode = CameraStreamMode::http_snapshot;
+        if (mode == CameraStreamMode::none)
+            continue;
+        info.mode = mode;
+        info.name = optional_json_string(webcam, "name");
+        info.stream_url = stream;
+        info.snapshot_url = snapshot;
+        return true;
+    }
+    return true;
+}
+
+bool MoonrakerPrinterAgent::fetch_webcam_info(const std::string& base_url, const std::string& api_key,
+                                              MoonrakerWebcamInfo& info, std::string& error,
+                                              const std::function<bool()>& cancelled) const
+{
+    nlohmann::json response;
+    if (!get_json(join_url(base_url, "/server/webcams/list"), api_key, cancelled, response, error, 1, 2))
+        return false;
+    if (!parse_webcam_info(response, base_url, info)) {
+        error = "Unexpected webcam JSON structure";
+        return false;
+    }
     return true;
 }
 
@@ -1408,18 +1651,11 @@ void MoonrakerPrinterAgent::announce_printhost_device()
 
     const std::string model_id = device_info.model_id;
 
-    nlohmann::json payload;
-    payload["dev_name"]     = dev_name;
-    payload["dev_id"]       = device_info.dev_id;
-    payload["dev_ip"]       = device_info.dev_ip;
-    payload["dev_type"]     = model_id.empty() ? dev_name : model_id;
-    payload["dev_signal"]   = "0";
-    payload["connect_type"] = "lan";
-    payload["bind_state"]   = "free";
-    payload["sec_link"]     = "secure";
-    payload["ssdp_version"] = "v1";
-
-    ssdp_fn(payload.dump());
+    MoonrakerDeviceInfo announced = device_info;
+    announced.dev_name = dev_name;
+    announced.model_id = model_id.empty() ? dev_name : model_id;
+    if (!emit_discovered_device(announced, "configured_host"))
+        return;
 
     {
         std::lock_guard<std::recursive_mutex> lock(state_mutex);
@@ -1431,6 +1667,32 @@ void MoonrakerPrinterAgent::announce_printhost_device()
             selected_machine = device_info.dev_id;
         }
     }
+}
+
+bool MoonrakerPrinterAgent::emit_discovered_device(const MoonrakerDeviceInfo& info, const std::string& source)
+{
+    OnMsgArrivedFn ssdp_fn;
+    {
+        std::lock_guard<std::recursive_mutex> lock(state_mutex);
+        ssdp_fn = on_ssdp_msg_fn;
+    }
+    if (!ssdp_fn || info.dev_id.empty() || info.dev_ip.empty())
+        return false;
+
+    const std::string dev_name = info.dev_name.empty() ? info.dev_id : info.dev_name;
+    nlohmann::json payload;
+    payload["dev_name"]        = dev_name;
+    payload["dev_id"]          = info.dev_id;
+    payload["dev_ip"]          = info.dev_ip;
+    payload["dev_type"]        = info.model_id.empty() ? dev_name : info.model_id;
+    payload["dev_signal"]      = "0";
+    payload["connect_type"]    = "lan";
+    payload["bind_state"]      = "free";
+    payload["sec_link"]        = "secure";
+    payload["ssdp_version"]    = "v1";
+    payload["discovery_source"] = source;
+    ssdp_fn(payload.dump());
+    return true;
 }
 
 void MoonrakerPrinterAgent::dispatch_local_connect(int state, const std::string& dev_id, const std::string& msg)
@@ -1694,11 +1956,8 @@ void MoonrakerPrinterAgent::run_status_stream(std::string dev_id, std::string ba
                 }
 
                 for (const auto& name : this->available_objects) {
-                    if (name == "extruder" || name.rfind("extruder", 0) == 0) {
+                    if (is_extruder_object_name(name)) {
                         subscribe_objects.insert(name);
-                        if (name == "extruder") {
-                            break;
-                        }
                     }
                 }
             } else {
@@ -1748,6 +2007,9 @@ void MoonrakerPrinterAgent::run_status_stream(std::string dev_id, std::string ba
                 // A message shows the printer is answering, so the next drop starts the backoff from reconnect_delay
                 retry_count = 0;
                 handle_ws_message(dev_id, beast::buffers_to_string(buffer.data()));
+                if (refresh_print_metadata(dev_id, base_url, api_key)) {
+                    dispatch_status(dev_id);
+                }
                 // Check if handle_ws_message triggered reconnection request
                 if (ws_reconnect_requested.exchange(false)) {
                     connection_lost = true;
@@ -1933,6 +2195,78 @@ bool MoonrakerPrinterAgent::refresh_storage(const std::string& base_url, const s
     return has_storage.exchange(has_free) != has_free;
 }
 
+bool MoonrakerPrinterAgent::refresh_print_metadata(const std::string& dev_id,
+                                                   const std::string& base_url,
+                                                   const std::string& api_key)
+{
+    std::string filename;
+    const auto now = std::chrono::steady_clock::now();
+    bool cache_changed = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(payload_mutex);
+        if (status_cache.contains("print_stats") && status_cache["print_stats"].contains("filename") &&
+            status_cache["print_stats"]["filename"].is_string()) {
+            filename = status_cache["print_stats"]["filename"].get<std::string>();
+        }
+        if (filename.empty()) {
+            cache_changed = !metadata_filename.empty() || metadata_estimated_seconds.has_value();
+            metadata_filename.clear();
+            metadata_estimated_seconds.reset();
+            metadata_last_attempt = {};
+            return cache_changed;
+        }
+
+        const bool new_file = filename != metadata_filename;
+        const bool retry_due = metadata_last_attempt.time_since_epoch().count() == 0 ||
+            now - metadata_last_attempt >= std::chrono::seconds(30);
+        if (!new_file && (metadata_estimated_seconds.has_value() || !retry_due))
+            return false;
+
+        cache_changed = new_file && metadata_estimated_seconds.has_value();
+        if (new_file) {
+            metadata_filename = filename;
+            metadata_estimated_seconds.reset();
+        }
+        metadata_last_attempt = now;
+    }
+
+    nlohmann::json response;
+    std::string error;
+    std::optional<double> estimated_seconds;
+    const std::string url = join_url(base_url, "/server/files/metadata?filename=" + Http::url_encode(filename));
+    const bool success = get_json(url, api_key, [this] { return ws_stop.load(); }, response, error, 2, 4);
+    if (success) {
+        const nlohmann::json& result = response.contains("result") ? response["result"] : response;
+        if (result.is_object() && result.contains("estimated_time") && result["estimated_time"].is_number()) {
+            const double value = result["estimated_time"].get<double>();
+            if (std::isfinite(value) && value > 0.0)
+                estimated_seconds = value;
+        }
+    }
+
+    {
+        std::lock_guard<std::recursive_mutex> lock(payload_mutex);
+        if (metadata_filename != filename)
+            return false;
+        cache_changed = cache_changed || metadata_estimated_seconds != estimated_seconds;
+        metadata_estimated_seconds = estimated_seconds;
+    }
+
+    if (success) {
+        BOOST_LOG_TRIVIAL(info) << "[PrinterMonitoring] metadata_query_result agent=" << get_agent_info().id
+                                << " device_ref=" << connection_device_ref(dev_id)
+                                << " file_ref=" << connection_device_ref(filename)
+                                << " success=true estimated_time_present=" << estimated_seconds.has_value()
+                                << " estimated_seconds=" << estimated_seconds.value_or(0.0);
+    } else if (!ws_stop.load()) {
+        BOOST_LOG_TRIVIAL(warning) << "[PrinterMonitoring] metadata_query_result agent=" << get_agent_info().id
+                                   << " device_ref=" << connection_device_ref(dev_id)
+                                   << " file_ref=" << connection_device_ref(filename)
+                                   << " success=false error=" << error;
+    }
+    return cache_changed;
+}
+
 void MoonrakerPrinterAgent::update_status_cache(const nlohmann::json& updates)
 {
     if (!updates.is_object()) {
@@ -2025,15 +2359,38 @@ nlohmann::json MoonrakerPrinterAgent::build_print_payload_locked() const
     payload["print"]["support_bed_leveling"] = has_bed_leveling ? 1 : 0;
 
     const nlohmann::json* extruder = nullptr;
-    if (status_cache.contains("extruder") && status_cache["extruder"].is_object()) {
+    std::string extruder_name;
+    std::string extruder_source = "unavailable";
+    if (status_cache.contains("toolhead") && status_cache["toolhead"].is_object() &&
+        status_cache["toolhead"].contains("extruder") && status_cache["toolhead"]["extruder"].is_string()) {
+        const std::string active_name = status_cache["toolhead"]["extruder"].get<std::string>();
+        if (is_extruder_object_name(active_name) && status_cache.contains(active_name) && status_cache[active_name].is_object()) {
+            extruder = &status_cache[active_name];
+            extruder_name = active_name;
+            extruder_source = "toolhead";
+        }
+    }
+    if (!extruder && status_cache.contains("extruder") && status_cache["extruder"].is_object()) {
         extruder = &status_cache["extruder"];
-    } else {
+        extruder_name = "extruder";
+        extruder_source = "fallback";
+    }
+    if (!extruder) {
         for (const auto& item : status_cache.items()) {
-            if (item.value().is_object() && item.key().rfind("extruder", 0) == 0) {
+            if (item.value().is_object() && is_extruder_object_name(item.key())) {
                 extruder = &item.value();
+                extruder_name = item.key();
+                extruder_source = "fallback";
                 break;
             }
         }
+    }
+
+    const std::string extruder_log_key = extruder_source + ":" + extruder_name;
+    if (extruder_log_key != active_extruder_log_key) {
+        BOOST_LOG_TRIVIAL(info) << "[PrinterMonitoring] active_extruder_resolved source=" << extruder_source
+                                << " object=" << (extruder_name.empty() ? "none" : extruder_name);
+        active_extruder_log_key = extruder_log_key;
     }
 
     if (extruder) {
@@ -2087,10 +2444,12 @@ nlohmann::json MoonrakerPrinterAgent::build_print_payload_locked() const
     }
 
     int mc_percent = -1;
+    std::optional<double> progress_fraction;
     if (status_cache.contains("virtual_sdcard") && status_cache["virtual_sdcard"].contains("progress") &&
         status_cache["virtual_sdcard"]["progress"].is_number()) {
         const double progress = status_cache["virtual_sdcard"]["progress"].get<double>();
         if (progress >= 0.0) {
+            progress_fraction = progress;
             mc_percent = std::clamp(static_cast<int>(progress * 100.0 + 0.5), 0, 100);
         }
     }
@@ -2098,15 +2457,45 @@ nlohmann::json MoonrakerPrinterAgent::build_print_payload_locked() const
         payload["print"]["mc_percent"] = mc_percent;
     }
 
-    if (status_cache.contains("print_stats") && status_cache["print_stats"].contains("total_duration") &&
-        status_cache["print_stats"].contains("print_duration") && status_cache["print_stats"]["total_duration"].is_number() &&
-        status_cache["print_stats"]["print_duration"].is_number()) {
-        const double total   = status_cache["print_stats"]["total_duration"].get<double>();
-        const double elapsed = status_cache["print_stats"]["print_duration"].get<double>();
-        if (total > 0.0 && elapsed >= 0.0) {
-            const auto remaining_minutes          = std::max(0, static_cast<int>((total - elapsed) / 60.0));
-            payload["print"]["mc_remaining_time"] = remaining_minutes;
+    std::string raw_state;
+    std::optional<double> elapsed_seconds;
+    if (status_cache.contains("print_stats") && status_cache["print_stats"].is_object()) {
+        const auto& print_stats = status_cache["print_stats"];
+        if (print_stats.contains("state") && print_stats["state"].is_string())
+            raw_state = boost::algorithm::to_lower_copy(print_stats["state"].get<std::string>());
+        if (print_stats.contains("print_duration") && print_stats["print_duration"].is_number()) {
+            const double value = print_stats["print_duration"].get<double>();
+            if (std::isfinite(value) && value >= 0.0)
+                elapsed_seconds = value;
         }
+    }
+
+    int remaining_minutes = -1;
+    std::string remaining_source = "unavailable";
+    if (raw_state == "complete") {
+        remaining_minutes = 0;
+        remaining_source = "complete";
+    } else if ((raw_state == "printing" || raw_state == "paused") && elapsed_seconds) {
+        std::optional<double> remaining_seconds;
+        if (metadata_estimated_seconds && *metadata_estimated_seconds > 0.0) {
+            remaining_seconds = std::max(0.0, *metadata_estimated_seconds - *elapsed_seconds);
+            remaining_source = "metadata";
+        } else if (progress_fraction && *progress_fraction > 0.001 && *progress_fraction <= 1.0) {
+            remaining_seconds = *elapsed_seconds * (1.0 - *progress_fraction) / *progress_fraction;
+            remaining_source = "progress";
+        }
+        if (remaining_seconds && std::isfinite(*remaining_seconds)) {
+            remaining_minutes = *remaining_seconds <= 0.0 ? 0 :
+                std::max(1, static_cast<int>(std::ceil(*remaining_seconds / 60.0)));
+        }
+    }
+    payload["print"]["mc_remaining_time"] = remaining_minutes;
+    if (remaining_source != remaining_time_log_source) {
+        BOOST_LOG_TRIVIAL(info) << "[PrinterMonitoring] remaining_time_source=" << remaining_source
+                                << " minutes=" << remaining_minutes
+                                << " metadata_available=" << metadata_estimated_seconds.has_value()
+                                << " progress_available=" << progress_fraction.has_value();
+        remaining_time_log_source = remaining_source;
     }
 
     const auto now_ms = static_cast<uint64_t>(
@@ -2293,11 +2682,20 @@ void MoonrakerPrinterAgent::perform_connection_async(const std::string& dev_id, 
         if (!fetch_device_info(base_url, api_key, fetched_info, error_msg, is_stale)) {
             if (!is_stale()) {
                 BOOST_LOG_TRIVIAL(error) << "MoonrakerPrinterAgent: Failed to fetch server info: " << error_msg;
+                BOOST_LOG_TRIVIAL(error) << "[PrinterConnection] server_info_result agent=" << get_agent_info().id
+                                         << " device_ref=" << connection_device_ref(dev_id)
+                                         << " success=false error_stage=server_info error_code=" << error_msg;
+                // Preserve the established generic Moonraker behavior. Honor Forge owns an
+                // explicit discovery/connection UI and must receive a terminal failure state.
+                if (get_traits().supports_active_discovery)
+                    dispatch_local_connect(ConnectStatusFailed, dev_id, "server_info_failed");
             }
-            // Orca todo: revist here, for now don't send error, this is set current MachineObject to null
-            // dispatch_local_connect(ConnectStatusFailed, dev_id, "server_info_failed");
             return;
         }
+        BOOST_LOG_TRIVIAL(info) << "[PrinterConnection] server_info_result agent=" << get_agent_info().id
+                                << " device_ref=" << connection_device_ref(dev_id) << " success=true"
+                                << " name_source=" << (fetched_info.name_source.empty() ? "unavailable" : fetched_info.name_source)
+                                << " name_present=" << !fetched_info.dev_name.empty();
 
         // Commit fetched info back to device_info under lock, only if still current
         {
@@ -2306,8 +2704,31 @@ void MoonrakerPrinterAgent::perform_connection_async(const std::string& dev_id, 
                 return;
             }
             device_info.dev_name     = fetched_info.dev_name.empty() ? dev_id : fetched_info.dev_name;
+            device_info.name_source  = fetched_info.name_source;
             device_info.version      = fetched_info.version;
             device_info.klippy_state = fetched_info.klippy_state;
+        }
+
+        MoonrakerWebcamInfo fetched_webcam;
+        std::string webcam_error;
+        const bool webcam_query_ok = fetch_webcam_info(base_url, api_key, fetched_webcam, webcam_error, is_stale);
+        if (is_stale())
+            return;
+        {
+            std::lock_guard<std::recursive_mutex> lock(state_mutex);
+            webcam_info = webcam_query_ok ? fetched_webcam : MoonrakerWebcamInfo{};
+        }
+        if (webcam_query_ok) {
+            BOOST_LOG_TRIVIAL(info) << "[PrinterCamera] webcam_query_result agent=" << get_agent_info().id
+                                    << " device_ref=" << connection_device_ref(dev_id)
+                                    << " success=true available=" << (fetched_webcam.mode != CameraStreamMode::none)
+                                    << " mode=" << static_cast<int>(fetched_webcam.mode)
+                                    << " stream_url_present=" << !fetched_webcam.stream_url.empty()
+                                    << " snapshot_url_present=" << !fetched_webcam.snapshot_url.empty();
+        } else {
+            BOOST_LOG_TRIVIAL(warning) << "[PrinterCamera] webcam_query_result agent=" << get_agent_info().id
+                                       << " device_ref=" << connection_device_ref(dev_id)
+                                       << " success=false available=false error_code=" << webcam_error;
         }
 
 // Orca todo: disable websocket for now, as we don't use MonitorPanel for Moonraker printers yet
@@ -2322,8 +2743,13 @@ void MoonrakerPrinterAgent::perform_connection_async(const std::string& dev_id, 
             }
             update_status_cache(initial_status);
             BOOST_LOG_TRIVIAL(info) << "MoonrakerPrinterAgent: Initial status queried successfully";
+            BOOST_LOG_TRIVIAL(info) << "[PrinterConnection] initial_status_result agent=" << get_agent_info().id
+                                    << " device_ref=" << connection_device_ref(dev_id) << " success=true";
         } else if (!is_stale()) {
             BOOST_LOG_TRIVIAL(warning) << "MoonrakerPrinterAgent: Initial status query failed: " << error_msg;
+            BOOST_LOG_TRIVIAL(warning) << "[PrinterConnection] initial_status_result agent=" << get_agent_info().id
+                                       << " device_ref=" << connection_device_ref(dev_id)
+                                       << " success=false error_code=" << error_msg;
         }
 
         join_stopped_status_stream();
@@ -2334,6 +2760,8 @@ void MoonrakerPrinterAgent::perform_connection_async(const std::string& dev_id, 
                 return;
             }
             start_status_stream(dev_id, base_url, api_key);
+            BOOST_LOG_TRIVIAL(info) << "[PrinterConnection] websocket_started agent=" << get_agent_info().id
+                                    << " device_ref=" << connection_device_ref(dev_id);
         }
 #endif
 
@@ -2353,10 +2781,14 @@ void MoonrakerPrinterAgent::perform_connection_async(const std::string& dev_id, 
             dispatch_local_connect(ConnectStatusOk, dev_id, "0");
             dispatch_printer_connected(dev_id);
             BOOST_LOG_TRIVIAL(info) << "MoonrakerPrinterAgent: connect_printer completed - dev_id=" << dev_id;
+            BOOST_LOG_TRIVIAL(info) << "[PrinterConnection] state_ready agent=" << get_agent_info().id
+                                    << " device_ref=" << connection_device_ref(dev_id);
         }
     } else if (result != BAMBU_NETWORK_ERR_CANCELED) {
-        // Orca todo: revist here, for now don't send error, this is set current MachineObject to null
-        // dispatch_local_connect(ConnectStatusFailed, dev_id, error_msg);
+        BOOST_LOG_TRIVIAL(error) << "[PrinterConnection] connect_failed agent=" << get_agent_info().id
+                                 << " device_ref=" << connection_device_ref(dev_id)
+                                 << " error_stage=connect error_code=" << error_msg;
+        dispatch_local_connect(ConnectStatusFailed, dev_id, "connect_failed");
     }
 }
 
@@ -2365,7 +2797,7 @@ bool MoonrakerPrinterAgent::is_numeric(const std::string& value)
     return !value.empty() && std::all_of(value.begin(), value.end(), [](unsigned char c) { return std::isdigit(c) != 0; });
 }
 
-std::string MoonrakerPrinterAgent::normalize_base_url(bool use_ssl, const std::string& host, const std::string& port)
+std::string MoonrakerPrinterAgent::normalize_base_url(bool use_ssl, const std::string& host, const std::string& port) const
 {
     std::string value = use_ssl ? "https://" : "http://";
     value += host;
@@ -2404,6 +2836,26 @@ std::string MoonrakerPrinterAgent::sanitize_filename(const std::string& filename
         return "print.gcode";
     }
     return basename;
+}
+
+std::string MoonrakerPrinterAgent::resolve_upload_filename(const PrintParams& params,
+                                                           const std::string& source_path)
+{
+    std::string filename = params.task_name.empty() ? params.project_name : params.task_name;
+    if (filename.empty())
+        filename = boost::filesystem::path(source_path).filename().string();
+    filename = sanitize_filename(filename);
+
+    if (boost::iends_with(filename, ".gcode.3mf")) {
+        filename.resize(filename.size() - 4);
+    } else if (boost::iends_with(filename, ".3mf")) {
+        filename.resize(filename.size() - 4);
+        if (!boost::iends_with(filename, ".gcode"))
+            filename += ".gcode";
+    } else if (!boost::iends_with(filename, ".gcode")) {
+        filename += ".gcode";
+    }
+    return sanitize_filename(filename);
 }
 
 } // namespace Slic3r

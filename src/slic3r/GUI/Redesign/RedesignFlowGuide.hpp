@@ -58,7 +58,26 @@ public:
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) { paint(); });
     }
 
+    int first_column_left()
+    {
+        wxClientDC dc(this);
+        return horizontal_layout(dc, GetClientSize()).left;
+    }
+
 private:
+    struct HorizontalLayout {
+        double scale {1.0};
+        double fit {1.0};
+        wxFont heading_font;
+        wxFont subtitle_font;
+        std::array<wxString, 3> headings;
+        std::array<wxString, 3> subtitles;
+        std::array<int, 3> image_widths {};
+        std::array<int, 3> widths {};
+        int gap {0};
+        int left {0};
+    };
+
     static wxFont flow_font(int point_size, bool medium, double scale = 1.0)
     {
         const wxString family = wxFontEnumerator::IsValidFacename("HONOR Sans Design") ? "HONOR Sans Design" :
@@ -88,6 +107,60 @@ private:
         if (!image.IsOk() || width <= 0 || height <= 0)
             return wxNullBitmap;
         return wxBitmap(image.Scale(width, height, wxIMAGE_QUALITY_HIGH));
+    }
+
+    HorizontalLayout horizontal_layout(wxDC& dc, const wxSize& client) const
+    {
+        HorizontalLayout result;
+        const int reference_width = m_reference_width ? m_reference_width() : client.x;
+        result.scale = std::min({1.0, double(std::max(1, reference_width)) / FromDIP(1427),
+                                 double(std::max(1, client.y)) / FromDIP(259)});
+        const auto dip = [this, &result](double value) { return FromDIP(value * result.scale); };
+        result.heading_font = flow_font(14, true, result.scale);
+        result.subtitle_font = flow_font(12, false, result.scale);
+        result.headings = {text("上传图片或输入提示词生成图片"), text("生成图片"), text("转为3D")};
+        result.subtitles = {text("描述想创作的图片"), text("生成图片并完善"), text("获得可打印的专属 3D模型")};
+        result.image_widths = {dip(276), dip(139), dip(208)};
+        result.widths = result.image_widths;
+        for (size_t i = 0; i < result.widths.size(); ++i) {
+            dc.SetFont(result.heading_font);
+            result.widths[i] = std::max(result.widths[i], dc.GetTextExtent(result.headings[i]).x);
+            dc.SetFont(result.subtitle_font);
+            result.widths[i] = std::max(result.widths[i], dc.GetTextExtent(result.subtitles[i]).x);
+        }
+        const int available = std::max(1, client.x - 2 * FromDIP(12));
+        const int minimum_gap = dip(40);
+        auto total_width = [&result] { return result.widths[0] + result.widths[1] + result.widths[2]; };
+        if (total_width() + 2 * minimum_gap > available) {
+            result.widths = result.image_widths;
+            const int spare = std::max(0, available - total_width() - 2 * minimum_gap);
+            for (auto& width : result.widths) width += spare / 3;
+            for (size_t i = 0; i < result.widths.size(); ++i) {
+                dc.SetFont(result.heading_font);
+                result.headings[i] = wrap_text(dc, result.headings[i], result.widths[i]);
+                dc.SetFont(result.subtitle_font);
+                result.subtitles[i] = wrap_text(dc, result.subtitles[i], result.widths[i]);
+            }
+        }
+        result.fit = std::min(1.0, double(std::max(3, available - 2 * minimum_gap)) /
+                                      std::max(1, total_width()));
+        if (result.fit < 1.0) {
+            for (auto& width : result.widths) width = std::max(1, int(std::floor(width * result.fit)));
+            for (auto& width : result.image_widths) width = std::max(1, int(std::floor(width * result.fit)));
+            for (size_t i = 0; i < result.widths.size(); ++i) {
+                result.headings[i].Replace("\n", "");
+                result.subtitles[i].Replace("\n", "");
+                dc.SetFont(result.heading_font);
+                result.headings[i] = wrap_text(dc, result.headings[i], result.widths[i]);
+                dc.SetFont(result.subtitle_font);
+                result.subtitles[i] = wrap_text(dc, result.subtitles[i], result.widths[i]);
+            }
+        }
+        result.gap = std::max(0, std::min((available - total_width()) / 2,
+                                          (dip(1067) - total_width()) / 2));
+        const int flow_width = total_width() + 2 * result.gap;
+        result.left = (client.x - flow_width) / 2;
+        return result;
     }
 
     void draw_card(wxDC& dc, int x, int y, int width, int height, double scale)
@@ -154,56 +227,18 @@ private:
 
         // Use the drawer-closed width for artwork and fonts. Opening the
         // drawer changes only the column spacing, not the element scale.
-        const int reference_width = m_reference_width ? m_reference_width() : client.x;
-        const double scale = std::min({1.0, double(std::max(1, reference_width)) / FromDIP(1427),
-                                      double(client.y) / FromDIP(259)});
+        auto layout = horizontal_layout(dc, client);
+        const double scale = layout.scale;
+        const double fit = layout.fit;
         const auto dip = [this, scale](double value) { return FromDIP(value * scale); };
-        const wxFont heading_font = flow_font(14, true, scale);
-        const wxFont subtitle_font = flow_font(12, false, scale);
-        std::array<wxString, 3> headings {text("上传图片或输入提示词生成图片"), text("生成图片"), text("转为3D")};
-        std::array<wxString, 3> subtitles {text("描述想创作的图片"), text("生成图片并完善"), text("获得可打印的专属 3D模型")};
-        std::array<int, 3> image_widths {dip(276), dip(139), dip(208)};
-        auto widths = image_widths;
-        for (size_t i = 0; i < widths.size(); ++i) {
-            dc.SetFont(heading_font);
-            widths[i] = std::max(widths[i], dc.GetTextExtent(headings[i]).x);
-            dc.SetFont(subtitle_font);
-            widths[i] = std::max(widths[i], dc.GetTextExtent(subtitles[i]).x);
-        }
-        const int available = std::max(1, client.x - 2 * FromDIP(12));
-        const int minimum_gap = dip(40);
-        auto total_width = [&widths] { return widths[0] + widths[1] + widths[2]; };
-        // At narrow widths keep every instruction, wrapping within its own
-        // column rather than hiding subtitles or shrinking the font again.
-        if (total_width() + 2 * minimum_gap > available) {
-            widths = image_widths;
-            const int spare = std::max(0, available - total_width() - 2 * minimum_gap);
-            for (auto& width : widths) width += spare / 3;
-            for (size_t i = 0; i < widths.size(); ++i) {
-                dc.SetFont(heading_font);
-                headings[i] = wrap_text(dc, headings[i], widths[i]);
-                dc.SetFont(subtitle_font);
-                subtitles[i] = wrap_text(dc, subtitles[i], widths[i]);
-            }
-        }
-        // Extremely narrow windows cannot hold all three images at the
-        // reference scale. Fit the artwork as a last resort; retain readable
-        // text, its full wording, and separate column bounds.
-        const double fit = std::min(1.0, double(std::max(3, available - 2 * minimum_gap)) /
-                                         std::max(1, total_width()));
-        if (fit < 1.0) {
-            for (auto& width : widths) width = std::max(1, int(std::floor(width * fit)));
-            for (auto& width : image_widths) width = std::max(1, int(std::floor(width * fit)));
-            for (size_t i = 0; i < widths.size(); ++i) {
-                headings[i].Replace("\n", ""); subtitles[i].Replace("\n", "");
-                dc.SetFont(heading_font); headings[i] = wrap_text(dc, headings[i], widths[i]);
-                dc.SetFont(subtitle_font); subtitles[i] = wrap_text(dc, subtitles[i], widths[i]);
-            }
-        }
-        const int gap = std::max(0, std::min((available - total_width()) / 2,
-                                            (dip(1067) - total_width()) / 2));
-        const int flow_width = total_width() + 2 * gap;
-        const int left = (client.x - flow_width) / 2;
+        const auto& heading_font = layout.heading_font;
+        const auto& subtitle_font = layout.subtitle_font;
+        const auto& headings = layout.headings;
+        const auto& subtitles = layout.subtitles;
+        const auto& image_widths = layout.image_widths;
+        const auto& widths = layout.widths;
+        const int gap = layout.gap;
+        const int left = layout.left;
         std::array<int, 3> centres {left + widths[0] / 2,
             left + widths[0] + gap + widths[1] / 2,
             left + widths[0] + gap + widths[1] + gap + widths[2] / 2};

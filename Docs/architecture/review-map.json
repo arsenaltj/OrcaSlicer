@@ -197,6 +197,11 @@
       "needle": "struct ModelGenerationFeatureHost::Impl"
     },
     {
+      "id": "smart_generation_flow",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/SmartGenerationFlow.hpp",
+      "needle": "class SmartGenerationFlow"
+    },
+    {
       "id": "generate_confirmation",
       "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationSubmission.cpp",
       "needle": "void ModelGenerationPanel::on_generate"
@@ -300,8 +305,14 @@
     {
       "id": "printer_adapter",
       "path": "src/slic3r/GUI/Redesign/OrcaPrinterAdapter.cpp",
-      "needle": "bool OrcaPrinterAdapter::review_print(wxWindow* parent) const",
-      "detail": "Native print review retains device/version guards; matching native preview result blocks export/review for out-of-bed toolpaths, including the wipe tower."
+      "needle": "bool OrcaPrinterAdapter::review_print(wxWindow* parent, bool allow_unready_review) const",
+      "detail": "Native print review captures the selected real-device target, returns an explicit export/upload/upload-and-print action, rechecks device and slice state, then delegates to existing Plater, SendJob and PrintJob routes. Matching native preview results still block export/review for out-of-bed toolpaths, including the wipe tower."
+    },
+    {
+      "id": "honor_forge_discovery",
+      "path": "src/slic3r/Utils/HonorForgePrinterAgent.cpp",
+      "needle": "bool HonorForgePrinterAgent::start_discovery(bool start, bool sending)",
+      "detail": "Honor Forge owns an agent-scoped asynchronous discovery generation; existing Bonjour mDNS and bounded subnet candidates must pass Moonraker /server/info validation before the existing DeviceManager callback receives them."
     },
     {
       "id": "accepted_ux_controls",
@@ -1036,6 +1047,7 @@
       "group": "设计与生成",
       "evidence": [
         "generate_confirmation",
+        "smart_generation_flow",
         "provider_authorization"
       ],
       "modules": [
@@ -1987,17 +1999,19 @@
           "src/orca_connectivity_moonraker",
           "src/orca_connectivity_wondermaker",
           "src/slic3r/Utils/PrintHost*",
-          "src/slic3r/Utils/Moonraker*"
+          "src/slic3r/Utils/Moonraker*",
+          "src/slic3r/Utils/HonorForge*"
         ],
         "evidence": [
-          "mobile_connectivity"
+          "mobile_connectivity",
+          "honor_forge_discovery"
         ],
         "tests": [
           "tests/mobile_sdk/*"
         ],
         "state_owner": "连接快照、CommandEnvelope 与设备能力",
-        "contract": "协议适配与业务命令分开；打印操作校验状态",
-        "note": "SDK 与桌面原生连接共同存在，不能用一个端口成功代替整链路验收。",
+        "contract": "协议适配与业务命令分开；打印操作校验状态和 agent 声明的 payload、存储与动作能力",
+        "note": "SDK 与桌面原生连接共同存在；Honor Forge 使用独立 agent ID 复用 Moonraker 连接、raw G-code 上传与打印，不建立第二套 DeviceManager 或 Job 状态，不能用一个端口成功代替整链路验收。",
         "build_boundary": "MobileDeviceSDK STATIC 与 MobileDeviceSDKShared SHARED；Moonraker/WonderMaker 适配各有 STATIC target，桌面还有原生 PrintHost 入口。"
       },
       {

@@ -20,6 +20,47 @@ namespace Slic3r { class IPrinterAgent; }
 using namespace Slic3r;
 namespace py = pybind11;
 
+TEST_CASE("unit: legacy printer presets resolve to the correct built-in agent", "[registry][unit]")
+{
+    CHECK(NetworkAgentFactory::resolve_printer_agent_id("", "Honor Forge", false) == HONOR_FORGE_PRINTER_AGENT_ID);
+    CHECK(NetworkAgentFactory::resolve_printer_agent_id("", "WonderMaker ZR Ultra S", false) == ORCA_PRINTER_AGENT_ID);
+    CHECK(NetworkAgentFactory::resolve_printer_agent_id("", "Bambu Lab X1 Carbon", true) == BBL_PRINTER_AGENT_ID);
+    CHECK(NetworkAgentFactory::resolve_printer_agent_id(ORCA_PRINTER_AGENT_ID, "Honor Forge", false) ==
+          ORCA_PRINTER_AGENT_ID);
+    CHECK(NetworkAgentFactory::resolve_printer_agent_id("plugin-agent", "Honor Forge", false) == "plugin-agent");
+}
+
+TEST_CASE("unit: printer transfer traits preserve raw Moonraker G-code", "[registry][unit]")
+{
+    const auto moonraker = NetworkAgentFactory::get_printer_agent_traits(MOONRAKER_PRINTER_AGENT_ID);
+    CHECK(moonraker.job_payload == PrinterAgentTraits::JobPayload::RawGcode);
+    CHECK(moonraker.storage_model == PrinterAgentTraits::StorageModel::VirtualGcodeRoot);
+    CHECK_FALSE(moonraker.requires_transfer_preflight);
+    CHECK(moonraker.supports_monitoring_telemetry);
+    CHECK(moonraker.supports_upload_only);
+    CHECK(moonraker.supports_upload_and_print);
+
+    const auto honor = NetworkAgentFactory::get_printer_agent_traits(HONOR_FORGE_PRINTER_AGENT_ID);
+    CHECK(honor.job_payload == PrinterAgentTraits::JobPayload::RawGcode);
+    CHECK(honor.storage_model == PrinterAgentTraits::StorageModel::VirtualGcodeRoot);
+    CHECK_FALSE(honor.requires_transfer_preflight);
+    CHECK(honor.supports_monitoring_telemetry);
+
+    const auto orca = NetworkAgentFactory::get_printer_agent_traits(ORCA_PRINTER_AGENT_ID);
+    CHECK_FALSE(orca.supports_upload_only);
+    CHECK_FALSE(orca.supports_upload_and_print);
+    CHECK_FALSE(orca.supports_monitoring_telemetry);
+
+    PrintParams params;
+    params.filename = "plate.gcode.3mf";
+    params.dst_file = "plate.gcode";
+    CHECK(resolve_printer_job_payload_path(params, moonraker) == "plate.gcode");
+    CHECK(resolve_printer_job_payload_path(params, PrinterAgentTraits{}) == "plate.gcode.3mf");
+    params.dst_file.clear();
+    CHECK(resolve_printer_job_payload_path(params, moonraker).empty());
+    CHECK(resolve_printer_job_payload_path(params, PrinterAgentTraits{}) == "plate.gcode.3mf");
+}
+
 // ===========================================================================
 // UNIT - printer-agent registry duplicate handling.
 // Confirms a duplicate agent id is rejected so a plugin cannot shadow a built-in

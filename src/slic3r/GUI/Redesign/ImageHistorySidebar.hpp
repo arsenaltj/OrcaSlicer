@@ -12,7 +12,7 @@ class ImageHistorySidebar final : public wxPanel
 {
 public:
     using Open = std::function<bool(const std::string&)>;
-    ImageHistorySidebar(wxWindow* parent, Open open, std::function<void()> layout_changed);
+    ImageHistorySidebar(wxWindow* parent, Open open, std::function<void()> layout_changed, bool models_only = false);
     ~ImageHistorySidebar() override;
     void refresh_history();
     void set_busy(bool busy);

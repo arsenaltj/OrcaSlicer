@@ -548,7 +548,15 @@ int BBLPrinterAgent::del_subscribe(std::vector<std::string> dev_list)
 // ============================================================================
 AgentInfo BBLPrinterAgent::get_agent_info_static()
 {
-    return AgentInfo{BBL_PRINTER_AGENT_ID, "Bambu Lab", "", "Bambu Lab printer agent"};
+    PrinterAgentTraits traits;
+    traits.protocol_family = PrinterAgentTraits::ProtocolFamily::Bambu;
+    traits.supports_active_discovery = true;
+    traits.supports_upload_only = true;
+    traits.supports_upload_and_print = true;
+    traits.job_payload = PrinterAgentTraits::JobPayload::Gcode3mf;
+    traits.storage_model = PrinterAgentTraits::StorageModel::ReportedDeviceStorage;
+    traits.requires_transfer_preflight = true;
+    return AgentInfo{BBL_PRINTER_AGENT_ID, "Bambu Lab", "", "Bambu Lab printer agent", traits};
 }
 
 // ============================================================================

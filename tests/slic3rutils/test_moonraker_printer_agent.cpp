@@ -101,6 +101,15 @@ protected:
     }
 };
 
+class WebcamParsingAgent : public MoonrakerPrinterAgent
+{
+public:
+    using MoonrakerPrinterAgent::MoonrakerPrinterAgent;
+    using MoonrakerPrinterAgent::MoonrakerWebcamInfo;
+    using MoonrakerPrinterAgent::parse_webcam_info;
+    using MoonrakerPrinterAgent::resolve_upload_filename;
+};
+
 // Connects without the app's printer preset, and counts the device info queries that have returned.
 class ConnectAgent : public MoonrakerPrinterAgent
 {
@@ -541,6 +550,49 @@ TEST_CASE("Moonraker discovery waits for a complete device identity", "[Moonrake
     REQUIRE(announcement.at("dev_id") == agent.device_info.dev_id);
     REQUIRE(announcement.at("dev_ip") == agent.device_info.dev_ip);
     REQUIRE(announcement.at("dev_name") == "Test model");
+}
+
+TEST_CASE("Moonraker webcam parsing prefers an enabled stream and resolves the web proxy", "[MoonrakerPrinterAgent][Camera]")
+{
+    const nlohmann::json response = {{"result", {{"webcams", nlohmann::json::array({
+        {{"name", "disabled"}, {"enabled", false}, {"stream_url", "/ignored"}},
+        {{"name", "camera"}, {"enabled", true}, {"stream_url", "/webcam/?action=stream"},
+         {"snapshot_url", "/webcam/?action=snapshot"}}
+    })}}}};
+    WebcamParsingAgent::MoonrakerWebcamInfo camera;
+    REQUIRE(WebcamParsingAgent::parse_webcam_info(response, "http://10.80.218.120:7125", camera));
+    CHECK(camera.mode == CameraStreamMode::http_snapshot);
+    CHECK(camera.name == "camera");
+    CHECK(camera.stream_url == "http://10.80.218.120/webcam/?action=stream");
+    CHECK(camera.snapshot_url == "http://10.80.218.120/webcam/?action=snapshot");
+}
+
+TEST_CASE("Moonraker uploads use the project name instead of the temporary G-code path", "[MoonrakerPrinterAgent][Transfer]")
+{
+    WebcamParsingAgent agent("");
+    PrintParams params;
+    params.project_name = "queued-part.gcode.3mf";
+    CHECK(agent.resolve_upload_filename(params, "C:/temp/.12100.0.gcode") == "queued-part.gcode");
+
+    params.task_name = "explicit-name";
+    CHECK(agent.resolve_upload_filename(params, "C:/temp/.12100.0.gcode") == "explicit-name.gcode");
+
+    params.task_name.clear();
+    params.project_name = "folder/unsafe-name.3mf";
+    CHECK(agent.resolve_upload_filename(params, "C:/temp/.12100.0.gcode") == "unsafe-name.gcode");
+}
+
+TEST_CASE("Moonraker webcam parsing supports snapshot-only cameras", "[MoonrakerPrinterAgent][Camera]")
+{
+    const nlohmann::json response = {{"result", {{"webcams", nlohmann::json::array({
+        {{"enabled", true}, {"snapshot_url", "https://printer.example/frame.jpg"}}
+    })}}}};
+    WebcamParsingAgent::MoonrakerWebcamInfo camera;
+    REQUIRE(WebcamParsingAgent::parse_webcam_info(response, "https://printer.example:7125", camera));
+    CHECK(camera.mode == CameraStreamMode::http_snapshot);
+    CHECK(camera.stream_url.empty());
+    CHECK(camera.snapshot_url == "https://printer.example/frame.jpg");
+    CHECK_FALSE(WebcamParsingAgent::parse_webcam_info(nlohmann::json::object(), "http://printer", camera));
 }
 
 TEST_CASE("Stopping the status stream gives a silent printer no more than its timeouts", "[MoonrakerPrinterAgent][StatusStream]")

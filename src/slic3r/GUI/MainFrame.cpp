@@ -711,13 +711,38 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
 
     update_title();
 
+    m_close_poll_timer.SetOwner(this);
+    Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
+        if (m_close_phase != ClosePhase::WaitingForPrinterTransfer)
+            return;
+        if (m_plater && !m_plater->poll_printer_transfer_shutdown())
+            return;
+
+        m_close_poll_timer.Stop();
+        m_close_phase = ClosePhase::Idle;
+        BOOST_LOG_TRIVIAL(info) << "[AppShutdown] close_resumed reason=printer_transfer_idle";
+        Close(false);
+    }, m_close_poll_timer.GetId());
+
     // declare events
     Bind(wxEVT_CLOSE_WINDOW, [this](wxCloseEvent& event) {
-        BOOST_LOG_TRIVIAL(info) << __FUNCTION__<< ": mainframe received close_widow event";
-        if (event.CanVeto() && m_plater->get_view3D_canvas3D()->get_gizmos_manager().is_in_editing_mode(true)) {
+        const char* phase = m_close_phase == ClosePhase::Idle ? "idle" :
+                            m_close_phase == ClosePhase::WaitingForPrinterTransfer ? "waiting_for_printer_transfer" :
+                            "shutting_down";
+        BOOST_LOG_TRIVIAL(info) << "[AppShutdown] close_received phase=" << phase
+                                << " can_veto=" << event.CanVeto();
+
+        if (m_close_phase != ClosePhase::Idle) {
+            BOOST_LOG_TRIVIAL(info) << "[AppShutdown] duplicate_close_ignored phase=" << phase;
+            if (event.CanVeto())
+                event.Veto();
+            return;
+        }
+
+        if (!m_close_confirmed && event.CanVeto() && m_plater->get_view3D_canvas3D()->get_gizmos_manager().is_in_editing_mode(true)) {
             // prevents to open the save dirty project dialog
             event.Veto();
-            BOOST_LOG_TRIVIAL(info) << __FUNCTION__<< "cancelled by gizmo in editing";
+            BOOST_LOG_TRIVIAL(info) << "[AppShutdown] close_cancelled reason=gizmo_editing";
             return;
         }
 
@@ -733,15 +758,18 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
         };
 
         // BBS: close save project
-        int result;
-        if (event.CanVeto() && ((result = m_plater->close_with_confirm(check)) == wxID_CANCEL)) {
-            event.Veto();
-            BOOST_LOG_TRIVIAL(info) << __FUNCTION__<< "cancelled by close_with_confirm selection";
-            return;
-        }
-        if (event.CanVeto() && !wxGetApp().check_print_host_queue()) {
-            event.Veto();
-            return;
+        if (!m_close_confirmed) {
+            int result;
+            if (event.CanVeto() && ((result = m_plater->close_with_confirm(check)) == wxID_CANCEL)) {
+                event.Veto();
+                BOOST_LOG_TRIVIAL(info) << "[AppShutdown] close_cancelled reason=project_confirmation";
+                return;
+            }
+            if (event.CanVeto() && !wxGetApp().check_print_host_queue()) {
+                event.Veto();
+                BOOST_LOG_TRIVIAL(info) << "[AppShutdown] close_cancelled reason=print_host_queue";
+                return;
+            }
         }
 
     #if 0 // BBS
@@ -760,18 +788,37 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
         //}
     #endif
 
-        MarkdownTip::ExitTip();
-        // Prevent queued selection/UI refresh work from running as normal during reset.
-        wxGetApp().set_closing(true);
-        wxGetApp().start_exit_watchdog();
+        if (!m_close_confirmed) {
+            m_close_confirmed = true;
+            MarkdownTip::ExitTip();
+            // Prevent queued selection/UI refresh work from running as normal while transfer cancellation completes.
+            wxGetApp().set_closing(true);
+            wxGetApp().start_exit_watchdog();
+        }
 
+        if (m_plater && !m_plater->request_printer_transfer_shutdown()) {
+            if (event.CanVeto()) {
+                m_close_phase = ClosePhase::WaitingForPrinterTransfer;
+                m_close_poll_timer.Start(50);
+                BOOST_LOG_TRIVIAL(info) << "[AppShutdown] close_deferred reason=printer_transfer";
+                event.Veto();
+                return;
+            }
+            BOOST_LOG_TRIVIAL(warning) << "[AppShutdown] close_cannot_defer reason=non_vetoable_event";
+        }
+
+        m_close_phase = ClosePhase::ShuttingDown;
+        BOOST_LOG_TRIVIAL(info) << "[AppShutdown] plater_reset_begin";
         m_plater->reset();
+        BOOST_LOG_TRIVIAL(info) << "[AppShutdown] plater_reset_end";
+        BOOST_LOG_TRIVIAL(info) << "[AppShutdown] mainframe_shutdown_begin";
         this->shutdown();
+        BOOST_LOG_TRIVIAL(info) << "[AppShutdown] mainframe_shutdown_end";
         // propagate event
 
         wxGetApp().remove_mall_system_dialog();
         event.Skip();
-        BOOST_LOG_TRIVIAL(info) << __FUNCTION__<< ": mainframe finished process close_widow event";
+        BOOST_LOG_TRIVIAL(info) << "[AppShutdown] close_event_finished";
     });
 
     //FIXME it seems this method is not called on application start-up, at least not on Windows. Why?

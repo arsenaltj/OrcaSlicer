@@ -8,6 +8,8 @@
 #include "slic3r/GUI/AIModelGenerationHttpError.hpp"
 #include "test_utils.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationImageInput.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/SmartGenerationFlow.hpp"
+#include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
 
 #include <boost/nowide/cstdlib.hpp>
 #include <boost/filesystem/fstream.hpp>
@@ -28,7 +30,92 @@
 #include <stdexcept>
 
 using Slic3r::GUI::AIModelGenerationClient;
+
+TEST_CASE("Smart generation advances once and retains completed stages across retries", "[SmartGenerationFlow]")
+{
+    using Slic3r::GUI::SmartGenerationFlow;
+    SmartGenerationFlow flow;
+    flow.begin("flow");
+    REQUIRE(flow.observe(90, false, false) == 27);
+    REQUIRE_FALSE(flow.claim_geometry(false));
+    REQUIRE(flow.claim_geometry(true));
+    REQUIRE_FALSE(flow.claim_geometry(true));
+    REQUIRE(flow.observe(0, false, false) == 30);
+    REQUIRE(flow.observe(80, false, false) == 78);
+    flow.stop();
+    REQUIRE_FALSE(flow.claim_geometry(true));
+    REQUIRE(flow.observe(95, true, false) == 78);
+    flow.resume(true);
+    REQUIRE(flow.observe(20, false, false) == 78);
+    REQUIRE(flow.observe(96, true, false) == 96);
+    REQUIRE(flow.observe(100, true, false) == 99);
+    REQUIRE(flow.observe(100, true, true) == 100);
+    flow.begin("new");
+    REQUIRE(flow.observe(0, false, false) == 0);
+}
+
+TEST_CASE("Restoring a smart task requires explicit intent before the next paid stage", "[SmartGenerationFlow]")
+{
+    using namespace Slic3r::GUI;
+    SmartGenerationFlow flow;
+    flow.restore(28, 60, false);
+    REQUIRE_FALSE(flow.claim_geometry(true));
+    REQUIRE(flow.observe(100, false, false) == 28);
+    flow.resume(false);
+    REQUIRE(flow.claim_geometry(true));
+    ModelGenerationUIState state, current;
+    state.smart_mode = true; state.smart_flow_id = "stable-flow";
+    state.model_generation_context = true; state.model_generation_session = 1;
+    REQUIRE(model_generation_route_action(state, current, false, 0, "") == RedesignModelRouteAction::Model);
+    current = state; state.job_id = "server-job"; ++state.revision;
+    REQUIRE(model_generation_route_action(state, current, true, 1, "stable-flow") == RedesignModelRouteAction::Refresh);
+}
 using namespace Slic3r::GUI::ModelGenerationPresentation;
+
+TEST_CASE("Static WebP keeps transparency and damaged replacements are rejected", "[ModelGenerationPresentation][ImageSelection][SmartGenerationFlow]")
+{
+    ScopedTemporaryDir temporary("orca-webp-input");
+    wxInitAllImageHandlers();
+    const std::vector<unsigned char> valid {82,73,70,70,36,0,0,0,87,69,66,80,86,80,56,76,23,0,0,0,47,95,192,15,16,7,80,144,66,20,168,100,1,32,33,252,159,47,69,244,63,245,7,0};
+    const auto original = temporary.path() / "original.webp";
+    const auto invalid = temporary.path() / "invalid.webp";
+    const auto write = [](const boost::filesystem::path& path, const std::vector<unsigned char>& bytes) {
+        boost::filesystem::ofstream stream(path, std::ios::binary);
+        stream.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    };
+    write(original, valid);
+    auto truncated = valid; truncated.resize(truncated.size() - 8); write(invalid, truncated);
+    REQUIRE(is_supported_image(original));
+    wxImage decoded(original.wstring());
+    REQUIRE(decoded.HasAlpha());
+    CHECK(decoded.GetWidth() == 96);
+    CHECK(decoded.GetAlpha(0, 0) == 100);
+    wxLogNull quiet;
+    CHECK_FALSE(is_supported_image(invalid));
+}
+
+TEST_CASE("Smart history displays original inputs and unfinished 3D flows", "[ModelGenerationPresentation][SmartGenerationFlow]")
+{
+    ScopedTemporaryDir temporary("orca-smart-history");
+    if (!wxImage::FindHandler(wxBITMAP_TYPE_PNG)) wxImage::AddHandler(new wxPNGHandler());
+    const std::string id = "33333333-3333-4333-8333-333333333333";
+    const auto directory = temporary.path() / id;
+    boost::filesystem::create_directories(directory);
+    wxImage original(64,64); original.SetRGB(wxRect(0,0,64,64),30,40,50);
+    REQUIRE(original.SaveFile((directory / "input.png").wstring(),wxBITMAP_TYPE_PNG));
+    REQUIRE(original.SaveFile((directory / "preview.png").wstring(),wxBITMAP_TYPE_PNG));
+    REQUIRE(write_json(directory / "job.json", {{"workflow_mode","smart"},{"id",id},
+        {"state","failed"},{"style","realistic"},{"user_prompt","vase"},
+        {"input_path","input.png"},{"preview_path","preview.png"}}));
+    auto entries = read_smart_model_history(temporary.path());
+    REQUIRE(entries.size() == 1);
+    CHECK(entries.front().preview_path == directory / "input.png");
+    CHECK(entries.front().state == "failed");
+    CHECK(entries.front().style == "realistic");
+    REQUIRE(write_json(directory / "job.json", {{"workflow_mode","advanced"},{"id",id},
+        {"state","awaiting_confirmation"},{"preview_path","preview.png"}}));
+    CHECK(read_smart_model_history(temporary.path()).empty());
+}
 
 TEST_CASE("Hidden print settings retain client defaults without a page",
           "[ModelGenerationPresentation][ModelGenerationLegacyState]")

@@ -126,6 +126,14 @@ void SendJob::process(Ctl &ctl)
     int result = -1;
     std::string http_body;
 
+    if (!agent || !agent->get_printer_agent()) {
+        BOOST_LOG_TRIVIAL(error) << "[PrinterTransfer] upload_failed action=upload_only reason=agent_unavailable";
+        ctl.update_status(curr_percent, send_print_failed_str);
+        return;
+    }
+    const auto traits = agent->get_printer_agent()->get_traits();
+    const std::string agent_id = agent->get_printer_agent()->get_agent_info().id;
+
     if (this->connection_type == "lan") {
         msg = _u8L("Sending print job over LAN");
     }
@@ -139,7 +147,7 @@ void SendJob::process(Ctl &ctl)
     // In check mode (InputIpAddressDialog / lan-mode send) verify the connection with a dummy
     // "verify_job" upload and fire the caller's success/fail callback; when not continuing, stop
     // here. Cloud sends skip this.
-    if (m_is_check_mode) {
+    if (m_is_check_mode && traits.requires_transfer_preflight) {
         PrintParams verify_params;
         verify_params.dev_ip           = m_dev_ip;
         verify_params.username         = agent->default_lan_username();
@@ -162,6 +170,10 @@ void SendJob::process(Ctl &ctl)
             m_job_finished = true;
             return;
         }
+    } else if (m_is_check_mode) {
+        BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] preflight_skipped action=upload_only agent="
+                                << agent_id << " storage_model="
+                                << printer_storage_model_name(traits.storage_model);
     }
 
     LifecycleEventContext start_ctx;
@@ -223,6 +235,7 @@ void SendJob::process(Ctl &ctl)
         params.filename = wxGetApp().plater()->get_3mf_filename();
     else
         params.filename = job_data._3mf_path.string();
+    params.dst_file = plate->get_tmp_gcode_path();
 
 
     params.config_filename      = job_data._3mf_config_path.string();
@@ -239,6 +252,12 @@ void SendJob::process(Ctl &ctl)
     params.use_ssl_for_ftp = m_local_use_ssl_for_ftp;
     params.use_ssl_for_mqtt = m_local_use_ssl;
     std::string msg_text;
+    const std::string payload_path = resolve_printer_job_payload_path(params, traits);
+    BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] payload_resolved action=upload_only agent=" << agent_id
+                            << " device_ref=" << std::hash<std::string>{}(m_dev_id)
+                            << " payload=" << printer_job_payload_name(traits.job_payload)
+                            << " storage_model=" << printer_storage_model_name(traits.storage_model)
+                            << " file=" << fs::path(payload_path).filename().string();
 
     const int StagePercentPoint[(int)PrintingStageFinished + 1] = {
         20,  // PrintingStageCreate
@@ -318,7 +337,11 @@ void SendJob::process(Ctl &ctl)
         };
 
 
-    if (params.connection_type != "lan") {
+    BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] upload_started action=upload_only agent=" << agent_id
+                            << " device_ref=" << std::hash<std::string>{}(m_dev_id);
+    if (traits.storage_model == PrinterAgentTraits::StorageModel::VirtualGcodeRoot) {
+        result = agent->start_send_gcode_to_sdcard(params, update_fn, cancel_fn, nullptr);
+    } else if (params.connection_type != "lan") {
         if (params.dev_ip.empty())
             params.comments = "no_ip";
         else if (this->cloud_print_only)
@@ -410,10 +433,16 @@ void SendJob::process(Ctl &ctl)
             ctl.show_error_info(msg_text, 0, "", "");
         }
         BOOST_LOG_TRIVIAL(error) << "send_job: failed, result = " << result;
+        BOOST_LOG_TRIVIAL(error) << "[PrinterTransfer] upload_failed action=upload_only agent=" << agent_id
+                                 << " device_ref=" << std::hash<std::string>{}(m_dev_id)
+                                 << " result=" << result;
 
     }
     else {
         BOOST_LOG_TRIVIAL(error) << "send_job: send ok.";
+        BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] upload_finished action=upload_only agent=" << agent_id
+                                << " device_ref=" << std::hash<std::string>{}(m_dev_id)
+                                << " result=" << result;
         wxCommandEvent* evt = new wxCommandEvent(m_print_job_completed_id);
         evt->SetString(from_u8(params.project_name));
         wxQueueEvent(m_plater, evt);

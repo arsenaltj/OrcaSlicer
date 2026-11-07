@@ -57,6 +57,7 @@
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/lexical_cast.hpp>
 #include <cmath>
+#include <chrono>
 #include <wx/progdlg.h>
 #include <wx/clipbrd.h>
 #include <wx/dcgraph.h>
@@ -71,6 +72,8 @@
 #include <wx/types.h>
 #include <wx/timer.h>
 #include "BitmapCache.hpp"
+#include "Redesign/PrinterTransferDialogStyle.hpp"
+#include "Redesign/PrinterWorkspaceState.hpp"
 
 #include "DeviceCore/DevManager.h"
 #include "DeviceCore/DevConfigUtil.h"
@@ -267,9 +270,13 @@ void SendToPrinterDialog::on_rename_enter()
     m_rename_normal_panel->Layout();
 }
 
-SendToPrinterDialog::SendToPrinterDialog(Plater *plater)
-    : DPIDialog(static_cast<wxWindow *>(wxGetApp().mainframe), wxID_ANY, _L("Send to Printer storage"), wxDefaultPosition, wxDefaultSize, wxCAPTION | wxCLOSE_BOX)
-    , m_plater(plater), m_export_3mf_cancel(false)
+SendToPrinterDialog::SendToPrinterDialog(Plater *plater, PrinterTransferPresentationContext presentation)
+    : DPIDialog(static_cast<wxWindow *>(wxGetApp().mainframe), wxID_ANY,
+                presentation.redesign() ? _L("上传 G-code") : _L("Send to Printer storage"),
+                wxDefaultPosition, wxDefaultSize, printer_transfer_dialog_style(presentation.redesign()))
+    , m_export_3mf_cancel(false)
+    , m_presentation(std::move(presentation))
+    , m_plater(plater)
 {
 #ifdef __WINDOWS__
     SetDoubleBuffered(true);
@@ -282,9 +289,16 @@ SendToPrinterDialog::SendToPrinterDialog(Plater *plater)
     SetFont(wxGetApp().normal_font());
 
     Freeze();
+    if (m_presentation.redesign()) {
+        m_colour_def_color = RedesignTheme::panel_colour();
+        m_colour_bold_color = RedesignTheme::primary_text_colour();
+    }
     SetBackgroundColour(m_colour_def_color);
 
     m_sizer_main = new wxBoxSizer(wxVERTICAL);
+
+    if (m_presentation.redesign())
+        m_sizer_main->Add(new PrinterTransferTitleBar(this, _L("上传 G-code")), 0, wxEXPAND);
 
     m_sizer_main->SetMinSize(wxSize(0, -1));
     m_line_top = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(-1, 1), wxTAB_TRAVERSAL);
@@ -636,6 +650,16 @@ SendToPrinterDialog::SendToPrinterDialog(Plater *plater)
      m_last_refresh_time = wxDateTime::Now();
     show_print_failed_info(false);
     SetSizer(m_sizer_main);
+    if (m_presentation.redesign()) {
+        m_line_top->Hide();
+        m_line_materia->SetBackgroundColour(RedesignTheme::divider_colour());
+        m_line_schedule->SetBackgroundColour(RedesignTheme::divider_colour());
+        m_button_refresh->Hide();
+        m_comboBox_printer->Disable();
+        m_button_ensure->SetLabel(_L("开始上传"));
+        apply_printer_transfer_redesign_theme(this);
+        style_printer_transfer_primary_button(m_button_ensure);
+    }
     Layout();
     Fit();
     Thaw();
@@ -644,7 +668,8 @@ SendToPrinterDialog::SendToPrinterDialog(Plater *plater)
     init_timer();
     // CenterOnParent();
     Centre(wxBOTH);
-    wxGetApp().UpdateDlgDarkUI(this);
+    if (!m_presentation.redesign())
+        wxGetApp().UpdateDlgDarkUI(this);
 }
 
 std::string SendToPrinterDialog::get_storage_selected()
@@ -718,6 +743,8 @@ void SendToPrinterDialog::update_storage_list(const std::vector<std::string> &st
 
     m_storage_panel->Layout();
     m_storage_panel->Fit();
+    if (m_presentation.redesign())
+        apply_printer_transfer_redesign_theme(m_storage_panel);
     Layout();
     Fit();
 }
@@ -762,12 +789,14 @@ void SendToPrinterDialog::show_print_failed_info(bool show, int code, wxString d
 void SendToPrinterDialog::prepare_mode()
 {
     m_is_in_sending_mode = false;
-    m_comboBox_printer->Enable();
+    m_comboBox_printer->Enable(!m_presentation.redesign());
     m_worker->wait_for_idle();
 
     if (wxIsBusy())
         wxEndBusyCursor();
     Enable_Send_Button(true);
+    if (m_presentation.redesign())
+        validate_presentation_target("prepare", true);
     show_print_failed_info(false);
 
     m_status_bar->reset();
@@ -878,10 +907,78 @@ void SendToPrinterDialog::on_cancel(wxCloseEvent &event)
     this->EndModal(wxID_CANCEL);
 }
 
+bool SendToPrinterDialog::request_app_shutdown()
+{
+    if (!m_app_shutdown_requested) {
+        BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] shutdown_cancel_requested phase="
+                                << (m_is_in_sending_mode ? "sending" : "prepare");
+        m_shutdown_ready_logged = false;
+    }
+
+    m_app_shutdown_requested = true;
+    m_is_canceled = true;
+    m_export_3mf_cancel = true;
+
+    if (m_refresh_timer && m_refresh_timer->IsRunning())
+        m_refresh_timer->Stop();
+    if (m_task_timer && m_task_timer->IsRunning())
+        m_task_timer->Stop();
+    if (m_url_timer && m_url_timer->IsRunning())
+        m_url_timer->Stop();
+    if (m_worker)
+        m_worker->cancel_all();
+
+    ResetTunnelAndJob();
+    m_token.reset();
+
+    if (IsModal()) {
+        m_modal_unwind_pending = true;
+        EndModal(wxID_CANCEL);
+    }
+
+    if (m_modal_unwind_pending)
+        return false;
+    return poll_app_shutdown();
+}
+
+bool SendToPrinterDialog::poll_app_shutdown()
+{
+    if (!m_app_shutdown_requested)
+        return true;
+
+    // EndModal() marks the dialog non-modal before ShowModal() has returned. Defer one
+    // event-loop turn so the modal stack is gone before MainFrame destroys its children.
+    if (m_modal_unwind_pending) {
+        m_modal_unwind_pending = false;
+        return false;
+    }
+
+    if (m_worker) {
+        try {
+            m_worker->process_events();
+        } catch (const std::exception& ex) {
+            BOOST_LOG_TRIVIAL(error) << "[PrinterTransfer] shutdown_worker_event_failed error=" << ex.what();
+        } catch (...) {
+            BOOST_LOG_TRIVIAL(error) << "[PrinterTransfer] shutdown_worker_event_failed error=unknown";
+        }
+    }
+
+    const bool ready = !m_worker || m_worker->is_idle();
+    if (ready && !m_shutdown_ready_logged) {
+        m_shutdown_ready_logged = true;
+        BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] shutdown_cancel_finished worker_idle=true";
+    }
+    return ready;
+}
+
 void SendToPrinterDialog::on_ok(wxCommandEvent &event)
 {
+    if (!validate_presentation_target("execute", true))
+        return;
     BOOST_LOG_TRIVIAL(info) << "print_job: on_ok to send !";
     m_is_canceled = false;
+    m_export_3mf_cancel = false;
+    m_app_shutdown_requested = false;
     Enable_Send_Button(false);
     if (m_is_in_sending_mode)
         return;
@@ -902,6 +999,13 @@ void SendToPrinterDialog::on_ok(wxCommandEvent &event)
         return;
     }
     assert(obj_->get_dev_id() == m_printer_last_select);
+
+    const auto printer_agent = wxGetApp().getAgent() ? wxGetApp().getAgent()->get_printer_agent() : nullptr;
+    const auto traits = printer_agent ? printer_agent->get_traits() : PrinterAgentTraits{};
+    const std::string agent_id = printer_agent ? printer_agent->get_agent_info().id : "none";
+    const auto prepare_started = std::chrono::steady_clock::now();
+    BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] prepare_begin agent=" << agent_id
+                            << " payload=" << printer_job_payload_name(traits.job_payload);
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", print_job: for send task, current printer id =  " << m_printer_last_select << std::endl;
     show_status(PrintDialogStatus::PrintStatusSending);
@@ -940,16 +1044,32 @@ void SendToPrinterDialog::on_ok(wxCommandEvent &event)
     if (wxGetApp().plater()->using_exported_file()) {
         m_plater->set_print_job_plate_idx(m_print_plate_idx);
         result = 0;
+    } else if (traits.job_payload == PrinterAgentTraits::JobPayload::RawGcode) {
+        m_plater->set_print_job_plate_idx(m_print_plate_idx);
+        result = 0;
+        BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] prepare_skipped agent=" << agent_id
+                                << " payload=raw_gcode reason=native_payload";
     }
-     else {
-         result = m_plater->send_gcode(m_print_plate_idx, [this](int export_stage, int current, int total, bool &cancel) {
-             if (this->m_is_canceled) return;
-             bool     cancelled = false;
-             wxString msg       = _L("Preparing print job");
-             m_status_bar->update_status(msg, cancelled, 10, true);
-             m_export_3mf_cancel = cancel = cancelled;
-         });
-     }
+    else {
+        result = m_plater->send_gcode(m_print_plate_idx, [this](int export_stage, int current, int total, bool &cancel) {
+            if (m_is_canceled || m_app_shutdown_requested || wxGetApp().is_closing()) {
+                m_export_3mf_cancel = cancel = true;
+                return;
+            }
+            bool     cancelled = false;
+            wxString msg       = _L("Preparing print job");
+            // export_3mf holds pointers into the project; do not dispatch nested user input here.
+            m_status_bar->update_status(msg, cancelled, 10, false);
+            m_export_3mf_cancel = cancel = cancelled;
+        });
+    }
+
+    const auto prepare_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - prepare_started).count();
+    BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] prepare_finished agent=" << agent_id
+                            << " payload=" << printer_job_payload_name(traits.job_payload)
+                            << " result=" << (m_is_canceled || m_export_3mf_cancel ? "cancelled" : result < 0 ? "failed" : "success")
+                            << " duration_ms=" << prepare_duration;
 
     if (m_is_canceled || m_export_3mf_cancel) {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": send progress 10";
@@ -1064,7 +1184,8 @@ void SendToPrinterDialog::on_ok(wxCommandEvent &event)
             });
         });
 
-        if (obj_->is_lan_mode_printer()) {
+        const bool requires_preflight = !printer_agent || printer_agent->get_traits().requires_transfer_preflight;
+        if (obj_->is_lan_mode_printer() && requires_preflight) {
             m_send_job->set_check_mode();
             m_send_job->check_and_continue();
         }
@@ -1174,7 +1295,38 @@ void SendToPrinterDialog::update_user_printer()
     wxArrayString                         machine_list_name;
     std::map<std::string, MachineObject*> option_list;
 
-    option_list = dev->get_my_machine_list(dev->get_current_printer_agent_id());
+    const std::string current_agent = dev->get_current_printer_agent_id();
+    option_list = dev->get_my_machine_list(current_agent);
+
+    if (m_presentation.redesign()) {
+        MachineObject* target = nullptr;
+        if (current_agent == m_presentation.agent_id) {
+            for (const auto& entry : option_list) {
+                if (entry.second && entry.second->get_dev_id() == m_presentation.device_id &&
+                    (entry.second->is_online() || entry.second->is_connected())) {
+                    target = entry.second;
+                    break;
+                }
+            }
+        }
+
+        if (target) {
+            m_list.push_back(target);
+            machine_list_name.Add(from_u8(printer_device_display_name(target->get_dev_name(), target->get_dev_ip())));
+            m_comboBox_printer->Set(machine_list_name);
+            m_comboBox_printer->SetSelection(0);
+            m_printer_last_select = target->get_dev_id();
+            wxCommandEvent event(wxEVT_COMBOBOX);
+            event.SetEventObject(m_comboBox_printer);
+            wxPostEvent(m_comboBox_printer, event);
+        } else {
+            m_printer_last_select.clear();
+            m_comboBox_printer->SetValue(_L("目标打印机不可用"));
+        }
+        m_comboBox_printer->Disable();
+        validate_presentation_target("refresh", true);
+        return;
+    }
 
     // same machine only appear once
     for (auto it = option_list.begin(); it != option_list.end(); it++) {
@@ -1235,6 +1387,50 @@ void SendToPrinterDialog::update_user_printer()
     }
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "for send task, current printer id =  " << m_printer_last_select << std::endl;
+}
+
+bool SendToPrinterDialog::validate_presentation_target(const char* phase, bool update_ui)
+{
+    if (!m_presentation.redesign())
+        return true;
+
+    DeviceManager* manager = wxGetApp().getDeviceManager();
+    MachineObject* selected = manager ? manager->get_selected_machine() : nullptr;
+    MachineObject* target = nullptr;
+    const std::string current_agent = manager ? manager->get_current_printer_agent_id() : std::string();
+    if (manager && current_agent == m_presentation.agent_id) {
+        const auto machines = manager->get_my_machine_list(current_agent);
+        for (const auto& entry : machines) {
+            if (entry.second && entry.second->get_dev_id() == m_presentation.device_id) {
+                target = entry.second;
+                break;
+            }
+        }
+    }
+
+    const bool valid = target && selected && selected->get_dev_id() == m_presentation.device_id &&
+        (target->is_online() || target->is_connected());
+    std::ostringstream validation_log;
+    validation_log << "[PrinterTransferUX] target_validation"
+                   << " phase=" << phase
+                   << " action=" << printer_transfer_action_name(m_presentation.action)
+                   << " agent=" << (current_agent.empty() ? "none" : current_agent)
+                   << " expected_agent=" << (m_presentation.agent_id.empty() ? "none" : m_presentation.agent_id)
+                   << " device_ref=" << printer_transfer_device_ref(m_presentation.device_id)
+                   << " result=" << (valid ? "valid" : "unavailable");
+    if (valid)
+        BOOST_LOG_TRIVIAL(info) << validation_log.str();
+    else
+        BOOST_LOG_TRIVIAL(warning) << validation_log.str();
+
+    if (update_ui) {
+        Enable_Send_Button(valid);
+        if (valid)
+            update_priner_status_msg(wxEmptyString);
+        else
+            update_priner_status_msg(_L("目标打印机已离线、发生变化或不再属于当前连接，请返回后重新选择。"), true);
+    }
+    return valid;
 }
 
 void SendToPrinterDialog::update_printer_combobox(wxCommandEvent &event)
@@ -1342,6 +1538,21 @@ void SendToPrinterDialog::update_show_status()
     }
     else if (obj_->is_system_printing()) {
         show_status(PrintDialogStatus::PrintStatusInSystemPrinting);
+        return;
+    }
+
+    const auto printer_agent = agent->get_printer_agent();
+    const auto traits = printer_agent ? printer_agent->get_traits() : PrinterAgentTraits{};
+    if (traits.storage_model == PrinterAgentTraits::StorageModel::VirtualGcodeRoot) {
+        if (!traits.supports_upload_only) {
+            show_status(PrintDialogStatus::PrintStatusNotSupportedSendToSDCard);
+            return;
+        }
+        if (m_print_status != PrintDialogStatus::PrintStatusReadingFinished)
+            BOOST_LOG_TRIVIAL(info) << "[PrinterDispatch] upload_dialog_ready agent="
+                                    << (printer_agent ? printer_agent->get_agent_info().id : "none")
+                                    << " storage_model=" << printer_storage_model_name(traits.storage_model);
+        show_status(PrintDialogStatus::PrintStatusReadingFinished);
         return;
     }
 
@@ -1543,6 +1754,13 @@ void SendToPrinterDialog::show_status(PrintDialogStatus status, std::vector<wxSt
 
 void SendToPrinterDialog::Enable_Send_Button(bool en)
 {
+    if (en && m_presentation.redesign()) {
+        auto* manager = wxGetApp().getDeviceManager();
+        auto* selected = manager ? manager->get_selected_machine() : nullptr;
+        en = manager && selected &&
+            manager->get_current_printer_agent_id() == m_presentation.agent_id &&
+            selected->get_dev_id() == m_presentation.device_id;
+    }
     if (!en) {
         if (m_button_ensure->IsEnabled()) {
             m_button_ensure->Disable();
@@ -1561,6 +1779,8 @@ void SendToPrinterDialog::on_dpi_changed(const wxRect &suggested_rect)
     m_button_refresh->Rescale(); // ORCA
     m_button_ensure->Rescale(); // ORCA
     m_status_bar->msw_rescale();
+    if (m_presentation.redesign())
+        style_printer_transfer_primary_button(m_button_ensure);
     Fit();
     Refresh();
 }
@@ -1681,6 +1901,12 @@ bool SendToPrinterDialog::Show(bool show)
 
     // set default value when show this dialog
     if (show) {
+        if (m_presentation.redesign()) {
+            BOOST_LOG_TRIVIAL(info) << "[PrinterTransferUX] dialog_open"
+                                    << " action=" << printer_transfer_action_name(m_presentation.action)
+                                    << " agent=" << (m_presentation.agent_id.empty() ? "none" : m_presentation.agent_id)
+                                    << " device_ref=" << printer_transfer_device_ref(m_presentation.device_id);
+        }
         update_storage_list(std::vector<std::string>());
         set_default();
         update_user_machine_list();
@@ -1696,6 +1922,16 @@ bool SendToPrinterDialog::Show(bool show)
     if (show) { CenterOnParent(); }
 
     return DPIDialog::Show(show);
+}
+
+void SendToPrinterDialog::on_change_color_mode()
+{
+    if (!m_presentation.redesign()) {
+        wxGetApp().UpdateDlgDarkUI(this);
+        return;
+    }
+    apply_printer_transfer_redesign_theme(this);
+    style_printer_transfer_primary_button(m_button_ensure);
 }
 
 extern wxString hide_passwd(wxString url, std::vector<wxString> const &passwords);
@@ -1930,9 +2166,13 @@ void SendToPrinterDialog::CreateMediaAbilityJob()
          show_status(PrintDialogStatus::PrintStatusPublicInitFailed);
          return;
      }
-     m_filetransfer_mediability_job->on_result([this](int res, int resp_ec, std::string json_res, std::vector<std::byte> bin_res) {
-         //this pl
-         CallAfter([this, res, resp_ec, json_res] {
+     const std::weak_ptr<int> token = m_token;
+     m_filetransfer_mediability_job->on_result([this, token](int res, int resp_ec, std::string json_res, std::vector<std::byte> bin_res) {
+         if (token.expired() || !wxTheApp)
+             return;
+         wxTheApp->CallAfter([this, token, res, resp_ec, json_res] {
+             if (token.expired() || m_app_shutdown_requested)
+                 return;
              if (res == 0) // 0 is success
              {
                  show_status(PrintDialogStatus::PrintStatusReadingFinished);
@@ -1998,14 +2238,23 @@ void SendToPrinterDialog::CreateUploadFileJob(const std::string &path, const std
         show_status(PrintDialogStatus::PrintStatusPublicUploadFiled);
         return;
     }
-    m_filetransfer_uploadfile_job->on_result([this](int res, int resp_ec, std::string json_res, std::vector<std::byte> bin_res) { //
-        CallAfter([this, res, resp_ec, json_res, bin_res] {
+    const std::weak_ptr<int> token = m_token;
+    m_filetransfer_uploadfile_job->on_result([this, token](int res, int resp_ec, std::string json_res, std::vector<std::byte> bin_res) { //
+        if (token.expired() || !wxTheApp)
+            return;
+        wxTheApp->CallAfter([this, token, res, resp_ec, json_res, bin_res] {
+            if (token.expired() || m_app_shutdown_requested)
+                return;
             UploadFileRessultCallback(res, resp_ec,json_res, bin_res);
         });
     });
 
-    m_filetransfer_uploadfile_job->on_msg([this](int kind, std::string json_res) {
-        CallAfter([this, kind, json_res] {
+    m_filetransfer_uploadfile_job->on_msg([this, token](int kind, std::string json_res) {
+        if (token.expired() || !wxTheApp)
+            return;
+        wxTheApp->CallAfter([this, token, kind, json_res] {
+            if (token.expired() || m_app_shutdown_requested)
+                return;
             if (kind == 0) {
                 try
                 {
@@ -2093,6 +2342,7 @@ void SendToPrinterDialog::Reset() {
 
 SendToPrinterDialog::~SendToPrinterDialog()
 {
+    m_token.reset();
     delete m_refresh_timer;
     if (m_task_timer && m_task_timer->IsRunning())
         m_task_timer->Stop();

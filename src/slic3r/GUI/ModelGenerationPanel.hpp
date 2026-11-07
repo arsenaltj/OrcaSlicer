@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AIModelGenerationClient.hpp"
+#include "AI/ModelGeneration/SmartGenerationFlow.hpp"
 #include "AI/ModelGeneration/BeautyCandidateSnapshot.hpp"
 #include "AI/ModelGeneration/BeautyWorkbenchSession.hpp"
 #include "AI/ModelGeneration/BeautyWorkbenchColorGate.hpp"
@@ -98,6 +99,7 @@ public:
     bool request_library_action(ModelLibraryCommand command, const ModelLibraryEntry& entry);
     bool library_asset_switch_allowed() const { return can_replace_model_asset(); }
     void request_library_local_import();
+    void set_smart_creation_presentation(bool smart) { m_shell_smart_creation = smart; }
     void unmount_assets();
     void set_history_navigation_handler(std::function<void(bool)> handler) { m_history_navigation = std::move(handler); }
     void set_ui_state_listener(ModelGenerationUIStateListener listener);
@@ -108,6 +110,7 @@ public:
                               AIModelGenerationClient::CatalogFn on_complete,
                               AIModelGenerationClient::ErrorFn on_error);
     bool request_generate_design();
+    bool request_generate_smart();
     bool request_generate_model();
     bool request_retry_model();
     bool request_stop();
@@ -170,6 +173,11 @@ public:
     void synchronize_workbench_project_palette(bool activate_preview = false);
 
 private:
+    void apply_smart_ui_state(ModelGenerationUIState& state);
+    bool m_smart_mode {false};
+    bool m_shell_smart_creation {false};
+    SmartGenerationFlow m_smart_flow;
+    bool m_smart_dispatch_pending {false};
     using GeneratedModelEntry = ModelLibraryEntry;
     PostGenerationWorkbenchListener m_workbench_listener;
     wxWindow* m_assets_home_parent {nullptr};
@@ -473,6 +481,8 @@ public:
     wxWindow* workbench_import_history() const;
     void mount_workbench_import_history(wxWindow* parent);
     void restore_workbench_import_history();
+    void mount_workbench_history_sidebar(wxWindow* parent);
+    void restore_workbench_history_sidebar();
     void set_workbench_import_feedback(bool active);
     void unmount_workbench();
 private:
@@ -485,6 +495,7 @@ private:
     void update_region_mode();
     wxWindow* build_workbench_history(wxWindow* parent);
     void refresh_workbench_history();
+    void layout_mounted_workbench_history_sidebar();
     void update_workbench_history_actions();
     void open_workbench_history_entry(const std::string& key);
     void export_workbench_history_entry(const std::string& key);
@@ -613,6 +624,15 @@ private:
     std::map<std::string, wxWindow*> m_workbench_history_cards;
     std::vector<std::string> m_workbench_history_visible_keys;
     wxWindow* m_workbench_history_home {nullptr};
+    wxWindow* m_workbench_history_sidebar_host {nullptr};
+    wxWindow* m_workbench_history_toggle_home {nullptr};
+    wxRect m_workbench_history_toggle_home_rect;
+    wxSize m_workbench_history_toggle_home_min_size;
+    wxSize m_workbench_history_toggle_home_max_size;
+    wxSize m_workbench_history_search_home_min_size;
+    wxSize m_workbench_history_search_home_max_size;
+    bool m_workbench_history_sidebar_mounted {false};
+    bool m_workbench_history_toggle_was_shown {false};
     bool m_workbench_import_feedback {false};
     bool m_workbench_import_history_was_shown {false};
     wxStaticText* m_workbench_history_status {nullptr};

@@ -51,6 +51,7 @@
 #include <wx/hashmap.h>
 #include "Widgets/AnimaController.hpp"
 #include "Widgets/RadioBox.hpp"
+#include "PrinterTransferPresentation.hpp"
 
 
 namespace Slic3r {
@@ -64,6 +65,7 @@ class SendToPrinterDialog : public DPIDialog
 private:
     void init_bind();
     void init_timer();
+    bool validate_presentation_target(const char* phase, bool update_ui);
 
     int                                 m_print_plate_idx;
     int                                 m_print_error_code = 0;
@@ -74,6 +76,10 @@ private:
     bool                                enable_prepare_mode{ true };
     bool                                m_export_3mf_cancel{ false };
     bool                                m_is_canceled{ false };
+    bool                                m_app_shutdown_requested{ false };
+    bool                                m_shutdown_ready_logged{ false };
+    bool                                m_modal_unwind_pending{ false };
+    PrinterTransferPresentationContext  m_presentation;
     bool                                m_tcp_try_connect{true};
     bool                                m_tutk_try_connect{false};
     bool                                m_ftp_try_connect{false};
@@ -179,7 +185,8 @@ private:
     wxDateTime                          m_last_refresh_time;
 
 public:
-    SendToPrinterDialog(Plater *plater = nullptr);
+    SendToPrinterDialog(Plater *plater = nullptr,
+                        PrinterTransferPresentationContext presentation = {});
     ~SendToPrinterDialog();
 
     bool Show(bool show) override;
@@ -213,7 +220,10 @@ public:
     void update_user_machine_list();
     void show_print_failed_info(bool show, int code = 0, wxString description = wxEmptyString, wxString extra = wxEmptyString);
     void update_print_error_info(int code, std::string msg, std::string extra);
-    void on_change_color_mode() { wxGetApp().UpdateDlgDarkUI(this); }
+    bool request_app_shutdown();
+    bool poll_app_shutdown();
+    void on_change_color_mode();
+    bool is_redesign_presentation() const { return m_presentation.redesign(); }
     void update_storage_list(const std::vector<std::string>& storages);
     std::string get_storage_selected();
 

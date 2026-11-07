@@ -290,7 +290,7 @@ void AIModelGenerationClient::preprocess_text(const std::string& request_id, con
                                                StatusFn on_complete, ErrorFn on_error, const GenerationOptions& options)
 {
     post_json("/v1/orcaslicer/model-jobs/text",
-              json::object({ { "request_id", request_id }, { "prompt", prompt }, { "palette", palette },
+              json::object({ { "request_id", request_id }, { "workflow_mode", options.workflow_mode }, { "flow_id", options.flow_id }, { "prompt", prompt }, { "palette", palette },
                              { "provider", options.provider }, { "face_limit", options.face_limit },
                              { "design_provider", options.design_provider }, { "design_model", options.design_model },
                              { "geometry_model", options.geometry_model },
@@ -325,6 +325,8 @@ void AIModelGenerationClient::preprocess_image(const std::string& request_id, co
     http.timeout_connect(5)
         .timeout_max(130)
         .size_limit(1024 * 1024)
+        .form_add("workflow_mode", options.workflow_mode)
+        .form_add("flow_id", options.flow_id)
         .form_add("request_id", request_id)
         .form_add("provider", options.provider)
         .form_add("design_provider", options.design_provider)
@@ -360,7 +362,7 @@ void AIModelGenerationClient::recommend_text_palette(const std::string& request_
                                                        const GenerationOptions& options)
 {
     post_json("/v1/orcaslicer/model-jobs/recommend-text-palette",
-              json::object({ { "request_id", request_id }, { "prompt", prompt }, { "style", style },
+              json::object({ { "request_id", request_id }, { "workflow_mode", options.workflow_mode }, { "flow_id", options.flow_id }, { "prompt", prompt }, { "style", style },
                              { "provider", options.provider }, { "face_limit", options.face_limit },
                              { "design_provider", options.design_provider }, { "design_model", options.design_model },
                              { "geometry_model", options.geometry_model },
@@ -392,6 +394,8 @@ void AIModelGenerationClient::recommend_image_palette(const std::string& request
     http.timeout_connect(5)
         .timeout_max(130)
         .size_limit(1024 * 1024)
+        .form_add("workflow_mode", options.workflow_mode)
+        .form_add("flow_id", options.flow_id)
         .form_add("request_id", request_id)
         .form_add("provider", options.provider)
         .form_add("design_provider", options.design_provider)
@@ -485,6 +489,9 @@ void AIModelGenerationClient::confirm_palette(const std::string& job_id, const s
               std::move(on_complete), std::move(on_error));
 }
 
+void AIModelGenerationClient::retry_preparation(const std::string& job_id, StatusFn on_complete, ErrorFn on_error, bool regenerate)
+{ post_json("/v1/orcaslicer/model-jobs/" + job_id + "/retry-preparation", {{"regenerate", regenerate}}, std::move(on_complete), std::move(on_error)); }
+
 void AIModelGenerationClient::reuse_design(const std::string& job_id, StatusFn on_complete, ErrorFn on_error)
 {
     post_json("/v1/orcaslicer/model-jobs/" + job_id + "/reuse-design", json::object(),
@@ -493,7 +500,7 @@ void AIModelGenerationClient::reuse_design(const std::string& job_id, StatusFn o
 
 void AIModelGenerationClient::generate(const std::string& job_id, const std::string& prepared_prompt,
                                        const std::vector<std::string>& palette, const GenerationOptions& options,
-                                       StatusFn on_complete, ErrorFn on_error, bool resume_existing)
+                                       StatusFn on_complete, ErrorFn on_error, bool resume_existing, bool explicit_resume)
 {
     post_json("/v1/orcaslicer/model-jobs/" + job_id + "/generate",
                json::object({ { "prepared_prompt", prepared_prompt }, { "palette", palette },
@@ -503,7 +510,7 @@ void AIModelGenerationClient::generate(const std::string& job_id, const std::str
                               { "geometry_quality", options.geometry_quality },
                               { "texture_quality", options.texture_quality },
                               { "output_format", options.output_format },
-                              { "resume_existing", resume_existing } }),
+                              { "explicit_resume", explicit_resume }, { "resume_existing", resume_existing } }),
                std::move(on_complete), std::move(on_error));
 }
 
@@ -861,8 +868,9 @@ void AIModelGenerationClient::parse_status_response(std::string body, StatusFn o
 AIModelGenerationClient::GenerationOptions AIModelGenerationClient::restore_generation_options(const json& saved)
 {
     GenerationOptions options;
-    if (!saved.is_object())
-        return options;
+    if (!saved.is_object()) return options;
+    options.workflow_mode = saved.value("workflow_mode", std::string("advanced"));
+    options.flow_id = saved.value("flow_id", std::string());
     if (saved.contains("provider") && saved["provider"].is_string()) {
         const std::string provider = saved["provider"].get<std::string>();
         if (provider == "tripo" || provider == "yoyoclaw")
@@ -920,6 +928,10 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
     status.progress = std::clamp(job.value("progress", 0), 0, 100);
     status.face_limit = job.value("face_limit", 1000000);
     status.generation_profile = job.value("generation_profile", std::string("quality"));
+    status.smart_progress = job.value("smart_progress", 0);
+    status.smart_elapsed_seconds = int(job.value("smart_elapsed_seconds", 0.0));
+    status.smart_phase = job.value("smart_phase", std::string());
+    status.smart_stop_intent = job.value("smart_stop_intent", false);
     status.generation_options = restore_generation_options(job);
     status.style = job.value("style", std::string());
     status.custom_style = job.value("custom_style", std::string());
