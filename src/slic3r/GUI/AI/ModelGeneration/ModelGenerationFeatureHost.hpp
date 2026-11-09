@@ -35,6 +35,7 @@ public:
     wxWindow* panel() const;
     ModelWorkspaceFeatureHost& workspace_capabilities();
     void initialize_for_shell();
+    void set_smart_creation_presentation(bool smart);
     void mount_assets(wxWindow* parent);
     void unmount_assets();
     void set_history_navigation_handler(std::function<void(bool)> handler);
@@ -54,6 +55,7 @@ public:
     bool advance_portrait_print(const std::string& id, PortraitPrint::Stage expected,
         PortraitPrint::Stage next, const std::string& revision = {}, const std::string& gcode = {});
     void pause_portrait_print(const std::string& reason, bool hard = false);
+    bool request_generate_smart();
     bool request_retry_model();
     bool request_stop();
     bool request_retry_service();
@@ -72,6 +74,8 @@ public:
     wxWindow* workbench_import_history() const;
     void mount_workbench_import_history(wxWindow* parent);
     void restore_workbench_import_history();
+    void mount_workbench_history_sidebar(wxWindow* parent);
+    void restore_workbench_history_sidebar();
     void set_workbench_import_feedback(bool active);
     void unmount_workbench();
     void set_color_matching_handler(std::function<void(const AI::GeneratedModelArtifact&)> handler);

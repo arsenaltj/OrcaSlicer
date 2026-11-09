@@ -4,6 +4,11 @@ from __future__ import annotations
 import json
 import hashlib
 import uuid
+import threading
+import hashlib
+import time
+import shutil
+from functools import wraps
 from dataclasses import dataclass
 from model_contracts import (
     ApplicationResult,
@@ -82,9 +87,56 @@ class ModelJobApplicationPorts:
     portrait_review: Callable[..., Any] | None = None
 
 
+# HTTP composition creates a new application per request. The create lock must
+# therefore belong to the process, not to a transient application instance.
+_smart_create_lock = threading.RLock()
+
+def _smart_creation(method):
+    @wraps(method)
+    def execute(self, fields, *args):
+        mode = fields.get("workflow_mode", "advanced")
+        if mode not in {"smart", "advanced"}:
+            raise RequestError("invalid_request", "Unknown workflow mode.", 400)
+        if mode != "smart": return method(self, fields, *args)
+        flow = _text_field(fields.get("flow_id"), "flow_id")
+        request_id = _text_field(fields.get("request_id"), "request_id")
+        try:
+            if str(uuid.UUID(flow)) != flow or request_id != flow: raise ValueError()
+        except ValueError:
+            raise RequestError("invalid_request", "Smart flow and request IDs must match a canonical UUID.", 400) from None
+        if _design_provider(fields) != "gpt":
+            raise RequestError("invalid_request", "Smart mode requires the configured GPT image model.", 400)
+        canonical = {k:v for k,v in fields.items() if k not in {"request_id", "flow_id", "_source_filename"}}
+        digest = hashlib.sha256(json.dumps(canonical, sort_keys=True, ensure_ascii=False).encode())
+        if args: digest.update(args[0])
+        fingerprint = digest.hexdigest()
+        with _smart_create_lock:
+            with self.ports.lock:
+                for job in self.ports.jobs.values():
+                    if job.request_id == request_id or job.flow_id == flow:
+                        if job.input_fingerprint != fingerprint:
+                            raise RequestError("request_conflict", "The request ID belongs to different inputs.", 409)
+                        return ApplicationResult(200, {"job": self.ports.present(job)})
+            if not self._design_status("gpt", _design_model(fields)).get("available", False):
+                raise RequestError("feature_unavailable", "The configured GPT image model is unavailable.", 503)
+            # Available only to this synchronous call; it never enters supplier policy.
+            self._smart_create_metadata = (flow, request_id, fingerprint)
+            try: return method(self, fields, *args)
+            finally: self._smart_create_metadata = None
+    return execute
+
 class ModelJobApplication:
     def __init__(self, ports: ModelJobApplicationPorts):
         self.ports = ports
+
+    def _persist_created(self, job: Job) -> None:
+        metadata = getattr(self, "_smart_create_metadata", None)
+        if metadata:
+            job.workflow_mode = "smart"
+            job.flow_id, job.request_id, job.input_fingerprint = metadata
+            job.smart_started_at = time.time()
+            self.ports.persist(job, required=True)
+        else: self.ports.persist(job, required=job.portrait_print)
 
     def _design_status(self, provider: str, model: str = "") -> dict[str, Any]:
         try:
@@ -96,6 +148,7 @@ class ModelJobApplication:
     def execute_job(self, command: str, job_id: str, request: dict[str, Any]) -> ApplicationResult:
         """Compose only named commands; callers cannot execute arbitrary entrypoints."""
         commands = {
+            "retry-preparation": self.retry_preparation,
             "generate": self.generate,
             "retexture": self.retexture,
             "stop": self.stop,
@@ -111,6 +164,7 @@ class ModelJobApplication:
             raise RequestError("not_found", "Model job command not found.", 404)
         return handler(job_id, request)
 
+    @_smart_creation
     def create_text_job(self, request: dict[str, Any]) -> ApplicationResult:
         if _boolean_field(request.get("portrait_print"), "portrait_print"):
             with self.ports.lock:
@@ -177,7 +231,7 @@ class ModelJobApplication:
         job.design_provider = design_provider
         job.design_model = design_model
         self._configure_portrait(job, request)
-        self.ports.persist(job, required=job.portrait_print)
+        self._persist_created(job)
         with self.ports.lock:
             self.ports.jobs[job.id] = job
         try:
@@ -200,7 +254,7 @@ class ModelJobApplication:
             raise RequestError("image_too_large", "Image exceeds the 20 MB limit.", 413)
         detected_type = _image_type(image)
         if detected_type is None:
-            raise RequestError("unsupported_image", "Image must be PNG or JPEG.", 415)
+            raise RequestError("unsupported_image", "Image must be PNG, JPEG or static WebP.", 415)
         if declared_type not in {"application/octet-stream", detected_type}:
             raise RequestError("unsupported_image", "Image Content-Type does not match its data.", 415)
         try:
@@ -210,6 +264,7 @@ class ModelJobApplication:
             raise RequestError("invalid_image", str(exc), 415) from None
         return ApplicationResult(200, {"recommendation": recommendation})
 
+    @_smart_creation
     def create_image_job(self, fields: dict[str, str], image: bytes, declared_type: str) -> ApplicationResult:
         if _boolean_field(fields.get("portrait_print"), "portrait_print"):
             with self.ports.lock:
@@ -241,7 +296,7 @@ class ModelJobApplication:
             raise RequestError("image_too_large", "Image exceeds the 20 MB limit.", 413)
         detected_type = _image_type(image)
         if detected_type is None:
-            raise RequestError("unsupported_image", "Image must be PNG or JPEG.", 415)
+            raise RequestError("unsupported_image", "Image must be PNG, JPEG or static WebP.", 415)
         if declared_type not in {"application/octet-stream", detected_type}:
             raise RequestError("unsupported_image", "Image Content-Type does not match its data.", 415)
         try:
@@ -255,7 +310,7 @@ class ModelJobApplication:
         job.design_provider = design_provider
         job.design_model = design_model
         job.image_metrics["source_filename"] = fields.get("_source_filename", "")
-        suffix = ".png" if detected_type == "image/png" else ".jpg"
+        suffix = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}[detected_type]
         input_path = job.directory / f"input-{uuid.uuid4().hex}{suffix}"
         try:
             input_path.write_bytes(image)
@@ -264,7 +319,17 @@ class ModelJobApplication:
             raise RequestError("service_unavailable", "The uploaded image could not be stored.", 503, True) from None
         job.input_path = input_path
         self._configure_portrait(job, fields, image)
-        self.ports.persist(job, required=job.portrait_print)
+        if detected_type == "image/webp":
+            # Keep original bytes for restore. Providers receive a lossless PNG
+            # with the same RGBA pixels used by the desktop preview.
+            from PIL import Image
+            normalized = job.directory / "input-normalized.png"
+            with Image.open(input_path) as decoded:
+                decoded.load()
+                decoded.convert("RGBA").save(normalized, format="PNG", icc_profile=decoded.info.get("icc_profile"))
+            job.image_metrics["provider_input"] = normalized.name
+            input_path = normalized
+        self._persist_created(job)
         with self.ports.lock:
             self.ports.jobs[job.id] = job
         try:
@@ -280,6 +345,54 @@ class ModelJobApplication:
         with self.ports.lock:
             response = self.ports.present(job)
         return ApplicationResult(202, {"job": response})
+
+    def retry_preparation(self, job_id: str, request: dict[str, Any]) -> ApplicationResult:
+        job = self.ports.get_job(job_id)
+        if job is None: raise RequestError("job_not_found", "Model job not found.", 404)
+        with self.ports.lock:
+            if job.workflow_mode != "smart" or job.smart_model_request_id or self.ports.latest_task_id(job):
+                raise RequestError("invalid_job_state", "This job must resume its existing model stage.", 409)
+            if job.state not in {"failed", "stopped", "awaiting_confirmation"}:
+                raise RequestError("invalid_job_state", "Preparation is already active.", 409)
+            regenerate = _boolean_field(request.get("regenerate"), "regenerate", default=False)
+            if job.preprocess_failure.get("ambiguous") is True and (regenerate or not job.preview_path):
+                raise RequestError("preparation_ambiguous", "The previous preparation result is unknown. Verify it before creating another paid request.", 409)
+            if job.preview_path and job.preview_path.is_file() and not regenerate:
+                job.state = "awaiting_confirmation"; job.phase = "awaiting_confirmation"
+                job.smart_stop_intent = False; job.stop_event.clear()
+                job.smart_started_at = time.time() - job.smart_elapsed_seconds
+                self.ports.persist(job, required=True)
+                return ApplicationResult(200, {"job": self.ports.present(job)})
+            if not self._design_status("gpt", job.design_model).get("available", False):
+                raise RequestError("feature_unavailable", "The configured GPT image model is unavailable.", 503)
+            job.state = "preprocessing"; job.phase = "preprocessing"
+            if regenerate:
+                # Keep old files as evidence, but never reuse failed eligibility.
+                evidence = job.directory / ("preparation-evidence-" + uuid.uuid4().hex)
+                evidence.mkdir()
+                for path in {job.preview_path, job.raw_preview_path, job.strict_preview_path,
+                             job.model_reference_path, job.geometry_reference_path} - {None}:
+                    if path.is_file() and path.resolve().is_relative_to(job.directory.resolve()):
+                        shutil.copy2(path, evidence / path.name)
+                (evidence / "metrics.json").write_text(json.dumps(job.image_metrics, ensure_ascii=False), encoding="utf-8")
+                job.preview_path = job.raw_preview_path = job.strict_preview_path = None
+                job.model_reference_path = job.geometry_reference_path = None
+                job.image_metrics.clear()
+            job.smart_stop_intent = False; job.stop_event.clear()
+            job.smart_started_at = time.time() - job.smart_elapsed_seconds
+            self.ports.persist(job, required=True)
+        try:
+            if job.source == "text": self.ports.submit(job, self.ports.preprocess_text, job.user_prompt)
+            elif job.input_path:
+                normalized = job.directory / "input-normalized.png"
+                self.ports.submit(job, self.ports.preprocess_image, normalized if normalized.is_file() else job.input_path,
+                                  _normalize_image_instruction(job.user_prompt))
+            else: raise RequestError("input_unavailable", "The original image is missing.", 409)
+        except Exception:
+            with self.ports.lock:
+                job.state = "failed"; job.phase = "failed"; self.ports.persist(job)
+            raise
+        return ApplicationResult(202, {"job": self.ports.present(job)})
 
     def confirm_palette(self, job_id: str, request: dict[str, Any]) -> ApplicationResult:
         job = self.ports.get_job(job_id)
@@ -391,6 +504,7 @@ class ModelJobApplication:
             raise RequestError("invalid_request", "prepared_prompt exceeds the 2000-byte limit.", 400)
         resume_existing = _boolean_field(request.get("resume_existing"), "resume_existing", default=False)
         retry_failed = _boolean_field(request.get("retry_failed"), "retry_failed", default=False)
+        explicit_resume = _boolean_field(request.get("explicit_resume"), "explicit_resume", default=False)
         job = self.ports.get_job(job_id)
         if job is None:
             raise RequestError("job_not_found", "Model job not found.", 404)
@@ -406,6 +520,10 @@ class ModelJobApplication:
         with self.ports.lock:
             if job.portrait_print and job.future is not None and not job.future.done():
                 return ApplicationResult(200, {"job": self.ports.present(job)})
+            if job.workflow_mode == "smart" and job.smart_model_request_id and job.state in {"queued", "running", "ready"}:
+                return ApplicationResult(200, {"job": self.ports.present(job)})
+            if job.workflow_mode == "smart" and job.smart_stop_intent and not explicit_resume:
+                raise RequestError("stopped", "The flow was stopped; resume explicitly to continue.", 409)
             provider_task_id = self.ports.latest_task_id(job)
             latest = job.attempts[-1] if job.attempts else {}
             terminal_retry = (retry_failed and job.portrait_print and job.state == "failed" and
@@ -490,6 +608,11 @@ class ModelJobApplication:
             job.geometry_quality = geometry_quality
             job.texture_quality = texture_quality
             job.output_format = output_format
+            if job.workflow_mode == "smart":
+                if job.smart_stop_intent or job.state in {"failed", "stopped"}:
+                    job.smart_started_at = time.time() - job.smart_elapsed_seconds
+                job.smart_model_request_id = f"{job.flow_id}:model:{next_attempt}"
+                job.smart_stop_intent = False
             job.state = "queued"
             job.phase = "generating"
             job.message = "Generation queued."
@@ -500,7 +623,7 @@ class ModelJobApplication:
             job.stop_event.clear()
             if job.portrait_print:
                 job.model_submission_started = True
-            self.ports.persist(job, required=job.portrait_print)
+            self.ports.persist(job, required=job.portrait_print or job.workflow_mode == "smart")
         try:
             self.ports.submit(job, self.ports.generate, prepared_prompt, resume_existing, authorization)
         except RequestError:
@@ -724,6 +847,7 @@ class ModelJobApplication:
         if job is None:
             raise RequestError("job_not_found", "Model job not found.", 404)
         with self.ports.lock:
+            if job.workflow_mode == "smart": job.smart_stop_intent = True
             if job.state in {"recommending_palette", "preprocessing", "queued", "running", "stopping"}:
                 job.stop_event.set()
                 job.state = "stopping"

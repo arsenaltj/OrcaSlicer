@@ -7413,7 +7413,21 @@ struct Plater::priv
             m_select_machine_dlg->prepare_mode();
     }
 
-    void hide_send_to_printer_dlg() { m_send_to_sdcard_dlg->EndModal(wxID_OK); }
+    void hide_send_to_printer_dlg()
+    {
+        if (m_send_to_sdcard_dlg && m_send_to_sdcard_dlg->IsModal())
+            m_send_to_sdcard_dlg->EndModal(wxID_OK);
+    }
+
+    bool request_printer_transfer_shutdown()
+    {
+        return !m_send_to_sdcard_dlg || m_send_to_sdcard_dlg->request_app_shutdown();
+    }
+
+    bool poll_printer_transfer_shutdown()
+    {
+        return !m_send_to_sdcard_dlg || m_send_to_sdcard_dlg->poll_app_shutdown();
+    }
 
     void update_preview_bottom_toolbar();
 
@@ -7647,7 +7661,8 @@ struct Plater::priv
     void on_action_slice_plate(SimpleEvent&);
     void on_action_slice_all(SimpleEvent&);
     void on_action_print_plate(SimpleEvent&);
-    void open_machine_select_dialog(int plate_idx, PrintFromType print_type = PrintFromType::FROM_NORMAL);
+    void open_machine_select_dialog(int plate_idx, PrintFromType print_type = PrintFromType::FROM_NORMAL,
+                                    const PrinterTransferPresentationContext* presentation = nullptr);
     void on_action_print_all(SimpleEvent&);
     void on_action_export_gcode(SimpleEvent&);
     void on_action_send_gcode(SimpleEvent&);
@@ -7753,7 +7768,8 @@ struct Plater::priv
     void update_fff_scene_only_shells(bool only_shells = true);
     //BBS: add popup object table logic
     bool PopupObjectTable(int object_id, int volume_id, const wxPoint& position);
-    void on_action_send_to_printer(bool isall = false);
+    void on_action_send_to_printer(bool isall = false,
+                                   const PrinterTransferPresentationContext* presentation = nullptr);
     void on_action_send_to_multi_machine(SimpleEvent&);
     int update_print_required_data(Slic3r::DynamicPrintConfig config, Slic3r::Model model, Slic3r::PlateDataPtrs plate_data_list, std::string file_name, std::string file_path);
 private:
@@ -13937,11 +13953,16 @@ void Plater::priv::on_action_print_plate(SimpleEvent&)
     }
 }
 
-void Plater::priv::open_machine_select_dialog(int plate_idx, PrintFromType print_type)
+void Plater::priv::open_machine_select_dialog(int plate_idx, PrintFromType print_type,
+                                              const PrinterTransferPresentationContext* presentation)
 {
-    // BBS
+    const bool redesign = presentation && presentation->redesign();
+    if (m_select_machine_dlg && (redesign || m_select_machine_dlg->is_redesign_presentation() != redesign)) {
+        delete m_select_machine_dlg;
+        m_select_machine_dlg = nullptr;
+    }
     if (!m_select_machine_dlg)
-        m_select_machine_dlg = new SelectMachineDialog(q);
+        m_select_machine_dlg = new SelectMachineDialog(q, presentation ? *presentation : PrinterTransferPresentationContext{});
     m_select_machine_dlg->set_print_type(print_type);
     m_select_machine_dlg->prepare(plate_idx);
     m_select_machine_dlg->ShowModal();
@@ -14027,13 +14048,24 @@ void Plater::priv::on_tab_selection_changing(wxBookCtrlEvent& e)
 
 int Plater::priv::update_print_required_data(Slic3r::DynamicPrintConfig config, Slic3r::Model model, Slic3r::PlateDataPtrs plate_data_list, std::string file_name, std::string file_path)
 {
+    if (m_select_machine_dlg && m_select_machine_dlg->is_redesign_presentation()) {
+        delete m_select_machine_dlg;
+        m_select_machine_dlg = nullptr;
+    }
     if (!m_select_machine_dlg) m_select_machine_dlg = new SelectMachineDialog(q);
     return m_select_machine_dlg->update_print_required_data(config, model, plate_data_list, file_name, file_path);
 }
 
-void Plater::priv::on_action_send_to_printer(bool isall)
+void Plater::priv::on_action_send_to_printer(bool isall,
+                                             const PrinterTransferPresentationContext* presentation)
 {
-	if (!m_send_to_sdcard_dlg) m_send_to_sdcard_dlg = new SendToPrinterDialog(q);
+    const bool redesign = presentation && presentation->redesign();
+    if (m_send_to_sdcard_dlg && (redesign || m_send_to_sdcard_dlg->is_redesign_presentation() != redesign)) {
+        delete m_send_to_sdcard_dlg;
+        m_send_to_sdcard_dlg = nullptr;
+    }
+    if (!m_send_to_sdcard_dlg)
+        m_send_to_sdcard_dlg = new SendToPrinterDialog(q, presentation ? *presentation : PrinterTransferPresentationContext{});
     if (isall) {
         m_send_to_sdcard_dlg->prepare(PLATE_ALL_IDX);
     }
@@ -19548,6 +19580,21 @@ void Plater::send_to_printer(bool isall)
     p->on_action_send_to_printer(isall);
 }
 
+void Plater::show_send_to_printer_dialog_for_current_plate(const PrinterTransferPresentationContext& presentation)
+{
+    p->on_action_send_to_printer(false, &presentation);
+}
+
+bool Plater::request_printer_transfer_shutdown()
+{
+    return p->request_printer_transfer_shutdown();
+}
+
+bool Plater::poll_printer_transfer_shutdown()
+{
+    return p->poll_printer_transfer_shutdown();
+}
+
 //BBS export gcode 3mf to file
 void Plater::export_gcode_3mf(bool export_all)
 {
@@ -20621,27 +20668,20 @@ int Plater::export_3mf(const boost::filesystem::path& output_path, SaveStrategy 
 
     release_PlateData_list(plate_data_list);
 
-    for (unsigned int i = 0; i < calibration_thumbnails.size(); i++)
-    {
-        //release the data here, as it will always be generated when export
-        calibration_thumbnails[i]->reset();
+    // These pointers refer to PartPlate-owned buffers. A failed/cancelled export may be
+    // unwinding during application shutdown, when the project is no longer safe to touch.
+    if (store_result && !wxGetApp().is_closing()) {
+        for (ThumbnailData* thumbnail : calibration_thumbnails)
+            thumbnail->reset();
+        for (ThumbnailData* thumbnail : no_light_thumbnails)
+            thumbnail->reset();
+        for (ThumbnailData* thumbnail : top_thumbnails)
+            thumbnail->reset();
+        for (ThumbnailData* thumbnail : picking_thumbnails)
+            thumbnail->reset();
+    } else if (!store_result) {
+        BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] thumbnail_cleanup_skipped reason=export_failed_or_cancelled";
     }
-    for (unsigned int i = 0; i < no_light_thumbnails.size(); i++) {
-        // release the data here, as it will always be generated when export
-        no_light_thumbnails[i]->reset();
-    }
-    for (unsigned int i = 0; i < top_thumbnails.size(); i++)
-    {
-        //release the data here, as it will always be generated when export
-        top_thumbnails[i]->reset();
-    }
-    top_thumbnails.clear();
-    for (unsigned int i = 0; i < picking_thumbnails.size(); i++)
-    {
-        //release the data here, as it will always be generated when export
-        picking_thumbnails[i]->reset();;
-    }
-    picking_thumbnails.clear();
 
     return ret;
 }
@@ -21210,6 +21250,9 @@ void Plater::print_job_finished(wxCommandEvent &evt)
 
 void Plater::send_job_finished(wxCommandEvent& evt)
 {
+    if (wxGetApp().is_closing())
+        return;
+
     Slic3r::DeviceManager* dev = Slic3r::GUI::wxGetApp().getDeviceManager();
     if (!dev) return;
     //dev->set_selected_machine(evt.GetString().ToStdString());
@@ -21246,7 +21289,15 @@ void Plater::single_snapshots_leave(SingleSnapshot *single)
 {
     p->single_snapshots_leave(single);
 }
+void Plater::show_select_machine_dialog_for_current_plate()
+{
+    p->open_machine_select_dialog(p->partplate_list.get_curr_plate_index());
+}
 
+void Plater::show_select_machine_dialog_for_current_plate(const PrinterTransferPresentationContext& presentation)
+{
+    p->open_machine_select_dialog(p->partplate_list.get_curr_plate_index(), PrintFromType::FROM_NORMAL, &presentation);
+}
 void Plater::undo() { p->undo(); }
 void Plater::redo() { p->redo(); }
 void Plater::undo_to(int selection)

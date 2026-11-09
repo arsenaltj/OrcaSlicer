@@ -75,7 +75,34 @@ def _copy_job_file(source: Path | None, job: Job, name: str) -> Path | None:
 def _persist_job(job: Job, *, touch: bool = True, required: bool = False) -> None:
     if touch:
         job.updated_at = time.time()
+    if job.workflow_mode == "smart":
+        if not job.smart_stop_intent and job.state not in {"failed", "stopped", "stopping"}:
+            local = job.phase in {"downloading_artifact", "checking_model", "checking_visual"} or job.state == "ready"
+            geometry = bool(job.smart_model_request_id or job.attempts)
+            if local:
+                mapped = min(99, 90 + max(0, job.progress - 90))
+            elif geometry:
+                if job.phase == "preparing_multiview": stage = max(0, min(5, (job.progress - 10) // 2))
+                elif job.phase == "converting": stage = max(85, min(90, 85 + (job.progress - 75) // 4))
+                else: stage = 2 if not job.attempts else max(5, min(85, 5 + (job.progress - 20) * 80 // 50))
+                mapped = 30 + stage * 60 // 100
+            else:
+                eligible = job.image_metrics.get("generation_input_quality", {}).get("model_input_eligible", True)
+                mapped = 30 if job.state == "awaiting_confirmation" and eligible else max(0, min(29, (job.progress - 5) * 18 // 10))
+            job.smart_progress = max(job.smart_progress, mapped)
+            job.smart_phase = "local" if local else "geometry" if geometry else "preparation"
+            job.smart_elapsed_seconds = max(job.smart_elapsed_seconds, time.time() - job.smart_started_at)
     payload = {
+        "workflow_mode": job.workflow_mode,
+        "flow_id": job.flow_id,
+        "request_id": job.request_id,
+        "input_fingerprint": job.input_fingerprint,
+        "smart_model_request_id": job.smart_model_request_id,
+        "smart_stop_intent": job.smart_stop_intent,
+        "smart_progress": job.smart_progress,
+        "smart_phase": job.smart_phase,
+        "smart_started_at": job.smart_started_at,
+        "smart_elapsed_seconds": job.smart_elapsed_seconds,
         "version": JOB_STATE_VERSION,
         "id": job.id,
         "source": job.source,
@@ -204,6 +231,14 @@ def _load_job(directory: Path) -> Job | None:
         geometry_model=str(payload.get("geometry_model", "")) if isinstance(payload.get("geometry_model", ""), str) else "",
         print_settings=print_settings,
     )
+    job.workflow_mode = "smart" if payload.get("workflow_mode") == "smart" else "advanced"
+    for key in ("flow_id", "request_id", "input_fingerprint", "smart_model_request_id", "smart_phase"):
+        value = payload.get(key)
+        if isinstance(value, str): setattr(job, key, value[:256])
+    job.smart_stop_intent = payload.get("smart_stop_intent") is True
+    job.smart_progress = max(0, min(99, int(payload.get("smart_progress", 0))))
+    job.smart_started_at = float(payload.get("smart_started_at", 0))
+    job.smart_elapsed_seconds = max(0, float(payload.get("smart_elapsed_seconds", 0)))
     job.source_design_job_id = str(payload.get("source_design_job_id", ""))
     job.state = str(payload.get("state", "failed"))
     job.phase = str(payload.get("phase", job.state))

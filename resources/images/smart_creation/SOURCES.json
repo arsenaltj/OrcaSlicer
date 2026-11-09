@@ -1,0 +1,71 @@
+[
+  {
+    "style": "portrait_sketch",
+    "label": "肖像速写",
+    "source": "Figma user-provided design RT3UGdgNumKCUfWKJ2hhLO node 123:3162",
+    "usage": "Exact Figma image export; displayed center-cropped at 96x80 with 12px card radius",
+    "sha256": "896755875ca601b73c9cbfd653f3409f68fddbbe353cb679d788e05c42c03b8d"
+  },
+  {
+    "style": "sculpture",
+    "label": "雕塑",
+    "source": "Figma user-provided design RT3UGdgNumKCUfWKJ2hhLO node 123:3166",
+    "usage": "Exact Figma image export; displayed center-cropped at 96x80 with 12px card radius",
+    "sha256": "a76576f50a706e4cd77843b1186c2dd1806aa6192c970a5eae511016b94fdf0a"
+  },
+  {
+    "style": "cartoon",
+    "label": "手办",
+    "source": "Figma user-provided design RT3UGdgNumKCUfWKJ2hhLO node 123:3170",
+    "usage": "Exact Figma image export; displayed center-cropped at 96x80 with 12px card radius",
+    "sha256": "dc5caa383c22988581b01f680b2ae24552042c802b21441750cc62d489c0c2b3"
+  },
+  {
+    "style": "realistic",
+    "label": "多色写实",
+    "source": "Figma user-provided design RT3UGdgNumKCUfWKJ2hhLO node 123:3174",
+    "usage": "Exact Figma image export; displayed center-cropped at 96x80 with 12px card radius",
+    "sha256": "e34477a7aa6d5af19f1ef8f5e5c564636ffb740c6b03fd46f49336323793c349"
+  },
+  {
+    "style": "low_poly",
+    "label": "低多边形",
+    "source": "Figma user-provided design RT3UGdgNumKCUfWKJ2hhLO node 123:3178",
+    "usage": "Exact Figma image export; displayed center-cropped at 96x80 with 12px card radius",
+    "sha256": "60f2e4a2510a156b072e28af7eaf5dac8a27c435cf55c7c7dbb3e61af7d94f86"
+  },
+  {
+    "style": "relief",
+    "label": "浮雕",
+    "source": "Figma user-provided design RT3UGdgNumKCUfWKJ2hhLO node 123:3182",
+    "usage": "Exact Figma image export; displayed center-cropped at 96x80 with 12px card radius",
+    "sha256": "c1536e011d88f5d78f9fb7857d8305a3cbef78c23083c9783504f361f100e00e"
+  },
+  {
+    "style": "ink_relief",
+    "label": "水墨版画浮雕",
+    "source": "Figma user-provided design RT3UGdgNumKCUfWKJ2hhLO node 123:3186",
+    "usage": "Exact Figma image export; displayed center-cropped at 96x80 with 12px card radius",
+    "sha256": "3f8bc03607336a1584bdeefe9037363d05f75b1bf5b90841cb3c183fc507baeb"
+  },
+  {
+    "style": "diorama",
+    "label": "微缩场景",
+    "source": "Figma user-provided design RT3UGdgNumKCUfWKJ2hhLO node 123:3190",
+    "usage": "Exact Figma image export; displayed center-cropped at 96x80 with 12px card radius",
+    "sha256": "e67f928c2f643acf921045308e831abfbe8a72732775f78db3dbd2451062070f"
+  },
+  {
+    "style": "custom",
+    "label": "自定义风格",
+    "source": "Figma user-provided design RT3UGdgNumKCUfWKJ2hhLO node 123:3194",
+    "usage": "Exact Figma image export; displayed center-cropped at 96x80 with 12px card radius",
+    "sha256": "0daa9ab7fe021da3e579b56a752052d9fba731277b7e06850570be332aaaf775"
+  },
+  {
+    "asset": "../redesign_upload.svg",
+    "source": "Figma RT3UGdgNumKCUfWKJ2hhLO node 30:22198 (inner vector group I30:22198;14602:43151)",
+    "usage": "Exact uploaded Figma vector export; no authored replacement",
+    "sha256": "b1216ef6e8ba80a5fca4bc69343eb415805a5cb757eb70348f659c1eba249649"
+  }
+]

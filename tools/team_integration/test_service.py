@@ -35,7 +35,7 @@ def configuration(path):
             "users": {"ou_model": "model-owner", "ou_slicing": "slicing-owner", "ou_maintainer": "maintainer"},
             "maintainer_ids": ["ou_maintainer"], "chat_id": "oc_team", "bot_open_id": "ou_bot",
             "required_checks": [{"name": "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer",
-                                  "app_id": 100}],
+                                  "app_id": 100}, {"name": "Documentation update check", "app_id": 100}],
             "candidate_workflow": ".github/workflows/team-integration-candidate.yml", "candidate_artifact": "team-integration-candidate",
             "required_approvals": 1, "github_token_env": "TEAM_GITHUB_TOKEN", "feishu_app_id_env": "TEAM_FEISHU_APP_ID",
             "feishu_app_secret_env": "TEAM_FEISHU_APP_SECRET", "poll_seconds": 30, "database_path": str(path)}
@@ -139,6 +139,35 @@ class ServiceTests(unittest.TestCase):
         self.service.tick()
         self.assertEqual("failed", self.state(1))
         self.assertEqual("failed", self.state(2))
+
+    def test_documentation_check_must_pass_for_the_current_head_from_its_trusted_app(self):
+        original = copy.deepcopy(self.github.check_rows)
+        self.assertEqual("ready", self.service.evaluate(pull(), BASE)[0])
+        for variant in ("missing", "failed", "pending", "wrong_app", "stale_head"):
+            with self.subTest(variant=variant):
+                self.github.check_rows = copy.deepcopy(original)
+                check = next(c for c in self.github.check_rows if c["name"] == "Documentation update check")
+                if variant == "missing":
+                    self.github.check_rows.remove(check)
+                elif variant == "failed":
+                    check["conclusion"] = "failure"
+                elif variant == "pending":
+                    check.update(status="in_progress", conclusion=None)
+                elif variant == "wrong_app":
+                    check["app"]["id"] = 999
+                else:
+                    check["head_sha"] = NEW
+                self.assertNotEqual("ready", self.service.evaluate(pull(), BASE)[0])
+                self.github.check_rows = copy.deepcopy(original)
+                self.assertEqual("ready", self.service.evaluate(pull(), BASE)[0])
+
+    def test_documentation_is_a_pr_gate_without_requiring_a_body_for_the_merged_baseline(self):
+        self.github.base_check_rows = [c for c in self.github.base_check_rows
+                                       if c["name"] != "Documentation update check"]
+        self.assertEqual("ready", self.service.evaluate(pull(), BASE)[0])
+        self.github.check_rows = [c for c in self.github.check_rows
+                                  if c["name"] != "Documentation update check"]
+        self.assertEqual("pending", self.service.evaluate(pull(), BASE)[0])
 
     def test_conflicting_pr_does_not_block_independent_pr(self):
         self.github.pulls[1]["mergeable"] = False

@@ -1,9 +1,9 @@
 #include "DesktopWorkspaceNavigation.hpp"
+#include "../Redesign/OrcaPrinterAdapter.hpp"
 #include "../Redesign/PrinterWorkspace.hpp"
 #include "../Redesign/RedesignControls.hpp"
 #include "AIDesktopFeatureHost.hpp"
 #include "ModelGeneration/ModelGenerationInputStyle.hpp"
-#include "Orca/OrcaPrintConfirmation.hpp"
 #include "Orca/SoftwareViewportExport.hpp"
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "libslic3r/GCode/ThumbnailData.hpp"
@@ -365,7 +365,7 @@ void DesktopWorkspaceNavigation::show_workspace_pages()
     menu.Bind(wxEVT_MENU, [this](wxCommandEvent&) { show_software_viewport_capture(this); }, screenshot->GetId());
     auto* print = menu.Append(wxWindow::NewControlId(), _L("打印确认…"));
     menu.Bind(wxEVT_MENU, [this](wxCommandEvent&) {
-        if (auto* plater = wxGetApp().plater()) show_orca_print_confirmation(this, *plater);
+        if (auto* plater = wxGetApp().plater()) OrcaPrinterAdapter(plater).review_print(this, true);
     }, print->GetId());
     m_body->PopupMenu(&menu);
 }

@@ -152,11 +152,8 @@ void ModelGenerationPanel::export_semantic_candidate()
     auto before = !portrait_save_flow_id.empty() ? draft_snapshot
         : m_beauty_reoptimization_before ? std::move(m_beauty_reoptimization_before)
         : std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
-    if (m_finishing_candidate.empty() && !m_beauty_session_source) {
-        m_beauty_session_source = before;
-        m_beauty_session_undo_base = m_beauty_transactions ? m_beauty_transactions->undo_count() : 0;
-        m_beauty_session_file_base = m_beauty_candidate_files.size();
-    }
+    if (m_finishing_candidate.empty() && !m_beauty_session.source())
+        m_beauty_session.start_draft(before);
     const size_t faces = m_model_preview->triangle_count();
     const auto overrides = m_model_preview->printer_filament_export_faces();
     const auto subfaces = m_model_preview->import_subface_color_overrides(true);
@@ -580,7 +577,7 @@ void ModelGenerationPanel::export_semantic_candidate()
                                 ? BeautyWorkbenchTransactionController::OperationKind::AppearanceRecolor
                                 : BeautyWorkbenchTransactionController::OperationKind::SemanticReoptimization, before);
                         if (boost::filesystem::is_regular_file(appearance_carrier))
-                            self->m_beauty_candidate_files.push_back(boost::filesystem::canonical(appearance_carrier));
+                            self->m_beauty_session.track_candidate(boost::filesystem::canonical(appearance_carrier));
                         if (self->m_beauty_controls && self->m_model_preview->secondary_regions_ready())
                             self->m_beauty_controls->request_secondary_partition(destination);
                         self->m_finishing_status->SetLabel(before->manual_color_dirty

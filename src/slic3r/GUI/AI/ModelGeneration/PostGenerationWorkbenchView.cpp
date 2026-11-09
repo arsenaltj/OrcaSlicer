@@ -713,7 +713,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         toolbar->Add(button, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
         return button;
     };
-    m_workbench_return_to_design_button = toolbar_command(_L("返回图像设计"), [this](wxCommandEvent&) {
+    m_workbench_return_to_design_button = toolbar_command(m_shell_smart_creation ? _L("返回AI创作") : _L("返回图像设计"), [this](wxCommandEvent&) {
         if (m_workbench_return_to_design) m_workbench_return_to_design();
     });
     m_workbench_edit = toolbar_command(_L("3D 美颜工作台"), [this](wxCommandEvent&) {
@@ -731,6 +731,15 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         if (m_workbench_import_feedback || m_workbench_import_running) return;
         m_workbench_history_user_open = !m_workbench_history_panel->IsShown();
         m_workbench_history_collapsed = !m_workbench_history_user_open;
+        if (m_workbench_history_sidebar_mounted) {
+            m_workbench_history_panel->Show(m_workbench_history_user_open);
+            const wxString action = m_workbench_history_user_open ? _L("收起历史模型") : _L("展开历史模型");
+            m_workbench_history_toggle->SetName(action);
+            m_workbench_history_toggle->SetToolTip(action);
+            static_cast<WorkbenchButton*>(m_workbench_history_toggle)->set_drawer_open(m_workbench_history_user_open);
+            layout_mounted_workbench_history_sidebar();
+            return;
+        }
         m_workbench_editing = false;
         update_finishing_selection();
         refresh_model_finishing(); refresh_post_generation_workbench();

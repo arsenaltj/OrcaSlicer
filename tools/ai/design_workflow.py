@@ -239,7 +239,7 @@ class DesignWorkflow:
         except ValueError as exc:
             self.ports.fail(job, str(exc))
         except OpenAIPreprocessorError as exc:
-            if job.portrait_print or not self.ports.fallback_enabled():
+            if job.portrait_print or job.workflow_mode == "smart" or not self.ports.fallback_enabled():
                 self.ports.fail_preprocess(job, exc)
             else:
                 with self.ports.lock:

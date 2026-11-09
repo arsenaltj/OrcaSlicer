@@ -10,12 +10,15 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <chrono>
 #include <memory>
+#include <vector>
 
 #include "libslic3r/AppConfig.hpp"
 #include "slic3r/GUI/DeviceCore/DevManager.h"
 #include "slic3r/GUI/DeviceManager.hpp"
 #include "slic3r/Utils/IPrinterAgent.hpp"
+#include "slic3r/Utils/HonorForgePrinterAgent.hpp"
 #include "slic3r/Utils/NetworkAgentFactory.hpp"
 #include "slic3r/Utils/MoonrakerPrinterAgent.hpp"
 #include "slic3r/Utils/NetworkAgent.hpp"
@@ -29,6 +32,61 @@ TEST_CASE("Moonraker permits an empty access code", "[DeviceAccess]")
     machine.set_access_code("", false);
 
     REQUIRE(machine.has_access_right());
+}
+
+TEST_CASE("Honor Forge permits an empty access code", "[DeviceAccess][HonorForgeDiscovery]")
+{
+    MachineObject machine(nullptr, nullptr, "test", "test_dev", "127.0.0.1");
+    machine.printer_agent_id = HONOR_FORGE_PRINTER_AGENT_ID;
+    machine.set_access_code("", false);
+
+    REQUIRE(machine.has_access_right());
+}
+
+TEST_CASE("Only real network callbacks mark a printer as discovered", "[DeviceAccess][HonorForgeDiscovery]")
+{
+    AppConfig config;
+    auto printer_agent = std::make_shared<MoonrakerPrinterAgent>("");
+    NetworkAgent network(nullptr, printer_agent);
+    DeviceManager manager(&network, false, &config);
+    const std::string configured = R"({"dev_name":"Configured","dev_id":"192.0.2.20:7125","dev_ip":"192.0.2.20:7125",
+        "dev_type":"","dev_signal":"0","connect_type":"lan","bind_state":"free","discovery_source":"configured_host"})";
+
+    manager.on_machine_alive(configured);
+    auto* machine = manager.get_local_machine("192.0.2.20:7125");
+    REQUIRE(machine != nullptr);
+    CHECK_FALSE(machine->discovered_on_network);
+
+    manager.on_machine_alive(R"({"dev_name":"Discovered","dev_id":"192.0.2.20:7125","dev_ip":"192.0.2.20:7125",
+        "dev_type":"","dev_signal":"0","connect_type":"lan","bind_state":"free","discovery_source":"mdns"})");
+    CHECK(machine->discovered_on_network);
+}
+
+TEST_CASE("Honor Forge device lists collapse cached endpoints for one host", "[DeviceAccess][HonorForgeDiscovery]")
+{
+    AppConfig config;
+    auto printer_agent = std::make_shared<HonorForgePrinterAgent>(
+        "", std::vector<std::shared_ptr<IPrinterDiscoveryProvider>>{},
+        [] { return std::vector<PrinterNetworkInterface>{}; });
+    NetworkAgent network(nullptr, printer_agent);
+    DeviceManager manager(&network, false, &config);
+
+    manager.on_machine_alive(R"({"dev_name":"Proxy","dev_id":"192.0.2.40:80","dev_ip":"192.0.2.40:80",
+        "dev_type":"","dev_signal":"0","connect_type":"lan","bind_state":"free","discovery_source":"mdns"})");
+    manager.on_machine_alive(R"({"dev_name":"Moonraker","dev_id":"192.0.2.40:7125","dev_ip":"192.0.2.40:7125",
+        "dev_type":"","dev_signal":"0","connect_type":"lan","bind_state":"free","discovery_source":"subnet_probe"})");
+
+    auto visible = manager.get_my_machine_list(HONOR_FORGE_PRINTER_AGENT_ID);
+    REQUIRE(visible.size() == 1);
+    CHECK(visible.count("192.0.2.40:7125") == 1);
+
+    auto* proxy = manager.get_local_machine("192.0.2.40:80");
+    REQUIRE(proxy != nullptr);
+    proxy->last_update_time = std::chrono::system_clock::now();
+    proxy->m_push_count = 1;
+    visible = manager.get_my_machine_list(HONOR_FORGE_PRINTER_AGENT_ID);
+    REQUIRE(visible.size() == 1);
+    CHECK(visible.count("192.0.2.40:80") == 1);
 }
 
 TEST_CASE("Moonraker logout revokes access until explicitly rebound", "[DeviceAccess]")
@@ -109,13 +167,21 @@ TEST_CASE("Rebinding Moonraker with an empty key saves the machine", "[DeviceAcc
     REQUIRE(machines.at("test_dev").access_code.empty());
 }
 
-TEST_CASE("Moonraker discovery leaves another agent's saved machine alone", "[DeviceAccess]")
+TEST_CASE("Address-derived discovery leaves another agent's saved machine alone", "[DeviceAccess]")
 {
     AppConfig config;
-    NetworkAgent network(nullptr, std::make_shared<MoonrakerPrinterAgent>(""));
+    const std::string active_agent = GENERATE(as<std::string>{}, MOONRAKER_PRINTER_AGENT_ID, HONOR_FORGE_PRINTER_AGENT_ID);
+    std::shared_ptr<IPrinterAgent> printer_agent;
+    if (active_agent == MOONRAKER_PRINTER_AGENT_ID)
+        printer_agent = std::make_shared<MoonrakerPrinterAgent>("");
+    else
+        printer_agent = std::make_shared<HonorForgePrinterAgent>("", std::vector<std::shared_ptr<IPrinterDiscoveryProvider>>{},
+                                                                  [] { return std::vector<PrinterNetworkInterface>{}; });
+    NetworkAgent network(nullptr, std::move(printer_agent));
     DeviceManager manager(&network, false, &config);
 
-    const std::string owner = GENERATE(as<std::string>{}, ORCA_PRINTER_AGENT_ID, MOONRAKER_PRINTER_AGENT_ID);
+    const std::string owner = GENERATE(as<std::string>{}, ORCA_PRINTER_AGENT_ID,
+                                       MOONRAKER_PRINTER_AGENT_ID, HONOR_FORGE_PRINTER_AGENT_ID);
     BBLocalMachine saved;
     saved.dev_id           = "192.0.2.10:7125";
     saved.dev_ip           = saved.dev_id;
@@ -124,5 +190,5 @@ TEST_CASE("Moonraker discovery leaves another agent's saved machine alone", "[De
 
     manager.on_machine_alive(R"({"dev_name":"Klipper","dev_id":"192.0.2.10:7125","dev_ip":"192.0.2.10:7125",
         "dev_type":"","dev_signal":"0","connect_type":"lan","bind_state":"free"})");
-    REQUIRE((manager.get_local_machine(saved.dev_id) != nullptr) == (owner == MOONRAKER_PRINTER_AGENT_ID));
+    REQUIRE((manager.get_local_machine(saved.dev_id) != nullptr) == (owner == active_agent));
 }

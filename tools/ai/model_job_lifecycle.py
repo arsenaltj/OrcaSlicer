@@ -277,6 +277,8 @@ class ModelJobLifecycle:
                 job.message = "Retrying the existing remote artifact download after restart."
                 job.progress = max(75, job.progress)
             if job.state in {"preprocessing", "recommending_palette"}:
+                if job.workflow_mode == "smart":
+                    job.preprocess_failure = {"code": "preparation_interrupted", "retryable": False, "ambiguous": True}
                 job.state = "failed"
                 job.phase = "failed"
                 job.message = "The sidecar restarted during a local AI step. Start that step again manually."
@@ -306,6 +308,9 @@ class ModelJobLifecycle:
                     job.phase = "failed"
                     job.message = "The sidecar restarted before the paid task reference was saved. Start a new generation manually."
                     job.progress = 0
+            if job.workflow_mode == "smart" and job.state in {"queued", "running"}:
+                job.state = "stopped"; job.phase = "stopped"
+                job.message = "Saved task restored. Resume explicitly to continue."
             restored.append(job)
         with self.ports.lock:
             for job in restored:
@@ -317,6 +322,7 @@ class ModelJobLifecycle:
 
     def resume_restored_jobs(self, restored: list[Job]) -> None:
         for job in restored:
+            if job.workflow_mode == "smart": continue  # Explicit desktop resume owns the next action.
             if job.state == "queued" and job.phase == "resuming":
                 if job.portrait_print:
                     job.state = "stopped"
@@ -503,6 +509,12 @@ class ModelJobLifecycle:
                 if isinstance(task, str) and task}),
             "max_attempts": MAX_GENERATION_ATTEMPTS,
             "prepared_prompt": job.prepared_prompt if job.source == "text" else "",
+            "workflow_mode": job.workflow_mode,
+            "flow_id": job.flow_id,
+            "smart_progress": job.smart_progress,
+            "smart_phase": job.smart_phase,
+            "smart_elapsed_seconds": job.smart_elapsed_seconds,
+            "smart_stop_intent": job.smart_stop_intent,
             "user_prompt": "" if job.source == "image" and job.user_prompt == DEFAULT_IMAGE_INSTRUCTION else job.user_prompt,
             "palette": list(job.palette),
             "palette_roles": job.palette_roles,

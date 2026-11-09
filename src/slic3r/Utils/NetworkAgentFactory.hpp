@@ -19,6 +19,7 @@ namespace Slic3r {
 static constexpr char ORCA_PRINTER_AGENT_ID[] = "orca";
 static constexpr char BBL_PRINTER_AGENT_ID[] = "bbl";
 static constexpr char MOONRAKER_PRINTER_AGENT_ID[] = "moonraker";
+static constexpr char HONOR_FORGE_PRINTER_AGENT_ID[] = "honor_forge";
 
 // Factory function type for creating printer agents
 using PrinterAgentFactory =
@@ -29,16 +30,19 @@ struct PrinterAgentInfo
 {
     std::string         id;           // Registry/config key, e.g. "orca" or a plugin AgentInfo::id
     std::string         display_name; // e.g., "Orca Native", "Bambu Lab"
+    PrinterAgentTraits  traits;
     std::string         plugin_identifier;     // Empty for built-ins, otherwise <plugin_key>;<uuid>;<capability_name>
     PrinterAgentFactory factory;      // Function to create the agent
 
     bool is_plugin() const { return !plugin_identifier.empty(); }
-    PrinterAgentInfo(const std::string& id_, const std::string& display_name_, PrinterAgentFactory factory_)
-        : id(id_), display_name(display_name_), factory(std::move(factory_))
+    PrinterAgentInfo(const std::string& id_, const std::string& display_name_, PrinterAgentFactory factory_,
+                     PrinterAgentTraits traits_ = {})
+        : id(id_), display_name(display_name_), traits(traits_), factory(std::move(factory_))
     {}
 
-    PrinterAgentInfo(const std::string& id_, const std::string& display_name_, const std::string& plugin_identifier, PrinterAgentFactory factory_)
-        : id(id_), display_name(display_name_), plugin_identifier(plugin_identifier), factory(std::move(factory_))
+    PrinterAgentInfo(const std::string& id_, const std::string& display_name_, const std::string& plugin_identifier,
+                     PrinterAgentFactory factory_, PrinterAgentTraits traits_ = {})
+        : id(id_), display_name(display_name_), traits(traits_), plugin_identifier(plugin_identifier), factory(std::move(factory_))
     {}
 };
 
@@ -86,7 +90,8 @@ public:
      * @param factory Factory function to create the agent
      * @return true if registration succeeded, false if already registered
      */
-    static bool register_printer_agent(const std::string& id, const std::string& display_name, PrinterAgentFactory factory);
+    static bool register_printer_agent(const std::string& id, const std::string& display_name, PrinterAgentFactory factory,
+                                       PrinterAgentTraits traits = {});
 
     /**
      * Check if an agent registry/config key is registered
@@ -97,6 +102,13 @@ public:
      * Get info about a registered agent by registry/config key
      */
     static const PrinterAgentInfo* get_printer_agent_info(const std::string& id);
+
+    /** Return registered capabilities by value so callers never retain registry storage. */
+    static PrinterAgentTraits get_printer_agent_traits(const std::string& id);
+
+    /** Resolve legacy presets/projects that predate an explicit printer_agent value. */
+    static std::string resolve_printer_agent_id(const std::string& stored_id, const std::string& printer_model,
+                                                bool is_bbl_vendor);
 
     /**
      * Return the full plugin reference for a plugin-backed printer agent ID, or empty for built-ins.

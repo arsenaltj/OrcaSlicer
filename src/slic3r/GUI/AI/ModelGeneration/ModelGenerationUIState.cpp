@@ -28,6 +28,7 @@ bool ModelGenerationUIState::same_content(const ModelGenerationUIState& other) c
 {
     return PortraitPrint::encode(portrait_print) == PortraitPrint::encode(other.portrait_print) &&
            portrait_print.authorized == other.portrait_print.authorized &&
+           smart_mode == other.smart_mode && smart_flow_id == other.smart_flow_id &&
            stage == other.stage && input == other.input && options == other.options &&
            service_available == other.service_available &&
            service_availability_known == other.service_availability_known && busy == other.busy &&

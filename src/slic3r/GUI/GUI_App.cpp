@@ -1836,12 +1836,19 @@ void GUI_App::shutdown()
 
 void GUI_App::start_exit_watchdog()
 {
+    bool expected = false;
+    if (!m_exit_watchdog_started.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        BOOST_LOG_TRIVIAL(info) << "[AppShutdown] duplicate_watchdog_ignored";
+        return;
+    }
+
     // Last resort for code that never returns while the app closes (plugins, vendor libraries,
     // network calls). The app config is saved on idle and again in MainFrame::shutdown, so ending
     // the process loses little; static destructors and atexit handlers are skipped too, as they may
     // be what is stuck.
     constexpr auto grace = std::chrono::seconds(30);
     try {
+        BOOST_LOG_TRIVIAL(info) << "[AppShutdown] watchdog_started grace_seconds=" << grace.count();
         // Made now: by the time the watchdog fires, static destruction may be under way. The logger
         // holds its own reference, which keeps boost::log's core and sinks alive.
         boost::log::sources::severity_logger_mt<boost::log::trivial::severity_level> logger;
@@ -1856,6 +1863,7 @@ void GUI_App::start_exit_watchdog()
             std::_Exit(EXIT_FAILURE);
         }).detach();
     } catch (const std::system_error& ex) {
+        m_exit_watchdog_started.store(false, std::memory_order_release);
         BOOST_LOG_TRIVIAL(warning) << "Could not start the exit watchdog: " << ex.what();
     }
 }
@@ -2945,6 +2953,25 @@ void GUI_App::init_networking_callbacks()
                     /* request_pushing */
                     MachineObject* obj = m_device_manager->get_my_machine(dev_id);
                     wxCommandEvent event(EVT_CONNECT_LAN_MODE_PRINT);
+                    const bool terminal_state = state == ConnectStatus::ConnectStatusOk ||
+                                                state == ConnectStatus::ConnectStatusFailed ||
+                                                state == ConnectStatus::ConnectStatusLost;
+                    const bool silent_restore = terminal_state &&
+                        m_silent_printer_connect_devices.erase(dev_id) != 0;
+                    if (silent_restore) {
+                        const char* result = state == ConnectStatus::ConnectStatusOk ? "connected" :
+                            state == ConnectStatus::ConnectStatusFailed ? "failed" : "lost";
+                        if (state == ConnectStatus::ConnectStatusOk) {
+                            BOOST_LOG_TRIVIAL(info) << "[PrinterConnection] automatic_restore_finished"
+                                                    << " device_ref=" << std::hex << std::hash<std::string>{}(dev_id)
+                                                    << std::dec << " result=" << result;
+                        } else {
+                            BOOST_LOG_TRIVIAL(warning) << "[PrinterConnection] automatic_restore_finished"
+                                                       << " device_ref=" << std::hex << std::hash<std::string>{}(dev_id)
+                                                       << std::dec << " result=" << result << " code=" << msg
+                                                       << " dialog=suppressed";
+                        }
+                    }
 
                     if (obj) {
 
@@ -2965,11 +2992,11 @@ void GUI_App::init_networking_callbacks()
                                 if (msg == "5") {
                                     obj->set_access_code("");
                                     text = wxString::Format(_L("Incorrect password"));
-                                    wxGetApp().show_dialog(text);
                                 } else {
-                                text = wxString::Format(_L("Connect %s failed! [SN:%s, code=%s]"), from_u8(obj->get_dev_name()), obj->get_dev_id(), msg);
-                                    wxGetApp().show_dialog(text);
+                                    text = wxString::Format(_L("Connect %s failed! [SN:%s, code=%s]"), from_u8(obj->get_dev_name()), obj->get_dev_id(), msg);
                                 }
+                                if (!silent_restore)
+                                    wxGetApp().show_dialog(text, true);
                                 event.SetInt(-1);
 
                                 obj->set_online_state(false);
@@ -4101,6 +4128,18 @@ bool GUI_App::on_init_inner()
 
         Bind(EVT_SHOW_DIALOG, [this](const wxCommandEvent& evt) {
             wxString msg = evt.GetString();
+            const bool redesign_connection_error = evt.GetInt() == 1 && mainframe &&
+                mainframe->is_redesign_shell_active();
+            if (redesign_connection_error) {
+                RedesignConfirmationOptions options;
+                options.style = wxOK | wxICON_INFORMATION;
+                options.standard_layout = true;
+                options.actions = {{wxID_OK, _L("确认"), true}};
+                BOOST_LOG_TRIVIAL(info) << "[PrinterConnection] failure_dialog theme=redesign";
+                show_redesign_confirmation(mainframe, msg, _L("连接失败"), options);
+                m_info_dialog_content = wxEmptyString;
+                return;
+            }
             InfoDialog dlg(this->mainframe, _L("Info"), msg);
             dlg.Bind(wxEVT_DESTROY, [this](auto& e) {
                 m_info_dialog_content = wxEmptyString;
@@ -4916,9 +4955,11 @@ void GUI_App::set_live_printer_agent(std::shared_ptr<IPrinterAgent> agent)
 
 std::string GUI_App::resolve_printer_agent_id(const std::string& stored_id) const
 {
-    if (!stored_id.empty())
-        return stored_id;
-    return (preset_bundle && preset_bundle->is_bbl_vendor()) ? BBL_PRINTER_AGENT_ID : ORCA_PRINTER_AGENT_ID;
+    const std::string printer_model = preset_bundle
+        ? preset_bundle->printers.get_edited_preset().config.opt_string("printer_model")
+        : std::string();
+    return NetworkAgentFactory::resolve_printer_agent_id(
+        stored_id, printer_model, preset_bundle && preset_bundle->is_bbl_vendor());
 }
 
 std::string GUI_App::canonical_printer_agent_id(const std::string& picked_id)
@@ -4984,7 +5025,8 @@ void GUI_App::switch_printer_agent()
             if (!print_host.empty()) {
                 const std::string dev_id = MachineObject::dev_id_from_address(print_host, config.opt_string("printhost_port"));
                 MachineObject* sel = m_device_manager->get_selected_machine();
-                const bool access_code_changed = effective_agent_id == MOONRAKER_PRINTER_AGENT_ID && sel &&
+                const auto traits = NetworkAgentFactory::get_printer_agent_traits(effective_agent_id);
+                const bool access_code_changed = traits.uses_printhost_api_key && sel &&
                                                  sel->get_access_code() != config.opt_string("printhost_apikey");
                 if (!sel || sel->get_dev_id() != dev_id || access_code_changed)
                     select_machine(effective_agent_id);
@@ -5021,6 +5063,16 @@ void GUI_App::switch_printer_agent_if_pending()
     switch_printer_agent();
 }
 
+void GUI_App::mark_printer_connection_user_initiated(const std::string& dev_id)
+{
+    if (dev_id.empty())
+        return;
+    const bool cleared = m_silent_printer_connect_devices.erase(dev_id) != 0;
+    BOOST_LOG_TRIVIAL(info) << "[PrinterConnection] user_selection device_ref=" << std::hex
+                            << std::hash<std::string>{}(dev_id) << std::dec
+                            << " cleared_silent_restore=" << cleared;
+}
+
 void GUI_App::select_machine(const std::string& agent_id)
 {
     // Skip for BBL agent for now - uses its own device discovery/selection
@@ -5040,6 +5092,9 @@ void GUI_App::select_machine(const std::string& agent_id)
 
     // Hands the machine to the Device tab's full selection flow (UI updates, callbacks, etc.).
     auto select_dev = [this](const std::string& dev_id) {
+        m_silent_printer_connect_devices.insert(dev_id);
+        BOOST_LOG_TRIVIAL(info) << "[PrinterConnection] automatic_restore_requested device_ref=" << std::hex
+                                << std::hash<std::string>{}(dev_id) << std::dec;
         if (MonitorPanel* monitor = MonitorPanel::if_built()) {
             monitor->select_machine(dev_id);
             BOOST_LOG_TRIVIAL(info) << "GUI_App::select_machine" << ": triggered select_machine for dev_id=" << dev_id;
@@ -5063,7 +5118,8 @@ void GUI_App::select_machine(const std::string& agent_id)
     }
     std::string port = host_cfg->opt_string("printhost_port");
     std::string access_code = host_cfg->opt_string("printhost_apikey");
-    if (access_code.empty() && agent_id != MOONRAKER_PRINTER_AGENT_ID)
+    const auto agent_traits = NetworkAgentFactory::get_printer_agent_traits(agent_id);
+    if (access_code.empty() && !agent_traits.accepts_empty_access_code)
         access_code = "88888888";
 
     // Generate dev_id from host and port
@@ -5100,7 +5156,7 @@ void GUI_App::select_machine(const std::string& agent_id)
             return;
         }
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": created new machine dev_id=" << dev_id;
-    } else if (agent_id == MOONRAKER_PRINTER_AGENT_ID && existing->printer_agent_id == agent_id &&
+    } else if (agent_traits.uses_printhost_api_key && existing->printer_agent_id == agent_id &&
                (!existing->has_access_right() || existing->get_access_code() != access_code)) {
         existing->set_access_code(access_code);
     }
@@ -5108,6 +5164,9 @@ void GUI_App::select_machine(const std::string& agent_id)
 
     // Route device selection through MainFrame so the redesign shell never
     // drives the hidden legacy MonitorPanel directly.
+    m_silent_printer_connect_devices.insert(dev_id);
+    BOOST_LOG_TRIVIAL(info) << "[PrinterConnection] automatic_restore_requested device_ref=" << std::hex
+                            << std::hash<std::string>{}(dev_id) << std::dec;
     if (mainframe) {
         mainframe->select_device(dev_id);
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": routed device selection for dev_id=" << dev_id;
@@ -7632,11 +7691,12 @@ std::string GUI_App::format_IP(const std::string& ip)
     return format_ip;
 }
 
-void GUI_App::show_dialog(wxString msg)
+void GUI_App::show_dialog(wxString msg, bool redesign_connection_error)
 {
     if (m_info_dialog_content.empty()) {
         wxCommandEvent* evt = new wxCommandEvent(EVT_SHOW_DIALOG);
         evt->SetString(msg);
+        evt->SetInt(redesign_connection_error ? 1 : 0);
         GUI::wxGetApp().QueueEvent(evt);
         m_info_dialog_content = msg;
     }

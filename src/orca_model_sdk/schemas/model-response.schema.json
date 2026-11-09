@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:orca:model-sdk:response:v1",
+  "title": "Model SDK v1 envelope",
+  "type": "object",
+  "required": ["schemaVersion", "ok"],
+  "properties": { "schemaVersion": { "const": 1 }, "ok": { "type": "boolean" }, "result": { "type": "object" }, "error": { "type": "object", "required": ["code", "message"], "properties": { "code": { "type": "string" }, "message": { "type": "string" } } } },
+  "allOf": [ { "if": { "properties": { "ok": { "const": true } } }, "then": { "required": ["result"] }, "else": { "required": ["error"] } } ],
+  "additionalProperties": true
+}

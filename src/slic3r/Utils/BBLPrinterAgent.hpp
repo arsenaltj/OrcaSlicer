@@ -76,6 +76,7 @@ public:
      */
      static AgentInfo get_agent_info_static();
      AgentInfo get_agent_info() override { return get_agent_info_static(); }
+     PrinterAgentTraits get_traits() const override { return get_agent_info_static().traits; }
 
     // Print Job Operations
     int start_print(PrintParams params, OnUpdateStatusFn update_fn, WasCancelledFn cancel_fn, OnWaitFn wait_fn) override;

@@ -48,6 +48,7 @@
 #include "ReleaseNote.hpp"
 #include "GUI_Utils.hpp"
 #include "wxExtensions.hpp"
+#include "PrinterTransferPresentation.hpp"
 #include "DeviceManager.hpp"
 #include "DeviceCore/DevNozzleSystem.h" // DevNozzle (get_mapped_nozzles return type)
 #include "Plater.hpp"
@@ -324,6 +325,7 @@ private:
     bool                                m_is_rename_mode{ false };
     bool                                m_check_flag {false};
     bool                                m_ext_change_assist{ false };
+    PrinterTransferPresentationContext  m_presentation;
     PrintPageMode                       m_print_page_mode{PrintPageMode::PrintPageModePrepare};
     std::string                         m_print_error_msg;
     std::string                         m_print_error_extra;
@@ -470,7 +472,8 @@ public:
     static std::vector<std::string> MachineBedTypeString;
 
 public:
-    SelectMachineDialog(Plater *plater = nullptr);
+    SelectMachineDialog(Plater *plater = nullptr,
+                        PrinterTransferPresentationContext presentation = {});
     ~SelectMachineDialog();
 
     void init_bind();
@@ -488,6 +491,8 @@ public:
     void sys_color_changed();
     void reset_timeout();
     void update_user_printer();
+    bool validate_presentation_target(const char* phase, bool update_ui);
+    bool is_redesign_presentation() const { return m_presentation.redesign(); }
     void reset_ams_material();
     void update_show_status(MachineObject* obj_ = nullptr);
 

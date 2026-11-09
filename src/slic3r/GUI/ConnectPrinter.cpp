@@ -170,7 +170,8 @@ void ConnectPrinterDialog::on_input_enter(wxCommandEvent& evt)
 void ConnectPrinterDialog::on_button_confirm(wxCommandEvent &event)
 {
     wxString code = m_textCtrl_code->GetTextCtrl()->GetValue();
-    if (code.empty() && (!m_obj || m_obj->printer_agent_id != MOONRAKER_PRINTER_AGENT_ID))
+    const auto traits = NetworkAgentFactory::get_printer_agent_traits(m_obj ? m_obj->printer_agent_id : std::string());
+    if (code.empty() && !traits.accepts_empty_access_code)
         code = "88888888";
     for (char c : code) {
         if (!(('0' <= c && c <= '9') || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z'))) {

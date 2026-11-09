@@ -19,6 +19,7 @@
 #include "slic3r/GUI/Redesign/RedesignPreviewPresentation.hpp"
 #include "slic3r/GUI/Redesign/RedesignWorkspaceNavigation.hpp"
 #include "slic3r/GUI/Redesign/ModelGenerationStarfield.hpp"
+#include "slic3r/GUI/Redesign/PrinterWorkspaceState.hpp"
 #include "slic3r/GUI/CanvasNotificationLayout.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -1893,4 +1894,93 @@ TEST_CASE("Changed recommendation parameters hide reanalysis until their own est
     state.lightweight_analyzing = true;
     state.analyzing = true;
     CHECK_FALSE(workbench_show_reanalyze(state));
+}
+
+TEST_CASE("Printer discovery keeps an empty accepted request active until timeout", "[UiRedesign][PrinterDiscovery]")
+{
+    PrinterDiscoveryState state;
+    state.begin(1, PrinterDiscoveryTrigger::Picker, "bambu", 0);
+
+    CHECK(state.request_id == 1);
+    CHECK(state.phase == PrinterDiscoveryPhase::Discovering);
+    CHECK(state.error == PrinterDiscoveryError::None);
+    CHECK_FALSE(state.retryable());
+
+    state.observe("bambu", 0, std::chrono::milliseconds(9999), std::chrono::seconds(10));
+    CHECK(state.phase == PrinterDiscoveryPhase::Discovering);
+    state.observe("bambu", 0, std::chrono::seconds(10), std::chrono::seconds(10));
+    CHECK(state.phase == PrinterDiscoveryPhase::TimedOut);
+    CHECK(state.retryable());
+}
+
+TEST_CASE("Printer discovery refreshes when devices arrive including after timeout", "[UiRedesign][PrinterDiscovery]")
+{
+    PrinterDiscoveryState state;
+    state.begin(2, PrinterDiscoveryTrigger::Activation, "bambu", 0);
+    state.observe("bambu", 2, std::chrono::milliseconds(250), std::chrono::seconds(10));
+    CHECK(state.phase == PrinterDiscoveryPhase::DevicesAvailable);
+    CHECK(state.current_count == 2);
+
+    state.begin(3, PrinterDiscoveryTrigger::Retry, "bambu", 0);
+    state.observe("bambu", 0, std::chrono::seconds(10), std::chrono::seconds(10));
+    REQUIRE(state.phase == PrinterDiscoveryPhase::TimedOut);
+    state.observe("bambu", 1, std::chrono::seconds(12), std::chrono::seconds(10));
+    CHECK(state.phase == PrinterDiscoveryPhase::DevicesAvailable);
+    CHECK(state.error == PrinterDiscoveryError::None);
+    CHECK(state.current_count == 1);
+}
+
+TEST_CASE("Printer discovery failures and changed selections remain retryable", "[UiRedesign][PrinterDiscovery]")
+{
+    PrinterDiscoveryState state;
+    state.begin(4, PrinterDiscoveryTrigger::Picker, "bambu", 0);
+    state.reject(PrinterDiscoveryError::RequestRejected);
+    CHECK(state.phase == PrinterDiscoveryPhase::Failed);
+    CHECK(state.error == PrinterDiscoveryError::RequestRejected);
+    CHECK(state.retryable());
+
+    state.begin(5, PrinterDiscoveryTrigger::Retry, "bambu", 0);
+    CHECK(state.phase == PrinterDiscoveryPhase::Discovering);
+    CHECK(state.error == PrinterDiscoveryError::None);
+    state.reject(PrinterDiscoveryError::SelectionChanged);
+    CHECK(state.phase == PrinterDiscoveryPhase::Failed);
+    CHECK(state.error == PrinterDiscoveryError::SelectionChanged);
+}
+
+TEST_CASE("Printer discovery rejects agent changes and never accepts an empty agent", "[UiRedesign][PrinterDiscovery]")
+{
+    CHECK(printer_discovery_agent_matches("bambu", "bambu"));
+    CHECK_FALSE(printer_discovery_agent_matches("", ""));
+    CHECK_FALSE(printer_discovery_agent_matches("bambu", "orca"));
+    CHECK(printer_discovery_device_matches("bambu", "bambu", "bambu"));
+    CHECK_FALSE(printer_discovery_device_matches("bambu", "orca", "orca"));
+    CHECK_FALSE(printer_discovery_device_matches("bambu", "bambu", "orca"));
+
+    PrinterDiscoveryState state;
+    state.begin(6, PrinterDiscoveryTrigger::Picker, "bambu", 0);
+    state.observe("orca", 3, std::chrono::milliseconds(100), std::chrono::seconds(10));
+    CHECK(state.phase == PrinterDiscoveryPhase::Failed);
+    CHECK(state.error == PrinterDiscoveryError::AgentChanged);
+    CHECK(state.current_count == 3);
+
+    state.begin(7, PrinterDiscoveryTrigger::Retry, "bambu", 0);
+    state.observe("bambu", 0, std::chrono::seconds(10), std::chrono::seconds(10));
+    REQUIRE(state.phase == PrinterDiscoveryPhase::TimedOut);
+    state.observe("orca", 0, std::chrono::seconds(11), std::chrono::seconds(10));
+    CHECK(state.phase == PrinterDiscoveryPhase::Failed);
+    CHECK(state.error == PrinterDiscoveryError::AgentChanged);
+}
+
+TEST_CASE("Printer devices expose offline available connecting connected and ready states", "[UiRedesign][PrinterDiscovery]")
+{
+    CHECK(printer_device_connection_state(false, false, false, false) ==
+          PrinterDeviceConnectionState::Offline);
+    CHECK(printer_device_connection_state(true, false, false, false) ==
+          PrinterDeviceConnectionState::Available);
+    CHECK(printer_device_connection_state(true, true, false, false) ==
+          PrinterDeviceConnectionState::Connecting);
+    CHECK(printer_device_connection_state(true, false, true, false) ==
+          PrinterDeviceConnectionState::Connected);
+    CHECK(printer_device_connection_state(true, false, true, true) ==
+          PrinterDeviceConnectionState::Ready);
 }

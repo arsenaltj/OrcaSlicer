@@ -1,9 +1,11 @@
 #include "VertexColorRegionEditor.hpp"
+#ifndef ORCA_MODEL_REGION_COMPUTE_ONLY
 #include "ModelArtifact.hpp"
 
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <boost/log/trivial.hpp>
+#endif
 #include <boost/unordered/unordered_flat_map.hpp>
 
 #include <algorithm>
@@ -228,6 +230,7 @@ bool VertexColorRegionEditor::initialize_impl(indexed_triangle_set mesh, std::ve
         return std::chrono::duration<double, std::milli>(end - begin).count();
     };
     // Argument copies and destruction of temporary maps are outside these stages.
+#ifndef ORCA_MODEL_REGION_COMPUTE_ONLY
     BOOST_LOG_TRIVIAL(info) << "AI region initialize: faces=" << m_mesh.indices.size()
         << ", setup_ms=" << milliseconds(started, setup_done)
         << ", indexed_ms=" << indexed_ms
@@ -235,6 +238,7 @@ bool VertexColorRegionEditor::initialize_impl(indexed_triangle_set mesh, std::ve
         << ", adjacency_ms=" << adjacency_ms
         << ", bvh_ms=" << milliseconds(adjacency_done, bvh_done)
         << ", region_topology=" << region_selection_ready();
+#endif
     return true;
 }
 catch (const RegionPreparationCanceled&) {
@@ -929,6 +933,7 @@ bool VertexColorRegionEditor::apply_color(const RGBA& color)
     return true;
 }
 
+#ifndef ORCA_MODEL_REGION_COMPUTE_ONLY
 bool VertexColorRegionEditor::apply_color_to_obj_copy(const RGBA& color,
                                                       const boost::filesystem::path& source,
                                                       const boost::filesystem::path& destination,
@@ -945,6 +950,7 @@ bool VertexColorRegionEditor::apply_color_to_obj_copy(const RGBA& color,
     m_face_color_overrides = original_overrides;
     return written;
 }
+#endif
 
 void VertexColorRegionEditor::build_color_mesh(indexed_triangle_set& mesh,
                                                std::vector<RGBA>& colors) const
@@ -980,6 +986,7 @@ void VertexColorRegionEditor::build_color_mesh(indexed_triangle_set& mesh,
     }
 }
 
+#ifndef ORCA_MODEL_REGION_COMPUTE_ONLY
 bool VertexColorRegionEditor::write_obj_copy(const boost::filesystem::path& source,
                                              const boost::filesystem::path& destination,
                                              std::string& error) const
@@ -1122,4 +1129,5 @@ bool VertexColorRegionEditor::write_obj_copy(const boost::filesystem::path& sour
     return true;
 }
 
+#endif
 } // namespace Slic3r::AI

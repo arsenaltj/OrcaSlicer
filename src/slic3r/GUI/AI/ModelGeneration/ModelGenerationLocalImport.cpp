@@ -9,6 +9,7 @@
 #include <boost/log/trivial.hpp>
 #include <nlohmann/json.hpp>
 #include <wx/filedlg.h>
+#include <wx/msgdlg.h>
 #include <wx/stattext.h>
 #include <wx/weakref.h>
 
@@ -112,6 +113,7 @@ void ModelGenerationPanel::import_local_model(const boost::filesystem::path& sou
                     : _L("已取消本地导入，原文件和当前模型已保留。");
                 weak->m_status->SetLabel(message);
                 if(open_beauty)weak->m_model_preview_message->SetLabel(message);
+                if (weak->m_shell_smart_creation) weak->publish_ui_state();
                 return;
             }
             if(!success){
@@ -122,6 +124,10 @@ void ModelGenerationPanel::import_local_model(const boost::filesystem::path& sou
                     : _L("无法导入这个模型。请检查 GLB/OBJ 是否包含有效几何、关联贴图是否齐全，并确认保存目录可写；原文件和当前模型保持不变。");
                 weak->m_status->SetLabel(failure);
                 if(open_beauty)weak->m_model_preview_message->SetLabel(failure);
+                if (weak->m_shell_smart_creation) {
+                    weak->publish_ui_state();
+                    wxMessageBox(failure, _L("导入未完成"), wxOK | wxICON_ERROR, wxGetTopLevelParent(weak.get()));
+                }
                 return;
             }
             // Keep the local token through parsing: neither phase may stop

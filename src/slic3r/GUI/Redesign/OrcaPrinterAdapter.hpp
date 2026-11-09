@@ -1,7 +1,9 @@
 #pragma once
 
 #include "PrinterWorkspaceState.hpp"
+#include "../../Utils/IPrinterAgent.hpp"
 
+#include <cstddef>
 #include <vector>
 #include <wx/image.h>
 
@@ -13,7 +15,24 @@ struct PrinterWorkspaceDevice
 {
     std::string id;
     std::string name;
+    std::string address;
+    std::string agent_id;
     bool online { false };
+    bool connecting { false };
+    bool connected { false };
+    bool information_ready { false };
+    bool selected { false };
+    bool configured_host_target { false };
+    bool discovered_on_network { false };
+};
+
+struct PrinterDiscoveryStartResult
+{
+    bool accepted { false };
+    PrinterDiscoveryError error { PrinterDiscoveryError::None };
+    std::string agent_id;
+    size_t device_count { 0 };
+    std::uint64_t backend_request_id {0};
 };
 
 class OrcaPrinterAdapter final
@@ -25,9 +44,13 @@ public:
     // Returns a user-facing explanation of the native G-code boundary check.
     // The string is empty when no current preview is outside the build volume.
     std::string preview_toolpath_diagnostic() const;
+    PrinterDiscoveryStartResult request_discovery() const;
+    PrinterDiscoveryBackendStatus discovery_status() const;
+    std::string active_agent_id() const;
     std::vector<PrinterWorkspaceDevice> devices() const;
     bool select_device(const std::string& id) const;
-    bool review_print(wxWindow* parent) const;
+    OrcaPrintTargetSnapshot print_target_snapshot() const;
+    bool review_print(wxWindow* parent, bool allow_unready_review = false) const;
     bool start_slice() const;
     bool can_import_model() const;
     bool import_model() const;

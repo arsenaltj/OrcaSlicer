@@ -17,6 +17,7 @@
 #include "libslic3r/Semver.hpp"
 #include <memory>
 #include <chrono>
+#include <set>
 #include <string>
 #include "ConfigWizardTypes.hpp"
 #include "libslic3r/Preset.hpp"
@@ -341,6 +342,7 @@ private:
 
     //BBS
     std::atomic<bool> m_is_closing {false};
+    std::atomic<bool> m_exit_watchdog_started {false};
     Slic3r::DeviceManager* m_device_manager { nullptr };
     Slic3r::UserManager* m_user_manager { nullptr };
     Slic3r::TaskManager* m_task_manager { nullptr };
@@ -439,6 +441,10 @@ public:
     // Install the selected preset's agent if it is registered but not live, e.g. when its plugin
     // finishes loading after the startup preset was applied. Otherwise leave the live agent alone.
     void switch_printer_agent_if_pending();
+
+    // A user selection must surface connection failures even when the same device was
+    // previously queued for silent preset restoration during startup.
+    void mark_printer_connection_user_initiated(const std::string& dev_id);
 
     std::string resolve_printer_agent_id(const std::string& stored_id) const;
     // ORCA TODO: in the future, bbl presets should specify "bbl" printer agent id
@@ -637,7 +643,7 @@ public:
     void            no_new_version();
     static std::string format_display_version();
     std::string     format_IP(const std::string& ip);
-    void            show_dialog(wxString msg);
+    void            show_dialog(wxString msg, bool redesign_connection_error = false);
     void            push_notification(const MachineObject* obj, wxString msg, wxString title = wxEmptyString, UserNotificationStyle style = UserNotificationStyle::UNS_NORMAL);
     // Returns false when the cloud presets could not be fetched, so nothing was reloaded.
     bool            reload_settings();
@@ -941,6 +947,7 @@ private:
     boost::optional<Semver> m_last_config_version;
     bool                    m_config_corrupted { false };
     std::string             m_open_method;
+    std::set<std::string>   m_silent_printer_connect_devices;
 };
 
 DECLARE_APP(GUI_App)

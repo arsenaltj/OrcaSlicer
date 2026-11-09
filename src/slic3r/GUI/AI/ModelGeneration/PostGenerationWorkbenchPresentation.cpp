@@ -499,6 +499,10 @@ void ModelGenerationPanel::rescale_post_generation_workbench()
 void ModelGenerationPanel::layout_workbench_history_toggle(bool force)
 {
     if (!m_workbench_history_toggle || !m_model_preview) return;
+    if (m_workbench_history_sidebar_mounted) {
+        layout_mounted_workbench_history_sidebar();
+        return;
+    }
     bool layout_needed = force;
     auto* overlay_host = m_model_preview->workbench_overlay_parent();
     const auto host_size = overlay_host->GetClientSize();
@@ -625,6 +629,9 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     set_workbench_enabled(m_workbench_sync_filaments, snapshot.can_edit_project_colors && device);
     set_workbench_tooltip(m_workbench_sync_filaments,
         device ? _L("使用原生设备耗材同步流程") : _L("当前没有可同步的同型号设备；可离线配置耗材"));
+    if (m_workbench_return_to_design_button)
+        layout_changed |= set_workbench_label(m_workbench_return_to_design_button,
+            m_shell_smart_creation ? _L("返回AI创作") : _L("返回图像设计"));
     if (m_workbench_return_to_design_button)
         set_workbench_enabled(m_workbench_return_to_design_button,
             post_generation_return_to_design_allowed(state));

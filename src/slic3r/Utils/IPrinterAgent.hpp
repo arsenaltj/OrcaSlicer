@@ -13,6 +13,8 @@
 #include <memory>
 #include <vector>
 #include <functional>
+#include <cstddef>
+#include <cstdint>
 #include <cmath>
 #include <nlohmann/json.hpp>
 #include <boost/format.hpp>
@@ -32,6 +34,96 @@ struct AgentInfo {
     std::string name;       ///< Human-readable agent name, e.g. "Orca", "Bambu Lab"
     std::string version;    ///< Agent version string, e.g. "1.0.0"
     std::string description; ///< Brief description of the agent's capabilities, e.g. "Orca printer agent"
+    struct Traits {
+        enum class ProtocolFamily {
+            Unknown = 0,
+            Bambu,
+            Moonraker
+        };
+
+        enum class JobPayload {
+            Gcode3mf = 0,
+            RawGcode
+        };
+
+        enum class StorageModel {
+            ReportedDeviceStorage = 0,
+            VirtualGcodeRoot
+        };
+
+        ProtocolFamily protocol_family {ProtocolFamily::Unknown};
+        bool accepts_empty_access_code {false};
+        bool uses_printhost_api_key {false};
+        bool supports_active_discovery {false};
+        bool preserves_foreign_device_ownership {false};
+        // The agent continuously updates the selected MachineObject with authoritative
+        // connection and printer status. Consumers may use that telemetry only when
+        // the owning agent opts in.
+        bool supports_monitoring_telemetry {false};
+        // Defaults preserve the established generic/plugin dispatch behavior.
+        // Agents that are transport stubs must opt out explicitly.
+        bool supports_upload_only {true};
+        bool supports_upload_and_print {true};
+        // Cloud task identity protects command routing for agents that expose it.
+        // Device-scoped local protocols may opt out when their control commands do
+        // not accept or report a task id.
+        bool requires_task_identity_for_control {true};
+        JobPayload job_payload {JobPayload::Gcode3mf};
+        StorageModel storage_model {StorageModel::ReportedDeviceStorage};
+        bool requires_transfer_preflight {true};
+    } traits;
+};
+
+using PrinterAgentTraits = AgentInfo::Traits;
+
+inline const char* printer_job_payload_name(PrinterAgentTraits::JobPayload payload) noexcept
+{
+    return payload == PrinterAgentTraits::JobPayload::RawGcode ? "raw_gcode" : "gcode_3mf";
+}
+
+inline const char* printer_storage_model_name(PrinterAgentTraits::StorageModel storage) noexcept
+{
+    return storage == PrinterAgentTraits::StorageModel::VirtualGcodeRoot ?
+        "virtual_gcode_root" : "reported_device_storage";
+}
+
+inline std::string resolve_printer_job_payload_path(const PrintParams& params,
+                                                    const PrinterAgentTraits& traits)
+{
+    if (traits.job_payload == PrinterAgentTraits::JobPayload::RawGcode)
+        return params.dst_file;
+    return params.filename;
+}
+
+enum class PrinterDiscoveryBackendPhase {
+    Idle = 0,
+    Running,
+    Completed,
+    Failed,
+    Cancelled
+};
+
+enum class PrinterDiscoveryBackendResult {
+    None = 0,
+    DevicesFound,
+    Empty,
+    NoEligibleInterface,
+    AuthenticationRequired,
+    ProtocolMismatch,
+    NetworkFailure,
+    Timeout,
+    InternalError
+};
+
+struct PrinterDiscoveryBackendStatus
+{
+    uint64_t request_id {0};
+    PrinterDiscoveryBackendPhase phase {PrinterDiscoveryBackendPhase::Idle};
+    PrinterDiscoveryBackendResult result {PrinterDiscoveryBackendResult::None};
+    size_t candidate_count {0};
+    size_t validated_count {0};
+    size_t emitted_count {0};
+    uint64_t elapsed_ms {0};
 };
 
 struct PrinterConnectionParams
@@ -432,6 +524,17 @@ public:
      * Get agent information.
      */
     virtual AgentInfo get_agent_info() = 0;
+
+    /**
+     * Return stable protocol capabilities used by GUI and DeviceManager adapters.
+     * Existing agents default to the conservative behavior represented by empty traits.
+     */
+    virtual PrinterAgentTraits get_traits() const { return {}; }
+
+    /**
+     * Return the latest active-discovery backend state, if the agent exposes one.
+     */
+    virtual PrinterDiscoveryBackendStatus discovery_status() const { return {}; }
 
     // ========================================================================
     // Filament Operations

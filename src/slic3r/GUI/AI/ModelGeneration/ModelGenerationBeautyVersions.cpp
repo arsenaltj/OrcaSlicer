@@ -141,17 +141,17 @@ bool ModelGenerationPanel::show_finishing_version(const boost::filesystem::path&
     const auto block_state=m_model_preview->portrait_color_blocks();
     const auto printer_restore=m_model_preview->printer_restore_snapshot();
     size_t triangles = 0, colors = 0; Vec3d dimensions = Vec3d::Zero(); std::string error;
-    const bool session_source = m_finishing_workbench && m_beauty_session_source &&
-        path == m_beauty_session_source->source;
+    const bool session_source = m_finishing_workbench && m_beauty_session.source() &&
+        path == m_beauty_session.source()->source;
     const auto explicit_overrides = path == m_finishing_candidate ? m_finishing_candidate_face_overrides
-        : session_source ? m_beauty_session_source->face_overrides : ModelPreview3D::FaceColorOverrides {};
+        : session_source ? m_beauty_session.source()->face_overrides : ModelPreview3D::FaceColorOverrides {};
     std::optional<OriginalAppearanceReference> appearance_override;
     if (path == m_finishing_candidate &&
         (m_finishing_candidate_original_appearance.valid() || !m_finishing_candidate_original_appearance_error.empty()))
         appearance_override = m_finishing_candidate_original_appearance;
-    else if (session_source && (m_beauty_session_source->original_appearance.valid() ||
-                               !m_beauty_session_source->original_appearance_error.empty()))
-        appearance_override = m_beauty_session_source->original_appearance;
+    else if (session_source && (m_beauty_session.source()->original_appearance.valid() ||
+                               !m_beauty_session.source()->original_appearance_error.empty()))
+        appearance_override = m_beauty_session.source()->original_appearance;
     invalidate_printer_filament_trial_for_model_change();
     if (!m_model_preview->load_model(path, {}, triangles, dimensions, colors, error, explicit_overrides, {},
             appearance_override)) {
@@ -162,24 +162,24 @@ bool ModelGenerationPanel::show_finishing_version(const boost::filesystem::path&
     if (path == m_finishing_candidate)
         m_model_preview->restore_semantic_region_evidence(m_finishing_candidate_region_evidence, m_finishing_candidate_region_error);
     else if (session_source)
-        m_model_preview->restore_semantic_region_evidence(m_beauty_session_source->region_evidence, m_beauty_session_source->region_evidence_error);
+        m_model_preview->restore_semantic_region_evidence(m_beauty_session.source()->region_evidence, m_beauty_session.source()->region_evidence_error);
     if (path == m_finishing_candidate)
         m_model_preview->restore_secondary_region_evidence(m_finishing_candidate_secondary_evidence, m_finishing_candidate_secondary_error);
     else if (session_source)
-        m_model_preview->restore_secondary_region_evidence(m_beauty_session_source->secondary_evidence, m_beauty_session_source->secondary_evidence_error);
+        m_model_preview->restore_secondary_region_evidence(m_beauty_session.source()->secondary_evidence, m_beauty_session.source()->secondary_evidence_error);
     if (path == m_finishing_candidate &&
         (!m_finishing_candidate_semantic_faces.empty() || !m_finishing_candidate_semantic_subfaces.empty())) {
         m_model_preview->restore_color_trial_without_recognition(color_state);
         m_model_preview->set_saved_semantic_result(
             m_finishing_candidate_semantic_faces, m_finishing_candidate_semantic_subfaces);
         m_model_preview->synchronize_project_bound_semantics(color_state, m_model_preview->color_trial_state());
-    } else if (session_source && (!m_beauty_session_source->semantic_faces.empty() ||
-                                  !m_beauty_session_source->semantic_subfaces.empty())) {
-        m_model_preview->restore_color_trial_without_recognition(m_beauty_session_source->color_trial);
+    } else if (session_source && (!m_beauty_session.source()->semantic_faces.empty() ||
+                                  !m_beauty_session.source()->semantic_subfaces.empty())) {
+        m_model_preview->restore_color_trial_without_recognition(m_beauty_session.source()->color_trial);
         m_model_preview->set_saved_semantic_result(
-            m_beauty_session_source->semantic_faces, m_beauty_session_source->semantic_subfaces);
+            m_beauty_session.source()->semantic_faces, m_beauty_session.source()->semantic_subfaces);
         m_model_preview->synchronize_project_bound_semantics(
-            m_beauty_session_source->color_trial, m_model_preview->color_trial_state());
+            m_beauty_session.source()->color_trial, m_model_preview->color_trial_state());
     } else if (m_finishing_workbench || m_model_preview->semantic_result_active())
         m_model_preview->restore_color_trial_without_recognition(color_state);
     else m_model_preview->restore_color_trial(color_state);
@@ -187,8 +187,8 @@ bool ModelGenerationPanel::show_finishing_version(const boost::filesystem::path&
         m_model_preview->restore_portrait_color_blocks(block_state);
         m_model_preview->restore_printer_restore_snapshot(printer_restore);
     } else if(session_source) {
-        m_model_preview->restore_portrait_color_blocks(m_beauty_session_source->color_blocks);
-        m_model_preview->restore_printer_restore_snapshot(m_beauty_session_source->printer_restore);
+        m_model_preview->restore_portrait_color_blocks(m_beauty_session.source()->color_blocks);
+        m_model_preview->restore_printer_restore_snapshot(m_beauty_session.source()->printer_restore);
     }
     m_model_preview->set_color_controls_visible(!m_finishing_workbench || m_finishing_tool->GetSelection() == 2);
     m_model_preview->set_selection_preview_suppressed(
@@ -305,8 +305,7 @@ void ModelGenerationPanel::rollback_portrait_color_save(const std::string& diagn
             (m_model_preview && m_model_preview->showing_model(file))) continue;
         boost::system::error_code ignored;
         boost::filesystem::remove(file, ignored);
-        m_beauty_candidate_files.erase(std::remove(m_beauty_candidate_files.begin(),
-            m_beauty_candidate_files.end(), file), m_beauty_candidate_files.end());
+        m_beauty_session.forget_candidate(file);
     }
     // A failed rollback write is diagnostic only; the native partition survives.
     save_portrait_print(true);
@@ -379,7 +378,7 @@ void ModelGenerationPanel::accept_model_finishing()
     }
     m_workbench_operation_notice = "正在接受候选并保存，可取消……";
     const auto root = generated_models_root();
-    const auto before = portrait_save ? m_portrait_save_draft : m_beauty_session_source;
+    const auto before = portrait_save ? m_portrait_save_draft : m_beauty_session.source();
     const auto source_context = m_finishing_source_context;
     auto after = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
     const auto verified_check = m_workbench_check_result;
@@ -679,12 +678,13 @@ void ModelGenerationPanel::accept_model_finishing()
         workbench_ai_palette_should_resume_after_accept(
             m_workbench_auto_palette_pending, verified_check.source,
             workbench_topology_safe(verified_check), verified_check.candidate_status);
+    const auto session_revision = m_beauty_session.revision();
     wxWeakRef<ModelGenerationPanel> weak(this);
     m_finishing_running = m_busy = true;
     m_finishing_status->SetLabel(_L("正在保存版本和编辑记录，可取消……"));
     refresh_controls();
     try {
-        m_finishing_worker = std::thread([weak, revision, canceled, committed, metadata_path,
+        m_finishing_worker = std::thread([weak, revision, session_revision, canceled, committed, metadata_path,
             source, source_hash, candidate, before, after, source_context, cache_root, region_cache_unsaved,
             topology_candidate, verified_check, filament_application, portrait_save, root,
             publication_id, portrait_save_flow_id, portrait_save_snapshot,
@@ -797,7 +797,7 @@ void ModelGenerationPanel::accept_model_finishing()
                         boost::filesystem::remove(artifact, ignored);
                 }
             }
-            wxGetApp().CallAfter([weak, revision, canceled, committed, candidate, before, after,
+            wxGetApp().CallAfter([weak, revision, session_revision, canceled, committed, candidate, before, after,
                 source, source_hash, source_context, region_cache_unsaved, topology_candidate, filament_application,
                 portrait_save, resume_automatic_palette_after_accept,
                 final_check, metadata_path, publication_id, error, portrait_save_flow_id,
@@ -834,15 +834,14 @@ void ModelGenerationPanel::accept_model_finishing()
                                 AI::model_artifact_sha256(file) != owned.second) continue;
                             boost::system::error_code ignored;
                             boost::filesystem::remove(file, ignored);
-                            if (weak) weak->m_beauty_candidate_files.erase(std::remove(
-                                weak->m_beauty_candidate_files.begin(), weak->m_beauty_candidate_files.end(), file),
-                                weak->m_beauty_candidate_files.end());
+                            if (weak) weak->m_beauty_session.forget_candidate(file);
                         }
                     } catch (const std::exception& failure) {
                         BOOST_LOG_TRIVIAL(error) << "stale portrait publication cleanup: " << failure.what();
                     }
                 };
                 if (!weak || weak->m_shutdown || revision != weak->m_sequence ||
+                    !weak->m_beauty_session.is_current(session_revision) ||
                     weak->m_beauty_publication_committed != committed ||
                     (portrait_save && (!weak->portrait_color_save_snapshot_current() ||
                         weak->m_portrait_save_flow_id != portrait_save_flow_id ||
@@ -930,11 +929,6 @@ void ModelGenerationPanel::accept_model_finishing()
                 self->m_finishing_undo_path = self->m_finishing_source;
                 self->m_finishing_restore_context = source_context;
                 self->m_finishing_accepted_path = candidate;
-                self->m_beauty_accepted_files.push_back(candidate);
-                if (after->original_appearance.valid() &&
-                    std::find(self->m_beauty_candidate_files.begin(), self->m_beauty_candidate_files.end(),
-                              after->original_appearance.carrier_model) != self->m_beauty_candidate_files.end())
-                    self->m_beauty_accepted_files.push_back(after->original_appearance.carrier_model);
                 self->select_local_finishing_version(candidate, self->m_finishing_id);
                 if (resume_automatic_palette_after_accept) {
                     self->m_workbench_auto_palette_pending = true;
@@ -974,38 +968,34 @@ void ModelGenerationPanel::accept_model_finishing()
                     self->m_finishing_source_context = {};
                     self->m_finishing_restore_context = {};
                     self->m_finishing_restore_selection = {};
-                    self->m_beauty_session_source.reset();
                     self->m_beauty_compare_draft.reset();
                 }
-                self->m_beauty_manual_color_dirty = false;
                 if (self->m_beauty_controls) self->m_beauty_controls->mark_saved();
-                if (self->m_beauty_transactions) {
-                    self->m_beauty_transactions->finish(true, false);
-                    if (before && self->m_finishing_workbench) {
-                        self->m_beauty_transactions->truncate_to(self->m_beauty_session_undo_base);
-                        const auto restore = [self](const auto& snapshot, const auto& context) {
-                            if (!self->restore_beauty_candidate(*snapshot)) return false;
-                            if (context) context();
-                            ++self->m_sequence;
-                            self->m_finishing_source.clear();
-                            self->m_finishing_undo_path.clear();
-                            self->m_finishing_redo_path.clear();
-                            self->m_finishing_source_context = {};
-                            self->m_beauty_session_source.reset();
-                            self->m_beauty_manual_color_dirty = snapshot->manual_color_dirty;
-                            if (self->m_beauty_controls) self->m_beauty_controls->set_dirty(snapshot->dirty);
-                            self->m_workbench_check_result = {};
-                            self->refresh_controls();
-                            return true;
-                        };
-                        self->m_beauty_transactions->record({
-                            BeautyWorkbenchTransactionController::OperationKind::AcceptCandidate,
-                            "accepted Beauty version", {}, {}, {}, {},
-                            [before, source_context, restore] { return restore(before, source_context); },
-                            [after, accepted_context, restore] { return restore(after, accepted_context); }});
-                    }
-                    self->m_beauty_session_undo_base = self->m_beauty_transactions->undo_count();
+                BeautyWorkbenchTransactionController::Entry history;
+                if (before && self->m_finishing_workbench) {
+                    const auto restore = [self](const auto& snapshot, const auto& context) {
+                        if (!self->restore_beauty_candidate(*snapshot)) return false;
+                        if (context) context();
+                        ++self->m_sequence;
+                        self->m_finishing_source.clear();
+                        self->m_finishing_undo_path.clear();
+                        self->m_finishing_redo_path.clear();
+                        self->m_finishing_source_context = {};
+                        self->m_beauty_session.clear_draft();
+                        self->m_beauty_manual_color_dirty = snapshot->manual_color_dirty;
+                        if (self->m_beauty_controls) self->m_beauty_controls->set_dirty(snapshot->dirty);
+                        self->m_workbench_check_result = {};
+                        self->refresh_controls();
+                        return true;
+                    };
+                    history = {BeautyWorkbenchTransactionController::OperationKind::AcceptCandidate,
+                        "accepted Beauty version", {}, {}, {}, {},
+                        [before, source_context, restore] { return restore(before, source_context); },
+                        [after, accepted_context, restore] { return restore(after, accepted_context); }};
                 }
+                self->m_beauty_session.complete_accept(session_revision, candidate,
+                    after->original_appearance.valid() ? after->original_appearance.carrier_model : boost::filesystem::path {},
+                    std::move(history));
                 self->m_finishing_status->SetLabel(_L("新版本已保存到模型库，可继续编辑、撤销或导入。"));
                 if (region_cache_unsaved) self->m_finishing_status->SetLabel(self->m_finishing_status->GetLabel() +
                     _L("区域缓存未保存，重新打开后需要重新识别。"));
@@ -1080,17 +1070,14 @@ void ModelGenerationPanel::discard_model_finishing()
     if (m_busy || m_workbench_check_running || (m_finishing_candidate.empty() &&
         !beauty_session_has_changes())) return;
     const auto discarded = m_finishing_candidate;
-    const bool beauty = bool(m_beauty_session_source);
-    if (m_beauty_session_source) {
-        if (!restore_beauty_candidate(*m_beauty_session_source)) return;
-    } else if (!show_finishing_version(m_finishing_source)) return;
-    if (m_beauty_transactions) m_beauty_transactions->truncate_to(m_beauty_session_undo_base);
-    clear_unaccepted_beauty_candidates(m_beauty_session_file_base);
-    if (!beauty) {
+    if (m_beauty_session.source()) {
+        if (!m_beauty_session.discard(m_finishing_accepted_path, beauty_session_ports())) return;
+    } else {
+        if (!show_finishing_version(m_finishing_source)) return;
+        clear_unaccepted_beauty_candidates();
         boost::system::error_code ignored;
         boost::filesystem::remove(discarded, ignored);
     }
-    m_beauty_session_source.reset();
     m_beauty_compare_draft.reset();
     m_finishing_candidate.clear();
     m_portrait_color_candidate_identity = {};
@@ -1170,12 +1157,9 @@ void ModelGenerationPanel::stop_model_finishing()
 
         m_finishing_accepted_path = m_finishing_candidate;
 
-        m_beauty_accepted_files.push_back(m_finishing_candidate);
-
-        if (m_finishing_candidate_original_appearance.valid() &&
-            std::find(m_beauty_candidate_files.begin(), m_beauty_candidate_files.end(),
-                      m_finishing_candidate_original_appearance.carrier_model) != m_beauty_candidate_files.end())
-            m_beauty_accepted_files.push_back(m_finishing_candidate_original_appearance.carrier_model);
+        m_beauty_session.preserve_publication(m_finishing_candidate,
+            m_finishing_candidate_original_appearance.valid()
+                ? m_finishing_candidate_original_appearance.carrier_model : boost::filesystem::path {});
 
     }
 

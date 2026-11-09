@@ -5,24 +5,30 @@
 
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <ctime>
 #include <functional>
 #include <map>
+#include <memory>
 #include <boost/shared_ptr.hpp>
 #include <wx/bitmap.h>
 #include <wx/panel.h>
 #include <wx/timer.h>
+#include <wx/webrequest.h>
 
 class wxBoxSizer;
 class wxScrolledWindow;
 class wxStaticText;
 class wxMediaCtrl3;
 class wxMediaCtrl;
+class wxWebRequestEvent;
+class wxWebView;
 class PrinterFileSystem;
 
 namespace Slic3r::GUI {
 
 class MediaPlayCtrl;
+class WebMediaController;
 class PrinterToggle;
 class PrinterProgress;
 class PrinterImage;
@@ -64,11 +70,15 @@ private:
     void update_compact_layout();
     void set_view(View view);
     void apply_state(const PrinterWorkspaceSnapshot& state);
+    void request_discovery(PrinterDiscoveryTrigger trigger);
     void choose_printer();
     void request_start();
     void request_task_action(PrinterTaskAction action);
     void request_option(int index, bool value);
     void request_snapshot();
+    void on_snapshot_request_state(wxWebRequestEvent& event);
+    void update_camera_view();
+    void schedule_camera_autoplay(const PrinterWorkspaceSnapshot& state);
     void set_error(const wxString& message);
     void update_preview();
     wxString media_directory() const;
@@ -89,18 +99,27 @@ private:
     bool m_media_dirty { true };
     bool m_destroying { false };
     bool m_file_media_requested { false };
+    bool m_auto_discovery_requested { false };
     size_t m_media_limit { 100 };
+    std::uint64_t m_discovery_sequence { 0 };
     View m_view { View::Prepare };
     Filter m_filter { Filter::All };
     std::optional<PrinterTaskAction> m_pending;
     PrinterCommandTarget m_pending_target;
     std::chrono::steady_clock::time_point m_pending_since;
     std::string m_media_device;
+    std::string m_snapshot_request_device;
+    std::string m_camera_autoplay_scope;
     std::string m_preview_key;
     std::string m_open_after_download;
+    wxString m_snapshot_request_path;
     wxString m_media_message;
     wxString m_preparation_notice, m_action_error;
     std::map<wxString, std::pair<std::time_t, wxBitmap>> m_local_thumbnails;
+    wxWebRequest m_snapshot_request;
+    int m_snapshot_request_id { wxID_ANY };
+    bool m_camera_autoplay_scheduled { false };
+    unsigned m_camera_autoplay_attempts { 0 };
 
     wxPanel* m_settings { nullptr };
     wxScrolledWindow* m_settings_scroll { nullptr };
@@ -124,6 +143,7 @@ private:
     wxStaticText* m_error { nullptr };
     wxStaticText* m_task_status { nullptr };
     std::array<wxStaticText*, 3> m_telemetry {};
+    std::array<wxStaticText*, 3> m_telemetry_details {};
     std::array<wxStaticText*, 2> m_health_details {};
     std::array<wxStaticText*, 2> m_health_status {};
     std::array<PrinterToggle*, 3> m_options {};
@@ -132,6 +152,7 @@ private:
     PrinterImage* m_model_image { nullptr };
     PrinterImage* m_media_image { nullptr };
     RoundedActionButton* m_printer_choice { nullptr };
+    RoundedActionButton* m_printer_refresh { nullptr };
     RoundedActionButton* m_start { nullptr };
     RoundedActionButton* m_import { nullptr };
     RoundedActionButton* m_prepare_back { nullptr };
@@ -142,7 +163,9 @@ private:
     RoundedActionButton* m_stop { nullptr };
     wxWindow* m_camera { nullptr };
     wxMediaCtrl3* m_media_ctrl { nullptr };
+    wxWebView* m_camera_view { nullptr };
     MediaPlayCtrl* m_media_play { nullptr };
+    std::unique_ptr<WebMediaController> m_web_media_controller;
     wxMediaCtrl* m_file_media { nullptr };
     std::string m_file_media_device;
     std::array<boost::shared_ptr<PrinterFileSystem>, 2> m_filesystems;

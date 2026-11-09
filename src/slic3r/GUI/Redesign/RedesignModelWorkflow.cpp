@@ -977,8 +977,12 @@ bool RedesignShell::open_model_workbench()
     const bool automatic_portrait_entry = !m_import_in_progress && !m_page_transition.active() &&
         owns_model_workflow() && m_model_view == ModelView::Result &&
         redesign_portrait_workbench_entry(m_model_generation_state.input.style, m_model_generation_state);
-    if (m_import_in_progress || m_page_transition.active() || !owns_model_workflow() ||
-        !m_model_generation_host->request_open_workbench()) return false;
+    if (m_import_in_progress || m_page_transition.active() || !owns_model_workflow()) return false;
+    restore_smart_model_history();
+    if (!m_model_generation_host->request_open_workbench()) {
+        if (m_active_page == Page::Image) mount_smart_model_history();
+        return false;
+    }
     // The workbench publishes exact ownership before this point. Record the
     // one-click intent immediately; the portrait state machine owns Check and
     // registers both native-partition consumers itself.
@@ -1257,6 +1261,7 @@ void RedesignShell::request_viewport_frame()
 
 void RedesignShell::refresh_workflow_layout()
 {
+    update_navigation();
     if (!owns_model_workflow()) return;
     const bool model = m_active_page == Page::Model;
     const bool slicing = model && (m_model_view == ModelView::Slicing || m_model_view == ModelView::Preview);
@@ -1462,8 +1467,9 @@ bool RedesignShell::return_to_image_design()
 
     if (m_workbench_state.dirty || !m_workbench_state.candidate_path.empty()) {
         if (show_redesign_confirmation(this,
+                m_smart_creation ? _L("当前 3D 工作台存在未保存修改或尚未接受的候选。返回AI创作后，如果开始新的生成任务，这些修改可能无法继续恢复。仍要返回吗？") :
                 _L("当前 3D 工作台存在未保存修改或尚未接受的候选。返回图像设计后，如果开始新的生成任务，这些修改可能无法继续恢复。仍要返回吗？"),
-                _L("返回图像设计"), {wxYES_NO | wxNO_DEFAULT}) != wxID_YES)
+                m_smart_creation ? _L("返回AI创作") : _L("返回图像设计"), {wxYES_NO | wxNO_DEFAULT}) != wxID_YES)
             return false;
     }
 
@@ -1471,6 +1477,10 @@ bool RedesignShell::return_to_image_design()
     const bool view_only = m_image_page_view_only;
     const auto route_session = m_model_route_session;
     const auto route_id = m_model_route_id;
+    const auto saved_input = m_saved_creation_input;
+    const auto saved_options = m_saved_creation_options;
+    m_saved_creation_input.reset();
+    m_saved_creation_options.reset();
     m_model_route_locked = false;
     m_model_route_session = 0;
     m_model_route_id.clear();
@@ -1480,7 +1490,17 @@ bool RedesignShell::return_to_image_design()
         m_image_page_view_only = view_only;
         m_model_route_session = route_session;
         m_model_route_id = route_id;
+        m_saved_creation_input = saved_input;
+        m_saved_creation_options = saved_options;
         return false;
+    }
+    if (saved_input && saved_options && m_model_generation_host) {
+        // Existing-asset navigation never replaces the creation draft. Returning
+        // synchronizes editable inputs only; it does not submit or restart a job.
+        restore_image_input(*saved_input);
+        m_model_generation_host->synchronize_input(*saved_input);
+        m_model_generation_host->synchronize_options(*saved_options);
+        apply_model_generation_state(m_model_generation_host->snapshot());
     }
     // A missing historical style becomes a valid default only when the user
     // explicitly returns to editing. This never restarts or submits a task.

@@ -2,9 +2,13 @@
 
 目标：每个 PR 都能从产品全貌下钻到模块、业务状态和源码改动。code-review-graph 负责本地代码关系与影响分析，Archify 负责经过布局校验的 architecture / lifecycle 图；同一个离线入口串起各层。PR 评论保留直接可见的 Mermaid 摘要。图是 Review 导航，不是验收结论。
 
-## 同页业务画布
+## 平台分层与同页业务画布
 
-`index.html` 首页使用产品能力架构：顶部服务与编排，中间模型生成和智能切片两条显式主线，下接 Orca 原生能力，底部公共支撑。原有细分业务入口保留在对应分区；点击分区标题展开整条主线，点击业务卡片进入对应阶段，再展开状态、业务条件和代码模块。文件依据在右侧显示，不跳转层级页面，可用路径、“缩回上层”或 Esc 返回。已有 Archify 图表在本页弹层打开，独立图表文件仍保留用于导出。
+首页先展示业务工作区、应用编排、契约与适配、Orca 内核、运行与工程五层，DFX 横跨各层。来源为 `review-map.json` 的 `landscape`，现状和路线见[平台架构](../architecture/PLATFORM_ARCHITECTURE.md)。能力页面展示状态归属、实际构建/进程边界、源码、静态上下游示例与验证候选；覆盖页区分明确路径归属、目录默认归属及未解析范围。目录默认项不代表逐文件完成业务审查。
+
+`AI 业务流程与状态` 保留下面的原有业务画布；首页 `Archify 图表` 展示平台概览，业务层仍打开状态图。`catalog` 字段供 AI 读取；`l0-platform.html/json` 随现有图表交付。
+
+从首页进入`AI 业务流程与状态`后，原业务画布展示顶部服务与编排、模型生成和智能切片两条显式主线、Orca原生能力与公共支撑。细分业务入口保留在对应分区；点击分区标题展开整条主线，点击业务卡片进入对应阶段，再展开状态、业务条件和代码模块。文件依据在右侧显示，不跳转层级页面，可用路径、“缩回上层”或 Esc 返回。Archify图表在本页弹层打开，独立图表文件保留用于导出。
 
 `product_overview` 集中维护首页能力、目标占位与业务关系。按用户确认的目标图，YOYOClaw、积分计费、自动上色/摆盘等完整目标能力在所属模块内使用紫色虚线和“未做”占位；可点击查看目标输入和输出，不参与 PR 改动计数。已有部分实现仍在当前源码主线展示，不据此宣布目标闭环完成。原生能力中尚未细化的入口明确只做模块级定位。
 
@@ -33,8 +37,8 @@
 | `.github/workflows/architecture-impact.yml` | 每个 PR 自动分析、上传交互制品并更新同仓 PR 评论 |
 | `scripts/architecture_review.py` | Git 差异、code-review-graph、Archify 与 README 的统一生成入口 |
 | `scripts/architecture-review-requirements.txt` | 固定解析工具版本 |
-| `scripts/architecture_explorer.html`、`scripts/architecture_review.html` | 业务画布与代码关系页面模板 |
-| `scripts/test_architecture_review.py` | 版本、删除关系、安全边界及 README 同步回归 |
+| `scripts/architecture_explorer.html`、`scripts/architecture_platform.js`、`scripts/architecture_review.html` | 平台/业务画布与代码关系模板；平台脚本内联到独立 HTML |
+| `scripts/test_architecture_review.py`、`scripts/test_architecture_catalog.py`、`scripts/test_architecture_platform.js` | 版本、影响、安全、映射防漂移与离线导航回归 |
 | `Docs/architecture/review-map.json` | 业务语义、源码锚点、未做目标及关系的唯一维护源 |
 | `docs/architecture/ai-integration-lock.json` | 已有模块 ownership 依赖；保留仓库版本，无需复制另一份 |
 | `README.md`、`AGENTS.md`、`.github/pull_request_template.md` | 团队入口、AI 执行规则和 PR 提示 |
@@ -55,6 +59,7 @@ README 顶部的标记区域由同一份映射生成，保留原项目 README �
 ```text
 python scripts/architecture_review.py --readme update
 python scripts/architecture_review.py --readme check
+python scripts/architecture_review.py --check-map
 ```
 
 需要维护业务阶段、状态说明、源码锚点、模块归属或未做目标时，只改相关映射条目并运行更新命令，将实际产生的 README 差异随 PR 提交。普通实现修改未改变总览时，README 内容保持稳定；**每次 PR 的具体变化仍会重新生成**在 PR 评论、检查摘要和交互制品中，通过 README 的固定链接进入。CI 用 `--readme check` 拒绝过期总览并提示修复命令，不自动向开发分支写回提交。
@@ -94,9 +99,9 @@ python scripts/architecture_review.py --base <base-sha> --head <head-sha>
 输出位于本工作树 `.tmp/architecture-review/report/`：
 
 - `index.html`：离线业务画布，同页缩放展开阶段/状态/模块，按本次差异高亮，并在侧栏查看源码依据。入口本身不依赖网络；需要查看 Archify 弹层时，应将整个制品解压。
-- `l0-context.html`、`l1-modules.html`、`l2-generation.html`、`l2-slicing.html`：四张独立 Archify 图，支持明暗主题、缩放、聚焦及导出；入口可单独展开每张图。
+- `l0-platform.html`、`l0-context.html`、`l1-modules.html`、`l2-generation.html`、`l2-slicing.html`：五张独立Archify图，分别展示平台分层、产品上下文、模块职责与两条业务主线；支持明暗主题、缩放、聚焦及导出。
 - `details.html`：完整模块关系、改动文件和搜索入口。
-- 同名图表 JSON：确定性生成的 Archify 输入；`archify-receipts.json` 汇总四张图的布局检查与输入/HTML 的 SHA-256。单张校验及错误日志留在本地。
+- 同名图表JSON：确定性生成的Archify输入；`archify-receipts.json`汇总五张图的布局检查与输入/HTML的SHA-256。单张校验及错误日志留在本地。
 - `summary.md`：PR Mermaid 摘要；`report.json`：完整分析数据、关系变化、版本及覆盖范围。
 
 完整日志在本地 `latest.log` 及报告目录的 Archify 日志。不同工作树不共用可写索引。Archify 校验或交付失败时命令返回失败；上次成功的 HTML 不代表本次通过。
@@ -132,6 +137,8 @@ Archify 节点用文字标明直接修改及潜在关联数量，颜色不表示
 ## 直接在线查看与版本记录
 
 入口：<https://arsenaltj.github.io/OrcaSlicer/>；每个 PR 的最新成功报告在 `pr/<number>/`，每份报告的固定地址为 `pr/<number>/<head-sha>/<run-id>/`。页面显示版本，更新记录保留旧提交。README 提供固定表格入口，在线记录随成功发布自动追加，不产生自动回写源码分支的提交。
+
+2026-11-03五层平台图已随[PR #60](https://github.com/arsenaltj/OrcaSlicer/pull/60)加入[同一在线入口](https://arsenaltj.github.io/OrcaSlicer/pr/60/)，保留原业务画布、状态图和历史版本。本轮用通过检查的同版发布助手人工追加成功Actions制品；默认分支的可信助手须随本PR合入后才包含`l0-platform`白名单。Pages构建、文件完整性、图表布局与浏览器/业务验收分别记录。
 
 Pages 使用 `codex/architecture-pages` 的根目录，分支只保存已公开的报告产物与索引，不是业务开发分支。首次由有权限的维护者启用该 Pages 来源。不要替换已有网站或更改默认分支。源码与新增发布 workflow 仍通过团队 PR 审核。
 

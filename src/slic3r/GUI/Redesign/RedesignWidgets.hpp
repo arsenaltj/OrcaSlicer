@@ -125,6 +125,8 @@ public:
         Refresh();
     }
     void set_text_colour(const wxColour& colour) { m_text_colour = colour; Refresh(); }
+    void set_generation_gradient(bool value) { m_generation_gradient = value; Refresh(); }
+    void set_corner_radius(int radius) { m_corner_radius = radius; Refresh(); }
 
 private:
     void paint()
@@ -153,8 +155,14 @@ private:
         }
 
         gc->SetBrush(wxBrush(face));
+        if (m_generation_gradient) {
+            const int alpha = IsEnabled() ? (m_pressed ? 205 : m_hovered ? 255 : 235) : 85;
+            gc->SetBrush(gc->CreateLinearGradientBrush(0, 0, size.x, 0,
+                wxColour(254, 165, 17, alpha), wxColour(78, 113, 255, alpha)));
+            foreground = IsEnabled() ? wxColour(255, 255, 255) : wxColour(175, 175, 180);
+        }
         gc->SetPen(FindFocus() == this ? wxPen(RedesignTheme::accent_colour(), std::max(1, FromDIP(1))) : *wxTRANSPARENT_PEN);
-        gc->DrawRoundedRectangle(FromDIP(1), FromDIP(1), size.x - FromDIP(2), size.y - FromDIP(2), FromDIP(10));
+        gc->DrawRoundedRectangle(FromDIP(1), FromDIP(1), size.x - FromDIP(2), size.y - FromDIP(2), FromDIP(m_corner_radius));
         dc.SetFont(GetFont());
         if (IsEnabled() && m_text_colour.IsOk()) foreground = m_text_colour;
         dc.SetTextForeground(foreground);
@@ -186,8 +194,10 @@ private:
     wxBitmap m_icon;
     int m_alignment { wxALIGN_CENTER };
     int m_horizontal_padding { 16 };
+    int m_corner_radius { 10 };
     int m_icon_horizontal_padding { 12 };
     bool m_primary { false };
+    bool m_generation_gradient { false };
     bool m_icon_on_left { false };
     bool m_hovered { false };
     bool m_pressed { false };

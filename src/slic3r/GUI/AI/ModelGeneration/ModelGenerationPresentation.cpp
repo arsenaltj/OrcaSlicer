@@ -1,6 +1,7 @@
 #include "ModelGenerationPresentation.hpp"
 #include "slic3r/GUI/AIModelGenerationHttpError.hpp"
 #include "ModelLibraryThumbnail.hpp"
+#include "ModelLibraryRepository.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AIModelOutputDirectory.hpp"
 
@@ -21,6 +22,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <cmath>
 #include <cstdlib>
 #include <string_view>
@@ -147,14 +149,31 @@ bool is_supported_image(const boost::filesystem::path& path)
     if (size == 0 || size > MAX_IMAGE_SIZE)
         return false;
     boost::filesystem::ifstream stream(path, std::ios::binary);
-    unsigned char magic[8] {};
+    unsigned char magic[12] {};
     stream.read(reinterpret_cast<char*>(magic), sizeof(magic));
     const auto count = stream.gcount();
     const bool png = count >= 8 && magic[0] == 0x89 && magic[1] == 'P' && magic[2] == 'N' && magic[3] == 'G' &&
                      magic[4] == 0x0d && magic[5] == 0x0a && magic[6] == 0x1a && magic[7] == 0x0a;
     const bool jpeg = count >= 3 && magic[0] == 0xff && magic[1] == 0xd8 && magic[2] == 0xff;
-    if (!png && !jpeg)
-        return false;
+    const bool webp = count == 12 && std::memcmp(magic, "RIFF", 4) == 0 && std::memcmp(magic + 8, "WEBP", 4) == 0;
+    if (!png && !jpeg && !webp) return false;
+    if (webp) {
+        const auto u32 = [](const unsigned char* b) { return uint32_t(b[0]) | uint32_t(b[1]) << 8 | uint32_t(b[2]) << 16 | uint32_t(b[3]) << 24; };
+        if (uint64_t(u32(magic + 4)) + 8 != size) return false;
+        uint64_t offset = 12;
+        while (offset < size) {
+            unsigned char chunk[8] {}; stream.read(reinterpret_cast<char*>(chunk), 8);
+            if (stream.gcount() != 8) return false;
+            const auto length = u32(chunk + 4);
+            if (offset + 8 + length + (length & 1) > size || std::memcmp(chunk, "ANIM", 4) == 0 || std::memcmp(chunk, "ANMF", 4) == 0) return false;
+            if (std::memcmp(chunk, "VP8X", 4) == 0) {
+                unsigned char flags = 0; stream.read(reinterpret_cast<char*>(&flags), 1);
+                if (!length || (flags & 2)) return false;
+                stream.seekg(length - 1 + (length & 1), std::ios::cur);
+            } else stream.seekg(length + (length & 1), std::ios::cur);
+            offset += 8 + length + (length & 1);
+        }
+    }
     wxImage image(path.wstring());
     return image.IsOk() && image.GetWidth() >= MIN_SOURCE_IMAGE_EDGE &&
            image.GetHeight() >= MIN_SOURCE_IMAGE_EDGE;
@@ -373,6 +392,51 @@ std::optional<DesignHistoryEntry> read_image_history_entry(
     return read_history_entry(root, job_id, validate_images, true);
 }
 
+std::vector<DesignHistoryEntry> read_smart_model_history(const boost::filesystem::path& root)
+{
+    std::map<std::string, DesignHistoryEntry> records;
+    const std::atomic<bool> cancelled {false};
+    for (const auto& model : ModelLibraryRepository::read(root, cancelled)) {
+        if (model.design_only) continue;
+        DesignHistoryEntry entry;
+        entry.job_id = model.job_id; entry.prompt = "3D模型 · " + model.title.ToStdString(wxConvUTF8);
+        entry.input_path = model.reference_image_path;
+        entry.preview_path = entry.input_path;
+        entry.state = "ready"; entry.generated_at = model.generated_at;
+        records.emplace(entry.job_id, std::move(entry));
+    }
+    boost::system::error_code ec;
+    for (boost::filesystem::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+        const auto directory = it->path(); const auto state_path = directory / "job.json";
+        try {
+            if (!path_is_inside(root, state_path) || !boost::filesystem::is_regular_file(state_path) ||
+                boost::filesystem::file_size(state_path) > 64 * 1024) continue;
+            const auto data = read_json(state_path);
+            if (data.value("workflow_mode", std::string()) != "smart") continue;
+            const auto id = data.value("id", std::string());
+            if (id.empty() || id != directory.filename().string()) continue;
+            DesignHistoryEntry entry;
+            entry.job_id = id; entry.state = data.value("state", std::string());
+            entry.prompt = "3D模型 · " + data.value("user_prompt", std::string());
+            entry.style = data.value("style", std::string("realistic"));
+            entry.generated_at = boost::filesystem::last_write_time(state_path);
+            const auto input = directory / data.value("input_path", std::string());
+            if (path_is_inside(directory, input) && is_library_image_file(input)) entry.input_path = input;
+            entry.preview_path = entry.input_path;  // Never expose the internal prepared image.
+            if (auto found = records.find(id); found != records.end() && !found->second.preview_path.empty() &&
+                found->second.preview_path != directory / data.value("preview_path", std::string()) &&
+                found->second.preview_path != directory / data.value("model_reference_path", std::string()) &&
+                found->second.preview_path != directory / data.value("raw_preview_path", std::string()))
+                entry.preview_path = found->second.preview_path;
+            records[id] = std::move(entry);
+        } catch (...) { /* A malformed record must not prevent other tasks from loading. */ }
+    }
+    std::vector<DesignHistoryEntry> entries;
+    for (auto& item : records) entries.emplace_back(std::move(item.second));
+    std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) { return a.generated_at > b.generated_at; });
+    return entries;
+}
+
 std::vector<DesignHistoryEntry> read_image_history(const boost::filesystem::path& root)
 {
     std::vector<DesignHistoryEntry> entries;
@@ -447,7 +511,7 @@ boost::filesystem::path archive_library_image(const boost::filesystem::path& sou
     std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) {
         return static_cast<char>(std::tolower(ch));
     });
-    if (extension != ".png" && extension != ".jpg" && extension != ".jpeg")
+    if (extension != ".png" && extension != ".jpg" && extension != ".jpeg" && extension != ".webp")
         extension = ".png";
     const boost::filesystem::path destination = temp_path(job_id + "-" + role, extension.substr(1));
     boost::system::error_code ec;

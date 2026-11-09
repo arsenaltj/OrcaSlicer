@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import ast
 from collections import Counter
+from fnmatch import fnmatchcase
 import hashlib
 import importlib.metadata
 import json
@@ -22,7 +23,7 @@ import time
 import urllib.request
 import zipfile
 
-VERSION = "2"
+VERSION = "3"
 ENGINE = "2.3.8"
 EXTENSIONS = {".cpp", ".hpp", ".h", ".c", ".cc", ".py"}
 LOCK = "docs/architecture/ai-integration-lock.json"
@@ -164,7 +165,151 @@ def module_for(path, config):
 
 
 def indexed(path, config):
-    return PurePosixPath(path).suffix in EXTENSIONS and any(matches(path, p) for p in config["index_scope"])
+    return (PurePosixPath(path).suffix in EXTENSIONS
+            and any(matches(path, p) for p in config["index_scope"])
+            and not any(matches(path, p) for p in config.get("index_exclude", [])))
+
+
+def catalog_sources(root, ref, config, worktree=False):
+    """Same version as the report; inventory is broader than symbol parsing."""
+    entries = tree(root, ref)
+    landscape = config.get("landscape", {})
+    extensions = EXTENSIONS | {".ipp", ".inl", ".cxx", ".cmake", ".js"}
+    def selected(path):
+        return ((PurePosixPath(path).suffix in extensions or PurePosixPath(path).name == "CMakeLists.txt")
+                and any(matches(path, p) for p in landscape.get("source_roots", []))
+                and not any(matches(path, p) for p in config.get("index_exclude", [])))
+    paths = {p for p, (mode, _) in entries.items() if mode in {"100644", "100755"} and selected(p)}
+    if not worktree:
+        return read_blobs(root, entries, paths)
+    paths.update(p.decode("utf-8") for p in git(root, "ls-files", "--others", "--exclude-standard", "-z").split(b"\0") if p)
+    return {p: (root / p).read_bytes() for p in sorted(paths) if selected(p)
+            and (root / p).is_file() and not (root / p).is_symlink()
+            and (root / p).resolve().is_relative_to(root)}
+
+
+def scope_matches(path, scopes):
+    return any(fnmatchcase(path, value) if any(c in value for c in "*?[") else matches(path, value)
+               for value in scopes)
+
+
+def validate_map(config, evidence, inventory):
+    """Fail on stale anchors, broken references, or empty declared code scopes."""
+    errors, ids = [], set()
+    for item in config.get("evidence", []):
+        key = item["id"]
+        if key in ids:
+            errors.append(f"duplicate evidence: {key}")
+        ids.add(key)
+        data = evidence.get(item["path"], b"").decode("utf-8-sig", "replace")
+        if not item.get("needle") or item["needle"] not in data:
+            errors.append(f"missing anchor: {key} ({item['path']})")
+    landscape = config.get("landscape", {})
+    capabilities = landscape.get("capabilities", [])
+    capability_ids = set()
+    for capability in capabilities:
+        key = capability["id"]
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", key) or key in capability_ids:
+            errors.append(f"invalid/duplicate capability: {key}")
+        capability_ids.add(key)
+        for scope in capability["paths"]:
+            if not any(scope_matches(p, [scope]) for p in inventory):
+                errors.append(f"empty code scope: {key} -> {scope}")
+        for anchor in capability.get("evidence", []):
+            if anchor not in ids:
+                errors.append(f"unknown evidence: {key} -> {anchor}")
+        for test in capability.get("tests", []):
+            if not any(scope_matches(p, [test]) for p in inventory):
+                errors.append(f"empty test scope: {key} -> {test}")
+    for layer in landscape.get("layers", []):
+        for key in layer["capabilities"]:
+            if key not in capability_ids:
+                errors.append(f"unknown capability: {layer['id']} -> {key}")
+    layer_members = Counter(key for layer in landscape.get("layers", []) for key in layer["capabilities"])
+    for key in capability_ids:
+        if layer_members[key] != 1:
+            errors.append(f"capability must appear in one layer: {key}")
+    for scenario in landscape.get("scenarios", []):
+        for key in scenario["capabilities"]:
+            if key not in capability_ids:
+                errors.append(f"unknown scenario capability: {key}")
+    entries = list(config.get("business_flows", []))
+    for journey in config.get("journeys", []):
+        entries.extend(journey.get("phases", []))
+        entries.extend(journey.get("rules", []))
+        for key in journey.get("state_sources") or [journey["state_source"]]:
+            if key not in ids:
+                errors.append(f"unknown state evidence: {journey['id']} -> {key}")
+    for entry in entries:
+        for key in entry.get("evidence", []):
+            if key not in ids:
+                errors.append(f"unknown business evidence: {entry.get('id', entry.get('title'))} -> {key}")
+    return errors
+
+
+def enrich_catalog(report, config, inventory, graph):
+    """Business membership is curated; dependencies are static parser evidence."""
+    landscape = config.get("landscape")
+    if not landscape:
+        return
+    indexed_files = set(graph["files"])
+    files = {p: {"path": p, "sha256": digest(data), "lines": len(data.splitlines()),
+                 "indexed": p in indexed_files} for p, data in sorted(inventory.items())}
+    capabilities, membership = [], {}
+    curated = set()
+    for capability in landscape["capabilities"]:
+        if not capability.get("directory_default"):
+            for p in files:
+                if scope_matches(p, capability["paths"]):
+                    membership.setdefault(p, set()).add(capability["id"])
+                    curated.add(p)
+    for p in files:
+        if p in membership:
+            continue
+        defaults = [(len(scope), capability["id"]) for capability in landscape["capabilities"]
+                    if capability.get("directory_default") for scope in capability["paths"]
+                    if scope_matches(p, [scope])]
+        if defaults:
+            membership[p] = {max(defaults)[1]}
+    for capability in landscape["capabilities"]:
+        paths = [p for p in files if capability["id"] in membership.get(p, set())]
+        tests = [p for p in files if scope_matches(p, capability.get("tests", []))]
+        capabilities.append({**capability, "files": paths, "test_files": tests,
+                             "indexed_files": sum(p in indexed_files for p in paths),
+                             "lines": sum(files[p]["lines"] for p in paths),
+                             "impact": path_impact(report, paths)})
+    dependencies = {}
+    for edge in graph["edges"]:
+        if edge["kind"] == "TESTED_BY":
+            continue
+        source_ids, target_ids = membership.get(edge["source"], set()), membership.get(edge["target"], set())
+        # An overlapping logical capability is not evidence for a dependency on itself.
+        if source_ids & target_ids:
+            continue
+        for source in source_ids:
+            for target in target_ids:
+                key = (source, target)
+                row = dependencies.setdefault(key, {"source": source, "target": target,
+                                                    "count": 0, "examples": []})
+                row["count"] += 1
+                if len(row["examples"]) < 3:
+                    row["examples"].append(edge)
+    report["catalog"] = {**landscape, "capabilities": capabilities,
+                         "files": list(files.values()),
+                         "dependencies": [dependencies[k] for k in sorted(dependencies)],
+                         "unassigned_files": [p for p in files if p not in membership and not p.startswith(("tests/", "scripts/"))
+                                              and not PurePosixPath(p).name.startswith("test_")],
+                         "inventory_identity": digest(json.dumps(files, sort_keys=True).encode()),
+                         "coverage": {"inventory_files": len(files), "indexed_files": len(indexed_files),
+                                      "mapped_files": len(membership),
+                                      "curated_files": len(curated),
+                                      "directory_default_files": len(membership) - len(curated),
+                                      "unindexed_files": sum(p not in indexed_files for p in files)},
+                         "limits": ["分层表示逻辑职责；不证明独立进程、CMake target 或状态已经隔离。",
+                                    "源码归属与验证清单人工维护；依赖示例来自静态解析，箭头从使用方指向依赖方。",
+                                    "部分文件可属于多个横切能力；目录默认归属单独计数，不代表逐文件完成业务审查；未归属文件不能当作无依赖。",
+                                    ".ipp/.inl/.cxx/CMake 进入目录与哈希清单，但当前解析器未必建立符号关系。",
+                                    "事件回调、HTTP、动态插件和共享数据需结合契约审查与相关回归；影响图不保证零遗漏。"]}
 
 
 def sources(root, entries, config, worktree=False):
@@ -221,7 +366,10 @@ def analyze(blobs, config, cache):
     for language in {"python" if p.endswith(".py") else "cpp" for p in blobs}:
         get_parser(language)
     hashes = {p: digest(data) for p, data in sorted(blobs.items())}
-    identity = digest(json.dumps([VERSION, digest(Path(__file__).read_bytes()), versions, config["identity"], hashes], sort_keys=True).encode())
+    # Exact file bytes already encode the selected parsing scope. Business labels,
+    # anchors and diagram layout do not alter parser facts; they bind the report
+    # separately via map_identity. A layout edit must not reparse the entire graph.
+    identity = digest(json.dumps([VERSION, digest(Path(__file__).read_bytes()), versions, hashes], sort_keys=True).encode())
     cached = cache / (identity + ".json")
     if cached.exists():
         result = json.loads(cached.read_text(encoding="utf-8"))
@@ -317,7 +465,7 @@ def make_report(config, before, after, changes, metadata):
                       "nodes": after["node_count"], "resolved_cross_file_edges": len(after["edges"]),
                       "unresolved_edges": after["unresolved_edges"], "cache_hits": int(before["cache_hit"]) + int(after["cache_hit"]),
                       "before_identity": before["identity"], "after_identity": after["identity"]},
-            "limits": ["试点仅解析 AI、sidecar 与相关测试；其他文件只标记模块，不推断其代码影响。",
+            "limits": ["按版本化 index_scope/index_exclude 解析 C/C++/Python；目录清单单独显示未解析文件，不据此推断无影响。",
                        "潜在影响最多沿静态依赖反向追踪两跳，同时保留基线中的删除关系。",
                        "C++ include 按相对路径或唯一后缀推测；重复头文件不强行连接。未解析端点含外部库。",
                        "wxWidgets 事件、动态调用及 HTTP 跨进程关系可能遗漏；图不代替代码审查或测试。",
@@ -370,7 +518,7 @@ def readme_overview(config):
     def label(value):
         return str(value).replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;").replace("|", "&#124;").replace("\n", " ")
 
-    lines = [README_START, "## AI 产品架构与 PR 变动", "",
+    lines = [README_START, "## 产品平台架构与 PR 变动", "",
              "[团队使用说明](Docs/coordination/architecture-review.md) · "
              "[PR 架构报告](https://github.com/arsenaltj/OrcaSlicer/actions/workflows/architecture-impact.yml?query=event%3Apull_request) · "
              "[开放 PR](https://github.com/arsenaltj/OrcaSlicer/pulls)", "",
@@ -379,8 +527,16 @@ def readme_overview(config):
              "| 全部 PR / 提交版本 | [打开更新记录表](https://arsenaltj.github.io/OrcaSlicer/) |",
              "| 首次接入：PR #14 | [直接打开交互图](https://arsenaltj.github.io/OrcaSlicer/pr/14/) |", "",
              "在线表格由发布流程自动追加。页面注明实际提交；新报告发布前，PR 入口仍显示上一份成功版本。", "",
-             "下图是本分支维护的业务主线，不是实时状态或验收结果；箭头表示业务衔接，执行仍受用户确认与状态约束。", "",
-             "```mermaid", "flowchart TB"]
+             "[平台分层与解耦路线](Docs/architecture/PLATFORM_ARCHITECTURE.md)。在线报告从平台分层下钻到能力、代码文件与验证入口。", ""]
+    landscape = config.get("landscape", {})
+    if landscape:
+        by_id = {c["id"]: c for c in landscape["capabilities"]}
+        lines += ["| 逻辑层 | 当前职责 |", "| --- | --- |"]
+        for layer in landscape["layers"]:
+            lines.append(f'| {label(layer["label"])} | {"、".join(label(by_id[key]["label"]) for key in layer["capabilities"])} |')
+        lines += ["", "DFX 横跨各层。逻辑分层不代表独立进程、构建目标或状态已隔离。", ""]
+    lines += ["下图是本分支维护的 AI 业务主线，不是实时状态或验收结果；箭头表示业务衔接，执行仍受用户确认与状态约束。", "",
+              "```mermaid", "flowchart TB"]
     phase_nodes = {}
     for index, journey in enumerate(config["journeys"]):
         lines.append(f'  subgraph j{index}["{label(journey["label"])}"]')
@@ -443,6 +599,8 @@ def sync_readme(root, config, check=False):
 
 def render_page(name, report):
     template = Path(__file__).with_name(name).read_text(encoding="utf-8")
+    if name == "architecture_explorer.html":
+        template = template.replace("__PLATFORM_SCRIPT__", Path(__file__).with_name("architecture_platform.js").read_text(encoding="utf-8"))
     payload = json.dumps(report, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     return template.replace("__REPORT_DATA__", payload)
 
@@ -604,7 +762,8 @@ def archify_spec(report):
     positions = {"desktop": [60, 60], "generation": [60, 260], "contracts": [470, 260],
                  "slicing": [880, 260], "adapter": [470, 60], "tests": [470, 460],
                  "core": [880, 60], "engineering": [60, 460], "assets": [880, 460],
-                 "unknown": [60, 660], "honor_account": [470, 660]}
+                 "unknown": [60, 660], "honor_account": [470, 660],
+                 "model_sdk": [880, 660], "slicing_sdk": [60, 860]}
     components = []
     for module in report["modules"]:
         key = module["id"]
@@ -646,7 +805,7 @@ def archify_spec(report):
                     f'全部关系：新增 {deltas["added"]} · 移除 {deltas["removed"]}；依据 code-review-graph']},
                 {"dot": "slate", "title": "判断边界", "items": [
                     f'{outside} 个改动文件未解析；完整明细见 details.html / report.json',
-                    '仅 AI 范围的静态依赖；动态调用可能遗漏；图不代表测试通过']} ]}
+                    '版本化范围内的静态依赖；动态调用可能遗漏；图不代表测试通过']} ]}
 
 
 def deliver_archify(root, output, spec, name):
@@ -683,12 +842,22 @@ def main(argv=None):
     parser.add_argument("--base", default="origin/codex/team/integration")
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--worktree", action="store_true")
+    parser.add_argument("--check-map", action="store_true", help="Check current workspace anchors, capability scopes and references (stdlib only)")
     parser.add_argument("--setup-archify", action="store_true", help="Download and verify the pinned official renderer, then exit")
     parser.add_argument("--readme", choices=["update", "check"], help="Synchronize/check only the versioned README overview, then exit (stdlib only)")
     parser.add_argument("--output", type=Path, default=Path(".tmp/architecture-review/report"))
     args = parser.parse_args(argv)
     start = time.monotonic()
     root = args.root.resolve()
+    if args.check_map:
+        config = load_map(root)
+        head = git(root, "rev-parse", "HEAD").decode().strip()
+        inventory = catalog_sources(root, head, config, True)
+        errors = validate_map(config, evidence_sources(root, head, config, True), inventory)
+        print(json.dumps({"status": "MAP_INVALID" if errors else "MAP_CURRENT", "errors": errors,
+                          "anchors": len(config.get("evidence", [])), "inventory_files": len(inventory),
+                          "capabilities": len(config.get("landscape", {}).get("capabilities", []))}, ensure_ascii=False))
+        return int(bool(errors))
     if args.readme:
         changed = sync_readme(root, load_map(root), check=args.readme == "check")
         print(json.dumps({"status": "README_UPDATED" if changed else "README_CURRENT"}))
@@ -711,21 +880,30 @@ def main(argv=None):
     after_blobs = sources(root, tree(root, head), config, args.worktree)
     before_business = evidence_sources(root, base, config)
     after_business = evidence_sources(root, head, config, args.worktree)
+    inventory = catalog_sources(root, head, config, args.worktree)
+    errors = validate_map(config, after_business, inventory)
+    if errors:
+        raise ValueError("Architecture map is stale:\n" + "\n".join(errors))
     changes = change_list(root, base, head, args.worktree)
     cache = root / ".tmp/architecture-review/cache"
     before = analyze(before_blobs, config, cache)
     after = analyze(after_blobs, config, cache)
     if args.worktree and (sources(root, tree(root, head), config, True) != after_blobs or
-                         evidence_sources(root, head, config, True) != after_business or change_list(root, base, head, True) != changes):
+                         evidence_sources(root, head, config, True) != after_business or
+                         catalog_sources(root, head, config, True) != inventory or
+                         load_map(root)["identity"] != config["identity"] or change_list(root, base, head, True) != changes):
         raise RuntimeError("Source changed during analysis; report not published. Run again after editing stops.")
     report = make_report(config, before, after, changes, {"base": base, "base_tip": base_tip, "head": head,
                          "mode": "工作区（含未提交修改）" if args.worktree else "PR 提交",
                          "seconds": round(time.monotonic() - start, 2), "map_identity": config["identity"]})
     enrich_business(report, config, before_business, after_business)
+    enrich_catalog(report, config, inventory, after)
     for name, content in [("report.json", json.dumps(report, ensure_ascii=False, indent=2)),
                           ("summary.md", markdown(report)), ("details.html", render_html(report))]:
         (output / name).write_text(content, encoding="utf-8")
     specs = {"l0-context": context_spec(report), "l1-modules": archify_spec(report)}
+    if config.get("landscape", {}).get("overview_spec"):
+        specs["l0-platform"] = config["landscape"]["overview_spec"]
     specs["l1-modules"]["meta"]["title"] = "L1 · 模块职责与本次改动"
     specs.update({f'l2-{journey["id"]}': journey_spec(report, journey) for journey in report["business"]["journeys"]})
     receipts = {name: deliver_archify(root, output, spec, name) for name, spec in specs.items()}

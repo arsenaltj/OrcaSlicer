@@ -92,6 +92,7 @@ inline bool model_generation_return_to_design_allowed(const ModelGenerationUISta
 
 inline const std::string& model_generation_route_id(const ModelGenerationUIState& state)
 {
+    if (state.smart_mode && !state.smart_flow_id.empty()) return state.smart_flow_id;
     return state.model_generation_context && !state.model_asset_id.empty() ? state.model_asset_id : state.job_id;
 }
 

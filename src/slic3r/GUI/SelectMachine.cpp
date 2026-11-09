@@ -78,6 +78,8 @@
 #include "slic3r/GUI/ReleaseNote.hpp"
 #include <boost/algorithm/string/case_conv.hpp>
 #include "slic3r/GUI/Widgets/StateColor.hpp"
+#include "slic3r/GUI/Redesign/PrinterTransferDialogStyle.hpp"
+#include "slic3r/GUI/Redesign/PrinterWorkspaceState.hpp"
 #include <wx/dcclient.h>
 #include "libslic3r/Print.hpp"
 #include <wx/dialog.h>
@@ -197,12 +199,16 @@ void                SelectMachineDialog::init_machine_bed_types()
                                    "pc", "pe", "pei", "pte", "suprtack"};
     }
 }
-SelectMachineDialog::SelectMachineDialog(Plater *plater)
-    : DPIDialog(static_cast<wxWindow *>(wxGetApp().mainframe), wxID_ANY, _L("Send print job"), wxDefaultPosition, wxDefaultSize, wxCAPTION | wxCLOSE_BOX)
-    , m_plater(plater), m_export_3mf_cancel(false)
+SelectMachineDialog::SelectMachineDialog(Plater *plater, PrinterTransferPresentationContext presentation)
+    : DPIDialog(static_cast<wxWindow *>(wxGetApp().mainframe), wxID_ANY,
+                presentation.redesign() ? _L("上传并打印") : _L("Send print job"),
+                wxDefaultPosition, wxDefaultSize, printer_transfer_dialog_style(presentation.redesign()))
+    , m_export_3mf_cancel(false)
+    , m_presentation(std::move(presentation))
     , m_mapping_popup(AmsMapingPopup(this))
     , m_mapping_tip_popup(AmsMapingTipPopup(this))
     , m_mapping_tutorial_popup(AmsTutorialPopup(this))
+    , m_plater(plater)
 {
     m_mapping_popup.EnableExtMappingFilaTypeCheck(false);
 
@@ -237,6 +243,10 @@ SelectMachineDialog::SelectMachineDialog(Plater *plater)
     SetFont(wxGetApp().normal_font());
 
     Freeze();
+    if (m_presentation.redesign()) {
+        m_colour_def_color = RedesignTheme::panel_colour();
+        m_colour_bold_color = RedesignTheme::primary_text_colour();
+    }
     SetBackgroundColour(m_colour_def_color);
 
     wxBoxSizer* m_scroll_sizer = new wxBoxSizer(wxVERTICAL);
@@ -904,6 +914,8 @@ SelectMachineDialog::SelectMachineDialog(Plater *plater)
     m_scroll_area->SetSizer(m_scroll_sizer);
 
     wxBoxSizer *sizer_main = new wxBoxSizer(wxVERTICAL);
+    if (m_presentation.redesign())
+        sizer_main->Add(new PrinterTransferTitleBar(this, _L("上传并打印")), 0, wxEXPAND);
     sizer_main->Add(m_scroll_area, 1, wxEXPAND, 0);
     sizer_main->Add(m_simplebook, 0, wxALIGN_CENTER, 0);
     sizer_main->Add(0, 0, 0, wxTOP, FromDIP(10));
@@ -911,6 +923,13 @@ SelectMachineDialog::SelectMachineDialog(Plater *plater)
     sizer_main->Add(0, 0, 0, wxTOP, FromDIP(18));
 
     SetSizer(sizer_main);
+    if (m_presentation.redesign()) {
+        m_line_top->Hide();
+        m_button_ensure->SetLabel(_L("确认上传并打印"));
+        m_printer_box->GetPrinterComboBox()->Disable();
+        apply_printer_transfer_redesign_theme(this);
+        style_printer_transfer_primary_button(m_button_ensure);
+    }
     Layout();
     Fit();
     Thaw();
@@ -918,7 +937,8 @@ SelectMachineDialog::SelectMachineDialog(Plater *plater)
     init_bind();
     init_timer();
     Centre(wxBOTH);
-    wxGetApp().UpdateDlgDarkUI(this);
+    if (!m_presentation.redesign())
+        wxGetApp().UpdateDlgDarkUI(this);
 }
 
 void SelectMachineDialog::init_bind()
@@ -946,7 +966,9 @@ void SelectMachineDialog::init_bind()
             if (!obj) return;
 
             if (obj->get_dev_id() == e.GetString()) {
-                m_printer_box->SetPrinterName(wxString::FromUTF8(obj->get_dev_name()) + _L("(LAN)"));
+                m_printer_box->SetPrinterName(m_presentation.redesign() ?
+                    from_u8(printer_device_display_name(obj->get_dev_name(), obj->get_dev_ip())) :
+                    wxString::FromUTF8(obj->get_dev_name()) + _L("(LAN)"));
             }
         }
     });
@@ -2737,6 +2759,8 @@ void SelectMachineDialog::show_errors(wxString &info)
 
 void SelectMachineDialog::on_ok_btn(wxCommandEvent &event)
 {
+    if (!validate_presentation_target("execute", true))
+        return;
     bool has_slice_warnings = false;
     bool is_printing_block  = false;
 
@@ -3023,7 +3047,7 @@ void SelectMachineDialog::EnableEditing(bool enable)
     m_rename_button->Enable(enable);
 
     /*printer*/
-    m_printer_box->EnableEditing(enable);
+    m_printer_box->EnableEditing(enable && !m_presentation.redesign());
 
     /*mapping*/
     for (size_t i = 0; i < m_sizer_ams_mapping_left->GetItemCount(); ++i) {
@@ -4065,6 +4089,14 @@ void SelectMachineDialog::update_user_printer()
 
     // update the machine list, and select a default machine
     _collect_sorted_machines(dev, m_list);
+    if (m_presentation.redesign()) {
+        const std::string current_agent = dev->get_current_printer_agent_id();
+        m_list.erase(std::remove_if(m_list.begin(), m_list.end(), [this, &current_agent](MachineObject* machine) {
+            return current_agent != m_presentation.agent_id || !machine ||
+                machine->get_dev_id() != m_presentation.device_id ||
+                (!machine->is_online() && !machine->is_connected());
+        }), m_list.end());
+    }
     m_printer_box->SetPrinters(m_list);
     if (!m_list.empty())
     {
@@ -4082,6 +4114,52 @@ void SelectMachineDialog::update_user_printer()
     }
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "for send task, current printer id =  " << m_printer_last_select << std::endl;
+    if (m_presentation.redesign()) {
+        m_printer_box->GetPrinterComboBox()->Disable();
+        validate_presentation_target("refresh", true);
+    }
+}
+
+bool SelectMachineDialog::validate_presentation_target(const char* phase, bool update_ui)
+{
+    if (!m_presentation.redesign())
+        return true;
+
+    DeviceManager* manager = wxGetApp().getDeviceManager();
+    MachineObject* selected = manager ? manager->get_selected_machine() : nullptr;
+    MachineObject* target = nullptr;
+    const std::string current_agent = manager ? manager->get_current_printer_agent_id() : std::string();
+    if (manager && current_agent == m_presentation.agent_id) {
+        const auto machines = manager->get_my_machine_list(current_agent);
+        for (const auto& entry : machines) {
+            if (entry.second && entry.second->get_dev_id() == m_presentation.device_id) {
+                target = entry.second;
+                break;
+            }
+        }
+    }
+
+    const bool valid = target && selected && selected->get_dev_id() == m_presentation.device_id &&
+        (target->is_online() || target->is_connected());
+    std::ostringstream validation_log;
+    validation_log << "[PrinterTransferUX] target_validation"
+                   << " phase=" << phase
+                   << " action=" << printer_transfer_action_name(m_presentation.action)
+                   << " agent=" << (current_agent.empty() ? "none" : current_agent)
+                   << " expected_agent=" << (m_presentation.agent_id.empty() ? "none" : m_presentation.agent_id)
+                   << " device_ref=" << printer_transfer_device_ref(m_presentation.device_id)
+                   << " result=" << (valid ? "valid" : "unavailable");
+    if (valid)
+        BOOST_LOG_TRIVIAL(info) << validation_log.str();
+    else
+        BOOST_LOG_TRIVIAL(warning) << validation_log.str();
+
+    if (update_ui) {
+        Enable_Send_Button(valid);
+        if (!valid)
+            show_status(PrintDialogStatus::PrintStatusInvalidPrinter);
+    }
+    return valid;
 }
 
 void SelectMachineDialog::on_rename_click(wxMouseEvent& event)
@@ -4801,6 +4879,32 @@ void SelectMachineDialog::update_show_status(MachineObject* obj_)
 
     reset_timeout();
 
+    const auto printer_agent = agent->get_printer_agent();
+    const auto traits = printer_agent ? printer_agent->get_traits() : PrinterAgentTraits{};
+    if (traits.storage_model == PrinterAgentTraits::StorageModel::VirtualGcodeRoot) {
+        if (!traits.supports_upload_and_print) {
+            show_status(PrintDialogStatus::PrintStatusUnsupportedPrinter);
+            return;
+        }
+        if (obj_->is_in_upgrading()) {
+            show_status(PrintDialogStatus::PrintStatusInUpgrading);
+            return;
+        }
+        if (obj_->is_system_printing()) {
+            show_status(PrintDialogStatus::PrintStatusInSystemPrinting);
+            return;
+        }
+        if (obj_->is_in_printing()) {
+            show_status(PrintDialogStatus::PrintStatusInPrinting);
+            return;
+        }
+        BOOST_LOG_TRIVIAL(info) << "[PrinterDispatch] print_dialog_ready agent="
+                                << (printer_agent ? printer_agent->get_agent_info().id : "none")
+                                << " storage_model=" << printer_storage_model_name(traits.storage_model);
+        show_status(PrintDialogStatus::PrintStatusReadyToGo);
+        return;
+    }
+
     /*check print all*/
     if (!obj_->GetConfig()->SupportPrintAllPlates() && m_print_plate_idx == PLATE_ALL_IDX)
     {
@@ -5373,6 +5477,13 @@ void SelectMachineDialog::Enable_Refresh_Button(bool en)
 
 void SelectMachineDialog::Enable_Send_Button(bool en)
 {
+    if (en && m_presentation.redesign()) {
+        auto* manager = wxGetApp().getDeviceManager();
+        auto* selected = manager ? manager->get_selected_machine() : nullptr;
+        en = manager && selected &&
+            manager->get_current_printer_agent_id() == m_presentation.agent_id &&
+            selected->get_dev_id() == m_presentation.device_id;
+    }
     if (!en) {
         if (m_button_ensure->IsEnabled()) {
             m_button_ensure->Disable();
@@ -5399,6 +5510,8 @@ void SelectMachineDialog::on_dpi_changed(const wxRect &suggested_rect)
         if (img_amsmapping_tip)img_amsmapping_tip->SetBitmap(ams_mapping_help_icon->bmp());
     }
     m_button_ensure->Rescale(); // ORCA
+    if (m_presentation.redesign())
+        style_printer_transfer_primary_button(m_button_ensure);
     m_status_bar->msw_rescale();
 
     for (auto material1 : m_materialList) {
@@ -6373,6 +6486,11 @@ void SelectMachineDialog::update_page_turn_state(bool show)
 
 void SelectMachineDialog::sys_color_changed()
 {
+    if (m_presentation.redesign()) {
+        apply_printer_transfer_redesign_theme(this);
+        style_printer_transfer_primary_button(m_button_ensure);
+        return;
+    }
     if (wxGetApp(). dark_mode()) {
         //rename_button->SetIcon("ams_editable_light");
         m_rename_button->SetBitmap(rename_editable_light->bmp());
@@ -6387,12 +6505,18 @@ void SelectMachineDialog::sys_color_changed()
 bool SelectMachineDialog::Show(bool show)
 {
     if (show) {
+        if (m_presentation.redesign()) {
+            BOOST_LOG_TRIVIAL(info) << "[PrinterTransferUX] dialog_open"
+                                    << " action=" << printer_transfer_action_name(m_presentation.action)
+                                    << " agent=" << (m_presentation.agent_id.empty() ? "none" : m_presentation.agent_id)
+                                    << " device_ref=" << printer_transfer_device_ref(m_presentation.device_id);
+        }
         EnableEditing(true);
         m_options_other->Show();
         m_refresh_timer->Start(LIST_REFRESH_INTERVAL);
 
         //set a default machine when obj is null
-        if (DeviceManager* dev = Slic3r::GUI::wxGetApp().getDeviceManager()) {
+        if (!m_presentation.redesign()) if (DeviceManager* dev = Slic3r::GUI::wxGetApp().getDeviceManager()) {
             if (!dev->get_selected_machine()) {
                 dev->load_last_machine();
             }
@@ -6419,7 +6543,12 @@ bool SelectMachineDialog::Show(bool show)
     m_printer_box->UpdatePlate(plate_name);
 
     // set default value when show this dialog
-    wxGetApp().UpdateDlgDarkUI(this);
+    if (!m_presentation.redesign())
+        wxGetApp().UpdateDlgDarkUI(this);
+    else {
+        apply_printer_transfer_redesign_theme(this);
+        style_printer_transfer_primary_button(m_button_ensure);
+    }
     wxGetApp().reset_to_active();
     set_default();
     update_user_machine_list();
@@ -7057,8 +7186,10 @@ void PrinterInfoBox::SetPrinters(const std::vector<MachineObject*>& sorted_print
     std::vector<DropDown::Item> drop_items;
     for (MachineObject* obj : sorted_printers)
     {
-        wxString shown_dev_name = wxString::FromUTF8(obj->get_dev_name());
-        if (obj->is_lan_mode_printer()) {
+        wxString shown_dev_name = m_select_dialog->is_redesign_presentation() ?
+            from_u8(printer_device_display_name(obj->get_dev_name(), obj->get_dev_ip())) :
+            wxString::FromUTF8(obj->get_dev_name());
+        if (!m_select_dialog->is_redesign_presentation() && obj->is_lan_mode_printer()) {
             shown_dev_name += _L("(LAN)");
         }
 
@@ -7113,7 +7244,9 @@ void PrinterInfoBox::SetDefault(bool from_sd)
 
     m_comboBox_printer->Clear();
     m_comboBox_printer->SetValue(wxEmptyString);
-    m_comboBox_printer->Enable();
+    m_comboBox_printer->Enable(!m_select_dialog->is_redesign_presentation());
+    if (m_select_dialog->is_redesign_presentation())
+        m_button_refresh->Hide();
 }
 
 void PrinterInfoBox::Create()

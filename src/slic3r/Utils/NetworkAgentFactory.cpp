@@ -7,6 +7,7 @@
 #include "QidiPrinterAgent.hpp"
 #include "SnapmakerPrinterAgent.hpp"
 #include "MoonrakerPrinterAgent.hpp"
+#include "HonorForgePrinterAgent.hpp"
 #include "slic3r/plugin/PluginManager.hpp"
 #include "slic3r/plugin/pluginTypes/printerAgent/PrinterAgentPluginCapability.hpp"
 #include "CrealityPrintAgent.hpp"
@@ -76,16 +77,17 @@ template<typename T> void register_agent()
                                                     if (cloud_agent)
                                                         agent->set_cloud_agent(cloud_agent);
                                                     return agent;
-                                                });
+                                                }, info.traits);
 }
 
 } // anonymous namespace
 
-bool NetworkAgentFactory::register_printer_agent(const std::string& id, const std::string& display_name, PrinterAgentFactory factory)
+bool NetworkAgentFactory::register_printer_agent(const std::string& id, const std::string& display_name,
+                                                 PrinterAgentFactory factory, PrinterAgentTraits traits)
 {
     std::lock_guard<std::mutex> lock(s_registry_mutex);
     auto& agents = get_printer_agents();
-    return agents.emplace(id, PrinterAgentInfo(id, display_name, std::move(factory))).second;
+    return agents.emplace(id, PrinterAgentInfo(id, display_name, std::move(factory), traits)).second;
 }
 
 bool NetworkAgentFactory::is_printer_agent_registered(const std::string& id)
@@ -101,6 +103,50 @@ const PrinterAgentInfo* NetworkAgentFactory::get_printer_agent_info(const std::s
     auto& agents = get_printer_agents();
     auto it      = agents.find(id);
     return (it != agents.end()) ? &it->second : nullptr;
+}
+
+PrinterAgentTraits NetworkAgentFactory::get_printer_agent_traits(const std::string& id)
+{
+    std::lock_guard<std::mutex> lock(s_registry_mutex);
+    const auto& agents = get_printer_agents();
+    const auto it = agents.find(id);
+    if (it != agents.end())
+        return it->second.traits;
+
+    // Unit-level DeviceManager consumers may run before the application registers built-ins.
+    if (id == MOONRAKER_PRINTER_AGENT_ID || id == HONOR_FORGE_PRINTER_AGENT_ID) {
+        PrinterAgentTraits traits;
+        traits.protocol_family = PrinterAgentTraits::ProtocolFamily::Moonraker;
+        traits.accepts_empty_access_code = true;
+        traits.uses_printhost_api_key = true;
+        traits.preserves_foreign_device_ownership = true;
+        traits.supports_monitoring_telemetry = true;
+        traits.supports_active_discovery = id == HONOR_FORGE_PRINTER_AGENT_ID;
+        traits.supports_upload_only = true;
+        traits.supports_upload_and_print = true;
+        traits.job_payload = PrinterAgentTraits::JobPayload::RawGcode;
+        traits.storage_model = PrinterAgentTraits::StorageModel::VirtualGcodeRoot;
+        traits.requires_transfer_preflight = false;
+        return traits;
+    }
+    if (id == ORCA_PRINTER_AGENT_ID) {
+        PrinterAgentTraits traits;
+        traits.supports_upload_only = false;
+        traits.supports_upload_and_print = false;
+        return traits;
+    }
+    return {};
+}
+
+std::string NetworkAgentFactory::resolve_printer_agent_id(const std::string& stored_id,
+                                                          const std::string& printer_model,
+                                                          bool is_bbl_vendor)
+{
+    if (!stored_id.empty())
+        return stored_id;
+    if (printer_model == "Honor Forge")
+        return HONOR_FORGE_PRINTER_AGENT_ID;
+    return is_bbl_vendor ? BBL_PRINTER_AGENT_ID : ORCA_PRINTER_AGENT_ID;
 }
 
 std::string NetworkAgentFactory::get_printer_agent_plugin_identifier(const std::string& id)
@@ -189,6 +235,7 @@ void NetworkAgentFactory::register_all_agents()
                                             // CrealityPrintAgent extends Moonraker behaviour
                                             // for K-series boards with CFS support.
     register_agent<MoonrakerPrinterAgent>();
+    register_agent<HonorForgePrinterAgent>();
 
     // Keep BBL as a built-in option. Python printer-agent plugins with the
     // same AgentInfo ID are listed separately under the plugin registry key.
@@ -201,7 +248,7 @@ void NetworkAgentFactory::register_all_agents()
                                    if (cloud_agent)
                                        agent->set_cloud_agent(cloud_agent);
                                    return agent;
-                               });
+                               }, info.traits);
     }
 }
 
