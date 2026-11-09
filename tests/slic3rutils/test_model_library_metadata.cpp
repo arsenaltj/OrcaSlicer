@@ -2,7 +2,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryMetadata.hpp"
-#include "slic3r/GUI/AI/ModelGeneration/PortraitPrintFlow.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchArtifactValidation.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryObservations.hpp"
 #include "test_utils.hpp"
 
@@ -234,7 +234,7 @@ struct ObservedLibraryCache {
 };
 Json certified_library_record()
 {
-    namespace PP = Slic3r::GUI::PortraitPrint;
+    namespace PP = Slic3r::GUI::WorkbenchArtifacts;
     Slic3r::GUI::WorkbenchCheckResult check;
     check.status = Slic3r::GUI::WorkbenchCheckStatus::Normal;
     check.purpose = Slic3r::GUI::WorkbenchCheckPurpose::PortraitPostColorReadOnly;
@@ -258,9 +258,9 @@ void write_library_record(const boost::filesystem::path& path, const Json& metad
 }
 
 TEST_CASE("Certified portrait observations preserve the authoritative certificate bytes",
-    "[ModelLibraryMetadata][PortraitPrintFlow][P0]")
+    "[ModelLibraryMetadata][WorkbenchArtifactValidation][P0]")
 {
-    namespace PP = Slic3r::GUI::PortraitPrint;
+    namespace PP = Slic3r::GUI::WorkbenchArtifacts;
     ScopedTemporaryDir temporary("orca-certified-observations");
     const auto path = temporary.path() / "portrait.json";
     const auto metadata = certified_library_record();

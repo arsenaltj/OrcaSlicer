@@ -1,8 +1,10 @@
 # Model capability and compatibility-view membership is explicit.
 set(ORCA_MODEL_WORKSPACE_SOURCES
     GUI/AI/ModelGeneration/ModelGenerationUIState.cpp
-    GUI/AI/ModelGeneration/PortraitPrintFlow.cpp
-    GUI/AI/ModelGeneration/PortraitPrintFlow.hpp
+    GUI/AI/ModelGeneration/NativeWorkbenchPartition.cpp
+    GUI/AI/ModelGeneration/NativeWorkbenchPublication.hpp
+    GUI/AI/ModelGeneration/ModelGenerationSubmissionResult.hpp
+    GUI/AI/ModelGeneration/WorkbenchArtifactValidation.hpp
     GUI/AI/ModelGeneration/PortraitNativeCheckpoint.hpp
     GUI/AI/ModelGeneration/ModelOriginalSurfaceSampler.hpp
     GUI/AI/ModelGeneration/PortraitNativePartition.hpp

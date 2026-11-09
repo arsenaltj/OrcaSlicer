@@ -12,8 +12,6 @@
 #include "slic3r/GUI/Redesign/StartupSetupDialog.hpp"
 #include "slic3r/GUI/AI/Model/BeautyDocument.hpp"
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
-#include "PortraitRecognitionState.hpp"
-#include "PortraitColorSaveRetry.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI.hpp"
@@ -381,8 +379,6 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
             entry.restore_undo = [restore, previous = binding->physical_slot, dirty] { return restore(previous, dirty); };
             entry.restore_redo = [restore, slot] { return restore(slot, true); };
             weak->m_beauty_transactions->record(std::move(entry));
-            if (weak->portrait_owns_display_context() && weak->m_portrait_print.running())
-                weak->pause_portrait_print("底座独立颜色已修改，请保存当前成果后重新核对。");
             weak->refresh_controls();
         });
         m_model_preview->set_honor_suite_application_callbacks([weak] {
@@ -391,10 +387,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
             std::string error;
             const auto compatibility = PrinterFilamentConfig::honor_suite_compatibility(
                 *wxGetApp().preset_bundle, honor_filament_suites().front());
-            const bool explicit_color_retry = PortraitPrint::eligible_paused_color_save_retry(
-                weak->m_portrait_print, weak->portrait_owns_display_context(), *weak->m_model_preview);
-            if (!compatibility.compatible && !explicit_color_retry &&
-                !(weak->portrait_owns_display_context() && weak->m_portrait_print.running())) {
+            if (!compatibility.compatible) {
                 error = compatibility.reason;
                 weak->m_workbench_operation_notice = error;
                 weak->refresh_post_generation_workbench();
@@ -405,7 +398,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
                     native_partition && native_partition->valid())) {
                 weak->m_honor_suite_partition_pending = true;
                 if (!weak->ensure_native_workbench_partition(
-                        PortraitPrint::native_workbench_partition_consumer(
+                        WorkbenchArtifacts::native_workbench_partition_consumer(
                             NativeWorkbenchPartitionConsumer::HonorSuite))) {
                     weak->m_honor_suite_partition_pending = false;
                     weak->m_workbench_operation_notice =
@@ -425,51 +418,6 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
             if (!weak || weak->m_shutdown || !weak->m_model_preview || !weak->m_honor_suite_before) return;
             auto before = std::move(weak->m_honor_suite_before);
             if (before->geometry_id != weak->m_model_preview->geometry_id()) return;
-            if (weak->portrait_owns_display_context() && weak->m_portrait_print.from_workbench() &&
-                weak->m_portrait_print.stage == PortraitPrint::Stage::Color) {
-                // A successful explicit re-selection may resume the failed
-                // save. Failed applications leave its authorization revoked.
-                if (colored && !weak->m_portrait_print.running()) {
-                    const auto resumed = PortraitPrint::resume_paused_color_save_after_explicit_action(
-                        weak->m_portrait_print, weak->portrait_owns_display_context(),
-                        *weak->m_model_preview, [weak] { return weak->resume_portrait_print(); });
-                    if (!resumed.value_or(false)) return;
-                }
-                if (!weak->m_portrait_print.current(weak->m_portrait_print.id, PortraitPrint::Stage::Color)) return;
-                if (!colored) {
-                    const auto error = weak->m_model_preview->semantic_error().ToStdString(wxConvUTF8);
-                    weak->pause_portrait_print(error.empty() ? "人物配色未应用，当前模型保留。" : error);
-                    return;
-                }
-                const auto state = weak->m_model_preview->color_trial_state();
-                if (state.suite_id != "honor.people.six" || !state.base_binding || !state.base_binding->valid()) {
-                    weak->pause_portrait_print("人物套装或底座绑定无效，未保存。"); return;
-                }
-                const auto regions = weak->m_model_preview->portrait_color_blocks();
-                if (!regions || regions->source_basis_signature != weak->m_portrait_print.basis_signature ||
-                    regions->algorithm_version != weak->m_portrait_print.boundary_algorithm_version) {
-                    weak->pause_portrait_print("配色结果与 AI 源色分区或边界版本不匹配，未保存。"); return;
-                }
-                weak->m_portrait_print.person_detected = weak->m_model_preview->portrait_person_detected();
-                weak->m_portrait_print.evidence_status = weak->m_model_preview->semantic_regions_ready() ? "partial_available" : "unavailable";
-                weak->m_portrait_print.semantic_applied = state.semantic_optimization && weak->m_model_preview->honor_suite_v2_appearance_active();
-                weak->m_portrait_print.near_color_fallback = !weak->m_portrait_print.semantic_applied;
-                weak->m_portrait_print.application_status = weak->m_portrait_print.semantic_applied ? "semantic_regions_applied" : "near_color_fallback";
-                weak->m_portrait_print.semantic_status = PortraitPrint::recognition_status(
-                    weak->m_portrait_print.person_detected, weak->m_model_preview->semantic_regions_ready(),
-                    weak->m_portrait_print.semantic_applied);
-                weak->m_portrait_print.region_binding_digest.clear(); // Bound to the verified publication below.
-                weak->m_portrait_print.base_binding = state.base_binding->encode();
-                weak->record_beauty_candidate(BeautyWorkbenchTransactionController::OperationKind::AppearanceRecolor, before);
-                weak->m_portrait_color_snapshot = weak->m_model_preview->color_trial_metadata();
-                weak->m_portrait_color_edit_revision = weak->m_model_preview->leaf_edit_revision();
-                const auto note = weak->m_portrait_print.semantic_applied ?
-                    std::string("人物区域语义绑定已实际应用；其余区域按原始颜色近色匹配。") : state.suite_fallback_reason;
-                weak->add_portrait_notice(weak->m_portrait_print.id, note);
-                weak->m_workbench_operation_notice = note;
-                weak->advance_portrait_print(weak->m_portrait_print.id, PortraitPrint::Stage::Color, PortraitPrint::Stage::SaveColor);
-                return;
-            }
             const bool same_config = wxGetApp().preset_bundle &&
                 PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature == weak->m_honor_suite_source_signature;
             // Close the recognition overlay before the normal import gate.
@@ -572,32 +520,6 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     m_workbench_project_summary = new WorkbenchStaticText(scroll, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxST_NO_AUTORESIZE);
     m_workbench_project_summary->SetForegroundColour(wxColour(190, 190, 196));
     controls->Add(m_workbench_project_summary, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
-    auto* switch_printer = new WorkbenchButton(scroll, _L("切换打印机"));
-    apply_slice_action_style(switch_printer);
-    switch_printer->SetName("portrait_print_switch_printer");
-    switch_printer->SetToolTip(_L("一键流程因机型不兼容暂停时，重新选择打印机和耗材；完成后点击“继续一键流程”。取消保留当前配置。"));
-    const auto can_switch_printer = [this] {
-        auto* plater = wxGetApp().plater();
-        return portrait_owns_display_context() && m_portrait_print.active() &&
-            m_portrait_print.paused && !m_portrait_print.failed &&
-            m_portrait_print.stage == PortraitPrint::Stage::Filaments && !m_busy && !m_finishing_running &&
-            m_finishing_candidate.empty() && plater && plater->model().objects.empty();
-    };
-    switch_printer->Bind(wxEVT_UPDATE_UI, [can_switch_printer](wxUpdateUIEvent& event) {
-        event.Enable(can_switch_printer());
-    });
-    switch_printer->Bind(wxEVT_BUTTON, [this, can_switch_printer](wxCommandEvent&) {
-        if (!can_switch_printer()) return;
-        // Reuse the native staged preset transaction. The saved portrait and
-        // its source-region binding stay paused until explicit continuation.
-        if (run_startup_setup(wxGetTopLevelParent(m_workbench_shell))) {
-            wxGetApp().load_current_presets();
-            synchronize_workbench_project_palette(true);
-        }
-        refresh_controls();
-        publish_workbench_state();
-    });
-    controls->Add(switch_printer, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     auto filament_action = [&](const wxString& label, auto handler) {
         auto* button = new WorkbenchButton(scroll,label);
         button->SetMinSize(FromDIP(wxSize(1,36))); button->Bind(wxEVT_BUTTON,handler);
@@ -661,8 +583,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     scroll->SetSizer(scroll_content);
     settings_root->Add(scroll, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
     m_workbench_slicing = command(settings, settings_root, _L("去切片"), [this](wxCommandEvent&) {
-        if (portrait_owns_display_context() && m_portrait_print.running()) request_stop();
-        else request_workbench_color_matching();
+        request_workbench_color_matching();
     });
     m_workbench_slicing->Disable();
     m_workbench_slicing->SetToolTip(_L("将当前模型导入切片设置；选择方案后显式启动切片。"));

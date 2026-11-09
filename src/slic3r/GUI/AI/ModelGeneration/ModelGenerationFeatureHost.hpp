@@ -2,6 +2,7 @@
 
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "ModelGenerationHost.hpp"
+#include "ModelGenerationSubmissionResult.hpp"
 #include "PostGenerationWorkbenchState.hpp"
 #include "WorkbenchImportSession.hpp"
 
@@ -46,15 +47,8 @@ public:
     void get_provider_catalog(const std::string& role, const std::string& provider,
                               AIModelGenerationClient::CatalogFn on_complete,
                               AIModelGenerationClient::ErrorFn on_error);
-    PortraitPrint::Submission request_generate_design();
-    PortraitPrint::Submission request_generate_model();
-    PortraitPrint::Submission request_portrait_print_from_model(std::function<bool()> create_empty_project);
-    bool resume_portrait_print();
-    bool record_portrait_import(const std::string& id, const AI::ModelImportResult& result);
-    void add_portrait_notice(const std::string& id, const std::string& notice);
-    bool advance_portrait_print(const std::string& id, PortraitPrint::Stage expected,
-        PortraitPrint::Stage next, const std::string& revision = {}, const std::string& gcode = {});
-    void pause_portrait_print(const std::string& reason, bool hard = false);
+    ModelGenerationSubmissionResult request_generate_design();
+    ModelGenerationSubmissionResult request_generate_model();
     bool request_generate_smart();
     bool request_retry_model();
     bool request_stop();

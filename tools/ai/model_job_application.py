@@ -83,8 +83,6 @@ class ModelJobApplicationPorts:
     analyze_model: Callable[..., Any]
     write_quality: Callable[..., None]
     review_model: Callable[..., Any]
-    recommend_palette: Callable[..., Any] | None = None
-    portrait_review: Callable[..., Any] | None = None
 
 
 # HTTP composition creates a new application per request. The create lock must
@@ -94,6 +92,8 @@ _smart_create_lock = threading.RLock()
 def _smart_creation(method):
     @wraps(method)
     def execute(self, fields, *args):
+        if _boolean_field(fields.get("portrait_print"), "portrait_print"):
+            raise RequestError("workflow_removed", "Portrait one-click processing has been removed.", 410)
         mode = fields.get("workflow_mode", "advanced")
         if mode not in {"smart", "advanced"}:
             raise RequestError("invalid_request", "Unknown workflow mode.", 400)
@@ -136,7 +136,7 @@ class ModelJobApplication:
             job.flow_id, job.request_id, job.input_fingerprint = metadata
             job.smart_started_at = time.time()
             self.ports.persist(job, required=True)
-        else: self.ports.persist(job, required=job.portrait_print)
+        else: self.ports.persist(job, required=False)
 
     def _design_status(self, provider: str, model: str = "") -> dict[str, Any]:
         try:
@@ -157,56 +157,19 @@ class ModelJobApplication:
             "confirm-palette": self.confirm_palette,
             "generation-options": self.set_generation_options,
             "reuse-design": self.reuse_design,
-            "retry-portrait": self.retry_portrait,
         }
         handler = commands.get(command)
         if handler is None:
             raise RequestError("not_found", "Model job command not found.", 404)
+        job = self.ports.get_job(job_id)
+        if job is not None and job.retired_workflow and command != "stop":
+            raise RequestError("workflow_removed", "This historical workflow cannot execute. Open its saved assets in the manual workbench.", 410)
         return handler(job_id, request)
 
     @_smart_creation
     def create_text_job(self, request: dict[str, Any]) -> ApplicationResult:
-        if _boolean_field(request.get("portrait_print"), "portrait_print"):
-            with self.ports.lock:
-                previous = self._portrait_creation(request)
-                return previous or self._create_text_job(request)
         return self._create_text_job(request)
 
-    def _portrait_creation(self, request: dict[str, Any], image: bytes = b"") -> ApplicationResult | None:
-        """Reserve a single durable request under the application's reentrant lock."""
-        request_id = _text_field(request.get("request_id"), "request_id")
-        count = _normalize_palette_color_count(request.get("palette_color_count"))
-        if _normalize_style(request.get("style")) != "realistic" or count not in {4, 5, 6}:
-            raise RequestError("invalid_portrait_print", "Portrait printing requires realistic style and 4, 5 or 6 colors.", 400)
-        if self.ports.recommend_palette is None:
-            raise RequestError("feature_unavailable", "Portrait palette recommendation is unavailable.", 503)
-        fingerprint = self._creation_fingerprint(request, image)
-        for job in self.ports.jobs.values():
-            if job.portrait_print and job.creation_request_id == request_id:
-                if job.creation_fingerprint != fingerprint:
-                    raise RequestError("request_conflict", "This request identity already belongs to different inputs.", 409)
-                return ApplicationResult(200, {"job": self.ports.present(job)})
-        return None
-
-    @staticmethod
-    def _creation_fingerprint(request: dict[str, Any], image: bytes = b"") -> str:
-        # Ignore advisory upload filenames. Input bytes and every actual option
-        # are bound to the idempotency identity, including the requested count.
-        fields = {key: value for key, value in request.items() if not key.startswith("_")}
-        encoded = json.dumps(fields, sort_keys=True, ensure_ascii=False).encode("utf-8")
-        return hashlib.sha256(encoded + b"\0" + hashlib.sha256(image).digest()).hexdigest()
-
-    def _configure_portrait(self, job: Job, request: dict[str, Any], image: bytes = b"") -> None:
-        if not _boolean_field(request.get("portrait_print"), "portrait_print"):
-            return
-        job.portrait_print = True
-        job.portrait_retry_authorized = True
-        job.creation_request_id = _text_field(request.get("request_id"), "request_id")
-        job.creation_fingerprint = self._creation_fingerprint(request, image)
-        job.palette_color_count = _normalize_palette_color_count(request.get("palette_color_count"))
-        job.state = job.phase = "recommending_palette"
-        job.message = "Analyzing the portrait's stable printable color regions."
-        job.palette_recommendation_confirmed = False
 
     def _create_text_job(self, request: dict[str, Any]) -> ApplicationResult:
         design_provider = _design_provider(request)
@@ -230,15 +193,11 @@ class ModelJobApplication:
         job.user_prompt = prompt
         job.design_provider = design_provider
         job.design_model = design_model
-        self._configure_portrait(job, request)
         self._persist_created(job)
         with self.ports.lock:
             self.ports.jobs[job.id] = job
         try:
-            if job.portrait_print:
-                self.ports.submit(job, self.ports.recommend_palette)
-            else:
-                self.ports.submit(job, self.ports.preprocess_text, prompt)
+            self.ports.submit(job, self.ports.preprocess_text, prompt)
         except RequestError:
             with self.ports.lock:
                 self.ports.jobs.pop(job.id, None)
@@ -266,10 +225,6 @@ class ModelJobApplication:
 
     @_smart_creation
     def create_image_job(self, fields: dict[str, str], image: bytes, declared_type: str) -> ApplicationResult:
-        if _boolean_field(fields.get("portrait_print"), "portrait_print"):
-            with self.ports.lock:
-                previous = self._portrait_creation(fields, image)
-                return previous or self._create_image_job(fields, image, declared_type)
         return self._create_image_job(fields, image, declared_type)
 
     def _create_image_job(self, fields: dict[str, str], image: bytes, declared_type: str) -> ApplicationResult:
@@ -318,7 +273,6 @@ class ModelJobApplication:
             self.ports.cleanup(job)
             raise RequestError("service_unavailable", "The uploaded image could not be stored.", 503, True) from None
         job.input_path = input_path
-        self._configure_portrait(job, fields, image)
         if detected_type == "image/webp":
             # Keep original bytes for restore. Providers receive a lossless PNG
             # with the same RGBA pixels used by the desktop preview.
@@ -333,10 +287,7 @@ class ModelJobApplication:
         with self.ports.lock:
             self.ports.jobs[job.id] = job
         try:
-            if job.portrait_print:
-                self.ports.submit(job, self.ports.recommend_palette)
-            else:
-                self.ports.submit(job, self.ports.preprocess_image, input_path, instruction)
+            self.ports.submit(job, self.ports.preprocess_image, input_path, instruction)
         except RequestError:
             with self.ports.lock:
                 self.ports.jobs.pop(job.id, None)
@@ -399,28 +350,15 @@ class ModelJobApplication:
         if job is None:
             raise RequestError("job_not_found", "Model job not found.", 404)
         with self.ports.lock:
-            if job.portrait_print and job.design_submission_started:
-                # Lost replies and duplicate confirmation clicks cannot buy a
-                # second image, including after a sidecar restart.
-                return ApplicationResult(200, {"job": self.ports.present(job)})
             if job.state != "awaiting_palette_confirmation" or not job.palette_recommendation:
                 raise RequestError("invalid_job_state", "Job is not awaiting palette confirmation.", 409)
             previous_recommendation = job.palette_recommendation
-            if job.portrait_print:
-                colors = tuple(item["hex"] for item in previous_recommendation["colors"])
-                roles = {item["role"]: item["hex"] for item in previous_recommendation["colors"]}
-                palette = _normalize_palette(request.get("palette"))
-                if palette != colors or _normalize_palette_roles(request.get("palette_roles"), palette) != roles:
-                    raise RequestError("palette_conflict", "Confirm the exact validated AI recommendation.", 409)
-                job.palette, job.palette_roles = colors, roles
-                job.palette_recommendation_confirmed = True
-                job.design_submission_started = True
             _use_unrestricted_creation(job)
             job.state = "preprocessing"
             job.phase = "preprocessing"
             job.message = "An unrestricted design preview is being prepared."
             job.progress = 10
-            self.ports.persist(job, required=job.portrait_print)
+            self.ports.persist(job, required=False)
         try:
             if job.source == "text":
                 self.ports.submit(job, self.ports.preprocess_text, job.user_prompt)
@@ -430,11 +368,6 @@ class ModelJobApplication:
                 raise RequestError("input_unavailable", "The stored reference image is unavailable.", 409)
         except RequestError:
             with self.ports.lock:
-                if job.portrait_print:
-                    job.state = job.phase = "failed"
-                    job.message = "The design dispatch was not confirmed. It will not be retried automatically."
-                    self.ports.persist(job)
-                    raise
                 job.palette_recommendation_confirmed = False
                 job.palette_recommendation = previous_recommendation
                 job.state = "awaiting_palette_confirmation"
@@ -518,23 +451,13 @@ class ModelJobApplication:
         provider = _generation_provider(request)
         requested_geometry_model = _geometry_model(request)
         with self.ports.lock:
-            if job.portrait_print and job.future is not None and not job.future.done():
-                return ApplicationResult(200, {"job": self.ports.present(job)})
             if job.workflow_mode == "smart" and job.smart_model_request_id and job.state in {"queued", "running", "ready"}:
                 return ApplicationResult(200, {"job": self.ports.present(job)})
             if job.workflow_mode == "smart" and job.smart_stop_intent and not explicit_resume:
                 raise RequestError("stopped", "The flow was stopped; resume explicitly to continue.", 409)
             provider_task_id = self.ports.latest_task_id(job)
-            latest = job.attempts[-1] if job.attempts else {}
-            terminal_retry = (retry_failed and job.portrait_print and job.state == "failed" and
-                latest.get("provider_terminal_failure") is True and bool(provider_task_id) and
-                latest.get("terminal_task_id") == provider_task_id and not resume_existing)
-            if retry_failed and not terminal_retry:
-                raise RequestError("retry_not_safe", "Only an explicitly failed portrait model task can be retried.", 409)
-            if job.portrait_print and not resume_existing and job.model_submission_started and not terminal_retry:
-                raise RequestError("portrait_task_reserved", "The portrait model was already dispatched; resume its saved task only.", 409)
-            if job.portrait_print and (not job.design_submission_started or not job.palette_recommendation_confirmed):
-                raise RequestError("invalid_job_state", "The portrait design and palette must be confirmed first.", 409)
+            if retry_failed:
+                raise RequestError("workflow_removed", "Portrait automatic retries have been removed.", 410)
             unsubmitted_retry = self.ports.can_retry_unsubmitted(job)
             if resume_existing:
                 if not provider_task_id:
@@ -545,7 +468,7 @@ class ModelJobApplication:
                     )
                 if job.state not in {"failed", "stopped", "queued", "running"}:
                     raise RequestError("invalid_job_state", "The saved provider task cannot be resumed in this state.", 409)
-            elif provider_task_id and job.state == "failed" and not terminal_retry:
+            elif provider_task_id and job.state == "failed":
                 raise RequestError(
                     "resume_required",
                     "A provider task already exists. Resume the saved task instead of creating another one.",
@@ -584,16 +507,6 @@ class ModelJobApplication:
                         409,
                     ) from None
                 self.ports.assess_reference(job)
-                if job.portrait_print:
-                    review = job.image_metrics.get("portrait_design", {})
-                    if (review.get("status") != "pass" or reference is None or
-                        review.get("sha256") != hashlib.sha256(reference.read_bytes()).hexdigest()):
-                        raise RequestError("portrait_review_required", "The exact single-person half-body design must pass vision review.", 409)
-                    for key in ("model_input_quality", "generation_input_quality"):
-                        advice = job.image_metrics.setdefault(key, {})
-                        advice["warnings"] = list(dict.fromkeys(advice.get("warnings", []) + advice.get("blockers", [])))
-                        advice["blockers"] = []
-                        advice["model_input_eligible"] = True
             if not self.ports.gateway(provider).model_generation_available():
                 raise RequestError("feature_unavailable", "Model generation is not configured.", 503)
             next_attempt = len(job.attempts) + 1
@@ -621,9 +534,7 @@ class ModelJobApplication:
             # A previous stop is local intent. An explicit retry or resume
             # clears that intent before the worker reaches its first boundary.
             job.stop_event.clear()
-            if job.portrait_print:
-                job.model_submission_started = True
-            self.ports.persist(job, required=job.portrait_print or job.workflow_mode == "smart")
+            self.ports.persist(job, required=job.workflow_mode == "smart")
         try:
             self.ports.submit(job, self.ports.generate, prepared_prompt, resume_existing, authorization)
         except RequestError:
@@ -641,70 +552,6 @@ class ModelJobApplication:
             response = self.ports.present(job)
         return ApplicationResult(200, {"job": response})
 
-    def retry_portrait(self, job_id: str, request: dict[str, Any]) -> ApplicationResult:
-        """Explicit page action. Never replace an unknown paid submission."""
-        if request:
-            raise RequestError("invalid_request", "Portrait retry takes no generation inputs.", 400)
-        job = self.ports.get_job(job_id)
-        if job is None or not job.portrait_print:
-            raise RequestError("job_not_found", "Portrait job not found.", 404)
-        if job.model_submission_started:
-            with self.ports.lock:
-                latest = job.attempts[-1] if job.attempts else {}
-                if job.state not in {"failed", "stopped", "queued"}:
-                    raise RequestError("invalid_job_state", "The saved model task is still active.", 409)
-                terminal_model = latest.get("provider_terminal_failure") is True
-                terminal_conversion = (bool(latest.get("conversion_task_id")) and
-                    latest.get("terminal_task_id") == latest.get("conversion_task_id"))
-                if terminal_conversion:
-                    failed = latest.get("failed_conversion_task_ids", []) + [latest["conversion_task_id"]]
-                    self.ports.record_attempt(job, len(job.attempts), failed_conversion_task_ids=failed,
-                        conversion_task_id="", conversion_submission_started=False)
-                    self.ports.persist(job, required=True)
-                model_request = dict(prepared_prompt=job.prepared_prompt, provider=job.provider,
-                    face_limit=job.face_limit, geometry_quality=job.geometry_quality,
-                    texture_quality=job.texture_quality, output_format=job.output_format,
-                    geometry_model=job.geometry_model, resume_existing=not terminal_model,
-                    retry_failed=terminal_model)
-                return self.generate(job_id, model_request)
-        with self.ports.lock:
-            if job.state not in {"failed", "stopped", "awaiting_confirmation"} or job.model_submission_started:
-                raise RequestError("invalid_job_state", "Retry the saved model task through its task reference.", 409)
-            failure = job.image_metrics.get("portrait_failure", {})
-            if failure.get("ambiguous") is True:
-                raise RequestError("provider_task_ambiguous", "Check the original image task before retrying.", 409)
-            review_only = (job.raw_preview_path is not None and job.raw_preview_path.is_file() and
-                job.image_metrics.get("portrait_design", {}).get("status") == "unavailable")
-            if review_only and self.ports.portrait_review is None:
-                raise RequestError("feature_unavailable", "Portrait framing review unavailable.", 503)
-            stage = "palette" if not job.palette_recommendation_confirmed else "design"
-            if (stage == "design" and job.design_submission_started and not review_only and not failure and
-                job.image_metrics.get("portrait_design", {}).get("status") != "not_portrait"):
-                raise RequestError("provider_task_ambiguous", "The original design submission must be checked.", 409)
-            job.stop_event.clear()
-            job.preprocess_failure = {}
-            job.state, job.phase = "queued", "portrait_review" if review_only else stage
-            job.message = "Retrying the saved portrait stage; existing results are retained."
-            self.ports.persist(job, required=True)
-        if review_only:
-            def review(saved: Job) -> None:
-                try:
-                    self.ports.portrait_review(saved, saved.raw_preview_path)
-                    saved.state = saved.phase = "stopped" if saved.stop_event.is_set() else "awaiting_confirmation"
-                    self.ports.persist(saved, required=True)
-                except Exception as error:
-                    saved.state = saved.phase = "failed"
-                    saved.message = f"Portrait framing review failed: {error}"
-                finally:
-                    self.ports.persist(saved)
-            self.ports.submit(job, review)
-        elif stage == "palette":
-            self.ports.submit(job, self.ports.recommend_palette)
-        else:
-            callback = self.ports.preprocess_image if job.source == "image" else self.ports.preprocess_text
-            args = (job.input_path, job.user_prompt) if job.source == "image" else (job.user_prompt,)
-            self.ports.submit(job, callback, *args)
-        return ApplicationResult(200, {"job": self.ports.present(job)})
 
     def retexture(self, reference_job_id: str, request: dict[str, Any]) -> ApplicationResult:
         if set(request) != {"geometry_job_id"}:

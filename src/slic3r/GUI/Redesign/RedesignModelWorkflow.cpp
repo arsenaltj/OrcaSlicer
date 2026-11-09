@@ -974,29 +974,13 @@ void RedesignShell::build_model_workflow()
 
 bool RedesignShell::open_model_workbench()
 {
-    const bool automatic_portrait_entry = !m_import_in_progress && !m_page_transition.active() &&
-        owns_model_workflow() && m_model_view == ModelView::Result &&
-        redesign_portrait_workbench_entry(m_model_generation_state.input.style, m_model_generation_state);
     if (m_import_in_progress || m_page_transition.active() || !owns_model_workflow()) return false;
     restore_smart_model_history();
     if (!m_model_generation_host->request_open_workbench()) {
         if (m_active_page == Page::Image) mount_smart_model_history();
         return false;
     }
-    // The workbench publishes exact ownership before this point. Record the
-    // one-click intent immediately; the portrait state machine owns Check and
-    // registers both native-partition consumers itself.
-    const auto owner = m_model_generation_host->workbench_snapshot();
-    if (automatic_portrait_entry)
-        m_portrait_entry_intent = {owner.revision, owner.model_path, owner.source_sha256,
-            owner.geometry_id, owner.appearance_id};
-    else
-        m_portrait_entry_intent.clear();
-    if (show_model_view(ModelView::Workbench)) {
-        try_start_queued_portrait_print();
-        return true;
-    }
-    m_portrait_entry_intent.clear();
+    if (show_model_view(ModelView::Workbench)) return true;
     m_model_generation_host->set_workbench_presented(false);
     return false;
 }
@@ -1404,8 +1388,6 @@ void RedesignShell::present_active_page(bool flush_children)
 void RedesignShell::apply_workbench_state(const PostGenerationWorkbenchState& state)
 {
     m_workbench_state = state;
-    try_start_queued_portrait_print();
-    queue_portrait_print();
     refresh_project_save_actions();
     if (m_model_back_to_design_button && m_model_back_to_design_button->IsShown())
         m_model_back_to_design_button->Enable(can_return_to_image_design());
@@ -1415,41 +1397,6 @@ void RedesignShell::apply_workbench_state(const PostGenerationWorkbenchState& st
         m_pending_workbench_job.clear();
         open_model_workbench();
     }
-}
-
-void RedesignShell::try_start_queued_portrait_print()
-{
-    if (!m_portrait_entry_intent.valid() || m_portrait_entry_dispatch_queued ||
-        !m_model_generation_host || m_active_page != Page::Model ||
-        m_model_view != ModelView::Workbench || !m_workbench_state.workbench_presented)
-        return;
-    if (!m_portrait_entry_intent.matches(m_workbench_state.revision,
-            m_workbench_state.model_path, m_workbench_state.source_sha256,
-            m_workbench_state.geometry_id, m_workbench_state.appearance_id)) {
-        m_portrait_entry_intent.clear();
-        return;
-    }
-
-    m_portrait_entry_dispatch_queued = true;
-    const auto intent = m_portrait_entry_intent;
-    wxWeakRef<RedesignShell> weak(this);
-    CallAfter([weak, intent] {
-        if (!weak) return;
-        weak->m_portrait_entry_dispatch_queued = false;
-        const auto current = weak->m_model_generation_host
-            ? weak->m_model_generation_host->workbench_snapshot()
-            : PostGenerationWorkbenchState{};
-        if (weak->m_active_page != Page::Model || weak->m_model_view != ModelView::Workbench ||
-            !current.workbench_presented || !intent.matches(current.revision, current.model_path,
-                current.source_sha256, current.geometry_id, current.appearance_id)) {
-            if (!intent.matches(current.revision, current.model_path, current.source_sha256,
-                    current.geometry_id, current.appearance_id))
-                weak->m_portrait_entry_intent.clear();
-            return;
-        }
-        if (weak->request_portrait_print())
-            weak->m_portrait_entry_intent.clear();
-    });
 }
 
 bool RedesignShell::can_return_to_image_design() const
@@ -1512,12 +1459,6 @@ bool RedesignShell::return_to_image_design()
 
 void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& request)
 {
-    const auto flow = m_model_generation_host->snapshot().portrait_print;
-    if (flow.running() && (flow.stage != PortraitPrint::Stage::Import ||
-        !m_plater || !m_plater->model().objects.empty() ||
-        std::to_string(m_plater->model().id().id) != flow.workspace_id)) {
-        m_model_generation_host->pause_portrait_print("导入目标已变化，需要空工程且只能包含本次人像。"); return;
-    }
     if (m_import_view_retry_available && request.artifact.local_path == m_import_committed_model_path) {
         retry_import_target_view();
         return;
@@ -1539,12 +1480,8 @@ void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& reque
     wxWeakRef<RedesignShell> weak(this);
     const auto session = m_import_session;
     const auto token = *transition;
-    CallAfter([weak, session, request, token, flow] {
+    CallAfter([weak, session, request, token] {
         if (!weak || !session->valid() || !weak->m_page_transition.current(token)) return;
-        if (flow.running() && (!weak->m_model_generation_host ||
-            !weak->m_model_generation_host->snapshot().portrait_print.current(flow.id, PortraitPrint::Stage::Import))) {
-            session->cancel(); weak->finish_import_loading(); return;
-        }
         if (session->cancelled()) { weak->finish_import_loading(); return; }
         try {
             const bool started = weak->m_model_generation_host && weak->m_model_generation_host->import_workbench_model_async(request, session,
@@ -1552,25 +1489,18 @@ void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& reque
                     if (weak && session->valid() && weak->m_page_transition.current(token))
                         weak->update_import_loading(phase, message);
                 },
-                [weak, session, request, token, flow](const auto& result) {
+                [weak, session, request, token](const auto& result) {
                     if (!weak || !session->valid() || !weak->m_page_transition.current(token)) return;
                     if (!result.imported()) {
-                        weak->m_model_generation_host->pause_portrait_print("人像导入未完成，已配色模型保留：" + result.error);
                         weak->finish_import_loading();
-                        if (!flow.running() && result.outcome != AI::ModelImportOutcome::Cancelled)
+                        if (result.outcome != AI::ModelImportOutcome::Cancelled)
                             wxMessageBox(wxString::FromUTF8(result.error.empty() ? "模型导入失败，工作副本已保留。" : result.error),
                                 _L("模型导入"), wxOK | wxICON_ERROR, weak.get());
                         return;
                     }
                     weak->m_import_project_committed = true;
-                    if (flow.running() && !weak->m_model_generation_host->record_portrait_import(flow.id, result))
-                        weak->m_model_generation_host->pause_portrait_print("原生修复结果与流程身份不匹配，已停止自动切片。");
                     weak->m_import_view_retry_available = true;
                     weak->m_import_committed_model_path = request.artifact.local_path;
-                    if (flow.running() && weak->m_plater && weak->m_plater->model().objects.size() == 1 &&
-                        weak->m_model_generation_host->snapshot().portrait_print.id == flow.id &&
-                        request.artifact.local_path == flow.model_path)
-                        weak->m_portrait_imported_object_id = std::to_string(weak->m_plater->model().objects.front()->id().id);
                     weak->update_import_loading(WorkbenchImportPhase::UpdatingView);
                     weak->m_slice_camera_fitted = false;
                     weak->m_slice_camera_loading_pending = false;
@@ -1578,16 +1508,14 @@ void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& reque
                     weak->stage_import_target_view();
                 });
             if (!started) {
-                weak->m_model_generation_host->pause_portrait_print("人像导入未启动，工程或模型状态已变化。");
                 weak->finish_import_loading();
-                if (!flow.running()) wxMessageBox(_L("模型或工程状态已变化，或正在执行其他处理任务。请完成当前操作后重新导入。"),
+                wxMessageBox(_L("模型或工程状态已变化，或正在执行其他处理任务。请完成当前操作后重新导入。"),
                     _L("模型导入"), wxOK | wxICON_WARNING, weak.get());
             }
         } catch (const std::exception& error) {
             if (!weak) return;
             weak->finish_import_loading();
-            if (flow.running()) weak->m_model_generation_host->pause_portrait_print(error.what());
-            else wxMessageBox(wxString::FromUTF8(error.what()), _L("模型导入"), wxOK | wxICON_ERROR, weak.get());
+            wxMessageBox(wxString::FromUTF8(error.what()), _L("模型导入"), wxOK | wxICON_ERROR, weak.get());
         }
     });
 }
@@ -1668,9 +1596,7 @@ void RedesignShell::stage_import_target_view()
     auto* content_sizer = m_content_host->GetSizer();
     if (!content_sizer || !m_import_transition_cover || !content_sizer->Detach(m_workbench_page)) {
         finish_import_loading(true);
-        if (m_model_generation_host->snapshot().portrait_print.active())
-            m_model_generation_host->pause_portrait_print("模型已导入工程，但无法准备切片视图，请重试视图，无需重复导入。");
-        else wxMessageBox(_L("模型已导入工程，但无法准备切片视图。可再次点击“去切片”重试视图，无需重复导入。"),
+        wxMessageBox(_L("模型已导入工程，但无法准备切片视图。可再次点击“去切片”重试视图，无需重复导入。"),
             _L("模型视口"), wxOK | wxICON_WARNING, this);
         return;
     }
@@ -1681,9 +1607,7 @@ void RedesignShell::stage_import_target_view()
     if (!m_workbench_page->Reparent(m_import_transition_cover)) {
         content_sizer->Add(m_workbench_page, 1, wxEXPAND);
         finish_import_loading(true);
-        if (m_model_generation_host->snapshot().portrait_print.active())
-            m_model_generation_host->pause_portrait_print("模型已导入工程，但无法准备切片视图，请重试视图，无需重复导入。");
-        else wxMessageBox(_L("模型已导入工程，但无法准备切片视图。可再次点击“去切片”重试视图，无需重复导入。"),
+        wxMessageBox(_L("模型已导入工程，但无法准备切片视图。可再次点击“去切片”重试视图，无需重复导入。"),
             _L("模型视口"), wxOK | wxICON_WARNING, this);
         return;
     }
@@ -1929,11 +1853,6 @@ void RedesignShell::check_import_first_frame()
         std::chrono::steady_clock::now() - m_import_view_started > std::chrono::seconds(15)) {
         m_import_view_retry_available = m_import_project_committed;
         finish_import_loading(true);
-        if (m_model_generation_host->snapshot().portrait_print.active()) {
-            m_model_generation_host->pause_portrait_print(
-                "模型已导入工程，但切片视口尚未完成首帧。请点击继续一键流程重试视图，模型不会重复导入。");
-            return;
-        }
         RedesignConfirmationOptions options;
         options.actions = {{wxID_YES, _L("进入切片重试"), true},
                            {wxID_NO, _L("留在工作台"), false}};
@@ -1962,14 +1881,6 @@ bool RedesignShell::update_print_preview(bool active, bool layers, bool support)
     active = active && owns_model_workflow() && state.gcode_ready && !state.slicing && plate &&
         plate->is_slice_result_valid();
     wxString notice;
-    if (active && m_model_generation_host) {
-        const auto flow = m_model_generation_host->snapshot().portrait_print;
-        if (flow.stage == PortraitPrint::Stage::PrintReady && flow.gcode_path == plate->get_gcode_filename())
-            for (const auto& item : flow.notices) {
-                if (!notice.empty()) notice += "\n";
-                notice += wxString::FromUTF8(item);
-            }
-    }
     m_print_page->set_preparation_notice(notice);
     if (m_print_canvas_mounted && active &&
         (!m_print_preview_revision_current || !m_print_preview_revision_current() ||
@@ -2307,7 +2218,6 @@ void RedesignShell::on_slicing_recommendation_source_changed(int selection)
 
 void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
 {
-    queue_portrait_print();
     const bool background_slicing = m_plater && m_plater->is_background_process_slicing();
     const bool external_toolpath = m_plater &&
         (m_plater->only_gcode_mode() || m_plater->using_exported_file());

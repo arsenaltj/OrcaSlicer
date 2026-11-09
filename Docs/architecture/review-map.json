@@ -197,28 +197,10 @@
       "needle": "struct ModelGenerationFeatureHost::Impl"
     },
     {
-      "id": "portrait_print_flow",
-      "path": "src/slic3r/GUI/AI/ModelGeneration/PortraitPrintFlow.cpp",
-      "needle": "PP::Submission ModelGenerationPanel::request_portrait_print_from_model",
-      "detail": "v7 starts at the owned completed-model workbench: immutable original, one strict native repair and v12 atomic partition, five model colors with sparse protected-role overlays, atomic saved painting, independent base, import and official slicing. Legacy records remain readable but stale native checkpoints rebuild from origin; continuation never submits generation tasks."
-    },
-    {
       "id": "portrait_suite_binding",
       "path": "src/slic3r/GUI/AI/ModelGeneration/ModelPreviewSemantics.cpp",
       "needle": "void ModelPreview3D::update_semantic_coloring()",
       "detail": "People six preserves the v12 native geometry, ordered faces and atomic regions. Full regional role support and high-confidence connected face overlays preserve hair, bilateral eyebrows, sclera, irises and lips. Native color reduction is independent of semantics; global one-to-one slot matching uses five model slots. Unknown faces retain their native group. Support slot six and the independent base keep separate identities."
-    },
-    {
-      "id": "portrait_palette_provider",
-      "path": "tools/ai/openai_preprocessor.py",
-      "needle": "def complete_yoyoclaw_once(",
-      "detail": "Manual 2D generation and confirmed 3D submission retain baseline interactions and prompts. Historical portrait jobs stay readable; the workbench flow never submits a provider task."
-    },
-    {
-      "id": "portrait_print_preparation",
-      "path": "src/slic3r/GUI/Redesign/RedesignPortraitPrintFlow.cpp",
-      "needle": "void RedesignShell::run_portrait_print()",
-      "detail": "Single-portrait import, local Balanced recommendation and official Orca slicing bind the same project revision. Valid G-code opens print preparation; no print task is sent."
     },
     {
       "id": "portrait_native_repair",
@@ -693,6 +675,18 @@
       "id": "architecture_gate",
       "path": "scripts/verify_ai_integration.py",
       "needle": "def main("
+    },
+    {
+      "id": "native_workbench_partition",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/NativeWorkbenchPartition.cpp",
+      "needle": "bool ModelGenerationPanel::ensure_native_workbench_partition(",
+      "detail": "Shared native partitioning serves the existing AI palette and explicit people-six suite. Model context, cancellation and late-result ownership remain bound to the manual workbench; no portrait one-click state or ledger exists."
+    },
+    {
+      "id": "native_workbench_publication",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/NativeWorkbenchPublication.hpp",
+      "needle": "inline void prepare_native_workbench_publication(",
+      "detail": "Manual native color publication preserves region semantics, color reduction, slot binding, atomic history and content-bound topology certificates."
     }
   ],
   "journeys": [
@@ -1056,24 +1050,20 @@
   ],
   "business_flows": [
     {
-      "id": "portrait_print",
-      "label": "人像一键至打印准备",
-      "detail": "仅多色写实：首次统一确认并备份当前工程，AI色板与单人半身2D核验后自动3D，按原始4/5/6源区域映射人物套装，保存配色，原子导入六实体耗材及单个人像；导入中原生保色修复并后加3mm底座，以本地综合最优正式切片并挂载交互打印预览",
-      "boundary": "正常路径无中途弹窗，风险页内保留；检测人物与证据完整度分开，证据不足自动标注近色回退，无安全六变五方案页内暂停；明确失败自动重试一次，未知查询原任务，重启只手动续行且不自动付费；同修订正式G-code有效才进入打印准备，不发送打印任务；其他模式保留手动流程",
+      "id": "native_workbench",
+      "label": "工作台原生分区与手动配色保存",
+      "detail": "共享检查及分区，显式人物六色、手动编辑和保存发布；原生导入继续验证拓扑与配色凭证",
+      "boundary": "不自动串联配色、底座、保存、导入或切片；旧一键请求明确失败，旧任务仅保留历史资产",
       "group": "设计与生成",
       "evidence": [
-        "portrait_print_flow",
+        "native_workbench_partition",
+        "native_workbench_publication",
         "portrait_suite_binding",
-        "portrait_palette_provider",
-        "portrait_print_preparation",
         "portrait_native_repair",
-        "portrait_print_preview",
-        "provider_authorization",
         "history"
       ],
       "modules": [
         "generation",
-        "slicing",
         "adapter",
         "desktop"
       ],

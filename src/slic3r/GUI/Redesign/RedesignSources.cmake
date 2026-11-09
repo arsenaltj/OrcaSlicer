@@ -53,7 +53,6 @@ set(ORCA_REDESIGN_WORKFLOW_SOURCES
     GUI/Redesign/RedesignModelRoute.hpp
     GUI/Redesign/RedesignShell.cpp
     GUI/Redesign/RedesignModelWorkflow.cpp
-    GUI/Redesign/RedesignPortraitPrintFlow.cpp
     GUI/Redesign/RedesignShell.hpp
     GUI/Redesign/RedesignState.cpp
     GUI/Redesign/RedesignState.hpp

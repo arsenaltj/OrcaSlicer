@@ -10,6 +10,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportUiGuard.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchProjectColor.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/NativeWorkbenchPublication.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchRoundBasePreview.hpp"
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
 #include "slic3r/GUI/AI/Model/BeautyDocument.hpp"
@@ -183,7 +184,7 @@ TEST_CASE("Accepted automatic repair resumes the pending AI palette exactly once
 }
 
 TEST_CASE("Automatic portrait entry requires a real native six-color AI palette",
-          "[PostGenerationWorkbench][ModelPreviewPalette][PortraitPrintFlow][Regression]")
+          "[PostGenerationWorkbench][ModelPreviewPalette][WorkbenchArtifactValidation][Regression]")
 {
     CHECK(workbench_default_ai_palette_ready(true, 0, 6, false, true));
 
@@ -1475,14 +1476,10 @@ TEST_CASE("OBJ and GLB repairs use candidates while pending versions and unsaved
 }
 
 TEST_CASE("Portrait-owned checks never create a second generic repair candidate",
-          "[WorkbenchTopology][PostGenerationWorkbench][PortraitPrintFlow][P0]")
+          "[WorkbenchTopology][PostGenerationWorkbench][WorkbenchArtifactValidation][P0]")
 {
-    CHECK(workbench_check_allows_topology_repair(false, false));
-    CHECK(workbench_check_allows_topology_repair(false, true));
-    CHECK(workbench_check_allows_topology_repair(true, false));
-    CHECK_FALSE(workbench_check_allows_topology_repair(true, true));
-    CHECK_FALSE(workbench_check_allows_topology_repair(false, false, true));
-    CHECK_FALSE(workbench_check_allows_topology_repair(false, true, true));
+    CHECK(workbench_check_allows_topology_repair(false));
+    CHECK_FALSE(workbench_check_allows_topology_repair(true));
 }
 
 TEST_CASE("automatic nozzle writeback preserves slice input identity", "[SmartSlicing][UiRedesign]")
@@ -3231,7 +3228,7 @@ namespace {
 WorkbenchNativeTopologyCertificate native_publication_proof_fixture(
     const boost::filesystem::path& source, const WorkbenchCheckResult& check)
 {
-    namespace PP = Slic3r::GUI::PortraitPrint;
+    namespace PP = Slic3r::GUI::WorkbenchArtifacts;
     const auto sha = [](char digit) { return std::string(64, digit); };
     WorkbenchNativeTopologyCertificate proof;
     proof.partition_metadata_path = "native-partition-fixture.json";
@@ -3338,7 +3335,7 @@ TEST_CASE("Native portrait publication rejects tampering even when full geometry
     auto proof = native_publication_proof_fixture(source.path(), original);
     const auto resign_metadata = [&] {
         proof.partition_metadata["workbench_check_certificate"] =
-            PortraitPrint::encode_workbench_check_certificate(original,
+            WorkbenchArtifacts::encode_workbench_check_certificate(original,
                 WorkbenchCheckPurpose::PortraitPostColorReadOnly,
                 proof.geometry_id, proof.appearance_id, proof.partition_metadata_path,
                 proof.partition_metadata, proof.partition_digest, proof.topology_hash);
@@ -3426,7 +3423,7 @@ TEST_CASE("A real native portrait carrier replays its original strict publicatio
     proof.native_reference = proof.partition_metadata.at("native_portrait_partition");
     const auto& reference = proof.native_reference;
     proof.partition_metadata_path = reference.at("metadata_path").get<std::string>();
-    CHECK(PortraitPrint::same_model_path(proof.partition_metadata_path, metadata_name));
+    CHECK(WorkbenchArtifacts::same_model_path(proof.partition_metadata_path, metadata_name));
     const boost::filesystem::path source(reference.at("carrier_path").get<std::string>());
     const char* candidate_name = std::getenv("ORCASLICER_PORTRAIT_NATIVE_CANDIDATE");
     const auto candidate = candidate_name ? boost::filesystem::path(candidate_name) : source;
@@ -3799,6 +3796,7 @@ struct NativeImportFixture {
     Slic3r::TriangleMesh carrier_mesh;
     Slic3r::AI::ModelImportRequest request;
     nlohmann::json reference, commit, cache_reference, saved_color_contracts;
+    std::shared_ptr<PortraitColorBlocks::Result> color_blocks;
 
     NativeImportFixture()
     {
@@ -3868,6 +3866,7 @@ struct NativeImportFixture {
         color_input.final_color_count = color_input.targets.size();
         const auto blocks = PC::build(color_input);
         REQUIRE(blocks);
+        color_blocks = blocks;
         saved_color_contracts = PC::encode(*blocks);
         for (size_t face = 0; face < original.indices.size(); ++face)
             REQUIRE(saved_color_contracts.at("final_slot_binding").at("regions")
@@ -3901,7 +3900,7 @@ struct NativeImportFixture {
         commit["source_sha256"] = reference.at("source_sha256");
         commit["native_portrait_partition"] = reference;
         commit["native_portrait_topology_certificate"] = topology;
-        commit["workbench_check_certificate"] = PortraitPrint::encode_workbench_check_certificate(
+        commit["workbench_check_certificate"] = WorkbenchArtifacts::encode_workbench_check_certificate(
             strict, WorkbenchCheckPurpose::PortraitPostColorReadOnly, proof.geometry_id,
             proof.appearance_id, metadata.generic_string(), commit, proof.partition_digest, proof.topology_hash);
         { boost::filesystem::ofstream output(metadata, std::ios::binary); output << commit.dump(); }
@@ -3952,7 +3951,7 @@ struct NativeImportFixture {
                 (cache_reference.at("content_id").get<std::string>() + ".json")).generic_string();
         }
         WorkbenchCheckResult strict;
-        REQUIRE(PortraitPrint::decode_workbench_check_certificate(commit.at("workbench_check_certificate"), strict));
+        REQUIRE(WorkbenchArtifacts::decode_workbench_check_certificate(commit.at("workbench_check_certificate"), strict));
         commit.erase("schema");
         commit.erase("transaction_status");
         commit.erase("portrait_print_id");
@@ -3981,7 +3980,7 @@ struct NativeImportFixture {
             {"isolated_components", strict.isolated_components}, {"small_faces", strict.small_faces},
             {"self_intersections_checked", strict.self_intersections_checked},
             {"self_intersections", strict.self_intersections}, {"issue_faces", nlohmann::json::array()}};
-        commit["workbench_check_certificate"] = PortraitPrint::encode_workbench_check_certificate(
+        commit["workbench_check_certificate"] = WorkbenchArtifacts::encode_workbench_check_certificate(
             strict, WorkbenchCheckPurpose::PortraitPostColorReadOnly,
             reference.at("geometry_id").get<std::string>(), reference.at("appearance_id").get<std::string>(),
             metadata.generic_string(), commit, reference.at("partition_digest").get<std::string>(),
@@ -4026,6 +4025,63 @@ struct NativeImportFixture {
         return reopened;
     }
 };
+}
+
+TEST_CASE("Manual native color publication can be saved again with content bound evidence",
+          "[WorkbenchNativeImport][WorkbenchSavedReopen][WorkbenchArtifactValidation]")
+{
+    using namespace Slic3r;
+    NativeImportFixture fixture;
+    if (GENERATE(false, true)) fixture.save_and_reopen(false);
+    for (int version = 0; version < 2; ++version) {
+        CAPTURE(version);
+        const auto candidate = fixture.directory.path / ("manual-" + std::to_string(version) + ".obj");
+        const auto metadata_path = fixture.directory.path / ("manual-" + std::to_string(version) + ".json");
+        boost::filesystem::copy_file(fixture.carrier, candidate);
+        WorkbenchNativeTopologyCertificate proof;
+        proof.partition_metadata = fixture.commit;
+        proof.partition_metadata_path = fixture.metadata.generic_string();
+        proof.native_reference = fixture.reference;
+        proof.candidate_sha256 = AI::model_artifact_sha256(candidate);
+        proof.carrier_sha256 = AI::model_artifact_sha256(fixture.carrier);
+        proof.geometry_id = fixture.reference.at("geometry_id");
+        proof.appearance_id = fixture.reference.at("appearance_id");
+        proof.partition_digest = fixture.reference.at("partition_digest");
+        proof.topology_hash = fixture.reference.at("topology_hash");
+        proof.face_count = fixture.original.indices.size();
+        WorkbenchCheckResult checked;
+        std::string error;
+        REQUIRE(decode_native_publication_certificate(candidate, fixture.carrier, proof, checked, error));
+        auto saved = fixture.commit;
+        saved.erase("schema");
+        saved.erase("transaction_status");
+        saved.erase("workbench_check_certificate");
+        saved["schema_version"] = 4;
+        saved["source"] = "local_finishing";
+        saved["model_sha256"] = proof.candidate_sha256;
+        saved["model_path"] = candidate.generic_string();
+        prepare_native_workbench_publication(saved, metadata_path, candidate, *fixture.color_blocks, proof);
+        saved["beauty_workbench"] = {{"model_sha256", proof.candidate_sha256}};
+        certify_native_workbench_publication(saved, metadata_path, checked);
+        nlohmann::json restored;
+        REQUIRE(restorable_native_partition_metadata_matches(saved, metadata_path, candidate,
+            proof.candidate_sha256, proof.geometry_id, proof.appearance_id, restored));
+        const auto certificate = saved.at("workbench_check_certificate");
+        REQUIRE(WorkbenchArtifacts::valid_workbench_check_certificate(certificate,
+            WorkbenchCheckPurpose::PortraitPostColorReadOnly, proof.candidate_sha256,
+            proof.geometry_id, proof.appearance_id, metadata_path.generic_string(), saved,
+            proof.partition_digest, proof.topology_hash));
+        auto changed = saved;
+        changed["beauty_workbench"]["model_sha256"] = std::string(64, 'f');
+        CHECK_FALSE(WorkbenchArtifacts::valid_workbench_check_certificate(certificate,
+            WorkbenchCheckPurpose::PortraitPostColorReadOnly, proof.candidate_sha256,
+            proof.geometry_id, proof.appearance_id, metadata_path.generic_string(), changed,
+            proof.partition_digest, proof.topology_hash));
+        fixture.carrier = candidate;
+        fixture.metadata = metadata_path;
+        fixture.reference = restored;
+        fixture.commit = saved;
+    }
 }
 
 TEST_CASE("Native corner comparison accepts color seams but binds every ordered coordinate bit",
@@ -4370,10 +4426,10 @@ TEST_CASE("Saved native metadata cannot replace a previously owned certificate w
     fixture.save_and_reopen(false);
     const auto owned = fixture.commit.at("workbench_check_certificate");
     WorkbenchCheckResult strict;
-    REQUIRE(PortraitPrint::decode_workbench_check_certificate(owned, strict));
+    REQUIRE(WorkbenchArtifacts::decode_workbench_check_certificate(owned, strict));
     auto changed = fixture.commit;
     changed["externally_changed_metadata"] = true;
-    changed["workbench_check_certificate"] = PortraitPrint::encode_workbench_check_certificate(
+    changed["workbench_check_certificate"] = WorkbenchArtifacts::encode_workbench_check_certificate(
         strict, WorkbenchCheckPurpose::PortraitPostColorReadOnly,
         fixture.reference.at("geometry_id").get<std::string>(),
         fixture.reference.at("appearance_id").get<std::string>(), fixture.metadata.generic_string(), changed,
@@ -4402,7 +4458,7 @@ TEST_CASE("A rebuilt real native portrait imports with exact closed topology and
     { boost::filesystem::ifstream input(metadata_path, std::ios::binary);
       REQUIRE(input.good()); metadata = nlohmann::json::parse(input); }
     const auto reference = metadata.at("native_portrait_partition");
-    REQUIRE(PortraitPrint::native_partition_has_exact_mesh(reference));
+    REQUIRE(WorkbenchArtifacts::native_partition_has_exact_mesh(reference));
     const boost::filesystem::path carrier(reference.at("carrier_path").get<std::string>());
     const auto carrier_sha256 = AI::model_artifact_sha256(carrier);
     REQUIRE(carrier_sha256 == reference.at("carrier_sha256"));

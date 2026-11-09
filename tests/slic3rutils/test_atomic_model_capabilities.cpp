@@ -146,7 +146,7 @@ TEST_CASE("Automatic checks wait for the workbench and keep one progress card th
 }
 
 TEST_CASE("Portrait source risk checks never become generic failure modals",
-          "[AtomicModelCapabilities][PostGenerationWorkbench][PortraitPrintFlow][P0]")
+          "[AtomicModelCapabilities][PostGenerationWorkbench][WorkbenchArtifactValidation][P0]")
 {
     WorkbenchCheckResult result;
     result.source = WorkbenchCheckSource::Automatic;

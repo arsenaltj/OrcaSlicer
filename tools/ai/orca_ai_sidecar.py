@@ -833,7 +833,7 @@ def _apply_printable_image_pipeline(job: Job, raw_preview: Path) -> dict[str, in
 
 
 def _write_job_color_intent(job: Job, artifact: Path) -> None:
-    if job.portrait_print or not job.palette or artifact.suffix.lower() == ".glb":
+    if not job.palette or artifact.suffix.lower() == '.glb':
         job.color_intent_path, job.color_intent_schema, job.color_intent_sha256 = None, "", ""
         return
     appearance = job.raw_preview_path or job.model_reference_path
@@ -919,8 +919,7 @@ def _ensure_portrait_multiview(job: Job) -> dict[str, Path] | None:
 
 
 def _recommend_palette_job(job: Job) -> None:
-    if job.portrait_print:
-        return _design_workflow().recommend_portrait_palette(job)
+    pass
     # A queued legacy recommendation resumes into creation without another
     # color-recommendation request or printer palette.
     if job.source == "text":
@@ -1120,9 +1119,6 @@ def _design_workflow() -> DesignWorkflow:
         fallback_enabled=lambda: _preprocess_fallback_enabled(),
         validate_image=lambda *args, **kwargs: _validate_image_file(*args, **kwargs),
         review_nonportrait=lambda *args, **kwargs: review_nonportrait_reference(*args, **kwargs),
-        recommend_colors=lambda *args, **kwargs: recommend_printable_palette(
-            *args, **kwargs, completion=complete_yoyoclaw_once),
-        portrait_vision_once=lambda *args, **kwargs: complete_yoyoclaw_once(*args, **kwargs),
     ))
 
 
@@ -1194,7 +1190,6 @@ def _job_application(get_job=None) -> ModelJobApplication:
         submit=lambda *args, **kwargs: _submit(*args, **kwargs),
         preprocess_text=_preprocess_text_job,
         preprocess_image=_preprocess_image_job,
-        recommend_palette=_recommend_palette_job, portrait_review=lambda *args: _design_workflow().check_portrait_design(*args),
         present=lambda *args, **kwargs: _public_job(*args, **kwargs),
         fallback_enabled=lambda *args, **kwargs: _preprocess_fallback_enabled(*args, **kwargs),
         image_provider_status=lambda *args, **kwargs: _image_provider_status(*args, **kwargs),
@@ -1460,7 +1455,7 @@ class Handler(BaseHTTPRequestHandler):
             parts[1] in {
                 "input", "raw-preview", "strict-preview", "preview", "model-reference", "heatmap", "metadata",
                 "background-mask", "subject-mask", "generate", "retexture", "stop", "artifact", "color-intent",
-                "recheck", "visual-review", "model-view-sheet", "confirm-palette", "generation-options", "reuse-design", "retry-portrait", "retry-preparation",
+                "recheck", "visual-review", "model-view-sheet", "confirm-palette", "generation-options", "reuse-design", "retry-preparation",
             }
             or re.fullmatch(r"mask-[a-z0-9_]+", parts[1])
         ):
@@ -1769,7 +1764,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             job_id, action = self._job_route(self.path)
             if not job_id or action not in {
-                "generate", "retexture", "stop", "recheck", "visual-review", "confirm-palette", "generation-options", "reuse-design", "retry-portrait", "retry-preparation"
+                "generate", "retexture", "stop", "recheck", "visual-review", "confirm-palette", "generation-options", "reuse-design", "retry-preparation"
             }:
                 self._model_error(404, "not_found", "Model job route not found.")
                 return

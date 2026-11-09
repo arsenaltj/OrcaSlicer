@@ -1,6 +1,6 @@
 #include "StartupSetupDialog.hpp"
 #include "StartupSetupService.hpp"
-#include "StartupBufferView.hpp"
+#include "RedesignShell.hpp"
 #include "../FilamentColourPalette.hpp"
 #include "../GUI_App.hpp"
 #include "../MainFrame.hpp"
@@ -29,6 +29,7 @@
 #include <wx/sizer.h>
 #include <wx/statbmp.h>
 #include <wx/stattext.h>
+#include <wx/tglbtn.h>
 #include <wx/vlbox.h>
 #include <wx/weakref.h>
 
@@ -407,93 +408,31 @@ private:
     bool m_selected = false;
 };
 
-class SetupSidebar final : public wxPanel
-{
-public:
-    explicit SetupSidebar(wxWindow* parent) : wxPanel(parent, wxID_ANY)
-    {
-        SetBackgroundStyle(wxBG_STYLE_PAINT);
-        SetBackgroundColour(RedesignTheme::flow_background_colour());
-        for (const auto& [name, size] : std::array<std::pair<const char*, int>, 7>{{
-            {"redesign_startup_assets", 24}, {"redesign_startup_image", 24},
-            {"redesign_startup_model", 24}, {"redesign_startup_print", 24},
-            {"redesign_startup_notification", 29}, {"redesign_startup_settings", 31},
-            {"redesign_startup_help", 31}}})
-            m_icons.emplace_back(this, name, size);
-        m_avatar = setup_image(this, resources_dir() + "/images/redesign_startup_avatar.png", wxSize(32, 32));
-        Bind(wxEVT_PAINT, [this](wxPaintEvent&) { paint(); });
-    }
-
-    void rescale()
-    {
-        for (auto& icon : m_icons) icon.msw_rescale();
-        m_avatar = setup_image(this, resources_dir() + "/images/redesign_startup_avatar.png", wxSize(32, 32));
-        Refresh();
-    }
-
-private:
-    void paint()
-    {
-        wxAutoBufferedPaintDC dc(this);
-        dc.SetBackground(wxBrush(RedesignTheme::flow_background_colour()));
-        dc.Clear();
-        const wxSize size = GetClientSize();
-        auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
-        if (!gc) return;
-        gc->SetPen(wxPen(wxColour(65, 65, 69), FromDIP(1)));
-        gc->SetBrush(wxBrush(wxColour(29, 29, 32)));
-        gc->DrawRoundedRectangle(0, 0, size.x - 1, size.y - 1, FromDIP(12));
-        gc->SetPen(*wxTRANSPARENT_PEN);
-        gc->SetBrush(wxBrush(wxColour(116, 116, 119)));
-        gc->DrawRoundedRectangle(FromDIP(18), FromDIP(40), FromDIP(48), FromDIP(48), FromDIP(12));
-        gc->SetBrush(wxBrush(RedesignTheme::accent_colour()));
-        gc->DrawRectangle(0, FromDIP(234), FromDIP(3), FromDIP(70));
-        gc.reset();
-        const bool compact = size.y < FromDIP(900);
-        const std::array<wxString, 4> names = {_L("模型库"), _L("图像"), _L("3D模型"), _L("打印")};
-        for (size_t index = 0; index < names.size(); ++index) {
-            const int top = FromDIP((compact ? 128 : 152) + int(index) * (compact ? 64 : 94));
-            dc.DrawBitmap(m_icons[index].bmp(), (size.x - m_icons[index].bmp().GetWidth()) / 2, top, true);
-            dc.SetFont(setup_font(this, 15));
-            dc.SetTextForeground(index == 1 ? *wxWHITE : wxColour(131, 131, 133));
-            const auto extent = dc.GetTextExtent(names[index]);
-            dc.DrawText(names[index], (size.x - extent.x) / 2, top + FromDIP(28));
-        }
-        if (size.y < FromDIP(620)) return;
-        const int bottom_top = size.y - FromDIP(compact ? 224 : 261);
-        dc.DrawBitmap(m_avatar, (size.x - m_avatar.GetWidth()) / 2, bottom_top, true);
-        for (size_t index = 4; index < m_icons.size(); ++index)
-            dc.DrawBitmap(m_icons[index].bmp(), (size.x - m_icons[index].bmp().GetWidth()) / 2,
-                           bottom_top + FromDIP((compact ? 55 : 72) + int(index - 4) * (compact ? 64 : 70)), true);
-    }
-
-    std::vector<ScalableBitmap> m_icons;
-    wxBitmap m_avatar;
-};
-
-class StartupSetupPanel final : public wxPanel, public wxEventFilter
+class StartupSetupPanel final : public wxPopupWindow, public wxEventFilter
 {
 public:
     StartupSetupPanel(wxTopLevelWindow* parent, std::function<void(bool)> complete)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE | wxTAB_TRAVERSAL)
+        : wxPopupWindow(parent, wxBORDER_NONE | wxPU_CONTAINS_CONTROLS)
         , m_service(*wxGetApp().app_config)
         , m_frame(parent)
         , m_complete(std::move(complete))
     {
+        // Keep the actual workspace visible, including native drop targets,
+        // while allowing interaction only with setup and the frame titlebar.
+        for (auto* child : parent->GetChildren()) {
+            if (auto* shell = dynamic_cast<RedesignShell*>(child)) {
+                m_workspace = shell;
+                m_workspace_was_enabled = shell->IsEnabled();
+                shell->Disable();
+                break;
+            }
+        }
         SetName(_L("首次配置"));
         SetBackgroundColour(RedesignTheme::flow_background_colour());
-        m_backdrop = new StartupBufferView(this, parent, false);
-        m_backdrop->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) { arrange(); event.Skip(); });
-        auto* layout = new wxBoxSizer(wxVERTICAL);
-        layout->Add(m_backdrop, 1, wxEXPAND);
-        SetSizer(layout);
-        m_content = new wxScrolledWindow(m_backdrop, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+        m_content = new wxScrolledWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize,
                                           wxBORDER_NONE | wxHSCROLL | wxVSCROLL | wxTAB_TRAVERSAL);
         m_content->SetBackgroundColour(RedesignTheme::flow_background_colour());
         m_content->SetScrollRate(FromDIP(16), FromDIP(16));
-        m_sidebar = new SetupSidebar(m_content);
-        m_collapse = new wxStaticBitmap(m_content, wxID_ANY,
-            ScalableBitmap(m_content, "redesign_startup_collapse", 133).bmp());
         m_panel = new wxPanel(m_content, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL);
         m_panel->SetBackgroundStyle(wxBG_STYLE_PAINT);
         m_panel->SetBackgroundColour(setup_face());
@@ -502,7 +441,6 @@ public:
         Bind(wxEVT_SIZE, [this](wxSizeEvent& event) { arrange(); event.Skip(); });
 #ifdef __WXMSW__
         Bind(wxEVT_DPI_CHANGED, [this](wxDPIChangedEvent& event) {
-            m_sidebar->rescale();
             m_region->rescale();
             for (auto* list : {m_heads, m_filaments, m_colours}) list->rescale();
             m_title->SetFont(setup_font(m_title, 32));
@@ -517,7 +455,6 @@ public:
             m_globe->SetBitmap(ScalableBitmap(m_panel, "redesign_startup_globe", 102).bmp());
             m_welcome_logo = setup_image(this, resources_dir() + "/images/startup_logo.png", wxSize(120, 120));
             m_welcome_logo_control->SetBitmap(m_welcome_logo);
-            m_collapse->SetBitmap(ScalableBitmap(m_content, "redesign_startup_collapse", 133).bmp());
             refresh();
             arrange();
             event.Skip();
@@ -525,18 +462,13 @@ public:
 #endif
         parent->Bind(wxEVT_CLOSE_WINDOW, &StartupSetupPanel::on_host_close, this);
         parent->Bind(wxEVT_SIZE, &StartupSetupPanel::on_host_size, this);
+        parent->Bind(wxEVT_MOVE, &StartupSetupPanel::on_host_move, this);
         parent->Bind(wxEVT_CHAR_HOOK, &StartupSetupPanel::on_host_key, this);
-        SetSize(parent->GetClientRect());
-        Layout();
+        Bind(wxEVT_CHAR_HOOK, &StartupSetupPanel::on_host_key, this);
         arrange();
         refresh();
+        Show();
         Raise();
-        for (wxWindow* sibling : parent->GetChildren()) {
-            if (sibling != this && !sibling->IsTopLevel() && sibling->IsShown()) {
-                m_hidden_siblings.emplace_back(sibling);
-                sibling->Hide();
-            }
-        }
         wxEvtHandler::AddFilter(this);
         m_next->SetFocus();
         load_catalog();
@@ -547,16 +479,13 @@ public:
         *m_cancel = true;
         if (m_worker.joinable()) m_worker.join();
         wxEvtHandler::RemoveFilter(this);
+        if (m_workspace && !m_workspace->IsBeingDeleted())
+            m_workspace->Enable(m_workspace_was_enabled);
         if (m_frame && !m_frame->IsBeingDeleted()) {
             m_frame->Unbind(wxEVT_CLOSE_WINDOW, &StartupSetupPanel::on_host_close, this);
             m_frame->Unbind(wxEVT_SIZE, &StartupSetupPanel::on_host_size, this);
+            m_frame->Unbind(wxEVT_MOVE, &StartupSetupPanel::on_host_move, this);
             m_frame->Unbind(wxEVT_CHAR_HOOK, &StartupSetupPanel::on_host_key, this);
-        }
-        if (m_frame && !m_frame->IsBeingDeleted()) {
-            for (const auto& sibling : m_hidden_siblings)
-                if (sibling && !sibling->IsBeingDeleted()) sibling->Show();
-            m_frame->Layout();
-            m_frame->Refresh();
         }
         if (!m_finished) {
             m_service.cancel();
@@ -566,17 +495,41 @@ public:
 
     int FilterEvent(wxEvent& event) override
     {
-        if (!m_finished && IsShownOnScreen() && event.GetEventType() == wxEVT_MENU && event.GetId() != wxID_EXIT)
+        if (m_finished || !IsShownOnScreen()) return wxEventFilter::Event_Skip;
+        // Startup readiness may enable the workspace from the nested loop.
+        // Keep its native drop targets locked and restore that latest intent.
+        if (m_workspace && m_workspace->IsEnabled()) {
+            m_workspace_was_enabled = true;
+            m_workspace->Disable();
+        }
+        if (event.GetEventType() == wxEVT_MENU && event.GetId() != wxID_EXIT)
             return wxEventFilter::Event_Processed;
+        auto* window = dynamic_cast<wxWindow*>(event.GetEventObject());
+        for (auto* owner = window; owner; owner = owner->GetParent()) {
+            if (owner == this) break;
+            if (dynamic_cast<RedesignShell*>(owner)) {
+                if (dynamic_cast<wxMouseEvent*>(&event) || dynamic_cast<wxKeyEvent*>(&event) ||
+                    event.GetEventType() == wxEVT_NAVIGATION_KEY ||
+                    event.GetEventType() == wxEVT_DROP_FILES ||
+                    event.GetEventType() == wxEVT_BUTTON || event.GetEventType() == wxEVT_TOGGLEBUTTON)
+                    return wxEventFilter::Event_Processed;
+                break;
+            }
+        }
         return wxEventFilter::Event_Skip;
     }
 
 private:
     void on_host_size(wxSizeEvent& event)
     {
-        SetSize(m_frame->GetClientRect());
-        Layout();
+        arrange();
         Raise();
+        event.Skip();
+    }
+
+    void on_host_move(wxMoveEvent& event)
+    {
+        arrange();
         event.Skip();
     }
 
@@ -902,18 +855,20 @@ private:
 
     void arrange()
     {
-        if (!m_content || !m_panel) return;
-        const auto bounds = m_backdrop->GetClientSize();
-        m_content->SetSize(0, FromDIP(40), bounds.x, std::max(1, bounds.y - FromDIP(40)));
-        const wxSize virtual_size(std::max(bounds.x, FromDIP(920)),
-                                   std::max(bounds.y - FromDIP(40), FromDIP(540)));
-        m_content->SetVirtualSize(virtual_size);
-        m_sidebar->SetSize(FromDIP(16), FromDIP(8), FromDIP(89), virtual_size.y - FromDIP(24));
-        m_collapse->SetSize(virtual_size.x - FromDIP(25), (virtual_size.y - FromDIP(133)) / 2,
-                             FromDIP(25), FromDIP(133));
+        if (!m_content || !m_panel || !m_frame) return;
+        const auto bounds = m_frame->GetClientSize();
         const auto panel_size = FromDIP(wxSize(692, 500));
-        m_panel->SetSize((virtual_size.x - panel_size.x) / 2,
-                         (virtual_size.y + FromDIP(40) - panel_size.y) / 2 - FromDIP(40), panel_size.x, panel_size.y);
+        const int top = FromDIP(40);
+        const wxSize viewport(std::min(bounds.x, panel_size.x),
+                              std::min(std::max(1, bounds.y - top), panel_size.y));
+        // An owned popup keeps the card above the workspace's native child
+        // surfaces when startup/resize repaints them, without another backdrop.
+        const auto origin = m_frame->ClientToScreen(wxPoint((bounds.x - viewport.x) / 2,
+            std::max(top, (bounds.y - viewport.y) / 2)));
+        SetSize(origin.x, origin.y, viewport.x, viewport.y);
+        m_content->SetSize(GetClientRect());
+        m_content->SetVirtualSize(panel_size);
+        m_panel->SetSize(0, 0, panel_size.x, panel_size.y);
         arrange_panel();
         m_panel->Raise();
     }
@@ -942,15 +897,13 @@ private:
 
     StartupSetupService m_service;
     wxWeakRef<wxTopLevelWindow> m_frame;
+    wxWeakRef<wxWindow> m_workspace;
+    bool m_workspace_was_enabled = false;
     std::function<void(bool)> m_complete;
     bool m_finished = false;
-    std::vector<wxWeakRef<wxWindow>> m_hidden_siblings;
     std::shared_ptr<std::atomic<bool>> m_cancel = std::make_shared<std::atomic<bool>>(false);
     std::thread m_worker;
-    StartupBufferView* m_backdrop = nullptr;
     wxScrolledWindow* m_content = nullptr;
-    SetupSidebar* m_sidebar = nullptr;
-    wxStaticBitmap* m_collapse = nullptr;
     wxPanel* m_panel = nullptr;
     wxStaticText* m_title = nullptr;
     wxStaticText* m_welcome = nullptr;
@@ -978,6 +931,7 @@ bool run_startup_setup(wxWindow* parent)
     if (!frame || frame->IsBeingDeleted()) return false;
     wxEventLoop loop;
     bool applied = false;
+    wxWeakRef<wxWindow> previous_focus(wxWindow::FindFocus());
     wxWeakRef<StartupSetupPanel> panel(new StartupSetupPanel(frame, [&](bool saved) {
         applied = saved;
         if (loop.IsRunning()) loop.Exit();
@@ -990,6 +944,8 @@ bool run_startup_setup(wxWindow* parent)
         delete panel.get();
     }
     if (applied) wxGetApp().update_mode();
+    if (previous_focus && !previous_focus->IsBeingDeleted() && previous_focus->IsShownOnScreen() && previous_focus->IsEnabled())
+        previous_focus->SetFocus();
     return applied;
 }
 

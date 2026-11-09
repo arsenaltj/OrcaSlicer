@@ -2382,14 +2382,6 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
             m_model_view = ModelView::Result;
     }
     m_model_generation_state = state;
-    if (state.portrait_print.active() && !state.portrait_print.running() &&
-        m_portrait_import_requested && m_import_session && m_import_session->can_cancel())
-        m_import_session->cancel();
-    if (state.portrait_print.paused) {
-        m_portrait_analysis_requested = false;
-        if (m_plater && m_plater->model().objects.empty()) m_portrait_import_requested = false;
-    }
-    queue_portrait_print();
     if (m_image_history) {
         m_image_history->set_busy(state.busy || m_submit_in_progress || m_image_page_view_only);
         if (state.design_ready) m_image_history->set_selected(state.job_id);
@@ -3303,7 +3295,7 @@ void RedesignShell::request_generate_design()
     m_image_design_draft.begin_submission();
     const bool requested = m_model_generation_host != nullptr && (m_smart_creation
         ? m_model_generation_host->request_generate_smart()
-        : PortraitPrint::accepted(m_model_generation_host->request_generate_design()));
+        : submission_accepted(m_model_generation_host->request_generate_design()));
     m_image_design_draft.end_submission(m_model_generation_host != nullptr ? m_model_generation_host->snapshot() : ModelGenerationUIState());
     if (!requested) {
         m_submit_in_progress = false;
@@ -4253,7 +4245,7 @@ void RedesignShell::update_image_state()
     // the responsive workspace after its first use.
     const bool show_preview = ready || (!m_smart_creation && (m_design_image_state == ImageState::Ready ||
         m_model_generation_state.stage != ModelGenerationUIStage::Input ||
-        m_model_generation_state.portrait_print.active() || m_preview_host->IsShown()));
+        m_preview_host->IsShown()));
     m_result_preview_card->Show(!m_smart_creation);
     m_source_preview_card->Show(ready);
     m_source_preview_card->GetContainingSizer()->Show(size_t(1), ready && !m_smart_creation);

@@ -359,7 +359,7 @@ void AIModelGenerationClient::recommend_text_palette(const std::string& request_
                                                        size_t palette_color_count,
                                                        const ImagePrintSettings& print_settings,
                                                        StatusFn on_complete, ErrorFn on_error, bool generate_image,
-                                                       const GenerationOptions& options, bool portrait_print)
+                                                       const GenerationOptions& options)
 {
     post_json("/v1/orcaslicer/model-jobs/recommend-text-palette",
               json::object({ { "request_id", request_id }, { "workflow_mode", options.workflow_mode }, { "flow_id", options.flow_id }, { "prompt", prompt }, { "style", style },
@@ -370,7 +370,6 @@ void AIModelGenerationClient::recommend_text_palette(const std::string& request_
                              { "output_format", options.output_format },
                              { "custom_style", custom_style },
                              { "palette_color_count", palette_color_count },
-                             { "portrait_print", portrait_print },
                              { "generate_image", generate_image },
                              { "print", serialize_print_settings(print_settings) } }),
               std::move(on_complete), std::move(on_error));
@@ -382,7 +381,7 @@ void AIModelGenerationClient::recommend_image_palette(const std::string& request
                                                         size_t palette_color_count,
                                                         const ImagePrintSettings& print_settings,
                                                         StatusFn on_complete, ErrorFn on_error, bool generate_image,
-                                                        const GenerationOptions& options, bool portrait_print)
+                                                        const GenerationOptions& options)
 {
     cancel_current();
     if (!is_loopback_endpoint(m_endpoint)) {
@@ -410,7 +409,6 @@ void AIModelGenerationClient::recommend_image_palette(const std::string& request
         .form_add("style", style)
         .form_add("custom_style", custom_style)
         .form_add("palette_color_count", std::to_string(palette_color_count))
-        .form_add("portrait_print", portrait_print ? "true" : "false")
         .form_add("generate_image", generate_image ? "true" : "false")
         .form_add("print", serialize_print_settings(print_settings).dump())
         .form_add_file("image", image_path, image_path.filename().string());
@@ -498,12 +496,6 @@ void AIModelGenerationClient::reuse_design(const std::string& job_id, StatusFn o
 {
     post_json("/v1/orcaslicer/model-jobs/" + job_id + "/reuse-design", json::object(),
               std::move(on_complete), std::move(on_error));
-}
-
-void AIModelGenerationClient::retry_portrait(const std::string& job_id, StatusFn on_complete, ErrorFn on_error)
-{
-    post_json("/v1/orcaslicer/model-jobs/" + job_id + "/retry-portrait", json::object(),
-        std::move(on_complete), std::move(on_error));
 }
 
 void AIModelGenerationClient::generate(const std::string& job_id, const std::string& prepared_prompt,
@@ -927,10 +919,6 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
         return std::nullopt;
     JobStatus status;
     status.id = job.value("id", std::string());
-    status.portrait_print = job.value("portrait_print", false);
-    status.creation_request_id = job.value("creation_request_id", std::string());
-    status.model_attempt = job.value("attempt", 0);
-    status.terminal_task_ids = job.value("terminal_task_ids", std::vector<std::string>{});
     status.source = job.value("source", std::string());
     status.state = job.value("state", std::string());
     status.phase = job.value("phase", std::string());
@@ -1037,17 +1025,6 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
     }
     if (job.contains("image_metrics") && job["image_metrics"].is_object()) {
         const auto& metrics = job["image_metrics"];
-        if (metrics.contains("portrait_design") && metrics["portrait_design"].is_object()) {
-            status.portrait_design_status = metrics["portrait_design"].value("status", std::string{});
-            status.portrait_design_reason = metrics["portrait_design"].value("reason", std::string{});
-        }
-        if (metrics.contains("portrait_attempts") && metrics["portrait_attempts"].is_object()) {
-            const auto& attempts = metrics["portrait_attempts"];
-            status.palette_retries = std::max(0, attempts.value("palette", 0) - 1);
-            status.design_retries = std::max(0, attempts.value("design", 0) - 1);
-            status.model_retries = attempts.value("model_retries", 0);
-            status.conversion_retries = attempts.value("conversion_retries", 0);
-        }
         status.image_score = metrics.value("score", 0.0);
         status.mean_color_error = metrics.value("mean_color_error", 0.0);
         status.small_region_ratio = metrics.value("small_region_ratio_after", 0.0);

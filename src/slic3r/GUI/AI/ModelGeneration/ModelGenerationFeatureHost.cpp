@@ -237,40 +237,14 @@ void ModelGenerationFeatureHost::get_provider_catalog(
 bool ModelGenerationFeatureHost::request_generate_smart()
 { return m_impl->model_generation && m_impl->model_generation->request_generate_smart(); }
 
-PortraitPrint::Submission ModelGenerationFeatureHost::request_generate_design()
+ModelGenerationSubmissionResult ModelGenerationFeatureHost::request_generate_design()
 {
-    return m_impl->model_generation ? m_impl->model_generation->request_generate_design() : PortraitPrint::Submission::Rejected;
+    return m_impl->model_generation ? m_impl->model_generation->request_generate_design() : ModelGenerationSubmissionResult::Rejected;
 }
 
-PortraitPrint::Submission ModelGenerationFeatureHost::request_generate_model()
+ModelGenerationSubmissionResult ModelGenerationFeatureHost::request_generate_model()
 {
-    return m_impl->model_generation ? m_impl->model_generation->request_generate_model() : PortraitPrint::Submission::Rejected;
-}
-
-PortraitPrint::Submission ModelGenerationFeatureHost::request_portrait_print_from_model(std::function<bool()> create_empty_project)
-{
-    return m_impl->model_generation ? m_impl->model_generation->request_portrait_print_from_model(std::move(create_empty_project)) : PortraitPrint::Submission::Rejected;
-}
-bool ModelGenerationFeatureHost::resume_portrait_print()
-{
-    return m_impl->model_generation && m_impl->model_generation->resume_portrait_print();
-}
-bool ModelGenerationFeatureHost::record_portrait_import(const std::string& id, const AI::ModelImportResult& result)
-{
-    return m_impl->model_generation && m_impl->model_generation->record_portrait_import(id, result);
-}
-void ModelGenerationFeatureHost::add_portrait_notice(const std::string& id, const std::string& notice)
-{
-    if (m_impl->model_generation) m_impl->model_generation->add_portrait_notice(id, notice);
-}
-bool ModelGenerationFeatureHost::advance_portrait_print(const std::string& id, PortraitPrint::Stage expected,
-    PortraitPrint::Stage next, const std::string& revision, const std::string& gcode)
-{
-    return m_impl->model_generation && m_impl->model_generation->advance_portrait_print(id, expected, next, revision, gcode);
-}
-void ModelGenerationFeatureHost::pause_portrait_print(const std::string& reason, bool hard)
-{
-    if (m_impl->model_generation) m_impl->model_generation->pause_portrait_print(reason, hard);
+    return m_impl->model_generation ? m_impl->model_generation->request_generate_model() : ModelGenerationSubmissionResult::Rejected;
 }
 
 bool ModelGenerationFeatureHost::request_retry_model()

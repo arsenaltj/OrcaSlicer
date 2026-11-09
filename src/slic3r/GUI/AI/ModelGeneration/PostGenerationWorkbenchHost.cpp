@@ -10,7 +10,6 @@
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
 #include "WorkbenchModelInspection.hpp"
 #include "WorkbenchImportEligibility.hpp"
-#include "PortraitColorSaveRetry.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchNativeImportTopology.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/I18N.hpp"
@@ -387,28 +386,15 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
 
 bool ModelGenerationPanel::can_replace_model_asset() const
 {
-    const bool owner = m_portrait_print.active() && portrait_owns_display_context();
-    const bool portrait_check = owner && m_workbench_check_running &&
-        (m_portrait_print.stage == PortraitPrint::Stage::Check ||
-         m_portrait_print.stage == PortraitPrint::Stage::Base);
-    const bool portrait_partition = owner && m_native_workbench_partition_running &&
-        m_portrait_print.stage == PortraitPrint::Stage::Partition;
-    const bool portrait_semantics = owner && m_portrait_semantics_requested &&
-        m_portrait_print.stage == PortraitPrint::Stage::Color && m_model_preview &&
-        m_model_preview->semantic_processing();
-    const bool portrait_export = owner && m_portrait_export_started &&
-        m_portrait_print.stage == PortraitPrint::Stage::SaveColor && m_finishing_running;
-    const bool portrait_busy = portrait_partition || portrait_export;
-    return !m_shutdown && !m_workbench_import_feedback &&
-        (!m_portrait_draft_before || portrait_export) &&
+    return !m_shutdown && !m_workbench_import_feedback && !m_portrait_draft_before &&
         !(m_portrait_task && m_portrait_task->snapshot().running()) && post_generation_asset_switch_allowed(
-        (m_busy && !portrait_busy) || m_preview_download_in_flight ||
-            (m_workbench_check_running && !portrait_check) || m_workbench_import_running,
-        m_finishing_running && !portrait_export,
+        m_busy || m_preview_download_in_flight || m_workbench_check_running || m_workbench_import_running,
+        m_finishing_running,
         (m_beauty_transactions && m_beauty_transactions->processing()) ||
-            (m_model_preview && m_model_preview->semantic_processing() && !portrait_semantics),
+            (m_model_preview && m_model_preview->semantic_processing()),
         !m_finishing_candidate.empty(), m_finishing_before, m_beauty_controls && m_beauty_controls->has_changes());
 }
+
 
 void ModelGenerationPanel::set_workbench_import_running(bool running)
 {
@@ -425,7 +411,6 @@ void ModelGenerationPanel::set_workbench_listener(PostGenerationWorkbenchListene
 
 void ModelGenerationPanel::publish_workbench_state()
 {
-    if (portrait_owns_display_context()) queue_portrait_print();
     if (!m_shutdown && m_workbench_listener) m_workbench_listener(workbench_snapshot());
 }
 
@@ -573,11 +558,6 @@ void ModelGenerationPanel::complete_return_overview()
 
 bool ModelGenerationPanel::request_workbench_color_matching()
 {
-    const bool portrait_context = portrait_owns_display_context();
-    if (portrait_context && m_portrait_print.active() && m_portrait_print.paused && !m_portrait_print.failed)
-        return resume_portrait_print();
-    if (portrait_context && m_portrait_print.running() &&
-        m_portrait_print.stage != PortraitPrint::Stage::Import) return false;
     const auto state = workbench_snapshot();
     if ((!state.can_import_for_slicing && !state.can_force_import && !state.deferred_native_repair) || (!m_color_matching && !m_workbench_import)) return false;
     if (!state.check.model_sha256.empty() &&
@@ -605,9 +585,6 @@ bool ModelGenerationPanel::request_workbench_color_matching()
                 ? PrinterFilamentConfig::honor_suite_compatibility(*bundle, *honor_suite)
                 : PrinterFilamentConfig::HonorSuiteCompatibility{};
             if (!compatibility.compatible) {
-                if (portrait_context && m_portrait_print.running()) {
-                    pause_portrait_print(compatibility.reason); return false;
-                }
                 const wxString reason = wxString::FromUTF8(compatibility.reason.empty()
                     ? "当前打印机不支持六实体色荣耀耗材套装" : compatibility.reason);
                 const wxString message = _L("当前模型使用荣耀六实体色耗材套装，但打印机配置不兼容。\n\n") + reason +
@@ -648,9 +625,6 @@ bool ModelGenerationPanel::request_workbench_color_matching()
                 _L("\n\n推荐“将耗材色映射到模型”，此操作不会改变当前打印机耗材配置。\n") +
                 _L("如需保留模型当前配色，请选择“将模型配色导入到耗材”。\n") +
                 _L("处理完成后请再次点击“去切片”。");
-            if (portrait_context && m_portrait_print.running()) {
-                pause_portrait_print(message.ToStdString(wxConvUTF8)); return false;
-            }
             const int map_to_model = wxWindow::NewControlId();
             const int import_to_filaments = wxWindow::NewControlId();
             RedesignConfirmationOptions options;
@@ -689,14 +663,9 @@ bool ModelGenerationPanel::request_workbench_color_matching()
             prepare_portrait_import(request);
             BeautyWorkbenchControls::prepare_import(m_displayed_model_path, request);
             nlohmann::json owned_native_reference, owned_native_check;
-            if (portrait_context && m_portrait_print.from_workbench() &&
-                m_portrait_print.current(m_portrait_print.id, PortraitPrint::Stage::Import)) {
-                owned_native_reference = m_portrait_print.native_portrait_partition;
-                owned_native_check = m_portrait_print.workbench_check_certificate;
-            } else if (native_workbench_context_matches(m_native_workbench_context) &&
-                PortraitPrint::native_partition_has_exact_mesh(m_native_workbench_partition_reference)) {
-                // A reopened accepted native version keeps the same owned
-                // checkpoint even after the automatic portrait flow is done.
+            if (native_workbench_context_matches(m_native_workbench_context) &&
+                WorkbenchArtifacts::native_partition_has_exact_mesh(m_native_workbench_partition_reference)) {
+                // Reopened accepted native versions retain their owned checkpoint.
                 owned_native_reference = m_native_workbench_partition_reference;
                 owned_native_check = m_native_workbench_partition_certificate;
             }
@@ -711,8 +680,7 @@ bool ModelGenerationPanel::request_workbench_color_matching()
             }
         }
         catch (const std::exception& error) {
-            if (portrait_context && m_portrait_print.running()) pause_portrait_print(error.what());
-            else wxMessageBox(wxString::FromUTF8(error.what()), _L("配色确认"), wxOK | wxICON_ERROR, this);
+            wxMessageBox(wxString::FromUTF8(error.what()), _L("配色确认"), wxOK | wxICON_ERROR, this);
             return false;
         }
         m_workbench_import(request);
@@ -745,14 +713,6 @@ bool ModelGenerationPanel::request_workbench_results()
 bool ModelGenerationPanel::request_save_and_return()
 {
     if (!post_generation_ui_state().can_edit) return false;
-    // Retry an owned native portrait through SaveColor so its exact topology
-    // certificate cannot be lost through the ordinary Beauty export path.
-    if (m_model_preview) {
-        const auto resumed = PortraitPrint::resume_paused_color_save_after_explicit_action(
-            m_portrait_print, portrait_owns_display_context(), *m_model_preview,
-            [this] { return resume_portrait_print(); });
-        if (resumed.has_value()) return *resumed;
-    }
     if (m_workbench_editing) {
         if (!beauty_color_match_current()) {
             m_finishing_status->SetLabel(_L("当前模型配色尚未完整绑定到耗材；已暂停保存，请恢复兼容配置后重试。"));

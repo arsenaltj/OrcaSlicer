@@ -65,15 +65,12 @@ inline bool workbench_automatic_check_should_start(bool workbench_open, bool wor
     return workbench_open && workbench_presented && model_ready;
 }
 
-inline bool workbench_check_allows_topology_repair(bool portrait_owns_context,
-                                                    bool portrait_flow_active,
-                                                    bool native_partition_requested = false)
+inline bool workbench_check_allows_topology_repair(bool native_partition_requested = false)
 {
-    // The shared v11 partition owns the only automatic topology repair for
-    // both ordinary AI palettes and portrait flows. Manual checks retain the
-    // generic repair candidate workflow.
-    return !native_partition_requested && !(portrait_owns_context && portrait_flow_active);
+    // Shared partitioning owns repair before clustering; checks are read-only until then.
+    return !native_partition_requested;
 }
+
 
 inline bool workbench_native_partition_should_start(bool pending, WorkbenchCheckSource source,
                                                      WorkbenchCheckStatus status,

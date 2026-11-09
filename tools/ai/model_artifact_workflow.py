@@ -587,9 +587,8 @@ class ModelArtifactWorkflow:
                 directory = directory / f"recovery-{recovery_number:02d}"
                 directory.mkdir(parents=False, exist_ok=False)
                 raw = raw.replace(directory / "artifact-raw.download")
-            options = {"native_repair_deferred": True} if job.portrait_print else {}
-            return self.ports.prepare_obj(raw, directory, () if job.portrait_print else job.palette,
-                                          {} if job.portrait_print else job.palette_roles, **options)
+            return self.ports.prepare_obj(raw, directory, job.palette,
+                                          job.palette_roles)
         original = directory / "provider-model.glb"
         raw.replace(original)
         analysis = directory / "analysis-model.obj"
@@ -648,28 +647,14 @@ class ModelArtifactWorkflow:
                 try:
                     candidate.resolve().relative_to(attempt_directory.resolve())
                     self.ports.validate_artifact(candidate, "obj", allow_repairable_obj=True)
-                    self.refresh_stale_face_limit_report(candidate, () if job.portrait_print else job.palette)
+                    self.refresh_stale_face_limit_report(candidate, job.palette)
                 except (OSError, TripoError, ValueError):
                     continue
                 return candidate
         self.ports.stop_boundary(job)
-        try:
-            result = self.ports.tripo_gateway().wait_for_task(
-                conversion_id, stop_event=job.stop_event,
-                progress=self.ports.progress_callback(job, 75, 95))
-        except ProviderGatewayError as error:
-            ledger = job.image_metrics.setdefault("portrait_attempts", {})
-            if (not job.portrait_print or not job.portrait_retry_authorized or resume or
-                    job.stop_event.is_set() or not error.terminal or error.task_id != conversion_id or
-                    int(ledger.get("conversion_retries", 0)) >= 1):
-                raise
-            self.ports.stop_boundary(job)
-            ledger["conversion_retries"] = 1
-            failed = list(existing.get("failed_conversion_task_ids", [])) + [conversion_id]
-            self.ports.record_attempt(job, attempt_number, failed_conversion_task_ids=failed,
-                conversion_task_id="", conversion_submission_started=False, conversion_error=str(error))
-            self.ports.persist(job, required=True)
-            return self.download_conversion(job, generation_id, format_name, attempt_number, False)
+        result = self.ports.tripo_gateway().wait_for_task(
+            conversion_id, stop_event=job.stop_event,
+            progress=self.ports.progress_callback(job, 75, 95))
         self.ports.stop_boundary(job)
         with self.ports.lock:
             job.phase = "downloading_artifact"
@@ -688,10 +673,7 @@ class ModelArtifactWorkflow:
                                                    progress=self.download_progress(job))
         self.ports.stop_boundary(job)
         if format_name == "obj":
-            if job.portrait_print:
-                # Keep original provider colors/region evidence. All suite
-                # mapping happens once in the native stable source basis.
-                return self.ports.prepare_obj(destination, work_directory, (), {}, native_repair_deferred=True)
+            pass
             portrait_cleanup = job.image_metrics.get("portrait_skin_cleanup", {})
             portrait_materials = (
                 job.style == "realistic"

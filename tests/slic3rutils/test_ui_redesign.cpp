@@ -730,22 +730,7 @@ TEST_CASE("Primary action separates changed 2D inputs from changed 3D options", 
     CHECK(redesign_primary_action(state, state.stage) == RedesignPrimaryAction::Design);
 }
 
-TEST_CASE("Portrait automation starts only from a completed model workbench", "[UiRedesign][PortraitPrintFlow]")
-{
-    ModelGenerationUIState state;
-    state.can_open_workbench = true;
-    for (const auto stage : {ModelGenerationUIStage::Input, ModelGenerationUIStage::DesignReady,
-            ModelGenerationUIStage::Failed, ModelGenerationUIStage::Stopped}) {
-        state.stage = stage;
-        CHECK_FALSE(redesign_portrait_workbench_entry("realistic", state));
-    }
-    state.stage = ModelGenerationUIStage::ModelReady;
-    CHECK(redesign_portrait_workbench_entry("realistic", state));
-    CHECK_FALSE(redesign_portrait_workbench_entry("sculpture", state));
-    CHECK_FALSE(redesign_portrait_workbench_entry("stylized", state));
-    state.can_open_workbench = false;
-    CHECK_FALSE(redesign_portrait_workbench_entry("realistic", state));
-}
+
 
 TEST_CASE("Historical face targets are displayed without rewriting retained generation options", "[UiRedesign][ModelFaceLimitChoice]")
 {

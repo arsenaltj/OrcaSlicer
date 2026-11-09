@@ -1,12 +1,27 @@
-# MAINLINE-BUGFIX-001：正式修复线主线同步与独立验证（2026-11-09）
+# MAINLINE-BUGFIX-001：首次向导背景同步与人像一键流程删除（2026-11-09）
 
-- 最新授权：拉取团队主线最新代码，在 task/mainline-bugfix 合并、解决冲突，独立编译并提供用户验证入口。取代本项上一轮“等待具体 bug、不构建”的范围限制。
-- 来源：本分支人像 v12/账号基线 8638fd3595c672c0b82bfdbe675f5cace856e05b；本次拉取 origin/codex/team/integration 为 ea91b273247fa5dc74d5a63cbb67e7842b7409ad，分歧为本地3提交/主线13提交。原开发目录和 task/model-library 保持独立。
-- 进展：19 个冲突文件按行为整合；同时保留主线 SmartGenerationFlow、BeautyWorkbenchSession、Honor Forge 打印机发现/传输，以及 v12 原子保存/角色/拓扑和账号改造。统一使用 Session 真值及修订检查，补合过期人像回调文件归属清理；手动生成仍用明确 Submission 返回值。
-- 文档迁移：采用主线精简维护索引；本地 v12/账号原计划迁入 [既有历史页](../history/development-records-20261103.md#portrait-v12-account-local-20261107)，原验收限制保持。此前两份本分支文档已保存 patch 和 Git stash 920e49ca8f74cf3f122ae0a291ea63b8920fe92c，本项承接其分支定位和隔离约束。
-- 负责：codex-mainline-bugfix-20261109；目录 D:/TEST/worktrees/OrcaSlicer-upstream-v2.5.0-alpha/mainline-bugfix；固定 .tmp/dev/{build,run,data}。新目录首次原生构建，第三方安装前缀只读复用，配置/对象/运行树不跨 checkout 共享。
-- 验收：无冲突残留、AI/文档/差异门禁及相关 Python/C++ 回归；本目录 Windows Release 构建、完整运行树/独立配置、入口启动。具体结果、来源 SHA 和日志随后据实收口；用户视觉、真实生成/设备传输和打印仍分别验收。
-- 证据：D:/TEST/artifacts/mainline-bugfix/evidence/merge-mainline-20261109/ 保存原目录前快照、原文档 patch、冲突逐项说明及后续验证。仅本地合并，不推送主线、创建 PR、打包、付费生成或发送打印。
+- 本轮范围／负责：按用户确认方案沿用 task/mainline-bugfix；会话 codex-mainline-bugfix-20261109，HEAD c75eefea0139da90e0568005fcf9ee1afd71260d。保留前轮四个文件的未提交修改，before.patch 位于本轮证据目录；不触及其他开发分支和备份。
+- 向导实现：背景直接显示已创建的 RedesignShell，移除重复绘制的旧侧栏、导航与折叠装饰；中央卡片仍为 692×500 DIP，arrange_panel、步骤与控件布局沿用。卡片使用主窗口拥有的 popup，避免启动期原生子窗口重绘遮挡；跟随主窗口移动／尺寸变化。事件过滤持续阻断背景操作，兼容启动延迟启用工作区；主窗口与卡片均处理取消按键。结束时恢复工作区启用意图与焦点；保留小窗口滚动和 DPI 处理，正常设计页未改版。
+- 一键删除：删除 PortraitPrintFlow、专属保存重试／识别辅助、RedesignPortraitPrintFlow、入口／自动启动／排队推进／暂停继续／重试／恢复／持久化写入，以及专属客户端字段、sidecar 处理、测试和构建登记。智能生成与手动工作台继续保留；旧一键请求明确失败，旧任务惰性保留资产且不恢复执行。
+- 共享能力：提交结果迁入 ModelGenerationSubmissionResult；身份／凭证校验迁入 WorkbenchArtifactValidation；原生分区、保存发布分别归 NativeWorkbenchPartition／NativeWorkbenchPublication 和既有工作台。保留人像 v12、六色套件、候选事务、原子保存、历史与原生导入校验。接受新版本及撤销／重做后按当前文件、几何、外观、分区恢复凭证，连续手动保存不依赖已删除流程状态。保留既有入场检查／原生分区和预览，完成后不会继续自动底座、保存、导入或切片。
+- 构建／自动验证：固定 .tmp/dev/build 增量 Release 编译、安装与完整 runtime／Python 校验五步通过，最终收据 .tmp/dev/logs/20261109-143724-261/result.json。工作台等定向 C++ 共396项，395通过、1项Windows符号链接环境跳过、0失败（20261109-140932-938）；最终卡片Esc补充修复后 UI／向导143/143通过（20261109-143921-728）。覆盖共享校验、手动原生连续保存／历史重开／导入、候选Session、智能生成及取消／过期回调。Python六组116/116通过，最终日志 *.verified.log；未发起付费生成或打印。
+- 架构／文档：MAP_CURRENT（99锚点／29能力／2899文件）、README_CURRENT；review-map 与 PLATFORM_ARCHITECTURE 同步共享归属及旧请求边界。AI门禁仍仅 MainFrame.cpp/.hpp、Plater.cpp/.hpp 四项 incoming 主线既有差异预算超限，未放宽门禁；不能据本地测试通过认定具备合入资格。可选 test_architecture_review.py 因缺少 PyYAML 导入失败，未计为通过，日志保留；架构目录和原子架构定向检查分别7项／3项通过。文档检查为无错误的advisory，不替代PR文档声明。
+- 实窗／向导：用户确认正常关闭旧窗口后，完整更新固定run及同一桌面“Honor Forge 正式修复验证”入口。独立新数据验证欢迎、地区、打印机、耗材、返回保持选择、完成写入、背景点击无效、完成后导航恢复、最大化／还原／最小化及标题栏关闭。发现并修复浮层被原生重绘遮挡和Esc不取消；最终新数据Esc取消日志确认未应用草稿。1190×795及1560×992截图保留；同尺寸设计页与向导背景来自同一实际工作区，禁用期间颜色随原生禁用状态变化。未改变系统DPI／跨屏；最小窗口受既有1190×795约束，真正卡片裁剪滚动未实测。用户视觉接受尚待反馈。
+- 实窗／模型：仅复制已有模型资产到隔离数据，入场共享检查／v12分区完成后停在Ready，未自动串联底座、保存、导入或切片。手动配置模型耗材、局部改色并保存为新历史版本成功，原模型保留；但该样本保存后普通语义导出复检报告自交，切片被门禁阻止，此完整人像链路不记通过，也不冒称已证实为既有问题。原生历史版本重开检查正常，切片入口仍经过颜色匹配门禁。普通20 mm立方体副本通过Ctrl+I导入与Orca原生切片，生成100层预览（8m38s／3.59g），不代表人像链已通过。未导出或发送打印。
+- 未结／验证入口：同一桌面入口已更新至本轮产物，备用 .tmp/dev/launch-formal-validation.cmd，均指向固定run并使用原 .tmp/dev/data；本轮GUI只使用 .tmp/dev/validation 下独立数据。当前隔离测试窗口PID25328保留供用户操作，不将其配置写入原数据。待核实人像语义导出自交及完整导入切片，DPI／跨屏和用户视觉接受仍待；不绕过拓扑或颜色门禁。
+- 证据／恢复点：D:/TEST/artifacts/mainline-bugfix/evidence/wizard-remove-oneclick-20261109/，源码／EXE／DLL身份、准确收据及GUI矩阵见 validation.json。两项修改已提供本地验证产物，任务保持review；后续在同一分支按反馈处理上述未结，不自动启动历史工作。不提交、推送、打包、付费生成或打印。
+
+## 前轮主线同步与独立验证（2026-11-09）
+
+- 最新授权：拉取团队主线最新代码，在 task/mainline-bugfix 合并、解决冲突，独立编译并提供用户验证入口；取代上一轮等待具体 bug、不构建的限制。
+- 来源／合并：人像 v12/账号基线 8638fd3595c672c0b82bfdbe675f5cace856e05b；本次拉取 origin/codex/team/integration 为 ea91b273247fa5dc74d5a63cbb67e7842b7409ad。本地普通 merge 为 c75eefea0139da90e0568005fcf9ee1afd71260d，保留两个父提交。19 个文本冲突按行为闭合，同时保留 v12 原子保存/角色/拓扑、账号能力，以及主线 SmartGenerationFlow、BeautyWorkbenchSession 和 Honor Forge 发现/传输；未推送或创建 PR。
+- 集成处理：工作台使用 Session 真值与修订守卫，清理回滚人像候选的文件归属；手动生成保留明确 Submission 结果，入口适配移入既有 Submission 模块。首次链接因 CMake 误选 Strawberry GMP/MPFR 库失败，已将本目录 cache 指向配套只读 Windows 依赖；随后暴露 app 目标未构建安装必需 SDK FFI DLL，补 src/CMakeLists.txt 的目标依赖。该构建修正保留未提交，未弱化门禁。
+- 构建：本 checkout 固定 .tmp/dev/build 的 Windows x64 Release，独立 .tmp/dev/run 与 .tmp/dev/data；配置、对象和运行树均未从其他 checkout 复制。Run -NoLaunch 五步通过，收据 .tmp/dev/logs/20261109-111029-392/result.json；运行树 19,631 文件，原生启动、Python 3.12.13/Pillow 12.2.0/YOYOClaw 依赖校验通过。最终记录更新后的匹配身份与复核收据保存于下述证据目录；早期两次失败日志保留。
+- 自动回归：相关 Python 六组共 131/131；C++ 人像/工作台/Session/智能生成/账号/头像/UI/设备访问/发现/Moonraker/展示标签联合 428/428，收据 .tmp/dev/logs/20261109-111310-975/result.json；PrinterWorkspace 14/14，收据 .tmp/dev/logs/20261109-113525-749/result.json。首次误选不存在 Python 文件为未匹配失败，已保留并用实际相关组补齐，不计为用例失败。后续仅删 CMake 说明注释及同步文档，未改测试覆盖的行为。
+- 门禁：无冲突残留，diff 检查通过，架构 README 同步；AI 门禁仍为未通过，剩 MainFrame.cpp/.hpp、Plater.cpp/.hpp 四项差异预算超限，新增行数与 incoming 主线相同，未放宽阈值。文档检查无错误，PR 声明未提供因本轮未创建 PR；不能据本地构建通过宣称已具主线合入资格。
+- 验证入口：桌面“Honor Forge 正式修复验证”；备用 .tmp/dev/launch-formal-validation.cmd。两者均传 --datadir 指向本 checkout 的 .tmp/dev/data，工作目录为完整 run。已实际启动 PID 45380，并通过 Windows computer-use 观察首次配置欢迎页和耗材页；检测到用户操作后保留其控制，不自动完成配置或认证。首次窗口观察只证明可见启动，用户视觉、真实生成/设备传输和实物打印仍待分别验证。
+- 隔离与历史：原开发目录和 task/model-library 分支/HEAD 未被本任务切换；模型库原文件哈希不变，实验目录在本轮间有其他开发对 6 个原文件的变化，本任务未覆盖。原本分支两份文档 patch/stash 920e49ca8f74cf3f122ae0a291ea63b8920fe92c 保留。v12/账号本地计划按真实四个新增 hunk（共249行）迁入[既有历史页](../history/development-records-20261103.md#portrait-v12-account-local-20261107)，保留旧验收限制。
+- 负责／证据／下一步：codex-mainline-bugfix-20261109；D:/TEST/worktrees/OrcaSlicer-upstream-v2.5.0-alpha/mainline-bugfix；证据 D:/TEST/artifacts/mainline-bugfix/evidence/merge-mainline-20261109/。本轮进入用户验证；后续按反馈在同一正式分支修复具体缺陷，合入前处理既有门禁及正式评审。不打包、不付费生成、不上传或发送打印，历史任务不自动续跑。
 
 # 2026-11-06 UX/PRINTER-DISCOVERY-20261105：新 UX 打印机发现、连接与 G-code 发送入口（最新 EXE 已构建，实机发现通过）
 

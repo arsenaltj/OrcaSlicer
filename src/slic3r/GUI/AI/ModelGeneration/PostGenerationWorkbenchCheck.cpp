@@ -27,11 +27,7 @@ bool ModelGenerationPanel::apply_pending_workbench_ai_palette(const boost::files
         clear_pending_workbench_ai_palette();
         return false;
     }
-    if (portrait_owns_display_context() && m_portrait_print.active()) {
-        clear_pending_workbench_ai_palette();
-        return false; // Build the shared partition after the owning flow's source check.
-    }
-    if (ensure_native_workbench_partition(PortraitPrint::native_workbench_partition_consumer(
+    if (ensure_native_workbench_partition(WorkbenchArtifacts::native_workbench_partition_consumer(
             NativeWorkbenchPartitionConsumer::AutomaticPalette)))
         return true;
     clear_pending_workbench_ai_palette();
@@ -41,21 +37,6 @@ bool ModelGenerationPanel::apply_pending_workbench_ai_palette(const boost::files
 
 void ModelGenerationPanel::ensure_workbench_check()
 {
-    const bool portrait_owned = m_model_preview &&
-        m_portrait_print.stage != PortraitPrint::Stage::Check && portrait_owns_display_context();
-    if (portrait_owned &&
-        (m_workbench_check_path != m_displayed_model_path.string() ||
-         m_workbench_check_revision != m_sequence ||
-         m_workbench_check_result.status == WorkbenchCheckStatus::NotRun)) {
-        if (restore_portrait_workbench_check_certificate()) {
-            refresh_post_generation_workbench();
-            publish_workbench_state();
-            return;
-        }
-    }
-    if (portrait_owned && m_workbench_check_path == m_displayed_model_path.string() &&
-        m_workbench_check_revision == m_sequence &&
-        m_workbench_check_result.status != WorkbenchCheckStatus::NotRun) return;
     if (m_shutdown || m_workbench_import_running ||
         !workbench_automatic_check_should_start(m_finishing_workbench, m_workbench_presented,
             m_model_preview_ready) ||
@@ -64,7 +45,7 @@ void ModelGenerationPanel::ensure_workbench_check()
         !m_finishing_candidate.empty() || (m_beauty_controls && m_beauty_controls->has_changes())) return;
     if (m_workbench_check_path == m_displayed_model_path.string() && m_workbench_check_revision == m_sequence &&
         m_workbench_check_result.status != WorkbenchCheckStatus::NotRun) return;
-    if (restore_portrait_workbench_check_certificate()) {
+    if (restore_workbench_check_certificate()) {
         refresh_post_generation_workbench();
         publish_workbench_state();
         return;
@@ -74,23 +55,13 @@ void ModelGenerationPanel::ensure_workbench_check()
 
 bool ModelGenerationPanel::request_check_workbench(bool automatic)
 {
-    const bool portrait_context = portrait_owns_display_context();
-    const bool portrait_source_context = m_model_preview && m_portrait_print.from_workbench() &&
-        !m_portrait_print.original_model_hash.empty() &&
-        m_model_preview->model_sha256() == m_portrait_print.original_model_hash;
     const auto native_portrait = m_model_preview ? m_model_preview->native_portrait_partition() : nullptr;
-    const bool portrait_partition_context = portrait_context ||
-        (native_portrait && native_portrait->valid());
-    const bool portrait_source_check = portrait_source_context &&
-        (!portrait_context || (m_portrait_print.running() &&
-            m_portrait_print.stage == PortraitPrint::Stage::Check));
-    const bool portrait_recheck = portrait_partition_context && !portrait_source_check;
-    const auto check_purpose = portrait_source_check ? WorkbenchCheckPurpose::PortraitSourceRisk :
-        portrait_recheck ? WorkbenchCheckPurpose::PortraitPostColorReadOnly :
+    const bool portrait_recheck = native_portrait && native_portrait->valid();
+    const auto check_purpose = portrait_recheck ? WorkbenchCheckPurpose::PortraitPostColorReadOnly :
         WorkbenchCheckPurpose::GeneralImport;
     if (m_shutdown || !m_finishing_workbench || !m_workbench_presented || !m_model_preview_ready ||
         m_workbench_check_running || m_busy || m_finishing_running ||
-        (!portrait_source_check && !portrait_recheck && !post_generation_ui_state().can_edit) || !m_finishing_candidate.empty() ||
+        (!portrait_recheck && !post_generation_ui_state().can_edit) || !m_finishing_candidate.empty() ||
         (m_beauty_controls && m_beauty_controls->has_changes())) return false;
     if (m_beauty_transactions && m_beauty_transactions->processing()) return false;
     if (m_workbench_check_worker.joinable()) m_workbench_check_worker.join();
@@ -110,19 +81,18 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     const auto source_appearance_error = m_model_preview->original_appearance_error();
     const auto partition = m_beauty_controls ? m_beauty_controls->capture_partition() : nullptr;
     const bool bound_edits = !m_model_preview->face_color_overrides().empty() || m_model_preview->leaf_editing() ||
-        m_model_preview->semantic_result_active() || (!portrait_source_check && (bool(m_model_preview->semantic_region_evidence()) ||
+        m_model_preview->semantic_result_active() || ((bool(m_model_preview->semantic_region_evidence()) ||
         bool(m_model_preview->secondary_region_evidence()))) || bool(m_model_preview->portrait_shape_details()) ||
         m_model_preview->selected_face_count() != 0 || m_model_preview->protected_face_count() != 0 ||
         (partition && bool(partition->puzzle));
     const bool native_partition_requested = automatic &&
-        !(portrait_context && m_portrait_print.active()) &&
         !m_model_preview->restored_persisted_color_trial();
     // Shared v11 partitioning owns automatic repair before clustering. Checks
     // remain read-only whenever they will hand the model to that partition, or
-    // when an active portrait flow already owns the displayed context.
+    // when the displayed model already has a verified native partition.
     const bool repair_allowed = workbench_check_allows_topology_repair(
-            portrait_context, m_portrait_print.active(), native_partition_requested) &&
-        !portrait_source_check && !portrait_recheck &&
+            native_partition_requested) &&
+        !portrait_recheck &&
         workbench_safe_repair_allowed(AI::model_artifact_format(source), bound_edits, false, false);
     const auto canceled = m_workbench_check_cancel = std::make_shared<std::atomic<bool>>(false);
     const auto attempts = m_workbench_repair_attempts;
@@ -467,7 +437,6 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                 self->refresh_controls();
                 self->update_finishing_selection();
                 self->publish_workbench_state();
-                self->queue_portrait_print();
             });
         });
     } catch (const std::exception& error) {

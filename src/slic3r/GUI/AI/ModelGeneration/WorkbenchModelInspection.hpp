@@ -1,7 +1,8 @@
 #pragma once
 
 #include "PostGenerationWorkbenchState.hpp"
-#include "PortraitPrintFlow.hpp"
+#include "WorkbenchArtifactValidation.hpp"
+#include "PortraitNativeCheckpoint.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
 #include "libslic3r/MeshBoolean.hpp"
@@ -248,8 +249,8 @@ inline bool decode_native_publication_certificate(
         };
 
         checkpoint();
-        require(PortraitPrint::valid_sha256(proof.candidate_sha256) &&
-                PortraitPrint::valid_sha256(proof.carrier_sha256) &&
+        require(WorkbenchArtifacts::valid_sha256(proof.candidate_sha256) &&
+                WorkbenchArtifacts::valid_sha256(proof.carrier_sha256) &&
                 proof.candidate_sha256 == proof.carrier_sha256 &&
                 !proof.geometry_id.empty() && !proof.appearance_id.empty() &&
                 proof.face_count > 0,
@@ -257,27 +258,24 @@ inline bool decode_native_publication_certificate(
 
         const auto& reference = proof.native_reference;
         const auto& metadata = proof.partition_metadata;
-        require(PortraitPrint::valid_native_partition_reference(
+        require(WorkbenchArtifacts::valid_native_partition_reference(
                     reference, proof.partition_digest, proof.topology_hash) &&
-                PortraitPrint::native_partition_has_exact_mesh(reference) &&
+                WorkbenchArtifacts::native_partition_has_exact_mesh(reference) &&
                 reference.at("carrier_sha256") == proof.carrier_sha256 &&
                 reference.at("geometry_id") == proof.geometry_id &&
                 reference.at("appearance_id") == proof.appearance_id &&
-                PortraitPrint::same_model_path(
+                WorkbenchArtifacts::same_model_path(
                     reference.at("metadata_path").get<std::string>(),
                     proof.partition_metadata_path) &&
                 reference.at("cache_reference").at("face_count").get<size_t>() ==
                     proof.face_count,
                 "Native publication reference identity mismatch.");
-        require(metadata.at("schema") ==
-                    "orca.native-workbench-partition-commit/v1" &&
-                metadata.at("transaction_status") == "committed" &&
-                metadata.at("native_portrait_partition") == reference &&
-                metadata.at("model_sha256") == proof.carrier_sha256 &&
-                PortraitPrint::same_model_path(
-                    metadata.at("model_path").get<std::string>(),
-                    reference.at("carrier_path").get<std::string>()),
-                "Native publication commit mismatch.");
+        nlohmann::json verified_reference;
+        require(restorable_native_partition_metadata_matches(metadata,
+                    boost::filesystem::path(boost::nowide::widen(proof.partition_metadata_path)),
+                    source, proof.carrier_sha256, proof.geometry_id, proof.appearance_id, verified_reference) &&
+                verified_reference == reference,
+                "Native publication checkpoint mismatch.");
         verify_files();
 
         const auto& native = metadata.at("native_portrait_topology_certificate");
@@ -317,12 +315,12 @@ inline bool decode_native_publication_certificate(
 
         const auto& certificate = metadata.at("workbench_check_certificate");
         WorkbenchCheckResult checked;
-        require(PortraitPrint::valid_workbench_check_certificate(
+        require(WorkbenchArtifacts::valid_workbench_check_certificate(
                     certificate, WorkbenchCheckPurpose::PortraitPostColorReadOnly,
                     proof.carrier_sha256, proof.geometry_id, proof.appearance_id,
                     proof.partition_metadata_path, metadata,
                     proof.partition_digest, proof.topology_hash) &&
-                PortraitPrint::decode_workbench_check_certificate(certificate, checked) &&
+                WorkbenchArtifacts::decode_workbench_check_certificate(certificate, checked) &&
                 workbench_topology_safe(checked) &&
                 checked.before_faces == proof.face_count,
                 "Native workbench certificate mismatch.");

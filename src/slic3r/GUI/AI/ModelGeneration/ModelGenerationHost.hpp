@@ -4,7 +4,7 @@
 #include <functional>
 #include <string>
 #include <vector>
-#include "PortraitPrintFlow.hpp"
+#include "WorkbenchArtifactValidation.hpp"
 
 namespace Slic3r::GUI {
 
@@ -66,7 +66,6 @@ struct ModelGenerationUIHistoryEntry
 
 struct ModelGenerationUIState
 {
-    PortraitPrint::State portrait_print;
     bool smart_mode {false};
     std::string smart_flow_id;
     std::uint64_t revision { 0 };

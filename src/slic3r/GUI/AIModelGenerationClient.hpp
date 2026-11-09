@@ -179,11 +179,6 @@ public:
         std::string style;
         std::string custom_style;
         size_t      palette_color_count { Slic3r::AI::kLegacyDefaultTargetPaletteColors };
-        bool        portrait_print { false };
-        std::string creation_request_id;
-        int model_attempt {0}, palette_retries {0}, design_retries {0}, model_retries {0}, conversion_retries {0};
-        std::vector<std::string> terminal_task_ids;
-        std::string portrait_design_status, portrait_design_reason;
         std::vector<std::string> palette;
         PaletteRoles palette_roles;
         ImagePrintSettings print_settings;
@@ -302,14 +297,14 @@ public:
                                 size_t palette_color_count,
                                 const ImagePrintSettings& print_settings,
                                 StatusFn on_complete, ErrorFn on_error, bool generate_image,
-                                const GenerationOptions& options, bool portrait_print = false);
+                                const GenerationOptions& options);
     void recommend_image_palette(const std::string& request_id, const std::string& instruction,
                                  const boost::filesystem::path& image_path,
                                  const std::string& style, const std::string& custom_style,
                                  size_t palette_color_count,
                                  const ImagePrintSettings& print_settings,
                                  StatusFn on_complete, ErrorFn on_error, bool generate_image,
-                                 const GenerationOptions& options, bool portrait_print = false);
+                                 const GenerationOptions& options);
     void recommend_image_style(const std::string& prompt,
                                const boost::filesystem::path& image_path,
                                StyleRecommendationFn on_complete, ErrorFn on_error);
@@ -317,7 +312,6 @@ public:
                          const PaletteRoles& palette_roles, StatusFn on_complete, ErrorFn on_error);
     void retry_preparation(const std::string& job_id, StatusFn on_complete, ErrorFn on_error, bool regenerate = false);
     void reuse_design(const std::string& job_id, StatusFn on_complete, ErrorFn on_error);
-    void retry_portrait(const std::string& job_id, StatusFn on_complete, ErrorFn on_error);
     void generate(const std::string& job_id, const std::string& prepared_prompt,
                   const std::vector<std::string>& palette, const GenerationOptions& options,
                   StatusFn on_complete, ErrorFn on_error, bool resume_existing = false, bool explicit_resume = false);

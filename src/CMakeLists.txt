@@ -231,7 +231,7 @@ if (WIN32)
         target_link_options(OrcaSlicer_app_gui PUBLIC "$<$<CONFIG:RELEASE>:/DEBUG>")
     endif()
     target_compile_definitions(OrcaSlicer_app_gui PRIVATE "$<$<NOT:$<CONFIG:RelWithDebInfo>>:SLIC3R_WRAPPER_NOCONSOLE>")
-    add_dependencies(OrcaSlicer_app_gui OrcaSlicer)
+    add_dependencies(OrcaSlicer_app_gui OrcaSlicer orca_mobile_device_sdk_ffi)
     set_target_properties(OrcaSlicer_app_gui PROPERTIES
         WIN32_EXECUTABLE "$<NOT:$<CONFIG:RelWithDebInfo>>"
     )

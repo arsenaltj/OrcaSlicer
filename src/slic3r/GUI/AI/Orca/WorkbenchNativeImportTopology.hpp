@@ -60,11 +60,11 @@ inline void load_verified_native_mesh(const AI::ModelImportRequest& request,
     auto unhashed = proof;
     const auto proof_sha256 = unhashed.at("proof_sha256").get<std::string>();
     unhashed.erase("proof_sha256");
-    require(PortraitPrint::valid_sha256(proof_sha256) &&
+    require(WorkbenchArtifacts::valid_sha256(proof_sha256) &&
         AI::beauty_leaf_digest(unhashed.dump()) == proof_sha256,
         "Native import topology proof changed.");
     const auto& reference = proof.at("native_reference");
-    require(PortraitPrint::native_partition_has_exact_mesh(reference),
+    require(WorkbenchArtifacts::native_partition_has_exact_mesh(reference),
         "Native import cache has no certified original indices; rebuild from the immutable source.");
     const auto& cache_reference = reference.at("cache_reference");
     const auto carrier_sha256 = reference.at("carrier_sha256").get<std::string>();
@@ -86,7 +86,7 @@ inline void load_verified_native_mesh(const AI::ModelImportRequest& request,
         AI::beauty_leaf_digest(AI::encode_model_matched_colors(*request.matched_colors).dump()) ==
             proof.at("matched_colors_sha256"),
         "Native import has changed geometry, material identity, manual edits or subfaces.");
-    require(PortraitPrint::same_model_path(
+    require(WorkbenchArtifacts::same_model_path(
         boost::nowide::narrow(request.artifact.local_path.wstring()),
         reference.at("carrier_path").get<std::string>()),
         "Native import artifact differs from the owned carrier.");
@@ -124,11 +124,11 @@ inline void load_verified_native_mesh(const AI::ModelImportRequest& request,
     // this exact read-only portrait certificate. General import is ineligible.
     const auto& certificate = proof.at("workbench_certificate");
     WorkbenchCheckResult checked;
-    require(PortraitPrint::valid_workbench_check_certificate(certificate,
+    require(WorkbenchArtifacts::valid_workbench_check_certificate(certificate,
             WorkbenchCheckPurpose::PortraitPostColorReadOnly, carrier_sha256,
             geometry_id, appearance_id, reference.at("metadata_path").get<std::string>(),
             metadata, partition_digest, topology_hash) &&
-        PortraitPrint::decode_workbench_check_certificate(certificate, checked) &&
+        WorkbenchArtifacts::decode_workbench_check_certificate(certificate, checked) &&
         workbench_topology_safe(checked) && checked.before_faces == face_count,
         "Native import workbench certificate mismatch.");
 

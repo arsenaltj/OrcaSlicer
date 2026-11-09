@@ -131,14 +131,7 @@ void ModelGenerationPanel::on_discard(wxCommandEvent&)
         m_selected_image->SetLabel(_L("未选择图片"));
     }
     if (m_finishing_workbench) set_finishing_workbench(false);
-    const bool portrait = portrait_owns_display_context() && m_portrait_print.active();
-    if (portrait) {
-        m_portrait_print.stage = PortraitPrint::Stage::Idle;
-        m_portrait_print.authorized = false;
-        m_portrait_print.reason = "用户已结束一键流程，任务与成果保留。";
-        save_portrait_print();
-    }
-    reset(portrait ? false : !m_ready);
+    reset(!m_ready);
     m_palette_recommendation_confirmed = reuse_palette;
     refresh_controls();
     m_prompt->SetFocus();
@@ -336,8 +329,6 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         refresh_model_finishing();
     };
     m_beauty_controls->on_undo = [this] {
-        if (portrait_owns_display_context() && m_portrait_print.running())
-            pause_portrait_print("已撤销模型或耗材操作，请核对已保存的人像版本后继续。");
         if (m_beauty_transactions && m_beauty_transactions->undo_count()) {
             if (!m_beauty_transactions->undo())
                 m_finishing_status->SetLabel(_L("无法撤销：历史模型文件缺失或已变更，当前预览保持不变。"));
@@ -349,8 +340,6 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         refresh_model_finishing();
     };
     m_beauty_controls->on_redo = [this] {
-        if (portrait_owns_display_context() && m_portrait_print.running())
-            pause_portrait_print("已重做模型或耗材操作，请核对已保存的人像版本后继续。");
         if (m_beauty_transactions && m_beauty_transactions->redo_count()) {
             if (!m_beauty_transactions->redo())
                 m_finishing_status->SetLabel(_L("无法重做：历史候选文件缺失或已变更，当前预览保持不变。"));
@@ -457,8 +446,6 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     m_beauty_controls->on_accept = [this] { accept_model_finishing(); };
     m_beauty_controls->on_discard = [this] { discard_model_finishing(); };
     m_beauty_controls->on_cancel = [this] {
-        if (portrait_owns_display_context() && m_portrait_print.running())
-            pause_portrait_print("用户已取消当前处理，一键流程暂停。");
         if (m_beauty_color_gate_state == BeautyColorGateState::Checking) {
             cancel_beauty_color_gate();
             m_beauty_color_gate_state = BeautyColorGateState::Blocked;
@@ -646,8 +633,6 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         refresh_local_recolor_controls(); update_finishing_selection(); refresh_model_finishing();
     });
     m_finishing_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        if (portrait_owns_display_context() && m_portrait_print.running())
-            pause_portrait_print("用户已取消当前处理，一键流程暂停。");
         if (m_beauty_color_gate_state == BeautyColorGateState::Checking) {
             cancel_beauty_color_gate();
             m_beauty_color_gate_state = BeautyColorGateState::Blocked;

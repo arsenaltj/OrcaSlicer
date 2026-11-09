@@ -1,6 +1,6 @@
 #pragma once
 
-#include "PortraitPrintFlow.hpp"
+#include "WorkbenchArtifactValidation.hpp"
 #include <boost/filesystem/path.hpp>
 #include <boost/nowide/convert.hpp>
 
@@ -13,17 +13,15 @@ inline bool portrait_partition_metadata_matches(const nlohmann::json& metadata,
                                          const std::string& geometry_id,
                                          const std::string& appearance_id,
                                          bool require_post_color,
-                                         const std::string& flow_id,
                                          nlohmann::json& reference)
 {
     try {
-        if (metadata.at("model_sha256") != model_sha256 ||
-            (!flow_id.empty() && metadata.at("portrait_print_id") != flow_id)) return false;
+        if (metadata.at("model_sha256") != model_sha256) return false;
         reference = metadata.at("native_portrait_partition");
-        if (!PortraitPrint::valid_native_partition_reference(reference) ||
+        if (!WorkbenchArtifacts::valid_native_partition_reference(reference) ||
             reference.at("carrier_sha256") != model_sha256 ||
-            !PortraitPrint::same_model_path(reference.at("carrier_path").get<std::string>(), boost::nowide::narrow(model_path.wstring())) ||
-            !PortraitPrint::same_model_path(reference.at("metadata_path").get<std::string>(), boost::nowide::narrow(metadata_path.wstring())) ||
+            !WorkbenchArtifacts::same_model_path(reference.at("carrier_path").get<std::string>(), boost::nowide::narrow(model_path.wstring())) ||
+            !WorkbenchArtifacts::same_model_path(reference.at("metadata_path").get<std::string>(), boost::nowide::narrow(metadata_path.wstring())) ||
             reference.at("geometry_id") != geometry_id ||
             reference.at("appearance_id") != appearance_id) return false;
         const auto& topology = metadata.at("native_portrait_topology_certificate");
@@ -52,14 +50,14 @@ inline bool portrait_partition_metadata_matches(const nlohmann::json& metadata,
         const auto& reduction = metadata.at("native_color_reduction");
         const auto& slots = metadata.at("final_slot_binding");
         const size_t region_count = semantics.at("regions").size();
-        return PortraitPrint::valid_region_semantics(semantics,
+        return WorkbenchArtifacts::valid_region_semantics(semantics,
                    reference.at("partition_digest").get<std::string>()) &&
-            PortraitPrint::valid_native_color_reduction(reduction,
+            WorkbenchArtifacts::valid_native_color_reduction(reduction,
                 reference.at("partition_digest").get<std::string>(), region_count) &&
-            PortraitPrint::valid_final_slot_binding(slots,
+            WorkbenchArtifacts::valid_final_slot_binding(slots,
                 reference.at("partition_digest").get<std::string>(),
                 reduction.at("mapping_digest").get<std::string>(), region_count) &&
-            PortraitPrint::valid_post_color_check(metadata.at("post_color_check"), reference);
+            WorkbenchArtifacts::valid_post_color_check(metadata.at("post_color_check"), reference);
     } catch (const std::exception&) {
         reference = nullptr;
         return false;
@@ -85,7 +83,7 @@ inline bool restorable_native_partition_metadata_matches(const nlohmann::json& m
             metadata.value("source", std::string{}) == "local_finishing";
         if (!commit && !saved) return false;
         if (!portrait_partition_metadata_matches(metadata, metadata_path, model_path,
-                model_sha256, geometry_id, appearance_id, saved, {}, reference)) {
+                model_sha256, geometry_id, appearance_id, saved, reference)) {
             reference = nullptr;
             return false;
         }

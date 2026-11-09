@@ -1622,7 +1622,7 @@ TEST_CASE("Frozen portrait evidence retains native atoms and protected roles aft
         {"metadata_path",text_path(new_metadata_path)},{"geometry_id",native.geometry_id},
         {"appearance_id",appearance_id},{"cache_reference",cache_reference}
     };
-    REQUIRE(GUI::PortraitPrint::valid_native_partition_reference(native_reference, native.partition_digest, topology_hash));
+    REQUIRE(GUI::WorkbenchArtifacts::valid_native_partition_reference(native_reference, native.partition_digest, topology_hash));
     nlohmann::json commit {
         {"schema","orca.native-workbench-partition-commit/v1"},{"schema_version",6},
         {"transaction_status","committed"},{"job_id","native-workbench-partition-v12-offline-replay"},
@@ -1655,10 +1655,10 @@ TEST_CASE("Frozen portrait evidence retains native atoms and protected roles aft
     certified.appearance_mapped = true; certified.appearance_confidence = 1.;
     certified.appearance_reason = "Frozen appearance and its topology verified separately from the native carrier.";
     REQUIRE(GUI::workbench_topology_safe(certified));
-    commit["workbench_check_certificate"] = GUI::PortraitPrint::encode_workbench_check_certificate(certified,
+    commit["workbench_check_certificate"] = GUI::WorkbenchArtifacts::encode_workbench_check_certificate(certified,
         GUI::WorkbenchCheckPurpose::PortraitPostColorReadOnly, native.geometry_id, appearance_id,
         text_path(new_metadata_path), commit, native.partition_digest, topology_hash);
-    REQUIRE(GUI::PortraitPrint::valid_workbench_check_certificate(commit.at("workbench_check_certificate"),
+    REQUIRE(GUI::WorkbenchArtifacts::valid_workbench_check_certificate(commit.at("workbench_check_certificate"),
         GUI::WorkbenchCheckPurpose::PortraitPostColorReadOnly, new_carrier_hash, native.geometry_id,
         appearance_id, text_path(new_metadata_path), commit, native.partition_digest, topology_hash));
     CHECK(NP::publish_native_portrait_partition_commit(new_metadata_path, new_carrier, original_copy, commit) == commit);
@@ -2243,7 +2243,7 @@ TEST_CASE("Addressed block cache preserves both tracks and rejects missing files
     REQUIRE_FALSE(PC::load(ref,root,s.source.geometry_id,4,s.source.content_id,error));
     boost::filesystem::remove(root);
 }
-TEST_CASE("Portrait publication reads back actual face and child colors and refuses a corrupt layer", "[PortraitColorBlocks][PortraitPrintFlow]") {
+TEST_CASE("Portrait publication reads back actual face and child colors and refuses a corrupt layer", "[PortraitColorBlocks][WorkbenchArtifactValidation]") {
     Sample sample;
     auto input = honor_input(sample);
     input.processed_subfaces = {{1, {1, 0}, {.95f, .1f, .1f}, 1.f}};

@@ -2,6 +2,7 @@
 
 #include "AIModelGenerationClient.hpp"
 #include "AI/ModelGeneration/SmartGenerationFlow.hpp"
+#include "AI/ModelGeneration/ModelGenerationSubmissionResult.hpp"
 #include "AI/ModelGeneration/BeautyCandidateSnapshot.hpp"
 #include "AI/ModelGeneration/PortraitWorkbenchEntry.hpp"
 #include "AI/ModelGeneration/BeautyWorkbenchSession.hpp"
@@ -110,15 +111,8 @@ public:
     void get_provider_catalog(const std::string& role, const std::string& provider,
                               AIModelGenerationClient::CatalogFn on_complete,
                               AIModelGenerationClient::ErrorFn on_error);
-    PortraitPrint::Submission request_generate_design();
-    PortraitPrint::Submission request_generate_model();
-    PortraitPrint::Submission request_portrait_print_from_model(std::function<bool()> create_empty_project);
-    bool resume_portrait_print();
-    bool record_portrait_import(const std::string& id, const AI::ModelImportResult& result);
-    void add_portrait_notice(const std::string& id, const std::string& notice);
-    bool advance_portrait_print(const std::string& id, PortraitPrint::Stage expected,
-        PortraitPrint::Stage next, const std::string& revision = {}, const std::string& gcode = {});
-    void pause_portrait_print(const std::string& reason, bool hard = false);
+    ModelGenerationSubmissionResult request_generate_design();
+    ModelGenerationSubmissionResult request_generate_model();
     bool request_generate_smart();
     bool request_retry_model();
     bool request_stop();
@@ -181,8 +175,8 @@ public:
     void synchronize_workbench_project_palette(bool activate_preview = false);
 
 private:
-    using NativeWorkbenchPartitionConsumer = PortraitPrint::NativeWorkbenchPartitionConsumer;
-    using NativeWorkbenchPartitionConsumers = PortraitPrint::NativeWorkbenchPartitionConsumers;
+    using NativeWorkbenchPartitionConsumer = WorkbenchArtifacts::NativeWorkbenchPartitionConsumer;
+    using NativeWorkbenchPartitionConsumers = WorkbenchArtifacts::NativeWorkbenchPartitionConsumers;
     struct NativeWorkbenchPartitionContext {
         boost::filesystem::path model_path;
         std::string source_sha256;
@@ -204,12 +198,7 @@ private:
         }
     };
 
-    PortraitPrint::State m_portrait_print;
-    PortraitPrint::Submission m_last_submission {PortraitPrint::Submission::Rejected};
-    AIModelGenerationClient::JobStatus m_portrait_job_status;
-    std::uint64_t m_portrait_generation_sequence {0};
-    bool m_portrait_advance_queued {false}, m_portrait_advancing {false};
-    bool m_portrait_semantics_requested {false}, m_portrait_export_started {false};
+    ModelGenerationSubmissionResult m_last_submission {ModelGenerationSubmissionResult::Rejected};
     std::thread m_native_workbench_partition_worker;
     std::shared_ptr<std::atomic<bool>> m_native_workbench_partition_cancel;
     bool m_native_workbench_partition_running {false};
@@ -222,42 +211,13 @@ private:
     nlohmann::json m_native_workbench_partition_report;
     nlohmann::json m_native_workbench_partition_certificate;
     nlohmann::json m_native_workbench_partition_commit;
-    nlohmann::json m_portrait_color_snapshot;
-    std::uint64_t m_portrait_color_edit_revision {0};
-    PortraitPrint::ColorCandidateIdentity m_portrait_color_candidate_identity;
-    std::shared_ptr<BeautyCandidateSnapshot> m_portrait_save_draft;
-    size_t m_portrait_save_undo_base {0};
-    std::string m_portrait_save_flow_id;
-    std::uint64_t m_portrait_save_sequence {0};
-    std::uint64_t m_portrait_save_edit_revision {0};
-    bool m_portrait_save_was_editing {false};
-    std::shared_ptr<PortraitOptimizationTask> m_portrait_save_task;
-    std::vector<boost::filesystem::path> m_portrait_save_files;
-    bool portrait_color_save_snapshot_current() const;
-    void rollback_portrait_color_save(const std::string& diagnostic, bool restore_draft = true);
-    nlohmann::json portrait_inputs_snapshot() const;
-    bool validate_portrait_inputs();
-    bool restore_portrait_model();
-    bool restore_portrait_workbench_check_certificate();
-    bool persist_portrait_workbench_check_certificate();
-    bool save_portrait_print(bool quiet = false);
-    void restore_portrait_print();
-    void queue_portrait_print();
-    void run_portrait_print();
+    bool restore_workbench_check_certificate();
     void publish_native_workbench_context();
     bool native_workbench_context_matches(const NativeWorkbenchPartitionContext&) const;
     bool restore_native_workbench_partition_checkpoint();
     bool ensure_native_workbench_partition(NativeWorkbenchPartitionConsumers consumers);
-    bool bind_native_workbench_partition_commit_to_portrait();
-    bool adopt_native_workbench_partition_for_portrait();
     void queue_honor_suite_after_native_partition();
     void cancel_native_workbench_partition();
-    bool observe_portrait_status(const AIModelGenerationClient::JobStatus& status, uint64_t sequence);
-    void save_portrait_colored_model();
-    bool portrait_color_published(const boost::filesystem::path& candidate,
-        const WorkbenchCheckResult& final_check);
-    void portrait_repair_published(const std::string& source_hash, const std::string& result_hash,
-        const boost::filesystem::path& accepted_path);
     void apply_smart_ui_state(ModelGenerationUIState& state);
     bool m_smart_mode {false};
     bool m_shell_smart_creation {false};
@@ -292,7 +252,6 @@ private:
     wxWindow* m_portrait_mode_choice {nullptr};
     wxTimer m_portrait_timer;
     WorkbenchCheckResult m_workbench_check_result;
-    WorkbenchCheckResult m_portrait_verified_check;
     std::string m_workbench_check_path;
     std::uint64_t m_workbench_check_revision {0};
     std::thread m_workbench_check_worker;
@@ -458,9 +417,6 @@ private:
     wxWindow* build_model_library(wxWindow* parent);
     void choose_local_model();
     void import_local_model(const boost::filesystem::path& source, bool open_beauty);
-    bool portrait_owns_display_context() const;
-    bool portrait_owns_save_candidate() const;
-    bool prepare_for_model_asset_switch();
     bool can_replace_model_asset() const;
 
     void on_choose_image(wxCommandEvent& event);

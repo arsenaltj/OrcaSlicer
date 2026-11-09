@@ -98,26 +98,24 @@ void classify_submission_error(const std::string& error, std::string& code, std:
 
 } // namespace
 
-PortraitPrint::Submission ModelGenerationPanel::request_generate_design()
+ModelGenerationSubmissionResult ModelGenerationPanel::request_generate_design()
 {
     if (!can_generate_design_from_shell())
-        return PortraitPrint::Submission::Rejected;
-    if (portrait_owns_display_context() && m_portrait_print.running())
-        pause_portrait_print("已切换到手动设计，本次自动流程暂停。");
-    m_last_submission = PortraitPrint::Submission::Rejected;
+        return ModelGenerationSubmissionResult::Rejected;
+    m_last_submission = ModelGenerationSubmissionResult::Rejected;
     m_smart_mode = false; m_smart_flow.stop();
     wxCommandEvent event;
     on_preprocess(event);
     return m_last_submission;
 }
 
-PortraitPrint::Submission ModelGenerationPanel::request_generate_model()
+ModelGenerationSubmissionResult ModelGenerationPanel::request_generate_model()
 {
     const bool reuse_ready_model = can_reuse_ready_model_design();
     if (m_shutdown || !m_page_initialized || m_generate == nullptr ||
         (!m_generate->IsEnabled() && !reuse_ready_model))
-        return PortraitPrint::Submission::Rejected;
-    m_last_submission = PortraitPrint::Submission::Rejected;
+        return ModelGenerationSubmissionResult::Rejected;
+    m_last_submission = ModelGenerationSubmissionResult::Rejected;
     wxCommandEvent event;
     on_generate(event);
     const bool submitted = m_journey_model_submitted;
@@ -133,18 +131,8 @@ PortraitPrint::Submission ModelGenerationPanel::request_generate_model()
 
 bool ModelGenerationPanel::request_stop()
 {
-    const bool portrait = portrait_owns_display_context() && m_portrait_print.running();
-    if (m_shutdown || !m_page_initialized || m_stop == nullptr || (!m_stop->IsEnabled() && !portrait && !(m_smart_mode && m_busy)))
+    if (m_shutdown || !m_page_initialized || m_stop == nullptr || (!m_stop->IsEnabled() && !(m_smart_mode && m_busy)))
         return false;
-    if (portrait) {
-        pause_portrait_print("用户已暂停工作台自动流程，已保存成果保留。");
-        if (m_model_preview && m_portrait_print.stage == PortraitPrint::Stage::Color)
-            m_model_preview->cancel_semantic_request_and_wait(false);
-        // Keep collecting the exact submitted task's result. Stopping the
-        // sidecar job would make a paused design impossible to continue
-        // without buying another image. The ledger blocks all next stages.
-        return true;
-    }
     wxCommandEvent event;
     on_stop(event);
     return true;
@@ -249,7 +237,7 @@ void ModelGenerationPanel::apply_smart_ui_state(ModelGenerationUIState& state)
                 weak->m_smart_dispatch_pending = false;
                 if (weak->m_shutdown || weak->m_smart_flow.flow_id != flow ||
                     !weak->m_smart_flow.claim_geometry(weak->m_ui_state.can_generate_model && weak->job_inputs_match())) return;
-                if (!PortraitPrint::accepted(weak->request_generate_model())) {
+                if (!submission_accepted(weak->request_generate_model())) {
                     weak->m_smart_flow.stop();
                     weak->m_status->SetLabel(_L("模型提交未完成，请检查输入和服务后重试。"));
                     weak->publish_ui_state();
@@ -261,7 +249,7 @@ void ModelGenerationPanel::apply_smart_ui_state(ModelGenerationUIState& state)
 
 void ModelGenerationPanel::on_generate(wxCommandEvent&)
 {
-    m_last_submission = PortraitPrint::Submission::Rejected;
+    m_last_submission = ModelGenerationSubmissionResult::Rejected;
     if (!input_editable() || !generation_provider_available("geometry")) return;
     if (!generation_options_valid()) {
         show_input_hint(_L("200 万面需要选择精细几何。"));
@@ -290,7 +278,7 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
     const SubmissionContext confirmation_context {source_job_id, confirmed_options.provider, m_sequence};
     const auto confirmed_prompt = m_prepared_prompt->GetValue();
     if (!m_smart_mode && show_generation_confirmation(this, message, _L("确认生成3D模型"), 189) != wxID_YES) {
-        m_last_submission = PortraitPrint::Submission::Cancelled; return;
+        m_last_submission = ModelGenerationSubmissionResult::Cancelled; return;
     }
     // The modal pumps events: restore, service loss or a late status may have
     // changed the job while the user was reading the confirmation.
@@ -310,7 +298,7 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
         return;
     }
     if (m_local_image_history || can_reuse_ready_model) {
-        m_last_submission = PortraitPrint::Submission::Pending;
+        m_last_submission = ModelGenerationSubmissionResult::Pending;
         m_design_history_loading = true;
         const uint64_t history_sequence = ++m_design_history_sequence;
         m_busy = true;
@@ -393,7 +381,7 @@ void ModelGenerationPanel::update_progress(int value, int step, const wxString& 
 
 void ModelGenerationPanel::submit_confirmed_model()
 {
-    m_last_submission = PortraitPrint::Submission::Submitted;
+    m_last_submission = ModelGenerationSubmissionResult::Submitted;
     const bool image_mode = m_job_preview_expected;
     if (image_mode)
         m_client.record_journey_event("preview_accepted", m_job_id);
@@ -602,8 +590,6 @@ void ModelGenerationPanel::handle_error(const std::string& error, uint64_t seque
 {
     if (m_shutdown || sequence != m_sequence)
         return;
-    if (m_portrait_print.running() && sequence == m_portrait_generation_sequence)
-        pause_portrait_print("生成服务返回失败或提交状态不明，已保留原任务和成果：" + error);
     m_submission_state.retain_error({m_job_id, current_generation_options().provider, sequence}, error);
     classify_submission_error(error, m_provider_error_code, m_provider_error_category,
                               m_provider_error_retryable, m_provider_error_ambiguous);
@@ -705,7 +691,6 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
 {
     if (m_shutdown || sequence != m_sequence)
         return;
-    if (!observe_portrait_status(status, sequence)) return;
     m_submission_state.reconcile({status.id, current_generation_options().provider, sequence}, status.state);
     m_poll_connection_failures = 0;
     const bool became_model_ready = !m_ready && status.state == "ready" && status.artifact_ready;
