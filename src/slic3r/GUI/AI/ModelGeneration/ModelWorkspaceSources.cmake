@@ -1,5 +1,12 @@
 # Model capability and compatibility-view membership is explicit.
 set(ORCA_MODEL_WORKSPACE_SOURCES
+    GUI/AI/ModelGeneration/AdvancedCreationTypes.hpp
+    GUI/AI/ModelGeneration/AdvancedCreationSession.hpp
+    GUI/AI/ModelGeneration/AdvancedCreationSession.cpp
+    GUI/AI/ModelGeneration/AdvancedMultiviewClient.hpp
+    GUI/AI/ModelGeneration/AdvancedMultiviewClient.cpp
+    GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.hpp
+    GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.cpp
     GUI/AI/ModelGeneration/ModelGenerationUIState.cpp
     GUI/AI/ModelGeneration/ModelLibraryEntry.hpp
     GUI/AI/ModelGeneration/ModelLibraryRepository.hpp

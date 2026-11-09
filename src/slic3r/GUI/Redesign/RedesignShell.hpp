@@ -45,6 +45,8 @@ class WorkbenchLabel;
 
 enum class AIServiceStatus;
 class ModelGenerationFeatureHost;
+class AdvancedCreationFeatureHost;
+class AdvancedCreationWorkspace;
 class AITextFeatureHost;
 class RoundedActionButton;
 class UploadThumbnail;
@@ -89,12 +91,18 @@ private:
     enum class ModelPageAction { None, RetryService, RetryModel, RestoreLatest, BackToDesign, ReloadPreview, Import };
 
     void build_image_workspace();
+    void switch_creation_mode(bool advanced);
+    std::unique_ptr<AdvancedCreationFeatureHost> m_advanced_host;
+    AdvancedCreationWorkspace* m_advanced_workspace {nullptr};
+    bool m_advanced_mode {false};
     void update_navigation();
     wxPanel* m_assets_page {nullptr};
     AssetsWorkspace* m_assets_workspace {nullptr};
     wxPanel* build_model_workspace();
     wxPanel* create_placeholder_page(const wxString& title, const wxString& body);
     void connect_model_generation_host();
+    void apply_advanced_model_state(const ModelGenerationUIState& state, bool open_route);
+    const ModelGenerationUIState& displayed_model_state() const;
     void mount_smart_model_history();
     void restore_smart_model_history();
     void apply_model_generation_state(const ModelGenerationUIState& state);
@@ -375,6 +383,7 @@ private:
     bool m_prompt_polish_available { false };
     std::string m_prompt_polish_unavailable_reason;
     ModelGenerationUIState m_model_generation_state;
+    ModelGenerationUIState m_advanced_model_state;
     ImageDesignDraft m_image_design_draft;
     std::optional<ModelGenerationUIInput> m_saved_creation_input;
     std::optional<ModelGenerationUIOptions> m_saved_creation_options;
@@ -398,6 +407,7 @@ private:
     // chooses "返回图像设计". The session and route identity reject stale
     // callbacks that could otherwise repaint the old image page.
     bool m_model_route_locked { false };
+    bool m_advanced_model_route { false };
     std::uint64_t m_model_route_session { 0 };
     std::string m_model_route_id;
     bool m_image_page_view_only { false };

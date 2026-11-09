@@ -25,11 +25,11 @@ namespace Slic3r::GUI {
 
 struct ModelGenerationFeatureHost::Impl
 {
-    Impl(wxWindow* parent, Plater* plater, NavigateAfterImportFn navigate_after_import, RetryServiceFn retry_service)
+    Impl(wxWindow* parent, Plater* plater, NavigateAfterImportFn navigate_after_import, RetryServiceFn retry_service, bool advanced_only)
         : workspace(std::make_unique<OrcaWorkspaceAdapter>(plater, navigate_after_import))
     {
         BOOST_LOG_TRIVIAL(info) << "AI model generation startup: creating model generation panel";
-        model_generation = new ModelGenerationPanel(parent, *workspace, *workspace);
+        model_generation = new ModelGenerationPanel(parent, *workspace, *workspace, advanced_only);
         capabilities = std::make_unique<ModelWorkspaceFeatureHost>(ModelGenerationPresentation::generated_models_root(),
             plater, navigate_after_import, ModelLibraryApplication::Ports {
                 [this] { return model_generation && model_generation->library_asset_switch_allowed(); },
@@ -132,9 +132,12 @@ struct ModelGenerationFeatureHost::Impl
 
 ModelGenerationFeatureHost::ModelGenerationFeatureHost(wxWindow* parent, Plater* plater,
                                                        NavigateAfterImportFn navigate_after_import,
-                                                       RetryServiceFn retry_service)
-    : m_impl(std::make_unique<Impl>(parent, plater, std::move(navigate_after_import), std::move(retry_service)))
+                                                       RetryServiceFn retry_service, bool advanced_only)
+    : m_impl(std::make_unique<Impl>(parent, plater, std::move(navigate_after_import), std::move(retry_service), advanced_only))
 {}
+
+bool ModelGenerationFeatureHost::can_replace_asset() const
+{ return m_impl->model_generation && m_impl->model_generation->library_asset_switch_allowed(); }
 
 ModelGenerationFeatureHost::~ModelGenerationFeatureHost()
 {

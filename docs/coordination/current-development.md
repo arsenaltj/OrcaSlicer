@@ -1,11 +1,11 @@
-# 2026-11-06 当前：Honor Forge 发现与连接已实机通过，只上传待人工
+# 2026-11-11 当前：高级四视角 Tripo 错误融合已定位，整改待授权
 
-主线：UX/PRINTER-DISCOVERY-20261105 / 本会话 / `codex/team/integration` / `0f6891b3ab` 基线；本轮 46 个文件按用户授权形成一笔本地提交，准确提交 ID 以 Git HEAD 为准。
+主线：UX/ADVANCED-MULTIVIEW-20261107 / 本会话 / codex/team/integration；完整授权、任务与证据见主计划同编号。
 
-本轮：新 UX 打印确认已提供“导出到电脑／仅上传 G-code／上传并打印”三项，真实设备门禁要求 agent、设备 ID、在线、连接及 15 秒内状态上报；Honor Forge/Moonraker 发送强制使用当前盘 raw `.gcode`，缺失即失败，不回退 `.gcode.3mf`。发送继续复用 `SendJob`、`PrintJob` 和 Moonraker agent，PrintHost 保留原流程。定向回归 HonorForgeDiscovery 10/10、DeviceAccess 9/9、registry 3/3、PrinterWorkspace 12/12、MoonrakerPrinterAgent 16/16、PrinterDiscovery 5/5、UiRedesign 130/130、SmartSlicing/确认 334/334 通过；架构门禁和 diff 检查通过。最终 Windows `Run -NoLaunch` 五步通过，收据 `.tmp/dev/logs/20261106-113150-807/result.json`，源码身份 `c5e719e5458341e704b37ccb495561ee34dcf4ea87ba4a49d5dbc977ac4ce702`，EXE 为 `.tmp/dev/run/Honor Forge Studio.exe`。
+本轮：Tripo官网确认当前命名对象数组及`front/left/back/right`顺序正确；鼠标和萌宠两份真实收据均含四个不同输入哈希，排除只传主图／右图。官网未明确`subject-left`／`camera-left`措辞，但白杯真实任务输入与返回模型的左右把手关系逐项一致，排除当前固定左右反标。独立五视图确认重复正面已经存在于供应商返回几何。可控主因是高级链路把任意主参考直接当语义`front`，且缺少共同相机、画布／尺度和跨视角刚体一致性归一／门禁；供应商在矛盾输入下的融合鲁棒性是共同风险。
 
-未结：最新 EXE 已以 `.tmp/dev/data` 启动（PID 4868）。用户在当前窗口手动打开设备弹框后，`picker` 发现同时验证实际打印机 `10.80.218.120` 的 7125／80 端点并归并为 1 台，随后选择命中并调用 `DeviceManager::set_selected_machine()`；`server_info`、初始状态和 WebSocket 均成功，最终 `selected=true/online=true/connected=true/info_ready=true`。打印机正在上报已有作业 `RUNNING`，本轮没有产生 `[PrinterDispatch]` 或 `[PrinterTransfer]`，没有上传或启动新打印。Windows Computer Use 原生管道仍不可用，因此可见布局只能由用户手动观察。设备型号映射仍记录 `Unsupported printer type: Honor Forge` 及预设名更新失败，未阻断连接和状态上报，但机型专属消费者待继续观察。
+未结：待授权实施Tripo canonical四视图归一和一致性门禁；官网未列出的`enable_image_autofix=false`及`.com`／`.ai`端点漂移需同时收敛但不是已证实根因。既有MV-UPL-02跨窗拖入、MV-LAY-06其他真实DPI、YOYOClaw协议、图像ambiguous对账、sidecar认证限制和4项集成diff预算基线保持。
 
-下一步：用户确认设备弹框只显示归并后的 `10.80.218.120:7125` 且按钮／状态文案正确；待打印机当前作业完成或硬件同事确认上传不会干扰后，完成切片并只测试“仅上传 G-code”，不要点击“上传并打印”，回收 `[PrinterDispatch]`、`[PrinterTransfer]` 日志和打印机端文件结果。断线重连和进入打印页后再接 WiFi 继续人工验证。
+下一步：用户确认整改范围后，在现有套图内增加自动相机／尺度归一、跨视角一致性门禁和失败视角待重新生成；复用当前禁用3D及单项重试，不新增隐式付费重试。
 
-计划变更：r5 ZIP 保留为上一发现阶段证据，不代表本轮新增三动作和 payload 修正；用户已明确本轮只交付开发 EXE，不新建安装包或 ZIP。实体发现、端点去重、选择、连接和状态上报已由实际 Honor Forge 设备日志通过；三按钮可见布局、只上传、断线重连和后接 WiFi 仍待用户反馈，上传并打印保持禁止验收。用户已授权本地提交；不推送或创建 PR。
+计划变更：新增只读根因记录及证据`.tmp/dev/review/20261110-tripo-multiview-root-cause/{mouse,pet}`和白杯左右语义对照`.tmp/dev/review/20261110-tripo-left-right-semantics/cup/model-view-sheet.png`；离线契约回归126／126、16／16、26／26通过。根因分析未改产品代码、未启动GUI或调用GPT／Tripo；2026-11-11按用户授权将前轮同组编辑实现、测试及协调记录通过`git commit --amend --no-edit`合入最近提交`feat(ai): add advanced multiview creation workflow`，未新增提交记录、未推送或创建PR，Tripo整改仍待授权。

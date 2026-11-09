@@ -185,6 +185,14 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
             m_library_refresh_pending = false;
         } else {
             workbench_metadata_updated = true;
+            if (m_advanced_only) {
+                auto& entries = snapshot->entries;
+                entries.erase(std::remove_if(entries.begin(), entries.end(), [](const GeneratedModelEntry& entry) {
+                    const auto metadata = ModelGenerationPresentation::read_json(
+                        ModelGenerationPresentation::generated_models_root() / entry.job_id / "job.json");
+                    return metadata.is_object() && metadata.value("workflow_mode", std::string()) == "smart";
+                }), entries.end());
+            }
             const size_t anchor_index = m_library_page * m_library_page_size;
             const std::string anchor = anchor_index < m_library_entries.size() ? m_library_entries[anchor_index].job_id : std::string();
             const auto position = std::find_if(snapshot->entries.begin(), snapshot->entries.end(),

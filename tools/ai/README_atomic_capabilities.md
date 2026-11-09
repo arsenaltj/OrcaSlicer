@@ -9,6 +9,8 @@
 | 类型、结构与打印规则 | `image_preprocessing_policy.py` | 描述/风格/打印参数 → 策略 | 独立函数 |
 | 人像及各类别提示词 | `image_preprocessing_prompts.py`、`openai_preprocessor.py::build_geometry_reference_prompt_layers` | 策略 → 精确规则层 | 独立调优；详见 [前处理说明](README_image_preprocessing.md) |
 | 图像/文字设计生成 | `design_workflow.py::DesignWorkflow` | Job/输入 → 等待确认的设计 | 独立应用能力；图像服务通过端口注入 |
+| 高级四视角设计 | `advanced_multiview_application.py`、`advanced_multiview_design_workflow.py`、`advanced_multiview_image_gateway.py` | 0～4具名上传／正文 → 四图组／当前图编辑；单个目标最多两张参考、一次生图 | 复用原单图image-to-3D核心提示；对应方向上传图直接生成对应设计，缺图才追加相机推理；不做自动视觉复核或第二次生图；高级独立组、版本及计划确认，智能仍沿原Job流程 |
+| 高级四图建模 | `advanced_multiview_models.py`、`advanced_multiview_model_workflow.py` | 冻结的正左后右四图 → 一个Job-v2 | Tripo具名多图；恢复原task，未核实能力禁止单图降级 |
 | 3D 生成/保留几何贴图 | `model_generation_workflow.py::ModelGenerationWorkflow` | 确认的 Job/授权 → 3D Job | 独立应用能力；供应商/下载/执行通过端口注入 |
 | 请求与选项校验 | `model_request.py` | 字段/图片 → 合法值或 RequestError | 无 HTTP、队列或生成调用 |
 | 已有模型/参考质量 | `model_quality_workflow.py::ModelQualityWorkflow`、`nonportrait_reference.py` | 已注册模型/参考 → 报告 | 独立检查；可选付费视觉复核单独注入 |
@@ -48,6 +50,21 @@ flowchart TD
 应用能力通过各自 `*Ports` 数据类声明依赖。`orca_ai_sidecar.py` 负责组装存储、任务注册表、锁、提供商和执行器，并负责认证、进程寿命和 HTTP。原子模块不导入它，不复制 host 的全局命名空间。工作流之间通过端口组合，本地算法使用显式参数，算法的阈值和旧历史兼容行为保持。
 
 ## 极简界面如何组合
+
+高级多视角使用独立 `AdvancedCreationSession`／`AdvancedCreationFeatureHost`／`AdvancedCreationWorkspace`。侧车由 `advanced_multiview_runtime.py` 组装应用、仓库及供应商端口，认证入口是 `/v1/orcaslicer/advanced-multiview`，不经旧单图创建设计接口：
+
+- `GET /capabilities` 查询当前模型的具名多参考、当前图编辑和四图建模能力；无法核实不宣称支持。
+- `POST /groups` 接受JSON纯文字或multipart具名 `front_image/left_image/back_image/right_image`；`front_image`是兼容字段名，语义为必填主参考相机0°，其它字段为相对左转90°／反向180°／右转90°，各槽一张，受原20MiB及解码校验约束。
+- `POST /groups/<id>/plans` 准备2D范围及最大调用数；显式确认后用 `/operations` 执行。首次始终正左后右，操作冻结主参考0°、俯视顺时针90°左、180°后、逆时针90°右及每个目标当前图／只读上下文。每个目标最多一次图像创建调用；失败后只有用户显式重试才产生新调用。
+- 所有路径复用原单图`build_geometry_reference_prompt`／`build_text_geometry_reference_prompt`，保留主体隔离、原场景背景替换为统一不透明纯色棚拍背景、无纹理／渐变／阴影／光晕、完整轮廓与四周留白、几何、身份、风格、光照、支撑、裁切和单主体规则；`background=opaque`是原传输契约，不代表保留来源背景，也不输出透明alpha。
+- 首次有对应方向上传图时只用该图生成对应设计，保持其形状、姿势、相机、构图和裁切。缺少对应方向时最多使用主参考上传图与已生成主设计图，并只覆盖原合同中的相机位置／不可见区域两项：说明目标旋转角度、保持主体形状和姿势、不可见区域可合理推理；不引入其它方向上传图或复杂姿态校验。局部编辑以当前目标设计图为第一参考，对应上传图仅作第二参考。
+- 高级2D不执行自动视觉复核、best-of、质量纠偏或第二次生图。供应商成功结果直接按目标版本发布；失败保留空槽或旧图并提供显式单项重试。下载恢复只复用已取得响应，不创建新图。
+- `PUT /groups/<id>/draft` 保存正文／参数并返回完整运行快照；`GET /groups/<id>` 与资产路由恢复当前图。初次失败保留空槽，编辑失败保留旧版本；停止后的晚到候选仅在显式重试时复用。
+- `/model-plans` 与 `/model-jobs` 将完整四图冻结到同一Job-v2。`resume/reconcile/stop` 始终沿原身份处理，未知提交阻止新创建；旧单图路由拒绝重生带高级四图来源的Job。
+
+组文件位于用户模型目录 `advanced-multiview/<group-id>`；原件、设计版本与操作收据分别持久化。桌面选择仅影响2D目标，不过滤3D四图。旧Job-v1单图历史保留显式入口；新高级工作台使用独立宿主，导入仍走原生应用保护。实际类型／路由与失败恢复详见[架构实施对照](../../Docs/plans/ui-redesign/2026-11-07-advanced-multiview-architecture.md#实施对照2026-11-08)、[详细设计](../../Docs/plans/ui-redesign/2026-11-07-advanced-multiview-detailed-design.md)及[逐项测试报告](../../Docs/plans/ui-redesign/2026-11-08-advanced-multiview-test-report.md)。
+
+运行恢复限制：侧车单独重启后，现有桌面认证nonce会失效；本轮真实验证通过正常重启应用、打开原组并显式恢复原3D任务继续，保持同一远端task且不新建。不能把此路径描述为服务自动重连；共享会话认证的变更不属于高级业务隔离范围。GPT和Tripo已有真实证据，YOYOClaw多参考／编辑协议仍未核实，不能以单图降级补偿能力缺口。
 
 `capability_catalog.py` 给出稳定能力 ID、源码入口、输入/输出、作用范围及确认点。离线查看：
 

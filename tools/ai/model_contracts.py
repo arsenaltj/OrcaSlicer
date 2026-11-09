@@ -204,6 +204,8 @@ class Job:
     design_model: str = ""
     geometry_model: str = ""
     workflow_mode: str = "advanced"
+    creation_kind: str = ""
+    approved_multiview_snapshot: dict[str, Any] = field(default_factory=dict)
     flow_id: str = ""
     request_id: str = ""
     input_fingerprint: str = ""

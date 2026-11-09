@@ -218,9 +218,10 @@ wxWindow* ModelGenerationPanel::build_workbench_history(wxWindow* parent)
     panel->SetMinSize(FromDIP(wxSize(260, 200)));
     panel->SetBackgroundColour(wxColour(32, 32, 34));
     auto* root = new wxBoxSizer(wxVERTICAL);
-    auto* title = new wxStaticText(panel, wxID_ANY, _L("选择模型"));
-    title->SetForegroundColour(wxColour(235, 235, 235));
-    root->Add(title, 0, wxEXPAND | wxALL, FromDIP(12));
+    m_workbench_history_title = new wxStaticText(panel, wxID_ANY,
+        m_shell_smart_creation ? _L("历史模型") : _L("选择模型"));
+    m_workbench_history_title->SetForegroundColour(wxColour(235, 235, 235));
+    root->Add(m_workbench_history_title, 0, wxEXPAND | wxALL, FromDIP(12));
     auto* search = new TextInput(panel, wxEmptyString, wxEmptyString, "workbench_search");
     search->SetName("ai_content_color");
     search->SetBackgroundColor(StateColor(wxColour(49, 49, 54)));
@@ -314,6 +315,16 @@ wxWindow* ModelGenerationPanel::build_workbench_history(wxWindow* parent)
     panel->SetSizer(root);
     panel->Hide();
     return panel;
+}
+
+void ModelGenerationPanel::set_smart_creation_presentation(bool smart)
+{
+    m_shell_smart_creation = smart;
+    if (!m_workbench_history_title) return;
+    const wxString title = smart ? _L("历史模型") : _L("选择模型");
+    if (m_workbench_history_title->GetLabel() == title) return;
+    m_workbench_history_title->SetLabel(title);
+    m_workbench_history_title->GetParent()->Layout();
 }
 
 void ModelGenerationPanel::refresh_workbench_history()

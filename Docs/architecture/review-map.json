@@ -544,6 +544,30 @@
       "needle": "class DesignWorkflow:"
     },
     {
+      "id": "advanced_creation_session",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationSession.hpp",
+      "needle": "class Session {",
+      "detail": "高级独立桌面草稿、选择、待重生投影与回调归属；持久组、上传引用和版本由侧车组仓库持有。"
+    },
+    {
+      "id": "advanced_multiview_application",
+      "path": "tools/ai/advanced_multiview_application.py",
+      "needle": "class AdvancedMultiviewApplication:",
+      "detail": "独立确认计划、同组输入更新、强制待处理范围、幂等和停止命令，不进入智能工作流。"
+    },
+    {
+      "id": "advanced_multiview_design",
+      "path": "tools/ai/advanced_multiview_design_workflow.py",
+      "needle": "class AdvancedMultiviewDesignWorkflow:",
+      "detail": "首次主视锚点后补齐四图；变化上传优先、普通编辑当前设计优先；成功逐视角清除待处理，失败和恢复不隐式重生。"
+    },
+    {
+      "id": "advanced_multiview_repository",
+      "path": "tools/ai/advanced_multiview_repository.py",
+      "needle": "class AdvancedMultiviewRepository:",
+      "detail": "用户 models 根下独立组／原件／不可变设计版本；同组替换当前上传引用并持久化待处理集合，使用OS单写锁、CAS与原子记录。"
+    },
+    {
       "id": "model_application",
       "path": "tools/ai/model_generation_workflow.py",
       "needle": "class ModelGenerationWorkflow:"
@@ -657,6 +681,30 @@
       "id": "architecture_gate",
       "path": "scripts/verify_ai_integration.py",
       "needle": "def main("
+    },
+    {
+      "id": "advanced_creation_host",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.cpp",
+      "needle": "void AdvancedCreationFeatureHost::generate_model(Confirm confirm)",
+      "detail": "高级独立宿主；确认记录持久化与显式对账，后台请求不释放前台锁。"
+    },
+    {
+      "id": "advanced_creation_workspace",
+      "path": "src/slic3r/GUI/Redesign/AdvancedCreationWorkspace.cpp",
+      "needle": "struct AdvancedCreationWorkspace::Impl {",
+      "detail": "高级四图界面和独立后处理宿主；旧单图历史显式打开，不进入智能 Session。"
+    },
+    {
+      "id": "advanced_multiview_models",
+      "path": "tools/ai/advanced_multiview_models.py",
+      "needle": "class AdvancedMultiviewModels:",
+      "detail": "四具名版本冻结为 Job-v2；模型确认、受理链接和原任务恢复。"
+    },
+    {
+      "id": "advanced_multiview_model_workflow",
+      "path": "tools/ai/advanced_multiview_model_workflow.py",
+      "needle": "class AdvancedMultiviewModelWorkflow:",
+      "detail": "只使用已确认四图，复用模型网关和产物端口；不自动重生设计。"
     }
   ],
   "journeys": [
@@ -1823,22 +1871,37 @@
           "tools/ai/model_generation_workflow.py",
           "tools/ai/design_workflow.py",
           "tools/ai/model_contracts.py",
-          "tools/ai/text_capability_application.py"
+          "tools/ai/text_capability_application.py",
+          "tools/ai/advanced_multiview*",
+          "src/slic3r/GUI/AI/ModelGeneration/AdvancedCreation*",
+          "src/slic3r/GUI/AI/ModelGeneration/AdvancedMultiviewClient*",
+          "src/slic3r/GUI/Redesign/AdvancedCreationWorkspace*"
         ],
         "evidence": [
           "job_application",
           "job_lifecycle",
           "model_application",
-          "design_application"
+          "design_application",
+          "advanced_creation_session",
+          "advanced_multiview_application",
+          "advanced_multiview_design",
+          "advanced_multiview_repository",
+          "advanced_creation_host",
+          "advanced_creation_workspace",
+          "advanced_multiview_models",
+          "advanced_multiview_model_workflow"
         ],
         "tests": [
           "tools/ai/test_atomic_capabilities.py",
-          "tools/ai/test_artifact_restart_recovery.py"
+          "tools/ai/test_artifact_restart_recovery.py",
+          "tools/ai/test_advanced_multiview.py",
+          "tests/slic3rutils/test_advanced_creation.cpp",
+          "tools/ai/test_advanced_multiview_models.py"
         ],
-        "state_owner": "Job / JobRepository 持有任务与产物状态",
-        "contract": "确认、取消、恢复与幂等提交在应用入口处理",
-        "note": "已独立于 HTTP；装配回调仍较宽。",
-        "build_boundary": "本地 Python sidecar 内的模块；不具有独立部署边界。"
+        "state_owner": "旧 Job / JobRepository 持有原任务；高级组仓库独立持有当前上传引用、待处理集合、四图版本与尝试，AdvancedCreation Session 持有高级桌面草稿与选择",
+        "contract": "只有首次／新建创建高级组；同组输入或风格变化强制重生对应视角并在待处理清空前禁止3D；确认、取消、恢复与幂等提交在应用入口处理",
+        "note": "旧工作流不变；高级独立 Session／Host／Workspace、同组输入更新、组版本和四图 Job-v2 已接入；供应商与真实主窗口验收分别记录。",
+        "build_boundary": "任务应用为本地 Python sidecar 模块；高级 Session 编入 libslic3r_gui STATIC，二者不具有独立部署边界。"
       },
       {
         "id": "beauty_session",
@@ -2168,16 +2231,19 @@
           "src/slic3r/GUI/AIModelOutputDirectory.hpp",
           "tools/ai/model_job_repository.py",
           "tools/ai/model_job_lifecycle.py",
+          "tools/ai/advanced_multiview_repository.py",
           "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryExport*",
           "src/slic3r/GUI/AI/ModelGeneration/WorkbenchHistory*"
         ],
         "evidence": [
           "history",
           "restore",
-          "install_model_storage"
+          "install_model_storage",
+          "advanced_multiview_repository"
         ],
         "tests": [
           "tools/ai/test_artifact_restart_recovery.py",
+          "tools/ai/test_advanced_multiview.py",
           "tests/slic3rutils/test_model_generation*"
         ],
         "state_owner": "用户数据目录、任务身份与文件指纹",

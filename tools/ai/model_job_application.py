@@ -123,6 +123,11 @@ class ModelJobApplication:
     def __init__(self, ports: ModelJobApplicationPorts):
         self.ports = ports
 
+    def _require_legacy_source(self, job_id: str) -> None:
+        job = self.ports.get_job(job_id)
+        if job is not None and job.creation_kind == "advanced_multiview_v1":
+            raise RequestError("advanced_plan_required", "This source requires its advanced four-view plan.", 409)
+
     def _persist_created(self, job: Job) -> None:
         metadata = getattr(self, "_smart_create_metadata", None)
         if metadata:
@@ -282,6 +287,7 @@ class ModelJobApplication:
         return ApplicationResult(202, {"job": response})
 
     def retry_preparation(self, job_id: str, request: dict[str, Any]) -> ApplicationResult:
+        self._require_legacy_source(job_id)
         job = self.ports.get_job(job_id)
         if job is None: raise RequestError("job_not_found", "Model job not found.", 404)
         with self.ports.lock:
@@ -330,6 +336,7 @@ class ModelJobApplication:
         return ApplicationResult(202, {"job": self.ports.present(job)})
 
     def confirm_palette(self, job_id: str, request: dict[str, Any]) -> ApplicationResult:
+        self._require_legacy_source(job_id)
         job = self.ports.get_job(job_id)
         if job is None:
             raise RequestError("job_not_found", "Model job not found.", 404)
@@ -365,6 +372,7 @@ class ModelJobApplication:
         return ApplicationResult(200, {"job": response})
 
     def set_generation_options(self, job_id: str, request: dict[str, Any]) -> ApplicationResult:
+        self._require_legacy_source(job_id)
         legacy_keys = {"provider", "face_limit", "geometry_quality", "texture_quality", "output_format"}
         model_keys = legacy_keys | {"design_provider", "design_model", "geometry_model"}
         request_keys = set(request)
@@ -400,6 +408,7 @@ class ModelJobApplication:
         return ApplicationResult(200, {"job": response})
 
     def reuse_design(self, job_id: str, request: dict[str, Any]) -> ApplicationResult:
+        self._require_legacy_source(job_id)
         if request:
             raise RequestError("invalid_request", "Reusing a design takes no provider or file arguments.", 400)
         source = self.ports.get_job(job_id)
@@ -412,6 +421,7 @@ class ModelJobApplication:
         return ApplicationResult(200, {"job": response})
 
     def generate(self, job_id: str, request: dict[str, Any]) -> ApplicationResult:
+        self._require_legacy_source(job_id)
         if "prepared_prompt" not in request:
             raise RequestError("invalid_request", "prepared_prompt is required.", 400)
         raw_prompt = request.get("prepared_prompt")
@@ -534,6 +544,9 @@ class ModelJobApplication:
         return ApplicationResult(200, {"job": response})
 
     def retexture(self, reference_job_id: str, request: dict[str, Any]) -> ApplicationResult:
+        self._require_legacy_source(reference_job_id)
+        if isinstance(request.get("geometry_job_id"), str):
+            self._require_legacy_source(request["geometry_job_id"])
         if set(request) != {"geometry_job_id"}:
             raise RequestError(
                 "invalid_request",

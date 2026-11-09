@@ -137,6 +137,7 @@ bool ModelGenerationPanel::can_generate_design_from_shell() const
 
 bool ModelGenerationPanel::request_generate_design()
 {
+    if (m_advanced_only) return false;
     if (!can_generate_design_from_shell())
         return false;
     m_smart_mode = false; m_smart_flow.stop();
@@ -147,6 +148,7 @@ bool ModelGenerationPanel::request_generate_design()
 
 bool ModelGenerationPanel::request_generate_model()
 {
+    if (m_advanced_only) return false;
     const bool reuse_ready_model = can_reuse_ready_model_design();
     if (m_shutdown || !m_page_initialized || m_generate == nullptr ||
         (!m_generate->IsEnabled() && !reuse_ready_model))
@@ -493,8 +495,9 @@ void ModelGenerationPanel::publish_ui_state()
 }
 
 ModelGenerationPanel::ModelGenerationPanel(wxWindow* parent, AI::IModelArtifactConsumer& artifact_consumer,
-                                           AI::IPrintablePaletteProvider& palette_provider)
+                                           AI::IPrintablePaletteProvider& palette_provider, bool advanced_only)
     : wxPanel(parent)
+    , m_advanced_only(advanced_only)
     , m_artifact_consumer(artifact_consumer)
     , m_palette_provider(palette_provider)
     , m_client(AISidecarClient::default_endpoint())
@@ -615,6 +618,7 @@ void ModelGenerationPanel::show_input_hint(const wxString& message, wxWindow* fo
 
 void ModelGenerationPanel::restore_latest_job(bool require_visible)
 {
+    if (m_advanced_only) return; // Advanced opens only its explicit group-linked or legacy advanced job.
     if (m_shutdown || !m_page_initialized || (require_visible && !IsShownOnScreen()) ||
         !m_service_available || m_restore_checked || !m_job_id.empty())
         return;
