@@ -53,6 +53,60 @@ TEST_CASE("Other suites and explicit palettes retain manual workbench processing
     CHECK_FALSE(PP::palette_allows_automatic_workbench(2, {}, false));
 }
 
+TEST_CASE("Saved model checks bind the complete coloring document and cannot certify native imports",
+          "[WorkbenchArtifactValidation][WorkbenchSavedReopen]")
+{
+    using namespace Slic3r::GUI;
+    const auto purpose = WorkbenchCheckPurpose::SavedModelReadOnly;
+    auto check = certified_check(sha('1'), purpose);
+    nlohmann::json metadata {{"source", "local_finishing"}, {"schema_version", 4},
+        {"model_sha256", sha('1')}, {"triangle_count", 4},
+        {"beauty_workbench", {{"geometry_id", "geometry"}, {"face_patch", {0,0,0,0}}}}};
+    const auto certificate = PP::encode_workbench_check_certificate(check, purpose,
+        "geometry", "appearance", "saved.json", metadata);
+    metadata["workbench_check_certificate"] = certificate;
+    REQUIRE(PP::valid_workbench_check_certificate(certificate, purpose,
+        sha('1'), "geometry", "appearance", "saved.json", metadata));
+    WorkbenchCheckResult restored;
+    REQUIRE(PP::decode_workbench_check_certificate(certificate, restored));
+    CHECK(restored.purpose == purpose);
+    CHECK(restored.status == WorkbenchCheckStatus::Normal);
+    CHECK(restored.self_intersections_checked);
+    CHECK_FALSE(PP::valid_workbench_check_certificate(certificate,
+        WorkbenchCheckPurpose::PortraitPostColorReadOnly, sha('1'), "geometry", "appearance",
+        "saved.json", metadata, sha('2'), sha('3')));
+    CHECK_FALSE(PP::valid_workbench_check_certificate(certificate, purpose,
+        sha('9'), "geometry", "appearance", "saved.json", metadata));
+    CHECK_FALSE(PP::valid_workbench_check_certificate(certificate, purpose,
+        sha('1'), "other-geometry", "appearance", "saved.json", metadata));
+    CHECK_FALSE(PP::valid_workbench_check_certificate(certificate, purpose,
+        sha('1'), "geometry", "other-appearance", "saved.json", metadata));
+    CHECK_FALSE(PP::valid_workbench_check_certificate(certificate, purpose,
+        sha('1'), "geometry", "appearance", "other.json", metadata));
+    metadata["beauty_workbench"]["face_patch"][0] = 1;
+    CHECK_FALSE(PP::valid_workbench_check_certificate(certificate, purpose,
+        sha('1'), "geometry", "appearance", "saved.json", metadata));
+}
+
+TEST_CASE("Saved model certificates reject incomplete topology and native claims",
+          "[WorkbenchArtifactValidation][WorkbenchSavedReopen]")
+{
+    using namespace Slic3r::GUI;
+    const auto purpose = WorkbenchCheckPurpose::SavedModelReadOnly;
+    auto check = certified_check(sha('1'), purpose);
+    nlohmann::json metadata {{"triangle_count", 4}};
+    SECTION("self intersection") { check.self_intersections = 1; }
+    SECTION("unavailable predicate") { check.self_intersections_checked = false; }
+    SECTION("open boundary") { check.boundary_edges = 1; }
+    SECTION("not checked") { check.status = WorkbenchCheckStatus::NotRun; }
+    SECTION("failed check") { check.status = WorkbenchCheckStatus::Failed; }
+    SECTION("native reference") { metadata["native_portrait_partition"] = nlohmann::json::object(); }
+    const auto certificate = PP::encode_workbench_check_certificate(check, purpose,
+        "geometry", "appearance", "saved.json", metadata);
+    CHECK_FALSE(PP::valid_workbench_check_certificate(certificate, purpose,
+        sha('1'), "geometry", "appearance", "saved.json", metadata));
+}
+
 TEST_CASE("Portrait source risk certificates are content addressed and reusable only for the same identity",
     "[WorkbenchArtifactValidation]")
 {

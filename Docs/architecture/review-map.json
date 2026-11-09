@@ -387,7 +387,8 @@
     {
       "id": "workbench_check",
       "path": "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchCheck.cpp",
-      "needle": "bool ModelGenerationPanel::request_check_workbench(bool automatic)"
+      "needle": "bool ModelGenerationPanel::request_check_workbench(bool automatic)",
+      "detail": "Checks reuse content-bound saved results; first-import partitioning excludes native geometry and existing coloring. Ordinary saves verify the final artifact and bind the complete editing metadata."
     },
     {
       "id": "workbench_beauty",
@@ -686,7 +687,7 @@
       "id": "native_workbench_publication",
       "path": "src/slic3r/GUI/AI/ModelGeneration/NativeWorkbenchPublication.hpp",
       "needle": "inline void prepare_native_workbench_publication(",
-      "detail": "Manual native color publication preserves region semantics, color reduction, slot binding, atomic history and content-bound topology certificates."
+      "detail": "Manual native color publication preserves region semantics, color reduction, slot binding, atomic history and content-bound topology certificates. WorkbenchModelInspection also restores unchanged legacy appearance geometry only after verifying its complete native ancestry and ordered corners; ordinary saved certificates cannot authorize native claims."
     }
   ],
   "journeys": [
@@ -1323,8 +1324,8 @@
     {
       "id": "workbench_check",
       "label": "工作副本检查",
-      "detail": "加载及保存后自动检查、安全修复和复检，展示残留问题与失败原因",
-      "boundary": "仅在身份兼容的 OBJ 工作副本上执行支持的修复；未覆盖的检查不显示正常",
+      "detail": "入场及手动检查共用修复、复检与原子保存；按当前模型身份恢复、补调度及显示通过或失败",
+      "boundary": "修复内部候选通过拓扑、几何和外观验证才自动发布；CGAL 与增强修复回退，失败不放行风险导入",
       "group": "资产与工作区",
       "evidence": [
         "workbench_check"

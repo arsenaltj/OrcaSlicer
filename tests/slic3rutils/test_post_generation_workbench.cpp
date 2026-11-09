@@ -56,6 +56,80 @@
 
 using namespace Slic3r::GUI;
 
+TEST_CASE("Saved coloring and native geometry never restart first-import partitioning",
+          "[PostGenerationWorkbench][WorkbenchCheckLifecycle]")
+{
+    CHECK(workbench_initial_partition_requested(true, true, false, false, false));
+    CHECK_FALSE(workbench_initial_partition_requested(false, true, false, false, false));
+    CHECK_FALSE(workbench_initial_partition_requested(true, false, false, false, false));
+    CHECK_FALSE(workbench_initial_partition_requested(true, true, true, false, false));
+    CHECK_FALSE(workbench_initial_partition_requested(true, true, false, true, false));
+    CHECK_FALSE(workbench_initial_partition_requested(true, true, false, false, true));
+}
+
+TEST_CASE("Check scheduling recovers after temporary blockers without requiring Beauty color matching",
+          "[PostGenerationWorkbench][WorkbenchCheckLifecycle]")
+{
+    // The previous editing session may have no compatible filament binding.
+    // Geometry inspection can still run when the model is presented and idle.
+    CHECK(workbench_check_start_allowed(true, true, false, false, false));
+    CHECK_FALSE(workbench_check_start_allowed(false, true, false, false, false));
+    CHECK_FALSE(workbench_check_start_allowed(true, false, false, false, false));
+    CHECK_FALSE(workbench_check_start_allowed(true, true, true, false, false));
+    CHECK(workbench_check_start_allowed(true, true, false, false, false));
+    CHECK_FALSE(workbench_check_start_allowed(true, true, false, true, false));
+    CHECK_FALSE(workbench_check_start_allowed(true, true, false, false, true));
+}
+
+TEST_CASE("A loaded model is pending until its current check and repair publication finish",
+          "[PostGenerationWorkbench][WorkbenchCheckLifecycle]")
+{
+    WorkbenchCheckResult result;
+    CHECK(workbench_check_outcome(result) == WorkbenchCheckOutcome::Pending);
+    result.status = WorkbenchCheckStatus::Running;
+    CHECK(workbench_check_outcome(result) == WorkbenchCheckOutcome::Processing);
+    result.status = WorkbenchCheckStatus::Normal;
+    result.candidate_status = RepairCandidateStatus::Ready;
+    CHECK(workbench_check_outcome(result) == WorkbenchCheckOutcome::Processing);
+    result.candidate_status = RepairCandidateStatus::Accepted;
+    CHECK(workbench_check_outcome(result, true) == WorkbenchCheckOutcome::Processing);
+    CHECK(workbench_check_outcome(result) == WorkbenchCheckOutcome::Passed);
+    for (const auto status : {WorkbenchCheckStatus::Attention, WorkbenchCheckStatus::Invalid, WorkbenchCheckStatus::Failed}) {
+        result.status = status;
+        result.candidate_status = RepairCandidateStatus::None;
+        CHECK(workbench_check_outcome(result) == WorkbenchCheckOutcome::Failed);
+        // A rejected or unloadable preview must never keep the terminal UI
+        // processing just because an old temporary-candidate flag remains.
+        result.candidate_status = RepairCandidateStatus::Ready;
+        CHECK(workbench_check_outcome(result) == WorkbenchCheckOutcome::Failed);
+        CHECK(workbench_check_outcome(result, true) == WorkbenchCheckOutcome::Processing);
+    }
+}
+
+TEST_CASE("Manual and automatic repairs publish only verified topology geometry and appearance",
+          "[WorkbenchTopology][WorkbenchCheckLifecycle]")
+{
+    auto check = inspect_workbench_mesh(Slic3r::make_cube(20., 20., 20.));
+    REQUIRE(workbench_topology_safe(check));
+    check.candidate_status = RepairCandidateStatus::Ready;
+    check.appearance_mapped = true;
+    check.appearance_confidence = 1.;
+    for (const auto source : {WorkbenchCheckSource::Automatic, WorkbenchCheckSource::Manual}) {
+        check.source = source;
+        CHECK(workbench_repair_publication_allowed(check, true));
+        CHECK_FALSE(workbench_repair_publication_allowed(check, false));
+        check.appearance_mapped = false;
+        CHECK_FALSE(workbench_repair_publication_allowed(check, true));
+        check.appearance_mapped = true;
+        check.appearance_confidence = 0.98;
+        CHECK_FALSE(workbench_repair_publication_allowed(check, true));
+        check.appearance_confidence = 1.;
+        check.self_intersections = 1;
+        CHECK_FALSE(workbench_repair_publication_allowed(check, true));
+        check.self_intersections = 0;
+    }
+}
+
 TEST_CASE("Workbench palette status keeps Honor fallback reasons visible",
           "[PostGenerationWorkbench][ModelPreviewPalette][UiRedesign]")
 {
@@ -3269,7 +3343,8 @@ WorkbenchNativeTopologyCertificate native_publication_proof_fixture(
             {"native_mesh_sha256", sha('7')},
             {"geometry_id", proof.geometry_id}, {"face_count", proof.face_count}}}};
     proof.partition_metadata = {{"schema", "orca.native-workbench-partition-commit/v1"},
-        {"transaction_status", "committed"}, {"portrait_print_id", "fixture-flow"},
+        {"schema_version", 6}, {"source", "native_workbench_partition"},
+        {"transaction_status", "committed"},
         {"source_model", "immutable-source.glb"}, {"source_sha256", sha('1')},
         {"model_path", source.generic_string()}, {"model_sha256", proof.carrier_sha256},
         {"native_portrait_partition", proof.native_reference},
@@ -3303,8 +3378,10 @@ TEST_CASE("Native portrait publication reuses only the complete bound strict cer
     const auto proof = native_publication_proof_fixture(source.path(), original);
     WorkbenchCheckResult decoded;
     std::string rejection;
-    REQUIRE(decode_native_publication_certificate(
-        candidate.path(), source.path(), proof, decoded, rejection));
+    const bool valid = decode_native_publication_certificate(
+        candidate.path(), source.path(), proof, decoded, rejection);
+    INFO(rejection);
+    REQUIRE(valid);
     CHECK(rejection.empty());
     CHECK(decoded.before_faces == cube.indices.size());
     CHECK(decoded.before_vertices == cube.vertices.size());
@@ -3333,6 +3410,12 @@ TEST_CASE("Native portrait publication rejects tampering even when full geometry
     const auto original = inspect_workbench_model(source.path());
     REQUIRE(workbench_topology_safe(original));
     auto proof = native_publication_proof_fixture(source.path(), original);
+    WorkbenchCheckResult baseline;
+    std::string baseline_rejection;
+    const bool baseline_valid = decode_native_publication_certificate(
+        candidate.path(), source.path(), proof, baseline, baseline_rejection);
+    INFO(baseline_rejection);
+    REQUIRE(baseline_valid);
     const auto resign_metadata = [&] {
         proof.partition_metadata["workbench_check_certificate"] =
             WorkbenchArtifacts::encode_workbench_check_certificate(original,
@@ -4444,6 +4527,148 @@ TEST_CASE("Saved native metadata cannot replace a previously owned certificate w
     std::string error;
     CHECK_FALSE(prepare_workbench_import_topology(candidate, false, result, error, {}, &fixture.request));
     CHECK_FALSE(error.empty());
+}
+
+TEST_CASE("Saved face coloring restores only its unchanged certified native geometry",
+          "[WorkbenchSavedReopen][WorkbenchTopology][WorkbenchCheckLifecycle]")
+{
+    using namespace Slic3r;
+    NativeImportFixture fixture;
+    const auto candidate = fixture.directory.path / "orcaslicer-ai-finish-recolor.obj";
+    const auto metadata_path = fixture.directory.path / "orcaslicer-ai-finish-recolor.json";
+    AI::BeautyDocument document;
+    document.geometry_id = AI::SurfaceSelectionPersistence::geometry_fingerprint(fixture.carrier_mesh.its);
+    document.face_count = fixture.carrier_mesh.its.indices.size();
+    document.face_patch.assign(document.face_count, 0);
+    AI::ModelFinishingOptions options;
+    options.smooth_surface = false;
+    options.repair_mesh = false;
+    options.beauty_appearance = true;
+    options.beauty_document = document.encode();
+    options.appearance.face_weights.assign(document.face_count, 1.f);
+    options.appearance.face_target_colors.assign(document.face_count, {.2f, .4f, .8f});
+    for (size_t face = 0; face < document.face_count; ++face) options.selected_faces.push_back(face);
+    const auto edited = AI::finish_model_artifact(fixture.carrier, candidate, options);
+    INFO(edited.error);
+    REQUIRE(edited.success);
+    nlohmann::json metadata {{"source", "local_finishing"}, {"schema_version", 4},
+        {"source_model", fixture.carrier.filename().generic_string()},
+        {"source_sha256", AI::model_artifact_sha256(fixture.carrier)},
+        {"model_sha256", AI::model_artifact_sha256(candidate)}, {"triangle_count", document.face_count}};
+    SECTION("unchanged colors keep history and import topology") {
+        { boost::filesystem::ofstream output(metadata_path); output << metadata.dump(); }
+        TriangleMesh mesh; ObjInfo colors; std::string error;
+        REQUIRE(AI::load_model_artifact(candidate, mesh, colors, error));
+        const auto original_colors = colors.vertex_colors;
+        REQUIRE(restore_workbench_appearance_topology(mesh, candidate));
+        CHECK(mesh.its.indices == fixture.original.indices);
+        CHECK(mesh.its.vertices == fixture.original.vertices);
+        CHECK(workbench_topology_safe(inspect_workbench_model(candidate)));
+        CHECK(workbench_topology_safe(inspect_workbench_publication(candidate, fixture.carrier, nullptr)));
+        REQUIRE(AI::load_model_artifact(candidate, mesh, colors, error));
+        AI::ModelImportRequest request; request.artifact.local_path = candidate;
+        AI::ModelImportResult imported;
+        REQUIRE(prepare_workbench_import_topology(mesh, false, imported, error, {}, &request));
+        CHECK_FALSE(imported.topology_risk);
+        CHECK(mesh.its.indices == fixture.original.indices);
+        REQUIRE(AI::load_model_artifact(candidate, mesh, colors, error));
+        CHECK(colors.vertex_colors == original_colors);
+        CHECK(AI::model_artifact_sha256(candidate) == edited.output_sha256);
+    }
+    SECTION("changed source hash cannot reuse the original geometry") {
+        metadata["source_sha256"] = std::string(64, 'a');
+        { boost::filesystem::ofstream output(metadata_path); output << metadata.dump(); }
+        TriangleMesh mesh; ObjInfo colors; std::string error;
+        REQUIRE(AI::load_model_artifact(candidate, mesh, colors, error));
+        CHECK_FALSE(restore_workbench_appearance_topology(mesh, candidate));
+    }
+    SECTION("changed triangle corners cannot acquire the source certificate") {
+        TriangleMesh mesh; ObjInfo colors; std::string error;
+        REQUIRE(AI::load_model_artifact(candidate, mesh, colors, error));
+        mesh.its.vertices.front().x() += .01f;
+        CHECK_FALSE(restore_workbench_appearance_topology(mesh, candidate, {}, fixture.carrier));
+    }
+    SECTION("cancel does not replace the candidate geometry") {
+        TriangleMesh mesh; ObjInfo colors; std::string error;
+        REQUIRE(AI::load_model_artifact(candidate, mesh, colors, error));
+        const auto before = mesh.its;
+        CHECK_FALSE(restore_workbench_appearance_topology(mesh, candidate, [] { return true; }, fixture.carrier));
+        CHECK(mesh.its.vertices == before.vertices);
+        CHECK(mesh.its.indices == before.indices);
+    }
+}
+
+TEST_CASE("A real saved recolor retains its native geometry through publication and import",
+          "[.WorkbenchRecolorQA]")
+{
+    using namespace Slic3r;
+    const char* fixture = std::getenv("ORCASLICER_MODEL_ARTIFACT_FIXTURE");
+    REQUIRE(fixture);
+    const boost::filesystem::path source(fixture);
+    const auto source_hash = AI::model_artifact_sha256(source);
+    const auto root = source.parent_path().filename() == "downloads"
+        ? source.parent_path().parent_path() : source.parent_path();
+    nlohmann::json record;
+    { boost::filesystem::ifstream input(AI::beauty_metadata_path(source, root)); input >> record; }
+    const auto native_path = root / record.at("source_model").get<std::string>();
+    const auto native_metadata_path = AI::beauty_metadata_path(native_path, root);
+    WorkbenchNativeTopologyCertificate proof;
+    { boost::filesystem::ifstream input(native_metadata_path); input >> proof.partition_metadata; }
+    proof.partition_metadata_path = native_metadata_path.string();
+    proof.native_reference = proof.partition_metadata.at("native_portrait_partition");
+    proof.candidate_sha256 = proof.carrier_sha256 = AI::model_artifact_sha256(native_path);
+    proof.geometry_id = proof.native_reference.at("geometry_id").get<std::string>();
+    proof.appearance_id = proof.native_reference.at("appearance_id").get<std::string>();
+    proof.partition_digest = proof.native_reference.at("partition_digest").get<std::string>();
+    proof.topology_hash = proof.native_reference.at("topology_hash").get<std::string>();
+    proof.face_count = proof.native_reference.at("cache_reference").at("face_count").get<size_t>();
+    WorkbenchCheckResult certified;
+    std::string rejection;
+    const bool certified_source = decode_native_publication_certificate(
+        native_path, native_path, proof, certified, rejection);
+    INFO(rejection);
+    REQUIRE(certified_source);
+    TriangleMesh native_mesh, source_mesh;
+    ObjInfo source_colors;
+    std::string source_error;
+    NativePortrait::NativePortraitPartitionIdentity native_identity;
+    REQUIRE(NativePortrait::load_native_portrait_partition_cache(
+        proof.native_reference.at("cache_reference"),
+        boost::filesystem::path(proof.native_reference.at("cache_path").get<std::string>()).parent_path(),
+        native_identity, source_error, &native_mesh));
+    REQUIRE(AI::load_model_artifact(source, source_mesh, source_colors, source_error));
+    const bool corners_match = NativePortrait::same_native_triangle_corners(source_mesh.its, native_mesh.its);
+    INFO("saved corners match native cache: " << corners_match);
+    const bool restored_source = restore_workbench_appearance_topology(source_mesh, source);
+    INFO("saved topology restored: " << restored_source);
+    REQUIRE(corners_match);
+    REQUIRE(restored_source);
+    ScopedTemporaryFile candidate(".obj");
+    boost::filesystem::copy_file(source, candidate.path());
+    const auto saved_check = inspect_workbench_publication(candidate.path(), source, nullptr);
+    INFO(saved_check.summary);
+    REQUIRE(workbench_topology_safe(saved_check));
+    CHECK(saved_check.model_sha256 == source_hash);
+    TriangleMesh mesh; ObjInfo colors; std::string error;
+    REQUIRE(AI::load_model_artifact(candidate.path(), mesh, colors, error));
+    REQUIRE(restore_workbench_appearance_topology(mesh, candidate.path(), {}, source));
+    CHECK(its_num_open_edges(mesh.its) == 0);
+    CHECK(workbench_topology_safe(inspect_workbench_model(source)));
+    const auto identity = mesh.its;
+    REQUIRE(AI::load_model_artifact(candidate.path(), mesh, colors, error));
+    AI::ModelImportRequest request; request.artifact.local_path = source;
+    AI::ModelImportResult imported;
+    REQUIRE(prepare_workbench_import_topology(mesh, false, imported, error, {}, &request));
+    CHECK_FALSE(imported.topology_risk);
+    CHECK(mesh.its.indices == identity.indices);
+    CHECK(mesh.its.vertices == identity.vertices);
+    CHECK(AI::model_artifact_sha256(source) == source_hash);
+    if (const char* report = std::getenv("ORCASLICER_RECOLOR_QA_REPORT")) {
+        boost::filesystem::ofstream output(report);
+        output << nlohmann::json {{"source_sha256", source_hash}, {"faces", saved_check.before_faces},
+            {"vertices", saved_check.before_vertices}, {"summary", saved_check.summary},
+            {"publication_safe", true}, {"native_import_safe", true}, {"source_unchanged", true}}.dump(2);
+    }
 }
 
 TEST_CASE("A rebuilt real native portrait imports with exact closed topology and unchanged face painting",

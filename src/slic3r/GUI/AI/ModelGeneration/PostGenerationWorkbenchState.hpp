@@ -17,10 +17,8 @@ enum class WorkbenchCheckStatus { NotRun, Running, Normal, Attention, Invalid, F
 enum class WorkbenchCheckPhase { Idle, Inspecting, Repairing, Rechecking };
 enum class RepairCandidateStatus { None, Generating, Ready, Accepted, Rejected, Failed };
 enum class WorkbenchFloatingCardMode { None, ModelCheck, HonorSuiteSemantic };
-enum class WorkbenchCheckPurpose { GeneralImport, PortraitSourceRisk, PortraitPostColorReadOnly };
-// Automatic checks are run when a model first becomes visible in the 3D
-// workbench; manual checks are initiated from the sidebar and retain the
-// existing candidate workflow.
+enum class WorkbenchCheckPurpose { GeneralImport, PortraitSourceRisk, PortraitPostColorReadOnly, SavedModelReadOnly };
+// Both entry points inspect, repair and atomically publish without user review.
 enum class WorkbenchCheckSource { Automatic, Manual };
 
 struct WorkbenchCheckResult {
@@ -45,8 +43,7 @@ struct WorkbenchCheckResult {
     size_t small_faces {0};
     std::vector<size_t> issue_faces;
     size_t isolated_components {0};
-    // A repair is always a temporary candidate.  The original check remains
-    // available while the candidate is being reviewed.
+    // A temporary repair is internal until its verified publication completes.
     RepairCandidateStatus candidate_status {RepairCandidateStatus::None};
     std::string candidate_path;
     std::string source_sha256;
@@ -65,10 +62,42 @@ inline bool workbench_automatic_check_should_start(bool workbench_open, bool wor
     return workbench_open && workbench_presented && model_ready;
 }
 
+// Geometry inspection is independent of Beauty's filament matching gate.
+// Shared processing and unsaved work still protect the current asset.
+inline bool workbench_check_start_allowed(bool presented, bool model_ready,
+    bool processing, bool candidate_pending, bool unsaved_changes)
+{
+    return presented && model_ready && !processing && !candidate_pending && !unsaved_changes;
+}
+
+enum class WorkbenchCheckOutcome { Pending, Processing, Passed, Failed };
+
+inline WorkbenchCheckOutcome workbench_check_outcome(const WorkbenchCheckResult& check,
+    bool processing = false)
+{
+    if (processing || check.status == WorkbenchCheckStatus::Running)
+        return WorkbenchCheckOutcome::Processing;
+    if (check.status == WorkbenchCheckStatus::Attention || check.status == WorkbenchCheckStatus::Invalid ||
+        check.status == WorkbenchCheckStatus::Failed)
+        return WorkbenchCheckOutcome::Failed;
+    if (check.candidate_status == RepairCandidateStatus::Generating ||
+        check.candidate_status == RepairCandidateStatus::Ready)
+        return WorkbenchCheckOutcome::Processing;
+    if (check.status == WorkbenchCheckStatus::NotRun) return WorkbenchCheckOutcome::Pending;
+    return check.status == WorkbenchCheckStatus::Normal
+        ? WorkbenchCheckOutcome::Passed : WorkbenchCheckOutcome::Failed;
+}
+
 inline bool workbench_check_allows_topology_repair(bool native_partition_requested = false)
 {
     // Shared partitioning owns repair before clustering; checks are read-only until then.
     return !native_partition_requested;
+}
+
+inline bool workbench_initial_partition_requested(bool automatic, bool appearance_available,
+    bool native_partition_valid, bool persisted_colors, bool bound_edits)
+{
+    return automatic && appearance_available && !native_partition_valid && !persisted_colors && !bound_edits;
 }
 
 
@@ -170,15 +199,8 @@ inline bool workbench_navigation_allowed(bool modal_blocking, bool leaves_workbe
 inline std::string workbench_check_status_line(const WorkbenchCheckResult& check,
                                                bool risk_acknowledged = false)
 {
-    if (check.purpose == WorkbenchCheckPurpose::PortraitSourceRisk &&
-        check.status != WorkbenchCheckStatus::NotRun &&
-        check.status != WorkbenchCheckStatus::Running &&
-        check.status != WorkbenchCheckStatus::Failed)
-        return "人物来源风险已记录";
-    if (risk_acknowledged && check.status == WorkbenchCheckStatus::Attention)
-        return "已确认开放边界风险，可继续导入切片";
     if (check.candidate_status == RepairCandidateStatus::Ready)
-        return "修复候选已生成，等待确认";
+        return "修复复检通过，正在保存……";
     switch (check.status) {
     case WorkbenchCheckStatus::NotRun: return "模型尚未检查";
     case WorkbenchCheckStatus::Running:
@@ -187,13 +209,10 @@ inline std::string workbench_check_status_line(const WorkbenchCheckResult& check
         case WorkbenchCheckPhase::Rechecking: return "正在复检模型……";
         default: return "正在检查模型……";
         }
-    case WorkbenchCheckStatus::Normal:
-        return !check.repair_reason.empty() || check.removed_faces || check.reversed_faces ||
-                       (check.before_faces && check.after_faces && check.before_faces != check.after_faces)
-            ? "模型修复已完成" : "模型检查已完成，未发现问题";
-    case WorkbenchCheckStatus::Attention: return "模型检查完成，存在开放边界风险";
-    case WorkbenchCheckStatus::Invalid: return "模型检查未通过";
-    case WorkbenchCheckStatus::Failed: return "模型检查失败";
+    case WorkbenchCheckStatus::Normal: return "检查通过";
+    case WorkbenchCheckStatus::Attention:
+    case WorkbenchCheckStatus::Invalid:
+    case WorkbenchCheckStatus::Failed: return "检查失败";
     }
     return "模型尚未检查";
 }

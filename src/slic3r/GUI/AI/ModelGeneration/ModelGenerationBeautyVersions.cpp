@@ -203,6 +203,12 @@ void ModelGenerationPanel::select_local_finishing_version(const boost::filesyste
 void ModelGenerationPanel::accept_model_finishing()
 {
     auto report = [this](const wxString& message) {
+        if (m_workbench_auto_repair && !m_busy && !m_finishing_running) {
+            m_workbench_auto_repair = false;
+            m_workbench_check_result.candidate_status = RepairCandidateStatus::Failed;
+            discard_model_finishing();
+            fail_workbench_check(into_u8(message));
+        }
         m_workbench_operation_notice = into_u8(message);
         m_finishing_status->SetLabel(message);
         m_status->SetLabel(message);
@@ -215,22 +221,16 @@ void ModelGenerationPanel::accept_model_finishing()
     if (m_finishing_candidate.empty()) {
         report(_L("没有可接受的候选，请先检查或生成候选。")); return;
     }
-    if (m_finishing_workbench && m_workbench_editing && !beauty_color_match_current()) {
+    const bool topology_candidate = m_workbench_check_result.candidate_status == RepairCandidateStatus::Ready &&
+        m_finishing_options.repair_mesh && !m_finishing_options.smooth_surface;
+    if (!topology_candidate && m_finishing_workbench && m_workbench_editing && !beauty_color_match_current()) {
         m_save_and_return = false;
         report(_L("当前模型配色尚未完整绑定到耗材；候选保留，请恢复兼容配置后再保留效果。"));
         return;
     }
-    const bool topology_candidate = m_workbench_check_result.candidate_status == RepairCandidateStatus::Ready &&
-        m_finishing_options.repair_mesh && !m_finishing_options.smooth_surface;
-    if (topology_candidate && !workbench_topology_safe(m_workbench_check_result)) {
-        report(_L("修复候选未通过拓扑复检，请保留原模型并重新检查。")); return;
-    }
-    if (topology_candidate && !m_workbench_check_result.appearance_mapped) {
-        const auto answer = wxMessageBox(
-            _L("修复改变了面身份，当前局部涂色、语义区域或人像保护无法安全映射。\n接受修复将清除这些无法验证的编辑；选择“否”保留原模型。"),
-            _L("确认接受修复候选"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING,
-            wxGetTopLevelParent(m_workbench_shell));
-        if (answer != wxYES) { report(_L("尚未接受修复，原模型和候选保留。")); return; }
+    if (topology_candidate && !workbench_repair_publication_allowed(
+            m_workbench_check_result, m_finishing_result.repair_geometry_verified)) {
+        report(_L("修复未通过拓扑、几何或配色复检，原模型保留；可重新检查。")); return;
     }
     // A repair already has a loaded candidate and a captured colour trial.
     // Baking that trial first would replace the repair candidate and recursively
@@ -280,6 +280,8 @@ void ModelGenerationPanel::accept_model_finishing()
     }
     const auto source = m_finishing_source;
     const auto candidate = m_finishing_candidate;
+    const auto semantic_appearance_id = m_model_preview->semantic_source_content_id();
+    const auto saved_appearance_id = semantic_appearance_id.empty() ? after->model_sha256 : semantic_appearance_id;
     std::vector<boost::filesystem::path> topology_publication_artifacts;
     if (topology_candidate) {
         topology_publication_artifacts.push_back(candidate);
@@ -382,7 +384,7 @@ void ModelGenerationPanel::accept_model_finishing()
             ? PrinterFilamentConfig::capture(*m_apply_filaments_staged).signature
             : m_beauty_color_gate_configuration_signature;
         metadata["applied_printer_filament_match"] = AI::encode_model_matched_colors(*saved_match);
-    } else if (m_finishing_workbench && m_workbench_editing) {
+    } else if (!topology_candidate && m_finishing_workbench && m_workbench_editing) {
         m_save_and_return = false;
         if (m_beauty_transactions)
             m_beauty_transactions->finish(false, false, "missing printer-filament match snapshot");
@@ -441,18 +443,17 @@ void ModelGenerationPanel::accept_model_finishing()
     try {
         m_finishing_worker = std::thread([weak, revision, session_revision, canceled, committed, metadata_path,
             source, source_hash, candidate, before, after, source_context, cache_root, region_cache_unsaved,
-            topology_candidate, verified_check, filament_application, root, native_proof,
+            topology_candidate, verified_check, filament_application, root, native_proof, saved_appearance_id,
             resume_automatic_palette_after_accept,
             topology_publication_artifacts = std::move(topology_publication_artifacts),
             metadata = std::move(metadata), history_index = std::move(history_index)]() mutable {
             std::string error;
             auto final_check = verified_check;
             try {
-                if (topology_candidate || filament_application || native_proof)
-                    final_check = inspect_workbench_publication(candidate, source,
-                        topology_candidate ? &verified_check : nullptr,
-                        [canceled] { return canceled->load(); },
-                        native_proof ? &*native_proof : nullptr);
+                final_check = inspect_workbench_publication(candidate, source,
+                    topology_candidate ? &verified_check : nullptr,
+                    [canceled] { return canceled->load(); },
+                    native_proof ? &*native_proof : nullptr);
 
                 if (after->shape_details && after->shape_details->compatible(after->geometry_id, after->result.faces_after)) {
                     auto shapes = PortraitShapeCache::save(*after->shape_details, cache_root);
@@ -501,13 +502,27 @@ void ModelGenerationPanel::accept_model_finishing()
                     document = beauty.encode();
                 }
                 document["model_sha256"] = after->model_sha256;
+                metadata["beauty_workbench"] = std::move(document);
                 if (native_proof) {
-                    metadata["beauty_workbench"] = document;
                     certify_native_workbench_publication(metadata, metadata_path, final_check);
+                } else {
+                    final_check.purpose = WorkbenchCheckPurpose::SavedModelReadOnly;
+                    auto saved_check = final_check;
+                    if (topology_candidate) {
+                        saved_check.before_faces = final_check.after_faces;
+                        saved_check.before_vertices = final_check.after_vertices;
+                    }
+                    auto certificate = WorkbenchArtifacts::encode_workbench_check_certificate(saved_check,
+                        WorkbenchCheckPurpose::SavedModelReadOnly, after->geometry_id, saved_appearance_id,
+                        boost::nowide::narrow(metadata_path.wstring()), metadata);
+                    if (!WorkbenchArtifacts::valid_workbench_check_certificate(certificate,
+                            WorkbenchCheckPurpose::SavedModelReadOnly, after->model_sha256,
+                            after->geometry_id, saved_appearance_id, boost::nowide::narrow(metadata_path.wstring()), metadata))
+                        throw std::runtime_error("Saved model check certificate is invalid.");
+                    metadata["workbench_check_certificate"] = std::move(certificate);
                 }
-                const auto encoded = document.dump();
                 AI::publish_beauty_version_record(metadata_path, candidate, source, metadata,
-                    native_proof ? nullptr : &encoded, [canceled] { return canceled->load(); }, &history_index);
+                    nullptr, [canceled] { return canceled->load(); }, &history_index);
                 committed->store(true);
             } catch (const std::exception& e) {
                 error = e.what();
@@ -647,7 +662,7 @@ void ModelGenerationPanel::accept_model_finishing()
                     _L("区域缓存未保存，重新打开后需要重新识别。"));
                 self->m_status->SetLabel(self->m_finishing_status->GetLabel());
                 self->m_model_preview_message->SetLabel(_L("当前显示：已接受的三维处理版本。"));
-                if (topology_candidate || filament_application || native_proof) {
+                {
                     if (topology_candidate) {
                         // The candidate is already the accepted model at this
                         // point. Do not leave Ready in the workbench state or
@@ -659,7 +674,7 @@ void ModelGenerationPanel::accept_model_finishing()
                     self->m_workbench_check_result = final_check;
                     self->m_workbench_check_path = candidate.string();
                     self->m_workbench_check_revision = self->m_sequence;
-                } else self->m_workbench_check_result = {};
+                }
                 self->m_workbench_operation_notice = topology_candidate ? "修复已接受并保存" : "新版本已保存";
                 self->finish_printer_filament_application(true);
                 self->m_workbench_history_filter = self->m_workbench_history_page = 0;

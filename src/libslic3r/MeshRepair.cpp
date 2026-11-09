@@ -1450,119 +1450,132 @@ StrictMeshRepairResult strict_repair_mesh(
         result.timings.input_check_ms = strict_elapsed_ms(stage_started);
 
         TriangleMesh candidate(source);
-        StrictMeshTopologyReport candidate_topology;
-        bool candidate_topology_checked = false;
+        const double source_area = strict_surface_area(source, canceled);
+        const double diagonal = bounding_box(source).size().cast<double>().norm();
+        // Each strategy must satisfy the complete delivery contract before it
+        // can stop the fallback chain. A closed but distorted CGAL result must
+        // not prevent enhanced repair from trying the immutable original.
+        const auto verify = [&](bool topology_checked = false) {
+            strict_check_canceled(canceled);
+            report("Verifying repaired native portrait topology", 82);
+            auto checked_at = StrictClock::now();
+            if (!topology_checked)
+                result.output_topology = inspect_strict_topology(candidate.its, canceled);
+            result.timings.final_check_ms += strict_elapsed_ms(checked_at);
+            if (!result.output_topology.safe()) {
+                std::ostringstream message;
+                message << "Strict mesh repair topology verification failed: open=" << result.output_topology.open_edges
+                        << ", nonmanifold_edges=" << result.output_topology.nonmanifold_edges
+                        << ", nonmanifold_vertices=" << result.output_topology.nonmanifold_vertices
+                        << ", degenerate=" << result.output_topology.degenerate_faces
+                        << ", duplicate=" << result.output_topology.duplicate_faces
+                        << ", orientation=" << result.output_topology.inconsistent_edges
+                        << ", self_intersection_checked=" << result.output_topology.self_intersections_checked
+                        << ", self_intersects=" << result.output_topology.self_intersects << '.';
+                throw std::runtime_error(message.str());
+            }
+            report("Verifying repaired native portrait geometry", 92);
+            checked_at = StrictClock::now();
+            const double repaired_area = strict_surface_area(candidate.its, canceled);
+            result.area_change_ratio = std::abs(repaired_area - source_area) / std::max(source_area, 1e-30);
+            result.sampled_deviation = std::max(strict_sampled_deviation(source, candidate.its, canceled),
+                                                strict_sampled_deviation(candidate.its, source, canceled));
+            result.sampled_deviation_ratio = diagonal > 0. ? result.sampled_deviation / diagonal
+                                                           : std::numeric_limits<double>::infinity();
+            result.geometry_verified = result.sampled_deviation_ratio <= options.maximum_sampled_deviation_ratio &&
+                                       result.area_change_ratio <= options.maximum_area_change_ratio;
+            result.timings.geometry_validation_ms += strict_elapsed_ms(checked_at);
+            strict_check_canceled(canceled);
+            if (options.reject_geometry_change && !result.geometry_verified) {
+                std::ostringstream message;
+                message << "Strict mesh repair exceeded geometry limits: sampled deviation ratio="
+                        << result.sampled_deviation_ratio << ", area change ratio=" << result.area_change_ratio << '.';
+                throw std::runtime_error(message.str());
+            }
+        };
         if (result.input_topology.safe()) {
             result.strategy = "strict-inspection-no-repair";
-            candidate_topology = result.input_topology;
-            candidate_topology_checked = true;
+            result.output_topology = result.input_topology;
+            verify(true);
         } else {
+            std::string first_error;
+            bool accepted = false;
             result.first_cgal_attempted = true;
             report("Repairing native portrait mesh with CGAL", 15);
             stage_started = StrictClock::now();
-            std::string first_error;
-            RepairedMeshErrors first_errors;
-            const bool first_ok = MeshBoolean::cgal::repair(candidate, &first_errors, &first_error,
-                [&] { return canceled && canceled(); });
-            result.timings.first_cgal_ms = strict_elapsed_ms(stage_started);
-            strict_check_canceled(canceled);
-            bool needs_enhanced_repair = !first_ok;
-            if (first_ok) {
-                result.cgal_errors.merge(first_errors);
-                stage_started = StrictClock::now();
-                candidate_topology = inspect_strict_topology(candidate.its, canceled);
-                result.timings.final_check_ms += strict_elapsed_ms(stage_started);
-                candidate_topology_checked = candidate_topology.safe();
-                needs_enhanced_repair = !candidate_topology_checked;
-                if (candidate_topology_checked)
-                    result.strategy = "strict-cgal";
-                else
-                    first_error = "CGAL repair completed but topology verification remained unsafe";
+            try {
+                RepairedMeshErrors errors;
+                const bool ok = MeshBoolean::cgal::repair(candidate, &errors, &first_error,
+                    [&] { return canceled && canceled(); });
+                result.timings.first_cgal_ms = strict_elapsed_ms(stage_started);
+                strict_check_canceled(canceled);
+                if (!ok) throw std::runtime_error(first_error.empty() ? "CGAL repair failed." : first_error);
+                verify();
+                result.cgal_errors = errors;
+                result.strategy = "strict-cgal";
+                accepted = true;
+            } catch (const StrictCanceled&) {
+                throw;
+            } catch (const std::exception& error) {
+                strict_check_canceled(canceled);
+                first_error = error.what();
             }
-            if (needs_enhanced_repair) {
+            if (!accepted) {
                 result.enhanced_repair_attempted = true;
                 report("Repairing native portrait mesh with enhanced repair", 40);
                 candidate = TriangleMesh(source);
-                candidate_topology_checked = false;
+                result.geometry_verified = false;
                 stage_started = StrictClock::now();
                 std::string enhanced_error;
-                const bool enhanced_ok = repair_mesh(candidate, &result.enhanced_stats, &enhanced_error,
-                    [&](int value) {
-                        report("Repairing native portrait mesh with enhanced repair",
-                            unsigned(std::clamp(40 + value / 4, 40, 65)));
-                        strict_check_canceled(canceled);
-                    });
-                result.timings.enhanced_repair_ms = strict_elapsed_ms(stage_started);
-                strict_check_canceled(canceled);
-                if (!enhanced_ok) {
-                    throw std::runtime_error("CGAL repair failed: " + first_error +
-                        "; enhanced repair failed: " + enhanced_error);
+                bool enhanced_ok = false;
+                try {
+                    enhanced_ok = repair_mesh(candidate, &result.enhanced_stats, &enhanced_error,
+                        [&](int value) {
+                            report("Repairing native portrait mesh with enhanced repair",
+                                unsigned(std::clamp(40 + value / 4, 40, 65)));
+                            strict_check_canceled(canceled);
+                        });
+                    result.timings.enhanced_repair_ms = strict_elapsed_ms(stage_started);
+                    strict_check_canceled(canceled);
+                    if (!enhanced_ok)
+                        throw std::runtime_error(enhanced_error.empty() ? "Enhanced repair failed." : enhanced_error);
+                    verify();
+                    result.strategy = "strict-enhanced";
+                    accepted = true;
+                } catch (const StrictCanceled&) {
+                    throw;
+                } catch (const std::exception& error) {
+                    strict_check_canceled(canceled);
+                    enhanced_error = error.what();
                 }
-                stage_started = StrictClock::now();
-                candidate_topology = inspect_strict_topology(candidate.its, canceled);
-                result.timings.final_check_ms += strict_elapsed_ms(stage_started);
-                candidate_topology_checked = candidate_topology.safe();
-                if (!candidate_topology_checked) {
+                if (!accepted && enhanced_ok) {
                     result.second_cgal_attempted = true;
                     report("Rechecking enhanced repair with CGAL", 70);
                     stage_started = StrictClock::now();
                     std::string second_error;
-                    RepairedMeshErrors second_errors;
-                    const bool second_ok = MeshBoolean::cgal::repair(candidate, &second_errors, &second_error,
+                    RepairedMeshErrors errors;
+                    const bool ok = MeshBoolean::cgal::repair(candidate, &errors, &second_error,
                         [&] { return canceled && canceled(); });
                     result.timings.second_cgal_ms = strict_elapsed_ms(stage_started);
                     strict_check_canceled(canceled);
-                    if (!second_ok)
-                        throw std::runtime_error("Enhanced repair CGAL recheck failed: " + second_error);
-                    result.cgal_errors.merge(second_errors);
-                    result.strategy = "strict-enhanced-plus-cgal";
-                    candidate_topology_checked = false;
-                } else {
-                    result.strategy = "strict-enhanced";
+                    try {
+                        if (!ok) throw std::runtime_error(second_error.empty() ? "CGAL recheck failed." : second_error);
+                        verify();
+                        result.cgal_errors = errors;
+                        result.strategy = "strict-enhanced-plus-cgal";
+                        accepted = true;
+                    } catch (const StrictCanceled&) {
+                        throw;
+                    } catch (const std::exception& error) {
+                        strict_check_canceled(canceled);
+                        enhanced_error += "; CGAL recheck: " + std::string(error.what());
+                    }
                 }
+                if (!accepted)
+                    throw std::runtime_error("CGAL repair: " + first_error + "; enhanced repair: " + enhanced_error);
             }
         }
 
-        report("Verifying repaired native portrait topology", 82);
-        if (!candidate_topology_checked) {
-            stage_started = StrictClock::now();
-            candidate_topology = inspect_strict_topology(candidate.its, canceled);
-            result.timings.final_check_ms += strict_elapsed_ms(stage_started);
-        }
-        result.output_topology = candidate_topology;
-        if (!result.output_topology.safe()) {
-            std::ostringstream message;
-            message << "Strict mesh repair topology verification failed: open=" << result.output_topology.open_edges
-                    << ", nonmanifold_edges=" << result.output_topology.nonmanifold_edges
-                    << ", nonmanifold_vertices=" << result.output_topology.nonmanifold_vertices
-                    << ", degenerate=" << result.output_topology.degenerate_faces
-                    << ", duplicate=" << result.output_topology.duplicate_faces
-                    << ", orientation=" << result.output_topology.inconsistent_edges
-                    << ", self_intersection_checked=" << result.output_topology.self_intersections_checked
-                    << ", self_intersects=" << result.output_topology.self_intersects << '.';
-            throw std::runtime_error(message.str());
-        }
-
-        report("Verifying repaired native portrait geometry", 92);
-        stage_started = StrictClock::now();
-        const double source_area = strict_surface_area(source, canceled);
-        const double repaired_area = strict_surface_area(candidate.its, canceled);
-        result.area_change_ratio = std::abs(repaired_area - source_area) / std::max(source_area, 1e-30);
-        result.sampled_deviation = std::max(strict_sampled_deviation(source, candidate.its, canceled),
-                                            strict_sampled_deviation(candidate.its, source, canceled));
-        const double diagonal = bounding_box(source).size().cast<double>().norm();
-        result.sampled_deviation_ratio = diagonal > 0. ? result.sampled_deviation / diagonal
-                                                       : std::numeric_limits<double>::infinity();
-        result.geometry_verified = result.sampled_deviation_ratio <= options.maximum_sampled_deviation_ratio &&
-                                   result.area_change_ratio <= options.maximum_area_change_ratio;
-        result.timings.geometry_validation_ms = strict_elapsed_ms(stage_started);
-        strict_check_canceled(canceled);
-        if (options.reject_geometry_change && !result.geometry_verified) {
-            std::ostringstream message;
-            message << "Strict mesh repair exceeded geometry limits: sampled deviation ratio="
-                    << result.sampled_deviation_ratio << ", area change ratio=" << result.area_change_ratio << '.';
-            throw std::runtime_error(message.str());
-        }
         result.repaired_mesh = std::move(candidate.its);
         result.success = true;
         report("Native portrait mesh repair complete", 100);

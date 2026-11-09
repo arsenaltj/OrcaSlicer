@@ -635,14 +635,27 @@ NativeWorkbenchPartition build_native_workbench_partition(
     settings.mesh_repair_callback = std::move(repair);
     settings.strict_mesh_repair = true;
     PaintedMesh painted;
-    const bool success = texture_mesh.precomputed_face_colors.empty()
+    // GLB can carry a solid baseColorFactor without any image texture.
+    // Use the existing material sampler so those models reach strict repair
+    // through the face-color path instead of failing the texture precheck.
+    TexturedMesh material_mesh;
+    const TexturedMesh* input = &texture_mesh;
+    if (texture_mesh.textures.empty() && texture_mesh.precomputed_face_colors.empty()) {
+        material_mesh = texture_mesh;
+        if (!sample_original_face_colors(texture_mesh, material_mesh.precomputed_face_colors))
+            throw std::runtime_error("Orca native material sampling failed.");
+        input = &material_mesh;
+    }
+    const bool success = input->precomputed_face_colors.empty()
         ? texture_to_painting(texture_mesh, painted, settings,
             [&](int, const char* message) { tracker.progress(message); }, cancel)
-        : face_colors_to_painting(texture_mesh, painted, settings,
+        : face_colors_to_painting(*input, painted, settings,
             [&](int, const char* message) { tracker.progress(message); }, cancel);
     if (!success) {
         if (cancel && cancel()) throw std::runtime_error("Native portrait partition canceled.");
-        throw std::runtime_error("Orca native texture partition failed.");
+        throw std::runtime_error(report && !report->strict_repair.error.empty()
+            ? "Orca native strict repair failed: " + report->strict_repair.error
+            : "Orca native texture partition failed.");
     }
     tracker.finish(BuildStageStatus::Succeeded);
     const auto enumeration_started = BuildClock::now();

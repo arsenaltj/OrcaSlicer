@@ -492,6 +492,60 @@ TEST_CASE("Original appearance topology mapping follows preview color precedence
     CHECK_THAT(mapped[3][2], Catch::Matchers::WithinAbs(0.f, 0.0001f));
 }
 
+TEST_CASE("Repaired appearance ignores zero area source faces and keeps original face colors",
+          "[ModelPreviewState][OriginalAppearance][Regression]")
+{
+    indexed_triangle_set source;
+    source.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+    source.indices = {{0, 0, 1}, {0, 1, 2}, {0, 2, 2}};
+    indexed_triangle_set target = source;
+    target.vertices.emplace_back(0.25f, 0.25f, 0.f);
+    target.indices = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}};
+    Slic3r::ObjInfo appearance;
+    const bool vertex_colors = GENERATE(false, true);
+    appearance.face_colors = {{1.f, 0.f, 0.f, 1.f}, {0.f, 1.f, 0.f, 1.f}, {0.f, 0.f, 1.f, 1.f}};
+    if (vertex_colors)
+        appearance.vertex_colors = {{1.f, 0.f, 0.f, 1.f}, {0.f, 1.f, 0.f, 1.f}, {0.f, 0.f, 1.f, 1.f}};
+    std::vector<Slic3r::RGBA> mapped;
+    std::string error;
+    REQUIRE(Slic3r::GUI::original_appearance_detail::map_appearance_to_vertices(
+        source, appearance, target, mapped, error));
+    REQUIRE(mapped.size() == target.vertices.size());
+    if (vertex_colors) {
+        CHECK(mapped[0] == appearance.vertex_colors[0]);
+        CHECK_THAT(mapped[3][0], Catch::Matchers::WithinAbs(0.5f, 0.0001f));
+        CHECK_THAT(mapped[3][1], Catch::Matchers::WithinAbs(0.25f, 0.0001f));
+        CHECK_THAT(mapped[3][2], Catch::Matchers::WithinAbs(0.25f, 0.0001f));
+    } else {
+        for (const auto& color : mapped) CHECK(color == appearance.face_colors[1]);
+    }
+    CHECK_FALSE(Slic3r::GUI::original_appearance_detail::map_appearance_to_vertices(
+        source, appearance, target, mapped, error, [] { return true; }));
+    CHECK(mapped.empty());
+    CHECK_FALSE(error.empty());
+}
+
+TEST_CASE("Original appearance rejects a source without any valid surface",
+          "[ModelPreviewState][OriginalAppearance][Regression]")
+{
+    indexed_triangle_set source;
+    source.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+    source.indices = {{0, 0, 1}};
+    const bool invalid_corner = GENERATE(false, true);
+    if (invalid_corner) source.indices[0][2] = 3;
+    indexed_triangle_set target;
+    target.vertices = source.vertices;
+    target.indices = {{0, 1, 2}};
+    Slic3r::ObjInfo appearance;
+    appearance.face_colors = {{1.f, 0.f, 0.f, 1.f}};
+    std::vector<Slic3r::RGBA> mapped;
+    std::string error;
+    CHECK_FALSE(Slic3r::GUI::original_appearance_detail::map_appearance_to_vertices(
+        source, appearance, target, mapped, error));
+    CHECK(mapped.empty());
+    CHECK_FALSE(error.empty());
+}
+
 TEST_CASE("Whole-face colour exports preserve original corners after saving and reopening",
           "[ModelPreviewState][OriginalAppearance][Regression]")
 {

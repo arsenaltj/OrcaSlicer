@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <limits>
 #include <optional>
@@ -238,8 +239,32 @@ inline bool map_appearance_to_vertices(const indexed_triangle_set& source,
         return false;
     }
     try {
+        // Repair can remove zero-area source faces. They have no surface
+        // appearance to transfer and must not win a nearest-face query at a
+        // surviving corner. Keep original face IDs for face-color lookup.
+        decltype(source.indices) surface_faces;
+        std::vector<size_t> source_faces;
+        surface_faces.reserve(source.indices.size());
+        source_faces.reserve(source.indices.size());
+        for (size_t face = 0; face < source.indices.size(); ++face) {
+            if ((face & 4095) == 0 && stopped(canceled))
+                throw std::runtime_error("Original appearance mapping canceled.");
+            const auto& triangle = source.indices[face];
+            for (int corner = 0; corner < 3; ++corner)
+                if (triangle[corner] < 0 || size_t(triangle[corner]) >= source.vertices.size() ||
+                    !source.vertices[triangle[corner]].allFinite())
+                    throw std::runtime_error("原始配色映射遇到无效来源面。");
+            const Vec3d a = source.vertices[triangle[0]].cast<double>();
+            const Vec3d u = source.vertices[triangle[1]].cast<double>() - a;
+            const Vec3d v = source.vertices[triangle[2]].cast<double>() - a;
+            if (u.cross(v).squaredNorm() == 0.) continue;
+            surface_faces.push_back(triangle);
+            source_faces.push_back(face);
+        }
+        if (surface_faces.empty())
+            throw std::runtime_error("原始配色映射缺少有效来源面。");
         const auto tree = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(
-            source.vertices, source.indices);
+            source.vertices, surface_faces);
         colors.assign(target.vertices.size(), RGBA {1.f, 1.f, 1.f, 1.f});
         for (size_t index = 0; index < target.vertices.size(); ++index) {
             if ((index & 4095) == 0 && stopped(canceled))
@@ -248,9 +273,10 @@ inline bool map_appearance_to_vertices(const indexed_triangle_set& source,
             Vec3d nearest;
             const Vec3d query = target.vertices[index].cast<double>();
             const double distance = AABBTreeIndirect::squared_distance_to_indexed_triangle_set(
-                source.vertices, source.indices, tree, query, face, nearest);
-            if (distance < 0. || face >= source.indices.size())
+                source.vertices, surface_faces, tree, query, face, nearest);
+            if (!std::isfinite(distance) || distance < 0. || face >= surface_faces.size())
                 throw std::runtime_error("原始配色无法映射到修复候选。");
+            face = source_faces[face];
             // Model preview also gives vertex colors precedence when an
             // artifact exposes both representations. Keep the immutable
             // carrier and topology-remap paths on the same rule.
@@ -261,7 +287,7 @@ inline bool map_appearance_to_vertices(const indexed_triangle_set& source,
                 const Vec3d v = source.vertices[triangle[2]].cast<double>() - a;
                 const Vec3d q = nearest - a;
                 const double uu = u.dot(u), uv = u.dot(v), vv = v.dot(v);
-                const double denominator = uu * vv - uv * uv;
+                const double denominator = u.cross(v).squaredNorm();
                 if (denominator <= 0.)
                     throw std::runtime_error("原始配色映射遇到无效来源面。");
                 const double b = std::clamp((vv * q.dot(u) - uv * q.dot(v)) / denominator, 0., 1.);

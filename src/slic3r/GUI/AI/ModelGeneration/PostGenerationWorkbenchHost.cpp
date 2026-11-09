@@ -359,17 +359,14 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
     // Legacy deferred repair is intentionally never advertised to import.
     state.deferred_native_repair = false;
     state.native_repair_source_sha256.clear();
-    state.force_import_acknowledged = !state.check.model_sha256.empty() &&
-        state.check.status == WorkbenchCheckStatus::Attention &&
-        state.check.force_import_risk &&
-        m_workbench_force_import_ack_revision == state.revision &&
-        m_workbench_force_import_ack_hash == state.check.model_sha256;
-    state.can_force_import = state.actions.can_import && !candidate_pending && !state.dirty &&
-        !state.can_import_for_slicing && state.check.status == WorkbenchCheckStatus::Attention &&
-        state.check.force_import_risk && state.force_import_acknowledged;
-    state.import_has_topology_risk = state.can_force_import;
-    if (state.check.status == WorkbenchCheckStatus::Attention && state.check.force_import_risk)
-        state.import_topology_reason = state.check.summary.empty() ? "模型尚未通过闭合拓扑检查；继续导入仅允许尝试切片。" : state.check.summary;
+    // Failed checks never authorize a risky import. Detailed topology remains
+    // available for diagnosis while the user can retry or select another asset.
+    state.force_import_acknowledged = false;
+    state.can_force_import = false;
+    state.import_has_topology_risk = false;
+    if (!m_workbench_check_running && !m_native_workbench_partition_running &&
+        (state.check.status == WorkbenchCheckStatus::Attention || state.check.status == WorkbenchCheckStatus::Invalid))
+        state.check.status = WorkbenchCheckStatus::Failed;
     if (m_model_preview && !m_model_preview->project_matching_valid() &&
         state.printer_filaments.ready && state.can_edit_project_colors) {
         // The old slot identity is only a preference. Import rebuilds an exact
@@ -761,7 +758,7 @@ bool ModelGenerationPanel::request_save_and_return()
     else {
         m_save_and_return = false;
         complete_return_overview();
-        request_check_workbench(true);
+        ensure_workbench_check();
     }
     return true;
 }
@@ -775,7 +772,7 @@ void ModelGenerationPanel::finish_workbench_save()
     } else if (m_finishing_result.success && (!m_beauty_controls || !m_beauty_controls->has_changes())) {
         m_save_and_return = false;
         complete_return_overview();
-        request_check_workbench(true);
+        ensure_workbench_check();
     } else m_save_and_return = false;
 }
 

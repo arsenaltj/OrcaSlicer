@@ -275,6 +275,13 @@ void ModelGenerationPanel::hide_workbench_check_card()
 
 void ModelGenerationPanel::cancel_workbench_check()
 {
+    if (m_workbench_auto_repair && m_finishing_running && m_finishing_canceled) {
+        m_finishing_canceled->store(true);
+        if (m_workbench_check_message)
+            m_workbench_check_message->SetLabel(_L("正在取消保存，当前模型保持不变……"));
+        if (m_workbench_check_cancel_button) m_workbench_check_cancel_button->Disable();
+        return;
+    }
     if (m_native_workbench_partition_running && m_native_workbench_partition_cancel) {
         m_native_workbench_partition_cancel->store(true);
         if (m_workbench_check_message)
@@ -361,7 +368,7 @@ void ModelGenerationPanel::update_workbench_check_card()
         default: phase = _L("检查模型"); break;
         }
     } else if (m_workbench_auto_repair && m_finishing_running) phase = _L("保存修复结果");
-    else phase = result.status == WorkbenchCheckStatus::Attention ? _L("检查完成") : _L("检查未通过");
+    else phase = result.status == WorkbenchCheckStatus::Normal ? _L("检查通过") : _L("检查失败");
     bool modal_layout_changed = set_workbench_label(m_workbench_check_phase, phase);
     wxString message = native_repair
         ? _L("正在通过 Orca 原生纹理链路严格修复模型并建立固定原子色区，请稍候……")
@@ -371,15 +378,7 @@ void ModelGenerationPanel::update_workbench_check_card()
     if (honor_semantic && message.empty())
         message = _L("正在识别人像区域并匹配肤色、头发、眼白、牙齿和嘴唇，请稍候……");
     else if (!honor_semantic && m_workbench_auto_repair && m_finishing_running)
-        message = _L("安全修复已通过复检，正在自动接受并保存……");
-    else if (!honor_semantic && !m_workbench_check_running &&
-             result.status == WorkbenchCheckStatus::Attention && result.force_import_risk)
-        message += _L("\n模型仍有开放边界，自交检测尚未完成；确认风险后可点击“去切片”并复核逐层切片。\n导入许可仅绑定当前模型版本。")
-            ;
-    else if (!honor_semantic && !m_workbench_check_running &&
-             result.status != WorkbenchCheckStatus::Attention)
-        message += _L("\n当前结果暂不能导入切片。可查看详情、重新检查修复，或保留当前模型。")
-            ;
+        message = _L("安全修复已通过复检，正在自动保存……");
     if (set_workbench_label(m_workbench_check_message, message)) {
         m_workbench_check_message->Wrap(FromDIP(376));
         modal_layout_changed = true;
@@ -387,23 +386,23 @@ void ModelGenerationPanel::update_workbench_check_card()
     const bool running = native_repair || honor_semantic || m_workbench_check_running ||
         (m_workbench_auto_repair && m_finishing_running);
     modal_layout_changed = set_workbench_shown(m_workbench_check_cancel_button,
-        native_repair || (!honor_semantic && m_workbench_check_running)) || modal_layout_changed;
+        native_repair || (!honor_semantic && (m_workbench_check_running ||
+            (m_workbench_auto_repair && m_finishing_running)))) || modal_layout_changed;
     const bool cancel_requested = native_repair
         ? m_native_workbench_partition_cancel && m_native_workbench_partition_cancel->load()
-        : m_workbench_check_cancel && m_workbench_check_cancel->load();
+        : m_workbench_auto_repair && m_finishing_running
+            ? m_finishing_canceled && m_finishing_canceled->load()
+            : m_workbench_check_cancel && m_workbench_check_cancel->load();
     set_workbench_enabled(m_workbench_check_cancel_button,
-        (native_repair || m_workbench_check_running) && !cancel_requested);
-    const bool attention = !honor_semantic && !m_workbench_check_running &&
-        result.status == WorkbenchCheckStatus::Attention &&
-        result.force_import_risk;
+        running && !honor_semantic && !cancel_requested);
     const bool review = !honor_semantic && !running && result.candidate_status != RepairCandidateStatus::Ready;
-    const bool retry = review && !attention && result.status != WorkbenchCheckStatus::Normal;
-    m_workbench_check_continue_button->SetLabel(attention ? _L("确认风险并继续") : _L("重新检查修复"));
-    modal_layout_changed = set_workbench_shown(m_workbench_check_continue_button, attention || retry) || modal_layout_changed;
+    const bool retry = review && result.status != WorkbenchCheckStatus::Normal;
+    m_workbench_check_continue_button->SetLabel(_L("重新检查修复"));
+    modal_layout_changed = set_workbench_shown(m_workbench_check_continue_button, retry) || modal_layout_changed;
     modal_layout_changed = set_workbench_shown(m_workbench_check_close_button, review) || modal_layout_changed;
     modal_layout_changed = set_workbench_shown(m_workbench_check_details_button, review) || modal_layout_changed;
     modal_layout_changed = set_workbench_shown(m_workbench_check_return_button,
-        !honor_semantic && !running && !attention) || modal_layout_changed;
+        !honor_semantic && !running) || modal_layout_changed;
     modal_layout_changed = set_workbench_shown(m_workbench_check_progress, running) || modal_layout_changed;
     m_workbench_check_progress->set_progress(honor_semantic && m_workbench_honor_semantic_progress > 0
         ? std::optional<int>(m_workbench_honor_semantic_progress) : std::nullopt);
@@ -526,6 +525,7 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     m_refreshing_workbench_layout = true;
     bool layout_changed = false;
     const auto state = post_generation_ui_state();
+    const auto snapshot = workbench_snapshot();
     const auto appearance_state = workbench_original_appearance_state(state.status, m_preview_loading,
         m_model_preview_ready && m_model_preview->has_model() && !m_displayed_model_path.empty(),
         m_model_preview->original_comparison_available(), !m_model_preview->original_appearance_error().empty());
@@ -558,10 +558,25 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     case PostGenerationUiState::Status::ComparingBefore: model_status = _L("处理前"); break;
     case PostGenerationUiState::Status::Error: model_status = _L("加载失败"); break;
     }
+    auto status_tone = post_generation_status_tone(
+        state.status, m_model_preview && m_model_preview->original_comparison_enabled());
+    if (state.status == PostGenerationUiState::Status::Ready ||
+        (state.status == PostGenerationUiState::Status::CandidateReady && m_workbench_auto_repair)) {
+        switch (workbench_check_outcome(snapshot.check, m_native_workbench_partition_running ||
+                m_workbench_check_running || (m_workbench_auto_repair && m_finishing_running))) {
+        case WorkbenchCheckOutcome::Pending:
+            model_status = _L("等待检查"); status_tone = PostGenerationStatusTone::Accent; break;
+        case WorkbenchCheckOutcome::Processing:
+            model_status = _L("检查处理中"); status_tone = PostGenerationStatusTone::Accent; break;
+        case WorkbenchCheckOutcome::Passed:
+            model_status = _L("检查通过"); status_tone = PostGenerationStatusTone::Success; break;
+        case WorkbenchCheckOutcome::Failed:
+            model_status = _L("检查失败"); status_tone = PostGenerationStatusTone::Error; break;
+        }
+    }
     set_workbench_label(m_workbench_model_status, model_status);
     set_workbench_tooltip(m_workbench_model_status, model_status);
-    const wxColour status_colour = workbench_status_colour(post_generation_status_tone(
-        state.status, m_model_preview && m_model_preview->original_comparison_enabled()));
+    const wxColour status_colour = workbench_status_colour(status_tone);
     if (m_workbench_model_status->GetForegroundColour() != status_colour) {
         m_workbench_model_status->SetForegroundColour(status_colour);
         m_workbench_model_status->Refresh(false);
@@ -609,7 +624,6 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         m_workbench_editing || m_workbench_history_panel->IsShown());
     set_workbench_enabled(m_workbench_history_toggle, !m_workbench_import_feedback);
     set_workbench_enabled(m_workbench_edit, state.can_edit && !m_workbench_editing);
-    const auto snapshot = workbench_snapshot();
     if (m_workbench_project_summary) {
         const auto& filaments = snapshot.printer_filaments;
         const wxString summary = wxString::FromUTF8(filaments.printer)+
@@ -635,12 +649,14 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     if (m_workbench_return_to_design_button)
         set_workbench_enabled(m_workbench_return_to_design_button,
             post_generation_return_to_design_allowed(state));
-    const bool topology_normal = snapshot.check.status == WorkbenchCheckStatus::Normal &&
+    const bool check_processing = m_native_workbench_partition_running || m_workbench_check_running ||
+        (m_workbench_auto_repair && m_finishing_running);
+    const bool topology_normal = !check_processing && snapshot.check.status == WorkbenchCheckStatus::Normal &&
         snapshot.check.candidate_status != RepairCandidateStatus::Ready && snapshot.candidate_path.empty() && !snapshot.dirty;
     layout_changed = set_workbench_label(m_workbench_check,
-        m_workbench_check_running ? _L("取消") : topology_normal ? _L("正常") : _L("检查")) || layout_changed;
+        m_workbench_check_running ? _L("取消") : topology_normal ? _L("通过") : _L("检查")) || layout_changed;
     wxColour check_colour(190, 190, 196);
-    if (snapshot.check.candidate_status == RepairCandidateStatus::Ready ||
+    if (check_processing || snapshot.check.candidate_status == RepairCandidateStatus::Ready ||
         snapshot.check.status == WorkbenchCheckStatus::Running ||
         snapshot.check.status == WorkbenchCheckStatus::Attention)
         check_colour = wxColour(255, 194, 39);
@@ -654,7 +670,7 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         m_workbench_check_status->SetForegroundColour(check_colour);
     }
     set_workbench_enabled(m_workbench_check,
-        m_workbench_check_running || (state.can_edit && m_finishing_candidate.empty() && !snapshot.dirty));
+        m_workbench_check_running || can_start_workbench_check());
     for (wxWindow* color : m_workbench_project_colors->GetChildren())
         set_workbench_enabled(color, snapshot.can_edit_project_colors);
     if (m_workbench_apply_project_filaments) {
@@ -756,9 +772,10 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     layout_changed = set_workbench_label(m_workbench_slicing, _L("去切片")) || layout_changed;
     set_workbench_enabled(m_workbench_slicing, can_import);
     set_workbench_tooltip(m_workbench_check, topology_normal
-        ? _L("拓扑正常；点击重新检查") : _L("检查拓扑并生成临时修复候选；原模型保留，接受前不会覆盖。"));
-    wxString check_text = from_u8(workbench_check_status_line(
-        snapshot.check, snapshot.force_import_acknowledged));
+        ? _L("拓扑正常；点击重新检查") : _L("检查并修复模型，复检通过后自动保存新版本；原模型保留。"));
+    wxString check_text = m_native_workbench_partition_running ? _L("正在修复模型……") :
+        m_workbench_auto_repair && m_finishing_running ? _L("正在保存修复结果……") :
+        from_u8(workbench_check_status_line(snapshot.check, snapshot.force_import_acknowledged));
     const wxString check_details = from_u8(workbench_check_detail_text(
         snapshot.check, snapshot.force_import_acknowledged));
     set_workbench_tooltip(m_workbench_check_status, check_details);
@@ -802,5 +819,6 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         request_library_thumbnails(true);
     publish_workbench_state();
     m_refreshing_workbench_layout = false;
+    queue_workbench_check();
 }
 } // namespace Slic3r::GUI

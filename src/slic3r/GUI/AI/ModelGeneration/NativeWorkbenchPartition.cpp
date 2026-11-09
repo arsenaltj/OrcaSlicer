@@ -630,8 +630,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 };
                 if (!weak) { cleanup(); return; }
                 auto* self = weak.get();
-                if (self->m_native_workbench_partition_worker.joinable()) self->m_native_workbench_partition_worker.join();
                 if (self->m_native_workbench_partition_cancel != canceled) { cleanup(); return; }
+                if (self->m_native_workbench_partition_worker.joinable()) self->m_native_workbench_partition_worker.join();
                 const auto consumers = self->m_native_workbench_partition_consumers;
                 const bool automatic_requested =
                     (consumers & std::uint8_t(NativeWorkbenchPartitionConsumer::AutomaticPalette)) != 0;
@@ -649,6 +649,13 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     cleanup();
                     self->m_native_workbench_partition_consumers = 0;
                     self->m_native_workbench_partition_context = {};
+                    if (!self->m_shutdown && self->m_displayed_model_path == context.model_path &&
+                        self->m_sequence == context.generation) {
+                        if (automatic_requested) self->clear_pending_workbench_ai_palette();
+                        self->fail_workbench_check(canceled->load()
+                            ? "已取消检查与修复，原模型保留；可重新检查。"
+                            : "模型在修复期间已变化，未应用过期结果；请重新检查。");
+                    }
                     if (honor_suite_requested) {
                         self->m_honor_suite_partition_pending = false;
                         self->m_honor_suite_partition_resume_queued = false;
@@ -665,9 +672,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
 
                     const auto failure = "Orca 原生工作台分区未完成，原文件和旧成果均已保留：" +
                         (error.empty() ? std::string("分区身份无效") : error);
-                                            self->m_workbench_operation_notice = failure;
-                        if (automatic_requested) self->clear_pending_workbench_ai_palette();
-                        self->publish_workbench_state();
+                    self->fail_workbench_check(failure);
+                    if (automatic_requested) self->clear_pending_workbench_ai_palette();
 
                     if (honor_suite_requested) {
                         self->m_honor_suite_partition_pending = false;
@@ -698,9 +704,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     log_native_portrait_partition_report(*report, "preview-failed");
                     const auto failure =
                         "Orca 原生工作台分区预览未加载，原文件和旧成果均已保留：" + load_error;
-                                            self->m_workbench_operation_notice = failure;
-                        if (automatic_requested) self->clear_pending_workbench_ai_palette();
-                        self->publish_workbench_state();
+                    self->fail_workbench_check(failure);
+                    if (automatic_requested) self->clear_pending_workbench_ai_palette();
 
                     if (honor_suite_requested) {
                         self->m_honor_suite_partition_pending = false;
@@ -757,9 +762,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     log_native_portrait_partition_report(*report,
                         preview_restored ? "activation-rolled-back" : "activation-rollback-failed");
                     const std::string failure = "原生原子分区缓存已保留，但 6 色 AI配色应用失败；模型与配色已回滚。";
-                                            self->m_workbench_operation_notice = preview_restored ? failure :
-                            failure + " 旧预览恢复失败，请重新打开原模型。";
-                        self->publish_workbench_state();
+                    self->fail_workbench_check(preview_restored ? failure :
+                        failure + " 旧预览恢复失败，请重新打开原模型。");
 
                     self->refresh_controls();
                     self->refresh_post_generation_workbench();
@@ -821,8 +825,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
 
         const auto message = "Orca 原生工作台分区未能启动，原文件保持不变：" +
             std::string(failure.what());
-                    if (automatic_requested) clear_pending_workbench_ai_palette();
-            m_workbench_operation_notice = message;
+        if (automatic_requested) clear_pending_workbench_ai_palette();
+        fail_workbench_check(message);
 
         refresh_controls();
         refresh_post_generation_workbench();
@@ -839,7 +843,8 @@ bool ModelGenerationPanel::restore_workbench_check_certificate()
         m_model_preview->model_path() != m_displayed_model_path) return false;
     const auto model_hash = AI::model_artifact_sha256(m_displayed_model_path);
     const auto geometry_id = m_model_preview->geometry_id();
-    const auto appearance_id = m_model_preview->semantic_source_content_id();
+    const auto semantic_appearance_id = m_model_preview->semantic_source_content_id();
+    const auto appearance_id = semantic_appearance_id.empty() ? model_hash : semantic_appearance_id;
     if (!PP::valid_sha256(model_hash) || model_hash != m_model_preview->model_sha256() ||
         geometry_id.empty() || appearance_id.empty()) return false;
 
@@ -859,12 +864,25 @@ bool ModelGenerationPanel::restore_workbench_check_certificate()
         m_displayed_model_path, ModelGenerationPresentation::generated_models_root());
     nlohmann::json metadata;
     if (!read_portrait_check_metadata(metadata_path, metadata)) return false;
+    const auto embedded = metadata.value("workbench_check_certificate", nlohmann::json{});
+    if (!metadata.contains("native_portrait_partition") &&
+        metadata.value("source", std::string{}) == "local_finishing" &&
+        metadata.value("schema_version", 0) == 4 &&
+        metadata.value("model_sha256", std::string{}) == model_hash &&
+        PP::valid_workbench_check_certificate(embedded, WorkbenchCheckPurpose::SavedModelReadOnly,
+            model_hash, geometry_id, appearance_id, u8(metadata_path), metadata)) {
+        WorkbenchCheckResult restored;
+        if (PP::decode_workbench_check_certificate(embedded, restored) &&
+            workbench_topology_safe(restored) &&
+            metadata.value("triangle_count", size_t(0)) == restored.before_faces)
+            return publish(embedded);
+        return false;
+    }
     const bool require_post_color = metadata.contains("post_color_check");
     nlohmann::json reference;
     if (!portrait_partition_metadata_matches(metadata, metadata_path, m_displayed_model_path,
             model_hash, geometry_id, appearance_id, require_post_color, reference)) return false;
 
-    nlohmann::json embedded = metadata.value("workbench_check_certificate", nlohmann::json{});
     const auto certificate_valid = [&](const nlohmann::json& certificate) {
         if (!PP::valid_workbench_check_certificate(certificate,
                 WorkbenchCheckPurpose::PortraitPostColorReadOnly, model_hash, geometry_id,

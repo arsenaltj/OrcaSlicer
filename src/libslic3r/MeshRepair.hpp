@@ -62,8 +62,7 @@ struct StrictMeshRepairOptions
 {
     double maximum_sampled_deviation_ratio = 0.002;
     double maximum_area_change_ratio = 0.02;
-    // The normal workbench may present an over-limit candidate for explicit
-    // confirmation. Automatic portrait partitioning sets this to true.
+    // Automatic publication requires verified geometry as well as topology.
     bool reject_geometry_change = true;
 };
 

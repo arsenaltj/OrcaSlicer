@@ -3,6 +3,7 @@
 #include "PostGenerationWorkbenchState.hpp"
 #include "WorkbenchArtifactValidation.hpp"
 #include "PortraitNativeCheckpoint.hpp"
+#include "PortraitNativePartitionCache.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
 #include "libslic3r/MeshBoolean.hpp"
@@ -21,6 +22,13 @@ inline bool workbench_topology_safe(const WorkbenchCheckResult& result)
         result.nonmanifold_edges == 0 && result.nonmanifold_vertices == 0 &&
         result.degenerate_faces == 0 && result.duplicate_faces == 0 &&
         result.inconsistent_edges == 0 && result.self_intersections_checked && result.self_intersections == 0;
+}
+
+inline bool workbench_repair_publication_allowed(const WorkbenchCheckResult& result,
+    bool geometry_verified)
+{
+    return result.candidate_status == RepairCandidateStatus::Ready && geometry_verified &&
+        workbench_topology_safe(result) && result.appearance_mapped && result.appearance_confidence >= 0.99;
 }
 
 inline WorkbenchCheckResult inspect_workbench_mesh(const TriangleMesh& mesh,
@@ -182,8 +190,12 @@ inline WorkbenchCheckResult inspect_workbench_mesh(const TriangleMesh& mesh,
     return result;
 }
 
+inline bool restore_workbench_appearance_topology(TriangleMesh& mesh,
+    const boost::filesystem::path& candidate, const std::function<bool()>& canceled = {},
+    const boost::filesystem::path& source = {}, WorkbenchCheckResult* verified = nullptr);
+
 inline WorkbenchCheckResult inspect_workbench_model(const boost::filesystem::path& path,
-    const std::function<bool()>& canceled = {})
+    const std::function<bool()>& canceled = {}, const boost::filesystem::path& appearance_source = {})
 {
     WorkbenchCheckResult result;
     const auto hash = AI::model_artifact_sha256(path);
@@ -194,7 +206,8 @@ inline WorkbenchCheckResult inspect_workbench_model(const boost::filesystem::pat
         result.status = WorkbenchCheckStatus::Failed;
         result.summary = error.empty() ? "Topology inspection unavailable." : error;
     } else {
-        result = inspect_workbench_mesh(mesh, canceled);
+        if (!restore_workbench_appearance_topology(mesh, path, canceled, appearance_source, &result))
+            result = inspect_workbench_mesh(mesh, canceled);
         if (AI::model_artifact_sha256(path) != hash) {
             result.status = WorkbenchCheckStatus::Failed;
             result.summary = "模型文件在检查期间已变化，请重新检查。";
@@ -350,8 +363,119 @@ inline bool decode_native_publication_certificate(
     }
 }
 
-// Publication is the last topology gate, shared by explicit repair acceptance
-// and automatic filament saving. Candidate statistics never certify the source.
+// Color writers duplicate corners for independent face colors. Recover the
+// immutable native indices only when every ordered corner is unchanged and
+// the entire original native certificate/cache still verifies. Reuse that
+// check just as native publication/import does; color-only versions do not
+// acquire a second geometry interpretation through coordinate welding.
+inline bool restore_workbench_appearance_topology(TriangleMesh& mesh,
+    const boost::filesystem::path& candidate, const std::function<bool()>& canceled,
+    const boost::filesystem::path& source, WorkbenchCheckResult* verified)
+{
+    if (verified) *verified = {};
+    try {
+        const auto checkpoint = [&] {
+            if (canceled && canceled()) throw std::runtime_error("Appearance topology verification canceled.");
+        };
+        const auto read = [&](const boost::filesystem::path& path) {
+            checkpoint();
+            if (boost::filesystem::is_symlink(path) || !boost::filesystem::is_regular_file(path) ||
+                boost::filesystem::file_size(path) > 128ULL * 1024 * 1024)
+                throw std::runtime_error("Appearance source metadata is unavailable.");
+            boost::filesystem::ifstream input(path, std::ios::binary);
+            return nlohmann::json::parse(input);
+        };
+        const auto same_corners = [&](const indexed_triangle_set& left, const indexed_triangle_set& right) {
+            if (left.indices.size() != right.indices.size()) return false;
+            for (size_t face = 0; face < left.indices.size(); ++face) {
+                if ((face & 4095) == 0) checkpoint();
+                for (int corner = 0; corner < 3; ++corner) {
+                    const auto a = left.indices[face][corner], b = right.indices[face][corner];
+                    if (a < 0 || b < 0 || size_t(a) >= left.vertices.size() || size_t(b) >= right.vertices.size() ||
+                        left.vertices[a] != right.vertices[b]) return false;
+                }
+            }
+            return true;
+        };
+        auto current = source.empty() ? candidate : source;
+        const auto candidate_hash = AI::model_artifact_sha256(candidate);
+        if (!WorkbenchArtifacts::valid_sha256(candidate_hash)) return false;
+        const auto root = current.parent_path().filename() == "downloads"
+            ? current.parent_path().parent_path() : current.parent_path();
+        std::set<std::string> visited;
+        struct VerifiedSource {
+            boost::filesystem::path model, metadata;
+            std::string model_hash, metadata_hash;
+        };
+        std::vector<VerifiedSource> ancestry;
+        // Legacy versions have only a source link. Bound traversal and reject
+        // cycles; new saved certificates avoid this work on normal reopen.
+        for (size_t depth = 0; depth < 64; ++depth) {
+            checkpoint();
+            if (!visited.insert(current.generic_string()).second || boost::filesystem::is_symlink(current)) return false;
+            const auto hash = AI::model_artifact_sha256(current);
+            const auto metadata_path = AI::beauty_metadata_path(current, root);
+            const auto metadata_hash = AI::model_artifact_sha256(metadata_path);
+            const auto metadata = read(metadata_path);
+            if (hash.empty() || metadata_hash.empty() || metadata.at("model_sha256") != hash) return false;
+            TriangleMesh carrier; ObjInfo colors; std::string error;
+            if (!AI::load_model_artifact(current, carrier, colors, error, canceled) ||
+                !same_corners(mesh.its, carrier.its)) return false;
+            ancestry.push_back({current, metadata_path, hash, metadata_hash});
+            if (metadata.contains("native_portrait_partition")) {
+                const auto& reference = metadata.at("native_portrait_partition");
+                WorkbenchNativeTopologyCertificate proof;
+                proof.partition_metadata = metadata;
+                proof.partition_metadata_path = boost::nowide::narrow(metadata_path.wstring());
+                proof.native_reference = reference;
+                proof.candidate_sha256 = proof.carrier_sha256 = hash;
+                proof.geometry_id = reference.at("geometry_id").get<std::string>();
+                proof.appearance_id = reference.at("appearance_id").get<std::string>();
+                proof.partition_digest = reference.at("partition_digest").get<std::string>();
+                proof.topology_hash = reference.at("topology_hash").get<std::string>();
+                proof.face_count = reference.at("cache_reference").at("face_count").get<size_t>();
+                WorkbenchCheckResult checked;
+                if (!decode_native_publication_certificate(current, current, proof, checked, error, canceled)) return false;
+                TriangleMesh exact;
+                NativePortrait::NativePortraitPartitionIdentity identity;
+                const boost::filesystem::path cache(boost::nowide::widen(reference.at("cache_path").get<std::string>()));
+                if (!NativePortrait::load_native_portrait_partition_cache(
+                        reference.at("cache_reference"), cache.parent_path(), identity, error, &exact) ||
+                    !NativePortrait::same_native_triangle_corners(carrier.its, exact.its, canceled) ||
+                    checked.before_faces != exact.its.indices.size() ||
+                    checked.before_vertices != exact.its.vertices.size()) return false;
+                checkpoint();
+                for (const auto& item : ancestry) {
+                    checkpoint();
+                    if (boost::filesystem::is_symlink(item.model) || boost::filesystem::is_symlink(item.metadata) ||
+                        AI::model_artifact_sha256(item.model) != item.model_hash ||
+                        AI::model_artifact_sha256(item.metadata) != item.metadata_hash) return false;
+                }
+                if (AI::model_artifact_sha256(candidate) != candidate_hash) return false;
+                checkpoint();
+                checked.model_sha256 = checked.source_sha256 = candidate_hash;
+                checked.purpose = WorkbenchCheckPurpose::SavedModelReadOnly;
+                exact.set_init_shift(mesh.get_init_shift());
+                mesh = std::move(exact);
+                if (verified) *verified = std::move(checked);
+                return true;
+            }
+            if (metadata.value("source", std::string{}) != "local_finishing") return false;
+            const boost::filesystem::path relative(metadata.at("source_model").get<std::string>());
+            if (relative.empty() || relative.is_absolute() || *relative.begin() == "..") return false;
+            const auto next = (root / relative).lexically_normal();
+            if (AI::model_artifact_sha256(next) != metadata.at("source_sha256")) return false;
+            current = next;
+        }
+    } catch (const std::exception&) {
+        // An unavailable/changed ancestry never certifies the model. The
+        // caller retains the complete inspection and ordinary failure path.
+    }
+    return false;
+}
+
+// Final publication checks also cover ordinary appearance and filament saves.
+// Candidate statistics never certify the source.
 inline WorkbenchCheckResult inspect_workbench_publication(const boost::filesystem::path& candidate,
     const boost::filesystem::path& source, const WorkbenchCheckResult* repair,
     const std::function<bool()>& canceled = {},
@@ -377,7 +501,9 @@ inline WorkbenchCheckResult inspect_workbench_publication(const boost::filesyste
         AI::model_artifact_sha256(candidate) != repair->candidate_sha256 ||
         AI::model_artifact_sha256(source) != repair->source_sha256))
         throw std::runtime_error("修复候选或原模型已变化，请重新检查。");
-    auto checked = inspect_workbench_model(candidate, canceled);
+    // A new color candidate has not published its metadata yet. Its source is
+    // supplied by the owning save transaction, then verified like history.
+    auto checked = inspect_workbench_model(candidate, canceled, source);
     if (!workbench_topology_safe(checked))
         throw std::runtime_error("候选最终拓扑检查未通过：" + checked.summary);
     if (repair) {

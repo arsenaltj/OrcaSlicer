@@ -478,6 +478,47 @@ TEST_CASE("Native workbench clustering permits genuine low color sources", "[Por
     CHECK(partition.painted.cluster_colors.size() == 2);
 }
 
+TEST_CASE("Native workbench repairs solid material models without an image texture",
+          "[PortraitNativePartition][PortraitNativeRepair][Regression]")
+{
+    auto mesh = native_workbench_cluster_sample(1);
+    mesh.precomputed_face_colors.clear();
+    mesh.material_colors = {{1.f, 0.f, 0.f, 1.f}};
+    mesh.material_texture_map = {-1};
+    mesh.material_ids.assign(mesh.indices.size(), 0);
+    mesh.indices.push_back({0, 0, 1});
+    mesh.material_ids.push_back(0);
+    NP::NativePortraitPartitionBuildReport report;
+    const auto partition = NP::build_native_workbench_partition(mesh,
+        NP::native_mesh_repair_callback(&report.strict_repair), {}, &report);
+    REQUIRE(partition.valid());
+    REQUIRE(report.success);
+    CHECK(report.strict_repair.success);
+    CHECK(report.strict_repair.output_topology.safe());
+    CHECK(partition.painted.indices.size() == 4);
+    REQUIRE(partition.painted.cluster_colors.size() == 1);
+    const std::array<size_t, 3> red {255, 0, 0};
+    CHECK(partition.painted.cluster_colors[0] == red);
+    CHECK(mesh.indices.size() == 5);
+}
+
+TEST_CASE("Native workbench keeps the strict repair rejection reason for retry details",
+          "[PortraitNativePartition][PortraitNativeRepair][Regression]")
+{
+    auto mesh = native_workbench_cluster_sample(1);
+    mesh.indices.pop_back();
+    mesh.precomputed_face_colors.pop_back();
+    NP::NativePortraitPartitionBuildReport report;
+    CHECK_THROWS_AS(NP::build_native_workbench_partition(mesh,
+        NP::native_mesh_repair_callback(&report.strict_repair), {}, &report), std::runtime_error);
+    CHECK_FALSE(report.success);
+    CHECK(report.strict_repair.first_cgal_attempted);
+    CHECK(report.strict_repair.enhanced_repair_attempted);
+    CHECK_FALSE(report.strict_repair.error.empty());
+    CHECK(report.error.find(report.strict_repair.error) != std::string::npos);
+    CHECK(mesh.indices.size() == 3);
+}
+
 TEST_CASE("Native workbench clustering rejects smoothing below six for a six color source",
           "[PortraitNativePartition][P0]")
 {

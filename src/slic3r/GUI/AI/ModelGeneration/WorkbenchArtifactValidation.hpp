@@ -43,6 +43,7 @@ inline const char* workbench_check_purpose_id(WorkbenchCheckPurpose purpose) {
     switch (purpose) {
     case WorkbenchCheckPurpose::PortraitSourceRisk: return "portrait_source_risk";
     case WorkbenchCheckPurpose::PortraitPostColorReadOnly: return "portrait_post_color_read_only";
+    case WorkbenchCheckPurpose::SavedModelReadOnly: return "saved_model_read_only";
     default: return "general_import";
     }
 }
@@ -77,7 +78,7 @@ inline nlohmann::json encode_workbench_check_certificate(
         geometry_id.empty() || appearance_id.empty() || !metadata.is_object() ||
         (!partition_digest.empty() && !valid_sha256(partition_digest)) ||
         (!topology_hash.empty() && !valid_sha256(topology_hash)))
-        throw std::invalid_argument("Invalid portrait workbench check certificate identity.");
+        throw std::invalid_argument("Invalid workbench check certificate identity.");
     nlohmann::json certificate {
         {"schema", "orca.workbench-check-certificate/v1"},
         {"checker_version", workbench_check_certificate_version},
@@ -149,7 +150,11 @@ inline bool valid_workbench_check_certificate(
         if (purpose == WorkbenchCheckPurpose::PortraitSourceRisk)
             return partition_digest.empty() && topology_hash.empty() &&
                 (status == "normal" || status == "attention" || status == "invalid");
-        return status == "normal" && valid_sha256(partition_digest) && valid_sha256(topology_hash) &&
+        const bool bound_topology = purpose == WorkbenchCheckPurpose::SavedModelReadOnly
+            ? partition_digest.empty() && topology_hash.empty() &&
+                !metadata.contains("native_portrait_partition")
+            : valid_sha256(partition_digest) && valid_sha256(topology_hash);
+        return status == "normal" && bound_topology &&
             certificate.at("boundary_edges").get<uint64_t>() == 0 &&
             certificate.at("nonmanifold_edges").get<uint64_t>() == 0 &&
             certificate.at("nonmanifold_vertices").get<uint64_t>() == 0 &&
@@ -177,7 +182,8 @@ inline bool decode_workbench_check_certificate(const nlohmann::json& certificate
             ? WorkbenchCheckPurpose::PortraitSourceRisk
             : purpose == "portrait_post_color_read_only"
                 ? WorkbenchCheckPurpose::PortraitPostColorReadOnly
-                : WorkbenchCheckPurpose::GeneralImport;
+                : purpose == "saved_model_read_only" ? WorkbenchCheckPurpose::SavedModelReadOnly
+                    : WorkbenchCheckPurpose::GeneralImport;
         const auto status = certificate.at("status").get<std::string>();
         decoded.status = status == "normal" ? WorkbenchCheckStatus::Normal :
             status == "attention" ? WorkbenchCheckStatus::Attention :

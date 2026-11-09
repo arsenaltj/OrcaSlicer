@@ -295,3 +295,35 @@ TEST_CASE("Strict mesh repair rejects cancellation without publishing geometry",
     CHECK(result.canceled);
     CHECK(result.repaired_mesh.empty());
 }
+
+TEST_CASE("A closed repair outside geometry limits still attempts enhanced repair", "[MeshRepair][StrictMeshRepair]")
+{
+    auto source = cube(20.);
+    source.indices.pop_back();
+    const auto original = source;
+    StrictMeshRepairOptions options;
+    options.maximum_sampled_deviation_ratio = 0.;
+    options.maximum_area_change_ratio = 0.;
+    const auto result = strict_repair_mesh(source, options);
+    CHECK(result.first_cgal_attempted);
+    CHECK(result.enhanced_repair_attempted);
+    CHECK_FALSE(result.success);
+    CHECK_FALSE(result.canceled);
+    CHECK(result.repaired_mesh.empty());
+    CHECK(source.vertices == original.vertices);
+    CHECK(source.indices == original.indices);
+}
+
+TEST_CASE("Cancellation before enhanced repair does not start another strategy", "[MeshRepair][StrictMeshRepair]")
+{
+    auto source = cube(20.);
+    source.indices.pop_back();
+    bool canceled = false;
+    const auto result = strict_repair_mesh(source, {},
+        [&](const char*, unsigned progress) { if (progress == 15) canceled = true; },
+        [&] { return canceled; });
+    CHECK(result.canceled);
+    CHECK_FALSE(result.enhanced_repair_attempted);
+    CHECK_FALSE(result.second_cgal_attempted);
+    CHECK(result.repaired_mesh.empty());
+}

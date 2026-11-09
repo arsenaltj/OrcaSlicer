@@ -446,6 +446,9 @@ void ModelGenerationPanel::refresh_model_finishing()
 void ModelGenerationPanel::reset_beauty_asset()
 {
     reset_portrait_session();
+    // Explicit history navigation starts a new asset, not an unmatched Beauty
+    // session inherited from the previous model.
+    m_workbench_editing = false;
     cancel_beauty_color_gate();
     if (m_workbench_check_cancel) m_workbench_check_cancel->store(true);
     if (m_workbench_check_worker.joinable()) m_workbench_check_worker.join();

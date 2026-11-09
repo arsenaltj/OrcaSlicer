@@ -660,9 +660,9 @@ ModelFinishingResult finish_model_artifact(const boost::filesystem::path& source
             if (original_colors.size() != original_vertices.size())
                 original_colors.assign(original_vertices.size(), RGBA {1.f, 1.f, 1.f, 1.f});
             StrictMeshRepairOptions strict_options;
-            // The ordinary workbench keeps an over-limit result as a reviewable
-            // candidate. Automatic portrait partitioning uses the default true.
-            strict_options.reject_geometry_change = false;
+            // Repairs are published automatically only after the same geometry
+            // limits as native partitioning pass. There is no manual review of
+            // an over-limit topology candidate.
             auto strict = strict_repair_mesh(original_surface, strict_options, {}, canceled);
             check_cancel();
             if (!strict.success)

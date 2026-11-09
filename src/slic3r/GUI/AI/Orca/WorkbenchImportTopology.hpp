@@ -31,6 +31,12 @@ inline bool prepare_workbench_import_topology(TriangleMesh& mesh, bool confirmed
         error = "Native portrait import certificate rejected: " + rejection + "; " + checked.summary;
         return false;
     }
+    if (request && restore_workbench_appearance_topology(mesh, request->artifact.local_path, canceled)) {
+        result.topology_risk = result.manual_repair_required = false;
+        result.topology_risk_reason.clear();
+        error.clear();
+        return true;
+    }
     if (its_num_open_edges(mesh.its) != 0) stitch_exact_mesh_seams(mesh);
     const auto check = inspect_workbench_mesh(mesh, canceled);
     const size_t open = its_num_open_edges(mesh.its);
