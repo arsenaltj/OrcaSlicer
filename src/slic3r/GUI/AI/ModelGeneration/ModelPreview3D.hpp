@@ -17,6 +17,8 @@
 #include "ModelPreviewNormals.hpp"
 #include "ModelPreviewGeometry.hpp"
 #include "ModelPreviewFrame.hpp"
+#include "ModelPreviewCamera.hpp"
+#include "slic3r/GUI/View3DNavigator.hpp"
 #include "BeautySourceSnapshot.hpp"
 #include "ModelHistoryMetadata.hpp"
 #include "ModelOriginalAppearance.hpp"
@@ -115,6 +117,18 @@ public:
     wxWindow* workbench_overlay_parent() const { return m_preview_host; }
     wxWindow* workbench_viewport_window() const { return m_canvas; }
     int workbench_viewport_top() const { return m_canvas ? m_canvas->GetPosition().y : 0; }
+    void attach_workbench_navigation(wxWindow* parent, wxWindow* bottom_anchor) {
+        if (!m_navigator) m_navigator = std::make_unique<WorkbenchViewNavigator>();
+        wxWeakRef<ModelPreview3D> weak(this);
+        m_navigator->attach_surface(parent, bottom_anchor,
+            [weak]() -> Transform3d { return weak ? weak->view_rotation() : Transform3d::Identity(); },
+            [weak](const Transform3d& rotation) {
+                if (!weak) return;
+                weak->set_auto_rotation(false);
+                weak->m_camera_rotation.set(rotation);
+                weak->m_canvas->Refresh(false);
+            });
+    }
     explicit ModelPreview3D(wxWindow* parent, bool retain_surface_attributes = false)
         : wxPanel(parent), m_retain_surface_attributes(retain_surface_attributes)
     {
@@ -186,7 +200,7 @@ public:
                 m_dragging || m_drawing_selection) {
                 set_auto_rotation(false);return;
             }
-            m_yaw=std::remainder(m_yaw+std::min(seconds,0.1)*0.35,6.283185307179586);
+            m_camera_rotation.turn(std::min(seconds,0.1)*0.35);
             m_canvas->Refresh(false);
         },m_rotation_timer.GetId());
         m_surface_timer.SetOwner(this);
@@ -275,6 +289,7 @@ public:
         });
         m_canvas->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
             if (m_workbench_input_locked) return;
+            if (handle_navigator_mouse(event)) return;
             set_auto_rotation(false);
             const bool edit_view = point_in_edit_view(event.GetPosition());
             if (edit_view && m_selection_enabled && !selection_busy() && !event.AltDown() &&
@@ -299,6 +314,7 @@ public:
         });
         m_canvas->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent& event) {
             if (m_workbench_input_locked) return;
+            if (handle_navigator_mouse(event)) return;
             if (m_drawing_selection) {
                 const wxPoint point = edit_view_point(event.GetPosition());
                 m_stroke.emplace_back(point.x, point.y);
@@ -316,6 +332,7 @@ public:
         });
         m_canvas->Bind(wxEVT_MOTION, [this](wxMouseEvent& event) {
             if (m_workbench_input_locked) return;
+            if (handle_navigator_mouse(event)) return;
             if (event.RightIsDown() && m_canvas->HasCapture()) {
                 const wxPoint current = event.GetPosition();
                 const double radius = std::max(0.001, 0.5 * m_bounds.size().norm());
@@ -341,15 +358,15 @@ public:
             }
             if (!m_drag_moved)
                 return;
-            m_yaw += (current.x - m_last_mouse.x) * 0.012;
-            m_pitch = std::clamp(
-                m_pitch + (current.y - m_last_mouse.y) * 0.012,
-                -1.5707963267948966, -0.15);
+            if (m_navigator) m_navigator->reset();
+            m_camera_rotation.orbit((current.x - m_last_mouse.x) * 0.012,
+                                    (current.y - m_last_mouse.y) * 0.012);
             m_last_mouse = current;
             m_canvas->Refresh(false);
         });
         m_canvas->Bind(wxEVT_MOUSEWHEEL, [this](wxMouseEvent& event) {
             if (m_workbench_input_locked) return;
+            if (handle_navigator_mouse(event)) return;
             if (m_drawing_selection) return;
             const int delta = event.GetWheelDelta();
             if (delta == 0)
@@ -360,15 +377,18 @@ public:
         });
         m_canvas->Bind(wxEVT_RIGHT_DOWN, [this](wxMouseEvent& event) {
             if (m_workbench_input_locked) return;
+            if (handle_navigator_mouse(event)) return;
             set_auto_rotation(false);
             if (m_drawing_selection) finish_drag();
             m_last_mouse = event.GetPosition();
             if (!m_canvas->HasCapture()) m_canvas->CaptureMouse();
         });
-        m_canvas->Bind(wxEVT_RIGHT_UP, [this](wxMouseEvent&) {
-            if (!m_workbench_input_locked) finish_drag();
+        m_canvas->Bind(wxEVT_RIGHT_UP, [this](wxMouseEvent& event) {
+            if (m_workbench_input_locked || handle_navigator_mouse(event)) return;
+            finish_drag();
         });
         m_canvas->Bind(wxEVT_MOUSE_CAPTURE_LOST, [this](wxMouseCaptureLostEvent&) {
+            if (m_navigator) m_navigator->reset();
             m_dragging = false; m_drawing_selection = false; m_stroke.clear(); m_canvas->Refresh(false);
         });
         m_canvas->Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
@@ -421,14 +441,25 @@ public:
                 << ", running_before_cancel=" << region_was_running;
         }
         clear();
+        if (m_context && m_canvas) m_canvas->SetCurrent(*m_context);
+        m_navigator.reset();
     }
 
     bool retains_surface_attributes() const { return m_retain_surface_attributes; }
 
-    struct ViewState { double yaw, pitch, zoom; BoundingBoxf3 bounds; double pan_x, pan_y; };
-    ViewState view_state() const { return {m_yaw, m_pitch, m_zoom, m_bounds, m_pan_x, m_pan_y}; }
+    struct ViewState {
+        double yaw, pitch, zoom; BoundingBoxf3 bounds; double pan_x, pan_y;
+        std::optional<Eigen::Quaterniond> navigator_rotation;
+    };
+    ViewState view_state() const {
+        return {m_camera_rotation.yaw, m_camera_rotation.pitch, m_zoom, m_bounds,
+                m_pan_x, m_pan_y, m_camera_rotation.navigator};
+    }
     void restore_view(const ViewState& state) {
-        m_yaw = state.yaw; m_pitch = state.pitch; m_zoom = state.zoom; m_bounds = state.bounds;
+        m_camera_rotation.reset(state.yaw, state.pitch);
+        m_camera_rotation.navigator = state.navigator_rotation;
+        if (m_navigator) m_navigator->reset();
+        m_zoom = state.zoom; m_bounds = state.bounds;
         m_pan_x = state.pan_x; m_pan_y = state.pan_y;
         m_canvas->Refresh(false);
     }
@@ -1439,6 +1470,8 @@ private:
     void clear_current_preview()
     {
         m_preview_frame.invalidate();
+        if (m_navigator) m_navigator->set_preview_frame(0, nullptr);
+        if (m_navigator) m_navigator->reset();
         m_resize_frame_valid = false;
         ++m_after_preview_sequence;
         m_after_preview_frame = {};
@@ -1565,8 +1598,8 @@ public:
     {
         set_auto_rotation(false);
         m_pan_x = m_pan_y = 0.0;
-        m_yaw = -0.65;
-        m_pitch = -1.05;
+        m_camera_rotation.reset(-0.65, -1.05);
+        if (m_navigator) m_navigator->reset();
         m_zoom = 1.0;
         if (m_canvas != nullptr)
             m_canvas->Refresh(false);
@@ -1589,8 +1622,8 @@ public:
         set_auto_rotation(false);
         m_pan_x = m_pan_y = 0.0;
         const auto angles = initial_view_angles(m_bounds.size().cast<double>());
-        m_yaw = angles.first;
-        m_pitch = angles.second;
+        m_camera_rotation.reset(angles.first, angles.second);
+        if (m_navigator) m_navigator->reset();
         m_zoom = 1.0;
         if (m_canvas != nullptr)
             m_canvas->Refresh(false);
@@ -1603,8 +1636,8 @@ public:
         // Generated portrait OBJ files are Z-up and face +X. Rotate +X toward
         // the orthographic camera so identity can be compared without asking
         // the user to find a precise angle by dragging a two-million-face mesh.
-        m_yaw = -1.5707963267948966;
-        m_pitch = -1.5707963267948966;
+        m_camera_rotation.reset(-1.5707963267948966, -1.5707963267948966);
+        if (m_navigator) m_navigator->reset();
         m_zoom = 1.0;
         if (m_canvas != nullptr)
             m_canvas->Refresh(false);
@@ -2574,6 +2607,8 @@ public:
     void set_beauty_view(bool enabled) {
         if (m_beauty_view == enabled) return;
         m_beauty_view = enabled;
+        if (m_navigator) m_navigator->reset();
+        if (m_navigator) m_navigator->show_surface(enabled && m_has_model);
         const wxColour background = enabled ? wxColour(49, 49, 54) : wxGetApp().get_window_default_clr();
         SetBackgroundColour(background);
         m_splitter->SetBackgroundColour(background);
@@ -3198,10 +3233,24 @@ public:
         m_after_preview_frame = std::move(fn);
         m_canvas->Refresh(false);
     }
+    // Independent of the portrait workflow's one-shot frame callback.
+    void observe_presentation_frame(std::function<void()> observer) {
+        ++m_presentation_observer_sequence;
+        m_presentation_frame_observer = std::move(observer);
+        if (m_presentation_frame_observer) {
+            m_preview_frame.invalidate();
+            m_canvas->Refresh(false);
+        }
+    }
+    void cancel_view_navigation() {
+        if (m_navigator) m_navigator->reset();
+        finish_drag();
+    }
     void set_workbench_input_locked(bool locked) {
         if (m_workbench_input_locked == locked) return;
         m_workbench_input_locked = locked;
         if (locked) {
+            if (m_navigator) m_navigator->reset();
             set_auto_rotation(false);
             if (m_canvas && m_canvas->HasCapture()) m_canvas->ReleaseMouse();
             m_dragging = false;
@@ -4321,6 +4370,17 @@ private:
         glsafe(::glClearDepth(1.0));
         glsafe(::glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
 
+        bool navigation_animating = false;
+        if (m_beauty_view && m_has_model && (!m_navigator || !m_navigator->has_surface())) {
+            if (!m_navigator) m_navigator = std::make_unique<WorkbenchViewNavigator>();
+            auto rotation = view_rotation();
+            navigation_animating = m_navigator->begin(rotation, drawable_size, frame.dpi_scale, true,
+                !m_workbench_input_locked && !m_drawing_selection && !m_dragging);
+            if (navigation_animating) {
+                set_auto_rotation(false);
+                m_camera_rotation.set(rotation);
+            }
+        }
         if (m_has_model) {
             if (!m_color_shader) {
                 m_color_shader = std::make_unique<GLShaderProgram>();
@@ -4605,6 +4665,7 @@ private:
                 m_render_diagnostics_logged = true;
             }
         }
+        if (m_beauty_view && m_has_model && m_navigator && !m_navigator->has_surface()) m_navigator->render();
         bool resize_frame_captured = false;
         if (m_has_model && m_color_shader) {
             glsafe(::glReadBuffer(GL_BACK));
@@ -4629,6 +4690,28 @@ private:
             m_pending_library_thumbnail_sha.clear();
             cache_library_model_thumbnail(artifact_sha);
         }
+        // Reuse the complete GPU frame beneath the navigation surface. Native
+        // GL children are opaque, so clearing that surface alone masks a zoomed
+        // model with a rectangle even when the navigator itself is transparent.
+        if (m_navigator) m_navigator->set_preview_frame(m_resize_frame_valid ? m_resize_frame_texture : 0, m_canvas);
+        const bool navigation_submitted = !m_navigator || m_navigator->present_surface(
+            m_beauty_view && m_has_model, !m_workbench_input_locked && !m_drawing_selection && !m_dragging);
+        if (m_context) m_canvas->SetCurrent(*m_context);
+        if (frame_submitted && navigation_submitted && m_has_model && m_color_shader && m_presentation_frame_observer) {
+            const auto sequence = m_presentation_observer_sequence;
+            const auto identity = m_model_sha256;
+            wxWeakRef<ModelPreview3D> weak(this);
+            CallAfter([weak, frame, sequence, identity] {
+                if (!weak || sequence != weak->m_presentation_observer_sequence ||
+                    !weak->m_presentation_frame_observer || !weak->m_has_model ||
+                    identity != weak->m_model_sha256 ||
+                    !weak->m_preview_frame.current(frame, weak->m_canvas->GetClientSize(),
+                        weak->m_canvas->GetDPIScaleFactor(), weak->m_canvas->IsShownOnScreen())) return;
+                auto observer = weak->m_presentation_frame_observer;
+                observer();
+            });
+        }
+        if (navigation_animating || !navigation_submitted) m_canvas->Refresh(false);
         if (frame_submitted && m_after_preview_frame) {
             const auto sequence = m_after_preview_sequence;
             wxWeakRef<ModelPreview3D> weak(this);
@@ -4663,6 +4746,8 @@ private:
     std::array<unsigned int, 2> m_resize_frame_size {0, 0};
     bool m_resize_frame_valid {false};
     std::uint64_t m_after_preview_sequence {0};
+    std::function<void()> m_presentation_frame_observer;
+    std::uint64_t m_presentation_observer_sequence {0};
     wxPanel* m_comparison_header {nullptr};
     std::vector<wxStaticText*> m_comparison_labels;
     wxSizerItem* m_overlay_top {nullptr};
@@ -4823,13 +4908,24 @@ private:
     AI::RegionSelectionSettings m_selection_settings;
     AI::RegionSelectionOperation m_selection_operation {AI::RegionSelectionOperation::Replace};
     ColorRGBA m_selection_preview_color {1.0f, 0.55f, 0.0f, 1.0f};
+    bool handle_navigator_mouse(wxMouseEvent& event) {
+        if (!m_beauty_view || !m_navigator || m_navigator->has_surface() || m_dragging || m_drawing_selection ||
+            !m_navigator->mouse(event)) return false;
+        set_auto_rotation(false);
+        if (event.LeftDown()) {
+            if (!m_canvas->HasCapture()) m_canvas->CaptureMouse();
+            m_canvas->SetFocus();
+        }
+        if (event.LeftUp() && m_canvas->HasCapture()) m_canvas->ReleaseMouse();
+        m_canvas->Refresh(false);
+        return true;
+    }
     Transform3d view_rotation() const
     {
         // Generated and imported OBJ files use OrcaSlicer's Z-up convention.
         // Orbit around Z first, then tilt the camera so the build plate stays
         // horizontal instead of presenting portrait bases sideways.
-        return Geometry::rotation_transform(m_pitch * Vec3d::UnitX()) *
-               Geometry::rotation_transform(m_yaw * Vec3d::UnitZ());
+        return m_camera_rotation.transform();
     }
 
     double fitted_half_height(int width, int height) const
@@ -4841,8 +4937,8 @@ private:
         return std::max(0.001, std::max(view_extents.y(), view_extents.x() / aspect) * fit_margin / m_zoom);
     }
 
-    double m_yaw {-0.65};
-    double m_pitch {-1.05};
+    ModelPreviewCameraRotation m_camera_rotation;
+    std::unique_ptr<WorkbenchViewNavigator> m_navigator;
     double m_zoom {1.0};
     bool m_dragging {false};
     bool m_drag_moved {false};

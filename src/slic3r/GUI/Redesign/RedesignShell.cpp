@@ -1475,6 +1475,17 @@ void RedesignShell::disconnect_model_generation_host()
         }
         frame->mount_native_workspace_tools(nullptr);
     }
+    m_workbench_transition_timer.Stop();
+    if (m_workbench_transition) {
+        if (m_model_generation_host) m_model_generation_host->cancel_workbench_presentation();
+        m_page_transition.rollback(*m_workbench_transition);
+        m_workbench_transition.reset();
+        restore_workbench_source_page();
+    }
+    if (m_workbench_transition_cover) {
+        m_workbench_transition_cover->Destroy();
+        m_workbench_transition_cover = nullptr;
+    }
     m_import_timer.Stop();
     m_slice_camera_retry_timer.Stop();
     m_preview_transition_timer.Stop();

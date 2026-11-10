@@ -134,6 +134,8 @@ public:
     void show_workbench_color_matching(const AI::GeneratedModelArtifact& artifact, Plater* plater);
     bool request_open_workbench();
     void set_workbench_presented(bool presented);
+    void prepare_workbench_presentation(std::function<void()> ready);
+    void cancel_workbench_presentation();
     void raise_workbench_modal();
     bool request_enter_beauty();
     bool request_return_overview();
@@ -280,6 +282,9 @@ private:
     WorkbenchButton* m_workbench_check_details_button {nullptr};
     bool m_workbench_check_card_visible {false};
     bool m_workbench_presented {false};
+    bool m_workbench_preparing {false};
+    std::function<void()> m_workbench_preparation_ready;
+    std::uint64_t m_workbench_surface_revision {0};
     std::uint64_t m_workbench_presentation_sequence {0};
     WorkbenchFloatingCardMode m_workbench_floating_card_mode {WorkbenchFloatingCardMode::None};
     bool m_workbench_honor_semantic_active {false};

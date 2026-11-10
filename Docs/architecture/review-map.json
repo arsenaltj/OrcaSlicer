@@ -693,6 +693,18 @@
       "path": "src/slic3r/GUI/AI/ModelGeneration/NativeWorkbenchPublication.hpp",
       "needle": "inline void prepare_native_workbench_publication(",
       "detail": "Manual native color publication preserves region semantics, color reduction, slot binding, atomic history and content-bound topology certificates. WorkbenchModelInspection restores unchanged legacy appearance geometry only after verifying its complete native ancestry and ordered corners. WorkbenchHistoryEvidence resolves an original publication only while both model copies and both full metadata records match; check, publication and native import still validate the original bound proof. Missing original-appearance companions recover only through the hash-bound source chain. Ordinary saved certificates cannot authorize native claims."
+    },
+    {
+      "id": "workbench_page_presentation",
+      "path": "src/slic3r/GUI/Redesign/RedesignWorkbenchPresentation.cpp",
+      "needle": "bool RedesignShell::begin_workbench_presentation()",
+      "detail": "The existing page transition token owns reveal and rollback. Retained source controls remain above the target until the shared native refresh queue and an independently observed current model frame complete. Preparation does not start automatic checks; minimized time is excluded from the deadline."
+    },
+    {
+      "id": "shared_view_navigator",
+      "path": "src/slic3r/GUI/View3DNavigator.cpp",
+      "needle": "ImGuizmo::ViewManipulateResult draw_view_navigator(",
+      "detail": "GUI-only shared navigator styling and Z-up mapping. Native Camera and the workbench orthographic camera retain separate ownership; workbench ImGui context and per-canvas ImGuizmo gesture/interpolation are isolated."
     }
   ],
   "journeys": [

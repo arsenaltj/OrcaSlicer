@@ -974,15 +974,9 @@ void RedesignShell::build_model_workflow()
 
 bool RedesignShell::open_model_workbench()
 {
+    if (m_workbench_transition) return true;
     if (m_import_in_progress || m_page_transition.active() || !owns_model_workflow()) return false;
-    restore_smart_model_history();
-    if (!m_model_generation_host->request_open_workbench()) {
-        if (m_active_page == Page::Image) mount_smart_model_history();
-        return false;
-    }
-    if (show_model_view(ModelView::Workbench)) return true;
-    m_model_generation_host->set_workbench_presented(false);
-    return false;
+    return show_model_view(ModelView::Workbench);
 }
 
 bool RedesignShell::block_workbench_navigation(bool leaves_workbench)
@@ -1002,13 +996,22 @@ void RedesignShell::return_model_overview()
 
 bool RedesignShell::show_model_view(ModelView view)
 {
+    if (view == ModelView::Workbench && m_workbench_transition) return true;
     if (block_workbench_navigation(view != ModelView::Workbench)) return false;
     if (view == ModelView::Preview && m_preview_transition &&
         m_page_transition.current(*m_preview_transition)) return true;
     if (!owns_model_workflow() || m_import_in_progress || m_page_transition.active()) return false;
-    // The retained workbench route bypasses open_model_workbench(). Reclaim
-    // its drawer before laying out the page, including a collapsed drawer.
-    if (view == ModelView::Workbench) restore_smart_model_history();
+    if (view == ModelView::Workbench) {
+        // The completed 3D result owns the retained-page presentation. Other
+        // existing routes keep their original layout and entry behavior.
+        if (m_active_page == Page::Model && m_model_view == ModelView::Result)
+            return begin_workbench_presentation();
+        restore_smart_model_history();
+        if (!m_model_generation_host->request_open_workbench()) {
+            if (m_active_page == Page::Image) mount_smart_model_history();
+            return false;
+        }
+    }
     if (view == ModelView::Preview) {
         auto* plate = m_plater->get_partplate_list().get_curr_plate();
         if (!plate || !plate->is_slice_result_valid() || !plate->get_slice_result())
@@ -1232,6 +1235,10 @@ void RedesignShell::finish_preview_transition(RedesignPageTransition::Token toke
 
 void RedesignShell::request_viewport_frame()
 {
+    if (m_workbench_transition) {
+        layout_workbench_transition_cover();
+        return;
+    }
     auto* owner = dynamic_cast<wxTopLevelWindow*>(wxGetTopLevelParent(this));
     if (!owner || owner->IsIconized() || !IsShownOnScreen()) return;
     layout_preview_transition_cover();
@@ -1258,8 +1265,8 @@ void RedesignShell::refresh_workflow_layout()
     const bool slicing = model && (m_model_view == ModelView::Slicing || m_model_view == ModelView::Preview);
     const bool render_slicing = slicing || m_import_target_staged;
     const bool render_print = m_active_page == Page::Print && m_print_canvas_mounted;
-    m_model_page->Show(model && m_model_view == ModelView::Result);
-    m_workbench_page->Show(m_import_target_staged || (model && m_model_view == ModelView::Workbench));
+    m_model_page->Show(!m_workbench_transition && model && m_model_view == ModelView::Result);
+    m_workbench_page->Show(m_workbench_transition || m_import_target_staged || (model && m_model_view == ModelView::Workbench));
     m_slicing_page->Show(render_slicing);
     m_plater->Show(render_slicing || render_print);
     m_slicing_settings->Show(!m_native_slicing);

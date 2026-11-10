@@ -321,6 +321,16 @@ void ModelGenerationFeatureHost::set_workbench_presented(bool presented)
 {
     m_impl->model_generation->set_workbench_presented(presented);
 }
+
+void ModelGenerationFeatureHost::prepare_workbench_presentation(std::function<void()> ready)
+{
+    m_impl->model_generation->prepare_workbench_presentation(std::move(ready));
+}
+
+void ModelGenerationFeatureHost::cancel_workbench_presentation()
+{
+    m_impl->model_generation->cancel_workbench_presentation();
+}
 void ModelGenerationFeatureHost::raise_workbench_modal() { m_impl->model_generation->raise_workbench_modal(); }
 void ModelGenerationFeatureHost::mount_workbench(wxWindow* parent) { m_impl->model_generation->mount_workbench(parent); }
 wxWindow* ModelGenerationFeatureHost::workbench_import_viewport() const { return m_impl->model_generation->workbench_import_viewport(); }

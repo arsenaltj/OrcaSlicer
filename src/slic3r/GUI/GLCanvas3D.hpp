@@ -28,6 +28,7 @@
 #include <optional>
 
 #include "GLToolbar.hpp"
+#include "View3DNavigator.hpp"
 #include "Event.hpp"
 #include "Selection.hpp"
 #include "Gizmos/GLGizmosManager.hpp"
@@ -792,6 +793,7 @@ private:
     ECursorType m_cursor_type;
     GLSelectionRectangle m_rectangle_selection;
     bool m_navigator_dragging{ false };
+    ImGuizmo::ViewManipulateState m_navigator_state;
 
     //BBS:add plate related logic
     mutable std::vector<int> m_hover_volume_idxs;
@@ -1233,6 +1235,7 @@ public:
     void enable_render(bool enabled)
     {
         m_enable_render = enabled;
+        if (!enabled) { m_navigator_state.reset(); m_navigator_dragging = false; }
     }
 
     // printable_only == false -> render also non printable volumes as grayed

@@ -80,6 +80,8 @@ public:
         WorkbenchImportCompletion completion);
     bool request_open_workbench();
     void set_workbench_presented(bool presented);
+    void prepare_workbench_presentation(std::function<void()> ready);
+    void cancel_workbench_presentation();
     void raise_workbench_modal();
     bool request_enter_beauty();
     bool request_return_overview();

@@ -178,6 +178,7 @@ void present_workbench_controls(wxWindow* root, wxWindow* viewport = nullptr)
 
 void ModelGenerationPanel::queue_workbench_surface_refresh()
 {
+    ++m_workbench_surface_revision;
     if (m_shutdown || m_workbench_surface_refresh_pending) return;
     m_workbench_surface_refresh_pending = true;
     wxWeakRef<ModelGenerationPanel> weak(this);
@@ -189,7 +190,7 @@ void ModelGenerationPanel::queue_workbench_surface_refresh()
             if (weak) weak->m_workbench_surface_refresh_pending = false;
         });
         (void)pending_guard;
-        if (weak->m_shutdown || !weak->m_workbench_presented ||
+        if (weak->m_shutdown || (!weak->m_workbench_presented && !weak->m_workbench_preparing) ||
             !weak->m_finishing_workbench || !weak->m_workbench_shell ||
             !weak->m_workbench_shell->IsShownOnScreen()) return;
         const auto* owner = wxDynamicCast(wxGetTopLevelParent(weak->m_workbench_shell), wxTopLevelWindow);
@@ -198,7 +199,7 @@ void ModelGenerationPanel::queue_workbench_surface_refresh()
         // Paint only after all synchronous layout/visibility changes have
         // settled. Hidden editor children must not paint an intermediate frame.
         weak->layout_workbench_history_toggle(true);
-        weak->update_workbench_check_card();
+        if (!weak->m_workbench_preparing) weak->update_workbench_check_card();
         auto* viewport = weak->workbench_import_viewport();
         auto* handle = weak->m_workbench_history_toggle;
         // Finish the exposed native backgrounds before their overlapping leaf.
@@ -211,6 +212,22 @@ void ModelGenerationPanel::queue_workbench_surface_refresh()
         }
         present_workbench_controls(weak->m_workbench_check_card);
         const auto controls_presented = std::chrono::steady_clock::now();
+        if (weak->m_workbench_preparing && weak->m_model_preview) {
+            const auto revision = weak->m_workbench_surface_revision;
+            const auto model_path = weak->m_displayed_model_path;
+            weak->m_model_preview->observe_presentation_frame([weak, revision, model_path] {
+                if (!weak || weak->m_shutdown || !weak->m_workbench_preparing) return;
+                if (revision != weak->m_workbench_surface_revision ||
+                    model_path != weak->m_displayed_model_path) {
+                    weak->queue_workbench_surface_refresh();
+                    return;
+                }
+                if (!weak->m_model_preview_ready || weak->m_preview_loading ||
+                    !weak->m_model_preview->showing_model(model_path)) return;
+                auto ready = weak->m_workbench_preparation_ready;
+                if (ready) ready();
+            });
+        }
         // One complete GL frame follows the native controls in this same pass.
         // A top-level restore can then expose the window without an old frame.
         if (viewport && viewport->IsShownOnScreen()) {
@@ -288,6 +305,7 @@ void ModelGenerationPanel::raise_workbench_modal()
 
 void ModelGenerationPanel::detach_workbench_floating_card()
 {
+    cancel_workbench_presentation();
     m_workbench_presented = false;
     ++m_workbench_presentation_sequence;
     if (m_workbench_check_running && m_workbench_check_cancel)

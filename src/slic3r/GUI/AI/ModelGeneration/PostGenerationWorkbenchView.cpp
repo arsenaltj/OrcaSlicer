@@ -771,6 +771,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     m_finishing_panel->GetSizer()->Add(m_workbench_footer, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM,
         FromDIP(8));
     workspace->SetSizer(workspace_sizer);
+    m_model_preview->attach_workbench_navigation(workspace, view_tools_host);
     row->Add(workspace, 1, wxEXPAND);
     row->Add(build_workbench_history(shell), 0, wxEXPAND | wxTOP | wxBOTTOM | wxLEFT,
              FromDIP(12));

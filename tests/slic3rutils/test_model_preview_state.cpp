@@ -26,6 +26,46 @@ using Slic3r::Vec3d;
 namespace selection = Slic3r::AI::SurfaceSelectionPersistence;
 namespace trial = Slic3r::AI::ColorTrialPersistence;
 
+TEST_CASE("Navigator orientations include every axis and remain continuous when orbiting",
+          "[ModelPreviewState][ModelPreviewCamera]")
+{
+    using namespace Slic3r;
+    GUI::ModelPreviewCameraRotation camera;
+    const Vec3d axis = GENERATE(Vec3d(1.,0.,0.), Vec3d(-1.,0.,0.), Vec3d(0.,1.,0.),
+        Vec3d(0.,-1.,0.), Vec3d(0.,0.,1.), Vec3d(0.,0.,-1.));
+    Transform3d view = Transform3d::Identity();
+    view.linear() = Eigen::Quaterniond::FromTwoVectors(axis, Vec3d::UnitZ()).toRotationMatrix();
+    camera.set(view);
+    CHECK((camera.transform().linear() * axis - Vec3d::UnitZ()).norm() < 1e-10);
+    const auto saved = camera;
+    camera.orbit(0., 0.);
+    CHECK((camera.transform().matrix() - view.matrix()).norm() < 1e-10);
+    camera.orbit(.08, -.05);
+    const auto expected = Geometry::rotation_transform(-.05 * Vec3d::UnitX()) * view *
+        Geometry::rotation_transform(.08 * Vec3d::UnitZ());
+    CHECK((camera.transform().matrix() - expected.matrix()).norm() < 1e-10);
+    camera = saved;
+    CHECK((camera.transform().matrix() - view.matrix()).norm() < 1e-10);
+    CHECK_THAT(camera.transform().linear().determinant(), Catch::Matchers::WithinAbs(1., 1e-10));
+}
+
+TEST_CASE("Resetting a navigator view restores the established preview camera and orbit limits",
+          "[ModelPreviewState][ModelPreviewCamera]")
+{
+    using namespace Slic3r;
+    GUI::ModelPreviewCameraRotation camera;
+    camera.set(Geometry::rotation_transform(Vec3d(.5, .3, .8)));
+    camera.reset(-.65, -1.05);
+    CHECK_FALSE(camera.navigator);
+    const auto expected = Geometry::rotation_transform(-1.05 * Vec3d::UnitX()) *
+        Geometry::rotation_transform(-.65 * Vec3d::UnitZ());
+    CHECK((camera.transform().matrix() - expected.matrix()).norm() < 1e-10);
+    camera.orbit(.1, 100.);
+    CHECK_THAT(camera.pitch, Catch::Matchers::WithinAbs(-.15, 1e-12));
+    camera.orbit(0., -100.);
+    CHECK_THAT(camera.pitch, Catch::Matchers::WithinAbs(-.5 * PI, 1e-12));
+}
+
 namespace {
 indexed_triangle_set original_appearance_fixture_mesh()
 {

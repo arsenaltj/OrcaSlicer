@@ -481,6 +481,10 @@ void ModelGenerationPanel::publish_workbench_state()
 
 void ModelGenerationPanel::set_workbench_presented(bool presented)
 {
+    if (presented && m_workbench_preparing) {
+        queue_workbench_surface_refresh();
+        return;
+    }
     const bool active = presented && !m_shutdown && m_finishing_workbench &&
         m_workbench_shell && m_workbench_shell->IsShownOnScreen();
     if (m_workbench_presented == active) {
@@ -496,6 +500,7 @@ void ModelGenerationPanel::set_workbench_presented(bool presented)
     m_workbench_presented = active;
     ++m_workbench_presentation_sequence;
     if (!active) {
+        if (m_model_preview) m_model_preview->cancel_view_navigation();
         if (m_workbench_check_running && m_workbench_check_cancel)
             m_workbench_check_cancel->store(true);
         m_workbench_check_card_visible = false;
@@ -511,6 +516,23 @@ void ModelGenerationPanel::set_workbench_presented(bool presented)
         ensure_workbench_check();
     }
     publish_workbench_state();
+}
+
+void ModelGenerationPanel::prepare_workbench_presentation(std::function<void()> ready)
+{
+    set_workbench_presented(false);
+    m_workbench_preparing = true;
+    m_workbench_preparation_ready = std::move(ready);
+    reveal_workbench_history();
+    queue_workbench_surface_refresh();
+}
+
+void ModelGenerationPanel::cancel_workbench_presentation()
+{
+    m_workbench_preparing = false;
+    m_workbench_preparation_ready = {};
+    ++m_workbench_surface_revision;
+    if (m_model_preview) m_model_preview->observe_presentation_frame({});
 }
 
 bool ModelGenerationPanel::request_open_workbench()

@@ -43,5 +43,6 @@ set(ORCA_MODEL_WORKSPACE_SOURCES
     GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp
     GUI/AI/ModelGeneration/ModelGenerationStatusText.hpp
     GUI/AI/ModelGeneration/ModelPreview3D.hpp
+    GUI/AI/ModelGeneration/ModelPreviewCamera.hpp
     GUI/AI/ModelGeneration/ModelPreviewColorState.hpp
 )

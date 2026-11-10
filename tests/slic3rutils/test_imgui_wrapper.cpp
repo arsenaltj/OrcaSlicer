@@ -19,14 +19,146 @@
 
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
+#include <ImGuizmo.h>
+#include <array>
 #include <wx/event.h>
 
 #include "slic3r/GUI/ImGuiWrapper.hpp"
+#include "slic3r/GUI/View3DNavigator.hpp"
 #include "slic3r/GUI/KeyChord.hpp"
 
 using Catch::Matchers::WithinAbs;
 using Slic3r::GUI::ImGuiWrapper;
 using Slic3r::GUI::KeyChord;
+
+TEST_CASE("Navigation backdrop preserves model pixels and excludes the footer",
+          "[ImGuiWrapper][View3DNavigator]")
+{
+    const int scale = GENERATE(1, 2);
+    ImGuiWrapper gui;
+    gui.set_display_size(128.f * scale, 128.f * scale);
+    unsigned char* pixels = nullptr;
+    int width = 0, height = 0;
+    ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    ImGui::NewFrame();
+    // A 128px navigator overlaps the model's lower-right 100x40px, then
+    // extends into the footer. Global origins and DPI must not shift texels.
+    Slic3r::GUI::draw_view_navigator_backdrop(7,
+        wxRect(100 * scale, 200 * scale, 400 * scale, 300 * scale),
+        wxRect(400 * scale, 460 * scale, 128 * scale, 128 * scale));
+    ImGui::Render();
+    auto* data = ImGui::GetDrawData();
+    REQUIRE(data->CmdListsCount == 1);
+    const auto* list = data->CmdLists[0];
+    REQUIRE(list->VtxBuffer.Size == 4);
+    const auto& top_left = list->VtxBuffer[0];
+    const auto& bottom_right = list->VtxBuffer[2];
+    CHECK_THAT(top_left.pos.x, WithinAbs(0.f, 1e-6f));
+    CHECK_THAT(top_left.pos.y, WithinAbs(0.f, 1e-6f));
+    CHECK_THAT(bottom_right.pos.x, WithinAbs(100.f * scale, 1e-6f));
+    CHECK_THAT(bottom_right.pos.y, WithinAbs(40.f * scale, 1e-6f));
+    CHECK_THAT(top_left.uv.x, WithinAbs(.75f, 1e-6f));
+    CHECK_THAT(top_left.uv.y, WithinAbs(40.f / 300.f, 1e-6f));
+    CHECK_THAT(bottom_right.uv.x, WithinAbs(1.f, 1e-6f));
+    CHECK_THAT(bottom_right.uv.y, WithinAbs(0.f, 1e-6f));
+}
+
+TEST_CASE("A navigator face click survives press and release before painting",
+          "[ImGuiWrapper][View3DNavigator]")
+{
+    ImGuiWrapper gui;
+    gui.set_display_size(800.f, 600.f);
+    unsigned char* pixels = nullptr;
+    int width = 0, height = 0;
+    auto& io = ImGui::GetIO();
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    const std::array<float, 16> identity {1.f,0.f,0.f,0.f, 0.f,1.f,0.f,0.f, 0.f,0.f,1.f,0.f, 0.f,0.f,0.f,1.f};
+    auto view = identity;
+    ImGuizmo::ViewManipulateState state;
+    Slic3r::GUI::ViewNavigatorMouseInput input;
+    auto draw = [&] {
+        input.apply(io);
+        ImGui::NewFrame();
+        ImGuizmo::BeginFrame();
+        const auto result = ImGuizmo::ViewManipulate(view.data(), identity.data(), ImGuizmo::ROTATE,
+            ImGuizmo::WORLD, nullptr, 8.f, ImVec2(0.f, 0.f), ImVec2(128.f, 128.f), 0, state);
+        ImGui::EndFrame();
+        return result;
+    };
+    input.push({ImVec2(4.f, 4.f), false, false, false, false, false});
+    draw();
+    // Both native input events arrive before the next GL frame.
+    input.push({ImVec2(64.f, 64.f), true, false, false, false, false});
+    input.push({ImVec2(64.f, 64.f), false, false, false, false, false});
+    draw();
+    CHECK(state.clicking);
+    CHECK_THAT(io.MouseDelta.x, WithinAbs(0.f, 1e-6f));
+    CHECK_THAT(io.MouseDelta.y, WithinAbs(0.f, 1e-6f));
+    REQUIRE(input.pending());
+    CHECK(draw().clicked_box >= 0);
+    CHECK(state.interpolation_frames > 0);
+    CHECK_FALSE(input.pending());
+    state.reset();
+    input.push({ImVec2(64.f, 64.f), true, false, false, false, false});
+    input.reset();
+    CHECK_FALSE(input.pending());
+}
+
+TEST_CASE("Workbench navigation creation cancellation and destruction preserve the slicer context",
+          "[ImGuiWrapper][View3DNavigator]")
+{
+    ImGuiWrapper host;
+    auto* context = ImGui::GetCurrentContext();
+    ImGui::GetIO().MouseDown[0] = true;
+    ImGui::GetIO().MousePos = ImVec2(17.f, 23.f);
+    {
+        Slic3r::GUI::WorkbenchViewNavigator first;
+        Slic3r::GUI::WorkbenchViewNavigator second;
+        REQUIRE(ImGui::GetCurrentContext() == context);
+        first.reset();
+        second.reset();
+        REQUIRE(ImGui::GetCurrentContext() == context);
+        CHECK(ImGui::GetIO().MouseDown[0]);
+        CHECK_THAT(ImGui::GetIO().MousePos.x, WithinAbs(17.f, 1e-6f));
+        CHECK_THAT(ImGui::GetIO().MousePos.y, WithinAbs(23.f, 1e-6f));
+    }
+    REQUIRE(ImGui::GetCurrentContext() == context);
+    CHECK(ImGui::GetIO().MouseDown[0]);
+    ImGui::GetIO().MouseDown[0] = false;
+}
+
+TEST_CASE("Navigator interpolation belongs to its canvas and can be cancelled without affecting another",
+          "[ImGuiWrapper][View3DNavigator]")
+{
+    ImGuiWrapper gui;
+    gui.set_display_size(800.f, 600.f);
+    unsigned char* pixels = nullptr;
+    int width = 0, height = 0;
+    ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    const std::array<float, 16> identity {1.f,0.f,0.f,0.f, 0.f,1.f,0.f,0.f, 0.f,0.f,1.f,0.f, 0.f,0.f,0.f,1.f};
+    auto first_view = identity, second_view = identity;
+    ImGuizmo::ViewManipulateState first, second;
+    first.interpolation_frames = 4;
+    first.interpolation_up[1] = 1.f;
+    first.interpolation_dir[0] = 1.f;
+    auto draw = [&](auto& view, auto& state) {
+        ImGui::NewFrame();
+        ImGuizmo::BeginFrame();
+        const auto result = ImGuizmo::ViewManipulate(view.data(), identity.data(), ImGuizmo::ROTATE,
+            ImGuizmo::WORLD, nullptr, 8.f, ImVec2(0.f, 0.f), ImVec2(128.f, 128.f), 0, state);
+        ImGui::EndFrame();
+        return result;
+    };
+    CHECK(draw(first_view, first).changed);
+    CHECK(first_view != identity);
+    CHECK_FALSE(draw(second_view, second).changed);
+    CHECK(second_view == identity);
+    first.reset();
+    const auto stopped = first_view;
+    CHECK_FALSE(draw(first_view, first).changed);
+    CHECK(first_view == stopped);
+    CHECK_FALSE(draw(second_view, second).changed);
+}
 
 namespace {
 

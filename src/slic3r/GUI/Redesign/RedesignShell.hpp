@@ -5,6 +5,7 @@
 #include "RedesignModelRoute.hpp"
 #include "RedesignPageTransition.hpp"
 #include "RedesignPreviewPresentation.hpp"
+#include "RedesignPresentationDeadline.hpp"
 #include "RedesignWorkspaceNavigation.hpp"
 #include "../AI/ModelGeneration/ModelGenerationHost.hpp"
 #include "../AI/ModelGeneration/PortraitWorkbenchEntry.hpp"
@@ -23,6 +24,7 @@
 #include <thread>
 #include <chrono>
 #include <optional>
+#include <memory>
 #include <vector>
 
 #include <wx/image.h>
@@ -30,6 +32,7 @@
 #include <wx/panel.h>
 #include <wx/timer.h>
 #include <wx/weakref.h>
+#include <wx/eventfilter.h>
 
 class wxBoxSizer;
 class wxActivityIndicator;
@@ -157,6 +160,10 @@ private:
     using ModelView = RedesignModelView;
     void build_model_workflow();
     bool open_model_workbench();
+    bool begin_workbench_presentation();
+    void layout_workbench_transition_cover();
+    void finish_workbench_presentation(bool ready, bool report_failure = true);
+    void restore_workbench_source_page();
     void return_model_overview();
     bool show_model_view(ModelView view);
     void apply_workbench_state(const PostGenerationWorkbenchState& state);
@@ -281,6 +288,15 @@ private:
     std::optional<RedesignPageTransition::Token> m_preview_transition;
     wxFrame* m_preview_transition_cover {nullptr};
     wxTimer m_preview_transition_timer;
+    std::optional<RedesignPageTransition::Token> m_workbench_transition;
+    wxFrame* m_workbench_transition_cover {nullptr};
+    wxWindow* m_workbench_transition_source {nullptr};
+    std::size_t m_workbench_source_index {0};
+    int m_workbench_source_proportion {1}, m_workbench_source_flags {0}, m_workbench_source_border {0};
+    std::unique_ptr<wxEventFilter> m_workbench_transition_input_filter;
+    wxSize m_workbench_prepared_size;
+    wxTimer m_workbench_transition_timer;
+    RedesignPresentationDeadline m_workbench_presentation_deadline;
     bool m_import_in_progress {false};
     bool m_import_awaiting_frame {false};
     bool m_import_target_staged {false};

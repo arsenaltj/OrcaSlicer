@@ -16,6 +16,7 @@
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
 #include "slic3r/GUI/Redesign/RedesignSlicingDetails.hpp"
 #include "slic3r/GUI/Redesign/RedesignPageTransition.hpp"
+#include "slic3r/GUI/Redesign/RedesignPresentationDeadline.hpp"
 #include "slic3r/GUI/Redesign/RedesignPreviewPresentation.hpp"
 #include "slic3r/GUI/Redesign/RedesignWorkspaceNavigation.hpp"
 #include "slic3r/GUI/Redesign/ModelGenerationStarfield.hpp"
@@ -643,6 +644,23 @@ TEST_CASE("Preview camera fitting requires a later frame and old route callbacks
     CHECK(gate.observe(*second, 42, true, true, 800, 600, 18, now) == Status::Ready);
     REQUIRE(page.mark_ready(*second));
     CHECK(page.commit(*second));
+}
+
+TEST_CASE("Workbench preparation counts visible time and resumes with its remaining budget",
+          "[UiRedesign][WorkbenchPresentation]")
+{
+    using Deadline = Slic3r::GUI::RedesignPresentationDeadline;
+    const auto start = Deadline::Clock::now();
+    Deadline deadline;
+    deadline.begin(start);
+    CHECK_FALSE(deadline.observe(start + std::chrono::seconds(8), false));
+    CHECK_FALSE(deadline.observe(start + std::chrono::seconds(8), true));
+    CHECK_FALSE(deadline.observe(start + std::chrono::minutes(10), true));
+    CHECK_FALSE(deadline.observe(start + std::chrono::minutes(10), false));
+    CHECK_FALSE(deadline.observe(start + std::chrono::minutes(10) + std::chrono::seconds(6), false));
+    CHECK(deadline.observe(start + std::chrono::minutes(10) + std::chrono::seconds(7), false));
+    deadline.begin(start + std::chrono::minutes(11));
+    CHECK_FALSE(deadline.observe(start + std::chrono::minutes(11) + std::chrono::seconds(1), false));
 }
 
 TEST_CASE("A stalled preview times out without committing and can retry the same G-code result",
