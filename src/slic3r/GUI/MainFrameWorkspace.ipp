@@ -15,6 +15,21 @@ bool cloak_redesign_restore(HWND hwnd, bool cloak)
     const BOOL value = cloak;
     return set_attribute && SUCCEEDED(set_attribute(hwnd, cloak_attribute, &value, sizeof(value)));
 }
+
+void finish_redesign_restore(wxWindow* root)
+{
+    const auto hwnd = root->GetHandle();
+    if (!::GetPropW(hwnd, redesign_restore_pending) || ::IsIconic(hwnd)) return;
+    ::GdiFlush();
+    using FlushComposition = HRESULT (WINAPI*)();
+    static const auto flush = reinterpret_cast<FlushComposition>(
+        ::GetProcAddress(::GetModuleHandleW(L"dwmapi.dll"), "DwmFlush"));
+    if (flush) flush();
+    cloak_redesign_restore(hwnd, false);
+    ::RemovePropW(hwnd, redesign_restore_pending);
+    BOOST_LOG_TRIVIAL(info) << "[UiRedesignRestore] restored content presented at "
+        << root->GetClientSize().x << 'x' << root->GetClientSize().y;
+}
 #endif
 
 void present_redesign_workspace(wxWindow* root, RedesignShell* shell)
@@ -31,30 +46,50 @@ void present_redesign_workspace(wxWindow* root, RedesignShell* shell)
         bounds.right - bounds.left < minimum.x || bounds.bottom - bounds.top < minimum.y)
         return;
 #endif
+    const auto started = std::chrono::steady_clock::now();
     root->Layout();
+    const auto layout_done = std::chrono::steady_clock::now();
     shell->request_viewport_frame();
+    const auto request_done = std::chrono::steady_clock::now();
+    wxWindow* workbench_surface = nullptr;
     std::vector<wxWindow*> windows {root};
     for (size_t i = 0; i < windows.size(); ++i)
-        for (auto* child : windows[i]->GetChildren())
-            if (child && child->IsShownOnScreen()) windows.push_back(child);
+        for (auto* child : windows[i]->GetChildren()) {
+            if (!child || !child->IsShownOnScreen()) continue;
+            // The workbench queue owns final layout, native overlays and GL.
+            // A second tree flush here can overwrite its freshly drawn handle.
+            if (is_redesign_workbench_surface(child)) workbench_surface = child;
+            else windows.push_back(child);
+        }
     for (auto* window : windows) {
         prepare_redesign_restore_background(window);
         window->Refresh(false);
     }
-    for (auto* window : windows) window->Update();
 #ifdef __WXMSW__
-    // Restore starts presenting before WM_SIZE. Only expose the recreated
-    // native surfaces after layout has committed and the GL paint has swapped.
+    if (workbench_surface) {
+        // Commit the surrounding native controls in one batch too. Per-child
+        // Update() flushes composition repeatedly before the workbench queue
+        // can paint its handle. Leave that subtree to its final-layout pass.
+        ::RedrawWindow(workbench_surface->GetHandle(), nullptr, nullptr,
+            RDW_VALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
+        ::RedrawWindow(root->GetHandle(), nullptr, nullptr, RDW_UPDATENOW | RDW_ALLCHILDREN);
+    } else
+#endif
+        for (auto* window : windows) window->Update();
+    wxString trace;
+    if (wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace) && trace == "1")
+        BOOST_LOG_TRIVIAL(info) << "[UiRedesignRestore] host presentation: layout_ms="
+            << std::chrono::duration<double, std::milli>(layout_done - started).count()
+            << ", request_ms="
+            << std::chrono::duration<double, std::milli>(request_done - layout_done).count()
+            << ", native_ms="
+            << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - request_done).count();
+#ifdef __WXMSW__
+    // The deferred workbench pass was queued above. Expose its complete native
+    // and GL surfaces afterwards; other pages retain their synchronous path.
     if (::GetPropW(root->GetHandle(), redesign_restore_pending)) {
-        ::GdiFlush();
-        using FlushComposition = HRESULT (WINAPI*)();
-        static const auto flush = reinterpret_cast<FlushComposition>(
-            ::GetProcAddress(::GetModuleHandleW(L"dwmapi.dll"), "DwmFlush"));
-        if (flush) flush();
-        cloak_redesign_restore(root->GetHandle(), false);
-        ::RemovePropW(root->GetHandle(), redesign_restore_pending);
-        BOOST_LOG_TRIVIAL(info) << "[UiRedesignRestore] restored content presented at "
-            << root->GetClientSize().x << 'x' << root->GetClientSize().y;
+        if (workbench_surface) root->CallAfter([root] { finish_redesign_restore(root); });
+        else finish_redesign_restore(root);
     }
 #endif
 }
@@ -79,15 +114,21 @@ void MainFrame::bind_workspace_window_events()
         // wx commits deferred child positions after the size event returns.
         // Coalesce nested size/iconize events and paint at the final viewport.
         CallAfter([this, pending] {
-            *pending = false;
             present_redesign_workspace(this, m_redesign_shell);
+            *pending = false;
         });
     };
     Bind(wxEVT_SIZE, [this, present_workspace, last_layout = wxSize()](wxSizeEvent&) mutable {
         const auto size = GetClientSize();
         if (m_redesign_shell_active) {
             if (IsIconized() || size.x <= 0 || size.y <= 0) return;
-            if (size == last_layout) return;
+            if (size == last_layout) {
+#ifdef __WXMSW__
+                // Restoring to the same dimensions still needs fresh controls.
+                if (::GetPropW(GetHandle(), redesign_restore_pending)) present_workspace();
+#endif
+                return;
+            }
             last_layout = size;
         }
             BOOST_LOG_TRIVIAL(trace) << "mainframe: size changed, is maximized = " << this->IsMaximized();
@@ -98,9 +139,11 @@ void MainFrame::bind_workspace_window_events()
                 m_topbar->SetMaximizedSize();
             }
 #endif
-        Layout();
-        Refresh(!m_redesign_shell_active);
         if (m_redesign_shell_active) present_workspace();
+        else {
+            Layout();
+            Refresh();
+        }
 #ifdef __WXGTK__
         update_edge_panels();
 #endif
@@ -114,7 +157,6 @@ void MainFrame::bind_workspace_window_events()
     Bind(wxEVT_ICONIZE, [this, present_workspace](wxIconizeEvent& event) {
         event.Skip();
         if (!event.IsIconized() && m_redesign_shell_active) {
-            Layout();
             present_workspace();
         }
     });
@@ -229,17 +271,13 @@ WXLRESULT MainFrame::MSWWindowProc(WXUINT nMsg, WXWPARAM wParam, WXLPARAM lParam
     const bool restoring_size = position && (::IsIconic(hWnd) || ::GetPropW(hWnd, redesign_iconized)) &&
         !(position->flags & (SWP_NOSIZE | SWP_HIDEWINDOW)) && position->cx > 160 && position->cy > 160;
     if (m_redesign_shell_active && (nMsg == WM_QUERYOPEN || restoring_size)) {
-        if (::GetPropW(hWnd, redesign_restore_pending) || cloak_redesign_restore(hWnd, true)) {
+        if (!::GetPropW(hWnd, redesign_restore_pending) && cloak_redesign_restore(hWnd, true)) {
             if (!::SetPropW(hWnd, redesign_restore_pending, reinterpret_cast<HANDLE>(1))) {
                 cloak_redesign_restore(hWnd, false);
             } else {
                 BOOST_LOG_TRIVIAL(info) << "[UiRedesignRestore] preparing restored content, message=" << nMsg;
-                // Also cover restores that don't change the remembered client size.
-                CallAfter([this] {
-                    if (!IsIconized() && ::GetPropW(GetHandle(), redesign_restore_pending)) {
-                        present_redesign_workspace(this, m_redesign_shell);
-                    }
-                });
+                // wx size/iconize events share the single presentation queue,
+                // including restores that preserve the remembered client size.
             }
         }
     }

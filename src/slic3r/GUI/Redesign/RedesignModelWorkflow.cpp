@@ -1006,6 +1006,9 @@ bool RedesignShell::show_model_view(ModelView view)
     if (view == ModelView::Preview && m_preview_transition &&
         m_page_transition.current(*m_preview_transition)) return true;
     if (!owns_model_workflow() || m_import_in_progress || m_page_transition.active()) return false;
+    // The retained workbench route bypasses open_model_workbench(). Reclaim
+    // its drawer before laying out the page, including a collapsed drawer.
+    if (view == ModelView::Workbench) restore_smart_model_history();
     if (view == ModelView::Preview) {
         auto* plate = m_plater->get_partplate_list().get_curr_plate();
         if (!plate || !plate->is_slice_result_valid() || !plate->get_slice_result())
@@ -1232,7 +1235,11 @@ void RedesignShell::request_viewport_frame()
     auto* owner = dynamic_cast<wxTopLevelWindow*>(wxGetTopLevelParent(this));
     if (!owner || owner->IsIconized() || !IsShownOnScreen()) return;
     layout_preview_transition_cover();
-    if ((native_workspace_visible() || m_print_canvas_mounted) && m_plater) {
+    if (m_active_page == Page::Model && m_model_view == ModelView::Workbench && m_model_generation_host) {
+        // The workbench owns its overlay coordinates and one coalesced native
+        // refresh. Revalidate them even when restore keeps the previous size.
+        m_model_generation_host->set_workbench_presented(true);
+    } else if ((native_workspace_visible() || m_print_canvas_mounted) && m_plater) {
         auto* canvas = m_plater->get_current_canvas3D();
         const auto size = canvas->get_canvas_size();
         if (size.get_width() <= 0 || size.get_height() <= 0) return;
@@ -1343,6 +1350,14 @@ void RedesignShell::present_active_page(bool flush_children)
     if (!root || !root->IsShownOnScreen()) return;
 
     root->Layout();
+    if (!flush_children && m_active_page == Page::Model &&
+        m_model_view == ModelView::Workbench && m_model_generation_host) {
+        // Layout, overlapping controls and GL submission belong to the
+        // workbench's single deferred update, including unchanged-size restore.
+        m_model_generation_host->set_workbench_presented(true);
+        root->Refresh(false);
+        return;
+    }
     std::vector<wxWindow*> visible_windows {root};
     for (std::size_t i = 0; i < visible_windows.size(); ++i) {
         prepare_redesign_restore_background(visible_windows[i]);

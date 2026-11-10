@@ -84,14 +84,6 @@ void apply_workbench_theme(wxWindow* window, bool enabled,
     if (auto* toggle = dynamic_cast<WorkbenchSwitch*>(window)) toggle->rescale_workbench();
 }
 
-void repaint_workbench_surface(wxWindow* window)
-{
-    if (!window || !window->IsShownOnScreen() || window->IsFrozen()) return;
-    window->Refresh();
-    window->Update();
-    for (wxWindow* child : window->GetChildren())
-        repaint_workbench_surface(child);
-}
 }
 bool ModelGenerationPanel::finishing_workbench_layout_ready(bool enabled) const
 {
@@ -140,23 +132,18 @@ void ModelGenerationPanel::set_finishing_workbench(bool enabled)
         ((!m_finishing_candidate.empty() && !m_finishing_before) || (!m_finishing_accepted_path.empty() &&
          m_displayed_model_path == m_finishing_accepted_path)));
     m_model_preview->set_beauty_view(enabled);
-    if (!enabled) {
-        m_workbench_history_toggle->Hide();
-    }
     m_model_preview->set_color_controls_visible(!enabled);
     m_model_stats->Show(!enabled);
     m_front_model_view->Show(!enabled);
     m_reset_model_view->Show(!enabled);
     apply_workbench_theme(m_finishing_panel, enabled);
     apply_workbench_theme(m_workbench_footer, enabled);
-    apply_workbench_theme(m_workbench_history_panel, enabled);
-    if (enabled && m_workbench_history_search) {
+    if (!m_workbench_history_sidebar_mounted) apply_workbench_theme(m_workbench_history_panel, enabled);
+    if (enabled && m_workbench_history_search && !m_workbench_history_sidebar_mounted) {
         m_workbench_history_search->SetBackgroundColour(wxColour(49, 49, 54));
         m_workbench_history_search->SetForegroundColour(wxColour(235, 235, 235));
     }
-    if (m_workbench_history_panel) {
-        m_workbench_history_panel->Show(enabled);
-    }
+    update_workbench_history_visibility();
     if (m_model_preview && m_model_preview->GetParent()) {
         auto* model_card = m_model_preview->GetParent();
         model_card->SetWindowStyleFlag(enabled ? wxBORDER_NONE : wxBORDER_SIMPLE);
@@ -262,9 +249,6 @@ void ModelGenerationPanel::update_finishing_selection()
 void ModelGenerationPanel::refresh_model_finishing()
 {
     if (!m_finishing_panel) return;
-    std::unique_ptr<wxWindowUpdateLocker> workbench_updates;
-    if (m_finishing_workbench && m_workbench_shell)
-        workbench_updates = std::make_unique<wxWindowUpdateLocker>(m_workbench_shell);
     if (!m_finishing_undo_path.empty() && m_displayed_model_path != m_finishing_accepted_path) {
         m_finishing_undo_path.clear(); m_finishing_accepted_path.clear();
     }
@@ -298,8 +282,14 @@ void ModelGenerationPanel::refresh_model_finishing()
         (ready || m_finishing_running || pending);
     const bool repaint_layout = m_finishing_workbench &&
         (m_finishing_panel->IsShown() != show_finishing_panel ||
-         m_workbench_history_panel->IsShown() != (!m_workbench_editing && !m_workbench_history_collapsed) ||
+         m_workbench_history_panel->IsShown() != m_workbench_history_state.panel_visible(
+             m_workbench_history_sidebar_mounted, m_finishing_workbench, m_workbench_editing) ||
          m_workbench_footer->IsShown() != show_beauty_actions);
+    // Status/progress updates do not change the page structure. Freezing the
+    // GL host for those updates lets Windows retain stale child surfaces.
+    std::unique_ptr<wxWindowUpdateLocker> workbench_updates;
+    if (repaint_layout && m_workbench_shell)
+        workbench_updates = std::make_unique<wxWindowUpdateLocker>(m_workbench_shell);
     m_finishing_panel->Show(show_finishing_panel);
     m_workbench_footer->Show(show_beauty_actions);
     const auto beauty_source = pending ? m_finishing_candidate : m_displayed_model_path;
@@ -359,7 +349,8 @@ void ModelGenerationPanel::refresh_model_finishing()
     m_finishing_compare_model->SetLabel(m_finishing_workbench
         ? (m_finishing_before ? _L("查看修改后") : _L("修改前后对比"))
         : (m_finishing_before ? _L("当前为处理前") : _L("按住查看处理前")));
-    m_finishing_compare_model->GetParent()->Layout();
+    if (m_finishing_compare_model->GetParent()->IsShownOnScreen())
+        m_finishing_compare_model->GetParent()->Layout();
     m_finishing_preview->Enable(editable);
     m_finishing_preview->SetLabel(pending ? _L("按当前强度重新预览") : cleanup ? _L("预览去杂效果") : _L("预览处理效果"));
     m_finishing_preset->Enable(editable);
@@ -406,11 +397,13 @@ void ModelGenerationPanel::refresh_model_finishing()
     wrap_workbench_text(m_finishing_status,
         std::max(FromDIP(80), m_finishing_scroll->GetClientSize().x - FromDIP(34)));
     wrap_workbench_text(m_finishing_selection_status, FromDIP(240));
-    m_finishing_panel->Layout();
-    m_finishing_scroll->Layout();
-    m_finishing_scroll->FitInside();
-    if (auto* page = dynamic_cast<wxScrolledWindow*>(m_finishing_panel->GetParent())) {
-        page->Layout(); page->FitInside();
+    if (m_finishing_panel->IsShownOnScreen()) {
+        m_finishing_panel->Layout();
+        m_finishing_scroll->Layout();
+        m_finishing_scroll->FitInside();
+        if (auto* page = dynamic_cast<wxScrolledWindow*>(m_finishing_panel->GetParent())) {
+            page->Layout(); page->FitInside();
+        }
     }
     if (m_workbench_history_scroller) {
         // Browsing is independent of replacing the active asset. In particular
@@ -434,9 +427,10 @@ void ModelGenerationPanel::refresh_model_finishing()
             weak->refresh_controls();
         });
     }
-    // Paint the final visible surfaces after thawing, before returning from a mode switch.
+    // Queue one paint after thawing and the final layout, rather than exposing
+    // each native child independently through recursive synchronous Update().
     workbench_updates.reset();
-    if (repaint_layout) repaint_workbench_surface(m_workbench_shell);
+    if (repaint_layout) queue_workbench_surface_refresh();
     if (m_save_and_return && !m_busy && !m_finishing_running && !m_workbench_check_running) {
         wxWeakRef<ModelGenerationPanel> weak(this);
         CallAfter([weak] { if (weak && !weak->m_shutdown) weak->finish_workbench_save(); });

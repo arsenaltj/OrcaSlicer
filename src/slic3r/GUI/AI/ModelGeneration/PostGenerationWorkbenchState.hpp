@@ -152,10 +152,10 @@ inline bool workbench_check_card_should_show(bool workbench_open, bool workbench
          result.status == WorkbenchCheckStatus::Failed))
         return false;
     const bool automatic = result.source == WorkbenchCheckSource::Automatic;
-    const bool repair_phase = result.phase == WorkbenchCheckPhase::Repairing ||
-        result.phase == WorkbenchCheckPhase::Rechecking;
     bool show = requested_visible;
-    if (check_running && (automatic || repair_phase)) show = true;
+    // Both entry checks and explicit checks need an immediate, cancellable
+    // progress card, including the initial inspection phase.
+    if (check_running) show = true;
     if (automatic_repair_saving) show = true;
     if (!check_running && !automatic_repair_saving && !automatic &&
         result.candidate_status == RepairCandidateStatus::Ready) show = false;

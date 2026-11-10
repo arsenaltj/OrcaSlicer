@@ -19,6 +19,7 @@
 #include <string_view>
 
 using Slic3r::GUI::ModelPreview3D;
+using Slic3r::GUI::ModelPreviewFrameState;
 using Slic3r::Vec3d;
 namespace selection = Slic3r::AI::SurfaceSelectionPersistence;
 namespace trial = Slic3r::AI::ColorTrialPersistence;
@@ -59,6 +60,62 @@ void write_original_appearance_json(const boost::filesystem::path& path, const n
     output << value.dump();
     REQUIRE(output.good());
 }
+}
+
+TEST_CASE("Preview frame completions require the current visible viewport and DPI",
+          "[ModelPreviewState][ModelPreviewFrame]")
+{
+    ModelPreviewFrameState state;
+    const auto frame = state.begin({800, 600}, 1.25);
+    CHECK(state.current(frame, {800, 600}, 1.25, true));
+    CHECK_FALSE(state.current(frame, {600, 600}, 1.25, true));
+    CHECK_FALSE(state.current(frame, {800, 600}, 1.5, true));
+    CHECK_FALSE(state.current(frame, {800, 600}, 1.25, false));
+    CHECK_FALSE(state.current(frame, {0, 600}, 1.25, true));
+    CHECK_FALSE(state.current(frame, {800, 0}, 1.25, true));
+}
+
+TEST_CASE("Resizing back to the same size cannot accept an older preview frame",
+          "[ModelPreviewState][ModelPreviewFrame]")
+{
+    ModelPreviewFrameState state;
+    const auto before = state.begin({800, 600}, 2.);
+    state.invalidate();
+    const auto narrow = state.begin({600, 600}, 2.);
+    state.invalidate();
+    CHECK_FALSE(state.current(before, {800, 600}, 2., true));
+    CHECK_FALSE(state.current(narrow, {800, 600}, 2., true));
+    CHECK(state.current(state.begin({800, 600}, 2.), {800, 600}, 2., true));
+}
+
+TEST_CASE("Replacing a model invalidates its frame even when viewport dimensions stay unchanged",
+          "[ModelPreviewState][ModelPreviewFrame]")
+{
+    ModelPreviewFrameState state;
+    const auto previous_model = state.begin({800, 600}, 1.);
+    state.invalidate();
+    CHECK_FALSE(state.current(previous_model, {800, 600}, 1., true));
+    CHECK(state.current(state.begin({800, 600}, 1.), {800, 600}, 1., true));
+}
+
+TEST_CASE("Resize transitions preserve the completed image aspect inside the new viewport",
+          "[ModelPreviewState][ModelPreviewFrame]")
+{
+    const wxSize source = GENERATE(wxSize(2232, 1647), wxSize(1688, 1647), wxSize(600, 1000));
+    const wxSize target = GENERATE(wxSize(1688, 1647), wxSize(2232, 1647), wxSize(1200, 800));
+    const auto extents = Slic3r::GUI::preview_frame_extents(source, target);
+    REQUIRE(extents);
+    CHECK((*extents)[0] > 0.f);
+    CHECK((*extents)[0] <= 1.f);
+    CHECK((*extents)[1] > 0.f);
+    CHECK((*extents)[1] <= 1.f);
+    const double image_aspect = double((*extents)[0]) * target.x / (double((*extents)[1]) * target.y);
+    CHECK_THAT(image_aspect, Catch::Matchers::WithinAbs(double(source.x) / source.y, 0.000001));
+    const auto double_dpi = Slic3r::GUI::preview_frame_extents(source * 2, target * 2);
+    REQUIRE(double_dpi);
+    CHECK(*double_dpi == *extents);
+    CHECK_FALSE(Slic3r::GUI::preview_frame_extents({0, source.y}, target));
+    CHECK_FALSE(Slic3r::GUI::preview_frame_extents(source, {target.x, 0}));
 }
 
 TEST_CASE("Saved low-color versions retain the immutable original palette source",

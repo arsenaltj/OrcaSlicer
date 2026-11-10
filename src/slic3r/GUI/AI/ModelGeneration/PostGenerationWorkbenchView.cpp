@@ -39,6 +39,7 @@
 #include <wx/textctrl.h>
 #include <wx/textdlg.h>
 #include <wx/tglbtn.h>
+#include <wx/toplevel.h>
 #include <wx/scrolwin.h>
 #include <wx/settings.h>
 #include <wx/sizer.h>
@@ -93,14 +94,6 @@ void apply_workbench_theme(wxWindow* window, bool enabled,
     if (auto* toggle = dynamic_cast<WorkbenchSwitch*>(window)) toggle->rescale_workbench();
 }
 
-void repaint_workbench_surface(wxWindow* window)
-{
-    if (!window || !window->IsShownOnScreen() || window->IsFrozen()) return;
-    window->Refresh();
-    window->Update();
-    for (wxWindow* child : window->GetChildren())
-        repaint_workbench_surface(child);
-}
 }
 wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent)
 {
@@ -597,14 +590,18 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     m_workbench_sync_timer.SetOwner(this, wxWindow::NewControlId());
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
         if (m_shutdown || !m_workbench_shell || !m_workbench_shell->IsShownOnScreen()) return;
+        auto* owner = wxDynamicCast(wxGetTopLevelParent(m_workbench_shell), wxTopLevelWindow);
+        if (owner && owner->IsIconized()) return;
         synchronize_workbench_project_palette();
-        ensure_workbench_check();
+        // Resume a blocked/missing check through the existing identity gate.
+        // Do not read and hash the full model on every UI timer tick.
+        queue_workbench_check();
     }, m_workbench_sync_timer.GetId());
     m_workbench_sync_timer.Start(500);
     row->Add(settings, 0, wxEXPAND | wxTOP | wxBOTTOM | wxRIGHT, FromDIP(12));
 
     auto* workspace = m_workbench_view_host = new wxPanel(shell, wxID_ANY, wxDefaultPosition,
-        wxDefaultSize, wxTAB_TRAVERSAL | wxCLIP_CHILDREN);
+        wxDefaultSize, wxTAB_TRAVERSAL | wxCLIP_CHILDREN | wxCLIP_SIBLINGS);
     workspace->SetBackgroundColour(wxColour(49, 49, 54));
     auto* workspace_sizer = new wxBoxSizer(wxVERTICAL);
     auto* toolbar_host = new wxPanel(workspace, wxID_ANY, wxDefaultPosition, wxDefaultSize,
@@ -649,21 +646,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     m_workbench_model_status->SetForegroundColour(wxColour(190, 190, 196));
     toolbar->Add(m_workbench_model_status, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
     m_workbench_history_toggle = command(toolbar_host, toolbar, wxEmptyString, [this](wxCommandEvent&) {
-        if (m_workbench_import_feedback || m_workbench_import_running) return;
-        m_workbench_history_user_open = !m_workbench_history_panel->IsShown();
-        m_workbench_history_collapsed = !m_workbench_history_user_open;
-        if (m_workbench_history_sidebar_mounted) {
-            m_workbench_history_panel->Show(m_workbench_history_user_open);
-            const wxString action = m_workbench_history_user_open ? _L("收起历史模型") : _L("展开历史模型");
-            m_workbench_history_toggle->SetName(action);
-            m_workbench_history_toggle->SetToolTip(action);
-            static_cast<WorkbenchButton*>(m_workbench_history_toggle)->set_drawer_open(m_workbench_history_user_open);
-            layout_mounted_workbench_history_sidebar();
-            return;
-        }
-        m_workbench_editing = false;
-        update_finishing_selection();
-        refresh_model_finishing(); refresh_post_generation_workbench();
+        toggle_workbench_history();
     });
     workspace_sizer->Add(toolbar_host, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
     m_workbench_state_status = new WorkbenchStaticText(workspace, wxID_ANY, wxEmptyString);
@@ -794,17 +777,22 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     shell->SetSizer(row);
     auto* parameter_host = m_model_preview->workbench_overlay_parent();
     toolbar->Detach(m_workbench_history_toggle);
-    m_workbench_history_toggle->Reparent(parameter_host);
+    // The preview has its own card/splitter margins. Its edge is not the drawer edge.
+    m_workbench_history_toggle->Reparent(shell);
     auto* history_toggle = static_cast<WorkbenchButton*>(m_workbench_history_toggle);
     history_toggle->SetName("ai_content_color");
     history_toggle->SetCornerRadius(0);
     history_toggle->SetBackgroundColour(wxColour(49, 49, 54));
     history_toggle->SetPaddingSize(FromDIP(wxSize(0, 0)));
-    history_toggle->SetMinSize(FromDIP(wxSize(19, 98)));
-    history_toggle->SetMaxSize(FromDIP(wxSize(19, 98)));
+    history_toggle->SetMinSize(FromDIP(workbench_history_handle_size()));
+    history_toggle->SetMaxSize(FromDIP(workbench_history_handle_size()));
     history_toggle->set_drawer_assets();
     parameter_host->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
-        layout_workbench_history_toggle(true); event.Skip();
+        queue_workbench_surface_refresh(); event.Skip();
+    });
+    shell->set_viewport_layout_callback([this] {
+        if (!m_workbench_history_sidebar_mounted && !m_shutdown)
+            queue_workbench_surface_refresh();
     });
 #ifdef __WXMSW__
     Bind(wxEVT_DPI_CHANGED, [this](wxDPIChangedEvent& event) {

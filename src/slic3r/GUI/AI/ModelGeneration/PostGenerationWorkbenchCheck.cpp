@@ -153,7 +153,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     m_workbench_check_result.phase = WorkbenchCheckPhase::Inspecting;
     m_workbench_check_result.summary = "正在检查模型……";
     m_workbench_check_running = true;
-    m_workbench_check_card_visible = automatic && !saved_appearance;
+    m_workbench_check_card_visible = true;
     update_finishing_selection();
     refresh_model_finishing();
     wxWeakRef<ModelGenerationPanel> weak(this);

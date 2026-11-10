@@ -151,30 +151,102 @@ void apply_workbench_theme(wxWindow* window, bool enabled,
     if (auto* toggle = dynamic_cast<WorkbenchSwitch*>(window)) toggle->rescale_workbench();
 }
 
-void repaint_workbench_surface(wxWindow* window)
+void invalidate_workbench_controls(wxWindow* window, wxWindow* viewport)
 {
-    if (!window || !window->IsShownOnScreen() || window->IsFrozen()) return;
-    window->Refresh();
-    window->Update();
+    if (!window || window == viewport ||
+        !window->IsShownOnScreen() || window->IsFrozen()) return;
+    window->Refresh(false);
     for (wxWindow* child : window->GetChildren())
-        repaint_workbench_surface(child);
+        invalidate_workbench_controls(child, viewport);
+}
+
+void present_workbench_controls(wxWindow* root, wxWindow* viewport = nullptr)
+{
+    if (!root || !root->IsShownOnScreen() || root->IsFrozen()) return;
+    invalidate_workbench_controls(root, viewport);
+#ifdef __WXMSW__
+    // Flush the native subtree once, rather than synchronously committing each
+    // composited child separately. The GL canvas is submitted by its owner
+    // after overlays and controls, using the same final viewport dimensions.
+    if (viewport) ::ValidateRect(viewport->GetHandle(), nullptr);
+    ::RedrawWindow(root->GetHandle(), nullptr, nullptr, RDW_UPDATENOW | RDW_ALLCHILDREN);
+#else
+    root->Update();
+#endif
 }
 }
 
-void ModelGenerationPanel::position_workbench_check_card()
+void ModelGenerationPanel::queue_workbench_surface_refresh()
 {
-    if (!m_workbench_check_card || !m_model_preview || !m_workbench_check_card->IsShown()) return;
-    auto* host = m_model_preview->workbench_overlay_parent();
-    if (!host || !host->IsShownOnScreen()) return;
-    const int viewport_top = m_model_preview->workbench_viewport_top();
-    const wxSize host_size = host->GetClientSize();
-    const wxRect viewport(host->ClientToScreen(wxPoint(0, viewport_top)),
-        wxSize(host_size.x, std::max(0, host_size.y - viewport_top)));
+    if (m_shutdown || m_workbench_surface_refresh_pending) return;
+    m_workbench_surface_refresh_pending = true;
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    CallAfter([weak] {
+        if (!weak) return;
+        // Requests made by the final layout/card placement belong to this
+        // update too; release the coalescing flag only after they have settled.
+        Slic3r::ScopeGuard pending_guard([weak] {
+            if (weak) weak->m_workbench_surface_refresh_pending = false;
+        });
+        (void)pending_guard;
+        if (weak->m_shutdown || !weak->m_workbench_presented ||
+            !weak->m_finishing_workbench || !weak->m_workbench_shell ||
+            !weak->m_workbench_shell->IsShownOnScreen()) return;
+        const auto* owner = wxDynamicCast(wxGetTopLevelParent(weak->m_workbench_shell), wxTopLevelWindow);
+        if (owner && owner->IsIconized()) return;
+        const auto started = std::chrono::steady_clock::now();
+        // Paint only after all synchronous layout/visibility changes have
+        // settled. Hidden editor children must not paint an intermediate frame.
+        weak->layout_workbench_history_toggle(true);
+        weak->update_workbench_check_card();
+        auto* viewport = weak->workbench_import_viewport();
+        auto* handle = weak->m_workbench_history_toggle;
+        // Finish the exposed native backgrounds before their overlapping leaf.
+        // No other presentation layer may flush this subtree independently.
+        present_workbench_controls(weak->m_workbench_shell, viewport);
+        if (handle && handle->IsShownOnScreen()) {
+            handle->Raise();
+            handle->Refresh(false);
+            handle->Update();
+        }
+        present_workbench_controls(weak->m_workbench_check_card);
+        const auto controls_presented = std::chrono::steady_clock::now();
+        // One complete GL frame follows the native controls in this same pass.
+        // A top-level restore can then expose the window without an old frame.
+        if (viewport && viewport->IsShownOnScreen()) {
+            viewport->Refresh(false);
+            viewport->Update();
+        }
+        wxString trace;
+        if (wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace) && trace == "1")
+            BOOST_LOG_TRIVIAL(info) << "Workbench surface presented: controls_ms="
+                << std::chrono::duration<double, std::milli>(controls_presented - started).count()
+                << ", total_ms="
+                << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count()
+                << ", history_open=" << weak->m_workbench_history_state.workbench_open;
+    });
+}
+
+bool ModelGenerationPanel::position_workbench_check_card(bool preparing)
+{
+    if (!m_workbench_check_card || !m_model_preview ||
+        (!preparing && !m_workbench_check_card->IsShown())) return false;
+    auto* canvas = m_model_preview->workbench_viewport_window();
+    if (!canvas || !canvas->IsShownOnScreen()) return false;
+    const wxSize viewport_size = canvas->GetClientSize();
+    if (viewport_size.x <= 0 || viewport_size.y <= 0) return false;
+    const wxRect viewport(canvas->ClientToScreen(wxPoint()), viewport_size);
     const wxSize card_size = m_workbench_check_card->GetSize();
-    m_workbench_check_card->Move(
+    const wxPoint position(
         viewport.x + std::max(0, (viewport.width - card_size.x) / 2),
         viewport.y + std::max(0, (viewport.height - card_size.y) / 2));
+    if (m_workbench_check_card->GetPosition() != position) {
+        const bool exposed = m_workbench_check_card->IsShown();
+        m_workbench_check_card->Move(position);
+        if (exposed) queue_workbench_surface_refresh();
+    }
     raise_workbench_check_card();
+    return true;
 }
 
 void ModelGenerationPanel::raise_workbench_check_card()
@@ -252,14 +324,15 @@ void ModelGenerationPanel::on_workbench_card_owner_activate(wxActivateEvent& eve
 
 void ModelGenerationPanel::on_workbench_card_overlay_size(wxSizeEvent& event)
 {
-    position_workbench_check_card();
+    queue_workbench_surface_refresh();
     event.Skip();
 }
 
 void ModelGenerationPanel::hide_workbench_check_card()
 {
     m_workbench_check_card_visible = false;
-    if (m_workbench_honor_semantic_active && m_finishing_workbench && m_workbench_presented) {
+    if (m_workbench_honor_semantic_active && m_finishing_workbench && m_workbench_presented &&
+        m_workbench_shell && m_workbench_shell->IsShownOnScreen()) {
         update_workbench_check_card();
         return;
     }
@@ -269,8 +342,10 @@ void ModelGenerationPanel::hide_workbench_check_card()
     if (m_workbench_check_progress) m_workbench_check_progress->set_progress(std::nullopt);
     if (m_model_preview) m_model_preview->set_workbench_input_locked(false);
     if (m_workbench_shell && !m_workbench_shell->IsEnabled()) m_workbench_shell->Enable();
-    if (m_workbench_check_card && m_workbench_check_card->IsShown())
+    if (m_workbench_check_card && m_workbench_check_card->IsShown()) {
         m_workbench_check_card->Hide();
+        queue_workbench_surface_refresh();
+    }
 }
 
 void ModelGenerationPanel::cancel_workbench_check()
@@ -341,7 +416,13 @@ void ModelGenerationPanel::update_workbench_check_card()
         hide_workbench_check_card();
         return;
     }
+    if (m_workbench_shell->IsFrozen()) {
+        queue_workbench_surface_refresh();
+        return;
+    }
     m_workbench_floating_card_mode = mode;
+    const bool was_shown = m_workbench_check_card->IsShown();
+    const wxRect previous_bounds = was_shown ? m_workbench_check_card->GetScreenRect() : wxRect();
     const bool honor_semantic = mode == WorkbenchFloatingCardMode::HonorSuiteSemantic;
     if (!honor_semantic) m_workbench_check_card_visible = true;
     const wxColour modal_text(238, 240, 244);
@@ -353,11 +434,6 @@ void ModelGenerationPanel::update_workbench_check_card()
     }
     if (m_model_preview) m_model_preview->set_workbench_input_locked(true);
     if (m_workbench_shell && m_workbench_shell->IsEnabled()) m_workbench_shell->Disable();
-    if (!m_workbench_check_card->IsShown()) {
-        apply_workbench_floating_card_shape(m_workbench_check_card, 8, wxColour(45, 45, 49));
-        m_workbench_check_card->Show();
-    }
-    install_workbench_card_layer_guard();
     wxString phase;
     if (native_repair) phase = _L("修复模型");
     else if (honor_semantic) phase = _L("正在应用荣耀耗材套装");
@@ -397,7 +473,7 @@ void ModelGenerationPanel::update_workbench_check_card()
         running && !honor_semantic && !cancel_requested);
     const bool review = !honor_semantic && !running && result.candidate_status != RepairCandidateStatus::Ready;
     const bool retry = review && result.status != WorkbenchCheckStatus::Normal;
-    m_workbench_check_continue_button->SetLabel(_L("重新检查修复"));
+    set_workbench_label(m_workbench_check_continue_button, _L("重新检查修复"));
     modal_layout_changed = set_workbench_shown(m_workbench_check_continue_button, retry) || modal_layout_changed;
     modal_layout_changed = set_workbench_shown(m_workbench_check_close_button, review) || modal_layout_changed;
     modal_layout_changed = set_workbench_shown(m_workbench_check_details_button, review) || modal_layout_changed;
@@ -420,7 +496,21 @@ void ModelGenerationPanel::update_workbench_check_card()
         m_workbench_check_modal->Layout();
         apply_workbench_floating_card_shape(m_workbench_check_card, 8, wxColour(45, 45, 49));
     }
-    position_workbench_check_card();
+    if (!position_workbench_check_card(true)) {
+        hide_workbench_check_card();
+        return;
+    }
+    if (!was_shown) {
+        apply_workbench_floating_card_shape(m_workbench_check_card, 8, wxColour(45, 45, 49));
+        m_workbench_check_card->Show();
+    } else if (previous_bounds != m_workbench_check_card->GetScreenRect()) {
+        queue_workbench_surface_refresh();
+    }
+    install_workbench_card_layer_guard();
+    raise_workbench_check_card();
+    // The first checking frame must be visible before the worker or model
+    // presentation can occupy the next turn; stage changes use this same pass.
+    if (!was_shown || modal_layout_changed) present_workbench_controls(m_workbench_check_card);
 }
 void ModelGenerationPanel::rescale_post_generation_workbench()
 {
@@ -502,20 +592,29 @@ void ModelGenerationPanel::layout_workbench_history_toggle(bool force)
         layout_mounted_workbench_history_sidebar();
         return;
     }
-    bool layout_needed = force;
-    auto* overlay_host = m_model_preview->workbench_overlay_parent();
-    const auto host_size = overlay_host->GetClientSize();
-    const int viewport_top = m_model_preview->workbench_viewport_top();
-    const int viewport_height = std::max(0, host_size.y - viewport_top);
-    const wxSize toggle_size = FromDIP(wxSize(19, 98));
-    layout_needed = set_workbench_shown(m_workbench_history_toggle, m_finishing_workbench) || layout_needed;
-    const wxRect toggle_rect(std::max(0, host_size.x - toggle_size.x),
-        viewport_top + std::max(0, (viewport_height - toggle_size.y) / 2), toggle_size.x, toggle_size.y);
-    if (m_workbench_history_toggle->GetRect() != toggle_rect) {
-        m_workbench_history_toggle->SetSize(toggle_rect);
+    if (!m_workbench_shell || m_workbench_history_home || m_shutdown ||
+        !m_workbench_shell->IsShownOnScreen()) return;
+    bool layout_needed = update_workbench_history_visibility() || force;
+    auto* viewport = m_model_preview->workbench_viewport_window();
+    if (!viewport) return;
+    const wxRect viewport_rect(m_workbench_shell->ScreenToClient(viewport->ClientToScreen(wxPoint())),
+        viewport->GetClientSize());
+    const wxSize toggle_size = m_workbench_shell->FromDIP(workbench_history_handle_size());
+    const auto toggle_rect = workbench_history_toggle_bounds(m_workbench_shell->GetClientSize(),
+        viewport_rect, toggle_size, m_workbench_history_panel->IsShown()
+            ? std::optional<int>(m_workbench_shell->ScreenToClient(
+                m_workbench_history_panel->ClientToScreen(wxPoint())).x) : std::nullopt);
+    if (!toggle_rect) return;
+    m_workbench_history_toggle->SetMinSize(toggle_size);
+    m_workbench_history_toggle->SetMaxSize(toggle_size);
+    if (m_workbench_history_toggle->GetRect() != *toggle_rect) {
+        m_workbench_history_toggle->SetSize(*toggle_rect);
         layout_needed = true;
     }
-    if (layout_needed) m_workbench_history_toggle->Raise();
+    if (layout_needed) {
+        m_workbench_history_toggle->Raise();
+        m_workbench_history_toggle->Refresh(false);
+    }
 }
 
 void ModelGenerationPanel::refresh_post_generation_workbench()
@@ -537,7 +636,6 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     const wxString original_appearance_reason = appearance_state == WorkbenchOriginalAppearanceState::Invalid
         ? model_hint + _L("：") + from_u8(m_model_preview->original_appearance_error()) : model_hint;
     m_model_preview->set_workbench_palette_hint(original_appearance_reason);
-    update_workbench_check_card();
     update_workbench_history_actions();
     const auto title_path = !m_finishing_candidate.empty() && !m_finishing_source.empty()
         ? m_finishing_source : m_displayed_model_path;
@@ -612,17 +710,7 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         !(m_workbench_auto_repair && (m_finishing_running || !m_finishing_candidate.empty()));
     layout_changed = set_workbench_shown(m_workbench_footer, show_beauty_actions) || layout_changed;
     const bool history_was_shown = m_workbench_history_panel->IsShown();
-    if (!m_workbench_import_feedback)
-        layout_changed = set_workbench_shown(m_workbench_history_panel,
-            !m_workbench_editing && !m_workbench_history_collapsed) || layout_changed;
-    const wxString history_action = m_workbench_editing ? _L("返回历史模型") :
-        m_workbench_history_panel->IsShown() ? _L("收起历史模型") : _L("展开历史模型");
-    if (m_workbench_history_toggle->GetName() != history_action)
-        m_workbench_history_toggle->SetName(history_action);
-    set_workbench_tooltip(m_workbench_history_toggle, history_action);
-    static_cast<WorkbenchButton*>(m_workbench_history_toggle)->set_drawer_open(
-        m_workbench_editing || m_workbench_history_panel->IsShown());
-    set_workbench_enabled(m_workbench_history_toggle, !m_workbench_import_feedback);
+    layout_changed = update_workbench_history_visibility() || layout_changed;
     set_workbench_enabled(m_workbench_edit, state.can_edit && !m_workbench_editing);
     if (m_workbench_project_summary) {
         const auto& filaments = snapshot.printer_filaments;
@@ -812,11 +900,12 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         m_comparison_panel->Layout();
         m_workbench_view_host->Layout();
         m_workbench_shell->Layout();
-        static_cast<wxScrolledWindow*>(m_workbench_shell)->FitInside();
         layout_workbench_history_toggle(true);
     } else layout_workbench_history_toggle();
     if (!history_was_shown && m_workbench_history_scroller->IsShownOnScreen())
         request_library_thumbnails(true);
+    // The card uses the final viewport, after footer/history layout is complete.
+    update_workbench_check_card();
     publish_workbench_state();
     m_refreshing_workbench_layout = false;
     queue_workbench_check();

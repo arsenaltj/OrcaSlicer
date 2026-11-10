@@ -25,6 +25,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/PortraitShapeDetails.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationUiState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySidebar.hpp"
 
 #include <boost/filesystem/path.hpp>
 #include <wx/image.h>
@@ -292,7 +293,9 @@ private:
     bool m_workbench_card_raise_pending {false};
     void update_workbench_check_card();
     void hide_workbench_check_card();
-    void position_workbench_check_card();
+    bool position_workbench_check_card(bool preparing = false);
+    void queue_workbench_surface_refresh();
+    bool m_workbench_surface_refresh_pending {false};
     void raise_workbench_check_card();
     void install_workbench_card_layer_guard();
     void remove_workbench_card_layer_guard();
@@ -622,6 +625,9 @@ private:
     wxToggleButton* m_workbench_grid {nullptr};
     wxPanel* m_workbench_footer {nullptr};
     void layout_workbench_history_toggle(bool force = false);
+    bool update_workbench_history_visibility();
+    void toggle_workbench_history();
+    void reveal_workbench_history();
     wxStaticText* m_workbench_state_status {nullptr};
     wxStaticText* m_workbench_model_status {nullptr};
     wxStaticText* m_workbench_check_status {nullptr};
@@ -637,8 +643,7 @@ private:
     bool m_workbench_editing {false};
     bool m_refreshing_workbench_layout {false};
     bool m_updating_comparison_layout {false};
-    bool m_workbench_history_collapsed {false};
-    bool m_workbench_history_user_open {false};
+    WorkbenchHistorySidebarState m_workbench_history_state;
     bool m_workbench_load_error {false};
     wxTextCtrl* m_workbench_history_search {nullptr};
     Button* m_workbench_history_upload {nullptr};
@@ -671,14 +676,10 @@ private:
     std::vector<std::string> m_workbench_history_visible_keys;
     wxWindow* m_workbench_history_home {nullptr};
     wxWindow* m_workbench_history_sidebar_host {nullptr};
-    wxWindow* m_workbench_history_toggle_home {nullptr};
-    wxRect m_workbench_history_toggle_home_rect;
-    wxSize m_workbench_history_toggle_home_min_size;
-    wxSize m_workbench_history_toggle_home_max_size;
+    wxWeakRef<Button> m_creation_history_toggle;
     wxSize m_workbench_history_search_home_min_size;
     wxSize m_workbench_history_search_home_max_size;
     bool m_workbench_history_sidebar_mounted {false};
-    bool m_workbench_history_toggle_was_shown {false};
     bool m_workbench_import_feedback {false};
     bool m_workbench_import_history_was_shown {false};
     wxStaticText* m_workbench_history_status {nullptr};

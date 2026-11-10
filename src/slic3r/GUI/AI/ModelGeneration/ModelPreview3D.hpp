@@ -16,6 +16,7 @@
 #include "ModelPreviewTexture.hpp"
 #include "ModelPreviewNormals.hpp"
 #include "ModelPreviewGeometry.hpp"
+#include "ModelPreviewFrame.hpp"
 #include "BeautySourceSnapshot.hpp"
 #include "ModelHistoryMetadata.hpp"
 #include "ModelOriginalAppearance.hpp"
@@ -36,6 +37,7 @@
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GLModel.hpp"
 #include "slic3r/GUI/GLShader.hpp"
+#include "slic3r/GUI/GLTexture.hpp"
 #include "slic3r/GUI/OpenGLManager.hpp"
 #include "libslic3r/Format/OBJ.hpp"
 #include "libslic3r/Geometry.hpp"
@@ -57,6 +59,7 @@
 #include <wx/timer.h>
 #include <wx/stdpaths.h>
 #include <wx/wupdlock.h>
+#include <wx/weakref.h>
 
 #include <algorithm>
 #include <atomic>
@@ -263,6 +266,10 @@ public:
         trace_stage("gl_context");
         m_canvas->Bind(wxEVT_PAINT, &ModelPreview3D::on_paint, this);
         m_canvas->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+            m_preview_frame.invalidate();
+            // Native resize can stretch the old front buffer before the next
+            // full model paint. Submit a cheap, proportionate completed frame.
+            present_resize_frame();
             m_canvas->Refresh(false);
             event.Skip();
         });
@@ -1431,6 +1438,10 @@ public:
 private:
     void clear_current_preview()
     {
+        m_preview_frame.invalidate();
+        m_resize_frame_valid = false;
+        ++m_after_preview_sequence;
+        m_after_preview_frame = {};
         cancel_surface_selection();
         const std::string semantic_context = m_semantic_submission_context;
         const std::string semantic_geometry = m_semantic_submission_geometry;
@@ -1467,8 +1478,13 @@ private:
         m_deferred_selection = {};
         m_region_prepare_failed = false;
         m_region_prepare_status->Hide();
-        if (m_context != nullptr && m_canvas != nullptr)
-            m_canvas->SetCurrent(*m_context);
+        if (m_context != nullptr && m_canvas != nullptr && m_canvas->SetCurrent(*m_context)) {
+            if (m_resize_frame_texture != 0) {
+                glsafe(::glDeleteTextures(1, &m_resize_frame_texture));
+                m_resize_frame_texture = 0;
+                m_resize_frame_size = {0, 0};
+            }
+        }
         m_models.clear();
         m_texture_model.reset();
         m_current_appearance_model.reset();
@@ -3177,7 +3193,11 @@ public:
     bool has_saved_portrait_result() const { return bool(m_portrait_shapes) || !m_saved_semantic_faces.empty() || m_semantic_ready; }
     void set_portrait_progress(std::shared_ptr<PortraitOptimizationTask> task) { m_portrait_progress = std::move(task); }
     void set_portrait_input_changed(std::function<void()> fn) { m_portrait_input_changed = std::move(fn); }
-    void after_next_preview_frame(std::function<void()> fn) { m_after_preview_frame = std::move(fn); m_canvas->Refresh(false); }
+    void after_next_preview_frame(std::function<void()> fn) {
+        ++m_after_preview_sequence;
+        m_after_preview_frame = std::move(fn);
+        m_canvas->Refresh(false);
+    }
     void set_workbench_input_locked(bool locked) {
         if (m_workbench_input_locked == locked) return;
         m_workbench_input_locked = locked;
@@ -4204,6 +4224,48 @@ private:
         }
     }
 
+    void present_resize_frame()
+    {
+        if (m_in_paint || !m_resize_frame_valid || !m_has_model ||
+            !m_canvas->IsShownOnScreen() || !m_context || !m_context->IsOK()) return;
+        const wxSize size = m_canvas->GetClientSize();
+        const auto frame = m_preview_frame.begin(size, m_canvas->GetDPIScaleFactor());
+        wxSize pixels = size;
+#if defined(__APPLE__)
+        pixels = wxSize(int(std::lround(size.x * frame.dpi_scale)),
+                        int(std::lround(size.y * frame.dpi_scale)));
+#endif
+        const auto extents = preview_frame_extents(
+            wxSize(int(m_resize_frame_size[0]), int(m_resize_frame_size[1])), pixels);
+        if (!extents || !m_canvas->SetCurrent(*m_context) ||
+            !wxGetApp().get_shader("flat_texture")) return;
+        m_in_paint = true;
+        Slic3r::ScopeGuard paint_guard([this] { m_in_paint = false; });
+        (void)paint_guard;
+        glsafe(::glBindFramebuffer(GL_FRAMEBUFFER, 0));
+        glsafe(::glViewport(0, 0, pixels.x, pixels.y));
+        glsafe(::glDisable(GL_SCISSOR_TEST));
+        glsafe(::glDisable(GL_STENCIL_TEST));
+        glsafe(::glDisable(GL_DEPTH_TEST));
+        glsafe(::glDisable(GL_CULL_FACE));
+        glsafe(::glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE));
+        const wxColour background = m_preview_background.IsOk() ? m_preview_background :
+            m_beauty_view ? wxColour(49, 49, 54) : wxGetApp().get_window_default_clr();
+        glsafe(::glClearColor(background.Red() / 255.f, background.Green() / 255.f,
+                             background.Blue() / 255.f, 1.f));
+        glsafe(::glClear(GL_COLOR_BUFFER_BIT));
+        glsafe(::glActiveTexture(GL_TEXTURE0));
+        // Framebuffer texture rows already run bottom to top.
+        const GLTexture::Quad_UVs uvs {{0.f, 0.f}, {1.f, 0.f}, {1.f, 1.f}, {0.f, 1.f}};
+        GLTexture::render_sub_texture(m_resize_frame_texture, -(*extents)[0], (*extents)[0],
+                                     -(*extents)[1], (*extents)[1], uvs);
+        if (m_preview_frame.current(frame, m_canvas->GetClientSize(),
+                m_canvas->GetDPIScaleFactor(), m_canvas->IsShownOnScreen()))
+            m_canvas->SwapBuffers();
+        // This transition must neither complete a model waiter nor replace the
+        // cached full frame. The already queued paint owns both operations.
+    }
+
     void on_paint(wxPaintEvent&)
     {
         wxPaintDC dc(m_canvas);
@@ -4214,6 +4276,7 @@ private:
             return;
         }
         const wxSize drawable_size = m_canvas->GetClientSize();
+        const auto frame = m_preview_frame.begin(drawable_size, m_canvas->GetDPIScaleFactor());
         if (!m_canvas->IsShownOnScreen() || drawable_size.x <= 0 || drawable_size.y <= 0)
             return;
         m_in_paint = true;
@@ -4233,11 +4296,10 @@ private:
         if (!wxGetApp().init_opengl())
             return;
 
-        int width = 0;
-        int height = 0;
-        m_canvas->GetClientSize(&width, &height);
+        int width = drawable_size.x;
+        int height = drawable_size.y;
 #if defined(__APPLE__)
-        const double dpi_scale = m_canvas->GetDPIScaleFactor();
+        const double dpi_scale = frame.dpi_scale;
         width = std::max(1, int(std::lround(width * dpi_scale)));
         height = std::max(1, int(std::lround(height * dpi_scale)));
 #else
@@ -4543,11 +4605,23 @@ private:
                 m_render_diagnostics_logged = true;
             }
         }
-        // Visibility can change through native window messages during a paint.
-        // Do not submit a frame for a canvas hidden by navigation or layout.
-        if (!m_canvas->IsShownOnScreen())
+        bool resize_frame_captured = false;
+        if (m_has_model && m_color_shader) {
+            glsafe(::glReadBuffer(GL_BACK));
+            GLTexture::copy_from_framebuffer(m_resize_frame_texture, m_resize_frame_size,
+                                           unsigned(width), unsigned(height), GL_LINEAR);
+            resize_frame_captured = ::glGetError() == GL_NO_ERROR;
+        }
+        // Native messages may change visibility or size while GL work finishes.
+        // A rejected capture must not become the next resize transition.
+        if (!m_preview_frame.current(frame, m_canvas->GetClientSize(),
+                m_canvas->GetDPIScaleFactor(), m_canvas->IsShownOnScreen())) {
+            m_resize_frame_valid = false;
+            m_canvas->Refresh(false);
             return;
+        }
         const bool frame_submitted = m_canvas->SwapBuffers();
+        m_resize_frame_valid = frame_submitted && resize_frame_captured;
         if (frame_submitted && m_has_model && m_color_shader != nullptr && !m_pending_library_thumbnail_sha.empty()) {
             // The first visible frame initializes the GL drawing state. Capture once
             // afterwards, rather than before the newly loaded model has been drawn.
@@ -4556,8 +4630,21 @@ private:
             cache_library_model_thumbnail(artifact_sha);
         }
         if (frame_submitted && m_after_preview_frame) {
-            auto completed = std::move(m_after_preview_frame);
-            CallAfter(std::move(completed));
+            const auto sequence = m_after_preview_sequence;
+            wxWeakRef<ModelPreview3D> weak(this);
+            CallAfter([weak, frame, sequence] {
+                if (!weak || sequence != weak->m_after_preview_sequence || !weak->m_after_preview_frame) return;
+                if (!weak->m_preview_frame.current(frame, weak->m_canvas->GetClientSize(),
+                        weak->m_canvas->GetDPIScaleFactor(), weak->m_canvas->IsShownOnScreen())) {
+                    // Keep this waiter until a complete frame at the latest
+                    // size is presented; a resize must not lose completion.
+                    weak->m_canvas->Refresh(false);
+                    return;
+                }
+                auto completed = std::move(weak->m_after_preview_frame);
+                ++weak->m_after_preview_sequence;
+                completed();
+            });
         }
         if (m_trial_toggle_started) {
             BOOST_LOG_TRIVIAL(info) << "AI color trial frame submitted: enabled=" << m_color_trial_enabled
@@ -4571,6 +4658,11 @@ private:
     std::string m_pending_library_thumbnail_sha;
     std::function<void()> m_library_thumbnail_published;
     wxGLCanvas* m_canvas {nullptr};
+    ModelPreviewFrameState m_preview_frame;
+    unsigned int m_resize_frame_texture {0};
+    std::array<unsigned int, 2> m_resize_frame_size {0, 0};
+    bool m_resize_frame_valid {false};
+    std::uint64_t m_after_preview_sequence {0};
     wxPanel* m_comparison_header {nullptr};
     std::vector<wxStaticText*> m_comparison_labels;
     wxSizerItem* m_overlay_top {nullptr};

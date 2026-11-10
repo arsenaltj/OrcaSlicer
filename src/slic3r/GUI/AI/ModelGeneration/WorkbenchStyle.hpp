@@ -173,6 +173,9 @@ public:
         m_rounded = rounded;
         update_shape();
     }
+    void set_viewport_layout_callback(std::function<void()> callback) {
+        m_viewport_layout_callback = std::move(callback);
+    }
     bool Layout() override {
         if (m_laying_out) return true;
         if (!GetSizer()) return wxScrolledWindow::Layout();
@@ -193,7 +196,8 @@ public:
             m_horizontal ? width : std::max(0, client.x - FromDIP(10)),
             m_horizontal ? std::max(0, height - (width > client.x ? FromDIP(10) : 0)) : height);
         update_bar();
-        refresh_controls();
+        if (m_viewport_layout_callback) m_viewport_layout_callback();
+        else refresh_controls();
         return true;
     }
     void FitInside() override { Layout(); }
@@ -201,9 +205,11 @@ public:
         wxScrolledWindow::ScrollWindow(dx, dy, rect);
         // The indicator belongs to the viewport, not the scrolling content.
         update_bar();
-        refresh_controls();
+        if (m_viewport_layout_callback) m_viewport_layout_callback();
+        else refresh_controls();
     }
 private:
+    std::function<void()> m_viewport_layout_callback;
     void update_shape() {
 #ifdef __WXMSW__
         const wxSize size = GetClientSize();
@@ -226,6 +232,7 @@ private:
     }
     static void refresh_descendants(wxWindow* window) {
         for (wxWindow* child : window->GetChildren()) {
+            if (!child->IsShownOnScreen()) continue;
             child->Refresh(false);
             refresh_descendants(child);
         }
@@ -1241,9 +1248,12 @@ public:
     }
     void set_drawer_assets() {
         m_drawer = true;
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        // wxAutoBufferedPaintDC owns this small leaf's buffer. A composited
+        // native surface can defer publishing it behind the adjacent GL view.
         refresh_drawer_assets();
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
-            wxPaintDC dc(this);
+            wxAutoBufferedPaintDC dc(this);
             dc.SetBackground(wxBrush(GetBackgroundColour()));
             dc.Clear();
             const auto size = GetClientSize();

@@ -21,6 +21,7 @@
 #include <wx/tglbtn.h>
 #include <wx/sizer.h>
 #include <wx/msgdlg.h>
+#include <wx/scrolwin.h>
 
 namespace Slic3r::GUI {
 
@@ -69,10 +70,77 @@ wxWindow* ModelGenerationPanel::workbench_import_viewport() const
 }
 wxWindow* ModelGenerationPanel::workbench_import_history() const { return m_workbench_history_panel; }
 
+void ModelGenerationPanel::toggle_workbench_history()
+{
+    if (m_workbench_import_feedback || m_workbench_import_running) return;
+    m_workbench_history_state.toggle(m_workbench_history_sidebar_mounted, m_workbench_editing);
+    if (m_workbench_history_sidebar_mounted) {
+        layout_mounted_workbench_history_sidebar();
+        return;
+    }
+    if (!m_workbench_editing) {
+        update_workbench_history_visibility();
+        if (m_workbench_history_panel->IsShown()) reveal_workbench_history();
+        else m_workbench_shell->Layout();
+        queue_workbench_surface_refresh();
+        return;
+    }
+    m_workbench_editing = false;
+    update_finishing_selection();
+    refresh_model_finishing(); refresh_post_generation_workbench();
+    reveal_workbench_history();
+}
+
+bool ModelGenerationPanel::update_workbench_history_visibility()
+{
+    if (!m_workbench_history_panel || !m_workbench_history_toggle ||
+        (m_workbench_history_home && !m_workbench_history_sidebar_mounted)) return false;
+    const bool mounted = m_workbench_history_sidebar_mounted;
+    auto* toggle = mounted ? m_creation_history_toggle.get() : m_workbench_history_toggle;
+    if (!toggle) return false;
+    const bool open = m_workbench_history_state.panel_visible(mounted, m_finishing_workbench, m_workbench_editing);
+    bool changed = false;
+    if (!m_workbench_import_feedback && m_workbench_history_panel->IsShown() != open)
+        changed = m_workbench_history_panel->Show(open);
+    const bool show_toggle = mounted || m_finishing_workbench;
+    if (toggle->IsShown() != show_toggle)
+        changed = toggle->Show(show_toggle) || changed;
+    const bool return_history = !mounted && m_workbench_editing;
+    const wxString action = return_history ? _L("返回历史模型") :
+        open ? _L("收起历史模型") : _L("展开历史模型");
+    if (toggle->GetName() != action) toggle->SetName(action);
+    if (!toggle->GetToolTip() || toggle->GetToolTipText() != action)
+        toggle->SetToolTip(action);
+    static_cast<WorkbenchButton*>(toggle)->set_drawer_open(return_history || open);
+    toggle->Enable(!m_workbench_import_feedback && !m_workbench_import_running);
+    return changed;
+}
+
+void ModelGenerationPanel::reveal_workbench_history()
+{
+    if (!m_finishing_workbench || m_workbench_history_sidebar_mounted || m_workbench_history_home ||
+        !m_workbench_history_panel || !m_workbench_history_panel->IsShown() || !m_workbench_shell) return;
+    auto* shell = static_cast<wxScrolledWindow*>(m_workbench_shell);
+    shell->Layout();
+    const auto client = shell->GetClientSize();
+    if (client.x <= 0 || client.y <= 0) return;
+    const auto left = shell->ScreenToClient(m_workbench_history_panel->ClientToScreen(wxPoint())).x;
+    int x, y, unit_x, unit_y;
+    shell->GetViewStart(&x, &y);
+    shell->GetScrollPixelsPerUnit(&unit_x, &unit_y);
+    const int target = workbench_history_scroll_target(client.x, left,
+        m_workbench_history_panel->GetSize().x, x, unit_x,
+        shell->FromDIP(workbench_history_handle_size()).x);
+    if (target != x) shell->Scroll(target, -1);
+    queue_workbench_surface_refresh();
+}
+
 void ModelGenerationPanel::mount_workbench_import_history(wxWindow* parent)
 {
     if (!parent || !m_workbench_history_panel || m_workbench_history_home) return;
+    m_workbench_import_history_was_shown = m_workbench_history_panel->IsShown();
     m_workbench_history_home = m_workbench_history_panel->GetParent();
+    m_workbench_history_toggle->Hide();
     if (auto* sizer = m_workbench_history_panel->GetContainingSizer()) sizer->Detach(m_workbench_history_panel);
     m_workbench_history_panel->Reparent(parent);
     parent->GetSizer()->Add(m_workbench_history_panel, 1, wxEXPAND);
@@ -82,14 +150,20 @@ void ModelGenerationPanel::mount_workbench_import_history(wxWindow* parent)
 
 void ModelGenerationPanel::restore_workbench_import_history()
 {
+    if (m_workbench_history_sidebar_mounted) {
+        restore_workbench_history_sidebar();
+        return;
+    }
     if (!m_workbench_history_home) return;
     if (auto* sizer = m_workbench_history_panel->GetContainingSizer()) sizer->Detach(m_workbench_history_panel);
     m_workbench_history_panel->Reparent(m_workbench_history_home);
     m_workbench_history_home->GetSizer()->Add(m_workbench_history_panel, 0,
         wxEXPAND | wxTOP | wxBOTTOM | wxLEFT, FromDIP(12));
-    m_workbench_history_panel->Show(m_workbench_import_history_was_shown);
-    m_workbench_history_home->Layout();
+    auto* home = m_workbench_history_home;
     m_workbench_history_home = nullptr;
+    update_workbench_history_visibility();
+    home->Layout();
+    layout_workbench_history_toggle(true);
 }
 
 void ModelGenerationPanel::mount_workbench_history_sidebar(wxWindow* parent)
@@ -103,31 +177,30 @@ void ModelGenerationPanel::mount_workbench_history_sidebar(wxWindow* parent)
     m_workbench_history_sidebar_host = parent;
     m_workbench_history_home = m_workbench_history_panel->GetParent();
     m_workbench_import_history_was_shown = m_workbench_history_panel->IsShown();
-    m_workbench_history_toggle_home = m_workbench_history_toggle->GetParent();
-    m_workbench_history_toggle_home_rect = m_workbench_history_toggle->GetRect();
-    m_workbench_history_toggle_home_min_size = m_workbench_history_toggle->GetMinSize();
-    m_workbench_history_toggle_home_max_size = m_workbench_history_toggle->GetMaxSize();
-    m_workbench_history_search_home_min_size = m_workbench_history_search->GetParent()->GetMinSize();
-    m_workbench_history_search_home_max_size = m_workbench_history_search->GetParent()->GetMaxSize();
-    m_workbench_history_toggle_was_shown = m_workbench_history_toggle->IsShown();
+    auto* search_home = m_workbench_history_search->GetParent();
+    m_workbench_history_search_home_min_size = search_home->ToDIP(search_home->GetMinSize());
+    m_workbench_history_search_home_max_size = search_home->ToDIP(search_home->GetMaxSize());
 
     if (auto* sizer = m_workbench_history_panel->GetContainingSizer())
         sizer->Detach(m_workbench_history_panel);
-    if (auto* sizer = m_workbench_history_toggle->GetContainingSizer())
-        sizer->Detach(m_workbench_history_toggle);
-    m_workbench_history_toggle->Reparent(parent);
+    // Keep each page's handle in its permanent native parent. Reparenting a
+    // painted handle through a hidden host can leave its visible surface blank.
+    if (!m_creation_history_toggle) {
+        auto* toggle = new WorkbenchButton(parent, wxEmptyString);
+        toggle->SetCornerRadius(0);
+        toggle->SetPaddingSize(FromDIP(wxSize(0, 0)));
+        toggle->SetBackgroundColour(wxColour(49, 49, 54));
+        toggle->set_drawer_assets();
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        toggle->Bind(wxEVT_BUTTON, [weak](wxCommandEvent&) {
+            if (weak && !weak->m_shutdown) weak->toggle_workbench_history();
+        });
+        parent->GetSizer()->Add(toggle, 0, wxALIGN_CENTER_VERTICAL);
+        m_creation_history_toggle = toggle;
+    }
     m_workbench_history_panel->Reparent(parent);
-    parent->GetSizer()->Add(m_workbench_history_toggle, 0, wxALIGN_CENTER_VERTICAL);
     parent->GetSizer()->Add(m_workbench_history_panel, 1, wxEXPAND);
 
-    m_workbench_history_collapsed = false;
-    m_workbench_history_user_open = true;
-    m_workbench_history_toggle->Show();
-    m_workbench_history_panel->Show();
-    auto* toggle = static_cast<WorkbenchButton*>(m_workbench_history_toggle);
-    toggle->set_drawer_open(true);
-    m_workbench_history_toggle->SetName(_L("收起历史模型"));
-    m_workbench_history_toggle->SetToolTip(_L("收起历史模型"));
     layout_mounted_workbench_history_sidebar();
     load_library_entries(true);
     refresh_workbench_history();
@@ -136,13 +209,17 @@ void ModelGenerationPanel::mount_workbench_history_sidebar(wxWindow* parent)
 void ModelGenerationPanel::layout_mounted_workbench_history_sidebar()
 {
     if (!m_workbench_history_sidebar_mounted || !m_workbench_history_sidebar_host ||
-        !m_workbench_history_panel || !m_workbench_history_toggle || !m_workbench_history_search)
+        !m_workbench_history_panel || !m_creation_history_toggle || !m_workbench_history_search)
         return;
 
-    const wxSize toggle_size = FromDIP(wxSize(18, 42));
-    m_workbench_history_toggle->SetMinSize(toggle_size);
-    m_workbench_history_toggle->SetMaxSize(toggle_size);
-    m_workbench_history_toggle->SetSize(toggle_size);
+    update_workbench_history_visibility();
+    const wxSize toggle_size = m_workbench_history_sidebar_host->FromDIP(workbench_history_handle_size());
+    auto* toggle = m_creation_history_toggle.get();
+    if (toggle->GetMinSize() != toggle_size)
+        static_cast<WorkbenchButton*>(toggle)->rescale_workbench();
+    toggle->SetMinSize(toggle_size);
+    toggle->SetMaxSize(toggle_size);
+    toggle->SetSize(toggle_size);
 
     auto* search = m_workbench_history_search->GetParent();
     search->SetMinSize(FromDIP(wxSize(212, 32)));
@@ -153,7 +230,7 @@ void ModelGenerationPanel::layout_mounted_workbench_history_sidebar()
     search->Refresh(false);
     m_workbench_history_search->Refresh(false);
 
-    const bool open = m_workbench_history_panel->IsShown();
+    const bool open = m_workbench_history_state.creation_open;
     const int panel_width = std::max(0, m_workbench_history_panel->GetMinSize().x);
     m_workbench_history_sidebar_host->SetMinSize(wxSize(open ? toggle_size.x + panel_width : toggle_size.x, -1));
     m_workbench_history_sidebar_host->InvalidateBestSize();
@@ -170,21 +247,12 @@ void ModelGenerationPanel::restore_workbench_history_sidebar()
         return;
 
     auto* sidebar_host = m_workbench_history_sidebar_host;
-    if (auto* sizer = m_workbench_history_toggle->GetContainingSizer())
-        sizer->Detach(m_workbench_history_toggle);
-    if (m_workbench_history_toggle_home) {
-        m_workbench_history_toggle->Reparent(m_workbench_history_toggle_home);
-        m_workbench_history_toggle->SetMinSize(m_workbench_history_toggle_home_min_size);
-        m_workbench_history_toggle->SetMaxSize(m_workbench_history_toggle_home_max_size);
-        m_workbench_history_toggle->SetSize(m_workbench_history_toggle_home_rect);
-        m_workbench_history_toggle->Show(m_workbench_history_toggle_was_shown);
-    }
+    if (m_creation_history_toggle) m_creation_history_toggle->Hide();
     if (m_workbench_history_search) {
         auto* search = m_workbench_history_search->GetParent();
-        search->SetMinSize(m_workbench_history_search_home_min_size);
-        search->SetMaxSize(m_workbench_history_search_home_max_size);
+        search->SetMinSize(search->FromDIP(m_workbench_history_search_home_min_size));
+        search->SetMaxSize(search->FromDIP(m_workbench_history_search_home_max_size));
     }
-    m_workbench_history_toggle_home = nullptr;
     m_workbench_history_sidebar_host = nullptr;
     m_workbench_history_sidebar_mounted = false;
     restore_workbench_import_history();
@@ -417,8 +485,10 @@ void ModelGenerationPanel::set_workbench_presented(bool presented)
         m_workbench_shell && m_workbench_shell->IsShownOnScreen();
     if (m_workbench_presented == active) {
         if (active) {
-            ensure_workbench_check();
-            update_workbench_check_card();
+            queue_workbench_surface_refresh();
+            // Resize/restore is a presentation request, not a new model
+            // entry. Schedule missing checks without rehashing the asset.
+            queue_workbench_check();
         }
         return;
     }
@@ -436,8 +506,9 @@ void ModelGenerationPanel::set_workbench_presented(bool presented)
         m_workbench_honor_semantic_message.clear();
         hide_workbench_check_card();
     } else {
+        reveal_workbench_history();
+        queue_workbench_surface_refresh();
         ensure_workbench_check();
-        update_workbench_check_card();
     }
     publish_workbench_state();
 }
@@ -458,7 +529,6 @@ bool ModelGenerationPanel::request_open_workbench()
     const bool opening = !m_finishing_workbench;
     if (!m_model_preview_ready) {
         m_workbench_editing = false;
-        m_workbench_history_collapsed = false;
     }
     // Publish exact ownership before presenting the workbench can start an
     // automatic check or any partition consumer.

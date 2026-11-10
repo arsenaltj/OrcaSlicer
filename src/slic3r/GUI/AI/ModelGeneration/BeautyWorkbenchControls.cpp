@@ -885,8 +885,10 @@ void BeautyWorkbenchControls::update_text()
         m_status->SetLabel(reason);
     }
     for (auto* label : {m_status, m_secondary_status}) wrap_status(label);
-    Layout();
-    if (m_layout_changed) m_layout_changed();
+    if (IsShownOnScreen()) {
+        Layout();
+        if (m_layout_changed) m_layout_changed();
+    }
 }
 
 void BeautyWorkbenchControls::wrap_status(wxStaticText* label)

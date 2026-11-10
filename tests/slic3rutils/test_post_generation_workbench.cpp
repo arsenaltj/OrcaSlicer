@@ -4,6 +4,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationUiState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySidebar.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelPreviewTextureColor.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportSession.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportEligibility.hpp"
@@ -55,6 +56,91 @@
 #include <vector>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("History drawers retain independent page preferences across temporary hiding",
+          "[PostGenerationWorkbench][WorkbenchHistorySidebar]")
+{
+    WorkbenchHistorySidebarState state;
+    REQUIRE(state.panel_visible(false, true, false));
+    state.toggle(false, false);
+    CHECK_FALSE(state.panel_visible(false, true, false));
+    CHECK(state.panel_visible(true, false, false));
+    state.toggle(true, false);
+    CHECK_FALSE(state.panel_visible(true, true, true));
+    state.toggle(false, false);
+    CHECK(state.panel_visible(false, true, false));
+    CHECK_FALSE(state.panel_visible(false, false, false));
+    CHECK_FALSE(state.panel_visible(false, true, true));
+    CHECK(state.panel_visible(false, true, false));
+    CHECK_FALSE(state.panel_visible(true, false, false));
+    state.toggle(true, false);
+    CHECK(state.panel_visible(true, true, true));
+}
+
+TEST_CASE("Returning from beauty opens history without toggling the creation drawer",
+          "[PostGenerationWorkbench][WorkbenchHistorySidebar]")
+{
+    WorkbenchHistorySidebarState state;
+    state.toggle(false, false);
+    state.toggle(true, false);
+    state.toggle(false, true);
+    CHECK(state.workbench_open);
+    CHECK_FALSE(state.creation_open);
+    CHECK(state.panel_visible(false, true, false));
+}
+
+TEST_CASE("History handles touch the actual drawer boundary independently of preview insets",
+          "[PostGenerationWorkbench][WorkbenchHistorySidebar]")
+{
+    const double scale = GENERATE(1., 1.25, 1.5, 2.);
+    const int inset = GENERATE(0, 32, 74);
+    const auto pixels = [scale](int dip) { return int(std::lround(dip * scale)); };
+    const auto handle_dip = workbench_history_handle_size();
+    const wxSize client(pixels(1200), pixels(800));
+    const wxSize handle(pixels(handle_dip.x), pixels(handle_dip.y));
+    const wxRect preview(pixels(280), pixels(60), pixels(640 - inset), pixels(600));
+    const auto rect = workbench_history_toggle_bounds(client, preview, handle, pixels(940));
+    REQUIRE(rect);
+    CHECK(rect->x + rect->width == pixels(940));
+    CHECK(std::abs(2 * rect->y + rect->height - 2 * preview.y - preview.height) <= 1);
+    CHECK(rect->GetSize() == handle);
+}
+
+TEST_CASE("Collapsed history handles remain inside the visible viewport after scrolling",
+          "[PostGenerationWorkbench][WorkbenchHistorySidebar]")
+{
+    const int preview_x = GENERATE(-640, 0, 280);
+    const auto rect = workbench_history_toggle_bounds({900, 700}, {preview_x, 80, 1400, 600}, workbench_history_handle_size(), std::nullopt);
+    REQUIRE(rect);
+    CHECK(rect->x + rect->width == 900);
+    CHECK(wxRect(0, 0, 900, 700).Contains(*rect));
+    const auto outside = workbench_history_toggle_bounds({900, 700}, {preview_x, 80, 1400, 600}, workbench_history_handle_size(), 1400);
+    REQUIRE(outside);
+    CHECK(outside->x + outside->width == 900);
+}
+
+TEST_CASE("Transient empty history hosts leave the last handle geometry untouched",
+          "[PostGenerationWorkbench][WorkbenchHistorySidebar]")
+{
+    const auto size = GENERATE(wxSize(0, 700), wxSize(900, 0), wxSize(-1, 700));
+    CHECK_FALSE(workbench_history_toggle_bounds(size, {0, 60, 600, 500}, workbench_history_handle_size(), 640));
+    CHECK_FALSE(workbench_history_toggle_bounds({900, 700}, {0, 60, 600, 0}, workbench_history_handle_size(), 640));
+    CHECK_FALSE(workbench_history_toggle_bounds({10, 700}, {0, 60, 600, 500}, workbench_history_handle_size(), 640));
+    CHECK_FALSE(workbench_history_toggle_bounds({900, 37}, {0, 0, 600, 37}, workbench_history_handle_size(), 640));
+    const auto restored = workbench_history_toggle_bounds({900, 700}, {0, 60, 600, 500}, workbench_history_handle_size(), 640);
+    REQUIRE(restored);
+    CHECK(restored->x + restored->width == 640);
+}
+
+TEST_CASE("Opening history scrolls only when needed to expose the drawer",
+          "[PostGenerationWorkbench][WorkbenchHistorySidebar]")
+{
+    CHECK(workbench_history_scroll_target(900, 920, 280, 0, 12, 19) == 25);
+    CHECK(workbench_history_scroll_target(900, 620, 280, 25, 12, 19) == 25);
+    CHECK(workbench_history_scroll_target(900, -112, 280, 40, 12, 19) < 40);
+    CHECK(workbench_history_scroll_target(0, 920, 280, 25, 12, 19) == 25);
+    CHECK(workbench_history_scroll_target(900, 920, 280, 25, 0, 19) == 25);
+}
 
 TEST_CASE("Saved coloring and native geometry never restart first-import partitioning",
           "[PostGenerationWorkbench][WorkbenchCheckLifecycle]")

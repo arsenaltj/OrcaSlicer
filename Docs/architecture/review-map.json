@@ -461,6 +461,11 @@
       "needle": "inline std::string workbench_history_key("
     },
     {
+      "id": "workbench_history_drawer",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySidebar.hpp",
+      "needle": "struct WorkbenchHistorySidebarState"
+    },
+    {
       "id": "workbench_import_loading",
       "path": "src/slic3r/GUI/Redesign/RedesignModelWorkflow.cpp",
       "needle": "void RedesignShell::layout_import_loading()"
@@ -1155,7 +1160,7 @@
     {
       "id": "history",
       "label": "历史与恢复",
-      "detail": "保存任务和资产，重新打开历史结果；按任务及模型路径复用卡片和缩略图，保持搜索、分页与滚动；查看模型目录、导出独立 GLB/图片副本并浏览模型图库",
+      "detail": "保存任务和资产，重新打开历史结果；按任务及模型路径复用卡片和缩略图，保持搜索、分页与滚动；AI创作与工作台分别保留折叠偏好，按钮跟随实际侧栏边界；查看模型目录、导出独立 GLB/图片副本并浏览模型图库",
       "boundary": "恢复已有记录不等于重新生成",
       "group": "资产与工作区",
       "evidence": [
@@ -1165,7 +1170,8 @@
         "library_export",
         "install_model_storage",
         "workbench_history_cards",
-        "workbench_history_snapshot"
+        "workbench_history_snapshot",
+        "workbench_history_drawer"
       ],
       "modules": [
         "generation"
@@ -1791,6 +1797,7 @@
         "paths": [
           "src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls*",
           "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbench*",
+          "src/slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySidebar.hpp",
           "src/slic3r/GUI/AI/ModelGeneration/ModelPreview*"
         ],
         "evidence": [
@@ -1799,11 +1806,12 @@
         ],
         "tests": [
           "tests/slic3rutils/test_beauty*",
-          "tests/slic3rutils/test_post_generation*"
+          "tests/slic3rutils/test_post_generation*",
+          "tests/slic3rutils/test_model_preview_state.cpp"
         ],
         "state_owner": "工作台候选与预览；正式工程仍归 Plater",
         "contract": "原始模型、候选、美颜结果与物理耗材分开",
-        "note": "能力存在；部分异步会话仍绑定 wxPanel。",
+        "note": "部分异步会话仍绑定 wxPanel；展示入口合并最终布局、拉手置顶、检查卡片及重绘。预览按模型／布局代次、视口和DPI拒绝过期帧并持有等比GPU过渡；工作台恢复层不复制GL的CPU帧，原生控件快照在首次真实绘制后失效。",
         "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
       },
       {

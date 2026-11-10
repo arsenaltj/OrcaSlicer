@@ -13,6 +13,13 @@
 
 namespace Slic3r::GUI {
 
+inline bool is_redesign_workbench_surface(const wxWindow* window)
+{
+    for (auto* ancestor = window; ancestor; ancestor = ancestor->GetParent())
+        if (ancestor->GetName() == "ai_workbench_surface") return true;
+    return false;
+}
+
 // Buffered controls still need an opaque surface while Windows restores their
 // native windows, before the first WM_PAINT has populated the backing pixels.
 class RedesignPaintPanel : public wxPanel {
@@ -139,6 +146,13 @@ struct RedesignRestoreSurface {
 
     void retain_frame()
     {
+        // The workbench presents its native controls in one final layout pass
+        // and retains its GL frame on the GPU. Screen copies can contain a
+        // clipped handle and must never become a second presentation owner.
+        if (is_redesign_workbench_surface(window)) {
+            pixels.clear();
+            return;
+        }
         const HWND hwnd = window->GetHandle();
         if (!::IsWindowVisible(hwnd) || ::IsIconic(::GetAncestor(hwnd, GA_ROOT))) return;
         if (!is_viewport()) {
@@ -241,6 +255,9 @@ inline LRESULT CALLBACK redesign_restore_background_proc(HWND hwnd, UINT message
     auto* surface = state->window;
     if (message == WM_PAINT) {
         const auto result = ::DefSubclassProc(hwnd, message, parameter, data);
+        // A restore snapshot is only a bridge to this first real control paint.
+        // Replaying it on later erases can resurrect a clipped handle or text.
+        if (is_redesign_workbench_surface(surface)) state->pixels.clear();
         if (state->is_viewport() && ::WindowFromDC(::wglGetCurrentDC()) == hwnd)
             state->context = ::wglGetCurrentContext();
         return result;
