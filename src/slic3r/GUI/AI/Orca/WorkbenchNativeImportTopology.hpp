@@ -86,10 +86,6 @@ inline void load_verified_native_mesh(const AI::ModelImportRequest& request,
         AI::beauty_leaf_digest(AI::encode_model_matched_colors(*request.matched_colors).dump()) ==
             proof.at("matched_colors_sha256"),
         "Native import has changed geometry, material identity, manual edits or subfaces.");
-    require(WorkbenchArtifacts::same_model_path(
-        boost::nowide::narrow(request.artifact.local_path.wstring()),
-        reference.at("carrier_path").get<std::string>()),
-        "Native import artifact differs from the owned carrier.");
     size_t matching_caches = 0;
     for (auto cache : request.native_portrait_partition_references) {
         if (cache.is_object()) cache.erase("import_topology_proof");
@@ -99,6 +95,8 @@ inline void load_verified_native_mesh(const AI::ModelImportRequest& request,
 
     const auto verify_files = [&] {
         checkpoint();
+        require(AI::model_artifact_sha256(request.artifact.local_path) == carrier_sha256,
+            "Native import artifact identity changed.");
         for (const auto& keys : {std::pair{"carrier_path", "carrier_sha256"},
                 std::pair{"source_path", "source_sha256"},
                 std::pair{"appearance_path", "appearance_sha256"},
@@ -116,6 +114,13 @@ inline void load_verified_native_mesh(const AI::ModelImportRequest& request,
     require(AI::beauty_leaf_digest(metadata_bytes) == proof.at("metadata_file_sha256"),
         "Native import metadata identity changed.");
     const auto metadata = nlohmann::json::parse(metadata_bytes);
+    const auto local_root = request.artifact.local_path.parent_path().filename() == "downloads"
+        ? request.artifact.local_path.parent_path().parent_path() : request.artifact.local_path.parent_path();
+    const auto evidence = workbench_history_evidence_location(request.artifact.local_path,
+        AI::beauty_metadata_path(request.artifact.local_path, local_root), metadata, canceled);
+    require(WorkbenchArtifacts::same_model_path(boost::nowide::narrow(evidence.model.wstring()),
+        reference.at("carrier_path").get<std::string>()),
+        "Native import artifact differs from the owned carrier.");
     require(metadata.at("native_portrait_partition") == reference &&
         metadata.at("workbench_check_certificate") == proof.at("workbench_certificate") &&
         metadata.at("model_sha256") == carrier_sha256,
@@ -186,6 +191,10 @@ inline void load_verified_native_mesh(const AI::ModelImportRequest& request,
     verify_files();
     require(AI::model_artifact_sha256(metadata_path) == proof.at("metadata_file_sha256"),
         "Native import metadata changed during verification.");
+    if (!WorkbenchArtifacts::same_model_path(boost::nowide::narrow(request.artifact.local_path.wstring()),
+            reference.at("carrier_path").get<std::string>()))
+        require(AI::model_artifact_sha256(AI::beauty_metadata_path(request.artifact.local_path, local_root)) ==
+            proof.at("metadata_file_sha256"), "Native import local history changed during verification.");
     checkpoint();
 }
 

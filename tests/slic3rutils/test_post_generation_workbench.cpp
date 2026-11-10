@@ -4615,6 +4615,74 @@ TEST_CASE("Saved native metadata cannot replace a previously owned certificate w
     CHECK_FALSE(error.empty());
 }
 
+TEST_CASE("Copied repaired history restores its original proof only while both publications remain unchanged",
+          "[WorkbenchSavedReopen][WorkbenchTopology][WorkbenchCheckLifecycle]")
+{
+    using namespace Slic3r;
+    NativeImportFixture fixture;
+    auto metadata = fixture.commit;
+    metadata["model_path"] = fixture.carrier.generic_string();
+    WorkbenchCheckResult certified;
+    REQUIRE(WorkbenchArtifacts::decode_workbench_check_certificate(
+        metadata.at("workbench_check_certificate"), certified));
+    const auto& reference = fixture.reference;
+    metadata["workbench_check_certificate"] = WorkbenchArtifacts::encode_workbench_check_certificate(
+        certified, WorkbenchCheckPurpose::PortraitPostColorReadOnly,
+        reference.at("geometry_id").get<std::string>(), reference.at("appearance_id").get<std::string>(),
+        fixture.metadata.generic_string(), metadata, reference.at("partition_digest").get<std::string>(),
+        reference.at("topology_hash").get<std::string>());
+    { boost::filesystem::ofstream output(fixture.metadata); output << metadata.dump(); }
+    const auto copied = fixture.directory.path / "copied";
+    boost::filesystem::create_directories(copied);
+    const auto model = copied / fixture.carrier.filename();
+    const auto record = copied / fixture.metadata.filename();
+    boost::filesystem::copy_file(fixture.carrier, model);
+    boost::filesystem::copy_file(fixture.metadata, record);
+    TriangleMesh mesh; ObjInfo colors; std::string error;
+    REQUIRE(AI::load_model_artifact(model, mesh, colors, error));
+    const auto before = mesh.its;
+    bool accepted = false;
+    std::function<bool()> canceled;
+    SECTION("unchanged proof restores the exact repaired geometry without a new inspection") {
+        accepted = true;
+    }
+    SECTION("changed copied metadata cannot borrow the original proof") {
+        boost::filesystem::ofstream output(record, std::ios::app); output << ' ';
+    }
+    SECTION("changed original metadata invalidates the copied publication") {
+        boost::filesystem::ofstream output(fixture.metadata, std::ios::app); output << ' ';
+    }
+    SECTION("changed copied model cannot borrow the original proof") {
+        boost::filesystem::ofstream output(model, std::ios::app); output << "\n# changed\n";
+    }
+    SECTION("changed original model invalidates the copied publication") {
+        boost::filesystem::ofstream output(fixture.carrier, std::ios::app); output << "\n# changed\n";
+    }
+    SECTION("cancellation leaves the copied model untouched") { canceled = [] { return true; }; }
+    WorkbenchCheckResult restored;
+    CHECK(restore_workbench_appearance_topology(mesh, model, canceled, {}, &restored) == accepted);
+    if (accepted) {
+        CHECK(workbench_topology_safe(restored));
+        CHECK(restored.model_sha256 == AI::model_artifact_sha256(model));
+        CHECK(mesh.its.indices == fixture.original.indices);
+        CHECK(mesh.its.vertices == fixture.original.vertices);
+        CHECK(workbench_topology_safe(inspect_workbench_model(model)));
+        auto request = fixture.request;
+        request.artifact.local_path = model;
+        request.native_portrait_partition_references = {fixture.cache_reference};
+        freeze_native_import_topology_proof(request, fixture.reference, metadata.at("workbench_check_certificate"));
+        REQUIRE(AI::load_model_artifact(model, mesh, colors, error));
+        AI::ModelImportResult imported;
+        REQUIRE(prepare_workbench_import_topology(mesh, false, imported, error, {}, &request));
+        CHECK_FALSE(imported.topology_risk);
+        CHECK(mesh.its.indices == fixture.original.indices);
+    } else {
+        CHECK(restored.status == WorkbenchCheckStatus::NotRun);
+        CHECK(mesh.its.indices == before.indices);
+        CHECK(mesh.its.vertices == before.vertices);
+    }
+}
+
 TEST_CASE("Saved face coloring restores only its unchanged certified native geometry",
           "[WorkbenchSavedReopen][WorkbenchTopology][WorkbenchCheckLifecycle]")
 {

@@ -4,6 +4,7 @@
 #include "WorkbenchArtifactValidation.hpp"
 #include "PortraitNativeCheckpoint.hpp"
 #include "PortraitNativePartitionCache.hpp"
+#include "WorkbenchHistoryEvidence.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
 #include "libslic3r/MeshBoolean.hpp"
@@ -271,6 +272,9 @@ inline bool decode_native_publication_certificate(
 
         const auto& reference = proof.native_reference;
         const auto& metadata = proof.partition_metadata;
+        const auto evidence = workbench_history_evidence_location(source,
+            boost::filesystem::path(boost::nowide::widen(proof.partition_metadata_path)), metadata, canceled);
+        const auto evidence_path = boost::nowide::narrow(evidence.metadata.wstring());
         require(WorkbenchArtifacts::valid_native_partition_reference(
                     reference, proof.partition_digest, proof.topology_hash) &&
                 WorkbenchArtifacts::native_partition_has_exact_mesh(reference) &&
@@ -279,14 +283,14 @@ inline bool decode_native_publication_certificate(
                 reference.at("appearance_id") == proof.appearance_id &&
                 WorkbenchArtifacts::same_model_path(
                     reference.at("metadata_path").get<std::string>(),
-                    proof.partition_metadata_path) &&
+                    evidence_path) &&
                 reference.at("cache_reference").at("face_count").get<size_t>() ==
                     proof.face_count,
                 "Native publication reference identity mismatch.");
         nlohmann::json verified_reference;
         require(restorable_native_partition_metadata_matches(metadata,
-                    boost::filesystem::path(boost::nowide::widen(proof.partition_metadata_path)),
-                    source, proof.carrier_sha256, proof.geometry_id, proof.appearance_id, verified_reference) &&
+                    evidence.metadata, evidence.model, proof.carrier_sha256,
+                    proof.geometry_id, proof.appearance_id, verified_reference) &&
                 verified_reference == reference,
                 "Native publication checkpoint mismatch.");
         verify_files();
@@ -331,7 +335,7 @@ inline bool decode_native_publication_certificate(
         require(WorkbenchArtifacts::valid_workbench_check_certificate(
                     certificate, WorkbenchCheckPurpose::PortraitPostColorReadOnly,
                     proof.carrier_sha256, proof.geometry_id, proof.appearance_id,
-                    proof.partition_metadata_path, metadata,
+                    evidence_path, metadata,
                     proof.partition_digest, proof.topology_hash) &&
                 WorkbenchArtifacts::decode_workbench_check_certificate(certificate, checked) &&
                 workbench_topology_safe(checked) &&
@@ -350,6 +354,10 @@ inline bool decode_native_publication_certificate(
                 "Native topology reports disagree.");
 
         verify_files();
+        const auto final_evidence = workbench_history_evidence_location(source,
+            boost::filesystem::path(boost::nowide::widen(proof.partition_metadata_path)), metadata, canceled);
+        require(final_evidence.model == evidence.model && final_evidence.metadata == evidence.metadata,
+            "Native publication evidence changed during verification.");
         checked.model_sha256 = proof.candidate_sha256;
         checked.source_sha256 = proof.carrier_sha256;
         checked.candidate_status = RepairCandidateStatus::None;

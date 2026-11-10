@@ -2,6 +2,8 @@
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitNativePartition.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitNativePartitionCache.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchHistoryEvidence.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
 #include "slic3r/GUI/AI/Model/BeautyDocument.hpp"
@@ -395,6 +397,7 @@ TEST_CASE("Filament baking retains original evidence across split vertices and r
     write_original_appearance_json(downloads / "orcaslicer-ai-finish-semantic-mapped.json", {
         {"source_model", parent.lexically_relative(root).generic_string()},
         {"source_sha256", baked.source_sha256},
+        {"model_sha256", baked.output_sha256},
         {"original_appearance", mapped_reference.encode(root)}
     });
     ModelPreview3D::PreparedModel reopened;
@@ -405,16 +408,43 @@ TEST_CASE("Filament baking retains original evidence across split vertices and r
     CHECK(reopened.original_appearance.origin_model == reference.origin_model);
     REQUIRE(reopened.trial_histogram);
     CHECK(reopened.trial_histogram->trial_palette(8, {}, true).size() == 8);
-    {
+    SECTION("missing companion recovers original colors from the unchanged parent") {
+        boost::filesystem::remove(mapped_carrier);
+        ModelPreview3D::PreparedModel restored;
+        REQUIRE(ModelPreview3D::prepare_model(mapped, restored, error));
+        INFO(restored.original_appearance_error);
+        REQUIRE(restored.has_source_appearance);
+        REQUIRE(restored.semantic_source);
+        CHECK(restored.semantic_source->content_id == reopened.semantic_source->content_id);
+        CHECK(restored.original_appearance.carrier_sha256 == mapped_reference.carrier_sha256);
+        CHECK(restored.original_appearance.origin_model == reference.origin_model);
+        CHECK(Slic3r::AI::model_artifact_sha256(mapped) == baked.output_sha256);
+    }
+    SECTION("missing companion does not recover from a changed parent") {
+        boost::filesystem::remove(mapped_carrier);
+        boost::filesystem::ofstream modified(parent, std::ios::app); modified << "\n# changed\n"; modified.close();
+        ModelPreview3D::PreparedModel rejected;
+        REQUIRE(ModelPreview3D::prepare_model(mapped, rejected, error));
+        CHECK_FALSE(rejected.has_source_appearance);
+        CHECK_FALSE(boost::filesystem::exists(mapped_carrier));
+    }
+    SECTION("cancelled recovery does not publish a companion") {
+        boost::filesystem::remove(mapped_carrier);
+        ModelPreview3D::PreparedModel rejected;
+        const auto cancel_on_missing = [&] { return !boost::filesystem::exists(mapped_carrier); };
+        CHECK_FALSE(ModelPreview3D::prepare_model(mapped, rejected, error, {}, {}, true, cancel_on_missing));
+        CHECK_FALSE(boost::filesystem::exists(mapped_carrier));
+    }
+    SECTION("changed companion cannot be replaced from the parent") {
         boost::filesystem::ofstream modified(mapped_carrier, std::ios::app);
         modified << "\n# modified original evidence\n";
         modified.close();
         REQUIRE(modified.good());
+        ModelPreview3D::PreparedModel rejected;
+        REQUIRE(ModelPreview3D::prepare_model(mapped, rejected, error));
+        CHECK_FALSE(rejected.has_source_appearance);
+        CHECK(rejected.original_appearance_error.find("哈希") != std::string::npos);
     }
-    ModelPreview3D::PreparedModel rejected;
-    REQUIRE(ModelPreview3D::prepare_model(mapped, rejected, error));
-    CHECK_FALSE(rejected.has_source_appearance);
-    CHECK(rejected.original_appearance_error.find("哈希") != std::string::npos);
 }
 
 TEST_CASE("Original appearance mapping inherits coordinate-only changes and publishes topology carriers",
@@ -1174,6 +1204,58 @@ TEST_CASE("A worker observes an externally canceled preview before publishing it
 
 // Opt-in CPU measurement using an existing local model. Measures preparation
 // and cancellation checkpoints; it never creates a window or uploads to GL.
+TEST_CASE("A real repaired history restores its original appearance and content-bound check evidence",
+          "[.WorkbenchHistoryEvidenceQA]")
+{
+    using namespace Slic3r;
+    using namespace Slic3r::GUI;
+    const auto source_name = boost::nowide::getenv("ORCASLICER_MODEL_ARTIFACT_FIXTURE");
+    REQUIRE(source_name);
+    const boost::filesystem::path source(source_name);
+    const auto root = source.parent_path().filename() == "downloads"
+        ? source.parent_path().parent_path() : source.parent_path();
+    struct RestoreDataDir {
+        std::string original {Slic3r::data_dir()};
+        ~RestoreDataDir() { Slic3r::set_data_dir(original); }
+    } restore_data;
+    Slic3r::set_data_dir(root.parent_path().string());
+    const auto record = AI::beauty_metadata_path(source, root);
+    nlohmann::json metadata;
+    { boost::filesystem::ifstream input(record); input >> metadata; }
+    const auto source_hash = AI::model_artifact_sha256(source);
+    const auto metadata_hash = AI::model_artifact_sha256(record);
+    ModelPreview3D::PreparedModel prepared;
+    std::string error;
+    REQUIRE(ModelPreview3D::prepare_model(source, prepared, error, {}, record));
+    INFO(prepared.original_appearance_error);
+    REQUIRE(prepared.has_source_appearance);
+    REQUIRE(prepared.semantic_source);
+    const auto evidence = workbench_history_evidence_location(source, record, metadata);
+    if (metadata.contains("workbench_check_certificate")) {
+        const auto& certificate = metadata.at("workbench_check_certificate");
+        const bool native = metadata.contains("native_portrait_partition");
+        REQUIRE(WorkbenchArtifacts::valid_workbench_check_certificate(certificate,
+            native ? WorkbenchCheckPurpose::PortraitPostColorReadOnly : WorkbenchCheckPurpose::SavedModelReadOnly,
+            source_hash, prepared.geometry_id, prepared.semantic_source->content_id,
+            boost::nowide::narrow(evidence.metadata.wstring()), metadata,
+            native ? metadata.at("native_portrait_partition").at("partition_digest").get<std::string>() : "",
+            native ? metadata.at("native_portrait_partition").at("topology_hash").get<std::string>() : ""));
+    }
+    const auto check = inspect_workbench_model(source);
+    INFO(check.summary);
+    REQUIRE(workbench_topology_safe(check));
+    CHECK(check.candidate_status == RepairCandidateStatus::None);
+    CHECK(AI::model_artifact_sha256(source) == source_hash);
+    CHECK(AI::model_artifact_sha256(record) == metadata_hash);
+    if (const auto report = boost::nowide::getenv("ORCASLICER_HISTORY_EVIDENCE_REPORT")) {
+        boost::filesystem::ofstream output(report);
+        output << nlohmann::json {{"source_sha256", source_hash}, {"metadata_sha256", metadata_hash},
+            {"evidence_record", boost::nowide::narrow(evidence.metadata.wstring())},
+            {"appearance_restored", true}, {"check_restored", true}, {"repair_candidate", false},
+            {"faces", check.before_faces}, {"vertices", check.before_vertices}}.dump(2);
+    }
+}
+
 TEST_CASE("Historical preview cancellation measures avoided preparation work", "[.ModelPreviewCancelProbe]")
 {
     struct RestoreLogging {

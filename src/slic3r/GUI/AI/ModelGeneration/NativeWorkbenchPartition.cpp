@@ -147,9 +147,11 @@ bool ModelGenerationPanel::restore_native_workbench_partition_checkpoint()
             : boost::filesystem::path{};
     nlohmann::json metadata;
     nlohmann::json verified_reference;
-    if (metadata_path.empty() || !read_portrait_check_metadata(metadata_path, metadata) ||
-        !restorable_native_partition_metadata_matches(metadata, metadata_path,
-            m_native_workbench_context.model_path, m_native_workbench_context.source_sha256,
+    if (metadata_path.empty() || !read_portrait_check_metadata(metadata_path, metadata)) return false;
+    const auto evidence = workbench_history_evidence_location(
+        m_native_workbench_context.model_path, metadata_path, metadata);
+    if (!restorable_native_partition_metadata_matches(metadata, evidence.metadata,
+            evidence.model, m_native_workbench_context.source_sha256,
             m_native_workbench_context.geometry_id, m_native_workbench_context.appearance_id,
             verified_reference) ||
         !PP::valid_native_partition_reference(verified_reference, partition->partition_digest) ||
@@ -164,7 +166,7 @@ bool ModelGenerationPanel::restore_native_workbench_partition_checkpoint()
             WorkbenchCheckPurpose::PortraitPostColorReadOnly,
             m_native_workbench_context.source_sha256,
             m_native_workbench_context.geometry_id,
-            m_native_workbench_context.appearance_id, u8(metadata_path), metadata,
+            m_native_workbench_context.appearance_id, u8(evidence.metadata), metadata,
             partition->partition_digest,
             verified_reference.at("topology_hash").get<std::string>()))
         return false;
@@ -864,13 +866,14 @@ bool ModelGenerationPanel::restore_workbench_check_certificate()
         m_displayed_model_path, ModelGenerationPresentation::generated_models_root());
     nlohmann::json metadata;
     if (!read_portrait_check_metadata(metadata_path, metadata)) return false;
+    const auto evidence = workbench_history_evidence_location(m_displayed_model_path, metadata_path, metadata);
     const auto embedded = metadata.value("workbench_check_certificate", nlohmann::json{});
     if (!metadata.contains("native_portrait_partition") &&
         metadata.value("source", std::string{}) == "local_finishing" &&
         metadata.value("schema_version", 0) == 4 &&
         metadata.value("model_sha256", std::string{}) == model_hash &&
         PP::valid_workbench_check_certificate(embedded, WorkbenchCheckPurpose::SavedModelReadOnly,
-            model_hash, geometry_id, appearance_id, u8(metadata_path), metadata)) {
+            model_hash, geometry_id, appearance_id, u8(evidence.metadata), metadata)) {
         WorkbenchCheckResult restored;
         if (PP::decode_workbench_check_certificate(embedded, restored) &&
             workbench_topology_safe(restored) &&
@@ -880,13 +883,13 @@ bool ModelGenerationPanel::restore_workbench_check_certificate()
     }
     const bool require_post_color = metadata.contains("post_color_check");
     nlohmann::json reference;
-    if (!portrait_partition_metadata_matches(metadata, metadata_path, m_displayed_model_path,
+    if (!portrait_partition_metadata_matches(metadata, evidence.metadata, evidence.model,
             model_hash, geometry_id, appearance_id, require_post_color, reference)) return false;
 
     const auto certificate_valid = [&](const nlohmann::json& certificate) {
         if (!PP::valid_workbench_check_certificate(certificate,
                 WorkbenchCheckPurpose::PortraitPostColorReadOnly, model_hash, geometry_id,
-                appearance_id, u8(metadata_path), metadata,
+                appearance_id, u8(evidence.metadata), metadata,
                 reference.at("partition_digest").get<std::string>(),
                 reference.at("topology_hash").get<std::string>())) return false;
         WorkbenchCheckResult restored;

@@ -344,6 +344,29 @@ inline std::optional<OriginalAppearanceReference> decode_reference(
     return reference;
 }
 
+// A missing immutable companion may be reconstructed from the hash-bound
+// parent chain. A changed carrier, invalid path or missing origin must still
+// fail rather than silently treating a saved low-color version as the source.
+inline bool missing_appearance_companion(const nlohmann::json& value,
+    const boost::filesystem::path& root, const std::string& topology)
+{
+    try {
+        if (value.at("schema") != "orca.model-original-appearance/v1" ||
+            value.at("topology_sha256") != topology ||
+            !AI::SurfaceSelectionPersistence::detail::valid_fingerprint(
+                value.at("carrier_sha256").get<std::string>())) return false;
+        const boost::filesystem::path relative(value.at("carrier_model").get<std::string>());
+        boost::filesystem::path parent, origin;
+        if (relative.empty() || relative.is_absolute() || relative.has_root_path() ||
+            std::any_of(relative.begin(), relative.end(), [](const auto& part) { return part == ".."; }) ||
+            !safe_library_file(root, relative.parent_path(), parent) ||
+            !safe_library_file(root, boost::filesystem::path(value.at("origin_model").get<std::string>()), origin) ||
+            AI::model_artifact_sha256(origin) != value.at("origin_sha256")) return false;
+        const auto carrier = parent / relative.filename();
+        return !boost::filesystem::exists(carrier) && !boost::filesystem::is_symlink(carrier);
+    } catch (const std::exception&) { return false; }
+}
+
 } // namespace original_appearance_detail
 
 inline bool resolve_original_appearance_reference(
@@ -498,11 +521,18 @@ inline bool resolve_original_appearance(const boost::filesystem::path& current_m
         error = "无法建立当前模型的拓扑身份。";
         return false;
     }
+    std::string recovery_origin_hash;
     if (current_metadata.is_object() && current_metadata.contains("original_appearance")) {
         const auto decoded = decode_reference(current_metadata["original_appearance"], root, topology, error);
-        if (!decoded) return false;
-        output.reference = *decoded;
-        return load_carrier(decoded->carrier_model, decoded->carrier_sha256, topology, output, error, canceled);
+        if (decoded) {
+            output.reference = *decoded;
+            return load_carrier(decoded->carrier_model, decoded->carrier_sha256, topology, output, error, canceled);
+        }
+        if (!current_metadata.contains("source_model") ||
+            current_metadata.value("model_sha256", std::string{}) != AI::model_artifact_sha256(current_model) ||
+            !missing_appearance_companion(current_metadata["original_appearance"], root, topology)) return false;
+        recovery_origin_hash = current_metadata["original_appearance"].at("origin_sha256").get<std::string>();
+        error.clear();
     }
 
     const bool has_parent = current_metadata.is_object() && current_metadata.contains("source_model");
@@ -555,15 +585,22 @@ inline bool resolve_original_appearance(const boost::filesystem::path& current_m
         auto source_metadata = read_record(record);
         if (compatible && source_metadata.is_object() && source_metadata.contains("original_appearance")) {
             const auto inherited = decode_reference(source_metadata["original_appearance"], root, source_topology, error);
-            if (!inherited) return false;
-            auto companion = current_model;
-            companion.replace_extension(".source-appearance.obj");
-            OriginalAppearanceReference mapped;
-            if (!prepare_original_appearance_for_candidate(source, current_model, expected_hash,
-                    *inherited, companion, root, mapped, error, canceled)) return false;
-            output.restored_legacy_chain = true;
-            output.reference = mapped;
-            return load_carrier(mapped.carrier_model, mapped.carrier_sha256, topology, output, error, canceled);
+            if (inherited) {
+                auto companion = current_model;
+                companion.replace_extension(".source-appearance.obj");
+                OriginalAppearanceReference mapped;
+                if (!prepare_original_appearance_for_candidate(source, current_model, expected_hash,
+                        *inherited, companion, root, mapped, error, canceled)) return false;
+                output.restored_legacy_chain = true;
+                output.reference = mapped;
+                return load_carrier(mapped.carrier_model, mapped.carrier_sha256, topology, output, error, canceled);
+            }
+            if (!missing_appearance_companion(source_metadata["original_appearance"], root, source_topology))
+                return false;
+            const auto source_origin = source_metadata["original_appearance"].at("origin_sha256").get<std::string>();
+            if (!recovery_origin_hash.empty() && recovery_origin_hash != source_origin) return false;
+            recovery_origin_hash = source_origin;
+            error.clear();
         }
         if (compatible &&
             has_appearance(mesh.its, appearance, texture)) {
@@ -585,7 +622,7 @@ inline bool resolve_original_appearance(const boost::filesystem::path& current_m
         candidate = current_model;
         candidate_hash = origin_hash;
     }
-    if (candidate.empty()) {
+    if (candidate.empty() || (!recovery_origin_hash.empty() && origin_hash != recovery_origin_hash)) {
         error = "未找到与当前拓扑兼容的原始配色证据。";
         return false;
     }

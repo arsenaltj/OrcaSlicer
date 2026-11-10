@@ -692,7 +692,7 @@
       "id": "native_workbench_publication",
       "path": "src/slic3r/GUI/AI/ModelGeneration/NativeWorkbenchPublication.hpp",
       "needle": "inline void prepare_native_workbench_publication(",
-      "detail": "Manual native color publication preserves region semantics, color reduction, slot binding, atomic history and content-bound topology certificates. WorkbenchModelInspection also restores unchanged legacy appearance geometry only after verifying its complete native ancestry and ordered corners; ordinary saved certificates cannot authorize native claims."
+      "detail": "Manual native color publication preserves region semantics, color reduction, slot binding, atomic history and content-bound topology certificates. WorkbenchModelInspection restores unchanged legacy appearance geometry only after verifying its complete native ancestry and ordered corners. WorkbenchHistoryEvidence resolves an original publication only while both model copies and both full metadata records match; check, publication and native import still validate the original bound proof. Missing original-appearance companions recover only through the hash-bound source chain. Ordinary saved certificates cannot authorize native claims."
     }
   ],
   "journeys": [
