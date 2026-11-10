@@ -40,8 +40,8 @@ struct ModelGenerationFeatureHost::Impl
                         return capabilities->open_colors(parent, artifact);
                     }
                     const bool opened = model_generation->request_library_action(command, entry);
-                    if (opened && history_navigation && (command == ModelLibraryCommand::OpenModel || command == ModelLibraryCommand::OpenImage))
-                        history_navigation(command == ModelLibraryCommand::OpenImage);
+                    if (opened && history_navigation && command == ModelLibraryCommand::OpenImage)
+                        history_navigation(true);
                     if (opened && (command == ModelLibraryCommand::Remove || command == ModelLibraryCommand::Import)) capabilities->refresh_assets();
                     return opened;
                 }, [this] { model_generation->request_library_local_import(); }});
@@ -344,6 +344,10 @@ void ModelGenerationFeatureHost::mount_assets(wxWindow* parent) { m_impl->capabi
 void ModelGenerationFeatureHost::unmount_assets() { m_impl->capabilities->unmount_assets(); }
 void ModelGenerationFeatureHost::set_history_navigation_handler(std::function<void(bool)> handler)
 { m_impl->history_navigation = handler; m_impl->model_generation->set_history_navigation_handler(std::move(handler)); }
+void ModelGenerationFeatureHost::set_history_model_open_handler(ModelHistoryOpenHandler handler)
+{ m_impl->model_generation->set_history_model_open_handler(std::move(handler)); }
+void ModelGenerationFeatureHost::finish_history_model_open(bool accepted, std::function<void()> complete)
+{ m_impl->model_generation->finish_history_model_open(accepted, std::move(complete)); }
 void ModelGenerationFeatureHost::unmount_workbench() { m_impl->model_generation->unmount_workbench(); }
 void ModelGenerationFeatureHost::set_color_matching_handler(std::function<void(const AI::GeneratedModelArtifact&)> handler)
 {

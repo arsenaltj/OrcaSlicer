@@ -17,13 +17,7 @@
 
 namespace Slic3r::GUI {
 
-inline bool workbench_topology_safe(const WorkbenchCheckResult& result)
-{
-    return result.status == WorkbenchCheckStatus::Normal && result.boundary_edges == 0 &&
-        result.nonmanifold_edges == 0 && result.nonmanifold_vertices == 0 &&
-        result.degenerate_faces == 0 && result.duplicate_faces == 0 &&
-        result.inconsistent_edges == 0 && result.self_intersections_checked && result.self_intersections == 0;
-}
+
 
 inline bool workbench_repair_publication_allowed(const WorkbenchCheckResult& result,
     bool geometry_verified)

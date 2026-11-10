@@ -470,9 +470,7 @@ bool ModelGenerationPanel::request_open_history(const std::string& job_id)
         return false;
     const auto entry = std::find_if(m_library_entries.begin(), m_library_entries.end(),
         [&job_id](const GeneratedModelEntry& candidate) { return candidate.job_id == job_id; });
-    const auto metadata = read_json(generated_models_root() / job_id / "job.json");
-    if (entry == m_library_entries.end() || (metadata.is_object() &&
-        metadata.value("workflow_mode", std::string()) == "smart")) {
+    if (entry == m_library_entries.end()) {
         reset(false); m_smart_flow = SmartGenerationFlow();
         const auto sequence = ++m_sequence;
         wxWeakRef<ModelGenerationPanel> weak(this);
@@ -487,11 +485,10 @@ bool ModelGenerationPanel::request_open_history(const std::string& job_id)
         });
         return true;
     }
-    load_library_entry(entry->model_path, entry->reference_image_path, entry->ai_image_path,
+    return load_library_entry(entry->model_path, entry->reference_image_path, entry->ai_image_path,
                        entry->palette, entry->palette_roles, entry->use_printable_colors,
                        entry->color_intent_path, entry->color_intent_schema,
-                       entry->color_intent_sha256, entry->job_id, entry->title);
-    return true;
+                       entry->color_intent_sha256, entry->job_id, entry->title, false, entry->repair_index);
 }
 
 bool ModelGenerationPanel::request_retry_model()

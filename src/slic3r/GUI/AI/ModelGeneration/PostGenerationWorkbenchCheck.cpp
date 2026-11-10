@@ -38,7 +38,7 @@ bool ModelGenerationPanel::apply_pending_workbench_ai_palette(const boost::files
 
 bool ModelGenerationPanel::can_start_workbench_check() const
 {
-    return !m_shutdown && m_model_preview && workbench_check_start_allowed(
+    return !m_shutdown && !m_history_open && !m_workbench_preparing && m_model_preview && workbench_check_start_allowed(
         m_finishing_workbench && m_workbench_presented, m_model_preview_ready,
         m_workbench_import_running || m_workbench_check_running || m_finishing_running ||
             m_native_workbench_partition_running || m_busy || m_model_preview->semantic_processing() ||

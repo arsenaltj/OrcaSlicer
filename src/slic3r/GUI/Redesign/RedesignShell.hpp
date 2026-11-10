@@ -8,6 +8,7 @@
 #include "RedesignPresentationDeadline.hpp"
 #include "RedesignWorkspaceNavigation.hpp"
 #include "../AI/ModelGeneration/ModelGenerationHost.hpp"
+#include "../AI/ModelGeneration/ModelHistoryOpen.hpp"
 #include "../AI/ModelGeneration/PortraitWorkbenchEntry.hpp"
 #include "../AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "../AI/ModelGeneration/WorkbenchImportSession.hpp"
@@ -160,10 +161,16 @@ private:
     using ModelView = RedesignModelView;
     void build_model_workflow();
     bool open_model_workbench();
-    bool begin_workbench_presentation();
+    bool begin_workbench_presentation(bool history_loading = false);
+    bool continue_workbench_presentation();
     void layout_workbench_transition_cover();
     void finish_workbench_presentation(bool ready, bool report_failure = true);
     void restore_workbench_source_page();
+    void sync_page_settings_visibility(Page page);
+    wxRect workbench_transition_bounds() const;
+    void update_history_loading(ModelHistoryOpenEvent::Stage stage);
+    void layout_history_loading();
+    void finish_history_loading();
     void return_model_overview();
     bool show_model_view(ModelView view);
     void apply_workbench_state(const PostGenerationWorkbenchState& state);
@@ -289,6 +296,15 @@ private:
     wxFrame* m_preview_transition_cover {nullptr};
     wxTimer m_preview_transition_timer;
     std::optional<RedesignPageTransition::Token> m_workbench_transition;
+    uint64_t m_history_open_request {0};
+    std::string m_history_open_asset;
+    wxDialog* m_history_loading {nullptr};
+    wxActivityIndicator* m_history_activity {nullptr};
+    WorkbenchLabel *m_history_stage {nullptr}, *m_history_elapsed {nullptr};
+    wxWindow* m_history_cancel {nullptr};
+    std::chrono::steady_clock::time_point m_history_started;
+    bool m_history_rollback_pending {false}, m_workbench_history_loading {false};
+    bool m_workbench_source_reparented {false};
     wxFrame* m_workbench_transition_cover {nullptr};
     wxWindow* m_workbench_transition_source {nullptr};
     std::size_t m_workbench_source_index {0};

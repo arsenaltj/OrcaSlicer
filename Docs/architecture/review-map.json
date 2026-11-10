@@ -692,19 +692,25 @@
       "id": "native_workbench_publication",
       "path": "src/slic3r/GUI/AI/ModelGeneration/NativeWorkbenchPublication.hpp",
       "needle": "inline void prepare_native_workbench_publication(",
-      "detail": "Manual native color publication preserves region semantics, color reduction, slot binding, atomic history and content-bound topology certificates. WorkbenchModelInspection restores unchanged legacy appearance geometry only after verifying its complete native ancestry and ordered corners. WorkbenchHistoryEvidence resolves an original publication only while both model copies and both full metadata records match; check, publication and native import still validate the original bound proof. Missing original-appearance companions recover only through the hash-bound source chain. Ordinary saved certificates cannot authorize native claims."
+      "detail": "Manual native color publication preserves region semantics, color reduction, slot binding, atomic history and content-bound topology certificates. WorkbenchModelInspection restores unchanged legacy appearance geometry only after verifying its complete native ancestry and ordered corners. WorkbenchHistoryEvidence resolves an original publication only while both model copies and both full metadata records match; check, publication and native import still validate the original bound proof. Missing original-appearance companions recover only through the hash-bound source chain. Ordinary saved certificates cannot authorize native claims. History loading validates these same complete certificates on its worker before automatic check scheduling; the in-memory source index never grants check success."
     },
     {
       "id": "workbench_page_presentation",
       "path": "src/slic3r/GUI/Redesign/RedesignWorkbenchPresentation.cpp",
-      "needle": "bool RedesignShell::begin_workbench_presentation()",
-      "detail": "The existing page transition token owns reveal and rollback. Retained source controls remain above the target until the shared native refresh queue and an independently observed current model frame complete. Preparation does not start automatic checks; minimized time is excluded from the deadline."
+      "needle": "bool RedesignShell::begin_workbench_presentation(bool history_loading)",
+      "detail": "The existing page-transition token retains the completed source page for result entry and direct history entry, including in-workbench model changes. Layout and current model frames gate reveal; checks run only afterwards. History notifications are generation/asset bound and ordinary state publication cannot reroute preparation. Failure, cancellation and timeout restore the previous model, route and AI settings before uncovering. The retained source includes settings and content but excludes fixed navigation; target settings visibility and final width precede frame validation."
     },
     {
       "id": "shared_view_navigator",
       "path": "src/slic3r/GUI/View3DNavigator.cpp",
       "needle": "ImGuizmo::ViewManipulateResult draw_view_navigator(",
       "detail": "GUI-only shared navigator styling and Z-up mapping. Native Camera and the workbench orthographic camera retain separate ownership; workbench ImGui context and per-canvas ImGuizmo gesture/interpolation are isolated."
+    },
+    {
+      "id": "model_history_open",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationHistoryOpen.cpp",
+      "needle": "bool ModelGenerationPanel::load_library_entry(",
+      "detail": "One generation/selected-asset checked history loading transaction owns entry, actual preparation stages, rollback and certificate restoration before page presentation. Cancellation retains the busy request until its parser drains; deferred launch follows the first card paint. Shared import-style feedback has an independent lifecycle and stays through final frame reveal. The existing scan worker supplies a memory-only source index; actual model preparation revalidates each source chain and complete publication proof."
     }
   ],
   "journeys": [

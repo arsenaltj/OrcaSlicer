@@ -8,6 +8,7 @@
 #include "AI/ModelGeneration/BeautyWorkbenchSession.hpp"
 #include "AI/ModelGeneration/BeautyWorkbenchColorGate.hpp"
 #include "AI/ModelGeneration/ModelLibraryEntry.hpp"
+#include "AI/ModelGeneration/ModelHistoryOpen.hpp"
 #include "AI/ModelGeneration/ModelLibraryApplication.hpp"
 #include "AI/ModelGeneration/ModelLibraryLoader.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationHost.hpp"
@@ -105,6 +106,8 @@ public:
     void set_smart_creation_presentation(bool smart) { m_shell_smart_creation = smart; }
     void unmount_assets();
     void set_history_navigation_handler(std::function<void(bool)> handler) { m_history_navigation = std::move(handler); }
+    void set_history_model_open_handler(ModelHistoryOpenHandler handler) { m_history_model_open = std::move(handler); }
+    void finish_history_model_open(bool accepted, std::function<void()> complete = {});
     void set_ui_state_listener(ModelGenerationUIStateListener listener);
     ModelGenerationUIState ui_state_snapshot() const { return m_ui_state; }
     bool synchronize_ui_input(const ModelGenerationUIInput& input);
@@ -230,6 +233,9 @@ private:
     PostGenerationWorkbenchListener m_workbench_listener;
     wxWindow* m_assets_home_parent {nullptr};
     std::function<void(bool)> m_history_navigation;
+    ModelHistoryOpenHandler m_history_model_open;
+    uint64_t m_history_open_generation {0};
+    std::shared_ptr<ModelHistoryOpenRequest> m_history_open;
     wxButton* m_library_cancel {nullptr};
     wxTextCtrl* m_assets_search {nullptr};
     wxChoice* m_assets_category {nullptr};
@@ -507,7 +513,8 @@ private:
     void load_model_preview_async(boost::filesystem::path path, std::vector<std::string> palette,
         std::function<void(size_t, Vec3d, size_t, double)> loaded,
         std::function<void(std::string)> failed, const boost::filesystem::path& metadata_path = {},
-        std::shared_ptr<ModelHistoryMetadata> history_metadata = {}, std::function<bool()> may_install = {});
+        std::shared_ptr<ModelHistoryMetadata> history_metadata = {}, std::function<bool()> may_install = {},
+        std::shared_ptr<ModelHistoryOpenRequest> history_open = {});
     void download_and_import();
     void import_local_artifact(const boost::filesystem::path& path, uint64_t sequence);
     void cleanup_files();
@@ -579,7 +586,7 @@ private:
     void load_design_library_entry(const std::string& job_id);
     void save_library_entry(size_t artifact_size, size_t triangle_count, double width, double depth,
                             double height, size_t color_count, double load_seconds);
-    void load_library_entry(const boost::filesystem::path& model_path,
+    bool load_library_entry(const boost::filesystem::path& model_path,
                              const boost::filesystem::path& reference_image_path,
                              const boost::filesystem::path& ai_image_path,
                              const std::vector<std::string>& palette,
@@ -588,7 +595,9 @@ private:
                              const boost::filesystem::path& color_intent_path,
                              const std::string& color_intent_schema,
                              const std::string& color_intent_sha256,
-                             const std::string& job_id, const wxString& title, bool new_asset = false);
+                             const std::string& job_id, const wxString& title, bool new_asset = false,
+                             std::shared_ptr<const ModelHistoryRepairIndex> repairs = {},
+                             std::shared_ptr<ModelHistoryOpenRequest> restoration = {});
     bool delete_library_entry(const GeneratedModelEntry& entry);
     void export_library_entry(const GeneratedModelEntry& entry);
     void update_library_provider_tasks(const std::string& job_id,

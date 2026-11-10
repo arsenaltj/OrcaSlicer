@@ -451,7 +451,7 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
 
 bool ModelGenerationPanel::can_replace_model_asset() const
 {
-    return !m_shutdown && !m_workbench_import_feedback && !m_portrait_draft_before &&
+    return !m_shutdown && !m_history_open && !m_preview_loading && !m_workbench_import_feedback && !m_portrait_draft_before &&
         !(m_portrait_task && m_portrait_task->snapshot().running()) && post_generation_asset_switch_allowed(
         m_busy || m_preview_download_in_flight || m_workbench_check_running || m_workbench_import_running,
         m_finishing_running,

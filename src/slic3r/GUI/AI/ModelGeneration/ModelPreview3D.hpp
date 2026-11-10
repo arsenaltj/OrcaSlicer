@@ -1330,18 +1330,39 @@ public:
         return true;
     }
 
-    bool try_load_cached_model(const boost::filesystem::path& path, const std::vector<std::string>& palette,
-                               size_t& triangle_count, Vec3d& dimensions, size_t& color_count)
+    void retain_history_rollback(bool retain) {
+        if (!retain && m_history_rollback_retained && m_context && m_canvas && m_canvas->SetCurrent(*m_context))
+            m_cached_preview.reset();
+        m_history_rollback_retained = retain;
+    }
+
+    bool restore_retained_history_model(const boost::filesystem::path& path,
+        const std::vector<std::string>& palette, size_t& triangles, Vec3d& dimensions, size_t& colors)
     {
+        if (!m_history_rollback_retained) return false;
+        if (m_has_model && m_model_path == path) {
+            triangles = m_triangle_count;
+            dimensions = m_model_dimensions;
+            colors = m_color_count;
+            return true;
+        }
+        return try_load_cached_model(path, palette, triangles, dimensions, colors, true);
+    }
+
+    bool try_load_cached_model(const boost::filesystem::path& path, const std::vector<std::string>& palette,
+                               size_t& triangle_count, Vec3d& dimensions, size_t& color_count,
+                               bool history_rollback = false)
+    {
+        const bool retained = history_rollback && m_history_rollback_retained;
         if (!m_cached_preview || m_cached_preview->path != path ||
-            !same_stamp(m_cached_preview->stamp, file_stamp(path)) ||
+            (!retained && !same_stamp(m_cached_preview->stamp, file_stamp(path))) ||
             m_context == nullptr || !m_context->IsOK() || !m_canvas->SetCurrent(*m_context))
             return false;
-        if (m_cached_preview->artifact_sha256.empty() ||
-            AI::model_artifact_sha256(path) != m_cached_preview->artifact_sha256)
+        if (!retained && (m_cached_preview->artifact_sha256.empty() ||
+            AI::model_artifact_sha256(path) != m_cached_preview->artifact_sha256))
             return false;
         const auto& appearance = m_cached_preview->original_appearance;
-        if (appearance.valid() &&
+        if (!retained && appearance.valid() &&
             (AI::model_artifact_sha256(appearance.carrier_model) != appearance.carrier_sha256 ||
              AI::model_artifact_sha256(appearance.origin_model) != appearance.origin_sha256))
             return false;
@@ -3622,7 +3643,10 @@ private:
         if (m_manual_color_model) bytes += m_manual_color_model->cpu_memory_used() + m_manual_color_model->gpu_memory_used();
         constexpr size_t cache_limit = size_t(384) * 1024 * 1024;
         if(m_color_blocks) bytes+=m_color_blocks->memory_bytes();
-        if (bytes > cache_limit)
+        // A history transition owns one rollback scene only until its first
+        // frame commits. Retain that already loaded scene even above the normal
+        // browsing-cache budget, so timeout/failure never reveals the new asset.
+        if (bytes > cache_limit && !m_history_rollback_retained)
             return;
         m_cached_preview = std::make_unique<CachedPreview>();
         m_cached_preview->geometry_id = m_geometry_id;
@@ -4753,6 +4777,7 @@ private:
     wxSizerItem* m_overlay_top {nullptr};
     wxSizerItem* m_overlay_bottom {nullptr};
     bool m_retain_surface_attributes {false};
+    bool m_history_rollback_retained {false};
     bool m_exact_surface_display {false};
     std::vector<float> m_surface_vertices;
     std::vector<Vec2f> m_original_surface_colors;

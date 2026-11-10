@@ -22,6 +22,7 @@
 #include "slic3r/GUI/Redesign/ModelGenerationStarfield.hpp"
 #include "slic3r/GUI/Redesign/PrinterWorkspaceState.hpp"
 #include "slic3r/GUI/CanvasNotificationLayout.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportPresentation.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -30,6 +31,23 @@
 #include <string>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("AI history retains the settings and content together without covering fixed navigation", "[UiRedesign][WorkbenchPresentation]")
+{
+    // These are already screen pixels, including a non-integer DPI conversion
+    // and the real gap between sibling containers. No second DIP conversion.
+    const wxRect settings(111, 55, 401, 720), content(528, 55, 992, 720);
+    const auto cover = workbench_retained_page_bounds(content, settings);
+    CHECK(cover == wxRect(111, 55, 1409, 720));
+    CHECK_FALSE(cover.Contains(wxPoint(90, 100)));
+    const wxRect expanded_content(111, 55, 1409, 720);
+    CHECK(workbench_retained_page_bounds(expanded_content, {}) == cover);
+    CHECK(workbench_retained_page_bounds(content, {}) == content);
+    const auto card = workbench_import_card_bounds(cover, wxRect(0, 0, 1600, 900), wxSize(410, 240));
+    CHECK(cover.Contains(card));
+    CHECK(card.width < cover.width);
+    CHECK(card.height < cover.height);
+}
 
 TEST_CASE("A workbench result batch publishes the final state once and commands remain immediate",
           "[UiRedesign][SlicingRefresh]")

@@ -89,6 +89,7 @@ set(ORCA_MODEL_GENERATION_PANEL_IMPLEMENTATIONS
     GUI/AI/ModelGeneration/ModelGenerationBeautyVersions.cpp
     GUI/AI/ModelGeneration/ModelGenerationBeautyView.cpp
     GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp
+    GUI/AI/ModelGeneration/ModelGenerationHistoryOpen.cpp
     GUI/AI/ModelGeneration/ModelGenerationLibraryView.cpp
     GUI/AI/ModelGeneration/ModelGenerationLocalImport.cpp
     GUI/AI/ModelGeneration/ModelGenerationPortrait.cpp

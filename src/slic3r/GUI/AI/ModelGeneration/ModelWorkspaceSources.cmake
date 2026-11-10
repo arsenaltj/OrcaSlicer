@@ -10,6 +10,9 @@ set(ORCA_MODEL_WORKSPACE_SOURCES
     GUI/AI/ModelGeneration/PortraitNativePartition.hpp
     GUI/AI/ModelGeneration/PortraitNativePartition.cpp
     GUI/AI/ModelGeneration/PortraitSuiteBinding.hpp
+    GUI/AI/ModelGeneration/ModelHistoryRepairIndex.hpp
+    GUI/AI/ModelGeneration/ModelHistoryOpen.hpp
+    GUI/AI/ModelGeneration/ModelHistoryPreview.hpp
     GUI/AI/ModelGeneration/ModelLibraryEntry.hpp
     GUI/AI/ModelGeneration/ModelLibraryRepository.hpp
     GUI/AI/ModelGeneration/ModelLibraryRepository.cpp
@@ -31,6 +34,7 @@ set(ORCA_MODEL_WORKSPACE_SOURCES
     GUI/AI/ColorMatching/ColorMatchingFeatureHost.hpp
     GUI/AI/ColorMatching/ColorMatchingFeatureHost.cpp
     GUI/ModelGenerationPanel.cpp
+    GUI/AI/ModelGeneration/ModelGenerationHistoryOpen.cpp
     GUI/AI/ModelGeneration/ModelGenerationLibraryView.cpp
     GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp
     GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp

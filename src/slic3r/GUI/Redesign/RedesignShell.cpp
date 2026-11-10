@@ -1476,6 +1476,14 @@ void RedesignShell::disconnect_model_generation_host()
         frame->mount_native_workspace_tools(nullptr);
     }
     m_workbench_transition_timer.Stop();
+    finish_history_loading();
+    if (m_history_loading) {
+        m_history_loading->Destroy();
+        m_history_loading = nullptr;
+    }
+    if (m_model_generation_host && m_history_open_request)
+        m_model_generation_host->finish_history_model_open(true);
+    m_history_open_request = 0;
     if (m_workbench_transition) {
         if (m_model_generation_host) m_model_generation_host->cancel_workbench_presentation();
         m_page_transition.rollback(*m_workbench_transition);
@@ -1539,6 +1547,7 @@ void RedesignShell::disconnect_model_generation_host()
         m_model_generation_host->set_workbench_import_handler({});
         m_model_generation_host->unmount_workbench();
         m_model_generation_host->set_history_navigation_handler({});
+        m_model_generation_host->set_history_model_open_handler({});
         m_model_generation_host->unmount_assets();
         m_model_generation_host->set_state_listener({});
         m_model_generation_host = nullptr;
@@ -2322,6 +2331,37 @@ void RedesignShell::connect_model_generation_host()
         // skip the portrait transaction owned by the explicit workbench action.
         if (!design) weak->show_model_view(ModelView::Result);
     });
+    m_model_generation_host->set_history_model_open_handler([weak](const ModelHistoryOpenEvent& event) {
+        if (!weak || !weak->m_model_generation_host) return false;
+        if (event.phase == ModelHistoryOpenEvent::Phase::Begin) {
+            if (weak->m_history_open_request || weak->m_page_transition.active()) return false;
+            if (weak->m_smart_creation && weak->m_active_page == Page::Image && !weak->m_saved_creation_input) {
+                weak->cancel_prompt_polish(true);
+                weak->m_saved_creation_input = weak->current_generation_input();
+                weak->m_saved_creation_options = weak->current_generation_options();
+            }
+            weak->m_history_open_request = event.request;
+            weak->m_history_open_asset = event.asset;
+            if (weak->begin_workbench_presentation(true)) return true;
+            weak->m_history_open_request = 0;
+            weak->m_history_open_asset.clear();
+            return false;
+        }
+        if (!event.matches(weak->m_history_open_request, weak->m_history_open_asset) ||
+            !weak->m_workbench_transition || weak->m_history_rollback_pending) return false;
+        if (event.phase == ModelHistoryOpenEvent::Phase::Progress) {
+            if (weak->m_workbench_history_loading) weak->update_history_loading(event.stage);
+            return true;
+        }
+        if (event.phase == ModelHistoryOpenEvent::Phase::Failed) {
+            weak->finish_workbench_presentation(false);
+            return true;
+        }
+        if (!weak->m_workbench_history_loading) return true; // Duplicate completion.
+        const auto state = weak->m_model_generation_host->snapshot();
+        if (!state.model_ready || state.model_asset_id != event.resolved_asset) return false;
+        return weak->continue_workbench_presentation();
+    });
     m_model_generation_host->set_state_listener([weak](const ModelGenerationUIState& state) {
         if (!weak || weak->m_model_generation_host == nullptr)
             return;
@@ -2354,7 +2394,7 @@ void RedesignShell::restore_smart_model_history()
 void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& state)
 {
     const auto route_action = model_generation_route_action(state, m_model_generation_state,
-        m_model_route_locked, m_model_route_session, m_model_route_id);
+        m_model_route_locked, m_model_route_session, m_model_route_id, m_history_open_request != 0);
     if (route_action == RedesignModelRouteAction::Ignore)
         return;
     const bool preserve_creation_draft = m_smart_creation && m_saved_creation_input.has_value();
@@ -3902,7 +3942,7 @@ bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
         }
         refresh_navigation();
         if (page == Page::Model || page == Page::Print) m_last_workbench_page = page;
-        if (m_image_settings_panel != nullptr) m_image_settings_panel->Show(page == Page::Image);
+        sync_page_settings_visibility(page);
         if (m_content_host != nullptr) m_content_host->Layout();
         if (m_content_host != nullptr && m_content_host->GetParent() != nullptr)
             m_content_host->GetParent()->Layout();

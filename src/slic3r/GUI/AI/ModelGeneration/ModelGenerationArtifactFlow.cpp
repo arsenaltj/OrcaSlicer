@@ -3,6 +3,7 @@
 #include "ModelGenerationPresentation.hpp"
 #include "ModelPreview3D.hpp"
 #include "ModelViewportFacts.hpp"
+#include "ModelHistoryPreview.hpp"
 #include "LocalModelImportState.hpp"
 #include "libslic3r/Geometry.hpp"
 #include "slic3r/GUI/GUI.hpp"
@@ -20,6 +21,7 @@
 
 namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
+
 
 wxWindow* ModelGenerationPanel::build_import_settings(wxWindow* parent)
 {
@@ -59,7 +61,8 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
     std::vector<std::string> palette,
     std::function<void(size_t, Vec3d, size_t, double)> loaded,
     std::function<void(std::string)> failed, const boost::filesystem::path& metadata_path,
-    std::shared_ptr<ModelHistoryMetadata> history_metadata, std::function<bool()> may_install)
+    std::shared_ptr<ModelHistoryMetadata> history_metadata, std::function<bool()> may_install,
+    std::shared_ptr<ModelHistoryOpenRequest> history_open)
 {
     // Refreshing controls can destroy the history card that supplied these arguments.
     // Own the inputs before refreshing or dispatching the worker.
@@ -85,49 +88,101 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
     refresh_controls();
     const uint64_t sequence = m_sequence;
     wxWeakRef<ModelGenerationPanel> weak(this);
-    try {
-        m_preview_worker = std::thread([weak, path, palette, sequence, loaded, failed, metadata_path, local_cancel, canceled, history_metadata, share_exact_vertices, may_install] {
-            const auto start = std::chrono::steady_clock::now();
-            auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
-            std::string error;
-            try {
-                if (ModelPreview3D::prepare_model(path, *prepared, error, {}, metadata_path, true,
-                    [canceled,local_cancel] { return canceled->load() || (local_cancel && local_cancel->load()); }, history_metadata.get()))
-                    prepared->prepare_render_geometry([canceled,local_cancel] { return canceled->load() || (local_cancel && local_cancel->load()); }, share_exact_vertices);
-            }
-            catch (const std::exception& e) { error = e.what(); }
-            wxGetApp().CallAfter([weak, prepared, palette, sequence, start, loaded, failed, error, local_cancel, canceled, may_install]() mutable {
-                if (!weak || weak->m_shutdown) return;
-                auto* self = weak.get();
-                if (self->m_preview_worker.joinable()) self->m_preview_worker.join();
-                self->m_preview_loading = false;
-                self->m_busy = false;
-                if(local_cancel && local_cancel->load()) {
-                    complete_local_model_import(self->m_library_import,local_cancel,true);
-                    failed({});
-                    return;
+    if (history_open) history_open->worker_pending = true;
+    auto launch = [weak, path, palette, sequence, loaded, failed, metadata_path, local_cancel, canceled,
+                   history_metadata, share_exact_vertices, may_install, history_open] {
+        if (!weak || weak->m_shutdown) return;
+        auto* self = weak.get();
+        if (history_open && history_open->canceled) {
+            self->m_preview_loading = false; self->m_busy = false;
+            if (!history_open->worker_finished()) self->refresh_controls();
+            return;
+        }
+        try {
+            self->m_preview_worker = std::thread([weak, path, palette, sequence, loaded, failed, metadata_path, local_cancel, canceled, history_metadata, share_exact_vertices, may_install, history_open] {
+                const auto start = std::chrono::steady_clock::now();
+                auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
+                std::string error;
+                try {
+                    const auto stopped = [canceled, local_cancel, history_open] {
+                        return canceled->load() || (local_cancel && local_cancel->load()) ||
+                            (history_open && history_open->canceled.load());
+                    };
+                    const bool ready = history_open
+                        ? prepare_history_preview(prepared, history_open, history_metadata, error, stopped)
+                        : ModelPreview3D::prepare_model(path, *prepared, error, {}, metadata_path, true,
+                            stopped, history_metadata.get());
+                    if (ready) {
+                        if (history_open && history_open->progress && !stopped())
+                            history_open->progress(ModelHistoryOpenEvent::Stage::Preview);
+                        prepared->prepare_render_geometry(stopped, share_exact_vertices);
+                        if (history_open) {
+                            history_open->model_hash = prepared->artifact_sha256;
+                            if (!history_open->check) history_open->record_hash = AI::model_artifact_sha256(
+                                history_open->root / "downloads" / ("orcaslicer-ai-" + history_open->entry.job_id + ".json"));
+                        }
+                    }
+                    else if (error.empty()) error = "Model preview loading canceled.";
                 }
-                if (sequence != self->m_sequence || canceled->load() || (may_install && !may_install())) {
-                    if(local_cancel) complete_local_model_import(self->m_library_import,local_cancel,true);
-                    self->refresh_controls(); return;
-                }
-                if(local_cancel) complete_local_model_import(self->m_library_import,local_cancel,false);
-                size_t triangles = 0, colors = 0; Vec3d dimensions;
-                self->invalidate_printer_filament_trial_for_model_change();
-                if (!error.empty() || !self->m_model_preview->load_prepared_model(
-                    std::move(*prepared), palette, triangles, dimensions, colors, error)) {
-                    failed(error); return;
-                }
-                loaded(triangles, dimensions, colors,
-                    std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
-                self->ensure_workbench_check();
+                catch (const std::exception& e) { error = e.what(); }
+                wxGetApp().CallAfter([weak, prepared, palette, sequence, start, loaded, failed, error, local_cancel, canceled, may_install, history_open]() mutable {
+                    if (!weak || weak->m_shutdown) return;
+                    auto* self = weak.get();
+                    if (self->m_preview_worker.joinable()) self->m_preview_worker.join();
+                    self->m_preview_loading = false;
+                    self->m_busy = false;
+                    if (history_open && history_open->worker_finished()) return;
+                    if(local_cancel && local_cancel->load()) {
+                        complete_local_model_import(self->m_library_import,local_cancel,true);
+                        failed({});
+                        return;
+                    }
+                    if (sequence != self->m_sequence || canceled->load() || (may_install && !may_install())) {
+                        if(local_cancel) complete_local_model_import(self->m_library_import,local_cancel,true);
+                        if (history_open && !history_open->canceled && sequence == self->m_sequence && !canceled->load())
+                            failed("历史模型或检查凭证在加载期间发生变化，请重新打开。");
+                        else self->refresh_controls();
+                        return;
+                    }
+                    if(local_cancel) complete_local_model_import(self->m_library_import,local_cancel,false);
+                    size_t triangles = 0, colors = 0; Vec3d dimensions;
+                    const auto& actual_palette = history_open ? history_open->entry.palette : palette;
+                    if (history_open && history_open->restoring && self->m_model_preview->restore_retained_history_model(
+                            history_open->entry.model_path, actual_palette, triangles, dimensions, colors)) {
+                        // Restore the exact former scene, even if its file vanished
+                        // during preparation. A changed source never regains proof.
+                        if (!history_open->previous_check || self->m_model_preview->model_sha256() !=
+                                AI::model_artifact_sha256(history_open->entry.model_path)) history_open->check.reset();
+                        else history_open->check = history_open->previous_check;
+                        loaded(triangles, dimensions, colors, 0.0);
+                        self->ensure_workbench_check();
+                        return;
+                    }
+                    self->invalidate_printer_filament_trial_for_model_change();
+                    if (history_open && !history_open->restoring && error.empty()) {
+                        history_open->installed = true; // GL/appearance failure also needs rollback.
+                        self->m_model_preview->retain_history_rollback(true);
+                    }
+                    if (!error.empty() || !self->m_model_preview->load_prepared_model(
+                        std::move(*prepared), actual_palette, triangles, dimensions, colors, error)) {
+                        failed(error); return;
+                    }
+                    loaded(triangles, dimensions, colors,
+                        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+                    self->ensure_workbench_check();
+                });
             });
-        });
-    } catch (const std::exception& e) {
-        m_preview_loading = false; m_busy = false;
-        if(local_cancel) complete_local_model_import(m_library_import,local_cancel,false);
-        failed(e.what());
-    }
+        } catch (const std::exception& e) {
+            self->m_preview_loading = false; self->m_busy = false;
+            if (history_open && history_open->worker_finished()) return;
+            if(local_cancel) complete_local_model_import(self->m_library_import,local_cancel,false);
+            failed(e.what());
+        }
+    };
+    // Begin has laid out and painted the retained page/loading card. Yield this
+    // event before any parser or restoration work, while keeping the busy gate.
+    if (history_open && !history_open->restoring) CallAfter(std::move(launch));
+    else launch();
 }
 
 void ModelGenerationPanel::download_model_preview(uint64_t sequence)

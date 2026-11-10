@@ -5,6 +5,7 @@
 #include "RedesignFeatureFlags.hpp"
 #include "RedesignModelRoute.hpp"
 #include "RedesignTheme.hpp"
+#include "RedesignModelLoadingCard.hpp"
 #include "RedesignPaintPanel.hpp"
 #include "AssetsWorkspace.hpp"
 #include "AssetsWorkspacePolicy.hpp"
@@ -56,32 +57,6 @@
 namespace Slic3r::GUI {
 namespace {
 using namespace AI::SmartSlicing;
-
-class WorkbenchActivityIndicator final : public wxActivityIndicator
-{
-public:
-    WorkbenchActivityIndicator(wxWindow* parent, const wxSize& size)
-        : wxActivityIndicator(parent, wxID_ANY, wxDefaultPosition, size),
-          m_background(workbench_owned_surface(parent))
-    {
-        SetBackgroundStyle(wxBG_STYLE_ERASE);
-        SetBackgroundColour(m_background);
-#ifdef __WXMSW__
-        SetDoubleBuffered(true);
-#endif
-        Bind(wxEVT_ERASE_BACKGROUND, [this](wxEraseEvent& event) {
-            if (auto* dc = event.GetDC()) {
-                dc->SetBackground(wxBrush(m_background));
-                dc->Clear();
-            }
-        });
-    }
-
-    bool HasTransparentBackground() override { return false; }
-
-private:
-    wxColour m_background;
-};
 
 bool fit_slicing_camera(Plater& plater)
 {
@@ -762,54 +737,40 @@ void RedesignShell::build_model_workflow()
     });
     m_import_transition_cover->Bind(wxEVT_CLOSE_WINDOW, [](wxCloseEvent& event) { event.Veto(); });
 
-    m_import_loading = new WorkbenchFloatingCard(wxGetTopLevelParent(this));
-    auto* loading_frame = new WorkbenchPaintedPanel(
-        m_import_loading, wxColour(45, 45, 49), 8, wxColour(72, 72, 78));
-    loading_frame->SetName("ai_content_color");
-    loading_frame->SetMinSize(FromDIP(wxSize(410, 184)));
-#ifdef __WXMSW__
-    loading_frame->SetDoubleBuffered(true);
-#endif
-    auto* loading = new wxBoxSizer(wxVERTICAL);
-    loading_frame->SetSizer(loading);
-    loading->Add(new HonorBrandMark(loading_frame), 0, wxLEFT | wxTOP, FromDIP(16));
-    m_import_activity = new WorkbenchActivityIndicator(
-        loading_frame, FromDIP(wxSize(36, 36)));
-    auto* activity = m_import_activity;
-    activity->SetForegroundColour(RedesignTheme::accent_colour());
-    activity->SetBackgroundColour(wxColour(45, 45, 49));
-    loading->Add(activity, 0, wxALIGN_CENTER | wxTOP | wxBOTTOM, FromDIP(16));
-    m_import_stage = new WorkbenchLabel(
-        loading_frame, _L("正在读取与验证模型…"), wxALIGN_CENTER);
-    m_import_stage->SetMinSize(FromDIP(wxSize(370, 24)));
-    RedesignTheme::style_text(m_import_stage, RedesignTheme::primary_text_colour(), 12);
-    loading->Add(m_import_stage, 0, wxALIGN_CENTER | wxLEFT | wxRIGHT, FromDIP(16));
-    m_import_elapsed = new WorkbenchLabel(loading_frame, wxEmptyString, wxALIGN_CENTER);
-    m_import_elapsed->SetMinSize(FromDIP(wxSize(370, 20)));
-    RedesignTheme::style_text(m_import_elapsed, RedesignTheme::secondary_text_colour(), 10);
-    loading->Add(m_import_elapsed, 0, wxALIGN_CENTER | wxTOP | wxBOTTOM, FromDIP(8));
-    auto* import_cancel = command(loading_frame, _L("取消"));
-    import_cancel->use_parent_surface();
-    m_import_cancel = import_cancel;
-    m_import_cancel->SetMinSize(FromDIP(wxSize(160, 36)));
-    loading->Add(m_import_cancel, 0, wxALIGN_CENTER | wxBOTTOM, FromDIP(16));
+    const auto make_cancel = [](wxWindow* parent) { return command(parent, _L("取消")); };
+    const auto import_card = create_model_loading_card(wxGetTopLevelParent(this),
+        _L("正在读取与验证模型…"), make_cancel);
+    m_import_loading = import_card.window;
+    m_import_activity = import_card.activity;
+    m_import_stage = import_card.stage;
+    m_import_elapsed = import_card.elapsed;
+    m_import_cancel = import_card.cancel;
     m_import_cancel->Bind(wxEVT_BUTTON, [weak](wxCommandEvent&) {
         if (weak && weak->m_import_session && weak->m_import_session->cancel()) {
             weak->m_import_stage->SetLabel(_L("正在取消导入…"));
             weak->m_import_cancel->Disable();
         }
     });
-    auto* loading_root = new wxBoxSizer(wxVERTICAL);
-    loading_root->Add(loading_frame, 1, wxEXPAND);
-    m_import_loading->SetSizerAndFit(loading_root);
-    m_import_loading->Bind(wxEVT_CHAR_HOOK, [](wxKeyEvent& event) {
-        if (event.GetKeyCode() != WXK_ESCAPE) event.Skip();
-    });
     m_import_loading->Bind(wxEVT_CLOSE_WINDOW, [weak](wxCloseEvent& event) {
         if (weak && weak->m_import_in_progress) event.Veto();
         else event.Skip();
     });
     m_import_loading->Hide();
+    const auto history_card = create_model_loading_card(wxGetTopLevelParent(this),
+        _L("正在读取模型与恢复外观…"), make_cancel);
+    m_history_loading = history_card.window;
+    m_history_activity = history_card.activity;
+    m_history_stage = history_card.stage;
+    m_history_elapsed = history_card.elapsed;
+    m_history_cancel = history_card.cancel;
+    m_history_cancel->Bind(wxEVT_BUTTON, [weak](wxCommandEvent&) {
+        if (weak && weak->m_history_open_request && !weak->m_history_rollback_pending)
+            weak->finish_workbench_presentation(false, false);
+    });
+    m_history_loading->Bind(wxEVT_CLOSE_WINDOW, [weak](wxCloseEvent& event) {
+        if (weak && weak->m_history_open_request) event.Veto();
+        else event.Skip();
+    });
     m_content_host->Bind(wxEVT_SIZE, [weak](wxSizeEvent& event) {
         event.Skip();
         if (weak) {
@@ -1260,6 +1221,7 @@ void RedesignShell::request_viewport_frame()
 void RedesignShell::refresh_workflow_layout()
 {
     update_navigation();
+    sync_page_settings_visibility(m_workbench_transition ? Page::Model : m_active_page);
     if (!owns_model_workflow()) return;
     const bool model = m_active_page == Page::Model;
     const bool slicing = model && (m_model_view == ModelView::Slicing || m_model_view == ModelView::Preview);
@@ -1366,6 +1328,8 @@ void RedesignShell::present_active_page(bool flush_children)
         return;
     }
     std::vector<wxWindow*> visible_windows {root};
+    if (flush_children && m_image_settings_panel && m_image_settings_panel->IsShownOnScreen())
+        visible_windows.push_back(m_image_settings_panel);
     for (std::size_t i = 0; i < visible_windows.size(); ++i) {
         prepare_redesign_restore_background(visible_windows[i]);
         for (auto* child : visible_windows[i]->GetChildren())

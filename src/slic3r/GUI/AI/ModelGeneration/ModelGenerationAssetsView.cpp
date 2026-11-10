@@ -74,10 +74,9 @@ bool ModelGenerationPanel::request_library_action(ModelLibraryCommand command, c
     switch (command) {
     case ModelLibraryCommand::OpenImage: return request_open_image_history(entry.job_id);
     case ModelLibraryCommand::OpenModel:
-        load_library_entry(entry.model_path, entry.reference_image_path, entry.ai_image_path, entry.palette,
+        return load_library_entry(entry.model_path, entry.reference_image_path, entry.ai_image_path, entry.palette,
             entry.palette_roles, entry.use_printable_colors, entry.color_intent_path, entry.color_intent_schema,
-            entry.color_intent_sha256, entry.job_id, entry.title);
-        return true;
+            entry.color_intent_sha256, entry.job_id, entry.title, false, entry.repair_index);
     case ModelLibraryCommand::Import: {
         AI::ModelImportRequest request;
         request.artifact.local_path = entry.model_path; request.artifact.job_id = entry.job_id;

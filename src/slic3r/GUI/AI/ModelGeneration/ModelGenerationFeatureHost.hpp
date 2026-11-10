@@ -5,6 +5,7 @@
 #include "ModelGenerationSubmissionResult.hpp"
 #include "PostGenerationWorkbenchState.hpp"
 #include "WorkbenchImportSession.hpp"
+#include "ModelHistoryOpen.hpp"
 
 #include <functional>
 #include <memory>
@@ -40,6 +41,8 @@ public:
     void mount_assets(wxWindow* parent);
     void unmount_assets();
     void set_history_navigation_handler(std::function<void(bool)> handler);
+    void set_history_model_open_handler(ModelHistoryOpenHandler handler);
+    void finish_history_model_open(bool accepted, std::function<void()> complete = {});
     ModelGenerationUIState snapshot() const;
     void set_state_listener(ModelGenerationUIStateListener listener);
     bool synchronize_input(const ModelGenerationUIInput& input);

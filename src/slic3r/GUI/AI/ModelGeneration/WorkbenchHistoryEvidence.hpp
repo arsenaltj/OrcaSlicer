@@ -1,6 +1,7 @@
 #pragma once
 
 #include "WorkbenchArtifactValidation.hpp"
+#include "PortraitNativeCheckpoint.hpp"
 #include "slic3r/GUI/AI/Model/BeautyMetadata.hpp"
 #include <boost/nowide/convert.hpp>
 
@@ -67,6 +68,87 @@ inline WorkbenchHistoryEvidenceLocation workbench_history_evidence_location(
     } catch (const std::exception&) {
         return current;
     }
+}
+
+// Shared by background history resolution and the live workbench. No repair,
+// inspection or certificate rewriting occurs here.
+inline bool read_validated_workbench_history_check(
+    const boost::filesystem::path& model, const boost::filesystem::path& metadata_path,
+    const std::string& model_hash, const std::string& geometry_id,
+    const std::string& appearance_id, WorkbenchCheckResult& out,
+    const std::function<bool()>& canceled = {}, std::string* record_identity = nullptr)
+{
+    namespace PP = WorkbenchArtifacts;
+    const auto u8 = [](const boost::filesystem::path& path) { return boost::nowide::narrow(path.wstring()); };
+    try {
+        if ((canceled && canceled()) || !PP::valid_sha256(model_hash)) return false;
+        boost::system::error_code error;
+        const auto bytes = boost::filesystem::file_size(metadata_path, error);
+        if (error || !bytes || bytes > 128ULL * 1024 * 1024 ||
+            boost::filesystem::is_symlink(metadata_path, error) || error) return false;
+        const auto record_hash = AI::model_artifact_sha256(metadata_path);
+        boost::filesystem::ifstream input(metadata_path, std::ios::binary);
+        const auto metadata = nlohmann::json::parse(input);
+        if (!metadata.is_object() || (canceled && canceled()) || record_hash.empty() ||
+            AI::model_artifact_sha256(metadata_path) != record_hash ||
+            AI::model_artifact_sha256(model) != model_hash) return false;
+    const auto complete = [&](const nlohmann::json& certificate) {
+        if ((canceled && canceled()) || AI::model_artifact_sha256(metadata_path) != record_hash ||
+            AI::model_artifact_sha256(model) != model_hash ||
+            !PP::decode_workbench_check_certificate(certificate, out)) return false;
+        if (record_identity) *record_identity = record_hash;
+        return true;
+    };
+    const auto evidence = workbench_history_evidence_location(model, metadata_path, metadata);
+    const auto embedded = metadata.value("workbench_check_certificate", nlohmann::json{});
+    if (!metadata.contains("native_portrait_partition") &&
+        metadata.value("source", std::string{}) == "local_finishing" &&
+        metadata.value("schema_version", 0) == 4 &&
+        metadata.value("model_sha256", std::string{}) == model_hash &&
+        PP::valid_workbench_check_certificate(embedded, WorkbenchCheckPurpose::SavedModelReadOnly,
+            model_hash, geometry_id, appearance_id, u8(evidence.metadata), metadata)) {
+        WorkbenchCheckResult restored;
+        if (PP::decode_workbench_check_certificate(embedded, restored) &&
+            workbench_topology_safe(restored) &&
+            metadata.value("triangle_count", size_t(0)) == restored.before_faces)
+            return complete(embedded);
+        return false;
+    }
+    const bool require_post_color = metadata.contains("post_color_check");
+    nlohmann::json reference;
+    if (!portrait_partition_metadata_matches(metadata, evidence.metadata, evidence.model,
+            model_hash, geometry_id, appearance_id, require_post_color, reference)) return false;
+
+    const auto certificate_valid = [&](const nlohmann::json& certificate) {
+        if (!PP::valid_workbench_check_certificate(certificate,
+                WorkbenchCheckPurpose::PortraitPostColorReadOnly, model_hash, geometry_id,
+                appearance_id, u8(evidence.metadata), metadata,
+                reference.at("partition_digest").get<std::string>(),
+                reference.at("topology_hash").get<std::string>())) return false;
+        WorkbenchCheckResult restored;
+        if (!PP::decode_workbench_check_certificate(certificate, restored) ||
+            !workbench_topology_safe(restored) ||
+            metadata.at("triangle_count").get<size_t>() != restored.before_faces) return false;
+        if (require_post_color) {
+            const auto& check = metadata.at("post_color_check");
+            if (check.at("faces").get<size_t>() != restored.before_faces ||
+                check.at("vertices").get<size_t>() != restored.before_vertices ||
+                check.at("boundary_edges").get<size_t>() != restored.boundary_edges ||
+                check.at("nonmanifold_edges").get<size_t>() != restored.nonmanifold_edges ||
+                check.at("nonmanifold_vertices").get<size_t>() != restored.nonmanifold_vertices ||
+                check.at("degenerate_faces").get<size_t>() != restored.degenerate_faces ||
+                check.at("duplicate_faces").get<size_t>() != restored.duplicate_faces ||
+                check.at("inconsistent_edges").get<size_t>() != restored.inconsistent_edges ||
+                check.at("self_intersections_checked").get<bool>() !=
+                    restored.self_intersections_checked ||
+                check.at("self_intersections").get<size_t>() != restored.self_intersections)
+                return false;
+        }
+        return true;
+    };
+
+    return certificate_valid(embedded) && complete(embedded);
+    } catch (const std::exception&) { return false; }
 }
 
 } // namespace Slic3r::GUI

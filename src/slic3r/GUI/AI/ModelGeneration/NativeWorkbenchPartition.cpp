@@ -850,71 +850,17 @@ bool ModelGenerationPanel::restore_workbench_check_certificate()
     if (!PP::valid_sha256(model_hash) || model_hash != m_model_preview->model_sha256() ||
         geometry_id.empty() || appearance_id.empty()) return false;
 
-    const auto publish = [&](const nlohmann::json& certificate) {
-        WorkbenchCheckResult restored;
-        if (!PP::decode_workbench_check_certificate(certificate, restored)) return false;
-        m_workbench_check_result = std::move(restored);
-        m_workbench_check_path = m_displayed_model_path.string();
-        m_workbench_check_revision = m_sequence;
-        m_workbench_check_card_visible = false;
-        return true;
-    };
-
-
-
     const auto metadata_path = AI::beauty_metadata_path(
         m_displayed_model_path, ModelGenerationPresentation::generated_models_root());
-    nlohmann::json metadata;
-    if (!read_portrait_check_metadata(metadata_path, metadata)) return false;
-    const auto evidence = workbench_history_evidence_location(m_displayed_model_path, metadata_path, metadata);
-    const auto embedded = metadata.value("workbench_check_certificate", nlohmann::json{});
-    if (!metadata.contains("native_portrait_partition") &&
-        metadata.value("source", std::string{}) == "local_finishing" &&
-        metadata.value("schema_version", 0) == 4 &&
-        metadata.value("model_sha256", std::string{}) == model_hash &&
-        PP::valid_workbench_check_certificate(embedded, WorkbenchCheckPurpose::SavedModelReadOnly,
-            model_hash, geometry_id, appearance_id, u8(evidence.metadata), metadata)) {
-        WorkbenchCheckResult restored;
-        if (PP::decode_workbench_check_certificate(embedded, restored) &&
-            workbench_topology_safe(restored) &&
-            metadata.value("triangle_count", size_t(0)) == restored.before_faces)
-            return publish(embedded);
-        return false;
-    }
-    const bool require_post_color = metadata.contains("post_color_check");
-    nlohmann::json reference;
-    if (!portrait_partition_metadata_matches(metadata, evidence.metadata, evidence.model,
-            model_hash, geometry_id, appearance_id, require_post_color, reference)) return false;
+    WorkbenchCheckResult restored;
+    if (!read_validated_workbench_history_check(m_displayed_model_path, metadata_path,
+            model_hash, geometry_id, appearance_id, restored)) return false;
+    m_workbench_check_result = std::move(restored);
+    m_workbench_check_path = m_displayed_model_path.string();
+    m_workbench_check_revision = m_sequence;
+    m_workbench_check_card_visible = false;
+    return true;
 
-    const auto certificate_valid = [&](const nlohmann::json& certificate) {
-        if (!PP::valid_workbench_check_certificate(certificate,
-                WorkbenchCheckPurpose::PortraitPostColorReadOnly, model_hash, geometry_id,
-                appearance_id, u8(evidence.metadata), metadata,
-                reference.at("partition_digest").get<std::string>(),
-                reference.at("topology_hash").get<std::string>())) return false;
-        WorkbenchCheckResult restored;
-        if (!PP::decode_workbench_check_certificate(certificate, restored) ||
-            !workbench_topology_safe(restored) ||
-            metadata.at("triangle_count").get<size_t>() != restored.before_faces) return false;
-        if (require_post_color) {
-            const auto& check = metadata.at("post_color_check");
-            if (check.at("faces").get<size_t>() != restored.before_faces ||
-                check.at("vertices").get<size_t>() != restored.before_vertices ||
-                check.at("boundary_edges").get<size_t>() != restored.boundary_edges ||
-                check.at("nonmanifold_edges").get<size_t>() != restored.nonmanifold_edges ||
-                check.at("nonmanifold_vertices").get<size_t>() != restored.nonmanifold_vertices ||
-                check.at("degenerate_faces").get<size_t>() != restored.degenerate_faces ||
-                check.at("duplicate_faces").get<size_t>() != restored.duplicate_faces ||
-                check.at("inconsistent_edges").get<size_t>() != restored.inconsistent_edges ||
-                check.at("self_intersections_checked").get<bool>() !=
-                    restored.self_intersections_checked ||
-                check.at("self_intersections").get<size_t>() != restored.self_intersections)
-                return false;
-        }
-        return true;
-    };
-
-    return certificate_valid(embedded) && publish(embedded);
 }
 
 } // namespace Slic3r::GUI
