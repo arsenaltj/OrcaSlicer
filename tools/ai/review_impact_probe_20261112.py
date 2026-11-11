@@ -2,7 +2,7 @@
 def positive_mean(values):
     """Return the mean of positive values, or 0.0 if there are none."""
     positives = [value for value in values if value > 0]
-    if values:
+    if positives:
         return sum(positives) / len(positives)
     return 0.0
 
