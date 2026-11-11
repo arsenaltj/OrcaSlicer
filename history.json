@@ -1,6 +1,16 @@
 [
   {
     "pr": 64,
+    "run": 42970500225,
+    "head": "bf2fce8a2bd444c9a861c350f7f3668b9c7c3760",
+    "base": "a45948531414c2d55457e96febd8a98cc2107eac",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "feat(ai): add advanced multiview creation workflow",
+    "path": "pr/64/bf2fce8a2bd444c9a861c350f7f3668b9c7c3760/42970500225",
+    "created": "2026-11-11T06:14:17+00:00"
+  },
+  {
+    "pr": 64,
     "run": 42970025326,
     "head": "bf2fce8a2bd444c9a861c350f7f3668b9c7c3760",
     "base": "a45948531414c2d55457e96febd8a98cc2107eac",

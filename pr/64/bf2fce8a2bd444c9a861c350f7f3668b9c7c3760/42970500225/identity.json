@@ -1,0 +1,27 @@
+{
+  "pr": 64,
+  "run": 42970500225,
+  "head": "bf2fce8a2bd444c9a861c350f7f3668b9c7c3760",
+  "base": "a45948531414c2d55457e96febd8a98cc2107eac",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "feat(ai): add advanced multiview creation workflow",
+  "path": "pr/64/bf2fce8a2bd444c9a861c350f7f3668b9c7c3760/42970500225",
+  "created": "2026-11-11T06:14:17+00:00",
+  "files": {
+    "index.html": "09b30bb358e4a89af7065bac13863a292b5a698af1e0ecf77ea2fd3b29ab2009",
+    "details.html": "338bb9d57b11df19fbd601d222da424d4924d35315c093f3f107b6bedf8c019a",
+    "report.json": "9888760841f1658adeb37ad612ffe08f96f603136345be9ba5b3976c850acb94",
+    "summary.md": "f3acf56f33220f767d1fe69b1e5a4c0630bb0451cb9caa568ebfcd3cd1311267",
+    "archify-receipts.json": "31a9532988603033c4f62787b64fd5318fdcb51526e53e8d6cce266a7b311c85",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "34c5be13e58738abb5a583099aa3134acb45e1d3c2e938c21183fb5985a63251",
+    "l1-modules.json": "7547f7b463aa34520eeb66843ae846c7d7c05be90105a07e0bbd9c50cf79d125",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
