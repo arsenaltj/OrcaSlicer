@@ -137,7 +137,8 @@ public:
             "triangle_count", "load_seconds", "print_feedback", "use_printable_colors",
             "provider", "provider_task_id", "provider_conversion_task_id", "prompt",
             "palette", "palette_roles", "reference_image_path", "ai_image_path",
-            "color_intent_path", "color_intent_schema", "color_intent_sha256"
+            "color_intent_path", "color_intent_schema", "color_intent_sha256",
+            "website_model_id", "website_version_id", "website_file_id", "website_sha256"
         };
         auto result = Json::parse(input, [](int depth, Json::parse_event_t event, Json& value) {
             return depth != 1 || event != Json::parse_event_t::key ||

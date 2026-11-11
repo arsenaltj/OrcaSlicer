@@ -4,11 +4,13 @@
 #include "ModelLibraryThumbnail.hpp"
 
 namespace Slic3r::GUI {
-std::unique_ptr<ModelLibraryLoader> make_model_library_loader()
+std::unique_ptr<ModelLibraryLoader> make_model_library_loader(bool include_native)
 {
     auto cache = std::make_shared<ModelLibraryThumbnailCache>();
     return std::make_unique<ModelLibraryLoader>(ModelLibraryLoader::Ports {
-        ModelLibraryRepository::read,
+        [include_native](const boost::filesystem::path& root,const std::atomic<bool>& canceled) {
+            return ModelLibraryRepository::read(root,canceled,include_native);
+        },
         [cache](const boost::filesystem::path& root, const ModelLibraryEntry& entry, int edge,
                 const std::atomic<bool>& cancelled) {
             ModelLibraryLoader::Thumbnail thumbnail {0, 0};

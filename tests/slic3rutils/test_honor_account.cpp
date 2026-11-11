@@ -756,6 +756,10 @@ TEST_CASE("Startup validates the saved account and handles offline or mismatched
         REQUIRE(session.snapshot().identity.subject == account_id);
         REQUIRE(session.snapshot().persistent);
         REQUIRE(bearer_matches.load());
+        const auto access=session.access();
+        REQUIRE(access.has_value());REQUIRE(access->subject==account_id);
+        REQUIRE(access->access_token==saved.access_token);REQUIRE(access->generation==session.generation());
+        REQUIRE_FALSE(session.refresh_access(session.generation()+1));
     }
 
     SECTION("temporary outage") {
@@ -772,6 +776,7 @@ TEST_CASE("Startup validates the saved account and handles offline or mismatched
         }));
         REQUIRE(session.snapshot().identity.subject == account_id);
         REQUIRE(memory->has(session_key(configuration())));
+        REQUIRE_FALSE(session.access().has_value());
         REQUIRE(session.snapshot().message.find("UPSTREAM_PRIVATE_DETAIL") == std::string::npos);
     }
 

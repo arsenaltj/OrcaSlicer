@@ -118,6 +118,8 @@ add_executable(${_TEST_NAME}_tests
     test_object_list.cpp
     test_ui_redesign.cpp
     test_honor_account.cpp
+    test_platform_library.cpp
+    test_diagnostic_logs.cpp
     test_account_avatar.cpp
     test_honor_browser_profile.cpp
     test_startup_setup.cpp

@@ -1,33 +1,25 @@
 #pragma once
-
 #include <wx/panel.h>
-#include <functional>
-
-class wxStaticText;
+#include <memory>
+#include <nlohmann/json.hpp>
 class wxWebView;
-
 namespace Slic3r::GUI {
-
-class AssetsWorkspace final : public wxPanel
-{
+class LibraryWorkspaceService;
+class ModelLibraryApplication;
+class AssetsWorkspace final : public wxPanel {
 public:
-    AssetsWorkspace(wxWindow* parent, std::function<void()> save_project);
-    wxWindow* local_assets_host() const { return m_local; }
-    void set_project_available(bool available);
-
+    explicit AssetsWorkspace(wxWindow*);
+    ~AssetsWorkspace() override;
+    void attach(std::shared_ptr<LibraryWorkspaceService>, std::shared_ptr<ModelLibraryApplication>);
+    void set_project_available(bool);
 private:
-    void select_gallery(bool gallery);
-    void load_gallery();
-    void open_storage();
-    void open_browser(const wxString& url);
-
-    wxPanel* m_local {nullptr};
-    wxPanel* m_gallery {nullptr};
-    wxWindow* m_local_tab {nullptr};
-    wxWindow* m_gallery_tab {nullptr};
-    wxWindow* m_save_project {nullptr};
-    wxStaticText* m_gallery_status {nullptr};
+    void load();
+    void send(const nlohmann::json&);
+    std::shared_ptr<LibraryWorkspaceService> m_service;
+    std::shared_ptr<ModelLibraryApplication> m_local;
     wxWebView* m_web {nullptr};
+    wxWindow* m_fallback {nullptr};
+    std::string m_nonce;
+    bool m_loaded {false}, m_project {false};
 };
-
-} // namespace Slic3r::GUI
+}

@@ -1,4 +1,5 @@
 #include "Preferences.hpp"
+#include "DiagnosticLogExport.hpp"
 #include "CloudProvider.hpp"
 #include "OptionsGroup.hpp"
 #include "GUI_App.hpp"
@@ -2381,6 +2382,10 @@ void PreferencesDialog::create_items()
     auto log_level_list  = std::vector<wxString>{_L("fatal"), _L("error"), _L("warning"), _L("info"), _L("debug"), _L("trace")};
     auto loglevel_combox = create_item_loglevel_combobox(_L("Log Level"), _L("Log Level"), log_level_list);
     g_sizer->Add(loglevel_combox);
+
+    g_sizer->Add(create_item_button(wxString::FromUTF8("诊断日志"),wxString::FromUTF8("导出日志…"),
+        wxEmptyString,wxString::FromUTF8("导出主程序及 AI 服务日志，自动隐藏凭据。"),
+        [this] {export_diagnostic_logs(this);}));
 
     //// DEVELOPER > Debug
 #if !BBL_RELEASE_TO_PUBLIC

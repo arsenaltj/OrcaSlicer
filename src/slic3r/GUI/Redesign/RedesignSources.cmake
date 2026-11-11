@@ -2,6 +2,18 @@
 include(${CMAKE_CURRENT_LIST_DIR}/../../Utils/HonorAccount/HonorAccountSources.cmake)
 set(ORCA_REDESIGN_WORKFLOW_SOURCES
     ${ORCA_HONOR_ACCOUNT_SOURCES}
+    Utils/PlatformLibrary/LibraryClient.cpp
+    Utils/PlatformLibrary/LibraryClient.hpp
+    Utils/PlatformLibrary/LibraryCatalog.cpp
+    Utils/PlatformLibrary/LibraryWorker.hpp
+    Utils/ZipArchive.cpp
+    Utils/ZipArchive.hpp
+    Utils/DiagnosticLogs.cpp
+    Utils/DiagnosticLogs.hpp
+    GUI/DiagnosticLogExport.cpp
+    GUI/DiagnosticLogExport.hpp
+    GUI/AI/ModelGeneration/LibraryWorkspaceService.cpp
+    GUI/AI/ModelGeneration/LibraryWorkspaceService.hpp
     GUI/View3DNavigator.cpp
     GUI/View3DNavigator.hpp
     GUI/AI/ModelGeneration/ModelGenerationAssetsView.cpp
@@ -48,6 +60,7 @@ set(ORCA_REDESIGN_WORKFLOW_SOURCES
     GUI/Redesign/AssetsWorkspacePolicy.hpp
     GUI/Redesign/AccountWorkspace.cpp
     GUI/Redesign/AccountWorkspace.hpp
+    GUI/Redesign/PlatformAccountService.hpp
     GUI/Redesign/AccountAvatar.hpp
     GUI/Redesign/HonorBrowserProfile.cpp
     GUI/Redesign/HonorBrowserProfile.hpp

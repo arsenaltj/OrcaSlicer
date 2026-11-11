@@ -46,9 +46,15 @@ inline bool export_model_library_copy(const ModelLibraryExportRequest& request,
                 throw std::runtime_error("无法创建导出文件夹。请尝试较短路径或更换可写位置，并检查磁盘空间。");
         }
         if (owned.empty()) throw std::runtime_error("同名副本过多，请选择其他文件夹。");
+        std::string model_name;
         if (!request.model.empty()) {
+            auto extension=request.model.extension().string();
+            std::transform(extension.begin(),extension.end(),extension.begin(),[](unsigned char c){return char(std::tolower(c));});
+            const bool native=extension==".3mf" || extension==".stl" || extension==".step" || extension==".stp";
+            model_name=native?"model"+extension:"model.glb";
             std::string reason;
-            if (!AI::archive_local_model(request.model, owned / "model.glb", reason)) {
+            if(native) fs::copy_file(request.model,owned/model_name);
+            else if (!AI::archive_local_model(request.model, owned / model_name, reason)) {
                 BOOST_LOG_TRIVIAL(warning) << "Library model export failed: " << reason;
                 throw std::runtime_error("无法导出模型副本。请检查 GLB/OBJ 是否完整、关联贴图是否齐全，或更换可写导出位置后重试。");
             }
@@ -66,7 +72,7 @@ inline bool export_model_library_copy(const ModelLibraryExportRequest& request,
         if (!request.task_id.empty()) info << "\nTask ID：" << request.task_id;
         if (!request.conversion_task_id.empty()) info << "\n转换任务 ID：" << request.conversion_task_id;
         info << "\n\n";
-        if (!request.model.empty()) info << "model.glb：自包含模型，材质/贴图随模型保存，可通过导入模型打开。\n";
+        if (!model_name.empty()) info << model_name << "：已保存模型副本；原生工程保留文件中的打印配置。\n";
         for (const auto& name : images) info << name << "\n";
         info << "设计图为关联历史图片，不代表美颜后模型外观。\n"
                 "这是已保存资产副本，不包含未保存编辑、工程打印预设或完整任务恢复状态。\n";

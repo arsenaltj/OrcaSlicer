@@ -24,8 +24,8 @@
 | 高级多视角创作 | [高级独立宿主](../src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.hpp)、[原子能力说明](../tools/ai/README_atomic_capabilities.md) | `AdvancedCreationSession`持有草稿／选择，`AdvancedCreationWorkspace`消费投影；`advanced_multiview_application.py`冻结相机／单次调用契约，workflow／repository编排版本、失败保留和显式重试，独立Job-v2冻结四图建模；智能仍走原连续流程 |
 | Provider/任务/质量 | [Gateway](../tools/ai/model_provider_gateway.py)、[任务应用](../tools/ai/model_job_application.py) | `model_job_lifecycle.py`、`model_job_repository.py`及对应能力/供应商模块；HTTP与界面调用应用入口 |
 | 后处理/配色/候选历史 | [BeautyWorkbenchSession](../src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchSession.hpp) | TransactionController、`ModelGenerationBeauty*`和预览/文件Ports；候选生命周期与原生工程撤销分别定位 |
-| 账号与本机会话 | [HonorSession](../src/slic3r/Utils/HonorAccount/HonorSession.hpp) | HonorClient/Store、Redesign的AccountWorkspace；身份状态、凭据和异步任务分开核对 |
-| 模型库/资产与历史 | [ModelLibraryApplication](../src/slic3r/GUI/AI/ModelGeneration/ModelLibraryApplication.hpp) | Library Repository/Loader、AssetsWorkspace、AIModelOutputDirectory；区分任务、产物、资产与项目 |
+| 账号与本机会话 | [PlatformAccountService](../src/slic3r/GUI/Redesign/PlatformAccountService.hpp)、[HonorSession](../src/slic3r/Utils/HonorAccount/HonorSession.hpp) | 账号页和模型库共享Session；HonorClient/Store保有凭据，HTML只接身份展示投影 |
+| 模型库/资产与历史 | [LibraryWorkspaceService](../src/slic3r/GUI/AI/ModelGeneration/LibraryWorkspaceService.hpp)、[ModelLibraryApplication](../src/slic3r/GUI/AI/ModelGeneration/ModelLibraryApplication.hpp) | 安装HTML→受限桥→C++业务→PlatformLibrary API/原子下载；Repository/Loader→既有工作台或原生导入。网页资源由tools/model-library-web构建，详情文件摘要不替代检查凭证 |
 | 导入与颜色保真 | [导入契约](../src/slic3r/AI/Contracts/IModelArtifactConsumer.hpp)、[ColorIntent](../src/slic3r/AI/Contracts/ColorIntent.hpp) | [OrcaWorkspaceAdapter](../src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.cpp)、OBJ/Model/ObjColorUtils；查消费者是否实际使用元数据 |
 | 智能切片 | [SmartSlicingCoordinator](../src/slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.cpp) | `AI/SmartSlicing/Domain`、`Ports`、`GUI/AI/SmartSlicing`、`GUI/AI/Orca` |
 | 原生尺寸/底座与 AI 连续流程 | [原生 UX 审查、修改前后与回归表](audits/2026-09-08-native-ai-workflow-ux.md) | `GUI/AI/Orca/OrcaModelPreparation*`；几何计算先于原生快照提交，既有涂色和原件保留；实际 GUI 验收与离线引擎测试分开记录 |
@@ -33,11 +33,13 @@
 | 原生切片/配方 | [Print](../src/libslic3r/Print.cpp)、[ColorDecomposeRecipe](../src/libslic3r/ColorDecomposeRecipe.hpp) | PrintConfig、GCode、ToolOrdering、Format；先与锁定基线对照，区分继承与本地增量 |
 | CAD/原生编辑 | [DesignPanel](../src/slic3r/GUI/CAD/DesignPanel.cpp)、[几何内核](../src/libslic3r/CAD) | CAD文档/求解、Model/GLCanvas；沿用原生工程与撤销边界，兼顾上游同步 |
 | 设备与移动SDK | [设备SDK](../src/orca_mobile_device_sdk/CMakeLists.txt)、[移动切片](../mobile-slicing/CMakeLists.txt) | 各target及其API/适配器；桌面编译不证明移动端或实机打印通过 |
-| DFX诊断/定位/性能/可靠性 | [AI诊断](../tools/ai/ai_diagnostics.py)、[侧车客户端](../src/slic3r/GUI/AISidecarClient.cpp) | 按request/job/产物定位日志和版本；固定样本测性能，取消/失败/恢复走相关回归 |
+| DFX诊断/定位/性能/可靠性 | [AI诊断](../tools/ai/ai_diagnostics.py)、[日志导出](../src/slic3r/Utils/DiagnosticLogs.hpp)、[侧车客户端](../src/slic3r/GUI/AISidecarClient.cpp) | 设置→开发者→日志级别下方“导出日志…”；仅当前log目录后台脱敏快照、清单及原子ZIP，复用故障排查写入器；回归DiagnosticLogs。按request/job/产物定位日志和版本 |
 | 已有模型质量复评 | [model-generation-evaluation Skill](../.agents/skills/model-generation-evaluation/SKILL.md) | 按 SOP 读取已有模型、报告和对应测试 |
 | 模型生成团队协作 | [团队 SOP](coordination/team-integration-sop.md) | 只在明确请求团队提交或集成时加载 |
 | 打包/发布 | [release runbook](../release/README.md)、根 AGENTS 发布条款 | 当前操作涉及的准确产物、授权记录、检查脚本和 CI；导航不是授权来源 |
 | 翻译 | [localization 规则](../localization/AGENTS.md) | 仅加载涉及的子项目资料 |
+
+模型库网页维护：在仓库根目录运行`npm ci --prefix tools/model-library-web`与`npm run build --prefix tools/model-library-web`，将固定依赖打包到`resources/web/model_library/viewer.bundle.js`；其余HTML/CSS/JS直接随安装资源交付，运行时不需要Node或Next.js。展示投影回归运行`node --test tests/web/test_model_library.cjs`；原生下载、账号和本地资产回归使用`./dev.ps1 CppTest -TestSuite slic3rutils_tests -TestLabel 'PlatformLibrary|HonorAccount|ModelLibrary|ModelHistoryOpen'`。网站OpenAPI、迁移039与兼容回归在独立网站仓库交付，客户端构建通过不代表网站已部署或真实账号下载已验收。
 
 ## 选择验证范围
 

@@ -1,0 +1,12 @@
+{
+  "name": "honor-forge-model-library-web",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "build": "esbuild viewer.js --bundle --minify --target=es2020 --format=iife --outfile=../../resources/web/model_library/viewer.bundle.js"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "three": "0.186.1"
+  }
+}
