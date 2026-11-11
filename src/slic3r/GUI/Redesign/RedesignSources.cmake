@@ -58,6 +58,8 @@ set(ORCA_REDESIGN_WORKFLOW_SOURCES
     GUI/Redesign/RedesignWorkbenchPresentation.cpp
     GUI/Redesign/RedesignPresentationDeadline.hpp
     GUI/Redesign/RedesignShell.hpp
+    GUI/Redesign/AdvancedCreationWorkspace.hpp
+    GUI/Redesign/AdvancedCreationWorkspace.cpp
     GUI/Redesign/RedesignState.cpp
     GUI/Redesign/RedesignState.hpp
     GUI/Redesign/RedesignTheme.hpp

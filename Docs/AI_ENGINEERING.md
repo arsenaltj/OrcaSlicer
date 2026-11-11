@@ -21,6 +21,7 @@
 | 任务 | 先读 | 再沿调用链阅读 |
 |---|---|---|
 | 生成界面/结果交互 | [ModelGeneration FeatureHost](../src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp) | `ModelGenerationPanel.cpp`、`ModelGenerationPresentation*`、`ModelGenerationArtifactFlow.cpp`、`AIModelGenerationClient.cpp` |
+| 高级多视角创作 | [高级独立宿主](../src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.hpp)、[原子能力说明](../tools/ai/README_atomic_capabilities.md) | `AdvancedCreationSession`持有草稿／选择，`AdvancedCreationWorkspace`消费投影；`advanced_multiview_application.py`冻结相机／单次调用契约，workflow／repository编排版本、失败保留和显式重试，独立Job-v2冻结四图建模；智能仍走原连续流程 |
 | Provider/任务/质量 | [Gateway](../tools/ai/model_provider_gateway.py)、[任务应用](../tools/ai/model_job_application.py) | `model_job_lifecycle.py`、`model_job_repository.py`及对应能力/供应商模块；HTTP与界面调用应用入口 |
 | 后处理/配色/候选历史 | [BeautyWorkbenchSession](../src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchSession.hpp) | TransactionController、`ModelGenerationBeauty*`和预览/文件Ports；候选生命周期与原生工程撤销分别定位 |
 | 账号与本机会话 | [HonorSession](../src/slic3r/Utils/HonorAccount/HonorSession.hpp) | HonorClient/Store、Redesign的AccountWorkspace；身份状态、凭据和异步任务分开核对 |

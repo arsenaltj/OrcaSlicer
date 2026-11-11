@@ -154,6 +154,13 @@ def _persist_job(job: Job, *, touch: bool = True, required: bool = False) -> Non
         "attempts": job.attempts,
         "updated_at": job.updated_at,
     }
+    if job.creation_kind:
+        from advanced_multiview_model_contracts import CREATION_KIND, approved_paths
+        if job.creation_kind != CREATION_KIND:
+            raise TripoError("Unknown model creation source.")
+        approved_paths(job.approved_multiview_snapshot, job.directory, verify_files=False)
+        payload.update(version=2, creation_kind=job.creation_kind,
+                       approved_multiview_snapshot=job.approved_multiview_snapshot)
     temporary = job.directory / f"{JOB_STATE_FILENAME}.part"
     destination = job.directory / JOB_STATE_FILENAME
     try:
@@ -178,8 +185,19 @@ def _load_job(directory: Path) -> Job | None:
         payload = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict) or payload.get("version") != JOB_STATE_VERSION:
+    if not isinstance(payload, dict) or payload.get("version") not in (JOB_STATE_VERSION, 2):
         return None
+    creation_kind = payload.get("creation_kind", "")
+    if payload.get("version") == 2:
+        from advanced_multiview_model_contracts import CREATION_KIND, approved_paths
+        if creation_kind != CREATION_KIND or payload.get("workflow_mode") != "advanced":
+            return None
+        try:
+            approved_paths(payload.get("approved_multiview_snapshot"), directory, verify_files=False)
+        except RequestError:
+            return None
+    elif creation_kind or payload.get("approved_multiview_snapshot"):
+        return None  # A new source must never be accepted as a legacy single-image job.
     job_id = payload.get("id")
     source = payload.get("source")
     if not isinstance(job_id, str) or directory.name != job_id or source not in {"text", "image"}:
@@ -228,6 +246,8 @@ def _load_job(directory: Path) -> Job | None:
         print_settings=print_settings,
     )
     job.workflow_mode = "smart" if payload.get("workflow_mode") == "smart" else "advanced"
+    job.creation_kind = creation_kind
+    job.approved_multiview_snapshot = payload.get("approved_multiview_snapshot", {})
     for key in ("flow_id", "request_id", "input_fingerprint", "smart_model_request_id", "smart_phase"):
         value = payload.get(key)
         if isinstance(value, str): setattr(job, key, value[:256])

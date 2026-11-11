@@ -100,7 +100,7 @@ void classify_submission_error(const std::string& error, std::string& code, std:
 
 ModelGenerationSubmissionResult ModelGenerationPanel::request_generate_design()
 {
-    if (!can_generate_design_from_shell())
+    if (m_advanced_only || !can_generate_design_from_shell())
         return ModelGenerationSubmissionResult::Rejected;
     m_last_submission = ModelGenerationSubmissionResult::Rejected;
     m_smart_mode = false; m_smart_flow.stop();
@@ -111,6 +111,8 @@ ModelGenerationSubmissionResult ModelGenerationPanel::request_generate_design()
 
 ModelGenerationSubmissionResult ModelGenerationPanel::request_generate_model()
 {
+    if (m_advanced_only)
+        return ModelGenerationSubmissionResult::Rejected;
     const bool reuse_ready_model = can_reuse_ready_model_design();
     if (m_shutdown || !m_page_initialized || m_generate == nullptr ||
         (!m_generate->IsEnabled() && !reuse_ready_model))
@@ -140,6 +142,7 @@ bool ModelGenerationPanel::request_stop()
 
 bool ModelGenerationPanel::request_generate_smart()
 {
+    if (m_advanced_only) return false;
     if (m_provider_error_ambiguous && job_inputs_match()) {
         show_input_hint(_L("上次提交结果不明确，请先核对远端任务状态。当前不会重复创建相同输入的付费任务。")); return false;
     }
@@ -470,7 +473,10 @@ bool ModelGenerationPanel::request_open_history(const std::string& job_id)
         return false;
     const auto entry = std::find_if(m_library_entries.begin(), m_library_entries.end(),
         [&job_id](const GeneratedModelEntry& candidate) { return candidate.job_id == job_id; });
-    if (entry == m_library_entries.end()) {
+    const auto metadata = read_json(generated_models_root() / job_id / "job.json");
+    if (m_advanced_only && (!metadata.is_object() || metadata.value("workflow_mode", std::string()) == "smart")) return false;
+    if (entry == m_library_entries.end() || (metadata.is_object() &&
+        metadata.value("workflow_mode", std::string()) == "smart")) {
         reset(false); m_smart_flow = SmartGenerationFlow();
         const auto sequence = ++m_sequence;
         wxWeakRef<ModelGenerationPanel> weak(this);
@@ -493,6 +499,7 @@ bool ModelGenerationPanel::request_open_history(const std::string& job_id)
 
 bool ModelGenerationPanel::request_retry_model()
 {
+    if (m_advanced_only) return false; // Advanced supplier tasks use their frozen model plan/resume endpoint.
     if (m_smart_mode && !m_busy && m_ready && !m_model_preview_ready && !m_artifact_download_started) {
         m_smart_flow.resume(true); m_preview_download_cancelled = false;
         wxCommandEvent event; on_import(event); return true;

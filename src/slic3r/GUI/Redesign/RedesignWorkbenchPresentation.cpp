@@ -228,7 +228,7 @@ void RedesignShell::layout_workbench_transition_cover()
 void RedesignShell::sync_page_settings_visibility(Page page)
 {
     if (!m_image_settings_panel) return;
-    const bool visible = page == Page::Image;
+    const bool visible = page == Page::Image && !m_advanced_mode;
     if (m_image_settings_panel->IsShown() == visible) return;
     m_image_settings_panel->Show(visible);
     // Preserve its controls/draft/scroll position; only the shared outer layout

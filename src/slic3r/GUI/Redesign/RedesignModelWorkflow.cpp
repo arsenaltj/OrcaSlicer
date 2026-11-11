@@ -1,5 +1,6 @@
 #include <glad/gl.h>
 #include "RedesignShell.hpp"
+#include "AdvancedCreationWorkspace.hpp"
 #include "RedesignMessageDialog.hpp"
 #include "HonorBrandMark.hpp"
 #include "RedesignFeatureFlags.hpp"
@@ -1387,6 +1388,25 @@ void RedesignShell::apply_workbench_state(const PostGenerationWorkbenchState& st
 
 bool RedesignShell::can_return_to_image_design() const
 {
+    if (m_advanced_model_route) {
+        if (m_import_in_progress || m_submit_in_progress || m_model_preview_loading || m_advanced_model_state.busy)
+            return false;
+        switch (m_advanced_model_state.stage) {
+        case ModelGenerationUIStage::GeneratingDesign:
+        case ModelGenerationUIStage::GeneratingModel:
+        case ModelGenerationUIStage::LoadingModel:
+        case ModelGenerationUIStage::Saving3DOptions:
+        case ModelGenerationUIStage::Stopping:
+            return false;
+        case ModelGenerationUIStage::Input:
+        case ModelGenerationUIStage::DesignReady:
+        case ModelGenerationUIStage::ModelReady:
+        case ModelGenerationUIStage::Failed:
+        case ModelGenerationUIStage::Stopped:
+            return true;
+        }
+        return false;
+    }
     return !m_workbench_state.modal_blocking && model_generation_return_to_design_allowed(
         m_model_generation_state, m_workbench_state.actions,
         m_import_in_progress || m_submit_in_progress || m_model_preview_loading);
@@ -1394,6 +1414,16 @@ bool RedesignShell::can_return_to_image_design() const
 
 bool RedesignShell::return_to_image_design()
 {
+    if (m_advanced_model_route) {
+        if (!can_return_to_image_design()) return false;
+        m_advanced_model_route = false;
+        if (!navigate_to(Page::Image)) {
+            m_advanced_model_route = true;
+            return false;
+        }
+        if (m_advanced_workspace) m_advanced_workspace->render();
+        return true;
+    }
     if (block_workbench_navigation()) return false;
     if (!can_return_to_image_design())
         return false;

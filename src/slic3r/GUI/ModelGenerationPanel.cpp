@@ -457,8 +457,9 @@ void ModelGenerationPanel::publish_ui_state()
 }
 
 ModelGenerationPanel::ModelGenerationPanel(wxWindow* parent, AI::IModelArtifactConsumer& artifact_consumer,
-                                           AI::IPrintablePaletteProvider& palette_provider)
+                                           AI::IPrintablePaletteProvider& palette_provider, bool advanced_only)
     : wxPanel(parent)
+    , m_advanced_only(advanced_only)
     , m_artifact_consumer(artifact_consumer)
     , m_palette_provider(palette_provider)
     , m_client(AISidecarClient::default_endpoint())
@@ -579,6 +580,7 @@ void ModelGenerationPanel::show_input_hint(const wxString& message, wxWindow* fo
 
 void ModelGenerationPanel::restore_latest_job(bool require_visible)
 {
+    if (m_advanced_only) return; // Advanced opens only its explicit group-linked or legacy advanced job.
     if (m_shutdown || !m_page_initialized || (require_visible && !IsShownOnScreen()) ||
         !m_service_available || m_restore_checked || !m_job_id.empty())
         return;

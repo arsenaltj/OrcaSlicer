@@ -1410,6 +1410,14 @@ if (WIN32)
         include("${CMAKE_SOURCE_DIR}/tools/ai/model_runtime_files.cmake")
         set(ORCA_AI_SIDECAR_RUNTIME_FILES
             ${ORCA_MODEL_CAPABILITY_RUNTIME_FILES}
+            "${CMAKE_SOURCE_DIR}/tools/ai/advanced_multiview_application.py" "${CMAKE_SOURCE_DIR}/tools/ai/advanced_multiview_contracts.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/advanced_multiview_design_workflow.py" "${CMAKE_SOURCE_DIR}/tools/ai/advanced_multiview_image_gateway.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/advanced_multiview_repository.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/advanced_multiview_runtime.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/advanced_multiview_transport.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/advanced_multiview_models.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/advanced_multiview_model_contracts.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/advanced_multiview_model_workflow.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/ai_diagnostics.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/color_intent.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/glb_artifact.py"

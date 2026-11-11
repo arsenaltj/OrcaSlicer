@@ -8,6 +8,9 @@
 
 ## 专项需求基线
 
+- [AI 创作高级模式多视角需求文档](2026-11-07-advanced-multiview-requirements.md)与[验收用例](2026-11-07-advanced-multiview-acceptance.md)：固化首次四视角、中央等大 2×2、单击选择／双击查看、黄色反馈、范围标签、定向编辑、整组历史及四图共同建模；只属于高级模式，不改变智能业务。文档交付不代表实施授权或产品验收通过，开发进度见主计划 `UX/ADVANCED-MULTIVIEW-20261107`。
+- 配套[软件架构方案](2026-11-07-advanced-multiview-architecture.md)与[详细设计](2026-11-07-advanced-multiview-detailed-design.md)：高级独立 Session／应用、四视角版本、布局、四图建模及旧历史兼容已接入；实际维护入口见架构实施对照，验证范围和供应商缺口见[测试报告](2026-11-08-advanced-multiview-test-report.md)。
+- 2026-11-09当前报告已按用户决定交付：原76条为74通过、2未完整执行（跨窗拖入、其他Windows缩放），155项相关自动验证通过；未验项及供应商限制保留，不宣称全量验收通过。
 - [3D 模型新 UX 需求与交互方案基线](2026-09-30-3d-model-ux-requirements.md)：固化生成结果导入、模型检查、3D 美颜、颜色匹配、正式导入、AI/Orca 切片和 Preview 的已确认需求，并包含后续架构、详细设计与实施提示词。
 
 ## 目标

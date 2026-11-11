@@ -121,6 +121,8 @@ class ModelJobLifecycle:
 
     def reuse_design_job(self, source: Job) -> Job:
         """Fork only saved design inputs. No provider calls, tasks, or model artifacts."""
+        if source.creation_kind == "advanced_multiview_v1":
+            raise RequestError("advanced_plan_required", "Reuse the advanced four-view group instead.", 409)
         if source.state not in {"awaiting_confirmation", "ready", "stopped", "failed", "cancelled"}:
             raise RequestError("invalid_job_state", "The source design is still being generated.", 409)
         reference = _model_generation_reference(source)
@@ -172,6 +174,14 @@ class ModelJobLifecycle:
         for directory in directories:
             job = _load_job(directory)
             if job is None:
+                continue
+            if job.creation_kind == "advanced_multiview_v1":
+                # Advanced inputs are already approved. Never run legacy portrait
+                # preparation, its source-selection policy or automatic paid retry.
+                if job.state in {"queued", "running", "stopping"}:
+                    job.state = job.phase = "stopped"
+                    job.message = "Advanced model restored. Resume its saved task explicitly."
+                restored.append(job)
                 continue
             if job.input_path is not None:
                 try:
@@ -322,6 +332,7 @@ class ModelJobLifecycle:
 
     def resume_restored_jobs(self, restored: list[Job]) -> None:
         for job in restored:
+            if job.creation_kind == "advanced_multiview_v1": continue
             if job.workflow_mode == "smart" or job.retired_workflow: continue  # Explicit desktop resume owns the next action.
             if job.state == "queued" and job.phase == "resuming":
                 latest_attempt = job.attempts[-1] if job.attempts else {}
@@ -401,6 +412,8 @@ class ModelJobLifecycle:
         newer user's recoverable image journey after restart.
         """
 
+        if job.creation_kind == "advanced_multiview_v1":
+            return False  # The advanced group, not legacy latest, owns this source.
         if job.state not in {
             "recommending_palette", "awaiting_palette_confirmation", "preprocessing",
             "awaiting_confirmation", "queued", "running", "stopping", "ready",
@@ -480,6 +493,8 @@ class ModelJobLifecycle:
             }
         return {
             "id": job.id,
+            **({"creation_kind": job.creation_kind,
+                "advanced_group_id": job.approved_multiview_snapshot.get("group_id", "")} if job.creation_kind else {}),
             "source": job.source,
             "style": job.style,
             "custom_style": job.custom_style,

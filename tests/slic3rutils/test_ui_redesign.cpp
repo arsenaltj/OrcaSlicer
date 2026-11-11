@@ -1790,6 +1790,25 @@ TEST_CASE("Returning to image design is available only after model work is stabl
     CHECK_FALSE(model_generation_return_to_design_allowed(state, workbench, true));
 }
 
+TEST_CASE("Advanced model presentation skips smart preparation and keeps advanced recovery actions", "[UiRedesign][ModelGenerationRoute]")
+{
+    ModelGenerationUIState state;
+    state.smart_mode = true;
+    state.stage = ModelGenerationUIStage::GeneratingDesign;
+    state.can_stop = false;
+    auto presented = advanced_model_presentation_state(state, true, false);
+    CHECK_FALSE(presented.smart_mode);
+    CHECK(presented.stage == ModelGenerationUIStage::GeneratingModel);
+    CHECK(presented.can_stop);
+
+    state.stage = ModelGenerationUIStage::Stopped;
+    state.can_retry_model = false;
+    presented = advanced_model_presentation_state(state, false, true);
+    CHECK(presented.stage == ModelGenerationUIStage::Stopped);
+    CHECK_FALSE(presented.can_stop);
+    CHECK(presented.can_retry_model);
+}
+
 TEST_CASE("An explicit return ignores same-session model refreshes but a new model session still routes", "[UiRedesign][ModelGenerationRoute]")
 {
     ModelGenerationUIState model;

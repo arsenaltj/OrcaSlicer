@@ -94,7 +94,7 @@ class ModelGenerationPanel : public wxPanel
 {
 public:
     ModelGenerationPanel(wxWindow* parent, AI::IModelArtifactConsumer& artifact_consumer,
-                         AI::IPrintablePaletteProvider& palette_provider);
+                         AI::IPrintablePaletteProvider& palette_provider, bool advanced_only = false);
     ~ModelGenerationPanel() override;
 
     void shutdown();
@@ -103,7 +103,7 @@ public:
     bool request_library_action(ModelLibraryCommand command, const ModelLibraryEntry& entry);
     bool library_asset_switch_allowed() const { return can_replace_model_asset(); }
     void request_library_local_import();
-    void set_smart_creation_presentation(bool smart) { m_shell_smart_creation = smart; }
+    void set_smart_creation_presentation(bool smart);
     void unmount_assets();
     void set_history_navigation_handler(std::function<void(bool)> handler) { m_history_navigation = std::move(handler); }
     void set_history_model_open_handler(ModelHistoryOpenHandler handler) { m_history_model_open = std::move(handler); }
@@ -227,6 +227,7 @@ private:
     void apply_smart_ui_state(ModelGenerationUIState& state);
     bool m_smart_mode {false};
     bool m_shell_smart_creation {false};
+    const bool m_advanced_only;
     SmartGenerationFlow m_smart_flow;
     bool m_smart_dispatch_pending {false};
     using GeneratedModelEntry = ModelLibraryEntry;
@@ -683,6 +684,7 @@ private:
     wxPanel* m_comparison_panel {nullptr};
     wxScrolledWindow* m_model_page {nullptr};
     wxPanel* m_workbench_history_panel {nullptr};
+    wxStaticText* m_workbench_history_title {nullptr};
     wxScrolledWindow* m_workbench_history_scroller {nullptr};
     wxBoxSizer* m_workbench_history_sizer {nullptr};
     wxGridSizer* m_workbench_history_grid {nullptr};

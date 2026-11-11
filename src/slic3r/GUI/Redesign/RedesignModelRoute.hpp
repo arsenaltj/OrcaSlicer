@@ -85,6 +85,21 @@ inline bool model_generation_return_to_design_allowed(const ModelGenerationUISta
     return false;
 }
 
+inline ModelGenerationUIState advanced_model_presentation_state(
+    ModelGenerationUIState state, bool can_stop, bool can_resume)
+{
+    state.smart_mode = false;
+    // Advanced mode starts from four completed design views. Even if an old
+    // job record reports the shared preparation phase, never expose the smart
+    // mode's 2D preparation stage in the advanced 3D route.
+    if (state.stage == ModelGenerationUIStage::GeneratingDesign)
+        state.stage = ModelGenerationUIStage::GeneratingModel;
+    state.can_stop = can_stop;
+    if (state.stage == ModelGenerationUIStage::Failed || state.stage == ModelGenerationUIStage::Stopped)
+        state.can_retry_model = can_resume;
+    return state;
+}
+
 inline const std::string& model_generation_route_id(const ModelGenerationUIState& state)
 {
     if (state.smart_mode && !state.smart_flow_id.empty()) return state.smart_flow_id;

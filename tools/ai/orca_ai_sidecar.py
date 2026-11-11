@@ -28,6 +28,7 @@ from ai_diagnostics import (
 )
 from array import array
 from capability_catalog import build_catalog
+import advanced_multiview_runtime
 from collections import Counter, deque
 from color_intent import (
     COLOR_INTENT_FILENAME,
@@ -1074,7 +1075,8 @@ def _submit(job: Job, worker: Callable[..., None], *args: Any) -> None:
             job.design_started_monotonic = None
             _begin_design_timing(job)
     try:
-        future = _executor_for(worker).submit(_run_worker_with_diagnostics, job, worker, args)
+        executor = _MODEL_EXECUTOR if job.creation_kind == "advanced_multiview_v1" else _executor_for(worker)
+        future = executor.submit(_run_worker_with_diagnostics, job, worker, args)
     except RuntimeError:
         raise RequestError("service_unavailable", "The model job service is shutting down.", 503, True) from None
     with _JOBS_LOCK:
@@ -1087,6 +1089,7 @@ def shutdown_sidecar() -> None:
         if _SHUT_DOWN:
             return
         _SHUT_DOWN = True
+    advanced_multiview_runtime.shutdown()
     with _JOBS_LOCK:
         jobs = list(_JOBS.values())
         for job in jobs:
@@ -1167,6 +1170,9 @@ def _generate_job(
     authorization: PaidTaskAuthorization | None = None,
 ) -> None:
     _model_workflow().generate(job, prepared_prompt, resume, authorization)
+
+
+_AdvancedHandler = advanced_multiview_runtime.compose_handler(_model_output_root, _JOBS, _JOBS_LOCK, _model_workflow, _submit, _public_job)
 
 
 def _retexture_job(
@@ -1273,7 +1279,7 @@ def _model_job_lifecycle() -> ModelJobLifecycle:
     ))
 
 
-class Handler(BaseHTTPRequestHandler):
+class Handler(_AdvancedHandler, BaseHTTPRequestHandler):
     server_version = "OrcaAISidecar/1.0"
 
     def log_message(self, fmt: str, *args: Any) -> None:
@@ -1475,6 +1481,7 @@ class Handler(BaseHTTPRequestHandler):
             return _JOBS.get(job_id)
 
     def do_GET(self) -> None:
+        if self.handle_advanced("GET"): return
         parsed_path = urlsplit(self.path)
         text_path, slicing_path = "/v1/orcaslicer/text-capabilities/image_prompt_polish", "/v1/orcaslicer/text-capabilities/slicing_parameter_recommendation"
         if parsed_path.path in {text_path, slicing_path}:
@@ -1668,6 +1675,7 @@ class Handler(BaseHTTPRequestHandler):
         self._download_job_file(job, action)
 
     def do_POST(self) -> None:
+        if self.handle_advanced("POST"): return
         if self.path == "/v1/orcaslicer/shutdown":
             if not self._require_native_client():
                 return
@@ -1757,10 +1765,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._create_image_job()
                 return
             if self.path == "/v1/orcaslicer/model-jobs/recommend-text-palette":
-                self._create_text_palette_recommendation()
+                self._create_text_job()  # Existing compatibility alias; no palette generation.
                 return
             if self.path == "/v1/orcaslicer/model-jobs/recommend-image-palette":
-                self._create_image_palette_recommendation()
+                self._create_image_job()  # Existing compatibility alias; no palette generation.
                 return
             job_id, action = self._job_route(self.path)
             if not job_id or action not in {
@@ -1801,17 +1809,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _create_text_job(self) -> None:
         self._send_application_result(self._application().create_text_job(self._read_model_json()))
-
     _create_text_palette_recommendation = _create_text_job
-
     def _recommend_model_style(self) -> None:
         self._send_application_result(self._application().recommend_model_style(*self._read_image_multipart()))
 
     def _create_image_job(self) -> None:
         self._send_application_result(self._application().create_image_job(*self._read_image_multipart()))
-
     _create_image_palette_recommendation = _create_image_job
-
     def _confirm_palette(self, job_id: str) -> None:
         self._send_application_result(self._application().confirm_palette(job_id, self._read_model_json()))
 

@@ -28,7 +28,8 @@ public:
     using RetryServiceFn = std::function<void()>;
 
     ModelGenerationFeatureHost(wxWindow* parent, Plater* plater, NavigateAfterImportFn navigate_after_import,
-                               RetryServiceFn retry_service);
+                               RetryServiceFn retry_service, bool advanced_only = false);
+    bool can_replace_asset() const;
     ~ModelGenerationFeatureHost();
 
     ModelGenerationFeatureHost(const ModelGenerationFeatureHost&) = delete;
