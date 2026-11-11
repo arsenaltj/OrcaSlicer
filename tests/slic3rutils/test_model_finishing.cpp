@@ -89,6 +89,7 @@ TEST_CASE("safe mesh repair is rechecked without mutating the original asset", "
     const auto repaired = finish_model_artifact(f.source, f.output, options);
     REQUIRE(repaired.success);
     REQUIRE(repaired.changed());
+    CHECK(repaired.repair_strategy.rfind("strict-", 0) == 0);
     CHECK(repaired.repair_geometry_verified);
     CHECK(repaired.repair_sampled_deviation < 1e-6);
     CHECK(repaired.repair_area_change_ratio < 1e-6);

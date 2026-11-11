@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <limits>
 #include <optional>
@@ -104,6 +105,33 @@ inline nlohmann::json read_record(const boost::filesystem::path& path)
     return input ? nlohmann::json::parse(input, nullptr, false) : nlohmann::json();
 }
 
+// A finishing version inherits the final AI count from its verified model
+// history, never from the currently selected generation page or target suite.
+inline int ai_source_color_count(boost::filesystem::path model,
+                                 const boost::filesystem::path& root,
+                                 boost::filesystem::path record = {})
+{
+    try {
+        for (size_t depth = 0; depth < 64; ++depth) {
+            const auto doc = read_record(record.empty() ? AI::beauty_metadata_path(model, root) : record);
+            record.clear();
+            if (!doc.is_object()) break;
+            const auto hash = AI::model_artifact_sha256(model);
+            if (hash.empty() || (doc.contains("model_sha256") && doc.at("model_sha256") != hash)) break;
+            const auto palette = doc.find("palette");
+            const int count = doc.value("ai_source_color_count",
+                palette != doc.end() && palette->is_array() ? int(palette->size()) : 0);
+            if (count >= 4 && count <= 6) return count;
+            if (!doc.contains("source_model") || !doc.contains("source_sha256")) break;
+            boost::filesystem::path parent;
+            if (!safe_library_file(root, boost::filesystem::path(doc.at("source_model").get<std::string>()), parent) ||
+                AI::model_artifact_sha256(parent) != doc.at("source_sha256")) break;
+            model = std::move(parent);
+        }
+    } catch (const std::exception&) { /* Invalid history cannot authorize a source basis. */ }
+    return 0;
+}
+
 inline bool has_appearance(const indexed_triangle_set& mesh, const ObjInfo& appearance,
                            const AI::ModelArtifactTextureSurface& texture)
 {
@@ -151,7 +179,8 @@ inline bool map_ordered_corner_appearance(const indexed_triangle_set& source,
                                           const indexed_triangle_set& target,
                                           std::vector<RGBA>& colors,
                                           std::string& error,
-                                          const std::function<bool()>& canceled = {})
+                                          const std::function<bool()>& canceled = {},
+                                          bool require_same_positions = true)
 {
     const bool vertex_colors = appearance.vertex_colors.size() == source.vertices.size();
     const bool face_colors = appearance.face_colors.size() == source.indices.size();
@@ -170,7 +199,7 @@ inline bool map_ordered_corner_appearance(const indexed_triangle_set& source,
             const int from = source.indices[face][corner], to = target.indices[face][corner];
             if (from < 0 || size_t(from) >= source.vertices.size() ||
                 to < 0 || size_t(to) >= target.vertices.size() ||
-                source.vertices[from] != target.vertices[to]) {
+                (require_same_positions && source.vertices[from] != target.vertices[to])) {
                 error = "原始配色的有序面角点与候选模型不匹配。";
                 return false;
             }
@@ -210,8 +239,32 @@ inline bool map_appearance_to_vertices(const indexed_triangle_set& source,
         return false;
     }
     try {
+        // Repair can remove zero-area source faces. They have no surface
+        // appearance to transfer and must not win a nearest-face query at a
+        // surviving corner. Keep original face IDs for face-color lookup.
+        decltype(source.indices) surface_faces;
+        std::vector<size_t> source_faces;
+        surface_faces.reserve(source.indices.size());
+        source_faces.reserve(source.indices.size());
+        for (size_t face = 0; face < source.indices.size(); ++face) {
+            if ((face & 4095) == 0 && stopped(canceled))
+                throw std::runtime_error("Original appearance mapping canceled.");
+            const auto& triangle = source.indices[face];
+            for (int corner = 0; corner < 3; ++corner)
+                if (triangle[corner] < 0 || size_t(triangle[corner]) >= source.vertices.size() ||
+                    !source.vertices[triangle[corner]].allFinite())
+                    throw std::runtime_error("原始配色映射遇到无效来源面。");
+            const Vec3d a = source.vertices[triangle[0]].cast<double>();
+            const Vec3d u = source.vertices[triangle[1]].cast<double>() - a;
+            const Vec3d v = source.vertices[triangle[2]].cast<double>() - a;
+            if (u.cross(v).squaredNorm() == 0.) continue;
+            surface_faces.push_back(triangle);
+            source_faces.push_back(face);
+        }
+        if (surface_faces.empty())
+            throw std::runtime_error("原始配色映射缺少有效来源面。");
         const auto tree = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(
-            source.vertices, source.indices);
+            source.vertices, surface_faces);
         colors.assign(target.vertices.size(), RGBA {1.f, 1.f, 1.f, 1.f});
         for (size_t index = 0; index < target.vertices.size(); ++index) {
             if ((index & 4095) == 0 && stopped(canceled))
@@ -220,9 +273,10 @@ inline bool map_appearance_to_vertices(const indexed_triangle_set& source,
             Vec3d nearest;
             const Vec3d query = target.vertices[index].cast<double>();
             const double distance = AABBTreeIndirect::squared_distance_to_indexed_triangle_set(
-                source.vertices, source.indices, tree, query, face, nearest);
-            if (distance < 0. || face >= source.indices.size())
+                source.vertices, surface_faces, tree, query, face, nearest);
+            if (!std::isfinite(distance) || distance < 0. || face >= surface_faces.size())
                 throw std::runtime_error("原始配色无法映射到修复候选。");
+            face = source_faces[face];
             // Model preview also gives vertex colors precedence when an
             // artifact exposes both representations. Keep the immutable
             // carrier and topology-remap paths on the same rule.
@@ -233,7 +287,7 @@ inline bool map_appearance_to_vertices(const indexed_triangle_set& source,
                 const Vec3d v = source.vertices[triangle[2]].cast<double>() - a;
                 const Vec3d q = nearest - a;
                 const double uu = u.dot(u), uv = u.dot(v), vv = v.dot(v);
-                const double denominator = uu * vv - uv * uv;
+                const double denominator = u.cross(v).squaredNorm();
                 if (denominator <= 0.)
                     throw std::runtime_error("原始配色映射遇到无效来源面。");
                 const double b = std::clamp((vv * q.dot(u) - uv * q.dot(v)) / denominator, 0., 1.);
@@ -290,6 +344,29 @@ inline std::optional<OriginalAppearanceReference> decode_reference(
     return reference;
 }
 
+// A missing immutable companion may be reconstructed from the hash-bound
+// parent chain. A changed carrier, invalid path or missing origin must still
+// fail rather than silently treating a saved low-color version as the source.
+inline bool missing_appearance_companion(const nlohmann::json& value,
+    const boost::filesystem::path& root, const std::string& topology)
+{
+    try {
+        if (value.at("schema") != "orca.model-original-appearance/v1" ||
+            value.at("topology_sha256") != topology ||
+            !AI::SurfaceSelectionPersistence::detail::valid_fingerprint(
+                value.at("carrier_sha256").get<std::string>())) return false;
+        const boost::filesystem::path relative(value.at("carrier_model").get<std::string>());
+        boost::filesystem::path parent, origin;
+        if (relative.empty() || relative.is_absolute() || relative.has_root_path() ||
+            std::any_of(relative.begin(), relative.end(), [](const auto& part) { return part == ".."; }) ||
+            !safe_library_file(root, relative.parent_path(), parent) ||
+            !safe_library_file(root, boost::filesystem::path(value.at("origin_model").get<std::string>()), origin) ||
+            AI::model_artifact_sha256(origin) != value.at("origin_sha256")) return false;
+        const auto carrier = parent / relative.filename();
+        return !boost::filesystem::exists(carrier) && !boost::filesystem::is_symlink(carrier);
+    } catch (const std::exception&) { return false; }
+}
+
 } // namespace original_appearance_detail
 
 inline bool resolve_original_appearance_reference(
@@ -329,7 +406,8 @@ inline bool prepare_original_appearance_for_candidate(
     const boost::filesystem::path& root,
     OriginalAppearanceReference& result,
     std::string& error,
-    const std::function<bool()>& canceled = {})
+    const std::function<bool()>& canceled = {},
+    bool force_candidate_geometry = false)
 {
     using namespace original_appearance_detail;
     result = {};
@@ -362,7 +440,7 @@ inline bool prepare_original_appearance_for_candidate(
         const std::string topology = AI::SurfaceSelectionPersistence::topology_fingerprint(candidate_mesh.its);
         if (!AI::SurfaceSelectionPersistence::detail::valid_fingerprint(topology))
             throw std::runtime_error("无法建立修复候选的拓扑身份。");
-        if (topology == inherited.topology_sha256) {
+        if (topology == inherited.topology_sha256 && !force_candidate_geometry) {
             result = resolved.reference;
             return true;
         }
@@ -370,9 +448,12 @@ inline bool prepare_original_appearance_for_candidate(
         std::vector<RGBA> colors;
         const bool ordered_surface = AI::SurfaceSelectionPersistence::geometry_fingerprint(current_mesh.its) ==
             AI::SurfaceSelectionPersistence::geometry_fingerprint(candidate_mesh.its);
-        const bool mapped = ordered_surface
+        const bool ordered_connectivity = topology == inherited.topology_sha256 &&
+            current_mesh.its.vertices.size() == candidate_mesh.its.vertices.size() &&
+            current_mesh.its.indices == candidate_mesh.its.indices;
+        const bool mapped = ordered_surface || ordered_connectivity
             ? map_ordered_corner_appearance(current_mesh.its, resolved.carrier_appearance,
-                candidate_mesh.its, colors, error, canceled)
+                candidate_mesh.its, colors, error, canceled, ordered_surface)
             : map_appearance_to_vertices(current_mesh.its, resolved.carrier_appearance,
                 candidate_mesh.its, colors, error, canceled);
         if (!mapped)
@@ -440,11 +521,18 @@ inline bool resolve_original_appearance(const boost::filesystem::path& current_m
         error = "无法建立当前模型的拓扑身份。";
         return false;
     }
+    std::string recovery_origin_hash;
     if (current_metadata.is_object() && current_metadata.contains("original_appearance")) {
         const auto decoded = decode_reference(current_metadata["original_appearance"], root, topology, error);
-        if (!decoded) return false;
-        output.reference = *decoded;
-        return load_carrier(decoded->carrier_model, decoded->carrier_sha256, topology, output, error, canceled);
+        if (decoded) {
+            output.reference = *decoded;
+            return load_carrier(decoded->carrier_model, decoded->carrier_sha256, topology, output, error, canceled);
+        }
+        if (!current_metadata.contains("source_model") ||
+            current_metadata.value("model_sha256", std::string{}) != AI::model_artifact_sha256(current_model) ||
+            !missing_appearance_companion(current_metadata["original_appearance"], root, topology)) return false;
+        recovery_origin_hash = current_metadata["original_appearance"].at("origin_sha256").get<std::string>();
+        error.clear();
     }
 
     const bool has_parent = current_metadata.is_object() && current_metadata.contains("source_model");
@@ -497,15 +585,22 @@ inline bool resolve_original_appearance(const boost::filesystem::path& current_m
         auto source_metadata = read_record(record);
         if (compatible && source_metadata.is_object() && source_metadata.contains("original_appearance")) {
             const auto inherited = decode_reference(source_metadata["original_appearance"], root, source_topology, error);
-            if (!inherited) return false;
-            auto companion = current_model;
-            companion.replace_extension(".source-appearance.obj");
-            OriginalAppearanceReference mapped;
-            if (!prepare_original_appearance_for_candidate(source, current_model, expected_hash,
-                    *inherited, companion, root, mapped, error, canceled)) return false;
-            output.restored_legacy_chain = true;
-            output.reference = mapped;
-            return load_carrier(mapped.carrier_model, mapped.carrier_sha256, topology, output, error, canceled);
+            if (inherited) {
+                auto companion = current_model;
+                companion.replace_extension(".source-appearance.obj");
+                OriginalAppearanceReference mapped;
+                if (!prepare_original_appearance_for_candidate(source, current_model, expected_hash,
+                        *inherited, companion, root, mapped, error, canceled)) return false;
+                output.restored_legacy_chain = true;
+                output.reference = mapped;
+                return load_carrier(mapped.carrier_model, mapped.carrier_sha256, topology, output, error, canceled);
+            }
+            if (!missing_appearance_companion(source_metadata["original_appearance"], root, source_topology))
+                return false;
+            const auto source_origin = source_metadata["original_appearance"].at("origin_sha256").get<std::string>();
+            if (!recovery_origin_hash.empty() && recovery_origin_hash != source_origin) return false;
+            recovery_origin_hash = source_origin;
+            error.clear();
         }
         if (compatible &&
             has_appearance(mesh.its, appearance, texture)) {
@@ -527,7 +622,7 @@ inline bool resolve_original_appearance(const boost::filesystem::path& current_m
         candidate = current_model;
         candidate_hash = origin_hash;
     }
-    if (candidate.empty()) {
+    if (candidate.empty() || (!recovery_origin_hash.empty() && origin_hash != recovery_origin_hash)) {
         error = "未找到与当前拓扑兼容的原始配色证据。";
         return false;
     }

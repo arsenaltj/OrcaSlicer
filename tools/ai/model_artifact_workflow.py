@@ -32,6 +32,7 @@ from model_obj_io import (
 )
 from model_texture_baking import _bake_obj_texture_to_vertex_colors, _quantize_vertex_color_obj
 from openai_preprocessor import OpenAIPreprocessorError
+from model_provider_gateway import ProviderGatewayError
 from pathlib import Path
 from portrait_model_materials import (
     _capture_portrait_front_face_details,
@@ -88,6 +89,7 @@ class ModelArtifactWorkflow:
         front_material_reference: Path | None = None,
         status_callback: Callable[[str, int], None] | None = None,
         build_aligned_portrait_reference: bool = False,
+        native_repair_deferred: bool = False,
     ) -> Path:
         def report_status(message: str, progress: int) -> None:
             if status_callback is not None:
@@ -289,8 +291,9 @@ class ModelArtifactWorkflow:
                 palette_roles,
                 True,
             )
-        repair_report = _remove_small_detached_obj_components(destination, job_directory / "mesh-repair.json")
-        _repair_small_obj_topology_defects(destination, job_directory / "mesh-repair.json", repair_report)
+        if not native_repair_deferred:
+            repair_report = _remove_small_detached_obj_components(destination, job_directory / "mesh-repair.json")
+            _repair_small_obj_topology_defects(destination, job_directory / "mesh-repair.json", repair_report)
         captured_face_details: dict[int, tuple[int, int, int]] = {}
         face_detail_capture_report: dict[str, Any] = {"status": "not_applicable"}
         if palette and portrait_materials and effective_front_reference is None:
@@ -584,7 +587,8 @@ class ModelArtifactWorkflow:
                 directory = directory / f"recovery-{recovery_number:02d}"
                 directory.mkdir(parents=False, exist_ok=False)
                 raw = raw.replace(directory / "artifact-raw.download")
-            return self.ports.prepare_obj(raw, directory, job.palette, job.palette_roles)
+            return self.ports.prepare_obj(raw, directory, job.palette,
+                                          job.palette_roles)
         original = directory / "provider-model.glb"
         raw.replace(original)
         analysis = directory / "analysis-model.obj"
@@ -649,10 +653,8 @@ class ModelArtifactWorkflow:
                 return candidate
         self.ports.stop_boundary(job)
         result = self.ports.tripo_gateway().wait_for_task(
-            conversion_id,
-            stop_event=job.stop_event,
-            progress=self.ports.progress_callback(job, 75, 95),
-        )
+            conversion_id, stop_event=job.stop_event,
+            progress=self.ports.progress_callback(job, 75, 95))
         self.ports.stop_boundary(job)
         with self.ports.lock:
             job.phase = "downloading_artifact"
@@ -671,6 +673,7 @@ class ModelArtifactWorkflow:
                                                    progress=self.download_progress(job))
         self.ports.stop_boundary(job)
         if format_name == "obj":
+            pass
             portrait_cleanup = job.image_metrics.get("portrait_skin_cleanup", {})
             portrait_materials = (
                 job.style == "realistic"

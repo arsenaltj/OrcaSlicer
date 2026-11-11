@@ -5425,9 +5425,9 @@ int PresetBundle::get_printer_extruder_count() const
 
 size_t PresetBundle::min_filament_count() const
 {
-    if (printers.get_edited_preset().config.opt_bool("single_extruder_multi_material"))
-        return 1;
-    return static_cast<size_t>(get_printer_extruder_count());
+    // Loaded materials are independent of hardware capacity. Tool changers
+    // may leave nozzles idle, just as shared-nozzle printers may unload spools.
+    return 1;
 }
 
 void PresetBundle::update_filament_count()
@@ -6319,6 +6319,14 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
             //BBS: add different settings logic
             BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": load print preset from print_settings_id");
             std::set<std::string> print_different_keys_set = project_different_keys(different_values[0]);
+            // Explicit spool identities belong to the saved project. Older
+            // material transactions merged them after collecting preset dirty
+            // keys; rebasing onto an installed process must still retain them.
+            for (const char* key : {"support_filament", "support_interface_filament"}) {
+                const auto* spool = config.option<ConfigOptionInt>(key);
+                if (spool && spool->value > 0 && size_t(spool->value) <= num_filaments)
+                    print_different_keys_set.insert(key);
+            }
             if (!print_compatible_printers.empty()) {
                 ConfigOptionStrings* compatible_printers = config.option<ConfigOptionStrings>("compatible_printers", true);
                 compatible_printers->values = print_compatible_printers;

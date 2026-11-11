@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ModelBaseBinding.hpp"
+
 #include "slic3r/AI/Contracts/GeneratedModelArtifact.hpp"
 #include "slic3r/AI/Contracts/ColorIntent.hpp"
 
@@ -207,12 +209,18 @@ struct ModelImportRequest
     bool use_saved_printer_match {false};
     // Desktop-only optional caches, archived through existing 3MF auxiliaries.
     std::vector<nlohmann::json> portrait_color_block_references;
+    std::vector<nlohmann::json> native_portrait_partition_references;
     // Desktop preparation intent only. Never serialized into a provider job or
     // applied to geometry by importing; the user must confirm in preparation.
     bool suggest_base_preparation {false};
     // Desktop workbench-only intent. Apply the fixed 3 mm round-base
     // preparation to the detached import copy before it enters the project.
     bool apply_round_base_preparation {false};
+    std::optional<ModelBaseBinding> base_binding;
+    // Portrait one-click: repair the detached painted import with Orca's core.
+    // Bound to this saved source; unchecked manual imports retain their gates.
+    bool native_repair_before_slice {false};
+    std::string native_repair_source_sha256;
     // Explicit exception path for an unchecked/open model. This metadata is
     // retained by the native preparation flow and never means slicing passed.
     bool topology_risk_confirmed {false};
@@ -243,6 +251,9 @@ struct ModelImportResult
     size_t             mapped_color_count { 0 };
     size_t             subface_color_count { 0 };
     bool               subface_colors_applied { false };
+    bool               native_repair_completed { false };
+    bool               native_repair_changed_geometry { false };
+    std::string        native_repair_source_sha256, native_geometry_id;
     std::string        error;
 
     bool imported() const { return outcome == ModelImportOutcome::Imported; }

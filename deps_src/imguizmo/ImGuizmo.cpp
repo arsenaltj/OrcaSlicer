@@ -2796,6 +2796,12 @@ namespace IMGUIZMO_NAMESPACE
       return ViewManipulate(view, length, position, size, backgroundColor);
    }
 
+   ViewManipulateResult ViewManipulate(float* view, const float* projection, OPERATION operation, MODE mode, float* matrix, float length, ImVec2 position, ImVec2 size, ImU32 backgroundColor, ViewManipulateState& state)
+   {
+      ComputeContext(view, projection, matrix, (operation & SCALE) ? LOCAL : mode);
+      return ViewManipulate(view, length, position, size, backgroundColor, state);
+   }
+
    void OrthoGraphic(const float l, float r, float b, const float t, float zn, const float zf, float* m16)
    {
        m16[0]  = 2 / (r - l);
@@ -2818,12 +2824,18 @@ namespace IMGUIZMO_NAMESPACE
 
    ViewManipulateResult ViewManipulate(float* view, float length, ImVec2 position, ImVec2 size, ImU32 backgroundColor)
    {
-      static bool isDraging = false;
-      static bool isClicking = false;
-      static bool isInside = false;
-      static vec_t interpolationUp;
-      static vec_t interpolationDir;
-      static int interpolationFrames = 0;
+      static ViewManipulateState legacyState;
+      return ViewManipulate(view, length, position, size, backgroundColor, legacyState);
+   }
+
+   ViewManipulateResult ViewManipulate(float* view, float length, ImVec2 position, ImVec2 size, ImU32 backgroundColor, ViewManipulateState& state)
+   {
+      bool& isDraging = state.dragging;
+      bool& isClicking = state.clicking;
+      bool& isInside = state.inside;
+      vec_t interpolationUp = makeVect(state.interpolation_up[0], state.interpolation_up[1], state.interpolation_up[2]);
+      vec_t interpolationDir = makeVect(state.interpolation_dir[0], state.interpolation_dir[1], state.interpolation_dir[2]);
+      int& interpolationFrames = state.interpolation_frames;
       const vec_t referenceUp = makeVect(0.f, 1.f, 0.f);
 
       matrix_t svgView, svgProjection;
@@ -2866,7 +2878,7 @@ namespace IMGUIZMO_NAMESPACE
 
       // tag faces
       bool boxes[27]{};
-      static int overBox = -1;
+      int& overBox = state.over_box;
       for (int iPass = 0; iPass < 2; iPass++)
       {
          for (int iFace = 0; iFace < 6; iFace++)
@@ -3160,6 +3172,11 @@ namespace IMGUIZMO_NAMESPACE
 
       // restore view/projection because it was used to compute ray
       ComputeContext(svgView.m16, svgProjection.m16, nullptr/*gContext.mModelSource.m16*/, WORLD/*gContext.mMode*/);
+
+      for (int i = 0; i < 4; ++i) {
+         state.interpolation_up[i] = interpolationUp[i];
+         state.interpolation_dir[i] = interpolationDir[i];
+      }
 
       return result;
    }

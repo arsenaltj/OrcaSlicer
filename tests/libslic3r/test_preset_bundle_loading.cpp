@@ -2687,15 +2687,14 @@ TEST_CASE("A tool changer keeps idle nozzles without adding filaments", "[Preset
 
 // The app config keeps each printer's filament list. The next start (load_selections) and a switch
 // back to the printer with remember_printer_config on (update_selections) restore it from there: a
-// shared-nozzle printer gets back the one filament it was left with, a tool changer still gets one
-// per tool.
-TEST_CASE("A remembered one-filament list comes back at the printer's minimum length", "[Preset][Bundle]")
+// loaded spool counts remain independent of nozzle capacity in both printer types.
+TEST_CASE("Remembered material slots retain idle nozzles on startup and printer switches", "[Preset][Bundle][FilamentSlots]")
 {
     const bool   shared_nozzles = GENERATE(true, false);
     const bool   on_startup     = GENERATE(true, false);
     const size_t nozzle_count   = shared_nozzles ? 2 : 4;
-    const size_t expected       = shared_nozzles ? 1 : nozzle_count;
-    CAPTURE(shared_nozzles, on_startup);
+    const size_t expected       = GENERATE(size_t(1), size_t(2));
+    CAPTURE(shared_nozzles, on_startup, expected);
 
     AppConfig app_config;
     {
@@ -2703,9 +2702,9 @@ TEST_CASE("A remembered one-filament list comes back at the printer's minimum le
         select_multi_nozzle_printer(bundle, nozzle_count, shared_nozzles);
         add_inmemory_preset(bundle.filaments, "Test Filament");
         bundle.filaments.select_preset_by_name("Test Filament", true);
-        // Set the one-filament list directly: set_num_filaments() runs the padding under test.
-        bundle.filament_presets = { "Test Filament" };
-        bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values = { "#123456" };
+        bundle.set_num_filaments(unsigned(expected), "#123456");
+        bundle.filament_presets.assign(expected, "Test Filament");
+        bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values.assign(expected, "#123456");
         bundle.export_selections(app_config);
     }
 
@@ -2719,6 +2718,7 @@ TEST_CASE("A remembered one-filament list comes back at the printer's minimum le
 
     CHECK(bundle.filament_presets.size() == expected);
     CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values.size() == expected);
+    CHECK(bundle.get_printer_extruder_count() == nozzle_count);
 }
 
 // A one-colour print for a shared-nozzle printer, as Bambu Studio saves it for an H2D or X2D, opens
@@ -2736,6 +2736,36 @@ TEST_CASE("A one-filament project for a shared-nozzle printer opens with one fil
 
     CHECK(bundle.filament_presets.size() == 1);
     CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values.size() == 1);
+}
+
+TEST_CASE("Reopening a project preserves explicit support spools across system preset rebasing",
+          "[Preset][Bundle][PortraitSupportBinding]")
+{
+    PresetBundle bundle;
+    select_multi_nozzle_printer(bundle, 6, false);
+    auto& process = add_inmemory_preset(bundle.prints, "System portrait process");
+    process.is_system = true;
+    process.config.set_key_value("support_filament", new ConfigOptionInt(0));
+    process.config.set_key_value("support_interface_filament", new ConfigOptionInt(0));
+    bundle.prints.select_preset_by_name(process.name, true);
+    bundle.set_num_filaments(6u, "#FFFFFF");
+
+    auto config = bundle.full_config();
+    const int support = GENERATE(3, 6);
+    const int interface = support == 6 ? 3 : 6;
+    config.set_key_value("support_filament", new ConfigOptionInt(support));
+    config.set_key_value("support_interface_filament", new ConfigOptionInt(interface));
+    // Older suite exports merged the project binding after collecting preset
+    // differences, so the file contains explicit spools but no dirty key for them.
+    config.set_key_value("different_settings_to_system", new ConfigOptionStrings(
+        std::vector<std::string>(8, "")));
+    Preset::normalize(config);
+    bundle.load_config_model("portrait-support.3mf", std::move(config));
+
+    CHECK(bundle.prints.get_edited_preset().config.opt_int("support_filament") == support);
+    CHECK(bundle.prints.get_edited_preset().config.opt_int("support_interface_filament") == interface);
+    CHECK(bundle.full_config().opt_int("support_filament") == support);
+    CHECK(bundle.full_config().opt_int("support_interface_filament") == interface);
 }
 
 // A "published" 3MF keeps the user's currently-selected presets and overlays only the

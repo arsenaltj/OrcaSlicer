@@ -30,7 +30,11 @@ struct ClusterParameters {
 
     std::size_t cluster_k = 10;  // Target number of cluster centers; ignored by the adaptive algorithm
 
+    std::size_t min_cluster_k = 1;  // Minimum cluster count for adaptive clustering
+
     std::size_t max_cluster_k = 32;  // Max cluster count upper bound for adaptive algorithm
+
+    double max_tail_color_distance = 0;  // Optional maximum distance for every sample; zero disables it
 
     std::size_t max_iter = 50;  // Maximum number of iterations
 

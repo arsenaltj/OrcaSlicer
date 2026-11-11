@@ -1,3 +1,167 @@
+namespace {
+
+#ifdef __WXMSW__
+constexpr const wchar_t* redesign_restore_pending = L"HonorForge.RestorePresentationPending";
+constexpr const wchar_t* redesign_iconized = L"HonorForge.Iconized";
+
+bool cloak_redesign_restore(HWND hwnd, bool cloak)
+{
+    using SetAttribute = HRESULT (WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
+    static const auto set_attribute = [] {
+        const auto library = ::LoadLibraryW(L"dwmapi.dll");
+        return library ? reinterpret_cast<SetAttribute>(::GetProcAddress(library, "DwmSetWindowAttribute")) : nullptr;
+    }();
+    constexpr DWORD cloak_attribute = 13; // DWMWA_CLOAK, Windows 8 and later.
+    const BOOL value = cloak;
+    return set_attribute && SUCCEEDED(set_attribute(hwnd, cloak_attribute, &value, sizeof(value)));
+}
+
+void finish_redesign_restore(wxWindow* root)
+{
+    const auto hwnd = root->GetHandle();
+    if (!::GetPropW(hwnd, redesign_restore_pending) || ::IsIconic(hwnd)) return;
+    ::GdiFlush();
+    using FlushComposition = HRESULT (WINAPI*)();
+    static const auto flush = reinterpret_cast<FlushComposition>(
+        ::GetProcAddress(::GetModuleHandleW(L"dwmapi.dll"), "DwmFlush"));
+    if (flush) flush();
+    cloak_redesign_restore(hwnd, false);
+    ::RemovePropW(hwnd, redesign_restore_pending);
+    BOOST_LOG_TRIVIAL(info) << "[UiRedesignRestore] restored content presented at "
+        << root->GetClientSize().x << 'x' << root->GetClientSize().y;
+}
+#endif
+
+void present_redesign_workspace(wxWindow* root, RedesignShell* shell)
+{
+    auto* frame = dynamic_cast<wxTopLevelWindow*>(root);
+    if (!frame || frame->IsIconized() || !shell) return;
+#ifdef __WXMSW__
+    // wx may already report a restored window while the native client still
+    // has the iconic 290x37 bounds. Keep the presentation gate until Windows
+    // commits a usable size; the following size event will request the paint.
+    RECT bounds {};
+    const auto minimum = frame->GetMinSize();
+    if (::IsIconic(root->GetHandle()) || !::GetWindowRect(root->GetHandle(), &bounds) ||
+        bounds.right - bounds.left < minimum.x || bounds.bottom - bounds.top < minimum.y)
+        return;
+#endif
+    const auto started = std::chrono::steady_clock::now();
+    root->Layout();
+    const auto layout_done = std::chrono::steady_clock::now();
+    shell->request_viewport_frame();
+    const auto request_done = std::chrono::steady_clock::now();
+    wxWindow* workbench_surface = nullptr;
+    std::vector<wxWindow*> windows {root};
+    for (size_t i = 0; i < windows.size(); ++i)
+        for (auto* child : windows[i]->GetChildren()) {
+            if (!child || !child->IsShownOnScreen()) continue;
+            // The workbench queue owns final layout, native overlays and GL.
+            // A second tree flush here can overwrite its freshly drawn handle.
+            if (is_redesign_workbench_surface(child)) workbench_surface = child;
+            else windows.push_back(child);
+        }
+    for (auto* window : windows) {
+        prepare_redesign_restore_background(window);
+        window->Refresh(false);
+    }
+#ifdef __WXMSW__
+    if (workbench_surface) {
+        // Commit the surrounding native controls in one batch too. Per-child
+        // Update() flushes composition repeatedly before the workbench queue
+        // can paint its handle. Leave that subtree to its final-layout pass.
+        ::RedrawWindow(workbench_surface->GetHandle(), nullptr, nullptr,
+            RDW_VALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
+        ::RedrawWindow(root->GetHandle(), nullptr, nullptr, RDW_UPDATENOW | RDW_ALLCHILDREN);
+    } else
+#endif
+        for (auto* window : windows) window->Update();
+    wxString trace;
+    if (wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace) && trace == "1")
+        BOOST_LOG_TRIVIAL(info) << "[UiRedesignRestore] host presentation: layout_ms="
+            << std::chrono::duration<double, std::milli>(layout_done - started).count()
+            << ", request_ms="
+            << std::chrono::duration<double, std::milli>(request_done - layout_done).count()
+            << ", native_ms="
+            << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - request_done).count();
+#ifdef __WXMSW__
+    // The deferred workbench pass was queued above. Expose its complete native
+    // and GL surfaces afterwards; other pages retain their synchronous path.
+    if (::GetPropW(root->GetHandle(), redesign_restore_pending)) {
+        if (workbench_surface) root->CallAfter([root] { finish_redesign_restore(root); });
+        else finish_redesign_restore(root);
+    }
+#endif
+}
+
+}
+
+void MainFrame::bind_workspace_window_events()
+{
+    if (m_redesign_shell_requested && wxGetApp().is_editor()) {
+        // Own the uncovered client surface before the first editor layout.
+        // GL children keep their own swap chains; do not enable compositing.
+        SetWindowStyleFlag(GetWindowStyleFlag() | wxCLIP_CHILDREN);
+        SetBackgroundStyle(wxBG_STYLE_ERASE);
+        SetBackgroundColour(RedesignTheme::background_colour());
+        m_tabpanel->SetBackgroundColour(RedesignTheme::background_colour());
+        m_plater->SetBackgroundColour(RedesignTheme::background_colour());
+    }
+    const auto pending = std::make_shared<bool>(false);
+    const auto present_workspace = [this, pending] {
+        if (!m_redesign_shell || IsIconized() || *pending) return;
+        *pending = true;
+        // wx commits deferred child positions after the size event returns.
+        // Coalesce nested size/iconize events and paint at the final viewport.
+        CallAfter([this, pending] {
+            present_redesign_workspace(this, m_redesign_shell);
+            *pending = false;
+        });
+    };
+    Bind(wxEVT_SIZE, [this, present_workspace, last_layout = wxSize()](wxSizeEvent&) mutable {
+        const auto size = GetClientSize();
+        if (m_redesign_shell_active) {
+            if (IsIconized() || size.x <= 0 || size.y <= 0) return;
+            if (size == last_layout) {
+#ifdef __WXMSW__
+                // Restoring to the same dimensions still needs fresh controls.
+                if (::GetPropW(GetHandle(), redesign_restore_pending)) present_workspace();
+#endif
+                return;
+            }
+            last_layout = size;
+        }
+            BOOST_LOG_TRIVIAL(trace) << "mainframe: size changed, is maximized = " << this->IsMaximized();
+#ifndef __APPLE__
+            if (this->IsMaximized()) {
+                m_topbar->SetWindowSize();
+            } else {
+                m_topbar->SetMaximizedSize();
+            }
+#endif
+        if (m_redesign_shell_active) present_workspace();
+        else {
+            Layout();
+            Refresh();
+        }
+#ifdef __WXGTK__
+        update_edge_panels();
+#endif
+        if ((!m_redesign_shell_active || is_prepare_or_preview_tab()) && wxGetApp().plater() != nullptr) wxQueueEvent(wxGetApp().plater(), new SimpleEvent(EVT_NOTICE_CHILDE_SIZE_CHANGED));
+
+        fit_tab_labels(); // ORCA on resize
+        // Restarts the idle build so a hidden Prepare page is laid out at the new size.
+        if (m_prebuild_started)
+            m_idle.start();
+    });
+    Bind(wxEVT_ICONIZE, [this, present_workspace](wxIconizeEvent& event) {
+        event.Skip();
+        if (!event.IsIconized() && m_redesign_shell_active) {
+            present_workspace();
+        }
+    });
+}
+
 void MainFrame::mount_native_workspace_tools(wxWindow* host)
 {
     if (!m_native_side_tools || !m_slice_btn || !m_print_btn) return;
@@ -46,6 +210,12 @@ const char* ui_redesign_win32_message_name(WXUINT message)
     case WM_WINDOWPOSCHANGING: return "WM_WINDOWPOSCHANGING";
     case WM_WINDOWPOSCHANGED: return "WM_WINDOWPOSCHANGED";
     case WM_NCHITTEST: return "WM_NCHITTEST";
+    case WM_SIZE: return "WM_SIZE";
+    case WM_PAINT: return "WM_PAINT";
+    case WM_ERASEBKGND: return "WM_ERASEBKGND";
+    case WM_PRINT: return "WM_PRINT";
+    case WM_PRINTCLIENT: return "WM_PRINTCLIENT";
+    case WM_NCPAINT: return "WM_NCPAINT";
     default: return nullptr;
     }
 }
@@ -57,6 +227,7 @@ const char* ui_redesign_win32_message_name(WXUINT message)
 
 void MainFrame::start_workflow_services()
 {
+    bind_workspace_window_events();
     if (wxGetApp().is_editor() && m_ai_feature_host) m_ai_feature_host->start();
 }
 
@@ -76,15 +247,88 @@ void MainFrame::init_ai_feature_host()
 }
 
 #ifdef __WXMSW__
+bool MainFrame::MSWPrintChild(WXHDC dc, wxWindow* child)
+{
+    if (!m_redesign_shell_active || !dc || !child)
+        return wxFrame::MSWPrintChild(dc, child);
+    auto colour = child->GetBackgroundColour().IsOk()
+        ? child->GetBackgroundColour() : RedesignTheme::background_colour();
+    if (colour.GetLuminance() > 0.5)
+        colour = RedesignTheme::background_colour();
+    const HBRUSH brush = ::CreateSolidBrush(RGB(colour.Red(), colour.Green(), colour.Blue()));
+    RECT bounds {0, 0, child->GetClientSize().x, child->GetClientSize().y};
+    ::FillRect(reinterpret_cast<HDC>(dc), &bounds, brush);
+    ::DeleteObject(brush);
+    return true;
+}
+
 WXLRESULT MainFrame::MSWWindowProc(WXUINT nMsg, WXWPARAM wParam, WXLPARAM lParam)
 {
     HWND hWnd = GetHandle();
+    const auto* position = nMsg == WM_WINDOWPOSCHANGING ? reinterpret_cast<const WINDOWPOS*>(lParam) : nullptr;
+    // Windows may clear WS_MINIMIZE before WINDOWPOSCHANGING. Remember the
+    // iconize event, and exclude the tiny iconic bounds and z-order-only moves.
+    const bool restoring_size = position && (::IsIconic(hWnd) || ::GetPropW(hWnd, redesign_iconized)) &&
+        !(position->flags & (SWP_NOSIZE | SWP_HIDEWINDOW)) && position->cx > 160 && position->cy > 160;
+    if (m_redesign_shell_active && (nMsg == WM_QUERYOPEN || restoring_size)) {
+        if (!::GetPropW(hWnd, redesign_restore_pending) && cloak_redesign_restore(hWnd, true)) {
+            if (!::SetPropW(hWnd, redesign_restore_pending, reinterpret_cast<HANDLE>(1))) {
+                cloak_redesign_restore(hWnd, false);
+            } else {
+                BOOST_LOG_TRIVIAL(info) << "[UiRedesignRestore] preparing restored content, message=" << nMsg;
+                // wx size/iconize events share the single presentation queue,
+                // including restores that preserve the remembered client size.
+            }
+        }
+    }
+    if (nMsg == WM_SIZE) {
+        if (wParam == SIZE_MINIMIZED) ::SetPropW(hWnd, redesign_iconized, reinterpret_cast<HANDLE>(1));
+        else ::RemovePropW(hWnd, redesign_iconized);
+    }
+    if (nMsg == WM_NCDESTROY) {
+        ::RemovePropW(hWnd, redesign_restore_pending);
+        ::RemovePropW(hWnd, redesign_iconized);
+    }
+    if (ui_redesign_drag_trace_enabled() &&
+        (nMsg == WM_PRINT || nMsg == WM_PRINTCLIENT || nMsg == WM_NCPAINT))
+        BOOST_LOG_TRIVIAL(info) << "[UiRedesignDrag][MainFrame] "
+            << ui_redesign_win32_message_name(nMsg) << " flags=" << static_cast<long long>(lParam);
     /* When we have a custom titlebar in the window, we don't need the non-client area of a normal window
      * to be painted. In order to achieve this, we handle the "WM_NCCALCSIZE" which is responsible for the
      * size of non-client area of a window and set the return value to 0. Also we have to tell the
      * application to not paint this area on activate and deactivation events so we also handle
      * "WM_NCACTIVATE" message. */
     switch (nMsg) {
+    case WM_SYSCOMMAND:
+        if (m_redesign_shell_active && ((wParam & 0xfff0) == SC_MINIMIZE ||
+            (wParam & 0xfff0) == SC_MAXIMIZE || (wParam & 0xfff0) == SC_RESTORE))
+            retain_redesign_window_frames(this);
+        break;
+    case WM_ENTERSIZEMOVE:
+        if (m_redesign_shell_active) retain_redesign_window_frames(this);
+        break;
+    case WM_PRINT:
+        // WM_PRINT can draw a classic caption directly into its snapshot DC.
+        // Our titlebar is part of the client and is included by PRF_CHILDREN.
+        if (m_redesign_shell_active) lParam &= ~PRF_NONCLIENT;
+        break;
+    case WM_NCPAINT:
+        // The client owns the titlebar. Native frame painting also occurs in
+        // restore snapshots, independently of WM_NCACTIVATE.
+        if (m_redesign_shell_active) return 0;
+        break;
+    case WM_PRINTCLIENT:
+        if (m_redesign_shell_active && wParam) {
+            MSWPrintChild(reinterpret_cast<WXHDC>(wParam), this);
+            return 0;
+        }
+        break;
+    case WM_ERASEBKGND:
+        if (m_redesign_shell_active && wParam) {
+            MSWPrintChild(reinterpret_cast<WXHDC>(wParam), this);
+            return 1;
+        }
+        break;
     case WM_NCACTIVATE: {
         /* Returning 0 from this message disable the window from receiving activate events which is not
         desirable. However When a visual style is not active (?) for this window, "lParam" is a handle to an
@@ -126,10 +370,11 @@ WXLRESULT MainFrame::MSWWindowProc(WXUINT nMsg, WXWPARAM wParam, WXLPARAM lParam
         break;
 
     case WM_NCLBUTTONDOWN:
-    case WM_ENTERSIZEMOVE:
     case WM_EXITSIZEMOVE:
     case WM_WINDOWPOSCHANGING:
     case WM_WINDOWPOSCHANGED:
+    case WM_SIZE:
+    case WM_PAINT:
         if (ui_redesign_drag_trace_enabled()) {
             BOOST_LOG_TRIVIAL(info) << "[UiRedesignDrag][MainFrame] "
                                      << ui_redesign_win32_message_name(nMsg)

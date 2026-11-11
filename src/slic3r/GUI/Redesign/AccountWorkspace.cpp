@@ -150,6 +150,7 @@ AccountWorkspace::AccountWorkspace(wxWindow* parent,Changed changed,std::functio
     m_browser_host=new wxPanel(this);m_browser_host->SetBackgroundColour(panel_colour());
     auto* browser_sizer=new wxBoxSizer(wxVERTICAL);m_browser_host->SetSizer(browser_sizer);
     outer->Add(m_browser_host,1,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,FromDIP(28));m_browser_host->Hide();
+    m_browser_host->Bind(wxEVT_SIZE,[this](wxSizeEvent& event){event.Skip();update_browser_zoom();});
     m_login->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){login();});
     m_logout->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){logout();});
     guest->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){m_enter_workspace();});
@@ -167,7 +168,10 @@ void AccountWorkspace::render()
 {
     const auto& s=m_session.snapshot();
     m_name->SetLabel(text(s.has_identity()?(s.identity.name.empty()?"荣耀用户":s.identity.name):"未登录"));
-    const auto message=!s.has_identity()&&!m_logout_message.empty()?m_logout_message:s.message;
+    auto message=!s.has_identity()&&!m_logout_message.empty()?m_logout_message:s.message;
+    if(!s.has_identity()&&!m_logout_message.empty()&&
+       s.message.find("撤销")!=std::string::npos&&s.message.find("未确认")!=std::string::npos)
+        message += "；远端撤销未确认";
     m_status->SetLabel(text(message.empty()?"登录后将在本机安全保持会话":message));m_status->Wrap(FromDIP(520));
     m_login->Show(!s.has_identity());
     if(m_login->Enable(!s.busy()&&!m_clear_only))m_login->Refresh();
@@ -179,14 +183,20 @@ void AccountWorkspace::render()
     m_avatar->SetName(text(s.has_identity()?"更换头像":"未登录头像"));
     m_avatar->SetToolTip(text(s.has_identity()?"更换头像":"登录后可更换头像"));
     m_avatar->SetCursor(wxCursor(s.has_identity()?wxCURSOR_HAND:wxCURSOR_ARROW));
-    if(m_browser)m_browser_status->SetLabel(text(m_browser_initializing?"正在打开荣耀登录页…":s.message));
-    m_browser_status->Show(m_browser!=nullptr&&!m_clear_only);m_cancel_login->Show(m_browser!=nullptr&&!m_clear_only);
+    const bool login_active=s.state==HA::State::Preparing||s.state==HA::State::Authorizing||s.state==HA::State::Exchanging;
+    m_browser_status->SetLabel(text(m_browser&&m_browser_initializing?"正在打开荣耀登录页…":s.message));
+    m_browser_status->Show(login_active&&!m_clear_only);m_cancel_login->Show(login_active&&!m_clear_only);
     load_avatar();m_summary->Layout();Layout();
     if(m_changed)m_changed(s,m_avatar_bitmap);
 }
 void AccountWorkspace::poll()
 {
     bool changed=m_session.poll();
+    if(auto authorization=m_session.take_authorization_url()) {
+        if(m_browser||m_clear_only||!open_browser(*authorization))
+            m_session.fail_authorization("登录页面需要可用的 Microsoft Edge WebView2 运行时及可写的用户数据目录");
+        changed=true;
+    }
     if(m_browser_reset&&m_browser_reset->done.load()) {
         const bool cleared=m_browser_reset->success&&m_session.complete_browser_reset();
         m_browser_reset.reset();
@@ -203,11 +213,22 @@ void AccountWorkspace::poll()
     }
     if(m_browser&&m_browser_initializing&&std::chrono::steady_clock::now()>=m_browser_deadline) {
         BOOST_LOG_TRIVIAL(warning) << "[HonorAccount] stage=browser_prepare result=timeout";
+        m_browser_deadline=std::chrono::steady_clock::time_point::max();
         m_browser_initializing=false;
         browser_failed("荣耀登录页面准备超时，请重试；若仍在清理账号记录，请重新打开软件");
         close_browser();changed=true;
     }
     const auto state=m_session.snapshot().state;
+    if(m_browser&&!m_browser_initializing&&!m_clear_only&&state==HA::State::Authorizing&&
+       m_browser_deadline!=std::chrono::steady_clock::time_point::max()&&
+       std::chrono::steady_clock::now()>=m_browser_deadline) {
+        const auto generation=m_browser_generation;
+        m_browser_deadline=std::chrono::steady_clock::time_point::max();
+        BOOST_LOG_TRIVIAL(warning) << "[HonorAccount] attempt=" << generation
+            << " stage=auth_submit result=timeout page=submit_wait";
+        browser_failed("荣耀登录提交后未收到页面响应，请重试");
+        close_browser();changed=true;
+    }
     if(m_browser && !m_clear_only && state!=HA::State::Authorizing && state!=HA::State::Exchanging) {close_browser();changed=true;}
     if(m_browser && m_clear_only && !m_browser_initializing && !m_browser_reset) {close_browser();changed=true;}
     if(changed)render();
@@ -215,7 +236,7 @@ void AccountWorkspace::poll()
 void AccountWorkspace::load_avatar()
 {
     const auto& snapshot=m_session.snapshot();
-    const auto path=AccountAvatar::account_path(text(Slic3r::data_dir()),m_session.config(),snapshot.identity.subject);
+    const auto path=AccountAvatar::account_path(text(Slic3r::data_dir()),snapshot.identity.subject);
     if(m_avatar_loaded&&path==m_avatar_path)return;
     m_avatar_loaded=true;m_avatar_path=path;
     m_avatar_image=path.empty()?m_guest_avatar:AccountAvatar::read(path);
@@ -290,6 +311,7 @@ void AccountWorkspace::edit_avatar()
 }
 void AccountWorkspace::close_browser()
 {
+    m_browser_deadline=std::chrono::steady_clock::time_point::max();
     if(m_browser) {
         if(m_browser_reset&&!m_browser_reset->done.load()) {
             // Native completion can be lost if the controller is destroyed.
@@ -302,12 +324,14 @@ void AccountWorkspace::close_browser()
         }
         // Keep the dedicated site's trusted-browser/session data across normal
         // success, cancellation, failure and restarts. No legacy native bridge.
+        m_browser_ready=false;
         m_browser->Stop();
         m_browser_host->GetSizer()->Detach(m_browser);m_browser->Hide();
         m_browser->Destroy();
         m_browser=nullptr;
     }
     m_browser_initializing=false;m_clear_only=false;m_browser_reset.reset();m_pending_authorization.clear();
+    m_browser_generation=0;
     m_browser_status->Hide();m_cancel_login->Hide();
     m_browser_host->Hide();m_summary->Show();Layout();
 }
@@ -322,16 +346,38 @@ bool AccountWorkspace::open_browser(const std::string& url,bool clear_only)
     if(!config)return false;
     m_browser=wxWebView::New(*config);
     if(!m_browser)return false;
+    m_browser_ready=false;
     if(!m_browser->Create(m_browser_host,wxID_ANY,"about:blank",wxDefaultPosition,wxDefaultSize,wxBORDER_NONE)) {
         m_browser->Destroy();m_browser=nullptr;return false;
     }
+    const auto generation=m_session.generation();
+    m_browser_generation=generation;
     m_browser_initializing=true;m_clear_only=clear_only;m_pending_authorization=url;
     m_browser_deadline=std::chrono::steady_clock::now()+std::chrono::seconds(20);
     m_browser->EnableAccessToDevTools(false);m_browser->EnableContextMenu(false);m_browser->EnableHistory(false);
     m_browser->SetBackgroundColour(panel_colour());
     const auto theme_script=honor_account_theme_script();
+    const auto submit_script=honor_account_submit_watchdog_script();
+    const bool submit_bridge=m_browser->AddScriptMessageHandler("honorAuthSubmit");
+    BOOST_LOG_TRIVIAL(info) << "[HonorAccount] attempt=" << generation
+        << " stage=auth_bridge result=" << (submit_bridge?"ready":"unavailable")
+        << " page=blank";
     m_browser->AddUserScript(theme_script,wxWEBVIEW_INJECT_AT_DOCUMENT_START);
-    m_browser->Bind(wxEVT_WEBVIEW_LOADED,[this,theme_script](wxWebViewEvent& event) {
+    if(submit_bridge)m_browser->AddUserScript(submit_script,wxWEBVIEW_INJECT_AT_DOCUMENT_START);
+    m_browser->Bind(wxEVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED,[this,generation](wxWebViewEvent& event) {
+        if(!m_browser||m_clear_only||generation!=m_browser_generation||generation!=m_session.generation()||
+           event.GetString()!="honor-submit-v1"||m_session.snapshot().state!=HA::State::Authorizing)return;
+        const auto page=HA::classify_authorization_page(
+            m_browser->GetCurrentURL().ToStdString(wxConvUTF8),m_session.config().callback_uri);
+        if(!HA::authorization_submit_allowed(page))return;
+        m_browser_deadline=std::chrono::steady_clock::now()+std::chrono::seconds(30);
+        BOOST_LOG_TRIVIAL(info) << "[HonorAccount] attempt=" << generation
+            << " stage=auth_submit result=received page=" << HA::authorization_page_name(page);
+    });
+    m_browser->Bind(wxEVT_WEBVIEW_LOADED,[this,theme_script,submit_script,submit_bridge,generation](wxWebViewEvent& event) {
+        if(generation!=m_browser_generation)return;
+        m_browser_ready=true;
+        update_browser_zoom();
         if(m_browser_initializing&&event.GetURL()=="about:blank") {
             // Start outside the native callback; cancellation can close a view
             // before this queued preparation runs.
@@ -339,12 +385,25 @@ bool AccountWorkspace::open_browser(const std::string& url,bool clear_only)
             CallAfter([this,browser]{if(m_browser==browser&&m_browser_initializing)prepare_browser();});
             return;
         }
+        m_browser_deadline=std::chrono::steady_clock::time_point::max();
+        const auto page=HA::classify_authorization_page(
+            event.GetURL().ToStdString(wxConvUTF8),m_session.config().callback_uri);
+        BOOST_LOG_TRIVIAL(info) << "[HonorAccount] attempt=" << generation
+            << " stage=auth_loaded result=ready page=" << HA::authorization_page_name(page);
         // Reapply idempotently if a backend couldn't inject before first paint.
-        if(m_browser)m_browser->RunScriptAsync(theme_script);
+        if(m_browser) {
+            m_browser->RunScriptAsync(theme_script);
+            if(submit_bridge)m_browser->RunScriptAsync(submit_script);
+        }
     });
-    m_browser->Bind(wxEVT_WEBVIEW_NAVIGATING,[this](wxWebViewEvent& event) {
+    m_browser->Bind(wxEVT_WEBVIEW_NAVIGATING,[this,generation](wxWebViewEvent& event) {
         const auto url=event.GetURL().ToStdString(wxConvUTF8);
-        if(m_session.callback(url)) {
+        const auto page=HA::classify_authorization_page(url,m_session.config().callback_uri);
+        if(generation==m_browser_generation)
+            m_browser_deadline=std::chrono::steady_clock::time_point::max();
+        BOOST_LOG_TRIVIAL(info) << "[HonorAccount] attempt=" << generation
+            << " stage=auth_navigation result=observed page=" << HA::authorization_page_name(page);
+        if(m_session.callback(url,generation)) {
             event.Veto();
             // Destroying the native controller from its own navigation callback
             // is unsafe. The timer closes it after verification or failure.
@@ -352,15 +411,18 @@ bool AccountWorkspace::open_browser(const std::string& url,bool clear_only)
         }
         if(url!="about:blank"&&url.compare(0,8,"https://")!=0)event.Veto();
     });
-    m_browser->Bind(wxEVT_WEBVIEW_NEWWINDOW,[this](wxWebViewEvent& event) {
+    m_browser->Bind(wxEVT_WEBVIEW_NEWWINDOW,[this,generation](wxWebViewEvent& event) {
         event.Veto();auto url=event.GetURL().ToStdString(wxConvUTF8);
-        if(m_session.callback(url))render();
+        m_browser_deadline=std::chrono::steady_clock::time_point::max();
+        if(m_session.callback(url,generation))render();
         else if(url.compare(0,8,"https://")==0 && m_browser)m_browser->LoadURL(text(url));
     });
-    m_browser->Bind(wxEVT_WEBVIEW_ERROR,[this](wxWebViewEvent& event) {
+    m_browser->Bind(wxEVT_WEBVIEW_ERROR,[this,generation](wxWebViewEvent& event) {
+        m_browser_deadline=std::chrono::steady_clock::time_point::max();
         // Do not display WebView's error text: it may contain the full URL.
         if(m_clear_only||m_session.snapshot().state==HA::State::Authorizing) {
-            BOOST_LOG_TRIVIAL(warning) << "[HonorAccount] Authorization page failed; WebView category=" << event.GetInt();
+            BOOST_LOG_TRIVIAL(warning) << "[HonorAccount] attempt=" << generation
+                << " stage=webview result=error page=unknown error_category=" << event.GetInt();
             m_browser_initializing=false;
             browser_failed("荣耀授权页面未能打开，请稍后重试或联系软件提供方");render();
         }
@@ -370,6 +432,13 @@ bool AccountWorkspace::open_browser(const std::string& url,bool clear_only)
     else {m_summary->Hide();m_browser_host->Show();}
     Layout();
     m_browser->LoadURL("about:blank");return true;
+}
+void AccountWorkspace::update_browser_zoom()
+{
+    if(!m_browser||!m_browser_host)return;
+    const auto viewport=m_browser_host->ToDIP(m_browser_host->GetClientSize());
+    const auto zoom=honor_account_zoom_factor_if_ready(m_browser_ready,viewport);
+    if(zoom)m_browser->SetZoomFactor(*zoom);
 }
 void AccountWorkspace::prepare_browser()
 {
@@ -394,14 +463,17 @@ void AccountWorkspace::navigate_authorization()
     if(!m_browser||!m_browser_initializing||m_session.snapshot().state!=HA::State::Authorizing)return;
     const auto url=std::move(m_pending_authorization);m_pending_authorization.clear();
     m_browser_initializing=false;
+    m_browser_deadline=std::chrono::steady_clock::time_point::max();
+    BOOST_LOG_TRIVIAL(info) << "[HonorAccount] attempt=" << m_browser_generation
+        << " stage=auth_navigation result=start page="
+        << HA::authorization_page_name(HA::classify_authorization_page(url,m_session.config().callback_uri));
     m_browser->LoadURL(text(url));render();
 }
 void AccountWorkspace::login()
 {
     if(m_clear_only||m_browser)return;
     m_logout_message.clear();
-    auto url=m_session.login();
-    if(!url.empty()&&!open_browser(url))m_session.fail_authorization("登录页面需要可用的 Microsoft Edge WebView2 运行时及可写的用户数据目录");
+    m_session.login();
     render();
 }
 void AccountWorkspace::logout()
@@ -410,8 +482,12 @@ void AccountWorkspace::logout()
     if(!m_session.logout(clear)) {render();return;}
     m_logout_message.clear();close_browser();
     if(clear) {
-        m_logout_message="已退出，正在清除本机荣耀登录和验证记录…";
-        if(!open_browser({},true))m_logout_message="已退出，登录记录尚未清除；下次登录会先重试清理";
+        if(m_session.browser_reset_pending()) {
+            m_logout_message="已退出，正在清除本机荣耀登录和验证记录…";
+            if(!open_browser({},true))m_logout_message="已退出，本机登录记录清理未确认；请重新打开软件后重试";
+        } else {
+            m_logout_message="已退出；本机荣耀网页登录记录清理未确认";
+        }
     }
     render();
 }

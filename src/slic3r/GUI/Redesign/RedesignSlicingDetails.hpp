@@ -5,8 +5,16 @@
 
 #include <cmath>
 #include <vector>
+#include <wx/sizer.h>
 
 namespace Slic3r::GUI {
+
+inline bool set_slicing_detail_visible(wxSizerItem& item, bool visible)
+{
+    if (item.IsShown() == visible) return false;
+    item.Show(visible);
+    return true;
+}
 
 struct SliceDetailRow
 {

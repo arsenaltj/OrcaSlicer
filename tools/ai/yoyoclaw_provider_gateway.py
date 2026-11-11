@@ -310,7 +310,12 @@ class YoYoClawModelProviderGateway:
         try:
             return self._client().wait_3d(model_id, task_id, stop_event=stop_event, progress=progress)
         except YoYoClawError as exc:
-            raise _error(exc, "task_poll") from None
+            error = _error(exc, "task_poll")
+            # Only this code is emitted after a confirmed terminal task status.
+            # HTTP/polling failures retain the task and must never buy a retry.
+            error.terminal = exc.code == "provider_task_failed"
+            error.task_id = task_id
+            raise error from None
 
     def download_artifact(
         self,

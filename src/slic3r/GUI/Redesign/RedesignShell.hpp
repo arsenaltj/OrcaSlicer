@@ -4,7 +4,12 @@
 #include "NativeWorkspaceTheme.hpp"
 #include "RedesignModelRoute.hpp"
 #include "RedesignPageTransition.hpp"
+#include "RedesignPreviewPresentation.hpp"
+#include "RedesignPresentationDeadline.hpp"
+#include "RedesignWorkspaceNavigation.hpp"
 #include "../AI/ModelGeneration/ModelGenerationHost.hpp"
+#include "../AI/ModelGeneration/ModelHistoryOpen.hpp"
+#include "../AI/ModelGeneration/PortraitWorkbenchEntry.hpp"
 #include "../AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "../AI/ModelGeneration/WorkbenchImportSession.hpp"
 #include "../AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
@@ -20,6 +25,7 @@
 #include <thread>
 #include <chrono>
 #include <optional>
+#include <memory>
 #include <vector>
 
 #include <wx/image.h>
@@ -27,6 +33,7 @@
 #include <wx/panel.h>
 #include <wx/timer.h>
 #include <wx/weakref.h>
+#include <wx/eventfilter.h>
 
 class wxBoxSizer;
 class wxActivityIndicator;
@@ -66,7 +73,7 @@ class AccountWorkspace;
 class RedesignShell final : public wxPanel
 {
 public:
-    enum class Page { Assets, Image, Model, Print, Account };
+    using Page = RedesignWorkspacePage;
 
     explicit RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model_generation_host = nullptr,
                            Plater* plater = nullptr, AITextFeatureHost* text_feature_host = nullptr);
@@ -82,6 +89,7 @@ public:
     bool native_slicing_visible() const { return native_workspace_visible() && m_native_slicing; }
     void start_slicing_from_workspace();
     void refresh_workflow_layout();
+    void request_viewport_frame();
     void show_printer_media();
     void refresh_printer_state();
 
@@ -158,9 +166,19 @@ private:
     void update_image_state();
     void update_preview_bitmap();
     void bind_upload_click(wxWindow* window);
-    enum class ModelView { Result, Workbench, Slicing, Preview };
+    using ModelView = RedesignModelView;
     void build_model_workflow();
     bool open_model_workbench();
+    bool begin_workbench_presentation(bool history_loading = false);
+    bool continue_workbench_presentation();
+    void layout_workbench_transition_cover();
+    void finish_workbench_presentation(bool ready, bool report_failure = true);
+    void restore_workbench_source_page();
+    void sync_page_settings_visibility(Page page);
+    wxRect workbench_transition_bounds() const;
+    void update_history_loading(ModelHistoryOpenEvent::Stage stage);
+    void layout_history_loading();
+    void finish_history_loading();
     void return_model_overview();
     bool show_model_view(ModelView view);
     void apply_workbench_state(const PostGenerationWorkbenchState& state);
@@ -183,6 +201,14 @@ private:
     void restore_import_source_page();
     void check_import_first_frame();
     void open_print_preparation();
+    bool update_print_preview(bool active, bool layers, bool support);
+    void return_to_slice_preview();
+    bool navigate_to_workbench();
+    void refresh_navigation();
+    bool prepare_preview_transition();
+    void check_preview_first_frame(RedesignPageTransition::Token token);
+    void finish_preview_transition(RedesignPageTransition::Token token, bool ready);
+    void layout_preview_transition_cover();
     bool can_save_print_project() const;
     void refresh_project_save_actions();
     void save_print_project();
@@ -219,6 +245,9 @@ private:
     wxWindow* m_native_preview {nullptr};
     NativeWorkspaceTheme m_native_theme;
     wxPanel* m_native_plater_host { nullptr };
+    bool m_print_canvas_mounted {false}, m_print_canvas_layers {false}, m_print_canvas_support {true};
+    std::function<bool()> m_print_preview_revision_current;
+    std::string m_print_preview_gcode;
     wxPanel* m_ai_slicing_controls { nullptr };
     wxWindow* m_ai_slicing_tab { nullptr };
     wxWindow* m_native_slicing_tab { nullptr };
@@ -268,7 +297,30 @@ private:
     bool m_native_slicing {false};
     bool m_preview_toolpath_outside {false};
     PreviewAutoFitState m_preview_auto_fit;
+    SliceCompletionPresentation m_slice_completion;
     bool m_slice_completion_retry_pending {false};
+    RedesignPreviewFrameGate m_preview_frame_gate;
+    std::optional<RedesignPageTransition::Token> m_preview_transition;
+    wxFrame* m_preview_transition_cover {nullptr};
+    wxTimer m_preview_transition_timer;
+    std::optional<RedesignPageTransition::Token> m_workbench_transition;
+    uint64_t m_history_open_request {0};
+    std::string m_history_open_asset;
+    wxDialog* m_history_loading {nullptr};
+    wxActivityIndicator* m_history_activity {nullptr};
+    WorkbenchLabel *m_history_stage {nullptr}, *m_history_elapsed {nullptr};
+    wxWindow* m_history_cancel {nullptr};
+    std::chrono::steady_clock::time_point m_history_started;
+    bool m_history_rollback_pending {false}, m_workbench_history_loading {false};
+    bool m_workbench_source_reparented {false};
+    wxFrame* m_workbench_transition_cover {nullptr};
+    wxWindow* m_workbench_transition_source {nullptr};
+    std::size_t m_workbench_source_index {0};
+    int m_workbench_source_proportion {1}, m_workbench_source_flags {0}, m_workbench_source_border {0};
+    std::unique_ptr<wxEventFilter> m_workbench_transition_input_filter;
+    wxSize m_workbench_prepared_size;
+    wxTimer m_workbench_transition_timer;
+    RedesignPresentationDeadline m_workbench_presentation_deadline;
     bool m_import_in_progress {false};
     bool m_import_awaiting_frame {false};
     bool m_import_target_staged {false};
@@ -395,6 +447,7 @@ private:
     bool m_generation_geometry_mode { true };
     int m_last_service_status { 0 };
     Page m_active_page { Page::Account };
+    Page m_last_workbench_page { Page::Model };
     // Keep the semantic workspace request, not only the visual host. Several
     // legacy requests (Prepare, Preview, Monitor and Multi-device) currently
     // share the Print host while their business meaning still differs.

@@ -453,3 +453,30 @@ TEST_CASE("Automatic, manual, and printer sources retain independent color count
     CHECK(restored.manual_count == 6);
     CHECK(restored.project_count == 0);
 }
+
+TEST_CASE("Independent base bindings round trip without changing portrait colors and exclude support white", "[ColorTrialState][HonorFilamentSuite]")
+{
+    auto state = saved_trial();
+    state.base_binding = AI::ModelBaseBinding {};
+    state.suite_fallback_reason = "near color fallback";
+    trial::State reopened; std::string error;
+    auto doc = trial::encode(state, 12, geometry_id);
+    REQUIRE(trial::decode(doc, 12, geometry_id, reopened, error));
+    REQUIRE(reopened.base_binding);
+    CHECK(reopened.base_binding->physical_slot == 0);
+    CHECK(reopened.base_binding->slot_id == "charcoal");
+    CHECK(reopened.suite_fallback_reason == state.suite_fallback_reason);
+    require_same(state, reopened);
+    const auto portrait = doc.at("colors");
+    state.base_binding = AI::ModelBaseBinding {"honor.people.six", "1", "milk-white", 3};
+    doc = trial::encode(state, 12, geometry_id);
+    CHECK(doc.at("colors") == portrait);
+    REQUIRE(trial::decode(doc, 12, geometry_id, reopened, error));
+    CHECK(reopened.base_binding->physical_slot == 3);
+    doc["base_binding"]["physical_slot"] = 5;
+    doc["base_binding"]["slot_id"] = "support-white";
+    CHECK_FALSE(trial::decode(doc, 12, geometry_id, reopened, error));
+    doc.erase("base_binding");
+    REQUIRE(trial::decode(doc, 12, geometry_id, reopened, error));
+    CHECK_FALSE(reopened.base_binding);
+}

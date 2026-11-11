@@ -73,7 +73,9 @@ inline constexpr size_t semantic_region_slot_count = 4;
 using SemanticRegionSlotBindings = std::array<int, semantic_region_slot_count>;
 inline constexpr SemanticRegionSlotBindings default_semantic_region_slot_bindings {{-1, -1, -1, -1}};
 // Version of stored recognition evidence; palette-mapping edits do not invalidate it.
-inline constexpr const char* pipeline_version = "orca.semantic-coloring/v17";
+inline constexpr const char* pipeline_version = "orca.semantic-coloring/v18";
+inline constexpr int global_view_size = 512;
+inline constexpr int production_face_roi_size = 1024;
 
 struct SubfaceLabelEvidence {
     size_t face_id {0};
@@ -132,6 +134,10 @@ struct MeshSnapshot {
     std::vector<RGBA> face_colors;
     std::string geometry_id;
     std::string content_id;
+    // Optional immutable original-surface sampler. Geometry and face IDs stay
+    // canonical after repair; sampling may refer back to verified source UVs.
+    std::function<Color(size_t, const Barycentric&)> sample_original;
+    std::string sampling_signature;
 };
 // Geometry identity plus the ordered original face/corner sRGB float32 values.
 // Vertex duplication at color seams does not change this identity.
@@ -144,8 +150,12 @@ struct Analysis {
     std::vector<SubfaceLabelEvidence> subface_labels;
     bool person_detected {false};
     bool canceled {false};
-    int face_roi_size {512};
+    int face_roi_size {production_face_roi_size};
     size_t rendered_views {0}, face_views {0}, observed_faces {0}, reliable_faces {0};
+    // Per-view diagnostics contain counts only. No rendered image, page data,
+    // or other personal input is retained in the semantic cache.
+    std::array<uint32_t, 8> candidate_face_regions {};
+    std::array<uint32_t, 8> detected_face_regions {};
     std::string error;
 };
 
@@ -195,8 +205,8 @@ RenderedView render_region(const MeshSnapshot&, float yaw_degrees, const ViewReg
                            int image_size = 512, const Cancel& = {});
 Analysis analyze(const MeshSnapshot&, IBodyRegionRecognizer&, IFaceRegionRecognizer&,
                  const Cancel& = {}, const Progress& = {});
-// Diagnostic-only resolution probe. Non-512 results cannot be cached or mapped
-// to materials, so experiments cannot enter the product path accidentally.
+// Diagnostic-only resolution probe. Results using a non-production ROI cannot
+// be cached or mapped to materials, so experiments cannot enter the product path.
 Analysis analyze_with_face_roi_size(const MeshSnapshot&, IBodyRegionRecognizer&,
                                     IFaceRegionRecognizer&, int face_roi_size,
                                     const Cancel& = {}, const Progress& = {},

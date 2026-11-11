@@ -333,7 +333,7 @@ class ModelJobLifecycle:
     def resume_restored_jobs(self, restored: list[Job]) -> None:
         for job in restored:
             if job.creation_kind == "advanced_multiview_v1": continue
-            if job.workflow_mode == "smart": continue  # Explicit desktop resume owns the next action.
+            if job.workflow_mode == "smart" or job.retired_workflow: continue  # Explicit desktop resume owns the next action.
             if job.state == "queued" and job.phase == "resuming":
                 latest_attempt = job.attempts[-1] if job.attempts else {}
                 if latest_attempt.get("provider_operation") == "model_texture":

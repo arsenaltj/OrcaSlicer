@@ -197,6 +197,24 @@
       "needle": "struct ModelGenerationFeatureHost::Impl"
     },
     {
+      "id": "portrait_suite_binding",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelPreviewSemantics.cpp",
+      "needle": "void ModelPreview3D::update_semantic_coloring()",
+      "detail": "People six preserves the v12 native geometry, ordered faces and atomic regions. Full regional role support and high-confidence connected face overlays preserve hair, bilateral eyebrows, sclera, irises and lips. Native color reduction is independent of semantics; global one-to-one slot matching uses five model slots. Unknown faces retain their native group. Support slot six and the independent base keep separate identities."
+    },
+    {
+      "id": "portrait_native_repair",
+      "path": "src/slic3r/GUI/AI/Orca/WorkbenchImportTopology.hpp",
+      "needle": "inline bool prepare_workbench_import_topology(",
+      "detail": "Strict native repair precedes partitioning. Shared synchronous and asynchronous import validation verifies ordered face-corner float bits before restoring the certified closed native indices and preserving painting. Owned checkpoint restoration distinguishes the committed partition and accepted saved-version formats; saved versions require all final coloring contracts and the bound post-color certificate. Unknown formats, changed identity and ordinary models retain fail-closed inspection. Import and painting failures roll back the detached candidate. The base is a separate volume outside source clustering and the native body certificate."
+    },
+    {
+      "id": "portrait_print_preview",
+      "path": "src/slic3r/GUI/Redesign/RedesignModelWorkflow.cpp",
+      "needle": "bool RedesignShell::update_print_preview(",
+      "detail": "Print preparation mounts the existing Plater read-only for final filament colors and native layer/support preview, bound to valid official G-code and workspace revision; leaving restores the native host."
+    },
+    {
       "id": "smart_generation_flow",
       "path": "src/slic3r/GUI/AI/ModelGeneration/SmartGenerationFlow.hpp",
       "needle": "class SmartGenerationFlow"
@@ -369,7 +387,8 @@
     {
       "id": "workbench_check",
       "path": "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchCheck.cpp",
-      "needle": "bool ModelGenerationPanel::request_check_workbench(bool automatic)"
+      "needle": "bool ModelGenerationPanel::request_check_workbench(bool automatic)",
+      "detail": "Checks reuse content-bound saved results; first-import partitioning excludes native geometry and existing coloring. Ordinary saves verify the final artifact and bind the complete editing metadata."
     },
     {
       "id": "workbench_beauty",
@@ -440,6 +459,11 @@
       "id": "workbench_history_snapshot",
       "path": "src/slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySnapshot.hpp",
       "needle": "inline std::string workbench_history_key("
+    },
+    {
+      "id": "workbench_history_drawer",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySidebar.hpp",
+      "needle": "struct WorkbenchHistorySidebarState"
     },
     {
       "id": "workbench_import_loading",
@@ -705,6 +729,36 @@
       "path": "tools/ai/advanced_multiview_model_workflow.py",
       "needle": "class AdvancedMultiviewModelWorkflow:",
       "detail": "只使用已确认四图，复用模型网关和产物端口；不自动重生设计。"
+    },
+    {
+      "id": "native_workbench_partition",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/NativeWorkbenchPartition.cpp",
+      "needle": "bool ModelGenerationPanel::ensure_native_workbench_partition(",
+      "detail": "Shared native partitioning serves the existing AI palette and explicit people-six suite. Model context, cancellation and late-result ownership remain bound to the manual workbench; no portrait one-click state or ledger exists."
+    },
+    {
+      "id": "native_workbench_publication",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/NativeWorkbenchPublication.hpp",
+      "needle": "inline void prepare_native_workbench_publication(",
+      "detail": "Manual native color publication preserves region semantics, color reduction, slot binding, atomic history and content-bound topology certificates. WorkbenchModelInspection restores unchanged legacy appearance geometry only after verifying its complete native ancestry and ordered corners. WorkbenchHistoryEvidence resolves an original publication only while both model copies and both full metadata records match; check, publication and native import still validate the original bound proof. Missing original-appearance companions recover only through the hash-bound source chain. Ordinary saved certificates cannot authorize native claims. History loading validates these same complete certificates on its worker before automatic check scheduling; the in-memory source index never grants check success."
+    },
+    {
+      "id": "workbench_page_presentation",
+      "path": "src/slic3r/GUI/Redesign/RedesignWorkbenchPresentation.cpp",
+      "needle": "bool RedesignShell::begin_workbench_presentation(bool history_loading)",
+      "detail": "The existing page-transition token retains the completed source page for result entry and direct history entry, including in-workbench model changes. Layout and current model frames gate reveal; checks run only afterwards. History notifications are generation/asset bound and ordinary state publication cannot reroute preparation. Failure, cancellation and timeout restore the previous model, route and AI settings before uncovering. The retained source includes settings and content but excludes fixed navigation; target settings visibility and final width precede frame validation."
+    },
+    {
+      "id": "shared_view_navigator",
+      "path": "src/slic3r/GUI/View3DNavigator.cpp",
+      "needle": "ImGuizmo::ViewManipulateResult draw_view_navigator(",
+      "detail": "GUI-only shared navigator styling and Z-up mapping. Native Camera and the workbench orthographic camera retain separate ownership; workbench ImGui context and per-canvas ImGuizmo gesture/interpolation are isolated."
+    },
+    {
+      "id": "model_history_open",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationHistoryOpen.cpp",
+      "needle": "bool ModelGenerationPanel::load_library_entry(",
+      "detail": "One generation/selected-asset checked history loading transaction owns entry, actual preparation stages, rollback and certificate restoration before page presentation. Cancellation retains the busy request until its parser drains; deferred launch follows the first card paint. Shared import-style feedback has an independent lifecycle and stays through final frame reveal. The existing scan worker supplies a memory-only source index; actual model preparation revalidates each source chain and complete publication proof."
     }
   ],
   "journeys": [
@@ -1068,6 +1122,26 @@
   ],
   "business_flows": [
     {
+      "id": "native_workbench",
+      "label": "工作台原生分区与手动配色保存",
+      "detail": "共享检查及分区，显式人物六色、手动编辑和保存发布；原生导入继续验证拓扑与配色凭证",
+      "boundary": "不自动串联配色、底座、保存、导入或切片；旧一键请求明确失败，旧任务仅保留历史资产",
+      "group": "设计与生成",
+      "evidence": [
+        "native_workbench_partition",
+        "native_workbench_publication",
+        "portrait_suite_binding",
+        "portrait_native_repair",
+        "history"
+      ],
+      "modules": [
+        "generation",
+        "adapter",
+        "desktop"
+      ],
+      "impact_scope": "evidence"
+    },
+    {
       "id": "design",
       "label": "设计准备",
       "detail": "从文字或图片开始，预处理并准备设计；按图片服务、模型和生成方式统计近期成功耗时，样本不足显示已等待，样本足够显示预计剩余时间，超出预估后继续等待真实结果",
@@ -1152,7 +1226,7 @@
     {
       "id": "history",
       "label": "历史与恢复",
-      "detail": "保存任务和资产，重新打开历史结果；按任务及模型路径复用卡片和缩略图，保持搜索、分页与滚动；查看模型目录、导出独立 GLB/图片副本并浏览模型图库",
+      "detail": "保存任务和资产，重新打开历史结果；按任务及模型路径复用卡片和缩略图，保持搜索、分页与滚动；AI创作与工作台分别保留折叠偏好，按钮跟随实际侧栏边界；查看模型目录、导出独立 GLB/图片副本并浏览模型图库",
       "boundary": "恢复已有记录不等于重新生成",
       "group": "资产与工作区",
       "evidence": [
@@ -1162,7 +1236,8 @@
         "library_export",
         "install_model_storage",
         "workbench_history_cards",
-        "workbench_history_snapshot"
+        "workbench_history_snapshot",
+        "workbench_history_drawer"
       ],
       "modules": [
         "generation"
@@ -1321,8 +1396,8 @@
     {
       "id": "workbench_check",
       "label": "工作副本检查",
-      "detail": "加载及保存后自动检查、安全修复和复检，展示残留问题与失败原因",
-      "boundary": "仅在身份兼容的 OBJ 工作副本上执行支持的修复；未覆盖的检查不显示正常",
+      "detail": "入场及手动检查共用修复、复检与原子保存；按当前模型身份恢复、补调度及显示通过或失败",
+      "boundary": "修复内部候选通过拓扑、几何和外观验证才自动发布；CGAL 与增强修复回退，失败不放行风险导入",
       "group": "资产与工作区",
       "evidence": [
         "workbench_check"
@@ -1788,6 +1863,7 @@
         "paths": [
           "src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls*",
           "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbench*",
+          "src/slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySidebar.hpp",
           "src/slic3r/GUI/AI/ModelGeneration/ModelPreview*"
         ],
         "evidence": [
@@ -1796,11 +1872,12 @@
         ],
         "tests": [
           "tests/slic3rutils/test_beauty*",
-          "tests/slic3rutils/test_post_generation*"
+          "tests/slic3rutils/test_post_generation*",
+          "tests/slic3rutils/test_model_preview_state.cpp"
         ],
         "state_owner": "工作台候选与预览；正式工程仍归 Plater",
         "contract": "原始模型、候选、美颜结果与物理耗材分开",
-        "note": "能力存在；部分异步会话仍绑定 wxPanel。",
+        "note": "部分异步会话仍绑定 wxPanel；展示入口合并最终布局、拉手置顶、检查卡片及重绘。预览按模型／布局代次、视口和DPI拒绝过期帧并持有等比GPU过渡；工作台恢复层不复制GL的CPU帧，原生控件快照在首次真实绘制后失效。",
         "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
       },
       {

@@ -5,6 +5,7 @@ namespace Slic3r::GUI {
 struct PortraitShapeDetails;
 struct PrinterFilamentRestoreSnapshot {
         std::shared_ptr<const PortraitColorBlocks::Result> color_blocks;
+        std::shared_ptr<const NativePortrait::NativePortraitPartition> native_portrait_partition;
         std::string geometry_id;
         ModelPreviewColorState color_trial;
         AI::SemanticColoring::FaceColors face_color_overrides;

@@ -9,6 +9,7 @@ void ModelPreview3D::capture_printer_filament_restore_snapshot()
     if (m_printer_filament_restore || m_geometry_id.empty() || !m_color_trial) return;
     PrinterFilamentRestoreSnapshot snapshot;
     snapshot.color_blocks=m_color_blocks;
+    snapshot.native_portrait_partition=m_native_portrait_partition;
     snapshot.geometry_id = m_geometry_id;
     snapshot.color_trial = m_color_trial->state();
     // Keep the in-memory source verbatim.  The trial must be able to restore
@@ -37,6 +38,7 @@ bool ModelPreview3D::restore_printer_filament_preview_source()
     const auto& snapshot = *m_printer_filament_restore;
 
     m_color_blocks=snapshot.color_blocks;
+    m_native_portrait_partition=snapshot.native_portrait_partition;
     m_face_color_overrides = snapshot.face_color_overrides;
     m_automatic_face_colors = snapshot.automatic_face_colors;
     m_automatic_subface_colors = snapshot.automatic_subface_colors;
@@ -88,6 +90,7 @@ bool ModelPreview3D::restore_printer_filament_input_source()
     m_suppress_semantic_change = false;
     m_restoring_printer_input = false;
     m_color_blocks=snapshot.color_blocks;
+    m_native_portrait_partition=snapshot.native_portrait_partition;
     m_face_color_overrides = snapshot.face_color_overrides;
     m_automatic_face_colors = snapshot.automatic_face_colors;
     m_automatic_subface_colors = snapshot.automatic_subface_colors;
@@ -278,6 +281,12 @@ ModelPreview3D::WorkbenchSurfacePalette ModelPreview3D::workbench_surface_palett
             if (unit.path.depth == 0) honor_face_slots[unit.face] = native_slot;
             else honor_subface_slots[{unit.face, unit.path.depth, unit.path.value}] = native_slot;
         }
+        if (m_color_blocks->active == PortraitColorBlocks::Track::ProcessedFaceColor)
+            for (const auto& overlay : m_color_blocks->face_overrides) {
+                if (overlay.face >= track.unit_blocks.size() || overlay.slot >= trial.project_color_slots.size()) continue;
+                if (track.blocks.at(track.unit_blocks[overlay.face]).status == PortraitColorBlocks::Status::ManualConfirmed) continue;
+                honor_face_slots[overlay.face] = trial.project_color_slots[overlay.slot];
+            }
     }
     auto preferred_target = [&trial](const PreviewPalette::Color& color) -> std::optional<size_t> {
         if (trial.source != 1) return {};
@@ -348,6 +357,12 @@ ModelPreview3D::FaceColorOverrides ModelPreview3D::printer_filament_export_faces
 {
     auto result = import_face_color_overrides(true);
     const auto trial = m_color_trial->state();
+    if (trial.source == 2 && trial.suite_id == "honor.people.six" && !trial.suite_fallback_reason.empty()) {
+        const auto surface = workbench_surface_palette();
+        result.clear(); result.reserve(surface.faces.size());
+        for (size_t face = 0; face < surface.faces.size(); ++face) result.emplace_back(face, surface.faces[face].color);
+        return result;
+    }
     if (trial.source != 1 || !project_matching_valid()) return result;
     const auto& mesh = m_semantic_source ? m_semantic_source->mesh :
         m_region_editor->ready() ? m_region_editor->mesh() : m_pending_mesh;
@@ -544,6 +559,9 @@ ModelPreview3D::BeautyPaintResult ModelPreview3D::restore_beauty_region(
 bool ModelPreview3D::restore_portrait_color_blocks(std::shared_ptr<const PortraitColorBlocks::Result> blocks,bool refresh)
 {
     if(blocks && (blocks->geometry_id!=m_geometry_id || blocks->face_count!=m_triangle_count))return false;
+    if (blocks && (blocks->algorithm_version != PortraitColorBlocks::portrait_postprocess_algorithm_version ||
+        !blocks->native_partition_identity || !m_native_portrait_partition ||
+        blocks->native_partition_identity->partition_digest != m_native_portrait_partition->partition_digest)) return false;
     const auto previous = m_color_blocks;
     m_color_blocks=std::move(blocks);
     m_selected_color_block.reset();
@@ -659,16 +677,18 @@ void ModelPreview3D::update_semantic_coloring()
         if (m_honor_suite_application_complete) m_honor_suite_application_complete(applied);
         return;
     }
-    if (!portrait_recognition_enabled() || !m_has_model || !m_semantic_source ||
+    if ((!honor_request && !portrait_recognition_enabled()) ||
+        (honor_request && !portrait_recognition_enabled() && !m_native_portrait_partition) ||
+        !m_has_model || !m_semantic_source ||
         (!honor_request && (!m_color_trial_enabled || !m_color_trial->color_block_postprocess_enabled()))) {
         if (m_semantic_controller) m_semantic_controller->cancel();
         if (honor_request) {
             const wxString reason = !portrait_recognition_enabled()
-                ? _L("本地人物语义识别不可用，未应用套装。")
+                ? _L("本地人物语义识别不可用。")
                 : !m_semantic_source
                 ? _L("当前模型缺少可靠人物语义输入，未应用套装。")
                 : _L("当前模型无法启动人物语义识别，未应用套装。");
-            reject_honor_suite_application(reason);
+            fallback_honor_people_suite(reason);
             if (m_semantic_completion) {
                 auto callback = std::move(m_semantic_completion);
                 callback(false);
@@ -719,9 +739,10 @@ void ModelPreview3D::update_semantic_coloring()
                                       !m_shapes_unlocked && m_manual_leaf_colors.empty() && m_manual_cell_colors.empty(),
                                        honor_request ? std::map<std::string, AI::SemanticColoring::Color>{} : m_manual_cell_colors,
                                        m_portrait_progress,std::move(saved),
-                                       honor_request ? targets.size() :
+                                       honor_request ? m_color_trial->honor_suite_source_basis().requested_count :
                                            size_t(std::clamp(m_color_trial->automatic_count(), 1, int(PreviewPalette::max_preview_colors))),
-                                       false, honor_request, fixed_role_slots, request_context)) {
+                                       false, honor_request, fixed_role_slots, request_context,
+                                       honor_request ? m_native_portrait_partition : nullptr)) {
         m_semantic_submission_edit_revision = m_leaf_edit_revision;
         m_semantic_submission_manual = m_face_color_overrides;
         m_semantic_submission_unlocked = m_shapes_unlocked;
@@ -785,10 +806,30 @@ bool ModelPreview3D::rebuild_semantic_preview_from_color_blocks()
     }
 }
 
+bool ModelPreview3D::fallback_honor_people_suite(const wxString& reason)
+{
+    if (!m_color_trial || !m_color_trial->honor_suite_request_pending() ||
+        !active_honor_filament_suite() || active_honor_filament_suite()->id != "honor.people.six")
+        return reject_honor_suite_application(reason);
+    m_semantic_error = reason;
+    m_suppress_semantic_change = true;
+    const bool applied = m_color_trial->commit_honor_suite_nearest(_L("近色回退：") + reason);
+    m_suppress_semantic_change = false;
+    if (!applied) return reject_honor_suite_application(reason);
+    m_color_blocks.reset(); m_automatic_face_colors.clear(); m_automatic_subface_colors.clear();
+    m_semantic_model.reset(); m_semantic_ready = false;
+    m_color_trial_enabled = m_color_trial->enabled(); m_trial_palette = m_color_trial->colors();
+    m_color_trial->set_semantic_status(_L("近色回退：") + reason, false);
+    m_canvas->Refresh(false);
+    if (m_honor_suite_application_complete) m_honor_suite_application_complete(true);
+    return true;
+}
+
 bool ModelPreview3D::reject_honor_suite_application(const wxString& reason)
 {
     if (!m_color_trial || !m_color_trial->honor_suite_request_pending()) return false;
     const wxString message = _L("人物语义配色未完成，模型与耗材保持原状。") + "\n" + reason;
+    m_semantic_error = reason;
     m_color_trial->reject_honor_suite_request(message);
     m_color_trial->set_semantic_status(message, false);
     if (m_honor_suite_application_complete) m_honor_suite_application_complete(false);
@@ -858,14 +899,28 @@ void ModelPreview3D::finish_semantic_coloring()
                 ? PortraitColorBlocks::reliable_fixed_role_blocks(*result->color_blocks,
                     m_color_trial->honor_suite_request_role_slots()) : 0;
             wxString fallback_reason;
+            const auto* suite = m_color_trial->active_honor_suite();
+            if (result->source_region_failure || (suite && suite->id == "honor.people.six" &&
+                (!result->color_blocks || result->color_blocks->source_palette.empty() || result->geometry.is_empty()))) {
+                const wxString reason=result->error.empty() ? _L("AI 源色区域或实际颜色边界未能建立，已保留原配色。") : wxString::FromUTF8(result->error);
+                reject_honor_suite_application(reason);
+                publish_honor_suite_semantic_progress(false,0,reason,honor_context,honor_geometry);
+                if (m_semantic_completion) {auto callback=std::move(m_semantic_completion);callback(false);}
+                m_semantic_timer.Stop();return;
+            }
             if (!result->error.empty())
-                fallback_reason = _L("本地人物语义识别不可用，未应用套装。");
+                fallback_reason = _L("本地人物语义识别不可用。");
             else if (!result->person_detected)
-                fallback_reason = _L("未检测到人物，未应用套装。");
+                fallback_reason = _L("未检测到人物。");
             else if (!result->color_blocks || reliable_roles == 0)
-                fallback_reason = _L("未找到置信度达到 0.70 的人物区域，未应用套装。");
+                fallback_reason = _L("已检测到人物，但没有可信的区域绑定。");
             else if (result->geometry.is_empty())
                 fallback_reason = _L("人物语义预览无法建立，未应用套装。");
+            if (!fallback_reason.empty() && result->color_blocks && !result->color_blocks->source_palette.empty() &&
+                result->error.empty() && !result->geometry.is_empty()) {
+                result->semantic_fallback_reason = std::string("近色回退：") + fallback_reason.ToStdString(wxConvUTF8);
+                fallback_reason.clear();
+            }
             if (!fallback_reason.empty()) {
                 if (result->analysis) {
                     m_semantic_analysis = std::move(result->analysis);
@@ -876,7 +931,7 @@ void ModelPreview3D::finish_semantic_coloring()
                     if (evidence) restore_semantic_region_evidence(std::move(evidence));
                 }
                 m_semantic_error = fallback_reason;
-                reject_honor_suite_application(fallback_reason);
+                fallback_honor_people_suite(fallback_reason);
                 publish_honor_suite_semantic_progress(false, 0, fallback_reason,
                     honor_context, honor_geometry);
                 BOOST_LOG_TRIVIAL(info) << "Honor suite semantic match fell back: person="
@@ -953,7 +1008,9 @@ void ModelPreview3D::finish_semantic_coloring()
             if (honor_submission) {
                 const size_t used = honor_suite_used_color_count();
                 m_suppress_semantic_change = true;
-                const bool committed = m_color_trial->commit_honor_suite_semantic(used);
+                const bool committed = result->semantic_fallback_reason.empty()
+                    ? m_color_trial->commit_honor_suite_semantic(used)
+                    : m_color_trial->commit_honor_suite_nearest(wxString::FromUTF8(result->semantic_fallback_reason));
                 m_suppress_semantic_change = false;
                 if (!committed) {
                     m_semantic_model.reset();
@@ -972,9 +1029,9 @@ void ModelPreview3D::finish_semantic_coloring()
                 }
                 m_color_trial_enabled = m_color_trial->enabled();
                 m_trial_palette = m_color_trial->colors();
-                m_color_trial->set_semantic_status(wxString::Format(
+                m_color_trial->set_semantic_status(result->semantic_fallback_reason.empty() ? wxString::Format(
                     _L("荣耀耗材套装语义配色完成 · 当前使用 %llu/5 色，第 6 槽专供支撑。"),
-                    static_cast<unsigned long long>(used)), false);
+                    static_cast<unsigned long long>(used)) : wxString::FromUTF8(result->semantic_fallback_reason), false);
                 m_semantic_submission_context.clear();
                 m_semantic_submission_geometry.clear();
             } else if(m_color_blocks) {

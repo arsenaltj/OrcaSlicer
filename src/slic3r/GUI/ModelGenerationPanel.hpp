@@ -2,10 +2,13 @@
 
 #include "AIModelGenerationClient.hpp"
 #include "AI/ModelGeneration/SmartGenerationFlow.hpp"
+#include "AI/ModelGeneration/ModelGenerationSubmissionResult.hpp"
 #include "AI/ModelGeneration/BeautyCandidateSnapshot.hpp"
+#include "AI/ModelGeneration/PortraitWorkbenchEntry.hpp"
 #include "AI/ModelGeneration/BeautyWorkbenchSession.hpp"
 #include "AI/ModelGeneration/BeautyWorkbenchColorGate.hpp"
 #include "AI/ModelGeneration/ModelLibraryEntry.hpp"
+#include "AI/ModelGeneration/ModelHistoryOpen.hpp"
 #include "AI/ModelGeneration/ModelLibraryApplication.hpp"
 #include "AI/ModelGeneration/ModelLibraryLoader.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationHost.hpp"
@@ -23,6 +26,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/PortraitShapeDetails.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationUiState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySidebar.hpp"
 
 #include <boost/filesystem/path.hpp>
 #include <wx/image.h>
@@ -102,6 +106,8 @@ public:
     void set_smart_creation_presentation(bool smart);
     void unmount_assets();
     void set_history_navigation_handler(std::function<void(bool)> handler) { m_history_navigation = std::move(handler); }
+    void set_history_model_open_handler(ModelHistoryOpenHandler handler) { m_history_model_open = std::move(handler); }
+    void finish_history_model_open(bool accepted, std::function<void()> complete = {});
     void set_ui_state_listener(ModelGenerationUIStateListener listener);
     ModelGenerationUIState ui_state_snapshot() const { return m_ui_state; }
     bool synchronize_ui_input(const ModelGenerationUIInput& input);
@@ -109,9 +115,9 @@ public:
     void get_provider_catalog(const std::string& role, const std::string& provider,
                               AIModelGenerationClient::CatalogFn on_complete,
                               AIModelGenerationClient::ErrorFn on_error);
-    bool request_generate_design();
+    ModelGenerationSubmissionResult request_generate_design();
+    ModelGenerationSubmissionResult request_generate_model();
     bool request_generate_smart();
-    bool request_generate_model();
     bool request_retry_model();
     bool request_stop();
     bool request_retry_service();
@@ -131,6 +137,8 @@ public:
     void show_workbench_color_matching(const AI::GeneratedModelArtifact& artifact, Plater* plater);
     bool request_open_workbench();
     void set_workbench_presented(bool presented);
+    void prepare_workbench_presentation(std::function<void()> ready);
+    void cancel_workbench_presentation();
     void raise_workbench_modal();
     bool request_enter_beauty();
     bool request_return_overview();
@@ -173,6 +181,49 @@ public:
     void synchronize_workbench_project_palette(bool activate_preview = false);
 
 private:
+    using NativeWorkbenchPartitionConsumer = WorkbenchArtifacts::NativeWorkbenchPartitionConsumer;
+    using NativeWorkbenchPartitionConsumers = WorkbenchArtifacts::NativeWorkbenchPartitionConsumers;
+    struct NativeWorkbenchPartitionContext {
+        boost::filesystem::path model_path;
+        std::string source_sha256;
+        std::string geometry_id;
+        std::string appearance_id;
+        std::uint64_t generation {0};
+
+        bool valid() const {
+            return !model_path.empty() && source_sha256.size() == 64 &&
+                !geometry_id.empty() && !appearance_id.empty();
+        }
+        bool operator==(const NativeWorkbenchPartitionContext& other) const {
+            return model_path == other.model_path && source_sha256 == other.source_sha256 &&
+                geometry_id == other.geometry_id && appearance_id == other.appearance_id &&
+                generation == other.generation;
+        }
+        bool operator!=(const NativeWorkbenchPartitionContext& other) const {
+            return !(*this == other);
+        }
+    };
+
+    ModelGenerationSubmissionResult m_last_submission {ModelGenerationSubmissionResult::Rejected};
+    std::thread m_native_workbench_partition_worker;
+    std::shared_ptr<std::atomic<bool>> m_native_workbench_partition_cancel;
+    bool m_native_workbench_partition_running {false};
+    std::uint8_t m_native_workbench_partition_consumers {0};
+    bool m_honor_suite_partition_pending {false};
+    bool m_honor_suite_partition_resume_queued {false};
+    NativeWorkbenchPartitionContext m_native_workbench_context;
+    NativeWorkbenchPartitionContext m_native_workbench_partition_context;
+    nlohmann::json m_native_workbench_partition_reference;
+    nlohmann::json m_native_workbench_partition_report;
+    nlohmann::json m_native_workbench_partition_certificate;
+    nlohmann::json m_native_workbench_partition_commit;
+    bool restore_workbench_check_certificate();
+    void publish_native_workbench_context();
+    bool native_workbench_context_matches(const NativeWorkbenchPartitionContext&) const;
+    bool restore_native_workbench_partition_checkpoint();
+    bool ensure_native_workbench_partition(NativeWorkbenchPartitionConsumers consumers);
+    void queue_honor_suite_after_native_partition();
+    void cancel_native_workbench_partition();
     void apply_smart_ui_state(ModelGenerationUIState& state);
     bool m_smart_mode {false};
     bool m_shell_smart_creation {false};
@@ -183,6 +234,9 @@ private:
     PostGenerationWorkbenchListener m_workbench_listener;
     wxWindow* m_assets_home_parent {nullptr};
     std::function<void(bool)> m_history_navigation;
+    ModelHistoryOpenHandler m_history_model_open;
+    uint64_t m_history_open_generation {0};
+    std::shared_ptr<ModelHistoryOpenRequest> m_history_open;
     wxButton* m_library_cancel {nullptr};
     wxTextCtrl* m_assets_search {nullptr};
     wxChoice* m_assets_category {nullptr};
@@ -214,6 +268,7 @@ private:
     std::shared_ptr<std::atomic<bool>> m_workbench_check_cancel;
     std::unordered_set<std::string> m_workbench_repair_attempts;
     bool m_workbench_check_running {false};
+    bool m_workbench_check_queued {false};
     bool m_workbench_import_running {false};
     bool m_workbench_auto_repair {false};
     bool m_workbench_auto_palette_pending {false};
@@ -234,6 +289,9 @@ private:
     WorkbenchButton* m_workbench_check_details_button {nullptr};
     bool m_workbench_check_card_visible {false};
     bool m_workbench_presented {false};
+    bool m_workbench_preparing {false};
+    std::function<void()> m_workbench_preparation_ready;
+    std::uint64_t m_workbench_surface_revision {0};
     std::uint64_t m_workbench_presentation_sequence {0};
     WorkbenchFloatingCardMode m_workbench_floating_card_mode {WorkbenchFloatingCardMode::None};
     bool m_workbench_honor_semantic_active {false};
@@ -247,7 +305,9 @@ private:
     bool m_workbench_card_raise_pending {false};
     void update_workbench_check_card();
     void hide_workbench_check_card();
-    void position_workbench_check_card();
+    bool position_workbench_check_card(bool preparing = false);
+    void queue_workbench_surface_refresh();
+    bool m_workbench_surface_refresh_pending {false};
     void raise_workbench_check_card();
     void install_workbench_card_layer_guard();
     void remove_workbench_card_layer_guard();
@@ -259,6 +319,9 @@ private:
     void cancel_workbench_check();
     void acknowledge_workbench_risk();
     void ensure_workbench_check();
+    bool can_start_workbench_check() const;
+    void queue_workbench_check();
+    void fail_workbench_check(const std::string& message);
     bool apply_pending_workbench_ai_palette(const boost::filesystem::path& source, std::uint64_t revision);
     void clear_pending_workbench_ai_palette();
     std::function<void(size_t)> m_project_color_edit;
@@ -451,7 +514,8 @@ private:
     void load_model_preview_async(boost::filesystem::path path, std::vector<std::string> palette,
         std::function<void(size_t, Vec3d, size_t, double)> loaded,
         std::function<void(std::string)> failed, const boost::filesystem::path& metadata_path = {},
-        std::shared_ptr<ModelHistoryMetadata> history_metadata = {}, std::function<bool()> may_install = {});
+        std::shared_ptr<ModelHistoryMetadata> history_metadata = {}, std::function<bool()> may_install = {},
+        std::shared_ptr<ModelHistoryOpenRequest> history_open = {});
     void download_and_import();
     void import_local_artifact(const boost::filesystem::path& path, uint64_t sequence);
     void cleanup_files();
@@ -523,7 +587,7 @@ private:
     void load_design_library_entry(const std::string& job_id);
     void save_library_entry(size_t artifact_size, size_t triangle_count, double width, double depth,
                             double height, size_t color_count, double load_seconds);
-    void load_library_entry(const boost::filesystem::path& model_path,
+    bool load_library_entry(const boost::filesystem::path& model_path,
                              const boost::filesystem::path& reference_image_path,
                              const boost::filesystem::path& ai_image_path,
                              const std::vector<std::string>& palette,
@@ -532,7 +596,9 @@ private:
                              const boost::filesystem::path& color_intent_path,
                              const std::string& color_intent_schema,
                              const std::string& color_intent_sha256,
-                             const std::string& job_id, const wxString& title, bool new_asset = false);
+                             const std::string& job_id, const wxString& title, bool new_asset = false,
+                             std::shared_ptr<const ModelHistoryRepairIndex> repairs = {},
+                             std::shared_ptr<ModelHistoryOpenRequest> restoration = {});
     bool delete_library_entry(const GeneratedModelEntry& entry);
     void export_library_entry(const GeneratedModelEntry& entry);
     void update_library_provider_tasks(const std::string& job_id,
@@ -574,26 +640,25 @@ private:
     wxToggleButton* m_workbench_grid {nullptr};
     wxPanel* m_workbench_footer {nullptr};
     void layout_workbench_history_toggle(bool force = false);
+    bool update_workbench_history_visibility();
+    void toggle_workbench_history();
+    void reveal_workbench_history();
     wxStaticText* m_workbench_state_status {nullptr};
     wxStaticText* m_workbench_model_status {nullptr};
     wxStaticText* m_workbench_check_status {nullptr};
     wxStaticText* m_workbench_palette_status {nullptr};
-    wxWindow* m_workbench_print {nullptr};
-    wxWindow* m_workbench_print_navigation {nullptr};
     wxWindow* m_workbench_edit {nullptr};
     wxWindow* m_workbench_check {nullptr};
     wxWindow* m_workbench_palette_details {nullptr};
     wxToggleButton* m_workbench_original {nullptr};
     wxWindow* m_workbench_slicing {nullptr};
-    std::array<wxStaticText*, 7> m_workbench_slice_values {};
     bool m_open_smart_slicing_after_import {false};
     wxWindow* m_workbench_history_toggle {nullptr};
     wxWindow* m_workbench_return_to_design_button {nullptr};
     bool m_workbench_editing {false};
     bool m_refreshing_workbench_layout {false};
     bool m_updating_comparison_layout {false};
-    bool m_workbench_history_collapsed {false};
-    bool m_workbench_history_user_open {false};
+    WorkbenchHistorySidebarState m_workbench_history_state;
     bool m_workbench_load_error {false};
     wxTextCtrl* m_workbench_history_search {nullptr};
     Button* m_workbench_history_upload {nullptr};
@@ -627,14 +692,10 @@ private:
     std::vector<std::string> m_workbench_history_visible_keys;
     wxWindow* m_workbench_history_home {nullptr};
     wxWindow* m_workbench_history_sidebar_host {nullptr};
-    wxWindow* m_workbench_history_toggle_home {nullptr};
-    wxRect m_workbench_history_toggle_home_rect;
-    wxSize m_workbench_history_toggle_home_min_size;
-    wxSize m_workbench_history_toggle_home_max_size;
+    wxWeakRef<Button> m_creation_history_toggle;
     wxSize m_workbench_history_search_home_min_size;
     wxSize m_workbench_history_search_home_max_size;
     bool m_workbench_history_sidebar_mounted {false};
-    bool m_workbench_history_toggle_was_shown {false};
     bool m_workbench_import_feedback {false};
     bool m_workbench_import_history_was_shown {false};
     wxStaticText* m_workbench_history_status {nullptr};

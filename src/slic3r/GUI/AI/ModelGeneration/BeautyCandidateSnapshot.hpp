@@ -18,6 +18,7 @@ struct BeautyPartitionSnapshot;
 struct PortraitShapeDetails;
 struct BeautyCandidateSnapshot {
     std::shared_ptr<const PortraitColorBlocks::Result> color_blocks;
+    std::shared_ptr<const NativePortrait::NativePortraitPartition> native_portrait_partition;
     std::optional<PrinterFilamentRestoreSnapshot> printer_restore;
     std::optional<AI::ModelMatchedColors> matched_colors;
     std::string matched_configuration_signature;
@@ -61,6 +62,7 @@ inline BeautyCandidateSnapshot beauty_comparison_baseline(
     // Partitioning, semantic evidence and draft state are editor context, not
     // appearance. They may be created after the entry baseline was captured
     // and must stay live while the user temporarily views the entry colors.
+    comparison.native_portrait_partition = current.native_portrait_partition;
     comparison.selection = current.selection;
     comparison.region_evidence = current.region_evidence;
     comparison.region_evidence_error = current.region_evidence_error;

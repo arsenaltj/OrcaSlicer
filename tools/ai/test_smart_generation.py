@@ -17,6 +17,54 @@ from model_request import _validate_image_data
 
 
 class SmartGenerationTests(unittest.TestCase):
+    def test_removed_creation_requests_never_submit_a_provider_task(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = self.make_application(Path(directory), {})
+            for mode in ("smart", "advanced"):
+                with self.subTest(mode=mode), self.assertRaises(RequestError) as caught:
+                    app.create_text_job({**self.request(), "workflow_mode": mode, "portrait_print": True})
+                self.assertEqual(caught.exception.status, 410)
+            with self.assertRaises(RequestError) as caught:
+                app.create_image_job({**self.request(), "portrait_print": "true"}, b"unused", "image/png")
+            self.assertEqual(caught.exception.status, 410)
+            with self.assertRaises(RequestError) as caught:
+                app.execute_job("retry-portrait", "missing", {})
+            self.assertEqual(caught.exception.status, 404)
+            self.submit.assert_not_called()
+
+    def test_retired_history_keeps_assets_without_reauthorizing_execution(self):
+        import json
+        from model_contracts import JOB_STATE_FILENAME
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = self.make_application(root, {})
+            first = app.create_text_job(self.request())
+            job = app.ports.jobs[first.payload["job"]["id"]]
+            model = job.directory / "model.glb"
+            model.write_bytes(b"existing model")
+            job.artifact_path = model
+            job.artifact_format = "glb"
+            job.state = "queued"
+            job.phase = "resuming"
+            _persist_job(job)
+            state_path = job.directory / JOB_STATE_FILENAME
+            record = json.loads(state_path.read_text(encoding="utf-8"))
+            record["portrait_print"] = True
+            state_path.write_text(json.dumps(record), encoding="utf-8")
+            restored = _load_job(job.directory)
+            self.assertTrue(restored.retired_workflow)
+            self.assertEqual(restored.state, "stopped")
+            self.assertEqual(restored.artifact_path, model)
+            restarted = self.make_application(root, {restored.id: restored})
+            for command in ("generate", "confirm-palette", "retry-preparation", "retexture"):
+                with self.subTest(command=command), self.assertRaises(RequestError) as caught:
+                    restarted.execute_job(command, restored.id, {})
+                self.assertEqual(caught.exception.status, 410)
+            _persist_job(restored)
+            self.assertTrue(_load_job(job.directory).retired_workflow)
+            self.assertEqual(model.read_bytes(), b"existing model")
+            self.submit.assert_not_called()
+
     def make_application(self, root, jobs):
         def denied(*args, **kwargs):
             raise AssertionError("Unexpected provider or capability invocation")

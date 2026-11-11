@@ -21,6 +21,7 @@ class RuntimeTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="orca-dev-runtime-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
+        self.native_startup = self.enterContext(mock.patch.object(dev, "verify_windows_native_startup"))
         self.build = self.root / ".tmp/build"
         self.runtime = self.root / ".tmp/dev/run"
         self.write(".gitignore", ".tmp/\n")
@@ -69,6 +70,29 @@ class RuntimeTests(unittest.TestCase):
         self.write("config/product.json", json.dumps({"display_name": "Honor Fixture", "version": "1.0.1", "build_number": 0}))
         with self.assertRaisesRegex(ValueError, "Native sources/resources/build configuration changed"):
             dev.update_sidecar(self.root, self.build)
+
+    def test_explicit_no_execution_install_checks_bytes_without_running_the_loader(self):
+        self.prepare()
+        self.native_startup.reset_mock()
+        before = dev.preflight(self.root, self.build)
+        dev.finish_install(self.root, self.build, before, skip_native_startup=True)
+        self.native_startup.assert_not_called()
+        receipt = dev.read_json(self.root / ".tmp/dev/runtime-state.json")
+        self.assertEqual(receipt["native_startup_check"], "skipped_by_request")
+        (self.runtime / "Honor Fixture.dll").write_text("wrong bytes")
+        with self.assertRaisesRegex(ValueError, "Runtime does not match"):
+            dev.finish_install(self.root, self.build, before, skip_native_startup=True)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows native loader gate")
+    def test_install_does_not_publish_a_receipt_when_native_dependencies_cannot_load(self):
+        self.prepare()
+        receipt = self.root / ".tmp/dev/runtime-state.json"
+        previous = receipt.read_bytes()
+        self.native_startup.assert_called_with(self.runtime, "Honor Fixture.exe")
+        self.native_startup.side_effect = ValueError("Native runtime cannot start with system PATH")
+        with self.assertRaisesRegex(ValueError, "cannot start with system PATH"):
+            dev.finish_install(self.root, self.build, dev.preflight(self.root, self.build))
+        self.assertEqual(receipt.read_bytes(), previous)
 
     def set_runtime_capabilities(self, portrait: bool, legacy_farl: bool):
         cache = self.build / "CMakeCache.txt"
@@ -539,6 +563,37 @@ class RuntimeTests(unittest.TestCase):
         self.write(".tmp/dev/run/resources/tools/ai/config.json", '{"version":2}')
         with self.assertRaisesRegex(ValueError, "Runtime does not match"):
             dev.verify_runtime(self.root, self.build, [])
+
+
+class NativeStartupTests(unittest.TestCase):
+    def test_native_loader_check_uses_only_system_paths_without_changing_parent_environment(self):
+        runtime = Path("staged-runtime")
+        completed = subprocess.CompletedProcess([], 0, "usage", "")
+        with mock.patch.dict(dev.os.environ, {"SystemRoot": r"C:\Windows", "Path": r"D:\developer-tools"}, clear=True):
+            before = dict(dev.os.environ)
+            with mock.patch.object(dev.subprocess, "run", return_value=completed) as run:
+                dev.verify_windows_native_startup(runtime, "Honor Fixture.exe")
+            self.assertEqual(dict(dev.os.environ), before)
+        args, options = run.call_args
+        self.assertEqual(args[0], [str(runtime / "Honor Fixture.exe"), "--help"])
+        self.assertEqual(options["cwd"], runtime)
+        self.assertEqual(options["env"]["PATH"],
+                         os.pathsep.join((str(Path(r"C:\Windows") / "System32"), r"C:\Windows")))
+        self.assertNotIn("D:\\developer-tools", options["env"]["PATH"])
+        self.assertEqual(sum(key.upper() == "PATH" for key in options["env"]), 1)
+
+    def test_native_loader_errors_and_timeouts_fail_validation_with_the_cause(self):
+        missing = subprocess.CompletedProcess([], 0xffffffff,
+                                               "Honor Fixture.dll was not loaded, error=126", "")
+        cases = ((missing, None, "error=126"),
+                 (None, OSError("loader unavailable"), "loader unavailable"),
+                 (None, subprocess.TimeoutExpired("fixture --help", 30), "timed out"))
+        with mock.patch.dict(dev.os.environ, {"SystemRoot": r"C:\Windows"}):
+            for result, error, reason in cases:
+                with self.subTest(reason=reason):
+                    with mock.patch.object(dev.subprocess, "run", return_value=result, side_effect=error):
+                        with self.assertRaisesRegex(ValueError, reason):
+                            dev.verify_windows_native_startup(Path("staged-runtime"), "Honor Fixture.exe")
 
 
 class OfflineSelectionTests(unittest.TestCase):

@@ -17,14 +17,14 @@ enum class WorkbenchCheckStatus { NotRun, Running, Normal, Attention, Invalid, F
 enum class WorkbenchCheckPhase { Idle, Inspecting, Repairing, Rechecking };
 enum class RepairCandidateStatus { None, Generating, Ready, Accepted, Rejected, Failed };
 enum class WorkbenchFloatingCardMode { None, ModelCheck, HonorSuiteSemantic };
-// Automatic checks are run when a model first becomes visible in the 3D
-// workbench; manual checks are initiated from the sidebar and retain the
-// existing candidate workflow.
+enum class WorkbenchCheckPurpose { GeneralImport, PortraitSourceRisk, PortraitPostColorReadOnly, SavedModelReadOnly };
+// Both entry points inspect, repair and atomically publish without user review.
 enum class WorkbenchCheckSource { Automatic, Manual };
 
 struct WorkbenchCheckResult {
     WorkbenchCheckStatus status {WorkbenchCheckStatus::NotRun};
     WorkbenchCheckSource source {WorkbenchCheckSource::Automatic};
+    WorkbenchCheckPurpose purpose {WorkbenchCheckPurpose::GeneralImport};
     std::string model_sha256;
     std::string summary;
     size_t boundary_edges {0};
@@ -43,8 +43,7 @@ struct WorkbenchCheckResult {
     size_t small_faces {0};
     std::vector<size_t> issue_faces;
     size_t isolated_components {0};
-    // A repair is always a temporary candidate.  The original check remains
-    // available while the candidate is being reviewed.
+    // A temporary repair is internal until its verified publication completes.
     RepairCandidateStatus candidate_status {RepairCandidateStatus::None};
     std::string candidate_path;
     std::string source_sha256;
@@ -63,13 +62,75 @@ inline bool workbench_automatic_check_should_start(bool workbench_open, bool wor
     return workbench_open && workbench_presented && model_ready;
 }
 
-inline bool workbench_ai_palette_should_apply(bool pending, WorkbenchCheckSource source,
-                                              bool topology_safe, RepairCandidateStatus candidate_status,
-                                              bool repair_candidate_loaded)
+// Geometry inspection is independent of Beauty's filament matching gate.
+// Shared processing and unsaved work still protect the current asset.
+inline bool workbench_check_start_allowed(bool presented, bool model_ready,
+    bool processing, bool candidate_pending, bool unsaved_changes)
 {
-    if (!pending || source != WorkbenchCheckSource::Automatic || !topology_safe) return false;
-    return repair_candidate_loaded ? candidate_status == RepairCandidateStatus::Ready
-                                   : candidate_status == RepairCandidateStatus::None;
+    return presented && model_ready && !processing && !candidate_pending && !unsaved_changes;
+}
+
+enum class WorkbenchCheckOutcome { Pending, Processing, Passed, Failed };
+
+inline WorkbenchCheckOutcome workbench_check_outcome(const WorkbenchCheckResult& check,
+    bool processing = false)
+{
+    if (processing || check.status == WorkbenchCheckStatus::Running)
+        return WorkbenchCheckOutcome::Processing;
+    if (check.status == WorkbenchCheckStatus::Attention || check.status == WorkbenchCheckStatus::Invalid ||
+        check.status == WorkbenchCheckStatus::Failed)
+        return WorkbenchCheckOutcome::Failed;
+    if (check.candidate_status == RepairCandidateStatus::Generating ||
+        check.candidate_status == RepairCandidateStatus::Ready)
+        return WorkbenchCheckOutcome::Processing;
+    if (check.status == WorkbenchCheckStatus::NotRun) return WorkbenchCheckOutcome::Pending;
+    return check.status == WorkbenchCheckStatus::Normal
+        ? WorkbenchCheckOutcome::Passed : WorkbenchCheckOutcome::Failed;
+}
+
+inline bool workbench_check_allows_topology_repair(bool native_partition_requested = false)
+{
+    // Shared partitioning owns repair before clustering; checks are read-only until then.
+    return !native_partition_requested;
+}
+
+inline bool workbench_initial_partition_requested(bool automatic, bool appearance_available,
+    bool native_partition_valid, bool persisted_colors, bool bound_edits)
+{
+    return automatic && appearance_available && !native_partition_valid && !persisted_colors && !bound_edits;
+}
+
+
+inline bool workbench_native_partition_should_start(bool pending, WorkbenchCheckSource source,
+                                                     WorkbenchCheckStatus status,
+                                                     RepairCandidateStatus candidate_status,
+                                                     bool repair_candidate_loaded)
+{
+    const bool readable_terminal_check = status == WorkbenchCheckStatus::Normal ||
+        status == WorkbenchCheckStatus::Attention || status == WorkbenchCheckStatus::Invalid;
+    // Attention and Invalid are topology risks, not failures to read the
+    // source. The native partition must receive them so its strict pre-cluster
+    // repair can run exactly once.
+    return pending && source == WorkbenchCheckSource::Automatic && readable_terminal_check &&
+        !repair_candidate_loaded && candidate_status == RepairCandidateStatus::None;
+}
+
+inline bool workbench_ai_palette_should_resume_after_accept(bool pending,
+    WorkbenchCheckSource source, bool topology_safe, RepairCandidateStatus candidate_status)
+{
+    return pending && source == WorkbenchCheckSource::Automatic && topology_safe &&
+        candidate_status == RepairCandidateStatus::Ready;
+}
+
+inline bool workbench_default_ai_palette_ready(bool enabled, int source,
+    int requested_count, bool suite_active, bool has_native_basis)
+{
+    return enabled && source == 0 && requested_count == 6 && !suite_active && has_native_basis;
+}
+
+inline bool workbench_honor_suite_requires_native_partition(bool native_partition_valid)
+{
+    return !native_partition_valid;
 }
 
 inline bool workbench_check_card_should_show(bool workbench_open, bool workbench_presented,
@@ -78,11 +139,23 @@ inline bool workbench_check_card_should_show(bool workbench_open, bool workbench
                                              const WorkbenchCheckResult& result)
 {
     if (!workbench_open || !workbench_presented) return false;
+    // Portrait checks are internal gates. Their terminal result is represented
+    // in the sidebar and flow ledger, never as the generic import/repair modal.
+    if (!check_running && !automatic_repair_saving &&
+        result.purpose != WorkbenchCheckPurpose::GeneralImport)
+        return false;
+    // Failed/invalid general checks remain available in the inline status and
+    // details view. A terminal failure card looks like it stopped the strict
+    // native repair even when that separate operation is still progressing.
+    if (!check_running && !automatic_repair_saving &&
+        (result.status == WorkbenchCheckStatus::Invalid ||
+         result.status == WorkbenchCheckStatus::Failed))
+        return false;
     const bool automatic = result.source == WorkbenchCheckSource::Automatic;
-    const bool repair_phase = result.phase == WorkbenchCheckPhase::Repairing ||
-        result.phase == WorkbenchCheckPhase::Rechecking;
     bool show = requested_visible;
-    if (check_running && (automatic || repair_phase)) show = true;
+    // Both entry checks and explicit checks need an immediate, cancellable
+    // progress card, including the initial inspection phase.
+    if (check_running) show = true;
     if (automatic_repair_saving) show = true;
     if (!check_running && !automatic_repair_saving && !automatic &&
         result.candidate_status == RepairCandidateStatus::Ready) show = false;
@@ -94,9 +167,11 @@ inline bool workbench_check_card_should_show(bool workbench_open, bool workbench
 
 inline WorkbenchFloatingCardMode workbench_floating_card_mode(bool workbench_open,
     bool workbench_presented, bool honor_semantic_active, bool requested_check_visible,
-    bool check_running, bool automatic_repair_saving, const WorkbenchCheckResult& result)
+    bool check_running, bool automatic_repair_saving, bool native_partition_running,
+    const WorkbenchCheckResult& result)
 {
     if (!workbench_open || !workbench_presented) return WorkbenchFloatingCardMode::None;
+    if (native_partition_running) return WorkbenchFloatingCardMode::ModelCheck;
     if (honor_semantic_active) return WorkbenchFloatingCardMode::HonorSuiteSemantic;
     return workbench_check_card_should_show(workbench_open, workbench_presented, requested_check_visible,
         check_running, automatic_repair_saving, result)
@@ -105,12 +180,14 @@ inline WorkbenchFloatingCardMode workbench_floating_card_mode(bool workbench_ope
 
 inline bool workbench_modal_navigation_blocked(bool workbench_open, bool workbench_presented,
     bool honor_semantic_active, bool requested_check_visible, bool check_running,
-    bool automatic_repair_saving, const WorkbenchCheckResult& result)
+    bool automatic_repair_saving, bool native_partition_running,
+    const WorkbenchCheckResult& result)
 {
     if (!workbench_open || !workbench_presented) return false;
-    return check_running || automatic_repair_saving ||
+    return check_running || automatic_repair_saving || native_partition_running ||
         workbench_floating_card_mode(workbench_open, workbench_presented, honor_semantic_active,
-            requested_check_visible, check_running, automatic_repair_saving, result) !=
+            requested_check_visible, check_running, automatic_repair_saving,
+            native_partition_running, result) !=
             WorkbenchFloatingCardMode::None;
 }
 
@@ -122,10 +199,8 @@ inline bool workbench_navigation_allowed(bool modal_blocking, bool leaves_workbe
 inline std::string workbench_check_status_line(const WorkbenchCheckResult& check,
                                                bool risk_acknowledged = false)
 {
-    if (risk_acknowledged && check.status == WorkbenchCheckStatus::Attention)
-        return "已确认开放边界风险，可继续导入切片";
     if (check.candidate_status == RepairCandidateStatus::Ready)
-        return "修复候选已生成，等待确认";
+        return "修复复检通过，正在保存……";
     switch (check.status) {
     case WorkbenchCheckStatus::NotRun: return "模型尚未检查";
     case WorkbenchCheckStatus::Running:
@@ -134,13 +209,10 @@ inline std::string workbench_check_status_line(const WorkbenchCheckResult& check
         case WorkbenchCheckPhase::Rechecking: return "正在复检模型……";
         default: return "正在检查模型……";
         }
-    case WorkbenchCheckStatus::Normal:
-        return !check.repair_reason.empty() || check.removed_faces || check.reversed_faces ||
-                       (check.before_faces && check.after_faces && check.before_faces != check.after_faces)
-            ? "模型修复已完成" : "模型检查已完成，未发现问题";
-    case WorkbenchCheckStatus::Attention: return "模型检查完成，存在开放边界风险";
-    case WorkbenchCheckStatus::Invalid: return "模型检查未通过";
-    case WorkbenchCheckStatus::Failed: return "模型检查失败";
+    case WorkbenchCheckStatus::Normal: return "检查通过";
+    case WorkbenchCheckStatus::Attention:
+    case WorkbenchCheckStatus::Invalid:
+    case WorkbenchCheckStatus::Failed: return "检查失败";
     }
     return "模型尚未检查";
 }
@@ -271,6 +343,9 @@ struct PostGenerationWorkbenchState {
     std::uint64_t revision {0};
     std::string asset_id;
     std::string model_path;
+    std::string source_sha256;
+    std::string geometry_id;
+    std::string appearance_id;
     std::string candidate_path;
     bool editing {false};
     bool workbench_presented {false};
@@ -282,6 +357,8 @@ struct PostGenerationWorkbenchState {
     std::string portrait_unavailable_reason;
     WorkbenchCheckResult check;
     std::vector<std::string> palette;
+    bool automatic_palette_active {false};
+    size_t automatic_palette_requested_count {0};
     size_t faces {0};
     size_t vertices {0};
     bool dirty {false};
@@ -289,6 +366,8 @@ struct PostGenerationWorkbenchState {
     std::string reoptimization_reason;
     bool can_edit_project_colors {false};
     bool can_import_for_slicing {false};
+    bool deferred_native_repair {false};
+    std::string native_repair_source_sha256;
     bool can_force_import {false};
     bool force_import_acknowledged {false};
     bool import_has_topology_risk {false};

@@ -22,7 +22,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 try:
     from .image_preprocessing_policy import build_image_preprocessing_policy, subject_structure_layers
@@ -804,12 +804,59 @@ def _palette_recommendation_payload(response: str) -> dict[str, Any]:
     return value
 
 
+def complete_yoyoclaw_once(
+    system_prompt: str, user_content: str, image_paths: tuple[Path, ...] = (),
+) -> str:
+    """Use the existing text/vision channel once, without Image2 credentials or fallback."""
+    try:
+        from .yoyoclaw_text_gateway import YoYoClawError, YoYoClawTextGateway
+    except ImportError:
+        from yoyoclaw_text_gateway import YoYoClawError, YoYoClawTextGateway
+
+    if not system_prompt.strip() or not user_content.strip() or len(image_paths) > 2:
+        raise OpenAIPreprocessorError("The palette analysis input is invalid.")
+    content: str | list[dict[str, Any]] = user_content
+    if image_paths:
+        content = [{"type": "text", "text": user_content}]
+        total_size = 0
+        for path in image_paths:
+            _image_kind(Path(path))
+            mime, data = _vision_image_data(Path(path))
+            total_size += len(data)
+            if not data or total_size > _MAX_IMAGE_BYTES:
+                raise OpenAIPreprocessorError("The palette reference images exceed the 20 MB limit.")
+            content.append({"type": "image_url", "image_url": {
+                "url": f"data:{mime};base64," + base64.b64encode(data).decode("ascii"), "detail": "high",
+            }})
+    diagnostic_event("portrait.palette.request.started", provider_source="yoyoclaw_text",
+                     requires_image=bool(image_paths))
+    try:
+        result = YoYoClawTextGateway().complete([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content},
+        ], requires_image=bool(image_paths))
+    except YoYoClawError as error:
+        # Never resubmit a completion or switch to an image/legacy credential
+        # after a failure, including an interrupted streaming response.
+        raise OpenAIPreprocessorError(
+            f"Portrait palette recommendation failed (YOYOClaw): {error}",
+            code=error.code, retryable=False,
+            ambiguous=error.ambiguous or error.code in {
+                "provider_timeout", "provider_connection_failed", "incomplete_provider_response",
+            },
+        ) from None
+    diagnostic_event("portrait.palette.request.completed", provider_source="yoyoclaw_text")
+    return result
+
+
 def recommend_printable_palette(
     instruction: str,
     style: str,
     custom_style: str = "",
     image_path: Path | None = None,
     color_count: int = LEGACY_DEFAULT_PRINTABLE_COLORS,
+    *,
+    completion: Callable[[str, str, tuple[Path, ...]], str] | None = None,
 ) -> PrintablePaletteRecommendation:
     """Recommend a provider-neutral palette without binding Orca filament slots."""
 
@@ -869,7 +916,9 @@ def recommend_printable_palette(
         + style_direction
     )
     user_content = prompt or "Analyze the primary visible subject in the reference image."
-    if image_path is None:
+    if completion is not None:
+        response = completion(system_prompt, user_content, () if image_path is None else (Path(image_path),))
+    elif image_path is None:
         response = complete_text(system_prompt, user_content)
     else:
         response = complete_vision(system_prompt, user_content, (Path(image_path),))

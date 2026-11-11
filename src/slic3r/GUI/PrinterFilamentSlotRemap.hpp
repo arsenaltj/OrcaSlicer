@@ -29,6 +29,8 @@ inline void config(ModelConfig& config, const Change& change)
 
 inline void plate_config(DynamicPrintConfig& config, const Change& change)
 {
+    for (const auto* key : {"extruder", "support_filament", "support_interface_filament"})
+        if (auto* option = config.option<ConfigOptionInt>(key)) option->value = remap(option->value, change);
     for (const auto* key : {"filament_map", "filament_nozzle_map", "filament_volume_map"}) {
         auto* option = config.option<ConfigOptionInts>(key);
         if (!option) continue;

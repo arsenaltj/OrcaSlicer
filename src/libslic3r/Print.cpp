@@ -3948,7 +3948,9 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
         using Clock                 = std::chrono::high_resolution_clock;
         auto            startTime   = Clock::now();
         std::optional<const FakeWipeTower *> wipe_tower_opt = {};
-        if (this->has_wipe_tower()) {
+        // An enabled tower need not produce paths (for example a single used tool).
+        // _make_wipe_tower() leaves the fake geometry untouched in that case.
+        if (this->has_wipe_tower() && !m_wipe_tower_data.tool_changes.empty()) {
             m_fake_wipe_tower.set_pos({m_config.wipe_tower_x.get_at(m_plate_index), m_config.wipe_tower_y.get_at(m_plate_index)});
             wipe_tower_opt = std::make_optional<const FakeWipeTower *>(&m_fake_wipe_tower);
         }

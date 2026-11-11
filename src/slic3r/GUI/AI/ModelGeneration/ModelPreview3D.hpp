@@ -16,14 +16,19 @@
 #include "ModelPreviewTexture.hpp"
 #include "ModelPreviewNormals.hpp"
 #include "ModelPreviewGeometry.hpp"
+#include "ModelPreviewFrame.hpp"
+#include "ModelPreviewCamera.hpp"
+#include "slic3r/GUI/View3DNavigator.hpp"
 #include "BeautySourceSnapshot.hpp"
 #include "ModelHistoryMetadata.hpp"
 #include "ModelOriginalAppearance.hpp"
+#include "ModelOriginalSurfaceSampler.hpp"
 #include "ModelPreviewPalette.hpp"
 #include "ModelPreviewColorControls.hpp"
 #include "WorkbenchRoundBasePreview.hpp"
 #include "ModelSemanticColoring.hpp"
 #include "PortraitColorBlockCache.hpp"
+#include "PortraitNativePartitionCache.hpp"
 #include "PrinterFilamentRestoreSnapshot.hpp"
 #include "PortraitResidualProposal.hpp"
 #include "PortraitResidualRequest.hpp"
@@ -34,6 +39,7 @@
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GLModel.hpp"
 #include "slic3r/GUI/GLShader.hpp"
+#include "slic3r/GUI/GLTexture.hpp"
 #include "slic3r/GUI/OpenGLManager.hpp"
 #include "libslic3r/Format/OBJ.hpp"
 #include "libslic3r/Geometry.hpp"
@@ -55,6 +61,7 @@
 #include <wx/timer.h>
 #include <wx/stdpaths.h>
 #include <wx/wupdlock.h>
+#include <wx/weakref.h>
 
 #include <algorithm>
 #include <atomic>
@@ -110,6 +117,18 @@ public:
     wxWindow* workbench_overlay_parent() const { return m_preview_host; }
     wxWindow* workbench_viewport_window() const { return m_canvas; }
     int workbench_viewport_top() const { return m_canvas ? m_canvas->GetPosition().y : 0; }
+    void attach_workbench_navigation(wxWindow* parent, wxWindow* bottom_anchor) {
+        if (!m_navigator) m_navigator = std::make_unique<WorkbenchViewNavigator>();
+        wxWeakRef<ModelPreview3D> weak(this);
+        m_navigator->attach_surface(parent, bottom_anchor,
+            [weak]() -> Transform3d { return weak ? weak->view_rotation() : Transform3d::Identity(); },
+            [weak](const Transform3d& rotation) {
+                if (!weak) return;
+                weak->set_auto_rotation(false);
+                weak->m_camera_rotation.set(rotation);
+                weak->m_canvas->Refresh(false);
+            });
+    }
     explicit ModelPreview3D(wxWindow* parent, bool retain_surface_attributes = false)
         : wxPanel(parent), m_retain_surface_attributes(retain_surface_attributes)
     {
@@ -181,7 +200,7 @@ public:
                 m_dragging || m_drawing_selection) {
                 set_auto_rotation(false);return;
             }
-            m_yaw=std::remainder(m_yaw+std::min(seconds,0.1)*0.35,6.283185307179586);
+            m_camera_rotation.turn(std::min(seconds,0.1)*0.35);
             m_canvas->Refresh(false);
         },m_rotation_timer.GetId());
         m_surface_timer.SetOwner(this);
@@ -197,6 +216,9 @@ public:
             // table; otherwise the old face/semantic caches can be walked
             // while their slot identities are being removed.
             if (!m_project_color_sync_suspended) synchronize_project_colors();
+        };
+        m_color_trial->on_native_automatic_basis = [this](size_t count) {
+            return native_workbench_automatic_basis(count);
         };
         m_color_trial->on_changed = [this] {
             m_trial_toggle_started = std::chrono::steady_clock::now();
@@ -258,11 +280,16 @@ public:
         trace_stage("gl_context");
         m_canvas->Bind(wxEVT_PAINT, &ModelPreview3D::on_paint, this);
         m_canvas->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+            m_preview_frame.invalidate();
+            // Native resize can stretch the old front buffer before the next
+            // full model paint. Submit a cheap, proportionate completed frame.
+            present_resize_frame();
             m_canvas->Refresh(false);
             event.Skip();
         });
         m_canvas->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
             if (m_workbench_input_locked) return;
+            if (handle_navigator_mouse(event)) return;
             set_auto_rotation(false);
             const bool edit_view = point_in_edit_view(event.GetPosition());
             if (edit_view && m_selection_enabled && !selection_busy() && !event.AltDown() &&
@@ -287,6 +314,7 @@ public:
         });
         m_canvas->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent& event) {
             if (m_workbench_input_locked) return;
+            if (handle_navigator_mouse(event)) return;
             if (m_drawing_selection) {
                 const wxPoint point = edit_view_point(event.GetPosition());
                 m_stroke.emplace_back(point.x, point.y);
@@ -304,6 +332,7 @@ public:
         });
         m_canvas->Bind(wxEVT_MOTION, [this](wxMouseEvent& event) {
             if (m_workbench_input_locked) return;
+            if (handle_navigator_mouse(event)) return;
             if (event.RightIsDown() && m_canvas->HasCapture()) {
                 const wxPoint current = event.GetPosition();
                 const double radius = std::max(0.001, 0.5 * m_bounds.size().norm());
@@ -329,15 +358,15 @@ public:
             }
             if (!m_drag_moved)
                 return;
-            m_yaw += (current.x - m_last_mouse.x) * 0.012;
-            m_pitch = std::clamp(
-                m_pitch + (current.y - m_last_mouse.y) * 0.012,
-                -1.5707963267948966, -0.15);
+            if (m_navigator) m_navigator->reset();
+            m_camera_rotation.orbit((current.x - m_last_mouse.x) * 0.012,
+                                    (current.y - m_last_mouse.y) * 0.012);
             m_last_mouse = current;
             m_canvas->Refresh(false);
         });
         m_canvas->Bind(wxEVT_MOUSEWHEEL, [this](wxMouseEvent& event) {
             if (m_workbench_input_locked) return;
+            if (handle_navigator_mouse(event)) return;
             if (m_drawing_selection) return;
             const int delta = event.GetWheelDelta();
             if (delta == 0)
@@ -348,15 +377,18 @@ public:
         });
         m_canvas->Bind(wxEVT_RIGHT_DOWN, [this](wxMouseEvent& event) {
             if (m_workbench_input_locked) return;
+            if (handle_navigator_mouse(event)) return;
             set_auto_rotation(false);
             if (m_drawing_selection) finish_drag();
             m_last_mouse = event.GetPosition();
             if (!m_canvas->HasCapture()) m_canvas->CaptureMouse();
         });
-        m_canvas->Bind(wxEVT_RIGHT_UP, [this](wxMouseEvent&) {
-            if (!m_workbench_input_locked) finish_drag();
+        m_canvas->Bind(wxEVT_RIGHT_UP, [this](wxMouseEvent& event) {
+            if (m_workbench_input_locked || handle_navigator_mouse(event)) return;
+            finish_drag();
         });
         m_canvas->Bind(wxEVT_MOUSE_CAPTURE_LOST, [this](wxMouseCaptureLostEvent&) {
+            if (m_navigator) m_navigator->reset();
             m_dragging = false; m_drawing_selection = false; m_stroke.clear(); m_canvas->Refresh(false);
         });
         m_canvas->Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
@@ -409,14 +441,25 @@ public:
                 << ", running_before_cancel=" << region_was_running;
         }
         clear();
+        if (m_context && m_canvas) m_canvas->SetCurrent(*m_context);
+        m_navigator.reset();
     }
 
     bool retains_surface_attributes() const { return m_retain_surface_attributes; }
 
-    struct ViewState { double yaw, pitch, zoom; BoundingBoxf3 bounds; double pan_x, pan_y; };
-    ViewState view_state() const { return {m_yaw, m_pitch, m_zoom, m_bounds, m_pan_x, m_pan_y}; }
+    struct ViewState {
+        double yaw, pitch, zoom; BoundingBoxf3 bounds; double pan_x, pan_y;
+        std::optional<Eigen::Quaterniond> navigator_rotation;
+    };
+    ViewState view_state() const {
+        return {m_camera_rotation.yaw, m_camera_rotation.pitch, m_zoom, m_bounds,
+                m_pan_x, m_pan_y, m_camera_rotation.navigator};
+    }
     void restore_view(const ViewState& state) {
-        m_yaw = state.yaw; m_pitch = state.pitch; m_zoom = state.zoom; m_bounds = state.bounds;
+        m_camera_rotation.reset(state.yaw, state.pitch);
+        m_camera_rotation.navigator = state.navigator_rotation;
+        if (m_navigator) m_navigator->reset();
+        m_zoom = state.zoom; m_bounds = state.bounds;
         m_pan_x = state.pan_x; m_pan_y = state.pan_y;
         m_canvas->Refresh(false);
     }
@@ -439,11 +482,18 @@ public:
         std::optional<GLModel::PreparedGeometry> render_geometry;
         GLModel::Geometry current_appearance_geometry;
         std::optional<GLModel::PreparedGeometry> current_appearance_render_geometry;
+        GLModel::Geometry direct_original_geometry;
+        std::optional<GLModel::PreparedGeometry> direct_original_render_geometry;
 
         // Freeze CPU geometry and its exact bounds before the GUI adopts it.
         // Synchronous consumers can still use the unprepared geometry.
         void prepare_render_geometry(const std::function<bool()>& canceled = {}, bool share_exact_vertices = false)
         {
+            const auto prepare_direct_original = [&] {
+                if (!direct_original_geometry.is_empty())
+                    direct_original_render_geometry.emplace(
+                        GLModel::prepare_geometry(std::move(direct_original_geometry), canceled));
+            };
             if (share_exact_vertices) {
                 auto shared = ModelPreviewGeometry::share_exact_vertices(mesh, geometry, canceled);
                 if (shared) {
@@ -453,6 +503,7 @@ public:
                     if (!current_appearance_geometry.is_empty())
                         current_appearance_render_geometry.emplace(
                             GLModel::prepare_geometry(std::move(current_appearance_geometry), canceled));
+                    prepare_direct_original();
                     return;
                 }
             }
@@ -460,12 +511,19 @@ public:
             if (!current_appearance_geometry.is_empty())
                 current_appearance_render_geometry.emplace(
                     GLModel::prepare_geometry(std::move(current_appearance_geometry), canceled));
+            prepare_direct_original();
         }
         const GLModel::Geometry& render_data() const
         { return render_geometry ? render_geometry->geometry() : geometry; }
 
         AI::ModelArtifactTextureSurface texture_surface;
         AI::ModelArtifactTextureSurface current_appearance_texture_surface;
+        std::shared_ptr<ModelOriginalSurfaceSampler> direct_original_source;
+        std::vector<Vec3f> direct_original_corner_normals;
+        std::string direct_original_sha256;
+        std::string direct_original_geometry_id;
+        std::string direct_original_error;
+        bool direct_original_is_current {false};
         indexed_triangle_set mesh;
         std::vector<RGBA> vertex_colors;
         BoundingBoxf3 bounds;
@@ -476,6 +534,7 @@ public:
         size_t colors {0};
         std::vector<PreviewPalette::Color> trial_palette;
         std::shared_ptr<const PreviewPalette::Histogram> trial_histogram;
+        int ai_source_color_count {0};
         std::shared_ptr<PreviewPalette::AutomaticColorUnits> automatic_color_units;
         std::string geometry_id;
         std::string artifact_sha256;
@@ -485,6 +544,8 @@ public:
         std::optional<ModelPreviewColorControls::State> color_trial;
         std::optional<PrinterFilamentRestoreSnapshot> printer_filament_restore;
         std::shared_ptr<const PortraitColorBlocks::Result> color_blocks;
+        std::shared_ptr<const NativePortrait::NativePortraitPartition> native_portrait_partition;
+        nlohmann::json native_workbench_partition_reference;
         std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> semantic_source;
         FaceColorOverrides saved_semantic_faces;
         SubfaceColorOverrides saved_semantic_subfaces;
@@ -496,6 +557,7 @@ public:
         bool shapes_unlocked {false};
         bool has_source_appearance {false};
         bool current_appearance_distinct {false};
+        bool round_base_enabled {false};
         OriginalAppearanceReference original_appearance;
         std::string original_appearance_error;
         nlohmann::json leaf_edits;
@@ -546,12 +608,15 @@ public:
         prepared.geometry_id = AI::SurfaceSelectionPersistence::geometry_fingerprint(its);
         if (stop_if_canceled()) return false;
         trace_stage("geometry_fingerprint");
-        nlohmann::json region_reference, secondary_region_reference, shape_reference, restore_shape_reference, block_reference, restore_block_reference;
+        nlohmann::json region_reference, secondary_region_reference, shape_reference, restore_shape_reference,
+            block_reference, restore_block_reference, native_partition_reference, region_semantics,
+            native_color_reduction, final_slot_binding;
         nlohmann::json restoration_metadata;
         std::string block_semantic_signature;
         prepared.face_color_overrides = explicit_overrides;
         auto record = metadata_path;
-        if (record.empty()) { record = path; record.replace_extension(".json"); }
+        if (record.empty())
+            record = AI::beauty_metadata_path(path, original_appearance_library_root(path, {}));
         boost::system::error_code record_error;
         const auto record_bytes = boost::filesystem::file_size(record, record_error);
         boost::filesystem::ifstream record_stream(record);
@@ -564,7 +629,23 @@ public:
             std::string state_error;
             if (metadata.is_object()) {
                 restoration_metadata = metadata;
+                if (metadata.contains("portrait_preparation") && metadata["portrait_preparation"].is_object()) {
+                    const auto& preparation = metadata["portrait_preparation"];
+                    const auto preparation_schema = preparation.value("schema", std::string{});
+                    prepared.round_base_enabled =
+                        (preparation_schema == "orca.portrait-preparation/v1" ||
+                         preparation_schema == "orca.portrait-preparation/v2") &&
+                        preparation.value("round_base", false) && preparation.value("height_mm", 0.0) == 3.0 &&
+                        preparation.value("overlap_mm", 0.0) == 0.2;
+                }
                 if (metadata.contains("portrait_color_blocks")) block_reference=metadata["portrait_color_blocks"];
+                if (metadata.contains("native_portrait_partition"))
+                    native_partition_reference = metadata["native_portrait_partition"];
+                if (metadata.contains("region_semantics")) region_semantics = metadata["region_semantics"];
+                if (metadata.contains("native_color_reduction"))
+                    native_color_reduction = metadata["native_color_reduction"];
+                if (metadata.contains("final_slot_binding"))
+                    final_slot_binding = metadata["final_slot_binding"];
                 if(metadata.contains("semantic_color_state") && metadata["semantic_color_state"].is_object())
                     block_semantic_signature=metadata["semantic_color_state"].value("signature",std::string{});
                 if (metadata.contains("semantic_region_evidence")) region_reference = metadata["semantic_region_evidence"];
@@ -688,15 +769,132 @@ public:
             source->face_colors = source_appearance.face_colors;
             source->geometry_id = prepared.geometry_id;
             source->content_id = AI::SemanticColoring::content_fingerprint(*source);
+            const auto origin = prepared.original_appearance.valid() ? prepared.original_appearance.origin_model : path;
+            const auto origin_hash = prepared.original_appearance.valid() ? prepared.original_appearance.origin_sha256 : current_hash;
+            const bool decoded_origin = origin_hash == current_hash;
+            auto sampler = ModelOriginalSurfaceSampler::load(origin, origin_hash, its, error, canceled,
+                decoded_origin ? &mesh : nullptr, decoded_origin ? &current_appearance : nullptr,
+                decoded_origin ? &prepared.texture_surface : nullptr);
+            if (!sampler) return false;
+            prepared.direct_original_source = sampler;
+            prepared.direct_original_sha256 = origin_hash;
+            prepared.direct_original_geometry_id =
+                AI::SurfaceSelectionPersistence::geometry_fingerprint(sampler->origin_mesh().its);
+            prepared.direct_original_is_current = origin_hash == current_hash &&
+                prepared.direct_original_geometry_id == prepared.geometry_id;
+            source->sample_original = [sampler](size_t face, const auto& bary) { return sampler->sample(face,bary); };
+            source->sampling_signature = "original-surface/v1:" + origin_hash;
+            // A repaired file may itself be its appearance carrier while its
+            // verified origin still owns the UVs. Carrier equality does not
+            // mean the original textured surface is already loaded.
+            if (!decoded_origin) {
+                auto texture = sampler->texture_surface();
+                if (!texture.faces.empty()) prepared.texture_surface = std::move(texture);
+            }
             prepared.semantic_source = std::move(source);
         }
         if (stop_if_canceled()) return false;
         trace_stage("semantic_snapshot");
+        prepared.ai_source_color_count = original_appearance_detail::ai_source_color_count(
+            path, original_appearance_library_root(path, record), record);
         if(prepared.semantic_source) {
-            const auto root=boost::filesystem::path(Slic3r::data_dir())/"cache"/"portrait-color-blocks";
+            const auto cache_root = boost::filesystem::path(Slic3r::data_dir()) / "cache";
+            const auto root = cache_root / "portrait-color-blocks";
             std::string block_error;
+            if (!native_partition_reference.is_null()) try {
+                if (!native_partition_reference.is_object() ||
+                    native_partition_reference.at("schema") !=
+                        "orca.native-workbench-partition-reference/v2" ||
+                    native_partition_reference.at("algorithm").get<uint32_t>() !=
+                        NativePortrait::algorithm_version ||
+                    native_partition_reference.at("coordinate_units") != "mm" ||
+                    native_partition_reference.at("carrier_sha256") != current_hash ||
+                    native_partition_reference.at("geometry_id") != prepared.geometry_id ||
+                    native_partition_reference.at("appearance_id") !=
+                        prepared.semantic_source->content_id)
+                    throw std::runtime_error("原生工作台分区独立引用缺失或载体身份不匹配。");
+                NativePortrait::NativeMillimeterBounds source_bounds_mm, carrier_bounds_mm;
+                if (!NativePortrait::decode_native_workbench_bounds(
+                        native_partition_reference.at("source_bounds_mm"), source_bounds_mm) ||
+                    !NativePortrait::decode_native_workbench_bounds(
+                        native_partition_reference.at("carrier_bounds_mm"), carrier_bounds_mm) ||
+                    !NativePortrait::native_workbench_bounds_compatible(
+                        source_bounds_mm, carrier_bounds_mm, block_error) ||
+                    !NativePortrait::native_workbench_bounds_compatible(
+                        carrier_bounds_mm,
+                        NativePortrait::native_workbench_bounds(its), block_error))
+                    throw std::runtime_error(block_error.empty()
+                        ? "原生工作台分区毫米尺寸证书无效。" : block_error);
+
+                const auto& cache_reference = native_partition_reference.at("cache_reference");
+                if (!cache_reference.is_object() ||
+                    cache_reference.at("content_id") !=
+                        native_partition_reference.at("cache_sha256") ||
+                    cache_reference.at("partition_digest") !=
+                        native_partition_reference.at("partition_digest") ||
+                    cache_reference.at("geometry_id") != prepared.geometry_id)
+                    throw std::runtime_error("原生工作台分区缓存引用不匹配。");
+
+                NativePortrait::NativeWorkbenchPartitionIdentity identity;
+                TriangleMesh exact_native_mesh;
+                if (!NativePortrait::load_native_portrait_partition_cache(
+                        cache_reference, cache_root / "native-workbench-partitions",
+                        identity, block_error, &exact_native_mesh))
+                    throw std::runtime_error(block_error);
+                if (identity.partition_digest !=
+                        native_partition_reference.at("partition_digest"))
+                    throw std::runtime_error("原生工作台分区缓存摘要不一致。");
+
+                if (!NativePortrait::same_native_triangle_corners(its, exact_native_mesh.its, canceled))
+                    throw std::runtime_error("Native cached topology differs from the ordered carrier corners.");
+                auto partition = NativePortrait::restore_native_workbench_partition(
+                    exact_native_mesh.its, identity, block_error);
+                if (!partition.valid())
+                    throw std::runtime_error(block_error.empty()
+                        ? "原生工作台分区无法恢复。" : block_error);
+                prepared.native_portrait_partition =
+                    std::make_shared<NativePortrait::NativeWorkbenchPartition>(std::move(partition));
+                prepared.native_workbench_partition_reference = native_partition_reference;
+            } catch (const std::exception& failure) {
+                prepared.native_portrait_partition.reset();
+                prepared.native_workbench_partition_reference = nullptr;
+                block_error = failure.what();
+            }
             if(!block_reference.is_null()) prepared.color_blocks=PortraitColorBlocks::load(block_reference,root,
                 prepared.geometry_id,its.indices.size(),prepared.semantic_source->content_id,block_error);
+            if (prepared.color_blocks && prepared.color_blocks->strategy ==
+                    PortraitColorBlocks::Strategy::ColorRegionMajorityV2) {
+                if (prepared.color_blocks->algorithm_version !=
+                    PortraitColorBlocks::portrait_postprocess_algorithm_version) {
+                    prepared.color_blocks.reset();
+                    block_error = "旧版人物分区只读保留，需从原始模型重建 v11。";
+                } else try {
+                    if (!prepared.native_portrait_partition ||
+                        !prepared.color_blocks->native_partition_identity ||
+                        NativePortrait::encode_native_portrait_partition_identity(
+                            NativePortrait::native_workbench_partition_identity(
+                                *prepared.native_portrait_partition)) !=
+                            NativePortrait::encode_native_portrait_partition_identity(
+                                *prepared.color_blocks->native_partition_identity))
+                        throw std::runtime_error("配色缓存与独立原生分区身份不一致。");
+
+                    const auto encoded_blocks = PortraitColorBlocks::encode(*prepared.color_blocks);
+                    if (!region_semantics.is_object() || !native_color_reduction.is_object() ||
+                        !final_slot_binding.is_object() ||
+                        !encoded_blocks.contains("region_semantics") ||
+                        !encoded_blocks.contains("native_color_reduction") ||
+                        !encoded_blocks.contains("final_slot_binding") ||
+                        region_semantics != encoded_blocks.at("region_semantics") ||
+                        native_color_reduction != encoded_blocks.at("native_color_reduction") ||
+                        final_slot_binding != encoded_blocks.at("final_slot_binding") ||
+                        region_semantics.at("partition_digest") !=
+                            prepared.native_portrait_partition->partition_digest)
+                        throw std::runtime_error("区域语义、减色映射或最终槽位与原生分区摘要不一致。");
+                } catch (const std::exception& failure) {
+                    prepared.color_blocks.reset();
+                    block_error = failure.what();
+                }
+            }
             if(prepared.color_blocks && ((!block_semantic_signature.empty() &&
                 block_semantic_signature!=prepared.color_blocks->semantic_signature) ||
                 (prepared.color_trial && prepared.color_blocks->control_signature!=PortraitColorBlocks::controls_signature(
@@ -706,9 +904,32 @@ public:
             if(!block_reference.is_null() && !prepared.color_blocks) {
                 prepared.saved_semantic_faces.clear();prepared.saved_semantic_subfaces.clear();
             }
-            if(prepared.printer_filament_restore && !restore_block_reference.is_null())
-                prepared.printer_filament_restore->color_blocks=PortraitColorBlocks::load(restore_block_reference,root,
-                    prepared.geometry_id,its.indices.size(),prepared.semantic_source->content_id,block_error);
+            if(prepared.printer_filament_restore && !restore_block_reference.is_null()) {
+                auto restored_blocks = PortraitColorBlocks::load(restore_block_reference, root,
+                    prepared.geometry_id, its.indices.size(), prepared.semantic_source->content_id, block_error);
+                if (restored_blocks && restored_blocks->strategy ==
+                        PortraitColorBlocks::Strategy::ColorRegionMajorityV2) {
+                    const bool current_v11 = restored_blocks->algorithm_version ==
+                        PortraitColorBlocks::portrait_postprocess_algorithm_version;
+                    const bool same_partition = current_v11 && prepared.native_portrait_partition &&
+                        restored_blocks->native_partition_identity &&
+                        restored_blocks->native_partition_identity->partition_digest ==
+                            prepared.native_portrait_partition->partition_digest;
+                    const auto encoded = same_partition
+                        ? PortraitColorBlocks::encode(*restored_blocks) : nlohmann::json();
+                    if (!same_partition || !encoded.contains("region_semantics") ||
+                        !encoded.contains("native_color_reduction") ||
+                        !encoded.contains("final_slot_binding") ||
+                        encoded.at("region_semantics") != region_semantics ||
+                        encoded.at("native_color_reduction") != native_color_reduction ||
+                        encoded.at("final_slot_binding") != final_slot_binding) {
+                        restored_blocks.reset();
+                        block_error =
+                            "打印机恢复快照未绑定当前独立原生分区，已忽略旧人物配色。";
+                    }
+                }
+                prepared.printer_filament_restore->color_blocks = std::move(restored_blocks);
+            }
             if(!block_error.empty()) BOOST_LOG_TRIVIAL(warning)<<block_error;
         }
         const auto runtime = semantic_region_runtime_directory();
@@ -787,6 +1008,8 @@ public:
             geometry.reserve_indices(its.indices.size() * 3);
             const bool vertex_colors = appearance.vertex_colors.size() == its.vertices.size();
             const bool face_colors = appearance.face_colors.size() == its.indices.size();
+            const bool texture_evidence = collect_evidence && prepared.semantic_source &&
+                prepared.semantic_source->sample_original && !prepared.texture_surface.images.empty();
             std::vector<uint32_t> packed_vertex_colors;
             std::vector<uint8_t> counted_vertices;
             if (vertex_colors) {
@@ -824,7 +1047,7 @@ public:
                     const RGBA& color = vertex_colors ? appearance.vertex_colors[vertex_index] : uniform_color;
                     const uint32_t packed = vertex_colors ? packed_vertex_colors[vertex_index] : uniform_packed;
                     if (collect_evidence) {
-                        trial_histogram->add(packed, area_weight);
+                        if (!texture_evidence) trial_histogram->add(packed, area_weight);
                         unit_color[0] += float((packed >> 16) & 255) / (3.f * 255.f);
                         unit_color[1] += float((packed >> 8) & 255) / (3.f * 255.f);
                         unit_color[2] += float(packed & 255) / (3.f * 255.f);
@@ -839,6 +1062,14 @@ public:
                         Vec2f(float(shown), lock == locked_colors.end() ? color[3] : -1.0f));
                 }
                 if (collect_evidence) {
+                    if (prepared.semantic_source && prepared.semantic_source->sample_original) {
+                        unit_color = prepared.semantic_source->sample_original(face_index, {1.f/3,1.f/3,1.f/3});
+                        const uint32_t sampled=preview_rgb8(unit_color[0],unit_color[1],unit_color[2]);
+                        // Texture samples replace the carrier's averaged
+                        // vertex evidence instead of giving both equal weight.
+                        if (texture_evidence)
+                            trial_histogram->add(sampled,area_weight*3);
+                    }
                     automatic_color_units->colors.push_back(unit_color);
                     automatic_color_units->area.push_back(area_weight * 0.5);
                 }
@@ -854,6 +1085,44 @@ public:
         }
         if (prepared.current_appearance_distinct)
             prepared.current_appearance_geometry = build_geometry(current_appearance, false, nullptr);
+        if (prepared.direct_original_source && !prepared.direct_original_is_current) {
+            try {
+                const auto& original_mesh = prepared.direct_original_source->origin_mesh().its;
+                const auto& original_colors = prepared.direct_original_source->origin_colors();
+                const auto& original_texture = prepared.direct_original_source->origin_texture_surface();
+                prepared.direct_original_corner_normals =
+                    ModelPreviewNormals::corner_normals(original_mesh, 45.f);
+                if (original_texture.faces.empty()) {
+                    auto& direct = prepared.direct_original_geometry;
+                    direct.format = {GLModel::Geometry::EPrimitiveType::Triangles,
+                        GLModel::Geometry::EVertexLayout::P3N3T2};
+                    direct.reserve_vertices(original_mesh.indices.size() * 3);
+                    direct.reserve_indices(original_mesh.indices.size() * 3);
+                    const bool vertex_colors =
+                        original_colors.vertex_colors.size() == original_mesh.vertices.size();
+                    const bool face_colors =
+                        original_colors.face_colors.size() == original_mesh.indices.size();
+                    for (size_t face = 0; face < original_mesh.indices.size(); ++face) {
+                        if ((face & 4095) == 0 && stop_if_canceled()) return false;
+                        const auto base = static_cast<unsigned int>(direct.vertices_count());
+                        const auto uniform = face_colors ? original_colors.face_colors[face] : fallback;
+                        for (size_t corner = 0; corner < 3; ++corner) {
+                            const auto vertex = original_mesh.indices[face][corner];
+                            const auto& color = vertex_colors ? original_colors.vertex_colors[vertex] : uniform;
+                            direct.add_vertex(original_mesh.vertices[vertex],
+                                prepared.direct_original_corner_normals[face * 3 + corner],
+                                Vec2f(float(preview_rgb8(color[0], color[1], color[2])), color[3]));
+                        }
+                        direct.add_triangle(base, base + 1, base + 2);
+                    }
+                }
+            } catch (const std::exception& failure) {
+                prepared.direct_original_error = failure.what();
+                prepared.direct_original_source.reset();
+                prepared.direct_original_corner_normals.clear();
+                prepared.direct_original_geometry = {};
+            }
+        }
         if (stop_if_canceled()) return false;
         trace_stage("packed_colors");
 
@@ -923,6 +1192,9 @@ public:
         std::unique_ptr<ModelPreviewTexture> texture_model;
         std::unique_ptr<ModelPreviewTexture> current_appearance_texture_model;
         std::unique_ptr<GLModel> current_appearance_model;
+        std::unique_ptr<ModelPreviewTexture> direct_original_texture_model;
+        std::unique_ptr<GLModel> direct_original_model;
+        bool direct_original_reuses_current = prepared.direct_original_is_current;
         auto model = std::make_unique<GLModel>();
         try {
             if (!prepared.texture_surface.faces.empty())
@@ -943,6 +1215,29 @@ public:
             else
                 model->init_from(std::move(prepared.geometry));
         } catch (const std::exception& failure) { error = failure.what(); return false; }
+        if (prepared.direct_original_source && !direct_original_reuses_current) {
+            try {
+                const auto& original_texture =
+                    prepared.direct_original_source->origin_texture_surface();
+                if (!original_texture.faces.empty()) {
+                    direct_original_texture_model = std::make_unique<ModelPreviewTexture>(
+                        original_texture, prepared.direct_original_source->origin_mesh().its,
+                        prepared.direct_original_corner_normals);
+                } else {
+                    direct_original_model = std::make_unique<GLModel>();
+                    if (prepared.direct_original_render_geometry)
+                        direct_original_model->init_from(
+                            std::move(*prepared.direct_original_render_geometry));
+                    else
+                        direct_original_model->init_from(
+                            std::move(prepared.direct_original_geometry));
+                }
+            } catch (const std::exception& failure) {
+                prepared.direct_original_error = failure.what();
+                direct_original_texture_model.reset();
+                direct_original_model.reset();
+            }
+        }
         cache_current_preview();
         clear_current_preview();
         m_surface_vertices = std::move(surface_vertices);
@@ -950,6 +1245,12 @@ public:
         m_texture_model = std::move(texture_model);
         m_current_appearance_texture_model = std::move(current_appearance_texture_model);
         m_current_appearance_model = std::move(current_appearance_model);
+        m_direct_original_texture_model = std::move(direct_original_texture_model);
+        m_direct_original_model = std::move(direct_original_model);
+        m_direct_original_reuses_current = direct_original_reuses_current;
+        m_direct_original_sha256 = std::move(prepared.direct_original_sha256);
+        m_direct_original_geometry_id = std::move(prepared.direct_original_geometry_id);
+        m_original_comparison_error = std::move(prepared.direct_original_error);
         m_models.emplace_back(std::move(model));
         m_bounds = prepared.bounds;
         m_pending_mesh = std::move(prepared.mesh);
@@ -958,6 +1259,9 @@ public:
         m_round_base_preview.reset(m_geometry_id);
         m_printer_filament_restore = std::move(prepared.printer_filament_restore);
         auto loaded_color_blocks = std::move(prepared.color_blocks);
+        m_native_portrait_partition = std::move(prepared.native_portrait_partition);
+        m_native_workbench_partition_reference =
+            std::move(prepared.native_workbench_partition_reference);
         m_face_color_overrides = std::move(prepared.face_color_overrides);
         m_semantic_source = std::move(prepared.semantic_source);
         m_portrait_shapes = std::move(prepared.shape_details);
@@ -987,7 +1291,7 @@ public:
         m_has_model = true;
         m_restored_persisted_color_trial = prepared.color_trial.has_value();
         m_color_trial->load(m_trial_histogram, m_trial_palette, m_geometry_id,
-            std::move(prepared.automatic_color_units));
+            std::move(prepared.automatic_color_units), prepared.ai_source_color_count);
         if (prepared.color_trial) {
             m_suppress_semantic_change = m_beauty_view || !prepared.saved_semantic_faces.empty() || !prepared.saved_semantic_subfaces.empty();
             m_color_trial->restore(*prepared.color_trial);
@@ -1020,23 +1324,45 @@ public:
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
         default_view();
+        if (prepared.round_base_enabled && !set_round_base_preview(true, error)) return false;
         m_pending_library_thumbnail_sha = std::move(prepared.artifact_sha256);
         notify_selection_changed();
         return true;
     }
 
-    bool try_load_cached_model(const boost::filesystem::path& path, const std::vector<std::string>& palette,
-                               size_t& triangle_count, Vec3d& dimensions, size_t& color_count)
+    void retain_history_rollback(bool retain) {
+        if (!retain && m_history_rollback_retained && m_context && m_canvas && m_canvas->SetCurrent(*m_context))
+            m_cached_preview.reset();
+        m_history_rollback_retained = retain;
+    }
+
+    bool restore_retained_history_model(const boost::filesystem::path& path,
+        const std::vector<std::string>& palette, size_t& triangles, Vec3d& dimensions, size_t& colors)
     {
+        if (!m_history_rollback_retained) return false;
+        if (m_has_model && m_model_path == path) {
+            triangles = m_triangle_count;
+            dimensions = m_model_dimensions;
+            colors = m_color_count;
+            return true;
+        }
+        return try_load_cached_model(path, palette, triangles, dimensions, colors, true);
+    }
+
+    bool try_load_cached_model(const boost::filesystem::path& path, const std::vector<std::string>& palette,
+                               size_t& triangle_count, Vec3d& dimensions, size_t& color_count,
+                               bool history_rollback = false)
+    {
+        const bool retained = history_rollback && m_history_rollback_retained;
         if (!m_cached_preview || m_cached_preview->path != path ||
-            !same_stamp(m_cached_preview->stamp, file_stamp(path)) ||
+            (!retained && !same_stamp(m_cached_preview->stamp, file_stamp(path))) ||
             m_context == nullptr || !m_context->IsOK() || !m_canvas->SetCurrent(*m_context))
             return false;
-        if (m_cached_preview->artifact_sha256.empty() ||
-            AI::model_artifact_sha256(path) != m_cached_preview->artifact_sha256)
+        if (!retained && (m_cached_preview->artifact_sha256.empty() ||
+            AI::model_artifact_sha256(path) != m_cached_preview->artifact_sha256))
             return false;
         const auto& appearance = m_cached_preview->original_appearance;
-        if (appearance.valid() &&
+        if (!retained && appearance.valid() &&
             (AI::model_artifact_sha256(appearance.carrier_model) != appearance.carrier_sha256 ||
              AI::model_artifact_sha256(appearance.origin_model) != appearance.origin_sha256))
             return false;
@@ -1047,6 +1373,11 @@ public:
         m_texture_model = std::move(cached->texture_model);
         m_current_appearance_model = std::move(cached->current_appearance_model);
         m_current_appearance_texture_model = std::move(cached->current_appearance_texture_model);
+        m_direct_original_model = std::move(cached->direct_original_model);
+        m_direct_original_texture_model = std::move(cached->direct_original_texture_model);
+        m_direct_original_reuses_current = cached->direct_original_reuses_current;
+        m_direct_original_sha256 = std::move(cached->direct_original_sha256);
+        m_direct_original_geometry_id = std::move(cached->direct_original_geometry_id);
         m_manual_color_model = std::move(cached->manual_color_model);
         m_pending_mesh = std::move(cached->mesh);
         m_pending_vertex_colors = std::move(cached->vertex_colors);
@@ -1055,6 +1386,9 @@ public:
         m_face_color_overrides = std::move(cached->face_color_overrides);
         m_printer_filament_restore = std::move(cached->printer_filament_restore);
         auto loaded_color_blocks = std::move(cached->color_blocks);
+        m_native_portrait_partition = std::move(cached->native_portrait_partition);
+        m_native_workbench_partition_reference =
+            std::move(cached->native_workbench_partition_reference);
         m_semantic_source = std::move(cached->semantic_source);
         m_portrait_shapes = std::move(cached->shape_details);
         m_shapes_unlocked = cached->shapes_unlocked;
@@ -1070,6 +1404,8 @@ public:
         m_model_path = std::move(cached->path);
         m_model_stamp = cached->stamp;
         m_bounds = cached->bounds;
+        std::string base_error;
+        if (cached->round_base_enabled && !set_round_base_preview(true, base_error)) return false;
         m_triangle_count = triangle_count = cached->triangles;
         m_vertex_count = cached->vertices;
         if (m_region_evidence) restore_semantic_region_evidence(m_region_evidence);
@@ -1077,6 +1413,7 @@ public:
         m_has_source_appearance = cached->has_source_appearance;
         m_original_appearance = std::move(cached->original_appearance);
         m_original_appearance_error = std::move(cached->original_appearance_error);
+        m_original_comparison_error = std::move(cached->original_comparison_error);
         m_model_sha256 = std::move(cached->artifact_sha256);
         m_trial_palette = std::move(cached->trial_palette);
         m_trial_histogram = std::move(cached->trial_histogram);
@@ -1153,11 +1490,18 @@ public:
 private:
     void clear_current_preview()
     {
+        m_preview_frame.invalidate();
+        if (m_navigator) m_navigator->set_preview_frame(0, nullptr);
+        if (m_navigator) m_navigator->reset();
+        m_resize_frame_valid = false;
+        ++m_after_preview_sequence;
+        m_after_preview_frame = {};
         cancel_surface_selection();
         const std::string semantic_context = m_semantic_submission_context;
         const std::string semantic_geometry = m_semantic_submission_geometry;
-        if (m_semantic_controller) m_semantic_controller->cancel();
+        if (m_semantic_controller) m_semantic_controller->cancel_and_wait();
         m_semantic_timer.Stop();
+        m_semantic_completion = {};
         publish_honor_suite_semantic_progress(false, 0, wxEmptyString,
             semantic_context, semantic_geometry);
         m_semantic_source.reset(); m_automatic_face_colors.clear(); m_automatic_subface_colors.clear();
@@ -1178,6 +1522,8 @@ private:
         m_round_base_model.reset();
         m_printer_filament_restore.reset();
         m_color_blocks.reset(); m_selected_color_block.reset();
+        m_native_portrait_partition.reset();
+        m_native_workbench_partition_reference = nullptr;
         m_selection_redo.clear();
         m_stroke.clear();
         m_drawing_selection = false;
@@ -1186,12 +1532,23 @@ private:
         m_deferred_selection = {};
         m_region_prepare_failed = false;
         m_region_prepare_status->Hide();
-        if (m_context != nullptr && m_canvas != nullptr)
-            m_canvas->SetCurrent(*m_context);
+        if (m_context != nullptr && m_canvas != nullptr && m_canvas->SetCurrent(*m_context)) {
+            if (m_resize_frame_texture != 0) {
+                glsafe(::glDeleteTextures(1, &m_resize_frame_texture));
+                m_resize_frame_texture = 0;
+                m_resize_frame_size = {0, 0};
+            }
+        }
         m_models.clear();
         m_texture_model.reset();
         m_current_appearance_model.reset();
         m_current_appearance_texture_model.reset();
+        m_direct_original_model.reset();
+        m_direct_original_texture_model.reset();
+        m_direct_original_reuses_current = false;
+        m_direct_original_sha256.clear();
+        m_direct_original_geometry_id.clear();
+        m_original_comparison_error.clear();
         m_manual_color_model.reset(); m_manual_corner_normals.clear();
         m_surface_vertices.clear();
         m_original_surface_colors.clear();
@@ -1262,8 +1619,8 @@ public:
     {
         set_auto_rotation(false);
         m_pan_x = m_pan_y = 0.0;
-        m_yaw = -0.65;
-        m_pitch = -1.05;
+        m_camera_rotation.reset(-0.65, -1.05);
+        if (m_navigator) m_navigator->reset();
         m_zoom = 1.0;
         if (m_canvas != nullptr)
             m_canvas->Refresh(false);
@@ -1286,8 +1643,8 @@ public:
         set_auto_rotation(false);
         m_pan_x = m_pan_y = 0.0;
         const auto angles = initial_view_angles(m_bounds.size().cast<double>());
-        m_yaw = angles.first;
-        m_pitch = angles.second;
+        m_camera_rotation.reset(angles.first, angles.second);
+        if (m_navigator) m_navigator->reset();
         m_zoom = 1.0;
         if (m_canvas != nullptr)
             m_canvas->Refresh(false);
@@ -1300,8 +1657,8 @@ public:
         // Generated portrait OBJ files are Z-up and face +X. Rotate +X toward
         // the orthographic camera so identity can be compared without asking
         // the user to find a precise angle by dragging a two-million-face mesh.
-        m_yaw = -1.5707963267948966;
-        m_pitch = -1.5707963267948966;
+        m_camera_rotation.reset(-1.5707963267948966, -1.5707963267948966);
+        if (m_navigator) m_navigator->reset();
         m_zoom = 1.0;
         if (m_canvas != nullptr)
             m_canvas->Refresh(false);
@@ -1520,6 +1877,8 @@ public:
             m_geometry_id, m_triangle_count, m_region_runtime_identity);
     }
     std::shared_ptr<const SemanticRegionEvidence> semantic_region_evidence() const { return m_region_evidence; }
+    bool portrait_person_detected() const { return m_person_detected; }
+    std::string semantic_source_content_id() const { return m_semantic_source ? m_semantic_source->content_id : std::string{}; }
     const std::string& semantic_region_evidence_error() const { return m_region_evidence_error; }
     bool restore_semantic_region_evidence(std::shared_ptr<const SemanticRegionEvidence> evidence,
                                          const std::string& previous_error = {}) {
@@ -2013,7 +2372,9 @@ public:
         return m_color_trial && m_color_trial->portrait_color_count_supported();
     }
     bool has_modern_portrait_color_blocks() const {
-        return m_color_blocks && m_color_blocks->strategy == PortraitColorBlocks::Strategy::ColorRegionMajorityV2;
+        return m_color_blocks && m_native_portrait_partition &&
+            m_color_blocks->strategy == PortraitColorBlocks::Strategy::ColorRegionMajorityV2 &&
+            m_color_blocks->algorithm_version == PortraitColorBlocks::portrait_postprocess_algorithm_version;
     }
     bool semantic_optimization_enabled() const {
         return m_color_trial_enabled && m_color_trial && m_color_trial->semantic_optimization();
@@ -2178,7 +2539,20 @@ public:
         GLModel::Geometry lines;
         lines.format = {GLModel::Geometry::EPrimitiveType::Lines, GLModel::Geometry::EVertexLayout::P3N3};
         const float offset = std::max(1e-5f, float(m_bounds.size().norm()) * 0.0001f);
-        if (m_leaf_editing) for (const auto& segment : m_leaf_editing->boundary_segments(pieces)) {
+        const bool actual_color_partition = m_color_blocks && !m_color_blocks->source_palette.empty() &&
+            m_color_blocks->face_partition(neighbors) == pieces;
+        if (actual_color_partition && m_color_blocks->algorithm_version == 7 &&
+            !m_color_blocks->borders.empty()) for (const auto& border:m_color_blocks->borders) {
+            const auto& face=m_semantic_source->mesh.indices[border.face];
+            Vec3f normal=(m_semantic_source->mesh.vertices[face[1]]-m_semantic_source->mesh.vertices[face[0]]).cross(
+                m_semantic_source->mesh.vertices[face[2]]-m_semantic_source->mesh.vertices[face[0]]);
+            if (normal.squaredNorm()<1e-20f) continue;
+            normal.normalize();const auto base=unsigned(lines.vertices_count());
+            lines.add_vertex(Vec3f(border.points[0],border.points[1],border.points[2])+offset*normal,normal);
+            lines.add_vertex(Vec3f(border.points[3],border.points[4],border.points[5])+offset*normal,normal);
+            lines.add_line(base,base+1);
+        }
+        else if (m_leaf_editing) for (const auto& segment : m_leaf_editing->boundary_segments(pieces)) {
             const auto base = unsigned(lines.vertices_count());
             lines.add_vertex(segment.a+offset*segment.normal,segment.normal);
             lines.add_vertex(segment.b+offset*segment.normal,segment.normal);
@@ -2212,11 +2586,20 @@ public:
         if (m_canvas) m_canvas->Refresh(false);
     }
     bool beauty_lighting() const { return m_beauty_lighting; }
-    bool original_comparison_available() const {
+    bool original_evidence_available() const {
         return m_has_model && m_has_source_appearance;
     }
+    bool original_comparison_available() const {
+        return original_evidence_available() &&
+            ((m_direct_original_reuses_current && (m_texture_model || !m_models.empty())) ||
+             m_direct_original_texture_model || m_direct_original_model);
+    }
+    const std::string& direct_original_sha256() const { return m_direct_original_sha256; }
+    const std::string& direct_original_geometry_id() const { return m_direct_original_geometry_id; }
     const OriginalAppearanceReference& original_appearance_reference() const { return m_original_appearance; }
-    const std::string& original_appearance_error() const { return m_original_appearance_error; }
+    const std::string& original_appearance_error() const {
+        return m_original_appearance_error.empty() ? m_original_comparison_error : m_original_appearance_error;
+    }
     void set_workbench_palette_hint(const wxString& hint) {
         m_color_trial->set_workbench_palette_hint(hint);
     }
@@ -2245,6 +2628,8 @@ public:
     void set_beauty_view(bool enabled) {
         if (m_beauty_view == enabled) return;
         m_beauty_view = enabled;
+        if (m_navigator) m_navigator->reset();
+        if (m_navigator) m_navigator->show_surface(enabled && m_has_model);
         const wxColour background = enabled ? wxColour(49, 49, 54) : wxGetApp().get_window_default_clr();
         SetBackgroundColour(background);
         m_splitter->SetBackgroundColour(background);
@@ -2420,11 +2805,32 @@ public:
         }
         if (honor_request) reject_honor_suite_application(m_semantic_error);
     }
+    void cancel_semantic_request_and_wait(bool notify_completion = true) {
+        const bool honor_request = m_color_trial && m_color_trial->honor_suite_request_pending();
+        const std::string request_context = m_semantic_submission_context;
+        const std::string geometry_id = m_semantic_submission_geometry;
+        if (m_semantic_controller) m_semantic_controller->cancel_and_wait();
+        m_semantic_timer.Stop();
+        m_semantic_error = _L("用户已取消自动划区语义识别。");
+        if (m_color_trial) m_color_trial->set_semantic_status(m_semantic_error, false);
+        publish_honor_suite_semantic_progress(false, 0, m_semantic_error,
+            request_context, geometry_id);
+        m_semantic_submission_context.clear();
+        m_semantic_submission_geometry.clear();
+        auto completion = std::move(m_semantic_completion);
+        if (honor_request) reject_honor_suite_application(m_semantic_error);
+        if (notify_completion && completion) completion(false);
+    }
     void set_semantic_completion_callback(std::function<void(bool)> callback) {
         m_semantic_completion = std::move(callback);
     }
     void restore_manual_face_colors(FaceColorOverrides colors) { m_face_color_overrides = std::move(colors); }
     const FaceColorOverrides& face_color_overrides() const { return m_face_color_overrides; }
+    bool has_native_portrait_partition_conflict() const {
+        return !m_face_color_overrides.empty() || !m_manual_leaf_colors.empty() ||
+            !m_manual_cell_colors.empty() || m_shapes_unlocked ||
+            (!m_pending_leaf_edits.is_null() && !m_pending_leaf_edits.empty());
+    }
     struct BeautyPaintResult {
         size_t changed {0};
         std::vector<size_t> faces;
@@ -2438,6 +2844,24 @@ public:
     void set_paint_commit_callback(std::function<void(const std::vector<size_t>&)> callback) { m_paint_commit = std::move(callback); }
     void set_beauty_history_callback(std::function<void(bool)> callback) { m_beauty_history = std::move(callback); }
     std::shared_ptr<const PortraitColorBlocks::Result> portrait_color_blocks() const {return m_color_blocks;}
+    std::shared_ptr<const NativePortrait::NativePortraitPartition> native_portrait_partition() const {
+        return m_native_portrait_partition;
+    }
+    const nlohmann::json& native_workbench_partition_reference() const {
+        return m_native_workbench_partition_reference;
+    }
+    bool restore_native_portrait_partition(
+        std::shared_ptr<const NativePortrait::NativePortraitPartition> partition) {
+        if (!partition) {
+            m_native_portrait_partition.reset();
+            return true;
+        }
+        if (!partition->valid() || partition->geometry_id != m_geometry_id ||
+            partition->painted.indices.size() != m_triangle_count)
+            return false;
+        m_native_portrait_partition = std::move(partition);
+        return true;
+    }
     bool restore_portrait_color_blocks(std::shared_ptr<const PortraitColorBlocks::Result>, bool refresh=true);
     bool switch_portrait_color_track(PortraitColorBlocks::Track);
     bool select_portrait_color_block(uint32_t);
@@ -2671,10 +3095,50 @@ public:
         return true;
     }
     bool showing_model(const boost::filesystem::path& path) const { return m_has_model && path == m_model_path && same_stamp(m_model_stamp, file_stamp(path)); }
+    const boost::filesystem::path& model_path() const { return m_model_path; }
+    const std::string& model_sha256() const { return m_model_sha256; }
     ModelPreviewColorControls::State color_trial_state() const { return m_color_trial->state(); }
     const PreviewPalette::AutomaticColorBasis& automatic_color_basis() const {
         static const PreviewPalette::AutomaticColorBasis empty;
         return m_color_trial ? m_color_trial->automatic_color_basis() : empty;
+    }
+    std::optional<PreviewPalette::AutomaticColorBasis>
+    native_workbench_automatic_basis(size_t requested_count) const {
+        if (!m_native_portrait_partition || !m_native_portrait_partition->valid() ||
+            m_native_portrait_partition->geometry_id != m_geometry_id ||
+            requested_count < NativePortrait::minimum_color_count ||
+            requested_count > NativePortrait::maximum_color_count)
+            return std::nullopt;
+        const auto reduction = NativePortrait::reduce_native_workbench_partition(
+            *m_native_portrait_partition, requested_count);
+        PreviewPalette::AutomaticColorBasis basis;
+        basis.geometry_id = m_geometry_id;
+        basis.source_color_signature = m_native_portrait_partition->partition_digest + ":" +
+            reduction.mapping_digest;
+        basis.requested_count = requested_count;
+        basis.source_palette.reserve(reduction.group_cluster_ids.size());
+        for (size_t cluster : reduction.group_cluster_ids) {
+            const auto& color = m_native_portrait_partition->painted.cluster_colors[cluster];
+            basis.source_palette.push_back({float(color[0]) / 255.f, float(color[1]) / 255.f,
+                float(color[2]) / 255.f});
+        }
+        basis.unit_source_slots.resize(m_triangle_count);
+        basis.unit_area.resize(m_triangle_count);
+        basis.source_area.assign(reduction.actual_color_count, 0.);
+        for (size_t region = 0; region < m_native_portrait_partition->region_members.size(); ++region) {
+            const size_t group = reduction.region_color_groups[region];
+            const auto& members = m_native_portrait_partition->region_members[region];
+            const double face_area = m_native_portrait_partition->region_areas[region] /
+                double(members.size());
+            basis.source_area[group] += m_native_portrait_partition->region_areas[region];
+            for (uint32_t face : members) {
+                basis.unit_source_slots[face] = group;
+                basis.unit_area[face] = face_area;
+            }
+        }
+        basis.basis_signature = PreviewPalette::automatic_basis_signature(basis);
+        return basis.valid() ? std::optional<PreviewPalette::AutomaticColorBasis>(std::move(basis))
+                             : std::nullopt;
     }
     std::string automatic_color_basis_signature() const {
         return m_color_trial ? m_color_trial->automatic_basis_signature() : std::string{};
@@ -2687,7 +3151,9 @@ public:
     }
     bool honor_suite_v2_appearance_active() const {
         if (!m_color_blocks || !m_semantic_ready ||
-            m_color_blocks->strategy != PortraitColorBlocks::Strategy::ColorRegionMajorityV2) return false;
+            !m_native_portrait_partition ||
+            m_color_blocks->strategy != PortraitColorBlocks::Strategy::ColorRegionMajorityV2 ||
+            m_color_blocks->algorithm_version != PortraitColorBlocks::portrait_postprocess_algorithm_version) return false;
         if (active_honor_filament_suite()) return true;
         return m_color_trial && m_color_trial->state().source == 1 && m_printer_filament_restore &&
             m_printer_filament_restore->geometry_id == m_geometry_id &&
@@ -2751,8 +3217,28 @@ public:
     bool project_matching_valid() const { return m_color_trial->project_matching_valid(); }
     FaceColorOverrides printer_filament_export_faces() const;
     wxWindow* build_workbench_palette(wxWindow* parent) { return m_color_trial->build_workbench_palette(parent); }
-    bool activate_current_ai_palette() {
-        return m_has_model && m_color_trial && m_color_trial->activate_current_ai_palette();
+    bool activate_current_ai_palette(int count = 0) {
+        return m_has_model && m_color_trial && m_color_trial->activate_current_ai_palette(count);
+    }
+    bool request_honor_people_suite() {
+        return m_has_model && m_color_trial && m_color_trial->request_honor_suite("honor.people.six");
+    }
+    bool set_independent_base_slot(size_t slot) {
+        if (!m_has_model || !m_color_trial || !m_color_trial->set_base_slot(slot)) return false;
+        m_canvas->Refresh(false); return true;
+    }
+    void set_base_slot_changed_callback(std::function<void(size_t)> callback) {
+        m_color_trial->on_base_slot_change = std::move(callback);
+    }
+    bool apply_portrait_suite_binding(const PortraitSuite::Binding& binding) {
+        if (!m_has_model || !m_color_trial) return false;
+        m_suppress_semantic_change = true;
+        const bool applied = m_color_trial->apply_portrait_suite_binding(binding);
+        m_suppress_semantic_change = false;
+        m_color_trial_enabled = m_color_trial->enabled();
+        m_trial_palette = m_color_trial->colors();
+        m_canvas->Refresh(false);
+        return applied;
     }
     bool restored_persisted_color_trial() const { return m_restored_persisted_color_trial; }
     wxWindow* build_workbench_mode(wxWindow* parent, std::function<void(bool)> mode, std::function<void()> cancel) {
@@ -2763,11 +3249,29 @@ public:
     bool has_saved_portrait_result() const { return bool(m_portrait_shapes) || !m_saved_semantic_faces.empty() || m_semantic_ready; }
     void set_portrait_progress(std::shared_ptr<PortraitOptimizationTask> task) { m_portrait_progress = std::move(task); }
     void set_portrait_input_changed(std::function<void()> fn) { m_portrait_input_changed = std::move(fn); }
-    void after_next_preview_frame(std::function<void()> fn) { m_after_preview_frame = std::move(fn); m_canvas->Refresh(false); }
+    void after_next_preview_frame(std::function<void()> fn) {
+        ++m_after_preview_sequence;
+        m_after_preview_frame = std::move(fn);
+        m_canvas->Refresh(false);
+    }
+    // Independent of the portrait workflow's one-shot frame callback.
+    void observe_presentation_frame(std::function<void()> observer) {
+        ++m_presentation_observer_sequence;
+        m_presentation_frame_observer = std::move(observer);
+        if (m_presentation_frame_observer) {
+            m_preview_frame.invalidate();
+            m_canvas->Refresh(false);
+        }
+    }
+    void cancel_view_navigation() {
+        if (m_navigator) m_navigator->reset();
+        finish_drag();
+    }
     void set_workbench_input_locked(bool locked) {
         if (m_workbench_input_locked == locked) return;
         m_workbench_input_locked = locked;
         if (locked) {
+            if (m_navigator) m_navigator->reset();
             set_auto_rotation(false);
             if (m_canvas && m_canvas->HasCapture()) m_canvas->ReleaseMouse();
             m_dragging = false;
@@ -3044,6 +3548,8 @@ private:
         std::unique_ptr<ModelPreviewTexture> texture_model;
         std::unique_ptr<GLModel> current_appearance_model;
         std::unique_ptr<ModelPreviewTexture> current_appearance_texture_model;
+        std::unique_ptr<GLModel> direct_original_model;
+        std::unique_ptr<ModelPreviewTexture> direct_original_texture_model;
         std::unique_ptr<GLModel> manual_color_model;
         indexed_triangle_set mesh;
         std::vector<RGBA> vertex_colors;
@@ -3064,6 +3570,8 @@ private:
         std::optional<ModelPreviewColorControls::State> color_trial;
         std::optional<PrinterFilamentRestoreSnapshot> printer_filament_restore;
         std::shared_ptr<const PortraitColorBlocks::Result> color_blocks;
+        std::shared_ptr<const NativePortrait::NativePortraitPartition> native_portrait_partition;
+        nlohmann::json native_workbench_partition_reference;
         std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> semantic_source;
         FaceColorOverrides saved_semantic_faces;
         SubfaceColorOverrides saved_semantic_subfaces;
@@ -3076,7 +3584,12 @@ private:
         bool has_source_appearance {false};
         OriginalAppearanceReference original_appearance;
         std::string original_appearance_error;
+        std::string original_comparison_error;
+        std::string direct_original_sha256;
+        std::string direct_original_geometry_id;
+        bool direct_original_reuses_current {false};
         bool restored_persisted_color_trial {false};
+        bool round_base_enabled {false};
         nlohmann::json leaf_edits;
     };
 
@@ -3123,10 +3636,17 @@ private:
             bytes += m_current_appearance_model->cpu_memory_used() + m_current_appearance_model->gpu_memory_used();
         if (m_current_appearance_texture_model)
             bytes += m_current_appearance_texture_model->memory_used();
+        if (m_direct_original_model)
+            bytes += m_direct_original_model->cpu_memory_used() + m_direct_original_model->gpu_memory_used();
+        if (m_direct_original_texture_model)
+            bytes += m_direct_original_texture_model->memory_used();
         if (m_manual_color_model) bytes += m_manual_color_model->cpu_memory_used() + m_manual_color_model->gpu_memory_used();
         constexpr size_t cache_limit = size_t(384) * 1024 * 1024;
         if(m_color_blocks) bytes+=m_color_blocks->memory_bytes();
-        if (bytes > cache_limit)
+        // A history transition owns one rollback scene only until its first
+        // frame commits. Retain that already loaded scene even above the normal
+        // browsing-cache budget, so timeout/failure never reveals the new asset.
+        if (bytes > cache_limit && !m_history_rollback_retained)
             return;
         m_cached_preview = std::make_unique<CachedPreview>();
         m_cached_preview->geometry_id = m_geometry_id;
@@ -3134,10 +3654,18 @@ private:
         m_cached_preview->has_source_appearance = m_has_source_appearance;
         m_cached_preview->original_appearance = m_original_appearance;
         m_cached_preview->original_appearance_error = m_original_appearance_error;
+        m_cached_preview->original_comparison_error = m_original_comparison_error;
+        m_cached_preview->direct_original_reuses_current = m_direct_original_reuses_current;
+        m_cached_preview->direct_original_sha256 = m_direct_original_sha256;
+        m_cached_preview->direct_original_geometry_id = m_direct_original_geometry_id;
         m_cached_preview->restored_persisted_color_trial = m_restored_persisted_color_trial;
+        m_cached_preview->round_base_enabled = round_base_preview_enabled();
         m_cached_preview->face_color_overrides = m_face_color_overrides;
         m_cached_preview->printer_filament_restore = m_printer_filament_restore;
         m_cached_preview->color_blocks=m_color_blocks;
+        m_cached_preview->native_portrait_partition=m_native_portrait_partition;
+        m_cached_preview->native_workbench_partition_reference =
+            m_native_workbench_partition_reference;
         m_cached_preview->manual_color_model = std::move(m_manual_color_model);
         m_cached_preview->semantic_source = m_semantic_source;
         m_cached_preview->region_evidence = m_region_evidence;
@@ -3156,6 +3684,8 @@ private:
         m_cached_preview->texture_model = std::move(m_texture_model);
         m_cached_preview->current_appearance_model = std::move(m_current_appearance_model);
         m_cached_preview->current_appearance_texture_model = std::move(m_current_appearance_texture_model);
+        m_cached_preview->direct_original_model = std::move(m_direct_original_model);
+        m_cached_preview->direct_original_texture_model = std::move(m_direct_original_texture_model);
         if (canonical->ready()) {
             // Retain only compact source arrays, never the adjacency/BVH. This
             // keeps the first local before/after comparison free of OBJ parsing.
@@ -3767,6 +4297,48 @@ private:
         }
     }
 
+    void present_resize_frame()
+    {
+        if (m_in_paint || !m_resize_frame_valid || !m_has_model ||
+            !m_canvas->IsShownOnScreen() || !m_context || !m_context->IsOK()) return;
+        const wxSize size = m_canvas->GetClientSize();
+        const auto frame = m_preview_frame.begin(size, m_canvas->GetDPIScaleFactor());
+        wxSize pixels = size;
+#if defined(__APPLE__)
+        pixels = wxSize(int(std::lround(size.x * frame.dpi_scale)),
+                        int(std::lround(size.y * frame.dpi_scale)));
+#endif
+        const auto extents = preview_frame_extents(
+            wxSize(int(m_resize_frame_size[0]), int(m_resize_frame_size[1])), pixels);
+        if (!extents || !m_canvas->SetCurrent(*m_context) ||
+            !wxGetApp().get_shader("flat_texture")) return;
+        m_in_paint = true;
+        Slic3r::ScopeGuard paint_guard([this] { m_in_paint = false; });
+        (void)paint_guard;
+        glsafe(::glBindFramebuffer(GL_FRAMEBUFFER, 0));
+        glsafe(::glViewport(0, 0, pixels.x, pixels.y));
+        glsafe(::glDisable(GL_SCISSOR_TEST));
+        glsafe(::glDisable(GL_STENCIL_TEST));
+        glsafe(::glDisable(GL_DEPTH_TEST));
+        glsafe(::glDisable(GL_CULL_FACE));
+        glsafe(::glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE));
+        const wxColour background = m_preview_background.IsOk() ? m_preview_background :
+            m_beauty_view ? wxColour(49, 49, 54) : wxGetApp().get_window_default_clr();
+        glsafe(::glClearColor(background.Red() / 255.f, background.Green() / 255.f,
+                             background.Blue() / 255.f, 1.f));
+        glsafe(::glClear(GL_COLOR_BUFFER_BIT));
+        glsafe(::glActiveTexture(GL_TEXTURE0));
+        // Framebuffer texture rows already run bottom to top.
+        const GLTexture::Quad_UVs uvs {{0.f, 0.f}, {1.f, 0.f}, {1.f, 1.f}, {0.f, 1.f}};
+        GLTexture::render_sub_texture(m_resize_frame_texture, -(*extents)[0], (*extents)[0],
+                                     -(*extents)[1], (*extents)[1], uvs);
+        if (m_preview_frame.current(frame, m_canvas->GetClientSize(),
+                m_canvas->GetDPIScaleFactor(), m_canvas->IsShownOnScreen()))
+            m_canvas->SwapBuffers();
+        // This transition must neither complete a model waiter nor replace the
+        // cached full frame. The already queued paint owns both operations.
+    }
+
     void on_paint(wxPaintEvent&)
     {
         wxPaintDC dc(m_canvas);
@@ -3777,6 +4349,7 @@ private:
             return;
         }
         const wxSize drawable_size = m_canvas->GetClientSize();
+        const auto frame = m_preview_frame.begin(drawable_size, m_canvas->GetDPIScaleFactor());
         if (!m_canvas->IsShownOnScreen() || drawable_size.x <= 0 || drawable_size.y <= 0)
             return;
         m_in_paint = true;
@@ -3796,11 +4369,10 @@ private:
         if (!wxGetApp().init_opengl())
             return;
 
-        int width = 0;
-        int height = 0;
-        m_canvas->GetClientSize(&width, &height);
+        int width = drawable_size.x;
+        int height = drawable_size.y;
 #if defined(__APPLE__)
-        const double dpi_scale = m_canvas->GetDPIScaleFactor();
+        const double dpi_scale = frame.dpi_scale;
         width = std::max(1, int(std::lround(width * dpi_scale)));
         height = std::max(1, int(std::lround(height * dpi_scale)));
 #else
@@ -3822,6 +4394,17 @@ private:
         glsafe(::glClearDepth(1.0));
         glsafe(::glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
 
+        bool navigation_animating = false;
+        if (m_beauty_view && m_has_model && (!m_navigator || !m_navigator->has_surface())) {
+            if (!m_navigator) m_navigator = std::make_unique<WorkbenchViewNavigator>();
+            auto rotation = view_rotation();
+            navigation_animating = m_navigator->begin(rotation, drawable_size, frame.dpi_scale, true,
+                !m_workbench_input_locked && !m_drawing_selection && !m_dragging);
+            if (navigation_animating) {
+                set_auto_rotation(false);
+                m_camera_rotation.set(rotation);
+            }
+        }
         if (m_has_model) {
             if (!m_color_shader) {
                 m_color_shader = std::make_unique<GLShaderProgram>();
@@ -3846,8 +4429,13 @@ private:
                 const Matrix3d normal_matrix = view_model.matrix().block(0, 0, 3, 3).inverse().transpose();
                 const auto round_base = m_round_base_preview.layout(m_geometry_id, m_bounds);
                 if (round_base && m_round_base_model) {
-                    const auto color = !m_trial_palette.empty()
+                    auto color = !m_trial_palette.empty()
                         ? m_trial_palette.front() : PreviewPalette::Color {0.72f, 0.72f, 0.74f};
+                    const auto& binding = m_color_trial->base_binding();
+                    if (binding && binding->valid()) {
+                        const wxColour bound(wxString::FromUTF8(honor_people_suite().physical_slots[binding->physical_slot].color));
+                        color = {bound.Red()/255.f, bound.Green()/255.f, bound.Blue()/255.f};
+                    }
                     m_round_base_model->set_color(ColorRGBA(color[0], color[1], color[2], 1.0f));
                 }
                 if (m_beauty_view && m_workbench_grid_visible) {
@@ -3954,8 +4542,14 @@ private:
                     if (!source_view && m_wireframe_view)
                         glsafe(::glPolygonMode(GL_FRONT_AND_BACK, GL_LINE));
                     if (source_view) {
-                        if (m_texture_model) m_texture_model->render(shader, body_view);
-                        else for (const std::unique_ptr<GLModel>& model : m_models) model->render(shader);
+                        if (m_direct_original_reuses_current) {
+                            if (m_texture_model) m_texture_model->render(shader, body_view);
+                            else for (const std::unique_ptr<GLModel>& model : m_models) model->render(shader);
+                        } else if (m_direct_original_texture_model) {
+                            m_direct_original_texture_model->render(shader, body_view);
+                        } else if (m_direct_original_model) {
+                            m_direct_original_model->render(shader);
+                        }
                     } else if (m_residual_preview_model) {
                         shader->set_uniform("preview_color_count", 0);
                         m_residual_preview_model->render(shader);
@@ -4095,11 +4689,24 @@ private:
                 m_render_diagnostics_logged = true;
             }
         }
-        // Visibility can change through native window messages during a paint.
-        // Do not submit a frame for a canvas hidden by navigation or layout.
-        if (!m_canvas->IsShownOnScreen())
+        if (m_beauty_view && m_has_model && m_navigator && !m_navigator->has_surface()) m_navigator->render();
+        bool resize_frame_captured = false;
+        if (m_has_model && m_color_shader) {
+            glsafe(::glReadBuffer(GL_BACK));
+            GLTexture::copy_from_framebuffer(m_resize_frame_texture, m_resize_frame_size,
+                                           unsigned(width), unsigned(height), GL_LINEAR);
+            resize_frame_captured = ::glGetError() == GL_NO_ERROR;
+        }
+        // Native messages may change visibility or size while GL work finishes.
+        // A rejected capture must not become the next resize transition.
+        if (!m_preview_frame.current(frame, m_canvas->GetClientSize(),
+                m_canvas->GetDPIScaleFactor(), m_canvas->IsShownOnScreen())) {
+            m_resize_frame_valid = false;
+            m_canvas->Refresh(false);
             return;
+        }
         const bool frame_submitted = m_canvas->SwapBuffers();
+        m_resize_frame_valid = frame_submitted && resize_frame_captured;
         if (frame_submitted && m_has_model && m_color_shader != nullptr && !m_pending_library_thumbnail_sha.empty()) {
             // The first visible frame initializes the GL drawing state. Capture once
             // afterwards, rather than before the newly loaded model has been drawn.
@@ -4107,9 +4714,44 @@ private:
             m_pending_library_thumbnail_sha.clear();
             cache_library_model_thumbnail(artifact_sha);
         }
+        // Reuse the complete GPU frame beneath the navigation surface. Native
+        // GL children are opaque, so clearing that surface alone masks a zoomed
+        // model with a rectangle even when the navigator itself is transparent.
+        if (m_navigator) m_navigator->set_preview_frame(m_resize_frame_valid ? m_resize_frame_texture : 0, m_canvas);
+        const bool navigation_submitted = !m_navigator || m_navigator->present_surface(
+            m_beauty_view && m_has_model, !m_workbench_input_locked && !m_drawing_selection && !m_dragging);
+        if (m_context) m_canvas->SetCurrent(*m_context);
+        if (frame_submitted && navigation_submitted && m_has_model && m_color_shader && m_presentation_frame_observer) {
+            const auto sequence = m_presentation_observer_sequence;
+            const auto identity = m_model_sha256;
+            wxWeakRef<ModelPreview3D> weak(this);
+            CallAfter([weak, frame, sequence, identity] {
+                if (!weak || sequence != weak->m_presentation_observer_sequence ||
+                    !weak->m_presentation_frame_observer || !weak->m_has_model ||
+                    identity != weak->m_model_sha256 ||
+                    !weak->m_preview_frame.current(frame, weak->m_canvas->GetClientSize(),
+                        weak->m_canvas->GetDPIScaleFactor(), weak->m_canvas->IsShownOnScreen())) return;
+                auto observer = weak->m_presentation_frame_observer;
+                observer();
+            });
+        }
+        if (navigation_animating || !navigation_submitted) m_canvas->Refresh(false);
         if (frame_submitted && m_after_preview_frame) {
-            auto completed = std::move(m_after_preview_frame);
-            CallAfter(std::move(completed));
+            const auto sequence = m_after_preview_sequence;
+            wxWeakRef<ModelPreview3D> weak(this);
+            CallAfter([weak, frame, sequence] {
+                if (!weak || sequence != weak->m_after_preview_sequence || !weak->m_after_preview_frame) return;
+                if (!weak->m_preview_frame.current(frame, weak->m_canvas->GetClientSize(),
+                        weak->m_canvas->GetDPIScaleFactor(), weak->m_canvas->IsShownOnScreen())) {
+                    // Keep this waiter until a complete frame at the latest
+                    // size is presented; a resize must not lose completion.
+                    weak->m_canvas->Refresh(false);
+                    return;
+                }
+                auto completed = std::move(weak->m_after_preview_frame);
+                ++weak->m_after_preview_sequence;
+                completed();
+            });
         }
         if (m_trial_toggle_started) {
             BOOST_LOG_TRIVIAL(info) << "AI color trial frame submitted: enabled=" << m_color_trial_enabled
@@ -4123,11 +4765,19 @@ private:
     std::string m_pending_library_thumbnail_sha;
     std::function<void()> m_library_thumbnail_published;
     wxGLCanvas* m_canvas {nullptr};
+    ModelPreviewFrameState m_preview_frame;
+    unsigned int m_resize_frame_texture {0};
+    std::array<unsigned int, 2> m_resize_frame_size {0, 0};
+    bool m_resize_frame_valid {false};
+    std::uint64_t m_after_preview_sequence {0};
+    std::function<void()> m_presentation_frame_observer;
+    std::uint64_t m_presentation_observer_sequence {0};
     wxPanel* m_comparison_header {nullptr};
     std::vector<wxStaticText*> m_comparison_labels;
     wxSizerItem* m_overlay_top {nullptr};
     wxSizerItem* m_overlay_bottom {nullptr};
     bool m_retain_surface_attributes {false};
+    bool m_history_rollback_retained {false};
     bool m_exact_surface_display {false};
     std::vector<float> m_surface_vertices;
     std::vector<Vec2f> m_original_surface_colors;
@@ -4140,6 +4790,7 @@ private:
     void rebuild_semantic_preview_from_cached_result();
     bool rebuild_semantic_preview_from_color_blocks();
     bool reject_honor_suite_application(const wxString& reason);
+    bool fallback_honor_people_suite(const wxString& reason);
     void publish_honor_suite_semantic_progress(bool active, int progress,
         const wxString& message, const std::string& request_context = {},
         const std::string& geometry_id = {})
@@ -4182,6 +4833,8 @@ private:
     std::unique_ptr<GLModel> m_semantic_model;
     std::unique_ptr<GLModel> m_residual_preview_model;
     std::shared_ptr<const PortraitColorBlocks::Result> m_color_blocks;
+    std::shared_ptr<const NativePortrait::NativePortraitPartition> m_native_portrait_partition;
+    nlohmann::json m_native_workbench_partition_reference;
     std::optional<uint32_t> m_selected_color_block;
     bool m_semantic_ready {false};
     bool m_person_detected {false};
@@ -4220,6 +4873,9 @@ private:
     std::unique_ptr<ModelPreviewTexture> m_texture_model;
     std::unique_ptr<GLModel> m_current_appearance_model;
     std::unique_ptr<ModelPreviewTexture> m_current_appearance_texture_model;
+    std::unique_ptr<GLModel> m_direct_original_model;
+    std::unique_ptr<ModelPreviewTexture> m_direct_original_texture_model;
+    bool m_direct_original_reuses_current {false};
     std::unique_ptr<GLModel> m_selection_model;
     std::unique_ptr<GLModel> m_manual_color_model;
     std::vector<Vec3f> m_manual_corner_normals;
@@ -4249,6 +4905,9 @@ private:
     bool m_restored_persisted_color_trial {false};
     OriginalAppearanceReference m_original_appearance;
     std::string m_original_appearance_error;
+    std::string m_original_comparison_error;
+    std::string m_direct_original_sha256;
+    std::string m_direct_original_geometry_id;
     std::vector<SelectionState> m_selection_history, m_selection_redo;
     std::vector<uint8_t> m_protected_faces;
     std::vector<uint8_t> m_foreground_faces, m_selection_domain;
@@ -4274,13 +4933,24 @@ private:
     AI::RegionSelectionSettings m_selection_settings;
     AI::RegionSelectionOperation m_selection_operation {AI::RegionSelectionOperation::Replace};
     ColorRGBA m_selection_preview_color {1.0f, 0.55f, 0.0f, 1.0f};
+    bool handle_navigator_mouse(wxMouseEvent& event) {
+        if (!m_beauty_view || !m_navigator || m_navigator->has_surface() || m_dragging || m_drawing_selection ||
+            !m_navigator->mouse(event)) return false;
+        set_auto_rotation(false);
+        if (event.LeftDown()) {
+            if (!m_canvas->HasCapture()) m_canvas->CaptureMouse();
+            m_canvas->SetFocus();
+        }
+        if (event.LeftUp() && m_canvas->HasCapture()) m_canvas->ReleaseMouse();
+        m_canvas->Refresh(false);
+        return true;
+    }
     Transform3d view_rotation() const
     {
         // Generated and imported OBJ files use OrcaSlicer's Z-up convention.
         // Orbit around Z first, then tilt the camera so the build plate stays
         // horizontal instead of presenting portrait bases sideways.
-        return Geometry::rotation_transform(m_pitch * Vec3d::UnitX()) *
-               Geometry::rotation_transform(m_yaw * Vec3d::UnitZ());
+        return m_camera_rotation.transform();
     }
 
     double fitted_half_height(int width, int height) const
@@ -4292,8 +4962,8 @@ private:
         return std::max(0.001, std::max(view_extents.y(), view_extents.x() / aspect) * fit_margin / m_zoom);
     }
 
-    double m_yaw {-0.65};
-    double m_pitch {-1.05};
+    ModelPreviewCameraRotation m_camera_rotation;
+    std::unique_ptr<WorkbenchViewNavigator> m_navigator;
     double m_zoom {1.0};
     bool m_dragging {false};
     bool m_drag_moved {false};

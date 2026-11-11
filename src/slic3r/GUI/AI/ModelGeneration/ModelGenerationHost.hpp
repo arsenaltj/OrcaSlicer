@@ -4,6 +4,7 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include "WorkbenchArtifactValidation.hpp"
 
 namespace Slic3r::GUI {
 

@@ -1,441 +1,1052 @@
 #include "slic3r/Utils/HonorAccount/HonorSession.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
-#include <openssl/evp.h>
-#include <openssl/rsa.h>
+
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
+#include <ctime>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <set>
+#include <stdexcept>
+#include <string>
 #include <thread>
+#include <vector>
 
 using namespace Slic3r::HonorAccount;
+
 namespace {
-using Json=nlohmann::json;
-std::string b64(const std::string& bytes)
+
+using Json = nlohmann::json;
+
+constexpr const char* account_id = "22222222-2222-4222-8222-222222222222";
+constexpr const char* other_account_id = "33333333-3333-4333-8333-333333333333";
+constexpr const char* session_id = "11111111-1111-4111-8111-111111111111";
+constexpr const char* rotated_session_id = "44444444-4444-4444-8444-444444444444";
+constexpr const char* rfc_verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+constexpr const char* rfc_challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
+std::string fixture_token(char value)
 {
-    std::string out((bytes.size()+2)/3*4,'\0');
-    EVP_EncodeBlock(reinterpret_cast<unsigned char*>(&out[0]),reinterpret_cast<const unsigned char*>(bytes.data()),int(bytes.size()));
-    while(!out.empty()&&out.back()=='=')out.pop_back();
-    for(auto& c:out) {if(c=='+')c='-';if(c=='/')c='_';}return out;
-}
-Config configuration()
-{
-    Config c;c.environment="test";c.client_id="314159265";c.client_secret="offline-fixture-only";c.redirect_uri="https://client.example/callback?app=orca";
-    c.authorize_url="https://fixture-test.cloud.honor.com/oauth2/v3/authorize";c.token_url="https://fixture-test.cloud.honor.com/oauth2/v3/token";
-    c.jwks_url="https://fixture-test.cloud.honor.com/oauth2/v3/certs";c.issuer="https://fixture-test.cloud.honor.com";return c;
-}
-struct Signer {
-    std::unique_ptr<EVP_PKEY,decltype(&EVP_PKEY_free)> key {nullptr,EVP_PKEY_free};
-    std::string jwks;
-    Signer()
-    {
-        std::unique_ptr<EVP_PKEY_CTX,decltype(&EVP_PKEY_CTX_free)> ctx(EVP_PKEY_CTX_new_id(EVP_PKEY_RSA,nullptr),EVP_PKEY_CTX_free);
-        REQUIRE(ctx);REQUIRE(EVP_PKEY_keygen_init(ctx.get())==1);REQUIRE(EVP_PKEY_CTX_set_rsa_keygen_bits(ctx.get(),2048)==1);
-        EVP_PKEY* raw=nullptr;REQUIRE(EVP_PKEY_keygen(ctx.get(),&raw)==1);key.reset(raw);
-        const auto* rsa=EVP_PKEY_get0_RSA(key.get());const BIGNUM *n,*e;RSA_get0_key(rsa,&n,&e,nullptr);
-        auto bytes=[](const BIGNUM* number) {std::string s(BN_num_bytes(number),'\0');BN_bn2bin(number,reinterpret_cast<unsigned char*>(&s[0]));return s;};
-        jwks=Json{{"keys",Json::array({Json{{"kty","RSA"},{"kid","fixture"},{"alg","RS256"},{"use","sig"},{"n",b64(bytes(n))},{"e",b64(bytes(e))}}})}}.dump();
-    }
-    Json claims(const std::string& nonce="nonce")
-    {
-        return {{"iss",configuration().issuer},{"aud",configuration().client_id},{"sub","fixture-union-id"},{"nonce",nonce},
-            {"iat",now_seconds()-10},{"exp",now_seconds()+3600},{"display_name","测试用户"},{"picture",""}};
-    }
-    std::string sign(const Json& claims,const std::string& algorithm="RS256")
-    {
-        auto input=b64(Json{{"alg",algorithm},{"kid","fixture"}}.dump())+"."+b64(claims.dump());
-        std::unique_ptr<EVP_MD_CTX,decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(),EVP_MD_CTX_free);
-        if(EVP_DigestSignInit(ctx.get(),nullptr,EVP_sha256(),nullptr,key.get())!=1)throw std::runtime_error("fixture signing init");
-        size_t size=0;if(EVP_DigestSign(ctx.get(),nullptr,&size,reinterpret_cast<const unsigned char*>(input.data()),input.size())!=1)throw std::runtime_error("fixture signing size");
-        std::string sig(size,'\0');if(EVP_DigestSign(ctx.get(),reinterpret_cast<unsigned char*>(&sig[0]),&size,reinterpret_cast<const unsigned char*>(input.data()),input.size())!=1)throw std::runtime_error("fixture signing");
-        sig.resize(size);return input+"."+b64(sig);
-    }
-    Credentials credentials()
-    {
-        Credentials c;c.access_token="fixture-at";c.refresh_token="fixture-rt";c.id_token=sign(claims());c.expires_at=now_seconds()+3600;
-        c.identity=verify_id_token(c.id_token,jwks,configuration(),"nonce",now_seconds());return c;
-    }
-    Response response(const std::string& nonce="nonce",const std::string& subject="fixture-union-id")
-    {
-        auto payload=claims(nonce);payload["sub"]=subject;
-        return {200,Json{{"access_token","rotated-at"},{"refresh_token","rotated-rt"},{"id_token",sign(payload)},{"expires_in",3600},{"token_type","Bearer"}}.dump()};
-    }
-};
-struct Memory { std::map<std::string,std::string> values;bool writable {true}, readable {true}, erasable {true}; };
-class MemoryStore final:public Store {
-public:
-    explicit MemoryStore(std::shared_ptr<Memory> memory):memory(memory) {}
-    std::optional<std::string> load(const std::string& key) override {if(!memory->readable)throw std::runtime_error("fixture read failure");auto i=memory->values.find(key);return i==memory->values.end()?std::nullopt:std::optional<std::string>(i->second);}
-    bool save(const std::string& key,const std::string& value) override {if(!memory->writable)return false;memory->values[key]=value;return true;}
-    bool erase(const std::string& key) override {if(!memory->writable||!memory->erasable)return false;memory->values.erase(key);return true;}
-    std::shared_ptr<Memory> memory;
-};
-std::shared_ptr<Memory> saved(const Credentials& credentials)
-{
-    auto memory=std::make_shared<Memory>();memory->values["configuration"]=serialize_config(configuration());
-    memory->values["session-"+configuration().key()]=serialize_credentials(credentials);return memory;
-}
-void finish(Session& session)
-{
-    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
-    while(session.snapshot().busy()&&std::chrono::steady_clock::now()<deadline) {session.poll();std::this_thread::sleep_for(std::chrono::milliseconds(2));}
-    REQUIRE_FALSE(session.snapshot().busy());
-}
-std::string parameter(const std::string& url,const std::string& key)
-{
-    auto begin=url.find(key+"=");REQUIRE(begin!=std::string::npos);begin+=key.size()+1;return url.substr(begin,url.find('&',begin)-begin);
-}
+    return std::string(43, value);
 }
 
-TEST_CASE("HONOR callback rejects changed origins paths fixed parameters and states", "[HonorAccount]")
+Config configuration()
 {
-    auto c=configuration();auto callback=c.redirect_uri+"&state=expected&code=a%2Bb%2Fc%3D";
-    REQUIRE(authorization_code(callback,c.redirect_uri,"expected")=="a+b/c=");
-    REQUIRE_THROWS(authorization_code(callback,c.redirect_uri,"other"));
-    REQUIRE_FALSE(is_callback("https://client.example.evil/callback?code=a",c.redirect_uri));
-    REQUIRE_FALSE(is_callback("https://client.example/callback/extra?code=a",c.redirect_uri));
-    REQUIRE_THROWS(authorization_code("https://client.example/callback?app=other&state=expected&code=a",c.redirect_uri,"expected"));
-    REQUIRE_THROWS(authorization_code(callback+"&state=expected",c.redirect_uri,"expected"));
-    REQUIRE_THROWS(authorization_code(callback+"#fragment",c.redirect_uri,"expected"));
-    REQUIRE_THROWS(authorization_code(c.redirect_uri+"&state=expected&error=access_denied",c.redirect_uri,"expected"));
-    REQUIRE_THROWS(authorization_code(c.redirect_uri+"&state=expected&code=%xx",c.redirect_uri,"expected"));
+    Config result;
+    result.api_url = "https://platform.example.test";
+    return result;
 }
-TEST_CASE("HONOR test provisioning fails closed before credentials reach production", "[HonorAccount]")
+
+Identity identity(const std::string& subject = account_id)
 {
-    auto c=configuration();REQUIRE(c.validate().empty());
-    auto url=authorization_url(c,"state","nonce");REQUIRE(url.find("access_type=offline")!=std::string::npos);
-    REQUIRE(url.find("client_secret")==std::string::npos);REQUIRE(url.find("loginChannel")==std::string::npos);
-    c.token_url="https://hnoauth-login.cloud.honor.com/oauth2/v3/token";REQUIRE_FALSE(c.validate().empty());
-    c=configuration();c.jwks_url="http://fixture-test.cloud.honor.com/certs";REQUIRE_FALSE(c.validate().empty());
-    c=configuration();c.authorize_url="https://honor.com.evil/authorize";REQUIRE_FALSE(c.validate().empty());
-    c=configuration();c.redirect_uri+="&state=fixed";REQUIRE_FALSE(c.validate().empty());
-    c=configuration();auto original=c.key();c.issuer="https://other.cloud.honor.com";REQUIRE(c.key()!=original);
+    Identity result;
+    result.subject = subject;
+    result.email = "maker@example.test";
+    result.name = "Local Maker";
+    result.picture = "https://images.example.test/avatar.png";
+    result.display_name_customized = true;
+    result.avatar_customized = false;
+    result.status = "active";
+    result.roles = {"user"};
+    return result;
 }
-TEST_CASE("HONOR preconfigured test login exchanges and refreshes only through the test services", "[HonorAccount]")
+
+PlatformSession platform_session(std::int64_t access_expires_at = now_seconds() + 3600,
+                                 std::int64_t refresh_expires_at = now_seconds() + 86400,
+                                 const std::string& subject = account_id)
 {
-    Config config;config.client_secret="offline-fixture-only";
+    PlatformSession result;
+    result.session_id = session_id;
+    result.access_token = fixture_token('A');
+    result.refresh_token = fixture_token('R');
+    result.access_expires_at = access_expires_at;
+    result.refresh_expires_at = refresh_expires_at;
+    result.identity = identity(subject);
+    return result;
+}
+
+std::string iso_time(std::int64_t value)
+{
+    const std::time_t time = static_cast<std::time_t>(value);
+    std::tm utc{};
+#ifdef _WIN32
+    if (gmtime_s(&utc, &time) != 0) throw std::runtime_error("fixture timestamp");
+#else
+    if (!gmtime_r(&time, &utc)) throw std::runtime_error("fixture timestamp");
+#endif
+    char buffer[32]{};
+    if (std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc) == 0)
+        throw std::runtime_error("fixture timestamp");
+    return buffer;
+}
+
+Json account_json(const Identity& value)
+{
+    return Json{{"id", value.subject},
+                {"email", value.email ? Json(*value.email) : Json(nullptr)},
+                {"displayName", value.name},
+                {"avatarUrl", value.picture ? Json(*value.picture) : Json(nullptr)},
+                {"displayNameCustomized", value.display_name_customized},
+                {"avatarCustomized", value.avatar_customized},
+                {"status", value.status},
+                {"roles", value.roles}};
+}
+
+std::string account_response(const Identity& value = identity())
+{
+    return account_json(value).dump();
+}
+
+std::string session_response(const PlatformSession& value)
+{
+    return Json{{"account", account_json(value.identity)},
+                {"sessionId", value.session_id},
+                {"kind", "mobile"},
+                {"accessToken", value.access_token},
+                {"refreshToken", value.refresh_token},
+                {"accessExpiresAt", iso_time(value.access_expires_at)},
+                {"refreshExpiresAt", iso_time(value.refresh_expires_at)}}
+        .dump();
+}
+
+Response attempt_response(std::int64_t expires_at = now_seconds() + 600)
+{
+    return {201,
+            Json{{"attemptId", fixture_token('I')},
+                 {"expiresAt", iso_time(expires_at)},
+                 {"sdkAllowed", false}}
+                .dump()};
+}
+
+Response authorization_response()
+{
+    return {200,
+            Json{{"authorizationUrl",
+                  "https://id.example.test/authorize?state=fixture-state"}}
+                .dump()};
+}
+
+std::string session_key(const Config& config)
+{
+    return "platform-session-" + config.key();
+}
+
+struct Memory {
+    mutable std::mutex mutex;
+    std::map<std::string, std::string> values;
+    std::set<std::string> failed_saves;
+    std::set<std::string> failed_erases;
+    bool writable {true};
+    bool readable {true};
+    bool erasable {true};
+
+    void put(const std::string& key, const std::string& value)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        values[key] = value;
+    }
+
+    std::optional<std::string> get(const std::string& key) const
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto found = values.find(key);
+        return found == values.end() ? std::nullopt
+                                     : std::optional<std::string>(found->second);
+    }
+
+    bool has(const std::string& key) const { return get(key).has_value(); }
+};
+
+class MemoryStore final : public Store {
+public:
+    explicit MemoryStore(std::shared_ptr<Memory> memory) : m_memory(std::move(memory)) {}
+
+    std::optional<std::string> load(const std::string& key) override
+    {
+        std::lock_guard<std::mutex> lock(m_memory->mutex);
+        if (!m_memory->readable) throw std::runtime_error("fixture read failure");
+        const auto found = m_memory->values.find(key);
+        return found == m_memory->values.end() ? std::nullopt
+                                               : std::optional<std::string>(found->second);
+    }
+
+    bool save(const std::string& key, const std::string& value) override
+    {
+        std::lock_guard<std::mutex> lock(m_memory->mutex);
+        if (!m_memory->writable || m_memory->failed_saves.count(key)) return false;
+        m_memory->values[key] = value;
+        return true;
+    }
+
+    bool erase(const std::string& key) override
+    {
+        std::lock_guard<std::mutex> lock(m_memory->mutex);
+        if (!m_memory->writable || !m_memory->erasable ||
+            m_memory->failed_erases.count(key))
+            return false;
+        m_memory->values.erase(key);
+        return true;
+    }
+
+private:
+    std::shared_ptr<Memory> m_memory;
+};
+
+std::shared_ptr<Memory> configured_memory(
+    const std::optional<PlatformSession>& saved_session = std::nullopt)
+{
+    auto memory = std::make_shared<Memory>();
+    const auto config = configuration();
+    memory->put("configuration", serialize_config(config));
+    if (saved_session) memory->put(session_key(config), serialize_session(*saved_session));
+    return memory;
+}
+
+template<class Predicate>
+bool wait_for_session(Session& session, Predicate predicate,
+                      std::chrono::milliseconds timeout = std::chrono::seconds(3))
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    do {
+        session.poll();
+        if (predicate()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    } while (std::chrono::steady_clock::now() < deadline);
+    session.poll();
+    return predicate();
+}
+
+struct Gate {
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool entered {false};
+    bool released {false};
+    bool returned {false};
+
+    void block()
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        entered = true;
+        condition.notify_all();
+        condition.wait(lock, [this] { return released; });
+        returned = true;
+        condition.notify_all();
+    }
+
+    bool wait_entered()
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        return condition.wait_for(lock, std::chrono::seconds(2),
+                                  [this] { return entered; });
+    }
+
+    void release()
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        released = true;
+        condition.notify_all();
+    }
+
+    bool wait_returned()
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        return condition.wait_for(lock, std::chrono::seconds(2),
+                                  [this] { return returned; });
+    }
+};
+
+class ScopedEnvironment {
+public:
+    ScopedEnvironment(std::string name, const std::string& value) : m_name(std::move(name))
+    {
+        if (const char* previous = std::getenv(m_name.c_str())) m_previous = previous;
+        assign(value);
+    }
+
+    ~ScopedEnvironment()
+    {
+        if (m_previous) assign(*m_previous);
+        else clear();
+    }
+
+private:
+    void assign(const std::string& value)
+    {
+#ifdef _WIN32
+        _putenv_s(m_name.c_str(), value.c_str());
+#else
+        setenv(m_name.c_str(), value.c_str(), 1);
+#endif
+    }
+
+    void clear()
+    {
+#ifdef _WIN32
+        _putenv_s(m_name.c_str(), "");
+#else
+        unsetenv(m_name.c_str());
+#endif
+    }
+
+    std::string m_name;
+    std::optional<std::string> m_previous;
+};
+
+} // namespace
+
+TEST_CASE("Platform configuration accepts only a public HTTPS origin and fixed callback",
+          "[HonorAccount]")
+{
+    auto config = configuration();
     REQUIRE(config.validate().empty());
-    REQUIRE(config.environment=="test");
-    const std::string origin="https://hnoauth-login-test-drcn.cloud.honor.com";
-    REQUIRE(config.authorize_url==origin+"/oauth2/v3/authorize");
-    REQUIRE(config.token_url==origin+"/oauth2/v3/token");
-    REQUIRE(config.jwks_url==origin+"/oauth2/v3/certs");
-    auto memory=std::make_shared<Memory>();
-    memory->values["configuration"]=serialize_config(config);
-    auto signer=std::make_shared<Signer>();
-    std::string nonce,posted_form,posted_url,keys_url;
-    Transport transport=[&](const std::string& url,const std::string& form,Cancellation) {
-        if(form.empty()) {keys_url=url;return Response{200,signer->jwks};}
-        posted_url=url;posted_form=form;
-        auto payload=signer->claims(nonce);payload["iss"]=config.issuer;payload["aud"]=config.client_id;
-        return Response{200,Json{{"access_token","fixture-at"},{"refresh_token","fixture-rt"},
-            {"id_token",signer->sign(payload)},{"expires_in",3600},{"token_type","Bearer"}}.dump()};
-    };
-    Session session(std::make_unique<MemoryStore>(memory),transport);
-    session.restore();REQUIRE(session.snapshot().state==State::SignedOut);
-    auto url=session.login();nonce=parameter(url,"nonce");auto state=parameter(url,"state");
-    REQUIRE(url.find(config.authorize_url+"?")==0);
-    REQUIRE(parameter(url,"redirect_uri")==encode("honorid://redirect_uri"));
-    REQUIRE(url.find(config.client_secret)==std::string::npos);
-    REQUIRE_FALSE(session.callback("honorid://redirect_url?state="+state+"&code=fixture"));
-    REQUIRE(session.snapshot().state==State::Authorizing);
-    REQUIRE_FALSE(is_callback("honorid://redirect_uri.evil?code=fixture",config.redirect_uri));
-    REQUIRE_THROWS(authorization_code(config.redirect_uri+"?code=fixture",config.redirect_uri,state));
-    REQUIRE(session.callback(config.redirect_uri+"?state="+state+"&code=a%2Bb%2Fc%3D"));
-    finish(session);
-    REQUIRE(session.snapshot().state==State::SignedIn);
-    REQUIRE(posted_url==config.token_url);
-    REQUIRE(keys_url==config.jwks_url);
-    REQUIRE(parameter(posted_form,"redirect_uri")==encode(config.redirect_uri));
-    REQUIRE(parameter(posted_form,"code")=="a%2Bb%2Fc%3D");
-    Session restored(std::make_unique<MemoryStore>(memory),transport);
-    restored.restore();finish(restored);
-    REQUIRE(restored.snapshot().state==State::SignedIn);
-    REQUIRE(posted_url==config.token_url);
-    REQUIRE(parameter(posted_form,"grant_type")=="refresh_token");
-    REQUIRE(keys_url==config.jwks_url);
-    auto changed=config;changed.token_url=configuration().token_url;
-    REQUIRE_FALSE(changed.validate().empty());
-    changed=config;changed.client_secret.clear();REQUIRE_FALSE(changed.validate().empty());
-}
-TEST_CASE("HONOR test App ID rejects legacy labels and mixed production endpoints before any request", "[HonorAccount]")
-{
-    Config config;config.client_secret="offline-fixture-only";
-    const auto test_key=config.key();
-    SECTION("legacy official label") {config.environment="official-web";}
-    SECTION("production label") {config.environment="production";}
-    SECTION("production authorization") {config.authorize_url="https://hnoauth-login.cloud.honor.com/oauth2/v3/authorize";}
-    SECTION("production token") {config.token_url="https://hnoauth-login.cloud.honor.com/oauth2/v3/token";}
-    SECTION("production public keys") {config.jwks_url="https://hnoauth-login.cloud.honor.com/oauth2/v3/certs";}
-    SECTION("legacy production keys") {config.jwks_url="https://hnoauth-login.cloud.hihonor.com/oauth2/v3/certs";}
-    SECTION("unverified issuer") {config.issuer="https://honorid-test.hihonor.com";}
+    REQUIRE(config.callback_uri == "honorforge://auth/callback");
+
+    const std::vector<std::string> rejected = {
+        "http://platform.example.test",       "https://user@platform.example.test",
+        "https://platform.example.test/path", "https://platform.example.test?query=1",
+        "https://platform.example.test#part", "https://platform.example.test:0",
+        "https://platform.example.test:70000", "https://999.1.1.1"};
+    for (const auto& origin : rejected) {
+        INFO(origin);
+        config = configuration();
+        config.api_url = origin;
+        REQUIRE_FALSE(config.validate().empty());
+    }
+
+    config = configuration();
+    config.callback_uri = "honorforge://auth/other";
     REQUIRE_FALSE(config.validate().empty());
-    REQUIRE(config.key()!=test_key);
-    unsigned requests=0;
-    Client client([&](const std::string&,const std::string&,Cancellation){++requests;return Response{};});
-    auto cancel=std::make_shared<std::atomic_bool>(false);
-    REQUIRE_THROWS(authorization_url(config,"state","nonce"));
-    REQUIRE_THROWS(client.exchange(config,"fixture-code","nonce",cancel));
-    Credentials previous;previous.refresh_token="fixture-rt";
-    REQUIRE_THROWS(client.restore(config,previous,cancel));
-    previous.refresh_token.clear();previous.expires_at=now_seconds()+3600;previous.identity.expires_at=previous.expires_at;
-    REQUIRE_THROWS(client.restore(config,previous,cancel));
-    REQUIRE(requests==0);
+    config = configuration();
+    config.browser_profile_key = "not-a-fingerprint";
+    REQUIRE_FALSE(config.validate().empty());
+
+    config = configuration();
+    config.browser_profile_key = digest("legacy profile");
+    const auto restored = parse_config(serialize_config(config));
+    REQUIRE(restored.api_url == config.api_url);
+    REQUIRE(restored.callback_uri == config.callback_uri);
+    REQUIRE(restored.browser_key() == config.browser_profile_key);
+    auto invalid = Json::parse(serialize_config(config));
+    invalid["unexpected"] = true;
+    REQUIRE_THROWS_AS(parse_config(invalid.dump()), Error);
 }
-TEST_CASE("HONOR verifies RSA signature issuer audience nonce and validity before exposing identity", "[HonorAccount]")
+
+TEST_CASE("Platform API provisioning reads only ORCA_PLATFORM_API_URL", "[HonorAccount]")
 {
-    Signer signer;auto c=configuration();auto payload=signer.claims();
-    auto identity=verify_id_token(signer.sign(payload),signer.jwks,c,"nonce",now_seconds());
-    REQUIRE(identity.subject=="fixture-union-id");REQUIRE(identity.name=="测试用户");
-    SECTION("nonce") {REQUIRE_THROWS(verify_id_token(signer.sign(payload),signer.jwks,c,"wrong",now_seconds()));}
-    SECTION("issuer") {payload["iss"]="https://wrong.cloud.honor.com";REQUIRE_THROWS(verify_id_token(signer.sign(payload),signer.jwks,c,"nonce",now_seconds()));}
-    SECTION("audience") {payload["aud"]="other-app";REQUIRE_THROWS(verify_id_token(signer.sign(payload),signer.jwks,c,"nonce",now_seconds()));}
-    SECTION("multiple audiences") {payload["aud"]=Json::array({c.client_id,"other"});REQUIRE_THROWS(verify_id_token(signer.sign(payload),signer.jwks,c,"nonce",now_seconds()));}
-    SECTION("expiry") {payload["exp"]=now_seconds()-1;REQUIRE_THROWS(verify_id_token(signer.sign(payload),signer.jwks,c,"nonce",now_seconds()));}
-    SECTION("algorithm confusion") {REQUIRE_THROWS(verify_id_token(signer.sign(payload,"HS256"),signer.jwks,c,"nonce",now_seconds()));}
-    SECTION("signature tampering") {auto jwt=signer.sign(payload);auto index=jwt.rfind('.')+1;jwt[index]=jwt[index]=='A'?'B':'A';REQUIRE_THROWS(verify_id_token(jwt,signer.jwks,c,"nonce",now_seconds()));}
-    SECTION("unknown key") {auto keys=Json::parse(signer.jwks);keys["keys"][0]["kid"]="rotated";REQUIRE_THROWS(verify_id_token(signer.sign(payload),keys.dump(),c,"nonce",now_seconds()));}
+    SECTION("valid origin") {
+        ScopedEnvironment environment("ORCA_PLATFORM_API_URL", "https://provisioned.example.test");
+        auto memory = std::make_shared<Memory>();
+        Config provisioned;
+        {
+            Session session(std::make_unique<MemoryStore>(memory));
+            provisioned = session.config();
+            REQUIRE(provisioned.api_url == "https://provisioned.example.test");
+            REQUIRE(provisioned.callback_uri == "honorforge://auth/callback");
+            REQUIRE(provisioned.browser_profile_key.empty());
+            REQUIRE(memory->get("configuration") == serialize_config(provisioned));
+        }
+
+        const auto saved = platform_session();
+        memory->put(session_key(provisioned), serialize_session(saved));
+        std::atomic_bool bearer_matches {false};
+        Session reopened(std::make_unique<MemoryStore>(memory),
+                         [&](const Request& request, Cancellation) {
+                             bearer_matches.store(request.bearer == saved.access_token);
+                             return Response{200, account_response(saved.identity)};
+                         });
+        REQUIRE(reopened.config().browser_profile_key.empty());
+        REQUIRE(memory->has(session_key(provisioned)));
+        reopened.restore();
+        REQUIRE(wait_for_session(reopened, [&] {
+            return reopened.snapshot().state == State::SignedIn;
+        }));
+        REQUIRE(bearer_matches.load());
+    }
+    SECTION("invalid origin") {
+        ScopedEnvironment environment("ORCA_PLATFORM_API_URL", "https://provisioned.example.test/path");
+        auto memory = std::make_shared<Memory>();
+        Session session(std::make_unique<MemoryStore>(memory));
+        REQUIRE_FALSE(session.config().validate().empty());
+        REQUIRE_FALSE(memory->has("configuration"));
+        REQUIRE_FALSE(session.login());
+        REQUIRE(session.snapshot().state == State::Failed);
+    }
 }
-TEST_CASE("HONOR refresh errors preserve credentials except documented expiry and blacklist", "[HonorAccount]")
+
+TEST_CASE("PKCE uses the RFC 7636 S256 vector and bounded random verifiers", "[HonorAccount]")
 {
-    REQUIRE(oauth_failure(400,"{\"sub_error\":11205}",true)==Failure::InvalidCredentials);
-    REQUIRE(oauth_failure(200,"{\"sub_error\":31204}",true)==Failure::InvalidCredentials);
-    REQUIRE(oauth_failure(400,"{\"sub_error\":12304}",true)==Failure::Configuration);
-    REQUIRE(oauth_failure(400,"{\"sub_error\":31202}",true)==Failure::Configuration);
-    REQUIRE(oauth_failure(503,"{\"sub_error\":11205}",true)==Failure::Temporary);
-    REQUIRE(oauth_failure(0,"",true)==Failure::Temporary);
+    REQUIRE(pkce_challenge(rfc_verifier) == rfc_challenge);
+    const auto verifier = pkce_verifier();
+    REQUIRE(verifier.size() >= 43);
+    REQUIRE(verifier.size() <= 128);
+    REQUIRE_NOTHROW(pkce_challenge(verifier));
+    REQUIRE_THROWS_AS(pkce_challenge("too-short"), Error);
 }
-TEST_CASE("HONOR authorization is exchanged once and protected persistence restores across sessions", "[HonorAccount]")
+
+TEST_CASE("Platform callback accepts one opaque code and rejects ambiguous input", "[HonorAccount]")
 {
-    auto signer=std::make_shared<Signer>();auto memory=std::make_shared<Memory>();std::string nonce;std::atomic_int posts{0};
-    Transport transport=[&](const std::string& url,const std::string& form,Cancellation)->Response {
-        if(form.empty())return {200,signer->jwks};++posts;
-        if(url!=configuration().token_url)throw std::runtime_error("unexpected fixture URL");
-        return signer->response(nonce);
+    const auto code = fixture_token('C');
+    const auto callback = configuration().callback_uri;
+    REQUIRE(is_callback(callback + "?code=" + code, callback));
+    REQUIRE(callback_code(callback + "?code=" + code, callback) == code);
+    REQUIRE(callback_code(callback + "?code=%43" + code.substr(1), callback) == code);
+
+    REQUIRE_FALSE(is_callback("honorforge://auth.evil/callback?code=" + code, callback));
+    REQUIRE_FALSE(is_callback("honorforge://auth/callback/extra?code=" + code, callback));
+    REQUIRE_THROWS_AS(callback_code(callback + "?code=" + code + "&code=" + code, callback),
+                      Error);
+    REQUIRE_THROWS_AS(callback_code(callback + "?code=" + code + "&", callback), Error);
+    REQUIRE_THROWS_AS(callback_code(callback + "?code=" + code + "&extra=1", callback), Error);
+    REQUIRE_THROWS_AS(callback_code(callback + "?code=" + code + "#fragment", callback), Error);
+    REQUIRE_THROWS_AS(callback_code(callback + "?code=%xx", callback), Error);
+    REQUIRE_THROWS_AS(callback_code(callback + "?code=short", callback), Error);
+
+    try {
+        callback_code(callback + "?error=HONOR_ACCESS_DENIED", callback);
+        FAIL("Expected a safe authorization failure");
+    } catch (const Error& error) {
+        REQUIRE(error.kind == Failure::Cancelled);
+        REQUIRE(std::string(error.what()).find("HONOR_ACCESS_DENIED") == std::string::npos);
+    }
+    try {
+        callback_code(callback + "?error=HONOR_PRIVATE_UPSTREAM_DETAIL", callback);
+        FAIL("Expected a safe authorization failure");
+    } catch (const Error& error) {
+        REQUIRE(std::string(error.what()).find("PRIVATE_UPSTREAM_DETAIL") == std::string::npos);
+    }
+}
+
+TEST_CASE("Only bounded HTTPS authorization pages are accepted", "[HonorAccount]")
+{
+    REQUIRE(valid_authorization_url("https://id.example.test/authorize?state=fixture"));
+    REQUIRE_FALSE(valid_authorization_url("http://id.example.test/authorize"));
+    REQUIRE_FALSE(valid_authorization_url("https://user@id.example.test/authorize"));
+    REQUIRE_FALSE(valid_authorization_url("https://id.example.test/authorize#code=private"));
+    REQUIRE_FALSE(valid_authorization_url("https://id.example.test/authorize value"));
+}
+
+TEST_CASE("Authorization diagnostics classify pages without exposing their contents",
+          "[HonorAccount]")
+{
+    const auto callback = configuration().callback_uri;
+    struct Case {
+        const char* url;
+        AuthorizationPage page;
+        const char* name;
+        bool submit_allowed;
     };
-    {
-        Session session(std::make_unique<MemoryStore>(memory),transport);REQUIRE(session.configure(configuration()));session.restore();
-        REQUIRE(session.snapshot().state==State::SignedOut);
-        auto url=session.login();nonce=parameter(url,"nonce");auto state=parameter(url,"state");
-        REQUIRE(session.login().empty());
-        auto callback=configuration().redirect_uri+"&state="+state+"&code=one";
-        REQUIRE(session.callback(callback));REQUIRE(session.callback(callback));finish(session);
-        REQUIRE(posts==1);REQUIRE(session.snapshot().state==State::SignedIn);REQUIRE(session.snapshot().persistent);
+    const std::vector<Case> cases = {
+        {"about:blank", AuthorizationPage::Blank, "blank", false},
+        {"https://hnid-test-drcn.cloud.honor.com/CAS/portal/login",
+         AuthorizationPage::CasPortal, "cas_portal", true},
+        {"https://hnoauth-login-test-drcn.cloud.honor.com/oauth2/v3/login",
+         AuthorizationPage::OAuthLogin, "oauth_login", true},
+        {"https://hnoauth-login.cloud.honor.com:443/oauth2/v3/authorize",
+         AuthorizationPage::OAuthAuthorize, "oauth_authorize", true},
+        {"honorforge://auth/callback?code=CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+         AuthorizationPage::Callback, "callback", false},
+        {"https://id.example.test/authorize?private=query",
+         AuthorizationPage::OtherHttps, "other_https", false},
+        {"https://hnoauth-login.cloud.honor.com:444/oauth2/v3/login",
+         AuthorizationPage::OtherHttps, "other_https", false},
+        {"https://hnoauth-login.cloud.honor.com.evil.test/oauth2/v3/login",
+         AuthorizationPage::OtherHttps, "other_https", false},
+        {"http://hnoauth-login.cloud.honor.com/oauth2/v3/login",
+         AuthorizationPage::Blocked, "blocked", false},
+    };
+    for (const auto& item : cases) {
+        INFO(item.url);
+        const auto page = classify_authorization_page(item.url, callback);
+        REQUIRE(page == item.page);
+        REQUIRE(std::string(authorization_page_name(page)) == item.name);
+        REQUIRE(authorization_submit_allowed(page) == item.submit_allowed);
     }
-    Session restored(std::make_unique<MemoryStore>(memory),transport);restored.restore();restored.restore();finish(restored);
-    REQUIRE(posts==2);REQUIRE(restored.snapshot().state==State::SignedIn);
-    restored.logout();REQUIRE(restored.snapshot().state==State::SignedOut);
-    Session reopened(std::make_unique<MemoryStore>(memory),transport);reopened.restore();REQUIRE(reopened.snapshot().state==State::SignedOut);
 }
-TEST_CASE("HONOR restore distinguishes temporary network loss revoked tokens and bad configuration", "[HonorAccount]")
+
+TEST_CASE("Platform account and session JSON is strict and versioned", "[HonorAccount]")
 {
-    Signer signer;auto memory=saved(signer.credentials());Response response;
-    SECTION("network") {response={0,""};}
-    SECTION("revoked") {response={400,"{\"sub_error\":31204}"};}
-    SECTION("configuration") {response={400,"{\"sub_error\":12304}"};}
-    Session session(std::make_unique<MemoryStore>(memory),[response](const std::string&,const std::string&,Cancellation){return response;});
-    session.restore();finish(session);
-    if(response.status==0) {REQUIRE(session.snapshot().state==State::Offline);REQUIRE(session.snapshot().has_identity());}
-    else if(response.body.find("31204")!=std::string::npos) {REQUIRE(session.snapshot().state==State::SignedOut);REQUIRE_FALSE(session.snapshot().has_identity());}
-    else REQUIRE(session.snapshot().state==State::Failed);
-    REQUIRE(memory->values.count("session-"+configuration().key())==(session.snapshot().state==State::SignedOut?0:1));
+    const auto original = platform_session();
+    const auto saved = serialize_session(original);
+    const auto restored = parse_session(saved);
+    REQUIRE(restored.session_id == original.session_id);
+    REQUIRE(restored.access_token == original.access_token);
+    REQUIRE(restored.refresh_token == original.refresh_token);
+    REQUIRE(restored.identity.subject == original.identity.subject);
+    REQUIRE(restored.identity.email == original.identity.email);
+    REQUIRE(restored.identity.roles == original.identity.roles);
+
+    const auto response = parse_session_response(session_response(original));
+    REQUIRE(response.session_id == original.session_id);
+    REQUIRE(response.identity.name == original.identity.name);
+    REQUIRE(parse_account_response(account_response()).subject == account_id);
+
+    auto local = Json::parse(saved);
+    local["unexpected"] = true;
+    REQUIRE_THROWS_AS(parse_session(local.dump()), Error);
+    local = Json::parse(saved);
+    local["kind"] = "web";
+    REQUIRE_THROWS_AS(parse_session(local.dump()), Error);
+
+    auto remote = Json::parse(session_response(original));
+    remote["account"]["status"] = "disabled";
+    REQUIRE_THROWS_AS(parse_session_response(remote.dump()), Error);
+    remote = Json::parse(session_response(original));
+    remote["account"]["roles"] = Json::array({"user", "user"});
+    REQUIRE_THROWS_AS(parse_session_response(remote.dump()), Error);
+    remote = Json::parse(session_response(original));
+    remote["account"]["id"] = "not-a-uuid";
+    REQUIRE_THROWS_AS(parse_session_response(remote.dump()), Error);
+    remote = Json::parse(session_response(original));
+    remote["accessExpiresAt"] = "2099-01-01T00:00:00+08:00";
+    REQUIRE_THROWS_AS(parse_session_response(remote.dump()), Error);
+    remote = Json::parse(session_response(original));
+    remote["unexpected"] = true;
+    REQUIRE_THROWS_AS(parse_session_response(remote.dump()), Error);
+
+    REQUIRE(is_refresh_tombstone(serialize_refresh_tombstone()));
+    REQUIRE_FALSE(is_refresh_tombstone(saved));
+    REQUIRE(parse_timestamp("2028-02-29T12:34:56.123Z") > 0);
+    REQUIRE_THROWS_AS(parse_timestamp("2027-02-29T12:34:56Z"), Error);
 }
-TEST_CASE("HONOR logout isolates late refresh results without saving or publishing them", "[HonorAccount]")
+
+TEST_CASE("Platform client follows the existing mobile browser request contract", "[HonorAccount]")
 {
-    auto signer=std::make_shared<Signer>();auto memory=saved(signer->credentials());
-    std::mutex mutex;std::condition_variable cv;bool entered=false,release=false,returned=false;
-    Session session(std::make_unique<MemoryStore>(memory),[&](const std::string&,const std::string&,Cancellation){
-        std::unique_lock<std::mutex> lock(mutex);entered=true;cv.notify_all();cv.wait(lock,[&]{return release;});returned=true;cv.notify_all();return signer->response();
+    const auto config = configuration();
+    auto issued = platform_session();
+    auto rotated = platform_session(now_seconds() + 7200, now_seconds() + 172800);
+    rotated.session_id = rotated_session_id;
+    rotated.access_token = fixture_token('B');
+    rotated.refresh_token = fixture_token('S');
+    std::vector<Request> requests;
+    Transport transport = [&](const Request& request, Cancellation) {
+        requests.push_back(request);
+        switch (requests.size()) {
+        case 1: return attempt_response();
+        case 2: return authorization_response();
+        case 3: return Response{201, session_response(issued)};
+        case 4: return Response{200, account_response(issued.identity)};
+        case 5: return Response{201, session_response(rotated)};
+        case 6: return Response{201, R"({"ok":true})"};
+        default: return Response{500, R"({"error":{"code":"UNEXPECTED_REQUEST"}})"};
+        }
+    };
+    const auto cancel = std::make_shared<std::atomic_bool>(false);
+    Client client(transport);
+    const auto authorization = client.authorize(config, rfc_verifier, cancel);
+    const auto exchanged = client.exchange(config, fixture_token('C'), rfc_verifier, cancel);
+    const auto validated = client.validate(config, exchanged, cancel);
+    const auto refreshed = client.refresh(config, validated, cancel);
+    client.revoke(config, refreshed.refresh_token, cancel);
+
+    REQUIRE(authorization.url == "https://id.example.test/authorize?state=fixture-state");
+    REQUIRE(exchanged.identity.subject == account_id);
+    REQUIRE(refreshed.session_id == rotated_session_id);
+    REQUIRE(requests.size() == 6);
+
+    REQUIRE(requests[0].method == Request::Method::Post);
+    REQUIRE(requests[0].url == config.api_url + "/v1/identity/honor/mobile/attempts");
+    REQUIRE((Json::parse(requests[0].json) ==
+             Json{{"platform", "ios"}, {"challenge", rfc_challenge}}));
+    REQUIRE(requests[0].bearer.empty());
+    REQUIRE(requests[1].method == Request::Method::Get);
+    REQUIRE(requests[1].url == config.api_url +
+                                   "/v1/identity/honor/mobile/authorize?attemptId=" +
+                                   fixture_token('I'));
+    REQUIRE(requests[1].json.empty());
+    REQUIRE(requests[2].url == config.api_url + "/v1/identity/exchange");
+    REQUIRE((Json::parse(requests[2].json) ==
+             Json{{"code", fixture_token('C')},
+                  {"verifier", rfc_verifier},
+                  {"kind", "mobile"}}));
+    REQUIRE(requests[2].url.find(fixture_token('C')) == std::string::npos);
+    REQUIRE(requests[3].url == config.api_url + "/v1/me");
+    REQUIRE(requests[3].bearer == issued.access_token);
+    REQUIRE((Json::parse(requests[4].json) ==
+             Json{{"refreshToken", issued.refresh_token}}));
+    REQUIRE((Json::parse(requests[5].json) ==
+             Json{{"refreshToken", rotated.refresh_token}}));
+}
+
+TEST_CASE("Platform errors expose only safe local messages", "[HonorAccount]")
+{
+    Client client([](const Request&, Cancellation) {
+        return Response{418,
+                        R"({"error":{"code":"PRIVATE_UPSTREAM_FAILURE","message":"fixture-code-and-token"}})"};
     });
+    try {
+        client.exchange(configuration(), fixture_token('C'), rfc_verifier,
+                        std::make_shared<std::atomic_bool>(false));
+        FAIL("Expected a protocol error");
+    } catch (const Error& error) {
+        const std::string message = error.what();
+        REQUIRE(message.find("HTTP 418") != std::string::npos);
+        REQUIRE(message.find("PRIVATE_UPSTREAM_FAILURE") == std::string::npos);
+        REQUIRE(message.find("fixture-code-and-token") == std::string::npos);
+    }
+}
+
+TEST_CASE("Slow platform attempt can be cancelled without publishing a late URL",
+          "[HonorAccount]")
+{
+    auto memory = configured_memory();
+    Gate gate;
+    std::atomic_int requests {0};
+    Session session(std::make_unique<MemoryStore>(memory),
+                    [&](const Request&, Cancellation) {
+                        ++requests;
+                        gate.block();
+                        return attempt_response();
+                    });
     session.restore();
-    {std::unique_lock<std::mutex> lock(mutex);REQUIRE(cv.wait_for(lock,std::chrono::seconds(2),[&]{return entered;}));}
-    session.logout();
-    {std::unique_lock<std::mutex> lock(mutex);release=true;cv.notify_all();REQUIRE(cv.wait_for(lock,std::chrono::seconds(2),[&]{return returned;}));}
-    session.poll();REQUIRE(session.snapshot().state==State::SignedOut);
-    REQUIRE(memory->values.count("session-"+configuration().key())==0);
+    REQUIRE(session.snapshot().state == State::SignedOut);
+    REQUIRE(session.login());
+    REQUIRE(session.snapshot().state == State::Preparing);
+    REQUIRE(gate.wait_entered());
+    session.cancel();
+    REQUIRE(session.snapshot().state == State::SignedOut);
+    gate.release();
+    REQUIRE(gate.wait_returned());
+    session.poll();
+    REQUIRE(session.snapshot().state == State::SignedOut);
+    REQUIRE_FALSE(session.take_authorization_url().has_value());
+    REQUIRE(requests.load() == 1);
 }
-TEST_CASE("HONOR missing system persistence never falls back to plaintext", "[HonorAccount]")
+
+TEST_CASE("Authorization URL is consumed once and duplicate callbacks exchange once",
+          "[HonorAccount]")
 {
-    auto signer=std::make_shared<Signer>();auto memory=saved(signer->credentials());memory->writable=false;
-    Session session(std::make_unique<MemoryStore>(memory),[signer](const std::string&,const std::string& form,Cancellation){return form.empty()?Response{200,signer->jwks}:signer->response();});
-    session.restore();finish(session);REQUIRE(session.snapshot().state==State::SignedIn);REQUIRE_FALSE(session.snapshot().persistent);
-}
-TEST_CASE("HONOR rejects a refresh that switches the subject", "[HonorAccount]")
-{
-    Signer signer;Client client([&](const std::string&,const std::string& form,Cancellation){return form.empty()?Response{200,signer.jwks}:signer.response("nonce","other-user");});
-    REQUIRE_THROWS(client.restore(configuration(),signer.credentials(),std::make_shared<std::atomic_bool>(false)));
-}
-TEST_CASE("HONOR unchanged settings keep the session and failed logout remains retryable", "[HonorAccount]")
-{
-    auto signer=std::make_shared<Signer>();auto memory=saved(signer->credentials());
-    Session session(std::make_unique<MemoryStore>(memory),[signer](const std::string&,const std::string& form,Cancellation){return form.empty()?Response{200,signer->jwks}:signer->response();});
-    session.restore();finish(session);REQUIRE(session.configure(configuration()));REQUIRE(session.snapshot().state==State::SignedIn);
-    memory->writable=false;session.logout();REQUIRE(session.snapshot().state==State::Failed);REQUIRE(session.snapshot().has_identity());
-    memory->writable=true;session.logout();REQUIRE(session.snapshot().state==State::SignedOut);REQUIRE_FALSE(session.snapshot().has_identity());
-}
-TEST_CASE("HONOR without a refresh token waits for expiry instead of repeating startup validation", "[HonorAccount]")
-{
-    auto signer=std::make_shared<Signer>();auto credentials=signer->credentials();credentials.refresh_token.clear();credentials.expires_at=now_seconds()+30;
-    auto memory=saved(credentials);
-    Session session(std::make_unique<MemoryStore>(memory),[signer](const std::string&,const std::string&,Cancellation){return Response{200,signer->jwks};});
-    session.restore();finish(session);REQUIRE(session.snapshot().state==State::SignedIn);REQUIRE_FALSE(session.poll());
-    credentials.expires_at=now_seconds()-1;
-    Client client;REQUIRE_THROWS(client.restore(configuration(),credentials,std::make_shared<std::atomic_bool>(false)));
-}
-TEST_CASE("HONOR ordinary logout retains provisioning without requesting a browser reset", "[HonorAccount]")
-{
-    Signer signer;auto memory=saved(signer.credentials());
-    Session session(std::make_unique<MemoryStore>(memory));
+    auto memory = configured_memory();
+    Gate exchange_gate;
+    std::atomic_int exchanges {0};
+    Transport transport = [&](const Request& request, Cancellation) {
+        if (request.url.find("/mobile/attempts") != std::string::npos)
+            return attempt_response();
+        if (request.url.find("/mobile/authorize") != std::string::npos)
+            return authorization_response();
+        if (request.url.find("/identity/exchange") != std::string::npos) {
+            ++exchanges;
+            exchange_gate.block();
+            return Response{201, session_response(platform_session())};
+        }
+        return Response{500, {}};
+    };
+    Session session(std::make_unique<MemoryStore>(memory), transport);
+    REQUIRE(session.login());
+    REQUIRE(wait_for_session(session, [&] {
+        return session.snapshot().state == State::Authorizing;
+    }));
+    REQUIRE(session.take_authorization_url().has_value());
+    REQUIRE_FALSE(session.take_authorization_url().has_value());
+    const auto callback = configuration().callback_uri + "?code=" + fixture_token('C');
+    REQUIRE(session.callback(callback));
+    REQUIRE(exchange_gate.wait_entered());
+    REQUIRE(session.callback(callback));
+    REQUIRE(exchanges.load() == 1);
+
     REQUIRE(session.logout());
-    REQUIRE_FALSE(session.browser_reset_pending());
-    REQUIRE_FALSE(session.snapshot().has_identity());
-    REQUIRE(memory->values.count("session-"+configuration().key())==0);
-    REQUIRE(memory->values.at("configuration")==serialize_config(configuration()));
+    REQUIRE(session.snapshot().state == State::SignedOut);
+    exchange_gate.release();
+    REQUIRE(exchange_gate.wait_returned());
+    session.poll();
+    REQUIRE(session.snapshot().state == State::SignedOut);
+    REQUIRE_FALSE(memory->has(session_key(configuration())));
+    REQUIRE(session.callback(callback));
+    REQUIRE(exchanges.load() == 1);
 }
-TEST_CASE("HONOR full logout keeps its browser reset pending across process restarts", "[HonorAccount]")
+
+TEST_CASE("A stale authorization generation cannot complete a newer login",
+          "[HonorAccount]")
 {
-    Signer signer;auto memory=saved(signer.credentials());
-    auto application=std::make_shared<Memory>();application->values["configuration"]=serialize_config(configuration());
-    {
-        Session session(std::make_unique<MemoryStore>(memory),https_request,std::make_unique<MemoryStore>(application));
-        REQUIRE(session.logout(true));
-        REQUIRE(session.browser_reset_pending());
+    auto memory = configured_memory();
+    std::atomic_int exchanges {0};
+    Transport transport = [&](const Request& request, Cancellation) {
+        if (request.url.find("/mobile/attempts") != std::string::npos)
+            return attempt_response();
+        if (request.url.find("/mobile/authorize") != std::string::npos)
+            return authorization_response();
+        if (request.url.find("/identity/exchange") != std::string::npos) {
+            ++exchanges;
+            return Response{201, session_response(platform_session())};
+        }
+        return Response{500, {}};
+    };
+    Session session(std::make_unique<MemoryStore>(memory), transport);
+    REQUIRE(session.login());
+    REQUIRE(wait_for_session(session, [&] {
+        return session.snapshot().state == State::Authorizing;
+    }));
+    const auto generation_a = session.generation();
+    REQUIRE(session.take_authorization_url().has_value());
+
+    session.cancel();
+    REQUIRE(session.snapshot().state == State::SignedOut);
+    REQUIRE(session.generation() != generation_a);
+    REQUIRE(session.login());
+    REQUIRE(wait_for_session(session, [&] {
+        return session.snapshot().state == State::Authorizing;
+    }));
+    const auto generation_b = session.generation();
+    REQUIRE(generation_b != generation_a);
+    REQUIRE(session.take_authorization_url().has_value());
+
+    const auto callback = configuration().callback_uri + "?code=" + fixture_token('C');
+    REQUIRE(session.callback(callback, generation_a));
+    REQUIRE(session.snapshot().state == State::Authorizing);
+    REQUIRE(session.generation() == generation_b);
+    REQUIRE(exchanges.load() == 0);
+
+    REQUIRE(session.callback(callback, generation_b));
+    REQUIRE(wait_for_session(session, [&] {
+        return session.snapshot().state == State::SignedIn;
+    }));
+    REQUIRE(session.generation() == generation_b);
+    REQUIRE(exchanges.load() == 1);
+    REQUIRE(session.callback(callback, generation_b));
+    REQUIRE(exchanges.load() == 1);
+}
+
+TEST_CASE("Expired browser callback fails without exchanging its code", "[HonorAccount]")
+{
+    auto memory = configured_memory();
+    const auto expires_at = now_seconds() + 3;
+    std::atomic_int exchanges {0};
+    Session session(std::make_unique<MemoryStore>(memory),
+                    [&](const Request& request, Cancellation) {
+                        if (request.url.find("/mobile/attempts") != std::string::npos)
+                            return attempt_response(expires_at);
+                        if (request.url.find("/mobile/authorize") != std::string::npos)
+                            return authorization_response();
+                        ++exchanges;
+                        return Response{201, session_response(platform_session())};
+                    });
+    REQUIRE(session.login());
+    REQUIRE(wait_for_session(session, [&] {
+        return session.snapshot().state == State::Authorizing;
+    }));
+    while (now_seconds() < expires_at)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    REQUIRE(session.callback(configuration().callback_uri + "?code=" + fixture_token('C')));
+    REQUIRE(session.snapshot().state == State::Failed);
+    REQUIRE(exchanges.load() == 0);
+    REQUIRE_FALSE(session.take_authorization_url().has_value());
+}
+
+TEST_CASE("Startup validates the saved account and handles offline or mismatched identity",
+          "[HonorAccount]")
+{
+    SECTION("matching account") {
+        const auto saved = platform_session();
+        auto memory = configured_memory(saved);
+        std::atomic_bool bearer_matches {false};
+        Session session(std::make_unique<MemoryStore>(memory),
+                        [&](const Request& request, Cancellation) {
+                            bearer_matches.store(request.bearer == saved.access_token);
+                            return Response{200, account_response(saved.identity)};
+                        });
+        session.restore();
+        REQUIRE(wait_for_session(session, [&] {
+            return session.snapshot().state == State::SignedIn;
+        }));
+        REQUIRE(session.snapshot().identity.subject == account_id);
+        REQUIRE(session.snapshot().persistent);
+        REQUIRE(bearer_matches.load());
+    }
+
+    SECTION("temporary outage") {
+        const auto saved = platform_session();
+        auto memory = configured_memory(saved);
+        Session session(std::make_unique<MemoryStore>(memory),
+                        [](const Request&, Cancellation) {
+                            return Response{503,
+                                            R"({"error":{"code":"UPSTREAM_PRIVATE_DETAIL"}})"};
+                        });
+        session.restore();
+        REQUIRE(wait_for_session(session, [&] {
+            return session.snapshot().state == State::Offline;
+        }));
+        REQUIRE(session.snapshot().identity.subject == account_id);
+        REQUIRE(memory->has(session_key(configuration())));
+        REQUIRE(session.snapshot().message.find("UPSTREAM_PRIVATE_DETAIL") == std::string::npos);
+    }
+
+    SECTION("account mismatch") {
+        auto memory = configured_memory(platform_session());
+        Session session(std::make_unique<MemoryStore>(memory),
+                        [](const Request&, Cancellation) {
+                            return Response{200, account_response(identity(other_account_id))};
+                        });
+        session.restore();
+        REQUIRE(wait_for_session(session, [&] {
+            return session.snapshot().state == State::Failed;
+        }));
         REQUIRE_FALSE(session.snapshot().has_identity());
-        REQUIRE(memory->values.count("session-"+configuration().key())==0);
+        REQUIRE_FALSE(memory->has(session_key(configuration())));
     }
-    unsigned requests=0;
-    Session reopened(std::make_unique<MemoryStore>(memory),[&](const std::string&,const std::string&,Cancellation) {
-        ++requests;return Response{};
-    });
-    reopened.restore();
-    REQUIRE(reopened.snapshot().state==State::SignedOut);
-    REQUIRE(reopened.browser_reset_pending());
-    REQUIRE(requests==0);
-    REQUIRE(reopened.complete_browser_reset());
-    REQUIRE_FALSE(reopened.browser_reset_pending());
-    REQUIRE(memory->values.at("configuration")==serialize_config(configuration()));
-    REQUIRE(application->values.size()==1);
-}
-TEST_CASE("HONOR interrupted full logout cannot restore credentials before finishing cleanup", "[HonorAccount]")
-{
-    Signer signer;auto memory=saved(signer.credentials());memory->erasable=false;
-    unsigned requests=0;
-    auto transport=[&](const std::string&,const std::string&,Cancellation) {++requests;return Response{};};
-    {
-        Session session(std::make_unique<MemoryStore>(memory),transport);
-        REQUIRE_FALSE(session.logout(true));
-        REQUIRE(session.browser_reset_pending());
-        REQUIRE(memory->values.count("session-"+configuration().key())==1);
+
+    SECTION("revoked access") {
+        auto memory = configured_memory(platform_session());
+        Session session(std::make_unique<MemoryStore>(memory),
+                        [](const Request&, Cancellation) {
+                            return Response{401,
+                                            R"({"error":{"code":"SESSION_REVOKED"}})"};
+                        });
+        session.restore();
+        REQUIRE(wait_for_session(session, [&] {
+            return session.snapshot().state == State::Failed;
+        }));
+        REQUIRE_FALSE(memory->has(session_key(configuration())));
     }
-    Session reopened(std::make_unique<MemoryStore>(memory),transport);
-    reopened.restore();
-    REQUIRE(reopened.snapshot().state==State::Failed);
-    REQUIRE_FALSE(reopened.snapshot().has_identity());
-    REQUIRE_FALSE(reopened.complete_browser_reset());
-    REQUIRE(reopened.browser_reset_pending());
-    memory->erasable=true;reopened.restore();
-    REQUIRE(reopened.snapshot().state==State::SignedOut);
-    REQUIRE(reopened.browser_reset_pending());
-    REQUIRE(memory->values.count("session-"+configuration().key())==0);
-    REQUIRE(requests==0);
-    REQUIRE(reopened.complete_browser_reset());
-    REQUIRE_FALSE(reopened.browser_reset_pending());
 }
-TEST_CASE("HONOR cannot report full logout when the cleanup request cannot be persisted", "[HonorAccount]")
+
+TEST_CASE("Refresh writes a tombstone before rotating both platform tokens", "[HonorAccount]")
 {
-    auto signer=std::make_shared<Signer>();auto memory=saved(signer->credentials());
-    Session session(std::make_unique<MemoryStore>(memory),[signer](const std::string&,const std::string& form,Cancellation) {
-        return form.empty()?Response{200,signer->jwks}:signer->response();
-    });
-    session.restore();finish(session);REQUIRE(session.snapshot().has_identity());
-    memory->writable=false;
-    REQUIRE_FALSE(session.logout(true));
+    auto previous = platform_session(now_seconds() + 30, now_seconds() + 86400);
+    auto rotated = platform_session(now_seconds() + 3600, now_seconds() + 172800);
+    rotated.session_id = rotated_session_id;
+    rotated.access_token = fixture_token('B');
+    rotated.refresh_token = fixture_token('S');
+    auto memory = configured_memory(previous);
+    std::atomic_bool saw_tombstone {false};
+    Session session(std::make_unique<MemoryStore>(memory),
+                    [&](const Request& request, Cancellation) {
+                        const auto stored = memory->get(session_key(configuration()));
+                        saw_tombstone.store(stored && is_refresh_tombstone(*stored));
+                        if (Json::parse(request.json)["refreshToken"] != previous.refresh_token)
+                            return Response{400, {}};
+                        return Response{201, session_response(rotated)};
+                    });
+    session.restore();
+    REQUIRE(wait_for_session(session, [&] {
+        return session.snapshot().state == State::SignedIn;
+    }));
+    REQUIRE(saw_tombstone.load());
+    const auto stored = memory->get(session_key(configuration()));
+    REQUIRE(stored.has_value());
+    const auto saved = parse_session(*stored);
+    REQUIRE(saved.session_id == rotated_session_id);
+    REQUIRE(saved.access_token == rotated.access_token);
+    REQUIRE(saved.refresh_token == rotated.refresh_token);
+}
+
+TEST_CASE("Unknown refresh result clears the local session instead of reusing a rotated token",
+          "[HonorAccount]")
+{
+    auto previous = platform_session(now_seconds() + 30, now_seconds() + 86400);
+    auto memory = configured_memory(previous);
+    std::atomic_bool saw_tombstone {false};
+    Session session(std::make_unique<MemoryStore>(memory),
+                    [&](const Request&, Cancellation) {
+                        const auto stored = memory->get(session_key(configuration()));
+                        saw_tombstone.store(stored && is_refresh_tombstone(*stored));
+                        return Response{503,
+                                        R"({"error":{"code":"PRIVATE_REFRESH_RESULT"}})"};
+                    });
+    session.restore();
+    REQUIRE(wait_for_session(session, [&] {
+        return session.snapshot().state == State::Failed;
+    }));
+    REQUIRE(saw_tombstone.load());
+    REQUIRE_FALSE(session.snapshot().has_identity());
+    REQUIRE_FALSE(memory->has(session_key(configuration())));
+    REQUIRE(session.snapshot().message.find("PRIVATE_REFRESH_RESULT") == std::string::npos);
+}
+
+TEST_CASE("Refresh never starts unless its crash tombstone is durably stored", "[HonorAccount]")
+{
+    auto previous = platform_session(now_seconds() + 30, now_seconds() + 86400);
+    auto memory = configured_memory(previous);
+    memory->failed_saves.insert(session_key(configuration()));
+    std::atomic_int requests {0};
+    Session session(std::make_unique<MemoryStore>(memory),
+                    [&](const Request&, Cancellation) {
+                        ++requests;
+                        return Response{};
+                    });
+    session.restore();
+    REQUIRE(session.snapshot().state == State::Offline);
     REQUIRE(session.snapshot().has_identity());
-    REQUIRE(memory->values.count("session-"+configuration().key())==1);
-    memory->writable=true;memory->readable=false;
-    REQUIRE(session.browser_reset_pending());
-    REQUIRE_FALSE(session.complete_browser_reset());
-    memory->readable=true;
+    REQUIRE(requests.load() == 0);
+    REQUIRE(memory->get(session_key(configuration())) == serialize_session(previous));
+}
+
+TEST_CASE("Startup discards an interrupted refresh tombstone and requires login",
+          "[HonorAccount]")
+{
+    auto memory = configured_memory();
+    memory->put(session_key(configuration()), serialize_refresh_tombstone());
+    std::atomic_int requests {0};
+    Session session(std::make_unique<MemoryStore>(memory),
+                    [&](const Request&, Cancellation) {
+                        ++requests;
+                        return Response{};
+                    });
+    session.restore();
+    REQUIRE(session.snapshot().state == State::SignedOut);
+    REQUIRE_FALSE(session.snapshot().has_identity());
+    REQUIRE_FALSE(memory->has(session_key(configuration())));
+    REQUIRE(requests.load() == 0);
+}
+
+TEST_CASE("Logout clears locally before best effort remote revocation", "[HonorAccount]")
+{
+    const auto saved = platform_session();
+    auto memory = configured_memory(saved);
+    std::atomic_bool cleared_before_revoke {false};
+    Session session(std::make_unique<MemoryStore>(memory),
+                    [&](const Request& request, Cancellation) {
+                        if (request.url.find("/v1/me") != std::string::npos)
+                            return Response{200, account_response(saved.identity)};
+                        cleared_before_revoke.store(!memory->has(session_key(configuration())));
+                        return Response{503,
+                                        R"({"error":{"code":"PRIVATE_REVOKE_FAILURE"}})"};
+                    });
+    session.restore();
+    REQUIRE(wait_for_session(session, [&] {
+        return session.snapshot().state == State::SignedIn;
+    }));
+    REQUIRE(session.logout());
+    REQUIRE(session.snapshot().state == State::SignedOut);
+    REQUIRE_FALSE(session.snapshot().has_identity());
+    REQUIRE_FALSE(memory->has(session_key(configuration())));
+    REQUIRE(wait_for_session(session, [&] {
+        return session.snapshot().message.find("远端撤销未确认") != std::string::npos;
+    }));
+    REQUIRE(cleared_before_revoke.load());
+
+    std::atomic_int requests {0};
+    Session reopened(std::make_unique<MemoryStore>(memory),
+                     [&](const Request&, Cancellation) {
+                         ++requests;
+                         return Response{};
+                     });
+    reopened.restore();
+    REQUIRE(reopened.snapshot().state == State::SignedOut);
+    REQUIRE(requests.load() == 0);
+}
+
+TEST_CASE("Browser cleanup requests persist without restoring the platform session",
+          "[HonorAccount]")
+{
+    const auto saved = platform_session();
+    auto memory = configured_memory(saved);
+    Session session(std::make_unique<MemoryStore>(memory),
+                    [&](const Request& request, Cancellation) {
+                        if (request.url.find("/v1/me") != std::string::npos)
+                            return Response{200, account_response(saved.identity)};
+                        return Response{201, R"({"ok":true})"};
+                    });
+    session.restore();
+    REQUIRE(wait_for_session(session, [&] {
+        return session.snapshot().state == State::SignedIn;
+    }));
     REQUIRE(session.logout(true));
     REQUIRE(session.browser_reset_pending());
-    REQUIRE_FALSE(session.snapshot().has_identity());
+    REQUIRE_FALSE(memory->has(session_key(configuration())));
+    REQUIRE(memory->has("browser-reset-platform-v2"));
+    REQUIRE(session.complete_browser_reset());
+    REQUIRE_FALSE(session.browser_reset_pending());
+    REQUIRE_FALSE(memory->has("browser-reset-platform-v2"));
 }
-TEST_CASE("HONOR unreadable cleanup state blocks restoration without deleting a valid saved session", "[HonorAccount]")
+
+TEST_CASE("A failed browser cleanup request remains mandatory before a new login",
+          "[HonorAccount]")
 {
-    Signer signer;auto memory=saved(signer.credentials());
-    unsigned requests=0;
-    Session session(std::make_unique<MemoryStore>(memory),[&](const std::string&,const std::string&,Cancellation) {
-        ++requests;return Response{};
-    });
-    memory->readable=false;session.restore();
-    REQUIRE(session.snapshot().state==State::Failed);
-    REQUIRE_FALSE(session.snapshot().has_identity());
-    REQUIRE(memory->values.count("session-"+configuration().key())==1);
-    REQUIRE(requests==0);
+    const auto saved = platform_session();
+    auto memory = configured_memory(saved);
+    memory->failed_saves.insert("browser-reset-platform-v2");
+    Session session(std::make_unique<MemoryStore>(memory),
+                    [&](const Request& request, Cancellation) {
+                        if (request.url.find("/v1/me") != std::string::npos)
+                            return Response{200, account_response(saved.identity)};
+                        if (request.url.find("/session/revoke") != std::string::npos)
+                            return Response{201, R"({"ok":true})"};
+                        return attempt_response();
+                    });
+    session.restore();
+    REQUIRE(wait_for_session(session, [&] {
+        return session.snapshot().state == State::SignedIn;
+    }));
+
+    REQUIRE(session.logout(true));
+    REQUIRE_FALSE(memory->has("browser-reset-platform-v2"));
+    REQUIRE(session.browser_reset_pending());
+    REQUIRE(session.login());
+    REQUIRE(session.browser_reset_pending());
+    session.cancel();
 }
-TEST_CASE("HONOR launch profiles share provisioning without sharing account sessions", "[HonorAccount]")
+
+TEST_CASE("Old direct credentials are erased while the browser profile is retained",
+          "[HonorAccount]")
 {
-    auto app=std::make_shared<Memory>();auto original=std::make_shared<Memory>();
-    original->values["configuration"]=serialize_config(configuration());
-    original->values["session-"+configuration().key()]="profile-only-credential";
-    Transport no_network=[](const std::string&,const std::string&,Cancellation)->Response {throw std::runtime_error("unexpected network");};
-    Session trial(std::make_unique<MemoryStore>(original),no_network,std::make_unique<MemoryStore>(app));
-    REQUIRE(app->values.size()==1);
-    REQUIRE(app->values.at("configuration")==original->values.at("configuration"));
-    auto direct_profile=std::make_shared<Memory>();
-    Session direct(std::make_unique<MemoryStore>(direct_profile),no_network,std::make_unique<MemoryStore>(app));
-    REQUIRE(direct.config().key()==trial.config().key());
-    direct.restore();REQUIRE(direct.snapshot().state==State::SignedOut);
-    REQUIRE_FALSE(direct.snapshot().has_identity());REQUIRE_FALSE(direct.snapshot().persistent);
-    REQUIRE_FALSE(direct.login().empty());direct.cancel();direct.logout();
-    REQUIRE(direct_profile->values.empty());
-    REQUIRE(original->values.at("session-"+configuration().key())=="profile-only-credential");
-    REQUIRE(app->values.size()==1);
+    const auto legacy = Json{{"environment", "test"},
+                             {"client_id", "legacy-client"},
+                             {"client_secret", "legacy-secret-must-disappear"},
+                             {"redirect_uri", "https://legacy.example.test/callback"},
+                             {"authorize_url", "https://legacy.example.test/authorize"},
+                             {"token_url", "https://legacy.example.test/token"},
+                             {"jwks_url", "https://legacy.example.test/certs"},
+                             {"issuer", "https://legacy.example.test"}}
+                            .dump();
+    const auto profile = legacy_profile_key(legacy);
+    REQUIRE(profile.has_value());
+    auto memory = std::make_shared<Memory>();
+    memory->put("configuration", legacy);
+    memory->put("session-" + *profile, "legacy-honor-access-and-refresh-token");
+    memory->put("browser-reset-" + *profile, "pending");
+
+    Session session(std::make_unique<MemoryStore>(memory));
+    REQUIRE(session.config().api_url.empty());
+    REQUIRE(session.config().browser_profile_key == *profile);
+    REQUIRE_FALSE(memory->has("session-" + *profile));
+    REQUIRE_FALSE(memory->has("browser-reset-" + *profile));
+    REQUIRE(memory->has("browser-reset-platform-v2"));
+    const auto migrated = memory->get("configuration");
+    REQUIRE(migrated.has_value());
+    REQUIRE(migrated->find("legacy-secret-must-disappear") == std::string::npos);
+    REQUIRE(migrated->find("legacy-honor-access-and-refresh-token") == std::string::npos);
+    REQUIRE(parse_config(*migrated).browser_profile_key == *profile);
 }
-TEST_CASE("HONOR profile provisioning keeps precedence and never replaces existing application configuration", "[HonorAccount]")
+
+TEST_CASE("Application profiles share only the public platform origin", "[HonorAccount]")
 {
-    auto profile=std::make_shared<Memory>();auto app=std::make_shared<Memory>();auto other=configuration();other.client_id="271828182";
-    profile->values["configuration"]=serialize_config(configuration());
-    app->values["configuration"]=serialize_config(other);
-    Session session(std::make_unique<MemoryStore>(profile),https_request,std::make_unique<MemoryStore>(app));
-    REQUIRE(session.config().client_id==configuration().client_id);
-    REQUIRE(app->values.at("configuration")==serialize_config(other));
-    auto changed=configuration();changed.client_id="161803398";
-    REQUIRE(session.configure(changed));REQUIRE(session.config().client_id==changed.client_id);
-    REQUIRE(app->values.at("configuration")==serialize_config(other));
+    auto profile = configured_memory();
+    auto configured = configuration();
+    configured.browser_profile_key = digest("profile-isolation");
+    profile->put("configuration", serialize_config(configured));
+    auto application = std::make_shared<Memory>();
+    Session first(std::make_unique<MemoryStore>(profile), https_request,
+                  std::make_unique<MemoryStore>(application));
+    const auto shared = parse_config(*application->get("configuration"));
+    REQUIRE(shared.api_url == configured.api_url);
+    REQUIRE(shared.browser_profile_key.empty());
+
+    auto second_profile = std::make_shared<Memory>();
+    Session second(std::make_unique<MemoryStore>(second_profile), https_request,
+                   std::make_unique<MemoryStore>(application));
+    REQUIRE(second.config().api_url == configured.api_url);
+    REQUIRE(second.config().browser_profile_key.empty());
+    REQUIRE_FALSE(second_profile->has(session_key(configured)));
 }
-TEST_CASE("HONOR unreadable or corrupt configuration never falls through to another account configuration", "[HonorAccount]")
-{
-    auto profile=std::make_shared<Memory>();auto app=std::make_shared<Memory>();
-    app->values["configuration"]=serialize_config(configuration());
-    SECTION("profile corrupt") {profile->values["configuration"]="{";}
-    SECTION("profile unreadable") {profile->readable=false;}
-    SECTION("application corrupt") {app->values["configuration"]="{";}
-    SECTION("application unreadable") {app->readable=false;}
-    SECTION("profile invalid") {auto invalid=configuration();invalid.client_secret.clear();profile->values["configuration"]=serialize_config(invalid);}
-    Session session(std::make_unique<MemoryStore>(profile),https_request,std::make_unique<MemoryStore>(app));
-    REQUIRE(session.login().empty());REQUIRE_FALSE(session.snapshot().has_identity());
-}
-TEST_CASE("HONOR configuration migration failure preserves the profile and configuration rollback", "[HonorAccount]")
-{
-    auto profile=std::make_shared<Memory>();auto app=std::make_shared<Memory>();
-    profile->values["configuration"]=serialize_config(configuration());app->writable=false;
-    Session session(std::make_unique<MemoryStore>(profile),https_request,std::make_unique<MemoryStore>(app));
-    REQUIRE(session.config().key()==configuration().key());REQUIRE(app->values.empty());
-    REQUIRE_FALSE(session.login().empty());session.cancel();
-    profile->erasable=false;auto changed=configuration();changed.client_id="271828182";
-    REQUIRE_FALSE(session.configure(changed));
-    REQUIRE(profile->values.at("configuration")==serialize_config(configuration()));
-    REQUIRE(session.config().key()==configuration().key());REQUIRE(app->values.empty());
-    profile->erasable=true;app->writable=true;
-    REQUIRE(session.configure(changed));REQUIRE(app->values.at("configuration")==serialize_config(changed));
-}
+
 #ifdef __WXMSW__
-TEST_CASE("HONOR Windows protected storage atomically rotates long UTF8 credentials and tombstones logout", "[HonorAccount]")
+TEST_CASE("Windows protected storage atomically rotates long UTF8 platform sessions",
+          "[HonorAccount]")
 {
-    auto profile="offline-test-"+random_value();auto store=system_store(profile);
-    std::string value;for(int i=0;i<2000;++i)value+="测试";
-    REQUIRE(store->save("long",value));REQUIRE(store->load("long")==value);
-    REQUIRE(store->save("long",value+"rotated"));REQUIRE(store->load("long")==value+"rotated");
-    REQUIRE(store->erase("long"));REQUIRE_FALSE(store->load("long"));
+    const auto profile = "offline-platform-test-" + random_value();
+    auto store = system_store(profile);
+    std::string value;
+    for (int i = 0; i < 2000; ++i) value += "\xE6\xB5\x8B\xE8\xAF\x95";
+    REQUIRE(store->save("long", value));
+    REQUIRE(store->load("long") == value);
+    REQUIRE(store->save("long", value + "-rotated"));
+    REQUIRE(store->load("long") == value + "-rotated");
+    REQUIRE(store->erase("long"));
+    REQUIRE_FALSE(store->load("long").has_value());
 }
 #endif

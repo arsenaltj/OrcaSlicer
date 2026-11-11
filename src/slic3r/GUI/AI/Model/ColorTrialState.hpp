@@ -3,7 +3,9 @@
 #include "../ModelGeneration/ModelPreviewPalette.hpp"
 #include "slic3r/AI/ModelGeneration/SemanticColoring/SemanticColoring.hpp"
 #include "../ModelGeneration/PortraitPaletteRoles.hpp"
+#include "../ModelGeneration/PortraitSuiteBinding.hpp"
 #include <nlohmann/json.hpp>
+#include "slic3r/AI/Contracts/ModelBaseBinding.hpp"
 
 #include <algorithm>
 #include <array>
@@ -50,6 +52,9 @@ struct State {
     // changing the historical numeric source contract.
     std::string suite_id;
     std::string suite_revision;
+    std::optional<GUI::PortraitSuite::Binding> suite_region_binding;
+    std::optional<ModelBaseBinding> base_binding;
+    std::string suite_fallback_reason;
 };
 
 // Saved color-card entries use the persisted manual source because dynamic
@@ -98,6 +103,12 @@ inline bool valid_suite_token(const std::string& value)
 
 inline bool valid_state(const State& state)
 {
+    if (state.base_binding && !state.base_binding->valid()) return false;
+    if (state.suite_region_binding &&
+        (!state.suite_region_binding->valid(state.colors.size()) ||
+         state.suite_region_binding->basis_signature != state.automatic_basis_signature ||
+         state.suite_region_binding->suite_id != state.suite_id ||
+         state.suite_region_binding->suite_revision != state.suite_revision)) return false;
     const bool has_suite_id = !state.suite_id.empty();
     const bool has_suite_revision = !state.suite_revision.empty();
     if (has_suite_id != has_suite_revision ||
@@ -237,6 +248,9 @@ inline nlohmann::json encode(const State& state, size_t actual_face_count, const
         doc["suite_id"] = state.suite_id;
         doc["suite_revision"] = state.suite_revision;
     }
+    if (state.suite_region_binding) doc["suite_region_binding"] = *state.suite_region_binding;
+    if (state.base_binding) doc["base_binding"] = state.base_binding->encode();
+    if (!state.suite_fallback_reason.empty()) doc["suite_fallback_reason"] = state.suite_fallback_reason;
     return doc;
 }
 
@@ -267,6 +281,15 @@ inline bool decode(const nlohmann::json& doc, size_t actual_face_count, const st
         (doc["locks"].size() != 6 && doc["locks"].size() != GUI::PreviewPalette::max_preview_colors))
         return fail("Trial color lock flags do not match a supported preview version.");
     State restored;
+    if (doc.contains("base_binding")) {
+        ModelBaseBinding b;
+        if (!ModelBaseBinding::decode(doc["base_binding"], b)) return fail("Invalid base slot binding.");
+        restored.base_binding = std::move(b);
+    }
+    if (doc.contains("suite_fallback_reason")) {
+        if (!doc["suite_fallback_reason"].is_string()) return fail("Invalid suite fallback reason.");
+        restored.suite_fallback_reason = doc["suite_fallback_reason"].get<std::string>();
+    }
     for (size_t i = 0; i < doc["locks"].size(); ++i) {
         if (!doc["locks"][i].is_boolean()) return fail("Trial color locks must be booleans.");
         restored.locks[i] = doc["locks"][i].get<bool>();
@@ -376,6 +399,10 @@ inline bool decode(const nlohmann::json& doc, size_t actual_face_count, const st
             }
         }
         restored.color_card_weighted_error = doc["color_card_weighted_error"].get<double>();
+    }
+    if (doc.contains("suite_region_binding")) {
+        try { restored.suite_region_binding = doc.at("suite_region_binding").get<GUI::PortraitSuite::Binding>(); }
+        catch (const std::exception&) { return fail("Invalid portrait suite region binding."); }
     }
     if (!detail::valid_state(restored)) return fail("Trial color centers and targets must form valid pairs.");
     output = std::move(restored);

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 
 using namespace Slic3r;
@@ -79,6 +80,8 @@ Analysis labeled(const MeshSnapshot& source, const std::vector<Label>& labels)
     result.signature = analysis_cache_key(source, result.body_identity, result.face_identity);
     result.face_labels = labels; result.face_confidence.assign(labels.size(), .95f);
     result.person_detected = true; result.rendered_views = 8; result.face_views = 1;
+    result.candidate_face_regions[0] = 1;
+    result.detected_face_regions[0] = 1;
     result.observed_faces = result.reliable_faces = labels.size();
     return result;
 }
@@ -100,10 +103,12 @@ std::vector<Color> portrait_card()
 class BodyFixture final : public IBodyRegionRecognizer {
 public:
     size_t calls {0}; bool alternate {false}; float certainty {.95f};
+    std::vector<std::pair<int, int>> image_sizes;
     Label primary {Label::FaceSkin}, alternate_label {Label::Clothes}; std::string failure;
     std::string identity() const override { return "body-fixture-v1"; }
     Prediction predict(const RGBImage& image, const Cancel&) override {
         ++calls;
+        image_sizes.emplace_back(image.width, image.height);
         Prediction prediction;
         prediction.error = failure;
         prediction.labels.assign(size_t(image.width) * image.height,
@@ -117,9 +122,11 @@ class FaceFixture final : public IFaceRegionRecognizer {
 public:
     size_t calls {0}; bool detects_face {true}; Label detail {Label::Unknown};
     std::vector<Label> sequence;
+    std::vector<std::pair<int, int>> image_sizes;
     std::string identity() const override { return "face-fixture-v1"; }
     Prediction predict(const RGBImage& image, const Cancel&) override {
         ++calls;
+        image_sizes.emplace_back(image.width, image.height);
         Prediction prediction;
         const Label current = sequence.empty() ? detail : sequence[std::min(calls - 1, sequence.size() - 1)];
         prediction.labels.assign(size_t(image.width) * image.height, current);
@@ -207,6 +214,40 @@ TEST_CASE("Independent eye masks replace broad skin predictions without model-sp
             return item.path.depth == 2 && item.label == detail && item.confidence >= minimum_confidence;
         }));
     }
+}
+
+TEST_CASE("Portrait recognition uses 1024 face crops and persists only per-view detection counts",
+          "[SemanticColoring][Regression]")
+{
+    const auto source = triangles({{.7f,.6f,.55f}});
+    BodyFixture body;
+    FaceFixture face;
+    face.detail = Label::FaceSkin;
+    const auto analysis = analyze(source, body, face);
+    REQUIRE(analysis.error.empty());
+    REQUIRE(body.image_sizes.size() == 8);
+    CHECK(std::all_of(body.image_sizes.begin(), body.image_sizes.end(), [](const auto& size) {
+        return size.first == global_view_size && size.second == global_view_size;
+    }));
+    REQUIRE_FALSE(face.image_sizes.empty());
+    CHECK(std::all_of(face.image_sizes.begin(), face.image_sizes.end(), [](const auto& size) {
+        return size.first == production_face_roi_size && size.second == production_face_roi_size;
+    }));
+    CHECK(analysis.face_roi_size == production_face_roi_size);
+    CHECK(std::accumulate(analysis.candidate_face_regions.begin(),
+        analysis.candidate_face_regions.end(), uint32_t(0)) == face.calls);
+    CHECK(std::accumulate(analysis.detected_face_regions.begin(),
+        analysis.detected_face_regions.end(), uint32_t(0)) == face.calls);
+
+    const auto encoded = encode_analysis(analysis);
+    CHECK(encoded.at("candidate_face_regions").size() == 8);
+    CHECK(encoded.at("detected_face_regions").size() == 8);
+    Analysis restored;
+    std::string error;
+    REQUIRE(decode_analysis(encoded, source, body.identity(), face.identity(), restored, error));
+    CHECK(restored.face_roi_size == production_face_roi_size);
+    CHECK(restored.candidate_face_regions == analysis.candidate_face_regions);
+    CHECK(restored.detected_face_regions == analysis.detected_face_regions);
 }
 
 TEST_CASE("A clear brow view survives Unknown side views without weakening eye conflict rules",

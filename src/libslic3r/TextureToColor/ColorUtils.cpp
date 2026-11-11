@@ -1267,6 +1267,7 @@ std::vector<Color> cluster_adaptive(const std::vector<Color>& colors, const Clus
     }
 
     const double max_color_distance = cluster_parameters.max_color_distance;
+    const double max_tail_color_distance = cluster_parameters.max_tail_color_distance;
     const std::size_t max_iter = cluster_parameters.max_iter;
     const bool use_lab = (cluster_parameters.color_difference_method != ColorDifferenceMethod::RGB);
     WorkingDistFunc working_dist_func = use_lab ? ciede2000 : calc_rgb_color_difference_by_squared_rgb_double;
@@ -1281,7 +1282,10 @@ std::vector<Color> cluster_adaptive(const std::vector<Color>& colors, const Clus
 
     BOOST_LOG_TRIVIAL(debug) << "cluster_adaptive: colors=" << colors.size()
                              << " unique=" << unique_colors.size()
-                             << " max_color_distance=" << max_color_distance;
+                             << " min_k=" << cluster_parameters.min_cluster_k
+                             << " max_k=" << cluster_parameters.max_cluster_k
+                             << " max_color_distance=" << max_color_distance
+                             << " max_tail_color_distance=" << max_tail_color_distance;
 
     if (unique_colors.size() <= 1) {
         return unique_colors;
@@ -1299,15 +1303,22 @@ std::vector<Color> cluster_adaptive(const std::vector<Color>& colors, const Clus
     // ==========================================
     // 2. Binary search k: find the smallest k where P99 radius <= max_color_distance
     // ==========================================
-    const std::size_t max_k = cluster_parameters.max_cluster_k;
-    std::size_t lo = 1;
-    std::size_t hi = std::min<std::size_t>(max_k, unique_colors.size());
+    const std::size_t max_k = std::max<std::size_t>(1,
+        std::min<std::size_t>(cluster_parameters.max_cluster_k, unique_colors.size()));
+    const std::size_t min_k = std::min<std::size_t>(
+        std::max<std::size_t>(1, cluster_parameters.min_cluster_k), max_k);
+    std::size_t lo = min_k;
+    std::size_t hi = max_k;
     std::size_t best_k = 0;
     std::vector<ColorDouble> best_centers;
 
     constexpr double kRadiusPercentile = 0.99;
 
-    auto calc_max_radius = [&](const std::vector<ColorDouble>& centers) -> double {
+    struct ClusterRadius {
+        double percentile {0.0};
+        double tail {0.0};
+    };
+    auto calc_radius = [&](const std::vector<ColorDouble>& centers) -> ClusterRadius {
         std::vector<double> distances(working_colors.size());
         tbb::parallel_for(tbb::blocked_range<std::size_t>(0, working_colors.size()), [&](const tbb::blocked_range<size_t>& range) {
             for (std::size_t i = range.begin(); i < range.end(); ++i) {
@@ -1322,11 +1333,12 @@ std::vector<Color> cluster_adaptive(const std::vector<Color>& colors, const Clus
             }
         });
         if (distances.empty()) {
-            return 0.0;
+            return {};
         }
+        const double tail = *std::max_element(distances.begin(), distances.end());
         std::size_t idx = std::min<std::size_t>(static_cast<std::size_t>(distances.size() * kRadiusPercentile), distances.size() - 1);
         std::nth_element(distances.begin(), distances.begin() + idx, distances.end());
-        return distances[idx];
+        return {distances[idx], tail};
     };
 
     const auto& cancel_cb = cluster_parameters.cancel_callback;
@@ -1336,11 +1348,15 @@ std::vector<Color> cluster_adaptive(const std::vector<Color>& colors, const Clus
         std::size_t mid = lo + (hi - lo) / 2;
         auto centers = kmeans_core(working_colors, mid, max_iter, working_dist_func, cancel_cb);
         if (cancel_cb && cancel_cb()) return {};
-        double max_radius = calc_max_radius(centers);
+        const ClusterRadius radius = calc_radius(centers);
 
-        BOOST_LOG_TRIVIAL(debug) << "cluster_adaptive binary search: k=" << mid << " max_radius=" << max_radius;
+        BOOST_LOG_TRIVIAL(debug) << "cluster_adaptive binary search: k=" << mid
+                                 << " p99_radius=" << radius.percentile
+                                 << " tail_radius=" << radius.tail;
 
-        if (max_radius <= max_color_distance) {
+        const bool tail_satisfied = max_tail_color_distance <= 0.0 ||
+            radius.tail <= max_tail_color_distance;
+        if (radius.percentile <= max_color_distance && tail_satisfied) {
             best_k = mid;
             best_centers = std::move(centers);
             hi = mid - 1;

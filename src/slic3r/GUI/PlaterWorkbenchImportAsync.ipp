@@ -218,7 +218,8 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                 if (!notify(WorkbenchImportPhase::Colors, "正在复检最终网格")) return;
                 TriangleMesh final_mesh = object.volumes.front()->mesh();
                 if (!prepare_workbench_import_topology(final_mesh, request.topology_risk_confirmed,
-                    prepared->result, prepared->result.error, stopped)) {
+                        prepared->result, prepared->result.error, stopped, &request)) {
+                    if (prepared->result.error.empty()) prepared->result.error = "最终网格复检未通过，已回滚导入。";
                     prepared->result.outcome = AI::ModelImportOutcome::RepairFailed;
                     return;
                 }
@@ -234,7 +235,7 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                 ui([&] {
                     created = LocalPrintModelImport::prepare(object, prepared->placement.placement,
                         prepared->placement.bed_size, prepared->model, prepared->result.error,
-                        request.apply_round_base_preparation);
+                        request.apply_round_base_preparation, request.base_binding);
                 });
                 if (!created || stopped()) return;
                 if (!LocalPrintModelImport::place(*prepared->model->objects.front(), prepared->placement.bed,

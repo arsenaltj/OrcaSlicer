@@ -1,5 +1,10 @@
 #include "slic3r/GUI/AI/ModelGeneration/ModelPreview3D.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitNativePartition.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitNativePartitionCache.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchHistoryEvidence.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
 #include "slic3r/GUI/AI/Model/BeautyDocument.hpp"
 #include "../test_utils.hpp"
@@ -16,9 +21,50 @@
 #include <string_view>
 
 using Slic3r::GUI::ModelPreview3D;
+using Slic3r::GUI::ModelPreviewFrameState;
 using Slic3r::Vec3d;
 namespace selection = Slic3r::AI::SurfaceSelectionPersistence;
 namespace trial = Slic3r::AI::ColorTrialPersistence;
+
+TEST_CASE("Navigator orientations include every axis and remain continuous when orbiting",
+          "[ModelPreviewState][ModelPreviewCamera]")
+{
+    using namespace Slic3r;
+    GUI::ModelPreviewCameraRotation camera;
+    const Vec3d axis = GENERATE(Vec3d(1.,0.,0.), Vec3d(-1.,0.,0.), Vec3d(0.,1.,0.),
+        Vec3d(0.,-1.,0.), Vec3d(0.,0.,1.), Vec3d(0.,0.,-1.));
+    Transform3d view = Transform3d::Identity();
+    view.linear() = Eigen::Quaterniond::FromTwoVectors(axis, Vec3d::UnitZ()).toRotationMatrix();
+    camera.set(view);
+    CHECK((camera.transform().linear() * axis - Vec3d::UnitZ()).norm() < 1e-10);
+    const auto saved = camera;
+    camera.orbit(0., 0.);
+    CHECK((camera.transform().matrix() - view.matrix()).norm() < 1e-10);
+    camera.orbit(.08, -.05);
+    const auto expected = Geometry::rotation_transform(-.05 * Vec3d::UnitX()) * view *
+        Geometry::rotation_transform(.08 * Vec3d::UnitZ());
+    CHECK((camera.transform().matrix() - expected.matrix()).norm() < 1e-10);
+    camera = saved;
+    CHECK((camera.transform().matrix() - view.matrix()).norm() < 1e-10);
+    CHECK_THAT(camera.transform().linear().determinant(), Catch::Matchers::WithinAbs(1., 1e-10));
+}
+
+TEST_CASE("Resetting a navigator view restores the established preview camera and orbit limits",
+          "[ModelPreviewState][ModelPreviewCamera]")
+{
+    using namespace Slic3r;
+    GUI::ModelPreviewCameraRotation camera;
+    camera.set(Geometry::rotation_transform(Vec3d(.5, .3, .8)));
+    camera.reset(-.65, -1.05);
+    CHECK_FALSE(camera.navigator);
+    const auto expected = Geometry::rotation_transform(-1.05 * Vec3d::UnitX()) *
+        Geometry::rotation_transform(-.65 * Vec3d::UnitZ());
+    CHECK((camera.transform().matrix() - expected.matrix()).norm() < 1e-10);
+    camera.orbit(.1, 100.);
+    CHECK_THAT(camera.pitch, Catch::Matchers::WithinAbs(-.15, 1e-12));
+    camera.orbit(0., -100.);
+    CHECK_THAT(camera.pitch, Catch::Matchers::WithinAbs(-.5 * PI, 1e-12));
+}
 
 namespace {
 indexed_triangle_set original_appearance_fixture_mesh()
@@ -58,6 +104,62 @@ void write_original_appearance_json(const boost::filesystem::path& path, const n
 }
 }
 
+TEST_CASE("Preview frame completions require the current visible viewport and DPI",
+          "[ModelPreviewState][ModelPreviewFrame]")
+{
+    ModelPreviewFrameState state;
+    const auto frame = state.begin({800, 600}, 1.25);
+    CHECK(state.current(frame, {800, 600}, 1.25, true));
+    CHECK_FALSE(state.current(frame, {600, 600}, 1.25, true));
+    CHECK_FALSE(state.current(frame, {800, 600}, 1.5, true));
+    CHECK_FALSE(state.current(frame, {800, 600}, 1.25, false));
+    CHECK_FALSE(state.current(frame, {0, 600}, 1.25, true));
+    CHECK_FALSE(state.current(frame, {800, 0}, 1.25, true));
+}
+
+TEST_CASE("Resizing back to the same size cannot accept an older preview frame",
+          "[ModelPreviewState][ModelPreviewFrame]")
+{
+    ModelPreviewFrameState state;
+    const auto before = state.begin({800, 600}, 2.);
+    state.invalidate();
+    const auto narrow = state.begin({600, 600}, 2.);
+    state.invalidate();
+    CHECK_FALSE(state.current(before, {800, 600}, 2., true));
+    CHECK_FALSE(state.current(narrow, {800, 600}, 2., true));
+    CHECK(state.current(state.begin({800, 600}, 2.), {800, 600}, 2., true));
+}
+
+TEST_CASE("Replacing a model invalidates its frame even when viewport dimensions stay unchanged",
+          "[ModelPreviewState][ModelPreviewFrame]")
+{
+    ModelPreviewFrameState state;
+    const auto previous_model = state.begin({800, 600}, 1.);
+    state.invalidate();
+    CHECK_FALSE(state.current(previous_model, {800, 600}, 1., true));
+    CHECK(state.current(state.begin({800, 600}, 1.), {800, 600}, 1., true));
+}
+
+TEST_CASE("Resize transitions preserve the completed image aspect inside the new viewport",
+          "[ModelPreviewState][ModelPreviewFrame]")
+{
+    const wxSize source = GENERATE(wxSize(2232, 1647), wxSize(1688, 1647), wxSize(600, 1000));
+    const wxSize target = GENERATE(wxSize(1688, 1647), wxSize(2232, 1647), wxSize(1200, 800));
+    const auto extents = Slic3r::GUI::preview_frame_extents(source, target);
+    REQUIRE(extents);
+    CHECK((*extents)[0] > 0.f);
+    CHECK((*extents)[0] <= 1.f);
+    CHECK((*extents)[1] > 0.f);
+    CHECK((*extents)[1] <= 1.f);
+    const double image_aspect = double((*extents)[0]) * target.x / (double((*extents)[1]) * target.y);
+    CHECK_THAT(image_aspect, Catch::Matchers::WithinAbs(double(source.x) / source.y, 0.000001));
+    const auto double_dpi = Slic3r::GUI::preview_frame_extents(source * 2, target * 2);
+    REQUIRE(double_dpi);
+    CHECK(*double_dpi == *extents);
+    CHECK_FALSE(Slic3r::GUI::preview_frame_extents({0, source.y}, target));
+    CHECK_FALSE(Slic3r::GUI::preview_frame_extents(source, {target.x, 0}));
+}
+
 TEST_CASE("Saved low-color versions retain the immutable original palette source",
           "[ModelPreviewState][ModelPreviewPalette][OriginalAppearance][Regression]")
 {
@@ -95,6 +197,93 @@ TEST_CASE("Saved low-color versions retain the immutable original palette source
     CHECK(prepared.trial_histogram->trial_palette(8, {}, true).size() == 8);
 }
 
+TEST_CASE("Original surface sampling survives face reorder winding and repaired triangles",
+          "[ModelPreviewState][OriginalAppearance]")
+{
+    const auto source=boost::filesystem::path(std::string(TEST_DATA_DIR))/"model_artifact"/"textured.glb";
+    Slic3r::TriangleMesh mesh;Slic3r::ObjInfo colors;std::string error;
+    REQUIRE(Slic3r::AI::load_model_artifact(source,mesh,colors,error));
+    const auto hash=Slic3r::AI::model_artifact_sha256(source);
+    const auto original=Slic3r::GUI::ModelOriginalSurfaceSampler::load(source,hash,mesh.its,error);
+    INFO(error);REQUIRE(original);
+    auto repaired=mesh.its;
+    std::reverse(repaired.indices.begin(),repaired.indices.end());
+    for (auto& face:repaired.indices) std::swap(face[0],face[2]);
+    const auto remapped=Slic3r::GUI::ModelOriginalSurfaceSampler::load(source,hash,repaired,error);
+    REQUIRE(remapped);
+    for (size_t face=0;face<repaired.indices.size();++face) {
+        const auto actual=remapped->sample(face,{.2f,.3f,.5f});
+        const auto expected=original->sample(repaired.indices.size()-1-face,{.5f,.3f,.2f});
+        for (size_t c=0;c<3;++c) CHECK_THAT(actual[c],Catch::Matchers::WithinAbs(expected[c],1e-5));
+    }
+    const auto face=mesh.its.indices.front();
+    const auto midpoint=(mesh.its.vertices[face[0]]+mesh.its.vertices[face[1]])*.5f;
+    repaired=mesh.its;const int mid=int(repaired.vertices.size());repaired.vertices.push_back(midpoint);
+    repaired.indices.front()={face[0],mid,face[2]};
+    const auto changed=Slic3r::GUI::ModelOriginalSurfaceSampler::load(source,hash,repaired,error);
+    INFO(error);REQUIRE(changed);
+    const auto expected=original->sample(0,{.35f,.15f,.5f});
+    const auto actual=changed->sample(0,{.2f,.3f,.5f});
+    for(size_t c=0;c<3;++c) CHECK_THAT(actual[c],Catch::Matchers::WithinAbs(expected[c],1e-4));
+    CHECK_FALSE(Slic3r::GUI::ModelOriginalSurfaceSampler::load(source,std::string(64,'0'),repaired,error));
+    CHECK_FALSE(Slic3r::GUI::ModelOriginalSurfaceSampler::load(source,hash,repaired,error,[]{return true;}));
+}
+
+TEST_CASE("AI source counts follow only hash verified model history", "[ModelPreviewState][OriginalAppearance]")
+{
+    ScopedTemporaryDir temporary("orca-source-color-history");const auto root=temporary.path();
+    boost::filesystem::create_directories(root/"models");
+    const auto original=root/"models"/"original.obj",saved=root/"models"/"saved.obj";
+    const auto mesh=original_appearance_fixture_mesh();std::string error;
+    REQUIRE(Slic3r::AI::write_model_artifact(original,mesh,original_appearance_fixture_colors(mesh.vertices.size()),error));
+    boost::filesystem::copy_file(original,saved);
+    const auto original_record=Slic3r::AI::beauty_metadata_path(original,root);
+    // Explicit finishing records use downloads so prepare_model can recover the
+    // same library root used to validate relative source-model references.
+    const auto record=root/"downloads"/"saved.json";
+    const auto hash=Slic3r::AI::model_artifact_sha256(original);
+    write_original_appearance_json(original_record,{{"model_sha256",hash},{"palette",{"#000000","#ffffff","#ff0000","#0000ff"}}});
+    write_original_appearance_json(record,{{"source_model","models/original.obj"},{"source_sha256",hash}});
+    using Slic3r::GUI::original_appearance_detail::ai_source_color_count;
+    CHECK(ai_source_color_count(saved,root,record)==4);
+    ModelPreview3D::PreparedModel prepared;
+    REQUIRE(ModelPreview3D::prepare_model(saved,prepared,error,{},record));
+    CHECK(prepared.ai_source_color_count==4);
+    write_original_appearance_json(record,{{"source_model","models/original.obj"},{"source_sha256","wrong"}});
+    CHECK(ai_source_color_count(saved,root,record)==0);
+    write_original_appearance_json(record,{{"source_model","../outside.obj"},{"source_sha256",hash}});
+    CHECK(ai_source_color_count(saved,root,record)==0);
+}
+
+TEST_CASE("Original texture sampling preserves UV wrapping and linear material factors",
+          "[ModelPreviewState][OriginalAppearance]")
+{
+    const auto path=boost::filesystem::path(std::string(TEST_DATA_DIR))/"model_artifact"/"textured.glb";
+    Slic3r::TriangleMesh mesh;Slic3r::ObjInfo colors;Slic3r::AI::ModelArtifactTextureSurface texture;std::string error;
+    REQUIRE(Slic3r::AI::load_model_artifact(path,mesh,colors,error,{},&texture));
+    REQUIRE_FALSE(texture.images.empty());REQUIRE(texture.faces.size()==mesh.its.indices.size());
+    auto& image=texture.images.front();image.width=2;image.height=2;
+    image.rgba={255,0,0,255,0,255,0,255,0,0,255,255,255,255,255,255};
+    auto& face=texture.faces.front();face.image=0;
+    for(auto& corner:face.corners){corner.uv={1.25f,.25f};corner.multiplier={.5f,.5f,.5f};}
+    const auto hash=Slic3r::AI::model_artifact_sha256(path);
+    for(const auto wrap:std::array<int,3>{10497,33648,33071}) {
+        face.wrap_s=wrap;
+        const auto sampler=Slic3r::GUI::ModelOriginalSurfaceSampler::load(path,hash,mesh.its,error,{},&mesh,&colors,&texture);
+        INFO(error);REQUIRE(sampler);
+        const auto sampled=sampler->sample(0,{.2f,.3f,.5f});
+        const size_t channel=wrap==10497?0:1;
+        for(size_t c=0;c<3;++c) CHECK_THAT(sampled[c],Catch::Matchers::WithinAbs(c==channel?.73535698f:0.f,1e-5));
+    }
+    namespace SC=Slic3r::AI::SemanticColoring;
+    SC::MeshSnapshot snapshot;snapshot.mesh=mesh.its;snapshot.vertex_colors=colors.vertex_colors;
+    snapshot.geometry_id=selection::geometry_fingerprint(mesh.its);snapshot.content_id=SC::content_fingerprint(snapshot);
+    const auto old_content=snapshot.content_id,old_key=SC::analysis_cache_key(snapshot,"body","face");
+    snapshot.sampling_signature="original-surface/v1:"+hash;
+    CHECK(SC::content_fingerprint(snapshot)==old_content);
+    CHECK(SC::analysis_cache_key(snapshot,"body","face")!=old_key);
+}
+
 TEST_CASE("Explicit original appearance references validate identity and topology",
           "[ModelPreviewState][OriginalAppearance]")
 {
@@ -128,6 +317,174 @@ TEST_CASE("Explicit original appearance references validate identity and topolog
     CHECK_FALSE(Slic3r::GUI::resolve_original_appearance_reference(
         bad_hash, mesh, root, resolved, error));
     CHECK(error.find("哈希") != std::string::npos);
+}
+
+TEST_CASE("Repaired carriers recover original UV evidence without mixing averaged vertex colors", "[ModelPreviewState][OriginalAppearance]")
+{
+    ScopedTemporaryDir temporary("orca-repaired-texture-evidence");
+    const auto root = temporary.path();
+    boost::filesystem::create_directories(root / "models");
+    const auto original = root / "models" / "original.glb";
+    const auto repaired = root / "models" / "repaired.obj";
+    const auto record = root / "downloads" / "repaired.json";
+    boost::filesystem::copy_file(boost::filesystem::path(std::string(TEST_DATA_DIR)) /
+        "model_artifact" / "textured.glb", original);
+    Slic3r::TriangleMesh mesh;
+    Slic3r::ObjInfo colors;
+    std::string error;
+    REQUIRE(Slic3r::AI::load_model_artifact(original, mesh, colors, error));
+    REQUIRE(Slic3r::AI::write_model_artifact(repaired, mesh.its,
+        std::vector<Slic3r::RGBA>(mesh.its.vertices.size(), {1.f, 0.f, 1.f, 1.f}), error));
+    REQUIRE(Slic3r::AI::load_model_artifact(repaired, mesh, colors, error));
+    const Slic3r::GUI::OriginalAppearanceReference reference {
+        boost::filesystem::canonical(repaired), Slic3r::AI::model_artifact_sha256(repaired),
+        selection::topology_fingerprint(mesh.its), boost::filesystem::canonical(original),
+        Slic3r::AI::model_artifact_sha256(original)
+    };
+    write_original_appearance_json(record, {{"original_appearance", reference.encode(root)}});
+    ModelPreview3D::PreparedModel prepared;
+    const bool loaded = ModelPreview3D::prepare_model(repaired, prepared, error, {}, record);
+    INFO(error);
+    REQUIRE(loaded);
+    REQUIRE(prepared.has_source_appearance);
+    REQUIRE_FALSE(prepared.texture_surface.images.empty());
+    REQUIRE(prepared.semantic_source);
+    REQUIRE(prepared.semantic_source->sample_original);
+    REQUIRE(prepared.trial_histogram);
+    Slic3r::GUI::PreviewPalette::Histogram expected;
+    for (size_t face = 0; face < mesh.its.indices.size(); ++face) {
+        const auto& triangle = mesh.its.indices[face];
+        const double area = (mesh.its.vertices[triangle[1]] - mesh.its.vertices[triangle[0]]).cross(
+            mesh.its.vertices[triangle[2]] - mesh.its.vertices[triangle[0]]).norm();
+        const auto sampled = prepared.semantic_source->sample_original(face, {1.f/3, 1.f/3, 1.f/3});
+        expected.add(Slic3r::GUI::preview_rgb8(sampled[0], sampled[1], sampled[2]), area * 3);
+    }
+    CHECK(prepared.trial_histogram->signature() == expected.signature());
+}
+
+TEST_CASE("Filament baking retains original evidence across split vertices and reopening",
+          "[ModelPreviewState][OriginalAppearance][Regression]")
+{
+    ScopedTemporaryDir temporary("orca-filament-original-appearance");
+    struct DataScope {
+        std::string previous = Slic3r::data_dir();
+        ~DataScope() { Slic3r::set_data_dir(previous); }
+    } scope;
+    Slic3r::set_data_dir(temporary.path().string());
+    const auto root = temporary.path() / "models";
+    const auto models = root / "job";
+    const auto downloads = root / "downloads";
+    boost::filesystem::create_directories(models);
+    boost::filesystem::create_directories(downloads);
+    const auto original = models / "original.obj";
+    const auto parent = models / "orcaslicer-ai-finish-repaired.obj";
+    const auto carrier = models / "orcaslicer-ai-finish-repaired.source-appearance.obj";
+    const auto mapped = downloads / "orcaslicer-ai-finish-semantic-mapped.obj";
+    const auto mesh = original_appearance_fixture_mesh();
+    auto original_mesh = mesh;
+    original_mesh.indices.pop_back();
+    const auto colors = original_appearance_fixture_colors(mesh.vertices.size());
+    std::string error;
+    REQUIRE(Slic3r::AI::write_model_artifact(original, original_mesh, colors, error));
+    REQUIRE(Slic3r::AI::write_model_artifact(carrier, mesh, colors, error));
+    REQUIRE(Slic3r::AI::write_model_artifact(parent, mesh,
+        std::vector<Slic3r::RGBA>(mesh.vertices.size(), {1.f, 0.f, 0.f, 1.f}), error));
+    const Slic3r::GUI::OriginalAppearanceReference reference {
+        boost::filesystem::canonical(carrier), Slic3r::AI::model_artifact_sha256(carrier),
+        selection::topology_fingerprint(mesh), boost::filesystem::canonical(original),
+        Slic3r::AI::model_artifact_sha256(original)
+    };
+    write_original_appearance_json(downloads / "orcaslicer-ai-finish-repaired.json", {
+        {"source_model", original.lexically_relative(root).generic_string()},
+        {"source_sha256", reference.origin_sha256},
+        {"original_appearance", reference.encode(root)}
+    });
+    ModelPreview3D::PreparedModel parent_preview;
+    REQUIRE(ModelPreview3D::prepare_model(parent, parent_preview, error));
+    REQUIRE(parent_preview.has_source_appearance);
+    REQUIRE(parent_preview.original_appearance.carrier_model == reference.carrier_model);
+    Slic3r::AI::ModelFinishingOptions options;
+    options.smooth_surface = options.repair_mesh = false;
+    options.beauty_appearance = true;
+    Slic3r::AI::BeautyDocument document;
+    document.geometry_id = selection::geometry_fingerprint(mesh);
+    document.face_count = mesh.indices.size();
+    document.face_patch.assign(document.face_count, 0);
+    options.beauty_document = document.encode();
+    options.appearance.face_weights.assign(document.face_count, 1.f);
+    for (size_t face = 0; face < document.face_count; ++face) {
+        options.selected_faces.push_back(face);
+        options.appearance.face_target_colors.push_back(face % 2
+            ? std::array<float, 3>{1.f, 0.f, 0.f} : std::array<float, 3>{0.f, 1.f, 0.f});
+    }
+    const auto baked = Slic3r::AI::finish_model_artifact(parent, mapped, options);
+    INFO(baked.error);
+    REQUIRE(baked.success);
+    REQUIRE(baked.vertices > mesh.vertices.size());
+    ModelPreview3D::PreparedModel incompatible;
+    REQUIRE(ModelPreview3D::prepare_model(mapped, incompatible, error, {}, {}, true, {}, nullptr, reference));
+    CHECK_FALSE(incompatible.has_source_appearance);
+    Slic3r::GUI::OriginalAppearanceReference mapped_reference;
+    const auto mapped_carrier = downloads / "orcaslicer-ai-finish-semantic-mapped.source-appearance.obj";
+    REQUIRE(Slic3r::GUI::prepare_original_appearance_for_candidate(
+        parent, mapped, baked.source_sha256, parent_preview.original_appearance,
+        mapped_carrier, root, mapped_reference, error));
+    REQUIRE(mapped_reference.carrier_model != reference.carrier_model);
+    CHECK(mapped_reference.origin_model == reference.origin_model);
+    ModelPreview3D::PreparedModel candidate;
+    REQUIRE(ModelPreview3D::prepare_model(mapped, candidate, error, {}, {}, true, {}, nullptr, mapped_reference));
+    REQUIRE(candidate.has_source_appearance);
+    write_original_appearance_json(downloads / "orcaslicer-ai-finish-semantic-mapped.json", {
+        {"source_model", parent.lexically_relative(root).generic_string()},
+        {"source_sha256", baked.source_sha256},
+        {"model_sha256", baked.output_sha256},
+        {"original_appearance", mapped_reference.encode(root)}
+    });
+    ModelPreview3D::PreparedModel reopened;
+    REQUIRE(ModelPreview3D::prepare_model(mapped, reopened, error));
+    INFO(reopened.original_appearance_error);
+    REQUIRE(reopened.has_source_appearance);
+    CHECK(reopened.original_appearance.carrier_model == mapped_reference.carrier_model);
+    CHECK(reopened.original_appearance.origin_model == reference.origin_model);
+    REQUIRE(reopened.trial_histogram);
+    CHECK(reopened.trial_histogram->trial_palette(8, {}, true).size() == 8);
+    SECTION("missing companion recovers original colors from the unchanged parent") {
+        boost::filesystem::remove(mapped_carrier);
+        ModelPreview3D::PreparedModel restored;
+        REQUIRE(ModelPreview3D::prepare_model(mapped, restored, error));
+        INFO(restored.original_appearance_error);
+        REQUIRE(restored.has_source_appearance);
+        REQUIRE(restored.semantic_source);
+        CHECK(restored.semantic_source->content_id == reopened.semantic_source->content_id);
+        CHECK(restored.original_appearance.carrier_sha256 == mapped_reference.carrier_sha256);
+        CHECK(restored.original_appearance.origin_model == reference.origin_model);
+        CHECK(Slic3r::AI::model_artifact_sha256(mapped) == baked.output_sha256);
+    }
+    SECTION("missing companion does not recover from a changed parent") {
+        boost::filesystem::remove(mapped_carrier);
+        boost::filesystem::ofstream modified(parent, std::ios::app); modified << "\n# changed\n"; modified.close();
+        ModelPreview3D::PreparedModel rejected;
+        REQUIRE(ModelPreview3D::prepare_model(mapped, rejected, error));
+        CHECK_FALSE(rejected.has_source_appearance);
+        CHECK_FALSE(boost::filesystem::exists(mapped_carrier));
+    }
+    SECTION("cancelled recovery does not publish a companion") {
+        boost::filesystem::remove(mapped_carrier);
+        ModelPreview3D::PreparedModel rejected;
+        const auto cancel_on_missing = [&] { return !boost::filesystem::exists(mapped_carrier); };
+        CHECK_FALSE(ModelPreview3D::prepare_model(mapped, rejected, error, {}, {}, true, cancel_on_missing));
+        CHECK_FALSE(boost::filesystem::exists(mapped_carrier));
+    }
+    SECTION("changed companion cannot be replaced from the parent") {
+        boost::filesystem::ofstream modified(mapped_carrier, std::ios::app);
+        modified << "\n# modified original evidence\n";
+        modified.close();
+        REQUIRE(modified.good());
+        ModelPreview3D::PreparedModel rejected;
+        REQUIRE(ModelPreview3D::prepare_model(mapped, rejected, error));
+        CHECK_FALSE(rejected.has_source_appearance);
+        CHECK(rejected.original_appearance_error.find("哈希") != std::string::npos);
+    }
 }
 
 TEST_CASE("Original appearance mapping inherits coordinate-only changes and publishes topology carriers",
@@ -185,6 +542,31 @@ TEST_CASE("Original appearance mapping inherits coordinate-only changes and publ
     CHECK(result.origin_model == canonical_source);
     CHECK(result.origin_sha256 == source_hash);
 
+    // A later shared partition still decodes the immutable origin, but must
+    // map geometry from the carrier matching the current evidence topology.
+    // Passing the origin as the mapping mesh reproduces the production
+    // topology-mismatch regression after a previous repair.
+    auto repartitioned_mesh = repaired_mesh;
+    repartitioned_mesh.vertices.emplace_back(.5f, 0.f, 0.f);
+    repartitioned_mesh.indices.front() = {0, 4, 3};
+    repartitioned_mesh.indices.emplace_back(4, 1, 3);
+    const auto repartitioned = models / "repartitioned.obj";
+    REQUIRE(Slic3r::AI::write_model_artifact(repartitioned, repartitioned_mesh,
+        std::vector<Slic3r::RGBA>(repartitioned_mesh.vertices.size(),
+            Slic3r::RGBA {0.f, 0.f, 0.f, 1.f}), error));
+    const auto repartitioned_carrier = models / "repartitioned.source-appearance.obj";
+    Slic3r::GUI::OriginalAppearanceReference remapped;
+    CHECK_FALSE(Slic3r::GUI::prepare_original_appearance_for_candidate(
+        result.origin_model, repartitioned, result.origin_sha256, result,
+        repartitioned_carrier, root, remapped, error));
+    CHECK(error.find("拓扑") != std::string::npos);
+    REQUIRE(Slic3r::GUI::prepare_original_appearance_for_candidate(
+        result.carrier_model, repartitioned, result.carrier_sha256, result,
+        repartitioned_carrier, root, remapped, error));
+    CHECK(remapped.topology_sha256 == selection::topology_fingerprint(repartitioned_mesh));
+    CHECK(remapped.origin_model == canonical_source);
+    CHECK(remapped.origin_sha256 == source_hash);
+
     Slic3r::TriangleMesh mapped_mesh;
     Slic3r::ObjInfo mapped_appearance;
     REQUIRE(Slic3r::AI::load_model_artifact(carrier, mapped_mesh, mapped_appearance, error));
@@ -235,6 +617,60 @@ TEST_CASE("Original appearance topology mapping follows preview color precedence
     CHECK_THAT(mapped[3][0], Catch::Matchers::WithinAbs(0.f, 0.0001f));
     CHECK_THAT(mapped[3][1], Catch::Matchers::WithinAbs(0.f, 0.0001f));
     CHECK_THAT(mapped[3][2], Catch::Matchers::WithinAbs(0.f, 0.0001f));
+}
+
+TEST_CASE("Repaired appearance ignores zero area source faces and keeps original face colors",
+          "[ModelPreviewState][OriginalAppearance][Regression]")
+{
+    indexed_triangle_set source;
+    source.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+    source.indices = {{0, 0, 1}, {0, 1, 2}, {0, 2, 2}};
+    indexed_triangle_set target = source;
+    target.vertices.emplace_back(0.25f, 0.25f, 0.f);
+    target.indices = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}};
+    Slic3r::ObjInfo appearance;
+    const bool vertex_colors = GENERATE(false, true);
+    appearance.face_colors = {{1.f, 0.f, 0.f, 1.f}, {0.f, 1.f, 0.f, 1.f}, {0.f, 0.f, 1.f, 1.f}};
+    if (vertex_colors)
+        appearance.vertex_colors = {{1.f, 0.f, 0.f, 1.f}, {0.f, 1.f, 0.f, 1.f}, {0.f, 0.f, 1.f, 1.f}};
+    std::vector<Slic3r::RGBA> mapped;
+    std::string error;
+    REQUIRE(Slic3r::GUI::original_appearance_detail::map_appearance_to_vertices(
+        source, appearance, target, mapped, error));
+    REQUIRE(mapped.size() == target.vertices.size());
+    if (vertex_colors) {
+        CHECK(mapped[0] == appearance.vertex_colors[0]);
+        CHECK_THAT(mapped[3][0], Catch::Matchers::WithinAbs(0.5f, 0.0001f));
+        CHECK_THAT(mapped[3][1], Catch::Matchers::WithinAbs(0.25f, 0.0001f));
+        CHECK_THAT(mapped[3][2], Catch::Matchers::WithinAbs(0.25f, 0.0001f));
+    } else {
+        for (const auto& color : mapped) CHECK(color == appearance.face_colors[1]);
+    }
+    CHECK_FALSE(Slic3r::GUI::original_appearance_detail::map_appearance_to_vertices(
+        source, appearance, target, mapped, error, [] { return true; }));
+    CHECK(mapped.empty());
+    CHECK_FALSE(error.empty());
+}
+
+TEST_CASE("Original appearance rejects a source without any valid surface",
+          "[ModelPreviewState][OriginalAppearance][Regression]")
+{
+    indexed_triangle_set source;
+    source.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+    source.indices = {{0, 0, 1}};
+    const bool invalid_corner = GENERATE(false, true);
+    if (invalid_corner) source.indices[0][2] = 3;
+    indexed_triangle_set target;
+    target.vertices = source.vertices;
+    target.indices = {{0, 1, 2}};
+    Slic3r::ObjInfo appearance;
+    appearance.face_colors = {{1.f, 0.f, 0.f, 1.f}};
+    std::vector<Slic3r::RGBA> mapped;
+    std::string error;
+    CHECK_FALSE(Slic3r::GUI::original_appearance_detail::map_appearance_to_vertices(
+        source, appearance, target, mapped, error));
+    CHECK(mapped.empty());
+    CHECK_FALSE(error.empty());
 }
 
 TEST_CASE("Whole-face colour exports preserve original corners after saving and reopening",
@@ -808,6 +1244,58 @@ TEST_CASE("A worker observes an externally canceled preview before publishing it
 
 // Opt-in CPU measurement using an existing local model. Measures preparation
 // and cancellation checkpoints; it never creates a window or uploads to GL.
+TEST_CASE("A real repaired history restores its original appearance and content-bound check evidence",
+          "[.WorkbenchHistoryEvidenceQA]")
+{
+    using namespace Slic3r;
+    using namespace Slic3r::GUI;
+    const auto source_name = boost::nowide::getenv("ORCASLICER_MODEL_ARTIFACT_FIXTURE");
+    REQUIRE(source_name);
+    const boost::filesystem::path source(source_name);
+    const auto root = source.parent_path().filename() == "downloads"
+        ? source.parent_path().parent_path() : source.parent_path();
+    struct RestoreDataDir {
+        std::string original {Slic3r::data_dir()};
+        ~RestoreDataDir() { Slic3r::set_data_dir(original); }
+    } restore_data;
+    Slic3r::set_data_dir(root.parent_path().string());
+    const auto record = AI::beauty_metadata_path(source, root);
+    nlohmann::json metadata;
+    { boost::filesystem::ifstream input(record); input >> metadata; }
+    const auto source_hash = AI::model_artifact_sha256(source);
+    const auto metadata_hash = AI::model_artifact_sha256(record);
+    ModelPreview3D::PreparedModel prepared;
+    std::string error;
+    REQUIRE(ModelPreview3D::prepare_model(source, prepared, error, {}, record));
+    INFO(prepared.original_appearance_error);
+    REQUIRE(prepared.has_source_appearance);
+    REQUIRE(prepared.semantic_source);
+    const auto evidence = workbench_history_evidence_location(source, record, metadata);
+    if (metadata.contains("workbench_check_certificate")) {
+        const auto& certificate = metadata.at("workbench_check_certificate");
+        const bool native = metadata.contains("native_portrait_partition");
+        REQUIRE(WorkbenchArtifacts::valid_workbench_check_certificate(certificate,
+            native ? WorkbenchCheckPurpose::PortraitPostColorReadOnly : WorkbenchCheckPurpose::SavedModelReadOnly,
+            source_hash, prepared.geometry_id, prepared.semantic_source->content_id,
+            boost::nowide::narrow(evidence.metadata.wstring()), metadata,
+            native ? metadata.at("native_portrait_partition").at("partition_digest").get<std::string>() : "",
+            native ? metadata.at("native_portrait_partition").at("topology_hash").get<std::string>() : ""));
+    }
+    const auto check = inspect_workbench_model(source);
+    INFO(check.summary);
+    REQUIRE(workbench_topology_safe(check));
+    CHECK(check.candidate_status == RepairCandidateStatus::None);
+    CHECK(AI::model_artifact_sha256(source) == source_hash);
+    CHECK(AI::model_artifact_sha256(record) == metadata_hash);
+    if (const auto report = boost::nowide::getenv("ORCASLICER_HISTORY_EVIDENCE_REPORT")) {
+        boost::filesystem::ofstream output(report);
+        output << nlohmann::json {{"source_sha256", source_hash}, {"metadata_sha256", metadata_hash},
+            {"evidence_record", boost::nowide::narrow(evidence.metadata.wstring())},
+            {"appearance_restored", true}, {"check_restored", true}, {"repair_candidate", false},
+            {"faces", check.before_faces}, {"vertices", check.before_vertices}}.dump(2);
+    }
+}
+
 TEST_CASE("Historical preview cancellation measures avoided preparation work", "[.ModelPreviewCancelProbe]")
 {
     struct RestoreLogging {
@@ -862,6 +1350,148 @@ TEST_CASE("Historical preview cancellation measures avoided preparation work", "
     output.close();REQUIRE(output.good());
 }
 
+
+// Opt-in replay of a frozen user failure through the real CPU preparation and
+// partition code. Inputs must be copies; no GUI, provider or project is opened.
+TEST_CASE("Frozen workbench partitions report their exact preparation result", "[.PortraitPartitionReplay]")
+{
+    namespace SC = Slic3r::AI::SemanticColoring;
+    namespace PC = Slic3r::GUI::PortraitColorBlocks;
+    namespace P = Slic3r::GUI::PreviewPalette;
+    const auto env = [](const char* key) {
+        const auto* value = boost::nowide::getenv(key);
+        return value ? std::string(value) : std::string{};
+    };
+    const auto model = env("ORCA_PARTITION_REPLAY_MODEL");
+    const auto evidence = env("ORCA_PARTITION_REPLAY_ANALYSIS");
+    const auto report_path = env("ORCA_PARTITION_REPLAY_REPORT");
+    if (model.empty() || evidence.empty() || report_path.empty())
+        SKIP("Select frozen model/analysis copies and a fresh report path.");
+    REQUIRE_FALSE(boost::filesystem::exists(report_path));
+    auto record = boost::filesystem::path(model); record.replace_extension(".json");
+    ModelPreview3D::PreparedModel prepared;
+    std::string error;
+    REQUIRE(ModelPreview3D::prepare_model(model, prepared, error, {}, record));
+    INFO(error);
+    REQUIRE(prepared.semantic_source);
+    REQUIRE(prepared.trial_histogram);
+    boost::filesystem::ifstream input(evidence);
+    const auto doc = nlohmann::json::parse(input);
+    SC::Analysis analysis;
+    REQUIRE(SC::decode_analysis(doc, *prepared.semantic_source, doc.at("body_identity"),
+        doc.at("face_identity"), analysis, error));
+    const size_t count = size_t(prepared.ai_source_color_count);
+    const auto basis = P::make_automatic_color_basis(*prepared.trial_histogram, count,
+        prepared.geometry_id, true, prepared.automatic_color_units.get());
+    REQUIRE(basis.valid());
+    Slic3r::PaintedMesh painted;
+    for (const auto& vertex : prepared.semantic_source->mesh.vertices)
+        painted.vertices.push_back({vertex.x(), vertex.y(), vertex.z()});
+    for (const auto& face : prepared.semantic_source->mesh.indices)
+        painted.indices.push_back({face[0], face[1], face[2]});
+    for (const auto& color : basis.source_palette)
+        painted.cluster_colors.push_back({size_t(std::lround(color[0] * 255.f)),
+            size_t(std::lround(color[1] * 255.f)), size_t(std::lround(color[2] * 255.f))});
+    for (const size_t slot : basis.unit_source_slots)
+        painted.face_colors.push_back(painted.cluster_colors.at(slot));
+    const auto native_partition =
+        Slic3r::GUI::NativePortrait::finalize_native_portrait_partition(std::move(painted));
+    REQUIRE(native_partition.geometry_id == prepared.geometry_id);
+    PC::Input partition{*prepared.semantic_source, analysis};
+    partition.strategy = PC::Strategy::ColorRegionMajorityV2;
+    partition.native_partition = &native_partition;
+    partition.intermediate_palette = basis.source_palette;
+    const auto& suite = Slic3r::GUI::honor_people_suite();
+    for (size_t slot = 0; slot < suite.model_slot_count; ++slot) {
+        const auto& hex = suite.physical_slots[slot].color;
+        partition.targets.push_back({float(std::stoul(hex.substr(1, 2), nullptr, 16)) / 255.f,
+            float(std::stoul(hex.substr(3, 2), nullptr, 16)) / 255.f,
+            float(std::stoul(hex.substr(5, 2), nullptr, 16)) / 255.f});
+    }
+    partition.mapping = partition.targets;
+    partition.final_color_count = partition.targets.size();
+    partition.fixed_role_slots = suite.semantic_role_slot_indices();
+    nlohmann::json report{{"source_sha256", prepared.artifact_sha256},
+        {"geometry_id", prepared.geometry_id}, {"content_id", prepared.semantic_source->content_id},
+        {"person_detected", analysis.person_detected}, {"source_count", count},
+        {"source_palette", basis.source_palette}, {"basis_signature", basis.basis_signature},
+        {"partition_digest", native_partition.partition_digest},
+        {"face_count", prepared.triangles}, {"semantic_subfaces", analysis.subface_labels.size()}};
+    const auto started = std::chrono::steady_clock::now();
+    try {
+        const auto result = PC::build(partition);
+        report["status"] = "partition_built";
+        report["units"] = result->units.size();
+        report["regions"] = result->current().blocks.size();
+        report["memory_bytes"] = result->memory_bytes();
+        SC::FaceColors faces; SC::SubfaceColors children;
+        result->appearance(faces, children);
+        const auto geometry = Slic3r::GUI::build_semantic_colored_geometry(*prepared.semantic_source, faces, children);
+        report["painted_faces"] = faces.size();
+        report["subfaces"] = children.size();
+        report["geometry_triangles"] = geometry.indices_count() / 3;
+        report["source_slots_preserved"] = result->unit_source_slots == native_partition.face_cluster_ids;
+        report["used_model_slots"] = PC::used_display_slots(*result);
+        report["semantic_bound_regions"] = PC::reliable_fixed_role_blocks(*result, suite.semantic_role_slot_indices());
+    } catch (const std::exception& exception) {
+        report["status"] = "partition_rejected";
+        report["error"] = exception.what();
+    }
+    report["elapsed_ms"] = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - started).count();
+    boost::filesystem::ofstream output(report_path);
+    output << report.dump(2); output.close();
+    REQUIRE(output.good());
+    CHECK(Slic3r::AI::model_artifact_sha256(model) == prepared.artifact_sha256);
+    INFO(report.dump(2));
+    REQUIRE(report.at("status") == "partition_built");
+    CHECK(report.at("units").get<size_t>() == prepared.triangles);
+    CHECK(report.at("subfaces").get<size_t>() == 0);
+    CHECK(report.at("geometry_triangles").get<size_t>() == prepared.triangles);
+    CHECK(report.at("source_slots_preserved").get<bool>());
+    for (size_t slot : report.at("used_model_slots").get<std::vector<size_t>>()) CHECK(slot < 5);
+}
+
+TEST_CASE("Frozen native workbench sources retain six effective clusters",
+          "[.NativeWorkbenchPartitionReplay][PortraitNativePartition][P0]")
+{
+    const auto* replay_model = boost::nowide::getenv("ORCA_NATIVE_WORKBENCH_REPLAY_MODEL");
+    if (!replay_model || !*replay_model)
+        SKIP("Set ORCA_NATIVE_WORKBENCH_REPLAY_MODEL to an immutable local GLB copy.");
+
+    const boost::filesystem::path source(replay_model);
+    REQUIRE(boost::filesystem::is_regular_file(source));
+    const auto source_sha256 = Slic3r::AI::model_artifact_sha256(source);
+    REQUIRE(source_sha256.size() == 64);
+
+    Slic3r::GUI::DecodedWorkbenchModel decoded;
+    std::string error;
+    REQUIRE(Slic3r::GUI::decode_workbench_model(source, decoded, error));
+    INFO(error);
+    REQUIRE(decoded.texture);
+    REQUIRE(Slic3r::GUI::normalize_decoded_workbench_model_to_millimeters(decoded, error));
+
+    Slic3r::GUI::NativePortrait::NativePortraitPartitionBuildReport report;
+    const auto partition = Slic3r::GUI::NativePortrait::build_native_workbench_partition(
+        *decoded.texture,
+        Slic3r::GUI::NativePortrait::native_mesh_repair_callback(&report.strict_repair),
+        {}, &report);
+    REQUIRE(report.success);
+    REQUIRE(partition.valid());
+    CHECK(partition.painted.cluster_colors.size() >=
+        Slic3r::GUI::NativePortrait::default_model_color_count);
+    CHECK(partition.painted.cluster_colors.size() <=
+        Slic3r::GUI::NativePortrait::maximum_color_count);
+
+    const auto automatic = Slic3r::GUI::NativePortrait::reduce_native_workbench_partition(
+        partition, Slic3r::GUI::NativePortrait::default_model_color_count);
+    REQUIRE(automatic.valid_for(partition));
+    CHECK(automatic.requested_color_count ==
+        Slic3r::GUI::NativePortrait::default_model_color_count);
+    CHECK(automatic.actual_color_count ==
+        Slic3r::GUI::NativePortrait::default_model_color_count);
+    CHECK(Slic3r::AI::model_artifact_sha256(source) == source_sha256);
+}
 
 TEST_CASE("Worker history preparation preserves editing state and complete metric records", "[ModelPreviewState]")
 {
@@ -1427,4 +2057,183 @@ TEST_CASE("Saved color blocks validate normal palette and discard only stale can
     REQUIRE(ModelPreview3D::prepare_model(fixture.model,stale,error));REQUIRE_FALSE(stale.color_blocks);
     REQUIRE(stale.saved_semantic_faces.empty());REQUIRE(stale.face_color_overrides==fixture.intent);
     REQUIRE(stale.semantic_source->content_id==source.content_id);
+}
+
+TEST_CASE("Saved v11 native workbench partitions reopen by identity and preserve failed candidates",
+          "[PortraitNativePartition][PortraitColorBlocks][ModelPreviewState]")
+{
+    namespace NP = Slic3r::GUI::NativePortrait;
+    namespace PC = Slic3r::GUI::PortraitColorBlocks;
+    namespace SC = Slic3r::AI::SemanticColoring;
+    SavedPreview fixture;
+    ScopedTemporaryDir cache("workbench-v11-preview-cache");
+    struct DataScope {
+        std::string previous = Slic3r::data_dir();
+        ~DataScope() { Slic3r::set_data_dir(previous); }
+    } scope;
+    Slic3r::set_data_dir(cache.string());
+    REQUIRE(fixture.original.semantic_source);
+    const auto& source = *fixture.original.semantic_source;
+
+    Slic3r::PaintedMesh painted;
+    for (const auto& vertex : source.mesh.vertices)
+        painted.vertices.push_back({vertex.x(), vertex.y(), vertex.z()});
+    for (const auto& face : source.mesh.indices)
+        painted.indices.push_back({face[0], face[1], face[2]});
+    painted.cluster_colors = {{35,30,25},{220,160,120},{235,235,230},{170,45,55}};
+    for (size_t face = 0; face < painted.indices.size(); ++face)
+        painted.face_colors.push_back(painted.cluster_colors[face % painted.cluster_colors.size()]);
+    const auto partition = NP::finalize_native_portrait_partition(std::move(painted));
+    REQUIRE(partition.geometry_id == source.geometry_id);
+
+    SC::Analysis analysis;
+    analysis.geometry_id = source.geometry_id;
+    analysis.content_id = source.content_id;
+    analysis.signature = std::string(64, 'c');
+    analysis.face_labels.assign(source.mesh.indices.size(), SC::Label::Unknown);
+    analysis.face_confidence.assign(source.mesh.indices.size(), .95f);
+    const std::vector<SC::Color> palette {{.12f,.10f,.08f},{.86f,.62f,.47f},
+        {.94f,.94f,.91f},{.67f,.18f,.22f}};
+    PC::Input input {source, analysis};
+    input.strategy = PC::Strategy::ColorRegionMajorityV2;
+    input.mapping = input.targets = palette;
+    input.final_color_count = palette.size();
+    input.native_partition = &partition;
+    const auto blocks = PC::build(input);
+    REQUIRE(blocks->algorithm_version == PC::portrait_postprocess_algorithm_version);
+
+    fixture.colors.mapping_colors = fixture.colors.colors = palette;
+    fixture.colors.count = fixture.colors.manual_count = int(palette.size());
+    const auto cache_root = cache.path() / "cache" / "portrait-color-blocks";
+    const auto native_cache_root = cache.path() / "cache" / "native-workbench-partitions";
+    auto doc = fixture.metadata(source.geometry_id);
+    const auto valid_reference = PC::save(*blocks, cache_root);
+    const auto native_cache_reference = NP::save_native_portrait_partition_cache(
+        partition, native_cache_root);
+    REQUIRE(blocks->native_partition_identity);
+    NP::NativePortraitPartitionIdentity cached_identity;
+    std::string cache_error;
+    REQUIRE(NP::load_native_portrait_partition_cache(
+        native_cache_reference, native_cache_root, cached_identity, cache_error));
+    CHECK(NP::encode_native_portrait_partition_identity(cached_identity) ==
+          NP::encode_native_portrait_partition_identity(*blocks->native_partition_identity));
+    const auto directly_restored = NP::restore_native_workbench_partition(
+        fixture.original.mesh, cached_identity, cache_error);
+    REQUIRE(directly_restored.valid());
+    CHECK(NP::encode_native_portrait_partition_identity(
+              NP::native_workbench_partition_identity(directly_restored)) ==
+          NP::encode_native_portrait_partition_identity(*blocks->native_partition_identity));
+    const auto model_hash = Slic3r::AI::model_artifact_sha256(fixture.model);
+    const auto millimeter_bounds = NP::encode_native_workbench_bounds(
+        NP::native_workbench_bounds(partition));
+    const auto native_reference = nlohmann::json {
+        {"schema", "orca.native-workbench-partition-reference/v2"},
+        {"algorithm", NP::algorithm_version},
+        {"partition_digest", partition.partition_digest}, {"topology_hash", std::string(64, 'd')},
+        {"source_path", fixture.model.string()}, {"source_sha256", model_hash},
+        {"carrier_path", fixture.model.string()}, {"carrier_sha256", model_hash},
+        {"appearance_path", fixture.model.string()}, {"appearance_sha256", model_hash},
+        {"cache_path", (native_cache_root /
+            (native_cache_reference.at("content_id").get<std::string>() + ".json")).string()},
+        {"cache_sha256", native_cache_reference.at("content_id")},
+        {"metadata_path", fixture.adjacent.string()}, {"geometry_id", source.geometry_id},
+        {"appearance_id", source.content_id}, {"coordinate_units", "mm"},
+        {"source_bounds_mm", millimeter_bounds}, {"carrier_bounds_mm", millimeter_bounds},
+        {"cache_reference", native_cache_reference}};
+    doc["portrait_color_blocks"] = valid_reference;
+    doc["native_portrait_partition"] = native_reference;
+    const auto encoded_blocks = PC::encode(*blocks);
+    doc["region_semantics"] = encoded_blocks.at("region_semantics");
+    doc["native_color_reduction"] = encoded_blocks.at("native_color_reduction");
+    doc["final_slot_binding"] = encoded_blocks.at("final_slot_binding");
+    doc["semantic_color_state"] = {{"signature", analysis.signature}};
+    fixture.write(fixture.adjacent, doc);
+
+    std::string error;
+    ModelPreview3D::PreparedModel reopened;
+    REQUIRE(ModelPreview3D::prepare_model(fixture.model, reopened, error));
+    INFO(error);
+    CHECK(reopened.artifact_sha256 == model_hash);
+    CHECK(reopened.geometry_id == source.geometry_id);
+    REQUIRE(reopened.semantic_source);
+    CHECK(reopened.semantic_source->content_id == source.content_id);
+    NP::NativeMillimeterBounds reopened_bounds;
+    REQUIRE(NP::decode_native_workbench_bounds(
+        native_reference.at("carrier_bounds_mm"), reopened_bounds));
+    CHECK(NP::native_workbench_bounds_compatible(
+        reopened_bounds, NP::native_workbench_bounds(reopened.mesh), cache_error));
+    REQUIRE(reopened.native_portrait_partition);
+    CHECK(NP::encode_native_portrait_partition_identity(
+              NP::native_workbench_partition_identity(*reopened.native_portrait_partition)) ==
+          NP::encode_native_portrait_partition_identity(*blocks->native_partition_identity));
+    REQUIRE(reopened.color_blocks);
+    CHECK(reopened.color_blocks->algorithm_version == PC::portrait_postprocess_algorithm_version);
+    CHECK(reopened.native_portrait_partition->partition_digest == partition.partition_digest);
+    CHECK(reopened.native_portrait_partition->boundary_digest == partition.boundary_digest);
+    CHECK(reopened.native_portrait_partition->face_cluster_ids == partition.face_cluster_ids);
+    CHECK(reopened.native_portrait_partition->region_members == partition.region_members);
+
+    SECTION("old metadata without an independent v11 partition reference stays inactive") {
+        doc.erase("native_portrait_partition");
+        doc.erase("semantic_binding");
+        fixture.write(fixture.adjacent, doc);
+        ModelPreview3D::PreparedModel rejected;
+        REQUIRE(ModelPreview3D::prepare_model(fixture.model, rejected, error));
+        CHECK_FALSE(rejected.color_blocks);
+        CHECK_FALSE(rejected.native_portrait_partition);
+    }
+
+    SECTION("a conflicting embedded identity cannot replace the independent partition") {
+        auto conflicting_painted = partition.painted;
+        const auto original_color = conflicting_painted.cluster_colors.front();
+        const std::array<size_t, 3> replacement_color {1, 2, 3};
+        REQUIRE(std::find(conflicting_painted.cluster_colors.begin(),
+                    conflicting_painted.cluster_colors.end(), replacement_color) ==
+                conflicting_painted.cluster_colors.end());
+        conflicting_painted.cluster_colors.front() = replacement_color;
+        for (auto& face_color : conflicting_painted.face_colors)
+            if (face_color == original_color) face_color = replacement_color;
+        const auto conflicting_partition =
+            NP::finalize_native_portrait_partition(std::move(conflicting_painted));
+        REQUIRE(conflicting_partition.geometry_id == partition.geometry_id);
+        REQUIRE(conflicting_partition.partition_digest != partition.partition_digest);
+        auto conflicting_input = input;
+        conflicting_input.native_partition = &conflicting_partition;
+        const auto conflicting_blocks = PC::build(conflicting_input);
+        REQUIRE(conflicting_blocks->native_partition_identity);
+        REQUIRE(conflicting_blocks->native_partition_identity->partition_digest ==
+                conflicting_partition.partition_digest);
+        doc["portrait_color_blocks"] = PC::save(*conflicting_blocks, cache_root);
+        fixture.write(fixture.adjacent, doc);
+        ModelPreview3D::PreparedModel rejected;
+        REQUIRE(ModelPreview3D::prepare_model(fixture.model, rejected, error));
+        CHECK_FALSE(rejected.color_blocks);
+        REQUIRE(rejected.native_portrait_partition);
+        CHECK(rejected.native_portrait_partition->partition_digest == partition.partition_digest);
+        const auto stale = cache_root /
+            (doc.at("portrait_color_blocks").at("content_id").get<std::string>() + ".json");
+        CHECK(boost::filesystem::is_regular_file(stale));
+    }
+
+    SECTION("a damaged independent cache remains on disk but cannot activate") {
+        const auto native_cache = native_cache_root /
+            (native_cache_reference.at("content_id").get<std::string>() + ".json");
+        boost::filesystem::ofstream output(native_cache, std::ios::binary | std::ios::app);
+        output << "damage";
+        output.close();
+        REQUIRE(output.good());
+        fixture.write(fixture.adjacent, doc);
+        ModelPreview3D::PreparedModel rejected;
+        REQUIRE(ModelPreview3D::prepare_model(fixture.model, rejected, error));
+        CHECK_FALSE(rejected.color_blocks);
+        CHECK_FALSE(rejected.native_portrait_partition);
+        CHECK(boost::filesystem::is_regular_file(native_cache));
+        CHECK(Slic3r::AI::model_artifact_sha256(native_cache) !=
+            native_cache_reference.at("content_id").get<std::string>());
+    }
+
+    CHECK(Slic3r::AI::model_artifact_sha256(fixture.model) == model_hash);
+    const auto valid_cache = cache_root /
+        (valid_reference.at("content_id").get<std::string>() + ".json");
+    CHECK(boost::filesystem::is_regular_file(valid_cache));
 }

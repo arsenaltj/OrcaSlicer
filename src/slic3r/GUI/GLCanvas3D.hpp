@@ -28,6 +28,7 @@
 #include <optional>
 
 #include "GLToolbar.hpp"
+#include "View3DNavigator.hpp"
 #include "Event.hpp"
 #include "Selection.hpp"
 #include "Gizmos/GLGizmosManager.hpp"
@@ -635,6 +636,8 @@ private:
     std::optional<ColorRGBA> m_workspace_background;
     bool m_workspace_toolbar_theme_dirty = false;
     bool m_workbench_appearance = false;
+    bool m_print_preview_read_only = false;
+    std::array<bool, 4> m_print_preview_editing {};
     bool m_suppress_gcode_window {false};
     wxGLCanvas* m_canvas;
     wxGLContext* m_context;
@@ -790,6 +793,7 @@ private:
     ECursorType m_cursor_type;
     GLSelectionRectangle m_rectangle_selection;
     bool m_navigator_dragging{ false };
+    ImGuizmo::ViewManipulateState m_navigator_state;
 
     //BBS:add plate related logic
     mutable std::vector<int> m_hover_volume_idxs;
@@ -1119,6 +1123,23 @@ public:
     void enable_gizmos(bool enable) { m_gizmos.set_enabled(enable); }
     void enable_selection(bool enable) { m_selection.set_enabled(enable); }
     void enable_main_toolbar(bool enable) { m_main_toolbar.set_enabled(enable); }
+    void set_print_preview_read_only(bool active) {
+        if (active == m_print_preview_read_only) return;
+        if (active) m_print_preview_editing = {m_picking_enabled, m_moving_enabled,
+            m_selection.is_enabled(), m_gizmos.is_enabled()};
+        m_print_preview_read_only = active;
+        if (active) {
+            // Selection tint and handles would hide the final filament colors.
+            // Clearing the view selection does not create an undo snapshot.
+            m_selection.clear();
+            post_event(SimpleEvent(EVT_GLCANVAS_OBJECT_SELECT));
+        }
+        enable_picking(active ? false : m_print_preview_editing[0]);
+        enable_moving(active ? false : m_print_preview_editing[1]);
+        enable_selection(active ? false : m_print_preview_editing[2]);
+        enable_gizmos(active ? false : m_print_preview_editing[3]);
+        set_as_dirty();
+    }
     bool compact_slicing_tools() const { return m_compact_slicing_tools; }
     bool slicing_gizmos_visible() const { return m_slicing_gizmos_visible; }
     void set_slicing_gizmos_visible(bool visible) {
@@ -1214,6 +1235,7 @@ public:
     void enable_render(bool enabled)
     {
         m_enable_render = enabled;
+        if (!enabled) { m_navigator_state.reset(); m_navigator_dragging = false; }
     }
 
     // printable_only == false -> render also non printable volumes as grayed
