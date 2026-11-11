@@ -216,6 +216,7 @@ std::optional<AdvancedCreation::GroupSnapshot> AdvancedMultiviewClient::parse_gr
             if (!valid_id(result.active_operation_id)) return {};
         }
         result.stop_intent = value.at("stop_intent").get<bool>();
+        result.execution_state = value.value("execution_state", std::string());
         result.published = value.at("published").get<bool>();
         result.model_busy = value.value("model_busy", false);
         if (value.contains("model_jobs") && value["model_jobs"].is_array() && !value["model_jobs"].empty()) {
@@ -244,6 +245,7 @@ std::optional<AdvancedCreation::GroupSnapshot> AdvancedMultiviewClient::parse_gr
             auto& target = result.views[slot];
             if (!source.at("current_version_id").is_null()) {
                 target.version_id = source.at("current_version_id").get<std::string>();
+                target.canonical_version_id = target.version_id;
                 if (!valid_id(target.version_id)) return {};
             }
             if (source.contains("current") && source["current"].is_object()) {
@@ -256,7 +258,13 @@ std::optional<AdvancedCreation::GroupSnapshot> AdvancedMultiviewClient::parse_gr
                 const auto& attempt = source.at("latest_attempt");
                 target.operation_id = attempt.at("operation_id").get<std::string>();
                 target.attempt_state = attempt.at("state").get<std::string>();
-                if (attempt.contains("error") && attempt["error"].is_object()) target.error_code = attempt["error"].value("code", std::string());
+                if (attempt.contains("error") && attempt["error"].is_object()) {
+                    const auto& error = attempt["error"];
+                    target.error_code = error.value("code", std::string());
+                    target.error_message = error.value("provider_message", error.value("message", std::string()));
+                    target.provider_request_id = error.value("request_id", std::string());
+                    target.error_http_status = error.value("http_status", 0);
+                }
             }
         }
         return result;

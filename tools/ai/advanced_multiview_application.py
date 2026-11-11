@@ -109,14 +109,19 @@ class AdvancedMultiviewApplication:
                 requested = targets(request.get("target_views"))
                 selected = tuple(view for view in VIEWS
                                  if view in requested or view in group["pending_views"])
-                bases = {v: group["views"][v]["current_version_id"] for v in selected}
-                if any(not version for version in bases.values()):
-                    raise RequestError("missing_current_view", "Complete missing initial views before editing them.", 409)
                 supplied_bases = request.get("base_versions")
                 if (not isinstance(supplied_bases, dict)
-                        or any(supplied_bases.get(view) != bases[view] for view in requested)
+                        or any(view not in supplied_bases for view in requested)
                         or any(view not in VIEWS for view in supplied_bases)):
-                    raise RequestError("revision_conflict", "The edit base versions changed.", 409)
+                    raise RequestError("revision_conflict", "Explicit visible base versions are required.", 409)
+                # A desktop cache failure may leave an older, verified image visible.
+                # Pin that immutable base; publication compares the canonical pointer
+                # captured separately below, never an unseen image chosen by the server.
+                bases = {v: supplied_bases.get(v, group["views"][v]["current_version_id"]) or None
+                         for v in selected}
+                for view, version_id in supplied_bases.items():
+                    if version_id:
+                        self.repository.version(group_id, view, version_id)
                 retry_of = None
                 initial = False
                 reusable = {}
@@ -135,6 +140,11 @@ class AdvancedMultiviewApplication:
                 initial = old["initial"]
                 retry_uses_current_input = initial and group["input_epoch"] != old["frozen"]["input_epoch"]
                 draft = deepcopy(group["saved_draft"] if retry_uses_current_input else old["draft"])
+                if retry_uses_current_input:
+                    # A failed-card retry may use newly supplied source content,
+                    # but it remains bound to the original paid provider/model.
+                    draft["design_provider"] = old["draft"]["design_provider"]
+                    draft["design_model"] = old["draft"]["design_model"]
                 if initial and "front" in selected and not group["views"]["front"]["current_version_id"]:
                     selected = tuple(v for v in VIEWS if not group["views"][v]["current_version_id"])
                 bases = {v: old["attempts"][v]["base_version_id"] for v in selected}
@@ -148,23 +158,25 @@ class AdvancedMultiviewApplication:
                         if record["base_version_id"] != bases[view]:
                             raise RequestError("snapshot_unavailable", "The saved candidate has a different edit base.", 409)
                         reusable[view] = candidate
-            capability = self.capabilities(draft["design_provider"], draft["design_model"])
-            required = "initial_text" if initial and group["source"] == "text" else \
-                       "initial_named_references" if initial else "edit_current_with_context"
-            if capability.get(required) != "supported":
-                raise RequestError("unsupported_multiview", "The selected image model does not support this operation.", 503)
-            if capability.get("model"):
-                draft["design_model"] = capability["model"]
-            # A failed submission without a result cannot be hidden by a fresh edit/initial plan.
-            for state in group["views"].values():
-                attempt = state.get("latest_attempt")
-                if attempt and attempt.get("state") in {"ambiguous", "result_pending", "result_saved"}:
-                    raise RequestError("provider_task_ambiguous", "Resolve the original submission before generating.", 409)
             context = {}
             for view in VIEWS:
                 version_id = group["views"][view]["current_version_id"]
+                if kind == "edit":
+                    version_id = supplied_bases.get(view, version_id) or None
                 if version_id:
                     context[view] = self.repository.version(group_id, view, version_id)
+            dependencies = []
+            if kind == "edit" and not group["uploads"].get("front") and not context.get("front"):
+                if any(not bases[v] and v != "front" and not group["uploads"].get(v) for v in selected):
+                    if "front" not in selected:
+                        dependencies.append("front")
+                    selected = tuple(v for v in VIEWS if v == "front" or v in selected)
+                    bases["front"] = None
+            modes = {v: "initial" if initial or not bases[v] else "edit" for v in selected}
+            capability = self.capabilities(draft["design_provider"], draft["design_model"])
+            self._check_capability(capability, modes.values(), group["source"])
+            if capability.get("model"):
+                draft["design_model"] = capability["model"]
             frozen = {"input_epoch": group["input_epoch"], "uploads": deepcopy(group["uploads"]),
                       "source": group["source"], "context": context,
                       "pending_views": list(group["pending_views"]),
@@ -179,6 +191,8 @@ class AdvancedMultiviewApplication:
                     "kind": kind, "initial": initial, "retry_of": retry_of,
                     "expected_group_revision": group["revision"], "targets": list(selected),
                     "base_versions": bases, "draft": draft, "frozen": frozen,
+                    "target_modes": modes, "dependency_views": dependencies,
+                    "publication_bases": {v: group["views"][v]["current_version_id"] for v in selected},
                     "reusable_versions": reusable,
                     "max_new_image_calls": len(selected) - len(reusable), "max_new_model_tasks": 0}
             content_hash = fingerprint(plan)
@@ -193,6 +207,13 @@ class AdvancedMultiviewApplication:
             plan["expires_at"] = time.time() + 600
             self.repository.write_record(group_id, relative, plan)
             return plan
+
+    @staticmethod
+    def _check_capability(capability, modes, source):
+        required = {"edit_current_with_context" if mode == "edit" else
+                    "initial_text" if source == "text" else "initial_named_references" for mode in modes}
+        if any(capability.get(key) != "supported" for key in required):
+            raise RequestError("unsupported_multiview", "The selected image model does not support this operation.", 503)
 
     def operation(self, group_id: str, operation_id: str) -> dict[str, Any]:
         identity(operation_id, "operation_id")
@@ -213,6 +234,7 @@ class AdvancedMultiviewApplication:
                 raise RequestError("submission_not_accepted", "This request was reconciled as not accepted. Confirm a new plan.", 409)
             relative = f"operations/{command_id}/operation.json"
             group = self.repository.load(group_id)
+            stopped = self.repository.path(group_id, f"stopped-submissions/{command_id}.json", must_exist=False).exists()
             existing = self.repository.path(group_id, relative, must_exist=False).exists()
             if existing:
                 operation = self.operation(group_id, command_id)
@@ -233,22 +255,25 @@ class AdvancedMultiviewApplication:
             if group["input_epoch"] != plan["frozen"]["input_epoch"]:
                 raise RequestError("stale_confirmation", "The creation input changed.", 409)
             capability = self.capabilities(plan["draft"]["design_provider"], plan["draft"]["design_model"])
-            required = "initial_text" if plan["initial"] and group["source"] == "text" else \
-                       "initial_named_references" if plan["initial"] else "edit_current_with_context"
-            if capability.get(required) != "supported":
-                raise RequestError("unsupported_multiview", "The image model is no longer available.", 503)
-            operation = {**deepcopy(plan), "schema": OPERATION_SCHEMA, "state": "queued",
-                         "new_image_calls": 0, "stop_intent": False, "created_at": time.time(),
+            self._check_capability(capability, plan.get("target_modes", {v: "initial" if plan["initial"] else "edit"
+                                                                       for v in plan["targets"]}).values(), group["source"])
+            operation = {**deepcopy(plan), "schema": OPERATION_SCHEMA, "state": "stopped" if stopped else "queued",
+                         "new_image_calls": 0, "stop_intent": stopped, "created_at": time.time(),
                          "attempts": {v: {"id": new_id(), "view": v, "base_version_id": plan["base_versions"][v],
-                                          "state": "queued", "error": None,
+                                          "state": "stopped" if stopped else "queued", "error": None,
                                           "version_id": plan.get("reusable_versions", {}).get(v),
                                           "remote_task_id": "", "provider_request_id": ""} for v in plan["targets"]}}
             self.repository.write_record(group_id, relative, operation)
+            if stopped:
+                return operation  # Stop won the acceptance race: retain receipt, spend zero calls.
             group["active_operation_id"] = command_id
             group["published"] = True
             group["stop_intent"] = False
             group["saved_draft"] = deepcopy(plan["draft"])
             group["latest_submitted_draft"] = deepcopy(plan["draft"])
+            for view, attempt in operation["attempts"].items():
+                group["views"][view]["latest_attempt"] = {"operation_id": command_id,
+                    "attempt_id": attempt["id"], "state": "queued", "error": None}
             if plan["kind"] == "initial":
                 group["initial_input"] = deepcopy(plan["draft"])
             self.repository.save(group)
@@ -256,8 +281,14 @@ class AdvancedMultiviewApplication:
         return operation
 
     def stop(self, group_id: str, operation_id: str) -> dict[str, Any]:
+        identity(operation_id, "operation_id")
         with self.repository.transaction():
             group = self.repository.load(group_id)
+            # Durable even when the original POST has not reached execute yet.
+            self.repository.write_record(group_id, f"stopped-submissions/{operation_id}.json",
+                                         {"id": operation_id, "stop_intent": True})
+            if not self.repository.path(group_id, f"operations/{operation_id}/operation.json", must_exist=False).exists():
+                return {"id": operation_id, "state": "stopped", "stop_intent": True}
             operation = self.operation(group_id, operation_id)
             if group["active_operation_id"] != operation_id:
                 return operation

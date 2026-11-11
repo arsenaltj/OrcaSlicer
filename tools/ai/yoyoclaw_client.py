@@ -24,9 +24,9 @@ from typing import Any, Callable, Mapping
 from urllib.parse import quote, urlencode, urlsplit
 
 try:
-    from .ai_diagnostics import event as diagnostic_event, safe_endpoint
+    from .ai_diagnostics import event as diagnostic_event, redact_text, safe_endpoint
 except ImportError:  # pragma: no cover - direct sidecar execution
-    from ai_diagnostics import event as diagnostic_event, safe_endpoint
+    from ai_diagnostics import event as diagnostic_event, redact_text, safe_endpoint
 
 try:
     import requests
@@ -134,6 +134,8 @@ class YoYoClawError(RuntimeError):
         retryable: bool = False,
         ambiguous: bool = False,
         status: int | None = None,
+        provider_message: str = "",
+        request_id: str = "",
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -141,6 +143,8 @@ class YoYoClawError(RuntimeError):
         self.retryable = retryable
         self.ambiguous = ambiguous
         self.status = status
+        self.provider_message = provider_message
+        self.request_id = request_id
 
 
 def _poll_timeout_error() -> YoYoClawError:
@@ -305,22 +309,98 @@ def _image_data_url(path: str | os.PathLike[str]) -> str:
 
 
 def _extract_image_url(result: Mapping[str, Any]) -> str | None:
-    images = result.get("data")
-    if isinstance(images, list):
-        for item in images:
-            if isinstance(item, Mapping) and isinstance(item.get("url"), str) and item["url"].strip():
-                return item["url"].strip()
-    output = result.get("output")
-    choices = output.get("choices") if isinstance(output, Mapping) else None
-    if isinstance(choices, list):
-        for choice in choices:
-            message = choice.get("message") if isinstance(choice, Mapping) else None
-            content = message.get("content") if isinstance(message, Mapping) else None
-            if isinstance(content, list):
-                for item in content:
-                    if isinstance(item, Mapping) and isinstance(item.get("image"), str) and item["image"].strip():
-                        return item["image"].strip()
-    return None
+    """Find provider image URLs through the known nested response envelopes."""
+    def visit(value: Any, depth: int = 0) -> str | None:
+        if depth > 8:
+            return None
+        if isinstance(value, Mapping):
+            for key in ("url", "image"):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+            for key in ("data", "output", "images", "choices", "message", "content", "results"):
+                if key in value:
+                    candidate = visit(value[key], depth + 1)
+                    if candidate:
+                        return candidate
+        elif isinstance(value, list):
+            for item in value:
+                candidate = visit(item, depth + 1)
+                if candidate:
+                    return candidate
+        return None
+
+    return visit(result)
+
+
+def _safe_provider_error(result: Mapping[str, Any]) -> tuple[str, str, str]:
+    error = result.get("error") if isinstance(result.get("error"), Mapping) else {}
+    provider_code = error.get("code") or result.get("code") or "provider_http_error"
+    if not isinstance(provider_code, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", provider_code):
+        provider_code = "provider_http_error"
+    raw_message = error.get("message") or result.get("message")
+    provider_message = redact_text(raw_message).strip() if isinstance(raw_message, str) else ""
+    raw_request_id = (result.get("requestId") or result.get("request_id") or
+                      error.get("requestId") or error.get("request_id"))
+    request_id = raw_request_id.strip() if isinstance(raw_request_id, str) else ""
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,200}", request_id):
+        request_id = ""
+    return provider_code, provider_message, request_id
+
+
+def _image_model_profile(model: str) -> str:
+    name = model.rsplit("/", 1)[-1].casefold()
+    profiles = {
+        "doubao-seedream-5.0-pro-pc-yoyo": "doubao",
+        "hy-image-3.0-pc-yoyo": "hy",
+        "qwen-image-3.0-pc-yoyo": "qwen",
+    }
+    profile = profiles.get(name, "")
+    if not profile:
+        raise YoYoClawError(
+            "The selected YOYOClaw image model is not supported by this client.",
+            code="model_unavailable", category="validation",
+        )
+    return profile
+
+
+def _image_generation_payload(model: str, prompt: str, image_paths: tuple[Path, ...]) -> dict[str, Any]:
+    if len(image_paths) > 3:
+        raise YoYoClawError(
+            "YOYOClaw image generation accepts at most three ordered references.",
+            code="invalid_model_request", category="validation",
+        )
+    text = prompt.strip() if isinstance(prompt, str) else ""
+    if not text:
+        raise YoYoClawError(
+            "YOYOClaw image generation requires a prompt.",
+            code="invalid_model_request", category="validation",
+        )
+    images = [_image_data_url(path) for path in image_paths]
+    profile = _image_model_profile(model)
+    if profile == "doubao":
+        payload: dict[str, Any] = {
+            "model": model, "prompt": text, "size": "1024x1024",
+            "output_format": "png", "response_format": "url", "watermark": False,
+        }
+        if images:
+            payload["image"] = images[0] if len(images) == 1 else images
+        return payload
+    if profile == "hy":
+        payload = {"model": model, "prompt": text, "size": "768x1024", "revise": True}
+        if images:
+            payload["images"] = images
+        return payload
+    return {
+        "model": model,
+        "input": {"messages": [{"role": "user", "content": [
+            *({"image": image} for image in images), {"text": text},
+        ]}]},
+        "parameters": {
+            "prompt_extend": True, "prompt_extend_mode": "direct", "enable_thinking": True,
+            "n": 1, "size": "768*1024", "watermark": False,
+        },
+    }
 
 
 class YoYoClawClient:
@@ -407,6 +487,7 @@ class YoYoClawClient:
         creation: bool = False,
         stream: bool = False,
         deadline: float | None = None,
+        unwrap_data: bool = True,
     ) -> Any:
         request_headers = {"Accept": "application/json", "Content-Type": "application/json"}
         if self._fingerprint:
@@ -449,10 +530,9 @@ class YoYoClawClient:
         if not 200 <= status < 300 or not valid_object or result.get("code") not in (None, "OK"):
             temporary = status in {408, 429} or 500 <= status < 600
             invalid = 200 <= status < 300 and not valid_object
-            error = result.get("error") if valid_object and isinstance(result.get("error"), Mapping) else {}
-            provider_code = error.get("code") or (result.get("code") if valid_object else None) or "provider_http_error"
-            if not isinstance(provider_code, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", provider_code):
-                provider_code = "provider_http_error"
+            provider_code, provider_message, request_id = (
+                _safe_provider_error(result) if valid_object else ("provider_http_error", "", "")
+            )
             category = "authentication" if status in {401, 403} else "rate_limit" if status == 429 else "network" if temporary else "provider"
             retryable = (temporary or invalid) and not creation
             ambiguous = creation and (invalid or 500 <= status < 600 or status in {0, 408, 409})
@@ -461,18 +541,20 @@ class YoYoClawClient:
                 "yoyoclaw.request.failed", level="WARNING", endpoint=endpoint, method=method,
                 http_status=status, response_type=response_type, **_response_metadata(response),
                 elapsed_ms=max(0, round((self._monotonic() - started) * 1000)),
-                error_code="invalid_provider_response" if invalid else "provider_http_error",
+                error_code="invalid_provider_response" if invalid else provider_code,
+                provider_message=provider_message, request_id=request_id,
                 category=category, retryable=retryable, ambiguous=ambiguous,
             )
             message = (f"YOYOClaw returned an invalid JSON response (HTTP {status})." if invalid else
                        f"YOYOClaw request failed (HTTP {status}, code={provider_code}).")
             raise YoYoClawError(
                 message, code=code, category=category, retryable=retryable,
-                ambiguous=ambiguous, status=status,
+                ambiguous=ambiguous, status=status, provider_message=provider_message,
+                request_id=request_id,
             )
         if stream:
             return response
-        return result.get("data", result)
+        return result.get("data", result) if unwrap_data else dict(result)
 
     def _set_tokens(self, data: Any) -> None:
         if not isinstance(data, Mapping) or not isinstance(data.get("access_token"), str) or not data["access_token"]:
@@ -514,7 +596,7 @@ class YoYoClawClient:
         elif self._monotonic() >= self._expires_at - 60:
             self._refresh(deadline=deadline)
 
-    def api(self, method: str, path: str, payload: Mapping[str, Any] | None = None, *, timeout: float = 180, creation: bool = False, deadline: float | None = None) -> Any:
+    def api(self, method: str, path: str, payload: Mapping[str, Any] | None = None, *, timeout: float = 180, creation: bool = False, deadline: float | None = None, unwrap_data: bool = True) -> Any:
         self._ensure_token(deadline=deadline)
         return self._request(
             method, path,
@@ -523,6 +605,7 @@ class YoYoClawClient:
             timeout=timeout,
             creation=creation,
             deadline=deadline,
+            unwrap_data=unwrap_data,
         )
 
     def whitelist_catalog(self, library: str) -> dict[str, Any]:
@@ -774,28 +857,38 @@ class YoYoClawClient:
             if callable(close):
                 close()
 
-    def generate_image(self, model: str, prompt: str, image_path: Path | None = None) -> str:
-        content: list[dict[str, str]] = []
-        if image_path is not None:
-            content.append({"image": _image_data_url(image_path)})
-        if isinstance(prompt, str) and prompt.strip():
-            content.append({"text": prompt.strip()})
-        if not content:
-            raise YoYoClawError("YOYOClaw image generation requires text or an image.", code="invalid_model_request", category="validation")
+    def generate_image_response(
+        self, model: str, prompt: str, image_paths: tuple[Path, ...] = (),
+    ) -> dict[str, Any]:
+        payload = _image_generation_payload(model, prompt, tuple(Path(path) for path in image_paths))
         result = self.api(
-            "POST", "/yoyoclaw/model/chat/completions",
-            {"model": model, "input": {"messages": [{"role": "user", "content": content}]}, "parameters": {"prompt_extend": True}},
-            timeout=600, creation=True,
+            "POST", "/yoyoclaw/model/chat/completions", payload,
+            timeout=600, creation=True, unwrap_data=False,
         )
         if not isinstance(result, Mapping):
             raise YoYoClawError("YOYOClaw image response is invalid.", code="invalid_provider_result", category="validation", ambiguous=True)
-        image_url = _extract_image_url(result)
-        if not image_url:
+        if not _extract_image_url(result):
             raise YoYoClawError("YOYOClaw image response did not contain an image URL.", code="invalid_provider_result", category="validation", ambiguous=True)
+        return dict(result)
+
+    def generate_image(self, model: str, prompt: str, image_path: Path | None = None) -> str:
+        result = self.generate_image_response(model, prompt, (image_path,) if image_path is not None else ())
+        image_url = _extract_image_url(result)
+        assert image_url is not None
         try:
             return _require_http_url(image_url)
         except ValueError:
             raise YoYoClawError("YOYOClaw returned an invalid image URL.", code="invalid_provider_result", category="validation", ambiguous=True) from None
+
+    def download_generated_image(self, result: Mapping[str, Any], destination: Path) -> Path:
+        image_url = _extract_image_url(result)
+        if not image_url:
+            raise YoYoClawError("YOYOClaw image response did not contain an image URL.", code="invalid_provider_result", category="validation")
+        try:
+            image_url = _require_http_url(image_url)
+        except ValueError:
+            raise YoYoClawError("YOYOClaw returned an invalid image URL.", code="invalid_provider_result", category="validation") from None
+        return self.download(image_url, destination, MAX_IMAGE_BYTES)
 
     def submit_3d(self, model: str, image_path: Path) -> str:
         try:

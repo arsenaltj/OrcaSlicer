@@ -1,9 +1,146 @@
 # 高级模式多视角实施与测试报告
 
-- 任务：`UX/ADVANCED-MULTIVIEW-20261107`；执行日期：2026-11-08～10。
+- 任务：`UX/ADVANCED-MULTIVIEW-20261107`；执行日期：2026-11-08～11。
 - 基线：[需求](2026-11-07-advanced-multiview-requirements.md)、[原76条验收定义](2026-11-07-advanced-multiview-acceptance.md)、[架构](2026-11-07-advanced-multiview-architecture.md)、[详细设计](2026-11-07-advanced-multiview-detailed-design.md)。
 - 交付决定（2026-11-09）：用户明确选择“先保留两项未验，交付当前报告”。本报告按该决定交付；原76条保留 **74通过、2未完整执行**，不宣称全部验收通过。
-- 结论：高级独立流程已实现，已取得真实GPT四视角生成／定向修改、Tripo四图共同建模、历史恢复和智能隔离证据。自动测试、编译、GUI、供应商和模型质量分别记录。
+- 原基线结论：高级独立流程已实现，已取得真实GPT四视角生成／定向修改、Tripo四图共同建模、历史恢复和智能隔离证据。下方R2结果独立统计，不以旧供应商成功替代新代码端到端验收。
+
+<a id="mv-r2-results"></a>
+
+## 2026-11-11 失败交互整改：实现与分层验收
+
+用户已确认开发和42条用例验收，并批准最多12次YOYOClaw真实调用。本机实现、定向自动回归、完整Windows构建、历史副本实窗及下方V1～V5端到端执行已完成；42条按定义所需的A／W／V分别判断，当前为 **16条通过、25条部分覆盖、1条未执行**。部分覆盖表示已有有效证据，但尚缺该条要求的某一层级或参数场景，不等同整条通过。真实供应商新增 **9／12次**：Doubao1、Hy2、Qwen6；7张正常发布、1张停止后仅归档、1次上游错误。已验证失败后解锁、换模型多图、空位补图、在途新建停止后续、组内串行及新四图／历史恢复；跨套图排队窗口未捕获，完整Host竞态等缺口保留，不能宣称42条全过。Qwen视角质量另记未通过，不用请求成功替代内容验收。
+
+### 实际实现与本轮修正
+
+- 删除设计卡片左上恢复／重试控件及相应创建、布局、事件；目标本轮结束未成功时右下显示“生成失败”，旧图保留，首次无图失败空位也可选择。统一从主按钮按当前模型准备计划，单张、多张、全部均可更换模型；旧失败不再全局锁住新2D意图，配置、输入与真实在途保护保持。
+- Application统一处理旧图编辑、缺图补生成及必要主图依赖；确认列当前模型、实际方向、依赖和调用上限。有主上传参考可用时不额外补主设计图；两张缺图共享必要主图一次调用。可见编辑基图与服务端current分别校验，发布继续使用版本比较保护。
+- 新建立即清工作区并回2D顶部，停止旧未提交视角；epoch、命令归属和任务级回执隔离旧回调。全局单执行器保持，真实排队投影与执行分开；单资产缓存失败不阻止整组终态和其它图片刷新。已得响应／版本保留，不自动新增付费请求。
+- 实窗发现上传缓存下载完成后路径未变，上传区仍显示空位。`UploadSlot::display`现会在同一路径由不可解码变为可用时重新加载，并以无异常文件状态检查处理；清空一份隔离缓存后通过真实资产下载复验。旧失败截图保留于`w-before-fix-upload-placeholder`，修复证据为`w-fixed-cold-reference-download`。
+- GPT全部参数保持原实现，包括编辑`size=auto`、`input_fidelity=high`。YOYOClaw三模型协议、尺寸及参考顺序保持；默认精确Qwen，标签去除`-PC-YOYO`。未增加并发、版本回退界面或智能／3D业务。
+
+### 源码、构建与自动证据
+
+本会话沿用`codex/team/integration`，构建／验收基线HEAD为`40680c85f71ef5bdb0fc577b2765dc9d30dad56a`，当时运行的源码包含工作树修改，具体身份见下表。用户随后明确要求排除主计划与短状态，将其余26个修改文件记录为一次本地Git提交，本报告随代码提交；不推送、修改PR或发布。完整运行目录为`.tmp/dev/run`，入口`Honor Forge Studio.exe`；GUI独立数据为`.tmp/dev/data/advanced-r2-20261111`。
+
+| 证据代号 | 范围与结果 | 收据／身份 |
+| --- | --- | --- |
+| A1 | Python高级2D 75／75；含混合补图、共享主图预算、停止先于受理、串行队列、废弃排队B不阻塞C、已得结果损坏和版本保护 | `.tmp/dev/logs/20261111-214018-433/result.json`，source `1dc002e792c5c569307182f357ac5bbe791cbaa942ec5d6b9782c891ca5afa33` |
+| A2 | C++ `AdvancedCreation` 22／22；含失败空位选择、可见旧图、旧失败解锁、新建epoch及点击清理 | `.tmp/dev/logs/20261111-205410-691/result.json`，source `0731d5923e0b8040c0cf14dc08a93f258216835feada1cea2de2736783f59de0` |
+| A3 | Python四图建模17／17 | `.tmp/dev/logs/20261111-204330-222/result.json` |
+| A4 | Python旧Sidecar HTTP合同80／80 | 同A3收据；原非高级入口与合同回归 |
+| A5 | Python YOYOClaw 34／34；目录、三协议0～3有序参考、尺寸、错误与脱敏 | 同A3收据 |
+| B1 | `Run -NoLaunch -Jobs 2`的catalogs、build、install、runtime-check、python-check五步全部exit 0 | `.tmp/dev/logs/20261111-212957-935/result.json`；source `21e4656c129e801e2415ce129a97261deaff33428dd4a4764e952f5d4c03cd5e`；native `5819cf105a0ac1145a6c3e319c19cdb5ab882f8c7e2201984fd9e02523dae685` |
+
+Python合计206／206，C++22／22。A2至B1的生产源码差异仅上述Workspace缓存刷新修正，已编译和实窗复验，Session／Host测试源未变。B1之后仅为A1增加两条共享主图／废弃队列用例及收尾文档，生产源码未变；身份差异与哈希核对记录在`.tmp/dev/advanced-r2-20261111/test-source-continuity.json`，不将不同完整source identity写成相同。
+
+架构映射为`MAP_CURRENT`（111锚点、29能力），生成说明为`README_CURRENT`；`git diff --check`通过。文档同步工作树候选检查无errors、状态`REVIEW_NEEDED`（advisory），列出平台／review-map／能力说明的实际更新，不等同已提交PR的声明通过。`scripts/verify_ai_integration.py --json`仍有原基线MainFrame.cpp/.hpp、Plater.cpp/.hpp四项diff预算错误，未放宽规则，详见`.tmp/dev/advanced-r2-integration.json`；不宣称工程集成门禁全绿。
+
+### Windows真实主窗口证据
+
+截图和UI树统一保存在`.tmp/dev/advanced-r2-20261111/`，下表给出文件名前缀，每项有同名`.txt`及`-0.png`等图片。初始历史与选择操作使用整改初版，缓存故障、离线新建及完整成功组全选确认已在B1最终构建复验；最终实例PID23436，配套侧车PID39036。W阶段窗口截图为1560×992，V阶段为1544×981；本轮未独立记录DPI，未完成其它窗口／DPI矩阵，不能引用旧版192DPI作为本轮证据。
+
+| 代号 | 真实操作与结果 | 证据前缀 |
+| --- | --- | --- |
+| W1 | 旧502组四图保留，失败卡单选／取消／多选，有图双击预览保留选择；没有卡片恢复／重试按钮 | `w-failed-multiselect`、`w-failed-old-image-preview`、`w-preview-preserves-selection` |
+| W2 | YOYOClaw默认Qwen、三标签无尾缀；Qwen左单图最多1张、Hy两个旧图最多2张，均取消且保留选择／旧图；GPT未配置按原规则禁用 | `w-whitelist-labels`、`w-failed-left-qwen-confirm`、`w-failed-two-hy-confirm`、`w-cancel-retains-failed-selection` |
+| W3 | 首次部分失败空位可选，空后视角补1张；主旧图＋后空位混合2张；Doubao全部4张，取消未发请求；双击空位不打开预览 | `w-first-partial-failure`、`w-failed-empty-selected`、`w-empty-back-one-confirm`、`w-mixed-front-back-confirm`、`w-all-doubao-confirm`、`w-empty-doubleclick-no-preview` |
+| W4 | 新建立即清空输入／选择／图像，连续新建可用，未保存描述清除；空位等待生成，主按钮因缺输入禁用，历史仍3组；智能往返不串草稿 | `w-new-empty-immediate`、`w-new-history-preserved`、`w-new-clears-unsaved-description`、`w-smart-isolated` |
+| W5 | 收展右栏、2D／3D往返保留失败选择；缺图3D禁用并提示原因 | `w-failed-layout-collapsed`、`w-roundtrip-2d-keeps-failure-selection`、`w-missing-view-blocks-3d` |
+| W6 | 完整成功组重开四图／缩略图正常；无选择时确认明确Qwen、全部四方向、最多4张，取消后旧四图和按钮保持 | `w-full-success-reopened`、`w-full-success-unselected-all-confirm`、`w-full-success-cancel-all-retains-images` |
+| W7 | 清一份上传cache，真实下载后同路径上传图显示恢复，修正上传区不刷新的问题 | `w-before-fix-upload-placeholder`、`w-fixed-cold-reference-download` |
+| W8 | 在隔离left缓存目标建立非空目录造成桌面写入失败：旧图保留、其余三图正常、失败右下和安全原因可见，主按钮可再次打开当前Qwen单图确认；恢复cache重开后失败清除 | `w-cache-failure-retains-image-and-unlocks`、`w-cache-failure-one-current-model-confirm`、`w-cache-restored-clears-failure`；`cache-fault.json`为restored=true |
+| W9 | 仅停止自己的验证侧车后，新建仍立即空白；重启配套应用／服务仍空白、历史3组保留，无旧图回填 | `w-service-offline-before-new`、`w-service-offline-new-immediate`、`w-service-restarted-empty-history-preserved`；`offline-sidecar-fault.json` |
+
+W8是桌面资产缓存写入故障，资产GET实际200；不是新的供应商下载失败或生图成功。W9为无在途供应商请求时的离线新建；不是在途停止／受理竞态验证。双击空位仅确认无预览，不增加“空位双击保留选择”的未约定结论。
+
+真实历史副本：F2为`2f0814a8-4b9f-4d2e-a2e5-ad65dd14f6bd`，F3为`341d50f8-11b8-43c1-bd3b-de5016de2237`，F1为`3b9916bf-bf77-4081-a75f-7fd99481f3a7`。F2旧operation `88a6d5d5-ef03-4c31-99b1-99969ace3a63`的HTTP502／`UPSTREAM_GRPC_ERROR`、requestId `c921e904-3b75-4ec1-8ee9-3ecbef1d13ca`仍可定位；本轮没有把未知受理改写为确定拒绝。
+
+`.tmp/dev/advanced-r2-20261111/preservation-and-no-generation.json`是获得真实调用授权前的检查点：当时三组原来源87文件hash全部不变，验证副本仅各自group.json因模型选择／草稿保存变化，新增7份未执行plan，没有新增operation／图像文件，仍为3组；当时侧车生成受理与供应商调用均0。该检查点不代表V执行后的调用数。V结束再次核对的结果在`supplier-validation.json`：原来源87／87文件hash仍不变，副本84个旧文件hash不变，仅3份group.json正常更新，已有旧版本／操作／响应文件保留；新增5份operation、实际9次调用，现为4组。原始hash清单为`copied-history-sha256.json`，原件、原日志、用户运行实例未用于故障注入。
+
+### 42条逐项结果
+
+A／W／V定义沿用[整改验收定义](2026-11-07-advanced-multiview-acceptance.md#mv-r2-acceptance)。下表“通过”仅用于该条要求层级均已取得证据；代码复核不替代Host竞态实测。
+
+| 用例 | 结果 | 已取得证据与未覆盖范围 |
+| --- | --- | --- |
+| MV-R2-UI-01 | 部分覆盖 | W1／W3／W6确认卡片无按钮，源码已删除控件；完整Tab焦点遍历未做。 |
+| MV-R2-UI-02 | 通过 | A1／A2、W4／W9：空态、输入门禁、立即新建及无空历史。 |
+| MV-R2-UI-03 | 通过 | A2、W1／W2：失败旧图选择、多选、双击及确认取消，0调用。 |
+| MV-R2-UI-04 | 通过 | A2、W3：失败空位选择／取消／混选，无成功预览或新增调用。 |
+| MV-R2-UI-05 | 部分覆盖 | A1真实单执行器跨组控制测试通过；V2／V5实窗已见组内排队→生成。V4首请求在新组确认前已返回，未捕获跨套图等待及原因，不冒充该场景通过。 |
+| MV-R2-UI-06 | 部分覆盖 | A1／A2、V2确认两张旧失败图成功更新并清错、未选图不变；V3空位单张成功。严格的“仅一张有旧图失败目标成功”组合未取得V（V1单张实际失败），不合并成整条通过。 |
+| MV-R2-UI-07 | 部分覆盖 | A1部分失败、A2旧图保留通过；V1新502失败后旧图保留／解锁，V2两张成功。单次任务一成功一失败的W＋V未取得，不将不同任务混装。 |
+| MV-R2-UI-08 | 部分覆盖 | W5及V5覆盖当前两种截图尺寸、右栏开合和2D／3D往返，新结果／勾选保持且无控件复活；其它支持窗口／DPI矩阵未验。 |
+| MV-R2-GEN-01 | 部分覆盖 | A1首次文字／上传、方向顺序和预算通过；V5纯文字首次真实四方向、每方向1次成功。已有参考图首次四方向的本版V未执行，质量另记。 |
+| MV-R2-GEN-02 | 部分覆盖 | A1当前模型单目标通过，W2换Qwen左单图确认1次；V1实际Doubao左单张1次但仍是原模型且失败，不能替代“换B的有旧图单张”V。 |
+| MV-R2-GEN-03 | 通过 | A1、W2、V2：原失败组换Hy，后／右两个旧图各1次成功；front／left current与哈希不变，未因换模型扩大目标。 |
+| MV-R2-GEN-04 | 部分覆盖 | A1新模型全四图通过；V4同组改Qwen确认全部四图，首请求真实发出，随后按新建场景停止其余3图。未实际完成该次全部四图重生，不用V5新组首次四图替代。 |
+| MV-R2-GEN-05 | 通过 | A1／A2、W6：未选＝全部四图，取消0调用并保持当前图／选择。 |
+| MV-R2-GEN-06 | 通过 | A1／A2、W3、V3：空后图按initial补图，Qwen实际1次，未增加主图；其它front／left／right current不变。图片可用与后视质量分别判断。 |
+| MV-R2-GEN-07 | 部分覆盖 | A1两个缺图共享front依赖且分别覆盖front成功／失败，最大3／实际失败1次；纯文字缺主图的确认及V未验。 |
+| MV-R2-GEN-08 | 通过 | A1已有主上传参考足够时不增主图，最多1次；此条仅要求A。 |
+| MV-R2-GEN-09 | 部分覆盖 | A1混合编辑／补图通过，W3主旧图＋后空图确认2张；本版V未执行。 |
+| MV-R2-GEN-10 | 通过 | A1／A2、W2／W3：取消无调用，保留图／正文／失败选择，可立即再次准备当前模型。 |
+| MV-R2-GEN-11 | 部分覆盖 | A1／A5能力／目录不回落通过，W2 GPT未配置门禁；白名单失败／空／下架及确认间失效W矩阵未全验。 |
+| MV-R2-GEN-12 | 部分覆盖 | A1／A2覆盖无效／超限／必需主参考，W4仅空输入门禁；其余无效输入实窗矩阵未全验。 |
+| MV-R2-ASY-01 | 通过 | A1、W1／W2、V1／V2：旧ambiguous及本次新502均不锁新意图，随后Hy两图实际成功；原错误／requestId和费用不确定事实保留。 |
+| MV-R2-ASY-02 | 部分覆盖 | A1／A2通过；V4实窗新建停止、V5真实在途禁用并于成功后恢复。明确失败且其它目标仍在执行、再使用停止入口的组合未取得W＋V。 |
+| MV-R2-ASY-03 | 部分覆盖 | A1供应商响应后下载／损坏／校验逻辑通过；W8仅桌面写cache故障，非该条完整W失败矩阵。 |
+| MV-R2-ASY-04 | 通过 | A1原子写／候选和版本回执保存失败、取回不新增调用、过期结果保护通过；此条仅要求A。 |
+| MV-R2-ASY-05 | 通过 | A2逐图加载和终态，W8真实单cache故障仍保留旧图／刷新其它三图、主按钮可继续。 |
+| MV-R2-ASY-06 | 部分覆盖 | A1重启不自动生成、W9离线新建及重连空白通过；运行中轮询失败与未决回执重连未演练。 |
+| MV-R2-ASY-07 | 部分覆盖 | A1／A2、V4确认首请求submitting时新建立即清空；实际只调用1次，另外3图停止0次，晚到结果仅旧组归档且current不变；V5新组四图／busy无污染。跨套图排队窗口未捕获，故仍非整条通过。 |
+| MV-R2-ASY-08 | 部分覆盖 | A1 stop先／后受理和迟到提交收敛通过；完整Host丢受理响应／新建时序与回执归档未有自动演练。 |
+| MV-R2-ASY-09 | 部分覆盖 | A1 A／B／C真实单执行器中B废弃0调用且C正常通过；W队列期间再次新建未演练。 |
+| MV-R2-ASY-10 | 部分覆盖 | A2旧快照／新建点击epoch，W1／W4选择与新建；全部Host成功／错误／下载／上传保存／润色延迟组合未参数化演练。 |
+| MV-R2-ASY-11 | 部分覆盖 | A1相同command仅一次受理，W2／W4取消再准备／新建连点通过；实窗提交连点幂等未执行。 |
+| MV-R2-ASY-12 | 未执行 | 代码已实现任务级与旧单回执兼容；旧／新回执并存、迁移写失败、逐项归档和重启的Host完整A＋W未执行。 |
+| MV-R2-REG-01 | 通过 | A1 GPT纯文字／原图／编辑／补图请求参数与参考角色回归，A4旧合同通过；编辑size=auto及input_fidelity=high未改。 |
+| MV-R2-REG-02 | 通过（A＋W） | A1／A5三协议、0～3参考和无回落，W2默认Qwen／三标签／GPT隐藏；V1～V5另记：Hy／Qwen实际返回，Doubao上游502，不能宣称三模型本版都生图成功。 |
+| MV-R2-REG-03 | 部分覆盖 | A4旧入口回归，W4智能／高级往返；本轮未以原生工程副本完整验证AI离线普通Orca／预设。 |
+| MV-R2-REG-04 | 部分覆盖 | A2／A3四图／pending／草稿／忙碌与Job-v2保护通过；W5缺图3D禁用，V5新四图可用时3D入口恢复，单选不缩减四图。未提交Tripo，其余pending／草稿门禁W矩阵未全验。 |
+| MV-R2-REG-05 | 部分覆盖 | A1／A2同组上传／风格pending扩围通过，W2／W3只换模型不扩围；本版上传／风格扩围W未重验。 |
+| MV-R2-REG-06 | 部分覆盖 | A1缺文件／重启；W1／W3／W6及V4／V5重开完整、失败、ambiguous、首次缺图和最新成功组，状态准确且无自动请求；缺文件组W未验。 |
+| MV-R2-REG-07 | 通过 | A1确认可见旧base、服务端归属和canonical发布CAS、过期回执不覆盖，A2保留可见基图；此条仅要求A。 |
+| MV-R2-REG-08 | 通过 | A1／A2、W4／W8、V1～V5：原来源87／87文件hash不变，副本仅3个旧group.json更新，旧文件84／84保留；新current与目标／版本／文件hash一致，停止晚到结果仅归旧组。 |
+| MV-R2-LOG-01 | 部分覆盖 | A1／A5、W1／W8、V1新502：UI统一失败且可继续，结构化日志／operation的HTTP502、code、限长message、requestId及关联一致，中文message无替换乱码。内容审核及结果保存失败完整W矩阵未验。 |
+| MV-R2-LOG-02 | 通过 | A1／A5假认证／Prompt／Data URL哨兵、长message脱敏与合法code／requestId保留通过。 |
+
+### 真实供应商验收（最多12次，实际9次，已结束）
+
+用户明确回复“批准，最多12次，继续端到端验收”后，按下表使用隔离历史机器人套图副本及无私人信息文字，从B1匹配Windows主窗口输入、确认、生成并重开历史。每次先核对确认中的实际方向、模型及上限；只调用YOYOClaw，GPT／Tripo新增0。失败同样计入次数，无自动重试、无追加购买。未上传人物历史组；人物组仅本地历史显示验证。
+
+| 阶段 | 模型／操作 | 最多新增调用 |
+| --- | --- | --- |
+| V1 | Doubao：旧失败组只选一张旧失败图，用当前模型生成 | 1 |
+| V2 | Hy：同组选择两张有旧图的失败目标，确认两张生成 | 2 |
+| V3 | Qwen：首次部分失败组仅补一个无图方向 | 1 |
+| V4 | Qwen：旧组全部四方向生成，观察首个请求已提交后立即新建，停止旧剩余方向；为操作时序最坏情况保留四次上限 | 4 |
+| V5 | Qwen：新工作区有效纯文字首次四图；若V4仍在途，验证串行排队→执行和旧回调隔离；完成后历史恢复 | 4 |
+| 合计上限 | Doubao 1、Hy 2、Qwen 9；不是每次必须用满 | **12** |
+
+实际完成5份新operation、9次提交，已遍历隔离目录中授权后全部operation核对，无遗漏或重复操作；7张正常发布，1张停止后仅归档，1次HTTP502。完整脱敏凭据、requestId、attempt／版本ID、PNG实际尺寸、SHA256、目标外current不变及原件保护在[调用证据](../../../.tmp/dev/advanced-r2-20261111/supplier-validation.json)。所有本轮返回图片均为768×1024，PNG头尺寸与版本元数据一致且不超过1024×1024；没有用GPT作对照调用。
+
+| 阶段 | 实际调用／结果 | operation | 实窗证据前缀 |
+| --- | --- | --- | --- |
+| V1 | Doubao 1次，上游502；旧左图保留，主按钮／模型选择恢复可用 | `5a840b5a-cb18-4452-ab94-b310bedae0aa` | `v1-doubao-left-confirm`、`v1-doubao-left-failed-unlocked` |
+| V2 | Hy 2次，后／右均成功；清除两目标失败，未选主／左不变，缩略图更新 | `6dabbc03-459d-4aec-96b0-dd95d460ef7f` | `v2-hy-two-old-views-running`、`v2-hy-two-targets-success` |
+| V3 | Qwen 1次，空后图补生成成功；其它三方向不变，后图错误清除；视角质量未通过 | `f715296b-b761-4e88-803d-3fb39e83ed02` | `v3-qwen-empty-back-running`、`v3-qwen-empty-back-success` |
+| V4 | Qwen仅1次，主请求已发时新建立即空白；其余3方向停止、0调用；晚到主图仅旧组归档，旧四个current不变，重开旧图仍可用 | `9fdac8d5-5dfc-4219-8d1a-588a13ce717c` | `v4-new-immediate-while-old-request-running`、`v4-old-stopped-history-preserves-four` |
+| V5 | Qwen 4次，新组纯文字首次四图逐张成功；历史重开、按钮恢复、右栏开合及2D／3D返回保留新图／选择，无3D提交 | `3e3b8ed6-e068-4e66-afd5-4840f260097a` | `v5-new-qwen-four-confirm`、`v5-new-qwen-four-running`、`v5-new-qwen-four-success`、`v5-new-qwen-history-reopened`、`v5-new-results-collapsed-selection-retained`、`v5-new-results-roundtrip-expanded`、`v5-four-usable-3d-eligible-no-submit` |
+
+V1错误为`HTTP502 / UPSTREAM_GRPC_ERROR`，requestId为`cc956965-7b77-41e0-942a-e470366589cb`；安全message为上游gRPC `UNAVAILABLE`／连接被对方重置，耗时1219ms（传输844ms）。这次不是`OutputImageSensitiveContentDetected.PolicyViolation`。日志的`yoyoclaw.request.failed`和`advanced_multiview.image.failed`与operation关联一致，中文message已核对无替换字符；按原事实保留ambiguous／recovery_required，不将失败伪写为确定拒绝，也不再全局锁住用户。
+
+V4主请求在新组确认前已经返回，因此V5捕获的是组内三个方向“排队中”→依次“生成中”，没有捕获跨套图等待前一个请求的UI窗口／原因；没有为了补画面再跑V4，剩余3次额度未使用。V4返回版本`8ee88a02-5981-4f4d-8442-e66f313dc5b6`仅保存在旧组，未替换旧主图；V5新组为`18b0e0d6-df74-4f1c-9680-ab9c2dedb8fa`，四current、模型、输入和忙碌状态均归新组。
+
+内容质量单列：V3要求后视但实际接近正面；V5四图主体完整、黄色机器人及蓝色胸口按钮符合描述，但左右图均朝画面右方，后图机位偏高，**视角质量未通过**。没有修改提示词／参考规则或购买质量重试。传输、保存和交互成功不能证明四视角语义正确，也不能据此宣称YOYOClaw三模型质量验收通过。
+
+本次明确调用计划已执行结束；D6仍因上表逐条剩余的窗口／DPI、完整Host回执／异步延迟、错误矩阵及未取得的特定W＋V组合保持部分完成。原76条两项未完整执行、旧质量问题和原集成diff预算失败保留，不扩大本轮调用或规格。
+
+## 2026-11-08～10 历史实施与验证（原统计保留）
+
+以下为当时实现与授权，不覆盖上方R2当前规格；其中卡片恢复／重试和旧失败全局锁的旧说明已被R2替代，原76条74通过／2未完整执行及质量失败证据不改写。
 - 2026-11-10同组输入与风格重新生成补充：用户最终确认只有首次或点击“新建创作”创建新组；已有套图补充／替换／移除上传图、修改描述或风格均更新原组。上传变化视角强制进入“待重新生成”，变化目标以新上传图优先、当前设计图其次；上传未变的描述编辑仍以当前设计图优先、原上传图其次。主图替换后，用户额外选择的侧视角可读取新主图；风格变化在同组强制四图重新生成。待处理视角不可取消，成功后逐项清除，失败保留旧图和左上角单项重试；本地上传刚变化时即先以草稿失配禁止3D，服务保存后再由待处理集合继续阻止，避免自动保存窗口内使用旧四图。首次缺图后再改风格时，显式重试使用当前组输入和当前风格补缺图，其它风格待处理视角保持。Sidecar新增同组multipart输入更新，旧组缺新字段时按空集合兼容，上传原件与设计版本保持不可变。Python高级多视角75／75、C++ `AdvancedCreation` 17／17及`OrcaSlicer_app_gui`纯构建通过，收据`.tmp/dev/logs/20261110-200425-552/result.json`、`.tmp/dev/logs/20261110-200445-669/result.json`、`.tmp/dev/logs/20261110-200602-898/result.json`；实现阶段统一源码身份`296b4328ebbe1ffdf3ab89ecc48120d37bbb1cc6145c7475053107cd38e50c39`，架构映射102锚点／29能力通过。旧实例关闭后，最终`./dev.ps1 -NoLaunch`完成五步构建、安装和运行时校验（`.tmp/dev/logs/20261110-201222-046/result.json`，源码身份`0b698222cc87b278c8ab8e5069e0007a88701d02b10824925b7dd2a313cb624f`）。真实主窗口加载有主上传图且已有四设计图的组`01070a0c-f69d-4927-b362-a5d9b17f5e74`：替换右视角后历史仍为11组、同一`group_id` revision 11→12、`pending_views=right`／`changed_upload_views=right`，右卡显示待处理并锁定选中；切到3D时“生成3D模型”禁用并提示先重新生成设计图。风格改为雕塑后同组revision 13、`pending_views=front,left,back,right`，四卡全部显示“待重新生成”、全部自动选中且点击不能取消；3D继续禁用。另用无原上传主图的历史白杯设计组确认辅助图单独更新返回`missing_front`且后端未变，符合主图必填规则。Sidecar日志只有组读取、输入更新与draft保存，没有图像或Tripo生成请求；本轮GPT／Tripo均为0。
 - 2026-11-10高级3D跳转与阶段隔离补充：确认高级“生成3D模型”后，界面约2秒内打开同一已受理Job的既有3D等待页；进度从“正在生成3D模型”开始，全程没有智能模式的2D设计准备／生图阶段。高级提交、停止、恢复、结果、返回创作和打开工作台均由高级专属宿主与`m_advanced_model_state`／`m_advanced_model_route`投影，智能模式只读往返未覆盖高级页面。实窗首次发现正常对账把受理阶段临时消息显示为`Four-view model accepted; no supplier task has started.`，现已改为正常提交静默对账并清除临时消息；手动恢复提示保留。真实组`2b4401d7-4db5-4ec6-b90b-c1667bd44ef0`创建Job`09a516ab-5bff-4b21-a2be-31cbe4d64a65`／Tripo task`6fcab64f-6390-4aa3-a7bf-dde65933cbff`，记录`workflow_mode=advanced`、`creation_kind=advanced_multiview_v1`，四个具名输入哈希互异，仅1个attempt，最终`ready/100%`，产物`model.glb`为31,044,012字节。完成页、原3D工作台、返回高级创作后的套图／四图／ready状态均通过真实GUI核对。本轮Tripo 1／3、GPT 0；`AdvancedCreation` 15／15、`UiRedesign` 132／132和最终Windows构建／安装／运行时校验／启动通过，收据`.tmp/dev/logs/20261110-173933-701/result.json`、`.tmp/dev/logs/20261110-174121-258/result.json`、`.tmp/dev/logs/20261110-174253-583/result.json`，源码身份`3c1612f6e6ebd49aa5e1b696107eb7cbcdae83d95ee40466d405966ccac7e4ae`。
 - 2026-11-10中央标题精简补充：中央四张卡片只显示“主视角／左视角／后视角／右视角”，删除原标题中的括号及括号内相机说明；每张卡片右侧“设计图”及相机0°／左转90°／反向180°／右转90°业务语义均保持。中央使用独立短名称映射，避免改变其它区域继续使用的“正视角”。首轮`./dev.ps1 -NoLaunch`编译、安装和运行时校验通过后，静态复核发现首项复用通用名称会显示成“正视角”，已在交付前纠正；最终构建收据`.tmp/dev/logs/20261110-163420-678/result.json`，源码身份`333d6cf90873d06ee3a32815f2a9ffffa7df7479afb7d68dafc491ef0b9caa2f`。用户明确自行完成GUI验证，本报告不将本次视觉结果写为已通过。

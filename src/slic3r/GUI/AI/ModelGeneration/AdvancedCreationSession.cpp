@@ -58,6 +58,12 @@ bool design_attempt_generating(const std::string& state)
     return state == "queued" || state == "submitting";
 }
 
+bool design_attempt_failed(const std::string& state)
+{
+    return state == "failed" || state == "blocked" || state == "stopped" || state == "ambiguous" ||
+           state == "result_pending" || state == "result_saved";
+}
+
 bool Session::set_design_draft(DesignDraft draft)
 {
     if (m_draft.design == draft) return false;
@@ -132,12 +138,26 @@ bool Session::apply_snapshot(GroupSnapshot snapshot, const CallbackContext& call
     if (m_group && m_group->id == snapshot.id && snapshot.revision < m_group->revision) return false;
     const bool inputs_changed = m_group && m_group->id == snapshot.id &&
                                 m_group->input_epoch != snapshot.input_epoch;
+    for (ViewId view : AllViews) {
+        auto& incoming = snapshot.views[index(view)];
+        if (incoming.canonical_version_id.empty()) incoming.canonical_version_id = incoming.version_id;
+        if (!incoming.usable && m_group && m_group->id == snapshot.id) {
+            const auto& visible = m_group->views[index(view)];
+            if (visible.usable) {
+                incoming.version_id = visible.version_id;
+                incoming.sha256 = visible.sha256;
+                incoming.image_path = visible.image_path;
+                incoming.usable = true;
+            }
+        }
+        if (!incoming.usable) { incoming.version_id.clear(); incoming.image_path.clear(); }
+    }
     if (restore_draft || inputs_changed) {
         m_draft.uploads = snapshot.uploads;
         m_draft.design = snapshot.saved_draft;
         if (restore_draft) m_selected.fill(false);
         for (ViewId view : AllViews)
-            if (snapshot.pending_views[index(view)] && snapshot.views[index(view)].usable)
+            if (snapshot.pending_views[index(view)])
                 m_selected[index(view)] = true;
         m_draft_dirty = false;
         m_pending_click.reset();
@@ -162,7 +182,9 @@ bool Session::matches_command(const CommandContext& command, bool uses_selection
 
 bool Session::toggle(ViewId view)
 {
-    if (!m_group || !m_group->views.at(index(view)).usable) return false;
+    if (!m_group) return false;
+    const auto& design = m_group->views.at(index(view));
+    if (!design.usable && !design_attempt_failed(design.attempt_state) && !design.display_error) return false;
     if (m_group->pending_views[index(view)] && m_selected[index(view)]) return false;
     m_selected[index(view)] = !m_selected[index(view)];
     ++m_selection_revision;
@@ -210,7 +232,8 @@ Eligibility Session::eligibility(const Capabilities& capabilities, const HostGua
     const bool busy = m_group && (!m_group->active_operation_id.empty() || m_group->model_busy);
     bool unresolved = false, missing = !m_group;
     if (m_group) for (const DesignView& view : m_group->views) {
-        missing = missing || !view.usable;
+        missing = missing || !view.usable || view.display_error || view.asset_pending ||
+                  (!view.canonical_version_id.empty() && view.version_id != view.canonical_version_id);
         unresolved = unresolved || view.attempt_state == "ambiguous" || view.attempt_state == "result_pending" ||
                      view.attempt_state == "result_saved";
         result.retry = result.retry || view.attempt_state == "failed" || view.attempt_state == "stopped" ||
@@ -226,11 +249,9 @@ Eligibility Session::eligibility(const Capabilities& capabilities, const HostGua
     const bool initial = !m_group || !m_group->published;
     const bool image_capable = initial ? (any_upload ? capabilities.initial_references : capabilities.initial_text)
                                       : capabilities.edit_current;
-    bool missing_target = false;
-    if (!initial && m_group) for (ViewId view : effective_views()) missing_target |= !m_group->views[index(view)].usable;
-    result.design_reason = busy ? "group_busy" : unresolved ? "recovery_required" : !guards.can_start ? "workbench_guard" :
+    result.design_reason = busy ? "group_busy" : !guards.can_start ? "workbench_guard" :
         !capabilities.service_available ? "service_unavailable" : any_upload && m_draft.uploads[0].empty() ? "missing_front" : !valid ? "invalid_input" :
-        !image_capable ? "unsupported_multiview" : missing_target ? "missing_current_view" : "";
+        !image_capable ? "unsupported_multiview" : "";
     result.generate_design = result.design_reason.empty();
     result.model_reason = busy ? "group_busy" : unresolved ? "recovery_required" : missing ? "missing_current_view" :
         std::any_of(m_group->pending_views.begin(), m_group->pending_views.end(), [](bool pending) { return pending; }) ?

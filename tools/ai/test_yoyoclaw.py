@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import base64
 import io
 import json
 import os
@@ -19,6 +20,7 @@ from tools.ai.yoyoclaw_client import (
     YoYoClawClient,
     YoYoClawConfig,
     YoYoClawError,
+    _image_generation_payload,
 )
 from tools.ai.yoyoclaw_provider_gateway import (
     GEOMETRY_LIBRARY,
@@ -63,6 +65,15 @@ class _FakeYoYoClawClient:
     def generate_image(self, model, prompt, image_path=None):
         self.generate_calls.append((model, prompt, image_path))
         return "https://example.invalid/design.png"
+
+    def generate_image_response(self, model, prompt, image_paths=()):
+        self.generate_calls.append((model, prompt, tuple(image_paths)))
+        return {"requestId": "image-request-1", "data": [{"url": "https://example.invalid/design.png"}]}
+
+    def download_generated_image(self, response, destination):
+        self.download_calls.append((response, Path(destination), 20 * 1024 * 1024))
+        Path(destination).write_bytes(b"PNG")
+        return Path(destination)
 
     def download(self, url, destination, max_bytes):
         self.download_calls.append((url, Path(destination), max_bytes))
@@ -222,7 +233,7 @@ class YoYoClawConfigTests(unittest.TestCase):
 
 
 class YoYoClawCatalogTests(unittest.TestCase):
-    def test_catalog_exposes_only_the_preferred_models_for_each_role(self):
+    def test_image_catalog_exposes_all_available_models_and_geometry_keeps_one_preferred_model(self):
         client = _FakeYoYoClawClient(
             image_models=[
                 {"name": "Qwen-Image-3.0-PC-YOYO"},
@@ -245,12 +256,16 @@ class YoYoClawCatalogTests(unittest.TestCase):
         geometry = gateway.catalog(GEOMETRY_ROLE)
 
         self.assertEqual(image["state"], "ready")
-        self.assertEqual([item["id"] for item in image["models"]], [PREFERRED_IMAGE_MODEL])
+        self.assertEqual([item["id"] for item in image["models"]], [
+            PREFERRED_IMAGE_MODEL,
+            "image-model-library/Qwen-Image-3.1-PC-YOYO",
+            "image-model-library/Doubao-Seedream-5.0-Pro-PC-YOYO",
+        ])
         self.assertEqual(image["default_model"], PREFERRED_IMAGE_MODEL)
         self.assertEqual([item["id"] for item in geometry["models"]], [PREFERRED_GEOMETRY_MODEL])
         self.assertEqual(geometry["default_model"], PREFERRED_GEOMETRY_MODEL)
 
-    def test_catalog_uses_a_compatible_server_default_then_highest_version(self):
+    def test_image_catalog_never_substitutes_for_missing_qwen_default(self):
         client = _FakeYoYoClawClient(
             image_models=[
                 {"name": "Qwen-Image-3.1-PC-YOYO"},
@@ -268,23 +283,28 @@ class YoYoClawCatalogTests(unittest.TestCase):
         image = gateway.catalog(IMAGE_ROLE)
         geometry = gateway.catalog(GEOMETRY_ROLE)
 
-        self.assertEqual(image["default_model"], "image-model-library/Qwen-Image-3.1-PC-YOYO")
+        self.assertEqual(image["state"], "ready")
+        self.assertEqual(image["default_model"], "")
+        self.assertEqual(len(image["models"]), 2)
         self.assertEqual(geometry["default_model"], "3d-model-library/Hy-3D-3.2-PC-YOYO")
 
-    def test_catalog_fails_closed_when_only_incompatible_models_exist(self):
+    def test_image_catalog_can_be_ready_without_a_default_while_geometry_fails_closed(self):
         client = _FakeYoYoClawClient(
             image_models=[{"name": "Doubao-Seedream-5.0-Pro-PC-YOYO"}],
             geometry_models=[{"name": "Hy-3D-Texture-PC-YOYO"}, {"name": "other-3d"}],
         )
         gateway = YoYoClawModelProviderGateway(lambda: client)
 
-        for role in (IMAGE_ROLE, GEOMETRY_ROLE):
-            with self.subTest(role=role):
-                catalog = gateway.catalog(role)
-                self.assertEqual(catalog["state"], "empty")
-                self.assertEqual(catalog["models"], [])
-                self.assertEqual(catalog["default_model"], "")
-                self.assertEqual(catalog["error"]["code"], "compatible_model_unavailable")
+        image = gateway.catalog(IMAGE_ROLE)
+        self.assertEqual(image["state"], "ready")
+        self.assertEqual([item["id"] for item in image["models"]],
+                         ["image-model-library/Doubao-Seedream-5.0-Pro-PC-YOYO"])
+        self.assertEqual(image["default_model"], "")
+        geometry = gateway.catalog(GEOMETRY_ROLE)
+        self.assertEqual(geometry["state"], "empty")
+        self.assertEqual(geometry["models"], [])
+        self.assertEqual(geometry["default_model"], "")
+        self.assertEqual(geometry["error"]["code"], "compatible_model_unavailable")
 
     def test_unconfigured_and_empty_catalogs_are_safe(self):
         unconfigured = YoYoClawModelProviderGateway(
@@ -301,6 +321,45 @@ class YoYoClawCatalogTests(unittest.TestCase):
 
 
 class YoYoClawGenerationTests(unittest.TestCase):
+    def test_three_image_models_build_ordered_zero_to_three_reference_payloads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            references = []
+            for index in range(3):
+                path = Path(directory) / f"reference-{index}.png"
+                path.write_bytes(b"\x89PNG\r\n\x1a\n" + bytes([index]))
+                references.append(path)
+            models = {
+                "doubao": "image-model-library/Doubao-Seedream-5.0-Pro-PC-YOYO",
+                "hy": "image-model-library/Hy-Image-3.0-PC-YOYO",
+                "qwen": "image-model-library/Qwen-Image-3.0-PC-YOYO",
+            }
+            for count in range(4):
+                paths = tuple(references[:count])
+                encoded = ["data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+                           for path in paths]
+                for profile, model in models.items():
+                    with self.subTest(profile=profile, count=count):
+                        payload = _image_generation_payload(model, "same object", paths)
+                        self.assertEqual(payload["model"], model)
+                        if profile == "doubao":
+                            self.assertEqual(payload["size"], "1024x1024")
+                            self.assertEqual(payload.get("image"), None if not encoded else
+                                             encoded[0] if count == 1 else encoded)
+                            self.assertFalse(payload["watermark"])
+                        elif profile == "hy":
+                            self.assertEqual(payload["size"], "768x1024")
+                            self.assertEqual(payload.get("images"), encoded if encoded else None)
+                            self.assertTrue(payload["revise"])
+                        else:
+                            content = payload["input"]["messages"][0]["content"]
+                            self.assertEqual(content[:-1], [{"image": value} for value in encoded])
+                            self.assertEqual(content[-1], {"text": "same object"})
+                            self.assertEqual(payload["parameters"]["size"], "768*1024")
+                            self.assertEqual(payload["parameters"]["n"], 1)
+
+            with self.assertRaises(YoYoClawError):
+                _image_generation_payload(models["qwen"], "same object", tuple(references + [references[0]]))
+
     def test_only_explicit_failed_status_authorizes_replacing_the_same_task(self):
         for code, terminal in (("provider_task_failed", True), ("provider_timeout", False),
                                ("provider_connection_failed", False)):
@@ -433,7 +492,7 @@ class YoYoClawTransportTests(unittest.TestCase):
                 "access_token": "access-token", "refresh_token": "refresh-token", "expires_in": 3600,
             }}),
             _TransportResponse(200, {"code": "OK", "data": {
-                "models": [{"name": "qwen-image-2.0"}], "default_model": "qwen-image-2.0",
+                "models": [{"name": "Qwen-Image-3.0-PC-YOYO"}], "default_model": "Qwen-Image-3.0-PC-YOYO",
             }}),
             _TransportResponse(200, {"code": "OK", "data": {
                 "data": [{"url": "https://cdn.example.invalid/design.png"}],
@@ -450,9 +509,9 @@ class YoYoClawTransportTests(unittest.TestCase):
         )
 
         catalog = client.whitelist_catalog(IMAGE_LIBRARY)
-        self.assertEqual(catalog["models"][0]["name"], "qwen-image-2.0")
-        self.assertEqual(catalog["default_model"], "qwen-image-2.0")
-        self.assertEqual(client.generate_image("image-model-library/qwen-image-2.0", "a vase"),
+        self.assertEqual(catalog["models"][0]["name"], "Qwen-Image-3.0-PC-YOYO")
+        self.assertEqual(catalog["default_model"], "Qwen-Image-3.0-PC-YOYO")
+        self.assertEqual(client.generate_image("image-model-library/Qwen-Image-3.0-PC-YOYO", "a vase"),
                          "https://cdn.example.invalid/design.png")
         with tempfile.TemporaryDirectory() as directory:
             reference = Path(directory) / "confirmed.png"
@@ -735,6 +794,31 @@ class YoYoClawTaskQueryTests(unittest.TestCase):
         self.assertEqual(event["content_type"], "other")
         self.assertNotIn("response_bytes", event)
         self.assertNotIn("private", output.getvalue())
+
+    def test_provider_error_code_message_and_request_id_are_structured_and_redacted(self):
+        client, _, _ = self.client([_TransportResponse(400, {
+            "error": {
+                "code": "OutputImageSensitiveContentDetected.PolicyViolation",
+                "message": "Output image rejected; token=private-token-value",
+            },
+            "requestId": "request-1234",
+            "private_payload": "must-not-be-logged",
+        })])
+        output = io.StringIO()
+        with mock.patch("sys.stderr", output):
+            with self.assertRaises(YoYoClawError) as raised:
+                client.generate_image("image-model-library/Qwen-Image-3.0-PC-YOYO", "safe prompt")
+        error = raised.exception
+        self.assertEqual(error.status, 400)
+        self.assertEqual(error.code, "OutputImageSensitiveContentDetected.PolicyViolation")
+        self.assertEqual(error.request_id, "request-1234")
+        self.assertIn("<redacted>", error.provider_message)
+        event = json.loads(output.getvalue())
+        self.assertEqual(event["error_code"], error.code)
+        self.assertEqual(event["request_id"], "request-1234")
+        self.assertIn("<redacted>", event["provider_message"])
+        self.assertNotIn("private-token-value", output.getvalue())
+        self.assertNotIn("must-not-be-logged", output.getvalue())
 
 
 if __name__ == "__main__":

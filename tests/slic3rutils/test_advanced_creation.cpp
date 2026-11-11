@@ -2,7 +2,9 @@
 #include <catch2/generators/catch_generators.hpp>
 
 #include "slic3r/GUI/AI/ModelGeneration/AdvancedCreationSession.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/AdvancedMultiviewClient.hpp"
 
+using Slic3r::GUI::AdvancedMultiviewClient;
 using namespace Slic3r::GUI::AdvancedCreation;
 
 namespace {
@@ -197,6 +199,29 @@ TEST_CASE("Advanced new creations default to realistic GPT while history keeps i
     CHECK(session.draft().design.provider == "gpt");
 }
 
+TEST_CASE("Changing the selected image model changes the advanced command identity", "[AdvancedCreation]")
+{
+    Session session;
+    const auto original_command = session.command_context();
+    auto draft = session.draft().design;
+    draft.provider = "yoyoclaw";
+    draft.model = "image-model-library/Qwen-Image-3.0-PC-YOYO";
+    REQUIRE(session.set_design_draft(draft));
+    CHECK_FALSE(session.matches_command(original_command, false));
+
+    const auto payload = AdvancedMultiviewClient::design_json(session.draft().design);
+    CHECK(payload.at("design_provider") == "yoyoclaw");
+    CHECK(payload.at("design_model") == "image-model-library/Qwen-Image-3.0-PC-YOYO");
+
+    session.mark_draft_saved(draft);
+    CHECK_FALSE(session.draft_dirty());
+    const auto qwen_command = session.command_context();
+    draft.model = "image-model-library/Hy-Image-3.0-PC-YOYO";
+    REQUIRE(session.set_design_draft(draft));
+    CHECK(session.draft_dirty());
+    CHECK_FALSE(session.matches_command(qwen_command, false));
+}
+
 TEST_CASE("Advanced confirmation becomes stale when its target draft or base changes", "[AdvancedCreation]")
 {
     auto session = ready_session();
@@ -236,7 +261,7 @@ TEST_CASE("Advanced four image eligibility retains original guards and ignores 2
     CHECK(session.eligibility(capabilities, guards).generate_design);
 }
 
-TEST_CASE("Advanced failed edits retain usable old results while unresolved submissions block new calls", "[AdvancedCreation]")
+TEST_CASE("Advanced old failed submissions allow new 2D generation while retaining 3D guards", "[AdvancedCreation]")
 {
     auto session = ready_session();
     Capabilities capabilities {true, true, true, true, true};
@@ -249,8 +274,103 @@ TEST_CASE("Advanced failed edits retain usable old results while unresolved subm
     group.views[2].attempt_state = "ambiguous";
     session.apply_snapshot(group, session.context());
     CHECK_FALSE(session.eligibility(capabilities, guards).generate_model);
-    CHECK_FALSE(session.eligibility(capabilities, guards).generate_design);
+    CHECK(session.eligibility(capabilities, guards).generate_design);
     CHECK(session.eligibility(capabilities, guards).recover);
+}
+
+TEST_CASE("Failed empty cards can be selected for generation but cannot open a preview", "[AdvancedCreation]")
+{
+    const std::string state = GENERATE("failed", "stopped", "blocked", "ambiguous", "result_pending", "result_saved");
+    auto group = complete_group();
+    group.views[1] = {};
+    group.views[1].attempt_state = state;
+    Session session;
+    REQUIRE(session.apply_snapshot(group, session.begin_open(group.id), true));
+    REQUIRE(session.toggle(ViewId::Left));
+    CHECK(session.effective_views() == std::vector<ViewId> {ViewId::Left});
+    CHECK_FALSE(session.double_click(ViewId::Left));
+    CHECK(session.selection()[1]);
+    Capabilities capabilities {true, true, true, true, true};
+    HostGuards guards {true, true, true};
+    CHECK(session.eligibility(capabilities, guards).generate_design);
+    CHECK_FALSE(session.eligibility(capabilities, guards).generate_model);
+    guards.can_start = false;
+    CHECK_FALSE(session.eligibility(capabilities, guards).generate_design);
+    guards.can_start = true;
+    capabilities.service_available = false;
+    CHECK_FALSE(session.eligibility(capabilities, guards).generate_design);
+}
+
+TEST_CASE("A missing asset preserves its visible base and refreshes terminal state independently", "[AdvancedCreation]")
+{
+    auto session = ready_session();
+    auto incoming = complete_group();
+    incoming.revision = 8;
+    incoming.views[1].canonical_version_id = "left-v2";
+    incoming.views[1].version_id = "left-v2";
+    incoming.views[1].usable = false;
+    incoming.views[1].display_error = true;
+    incoming.views[1].attempt_state = "succeeded";
+    incoming.views[2].version_id = "back-v2";
+    REQUIRE(session.apply_snapshot(incoming, session.context()));
+    CHECK(session.group()->revision == 8);
+    CHECK(session.group()->active_operation_id.empty());
+    CHECK(session.group()->views[1].version_id == "left-v1");
+    CHECK(session.group()->views[1].canonical_version_id == "left-v2");
+    CHECK(session.group()->views[1].image_path == "left.png");
+    CHECK(session.group()->views[1].usable);
+    CHECK(session.group()->views[2].version_id == "back-v2");
+    Capabilities capabilities {true, true, true, true, true};
+    HostGuards guards {true, true, true};
+    CHECK(session.eligibility(capabilities, guards).generate_design);
+    CHECK_FALSE(session.eligibility(capabilities, guards).generate_model);
+    incoming.views[1].usable = true;
+    incoming.views[1].display_error = false;
+    REQUIRE(session.apply_snapshot(incoming, session.context()));
+    CHECK(session.group()->views[1].version_id == "left-v2");
+    CHECK_FALSE(session.group()->views[1].display_error);
+    CHECK(session.eligibility(capabilities, guards).generate_model);
+}
+
+TEST_CASE("New creation immediately invalidates all old commands and pending card clicks", "[AdvancedCreation]")
+{
+    auto session = ready_session();
+    auto busy = complete_group();
+    busy.active_operation_id = "operation-a";
+    busy.views[1].attempt_state = "submitting";
+    REQUIRE(session.apply_snapshot(busy, session.context()));
+    const auto callback = session.context();
+    const auto command = session.command_context();
+    session.click(ViewId::Left, 100, 500);
+    session.new_creation();
+    CHECK_FALSE(session.group());
+    CHECK_FALSE(session.draft_dirty());
+    CHECK(session.draft().design.prompt.empty());
+    CHECK(session.draft().design.provider == "gpt");
+    for (auto view : AllViews) {
+        CHECK_FALSE(session.selection()[index(view)]);
+        CHECK(session.draft().uploads[index(view)].empty());
+    }
+    CHECK_FALSE(session.flush_click(1000));
+    CHECK_FALSE(session.matches_command(command));
+    CHECK_FALSE(session.apply_snapshot(busy, callback));
+    CHECK_FALSE(session.group());
+}
+
+TEST_CASE("Queued and running tasks retain the existing single submission guard", "[AdvancedCreation]")
+{
+    const std::string state = GENERATE("queued", "running");
+    auto session = ready_session();
+    auto group = complete_group();
+    group.active_operation_id = "active-a";
+    group.execution_state = state;
+    group.views[1].attempt_state = state == "queued" ? "queued" : "submitting";
+    REQUIRE(session.apply_snapshot(group, session.context()));
+    Capabilities capabilities {true, true, true, true, true};
+    HostGuards guards {true, true, true};
+    CHECK_FALSE(session.eligibility(capabilities, guards).generate_design);
+    CHECK(session.eligibility(capabilities, guards).design_reason == "group_busy");
+    CHECK(session.eligibility(capabilities, guards).stop);
 }
 
 TEST_CASE("Advanced cards animate only active image submissions", "[AdvancedCreation]")

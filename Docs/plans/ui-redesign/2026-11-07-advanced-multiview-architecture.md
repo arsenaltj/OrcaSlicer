@@ -7,6 +7,8 @@
 - 设计审查基线：`codex/team/integration` / `99b8bee679110ad0f43b080c3a695c9d54d7406c`。下文现有能力表保留该基线事实；2026-11-08 已在同分支工作树实施，具体类名及维护入口见下方实施对照。
 - 验证结论见[测试报告](2026-11-08-advanced-multiview-test-report.md)，设计及代码存在不表示全部供应商、窗口或用户视觉验收通过。
 
+2026-11-11整改入口：[需求V2.0](2026-11-07-advanced-multiview-requirements.md#mv-r2-requirements)、[开发方案V2.0](2026-11-07-advanced-multiview-detailed-design.md#mv-r2-development)及[42条用例](2026-11-07-advanced-multiview-acceptance.md#mv-r2-acceptance)均已获开发与验证授权。当前模型统一计划通过可选`target_modes/dependency_views/publication_bases`兼容旧记录；Host按操作保留收据、逐图缓存并隔离epoch；新建立即重置，持久stop意图与受理事务收敛，执行器保持串行并投影queued。下方保留原实施基线；卡片恢复／原模型重试、缺图不可选及旧未决失败全局锁由R2替代。实际验证结论见既有测试报告，不能将设计或编译等同验收。
+
 ## 实施对照（2026-11-08）
 
 | 职责 | 实际维护入口 | 边界 |

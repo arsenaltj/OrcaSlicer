@@ -25,7 +25,7 @@ DFX 按用户确认定义为**诊断、日志、故障定位、性能与可靠�
 | 业务 | 主要入口/状态归属 | 交接约束 |
 | --- | --- | --- |
 | AI 文本/图片/模型工作流 | `tools/ai/model_job_application.py`、`model_job_lifecycle.py`、`model_job_repository.py`；GUI 提交/展示在 ModelGenerationPanel / FeatureHost | 确认、供应商 task id、本地 job id、取消和重启恢复分别处理；HTTP Handler 不产生第二套业务规则 |
-| 高级多视角创作 | `AdvancedCreationSession*` 独立持有桌面草稿、选择与待重生投影；`advanced_multiview_application.py`／`advanced_multiview_design_workflow.py` 编排，`advanced_multiview_repository.py` 持有组、当前上传引用、待处理集合与不可变四图版本 | 独立认证路由 `/v1/orcaslicer/advanced-multiview`；只有首次／新建创建组，上传或风格变化在同组标记待重生并禁止3D。变化目标上传图优先、普通描述编辑以当前设计图优先；停止／恢复复用已得结果，未知提交阻止新付费。独立 Host／Workspace 接入四图 Job-v2 和独立工作台；编译／离线结果不能视为真实供应商和产品验收通过 |
+| 高级多视角创作 | `AdvancedCreationSession*` 持有桌面草稿、模型ID、选择及已验证可见版本；Application拥有当前模型的混合编辑／补图计划与依赖预算，workflow校验发布，repository持有组／current和不可变版本；Host拥有任务级回执、缓存和epoch适配 | 独立认证路由 `/v1/orcaslicer/advanced-multiview`；GPT全部参数保持原规格，YOYOClaw实时白名单、精确Qwen默认及最多三张有序参考不变。失败保留旧图／空位，由主按钮以当前模型新生成；旧未知结果保留事实，不锁新2D意图、不自动重发，3D四图／未决状态保护不变。新建立即重置，停止未提交旧视角；按操作回执兼容旧单文件，stop先于execute仍有效。执行器保持串行并投影queued；逐图缓存失败不吞终态，可见基图与服务端current分别冻结并比较。独立Job-v2／工作台及智能业务保持；编译／离线结果不代替真实供应商或GUI验收 |
 | 3D 后处理/人像/配色 | `GUI/AI/ModelGeneration/BeautyWorkbenchSession*`、`BeautyWorkbenchTransactionController*`、`PostGenerationWorkbench*`、`GUI/AI/ColorMatching` | 候选、当前作品、预览和历史需区分；颜色、几何与实物打印质量分别验证 |
 | 原生导入/应用 | `AI/Contracts/IModelArtifactConsumer.hpp`、`GUI/AI/Orca`、`PlaterWorkbenchImport*.ipp`、`PlaterAITransaction.ipp` | Plater/Model/Config 保有工程真值；明确应用和撤销；侧车不直接修改原生工程 |
 | 智能切片 | `AI/SmartSlicing/{Domain,Application,Ports}`、`GUI/AI/SmartSlicing` | revision 约束候选；分析、试切、正式应用与撤销分开；AI 离线保留普通 Orca |

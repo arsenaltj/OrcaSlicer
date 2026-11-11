@@ -33,6 +33,7 @@ def _error(error: YoYoClawError, operation: str) -> ProviderGatewayError:
     return ProviderGatewayError(
         str(error), code=error.code, category=error.category, provider="yoyoclaw",
         operation=operation, retryable=error.retryable, ambiguous=error.ambiguous,
+        status=error.status, provider_message=error.provider_message, request_id=error.request_id,
     )
 
 
@@ -164,6 +165,11 @@ def _resolve_preferred_model(entries: list[dict[str, Any]], role: str,
     if exact is not None:
         return exact
 
+    # Image generation has a product-defined default.  Its absence must not
+    # silently switch a new advanced draft to another paid model.
+    if role == IMAGE_ROLE:
+        return None
+
     library = IMAGE_LIBRARY if role == IMAGE_ROLE else GEOMETRY_LIBRARY
     if isinstance(server_default, str) and server_default.strip():
         normalized_default = _normalise_model(server_default, library)
@@ -193,6 +199,18 @@ class YoYoClawModelProviderGateway:
     def model_generation_available(self) -> bool:
         return bool(self._client().config.configured)
 
+    @staticmethod
+    def _entries(client: YoYoClawClient, library: str) -> tuple[list[dict[str, Any]], str]:
+        catalog_reader = getattr(client, "whitelist_catalog", None)
+        if callable(catalog_reader):
+            catalog_payload = catalog_reader(library)
+            raw_models = catalog_payload.get("models", []) if isinstance(catalog_payload, Mapping) else []
+            server_default = catalog_payload.get("default_model", "") if isinstance(catalog_payload, Mapping) else ""
+        else:
+            raw_models = client.whitelist(library)
+            server_default = ""
+        return _model_entries(raw_models, library), server_default
+
     def catalog(self, role: str) -> dict[str, Any]:
         if role not in {IMAGE_ROLE, GEOMETRY_ROLE}:
             return {
@@ -207,31 +225,62 @@ class YoYoClawModelProviderGateway:
             }
         client = self._client()
         try:
-            catalog_reader = getattr(client, "whitelist_catalog", None)
-            if callable(catalog_reader):
-                catalog_payload = catalog_reader(library)
-                raw_models = catalog_payload.get("models", []) if isinstance(catalog_payload, Mapping) else []
-                server_default = catalog_payload.get("default_model", "") if isinstance(catalog_payload, Mapping) else ""
-            else:
-                raw_models = client.whitelist(library)
-                server_default = ""
-            entries = _model_entries(raw_models, library)
+            entries, server_default = self._entries(client, library)
         except YoYoClawError as exc:
             return {
                 "role": role, "provider": "yoyoclaw", "state": "error", "models": [], "default_model": "",
-                "error": {"code": exc.code, "message": str(exc), "retryable": exc.retryable},
+                "error": {"code": exc.code, "message": str(exc), "retryable": exc.retryable,
+                          "request_id": exc.request_id},
             }
         selected = _resolve_preferred_model(entries, role, server_default)
-        selected_models = [selected] if selected is not None else []
+        selected_models = entries if role == IMAGE_ROLE else [selected] if selected is not None else []
         default = str(selected["id"]) if selected is not None else ""
+        available = bool(selected_models)
         return {
-            "role": role, "provider": "yoyoclaw", "state": "ready" if selected is not None else "empty",
+            "role": role, "provider": "yoyoclaw", "state": "ready" if available else "empty",
             "models": selected_models, "default_model": default,
-            "error": None if selected is not None else {
+            "error": None if available else {
                 "code": "compatible_model_unavailable",
                 "message": "No compatible YOYOClaw model is available for this function.",
             },
         }
+
+    def _image_client_and_model(self, model_id: str) -> tuple[YoYoClawClient, str]:
+        if not isinstance(model_id, str) or not model_id.strip():
+            raise ProviderGatewayError(
+                "A YOYOClaw image model must be selected.", code="model_required", category="validation",
+                provider="yoyoclaw", operation="image_generation",
+            )
+        normalized = _normalise_model(model_id, IMAGE_LIBRARY)
+        client = self._client()
+        try:
+            entries, _ = self._entries(client, IMAGE_LIBRARY)
+        except YoYoClawError as exc:
+            raise _error(exc, "image_catalog") from None
+        selected = next((str(item["id"]) for item in entries
+                         if str(item.get("id", "")).casefold() == normalized.casefold()), "")
+        if not selected:
+            raise ProviderGatewayError(
+                "The selected YOYOClaw image model is unavailable.",
+                code="model_unavailable", category="availability", provider="yoyoclaw",
+                operation="image_generation",
+            )
+        return client, selected
+
+    def generate_design_response(
+        self, model_id: str, prompt: str, image_paths: tuple[Path, ...] = (),
+    ) -> dict[str, Any]:
+        client, selected = self._image_client_and_model(model_id)
+        try:
+            return client.generate_image_response(selected, prompt, image_paths)
+        except YoYoClawError as exc:
+            raise _error(exc, "image_generation") from None
+
+    def download_design_response(self, response: Mapping[str, Any], output_path: str | Path) -> Path:
+        try:
+            return self._client().download_generated_image(response, Path(output_path))
+        except YoYoClawError as exc:
+            raise _error(exc, "image_download") from None
 
     def _validate_geometry_model(self, model_id: str) -> str:
         if not isinstance(model_id, str) or not model_id.strip():
@@ -347,17 +396,10 @@ def generate_design_image(
     client = client_factory()
     try:
         model_id = _normalise_model(model, IMAGE_LIBRARY)
-        catalog_reader = getattr(client, "whitelist_catalog", None)
-        if callable(catalog_reader):
-            catalog_payload = catalog_reader(IMAGE_LIBRARY)
-            raw_models = catalog_payload.get("models", []) if isinstance(catalog_payload, Mapping) else []
-            server_default = catalog_payload.get("default_model", "") if isinstance(catalog_payload, Mapping) else ""
-        else:
-            raw_models = client.whitelist(IMAGE_LIBRARY)
-            server_default = ""
-        entries = _model_entries(raw_models, IMAGE_LIBRARY)
-        selected = _resolve_preferred_model(entries, IMAGE_ROLE, server_default)
-        if selected is None or model_id.casefold() != str(selected["id"]).casefold():
+        entries, _ = YoYoClawModelProviderGateway._entries(client, IMAGE_LIBRARY)
+        selected = next((entry for entry in entries
+                         if model_id.casefold() == str(entry["id"]).casefold()), None)
+        if selected is None:
             raise YoYoClawError("The selected YOYOClaw image model is unavailable.", code="model_unavailable", category="availability")
         model_id = str(selected["id"])
         url = client.generate_image(model_id, prompt, image_path=image_path)

@@ -1,11 +1,13 @@
 """Offline contract and failure tests. Supplier ports are controlled; no real generation."""
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
-from io import BytesIO
+from io import BytesIO, StringIO
 from itertools import combinations
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -18,6 +20,36 @@ from advanced_multiview_repository import AdvancedMultiviewRepository
 from advanced_multiview_transport import parse_upload, dispatch, PREFIX
 from model_contracts import RequestError
 from model_provider_gateway import ProviderGatewayError
+
+
+QWEN_IMAGE = "image-model-library/Qwen-Image-3.0-PC-YOYO"
+HY_IMAGE = "image-model-library/Hy-Image-3.0-PC-YOYO"
+DOUBAO_IMAGE = "image-model-library/Doubao-Seedream-5.0-Pro-PC-YOYO"
+
+
+class _FakeYoYoImageGateway:
+    def __init__(self):
+        self.models = [QWEN_IMAGE, HY_IMAGE, DOUBAO_IMAGE]
+        self.generate_calls = []
+        self.download_calls = []
+        self.download_error = None
+
+    def catalog(self, role):
+        return {"role": role, "provider": "yoyoclaw", "state": "ready",
+                "default_model": QWEN_IMAGE,
+                "models": [{"id": model, "name": model.rsplit("/", 1)[-1], "available": True}
+                           for model in self.models], "error": None}
+
+    def generate_design_response(self, model, prompt, image_paths=()):
+        self.generate_calls.append((model, prompt, tuple(image_paths)))
+        return {"requestId": "yoyo-request-1", "data": [{"url": "https://example.invalid/image.png"}]}
+
+    def download_design_response(self, response, output_path):
+        self.download_calls.append((response, Path(output_path)))
+        if self.download_error:
+            raise self.download_error
+        Path(output_path).write_bytes(png("teal"))
+        return Path(output_path)
 
 
 def png(color="navy", size=256):
@@ -238,6 +270,37 @@ class MultiviewTests(unittest.TestCase):
         self.assertEqual(contract["views"]["right"]["top_view_orbit"], "counterclockwise")
         self.assertEqual(plan["max_new_image_calls"], 4)
 
+    def test_one_operation_freezes_one_yoyoclaw_model_and_a_later_edit_can_change_it(self):
+        group = self.create(design_provider="yoyoclaw", design_model=QWEN_IMAGE)
+        plan = self.plan(group)
+        self.execute(plan)
+        self.drain()
+        self.assertEqual({request.model for request in self.requests}, {QWEN_IMAGE})
+        current = self.repository.load(group["id"])
+        back = current["views"]["back"]["current_version_id"]
+        self.requests.clear()
+        edit = self.plan(current, "edit", prompt="Refine", design_provider="yoyoclaw",
+                         design_model=DOUBAO_IMAGE, target_views=["back"],
+                         base_versions={"back": back})
+        self.execute(edit)
+        self.drain()
+        self.assertEqual([request.model for request in self.requests], [DOUBAO_IMAGE])
+
+    def test_failed_card_retry_keeps_original_model_when_current_input_changes(self):
+        self.failure["left"] = ProviderGatewayError("rejected", code="rejected", category="request")
+        group = self.create(design_provider="yoyoclaw", design_model=QWEN_IMAGE)
+        initial = self.plan(group)
+        self.execute(initial)
+        self.drain()
+        current = self.repository.load(group["id"])
+        changed = {**current["saved_draft"], "style": "sculpture", "design_model": DOUBAO_IMAGE}
+        current = self.application.save_draft(group["id"], {
+            "expected_group_revision": current["revision"], "draft": changed})
+        retry = self.plan(current, "retry", operation_id=initial["id"], target_views=["left"])
+        self.assertEqual(retry["draft"]["style"], "sculpture")
+        self.assertEqual(retry["draft"]["design_provider"], "yoyoclaw")
+        self.assertEqual(retry["draft"]["design_model"], QWEN_IMAGE)
+
     def test_double_submit_returns_same_operation_and_enqueues_once(self):
         plan = self.plan(self.create())
         a = self.execute(plan)
@@ -440,13 +503,148 @@ class MultiviewTests(unittest.TestCase):
         self.drain()
         self.assertTrue(self.repository.snapshot(group["id"])["all_views_available"])
 
-    def test_ambiguous_submission_blocks_all_new_generation_without_implicit_retry(self):
+    def test_old_ambiguous_receipt_is_preserved_while_a_new_model_fills_failed_targets(self):
         self.failure["left"] = ProviderGatewayError("timeout", code="timeout", category="availability", ambiguous=True)
         group, old = self.initial()
         self.assertEqual([r.view for r in self.requests], ["front", "left"])
         with self.assertRaises(RequestError):
             self.plan(group, "retry", operation_id=old["id"], target_views=["left"])
         self.assertEqual(len(self.requests), 2)
+        self.failure.clear()
+        plan = self.plan(group, "edit", design_provider="yoyoclaw", design_model=QWEN_IMAGE,
+                         target_views=["left", "back", "right"], base_versions=dict.fromkeys(VIEWS[1:]))
+        self.assertEqual(plan["max_new_image_calls"], 3)
+        self.assertEqual(set(plan["target_modes"].values()), {"initial"})
+        self.execute(plan)
+        self.drain()
+        self.assertEqual([r.model for r in self.requests[2:]], [QWEN_IMAGE] * 3)
+        self.assertEqual(self.application.operation(group["id"], old["id"])["attempts"]["left"]["state"], "ambiguous")
+        self.assertTrue(self.repository.snapshot(group["id"])["all_views_available"])
+
+    def test_one_current_model_plan_mixes_edits_and_missing_views_without_extra_calls(self):
+        self.failure["left"] = ProviderGatewayError("rejected", code="rejected", category="request")
+        group, _ = self.initial({"front": png()})
+        original = {v: group["views"][v]["current_version_id"] for v in VIEWS}
+        self.failure.clear()
+        plan = self.plan(group, "edit", design_provider="yoyoclaw", design_model=HY_IMAGE,
+                         target_views=["left", "back"], base_versions=original)
+        self.assertEqual(plan["targets"], ["left", "back"])
+        self.assertEqual(plan["target_modes"], {"left": "initial", "back": "edit"})
+        self.assertEqual(plan["max_new_image_calls"], 2)
+        self.execute(plan)
+        self.drain()
+        self.assertTrue(self.requests[-2].initial)
+        self.assertFalse(self.requests[-1].initial)
+        self.assertEqual([r.model for r in self.requests[-2:]], [HY_IMAGE, HY_IMAGE])
+        restored = self.repository.load(group["id"])
+        for view in ("front", "right"):
+            self.assertEqual(restored["views"][view]["current_version_id"], original[view])
+
+    def test_missing_text_anchor_is_listed_and_generated_before_selected_empty_view(self):
+        self.failure["front"] = ProviderGatewayError("rejected", code="rejected", category="request")
+        group, _ = self.initial()
+        self.failure.clear()
+        plan = self.plan(group, "edit", prompt="One object", design_model=QWEN_IMAGE,
+                         target_views=["left"], base_versions=dict.fromkeys(VIEWS))
+        self.assertEqual(plan["targets"], ["front", "left"])
+        self.assertEqual(plan["dependency_views"], ["front"])
+        self.assertEqual(plan["max_new_image_calls"], 2)
+        self.execute(plan)
+        self.drain()
+        self.assertEqual([r.view for r in self.requests], ["front", "front", "left"])
+        self.assertEqual([role for role, _ in self.requests[-1].references], ["front_design"])
+
+    def test_existing_upload_avoids_unnecessary_main_dependency_and_failed_anchor_spends_no_extra_call(self):
+        for images in ({"front": png()}, {}):
+            with self.subTest(has_upload=bool(images)):
+                group = self.create(images)
+                plan = self.plan(group)
+                self.failure["front"] = ProviderGatewayError("no", code="rejected", category="request")
+                self.execute(plan)
+                self.drain()
+                group = self.repository.load(group["id"])
+                before = len(self.requests)
+                repair = self.plan(group, "edit", prompt="One object", target_views=["left"],
+                                   base_versions=dict.fromkeys(VIEWS))
+                self.assertEqual(repair["dependency_views"], [] if images else ["front"])
+                self.execute(repair)
+                self.drain()
+                self.assertEqual(len(self.requests) - before, 1)
+                state = self.repository.load(group["id"])
+                self.assertIsNone(state["active_operation_id"])
+
+    def test_two_missing_views_share_one_explicit_main_dependency_and_budget(self):
+        for anchor_fails in (False, True):
+            with self.subTest(anchor_fails=anchor_fails):
+                self.failure["front"] = ProviderGatewayError("no", code="rejected", category="request")
+                group, _ = self.initial()
+                if not anchor_fails:
+                    self.failure.clear()
+                before = len(self.requests)
+                plan = self.plan(group, "edit", design_provider="yoyoclaw", design_model=QWEN_IMAGE,
+                                 target_views=["left", "back"], base_versions=dict.fromkeys(VIEWS))
+                self.assertEqual(plan["targets"], ["front", "left", "back"])
+                self.assertEqual(plan["dependency_views"], ["front"])
+                self.assertEqual(plan["max_new_image_calls"], 3)
+                self.execute(plan)
+                self.drain()
+                submitted = self.requests[before:]
+                self.assertEqual([r.view for r in submitted], ["front"] if anchor_fails else ["front", "left", "back"])
+                self.assertTrue(all(r.model == QWEN_IMAGE for r in submitted))
+                result = self.repository.load(group["id"])
+                self.assertIsNone(result["active_operation_id"])
+                for view in ("front", "left", "back"):
+                    self.assertEqual(bool(result["views"][view]["current_version_id"]), not anchor_fails)
+                self.assertIsNone(result["views"]["right"]["current_version_id"])
+
+    def test_confirmed_visible_base_is_used_even_if_canonical_current_was_not_displayed(self):
+        group, _ = self.initial()
+        visible = group["views"]["left"]["current_version_id"]
+        self.execute(self.plan(group, "edit", prompt="First edit", target_views=["left"], base_versions={"left": visible}))
+        self.drain()
+        group = self.repository.load(group["id"])
+        canonical = group["views"]["left"]["current_version_id"]
+        plan = self.plan(group, "edit", prompt="Edit the visible version", target_views=["left"], base_versions={"left": visible})
+        self.assertEqual(plan["base_versions"]["left"], visible)
+        self.assertEqual(plan["publication_bases"]["left"], canonical)
+        self.execute(plan)
+        self.drain()
+        self.assertIn(visible, str(self.requests[-1].references[0][1]))
+        snapshot = self.repository.snapshot(group["id"])
+        self.assertEqual(snapshot["views"]["left"]["current"]["base_version_id"], visible)
+
+    def test_stop_before_or_after_acceptance_prevents_all_queued_supplier_calls(self):
+        for stop_first in (True, False):
+            with self.subTest(stop_first=stop_first):
+                group = self.create()
+                plan = self.plan(group)
+                if not stop_first:
+                    self.execute(plan)
+                self.application.stop(group["id"], plan["id"])
+                self.execute(plan)
+                self.drain()
+                operation = self.application.operation(group["id"], plan["id"])
+                self.assertEqual(operation["state"], "stopped")
+                self.assertEqual(operation["new_image_calls"], 0)
+        self.assertEqual(self.requests, [])
+
+    def test_new_all_view_generation_uses_current_model_and_never_reuses_stopped_candidate(self):
+        group = self.create()
+        old = self.plan(group)
+        self.after_image = lambda _: self.application.stop(group["id"], old["id"])
+        self.execute(old)
+        self.drain()
+        candidate = self.application.operation(group["id"], old["id"])["attempts"]["front"]["version_id"]
+        group = self.repository.load(group["id"])
+        self.after_image = None
+        plan = self.plan(group, "edit", prompt="One object", design_model=DOUBAO_IMAGE,
+                         target_views=[], base_versions=dict.fromkeys(VIEWS))
+        self.assertEqual(plan["max_new_image_calls"], 4)
+        self.assertEqual(plan["reusable_versions"], {})
+        self.execute(plan)
+        self.drain()
+        self.assertEqual([r.model for r in self.requests[1:]], [DOUBAO_IMAGE] * 4)
+        self.assertNotEqual(self.repository.load(group["id"])["views"]["front"]["current_version_id"], candidate)
 
     def test_stop_does_not_publish_late_image_or_start_following_calls(self):
         group = self.create()
@@ -461,6 +659,117 @@ class MultiviewTests(unittest.TestCase):
         attempt = self.application.operation(group["id"], plan["id"])["attempts"]["front"]
         self.assertEqual(attempt["state"], "stopped")
         self.assertTrue(attempt["version_id"])
+
+    def test_serial_executor_projects_the_new_group_as_queued_until_old_sent_request_returns(self):
+        from advanced_multiview_runtime import AdvancedMultiviewRuntime
+        started, release = threading.Event(), threading.Event()
+        requests, futures = [], []
+
+        def generate(request, output):
+            requests.append(request)
+            if len(requests) == 1:
+                started.set()
+                if not release.wait(5):
+                    raise RuntimeError("test barrier timed out")
+            output.write_bytes(png())
+            return DesignImageResult()
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        self.addCleanup(executor.shutdown, wait=True)
+        self.addCleanup(release.set)
+        workflow = AdvancedMultiviewDesignWorkflow(self.repository, generate)
+        app = AdvancedMultiviewApplication(self.repository, capabilities=lambda *_: self.capability,
+            submit=lambda work: futures.append(executor.submit(work)), run_design=workflow.run)
+        runtime = AdvancedMultiviewRuntime.__new__(AdvancedMultiviewRuntime)
+        runtime.repository, runtime.application, runtime.workflow, runtime.models = self.repository, app, workflow, None
+        old, new = self.create(), self.create()
+        plans = [app.prepare(g["id"], {"command_id": new_id(), "kind": "initial",
+                                      "expected_group_revision": g["revision"]}) for g in (old, new)]
+
+        def accept(plan):
+            return app.execute(plan["group_id"], {"command_id": plan["id"], "plan_id": plan["id"],
+                                                 "confirmation_fingerprint": plan["confirmation_fingerprint"]})
+
+        accept(plans[0])
+        self.assertTrue(started.wait(3))
+        app.stop(old["id"], plans[0]["id"])
+        accept(plans[1])
+        accept(plans[1])
+        self.assertEqual(runtime.snapshot(new["id"])["execution_state"], "queued")
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(len(futures), 2)
+        release.set()
+        for future in futures:
+            future.result(timeout=5)
+        self.assertEqual(len(requests), 5)
+        self.assertEqual(app.operation(old["id"], plans[0]["id"])["new_image_calls"], 1)
+        self.assertIsNone(runtime.snapshot(new["id"])["active_operation_id"])
+        self.assertTrue(runtime.snapshot(new["id"])["all_views_available"])
+        self.assertIsNone(runtime.snapshot(old["id"])["views"]["front"]["current_version_id"])
+
+    def test_discarding_a_queued_group_spends_no_calls_and_does_not_block_the_next_group(self):
+        groups = [self.create() for _ in range(3)]
+        plans = [self.plan(group) for group in groups]
+        self.execute(plans[0])
+        self.execute(plans[1])
+        self.application.stop(groups[1]["id"], plans[1]["id"])
+        self.execute(plans[2])
+        self.drain()
+        stopped = self.application.operation(groups[1]["id"], plans[1]["id"])
+        self.assertEqual(stopped["state"], "stopped")
+        self.assertEqual(stopped["new_image_calls"], 0)
+        stopped_attempts = {attempt["id"] for attempt in stopped["attempts"].values()}
+        self.assertFalse(any(request.attempt_id in stopped_attempts for request in self.requests))
+        self.assertEqual(len(self.requests), 8)
+        for group in groups:
+            result = self.repository.snapshot(group["id"])
+            self.assertIsNone(result["active_operation_id"])
+            self.assertEqual(result["all_views_available"], group["id"] != groups[1]["id"])
+
+    def test_visible_bases_cannot_reference_a_version_owned_by_another_group_or_view(self):
+        first, _ = self.initial()
+        second, _ = self.initial()
+        for version in (first["views"]["left"]["current_version_id"], second["views"]["front"]["current_version_id"]):
+            with self.subTest(version=version), self.assertRaises(RequestError):
+                self.plan(second, "edit", target_views=["left"], base_versions={"left": version})
+
+    def test_later_user_generation_prevents_recovery_of_superseded_saved_receipts(self):
+        from advanced_multiview_runtime import AdvancedMultiviewRuntime
+        self.failure["left"] = ProviderGatewayError("unknown", code="upstream", category="availability", ambiguous=True)
+        group, old = self.initial()
+        self.failure.clear()
+        self.execute(self.plan(group, "edit", prompt="A new attempt", target_views=["left"], base_versions={"left": None}))
+        self.drain()
+        runtime = AdvancedMultiviewRuntime.__new__(AdvancedMultiviewRuntime)
+        runtime.repository, runtime.application, runtime.workflow, runtime.models = self.repository, self.application, self.workflow, None
+        before = self.repository.load(group["id"])
+        with self.assertRaises(RequestError) as error:
+            runtime.recover(group["id"], old["id"])
+        self.assertEqual(error.exception.code, "stale_result")
+        self.assertEqual(self.repository.load(group["id"]), before)
+
+    def test_invalid_obtained_image_does_not_reintroduce_a_busy_lock_during_restart_recovery(self):
+        calls = []
+        def invalid_result(request, output):
+            calls.append(request)
+            output.write_bytes(b"invalid image result")
+            return DesignImageResult(provider_request_id="known-response")
+        self.workflow.generate_image = invalid_result
+        group, old = self.initial()
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(group["active_operation_id"])
+        for _ in range(2):
+            self.workflow.recover_interrupted(group["id"])
+            group = self.repository.load(group["id"])
+            self.assertIsNone(group["active_operation_id"])
+            self.assertEqual(group["views"]["front"]["latest_attempt"]["state"], "result_pending")
+            self.assertIsNone(group["views"]["front"]["current_version_id"])
+        self.assertEqual(len(calls), 1)
+        plan = self.plan(group, "edit", prompt="Try with current model", target_views=["front"],
+                         base_versions={"front": None}, design_model=QWEN_IMAGE)
+        self.assertEqual(plan["max_new_image_calls"], 1)
+        attempt = self.application.operation(group["id"], old["id"])["attempts"]["front"]
+        self.assertTrue(self.repository.path(group["id"], f"staging/{attempt['id']}/result.png").exists())
 
     def test_reopen_and_restart_do_not_generate_and_missing_files_block_four_view_readiness(self):
         group, _ = self.initial()
@@ -601,6 +910,72 @@ class MultiviewTests(unittest.TestCase):
             create.assert_not_called()
         self.assertTrue(self.repository.snapshot(group["id"])["views"]["front"]["current"])
         self.assertEqual(self.requests, [])
+
+    def test_yoyoclaw_gateway_routes_selected_model_and_recovers_saved_response_without_resubmission(self):
+        from advanced_multiview_design_workflow import DesignImageRequest
+        from advanced_multiview_image_gateway import AdvancedMultiviewImageGateway
+        fake = _FakeYoYoImageGateway()
+        gateway = AdvancedMultiviewImageGateway(fake)
+        references = []
+        for index in range(3):
+            path = Path(self.temporary.name) / f"yoyo-reference-{index}.png"
+            path.write_bytes(png(["red", "green", "blue"][index]))
+            references.append((f"role-{index}", path))
+        request = DesignImageRequest("right", False, "same object", "realistic", "", "yoyoclaw",
+                                     HY_IMAGE, new_id(), tuple(references))
+        output = Path(self.temporary.name) / "yoyo-output.png"
+        result = gateway.generate(request, output)
+        self.assertEqual(result.provider_request_id, "yoyo-request-1")
+        self.assertEqual(fake.generate_calls[0][0], HY_IMAGE)
+        self.assertEqual(fake.generate_calls[0][2], tuple(path for _, path in references))
+        self.assertTrue(output.with_suffix(".response.json").is_file())
+        output.unlink()
+        recovered = gateway.recover(output)
+        self.assertEqual(recovered.provider_request_id, "yoyo-request-1")
+        self.assertEqual(len(fake.generate_calls), 1)
+        self.assertEqual(len(fake.download_calls), 2)
+        self.assertTrue(output.is_file())
+
+    def test_yoyoclaw_capabilities_list_each_available_supported_model_without_fallback(self):
+        from advanced_multiview_image_gateway import AdvancedMultiviewImageGateway
+        fake = _FakeYoYoImageGateway()
+        gateway = AdvancedMultiviewImageGateway(fake)
+        capabilities = gateway.catalog_capabilities()
+        yoyo = [item for item in capabilities if item["provider"] == "yoyoclaw"]
+        self.assertEqual([item["model"] for item in yoyo], fake.models)
+        self.assertTrue(all(item["initial_named_references"] == "supported" for item in yoyo))
+        self.assertTrue(all(item["max_reference_images"] == 3 for item in yoyo))
+        fake.models.remove(QWEN_IMAGE)
+        unavailable = gateway.capabilities("yoyoclaw", QWEN_IMAGE)
+        self.assertEqual(unavailable["reason"], "model_unavailable")
+        self.assertEqual(unavailable["initial_text"], "unknown")
+
+    def test_provider_failure_persists_and_logs_safe_correlated_fields(self):
+        self.failure["front"] = ProviderGatewayError(
+            "provider rejected", code="OutputImageSensitiveContentDetected.PolicyViolation",
+            category="provider", provider="yoyoclaw", operation="image_generation",
+            status=400, provider_message="Rejected token=private-value", request_id="request-safe-1",
+        )
+        output = StringIO()
+        with mock.patch("sys.stderr", output):
+            created = self.create(design_provider="yoyoclaw", design_model=QWEN_IMAGE)
+            plan = self.plan(created)
+            self.execute(plan)
+            self.drain()
+            group = self.repository.load(created["id"])
+        attempt = self.application.operation(group["id"], plan["id"])["attempts"]["front"]
+        error = attempt["error"]
+        self.assertEqual(error["code"], "OutputImageSensitiveContentDetected.PolicyViolation")
+        self.assertEqual(error["http_status"], 400)
+        self.assertEqual(error["request_id"], "request-safe-1")
+        self.assertIn("<redacted>", error["provider_message"])
+        event = next(json.loads(line) for line in output.getvalue().splitlines()
+                     if "advanced_multiview.image.failed" in line)
+        self.assertEqual(event["operation_id"], plan["id"])
+        self.assertEqual(event["attempt_id"], attempt["id"])
+        self.assertEqual(event["view"], "front")
+        self.assertEqual(event["http_status"], 400)
+        self.assertNotIn("private-value", output.getvalue())
 
     def test_candidate_receipt_failure_recovers_immutable_version_without_generation(self):
         group = self.create()
@@ -919,6 +1294,7 @@ class MultiviewTests(unittest.TestCase):
         group = self.create(); plan = self.plan(group)
         runtime = AdvancedMultiviewRuntime.__new__(AdvancedMultiviewRuntime)
         runtime.repository, runtime.workflow, runtime.application = self.repository, self.workflow, self.application
+        runtime.models = None
         self.assertFalse(runtime.reconcile(group["id"], plan["id"])["accepted"])
         with self.assertRaises(RequestError) as result:
             self.execute(plan)
