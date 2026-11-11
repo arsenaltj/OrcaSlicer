@@ -150,6 +150,7 @@ def _persist_job(job: Job, *, touch: bool = True, required: bool = False) -> Non
         "palette_recommendation": job.palette_recommendation,
         "palette_recommendation_confirmed": job.palette_recommendation_confirmed,
         "generate_image": job.generate_image,
+        "retired_workflow": job.retired_workflow,
         "attempts": job.attempts,
         "updated_at": job.updated_at,
     }
@@ -242,6 +243,7 @@ def _load_job(directory: Path) -> Job | None:
     job.user_prompt = str(payload.get("user_prompt", ""))
     job.prepared_prompt = str(payload.get("prepared_prompt", ""))
     job.generate_image = payload.get("generate_image") is True
+    job.retired_workflow = payload.get("portrait_print") is True or payload.get("retired_workflow") is True
     job.input_path = _job_file(job, payload.get("input_path"))
     job.raw_preview_path = _job_file(job, payload.get("raw_preview_path"))
     job.strict_preview_path = _job_file(job, payload.get("strict_preview_path"))
@@ -287,4 +289,8 @@ def _load_job(directory: Path) -> Job | None:
         job.updated_at = float(payload.get("updated_at", state_path.stat().st_mtime))
     except (TypeError, ValueError, OSError):
         job.updated_at = time.time()
+    if job.retired_workflow:
+        job.state = "stopped"
+        job.phase = "workflow_removed"
+        job.message = "This workflow was removed. Saved images and models remain available in history."
     return job

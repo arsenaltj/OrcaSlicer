@@ -125,7 +125,7 @@ class DesignWorkflow:
         except ValueError as exc:
             self.ports.fail(job, str(exc))
         except OpenAIPreprocessorError as exc:
-            if job.workflow_mode == "smart" or not self.ports.fallback_enabled():
+            if job.workflow_mode == 'smart' or not self.ports.fallback_enabled():
                 self.ports.fail_preprocess(job, exc)
             else:
                 with self.ports.lock:
@@ -233,8 +233,7 @@ class DesignWorkflow:
                         "status": "unavailable", "warnings": ["reference_quality_unavailable"],
                         "physical_print_qualified": False,
                     }
-            else:
-                self.ports.assess_preview(job, input_path)
+            self.ports.assess_preview(job, input_path)
             (job.directory / "preview-colors.json").write_text(
                 json.dumps(
                     {

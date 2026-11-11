@@ -35,6 +35,7 @@ struct BeautyPartitionSnapshot {
     std::shared_ptr<const AI::BeautySurface> surface;
     std::optional<AI::BeautyPuzzle> puzzle;
     uint32_t selected {0};
+    std::vector<uint32_t> selected_pieces;
     std::string canonical_geometry_id,source_sha256,mapping_sha256;
     AI::SurfaceSelectionPersistence::SelectionState selection;
 };
@@ -142,6 +143,7 @@ public:
     std::function<void(bool)> on_color_blocks_change;
 
 private:
+    void clear_partition_pick_state();
     void on_history_key(wxKeyEvent& event);
     void update_text();
     void wrap_status(wxStaticText* label);
@@ -238,6 +240,7 @@ private:
     std::shared_ptr<const BeautyPartitionSnapshot> m_pending_partition_snapshot;
     std::optional<AI::BeautyPuzzle> m_partition;
     uint32_t m_selected_piece {0};
+    std::vector<uint32_t> m_selected_pieces;
     std::shared_ptr<PartitionTask> m_partition_task;
     bool m_partition_semantics_attempted {false};
     bool m_automatic_partition_started {false};

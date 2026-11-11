@@ -297,6 +297,9 @@ class ModelGenerationWorkflow:
                         provider_error_category=exc.category,
                         provider_error_retryable=exc.retryable,
                         provider_error_ambiguous=exc.ambiguous,
+                        provider_terminal_failure=exc.terminal and exc.task_id ==
+                            job.attempts[active_attempt - 1].get("generation_task_id"),
+                        terminal_task_id=exc.task_id if exc.terminal else "",
                     )
                 self.ports.fail(job, str(exc))
         except TripoError as exc:

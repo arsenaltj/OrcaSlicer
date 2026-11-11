@@ -238,6 +238,9 @@ class Job:
     palette_recommendation: dict[str, Any] = field(default_factory=dict)
     palette_recommendation_confirmed: bool = False
     generate_image: bool = False
+    # Explicit opt-in. Ordinary/legacy design routes keep unrestricted creation.
+    retired_workflow: bool = False  # Historical removed workflows remain readable, never executable.
+    # In-memory permission only: loading a saved job never authorizes a new paid retry.
     attempts: list[dict[str, Any]] = field(default_factory=list)
     updated_at: float = field(default_factory=time.time)
     design_started_monotonic: float | None = field(default=None, repr=False)

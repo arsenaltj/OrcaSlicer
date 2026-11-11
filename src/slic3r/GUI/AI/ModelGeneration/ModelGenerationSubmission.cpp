@@ -98,6 +98,46 @@ void classify_submission_error(const std::string& error, std::string& code, std:
 
 } // namespace
 
+ModelGenerationSubmissionResult ModelGenerationPanel::request_generate_design()
+{
+    if (!can_generate_design_from_shell())
+        return ModelGenerationSubmissionResult::Rejected;
+    m_last_submission = ModelGenerationSubmissionResult::Rejected;
+    m_smart_mode = false; m_smart_flow.stop();
+    wxCommandEvent event;
+    on_preprocess(event);
+    return m_last_submission;
+}
+
+ModelGenerationSubmissionResult ModelGenerationPanel::request_generate_model()
+{
+    const bool reuse_ready_model = can_reuse_ready_model_design();
+    if (m_shutdown || !m_page_initialized || m_generate == nullptr ||
+        (!m_generate->IsEnabled() && !reuse_ready_model))
+        return ModelGenerationSubmissionResult::Rejected;
+    m_last_submission = ModelGenerationSubmissionResult::Rejected;
+    wxCommandEvent event;
+    on_generate(event);
+    const bool submitted = m_journey_model_submitted;
+    if (submitted) {
+        m_ui_model_generation_context = true;
+        publish_ui_state();
+    }
+    // on_generate() may be cancelled by the confirmation dialog or rejected
+    // by a final input/options check. Callers use this result to avoid
+    // locking the Shell on a 3D page when no model task was actually started.
+    return m_last_submission;
+}
+
+bool ModelGenerationPanel::request_stop()
+{
+    if (m_shutdown || !m_page_initialized || m_stop == nullptr || (!m_stop->IsEnabled() && !(m_smart_mode && m_busy)))
+        return false;
+    wxCommandEvent event;
+    on_stop(event);
+    return true;
+}
+
 bool ModelGenerationPanel::request_generate_smart()
 {
     if (m_provider_error_ambiguous && job_inputs_match()) {
@@ -197,7 +237,7 @@ void ModelGenerationPanel::apply_smart_ui_state(ModelGenerationUIState& state)
                 weak->m_smart_dispatch_pending = false;
                 if (weak->m_shutdown || weak->m_smart_flow.flow_id != flow ||
                     !weak->m_smart_flow.claim_geometry(weak->m_ui_state.can_generate_model && weak->job_inputs_match())) return;
-                if (!weak->request_generate_model()) {
+                if (!submission_accepted(weak->request_generate_model())) {
                     weak->m_smart_flow.stop();
                     weak->m_status->SetLabel(_L("模型提交未完成，请检查输入和服务后重试。"));
                     weak->publish_ui_state();
@@ -209,6 +249,7 @@ void ModelGenerationPanel::apply_smart_ui_state(ModelGenerationUIState& state)
 
 void ModelGenerationPanel::on_generate(wxCommandEvent&)
 {
+    m_last_submission = ModelGenerationSubmissionResult::Rejected;
     if (!input_editable() || !generation_provider_available("geometry")) return;
     if (!generation_options_valid()) {
         show_input_hint(_L("200 万面需要选择精细几何。"));
@@ -236,8 +277,9 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
     message += _L("\n停止：只停止本地等待；已提交的远端任务可能继续运行并计费。");
     const SubmissionContext confirmation_context {source_job_id, confirmed_options.provider, m_sequence};
     const auto confirmed_prompt = m_prepared_prompt->GetValue();
-    if (!m_smart_mode && show_generation_confirmation(this, message, _L("确认生成3D模型"), 189) != wxID_YES)
-        return;
+    if (!m_smart_mode && show_generation_confirmation(this, message, _L("确认生成3D模型"), 189) != wxID_YES) {
+        m_last_submission = ModelGenerationSubmissionResult::Cancelled; return;
+    }
     // The modal pumps events: restore, service loss or a late status may have
     // changed the job while the user was reading the confirmation.
     const auto current_options = current_generation_options();
@@ -256,6 +298,7 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
         return;
     }
     if (m_local_image_history || can_reuse_ready_model) {
+        m_last_submission = ModelGenerationSubmissionResult::Pending;
         m_design_history_loading = true;
         const uint64_t history_sequence = ++m_design_history_sequence;
         m_busy = true;
@@ -338,6 +381,7 @@ void ModelGenerationPanel::update_progress(int value, int step, const wxString& 
 
 void ModelGenerationPanel::submit_confirmed_model()
 {
+    m_last_submission = ModelGenerationSubmissionResult::Submitted;
     const bool image_mode = m_job_preview_expected;
     if (image_mode)
         m_client.record_journey_event("preview_accepted", m_job_id);
@@ -426,9 +470,7 @@ bool ModelGenerationPanel::request_open_history(const std::string& job_id)
         return false;
     const auto entry = std::find_if(m_library_entries.begin(), m_library_entries.end(),
         [&job_id](const GeneratedModelEntry& candidate) { return candidate.job_id == job_id; });
-    const auto metadata = read_json(generated_models_root() / job_id / "job.json");
-    if (entry == m_library_entries.end() || (metadata.is_object() &&
-        metadata.value("workflow_mode", std::string()) == "smart")) {
+    if (entry == m_library_entries.end()) {
         reset(false); m_smart_flow = SmartGenerationFlow();
         const auto sequence = ++m_sequence;
         wxWeakRef<ModelGenerationPanel> weak(this);
@@ -443,11 +485,10 @@ bool ModelGenerationPanel::request_open_history(const std::string& job_id)
         });
         return true;
     }
-    load_library_entry(entry->model_path, entry->reference_image_path, entry->ai_image_path,
+    return load_library_entry(entry->model_path, entry->reference_image_path, entry->ai_image_path,
                        entry->palette, entry->palette_roles, entry->use_printable_colors,
                        entry->color_intent_path, entry->color_intent_schema,
-                       entry->color_intent_sha256, entry->job_id, entry->title);
-    return true;
+                       entry->color_intent_sha256, entry->job_id, entry->title, false, entry->repair_index);
 }
 
 bool ModelGenerationPanel::request_retry_model()

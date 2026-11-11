@@ -7,15 +7,53 @@
 #include <algorithm>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/filesystem/path.hpp>
+#include <cmath>
+#include <limits>
 
 namespace Slic3r::GUI {
+
+enum class WorkbenchCoordinateUnit : uint8_t { Millimeters, Meters };
 
 // Parsers and geometry are independent of Orca's main-thread object IDs.
 struct DecodedWorkbenchModel {
     TriangleMesh mesh;
     ObjInfo colors;
     std::shared_ptr<TexturedMesh> texture;
+    WorkbenchCoordinateUnit coordinate_unit {WorkbenchCoordinateUnit::Millimeters};
 };
+
+// Assimp exposes glTF positions in metres while Orca's editable geometry and
+// OBJ writers use millimetres. Consumers which publish geometry directly (as
+// opposed to assemble_workbench_model) must cross this boundary exactly once.
+inline bool normalize_decoded_workbench_model_to_millimeters(
+    DecodedWorkbenchModel& decoded, std::string& error)
+{
+    if (decoded.coordinate_unit == WorkbenchCoordinateUnit::Millimeters) return true;
+    constexpr double scale = 1000.0;
+    const auto scalable = [](double value) {
+        return std::isfinite(value) &&
+            std::abs(value) <= double(std::numeric_limits<float>::max()) / scale;
+    };
+    for (const auto& vertex : decoded.mesh.its.vertices)
+        for (int axis = 0; axis < 3; ++axis)
+            if (!scalable(vertex[axis])) {
+                error = "The decoded model contains an invalid position.";
+                return false;
+            }
+    if (decoded.texture) for (const auto& vertex : decoded.texture->vertices)
+        for (float value : vertex)
+            if (!scalable(value)) {
+                error = "The decoded texture mesh contains an invalid position.";
+                return false;
+            }
+    for (auto& vertex : decoded.mesh.its.vertices)
+        for (int axis = 0; axis < 3; ++axis)
+            vertex[axis] = float(double(vertex[axis]) * scale);
+    if (decoded.texture) for (auto& vertex : decoded.texture->vertices)
+        for (float& value : vertex) value = float(double(value) * scale);
+    decoded.coordinate_unit = WorkbenchCoordinateUnit::Millimeters;
+    return true;
+}
 
 inline bool decode_workbench_model(const boost::filesystem::path& path, DecodedWorkbenchModel& decoded,
     std::string& error, const std::function<bool()>& canceled = {}, bool explicit_obj_colors = false)
@@ -65,6 +103,7 @@ inline bool decode_workbench_model(const boost::filesystem::path& path, DecodedW
         // Keep printable geometry and appearance in the original frame.
         // Workbench placement moves the native double transformation.
     } else if (boost::algorithm::iequals(path.extension().string(), ".glb")) {
+        decoded.coordinate_unit = WorkbenchCoordinateUnit::Meters;
         auto texture = std::make_shared<TexturedMesh>();
         if (!load_assimp_textured_model(path.string(), *texture, &error) || stopped()) return false;
         indexed_triangle_set its;

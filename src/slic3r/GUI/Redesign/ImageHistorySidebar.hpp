@@ -17,6 +17,7 @@ public:
     void refresh_history();
     void set_busy(bool busy);
     void set_selected(const std::string& job_id);
+    void fit_to_page_width(int width);
 
 private:
     struct Impl;

@@ -78,6 +78,8 @@ public:
         std::string parent_repair_status;
         nlohmann::json parent_repair_audit;
         bool analysis_only {false};
+        bool source_region_failure {false};
+        std::string semantic_fallback_reason;
     };
     ModelSemanticColoring(std::filesystem::path runtime, std::filesystem::path cache);
     ~ModelSemanticColoring();
@@ -96,8 +98,10 @@ public:
                  bool analysis_only = false,
                  bool color_block_postprocess = false,
                  std::map<std::string, size_t> fixed_role_slots = {},
-                 std::string request_context = {});
+                 std::string request_context = {},
+                  std::shared_ptr<const NativePortrait::NativePortraitPartition> native_partition = {});
     void cancel();
+    void cancel_and_wait();
     std::unique_ptr<Result> poll();
     bool busy() const;
     int progress() const;

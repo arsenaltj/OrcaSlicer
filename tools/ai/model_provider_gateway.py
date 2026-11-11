@@ -90,6 +90,8 @@ class ProviderGatewayError(RuntimeError):
         operation: str = "",
         retryable: bool = False,
         ambiguous: bool = False,
+        task_id: str = "",
+        terminal: bool = False,
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -98,6 +100,7 @@ class ProviderGatewayError(RuntimeError):
         self.operation = operation
         self.retryable = retryable
         self.ambiguous = ambiguous
+        self.task_id, self.terminal = task_id, terminal
 
 
 class PaidTaskAuthorization:
@@ -169,6 +172,9 @@ def _classify_tripo_error(
     retryable = False
     ambiguous = False
     upload_operation = operation.endswith("_input_upload")
+    if error.terminal:
+        return ProviderGatewayError(message, code="provider_task_failed", category="provider",
+            provider="tripo", operation=operation, retryable=True, task_id=error.task_id, terminal=True)
     if "not configured" in lowered:
         code, category = "provider_not_configured", "configuration"
     elif "rate limiting" in lowered or "rate limit" in lowered:

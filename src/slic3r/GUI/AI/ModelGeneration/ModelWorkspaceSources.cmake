@@ -1,6 +1,18 @@
 # Model capability and compatibility-view membership is explicit.
 set(ORCA_MODEL_WORKSPACE_SOURCES
     GUI/AI/ModelGeneration/ModelGenerationUIState.cpp
+    GUI/AI/ModelGeneration/NativeWorkbenchPartition.cpp
+    GUI/AI/ModelGeneration/NativeWorkbenchPublication.hpp
+    GUI/AI/ModelGeneration/ModelGenerationSubmissionResult.hpp
+    GUI/AI/ModelGeneration/WorkbenchArtifactValidation.hpp
+    GUI/AI/ModelGeneration/PortraitNativeCheckpoint.hpp
+    GUI/AI/ModelGeneration/ModelOriginalSurfaceSampler.hpp
+    GUI/AI/ModelGeneration/PortraitNativePartition.hpp
+    GUI/AI/ModelGeneration/PortraitNativePartition.cpp
+    GUI/AI/ModelGeneration/PortraitSuiteBinding.hpp
+    GUI/AI/ModelGeneration/ModelHistoryRepairIndex.hpp
+    GUI/AI/ModelGeneration/ModelHistoryOpen.hpp
+    GUI/AI/ModelGeneration/ModelHistoryPreview.hpp
     GUI/AI/ModelGeneration/ModelLibraryEntry.hpp
     GUI/AI/ModelGeneration/ModelLibraryRepository.hpp
     GUI/AI/ModelGeneration/ModelLibraryRepository.cpp
@@ -22,6 +34,7 @@ set(ORCA_MODEL_WORKSPACE_SOURCES
     GUI/AI/ColorMatching/ColorMatchingFeatureHost.hpp
     GUI/AI/ColorMatching/ColorMatchingFeatureHost.cpp
     GUI/ModelGenerationPanel.cpp
+    GUI/AI/ModelGeneration/ModelGenerationHistoryOpen.cpp
     GUI/AI/ModelGeneration/ModelGenerationLibraryView.cpp
     GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp
     GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp
@@ -34,5 +47,6 @@ set(ORCA_MODEL_WORKSPACE_SOURCES
     GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp
     GUI/AI/ModelGeneration/ModelGenerationStatusText.hpp
     GUI/AI/ModelGeneration/ModelPreview3D.hpp
+    GUI/AI/ModelGeneration/ModelPreviewCamera.hpp
     GUI/AI/ModelGeneration/ModelPreviewColorState.hpp
 )

@@ -54,10 +54,13 @@ add_executable(${_TEST_NAME}_tests
     test_mesh_raycaster.cpp
     test_font_texture_compression.cpp
     test_model_library_metadata.cpp
+    test_model_history_open.cpp
     test_atomic_model_capabilities.cpp
     test_model_library_filter.cpp
     test_model_library_export.cpp
     test_model_generation_submission_state.cpp
+    test_workbench_artifact_validation.cpp
+    test_portrait_suite_binding.cpp
     test_local_print_color_matching.cpp
     test_local_print_color_recipes.cpp
     test_local_print_color_boundary.cpp

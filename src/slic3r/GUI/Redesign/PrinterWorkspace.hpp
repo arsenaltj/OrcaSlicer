@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdint>
 #include <ctime>
+#include <functional>
 #include <map>
 #include <memory>
 #include <boost/shared_ptr.hpp>
@@ -43,6 +44,10 @@ public:
     void show_monitor();
     void show_media();
     void refresh_state();
+    void set_return_to_preview_handler(std::function<void()> handler);
+    wxPanel* preview_host() const { return m_interactive_host; }
+    void set_interactive_preview_handler(std::function<bool(bool, bool, bool)> handler);
+    void set_preparation_notice(const wxString& notice);
     bool monitoring() const;
     void apply_ai_theme(bool update_fonts) override;
 
@@ -109,6 +114,7 @@ private:
     std::string m_open_after_download;
     wxString m_snapshot_request_path;
     wxString m_media_message;
+    wxString m_preparation_notice, m_action_error;
     std::map<wxString, std::pair<std::time_t, wxBitmap>> m_local_thumbnails;
     wxWebRequest m_snapshot_request;
     int m_snapshot_request_id { wxID_ANY };
@@ -122,6 +128,10 @@ private:
     wxPanel* m_stage { nullptr };
     wxPanel* m_video_panel { nullptr };
     wxPanel* m_prepare_visual { nullptr };
+    wxPanel* m_interactive_host { nullptr };
+    wxPanel* m_preview_controls { nullptr };
+    bool m_layer_preview {false}, m_show_support {true};
+    std::function<bool(bool, bool, bool)> m_interactive_preview;
     wxPanel* m_media_visual { nullptr };
     wxPanel* m_gallery { nullptr };
     wxScrolledWindow* m_gallery_scroll { nullptr };
@@ -146,6 +156,8 @@ private:
     RoundedActionButton* m_start { nullptr };
     RoundedActionButton* m_import { nullptr };
     RoundedActionButton* m_prepare_back { nullptr };
+    RoundedActionButton* m_preview_back { nullptr };
+    std::function<void()> m_return_to_preview;
     RoundedActionButton* m_file_toggle { nullptr };
     RoundedActionButton* m_pause { nullptr };
     RoundedActionButton* m_stop { nullptr };

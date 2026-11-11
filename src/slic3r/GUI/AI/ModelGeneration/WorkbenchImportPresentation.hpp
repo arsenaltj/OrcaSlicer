@@ -3,6 +3,14 @@
 #include <algorithm>
 
 namespace Slic3r::GUI {
+// The AI settings are a sibling of the content host. Retain their union,
+// including the gap, while leaving the fixed navigation outside the cover.
+inline wxRect workbench_retained_page_bounds(wxRect content, const wxRect& settings)
+{
+    if (!settings.IsEmpty()) content.Union(settings);
+    return content;
+}
+
 // All coordinates belong to the content host. Restrict feedback to the actual
 // viewport, including a horizontally scrolled or partially clipped workbench.
 inline wxRect workbench_import_feedback_bounds(wxRect viewport, const wxRect& content)

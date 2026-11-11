@@ -505,6 +505,13 @@ public:
     }
 
     libvgcode::EViewType get_view_type() const { return m_viewer.get_view_type(); }
+    void set_support_visibility(bool visible) {
+        for (auto role : {libvgcode::EGCodeExtrusionRole::SupportMaterial,
+                libvgcode::EGCodeExtrusionRole::SupportMaterialInterface,
+                libvgcode::EGCodeExtrusionRole::SupportTransition})
+            if (m_viewer.is_extrusion_role_visible(role) != visible)
+                m_viewer.toggle_extrusion_role_visibility(role);
+    }
 
     // ORCA: darken the layers not scrubbed to while using the preview layer slider
     void set_dim_previous_layers(bool value) { m_viewer.set_dim_previous_layers(value); }

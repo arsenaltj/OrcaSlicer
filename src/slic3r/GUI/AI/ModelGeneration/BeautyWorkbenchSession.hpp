@@ -53,6 +53,10 @@ public:
     void track_candidate(const boost::filesystem::path& path) {
         if (!path.empty()) m_candidate_files.push_back(path);
     }
+    void forget_candidate(const boost::filesystem::path& path) {
+        m_candidate_files.erase(std::remove(m_candidate_files.begin(), m_candidate_files.end(), path),
+            m_candidate_files.end());
+    }
     // Also used during shutdown when publication completed before its UI
     // callback. Only session-owned appearance carriers may be retained.
     void preserve_publication(const boost::filesystem::path& candidate,

@@ -10,6 +10,7 @@
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
 #include "WorkbenchModelInspection.hpp"
 #include "WorkbenchImportEligibility.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchNativeImportTopology.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include <wx/weakref.h>
@@ -20,6 +21,7 @@
 #include <wx/tglbtn.h>
 #include <wx/sizer.h>
 #include <wx/msgdlg.h>
+#include <wx/scrolwin.h>
 
 namespace Slic3r::GUI {
 
@@ -68,10 +70,77 @@ wxWindow* ModelGenerationPanel::workbench_import_viewport() const
 }
 wxWindow* ModelGenerationPanel::workbench_import_history() const { return m_workbench_history_panel; }
 
+void ModelGenerationPanel::toggle_workbench_history()
+{
+    if (m_workbench_import_feedback || m_workbench_import_running) return;
+    m_workbench_history_state.toggle(m_workbench_history_sidebar_mounted, m_workbench_editing);
+    if (m_workbench_history_sidebar_mounted) {
+        layout_mounted_workbench_history_sidebar();
+        return;
+    }
+    if (!m_workbench_editing) {
+        update_workbench_history_visibility();
+        if (m_workbench_history_panel->IsShown()) reveal_workbench_history();
+        else m_workbench_shell->Layout();
+        queue_workbench_surface_refresh();
+        return;
+    }
+    m_workbench_editing = false;
+    update_finishing_selection();
+    refresh_model_finishing(); refresh_post_generation_workbench();
+    reveal_workbench_history();
+}
+
+bool ModelGenerationPanel::update_workbench_history_visibility()
+{
+    if (!m_workbench_history_panel || !m_workbench_history_toggle ||
+        (m_workbench_history_home && !m_workbench_history_sidebar_mounted)) return false;
+    const bool mounted = m_workbench_history_sidebar_mounted;
+    auto* toggle = mounted ? m_creation_history_toggle.get() : m_workbench_history_toggle;
+    if (!toggle) return false;
+    const bool open = m_workbench_history_state.panel_visible(mounted, m_finishing_workbench, m_workbench_editing);
+    bool changed = false;
+    if (!m_workbench_import_feedback && m_workbench_history_panel->IsShown() != open)
+        changed = m_workbench_history_panel->Show(open);
+    const bool show_toggle = mounted || m_finishing_workbench;
+    if (toggle->IsShown() != show_toggle)
+        changed = toggle->Show(show_toggle) || changed;
+    const bool return_history = !mounted && m_workbench_editing;
+    const wxString action = return_history ? _L("返回历史模型") :
+        open ? _L("收起历史模型") : _L("展开历史模型");
+    if (toggle->GetName() != action) toggle->SetName(action);
+    if (!toggle->GetToolTip() || toggle->GetToolTipText() != action)
+        toggle->SetToolTip(action);
+    static_cast<WorkbenchButton*>(toggle)->set_drawer_open(return_history || open);
+    toggle->Enable(!m_workbench_import_feedback && !m_workbench_import_running);
+    return changed;
+}
+
+void ModelGenerationPanel::reveal_workbench_history()
+{
+    if (!m_finishing_workbench || m_workbench_history_sidebar_mounted || m_workbench_history_home ||
+        !m_workbench_history_panel || !m_workbench_history_panel->IsShown() || !m_workbench_shell) return;
+    auto* shell = static_cast<wxScrolledWindow*>(m_workbench_shell);
+    shell->Layout();
+    const auto client = shell->GetClientSize();
+    if (client.x <= 0 || client.y <= 0) return;
+    const auto left = shell->ScreenToClient(m_workbench_history_panel->ClientToScreen(wxPoint())).x;
+    int x, y, unit_x, unit_y;
+    shell->GetViewStart(&x, &y);
+    shell->GetScrollPixelsPerUnit(&unit_x, &unit_y);
+    const int target = workbench_history_scroll_target(client.x, left,
+        m_workbench_history_panel->GetSize().x, x, unit_x,
+        shell->FromDIP(workbench_history_handle_size()).x);
+    if (target != x) shell->Scroll(target, -1);
+    queue_workbench_surface_refresh();
+}
+
 void ModelGenerationPanel::mount_workbench_import_history(wxWindow* parent)
 {
     if (!parent || !m_workbench_history_panel || m_workbench_history_home) return;
+    m_workbench_import_history_was_shown = m_workbench_history_panel->IsShown();
     m_workbench_history_home = m_workbench_history_panel->GetParent();
+    m_workbench_history_toggle->Hide();
     if (auto* sizer = m_workbench_history_panel->GetContainingSizer()) sizer->Detach(m_workbench_history_panel);
     m_workbench_history_panel->Reparent(parent);
     parent->GetSizer()->Add(m_workbench_history_panel, 1, wxEXPAND);
@@ -81,14 +150,20 @@ void ModelGenerationPanel::mount_workbench_import_history(wxWindow* parent)
 
 void ModelGenerationPanel::restore_workbench_import_history()
 {
+    if (m_workbench_history_sidebar_mounted) {
+        restore_workbench_history_sidebar();
+        return;
+    }
     if (!m_workbench_history_home) return;
     if (auto* sizer = m_workbench_history_panel->GetContainingSizer()) sizer->Detach(m_workbench_history_panel);
     m_workbench_history_panel->Reparent(m_workbench_history_home);
     m_workbench_history_home->GetSizer()->Add(m_workbench_history_panel, 0,
         wxEXPAND | wxTOP | wxBOTTOM | wxLEFT, FromDIP(12));
-    m_workbench_history_panel->Show(m_workbench_import_history_was_shown);
-    m_workbench_history_home->Layout();
+    auto* home = m_workbench_history_home;
     m_workbench_history_home = nullptr;
+    update_workbench_history_visibility();
+    home->Layout();
+    layout_workbench_history_toggle(true);
 }
 
 void ModelGenerationPanel::mount_workbench_history_sidebar(wxWindow* parent)
@@ -102,31 +177,30 @@ void ModelGenerationPanel::mount_workbench_history_sidebar(wxWindow* parent)
     m_workbench_history_sidebar_host = parent;
     m_workbench_history_home = m_workbench_history_panel->GetParent();
     m_workbench_import_history_was_shown = m_workbench_history_panel->IsShown();
-    m_workbench_history_toggle_home = m_workbench_history_toggle->GetParent();
-    m_workbench_history_toggle_home_rect = m_workbench_history_toggle->GetRect();
-    m_workbench_history_toggle_home_min_size = m_workbench_history_toggle->GetMinSize();
-    m_workbench_history_toggle_home_max_size = m_workbench_history_toggle->GetMaxSize();
-    m_workbench_history_search_home_min_size = m_workbench_history_search->GetParent()->GetMinSize();
-    m_workbench_history_search_home_max_size = m_workbench_history_search->GetParent()->GetMaxSize();
-    m_workbench_history_toggle_was_shown = m_workbench_history_toggle->IsShown();
+    auto* search_home = m_workbench_history_search->GetParent();
+    m_workbench_history_search_home_min_size = search_home->ToDIP(search_home->GetMinSize());
+    m_workbench_history_search_home_max_size = search_home->ToDIP(search_home->GetMaxSize());
 
     if (auto* sizer = m_workbench_history_panel->GetContainingSizer())
         sizer->Detach(m_workbench_history_panel);
-    if (auto* sizer = m_workbench_history_toggle->GetContainingSizer())
-        sizer->Detach(m_workbench_history_toggle);
-    m_workbench_history_toggle->Reparent(parent);
+    // Keep each page's handle in its permanent native parent. Reparenting a
+    // painted handle through a hidden host can leave its visible surface blank.
+    if (!m_creation_history_toggle) {
+        auto* toggle = new WorkbenchButton(parent, wxEmptyString);
+        toggle->SetCornerRadius(0);
+        toggle->SetPaddingSize(FromDIP(wxSize(0, 0)));
+        toggle->SetBackgroundColour(wxColour(49, 49, 54));
+        toggle->set_drawer_assets();
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        toggle->Bind(wxEVT_BUTTON, [weak](wxCommandEvent&) {
+            if (weak && !weak->m_shutdown) weak->toggle_workbench_history();
+        });
+        parent->GetSizer()->Add(toggle, 0, wxALIGN_CENTER_VERTICAL);
+        m_creation_history_toggle = toggle;
+    }
     m_workbench_history_panel->Reparent(parent);
-    parent->GetSizer()->Add(m_workbench_history_toggle, 0, wxALIGN_CENTER_VERTICAL);
     parent->GetSizer()->Add(m_workbench_history_panel, 1, wxEXPAND);
 
-    m_workbench_history_collapsed = false;
-    m_workbench_history_user_open = true;
-    m_workbench_history_toggle->Show();
-    m_workbench_history_panel->Show();
-    auto* toggle = static_cast<WorkbenchButton*>(m_workbench_history_toggle);
-    toggle->set_drawer_open(true);
-    m_workbench_history_toggle->SetName(_L("收起历史模型"));
-    m_workbench_history_toggle->SetToolTip(_L("收起历史模型"));
     layout_mounted_workbench_history_sidebar();
     load_library_entries(true);
     refresh_workbench_history();
@@ -135,13 +209,17 @@ void ModelGenerationPanel::mount_workbench_history_sidebar(wxWindow* parent)
 void ModelGenerationPanel::layout_mounted_workbench_history_sidebar()
 {
     if (!m_workbench_history_sidebar_mounted || !m_workbench_history_sidebar_host ||
-        !m_workbench_history_panel || !m_workbench_history_toggle || !m_workbench_history_search)
+        !m_workbench_history_panel || !m_creation_history_toggle || !m_workbench_history_search)
         return;
 
-    const wxSize toggle_size = FromDIP(wxSize(18, 42));
-    m_workbench_history_toggle->SetMinSize(toggle_size);
-    m_workbench_history_toggle->SetMaxSize(toggle_size);
-    m_workbench_history_toggle->SetSize(toggle_size);
+    update_workbench_history_visibility();
+    const wxSize toggle_size = m_workbench_history_sidebar_host->FromDIP(workbench_history_handle_size());
+    auto* toggle = m_creation_history_toggle.get();
+    if (toggle->GetMinSize() != toggle_size)
+        static_cast<WorkbenchButton*>(toggle)->rescale_workbench();
+    toggle->SetMinSize(toggle_size);
+    toggle->SetMaxSize(toggle_size);
+    toggle->SetSize(toggle_size);
 
     auto* search = m_workbench_history_search->GetParent();
     search->SetMinSize(FromDIP(wxSize(212, 32)));
@@ -152,7 +230,7 @@ void ModelGenerationPanel::layout_mounted_workbench_history_sidebar()
     search->Refresh(false);
     m_workbench_history_search->Refresh(false);
 
-    const bool open = m_workbench_history_panel->IsShown();
+    const bool open = m_workbench_history_state.creation_open;
     const int panel_width = std::max(0, m_workbench_history_panel->GetMinSize().x);
     m_workbench_history_sidebar_host->SetMinSize(wxSize(open ? toggle_size.x + panel_width : toggle_size.x, -1));
     m_workbench_history_sidebar_host->InvalidateBestSize();
@@ -169,21 +247,12 @@ void ModelGenerationPanel::restore_workbench_history_sidebar()
         return;
 
     auto* sidebar_host = m_workbench_history_sidebar_host;
-    if (auto* sizer = m_workbench_history_toggle->GetContainingSizer())
-        sizer->Detach(m_workbench_history_toggle);
-    if (m_workbench_history_toggle_home) {
-        m_workbench_history_toggle->Reparent(m_workbench_history_toggle_home);
-        m_workbench_history_toggle->SetMinSize(m_workbench_history_toggle_home_min_size);
-        m_workbench_history_toggle->SetMaxSize(m_workbench_history_toggle_home_max_size);
-        m_workbench_history_toggle->SetSize(m_workbench_history_toggle_home_rect);
-        m_workbench_history_toggle->Show(m_workbench_history_toggle_was_shown);
-    }
+    if (m_creation_history_toggle) m_creation_history_toggle->Hide();
     if (m_workbench_history_search) {
         auto* search = m_workbench_history_search->GetParent();
-        search->SetMinSize(m_workbench_history_search_home_min_size);
-        search->SetMaxSize(m_workbench_history_search_home_max_size);
+        search->SetMinSize(search->FromDIP(m_workbench_history_search_home_min_size));
+        search->SetMaxSize(search->FromDIP(m_workbench_history_search_home_max_size));
     }
-    m_workbench_history_toggle_home = nullptr;
     m_workbench_history_sidebar_host = nullptr;
     m_workbench_history_sidebar_mounted = false;
     restore_workbench_import_history();
@@ -289,14 +358,27 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
     state.revision = m_sequence;
     state.asset_id = m_displayed_model_job_id;
     state.model_path = m_displayed_model_path.string();
+    if (native_workbench_context_matches(m_native_workbench_context)) {
+        state.source_sha256 = m_native_workbench_context.source_sha256;
+        state.geometry_id = m_native_workbench_context.geometry_id;
+        state.appearance_id = m_native_workbench_context.appearance_id;
+    }
     state.candidate_path = m_finishing_candidate.string();
     for (const auto& color : local_recolor_palette()) state.palette.push_back(color.color);
+    if (m_model_preview) {
+        const auto trial = m_model_preview->color_trial_state();
+        state.automatic_palette_requested_count = trial.automatic_count > 0
+            ? size_t(trial.automatic_count) : 0;
+        state.automatic_palette_active = workbench_default_ai_palette_ready(
+            trial.enabled, trial.source, trial.automatic_count, !trial.suite_id.empty(),
+            !trial.automatic_basis_signature.empty());
+    }
     state.editing = m_workbench_editing;
     state.workbench_presented = m_workbench_presented;
     state.modal_blocking = workbench_modal_navigation_blocked(m_finishing_workbench,
         m_workbench_presented, m_workbench_honor_semantic_active, m_workbench_check_card_visible,
         m_workbench_check_running, m_workbench_auto_repair && m_finishing_running,
-        m_workbench_check_result);
+        m_native_workbench_partition_running, m_workbench_check_result);
     state.semantic_mode = m_semantic_mode;
     if (m_portrait_task) state.portrait_optimization = m_portrait_task->snapshot();
     state.portrait_enabled = m_portrait_mode;
@@ -341,17 +423,18 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
         state.check.candidate_status == RepairCandidateStatus::Ready;
     const bool topology_safe = workbench_topology_safe(state.check);
     state.can_import_for_slicing = state.actions.can_import && !candidate_pending && !state.dirty && topology_safe;
-    state.force_import_acknowledged = !state.check.model_sha256.empty() &&
-        state.check.status == WorkbenchCheckStatus::Attention &&
-        state.check.force_import_risk &&
-        m_workbench_force_import_ack_revision == state.revision &&
-        m_workbench_force_import_ack_hash == state.check.model_sha256;
-    state.can_force_import = state.actions.can_import && !candidate_pending && !state.dirty &&
-        !state.can_import_for_slicing && state.check.status == WorkbenchCheckStatus::Attention &&
-        state.check.force_import_risk && state.force_import_acknowledged;
-    state.import_has_topology_risk = state.can_force_import;
-    if (state.check.status == WorkbenchCheckStatus::Attention && state.check.force_import_risk)
-        state.import_topology_reason = state.check.summary.empty() ? "模型尚未通过闭合拓扑检查；继续导入仅允许尝试切片。" : state.check.summary;
+    // Portrait v9 has already completed native repair before clustering.
+    // Legacy deferred repair is intentionally never advertised to import.
+    state.deferred_native_repair = false;
+    state.native_repair_source_sha256.clear();
+    // Failed checks never authorize a risky import. Detailed topology remains
+    // available for diagnosis while the user can retry or select another asset.
+    state.force_import_acknowledged = false;
+    state.can_force_import = false;
+    state.import_has_topology_risk = false;
+    if (!m_workbench_check_running && !m_native_workbench_partition_running &&
+        (state.check.status == WorkbenchCheckStatus::Attention || state.check.status == WorkbenchCheckStatus::Invalid))
+        state.check.status = WorkbenchCheckStatus::Failed;
     if (m_model_preview && !m_model_preview->project_matching_valid() &&
         state.printer_filaments.ready && state.can_edit_project_colors) {
         // The old slot identity is only a preference. Import rebuilds an exact
@@ -368,12 +451,15 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
 
 bool ModelGenerationPanel::can_replace_model_asset() const
 {
-    return !m_shutdown && !m_workbench_import_feedback && !m_portrait_draft_before &&
-        !(m_portrait_task && m_portrait_task->snapshot().running()) && post_generation_asset_switch_allowed(m_busy || m_preview_download_in_flight || m_workbench_check_running || m_workbench_import_running,
-        m_finishing_running, (m_beauty_transactions && m_beauty_transactions->processing()) ||
+    return !m_shutdown && !m_history_open && !m_preview_loading && !m_workbench_import_feedback && !m_portrait_draft_before &&
+        !(m_portrait_task && m_portrait_task->snapshot().running()) && post_generation_asset_switch_allowed(
+        m_busy || m_preview_download_in_flight || m_workbench_check_running || m_workbench_import_running,
+        m_finishing_running,
+        (m_beauty_transactions && m_beauty_transactions->processing()) ||
             (m_model_preview && m_model_preview->semantic_processing()),
         !m_finishing_candidate.empty(), m_finishing_before, m_beauty_controls && m_beauty_controls->has_changes());
 }
+
 
 void ModelGenerationPanel::set_workbench_import_running(bool running)
 {
@@ -395,12 +481,18 @@ void ModelGenerationPanel::publish_workbench_state()
 
 void ModelGenerationPanel::set_workbench_presented(bool presented)
 {
+    if (presented && m_workbench_preparing) {
+        queue_workbench_surface_refresh();
+        return;
+    }
     const bool active = presented && !m_shutdown && m_finishing_workbench &&
         m_workbench_shell && m_workbench_shell->IsShownOnScreen();
     if (m_workbench_presented == active) {
         if (active) {
-            ensure_workbench_check();
-            update_workbench_check_card();
+            queue_workbench_surface_refresh();
+            // Resize/restore is a presentation request, not a new model
+            // entry. Schedule missing checks without rehashing the asset.
+            queue_workbench_check();
         }
         return;
     }
@@ -408,6 +500,7 @@ void ModelGenerationPanel::set_workbench_presented(bool presented)
     m_workbench_presented = active;
     ++m_workbench_presentation_sequence;
     if (!active) {
+        if (m_model_preview) m_model_preview->cancel_view_navigation();
         if (m_workbench_check_running && m_workbench_check_cancel)
             m_workbench_check_cancel->store(true);
         m_workbench_check_card_visible = false;
@@ -418,10 +511,28 @@ void ModelGenerationPanel::set_workbench_presented(bool presented)
         m_workbench_honor_semantic_message.clear();
         hide_workbench_check_card();
     } else {
+        reveal_workbench_history();
+        queue_workbench_surface_refresh();
         ensure_workbench_check();
-        update_workbench_check_card();
     }
     publish_workbench_state();
+}
+
+void ModelGenerationPanel::prepare_workbench_presentation(std::function<void()> ready)
+{
+    set_workbench_presented(false);
+    m_workbench_preparing = true;
+    m_workbench_preparation_ready = std::move(ready);
+    reveal_workbench_history();
+    queue_workbench_surface_refresh();
+}
+
+void ModelGenerationPanel::cancel_workbench_presentation()
+{
+    m_workbench_preparing = false;
+    m_workbench_preparation_ready = {};
+    ++m_workbench_surface_revision;
+    if (m_model_preview) m_model_preview->observe_presentation_frame({});
 }
 
 bool ModelGenerationPanel::request_open_workbench()
@@ -440,8 +551,10 @@ bool ModelGenerationPanel::request_open_workbench()
     const bool opening = !m_finishing_workbench;
     if (!m_model_preview_ready) {
         m_workbench_editing = false;
-        m_workbench_history_collapsed = false;
     }
+    // Publish exact ownership before presenting the workbench can start an
+    // automatic check or any partition consumer.
+    publish_native_workbench_context();
     set_finishing_workbench(true);
     if (opening) {
         m_portrait_mode = false;
@@ -535,7 +648,7 @@ void ModelGenerationPanel::complete_return_overview()
 bool ModelGenerationPanel::request_workbench_color_matching()
 {
     const auto state = workbench_snapshot();
-    if ((!state.can_import_for_slicing && !state.can_force_import) || (!m_color_matching && !m_workbench_import)) return false;
+    if ((!state.can_import_for_slicing && !state.can_force_import && !state.deferred_native_repair) || (!m_color_matching && !m_workbench_import)) return false;
     if (!state.check.model_sha256.empty() &&
         AI::model_artifact_sha256(m_displayed_model_path) != state.check.model_sha256) {
         m_workbench_check_result = {};
@@ -564,7 +677,7 @@ bool ModelGenerationPanel::request_workbench_color_matching()
                 const wxString reason = wxString::FromUTF8(compatibility.reason.empty()
                     ? "当前打印机不支持六实体色荣耀耗材套装" : compatibility.reason);
                 const wxString message = _L("当前模型使用荣耀六实体色耗材套装，但打印机配置不兼容。\n\n") + reason +
-                    _L("\n\n推荐将当前真实耗材色映射到模型，此操作不会改变打印机耗材配置。完成后请确认预览并再次点击“导入切片”。");
+                    _L("\n\n推荐将当前真实耗材色映射到模型，此操作不会改变打印机耗材配置。完成后请确认预览并再次点击“去切片”。");
                 const int map_to_model = wxWindow::NewControlId();
                 const int return_to_workbench = wxWindow::NewControlId();
                 RedesignConfirmationOptions options;
@@ -600,7 +713,7 @@ bool ModelGenerationPanel::request_workbench_color_matching()
             const wxString message = _L("当前模型配色和打印机耗材不匹配。\n\n缺少：") + missing +
                 _L("\n\n推荐“将耗材色映射到模型”，此操作不会改变当前打印机耗材配置。\n") +
                 _L("如需保留模型当前配色，请选择“将模型配色导入到耗材”。\n") +
-                _L("处理完成后请再次点击“导入切片”。");
+                _L("处理完成后请再次点击“去切片”。");
             const int map_to_model = wxWindow::NewControlId();
             const int import_to_filaments = wxWindow::NewControlId();
             RedesignConfirmationOptions options;
@@ -624,7 +737,10 @@ bool ModelGenerationPanel::request_workbench_color_matching()
         request.topology_risk_confirmed = state.force_import_acknowledged && !state.can_import_for_slicing;
         request.topology_risk_reason = state.import_topology_reason;
         request.topology_check_sha256 = state.check.model_sha256;
+        request.native_repair_before_slice = state.deferred_native_repair;
+        request.native_repair_source_sha256 = state.native_repair_source_sha256;
         request.apply_round_base_preparation = m_model_preview->round_base_preview_enabled();
+        request.base_binding = m_model_preview->color_trial_state().base_binding;
         if (!workbench_import_request_allowed(state, request)) {
             m_workbench_operation_notice = state.check.status == WorkbenchCheckStatus::Attention
                 ? "请先在检查提示中确认继续导入；当前检查结果只绑定本次模型。"
@@ -635,6 +751,22 @@ bool ModelGenerationPanel::request_workbench_color_matching()
         try {
             prepare_portrait_import(request);
             BeautyWorkbenchControls::prepare_import(m_displayed_model_path, request);
+            nlohmann::json owned_native_reference, owned_native_check;
+            if (native_workbench_context_matches(m_native_workbench_context) &&
+                WorkbenchArtifacts::native_partition_has_exact_mesh(m_native_workbench_partition_reference)) {
+                // Reopened accepted native versions retain their owned checkpoint.
+                owned_native_reference = m_native_workbench_partition_reference;
+                owned_native_check = m_native_workbench_partition_certificate;
+            }
+            if (owned_native_reference.is_object()) {
+                if (m_model_preview->has_native_portrait_partition_conflict() ||
+                    !m_model_preview->import_subface_color_overrides(true).empty() ||
+                    owned_native_reference.at("geometry_id") != m_model_preview->geometry_id() ||
+                    owned_native_reference.at("appearance_id") != m_model_preview->semantic_source_content_id())
+                    throw std::runtime_error("Native portrait import contains uncommitted geometry or subfaces.");
+                freeze_native_import_topology_proof(request,
+                    owned_native_reference, owned_native_check);
+            }
         }
         catch (const std::exception& error) {
             wxMessageBox(wxString::FromUTF8(error.what()), _L("配色确认"), wxOK | wxICON_ERROR, this);
@@ -718,7 +850,7 @@ bool ModelGenerationPanel::request_save_and_return()
     else {
         m_save_and_return = false;
         complete_return_overview();
-        request_check_workbench(true);
+        ensure_workbench_check();
     }
     return true;
 }
@@ -732,7 +864,7 @@ void ModelGenerationPanel::finish_workbench_save()
     } else if (m_finishing_result.success && (!m_beauty_controls || !m_beauty_controls->has_changes())) {
         m_save_and_return = false;
         complete_return_overview();
-        request_check_workbench(true);
+        ensure_workbench_check();
     } else m_save_and_return = false;
 }
 

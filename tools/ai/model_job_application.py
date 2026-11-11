@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import uuid
 import threading
 import hashlib
@@ -38,6 +39,9 @@ from model_request import (
     _normalize_generation_profile,
     _normalize_image_instruction,
     _normalize_print_settings,
+    _normalize_palette,
+    _normalize_palette_color_count,
+    _normalize_palette_roles,
     _normalize_style,
     _text_field,
     _user_image_instruction,
@@ -88,6 +92,8 @@ _smart_create_lock = threading.RLock()
 def _smart_creation(method):
     @wraps(method)
     def execute(self, fields, *args):
+        if _boolean_field(fields.get("portrait_print"), "portrait_print"):
+            raise RequestError("workflow_removed", "Portrait one-click processing has been removed.", 410)
         mode = fields.get("workflow_mode", "advanced")
         if mode not in {"smart", "advanced"}:
             raise RequestError("invalid_request", "Unknown workflow mode.", 400)
@@ -130,7 +136,7 @@ class ModelJobApplication:
             job.flow_id, job.request_id, job.input_fingerprint = metadata
             job.smart_started_at = time.time()
             self.ports.persist(job, required=True)
-        else: self.ports.persist(job)
+        else: self.ports.persist(job, required=False)
 
     def _design_status(self, provider: str, model: str = "") -> dict[str, Any]:
         try:
@@ -155,10 +161,17 @@ class ModelJobApplication:
         handler = commands.get(command)
         if handler is None:
             raise RequestError("not_found", "Model job command not found.", 404)
+        job = self.ports.get_job(job_id)
+        if job is not None and job.retired_workflow and command != "stop":
+            raise RequestError("workflow_removed", "This historical workflow cannot execute. Open its saved assets in the manual workbench.", 410)
         return handler(job_id, request)
 
     @_smart_creation
     def create_text_job(self, request: dict[str, Any]) -> ApplicationResult:
+        return self._create_text_job(request)
+
+
+    def _create_text_job(self, request: dict[str, Any]) -> ApplicationResult:
         design_provider = _design_provider(request)
         design_model = _design_model(request)
         if not self._design_status(design_provider, design_model).get("available", False) and (
@@ -212,6 +225,9 @@ class ModelJobApplication:
 
     @_smart_creation
     def create_image_job(self, fields: dict[str, str], image: bytes, declared_type: str) -> ApplicationResult:
+        return self._create_image_job(fields, image, declared_type)
+
+    def _create_image_job(self, fields: dict[str, str], image: bytes, declared_type: str) -> ApplicationResult:
         design_provider = _design_provider(fields)
         design_model = _design_model(fields)
         if not self._design_status(design_provider, design_model).get("available", False):
@@ -342,7 +358,7 @@ class ModelJobApplication:
             job.phase = "preprocessing"
             job.message = "An unrestricted design preview is being prepared."
             job.progress = 10
-            self.ports.persist(job)
+            self.ports.persist(job, required=False)
         try:
             if job.source == "text":
                 self.ports.submit(job, self.ports.preprocess_text, job.user_prompt)
@@ -420,6 +436,7 @@ class ModelJobApplication:
         if len(raw_prompt.strip().encode("utf-8")) > MAX_PROMPT_BYTES:
             raise RequestError("invalid_request", "prepared_prompt exceeds the 2000-byte limit.", 400)
         resume_existing = _boolean_field(request.get("resume_existing"), "resume_existing", default=False)
+        retry_failed = _boolean_field(request.get("retry_failed"), "retry_failed", default=False)
         explicit_resume = _boolean_field(request.get("explicit_resume"), "explicit_resume", default=False)
         job = self.ports.get_job(job_id)
         if job is None:
@@ -439,6 +456,8 @@ class ModelJobApplication:
             if job.workflow_mode == "smart" and job.smart_stop_intent and not explicit_resume:
                 raise RequestError("stopped", "The flow was stopped; resume explicitly to continue.", 409)
             provider_task_id = self.ports.latest_task_id(job)
+            if retry_failed:
+                raise RequestError("workflow_removed", "Portrait automatic retries have been removed.", 410)
             unsubmitted_retry = self.ports.can_retry_unsubmitted(job)
             if resume_existing:
                 if not provider_task_id:
@@ -515,7 +534,7 @@ class ModelJobApplication:
             # A previous stop is local intent. An explicit retry or resume
             # clears that intent before the worker reaches its first boundary.
             job.stop_event.clear()
-            self.ports.persist(job, required=True) if job.workflow_mode == "smart" else self.ports.persist(job)
+            self.ports.persist(job, required=job.workflow_mode == "smart")
         try:
             self.ports.submit(job, self.ports.generate, prepared_prompt, resume_existing, authorization)
         except RequestError:
@@ -532,6 +551,7 @@ class ModelJobApplication:
         with self.ports.lock:
             response = self.ports.present(job)
         return ApplicationResult(200, {"job": response})
+
 
     def retexture(self, reference_job_id: str, request: dict[str, Any]) -> ApplicationResult:
         if set(request) != {"geometry_job_id"}:

@@ -1,10 +1,13 @@
 #pragma once
 
 #include "slic3r/AI/ModelGeneration/SemanticColoring/SemanticColoring.hpp"
+#include "ModelPreviewPalette.hpp"
+#include "PortraitNativePartition.hpp"
 #include <memory>
 #include <stdexcept>
 #include <map>
 #include <nlohmann/json.hpp>
+#include <optional>
 
 namespace Slic3r::GUI::PortraitColorBlocks {
 namespace SC = AI::SemanticColoring;
@@ -60,10 +63,10 @@ inline constexpr size_t maximum_units = 2000000;
 inline constexpr size_t portrait_postprocess_min_colors = 4;
 inline constexpr size_t portrait_postprocess_max_colors = 6;
 inline constexpr float fixed_role_minimum_confidence = .70f;
-// V2 region membership now uses a fixed source-seed comparison.  Bump the
-// persisted algorithm contract so candidates produced by the chained-gradient
-// traversal are rebuilt instead of being interpreted as valid regions.
-inline constexpr uint32_t portrait_postprocess_algorithm_version = 6;
+inline constexpr uint32_t legacy_color_region_algorithm_version = 8;
+// v11 consumes the shared native workbench partition. Versions 6 through 10
+// remain readable, but none of their saved partitions may become an active v11 input.
+inline constexpr uint32_t portrait_postprocess_algorithm_version = 12;
 inline constexpr bool portrait_color_postprocess_supported(size_t count) {
     return count >= portrait_postprocess_min_colors && count <= portrait_postprocess_max_colors;
 }
@@ -108,9 +111,25 @@ struct ColorTrack {
     std::vector<uint32_t> unit_blocks;
 };
 struct Result {
+    struct Border { size_t face; std::array<float,6> points; };
     std::string geometry_id, source_signature, semantic_signature, palette_signature, control_signature;
     Strategy strategy = Strategy::ConnectedColorBlocksV1;
     uint32_t algorithm_version = 0;
+    std::string source_basis_signature;
+    std::vector<SC::Color> source_palette;
+    std::vector<size_t> unit_source_slots;
+    // v12 keeps immutable atomic membership separate from face-level roles.
+    // The annotations own support, components and sparse slot overrides.
+    std::optional<NativePortrait::NativePortraitPartitionIdentity> native_partition_identity;
+    std::optional<NativePortrait::NativeColorReduction> native_color_reduction;
+    std::vector<NativePortrait::RegionAnnotation> semantic_annotations;
+    std::vector<size_t> final_region_slots;
+    std::vector<NativePortrait::ProtectedRoleComponent> protected_components;
+    std::vector<NativePortrait::RoleFaceOverride> face_overrides;
+    // Read-only v10/v11 native metadata survives archival byte-for-byte in
+    // canonical JSON, but can never supply an active v12 partition.
+    nlohmann::json legacy_native_metadata;
+    std::vector<Border> borders;
     // The ten-color palette is an internal analysis artifact. final_palette is
     // the user-visible four-to-six-color result after protected-role compaction.
     std::vector<SC::Color> intermediate_palette, final_palette;
@@ -167,6 +186,9 @@ struct Input {
     // Optional product-card role locks. Unlike the ordinary V2 allocator,
     // these slots may be shared by several confirmed anatomy roles.
     std::map<std::string, size_t> fixed_role_slots;
+    // v11's only region input. It is completed by TextureToColor before this
+    // postprocessor runs; semantic evidence can annotate but never modify it.
+    const NativePortrait::NativePortraitPartition* native_partition = nullptr;
 };
 std::shared_ptr<Result> build(const Input&, const SC::Cancel& = {});
 // Rebind an existing color-region result to a new color card.  The region and

@@ -476,7 +476,9 @@ static bool quantize_vertex_colors(
         out_centers = settings.fixed_palette;
     } else if (settings.target_colors_num == 0) {
         para.max_color_distance = settings.max_color_distance;
+        para.min_cluster_k      = settings.min_cluster_k;
         para.max_cluster_k      = settings.max_cluster_k;
+        para.max_tail_color_distance = settings.max_tail_color_distance;
         out_centers = cluster_adaptive(vertex_rgb, para);
     } else {
         para.cluster_k = settings.target_colors_num;
@@ -733,6 +735,13 @@ static bool repair_cluster_smooth(
         return false;
     };
 
+    std::vector<RGB> source_sample_colors = face_colors;
+    std::sort(source_sample_colors.begin(), source_sample_colors.end());
+    source_sample_colors.erase(
+        std::unique(source_sample_colors.begin(), source_sample_colors.end()),
+        source_sample_colors.end());
+    const std::size_t source_sample_color_count = source_sample_colors.size();
+
     report(0, "Repairing mesh");
     if (cancelled()) return false;
 
@@ -787,7 +796,37 @@ static bool repair_cluster_smooth(
         const auto& stats = stats_mesh.stats();
         // Orca's TriangleMeshStats only counts open edges: manifold() is open_edges == 0, and
         // there are no separate non-manifold edge/vertex counters to test or log here.
-        if (!stats.manifold()) {
+        if (settings.strict_mesh_repair) {
+            if (settings.mesh_repair_decision != MeshRepairDecision::RepairAndImport ||
+                !settings.mesh_repair_callback) {
+                BOOST_LOG_TRIVIAL(error) << log_prefix
+                    << ": strict mesh repair requires a RepairAndImport callback.";
+                return false;
+            }
+            indexed_triangle_set repaired_its;
+            std::string repair_error;
+            const bool repaired = settings.mesh_repair_callback(
+                static_cast<const indexed_triangle_set&>(mesh), repaired_its,
+                [&](const char* message, unsigned /*percent*/) {
+                    report(5, message ? message : "Repairing mesh");
+                },
+                [&]() { return cancelled(); }, &repair_error);
+            if (!repaired) {
+                BOOST_LOG_TRIVIAL(error) << log_prefix << ": strict mesh repair failed: " << repair_error;
+                return false;
+            }
+            if (cancelled()) return false;
+            TriMesh strict_mesh(std::move(repaired_its));
+            if (!is_closed(strict_mesh) || !cgalutils::is_mesh_halfedge_compatible(strict_mesh)) {
+                BOOST_LOG_TRIVIAL(error) << log_prefix
+                    << ": strict mesh repair result failed closed/halfedge verification.";
+                return false;
+            }
+            report(10, "Resampling face colors");
+            if (!resample_face_colors(std::move(strict_mesh)))
+                return false;
+            BOOST_LOG_TRIVIAL(info) << log_prefix << ": strict mesh repair finished.";
+        } else if (!stats.manifold()) {
             BOOST_LOG_TRIVIAL(info) << log_prefix << ": mesh has non-manifold geometry or open boundaries, open_edges="
                                     << stats.open_edges;
             if (settings.mesh_repair_decision == MeshRepairDecision::Ask) {
@@ -825,6 +864,11 @@ static bool repair_cluster_smooth(
     const bool needs_halfedges = settings.face_color_overrides.empty() &&
         (settings.fixed_palette.empty() || settings.smooth_weight > 0.0);
     if (needs_halfedges && !cgalutils::is_mesh_halfedge_compatible(mesh)) {
+        if (settings.strict_mesh_repair) {
+            BOOST_LOG_TRIVIAL(error) << log_prefix
+                << ": strict mesh repair result became halfedge-incompatible; aborting before clustering.";
+            return false;
+        }
         BOOST_LOG_TRIVIAL(info) << log_prefix << ": mesh not halfedge-compatible, attempting RepairMesh.";
         if (!repair_and_resample())
             return false;
@@ -837,96 +881,136 @@ static bool repair_cluster_smooth(
     report(20, "Color clustering");
     if (cancelled()) return false;
 
-    // Clustering
+    // Clustering. Workbench callers may require at least six effective
+    // clusters. Retry only this post-repair section from the same unsmoothed
+    // mesh when region smoothing consumes a cluster; strict repair remains a
+    // single operation.
     std::vector<RGB> cluster_centers;
-    out_clustered_face_colors = face_colors;
-    std::vector<std::size_t> clustered_face_labels(face_colors.size());
+    std::vector<std::size_t> clustered_face_labels;
     std::vector<std::array<float, 3>> fixed_centers;
     if (!prepare_fixed_palette(settings, fixed_centers)) return false;
     const bool adaptive_cluster = settings.target_colors_num == 0;
+    const TriMesh unsmoothed_mesh = mesh;
+    const std::size_t adaptive_max_k = std::max<std::size_t>(1, settings.max_cluster_k);
+    const std::size_t configured_min_k = std::max<std::size_t>(1, settings.min_cluster_k);
+    // A minimum cluster count is a quality floor only when the source can
+    // actually supply that many sampled colours. Genuine low-colour models
+    // keep their real result instead of being failed after smoothing.
+    const std::size_t required_effective_clusters =
+        adaptive_cluster && fixed_centers.empty() &&
+            source_sample_color_count >= configured_min_k
+        ? std::min(configured_min_k, adaptive_max_k) : 1;
+    std::size_t adaptive_min_k = std::min(configured_min_k, adaptive_max_k);
 
-    if (!fixed_centers.empty()) {
-        cluster_centers = settings.fixed_palette;
-    } else if (adaptive_cluster) {
-        BOOST_LOG_TRIVIAL(debug) << log_prefix << ": use cluster adaptive method.";
-        ClusterParameters para;
-        para.max_color_distance = settings.max_color_distance;
-        para.max_cluster_k = settings.max_cluster_k;
-        para.cancel_callback = cancel_callback ? [&]() { return cancel_callback(); } : std::function<bool()>{};
-        cluster_centers = cluster_adaptive(face_colors, para);
-        if (cancelled()) return false;
-    } else {
-        BOOST_LOG_TRIVIAL(debug) << log_prefix << ": use cluster k-means method.";
-        ClusterParameters para;
-        para.cluster_k = settings.target_colors_num;
-        para.cancel_callback = cancel_callback ? [&]() { return cancel_callback(); } : std::function<bool()>{};
-        cluster_centers = cluster_k_means(face_colors, para);
-        if (cancelled()) return false;
-    }
+    for (;;) {
+        mesh = unsmoothed_mesh;
+        cluster_centers.clear();
+        clustered_face_labels.assign(face_colors.size(), 0);
+        out_clustered_face_colors = face_colors;
 
-    BOOST_LOG_TRIVIAL(debug) << log_prefix << ": k = " << cluster_centers.size() << ".";
-    if (cluster_centers.empty()) {
-        BOOST_LOG_TRIVIAL(debug) << log_prefix << ": no cluster center generated.";
-        return false;
-    }
+        if (!fixed_centers.empty()) {
+            cluster_centers = settings.fixed_palette;
+        } else if (adaptive_cluster) {
+            BOOST_LOG_TRIVIAL(debug) << log_prefix << ": use cluster adaptive method, min_k="
+                                     << adaptive_min_k << ".";
+            ClusterParameters para;
+            para.max_color_distance = settings.max_color_distance;
+            para.min_cluster_k = adaptive_min_k;
+            para.max_cluster_k = settings.max_cluster_k;
+            para.max_tail_color_distance = settings.max_tail_color_distance;
+            para.cancel_callback = cancel_callback ? [&]() { return cancel_callback(); } : std::function<bool()>{};
+            cluster_centers = cluster_adaptive(face_colors, para);
+            if (cancelled()) return false;
+        } else {
+            BOOST_LOG_TRIVIAL(debug) << log_prefix << ": use cluster k-means method.";
+            ClusterParameters para;
+            para.cluster_k = settings.target_colors_num;
+            para.cancel_callback = cancel_callback ? [&]() { return cancel_callback(); } : std::function<bool()>{};
+            cluster_centers = cluster_k_means(face_colors, para);
+            if (cancelled()) return false;
+        }
 
-    report(40, "Assigning cluster labels");
-    if (cancelled()) return false;
-
-    // Assign each face to nearest cluster center
-    {
-        std::atomic<size_t> done{0};
-        std::atomic<bool> cancel_requested{false};
-        const size_t total = mesh.indices.size();
-        const size_t interval = std::max<size_t>(total / 20, 1);
-        tbb::parallel_for(tbb::blocked_range<std::size_t>(0, total), [&](const tbb::blocked_range<size_t>& range) {
-            for (std::size_t fid = range.begin(); fid < range.end(); ++fid) {
-                if (cancel_requested.load(std::memory_order_relaxed)) return;
-                std::size_t nearest_id = 0;
-                if (!fixed_centers.empty())
-                    nearest_id = fixed_palette_nearest(face_colors[fid], fixed_centers);
-                else
-                    calc_nearest_color_id(cluster_centers, face_colors[fid], nearest_id);
-                clustered_face_labels[fid] = nearest_id;
-                out_clustered_face_colors[fid] = cluster_centers[nearest_id];
-                size_t cnt = done.fetch_add(1, std::memory_order_relaxed) + 1;
-                if (cnt % interval == 0) {
-                    if (cancelled()) { cancel_requested.store(true, std::memory_order_relaxed); return; }
-                }
-            }
-        });
-        if (cancel_requested.load() || cancelled()) return false;
-    }
-    if (adaptive_cluster && fixed_centers.empty()) {
-        if (!discard_unused_cluster_centers(cluster_centers, clustered_face_labels, "cluster assignment"))
+        BOOST_LOG_TRIVIAL(debug) << log_prefix << ": k = " << cluster_centers.size() << ".";
+        if (cluster_centers.empty()) {
+            BOOST_LOG_TRIVIAL(debug) << log_prefix << ": no cluster center generated.";
             return false;
-    } else if (fixed_centers.empty()) {
-        ensure_all_cluster_centers_used(face_colors, cluster_centers, clustered_face_labels, "cluster assignment");
-    }
+        }
+
+        report(40, "Assigning cluster labels");
+        if (cancelled()) return false;
+
+        {
+            std::atomic<size_t> done{0};
+            std::atomic<bool> cancel_requested{false};
+            const size_t total = mesh.indices.size();
+            const size_t interval = std::max<size_t>(total / 20, 1);
+            tbb::parallel_for(tbb::blocked_range<std::size_t>(0, total), [&](const tbb::blocked_range<size_t>& range) {
+                for (std::size_t fid = range.begin(); fid < range.end(); ++fid) {
+                    if (cancel_requested.load(std::memory_order_relaxed)) return;
+                    std::size_t nearest_id = 0;
+                    if (!fixed_centers.empty())
+                        nearest_id = fixed_palette_nearest(face_colors[fid], fixed_centers);
+                    else
+                        calc_nearest_color_id(cluster_centers, face_colors[fid], nearest_id);
+                    clustered_face_labels[fid] = nearest_id;
+                    out_clustered_face_colors[fid] = cluster_centers[nearest_id];
+                    size_t cnt = done.fetch_add(1, std::memory_order_relaxed) + 1;
+                    if (cnt % interval == 0 && cancelled()) {
+                        cancel_requested.store(true, std::memory_order_relaxed);
+                        return;
+                    }
+                }
+            });
+            if (cancel_requested.load() || cancelled()) return false;
+        }
+        if (adaptive_cluster && fixed_centers.empty()) {
+            if (!discard_unused_cluster_centers(cluster_centers, clustered_face_labels, "cluster assignment"))
+                return false;
+        } else if (fixed_centers.empty()) {
+            ensure_all_cluster_centers_used(face_colors, cluster_centers, clustered_face_labels, "cluster assignment");
+        }
 
 #ifdef OUTPUT_TEST_RESULT
-    {
-        std::vector<RGB> tmp = out_clustered_face_colors;
-        for (std::size_t i = 0; i < tmp.size(); ++i)
-            tmp[i] = cluster_centers[clustered_face_labels[i]];
-        SaveToOFF(std::string(log_prefix) + "_3_cluster.off", mesh, tmp);
-    }
+        {
+            std::vector<RGB> tmp = out_clustered_face_colors;
+            for (std::size_t i = 0; i < tmp.size(); ++i)
+                tmp[i] = cluster_centers[clustered_face_labels[i]];
+            SaveToOFF(std::string(log_prefix) + "_3_cluster.off", mesh, tmp);
+        }
 #endif
 
-    report(65, "Smoothing colors");
-    if (cancelled()) return false;
+        report(65, "Smoothing colors");
+        if (cancelled()) return false;
 
-    SmoothParameters smooth_parameters;
-    smooth_parameters.smooth_weight = settings.smooth_weight;
-    if (needs_halfedges && !smooth_region(mesh, clustered_face_labels, smooth_parameters)) {
-        BOOST_LOG_TRIVIAL(debug) << log_prefix << ": smooth region failed.";
-        return false;
-    }
-    if (adaptive_cluster && fixed_centers.empty()) {
-        if (!discard_unused_cluster_centers(cluster_centers, clustered_face_labels, "color smoothing"))
+        SmoothParameters smooth_parameters;
+        smooth_parameters.smooth_weight = settings.smooth_weight;
+        if (needs_halfedges && !smooth_region(mesh, clustered_face_labels, smooth_parameters)) {
+            BOOST_LOG_TRIVIAL(debug) << log_prefix << ": smooth region failed.";
             return false;
-    } else if (fixed_centers.empty()) {
-        ensure_all_cluster_centers_used(face_colors, cluster_centers, clustered_face_labels, "color smoothing");
+        }
+        if (adaptive_cluster && fixed_centers.empty()) {
+            if (!discard_unused_cluster_centers(cluster_centers, clustered_face_labels, "color smoothing"))
+                return false;
+        } else if (fixed_centers.empty()) {
+            ensure_all_cluster_centers_used(face_colors, cluster_centers, clustered_face_labels, "color smoothing");
+        }
+
+        if (!adaptive_cluster || !fixed_centers.empty() ||
+            cluster_centers.size() >= required_effective_clusters)
+            break;
+        if (adaptive_min_k >= adaptive_max_k) {
+            BOOST_LOG_TRIVIAL(error) << log_prefix << ": smoothing retained only "
+                << cluster_centers.size() << " clusters, below required "
+                << required_effective_clusters << " after retrying through k="
+                << adaptive_max_k << ".";
+            return false;
+        }
+        const std::size_t next_min_k = std::min(adaptive_max_k,
+            std::max(adaptive_min_k + 1, adaptive_min_k * 2));
+        BOOST_LOG_TRIVIAL(info) << log_prefix << ": smoothing retained "
+            << cluster_centers.size() << " clusters; retry adaptive clustering with min_k="
+            << next_min_k << ".";
+        adaptive_min_k = next_min_k;
     }
 
     report(90, "Updating face colors");
@@ -1182,7 +1266,7 @@ bool ClusterAndSmooth(const TriMesh& mesh,
     // to match the legacy behaviour, which never touched the mesh either.
     // A vertex color count that disagrees with the mesh falls through to the generic
     // pipeline below rather than failing the import outright.
-    if (!vertex_colors.empty() &&
+    if (!settings.strict_mesh_repair && !vertex_colors.empty() &&
         vertex_colors.size() == out_mesh.vertices.size() &&
         out_mesh.facets_count() < settings.oversampling_min_face_count) {
         report(10, "Quantizing vertex colors");

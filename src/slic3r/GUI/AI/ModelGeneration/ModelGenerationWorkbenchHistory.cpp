@@ -396,10 +396,9 @@ void ModelGenerationPanel::open_workbench_history_entry(const std::string& key)
         m_workbench_history_status->SetLabel(_L("模型列表已变化，请刷新后重试。"));
         return;
     }
-    if (found->model_path == m_displayed_model_path) return;
     load_library_entry(found->model_path, found->reference_image_path, found->ai_image_path,
         found->palette, found->palette_roles, found->use_printable_colors, found->color_intent_path,
-        found->color_intent_schema, found->color_intent_sha256, found->job_id, found->title);
+        found->color_intent_schema, found->color_intent_sha256, found->job_id, found->title, false, found->repair_index);
 }
 
 void ModelGenerationPanel::export_workbench_history_entry(const std::string& key)

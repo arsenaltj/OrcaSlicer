@@ -29,6 +29,7 @@ private:
     bool open_browser(const std::string& url, bool clear_only = false);
     void prepare_browser();
     void navigate_authorization();
+    void update_browser_zoom();
     void poll();
     void load_avatar();
     void edit_avatar();
@@ -54,10 +55,12 @@ private:
     wxString m_avatar_path;
     bool m_avatar_loaded {false};
     bool m_browser_initializing {false};
+    bool m_browser_ready {false};
     bool m_clear_only {false};
     std::shared_ptr<HonorBrowserProfile::Reset> m_browser_reset;
     std::string m_logout_message;
     std::string m_pending_authorization;
-    std::chrono::steady_clock::time_point m_browser_deadline;
+    std::chrono::steady_clock::time_point m_browser_deadline {std::chrono::steady_clock::time_point::max()};
+    std::uint64_t m_browser_generation {0};
 };
 } // namespace Slic3r::GUI

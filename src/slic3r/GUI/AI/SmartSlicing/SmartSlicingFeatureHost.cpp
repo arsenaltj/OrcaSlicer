@@ -29,6 +29,7 @@
 #include "slic3r/AI/SmartSlicing/Application/VersionedApplyWorkflow.hpp"
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingEngine.hpp"
 #include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/Utils.hpp"
 
 #include <wx/aui/framemanager.h>
 #include <wx/button.h>
@@ -1183,6 +1184,10 @@ struct SmartSlicingFeatureHost::Impl
 
     void process_recommendation_timer()
     {
+        workbench_publication.begin();
+        ScopeGuard publish_final_state([this] {
+            if (workbench_publication.finish()) publish_workbench();
+        });
         refresh_native_slice_revision();
         if (versioned_apply_workflow->active_transaction()) {
             workbench_official = versioned_apply_workflow->poll();
@@ -1898,7 +1903,8 @@ struct SmartSlicingFeatureHost::Impl
 
     void publish_workbench()
     {
-        if (workbench_listener) workbench_listener(workbench_snapshot());
+        if (workbench_publication.request() && workbench_listener)
+            workbench_listener(workbench_snapshot());
     }
 
     bool is_shown() const
@@ -1970,6 +1976,7 @@ struct SmartSlicingFeatureHost::Impl
     AI::SmartSlicing::OfficialSliceResult workbench_official;
     WorkbenchSliceGoalHistory slice_goal_history;
     SmartSlicingWorkbenchListener workbench_listener;
+    WorkbenchPublicationBatch workbench_publication;
     StartOfficialSliceFn native_slice;
     bool workbench_active {false};
     bool workbench_ai_mode {true};

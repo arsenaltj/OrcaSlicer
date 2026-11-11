@@ -258,9 +258,7 @@ from openai_preprocessor import (
     IDENTITY_FIRST_PORTRAIT_STYLES,
     OpenAIPreprocessorError,
     PORTRAIT_FACE_LOCK_FILENAME,
-    complete_text,
-    complete_vision,
-    complete_vision_once,
+    complete_text, complete_vision, complete_vision_once, complete_yoyoclaw_once,
     _unrestricted_creation_prompt,
     build_geometry_reference_prompt,
     edit_image,
@@ -835,7 +833,7 @@ def _apply_printable_image_pipeline(job: Job, raw_preview: Path) -> dict[str, in
 
 
 def _write_job_color_intent(job: Job, artifact: Path) -> None:
-    if not job.palette or artifact.suffix.lower() == ".glb":
+    if not job.palette or artifact.suffix.lower() == '.glb':
         job.color_intent_path, job.color_intent_schema, job.color_intent_sha256 = None, "", ""
         return
     appearance = job.raw_preview_path or job.model_reference_path
@@ -921,6 +919,7 @@ def _ensure_portrait_multiview(job: Job) -> dict[str, Path] | None:
 
 
 def _recommend_palette_job(job: Job) -> None:
+    pass
     # A queued legacy recommendation resumes into creation without another
     # color-recommendation request or printer palette.
     if job.source == "text":
@@ -957,9 +956,9 @@ def _prepare_obj_artifact(
     portrait_materials: bool = False,
     front_material_reference: Path | None = None,
     status_callback: Callable[[str, int], None] | None = None,
-    build_aligned_portrait_reference: bool = False,
+    build_aligned_portrait_reference: bool = False, native_repair_deferred: bool = False,
 ) -> Path:
-    return _model_artifact_workflow().prepare_obj_artifact(raw_download, job_directory, palette, palette_roles, portrait_materials, front_material_reference, status_callback, build_aligned_portrait_reference)
+    return _model_artifact_workflow().prepare_obj_artifact(raw_download, job_directory, palette, palette_roles, portrait_materials, front_material_reference, status_callback, build_aligned_portrait_reference, native_repair_deferred)
 
 
 def _persist_attempts(job: Job) -> None:
@@ -1391,7 +1390,7 @@ class Handler(BaseHTTPRequestHandler):
                 "workflow_mode", "flow_id", "request_id", "instruction", "palette", "palette_roles", "palette_recommendation_confirmed", "provider",
                 "design_provider", "design_model", "geometry_model", "face_limit", "geometry_quality",
                 "texture_quality", "output_format",
-                "palette_color_count", "style", "custom_style", "print", "image", "generate_image",
+                "palette_color_count", "style", "custom_style", "print", "image", "generate_image", "portrait_print",
             } or name in seen:
                 raise RequestError("invalid_multipart", "Multipart fields are unexpected or duplicated.", 400)
             seen.add(name)
@@ -1803,9 +1802,7 @@ class Handler(BaseHTTPRequestHandler):
     def _create_text_job(self) -> None:
         self._send_application_result(self._application().create_text_job(self._read_model_json()))
 
-    def _create_text_palette_recommendation(self) -> None:
-        # Compatibility route: old clients now create an unrestricted design.
-        self._create_text_job()
+    _create_text_palette_recommendation = _create_text_job
 
     def _recommend_model_style(self) -> None:
         self._send_application_result(self._application().recommend_model_style(*self._read_image_multipart()))
@@ -1813,9 +1810,7 @@ class Handler(BaseHTTPRequestHandler):
     def _create_image_job(self) -> None:
         self._send_application_result(self._application().create_image_job(*self._read_image_multipart()))
 
-    def _create_image_palette_recommendation(self) -> None:
-        # Compatibility route: old clients now create an unrestricted design.
-        self._create_image_job()
+    _create_image_palette_recommendation = _create_image_job
 
     def _confirm_palette(self, job_id: str) -> None:
         self._send_application_result(self._application().confirm_palette(job_id, self._read_model_json()))

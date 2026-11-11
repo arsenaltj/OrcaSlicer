@@ -1206,7 +1206,10 @@ function(orcaslicer_copy_dlls target config postfix output_dlls)
             "Rebuild the dependencies (build_release_vs2022.bat deps) with the same "
             "SLIC3R_CAD setting as this project.")
     endif ()
+    # TKService imports FreeType even when no text tool is opened. Keep its DLL
+    # beside the toolkits so Explorer launches do not depend on a developer PATH.
     file(COPY ${_occt_dlls}
+            ${CMAKE_PREFIX_PATH}/bin/freetype.dll
             ${CMAKE_PREFIX_PATH}/bin/avformat-61.dll
             ${CMAKE_PREFIX_PATH}/bin/avcodec-61.dll
             ${CMAKE_PREFIX_PATH}/bin/swresample-5.dll
@@ -1218,6 +1221,7 @@ function(orcaslicer_copy_dlls target config postfix output_dlls)
         ${_out_dir}/libgmp-10.dll
         ${_out_dir}/libmpfr-4.dll
         ${_out_dir}/WebView2Loader.dll
+        ${_out_dir}/freetype.dll
 
         ${_out_dir}/avformat-61.dll
         ${_out_dir}/avcodec-61.dll

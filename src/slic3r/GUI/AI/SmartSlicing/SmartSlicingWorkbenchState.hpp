@@ -15,6 +15,29 @@
 
 namespace Slic3r::GUI {
 
+// A timer drains several result sources before publishing the final UI state.
+// Commands outside a batch still notify synchronously.
+class WorkbenchPublicationBatch
+{
+public:
+    void begin() { ++m_depth; }
+    bool request()
+    {
+        if (m_depth == 0) return true;
+        m_pending = true;
+        return false;
+    }
+    bool finish()
+    {
+        if (m_depth == 0 || --m_depth != 0 || !m_pending) return false;
+        m_pending = false;
+        return true;
+    }
+private:
+    unsigned m_depth {0};
+    bool m_pending {false};
+};
+
 enum class WorkbenchSliceRoute { Unavailable, AiRetry, AiCandidate, Native };
 enum class SlicingRecommendationSource { Local, Cloud };
 enum class CloudRecommendationStatus { Idle, Preparing, Requesting, Ready, Failed };

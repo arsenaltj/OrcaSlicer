@@ -214,6 +214,20 @@ namespace IMGUIZMO_NAMESPACE
        int  clicked_box = -1;
    };
 
+   // ORCA: canvases own their navigation gesture and interpolation lifetime.
+   // A separate ImGui context alone does not isolate function-local statics.
+   struct ViewManipulateState
+   {
+       bool dragging = false;
+       bool clicking = false;
+       bool inside = false;
+       float interpolation_up[4] {};
+       float interpolation_dir[4] {};
+       int interpolation_frames = 0;
+       int over_box = -1;
+       void reset() { *this = ViewManipulateState{}; }
+   };
+
    //
    // Please note that this cubeview is patented by Autodesk : https://patents.google.com/patent/US7782319B2/en
    // It seems to be a defensive patent in the US. I don't think it will bring troubles using it as
@@ -223,6 +237,8 @@ namespace IMGUIZMO_NAMESPACE
 
    // use this version if you did not call Manipulate before and you are just using ViewManipulate
    IMGUI_API ViewManipulateResult ViewManipulate(float* view, const float* projection, OPERATION operation, MODE mode, float* matrix, float length, ImVec2 position, ImVec2 size, ImU32 backgroundColor);
+   IMGUI_API ViewManipulateResult ViewManipulate(float* view, float length, ImVec2 position, ImVec2 size, ImU32 backgroundColor, ViewManipulateState& state);
+   IMGUI_API ViewManipulateResult ViewManipulate(float* view, const float* projection, OPERATION operation, MODE mode, float* matrix, float length, ImVec2 position, ImVec2 size, ImU32 backgroundColor, ViewManipulateState& state);
 
    IMGUI_API void SetID(int id);
 

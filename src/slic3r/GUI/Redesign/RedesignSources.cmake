@@ -2,6 +2,8 @@
 include(${CMAKE_CURRENT_LIST_DIR}/../../Utils/HonorAccount/HonorAccountSources.cmake)
 set(ORCA_REDESIGN_WORKFLOW_SOURCES
     ${ORCA_HONOR_ACCOUNT_SOURCES}
+    GUI/View3DNavigator.cpp
+    GUI/View3DNavigator.hpp
     GUI/AI/ModelGeneration/ModelGenerationAssetsView.cpp
     GUI/AI/SmartSlicing/SmartSlicingPanel.cpp
     GUI/AI/SmartSlicing/SmartSlicingPanel.hpp
@@ -53,6 +55,8 @@ set(ORCA_REDESIGN_WORKFLOW_SOURCES
     GUI/Redesign/RedesignModelRoute.hpp
     GUI/Redesign/RedesignShell.cpp
     GUI/Redesign/RedesignModelWorkflow.cpp
+    GUI/Redesign/RedesignWorkbenchPresentation.cpp
+    GUI/Redesign/RedesignPresentationDeadline.hpp
     GUI/Redesign/RedesignShell.hpp
     GUI/Redesign/RedesignState.cpp
     GUI/Redesign/RedesignState.hpp
@@ -85,6 +89,7 @@ set(ORCA_MODEL_GENERATION_PANEL_IMPLEMENTATIONS
     GUI/AI/ModelGeneration/ModelGenerationBeautyVersions.cpp
     GUI/AI/ModelGeneration/ModelGenerationBeautyView.cpp
     GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp
+    GUI/AI/ModelGeneration/ModelGenerationHistoryOpen.cpp
     GUI/AI/ModelGeneration/ModelGenerationLibraryView.cpp
     GUI/AI/ModelGeneration/ModelGenerationLocalImport.cpp
     GUI/AI/ModelGeneration/ModelGenerationPortrait.cpp

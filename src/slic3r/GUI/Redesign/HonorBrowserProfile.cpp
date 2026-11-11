@@ -10,7 +10,7 @@ namespace Slic3r::GUI::HonorBrowserProfile {
 wxString path(const wxString& data, const HonorAccount::Config& config)
 {
     if (data.empty()) return {};
-    return wxFileName(data, "").GetPathWithSep() + "honor-webview/" + wxString::FromUTF8(config.key());
+    return wxFileName(data, "").GetPathWithSep() + "honor-webview/" + wxString::FromUTF8(config.browser_key());
 }
 
 std::optional<wxWebViewConfiguration> configuration(const wxString& data, const HonorAccount::Config& config)

@@ -95,6 +95,7 @@ bool ModelGenerationPanel::request_semantic_mode(SemanticMode mode)
 
 void ModelGenerationPanel::reset_portrait_session()
 {
+    cancel_native_workbench_partition();
     if (m_portrait_task) m_portrait_task->finish(PortraitOutcome::Cancelled);
     m_portrait_task.reset(); m_portrait_draft_before.reset(); m_portrait_preview_draft.reset();
     m_portrait_entered = m_portrait_preview_drawn = m_portrait_cancel_requested = false;
@@ -453,113 +454,6 @@ bool ModelGenerationPanel::request_portrait_optimization(wxString& reason)
 {
     reason = _L("人像重配色已停用；请在 3D 美颜工作台点击“自动划区”，按需附加语义标签。");
     return false;
-    const bool detected_v2_portrait = m_model_preview &&
-        (m_model_preview->semantic_person_detected() || m_model_preview->has_modern_portrait_color_blocks());
-    if (m_shutdown || ((m_semantic_mode != SemanticMode::Portrait) && !detected_v2_portrait) || m_portrait_draft_before ||
-        m_workbench_check_running || (m_portrait_task && m_portrait_task->snapshot().running())) {
-        reason = _L("请在人像模式下等待检查或当前任务结束；未保存草稿须先保存或放弃。");
-        return false;
-    }
-
-    // A cached V2 result is already proof that the background detector found
-    // a person. Re-running from the Beauty workbench must not require the
-    // hidden legacy mode selector to be toggled first.
-    if (detected_v2_portrait) m_semantic_mode = SemanticMode::Portrait;
-
-        if (!m_model_preview || !post_generation_ui_state().can_edit || !m_finishing_candidate.empty()) {
-            reason = _L("当前模型不可编辑，请先完成任务或接受、放弃候选版本。");
-            return false;
-        }
-        if (!m_model_preview->semantic_reoptimization_available()) {
-            reason = m_model_preview->semantic_reoptimization_reason();
-            return false;
-        }
-        if (m_beauty_transactions && !m_beauty_transactions->begin(
-                BeautyWorkbenchTransactionController::OperationKind::SemanticReoptimization)) {
-            reason = _L("当前仍有 Beauty 处理正在进行，请先完成或取消。");
-            m_finishing_status->SetLabel(reason);
-            refresh_model_finishing();
-            return false;
-        }
-        m_portrait_task = std::make_shared<PortraitOptimizationTask>(ModelGenerationPresentation::new_request_id(), m_displayed_model_path.string(), m_sequence);
-        m_portrait_cancel_requested = false;
-        m_portrait_preview_drawn = false;
-        if (m_finishing_status) m_finishing_status->SetLabel(_L("正在优化人像区域，请查看左侧处理步骤。"));
-        m_model_preview->set_portrait_progress(m_portrait_task);
-        const auto task = m_portrait_task;
-        const auto sequence = m_sequence;
-        update_portrait_optimization();
-        if (m_portrait_card) {
-            m_portrait_card->GetParent()->Layout();
-            m_portrait_card->Refresh();
-            m_portrait_card->Update();
-        }
-        BOOST_LOG_TRIVIAL(info) << "Portrait optimization feedback request=" << task->snapshot().request_id
-            << " milliseconds=" << task->snapshot().elapsed_seconds * 1000;
-        m_beauty_reoptimization_before = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
-        const auto edit_revision = m_model_preview->leaf_edit_revision();
-        const auto manual_colors = m_model_preview->face_color_overrides();
-        const auto model_path = m_displayed_model_path;
-        const bool unlocked = m_model_preview->portrait_shapes_unlocked();
-        m_model_preview->set_semantic_completion_callback([this, task, sequence, edit_revision, manual_colors, model_path, unlocked](bool success) {
-            if (m_shutdown || m_sequence != sequence || m_portrait_task != task) return;
-            const bool automatic = m_auto_portrait_active;
-            if (success && !m_model_preview->semantic_person_detected()) {
-                success = false;
-                if (automatic) {
-                    if (auto before = std::move(m_beauty_reoptimization_before))
-                        restore_beauty_candidate(*before);
-                    finish_portrait_optimization(PortraitOutcome::Failed, _L("未检测到人像，已沿用普通配色。"));
-                    m_auto_portrait_active = false;
-                    m_semantic_mode = SemanticMode::General;
-                    m_model_preview->set_portrait_mode(false);
-                    refresh_model_finishing();
-                    return;
-                }
-            }
-            if (!success) {
-                const auto error = m_model_preview->semantic_error();
-                if (automatic) {
-                    if (auto before = std::move(m_beauty_reoptimization_before))
-                        restore_beauty_candidate(*before);
-                    if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "automatic portrait probe unavailable");
-                    finish_portrait_optimization(PortraitOutcome::Failed, error);
-                    m_auto_portrait_active = false;
-                    m_semantic_mode = SemanticMode::General;
-                    m_model_preview->set_portrait_mode(false);
-                    refresh_model_finishing();
-                    return;
-                }
-                const bool edited = edit_revision != m_model_preview->leaf_edit_revision() ||
-                    manual_colors != m_model_preview->face_color_overrides() ||
-                    model_path != m_displayed_model_path || unlocked != m_model_preview->portrait_shapes_unlocked();
-                if (auto before = std::move(m_beauty_reoptimization_before); before && !edited)
-                    restore_beauty_candidate(*before);
-                if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic optimization failed");
-                if (m_finishing_status) m_finishing_status->SetLabel(
-                    _L("人像区域优化未完成，当前模型和选区保持不变：") + error);
-                finish_portrait_optimization(m_portrait_cancel_requested ? PortraitOutcome::Cancelled : PortraitOutcome::Failed, error);
-                refresh_model_finishing();
-                return;
-            }
-            export_semantic_candidate();
-        });
-        if (!m_model_preview->request_semantic_reoptimization()) {
-            if (!m_beauty_reoptimization_before) {
-                reason = m_finishing_status->GetLabel();
-                return false;
-            }
-            reason = _L("未重新识别人像区域：") + m_model_preview->semantic_reoptimization_reason();
-            m_model_preview->set_semantic_completion_callback({});
-            if (auto before = std::move(m_beauty_reoptimization_before)) restore_beauty_candidate(*before);
-            if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic request unavailable");
-            m_finishing_status->SetLabel(reason);
-            finish_portrait_optimization(PortraitOutcome::Failed, reason);
-            refresh_model_finishing();
-            return false;
-        }
-        refresh_model_finishing();
-        return true;
 }
 
 } // namespace Slic3r::GUI

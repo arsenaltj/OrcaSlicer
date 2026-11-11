@@ -1,9 +1,44 @@
 #pragma once
 
 #include "RedesignTheme.hpp"
+#include <algorithm>
+#include <array>
 #include <nlohmann/json.hpp>
+#include <optional>
 
 namespace Slic3r::GUI {
+
+struct HonorAccountTrustCopy {
+    const char* source;
+    const char* replacement;
+};
+
+inline constexpr std::array<HonorAccountTrustCopy, 2> honor_account_trust_copy()
+{
+    return {{
+        {"是否信任此浏览器？", "是否信任 Honor Forge Studio？"},
+        {"若信任，当您下次登录时，系统将不会要求您再次验证。",
+         "若信任该软件，您下次登录时将不再需要重复验证。"},
+    }};
+}
+
+inline float honor_account_zoom_factor(const wxSize& viewport_dip)
+{
+    if (viewport_dip.x <= 0 || viewport_dip.y <= 0) return 1.0f;
+    constexpr float design_width = 1600.0f;
+    constexpr float design_height = 900.0f;
+    constexpr float minimum_zoom = 0.65f;
+    const float fit = std::min(viewport_dip.x / design_width,
+                               viewport_dip.y / design_height);
+    return std::clamp(fit, minimum_zoom, 1.0f);
+}
+
+inline std::optional<float> honor_account_zoom_factor_if_ready(bool browser_ready,
+                                                                const wxSize& viewport_dip)
+{
+    if (!browser_ready) return std::nullopt;
+    return honor_account_zoom_factor(viewport_dip);
+}
 
 // Presentation only: no native bridge, form values, event handlers, storage or
 // requests. HONOR's current PC portal forces blue even with themeName=dark.
@@ -46,6 +81,17 @@ inline wxString honor_account_theme_script()
     background: var(--orca-panel) !important;
     color: var(--orca-text) !important;
     font-family: "HONOR Sans Design", "Microsoft YaHei UI", sans-serif;
+}
+:root[data-orca-honor-theme],
+:root[data-orca-honor-theme] body {
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+}
+:root[data-orca-honor-theme]::-webkit-scrollbar,
+:root[data-orca-honor-theme] body::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
 }
 :root[data-orca-honor-theme] #root,
 :root[data-orca-honor-theme] .login-title {
@@ -356,6 +402,9 @@ inline wxString honor_account_theme_script()
     css.Replace("@SECONDARY@", secondary_text_colour().GetAsString(wxC2S_CSS_SYNTAX));
     css.Replace("@ACCENT@", accent_colour().GetAsString(wxC2S_CSS_SYNTAX));
     css.Replace("@DIVIDER@", divider_colour().GetAsString(wxC2S_CSS_SYNTAX));
+    nlohmann::json trust_copy = nlohmann::json::object();
+    for (const auto& item : honor_account_trust_copy())
+        trust_copy[item.source] = item.replacement;
     std::string script = R"JS((function () {
     'use strict';
     if (window !== window.top || location.protocol !== 'https:' ||
@@ -365,27 +414,135 @@ inline wxString honor_account_theme_script()
     const oauth = ['hnoauth-login-test-drcn.cloud.honor.com', 'hnoauth-login.cloud.honor.com']
         .includes(location.hostname) && /^\/oauth2\/v3\/(authorize|login)$/.test(location.pathname);
     if (!cas && !oauth) return;
+    if (window.__orcaHonorPresentationRefresh) {
+        window.__orcaHonorPresentationRefresh();
+        return;
+    }
     const css = )JS" + nlohmann::json(css.ToStdString(wxConvUTF8)).dump() + R"JS(;
-    const install = function () {
-        const root = document.documentElement;
-        if (!root) return false;
-        root.setAttribute('data-orca-honor-theme', '1');
+    const trustCopy = )JS" + trust_copy.dump() + R"JS(;
+    const trustDialogSelector = [
+        '[ht="pop-trust-browser-dialog"]',
+        '.pop-trust-browser-dialog',
+        '[data-testid="trust-browser-container"]',
+        '.trust-browser',
+        '[role="dialog"]',
+        '.ant-modal',
+        '.hnui-dialog',
+        '.hnr-dialog'
+    ].join(',');
+    const rewriteTrustCatalog = function () {
+        const catalog = window.rss_new;
+        if (!catalog || typeof catalog !== 'object') return;
+        for (const key of [
+            'trustBrowser_label_DialogTitle',
+            'trustBrowser_label_content',
+            'trustBrowser_label_content_new'
+        ]) {
+            if (typeof catalog[key] !== 'string') continue;
+            let next = catalog[key];
+            for (const [source, replacement] of Object.entries(trustCopy))
+                next = next.replace(source, replacement);
+            if (next !== catalog[key]) catalog[key] = next;
+        }
+    };
+    const rewriteText = function (root) {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            let next = node.nodeValue;
+            for (const [source, replacement] of Object.entries(trustCopy))
+                next = next.replace(source, replacement);
+            if (next !== node.nodeValue) node.nodeValue = next;
+        }
+    };
+    const rewriteTrustMarker = function (marker) {
+        if (!marker || marker.nodeType !== Node.ELEMENT_NODE) return;
+        // HONOR renders the title beside the data-testid content node in one
+        // portal variant. Walk only its nearby dialog ancestors.
+        let scope = marker;
+        for (let depth = 0; scope && scope !== document.body && depth < 6; ++depth) {
+            rewriteText(scope);
+            const text = scope.textContent || '';
+            if (Object.values(trustCopy).every(value => text.includes(value))) break;
+            scope = scope.parentElement;
+        }
+    };
+    const rewriteTrustCopy = function (root) {
+        rewriteTrustCatalog();
+        if (!root) return;
+        if (root.nodeType === Node.ELEMENT_NODE && root.matches(trustDialogSelector))
+            rewriteTrustMarker(root);
+        if (root.querySelectorAll)
+            for (const marker of root.querySelectorAll(trustDialogSelector))
+                rewriteTrustMarker(marker);
+    };
+    const install = function (target) {
+        const documentRoot = document.documentElement;
+        if (!documentRoot) return false;
+        documentRoot.setAttribute('data-orca-honor-theme', '1');
         if (!document.getElementById('orca-honor-theme')) {
             const style = document.createElement('style');
             style.id = 'orca-honor-theme';
             style.textContent = css;
-            root.appendChild(style);
+            documentRoot.appendChild(style);
         }
+        rewriteTrustCopy(target || document);
         return true;
     };
-    if (!install()) {
-        const observer = new MutationObserver(function () {
-            if (install()) observer.disconnect();
+    let scheduled = false;
+    const pendingRoots = new Set();
+    const schedule = function (root) {
+        if (root) pendingRoots.add(root.nodeType === Node.TEXT_NODE ? root.parentElement : root);
+        if (scheduled) return;
+        scheduled = true;
+        queueMicrotask(function () {
+            scheduled = false;
+            const roots = Array.from(pendingRoots);
+            pendingRoots.clear();
+            rewriteTrustCatalog();
+            for (const candidate of roots) rewriteTrustCopy(candidate);
         });
-        observer.observe(document, {childList: true});
-    }
+    };
+    window.__orcaHonorPresentationRefresh = function () { install(document); };
+    const observer = new MutationObserver(function (records) {
+        for (const record of records) {
+            if (record.type === 'characterData') {
+                const marker = record.target.parentElement && record.target.parentElement.closest(trustDialogSelector);
+                if (marker) schedule(marker);
+                continue;
+            }
+            for (const node of record.addedNodes) {
+                const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+                if (element && (element.matches(trustDialogSelector) ||
+                    (element.querySelector && element.querySelector(trustDialogSelector)))) schedule(element);
+            }
+        }
+    });
+    observer.observe(document, {childList: true, subtree: true, characterData: true});
+    window.__orcaHonorPresentationObserver = observer;
+    install(document);
 })();)JS";
     return wxString::FromUTF8(script);
+}
+
+inline wxString honor_account_submit_watchdog_script()
+{
+    // This bridge reports only that the owning page submitted a form. It does
+    // not read fields, block submission, inspect storage, or perform requests.
+    return wxString::FromUTF8(R"JS((function () {
+    'use strict';
+    if (window !== window.top || location.protocol !== 'https:' ||
+        (location.port && location.port !== '443') || window.__orcaHonorSubmitWatchdog) return;
+    const cas = location.hostname === 'hnid-test-drcn.cloud.honor.com' &&
+        location.pathname.startsWith('/CAS/portal/');
+    const oauth = ['hnoauth-login-test-drcn.cloud.honor.com', 'hnoauth-login.cloud.honor.com']
+        .includes(location.hostname) && /^\/oauth2\/v3\/(authorize|login)$/.test(location.pathname);
+    if (!cas && !oauth) return;
+    window.__orcaHonorSubmitWatchdog = true;
+    document.addEventListener('submit', function () {
+        if (window.honorAuthSubmit && typeof window.honorAuthSubmit.postMessage === 'function')
+            window.honorAuthSubmit.postMessage('honor-submit-v1');
+    }, true);
+})();)JS");
 }
 
 } // namespace Slic3r::GUI

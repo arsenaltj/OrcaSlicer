@@ -36,7 +36,9 @@ struct TextureToColorSettings {
     std::size_t oversampling_max_face_count = 1000000;  // 无论输入参数如何, 超采样后的面片数不能超过oversampling_max_face_count
 
     double max_color_distance = 25.0;  // 自适应聚类允许的最大簇内半径(CIEDE2000 ΔE)
+    std::size_t min_cluster_k = 1;  // 自适应聚类的最小颜色数量下限
     std::size_t max_cluster_k = 32;  // 自适应聚类的最大颜色数量上限
+    double max_tail_color_distance = 0.0;  // 最远样本约束；0 表示关闭并保留原有 P99 行为
 
     MeshRepairDecision mesh_repair_decision = MeshRepairDecision::ImportWithoutRepair;
 
@@ -44,6 +46,7 @@ struct TextureToColorSettings {
     bool* mesh_repair_decision_required = nullptr;
 
     MeshRepairCallback mesh_repair_callback;
+    bool strict_mesh_repair = false;
     // Fixed targets retain user-edited colors; optional source centers retain
     // region membership using the same Oklab metric as the desktop trial.
     std::vector<std::array<std::size_t, 3>> fixed_palette;

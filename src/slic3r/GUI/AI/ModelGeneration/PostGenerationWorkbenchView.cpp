@@ -9,6 +9,7 @@
 #include "WorkbenchStyle.hpp"
 #include "slic3r/GUI/Redesign/RedesignFeatureFlags.hpp"
 #include "slic3r/GUI/Redesign/HonorBrandMark.hpp"
+#include "slic3r/GUI/Redesign/StartupSetupDialog.hpp"
 #include "slic3r/GUI/AI/Model/BeautyDocument.hpp"
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
@@ -38,6 +39,7 @@
 #include <wx/textctrl.h>
 #include <wx/textdlg.h>
 #include <wx/tglbtn.h>
+#include <wx/toplevel.h>
 #include <wx/scrolwin.h>
 #include <wx/settings.h>
 #include <wx/sizer.h>
@@ -92,24 +94,15 @@ void apply_workbench_theme(wxWindow* window, bool enabled,
     if (auto* toggle = dynamic_cast<WorkbenchSwitch*>(window)) toggle->rescale_workbench();
 }
 
-void repaint_workbench_surface(wxWindow* window)
-{
-    if (!window || !window->IsShownOnScreen() || window->IsFrozen()) return;
-    window->Refresh();
-    window->Update();
-    for (wxWindow* child : window->GetChildren())
-        repaint_workbench_surface(child);
-}
 }
 wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent)
 {
-    auto* shell = new wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
-                                       wxHSCROLL | wxBORDER_NONE | wxCLIP_CHILDREN);
+    auto* shell = new WorkbenchScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+                                             wxHSCROLL | wxBORDER_NONE | wxCLIP_CHILDREN);
     m_workbench_shell = shell;
     // Preserve the viewport and rail widths; narrow windows scroll the body.
     shell->SetMinSize(wxSize(1, 1));
     shell->SetScrollRate(FromDIP(12), 0);
-    shell->ShowScrollbars(wxSHOW_SB_DEFAULT, wxSHOW_SB_NEVER);
     shell->SetName("ai_workbench_surface");
     shell->SetBackgroundColour(wxColour(49, 49, 54));
     shell->SetFont(wxFontInfo(9).FaceName("HONOR Sans Design"));
@@ -350,6 +343,37 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     });
     {
         wxWeakRef<ModelGenerationPanel> weak(this);
+        m_model_preview->set_base_slot_changed_callback([weak](size_t slot) {
+            if (!weak || weak->m_shutdown || !weak->m_model_preview || weak->m_busy || weak->m_finishing_running ||
+                !weak->m_beauty_transactions || weak->m_beauty_transactions->processing()) return;
+            const auto binding = weak->m_model_preview->color_trial_state().base_binding;
+            if (!binding || !binding->valid() || binding->physical_slot == slot) return;
+            const auto path = weak->m_displayed_model_path;
+            const auto geometry = weak->m_model_preview->geometry_id();
+            const auto appearance = weak->m_model_preview->semantic_source_content_id();
+            const bool dirty = weak->m_beauty_manual_color_dirty;
+            if (!weak->m_model_preview->set_independent_base_slot(slot)) return;
+            weak->m_beauty_manual_color_dirty = true;
+            // A base-only transaction never reloads the mesh, colour regions,
+            // semantic evidence or printer match belonging to the portrait.
+            const auto restore = [weak, path, geometry, appearance](size_t target, bool was_dirty) {
+                if (!weak || weak->m_shutdown || !weak->m_model_preview ||
+                    weak->m_displayed_model_path != path || !weak->m_model_preview->showing_model(path) ||
+                    weak->m_model_preview->geometry_id() != geometry ||
+                    weak->m_model_preview->semantic_source_content_id() != appearance ||
+                    !weak->m_model_preview->set_independent_base_slot(target)) return false;
+                weak->m_beauty_manual_color_dirty = was_dirty;
+                weak->refresh_controls();
+                return true;
+            };
+            BeautyWorkbenchTransactionController::Entry entry;
+            entry.kind = BeautyWorkbenchTransactionController::OperationKind::AppearanceRecolor;
+            entry.label = "底座独立颜色";
+            entry.restore_undo = [restore, previous = binding->physical_slot, dirty] { return restore(previous, dirty); };
+            entry.restore_redo = [restore, slot] { return restore(slot, true); };
+            weak->m_beauty_transactions->record(std::move(entry));
+            weak->refresh_controls();
+        });
         m_model_preview->set_honor_suite_application_callbacks([weak] {
             if (!weak || weak->m_shutdown || !weak->m_model_preview ||
                 !wxGetApp().preset_bundle || weak->m_workbench_honor_semantic_active) return false;
@@ -360,6 +384,21 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
                 error = compatibility.reason;
                 weak->m_workbench_operation_notice = error;
                 weak->refresh_post_generation_workbench();
+                return false;
+            }
+            const auto native_partition = weak->m_model_preview->native_portrait_partition();
+            if (workbench_honor_suite_requires_native_partition(
+                    native_partition && native_partition->valid())) {
+                weak->m_honor_suite_partition_pending = true;
+                if (!weak->ensure_native_workbench_partition(
+                        WorkbenchArtifacts::native_workbench_partition_consumer(
+                            NativeWorkbenchPartitionConsumer::HonorSuite))) {
+                    weak->m_honor_suite_partition_pending = false;
+                    weak->m_workbench_operation_notice =
+                        "人物六色需要先建立 Orca 原生原子分区；当前编辑或模型身份不允许建立，已保留原配色。";
+                    weak->refresh_post_generation_workbench();
+                    weak->publish_workbench_state();
+                }
                 return false;
             }
             weak->m_honor_suite_before = std::make_shared<BeautyCandidateSnapshot>(weak->capture_beauty_candidate());
@@ -383,7 +422,9 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
                 return;
             }
             const std::string notice = !colored
-                ? "套装配色未完成或已取消，模型与耗材保持原状；人物套装需检测到可信的人物区域。"
+                ? (weak->m_model_preview->semantic_error().empty()
+                    ? std::string("套装配色未完成或已取消，模型与耗材保持原状。")
+                    : weak->m_model_preview->semantic_error().ToStdString(wxConvUTF8))
                 : !same_config ? "识别期间打印机或耗材已变化，套装未提交；请重新选择。"
                 : weak->m_workbench_operation_notice;
             if (weak->m_model_preview->leaf_edit_revision() == weak->m_honor_suite_edit_revision || colored) {
@@ -521,46 +562,6 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     // Beauty remains available from the fixed top-bar entry, while the check
     // and palette sections retain their existing layout and state.
     controls = m_workbench_settings_groups[2];
-    controls = new wxBoxSizer(wxVERTICAL);
-    sections->Add(controls, 0, wxEXPAND);
-    heading(_L("切片"));
-    auto* slice_panel = new WorkbenchPanel(scroll);
-    slice_panel->SetBackgroundColour(wxColour(22, 22, 25));
-    auto* slice_root = new wxBoxSizer(wxVERTICAL);
-    auto* slice_title = new WorkbenchStaticText(slice_panel, wxID_ANY, _L("AI 智能切片"));
-    slice_title->SetForegroundColour(wxColour(220, 220, 222));
-    slice_root->Add(slice_title, 0, wxEXPAND | wxALL, FromDIP(12));
-    auto* slice_grid = new wxFlexGridSizer(2, FromDIP(12), FromDIP(12));
-    slice_grid->AddGrowableCol(1);
-    const std::array<wxString, 7> slice_labels {{_L("层高"), _L("墙厚"), _L("填充率"), _L("打印速度"),
-        _L("支撑"), _L("预计耗时"), _L("耗材")}};
-    for (size_t index = 0; index < slice_labels.size(); ++index) {
-        auto* label = new WorkbenchStaticText(slice_panel, wxID_ANY, slice_labels[index]);
-        label->SetForegroundColour(wxColour(170, 170, 176));
-        slice_grid->Add(label, 0, wxALIGN_CENTER_VERTICAL);
-        auto* value = m_workbench_slice_values[index] = new WorkbenchStaticText(slice_panel, wxID_ANY, "--");
-        value->SetForegroundColour(wxColour(220, 220, 222));
-        slice_grid->Add(value, 0, wxALIGN_RIGHT | wxALIGN_CENTER_VERTICAL);
-    }
-    m_workbench_slice_values[3]->SetToolTip(_L("当前工艺的外墙打印速度"));
-    for (size_t index : {size_t(5), size_t(6)})
-        m_workbench_slice_values[index]->SetToolTip(_L("当前模型所在打印板的切片合计；导入后在准备页显式切片。"));
-    slice_root->Add(slice_grid, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
-    auto* slicing = command(slice_panel, slice_root, _L("导入切片"), [this](wxCommandEvent&) {
-        request_workbench_color_matching();
-    });
-    slice_root->GetItem(slicing)->SetFlag(wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM);
-    slice_root->GetItem(slicing)->SetBorder(FromDIP(12));
-    apply_slice_action_style(static_cast<WorkbenchButton*>(slicing));
-    slice_panel->SetSizer(slice_root);
-    controls->Add(slice_panel, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    m_workbench_slicing = slicing;
-    slicing->SetToolTip(_L("导入当前模型到准备页，随后打开智能切片；候选比较与切片需在该页显式启动。"));
-    slicing->SetIcon("workbench_printer");
-    if (RedesignFeatureFlags::model_workflow_review_enabled()) {
-        slice_grid->ShowItems(false);
-        slice_title->SetLabel(_L("导入后选择切片方案"));
-    }
     auto* native_entry = command(scroll, controls, _L("orca原生"), [this](wxCommandEvent&) {
         request_workbench_color_matching();
     });
@@ -574,36 +575,41 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     scroll_content->Add(sections, 0, wxEXPAND | wxRIGHT, FromDIP(8));
     scroll->SetSizer(scroll_content);
     settings_root->Add(scroll, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
-    m_workbench_print = command(settings, settings_root, _L("去打印"), [](wxCommandEvent&) {});
-    m_workbench_print->Disable();
-    m_workbench_print->SetToolTip(_L("设备打印尚未接入，请在切片区域导入模型并预览、导出 G-code。"));
-    auto* print = static_cast<Button*>(m_workbench_print);
-    print->SetBackgroundColor(StateColor(std::pair<wxColour, int>(wxColour(75, 75, 80), StateColor::Disabled),
+    m_workbench_slicing = command(settings, settings_root, _L("去切片"), [this](wxCommandEvent&) {
+        request_workbench_color_matching();
+    });
+    m_workbench_slicing->Disable();
+    m_workbench_slicing->SetToolTip(_L("将当前模型导入切片设置；选择方案后显式启动切片。"));
+    auto* slicing = static_cast<Button*>(m_workbench_slicing);
+    slicing->SetBackgroundColor(StateColor(std::pair<wxColour, int>(wxColour(75, 75, 80), StateColor::Disabled),
         std::pair<wxColour, int>(wxColour(255, 194, 39), StateColor::Normal)));
-    print->SetTextColor(StateColor(wxColour(22, 22, 25)));
-    settings_root->GetItem(print)->SetBorder(FromDIP(12));
-    settings_root->GetItem(print)->SetFlag(wxEXPAND | wxALL);
+    slicing->SetTextColor(StateColor(wxColour(22, 22, 25)));
+    settings_root->GetItem(slicing)->SetBorder(FromDIP(12));
+    settings_root->GetItem(slicing)->SetFlag(wxEXPAND | wxALL);
     settings->SetSizer(settings_root);
     m_workbench_sync_timer.SetOwner(this, wxWindow::NewControlId());
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
         if (m_shutdown || !m_workbench_shell || !m_workbench_shell->IsShownOnScreen()) return;
+        auto* owner = wxDynamicCast(wxGetTopLevelParent(m_workbench_shell), wxTopLevelWindow);
+        if (owner && owner->IsIconized()) return;
         synchronize_workbench_project_palette();
-        ensure_workbench_check();
+        // Resume a blocked/missing check through the existing identity gate.
+        // Do not read and hash the full model on every UI timer tick.
+        queue_workbench_check();
     }, m_workbench_sync_timer.GetId());
     m_workbench_sync_timer.Start(500);
     row->Add(settings, 0, wxEXPAND | wxTOP | wxBOTTOM | wxRIGHT, FromDIP(12));
 
     auto* workspace = m_workbench_view_host = new wxPanel(shell, wxID_ANY, wxDefaultPosition,
-        wxDefaultSize, wxTAB_TRAVERSAL | wxCLIP_CHILDREN);
+        wxDefaultSize, wxTAB_TRAVERSAL | wxCLIP_CHILDREN | wxCLIP_SIBLINGS);
     workspace->SetBackgroundColour(wxColour(49, 49, 54));
     auto* workspace_sizer = new wxBoxSizer(wxVERTICAL);
     auto* toolbar_host = new wxPanel(workspace, wxID_ANY, wxDefaultPosition, wxDefaultSize,
         wxBORDER_NONE | wxCLIP_CHILDREN);
     toolbar_host->SetName("ai_content_color");
     toolbar_host->SetBackgroundColour(workspace->GetBackgroundColour());
-#ifdef __WXMSW__
-    toolbar_host->SetDoubleBuffered(true);
-#endif
+    // Buttons buffer their own paint. Windows compositing this container
+    // exposes its empty backing surface during a restore animation.
     auto* toolbar = new wxBoxSizer(wxHORIZONTAL);
     toolbar_host->SetSizer(toolbar);
     auto toolbar_command = [this, toolbar_host, toolbar](const wxString& label, auto action) {
@@ -640,21 +646,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     m_workbench_model_status->SetForegroundColour(wxColour(190, 190, 196));
     toolbar->Add(m_workbench_model_status, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
     m_workbench_history_toggle = command(toolbar_host, toolbar, wxEmptyString, [this](wxCommandEvent&) {
-        if (m_workbench_import_feedback || m_workbench_import_running) return;
-        m_workbench_history_user_open = !m_workbench_history_panel->IsShown();
-        m_workbench_history_collapsed = !m_workbench_history_user_open;
-        if (m_workbench_history_sidebar_mounted) {
-            m_workbench_history_panel->Show(m_workbench_history_user_open);
-            const wxString action = m_workbench_history_user_open ? _L("收起历史模型") : _L("展开历史模型");
-            m_workbench_history_toggle->SetName(action);
-            m_workbench_history_toggle->SetToolTip(action);
-            static_cast<WorkbenchButton*>(m_workbench_history_toggle)->set_drawer_open(m_workbench_history_user_open);
-            layout_mounted_workbench_history_sidebar();
-            return;
-        }
-        m_workbench_editing = false;
-        update_finishing_selection();
-        refresh_model_finishing(); refresh_post_generation_workbench();
+        toggle_workbench_history();
     });
     workspace_sizer->Add(toolbar_host, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
     m_workbench_state_status = new WorkbenchStaticText(workspace, wxID_ANY, wxEmptyString);
@@ -665,9 +657,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         wxBORDER_NONE | wxCLIP_CHILDREN);
     view_tools_host->SetName("ai_content_color");
     view_tools_host->SetBackgroundColour(workspace->GetBackgroundColour());
-#ifdef __WXMSW__
-    view_tools_host->SetDoubleBuffered(true);
-#endif
+    // Keep this host opaque; its owner-painted children buffer individually.
     auto* view_tools = new wxBoxSizer(wxHORIZONTAL);
     view_tools_host->SetSizer(view_tools);
     auto tool_region = [view_tools_host, view_tools] {
@@ -781,23 +771,29 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     m_finishing_panel->GetSizer()->Add(m_workbench_footer, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM,
         FromDIP(8));
     workspace->SetSizer(workspace_sizer);
+    m_model_preview->attach_workbench_navigation(workspace, view_tools_host);
     row->Add(workspace, 1, wxEXPAND);
     row->Add(build_workbench_history(shell), 0, wxEXPAND | wxTOP | wxBOTTOM | wxLEFT,
              FromDIP(12));
     shell->SetSizer(row);
     auto* parameter_host = m_model_preview->workbench_overlay_parent();
     toolbar->Detach(m_workbench_history_toggle);
-    m_workbench_history_toggle->Reparent(parameter_host);
+    // The preview has its own card/splitter margins. Its edge is not the drawer edge.
+    m_workbench_history_toggle->Reparent(shell);
     auto* history_toggle = static_cast<WorkbenchButton*>(m_workbench_history_toggle);
     history_toggle->SetName("ai_content_color");
     history_toggle->SetCornerRadius(0);
     history_toggle->SetBackgroundColour(wxColour(49, 49, 54));
     history_toggle->SetPaddingSize(FromDIP(wxSize(0, 0)));
-    history_toggle->SetMinSize(FromDIP(wxSize(19, 98)));
-    history_toggle->SetMaxSize(FromDIP(wxSize(19, 98)));
+    history_toggle->SetMinSize(FromDIP(workbench_history_handle_size()));
+    history_toggle->SetMaxSize(FromDIP(workbench_history_handle_size()));
     history_toggle->set_drawer_assets();
     parameter_host->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
-        layout_workbench_history_toggle(true); event.Skip();
+        queue_workbench_surface_refresh(); event.Skip();
+    });
+    shell->set_viewport_layout_callback([this] {
+        if (!m_workbench_history_sidebar_mounted && !m_shutdown)
+            queue_workbench_surface_refresh();
     });
 #ifdef __WXMSW__
     Bind(wxEVT_DPI_CHANGED, [this](wxDPIChangedEvent& event) {

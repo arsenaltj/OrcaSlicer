@@ -5,10 +5,12 @@
 #include <wx/string.h>
 #include <ctime>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace Slic3r::GUI {
+class ModelHistoryRepairIndex;
 
 // Read-only asset projection. Strings are presentation values, never controls;
 // loading an asset still reads its authoritative model/history document.
@@ -24,6 +26,7 @@ struct ModelLibraryEntry {
     double load_seconds {0.0};
     std::string print_feedback;
     bool use_printable_colors {false}, design_only {false}, accepted_finishing {false};
+    std::shared_ptr<const ModelHistoryRepairIndex> repair_index;
 };
 
 } // namespace Slic3r::GUI

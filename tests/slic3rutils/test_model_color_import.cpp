@@ -1,10 +1,15 @@
 #include "slic3r/GUI/TextureImportDialog.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp"
 #include "slic3r/GUI/AI/Orca/AIImportSeamRepair.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchImportTopology.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchTextureImport.hpp"
 #include "slic3r/GUI/AI/Orca/ModelColorUpdate.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitColorBlockCache.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitSuiteBinding.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitNativePartition.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitNativePartitionCache.hpp"
+#include "slic3r/GUI/AI/Orca/FilamentColorPack.hpp"
 #include "libslic3r/TexturePainting.hpp"
 #include "slic3r/GUI/ModelColorImportResult.hpp"
 #include "slic3r/GUI/TextureImportModel.hpp"
@@ -22,6 +27,196 @@
 
 using namespace Slic3r;
 using namespace Slic3r::GUI;
+
+TEST_CASE("Portrait source regions retain exact native slots and support exclusion through 3MF", "[PortraitSuiteBinding][ModelColorImport][BeautyWorkbench]")
+{
+    const size_t count = GENERATE(size_t(4), size_t(5), size_t(6));
+    namespace P = PreviewPalette;
+    namespace SC = AI::SemanticColoring;
+    const auto& suite = honor_people_suite();
+    std::vector<P::Color> targets;
+    for (size_t i = 0; i < 5; ++i) {
+        const auto rgb = std::stoul(suite.physical_slots[i].color.substr(1), nullptr, 16);
+        targets.push_back({float((rgb >> 16) & 255)/255.f, float((rgb >> 8) & 255)/255.f, float(rgb & 255)/255.f});
+    }
+    const auto mesh = its_make_cube(10, 10, 10);
+    P::AutomaticColorBasis basis;
+    basis.geometry_id = AI::SurfaceSelectionPersistence::geometry_fingerprint(mesh);
+    basis.source_color_signature = "original-provider-colors"; basis.requested_count = count;
+    basis.source_palette = targets;
+    basis.source_palette.push_back({.60f, .59f, .58f}); basis.source_palette.resize(count);
+    basis.source_area.assign(count, 0);
+    for (size_t face = 0; face < mesh.indices.size(); ++face) {
+        basis.unit_source_slots.push_back(face % count); basis.unit_area.push_back(1);
+        basis.source_area[face % count] += 1;
+    }
+    basis.basis_signature = P::automatic_basis_signature(basis);
+    PortraitSuite::Constraints constraints; constraints.reliable = true;
+    constraints.labels = {{SC::Label::Hair}, {SC::Label::Lips}, {SC::Label::FaceSkin},
+        {SC::Label::EyeSclera}, {SC::Label::Clothes}, {SC::Label::Clothes}};
+    const auto result = PortraitSuite::match(basis, targets, constraints, suite.id, suite.revision);
+    REQUIRE(result.binding.valid(count));
+    if (count == 6) CHECK(result.binding.source_to_model_slot[4] == result.binding.source_to_model_slot[5]);
+
+    Model model; auto* object = model.add_object("portrait", "portrait.obj", TriangleMesh(mesh)); object->add_instance();
+    model.texture_mesh = std::make_shared<TexturedMesh>();
+    AI::ModelMatchedColors matched; matched.source_sha256 = std::string(64, 'a'); matched.geometry_id = basis.geometry_id;
+    for (size_t slot = 0; slot < 6; ++slot)
+        matched.palette.push_back({slot, suite.physical_slots[slot].color, "PLA", true});
+    for (size_t source : basis.unit_source_slots) matched.face_slots.push_back(result.binding.source_to_model_slot[source]);
+    REQUIRE(matched.valid());
+    AI::ModelImportRequest request; request.matched_colors = matched;
+    auto options = model_import_color_options(request); options.matched_source = std::make_shared<indexed_triangle_set>(mesh);
+    apply_matched_texture_colors(model, options, options.matched_filaments);
+    auto* volume = object->volumes.front();
+    TriangleSelector expected(volume->mesh());
+    for (size_t f = 0; f < mesh.indices.size(); ++f) {
+        REQUIRE(matched.face_slots[f] < 5);
+        expected.set_facet(int(f), EnforcerBlockerType(int(matched.face_slots[f]) + int(EnforcerBlockerType::Extruder1)));
+    }
+    CHECK(volume->mmu_segmentation_facets.get_data() == expected.serialize());
+
+    PresetBundle filaments; filaments.set_num_filaments(6, "#808080");
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config(); config.apply(filaments.project_config);
+    auto& colors = config.option<ConfigOptionStrings>("filament_colour")->values;
+    for (size_t slot = 0; slot < 6; ++slot) colors[slot] = suite.physical_slots[slot].color;
+    config.set_key_value("support_filament", new ConfigOptionInt(6));
+    config.set_key_value("support_interface_filament", new ConfigOptionInt(6));
+    ScopedTemporaryDir backup("portrait-suite-source"); model.set_backup_path(backup.string());
+    ScopedTemporaryFile file(".3mf"); const auto path = file.string();
+    PlateData plate; plate.plate_index = 0;
+    StoreParams params; params.path = path.c_str(); params.model = &model; params.config = &config;
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence; params.plate_data_list.push_back(&plate);
+    REQUIRE(store_bbs_3mf(params));
+    Model reopened; ScopedTemporaryDir reopened_backup("portrait-suite-reopened"); reopened.set_backup_path(reopened_backup.string());
+    DynamicPrintConfig restored_config; ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs plates; std::vector<Preset*> presets; bool bbl = false, orca = false; Semver version;
+    const bool loaded = load_bbs_3mf(path.c_str(), &restored_config, &substitutions, &reopened, &plates,
+        &presets, &bbl, &orca, &version, nullptr, LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+    release_PlateData_list(plates); for (auto* preset : presets) delete preset;
+    REQUIRE(loaded); REQUIRE(reopened.objects.size() == 1);
+    auto* restored = reopened.objects.front()->volumes.front();
+    TriangleSelector actual(restored->mesh()); actual.deserialize(restored->mmu_segmentation_facets.get_data());
+    CHECK(actual.serialize() == expected.serialize());
+    CHECK(restored_config.opt_string("filament_colour", 3u) == "#FFFFFF");
+    CHECK(restored_config.opt_string("filament_colour", 5u) == "#FFFFFF");
+    CHECK(restored_config.opt_int("support_filament") == 6);
+    CHECK(restored_config.opt_int("support_interface_filament") == 6);
+}
+
+TEST_CASE("V9 native portrait region slots survive 3MF without subfaces",
+          "[PortraitNativePartition][ModelColorImport][PortraitColorBlocks]")
+{
+    namespace NP = NativePortrait;
+    namespace SC = AI::SemanticColoring;
+    const auto mesh = its_make_cube(10, 10, 10);
+    PaintedMesh painted;
+    for (const auto& vertex : mesh.vertices)
+        painted.vertices.push_back({vertex.x(), vertex.y(), vertex.z()});
+    for (const auto& face : mesh.indices)
+        painted.indices.push_back({face[0], face[1], face[2]});
+    painted.cluster_colors = {{35,30,25},{220,160,120},{235,235,230},{170,45,55}};
+    for (size_t face = 0; face < painted.indices.size(); ++face)
+        painted.face_colors.push_back(painted.cluster_colors[(face / 3) % painted.cluster_colors.size()]);
+    const auto partition = NP::finalize_native_portrait_partition(std::move(painted));
+    REQUIRE(partition.geometry_id == AI::SurfaceSelectionPersistence::geometry_fingerprint(mesh));
+
+    NP::BindingOptions binding;
+    binding.target_palette = {{.12f,.10f,.08f},{.86f,.62f,.47f},
+        {.94f,.94f,.91f},{.67f,.18f,.22f}};
+    const SC::Analysis no_semantics;
+    const auto annotations = NP::annotate_native_portrait_regions(partition, no_semantics, binding);
+    REQUIRE(annotations.valid_for(partition));
+    REQUIRE(annotations.subface_slots.empty());
+    for (const auto& members : partition.region_members) {
+        REQUIRE_FALSE(members.empty());
+        const size_t slot = annotations.face_slots[members.front()];
+        for (uint32_t face : members) CHECK(annotations.face_slots[face] == slot);
+    }
+    const auto identity = NP::native_portrait_partition_identity(partition);
+    NP::NativePortraitPartitionIdentity decoded_identity;
+    std::string error;
+    REQUIRE(NP::decode_native_portrait_partition_identity(
+        NP::encode_native_portrait_partition_identity(identity), decoded_identity, error));
+    CHECK(decoded_identity.partition_digest == partition.partition_digest);
+
+    Model model;
+    model.texture_mesh = std::make_shared<TexturedMesh>();
+    auto* object = model.add_object("native-v9", "native-v9.obj", TriangleMesh(mesh));
+    object->add_instance();
+    AI::ModelMatchedColors matched;
+    matched.source_sha256 = std::string(64, 'a');
+    matched.geometry_id = partition.geometry_id;
+    const std::array<const char*, 4> colors {{"#231E19", "#DCA078", "#EBEBE6", "#AA2D37"}};
+    for (size_t slot = 0; slot < colors.size(); ++slot)
+        matched.palette.push_back({slot, colors[slot], "PLA", true});
+    matched.face_slots = annotations.face_slots;
+    REQUIRE(matched.subface_slots.empty());
+    REQUIRE(matched.valid());
+    AI::ModelImportRequest request;
+    request.matched_colors = matched;
+    auto options = model_import_color_options(request);
+    options.matched_source = std::make_shared<indexed_triangle_set>(mesh);
+    apply_matched_texture_colors(model, options, options.matched_filaments);
+
+    auto* volume = object->volumes.front();
+    TriangleSelector expected(volume->mesh());
+    for (size_t face = 0; face < matched.face_slots.size(); ++face)
+        expected.set_facet(int(face), EnforcerBlockerType(
+            int(EnforcerBlockerType::Extruder1) + int(matched.face_slots[face])));
+    CHECK(volume->mmu_segmentation_facets.get_data() == expected.serialize());
+
+    PresetBundle filaments;
+    filaments.set_num_filaments(colors.size(), "#808080");
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.apply(filaments.project_config);
+    ScopedTemporaryDir backup("native-v9-3mf-source");
+    model.set_backup_path(backup.string());
+    ScopedTemporaryDir native_cache("native-v9-partition-cache");
+    const auto native_reference = NP::save_native_portrait_partition_cache(
+        partition, native_cache.path());
+    NP::archive_native_portrait_partitions(
+        {native_reference}, native_cache.path(), model.get_auxiliary_file_temp_path());
+    ScopedTemporaryFile file(".3mf");
+    const auto archive = file.string();
+    PlateData plate;
+    plate.plate_index = 0;
+    StoreParams params;
+    params.path = archive.c_str();
+    params.model = &model;
+    params.config = &config;
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence;
+    params.plate_data_list.push_back(&plate);
+    REQUIRE(store_bbs_3mf(params));
+
+    Model reopened;
+    ScopedTemporaryDir reopened_backup("native-v9-3mf-reopened");
+    reopened.set_backup_path(reopened_backup.string());
+    DynamicPrintConfig restored_config;
+    ConfigSubstitutionContext substitutions {ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs plates;
+    std::vector<Preset*> presets;
+    bool bbl = false, orca = false;
+    Semver version;
+    const bool loaded = load_bbs_3mf(archive.c_str(), &restored_config, &substitutions,
+        &reopened, &plates, &presets, &bbl, &orca, &version, nullptr,
+        LoadStrategy::LoadModel | LoadStrategy::LoadConfig | LoadStrategy::LoadAuxiliary);
+    release_PlateData_list(plates);
+    for (auto* preset : presets) delete preset;
+    REQUIRE(loaded);
+    REQUIRE(reopened.objects.size() == 1);
+    const auto* restored = reopened.objects.front()->volumes.front();
+    CHECK(restored->mesh().its.indices.size() == partition.painted.indices.size());
+    CHECK(restored->mmu_segmentation_facets.get_data() == expected.serialize());
+    ScopedTemporaryDir restored_cache("native-v9-partition-cache-restored");
+    REQUIRE(NP::restore_native_portrait_partition_archive(
+        reopened.get_auxiliary_file_temp_path(), restored_cache.path()) == 1);
+    NP::NativePortraitPartitionIdentity restored_identity;
+    REQUIRE(NP::load_native_portrait_partition_cache(
+        native_reference, restored_cache.path(), restored_identity, error));
+    CHECK(NP::encode_native_portrait_partition_identity(restored_identity) ==
+        NP::encode_native_portrait_partition_identity(identity));
+}
 
 static void verify_source_frame_workbench_paint(const boost::filesystem::path& path, bool meters)
 {
@@ -63,6 +258,32 @@ TEST_CASE("Background GLB texture painting preserves millimeter position and loc
 {
     const auto file = GENERATE("outward-textured.glb", "transformed.glb", "vertex-material-color.glb");
     verify_source_frame_workbench_paint(boost::filesystem::path(TEST_DATA_DIR) / "model_artifact" / file, true);
+}
+
+TEST_CASE("Decoded GLB geometry crosses from meters to millimeters exactly once",
+          "[WorkbenchTextureImport][WorkbenchImportUnits][PortraitNativePartition][P0]")
+{
+    DecodedWorkbenchModel decoded;
+    decoded.coordinate_unit = WorkbenchCoordinateUnit::Meters;
+    decoded.mesh.its.vertices = {{0.05f, -0.02f, 0.1f}, {0.0f, 0.0f, 0.0f}};
+    decoded.texture = std::make_shared<TexturedMesh>();
+    decoded.texture->vertices = {{0.05f, -0.02f, 0.1f}, {0.0f, 0.0f, 0.0f}};
+    std::string error;
+
+    REQUIRE(normalize_decoded_workbench_model_to_millimeters(decoded, error));
+    CHECK(decoded.coordinate_unit == WorkbenchCoordinateUnit::Millimeters);
+    CHECK_THAT(decoded.mesh.its.vertices[0].x(), Catch::Matchers::WithinAbs(50.0f, 1e-5f));
+    CHECK_THAT(decoded.mesh.its.vertices[0].y(), Catch::Matchers::WithinAbs(-20.0f, 1e-5f));
+    CHECK_THAT(decoded.mesh.its.vertices[0].z(), Catch::Matchers::WithinAbs(100.0f, 1e-5f));
+    CHECK_THAT(decoded.texture->vertices[0][0], Catch::Matchers::WithinAbs(50.0f, 1e-5f));
+    CHECK_THAT(decoded.texture->vertices[0][1], Catch::Matchers::WithinAbs(-20.0f, 1e-5f));
+    CHECK_THAT(decoded.texture->vertices[0][2], Catch::Matchers::WithinAbs(100.0f, 1e-5f));
+
+    const auto mesh_vertices = decoded.mesh.its.vertices;
+    const auto texture_vertices = decoded.texture->vertices;
+    REQUIRE(normalize_decoded_workbench_model_to_millimeters(decoded, error));
+    CHECK(decoded.mesh.its.vertices == mesh_vertices);
+    CHECK(decoded.texture->vertices == texture_vertices);
 }
 
 TEST_CASE("Background colored OBJ painting preserves the source coordinate frame", "[WorkbenchTextureImport][WorkbenchImportUnits]")

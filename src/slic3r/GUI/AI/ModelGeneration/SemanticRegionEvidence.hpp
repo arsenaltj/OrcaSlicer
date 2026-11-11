@@ -17,6 +17,9 @@ struct SemanticRegionEvidence {
     std::string body_identity, face_identity, runtime_identity;
     std::vector<AI::SemanticColoring::Label> labels;
     std::vector<float> confidence;
+    // Legacy v1 evidence was only published after positive person detection.
+    bool person_detected {true};
+    std::vector<AI::SemanticColoring::SubfaceLabelEvidence> subfaces;
 
     bool compatible(const std::string& geometry, size_t faces, const std::string& runtime) const {
         return !geometry.empty() && geometry_id == geometry && labels.size() == faces &&
@@ -35,7 +38,14 @@ struct SemanticRegionEvidence {
             reliable |= labels[face] != SC::Label::Unknown && labels[face] != SC::Label::Background &&
                 confidence[face] >= SC::minimum_confidence;
         }
-        return reliable;
+        for (const auto& leaf : subfaces) {
+            if (leaf.face_id >= labels.size() || leaf.path.depth == 0 || leaf.path.depth > 2 ||
+                unsigned(leaf.path.value) >= (1u << (2u * leaf.path.depth)) ||
+                size_t(leaf.label) >= SC::label_count || !std::isfinite(leaf.confidence) ||
+                leaf.confidence < SC::minimum_confidence || leaf.confidence > 1.f || leaf.samples == 0) return false;
+            reliable |= leaf.label != SC::Label::Unknown && leaf.label != SC::Label::Background;
+        }
+        return person_detected && reliable;
     }
     static std::shared_ptr<const SemanticRegionEvidence> from_analysis(
         const AI::SemanticColoring::Analysis& analysis, const std::string& runtime) {
@@ -49,13 +59,18 @@ struct SemanticRegionEvidence {
         evidence->runtime_identity = runtime;
         evidence->labels = analysis.face_labels;
         evidence->confidence = analysis.face_confidence;
+        evidence->person_detected = analysis.person_detected;
+        evidence->subfaces = analysis.subface_labels;
         return evidence->valid() ? evidence : nullptr;
     }
     nlohmann::json encode() const {
         std::vector<unsigned int> values;
         values.reserve(labels.size());
         for (auto label : labels) values.push_back(unsigned(label));
-        return {{"schema", "orca.semantic-region-evidence/v1"},
+        nlohmann::json leaves = nlohmann::json::array();
+        for (const auto& leaf : subfaces)
+            leaves.push_back({leaf.face_id, leaf.path.depth, leaf.path.value, unsigned(leaf.label), leaf.confidence, leaf.samples});
+        return {{"schema", "orca.semantic-region-evidence/v2"}, {"person_detected", person_detected}, {"subfaces", leaves},
             {"pipeline", AI::SemanticColoring::pipeline_version}, {"geometry_id", geometry_id},
             {"face_count", labels.size()}, {"source_content_id", source_content_id},
             {"analysis_signature", analysis_signature}, {"body_identity", body_identity},
@@ -64,8 +79,10 @@ struct SemanticRegionEvidence {
     }
     static std::shared_ptr<const SemanticRegionEvidence> decode(const nlohmann::json& doc,
         const std::string& geometry, size_t faces, const std::string& runtime, std::string& error) {
+        namespace SC = AI::SemanticColoring;
         try {
-            if (!doc.is_object() || doc.at("schema") != "orca.semantic-region-evidence/v1" ||
+            if (!doc.is_object() || (doc.at("schema") != "orca.semantic-region-evidence/v1" &&
+                doc.at("schema") != "orca.semantic-region-evidence/v2") ||
                 doc.at("pipeline") != AI::SemanticColoring::pipeline_version || doc.at("geometry_id") != geometry ||
                 doc.at("face_count").get<size_t>() != faces || doc.at("runtime_identity") != runtime ||
                 !doc.at("labels").is_array() || doc.at("labels").size() != faces ||
@@ -85,6 +102,19 @@ struct SemanticRegionEvidence {
                 evidence->labels.push_back(AI::SemanticColoring::Label(label));
             }
             evidence->confidence = doc.at("confidence").get<std::vector<float>>();
+            evidence->person_detected = doc.value("person_detected", true);
+            if (doc.contains("subfaces")) {
+                const auto& leaves = doc.at("subfaces");
+                if (!leaves.is_array() || leaves.size() > 2000000) throw std::runtime_error("Invalid semantic leaves");
+                for (const auto& leaf : leaves) {
+                    if (!leaf.is_array() || leaf.size() != 6 || leaf[1].get<unsigned>() > 2 ||
+                        leaf[2].get<unsigned>() > 255 || leaf[3].get<unsigned>() >= SC::label_count)
+                        throw std::runtime_error("Invalid semantic leaf identity");
+                    evidence->subfaces.push_back({leaf[0].get<size_t>(),
+                        {leaf[1].get<uint8_t>(), leaf[2].get<uint8_t>()},
+                        SC::Label(leaf[3].get<unsigned>()), leaf[4].get<float>(), leaf[5].get<uint32_t>()});
+                }
+            }
             if (!evidence->valid()) throw std::runtime_error("Region evidence has no reliable labels or is malformed");
             error.clear();
             return evidence;

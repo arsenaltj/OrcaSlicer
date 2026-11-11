@@ -1,6 +1,7 @@
 #pragma once
 
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchNativeImportTopology.hpp"
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 #include "libslic3r/MeshSeamRepair.hpp"
 
@@ -8,13 +9,34 @@ namespace Slic3r::GUI {
 
 // Operates on a detached mesh, after whole-face and subface painting. Exact
 // seam joining preserves every ordered triangle corner and painted face ID.
-// Never run CGAL here: a topology-changing repair needs its own preview and
-// explicit acceptance in the workbench.
+// Manual imports retain the workbench candidate acceptance contract.
 inline bool prepare_workbench_import_topology(TriangleMesh& mesh, bool confirmed_risk,
     AI::ModelImportResult& result, std::string& error,
-    const std::function<bool()>& canceled = {})
+    const std::function<bool()>& canceled = {}, const AI::ModelImportRequest* request = nullptr)
 {
     if (canceled && canceled()) { error = "Model import canceled."; return false; }
+    if (request && has_native_import_topology_proof(*request)) {
+        std::string rejection;
+        if (restore_certified_native_import_topology(mesh, *request, result, rejection, canceled)) {
+            error.clear();
+            return true;
+        }
+        // A claimed but invalid proof still gets the complete existing check.
+        // Its result cannot authorize changed identities, even for a safe cube.
+        TriangleMesh inspected = mesh;
+        if (its_num_open_edges(inspected.its) != 0) stitch_exact_mesh_seams(inspected);
+        const auto checked = inspect_workbench_mesh(inspected, canceled);
+        result.topology_risk = result.manual_repair_required = true;
+        result.topology_risk_reason = checked.summary;
+        error = "Native portrait import certificate rejected: " + rejection + "; " + checked.summary;
+        return false;
+    }
+    if (request && restore_workbench_appearance_topology(mesh, request->artifact.local_path, canceled)) {
+        result.topology_risk = result.manual_repair_required = false;
+        result.topology_risk_reason.clear();
+        error.clear();
+        return true;
+    }
     if (its_num_open_edges(mesh.its) != 0) stitch_exact_mesh_seams(mesh);
     const auto check = inspect_workbench_mesh(mesh, canceled);
     const size_t open = its_num_open_edges(mesh.its);

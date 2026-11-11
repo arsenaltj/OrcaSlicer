@@ -2493,7 +2493,7 @@ float GLCanvas3D::get_collapse_toolbar_height() const
 // The bottom-left corner: the 3D navigator, then the column of round canvas buttons beside it, in
 // units of the toolbar scale. Shared by _render_3d_navigator, _render_canvas_toolbar,
 // get_canvas_toolbar_right and canvas_corner_height, so an overlay kept clear of the corner follows its layout.
-static constexpr float NAVIGATOR_SIZE         = 128.f;
+static constexpr float NAVIGATOR_SIZE         = view_navigator_size;
 static constexpr float CANVAS_TOOLBAR_MARGIN  = 10.f;   // off the canvas edge, when there is no navigator
 static constexpr float CANVAS_TOOLBAR_PADDING = 2.f;
 static constexpr float CANVAS_TOOLBAR_BUTTON  = 36.f;
@@ -3979,6 +3979,7 @@ void GLCanvas3D::bind_event_handlers()
                         down = false;
                 }
                 m_navigator_dragging = false;
+                m_navigator_state.reset();
                 render();
             });
         m_event_handlers_bound = true;
@@ -4107,6 +4108,7 @@ void GLCanvas3D::on_idle(wxIdleEvent& evt)
 
 void GLCanvas3D::on_char(wxKeyEvent& evt)
 {
+    if (m_print_preview_read_only) return;
     if (!m_initialized)
         return;
 
@@ -4418,6 +4420,7 @@ void GLCanvas3D::release_held_modifiers()
 
 void GLCanvas3D::on_key(wxKeyEvent& evt)
 {
+    if (m_print_preview_read_only) return;
 #ifdef __APPLE__
     // A key the input method used for a composition must not also edit the text field: Esc would revert
     // it, Backspace delete a character, Enter add a line.
@@ -5099,7 +5102,7 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
         m_mouse.position = Vec2d(-1.0, -1.0);
         m_dirty = true;
     }
-    else if (evt.LeftDClick()) {
+    else if (evt.LeftDClick() && !m_print_preview_read_only) {
         // switch to object panel if double click on object, otherwise switch to global panel if double click on background
         if (selected_object_idx >= 0)
             post_event(SimpleEvent(EVT_GLCANVAS_SWITCH_TO_OBJECT));
@@ -5110,6 +5113,10 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
         // Orca: Retain the click position even if the first motion event crosses a surface edge.
         m_mouse.set_start_position_2D_as_invalid();
         m_mouse.drag.start_position_2D = pos;
+        // A display-only preview has no object move to anchor. Seed orbit on
+        // button-down so even coalesced drag events retain their full motion.
+        if (m_print_preview_read_only)
+            m_mouse.drag.start_position_3D = Vec3d(double(pos.x()), double(pos.y()), 0.0);
 
         //BBS: add orient deactivate logic
         if (!m_gizmos.on_mouse(evt)) {
@@ -5479,7 +5486,7 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                 if (m_gizmos.get_current_type() != GLGizmosManager::MeshBoolean && m_hover_volume_idxs.empty())
                     deselect_all();
         }
-        else if (evt.RightUp() && !is_layers_editing_enabled()) {
+        else if (evt.RightUp() && !is_layers_editing_enabled() && !m_print_preview_read_only) {
             // forces a frame render to ensure that m_hover_volume_idxs is updated even when the user right clicks while
             // the context menu is already shown
             render();
@@ -5558,7 +5565,7 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
 
     // Detection of doubleclick on text to open emboss edit window
     auto type = m_gizmos.get_current_type();
-    if (evt.LeftDClick() && !m_hover_volume_idxs.empty() &&
+    if (evt.LeftDClick() && !m_print_preview_read_only && !m_hover_volume_idxs.empty() &&
         (type == GLGizmosManager::EType::Undefined ||
          type == GLGizmosManager::EType::Move ||
          type == GLGizmosManager::EType::Rotate ||
@@ -6848,107 +6855,39 @@ void GLCanvas3D::_render_arrange_menu(float left, float right, float bottom, flo
     ImGuiWrapper::pop_toolbar_style();
 }
 
-static const float cameraProjection[16] = {1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f};
-
 void GLCanvas3D::_render_3d_navigator()
 {
     if (!wxGetApp().show_3d_navigator()) {
         m_canvas_toolbar_pos[0] = 0;
         m_navigator_dragging = false;
+        m_navigator_state.reset();
         return;
     }
-
-    // Fix stealing capture event from other drag events
     const bool other_drag_active = !m_navigator_dragging && (m_moving || m_rectangle_selection.is_dragging() || m_gizmos.is_dragging() || m_layers_editing.state == LayersEditing::Editing);
-
-    ImGuiIO& io = ImGui::GetIO();
-    const bool saved_mouse_down0 = io.MouseDown[0];
-    if (other_drag_active)
-        io.MouseDown[0] = false;
-
-    ImGuizmo::BeginFrame();
-
-    auto& style                                = ImGuizmo::GetStyle();
-    style.Colors[ImGuizmo::COLOR::DIRECTION_X] = ImGuiWrapper::to_ImVec4(ColorRGBA::Y());
-    style.Colors[ImGuizmo::COLOR::DIRECTION_Y] = ImGuiWrapper::to_ImVec4(ColorRGBA::Z());
-    style.Colors[ImGuizmo::COLOR::DIRECTION_Z] = ImGuiWrapper::to_ImVec4(ColorRGBA::X());
-    style.Colors[ImGuizmo::COLOR::TEXT] = m_is_dark ? ImVec4(224 / 255.f, 224 / 255.f, 224 / 255.f, 1.f) : ImVec4(.2f, .2f, .2f, 1.0f);
-    style.Colors[ImGuizmo::COLOR::FACE]        = m_is_dark ? ImVec4(0.23f, 0.23f, 0.23f, 1.f) : ImVec4(0.77f, 0.77f, 0.77f, 1);
-    strcpy(style.AxisLabels[ImGuizmo::Axis::Axis_X], _u8L_CONTEXT("Y", "Axis").c_str()); // ORCA use uppercase to match text on tranform widgets
-    strcpy(style.AxisLabels[ImGuizmo::Axis::Axis_Y], _u8L_CONTEXT("Z", "Axis").c_str()); // ORCA use uppercase to match text on tranform widgets
-    strcpy(style.AxisLabels[ImGuizmo::Axis::Axis_Z], _u8L_CONTEXT("X", "Axis").c_str()); // ORCA use uppercase to match text on tranform widgets
-    strcpy(style.FaceLabels[ImGuizmo::FACES::FACE_FRONT], _u8L_CONTEXT("Front", "Camera View").c_str());
-    strcpy(style.FaceLabels[ImGuizmo::FACES::FACE_BACK], _u8L_CONTEXT("Back", "Camera View").c_str());
-    strcpy(style.FaceLabels[ImGuizmo::FACES::FACE_TOP], _u8L_CONTEXT("Top", "Camera View").c_str());
-    strcpy(style.FaceLabels[ImGuizmo::FACES::FACE_BOTTOM], _u8L_CONTEXT("Bottom", "Camera View").c_str());
-    strcpy(style.FaceLabels[ImGuizmo::FACES::FACE_LEFT], _u8L_CONTEXT("Left", "Camera View").c_str());
-    strcpy(style.FaceLabels[ImGuizmo::FACES::FACE_RIGHT], _u8L_CONTEXT("Right", "Camera View").c_str());
-
     float sc = get_scale();
 #ifdef WIN32
-    const int dpi = get_dpi_for_window(wxGetApp().GetTopWindow());
-    sc *= (float) dpi / (float) DPI_DEFAULT;
-#endif // WIN32
-
-    const float viewManipulateLeft = 0;
-    const float viewManipulateTop  = io.DisplaySize.y;
-    const float camDistance        = 8.f;
-
-    Camera&     camera           = wxGetApp().plater()->get_camera();
-    Transform3d m                = Transform3d::Identity();
-    m.matrix().block(0, 0, 3, 3) = camera.get_view_rotation().toRotationMatrix();
-    // Rotate along X and Z axis for 90 degrees to have Y-up
-    const auto coord_mapping_transform = Geometry::rotation_transform(Vec3d(0.5 * PI, 0, 0.5 * PI));
-    m = m * coord_mapping_transform;
-    float cameraView[16];
-    for (unsigned int c = 0; c < 4; ++c) {
-        for (unsigned int r = 0; r < 4; ++r) {
-            cameraView[c * 4 + r] = m(r, c);
-        }
-    }
-
-    const float size  = NAVIGATOR_SIZE * sc;
+    sc *= float(get_dpi_for_window(wxGetApp().GetTopWindow())) / float(DPI_DEFAULT);
+#endif
+    const float size = NAVIGATOR_SIZE * sc;
     m_canvas_toolbar_pos[0] = size;
-    const auto result = ImGuizmo::ViewManipulate(cameraView, cameraProjection, ImGuizmo::OPERATION::ROTATE, ImGuizmo::MODE::WORLD, nullptr,
-                                                 camDistance, ImVec2(viewManipulateLeft, viewManipulateTop - size), ImVec2(size, size),
-                                                 0x00101010);
-
-    // Restore the real mouse-down state
-    if (other_drag_active)
-        io.MouseDown[0] = saved_mouse_down0;
-
+    Camera& camera = wxGetApp().plater()->get_camera();
+    Transform3d rotation = Transform3d::Identity();
+    rotation.linear() = camera.get_view_rotation().toRotationMatrix();
+    const auto result = draw_view_navigator(rotation, ImVec2(0.f, ImGui::GetIO().DisplaySize.y - size),
+        size, m_is_dark, m_navigator_state, !other_drag_active);
     if (result.changed) {
-        for (unsigned int c = 0; c < 4; ++c) {
-            for (unsigned int r = 0; r < 4; ++r) {
-                m(r, c) = cameraView[c * 4 + r];
-            }
-        }
-        // Rotate back
-        m = m * (coord_mapping_transform.inverse());
-        camera.set_rotation(m);
-
-        if (result.dragging) {
-            // Switch back to perspective view when normal dragging
-            camera.auto_type(Camera::EType::Perspective);
-        } else if (result.clicked_box >= 0) {
+        camera.set_rotation(rotation);
+        if (result.dragging) camera.auto_type(Camera::EType::Perspective);
+        else if (result.clicked_box >= 0) {
             switch (result.clicked_box) {
-            case 4: // back
-            case 10: // top
-            case 12: // right
-            case 14: // left
-            case 16: // bottom
-            case 22: // front
-                // Automatically switch to orthographic view when click the center face of the navigator
+            case 4: case 10: case 12: case 14: case 16: case 22:
                 camera.auto_type(Camera::EType::Ortho); break;
             default:
-                // Otherwise switch back to perspective view
                 camera.auto_type(Camera::EType::Perspective); break;
             }
         }
-
         request_extra_frame();
     }
-
     m_navigator_dragging = result.dragging;
 }
 

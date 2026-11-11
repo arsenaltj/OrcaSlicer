@@ -606,12 +606,41 @@ inline HonorSuiteCompatibility honor_suite_compatibility(const PresetBundle& bun
     return result;
 }
 
-// Honor suites are physical hardware definitions, not generic color cards.
-// This path never selects bases or creates/removes mixed recipes. It prepares
-// six real slots in a copy and leaves every unrelated physical or mixed slot
-// untouched until the caller commits the complete transaction.
+// Capture actual model references, including painted leaves rather than the
+// historical used_states cache. Print-order lists alone do not use a color;
+// their entries follow the normal slot-remap transaction during cleanup.
+inline std::set<size_t> honor_suite_referenced_slots(const Model& model,
+    const std::vector<const DynamicPrintConfig*>& plates = {})
+{
+    std::set<size_t> slots;
+    const auto retain = [&](int slot) { if (slot > 0) slots.insert(size_t(slot - 1)); };
+    const auto retain_config = [&](const auto& config) {
+        for (const char* key : {"extruder", "support_filament", "support_interface_filament"})
+            if (config.has(key)) retain(config.opt_int(key));
+    };
+    for (const auto* object : model.objects) {
+        retain_config(object->config);
+        for (const auto& range : object->layer_config_ranges) retain_config(range.second);
+        for (const auto* volume : object->volumes) {
+            retain_config(volume->config);
+            for (int slot : volume->get_extruders()) retain(slot);
+        }
+    }
+    for (const auto& plate : model.plates_custom_gcodes)
+        for (const auto& code : plate.second.gcodes)
+            if (code.type == CustomGCode::Type::ToolChange || code.type == CustomGCode::Type::ColorChange)
+                retain(code.extruder);
+    for (const auto* plate : plates) if (plate) retain_config(*plate);
+    return slots;
+}
+
+// Honor suites bind six physical nozzle identities. Only the people suite
+// removes unused old recipes when the caller supplies a complete reference
+// snapshot. Missing context conservatively preserves recipes, as do pet suites.
+// All changes remain staged for the caller's atomic undo transaction.
 inline bool stage_honor_physical_suite_import(const PresetBundle& live,
-    const HonorFilamentSuite& suite, StagedColorPackImport& result, std::string& error)
+    const HonorFilamentSuite& suite, StagedColorPackImport& result, std::string& error,
+    const std::set<size_t>* referenced_slots = nullptr)
 {
     result = {};
     error.clear();
@@ -682,6 +711,21 @@ inline bool stage_honor_physical_suite_import(const PresetBundle& live,
         bindings = collect_bindings(staged_state);
     }
 
+    if (suite.id == "honor.people.six" && referenced_slots) {
+        auto retained = bindings;
+        for (size_t original : *referenced_slots) {
+            if (original >= live.filament_presets.size()) {
+                error = "工程中存在无效耗材引用，无法安全清理旧叠色配方；工程保持原状";
+                return false;
+            }
+            int shifted = int(original + 1);
+            for (const auto& change : changes) shifted = PrinterFilamentSlotRemap::remap(shifted, change);
+            if (staged->is_mixed_filament(size_t(shifted - 1))) retained.push_back(size_t(shifted - 1));
+        }
+        if (!trim_unused_mixed_slots(*staged, retained, retained.size(), changes, error)) return false;
+        staged_state = capture(*staged);
+    }
+
     auto& colors = staged->project_config.option<ConfigOptionStrings>("filament_colour")->values;
     auto& multi = staged->project_config.option<ConfigOptionStrings>("filament_multi_colour")->values;
     auto& types = staged->project_config.option<ConfigOptionStrings>("filament_colour_type")->values;
@@ -732,8 +776,8 @@ inline bool stage_honor_physical_suite_import(const PresetBundle& live,
     result.changes = std::move(changes);
     result.bindings = std::move(bindings);
     result.source_signature = source.signature;
-    result.physical_count = required;
-    result.mixed_count = 0;
+    result.physical_count = imported.physical_count;
+    result.mixed_count = imported.mixed.size();
     return true;
 }
 

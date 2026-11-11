@@ -1,5 +1,7 @@
 #include "ModelLibraryRepository.hpp"
+#include "ModelHistoryRepairIndex.hpp"
 #include "ModelLibraryMetadata.hpp"
+#include "ModelLibraryObservations.hpp"
 #include "ModelLibraryThumbnail.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
@@ -33,7 +35,7 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
     };
     thread_local ModelLibraryMetadata summaries;
     const auto read_json = [](const boost::filesystem::path& path) {
-        return summaries.read(path);
+        return ModelLibraryObservations::overlay(summaries.read(path), path);
     };
     boost::system::error_code ec;
     if (cancelled || !boost::filesystem::is_directory(root, ec)) return {};
@@ -82,10 +84,13 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
             // it also avoids recursively parsing our own cache on every scan.
             if (it->path().filename() == "library-summary-cache-v1.json") continue;
             const auto data = read_json(it->path());
-            if (!data.is_object() || data.value("source", std::string()) != "local_finishing") continue;
+            if (!data.is_object() || (data.value("source", std::string()) != "local_finishing" &&
+                data.value("source", std::string()) != "native_workbench_partition")) continue;
             const auto id = data.value("job_id", std::string());
             const auto path = root / data.value("model_path", std::string());
-            if (id.rfind("finish-", 0) == 0 && path_is_inside(root, path) && is_nonempty_model(path))
+            if (!id.empty() && (id.rfind("finish-", 0) == 0 ||
+                data.value("source", std::string()) == "native_workbench_partition") &&
+                path_is_inside(root, path) && is_nonempty_model(path))
                 models[id] = path;
         }
     }
@@ -280,6 +285,12 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
             return lhs.generated_at > rhs.generated_at;
         return lhs.job_id < rhs.job_id;
     });
+    auto repairs = std::make_shared<ModelHistoryRepairIndex>(root);
+    for (const auto& entry : entries) {
+        if (cancelled) return {};
+        if (!entry.model_path.empty()) repairs->add(entry.model_path, library_metadata_path(entry.job_id), entry.job_id);
+    }
+    for (auto& entry : entries) entry.repair_index = repairs;
     return entries;
 }
 

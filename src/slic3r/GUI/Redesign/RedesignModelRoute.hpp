@@ -108,12 +108,15 @@ inline bool model_generation_route_revokes_workbench_presentation(
 
 inline RedesignModelRouteAction model_generation_route_action(
     const ModelGenerationUIState& state, const ModelGenerationUIState& current,
-    bool locked, std::uint64_t route_session, const std::string& route_id)
+    bool locked, std::uint64_t route_session, const std::string& route_id, bool opening_history = false)
 {
     if (state.revision < current.revision ||
         state.model_generation_session < current.model_generation_session)
         return RedesignModelRouteAction::Ignore;
 
+    // The explicit history presentation owns routing until its current first
+    // frame commits or rolls back. State publication may only refresh it.
+    if (opening_history) return RedesignModelRouteAction::Refresh;
     const bool new_session = state.model_generation_session > current.model_generation_session;
     const std::string& state_route_id = model_generation_route_id(state);
     if (new_session && state_route_id.empty())

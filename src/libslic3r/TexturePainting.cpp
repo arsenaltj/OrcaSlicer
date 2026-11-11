@@ -406,6 +406,10 @@ bool texture_to_painting(
     algo_settings.face_color_overrides = settings.face_color_overrides;
     algo_settings.smooth_weight      = settings.smooth_weight;
     algo_settings.oversampling_iters = settings.oversampling_iters;
+    algo_settings.max_color_distance = settings.max_color_distance;
+    algo_settings.min_cluster_k      = settings.min_cluster_k;
+    algo_settings.max_cluster_k      = settings.max_cluster_k;
+    algo_settings.max_tail_color_distance = settings.max_tail_color_distance;
     switch (settings.mesh_repair_decision) {
     case TexturePaintingSettings::MeshRepairDecision::Ask:
         algo_settings.mesh_repair_decision = tex2color::MeshRepairDecision::Ask;
@@ -435,6 +439,7 @@ bool texture_to_painting(
     std::vector<std::array<std::size_t,3>> face_colors;
     algo_settings.mesh_repair_decision_required = settings.mesh_repair_decision_required;
     algo_settings.mesh_repair_callback = settings.mesh_repair_callback;
+    algo_settings.strict_mesh_repair = settings.strict_mesh_repair;
 
     bool ok = tex2color::TextureToColor(
         input_mesh, uv_coords, texture,
@@ -474,6 +479,10 @@ bool face_colors_to_painting(
     algo_settings.fixed_mapping_palette = settings.fixed_mapping_palette;
     algo_settings.face_color_overrides = settings.face_color_overrides;
     algo_settings.smooth_weight     = settings.smooth_weight;
+    algo_settings.max_color_distance = settings.max_color_distance;
+    algo_settings.min_cluster_k      = settings.min_cluster_k;
+    algo_settings.max_cluster_k      = settings.max_cluster_k;
+    algo_settings.max_tail_color_distance = settings.max_tail_color_distance;
     switch (settings.mesh_repair_decision) {
     case TexturePaintingSettings::MeshRepairDecision::Ask:
         algo_settings.mesh_repair_decision = tex2color::MeshRepairDecision::Ask;
@@ -488,6 +497,7 @@ bool face_colors_to_painting(
     }
     algo_settings.mesh_repair_decision_required = settings.mesh_repair_decision_required;
     algo_settings.mesh_repair_callback = settings.mesh_repair_callback;
+    algo_settings.strict_mesh_repair = settings.strict_mesh_repair;
 
     tex2color::AlgoProgressCallback algo_progress = nullptr;
     if (progress) {

@@ -16,7 +16,10 @@ inline bool workbench_import_request_allowed(const PostGenerationWorkbenchState&
         state.check.candidate_status == RepairCandidateStatus::Generating ||
         state.check.candidate_status == RepairCandidateStatus::Ready)
         return false;
-    if (request.topology_check_sha256 != state.check.model_sha256) return false;
+    // v9 repairs only before clustering. A legacy request that asks to repair
+    // already painted faces must be rebuilt from the original model instead.
+    if (request.native_repair_before_slice) return false;
+    if (state.deferred_native_repair || request.topology_check_sha256 != state.check.model_sha256) return false;
     if (state.can_import_for_slicing) return true;
     // Only a confirmed, low-severity boundary risk can use the exception path.
     // Invalid, failed, unchecked and changed reports are never force-importable.

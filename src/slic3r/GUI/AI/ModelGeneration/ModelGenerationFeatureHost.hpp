@@ -2,8 +2,10 @@
 
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "ModelGenerationHost.hpp"
+#include "ModelGenerationSubmissionResult.hpp"
 #include "PostGenerationWorkbenchState.hpp"
 #include "WorkbenchImportSession.hpp"
+#include "ModelHistoryOpen.hpp"
 
 #include <functional>
 #include <memory>
@@ -39,6 +41,8 @@ public:
     void mount_assets(wxWindow* parent);
     void unmount_assets();
     void set_history_navigation_handler(std::function<void(bool)> handler);
+    void set_history_model_open_handler(ModelHistoryOpenHandler handler);
+    void finish_history_model_open(bool accepted, std::function<void()> complete = {});
     ModelGenerationUIState snapshot() const;
     void set_state_listener(ModelGenerationUIStateListener listener);
     bool synchronize_input(const ModelGenerationUIInput& input);
@@ -46,9 +50,9 @@ public:
     void get_provider_catalog(const std::string& role, const std::string& provider,
                               AIModelGenerationClient::CatalogFn on_complete,
                               AIModelGenerationClient::ErrorFn on_error);
-    bool request_generate_design();
+    ModelGenerationSubmissionResult request_generate_design();
+    ModelGenerationSubmissionResult request_generate_model();
     bool request_generate_smart();
-    bool request_generate_model();
     bool request_retry_model();
     bool request_stop();
     bool request_retry_service();
@@ -79,6 +83,8 @@ public:
         WorkbenchImportCompletion completion);
     bool request_open_workbench();
     void set_workbench_presented(bool presented);
+    void prepare_workbench_presentation(std::function<void()> ready);
+    void cancel_workbench_presentation();
     void raise_workbench_modal();
     bool request_enter_beauty();
     bool request_return_overview();
