@@ -4,7 +4,7 @@
 #include <functional>
 
 namespace Slic3r::GUI {
-enum class ModelLibraryCommand { OpenModel, OpenImage, Import, Retexture, Remove, MatchColors };
+enum class ModelLibraryCommand { OpenModel, OpenImage, Import, Retexture, Remove, MatchColors, Export, RecordPrintResult };
 struct ModelLibraryActionToken { uint64_t revision; std::string job_id; };
 
 // The library owns selection/list identity. Actions are injected capabilities;
@@ -22,6 +22,7 @@ public:
     void set_ports(Ports ports) { m_ports = std::move(ports); ++m_revision; }
     const std::vector<ModelLibraryEntry>& entries() const { return m_entries; }
     uint64_t revision() const { return m_revision; }
+    bool can_replace() const {const auto allowed=m_ports.can_replace;const auto revision=m_revision;return (!allowed || allowed()) && revision==m_revision;}
     void choose_local() {
         const auto revision = m_revision;
         const auto choose = m_ports.choose_local;
@@ -47,7 +48,7 @@ public:
         // detach a feature. Recheck identity after they return.
         const auto* entry = find(token);
         if (!entry) return false;
-        if (command != ModelLibraryCommand::OpenImage && command != ModelLibraryCommand::Remove && entry->design_only) return false;
+        if (command != ModelLibraryCommand::OpenImage && command != ModelLibraryCommand::Remove && command != ModelLibraryCommand::Export && entry->design_only) return false;
         const auto copy = *entry; // A callback may replace the list synchronously.
         return execute(command, copy);
     }

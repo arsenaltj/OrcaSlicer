@@ -7,6 +7,20 @@
 #include <thread>
 
 namespace Slic3r::HonorAccount {
+std::optional<SessionAccess> Session::access() const
+{
+    if (m_snapshot.state != State::SignedIn || !m_session ||
+        m_session->access_expires_at <= now_seconds()) return std::nullopt;
+    return SessionAccess {m_config.api_url, m_session->access_token,
+        m_session->identity.subject, m_generation};
+}
+
+bool Session::refresh_access(std::uint64_t expected_generation)
+{
+    if (expected_generation != m_generation || !m_session || m_task ||
+        m_snapshot.state != State::SignedIn) return false;
+    return start_refresh();
+}
 namespace {
 
 bool local_endpoint(const std::string& value)

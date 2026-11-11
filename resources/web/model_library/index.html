@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data: blob:; connect-src blob:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>模型库</title>
+    <link rel="stylesheet" href="library.css" />
+    <script defer src="viewer.bundle.js"></script>
+    <script defer src="library-state.js"></script>
+    <script defer src="library.js"></script>
+  </head>
+  <body>
+    <main id="app">
+      <header>
+        <nav class="tabs" aria-label="资产分类">
+          <button data-scope="mine">我的模型</button
+          ><button data-scope="library" class="selected">模型库</button>
+        </nav>
+      </header>
+      <section id="listing">
+        <div class="toolbar">
+          <nav id="filters" aria-label="模型筛选"></nav>
+          <div class="tools">
+            <select id="sort" aria-label="排序">
+              <option value="newest">最新上传</option>
+              <option value="views">最多浏览</option>
+              <option value="downloads">最多下载</option>
+              <option value="likes">最多点赞</option>
+              <option value="favorites">最多收藏</option>
+              <option value="title">名称排序</option></select
+            ><label class="search"
+              ><span id="searchIcon"></span
+              ><input
+                id="search"
+                maxlength="120"
+                placeholder="搜索模型"
+                aria-label="搜索模型"
+            /></label>
+          </div>
+        </div>
+        <div id="notice" role="status" hidden></div>
+        <div id="grid" class="grid"></div>
+        <div id="empty" class="empty" hidden>
+          <p id="emptyText">暂无模型</p>
+          <button data-command="chooseLocal">导入本地模型</button
+          ><button data-command="login" id="emptyLogin" hidden>登录账号</button>
+          <button data-command="storage">打开模型文件夹</button>
+          <button data-command="saveProject" id="emptySaveProject" hidden>
+            保存当前工程（3MF）
+          </button>
+        </div>
+        <button id="more" hidden>加载更多</button>
+      </section>
+      <section id="detail" hidden>
+        <button id="back" class="back">‹ 返回</button>
+        <div class="detail-grid">
+          <div>
+            <div id="media" class="media">
+              <img id="hero" alt="模型预览" />
+              <div id="viewer" hidden></div>
+              <button id="geometry">3D 预览</button
+              ><button id="closeGeometry" hidden>关闭3D预览</button>
+            </div>
+            <div id="gallery" class="gallery"></div>
+          </div>
+          <article>
+            <h1 id="title"></h1>
+            <p id="author"></p>
+            <label
+              >版本
+              <select id="versions" aria-label="模型版本"></select
+            ></label>
+            <p id="license"></p>
+            <p id="licenseDescription"></p>
+            <p id="description"></p>
+            <div class="engagement">
+              <button id="like"></button><button id="favorite"></button>
+            </div>
+            <p id="eligibility"></p>
+            <h2>模型文件</h2>
+            <div id="files"></div>
+            <div id="downloadComplete" hidden>
+              <p>下载完成</p>
+              <button id="openDownloaded">打开工作台</button
+              ><button id="importDownloaded">导入切片</button>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+    <div id="menu" role="menu" hidden></div>
+    <div id="loading" class="loading" role="status" hidden>
+      <div class="spinner"></div>
+      <strong id="stage"></strong>
+      <p id="bytes"></p>
+      <button id="cancel">取消</button>
+    </div>
+    <div id="toast" role="alert" hidden></div>
+  </body>
+</html>

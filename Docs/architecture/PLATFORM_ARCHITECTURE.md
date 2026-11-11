@@ -29,8 +29,8 @@ DFX 按用户确认定义为**诊断、日志、故障定位、性能与可靠�
 | 3D 后处理/人像/配色 | `GUI/AI/ModelGeneration/BeautyWorkbenchSession*`、`BeautyWorkbenchTransactionController*`、`PostGenerationWorkbench*`、`GUI/AI/ColorMatching` | 候选、当前作品、预览和历史需区分；颜色、几何与实物打印质量分别验证 |
 | 原生导入/应用 | `AI/Contracts/IModelArtifactConsumer.hpp`、`GUI/AI/Orca`、`PlaterWorkbenchImport*.ipp`、`PlaterAITransaction.ipp` | Plater/Model/Config 保有工程真值；明确应用和撤销；侧车不直接修改原生工程 |
 | 智能切片 | `AI/SmartSlicing/{Domain,Application,Ports}`、`GUI/AI/SmartSlicing` | revision 约束候选；分析、试切、正式应用与撤销分开；AI 离线保留普通 Orca |
-| 账号 | `Redesign/AccountWorkspace*`、`Utils/HonorAccount/{HonorSession,HonorClient,HonorStore}*` | Session 管身份状态；异步 Task 隔离取消/晚到结果；应用配置和用户凭据分开 |
-| 模型库/资产 | `Redesign/AssetsWorkspace*`、`ModelLibraryApplication*`、Repository/Loader、`AIModelOutputDirectory.hpp` | 图库、任务产物、草稿、导出副本和 3MF 工程有不同生命周期；默认使用用户数据目录 |
+| 账号 | `Redesign/PlatformAccountService*`、AccountWorkspace、`Utils/HonorAccount/{HonorSession,HonorClient,HonorStore}*` | 应用共享服务拥有唯一Session，账号页和模型库共用身份；异步Task隔离取消/晚到结果，凭据只留原生层 |
+| 模型库/资产 | `resources/web/model_library`、AssetsWorkspace、LibraryWorkspaceService、`Utils/PlatformLibrary`、ModelLibraryApplication、Repository/Loader | HTML只展示；C++管理查询、个人记录与下载，登记资产仍由本地库消费；用户目录保留原件与独立编辑成果 |
 | 打印/设备 | 原生 Print/GCode、PrinterWorkspace/OrcaPrinterAdapter、DeviceManager、SendJob/PrintJob、Honor Forge/Moonraker agent、`orca_mobile_device_sdk` | Honor Forge 使用独立 agent ID，mDNS/受控子网候选通过 Moonraker 探测后进入既有 DeviceManager；UI 只选择导出、仅上传或上传并打印，传输继续由既有 Job 和 agent 执行，raw G-code 与 3MF 能力按 agent 显式声明 |
 | CAD/原生编辑 | `libslic3r/CAD`、`GUI/CAD`、Model/Geometry、GLCanvas3D | CAD 文档与求解结果回到原生模型；SLVS/OCCT 版本和构建选项是依赖契约 |
 
@@ -48,6 +48,22 @@ flowchart LR
   Beauty --> Library
   Native --> Project[3MF 工程]
 ```
+
+## 2026-11-11：模型库与网站接缝
+
+AssetsWorkspace只装配安装目录的HTML和受限消息桥，页面不能提交任意URL、本机路径或凭据。LibraryWorkspaceService拥有目录、详情、个人记录和下载状态；请求绑定页面代次及原生账号身份，切页、刷新、注销和取消使旧结果失效。PlatformAccountService统一轮询已有HonorSession，账号页继续负责登录展示及授权窗口，模型库受限操作进入原登录流程并在返回后重新验证详情资格。离线不妨碍本地资产。
+
+LibraryClient直接使用平台`/v1/library`契约，图片只取已登记的相对预览资源，3D数据以有界分块交给本地WebGL展示。下载固定模型/版本/文件ID，在后台校验资格、大小和SHA-256；GUI复核当前请求及账号后原子登记，不发表临时文件。重复版本内容一致才复用；来源元数据不能代替内容校验或工作台检查凭证。原件被修改时仍保留本地资产，停止与网站原件合并显示。GLB/OBJ沿用完整首帧切换和修复成果索引；3MF/STL/STEP使用既有原生导入，3MF保留工程/几何选择及打印配置，不送入GLB历史解析。
+
+网站独立仓库以迁移039追加账号浏览记录，并补齐`me/likes`、`me/downloads`、`me/views`及详情文件摘要；匿名统计口径、原收藏接口和网页兼容性保留。迁移和API在网站正式发布前，桌面个人记录端到端仍待真实环境验收。客户端不上传本机模型，不包含网站Next.js运行时；下载、导入及切片均不计为打印。
+
+本人作品复用已上线的`GET /v1/me/models?offset=N`，以100条页协议读取完整列表；LibraryCatalog归一化模型／版本／发布状态后执行搜索、排序及24条展示分页。LibraryWorkspaceService只在当前账号代次内缓存成功来源，进入或刷新重新同步，换账号及注销清除；“全部”分别读取个人活动，单路失败保留其他成功来源。本地下载原件仍通过现有摘要规则关联，修复／改色成果保持独立。详情统计及互动为可选数据，缺少时展示未知，私有／草稿／撤回作品不提交公共互动；可选版本只来自当前账号的详情响应。安装页的根背景固定在视口，单一文档内容滚动，不随内容移动渐变。
+
+## 2026-11-11：开发者日志导出
+
+Preferences的日志级别下方通过DiagnosticLogExport适配保存对话框与现有ProgressDialog，无需启用开发者模式。DiagnosticLogs在后台仅快照当前data_dir/log下的日志文件，保留诊断ID、时间、阶段和错误，按AI诊断语义移除凭据及URL认证／查询参数；不读取模型、历史、账号存储或完整配置。有限大小快照避免运行中日志追加导致等待无界，轮转／占用产生清单遗漏；写入失败或取消不发布。生成版本／时间／文件及遗漏清单，复用从TroubleshootDialog提取的ZipArchive写入能力，完成后在同目录原子替换目标。故障排查页原目录选择及打包行为保持；导出不是日志上传或安装包制作。
+
+内部桥只接受已登记身份和白名单命令：查询、详情、账号登录、点赞/收藏、下载/取消，以及本地库已提供的打开、导入、配色、导出、打印结果记录等操作；顶层安装URL、随机nonce、字段和消息大小共同校验。页面离开立即停止预览、失效请求与本地扫描；账号变更清理网站图片与个人操作投影，本地缩略图和已下载文件保留。3D传输限64MiB，以192KiB分块每100ms至多发送两块，单个预览准备期间拒绝重复请求。下载原件限100MiB，临时文件和登记文件均只写用户模型目录；SHA-256、大小、固定版本和当前原生身份全部成立后才能登记。
 
 ## 2026-11-10：历史加载反馈与设置栏生命周期
 

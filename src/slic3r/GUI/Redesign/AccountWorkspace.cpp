@@ -1,4 +1,5 @@
 #include "AccountWorkspace.hpp"
+#include "PlatformAccountService.hpp"
 #include "RedesignWidgets.hpp"
 #include "RedesignTheme.hpp"
 #include "HonorAccountWebTheme.hpp"
@@ -67,9 +68,10 @@ public:
 };
 #endif
 }
-AccountWorkspace::AccountWorkspace(wxWindow* parent,Changed changed,std::function<void()> enter)
+AccountWorkspace::AccountWorkspace(wxWindow* parent,Changed changed,std::function<void()> enter,
+    std::shared_ptr<PlatformAccountService> account)
     :wxPanel(parent,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxTAB_TRAVERSAL),
-     m_session(HA::system_store(Slic3r::data_dir()),HA::https_request,HA::application_configuration_store()),m_changed(std::move(changed)),m_enter_workspace(std::move(enter)),m_timer(this)
+     m_account(std::move(account)),m_session(m_account->session()),m_changed(std::move(changed)),m_enter_workspace(std::move(enter)),m_timer(this)
 {
     SetName(text("我的账号"));SetBackgroundColour(background_colour());
     auto* outer=new wxBoxSizer(wxVERTICAL);SetSizer(outer);
@@ -156,14 +158,15 @@ AccountWorkspace::AccountWorkspace(wxWindow* parent,Changed changed,std::functio
     guest->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){m_enter_workspace();});
     m_cancel_login->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){m_session.cancel();close_browser();render();});
     Bind(wxEVT_TIMER,[this](wxTimerEvent&){poll();},m_timer.GetId());
+    m_account->subscribe(this, [this] { render(); });
     // start() runs after the shell's page table has been assembled.
 }
 AccountWorkspace::~AccountWorkspace()
 {
     m_timer.Stop();
-    m_changed={};m_session.cancel();
+    m_account->unsubscribe(this); m_changed={};
 }
-void AccountWorkspace::start() { m_session.restore();render();m_timer.Start(150); }
+void AccountWorkspace::start() { m_account->start();render();m_timer.Start(150); }
 void AccountWorkspace::render()
 {
     const auto& s=m_session.snapshot();
@@ -191,7 +194,7 @@ void AccountWorkspace::render()
 }
 void AccountWorkspace::poll()
 {
-    bool changed=m_session.poll();
+    bool changed=false;
     if(auto authorization=m_session.take_authorization_url()) {
         if(m_browser||m_clear_only||!open_browser(*authorization))
             m_session.fail_authorization("登录页面需要可用的 Microsoft Edge WebView2 运行时及可写的用户数据目录");

@@ -12,12 +12,14 @@ class wxStaticText;
 class wxSizerItem;
 class wxCheckBox;
 namespace Slic3r::GUI {
+class PlatformAccountService;
 namespace HonorBrowserProfile { struct Reset; }
 class RoundedActionButton;
 class AccountWorkspace final : public wxPanel {
 public:
     using Changed = std::function<void(const HonorAccount::Snapshot&, const wxBitmap&)>;
-    AccountWorkspace(wxWindow*, Changed, std::function<void()> enter_workspace);
+    AccountWorkspace(wxWindow*, Changed, std::function<void()> enter_workspace,
+                     std::shared_ptr<PlatformAccountService> account);
     ~AccountWorkspace() override;
     void start();
 private:
@@ -33,7 +35,8 @@ private:
     void poll();
     void load_avatar();
     void edit_avatar();
-    HonorAccount::Session m_session;
+    std::shared_ptr<PlatformAccountService> m_account;
+    HonorAccount::Session& m_session;
     Changed m_changed;
     std::function<void()> m_enter_workspace;
     wxTimer m_timer;

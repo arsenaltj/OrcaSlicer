@@ -4,6 +4,9 @@
 #include "ImageWorkspaceLayout.hpp"
 #include "AssetsWorkspace.hpp"
 #include "AccountWorkspace.hpp"
+#include "PlatformAccountService.hpp"
+#include "../AI/ModelGeneration/LibraryWorkspaceService.hpp"
+#include "../AI/ModelGeneration/ModelWorkspaceFeatureHost.hpp"
 #include "ModelFaceLimitChoice.hpp"
 #include "RedesignTheme.hpp"
 #include "RedesignFlowGuide.hpp"
@@ -28,6 +31,7 @@
 #include "../AI/SmartSlicing/SmartSlicingFeatureHost.hpp"
 #include "../AI/Text/AITextFeatureHost.hpp"
 #include "../Plater.hpp"
+#include "../AIModelOutputDirectory.hpp"
 #include "../ParamsPanel.hpp"
 #include "../Widgets/Label.hpp"
 
@@ -2188,7 +2192,9 @@ void RedesignShell::build_image_workspace()
     m_preview_host->Bind(wxEVT_SIZE, resize_center);
     update_image_state();
 
-    m_assets_page = m_assets_workspace = new AssetsWorkspace(m_content_host, [this] { save_print_project(); });
+    m_platform_account = std::make_shared<PlatformAccountService>(
+        HonorAccount::system_store(Slic3r::data_dir()), HonorAccount::application_configuration_store());
+    m_assets_page = m_assets_workspace = new AssetsWorkspace(m_content_host);
 #ifdef __WXMSW__
     // Individual image controls buffer their own paint. Whole-page Windows
     // compositing exposes a pale intermediate surface when the page restores.
@@ -2228,9 +2234,13 @@ void RedesignShell::build_image_workspace()
                 if (state.state == HonorAccount::State::SignedIn || state.state == HonorAccount::State::Offline)
                     navigate_to_image_view();
             } else if (login_completed && m_active_page == Page::Account) {
-                navigate_to_image_view();
+                if (m_account_return_assets) { m_account_return_assets=false; navigate_to(Page::Assets); }
+                else navigate_to_image_view();
             }
-        }, [this] { navigate_to_image_view(); });
+        }, [this] {
+            if (m_account_return_assets) {m_account_return_assets=false; navigate_to(Page::Assets);}
+            else navigate_to_image_view();
+        }, m_platform_account);
     m_pages[static_cast<std::size_t>(Page::Account)] = m_account_workspace;
     m_content_host->GetSizer()->Add(m_account_workspace, 1, wxEXPAND);
     m_account_workspace->Hide();
@@ -2364,7 +2374,23 @@ void RedesignShell::connect_model_generation_host()
     }
     apply_model_generation_state(m_model_generation_host->snapshot());
     wxWeakRef<RedesignShell> weak(this);
-    m_model_generation_host->mount_assets(m_assets_workspace->local_assets_host());
+    auto library=m_model_generation_host->workspace_capabilities().capabilities().library;
+    m_asset_service=std::make_shared<LibraryWorkspaceService>(m_platform_account,library,
+        LibraryWorkspaceService::Ports {
+            [this] {m_account_return_assets=true;navigate_to(Page::Account);},
+            [this] {
+                const auto root=ai_model_output_directory().root();
+                boost::system::error_code ec;boost::filesystem::create_directories(root,ec);
+                if(!ec) wxLaunchDefaultApplication(from_path(root)+wxFileName::GetPathSeparator());
+            },
+            [this] {save_print_project();},
+            [this,library](const boost::filesystem::path& path) {
+                if(!m_plater || !library->can_replace()) return false;
+                wxArrayString files;files.Add(from_path(path));
+                if(!m_plater->load_files(files)) return false;
+                return show_model_view(ModelView::Slicing);
+            }});
+    m_assets_workspace->attach(m_asset_service,library);
     m_model_generation_host->set_smart_creation_presentation(m_smart_creation);
     mount_smart_model_history();
     m_model_generation_host->set_history_navigation_handler([weak](bool design) {

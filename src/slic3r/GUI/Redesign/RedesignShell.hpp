@@ -69,6 +69,8 @@ class SlicingCanvasOverlay;
 class WorkbenchPaletteChoice;
 class WorkbenchSlider;
 class AccountWorkspace;
+class PlatformAccountService;
+class LibraryWorkspaceService;
 
 class RedesignShell final : public wxPanel
 {
@@ -408,6 +410,9 @@ private:
     std::array<wxWindow*, 3> m_nav_buttons {};
     std::array<wxPanel*, 5> m_pages {};
     std::array<wxWeakRef<wxWindow>, 5> m_page_focus;
+    std::shared_ptr<PlatformAccountService> m_platform_account;
+    std::shared_ptr<LibraryWorkspaceService> m_asset_service;
+    bool m_account_return_assets {false};
     AccountWorkspace* m_account_workspace {nullptr};
     RoundedActionButton* m_account_nav {nullptr};
     bool m_account_started {false};

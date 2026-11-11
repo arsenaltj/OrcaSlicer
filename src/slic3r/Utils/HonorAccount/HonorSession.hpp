@@ -46,6 +46,12 @@ struct Snapshot {
     }
 };
 
+// Native request lease; never serialized to a WebView or persisted by consumers.
+struct SessionAccess {
+    std::string api_url, access_token, subject;
+    std::uint64_t generation {0};
+};
+
 // Main-thread state and storage. Detached workers own only an isolated Task;
 // cancellation, logout, configuration changes, and destruction cannot publish
 // a result into a newer session generation.
@@ -58,6 +64,8 @@ public:
     const Config& config() const { return m_config; }
     const Snapshot& snapshot() const { return m_snapshot; }
     std::uint64_t generation() const noexcept { return m_generation; }
+    std::optional<SessionAccess> access() const;
+    bool refresh_access(std::uint64_t expected_generation);
 
     bool configure(const Config&);
     void restore();

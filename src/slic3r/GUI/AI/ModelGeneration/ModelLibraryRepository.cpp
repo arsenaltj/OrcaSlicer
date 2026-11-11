@@ -2,6 +2,7 @@
 #include "ModelHistoryRepairIndex.hpp"
 #include "ModelLibraryMetadata.hpp"
 #include "ModelLibraryObservations.hpp"
+#include "slic3r/Utils/PlatformLibrary/LibraryClient.hpp"
 #include "ModelLibraryThumbnail.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
@@ -15,7 +16,7 @@
 namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
 std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
-    const boost::filesystem::path& root, const std::atomic<bool>& cancelled)
+    const boost::filesystem::path& root, const std::atomic<bool>& cancelled, bool include_native)
 {
     // Resolve the root before dispatch; no app configuration is read here.
     // The summary reader may maintain its cache beneath the supplied root.
@@ -85,12 +86,17 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
             if (it->path().filename() == "library-summary-cache-v1.json") continue;
             const auto data = read_json(it->path());
             if (!data.is_object() || (data.value("source", std::string()) != "local_finishing" &&
-                data.value("source", std::string()) != "native_workbench_partition")) continue;
+                data.value("source", std::string()) != "native_workbench_partition" &&
+                data.value("source", std::string()) != "website_download")) continue;
             const auto id = data.value("job_id", std::string());
             const auto path = root / data.value("model_path", std::string());
             if (!id.empty() && (id.rfind("finish-", 0) == 0 ||
-                data.value("source", std::string()) == "native_workbench_partition") &&
-                path_is_inside(root, path) && is_nonempty_model(path))
+                data.value("source", std::string()) == "native_workbench_partition" ||
+                data.value("source", std::string()) == "website_download") &&
+                path_is_inside(root, path) && (is_nonempty_model(path) ||
+                  (include_native && data.value("source",std::string())=="website_download" &&
+                   !path.extension().empty() && PlatformLibrary::supported_format(path.extension().string().substr(1)) &&
+                   boost::filesystem::is_regular_file(path,ec) && boost::filesystem::file_size(path,ec)>0 && !ec)))
                 models[id] = path;
         }
     }
@@ -142,6 +148,17 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
             entry.triangle_count = metadata.value("triangle_count", size_t {0});
             entry.load_seconds = metadata.value("load_seconds", 0.0);
             entry.print_feedback = metadata.value("print_feedback", std::string());
+            entry.website_model_id = metadata.value("website_model_id",std::string());
+            entry.website_version_id = metadata.value("website_version_id",std::string());
+            entry.website_file_id = metadata.value("website_file_id",std::string());
+            entry.website_sha256 = metadata.value("website_sha256",std::string());
+            // Source metadata alone never associates edited bytes with a website original.
+            if(metadata.value("source",std::string())=="website_download" &&
+               PlatformLibrary::uuid(entry.website_model_id) && PlatformLibrary::uuid(entry.website_version_id) &&
+               PlatformLibrary::uuid(entry.website_file_id) && entry.website_sha256.size()==64) {
+                try {entry.website_original_verified=PlatformLibrary::file_digest(model_path,&cancelled)==entry.website_sha256;}
+                catch(...) {if(cancelled) return {};}
+            }
             entry.use_printable_colors = metadata.value("use_printable_colors", false);
             const std::string provider = metadata.value("provider", std::string());
             const std::string provider_task_id = metadata.value("provider_task_id", std::string());
