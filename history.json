@@ -1,5 +1,15 @@
 [
   {
+    "pr": 66,
+    "run": 43063840991,
+    "head": "e19b5db0bd8259af71c9d7646397c0ebca945889",
+    "base": "75005701c4aa2c9905f0320376771132719ed3af",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "受控验收：独立正数平均值工具",
+    "path": "pr/66/e19b5db0bd8259af71c9d7646397c0ebca945889/43063840991",
+    "created": "2026-11-11T17:05:14+00:00"
+  },
+  {
     "pr": 64,
     "run": 42970500225,
     "head": "bf2fce8a2bd444c9a861c350f7f3668b9c7c3760",
