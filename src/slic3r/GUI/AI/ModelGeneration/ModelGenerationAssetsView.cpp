@@ -6,6 +6,7 @@
 #include "slic3r/GUI/AIModelOutputDirectory.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/MsgDialog.hpp"
+#include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include <wx/dirdlg.h>
 #include <wx/filename.h>
@@ -55,7 +56,8 @@ void ModelGenerationPanel::export_library_entry(const GeneratedModelEntry& entry
     }
     config->set("model_library_export_directory", folder.string());
     MessageDialog completed(this, _L("已保存独立副本：\n") + from_path(destination) + "\n\n" +
-        (entry.design_only ? _L("设计图已导出。") : _L("model.glb 保留模型材质和贴图。打印工程请另存 3MF。")),
+        (entry.design_only ? _L("设计图已导出。") : AI::is_model_artifact(entry.model_path)
+            ? _L("model.glb 保留模型材质和贴图。打印工程请另存 3MF。") : _L("已保留原格式及文件内的打印配置。")),
         _L("导出完成"), wxYES_NO | wxNO_DEFAULT | wxICON_INFORMATION);
     completed.SetButtonLabel(wxID_YES, _L("打开文件夹"));
     completed.SetButtonLabel(wxID_NO, _L("完成"));
@@ -92,6 +94,17 @@ bool ModelGenerationPanel::request_library_action(ModelLibraryCommand command, c
             wxMessageBox(result.error.empty() ? _L("无法导入这个模型，请检查文件和耗材配置。") : wxString::FromUTF8(result.error),
                 _L("导入未完成"), wxOK | wxICON_ERROR, wxGetTopLevelParent(this));
         return result.imported();
+    }
+    case ModelLibraryCommand::Export: export_library_entry(entry); return true;
+    case ModelLibraryCommand::RecordPrintResult: {
+        if(entry.imported_at<=0) return false;
+        const int result=show_redesign_confirmation(this,
+            _L("请根据已经完成的真实打印记录结果。\n\n“打印成功”表示成品达到本次测试预期；“有问题”表示需要后续复盘。"),
+            _L("记录实际打印结果"), {wxYES_NO|wxCANCEL,105,
+                {{wxID_YES,_L("打印成功"),true},{wxID_NO,_L("有问题")},{wxID_CANCEL,_L("Cancel")}}});
+        if(result==wxID_YES) record_library_print_feedback(entry.job_id,"success");
+        else if(result==wxID_NO) record_library_print_feedback(entry.job_id,"issue");
+        return result!=wxID_CANCEL;
     }
     case ModelLibraryCommand::Retexture: on_retexture_from_library(entry.job_id, entry.title); return true;
     case ModelLibraryCommand::Remove: return delete_library_entry(entry);

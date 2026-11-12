@@ -5,7 +5,7 @@
 namespace Slic3r::GUI {
 ModelWorkspaceFeatureHost::ModelWorkspaceFeatureHost(boost::filesystem::path root, Plater* workspace,
     std::function<void()> navigate, ModelLibraryApplication::Ports ports)
-    : m_root(std::move(root)), m_ports(std::move(ports)), m_capabilities(m_root), m_colors(workspace, std::move(navigate), m_capabilities.colors) {}
+    : m_root(std::move(root)), m_ports(std::move(ports)), m_capabilities(m_root), m_colors(workspace, std::move(navigate), m_capabilities.colors) {m_capabilities.library->set_ports(m_ports);}
 ModelWorkspaceFeatureHost::~ModelWorkspaceFeatureHost() { shutdown(); }
 void ModelWorkspaceFeatureHost::mount_assets(wxWindow* parent)
 {

@@ -27,7 +27,8 @@
     "src/slic3r/GUI/MainFrame.hpp",
     "src/slic3r/GUI/Plater.hpp",
     "src/slic3r/GUI/GLCanvas3D.hpp",
-    "src/orca_model_sdk"
+    "src/orca_model_sdk",
+    "src/slic3r/Utils/PlatformLibrary"
   ],
   "modules": [
     {
@@ -55,9 +56,10 @@
       "paths": [
         "src/slic3r/Utils/HonorAccount",
         "src/slic3r/GUI/Redesign/AccountWorkspace.cpp",
-        "src/slic3r/GUI/Redesign/AccountWorkspace.hpp"
+        "src/slic3r/GUI/Redesign/AccountWorkspace.hpp",
+        "src/slic3r/GUI/Redesign/PlatformAccountService.hpp"
       ],
-      "purpose": "官方 OAuth 身份校验、本机会话与独立账号页，不承接打印机或 AI 供应商凭据"
+      "purpose": "应用共享平台Session、官方OAuth校验与本机凭据；账号页与模型库共用身份，不承接AI供应商凭据"
     },
     {
       "id": "desktop",
@@ -363,14 +365,14 @@
     {
       "id": "assets_workspace",
       "path": "src/slic3r/GUI/Redesign/AssetsWorkspace.cpp",
-      "needle": "void AssetsWorkspace::load_gallery()",
-      "detail": "Local assets retain their history owner. The installed gallery and public catalog previews load lazily through WebView and support offline browse/filter/detail; HTTPS downloads open in the browser, arbitrary file navigation is blocked."
+      "needle": "void AssetsWorkspace::load()",
+      "detail": "Installed HTML presentation with a nonce-bound restricted bridge; LibraryWorkspaceService owns queries, account records and staged downloads. No remote page or native credential enters the HTML."
     },
     {
       "id": "library_export",
       "path": "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryExport.hpp",
       "needle": "inline bool export_model_library_copy",
-      "detail": "Accepted snapshots export GLB/images under the user output models/exports directory. AIModelOutputDirectory defaults to data_dir()/models, supports an explicit environment override, and preserves legacy originals during migration."
+      "detail": "Saved GLB/OBJ snapshots export self-contained GLB; native formats copy original bytes and preserve embedded print configuration. The user output directory and all source assets remain separate."
     },
     {
       "id": "install_model_storage",
@@ -771,6 +773,31 @@
       "path": "src/slic3r/GUI/AI/ModelGeneration/WorkbenchModelContext.hpp",
       "needle": "struct WorkbenchModelContext",
       "detail": "唯一编辑资产身份及格式、色板、ColorIntent、参考图；与智能生成字段、任务和返回来源分别维护。"
+    },
+    {
+      "id": "library_workspace_service",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/LibraryWorkspaceService.hpp",
+      "needle": "class LibraryWorkspaceService final"
+    },
+    {
+      "id": "platform_library_download",
+      "path": "src/slic3r/Utils/PlatformLibrary/LibraryClient.cpp",
+      "needle": "std::string StagedDownload::commit"
+    },
+    {
+      "id": "platform_account_service",
+      "path": "src/slic3r/GUI/Redesign/PlatformAccountService.hpp",
+      "needle": "class PlatformAccountService final"
+    },
+    {
+      "id": "platform_owned_catalog",
+      "path": "src/slic3r/Utils/PlatformLibrary/LibraryCatalog.cpp",
+      "needle": "Json Client::owned_models"
+    },
+    {
+      "id": "diagnostic_log_export",
+      "path": "src/slic3r/Utils/DiagnosticLogs.cpp",
+      "needle": "LogExportResult export_logs"
     }
   ],
   "journeys": [
@@ -1907,11 +1934,12 @@
         ],
         "tests": [
           "tests/slic3rutils/test_model_library*",
-          "tests/ui_redesign/*"
+          "tests/ui_redesign/*",
+          "tests/slic3rutils/test_platform_library.cpp"
         ],
-        "state_owner": "图库为只读目录；作品与历史有独立身份",
+        "state_owner": "HTML展示投影；业务由LibraryWorkspaceService管理",
         "contract": "浏览、载入、导出不隐式生成或切片",
-        "note": "本地图册、生成历史与项目存储不是同一份数据。",
+        "note": "Figma1445/1447本地资源；受限桥仅传注册身份，详情留在客户端；WebView不可用时保留原本地列表。 网页资源resources/web/model_library与tests/web/test_model_library.cjs由Node回归覆盖；现有符号图只统计C++/Python，不将网页写成已索引源码。",
         "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
       },
       {
@@ -2058,34 +2086,42 @@
           "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryApplication*",
           "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryRepository*",
           "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryLoader*",
-          "src/slic3r/GUI/AI/ModelGeneration/ModelWorkspaceFeatureHost*"
+          "src/slic3r/GUI/AI/ModelGeneration/ModelWorkspaceFeatureHost*",
+          "src/slic3r/GUI/AI/ModelGeneration/LibraryWorkspaceService*",
+          "src/slic3r/Utils/PlatformLibrary"
         ],
         "evidence": [
           "model_library_application",
-          "minimal_model_gui"
+          "minimal_model_gui",
+          "library_workspace_service",
+          "platform_library_download",
+          "platform_owned_catalog"
         ],
         "tests": [
-          "tests/slic3rutils/test_model_library*"
+          "tests/slic3rutils/test_model_library*",
+          "tests/slic3rutils/test_platform_library.cpp"
         ],
-        "state_owner": "库条目、载入 token 与模型身份",
-        "contract": "载入结果需核对 token/revision 后才能展示",
-        "note": "库载入逻辑可复用；UI 主路径仍有旧面板装配。",
+        "state_owner": "LibraryWorkspaceService管理目录、个人记录和下载代次；ModelLibraryApplication管理本地资产身份",
+        "contract": "请求绑定页面代次、账号及版本；后台暂存校验后原子登记，现有工作台仍验证检查凭证；本人100条分页完整归一化后筛选，来源独立失败，缓存隔离账号代次",
+        "note": "网站原件仅在内容摘要验证后与账号记录关联；原生格式走既有工程/几何导入，GLB/OBJ保留历史直达及修复索引。",
         "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
       },
       {
         "id": "identity",
         "label": "OAuth 与本机会话",
         "paths": [
-          "src/slic3r/Utils/HonorAccount"
+          "src/slic3r/Utils/HonorAccount",
+          "src/slic3r/GUI/Redesign/PlatformAccountService*"
         ],
         "evidence": [
-          "honor_identity"
+          "honor_identity",
+          "platform_account_service"
         ],
         "tests": [
           "tests/slic3rutils/test_honor*"
         ],
-        "state_owner": "HonorAccount 本机会话与授权状态",
-        "contract": "校验回调、令牌与刷新；取消拒绝迟到结果",
+        "state_owner": "应用共享PlatformAccountService拥有唯一HonorAccount Session",
+        "contract": "原生凭据不进入HTML；取消、过期、刷新及注销均使旧请求失效",
         "note": "应用接入配置与用户令牌应分开维护。",
         "build_boundary": "HonorAccountSources.cmake 纳入 libslic3r_gui；本地系统凭据存储另有平台实现。"
       },
@@ -2360,18 +2396,24 @@
           "scripts/run_beauty_model_regression.py",
           "scripts/beauty_color_quality.py",
           "scripts/dev_runtime.py",
-          "src/libslic3r/Utils.hpp"
+          "src/libslic3r/Utils.hpp",
+          "src/slic3r/Utils/DiagnosticLogs*",
+          "src/slic3r/Utils/ZipArchive*",
+          "src/slic3r/GUI/DiagnosticLogExport*",
+          "src/slic3r/GUI/TroubleshootDialog*"
         ],
         "evidence": [
-          "diagnostic_events"
+          "diagnostic_events",
+          "diagnostic_log_export"
         ],
         "tests": [
           "tools/ai/test_ai_diagnostics.py",
           "tools/ai/test_diagnostic_failure_flow.py",
-          "scripts/test_dev_runtime.py"
+          "scripts/test_dev_runtime.py",
+          "tests/slic3rutils/test_diagnostic_logs.cpp"
         ],
-        "state_owner": "AI 诊断 ID、原生日志、性能与回归证据分散在不同入口",
-        "contract": "记录失败和版本；不持有业务状态真值",
+        "state_owner": "AI 诊断 ID、原生日志、性能与回归证据分散在不同入口；DiagnosticLogs拥有后台脱敏日志快照与原子ZIP发布",
+        "contract": "记录失败和版本；不持有业务状态真值；只读当前log目录，取消／写入失败保护原目标，遗漏进入清单",
         "note": "横切于全部业务。已有日志与回归入口；跨进程关联、性能基线和可靠性预算尚需统一，不能视为已完成的独立平台。",
         "build_boundary": "横跨原生 C++、Python sidecar 与 scripts；没有单独 DFX 库/进程。"
       },
