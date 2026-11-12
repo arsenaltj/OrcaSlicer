@@ -1,5 +1,15 @@
 [
   {
+    "pr": 68,
+    "run": 43172998551,
+    "head": "d7c2d205d45295f6e12e6ebb2908ea8102a71b89",
+    "base": "2f02748781335b461e2e6a7f3978ba17d73af6bc",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "feat(ai): improve advanced multiview and unify model workbench",
+    "path": "pr/68/d7c2d205d45295f6e12e6ebb2908ea8102a71b89/43172998551",
+    "created": "2026-11-12T07:11:31+00:00"
+  },
+  {
     "pr": 66,
     "run": 43063840991,
     "head": "e19b5db0bd8259af71c9d7646397c0ebca945889",

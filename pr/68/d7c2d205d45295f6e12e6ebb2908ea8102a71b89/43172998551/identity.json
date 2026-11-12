@@ -1,0 +1,27 @@
+{
+  "pr": 68,
+  "run": 43172998551,
+  "head": "d7c2d205d45295f6e12e6ebb2908ea8102a71b89",
+  "base": "2f02748781335b461e2e6a7f3978ba17d73af6bc",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "feat(ai): improve advanced multiview and unify model workbench",
+  "path": "pr/68/d7c2d205d45295f6e12e6ebb2908ea8102a71b89/43172998551",
+  "created": "2026-11-12T07:11:31+00:00",
+  "files": {
+    "index.html": "9df4f8752f136936c4d7922ae9c6d679a4d9f57b3c9f5f34d6e8e716d71e10e3",
+    "details.html": "f0339129d27963d1cb1a3c4b6d8cd45d64db5a7f26ccae6863c51608d2b6c8b1",
+    "report.json": "d9e24ffbd8d3c4861e400a83af2f3e61027645ac14cea40328da831dd4437c62",
+    "summary.md": "d1a59a1c94da9cf9ce8b90b16ece66aeee287e4651355da9f5f0785440d17cac",
+    "archify-receipts.json": "a0bf89b74fd27d8d2ee60f205643bbd0903376012bc06e6c9395a0a4d81938ea",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "a81a8284382a4f124c85e993815d645109a874688adfb7e69a32b47ee69279ac",
+    "l1-modules.json": "c79052c24bfb05987f9effdc796bdff0e39cb68e89c4f0c414d5ce5b26c761dd",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
