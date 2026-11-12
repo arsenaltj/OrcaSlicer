@@ -36,9 +36,14 @@ AIModelGenerationClient::ProviderCatalog image_catalog_state(
 
 AdvancedCreationFeatureHost::AdvancedCreationFeatureHost(wxWindow* owner)
     : m_owner(owner), m_client(AISidecarClient::default_endpoint()),
+      m_catalog_client(AISidecarClient::default_endpoint()),
       m_cache(ModelGenerationPresentation::generated_models_root() / "advanced-cache"),
       m_poll_timer(this), m_save_timer(this)
 {
+    m_model_monitor.set_listener([this](const auto& state) {
+        if (!m_shutdown && m_session.matches(m_model_context) && m_model_state_listener)
+            m_model_state_listener(state, false);
+    });
     m_image_catalog = image_catalog_state("checking", {}, {}, false, "checking");
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
         const auto& group = m_session.group();
@@ -87,8 +92,8 @@ void AdvancedCreationFeatureHost::shutdown()
 {
     if (m_shutdown) return;
     m_shutdown = true;
-    m_poll_timer.Stop(); m_save_timer.Stop(); m_listener = {}; m_model_job_listener = {};
-    m_catalog_requester = {};
+    m_poll_timer.Stop(); m_save_timer.Stop(); m_listener = {}; m_model_state_listener = {};
+    m_model_monitor.set_listener({}); m_model_monitor.reset(); m_catalog_client.cancel_current();
     m_client.cancel();
 }
 
@@ -128,22 +133,41 @@ AdvancedMultiviewClient::Error AdvancedCreationFeatureHost::error(bool release_c
 
 void AdvancedCreationFeatureHost::set_listener(std::function<void()> listener)
 { m_listener = std::move(listener); publish(); }
-void AdvancedCreationFeatureHost::publish() { if (m_listener) m_listener(); }
-
-void AdvancedCreationFeatureHost::set_provider_catalog_requester(CatalogRequester requester)
+void AdvancedCreationFeatureHost::get_provider_catalog(const std::string& role, const std::string& provider,
+    AIModelGenerationClient::CatalogFn complete, AIModelGenerationClient::ErrorFn error)
 {
-    m_catalog_requester = std::move(requester);
-    if (!m_catalog_requester) {
-        ++m_image_catalog_sequence;
-        return;
-    }
-    if (m_service_available) refresh_image_catalog();
+    wxWeakRef<AdvancedCreationFeatureHost> weak(this);
+    m_catalog_client.get_provider_catalog(role, provider, [weak, complete](auto catalog) {
+        wxGetApp().CallAfter([weak, complete, catalog = std::move(catalog)]() mutable {
+            if (weak && !weak->m_shutdown && complete) complete(std::move(catalog));
+        });
+    }, [weak, error](auto message) {
+        wxGetApp().CallAfter([weak, error, message = std::move(message)]() mutable {
+            if (weak && !weak->m_shutdown && error) error(std::move(message));
+        });
+    });
 }
+void AdvancedCreationFeatureHost::observe_model_job(const std::string& job, bool open_route, bool restart)
+{
+    m_model_context = m_session.context();
+    boost::filesystem::path reference;
+    if (m_session.group()) reference = m_session.group()->views[0].image_path;
+    m_model_monitor.observe(job, reference, restart);
+    if (open_route && m_model_state_listener) m_model_state_listener(m_model_monitor.snapshot(), true);
+}
+void AdvancedCreationFeatureHost::show_model()
+{
+    if (!m_session.group() || m_session.group()->model_job_id.empty()) return;
+    observe_model_job(m_session.group()->model_job_id, true);
+}
+
+void AdvancedCreationFeatureHost::publish() { if (m_listener) m_listener(); }
 
 void AdvancedCreationFeatureHost::set_service_available(bool available)
 {
     const bool changed = available != m_service_available;
     m_service_available = available;
+    m_model_monitor.set_available(available);
     if (available && changed) {
         refresh_capabilities(); refresh_image_catalog(); refresh_history(); m_poll_timer.Start(1200);
     } else if (!available) {
@@ -169,9 +193,9 @@ void AdvancedCreationFeatureHost::refresh_image_catalog()
 {
     const auto sequence = ++m_image_catalog_sequence;
     m_image_catalog = image_catalog_state("checking", {}, {}, false, "checking");
-    if (!m_service_available || !m_catalog_requester) { publish(); return; }
+    if (!m_service_available) { publish(); return; }
     wxWeakRef<AdvancedCreationFeatureHost> weak(this);
-    m_catalog_requester("image", "yoyoclaw",
+    get_provider_catalog("image", "yoyoclaw",
         [weak, sequence](ProviderCatalog catalog) mutable {
             if (!weak || weak->m_shutdown || sequence != weak->m_image_catalog_sequence) return;
             if (catalog.role != "image" || catalog.provider != "yoyoclaw") {
@@ -289,6 +313,8 @@ void AdvancedCreationFeatureHost::ingest(Json group, CallbackContext context, bo
         project(false, false);
         if (!pending->message.empty()) m_message = pending->message;
         else m_message.clear();
+        if (m_session.group() && !m_session.group()->model_job_id.empty())
+            observe_model_job(m_session.group()->model_job_id, false);
         if (done) done();
         publish();
     };
@@ -375,7 +401,7 @@ void AdvancedCreationFeatureHost::open_group(const std::string& id)
     if (m_command_pending || m_poll_pending || has_pending_receipt() || (m_start_guard && !m_start_guard()) || !AdvancedMultiviewClient::valid_id(id)) return;
     m_command_pending = true;
     save_draft([this, id] {
-        m_command_pending = false; m_session.begin_open(id); m_message.clear(); poll(true); publish();
+        m_command_pending = false; m_model_monitor.reset(); m_session.begin_open(id); m_message.clear(); poll(true); publish();
     });
 }
 
@@ -425,6 +451,7 @@ void AdvancedCreationFeatureHost::new_creation()
             {"group_id", group.id}, {"operation_id", operation}, {"kind", group.model_busy ? "model" : "design"}};
     }
     m_save_timer.Stop();
+    m_model_monitor.reset();
     m_session.new_creation();
     m_restore_receipts = false;
     m_command_pending = false; m_poll_pending = false; m_message.clear();
@@ -502,7 +529,7 @@ void AdvancedCreationFeatureHost::generate_model(Confirm confirm)
                      {"confirmation_fingerprint", plan.at("confirmation_fingerprint")}},
                     complete([this, job = plan.at("job_id").get<std::string>()](Json) {
                         m_command_pending = false;
-                        if (!job.empty() && m_model_job_listener) m_model_job_listener(job);
+                        if (!job.empty()) observe_model_job(job, true);
                         reconcile_submission(false);
                     }), error());
             }), error());
@@ -521,7 +548,7 @@ void AdvancedCreationFeatureHost::resume_model()
     m_client.request("POST", "/groups/" + group.id + "/model-jobs/" + group.model_job_id + "/resume", Json::object(),
         complete([this, job](Json) {
             m_command_pending = false; poll();
-            if (!job.empty() && m_model_job_listener) m_model_job_listener(job);
+            if (!job.empty()) observe_model_job(job, true, true);
             publish();
         }), error());
     publish();
@@ -715,6 +742,10 @@ void AdvancedCreationFeatureHost::retry(ViewId view, Confirm confirm)
 
 void AdvancedCreationFeatureHost::stop()
 {
+    if (m_model_monitor.snapshot().stage == ModelGenerationUIStage::LoadingModel &&
+        m_session.matches(m_model_context)) {
+        m_model_monitor.stop_local(); return;
+    }
     if (!eligibility().stop || !m_session.group()) return;
     const auto& group = *m_session.group(); m_command_pending = true;
     const auto route = group.model_busy ? "/model-jobs/" + group.model_job_id : "/operations/" + group.active_operation_id;

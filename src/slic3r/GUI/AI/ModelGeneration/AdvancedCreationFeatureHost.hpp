@@ -2,6 +2,7 @@
 
 #include "AdvancedCreationSession.hpp"
 #include "AdvancedMultiviewClient.hpp"
+#include "AdvancedModelTaskMonitor.hpp"
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include <wx/event.h>
 #include <wx/timer.h>
@@ -18,8 +19,6 @@ public:
     using Json = nlohmann::json;
     using Confirm = std::function<bool(const Json&)>;
     using ProviderCatalog = AIModelGenerationClient::ProviderCatalog;
-    using CatalogRequester = std::function<void(const std::string&, const std::string&,
-        AIModelGenerationClient::CatalogFn, AIModelGenerationClient::ErrorFn)>;
     explicit AdvancedCreationFeatureHost(wxWindow* owner);
     ~AdvancedCreationFeatureHost() override;
     AdvancedCreation::Session& session() { return m_session; }
@@ -32,10 +31,15 @@ public:
     const ProviderCatalog& image_catalog() const { return m_image_catalog; }
     void reconcile_submission();
     void set_listener(std::function<void()> listener);
-    void set_model_job_listener(std::function<void(const std::string&)> listener)
-    { m_model_job_listener = std::move(listener); }
+    void set_model_state_listener(std::function<void(const ModelGenerationUIState&, bool)> listener)
+    { m_model_state_listener = std::move(listener); }
+    const ModelGenerationUIState& model_state() const { return m_model_monitor.snapshot(); }
+    const std::optional<ModelLibraryEntry>& model_artifact() const { return m_model_monitor.artifact(); }
+    void show_model();
+    void retry_local_model() { m_model_monitor.retry_local(); }
+    void get_provider_catalog(const std::string& role, const std::string& provider,
+        AIModelGenerationClient::CatalogFn complete, AIModelGenerationClient::ErrorFn error);
     void set_start_guard(std::function<bool()> guard) { m_start_guard = std::move(guard); }
-    void set_provider_catalog_requester(CatalogRequester requester);
     void set_service_available(bool available);
     void refresh_capabilities();
     void refresh_image_catalog();
@@ -58,6 +62,7 @@ private:
                       bool session_bound = true);
     AdvancedMultiviewClient::Error error(bool release_command = true, bool release_poll = false);
     void publish();
+    void observe_model_job(const std::string& job, bool open_route, bool restart = false);
     void poll(bool restore = false);
     void ingest(Json group, AdvancedCreation::CallbackContext context, bool restore,
                 std::function<void()> done = {});
@@ -74,13 +79,15 @@ private:
     wxWeakRef<wxWindow> m_owner;
     AdvancedCreation::Session m_session;
     AdvancedMultiviewClient m_client;
+    AIModelGenerationClient m_catalog_client;
+    AdvancedModelTaskMonitor m_model_monitor;
+    AdvancedCreation::CallbackContext m_model_context;
     boost::filesystem::path m_cache;
     wxTimer m_poll_timer;
     wxTimer m_save_timer;
     std::function<void()> m_listener;
-    std::function<void(const std::string&)> m_model_job_listener;
+    std::function<void(const ModelGenerationUIState&, bool)> m_model_state_listener;
     std::function<bool()> m_start_guard;
-    CatalogRequester m_catalog_requester;
     ProviderCatalog m_image_catalog;
     std::uint64_t m_image_catalog_sequence {0};
     Json m_capabilities;

@@ -21,6 +21,7 @@ struct ModelLibraryEntry {
     std::map<std::string, std::string> palette_roles;
     std::string color_intent_schema, color_intent_sha256;
     std::string job_id, provider_name, provider_task_id, provider_conversion_task_id;
+    std::string content_sha256; // Optional immutable identity captured during preparation, not a new history format.
     std::time_t generated_at {0}, imported_at {0};
     size_t triangle_count {0};
     double load_seconds {0.0};

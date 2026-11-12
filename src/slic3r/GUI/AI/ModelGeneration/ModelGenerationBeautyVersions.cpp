@@ -161,7 +161,7 @@ bool ModelGenerationPanel::show_finishing_version(const boost::filesystem::path&
     m_model_preview->set_color_controls_visible(!m_finishing_workbench || m_finishing_tool->GetSelection() == 2);
     m_model_preview->set_selection_preview_suppressed(
         m_finishing_workbench && !m_finishing_candidate.empty() && path == m_finishing_candidate);
-    m_model_preview_ready = true;
+    m_workbench_model.ready = true;
     if (m_workbench_load_error) {
         m_status->SetLabel(wxEmptyString);
         m_result_summary->SetLabel(wxEmptyString);
@@ -182,18 +182,17 @@ void ModelGenerationPanel::select_local_finishing_version(const boost::filesyste
     m_native_workbench_partition_report = nullptr;
     m_native_workbench_partition_certificate = nullptr;
     m_native_workbench_partition_commit = nullptr;
-    ++m_sequence;
-    ++m_model_generation_session;
-    m_poll_timer.Stop();
-    m_job_id.clear(); m_job_palette.clear(); m_job_palette_roles.clear();
-    m_job_use_printable_colors = false;
-    m_artifact_path = m_displayed_model_path = path;
-    m_displayed_model_job_id = id;
-    m_displayed_model_palette.clear(); m_displayed_model_palette_roles.clear();
-    m_color_intent_path.clear(); m_color_intent_schema.clear(); m_color_intent_sha256.clear();
-    m_artifact_format = AI::model_artifact_format(path); m_artifact_color_encoding = "vertex_colors";
-    m_ready = true; m_library_model_loaded = true; m_artifact_download_started = false;
-    m_awaiting_confirmation = false; m_awaiting_palette_confirmation = false;
+    ++m_workbench_model.revision;
+    m_workbench_model.path = path;
+    m_workbench_model.asset_id = id;
+    m_workbench_model.sha256 = AI::model_artifact_sha256(path);
+    m_workbench_model.palette.clear(); m_workbench_model.palette_roles.clear();
+    m_workbench_model.use_printable_colors = false;
+    m_workbench_model.color_intent_path.clear(); m_workbench_model.color_intent_schema.clear();
+    m_workbench_model.color_intent_sha256.clear();
+    m_workbench_model.format = AI::model_artifact_format(path);
+    m_workbench_model.color_encoding = m_workbench_model.format == "glb" ? "textures_or_vertex_colors" : "vertex_colors";
+    m_workbench_model.ready = true; m_library_model_loaded = true;
     m_last_imported_model_path.clear();
     clear_model_quality();
     m_visual_quality = {};
@@ -405,10 +404,10 @@ void ModelGenerationPanel::accept_model_finishing()
         metadata["local_selection"] = AI::SurfaceSelectionPersistence::encode(m_finishing_selection_state,
             m_finishing_result.faces_after, m_model_preview->geometry_id());
     else if (m_model_preview->leaf_editing()) metadata["local_selection"]=m_model_preview->selection_metadata();
-    if (!m_reference_image_path.empty() && path_is_inside(root, m_reference_image_path))
-        metadata["reference_image_path"] = m_reference_image_path.lexically_relative(root).generic_string();
-    if (!m_raw_preview_path.empty() && path_is_inside(root, m_raw_preview_path))
-        metadata["ai_image_path"] = m_raw_preview_path.lexically_relative(root).generic_string();
+    if (!m_workbench_model.reference_image_path.empty() && path_is_inside(root, m_workbench_model.reference_image_path))
+        metadata["reference_image_path"] = m_workbench_model.reference_image_path.lexically_relative(root).generic_string();
+    if (!m_workbench_model.design_image_path.empty() && path_is_inside(root, m_workbench_model.design_image_path))
+        metadata["ai_image_path"] = m_workbench_model.design_image_path.lexically_relative(root).generic_string();
     nlohmann::json history_index = {
         {"schema", "orca.local-finishing-history/v1"},
         {"source", "local_finishing"},
@@ -428,7 +427,7 @@ void ModelGenerationPanel::accept_model_finishing()
     const auto canceled = m_finishing_canceled;
     const auto committed = m_beauty_publication_committed;
     const auto cache_root = boost::filesystem::path(Slic3r::data_dir()) / "cache";
-    const auto revision = m_sequence;
+    const auto revision = m_workbench_model.revision;
     const bool resume_automatic_palette_after_accept = topology_candidate &&
         m_workbench_auto_palette_revision == revision &&
         m_workbench_auto_palette_path == source &&
@@ -535,7 +534,7 @@ void ModelGenerationPanel::accept_model_finishing()
             wxGetApp().CallAfter([weak, revision, session_revision, canceled, committed, candidate, before, after,
                 source, source_hash, source_context, region_cache_unsaved, topology_candidate, filament_application, native_proof,
                 resume_automatic_palette_after_accept, final_check, metadata_path, error]() mutable {
-                if (!weak || weak->m_shutdown || revision != weak->m_sequence ||
+                if (!weak || weak->m_shutdown || revision != weak->m_workbench_model.revision ||
                     !weak->m_beauty_session.is_current(session_revision) ||
                     weak->m_beauty_publication_committed != committed) return;
                 auto* self = weak.get();
@@ -567,7 +566,7 @@ void ModelGenerationPanel::accept_model_finishing()
                         self->m_workbench_check_result.repair_reason = self->m_workbench_check_result.summary;
                         if (!error.empty()) self->m_workbench_check_result.repair_reason += " " + error;
                         self->m_workbench_check_path = source.string();
-                        self->m_workbench_check_revision = self->m_sequence;
+                        self->m_workbench_check_revision = self->m_workbench_model.revision;
                         self->m_finishing_status->SetLabel(from_u8(self->m_workbench_check_result.repair_reason));
                     } else self->m_finishing_status->SetLabel(canceled->load()
                         ? _L("已取消保存，候选和草稿保留，可再次保存。")
@@ -597,7 +596,7 @@ void ModelGenerationPanel::accept_model_finishing()
                 self->publish_native_workbench_context();
                 if (resume_automatic_palette_after_accept) {
                     self->m_workbench_auto_palette_pending = true;
-                    self->m_workbench_auto_palette_revision = self->m_sequence;
+                    self->m_workbench_auto_palette_revision = self->m_workbench_model.revision;
                     self->m_workbench_auto_palette_path = candidate;
                 }
                 const auto accepted_context = self->capture_model_context();
@@ -636,7 +635,7 @@ void ModelGenerationPanel::accept_model_finishing()
                     const auto restore = [self](const auto& snapshot, const auto& context) {
                         if (!self->restore_beauty_candidate(*snapshot)) return false;
                         if (context) context();
-                        ++self->m_sequence;
+                        ++self->m_workbench_model.revision;
                         self->publish_native_workbench_context();
                         self->m_finishing_source.clear();
                         self->m_finishing_undo_path.clear();
@@ -673,7 +672,7 @@ void ModelGenerationPanel::accept_model_finishing()
                     }
                     self->m_workbench_check_result = final_check;
                     self->m_workbench_check_path = candidate.string();
-                    self->m_workbench_check_revision = self->m_sequence;
+                    self->m_workbench_check_revision = self->m_workbench_model.revision;
                 }
                 self->m_workbench_operation_notice = topology_candidate ? "修复已接受并保存" : "新版本已保存";
                 self->finish_printer_filament_application(true);
@@ -686,7 +685,7 @@ void ModelGenerationPanel::accept_model_finishing()
                 self->finish_workbench_save();
                 self->m_workbench_auto_repair = false;
                 if (resume_automatic_palette_after_accept)
-                    self->apply_pending_workbench_ai_palette(candidate, self->m_sequence);
+                    self->apply_pending_workbench_ai_palette(candidate, self->m_workbench_model.revision);
                 self->ensure_workbench_check();
             });
         });
@@ -707,7 +706,7 @@ void ModelGenerationPanel::accept_model_finishing()
             m_workbench_check_result.summary = "无法启动修复版本保存，候选和原始外观载体已回滚。";
             m_workbench_check_result.repair_reason = m_workbench_check_result.summary + " " + error.what();
             m_workbench_check_path = source.string();
-            m_workbench_check_revision = m_sequence;
+            m_workbench_check_revision = m_workbench_model.revision;
             m_finishing_status->SetLabel(from_u8(m_workbench_check_result.repair_reason));
         } else {
             m_finishing_status->SetLabel(_L("暂时无法启动保存，候选保留：") + from_u8(error.what()));
@@ -756,9 +755,9 @@ void ModelGenerationPanel::undo_model_finishing()
     if (!show_finishing_version(m_finishing_undo_path)) return;
     m_finishing_redo_preview = [this, redo_colors] { m_model_preview->restore_color_trial(redo_colors); };
     m_finishing_redo_path = m_finishing_accepted_path;
-    m_finishing_redo_id = m_displayed_model_job_id;
+    m_finishing_redo_id = m_workbench_model.asset_id;
     m_finishing_redo_source = m_finishing_undo_path;
-    ++m_sequence;
+    ++m_workbench_model.revision;
     if (m_finishing_restore_context) m_finishing_restore_context();
     if (m_finishing_restore_selection) m_finishing_restore_selection();
     refresh_model_quality_card();
@@ -772,7 +771,7 @@ void ModelGenerationPanel::undo_model_finishing()
 
 void ModelGenerationPanel::redo_model_finishing()
 {
-    if (m_busy || m_workbench_check_running || m_finishing_redo_path.empty() || m_displayed_model_path != m_finishing_redo_source) return;
+    if (m_busy || m_workbench_check_running || m_finishing_redo_path.empty() || m_workbench_model.path != m_finishing_redo_source) return;
     if (!show_finishing_version(m_finishing_redo_path)) return;
     m_finishing_undo_path = m_finishing_redo_source;
     m_finishing_accepted_path = m_finishing_redo_path;

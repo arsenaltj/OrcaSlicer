@@ -920,6 +920,7 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
     JobStatus status;
     status.id = job.value("id", std::string());
     status.source = job.value("source", std::string());
+    status.creation_kind = job.value("creation_kind", std::string());
     status.state = job.value("state", std::string());
     status.phase = job.value("phase", std::string());
     status.message = job.value("message", std::string());

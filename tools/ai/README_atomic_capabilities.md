@@ -66,7 +66,7 @@ flowchart TD
 - “新建创作”立即重置本地工作区／epoch，不等待草稿、轮询或配置；历史／原件／文件／日志保留。桌面回执保存为`advanced-cache/pending-submissions/<operation-id>.json`并兼容读取旧`pending-submission.json`，仅核对／归档对应操作。停止意图可先于受理写入`stopped-submissions/<operation-id>.json`，后到POST不得发旧任务后续请求；旧回调不修改新会话或释放其忙碌。已提交请求可仍计费，其晚到候选只归旧组。保留内部旧retry/recover合同，但统一新生成入口不沿旧模型重试或复用候选。
 - `/model-plans` 与 `/model-jobs` 将完整四图冻结到同一Job-v2。`resume/reconcile/stop` 始终沿原身份处理，未知提交阻止新创建；旧单图路由拒绝重生带高级四图来源的Job。
 
-组文件位于用户模型目录 `advanced-multiview/<group-id>`；原件、设计版本与操作收据分别持久化。桌面选择仅影响2D目标，不过滤3D四图。旧Job-v1单图历史保留显式入口；新高级工作台使用独立宿主，导入仍走原生应用保护。实际类型／路由与失败恢复详见[架构实施对照](../../Docs/plans/ui-redesign/2026-11-07-advanced-multiview-architecture.md#实施对照2026-11-08)、[详细设计](../../Docs/plans/ui-redesign/2026-11-07-advanced-multiview-detailed-design.md)及[逐项测试报告](../../Docs/plans/ui-redesign/2026-11-08-advanced-multiview-test-report.md)。
+组文件位于用户模型目录 `advanced-multiview/<group-id>`；原件、设计版本与操作收据分别持久化。桌面选择仅影响2D目标，不过滤3D四图。旧Job-v1单图历史保留显式入口；智能与高级共享Shell内的一套等待／结果／编辑工作台，创作Session仍各自独立。高级通过无编辑UI的AdvancedModelTaskMonitor观察明确Job并复用ModelArtifactAcquisition；显式产物打开和3D历史不覆盖创作输入，编辑与导入使用当前WorkbenchModelContext。导入沿原确认／进度／原生保护接回切片及预览。实际类型／路由与失败恢复详见[架构实施对照](../../Docs/plans/ui-redesign/2026-11-07-advanced-multiview-architecture.md#实施对照2026-11-08)、[详细设计](../../Docs/plans/ui-redesign/2026-11-07-advanced-multiview-detailed-design.md)及[逐项测试报告](../../Docs/plans/ui-redesign/2026-11-08-advanced-multiview-test-report.md)。
 
 运行恢复限制：侧车单独重启后，现有桌面认证nonce会失效；本轮真实验证通过正常重启应用、打开原组并显式恢复原3D任务继续，保持同一远端task且不新建。不能把此路径描述为服务自动重连；共享会话认证的变更不属于高级业务隔离范围。GPT和Tripo保留既有真实证据；YOYOClaw三种白名单图像模型已有官方协议和三参考图中转验证，其中Doubao样本曾在输出内容审核阶段失败，不能把审核通过或所有输入内容可用性写成已保证。
 

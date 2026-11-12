@@ -185,14 +185,6 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
             m_library_refresh_pending = false;
         } else {
             workbench_metadata_updated = true;
-            if (m_advanced_only) {
-                auto& entries = snapshot->entries;
-                entries.erase(std::remove_if(entries.begin(), entries.end(), [](const GeneratedModelEntry& entry) {
-                    const auto metadata = ModelGenerationPresentation::read_json(
-                        ModelGenerationPresentation::generated_models_root() / entry.job_id / "job.json");
-                    return metadata.is_object() && metadata.value("workflow_mode", std::string()) == "smart";
-                }), entries.end());
-            }
             const size_t anchor_index = m_library_page * m_library_page_size;
             const std::string anchor = anchor_index < m_library_entries.size() ? m_library_entries[anchor_index].job_id : std::string();
             const auto position = std::find_if(snapshot->entries.begin(), snapshot->entries.end(),
@@ -519,7 +511,7 @@ void ModelGenerationPanel::load_design_library_entry(const std::string& job_id)
                 // Reopening the current pending design after reconnect is a
                 // read refresh: keep local input and unsubmitted quality choices.
                 if (status.id == weak->m_job_id && weak->m_awaiting_confirmation &&
-                    status.state == "awaiting_confirmation" && !weak->m_model_preview_ready && weak->m_style_preview_ready) {
+                    status.state == "awaiting_confirmation" && !weak->m_workbench_model.ready && weak->m_style_preview_ready) {
                     weak->handle_status(std::move(status), sequence);
                     if (weak->m_preview_book) weak->m_preview_book->SetSelection(0);
                     return;

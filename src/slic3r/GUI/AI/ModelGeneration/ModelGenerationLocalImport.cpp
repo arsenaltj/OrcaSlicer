@@ -33,10 +33,10 @@ void ModelGenerationPanel::import_local_model(const boost::filesystem::path& sou
     }
     const std::string id="finish-import-"+new_request_id();
     const auto destination=temp_path(id,"glb"),metadata_path=library_metadata_path(id),root=generated_models_root();
-    const auto reference_image_path=open_beauty && !m_reference_image_path.empty() && path_is_inside(root,m_reference_image_path)
-        ? m_reference_image_path : boost::filesystem::path();
-    const auto ai_image_path=open_beauty && !m_raw_preview_path.empty() && path_is_inside(root,m_raw_preview_path)
-        ? m_raw_preview_path : boost::filesystem::path();
+    const auto reference_image_path=open_beauty && !m_workbench_model.reference_image_path.empty() && path_is_inside(root,m_workbench_model.reference_image_path)
+        ? m_workbench_model.reference_image_path : boost::filesystem::path();
+    const auto ai_image_path=open_beauty && !m_workbench_model.design_image_path.empty() && path_is_inside(root,m_workbench_model.design_image_path)
+        ? m_workbench_model.design_image_path : boost::filesystem::path();
     if(m_library_import_worker.joinable())m_library_import_worker.join();
     auto* operation = local_model_import_state(m_library_import);
     if (!operation) return;

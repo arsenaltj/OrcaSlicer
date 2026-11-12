@@ -4,15 +4,12 @@
 #include "SmartCreationControls.hpp"
 #include "../AI/ModelGeneration/AdvancedCreationFeatureHost.hpp"
 #include "../AI/ModelGeneration/ModelGenerationPresentation.hpp"
-#include "../AI/ModelGeneration/ModelGenerationFeatureHost.hpp"
 #include "../AI/Text/AITextClient.hpp"
 #include "../AISidecarClient.hpp"
 #include "../GUI_App.hpp"
 #include "../wxExtensions.hpp"
 #include <wx/display.h>
-#include <wx/progdlg.h>
 #include <wx/choice.h>
-#include <wx/choicdlg.h>
 #include <wx/control.h>
 #include <wx/dcbuffer.h>
 #include <wx/dialog.h>
@@ -1143,19 +1140,11 @@ struct AdvancedCreationWorkspace::Impl {
     UploadAreaPanel* uploads {nullptr};
     std::array<wxStaticText*, 4> tags {};
     std::array<std::uint64_t, 4> suppress_until {};
-    std::unique_ptr<ModelGenerationFeatureHost> model_host;
     std::unique_ptr<AITextClient> text_client;
     std::shared_ptr<AITextClient::RequestHandle> polish_request;
-    std::shared_ptr<WorkbenchImportSession> import_session;
-    wxProgressDialog* import_progress {nullptr};
     wxPanel* creation {nullptr};
-    wxPanel* workbench {nullptr};
-    wxPanel* legacy {nullptr};
-    bool workbench_open {false}, polish_pending {false}, closing {false};
-    std::string opening_model;
-    std::function<void()> after_import;
-    std::function<void(const ModelGenerationUIState&)> model_state_changed;
-    std::function<void(const ModelGenerationUIState&)> show_model_route;
+    bool polish_pending {false}, closing {false};
+    std::function<bool()> can_replace_asset;
     wxPanel* grid {nullptr};
     wxScrolledWindow* input_scroll {nullptr};
     wxPanel* input_content {nullptr};
@@ -1216,63 +1205,15 @@ struct AdvancedCreationWorkspace::Impl {
     } image_status, geometry_status;
 
     Impl(AdvancedCreationWorkspace& owner, AdvancedCreationFeatureHost& feature, std::function<void()> show_smart,
-         Plater* plater, std::function<void()> navigate_after_import,
-         std::function<void(const ModelGenerationUIState&)> model_state,
-         std::function<void(const ModelGenerationUIState&)> show_model)
-        : page(owner), host(feature), after_import(std::move(navigate_after_import)),
-          model_state_changed(std::move(model_state)), show_model_route(std::move(show_model)), click_timer(&owner) {
+         std::function<bool()> can_replace)
+        : page(owner), host(feature), can_replace_asset(std::move(can_replace)), click_timer(&owner) {
         page.SetBackgroundColour(background_colour());
         auto* root = new wxBoxSizer(wxVERTICAL); page.SetSizer(root);
         creation = new wxPanel(&page); creation->SetBackgroundColour(background_colour());
         auto* outer = new wxBoxSizer(wxHORIZONTAL); creation->SetSizer(outer); root->Add(creation, 1, wxEXPAND);
-        workbench = new wxPanel(&page); workbench->SetSizer(new wxBoxSizer(wxVERTICAL));
-        root->Add(workbench, 1, wxEXPAND); workbench->Hide();
-        model_host = std::make_unique<ModelGenerationFeatureHost>(&page, plater, [this] { if (after_import) after_import(); }, [] {}, true);
-        model_host->set_smart_creation_presentation(false); model_host->initialize_for_shell();
-        host.set_provider_catalog_requester([this](const std::string& role, const std::string& selected_provider,
-                                                   AIModelGenerationClient::CatalogFn complete,
-                                                   AIModelGenerationClient::ErrorFn error) {
-            if (!model_host || closing) { if (error) error("Model generation host is unavailable."); return; }
-            model_host->get_provider_catalog(role, selected_provider, std::move(complete), std::move(error));
-        });
-        legacy = new wxPanel(&page); legacy->SetSizer(new wxBoxSizer(wxVERTICAL));
-        auto* legacy_back = new RoundedActionButton(legacy, t("返回多视角创作"), false, 36);
-        legacy_back->SetMinSize(page.FromDIP(wxSize(200, 36)));
-        legacy->GetSizer()->Add(legacy_back, 0, wxALL, page.FromDIP(10));
-        legacy_back->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-            if (!navigation_allowed() || !model_host->can_replace_asset()) return;
-            legacy->Hide(); creation->Show(); page.Layout(); render();
-        });
-        model_host->panel()->Reparent(legacy); legacy->GetSizer()->Add(model_host->panel(), 1, wxEXPAND);
-        root->Add(legacy, 1, wxEXPAND); legacy->Hide();
-        model_host->mount_workbench(workbench);
         text_client = std::make_unique<AITextClient>(AISidecarClient::default_endpoint());
-        host.set_start_guard([this] { return !import_session && !polish_pending && model_host->can_replace_asset(); });
-        model_host->set_workbench_return_to_design_handler([this] { close_workbench(); });
-        model_host->set_workbench_results_handler([this] { close_workbench(); });
-        model_host->set_workbench_import_handler([this](const auto& request) { import_model(request); });
-        wxWeakRef<AdvancedCreationWorkspace> weak(&page);
-        model_host->set_state_listener([weak](const auto& state) {
-            if (!weak) return;
-            weak->CallAfter([weak, state] {
-                if (!weak) return;
-                weak->m_impl->model_changed();
-                if (weak->m_impl->model_state_changed) weak->m_impl->model_state_changed(state);
-            });
-        });
-        host.set_model_job_listener([weak](const std::string& job_id) {
-            if (!weak) return;
-            const auto context = weak->m_impl->host.session().context();
-            weak->CallAfter([weak, context, job_id] {
-                if (!weak || job_id.empty() ||
-                    !weak->m_impl->host.session().matches(context) ||
-                    !weak->m_impl->model_host->request_open_history(job_id)) return;
-                const auto state = weak->m_impl->model_host->snapshot();
-                if (weak->m_impl->show_model_route) weak->m_impl->show_model_route(state);
-            });
-        });
+        host.set_start_guard([this] { return !polish_pending && (!can_replace_asset || can_replace_asset()); });
         page.Bind(wxEVT_SHOW, [this](wxShowEvent& event) {
-            if (model_host) model_host->set_workbench_presented(event.IsShown() && workbench_open);
             if (!event.IsShown() && polish_request) { polish_request->cancel(); polish_request.reset(); polish_pending = false; }
             if (event.IsShown()) switch_stage(false, true);
             event.Skip();
@@ -1662,11 +1603,7 @@ struct AdvancedCreationWorkspace::Impl {
         if (closing) return; closing = true;
         click_timer.Stop();
         if (polish_request) polish_request->cancel();
-        if (import_session) import_session->invalidate();
-        if (import_progress) { import_progress->Destroy(); import_progress = nullptr; }
-        host.set_provider_catalog_requester({});
-        if (model_host) { model_host->shutdown(); model_host->unmount_workbench(); }
-        host.set_start_guard({}); host.set_model_job_listener({}); host.set_listener({});
+        host.set_start_guard({}); host.set_listener({});
     }
     void switch_stage(bool selected_model, bool reset = false) {
         if (!reset && model_tab == selected_model) return;
@@ -1723,7 +1660,7 @@ struct AdvancedCreationWorkspace::Impl {
     }
     void refresh_provider_status(bool geometry) {
         auto* picker = geometry ? geometry_provider : provider;
-        if (!picker || !model_host) return;
+        if (!picker) return;
         auto& value = geometry ? geometry_status : image_status;
         const std::string selected_provider = geometry ? "tripo" : host.session().draft().design.provider;
         if (!service_available) {
@@ -1744,7 +1681,7 @@ struct AdvancedCreationWorkspace::Impl {
         value.provider = selected_provider; value.state = "checking"; value.connection_state.clear();
         const std::uint64_t sequence = ++value.sequence; apply_provider_status(geometry);
         wxWeakRef<AdvancedCreationWorkspace> weak(&page);
-        model_host->get_provider_catalog(geometry ? "geometry" : "image", selected_provider,
+        host.get_provider_catalog(geometry ? "geometry" : "image", selected_provider,
             [weak, geometry, sequence, selected_provider](AIModelGenerationClient::ProviderCatalog catalog) {
                 if (!weak) return;
                 auto& self = *weak->m_impl;
@@ -1763,7 +1700,6 @@ struct AdvancedCreationWorkspace::Impl {
     }
     void set_service_available(bool available) {
         service_available = available;
-        model_host->set_service_availability(available, available, {});
         image_status.provider.clear(); image_status.state.clear(); ++image_status.sequence;
         geometry_status.provider.clear(); geometry_status.state.clear(); ++geometry_status.sequence;
         refresh_provider_status(false); refresh_provider_status(true);
@@ -1777,84 +1713,10 @@ struct AdvancedCreationWorkspace::Impl {
         options.geometry_quality = options.face_limit == 2000000 ? "detailed" : "standard";
         host.session().set_model_options(std::move(options)); host.changed();
     }
-    bool navigation_allowed() {
-        if (import_session || model_host->workbench_snapshot().modal_blocking) {
-            model_host->raise_workbench_modal(); return false;
-        }
-        return true;
-    }
-    void close_workbench() {
-        if (!navigation_allowed()) return;
-        workbench_open = false; model_host->set_workbench_presented(false);
-        workbench->Hide(); creation->Show(); page.Layout(); render();
-    }
+    bool navigation_allowed() { return true; }
     void open_model() {
         if (!host.session().group() || !input_editable()) return;
-        const auto& group = *host.session().group();
-        if (group.model_state != "ready" || group.model_job_id.empty()) return;
-        opening_model = group.model_job_id;
-        if (!model_host->request_open_history(opening_model)) opening_model.clear();
-        model_changed();
-    }
-    bool open_model_workbench() {
-        const auto state = model_host->snapshot();
-        if (!state.model_ready || !state.can_open_workbench || !model_host->request_open_workbench()) return false;
-        opening_model.clear(); workbench_open = true; creation->Hide(); workbench->Show();
-        page.Layout(); model_host->set_workbench_presented(page.IsShownOnScreen());
-        return true;
-    }
-    void open_legacy() {
-        if (!input_editable()) return;
-        const auto root = ModelGenerationPresentation::generated_models_root();
-        std::vector<std::string> ids; wxArrayString labels;
-        try {
-            for (const auto& entry : ModelGenerationPresentation::read_image_history(root)) {
-                const auto metadata = ModelGenerationPresentation::read_json(root / entry.job_id / "job.json");
-                if (metadata.value("workflow_mode", std::string()) == "smart") continue;
-                ids.push_back(entry.job_id);
-                labels.Add(t(entry.prompt.empty() ? "单图设计" : entry.prompt.c_str()) + t(" · ") + t(entry.job_id.substr(0, 8).c_str()));
-            }
-        } catch (const std::exception&) {
-            show_redesign_details(&page, t("旧版历史暂时无法读取，原记录已保留。"), t("历史读取失败")); return;
-        }
-        if (ids.empty()) { show_redesign_details(&page, t("暂无可用的旧版单图设计记录。"), t("旧版单图历史")); return; }
-        wxSingleChoiceDialog picker(&page, t("选择旧版设计，按原单图流程打开。"), t("旧版单图历史"), labels);
-        if (picker.ShowModal() != wxID_OK || !model_host->request_open_image_history(ids.at(picker.GetSelection()))) return;
-        creation->Hide(); legacy->Show(); model_host->panel()->Show(); page.Layout();
-    }
-    void model_changed() {
-        if (closing) return;
-        const auto state = model_host->snapshot();
-        if (!opening_model.empty() && state.model_ready && state.can_open_workbench) {
-            if (model_host->request_open_workbench()) {
-                opening_model.clear(); workbench_open = true; creation->Hide(); workbench->Show();
-                page.Layout(); model_host->set_workbench_presented(page.IsShownOnScreen());
-            }
-        }
-        render();
-    }
-    void import_model(const AI::ModelImportRequest& request) {
-        if (import_session) return;
-        if (show_generation_confirmation(&page, t("将当前模型导入 Orca 工程？导入后可继续调整打印参数。"), t("确认导入模型")) != wxID_YES) return;
-        import_session = std::make_shared<WorkbenchImportSession>();
-        import_progress = new wxProgressDialog(t("导入模型"), t("正在读取模型…"), 100, &page, wxPD_APP_MODAL | wxPD_CAN_ABORT | wxPD_ELAPSED_TIME);
-        wxWeakRef<AdvancedCreationWorkspace> weak(&page);
-        const bool started = model_host->import_workbench_model_async(request, import_session,
-            [weak](WorkbenchImportPhase phase, const std::string& message) {
-                if (!weak) return; auto& self = *weak->m_impl;
-                if (self.import_progress && !self.import_progress->Pulse(t(message.c_str())) && self.import_session) self.import_session->cancel();
-            }, [weak](const AI::ModelImportResult& result) {
-                if (!weak) return; auto& self = *weak->m_impl;
-                if (self.import_progress) { self.import_progress->Destroy(); self.import_progress = nullptr; }
-                self.import_session.reset();
-                if (!result.imported() && !result.error.empty()) show_redesign_details(weak, t(result.error.c_str()), t("模型导入未完成"));
-                self.render();
-                if (result.imported() && self.after_import) self.after_import();
-            });
-        if (!started) {
-            import_progress->Destroy(); import_progress = nullptr; import_session.reset();
-            show_redesign_details(&page, t("当前模型状态已变化，请重新检查后导入。"), t("模型导入未开始"));
-        }
+        host.show_model();
     }
     void polish_prompt() {
         if (!input_editable() || polish_pending) return;
@@ -1943,7 +1805,7 @@ struct AdvancedCreationWorkspace::Impl {
         };
     }
     bool input_editable() const {
-        return !polish_pending && !import_session && model_host->can_replace_asset() && !host.command_pending() && !host.has_pending_receipt() && (!host.session().group() ||
+        return !polish_pending && (!can_replace_asset || can_replace_asset()) && !host.command_pending() && !host.has_pending_receipt() && (!host.session().group() ||
                (host.session().group()->active_operation_id.empty() && !host.session().group()->model_busy));
     }
     void choose(ViewId view) {
@@ -2217,12 +2079,8 @@ struct AdvancedCreationWorkspace::Impl {
 };
 
 AdvancedCreationWorkspace::AdvancedCreationWorkspace(wxWindow* parent, AdvancedCreationFeatureHost& host,
-                                                     std::function<void()> show_smart, Plater* plater,
-                                                     std::function<void()> after_import,
-                                                     std::function<void(const ModelGenerationUIState&)> model_state_changed,
-                                                     std::function<void(const ModelGenerationUIState&)> show_model_route)
-    : wxPanel(parent), m_impl(std::make_unique<Impl>(*this, host, std::move(show_smart), plater,
-          std::move(after_import), std::move(model_state_changed), std::move(show_model_route)))
+    std::function<void()> show_smart, std::function<bool()> can_replace)
+    : wxPanel(parent), m_impl(std::make_unique<Impl>(*this, host, std::move(show_smart), std::move(can_replace)))
 {
     wxWeakRef<AdvancedCreationWorkspace> weak(this);
     host.set_listener([weak] { if (weak) weak->render(); });
@@ -2231,6 +2089,5 @@ AdvancedCreationWorkspace::~AdvancedCreationWorkspace() = default;
 void AdvancedCreationWorkspace::render() { m_impl->render(); }
 void AdvancedCreationWorkspace::set_service_available(bool available) { m_impl->set_service_available(available); }
 bool AdvancedCreationWorkspace::navigation_allowed() { return m_impl->navigation_allowed(); }
-bool AdvancedCreationWorkspace::request_open_model_workbench() { return m_impl->open_model_workbench(); }
 void AdvancedCreationWorkspace::shutdown() { m_impl->shutdown(); }
 }

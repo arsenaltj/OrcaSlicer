@@ -11,6 +11,13 @@ enum class RedesignModelRouteAction { Ignore, Refresh, Model, Image };
 
 enum class RedesignPrimaryAction { Design, Model };
 
+inline const ModelGenerationUIState& selected_model_presentation(bool advanced,
+    const ModelGenerationUIState& smart, const ModelGenerationUIState& four_view)
+{ return advanced ? four_view : smart; }
+
+inline bool workbench_return_advanced(bool from_editor, std::optional<bool> anchor, bool task_advanced)
+{ return from_editor && anchor ? *anchor : task_advanced; }
+
 class PreviewAutoFitState
 {
 public:

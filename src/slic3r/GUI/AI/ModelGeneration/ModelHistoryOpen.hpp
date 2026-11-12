@@ -31,6 +31,8 @@ struct ModelHistoryOpenRequest {
     ModelLibraryEntry entry, previous;
     boost::filesystem::path root;
     std::string model_hash, record_hash;
+    boost::filesystem::path expected_source;
+    std::string expected_source_sha256;
     std::shared_ptr<const ModelHistoryRepairIndex> repairs;
     std::optional<WorkbenchCheckResult> check, previous_check;
     std::atomic<bool> canceled {false};

@@ -25,11 +25,11 @@ namespace Slic3r::GUI {
 
 struct ModelGenerationFeatureHost::Impl
 {
-    Impl(wxWindow* parent, Plater* plater, NavigateAfterImportFn navigate_after_import, RetryServiceFn retry_service, bool advanced_only)
+    Impl(wxWindow* parent, Plater* plater, NavigateAfterImportFn navigate_after_import, RetryServiceFn retry_service)
         : workspace(std::make_unique<OrcaWorkspaceAdapter>(plater, navigate_after_import))
     {
         BOOST_LOG_TRIVIAL(info) << "AI model generation startup: creating model generation panel";
-        model_generation = new ModelGenerationPanel(parent, *workspace, *workspace, advanced_only);
+        model_generation = new ModelGenerationPanel(parent, *workspace, *workspace);
         capabilities = std::make_unique<ModelWorkspaceFeatureHost>(ModelGenerationPresentation::generated_models_root(),
             plater, navigate_after_import, ModelLibraryApplication::Ports {
                 [this] { return model_generation && model_generation->library_asset_switch_allowed(); },
@@ -132,8 +132,8 @@ struct ModelGenerationFeatureHost::Impl
 
 ModelGenerationFeatureHost::ModelGenerationFeatureHost(wxWindow* parent, Plater* plater,
                                                        NavigateAfterImportFn navigate_after_import,
-                                                       RetryServiceFn retry_service, bool advanced_only)
-    : m_impl(std::make_unique<Impl>(parent, plater, std::move(navigate_after_import), std::move(retry_service), advanced_only))
+                                                       RetryServiceFn retry_service)
+    : m_impl(std::make_unique<Impl>(parent, plater, std::move(navigate_after_import), std::move(retry_service)))
 {}
 
 bool ModelGenerationFeatureHost::can_replace_asset() const
@@ -290,6 +290,11 @@ bool ModelGenerationFeatureHost::request_open_image_history(const std::string& j
 {
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_open_image_history(job_id);
 }
+
+bool ModelGenerationFeatureHost::request_open_workbench_artifact(const WorkbenchOpenRequest& request)
+{ return m_impl->model_generation && m_impl->model_generation->request_open_workbench_artifact(request); }
+bool ModelGenerationFeatureHost::request_open_generated_artifact()
+{ return m_impl->model_generation && m_impl->model_generation->request_open_generated_artifact(); }
 
 bool ModelGenerationFeatureHost::request_open_history(const std::string& job_id)
 {

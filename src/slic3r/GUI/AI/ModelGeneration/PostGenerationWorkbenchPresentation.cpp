@@ -214,15 +214,15 @@ void ModelGenerationPanel::queue_workbench_surface_refresh()
         const auto controls_presented = std::chrono::steady_clock::now();
         if (weak->m_workbench_preparing && weak->m_model_preview) {
             const auto revision = weak->m_workbench_surface_revision;
-            const auto model_path = weak->m_displayed_model_path;
+            const auto model_path = weak->m_workbench_model.path;
             weak->m_model_preview->observe_presentation_frame([weak, revision, model_path] {
                 if (!weak || weak->m_shutdown || !weak->m_workbench_preparing) return;
                 if (revision != weak->m_workbench_surface_revision ||
-                    model_path != weak->m_displayed_model_path) {
+                    model_path != weak->m_workbench_model.path) {
                     weak->queue_workbench_surface_refresh();
                     return;
                 }
-                if (!weak->m_model_preview_ready || weak->m_preview_loading ||
+                if (!weak->m_workbench_model.ready || weak->m_preview_loading ||
                     !weak->m_model_preview->showing_model(model_path)) return;
                 auto ready = weak->m_workbench_preparation_ready;
                 if (ready) ready();
@@ -394,7 +394,7 @@ void ModelGenerationPanel::acknowledge_workbench_risk()
     if (m_workbench_check_running || m_workbench_check_result.status != WorkbenchCheckStatus::Attention ||
         !m_workbench_check_result.force_import_risk || m_workbench_check_result.model_sha256.empty()) return;
     m_workbench_force_import_ack_hash = m_workbench_check_result.model_sha256;
-    m_workbench_force_import_ack_revision = m_sequence;
+    m_workbench_force_import_ack_revision = m_workbench_model.revision;
     m_workbench_operation_notice = "已确认开放边界风险；可点击“去切片”继续，导入后请复核逐层切片结果。";
     hide_workbench_check_card();
     refresh_post_generation_workbench();
@@ -412,7 +412,7 @@ void ModelGenerationPanel::show_workbench_check_details()
         actions.push_back({wxID_APPLY, _L("定位问题区域"), false});
     actions.push_back({wxID_OK, _L("关闭"), false});
     if (show_redesign_details(m_workbench_shell, detail_text, _L("检查修复详情"), actions) == wxID_APPLY &&
-        m_model_preview && AI::model_artifact_sha256(m_displayed_model_path) == m_workbench_check_result.model_sha256) {
+        m_model_preview && AI::model_artifact_sha256(m_workbench_model.path) == m_workbench_check_result.model_sha256) {
         m_workbench_editing = true;
         refresh_post_generation_workbench();
         m_model_preview->select_face_evidence(m_workbench_check_result.issue_faces);
@@ -644,7 +644,7 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     const auto state = post_generation_ui_state();
     const auto snapshot = workbench_snapshot();
     const auto appearance_state = workbench_original_appearance_state(state.status, m_preview_loading,
-        m_model_preview_ready && m_model_preview->has_model() && !m_displayed_model_path.empty(),
+        m_workbench_model.ready && m_model_preview->has_model() && !m_workbench_model.path.empty(),
         m_model_preview->original_comparison_available(), !m_model_preview->original_appearance_error().empty());
     const bool original_appearance_available = appearance_state == WorkbenchOriginalAppearanceState::Available;
     const bool model_unavailable = appearance_state == WorkbenchOriginalAppearanceState::Empty ||
@@ -656,7 +656,7 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     m_model_preview->set_workbench_palette_hint(original_appearance_reason);
     update_workbench_history_actions();
     const auto title_path = !m_finishing_candidate.empty() && !m_finishing_source.empty()
-        ? m_finishing_source : m_displayed_model_path;
+        ? m_finishing_source : m_workbench_model.path;
     bool accepted = !m_finishing_accepted_path.empty() && title_path == m_finishing_accepted_path;
     for (const auto& entry : m_library_entries) {
         if (entry.model_path != title_path) continue;
@@ -720,7 +720,7 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         layout_changed = true;
     }
     layout_changed = set_workbench_shown(m_workbench_settings, true) || layout_changed;
-    const bool finishing_ready = m_model_preview_ready && is_nonempty_model(m_displayed_model_path);
+    const bool finishing_ready = m_workbench_model.ready && is_nonempty_model(m_workbench_model.path);
     const bool show_finishing_panel = m_workbench_editing &&
         (finishing_ready || m_finishing_running || !m_finishing_candidate.empty());
     layout_changed = set_workbench_shown(m_finishing_panel, show_finishing_panel) || layout_changed;
@@ -866,7 +866,7 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
             m_workbench_grid->SetValue(grid_visible);
         set_workbench_enabled(m_workbench_grid, m_model_preview->has_model());
     }
-    const bool can_import = (snapshot.can_import_for_slicing || snapshot.can_force_import) && is_nonempty_model(m_displayed_model_path);
+    const bool can_import = (snapshot.can_import_for_slicing || snapshot.can_force_import) && is_nonempty_model(m_workbench_model.path);
     if (auto* portrait = FindWindowByName("portrait_r6_entry", m_workbench_shell)) {
         set_workbench_enabled(portrait, snapshot.actions.can_edit && snapshot.portrait_available);
         layout_changed = set_workbench_label(portrait,

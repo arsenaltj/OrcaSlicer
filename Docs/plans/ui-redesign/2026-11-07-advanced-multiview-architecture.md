@@ -1,6 +1,8 @@
 # AI 创作高级模式：多视角软件架构方案
 
-- 日期：2026-11-07；版本：设计 V1.2（2026-11-09历史套图展示／重命名补充）。
+2026-11-12实施对照：已在源码增加AdvancedModelTaskFlow／Monitor、ModelArtifactAcquisition、WorkbenchModelContext／OpenRequest，移除高级内部完整ModelGenerationFeatureHost和独立导入；两来源显式产物及3D历史交给原唯一编辑实例，生成任务及草稿继续独立。Shell来源快照和返回锚点、编辑代次及当前元数据消费者已迁移，构建／定向回归／真实主窗口待验收。最新状态见主计划，以下V3.0目标仍是冻结范围。
+
+- 日期：2026-11-07；当前提案：设计 V3.0（2026-11-11单工作台目标架构，开发方案待确认）；原实施基线保留。
 - 任务：`UX/ADVANCED-MULTIVIEW-20261107`。
 - 输入：[需求 V1.4](2026-11-07-advanced-multiview-requirements.md)、[76 条原验收用例及增补](2026-11-07-advanced-multiview-acceptance.md)。
 - 配套：[详细设计](2026-11-07-advanced-multiview-detailed-design.md)。
@@ -9,7 +11,49 @@
 
 2026-11-11整改入口：[需求V2.0](2026-11-07-advanced-multiview-requirements.md#mv-r2-requirements)、[开发方案V2.0](2026-11-07-advanced-multiview-detailed-design.md#mv-r2-development)及[42条用例](2026-11-07-advanced-multiview-acceptance.md#mv-r2-acceptance)均已获开发与验证授权。当前模型统一计划通过可选`target_modes/dependency_views/publication_bases`兼容旧记录；Host按操作保留收据、逐图缓存并隔离epoch；新建立即重置，持久stop意图与受理事务收敛，执行器保持串行并投影queued。下方保留原实施基线；卡片恢复／原模型重试、缺图不可选及旧未决失败全局锁由R2替代。实际验证结论见既有测试报告，不能将设计或编译等同验收。
 
-## 实施对照（2026-11-08）
+<a id="mv-workbench-architecture"></a>
+
+## 2026-11-11 统一工作台目标边界（需求已确认，开发方案待确认）
+
+用户已确认[WB-01～11及WB-A／B](2026-11-07-advanced-multiview-requirements.md#mv-workbench-requirements)，本轮只编写[开发方案V3.0](2026-11-07-advanced-multiview-detailed-design.md#mv-workbench-development)和[80条用例](2026-11-07-advanced-multiview-acceptance.md#mv-workbench-acceptance)，未实施产品。下方2026-11-08的双宿主／内部工作台是待替代的现状记录；当前不能据其“复用原工作台”的文字宣称完整导航／导入兼容已通过。旧MV-MODEL-07及新缺陷证据保留，实际结果以主计划和测试报告为准。
+
+```mermaid
+flowchart TD
+    S[智能创作Session与SmartGenerationFlow] --> SS[智能任务状态]
+    A[高级创作Session与FeatureHost] --> AM[高级3D任务观察器]
+    AM --> AS[高级任务状态]
+    SS --> R[Shell工作台等待与结果页]
+    AS --> R
+    S --> AC[共享产物获取及校验接缝]
+    AM --> AC
+    AC --> GA[GeneratedModelArtifact与已有资产元数据]
+    GA --> OP[显式打开请求及两阶段安装]
+    R -->|用户打开结果| OP
+    H[模型库与历史3D打开] --> OP
+    OP --> WB[唯一工作台模型上下文与BeautyWorkbenchSession]
+    WB --> IM[原Shell导入确认与进度呈现]
+    IM --> P[Orca Adapter与Plater]
+    P --> SP[原切片 预览 打印流程]
+```
+
+图中节点为职责，不意味着另建一套智能宿主。沿用现有ModelGenerationFeatureHost／Panel承载共享工作台，拆清其生成和编辑上下文；AdvancedCreationWorkspace不再创建完整ModelGenerationFeatureHost和内部编辑面板。拟AdvancedModelTaskMonitor仅承接高级明确任务观察／下载，由高级FeatureHost持有，不持有编辑Session或原生工程。
+
+| 边界 | 目标约束与消费者 |
+| --- | --- |
+| 生成状态与业务所有者 | 智能原Session／SmartGenerationFlow和高级Session／Application各自持有；Shell只选当前来源快照。阶段／进度算法和服务端Job-v1/v2不变，无统一成一份可写生成业务状态。 |
+| 等待与结果 | 共用既有Page::Model；包括首次进入、左导航、幂等刷新、合法重入及历史恢复。状态按模式、任务／会话和该来源revision校验，不能跨来源比较revision或固定读取智能状态。 |
+| 产物契约 | GeneratedModelArtifact保持无GUI／供应商依赖；共享获取复用现有客户端、校验、元数据及文件发布。GUI来源／返回锚点不进入libslic3r或供应商请求。 |
+| 工作台打开 | 普通3D打开只加载模型／编辑元数据，不调用会清任务／覆盖输入的生成恢复路径；复用原ModelHistoryOpen及首帧、取消drain、保留页和回滚接缝。 |
+| 当前编辑与事务 | 唯一WorkbenchModelContext持有模型身份／格式／颜色／元数据，BeautyWorkbenchSession持有原编辑事务／候选；检查、保存、历史和导入消费者读取当前模型，而非智能生成临时字段。 |
+| 返回与历史 | Shell只保存来源身份和工作区epoch；普通历史切换不覆盖创作草稿，尊重显式新建／切组。单模型未保存保护沿现有规则，不新增两份未保存编辑或返回会话持久化。 |
+| 原生工程与流程 | Plater保持项目／配置／耗材／原生撤销真值；导入统一经原Shell呈现和Adapter，提交与目标视图就绪分开，已提交后视图恢复不能重复导入。 |
+| 清理与保护 | 迁移有效观察／目录／历史能力后删除高级内部工作台、完整model_host、独立导入／错误路由及无消费者依赖。移除实例级advanced_only时保留按实际任务来源识别的Job-v2防错保护。 |
+
+允许的依赖仍为GUI组合／Adapter→Session／Contracts／Ports→实现，不新增内核到GUI或供应商反向依赖。供应商策略、四图冻结、提示词、GPT参数、执行并发和历史格式不因统一工作台改变。
+
+本轮只是目标架构说明，review-map中的当前源码锚点及平台现行实现说明不提前伪改为已完成。实施时同步实际边界、原子能力及相关ADR／已有架构决策入口，并运行原集成／映射／文档检查，不弱化阈值；旧集成diff预算缺口及受限的历史操作继续保留原状态，不扩大本次范围。
+
+## 实施对照（2026-11-08，保留现状记录，工作台部分待V3.0替代）
 
 | 职责 | 实际维护入口 | 边界 |
 | --- | --- | --- |

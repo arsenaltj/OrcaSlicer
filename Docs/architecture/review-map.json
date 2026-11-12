@@ -710,13 +710,13 @@
       "id": "advanced_creation_host",
       "path": "src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.cpp",
       "needle": "void AdvancedCreationFeatureHost::generate_model(Confirm confirm)",
-      "detail": "高级独立宿主；持有YOYOClaw实时图像目录状态，仅精确Qwen可作为新草稿默认且不回落；确认记录持久化与显式对账，后台请求不释放前台锁。"
+      "detail": "高级独立提交／停止／恢复与回执所有者；无编辑UI的任务观察器跟随明确Job，共享获取本地产物，目录请求与任务请求隔离。"
     },
     {
       "id": "advanced_creation_workspace",
       "path": "src/slic3r/GUI/Redesign/AdvancedCreationWorkspace.cpp",
       "needle": "struct AdvancedCreationWorkspace::Impl {",
-      "detail": "高级四图界面和独立后处理宿主；GPT隐藏图像模型下拉框，YOYOClaw显示实时白名单、展示名移除PC-YOYO但保存完整ID；旧单图历史显式打开，不进入智能 Session。"
+      "detail": "高级四图创作界面，只适配独立 Session；已移除重复编辑宿主与独立导入，3D查看交给 Shell 的唯一工作台。GPT／YOYOClaw目录和四图规则保持。"
     },
     {
       "id": "advanced_multiview_models",
@@ -759,6 +759,18 @@
       "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationHistoryOpen.cpp",
       "needle": "bool ModelGenerationPanel::load_library_entry(",
       "detail": "One generation/selected-asset checked history loading transaction owns entry, actual preparation stages, rollback and certificate restoration before page presentation. Cancellation retains the busy request until its parser drains; deferred launch follows the first card paint. Shared import-style feedback has an independent lifecycle and stays through final frame reveal. The existing scan worker supplies a memory-only source index; actual model preparation revalidates each source chain and complete publication proof."
+    },
+    {
+      "id": "advanced_model_task_flow",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/AdvancedModelTaskFlow.hpp",
+      "needle": "class AdvancedModelTaskFlow",
+      "detail": "高级只读任务观察／下载／本地准备生命周期；Ports隔离请求、取消、过期回调，不具备付费提交入口。"
+    },
+    {
+      "id": "workbench_model_context",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/WorkbenchModelContext.hpp",
+      "needle": "struct WorkbenchModelContext",
+      "detail": "唯一编辑资产身份及格式、色板、ColorIntent、参考图；与智能生成字段、任务和返回来源分别维护。"
     }
   ],
   "journeys": [
@@ -1952,7 +1964,9 @@
           "tools/ai/advanced_multiview*",
           "src/slic3r/GUI/AI/ModelGeneration/AdvancedCreation*",
           "src/slic3r/GUI/AI/ModelGeneration/AdvancedMultiviewClient*",
-          "src/slic3r/GUI/Redesign/AdvancedCreationWorkspace*"
+          "src/slic3r/GUI/Redesign/AdvancedCreationWorkspace*",
+          "src/slic3r/GUI/AI/ModelGeneration/AdvancedModelTask*",
+          "src/slic3r/GUI/AI/ModelGeneration/ModelArtifactAcquisition*"
         ],
         "evidence": [
           "job_application",
@@ -1966,18 +1980,20 @@
           "advanced_creation_host",
           "advanced_creation_workspace",
           "advanced_multiview_models",
-          "advanced_multiview_model_workflow"
+          "advanced_multiview_model_workflow",
+          "advanced_model_task_flow"
         ],
         "tests": [
           "tools/ai/test_atomic_capabilities.py",
           "tools/ai/test_artifact_restart_recovery.py",
           "tools/ai/test_advanced_multiview.py",
           "tests/slic3rutils/test_advanced_creation.cpp",
-          "tools/ai/test_advanced_multiview_models.py"
+          "tools/ai/test_advanced_multiview_models.py",
+          "tests/slic3rutils/test_unified_workbench.cpp"
         ],
-        "state_owner": "旧 Job / JobRepository 持有原任务；高级组仓库独立持有当前上传引用、待处理集合、四图版本、operation模型与尝试，AdvancedCreation Session 持有高级桌面草稿、完整图像模型ID与选择",
+        "state_owner": "旧 Job / JobRepository 持有原任务；高级组仓库独立持有当前上传引用、待处理集合、四图版本、operation模型与尝试，AdvancedCreation Session 持有高级桌面草稿、完整图像模型ID与选择；AdvancedModelTaskFlow只持有本地观察投影及请求代次，不创建远端任务",
         "contract": "只有首次／新建创建高级组；同组输入或风格变化强制重生对应视角并在待处理清空前禁止3D；YOYOClaw目录无精确Qwen时不自动回落，operation冻结模型且失败重试沿原模型；确认、取消、响应恢复与幂等提交在应用入口处理",
-        "note": "旧GPT规格和智能工作流不变；高级独立 Session／Host／Workspace接入YOYOClaw实时白名单、三种已验证多参考图协议、结构化错误诊断、同组输入更新、组版本和四图 Job-v2；真实供应商与真实主窗口验收分别记录。",
+        "note": "智能与高级创作Session／任务独立，生成等待、结果与编辑接入Shell唯一工作台；高级不额外执行2D。供应商协议、预算确认与原文件兼容不变。",
         "build_boundary": "任务应用为本地 Python sidecar 模块；高级 Session 编入 libslic3r_gui STATIC，二者不具有独立部署边界。"
       },
       {
@@ -1989,7 +2005,9 @@
           "src/slic3r/GUI/AI/ModelGeneration/WorkbenchImport*",
           "src/slic3r/GUI/AI/ModelGeneration/PortraitColor*",
           "src/slic3r/GUI/AI/ColorMatching",
-          "src/slic3r/GUI/AI/Model"
+          "src/slic3r/GUI/AI/Model",
+          "src/slic3r/GUI/AI/ModelGeneration/WorkbenchModelContext.hpp",
+          "src/slic3r/GUI/AI/ModelGeneration/WorkbenchOpenRequest.hpp"
         ],
         "evidence": [
           "beauty_session",
@@ -1997,14 +2015,16 @@
           "beauty_session_accept",
           "beauty_session_discard",
           "workbench_portrait_color_blocks",
-          "beauty_physical_handoff"
+          "beauty_physical_handoff",
+          "workbench_model_context"
         ],
         "tests": [
           "tests/slic3rutils/test_beauty*",
           "tests/slic3rutils/test_portrait*",
-          "tests/slic3rutils/test_model_color*"
+          "tests/slic3rutils/test_model_color*",
+          "tests/slic3rutils/test_unified_workbench.cpp"
         ],
-        "state_owner": "Session私有持有候选基线、历史检查点、候选/已发布文件与草稿revision；TransactionController持有撤销时间线",
+        "state_owner": "Session私有持有候选基线、历史检查点、候选/已发布文件与草稿revision；TransactionController持有撤销时间线；当前模型身份与元数据由唯一WorkbenchModelContext持有，Shell仅持返回来源",
         "contract": "保存成功才完成接受；过期回调不接受新草稿；恢复成功才清理待选文件/历史；原生交接保持明确应用",
         "note": "配色候选生命周期通过Session操作；预览、持久化、耗材原生提交与人像编辑上下文仍由宿主适配。未宣称整个后处理已无GUI依赖。",
         "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"

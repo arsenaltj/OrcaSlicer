@@ -119,8 +119,8 @@ bool ModelGenerationPanel::native_workbench_context_matches(
     const NativeWorkbenchPartitionContext& context) const
 {
     return context.valid() && context == m_native_workbench_context && m_model_preview &&
-        m_model_preview_ready && m_model_preview->showing_model(context.model_path) &&
-        m_displayed_model_path == context.model_path && m_sequence == context.generation &&
+        m_workbench_model.ready && m_model_preview->showing_model(context.model_path) &&
+        m_workbench_model.path == context.model_path && m_workbench_model.revision == context.generation &&
         AI::model_artifact_sha256(context.model_path) == context.source_sha256 &&
         m_model_preview->geometry_id() == context.geometry_id &&
         m_model_preview->semantic_source_content_id() == context.appearance_id;
@@ -181,13 +181,13 @@ bool ModelGenerationPanel::restore_native_workbench_partition_checkpoint()
 void ModelGenerationPanel::publish_native_workbench_context()
 {
     NativeWorkbenchPartitionContext next;
-    if (!m_shutdown && m_model_preview_ready && m_model_preview &&
-        m_model_preview->showing_model(m_displayed_model_path)) {
-        next.model_path = m_displayed_model_path;
-        next.source_sha256 = AI::model_artifact_sha256(m_displayed_model_path);
+    if (!m_shutdown && m_workbench_model.ready && m_model_preview &&
+        m_model_preview->showing_model(m_workbench_model.path)) {
+        next.model_path = m_workbench_model.path;
+        next.source_sha256 = AI::model_artifact_sha256(m_workbench_model.path);
         next.geometry_id = m_model_preview->geometry_id();
         next.appearance_id = m_model_preview->semantic_source_content_id();
-        next.generation = m_sequence;
+        next.generation = m_workbench_model.revision;
     }
     if (next != m_native_workbench_context) {
         if (m_native_workbench_partition_running) cancel_native_workbench_partition();
@@ -289,8 +289,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
     const bool honor_suite_requested = has_consumer(
         NativeWorkbenchPartitionConsumer::HonorSuite);
     if (consumers == 0) return false;
-    if (m_shutdown || !m_model_preview || !m_model_preview_ready ||
-        !m_model_preview->showing_model(m_displayed_model_path)) return false;
+    if (m_shutdown || !m_model_preview || !m_workbench_model.ready ||
+        !m_model_preview->showing_model(m_workbench_model.path)) return false;
     if (!native_workbench_context_matches(m_native_workbench_context))
         publish_native_workbench_context();
     if (!native_workbench_context_matches(m_native_workbench_context)) return false;
@@ -300,8 +300,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
 
     auto activation_before = std::make_shared<NativeWorkbenchActivationRollback>();
     activation_before->beauty = capture_beauty_candidate();
-    activation_before->displayed_model_path = m_displayed_model_path;
-    activation_before->displayed_model_job_id = m_displayed_model_job_id;
+    activation_before->displayed_model_path = m_workbench_model.path;
+    activation_before->displayed_model_job_id = m_workbench_model.asset_id;
     activation_before->partition_reference = m_native_workbench_partition_reference;
     activation_before->partition_report = m_native_workbench_partition_report;
     activation_before->partition_certificate = m_native_workbench_partition_certificate;
@@ -319,8 +319,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
 
         if (!completed) {
             const bool preview_restored = restore_beauty_candidate(activation_before->beauty);
-            m_displayed_model_path = activation_before->displayed_model_path;
-            m_displayed_model_job_id = activation_before->displayed_model_job_id;
+            m_workbench_model.path = activation_before->displayed_model_path;
+            m_workbench_model.asset_id = activation_before->displayed_model_job_id;
             m_native_workbench_partition_reference = activation_before->partition_reference;
             m_native_workbench_partition_report = activation_before->partition_report;
             m_native_workbench_partition_certificate = activation_before->partition_certificate;
@@ -353,7 +353,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
     const auto source_appearance = m_model_preview->original_appearance_reference();
     const auto source_appearance_error = m_model_preview->original_appearance_error();
     const auto source = source_appearance.valid()
-        ? source_appearance.origin_model : m_displayed_model_path;
+        ? source_appearance.origin_model : m_workbench_model.path;
     const auto source_hash = source_appearance.valid()
         ? source_appearance.origin_sha256 : m_native_workbench_context.source_sha256;
     const auto context = m_native_workbench_context;
@@ -651,8 +651,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     cleanup();
                     self->m_native_workbench_partition_consumers = 0;
                     self->m_native_workbench_partition_context = {};
-                    if (!self->m_shutdown && self->m_displayed_model_path == context.model_path &&
-                        self->m_sequence == context.generation) {
+                    if (!self->m_shutdown && self->m_workbench_model.path == context.model_path &&
+                        self->m_workbench_model.revision == context.generation) {
                         if (automatic_requested) self->clear_pending_workbench_ai_palette();
                         self->fail_workbench_check(canceled->load()
                             ? "已取消检查与修复，原模型保留；可重新检查。"
@@ -742,8 +742,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     report->success = false;
                     report->error = preview.detail;
                     report->total_ms = portrait_elapsed_ms(*report_started);
-                    self->m_displayed_model_path = activation_before->displayed_model_path;
-                    self->m_displayed_model_job_id = activation_before->displayed_model_job_id;
+                    self->m_workbench_model.path = activation_before->displayed_model_path;
+                    self->m_workbench_model.asset_id = activation_before->displayed_model_job_id;
                     const bool preview_restored = self->restore_beauty_candidate(activation_before->beauty);
                     self->m_native_workbench_context = context;
                     self->m_native_workbench_partition_reference = activation_before->partition_reference;
@@ -775,7 +775,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
 
                 self->select_local_finishing_version(destination,
                     "native-workbench-partition-" + partition->partition_digest.substr(0, 16));
-                self->m_model_preview_ready = true;
+                self->m_workbench_model.ready = true;
                 self->m_model_stats->SetLabel(wxString::Format(
                     _L("%llu 个三角面 · %llu 个原始色值\n%.1f × %.1f × %.1f mm"),
                     static_cast<unsigned long long>(triangles), static_cast<unsigned long long>(colors),
@@ -790,11 +790,11 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 self->m_native_workbench_partition_commit = *commit_document;
                 self->m_native_workbench_context = {destination, output_hash,
                     self->m_model_preview->geometry_id(),
-                    self->m_model_preview->semantic_source_content_id(), self->m_sequence};
+                    self->m_model_preview->semantic_source_content_id(), self->m_workbench_model.revision};
                 self->m_workbench_check_result = portrait_partition_check_result(
                     *partition, *report, output_hash);
                 self->m_workbench_check_path = destination.string();
-                self->m_workbench_check_revision = self->m_sequence;
+                self->m_workbench_check_revision = self->m_workbench_model.revision;
                 if (automatic_requested) self->clear_pending_workbench_ai_palette();
                 self->m_native_workbench_partition_consumers = 0;
                 self->m_native_workbench_partition_context = {};
@@ -840,10 +840,10 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
 
 bool ModelGenerationPanel::restore_workbench_check_certificate()
 {
-    if (!m_model_preview || !m_model_preview_ready || m_displayed_model_path.empty() ||
-        !m_model_preview->showing_model(m_displayed_model_path) ||
-        m_model_preview->model_path() != m_displayed_model_path) return false;
-    const auto model_hash = AI::model_artifact_sha256(m_displayed_model_path);
+    if (!m_model_preview || !m_workbench_model.ready || m_workbench_model.path.empty() ||
+        !m_model_preview->showing_model(m_workbench_model.path) ||
+        m_model_preview->model_path() != m_workbench_model.path) return false;
+    const auto model_hash = AI::model_artifact_sha256(m_workbench_model.path);
     const auto geometry_id = m_model_preview->geometry_id();
     const auto semantic_appearance_id = m_model_preview->semantic_source_content_id();
     const auto appearance_id = semantic_appearance_id.empty() ? model_hash : semantic_appearance_id;
@@ -851,13 +851,13 @@ bool ModelGenerationPanel::restore_workbench_check_certificate()
         geometry_id.empty() || appearance_id.empty()) return false;
 
     const auto metadata_path = AI::beauty_metadata_path(
-        m_displayed_model_path, ModelGenerationPresentation::generated_models_root());
+        m_workbench_model.path, ModelGenerationPresentation::generated_models_root());
     WorkbenchCheckResult restored;
-    if (!read_validated_workbench_history_check(m_displayed_model_path, metadata_path,
+    if (!read_validated_workbench_history_check(m_workbench_model.path, metadata_path,
             model_hash, geometry_id, appearance_id, restored)) return false;
     m_workbench_check_result = std::move(restored);
-    m_workbench_check_path = m_displayed_model_path.string();
-    m_workbench_check_revision = m_sequence;
+    m_workbench_check_path = m_workbench_model.path.string();
+    m_workbench_check_revision = m_workbench_model.revision;
     m_workbench_check_card_visible = false;
     return true;
 

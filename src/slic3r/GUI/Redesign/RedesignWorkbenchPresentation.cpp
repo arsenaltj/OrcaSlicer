@@ -1,4 +1,5 @@
 #include "RedesignShell.hpp"
+#include "AdvancedCreationWorkspace.hpp"
 #include "RedesignTheme.hpp"
 #include "../AI/ModelGeneration/WorkbenchStyle.hpp"
 #include "../AI/ModelGeneration/WorkbenchImportPresentation.hpp"
@@ -92,6 +93,9 @@ bool RedesignShell::begin_workbench_presentation(bool history_loading)
     const auto token = m_page_transition.begin(
         {int(m_active_page), int(m_model_view)}, {int(Page::Model), int(ModelView::Workbench)});
     if (!token) return false;
+    if (!m_pending_workbench_return_advanced &&
+        !(m_active_page == Page::Model && m_model_view != ModelView::Result && m_workbench_return_advanced))
+        m_pending_workbench_return_advanced = m_advanced_mode;
     m_workbench_transition = *token;
     m_workbench_source_index = 0;
     for (auto* candidate : content->GetChildren()) {
@@ -352,6 +356,7 @@ void RedesignShell::finish_workbench_presentation(bool ready, bool report_failur
         m_model_route_id = model_generation_route_id(m_model_generation_state);
     }
     if (ready) {
+        if (m_pending_workbench_return_advanced) m_workbench_return_advanced = m_pending_workbench_return_advanced;
         m_image_page_view_only = false;
         m_active_page = Page::Model;
         m_last_workbench_page = Page::Model;
@@ -363,7 +368,10 @@ void RedesignShell::finish_workbench_presentation(bool ready, bool report_failur
         m_active_page = static_cast<Page>(source.page);
         m_model_view = static_cast<ModelView>(source.view);
     }
+    m_pending_workbench_return_advanced.reset();
     restore_workbench_source_page();
+    if (m_advanced_workspace) m_advanced_workspace->Show(m_active_page == Page::Image && m_advanced_mode);
+    if (m_advanced_mode) m_image_page->Hide();
     sync_page_settings_visibility(m_active_page);
     refresh_navigation();
     refresh_workflow_layout();

@@ -27,7 +27,7 @@ void ModelGenerationPanel::show_workbench_color_matching(const AI::GeneratedMode
     const wxWeakRef<wxWindow> entry(wxWindow::FindFocus());
     if (!m_workbench_color_matching->open_artifact(artifact)) return;
     m_color_matching_entry = entry;
-    m_color_matching_entry_sequence = m_sequence;
+    m_color_matching_entry_sequence = m_workbench_model.revision;
     m_preview_book->SetSelection(m_preview_book->FindPage(m_workbench_color_matching));
     m_preview_book->GetParent()->Layout();
 }
@@ -46,7 +46,7 @@ void ModelGenerationPanel::close_workbench_color_matching(bool restore_entry)
     // Restore keyboard navigation only after the original page is visible.
     // A new route/model or destroyed/disabled entry must not steal focus.
     CallAfter([weak, entry, sequence]() {
-        if (!weak || weak->m_shutdown || weak->m_busy || sequence != weak->m_sequence ||
+        if (!weak || weak->m_shutdown || weak->m_busy || sequence != weak->m_workbench_model.revision ||
             !weak->m_preview_book || weak->m_preview_book->GetSelection() != 0 ||
             !entry || !weak->IsDescendant(entry.get()) ||
             !entry->IsShownOnScreen() || !entry->IsEnabled()) return;
@@ -70,13 +70,13 @@ void ModelGenerationPanel::refresh_comparison_layout(bool reset_scroll)
     if (!row) return;
     m_updating_comparison_layout = true;
     wxWindow* card = m_model_preview->GetParent();
-    const bool show_model = m_finishing_workbench || (m_model_preview_ready && !m_expand_images->GetValue());
+    const bool show_model = m_finishing_workbench || (m_workbench_model.ready && !m_expand_images->GetValue());
     const bool stacked = !m_finishing_workbench && m_model_page->GetClientSize().x < FromDIP(920);
     const int orientation = stacked ? wxVERTICAL : wxHORIZONTAL;
     const bool visibility_changed = card->IsShown() != show_model;
     const bool layout_changed = row->GetOrientation() != orientation;
     card->Show(show_model);
-    m_expand_images->Enable(m_model_preview_ready && !m_finishing_workbench);
+    m_expand_images->Enable(m_workbench_model.ready && !m_finishing_workbench);
     if (layout_changed) {
         row->SetOrientation(orientation);
         row->GetItem(card)->SetFlag(wxEXPAND | (stacked ? wxBOTTOM : wxRIGHT));

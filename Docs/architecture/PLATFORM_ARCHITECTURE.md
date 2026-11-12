@@ -25,7 +25,7 @@ DFX 按用户确认定义为**诊断、日志、故障定位、性能与可靠�
 | 业务 | 主要入口/状态归属 | 交接约束 |
 | --- | --- | --- |
 | AI 文本/图片/模型工作流 | `tools/ai/model_job_application.py`、`model_job_lifecycle.py`、`model_job_repository.py`；GUI 提交/展示在 ModelGenerationPanel / FeatureHost | 确认、供应商 task id、本地 job id、取消和重启恢复分别处理；HTTP Handler 不产生第二套业务规则 |
-| 高级多视角创作 | `AdvancedCreationSession*` 持有桌面草稿、模型ID、选择及已验证可见版本；Application拥有当前模型的混合编辑／补图计划与依赖预算，workflow校验发布，repository持有组／current和不可变版本；Host拥有任务级回执、缓存和epoch适配 | 独立认证路由 `/v1/orcaslicer/advanced-multiview`；GPT全部参数保持原规格，YOYOClaw实时白名单、精确Qwen默认及最多三张有序参考不变。失败保留旧图／空位，由主按钮以当前模型新生成；旧未知结果保留事实，不锁新2D意图、不自动重发，3D四图／未决状态保护不变。新建立即重置，停止未提交旧视角；按操作回执兼容旧单文件，stop先于execute仍有效。执行器保持串行并投影queued；逐图缓存失败不吞终态，可见基图与服务端current分别冻结并比较。独立Job-v2／工作台及智能业务保持；编译／离线结果不代替真实供应商或GUI验收 |
+| 高级多视角创作 | `AdvancedCreationSession*` 持有桌面草稿、模型ID、选择及已验证可见版本；Application拥有当前模型的混合编辑／补图计划与依赖预算，workflow校验发布，repository持有组／current和不可变版本；Host拥有任务级回执、缓存和epoch适配 | 独立认证路由 `/v1/orcaslicer/advanced-multiview`；GPT全部参数保持原规格，YOYOClaw实时白名单、精确Qwen默认及最多三张有序参考不变。失败保留旧图／空位，由主按钮以当前模型新生成；旧未知结果保留事实，不锁新2D意图、不自动重发，3D四图／未决状态保护不变。新建立即重置，停止未提交旧视角；按操作回执兼容旧单文件，stop先于execute仍有效。执行器保持串行并投影queued；逐图缓存失败不吞终态，可见基图与服务端current分别冻结并比较。独立Job-v2及智能业务保持；两模式生成等待／结果／编辑进入Shell唯一工作台；编译／离线结果不代替真实供应商或GUI验收 |
 | 3D 后处理/人像/配色 | `GUI/AI/ModelGeneration/BeautyWorkbenchSession*`、`BeautyWorkbenchTransactionController*`、`PostGenerationWorkbench*`、`GUI/AI/ColorMatching` | 候选、当前作品、预览和历史需区分；颜色、几何与实物打印质量分别验证 |
 | 原生导入/应用 | `AI/Contracts/IModelArtifactConsumer.hpp`、`GUI/AI/Orca`、`PlaterWorkbenchImport*.ipp`、`PlaterAITransaction.ipp` | Plater/Model/Config 保有工程真值；明确应用和撤销；侧车不直接修改原生工程 |
 | 智能切片 | `AI/SmartSlicing/{Domain,Application,Ports}`、`GUI/AI/SmartSlicing` | revision 约束候选；分析、试切、正式应用与撤销分开；AI 离线保留普通 Orca |
@@ -179,6 +179,14 @@ Panel不再直接写上述五项生命周期状态的引用。进入配色、局
 | [Archify](https://github.com/tt-a1i/archify) | 已有固定版本、布局校验与离线导出 | 继续用于可读图表；布局与代码正确性分别报告 |
 
 未安装上述三个新工具、写全局 hooks/MCP 或上传源码到新服务。工具图谱仍需结合协议、事件、共享数据和回归，不能承诺影响零遗漏。
+
+## 统一工作台与生成来源（2026-11-12）
+
+智能和高级的创作 Session、输入和任务继续独立。高级的 `AdvancedModelTaskFlow` 通过 Ports 观察明确 Job，wx 适配器负责轮询、共享下载及本地解析；它不拥有编辑控件、Beauty Session、Plater或生成提交能力。目录请求不取消任务下载。智能沿原2D准备→3D链，高级只观察既有四图的3D阶段，保留原进度算法。
+
+`WorkbenchModelContext` 是唯一编辑资产的路径／哈希、格式、色板、ColorIntent和参考图来源。生成状态刷新及新建创作不替换编辑对象；显式打开产物或3D历史才经原 `ModelHistoryOpen` 准备、代次过滤、首帧呈现和回滚安装。历史3D打开不恢复生成输入；明确的未完成任务恢复仍走原来源命令，Job-v2不能从旧单图重试。Shell保存进入来源，历史切换及本地保存不改来源，返回使用对应Session的最新创作工作区。
+
+高级页内第二套完整宿主、独立导入进度框和导入跳打印分支已移除。两个来源的检查／修复、美颜、保存、撤销及导入都消费当前编辑模型，导入继续通过Shell原确认／进度／工程提交／切片／预览，Plater仍持原生工程真值。实现验证及未覆盖项见[本轮测试报告](../plans/ui-redesign/2026-11-08-advanced-multiview-test-report.md)，不由源码说明推断实窗通过。
 
 ## 开发时怎样用
 

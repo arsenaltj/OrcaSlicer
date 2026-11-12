@@ -5,20 +5,14 @@
 
 namespace Slic3r::GUI {
 class AdvancedCreationFeatureHost;
-struct ModelGenerationUIState;
-class Plater;
 class AdvancedCreationWorkspace final : public wxPanel {
 public:
     AdvancedCreationWorkspace(wxWindow* parent, AdvancedCreationFeatureHost& host,
-                              std::function<void()> show_smart, Plater* plater,
-                              std::function<void()> after_import,
-                              std::function<void(const ModelGenerationUIState&)> model_state_changed,
-                              std::function<void(const ModelGenerationUIState&)> show_model_route);
+                              std::function<void()> show_smart, std::function<bool()> can_replace_asset);
     ~AdvancedCreationWorkspace() override;
     void render();
     void set_service_available(bool available);
     bool navigation_allowed();
-    bool request_open_model_workbench();
     void shutdown();
 private:
     struct Impl;
