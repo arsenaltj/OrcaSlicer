@@ -995,7 +995,7 @@ bool RedesignShell::show_model_view(ModelView view)
         refresh_workflow_layout();
         present_active_page();
         if (view == ModelView::Result)
-            update_model_page(m_model_generation_state);
+            update_model_page(displayed_model_state());
         if (m_model_generation_host)
             m_model_generation_host->set_workbench_presented(view == ModelView::Workbench);
         return true;
@@ -1050,6 +1050,7 @@ bool RedesignShell::show_model_view(ModelView view)
             const bool show_page = active && view == ModelView::Result;
             if (m_pages[i]) m_pages[i]->Show(show_page);
         }
+        if (m_advanced_workspace) m_advanced_workspace->Hide();
         refresh_navigation();
         if (m_image_settings_panel) m_image_settings_panel->Hide();
         if (m_slicing_host)
@@ -1072,7 +1073,7 @@ bool RedesignShell::show_model_view(ModelView view)
     if (m_model_generation_host)
         m_model_generation_host->set_workbench_presented(view == ModelView::Workbench);
     restore_active_page_focus();
-    if (view == ModelView::Result) update_model_page(m_model_generation_state);
+    if (view == ModelView::Result) update_model_page(displayed_model_state());
     return true;
 }
 
@@ -1225,6 +1226,7 @@ void RedesignShell::refresh_workflow_layout()
     sync_page_settings_visibility(m_workbench_transition ? Page::Model : m_active_page);
     if (!owns_model_workflow()) return;
     const bool model = m_active_page == Page::Model;
+    if (m_advanced_workspace && model) m_advanced_workspace->Hide();
     const bool slicing = model && (m_model_view == ModelView::Slicing || m_model_view == ModelView::Preview);
     const bool render_slicing = slicing || m_import_target_staged;
     const bool render_print = m_active_page == Page::Print && m_print_canvas_mounted;
@@ -1388,6 +1390,10 @@ void RedesignShell::apply_workbench_state(const PostGenerationWorkbenchState& st
 
 bool RedesignShell::can_return_to_image_design() const
 {
+    if (m_workbench_state.modal_blocking) return false;
+    if (m_active_page == Page::Model && m_model_view != ModelView::Result)
+        return !m_import_in_progress && !m_submit_in_progress && !m_model_preview_loading &&
+            post_generation_return_to_design_allowed(m_workbench_state.actions);
     if (m_advanced_model_route) {
         if (m_import_in_progress || m_submit_in_progress || m_model_preview_loading || m_advanced_model_state.busy)
             return false;
@@ -1414,16 +1420,9 @@ bool RedesignShell::can_return_to_image_design() const
 
 bool RedesignShell::return_to_image_design()
 {
-    if (m_advanced_model_route) {
-        if (!can_return_to_image_design()) return false;
-        m_advanced_model_route = false;
-        if (!navigate_to(Page::Image)) {
-            m_advanced_model_route = true;
-            return false;
-        }
-        if (m_advanced_workspace) m_advanced_workspace->render();
-        return true;
-    }
+    const bool from_editor = m_active_page == Page::Model && m_model_view != ModelView::Result;
+    const bool return_advanced = workbench_return_advanced(
+        from_editor, m_workbench_return_advanced, m_advanced_model_route);
     if (block_workbench_navigation()) return false;
     if (!can_return_to_image_design())
         return false;
@@ -1436,14 +1435,19 @@ bool RedesignShell::return_to_image_design()
             return false;
     }
 
+    if (return_advanced != m_advanced_mode) switch_creation_mode(return_advanced);
+    if (return_advanced != m_advanced_mode) return false;
+
     const bool route_locked = m_model_route_locked;
     const bool view_only = m_image_page_view_only;
     const auto route_session = m_model_route_session;
     const auto route_id = m_model_route_id;
     const auto saved_input = m_saved_creation_input;
     const auto saved_options = m_saved_creation_options;
-    m_saved_creation_input.reset();
-    m_saved_creation_options.reset();
+    if (!return_advanced) {
+        m_saved_creation_input.reset();
+        m_saved_creation_options.reset();
+    }
     m_model_route_locked = false;
     m_model_route_session = 0;
     m_model_route_id.clear();
@@ -1457,13 +1461,17 @@ bool RedesignShell::return_to_image_design()
         m_saved_creation_options = saved_options;
         return false;
     }
-    if (saved_input && saved_options && m_model_generation_host) {
+    if (!return_advanced && saved_input && saved_options && m_model_generation_host) {
         // Existing-asset navigation never replaces the creation draft. Returning
         // synchronizes editable inputs only; it does not submit or restart a job.
         restore_image_input(*saved_input);
         m_model_generation_host->synchronize_input(*saved_input);
         m_model_generation_host->synchronize_options(*saved_options);
         apply_model_generation_state(m_model_generation_host->snapshot());
+    }
+    if (return_advanced) {
+        if (m_advanced_workspace) m_advanced_workspace->render();
+        return true;
     }
     // A missing historical style becomes a valid default only when the user
     // explicitly returns to editing. This never restarts or submits a task.

@@ -466,6 +466,8 @@ private:
     // callbacks that could otherwise repaint the old image page.
     bool m_model_route_locked { false };
     bool m_advanced_model_route { false };
+    std::optional<bool> m_workbench_return_advanced;
+    std::optional<bool> m_pending_workbench_return_advanced;
     std::uint64_t m_model_route_session { 0 };
     std::string m_model_route_id;
     bool m_image_page_view_only { false };

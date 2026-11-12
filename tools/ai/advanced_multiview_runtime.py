@@ -16,9 +16,9 @@ from model_contracts import RequestError
 
 
 class AdvancedMultiviewRuntime:
-    def __init__(self, root: Path, model_ports=None):
+    def __init__(self, root: Path, model_ports=None, image_provider_gateway=None):
         self.repository = AdvancedMultiviewRepository(root)
-        self.gateway = AdvancedMultiviewImageGateway()
+        self.gateway = AdvancedMultiviewImageGateway(image_provider_gateway)
         self.workflow = AdvancedMultiviewDesignWorkflow(
             self.repository, self.gateway.generate, self.gateway.recover)
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="advanced-design")
@@ -45,13 +45,17 @@ class AdvancedMultiviewRuntime:
     def capabilities(self) -> dict[str, Any]:
         return {"schema": "advanced-multiview-capabilities-v1", "protocol_version": 1,
                 "model_plans": self.models is not None,
-                "image_models": [self.gateway.capabilities("gpt", ""), self.gateway.capabilities("yoyoclaw", "")],
+                "image_models": self.gateway.catalog_capabilities(),
                 "model_providers": {p: self.models.ports.capability(p, "") if self.models else
                                     {"named_four_view_model": "unknown", "available": False}
                                     for p in ("tripo", "yoyoclaw")}}
 
     def snapshot(self, group_id: str) -> dict[str, Any]:
         result = self.repository.snapshot(group_id)
+        result["execution_state"] = ""
+        if result["active_operation_id"]:
+            operation = self.application.operation(group_id, result["active_operation_id"])
+            result["execution_state"] = operation["state"]
         result["model_jobs"] = []
         result["model_busy"] = False
         if self.models:
@@ -72,6 +76,9 @@ class AdvancedMultiviewRuntime:
                 raise RequestError("group_busy", "Wait for the active operation before recovering saved results.", 409)
             if operation["state"] != "recovery_required":
                 return operation
+            if any((group["views"][view].get("latest_attempt") or {}).get("operation_id") != operation_id
+                   for view in operation["targets"]):
+                raise RequestError("stale_result", "A newer generation superseded this operation; its receipts are preserved.", 409)
             group["active_operation_id"] = operation_id
             self.repository.save(group)
         # Known output download/local commit only, never a supplier creation request.
@@ -89,11 +96,11 @@ class AdvancedMultiviewRuntime:
                 # A delayed original POST cannot be accepted after this negative answer.
                 self.repository.write_record(group_id, f"reconciled-submissions/design/{operation_id}.json",
                                              {"id": operation_id, "accepted": False})
-                return {"accepted": False, "group": self.repository.snapshot(group_id)}
+                return {"accepted": False, "group": self.snapshot(group_id)}
             if not self.application.operation_running(operation_id):
                 self.workflow.recover_interrupted(group_id)
             return {"accepted": True, "operation": self.application.operation(group_id, operation_id),
-                    "group": self.repository.snapshot(group_id)}
+                    "group": self.snapshot(group_id)}
 
     def shutdown(self) -> None:
         if self.closed:
@@ -115,25 +122,26 @@ _RUNTIMES: dict[Path, AdvancedMultiviewRuntime] = {}
 _LOCK = threading.RLock()
 
 
-def get_runtime(root: Path, model_ports=None) -> AdvancedMultiviewRuntime:
+def get_runtime(root: Path, model_ports=None, image_provider_gateway=None) -> AdvancedMultiviewRuntime:
     root = Path(root).resolve()
     with _LOCK:
         if root not in _RUNTIMES:
-            _RUNTIMES[root] = AdvancedMultiviewRuntime(root, model_ports() if model_ports else None)
+            _RUNTIMES[root] = AdvancedMultiviewRuntime(
+                root, model_ports() if model_ports else None, image_provider_gateway)
         return _RUNTIMES[root]
 
 
-def handle(handler, root, method: str, model_ports=None) -> bool:
-    return dispatch(handler, lambda: get_runtime(root(), model_ports), method)
+def handle(handler, root, method: str, model_ports=None, image_provider_gateway=None) -> bool:
+    return dispatch(handler, lambda: get_runtime(root(), model_ports, image_provider_gateway), method)
 
 
-def compose_handler(root, jobs, lock, workflow, submit, present):
+def compose_handler(root, jobs, lock, workflow, submit, present, image_provider_gateway=None):
     """Bind the advanced composition once; legacy generation retains its own worker."""
     def ports():
         return AdvancedModelPorts(jobs, lock, workflow().ports, submit, present, configured_model_capability)
     class AdvancedHandler:
         def handle_advanced(self, method):
-            return handle(self, root, method, ports)
+            return handle(self, root, method, ports, image_provider_gateway)
 
         def do_PUT(self):
             if not self.handle_advanced("PUT"):

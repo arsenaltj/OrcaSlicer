@@ -1172,7 +1172,8 @@ def _generate_job(
     _model_workflow().generate(job, prepared_prompt, resume, authorization)
 
 
-_AdvancedHandler = advanced_multiview_runtime.compose_handler(_model_output_root, _JOBS, _JOBS_LOCK, _model_workflow, _submit, _public_job)
+_AdvancedHandler = advanced_multiview_runtime.compose_handler(
+    _model_output_root, _JOBS, _JOBS_LOCK, _model_workflow, _submit, _public_job, _YOYOCLAW_PROVIDER_GATEWAY)
 
 
 def _retexture_job(

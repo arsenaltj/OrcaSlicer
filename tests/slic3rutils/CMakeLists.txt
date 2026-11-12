@@ -55,6 +55,7 @@ add_executable(${_TEST_NAME}_tests
     test_font_texture_compression.cpp
     test_model_library_metadata.cpp
     test_model_history_open.cpp
+    test_unified_workbench.cpp
     test_atomic_model_capabilities.cpp
     test_model_library_filter.cpp
     test_model_library_export.cpp

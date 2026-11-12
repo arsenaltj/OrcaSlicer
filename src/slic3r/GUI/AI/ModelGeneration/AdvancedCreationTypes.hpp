@@ -41,12 +41,19 @@ struct InputDraft {
 
 struct DesignView {
     std::string version_id;
+    // Canonical service pointer; version_id identifies the validated visible base.
+    std::string canonical_version_id;
     std::string sha256;
     std::string image_path;
     bool usable {false};
+    bool asset_pending {false};
+    bool display_error {false};
     std::string operation_id;
     std::string attempt_state;
     std::string error_code;
+    std::string error_message;
+    std::string provider_request_id;
+    int error_http_status {0};
 };
 
 struct GroupSnapshot {
@@ -61,6 +68,7 @@ struct GroupSnapshot {
     std::optional<DesignDraft> latest_submitted_draft;
     std::array<DesignView, 4> views;
     std::string active_operation_id;
+    std::string execution_state;
     bool stop_intent {false};
     bool published {false};
     bool model_busy {false};
@@ -113,5 +121,6 @@ struct GridLayout { std::array<LayoutRect, 4> cards; std::array<LayoutRect, 4> i
 GridLayout grid_layout(int width, int height, int margin, int gap, int caption_height);
 LayoutRect contain_image(LayoutRect available, int image_width, int image_height);
 bool design_attempt_generating(const std::string& state);
+bool design_attempt_failed(const std::string& state);
 
 } // namespace Slic3r::GUI::AdvancedCreation

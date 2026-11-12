@@ -66,3 +66,9 @@ Capability discovery and recipes are read-only metadata. They expose availabilit
 - `docs/architecture/ADR-004-commercial-ai-product-line.md`
 - `docs/architecture/COMMERCIAL_READINESS.md`
 - `docs/plans/2026-08-28-ai-modular-integration-release-design.md`
+
+## 2026-11-12 shared workbench ownership
+
+Smart and advanced creation keep independent Sessions and remote jobs. Both feed the existing Shell wait/result flow and one editable WorkbenchModelContext. A UI-free advanced observer follows an explicit job through the existing status and artifact acquisition ports; it cannot submit generation. Explicit artifact/history opening reuses the existing preparation, drain, presentation and rollback lifecycle without restoring creation inputs. Shell owns the return source; Beauty Session retains edit transactions; Plater retains project truth.
+
+The advanced workspace no longer instantiates a second full model/editor host or a separate native import flow. This removes competing owners of the same Plater and configuration while retaining both generation protocols and their distinct progress. The change does not introduce per-mode unsaved editor sessions, a new persistence format, service, or concurrency policy. Verification and remaining coverage are recorded with the approved WB acceptance cases.

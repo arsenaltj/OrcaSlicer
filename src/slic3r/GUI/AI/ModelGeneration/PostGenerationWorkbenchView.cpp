@@ -348,7 +348,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
                 !weak->m_beauty_transactions || weak->m_beauty_transactions->processing()) return;
             const auto binding = weak->m_model_preview->color_trial_state().base_binding;
             if (!binding || !binding->valid() || binding->physical_slot == slot) return;
-            const auto path = weak->m_displayed_model_path;
+            const auto path = weak->m_workbench_model.path;
             const auto geometry = weak->m_model_preview->geometry_id();
             const auto appearance = weak->m_model_preview->semantic_source_content_id();
             const bool dirty = weak->m_beauty_manual_color_dirty;
@@ -358,7 +358,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
             // semantic evidence or printer match belonging to the portrait.
             const auto restore = [weak, path, geometry, appearance](size_t target, bool was_dirty) {
                 if (!weak || weak->m_shutdown || !weak->m_model_preview ||
-                    weak->m_displayed_model_path != path || !weak->m_model_preview->showing_model(path) ||
+                    weak->m_workbench_model.path != path || !weak->m_model_preview->showing_model(path) ||
                     weak->m_model_preview->geometry_id() != geometry ||
                     weak->m_model_preview->semantic_source_content_id() != appearance ||
                     !weak->m_model_preview->set_independent_base_slot(target)) return false;

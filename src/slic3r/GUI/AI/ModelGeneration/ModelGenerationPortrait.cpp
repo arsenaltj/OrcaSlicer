@@ -215,10 +215,10 @@ void ModelGenerationPanel::portrait_preview_ready()
     if (!m_portrait_task || !m_portrait_task->snapshot().running()) return;
     m_model_preview->prepare_beauty_editor();
     m_portrait_task->report({PortraitStage::Preview, "等待预览绘制与选区准备", 0, 0});
-    const auto task = m_portrait_task; const auto sequence = m_sequence;
+    const auto task = m_portrait_task; const auto sequence = m_workbench_model.revision;
     wxWeakRef<ModelGenerationPanel> weak(this);
     m_model_preview->after_next_preview_frame([weak, task, sequence] {
-        if (weak && !weak->m_shutdown && weak->m_portrait_task == task && weak->m_sequence == sequence)
+        if (weak && !weak->m_shutdown && weak->m_portrait_task == task && weak->m_workbench_model.revision == sequence)
             weak->m_portrait_preview_drawn = true;
     });
 }
@@ -435,7 +435,7 @@ void ModelGenerationPanel::prepare_portrait_import(AI::ModelImportRequest& reque
     // A saved contour is carried by the verified GLB texture. Texture matching
     // subdivides the source, so old source face/leaf ordinals must not be applied
     // again afterwards. Refuse unsaved or changed appearance instead of dropping it.
-    boost::filesystem::ifstream stream(ModelGenerationPresentation::library_metadata_path(m_displayed_model_job_id),std::ios::binary);
+    boost::filesystem::ifstream stream(ModelGenerationPresentation::library_metadata_path(m_workbench_model.asset_id),std::ios::binary);
     const auto metadata=stream ? nlohmann::json::parse(stream,nullptr,false) : nlohmann::json();
     const auto hash=AI::model_artifact_sha256(boost::filesystem::path(request.artifact.local_path));
     const auto current=AI::baked_portrait_appearance(hash,m_model_preview->semantic_result_metadata(),

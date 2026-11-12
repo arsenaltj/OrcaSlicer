@@ -14,7 +14,7 @@ void ModelGenerationPanel::preserve_portrait_draft()
         if (!shapes || !shapes->surface_partition) throw std::runtime_error("No continuous contour draft");
         const auto root = boost::filesystem::path(Slic3r::data_dir()) / "cache";
         const auto sha = m_portrait_draft_before->model_sha256;
-        if (!AI::ShapeLockSet::sha256(sha) || AI::model_artifact_sha256(m_displayed_model_path) != sha)
+        if (!AI::ShapeLockSet::sha256(sha) || AI::model_artifact_sha256(m_workbench_model.path) != sha)
             throw std::runtime_error("Draft source changed");
         nlohmann::json draft = {{"schema","orca.portrait-draft/v1"}, {"source_sha256",sha},
             {"geometry",m_model_preview->geometry_id()}, {"face_count",m_model_preview->triangle_count()},
@@ -54,11 +54,11 @@ void ModelGenerationPanel::clear_portrait_draft()
 
 void ModelGenerationPanel::restore_portrait_draft()
 {
-    if (!m_model_preview || !m_model_preview_ready || m_portrait_draft_before) return;
+    if (!m_model_preview || !m_workbench_model.ready || m_portrait_draft_before) return;
     std::shared_ptr<BeautyCandidateSnapshot> before;
     try {
         const auto root = boost::filesystem::path(Slic3r::data_dir())/"cache";
-        const auto sha = AI::model_artifact_sha256(m_displayed_model_path);
+        const auto sha = AI::model_artifact_sha256(m_workbench_model.path);
         if (!AI::ShapeLockSet::sha256(sha)) return;
         const auto directory = root/"portrait-drafts", file = directory/(sha+".json");
         if (!boost::filesystem::is_regular_file(file)) return;
@@ -93,7 +93,7 @@ void ModelGenerationPanel::restore_portrait_draft()
         m_semantic_mode = SemanticMode::Portrait;
         m_portrait_entered = true;
         m_model_preview->set_portrait_mode(true);
-        m_portrait_task = std::make_shared<PortraitOptimizationTask>(ModelGenerationPresentation::new_request_id(),sha,m_sequence);
+        m_portrait_task = std::make_shared<PortraitOptimizationTask>(ModelGenerationPresentation::new_request_id(),sha,m_workbench_model.revision);
         if (m_beauty_controls) m_beauty_controls->set_dirty(true);
         finish_portrait_optimization(PortraitOutcome::DraftOnly,
             shapes->surface_partition && !shapes->surface_partition->value("tessellation_version",0)

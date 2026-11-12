@@ -97,7 +97,7 @@ void repaint_workbench_surface(wxWindow* window)
 }
 void ModelGenerationPanel::preview_model_finishing()
 {
-    if (m_busy || m_shutdown || m_workbench_check_running || !m_model_preview_ready) return;
+    if (m_busy || m_shutdown || m_workbench_check_running || !m_workbench_model.ready) return;
     if (m_finishing_workbench && m_workbench_editing && !post_generation_ui_state().can_edit) {
         m_finishing_status->SetLabel(_L("当前耗材配置正在复检或不兼容；已暂停新增处理，请先恢复兼容配置。"));
         return;
@@ -145,7 +145,7 @@ void ModelGenerationPanel::preview_model_finishing()
         return;
     }
     const auto source = m_finishing_workbench && !m_finishing_candidate.empty()
-        ? m_finishing_candidate : m_displayed_model_path;
+        ? m_finishing_candidate : m_workbench_model.path;
     if (!is_nonempty_model(source)) {
         m_finishing_status->SetLabel(_L("模型文件已不存在，请从模型库重新加载。")); return;
     }
@@ -339,7 +339,7 @@ void ModelGenerationPanel::preview_model_finishing()
     m_finishing_status->SetLabel(recolor ? _L("正在生成局部颜色预览，可取消；选区之外保持原样……") : cleanup ? _L("正在清理选区内的小杂色块，可取消……") : _L("正在本地处理三维表面，原始模型保持不变……"));
     refresh_controls();
     wxWeakRef<ModelGenerationPanel> weak(this);
-    const uint64_t sequence = m_sequence;
+    const uint64_t sequence = m_workbench_model.revision;
     const auto appearance_root = generated_models_root();
     const auto source_appearance = m_model_preview->original_appearance_reference();
     const auto source_appearance_error = m_model_preview->original_appearance_error();
@@ -378,7 +378,7 @@ void ModelGenerationPanel::preview_model_finishing()
                 boost::filesystem::remove(destination, ignored);
                 boost::filesystem::remove(appearance_carrier, ignored);
             };
-            if (!weak || weak->m_shutdown || sequence != weak->m_sequence) {
+            if (!weak || weak->m_shutdown || sequence != weak->m_workbench_model.revision) {
                 if (result.success) remove_candidate();
                 return;
             }

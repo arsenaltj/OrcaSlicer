@@ -22,8 +22,8 @@ bool ModelGenerationPanel::apply_pending_workbench_ai_palette(const boost::files
                                                                std::uint64_t revision)
 {
     if (!m_workbench_auto_palette_pending || revision != m_workbench_auto_palette_revision ||
-        source != m_workbench_auto_palette_path || revision != m_sequence || source != m_displayed_model_path ||
-        !m_model_preview_ready || m_model_preview->restored_persisted_color_trial()) {
+        source != m_workbench_auto_palette_path || revision != m_workbench_model.revision || source != m_workbench_model.path ||
+        !m_workbench_model.ready || m_model_preview->restored_persisted_color_trial()) {
         clear_pending_workbench_ai_palette();
         return false;
     }
@@ -39,7 +39,7 @@ bool ModelGenerationPanel::apply_pending_workbench_ai_palette(const boost::files
 bool ModelGenerationPanel::can_start_workbench_check() const
 {
     return !m_shutdown && !m_history_open && !m_workbench_preparing && m_model_preview && workbench_check_start_allowed(
-        m_finishing_workbench && m_workbench_presented, m_model_preview_ready,
+        m_finishing_workbench && m_workbench_presented, m_workbench_model.ready,
         m_workbench_import_running || m_workbench_check_running || m_finishing_running ||
             m_native_workbench_partition_running || m_busy || m_model_preview->semantic_processing() ||
             m_model_preview->selection_busy() ||
@@ -52,8 +52,8 @@ bool ModelGenerationPanel::can_start_workbench_check() const
 void ModelGenerationPanel::queue_workbench_check()
 {
     if (m_workbench_check_queued || !can_start_workbench_check()) return;
-    if (m_workbench_check_path == m_displayed_model_path.string() &&
-        m_workbench_check_revision == m_sequence &&
+    if (m_workbench_check_path == m_workbench_model.path.string() &&
+        m_workbench_check_revision == m_workbench_model.revision &&
         m_workbench_check_result.status != WorkbenchCheckStatus::NotRun) return;
     m_workbench_check_queued = true;
     wxWeakRef<ModelGenerationPanel> weak(this);
@@ -69,20 +69,20 @@ void ModelGenerationPanel::fail_workbench_check(const std::string& message)
     m_workbench_check_result = {};
     m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
     m_workbench_check_result.summary = message;
-    m_workbench_check_result.model_sha256 = AI::model_artifact_sha256(m_displayed_model_path);
+    m_workbench_check_result.model_sha256 = AI::model_artifact_sha256(m_workbench_model.path);
     m_workbench_check_result.source_sha256 = m_workbench_check_result.model_sha256;
-    m_workbench_check_path = m_displayed_model_path.string();
-    m_workbench_check_revision = m_sequence;
+    m_workbench_check_path = m_workbench_model.path.string();
+    m_workbench_check_revision = m_workbench_model.revision;
     m_workbench_operation_notice = message;
 }
 
 void ModelGenerationPanel::ensure_workbench_check()
 {
     if (!can_start_workbench_check()) return;
-    if (m_workbench_check_path == m_displayed_model_path.string() && m_workbench_check_revision == m_sequence &&
+    if (m_workbench_check_path == m_workbench_model.path.string() && m_workbench_check_revision == m_workbench_model.revision &&
         m_workbench_check_result.status != WorkbenchCheckStatus::NotRun &&
         !m_workbench_check_result.model_sha256.empty() &&
-        AI::model_artifact_sha256(m_displayed_model_path) == m_workbench_check_result.model_sha256) return;
+        AI::model_artifact_sha256(m_workbench_model.path) == m_workbench_check_result.model_sha256) return;
     if (restore_workbench_check_certificate()) {
         refresh_post_generation_workbench();
         publish_workbench_state();
@@ -97,10 +97,10 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     const bool portrait_recheck = native_portrait && native_portrait->valid();
     if (!can_start_workbench_check()) return false;
     if (m_workbench_check_worker.joinable()) m_workbench_check_worker.join();
-    const auto source = m_displayed_model_path;
-    const auto revision = m_sequence;
+    const auto source = m_workbench_model.path;
+    const auto revision = m_workbench_model.revision;
     const auto presentation = m_workbench_presentation_sequence;
-    const auto asset = m_displayed_model_job_id;
+    const auto asset = m_workbench_model.asset_id;
     const auto id = "finish-" + ModelGenerationPresentation::new_request_id();
     // Candidates are deliberately written beside the source and never replace
     // it.  GLB repairs are exported as a colour-carrying OBJ because topology
@@ -176,10 +176,10 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                 !workbench_topology_safe(result) && repair_allowed && (!automatic || !attempts.count(key)) && !canceled->load();
             auto progress = [weak, source, revision, presentation, canceled](WorkbenchCheckPhase phase, const std::string& text) {
                 wxGetApp().CallAfter([weak, source, revision, presentation, canceled, phase, text] {
-                    if (!weak || weak->m_shutdown || canceled->load() || revision != weak->m_sequence ||
+                    if (!weak || weak->m_shutdown || canceled->load() || revision != weak->m_workbench_model.revision ||
                         presentation != weak->m_workbench_presentation_sequence ||
                         !weak->m_finishing_workbench || !weak->m_workbench_presented ||
-                        source != weak->m_displayed_model_path || weak->m_workbench_check_cancel != canceled) return;
+                        source != weak->m_workbench_model.path || weak->m_workbench_check_cancel != canceled) return;
                     weak->m_workbench_check_result.phase = phase;
                     weak->m_workbench_check_result.summary = text;
                     if (phase == WorkbenchCheckPhase::Repairing || phase == WorkbenchCheckPhase::Rechecking)
@@ -315,7 +315,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                     boost::filesystem::remove(destination, ec);
                     boost::filesystem::remove(appearance_carrier, ec);
                 };
-                if (!weak || weak->m_shutdown || revision != weak->m_sequence || source != weak->m_displayed_model_path ||
+                if (!weak || weak->m_shutdown || revision != weak->m_workbench_model.revision || source != weak->m_workbench_model.path ||
                     weak->m_workbench_check_cancel != canceled) { cleanup(); return; }
                 auto* self = weak.get();
                 if (self->m_workbench_check_worker.joinable()) self->m_workbench_check_worker.join();

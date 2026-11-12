@@ -92,6 +92,9 @@ class ProviderGatewayError(RuntimeError):
         ambiguous: bool = False,
         task_id: str = "",
         terminal: bool = False,
+        status: int | None = None,
+        provider_message: str = "",
+        request_id: str = "",
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -101,6 +104,9 @@ class ProviderGatewayError(RuntimeError):
         self.retryable = retryable
         self.ambiguous = ambiguous
         self.task_id, self.terminal = task_id, terminal
+        self.status = status
+        self.provider_message = provider_message
+        self.request_id = request_id
 
 
 class PaidTaskAuthorization:

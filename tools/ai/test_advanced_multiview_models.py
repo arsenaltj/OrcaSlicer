@@ -207,6 +207,7 @@ class ModelTests(unittest.TestCase):
     def test_reconciliation_reports_original_receipt_and_never_generates(self):
         runtime = AdvancedMultiviewRuntime.__new__(AdvancedMultiviewRuntime)
         runtime.repository, runtime.workflow, runtime.application = self.repo, self.design, self.images
+        runtime.models = self.models
         result = runtime.reconcile(self.group["id"], self.initial["id"])
         self.assertTrue(result["accepted"])
         self.assertFalse(runtime.reconcile(self.group["id"], new_id())["accepted"])

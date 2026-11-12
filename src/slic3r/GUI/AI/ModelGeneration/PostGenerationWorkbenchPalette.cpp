@@ -157,8 +157,8 @@ ModelPreview3D::PrinterFilamentMatchResult ModelPreview3D::printer_filament_matc
 
 bool ModelGenerationPanel::request_beauty_color_gate(bool enter_after_success)
 {
-    if (m_shutdown || !m_model_preview || !m_model_preview_ready ||
-        !ModelGenerationPresentation::is_nonempty_model(m_displayed_model_path)) return false;
+    if (m_shutdown || !m_model_preview || !m_workbench_model.ready ||
+        !ModelGenerationPresentation::is_nonempty_model(m_workbench_model.path)) return false;
     if (enter_after_success) m_beauty_entry_pending = true;
 
     if (m_beauty_color_gate_cancel) m_beauty_color_gate_cancel->store(true);
@@ -166,8 +166,8 @@ bool ModelGenerationPanel::request_beauty_color_gate(bool enter_after_success)
     m_beauty_color_gate_cancel = std::make_shared<std::atomic<bool>>(false);
     const auto cancel = m_beauty_color_gate_cancel;
     const std::uint64_t request_id = ++m_beauty_color_gate_request;
-    const std::uint64_t model_sequence = m_sequence;
-    const auto source = m_displayed_model_path;
+    const std::uint64_t model_sequence = m_workbench_model.revision;
+    const auto source = m_workbench_model.path;
     const auto source_sha256 = AI::model_artifact_sha256(source);
     auto* bundle = wxGetApp().preset_bundle;
     if (!bundle) {
@@ -204,7 +204,7 @@ bool ModelGenerationPanel::request_beauty_color_gate(bool enter_after_success)
             // A previous worker may post after a replacement request has
             // already installed its own thread. Never join that newer worker.
             if (request_id != self->m_beauty_color_gate_request ||
-                model_sequence != self->m_sequence || source != self->m_displayed_model_path)
+                model_sequence != self->m_workbench_model.revision || source != self->m_workbench_model.path)
                 return;
             if (self->m_beauty_color_gate_worker.joinable()) self->m_beauty_color_gate_worker.join();
             self->finish_beauty_color_gate(request_id, model_sequence, source, identity, std::move(result));
@@ -218,7 +218,7 @@ void ModelGenerationPanel::finish_beauty_color_gate(
     boost::filesystem::path source, BeautyColorGateIdentity identity, BeautyColorGateResult result)
 {
     if (m_shutdown || result.canceled || request_id != m_beauty_color_gate_request ||
-        model_sequence != m_sequence || source != m_displayed_model_path) return;
+        model_sequence != m_workbench_model.revision || source != m_workbench_model.path) return;
     auto* bundle = wxGetApp().preset_bundle;
     if (!m_model_preview || !ModelGenerationPresentation::is_nonempty_model(source)) return;
 
@@ -570,7 +570,7 @@ void ModelGenerationPanel::apply_workbench_printer_filaments(bool physical_only)
         return;
     }
     auto trial = m_model_preview->color_trial_state();
-    if (m_applied_filaments_saved_model == m_displayed_model_path &&
+    if (m_applied_filaments_saved_model == m_workbench_model.path &&
         m_applied_filaments_saved_signature == state.signature && trial.source == 1 &&
         trial.enabled && m_model_preview->project_matching_valid() &&
         !m_beauty_manual_color_dirty && (!m_beauty_controls || !m_beauty_controls->has_changes())) {
@@ -626,7 +626,7 @@ void ModelGenerationPanel::apply_workbench_printer_filaments(bool physical_only)
     }
     if (m_beauty_controls) m_beauty_controls->synchronize_preview_options();
     auto captured_match = capture_applied_filament_match(
-        *staged, *m_model_preview, AI::model_artifact_sha256(m_displayed_model_path));
+        *staged, *m_model_preview, AI::model_artifact_sha256(m_workbench_model.path));
     m_apply_filaments_match = std::move(captured_match.matched);
     if (!m_apply_filaments_match) {
         m_model_preview->set_project_configuration_override({});
@@ -702,7 +702,7 @@ void ModelGenerationPanel::finish_printer_filament_application(bool success)
         m_printer_filament_trial_active = false;
         m_printer_filament_trial_geometry.clear();
         m_printer_filament_trial_signature.clear();
-        m_applied_filaments_saved_model = m_displayed_model_path;
+        m_applied_filaments_saved_model = m_workbench_model.path;
         m_applied_filaments_saved_signature = PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature;
         m_workbench_operation_notice = "已应用并保存，可直接导入";
         m_workbench_printer_filament_notice = m_workbench_operation_notice;
@@ -732,7 +732,7 @@ void ModelGenerationPanel::synchronize_workbench_project_palette(bool activate_p
     const auto snapshot = workbench_snapshot();
     const auto& state = snapshot.printer_filaments;
     const bool changed = state.signature != m_workbench_filament_signature;
-    if (m_model_preview_ready) m_model_preview->synchronize_project_colors(activate_preview);
+    if (m_workbench_model.ready) m_model_preview->synchronize_project_colors(activate_preview);
     if (m_printer_filament_trial_active && m_model_preview) {
         const auto trial = m_model_preview->color_trial_state();
         if (trial.source != 1 || !m_model_preview->project_matching_valid()) {

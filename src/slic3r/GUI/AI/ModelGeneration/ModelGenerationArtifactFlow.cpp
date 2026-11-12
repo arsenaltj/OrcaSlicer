@@ -62,7 +62,7 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
     std::function<void(size_t, Vec3d, size_t, double)> loaded,
     std::function<void(std::string)> failed, const boost::filesystem::path& metadata_path,
     std::shared_ptr<ModelHistoryMetadata> history_metadata, std::function<bool()> may_install,
-    std::shared_ptr<ModelHistoryOpenRequest> history_open)
+    std::shared_ptr<ModelHistoryOpenRequest> history_open, bool install_to_workbench)
 {
     // Refreshing controls can destroy the history card that supplied these arguments.
     // Own the inputs before refreshing or dispatching the worker.
@@ -72,7 +72,7 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
     const auto local_cancel=local && local->parsing ? local->cancel : nullptr;
     size_t triangles = 0, colors = 0; Vec3d dimensions;
     // Explicit history navigation restores persisted state, not unsaved cached edits.
-    if (metadata_path.empty() &&
+    if (install_to_workbench && metadata_path.empty() &&
         (m_model_preview->try_use_current_model(path, palette, triangles, dimensions, colors) ||
          m_model_preview->try_load_cached_model(path, palette, triangles, dimensions, colors))) {
         if(local_cancel) complete_local_model_import(m_library_import,local_cancel,false);
@@ -86,11 +86,11 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
     const auto canceled = m_preview_canceled;
     const bool share_exact_vertices = !m_model_preview->retains_surface_attributes();
     refresh_controls();
-    const uint64_t sequence = m_sequence;
+    const uint64_t sequence = ++m_model_open_sequence;
     wxWeakRef<ModelGenerationPanel> weak(this);
     if (history_open) history_open->worker_pending = true;
     auto launch = [weak, path, palette, sequence, loaded, failed, metadata_path, local_cancel, canceled,
-                   history_metadata, share_exact_vertices, may_install, history_open] {
+                   history_metadata, share_exact_vertices, may_install, history_open, install_to_workbench] {
         if (!weak || weak->m_shutdown) return;
         auto* self = weak.get();
         if (history_open && history_open->canceled) {
@@ -99,7 +99,7 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
             return;
         }
         try {
-            self->m_preview_worker = std::thread([weak, path, palette, sequence, loaded, failed, metadata_path, local_cancel, canceled, history_metadata, share_exact_vertices, may_install, history_open] {
+            self->m_preview_worker = std::thread([weak, path, palette, sequence, loaded, failed, metadata_path, local_cancel, canceled, history_metadata, share_exact_vertices, may_install, history_open, install_to_workbench] {
                 const auto start = std::chrono::steady_clock::now();
                 auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
                 std::string error;
@@ -115,7 +115,7 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
                     if (ready) {
                         if (history_open && history_open->progress && !stopped())
                             history_open->progress(ModelHistoryOpenEvent::Stage::Preview);
-                        prepared->prepare_render_geometry(stopped, share_exact_vertices);
+                        if (install_to_workbench) prepared->prepare_render_geometry(stopped, share_exact_vertices);
                         if (history_open) {
                             history_open->model_hash = prepared->artifact_sha256;
                             if (!history_open->check) history_open->record_hash = AI::model_artifact_sha256(
@@ -125,7 +125,7 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
                     else if (error.empty()) error = "Model preview loading canceled.";
                 }
                 catch (const std::exception& e) { error = e.what(); }
-                wxGetApp().CallAfter([weak, prepared, palette, sequence, start, loaded, failed, error, local_cancel, canceled, may_install, history_open]() mutable {
+                wxGetApp().CallAfter([weak, prepared, palette, sequence, start, loaded, failed, error, local_cancel, canceled, may_install, history_open, install_to_workbench]() mutable {
                     if (!weak || weak->m_shutdown) return;
                     auto* self = weak.get();
                     if (self->m_preview_worker.joinable()) self->m_preview_worker.join();
@@ -137,9 +137,9 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
                         failed({});
                         return;
                     }
-                    if (sequence != self->m_sequence || canceled->load() || (may_install && !may_install())) {
+                    if (sequence != self->m_model_open_sequence || canceled->load() || (may_install && !may_install())) {
                         if(local_cancel) complete_local_model_import(self->m_library_import,local_cancel,true);
-                        if (history_open && !history_open->canceled && sequence == self->m_sequence && !canceled->load())
+                        if (history_open && !history_open->canceled && sequence == self->m_model_open_sequence && !canceled->load())
                             failed("历史模型或检查凭证在加载期间发生变化，请重新打开。");
                         else self->refresh_controls();
                         return;
@@ -156,6 +156,12 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
                         else history_open->check = history_open->previous_check;
                         loaded(triangles, dimensions, colors, 0.0);
                         self->ensure_workbench_check();
+                        return;
+                    }
+                    if (!install_to_workbench) {
+                        if (!error.empty()) { failed(error); return; }
+                        loaded(prepared->triangles, prepared->bounds.size().cast<double>(), prepared->colors,
+                            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
                         return;
                     }
                     self->invalidate_printer_filament_trial_for_model_change();
@@ -214,71 +220,30 @@ void ModelGenerationPanel::download_model_preview(uint64_t sequence)
     refresh_controls();
 
     wxWeakRef<ModelGenerationPanel> weak(this);
-    m_client.download_artifact(m_job_id, m_artifact_format, m_artifact_path,
-        [weak, sequence](boost::filesystem::path path) mutable {
-            if (!weak)
-                return;
-            wxGetApp().CallAfter([weak, sequence, path = std::move(path)]() mutable {
-                if (!weak || weak->m_shutdown || sequence != weak->m_sequence)
-                    return;
-                weak->m_artifact_path = path;
-                if (weak->m_color_intent_schema.empty()) {
-                    weak->finish_model_preview_download(path, sequence);
-                    return;
-                }
-                weak->m_status->SetLabel(_L("正在校验模型颜色意图与模型的绑定..."));
-                weak->m_color_intent_path = temp_path(weak->m_job_id + "-color-intent", "json");
-                weak->m_client.download_color_intent(
-                    weak->m_job_id, weak->m_color_intent_schema, weak->m_color_intent_sha256,
-                    path, weak->m_color_intent_path,
-                    [weak, sequence, path](boost::filesystem::path manifest_path) mutable {
-                        if (!weak)
-                            return;
-                        wxGetApp().CallAfter([weak, sequence, path = std::move(path),
-                                              manifest_path = std::move(manifest_path)]() mutable {
-                            if (!weak || weak->m_shutdown || sequence != weak->m_sequence)
-                                return;
-                            weak->m_color_intent_path = std::move(manifest_path);
-                            weak->finish_model_preview_download(path, sequence);
-                        });
-                    },
-                    [weak, sequence, path](std::string error) mutable {
-                        if (!weak)
-                            return;
-                        wxGetApp().CallAfter([weak, sequence, path, error = std::move(error)]() {
-                            if (!weak || weak->m_shutdown || sequence != weak->m_sequence)
-                                return;
-                            weak->m_color_intent_path.clear();
-                            weak->m_color_intent_schema.clear(); weak->m_color_intent_sha256.clear();
-                            weak->m_result_summary->SetLabel(_L("颜色清单不可用，将使用模型自身颜色：") + from_u8(error));
-                            weak->finish_model_preview_download(path, sequence);
-                        });
-                    });
-            });
-        },
-        [weak, sequence](std::string error) mutable {
-            if (!weak)
-                return;
-            wxGetApp().CallAfter([weak, sequence, error = std::move(error)]() {
-                if (!weak || weak->m_shutdown || sequence != weak->m_sequence)
-                    return;
-                weak->m_busy = false;
-                weak->m_artifact_download_started = false;
-                weak->m_model_preview_ready = false;
-                weak->m_status->SetLabel(_L("模型下载失败，请重试。"));
-                weak->m_result_summary->SetLabel(_L("下载错误：") + from_u8(error));
-                weak->m_model_stats->SetLabel(_L("模型尚未下载"));
-                weak->refresh_controls();
-            });
-        },
-        [weak, sequence](size_t received, size_t total) {
-            if (!weak) return;
-            wxGetApp().CallAfter([weak, sequence, received, total] {
-                if (!weak || weak->m_shutdown || sequence != weak->m_sequence || !weak->m_busy ||
-                    weak->m_preview_loading || weak->m_model_preview_ready) return;
-                weak->update_progress(weak->m_model_progress.download(received, total), 4, _L("下载模型"));
-                weak->publish_ui_state();
-            });
+    AIModelGenerationClient::JobStatus status;
+    status.id = m_job_id; status.artifact_format = m_artifact_format;
+    status.artifact_color_encoding = m_artifact_color_encoding;
+    status.palette = m_job_palette; status.color_intent_ready = !m_color_intent_schema.empty();
+    status.color_intent_schema = m_color_intent_schema; status.color_intent_sha256 = m_color_intent_sha256;
+    m_artifact_acquisition.start(status,
+        [weak, sequence](AI::GeneratedModelArtifact artifact) {
+            if (!weak || weak->m_shutdown || sequence != weak->m_sequence) return;
+            weak->m_artifact_path = artifact.local_path;
+            weak->m_color_intent_path.clear();
+            if (artifact.color_intent_manifest) weak->m_color_intent_path = artifact.color_intent_manifest->local_path;
+            else { weak->m_color_intent_schema.clear(); weak->m_color_intent_sha256.clear(); }
+            weak->finish_model_preview_download(artifact.local_path, sequence);
+        }, [weak, sequence](std::string error) {
+            if (!weak || weak->m_shutdown || sequence != weak->m_sequence) return;
+            weak->m_busy = false; weak->m_artifact_download_started = false;
+            weak->m_generation_artifact_ready = false;
+            weak->m_status->SetLabel(_L("模型下载失败，请重试。"));
+            weak->m_result_summary->SetLabel(_L("下载错误：") + from_u8(error));
+            weak->refresh_controls();
+        }, [weak, sequence](size_t received, size_t total) {
+            if (!weak || weak->m_shutdown || sequence != weak->m_sequence || !weak->m_busy || weak->m_preview_loading) return;
+            weak->update_progress(weak->m_model_progress.download(received, total), 4, _L("下载模型"));
+            weak->publish_ui_state();
         });
 }
 
@@ -298,15 +263,11 @@ void ModelGenerationPanel::finish_model_preview_download(const boost::filesystem
     load_model_preview_async(path, m_job_palette,
         [this, path](size_t triangle_count, Vec3d dimensions, size_t color_count, double load_seconds) {
     m_artifact_path = path;
-    m_displayed_model_path = path;
-    m_displayed_model_job_id = m_job_id;
-    m_displayed_model_palette = m_job_palette;
-    m_displayed_model_palette_roles = m_job_palette_roles;
+    m_generation_artifact_ready = true;
+    m_generation_artifact_sha256 = AI::model_artifact_sha256(path);
     m_busy = false;
-    m_model_preview_ready = true;
     refresh_model_quality_card();
     show_model_comparison();
-    m_library_model_loaded = false;
     update_progress(m_model_progress.complete(), 4, _L("查看模型"));
     const bool visual_gate_blocked = m_visual_quality.available && !m_visual_quality.import_recommended;
     m_status->SetLabel(visual_gate_blocked
@@ -339,13 +300,13 @@ void ModelGenerationPanel::finish_model_preview_download(const boost::filesystem
     }, [this](std::string error) {
         m_busy = false;
         m_artifact_download_started = false;
-        m_model_preview_ready = false;
+        m_generation_artifact_ready = false;
         m_status->SetLabel(_L("模型解析失败，已保留本地文件。"));
         m_result_summary->SetLabel(_L("无法显示 3D 预览：") + from_u8(error));
         m_model_stats->SetLabel(_L("模型预览不可用"));
         m_model_preview_message->SetLabel(_L("请重试下载，或在资产页打开模型文件夹检查下载的模型。"));
         refresh_controls();
-    });
+    }, {}, {}, [this, sequence] { return sequence == m_sequence; }, {}, false);
 }
 
 } // namespace Slic3r::GUI

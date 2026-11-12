@@ -99,7 +99,7 @@ void repaint_workbench_surface(wxWindow* window)
 void ModelGenerationPanel::on_discard(wxCommandEvent&)
 {
     if (m_busy || m_finishing_running || !m_finishing_candidate.empty()) return;
-    if (m_ready || m_model_preview_ready || m_style_preview_ready) {
+    if (m_ready || m_workbench_model.ready || m_style_preview_ready) {
         const int answer = show_redesign_confirmation(this,
             _L("要先看看重新设计的建议吗？当前历史模型会保留，图片和描述可继续使用。"),
             _L("重新开始"), {wxYES_NO | wxCANCEL, 105,

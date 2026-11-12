@@ -1602,14 +1602,12 @@ void RedesignShell::switch_creation_mode(bool advanced)
     cancel_prompt_polish(true);
     if (advanced && !m_advanced_host) {
         m_advanced_host = std::make_unique<AdvancedCreationFeatureHost>(this);
+        m_advanced_host->set_model_state_listener([this](const ModelGenerationUIState& state, bool open_route) {
+            apply_advanced_model_state(state, open_route);
+        });
         m_advanced_workspace = new AdvancedCreationWorkspace(m_content_host, *m_advanced_host,
-            [this] { switch_creation_mode(false); }, m_plater, [this] {
-                if (m_print_page) m_print_page->show_prepare();
-                navigate_to(Page::Print);
-            }, [this](const ModelGenerationUIState& state) {
-                apply_advanced_model_state(state, false);
-            }, [this](const ModelGenerationUIState& state) {
-                apply_advanced_model_state(state, true);
+            [this] { switch_creation_mode(false); }, [this] {
+                return m_model_generation_host && m_model_generation_host->can_replace_asset();
             });
         m_content_host->GetSizer()->Add(m_advanced_workspace, 1, wxEXPAND);
         const auto status = static_cast<AIServiceStatus>(m_last_service_status);
@@ -1621,9 +1619,9 @@ void RedesignShell::switch_creation_mode(bool advanced)
     m_advanced_mode = advanced;
     // Each mode retains its own widgets, session, history and in-flight client.
     // The existing smart input and options are never copied to advanced state.
-    m_image_page->Show(!advanced);
-    if (m_advanced_workspace) m_advanced_workspace->Show(advanced);
-    m_image_settings_panel->Show(!advanced);
+    m_image_page->Show(m_active_page == Page::Image && !advanced);
+    if (m_advanced_workspace) m_advanced_workspace->Show(m_active_page == Page::Image && advanced);
+    sync_page_settings_visibility(m_active_page);
     m_content_host->Layout(); m_content_host->GetParent()->Layout(); Layout();
     if (m_advanced_workspace && advanced) m_advanced_workspace->render();
 }
@@ -2341,7 +2339,7 @@ wxPanel* RedesignShell::build_model_workspace()
     m_model_stop_button = new RoundedActionButton(status_column, text("停止生成"), false, 40);
     m_model_stop_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (m_advanced_model_route && m_advanced_host) {
-            if (m_advanced_host->eligibility().stop) m_advanced_host->stop();
+            if (m_advanced_model_state.can_stop) m_advanced_host->stop();
             return;
         }
         if (m_model_generation_host != nullptr && m_model_generation_host->request_stop())
@@ -2433,8 +2431,8 @@ void RedesignShell::connect_model_generation_host()
             return true;
         }
         if (!weak->m_workbench_history_loading) return true; // Duplicate completion.
-        const auto state = weak->m_model_generation_host->snapshot();
-        if (!state.model_ready || state.model_asset_id != event.resolved_asset) return false;
+        const auto state = weak->m_model_generation_host->workbench_snapshot();
+        if (state.model_path.empty() || state.asset_id != event.resolved_asset) return false;
         return weak->continue_workbench_presentation();
     });
     m_model_generation_host->set_state_listener([weak](const ModelGenerationUIState& state) {
@@ -2451,22 +2449,24 @@ void RedesignShell::connect_model_generation_host()
 
 const ModelGenerationUIState& RedesignShell::displayed_model_state() const
 {
-    return m_advanced_model_route ? m_advanced_model_state : m_model_generation_state;
+    return selected_model_presentation(m_advanced_model_route, m_model_generation_state, m_advanced_model_state);
 }
 
 void RedesignShell::apply_advanced_model_state(const ModelGenerationUIState& state, bool open_route)
 {
-    bool can_stop = false;
+    if (state.revision < m_advanced_model_state.revision) return;
+    bool can_stop = state.can_stop;
     bool can_resume = false;
     std::string group_message;
     if (m_advanced_host && m_advanced_host->session().group()) {
         const auto& group = *m_advanced_host->session().group();
-        can_stop = m_advanced_host->eligibility().stop;
-        can_resume = group.model_resumable &&
+        can_stop = can_stop || (group.model_job_id == state.job_id && m_advanced_host->eligibility().stop);
+        can_resume = group.model_job_id == state.job_id && group.model_resumable &&
             (group.model_state == "failed" || group.model_state == "stopped");
         group_message = group.model_message;
     }
-    m_advanced_model_state = advanced_model_presentation_state(state, can_stop, can_resume);
+    const bool local_retry = state.can_retry_model && state.job_state == "ready";
+    m_advanced_model_state = advanced_model_presentation_state(state, can_stop, can_resume || local_retry);
     if (m_advanced_model_state.status_text.empty() && !group_message.empty())
         m_advanced_model_state.status_text = std::move(group_message);
     if (open_route) {
@@ -2475,7 +2475,7 @@ void RedesignShell::apply_advanced_model_state(const ModelGenerationUIState& sta
         clear_model_preview();
         update_model_page(m_advanced_model_state);
         navigate_to(Page::Model);
-    } else if (m_advanced_model_route) {
+    } else if (m_advanced_model_route && m_model_view == ModelView::Result) {
         update_model_page(m_advanced_model_state);
     }
 }
@@ -2538,6 +2538,8 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         if (!preserve_model_workbench)
             m_model_view = ModelView::Result;
     }
+    if (route_action == RedesignModelRouteAction::Model && !m_advanced_mode && !m_history_open_request)
+        m_advanced_model_route = false;
     m_model_generation_state = state;
     if (m_image_history) {
         m_image_history->set_busy(state.busy || m_submit_in_progress || m_image_page_view_only);
@@ -3534,10 +3536,14 @@ void RedesignShell::request_model_page_action()
         break;
     case ModelPageAction::RetryModel:
         if (m_advanced_model_route && m_advanced_host) {
-            const auto& group = m_advanced_host->session().group();
-            handled = group && group->model_resumable &&
-                (group->model_state == "failed" || group->model_state == "stopped");
-            if (handled) m_advanced_host->resume_model();
+            if (m_advanced_model_state.job_state == "ready" && m_advanced_model_state.can_retry_model) {
+                m_advanced_host->retry_local_model(); handled = true;
+            } else {
+                const auto& group = m_advanced_host->session().group();
+                handled = group && group->model_job_id == m_advanced_model_state.job_id && group->model_resumable &&
+                    (group->model_state == "failed" || group->model_state == "stopped");
+                if (handled) m_advanced_host->resume_model();
+            }
         } else {
             handled = m_model_generation_host != nullptr && m_model_generation_host->request_retry_model();
         }
@@ -3557,17 +3563,24 @@ void RedesignShell::request_model_page_action()
         update_model_page(displayed_model_state());
         return;
     case ModelPageAction::Import:
-        if (m_advanced_model_route && m_advanced_workspace) {
-            handled = m_advanced_workspace->request_open_model_workbench();
-            if (handled) {
-                m_advanced_model_route = false;
-                navigate_to(Page::Image);
-                return;
+        if (owns_model_workflow() && m_model_generation_host) {
+            const auto& source = displayed_model_state();
+            const auto current = m_model_generation_host->workbench_snapshot();
+            m_pending_workbench_return_advanced = m_advanced_model_route;
+            if (current.asset_id == source.model_asset_id && current.model_path == source.model_path) {
+                handled = open_model_workbench();
+            } else if (m_advanced_model_route && m_advanced_host && m_advanced_host->model_artifact()) {
+                WorkbenchOpenRequest request;
+                request.entry = *m_advanced_host->model_artifact();
+                request.artifact.local_path = request.entry.model_path;
+                request.artifact.job_id = request.entry.job_id;
+                request.expected_sha256 = request.entry.content_sha256;
+                handled = m_model_generation_host->request_open_workbench_artifact(request);
+            } else if (!m_advanced_model_route) {
+                handled = m_model_generation_host->request_open_generated_artifact();
             }
-        } else {
-            handled = owns_model_workflow() ? open_model_workbench() :
-                m_model_generation_host != nullptr && m_model_generation_host->request_import();
-        }
+            if (!handled) m_pending_workbench_return_advanced.reset();
+        } else handled = m_model_generation_host && m_model_generation_host->request_import();
         break;
     case ModelPageAction::None:
         return;

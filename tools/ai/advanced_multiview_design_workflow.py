@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from PIL import Image, ImageOps
 
+from ai_diagnostics import event as diagnostic_event, redact_text
 from advanced_multiview_contracts import VERSION_SCHEMA, VIEWS, new_id, view_contract_snapshot
 from advanced_multiview_repository import AdvancedMultiviewRepository
 from model_contracts import MIN_MODEL_REFERENCE_EDGE, RequestError
@@ -51,7 +52,8 @@ class AdvancedMultiviewDesignWorkflow:
     def _request(operation: dict[str, Any], view: str, references=()) -> DesignImageRequest:
         draft = operation["draft"]
         contract = operation["frozen"].get("view_contract") or view_contract_snapshot()
-        return DesignImageRequest(view, operation["initial"], draft["prompt"], draft["style"],
+        initial = operation.get("target_modes", {}).get(view, "initial" if operation["initial"] else "edit") == "initial"
+        return DesignImageRequest(view, initial, draft["prompt"], draft["style"],
                                   draft["custom_style"], draft["design_provider"], draft["design_model"],
                                   operation["attempts"][view]["id"], references,
                                   dict(contract["views"][view]))
@@ -88,12 +90,14 @@ class AdvancedMultiviewDesignWorkflow:
             verified = self.repository.version(group_id, name, record["id"])
             append(role or name + "_design", self.repository.path(group_id, verified["path"]))
 
-        if operation["initial"]:
+        if self._request(operation, view).initial:
             if frozen["uploads"].get(view):
                 upload(view)
             elif view != "front":
                 upload("front")
-                anchor = frozen.get("initial_front_version_id") or group["views"]["front"]["current_version_id"]
+                anchor = frozen.get("initial_front_version_id") or frozen["context"].get("front", {}).get("id")
+                if not anchor and operation["initial"]:  # Legacy initial/retry records.
+                    anchor = group["views"]["front"]["current_version_id"]
                 if anchor:
                     record = self.repository.version(group_id, "front", anchor)
                     append("front_design", self.repository.path(group_id, record["path"]))
@@ -148,11 +152,12 @@ class AdvancedMultiviewDesignWorkflow:
         group_id, operation_id = group["id"], operation["id"]
         attempt = operation["attempts"][view]
         version_id = attempt["version_id"]
+        publication_base = operation.get("publication_bases", {}).get(view, attempt["base_version_id"])
         self.repository.version(group_id, view, version_id)
         if (group["active_operation_id"] != operation_id
                 or group["input_epoch"] != operation["frozen"]["input_epoch"]
                 or attempt["id"] != attempt_id
-                or group["views"][view]["current_version_id"] not in {attempt["base_version_id"], version_id}):
+                or group["views"][view]["current_version_id"] not in {publication_base, version_id}):
             attempt.update(state="stopped", error={"code": "stale_result"})
             self._save(group_id, operation)
             return
@@ -170,7 +175,7 @@ class AdvancedMultiviewDesignWorkflow:
         group["changed_upload_views"] = [item for item in group["changed_upload_views"] if item != view]
         self.repository.save(group)
         attempt.update(state="succeeded", error=None)
-        if operation["initial"] and view == "front":
+        if view == "front":
             operation["frozen"]["initial_front_version_id"] = version_id
         self._save(group_id, operation)
 
@@ -220,6 +225,7 @@ class AdvancedMultiviewDesignWorkflow:
                     output = self.repository.path(group_id, f"staging/{attempt['id']}/result.png", must_exist=False)
                     output.parent.mkdir(parents=True, exist_ok=True)
                 try:
+                    started = time.monotonic()
                     result = self.generate_image(request, output)
                     self._publish(group_id, operation_id, view, request, output, result)
                 except Exception as error:
@@ -229,6 +235,37 @@ class AdvancedMultiviewDesignWorkflow:
                     # Unexpected transport failures may have incurred a charge. Do not guess safe retry.
                     if not isinstance(error, (RequestError, ProviderGatewayError)):
                         ambiguous = True
+                    elapsed_ms = max(0, round((time.monotonic() - started) * 1000))
+                    gateway_error = error if isinstance(error, ProviderGatewayError) else None
+                    provider_message = redact_text(gateway_error.provider_message).strip() if gateway_error else ""
+                    request_id = gateway_error.request_id if gateway_error else ""
+                    error_code = getattr(error, "code", "provider_result_unknown")
+                    error_record = {
+                        "code": error_code,
+                        "message": provider_message or (
+                            redact_text(error.message) if isinstance(error, RequestError) else "Image generation failed."
+                        ),
+                        "provider": request.provider,
+                        "model": request.model,
+                        "retryable": bool(gateway_error and gateway_error.retryable),
+                        "ambiguous": ambiguous,
+                        "elapsed_ms": elapsed_ms,
+                    }
+                    if gateway_error and isinstance(gateway_error.status, int):
+                        error_record["http_status"] = gateway_error.status
+                    if provider_message:
+                        error_record["provider_message"] = provider_message
+                    if request_id:
+                        error_record["request_id"] = request_id
+                    diagnostic_event(
+                        "advanced_multiview.image.failed", level="WARNING",
+                        operation_id=operation_id, attempt_id=request.attempt_id, view=view,
+                        provider=request.provider, model=request.model, elapsed_ms=elapsed_ms,
+                        error_code=error_code, category=getattr(error, "category", "local"),
+                        http_status=gateway_error.status if gateway_error else None,
+                        provider_message=provider_message, request_id=request_id,
+                        retryable=bool(gateway_error and gateway_error.retryable), ambiguous=ambiguous,
+                    )
                     with self.repository.transaction():
                         operation = self._operation(group_id, operation_id)
                         attempt = operation["attempts"][view]
@@ -236,8 +273,7 @@ class AdvancedMultiviewDesignWorkflow:
                             raise  # Preserve the recoverable local result, not a new failed generation.
                         known = output.exists() or output.with_suffix(".response.json").exists()
                         attempt.update(state="result_pending" if known else "ambiguous" if ambiguous else "failed",
-                                       error={"code": getattr(error, "code", "provider_result_unknown"),
-                                              "message": str(error) if isinstance(error, RequestError) else "Image generation failed."})
+                                       error=error_record)
                         if ambiguous or known:
                             operation["halt_remaining"] = True
                         self._save(group_id, operation)
@@ -256,7 +292,11 @@ class AdvancedMultiviewDesignWorkflow:
                 with self.repository.transaction():
                     operation = self._operation(group_id, operation_id)
                     operation.update(state="recovery_required", recovery_error={"code": code})
+                    for attempt in operation["attempts"].values():
+                        if attempt["state"] == "queued":
+                            attempt["state"] = "stopped"
                     self._save(group_id, operation)
+                    self._finish(group_id, operation_id)
             except Exception:
                 logging.getLogger(__name__).error("Advanced recovery receipt could not be committed (%s)", operation_id)
 
@@ -282,6 +322,21 @@ class AdvancedMultiviewDesignWorkflow:
         with self.repository.transaction():
             group = self.repository.load(group_id)
             operation_id = group["active_operation_id"]
+            if not operation_id:
+                # A terminal local failure releases 2D eligibility. Known receipts
+                # remain recoverable until a newer intent supersedes that target.
+                operation_ids = {state["latest_attempt"]["operation_id"] for state in group["views"].values()
+                                 if state.get("latest_attempt") and state["latest_attempt"]["state"] in
+                                 {"submitting", "result_saved", "result_pending"}}
+                if len(operation_ids) == 1:
+                    candidate_id = operation_ids.pop()
+                    candidate = self._operation(group_id, candidate_id)
+                    if (candidate["frozen"]["input_epoch"] == group["input_epoch"] and all(
+                            (group["views"][view].get("latest_attempt") or {}).get("operation_id") == candidate_id
+                            for view in candidate["targets"])):
+                        operation_id = candidate_id
+                        group["active_operation_id"] = operation_id
+                        group = self.repository.save(group)
             if not operation_id:
                 # A crash between acceptance receipt and group commit cannot start
                 # paid work. Preserve its receipt as explicitly stopped for retry.
@@ -332,18 +387,28 @@ class AdvancedMultiviewDesignWorkflow:
                         elif output.exists():
                             result = DesignImageResult()
                         if result is not None:
-                            self._publish(group_id, operation_id, view, self._request(operation, view), output, result)
-                            group = self.repository.load(group_id)
-                            operation = self._operation(group_id, operation_id)
-                            attempt = operation["attempts"][view]
+                            try:
+                                self._publish(group_id, operation_id, view, self._request(operation, view), output, result)
+                            except RequestError as error:
+                                if error.code == "persistence_failed":
+                                    raise
+                                # A corrupt obtained image remains a failed result,
+                                # never a reason to retain a phantom active worker.
+                                attempt.update(state="result_pending", error={"code": error.code,
+                                               "message": redact_text(error.message)})
+                            else:
+                                group = self.repository.load(group_id)
+                                operation = self._operation(group_id, operation_id)
+                                attempt = operation["attempts"][view]
                 if attempt["state"] == "result_saved" and attempt["version_id"]:
                     record = self.repository.version(group_id, view, attempt["version_id"])
-                    if (group["views"][view]["current_version_id"] in {attempt["base_version_id"], record["id"]}
+                    publication_base = operation.get("publication_bases", {}).get(view, attempt["base_version_id"])
+                    if (group["views"][view]["current_version_id"] in {publication_base, record["id"]}
                             and not group["stop_intent"] and not operation["stop_intent"]):
                         group["views"][view] = {"current_version_id": record["id"], "latest_attempt": {
                             "operation_id": operation_id, "attempt_id": attempt["id"], "state": "succeeded"}}
                         attempt["state"] = "succeeded"
-                        if operation["initial"] and view == "front":
+                        if view == "front":
                             operation["frozen"]["initial_front_version_id"] = record["id"]
                     else:
                         attempt.update(state="stopped", error={"code": "stopped_with_result"})

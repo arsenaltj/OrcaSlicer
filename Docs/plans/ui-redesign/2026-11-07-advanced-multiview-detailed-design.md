@@ -1,8 +1,280 @@
 # AI 创作高级模式：多视角详细设计
 
-- 日期：2026-11-07；版本：设计 V1.8（2026-11-10高级3D等待路由补充）；任务：`UX/ADVANCED-MULTIVIEW-20261107`。
-- 对应：[需求 V1.8](2026-11-07-advanced-multiview-requirements.md)、[软件架构](2026-11-07-advanced-multiview-architecture.md)、[验收用例](2026-11-07-advanced-multiview-acceptance.md)。
+2026-11-12实施更新：用户已确认本方案及80条用例并授权实施；本任务2D生图不限次，Tripo新增3D最多3次（失败新增提交计数）。下方2026-11-11的“待确认／预算0／均未开始”仅为原方案基线，由本条授权与主计划当前状态取代；不更改已确认业务规格。实际验收按既有测试报告逐层记录，尚未完成实窗验收。
+
+- 日期：2026-11-07；当前提案：设计 V3.0（2026-11-11统一工作台开发方案待确认）；任务：`UX/ADVANCED-MULTIVIEW-20261107`。原V2.0的2D整改授权及实施证据保留。
+- 当前对应：[需求V3.0（已确认）](2026-11-07-advanced-multiview-requirements.md#mv-workbench-requirements)、[目标架构](2026-11-07-advanced-multiview-architecture.md#mv-workbench-architecture)、[80条用例（待确认）](2026-11-07-advanced-multiview-acceptance.md#mv-workbench-acceptance)。原V2.0的2D整改见下方独立章节。
 - 本文保留2026-11-07设计基线；2026-11-08已实施的实际模块名及接缝见[架构实施对照](2026-11-07-advanced-multiview-architecture.md#实施对照2026-11-08)。下文“拟”指原设计名称，实际类型以 `AdvancedCreationTypes.hpp` 及对应Python契约为准；测试结论见[测试报告](2026-11-08-advanced-multiview-test-report.md)。
+
+<a id="mv-workbench-development"></a>
+
+## 2026-11-11 统一工作台开发方案V3.0（待确认，未实施）
+
+输入为[已确认的WB-01～11及WB-A／B](2026-11-07-advanced-multiview-requirements.md#mv-workbench-requirements)，对应[80条完整验收用例](2026-11-07-advanced-multiview-acceptance.md#mv-workbench-acceptance)。用户本轮仅授权编写方案／用例，确认后才开始产品实现、代码删除、构建和验证。以下类型名是拟新增或调整的接缝，不表示源码已经存在；执行状态只维护于主计划／短状态，实际测试结果以后增量写入既有测试报告。
+
+### WB-D1 目标、基线和约束
+
+- 当前审查基线：本会话／`codex/team/integration`／`5d6602171f6fa1edb061a679ac74cf4e55c67cb1`；产品尚未实施本整改。前轮截图、日志、双实例与独立导入根因及原R2未结保留。
+- 交付一个工作台页面体系和一个当前编辑上下文，覆盖等待／结果／编辑／导入／切片／预览及原后续打印。智能／高级创作Session、任务和原供应商协议继续独立。
+- 原检查、修复、美颜、配色、底座、文件发布、撤销、原生导入、切片算法及既有工程保护继续复用，不因本次收敛重写其业务规则。保留原入场检查策略；进入工作台不自动串联后续处理。
+- GPT全部参数（包括size=auto、input_fidelity=high）、YOYO模型选择及请求、多视图规则、3D模型参数、Job-v1/v2、历史格式、输出目录和执行并发策略不变。
+- 本轮不新增生成预算，不复用上一轮收口后的剩余额度，不提交／推送／合并／发布。不以全量重构、回滚整个高级功能或删除有效历史能力代替定向整改。
+
+### WB-D2 现状问题和所需接缝
+
+| 已核对的现状 | 实施处理 |
+| --- | --- |
+| Shell已共用Page::Model下的等待／结果页；高级打开完成工作台却进入AdvancedCreationWorkspace内部实例并跳Page::Image | 等待与结果继续留在原工作台导航，完成产物显式交给唯一编辑实例；删除内部编辑及其错误导航。 |
+| show_model_view(Result)的重入／幂等刷新仍直接读取智能m_model_generation_state | 所有入口共用来源选择，不能只有高级首次进入正确。 |
+| AdvancedCreationWorkspace内部model_host同时承担重复编辑、任务观察、下载、目录和旧历史适配 | 将仍需的观察／下载／目录能力转入无工作台UI的任务适配器及既有服务；再删除整个高级专属ModelGenerationFeatureHost实例。 |
+| request_open_history会reset／restore_job；load_library_entry成功后停轮询、取消客户端、清job ID并回填生成选项／单图输入 | 拆出显式产物打开入口和仅加载3D对象的模式；完成高级模型和工作台历史切换均不通过“恢复生成输入”安装到智能上下文。 |
+| ModelGenerationPanel同时持有SmartGenerationFlow、显示模型字段和BeautyWorkbenchSession，m_sequence等被多种回调共用 | 按生成任务与当前编辑模型拆开身份、请求代次和安装条件，审查所有受影响消费者，避免仅增加一个UI标志。 |
+| 编辑导入仍有字段从m_job_palette／m_artifact_format等生成现场读取 | 从当前工作台模型上下文读取格式、色板、ColorIntent及历史身份，防止高级模型借用智能参数。 |
+
+### WB-D3 状态所有者与依赖方向
+
+| 状态／能力 | 唯一所有者 | 可以做什么／不能做什么 |
+| --- | --- | --- |
+| 智能草稿、生成意图、2D→3D阶段和进度 | 既有智能Session／SmartGenerationFlow／ModelGenerationFeatureHost生成部分 | 保持现有提交、停止、恢复及自动衔接；打开另一来源3D对象不重置这些状态。 |
+| 高级输入、四图版本、套图、模型计划／任务与命令资格 | AdvancedCreationSession／FeatureHost及原侧车Application | 提交、停止、恢复仍走高级入口；工作台不能改变四图计划或用旧单图接口重建Job-v2。 |
+| 高级3D任务观察与本地产物获取 | 拟AdvancedModelTaskMonitor，由AdvancedCreationFeatureHost持有 | 只观察明确Job、投影状态并调用共享下载／校验；不持有BeautySession、原生工程或编辑控件，不新增生成业务真值。 |
+| 等待页当前来源、页面切换、返回锚点 | RedesignShell现有路由上下文扩展 | 保存来源及任务／工作区身份、路由代次；消费两模式快照。不能在Shell再编排供应商生成或持久化第二份草稿。 |
+| 当前3D资产身份、路径／哈希、格式／颜色及工作台元数据 | 拟WorkbenchModelContext，归唯一工作台宿主 | 接替Panel中对应编辑字段作为真值；PostGenerationWorkbenchState只是投影，不能与生成字段各维护一份编辑真值。 |
+| 未保存编辑、候选、保存事务和工作台撤销 | 既有BeautyWorkbenchSession及TransactionController | 保留原事务／文件恢复及revision；与当前模型身份组合校验，不另建高级编辑Session。 |
+| 项目、耗材配置、原生撤销、切片和G-code | Plater及既有Orca Adapter | 保持原生工程真值；生成、导航和UI不静默更改工程。 |
+
+依赖为Shell／GUI适配器→既有Session／Ports／Contracts→文件／HTTP／原生Adapter。GeneratedModelArtifact继续是无wx／供应商对象的不可变跨模块产物契约；来源模式、组ID和返回页面属于GUI上下文，不塞入libslic3r或供应商参数。仅在当前ModelGeneration模块内增加必要接缝，不新增服务、DLL或循环依赖。
+
+### WB-D4 身份、交接与生命周期
+
+#### 1. 路由与编辑身份分离
+
+来源标识由来源模式、生成会话、明确job／flow ID及高级group／工作区epoch组成；每个来源内部使用自己的revision，不能直接比较智能和高级的revision数值。Shell另持路由请求代次。当前编辑模型使用asset ID、规范化路径、实际文件哈希及Beauty revision。
+
+生成来源与当前编辑资产分开：保存修复／美颜版本或切换历史后，当前asset会改变，返回锚点仍指向进入前创作工作区。任务状态更新不能默认安装到编辑器；只有当前有效的显式打开请求可以替换当前模型。
+
+#### 2. 高级观察与共享下载
+
+AdvancedCreationFeatureHost在原model-jobs受理／显式恢复后，向AdvancedModelTaskMonitor传递明确Job及CallbackContext。观察器使用AIModelGenerationClient的get_status、download_artifact、download_color_intent及现有状态解析，不调用get_latest、generate或retry_preparation。
+
+保留当前轮询节奏和单次在途互斥。图像／几何目录查询使用既有catalog API及独立请求代次，不与任务下载共用可被相互取消的请求句柄。停止／恢复仍由AdvancedCreationFeatureHost原高级端点执行，观察器只重新跟随同一Job。
+
+从ModelGenerationArtifactFlow提取共享的产物获取／校验协作代码，拟放ModelArtifactAcquisition；智能原调用点与高级观察器共用现有文件命名、格式／颜色限制、ColorIntent校验、元数据／模型库发布和错误处理。临时下载完整校验后按原流程发布，保持用户模型目录，不向安装目录写入。失败只允许现有本地重新下载／加载入口，不能自动重发模型生成。
+
+任务观察、下载、文件校验和UI模型安装是不同阶段。高级生成状态可持续发布；被切换的旧请求只能保留归属明确的已有结果，不能安装到新工作区。关闭后取消本地请求／timer，回调使用弱引用及代次检查，保留已取得的有效文件。
+
+#### 3. 显式工作台产物打开
+
+在ModelGenerationFeatureHost／Panel增加面向工作台的产物打开入口，拟request_open_workbench_artifact。请求包含GeneratedModelArtifact、已核实的asset／metadata引用、色板roles／ColorIntent及源路由令牌；读取的参考图可供原工作台显示，但不回填创作输入控件。
+
+打开按原有ModelHistoryOpen／预览准备接缝分两阶段：
+
+1. 检查目标及WB-A保护，获得当前打开请求代次；保留原页／原模型及必要回滚上下文。
+2. 读取元数据、校验路径／格式／哈希／ColorIntent、解析模型，在后台准备可用预览数据。
+3. GUI线程重新检查源请求、当前目标、取消状态及模型身份；布局和首帧按原呈现门槛准备。
+4. 就绪后提交唯一WorkbenchModelContext／Beauty上下文并揭示工作台；提交前失败或取消恢复原模型、视角、页面和有效编辑现场。
+
+取消后台解析仍沿用原drain规则，不能解析尚在使用旧状态时提前解除busy。临时文件只清理当前请求拥有的未发布文件，不删除原件、接受版本或历史。首次产物和历史模型共用底层准备／提交过程，不复制另一套GL加载或回滚算法。
+
+#### 4. 历史读取与生成恢复分开
+
+工作台侧栏、全局模型库、智能／高级已完成3D结果均使用“打开3D对象”语义，保持草稿及当前生成任务。显式恢复未完成生成任务继续走对应模式原命令，不被历史3D打开替代。
+
+旧Job-v1、四图Job-v2、修复／美颜衍生版本及本地导入模型均按其原记录读取；沿原修复链和证书解析规则解析实际目标，不能把任务ID、资产ID、历史选中项和修复文件路径混作一个ID。模型库打开设计来源的既有显式业务保留，与普通3D历史打开区分。
+
+#### 5. 消费者迁移
+
+检查／修复、配色／美颜／底座、保存、候选接受／放弃、模型历史、导入请求和原生工程上下文均改从当前工作台模型读取资产身份与元数据。生成请求仍只读其所属生成Session。已有m_sequence共享调用点须明确使用生成代次、模型打开代次还是Beauty revision，不能简单把所有检查换成一个新全局序号。
+
+### WB-D5 页面、任务与返回行为
+
+| 场景 | 页面／状态和命令目标 |
+| --- | --- |
+| 智能准备／生成 | 工作台等待页；智能阶段和原组合进度，原条件满足才自动衔接一次3D。 |
+| 高级已受理3D | 工作台等待页；仅3D阶段和原3D进度，停止／恢复指向该高级Job。 |
+| 远端完成、下载／本地预览未完成 | 仍在工作台加载／等待状态；未满足门槛不呈现可编辑完成。 |
+| 失败／停止 | 留在对应任务结果状态，显示安全错误及原可用恢复入口；另一个模式的状态不替换当前诊断。 |
+| 点击打开工作台 | 通过明确产物交接进入唯一编辑实例，工作台导航保持高亮；不跳AI创作。 |
+| 左导航／Tab／历史入口重入 | 在原资格内进入，等待页统一按当前来源选快照，编辑页按当前asset恢复；页面互斥，隐藏浮层及时撤销。 |
+| 工作台导入 | 原Shell统一确认／进度／原生提交／目标视图；成功进入原切片流程，失败／取消按原保护回滚。 |
+| 已提交导入但目标视图未呈现 | 保留工程提交结果，复用原视图恢复入口，不能为补画面重复添加模型。 |
+
+保留原生成／加载／停止／保存／导入／编辑中的导航资格，不新增“生成中自由切换两任务”或并发产品能力。状态刷新只允许更新当前路由对应呈现，不触发隐式导航；新的明确用户提交仍按原规则打开新任务。
+
+WB-A统一适用于另一结果、历史或模型库替换当前模型。复用现有忙碌／候选／未保存保护及保存／放弃方式；取消则原模型、视角、选择、候选和文件保持。目标打开失败不能留下半安装模型。本轮只保持一个编辑上下文，不新增两模式未保存3D会话的切换恢复。
+
+WB-B使用GUI内的返回锚点：来源模式、组／创作工作区身份及进入时epoch，不复制另一份套图／草稿。历史切换和保存衍生版本不改锚点；从模型库直接进入时使用进入前的创作上下文。返回时查询该模式现有Session；若用户已明确新建／切组，使用其最新工作区，不重放旧模型的历史输入。返回失败沿原保护保留原页并提示，不静默新建；返回本身不产生生成调用。重启后无内存锚点时沿既有当前创作工作区处理，不新增持久化返回会话。
+
+### WB-D6 文件范围和删除清单
+
+| 文件／模块 | 计划修改及完成输出 |
+| --- | --- |
+| Redesign/RedesignShell.{hpp,cpp}、RedesignModelRoute.hpp、RedesignModelWorkflow.cpp | 统一来源／返回上下文、全部等待页重入、结果交接与导航互斥；移除高级完成后跳Image和高级导入跳Print的分支。 |
+| Redesign/RedesignWorkbenchPresentation.cpp及现有页面过渡接缝 | 复用原保留页、加载进度、取消／首帧门槛和回滚，接入明确的目标产物／打开代次；不复制呈现实现。 |
+| Redesign/AdvancedCreationWorkspace.{hpp,cpp} | 只保留高级创作UI和必要动作适配；移除内部工作台、完整ModelGenerationFeatureHost、独立导入和相关显隐／返回状态。原润色、图片预览、套图历史和目录消费者保持。 |
+| AI/ModelGeneration/AdvancedCreationFeatureHost.{hpp,cpp}及拟AdvancedModelTaskMonitor.{hpp,cpp} | 接管明确高级3D的观察／下载状态和目录接缝；保留原高级提交、停止、恢复与Session资格，不改端点。 |
+| AI/ModelGeneration/ModelGenerationFeatureHost.{hpp,cpp}、GUI/ModelGenerationPanel.{hpp,cpp} | 增加产物打开入口，隔离生成和编辑上下文／代次；只保留一个编辑实例。 |
+| ModelGenerationArtifactFlow.cpp及拟ModelArtifactAcquisition.{hpp,cpp} | 提取已有下载、校验和发布能力供两来源使用；保留格式、路径、元数据及本地恢复语义。 |
+| ModelGenerationHistoryOpen.cpp、ModelGenerationLibraryView.cpp、ModelGenerationWorkbenchHistory.cpp、ModelGenerationSubmission.cpp | 普通3D打开与生成恢复拆开；历史打开不污染草稿，不误恢复latest／误重建Job-v2。 |
+| 拟WorkbenchModelContext.hpp／WorkbenchOpenRequest.hpp及PostGenerationWorkbenchHost.cpp、ModelGenerationBeauty*的相关消费者 | 收口当前编辑身份／元数据、打开令牌和消费读取；沿现有Session事务和Ports改动，不重写美颜／修复算法。 |
+| ModelWorkspaceSources.cmake、对应CMake清单与tests/slic3rutils | 注册实际新增接缝及定向测试，删除确无消费者的专用依赖；不复制构建缓存。 |
+| 本需求／设计／架构／验收文档、平台架构说明、原子能力说明及review-map | 同步真实状态所有者、共享工作台入口、历史／返回行为和失效锚点；方案阶段只标明目标，实际映射随代码维护。 |
+
+删除按引用／消费者核实后执行：
+
+| 已有实现 | 处理方式 |
+| --- | --- |
+| AdvancedCreationWorkspace的workbench面板、mount_workbench、workbench_open、opening_model、open／close／model_changed中自动显示内部编辑的分支 | 迁移任务观察和结果查看入口后实际删除；高级历史查看同样进入统一工作台。 |
+| import_session、import_progress、import_model、after_import／navigate_after_import、wxProgressDialog及仅用于独立导入的头文件 | 统一导入接线完成后连同构造参数、shutdown分支、guard引用一并删除。原WorkbenchImportSession类仍被共享导入使用，不能整删。 |
+| request_open_model_workbench及Shell高级专属完成／导入绕行 | 删除旧声明、定义和调用，以有效的共享产物交接替代，不留同名空包装。 |
+| 高级专属完整model_host及实例级advanced_only参数／成员／专用分支 | 观察、目录、历史消费者迁移后移除。Job-v2防误走旧生成入口的保护改由实际任务来源／协议检查承接，不能因移除标志而丢失。 |
+| legacy面板／open_legacy等旧接线 | 先核查真实可达消费者；确无入口的死代码删除，仍有用户入口的旧历史能力经共享接缝保留，不按legacy名称整段删除。 |
+| 专用资源、绑定、无用include／构建项及旧路径测试 | 仅在全仓引用和构建消费者确认无用时删除；共享资源与有效断言保留，测试迁至统一流程语义。 |
+
+不以恒定开关、隐藏备用工作台、注释旧实现、复制宿主或空转兼容壳交付。删除的是当前源码中的废弃路径，正常Git历史及问题证据保留，不重写提交历史。
+
+### WB-D7 开发顺序、输出及完成条件
+
+以下WBD-1～8为同一任务内的实施顺序，当前均未开始。默认单代理、沿用现有分支，按依赖推进；构建期间不改源码。
+
+| 步骤 | 输出 | 验证和完成条件 |
+| --- | --- | --- |
+| WBD-1 身份与返回接缝 | 明确来源／任务／编辑资产身份、独立代次、WB-A保护及WB-B返回锚点；梳理所有消费者 | HAND／RET／JOB对应纯逻辑用例可检验草稿不变、旧结果失效和替换保护，不新增第二份业务状态。 |
+| WBD-2 高级观察与共享获取 | 无工作台UI的高级任务观察、共享产物下载／校验／元数据能力和目录请求 | WAIT／JOB离线端口序列验证阶段、耗时、停止恢复、下载故障、取消、调用次数及shutdown；高级观察器不能提交生图。 |
+| WBD-3 单工作台交接 | 明确产物打开、模型元数据上下文和两阶段安装／回滚，历史3D打开与生成恢复分离 | HAND／RET／EDIT验证准确资产／色板、草稿隔离、失败回滚和旧打开请求不能安装。 |
+| WBD-4 页面全入口收口 | 结果按钮、左导航、Tab、历史／模型库、返回、等待重入统一接线与互斥 | NAV／WAIT／RET验证两模式全入口；高级不再跳Image或被智能空状态覆盖。 |
+| WBD-5 编辑与原生导入消费者 | 检查／候选／保存／撤销消费正确模型；导入接回原Shell进度、提交和切片／预览 | EDIT／PIPE覆盖文件、证书、原生配置／撤销、取消／失败／已提交视图失败，普通Orca保持。 |
+| WBD-6 废弃实现删除 | 按清单删除高级重复宿主、独立导入及无效接口／依赖，承接有效兼容能力 | CLEAN及REG引用／diff审查，最终不保留备用第二实例和死包装，不通过删有效测试弱化验收。 |
+| WBD-7 自动回归与维护文档 | 定向测试、架构边界／锚点、实际使用说明同步，保存源码与测试收据 | 受影响离线测试通过；架构检查不新增失败且不弱化；既有四项集成diff预算缺口单列，不冒充全部通过。 |
+| WBD-8 Windows实窗及交付 | 匹配源码的EXE／DLL／资源／sidecar、独立数据、真实主窗口证据及逐项测试结论 | 两来源已有资产覆盖编辑→导入→切片→预览；真实等待／生成条目按V前置执行。未满足预算或服务条件则保留未执行，不拿历史或fixture冒充。 |
+
+### WB-D8 测试入口、证据和验收限制
+
+验收定义共80条：NAV 8、WAIT 12、JOB 10、HAND 8、EDIT 8、PIPE 10、RET 8、REG 10、CLEAN 6。每条有前置、操作、预期、优先级、需求映射和证据层级，全部当前未执行。用例数量不等于真实生成次数或自动测试数量。
+
+实施后的定向命令示例（本轮不执行）：
+
+```powershell
+./dev.ps1 CppTest -TestSuite slic3rutils_tests -TestLabel 'UnifiedWorkbench|ModelGenerationRoute|SmartGenerationFlow|AdvancedCreation|ModelHistoryOpen|BeautyWorkbenchSession|WorkbenchImport|PostGeneration' -Jobs 2
+./dev.ps1 Test -TestPattern test_advanced_multiview.py,test_advanced_multiview_models.py,test_sidecar_contract.py,test_yoyoclaw.py
+python scripts/verify_ai_integration.py --json
+python scripts/architecture_review.py --check-map
+python scripts/architecture_review.py --readme update
+python scripts/architecture_review.py --readme check
+python scripts/check_documentation_sync.py --base HEAD --worktree
+./dev.ps1 Build -Jobs 2
+./dev.ps1 Run -NoLaunch -Jobs 2
+```
+
+新接缝测试使用拟UnifiedWorkbench标签，已有标签按实际受影响测试核对匹配数；无匹配不能算通过。Python定向回归保护参数和既有边界，若未改动且仍与已有收据条件一致可引用原证据，不能因列了命令就重复无关全量测试。C++单元使用离线Ports／fixture模拟状态与故障，禁止另起mock服务伪装主窗口验收。原生几何／切片算法未改动时不自动扩大到全量核心套件，导入与切片行为仍须真实主窗口验证。
+
+复用本checkout的dev.ps1和.tmp/dev/build，核对CMAKE_HOME_DIRECTORY，单写者增量构建。使用完整匹配运行树与独立datadir／既有样本副本，保留用户运行实例与工程；运行目录占用按现有快速开发规则安装独立完整目录并核对，不终止用户进程。记录源码提交及未提交生产源码快照、EXE／DLL／资源／sidecar身份、样本哈希、任务／资产／组ID、配置、原生日志和截图。
+
+**付费与验收前置**：目前新增GPT／YOYO／Tripo调用预算为0。已有真实模型／任务历史副本可验证查看、编辑、导入、切片、预览和返回；不能证明新任务的实时生成、停止／恢复或完整2D→3D衔接。带V的子断言必须有可用的真实在途／可安全恢复任务或另行批准的具体输入、服务和最大调用数；恢复若可能重新提交／计费，同样先确认。已有任务观察／本地下载不视为获得新的生成授权。V条件未满足时标未执行或部分覆盖，整体端到端验收不能标全部通过；本轮不提前申请或消耗新预算。
+
+日志沿既有诊断入口记录来源模式、明确任务、路由代次、资产／模型哈希、阶段、拒绝过期回调原因、导入是否提交及错误码／安全message；不记录凭据、照片、Prompt全文或Data URL。测试结果以后只追加到既有测试报告的新WB结果节，保留原76条、R2的42条及质量／集成缺口，主计划维护执行状态。
+
+### WB-D9 风险与完成判定
+
+| 风险 | 控制与证据 |
+| --- | --- |
+| 删除高级model_host连带丢失进度／目录／本地加载 | WBD-2先迁移有效职责，WAIT／JOB／REG验证，再执行WBD-6删除。 |
+| 工作台打开覆盖智能草稿、任务或进度 | 明确产物入口、来源内revision及生成／编辑代次隔离，HAND-03／04、RET、JOB竞态覆盖。 |
+| 高级编辑保存或导入借用智能格式／色板／身份 | 当前WorkbenchModelContext为唯一编辑元数据源，HAND-01／08、EDIT及PIPE断言绑定文件／哈希。 |
+| 取消／首帧失败丢失原模型或候选 | 复用ModelHistoryOpen的准备、drain、提交／回滚及保留页门槛，HAND-06／07、RET-05及PIPE故障覆盖。 |
+| 移除advanced_only后Job-v2误走旧重试 | 按实际任务来源／协议守卫，JOB-02／03及REG-05／06；不新增后端协议或降级输入。 |
+| 导入已提交但视图失败重复添加模型 | 沿用原提交结果及视图恢复，PIPE-07检查工程对象数与提交次数。 |
+| 旧单图历史因清理被误删、用旧局部测试掩盖新链问题 | 审查真实消费者，REG-06／07和CLEAN全引用核对；旧证据原样保留并重验本次链路。 |
+
+完成需要：当前源码只有有效的统一工作台路径；确认需求均有对应证据；受影响自动测试和Windows构建通过；两模式真实主窗口覆盖原编辑／导入／切片／预览；V项达到其真实前置并完成后才可宣称完整实时端到端通过。历史集成守卫缺口按实际结果单列，不能修改预算阈值、跳过Git检查或删除有效断言以取得通过。若实现必须改变未讨论的参数、协议、历史格式、并发或交互，停止该扩展并向用户确认。
+
+<a id="mv-r2-development"></a>
+
+## 2026-11-11 整改开发方案（已确认）
+
+用户已确认统一产品需求、软件开发方案和42条用例验收，授权实施。下方R2方案替代旧基线中卡片恢复／重试、缺图不可选、未决失败全局阻塞和保存成功后新建的处理；其它已对齐规则继续有效。状态只维护于[主计划](../2026-09-25-product-convergence-and-lightweight-plan.md)及短状态；本节是设计规格，不另建执行台账。
+
+### R2-A 修改范围与状态所有者
+
+| 层／维护文件 | 修改内容与输出 | 责任边界 |
+| --- | --- | --- |
+| `tools/ai/advanced_multiview_application.py`、`advanced_multiview_contracts.py` | 统一新生成计划支持旧图编辑与无图补生成；按当前模型冻结这次计划，计算必要主视角依赖／实际范围／最大次数；允许已结束旧失败后的新计划；提交／停止原子检查 | Application拥有目标、输入、预算和资格，不由UI拼第二套业务计划。每次新意图新command ID，原请求幂等ID仍可核对。 |
+| `advanced_multiview_design_workflow.py`、`advanced_multiview_image_gateway.py` | 按目标选择现有编辑或补生成参考规则；完整结果才发布；失败保留旧图、结束真实占用、保留错误与已得结果；旧结果不覆盖新意图 | workflow拥有执行／依赖／发布；gateway仅适配。复用原提示词与GPT／YOYOClaw参数，不改SDK、模型大小或供应商重试策略。 |
+| `advanced_multiview_runtime.py`、`advanced_multiview_transport.py`、`advanced_multiview_repository.py` | 保持单执行器；快照暴露真实排队／执行／终态，按需增加可选投影字段；按操作保存停止意图与受理核对，兼容旧记录 | repository拥有组／版本／回执事实；runtime组合并投影，不新增调度平台、并发池或到GUI的反向依赖。 |
+| `AdvancedCreationTypes.hpp`、`AdvancedCreationSession.hpp/.cpp` | 失败空位选择、资格去除旧失败全局锁、当前可显示版本及加载结果投影；真实忙碌和必要输入限制保留；新建epoch隔离 | Session拥有草稿、选择、资格及展示投影；服务端group/current版本仍为业务真值。 |
+| `AdvancedCreationFeatureHost.hpp/.cpp`、`AdvancedMultiviewClient.hpp/.cpp` | 统一主按钮计划；逐图资源获取不阻止任务状态刷新；任务级提交／核对／停止回执；新建立即复位、异步清理旧任务 | Host／Client适配应用命令、缓存和回调，不另行推断费用或供应商是否已受理。 |
+| `Redesign/AdvancedCreationWorkspace.cpp` | 删除卡片按钮的创建、成员、布局、事件和显示分支；右下角状态／安全原因；排队、成功清错与缩略图刷新；复用现有确认／停止 | Workspace只消费投影、传递选择与命令；不改共享`RoundedActionButton`行为来修局部问题，不新增卡片操作入口。 |
+| 既有测试及文档 | 在`test_advanced_multiview.py`、`test_advanced_creation.cpp`、`test_sidecar_contract.py`等现有入口定向补测；按实际契约影响补3D／供应商回归；同步维护文档与映射 | 42条验收定义见配套文档，不代表必须新增42个独立测试函数或42次真实生成。 |
+
+上表C++文件均在`src/slic3r/GUI/AI/ModelGeneration/`，Workspace在`src/slic3r/GUI/Redesign/`。不修改libslic3r、智能生成、供应商凭据、原始图片或用户在用运行目录。
+
+### R2-B 计划、依赖与调用规则
+
+1. 用户选中后点击主按钮，先结算待处理单击，再取当前草稿／选择／组revision准备计划；未选图仍为全部四视角，已有pending范围继续纳入。每次新生成按当前模型准备，不调用绑定旧模型的卡片retry路径。
+2. 以每个目标是否有已确认基础设计图决定编辑／补生成，允许一个计划含两种目标。现有上传优先级、相机角色、有序参考上限与逐目标`n=1`保持；缺图不走“编辑不存在图片”。
+3. 缺图目标优先使用既有可用参考；确实需要补主视角才加入依赖，主视角先执行。确认窗口列出实际目标和最多调用数，缺依赖失败则相关目标结束失败／未执行，不额外追加调用；其它视角继续／停止沿已有规则。
+4. 已结束旧`ambiguous/result_pending/result_saved`不作为下一次2D计划的全局拒绝理由；原错误和结果不确定事实保留，不将未知状态伪写成服务端确定失败，不自动付费重提。
+5. 重复受理同一command ID返回同一操作；用户下一次明确重新生成使用新command ID和当前模型。重新生成全部四图允许更新之前成功图，但新结果可用前保留各自旧图。
+6. 确认取消、失效、模型下架或输入不满足时不提交；恢复准备状态，保留选择／旧图／既有失败。确认与实际提交期间revision变化必须重新核对，禁止把新输入或新模型暗塞入旧确认。
+
+### R2-C 状态、图片与缓存的一致性
+
+| 投影状态 | 卡片显示 | 主按钮／图像处理 |
+| --- | --- | --- |
+| 尚未发起 | 等待生成；已有图保持设计图 | 依原输入／服务条件计算资格，不造失败。 |
+| 排队 | 保留旧图／空位，右下“排队中”，提示等待前一个请求 | 真实已受理任务单飞，不能重复提交；新建仍立即响应。 |
+| 执行／获取结果 | 保留旧图／空位和加载提示 | 真实在途保护继续，逐张完成，不因一张结束改掉其它目标。 |
+| 成功 | 可用新图替换旧图，显示设计图，清掉该卡片旧失败和过期总体错误 | 按终态释放占用，刷新当前套图／历史缩略图。 |
+| 结束未成功 | 旧图／空位保留，右下“生成失败”，安全原因提示 | 旧失败不锁下一次2D；按其它真实条件判资格。 |
+
+必须修复现有`ingest`任一资产失败就不应用整组snapshot的路径。先接收真实任务终态／revision，再逐图接收可用资产；单图下载失败不得让已结束任务持续busy或吞掉其它图的更新。已有响应／文件／版本不因缓存获取失败删除，不自动新增生图来掩盖下载故障。
+
+服务端current版本与Session的可见图片版本分开表达。下载失败保留上一次已验证可见图；计划明确记录用户看到并确认的基图ID，同时冻结计划时服务端current／group revision，服务端验证版本属于同组且未被并发更新。发布使用计划时版本的比较保护；不得拿尚未展示的新版本静默替代编辑基图。该设计仅保证显示／命令一致，不增加版本浏览器或撤销UI。3D仍按既有四图与版本／输入约束消费明确的快照，不因2D解锁而提交错图。
+
+### R2-D 新建、提交竞态与任务回执
+
+- 新建在本地立即取消旧单击／草稿保存计时、递增会话epoch、清空当前输入／组投影／选择／提示并发布初始界面。沿既有初始化默认值回到2D页／顶部，YOYOClaw子模型默认规则保持；不等待网络、旧保存成功或模型配置可用，也不直接创建空历史组。
+- 重置前捕获旧group／operation及仍在准备、已提交但未确认的命令引用，按原任务持久保留停止／核对意图，异步停止尚未提交的视角。停止与受理须在同一仓库事务规则下收敛：无论stop先到还是execute先到，都不能在新建后继续启动旧批次剩余视角。
+- 已发送供应商请求保留其响应、候选／错误和可能费用事实；返回后归旧任务，不回填新工作区。队列中尚未开始的旧任务应结束而不调用供应商；新组仍按全局串行规则排队。
+- 当前单一`pending-submission.json`不能作为跨新建的全局锁。改为按operation关联的独立回执／核对集合，兼容读取旧单收据；写入／迁移失败保留原记录，核对只归档相应操作，不删除其它任务回执。新建不以丢弃回执换取解锁。
+- 所有异步成功／失败／完成回调校验原group、operation、会话epoch与命令归属；过期回调可以完成旧任务持久记录，但不能修改新草稿、弹出旧确认、改变新组选择或释放新命令busy。润色／上传保存也适用。
+
+### R2-E 兼容与维护文档
+
+现有group／operation／plan／version记录保持可读；新增字段采用可选投影或兼容默认，旧`initial`及旧受理记录可以解析；不批量改写旧供应商错误，不删除原始组、文件或用户照片。历史打开和重启只核对已有结果，不自行新增供应商调用。保留后端已有内部取回结果能力，卡片控件删除不扩大成删除3D恢复／受理对账等共享契约。
+
+GPT编辑`size=auto`、`input_fidelity=high`及其余参数，GPT纯文字原参数和提示词，以及YOYOClaw三种请求协议／尺寸／顺序均对照原实现回归。白名单失败／模型不可用保持真实状态，不静默换模型。智能链路、原生Orca、独立Job-v2及四图建模预算保持。
+
+实现时同步本需求／设计／验收、`tools/ai/README_atomic_capabilities.md`、`Docs/architecture/PLATFORM_ARCHITECTURE.md`及实际受影响的工程导航；契约／能力／状态锚点变化更新`review-map.json`并运行生成同步。2026-11-11本机实现、定向自动回归及完整Windows构建已完成，实窗使用历史副本；具体执行证据和未验层级见[整改实际结果](2026-11-08-advanced-multiview-test-report.md#mv-r2-results)，设计规格本身不作为全部验收通过的证据。
+
+### R2-F 开发顺序、输出与验证
+
+| 步骤 | 具体输出 | 验证与完成条件 |
+| --- | --- | --- |
+| D1 计划和兼容契约 | 当前模型的统一编辑／补图计划、实际范围及依赖预算；旧记录解析及停止／受理竞态规则 | GEN组及ASY-01／08／12对应离线用例先验证；不得靠UI隐藏后端409。 |
+| D2 执行与状态投影 | 串行真实排队、失败释放、依赖执行、响应／版本保留和安全诊断 | 全成功、部分失败、502未知、下载／保存失败、停止及call-count断言；不增加自动重发。 |
+| D3 Session与Host生命周期 | 缺图选择、新建同步重置、逐图缓存更新、可见基图一致及任务级回执／回调隔离 | C++ Session回归与ASY组竞态、REG-07；单图资源故障不锁整组。 |
+| D4 界面适配 | 控件实际删除、右下失败／排队、安全原因、确认取消和缩略图更新 | UI组实窗与相应自动逻辑证据，双击／单击、右栏和DPI布局正确。 |
+| D5 定向集成与文档 | 受影响Python／C++／HTTP／3D消费者回归，维护文档与映射一致 | 按下方命令运行，逐项记录范围与源码身份，保持既有守卫不弱化。 |
+| D6 Windows交付验证 | 同源码的完整EXE／DLL／资源／sidecar及独立数据目录实窗证据 | 复用本checkout构建和完整运行树；保留用户运行实例；真实调用只在另有明确预算时执行。 |
+
+定向验证入口（Python测试在本机用`-PythonPath`指定已有完整解释器，构建仍使用配置的Python 3.12+）：
+
+```powershell
+./dev.ps1 Test -TestPattern test_advanced_multiview.py,test_advanced_multiview_models.py,test_sidecar_contract.py,test_yoyoclaw.py
+./dev.ps1 CppTest -TestSuite slic3rutils_tests -TestLabel AdvancedCreation -Jobs 2
+python scripts/verify_ai_integration.py --json
+python scripts/architecture_review.py --readme update
+python scripts/check_documentation_sync.py --base HEAD --worktree
+./dev.ps1 Build -Jobs 2
+./dev.ps1 Run -NoLaunch -Jobs 2
+```
+
+Python／C++定向测试按修改范围执行，不添加无关全量测试；新边界有失败再补测。构建／安装分阶段使用：`Build`可在用户实例保留期间执行；`Run -NoLaunch`只在运行树可安全刷新时安装，不终止用户进程，也不在构建期间改源码。运行目录占用则按既有快速开发规则处理；验收使用匹配的Windows真实主窗口，不能以fixture或另建mock服务冒充真实生成。
+
+42条用例是验收定义，实际执行及证据在既有测试报告中增量记录。离线测试记录调用计数、输入／版本／文件哈希、任务ID和安全诊断；GUI记录源码／产物身份、窗口／DPI和截图。真实供应商验证须单列输入、模型、最大调用数和实际预算消耗，复用已有证据，不把文档中的历史额度自动当作新授权。未执行的真实服务／视觉项明确保留未执行。
+
+## 历史基线与已实施说明（2026-11-07至10）
 
 实施补充：草稿 `PUT /groups/<id>/draft` 返回与GET相同的完整运行快照，保留四图current及3D任务投影；上传原件和设计版本均不可被描述保存替换。高级润色单独将支持的源图解码为最长边不超过2048像素的PNG临时副本，跨异步请求保留到回调释放，保留原件；正文仍排除视角标签。图像提示词规定左侧视图朝画布左、右侧视图朝画布右，并保持非对称附件的实际侧别；画面质量须另验，不能用提示词存在作为通过证据。
 

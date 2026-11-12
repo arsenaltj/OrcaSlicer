@@ -105,7 +105,7 @@ void ModelGenerationPanel::export_semantic_candidate()
     if (!m_model_preview || (!m_model_preview->semantic_regions_ready() && !m_model_preview->leaf_editing() &&
         m_model_preview->color_trial_state().source != 1 &&
         m_model_preview->face_color_overrides().empty()) ||
-        !is_nonempty_model(m_finishing_candidate.empty() ? m_displayed_model_path : m_finishing_candidate)) {
+        !is_nonempty_model(m_finishing_candidate.empty() ? m_workbench_model.path : m_finishing_candidate)) {
         if (auto before = std::move(m_beauty_reoptimization_before)) restore_beauty_candidate(*before);
         if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic candidate source unavailable");
         if (m_finishing_status) m_finishing_status->SetLabel(_L("人像区域结果没有可用的模型源，当前版本保持不变。"));
@@ -114,7 +114,7 @@ void ModelGenerationPanel::export_semantic_candidate()
         return;
     }
     if (m_finishing_worker.joinable()) m_finishing_worker.join();
-    const auto source = m_finishing_candidate.empty() ? m_displayed_model_path : m_finishing_candidate;
+    const auto source = m_finishing_candidate.empty() ? m_workbench_model.path : m_finishing_candidate;
     const auto region_evidence = m_model_preview->semantic_region_evidence();
     const auto secondary_evidence = m_model_preview->secondary_region_evidence();
     const auto shape_details = m_model_preview->portrait_shape_details();
@@ -230,7 +230,7 @@ void ModelGenerationPanel::export_semantic_candidate()
     m_finishing_status->SetLabel(_L("正在把改色结果保存为新的 GLB 版本，可旋转查看或取消……"));
     refresh_controls();
     wxWeakRef<ModelGenerationPanel> weak(this);
-    const uint64_t sequence = m_sequence;
+    const uint64_t sequence = m_workbench_model.revision;
     const auto cache_root=boost::filesystem::path(Slic3r::data_dir())/"cache";
     try {
         m_finishing_worker = std::thread([weak, source, destination, appearance_carrier, appearance_root, options, canceled, sequence, manual_overrides, color_state=candidate_color_state, printer_filament_application, before, region_evidence, secondary_evidence, shape_details, shapes_unlocked,leaf_edits,leaf_revision,partition_snapshot,portrait_task,cell_colors,cache_root,draft_snapshot,baked_semantic,color_block_contract,printer_restore_snapshot] {
@@ -332,7 +332,7 @@ void ModelGenerationPanel::export_semantic_candidate()
                     boost::filesystem::remove(destination, ignored);
                     boost::filesystem::remove(appearance_carrier, ignored);
                 };
-                if (!weak || weak->m_shutdown || sequence != weak->m_sequence) {
+                if (!weak || weak->m_shutdown || sequence != weak->m_workbench_model.revision) {
                     cleanup_candidate();
                     return;
                 }

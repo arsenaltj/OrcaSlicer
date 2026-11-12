@@ -167,6 +167,7 @@ public:
     {
         std::string id;
         std::string source;
+        std::string creation_kind;
         std::string state;
         std::string phase;
         std::string message;

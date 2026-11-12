@@ -1,4 +1,5 @@
 #pragma once
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchOpenRequest.hpp"
 
 #include "AIModelGenerationClient.hpp"
 #include "AI/ModelGeneration/SmartGenerationFlow.hpp"
@@ -9,6 +10,8 @@
 #include "AI/ModelGeneration/BeautyWorkbenchColorGate.hpp"
 #include "AI/ModelGeneration/ModelLibraryEntry.hpp"
 #include "AI/ModelGeneration/ModelHistoryOpen.hpp"
+#include "AI/ModelGeneration/WorkbenchModelContext.hpp"
+#include "AI/ModelGeneration/ModelArtifactAcquisition.hpp"
 #include "AI/ModelGeneration/ModelLibraryApplication.hpp"
 #include "AI/ModelGeneration/ModelLibraryLoader.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationHost.hpp"
@@ -94,7 +97,7 @@ class ModelGenerationPanel : public wxPanel
 {
 public:
     ModelGenerationPanel(wxWindow* parent, AI::IModelArtifactConsumer& artifact_consumer,
-                         AI::IPrintablePaletteProvider& palette_provider, bool advanced_only = false);
+                         AI::IPrintablePaletteProvider& palette_provider);
     ~ModelGenerationPanel() override;
 
     void shutdown();
@@ -126,6 +129,8 @@ public:
     bool request_import();
     bool request_refresh_history();
     bool request_open_history(const std::string& job_id);
+    bool request_open_workbench_artifact(const WorkbenchOpenRequest& request);
+    bool request_open_generated_artifact();
     bool request_open_image_history(const std::string& job_id);
     void set_service_availability(bool available, const std::string& message = {});
     void set_service_availability(bool available, bool generation_available, const std::string& message);
@@ -227,7 +232,6 @@ private:
     void apply_smart_ui_state(ModelGenerationUIState& state);
     bool m_smart_mode {false};
     bool m_shell_smart_creation {false};
-    const bool m_advanced_only;
     SmartGenerationFlow m_smart_flow;
     bool m_smart_dispatch_pending {false};
     using GeneratedModelEntry = ModelLibraryEntry;
@@ -515,7 +519,7 @@ private:
         std::function<void(size_t, Vec3d, size_t, double)> loaded,
         std::function<void(std::string)> failed, const boost::filesystem::path& metadata_path = {},
         std::shared_ptr<ModelHistoryMetadata> history_metadata = {}, std::function<bool()> may_install = {},
-        std::shared_ptr<ModelHistoryOpenRequest> history_open = {});
+        std::shared_ptr<ModelHistoryOpenRequest> history_open = {}, bool install_to_workbench = true);
     void download_and_import();
     void import_local_artifact(const boost::filesystem::path& path, uint64_t sequence);
     void cleanup_files();
@@ -598,7 +602,8 @@ private:
                              const std::string& color_intent_sha256,
                              const std::string& job_id, const wxString& title, bool new_asset = false,
                              std::shared_ptr<const ModelHistoryRepairIndex> repairs = {},
-                             std::shared_ptr<ModelHistoryOpenRequest> restoration = {});
+                                               std::shared_ptr<ModelHistoryOpenRequest> restoration = {},
+                                               const std::string& expected_sha256 = {});
     bool delete_library_entry(const GeneratedModelEntry& entry);
     void export_library_entry(const GeneratedModelEntry& entry);
     void update_library_provider_tasks(const std::string& job_id,
@@ -611,6 +616,7 @@ private:
     AI::IModelArtifactConsumer&    m_artifact_consumer;
     AI::IPrintablePaletteProvider& m_palette_provider;
     AIModelGenerationClient m_client;
+    ModelArtifactAcquisition m_artifact_acquisition;
     ModelGenerationUIStateListener m_ui_state_listener;
     ModelGenerationUIState m_ui_state;
 
@@ -913,7 +919,10 @@ private:
     boost::filesystem::path m_raw_preview_path;
     boost::filesystem::path m_artifact_path;
     boost::filesystem::path m_color_intent_path;
-    boost::filesystem::path m_displayed_model_path;
+    WorkbenchModelContext m_workbench_model;
+    uint64_t m_model_open_sequence {0};
+    bool m_generation_artifact_ready {false};
+    std::string m_generation_artifact_sha256;
     boost::filesystem::path m_last_imported_model_path;
     wxImage m_reference_image;
     wxImage m_raw_preview_image;
@@ -940,8 +949,6 @@ private:
     AIModelGenerationClient::PaletteRoles m_palette_roles;
     AIModelGenerationClient::PaletteRoles m_job_palette_roles;
     std::vector<std::string> m_palette_roles_source;
-    std::vector<std::string> m_displayed_model_palette;
-    AIModelGenerationClient::PaletteRoles m_displayed_model_palette_roles;
     AIModelGenerationClient::PaletteRecommendation m_palette_recommendation;
     AIModelGenerationClient::StyleRecommendation m_style_recommendation;
     std::vector<std::string> m_user_adjusted_palette_colors;
@@ -959,6 +966,7 @@ private:
     std::string m_selected_geometry_model;
     bool           m_legacy_generation_defaults { false };
     std::string m_job_id;
+    std::string m_job_creation_kind;
     std::string m_job_state;
     std::string m_job_phase;
     ModelGenerationPresentation::ModelGenerationProgress m_model_progress;
@@ -972,7 +980,6 @@ private:
     std::string m_provider_error_category;
     bool m_provider_error_retryable { false };
     bool m_provider_error_ambiguous { false };
-    std::string m_displayed_model_job_id;
     std::string m_artifact_format;
     std::string m_artifact_color_encoding;
     std::string m_color_intent_schema;
@@ -989,9 +996,7 @@ private:
     bool m_palette_recommendation_confirmed { false };
     bool m_ready { false };
     bool m_artifact_download_started { false };
-    bool m_model_preview_ready { false };
     bool m_library_model_loaded { false };
-    bool m_history_model_design_reusable { false };
     bool m_service_available { false };
     bool m_generation_available { false };
     std::map<std::string, AIModelGenerationClient::ProviderCatalog> m_provider_catalogs;

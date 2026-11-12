@@ -299,7 +299,7 @@ std::vector<BeautyColorItem> ModelGenerationPanel::local_recolor_palette() const
 
     auto fallback = project_palette();
     if (fallback.empty())
-        fallback = !m_displayed_model_palette.empty() ? m_displayed_model_palette : m_job_palette;
+        fallback = m_workbench_model.palette;
     if (fallback.size() > PreviewPalette::max_preview_colors)
         fallback.resize(PreviewPalette::max_preview_colors);
     for (size_t slot = 0; slot < fallback.size(); ++slot) {
@@ -323,7 +323,7 @@ bool ModelGenerationPanel::beauty_color_match_current() const
     const auto& matched = *m_beauty_matched_colors;
     const std::string source_sha256 = m_beauty_session.source()
         ? m_beauty_session.source()->model_sha256
-        : AI::model_artifact_sha256(m_displayed_model_path);
+        : AI::model_artifact_sha256(m_workbench_model.path);
     const std::string geometry_id = m_beauty_session.source()
         ? m_beauty_session.source()->geometry_id : m_model_preview->geometry_id();
     return matched.source_sha256 == source_sha256 && matched.geometry_id == geometry_id &&
@@ -355,9 +355,9 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
 {
     PostGenerationWorkbenchState state;
     state.actions = post_generation_ui_state();
-    state.revision = m_sequence;
-    state.asset_id = m_displayed_model_job_id;
-    state.model_path = m_displayed_model_path.string();
+    state.revision = m_workbench_model.revision;
+    state.asset_id = m_workbench_model.asset_id;
+    state.model_path = m_workbench_model.path.string();
     if (native_workbench_context_matches(m_native_workbench_context)) {
         state.source_sha256 = m_native_workbench_context.source_sha256;
         state.geometry_id = m_native_workbench_context.geometry_id;
@@ -549,7 +549,7 @@ bool ModelGenerationPanel::request_open_workbench()
         return false;
     }
     const bool opening = !m_finishing_workbench;
-    if (!m_model_preview_ready) {
+    if (!m_workbench_model.ready) {
         m_workbench_editing = false;
     }
     // Publish exact ownership before presenting the workbench can start an
@@ -650,19 +650,14 @@ bool ModelGenerationPanel::request_workbench_color_matching()
     const auto state = workbench_snapshot();
     if ((!state.can_import_for_slicing && !state.can_force_import && !state.deferred_native_repair) || (!m_color_matching && !m_workbench_import)) return false;
     if (!state.check.model_sha256.empty() &&
-        AI::model_artifact_sha256(m_displayed_model_path) != state.check.model_sha256) {
+        AI::model_artifact_sha256(m_workbench_model.path) != state.check.model_sha256) {
         m_workbench_check_result = {};
         m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
         m_workbench_check_result.summary = "模型文件已变化，请重新执行检查后再导入。";
         refresh_post_generation_workbench();
         return false;
     }
-    AI::GeneratedModelArtifact artifact;
-    artifact.local_path = m_displayed_model_path.string();
-    artifact.job_id = m_displayed_model_job_id;
-    artifact.format = m_artifact_format;
-    artifact.color_encoding = m_artifact_color_encoding;
-    artifact.generation_palette = m_displayed_model_palette;
+    const auto artifact = m_workbench_model.artifact();
     if (m_workbench_import) {
         AI::ModelImportRequest request;
         request.artifact = artifact;
@@ -692,7 +687,7 @@ bool ModelGenerationPanel::request_workbench_color_matching()
             }
         }
         const auto match = bundle ? m_model_preview->printer_filament_match_result(
-            *bundle, AI::model_artifact_sha256(m_displayed_model_path)) : ModelPreview3D::PrinterFilamentMatchResult{};
+            *bundle, AI::model_artifact_sha256(m_workbench_model.path)) : ModelPreview3D::PrinterFilamentMatchResult{};
         if (!match.matched) {
             if (!match.error.empty() || match.missing_colors.empty()) {
                 m_workbench_operation_notice = match.error.empty()
@@ -750,7 +745,7 @@ bool ModelGenerationPanel::request_workbench_color_matching()
         }
         try {
             prepare_portrait_import(request);
-            BeautyWorkbenchControls::prepare_import(m_displayed_model_path, request);
+            BeautyWorkbenchControls::prepare_import(m_workbench_model.path, request);
             nlohmann::json owned_native_reference, owned_native_check;
             if (native_workbench_context_matches(m_native_workbench_context) &&
                 WorkbenchArtifacts::native_partition_has_exact_mesh(m_native_workbench_partition_reference)) {

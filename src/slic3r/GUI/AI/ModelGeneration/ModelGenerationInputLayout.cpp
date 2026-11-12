@@ -427,7 +427,7 @@ void ModelGenerationPanel::apply_ai_theme(bool update_fonts)
 void ModelGenerationPanel::navigate_workspace(WorkspaceAction action)
 {
     initialize_page();
-    if (action == WorkspaceAction::ShowImage && !m_model_preview_ready)
+    if (action == WorkspaceAction::ShowImage && !m_workbench_model.ready)
         m_preserve_image_on_model_ready = true;
     dispatch_workspace_action(action);
 }
@@ -440,7 +440,7 @@ void ModelGenerationPanel::dispatch_workspace_action(WorkspaceAction action)
         if (m_prepare_navigation) m_prepare_navigation();
         return;
     }
-    select_workspace_view(workspace_destination(action, m_workspace_view, m_model_preview_ready));
+    select_workspace_view(workspace_destination(action, m_workspace_view, m_workbench_model.ready));
 }
 
 void ModelGenerationPanel::set_library_drawer(bool open)
@@ -559,10 +559,10 @@ void ModelGenerationPanel::refresh_input_layout()
         }
     }
     const auto view = workspace_presentation(m_workspace_view,
-        m_reference_image.IsOk() || m_style_preview_image.IsOk(), m_model_preview_ready,
+        m_reference_image.IsOk() || m_style_preview_image.IsOk(), m_workbench_model.ready,
         m_busy, m_awaiting_confirmation, m_ready, static_cast<bool>(m_prepare_navigation));
     m_workspace_view = view.view;
-    const bool empty_model = view.view == WorkspaceView::Model && !m_model_preview_ready;
+    const bool empty_model = view.view == WorkspaceView::Model && !m_workbench_model.ready;
     bool layout_changed = m_input_welcome->Show(view.welcome);
     layout_changed |= m_model_empty->Show(empty_model);
     layout_changed |= m_workflow_panel->Show(!empty_model && view.view != WorkspaceView::Library &&
@@ -570,7 +570,7 @@ void ModelGenerationPanel::refresh_input_layout()
     layout_changed |= m_input_results->Show(!view.welcome && !empty_model);
     layout_changed |= m_input_journey->Show(view.journey && view.view != WorkspaceView::Model);
     const bool library_view = view.view == WorkspaceView::Library;
-    const bool model_overview = view.view == WorkspaceView::Model && m_model_preview_ready;
+    const bool model_overview = view.view == WorkspaceView::Model && m_workbench_model.ready;
     const bool result_chrome = !library_view && !m_finishing_workbench && !model_overview;
     for (wxWindow* control : std::array<wxWindow*, 4>{m_preview_kind, m_preview_stage_hint,
                                                      m_preview_message, m_result_summary})
@@ -590,8 +590,8 @@ void ModelGenerationPanel::refresh_input_layout()
     layout_changed |= m_input_actions->Show(!model_overview || m_busy);
     const bool overview_visibility_changed = m_model_overview->Show(model_overview);
     layout_changed |= overview_visibility_changed;
-    layout_changed |= m_finishing_shortcut->Show(!library_view && !model_overview && !m_finishing_workbench && m_model_preview_ready);
-    layout_changed |= m_expand_images->Show(image_tools && m_model_preview_ready);
+    layout_changed |= m_finishing_shortcut->Show(!library_view && !model_overview && !m_finishing_workbench && m_workbench_model.ready);
+    layout_changed |= m_expand_images->Show(image_tools && m_workbench_model.ready);
     // The overview owns the model facts; leave the central GL canvas for viewing it.
     layout_changed |= m_model_stats->Show(!model_overview);
     if (model_overview) {
@@ -664,7 +664,7 @@ void ModelGenerationPanel::refresh_input_layout()
     apply_control(m_generate, Role::PrimaryAction);
     apply_control(m_import, Role::PrimaryAction);
     const wxString previous_status = m_status->GetLabel();
-    if (!m_awaiting_confirmation && !m_busy && !m_ready && !m_model_preview_ready) {
+    if (!m_awaiting_confirmation && !m_busy && !m_ready && !m_workbench_model.ready) {
         m_preprocess->SetLabel(_L("生成 2D 设计图"));
         m_preprocess->Show();
         if (m_service_available) {
