@@ -29,7 +29,6 @@
 #include <wx/notebook.h>
 #include <wx/sizer.h>
 #include <wx/string.h>
-#include <wx/stattext.h>
 
 #include "Selection.hpp"
 #include "AI/AIDesktopFeatureHost.hpp"
@@ -106,6 +105,7 @@ namespace LocalPrintColorCommit { struct Prepared; }
 namespace LocalPrintModelImport { struct PlacementSnapshot; }
 struct ModelColorImportResult;
 struct TextureImportOptions;
+enum class LoadType : unsigned char;
 class SyncAmsInfoDialog;
 class MainFrame;
 class ConfigOptionsGroup;
@@ -205,7 +205,7 @@ public:
     void create_printer_preset();
     void init_filament_combo(PlaterPresetComboBox **combo, const int filament_idx);
     void remove_unused_filament_combos(const size_t current_extruder_count);
-    void update_all_preset_comboboxes();
+    void update_all_preset_comboboxes(bool update_filament_combos = true);
     //void update_partplate(PartPlateList& list);
     void update_presets(Slic3r::Preset::Type preset_type);
     //BBS
@@ -339,7 +339,7 @@ public:
     void                            update_ai_workflow_step(AIWorkflowStep step, AIWorkflowStatus status,
                                                             const wxString& detail = wxString());
     void                            finish_ai_workflow(bool success, const wxString& summary, bool cancelled = false);
-    bool                            ai_workflow_active() const { return m_ai_workflow_active; }
+    bool                            ai_workflow_active() const;
 
     bool need_auto_sync_after_connect_printer() const { return m_need_auto_sync_after_connect_printer; }
     void set_need_auto_sync_after_connect_printer(bool need_auto_sync) { m_need_auto_sync_after_connect_printer = need_auto_sync; }
@@ -352,10 +352,6 @@ private:
     std::unique_ptr<priv> p;
 
     wxBoxSizer* m_scrolled_sizer = nullptr;
-    wxWeakRef<wxPanel> m_ai_workflow_panel;
-    wxWeakRef<wxStaticText> m_ai_workflow_summary;
-    std::array<wxWeakRef<wxStaticText>, AIWorkflowStepCount> m_ai_workflow_steps {};
-    bool m_ai_workflow_active = false;
     bool            m_need_auto_sync_after_connect_printer{false};
 };
 
@@ -410,6 +406,8 @@ public:
     bool up_to_date(bool saved, bool backup);
 
     bool open_3mf_file(const boost::filesystem::path &file_path);
+    // Batch import resolves the project/geometry question once before staging the whole set.
+    bool open_3mf_file(const boost::filesystem::path &file_path, LoadType resolved_type);
     int  get_3mf_file_count(std::vector<boost::filesystem::path> paths);
     void add_file();
     // Returns false when no object was added (e.g. the user cancelled the load dialog).
@@ -485,7 +483,8 @@ public:
     std::vector<size_t> load_files(const std::vector<boost::filesystem::path>& input_files,
                                    LoadStrategy strategy,
                                    bool ask_multi,
-                                   bool* published_out);
+                                   bool* published_out,
+                                   const std::function<void()>& before_publish = nullptr);
     // To be called when providing a list of files to the GUI slic3r on command line.
     std::vector<size_t> load_files(const std::vector<std::string>& input_files,
                                    LoadStrategy strategy = LoadStrategy::LoadModel | LoadStrategy::LoadConfig,
@@ -594,7 +593,8 @@ public:
     void reset(bool apply_presets_change = false, bool reload_presets = true);
     void reset_with_confirm();
     //BBS: return int for various result
-    int close_with_confirm(std::function<bool(bool yes_or_no)> second_check = nullptr); // BBS close project
+    // With deferred_close, the steps that mark the current project closed are returned instead of run.
+    int close_with_confirm(std::function<bool(bool yes_or_no)> second_check = nullptr, std::function<void()>* deferred_close = nullptr); // BBS close project
     //BBS: trigger a restore project event
     void trigger_restore_project(int skip_confirm = 0);
     bool delete_object_from_model(size_t obj_idx, bool refresh_immediately = true); // BBS support refresh immediately
@@ -632,7 +632,7 @@ public:
     int  export_published_3mf(const std::vector<std::string>& published_keys, const std::vector<Slic3r::PublishedMaterialEntry>& material_keys);
     // Session-level stash of the last published selection, seeded into the Publish dialog on
     // open and written on publish or on loading a published 3MF
-    bool get_pending_published(std::vector<std::string>& out_keys, std::vector<Slic3r::PublishedMaterialEntry>& out_material) const;
+    bool get_pending_published(std::vector<std::string>& out_keys, std::vector<Slic3r::PublishedMaterialEntry>& out_material, bool& out_legacy_process) const;
     void set_pending_published(const std::vector<std::string>& published_keys, const std::vector<Slic3r::PublishedMaterialEntry>& material_keys);
     static TriangleMesh combine_mesh_fff(const ModelObject& mo, int instance_id, std::function<void(const std::string&)> notify_func = {});
     void export_stl(bool extended = false, bool selection_only = false, bool multi_stls = false, FileType file_type = FT_STL);
@@ -742,7 +742,8 @@ public:
         NOT_CONNECTED,
         INCONSISTENT,
         UNINSTALL_FILAMENT,
-        EMPTY_FILAMENT
+        EMPTY_FILAMENT,
+        NO_FILAMENT_SYSTEM
     };
     void pop_warning_and_go_to_device_page(wxString printer_name, PrinterWarningType type, const wxString &title);
     bool check_printer_initialized(MachineObject *obj, bool only_warning = false,bool popup_warning = true);
@@ -1112,6 +1113,7 @@ public:
     wxMenu* part_menu();
     wxMenu* text_part_menu();
     wxMenu* svg_part_menu();
+    wxMenu* painted_modifier_menu();
     wxMenu* sla_object_menu();
     wxMenu* default_menu();
     wxMenu* instance_menu();

@@ -18,6 +18,8 @@ inline AIImportSeamResult stitch_ai_import_seams(ModelObject& object)
 {
     AIImportSeamResult result;
     for (ModelVolume* volume : object.volumes) {
+        // A painted modifier annotates its host; it is not an independent solid.
+        if (volume && volume->is_painted_modifier()) continue;
         // Once an opening is known, untouched modifiers cannot change the
         // status. Model parts must still be visited for possible seam repair.
         if (!volume || (!volume->is_model_part() && result.has_open_edges)) continue;

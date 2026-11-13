@@ -1,5 +1,4 @@
 #pragma once
-#include "slic3r/GUI/AI/ModelGeneration/WorkbenchOpenRequest.hpp"
 
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "ModelGenerationHost.hpp"
@@ -21,6 +20,7 @@ namespace Slic3r::GUI {
 class ModelGenerationPanel;
 class Plater;
 class ModelWorkspaceFeatureHost;
+struct WorkbenchOpenRequest;
 
 class ModelGenerationFeatureHost final
 {
@@ -30,6 +30,14 @@ public:
 
     ModelGenerationFeatureHost(wxWindow* parent, Plater* plater, NavigateAfterImportFn navigate_after_import,
                                RetryServiceFn retry_service);
+    wxWindow* legacy_creation_panel();
+    void unmount_legacy_creation();
+    void set_advanced_state_listener(ModelGenerationUIStateListener listener);
+    ModelGenerationUIState advanced_snapshot() const;
+    bool request_open_legacy_image_history(const std::string& job_id);
+    bool request_open_workbench_artifact(WorkbenchOpenRequest request);
+    bool request_open_generated_workbench(bool advanced, const ModelGenerationUIState& displayed);
+    bool workbench_returns_to_advanced() const;
     bool can_replace_asset() const;
     ~ModelGenerationFeatureHost();
 
@@ -52,6 +60,9 @@ public:
     void get_provider_catalog(const std::string& role, const std::string& provider,
                               AIModelGenerationClient::CatalogFn on_complete,
                               AIModelGenerationClient::ErrorFn on_error);
+    void get_advanced_provider_catalog(const std::string& role, const std::string& provider,
+                                      AIModelGenerationClient::CatalogFn on_complete,
+                                      AIModelGenerationClient::ErrorFn on_error);
     ModelGenerationSubmissionResult request_generate_design();
     ModelGenerationSubmissionResult request_generate_model();
     bool request_generate_smart();
@@ -63,8 +74,6 @@ public:
     bool request_import();
     bool request_refresh_history();
     bool request_open_history(const std::string& job_id);
-    bool request_open_workbench_artifact(const WorkbenchOpenRequest& request);
-    bool request_open_generated_artifact();
     bool request_open_image_history(const std::string& job_id);
     PostGenerationWorkbenchState workbench_snapshot() const;
     void set_workbench_listener(PostGenerationWorkbenchListener listener);
@@ -87,6 +96,7 @@ public:
         WorkbenchImportCompletion completion);
     bool request_open_workbench();
     void set_workbench_presented(bool presented);
+    void present_workbench_restore_frame();
     void prepare_workbench_presentation(std::function<void()> ready);
     void cancel_workbench_presentation();
     void raise_workbench_modal();

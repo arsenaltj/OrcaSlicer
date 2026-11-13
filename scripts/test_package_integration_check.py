@@ -15,7 +15,7 @@ class PackageIntegrationTests(unittest.TestCase):
             "source_identity_sha256": "b" * 64,
         }
         self.known = {
-            "schema": "orcaslicer.ai-integration-lock/v4",
+            "schema": "orcaslicer.ai-integration-lock/v5",
             "ok": False,
             "git_checks_skipped": False,
             "git": {"head": "a" * 40},

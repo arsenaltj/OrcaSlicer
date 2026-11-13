@@ -149,7 +149,42 @@
       this.offset = 0;
     }
   }
+  class FrameUpdates {
+    constructor(post, commit) {
+      this.post = post;
+      this.commit = commit;
+      this.pending = false;
+      this.depth = 0;
+      this.dirty = false;
+      this.disposed = false;
+    }
+    request() {
+      if (this.disposed) return;
+      this.dirty = true;
+      if (this.depth || this.pending) return;
+      this.pending = true;
+      try {
+        this.post(() => {
+          this.pending = false;
+          if (this.disposed || !this.dirty) return;
+          this.dirty = false;
+          this.commit();
+          if (this.dirty) this.request();
+        });
+      } catch (error) {
+        this.pending = false;
+        throw error;
+      }
+    }
+    batch(apply) {
+      ++this.depth;
+      try { apply(); }
+      finally { --this.depth; if (this.dirty) this.request(); }
+    }
+    dispose() { this.disposed = true; this.commit = () => {}; }
+  }
   const api = {
+    FrameUpdates,
     project,
     retainLocalImages,
     safeImage,

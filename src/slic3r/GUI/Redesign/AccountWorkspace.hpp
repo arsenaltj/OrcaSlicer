@@ -6,6 +6,7 @@
 #include <wx/image.h>
 #include <wx/panel.h>
 #include <wx/timer.h>
+#include "../Presentation/UiRuntime.hpp"
 
 class wxWebView;
 class wxStaticText;
@@ -24,6 +25,9 @@ public:
     void start();
 private:
     void render();
+    void commit_view();
+    Presentation::RefreshScheduler m_view_refresh;
+    Presentation::TaskScope m_avatar_scope;
     void login();
     void logout();
     void browser_failed(const char* message);

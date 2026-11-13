@@ -1,6 +1,7 @@
 #pragma once
 
 #include "slic3r/GUI/3DScene.hpp"
+#include "slic3r/GUI/Presentation/UiRuntime.hpp"
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 #include "slic3r/GUI/AI/Model/VertexColorRegionEditor.hpp"
 #include "slic3r/GUI/AI/Model/SurfaceSelection.hpp"
@@ -29,6 +30,7 @@
 #include "ModelSemanticColoring.hpp"
 #include "PortraitColorBlockCache.hpp"
 #include "PortraitNativePartitionCache.hpp"
+#include "NativeWorkbenchCheckpoint.hpp"
 #include "PrinterFilamentRestoreSnapshot.hpp"
 #include "PortraitResidualProposal.hpp"
 #include "PortraitResidualRequest.hpp"
@@ -132,6 +134,7 @@ public:
     explicit ModelPreview3D(wxWindow* parent, bool retain_surface_attributes = false)
         : wxPanel(parent), m_retain_surface_attributes(retain_surface_attributes)
     {
+        Presentation::background_tasks().on_shutdown(this, [this] { begin_background_shutdown(); });
         wxString trace_value;
         const bool trace = wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace_value) && trace_value == "1";
         const auto started = std::chrono::steady_clock::now();
@@ -419,7 +422,18 @@ public:
         });
     }
 
+    void begin_background_shutdown() {
+        m_rotation_timer.Stop(); m_semantic_timer.Stop(); m_surface_timer.Stop(); m_region_prepare_timer.Stop();
+        if (m_region_preparation) m_region_preparation->canceled = true;
+        cancel_surface_selection();
+        if (m_semantic_controller) m_semantic_controller->cancel();
+        auto& runner = Presentation::background_tasks();
+        runner.retire(m_surface_worker); runner.retire(m_region_prepare_worker);
+        if (m_semantic_controller) { auto thread = m_semantic_controller->begin_shutdown(); runner.retire(thread); }
+    }
+
     ~ModelPreview3D() override {
+        Presentation::background_tasks().remove_shutdown_hook(this);
         const bool region_was_running = m_region_preparation && !m_region_preparation->done.load();
         if (m_region_preparation) m_region_preparation->canceled = true;
         m_rotation_timer.Stop();
@@ -480,38 +494,102 @@ public:
     struct PreparedModel {
         GLModel::Geometry geometry;
         std::optional<GLModel::PreparedGeometry> render_geometry;
+        std::optional<GLModel::PreparedGeometry> manual_render_geometry;
         GLModel::Geometry current_appearance_geometry;
         std::optional<GLModel::PreparedGeometry> current_appearance_render_geometry;
         GLModel::Geometry direct_original_geometry;
         std::optional<GLModel::PreparedGeometry> direct_original_render_geometry;
+        std::vector<float> surface_vertices;
+        std::vector<Vec2f> surface_colors;
+        bool surface_attributes_ready {false};
+        std::optional<ModelPreviewTexture::Prepared> texture_upload, current_texture_upload, original_texture_upload;
+        enum class RenderPreparation { Unprepared, Preparing, Ready, Failed, Canceled, Consumed };
+        RenderPreparation render_preparation {RenderPreparation::Unprepared};
+
+        bool installable() const
+        { return render_preparation == RenderPreparation::Unprepared || render_preparation == RenderPreparation::Ready; }
 
         // Freeze CPU geometry and its exact bounds before the GUI adopts it.
         // Synchronous consumers can still use the unprepared geometry.
         void prepare_render_geometry(const std::function<bool()>& canceled = {}, bool share_exact_vertices = false)
         {
-            const auto prepare_direct_original = [&] {
-                if (!direct_original_geometry.is_empty())
-                    direct_original_render_geometry.emplace(
-                        GLModel::prepare_geometry(std::move(direct_original_geometry), canceled));
+            if (render_preparation == RenderPreparation::Ready) return;
+            // Cancellation restores all owned inputs below. An explicit retry
+            // can prepare them again, while the canceled payload stays
+            // un-installable until a complete new preparation succeeds.
+            if (render_preparation == RenderPreparation::Canceled)
+                render_preparation = RenderPreparation::Unprepared;
+            if (render_preparation != RenderPreparation::Unprepared)
+                throw std::runtime_error("模型预览准备结果已失效，请重新加载。");
+            render_preparation = RenderPreparation::Preparing;
+            bool was_canceled = false, shared_geometry = false;
+            const auto stopped = [&] {
+                if (!was_canceled && canceled && canceled()) was_canceled = true;
+                return was_canceled;
             };
-            if (share_exact_vertices) {
-                auto shared = ModelPreviewGeometry::share_exact_vertices(mesh, geometry, canceled);
-                if (shared) {
-                    auto frozen = GLModel::prepare_geometry(std::move(*shared), canceled);
-                    render_geometry.emplace(std::move(frozen));
-                    geometry = {}; // Release expanded storage on this worker.
-                    if (!current_appearance_geometry.is_empty())
-                        current_appearance_render_geometry.emplace(
-                            GLModel::prepare_geometry(std::move(current_appearance_geometry), canceled));
-                    prepare_direct_original();
-                    return;
+            std::optional<GLModel::PreparedGeometry> frozen, manual, current, original;
+            std::optional<ModelPreviewTexture::Prepared> texture, current_texture, original_texture;
+            std::vector<float> vertices;
+            std::vector<Vec2f> colors;
+            try {
+            const auto check_canceled = [&] {
+                if (stopped()) throw std::runtime_error("模型预览准备已取消。");
+            };
+            check_canceled();
+            // Build a complete payload locally. A cancellation or exception must
+            // never expose a partially prepared texture/geometry set to the GUI.
+            if (has_source_appearance && !face_color_overrides.empty())
+                manual.emplace(GLModel::prepare_geometry(
+                    ModelPreviewGeometry::manual_color_geometry(mesh, corner_normals, face_color_overrides, stopped), stopped));
+            if (!texture_surface.faces.empty())
+                texture.emplace(ModelPreviewTexture::prepare(texture_surface, mesh, corner_normals, {}, stopped));
+            if (current_appearance_distinct && !current_appearance_texture_surface.faces.empty())
+                current_texture.emplace(ModelPreviewTexture::prepare(current_appearance_texture_surface,
+                    mesh, corner_normals, {}, stopped));
+            if (direct_original_source && !direct_original_is_current &&
+                !direct_original_source->origin_texture_surface().faces.empty())
+                original_texture.emplace(ModelPreviewTexture::prepare(direct_original_source->origin_texture_surface(),
+                    direct_original_source->origin_mesh().its, direct_original_corner_normals, {}, stopped));
+            if (!share_exact_vertices) {
+                vertices = geometry.vertices;
+                colors.reserve(geometry.vertices_count());
+                for (size_t v = 0; v < geometry.vertices_count(); ++v) {
+                    if ((v & 16383) == 0) check_canceled();
+                    colors.push_back(geometry.extract_tex_coord_2(v));
                 }
             }
-            render_geometry.emplace(GLModel::prepare_geometry(std::move(geometry), canceled));
+            if (share_exact_vertices) {
+                auto shared = ModelPreviewGeometry::share_exact_vertices(mesh, geometry, stopped);
+                if (shared) {
+                    frozen.emplace(GLModel::prepare_geometry(std::move(*shared), stopped));
+                    shared_geometry = true;
+                }
+            }
+            if (!frozen) frozen.emplace(GLModel::prepare_geometry(std::move(geometry), stopped));
             if (!current_appearance_geometry.is_empty())
-                current_appearance_render_geometry.emplace(
-                    GLModel::prepare_geometry(std::move(current_appearance_geometry), canceled));
-            prepare_direct_original();
+                current.emplace(GLModel::prepare_geometry(std::move(current_appearance_geometry), stopped));
+            if (!direct_original_geometry.is_empty())
+                original.emplace(GLModel::prepare_geometry(std::move(direct_original_geometry), stopped));
+            check_canceled();
+            if (shared_geometry) geometry = {}; // Release only after all cancellation points.
+            render_geometry = std::move(frozen);
+            manual_render_geometry = std::move(manual);
+            current_appearance_render_geometry = std::move(current);
+            direct_original_render_geometry = std::move(original);
+            texture_upload = std::move(texture);
+            current_texture_upload = std::move(current_texture);
+            original_texture_upload = std::move(original_texture);
+            surface_vertices = std::move(vertices);
+            surface_colors = std::move(colors);
+            surface_attributes_ready = !share_exact_vertices;
+            render_preparation = RenderPreparation::Ready;
+            } catch (...) {
+                if (frozen && !shared_geometry) geometry = std::move(*frozen).release_geometry();
+                if (current) current_appearance_geometry = std::move(*current).release_geometry();
+                if (original) direct_original_geometry = std::move(*original).release_geometry();
+                render_preparation = was_canceled ? RenderPreparation::Canceled : RenderPreparation::Failed;
+                throw;
+            }
         }
         const GLModel::Geometry& render_data() const
         { return render_geometry ? render_geometry->geometry() : geometry; }
@@ -546,6 +624,10 @@ public:
         std::shared_ptr<const PortraitColorBlocks::Result> color_blocks;
         std::shared_ptr<const NativePortrait::NativePortraitPartition> native_portrait_partition;
         nlohmann::json native_workbench_partition_reference;
+        std::shared_ptr<const NativeWorkbenchCheckpoint> native_workbench_checkpoint;
+        // Short-lived read leases travel only to installation, never into the
+        // retained preview/cache where they could block a later save.
+        std::shared_ptr<const VerifiedModelFiles> installation_files;
         std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> semantic_source;
         FaceColorOverrides saved_semantic_faces;
         SubfaceColorOverrides saved_semantic_subfaces;
@@ -855,6 +937,11 @@ public:
                 prepared.native_portrait_partition =
                     std::make_shared<NativePortrait::NativeWorkbenchPartition>(std::move(partition));
                 prepared.native_workbench_partition_reference = native_partition_reference;
+                prepared.native_workbench_checkpoint = prepare_native_workbench_checkpoint(path, record,
+                    restoration_metadata, current_hash, prepared.geometry_id,
+                    prepared.semantic_source ? prepared.semantic_source->content_id : current_hash,
+                    prepared.native_portrait_partition->partition_digest, native_partition_reference, canceled,
+                    &prepared.installation_files);
             } catch (const std::exception& failure) {
                 prepared.native_portrait_partition.reset();
                 prepared.native_workbench_partition_reference = nullptr;
@@ -997,7 +1084,7 @@ public:
                 << " elapsed_ms=" << std::chrono::duration<double, std::milli>(now - normal_tick).count();
             normal_tick = std::chrono::steady_clock::now();
         };
-        const auto corner_normals = ModelPreviewNormals::corner_normals(its, 45.f, normal_trace);
+        auto corner_normals = ModelPreviewNormals::corner_normals(its, 45.f, normal_trace);
         if (stop_if_canceled()) return false;
         trace_stage("normals");
         const auto build_geometry = [&](const ObjInfo& appearance, bool collect_evidence,
@@ -1145,8 +1232,8 @@ public:
             << ", clustering_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - palette_started).count();
         prepared.geometry = std::move(geometry);
-        if (!prepared.texture_surface.faces.empty() || !prepared.current_appearance_texture_surface.faces.empty())
-            prepared.corner_normals = corner_normals;
+        // Reuse these worker-computed normals for manual colors and brush edits.
+        prepared.corner_normals = std::move(corner_normals);
         prepared.path = path;
         try { prepared.artifact_sha256 = AI::model_artifact_sha256(path); }
         catch (...) { /* A cache failure must not reject a valid model. */ }
@@ -1167,6 +1254,15 @@ public:
     bool load_prepared_model(PreparedModel&& prepared, const std::vector<std::string>& palette,
                              size_t& triangle_count, Vec3d& dimensions, size_t& color_count, std::string& error)
     {
+        Presentation::assert_gui_thread();
+        if (!prepared.installable()) {
+            error = "模型预览准备未完成或结果已使用，请重新加载。";
+            return false;
+        }
+        if (prepared.installation_files && !prepared.installation_files->current()) {
+            error = "模型或检查凭证在预览准备期间发生变化，请重新打开。";
+            return false;
+        }
         if (m_canvas == nullptr || m_context == nullptr || !m_context->IsOK() || !m_canvas->SetCurrent(*m_context)) {
             error = "OpenGL preview context is unavailable.";
             return false;
@@ -1176,13 +1272,20 @@ public:
             error = "The OBJ contains no renderable triangles.";
             return false;
         }
+        prepared.render_preparation = PreparedModel::RenderPreparation::Consumed;
         std::vector<float> surface_vertices;
         std::vector<Vec2f> surface_colors;
         if (m_retain_surface_attributes) {
-            surface_vertices = geometry.vertices;
-            surface_colors.reserve(geometry.vertices_count());
-            for (size_t v = 0; v < geometry.vertices_count(); ++v)
-                surface_colors.push_back(geometry.extract_tex_coord_2(v));
+            if (prepared.surface_attributes_ready) {
+                surface_vertices = std::move(prepared.surface_vertices);
+                surface_colors = std::move(prepared.surface_colors);
+            } else {
+                // Legacy synchronous callers retain their original contract.
+                surface_vertices = geometry.vertices;
+                surface_colors.reserve(geometry.vertices_count());
+                for (size_t v = 0; v < geometry.vertices_count(); ++v)
+                    surface_colors.push_back(geometry.extract_tex_coord_2(v));
+            }
         }
         // Async model loading can upload textures before the first paint initializes GLAD.
         if (!wxGetApp().init_opengl()) {
@@ -1196,12 +1299,21 @@ public:
         std::unique_ptr<GLModel> direct_original_model;
         bool direct_original_reuses_current = prepared.direct_original_is_current;
         auto model = std::make_unique<GLModel>();
+        std::unique_ptr<GLModel> manual_color_model;
         try {
-            if (!prepared.texture_surface.faces.empty())
+            if (prepared.manual_render_geometry) {
+                manual_color_model = std::make_unique<GLModel>();
+                manual_color_model->init_from(std::move(*prepared.manual_render_geometry));
+            }
+            if (prepared.texture_upload)
+                texture_model = std::make_unique<ModelPreviewTexture>(std::move(*prepared.texture_upload));
+            else if (!prepared.texture_surface.faces.empty())
                 texture_model = std::make_unique<ModelPreviewTexture>(prepared.texture_surface,
                     prepared.mesh, prepared.corner_normals);
             if (prepared.current_appearance_distinct) {
-                if (!prepared.current_appearance_texture_surface.faces.empty())
+                if (prepared.current_texture_upload)
+                    current_appearance_texture_model = std::make_unique<ModelPreviewTexture>(std::move(*prepared.current_texture_upload));
+                else if (!prepared.current_appearance_texture_surface.faces.empty())
                     current_appearance_texture_model = std::make_unique<ModelPreviewTexture>(
                         prepared.current_appearance_texture_surface, prepared.mesh, prepared.corner_normals);
                 current_appearance_model = std::make_unique<GLModel>();
@@ -1220,9 +1332,11 @@ public:
                 const auto& original_texture =
                     prepared.direct_original_source->origin_texture_surface();
                 if (!original_texture.faces.empty()) {
-                    direct_original_texture_model = std::make_unique<ModelPreviewTexture>(
-                        original_texture, prepared.direct_original_source->origin_mesh().its,
-                        prepared.direct_original_corner_normals);
+                    if (prepared.original_texture_upload)
+                        direct_original_texture_model = std::make_unique<ModelPreviewTexture>(std::move(*prepared.original_texture_upload));
+                    else direct_original_texture_model = std::make_unique<ModelPreviewTexture>(
+                            original_texture, prepared.direct_original_source->origin_mesh().its,
+                            prepared.direct_original_corner_normals);
                 } else {
                     direct_original_model = std::make_unique<GLModel>();
                     if (prepared.direct_original_render_geometry)
@@ -1239,7 +1353,9 @@ public:
             }
         }
         cache_current_preview();
-        clear_current_preview();
+        clear_current_preview(true);
+        m_manual_color_model = std::move(manual_color_model);
+        m_manual_corner_normals = std::move(prepared.corner_normals);
         m_surface_vertices = std::move(surface_vertices);
         m_original_surface_colors = std::move(surface_colors);
         m_texture_model = std::move(texture_model);
@@ -1252,6 +1368,7 @@ public:
         m_direct_original_geometry_id = std::move(prepared.direct_original_geometry_id);
         m_original_comparison_error = std::move(prepared.direct_original_error);
         m_models.emplace_back(std::move(model));
+        m_gpu_upload_pending = true;
         m_bounds = prepared.bounds;
         m_pending_mesh = std::move(prepared.mesh);
         m_pending_vertex_colors = std::move(prepared.vertex_colors);
@@ -1262,6 +1379,7 @@ public:
         m_native_portrait_partition = std::move(prepared.native_portrait_partition);
         m_native_workbench_partition_reference =
             std::move(prepared.native_workbench_partition_reference);
+        m_native_workbench_checkpoint = std::move(prepared.native_workbench_checkpoint);
         m_face_color_overrides = std::move(prepared.face_color_overrides);
         m_semantic_source = std::move(prepared.semantic_source);
         m_portrait_shapes = std::move(prepared.shape_details);
@@ -1314,7 +1432,7 @@ public:
                 BOOST_LOG_TRIVIAL(info) << "Legacy portrait color-block metadata loaded read-only; native palette remains active";
             }
         }
-        if (m_has_source_appearance && !m_face_color_overrides.empty() &&
+        if (m_has_source_appearance && !m_face_color_overrides.empty() && !m_manual_color_model &&
             !restore_beauty_face_colors(m_face_color_overrides)) {
             error = "Unable to restore the current model appearance.";
             clear_current_preview();
@@ -1379,6 +1497,7 @@ public:
         m_direct_original_sha256 = std::move(cached->direct_original_sha256);
         m_direct_original_geometry_id = std::move(cached->direct_original_geometry_id);
         m_manual_color_model = std::move(cached->manual_color_model);
+        m_manual_corner_normals = std::move(cached->manual_corner_normals);
         m_pending_mesh = std::move(cached->mesh);
         m_pending_vertex_colors = std::move(cached->vertex_colors);
         m_geometry_id = std::move(cached->geometry_id);
@@ -1389,6 +1508,7 @@ public:
         m_native_portrait_partition = std::move(cached->native_portrait_partition);
         m_native_workbench_partition_reference =
             std::move(cached->native_workbench_partition_reference);
+        m_native_workbench_checkpoint = std::move(cached->native_workbench_checkpoint);
         m_semantic_source = std::move(cached->semantic_source);
         m_portrait_shapes = std::move(cached->shape_details);
         m_shapes_unlocked = cached->shapes_unlocked;
@@ -1488,18 +1608,19 @@ public:
     }
 
 private:
-    void clear_current_preview()
+    void clear_current_preview(bool preserve_frame = false)
     {
         m_preview_frame.invalidate();
         if (m_navigator) m_navigator->set_preview_frame(0, nullptr);
         if (m_navigator) m_navigator->reset();
-        m_resize_frame_valid = false;
+        if (!preserve_frame) m_resize_frame_valid = false;
+        m_gpu_upload_pending = m_gpu_upload_failed = false;
         ++m_after_preview_sequence;
         m_after_preview_frame = {};
         cancel_surface_selection();
         const std::string semantic_context = m_semantic_submission_context;
         const std::string semantic_geometry = m_semantic_submission_geometry;
-        if (m_semantic_controller) m_semantic_controller->cancel_and_wait();
+        if (m_semantic_controller) m_semantic_controller->cancel();
         m_semantic_timer.Stop();
         m_semantic_completion = {};
         publish_honor_suite_semantic_progress(false, 0, wxEmptyString,
@@ -1524,6 +1645,7 @@ private:
         m_color_blocks.reset(); m_selected_color_block.reset();
         m_native_portrait_partition.reset();
         m_native_workbench_partition_reference = nullptr;
+        m_native_workbench_checkpoint.reset();
         m_selection_redo.clear();
         m_stroke.clear();
         m_drawing_selection = false;
@@ -1533,7 +1655,7 @@ private:
         m_region_prepare_failed = false;
         m_region_prepare_status->Hide();
         if (m_context != nullptr && m_canvas != nullptr && m_canvas->SetCurrent(*m_context)) {
-            if (m_resize_frame_texture != 0) {
+            if (!preserve_frame && m_resize_frame_texture != 0) {
                 glsafe(::glDeleteTextures(1, &m_resize_frame_texture));
                 m_resize_frame_texture = 0;
                 m_resize_frame_size = {0, 0};
@@ -2805,22 +2927,6 @@ public:
         }
         if (honor_request) reject_honor_suite_application(m_semantic_error);
     }
-    void cancel_semantic_request_and_wait(bool notify_completion = true) {
-        const bool honor_request = m_color_trial && m_color_trial->honor_suite_request_pending();
-        const std::string request_context = m_semantic_submission_context;
-        const std::string geometry_id = m_semantic_submission_geometry;
-        if (m_semantic_controller) m_semantic_controller->cancel_and_wait();
-        m_semantic_timer.Stop();
-        m_semantic_error = _L("用户已取消自动划区语义识别。");
-        if (m_color_trial) m_color_trial->set_semantic_status(m_semantic_error, false);
-        publish_honor_suite_semantic_progress(false, 0, m_semantic_error,
-            request_context, geometry_id);
-        m_semantic_submission_context.clear();
-        m_semantic_submission_geometry.clear();
-        auto completion = std::move(m_semantic_completion);
-        if (honor_request) reject_honor_suite_application(m_semantic_error);
-        if (notify_completion && completion) completion(false);
-    }
     void set_semantic_completion_callback(std::function<void(bool)> callback) {
         m_semantic_completion = std::move(callback);
     }
@@ -2849,6 +2955,9 @@ public:
     }
     const nlohmann::json& native_workbench_partition_reference() const {
         return m_native_workbench_partition_reference;
+    }
+    const std::shared_ptr<const NativeWorkbenchCheckpoint>& native_workbench_checkpoint() const {
+        return m_native_workbench_checkpoint;
     }
     bool restore_native_portrait_partition(
         std::shared_ptr<const NativePortrait::NativePortraitPartition> partition) {
@@ -3194,10 +3303,6 @@ public:
         return PrinterFilamentPreview::model_color_pack(
             m_printer_filament_restore->color_trial);
     }
-    std::optional<AI::ModelMatchedColors> printer_filament_match(const PresetBundle& bundle,
-        const std::string& source_sha256) const;
-    PrinterFilamentMatchResult printer_filament_match_result(const PresetBundle& bundle,
-        const std::string& source_sha256) const;
     WorkbenchSurfacePalette workbench_surface_palette() const;
     void refresh_saved_color_packs() { m_color_trial->refresh_saved_color_packs(); }
     void set_project_filament_edit_handler(std::function<void(size_t)> handler) {
@@ -3255,6 +3360,11 @@ public:
         m_canvas->Refresh(false);
     }
     // Independent of the portrait workflow's one-shot frame callback.
+    Presentation::PresentationStamp presentation_stamp(std::uint64_t page, std::uint64_t layout) const {
+        const auto frame = m_preview_frame.begin(m_canvas->GetClientSize(), m_canvas->GetDPIScaleFactor());
+        return {page, frame.generation, layout, frame.size.x, frame.size.y,
+            int(std::lround(frame.dpi_scale * 1000.))};
+    }
     void observe_presentation_frame(std::function<void()> observer) {
         ++m_presentation_observer_sequence;
         m_presentation_frame_observer = std::move(observer);
@@ -3551,6 +3661,7 @@ private:
         std::unique_ptr<GLModel> direct_original_model;
         std::unique_ptr<ModelPreviewTexture> direct_original_texture_model;
         std::unique_ptr<GLModel> manual_color_model;
+        std::vector<Vec3f> manual_corner_normals;
         indexed_triangle_set mesh;
         std::vector<RGBA> vertex_colors;
         BoundingBoxf3 bounds;
@@ -3572,6 +3683,7 @@ private:
         std::shared_ptr<const PortraitColorBlocks::Result> color_blocks;
         std::shared_ptr<const NativePortrait::NativePortraitPartition> native_portrait_partition;
         nlohmann::json native_workbench_partition_reference;
+        std::shared_ptr<const NativeWorkbenchCheckpoint> native_workbench_checkpoint;
         std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> semantic_source;
         FaceColorOverrides saved_semantic_faces;
         SubfaceColorOverrides saved_semantic_subfaces;
@@ -3617,7 +3729,7 @@ private:
         if (m_retain_surface_attributes) return;
         // A/B review needs one prior model. Never retain the much larger selection
         // adjacency/BVH or let large artifacts accumulate through version browsing.
-        if (!m_has_model || !m_model_stamp.valid)
+        if (!m_has_model || !m_model_stamp.valid || m_gpu_upload_pending || m_gpu_upload_failed)
             return;
         const auto canonical = m_leaf_editing ? m_leaf_editing->canonical_editor : m_region_editor;
         const auto& mesh = canonical->ready() ? canonical->mesh()
@@ -3641,6 +3753,7 @@ private:
         if (m_direct_original_texture_model)
             bytes += m_direct_original_texture_model->memory_used();
         if (m_manual_color_model) bytes += m_manual_color_model->cpu_memory_used() + m_manual_color_model->gpu_memory_used();
+        bytes += m_manual_corner_normals.capacity() * sizeof(Vec3f);
         constexpr size_t cache_limit = size_t(384) * 1024 * 1024;
         if(m_color_blocks) bytes+=m_color_blocks->memory_bytes();
         // A history transition owns one rollback scene only until its first
@@ -3666,7 +3779,9 @@ private:
         m_cached_preview->native_portrait_partition=m_native_portrait_partition;
         m_cached_preview->native_workbench_partition_reference =
             m_native_workbench_partition_reference;
+        m_cached_preview->native_workbench_checkpoint = m_native_workbench_checkpoint;
         m_cached_preview->manual_color_model = std::move(m_manual_color_model);
+        m_cached_preview->manual_corner_normals = std::move(m_manual_corner_normals);
         m_cached_preview->semantic_source = m_semantic_source;
         m_cached_preview->region_evidence = m_region_evidence;
         m_cached_preview->region_runtime_identity = m_region_runtime_identity;
@@ -3833,7 +3948,7 @@ private:
     void finish_region_preparation()
     {
         if (!m_region_preparation || !m_region_preparation->done.load(std::memory_order_acquire)) return;
-        if (m_region_prepare_worker.joinable()) m_region_prepare_worker.join();
+        Presentation::background_tasks().retire(m_region_prepare_worker);
         auto task = std::move(m_region_preparation);
         m_region_prepare_timer.Stop();
         if (task->generation != m_region_generation || task->shapes != m_portrait_shapes) {
@@ -4018,7 +4133,7 @@ private:
     void finish_surface_selection()
     {
         if (!m_surface_task || !m_surface_task->done) return;
-        if (m_surface_worker.joinable()) m_surface_worker.join();
+        Presentation::background_tasks().retire(m_surface_worker);
         m_surface_timer.Stop();
         auto task = std::move(m_surface_task);
         if (task->generation != m_region_generation || task->editor != m_region_editor) return;
@@ -4352,6 +4467,32 @@ private:
         const auto frame = m_preview_frame.begin(drawable_size, m_canvas->GetDPIScaleFactor());
         if (!m_canvas->IsShownOnScreen() || drawable_size.x <= 0 || drawable_size.y <= 0)
             return;
+        if (m_gpu_upload_pending) {
+            if (!m_context || !m_context->IsOK() || !m_canvas->SetCurrent(*m_context) || !wxGetApp().init_opengl()) return;
+            const auto step = [this] {
+                for (auto& model : m_models) if (model && !model->upload_step()) return false;
+                for (auto* model : {m_current_appearance_model.get(), m_direct_original_model.get(), m_manual_color_model.get()})
+                    if (model && !model->upload_step()) return false;
+                for (auto* texture : {m_texture_model.get(), m_current_appearance_texture_model.get(), m_direct_original_texture_model.get()})
+                    if (texture && !texture->upload_step()) return false;
+                return true;
+            };
+            const auto started = std::chrono::steady_clock::now();
+            if (!m_gpu_upload_failed) {
+                try { m_gpu_upload_pending = !step(); }
+                catch (const std::exception& error) {
+                    m_gpu_upload_failed = true;
+                    BOOST_LOG_TRIVIAL(error) << "[UiUpload] failed: " << error.what();
+                }
+            }
+            const double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now()-started).count();
+            if (elapsed > 50.) BOOST_LOG_TRIVIAL(info) << "[UiUpload] slow_driver_step_ms=" << elapsed;
+            if (m_gpu_upload_pending) {
+                present_resize_frame();
+                if (!m_gpu_upload_failed) m_canvas->Refresh(false);
+                return;
+            }
+        }
         m_in_paint = true;
         Slic3r::ScopeGuard paint_guard([this]() { m_in_paint = false; });
         (void)paint_guard;
@@ -4767,6 +4908,7 @@ private:
     wxGLCanvas* m_canvas {nullptr};
     ModelPreviewFrameState m_preview_frame;
     unsigned int m_resize_frame_texture {0};
+    bool m_gpu_upload_pending {false}, m_gpu_upload_failed {false};
     std::array<unsigned int, 2> m_resize_frame_size {0, 0};
     bool m_resize_frame_valid {false};
     std::uint64_t m_after_preview_sequence {0};
@@ -4835,6 +4977,7 @@ private:
     std::shared_ptr<const PortraitColorBlocks::Result> m_color_blocks;
     std::shared_ptr<const NativePortrait::NativePortraitPartition> m_native_portrait_partition;
     nlohmann::json m_native_workbench_partition_reference;
+    std::shared_ptr<const NativeWorkbenchCheckpoint> m_native_workbench_checkpoint;
     std::optional<uint32_t> m_selected_color_block;
     bool m_semantic_ready {false};
     bool m_person_detected {false};

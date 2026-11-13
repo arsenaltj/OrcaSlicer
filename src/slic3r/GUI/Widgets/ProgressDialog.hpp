@@ -54,6 +54,9 @@ public:
 
     virtual bool Update(int value, const wxString &newmsg = wxEmptyString, bool *skip = NULL);
     virtual bool Pulse(const wxString &newmsg = wxEmptyString, bool *skip = NULL);
+    // For an asynchronous operation already driven by the GUI event loop.
+    // Unlike Pulse(), this never yields or creates a nested event loop.
+    bool PulseFromEvent(const wxString &newmsg = wxEmptyString);
     bool         WasCanceled() const;
 
     virtual void Resume();

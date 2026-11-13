@@ -209,7 +209,7 @@ void ModelGenerationPanel::update_workbench_history_actions()
     const bool allowed = can_replace_model_asset();
     if (m_workbench_history_upload->IsEnabled() != allowed) m_workbench_history_upload->Enable(allowed);
     for (const auto& pair : m_workbench_history_cards)
-        static_cast<WorkbenchHistoryCard*>(pair.second)->update_actions(allowed, m_workbench_model.path);
+        static_cast<WorkbenchHistoryCard*>(pair.second)->update_actions(allowed, m_displayed_model_path);
 }
 
 wxWindow* ModelGenerationPanel::build_workbench_history(wxWindow* parent)
@@ -355,7 +355,7 @@ void ModelGenerationPanel::refresh_workbench_history()
         const auto& entry = *entries[index];
         const auto key = workbench_history_key(entry);
         visible.push_back(key);
-        const bool current = entry.model_path == m_workbench_model.path;
+        const bool current = entry.model_path == m_displayed_model_path;
         auto& cached = m_workbench_history_cards[key];
         if (!cached) {
             cached = new WorkbenchHistoryCard(m_workbench_history_scroller,
@@ -434,7 +434,7 @@ void ModelGenerationPanel::delete_workbench_history_entry(const std::string& key
         return;
     }
 
-    const bool current = found->model_path == m_workbench_model.path;
+    const bool current = found->model_path == m_displayed_model_path;
     std::optional<GeneratedModelEntry> fallback;
     if (current) {
         const auto filtered = filtered_workbench_history_entries(

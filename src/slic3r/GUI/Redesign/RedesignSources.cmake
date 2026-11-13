@@ -1,6 +1,13 @@
 # Assemble the redesigned workflows on the existing native GUI target.
+include(${CMAKE_CURRENT_LIST_DIR}/../Presentation/PresentationRuntime.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../../Utils/HonorAccount/HonorAccountSources.cmake)
 set(ORCA_REDESIGN_WORKFLOW_SOURCES
+    GUI/NativeSlicingEvents.hpp
+    GUI/Presentation/UiLifecycle.hpp
+    GUI/Presentation/UiRuntime.hpp
+    GUI/Presentation/WindowMountLease.hpp
+    GUI/Redesign/RedesignPageCoordinator.hpp
+    GUI/Redesign/LibraryPresentationChannel.hpp
     ${ORCA_HONOR_ACCOUNT_SOURCES}
     Utils/PlatformLibrary/LibraryClient.cpp
     Utils/PlatformLibrary/LibraryClient.hpp
@@ -97,6 +104,7 @@ set(ORCA_REDESIGN_WORKFLOW_SOURCES
 set(ORCA_MODEL_GENERATION_PANEL_IMPLEMENTATIONS
     GUI/ModelGenerationPanel.cpp
     GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp
+    GUI/AI/ModelGeneration/WorkbenchAssetHandoff.cpp
     GUI/AI/ModelGeneration/ModelGenerationAssetsView.cpp
     GUI/AI/ModelGeneration/ModelGenerationBeautyExport.cpp
     GUI/AI/ModelGeneration/ModelGenerationBeautyPreview.cpp

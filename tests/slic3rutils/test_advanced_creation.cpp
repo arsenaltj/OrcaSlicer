@@ -3,6 +3,7 @@
 
 #include "slic3r/GUI/AI/ModelGeneration/AdvancedCreationSession.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/AdvancedMultiviewClient.hpp"
+#include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
 
 using Slic3r::GUI::AdvancedMultiviewClient;
 using namespace Slic3r::GUI::AdvancedCreation;
@@ -33,6 +34,53 @@ Session ready_session()
     session.apply_snapshot(complete_group(), context, true);
     return session;
 }
+}
+
+TEST_CASE("An unchanged verified advanced image stays ready while another view generates", "[AdvancedCreation][AdvancedImageRefresh]")
+{
+    auto session = ready_session();
+    auto snapshot = *session.group();
+    ++snapshot.revision;
+    snapshot.views[index(ViewId::Back)].attempt_state = "running";
+    for (auto& view : snapshot.views) {
+        view.canonical_version_id = view.version_id;
+        view.usable = false;
+        view.asset_pending = true;
+    }
+    REQUIRE(session.apply_snapshot(snapshot, session.context()));
+    for (ViewId view : {ViewId::Front, ViewId::Left, ViewId::Right}) {
+        CHECK(session.group()->views[index(view)].usable);
+        CHECK_FALSE(session.group()->views[index(view)].asset_pending);
+    }
+    snapshot = *session.group();
+    ++snapshot.revision;
+    snapshot.views[index(ViewId::Left)].canonical_version_id = "left-v2";
+    snapshot.views[index(ViewId::Left)].usable = false;
+    snapshot.views[index(ViewId::Left)].asset_pending = true;
+    REQUIRE(session.apply_snapshot(snapshot, session.context()));
+    CHECK(session.group()->views[index(ViewId::Left)].asset_pending);
+    CHECK(session.group()->views[index(ViewId::Left)].version_id == "left-v1");
+}
+
+TEST_CASE("Advanced cache failures and changed digests affect only their own view", "[AdvancedCreation][AdvancedImageRefresh]")
+{
+    auto session=ready_session();auto snapshot=*session.group();++snapshot.revision;
+    for(auto& view:snapshot.views) {view.canonical_version_id=view.version_id;view.usable=false;view.asset_pending=true;}
+    snapshot.views[index(ViewId::Front)].sha256=std::string(64,'a');
+    snapshot.views[index(ViewId::Back)].display_error=true;
+    REQUIRE(session.apply_snapshot(snapshot,session.context()));
+    CHECK(session.group()->views[index(ViewId::Front)].asset_pending);
+    CHECK(session.group()->views[index(ViewId::Back)].display_error);
+    CHECK_FALSE(session.group()->views[index(ViewId::Left)].asset_pending);
+    CHECK_FALSE(session.group()->views[index(ViewId::Right)].asset_pending);
+    auto ready=*session.group();++ready.revision;
+    ready.views[index(ViewId::Front)].sha256=std::string(64,'a');
+    ready.views[index(ViewId::Front)].usable=true;ready.views[index(ViewId::Front)].asset_pending=false;
+    REQUIRE(session.apply_snapshot(ready,session.context()));
+    REQUIRE_FALSE(session.apply_snapshot(snapshot,session.context()));
+    CHECK(session.group()->views[index(ViewId::Front)].sha256==std::string(64,'a'));
+    const auto old=session.context();session.begin_open("other-group");
+    CHECK_FALSE(session.apply_snapshot(ready,old));
 }
 
 TEST_CASE("Advanced selection toggles independently and derives a fixed ordered scope", "[AdvancedCreation]")
@@ -434,4 +482,181 @@ TEST_CASE("Advanced custom style requires a nonblank description before generati
     CHECK_FALSE(session.eligibility(capabilities, guards).generate_design);
     draft.custom_style = "Clay sculpture"; session.set_design_draft(draft);
     CHECK(session.eligibility(capabilities, guards).generate_design);
+}
+
+namespace {
+const std::string routed_group = "11111111-1111-4111-8111-111111111111";
+const std::string routed_job = "22222222-2222-4222-8222-222222222222";
+nlohmann::json model_acceptance()
+{
+    return {{"id", routed_job}, {"creation_kind", "advanced_multiview_v1"},
+        {"advanced_group_id", routed_group}, {"workflow_mode", "advanced"},
+        {"state", "queued"}, {"phase", "queued"}, {"updated_at", 100.0}, {"message", "Four-view model accepted."}};
+}
+Session model_session()
+{
+    Session session;
+    auto group = complete_group(); group.id = routed_group; group.model_job_id = "old-job";
+    session.apply_snapshot(group, session.begin_open(group.id), true);
+    return session;
+}
+Slic3r::GUI::ModelGenerationUIState model_projection()
+{
+    Slic3r::GUI::ModelGenerationUIState state;
+    state.job_id = routed_job; state.model_generation_context = true;
+    state.stage = Slic3r::GUI::ModelGenerationUIStage::GeneratingModel;
+    return state;
+}
+}
+
+TEST_CASE("Advanced acceptance reaches the shared model route before cached group images finish", "[AdvancedCreation][ModelGenerationRoute]")
+{
+    using Slic3r::GUI::AdvancedModelRouteIntent;
+    using Slic3r::GUI::AdvancedMultiviewClient;
+    const bool group_first = GENERATE(false, true);
+    auto session = model_session();
+    session.toggle(ViewId::Left);
+    const auto selection = session.selection();
+    const auto context = session.context();
+    auto cached_group = *session.group();
+    ModelJobEvent event {context, routed_job, 1};
+    AdvancedModelRouteIntent route;
+    route.request(event, 10);
+    auto state = model_projection();
+    CHECK_FALSE(route.ready(context, session.group()->model_job_id, state, 10, true, false));
+    if (group_first) {
+        cached_group.model_job_id = routed_job;
+        REQUIRE(session.apply_snapshot(cached_group, context));
+    }
+    const auto accepted = AdvancedMultiviewClient::parse_model_job(model_acceptance(), routed_group, routed_job);
+    REQUIRE(accepted);
+    REQUIRE(session.apply_model_job(*accepted, context));
+    event.phase = ModelJobEvent::Phase::Accepted;
+    route.accept(event);
+    CHECK(session.group()->model_busy);
+    // No generated file, ready flag, image-cache completion or edit eligibility
+    // is involved in this gate. The old group's task ID cannot swallow acceptance.
+    CHECK_FALSE(state.model_ready);
+    CHECK_FALSE(state.can_open_workbench);
+    CHECK(route.ready(context, session.group()->model_job_id, state, 10, true, false));
+    if (!group_first) REQUIRE(session.apply_snapshot(cached_group, context));
+    CHECK(session.group()->model_job_id == routed_job);
+    CHECK(session.selection() == selection);
+    CHECK(session.context().epoch == context.epoch);
+    CHECK(route.ready(context, session.group()->model_job_id, state, 10, true, false));
+    // Repeated reconcile/status events cannot open the shared page twice.
+    route.cancel();
+    route.accept(event);
+    CHECK_FALSE(route.ready(context, routed_job, state, 10, true, false));
+}
+
+TEST_CASE("Advanced acceptance rejects a response from another plan group or creator", "[AdvancedCreation][ModelGenerationRoute]")
+{
+    using Slic3r::GUI::AdvancedMultiviewClient;
+    const auto key = GENERATE("id", "advanced_group_id", "creation_kind", "workflow_mode", "state");
+    auto job = model_acceptance();
+    job[key] = key == std::string("state") ? "" : "different-identity";
+    CHECK_FALSE(AdvancedMultiviewClient::parse_model_job(job, routed_group, routed_job));
+    job = model_acceptance(); job.erase(key);
+    CHECK_FALSE(AdvancedMultiviewClient::parse_model_job(job, routed_group, routed_job));
+}
+
+TEST_CASE("Advanced receipt recovery registers the group before accepting its task without waiting for images", "[AdvancedCreation][ModelGenerationRoute]")
+{
+    Session session;
+    const auto context = session.begin_open(routed_group);
+    const auto accepted = Slic3r::GUI::AdvancedMultiviewClient::parse_model_job(model_acceptance(), routed_group, routed_job);
+    REQUIRE(accepted);
+    CHECK_FALSE(session.apply_model_job(*accepted, context));
+    auto group = complete_group(); group.id = routed_group;
+    for (auto& view : group.views) {
+        view.usable = false; view.asset_pending = true;
+    }
+    REQUIRE(session.apply_snapshot(group, context, true));
+    REQUIRE(session.apply_model_job(*accepted, context));
+    CHECK(session.group()->model_job_id == routed_job);
+    CHECK(session.group()->model_busy);
+    Slic3r::GUI::AdvancedModelRouteIntent route;
+    ModelJobEvent event {context, routed_job, 1};
+    route.request(event, 1);
+    event.phase = ModelJobEvent::Phase::Accepted; route.accept(event);
+    CHECK(route.ready(context, routed_job, model_projection(), 1, true, false));
+    session.begin_open("another-group");
+    CHECK_FALSE(session.apply_model_job(*accepted, context));
+}
+
+TEST_CASE("Advanced delayed task projections wait for transitions and keep the foreground identity", "[AdvancedCreation][ModelGenerationRoute]")
+{
+    Slic3r::GUI::AdvancedModelRouteIntent route;
+    auto session = model_session();
+    ModelJobEvent event {session.context(), routed_job, 8};
+    route.request(event, 10);
+    auto projection = model_projection();
+    // Cancellation, explicit rejection and uncertain submission do not emit
+    // acceptance, even if an old projection happens to have the same job ID.
+    CHECK_FALSE(route.ready(event.context, routed_job, projection, 10, true, false));
+    event.phase = ModelJobEvent::Phase::Accepted; route.accept(event);
+    auto old_projection = projection; old_projection.job_id = "old-job";
+    CHECK_FALSE(route.ready(event.context, routed_job, old_projection, 10, true, false));
+    CHECK_FALSE(route.ready(event.context, routed_job, projection, 10, true, true));
+    CHECK(route.ready(event.context, routed_job, projection, 10, true, false));
+    CHECK_FALSE(route.ready(event.context, routed_job, projection, 11, true, false));
+    CHECK_FALSE(route.ready(event.context, routed_job, projection, 10, false, false));
+    auto other_group = event.context; other_group.group_id = "other-group";
+    CHECK_FALSE(route.ready(other_group, routed_job, projection, 10, true, false));
+    auto other_epoch = event.context; ++other_epoch.epoch;
+    CHECK_FALSE(route.ready(other_epoch, routed_job, projection, 10, true, false));
+    // Leaving then returning, switching mode and shutdown all revoke the
+    // presentation token; a late accepted callback cannot re-arm it.
+    route.cancel(); route.accept(event);
+    CHECK_FALSE(route.ready(event.context, routed_job, projection, 10, true, false));
+    auto resume = event; resume.request = 9; resume.phase = ModelJobEvent::Phase::Requested;
+    route.request(resume, 11); route.accept(event);
+    CHECK_FALSE(route.ready(resume.context, routed_job, projection, 11, true, false));
+    resume.phase = ModelJobEvent::Phase::Accepted; route.accept(resume);
+    CHECK(route.ready(resume.context, routed_job, projection, 11, true, false));
+}
+
+TEST_CASE("Advanced current group model reconciliation preserves selection draft and context", "[AdvancedCreation][ModelGenerationRoute]")
+{
+    auto session = model_session();
+    session.toggle(ViewId::Back);
+    auto draft = session.draft().design; draft.prompt = "Preserve the current draft";
+    session.set_design_draft(draft);
+    const auto selection = session.selection(); const auto context = session.context();
+    auto accepted = *Slic3r::GUI::AdvancedMultiviewClient::parse_model_job(model_acceptance(), routed_group, routed_job);
+    REQUIRE(session.apply_model_job(accepted, context));
+    auto group = *session.group(); ++group.revision;
+    REQUIRE(session.apply_snapshot(group, context));
+    CHECK(session.selection() == selection);
+    CHECK(session.draft().design == draft);
+    CHECK(session.draft_dirty());
+    CHECK(session.context().epoch == context.epoch);
+    for (const auto* state : {"stopping", "stopped", "failed", "running", "ready"}) {
+        accepted.state = state;
+        REQUIRE(session.apply_model_job(accepted, context));
+        CHECK(session.selection() == selection);
+        CHECK(session.group()->model_state == state);
+    }
+    session.begin_open("another-group");
+    CHECK_FALSE(session.apply_model_job(accepted, context));
+}
+
+TEST_CASE("Advanced image cache completion cannot restore an older stopped model after resume", "[AdvancedCreation][ModelGenerationRoute]")
+{
+    auto session = model_session();
+    auto resumed = *Slic3r::GUI::AdvancedMultiviewClient::parse_model_job(model_acceptance(), routed_group, routed_job);
+    resumed.state = "running"; resumed.updated_at = 200;
+    REQUIRE(session.apply_model_job(resumed, session.context()));
+    auto old_snapshot = *session.group();
+    old_snapshot.model_state = "stopped"; old_snapshot.model_busy = false; old_snapshot.model_updated_at = 100;
+    REQUIRE(session.apply_snapshot(old_snapshot, session.context()));
+    CHECK(session.group()->model_state == "running");
+    CHECK(session.group()->model_busy);
+    auto completed = *session.group(); completed.model_state = "ready";
+    completed.model_busy = false; completed.model_updated_at = 300;
+    REQUIRE(session.apply_snapshot(completed, session.context()));
+    REQUIRE(session.apply_snapshot(old_snapshot, session.context()));
+    CHECK(session.group()->model_state == "ready");
+    CHECK_FALSE(session.group()->model_busy);
 }

@@ -6,7 +6,9 @@
 
 namespace Slic3r::GUI {
 
-// The one editable asset. Generation inputs and remote task state do not live here.
+// Value-only asset projection retained for contract consumers. The application
+// owns the editable session exclusively through Role::WorkbenchAssets; this
+// record does not create or own another editor or generation session.
 struct WorkbenchModelContext {
     boost::filesystem::path path, reference_image_path, design_image_path;
     std::string asset_id, sha256, format, color_encoding;

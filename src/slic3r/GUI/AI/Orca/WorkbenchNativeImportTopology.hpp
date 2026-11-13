@@ -210,9 +210,11 @@ inline bool has_native_import_topology_proof(const AI::ModelImportRequest& reque
 // The host supplies its live Import state or its validated reopened native
 // checkpoint. Metadata cannot choose its own authority or certificate.
 inline void freeze_native_import_topology_proof(AI::ModelImportRequest& request,
-    const nlohmann::json& owned_native_reference, const nlohmann::json& owned_workbench_certificate)
+    const nlohmann::json& owned_native_reference, const nlohmann::json& owned_workbench_certificate,
+    const std::function<bool()>& canceled = {})
 {
     using namespace NativeImportTopologyDetail;
+    require(!canceled || !canceled(), "Native import verification canceled.");
     require(!has_native_import_topology_proof(request), "Native import topology proof is already frozen.");
     const auto metadata_path = path8(owned_native_reference.at("metadata_path").get<std::string>());
     const auto contents = bounded_metadata_bytes(metadata_path);
@@ -238,7 +240,8 @@ inline void freeze_native_import_topology_proof(AI::ModelImportRequest& request,
         "The owned native import cache reference is missing.");
     (*found)["import_topology_proof"] = proof;
     TriangleMesh exact_mesh;
-    load_verified_native_mesh(candidate, proof, exact_mesh, {});
+    load_verified_native_mesh(candidate, proof, exact_mesh, canceled);
+    require(!canceled || !canceled(), "Native import verification canceled.");
     request = std::move(candidate);
 }
 

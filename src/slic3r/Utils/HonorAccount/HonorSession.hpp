@@ -6,6 +6,8 @@
 #include <mutex>
 #include <optional>
 #include <variant>
+#include <thread>
+#include <vector>
 
 namespace Slic3r::HonorAccount {
 
@@ -52,13 +54,14 @@ struct SessionAccess {
     std::uint64_t generation {0};
 };
 
-// Main-thread state and storage. Detached workers own only an isolated Task;
+// Main-thread state and storage. Managed workers own only an isolated Task;
 // cancellation, logout, configuration changes, and destruction cannot publish
 // a result into a newer session generation.
 class Session {
 public:
+    using Executor = std::function<bool(std::function<void()>)>;
     Session(std::unique_ptr<Store>, Transport transport = https_request,
-            std::unique_ptr<Store> application_configuration = nullptr);
+            std::unique_ptr<Store> application_configuration = nullptr, Executor executor = {});
     ~Session();
 
     const Config& config() const { return m_config; }
@@ -80,6 +83,7 @@ public:
     bool complete_browser_reset();
     // Called by the UI timer; returns true only when observable state changed.
     bool poll();
+    void stop_accepting();
 
 private:
     enum class TaskKind { Authorize, Exchange, Validate, Refresh };
@@ -109,6 +113,7 @@ private:
     void start_revoke(const std::string& refresh_token);
     void cancel_task();
     void cancel_revoke();
+    bool execute(std::function<void()>);
     bool save_session(const PlatformSession&);
     bool erase_session();
     bool migrate_legacy(Store&, const std::string&, Config&, bool profile_store);
@@ -119,6 +124,10 @@ private:
     std::unique_ptr<Store> m_store;
     std::unique_ptr<Store> m_application_configuration;
     Transport m_transport;
+    Executor m_executor;
+    struct OwnedWork { std::thread thread; std::shared_ptr<std::atomic_bool> done; };
+    std::vector<OwnedWork> m_workers;
+    bool m_stopping {false};
     Config m_config;
     Snapshot m_snapshot;
     std::optional<PlatformSession> m_session;

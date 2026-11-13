@@ -1,4 +1,5 @@
 #include "LocalPrintColorPanel.hpp"
+#include "slic3r/GUI/Presentation/UiRuntime.hpp"
 #include "ColorMatchingSession.hpp"
 #include "ColorMatchingComputation.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationInputStyle.hpp"
@@ -350,7 +351,7 @@ struct LocalPrintColorPanel::Impl {
             title = saved.value("source_name", item.local_path.stem().string());
             parent_version = saved.value("version_id", "");
         } catch (const std::exception& error) { message(u8(error.what())); return; }
-        if (worker.joinable()) worker.join();
+        Presentation::background_tasks().retire(worker);
         busy = true; cancel = false; const auto revision = ++operation_revision; refresh();
         message(_L("正在读取原色模型和表面数据……"));
         auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
@@ -457,11 +458,12 @@ struct LocalPrintColorPanel::Impl {
                     }
                     *restored = std::move(value);
                 }
+                if (!cancel) prepared->prepare_render_geometry([&] { return cancel.load(); });
             } catch (const std::exception& exception) { error = exception.what(); }
             wxGetApp().CallAfter([this, weak, item, destination, title, parent_version, prepared, mesh, native, colors, samples, hash, error, restored,
                                    expected_source, expected_paint, expected_config, saved_paint_matches, restore_snapshot, beauty, beauty_appearance, revision] {
                 if (!weak || stopped || revision != operation_revision) return;
-                if (worker.joinable()) worker.join(); busy = false;
+                Presentation::background_tasks().retire(worker); busy = false;
                 if (cancel || !error.empty()) { message(cancel ? _L("已取消，准备页未修改。") : u8(error)); refresh(); return; }
                 if (destination.valid()) {
                     const ModelVolume* current = nullptr;
@@ -608,7 +610,7 @@ struct LocalPrintColorPanel::Impl {
         if (busy || stopped) return;
         try {
             auto request = layer_request();
-            if (worker.joinable()) worker.join();
+            Presentation::background_tasks().retire(worker);
             cancel=false;busy=true;layer_busy=true;layer_notice.clear();refresh();
             message(_L("正在模型副本上核验实际层序，可取消；准备页未修改。"));
             const auto revision=++operation_revision;
@@ -628,7 +630,7 @@ struct LocalPrintColorPanel::Impl {
                 catch(const std::exception& e){error=e.what();}
                 wxGetApp().CallAfter([this,weak,revision,result=std::move(result),identity=request.identity,error] {
                     if(!weak || stopped || revision!=operation_revision) return;
-                    if(worker.joinable())worker.join();busy=false;layer_busy=false;refresh();
+                    Presentation::background_tasks().retire(worker);busy=false;layer_busy=false;refresh();
                     if(cancel || !error.empty()){message(cancel ? _L("层序核验已取消，准备页未修改。") : u8(error));return;}
                     try {
                         if(layer_request().identity!=identity) throw std::runtime_error("Model or process changed during layer inspection. Inspect again.");
@@ -658,7 +660,7 @@ struct LocalPrintColorPanel::Impl {
     void compute(bool recognize_details = false)
     {
         if (busy || input.faces.empty() || stopped) return;
-        if (worker.joinable()) worker.join();
+        Presentation::background_tasks().retire(worker);
         refresh_palette();
         cancel = false; busy = true; has_result = false; restored_confirmation = false;
         const auto revision = ++operation_revision;
@@ -687,7 +689,7 @@ struct LocalPrintColorPanel::Impl {
             wxGetApp().CallAfter([this, weak, result = std::move(result), evidence, notice, cleanup_notice, recognize_details, revision,
                                  expected_source, expected_geometry]() mutable {
                 if (!weak || stopped || revision != operation_revision) return;
-                if (worker.joinable()) worker.join(); busy = false;
+                Presentation::background_tasks().retire(worker); busy = false;
                 if (!result.ok() || cancel) { message((cancel || result.cancelled ? _L("已取消，准备页未修改。\n") : u8(result.error)) + cleanup_notice); refresh(); return; }
                 if (input.identity.source_sha256 != expected_source || input.identity.geometry_id != expected_geometry) {
                     message(_L("模型在计算期间已改变，请重新打开。")); refresh(); return;
@@ -961,6 +963,9 @@ LocalPrintColorPanel::LocalPrintColorPanel(wxWindow* parent, Plater* plater, std
     : wxPanel(parent), m_impl(std::make_unique<Impl>(this, plater, std::move(navigation), std::move(back_to_workbench), std::move(session)))
 {
     SetName("color_matching");
+    Presentation::background_tasks().on_shutdown(this, [this] {
+        auto thread = m_impl->session.begin_shutdown(); Presentation::background_tasks().retire(thread);
+    });
     apply_ai_theme(true);
 }
 void LocalPrintColorPanel::apply_ai_theme(bool update_fonts)
@@ -968,7 +973,9 @@ void LocalPrintColorPanel::apply_ai_theme(bool update_fonts)
     ModelGenerationInputStyle::apply(this, update_fonts);
     Refresh(false);
 }
-LocalPrintColorPanel::~LocalPrintColorPanel() { shutdown(); }
+LocalPrintColorPanel::~LocalPrintColorPanel() {
+    Presentation::background_tasks().remove_shutdown_hook(this); shutdown();
+}
 bool LocalPrintColorPanel::open_artifact(const AI::GeneratedModelArtifact& artifact)
 {
     if (m_impl->busy || m_impl->stopped) return false;

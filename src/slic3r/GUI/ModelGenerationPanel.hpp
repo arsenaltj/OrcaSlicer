@@ -1,5 +1,4 @@
 #pragma once
-#include "slic3r/GUI/AI/ModelGeneration/WorkbenchOpenRequest.hpp"
 
 #include "AIModelGenerationClient.hpp"
 #include "AI/ModelGeneration/SmartGenerationFlow.hpp"
@@ -10,8 +9,6 @@
 #include "AI/ModelGeneration/BeautyWorkbenchColorGate.hpp"
 #include "AI/ModelGeneration/ModelLibraryEntry.hpp"
 #include "AI/ModelGeneration/ModelHistoryOpen.hpp"
-#include "AI/ModelGeneration/WorkbenchModelContext.hpp"
-#include "AI/ModelGeneration/ModelArtifactAcquisition.hpp"
 #include "AI/ModelGeneration/ModelLibraryApplication.hpp"
 #include "AI/ModelGeneration/ModelLibraryLoader.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationHost.hpp"
@@ -30,6 +27,10 @@
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationUiState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySidebar.hpp"
+#include "AI/ModelGeneration/WorkbenchOpenRequest.hpp"
+#include "Presentation/UiRuntime.hpp"
+#include "Presentation/WindowMountLease.hpp"
+#include "AI/ModelGeneration/WorkbenchImportSession.hpp"
 
 #include <boost/filesystem/path.hpp>
 #include <wx/image.h>
@@ -92,15 +93,22 @@ struct SecondaryRegionEvidence;
 namespace PortraitResidual { struct Document; }
 class LocalPrintColorPanel;
 class Plater;
+class WorkbenchImportSession;
+struct BeautyRestorePreparation;
 
 class ModelGenerationPanel : public wxPanel
 {
 public:
-    ModelGenerationPanel(wxWindow* parent, AI::IModelArtifactConsumer& artifact_consumer,
-                         AI::IPrintablePaletteProvider& palette_provider);
     ~ModelGenerationPanel() override;
 
+    void set_asset_replace_guard(std::function<bool()> guard) { m_asset_replace_guard = std::move(guard); }
+    void set_asset_open_handler(std::function<bool(WorkbenchOpenRequest)> handler)
+    { m_asset_open = std::move(handler); }
+    WorkbenchOpenRequest generated_workbench_request(WorkbenchOpenRequest::Origin origin) const;
+    bool open_workbench_asset(WorkbenchOpenRequest request);
+
     void shutdown();
+    void begin_background_shutdown();
     void initialize_for_shell_host();
     void mount_assets(wxWindow* parent);
     bool request_library_action(ModelLibraryCommand command, const ModelLibraryEntry& entry);
@@ -129,8 +137,6 @@ public:
     bool request_import();
     bool request_refresh_history();
     bool request_open_history(const std::string& job_id);
-    bool request_open_workbench_artifact(const WorkbenchOpenRequest& request);
-    bool request_open_generated_artifact();
     bool request_open_image_history(const std::string& job_id);
     void set_service_availability(bool available, const std::string& message = {});
     void set_service_availability(bool available, bool generation_available, const std::string& message);
@@ -138,16 +144,20 @@ public:
     void set_prepare_navigation_handler(std::function<void()> handler) { m_prepare_navigation = std::move(handler); }
     void set_color_matching_handler(std::function<void(const AI::GeneratedModelArtifact&)> handler) { m_color_matching = std::move(handler); }
     void set_workbench_import_handler(std::function<void(const AI::ModelImportRequest&)> handler) { m_workbench_import = std::move(handler); }
+    using LocalImportExecutor = std::function<bool(const AI::ModelImportRequest&,
+        std::shared_ptr<WorkbenchImportSession>, WorkbenchImportProgress, WorkbenchImportCompletion, std::function<bool()>)>;
+    void set_local_import_executor(LocalImportExecutor executor) { m_local_import_executor = std::move(executor); }
     void set_workbench_import_running(bool running);
     void show_workbench_color_matching(const AI::GeneratedModelArtifact& artifact, Plater* plater);
     bool request_open_workbench();
     void set_workbench_presented(bool presented);
+    void present_workbench_restore_frame();
     void prepare_workbench_presentation(std::function<void()> ready);
     void cancel_workbench_presentation();
     void raise_workbench_modal();
     bool request_enter_beauty();
     bool request_return_overview();
-    bool request_workbench_color_matching();
+    bool request_workbench_color_matching(const BeautyColorGateResult* prepared_match = nullptr);
     bool request_enable_portrait(bool enabled);
     bool request_semantic_mode(SemanticMode mode);
     bool request_portrait_optimization(wxString& reason);
@@ -158,10 +168,16 @@ public:
     void finish_portrait_optimization(PortraitOutcome outcome, const wxString& reason = wxString());
     void portrait_preview_ready();
     void reset_portrait_session();
-    void preserve_portrait_draft();
+    void preserve_portrait_draft(bool finalizing = false);
     void restore_portrait_draft();
     void clear_portrait_draft();
+    void restore_portrait_preview_draft_async(const wxString& reason);
+    bool prepare_workbench_import_request_async(AI::ModelImportRequest request,
+        std::shared_ptr<WorkbenchImportSession> session,
+        std::function<void(AI::ModelImportRequest, std::string)> completion);
     void prepare_portrait_import(AI::ModelImportRequest& request);
+    std::function<void(AI::ModelImportRequest&)> capture_portrait_import_preparation(
+        const AI::ModelImportRequest& request) const;
     bool request_check_workbench(bool automatic = false);
     bool request_save_and_return();
     bool request_workbench_results();
@@ -186,6 +202,16 @@ public:
     void synchronize_workbench_project_palette(bool activate_preview = false);
 
 private:
+    friend class ModelGenerationFeatureHost;
+    enum class Role { SmartCreation, AdvancedCreation, WorkbenchAssets };
+    ModelGenerationPanel(wxWindow* parent, AI::IModelArtifactConsumer& artifact_consumer,
+                         AI::IPrintablePaletteProvider& palette_provider, Role role);
+    void initialize_workbench_assets();
+    void restore_generation_input_projection(const AIModelGenerationClient::JobStatus& status);
+    const Role m_role;
+    std::unique_ptr<WorkbenchInstanceLease> m_workbench_instance;
+    std::function<bool(WorkbenchOpenRequest)> m_asset_open;
+    std::function<bool()> m_asset_replace_guard;
     using NativeWorkbenchPartitionConsumer = WorkbenchArtifacts::NativeWorkbenchPartitionConsumer;
     using NativeWorkbenchPartitionConsumers = WorkbenchArtifacts::NativeWorkbenchPartitionConsumers;
     struct NativeWorkbenchPartitionContext {
@@ -213,6 +239,7 @@ private:
     std::thread m_native_workbench_partition_worker;
     std::shared_ptr<std::atomic<bool>> m_native_workbench_partition_cancel;
     bool m_native_workbench_partition_running {false};
+    bool m_native_workbench_partition_draining {false};
     std::uint8_t m_native_workbench_partition_consumers {0};
     bool m_honor_suite_partition_pending {false};
     bool m_honor_suite_partition_resume_queued {false};
@@ -232,6 +259,7 @@ private:
     void apply_smart_ui_state(ModelGenerationUIState& state);
     bool m_smart_mode {false};
     bool m_shell_smart_creation {false};
+    const bool m_advanced_only;
     SmartGenerationFlow m_smart_flow;
     bool m_smart_dispatch_pending {false};
     using GeneratedModelEntry = ModelLibraryEntry;
@@ -310,8 +338,17 @@ private:
     void update_workbench_check_card();
     void hide_workbench_check_card();
     bool position_workbench_check_card(bool preparing = false);
-    void queue_workbench_surface_refresh();
-    bool m_workbench_surface_refresh_pending {false};
+    void queue_workbench_surface_refresh(bool barrier = false, Presentation::Dirty flags =
+        Presentation::Dirty::Layout | Presentation::Dirty::Overlay | Presentation::Dirty::Viewport | Presentation::Dirty::Paint);
+    void apply_workbench_snapshot();
+    void commit_workbench_surface(Presentation::Dirty flags);
+    Presentation::RefreshScheduler m_workbench_surface_refresh;
+    Presentation::TaskScope m_workbench_evidence_scope;
+    boost::filesystem::path m_workbench_evidence_path;
+    std::uint64_t m_workbench_evidence_revision {0};
+    bool m_workbench_evidence_running {false};
+    Presentation::WindowMountLease m_workbench_mount_lease;
+    Presentation::WindowMountLease m_history_mount_lease;
     void raise_workbench_check_card();
     void install_workbench_card_layer_guard();
     void remove_workbench_card_layer_guard();
@@ -366,6 +403,7 @@ private:
     WorkbenchButton* m_workbench_sync_filaments {nullptr};
     void apply_workbench_printer_filaments(bool physical_only = false);
     bool request_beauty_color_gate(bool enter_after_success);
+    bool request_workbench_filament_match(std::function<void(BeautyColorGateResult)> complete);
     void finish_beauty_color_gate(std::uint64_t request_id, std::uint64_t model_sequence,
                                   boost::filesystem::path source, BeautyColorGateIdentity identity,
                                   BeautyColorGateResult result);
@@ -375,7 +413,11 @@ private:
     bool beauty_session_has_changes() const;
     void complete_return_overview();
     void toggle_printer_filament_trial();
-    bool apply_model_palette_to_filaments();
+    void apply_model_palette_to_filaments(std::function<void(bool)> complete = {});
+    bool apply_model_palette_to_filaments_prepared(const BeautyCandidateSnapshot& entry,
+        const std::shared_ptr<BeautyRestorePreparation>& prepared);
+    void apply_workbench_printer_filaments_prepared(bool physical_only,
+        const std::shared_ptr<BeautyCandidateSnapshot>& before, const std::shared_ptr<BeautyRestorePreparation>& prepared);
     std::shared_ptr<BeautyCandidateSnapshot> m_honor_suite_before;
     std::string m_honor_suite_source_signature;
     uint64_t m_honor_suite_edit_revision {0};
@@ -397,7 +439,7 @@ private:
     std::string m_beauty_color_gate_message;
     bool m_beauty_entry_pending {false};
     std::uint64_t m_beauty_color_gate_request {0};
-    std::thread m_beauty_color_gate_worker;
+    Presentation::TaskScope m_beauty_color_gate_scope;
     std::shared_ptr<std::atomic<bool>> m_beauty_color_gate_cancel;
     std::string m_beauty_color_gate_expected_key;
     std::string m_beauty_color_gate_cache_key;
@@ -514,14 +556,17 @@ private:
     void reset(bool remove_remote);
     void download_preview(uint64_t sequence);
     void download_model_preview(uint64_t sequence);
-    void finish_model_preview_download(const boost::filesystem::path& path, uint64_t sequence);
+    void finish_model_preview_download(const boost::filesystem::path& path, uint64_t sequence, bool manifest_checked = false);
     void load_model_preview_async(boost::filesystem::path path, std::vector<std::string> palette,
         std::function<void(size_t, Vec3d, size_t, double)> loaded,
         std::function<void(std::string)> failed, const boost::filesystem::path& metadata_path = {},
         std::shared_ptr<ModelHistoryMetadata> history_metadata = {}, std::function<bool()> may_install = {},
-        std::shared_ptr<ModelHistoryOpenRequest> history_open = {}, bool install_to_workbench = true);
+        std::shared_ptr<ModelHistoryOpenRequest> history_open = {});
     void download_and_import();
     void import_local_artifact(const boost::filesystem::path& path, uint64_t sequence);
+    void complete_local_artifact_import(const boost::filesystem::path& path, uint64_t sequence, const AI::ModelImportResult& result);
+    LocalImportExecutor m_local_import_executor;
+    std::shared_ptr<WorkbenchImportSession> m_local_import_session;
     void cleanup_files();
     void set_preview_empty(const wxString& message);
     void show_preview_failure(const wxString& message);
@@ -573,10 +618,13 @@ private:
     void preview_model_finishing();
     void paint_beauty_color(const std::vector<size_t>& faces);
     void restore_beauty_entry_color();
-    bool show_finishing_version(const boost::filesystem::path& path);
+    void show_finishing_version_async(const boost::filesystem::path& path, std::function<void(bool)> complete,
+        std::function<bool()> may_install = {});
+    void discard_model_finishing_async(std::function<void(bool)> complete = {});
+    bool show_finishing_version_prepared(const boost::filesystem::path& path,
+        const std::shared_ptr<BeautyRestorePreparation>& prepared);
     wxButton* m_finishing_color_match { nullptr };
-    void accept_model_finishing();
-    void discard_model_finishing();
+    void accept_model_finishing(std::optional<AI::ModelMatchedColors> prepared_match = {});
     void stop_model_finishing();
     void select_local_finishing_version(const boost::filesystem::path& path, const std::string& id);
     void load_library_entries(bool for_shell = false);
@@ -602,8 +650,8 @@ private:
                              const std::string& color_intent_sha256,
                              const std::string& job_id, const wxString& title, bool new_asset = false,
                              std::shared_ptr<const ModelHistoryRepairIndex> repairs = {},
-                                               std::shared_ptr<ModelHistoryOpenRequest> restoration = {},
-                                               const std::string& expected_sha256 = {});
+                             std::shared_ptr<ModelHistoryOpenRequest> restoration = {},
+                             const std::string& expected_model_sha256 = {});
     bool delete_library_entry(const GeneratedModelEntry& entry);
     void export_library_entry(const GeneratedModelEntry& entry);
     void update_library_provider_tasks(const std::string& job_id,
@@ -616,7 +664,6 @@ private:
     AI::IModelArtifactConsumer&    m_artifact_consumer;
     AI::IPrintablePaletteProvider& m_palette_provider;
     AIModelGenerationClient m_client;
-    ModelArtifactAcquisition m_artifact_acquisition;
     ModelGenerationUIStateListener m_ui_state_listener;
     ModelGenerationUIState m_ui_state;
 
@@ -684,8 +731,8 @@ private:
     bool m_library_shell_thumbnails_running {false};
     int m_library_shell_thumbnail_edge {0};
     BeautyWorkbenchControls* m_beauty_controls {nullptr};
-    BeautyWorkbenchSession<BeautyCandidateSnapshot> m_beauty_session;
-    BeautyWorkbenchTransactionController* m_beauty_transactions {&m_beauty_session.transactions()};
+    std::unique_ptr<BeautyWorkbenchSession<BeautyCandidateSnapshot>> m_beauty_session;
+    BeautyWorkbenchTransactionController* m_beauty_transactions {nullptr};
     wxWindow* m_workflow_panel {nullptr};
     wxPanel* m_comparison_panel {nullptr};
     wxScrolledWindow* m_model_page {nullptr};
@@ -734,7 +781,9 @@ private:
     wxButton* m_finishing_cancel {nullptr};
     wxStaticText* m_finishing_status {nullptr};
     std::thread m_finishing_worker;
-    std::thread m_preview_worker;
+    Presentation::TaskScope m_preview_task_scope;
+    Presentation::TaskScope m_artifact_validation_scope;
+    Presentation::TaskScope m_import_preparation_scope;
     bool m_preview_loading {false};
     std::shared_ptr<std::atomic<bool>> m_preview_canceled;
     std::shared_ptr<std::atomic<bool>> m_finishing_canceled;
@@ -766,17 +815,24 @@ private:
     BeautyCandidateSnapshot capture_beauty_candidate() const;
     std::function<void()> capture_model_context();
     void reset_beauty_asset();
-    bool restore_beauty_candidate(const BeautyCandidateSnapshot& snapshot);
+    void restore_beauty_candidate_async(BeautyCandidateSnapshot snapshot, std::function<void(bool)> complete = {});
+    void prepare_beauty_restoration(BeautyCandidateSnapshot snapshot,
+        std::function<void(std::shared_ptr<BeautyRestorePreparation>)> complete);
+    bool restore_beauty_candidate_prepared(const BeautyCandidateSnapshot& snapshot,
+        const std::shared_ptr<BeautyRestorePreparation>& prepared);
+    Presentation::TaskScope m_beauty_restore_scope;
+    std::map<std::string, std::shared_ptr<Presentation::TaskScope>> m_portrait_draft_tasks;
+    bool m_beauty_restore_running {false};
     void record_beauty_candidate(BeautyWorkbenchTransactionController::OperationKind kind,
                                  std::shared_ptr<BeautyCandidateSnapshot> before);
     BeautyWorkbenchSession<BeautyCandidateSnapshot>::Ports beauty_session_ports();
     void clear_unaccepted_beauty_candidates(size_t start = 0);
     // Remaining portrait/editor state is migrated separately. Candidate files,
     // baselines and history checkpoints are private to the session.
-    std::shared_ptr<BeautyCandidateSnapshot>& m_beauty_reoptimization_before {m_beauty_session.draft().reoptimization_before};
-    std::shared_ptr<BeautyCandidateSnapshot>& m_portrait_draft_before {m_beauty_session.draft().portrait_before};
-    std::shared_ptr<BeautyCandidateSnapshot>& m_portrait_preview_draft {m_beauty_session.draft().portrait_preview};
-    bool& m_beauty_manual_color_dirty {m_beauty_session.draft().manual_color_dirty};
+    std::shared_ptr<BeautyCandidateSnapshot> m_beauty_reoptimization_before;
+    std::shared_ptr<BeautyCandidateSnapshot> m_portrait_draft_before;
+    std::shared_ptr<BeautyCandidateSnapshot> m_portrait_preview_draft;
+    bool m_beauty_manual_color_dirty {false};
 
     std::thread m_library_import_worker;
     wxStaticText*   m_prompt_label { nullptr };
@@ -919,10 +975,7 @@ private:
     boost::filesystem::path m_raw_preview_path;
     boost::filesystem::path m_artifact_path;
     boost::filesystem::path m_color_intent_path;
-    WorkbenchModelContext m_workbench_model;
-    uint64_t m_model_open_sequence {0};
-    bool m_generation_artifact_ready {false};
-    std::string m_generation_artifact_sha256;
+    boost::filesystem::path m_displayed_model_path;
     boost::filesystem::path m_last_imported_model_path;
     wxImage m_reference_image;
     wxImage m_raw_preview_image;
@@ -949,6 +1002,8 @@ private:
     AIModelGenerationClient::PaletteRoles m_palette_roles;
     AIModelGenerationClient::PaletteRoles m_job_palette_roles;
     std::vector<std::string> m_palette_roles_source;
+    std::vector<std::string> m_displayed_model_palette;
+    AIModelGenerationClient::PaletteRoles m_displayed_model_palette_roles;
     AIModelGenerationClient::PaletteRecommendation m_palette_recommendation;
     AIModelGenerationClient::StyleRecommendation m_style_recommendation;
     std::vector<std::string> m_user_adjusted_palette_colors;
@@ -966,7 +1021,6 @@ private:
     std::string m_selected_geometry_model;
     bool           m_legacy_generation_defaults { false };
     std::string m_job_id;
-    std::string m_job_creation_kind;
     std::string m_job_state;
     std::string m_job_phase;
     ModelGenerationPresentation::ModelGenerationProgress m_model_progress;
@@ -980,6 +1034,7 @@ private:
     std::string m_provider_error_category;
     bool m_provider_error_retryable { false };
     bool m_provider_error_ambiguous { false };
+    std::string m_displayed_model_job_id;
     std::string m_artifact_format;
     std::string m_artifact_color_encoding;
     std::string m_color_intent_schema;
@@ -996,7 +1051,9 @@ private:
     bool m_palette_recommendation_confirmed { false };
     bool m_ready { false };
     bool m_artifact_download_started { false };
+    bool m_model_preview_ready { false };
     bool m_library_model_loaded { false };
+    bool m_history_model_design_reusable { false };
     bool m_service_available { false };
     bool m_generation_available { false };
     std::map<std::string, AIModelGenerationClient::ProviderCatalog> m_provider_catalogs;
@@ -1015,6 +1072,7 @@ private:
     bool m_restore_checked { false };
     bool m_restoring_input { false };
     bool m_shutdown { false };
+    bool m_shutdown_draining {false};
     bool m_updating_preview { false };
     bool m_preview_download_in_flight { false };
     bool m_preview_download_cancelled { false };

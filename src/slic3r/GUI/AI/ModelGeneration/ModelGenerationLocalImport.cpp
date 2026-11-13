@@ -33,11 +33,11 @@ void ModelGenerationPanel::import_local_model(const boost::filesystem::path& sou
     }
     const std::string id="finish-import-"+new_request_id();
     const auto destination=temp_path(id,"glb"),metadata_path=library_metadata_path(id),root=generated_models_root();
-    const auto reference_image_path=open_beauty && !m_workbench_model.reference_image_path.empty() && path_is_inside(root,m_workbench_model.reference_image_path)
-        ? m_workbench_model.reference_image_path : boost::filesystem::path();
-    const auto ai_image_path=open_beauty && !m_workbench_model.design_image_path.empty() && path_is_inside(root,m_workbench_model.design_image_path)
-        ? m_workbench_model.design_image_path : boost::filesystem::path();
-    if(m_library_import_worker.joinable())m_library_import_worker.join();
+    const auto reference_image_path=open_beauty && !m_reference_image_path.empty() && path_is_inside(root,m_reference_image_path)
+        ? m_reference_image_path : boost::filesystem::path();
+    const auto ai_image_path=open_beauty && !m_raw_preview_path.empty() && path_is_inside(root,m_raw_preview_path)
+        ? m_raw_preview_path : boost::filesystem::path();
+    Presentation::background_tasks().retire(m_library_import_worker);
     auto* operation = local_model_import_state(m_library_import);
     if (!operation) return;
     const auto canceled = std::make_shared<std::atomic<bool>>(false);
@@ -103,7 +103,7 @@ void ModelGenerationPanel::import_local_model(const boost::filesystem::path& sou
             if(!weak || weak->m_shutdown)return;
             auto* operation=local_model_import_state(weak->m_library_import);
             if (!operation || operation->cancel != canceled) return;
-            if(weak->m_library_import_worker.joinable())weak->m_library_import_worker.join();
+            Presentation::background_tasks().retire(weak->m_library_import_worker);
             weak->m_busy=false;
             if(canceled->load()) {
                 complete_local_model_import(weak->m_library_import,canceled,false);

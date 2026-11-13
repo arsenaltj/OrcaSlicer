@@ -1,6 +1,7 @@
 #include "slic3r/GUI/TextureImportDialog.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp"
 #include "slic3r/GUI/AI/Orca/AIImportSeamRepair.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaPrintColorLayers.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchImportTopology.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchTextureImport.hpp"
@@ -778,6 +779,52 @@ TEST_CASE("AI seam status includes untouched modifier openings and rechecks chan
     CHECK_FALSE(stitch_ai_import_seams(*object).has_open_edges);
     solid->set_mesh(TriangleMesh(open));
     CHECK(stitch_ai_import_seams(*object).has_open_edges);
+}
+
+TEST_CASE("Painted modifiers keep their host and stay outside AI solid seam repair", "[ModelColorImport][AIImportSeam][PaintedModifier]") {
+    Model model;
+    auto* object = model.add_object();
+    auto* solid = object->add_volume(TriangleMesh(its_make_cube(10,10,10)));
+    auto* modifier = object->add_painted_modifier(*solid);
+    auto open = solid->mesh().its;
+    open.indices.pop_back();
+    modifier->set_mesh(TriangleMesh(open));
+    const auto id = modifier->id();
+    const auto result = stitch_ai_import_seams(*object);
+    CHECK(result.stitched_volumes == 0);
+    CHECK_FALSE(result.has_open_edges);
+    CHECK(modifier->id() == id);
+    CHECK(object->painted_modifier_host(*modifier) == solid);
+    CHECK(modifier->mesh().its.indices == open.indices);
+}
+
+TEST_CASE("Layer proof identity rejects changes to painted modifier depth host and facets", "[ModelColorImport][PaintedModifier]") {
+    Model model;
+    auto* object = model.add_object();
+    auto* solid = object->add_volume(TriangleMesh(its_make_cube(10,10,10)));
+    auto* modifier = object->add_painted_modifier(*solid);
+    object->add_instance();
+    const DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    const auto identity = [&] { return OrcaPrintColorLayers::identity(*object, config); };
+    const auto initial = identity();
+    modifier->painted_modifier_depth = 2.5f;
+    CHECK(identity() != initial);
+    modifier->painted_modifier_depth = 0.f;
+    REQUIRE(identity() == initial);
+    modifier->painted_modifier_host = ObjectID();
+    CHECK(identity() != initial);
+    modifier->painted_modifier_host = solid->id();
+    REQUIRE(identity() == initial);
+    TriangleSelector selector(solid->mesh());
+    selector.set_facet(0, EnforcerBlockerType::ENFORCER);
+    modifier->painted_modifier_facets.set(selector);
+    CHECK(identity() != initial);
+    const auto copy = OrcaPrintColorLayers::snapshot_model(*object);
+    REQUIRE(copy->objects.size() == 1);
+    const auto* restored = copy->objects.front();
+    REQUIRE(restored->volumes.size() == 2);
+    CHECK(restored->painted_modifier_host(*restored->volumes[1]) == restored->volumes[0]);
+    CHECK(restored->volumes[1]->painted_modifier_facets.get_data() == modifier->painted_modifier_facets.get_data());
 }
 
 TEST_CASE("Local import seam checks compare transaction reuse with repeated adjacency checks", "[.AIImportSeamProbe]") {

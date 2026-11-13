@@ -159,15 +159,30 @@ AccountWorkspace::AccountWorkspace(wxWindow* parent,Changed changed,std::functio
     m_cancel_login->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){m_session.cancel();close_browser();render();});
     Bind(wxEVT_TIMER,[this](wxTimerEvent&){poll();},m_timer.GetId());
     m_account->subscribe(this, [this] { render(); });
+    m_view_refresh.configure([this] { return IsShownOnScreen(); },
+        [this](Presentation::Dirty) { commit_view(); }, "account");
+    Bind(wxEVT_SHOW,[this](wxShowEvent& event) {
+        event.Skip(); if(event.IsShown()) m_view_refresh.resume();
+    });
     // start() runs after the shell's page table has been assembled.
 }
 AccountWorkspace::~AccountWorkspace()
 {
+    m_avatar_scope.cancel();
+    m_view_refresh.stop();
     m_timer.Stop();
     m_account->unsubscribe(this); m_changed={};
 }
 void AccountWorkspace::start() { m_account->start();render();m_timer.Start(150); }
 void AccountWorkspace::render()
+{
+    Presentation::assert_gui_thread();
+    // Identity notifications are business results, independent of page visibility.
+    load_avatar();
+    if(m_changed)m_changed(m_session.snapshot(),m_avatar_bitmap);
+    m_view_refresh.request(Presentation::Dirty::Content | Presentation::Dirty::Layout);
+}
+void AccountWorkspace::commit_view()
 {
     const auto& s=m_session.snapshot();
     m_name->SetLabel(text(s.has_identity()?(s.identity.name.empty()?"荣耀用户":s.identity.name):"未登录"));
@@ -189,8 +204,7 @@ void AccountWorkspace::render()
     const bool login_active=s.state==HA::State::Preparing||s.state==HA::State::Authorizing||s.state==HA::State::Exchanging;
     m_browser_status->SetLabel(text(m_browser&&m_browser_initializing?"正在打开荣耀登录页…":s.message));
     m_browser_status->Show(login_active&&!m_clear_only);m_cancel_login->Show(login_active&&!m_clear_only);
-    load_avatar();m_summary->Layout();Layout();
-    if(m_changed)m_changed(s,m_avatar_bitmap);
+    m_summary->Layout();Layout();
 }
 void AccountWorkspace::poll()
 {
@@ -242,10 +256,24 @@ void AccountWorkspace::load_avatar()
     const auto path=AccountAvatar::account_path(text(Slic3r::data_dir()),snapshot.identity.subject);
     if(m_avatar_loaded&&path==m_avatar_path)return;
     m_avatar_loaded=true;m_avatar_path=path;
-    m_avatar_image=path.empty()?m_guest_avatar:AccountAvatar::read(path);
-    if(!m_avatar_image.IsOk())m_avatar_image=m_default_avatar;
+    m_avatar_image=path.empty()?m_guest_avatar:m_default_avatar;
     m_avatar_bitmap=wxBitmap(AccountAvatar::circle(m_avatar_image,FromDIP(144)));
     m_avatar->set_icon(m_avatar_bitmap);
+    const auto task = m_avatar_scope.begin(path.ToStdString(wxConvUTF8),
+        Presentation::TaskLifetime::View, m_session.generation());
+    if (path.empty()) return;
+    wxWeakRef<AccountWorkspace> weak(this);
+    Presentation::background_tasks().submit(task, [path](const Presentation::TaskContext&) {
+        return AccountAvatar::read(path);
+    }, [weak, task, path](Presentation::TaskResult<wxImage> result) {
+        if (!weak || !weak->m_avatar_scope.matches(task) || task.account_epoch != weak->m_session.generation() ||
+            path != weak->m_avatar_path || !result.value || !result.value->IsOk()) return;
+        weak->m_avatar_image = std::move(*result.value);
+        weak->m_avatar_bitmap = wxBitmap(AccountAvatar::circle(weak->m_avatar_image, weak->FromDIP(144)));
+        weak->m_avatar->set_icon(weak->m_avatar_bitmap);
+        if (weak->m_changed) weak->m_changed(weak->m_session.snapshot(), weak->m_avatar_bitmap);
+        weak->m_view_refresh.request(Presentation::Dirty::Paint);
+    });
 }
 void AccountWorkspace::edit_avatar()
 {

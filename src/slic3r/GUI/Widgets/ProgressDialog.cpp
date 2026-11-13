@@ -1,3 +1,4 @@
+#include <wx/thread.h>
 #include "wx/wxprec.h"
 #include <cstddef>
 #include <wx/time.h>
@@ -663,6 +664,22 @@ bool ProgressDialog::Pulse(const wxString &newmsg, bool *skip)
 }
 
 bool ProgressDialog::WasCanceled() const { return m_state == Canceled; }
+
+bool ProgressDialog::PulseFromEvent(const wxString &newmsg)
+{
+    wxASSERT(wxIsMainThread());
+    if (m_state == Canceled) return false;
+    if (m_gauge) m_gauge->Pulse();
+    // This entry is called by the normal event loop. UpdateMessage yields to
+    // another loop and may reenter cancellation/destruction while on this stack.
+    if (!newmsg.empty() && m_msg && newmsg != m_msg->GetLabel()) {
+        FormatString(newmsg);
+        Fit();
+    }
+    if (m_elapsed) SetTimeLabel(wxGetCurrentTime() - m_timeStart, m_elapsed);
+    Refresh(false);
+    return true;
+}
 
 bool ProgressDialog::DoBeforeUpdate(bool *skip)
 {

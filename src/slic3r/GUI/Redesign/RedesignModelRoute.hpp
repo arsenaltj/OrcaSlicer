@@ -1,6 +1,8 @@
 #pragma once
 
 #include "../AI/ModelGeneration/ModelGenerationHost.hpp"
+#include "../AI/ModelGeneration/AdvancedCreationTypes.hpp"
+#include "../AI/ModelGeneration/ModelGenerationStatusText.hpp"
 #include "../AI/ModelGeneration/PostGenerationUiState.hpp"
 
 #include <optional>
@@ -17,6 +19,32 @@ inline const ModelGenerationUIState& selected_model_presentation(bool advanced,
 
 inline bool workbench_return_advanced(bool from_editor, std::optional<bool> anchor, bool task_advanced)
 { return from_editor && anchor ? *anchor : task_advanced; }
+// Shell-owned foreground intent only; task state remains in Advanced Session.
+class AdvancedModelRouteIntent {
+public:
+    void request(const AdvancedCreation::ModelJobEvent& event, std::uint64_t navigation) {
+        if (event.phase != AdvancedCreation::ModelJobEvent::Phase::Requested || event.job_id.empty()) return;
+        m_request = event; m_navigation = navigation; m_accepted = false;
+    }
+    void accept(const AdvancedCreation::ModelJobEvent& event) {
+        if (event.phase == AdvancedCreation::ModelJobEvent::Phase::Accepted && m_request &&
+            m_request->same_request(event)) m_accepted = true;
+    }
+    void cancel() { m_request.reset(); m_accepted = false; }
+    bool pending() const { return m_request.has_value(); }
+    bool ready(const AdvancedCreation::CallbackContext& current, const std::string& current_job,
+               const ModelGenerationUIState& projection, std::uint64_t navigation,
+               bool foreground, bool blocked) const {
+        return m_request && m_accepted && foreground && !blocked && navigation == m_navigation &&
+            current.epoch == m_request->context.epoch && current.group_id == m_request->context.group_id &&
+            current_job == m_request->job_id && projection.job_id == m_request->job_id &&
+            projection.model_generation_context;
+    }
+private:
+    std::optional<AdvancedCreation::ModelJobEvent> m_request;
+    std::uint64_t m_navigation {0};
+    bool m_accepted {false};
+};
 
 class PreviewAutoFitState
 {
@@ -101,6 +129,7 @@ inline ModelGenerationUIState advanced_model_presentation_state(
     // mode's 2D preparation stage in the advanced 3D route.
     if (state.stage == ModelGenerationUIStage::GeneratingDesign)
         state.stage = ModelGenerationUIStage::GeneratingModel;
+    ModelGenerationStatusText::present_advanced_model(state);
     state.can_stop = can_stop;
     if (state.stage == ModelGenerationUIStage::Failed || state.stage == ModelGenerationUIStage::Stopped)
         state.can_retry_model = can_resume;
@@ -130,15 +159,15 @@ inline bool model_generation_route_revokes_workbench_presentation(
 
 inline RedesignModelRouteAction model_generation_route_action(
     const ModelGenerationUIState& state, const ModelGenerationUIState& current,
-    bool locked, std::uint64_t route_session, const std::string& route_id, bool opening_history = false)
+    bool locked, std::uint64_t route_session, const std::string& route_id, bool retain_foreground = false)
 {
     if (state.revision < current.revision ||
         state.model_generation_session < current.model_generation_session)
         return RedesignModelRouteAction::Ignore;
 
-    // The explicit history presentation owns routing until its current first
-    // frame commits or rolls back. State publication may only refresh it.
-    if (opening_history) return RedesignModelRouteAction::Refresh;
+    // History presentation, editing and another creator own their foreground.
+    // Background task updates still project progress without changing routes.
+    if (retain_foreground) return RedesignModelRouteAction::Refresh;
     const bool new_session = state.model_generation_session > current.model_generation_session;
     const std::string& state_route_id = model_generation_route_id(state);
     if (new_session && state_route_id.empty())

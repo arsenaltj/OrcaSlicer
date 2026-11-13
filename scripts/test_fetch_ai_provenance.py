@@ -18,6 +18,7 @@ class ProvenanceTests(unittest.TestCase):
         self.root = Path(__file__).resolve().parents[1]
         self.document = json.loads((self.root / "docs/architecture/ai-integration-lock.json").read_text(encoding="utf-8-sig"))
         self.commits = provenance.pinned_commits(self.document)
+        self.sources = provenance.commit_sources(self.document)
         self.present = set()
         self.fetch_fails = False
         self.fetch_without_object = False
@@ -43,7 +44,7 @@ class ProvenanceTests(unittest.TestCase):
             self.assertIn(commit, self.commits)
             return subprocess.CompletedProcess(argv, int(commit not in self.present), b"", b"")
         self.assertEqual(command[:-1], ["fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules",
-                                       "--refmap=", "--no-auto-maintenance", "origin"])
+                                       "--refmap=", "--no-auto-maintenance", self.sources[command[-1]]])
         self.assertIn(command[-1], self.commits)
         self.assertEqual(os.environ["GITHUB_ACTIONS"], "true")
         if not self.fetch_fails and not self.fetch_without_object:
@@ -56,6 +57,14 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(result["missing"], self.commits)
         self.assertEqual(result["status"], "missing_fixed_objects")
         self.assertTrue(all(call[4] == "cat-file" for call in self.calls))
+
+    def test_official_pins_use_official_repository_without_following_nightly_tag(self):
+        self.assertEqual(self.sources[self.document["upstream"]["sha"]], provenance.OFFICIAL_REPOSITORY)
+        for source in self.document["feature_sources"].values():
+            self.assertEqual(self.sources[source["sha"]], "origin")
+        os.environ["GITHUB_ACTIONS"] = "true"
+        self.assertEqual(provenance.restore_provenance(self.root, self.document)["missing"], [])
+        self.assertFalse(any("nightly-builds" in argument for call in self.calls for argument in call))
 
     def test_missing_objects_cannot_trigger_local_fetch(self):
         for value in ("false", "TRUE", "1", ""):

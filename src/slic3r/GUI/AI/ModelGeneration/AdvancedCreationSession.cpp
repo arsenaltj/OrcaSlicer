@@ -112,6 +112,7 @@ CallbackContext Session::begin_open(std::string group_id)
     ++m_epoch;
     m_opening_id = std::move(group_id);
     m_pending_click.reset();
+    m_accepted_model.reset();
     return context();
 }
 
@@ -144,10 +145,13 @@ bool Session::apply_snapshot(GroupSnapshot snapshot, const CallbackContext& call
         if (!incoming.usable && m_group && m_group->id == snapshot.id) {
             const auto& visible = m_group->views[index(view)];
             if (visible.usable) {
+                const bool same_verified_asset = !incoming.display_error &&
+                    incoming.canonical_version_id == visible.version_id && incoming.sha256 == visible.sha256;
                 incoming.version_id = visible.version_id;
                 incoming.sha256 = visible.sha256;
                 incoming.image_path = visible.image_path;
                 incoming.usable = true;
+                if (same_verified_asset) incoming.asset_pending = false;
             }
         }
         if (!incoming.usable) { incoming.version_id.clear(); incoming.image_path.clear(); }
@@ -164,7 +168,42 @@ bool Session::apply_snapshot(GroupSnapshot snapshot, const CallbackContext& call
         ++m_draft_revision;
         ++m_selection_revision;
     }
+    // A group/assets GET may have started before the model POST was accepted.
+    // Its old task must not undo the already verified acceptance projection.
+    if (!m_accepted_model && m_group && snapshot.model_job_id == m_group->model_job_id &&
+        snapshot.model_updated_at < m_group->model_updated_at) {
+        ModelJobProjection current;
+        current.id = m_group->model_job_id; current.state = m_group->model_state;
+        current.phase = m_group->model_phase; current.message = m_group->model_message;
+        current.updated_at = m_group->model_updated_at; current.error_code = m_group->model_error_code;
+        current.error_ambiguous = m_group->model_error_ambiguous; current.resumable = m_group->model_resumable;
+        m_accepted_model = std::move(current);
+    }
+    if (m_accepted_model && snapshot.model_job_id == m_accepted_model->id &&
+        snapshot.model_updated_at >= m_accepted_model->updated_at)
+        m_accepted_model.reset();
     m_group = std::move(snapshot);
+    if (m_accepted_model) apply_model_job(*m_accepted_model, callback);
+    return true;
+}
+
+bool Session::apply_model_job(const ModelJobProjection& job, const CallbackContext& callback)
+{
+    if (!matches(callback) || !m_group || m_group->id != callback.group_id || job.id.empty() || job.state.empty())
+        return false;
+    if (m_group->model_job_id == job.id && job.updated_at < m_group->model_updated_at)
+        return true; // Identity accepted; a newer projection is already installed.
+    // Copy first: the caller may be reapplying the retained projection above.
+    m_accepted_model = job;
+    m_group->model_job_id = job.id;
+    m_group->model_state = job.state;
+    m_group->model_phase = job.phase;
+    m_group->model_updated_at = job.updated_at;
+    m_group->model_message = job.message;
+    m_group->model_error_code = job.error_code;
+    m_group->model_error_ambiguous = job.error_ambiguous;
+    m_group->model_resumable = job.resumable;
+    m_group->model_busy = job.state == "queued" || job.state == "running" || job.state == "stopping";
     return true;
 }
 

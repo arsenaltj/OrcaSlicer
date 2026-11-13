@@ -1,10 +1,14 @@
 #include "FixModelByCgal.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <limits>
+#include <cstddef>
+#include <exception>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -12,7 +16,7 @@
 
 #include <boost/log/trivial.hpp>
 
-#include "libslic3r/MeshBoolean.hpp"
+#include "libslic3r/MeshRepair.hpp"
 #include "libslic3r/MeshSeamRepair.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Format/bbs_3mf.hpp"
@@ -131,10 +135,12 @@ public:
 
 // Orca: Main function to repair model objects using CGAL, with progress dialog and cancellation support.
 // Returns false if fixing was canceled. fix_result contains error message if failed.
-bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::ProgressDialog &progress_dialog, const wxString &msg_header, std::string &fix_result, bool keep_painting, bool* painting_removed)
+bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::ProgressDialog &progress_dialog, const wxString &msg_header, std::string &fix_result, bool keep_painting, bool* painting_removed, bool* modified)
 {
     if (painting_removed)
         *painting_removed = false;
+    if (modified)
+        *modified = false;
     // Hold SaveObjectGaurd to prevent backup manager from racing concurrent mesh mutations (use-after-free).
     SaveObjectGaurd backup_gaurd(original_object);
 
@@ -165,6 +171,7 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
 
     bool   success = false;
     bool   staged_paint_removed = false;
+    bool   staged_modified = false;
     size_t ivolume = 0;
 
     // Orca: Lambda for updating progress from worker thread.
@@ -178,7 +185,7 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
     };
 
     // Orca: Worker thread that performs the actual model repair operations.
-    auto worker_thread = std::thread([&model_object, volume_idx, &ivolume, on_progress, &success, &canceled, &finished, &fix_result, &staged_paint_removed, keep_painting]() {
+    auto worker_thread = std::thread([&model_object, volume_idx, &ivolume, on_progress, &success, &canceled, &finished, &fix_result, &staged_paint_removed, &staged_modified, keep_painting]() {
         try {
 	        set_current_thread_name("cgal_fix_model");
 
@@ -194,6 +201,14 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
                 on_progress(_u8L("Repairing model object"), 10);
 
                 ModelVolume *volume = model_object.volumes[ivolume];
+                if (volume->is_painted_modifier())
+                    continue;
+                // A painted modifier follows the complete host mesh. Let the
+                // official repair handle that host without fragmenting it.
+                const bool has_painted_modifiers = std::any_of(model_object.volumes.begin(), model_object.volumes.end(),
+                    [volume](const ModelVolume* candidate) {
+                        return candidate->is_painted_modifier() && candidate->painted_modifier_host == volume->id();
+                    });
                 TriangleMesh stitched_mesh;
                 {
                     RepairStageTimer stage("copy_volume_mesh", ivolume, invalid_repair_index, &canceled);
@@ -208,20 +223,14 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
                     exact_seams_stitched = stitch_exact_mesh_seams(stitched_mesh);
                 }
                 if (exact_seams_stitched) {
+                    staged_modified = true;
                     volume->set_mesh(std::move(stitched_mesh));
                     volume->set_new_unique_id();
-                    // No faces moved or changed order; even with the general
-                    // keep-painting option off, there is nothing to remap.
-                    on_progress(_u8L("Repair finished"), 100);
-                    continue;
+                    // No faces moved or changed order; keep the seam painting.
+                    // The official repair below still checks orientation and topology.
                 }
-                if (!keep_painting) {
-                    staged_paint_removed |= volume->is_any_painted();
-                    volume->supported_facets.reset();
-                    volume->seam_facets.reset();
-                    volume->mmu_segmentation_facets.reset();
-                    volume->fuzzy_skin_facets.reset();
-                }
+                // A valid volume keeps its identity and painting even when the
+                // repair preference would discard paint on a changed mesh.
 
                 // Orca: Split splittable volumes into parts for individual processing.
                 size_t parts_count = 1;
@@ -229,14 +238,20 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
                 {
                     RepairStageTimer stage("check_volume_splittable", ivolume, invalid_repair_index, &canceled,
                                            stitched_mesh.its.vertices.size(), stitched_mesh.its.indices.size());
-                    is_splittable = volume->is_splittable();
+                    is_splittable = !exact_seams_stitched && !has_painted_modifiers && volume->is_splittable();
                 }
                 if (canceled)
                     throw RepairCanceledException();
                 if (is_splittable) {
                     RepairStageTimer stage("split_volume", ivolume, invalid_repair_index, &canceled,
                                            stitched_mesh.its.vertices.size(), stitched_mesh.its.indices.size());
+                    const ObjectID before_id = volume->id();
+                    const bool had_painting = volume->is_any_painted();
                     parts_count = volume->split(1, keep_painting);
+                    if (volume->id() != before_id) {
+                        staged_modified = true;
+                        staged_paint_removed |= !keep_painting && had_painting;
+                    }
                     BOOST_LOG_TRIVIAL(info) << "[CgalRepair] split_result volume=" << ivolume
                         << " parts=" << parts_count;
                     if (parts_count > 1) {
@@ -257,9 +272,10 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
                     for (size_t idx = part_end + 1; idx > ivolume; --idx) {
                         const size_t part_idx = idx - 1;
                         const ModelVolume *part_volume = model_object.volumes[part_idx];
-                        if (!is_not_3dimensional_part(part_volume->mesh()))
+                        if (has_painted_modifiers || !is_not_3dimensional_part(part_volume->mesh()))
                             continue;
 
+                        staged_modified = true;
                         model_object.delete_volume(part_idx);
                         ++removed_parts;
                         if (part_end > 0)
@@ -284,53 +300,28 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
                         throw RepairCanceledException();
                     on_progress(_u8L("Repairing model object"), unsigned(100 * (part_idx - ivolume)));
                     ModelVolume *part_volume = model_object.volumes[part_idx];
-                    TriangleMesh mesh;
-                    {
-                        RepairStageTimer stage("copy_part_mesh", ivolume, part_idx, &canceled);
-                        mesh = part_volume->mesh();
-                        stage.finish(mesh.its.vertices.size(), mesh.its.indices.size());
-                    }
-
-                    size_t open_edges = 0;
-                    {
-                        RepairStageTimer stage("count_open_edges", ivolume, part_idx, &canceled,
-                                               mesh.its.vertices.size(), mesh.its.indices.size());
-                        open_edges = its_num_open_edges(mesh.its);
-                    }
-                    if (open_edges != 0) {
-
-                        // Save painting for later remap
-                        std::optional<TriangleSelector::SavedPainting> saved_painting;
-                        if (keep_painting) {
-                            RepairStageTimer stage("save_painting", ivolume, part_idx, &canceled,
-                                                   mesh.its.vertices.size(), mesh.its.indices.size());
-                            saved_painting = part_volume->save_painting();
-                        }
-
-                        std::string error;
-                        if (!MeshBoolean::cgal::repair(mesh, nullptr, &error, [&canceled] { return canceled.load(); })) {
-                            if (canceled)
-                                throw RepairCanceledException();
-                            throw Slic3r::RuntimeError(error.empty() ? _u8L("Repair failed") : error);
-                        }
+                    const bool had_painting = part_volume->is_any_painted();
+                    MeshRepairStats stats;
+                    std::string error;
+                    RepairStageTimer stage("repair_part_mesh", ivolume, part_idx, &canceled,
+                                           part_volume->mesh().its.vertices.size(), part_volume->mesh().its.indices.size());
+                    // Run the official volume repair on private staging. In particular,
+                    // closed meshes may still need orientation or nonmanifold repairs.
+                    if (!part_volume->repair(keep_painting, &stats, &error, [&](int percent) {
                         if (canceled)
                             throw RepairCanceledException();
-
-                        {
-                            RepairStageTimer stage("update_repaired_volume_metadata", ivolume, part_idx, &canceled,
-                                                   mesh.its.vertices.size(), mesh.its.indices.size());
-                            part_volume->set_mesh(std::move(mesh));
-                            part_volume->calculate_convex_hull();
-                            part_volume->invalidate_convex_hull_2d();
-                            part_volume->set_new_unique_id();
-                        }
-
-                        // Remap paint back
-                        {
-                            RepairStageTimer stage("restore_painting", ivolume, part_idx, &canceled);
-                            part_volume->restore_painting(saved_painting);
-                        }
+                        const size_t count = std::max<size_t>(1, part_end - ivolume + 1);
+                        on_progress(_u8L("Repairing model object"),
+                                    unsigned((100 * (part_idx - ivolume) + size_t(percent)) / count));
+                    })) {
+                        if (canceled)
+                            throw RepairCanceledException();
+                        throw Slic3r::RuntimeError(error.empty() ? _u8L("Repair failed") : error);
                     }
+                    if (canceled)
+                        throw RepairCanceledException();
+                    staged_modified |= stats.modified;
+                    staged_paint_removed |= stats.modified && !keep_painting && had_painting;
                     on_progress(_u8L("Repairing model object"), unsigned(100 * (part_idx - ivolume + 1)));
                 }
 
@@ -339,7 +330,10 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
                 on_progress(_u8L("Repair finished"), 100);
             }
 
-            model_object.invalidate_bounding_box();
+            if (staged_modified) {
+                model_object.sync_painted_modifiers();
+                model_object.invalidate_bounding_box();
+            }
 
             if (ivolume > 0)
                 --ivolume;
@@ -385,7 +379,7 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
     BOOST_LOG_TRIVIAL(info) << "[CgalRepair] worker_joined canceled=" << canceled.load()
         << " success=" << success << " error=" << fix_result;
 
-    if (!canceled && success) {
+    if (!canceled && success && staged_modified) {
         RepairStageTimer stage("commit_staged_model", invalid_repair_index, invalid_repair_index, &canceled);
         const size_t original_volume_count = original_object.volumes.size();
         try {
@@ -410,6 +404,8 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
         original_object.invalidate_bounding_box();
         if (painting_removed)
             *painting_removed = staged_paint_removed;
+        if (modified)
+            *modified = true;
         stage.finish();
         BOOST_LOG_TRIVIAL(info) << "[CgalRepair] commit_result volumes=" << original_object.volumes.size();
     }

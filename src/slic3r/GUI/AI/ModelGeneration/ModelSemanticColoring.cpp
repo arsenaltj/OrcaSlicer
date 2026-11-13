@@ -1,4 +1,5 @@
 #include "ModelSemanticColoring.hpp"
+#include "slic3r/GUI/Presentation/UiRuntime.hpp"
 #include "PortraitContourProposal.hpp"
 #include "ModelColorPreviewShader.hpp"
 #include "ModelPreviewNormals.hpp"
@@ -1194,11 +1195,14 @@ void ModelSemanticColoring::cancel_and_wait() {
     if (state.worker.joinable()) state.worker.join();
     state.job.reset();
 }
+std::thread ModelSemanticColoring::begin_shutdown() {
+    cancel(); return std::move(m_impl->worker);
+}
 std::unique_ptr<ModelSemanticColoring::Result> ModelSemanticColoring::poll() {
     auto& state = *m_impl;
     std::unique_ptr<Result> result;
     if (state.job && state.job->done.load()) {
-        if (state.worker.joinable()) state.worker.join();
+        Presentation::background_tasks().retire(state.worker);
         if (!state.job->canceled.load() && state.wanted && state.job->request.generation == state.generation)
             result = std::move(state.job->result);
         state.job.reset();

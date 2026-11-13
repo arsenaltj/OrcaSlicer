@@ -4,6 +4,11 @@
   const $ = (id) => document.getElementById(id),
     state = {
       nonce: "",
+      documentGeneration: 0,
+      accountGeneration: 0,
+      requestGeneration: 0,
+      connected: false,
+      catalogQuery: "",
       scope: "library",
       filter: "all",
       category: "",
@@ -50,10 +55,15 @@
     return n;
   }
   function send(command, rest = {}) {
-    if (state.nonce && window.wx?.postMessage)
-      window.wx.postMessage(
-        JSON.stringify({ nonce: state.nonce, command, ...rest }),
-      );
+    if (!state.nonce || !window.wx?.postMessage || (command !== "ready" && !state.connected)) {
+      notice("模型库尚未连接完成，请稍候或重新进入模型库。");
+      return false;
+    }
+    if (command !== "ready") ++state.requestGeneration;
+    window.wx.postMessage(JSON.stringify({nonce: state.nonce, command,
+      documentGeneration: state.documentGeneration, accountTag: state.accountTag,
+      accountGeneration: state.accountGeneration, requestGeneration: state.requestGeneration, ...rest}));
+    return true;
   }
   function notice(text, login = false) {
     $("notice").replaceChildren(document.createTextNode(text));
@@ -81,7 +91,9 @@
   function query(reset = true) {
     if (reset) {
       state.offset = 0;
-      state.cloud = [];
+      const identity = JSON.stringify([state.scope,state.filter,state.q,state.category,state.sort]);
+      if (identity !== state.catalogQuery) state.cloud = [];
+      state.catalogQuery = identity;
       window.libraryState.retainLocalImages(state.images, state.local);
     }
     state.detail = null;
@@ -226,7 +238,13 @@
     );
     return n;
   }
+  const frameUpdates = new window.libraryState.FrameUpdates(
+    (callback) => window.requestAnimationFrame(callback), renderNow,
+  );
   function render() {
+    frameUpdates.request();
+  }
+  function renderNow() {
     const items = window.libraryState.project(
         state.local,
         state.cloud,
@@ -422,27 +440,41 @@
       );
       b.disabled = !window.libraryState.supported(file.filename);
       b.onclick = () =>
-        send(
-          state.signedIn ? "download" : "login",
-          state.signedIn ? { file: file.id } : {},
-        );
+        send("download", { file: file.id });
       row.append(b);
       $("files").append(row);
     }
   }
   window.modelLibraryReceive = (message) => {
     if (!message || typeof message !== "object") return;
-    switch (message.type) {
-      case "init":
+    if (message.type === "init") {
+      if (!message.nonce || !Number.isSafeInteger(message.documentGeneration) ||
+          message.documentGeneration < state.documentGeneration) return;
+      if (message.documentGeneration !== state.documentGeneration) {
         state.nonce = message.nonce;
-        filters();
-        break;
+        state.documentGeneration = message.documentGeneration;
+        state.accountGeneration = state.requestGeneration = 0;
+        state.connected = false;
+      }
+      filters();
+      send("ready");
+      return;
+    }
+    if (message.documentGeneration !== state.documentGeneration) return;
+    if (message.type === "account") {
+      if (message.accountGeneration < state.accountGeneration) return;
+    } else if (message.accountTag !== state.accountTag || message.accountGeneration !== state.accountGeneration ||
+               message.requestGeneration !== state.requestGeneration) return;
+    switch (message.type) {
       case "account": {
-        const changed = state.accountTag !== message.accountTag;
+        const changed = state.accountTag !== message.accountTag || state.accountGeneration !== message.accountGeneration;
         state.accountTag = message.accountTag;
+        state.accountGeneration = message.accountGeneration;
+        state.connected = true;
         state.signedIn = message.signedIn;
         state.projectAvailable = message.projectAvailable;
         if (changed) {
+          busy(false);
           state.cloud = [];
           window.libraryState.retainLocalImages(state.images, state.local);
           state.detail = null;
@@ -455,6 +487,7 @@
           $("downloadComplete").hidden = true;
           $("detail").hidden = true;
           $("listing").hidden = false;
+          notice("");
         }
         render();
         break;
@@ -466,6 +499,10 @@
         $("geometry").hidden = false;
         $("closeGeometry").hidden = true;
         $("menu").hidden = true;
+        break;
+      case "taxonomy":
+        state.taxonomy = message.value?.categories || [];
+        filters();
         break;
       case "local":
         state.local = message.items;
@@ -580,6 +617,12 @@
         break;
       }
     }
+  };
+  window.modelLibraryReceiveBatch = (messages) => {
+    if (!Array.isArray(messages)) return;
+    frameUpdates.batch(() => {
+      for (const message of messages) window.modelLibraryReceive(message);
+    });
   };
   for (const b of document.querySelectorAll("[data-scope]"))
     b.onclick = () => {

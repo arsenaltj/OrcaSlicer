@@ -49,33 +49,12 @@ void present_redesign_workspace(wxWindow* root, RedesignShell* shell)
     const auto started = std::chrono::steady_clock::now();
     root->Layout();
     const auto layout_done = std::chrono::steady_clock::now();
-    shell->request_viewport_frame();
+    // The shell coordinates each surface's own restore barrier. Top-level
+    // recovery paints only its background, never flushes a second child tree.
+    root->Refresh(false);
+    root->Update();
+    shell->present_restore_frame();
     const auto request_done = std::chrono::steady_clock::now();
-    wxWindow* workbench_surface = nullptr;
-    std::vector<wxWindow*> windows {root};
-    for (size_t i = 0; i < windows.size(); ++i)
-        for (auto* child : windows[i]->GetChildren()) {
-            if (!child || !child->IsShownOnScreen()) continue;
-            // The workbench queue owns final layout, native overlays and GL.
-            // A second tree flush here can overwrite its freshly drawn handle.
-            if (is_redesign_workbench_surface(child)) workbench_surface = child;
-            else windows.push_back(child);
-        }
-    for (auto* window : windows) {
-        prepare_redesign_restore_background(window);
-        window->Refresh(false);
-    }
-#ifdef __WXMSW__
-    if (workbench_surface) {
-        // Commit the surrounding native controls in one batch too. Per-child
-        // Update() flushes composition repeatedly before the workbench queue
-        // can paint its handle. Leave that subtree to its final-layout pass.
-        ::RedrawWindow(workbench_surface->GetHandle(), nullptr, nullptr,
-            RDW_VALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
-        ::RedrawWindow(root->GetHandle(), nullptr, nullptr, RDW_UPDATENOW | RDW_ALLCHILDREN);
-    } else
-#endif
-        for (auto* window : windows) window->Update();
     wxString trace;
     if (wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace) && trace == "1")
         BOOST_LOG_TRIVIAL(info) << "[UiRedesignRestore] host presentation: layout_ms="
@@ -85,12 +64,9 @@ void present_redesign_workspace(wxWindow* root, RedesignShell* shell)
             << ", native_ms="
             << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - request_done).count();
 #ifdef __WXMSW__
-    // The deferred workbench pass was queued above. Expose its complete native
-    // and GL surfaces afterwards; other pages retain their synchronous path.
-    if (::GetPropW(root->GetHandle(), redesign_restore_pending)) {
-        if (workbench_surface) root->CallAfter([root] { finish_redesign_restore(root); });
-        else finish_redesign_restore(root);
-    }
+    if (::GetPropW(root->GetHandle(), redesign_restore_pending))
+        finish_redesign_restore(root);
+    release_redesign_restore_frames(root);
 #endif
 }
 
@@ -194,32 +170,13 @@ bool ui_redesign_drag_trace_enabled()
 {
     static const bool enabled = [] {
         const char *value = std::getenv("ORCASLICER_UI_REDESIGN_DRAG_TRACE");
+        const char *latency = std::getenv("ORCASLICER_UI_LATENCY_TRACE");
+        if (latency && *latency=='1') return true;
         return value != nullptr && (*value == '1' || *value == 'y' || *value == 'Y' ||
                                     *value == 't' || *value == 'T');
     }();
     return enabled;
 }
-
-#ifdef __WXMSW__
-const char* ui_redesign_win32_message_name(WXUINT message)
-{
-    switch (message) {
-    case WM_NCLBUTTONDOWN: return "WM_NCLBUTTONDOWN";
-    case WM_ENTERSIZEMOVE: return "WM_ENTERSIZEMOVE";
-    case WM_EXITSIZEMOVE: return "WM_EXITSIZEMOVE";
-    case WM_WINDOWPOSCHANGING: return "WM_WINDOWPOSCHANGING";
-    case WM_WINDOWPOSCHANGED: return "WM_WINDOWPOSCHANGED";
-    case WM_NCHITTEST: return "WM_NCHITTEST";
-    case WM_SIZE: return "WM_SIZE";
-    case WM_PAINT: return "WM_PAINT";
-    case WM_ERASEBKGND: return "WM_ERASEBKGND";
-    case WM_PRINT: return "WM_PRINT";
-    case WM_PRINTCLIENT: return "WM_PRINTCLIENT";
-    case WM_NCPAINT: return "WM_NCPAINT";
-    default: return nullptr;
-    }
-}
-#endif
 
 }
 
@@ -265,6 +222,44 @@ bool MainFrame::MSWPrintChild(WXHDC dc, wxWindow* child)
 WXLRESULT MainFrame::MSWWindowProc(WXUINT nMsg, WXWPARAM wParam, WXLPARAM lParam)
 {
     HWND hWnd = GetHandle();
+    // The main frame owns the one native move loop on this GUI thread. Emit a
+    // bounded summary, not one synchronous log write per mouse/window message.
+    struct DragSample {
+        bool active {false}; wxSize size; int dpi {0}; unsigned positions {0}, paints {0};
+        std::chrono::steady_clock::time_point started;
+        std::uint64_t snapshots {0};
+        unsigned messages {0}, slow_messages {0}, slowest_message {0};
+        double max_message_ms {0};
+    };
+    static thread_local DragSample drag;
+    if (m_redesign_shell_active && ui_redesign_drag_trace_enabled()) {
+        if (nMsg==WM_ENTERSIZEMOVE) drag={true,GetClientSize(),GetDPI().x,0,0,std::chrono::steady_clock::now(),redesign_restore_snapshot_count()};
+        if (drag.active && nMsg==WM_WINDOWPOSCHANGED) ++drag.positions;
+        if (drag.active && nMsg==WM_PAINT) ++drag.paints;
+        if (drag.active && nMsg==WM_EXITSIZEMOVE) {
+            BOOST_LOG_TRIVIAL(info) << "[UiWindowMotion] kind="
+                << (drag.size==GetClientSize() && drag.dpi==GetDPI().x ? "move" : "resize_or_dpi")
+                << " positions=" << drag.positions << " paints=" << drag.paints
+                << " messages=" << drag.messages << " slow_messages=" << drag.slow_messages
+                << " max_message_ms=" << drag.max_message_ms << " slowest_message=" << drag.slowest_message
+                << " snapshot_requests=" << redesign_restore_snapshot_count()-drag.snapshots << " elapsed_ms="
+                << std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-drag.started).count();
+            drag.active=false;
+        }
+    }
+    struct MessageSample {
+        DragSample& drag;
+        WXUINT message;
+        bool measure;
+        std::chrono::steady_clock::time_point started {std::chrono::steady_clock::now()};
+        ~MessageSample() {
+            if (!measure) return;
+            const auto elapsed = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+            ++drag.messages;
+            if (elapsed>50.) ++drag.slow_messages;
+            if (elapsed>drag.max_message_ms) { drag.max_message_ms=elapsed; drag.slowest_message=message; }
+        }
+    } message_sample {drag,nMsg,drag.active};
     const auto* position = nMsg == WM_WINDOWPOSCHANGING ? reinterpret_cast<const WINDOWPOS*>(lParam) : nullptr;
     // Windows may clear WS_MINIMIZE before WINDOWPOSCHANGING. Remember the
     // iconize event, and exclude the tiny iconic bounds and z-order-only moves.
@@ -286,13 +281,10 @@ WXLRESULT MainFrame::MSWWindowProc(WXUINT nMsg, WXWPARAM wParam, WXLPARAM lParam
         else ::RemovePropW(hWnd, redesign_iconized);
     }
     if (nMsg == WM_NCDESTROY) {
+        release_redesign_restore_frames(this);
         ::RemovePropW(hWnd, redesign_restore_pending);
         ::RemovePropW(hWnd, redesign_iconized);
     }
-    if (ui_redesign_drag_trace_enabled() &&
-        (nMsg == WM_PRINT || nMsg == WM_PRINTCLIENT || nMsg == WM_NCPAINT))
-        BOOST_LOG_TRIVIAL(info) << "[UiRedesignDrag][MainFrame] "
-            << ui_redesign_win32_message_name(nMsg) << " flags=" << static_cast<long long>(lParam);
     /* When we have a custom titlebar in the window, we don't need the non-client area of a normal window
      * to be painted. In order to achieve this, we handle the "WM_NCCALCSIZE" which is responsible for the
      * size of non-client area of a window and set the return value to 0. Also we have to tell the
@@ -302,10 +294,11 @@ WXLRESULT MainFrame::MSWWindowProc(WXUINT nMsg, WXWPARAM wParam, WXLPARAM lParam
     case WM_SYSCOMMAND:
         if (m_redesign_shell_active && ((wParam & 0xfff0) == SC_MINIMIZE ||
             (wParam & 0xfff0) == SC_MAXIMIZE || (wParam & 0xfff0) == SC_RESTORE))
-            retain_redesign_window_frames(this);
+            retain_redesign_restore_frames_once(this);
         break;
     case WM_ENTERSIZEMOVE:
-        if (m_redesign_shell_active) retain_redesign_window_frames(this);
+        // Native movement preserves client dimensions and pixels. It must not
+        // synchronously read back every image/control or a GL front buffer.
         break;
     case WM_PRINT:
         // WM_PRINT can draw a classic caption directly into its snapshot DC.
@@ -375,12 +368,6 @@ WXLRESULT MainFrame::MSWWindowProc(WXUINT nMsg, WXWPARAM wParam, WXLPARAM lParam
     case WM_WINDOWPOSCHANGED:
     case WM_SIZE:
     case WM_PAINT:
-        if (ui_redesign_drag_trace_enabled()) {
-            BOOST_LOG_TRIVIAL(info) << "[UiRedesignDrag][MainFrame] "
-                                     << ui_redesign_win32_message_name(nMsg)
-                                     << " wParam=" << static_cast<unsigned long long>(wParam)
-                                     << " lParam=" << static_cast<long long>(lParam);
-        }
         break;
 
     case WM_NCHITTEST: {
@@ -414,7 +401,7 @@ WXLRESULT MainFrame::MSWWindowProc(WXUINT nMsg, WXWPARAM wParam, WXLPARAM lParam
         if (ui_redesign_drag_trace_enabled()) {
             const auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - begin).count();
-            BOOST_LOG_TRIVIAL(info) << "[UiRedesignDrag][MainFrame] WM_NCHITTEST"
+            if (elapsed_us>50000) BOOST_LOG_TRIVIAL(info) << "[UiRedesignDrag][MainFrame] WM_NCHITTEST"
                                      << " screen=" << screen_x << "," << screen_y
                                      << " result=" << static_cast<long long>(result)
                                      << " elapsed_us=" << elapsed_us;
@@ -515,7 +502,9 @@ void MainFrame::update_layout()
 
     wxBusyCursor busy;
 
-    Freeze();
+    wxWindowUpdateLocker no_updates;
+    if (IsShownOnScreen())
+        no_updates.Lock(this);
 
     // Remove old settings
     if (m_layout != ESettingsLayout::Unknown)
@@ -605,7 +594,6 @@ void MainFrame::update_layout()
 #endif
 
     Layout();
-    Thaw();
 }
 
 void MainFrame::show_redesign_shell(bool show)
@@ -1239,4 +1227,23 @@ MainFrame::~MainFrame()
     // Member-owned hosts are destroyed before wxWidgets destroys child windows.
     if (m_redesign_shell != nullptr)
         m_redesign_shell->disconnect_model_generation_host();
+}
+
+void MainFrame::init_close_controller()
+{
+    m_close_controller = std::make_unique<Presentation::WindowCloseController>(*this,
+        [this] { return !m_plater || m_plater->request_printer_transfer_shutdown(); },
+        [this] { return !m_plater || m_plater->poll_printer_transfer_shutdown(); },
+        [] { MarkdownTip::ExitTip(); wxGetApp().set_closing(true); });
+    m_close_controller->set_confirmations({
+        [this] { return !m_plater->get_view3D_canvas3D()->get_gizmos_manager().is_in_editing_mode(true); },
+        [this] {
+            const auto check = [](bool yes) {
+                return yes || wxGetApp().check_and_save_current_preset_changes(_L("Closing application"),
+                    _L("Closing Application while some presets are modified."));
+            };
+            return m_plater->close_with_confirm(check) != wxID_CANCEL;
+        },
+        [] { return wxGetApp().check_print_host_queue(); }
+    });
 }

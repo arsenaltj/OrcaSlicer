@@ -90,21 +90,10 @@ bool RedesignShell::begin_workbench_presentation(bool history_loading)
     auto* item = content->GetItem(source);
     if (!item) return false;
     remember_active_page_focus();
-    const auto token = m_page_transition.begin(
-        {int(m_active_page), int(m_model_view)}, {int(Page::Model), int(ModelView::Workbench)});
+    const auto token = m_page_coordinator.transition().begin(
+        {int(m_page_coordinator.page()), int(m_page_coordinator.view())}, {int(Page::Model), int(ModelView::Workbench)});
     if (!token) return false;
-    if (!m_pending_workbench_return_advanced &&
-        !(m_active_page == Page::Model && m_model_view != ModelView::Result && m_workbench_return_advanced))
-        m_pending_workbench_return_advanced = m_advanced_mode;
     m_workbench_transition = *token;
-    m_workbench_source_index = 0;
-    for (auto* candidate : content->GetChildren()) {
-        if (candidate == item) break;
-        ++m_workbench_source_index;
-    }
-    m_workbench_source_proportion = item->GetProportion();
-    m_workbench_source_flags = item->GetFlag();
-    m_workbench_source_border = item->GetBorder();
     if (!m_workbench_transition_cover) {
         m_workbench_transition_cover = new RetainedWorkbenchPageFrame(wxGetTopLevelParent(this));
         m_workbench_transition_cover->SetName("workbench-open-transition");
@@ -125,7 +114,7 @@ bool RedesignShell::begin_workbench_presentation(bool history_loading)
     auto* retained = static_cast<RetainedWorkbenchPageFrame*>(m_workbench_transition_cover);
     const auto source_bounds = workbench_transition_bounds();
     if (!retained->retain(source_bounds)) {
-        m_page_transition.rollback(*token);
+        m_page_coordinator.transition().rollback(*token);
         m_workbench_transition.reset();
         return false;
     }
@@ -138,10 +127,8 @@ bool RedesignShell::begin_workbench_presentation(bool history_loading)
     m_workbench_source_reparented = source != m_workbench_page;
     if (m_workbench_source_reparented) source->Hide();
     if (m_workbench_source_reparented &&
-        (!content->Detach(source) || !source->Reparent(m_workbench_transition_cover))) {
-        if (!content->GetItem(source)) content->Insert(m_workbench_source_index, source,
-            m_workbench_source_proportion, m_workbench_source_flags, m_workbench_source_border);
-        m_page_transition.rollback(*token);
+        !m_workbench_source_mount.mount(source, m_workbench_transition_cover)) {
+        m_page_coordinator.transition().rollback(*token);
         m_workbench_transition.reset();
         m_workbench_transition_cover->Hide();
         retained->release();
@@ -149,8 +136,6 @@ bool RedesignShell::begin_workbench_presentation(bool history_loading)
         return false;
     }
     m_workbench_transition_source = source;
-    if (m_workbench_source_reparented)
-        m_workbench_transition_cover->GetSizer()->Add(source, 1, wxEXPAND);
     m_workbench_transition_input_filter = std::make_unique<RetainedPageInputFilter>(this, source,
         history_loading ? m_history_loading : nullptr);
     m_workbench_prepared_size = wxSize();
@@ -185,7 +170,7 @@ bool RedesignShell::continue_workbench_presentation()
     if (m_history_open_request) update_history_loading(ModelHistoryOpenEvent::Stage::Displaying);
     wxWeakRef<RedesignShell> weak(this);
     m_model_generation_host->prepare_workbench_presentation([weak, token] {
-        if (weak && weak->m_page_transition.current(token) && weak->m_workbench_transition == token)
+        if (weak && weak->m_page_coordinator.transition().current(token) && weak->m_workbench_transition == token)
             weak->finish_workbench_presentation(true);
     });
     restore_smart_model_history();
@@ -232,7 +217,7 @@ void RedesignShell::layout_workbench_transition_cover()
 void RedesignShell::sync_page_settings_visibility(Page page)
 {
     if (!m_image_settings_panel) return;
-    const bool visible = page == Page::Image && !m_advanced_mode;
+    const bool visible = page == Page::Image && !m_page_coordinator.advanced();
     if (m_image_settings_panel->IsShown() == visible) return;
     m_image_settings_panel->Show(visible);
     // Preserve its controls/draft/scroll position; only the shared outer layout
@@ -303,14 +288,11 @@ void RedesignShell::restore_workbench_source_page()
     if (!source || !m_workbench_transition_cover || !m_workbench_source_reparented) return;
     m_workbench_source_reparented = false;
     source->Hide();
-    m_workbench_transition_cover->GetSizer()->Detach(source);
-    source->Reparent(m_content_host);
-    auto* sizer = m_content_host->GetSizer();
-    if (!sizer->GetItem(source)) sizer->Insert(std::min(m_workbench_source_index, sizer->GetItemCount()),
-        source, m_workbench_source_proportion, m_workbench_source_flags, m_workbench_source_border);
+    m_workbench_source_mount.restore();
+    source->Hide();
 }
 
-void RedesignShell::finish_workbench_presentation(bool ready, bool report_failure)
+void RedesignShell::finish_workbench_presentation(bool ready, bool report_failure, std::string error)
 {
     if (!m_workbench_transition || (ready && m_history_rollback_pending)) return;
     if (!ready && m_history_open_request && !m_history_rollback_pending) {
@@ -321,12 +303,11 @@ void RedesignShell::finish_workbench_presentation(bool ready, bool report_failur
         m_history_loading->Layout();
         m_history_loading->Refresh(false);
         wxWeakRef<RedesignShell> weak(this);
-        m_model_generation_host->finish_history_model_open(false, [weak, report_failure] {
+        m_model_generation_host->finish_history_model_open(false, [weak, report_failure, error = std::move(error)] {
             if (!weak || !weak->m_workbench_transition) return;
             weak->m_history_open_request = 0;
             weak->m_history_rollback_pending = false;
-            weak->m_model_generation_state = weak->m_model_generation_host->snapshot();
-            weak->finish_workbench_presentation(false, report_failure);
+            weak->finish_workbench_presentation(false, report_failure, error);
         });
         return;
     }
@@ -338,54 +319,55 @@ void RedesignShell::finish_workbench_presentation(bool ready, bool report_failur
         return;
     }
     m_workbench_transition_timer.Stop();
-    const auto source = m_page_transition.source();
+    const auto source = m_page_coordinator.transition().source();
     m_model_generation_host->cancel_workbench_presentation();
     if (ready) {
-        m_page_transition.mark_ready(token);
-        ready = m_page_transition.commit(token);
+        m_page_coordinator.transition().mark_ready(token);
+        ready = m_page_coordinator.transition().commit(token);
     }
-    if (!ready) m_page_transition.rollback(token);
+    if (!ready) m_page_coordinator.transition().rollback(token);
     m_workbench_transition.reset();
     m_workbench_history_loading = false;
     if (ready && m_history_open_request) {
         m_model_generation_host->finish_history_model_open(true);
         m_history_open_request = 0;
-        m_model_generation_state = m_model_generation_host->snapshot();
-        m_model_route_locked = true;
-        m_model_route_session = m_model_generation_state.model_generation_session;
-        m_model_route_id = model_generation_route_id(m_model_generation_state);
     }
     if (ready) {
-        if (m_pending_workbench_return_advanced) m_workbench_return_advanced = m_pending_workbench_return_advanced;
         m_image_page_view_only = false;
-        m_active_page = Page::Model;
+        m_advanced_model_route = false;
+        if (m_advanced_workspace && m_advanced_workspace != m_workbench_transition_source)
+            m_advanced_workspace->Hide();
+        m_page_coordinator.select_page(Page::Model);
         m_last_workbench_page = Page::Model;
-        m_model_view = ModelView::Workbench;
+        m_page_coordinator.select_view(ModelView::Workbench);
         m_active_tab_id = TAB_ID_GENERATE_3D;
         for (auto* page : m_pages) if (page && page != m_workbench_transition_source) page->Hide();
     } else {
         m_workbench_page->Hide();
-        m_active_page = static_cast<Page>(source.page);
-        m_model_view = static_cast<ModelView>(source.view);
+        m_page_coordinator.select_page(static_cast<Page>(source.page));
+        m_page_coordinator.select_view(static_cast<ModelView>(source.view));
     }
-    m_pending_workbench_return_advanced.reset();
     restore_workbench_source_page();
-    if (m_advanced_workspace) m_advanced_workspace->Show(m_active_page == Page::Image && m_advanced_mode);
-    if (m_advanced_mode) m_image_page->Hide();
-    sync_page_settings_visibility(m_active_page);
+    sync_page_settings_visibility(m_page_coordinator.page());
     refresh_navigation();
     refresh_workflow_layout();
     m_model_generation_host->set_workbench_presented(ready ||
-        (m_active_page == Page::Model && m_model_view == ModelView::Workbench));
-    if (!ready && m_active_page == Page::Image) mount_smart_model_history();
+        (m_page_coordinator.page() == Page::Model && m_page_coordinator.view() == ModelView::Workbench));
+    sync_smart_model_history();
+    queue_creation_history_refresh();
     restore_active_page_focus();
-    if (!ready) present_active_page(true);
+    present_active_page(!ready);
     m_workbench_transition_cover->Hide();
     finish_history_loading();
     static_cast<RetainedWorkbenchPageFrame*>(m_workbench_transition_cover)->release();
     BOOST_LOG_TRIVIAL(info) << "[WorkbenchPresentation] " << (ready ? "committed" : "rolled back") << " token=" << token;
-    if (!ready && report_failure)
-        wxMessageBox(_L("工作台界面准备未完成，请重新点击打开工作台。"), _L("工作台"), wxOK | wxICON_WARNING, this);
+    if (!ready && report_failure) {
+        BOOST_LOG_TRIVIAL(error) << "[WorkbenchPresentation] failure token=" << token
+            << " stage=" << (error.empty() ? "presentation" : "model_load") << " reason=" << error;
+        wxMessageBox(error.empty() ? _L("工作台界面准备未完成，请重新点击打开工作台。") :
+            _L("模型读取、校验或安装失败，原页面和模型已保留。详细原因已记录到日志。"),
+            _L("工作台"), wxOK | wxICON_WARNING, this);
+    }
 }
 
 } // namespace Slic3r::GUI

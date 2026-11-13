@@ -87,19 +87,11 @@ void apply_workbench_parameter_theme(wxWindow* parameters)
     apply_workbench_theme(parameters, true, wxColour(40, 40, 43));
 }
 
-void repaint_workbench_surface(wxWindow* window)
-{
-    if (!window || !window->IsShownOnScreen() || window->IsFrozen()) return;
-    window->Refresh();
-    window->Update();
-    for (wxWindow* child : window->GetChildren())
-        repaint_workbench_surface(child);
-}
 }
 void ModelGenerationPanel::on_discard(wxCommandEvent&)
 {
     if (m_busy || m_finishing_running || !m_finishing_candidate.empty()) return;
-    if (m_ready || m_workbench_model.ready || m_style_preview_ready) {
+    if (m_ready || m_model_preview_ready || m_style_preview_ready) {
         const int answer = show_redesign_confirmation(this,
             _L("要先看看重新设计的建议吗？当前历史模型会保留，图片和描述可继续使用。"),
             _L("重新开始"), {wxYES_NO | wxCANCEL, 105,
@@ -329,22 +321,32 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         refresh_model_finishing();
     };
     m_beauty_controls->on_undo = [this] {
+        if (m_beauty_restore_running) return;
         if (m_beauty_transactions && m_beauty_transactions->undo_count()) {
-            if (!m_beauty_transactions->undo())
-                m_finishing_status->SetLabel(_L("无法撤销：历史模型文件缺失或已变更，当前预览保持不变。"));
-            else m_finishing_status->SetLabel(_L("已撤销上一步修改。"));
-            refresh_model_finishing(); return;
+            wxWeakRef<ModelGenerationPanel> weak(this);
+            m_beauty_transactions->undo_async([weak](bool restored) {
+                if (!weak || weak->m_shutdown) return;
+                weak->m_finishing_status->SetLabel(restored ? _L("已撤销上一步修改。") :
+                    _L("无法撤销：历史模型文件缺失或已变更，当前预览保持不变。"));
+                weak->refresh_model_finishing();
+            });
+            return;
         }
         if (!m_finishing_undo_path.empty()) undo_model_finishing();
         else if (m_model_preview) m_model_preview->undo_selection();
         refresh_model_finishing();
     };
     m_beauty_controls->on_redo = [this] {
+        if (m_beauty_restore_running) return;
         if (m_beauty_transactions && m_beauty_transactions->redo_count()) {
-            if (!m_beauty_transactions->redo())
-                m_finishing_status->SetLabel(_L("无法重做：历史候选文件缺失或已变更，当前预览保持不变。"));
-            else m_finishing_status->SetLabel(_L("已重做上一步修改。"));
-            refresh_model_finishing(); return;
+            wxWeakRef<ModelGenerationPanel> weak(this);
+            m_beauty_transactions->redo_async([weak](bool restored) {
+                if (!weak || weak->m_shutdown) return;
+                weak->m_finishing_status->SetLabel(restored ? _L("已重做上一步修改。") :
+                    _L("无法重做：历史候选文件缺失或已变更，当前预览保持不变。"));
+                weak->refresh_model_finishing();
+            });
+            return;
         }
         if (!m_finishing_redo_path.empty()) redo_model_finishing();
         else if (m_model_preview) m_model_preview->redo_selection();
@@ -444,7 +446,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     };
     m_beauty_controls->on_preview = [this] { preview_model_finishing(); };
     m_beauty_controls->on_accept = [this] { accept_model_finishing(); };
-    m_beauty_controls->on_discard = [this] { discard_model_finishing(); };
+    m_beauty_controls->on_discard = [this] { discard_model_finishing_async(); };
     m_beauty_controls->on_cancel = [this] {
         if (m_beauty_color_gate_state == BeautyColorGateState::Checking) {
             cancel_beauty_color_gate();
@@ -574,8 +576,8 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     });
     m_beauty_controls->on_color_blocks_change=[this](bool before) {
         if(before) {
-            if (!m_beauty_session.source() && m_finishing_candidate.empty())
-                m_beauty_session.start_draft(std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate()));
+            if (!m_beauty_session->source() && m_finishing_candidate.empty())
+                m_beauty_session->start_draft(std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate()));
             return;
         }
         m_beauty_manual_color_dirty=m_beauty_controls && m_beauty_controls->has_changes();
@@ -602,7 +604,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     scroll->SetSizer(sizer);
     m_finishing_preview->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { preview_model_finishing(); });
     m_finishing_accept->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { accept_model_finishing(); });
-    m_finishing_discard->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { discard_model_finishing(); });
+    m_finishing_discard->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { discard_model_finishing_async(); });
     m_finishing_undo->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { undo_model_finishing(); });
     m_finishing_redo->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { redo_model_finishing(); });
     m_finishing_strength->Bind(wxEVT_SCROLL_THUMBRELEASE, [this](wxScrollEvent&) {
@@ -633,6 +635,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         refresh_local_recolor_controls(); update_finishing_selection(); refresh_model_finishing();
     });
     m_finishing_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (m_beauty_restore_running) m_beauty_restore_scope.cancel();
         if (m_beauty_color_gate_state == BeautyColorGateState::Checking) {
             cancel_beauty_color_gate();
             m_beauty_color_gate_state = BeautyColorGateState::Blocked;
@@ -651,39 +654,38 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         m_finishing_cancel->Disable();
     });
     auto compare = [this](wxCommandEvent&) {
-        if (m_busy || (m_beauty_transactions && m_beauty_transactions->processing())) return;
+        if (m_busy || m_beauty_restore_running || (m_beauty_transactions && m_beauty_transactions->processing())) return;
+        wxWeakRef<ModelGenerationPanel> weak(this);
         if (!m_finishing_candidate.empty()) {
-            if (!show_finishing_version(m_finishing_before ? m_finishing_candidate : m_finishing_source))
-                return;
-            m_finishing_before = !m_finishing_before;
-            if (!m_finishing_before && m_beauty_manual_color_dirty && m_beauty_controls)
-                m_beauty_controls->set_dirty(true);
-            m_finishing_compare->SetLabel(m_finishing_before ? _L("查看处理后") : _L("查看处理前"));
-            m_finishing_compare_model->SetLabel(m_finishing_compare->GetLabel());
-            m_model_preview_message->SetLabel(m_finishing_before
-                ? _L("处理前 · 当前已保存版本") : _L("处理后 · 尚未接受"));
-            refresh_model_finishing();
+            const bool before = !m_finishing_before;
+            show_finishing_version_async(before ? m_finishing_source : m_finishing_candidate, [weak, before](bool restored) {
+                if (!weak || weak->m_shutdown || !restored) return;
+                weak->m_finishing_before = before;
+                if (!before && weak->m_beauty_manual_color_dirty && weak->m_beauty_controls)
+                    weak->m_beauty_controls->set_dirty(true);
+                weak->m_finishing_compare->SetLabel(before ? _L("查看处理后") : _L("查看处理前"));
+                weak->m_finishing_compare_model->SetLabel(weak->m_finishing_compare->GetLabel());
+                weak->m_model_preview_message->SetLabel(before
+                    ? _L("处理前 · 当前已保存版本") : _L("处理后 · 尚未接受"));
+                weak->refresh_model_finishing();
+            });
             return;
         }
-        if (m_finishing_workbench && m_workbench_editing && m_beauty_session.source() &&
-            beauty_session_has_changes()) {
-            if (!m_finishing_before) {
-                auto draft = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
-                const auto comparison = beauty_comparison_baseline(*m_beauty_session.source(), *draft);
-                if (!restore_beauty_candidate(comparison)) return;
-                m_beauty_compare_draft = std::move(draft);
-                m_finishing_before = true;
-            } else {
-                if (!m_beauty_compare_draft ||
-                    !restore_beauty_candidate(*m_beauty_compare_draft)) return;
-                m_beauty_compare_draft.reset();
-                m_finishing_before = false;
-            }
-            m_finishing_compare->SetLabel(m_finishing_before ? _L("查看修改后") : _L("修改前后对比"));
-            m_finishing_compare_model->SetLabel(m_finishing_compare->GetLabel());
-            m_model_preview_message->SetLabel(m_finishing_before
-                ? _L("修改前 · 进入美颜时") : _L("修改后 · 尚未保存"));
-            refresh_model_finishing();
+        if (m_finishing_workbench && m_workbench_editing && m_beauty_session->source() && beauty_session_has_changes()) {
+            const bool before = !m_finishing_before;
+            auto draft = before ? std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate()) : m_beauty_compare_draft;
+            if (!draft) return;
+            auto target = before ? beauty_comparison_baseline(*m_beauty_session->source(), *draft) : *draft;
+            restore_beauty_candidate_async(std::move(target), [weak, before, draft](bool restored) {
+                if (!weak || weak->m_shutdown || !restored) return;
+                weak->m_beauty_compare_draft = before ? draft : nullptr;
+                weak->m_finishing_before = before;
+                weak->m_finishing_compare->SetLabel(before ? _L("查看修改后") : _L("修改前后对比"));
+                weak->m_finishing_compare_model->SetLabel(weak->m_finishing_compare->GetLabel());
+                weak->m_model_preview_message->SetLabel(before
+                    ? _L("修改前 · 进入美颜时") : _L("修改后 · 尚未保存"));
+                weak->refresh_model_finishing();
+            });
         }
     };
     m_finishing_compare->Bind(wxEVT_BUTTON, compare);
@@ -692,19 +694,36 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     });
     m_finishing_compare_model->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
         if (m_finishing_workbench) { event.Skip(); return; }
-        if (m_busy || m_finishing_candidate.empty() || m_finishing_before) return;
-        if (show_finishing_version(m_finishing_source)) {
-            m_finishing_compare_held = true;
-            m_finishing_compare_model->CaptureMouse();
-            m_model_preview_message->SetLabel(_L("处理前 · 松开恢复处理后"));
-            refresh_model_finishing();
-        }
+        if (m_busy || m_beauty_restore_running || m_finishing_candidate.empty() || m_finishing_before) return;
+        m_finishing_compare_held = true;
+        m_finishing_compare_model->CaptureMouse();
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        show_finishing_version_async(m_finishing_source, [weak](bool restored) {
+            if (!weak || weak->m_shutdown || !weak->m_finishing_compare_held) return;
+            if (restored) {
+                weak->m_model_preview_message->SetLabel(_L("处理前 · 松开恢复处理后"));
+                weak->refresh_model_finishing();
+            } else {
+                weak->m_finishing_compare_held = false;
+                if (weak->m_finishing_compare_model->HasCapture()) weak->m_finishing_compare_model->ReleaseMouse();
+            }
+        }, [weak] { return weak && !weak->m_shutdown && weak->m_finishing_compare_held; });
     });
     auto release_compare = [this] {
         if (!m_finishing_compare_held) return;
         m_finishing_compare_held = false;
         if (m_finishing_compare_model->HasCapture()) m_finishing_compare_model->ReleaseMouse();
-        if (!m_finishing_candidate.empty()) show_finishing_version(m_finishing_candidate);
+        if (m_beauty_restore_running) {
+            // A release can precede parsing. The source must never install
+            // after capture has ended; keep the busy gate until it drains.
+            m_beauty_restore_scope.cancel();
+        } else if (!m_shutdown && !m_finishing_candidate.empty() &&
+                   !m_model_preview->showing_model(m_finishing_candidate)) {
+            wxWeakRef<ModelGenerationPanel> weak(this);
+            show_finishing_version_async(m_finishing_candidate, [weak](bool) {
+                if (weak && !weak->m_shutdown) weak->refresh_model_finishing();
+            });
+        }
         m_model_preview_message->SetLabel(_L("处理后 · 尚未保存"));
         refresh_model_finishing();
     };
@@ -753,7 +772,7 @@ void ModelGenerationPanel::paint_beauty_color(const std::vector<size_t>& faces)
     const bool before_dirty = m_beauty_controls && m_beauty_controls->has_changes();
     const bool before_manual_dirty = m_beauty_manual_color_dirty;
     const auto before_match = m_beauty_matched_colors;
-    auto session_source = !m_beauty_session.source() && m_finishing_candidate.empty()
+    auto session_source = !m_beauty_session->source() && m_finishing_candidate.empty()
         ? std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate()) : nullptr;
     const auto painted = m_model_preview->paint_beauty_faces(faces,
         {color.Red() / 255.f, color.Green() / 255.f, color.Blue() / 255.f, 1.f},
@@ -773,7 +792,7 @@ void ModelGenerationPanel::paint_beauty_color(const std::vector<size_t>& faces)
         refresh_model_finishing();
         return;
     }
-    if (session_source) m_beauty_session.start_draft(std::move(session_source));
+    if (session_source) m_beauty_session->start_draft(std::move(session_source));
     const auto after_colors = m_model_preview->face_color_overrides();
     const auto after_leaves = m_model_preview->leaf_edit_metadata();
     const auto after_match = m_beauty_matched_colors;
@@ -824,7 +843,7 @@ void ModelGenerationPanel::restore_beauty_entry_color()
 {
     if (!m_finishing_workbench || !m_workbench_editing || !post_generation_ui_state().can_edit ||
         m_beauty_color_gate_state != BeautyColorGateState::Compatible || !m_model_preview ||
-        !m_beauty_session.source() || !m_beauty_session.source()->matched_colors ||
+        !m_beauty_session->source() || !m_beauty_session->source()->matched_colors ||
         !m_beauty_matched_colors) {
         if (m_finishing_status)
             m_finishing_status->SetLabel(_L("当前没有可恢复的进入时颜色，或耗材匹配已变化。"));
@@ -843,13 +862,13 @@ void ModelGenerationPanel::restore_beauty_entry_color()
     const bool before_dirty = m_beauty_controls && m_beauty_controls->has_changes();
     const bool before_manual_dirty = m_beauty_manual_color_dirty;
     const auto restored = m_model_preview->restore_beauty_region(
-        faces, m_beauty_session.source()->face_overrides, m_beauty_session.source()->leaf_edits);
+        faces, m_beauty_session->source()->face_overrides, m_beauty_session->source()->leaf_edits);
     if (!restored.changed) {
         m_finishing_status->SetLabel(_L("所选区域已经是进入工作台时的颜色。"));
         return;
     }
     if (!restore_beauty_paint_slots(*m_beauty_matched_colors,
-            *m_beauty_session.source()->matched_colors,
+            *m_beauty_session->source()->matched_colors,
             BeautyPaintSlotChanges{restored.faces, restored.subfaces})) {
         if (leaves) m_model_preview->restore_leaf_edits(before_leaves);
         else m_model_preview->restore_beauty_face_colors(before_colors);

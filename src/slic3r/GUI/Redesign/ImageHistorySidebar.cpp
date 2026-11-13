@@ -1,4 +1,5 @@
 #include "ImageHistorySidebar.hpp"
+#include "../Presentation/UiRuntime.hpp"
 #include "ImageHistoryPagination.hpp"
 #include "ImageWorkspaceLayout.hpp"
 #include "RedesignWidgets.hpp"
@@ -474,8 +475,13 @@ struct ImageHistorySidebar::Impl {
 };
 
 ImageHistorySidebar::ImageHistorySidebar(wxWindow* parent, Open open, std::function<void()> changed, bool models_only)
-    : wxPanel(parent), m_impl(std::make_unique<Impl>(this, std::move(open), std::move(changed), models_only)) {}
-ImageHistorySidebar::~ImageHistorySidebar() = default;
+    : wxPanel(parent), m_impl(std::make_unique<Impl>(this, std::move(open), std::move(changed), models_only)) {
+    Presentation::background_tasks().on_shutdown(this, [this] {
+        m_impl->timer.Stop(); m_impl->worker.stop = true; m_impl->worker.wake.notify_one();
+        Presentation::background_tasks().retire(m_impl->worker.thread);
+    });
+}
+ImageHistorySidebar::~ImageHistorySidebar() { Presentation::background_tasks().remove_shutdown_hook(this); }
 void ImageHistorySidebar::refresh_history() { m_impl->refresh(); }
 void ImageHistorySidebar::set_busy(bool busy) { m_impl->busy = busy; }
 void ImageHistorySidebar::fit_to_page_width(int width)

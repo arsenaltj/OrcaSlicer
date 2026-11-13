@@ -1,10 +1,16 @@
 // Included inside the Plater translation unit; preserves native project-save semantics.
 // BBS: save logic
-int GUI::Plater::close_with_confirm(std::function<bool(bool)> second_check)
+int GUI::Plater::close_with_confirm(std::function<bool(bool)> second_check, std::function<void()>* deferred_close)
 {
+    // Staged CAD imports publish only after dialogs and geometry preparation
+    // succeed. Cancelling them must preserve the original project's state.
+    const auto close = [deferred_close](std::function<void()> steps) {
+        if (deferred_close) *deferred_close = std::move(steps);
+        else steps();
+    };
     if (up_to_date(false, false)) {
         if (second_check && !second_check(false)) return wxID_CANCEL;
-        model().set_backup_path("");
+        close([this] { model().set_backup_path(""); });
         return wxID_NO;
     }
 
@@ -31,20 +37,18 @@ int GUI::Plater::close_with_confirm(std::function<bool(bool)> second_check)
             wxGetApp().app_config->set("save_project_choise", result == wxID_YES ? "yes" : "no");
         if (result == wxID_YES) {
             result = save_project();
-            if (result == wxID_CANCEL) {
-                if (choise.empty())
-                    return result;
-                else
-                    result = wxID_NO;
-            }
+            if (result == wxID_CANCEL)
+                return result;
         }
     }
 
     if (second_check && !second_check(result == wxID_YES)) return wxID_CANCEL;
 
-    model().set_backup_path("");
-    up_to_date(true, false);
-    up_to_date(true, true);
+    close([this] {
+        model().set_backup_path("");
+        up_to_date(true, false);
+        up_to_date(true, true);
+    });
 
     return result;
 }

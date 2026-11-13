@@ -11,7 +11,7 @@ import sys
 # The packager uses isolated Python; load only modules beside this script.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from package_source_identity import capture
-from verify_ai_integration import validate
+from verify_ai_integration import SCHEMA, validate
 
 
 def _valid_report(report: object, head: str) -> bool:
@@ -19,7 +19,7 @@ def _valid_report(report: object, head: str) -> bool:
         return False
     errors = report.get("errors")
     return (
-        report.get("schema") == "orcaslicer.ai-integration-lock/v4"
+        report.get("schema") == SCHEMA
         and report.get("git_checks_skipped") is False
         and isinstance(report.get("git"), dict)
         and report["git"].get("head") == head

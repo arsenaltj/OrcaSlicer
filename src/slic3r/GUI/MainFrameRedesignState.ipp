@@ -1,4 +1,6 @@
     std::unique_ptr<AIDesktopFeatureHost> m_ai_feature_host;
+    std::unique_ptr<Presentation::WindowCloseController> m_close_controller;
+    void init_close_controller();
     void bind_workspace_window_events();
 #ifdef __WXMSW__
     bool MSWPrintChild(WXHDC dc, wxWindow* child) override;

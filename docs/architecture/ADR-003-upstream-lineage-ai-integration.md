@@ -80,3 +80,11 @@ GUI automation must select the executable path, endpoint, data directory and con
 - AI-disabled and Sidecar-offline paths preserve normal Orca behavior.
 - Representative old 3MF projects and profiles open, slice and save without migration regressions.
 - No credentials, generated models, build products or machine-specific paths are committed.
+
+## 2026-11-13：固定提交型 Nightly 基线
+
+本轮官方来源与候选差异基线均固定为 `93941dc34e8a534ce3966a5979fe1edac002cb68`，上游兼容版本为 `2.6.0-dev`。集成锁 v5 将 `kind=commit` 与 `kind=tag` 分开：固定提交必须存在且为最终候选 HEAD 的祖先；`observed_ref` 仅解释来源，不解析移动标签决定资格。正式发布标签仍核对标签解引用后的准确提交，标签缺失、移动、错误对象和非祖先均拒绝。升级前功能来源及集成收据保持原值。
+
+CI 通过 `fetch_ai_provenance.py` 只取锁中的完整提交；官方对象从官方 Orca 仓库获取，历史产品收据从 origin 获取，不更新开发分支或跟随 Nightly 标签。当前两条候选工作流不再硬编码旧 Alpha／Beta 抓取步骤，校验器、测试与内部产物消费者同步使用 v5。未提交 merge 的 HEAD 尚未包含新上游时，完整 Git 守卫应继续失败；源码及预算检查通过不等于祖先、候选 CI 或主线准入通过。
+
+共享热点预算阈值保持原值。证据分别保留 P1 职责整改后的旧 Beta 测量、合并后的旧 Beta 测量和固定 Nightly 测量；官方新增行数不能冒充本地职责整改，换比较基线也不能抹掉旧失败记录。产品显示版本从 `config/product.json` 独立读取，不能以产品版本改写预设或 3MF 兼容语义。

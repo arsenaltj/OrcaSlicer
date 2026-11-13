@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <string>
 #include <exception>
+#include <stdexcept>
 #include "slic3r/GUI/OpenGLManager.hpp"
 #include "libslic3r/BoundingBox.hpp"
 #include <limits>
@@ -575,6 +576,8 @@ bool GLModel::init_from_file(const std::string& filename)
 
 void GLModel::reset()
 {
+    m_upload_started = m_upload_ready = false;
+    m_upload_vertex_bytes = m_upload_index_bytes = 0;
     // release gpu memory
     if (m_render_data.ibo_id > 0) {
         glsafe(::glDeleteBuffers(1, &m_render_data.ibo_id));
@@ -636,7 +639,7 @@ void GLModel::render(GLShaderProgram* shader)
 
 void GLModel::render(const std::pair<size_t, size_t>& range, GLShaderProgram* shader)
 {
-    if (m_render_disabled)
+    if (m_render_disabled || (m_upload_started && !m_upload_ready))
         return;
 
     if (range.second == range.first)
@@ -725,6 +728,7 @@ void GLModel::render(const std::pair<size_t, size_t>& range, GLShaderProgram* sh
 
 void GLModel::render_instanced(unsigned int instances_vbo, unsigned int instances_count)
 {
+    if (m_upload_started && !m_upload_ready) return;
     if (instances_vbo == 0 || instances_count == 0)
         return;
 
@@ -823,6 +827,62 @@ bool GLModel::update_vertex_attributes(const std::vector<float>& vertices)
     glsafe(::glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.size() * sizeof(float), vertices.data()));
     glsafe(::glBindBuffer(GL_ARRAY_BUFFER, 0));
     return true;
+}
+
+bool GLModel::upload_step(size_t budget_bytes)
+{
+    if (m_upload_ready || (!m_upload_started && m_render_data.vbo_id && m_render_data.ibo_id)) return true;
+    auto& data = m_render_data.geometry;
+    if (data.vertices.empty() || data.indices.empty()) return true;
+    // Attribute only errors from this upload to this frame. Partial data is
+    // never eligible for drawing or for a successful first-frame notification.
+    for (int i = 0; i < 16 && ::glGetError() != GL_NO_ERROR; ++i) {}
+    GLint array = 0, element = 0, vao = 0;
+    ::glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &array);
+    const bool core = OpenGLManager::get_gl_info().is_core_profile();
+    if (core) { ::glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao); }
+    if (!m_upload_started) {
+        if (core) ::glGenVertexArrays(1, &m_render_data.vao_id);
+        if (core) ::glBindVertexArray(m_render_data.vao_id);
+        ::glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &element);
+        m_render_data.vertices_count = data.vertices_count();
+        m_render_data.indices_count = data.indices_count();
+        // Keep the already prepared UINT indices; no GUI-thread conversion.
+        data.index_type = Geometry::EIndexType::UINT;
+        ::glGenBuffers(1, &m_render_data.vbo_id);
+        ::glBindBuffer(GL_ARRAY_BUFFER, m_render_data.vbo_id);
+        ::glBufferData(GL_ARRAY_BUFFER, data.vertices.size() * sizeof(float), nullptr, GL_STATIC_DRAW);
+        ::glGenBuffers(1, &m_render_data.ibo_id);
+        ::glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_render_data.ibo_id);
+        ::glBufferData(GL_ELEMENT_ARRAY_BUFFER, data.indices.size() * sizeof(unsigned int), nullptr, GL_STATIC_DRAW);
+        m_upload_started = true;
+    } else {
+        if (core) ::glBindVertexArray(m_render_data.vao_id);
+        ::glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &element);
+    }
+    const auto upload = [&](GLenum target, GLuint buffer, const void* bytes, size_t total, size_t& offset) {
+        const size_t count = std::min(budget_bytes, total - offset);
+        if (count) {
+            ::glBindBuffer(target, buffer);
+            ::glBufferSubData(target, offset, count, static_cast<const unsigned char*>(bytes) + offset);
+            offset += count; budget_bytes -= count;
+        }
+        return offset == total;
+    };
+    const bool vertices_ready = upload(GL_ARRAY_BUFFER, m_render_data.vbo_id, data.vertices.data(),
+        data.vertices.size() * sizeof(float), m_upload_vertex_bytes);
+    const bool indices_ready = upload(GL_ELEMENT_ARRAY_BUFFER, m_render_data.ibo_id, data.indices.data(),
+        data.indices.size() * sizeof(unsigned int), m_upload_index_bytes);
+    ::glBindBuffer(GL_ARRAY_BUFFER, array); ::glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, element);
+    if (core) ::glBindVertexArray(vao);
+    if (::glGetError() != GL_NO_ERROR)
+        throw std::runtime_error("OpenGL model upload failed");
+    if (vertices_ready && indices_ready) {
+        std::vector<float>().swap(data.vertices);
+        std::vector<unsigned int>().swap(data.indices);
+        m_upload_ready = true;
+    }
+    return m_upload_ready;
 }
 
 bool GLModel::send_to_gpu()
