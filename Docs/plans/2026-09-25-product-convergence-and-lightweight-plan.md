@@ -4,7 +4,9 @@
 - 基线／保护：沿task/mainline-bugfix，原HEAD072f52d5e898519a09e283d5d4fab6c36ed24827与待提交MERGE_HEAD93941dc34e8a534ce3966a5979fe1edac002cb68。pr-current-20261113保存1187项完整源码前像、原Git index与merge控制文件、完整暂存／未暂存差异、470项当前模型及网站8项摘要；原stash与此前失败证据保留。当前源码仍对应已交付library-empty-20261113的原生与网页资源，本轮仅更新验收和提交记录，不混入网站独立修改。
 - 最新主线：fetch取得origin/codex/team/integration e5a0b3ae09；相对072f52d5e8新增6条历史，净源码树完全相同。先按正常merge收口固定Nightly和现有修复，再合入这些团队历史，保留双方祖先，不reset、重写或强推。本分支没有开放PR，PR #65已合并，因此新建指向codex/team/integration的中文开放PR；说明以最新base／最终head的实际差异为准，不能把主线已有的模型库、日志导出或YOYOClaw接入重复列为新增功能。
 - 已有验证／待验：沿用源码匹配的原生704项格式、643项切片、工作台／生命周期／账号／库及历史副本证据；本轮模型库18项网页、58项集成契约、独立浏览器5项与NoLaunch五步记录已完成，用户本轮模型库验收单列。合并提交后重验固定来源祖先与预算门禁，补提交态架构／文档检查；CI绑定最新base／head后另列，不将本地或用户验收当作远端CI通过，仍需非作者评审和维护者受保护合入。
-- 负责／证据：mainline-pr-submit-20261113，单writer；D:/TEST/artifacts/mainline-bugfix/evidence/pr-current-20261113。下一步完成当前版本本地提交、同步最新团队主线、推送并创建开放PR，源码与本地验证产物的构建基线分别保留。
+- Git交付：38ef1de32439f5efe593065b0f6ec534e6c9382f以普通双亲合并收口固定Nightly和当前修复；9e14590963287eed7c6ebe1bf90822f011121178合入最新团队主线e5a0b3ae092f47193adeb3b5c7cef90dad7594bf，无冲突、源码树不变。普通推送task/mainline-bugfix后已创建中文[开放PR #71](https://github.com/arsenaltj/OrcaSlicer/pull/71)，目标codex/team/integration，未设为Draft、未合入主线。相对该最新主线1187文件、111387行新增／63616行删除，包含官方257提交和本地成果；最终提交数／head由PR实时记录及本轮证据保存，交付记录追加不改变业务代码。
+- 提交态验证：完整集成守卫通过，固定官方与候选祖先、四项原阈值预算均无错误；map125／3012／29与README通过。精确e5a0b3ae09／9e14590963的本地架构分析生成，5张图各9项布局检查通过，静态未解析关系仍明确披露，不冒充业务证明。中文PR文档声明首轮误列进度类设计文档及JSON凭证，校验失败已保留；仅列真实维护文档后通过，未削弱检查。首次普通push在部分克隆补取官方对象时过慢，取消自有Git进程后启用对象协商完成普通推送，无force或历史改写；未结束用户程序。
+- 负责／证据：mainline-pr-submit-20261113，单writer；D:/TEST/artifacts/mainline-bugfix/evidence/pr-current-20261113/validation.json。已验收模型库本轮Git交付完成；下一步核对PR #71最新base／head候选CI与非作者评审，未验矩阵和退出崩溃继续保留。源码与原本地验证产物的基础SHA／快照分别登记，本轮不重新构建运行树、打包、部署或打印。
 
 # MAINLINE-BUGFIX-001：生成绘制、模型库与检查交接五项补修（2026-11-13）
 
