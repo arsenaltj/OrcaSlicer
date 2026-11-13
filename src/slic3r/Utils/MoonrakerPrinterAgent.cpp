@@ -1,12 +1,16 @@
 #include "MoonrakerPrinterAgent.hpp"
 #include "AsioUtils.hpp"
+#include "CrealityCfs.hpp"
 #include "Http.hpp"
 #include "IPrinterAgent.hpp"
 #include "NetworkAgentFactory.hpp"
 #include "bambu_networking.hpp"
+#include "libslic3r/Config.hpp"
+#include "libslic3r/Format/bbs_3mf.hpp"
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Utils.hpp"
+#include "libslic3r/miniz_extension.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include "slic3r/GUI/DeviceManager.hpp"
@@ -48,7 +52,9 @@
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/path.hpp>
 #include <boost/filesystem/operations.hpp>
+#include <boost/format.hpp>
 #include <boost/log/trivial.hpp>
+#include <miniz.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <openssl/tls1.h>
@@ -57,15 +63,18 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <cctype>
 #include <ios>
 #include <functional>
 #include <exception>
 #include <map>
 #include <string>
+#include <string_view>
 #include <mutex>
 #include <memory>
 #include <sstream>
+#include <regex>
 #include <set>
 #include <string_view>
 #include <thread>
@@ -211,6 +220,125 @@ bool is_extruder_object_name(const std::string& name)
     return name.size() > prefix.size() && name.compare(0, prefix.size(), prefix) == 0 &&
         std::all_of(name.begin() + prefix.size(), name.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; });
 }
+bool extract_plate_gcode(const std::string& archive_path, int plate_index, const boost::filesystem::path& gcode_path)
+{
+    static const std::regex plate_gcode(R"(Metadata/plate_\d+\.gcode)");
+
+    mz_zip_archive archive;
+    mz_zip_zero_struct(&archive);
+    if (!Slic3r::open_zip_reader(&archive, archive_path))
+        return false;
+
+    int index = mz_zip_reader_locate_file(&archive, (boost::format(GCODE_FILE_FORMAT) % plate_index).str().c_str(), nullptr, 0);
+    if (index < 0) {
+        int plates = 0;
+        for (mz_uint i = 0, n = mz_zip_reader_get_num_files(&archive); i < n; ++i) {
+            mz_zip_archive_file_stat stat;
+            if (mz_zip_reader_file_stat(&archive, i, &stat) && std::regex_match(stat.m_filename, plate_gcode)) {
+                index = int(i);
+                ++plates;
+            }
+        }
+        // Another plate's G-code would print the wrong part
+        if (plates != 1)
+            index = -1;
+    }
+    const bool extracted = index >= 0 && Slic3r::extract_zip_entry_to_file(&archive, mz_uint(index), gcode_path);
+    Slic3r::close_zip_reader(&archive);
+    return extracted;
+}
+
+// Klipper reads any uploaded file as G-code, so unless the printer prints 3MF, a .gcode.3mf bundle is uploaded as the
+// plate's G-code inside it.
+std::string moonraker_upload_source(const Slic3r::PrintParams& params)
+{
+    // Native jobs supply the actual sliced plate; direct agent consumers may
+    // supply only filename. Only this adapter can safely unpack that bundle.
+    // Never fall back from an explicitly supplied but missing plate.
+    return params.dst_file.empty() ? params.filename : params.dst_file;
+}
+
+class UploadFile
+{
+public:
+    UploadFile(const std::string& path, const Slic3r::PrintParams& params, bool printer_accepts_3mf) : m_source(path), m_path(path)
+    {
+        if (!boost::iends_with(path, ".3mf"))
+            return;
+        if (printer_accepts_3mf) {
+            m_sends_bundle = true;
+            return;
+        }
+        m_path.clear();
+        m_failed = true;
+        boost::system::error_code ec;
+        const boost::filesystem::path temp_dir = boost::filesystem::temp_directory_path(ec);
+        const boost::filesystem::path name     = ec ? boost::filesystem::path() :
+                                                      boost::filesystem::unique_path("orca-upload-%%%%-%%%%-%%%%.gcode", ec);
+        if (ec) {
+            BOOST_LOG_TRIVIAL(error) << "MoonrakerPrinterAgent: no temp file to extract the plate G-code to: " << ec.message();
+            return;
+        }
+        m_extracted = temp_dir / name;
+        // plate_index is read only for a bundle, because the verify uploads leave it unset
+        if (!extract_plate_gcode(path, params.plate_index, m_extracted)) {
+            BOOST_LOG_TRIVIAL(error) << "MoonrakerPrinterAgent: no G-code for plate " << params.plate_index << " in " << path;
+            return;
+        }
+        m_path   = m_extracted.string();
+        m_failed = false;
+    }
+    ~UploadFile()
+    {
+        if (!m_extracted.empty()) {
+            boost::system::error_code ec;
+            boost::filesystem::remove(m_extracted, ec);
+        }
+    }
+    UploadFile(const UploadFile&)            = delete;
+    UploadFile& operator=(const UploadFile&) = delete;
+
+    // ok() is false when a bundle's plate G-code could not be extracted.
+    bool               ok() const { return !m_failed; }
+    bool               sends_bundle() const { return m_sends_bundle; }
+    const std::string& path() const { return m_path; }
+
+    std::string upload_name(std::string name) const
+    {
+        if (name.empty())
+            name = boost::filesystem::path(m_source).filename().string();
+        for (const char* extension : {".3mf", ".gcode"})
+            if (boost::iends_with(name, extension))
+                name.erase(name.size() - std::strlen(extension));
+        // Klipper's print start can't take # ; * or control characters, newer curl uploads " as %22, and / \ would make
+        // the name a path
+        std::replace_if(name.begin(), name.end(), [](char c) {
+            const auto byte = static_cast<unsigned char>(c);
+            return byte < 0x20 || byte == 0x7F || std::string_view("\"#;*/\\").find(c) != std::string_view::npos;
+        }, '_');
+        // A leading dot hides the file in Fluidd and Mainsail, and a leading space may be trimmed from the stored name
+        name.erase(0, name.find_first_not_of(". "));
+        // Printer file systems allow 255 bytes per name
+        const std::size_t max_stem = 255 - std::strlen(".gcode.3mf");
+        if (name.size() > max_stem) {
+            std::size_t cut = max_stem;
+            while (cut > 0 && (static_cast<unsigned char>(name[cut]) & 0xC0) == 0x80)
+                --cut;
+            name.resize(cut);
+        }
+        if (name.empty())
+            name = "print";
+        // A bundle is named .gcode.3mf, as the print host upload names it
+        return name + (m_sends_bundle ? ".gcode.3mf" : ".gcode");
+    }
+
+private:
+    std::string             m_source;
+    std::string             m_path;
+    boost::filesystem::path m_extracted;
+    bool                    m_sends_bundle = false;
+    bool                    m_failed       = false;
+};
 
 } // namespace
 
@@ -429,8 +557,10 @@ int MoonrakerPrinterAgent::start_send_gcode_to_sdcard(PrintParams      params,
     if (update_fn)
         update_fn(PrintingStageCreate, 0, _u8L("Preparing..."));
 
-    const auto traits = get_traits();
-    const std::string gcode_path = resolve_printer_job_payload_path(params, traits);
+    if (cancel_fn && cancel_fn())
+        return BAMBU_NETWORK_ERR_CANCELED;
+
+    const std::string gcode_path = moonraker_upload_source(params);
     namespace fs = boost::filesystem;
     const fs::path source_path(gcode_path);
     if (gcode_path.empty() || !fs::exists(source_path)) {
@@ -440,16 +570,18 @@ int MoonrakerPrinterAgent::start_send_gcode_to_sdcard(PrintParams      params,
                                  << " reason=file_not_found file=" << source_path.filename().string();
         return BAMBU_NETWORK_ERR_FILE_NOT_EXIST;
     }
-    const std::string safe_filename = resolve_upload_filename(params, gcode_path);
+    UploadFile file(gcode_path, params, accepts_3mf());
+    if (!file.ok()) return BAMBU_NETWORK_ERR_FILE_NOT_EXIST;
+    const std::string safe_filename = file.upload_name(params.task_name.empty() ? params.project_name : params.task_name);
 
     BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] upload_started action=upload_only agent="
                             << get_agent_info().id
                             << " device_ref=" << connection_device_ref(params.dev_id)
-                            << " payload=" << printer_job_payload_name(traits.job_payload)
+                            << " payload=" << (file.sends_bundle() ? "gcode_3mf" : "raw_gcode")
                             << " file=" << safe_filename;
 
     // Upload only, don't start print
-    if (!upload_gcode(gcode_path, safe_filename, device_info.base_url, device_info.api_key, update_fn, cancel_fn)) {
+    if (!upload_gcode(file.path(), safe_filename, device_info.base_url, device_info.api_key, update_fn, cancel_fn)) {
         BOOST_LOG_TRIVIAL(error) << "[PrinterTransfer] upload_failed action=upload_only agent="
                                  << get_agent_info().id
                                  << " device_ref=" << connection_device_ref(params.dev_id)
@@ -475,15 +607,11 @@ int MoonrakerPrinterAgent::start_local_print(PrintParams params, OnUpdateStatusF
     if (cancel_fn && cancel_fn()) {
         return BAMBU_NETWORK_ERR_CANCELED;
     }
-    // Determine the G-code file to upload
-    // params.filename may be .3mf, params.dst_file contains actual G-code
-    const auto traits = get_traits();
-    const std::string gcode_path = resolve_printer_job_payload_path(params, traits);
+    const std::string gcode_path = moonraker_upload_source(params);
 
-    // Check if file exists and has .gcode extension
     namespace fs = boost::filesystem;
     fs::path source_path(gcode_path);
-    if (!fs::exists(source_path)) {
+    if (gcode_path.empty() || !fs::exists(source_path)) {
         BOOST_LOG_TRIVIAL(error) << "MoonrakerPrinterAgent: G-code file does not exist: " << gcode_path;
         BOOST_LOG_TRIVIAL(error) << "[PrinterTransfer] upload_failed action=upload_and_print agent="
                                  << get_agent_info().id
@@ -492,7 +620,12 @@ int MoonrakerPrinterAgent::start_local_print(PrintParams params, OnUpdateStatusF
         return BAMBU_NETWORK_ERR_FILE_NOT_EXIST;
     }
 
-    const std::string upload_filename = resolve_upload_filename(params, gcode_path);
+    UploadFile file(gcode_path, params, accepts_3mf());
+    if (!file.ok()) {
+        return BAMBU_NETWORK_ERR_FILE_NOT_EXIST;
+    }
+
+    const std::string upload_filename = file.upload_name(params.task_name.empty() ? params.project_name : params.task_name);
 
     // Upload file
     if (update_fn)
@@ -500,9 +633,9 @@ int MoonrakerPrinterAgent::start_local_print(PrintParams params, OnUpdateStatusF
     BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] upload_started action=upload_and_print agent="
                             << get_agent_info().id
                             << " device_ref=" << connection_device_ref(params.dev_id)
-                            << " payload=" << printer_job_payload_name(traits.job_payload)
+                            << " payload=" << (file.sends_bundle() ? "gcode_3mf" : "raw_gcode")
                             << " file=" << upload_filename;
-    if (!upload_gcode(gcode_path, upload_filename, device_info.base_url, device_info.api_key, update_fn, cancel_fn)) {
+    if (!upload_gcode(file.path(), upload_filename, device_info.base_url, device_info.api_key, update_fn, cancel_fn)) {
         BOOST_LOG_TRIVIAL(error) << "[PrinterTransfer] upload_failed action=upload_and_print agent="
                                  << get_agent_info().id
                                  << " device_ref=" << connection_device_ref(params.dev_id)
@@ -519,14 +652,12 @@ int MoonrakerPrinterAgent::start_local_print(PrintParams params, OnUpdateStatusF
         return BAMBU_NETWORK_ERR_CANCELED;
     }
 
-    // Start print via gcode script (simpler than JSON-RPC)
     if (update_fn)
         update_fn(PrintingStageSending, 0, _u8L("Starting print..."));
-    std::string gcode = "SDCARD_PRINT_FILE FILENAME=" + upload_filename;
     BOOST_LOG_TRIVIAL(info) << "[PrinterTransfer] print_start_requested agent=" << get_agent_info().id
                             << " device_ref=" << connection_device_ref(params.dev_id)
                             << " file=" << upload_filename;
-    if (!send_gcode_sync(device_info.dev_id, gcode)) {
+    if (!print_uploaded_file(params, upload_filename)) {
         BOOST_LOG_TRIVIAL(error) << "[PrinterTransfer] print_start_result agent=" << get_agent_info().id
                                  << " device_ref=" << connection_device_ref(params.dev_id)
                                  << " success=false file=" << upload_filename;
@@ -539,6 +670,19 @@ int MoonrakerPrinterAgent::start_local_print(PrintParams params, OnUpdateStatusF
                             << " device_ref=" << connection_device_ref(params.dev_id)
                             << " success=true file=" << upload_filename;
     return BAMBU_NETWORK_SUCCESS;
+}
+
+bool MoonrakerPrinterAgent::print_uploaded_file(const PrintParams& /*params*/, const std::string& filename)
+{
+    // Start print via gcode script (simpler than JSON-RPC); quoted so spaces and apostrophes stay part of the name
+    return send_gcode_sync(device_info.dev_id, "SDCARD_PRINT_FILE FILENAME=\"" + filename + "\"");
+}
+
+bool MoonrakerPrinterAgent::accepts_3mf() const
+{
+    const PresetBundle*     bundle  = GUI::wxGetApp().preset_bundle;
+    const ConfigOptionBool* use_3mf = bundle ? bundle->printers.get_edited_preset().config.option<ConfigOptionBool>("use_3mf") : nullptr;
+    return use_3mf != nullptr && use_3mf->value;
 }
 
 int MoonrakerPrinterAgent::start_sdcard_print(PrintParams params, OnUpdateStatusFn update_fn, WasCancelledFn cancel_fn)
@@ -634,6 +778,9 @@ void MoonrakerPrinterAgent::build_ams_payload(int ams_count, int max_lane_index,
         nlohmann::json ams_unit = nlohmann::json::object();
         ams_unit["id"] = std::to_string(ams_id);
         ams_unit["info"] = "0002";  // treat as AMS_LITE 
+        if (const std::string name = ams_unit_name(ams_id); !name.empty()) {
+            ams_unit["display_name"] = name;
+        }
 
         nlohmann::json tray_array = nlohmann::json::array();
         int max_slot_in_this_ams = std::min(3, max_lane_index - ams_id * 4);
@@ -659,7 +806,6 @@ void MoonrakerPrinterAgent::build_ams_payload(int ams_count, int max_lane_index,
                 tray_json["tray_info_idx"] = tray->tray_info_idx;
                 tray_json["tray_type"] = tray->tray_type;
                 tray_json["tray_color"] = normalize_color_value(tray->tray_color);
-                // Sent for every tray, since update_filament_multi_color() stops at the first tray without "cols".
                 // "ctype" uses the filament_colour_type values (0 = gradient, 1 = solid or segments).
                 const bool     multi = tray->tray_colors.size() > 1;
                 nlohmann::json cols  = nlohmann::json::array();
@@ -678,6 +824,13 @@ void MoonrakerPrinterAgent::build_ams_payload(int ams_count, int max_lane_index,
                 }
                 if (tray->nozzle_temp > 0) {
                     tray_json["nozzle_temp_max"] = std::to_string(tray->nozzle_temp);
+                }
+                // A spool that resolved to no preset (the printer cannot name it, or no preset
+                // of its type is installed) gives the project no filament, so the sync keeps
+                // the project filament in that position as it does for an empty slot. The
+                // tray still exists, so the mapping dialog shows it in its colour.
+                if (tray->tray_info_idx.empty()) {
+                    tray_json["tray_slot_placeholder"] = "1";
                 }
             } else {
                 tray_json["tray_info_idx"] = "";
@@ -761,8 +914,16 @@ bool MoonrakerPrinterAgent::fetch_filament_info(std::string dev_id, FilamentSync
         return true;
     }
 
-    // No MMU detected - this is normal for printers without MMU, not an error
-    BOOST_LOG_TRIVIAL(info) << "MoonrakerPrinterAgent::fetch_filament_info: No MMU system detected (neither HH nor Moonraker)";
+    // Creality Hi exposes CFS slots as a Moonraker box printer object.
+    if (fetch_creality_cfs_data(trays, max_lane_index)) {
+        BOOST_LOG_TRIVIAL(info) << "MoonrakerPrinterAgent::fetch_filament_info: Detected Creality CFS with "
+                                << (max_lane_index + 1) << " slots";
+        build_ams_payload((max_lane_index + 4) / 4, max_lane_index, trays);
+        return true;
+    }
+
+    // No MMU detected - this is normal for printers without MMU, not an error.
+    BOOST_LOG_TRIVIAL(info) << "MoonrakerPrinterAgent::fetch_filament_info: No MMU system detected";
     return false;
 }
 
@@ -799,7 +960,11 @@ std::string MoonrakerPrinterAgent::map_filament_type_to_generic_id(const std::st
     static const std::map<std::string, std::string> type_to_ofl_family = {
         // PLA variants
         {"PLA", "PLA"},
+        {"PLA+", "PLA"},
+        {"PLA PRO", "PLA"},
         {"PLA-CF", "PLA-CF"},
+        {"PLA MATTE", "PLA Matte"},
+        {"PLA-MATTE", "PLA Matte"},
         {"PLA SILK", "PLA Silk"},
         {"PLA-SILK", "PLA Silk"},
         {"PLA HIGH SPEED", "PLA High Speed"},
@@ -808,11 +973,16 @@ std::string MoonrakerPrinterAgent::map_filament_type_to_generic_id(const std::st
 
         // ABS/ASA variants
         {"ABS", "ABS"},
+        {"ABS+", "ABS"},
         {"ASA", "ASA"},
 
         // PETG/PET variants
         {"PETG", "PETG"},
+        {"PETG+", "PETG"},
         {"PET", "PETG"},
+        {"PETG HF", "PETG HF"},
+        {"PETG-HF", "PETG HF"},
+        {"PETG-CF", "PETG-CF"},
         {"PCTG", "PCTG"},
 
         // PA/Nylon variants
@@ -828,7 +998,10 @@ std::string MoonrakerPrinterAgent::map_filament_type_to_generic_id(const std::st
 
         // PP/PE variants
         {"PE", "PE"},
+        {"PE-CF", "PE-CF"},
         {"PP", "PP"},
+        {"PP-CF", "PP-CF"},
+        {"PP-GF", "PP-GF"},
 
         // Support materials
         {"PVA", "PVA"},
@@ -857,6 +1030,43 @@ std::string MoonrakerPrinterAgent::map_filament_type_to_generic_id(const std::st
 
     // Unknown material, or no loaded preset data to resolve against
     return UNKNOWN_FILAMENT_ID;
+}
+
+bool MoonrakerPrinterAgent::fetch_creality_cfs_data(std::vector<AmsTrayData>& trays, int& max_lane_index)
+{
+    const std::string url = join_url(device_info.base_url, "/printer/objects/query?box");
+    std::string response_body;
+    auto http = Http::get(url);
+    if (!device_info.api_key.empty())
+        http.header("X-Api-Key", device_info.api_key);
+    http.timeout_connect(5).timeout_max(10)
+        .on_complete([&](std::string body, unsigned status) {
+            if (status == 200)
+                response_body = std::move(body);
+        })
+        .perform_sync();
+
+    std::vector<CrealityCfsSlot> slots;
+    if (response_body.empty() || !parse_creality_cfs_response(response_body, slots) || slots.empty())
+        return false;
+
+    trays.clear();
+    max_lane_index = 0;
+    auto* bundle = GUI::wxGetApp().preset_bundle;
+    for (const auto& slot : slots) {
+        AmsTrayData data;
+        data.slot_index = slot.slot_index;
+        data.tray_type = slot.material_type;
+        data.tray_color = slot.color;
+        data.has_filament = true;
+        data.tray_info_idx = bundle ? bundle->filaments.filament_id_by_type(data.tray_type) : std::string();
+        if (data.tray_info_idx.empty())
+            data.tray_info_idx = map_filament_type_to_generic_id(data.tray_type);
+        max_lane_index = std::max(max_lane_index, data.slot_index);
+        trays.push_back(std::move(data));
+    }
+    BOOST_LOG_TRIVIAL(info) << "MoonrakerPrinterAgent::fetch_creality_cfs_data: Detected " << trays.size() << " CFS slots";
+    return true;
 }
 
 // JSON helper methods - null-safe accessors
@@ -1011,10 +1221,10 @@ bool MoonrakerPrinterAgent::fetch_moonraker_filament_data(std::vector<AmsTrayDat
         // counts: Happy Hare writes Spoolman's numeric filament record id under the same key.
         tray.tray_info_idx = safe_json_string(lane_obj, "filament_id");
         auto* bundle = GUI::wxGetApp().preset_bundle;
+        if (tray.tray_info_idx.empty() && bundle)
+            tray.tray_info_idx = bundle->filaments.filament_id_by_type(tray.tray_type);
         if (tray.tray_info_idx.empty())
-            tray.tray_info_idx = bundle
-                ? bundle->filaments.filament_id_by_type(tray.tray_type)
-                : map_filament_type_to_generic_id(tray.tray_type);
+            tray.tray_info_idx = map_filament_type_to_generic_id(tray.tray_type);
 
         max_lane_index = std::max(max_lane_index, lane_index);
         trays.push_back(tray);
@@ -1140,9 +1350,9 @@ bool MoonrakerPrinterAgent::fetch_hh_filament_info(std::vector<AmsTrayData>& tra
         tray.has_filament = true;
 
         auto* bundle = GUI::wxGetApp().preset_bundle;
-        tray.tray_info_idx = bundle
-            ? bundle->filaments.filament_id_by_type(tray.tray_type)
-            : map_filament_type_to_generic_id(tray.tray_type);
+        tray.tray_info_idx = bundle ? bundle->filaments.filament_id_by_type(tray.tray_type) : std::string();
+        if (tray.tray_info_idx.empty())
+            tray.tray_info_idx = map_filament_type_to_generic_id(tray.tray_type);
 
         max_lane_index = std::max(max_lane_index, gate_idx);
         trays.push_back(tray);
@@ -1683,7 +1893,9 @@ bool MoonrakerPrinterAgent::emit_discovered_device(const MoonrakerDeviceInfo& in
     nlohmann::json payload;
     payload["dev_name"]        = dev_name;
     payload["dev_id"]          = info.dev_id;
-    payload["dev_ip"]          = info.dev_ip;
+    // Saved connections recover their port from dev_ip. Device identity may be
+    // opaque; derive the endpoint from the URL, retaining IPv6 brackets.
+    payload["dev_ip"]          = info.base_url.empty() ? info.dev_ip : Http::get_host_header_value(info.base_url);
     payload["dev_type"]        = info.model_id.empty() ? dev_name : info.model_id;
     payload["dev_signal"]      = "0";
     payload["connect_type"]    = "lan";
@@ -2646,7 +2858,8 @@ bool MoonrakerPrinterAgent::send_jsonrpc_command(const std::string&    base_url,
     http.header("Content-Type", "application/json")
         .set_post_body(request_str)
         .timeout_connect(5)
-        .timeout_max(10)
+        // Some firmware, like Qidi's, copies the file before starting the print and only answers afterwards
+        .timeout_max(60)
         .on_complete([&](std::string body, unsigned status) {
             if (status == 200) {
                 response = body;
@@ -2678,19 +2891,32 @@ void MoonrakerPrinterAgent::perform_connection_async(const std::string& dev_id, 
     }
 
     try {
+        // Nothing else retries the connection, so retry with the status stream's backoff until superseded: the printer
+        // may still be starting, and on macOS the first attempt has been seen refused while the app's Local Network
+        // access is checked
         MoonrakerDeviceInfo fetched_info;
-        if (!fetch_device_info(base_url, api_key, fetched_info, error_msg, is_stale)) {
-            if (!is_stale()) {
-                BOOST_LOG_TRIVIAL(error) << "MoonrakerPrinterAgent: Failed to fetch server info: " << error_msg;
-                BOOST_LOG_TRIVIAL(error) << "[PrinterConnection] server_info_result agent=" << get_agent_info().id
-                                         << " device_ref=" << connection_device_ref(dev_id)
-                                         << " success=false error_stage=server_info error_code=" << error_msg;
-                // Preserve the established generic Moonraker behavior. Honor Forge owns an
-                // explicit discovery/connection UI and must receive a terminal failure state.
-                if (get_traits().supports_active_discovery)
-                    dispatch_local_connect(ConnectStatusFailed, dev_id, "server_info_failed");
+        for (int attempt = 0; !fetch_device_info(base_url, api_key, fetched_info, error_msg, is_stale); ++attempt) {
+            if (is_stale()) {
+                return;
             }
-            return;
+            if (get_traits().supports_active_discovery) {
+                BOOST_LOG_TRIVIAL(error) << "[PrinterConnection] server_info_result agent=" << get_agent_info().id
+                    << " device_ref=" << connection_device_ref(dev_id)
+                    << " success=false error_stage=server_info error_code=" << error_msg;
+                dispatch_local_connect(ConnectStatusFailed, dev_id, "server_info_failed");
+                return;
+            }
+            const auto delay = ws_timings.reconnect_delay * (1 << std::min(attempt, 5));
+            BOOST_LOG_TRIVIAL(warning) << "MoonrakerPrinterAgent: Failed to fetch server info: " << error_msg << ", retrying in "
+                                       << delay.count() << "ms";
+            // Short steps, so a disconnect or the destructor does not wait out the delay
+            const auto step = std::chrono::milliseconds(50);
+            for (auto waited = std::chrono::milliseconds(0); waited < delay && !is_stale(); waited += step) {
+                std::this_thread::sleep_for(step);
+            }
+            if (is_stale()) {
+                return;
+            }
         }
         BOOST_LOG_TRIVIAL(info) << "[PrinterConnection] server_info_result agent=" << get_agent_info().id
                                 << " device_ref=" << connection_device_ref(dev_id) << " success=true"
@@ -2829,33 +3055,12 @@ std::string MoonrakerPrinterAgent::sanitize_filename(const std::string& filename
     if (filename.empty()) {
         return "print.gcode";
     }
-    namespace fs = boost::filesystem;
-    fs::path    p(filename);
-    std::string basename = p.filename().string();
+    // boost's Windows path parsing would also split at ':', which printer file names may contain
+    const std::string basename = filename.substr(filename.find_last_of("/\\") + 1);
     if (basename.empty() || basename == "." || basename == "..") {
         return "print.gcode";
     }
     return basename;
-}
-
-std::string MoonrakerPrinterAgent::resolve_upload_filename(const PrintParams& params,
-                                                           const std::string& source_path)
-{
-    std::string filename = params.task_name.empty() ? params.project_name : params.task_name;
-    if (filename.empty())
-        filename = boost::filesystem::path(source_path).filename().string();
-    filename = sanitize_filename(filename);
-
-    if (boost::iends_with(filename, ".gcode.3mf")) {
-        filename.resize(filename.size() - 4);
-    } else if (boost::iends_with(filename, ".3mf")) {
-        filename.resize(filename.size() - 4);
-        if (!boost::iends_with(filename, ".gcode"))
-            filename += ".gcode";
-    } else if (!boost::iends_with(filename, ".gcode")) {
-        filename += ".gcode";
-    }
-    return sanitize_filename(filename);
 }
 
 } // namespace Slic3r

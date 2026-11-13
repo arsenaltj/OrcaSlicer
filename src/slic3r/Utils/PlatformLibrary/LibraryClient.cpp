@@ -9,6 +9,7 @@
 #include <regex>
 #include <ctime>
 #include <cctype>
+#include <boost/log/trivial.hpp>
 
 namespace Slic3r::PlatformLibrary {
 namespace {
@@ -44,11 +45,13 @@ struct Receiver {
     Cancellation cancel; Binary value; std::size_t limit, received {0};
     std::function<bool(const char*,std::size_t)> sink;
     std::function<void(std::size_t,std::size_t)> progress;
+    bool limit_exceeded {false},write_failed {false};
 };
 size_t receive(char* data,size_t size,size_t count,void* opaque) noexcept {
     auto& r=*static_cast<Receiver*>(opaque); const auto n=size*count;
-    try { if((r.cancel && *r.cancel) || n>r.limit-r.received) return 0;
-        if(r.sink) { if(!r.sink(data,n)) return 0; } else r.value.bytes.append(data,n);
+    try { if(r.cancel && *r.cancel) return 0;
+        if(n>r.limit-r.received) {r.limit_exceeded=true;return 0;}
+        if(r.sink) { if(!r.sink(data,n)) {r.write_failed=true;return 0;} } else r.value.bytes.append(data,n);
         r.received+=n; return n;
     } catch(...) { return 0; }
 }
@@ -118,8 +121,17 @@ Binary transfer(const Identity& identity,const std::string& path,const std::stri
     long status=0; curl_easy_getinfo(curl.get(),CURLINFO_RESPONSE_CODE,&status);
     r.value.status=unsigned(status); char* mime=nullptr;curl_easy_getinfo(curl.get(),CURLINFO_CONTENT_TYPE,&mime);
     if(mime) r.value.mime=mime;
-    if(code!=CURLE_OK) throw Error(unsigned(status),r.received>=limit?"文件超出允许大小":"网络中断或无法写入文件，请重试");
-    if(status<200 || status>=300) throw Error(unsigned(status),status==401?"登录已失效，请重新登录":status==403?"当前账号没有此操作资格":status==404?"模型或文件已不可用":"平台暂时无法完成请求");
+    if((code==CURLE_OK && status<200) || status>=300) throw Error(unsigned(status),status==401?"登录已失效，请重新登录":status==403?"当前账号没有此操作资格":status==404?"模型或文件已不可用":"平台暂时无法完成请求");
+    if(code!=CURLE_OK) {
+        BOOST_LOG_TRIVIAL(warning) << "PlatformLibrary transfer failed: curl=" << int(code) << ", status=" << status
+            << ", received=" << r.received << ", write_failed=" << r.write_failed << ", limit_exceeded=" << r.limit_exceeded;
+        const char* message=r.limit_exceeded?"文件超出允许大小":r.write_failed?"无法写入下载文件，请检查磁盘空间及目录权限":
+            code==CURLE_OPERATION_TIMEDOUT?"连接或下载超时，请检查网络后重试":
+            code==CURLE_COULDNT_RESOLVE_HOST?"无法解析平台地址，请检查网络后重试":
+            code==CURLE_PEER_FAILED_VERIFICATION?"平台安全证书校验失败，请检查系统时间与网络环境":
+            "网络连接中断，请检查网络后重试";
+        throw Error(unsigned(status),message);
+    }
     return std::move(r.value);
 }
 Json Client::query(const std::string& path,Cancellation cancel,const std::string& method,const Json& body) const {
@@ -157,7 +169,9 @@ DownloadSpec DownloadSpec::from_detail(const Json& detail,const std::string& fil
         throw Error(403,"当前账号没有下载资格");
     DownloadSpec s; s.model=detail.value("id",""); s.version=detail["version"].value("id","");
     s.version_number=detail["version"].value("version",0); s.file=file; s.title=detail.value("title","");
+    bool found=false;
     for(const auto& f:detail.at("files")) if(f.value("id","")==file) {
+        found=true;
         if(f.value("status","")!="ready") throw Error(0,"模型文件尚未处理完成");
         s.filename=f.value("filename","");s.sha256=f.value("sha256","");
         const auto size=f.find("size");
@@ -165,6 +179,8 @@ DownloadSpec DownloadSpec::from_detail(const Json& detail,const std::string& fil
             if(size->is_string() && std::regex_match(size->get<std::string>(),std::regex("^[0-9]{1,12}$"))) s.size=std::stoull(size->get<std::string>());
             else if(size->is_number_unsigned()) s.size=size->get<std::uint64_t>();
         } break;}
+    if(!found) throw Error(404,"选中的文件已不可用，请重新读取模型详情");
+    if(s.sha256.empty()) throw Error(0,"平台尚未提供该文件的校验摘要，暂不能安全下载，请稍后重试");
     s.validate();
     return s;
 }
@@ -174,6 +190,8 @@ std::string DownloadSpec::extension() const {
 }
 void DownloadSpec::validate() const {
     const auto ext=extension();
+    if(size>104857600) throw Error(0,"该模型超过当前100 MB下载上限");
+    if(!ext.empty() && !supported_format(ext.substr(1))) throw Error(0,"当前版本不支持下载此文件格式");
     if(!uuid(model) || !uuid(version) || !uuid(file) || version_number<1 || ext.empty() || !supported_format(ext.substr(1)) ||
        size==0 || size>104857600 || !std::regex_match(sha256,std::regex("^[0-9a-f]{64}$")))
         throw Error(0,"下载文件清单无效或格式暂不支持");
@@ -205,7 +223,8 @@ std::shared_ptr<StagedDownload> StagedDownload::prepare(const Client& client,con
         cancel,std::size_t(spec.size),[&](const char* b,std::size_t n) {out.write(b,n);return bool(out);},std::move(notify));
     out.close();if(!out) throw Error(0,"下载文件写入失败");check(cancel);
     const auto part=staged->m_staging/("model"+ext);
-    if(boost::filesystem::file_size(part)!=spec.size || file_digest(part,cancel.get())!=spec.sha256) throw Error(0,"文件大小或 SHA-256 校验失败");
+    if(boost::filesystem::file_size(part)!=spec.size) throw Error(0,"下载文件大小不符，残缺文件未登记，请重新下载");
+    if(file_digest(part,cancel.get())!=spec.sha256) throw Error(0,"下载文件 SHA-256 校验失败，文件未登记，请重新下载");
     return staged;
 }
 std::string StagedDownload::commit(Cancellation cancel) {

@@ -145,6 +145,9 @@ namespace GUI {
             PreparedGeometry(PreparedGeometry&&) = default;
             PreparedGeometry& operator=(PreparedGeometry&&) = default;
             const Geometry& geometry() const { return m_geometry; }
+            // A canceled CPU transaction returns its owned storage before any
+            // GUI installation. No GL object has been created at this point.
+            Geometry release_geometry() && { return std::move(m_geometry); }
         };
 
         struct RenderData
@@ -189,6 +192,9 @@ namespace GUI {
         void init_from(Geometry&& data);
         static PreparedGeometry prepare_geometry(Geometry&& data, const std::function<bool()>& canceled = {});
         void init_from(PreparedGeometry&& data);
+        // Optional bounded upload for retained model previews. Existing render
+        // consumers keep their synchronous upload behavior.
+        bool upload_step(size_t budget_bytes = 4 * 1024 * 1024);
         // Replace same-layout vertex attributes without replacing topology or
         // allocating a new index buffer. The caller retains unchanged positions.
         bool update_vertex_attributes(const std::vector<float>& vertices);
@@ -233,6 +239,8 @@ namespace GUI {
         }
 
     private:
+        size_t m_upload_vertex_bytes {0}, m_upload_index_bytes {0};
+        bool m_upload_started {false}, m_upload_ready {false};
         bool send_to_gpu();
     };
     bool contains(const BuildVolume& volume, const GLModel& model, bool ignore_bottom = true);

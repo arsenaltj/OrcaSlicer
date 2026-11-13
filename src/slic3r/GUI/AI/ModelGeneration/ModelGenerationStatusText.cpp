@@ -5,7 +5,6 @@
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/I18N.hpp"
-
 #include <algorithm>
 
 namespace Slic3r::GUI::ModelGenerationStatusText {
@@ -38,11 +37,34 @@ wxString localized_service_error(const std::string& error)
         return _L("无法连接本地 AI 服务，请确认正式服务已启动后重试。");
     if (message.Contains("large square cutout") || message.Contains("missing body region"))
         return _L("人物出现方形缺口或身体区域缺失，本次未提交付费 3D 任务；请点击“换一张”重新生成。");
-    return _L("操作失败：") + message;
+    return _L("操作未能完成，请保留任务记录并查看诊断日志后重试。");
+}
+
+wxString localized_advanced_service_error(const std::string& error)
+{
+    // HTTP adapter preserves a structured code before ':'. Never append the
+    // supplier's untrusted/free-form English explanation to the visible UI.
+    const auto separator = error.find(':');
+    const auto code = separator == std::string::npos ? std::string() : error.substr(0, separator);
+    const bool valid_code = !code.empty() && code.size() <= 64 && std::all_of(code.begin(), code.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+    });
+    if (!valid_code) return localized_service_error(error);
+    wxString message = code == "stale_plan" || code == "stale_confirmation" || code == "confirmation_changed" || code == "revision_conflict"
+        ? _L("当前设计或确认计划已变化，请刷新状态后重新确认。")
+        : code == "group_busy" || code == "model_busy" ? _L("当前组仍有任务处理中，请等待或停止当前任务。")
+        : code == "unsupported_multiview" ? _L("当前模型服务暂不支持四视角建模，请检查服务配置。")
+        : code == "provider_task_ambiguous" ? _L("任务受理结果暂不明确，请核对或恢复原任务，不要重复提交。")
+        : code == "idempotency_conflict" || code == "snapshot_unavailable"
+            ? _L("原任务身份或记录暂时无法核对，请保留请求记录后恢复原任务。")
+            : _L("高级任务处理未能完成，当前输入和已有结果已保留，请查看诊断日志。");
+    return message + "\n" + _L("错误码：") + from_u8(code);
 }
 
 wxString localized_job_status(const AIModelGenerationClient::JobStatus& status, bool advanced)
 {
+    if (advanced && status.state == "accepted")
+        return _L("3D任务已受理，正在读取任务进度…");
     if (advanced && status.state != "queued" && status.state != "running" && status.state != "ready" &&
         status.state != "stopping" && status.state != "stopped" && status.state != "cancelled" && status.state != "failed")
         return _L("正在处理当前3D模型任务…");
@@ -72,6 +94,8 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status, 
             : _L("预览未通过 3D 输入检查，请按提示重新生成。");
     if (status.state == "queued")
         return _L("3D 生成任务已排队...");
+    if (advanced && status.state == "running" && status.phase == "preparing_multiview")
+        return _L("正在准备已确认的四视角模型输入…");
     if (!advanced && status.state == "running" && status.phase == "preparing_multiview")
         return _L("正在生成并核对写实人像四视图，尚未提交付费 3D 任务...");
     if (status.state == "running" && status.phase == "generating")
@@ -91,7 +115,7 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status, 
             : _L("正在转换高精度彩色 OBJ...");
     }
     if (status.state == "running" && status.phase == "downloading_artifact")
-        return _L("正在整理模型文件...");
+        return advanced ? _L("正在下载和整理模型文件…") : _L("正在整理模型文件...");
     if (status.state == "running" && status.phase == "checking_model") {
         if (advanced) return _L("正在校验模型文件…");
         if (status.progress <= 96) return _L("正在下载并把纹理烘焙为模型顶点色...");
@@ -159,6 +183,8 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status, 
             message = _L("模型生成未完成，请保留任务信息并查看诊断记录。");
         else
             message = status.message.empty() ? _L("生成任务失败。") : localized_service_error(status.message);
+        if (advanced && !status.provider_error_code.empty())
+            message += "\n" + _L("错误码：") + from_u8(status.provider_error_code);
         if (!advanced && !status.provider_error_category.empty())
             message += "\n" + _L("故障分类：") + from_u8(status.provider_error_category);
         if (!status.provider_task_id.empty())
@@ -166,18 +192,18 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status, 
         if (!status.provider_conversion_task_id.empty())
             message += "\n" + _L("转换任务 ID：") + from_u8(status.provider_conversion_task_id);
         if (status.provider_error_ambiguous)
-            message += "\n" + _L("提交结果不明确，请先确认服务端任务状态，避免重复计费。");
+            message += "\n" + _L("提交结果不明确，请先确认服务端任务状态，不要重复提交，避免重复计费。");
         if (!status.id.empty())
             message += "\n" + _L("诊断 ID：") + from_u8(status.id);
         return message;
     }
     if (advanced) return _L("正在处理当前3D模型任务…");
-    return status.message.empty() ? _L("正在处理...") : from_u8(status.message);
+    return _L("正在处理当前任务，请稍候…");
 }
 
 void localize_advanced_model_state(ModelGenerationUIState& state)
 {
-    if (state.smart_mode || state.job_id.empty()) return;
+    if (state.smart_mode || (state.job_id.empty() && state.stage == ModelGenerationUIStage::Input)) return;
     AIModelGenerationClient::JobStatus status;
     status.id = state.job_id;
     status.state = state.job_state;
@@ -193,7 +219,7 @@ void localize_advanced_model_state(ModelGenerationUIState& state)
     case ModelGenerationUIStage::LoadingModel:
         text = _L("正在下载、校验并加载3D模型…"); break;
     case ModelGenerationUIStage::ModelReady:
-        text = _L("3D模型已生成，可进入工作台编辑。"); break;
+        text = _L("3D模型生成完成，可进入工作台编辑。"); break;
     case ModelGenerationUIStage::GeneratingModel:
         // The observer keeps the last provider phase while reconnecting. Preserve
         // its existing Chinese connection notice instead of reusing that old phase.
@@ -216,6 +242,12 @@ void localize_advanced_model_state(ModelGenerationUIState& state)
     state.status_text = text.ToStdString(wxConvUTF8);
     // Raw messages remain on the original host snapshot; the display uses the mapped reason.
     state.summary_text.clear();
+}
+
+void present_advanced_model(ModelGenerationUIState& state)
+{
+    localize_advanced_model_state(state);
+    state.workflow_guidance = _L("任务记录已保留，进度更新不会重复提交生成请求。").ToStdString(wxConvUTF8);
 }
 
 wxString model_input_quality_label(const std::string& code)

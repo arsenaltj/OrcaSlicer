@@ -70,6 +70,59 @@ TEST_CASE("Discard restores the draft before removing its candidates and retains
     CHECK(workbench.visible == 0);
 }
 
+TEST_CASE("Asynchronous discard preserves its draft and files until a verified restore succeeds", "[BeautyWorkbenchSession][UiLifecycle]")
+{
+    Workbench workbench;
+    auto& session = workbench.session;
+    session.start_draft(workbench.snapshot(1));
+    session.track_candidate("candidate.glb");
+    auto ports = workbench.ports();
+    std::function<void(bool)> pending;
+    ports.restore_async = [&](const auto& source, auto complete) {
+        CHECK(source.version == 1);
+        pending = std::move(complete);
+    };
+    bool restored = true;
+    session.discard_async({}, ports, [&](bool ok) { restored = ok; });
+    CHECK(session.transactions().processing());
+    CHECK(session.source());
+    CHECK(workbench.removed.empty());
+    REQUIRE(pending);
+    pending(false);
+    CHECK_FALSE(restored);
+    CHECK(session.source());
+    CHECK(workbench.removed.empty());
+    session.discard_async({}, ports, [&](bool ok) { restored = ok; });
+    pending(true);
+    pending(true);
+    CHECK(restored);
+    CHECK_FALSE(session.source());
+    REQUIRE(workbench.removed.size() == 1);
+    CHECK(workbench.removed.front() == Path("candidate.glb"));
+    CHECK_FALSE(session.transactions().processing());
+}
+
+TEST_CASE("A replacement draft rejects late asynchronous discard cleanup", "[BeautyWorkbenchSession][UiLifecycle]")
+{
+    Workbench workbench;
+    auto& session = workbench.session;
+    session.start_draft(workbench.snapshot(1));
+    session.track_candidate("first.glb");
+    auto ports = workbench.ports();
+    std::function<void(bool)> pending;
+    ports.restore_async = [&](const auto&, auto complete) { pending = std::move(complete); };
+    int callbacks = 0;
+    session.discard_async({}, ports, [&](bool) { ++callbacks; });
+    session.reset();
+    session.start_draft(workbench.snapshot(3));
+    session.track_candidate("second.glb");
+    pending(true);
+    REQUIRE(session.source());
+    CHECK(session.source()->version == 3);
+    CHECK(callbacks == 0);
+    CHECK(workbench.removed.empty());
+}
+
 TEST_CASE("Failed draft restoration retains candidates and both history timelines for retry", "[BeautyWorkbenchSession]")
 {
     const bool invalid_source = GENERATE(true, false);
@@ -223,4 +276,42 @@ TEST_CASE("Publication completed before shutdown retains its model and owned app
     session.track_candidate("external.obj");
     session.clear_candidates(0, {}, workbench.ports());
     CHECK(workbench.removed == std::vector<Path> {"temporary.glb", "external.obj"});
+}
+
+TEST_CASE("A failed asynchronous rollback retains its source and releases the busy gate for retry", "[BeautyWorkbenchSession][UiLifecycle]")
+{
+    Workbench workbench;
+    auto& session = workbench.session;
+    session.start_draft(workbench.snapshot(0));
+    workbench.preview(0, 1, "pending.glb");
+    const auto source = session.source();
+    const auto revision = session.revision();
+    auto ports = workbench.ports();
+    std::function<void(bool)> restore;
+    ports.restore_async = [&](const auto&, auto complete) { restore = std::move(complete); };
+    int callbacks = 0;
+    bool restored = true;
+    session.discard_async({}, ports, [&](bool ok) { ++callbacks; restored = ok; });
+    REQUIRE(bool(restore));
+    CHECK(session.transactions().processing());
+    CHECK(workbench.removed.empty());
+    CHECK(session.source() == source);
+    CHECK_FALSE(session.transactions().begin(Controller::OperationKind::AppearanceRecolor));
+    restore(false);
+    CHECK_FALSE(restored);
+    CHECK(callbacks == 1);
+    CHECK_FALSE(session.transactions().processing());
+    CHECK(session.revision() == revision);
+    CHECK(session.transactions().undo_count() == 1);
+    CHECK(workbench.removed.empty());
+    restore(true); // A duplicate late result cannot turn failure into success.
+    CHECK(callbacks == 1);
+    CHECK(session.source() == source);
+    session.discard_async({}, ports, [&](bool ok) { ++callbacks; restored = ok; });
+    restore(true);
+    CHECK(restored);
+    CHECK(callbacks == 2);
+    CHECK_FALSE(session.source());
+    CHECK(session.transactions().undo_count() == 0);
+    CHECK(workbench.removed == std::vector<Path>{"pending.glb"});
 }

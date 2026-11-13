@@ -16,7 +16,7 @@ InlineModelArtifact artifact(std::string hash = "hash-a") {
     InlineModelArtifact result;
     result.request.entry.job_id = "job"; result.request.entry.model_path = "model.obj";
     result.request.artifact.job_id = "job"; result.request.artifact.local_path = "model.obj";
-    result.request.expected_sha256 = std::move(hash); return result;
+    result.request.sha256 = std::move(hash); return result;
 }
 void ready(InlineModelGenerationState& view) {
     REQUIRE(view.advance(view.generation(), InlinePreviewPhase::Preparing));
@@ -68,7 +68,7 @@ TEST_CASE("Late preparation and first frames cannot complete a replacement artif
     CHECK_FALSE(view.advance(old,InlinePreviewPhase::Ready)); CHECK_FALSE(view.ready());
     ready(view); CHECK(view.ready());
     REQUIRE(view.artifact());
-    CHECK(view.artifact()->request.expected_sha256=="hash-b");
+    CHECK(view.artifact()->request.sha256=="hash-b");
 }
 
 TEST_CASE("Context changes and stale revisions preserve the selected source", "[InlineModelGeneration]") {

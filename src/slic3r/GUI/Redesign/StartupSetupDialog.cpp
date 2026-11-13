@@ -1,4 +1,5 @@
 #include "StartupSetupDialog.hpp"
+#include "../Presentation/UiRuntime.hpp"
 #include "StartupSetupService.hpp"
 #include "RedesignShell.hpp"
 #include "../FilamentColourPalette.hpp"
@@ -471,13 +472,18 @@ public:
         Raise();
         wxEvtHandler::AddFilter(this);
         m_next->SetFocus();
+        Presentation::background_tasks().on_shutdown(this, [this] {
+            *m_cancel = true;
+            Presentation::background_tasks().retire(m_worker);
+        });
         load_catalog();
     }
 
     ~StartupSetupPanel() override
     {
+        Presentation::background_tasks().remove_shutdown_hook(this);
         *m_cancel = true;
-        if (m_worker.joinable()) m_worker.join();
+        Presentation::background_tasks().retire(m_worker);
         wxEvtHandler::RemoveFilter(this);
         if (m_workspace && !m_workspace->IsBeingDeleted())
             m_workspace->Enable(m_workspace_was_enabled);
@@ -647,7 +653,7 @@ private:
     void load_catalog()
     {
         if (m_service.snapshot().loading) return;
-        if (m_worker.joinable()) m_worker.join();
+        Presentation::background_tasks().retire(m_worker);
         const auto revision = m_service.begin_load();
         refresh();
         const std::string resources = resources_dir();

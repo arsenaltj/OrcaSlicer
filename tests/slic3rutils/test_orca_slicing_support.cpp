@@ -209,6 +209,7 @@ TEST_CASE("Painted split facets retain their real geometry and palette in the sc
 {
     auto project=preparation_project();
     project.metadata["sourceColors"]=nlohmann::json::array({"#ff0000","#00ff00"});
+    project.config.set_key_value("filament_colour",new Slic3r::ConfigOptionStrings({"#ff0000","#00ff00"}));
     auto* volume=project.model.objects[0]->volumes[0];
     const auto originalCount=volume->mesh().its.indices.size();
     // Root splits all three sides (3), four children carry material 2 (8).
@@ -216,6 +217,7 @@ TEST_CASE("Painted split facets retain their real geometry and palette in the sc
     volume->mmu_segmentation_facets.set_triangle_from_string(0,"88883");
     ScopedTemporaryFile scene(".scene");
     const auto info=orca::mobile::slicing::write_scene(project,scene.string());
+    CHECK(info["paletteCount"]==2);
     CHECK(info["triangleCount"].get<size_t>()==originalCount+3);
     CHECK(volume->mesh().its.indices.size()==originalCount);
     std::ifstream input(scene.string(),std::ios::binary);

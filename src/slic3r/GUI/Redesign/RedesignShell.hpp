@@ -5,6 +5,9 @@
 #include "RedesignModelRoute.hpp"
 #include "InlineModelGenerationState.hpp"
 #include "RedesignPageTransition.hpp"
+#include "RedesignPageCoordinator.hpp"
+#include "../Presentation/UiRuntime.hpp"
+#include "../Presentation/WindowMountLease.hpp"
 #include "RedesignPreviewPresentation.hpp"
 #include "RedesignPresentationDeadline.hpp"
 #include "RedesignWorkspaceNavigation.hpp"
@@ -97,6 +100,7 @@ public:
     void start_slicing_from_workspace();
     void refresh_workflow_layout();
     void request_viewport_frame();
+    void present_restore_frame();
     void show_printer_media();
     void refresh_printer_state();
 
@@ -108,13 +112,15 @@ private:
     void switch_creation_mode(bool advanced);
     std::unique_ptr<AdvancedCreationFeatureHost> m_advanced_host;
     AdvancedCreationWorkspace* m_advanced_workspace {nullptr};
-    bool m_advanced_mode {false};
     void update_navigation();
     wxPanel* m_assets_page {nullptr};
     AssetsWorkspace* m_assets_workspace {nullptr};
     wxPanel* create_placeholder_page(const wxString& title, const wxString& body);
     void connect_model_generation_host();
-    void apply_advanced_model_state(const ModelGenerationUIState& state, bool new_generation);
+    void apply_advanced_model_state(const ModelGenerationUIState& state, bool new_generation = false);
+    void on_advanced_model_job(const AdvancedCreation::ModelJobEvent& event);
+    std::optional<AdvancedCreation::ModelJobEvent> m_inline_model_request;
+    std::uint64_t m_creation_navigation_epoch {0};
     void apply_smart_inline_generation();
     void refresh_inline_generation();
     void recover_smart_generation();
@@ -122,6 +128,9 @@ private:
     void show_generation_completion();
     void mount_smart_model_history();
     void restore_smart_model_history();
+    void sync_smart_model_history();
+    void queue_creation_history_refresh();
+    Presentation::RefreshScheduler m_creation_history_refresh;
     void apply_model_generation_state(const ModelGenerationUIState& state);
     void restore_image_input(const ModelGenerationUIInput& input);
     ModelGenerationUIInput current_generation_input() const;
@@ -176,7 +185,7 @@ private:
     bool begin_workbench_presentation(bool history_loading = false);
     bool continue_workbench_presentation();
     void layout_workbench_transition_cover();
-    void finish_workbench_presentation(bool ready, bool report_failure = true);
+    void finish_workbench_presentation(bool ready, bool report_failure = true, std::string error = {});
     void restore_workbench_source_page();
     void sync_page_settings_visibility(Page page);
     wxRect workbench_transition_bounds() const;
@@ -227,6 +236,9 @@ private:
     bool navigate_to_impl(Page page, bool allow_locked_image_view);
     wxWindow* page_route_root(Page page, ModelView view) const;
     wxWindow* active_page_focus_root() const;
+    void configure_page_lifecycle();
+    void commit_active_page(Presentation::Dirty flags);
+    void apply_slicing_snapshot();
     void present_active_page(bool flush_children = false);
     void remember_active_page_focus();
     void restore_active_page_focus();
@@ -285,6 +297,8 @@ private:
     int m_slice_committed_count {6};
     int m_slice_progress_percent {0};
     wxString m_slice_progress_stage;
+    Presentation::ProgressGate m_slice_progress_gate;
+    int m_slice_progress_phase {0};
     bool m_slice_camera_fitted {false};
     bool m_slice_camera_loading_pending {false};
     bool m_slice_camera_waiting_for_frame {false};
@@ -292,11 +306,11 @@ private:
     std::vector<std::string> m_slice_displayed_palette;
     wxWindow* m_return_slice { nullptr };
     Plater* m_plater { nullptr };
-    wxWindow* m_plater_original_parent { nullptr };
+    Presentation::WindowMountLease m_plater_mount, m_print_plater_mount;
     SmartSlicingFeatureHost* m_slicing_host { nullptr };
     PostGenerationWorkbenchState m_workbench_state;
     SmartSlicingWorkbenchState m_slicing_state;
-    ModelView m_model_view {ModelView::Workbench};
+    Presentation::RefreshState m_slicing_dirty;
     bool m_native_slicing {false};
     bool m_preview_toolpath_outside {false};
     PreviewAutoFitState m_preview_auto_fit;
@@ -318,8 +332,7 @@ private:
     bool m_workbench_source_reparented {false};
     wxFrame* m_workbench_transition_cover {nullptr};
     wxWindow* m_workbench_transition_source {nullptr};
-    std::size_t m_workbench_source_index {0};
-    int m_workbench_source_proportion {1}, m_workbench_source_flags {0}, m_workbench_source_border {0};
+    Presentation::WindowMountLease m_workbench_source_mount, m_import_source_mount;
     std::unique_ptr<wxEventFilter> m_workbench_transition_input_filter;
     wxSize m_workbench_prepared_size;
     wxTimer m_workbench_transition_timer;
@@ -346,7 +359,10 @@ private:
     std::chrono::steady_clock::time_point m_import_started;
     std::chrono::steady_clock::time_point m_import_view_started;
     boost::filesystem::path m_import_committed_model_path;
-    RedesignPageTransition m_page_transition;
+    RedesignPageCoordinator m_page_coordinator;
+    Presentation::RefreshScheduler m_surface_refresh;
+    bool m_presentation_stopping {false};
+    Presentation::TaskScope m_design_image_scope;
     std::optional<RedesignPageTransition::Token> m_import_transition;
     bool m_saved_sidebar_collapsed {false};
     std::optional<bool> m_saved_collapse_toolbar;
@@ -440,7 +456,6 @@ private:
     std::string m_provider_catalog_provider;
     bool m_generation_geometry_mode { true };
     int m_last_service_status { 0 };
-    Page m_active_page { Page::Account };
     Page m_last_workbench_page { Page::Model };
     // Keep the semantic workspace request, not only the visual host. Several
     // legacy requests (Prepare, Preview, Monitor and Multi-device) currently
@@ -449,8 +464,6 @@ private:
     ImageState m_image_state { ImageState::Empty };
     ImageState m_design_image_state { ImageState::Empty };
     SecondaryAction m_secondary_action { SecondaryAction::None };
-    std::optional<bool> m_workbench_return_advanced;
-    std::optional<bool> m_pending_workbench_return_advanced;
     bool m_image_page_view_only { false };
     bool m_input_sync_ok { false };
     bool m_option_sync_ok { false };

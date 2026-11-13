@@ -1,6 +1,6 @@
 # AI 创作高级模式：多视角软件架构方案
 
-2026-11-12实施对照：已在源码增加AdvancedModelTaskFlow／Monitor、ModelArtifactAcquisition、WorkbenchModelContext／OpenRequest，移除高级内部完整ModelGenerationFeatureHost和独立导入；两来源显式产物及3D历史交给原唯一编辑实例，生成任务及草稿继续独立。Shell来源快照和返回锚点、编辑代次及当前元数据消费者已迁移，构建／定向回归／真实主窗口待验收。最新状态见主计划，以下V3.0目标仍是冻结范围。
+2026-11-12主线同步实施对照：保留本地应用级Role::WorkbenchAssets及唯一Beauty Session；Smart／Legacy面板仅创作，不构造工作台。合并主线AdvancedModelTaskFlow／Monitor和ModelArtifactAcquisition承接四图任务、下载及历史登记，保留YOYOClaw模型选择、队列和多回执恢复。WorkbenchModelContext只作纯值契约，不另设可写编辑状态；返回上下文归唯一FeatureHost。受理先登记Session、Shell独占共用3D页导航，图片缓存及manifest校验后台执行。当前构建／回归和用户实窗分别记录于主计划，以下V3.0为设计基线。
 
 - 日期：2026-11-07；当前提案：设计 V3.0（2026-11-11单工作台目标架构，开发方案待确认）；原实施基线保留。
 - 任务：`UX/ADVANCED-MULTIVIEW-20261107`。
@@ -44,7 +44,7 @@ flowchart TD
 | 等待与结果 | 共用既有Page::Model；包括首次进入、左导航、幂等刷新、合法重入及历史恢复。状态按模式、任务／会话和该来源revision校验，不能跨来源比较revision或固定读取智能状态。 |
 | 产物契约 | GeneratedModelArtifact保持无GUI／供应商依赖；共享获取复用现有客户端、校验、元数据及文件发布。GUI来源／返回锚点不进入libslic3r或供应商请求。 |
 | 工作台打开 | 普通3D打开只加载模型／编辑元数据，不调用会清任务／覆盖输入的生成恢复路径；复用原ModelHistoryOpen及首帧、取消drain、保留页和回滚接缝。 |
-| 当前编辑与事务 | 唯一WorkbenchModelContext持有模型身份／格式／颜色／元数据，BeautyWorkbenchSession持有原编辑事务／候选；检查、保存、历史和导入消费者读取当前模型，而非智能生成临时字段。 |
+| 当前编辑与事务 | 唯一WorkbenchAssets面板持有模型身份／格式／颜色／元数据（WorkbenchModelContext仅纯值契约），BeautyWorkbenchSession持有原编辑事务／候选；检查、保存、历史和导入消费者读取当前模型，而非智能生成临时字段。 |
 | 返回与历史 | Shell只保存来源身份和工作区epoch；普通历史切换不覆盖创作草稿，尊重显式新建／切组。单模型未保存保护沿现有规则，不新增两份未保存编辑或返回会话持久化。 |
 | 原生工程与流程 | Plater保持项目／配置／耗材／原生撤销真值；导入统一经原Shell呈现和Adapter，提交与目标视图就绪分开，已提交后视图恢复不能重复导入。 |
 | 清理与保护 | 迁移有效观察／目录／历史能力后删除高级内部工作台、完整model_host、独立导入／错误路由及无消费者依赖。移除实例级advanced_only时保留按实际任务来源识别的Job-v2防错保护。 |
@@ -55,17 +55,19 @@ flowchart TD
 
 ## 实施对照（2026-11-08，保留现状记录，工作台部分待V3.0替代）
 
+2026-11-12修正：共用3D进度／结果页与工作台均只构造一个。高级Host先验证并登记受理任务，Workspace只上报事件和投影，Shell持有绑定任务／会话／操作／导航代次的可撤销前台意图；进入共用页不依赖四图缓存、生成完成或工作台检查。高级3D同组核对保留当前Session和选择，2D及跨组恢复保持原语义，缓存旧投影不回退新状态；中文进度由既有呈现模块负责，未知服务说明不直接显示。创作会话仍独立，不新增业务状态所有者或外部API。
+
 | 职责 | 实际维护入口 | 边界 |
 | --- | --- | --- |
 | 草稿、选择、点击及资格 | `GUI/AI/ModelGeneration/AdvancedCreation{Types,Session}.*` | `AdvancedCreation::Session` 独立持有；UI只派生标签／范围／选中态 |
 | 桌面命令、持久提交收据、缓存及回调 | `AdvancedCreationFeatureHost.*`、`AdvancedMultiviewClient.*` | 认证回环传输；异步 epoch／revision；未知提交须显式对账 |
-| 高级界面及独立工作台 | `GUI/Redesign/AdvancedCreationWorkspace.*` | Shell懒创建；单击延迟与双击分离；润色使用高级独立客户端，WebP本地派生PNG，不改智能文本接口 |
+| 高级创作界面及共享工作台端口 | `GUI/Redesign/AdvancedCreationWorkspace.*` | Shell懒创建；单击延迟与双击分离；润色使用高级独立客户端，WebP本地派生PNG，不改智能文本接口 |
 | 组、四图版本及2D命令 | `tools/ai/advanced_multiview_{repository,application,design_workflow}.py` | 首次主参考相机0°锚点后按左转90°／180°／右转90°固定顺序逐项发布；定向编辑冻结当前图，旧图不因失败清空 |
 | 图像供应商 | `advanced_multiview_image_gateway.py` | GPT具名多参考与当前图编辑；明确左右朝向和非镜像约束；不保证生成模型必然遵守方向 |
 | 四图建模 | `advanced_multiview_{model_contracts,models,model_workflow}.py` | 冻结四图副本／哈希，Job-v2；Tripo真实四图接入；旧单图入口拒绝将新任务降级 |
 | HTTP及组合 | `advanced_multiview_{transport,runtime}.py` | `/v1/orcaslicer/advanced-multiview` 独立命名空间；保存草稿返回完整快照，包含current图及model投影 |
 
-组位于用户模型根目录的 `advanced-multiview/<group-id>`，桌面缓存及待核对收据位于 `advanced-cache`；安装目录只读。3D沿既有工作台、原生导入与工程保护。旧单图Job-v1仍可读取，新四图Job-v2不被旧读取器作为单图重生。智能宿主保持默认构造参数与原链路；新增 `advanced_only` 仅用于高级专属工作台实例。
+组位于用户模型根目录的 `advanced-multiview/<group-id>`，桌面缓存及待核对收据位于 `advanced-cache`；安装目录只读。3D沿既有工作台、原生导入与工程保护。旧单图Job-v1仍可读取，新四图Job-v2不被旧读取器作为单图重生。智能和高级创作适配分别保留任务及只读预览；应用级 `ModelGenerationFeatureHost` 唯一持有 `WorkbenchAssets` 资产面板，不再构造高级工作台。
 
 “历史套图”右栏只消费既有高级组列表和Session当前组，不新增仓库、迁移或可写历史状态；隐藏旧单图入口不删除旧数据。智能右栏仍消费原模型历史，只通过呈现上下文把标题改为“历史模型”。模式选中配色、标题和套图卡片均停留在GUI适配层，不形成到Session、侧车或供应商的新增依赖。
 
@@ -82,7 +84,7 @@ flowchart TD
 | 边界 | 本方案约束 |
 | --- | --- |
 | 智能业务 | 不改变输入、自动推进、确认、重试、供应商选择及人像策略；不向其 Session 填入高级输入／结果 |
-| 高级与智能 | 分开持有草稿、运行任务、回调令牌、历史恢复和工作台上下文；共享只读服务状态不等于共享业务状态 |
+| 高级与智能 | 分开持有草稿、运行任务、回调令牌和生成恢复；工作台是独立的唯一资产会话；共享只读服务状态不等于共享业务状态 |
 | 旧高级单图历史 | 保留原链路；不自动生成四图，不按新四图资格强制解释 |
 | 原生工程 | 继续由 Plater／Model／Config 和现有导入适配器管理；生成与导入不直接触发切片或打印 |
 | 实施停止线 | 若实现某项必须改变智能业务逻辑，停止该项并告知用户；不能用“共享重构”绕过此边界 |
@@ -103,7 +105,7 @@ flowchart TD
 | `tripo_client.py::create_multiview_task` | 已调用 `/generation/multiview-to-model` | 可作为优先接入候选；账号、当前模型限制及实际质量仍需核实 |
 | `yoyoclaw_provider_gateway.py::start_or_reuse_model_task` | 当前仅接受 `source="image"` | 高级四图建模不可用；不静默改供应商或拼图冒充四图接入 |
 | `model_generation_workflow.py::generate` | 部分人像策略可能选择正视单图；旧多视角准备可能产生额外图像步骤 | 新高级不进入该参考图决策路径，防止已确认四图被替换／丢弃 |
-| `ModelGenerationFeatureHost.cpp`、`PostGenerationWorkbenchHost.cpp` | 创作与工作台仍关联到同一个 Panel 实例 | 高级使用独立宿主实例承接结果，不能把高级历史载入智能宿主 |
+| `ModelGenerationFeatureHost.cpp`、`PostGenerationWorkbenchHost.cpp` | 原工作台从生成页构造中分离，资产面板单独持有编辑会话 | 智能／高级通过 WorkbenchOpenRequest 交接；不能把高级任务载入智能恢复入口 |
 | `ImageHistorySidebar.cpp`、`ModelHistoryMetadata.hpp` | 现有历史有单图摘要、后台缩略图和元数据恢复保护 | 新增组历史投影；旧历史和模型资产元数据原件保留 |
 
 现有 `capability_catalog.py` 是原子能力目录，`ProviderCatalog::ready()` 只说明服务／模型可用。二者均不能直接证明“多参考生成＋当前图定向编辑＋四图建模”可用，需要新增独立的高级能力描述。
@@ -119,14 +121,15 @@ flowchart TB
     Host[新增 AdvancedCreationFeatureHost]
     Session[新增 AdvancedCreationSession]
     Client[新增 AdvancedMultiviewClient]
-    AWB[高级专属结果与工作台宿主]
+    AWB[应用级唯一工作台及资产会话]
     Native[OrcaWorkspaceAdapter / 原生导入端口]
     Router --> Smart
     Router --> View
     View --> Host
     Host --> Session
     Host --> Client
-    Host --> AWB
+    Host -->|模型产物| AWB
+    Smart -->|模型产物| AWB
     AWB --> Native
   end
   subgraph Sidecar[既有 Python 侧车]
@@ -166,7 +169,7 @@ flowchart TB
 | `AdvancedMultiviewRepository` | 上传原件、组摘要、不可变设计版本、操作记录；原子更新和路径校验 | GUI 偏好、原生工程状态 |
 | `AdvancedMultiviewModelWorkflow` | 使用冻结四图提交／恢复一个逻辑 3D Job；复用网关、下载、产物处理端口 | 重新生成设计图、调用旧人像单图选路策略 |
 | 既有 Job 仓库／生命周期 | 3D Job、供应商 task ID、状态及产物的唯一写者 | 将四个 2D 设计任务重新解释为四个模型任务 |
-| 高级专属工作台宿主 | 本实例的模型、候选、编辑与导入会话 | 加载或覆盖智能创作实例中的草稿和模型 |
+| 应用级唯一工作台 | 当前可编辑资产、候选、检查凭证与原异步导入会话 | 持有或恢复任一创作模式的生成任务、构造第二个编辑实例 |
 
 桌面中的组快照是只读投影，不能和侧车争抢写入。组仅保存 `model_job_id` 和输入快照关联；3D 进度从 Job 查询／关联投影，不在组内维护另一套可写 3D 状态。图片版本、操作记录可独立落盘，组摘要不无限追加全部历史。
 
@@ -174,8 +177,8 @@ flowchart TB
 
 1. 保留现有智能 FeatureHost、Panel、`SmartGenerationFlow`、单图 DTO 及监听器。不能依靠切换同一 Panel 的 `smart_mode` 布尔值完成隔离。
 2. 懒创建高级页面与 `AdvancedCreationFeatureHost`。其 2D 草稿／任务独立，服务发现复用 `AIDesktopFeatureHost` 的既有管理器，不能再启动一个侧车。
-3. 高级需要旧单图历史或 3D 工作台时，使用另一个 `ModelGenerationFeatureHost` 实例作为**高级专属承接宿主**。新增显式上下文 `AdvancedOnly`：禁用该实例的智能生成入口和无范围的自动 latest 恢复，只允许显式打开高级／旧高级任务；默认上下文维持原实例行为。
-4. 不直接裸建第二个默认宿主：现有初始化、历史扫描、输出元数据和监听器有隐含归属，必须先接入上下文和宿主所有权令牌。若其隔离必须修改智能业务，停止该接入并反馈。
+3. 应用宿主唯一创建 `WorkbenchAssets` 资产面板和编辑会话，构造租约拒绝重复实例；智能及高级创作面板不创建工作台、编辑会话或导入编排。旧单图界面只复用独立的高级创作控件。
+4. `WorkbenchOpenRequest` 交接实际资产身份、摘要、外观、来源与返回上下文。高级 Job-v2 通过 `AdvancedModelTaskMonitor`／`AdvancedModelTaskFlow` 只读适配现有进度／下载／登记能力，不调用智能任务恢复；检查、取消与导入使用资产面板自己的代次和客户端。历史加载复用完整旧页、有效首帧、超时及回滚。
 5. 模式切换只改变展示归属，按原任务／未接受候选保护决定是否允许离开；禁止取消旧任务、清空草稿或自动生成。允许离开时后台任务继续更新所属组；旧模式事件不得把当前页面导航走。
 6. 页面实例保留各自输入和选择；后台快照可以更新所属 Session，但界面应用必须同时匹配 mode、group、epoch。销毁时失效令牌、取消本地监听／待执行点击，不宣称远端任务已取消。
 

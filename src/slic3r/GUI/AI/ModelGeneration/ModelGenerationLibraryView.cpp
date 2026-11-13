@@ -162,7 +162,7 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
     }
     std::optional<ModelLibraryLoader::Snapshot> snapshot;
     std::vector<ModelLibraryLoader::Thumbnail> thumbnails;
-    m_library_load_state->take(snapshot, thumbnails);
+    m_library_load_state->take(snapshot, thumbnails, 2);
     bool history_updated = false, workbench_metadata_updated = false;
     if (snapshot && snapshot->revision == m_library_revision) {
         m_library_scan_pending = false;
@@ -185,6 +185,14 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
             m_library_refresh_pending = false;
         } else {
             workbench_metadata_updated = true;
+            if (m_advanced_only) {
+                auto& entries = snapshot->entries;
+                entries.erase(std::remove_if(entries.begin(), entries.end(), [](const GeneratedModelEntry& entry) {
+                    const auto metadata = ModelGenerationPresentation::read_json(
+                        ModelGenerationPresentation::generated_models_root() / entry.job_id / "job.json");
+                    return metadata.is_object() && metadata.value("workflow_mode", std::string()) == "smart";
+                }), entries.end());
+            }
             const size_t anchor_index = m_library_page * m_library_page_size;
             const std::string anchor = anchor_index < m_library_entries.size() ? m_library_entries[anchor_index].job_id : std::string();
             const auto position = std::find_if(snapshot->entries.begin(), snapshot->entries.end(),
@@ -242,16 +250,10 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
     // Applying decoded pixels creates wxImage/wxBitmap objects on the UI
     // thread. Keep each timer tick bounded so opening the history page stays
     // interactive while the worker continues decoding the rest of the page.
-    constexpr size_t max_thumbnails_per_tick = 2;
-    size_t applied = 0;
     for (const auto& thumbnail : thumbnails) {
         if (thumbnail.revision != m_library_revision) continue;
         const auto targets = thumbnail.for_shell ? m_ui_history_entries.size() : m_library_thumbnails.size();
         if (thumbnail.index >= targets) continue;
-        if (applied++ >= max_thumbnails_per_tick) {
-            m_library_load_state->defer(thumbnail);
-            continue;
-        }
         if (thumbnail.for_shell) {
             if (thumbnail.index >= m_ui_history_entries.size())
                 continue;
@@ -511,7 +513,7 @@ void ModelGenerationPanel::load_design_library_entry(const std::string& job_id)
                 // Reopening the current pending design after reconnect is a
                 // read refresh: keep local input and unsubmitted quality choices.
                 if (status.id == weak->m_job_id && weak->m_awaiting_confirmation &&
-                    status.state == "awaiting_confirmation" && !weak->m_workbench_model.ready && weak->m_style_preview_ready) {
+                    status.state == "awaiting_confirmation" && !weak->m_model_preview_ready && weak->m_style_preview_ready) {
                     weak->handle_status(std::move(status), sequence);
                     if (weak->m_preview_book) weak->m_preview_book->SetSelection(0);
                     return;

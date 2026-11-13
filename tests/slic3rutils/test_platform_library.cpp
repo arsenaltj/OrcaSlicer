@@ -1,15 +1,124 @@
 #include "slic3r/Utils/PlatformLibrary/LibraryClient.hpp"
 #include "slic3r/Utils/PlatformLibrary/LibraryWorker.hpp"
+#include "slic3r/GUI/Redesign/LibraryPresentationChannel.hpp"
 #include "slic3r/Utils/HonorAccount/HonorOAuth.hpp"
+#include "slic3r/Utils/HonorAccount/HonorSession.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryRepository.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryExport.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelPreview3D.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
+#include <boost/nowide/cstdlib.hpp>
 #include <condition_variable>
 #include <chrono>
+#include <future>
+#include <wx/init.h>
 
 using namespace Slic3r::PlatformLibrary;
+
+// Explicit local QA only. Read the existing access token without refreshing,
+// saving or erasing the user's session; never log credentials or account data.
+TEST_CASE("A free platform model downloads and reuses a verified consumable local asset", "[.PlatformLibraryLiveQA]") {
+    const auto profile_value = boost::nowide::getenv("ORCA_LIBRARY_QA_PROFILE");
+    if (!profile_value) SKIP("Set the existing credential profile.");
+    // Own the first value before nowide reuses its environment string buffer.
+    const std::string profile(profile_value);
+    const auto output = boost::nowide::getenv("ORCA_LIBRARY_QA_OUTPUT");
+    if (!output) SKIP("Set an independent QA output directory.");
+    wxInitializer init; REQUIRE(init.IsOk());
+    const boost::filesystem::path evidence(output);
+    boost::filesystem::create_directories(evidence);
+    Json report = {{"scope", "free_download_native_transaction"}, {"session_read_only", true},
+                   {"session_refreshed", false}, {"main_window", false}, {"status", "pending"}};
+    const auto save_report = [&] {
+        boost::filesystem::ofstream stream(evidence / "live-download.json"); stream << report.dump(2);
+    };
+    auto store = Slic3r::HonorAccount::system_store(profile);
+    Slic3r::HonorAccount::Config config;
+    config.api_url = "https://api.cutelion.top";
+    if (const auto raw = store->load("configuration")) config = Slic3r::HonorAccount::parse_config(*raw);
+    REQUIRE(config.api_url == "https://api.cutelion.top");
+    const auto saved = store->load("platform-session-" + config.key());
+    if (!saved || Slic3r::HonorAccount::is_refresh_tombstone(*saved)) {
+        report["status"] = "not_verified"; report["reason"] = "no_existing_access_session"; save_report();
+        SKIP("No existing platform access session; the user's login is left unchanged.");
+    }
+    const auto session = Slic3r::HonorAccount::parse_session(*saved);
+    if (session.access_expires_at <= Slic3r::HonorAccount::now_seconds()) {
+        report["status"] = "not_verified"; report["reason"] = "existing_access_expired"; save_report();
+        SKIP("Existing access expired; this QA never rotates or refreshes credentials.");
+    }
+    Client client({config.api_url, session.access_token, session.identity.subject, 1});
+    const auto cancel = std::make_shared<std::atomic_bool>(false);
+    try {
+        // Fixed small public GLB; refuse a changed version or any paid access.
+        const auto selected = client.detail("2c8b7618-119e-4c72-a7a7-5f24cfd7b3c6", 1, cancel);
+        REQUIRE(selected.at("version").value("access", "") == "free");
+        REQUIRE(selected.at("access").value("allowed", false));
+        const auto spec = DownloadSpec::from_detail(selected, "8cc05093-3714-4944-823c-3ed22f3a2fa5");
+        REQUIRE(spec.size <= 1024 * 1024);
+        const auto models = evidence / "下载模型" / "models";
+        const auto started = std::chrono::steady_clock::now();
+        auto download = StagedDownload::prepare(client, spec, models, cancel);
+        REQUIRE(download->commit(cancel) == spec.key());
+        const auto path = models / "website" / spec.key() / "model.glb";
+        REQUIRE(file_digest(path) == spec.sha256);
+        REQUIRE(boost::filesystem::file_size(path) == spec.size);
+        std::size_t extra_network_calls = 0;
+        Client reuse(client.identity(), [&](const Identity&, const std::string&, const std::string&, const std::string&,
+            Cancellation, std::size_t, std::function<bool(const char*, std::size_t)>,
+            std::function<void(std::size_t, std::size_t)>) -> Binary {
+                ++extra_network_calls; throw Error(0, "Duplicate download must reuse the local bytes");
+        });
+        REQUIRE(StagedDownload::prepare(reuse, spec, models, cancel)->commit(cancel) == spec.key());
+        REQUIRE(extra_network_calls == 0);
+        Slic3r::GUI::ModelPreview3D::PreparedModel prepared;
+        std::string error;
+        REQUIRE(Slic3r::GUI::ModelPreview3D::prepare_model(path, prepared, error));
+        REQUIRE(prepared.triangles > 0);
+        const auto entries = Slic3r::GUI::ModelLibraryRepository::read(models, *cancel);
+        REQUIRE(std::any_of(entries.begin(), entries.end(), [&](const auto& entry) {
+            return entry.job_id == spec.key() && entry.model_path == path;
+        }));
+        report.update({{"status", "passed"}, {"model", spec.model}, {"version", spec.version},
+            {"file", spec.file}, {"sha256", spec.sha256}, {"size", spec.size},
+            {"triangles", prepared.triangles}, {"repeat_network_calls", extra_network_calls},
+            {"milliseconds", std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - started).count()}});
+        save_report();
+    } catch (const Error& error) {
+        report["status"] = "not_verified"; report["http_status"] = error.status;
+        report["reason"] = error.what(); save_report();
+        if (error.status == 401) SKIP("The existing access token is no longer valid; no refresh is attempted.");
+        throw;
+    }
+}
+
+TEST_CASE("Canceling accumulated library results allows new account work to complete", "[PlatformLibrary][UiLifecycle]") {
+    Worker worker;
+    std::mutex mutex;
+    std::condition_variable changed;
+    int produced=0;
+    for(int i=0;i<40;++i) REQUIRE(worker.submit(1,"old","",[&](Cancellation) {
+        {std::lock_guard<std::mutex> lock(mutex);++produced;changed.notify_all();}
+        return Worker::Value{Json::object(),{}};
+    }));
+    bool filled;
+    {std::unique_lock<std::mutex> lock(mutex);
+     filled=changed.wait_for(lock,std::chrono::seconds(3),[&]{return produced>=16;});}
+    worker.cancel();
+    REQUIRE(worker.submit(2,"new","",[](Cancellation){return Worker::Value{Json::object(),{}};}));
+    std::deque<Worker::Result> results;
+    const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    while(results.empty() && std::chrono::steady_clock::now()<end) {results=worker.take(1);std::this_thread::yield();}
+    worker.stop();
+    REQUIRE(filled);
+    REQUIRE(results.size()==1);
+    REQUIRE(results.front().epoch==2);
+    REQUIRE(results.front().kind=="new");
+}
+
 namespace {
 constexpr const char* model="11111111-1111-4111-8111-111111111111";
 constexpr const char* version="22222222-2222-4222-8222-222222222222";
@@ -244,4 +353,113 @@ TEST_CASE("A malformed account source cannot discard other successful personal c
     });
     const auto result=c.personal("all",Json::object(),cancellation());
     REQUIRE(result.at("items").size()==1);REQUIRE(result.at("unavailable").size()==4);
+}
+
+TEST_CASE("The installed library handshake survives account publication and rejects obsolete documents", "[PlatformLibrary][LibraryBridge]") {
+    using Channel=Slic3r::GUI::LibraryPresentationChannel;
+    Channel channel;
+    auto init=channel.begin("document-one");
+    channel.push({{"type","account"},{"accountTag","first"},{"accountGeneration",4u}});
+    REQUIRE(channel.take().empty());
+    REQUIRE(init.at("type")=="init");
+    Json ready={{"command","ready"},{"nonce","document-one"},{"documentGeneration",init.at("documentGeneration")}};
+    REQUIRE(channel.accept(ready)==Channel::Acceptance::Ready);
+    REQUIRE(channel.accept(ready)==Channel::Acceptance::Rejected);
+    channel.push({{"type","account"},{"accountTag","first"},{"accountGeneration",4u}});
+    channel.push({{"type","catalog"},{"items",Json::array({owned_record(1)})}});
+    auto batch=channel.take();REQUIRE(batch.size()==2);
+    REQUIRE(batch[1].at("accountTag")=="first");REQUIRE(batch[1].at("requestGeneration")==0);
+    Json command={{"command","query"},{"nonce","document-one"},{"documentGeneration",init.at("documentGeneration")},
+        {"accountTag","first"},{"accountGeneration",4u},{"requestGeneration",1u}};
+    REQUIRE(channel.accept(command)==Channel::Acceptance::Command);
+    REQUIRE(channel.accept(command)==Channel::Acceptance::Rejected);
+    channel.push({{"type","catalog"},{"items",Json::array({owned_record(1)})}});
+    auto old=channel.take();
+    channel.push({{"type","account"},{"accountTag","second"},{"accountGeneration",5u}});
+    channel.retry(std::move(old));
+    batch=channel.take();REQUIRE(batch.size()==1);REQUIRE(batch[0].at("accountTag")=="second");
+    command["requestGeneration"]=2u;REQUIRE(channel.accept(command)==Channel::Acceptance::Rejected);
+    const auto newer=channel.begin("document-two");
+    REQUIRE(newer.at("documentGeneration")!=init.at("documentGeneration"));
+    REQUIRE(channel.accept(ready)==Channel::Acceptance::Rejected);
+    REQUIRE(channel.take().empty());
+}
+
+TEST_CASE("Library presentation coalesces progress and retries only current snapshots", "[PlatformLibrary][LibraryBridge]") {
+    using Channel=Slic3r::GUI::LibraryPresentationChannel;
+    Channel channel;const auto init=channel.begin("nonce");
+    REQUIRE(channel.accept({{"command","ready"},{"nonce","nonce"},
+        {"documentGeneration",init.at("documentGeneration")}})==Channel::Acceptance::Ready);
+    channel.push({{"type","account"},{"accountTag","account"},{"accountGeneration",4u}});
+    for(unsigned i=0;i<1000;++i) channel.push({{"type","loading"},{"done",i}});
+    auto batch=channel.take();REQUIRE(batch.size()==2);REQUIRE(batch.back().at("done")==999);
+    channel.retry(batch);REQUIRE(channel.take()==batch);
+    channel.push({{"type","loading"},{"active",true}});
+    REQUIRE(channel.accept({{"command","cancel"},{"nonce","nonce"},{"documentGeneration",init.at("documentGeneration")},
+        {"accountTag","account"},{"accountGeneration",4u},{"requestGeneration",1u}})==Channel::Acceptance::Command);
+    REQUIRE(channel.take().empty());
+    channel.retry(batch);REQUIRE(channel.take().empty());
+    channel.push({{"type","loading"},{"active",false}});
+    REQUIRE(channel.take()[0].at("requestGeneration")==1);
+}
+
+TEST_CASE("Personal uploads are presented before optional activity requests finish", "[PlatformLibrary][LibraryBridge]") {
+    int snapshots=0;bool got_uploads=false;
+    const auto c=catalog_client([&](const std::string& path,Cancellation) {
+        if(path.find("/me/models?")!=std::string::npos) return Json::array({owned_record(1)});
+        REQUIRE(got_uploads);
+        throw Error(503,"unavailable");return Json();
+    });
+    const auto result=c.personal("all",Json::object(),cancellation(),Json::object(),[&](const Json& value) {
+        ++snapshots;REQUIRE(value.at("items").size()==1);got_uploads=true;
+    });
+    REQUIRE(snapshots==5);REQUIRE(result.at("items").size()==1);
+    REQUIRE(result.at("unavailable").size()==4);
+}
+
+TEST_CASE("An invalid owned upload cannot hide the remaining valid uploads", "[PlatformLibrary][LibraryBridge]") {
+    auto invalid=owned_record(2);invalid["version_id"]=nullptr;
+    const auto c=catalog_client([&](const std::string&,Cancellation) {return Json::array({owned_record(1),invalid,owned_record(3)});});
+    const auto result=c.personal("models",Json::object(),cancellation());
+    REQUIRE(result.at("items").size()==2);REQUIRE(result.at("unavailable")==Json::array({"models"}));
+    const auto cached=c.personal("models",Json::object(),cancellation(),result.at("cache"));
+    REQUIRE(cached.at("items").size()==2);REQUIRE(cached.at("unavailable")==result.at("unavailable"));
+}
+
+TEST_CASE("A rejected library queue never executes its download command", "[PlatformLibrary][LibraryDownload]") {
+    Worker worker;worker.stop();bool executed=false;
+    REQUIRE_FALSE(worker.submit(1,"download",file,[&](Cancellation){executed=true;return Worker::Value{};},true));
+    REQUIRE_FALSE(executed);REQUIRE(worker.take().empty());
+}
+
+TEST_CASE("Cancelled library progress and partial results cannot contaminate the next request", "[PlatformLibrary][LibraryDownload]") {
+    Worker worker;std::promise<void> entered,release;const auto released=release.get_future().share();
+    Cancellation old;
+    REQUIRE(worker.submit(1,"old","",[&](Cancellation cancel) {
+        old=cancel;worker.progress(10,100,cancel);entered.set_value();released.wait();
+        worker.progress(99,100,cancel);worker.publish(1,"catalog","partial",Worker::Value{1,{}},cancel);
+        return Worker::Value{};
+    }));
+    const auto started=entered.get_future().wait_for(std::chrono::seconds(2));
+    if(started!=std::future_status::ready) release.set_value();
+    REQUIRE(started==std::future_status::ready);
+    REQUIRE(worker.bytes().first==10);worker.cancel();release.set_value();
+    REQUIRE(worker.submit(2,"new","",[&](Cancellation cancel) {worker.progress(5,50,cancel);return Worker::Value{2,{}};}));
+    std::deque<Worker::Result> results;const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+    while(results.empty() && std::chrono::steady_clock::now()<end) {results=worker.take();std::this_thread::yield();}
+    REQUIRE(results.size()==1);REQUIRE(results.front().epoch==2);REQUIRE(worker.bytes().first==5);
+    REQUIRE_FALSE(worker.publish(1,"catalog","partial",Worker::Value{1,{}},old));
+}
+
+TEST_CASE("Download failures leave Chinese-path storage clean and keep existing files", "[PlatformLibrary][LibraryDownload]") {
+    Directory temporary;const auto root=temporary.path/boost::filesystem::path(L"中文模型目录");
+    const auto spec=DownloadSpec::from_detail(detail("complete"),file);
+    for(const unsigned status:{401u,403u,404u}) {
+        auto client=fixture_client("complete",[status](Cancellation){throw Error(status,"下载请求未完成");});
+        try {StagedDownload::prepare(client,spec,root,cancellation());FAIL("Expected rejected download");}
+        catch(const Error& error) {REQUIRE(error.status==status);}
+        REQUIRE(boost::filesystem::is_empty(root/"website"));REQUIRE(boost::filesystem::is_empty(root/"downloads"));
+    }
+    REQUIRE(StagedDownload::prepare(fixture_client("complete"),spec,root,cancellation())->commit(cancellation())==spec.key());
+    REQUIRE(file_digest(root/"website"/spec.key()/"model.glb")==spec.sha256);
 }

@@ -54,7 +54,7 @@ class SmartGenerationTests(unittest.TestCase):
             restored = _load_job(job.directory)
             self.assertTrue(restored.retired_workflow)
             self.assertEqual(restored.state, "stopped")
-            self.assertEqual(restored.artifact_path, model)
+            self.assertEqual(restored.artifact_path, model.resolve())
             restarted = self.make_application(root, {restored.id: restored})
             for command in ("generate", "confirm-palette", "retry-preparation", "retexture"):
                 with self.subTest(command=command), self.assertRaises(RequestError) as caught:

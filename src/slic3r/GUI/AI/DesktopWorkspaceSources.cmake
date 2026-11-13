@@ -1,6 +1,7 @@
 # The printer view and native adapters share the existing GUI target and PCH.
 # RedesignShell now owns navigation; the legacy navigation is not assembled.
 set(ORCA_DESKTOP_WORKSPACE_SOURCES
+    ${CMAKE_CURRENT_LIST_DIR}/SidebarWorkflowView.hpp
     ${CMAKE_CURRENT_LIST_DIR}/../MainFrameWorkspace.ipp
     ${CMAKE_CURRENT_LIST_DIR}/../PlaterAIFeatureHosts.ipp
     ${CMAKE_CURRENT_LIST_DIR}/Orca/OrcaPrintConfirmation.cpp

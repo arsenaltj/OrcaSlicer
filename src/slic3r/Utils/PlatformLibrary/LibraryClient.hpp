@@ -36,9 +36,10 @@ public:
     Json list(const Json& filters, Cancellation) const;
     Json detail(const std::string& id, int version, Cancellation) const;
     Json activity(const std::string& kind, const Json& filters, Cancellation) const;
-    Json owned_models(Cancellation) const;
+    Json owned_models(Cancellation, std::size_t* unreadable=nullptr) const;
     // Account-scoped, in-memory source collections; filtering and paging follow normalization.
-    Json personal(const std::string& filter, const Json& filters, Cancellation, Json cache=Json::object()) const;
+    Json personal(const std::string& filter, const Json& filters, Cancellation, Json cache=Json::object(),
+                  std::function<void(const Json&)> progress={}) const;
     Json presentation_detail(const std::string& id, int version, const std::string& visitor, Cancellation) const;
     Json toggle(const std::string& id, const std::string& kind, bool active, Cancellation) const;
     std::string image(const std::string& relative, Cancellation) const;

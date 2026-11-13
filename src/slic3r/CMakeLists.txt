@@ -130,6 +130,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/PluginStatus.hpp
     GUI/PluginPickerDialog.cpp
     GUI/PluginPickerDialog.hpp
+    GUI/PluginPermissionValidation.cpp
+    GUI/PluginPermissionValidation.hpp
     GUI/PluginsDialog.cpp
     GUI/PluginsDialog.hpp
     GUI/Shortcuts.cpp
@@ -207,6 +209,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/Gizmos/GLGizmoMmuSegmentation.hpp
     GUI/Gizmos/GLGizmoMove.cpp
     GUI/Gizmos/GLGizmoMove.hpp
+    GUI/Gizmos/GLGizmoPaintedModifier.cpp
+    GUI/Gizmos/GLGizmoPaintedModifier.hpp
     GUI/Gizmos/GLGizmoPainterBase.cpp
     GUI/Gizmos/GLGizmoPainterBase.hpp
     GUI/Gizmos/GLGizmoRotate.cpp
@@ -555,6 +559,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/SceneRaycaster.hpp
     GUI/SceneCache.cpp
     GUI/SceneCache.hpp
+    GUI/SelectionOutline.cpp
+    GUI/SelectionOutline.hpp
     GUI/FrameProfiler.cpp
     GUI/FrameProfiler.hpp
     GUI/SceneBenchmark.cpp
@@ -593,6 +599,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/StatusPanel.hpp
     GUI/StepMeshDialog.cpp
     GUI/StepMeshDialog.hpp
+    GUI/GeometryImportDialog.cpp
+    GUI/GeometryImportDialog.hpp
     GUI/SurfaceDrag.cpp
     GUI/SurfaceDrag.hpp
     GUI/Tabbook.cpp
@@ -796,6 +804,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/CloudDeleteQueue.hpp
     Utils/ColorSpaceConvert.cpp
     Utils/ColorSpaceConvert.hpp
+    Utils/CrealityCfs.cpp
+    Utils/CrealityCfs.hpp
     Utils/CrealityPrint.cpp
     Utils/CrealityPrint.hpp
     Utils/CrealityPrintAgent.cpp
@@ -948,6 +958,8 @@ if (APPLE)
             GUI/GUI_UtilsMac.mm
             GUI/MacIME.mm
             GUI/MacIME.hpp
+            GUI/Accessibility/AccessibilityMac.mm
+            GUI/Accessibility/AccessibilityMac.h
         )
     FIND_LIBRARY(DISKARBITRATION_LIBRARY DiskArbitration)
 endif ()
@@ -1020,7 +1032,7 @@ else()
     set(_opengl_link_lib OpenGL::GL)
 endif()
 
-target_link_libraries(libslic3r_gui OrcaSlicer::Core OrcaSlicer::MobileDeviceSDK OrcaSlicer::AIContracts OrcaSlicer::SmartSlicing cereal::cereal imgui imguizmo minilzo libvgcode md4c-html glad ${_opengl_link_lib} hidapi mdns ${wxWidgets_LIBRARIES} glfw libcurl OpenSSL::SSL OpenSSL::Crypto LibDataChannel::LibDataChannel noise::noise pybind11::embed)
+target_link_libraries(libslic3r_gui orca_ui_runtime OrcaSlicer::Core OrcaSlicer::MobileDeviceSDK OrcaSlicer::AIContracts OrcaSlicer::SmartSlicing cereal::cereal imgui imguizmo minilzo libvgcode md4c-html glad ${_opengl_link_lib} hidapi mdns ${wxWidgets_LIBRARIES} glfw libcurl OpenSSL::SSL OpenSSL::Crypto LibDataChannel::LibDataChannel noise::noise pybind11::embed)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Linux finds wxWidgets in module mode, whose include dirs and definitions

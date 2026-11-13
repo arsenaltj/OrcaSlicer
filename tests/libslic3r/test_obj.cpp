@@ -4,6 +4,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include "libslic3r/Model.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/Format/OBJ.hpp"
 
@@ -171,4 +172,62 @@ TEST_CASE("Texture coordinates follow the corners of a mesh that is flipped on l
     for (size_t face = 0; face < its.indices.size(); ++face)
         for (int corner = 0; corner < 3; ++corner)
             check_uv_is_vt(loaded.info.uvs[face][corner], its.indices[face][corner] + 1);
+}
+
+TEST_CASE("Model imports retain native OBJ UVs with either color policy", "[OBJ][ModelImport][Regression]")
+{
+    const bool explicit_color_policy = GENERATE(false, true);
+    const bool inward = GENERATE(false, true);
+    CAPTURE(explicit_color_policy, inward);
+    ScopedTemporaryFile obj(".obj");
+    ScopedTemporaryFile mtl(".mtl");
+    {
+        boost::nowide::ofstream out(mtl.string());
+        out << "newmtl a\nKd 1 0 0\n";
+    }
+    {
+        boost::nowide::ofstream out(obj.string());
+        out << "mtllib " << mtl.path().filename().string() << "\n"
+            << "v 0 0 0\nv 10 0 0\nv 0 10 0\nv 0 0 10\n"
+            << "vt 0.1 0.05\nvt 0.2 0.1\nvt 0.3 0.15\nvt 0.4 0.2\nusemtl a\n";
+        if (inward)
+            out << "f 1/1 2/2 3/3\nf 1/1 4/4 2/2\nf 1/1 3/3 4/4\nf 2/2 4/4 3/3\n";
+        else
+            out << "f 1/1 3/3 2/2\nf 1/1 2/2 4/4\nf 1/1 4/4 3/3\nf 2/2 3/3 4/4\n";
+    }
+    int callback_count = 0;
+    ObjImportColorFn color_policy;
+    if (explicit_color_policy)
+        color_policy = [&callback_count](ObjDialogInOut &colors) {
+            ++callback_count;
+            colors.preserve_input_colors = true;
+        };
+    const Model model = Model::read_from_file(obj.string(), nullptr, nullptr,
+        LoadStrategy::AddDefaultInstances, nullptr, nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr, 0, color_policy);
+    REQUIRE(model.objects.size() == 1);
+    REQUIRE(model.objects.front()->volumes.size() == 1);
+    const ModelVolume &volume = *model.objects.front()->volumes.front();
+    const indexed_triangle_set &its = volume.mesh().its;
+    REQUIRE(its.indices.size() == 4);
+    REQUIRE(volume.texture_uv.size() == its.indices.size() * 3);
+    CHECK(its_volume(its) > 0.f);
+    CHECK(callback_count == (explicit_color_policy ? 1 : 0));
+    // Use the final mesh corners, after any winding repair, rather than parser order.
+    const std::array<Vec3f, 4> original_vertices{
+        Vec3f(0.f, 0.f, 0.f), Vec3f(10.f, 0.f, 0.f),
+        Vec3f(0.f, 10.f, 0.f), Vec3f(0.f, 0.f, 10.f)};
+    for (size_t face = 0; face < its.indices.size(); ++face)
+        for (int corner = 0; corner < 3; ++corner) {
+            const Vec3f vertex = (volume.get_matrix() *
+                its.vertices[its.indices[face][corner]].cast<double>()).cast<float>();
+            size_t original = 0;
+            while (original < original_vertices.size() &&
+                   (vertex - original_vertices[original]).squaredNorm() > 1e-8f)
+                ++original;
+            REQUIRE(original < original_vertices.size());
+            const Vec2f &uv = volume.texture_uv[face * 3 + size_t(corner)];
+            CHECK_THAT(uv.x(), WithinAbs((original + 1) / 10., 1e-6));
+            CHECK_THAT(uv.y(), WithinAbs(1. - (original + 1) / 20., 1e-6));
+        }
 }

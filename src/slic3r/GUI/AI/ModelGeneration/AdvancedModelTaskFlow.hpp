@@ -2,6 +2,7 @@
 
 #include "ModelGenerationHost.hpp"
 #include "ModelGenerationPresentation.hpp"
+#include "ModelGenerationStatusText.hpp"
 #include "ModelLibraryEntry.hpp"
 #include "slic3r/AI/Contracts/GeneratedModelArtifact.hpp"
 #include <memory>
@@ -60,7 +61,9 @@ public:
         m_ports.status(m_state.job_id, [this, valid, query](Status status) {
             if (!valid() || !m_pending || query != m_query) return;
             m_pending = false;
-            if (status.id != m_state.job_id) { reconnect("任务响应与当前任务不匹配。"); return; }
+            if (status.id != m_state.job_id || status.creation_kind != "advanced_multiview_v1") {
+                reconnect("任务响应与当前高级任务不匹配。"); return;
+            }
             if (status.updated_at > 0 && m_status.updated_at > status.updated_at) {
                 m_ports.schedule(1200); return;
             }
@@ -90,13 +93,13 @@ private:
         if (m_listener) m_listener(m_state);
     }
     void reconnect(std::string message) {
-        m_state.status_text = "正在重新连接当前任务"; m_state.summary_text = std::move(message);
+        m_state.status_text = "正在重新连接当前任务"; m_state.summary_text = ModelGenerationStatusText::localized_advanced_service_error(message).ToUTF8().data();
         publish(); if (m_available) m_ports.schedule(1200);
     }
     void received(Status status) {
         m_status = std::move(status);
         m_state.job_state = m_status.state; m_state.job_phase = m_status.phase;
-        m_state.status_text = m_status.message; m_state.summary_text.clear();
+        m_state.status_text = ModelGenerationStatusText::localized_job_status(m_status, true).ToUTF8().data(); m_state.summary_text.clear();
         m_state.provider_name = m_status.provider_name; m_state.provider_task_id = m_status.provider_task_id;
         m_state.provider_conversion_task_id = m_status.provider_conversion_task_id;
         m_state.provider_error_code = m_status.provider_error_code;
@@ -117,7 +120,7 @@ private:
     void fail(std::string error) {
         m_local = false; m_terminal = true; m_state.busy = false; m_state.can_stop = false;
         m_state.stage = ModelGenerationUIStage::Failed; m_state.status_text = "模型本地加载未完成";
-        m_state.summary_text = std::move(error); m_state.can_retry_model = m_status.artifact_ready; publish();
+        m_state.summary_text = ModelGenerationStatusText::localized_advanced_service_error(error).ToUTF8().data(); m_state.can_retry_model = m_status.artifact_ready; publish();
     }
     void acquire() {
         if (m_local) return;

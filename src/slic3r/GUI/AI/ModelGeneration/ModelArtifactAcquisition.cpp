@@ -11,7 +11,7 @@ using namespace ModelGenerationPresentation;
 
 ModelArtifactAcquisition::ModelArtifactAcquisition() : m_client(AISidecarClient::default_endpoint()) {}
 ModelArtifactAcquisition::~ModelArtifactAcquisition() { cancel(); }
-void ModelArtifactAcquisition::cancel() { ++m_generation; m_client.cancel_current(); }
+void ModelArtifactAcquisition::cancel() { ++m_generation; m_validation.cancel(); m_client.cancel_current(); }
 bool ModelArtifactAcquisition::supported(const std::string& format, const std::string& encoding)
 { return format == "glb" || (format == "obj" && encoding == "vertex_colors"); }
 
@@ -25,13 +25,13 @@ void ModelArtifactAcquisition::start(const AIModelGenerationClient::JobStatus& s
     const auto generation = m_generation;
     wxWeakRef<ModelArtifactAcquisition> weak(this);
     const auto fail = [weak, generation, failed](std::string error) {
-        wxGetApp().CallAfter([weak, generation, failed, error = std::move(error)] {
+        Presentation::post_gui([weak, generation, failed, error = std::move(error)] {
             if (weak && generation == weak->m_generation) failed(error);
         });
     };
     m_client.download_artifact(status.id, status.artifact_format, temp_path(status.id, status.artifact_format),
         [weak, generation, status, complete, fail](boost::filesystem::path path) {
-            wxGetApp().CallAfter([weak, generation, status, complete, fail, path] {
+            Presentation::post_gui([weak, generation, status, complete, fail, path] {
                 if (!weak || generation != weak->m_generation) return;
                 AI::GeneratedModelArtifact artifact;
                 artifact.local_path = path; artifact.job_id = status.id;
@@ -43,23 +43,33 @@ void ModelArtifactAcquisition::start(const AIModelGenerationClient::JobStatus& s
                 weak->m_client.download_color_intent(status.id, status.color_intent_schema, status.color_intent_sha256,
                     path, manifest,
                     [weak, generation, artifact, status, complete](boost::filesystem::path manifest) mutable {
-                        wxGetApp().CallAfter([weak, generation, artifact, status, complete, manifest]() mutable {
+                        Presentation::post_gui([weak, generation, artifact, status, complete, manifest]() mutable {
                             if (!weak || generation != weak->m_generation) return;
-                            if (AIModelGenerationClient::validate_color_intent_manifest_file(
-                                manifest, status.color_intent_schema, status.color_intent_sha256, artifact.local_path))
-                                artifact.color_intent_manifest = AI::ColorIntentManifestRef{
-                                    manifest.string(), status.color_intent_schema, status.color_intent_sha256};
-                            complete(artifact);
+                            const auto task = weak->m_validation.begin(artifact.job_id, Presentation::TaskLifetime::Session);
+                            const bool accepted = Presentation::background_tasks().submit(task,
+                                [artifact, status, manifest](const Presentation::TaskContext& context) mutable {
+                                    if (!context.canceled() && AIModelGenerationClient::validate_color_intent_manifest_file(
+                                        manifest, status.color_intent_schema, status.color_intent_sha256, artifact.local_path))
+                                        artifact.color_intent_manifest = AI::ColorIntentManifestRef{
+                                            manifest.string(), status.color_intent_schema, status.color_intent_sha256};
+                                    return artifact;
+                                }, [weak, generation, task, artifact, complete](Presentation::TaskResult<AI::GeneratedModelArtifact> result) {
+                                    if (!weak || generation != weak->m_generation || !weak->m_validation.matches(task) || result.canceled) return;
+                                    // An unavailable/invalid optional manifest keeps the existing
+                                    // model-color fallback; unvalidated intent is never installed.
+                                    complete(result.value && !result.error ? std::move(*result.value) : artifact);
+                                }, Presentation::TaskPriority::Visible);
+                            if (!accepted) complete(artifact);
                         });
                     }, [weak, generation, artifact, complete](std::string) {
                         // Preserve the existing fallback to the model's own colors.
-                        wxGetApp().CallAfter([weak, generation, artifact, complete] {
+                        Presentation::post_gui([weak, generation, artifact, complete] {
                             if (weak && generation == weak->m_generation) complete(artifact);
                         });
                     });
             });
         }, fail, [weak, generation, progress](size_t received, size_t total) {
-            if (progress) wxGetApp().CallAfter([weak, generation, progress, received, total] {
+            if (progress) Presentation::post_gui([weak, generation, progress, received, total] {
                 if (weak && generation == weak->m_generation) progress(received, total);
             });
         });

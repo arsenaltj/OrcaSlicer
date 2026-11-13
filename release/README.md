@@ -89,6 +89,14 @@ identity is checked before using these expectations.
 
 ## Package contents and tester configuration
 
+Platform login uses the built-in public API endpoint `https://api.cutelion.top`.
+Fresh installations do not need a developer's environment or configuration file.
+An explicit `ORCA_PLATFORM_API_URL` overrides the saved profile configuration,
+which takes precedence over the shared application configuration and then the
+built-in default. Invalid explicit overrides remain errors. This default contains
+no account, token or provider credentials; user sessions stay in the existing
+per-user secure store and must never be copied into a package.
+
 Internal shared packages contain no provider credentials, user images or generated
 assets. Tester configuration stays outside the package and source control. The
 package content inspector remains mandatory; its recorded scope and limitations

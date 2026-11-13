@@ -3,6 +3,63 @@
 
 using Controller = Slic3r::GUI::BeautyWorkbenchTransactionController;
 
+TEST_CASE("Asynchronous history moves its entry only after restoration commits", "[BeautyTransactionController][UiLifecycle]")
+{
+    Controller controller;
+    std::function<void(bool)> pending;
+    Controller::Entry entry;
+    entry.restore_undo_async = [&](auto complete) { pending = std::move(complete); };
+    entry.restore_redo_async = entry.restore_undo_async;
+    controller.record(std::move(entry));
+    int callbacks = 0;
+    bool restored = true;
+    controller.undo_async([&](bool ok) { ++callbacks; restored = ok; });
+    CHECK(controller.processing());
+    CHECK(controller.undo_count() == 1);
+    CHECK(controller.redo_count() == 0);
+    REQUIRE(pending);
+    pending(false);
+    CHECK_FALSE(restored);
+    CHECK(controller.undo_count() == 1);
+    CHECK(controller.redo_count() == 0);
+    CHECK_FALSE(controller.processing());
+    controller.undo_async([&](bool ok) { ++callbacks; restored = ok; });
+    pending(true);
+    pending(true);
+    CHECK(restored);
+    CHECK(callbacks == 2);
+    CHECK(controller.undo_count() == 0);
+    CHECK(controller.redo_count() == 1);
+    controller.redo_async([&](bool ok) { restored = ok; });
+    CHECK(controller.redo_count() == 1);
+    pending(true);
+    CHECK(restored);
+    CHECK(controller.undo_count() == 1);
+    CHECK(controller.redo_count() == 0);
+}
+
+TEST_CASE("Reset and destruction invalidate pending history completions", "[BeautyTransactionController][UiLifecycle]")
+{
+    std::function<void(bool)> pending;
+    int callbacks = 0;
+    {
+        Controller controller;
+        Controller::Entry entry;
+        entry.restore_undo_async = [&](auto complete) { pending = std::move(complete); };
+        entry.restore_redo_async = entry.restore_undo_async;
+        controller.record(entry);
+        controller.undo_async([&](bool) { ++callbacks; });
+        controller.reset();
+        pending(true);
+        CHECK(callbacks == 0);
+        CHECK(controller.undo_count() == 0);
+        controller.record(std::move(entry));
+        controller.undo_async([&](bool) { ++callbacks; });
+    }
+    pending(true);
+    CHECK(callbacks == 0);
+}
+
 TEST_CASE("Beauty transaction controller keeps view access while processing", "[BeautyWorkbench]")
 {
     Controller controller;

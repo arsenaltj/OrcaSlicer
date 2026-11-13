@@ -17,7 +17,8 @@ import sys
 from typing import Any, Iterable, Sequence
 
 
-SCHEMA = "orcaslicer.ai-integration-lock/v4"
+SCHEMA = "orcaslicer.ai-integration-lock/v5"
+OFFICIAL_NIGHTLY_SHA = "93941dc34e8a534ce3966a5979fe1edac002cb68"
 EXPECTED_INTEGRATION_BRANCH = "codex/team/integration"
 EXPECTED_BRANCH_POLICY = {
     "long_lived_branches": {
@@ -46,14 +47,17 @@ EXPECTED_CI_CONTRACT = {
 EXPECTED_UPSTREAM = {
     "remote": "upstream",
     "branch": "main",
-    "ref": "upstream/main",
-    "sha": "b6ef6cf1be428b931d669dcc31b7f43ae320be85",
+    "ref": OFFICIAL_NIGHTLY_SHA,
+    "sha": OFFICIAL_NIGHTLY_SHA,
+    "kind": "commit",
+    "version": "2.6.0-dev",
 }
 EXPECTED_CANDIDATE_BASELINE = {
     "remote": "upstream",
-    "tag": "v2.5.0-beta",
-    "sha": "345efec64c7b95a05ce5cf96df0dde66a158835c",
-    "purpose": "official_tag_candidate_diff_base",
+    "kind": "commit",
+    "sha": OFFICIAL_NIGHTLY_SHA,
+    "purpose": "official_commit_candidate_diff_base",
+    "observed_ref": "refs/tags/nightly-builds",
 }
 EXPECTED_FEATURE_SOURCES = {
     "model_generation": {
@@ -348,8 +352,7 @@ def validate_document(document: Any) -> list[dict[str, str]]:
         "architecture_contract",
         "boundaries",
     )
-    if "candidate_baseline" in root:
-        document_keys += ("candidate_baseline",)
+    document_keys += ("candidate_baseline",)
     _expect_exact_keys(
         root,
         document_keys,
@@ -912,6 +915,32 @@ def validate_integration_receipts(
     return errors, receipt_details
 
 
+def validate_baseline_git(
+    baseline: dict[str, Any], repo_root: Path, head: str, *, name: str
+) -> list[dict[str, str]]:
+    """A fixed commit ignores moving refs; a release tag remains identity-checked."""
+    errors: list[dict[str, str]] = []
+    sha = baseline.get("sha")
+    if not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{40}", sha) is None:
+        return [_issue("git.baseline_sha", f"{name} must name a complete commit SHA")]
+    if _run_git(repo_root, ["cat-file", "-e", f"{sha}^{{commit}}"]).returncode != 0:
+        return [_issue("git.missing_commit", f"locked {name} commit is not available: {sha}")]
+    if _run_git(repo_root, ["merge-base", "--is-ancestor", sha, head]).returncode != 0:
+        errors.append(_issue(f"git.{name}_ancestor", f"locked {name} {sha} is not an ancestor of HEAD {head}"))
+    kind = baseline.get("kind", "tag" if "tag" in baseline else "commit")
+    if kind == "tag":
+        tag = baseline.get("tag")
+        if not isinstance(tag, str) or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.]+)?", tag):
+            errors.append(_issue("git.candidate_baseline_tag", f"{name} requires a fixed release tag"))
+        else:
+            resolved = _run_git(repo_root, ["rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"])
+            if resolved.returncode != 0 or resolved.stdout.strip() != sha:
+                errors.append(_issue("git.candidate_baseline_tag", f"candidate baseline tag {tag} does not resolve to {sha}"))
+    elif kind != "commit":
+        errors.append(_issue("git.baseline_kind", f"unsupported {name} baseline kind"))
+    return errors
+
+
 def validate_git(document: dict[str, Any], repo_root: Path) -> tuple[list[dict[str, str]], dict[str, Any]]:
     """Validate that locked commits exist and remain tied to the intended histories."""
     errors: list[dict[str, str]] = []
@@ -930,37 +959,14 @@ def validate_git(document: dict[str, Any], repo_root: Path) -> tuple[list[dict[s
         errors.extend(validate_tracked_paths(tracked_paths))
         errors.extend(validate_git_secret_content(repo_root))
 
-    shas = {"upstream": document["upstream"]["sha"]}
+    errors.extend(validate_baseline_git(document["upstream"], repo_root, head, name="upstream"))
     candidate_baseline = document.get("candidate_baseline")
     if isinstance(candidate_baseline, dict):
-        shas["candidate baseline"] = candidate_baseline["sha"]
-    shas.update({name: source["sha"] for name, source in document["feature_sources"].items()})
+        errors.extend(validate_baseline_git(candidate_baseline, repo_root, head, name="candidate_baseline"))
+    shas = {name: source["sha"] for name, source in document["feature_sources"].items()}
     for name, sha in shas.items():
         if _run_git(repo_root, ["cat-file", "-e", f"{sha}^{{commit}}"]).returncode != 0:
             errors.append(_issue("git.missing_commit", f"locked {name} commit is not available: {sha}"))
-
-    upstream_sha = document["upstream"]["sha"]
-    if _run_git(repo_root, ["merge-base", "--is-ancestor", upstream_sha, head]).returncode != 0:
-        errors.append(_issue("git.upstream_ancestor", f"locked upstream {upstream_sha} is not an ancestor of HEAD {head}"))
-
-    if isinstance(candidate_baseline, dict):
-        candidate_sha = candidate_baseline["sha"]
-        if _run_git(repo_root, ["merge-base", "--is-ancestor", candidate_sha, head]).returncode != 0:
-            errors.append(
-                _issue(
-                    "git.candidate_baseline_ancestor",
-                    f"candidate baseline {candidate_sha} is not an ancestor of HEAD {head}",
-                )
-            )
-        tag = candidate_baseline["tag"]
-        tag_result = _run_git(repo_root, ["rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"])
-        if tag_result.returncode != 0 or tag_result.stdout.strip() != candidate_sha:
-            errors.append(
-                _issue(
-                    "git.candidate_baseline_tag",
-                    f"candidate baseline tag {tag} does not resolve to {candidate_sha}",
-                )
-            )
 
     # feature_sources records historical imports, not the current developer
     # branch tips. Fixed source objects and ancestor receipts below preserve
@@ -977,6 +983,54 @@ def _source_requirements(document: dict[str, Any]) -> tuple[tuple[str, str, str]
     port = runtime["product_port"]
     protocol = runtime["protocol_version"]
     return (
+        (
+            "version.inc",
+            rf'set\(SoftFever_VERSION "{re.escape(document["upstream"]["version"])}"\)',
+            "upstream format and preset compatibility version",
+        ),
+        (
+            "src/slic3r/GUI/ApplicationUpdatePolicy.hpp",
+            r'application_updates_enabled\(\)\s*\{\s*return false;',
+            "application update policy remains disabled",
+        ),
+        (
+            "src/slic3r/GUI/GUI_App.cpp",
+            r'void GUI_App::enter_force_upgrade\(\)\s*\{\s*if \(!application_updates_enabled\(\)\) return;',
+            "application forced update producer policy",
+        ),
+        (
+            "src/slic3r/GUI/GUI_App.cpp",
+            r'Bind\(EVT_ENTER_FORCE_UPGRADE,[^\n]+\{\s*if \(!application_updates_enabled\(\)\) return;',
+            "application cached forced update consumer policy",
+        ),
+        (
+            "src/slic3r/GUI/GUI_App.cpp",
+            r'void GUI_App::check_new_version_sf\([^\n]+\)\s*\{\s*if \(!application_updates_enabled\(\)\) return;',
+            "application automatic and manual update policy",
+        ),
+        (
+            "src/slic3r/GUI/NotificationManager.cpp",
+            r'if \(!application_updates_enabled\(\) &&\s*'
+            r'\(notification_type == NotificationType::NewAppAvailable\s*\|\|\s*'
+            r'notification_type == NotificationType::NewAlphaAvailable\s*\|\|\s*'
+            r'notification_type == NotificationType::NewBetaAvailable\)\)\s*return false;',
+            "application update notification policy",
+        ),
+        (
+            "src/slic3r/Utils/PresetUpdater.cpp",
+            r'enabled_version_check\s*=\s*GUI::application_updates_enabled\(\);',
+            "application update worker policy",
+        ),
+        (
+            "src/slic3r/GUI/NativeCommands.cpp",
+            r'if \(application_updates_enabled\(\)\)\s*\{\s*add_with_icon\("help_check_updates"',
+            "application update help command policy",
+        ),
+        (
+            "src/slic3r/GUI/Preferences.cpp",
+            r'if \(application_updates_enabled\(\)\)\s*\{\s*auto item_stable_updates',
+            "application update preference policy",
+        ),
         (
             "tools/ai/orca_ai_sidecar.py",
             rf'^PORT\s*=\s*int\(os\.environ\.get\("ORCASLICER_AI_SIDECAR_PORT",\s*"{port}"\)\)',

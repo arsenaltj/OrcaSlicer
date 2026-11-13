@@ -187,6 +187,30 @@ void AdvancedMultiviewClient::download_asset(const std::string& group, const std
     track(std::move(http), done);
 }
 
+std::optional<AdvancedCreation::ModelJobProjection> AdvancedMultiviewClient::parse_model_job(
+    const Json& job, const std::string& group, const std::string& expected_job)
+{
+    try {
+        if (!valid_id(group) || !valid_id(expected_job) || job.at("id") != expected_job ||
+            job.at("creation_kind") != "advanced_multiview_v1" || job.at("advanced_group_id") != group ||
+            job.at("workflow_mode") != "advanced") return {};
+        AdvancedCreation::ModelJobProjection result;
+        result.id = expected_job;
+        result.state = job.at("state").get<std::string>();
+        if (result.state.empty()) return {};
+        result.phase = job.value("phase", std::string());
+        result.updated_at = job.value("updated_at", 0.0);
+        result.message = job.value("message", std::string());
+        if (job.contains("provider_tasks") && job["provider_tasks"].is_object())
+            result.resumable = !job["provider_tasks"].value("generation_task_id", std::string()).empty();
+        if (job.contains("provider_failure") && job["provider_failure"].is_object()) {
+            result.error_code = job["provider_failure"].value("code", std::string());
+            result.error_ambiguous = job["provider_failure"].value("ambiguous", false);
+        }
+        return result;
+    } catch (const Json::exception&) { return {}; }
+}
+
 std::optional<AdvancedCreation::GroupSnapshot> AdvancedMultiviewClient::parse_group(const Json& value,
                                                                                  const boost::filesystem::path& root)
 {
@@ -229,7 +253,13 @@ std::optional<AdvancedCreation::GroupSnapshot> AdvancedMultiviewClient::parse_gr
             if (!valid_id(result.model_job_id)) return {};
             const auto& model = *projected;
             result.model_state = model.value("state", std::string());
+            result.model_phase = model.value("phase", std::string());
+            result.model_updated_at = model.value("updated_at", 0.0);
             result.model_message = model.value("message", std::string());
+            if (model.contains("provider_failure") && model["provider_failure"].is_object()) {
+                result.model_error_code = model["provider_failure"].value("code", std::string());
+                result.model_error_ambiguous = model["provider_failure"].value("ambiguous", false);
+            }
             if (model.contains("provider_tasks") && model["provider_tasks"].is_object())
                 result.model_resumable = !model["provider_tasks"].value("generation_task_id", std::string()).empty();
         }

@@ -451,6 +451,7 @@ public:
         TriangleSplittingData seam;
         TriangleSplittingData mmu;
         TriangleSplittingData fuzzy;
+        TriangleSplittingData painted_modifier;
     };
 
     // Remap painting data from source mesh to target mesh using spatial mapping.

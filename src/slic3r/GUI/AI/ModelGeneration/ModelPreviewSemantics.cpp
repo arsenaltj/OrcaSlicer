@@ -398,20 +398,7 @@ bool ModelPreview3D::restore_beauty_face_colors(const FaceColorOverrides& colors
         if (!colors.empty()) {
             if (m_manual_corner_normals.size() != mesh->indices.size() * 3)
                 m_manual_corner_normals = ModelPreviewNormals::corner_normals(*mesh);
-            GLModel::Geometry geometry;
-            geometry.format = {GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3N3T2};
-            geometry.reserve_vertices(colors.size() * 3);
-            geometry.reserve_indices(colors.size() * 3);
-            for (const auto& item : colors) {
-                if (item.first >= mesh->indices.size()) return false;
-                const auto& face = mesh->indices[item.first];
-                const auto packed = preview_rgb8(item.second[0], item.second[1], item.second[2]);
-                const auto base = uint32_t(geometry.vertices_count());
-                for (size_t corner = 0; corner < 3; ++corner)
-                    geometry.add_vertex(mesh->vertices[face[corner]], m_manual_corner_normals[item.first * 3 + corner],
-                                        Vec2f(float(packed), -1.f));
-                geometry.add_triangle(base, base + 1, base + 2);
-            }
+            auto geometry = ModelPreviewGeometry::manual_color_geometry(*mesh, m_manual_corner_normals, colors);
             model = std::make_unique<GLModel>();
             model->init_from(std::move(geometry));
         }

@@ -4,6 +4,7 @@
 
 #include <catch2/catch_message.hpp>
 #include "slic3r/GUI/ActionRegistry.hpp"
+#include "slic3r/GUI/ApplicationUpdatePolicy.hpp"
 #include "slic3r/GUI/GUI_Factories.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include "slic3r/GUI/NativeCommands.hpp"
@@ -227,6 +228,10 @@ TEST_CASE("Native command icons resolve to shipped SVGs", "[ActionSource][SpeedD
                               Expected{"go_to_tab", ""}}) {
         const std::string* icon = icon_of(e.key);
         INFO(e.key);
+        if (std::string(e.key) == "help_check_updates" && !Slic3r::GUI::application_updates_enabled()) {
+            CHECK(icon == nullptr);
+            continue;
+        }
         REQUIRE(icon != nullptr);
         CHECK(*icon == e.icon);
     }
@@ -259,6 +264,11 @@ TEST_CASE("Native command catalog includes the Help and developer-mode commands"
                             "help_benchmark_3d_scene", "help_tip_of_the_day", "help_check_updates", "help_about", "open_wiki",
                             "open_youtube"}) {
         const Slic3r::GUI::NativeCommand* c = find(key);
+        INFO(key);
+        if (std::string(key) == "help_check_updates" && !Slic3r::GUI::application_updates_enabled()) {
+            CHECK(c == nullptr);
+            continue;
+        }
         REQUIRE(c != nullptr);
         CHECK(c->group == first->group);
     }

@@ -1,7 +1,10 @@
 #pragma once
 
 #include "RedesignTheme.hpp"
+#include <chrono>
+#include <cstdint>
 #include <wx/panel.h>
+#include <wx/utils.h>
 #ifdef __WXMSW__
 #include <glad/gl.h>
 #include <boost/log/trivial.hpp>
@@ -12,6 +15,9 @@
 #endif
 
 namespace Slic3r::GUI {
+
+inline std::uint64_t& redesign_restore_snapshot_count()
+{ static thread_local std::uint64_t count=0; return count; }
 
 inline bool is_redesign_workbench_surface(const wxWindow* window)
 {
@@ -35,11 +41,17 @@ public:
 
     void preserve_restore_colour() { m_preserve_restore_colour = true; }
     bool preserves_restore_colour() const { return m_preserve_restore_colour; }
+    void paint_owns_background(bool value=true) { m_paint_owns_background=value; }
+    std::uint64_t background_erase_count() const { return m_background_erases; }
 
 #ifdef __WXMSW__
     WXLRESULT MSWWindowProc(WXUINT message, WXWPARAM wparam, WXLPARAM lparam) override
     {
         if (message == WM_ERASEBKGND && wparam && GetBackgroundStyle() == wxBG_STYLE_PAINT) {
+            ++m_background_erases;
+            // This opt-in surface paints its complete background in one
+            // buffered WM_PAINT; immediate erasing would expose a grey frame.
+            if (m_paint_owns_background) return 1;
             const auto colour = GetBackgroundColour();
             const HBRUSH brush = ::CreateSolidBrush(RGB(colour.Red(), colour.Green(), colour.Blue()));
             RECT bounds;
@@ -53,6 +65,8 @@ public:
 #endif
 private:
     bool m_preserve_restore_colour {false};
+    bool m_paint_owns_background {false};
+    std::uint64_t m_background_erases {0};
 };
 
 inline wxColour redesign_restore_background_colour(wxWindow* window)
@@ -257,7 +271,7 @@ inline LRESULT CALLBACK redesign_restore_background_proc(HWND hwnd, UINT message
         const auto result = ::DefSubclassProc(hwnd, message, parameter, data);
         // A restore snapshot is only a bridge to this first real control paint.
         // Replaying it on later erases can resurrect a clipped handle or text.
-        if (is_redesign_workbench_surface(surface)) state->pixels.clear();
+        state->pixels.clear();
         if (state->is_viewport() && ::WindowFromDC(::wglGetCurrentDC()) == hwnd)
             state->context = ::wglGetCurrentContext();
         return result;
@@ -315,6 +329,31 @@ inline void retain_redesign_window_frames(wxWindow* root)
         state->retain_frame();
     }
     for (auto* child : root->GetChildren()) retain_redesign_window_frames(child);
+#endif
+}
+
+// Both custom caption actions and native system commands can announce the
+// same transition. Only its first entry may retain the native surfaces.
+inline void retain_redesign_restore_frames_once(wxWindow* root)
+{
+#ifdef __WXMSW__
+    constexpr auto property=L"HonorForge.RestoreFramesRetained";
+    if (!root || ::GetPropW(root->GetHandle(),property)) return;
+    if (!::SetPropW(root->GetHandle(),property,reinterpret_cast<HANDLE>(1))) return;
+    ++redesign_restore_snapshot_count();
+    const auto started=std::chrono::steady_clock::now();
+    retain_redesign_window_frames(root);
+    wxString trace;
+    if (wxGetEnv("ORCASLICER_UI_LATENCY_TRACE",&trace) && trace=="1")
+        BOOST_LOG_TRIVIAL(info) << "[UiRestoreSnapshot] captured=1 elapsed_ms="
+            << std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+#endif
+}
+
+inline void release_redesign_restore_frames(wxWindow* root)
+{
+#ifdef __WXMSW__
+    if (root) ::RemovePropW(root->GetHandle(),L"HonorForge.RestoreFramesRetained");
 #endif
 }
 

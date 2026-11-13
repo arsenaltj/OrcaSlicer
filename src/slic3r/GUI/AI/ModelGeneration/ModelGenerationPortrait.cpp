@@ -161,26 +161,56 @@ void ModelGenerationPanel::queue_portrait_reoptimization()
         << m_model_preview->geometry_id() << ", colors=" << m_portrait_reoptimization_count;
 }
 
+void ModelGenerationPanel::restore_portrait_preview_draft_async(const wxString& reason)
+{
+    if (!m_portrait_preview_draft || m_beauty_restore_running || m_shutdown) return;
+    const auto draft = m_portrait_preview_draft;
+    const auto before = m_portrait_draft_before;
+    if (m_portrait_task) m_portrait_task->finish(PortraitOutcome::DraftOnly);
+    m_model_preview->after_next_preview_frame({});
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    auto restore = [weak, draft, before, reason](bool discarded) {
+        if (!weak || weak->m_shutdown) return;
+        if (!discarded) { weak->update_portrait_optimization(); return; }
+        weak->restore_beauty_candidate_async(*draft, [weak, draft, before, reason](bool restored) {
+            if (!weak || weak->m_shutdown) return;
+            if (restored) {
+                if (weak->m_portrait_preview_draft == draft) weak->m_portrait_preview_draft.reset();
+                weak->m_portrait_draft_before = before;
+                weak->preserve_portrait_draft();
+                weak->finish_portrait_optimization(PortraitOutcome::DraftOnly, reason);
+            }
+            weak->update_portrait_optimization();
+        });
+    };
+    if (!m_finishing_candidate.empty()) discard_model_finishing_async(std::move(restore));
+    else restore(true);
+}
+
 void ModelGenerationPanel::cancel_portrait_optimization()
 {
+    if (m_beauty_restore_running) return;
     m_portrait_cancel_requested = true;
     if (m_finishing_running) {
-        stop_model_finishing();
+        // The existing completion path restores drafts and protects published
+        // results. Keep its busy gate until it returns; never wait here.
+        if (m_finishing_canceled) m_finishing_canceled->store(true);
+        if (m_beauty_transactions) m_beauty_transactions->request_cancel();
     } else if (m_portrait_preview_draft) {
-        const auto draft=std::move(m_portrait_preview_draft);
-        const auto before=m_portrait_draft_before;
-        if (m_portrait_task) m_portrait_task->finish(PortraitOutcome::Cancelled);
-        m_model_preview->after_next_preview_frame({});
-        if (!m_finishing_candidate.empty()) discard_model_finishing();
-        restore_beauty_candidate(*draft);
-        m_portrait_draft_before=before;
-        preserve_portrait_draft();
-        finish_portrait_optimization(PortraitOutcome::DraftOnly,_L("已取消预览准备，裁切草稿与原正式版本均已保留。"));
+        restore_portrait_preview_draft_async(_L("已取消预览准备，裁切草稿与原正式版本均已保留。"));
     } else if (m_portrait_draft_before) {
-        restore_beauty_candidate(*m_portrait_draft_before); clear_portrait_draft(); m_portrait_draft_before.reset();
-        if (m_beauty_controls) m_beauty_controls->set_dirty(false);
-        if (m_finishing_status) m_finishing_status->SetLabel(_L("已放弃未保存草稿，处理前版本已恢复。"));
-        finish_portrait_optimization(PortraitOutcome::Cancelled, _L("已放弃未保存草稿，处理前版本已恢复。"));
+        const auto before = m_portrait_draft_before;
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        restore_beauty_candidate_async(*before, [weak, before](bool restored) {
+            if (!weak || weak->m_shutdown) return;
+            if (restored && weak->m_portrait_draft_before == before) {
+                weak->clear_portrait_draft(); weak->m_portrait_draft_before.reset();
+                if (weak->m_beauty_controls) weak->m_beauty_controls->set_dirty(false);
+                if (weak->m_finishing_status) weak->m_finishing_status->SetLabel(_L("已放弃未保存草稿，处理前版本已恢复。"));
+                weak->finish_portrait_optimization(PortraitOutcome::Cancelled, _L("已放弃未保存草稿，处理前版本已恢复。"));
+            }
+            weak->update_portrait_optimization();
+        });
     } else if (m_model_preview && m_model_preview->semantic_processing()) {
         m_model_preview->cancel_semantic_request();
         m_model_preview->set_portrait_mode(true);
@@ -189,11 +219,17 @@ void ModelGenerationPanel::cancel_portrait_optimization()
         // final stage. Cancellation restores the same pre-task snapshot here.
         m_model_preview->after_next_preview_frame({});
         finish_portrait_optimization(PortraitOutcome::Cancelled, _L("优化已取消，处理前正式版本保留。"));
-        if (!m_finishing_candidate.empty()) discard_model_finishing();
-        m_model_preview->set_portrait_mode(true);
-        if (m_portrait_task) m_portrait_task->evidence(m_finishing_candidate.empty()
-            ? "已取消预览准备，处理前模型、选区和保护状态已恢复。"
-            : "优化已取消，但处理前版本恢复失败；候选仍保留，请重试放弃。", true);
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        auto finished = [weak](bool) {
+            if (!weak || weak->m_shutdown) return;
+            weak->m_model_preview->set_portrait_mode(true);
+            if (weak->m_portrait_task) weak->m_portrait_task->evidence(weak->m_finishing_candidate.empty()
+                ? "已取消预览准备，处理前模型、选区和保护状态已恢复。"
+                : "优化已取消，但处理前版本恢复失败；候选仍保留，请重试放弃。", true);
+            weak->update_portrait_optimization();
+        };
+        if (!m_finishing_candidate.empty()) discard_model_finishing_async(std::move(finished));
+        else finished(true);
     }
     update_portrait_optimization();
 }
@@ -215,10 +251,10 @@ void ModelGenerationPanel::portrait_preview_ready()
     if (!m_portrait_task || !m_portrait_task->snapshot().running()) return;
     m_model_preview->prepare_beauty_editor();
     m_portrait_task->report({PortraitStage::Preview, "等待预览绘制与选区准备", 0, 0});
-    const auto task = m_portrait_task; const auto sequence = m_workbench_model.revision;
+    const auto task = m_portrait_task; const auto sequence = m_sequence;
     wxWeakRef<ModelGenerationPanel> weak(this);
     m_model_preview->after_next_preview_frame([weak, task, sequence] {
-        if (weak && !weak->m_shutdown && weak->m_portrait_task == task && weak->m_workbench_model.revision == sequence)
+        if (weak && !weak->m_shutdown && weak->m_portrait_task == task && weak->m_sequence == sequence)
             weak->m_portrait_preview_drawn = true;
     });
 }
@@ -312,16 +348,8 @@ void ModelGenerationPanel::update_portrait_optimization()
         !m_portrait_card->IsShown() && (!m_portrait_task || !m_portrait_task->snapshot().running())) return;
     if (m_portrait_task && m_portrait_task->snapshot().running() && m_portrait_preview_draft &&
         m_model_preview->beauty_editor_failed()) {
-        const auto draft=std::move(m_portrait_preview_draft);
-        const auto before=m_portrait_draft_before;
-        m_portrait_task->finish(PortraitOutcome::DraftOnly);
         m_save_and_return=false;
-        m_model_preview->after_next_preview_frame({});
-        if (!m_finishing_candidate.empty()) discard_model_finishing();
-        restore_beauty_candidate(*draft);
-        m_portrait_draft_before=before;
-        preserve_portrait_draft();
-        finish_portrait_optimization(PortraitOutcome::DraftOnly,_L("预览选区或裁切编辑数据恢复失败；原草稿已保留，请重试保存。"));
+        restore_portrait_preview_draft_async(_L("预览选区或裁切编辑数据恢复失败；原草稿已保留，请重试保存。"));
         return;
     }
     // A preview frame callback is an optional rendering acknowledgement.  On
@@ -429,25 +457,43 @@ void ModelGenerationPanel::update_portrait_optimization()
 
 void ModelGenerationPanel::prepare_portrait_import(AI::ModelImportRequest& request)
 {
-    if(m_model_preview && m_model_preview->portrait_color_blocks())return;
+    // Compatibility consumer outside the Shell import transaction. Never
+    // treat the installed preview digest as proof of the actual file.
+    const auto prepare = capture_portrait_import_preparation(request);
+    if (!prepare) return;
+    if (AI::model_artifact_sha256(boost::filesystem::path(request.artifact.local_path)) !=
+            m_model_preview->model_sha256())
+        throw std::runtime_error("当前裁切外观尚未绑定到已保存 GLB，或保存后颜色已变化。请先保存并接受当前版本，再导入切片。");
+    try { prepare(request); }
+    catch (...) {
+        if (m_beauty_controls) m_beauty_controls->set_dirty(true);
+        throw;
+    }
+}
+
+std::function<void(AI::ModelImportRequest&)> ModelGenerationPanel::capture_portrait_import_preparation(
+    const AI::ModelImportRequest& request) const
+{
+    Presentation::assert_gui_thread();
+    if(m_model_preview && m_model_preview->portrait_color_blocks())return {};
     const auto shapes=m_model_preview ? m_model_preview->portrait_shape_details() : nullptr;
-    if (!shapes || !shapes->surface_partition || request.color_mode==AI::ImportColorMode::SingleColor) return;
+    if (!shapes || !shapes->surface_partition || request.color_mode==AI::ImportColorMode::SingleColor) return {};
     // A saved contour is carried by the verified GLB texture. Texture matching
     // subdivides the source, so old source face/leaf ordinals must not be applied
     // again afterwards. Refuse unsaved or changed appearance instead of dropping it.
-    boost::filesystem::ifstream stream(ModelGenerationPresentation::library_metadata_path(m_workbench_model.asset_id),std::ios::binary);
-    const auto metadata=stream ? nlohmann::json::parse(stream,nullptr,false) : nlohmann::json();
-    const auto hash=AI::model_artifact_sha256(boost::filesystem::path(request.artifact.local_path));
-    const auto current=AI::baked_portrait_appearance(hash,m_model_preview->semantic_result_metadata(),
+    const auto current=AI::baked_portrait_appearance(m_model_preview->model_sha256(),m_model_preview->semantic_result_metadata(),
         m_model_preview->import_cell_color_overrides(),shapes->surface_partition->at("partition_sha256").get<std::string>());
-    if (!metadata.is_object() || !metadata.contains("baked_portrait_appearance") ||
-        !AI::same_baked_portrait_appearance(metadata.at("baked_portrait_appearance"),current)) {
-        if (m_beauty_controls) m_beauty_controls->set_dirty(true);
-        throw std::runtime_error("当前裁切外观尚未绑定到已保存 GLB，或保存后颜色已变化。请先保存并接受当前版本，再导入切片。");
-    }
-    request.face_color_overrides.clear();
-    request.subface_color_overrides.clear();
-    request.face_color_geometry_id.clear();
+    return [current, record = ModelGenerationPresentation::library_metadata_path(m_displayed_model_job_id)](
+            AI::ModelImportRequest& prepared) {
+        boost::filesystem::ifstream stream(record,std::ios::binary);
+        const auto metadata=stream ? nlohmann::json::parse(stream,nullptr,false) : nlohmann::json();
+        if (!metadata.is_object() || !metadata.contains("baked_portrait_appearance") ||
+            !AI::same_baked_portrait_appearance(metadata.at("baked_portrait_appearance"),current))
+            throw std::runtime_error("当前裁切外观尚未绑定到已保存 GLB，或保存后颜色已变化。请先保存并接受当前版本，再导入切片。");
+        prepared.face_color_overrides.clear();
+        prepared.subface_color_overrides.clear();
+        prepared.face_color_geometry_id.clear();
+    };
 }
 
 bool ModelGenerationPanel::request_portrait_optimization(wxString& reason)

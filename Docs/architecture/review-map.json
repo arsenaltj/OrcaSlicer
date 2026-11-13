@@ -28,7 +28,8 @@
     "src/slic3r/GUI/Plater.hpp",
     "src/slic3r/GUI/GLCanvas3D.hpp",
     "src/orca_model_sdk",
-    "src/slic3r/Utils/PlatformLibrary"
+    "src/slic3r/Utils/PlatformLibrary",
+    "src/slic3r/GUI/Presentation"
   ],
   "modules": [
     {
@@ -74,9 +75,10 @@
         "src/slic3r/GUI/AI/Text",
         "src/slic3r/GUI/Redesign/RedesignShell.cpp",
         "src/slic3r/GUI/Redesign/RedesignShell.hpp",
-        "src/slic3r/GUI/Redesign"
+        "src/slic3r/GUI/Redesign",
+        "src/slic3r/GUI/Presentation"
       ],
-      "purpose": "组合主窗口、功能入口与本地服务可用性"
+      "purpose": "组合主窗口、功能入口与本地服务；PageCoordinator唯一持有页面，Presentation统一GUI分发、挂载租约、刷新和任务排空，业务真值留在既有Session"
     },
     {
       "id": "generation",
@@ -366,7 +368,13 @@
       "id": "assets_workspace",
       "path": "src/slic3r/GUI/Redesign/AssetsWorkspace.cpp",
       "needle": "void AssetsWorkspace::load()",
-      "detail": "Installed HTML presentation with a nonce-bound restricted bridge; LibraryWorkspaceService owns queries, account records and staged downloads. No remote page or native credential enters the HTML."
+      "detail": "安装HTML只负责展示；独立init／nonce／文档ready后才发送账号和业务快照，页面协调器恢复显隐及未完成握手。账号／请求代次隔离旧消息，网页不能取得凭据、URL或本机路径。"
+    },
+    {
+      "id": "library_presentation_channel",
+      "path": "src/slic3r/GUI/Redesign/LibraryPresentationChannel.hpp",
+      "needle": "class LibraryPresentationChannel {",
+      "detail": "仅持有文档握手和展示消息身份；init独立于账号队列，ready后合并当前账号／请求快照，不复制业务状态。"
     },
     {
       "id": "library_export",
@@ -573,7 +581,7 @@
       "id": "advanced_creation_session",
       "path": "src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationSession.hpp",
       "needle": "class Session {",
-      "detail": "高级独立桌面草稿、完整模型ID、失败空位选择、可见版本与回调epoch；失败不锁新2D意图，3D保留未决／四图保护；持久current及版本归侧车仓库。"
+      "detail": "高级创作独立维护四图版本与3D任务；同版本同SHA已验证图片保持就绪，其他视角生成不重置完成图。任务受理先登记再通知，核对不重开当前组。"
     },
     {
       "id": "advanced_multiview_application",
@@ -712,37 +720,19 @@
       "id": "advanced_creation_host",
       "path": "src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.cpp",
       "needle": "void AdvancedCreationFeatureHost::generate_model(Confirm confirm)",
-      "detail": "高级独立提交／停止／恢复与回执所有者；无编辑UI的任务观察器跟随明确Job，共享获取本地产物，目录请求与任务请求隔离。"
+      "detail": "高级提交／停止／恢复和产物由现有适配执行；先登记真实任务再通知所属创作页，不等待四图缓存；任务刷新不导航。按资源身份复用验证／解码结果，迟到结果不覆盖新组或版本。"
     },
     {
       "id": "advanced_creation_workspace",
       "path": "src/slic3r/GUI/Redesign/AdvancedCreationWorkspace.cpp",
       "needle": "struct AdvancedCreationWorkspace::Impl {",
-      "detail": "高级四图创作界面，只适配独立 Session；2D四图与页内3D展示按当前阶段互斥，用户返回2D后任务刷新不强切3D。完成后显式交接成果给 Shell 唯一编辑工作台；GPT／YOYOClaw目录和四图规则保持。"
+      "detail": "高级四图控件通过统一刷新应用快照；后台解码缩放，资源／像素尺寸／DPI相同复用位图，重生成期间保留旧图。页内3D进度与预览沿原高级Session，Shell独占唯一工作台路由。"
     },
     {
-      "id": "inline_generation_state",
-      "path": "src/slic3r/GUI/Redesign/InlineModelGenerationState.hpp",
-      "needle": "class InlineModelGenerationState {",
-      "detail": "仅持有来源／上下文／任务／成果的展示投影、局部呈现代次和新成果提示去重；远端就绪与本地有效首帧分开。路径、摘要或色板变化失效旧帧，不拥有生成资格、持久化或提交规则。"
-    },
-    {
-      "id": "inline_generation_view",
-      "path": "src/slic3r/GUI/Redesign/InlineModelGenerationView.cpp",
-      "needle": "InlineModelGenerationView::InlineModelGenerationView(",
-      "detail": "智能／高级分别挂载中央进度与只读模型预览；CPU准备协作取消并排空旧线程，GUI线程安装GL模型，有效可见首帧后开放完成动作。隐藏／最小化暂停呈现等待，本地重载不提交远端生成。"
-    },
-    {
-      "id": "creation_artifact_handoff",
-      "path": "src/slic3r/GUI/Redesign/RedesignCreationModel.cpp",
-      "needle": "void RedesignShell::open_creation_artifact(CreationSource source)",
-      "detail": "状态回调只刷新来源页；用户动作冻结当前可见成果，复用原资产校验、编辑保护及工作台首帧／失败回滚事务。同一已编辑资产恢复编辑现场，生成完成不替换编辑对象。"
-    },
-    {
-      "id": "generation_completion_toast",
-      "path": "src/slic3r/GUI/Redesign/GenerationCompletionToast.cpp",
-      "needle": "GenerationCompletionToast::GenerationCompletionToast(wxWindow* owner)",
-      "detail": "页内当前新生成成果首次有效呈现后的非模态提示；窗口位置／尺寸／DPI变化重定位，隐藏／最小化／切来源或进入工作台时消失，不拥有导航或任务状态。"
+      "id": "workbench_asset_handoff",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/WorkbenchAssetHandoff.cpp",
+      "needle": "void ModelGenerationPanel::initialize_workbench_assets()",
+      "detail": "应用宿主唯一初始化编辑会话；创作只交接实际资产、预览摘要和返回上下文，不恢复或清理智能任务。"
     },
     {
       "id": "advanced_multiview_models",
@@ -760,7 +750,7 @@
       "id": "native_workbench_partition",
       "path": "src/slic3r/GUI/AI/ModelGeneration/NativeWorkbenchPartition.cpp",
       "needle": "bool ModelGenerationPanel::ensure_native_workbench_partition(",
-      "detail": "Shared native partitioning serves the existing AI palette and explicit people-six suite. Model context, cancellation and late-result ownership remain bound to the manual workbench; no portrait one-click state or ledger exists."
+      "detail": "原生修复、配色和发布仍由唯一工作台持有。CPU几何只准备一次，完整发布凭证附加后直接交接GUI；预览失败重试先严格验证已发布成果并复用，不能重复修复或删除既有成果。"
     },
     {
       "id": "native_workbench_publication",
@@ -772,7 +762,7 @@
       "id": "workbench_page_presentation",
       "path": "src/slic3r/GUI/Redesign/RedesignWorkbenchPresentation.cpp",
       "needle": "bool RedesignShell::begin_workbench_presentation(bool history_loading)",
-      "detail": "The existing page-transition token retains smart/advanced creation and direct history/local/library entry sources, including in-workbench model changes. Layout and current model frames gate reveal; checks run only afterwards. An empty workbench opens without waiting for a model frame. History notifications are generation/asset bound and ordinary state publication cannot reroute preparation. Failure, cancellation and timeout restore the previous model, visible source route and AI settings before uncovering. The retained source includes settings and content but excludes fixed navigation; target settings visibility and final width precede frame validation."
+      "detail": "The existing page-transition token retains the completed source page for result entry and direct history entry, including in-workbench model changes. Layout and current model frames gate reveal; checks run only afterwards. History notifications are generation/asset bound and ordinary state publication cannot reroute preparation. Failure, cancellation and timeout restore the previous model, route and AI settings before uncovering. The retained source includes settings and content but excludes fixed navigation; target settings visibility and final width precede frame validation."
     },
     {
       "id": "shared_view_navigator",
@@ -796,12 +786,13 @@
       "id": "workbench_model_context",
       "path": "src/slic3r/GUI/AI/ModelGeneration/WorkbenchModelContext.hpp",
       "needle": "struct WorkbenchModelContext",
-      "detail": "唯一编辑资产身份及格式、色板、ColorIntent、参考图；与智能生成字段、任务和返回来源分别维护。"
+      "detail": "纯值资产投影；实际唯一编辑状态由应用级Role::WorkbenchAssets面板及Beauty Session持有，生成会话独立，返回上下文归FeatureHost。"
     },
     {
       "id": "library_workspace_service",
       "path": "src/slic3r/GUI/AI/ModelGeneration/LibraryWorkspaceService.hpp",
-      "needle": "class LibraryWorkspaceService final"
+      "needle": "class LibraryWorkspaceService final",
+      "detail": "目录、本人作品与活动渐进查询，保留各成功来源；下载受理后才busy，终态释放，登录后恢复选定详情／文件再验证资格。仅业务会话拥有查询及下载状态。"
     },
     {
       "id": "platform_library_download",
@@ -822,6 +813,60 @@
       "id": "diagnostic_log_export",
       "path": "src/slic3r/Utils/DiagnosticLogs.cpp",
       "needle": "LogExportResult export_logs"
+    },
+    {
+      "id": "page_lifecycle",
+      "path": "src/slic3r/GUI/Redesign/RedesignPageCoordinator.hpp",
+      "needle": "class RedesignPageCoordinator",
+      "detail": "Shell持有唯一页面路由及原过渡令牌。保留页面幂等准备、呈现、隐藏与销毁；不持有生成或编辑业务状态。"
+    },
+    {
+      "id": "ui_refresh_runtime",
+      "path": "src/slic3r/GUI/Presentation/UiRuntime.cpp",
+      "needle": "void RefreshScheduler::commit_pending",
+      "detail": "每surface单pending，隐藏保留dirty，提交期间新增变化留下一轮；高级页通知亦合并，只有几何变化提交布局。纯平移不采集恢复帧。TaskRunner提供有界数据工作、取消身份及GUI回调排空，旧执行器通过shutdown hook保留原事务。"
+    },
+    {
+      "id": "model_preview_load_result",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelHistoryPreview.hpp",
+      "needle": "struct ModelPreviewLoadResult",
+      "detail": "后台返回最终选中的预览、实际资产和文件凭证；子资源全部就绪才提交Ready，重复完成不再次移动几何。发布后展示失败仍保留有效成果，取消／失败不可安装。"
+    },
+    {
+      "id": "async_preview_image",
+      "path": "src/slic3r/GUI/Presentation/AsyncPreviewImage.cpp",
+      "needle": "void AsyncPreviewImage::launch",
+      "detail": "四图、上传及历史图按资源版本／像素尺寸／DPI后台准备，GUI只安装匹配请求的完整位图。保持旧图、隐藏失效及恢复，普通绘制和窗口平移不缩图。"
+    },
+    {
+      "id": "window_mount_lease",
+      "path": "src/slic3r/GUI/Presentation/WindowMountLease.hpp",
+      "needle": "class WindowMountLease",
+      "detail": "wx parent管理控件；跨宿主挂载保留原parent/sizer位置/显隐/焦点，仅栈顶代次可恢复。原布局替换时仍安全归还，避免临时宿主删除Plater。"
+    },
+    {
+      "id": "inline_generation_state",
+      "path": "src/slic3r/GUI/Redesign/InlineModelGenerationState.hpp",
+      "needle": "class InlineModelGenerationState {",
+      "detail": "仅持有来源／上下文／任务／成果的展示投影、局部呈现代次和新成果提示去重；远端就绪与本地有效首帧分开。路径、摘要或色板变化失效旧帧，不拥有生成资格、持久化或提交规则。"
+    },
+    {
+      "id": "inline_generation_view",
+      "path": "src/slic3r/GUI/Redesign/InlineModelGenerationView.cpp",
+      "needle": "InlineModelGenerationView::InlineModelGenerationView(",
+      "detail": "智能／高级分别挂载中央进度与只读模型预览；CPU解析及渲染几何由有界TaskRunner和TaskScope准备，协作取消并过滤旧回调，GUI不join，GUI线程安装GL模型，有效可见首帧后开放完成动作。隐藏／最小化暂停呈现等待，本地重载不提交远端生成。"
+    },
+    {
+      "id": "creation_artifact_handoff",
+      "path": "src/slic3r/GUI/Redesign/RedesignCreationModel.cpp",
+      "needle": "void RedesignShell::open_creation_artifact(CreationSource source)",
+      "detail": "状态回调只刷新来源页；用户动作冻结当前可见成果，复用原资产校验、编辑保护及工作台首帧／失败回滚事务。同一已编辑资产恢复编辑现场，生成完成不替换编辑对象。"
+    },
+    {
+      "id": "generation_completion_toast",
+      "path": "src/slic3r/GUI/Redesign/GenerationCompletionToast.cpp",
+      "needle": "GenerationCompletionToast::GenerationCompletionToast(wxWindow* owner)",
+      "detail": "页内当前新生成成果首次有效呈现后的非模态提示；窗口位置／尺寸／DPI变化重定位，隐藏／最小化／切来源或进入工作台时消失，不拥有导航或任务状态。"
     }
   ],
   "journeys": [
@@ -1883,20 +1928,26 @@
           "src/slic3r/GUI/Plater*",
           "src/slic3r/GUI/Redesign/RedesignShell*",
           "src/slic3r/GUI/Redesign/RedesignModelWorkflow*",
-          "src/slic3r/GUI/GUI_App*"
+          "src/slic3r/GUI/GUI_App*",
+          "src/slic3r/GUI/Presentation/*",
+          "src/slic3r/GUI/Redesign/RedesignPageCoordinator*"
         ],
         "evidence": [
           "desktop_host",
-          "native_output"
+          "native_output",
+          "page_lifecycle",
+          "ui_refresh_runtime",
+          "window_mount_lease"
         ],
         "tests": [
           "tests/slic3rutils/test_orca_*",
-          "tests/ui_redesign/*"
+          "tests/ui_redesign/*",
+          "tests/slic3rutils/test_ui_lifecycle.cpp"
         ],
-        "state_owner": "Plater 持有当前工程；Shell 投影并导航",
-        "contract": "导入、应用、撤销与保存使用原生工作区",
+        "state_owner": "Plater持有当前工程；既有Session拥有业务；Shell持有PageCoordinator唯一页面状态，Presenter只消费快照",
+        "contract": "单一编辑工作台及两种创作页复用的3D只读预览；主线程GUI提交、挂载租约、合并dirty、有效首帧与退出排空，业务与展示资格分别校验",
         "note": "逻辑入口集中；不是所有业务均已离开主窗口。",
-        "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
+        "build_boundary": "C++17桌面；orca_ui_runtime为GUI执行／刷新静态库，页面消费者仍编译进libslic3r_gui，原生执行器不整体重写"
       },
       {
         "id": "creation_ui",
@@ -1905,28 +1956,19 @@
           "src/slic3r/GUI/ModelGenerationPanel*",
           "src/slic3r/GUI/AI/ModelGeneration/ModelGeneration*",
           "src/slic3r/GUI/AIModelGenerationClient*",
-          "src/slic3r/GUI/AI/Text",
-          "src/slic3r/GUI/Redesign/InlineModelGeneration*",
-          "src/slic3r/GUI/Redesign/RedesignCreationModel.cpp",
-          "src/slic3r/GUI/Redesign/GenerationCompletionToast*"
+          "src/slic3r/GUI/AI/Text"
         ],
         "evidence": [
           "generation_host",
-          "generate_confirmation",
-          "inline_generation_state",
-          "inline_generation_view",
-          "creation_artifact_handoff",
-          "generation_completion_toast"
+          "generate_confirmation"
         ],
         "tests": [
           "tests/slic3rutils/test_model_generation*",
-          "tools/ai/test_atomic_capabilities.py",
-          "tests/slic3rutils/test_inline_model_generation.cpp",
-          "tests/slic3rutils/test_ui_redesign.cpp"
+          "tools/ai/test_atomic_capabilities.py"
         ],
-        "state_owner": "原Host／Session拥有任务与资格；ModelGenerationUIState及InlineModelGenerationState仅投影任务和本地呈现，WorkbenchModelContext独立持有编辑资产",
-        "contract": "确认后创建任务；状态刷新不导航；当前成果有效首帧后才开放完成动作，显式交接统一工作台",
-        "note": "两模式各自中央展示及重生成命令；工作台Tab直接编辑，独立等待／结果页已移除。原智能完整链、高级确认四图、历史及下游命令沿用。与后处理共享 Panel 的既有耦合保持。",
+        "state_owner": "ModelGenerationUIState 投影本地任务",
+        "contract": "确认后创建任务；完成产物显式交接",
+        "note": "与后处理共享 Panel，属于主要耦合点。",
         "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
       },
       {
@@ -2054,7 +2096,7 @@
         ],
         "state_owner": "旧 Job / JobRepository 持有原任务；高级组仓库独立持有当前上传引用、待处理集合、四图版本、operation模型与尝试，AdvancedCreation Session 持有高级桌面草稿、完整图像模型ID与选择；AdvancedModelTaskFlow只持有本地观察投影及请求代次，不创建远端任务",
         "contract": "只有首次／新建创建高级组；同组输入或风格变化强制重生对应视角并在待处理清空前禁止3D；YOYOClaw目录无精确Qwen时不自动回落，operation冻结模型且失败重试沿原模型；确认、取消、响应恢复与幂等提交在应用入口处理",
-        "note": "智能与高级创作Session／任务独立，生成等待与结果留各自创作页，成果显式交接Shell唯一编辑工作台；高级重新生成复用确认四图且不额外执行2D。供应商协议、预算确认与原文件兼容不变。",
+        "note": "智能与高级创作Session／任务独立，生成等待、结果与编辑接入Shell唯一工作台；高级不额外执行2D。供应商协议、预算确认与原文件兼容不变。",
         "build_boundary": "任务应用为本地 Python sidecar 模块；高级 Session 编入 libslic3r_gui STATIC，二者不具有独立部署边界。"
       },
       {
@@ -2085,7 +2127,7 @@
           "tests/slic3rutils/test_model_color*",
           "tests/slic3rutils/test_unified_workbench.cpp"
         ],
-        "state_owner": "Session私有持有候选基线、历史检查点、候选/已发布文件与草稿revision；TransactionController持有撤销时间线；当前模型身份与元数据由唯一WorkbenchModelContext持有，Shell仅持返回来源",
+        "state_owner": "Session私有持有候选基线、历史检查点、候选/已发布文件与草稿revision；TransactionController持有撤销时间线；当前模型身份与元数据由应用级WorkbenchAssets唯一面板持有；WorkbenchModelContext仅作纯值契约，FeatureHost持返回上下文，Shell只适配导航",
         "contract": "保存成功才完成接受；过期回调不接受新草稿；恢复成功才清理待选文件/历史；原生交接保持明确应用",
         "note": "配色候选生命周期通过Session操作；预览、持久化、耗材原生提交与人像编辑上下文仍由宿主适配。未宣称整个后处理已无GUI依赖。",
         "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"

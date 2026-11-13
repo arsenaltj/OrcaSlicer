@@ -5,6 +5,7 @@
 #include <atomic>
 #include <memory>
 #include <thread>
+#include "slic3r/GUI/Presentation/UiRuntime.hpp"
 #include <optional>
 
 namespace Slic3r::GUI {
@@ -30,8 +31,7 @@ private:
     AIModelGenerationClient m_client;
     ModelArtifactAcquisition m_acquisition;
     wxTimer m_timer;
-    std::thread m_worker;
-    std::shared_ptr<std::atomic<bool>> m_cancel;
+    Presentation::TaskScope m_preparation;
     std::unique_ptr<AdvancedModelTaskFlow> m_flow;
     std::shared_ptr<int> m_lifetime {std::make_shared<int>(0)};
 };

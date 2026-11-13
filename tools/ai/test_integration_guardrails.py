@@ -26,18 +26,29 @@ class IntegrationGuardrailTests(unittest.TestCase):
     def setUp(self) -> None:
         self.document = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
 
+    def test_library_bridge_never_waits_for_webview_script_results(self) -> None:
+        source = (REPO_ROOT / "src/slic3r/GUI/Redesign/AssetsWorkspace.cpp").read_text(encoding="utf-8")
+        # A synchronous wxWebView call pumps a nested event loop. During a
+        # native show/freeze callback its completion may never arrive, even
+        # though ordinary timer messages continue to run.
+        self.assertNotRegex(source, r"(?:->|\.)\s*RunScript\s*\(",
+                            "Library presentation must submit scripts without waiting for their result")
+        self.assertNotRegex(source, r"\bwx(?:Safe)?Yield(?:IfNeeded|For)?\s*\(",
+                            "Library navigation must return to the normal GUI event loop")
+
     def test_repository_lock_passes_schema_and_source_checks(self) -> None:
         self.assertEqual([], GUARDRAILS.validate_document(self.document))
         self.assertEqual([], GUARDRAILS.validate_source_constants(self.document, REPO_ROOT))
 
     def test_repository_lock_declares_guarded_modular_architecture(self) -> None:
-        self.assertEqual("orcaslicer.ai-integration-lock/v4", self.document["schema"])
+        self.assertEqual("orcaslicer.ai-integration-lock/v5", self.document["schema"])
         self.assertEqual(
             {
                 "remote": "upstream",
-                "tag": "v2.5.0-beta",
-                "sha": "345efec64c7b95a05ce5cf96df0dde66a158835c",
-                "purpose": "official_tag_candidate_diff_base",
+                "kind": "commit",
+                "sha": "93941dc34e8a534ce3966a5979fe1edac002cb68",
+                "purpose": "official_commit_candidate_diff_base",
+                "observed_ref": "refs/tags/nightly-builds",
             },
             self.document["candidate_baseline"],
         )
@@ -638,6 +649,28 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertEqual(len(GUARDRAILS._source_requirements(self.document)), len(errors))
         self.assertTrue(all(error["code"] == "source.constant" for error in errors))
 
+    def test_stable_and_prerelease_notifications_cannot_bypass_disabled_updates(self) -> None:
+        relative = "src/slic3r/GUI/NotificationManager.cpp"
+        source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+        for notification in ("NewAppAvailable", "NewAlphaAvailable", "NewBetaAvailable"):
+            with self.subTest(notification=notification), tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                for path, _, _ in GUARDRAILS._source_requirements(self.document):
+                    destination = root / path
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_text((REPO_ROOT / path).read_text(encoding="utf-8"), encoding="utf-8")
+                broken = source.replace(
+                    "notification_type == NotificationType::" + notification,
+                    "notification_type == NotificationType::PresetUpdateAvailable",
+                    1,
+                )
+                self.assertNotEqual(source, broken)
+                (root / relative).write_text(broken, encoding="utf-8")
+                errors = GUARDRAILS.validate_source_constants(self.document, root)
+                self.assertEqual(1, len(errors))
+                self.assertEqual("source.constant", errors[0]["code"])
+                self.assertIn("application update notification policy", errors[0]["message"])
+
     def test_local_transport_security_is_part_of_source_contract(self) -> None:
         labels = {label for _, _, label in GUARDRAILS._source_requirements(self.document)}
 
@@ -827,6 +860,53 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertEqual(not self.expected_architecture_findings, report["ok"])
         self.assertTrue(report["git_checks_skipped"])
         self.assertCountEqual(self.expected_architecture_findings, report["errors"])
+
+
+class FixedBaselineGitTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="orca-baseline-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.git("init", "--quiet")
+        self.git("config", "user.name", "Baseline Test")
+        self.git("config", "user.email", "baseline@example.invalid")
+        self.git("commit", "--quiet", "--allow-empty", "-m", "official baseline")
+        self.baseline = self.git("rev-parse", "HEAD")
+        self.git("commit", "--quiet", "--allow-empty", "-m", "product candidate")
+        self.head = self.git("rev-parse", "HEAD")
+
+    def git(self, *arguments: str) -> str:
+        return subprocess.run(["git", "-C", str(self.root), *arguments], check=True,
+                              capture_output=True, text=True, encoding="utf-8").stdout.strip()
+
+    def check(self, baseline: dict) -> list[dict]:
+        return GUARDRAILS.validate_baseline_git(baseline, self.root, self.head, name="candidate_baseline")
+
+    def test_fixed_nightly_survives_absent_and_moving_observed_tags(self) -> None:
+        baseline = {"kind": "commit", "sha": self.baseline, "observed_ref": "refs/tags/nightly-builds"}
+        self.assertEqual([], self.check(baseline))
+        self.git("tag", "nightly-builds", self.head)
+        self.assertEqual([], self.check(baseline))
+        self.git("tag", "-f", "nightly-builds", self.baseline)
+        self.assertEqual([], self.check(baseline))
+
+    def test_fixed_pin_rejects_missing_wrong_type_and_nonancestor_objects(self) -> None:
+        for sha in ("f" * 40, "HEAD", self.git("rev-parse", "HEAD^{tree}")):
+            with self.subTest(sha=sha):
+                self.assertTrue(self.check({"kind": "commit", "sha": sha}))
+        self.git("checkout", "--quiet", "--orphan", "unrelated")
+        self.git("commit", "--quiet", "--allow-empty", "-m", "unrelated history")
+        errors = self.check({"kind": "commit", "sha": self.git("rev-parse", "HEAD")})
+        self.assertEqual(["git.candidate_baseline_ancestor"], [error["code"] for error in errors])
+
+    def test_release_tags_require_exact_fixed_commit_and_reject_tag_movement(self) -> None:
+        baseline = {"kind": "tag", "tag": "v2.5.0-beta", "sha": self.baseline}
+        self.assertTrue(self.check(baseline))
+        self.git("tag", "-a", "v2.5.0-beta", self.baseline, "-m", "official release")
+        self.assertEqual([], self.check(baseline))
+        self.git("tag", "-f", "v2.5.0-beta", self.head)
+        self.assertEqual(["git.candidate_baseline_tag"], [error["code"] for error in self.check(baseline)])
+        self.assertTrue(self.check({**baseline, "tag": "nightly-builds"}))
 
 
 if __name__ == "__main__":

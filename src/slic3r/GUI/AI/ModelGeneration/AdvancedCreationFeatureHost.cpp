@@ -1,5 +1,6 @@
 #include "AdvancedCreationFeatureHost.hpp"
 #include "ModelGenerationPresentation.hpp"
+#include "ModelGenerationStatusText.hpp"
 #include "slic3r/GUI/AISidecarClient.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "libslic3r/Utils.hpp"
@@ -95,24 +96,26 @@ void AdvancedCreationFeatureHost::shutdown()
     m_lifetime.reset();
     m_poll_timer.Stop(); m_save_timer.Stop(); m_listener = {}; m_model_state_listener = {};
     m_model_monitor.set_listener({}); m_model_monitor.reset(); m_catalog_client.cancel_current();
+    m_cache_scope.cancel();
+    m_model_job_listener = {};
     m_client.cancel();
 }
 
 AdvancedCreationFeatureHost::Complete AdvancedCreationFeatureHost::complete(std::function<void(Json)> callback, bool release_command, bool release_poll, bool session_bound)
 {
-    auto* self = this;
+    auto* weak = this;
     const auto alive = std::weak_ptr<int>(m_lifetime);
     const auto context = m_session.context();
-    return [self, alive, context, callback = std::move(callback), release_command, release_poll, session_bound](Json value) {
-        wxGetApp().CallAfter([self, alive, context, callback, release_command, release_poll, session_bound, value = std::move(value)]() mutable {
-            if (alive.expired()) return;
-            if (session_bound && !self->m_session.matches(context)) return;
+    return [weak, alive, context, callback = std::move(callback), release_command, release_poll, session_bound](Json value) {
+        Presentation::post_gui([weak, alive, context, callback, release_command, release_poll, session_bound, value = std::move(value)]() mutable {
+            if (alive.expired() || weak->m_shutdown) return;
+            if (session_bound && !weak->m_session.matches(context)) return;
             try { callback(std::move(value)); }
             catch (const Json::exception&) {
-                if (!self->m_session.matches(context)) return;
-                if (release_command) self->m_command_pending = false;
-                if (release_poll) self->m_poll_pending = false;
-                self->m_message = "高级服务返回的数据不完整，当前输入与结果已保留。"; self->publish();
+                if (!weak->m_session.matches(context)) return;
+                if (release_command) weak->m_command_pending = false;
+                if (release_poll) weak->m_poll_pending = false;
+                weak->m_message = "高级服务返回的数据不完整，当前输入与结果已保留。"; weak->publish();
             }
         });
     };
@@ -120,16 +123,16 @@ AdvancedCreationFeatureHost::Complete AdvancedCreationFeatureHost::complete(std:
 
 AdvancedMultiviewClient::Error AdvancedCreationFeatureHost::error(bool release_command, bool release_poll)
 {
-    auto* self = this;
+    auto* weak = this;
     const auto alive = std::weak_ptr<int>(m_lifetime);
     const auto context = m_session.context();
-    return [self, alive, context, release_command, release_poll](std::string message) {
-        wxGetApp().CallAfter([self, alive, context, release_command, release_poll, message = std::move(message)] {
-            if (alive.expired() || !self->m_session.matches(context)) return;
-            self->m_message = message;
-            if (release_command) self->m_command_pending = false;
-            if (release_poll) self->m_poll_pending = false;
-            self->publish();
+    return [weak, alive, context, release_command, release_poll](std::string message) {
+        Presentation::post_gui([weak, alive, context, release_command, release_poll, message = std::move(message)] {
+            if (alive.expired() || weak->m_shutdown || !weak->m_session.matches(context)) return;
+            weak->m_message = ModelGenerationStatusText::localized_advanced_service_error(message).ToUTF8().data();
+            if (release_command) weak->m_command_pending = false;
+            if (release_poll) weak->m_poll_pending = false;
+            weak->publish();
         });
     };
 }
@@ -139,29 +142,30 @@ void AdvancedCreationFeatureHost::set_listener(std::function<void()> listener)
 void AdvancedCreationFeatureHost::get_provider_catalog(const std::string& role, const std::string& provider,
     AIModelGenerationClient::CatalogFn complete, AIModelGenerationClient::ErrorFn error)
 {
+    auto* weak = this;
     const auto alive = std::weak_ptr<int>(m_lifetime);
-    m_catalog_client.get_provider_catalog(role, provider, [alive, complete](auto catalog) {
-        wxGetApp().CallAfter([alive, complete, catalog = std::move(catalog)]() mutable {
-            if (!alive.expired() && complete) complete(std::move(catalog));
+    m_catalog_client.get_provider_catalog(role, provider, [weak, alive, complete](auto catalog) {
+        Presentation::post_gui([weak, alive, complete, catalog = std::move(catalog)]() mutable {
+            if (!alive.expired() && !weak->m_shutdown && complete) complete(std::move(catalog));
         });
-    }, [alive, error](auto message) {
-        wxGetApp().CallAfter([alive, error, message = std::move(message)]() mutable {
-            if (!alive.expired() && error) error(std::move(message));
+    }, [weak, alive, error](auto message) {
+        Presentation::post_gui([weak, alive, error, message = std::move(message)]() mutable {
+            if (!alive.expired() && !weak->m_shutdown && error) error(std::move(message));
         });
     });
 }
-void AdvancedCreationFeatureHost::observe_model_job(const std::string& job, bool new_generation, bool restart)
+void AdvancedCreationFeatureHost::observe_model_job(const std::string& job, bool open_route, bool restart)
 {
     m_model_context = m_session.context();
     boost::filesystem::path reference;
     if (m_session.group()) reference = m_session.group()->views[0].image_path;
     m_model_monitor.observe(job, reference, restart);
-    if (new_generation && m_model_state_listener) m_model_state_listener(m_model_monitor.snapshot(), true);
+    if (open_route && m_model_state_listener) m_model_state_listener(m_model_monitor.snapshot(), true);
 }
 void AdvancedCreationFeatureHost::show_model()
 {
     if (!m_session.group() || m_session.group()->model_job_id.empty()) return;
-    observe_model_job(m_session.group()->model_job_id, false);
+    observe_model_job(m_session.group()->model_job_id, true);
 }
 
 void AdvancedCreationFeatureHost::publish() { if (m_listener) m_listener(); }
@@ -197,32 +201,32 @@ void AdvancedCreationFeatureHost::refresh_image_catalog()
     const auto sequence = ++m_image_catalog_sequence;
     m_image_catalog = image_catalog_state("checking", {}, {}, false, "checking");
     if (!m_service_available) { publish(); return; }
-    auto* self = this;
+    auto* weak = this;
     const auto alive = std::weak_ptr<int>(m_lifetime);
     get_provider_catalog("image", "yoyoclaw",
-        [self, alive, sequence](ProviderCatalog catalog) mutable {
-            if (alive.expired() || sequence != self->m_image_catalog_sequence) return;
+        [weak, alive, sequence](ProviderCatalog catalog) mutable {
+            if (alive.expired() || weak->m_shutdown || sequence != weak->m_image_catalog_sequence) return;
             if (catalog.role != "image" || catalog.provider != "yoyoclaw") {
                 catalog = image_catalog_state("error", "invalid_catalog",
                                               "YOYOClaw image catalog is invalid.", false, "error");
             }
-            self->m_image_catalog = std::move(catalog);
-            auto draft = self->m_session.draft().design;
+            weak->m_image_catalog = std::move(catalog);
+            auto draft = weak->m_session.draft().design;
             if (draft.provider == "yoyoclaw" && draft.model.empty() &&
-                self->m_image_catalog.default_model == DefaultYoyoImageModel &&
-                self->m_image_catalog.supports_model(DefaultYoyoImageModel)) {
+                weak->m_image_catalog.default_model == DefaultYoyoImageModel &&
+                weak->m_image_catalog.supports_model(DefaultYoyoImageModel)) {
                 draft.model = DefaultYoyoImageModel;
-                self->m_session.set_design_draft(std::move(draft));
-                self->m_save_timer.StartOnce(650);
+                weak->m_session.set_design_draft(std::move(draft));
+                weak->m_save_timer.StartOnce(650);
             }
-            self->refresh_capabilities();
-            self->publish();
+            weak->refresh_capabilities();
+            weak->publish();
         },
-        [self, alive, sequence](std::string message) {
-            if (alive.expired() || sequence != self->m_image_catalog_sequence) return;
-            self->m_image_catalog = image_catalog_state(
+        [weak, alive, sequence](std::string message) {
+            if (alive.expired() || weak->m_shutdown || sequence != weak->m_image_catalog_sequence) return;
+            weak->m_image_catalog = image_catalog_state(
                 "error", "catalog_unavailable", std::move(message), true, "error");
-            self->publish();
+            weak->publish();
         });
 }
 
@@ -280,13 +284,8 @@ void AdvancedCreationFeatureHost::ingest(Json group, CallbackContext context, bo
     if (!m_session.matches(context)) return;
     if (!parsed) { m_poll_pending = false; m_command_pending = false;
         m_message = "高级服务返回的数据不完整，当前输入与结果已保留。"; publish(); return; }
-    struct Pending {
-        GroupSnapshot snapshot;
-        std::size_t count {0};
-        std::string message;
-    };
-    auto pending = std::make_shared<Pending>(); pending->snapshot = std::move(*parsed);
     struct Asset { std::string id, hash; };
+    struct Verified { GroupSnapshot snapshot; std::vector<Asset> missing; };
     std::vector<Asset> assets;
     for (auto view : AllViews) {
         const auto name = view_name(view);
@@ -295,61 +294,105 @@ void AdvancedCreationFeatureHost::ingest(Json group, CallbackContext context, bo
         const auto& current = group.at("views").at(name).at("current");
         if (current.is_object()) assets.push_back({current.at("id"), current.at("sha256")});
     }
-    auto project = [this, pending, context](bool loading, bool restore_draft) {
-        if (!m_session.matches(context)) return;
-        auto snapshot = pending->snapshot;
-        for (auto& design : snapshot.views) {
+    const auto snapshot = *parsed;
+    std::map<std::string,std::string> decoded;
+    if (m_session.group() && m_session.group()->id == snapshot.id)
+        for (const auto& visible : m_session.group()->views)
+            if (visible.usable && !visible.display_error) decoded[visible.image_path] = visible.sha256;
+    // Publish real task/revision state immediately. Unverified images are never
+    // installed; Session keeps the last verified version while cache I/O runs.
+    for (auto& design : parsed->views) {
+        design.usable = false;
+        design.asset_pending = !design.canonical_version_id.empty();
+    }
+    if (!m_session.apply_snapshot(std::move(*parsed), context, restore)) {
+        m_poll_pending = false; m_command_pending = false; publish(); return;
+    }
+    if (m_session.group() && !m_session.group()->model_job_id.empty())
+        observe_model_job(m_session.group()->model_job_id, false);
+    m_poll_pending = true;
+    publish();
+    const auto group_id = snapshot.id;
+    const auto task = m_cache_scope.begin(group_id, Presentation::TaskLifetime::Session);
+    const auto cache = m_cache;
+    auto* weak = this;
+    const auto alive = std::weak_ptr<int>(m_lifetime);
+    auto verify = [snapshot, assets, cache, group_id, decoded](const Presentation::TaskContext& worker) {
+        Verified result; result.snapshot = snapshot;
+        std::map<std::pair<std::string,std::string>,bool> checked;
+        const auto matches = [&](const boost::filesystem::path& path,const std::string& hash) {
+            const auto key=std::make_pair(path.generic_string(),hash);
+            const auto found=checked.find(key);
+            if(found!=checked.end()) return found->second;
+            return checked.emplace(key,AdvancedMultiviewClient::cached_asset_matches(path,hash)).first->second;
+        };
+        for (const auto& asset : assets) {
+            if (worker.canceled()) return result;
+            if (!matches(AdvancedMultiviewClient::asset_path(cache, group_id, asset.id), asset.hash))
+                result.missing.push_back(asset);
+        }
+        for (auto& design : result.snapshot.views) {
+            if (worker.canceled()) return result;
             if (design.canonical_version_id.empty()) continue;
-            design.usable = AdvancedMultiviewClient::cached_asset_matches(
-                boost::filesystem::path(design.image_path), design.sha256);
-            if (design.usable) {
+            design.usable = matches(boost::filesystem::path(design.image_path), design.sha256);
+            const auto prior=decoded.find(design.image_path);
+            if (design.usable && (prior==decoded.end() || prior->second!=design.sha256)) {
                 wxImage image(wxString(boost::filesystem::path(design.image_path).wstring()));
                 design.usable = image.IsOk();
             }
-            design.asset_pending = !design.usable && loading;
-            design.display_error = !design.usable && !loading;
+            design.asset_pending = !design.usable;
         }
-        m_session.apply_snapshot(std::move(snapshot), context, restore_draft);
+        return result;
     };
-    auto finish = [this, pending, context, done, project] {
-        if (!m_session.matches(context)) return;
-        m_poll_pending = false;
-        project(false, false);
-        if (!pending->message.empty()) m_message = pending->message;
-        else m_message.clear();
-        if (m_session.group() && !m_session.group()->model_job_id.empty())
-            observe_model_job(m_session.group()->model_job_id, false);
+    auto finish = [weak, alive, task, context, done](Presentation::TaskResult<Verified> outcome) {
+        if (alive.expired() || weak->m_shutdown || !weak->m_cache_scope.matches(task) || !weak->m_session.matches(context)) return;
+        weak->m_poll_pending = false;
+        bool cache_error = outcome.canceled || outcome.error || !outcome.value;
+        if (!cache_error) {
+            auto result = std::move(*outcome.value);
+            cache_error = !result.missing.empty();
+            for (auto& design : result.snapshot.views) {
+                design.asset_pending = false;
+                design.display_error = !design.usable && !design.canonical_version_id.empty();
+            }
+            weak->m_session.apply_snapshot(std::move(result.snapshot), context, false);
+        } else if (weak->m_session.group()) {
+            auto snapshot = *weak->m_session.group();
+            for (auto& design : snapshot.views) {
+                if (design.asset_pending) design.display_error = true;
+                design.asset_pending = false;
+            }
+            weak->m_session.apply_snapshot(std::move(snapshot), context, false);
+        }
+        if (weak->m_session.group() && !weak->m_session.group()->model_job_id.empty())
+            weak->observe_model_job(weak->m_session.group()->model_job_id, false);
         if (done) done();
-        publish();
+        if (alive.expired() || weak->m_shutdown || !weak->m_cache_scope.matches(task) || !weak->m_session.matches(context)) return;
+        if (cache_error) weak->m_message = "高级图片缓存暂时无法读取，当前输入与结果已保留。";
+        weak->publish();
     };
-    for (const auto& asset : assets) {
-        const auto path = AdvancedMultiviewClient::asset_path(m_cache, group.at("id"), asset.id);
-        if (!AdvancedMultiviewClient::cached_asset_matches(path, asset.hash)) ++pending->count;
-    }
-    // Always apply real revision and terminal states, even if an individual asset
-    // cannot be obtained. Session retains each last verified visible image.
-    project(pending->count != 0, restore);
-    if (!pending->count) { finish(); return; }
-    m_poll_pending = true;
-    publish();
-    const auto group_id = group.at("id").get<std::string>();
-    const auto alive = std::weak_ptr<int>(m_lifetime);
-    for (const auto& asset : assets) {
-        const auto path = AdvancedMultiviewClient::asset_path(m_cache, group_id, asset.id);
-        if (AdvancedMultiviewClient::cached_asset_matches(path, asset.hash)) continue;
-        m_client.download_asset(group_id, asset.id, asset.hash, path,
-            [alive, pending, finish] {
-                wxGetApp().CallAfter([alive, pending, finish] {
-                    if (!alive.expired() && --pending->count == 0) finish();
-                });
-            }, [alive, pending, finish](std::string message) {
-                wxGetApp().CallAfter([alive, pending, finish, message = std::move(message)] {
-                    if (alive.expired()) return;
-                    pending->message = "图片获取失败，原图已保留：" + message;
-                    if (--pending->count == 0) finish();
-                });
-            });
-    }
+    const bool accepted = Presentation::background_tasks().submit(task, verify,
+        [weak, alive, task, context, group_id, verify, finish](Presentation::TaskResult<Verified> outcome) {
+            if (alive.expired() || weak->m_shutdown || !weak->m_cache_scope.matches(task) || !weak->m_session.matches(context)) return;
+            if (!outcome.value || outcome.error || outcome.value->missing.empty()) { finish(std::move(outcome)); return; }
+            const auto missing = outcome.value->missing;
+            weak->m_session.apply_snapshot(std::move(outcome.value->snapshot), context, false);
+            weak->publish();
+            auto count = std::make_shared<std::size_t>(missing.size());
+            auto downloaded = [weak, alive, task, context, count, verify, finish](std::string error) {
+                if (alive.expired() || weak->m_shutdown || !weak->m_cache_scope.matches(task) || !weak->m_session.matches(context)) return;
+                if (!error.empty()) weak->m_message = ModelGenerationStatusText::localized_advanced_service_error(error).ToUTF8().data();
+                if (--*count != 0) return;
+                if (!Presentation::background_tasks().submit(task, verify, finish)) finish({});
+            };
+            for (const auto& asset : missing) {
+                const auto path = AdvancedMultiviewClient::asset_path(weak->m_cache, group_id, asset.id);
+                weak->m_client.download_asset(group_id, asset.id, asset.hash, path,
+                    [downloaded] { Presentation::post_gui([downloaded] { downloaded({}); }); },
+                    [downloaded](std::string error) { Presentation::post_gui([downloaded, error = std::move(error)] { downloaded(error); }); });
+            }
+        });
+    if (!accepted) finish({});
 }
 
 void AdvancedCreationFeatureHost::poll(bool restore)
@@ -455,6 +498,7 @@ void AdvancedCreationFeatureHost::new_creation()
             {"group_id", group.id}, {"operation_id", operation}, {"kind", group.model_busy ? "model" : "design"}};
     }
     m_save_timer.Stop();
+    m_cache_scope.cancel();
     m_model_monitor.reset();
     m_session.new_creation();
     m_restore_receipts = false;
@@ -528,17 +572,51 @@ void AdvancedCreationFeatureHost::generate_model(Confirm confirm)
                     {"group_id", group}, {"operation_id", plan.at("job_id")}, {"new_group", false}})) {
                     m_command_pending = false; publish(); return;
                 }
+                const auto request = begin_model_request(plan.at("job_id").get<std::string>());
                 m_client.request("POST", "/groups/" + group + "/model-jobs",
                     {{"command_id", plan.at("id")}, {"plan_id", plan.at("id")},
                      {"confirmation_fingerprint", plan.at("confirmation_fingerprint")}},
-                    complete([this, job = plan.at("job_id").get<std::string>()](Json) {
+                    complete([this, request](Json response) {
                         m_command_pending = false;
-                        if (!job.empty()) observe_model_job(job, true);
+                        if (!m_session.matches(request.context)) return;
+                        const auto receipt = m_pending_receipts.find(request.job_id);
+                        if (receipt == m_pending_receipts.end() ||
+                            receipt->second.value("group_id", std::string()) != request.context.group_id ||
+                            !accept_model_job(response.at("job"), request)) {
+                            m_message = "任务受理身份暂时无法核对，请核对原请求，不要重复提交。";
+                            publish(); return;
+                        }
                         reconcile_submission(false);
                     }), error());
             }), error());
     });
     publish();
+}
+
+ModelJobEvent AdvancedCreationFeatureHost::begin_model_request(const std::string& job)
+{
+    ModelJobEvent request {m_session.context(), job, ++m_model_request_sequence};
+    m_model_request = request;
+    if (m_model_job_listener) m_model_job_listener(request);
+    return request;
+}
+
+bool AdvancedCreationFeatureHost::accept_model_job(const Json& job, const ModelJobEvent& request)
+{
+    const auto projection = AdvancedMultiviewClient::parse_model_job(job, request.context.group_id, request.job_id);
+    if (!projection || !m_model_request || !m_model_request->same_request(request) ||
+        !m_session.apply_model_job(*projection, request.context)) return false;
+    // Publish the real identity before the adapter/Shell can inspect the Session.
+    auto accepted = request; accepted.phase = ModelJobEvent::Phase::Accepted;
+    m_model_request = accepted;
+    if (m_model_job_listener) m_model_job_listener(accepted);
+    const auto& observed = m_model_monitor.snapshot();
+    const bool resumed = observed.job_id == accepted.job_id &&
+        (observed.stage == ModelGenerationUIStage::Failed || observed.stage == ModelGenerationUIStage::Stopped) &&
+        (projection->state == "queued" || projection->state == "running" || projection->state == "stopping");
+    observe_model_job(accepted.job_id, false, resumed);
+    publish();
+    return true;
 }
 
 void AdvancedCreationFeatureHost::resume_model()
@@ -547,12 +625,16 @@ void AdvancedCreationFeatureHost::resume_model()
     const auto& group = *m_session.group();
     if (group.model_busy || !group.active_operation_id.empty() || !group.model_resumable ||
         (group.model_state != "stopped" && group.model_state != "failed")) return;
-    const auto job = group.model_job_id;
+    const auto request = begin_model_request(group.model_job_id);
     m_command_pending = true;
     m_client.request("POST", "/groups/" + group.id + "/model-jobs/" + group.model_job_id + "/resume", Json::object(),
-        complete([this, job](Json) {
-            m_command_pending = false; poll();
-            if (!job.empty()) observe_model_job(job, false, true);
+        complete([this, request](Json value) {
+            m_command_pending = false;
+            if (!m_session.matches(request.context)) return;
+            if (!accept_model_job(value.at("job"), request)) {
+                m_message = "恢复任务的身份暂时无法核对，当前任务和输入已保留。";
+            }
+            poll();
             publish();
         }), error());
     publish();
@@ -684,14 +766,16 @@ void AdvancedCreationFeatureHost::settle_receipt(const std::string& operation, b
     if (current) m_command_pending = true;
     m_reconciling.insert(operation);
     const auto collection = receipt.value("kind", std::string("design")) == "model" ? "/model-jobs/" : "/operations/";
-    auto* self = this;
+    auto* weak = this;
     const auto alive = std::weak_ptr<int>(m_lifetime);
-    auto failed = [self, alive, operation, context, current](std::string message) {
-        wxGetApp().CallAfter([self, alive, operation, context, current, message = std::move(message)] {
-            if (alive.expired()) return;
-            self->m_reconciling.erase(operation);
-            if (current && self->m_session.matches(context)) {
-                self->m_command_pending = false; self->m_message = message; self->publish();
+    auto failed = [weak, alive, operation, context, current](std::string message) {
+        Presentation::post_gui([weak, alive, operation, context, current, message = std::move(message)] {
+            if (alive.expired() || weak->m_shutdown) return;
+            weak->m_reconciling.erase(operation);
+            if (current && weak->m_session.matches(context)) {
+                weak->m_command_pending = false;
+                weak->m_message = ModelGenerationStatusText::localized_advanced_service_error(message).ToUTF8().data();
+                weak->publish();
             }
         });
     };
@@ -703,7 +787,7 @@ void AdvancedCreationFeatureHost::settle_receipt(const std::string& operation, b
         return;
     }
     m_client.request("POST", "/groups/" + group + collection + operation + "/reconcile", Json::object(),
-        complete([this, group, operation, collection, context, current, abandoned, announce_recovery, failed](Json value) {
+        complete([this, group, operation, collection, context, current, abandoned, announce_recovery, failed, receipt](Json value) {
             m_reconciling.erase(operation);
             const auto live = m_pending_receipts.find(operation);
             if (!abandoned && live != m_pending_receipts.end() && live->second.value("stop_intent", false)) {
@@ -716,16 +800,40 @@ void AdvancedCreationFeatureHost::settle_receipt(const std::string& operation, b
             }
             if (!current || !m_session.matches(context)) { clear_pending_receipt(operation); return; }
             m_command_pending = false;
+            if (!m_session.matches(context)) return;
             if (!value.at("accepted").get<bool>()) {
                 clear_pending_receipt(operation); m_message = "原确认请求未受理，可以重新确认生成。"; publish(); return;
             }
-            const auto callback = m_session.begin_open(group);
-            ingest(std::move(value.at("group")), callback, true, [this, operation, announce_recovery] {
-                clear_pending_receipt(operation);
-                if (!has_pending_receipt()) {
-                    m_message = announce_recovery ? "原请求已恢复，没有新建生成请求。" :
-                        std::string();
+            const bool model_request = receipt.value("kind", std::string("design")) == "model";
+            const bool restore = !m_session.group() || m_session.group()->id != group;
+            auto callback = context;
+            if (restore) callback = m_session.begin_open(group);
+            // Restart recovery has no installed group yet. Register the real
+            // group/task before acceptance; image validation remains asynchronous.
+            if (restore && model_request) {
+                auto snapshot = AdvancedMultiviewClient::parse_group(value.at("group"), m_cache);
+                if (snapshot) for (auto& design : snapshot->views) {
+                    design.usable = false;
+                    design.asset_pending = !design.canonical_version_id.empty();
                 }
+                if (!snapshot || !m_session.apply_snapshot(std::move(*snapshot), callback, true)) {
+                    m_message = "原任务所属套图暂时无法核对，当前记录已保留。"; publish(); return;
+                }
+            }
+            if (model_request) {
+                if (announce_recovery || !m_model_request || m_model_request->job_id != operation ||
+                    (m_model_request->context.epoch != callback.epoch || m_model_request->context.group_id != callback.group_id))
+                    begin_model_request(operation);
+                if (!m_model_request || !accept_model_job(value.at("job"), *m_model_request)) {
+                    m_message = "原任务身份与请求记录不一致，请保留记录后重试核对。"; publish(); return;
+                }
+            }
+            // Reconcile the current group in place. Image synchronization must
+            // not reset its selection or delay the accepted task projection.
+            ingest(std::move(value.at("group")), callback, restore && !model_request, [this, operation, announce_recovery] {
+                clear_pending_receipt(operation);
+                if (!has_pending_receipt()) m_message = announce_recovery
+                    ? "原请求已恢复，没有新建生成请求。" : std::string();
                 refresh_history();
             });
         }, false, false, false), failed);

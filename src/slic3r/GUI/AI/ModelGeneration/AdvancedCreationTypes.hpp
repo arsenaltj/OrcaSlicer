@@ -74,7 +74,11 @@ struct GroupSnapshot {
     bool model_busy {false};
     std::string model_job_id;
     std::string model_state;
+    std::string model_phase;
+    double model_updated_at {0.0};
     std::string model_message;
+    std::string model_error_code;
+    bool model_error_ambiguous {false};
     bool model_resumable {false};
 };
 
@@ -106,6 +110,28 @@ struct Eligibility {
 struct CallbackContext {
     std::uint64_t epoch {0};
     std::string group_id;
+};
+
+struct ModelJobProjection {
+    std::string id, state, phase, message, error_code;
+    double updated_at {0.0};
+    bool error_ambiguous {false};
+    bool resumable {false};
+};
+
+// Internal GUI-thread notification. Request identity is independent of the
+// session epoch so resuming the same job cannot reuse an old foreground intent.
+struct ModelJobEvent {
+    enum class Phase { Requested, Accepted };
+    CallbackContext context;
+    std::string job_id;
+    std::uint64_t request {0};
+    Phase phase {Phase::Requested};
+
+    bool same_request(const ModelJobEvent& other) const {
+        return request == other.request && job_id == other.job_id &&
+            context.epoch == other.context.epoch && context.group_id == other.context.group_id;
+    }
 };
 
 struct CommandContext {

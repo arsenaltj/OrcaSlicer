@@ -2,6 +2,9 @@
 
 #include "slic3r/GUI/GLModel.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "ModelColorPreviewShader.hpp"
+#include <array>
+#include <utility>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -13,6 +16,43 @@
 #include <vector>
 
 namespace Slic3r::GUI::ModelPreviewGeometry {
+
+// CPU-only overlay preparation preserves the existing RGB8 sentinel and face
+// order. A worker can freeze it before the GUI installs any model resources.
+inline GLModel::Geometry manual_color_geometry(const indexed_triangle_set& mesh,
+    const std::vector<Vec3f>& normals,
+    const std::vector<std::pair<size_t, std::array<float, 3>>>& colors,
+    const std::function<bool()>& canceled = {})
+{
+    GLModel::Geometry geometry;
+    geometry.format = {GLModel::Geometry::EPrimitiveType::Triangles,
+        GLModel::Geometry::EVertexLayout::P3N3T2};
+    if (colors.size() > std::numeric_limits<uint32_t>::max() / 3)
+        throw std::runtime_error("Manual color preview is too large.");
+    if (!colors.empty() && normals.size() != mesh.indices.size() * 3)
+        throw std::runtime_error("Manual color normals do not match the model.");
+    geometry.reserve_vertices(colors.size() * 3);
+    geometry.reserve_indices(colors.size() * 3);
+    for (size_t at = 0; at < colors.size(); ++at) {
+        if ((at & 4095) == 0 && canceled && canceled())
+            throw std::runtime_error("Render geometry preparation cancelled.");
+        const auto& item = colors[at];
+        if (item.first >= mesh.indices.size())
+            throw std::runtime_error("Manual color face does not belong to the model.");
+        const auto& face = mesh.indices[item.first];
+        const auto packed = preview_rgb8(item.second[0], item.second[1], item.second[2]);
+        const auto base = uint32_t(geometry.vertices_count());
+        for (size_t corner = 0; corner < 3; ++corner) {
+            if (face[corner] < 0 || size_t(face[corner]) >= mesh.vertices.size())
+                throw std::runtime_error("Manual color vertex does not belong to the model.");
+            geometry.add_vertex(mesh.vertices[face[corner]], normals[item.first * 3 + corner],
+                Vec2f(float(packed), -1.f));
+        }
+        geometry.add_triangle(base, base + 1, base + 2);
+    }
+    if (canceled && canceled()) throw std::runtime_error("Render geometry preparation cancelled.");
+    return geometry;
+}
 
 // CPU-only sharing for expanded historical preview geometry. Every attribute
 // bit and triangle corner stays intact; consumers that edit per-face attributes

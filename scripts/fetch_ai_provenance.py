@@ -18,6 +18,17 @@ import sys
 
 from verify_ai_integration import validate_document
 
+OFFICIAL_REPOSITORY = "https://github.com/OrcaSlicer/OrcaSlicer.git"
+
+
+def commit_sources(document: dict) -> dict[str, str]:
+    """Official pins come from Orca; historical product receipts come from origin."""
+    sources = {commit: "origin" for commit in pinned_commits(document)}
+    sources[document["upstream"]["sha"]] = OFFICIAL_REPOSITORY
+    if isinstance(document.get("candidate_baseline"), dict):
+        sources[document["candidate_baseline"]["sha"]] = OFFICIAL_REPOSITORY
+    return sources
+
 
 def pinned_commits(document: dict) -> list[str]:
     errors = validate_document(document)
@@ -46,6 +57,7 @@ def has_commit(repo_root: Path, commit: str) -> bool:
 
 def restore_provenance(repo_root: Path, document: dict, *, check_only: bool = False) -> dict:
     commits = pinned_commits(document)
+    sources = commit_sources(document)
     missing = [commit for commit in commits if not has_commit(repo_root, commit)]
     fetched = []
     if missing and not check_only:
@@ -56,7 +68,7 @@ def restore_provenance(repo_root: Path, document: dict, *, check_only: bool = Fa
             try:
                 result = run_git(repo_root, [
                     "fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules",
-                    "--refmap=", "--no-auto-maintenance", "origin", commit,
+                    "--refmap=", "--no-auto-maintenance", sources[commit], commit,
                 ])
                 present = has_commit(repo_root, commit)
             except subprocess.TimeoutExpired:

@@ -210,6 +210,25 @@ struct BeautyColorGateRequest {
     }
 };
 
+inline void apply_preferred_beauty_filament_match(BeautyColorGateRequest& request,
+    const std::optional<AI::ModelMatchedColors>& preferred)
+{
+    if (!preferred || !preferred->valid() || preferred->source_sha256 != request.source_sha256 ||
+        preferred->geometry_id != request.geometry_id ||
+        preferred->material_fingerprint != request.material_fingerprint ||
+        preferred->process_fingerprint != request.process_fingerprint ||
+        preferred->face_slots.size() != request.faces.size()) return;
+    for (size_t face = 0; face < request.faces.size(); ++face)
+        request.faces[face].preferred_slot = preferred->face_slots[face];
+    std::map<std::tuple<size_t, uint8_t, uint8_t>, size_t> leaves;
+    for (const auto& child : preferred->subface_slots)
+        leaves[{child.face_id, child.depth, child.path}] = child.slot;
+    for (auto& child : request.subfaces) {
+        const auto found = leaves.find({child.face_id, child.depth, child.path});
+        if (found != leaves.end()) child.preferred_slot = found->second;
+    }
+}
+
 struct BeautyColorGateIdentity {
     std::string source_sha256;
     std::string geometry_id;

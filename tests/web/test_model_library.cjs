@@ -195,3 +195,196 @@ test("geometry delivery rejects stale, missing and oversized chunks", () => {
   assert.equal(transfer.append("m:v", 4, 1, "AA=="), false);
   assert.equal(transfer.finish("m:v", 4), null);
 });
+
+
+test("model library batches commit one browser frame and preserve invalidation during render", () => {
+  const {FrameUpdates} = require("../../resources/web/model_library/library-state.js");
+  const queue = [];
+  let commits = 0;
+  const updates = new FrameUpdates(fn => queue.push(fn), () => {
+    ++commits;
+    if (commits === 1) updates.request();
+  });
+  updates.batch(() => {
+    for (let i=0; i<20; ++i) updates.request();
+    updates.batch(() => updates.request());
+    assert.equal(queue.length, 0);
+  });
+  updates.batch(() => updates.request());
+  assert.equal(queue.length, 1);
+  queue.shift()();
+  assert.equal(commits, 1);
+  assert.equal(queue.length, 1);
+  queue.shift()();
+  assert.equal(commits, 2);
+  updates.request();
+  updates.dispose();
+  queue.shift()();
+  assert.equal(commits, 2);
+});
+
+test("failed model library batches still release their pending render", () => {
+  const {FrameUpdates} = require("../../resources/web/model_library/library-state.js");
+  const queue = [];
+  let commits = 0;
+  const updates = new FrameUpdates(fn => queue.push(fn), () => ++commits);
+  assert.throws(() => updates.batch(() => { updates.request(); throw new Error("bad message"); }));
+  assert.equal(queue.length, 1);
+  queue.shift()();
+  assert.equal(commits, 1);
+});
+
+test("a rejected frame post preserves changes for the next render request", () => {
+  const {FrameUpdates} = require("../../resources/web/model_library/library-state.js");
+  const queue = [];
+  let reject = true, commits = 0;
+  const updates = new FrameUpdates(callback => {
+    if (reject) throw new Error("frame post rejected");
+    queue.push(callback);
+  }, () => ++commits);
+  assert.throws(() => updates.request(), /frame post rejected/);
+  reject = false;
+  updates.request();
+  updates.request();
+  assert.equal(queue.length, 1);
+  queue.shift()();
+  assert.equal(commits, 1);
+});
+
+// Execute the installed script and its real event handlers. This small DOM
+// adapter supplies elements only; it does not duplicate page/bridge behavior.
+function installedPage() {
+  const fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
+  class Element {
+    constructor(tag = "div") {
+      this.tagName = tag; this.children = []; this.dataset = {}; this.style = {};
+      this.attributes = {}; this.hidden = false; this.className = ""; this.value = "";
+      this.classList = { toggle: (name, active) => {
+        const names = new Set(this.className.split(/\s+/).filter(Boolean));
+        if (active) names.add(name); else names.delete(name);
+        this.className = [...names].join(" ");
+      }};
+    }
+    set textContent(text) { this.children = []; this.text = String(text); }
+    get textContent() { return (this.text || "") + this.children.map(x => x.textContent ?? String(x)).join(""); }
+    append(...values) { for (const value of values) { if (typeof value === "object") value.parent = this; this.children.push(value); } }
+    prepend(value) { value.parent = this; this.children.unshift(value); }
+    replaceChildren(...values) { this.children = []; this.text = ""; this.append(...values); }
+    setAttribute(key, value) { this.attributes[key] = String(value); }
+    getAttribute(key) { return this.attributes[key] ?? null; }
+    removeAttribute(key) { delete this.attributes[key]; }
+    contains(value) { return value === this || this.children.some(x => x.contains?.(value)); }
+    querySelector(selector) {
+      for (const value of this.children) {
+        if (typeof value !== "object") continue;
+        if (selector.startsWith(".") ? value.className?.split(" ").includes(selector.slice(1)) : value.tagName === selector) return value;
+        const nested = value.querySelector?.(selector); if (nested) return nested;
+      }
+      return null;
+    }
+    remove() { if (this.parent) this.parent.children = this.parent.children.filter(x => x !== this); }
+    focus() {}
+  }
+  const directory = path.resolve(__dirname, "../../resources/web/model_library");
+  const html = fs.readFileSync(path.join(directory, "index.html"), "utf8");
+  const ids = new Map([...html.matchAll(/id="([^"]+)"/g)].map(x => [x[1], new Element()]));
+  const scopes = ["mine", "library"].map(scope => { const node = new Element("button"); node.dataset.scope = scope; return node; });
+  const frames = [], timers = [], sent = [];
+  const window = { libraryState: require("../../resources/web/model_library/library-state.js"),
+    wx: {postMessage: text => sent.push(JSON.parse(text))}, libraryViewer: { close() {} } };
+  window.requestAnimationFrame = function(callback) {
+    assert.equal(this, window, "the browser frame API requires its Window receiver");
+    frames.push(callback);
+  };
+  const document = {getElementById: id => { assert.ok(ids.has(id), `installed id ${id}`); return ids.get(id); },
+    createElement: tag => new Element(tag), createTextNode: text => ({textContent: text}), addEventListener() {},
+    querySelectorAll: selector => selector === "[data-scope]" ? scopes : []};
+  vm.runInNewContext(fs.readFileSync(path.join(directory, "library.js"), "utf8"), {
+    window, document, innerWidth: 1440, innerHeight: 860,
+    requestAnimationFrame: window.requestAnimationFrame,
+    setTimeout: callback => { timers.push(callback); return timers.length; }, clearTimeout() {},
+  }, {filename: "installed-library.js"});
+  let doc = 1, account = "anonymous", generation = 0;
+  const receive = value => window.modelLibraryReceive({documentGeneration: doc, accountTag: account,
+    accountGeneration: generation, requestGeneration: sent.at(-1)?.requestGeneration || 0, ...value});
+  function handshake(nextDoc = 1) {
+    doc = nextDoc;
+    window.modelLibraryReceive({type: "init", nonce: `nonce-${doc}`, documentGeneration: doc});
+    assert.equal(sent.at(-1).command, "ready");
+  }
+  function login(tag = "account", nextGeneration = 1) {
+    account = tag; generation = nextGeneration;
+    receive({type: "account", signedIn: tag !== "anonymous", name: "用户", projectAvailable: true});
+  }
+  function flush() { let budget = 20; while (frames.length && budget--) frames.shift()(); assert.ok(budget > 0); }
+  return {ids, scopes, sent, receive, handshake, login, flush};
+}
+
+const scriptCard = {id: "model-one", versionId: "version-one", version: 1,
+  title: "真实模型", category: "", author: {displayName: "作者"}};
+function scriptDetail() {
+  return { ...scriptCard, publicInteraction: true, description: "模型说明", author: {displayName: "作者"},
+    version: {id: "version-one", version: 1, licenseName: "CC0", licenseDescription: "许可说明"},
+    versions: [{id: "version-one", version: 1, status: "published"}], access: {allowed: true},
+    files: [{id: "file-one", filename: "model.glb", size: 8}] };
+}
+
+test("installed page renders its first empty state and then a populated catalog in browser frames", () => {
+  const page = installedPage();
+  page.handshake();page.login("anonymous", 0);page.flush();
+  assert.equal(page.ids.get("empty").hidden, false);
+  assert.equal(page.ids.get("emptyText").textContent, "暂无模型");
+  page.receive({type: "taxonomy", value: {categories: [{slug: "art", label: "艺术与设计"}]}});
+  page.receive({type: "catalog", items: [scriptCard], replace: true, hasMore: false});page.flush();
+  assert.match(page.ids.get("filters").textContent, /艺术与设计/);
+  assert.equal(page.ids.get("empty").hidden, true);
+  assert.equal(page.ids.get("grid").children.length, 1);
+});
+
+test("installed page handshakes before rendering public and owned catalogs and keeps successful lists after errors", () => {
+  const page = installedPage();page.handshake();page.login("anonymous", 0);
+  page.receive({type: "catalog", items: [scriptCard], replace: true, hasMore: false});page.flush();
+  assert.equal(page.ids.get("grid").children.length, 1);
+  assert.match(page.ids.get("grid").textContent, /真实模型/);
+  page.receive({type: "error", message: "分类暂不可用"});page.flush();
+  assert.equal(page.ids.get("grid").children.length, 1);
+  page.login();page.scopes[0].onclick();
+  assert.equal(page.sent.at(-1).scope, "mine");
+  const query = page.sent.at(-1);
+  page.receive({type: "catalog", items: [{...scriptCard, owned: true, status: "draft", visibility: "private"}], replace: true});page.flush();
+  assert.match(page.ids.get("grid").textContent, /草稿 · 私有/);
+  page.receive({type: "catalog", requestGeneration: query.requestGeneration - 1, items: [], replace: true});page.flush();
+  assert.equal(page.ids.get("grid").children.length, 1);
+  page.receive({type: "account", accountTag: "obsolete", accountGeneration: 0});page.flush();
+  assert.equal(page.ids.get("grid").children.length, 1);
+});
+
+test("installed download and cancel buttons send exact identities and always recover their busy state", () => {
+  const page=installedPage();page.handshake();page.login();
+  page.receive({type: "catalog", items: [scriptCard], replace: true});page.flush();
+  page.ids.get("grid").querySelector("button").onclick();
+  assert.equal(page.sent.at(-1).command, "detail");
+  assert.equal(page.sent.at(-1).key, "model-one:version-one");
+  page.receive({type: "detail", key: "model-one:version-one", value: scriptDetail()});
+  page.ids.get("files").querySelector("button").onclick();
+  const download=page.sent.at(-1);assert.equal(download.command, "download");assert.equal(download.file, "file-one");
+  assert.equal(download.nonce, "nonce-1");assert.equal(download.accountTag, "account");
+  page.receive({type: "loading", active: true, cancelable: true, stage: "正在下载并校验模型…"});
+  assert.equal(page.ids.get("app").inert, true);
+  page.ids.get("cancel").onclick();assert.equal(page.sent.at(-1).command, "cancel");
+  page.receive({type: "loading", active: true, requestGeneration: download.requestGeneration, cancelable: true});
+  page.receive({type: "loading", active: false});assert.equal(page.ids.get("app").inert, false);
+  for (const message of ["下载队列暂不可用", "登录已失效", "当前账号没有下载资格", "文件已下架", "网络连接中断", "文件校验失败"]) {
+    page.receive({type: "loading", active: true, cancelable: true});
+    page.receive({type: "error", message});assert.equal(page.ids.get("app").inert, false);
+    assert.equal(page.ids.get("loading").hidden, true);assert.match(page.ids.get("notice").textContent, new RegExp(message));
+  }
+  page.receive({type: "loading", active: true, cancelable: true});page.login("anonymous", 2);
+  assert.equal(page.ids.get("app").inert, false);
+  page.receive({type: "detail", value: scriptDetail(), key: "model-one:version-one"});
+  page.ids.get("files").querySelector("button").onclick();
+  assert.equal(page.sent.at(-1).file, "file-one"); // Preserve selection across native login.
+  page.handshake(2);page.login("anonymous", 2);
+  page.receive({type: "catalog", documentGeneration: 1, items: [scriptCard], replace: true});page.flush();
+  assert.equal(page.ids.get("grid").children.length, 0);
+});

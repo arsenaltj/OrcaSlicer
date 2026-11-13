@@ -1,5 +1,7 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
 #include "ModelPreview3D.hpp"
+#include "ModelHistoryPreview.hpp"
+#include "slic3r/GUI/DiagnosticStageTimer.hpp"
 #include "BeautyWorkbenchControls.hpp"
 #include "WorkbenchModelInspection.hpp"
 #include "ModelOriginalAppearance.hpp"
@@ -86,22 +88,6 @@ void log_native_portrait_partition_report(
         << NativePortrait::encode_native_portrait_partition_build_report(report).dump();
 }
 
-bool read_portrait_check_metadata(const boost::filesystem::path& path,
-                                  nlohmann::json& document)
-{
-    try {
-        boost::system::error_code error;
-        const auto bytes = boost::filesystem::file_size(path, error);
-        if (error || bytes == 0 || bytes > 128ULL * 1024 * 1024 ||
-            boost::filesystem::is_symlink(path, error) || error) return false;
-        boost::filesystem::ifstream input(path, std::ios::binary);
-        document = nlohmann::json::parse(input);
-        return document.is_object();
-    } catch (const std::exception&) {
-        document = nullptr;
-        return false;
-    }
-}
 struct NativeWorkbenchActivationRollback {
     BeautyCandidateSnapshot beauty;
     boost::filesystem::path displayed_model_path;
@@ -119,9 +105,9 @@ bool ModelGenerationPanel::native_workbench_context_matches(
     const NativeWorkbenchPartitionContext& context) const
 {
     return context.valid() && context == m_native_workbench_context && m_model_preview &&
-        m_workbench_model.ready && m_model_preview->showing_model(context.model_path) &&
-        m_workbench_model.path == context.model_path && m_workbench_model.revision == context.generation &&
-        AI::model_artifact_sha256(context.model_path) == context.source_sha256 &&
+        m_model_preview_ready && m_model_preview->showing_model(context.model_path) &&
+        m_displayed_model_path == context.model_path && m_sequence == context.generation &&
+        m_model_preview->model_sha256() == context.source_sha256 &&
         m_model_preview->geometry_id() == context.geometry_id &&
         m_model_preview->semantic_source_content_id() == context.appearance_id;
 }
@@ -135,59 +121,26 @@ bool ModelGenerationPanel::restore_native_workbench_partition_checkpoint()
     if (!native_workbench_context_matches(m_native_workbench_context)) return false;
     const auto partition = m_model_preview->native_portrait_partition();
     if (!partition || !partition->valid()) return false;
-    const auto& preview_reference = m_model_preview->native_workbench_partition_reference();
-    // A newly published candidate was loaded before its metadata existed.
-    // Resolve its current record, then validate it against the live file and
-    // partition exactly as on reopen. Never carry the previous model's proof.
-    const auto metadata_path = preview_reference.is_null()
-        ? AI::beauty_metadata_path(m_native_workbench_context.model_path,
-            ModelGenerationPresentation::generated_models_root())
-        : PP::valid_native_partition_reference(preview_reference, partition->partition_digest)
-            ? path8(preview_reference.at("metadata_path").get<std::string>())
-            : boost::filesystem::path{};
-    nlohmann::json metadata;
-    nlohmann::json verified_reference;
-    if (metadata_path.empty() || !read_portrait_check_metadata(metadata_path, metadata)) return false;
-    const auto evidence = workbench_history_evidence_location(
-        m_native_workbench_context.model_path, metadata_path, metadata);
-    if (!restorable_native_partition_metadata_matches(metadata, evidence.metadata,
-            evidence.model, m_native_workbench_context.source_sha256,
-            m_native_workbench_context.geometry_id, m_native_workbench_context.appearance_id,
-            verified_reference) ||
-        !PP::valid_native_partition_reference(verified_reference, partition->partition_digest) ||
-        (!preview_reference.is_null() && verified_reference != preview_reference))
-        return false;
-    const auto report = metadata.value("partition_build_report", nlohmann::json{});
-    const auto certificate = metadata.value("workbench_check_certificate", nlohmann::json{});
-    if (report.value("schema", std::string{}) !=
-            "orca.native-workbench-partition-build-report/v1" ||
-        !report.value("success", false) ||
-        !PP::valid_workbench_check_certificate(certificate,
-            WorkbenchCheckPurpose::PortraitPostColorReadOnly,
-            m_native_workbench_context.source_sha256,
-            m_native_workbench_context.geometry_id,
-            m_native_workbench_context.appearance_id, u8(evidence.metadata), metadata,
-            partition->partition_digest,
-            verified_reference.at("topology_hash").get<std::string>()))
-        return false;
-
-    m_native_workbench_partition_reference = verified_reference;
-    m_native_workbench_partition_report = report;
-    m_native_workbench_partition_certificate = certificate;
-    m_native_workbench_partition_commit = std::move(metadata);
-    return true;
+    if (const auto& checkpoint = m_model_preview->native_workbench_checkpoint()) {
+        m_native_workbench_partition_reference = checkpoint->reference;
+        m_native_workbench_partition_report = checkpoint->report;
+        m_native_workbench_partition_certificate = checkpoint->certificate;
+        m_native_workbench_partition_commit = checkpoint->commit;
+        return true;
+    }
+    return false;
 }
 
 void ModelGenerationPanel::publish_native_workbench_context()
 {
     NativeWorkbenchPartitionContext next;
-    if (!m_shutdown && m_workbench_model.ready && m_model_preview &&
-        m_model_preview->showing_model(m_workbench_model.path)) {
-        next.model_path = m_workbench_model.path;
-        next.source_sha256 = AI::model_artifact_sha256(m_workbench_model.path);
+    if (!m_shutdown && m_model_preview_ready && m_model_preview &&
+        m_model_preview->showing_model(m_displayed_model_path)) {
+        next.model_path = m_displayed_model_path;
+        next.source_sha256 = m_model_preview->model_sha256();
         next.geometry_id = m_model_preview->geometry_id();
         next.appearance_id = m_model_preview->semantic_source_content_id();
-        next.generation = m_workbench_model.revision;
+        next.generation = m_sequence;
     }
     if (next != m_native_workbench_context) {
         if (m_native_workbench_partition_running) cancel_native_workbench_partition();
@@ -197,7 +150,7 @@ void ModelGenerationPanel::publish_native_workbench_context()
         m_native_workbench_partition_certificate = nullptr;
         m_native_workbench_partition_commit = nullptr;
     }
-    if (m_native_workbench_context.valid())
+    if (m_native_workbench_context.valid() && m_native_workbench_partition_commit.is_null())
         restore_native_workbench_partition_checkpoint();
 }
 
@@ -205,14 +158,26 @@ void ModelGenerationPanel::cancel_native_workbench_partition()
 {
     const bool was_running = m_native_workbench_partition_running;
     if (m_native_workbench_partition_cancel) m_native_workbench_partition_cancel->store(true);
-    if (m_native_workbench_partition_worker.joinable()) m_native_workbench_partition_worker.join();
+    if (m_native_workbench_partition_worker.joinable()) {
+        m_native_workbench_partition_draining = true;
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        Presentation::background_tasks().retire(m_native_workbench_partition_worker, [weak, was_running] {
+            if (!weak) return;
+            weak->m_native_workbench_partition_draining = false;
+            weak->m_native_workbench_partition_running = false;
+            if (was_running) weak->m_busy = false;
+            if (!weak->m_shutdown) {
+                weak->refresh_controls(); weak->refresh_post_generation_workbench(); weak->publish_workbench_state();
+            }
+        });
+    }
     m_native_workbench_partition_cancel.reset();
-    m_native_workbench_partition_running = false;
+    m_native_workbench_partition_running = m_native_workbench_partition_draining;
     m_native_workbench_partition_consumers = 0;
     m_native_workbench_partition_context = {};
     m_honor_suite_partition_pending = false;
     m_honor_suite_partition_resume_queued = false;
-    if (was_running) m_busy = false;
+    if (was_running && !m_native_workbench_partition_draining) m_busy = false;
 }
 
 void ModelGenerationPanel::queue_honor_suite_after_native_partition()
@@ -289,8 +254,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
     const bool honor_suite_requested = has_consumer(
         NativeWorkbenchPartitionConsumer::HonorSuite);
     if (consumers == 0) return false;
-    if (m_shutdown || !m_model_preview || !m_workbench_model.ready ||
-        !m_model_preview->showing_model(m_workbench_model.path)) return false;
+    if (m_shutdown || m_beauty_restore_running || m_native_workbench_partition_draining || !m_model_preview || !m_model_preview_ready ||
+        !m_model_preview->showing_model(m_displayed_model_path)) return false;
     if (!native_workbench_context_matches(m_native_workbench_context))
         publish_native_workbench_context();
     if (!native_workbench_context_matches(m_native_workbench_context)) return false;
@@ -300,8 +265,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
 
     auto activation_before = std::make_shared<NativeWorkbenchActivationRollback>();
     activation_before->beauty = capture_beauty_candidate();
-    activation_before->displayed_model_path = m_workbench_model.path;
-    activation_before->displayed_model_job_id = m_workbench_model.asset_id;
+    activation_before->displayed_model_path = m_displayed_model_path;
+    activation_before->displayed_model_job_id = m_displayed_model_job_id;
     activation_before->partition_reference = m_native_workbench_partition_reference;
     activation_before->partition_report = m_native_workbench_partition_report;
     activation_before->partition_certificate = m_native_workbench_partition_certificate;
@@ -318,19 +283,25 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 int(NativePortrait::default_model_color_count));
 
         if (!completed) {
-            const bool preview_restored = restore_beauty_candidate(activation_before->beauty);
-            m_workbench_model.path = activation_before->displayed_model_path;
-            m_workbench_model.asset_id = activation_before->displayed_model_job_id;
-            m_native_workbench_partition_reference = activation_before->partition_reference;
-            m_native_workbench_partition_report = activation_before->partition_report;
-            m_native_workbench_partition_certificate = activation_before->partition_certificate;
-            m_native_workbench_partition_commit = activation_before->partition_commit;
-            m_workbench_check_result = activation_before->workbench_check;
-            m_workbench_check_path = activation_before->workbench_check_path;
-            m_workbench_check_revision = activation_before->workbench_check_revision;
+            wxWeakRef<ModelGenerationPanel> weak(this);
+            restore_beauty_candidate_async(activation_before->beauty, [weak, activation_before](bool preview_restored) {
+                if (!weak || weak->m_shutdown) return;
+                auto* self = weak.get();
+                self->m_displayed_model_path = activation_before->displayed_model_path;
+                self->m_displayed_model_job_id = activation_before->displayed_model_job_id;
+                self->m_native_workbench_partition_reference = activation_before->partition_reference;
+                self->m_native_workbench_partition_report = activation_before->partition_report;
+                self->m_native_workbench_partition_certificate = activation_before->partition_certificate;
+                self->m_native_workbench_partition_commit = activation_before->partition_commit;
+                self->m_workbench_check_result = activation_before->workbench_check;
+                self->m_workbench_check_path = activation_before->workbench_check_path;
+                self->m_workbench_check_revision = activation_before->workbench_check_revision;
 
-            if (!preview_restored)
-                BOOST_LOG_TRIVIAL(error) << "Failed to restore workbench preview after cached partition activation rollback.";
+                if (!preview_restored)
+                    BOOST_LOG_TRIVIAL(error) << "Failed to restore workbench preview after cached partition activation rollback.";
+                self->refresh_controls();
+                self->publish_workbench_state();
+            });
         }
         if (automatic_requested) {
             clear_pending_workbench_ai_palette();
@@ -348,15 +319,16 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
         m_native_workbench_partition_consumers |= consumers;
         return true;
     }
-    if (m_native_workbench_partition_worker.joinable()) m_native_workbench_partition_worker.join();
+    Presentation::background_tasks().retire(m_native_workbench_partition_worker);
 
     const auto source_appearance = m_model_preview->original_appearance_reference();
     const auto source_appearance_error = m_model_preview->original_appearance_error();
     const auto source = source_appearance.valid()
-        ? source_appearance.origin_model : m_workbench_model.path;
+        ? source_appearance.origin_model : m_displayed_model_path;
     const auto source_hash = source_appearance.valid()
         ? source_appearance.origin_sha256 : m_native_workbench_context.source_sha256;
     const auto context = m_native_workbench_context;
+    const auto source_job = m_displayed_model_job_id;
     const auto edit_revision = m_model_preview->leaf_edit_revision();
     const auto asset_id = "native-workbench-partition-v12-" +
         ModelGenerationPresentation::new_request_id();
@@ -392,15 +364,18 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
     try {
         m_native_workbench_partition_worker = std::thread([weak, source, source_hash, source_appearance,
             source_appearance_error, asset_id,
-            context, edit_revision, destination, metadata_path, appearance_carrier,
+            context, source_job, edit_revision, destination = destination, metadata_path = metadata_path, appearance_carrier,
             appearance_root, cache_root, share_exact_vertices, canceled, committed, report, reference,
-            workbench_certificate, commit_document, report_started, activation_before] {
+            workbench_certificate, commit_document, report_started, activation_before]() mutable {
             auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
             auto partition = std::make_shared<NativePortrait::NativePortraitPartition>();
             std::string output_hash;
             std::string error;
             std::string topology_hash;
             nlohmann::json topology_certificate;
+            std::optional<WorkbenchCheckResult> restored_check;
+            std::shared_ptr<VerifiedModelFiles> retry_files;
+            DiagnosticStageTimer timing("ORCASLICER_UI_LATENCY_TRACE", "NativeWorkbenchHandoff");
             std::optional<NativePortrait::BuildStage> active_stage;
             std::chrono::steady_clock::time_point active_started;
             const auto stopped = [canceled] { return canceled->load(); };
@@ -426,6 +401,36 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 boost::filesystem::remove(metadata_path, ignored);
             };
             try {
+                auto retry = std::make_shared<ModelHistoryOpenRequest>();
+                retry->root = appearance_root;retry->entry.model_path = context.model_path;
+                retry->entry.job_id = source_job;retry->expected_model_sha256 = context.source_sha256;
+                auto reused = prepare_published_workbench_retry(retry, stopped, share_exact_vertices);
+                timing("published-result-lookup");
+                if (stopped()) throw std::runtime_error("检查成果恢复已取消。");
+                if (reused) {
+                    committed->store(true); // No retry path owns existing publication files.
+                    if(!reused->error.empty()) throw std::runtime_error(reused->error);
+                    if(!retry->verified_files || !retry->verified_files->current())
+                        throw std::runtime_error("已发布成果在恢复期间发生变化，请重新打开。");
+                    prepared = std::move(reused->prepared);
+                    *partition = *prepared->native_portrait_partition;
+                    destination = retry->entry.model_path;
+                    metadata_path = AI::beauty_metadata_path(destination, appearance_root);
+                    output_hash = prepared->artifact_sha256;
+                    const auto& checkpoint = *prepared->native_workbench_checkpoint;
+                    *reference = checkpoint.reference;
+                    *workbench_certificate = checkpoint.certificate;
+                    *commit_document = checkpoint.commit;
+                    restored_check = retry->check;
+                    retry_files = retry->verified_files;
+                    if(!retry_files->verify(context.model_path,context.source_sha256))
+                        throw std::runtime_error("原模型在成果恢复期间发生变化。");
+                    report->success = true;
+                    for(auto& stage : report->stages) {
+                        stage.status = NativePortrait::BuildStageStatus::Skipped;
+                        stage.detail = "Reused a published carrier after full identity and certificate validation.";
+                    }
+                } else {
                 begin_stage(NativePortrait::BuildStage::SourceCheck,
                     "Verify recorded source identity and topology risks before partitioning.");
                 if (!source_appearance.valid())
@@ -541,6 +546,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 prepared->native_portrait_partition = partition;
                 prepared->native_workbench_partition_reference = *reference;
                 prepared->prepare_render_geometry(stopped, share_exact_vertices);
+                timing("cpu-preview-ready");
                 if (stopped()) throw std::runtime_error("原生人像分区已取消。");
                 if (AI::model_artifact_sha256(source) != source_hash ||
                     AI::model_artifact_sha256(destination) != output_hash)
@@ -603,8 +609,24 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 report->error.clear();
                 report->total_ms = portrait_elapsed_ms(*report_started);
                 committed->store(true);
+                prepared->native_workbench_checkpoint = prepare_native_workbench_checkpoint(
+                    destination, metadata_path, metadata, output_hash, partition->geometry_id,
+                    appearance_id, partition->partition_digest, *reference, stopped, &prepared->installation_files);
+                if (!prepared->native_workbench_checkpoint)
+                    throw std::runtime_error("原生分区发布凭证验证未完成，成果保留，请重新打开。");
+                timing("published-certificate-ready");
+                // The CPU payload was frozen before publication. Adding its
+                // checkpoint must not consume the render geometry a second time.
+                if (prepared->render_preparation != ModelPreview3D::PreparedModel::RenderPreparation::Ready)
+                    throw std::runtime_error("成果已发布，但预览准备未完成，请重新打开该成果。");
+                }
             } catch (const std::exception& failure) {
-                finish_stage(NativePortrait::BuildStageStatus::Failed);
+                if (!committed->load()) finish_stage(NativePortrait::BuildStageStatus::Failed);
+                else {
+                    auto& preview = report->stage(NativePortrait::BuildStage::PreviewSwitch);
+                    preview.status = NativePortrait::BuildStageStatus::Failed;
+                    preview.detail = failure.what();
+                }
                 if (!committed->load()) {
                     auto& metadata = report->stage(NativePortrait::BuildStage::MetadataPublish);
                     if (metadata.status == NativePortrait::BuildStageStatus::Succeeded) {
@@ -621,7 +643,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
             wxGetApp().CallAfter([weak, context, edit_revision,
                 destination, metadata_path, appearance_carrier, canceled, committed, prepared,
                 partition, report, reference, workbench_certificate, commit_document,
-                output_hash, report_started, activation_before,
+                output_hash, restored_check, retry_files, report_started, activation_before,
                 error = std::move(error)]() mutable {
                 const auto cleanup = [&] {
                     if (committed->load()) return;
@@ -633,7 +655,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 if (!weak) { cleanup(); return; }
                 auto* self = weak.get();
                 if (self->m_native_workbench_partition_cancel != canceled) { cleanup(); return; }
-                if (self->m_native_workbench_partition_worker.joinable()) self->m_native_workbench_partition_worker.join();
+                Presentation::background_tasks().retire(self->m_native_workbench_partition_worker);
                 const auto consumers = self->m_native_workbench_partition_consumers;
                 const bool automatic_requested =
                     (consumers & std::uint8_t(NativeWorkbenchPartitionConsumer::AutomaticPalette)) != 0;
@@ -645,14 +667,15 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 self->m_busy = false;
                 if (self->m_shutdown || canceled->load() ||
                     !self->native_workbench_context_matches(context) ||
+                    (retry_files && !retry_files->current()) ||
                     self->m_model_preview->leaf_edit_revision() != edit_revision) {
                     report->total_ms = portrait_elapsed_ms(*report_started);
                     log_native_portrait_partition_report(*report, "discarded");
                     cleanup();
                     self->m_native_workbench_partition_consumers = 0;
                     self->m_native_workbench_partition_context = {};
-                    if (!self->m_shutdown && self->m_workbench_model.path == context.model_path &&
-                        self->m_workbench_model.revision == context.generation) {
+                    if (!self->m_shutdown && self->m_displayed_model_path == context.model_path &&
+                        self->m_sequence == context.generation) {
                         if (automatic_requested) self->clear_pending_workbench_ai_palette();
                         self->fail_workbench_check(canceled->load()
                             ? "已取消检查与修复，原模型保留；可重新检查。"
@@ -672,8 +695,11 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     report->total_ms = portrait_elapsed_ms(*report_started);
                     log_native_portrait_partition_report(*report, "failed");
 
-                    const auto failure = "Orca 原生工作台分区未完成，原文件和旧成果均已保留：" +
-                        (error.empty() ? std::string("分区身份无效") : error);
+                    const auto failure = committed->load()
+                        ? std::string("检查修复成果已保存，但预览准备失败；重新检查可恢复已有成果。原文件已保留。")
+                        : report->stage(NativePortrait::BuildStage::MetadataPublish).status == NativePortrait::BuildStageStatus::Failed
+                            ? std::string("检查修复成果发布失败，原文件已保留，请检查磁盘空间及目录权限。")
+                            : std::string("模型检查修复未完成，原文件与旧成果已保留，请重试或查看诊断日志。");
                     self->fail_workbench_check(failure);
                     if (automatic_requested) self->clear_pending_workbench_ai_palette();
 
@@ -693,6 +719,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 Vec3d dimensions;
                 std::string load_error;
                 const auto preview_started = std::chrono::steady_clock::now();
+                DiagnosticStageTimer gui_timing("ORCASLICER_UI_LATENCY_TRACE", "NativeWorkbenchHandoff");
                 self->invalidate_printer_filament_trial_for_model_change();
                 if (!self->m_model_preview->load_prepared_model(
                         std::move(*prepared), {}, triangles, dimensions, colors, load_error)) {
@@ -705,7 +732,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     report->total_ms = portrait_elapsed_ms(*report_started);
                     log_native_portrait_partition_report(*report, "preview-failed");
                     const auto failure =
-                        "Orca 原生工作台分区预览未加载，原文件和旧成果均已保留：" + load_error;
+                        "检查修复成果已保存，但预览安装失败；重新检查可恢复已有成果。原文件已保留。";
                     self->fail_workbench_check(failure);
                     if (automatic_requested) self->clear_pending_workbench_ai_palette();
 
@@ -721,6 +748,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     return;
                 }
                 self->m_model_preview->restore_view(view);
+                gui_timing("gui-installed");
                 auto& preview = report->stage(NativePortrait::BuildStage::PreviewSwitch);
                 preview.status = NativePortrait::BuildStageStatus::Succeeded;
                 preview.duration_ms += portrait_elapsed_ms(preview_started);
@@ -742,40 +770,44 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     report->success = false;
                     report->error = preview.detail;
                     report->total_ms = portrait_elapsed_ms(*report_started);
-                    self->m_workbench_model.path = activation_before->displayed_model_path;
-                    self->m_workbench_model.asset_id = activation_before->displayed_model_job_id;
-                    const bool preview_restored = self->restore_beauty_candidate(activation_before->beauty);
-                    self->m_native_workbench_context = context;
-                    self->m_native_workbench_partition_reference = activation_before->partition_reference;
-                    self->m_native_workbench_partition_report = activation_before->partition_report;
-                    self->m_native_workbench_partition_certificate = activation_before->partition_certificate;
-                    self->m_native_workbench_partition_commit = activation_before->partition_commit;
-                    self->m_workbench_check_result = activation_before->workbench_check;
-                    self->m_workbench_check_path = activation_before->workbench_check_path;
-                    self->m_workbench_check_revision = activation_before->workbench_check_revision;
+                    self->m_displayed_model_path = activation_before->displayed_model_path;
+                    self->m_displayed_model_job_id = activation_before->displayed_model_job_id;
+                    self->restore_beauty_candidate_async(activation_before->beauty,
+                        [weak, activation_before, context, automatic_requested, honor_suite_requested, report](bool preview_restored) {
+                        if (!weak || weak->m_shutdown) return;
+                        auto* self = weak.get();
+                        self->m_native_workbench_context = context;
+                        self->m_native_workbench_partition_reference = activation_before->partition_reference;
+                        self->m_native_workbench_partition_report = activation_before->partition_report;
+                        self->m_native_workbench_partition_certificate = activation_before->partition_certificate;
+                        self->m_native_workbench_partition_commit = activation_before->partition_commit;
+                        self->m_workbench_check_result = activation_before->workbench_check;
+                        self->m_workbench_check_path = activation_before->workbench_check_path;
+                        self->m_workbench_check_revision = activation_before->workbench_check_revision;
 
-                    if (automatic_requested) self->clear_pending_workbench_ai_palette();
-                    if (honor_suite_requested) {
-                        self->m_honor_suite_partition_pending = false;
-                        self->m_honor_suite_partition_resume_queued = false;
-                    }
-                    self->m_native_workbench_partition_consumers = 0;
-                    self->m_native_workbench_partition_context = {};
-                    log_native_portrait_partition_report(*report,
-                        preview_restored ? "activation-rolled-back" : "activation-rollback-failed");
-                    const std::string failure = "原生原子分区缓存已保留，但 6 色 AI配色应用失败；模型与配色已回滚。";
-                    self->fail_workbench_check(preview_restored ? failure :
-                        failure + " 旧预览恢复失败，请重新打开原模型。");
+                        if (automatic_requested) self->clear_pending_workbench_ai_palette();
+                        if (honor_suite_requested) {
+                            self->m_honor_suite_partition_pending = false;
+                            self->m_honor_suite_partition_resume_queued = false;
+                        }
+                        self->m_native_workbench_partition_consumers = 0;
+                        self->m_native_workbench_partition_context = {};
+                        log_native_portrait_partition_report(*report,
+                            preview_restored ? "activation-rolled-back" : "activation-rollback-failed");
+                        const std::string failure = "原生原子分区缓存已保留，但 6 色 AI配色应用失败；模型与配色已回滚。";
+                        self->fail_workbench_check(preview_restored ? failure :
+                            failure + " 旧预览恢复失败，请重新打开原模型。");
 
-                    self->refresh_controls();
-                    self->refresh_post_generation_workbench();
-                    self->publish_workbench_state();
+                        self->refresh_controls();
+                        self->refresh_post_generation_workbench();
+                        self->publish_workbench_state();
+                    });
                     return;
                 }
 
                 self->select_local_finishing_version(destination,
                     "native-workbench-partition-" + partition->partition_digest.substr(0, 16));
-                self->m_workbench_model.ready = true;
+                self->m_model_preview_ready = true;
                 self->m_model_stats->SetLabel(wxString::Format(
                     _L("%llu 个三角面 · %llu 个原始色值\n%.1f × %.1f × %.1f mm"),
                     static_cast<unsigned long long>(triangles), static_cast<unsigned long long>(colors),
@@ -785,16 +817,17 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 log_native_portrait_partition_report(*report, "succeeded");
                 self->m_native_workbench_partition_reference = *reference;
                 self->m_native_workbench_partition_report =
-                    NativePortrait::encode_native_portrait_partition_build_report(*report);
+                    restored_check ? commit_document->value("partition_build_report", nlohmann::json{}) :
+                        NativePortrait::encode_native_portrait_partition_build_report(*report);
                 self->m_native_workbench_partition_certificate = *workbench_certificate;
                 self->m_native_workbench_partition_commit = *commit_document;
                 self->m_native_workbench_context = {destination, output_hash,
                     self->m_model_preview->geometry_id(),
-                    self->m_model_preview->semantic_source_content_id(), self->m_workbench_model.revision};
-                self->m_workbench_check_result = portrait_partition_check_result(
+                    self->m_model_preview->semantic_source_content_id(), self->m_sequence};
+                self->m_workbench_check_result = restored_check ? *restored_check : portrait_partition_check_result(
                     *partition, *report, output_hash);
                 self->m_workbench_check_path = destination.string();
-                self->m_workbench_check_revision = self->m_workbench_model.revision;
+                self->m_workbench_check_revision = self->m_sequence;
                 if (automatic_requested) self->clear_pending_workbench_ai_palette();
                 self->m_native_workbench_partition_consumers = 0;
                 self->m_native_workbench_partition_context = {};
@@ -840,26 +873,56 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
 
 bool ModelGenerationPanel::restore_workbench_check_certificate()
 {
-    if (!m_model_preview || !m_workbench_model.ready || m_workbench_model.path.empty() ||
-        !m_model_preview->showing_model(m_workbench_model.path) ||
-        m_model_preview->model_path() != m_workbench_model.path) return false;
-    const auto model_hash = AI::model_artifact_sha256(m_workbench_model.path);
+    if (!m_model_preview || !m_model_preview_ready || m_displayed_model_path.empty() ||
+        !m_model_preview->showing_model(m_displayed_model_path) ||
+        m_model_preview->model_path() != m_displayed_model_path) return false;
+    const auto source = m_displayed_model_path;
+    const auto revision = m_sequence;
+    const auto expected_hash = m_model_preview->model_sha256();
     const auto geometry_id = m_model_preview->geometry_id();
-    const auto semantic_appearance_id = m_model_preview->semantic_source_content_id();
-    const auto appearance_id = semantic_appearance_id.empty() ? model_hash : semantic_appearance_id;
-    if (!PP::valid_sha256(model_hash) || model_hash != m_model_preview->model_sha256() ||
-        geometry_id.empty() || appearance_id.empty()) return false;
-
-    const auto metadata_path = AI::beauty_metadata_path(
-        m_workbench_model.path, ModelGenerationPresentation::generated_models_root());
-    WorkbenchCheckResult restored;
-    if (!read_validated_workbench_history_check(m_workbench_model.path, metadata_path,
-            model_hash, geometry_id, appearance_id, restored)) return false;
-    m_workbench_check_result = std::move(restored);
-    m_workbench_check_path = m_workbench_model.path.string();
-    m_workbench_check_revision = m_workbench_model.revision;
-    m_workbench_check_card_visible = false;
-    return true;
+    const auto semantic_id = m_model_preview->semantic_source_content_id();
+    if (!PP::valid_sha256(expected_hash) || geometry_id.empty()) return false;
+    if (m_workbench_evidence_running && m_workbench_evidence_path == source &&
+        m_workbench_evidence_revision == revision) return true;
+    const auto metadata_path = AI::beauty_metadata_path(source, ModelGenerationPresentation::generated_models_root());
+    const auto task = m_workbench_evidence_scope.begin(source.string());
+    using Evidence = std::pair<std::optional<WorkbenchCheckResult>, std::shared_ptr<VerifiedModelFiles>>;
+    m_workbench_evidence_running = true;
+    m_workbench_evidence_path = source; m_workbench_evidence_revision = revision;
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    const bool accepted = Presentation::background_tasks().submit(task,
+        [source, metadata_path, expected_hash, geometry_id, semantic_id](const Presentation::TaskContext& context) {
+            Evidence evidence;
+            const auto hash = AI::model_artifact_sha256(source);
+            std::string record_hash;
+            WorkbenchCheckResult restored;
+            if (!context.canceled() && hash == expected_hash && read_validated_workbench_history_check(
+                    source, metadata_path, hash, geometry_id, semantic_id.empty() ? hash : semantic_id, restored,
+                    [&context] { return context.canceled(); }, &record_hash)) {
+                auto proof = std::make_shared<VerifiedModelFiles>();
+                if (proof->verify(source, hash) && proof->verify(metadata_path, record_hash)) {
+                    evidence.first = std::move(restored); evidence.second = std::move(proof);
+                }
+            }
+            return evidence;
+        }, [weak, task, source, revision](Presentation::TaskResult<Evidence> result) {
+            if (!weak || weak->m_shutdown || !weak->m_workbench_evidence_scope.matches(task)) return;
+            weak->m_workbench_evidence_running = false;
+            if (source != weak->m_displayed_model_path || revision != weak->m_sequence) {
+                weak->queue_workbench_check(); return;
+            }
+            if (result.value && result.value->first && result.value->second && result.value->second->current()) {
+                weak->m_workbench_check_result = std::move(*result.value->first);
+                weak->m_workbench_check_path = source.string();
+                weak->m_workbench_check_revision = revision;
+                weak->m_workbench_check_card_visible = false;
+                weak->refresh_post_generation_workbench(); weak->publish_workbench_state();
+            } else if (weak->can_start_workbench_check()) {
+                weak->request_check_workbench(true);
+            }
+        }, Presentation::TaskPriority::Visible);
+    if (!accepted) m_workbench_evidence_running = false;
+    return accepted;
 
 }
 

@@ -3,6 +3,7 @@
 #include <wx/timer.h>
 #include <map>
 #include <vector>
+#include "../Presentation/UiRuntime.hpp"
 
 namespace Slic3r::GUI {
 // Application lifetime, independent of which account/library page is visible.
@@ -11,11 +12,24 @@ public:
     PlatformAccountService(std::unique_ptr<HonorAccount::Store> store,
         std::unique_ptr<HonorAccount::Store> configuration,
         HonorAccount::Transport transport = HonorAccount::https_request)
-        : m_session(std::move(store), std::move(transport), std::move(configuration)), m_timer(this)
+        : m_session(std::move(store), std::move(transport), std::move(configuration),
+            [](std::function<void()> operation) {
+                Presentation::TaskContext context;
+                context.lifetime = Presentation::TaskLifetime::Session;
+                context.identity = "account-request";
+                return Presentation::background_tasks().submit(context,
+                    [operation = std::move(operation)](const Presentation::TaskContext&) { operation(); return true; },
+                    [](Presentation::TaskResult<bool>) {});
+            }), m_timer(this)
     {
         Bind(wxEVT_TIMER, [this](wxTimerEvent&) { tick(); }, m_timer.GetId());
+        Presentation::background_tasks().on_shutdown(this, [this] {
+            m_timer.Stop(); m_listeners.clear(); m_session.stop_accepting();
+        });
     }
-    ~PlatformAccountService() override { m_timer.Stop(); }
+    ~PlatformAccountService() override {
+        Presentation::background_tasks().remove_shutdown_hook(this); m_timer.Stop();
+    }
     HonorAccount::Session& session() { return m_session; }
     void start() {
         if (m_started) return;

@@ -4,6 +4,7 @@
 #include "ModelGenerationInputStyle.hpp"
 #include "WorkbenchStyle.hpp"
 #include "slic3r/GUI/I18N.hpp"
+#include "slic3r/GUI/Presentation/UiRuntime.hpp"
 #include <wx/listbox.h>
 #include <wx/textctrl.h>
 #include <wx/choice.h>
@@ -20,6 +21,10 @@ ModelLibraryPanel::ModelLibraryPanel(wxWindow* parent, std::shared_ptr<ModelLibr
     : wxPanel(parent), m_application_owner(std::move(application)), m_application(*m_application_owner), m_loader(make_model_library_loader()), m_timer(this)
 {
     SetName("model_library_capability");
+    Presentation::background_tasks().on_shutdown(this, [this] {
+        m_stopped = true; m_timer.Stop();
+        auto scanner = m_loader->begin_shutdown(); Presentation::background_tasks().retire(scanner);
+    });
     auto* column = new wxBoxSizer(wxVERTICAL); SetSizer(column);
     auto* filter = new wxBoxSizer(wxHORIZONTAL);
     m_search = new wxTextCtrl(this, wxID_ANY); m_search->SetHint(_L("搜索名称或任务 ID"));
@@ -74,7 +79,9 @@ ModelLibraryPanel::ModelLibraryPanel(wxWindow* parent, std::shared_ptr<ModelLibr
     ModelGenerationInputStyle::apply(this, true);
     refresh_assets();
 }
-ModelLibraryPanel::~ModelLibraryPanel() { shutdown(); }
+ModelLibraryPanel::~ModelLibraryPanel() {
+    Presentation::background_tasks().remove_shutdown_hook(this); shutdown();
+}
 void ModelLibraryPanel::shutdown() { if (m_stopped) return; m_stopped = true; Disable(); m_timer.Stop(); m_loader->stop(); }
 void ModelLibraryPanel::refresh_assets()
 {

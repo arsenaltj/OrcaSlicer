@@ -3,6 +3,7 @@
 #include "slic3r/GUI/AISidecarClient.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include <boost/filesystem.hpp>
+#include <wx/weakref.h>
 
 namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
@@ -13,11 +14,11 @@ AdvancedModelTaskMonitor::AdvancedModelTaskMonitor()
     m_flow = std::make_unique<AdvancedModelTaskFlow>(AdvancedModelTaskFlow::Ports{
         [this, alive](const std::string& job, auto complete, auto failed) {
             m_client.get_status(job, [alive, complete](auto status) {
-                wxGetApp().CallAfter([alive, complete, status = std::move(status)]() mutable {
+                Presentation::post_gui([alive, complete, status = std::move(status)]() mutable {
                     if (!alive.expired()) complete(std::move(status));
                 });
             }, [alive, failed](auto message) {
-                wxGetApp().CallAfter([alive, failed, message = std::move(message)]() mutable {
+                Presentation::post_gui([alive, failed, message = std::move(message)]() mutable {
                     if (!alive.expired()) failed(std::move(message));
                 });
             });
@@ -37,9 +38,7 @@ AdvancedModelTaskMonitor::~AdvancedModelTaskMonitor() { m_lifetime.reset(); m_fl
 void AdvancedModelTaskMonitor::cancel_requests()
 {
     m_timer.Stop(); m_client.cancel_current(); m_acquisition.cancel();
-    if (m_cancel) m_cancel->store(true);
-    if (m_worker.joinable()) m_worker.join();
-    m_cancel.reset();
+    m_preparation.cancel();
 }
 void AdvancedModelTaskMonitor::reset() { m_flow->reset(); }
 void AdvancedModelTaskMonitor::set_listener(ModelGenerationUIStateListener listener)
@@ -53,18 +52,20 @@ void AdvancedModelTaskMonitor::prepare(AI::GeneratedModelArtifact artifact,
     AIModelGenerationClient::JobStatus status, boost::filesystem::path reference,
     std::function<void(ModelLibraryEntry)> complete, AIModelGenerationClient::ErrorFn failed)
 {
-    if (m_worker.joinable()) m_worker.join();
-    m_cancel = std::make_shared<std::atomic<bool>>(false);
-    const auto cancel = m_cancel;
+    const auto task = m_preparation.begin(artifact.job_id, Presentation::TaskLifetime::Session);
+    auto* weak = this;
     const auto alive = std::weak_ptr<int>(m_lifetime);
-    m_worker = std::thread([this, alive, cancel, artifact, status, reference, complete, failed] {
+    struct Prepared { ModelLibraryEntry entry; std::string error; };
+    const bool accepted = Presentation::background_tasks().submit(task,
+        [artifact = std::move(artifact), status = std::move(status), reference = std::move(reference)](
+                const Presentation::TaskContext& context) {
         const auto start = std::chrono::steady_clock::now();
         std::string error;
         ModelLibraryEntry entry;
         try {
             ModelPreview3D::PreparedModel prepared;
             if (ModelPreview3D::prepare_model(artifact.local_path, prepared, error, {}, {}, true,
-                    [cancel] { return cancel->load(); })) {
+                    [&context] { return context.canceled(); })) {
                 entry.model_path = artifact.local_path; entry.job_id = artifact.job_id;
                 entry.content_sha256 = prepared.artifact_sha256;
                 entry.palette = artifact.generation_palette; entry.palette_roles = status.palette_roles;
@@ -104,16 +105,18 @@ void AdvancedModelTaskMonitor::prepare(AI::GeneratedModelArtifact artifact,
                     record["color_intent_schema"] = entry.color_intent_schema;
                     record["color_intent_sha256"] = entry.color_intent_sha256;
                 }
-                if (!cancel->load() && !ModelArtifactAcquisition::publish_library_record(status.id, std::move(record)))
+                if (!context.canceled() && !ModelArtifactAcquisition::publish_library_record(status.id, std::move(record)))
                     error = "模型文件已保留，但模型记录暂时无法保存。";
             }
         } catch (const std::exception& e) { error = e.what(); }
-        wxGetApp().CallAfter([this, alive, cancel, error, entry = std::move(entry), complete, failed]() mutable {
-            if (alive.expired() || cancel->load()) return;
-            if (m_worker.joinable()) m_worker.join();
-            if (!error.empty() || entry.model_path.empty()) failed(error);
-            else complete(std::move(entry));
-        });
-    });
+        return Prepared {std::move(entry), std::move(error)};
+    }, [weak, alive, task, complete = std::move(complete), failed](Presentation::TaskResult<Prepared> result) mutable {
+        if (alive.expired() || !weak->m_preparation.matches(task) || result.canceled) return;
+        if (!result.value || result.error) { failed("模型本地准备未完成，已保留生成结果，请重试加载。"); return; }
+        if (!result.value->error.empty() || result.value->entry.model_path.empty())
+            failed(result.value->error.empty() ? "模型本地准备未完成，已保留生成结果，请重试加载。" : result.value->error);
+        else complete(std::move(result.value->entry));
+    }, Presentation::TaskPriority::Visible);
+    if (!accepted) failed("模型本地准备暂时繁忙，请稍后重试加载。");
 }
 } // namespace Slic3r::GUI

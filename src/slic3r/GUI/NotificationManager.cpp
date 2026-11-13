@@ -1,4 +1,5 @@
 #include "NotificationManager.hpp"
+#include "ApplicationUpdatePolicy.hpp"
 #include <wx/glcanvas.h>
 
 #include "HintNotification.hpp"
@@ -628,6 +629,10 @@ void NotificationManager::PopNotification::init()
 {
 	// Do not init closing notification
 	if (is_finished())
+		return;
+	// Text is measured with the ImGui font, which the first ImGui frame sets up. Without a
+	// working OpenGL context that frame never comes, so stay Unknown and let render() init.
+	if (ImGui::GetFont() == nullptr)
 		return;
 
 	count_spaces();
@@ -3113,6 +3118,12 @@ bool NotificationManager::push_notification_data(const NotificationData& notific
 }
 bool NotificationManager::push_notification_data(std::unique_ptr<NotificationManager::PopNotification> notification, int timestamp)
 {
+    const auto notification_type = notification->get_type();
+    if (!application_updates_enabled() &&
+        (notification_type == NotificationType::NewAppAvailable ||
+         notification_type == NotificationType::NewAlphaAvailable ||
+         notification_type == NotificationType::NewBetaAvailable))
+        return false;
 	// if timestamped notif, push only new one
 	if (timestamp != 0) {
 		if (m_used_timestamps.find(timestamp) == m_used_timestamps.end()) {

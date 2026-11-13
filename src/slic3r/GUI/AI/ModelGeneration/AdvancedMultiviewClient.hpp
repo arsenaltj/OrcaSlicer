@@ -31,6 +31,8 @@ public:
     static Json design_json(const AdvancedCreation::DesignDraft& draft);
     static std::optional<AdvancedCreation::GroupSnapshot> parse_group(const Json& group,
                                                                      const boost::filesystem::path& cache_root);
+    static std::optional<AdvancedCreation::ModelJobProjection> parse_model_job(
+        const Json& job, const std::string& group, const std::string& expected_job);
     static boost::filesystem::path asset_path(const boost::filesystem::path& cache_root,
                                               const std::string& group, const std::string& asset);
     static bool valid_id(const std::string& value);

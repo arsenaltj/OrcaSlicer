@@ -1,6 +1,7 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "ModelPreview3D.hpp"
+#include "BeautyRestorePreparation.hpp"
 #include "BeautyWorkbenchControls.hpp"
 #include "BeautyWorkbenchTransactionController.hpp"
 #include "WorkbenchStyle.hpp"
@@ -130,7 +131,7 @@ void ModelGenerationPanel::set_finishing_workbench(bool enabled)
     SetBackgroundColour(enabled ? wxColour(49, 49, 54) : *wxWHITE);
     m_model_preview->set_selection_preview_suppressed(enabled &&
         ((!m_finishing_candidate.empty() && !m_finishing_before) || (!m_finishing_accepted_path.empty() &&
-         m_workbench_model.path == m_finishing_accepted_path)));
+         m_displayed_model_path == m_finishing_accepted_path)));
     m_model_preview->set_beauty_view(enabled);
     m_model_preview->set_color_controls_visible(!enabled);
     m_model_stats->Show(!enabled);
@@ -198,9 +199,9 @@ PostGenerationUiState ModelGenerationPanel::post_generation_ui_state() const
     auto state = derive_post_generation_ui_state(
         m_finishing_workbench ? PostGenerationUiState::Mode::Workbench
                               : PostGenerationUiState::Mode::Result,
-        m_workbench_model.ready,
-        !m_workbench_model.path.empty(),
-        m_busy || m_preview_loading || m_workbench_import_running,
+        m_model_preview_ready,
+        !m_displayed_model_path.empty(),
+        m_busy || m_preview_loading || m_workbench_import_running || m_beauty_restore_running,
         m_finishing_running || m_workbench_check_running,
         (m_beauty_transactions && m_beauty_transactions->processing()) ||
             (m_model_preview && m_model_preview->semantic_processing()) ||
@@ -226,7 +227,7 @@ PostGenerationUiState ModelGenerationPanel::post_generation_ui_state() const
         state.can_import = false;
     }
     const int tool = m_finishing_tool ? m_finishing_tool->GetSelection() : -1;
-    if (AI::model_artifact_format(m_workbench_model.path) == "glb" && (tool == 3 || tool == 5))
+    if (AI::model_artifact_format(m_displayed_model_path) == "glb" && (tool == 3 || tool == 5))
         state.can_preview = false;
     return state;
 }
@@ -249,17 +250,17 @@ void ModelGenerationPanel::update_finishing_selection()
 void ModelGenerationPanel::refresh_model_finishing()
 {
     if (!m_finishing_panel) return;
-    if (!m_finishing_undo_path.empty() && m_workbench_model.path != m_finishing_accepted_path) {
+    if (!m_finishing_undo_path.empty() && m_displayed_model_path != m_finishing_accepted_path) {
         m_finishing_undo_path.clear(); m_finishing_accepted_path.clear();
     }
-    if (!m_finishing_running && !m_finishing_candidate.empty() && m_workbench_model.path != m_finishing_source) {
+    if (!m_finishing_running && !m_finishing_candidate.empty() && m_displayed_model_path != m_finishing_source) {
         // Selecting a different library model invalidates only the unaccepted
         // local preview, never the selected file or its history record.
         boost::system::error_code ignored;
-        if (m_workbench_model.path != m_finishing_candidate)
+        if (m_displayed_model_path != m_finishing_candidate)
             boost::filesystem::remove(m_finishing_candidate, ignored);
         clear_unaccepted_beauty_candidates();
-        m_beauty_session.clear_draft();
+        m_beauty_session->clear_draft();
         m_beauty_reoptimization_before.reset();
         m_finishing_candidate_region_evidence.reset();
         m_finishing_candidate_secondary_evidence.reset();
@@ -272,7 +273,7 @@ void ModelGenerationPanel::refresh_model_finishing()
         m_model_preview->set_selection_preview_suppressed(false);
     }
     const bool pending = !m_finishing_candidate.empty();
-    const bool ready = m_workbench_model.ready && is_nonempty_model(m_workbench_model.path);
+    const bool ready = m_model_preview_ready && is_nonempty_model(m_displayed_model_path);
     const bool transaction_busy = (m_portrait_task && m_portrait_task->snapshot().running()) || m_workbench_check_running || (m_beauty_transactions && m_beauty_transactions->processing()) ||
         m_model_preview->semantic_processing() ||
         (m_finishing_workbench && m_model_preview->selection_busy());
@@ -292,7 +293,7 @@ void ModelGenerationPanel::refresh_model_finishing()
         workbench_updates = std::make_unique<wxWindowUpdateLocker>(m_workbench_shell);
     m_finishing_panel->Show(show_finishing_panel);
     m_workbench_footer->Show(show_beauty_actions);
-    const auto beauty_source = pending ? m_finishing_candidate : m_workbench_model.path;
+    const auto beauty_source = pending ? m_finishing_candidate : m_displayed_model_path;
     const auto ui_state = post_generation_ui_state();
     if (m_beauty_controls) {
         m_beauty_controls->set_color_gate(m_beauty_color_gate_state, m_beauty_color_gate_message);
@@ -334,7 +335,7 @@ void ModelGenerationPanel::refresh_model_finishing()
     // Automatic topology repairs are committed without a user candidate
     // review.  Keep the footer free of the legacy compare affordance while
     // that save transaction is running; manual beauty candidates retain it.
-    const bool beauty_comparable = m_beauty_session.source() && beauty_session_has_changes();
+    const bool beauty_comparable = m_beauty_session->source() && beauty_session_has_changes();
     const bool beauty_footer_processing = transaction_busy || m_finishing_running ||
         m_beauty_color_gate_state == BeautyColorGateState::Checking ||
         (m_beauty_controls && m_beauty_controls->partitioning());
@@ -364,7 +365,7 @@ void ModelGenerationPanel::refresh_model_finishing()
     m_finishing_cancel->Show(!m_finishing_workbench && (m_finishing_running || transaction_busy));
     m_finishing_undo->Show(!m_finishing_workbench && !m_finishing_undo_path.empty() && !pending && !m_finishing_running);
     m_finishing_undo->Enable(editable);
-    if (!m_finishing_redo_path.empty() && m_workbench_model.path != m_finishing_redo_source)
+    if (!m_finishing_redo_path.empty() && m_displayed_model_path != m_finishing_redo_source)
         m_finishing_redo_path.clear();
     m_finishing_redo->Show(!m_finishing_workbench && !m_finishing_redo_path.empty() && !pending && !m_finishing_running);
     m_finishing_redo->Enable(editable);
@@ -390,7 +391,7 @@ void ModelGenerationPanel::refresh_model_finishing()
             static_cast<unsigned long long>(m_finishing_options.selected_faces.size())));
     }
     if (m_finishing_running) m_stop->Hide();
-    if (m_workbench_model.asset_id.rfind("finish-", 0) == 0) {
+    if (m_displayed_model_job_id.rfind("finish-", 0) == 0) {
         m_recheck_model->Disable(); m_visual_review_model->Disable();
         m_recheck_model->SetToolTip(_L("本地处理版本请导入准备页，检查实际打印条件。"));
     }
@@ -439,13 +440,14 @@ void ModelGenerationPanel::refresh_model_finishing()
 
 void ModelGenerationPanel::reset_beauty_asset()
 {
+    if (!m_beauty_session) return;
     reset_portrait_session();
     // Explicit history navigation starts a new asset, not an unmatched Beauty
     // session inherited from the previous model.
     m_workbench_editing = false;
     cancel_beauty_color_gate();
     if (m_workbench_check_cancel) m_workbench_check_cancel->store(true);
-    if (m_workbench_check_worker.joinable()) m_workbench_check_worker.join();
+    Presentation::background_tasks().retire(m_workbench_check_worker);
     m_workbench_check_cancel.reset();
     m_workbench_check_running = m_workbench_auto_repair = false;
     clear_pending_workbench_ai_palette();
@@ -490,16 +492,35 @@ void ModelGenerationPanel::reset_beauty_asset()
     m_finishing_before = m_finishing_compare_held = m_save_and_return = false;
     m_portrait_mode = false;
     if (m_beauty_controls) m_beauty_controls->reset_asset();
-    m_beauty_session.reset();
+    m_beauty_session->reset();
+    m_beauty_reoptimization_before.reset();
+    m_portrait_draft_before.reset();
+    m_portrait_preview_draft.reset();
+    m_beauty_manual_color_dirty = false;
 }
 
 std::function<void()> ModelGenerationPanel::capture_model_context()
 {
-    return [this, context = m_workbench_model, library = m_library_model_loaded] {
-        const auto revision = m_workbench_model.revision + 1;
-        m_workbench_model = context;
-        m_workbench_model.revision = revision;
-        m_library_model_loaded = library;
+    return [this, job = m_job_id, displayed = m_displayed_model_job_id,
+        artifact = m_artifact_path, source = m_displayed_model_path, palette = m_job_palette, roles = m_job_palette_roles,
+        display_palette = m_displayed_model_palette, display_roles = m_displayed_model_palette_roles,
+        printable = m_job_use_printable_colors, manifest = m_color_intent_path,
+        schema = m_color_intent_schema, hash = m_color_intent_sha256, format = m_artifact_format,
+        encoding = m_artifact_color_encoding, quality = m_model_quality, visual = m_visual_quality,
+        refinement = m_model_refinement, library = m_library_model_loaded] {
+        // Undo/redo restores a legitimate asset context. Give it a fresh route
+        // identity so delayed notifications cannot restore the previous version.
+        if (m_displayed_model_job_id != displayed || m_displayed_model_path != source)
+            ++m_model_generation_session;
+        m_job_id = job; m_displayed_model_job_id = displayed;
+        m_artifact_path = artifact; m_displayed_model_path = source;
+        m_job_palette = palette; m_job_palette_roles = roles;
+        m_displayed_model_palette = display_palette; m_displayed_model_palette_roles = display_roles;
+        m_job_use_printable_colors = printable; m_color_intent_path = manifest;
+        m_color_intent_schema = schema; m_color_intent_sha256 = hash;
+        m_artifact_format = format; m_artifact_color_encoding = encoding;
+        m_model_quality = quality; m_visual_quality = visual; m_model_refinement = refinement;
+        m_library_model_loaded = library; m_ready = m_artifact_download_started = m_model_preview_ready = true;
         m_last_imported_model_path.clear();
     };
 }
@@ -507,13 +528,13 @@ std::function<void()> ModelGenerationPanel::capture_model_context()
 BeautyCandidateSnapshot ModelGenerationPanel::capture_beauty_candidate() const
 {
     BeautyCandidateSnapshot snapshot;
-    snapshot.source = m_finishing_source.empty() ? m_workbench_model.path : m_finishing_source;
+    snapshot.source = m_finishing_source.empty() ? m_displayed_model_path : m_finishing_source;
     snapshot.candidate = m_finishing_candidate;
     snapshot.model_sha256 = snapshot.candidate.empty()
-        ? (m_beauty_session.source() && m_beauty_session.source()->source == snapshot.source
-            ? m_beauty_session.source()->model_sha256 : AI::model_artifact_sha256(snapshot.source))
+        ? (m_beauty_session->source() && m_beauty_session->source()->source == snapshot.source
+            ? m_beauty_session->source()->model_sha256 : m_model_preview->model_sha256())
         : (!m_finishing_result.output_sha256.empty() ? m_finishing_result.output_sha256
-            : AI::model_artifact_sha256(snapshot.candidate));
+            : m_model_preview->model_sha256());
     snapshot.id = m_finishing_id;
     snapshot.geometry_id = m_model_preview->geometry_id();
     snapshot.original_appearance = m_model_preview->original_appearance_reference();
@@ -546,11 +567,94 @@ BeautyCandidateSnapshot ModelGenerationPanel::capture_beauty_candidate() const
     return snapshot;
 }
 
-bool ModelGenerationPanel::restore_beauty_candidate(const BeautyCandidateSnapshot& snapshot)
+void ModelGenerationPanel::prepare_beauty_restoration(BeautyCandidateSnapshot snapshot,
+    std::function<void(std::shared_ptr<BeautyRestorePreparation>)> complete)
 {
+    Presentation::assert_gui_thread();
+    auto completion = std::make_shared<std::function<void(std::shared_ptr<BeautyRestorePreparation>)>>(std::move(complete));
+    auto failed = [&](const std::string& error) {
+        auto result = std::make_shared<BeautyRestorePreparation>(); result->error = error;
+        if (*completion) (*completion)(std::move(result));
+    };
+    if (m_shutdown || !m_model_preview || m_beauty_restore_running || m_preview_loading) {
+        failed("版本恢复失败，当前模型保持不变。"); return;
+    }
+    const auto sequence = m_sequence;
+    const auto model_session = m_model_generation_session;
     const auto path = snapshot.candidate.empty() ? snapshot.source : snapshot.candidate;
-    if (!is_nonempty_model(path)) return false;
-    if (snapshot.model_sha256.empty() || AI::model_artifact_sha256(path) != snapshot.model_sha256) return false;
+    const auto metadata = AI::beauty_metadata_path(path, generated_models_root());
+    const auto task = m_beauty_restore_scope.begin(path.string(), Presentation::TaskLifetime::Transaction);
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    m_beauty_restore_running = true;
+    refresh_controls();
+    const bool accepted = Presentation::background_tasks().submit(task,
+        [snapshot = std::move(snapshot), path, metadata](const Presentation::TaskContext& context) {
+            auto result = std::make_shared<BeautyRestorePreparation>();
+            try {
+                const auto canceled = [&] { return context.canceled(); };
+                if (canceled()) return result;
+                const auto hash = snapshot.model_sha256.empty() ? AI::model_artifact_sha256(path) : snapshot.model_sha256;
+                auto files = std::make_shared<VerifiedModelFiles>();
+                if (!files->verify(path, hash)) throw std::runtime_error("历史模型文件缺失或已变更");
+                boost::system::error_code ec;
+                const auto metadata_hash = boost::filesystem::is_regular_file(metadata, ec)
+                    ? AI::model_artifact_sha256(metadata) : std::string{};
+                if (!files->verify(metadata, metadata_hash, true))
+                    throw std::runtime_error("历史模型记录已变更");
+                const std::optional<OriginalAppearanceReference> appearance =
+                    snapshot.original_appearance.valid() || !snapshot.original_appearance_error.empty()
+                        ? std::optional<OriginalAppearanceReference>(snapshot.original_appearance) : std::nullopt;
+                if (!ModelPreview3D::prepare_model(path, result->model, result->error, snapshot.face_overrides,
+                        metadata, true, canceled, nullptr, appearance)) return result;
+                const auto& original = result->model.original_appearance;
+                if (original.valid() && (!files->verify(original.carrier_model, original.carrier_sha256) ||
+                        !files->verify(original.origin_model, original.origin_sha256)))
+                    throw std::runtime_error("历史模型原色来源已变更");
+                if (result->model.artifact_sha256 != hash || !files->current())
+                    throw std::runtime_error("历史模型文件缺失或已变更");
+                result->model.prepare_render_geometry(canceled);
+                result->model.installation_files = std::move(files);
+            } catch (const std::exception& error) { result->error = error.what(); }
+            return result;
+        }, [weak, task, sequence, model_session, completion](
+                Presentation::TaskResult<std::shared_ptr<BeautyRestorePreparation>> outcome) mutable {
+            if (!weak || !weak->m_beauty_restore_scope.owns(task)) return;
+            weak->m_beauty_restore_running = false;
+            if (weak->m_shutdown || sequence != weak->m_sequence || model_session != weak->m_model_generation_session) return;
+            auto prepared = outcome.value ? std::move(*outcome.value) : std::make_shared<BeautyRestorePreparation>();
+            if (outcome.canceled || outcome.error) prepared->error = "版本恢复失败，当前模型保持不变。";
+            if (*completion) (*completion)(std::move(prepared));
+            if (weak) weak->refresh_controls();
+        }, Presentation::TaskPriority::Visible);
+    if (!accepted) {
+        m_beauty_restore_running = false;
+        failed("版本恢复失败，当前模型保持不变。");
+        refresh_controls();
+    }
+}
+
+void ModelGenerationPanel::restore_beauty_candidate_async(BeautyCandidateSnapshot snapshot,
+    std::function<void(bool)> complete)
+{
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    // Capture before moving the worker input: argument evaluation order must
+    // not turn the commit snapshot into a moved-from value.
+    auto commit_snapshot = std::make_shared<BeautyCandidateSnapshot>(snapshot);
+    prepare_beauty_restoration(std::move(snapshot), [weak, commit_snapshot, complete = std::move(complete)](auto prepared) {
+        if (!weak || weak->m_shutdown) return;
+        const bool ok = weak->restore_beauty_candidate_prepared(*commit_snapshot, prepared);
+        if (complete) complete(ok);
+    });
+}
+
+bool ModelGenerationPanel::restore_beauty_candidate_prepared(const BeautyCandidateSnapshot& snapshot,
+    const std::shared_ptr<BeautyRestorePreparation>& preparation)
+{
+    Presentation::assert_gui_thread();
+    if (!preparation || !preparation->error.empty()) return false;
+    const auto path = snapshot.candidate.empty() ? snapshot.source : snapshot.candidate;
+    if (snapshot.model_sha256.empty() || preparation->model.path != path ||
+        preparation->model.artifact_sha256 != snapshot.model_sha256) return false;
     if (snapshot.project_config && wxGetApp().plater()) {
         const size_t retained = snapshot.project_presets.size();
         for (const auto& plate : wxGetApp().plater()->model().plates_custom_gcodes)
@@ -587,18 +691,6 @@ bool ModelGenerationPanel::restore_beauty_candidate(const BeautyCandidateSnapsho
     size_t triangles = 0, colors = 0;
     Vec3d dimensions;
     std::string error;
-    const auto metadata = AI::beauty_metadata_path(path, generated_models_root());
-    // Prepare without retiring the current preview. A native commit rejection
-    // must leave both the model and its unsaved appearance unchanged.
-    ModelPreview3D::PreparedModel prepared;
-    const std::optional<OriginalAppearanceReference> appearance_override =
-        snapshot.original_appearance.valid() || !snapshot.original_appearance_error.empty()
-            ? std::optional<OriginalAppearanceReference>(snapshot.original_appearance) : std::nullopt;
-    if (!ModelPreview3D::prepare_model(path, prepared, error, snapshot.face_overrides, metadata,
-            true, {}, nullptr, appearance_override)) {
-        m_finishing_status->SetLabel(_L("版本恢复失败，当前模型保持不变：") + from_u8(error));
-        return false;
-    }
     bool config_changed = false;
     if (snapshot.project_config) {
         auto& bundle = *wxGetApp().preset_bundle;
@@ -616,7 +708,7 @@ bool ModelGenerationPanel::restore_beauty_candidate(const BeautyCandidateSnapsho
         }
     }
     invalidate_printer_filament_trial_for_model_change();
-    if (!m_model_preview->load_prepared_model(std::move(prepared), {}, triangles, dimensions, colors, error)) {
+    if (!m_model_preview->load_prepared_model(std::move(preparation->model), {}, triangles, dimensions, colors, error)) {
         // Only undo the configuration action just committed above; a no-op
         // restoration must never undo an unrelated project action.
         if (config_changed) wxGetApp().plater()->undo();
@@ -624,7 +716,7 @@ bool ModelGenerationPanel::restore_beauty_candidate(const BeautyCandidateSnapsho
         return false;
     }
     m_model_preview->restore_view(view);
-    m_workbench_model.ready = true;
+    m_model_preview_ready = true;
     m_workbench_load_error = false;
     m_model_stats->SetLabel(wxString::Format(_L("%llu 个三角面 · %llu 个原始色值\n%.1f × %.1f × %.1f mm"),
         static_cast<unsigned long long>(triangles), static_cast<unsigned long long>(colors),
@@ -708,23 +800,23 @@ void ModelGenerationPanel::record_beauty_candidate(BeautyWorkbenchTransactionCon
         after->project_config = std::make_shared<DynamicPrintConfig>(wxGetApp().preset_bundle->project_config);
         after->project_presets = wxGetApp().preset_bundle->filament_presets;
     }
-    m_beauty_session.record(kind, std::move(before), std::move(after), beauty_session_ports());
+    m_beauty_session->record(kind, std::move(before), std::move(after), beauty_session_ports());
 }
 
 BeautyWorkbenchSession<BeautyCandidateSnapshot>::Ports ModelGenerationPanel::beauty_session_ports()
 {
     return {
-        [](const BeautyCandidateSnapshot& snapshot) {
-            const auto& path = snapshot.candidate.empty() ? snapshot.source : snapshot.candidate;
-            return is_nonempty_model(path) && !snapshot.model_sha256.empty() && AI::model_artifact_sha256(path) == snapshot.model_sha256;
-        },
-        [this](const BeautyCandidateSnapshot& snapshot) { return restore_beauty_candidate(snapshot); },
-        [](const boost::filesystem::path& path) { boost::system::error_code ignored; boost::filesystem::remove(path, ignored); }};
+        {}, {}, // GUI consumers restore only through the strict asynchronous port.
+        [](const boost::filesystem::path& path) { boost::system::error_code ignored; boost::filesystem::remove(path, ignored); },
+        [this](const BeautyCandidateSnapshot& snapshot, std::function<void(bool)> complete) {
+            restore_beauty_candidate_async(snapshot, std::move(complete));
+        }};
 }
 
 void ModelGenerationPanel::clear_unaccepted_beauty_candidates(size_t start)
 {
-    m_beauty_session.clear_candidates(start, m_finishing_accepted_path, beauty_session_ports());
+    if (!m_beauty_session) return;
+    m_beauty_session->clear_candidates(start, m_finishing_accepted_path, beauty_session_ports());
 }
 
 } // namespace Slic3r::GUI

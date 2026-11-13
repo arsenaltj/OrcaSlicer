@@ -1491,6 +1491,10 @@ TEST_CASE("Frozen native workbench sources retain six effective clusters",
     CHECK(automatic.actual_color_count ==
         Slic3r::GUI::NativePortrait::default_model_color_count);
     CHECK(Slic3r::AI::model_artifact_sha256(source) == source_sha256);
+    if (const auto* output = boost::nowide::getenv("ORCA_NATIVE_WORKBENCH_REPLAY_REPORT")) {
+        boost::filesystem::ofstream stream(output);
+        stream << Slic3r::GUI::NativePortrait::encode_native_portrait_partition_build_report(report).dump(2);
+    }
 }
 
 TEST_CASE("Worker history preparation preserves editing state and complete metric records", "[ModelPreviewState]")

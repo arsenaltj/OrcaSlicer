@@ -7,6 +7,7 @@
 #include "ModelGenerationStarfieldRenderer.hpp"
 #include "../AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "../AI/ModelGeneration/ModelPreview3D.hpp"
+#include "../Presentation/UiRuntime.hpp"
 #include "../GUI_App.hpp"
 #include "../wxExtensions.hpp"
 #include "../Widgets/Label.hpp"
@@ -16,7 +17,6 @@
 #include <wx/toplevel.h>
 #include <wx/weakref.h>
 #include <atomic>
-#include <thread>
 
 namespace Slic3r::GUI {
 using namespace RedesignTheme;
@@ -96,7 +96,9 @@ struct InlineModelGenerationView::Impl {
     RoundedActionButton* recover;
     ModelPreview3D* preview {nullptr};
     std::shared_ptr<Preparation> preparation;
-    std::thread worker;
+    Presentation::TaskScope preparation_scope;
+    Presentation::RefreshScheduler refresh;
+    std::shared_ptr<int> lifetime {std::make_shared<int>(0)};
     wxTimer timer;
     RedesignPresentationDeadline deadline;
     ModelGenerationAnimationClock animation;
@@ -108,6 +110,7 @@ struct InlineModelGenerationView::Impl {
         : view(owner), callbacks(std::move(cb)), feedback(new GenerationFeedback(&owner)),
           recover(new RoundedActionButton(feedback, t("恢复当前任务"), false, 36)), timer(&owner) {
         view.SetMinSize(wxSize(0,0)); view.SetBackgroundColour(background_colour());
+        refresh.configure([this] { return visible(); }, [this](Presentation::Dirty) { render(); tick(); }, "inline-generation");
         view.SetName("inline-model-generation");
         recover->SetName("inline-generation-recover"); recover->Hide();
         recover->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
@@ -131,10 +134,10 @@ struct InlineModelGenerationView::Impl {
     }
     void shutdown() {
         if (closing) return;
-        closing = true; timer.Stop();
+        closing = true; timer.Stop(); refresh.stop(); lifetime.reset();
+        preparation_scope.cancel();
         if (preparation) preparation->canceled = true;
         if (preview) preview->observe_presentation_frame({});
-        if (worker.joinable()) worker.join();
         preparation.reset(); callbacks = {};
     }
     void changed() { if (callbacks.changed) callbacks.changed(); }
@@ -213,20 +216,33 @@ struct InlineModelGenerationView::Impl {
         state.advance(state.generation(), InlinePreviewPhase::Preparing);
         auto request = preparation;
         try {
-            worker = std::thread([request] {
+            const auto task = preparation_scope.begin(request->request.entry.job_id);
+            auto* target = &view;
+            const auto alive = std::weak_ptr<int>(lifetime);
+            const bool accepted = Presentation::background_tasks().submit(task, [request](const Presentation::TaskContext& context) {
                 try {
                     const auto& open = request->request;
-                    if (!open.expected_sha256.empty() && AI::model_artifact_sha256(open.entry.model_path) != open.expected_sha256)
+                    const auto stopped = [&context, request] { return context.canceled() || request->canceled.load(); };
+                    if (!open.sha256.empty() && AI::model_artifact_sha256(open.entry.model_path) != open.sha256)
                         request->error = "模型文件摘要已变化，请恢复原文件后重新加载。";
                     else if (!ModelPreview3D::prepare_model(open.entry.model_path, request->prepared, request->error,
                         {}, ModelGenerationPresentation::library_metadata_path(open.entry.job_id), true,
-                        [request] { return request->canceled.load(); }) && request->error.empty())
+                        stopped) && request->error.empty())
                         request->error = "模型文件无法解析。";
-                    if (request->error.empty() && !open.expected_sha256.empty() && request->prepared.artifact_sha256 != open.expected_sha256)
+                    if (request->error.empty() && !open.sha256.empty() && request->prepared.artifact_sha256 != open.sha256)
                         request->error = "模型在加载期间发生变化。";
+                    if (request->error.empty() && !stopped()) request->prepared.prepare_render_geometry(stopped);
                 } catch (const std::exception& exception) { request->error = exception.what(); }
+                return true;
+            }, [target, alive, task, request](Presentation::TaskResult<bool> result) {
+                if (alive.expired()) return;
+                auto& self = *target->m_impl;
+                if (!self.preparation_scope.matches(task) || self.preparation != request || result.canceled) return;
+                if (result.error || !result.value) request->error = "模型预览准备未完成，请重新加载。";
                 request->done.store(true);
-            });
+                self.refresh.request(Presentation::Dirty::Content);
+            }, Presentation::TaskPriority::Visible);
+            if (!accepted) throw std::runtime_error("模型预览任务暂时繁忙，请重新加载。");
         } catch (const std::exception& exception) {
             error = exception.what();
             if (state.binding().source == CreationSource::Advanced)
@@ -237,7 +253,6 @@ struct InlineModelGenerationView::Impl {
     }
     void install() {
         if (!preparation || !preparation->done.load()) return;
-        if (worker.joinable()) worker.join(); // Only an already completed CPU worker is reaped.
         if (preparation->canceled || preparation->generation != state.generation()) { preparation.reset(); return; }
         if (!visible()) return; // Retain prepared CPU data until this source is shown.
         auto request = std::move(preparation);
@@ -284,8 +299,7 @@ struct InlineModelGenerationView::Impl {
         }
         if (shown && feedback->animate) feedback->Refresh(false);
         notify();
-        const bool needs_timer = (preparation && !preparation->done.load()) ||
-            (shown && (feedback->animate || state.phase() == InlinePreviewPhase::AwaitingFirstFrame));
+        const bool needs_timer = shown && (feedback->animate || state.phase() == InlinePreviewPhase::AwaitingFirstFrame);
         if (needs_timer && !timer.IsRunning()) timer.Start(42);
         else if (!needs_timer) timer.Stop();
     }
@@ -306,26 +320,30 @@ void InlineModelGenerationView::apply_snapshot(const GenerationBinding& binding,
     if (generation != m_impl->state.generation()) {
         m_impl->design_wait.clear();
         if (m_impl->preparation) m_impl->preparation->canceled = true;
+        m_impl->preparation_scope.cancel(); m_impl->preparation.reset();
         if (m_impl->preview) { m_impl->preview->observe_presentation_frame({}); m_impl->preview->clear(); }
         m_impl->error.clear();
     }
-    m_impl->render(); m_impl->tick();
+    m_impl->refresh.request(Presentation::Dirty::Content);
     if (ready_before != ready()) m_impl->changed();
 }
 void InlineModelGenerationView::set_presented(bool active) {
     if (m_impl->closing) return;
     if (active && !m_impl->presented && m_impl->preview) m_impl->preview->refresh();
     m_impl->presented = active; m_impl->tick();
+    if (active) m_impl->refresh.resume();
 }
 void InlineModelGenerationView::retry_preview() {
     if (m_impl->closing || !m_impl->state.artifact()) return;
     if (m_impl->preparation) m_impl->preparation->canceled = true;
+    m_impl->preparation_scope.cancel(); m_impl->preparation.reset();
     if (m_impl->preview) { m_impl->preview->observe_presentation_frame({}); m_impl->preview->clear(); }
     m_impl->state.retry(); m_impl->error.clear(); m_impl->render(); m_impl->changed(); m_impl->tick();
 }
 void InlineModelGenerationView::generation_started() { m_impl->state.generation_started(); }
 void InlineModelGenerationView::invalidate_context() {
     if (m_impl->preparation) m_impl->preparation->canceled = true;
+    m_impl->preparation_scope.cancel(); m_impl->preparation.reset();
     if (m_impl->preview) { m_impl->preview->observe_presentation_frame({}); m_impl->preview->clear(); }
     m_impl->state.invalidate(); m_impl->render(); m_impl->changed();
 }
@@ -372,7 +390,7 @@ void GenerationCompletionActions::paint() {
     dc.DrawBitmap(m_glow, m_workbench->GetPosition().x, 0, true);
 }
 void GenerationCompletionActions::set_enabled(bool regenerate, bool open_workbench) {
-    m_regenerate->Enable(regenerate); m_workbench->Enable(open_workbench);
-    m_regenerate->Refresh(false); m_workbench->Refresh(false);
+    if (m_regenerate->IsEnabled() != regenerate) { m_regenerate->Enable(regenerate); m_regenerate->Refresh(false); }
+    if (m_workbench->IsEnabled() != open_workbench) { m_workbench->Enable(open_workbench); m_workbench->Refresh(false); }
 }
 } // namespace Slic3r::GUI

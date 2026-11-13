@@ -25,7 +25,7 @@ struct InlineModelArtifact {
     bool operator==(const InlineModelArtifact& other) const {
         return request.entry.job_id == other.request.entry.job_id &&
             request.entry.model_path.lexically_normal() == other.request.entry.model_path.lexically_normal() &&
-            request.expected_sha256 == other.request.expected_sha256 &&
+            request.sha256 == other.request.sha256 &&
             request.entry.palette == other.request.entry.palette &&
             request.entry.palette_roles == other.request.entry.palette_roles &&
             request.entry.use_printable_colors == other.request.entry.use_printable_colors &&
@@ -102,7 +102,7 @@ public:
         if (!visible || !ready() || !m_generated.count({m_binding.source, m_binding.context, m_task})) return false;
         const auto& request = m_artifact->request;
         return m_notified.emplace(m_binding.source, m_binding.context, m_task, request.entry.job_id,
-            request.entry.model_path.lexically_normal().generic_string(), request.expected_sha256).second;
+            request.entry.model_path.lexically_normal().generic_string(), request.sha256).second;
     }
     bool has_content() const {
         return m_artifact || inline_generation_active(m_state) ||

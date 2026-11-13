@@ -16,6 +16,7 @@ public:
         std::function<bool(const Snapshot&)> valid;
         std::function<bool(const Snapshot&)> restore;
         std::function<void(const boost::filesystem::path&)> remove_candidate;
+        std::function<void(const Snapshot&, std::function<void(bool)>)> restore_async;
     };
     struct Draft {
         std::shared_ptr<Snapshot> reoptimization_before, portrait_before, portrait_preview;
@@ -72,7 +73,8 @@ public:
         if (!is_current(revision) || candidate.empty()) return false;
         preserve_publication(candidate, carrier);
         m_transactions.finish(true);
-        if (m_source && (history.undo || history.restore_undo) && (history.redo || history.restore_redo)) {
+        if (m_source && (history.undo || history.restore_undo || history.restore_undo_async) &&
+            (history.redo || history.restore_redo || history.restore_redo_async)) {
             m_transactions.truncate_to(m_undo_base);
             m_transactions.record(std::move(history));
         }
@@ -93,7 +95,16 @@ public:
     }
     void record(BeautyWorkbenchTransactionController::OperationKind kind,
                 std::shared_ptr<Snapshot> before, std::shared_ptr<Snapshot> after, Ports ports) {
-        if (!before || !after || !ports.valid || !ports.restore || m_transactions.processing()) return;
+        if (!before || !after || m_transactions.processing()) return;
+        if (ports.restore_async) {
+            track_candidate(after->candidate);
+            BeautyWorkbenchTransactionController::Entry entry;
+            entry.kind = kind; entry.label = "Beauty candidate";
+            entry.restore_undo_async = [before, restore = ports.restore_async](auto complete) { restore(*before, std::move(complete)); };
+            entry.restore_redo_async = [after, restore = ports.restore_async](auto complete) { restore(*after, std::move(complete)); };
+            m_transactions.record(std::move(entry)); return;
+        }
+        if (!ports.valid || !ports.restore) return;
         track_candidate(after->candidate);
         m_transactions.record({kind, "Beauty candidate", {}, {},
             [before, valid = ports.valid] { return valid(*before); },
@@ -111,6 +122,27 @@ public:
         }
         m_candidate_files.resize(start);
     }
+    void discard_async(const boost::filesystem::path& accepted, Ports ports, std::function<void(bool)> complete) {
+        if (!ports.restore_async) { const bool ok = discard(accepted, ports); if (complete) complete(ok); return; }
+        if (!m_source || !m_transactions.begin_restore()) { if (complete) complete(false); return; }
+        const auto source = m_source;
+        const auto revision = m_revision;
+        const auto lifetime = std::weak_ptr<const char>(m_lifetime);
+        const auto delivered = std::make_shared<bool>(false);
+        auto finished = [this, lifetime, delivered, source, revision, accepted, ports,
+                         complete = std::move(complete)](bool ok) {
+            if (lifetime.expired() || *delivered || revision != m_revision || source != m_source) return;
+            *delivered = true;
+            m_transactions.finish(ok);
+            if (ok) {
+                m_transactions.truncate_to(m_undo_base);
+                clear_candidates(m_file_base, accepted, ports); clear_draft();
+            }
+            if (complete) complete(ok);
+        };
+        try { ports.restore_async(*source, finished); }
+        catch (...) { finished(false); }
+    }
 private:
     BeautyWorkbenchTransactionController m_transactions;
     Draft m_draft;
@@ -118,5 +150,6 @@ private:
     std::vector<boost::filesystem::path> m_candidate_files, m_accepted_files;
     size_t m_undo_base {0}, m_file_base {0};
     Revision m_revision {0};
+    std::shared_ptr<const char> m_lifetime {std::make_shared<const char>(0)};
 };
 }

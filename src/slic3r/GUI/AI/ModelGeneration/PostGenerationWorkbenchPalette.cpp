@@ -1,5 +1,6 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
 #include "ModelPreview3D.hpp"
+#include "BeautyRestorePreparation.hpp"
 #include "BeautyWorkbenchControls.hpp"
 #include "BeautyWorkbenchTransactionController.hpp"
 #include "ModelGenerationPresentation.hpp"
@@ -95,35 +96,8 @@ BeautyColorGateRequest capture_beauty_color_gate_request(
     for (const auto& child : surface.subfaces)
         request.subfaces.push_back({{child.color, child.preferred_slot}, child.face_id, child.depth, child.path});
 
-    if (preferred && preferred->valid() && preferred->source_sha256 == request.source_sha256 &&
-        preferred->geometry_id == request.geometry_id &&
-        preferred->material_fingerprint == request.material_fingerprint &&
-        preferred->process_fingerprint == request.process_fingerprint &&
-        preferred->face_slots.size() == request.faces.size()) {
-        for (size_t face = 0; face < request.faces.size(); ++face)
-            request.faces[face].preferred_slot = preferred->face_slots[face];
-        std::map<std::tuple<size_t, uint8_t, uint8_t>, size_t> leaves;
-        for (const auto& child : preferred->subface_slots)
-            leaves[{child.face_id, child.depth, child.path}] = child.slot;
-        for (auto& child : request.subfaces) {
-            const auto found = leaves.find({child.face_id, child.depth, child.path});
-            if (found != leaves.end()) child.preferred_slot = found->second;
-        }
-    }
+    apply_preferred_beauty_filament_match(request, preferred);
     return request;
-}
-
-ModelPreview3D::PrinterFilamentMatchResult capture_applied_filament_match(
-    const PresetBundle& bundle, const ModelPreview3D& preview,
-    const std::string& source_sha256)
-{
-    ModelPreview3D::PrinterFilamentMatchResult result;
-    const auto matched = match_beauty_workbench_colors(
-        capture_beauty_color_gate_request(bundle, preview, source_sha256));
-    result.matched = matched.matched;
-    result.missing_colors = matched.missing_colors;
-    result.error = matched.error;
-    return result;
 }
 
 std::string workbench_filament_layout(const WorkbenchPrinterFilaments& state, const PresetBundle* bundle)
@@ -143,32 +117,69 @@ std::string workbench_filament_layout(const WorkbenchPrinterFilaments& state, co
 
 }
 
-std::optional<AI::ModelMatchedColors> ModelPreview3D::printer_filament_match(
-    const PresetBundle& bundle, const std::string& source_sha256) const
+bool ModelGenerationPanel::request_workbench_filament_match(std::function<void(BeautyColorGateResult)> complete)
 {
-    return capture_applied_filament_match(bundle, *this, source_sha256).matched;
-}
-
-ModelPreview3D::PrinterFilamentMatchResult ModelPreview3D::printer_filament_match_result(
-    const PresetBundle& bundle, const std::string& source_sha256) const
-{
-    return capture_applied_filament_match(bundle, *this, source_sha256);
+    if (m_shutdown || m_beauty_restore_running || !m_model_preview || !wxGetApp().preset_bundle) return false;
+    auto request = capture_beauty_color_gate_request(*wxGetApp().preset_bundle, *m_model_preview,
+        m_model_preview->model_sha256());
+    const auto task = m_beauty_restore_scope.begin(m_displayed_model_path.string(), Presentation::TaskLifetime::Transaction);
+    const auto path = m_model_preview->model_path();
+    const auto sequence = m_sequence;
+    const auto session = m_model_generation_session;
+    const auto revision = m_model_preview->leaf_edit_revision();
+    const auto geometry = m_model_preview->geometry_id();
+    const auto signature = request.configuration_signature;
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    m_beauty_restore_running = true;
+    refresh_controls();
+    struct Match { BeautyColorGateResult result; std::shared_ptr<VerifiedModelFiles> files; };
+    const bool accepted = Presentation::background_tasks().submit(task,
+        [request = std::move(request), path](const Presentation::TaskContext& context) {
+            Match match; match.files = std::make_shared<VerifiedModelFiles>();
+            if (!match.files->verify(path, request.source_sha256)) {
+                match.result.error = "模型内容已变化，请重新打开模型后重试。"; return match;
+            }
+            match.result = match_beauty_workbench_colors(request, context.cancellation.get());
+            return match;
+        }, [weak, task, path, sequence, session, revision, geometry, signature, complete](Presentation::TaskResult<Match> outcome) mutable {
+            if (!weak || !weak->m_beauty_restore_scope.owns(task)) return;
+            weak->m_beauty_restore_running = false;
+            if (weak->m_shutdown || weak->m_sequence != sequence || weak->m_model_generation_session != session ||
+                !weak->m_model_preview || weak->m_model_preview->model_path() != path ||
+                weak->m_model_preview->geometry_id() != geometry || weak->m_model_preview->leaf_edit_revision() != revision) return;
+            Match match = outcome.value ? std::move(*outcome.value) : Match{};
+            if (outcome.canceled || outcome.error || !wxGetApp().preset_bundle ||
+                PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature != signature ||
+                !match.files || !match.files->current()) {
+                match.result.matched.reset();
+                match.result.error = "模型或工程状态已变化，或正在执行其他处理任务。请完成当前操作后重新导入。";
+            }
+            // Publish the released processing state before Shell can admit the
+            // continuation. Its cached view otherwise still says cannot import.
+            weak->refresh_controls();
+            if (!weak || weak->m_shutdown || weak->m_sequence != sequence ||
+                weak->m_model_generation_session != session || !weak->m_model_preview ||
+                weak->m_model_preview->model_path() != path ||
+                weak->m_model_preview->geometry_id() != geometry || weak->m_model_preview->leaf_edit_revision() != revision) return;
+            complete(std::move(match.result));
+        }, Presentation::TaskPriority::Visible);
+    if (!accepted) { m_beauty_restore_running = false; refresh_controls(); }
+    return accepted;
 }
 
 bool ModelGenerationPanel::request_beauty_color_gate(bool enter_after_success)
 {
-    if (m_shutdown || !m_model_preview || !m_workbench_model.ready ||
-        !ModelGenerationPresentation::is_nonempty_model(m_workbench_model.path)) return false;
+    if (m_shutdown || !m_model_preview || !m_model_preview_ready ||
+        !ModelGenerationPresentation::is_nonempty_model(m_displayed_model_path)) return false;
     if (enter_after_success) m_beauty_entry_pending = true;
 
     if (m_beauty_color_gate_cancel) m_beauty_color_gate_cancel->store(true);
-    if (m_beauty_color_gate_worker.joinable()) m_beauty_color_gate_worker.join();
-    m_beauty_color_gate_cancel = std::make_shared<std::atomic<bool>>(false);
-    const auto cancel = m_beauty_color_gate_cancel;
+    const auto task = m_beauty_color_gate_scope.begin("beauty-color-gate");
+    m_beauty_color_gate_cancel = task.cancellation;
     const std::uint64_t request_id = ++m_beauty_color_gate_request;
-    const std::uint64_t model_sequence = m_workbench_model.revision;
-    const auto source = m_workbench_model.path;
-    const auto source_sha256 = AI::model_artifact_sha256(source);
+    const std::uint64_t model_sequence = m_sequence;
+    const auto source = m_displayed_model_path;
+    const auto source_sha256 = m_model_preview->model_sha256();
     auto* bundle = wxGetApp().preset_bundle;
     if (!bundle) {
         BeautyColorGateResult unavailable;
@@ -177,39 +188,60 @@ bool ModelGenerationPanel::request_beauty_color_gate(bool enter_after_success)
         return m_workbench_editing;
     }
     auto preferred = m_beauty_matched_colors;
-    if (!preferred)
-        preferred = saved_beauty_filament_match(
-            source, ModelGenerationPresentation::generated_models_root());
     auto request = capture_beauty_color_gate_request(*bundle, *m_model_preview, source_sha256, preferred);
     const auto identity = beauty_color_gate_identity(request);
     const std::string key = identity.cache_key();
     m_beauty_color_gate_expected_key = key;
-    if (m_beauty_color_gate_cache && key == m_beauty_color_gate_cache_key) {
-        finish_beauty_color_gate(request_id, model_sequence, source, identity, *m_beauty_color_gate_cache);
-        return m_workbench_editing;
-    }
 
     m_beauty_color_gate_state = BeautyColorGateState::Checking;
     m_beauty_color_gate_message = "正在核对模型每个区域与当前耗材……";
     refresh_model_finishing();
     refresh_post_generation_workbench();
     wxWeakRef<ModelGenerationPanel> weak(this);
-    m_beauty_color_gate_worker = std::thread([weak, request_id, model_sequence, source, identity,
-                                               request = std::move(request), cancel] () mutable {
-        auto result = match_beauty_workbench_colors(request, cancel.get());
-        wxGetApp().CallAfter([weak, request_id, model_sequence, source, identity,
-                              result = std::move(result)] () mutable {
-            if (!weak) return;
-            auto* self = weak.get();
-            // A previous worker may post after a replacement request has
-            // already installed its own thread. Never join that newer worker.
-            if (request_id != self->m_beauty_color_gate_request ||
-                model_sequence != self->m_workbench_model.revision || source != self->m_workbench_model.path)
+    const auto cache = m_beauty_color_gate_cache;
+    const auto cache_key = m_beauty_color_gate_cache_key;
+    const auto root = ModelGenerationPresentation::generated_models_root();
+    struct Evidence {
+        BeautyColorGateResult result;
+        BeautyColorGateIdentity identity;
+        std::shared_ptr<VerifiedModelFiles> files;
+    };
+    const bool accepted = Presentation::background_tasks().submit(task,
+        [request = std::move(request), source, root, preferred, cache, cache_key](const Presentation::TaskContext& context) mutable {
+            Evidence evidence;
+            evidence.files = std::make_shared<VerifiedModelFiles>();
+            if (!evidence.files->verify(source, request.source_sha256)) {
+                evidence.result.error = "模型内容已变化，请重新打开模型后重试。";
+            } else {
+                if (!preferred) {
+                    const auto saved = saved_beauty_filament_match(source, root);
+                    apply_preferred_beauty_filament_match(request, saved);
+                }
+                evidence.identity = beauty_color_gate_identity(request);
+                evidence.result = cache && cache_key == evidence.identity.cache_key() ? *cache :
+                    match_beauty_workbench_colors(request, context.cancellation.get());
+            }
+            return evidence;
+        }, [weak, task, request_id, model_sequence, source, identity](Presentation::TaskResult<Evidence> outcome) mutable {
+            if (!weak || weak->m_shutdown || !weak->m_beauty_color_gate_scope.matches(task) || outcome.canceled) return;
+            if (!outcome.value || outcome.error) {
+                BeautyColorGateResult result; result.error = "模型配色检查未完成，请重试。";
+                weak->finish_beauty_color_gate(request_id, model_sequence, source, identity, std::move(result));
                 return;
-            if (self->m_beauty_color_gate_worker.joinable()) self->m_beauty_color_gate_worker.join();
-            self->finish_beauty_color_gate(request_id, model_sequence, source, identity, std::move(result));
-        });
-    });
+            }
+            auto& evidence = *outcome.value;
+            if (evidence.files && !evidence.files->current()) {
+                evidence.result.matched.reset();
+                evidence.result.error = "模型内容已变化，请重新打开模型后重试。";
+            }
+            if (evidence.identity.source_sha256.empty()) evidence.identity = identity;
+            weak->m_beauty_color_gate_expected_key = evidence.identity.cache_key();
+            weak->finish_beauty_color_gate(request_id, model_sequence, source, evidence.identity, std::move(evidence.result));
+        }, Presentation::TaskPriority::Visible);
+    if (!accepted) {
+        BeautyColorGateResult result; result.error = "模型配色检查未完成，请重试。";
+        finish_beauty_color_gate(request_id, model_sequence, source, identity, std::move(result));
+    }
     return false;
 }
 
@@ -218,7 +250,7 @@ void ModelGenerationPanel::finish_beauty_color_gate(
     boost::filesystem::path source, BeautyColorGateIdentity identity, BeautyColorGateResult result)
 {
     if (m_shutdown || result.canceled || request_id != m_beauty_color_gate_request ||
-        model_sequence != m_workbench_model.revision || source != m_workbench_model.path) return;
+        model_sequence != m_sequence || source != m_displayed_model_path) return;
     auto* bundle = wxGetApp().preset_bundle;
     if (!m_model_preview || !ModelGenerationPresentation::is_nonempty_model(source)) return;
 
@@ -233,7 +265,7 @@ void ModelGenerationPanel::finish_beauty_color_gate(
             (!identity.process_fingerprint.empty() &&
              identity.process_fingerprint != native.process_fingerprint);
         const bool stale = identity.cache_key() != m_beauty_color_gate_expected_key ||
-            identity.source_sha256 != AI::model_artifact_sha256(source) ||
+            identity.source_sha256 != m_model_preview->model_sha256() ||
             identity.geometry_id != m_model_preview->geometry_id() ||
             identity.configuration_signature != configuration.signature ||
             native_changed;
@@ -268,7 +300,7 @@ void ModelGenerationPanel::finish_beauty_color_gate(
             // appearance input. Region restore, discard and history therefore
             // all share the same colors, native slots and protected selection.
             m_beauty_compare_draft.reset();
-            m_beauty_session.start_draft(
+            m_beauty_session->start_draft(
                 std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate()));
             m_workbench_editing = true;
             m_finishing_selection_open = false;
@@ -327,12 +359,15 @@ void ModelGenerationPanel::show_beauty_color_gate_guide(const BeautyColorGateRes
     const int answer = show_redesign_confirmation(this, message, _L("先完成打印配色"), options);
     if (answer == adapt_model) {
         apply_workbench_printer_filaments();
-        if (!m_apply_filaments_saving) m_beauty_entry_pending = false;
+        if (!m_apply_filaments_saving && !m_beauty_restore_running) m_beauty_entry_pending = false;
     } else if (answer == configure_filaments) {
         if (m_printer_filament_trial_active) exit_printer_filament_trial();
-        toggle_printer_filament_trial();
-        if (m_printer_filament_trial_active) request_beauty_color_gate(true);
-        else m_beauty_entry_pending = false;
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        apply_model_palette_to_filaments([weak](bool applied) {
+            if (!weak || weak->m_shutdown) return;
+            if (applied && weak->m_printer_filament_trial_active) weak->request_beauty_color_gate(true);
+            else weak->m_beauty_entry_pending = false;
+        });
     } else {
         m_beauty_entry_pending = false;
         m_beauty_color_gate_state = BeautyColorGateState::Blocked;
@@ -346,7 +381,7 @@ void ModelGenerationPanel::cancel_beauty_color_gate()
     m_beauty_entry_pending = false;
     ++m_beauty_color_gate_request;
     if (m_beauty_color_gate_cancel) m_beauty_color_gate_cancel->store(true);
-    if (m_beauty_color_gate_worker.joinable()) m_beauty_color_gate_worker.join();
+    m_beauty_color_gate_scope.cancel();
     m_beauty_color_gate_cancel.reset();
     m_beauty_color_gate_expected_key.clear();
     if (m_beauty_color_gate_state == BeautyColorGateState::Checking)
@@ -359,7 +394,43 @@ void ModelGenerationPanel::toggle_printer_filament_trial()
     else apply_model_palette_to_filaments();
 }
 
-bool ModelGenerationPanel::apply_model_palette_to_filaments()
+void ModelGenerationPanel::apply_model_palette_to_filaments(std::function<void(bool)> complete)
+{
+    if (m_shutdown || m_beauty_restore_running || m_apply_filaments_saving || !m_model_preview ||
+        !wxGetApp().plater() || !wxGetApp().preset_bundle) { if (complete) complete(false); return; }
+    if (!workbench_snapshot().can_edit_project_colors || !m_finishing_candidate.empty()) {
+        m_workbench_operation_notice = m_workbench_printer_filament_notice =
+            "模型处理中或存在未接受候选，请先完成当前操作。";
+        m_workbench_printer_filament_notice_error = true;
+        refresh_controls(); publish_workbench_state();
+        if (complete) complete(false);
+        return;
+    }
+    const auto entry = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
+    const auto signature = PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature;
+    const auto revision = m_model_preview->leaf_edit_revision();
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    prepare_beauty_restoration(*entry, [weak, entry, signature, revision, complete = std::move(complete)](auto prepared) {
+        if (!weak || weak->m_shutdown) return;
+        const bool current = wxGetApp().preset_bundle && weak->m_model_preview &&
+            weak->m_model_preview->leaf_edit_revision() == revision &&
+            PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature == signature;
+        const bool ready = current && prepared && prepared->error.empty() &&
+            prepared->model.installation_files && prepared->model.installation_files->current();
+        if (!ready) {
+            weak->m_workbench_operation_notice = weak->m_workbench_printer_filament_notice =
+                prepared && !prepared->error.empty() ? prepared->error :
+                    "模型或工程状态已变化，或正在执行其他处理任务。请完成当前操作后重新导入。";
+            weak->m_workbench_printer_filament_notice_error = true;
+            weak->refresh_controls(); weak->publish_workbench_state();
+        }
+        const bool success = ready && weak->apply_model_palette_to_filaments_prepared(*entry, prepared);
+        if (complete) complete(success);
+    });
+}
+
+bool ModelGenerationPanel::apply_model_palette_to_filaments_prepared(const BeautyCandidateSnapshot& entry,
+    const std::shared_ptr<BeautyRestorePreparation>& prepared)
 {
     if (m_shutdown || m_apply_filaments_saving || !m_model_preview || !wxGetApp().plater()) return false;
     auto report = [this](std::string message, bool error) {
@@ -374,7 +445,6 @@ bool ModelGenerationPanel::apply_model_palette_to_filaments()
         report("模型处理中或存在未接受候选，请先完成当前操作。", true);
         return false;
     }
-    const auto entry = capture_beauty_candidate();
     const auto card = m_model_preview->model_color_pack_for_filament_import();
     if (!card) {
         report("当前没有可导入的模型配色，请先生成 AI配色或完成试色。", true);
@@ -450,7 +520,7 @@ bool ModelGenerationPanel::apply_model_palette_to_filaments()
     }
 
     auto rollback_entry = [&] {
-        const bool restored = restore_beauty_candidate(entry);
+        const bool restored = restore_beauty_candidate_prepared(entry, prepared);
         if (!restored)
             BOOST_LOG_TRIVIAL(error) << "AI model-color import failed to restore its entry preview state";
         return restored;
@@ -550,8 +620,38 @@ void ModelGenerationPanel::invalidate_printer_filament_trial_for_model_change()
 
 void ModelGenerationPanel::apply_workbench_printer_filaments(bool physical_only)
 {
+    if (m_shutdown || m_beauty_restore_running || m_apply_filaments_saving || !m_model_preview ||
+        !wxGetApp().preset_bundle || !workbench_snapshot().can_apply_printer_filaments) return;
+    auto before = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
+    before->project_config = std::make_shared<DynamicPrintConfig>(wxGetApp().preset_bundle->project_config);
+    before->project_presets = wxGetApp().preset_bundle->filament_presets;
+    const auto signature = PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature;
+    const auto revision = m_model_preview->leaf_edit_revision();
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    prepare_beauty_restoration(*before, [weak, physical_only, before, signature, revision](auto prepared) {
+        if (!weak || weak->m_shutdown) return;
+        if (!prepared || !prepared->error.empty() ||
+            !weak->m_model_preview || weak->m_model_preview->leaf_edit_revision() != revision ||
+            !wxGetApp().preset_bundle ||
+            PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature != signature) {
+            weak->m_beauty_entry_pending = false;
+            weak->m_workbench_operation_notice = weak->m_workbench_printer_filament_notice =
+                prepared && !prepared->error.empty() ? prepared->error :
+                    "模型或工程状态已变化，或正在执行其他处理任务。请完成当前操作后重新导入。";
+            weak->m_workbench_printer_filament_notice_error = true;
+            weak->refresh_controls(); weak->publish_workbench_state();
+            return;
+        }
+        weak->apply_workbench_printer_filaments_prepared(physical_only, before, prepared);
+    });
+}
+
+void ModelGenerationPanel::apply_workbench_printer_filaments_prepared(bool physical_only,
+    const std::shared_ptr<BeautyCandidateSnapshot>& before, const std::shared_ptr<BeautyRestorePreparation>& prepared)
+{
     if (m_shutdown || m_apply_filaments_saving || !m_model_preview || !workbench_snapshot().can_apply_printer_filaments) return;
     auto report = [this](std::string message, bool error) {
+        m_beauty_entry_pending = false;
         m_workbench_operation_notice = message;
         m_workbench_printer_filament_notice = std::move(message);
         m_workbench_printer_filament_notice_error = error;
@@ -570,7 +670,7 @@ void ModelGenerationPanel::apply_workbench_printer_filaments(bool physical_only)
         return;
     }
     auto trial = m_model_preview->color_trial_state();
-    if (m_applied_filaments_saved_model == m_workbench_model.path &&
+    if (m_applied_filaments_saved_model == m_displayed_model_path &&
         m_applied_filaments_saved_signature == state.signature && trial.source == 1 &&
         trial.enabled && m_model_preview->project_matching_valid() &&
         !m_beauty_manual_color_dirty && (!m_beauty_controls || !m_beauty_controls->has_changes())) {
@@ -580,18 +680,18 @@ void ModelGenerationPanel::apply_workbench_printer_filaments(bool physical_only)
     const bool trial_was_active = m_printer_filament_trial_active;
     const std::string trial_geometry = m_printer_filament_trial_geometry;
     const std::string trial_signature = m_printer_filament_trial_signature;
-    auto before = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
-    before->project_config = std::make_shared<DynamicPrintConfig>(bundle->project_config);
-    before->project_presets = bundle->filament_presets;
-    auto rollback_model = [&] {
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    auto rollback_model = [weak, before, prepared, trial_was_active, trial_geometry, trial_signature] {
+        if (!weak || weak->m_shutdown) return false;
+        auto* self = weak.get();
         auto rollback = *before;
         rollback.project_config.reset();
         rollback.project_presets.clear();
-        const bool restored = restore_beauty_candidate(rollback);
+        const bool restored = self->restore_beauty_candidate_prepared(rollback, prepared);
         if (restored && trial_was_active) {
-            m_printer_filament_trial_active = true;
-            m_printer_filament_trial_geometry = trial_geometry;
-            m_printer_filament_trial_signature = trial_signature;
+            self->m_printer_filament_trial_active = true;
+            self->m_printer_filament_trial_geometry = trial_geometry;
+            self->m_printer_filament_trial_signature = trial_signature;
         }
         return restored;
     };
@@ -599,7 +699,6 @@ void ModelGenerationPanel::apply_workbench_printer_filaments(bool physical_only)
     // palette. Never stage color-card targets here: doing so changes the
     // printer slot count and invents recipes from the card.
     auto staged = std::make_shared<PresetBundle>(*bundle);
-    std::vector<PrinterFilamentSlotRemap::Change> changes;
     if (trial.source == 1 && !m_model_preview->restore_printer_filament_input_source()) {
         const bool restored = rollback_model();
         report(restored ? "无法恢复应用前的模型颜色，请重新加载模型后再试" :
@@ -625,33 +724,75 @@ void ModelGenerationPanel::apply_workbench_printer_filaments(bool physical_only)
         return;
     }
     if (m_beauty_controls) m_beauty_controls->synchronize_preview_options();
-    auto captured_match = capture_applied_filament_match(
-        *staged, *m_model_preview, AI::model_artifact_sha256(m_workbench_model.path));
-    m_apply_filaments_match = std::move(captured_match.matched);
-    if (!m_apply_filaments_match) {
-        m_model_preview->set_project_configuration_override({});
-        const bool restored = rollback_model();
-        report(!restored ? "耗材应用未生成完整绑定，且点击前模型状态恢复失败；请重新加载模型" :
-            captured_match.error.empty()
-            ? "耗材应用没有生成完整面级匹配，原模型和工程配置保持不变"
-            : captured_match.error + " 原模型和工程配置保持不变", true);
-        return;
-    }
-    m_apply_filaments_before = before;
-    m_apply_filaments_staged = staged;
-    m_apply_filaments_changes = std::move(changes);
-    m_apply_filaments_source_identity = state.signature;
-    m_apply_filaments_before_trial_active = trial_was_active;
-    m_apply_filaments_saving = true;
-    m_beauty_session.start_draft(before);
-    m_beauty_manual_color_dirty = true;
-    if (m_beauty_controls) m_beauty_controls->set_dirty(true);
-    m_workbench_operation_notice = "正在应用并自动保存……";
-    m_workbench_printer_filament_notice = m_workbench_operation_notice;
-    m_workbench_printer_filament_notice_error = false;
-    if (!request_save_and_return()) finish_printer_filament_application(false);
+    auto request = capture_beauty_color_gate_request(*staged, *m_model_preview, m_model_preview->model_sha256());
+    const auto task = m_beauty_restore_scope.begin(m_displayed_model_path.string(), Presentation::TaskLifetime::Transaction);
+    const auto sequence = m_sequence;
+    const auto session = m_model_generation_session;
+    const auto path = m_displayed_model_path;
+    const auto geometry = m_model_preview->geometry_id();
+    const auto edit_revision = m_model_preview->leaf_edit_revision();
+    const auto signature = state.signature;
+    m_beauty_restore_running = true;
     refresh_controls();
-    publish_workbench_state();
+    const bool accepted = Presentation::background_tasks().submit(task,
+        [request = std::move(request), path](const Presentation::TaskContext& context) {
+            BeautyColorGateResult result;
+            VerifiedModelFiles files;
+            if (!files.verify(path, request.source_sha256)) {
+                result.error = "模型内容已变化，请重新打开模型后重试。"; return result;
+            }
+            result = match_beauty_workbench_colors(request, context.cancellation.get());
+            if (!files.current()) { result.matched.reset(); result.error = "模型内容已变化，请重新打开模型后重试。"; }
+            return result;
+        }, [weak, task, sequence, session, path, geometry, edit_revision, signature,
+            before, staged, trial_was_active, rollback_model](Presentation::TaskResult<BeautyColorGateResult> outcome) {
+            if (!weak || !weak->m_beauty_restore_scope.owns(task)) return;
+            weak->m_beauty_restore_running = false;
+            if (weak->m_shutdown || weak->m_sequence != sequence || weak->m_model_generation_session != session ||
+                weak->m_displayed_model_path != path || !weak->m_model_preview ||
+                weak->m_model_preview->geometry_id() != geometry || weak->m_model_preview->leaf_edit_revision() != edit_revision) return;
+            auto* self = weak.get();
+            auto captured_match = outcome.value ? std::move(*outcome.value) : BeautyColorGateResult{};
+            const bool current = wxGetApp().preset_bundle &&
+                PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature == signature;
+            if (!current || outcome.canceled || outcome.error) captured_match.matched.reset();
+            self->m_apply_filaments_match = std::move(captured_match.matched);
+            if (!self->m_apply_filaments_match) {
+                self->m_beauty_entry_pending = false;
+                self->m_model_preview->set_project_configuration_override({});
+                const bool restored = rollback_model();
+                const auto message = !restored
+                    ? "耗材应用未生成完整绑定，且点击前模型状态恢复失败；请重新加载模型"
+                    : captured_match.error.empty()
+                    ? std::string("耗材应用没有生成完整面级匹配，原模型和工程配置保持不变")
+                    : captured_match.error + " 原模型和工程配置保持不变";
+                self->m_workbench_operation_notice = self->m_workbench_printer_filament_notice = message;
+                self->m_workbench_printer_filament_notice_error = true;
+                self->refresh_controls(); self->publish_workbench_state(); return;
+            }
+            self->m_apply_filaments_before = before;
+            self->m_apply_filaments_staged = staged;
+            self->m_apply_filaments_changes.clear();
+            self->m_apply_filaments_source_identity = signature;
+            self->m_apply_filaments_before_trial_active = trial_was_active;
+            self->m_apply_filaments_saving = true;
+            self->m_beauty_session->start_draft(before);
+            self->m_beauty_manual_color_dirty = true;
+            if (self->m_beauty_controls) self->m_beauty_controls->set_dirty(true);
+            self->m_workbench_operation_notice = "正在应用并自动保存……";
+            self->m_workbench_printer_filament_notice = self->m_workbench_operation_notice;
+            self->m_workbench_printer_filament_notice_error = false;
+            if (!self->request_save_and_return()) self->finish_printer_filament_application(false);
+            self->refresh_controls();
+            self->publish_workbench_state();
+        }, Presentation::TaskPriority::Visible);
+    if (!accepted) {
+        m_beauty_restore_running = false;
+        m_model_preview->set_project_configuration_override({});
+        rollback_model();
+        report("耗材应用没有生成完整面级匹配，原模型和工程配置保持不变", true);
+    }
+
 }
 
 bool ModelGenerationPanel::commit_printer_filament_application(std::string& error)
@@ -670,30 +811,39 @@ void ModelGenerationPanel::finish_printer_filament_application(bool success)
 {
     if (!m_apply_filaments_saving) return;
     const bool resume_beauty_entry = success && m_beauty_entry_pending;
-    m_apply_filaments_saving = false;
     m_save_and_return = false;
     m_model_preview->set_project_configuration_override({});
     if (!success && m_apply_filaments_before) {
-        // The live project was never modified before final publication. Restore
-        // the model draft, without overwriting an external configuration change.
-        // The retained session baseline is the same snapshot. Retire its
-        // uncommitted native payload too, so retrying Discard cannot restore
-        // an external configuration change after this restore failed.
-        auto& before = *m_apply_filaments_before;
-        before.project_config.reset(); before.project_presets.clear();
-        auto ports = beauty_session_ports();
-        ports.restore = [this, &before](const BeautyCandidateSnapshot&) { return restore_beauty_candidate(before); };
-        const bool restored = m_beauty_session.discard(m_finishing_accepted_path, ports);
-        if (restored && m_apply_filaments_before_trial_active) {
-            m_printer_filament_trial_active = true;
-            m_printer_filament_trial_geometry = before.geometry_id;
-            m_printer_filament_trial_signature = m_apply_filaments_source_identity;
-        }
-        m_workbench_operation_notice = (restored
-            ? "应用未保存，原模型和工程配置保留。 "
-            : "应用未保存，草稿恢复失败；候选及撤销记录保留，请重新加载模型后再试。 ") + m_workbench_operation_notice;
-        m_workbench_printer_filament_notice = m_workbench_operation_notice;
-        m_workbench_printer_filament_notice_error = true;
+        if (m_beauty_restore_running) return;
+        // The model baseline must not restore an external native config edit.
+        const auto before = m_apply_filaments_before;
+        before->project_config.reset(); before->project_presets.clear();
+        const auto signature = m_apply_filaments_source_identity;
+        const bool trial_active = m_apply_filaments_before_trial_active;
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        m_beauty_session->discard_async(m_finishing_accepted_path, beauty_session_ports(),
+            [weak, before, signature, trial_active](bool restored) {
+                if (!weak || weak->m_shutdown || weak->m_apply_filaments_before != before) return;
+                auto* self = weak.get();
+                if (restored && trial_active) {
+                    self->m_printer_filament_trial_active = true;
+                    self->m_printer_filament_trial_geometry = before->geometry_id;
+                    self->m_printer_filament_trial_signature = signature;
+                }
+                self->m_workbench_operation_notice = (restored
+                    ? "应用未保存，原模型和工程配置保留。 "
+                    : "应用未保存，草稿恢复失败；候选及撤销记录保留，请重新加载模型后再试。 ") + self->m_workbench_operation_notice;
+                self->m_workbench_printer_filament_notice = self->m_workbench_operation_notice;
+                self->m_workbench_printer_filament_notice_error = true;
+                self->m_apply_filaments_saving = false;
+                self->m_apply_filaments_before.reset(); self->m_apply_filaments_staged.reset();
+                self->m_apply_filaments_changes.clear(); self->m_apply_filaments_source_identity.clear();
+                self->m_apply_filaments_match.reset(); self->m_apply_filaments_before_trial_active = false;
+                self->m_beauty_entry_pending = false;
+                self->synchronize_workbench_project_palette(false);
+                self->refresh_controls(); self->publish_workbench_state();
+            });
+        return;
     } else if (success) {
         // A printer-to-model application publishes a saved model version, not
         // a temporary filament trial. If it started while a trial was active,
@@ -702,7 +852,7 @@ void ModelGenerationPanel::finish_printer_filament_application(bool success)
         m_printer_filament_trial_active = false;
         m_printer_filament_trial_geometry.clear();
         m_printer_filament_trial_signature.clear();
-        m_applied_filaments_saved_model = m_workbench_model.path;
+        m_applied_filaments_saved_model = m_displayed_model_path;
         m_applied_filaments_saved_signature = PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature;
         m_workbench_operation_notice = "已应用并保存，可直接导入";
         m_workbench_printer_filament_notice = m_workbench_operation_notice;
@@ -710,6 +860,7 @@ void ModelGenerationPanel::finish_printer_filament_application(bool success)
         m_finishing_status->SetLabel(_L("已应用并保存，可直接导入。"));
         m_status->SetLabel(m_finishing_status->GetLabel());
     }
+    m_apply_filaments_saving = false;
     m_apply_filaments_before.reset(); m_apply_filaments_staged.reset();
     m_apply_filaments_changes.clear();
     m_apply_filaments_source_identity.clear();
@@ -732,7 +883,7 @@ void ModelGenerationPanel::synchronize_workbench_project_palette(bool activate_p
     const auto snapshot = workbench_snapshot();
     const auto& state = snapshot.printer_filaments;
     const bool changed = state.signature != m_workbench_filament_signature;
-    if (m_workbench_model.ready) m_model_preview->synchronize_project_colors(activate_preview);
+    if (m_model_preview_ready) m_model_preview->synchronize_project_colors(activate_preview);
     if (m_printer_filament_trial_active && m_model_preview) {
         const auto trial = m_model_preview->color_trial_state();
         if (trial.source != 1 || !m_model_preview->project_matching_valid()) {

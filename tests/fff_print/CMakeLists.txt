@@ -4,6 +4,7 @@ add_executable(${_TEST_NAME}_tests
 	../../src/slic3r/GUI/AI/Orca/OrcaParameterProposalAdapter.cpp
 	../../src/slic3r/GUI/AI/Orca/OrcaTrialSliceExecutor.cpp
 	../../src/slic3r/GUI/AI/Orca/SmartSliceApplier.cpp
+	../../src/slic3r/GUI/AI/Orca/OrcaModelPreparation.cpp
 	${_TEST_NAME}_tests.cpp
 	test_orca_slicing_preview.cpp
 	../../src/orca_mobile_slicing_sdk/project_support.cpp
@@ -13,6 +14,8 @@ add_executable(${_TEST_NAME}_tests
 	test_helpers.cpp
 	test_helpers.hpp
 	test_adaptive_pressure_advance.cpp
+	test_bridge.cpp
+	test_calib.cpp
 	test_cooling.cpp
 	test_extrusion_entity.cpp
 	test_extrusion_processor.cpp
@@ -31,6 +34,7 @@ add_executable(${_TEST_NAME}_tests
 	test_model.cpp
 	test_multifilament.cpp
 	test_multimaterial_segmentation.cpp
+	test_painted_modifier.cpp
 	test_perimeters.cpp
 	# Seam geometry and pipeline regressions share the existing Print fixtures.
 	test_precise_seam.cpp

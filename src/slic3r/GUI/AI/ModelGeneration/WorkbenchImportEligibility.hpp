@@ -1,6 +1,8 @@
 #pragma once
 
 #include "PostGenerationWorkbenchState.hpp"
+#include <optional>
+#include <utility>
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 
 namespace Slic3r::GUI {
@@ -27,6 +29,17 @@ inline bool workbench_import_request_allowed(const PostGenerationWorkbenchState&
         state.check.status == WorkbenchCheckStatus::Attention &&
         state.check.force_import_risk && request.topology_risk_confirmed &&
         !state.check.model_sha256.empty();
+}
+
+// An asynchronous preparation may have published a temporarily busy view.
+// Read the authoritative editor again at each import admission boundary.
+template<class ReadSnapshot>
+std::optional<PostGenerationWorkbenchState> current_workbench_import_source(
+    const AI::ModelImportRequest& request, ReadSnapshot&& read_snapshot)
+{
+    auto current = std::forward<ReadSnapshot>(read_snapshot)();
+    if (!workbench_import_request_allowed(current, request)) return {};
+    return current;
 }
 
 } // namespace Slic3r::GUI
