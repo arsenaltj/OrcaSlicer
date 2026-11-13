@@ -1,0 +1,27 @@
+{
+  "pr": 72,
+  "run": 43398939866,
+  "head": "6955e7c73e41f476af0bd04bb6c498e2edacce59",
+  "base": "362cfbed7499628fdb2f8318996954adeef89bf8",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "修复主线 CI 的 Windows 历史路径断言与构建作业依赖",
+  "path": "pr/72/6955e7c73e41f476af0bd04bb6c498e2edacce59/43398939866",
+  "created": "2026-11-13T09:13:55+00:00",
+  "files": {
+    "index.html": "01584aa7747bb9700442141ff3e5f0654f12fdb7ee3388142a7ac2930e7b1c98",
+    "details.html": "c56780727cc67d45dc2e3236bcc9fdfaf30dec245f5f68dd13ba83dad45782a4",
+    "report.json": "343b1ad36a3bc68b9a55f5d0190393086f3bd6888c6ed3421d3dfc4a40024269",
+    "summary.md": "3bf229ca7a62648ccc4fdf831a76713cf72eb8e939b457e86826f13530675df5",
+    "archify-receipts.json": "ffee45a82eaddcee4994cb4eb2fc9f6b324f079036740aaca580b658452ff986",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "2a6d001e0814f21c02603e7df231ed8f3d5ba6e7074b34f3ee0d6f43f0057320",
+    "l1-modules.json": "b96edb92b14c40a5cafed32a14f91e7783de2a1d9043e4aaa98e91f9cf904e53",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
