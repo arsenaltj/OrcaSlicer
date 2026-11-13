@@ -1,5 +1,15 @@
 [
   {
+    "pr": 71,
+    "run": 43381354713,
+    "head": "7e4fe9fc310f54287f32754f0c682ff12b96312c",
+    "base": "e5a0b3ae092f47193adeb3b5c7cef90dad7594bf",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "同步固定官方 Nightly，完善单一工作台、页面刷新与模型库稳定性",
+    "path": "pr/71/7e4fe9fc310f54287f32754f0c682ff12b96312c/43381354713",
+    "created": "2026-11-13T06:53:28+00:00"
+  },
+  {
     "pr": 69,
     "run": 43362626826,
     "head": "b7cf35cd02c2e33d0dd0e92f9f0e3bfe2d184f02",

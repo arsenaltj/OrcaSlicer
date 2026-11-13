@@ -1,0 +1,27 @@
+{
+  "pr": 71,
+  "run": 43381354713,
+  "head": "7e4fe9fc310f54287f32754f0c682ff12b96312c",
+  "base": "e5a0b3ae092f47193adeb3b5c7cef90dad7594bf",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "同步固定官方 Nightly，完善单一工作台、页面刷新与模型库稳定性",
+  "path": "pr/71/7e4fe9fc310f54287f32754f0c682ff12b96312c/43381354713",
+  "created": "2026-11-13T06:53:28+00:00",
+  "files": {
+    "index.html": "1e6aca5402868842eb8b079d81efbb955354165602b387d3274222c64b1c1cd0",
+    "details.html": "8da7240ad18b57cbdda86b23a7ece3795b06e8d721f8b100b62303442ebff988",
+    "report.json": "cb083dd47dfac40d59009d47c02dae683c640a508ccf5219ad7418f79081da15",
+    "summary.md": "d3eb50e30ba5bbe0d8a22928a29a6e839dd79600320c0d9282eae3740786f795",
+    "archify-receipts.json": "49ea96834441b496dcedcdb8c3af1973bbacb38a77432ed29ee246ce194322fb",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "1d508de6ee8fb2ded420e8dd7eaa0985fe91f8c3fa2465b589f0f48c1fb65710",
+    "l1-modules.json": "afbb8607f80ef047db1f9f5b81bececf1c2b27709079d20463cd4fcc21cc7c48",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
