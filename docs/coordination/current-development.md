@@ -1,4 +1,18 @@
-# 2026-11-13 当前：已验收版本提交与开放 PR
+# 2026-11-13 当前：PR #71 已合入，CI 补修
+
+主线：MAINLINE-BUGFIX-001／task/mainline-bugfix；用户已直接合入 PR #71，实际集成提交为 362cfbed7499628fdb2f8318996954adeef89bf8，本地已快进同步。
+
+本轮：承接“解决问题直接合并”授权收口两项 CI 失败。Windows runner 临时目录的 8.3 短路径导致历史恢复测试误判，改为比较规范化路径；Nightly 合并遗漏 build_script_changes，恢复官方差异查询作业并覆盖本地内部打包测试输入。11 项短路径实测先红后绿，actionlint 对构建及候选工作流通过，完整集成守卫无错误；产品业务代码和运行树未改。
+
+未结：补修提交对应远端 CI 尚待完成；Team integration candidate 远端处于 disabled_manually，本轮保留该设置，不将缺失检查写成通过。此前真实下载、GPU／动态闪屏、退出崩溃、性能／DPI、跨平台及旧矩阵保持待验。
+
+下一步：通过独立补修 PR 收口 CI，记录准确 base／head、实际合并 SHA 和集成检查结果。证据沿用 pr71-mainline-20261113，不重复合并已关闭的 PR #71。
+
+计划变更：用户自行完成 PR #71 合入，当前仅修复残留测试／工作流与交付记录；不编译、更新运行树、打包、部署、生成、打印或操作用户窗口。
+
+---
+
+# 2026-11-13 此前：已验收版本提交与开放 PR
 
 主线：MAINLINE-BUGFIX-001／task/mainline-bugfix；本次拉取远端最新 codex/team/integration 为 e5a0b3ae09，较原072f52d5e8新增6条历史，最终源码树相同。
 

@@ -102,6 +102,32 @@ concurrency:
 jobs:
   # Pull-request code always uses ephemeral GitHub-hosted runners. This general
   # build chain intentionally forwards no repository secrets.
+  build_script_changes:
+    name: Look for build script changes
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.changes.outputs.changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          lfs: 'false'
+          fetch-depth: 2
+          sparse-checkout: .github/workflows
+          persist-credentials: false
+      - name: Look for changed files
+        id: changes
+        run: |
+          if git diff --quiet HEAD^1 HEAD -- build_win.bat .github/workflows/build_all.yml \
+              scripts/check_exception_throw_info.ps1 scripts/prune_cached_presets.ps1 \
+              scripts/test_build_win.ps1 scripts/test_check_exception_throw_info.ps1 scripts/test_prune_cached_presets.ps1 \
+              scripts/package_internal_fast.ps1 scripts/package_source_identity.py \
+              scripts/test_package_source_identity.py release/build_internal.ps1; then
+            echo "No build script changes."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
   # build_win.bat ships a test suite. Run it before the Windows builds.
   check_build_script:
     name: Windows build script tests

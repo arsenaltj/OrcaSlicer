@@ -1,3 +1,12 @@
+# MAINLINE-BUGFIX-001：PR #71 合入与 CI 补修（2026-11-13）
+
+- 实际合入：用户在本轮排查期间直接合入 PR #71，GitHub 返回 362cfbed7499628fdb2f8318996954adeef89bf8，父提交为 e5a0b3ae09 和 7e4fe9fc31。本地 task/mainline-bugfix 已快进同步，源码树与原 PR head 相同；不重复执行 PR #71 合并。
+- CI 根因与范围：原 1344 项离线测试仅退役历史测试失败，runner 使用 RUNNER~1 临时目录，而恢复器按既有安全路径契约返回规范化路径。仅修正测试期望为 model.resolve()，保留资产与禁止重新执行断言。build_all.yml 在 Nightly 冲突整合时遗漏 build_script_changes 定义但保留 needs；恢复官方查询作业，并把本地内部打包脚本及源码身份测试加入差异输入，保留失败时执行测试、hosted runner 和无 secrets 转发的行为。不修改任何产品业务实现。
+- 验证：使用 Windows 真实 8.3 临时目录别名复现原失败，修复后 11 项智能生成测试通过；actionlint 1.7.12（官方包摘要核验）确认 build_all 与 team-integration-candidate 两份工作流无错误；完整集成守卫 errors=[]，本轮 diff 无空白错误。远端新的 AI 检查与主线检查分别记录，不把静态验证当作实际构建。
+- 远端配置与未验：Team integration candidate 当前 disabled_manually，分支规则 API 返回无规则／保护接口404；本轮不启用工作流、不变更仓库设置，不伪造候选或非作者审批。原真实账号下载、GPU／动态闪屏、12:41退出崩溃、性能／DPI、跨平台和几何差异继续保留。
+- 交付路径：沿当前分支提交必要 CI 补修，通过新的小范围 PR 记录其 base／head、检查和实际合并 SHA；此前用户的直接合入授权继续适用于问题收口，不直接 push 集成、不强推或改写历史。未重新编译、安装或启动软件，已验收的产品版本仍为 Honor Forge Studio 1.0.3。
+- 负责／证据：mainline-pr71-merge-20261113，单 writer；D:/TEST/artifacts/mainline-bugfix/evidence/pr71-mainline-20261113。整体任务保持集成验证与旧矩阵待验，不以 PR 已合入标记全部功能验证完成。
+
 # MAINLINE-BUGFIX-001：已验收版本提交与开放 PR（2026-11-13）
 
 - 授权／验收：用户明确回复“已验收”，要求当前版本本地提交，对比远端最新主线列出新增与修复，更新并提交开放PR。验收承接本次模型库空白续修，不静默扩展到真实下载、GPU、动态闪屏、退出崩溃或其他未验矩阵；高级页拖动原用户验收继续有效。本轮不再修改业务代码，不操作用户窗口，不生成、付费、打包、部署、打印或合入团队主线。
