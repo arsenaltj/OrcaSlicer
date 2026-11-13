@@ -66,6 +66,12 @@ set(ORCA_REDESIGN_WORKFLOW_SOURCES
     GUI/Redesign/HonorBrowserProfile.hpp
     GUI/Redesign/HonorAccountWebTheme.hpp
     GUI/Redesign/RedesignModelRoute.hpp
+    GUI/Redesign/InlineModelGenerationState.hpp
+    GUI/Redesign/InlineModelGenerationView.hpp
+    GUI/Redesign/InlineModelGenerationView.cpp
+    GUI/Redesign/GenerationCompletionToast.hpp
+    GUI/Redesign/GenerationCompletionToast.cpp
+    GUI/Redesign/RedesignCreationModel.cpp
     GUI/Redesign/RedesignShell.cpp
     GUI/Redesign/RedesignModelWorkflow.cpp
     GUI/Redesign/RedesignWorkbenchPresentation.cpp

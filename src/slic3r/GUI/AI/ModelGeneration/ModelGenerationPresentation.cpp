@@ -141,6 +141,17 @@ std::string new_request_id()
     return boost::uuids::to_string(boost::uuids::random_generator()());
 }
 
+bool is_unfinished_smart_job(const AIModelGenerationClient::JobStatus& status, bool published_local_model)
+{
+    if (status.id.empty() || status.creation_kind == "advanced_multiview_v1" ||
+        status.generation_options.workflow_mode != "smart" || status.generation_options.flow_id.empty())
+        return false;
+    if (status.state == "ready") return !published_local_model;
+    return status.state == "preprocessing" || status.state == "queued" || status.state == "running" ||
+        status.state == "stopping" || status.state == "stopped" || status.state == "cancelled" ||
+        status.state == "failed" || status.state == "awaiting_confirmation";
+}
+
 bool is_supported_image(const boost::filesystem::path& path)
 {
     if (!boost::filesystem::is_regular_file(path))

@@ -92,6 +92,7 @@ void AdvancedCreationFeatureHost::shutdown()
 {
     if (m_shutdown) return;
     m_shutdown = true;
+    m_lifetime.reset();
     m_poll_timer.Stop(); m_save_timer.Stop(); m_listener = {}; m_model_state_listener = {};
     m_model_monitor.set_listener({}); m_model_monitor.reset(); m_catalog_client.cancel_current();
     m_client.cancel();
@@ -99,18 +100,19 @@ void AdvancedCreationFeatureHost::shutdown()
 
 AdvancedCreationFeatureHost::Complete AdvancedCreationFeatureHost::complete(std::function<void(Json)> callback, bool release_command, bool release_poll, bool session_bound)
 {
-    wxWeakRef<AdvancedCreationFeatureHost> weak(this);
+    auto* self = this;
+    const auto alive = std::weak_ptr<int>(m_lifetime);
     const auto context = m_session.context();
-    return [weak, context, callback = std::move(callback), release_command, release_poll, session_bound](Json value) {
-        wxGetApp().CallAfter([weak, context, callback, release_command, release_poll, session_bound, value = std::move(value)]() mutable {
-            if (!weak || weak->m_shutdown) return;
-            if (session_bound && !weak->m_session.matches(context)) return;
+    return [self, alive, context, callback = std::move(callback), release_command, release_poll, session_bound](Json value) {
+        wxGetApp().CallAfter([self, alive, context, callback, release_command, release_poll, session_bound, value = std::move(value)]() mutable {
+            if (alive.expired()) return;
+            if (session_bound && !self->m_session.matches(context)) return;
             try { callback(std::move(value)); }
             catch (const Json::exception&) {
-                if (!weak->m_session.matches(context)) return;
-                if (release_command) weak->m_command_pending = false;
-                if (release_poll) weak->m_poll_pending = false;
-                weak->m_message = "高级服务返回的数据不完整，当前输入与结果已保留。"; weak->publish();
+                if (!self->m_session.matches(context)) return;
+                if (release_command) self->m_command_pending = false;
+                if (release_poll) self->m_poll_pending = false;
+                self->m_message = "高级服务返回的数据不完整，当前输入与结果已保留。"; self->publish();
             }
         });
     };
@@ -118,15 +120,16 @@ AdvancedCreationFeatureHost::Complete AdvancedCreationFeatureHost::complete(std:
 
 AdvancedMultiviewClient::Error AdvancedCreationFeatureHost::error(bool release_command, bool release_poll)
 {
-    wxWeakRef<AdvancedCreationFeatureHost> weak(this);
+    auto* self = this;
+    const auto alive = std::weak_ptr<int>(m_lifetime);
     const auto context = m_session.context();
-    return [weak, context, release_command, release_poll](std::string message) {
-        wxGetApp().CallAfter([weak, context, release_command, release_poll, message = std::move(message)] {
-            if (!weak || weak->m_shutdown || !weak->m_session.matches(context)) return;
-            weak->m_message = message;
-            if (release_command) weak->m_command_pending = false;
-            if (release_poll) weak->m_poll_pending = false;
-            weak->publish();
+    return [self, alive, context, release_command, release_poll](std::string message) {
+        wxGetApp().CallAfter([self, alive, context, release_command, release_poll, message = std::move(message)] {
+            if (alive.expired() || !self->m_session.matches(context)) return;
+            self->m_message = message;
+            if (release_command) self->m_command_pending = false;
+            if (release_poll) self->m_poll_pending = false;
+            self->publish();
         });
     };
 }
@@ -136,29 +139,29 @@ void AdvancedCreationFeatureHost::set_listener(std::function<void()> listener)
 void AdvancedCreationFeatureHost::get_provider_catalog(const std::string& role, const std::string& provider,
     AIModelGenerationClient::CatalogFn complete, AIModelGenerationClient::ErrorFn error)
 {
-    wxWeakRef<AdvancedCreationFeatureHost> weak(this);
-    m_catalog_client.get_provider_catalog(role, provider, [weak, complete](auto catalog) {
-        wxGetApp().CallAfter([weak, complete, catalog = std::move(catalog)]() mutable {
-            if (weak && !weak->m_shutdown && complete) complete(std::move(catalog));
+    const auto alive = std::weak_ptr<int>(m_lifetime);
+    m_catalog_client.get_provider_catalog(role, provider, [alive, complete](auto catalog) {
+        wxGetApp().CallAfter([alive, complete, catalog = std::move(catalog)]() mutable {
+            if (!alive.expired() && complete) complete(std::move(catalog));
         });
-    }, [weak, error](auto message) {
-        wxGetApp().CallAfter([weak, error, message = std::move(message)]() mutable {
-            if (weak && !weak->m_shutdown && error) error(std::move(message));
+    }, [alive, error](auto message) {
+        wxGetApp().CallAfter([alive, error, message = std::move(message)]() mutable {
+            if (!alive.expired() && error) error(std::move(message));
         });
     });
 }
-void AdvancedCreationFeatureHost::observe_model_job(const std::string& job, bool open_route, bool restart)
+void AdvancedCreationFeatureHost::observe_model_job(const std::string& job, bool new_generation, bool restart)
 {
     m_model_context = m_session.context();
     boost::filesystem::path reference;
     if (m_session.group()) reference = m_session.group()->views[0].image_path;
     m_model_monitor.observe(job, reference, restart);
-    if (open_route && m_model_state_listener) m_model_state_listener(m_model_monitor.snapshot(), true);
+    if (new_generation && m_model_state_listener) m_model_state_listener(m_model_monitor.snapshot(), true);
 }
 void AdvancedCreationFeatureHost::show_model()
 {
     if (!m_session.group() || m_session.group()->model_job_id.empty()) return;
-    observe_model_job(m_session.group()->model_job_id, true);
+    observe_model_job(m_session.group()->model_job_id, false);
 }
 
 void AdvancedCreationFeatureHost::publish() { if (m_listener) m_listener(); }
@@ -194,31 +197,32 @@ void AdvancedCreationFeatureHost::refresh_image_catalog()
     const auto sequence = ++m_image_catalog_sequence;
     m_image_catalog = image_catalog_state("checking", {}, {}, false, "checking");
     if (!m_service_available) { publish(); return; }
-    wxWeakRef<AdvancedCreationFeatureHost> weak(this);
+    auto* self = this;
+    const auto alive = std::weak_ptr<int>(m_lifetime);
     get_provider_catalog("image", "yoyoclaw",
-        [weak, sequence](ProviderCatalog catalog) mutable {
-            if (!weak || weak->m_shutdown || sequence != weak->m_image_catalog_sequence) return;
+        [self, alive, sequence](ProviderCatalog catalog) mutable {
+            if (alive.expired() || sequence != self->m_image_catalog_sequence) return;
             if (catalog.role != "image" || catalog.provider != "yoyoclaw") {
                 catalog = image_catalog_state("error", "invalid_catalog",
                                               "YOYOClaw image catalog is invalid.", false, "error");
             }
-            weak->m_image_catalog = std::move(catalog);
-            auto draft = weak->m_session.draft().design;
+            self->m_image_catalog = std::move(catalog);
+            auto draft = self->m_session.draft().design;
             if (draft.provider == "yoyoclaw" && draft.model.empty() &&
-                weak->m_image_catalog.default_model == DefaultYoyoImageModel &&
-                weak->m_image_catalog.supports_model(DefaultYoyoImageModel)) {
+                self->m_image_catalog.default_model == DefaultYoyoImageModel &&
+                self->m_image_catalog.supports_model(DefaultYoyoImageModel)) {
                 draft.model = DefaultYoyoImageModel;
-                weak->m_session.set_design_draft(std::move(draft));
-                weak->m_save_timer.StartOnce(650);
+                self->m_session.set_design_draft(std::move(draft));
+                self->m_save_timer.StartOnce(650);
             }
-            weak->refresh_capabilities();
-            weak->publish();
+            self->refresh_capabilities();
+            self->publish();
         },
-        [weak, sequence](std::string message) {
-            if (!weak || weak->m_shutdown || sequence != weak->m_image_catalog_sequence) return;
-            weak->m_image_catalog = image_catalog_state(
+        [self, alive, sequence](std::string message) {
+            if (alive.expired() || sequence != self->m_image_catalog_sequence) return;
+            self->m_image_catalog = image_catalog_state(
                 "error", "catalog_unavailable", std::move(message), true, "error");
-            weak->publish();
+            self->publish();
         });
 }
 
@@ -329,18 +333,18 @@ void AdvancedCreationFeatureHost::ingest(Json group, CallbackContext context, bo
     m_poll_pending = true;
     publish();
     const auto group_id = group.at("id").get<std::string>();
-    wxWeakRef<AdvancedCreationFeatureHost> weak(this);
+    const auto alive = std::weak_ptr<int>(m_lifetime);
     for (const auto& asset : assets) {
         const auto path = AdvancedMultiviewClient::asset_path(m_cache, group_id, asset.id);
         if (AdvancedMultiviewClient::cached_asset_matches(path, asset.hash)) continue;
         m_client.download_asset(group_id, asset.id, asset.hash, path,
-            [weak, pending, finish] {
-                wxGetApp().CallAfter([weak, pending, finish] {
-                    if (weak && !weak->m_shutdown && --pending->count == 0) finish();
+            [alive, pending, finish] {
+                wxGetApp().CallAfter([alive, pending, finish] {
+                    if (!alive.expired() && --pending->count == 0) finish();
                 });
-            }, [weak, pending, finish](std::string message) {
-                wxGetApp().CallAfter([weak, pending, finish, message = std::move(message)] {
-                    if (!weak || weak->m_shutdown) return;
+            }, [alive, pending, finish](std::string message) {
+                wxGetApp().CallAfter([alive, pending, finish, message = std::move(message)] {
+                    if (alive.expired()) return;
                     pending->message = "图片获取失败，原图已保留：" + message;
                     if (--pending->count == 0) finish();
                 });
@@ -548,7 +552,7 @@ void AdvancedCreationFeatureHost::resume_model()
     m_client.request("POST", "/groups/" + group.id + "/model-jobs/" + group.model_job_id + "/resume", Json::object(),
         complete([this, job](Json) {
             m_command_pending = false; poll();
-            if (!job.empty()) observe_model_job(job, true, true);
+            if (!job.empty()) observe_model_job(job, false, true);
             publish();
         }), error());
     publish();
@@ -680,13 +684,14 @@ void AdvancedCreationFeatureHost::settle_receipt(const std::string& operation, b
     if (current) m_command_pending = true;
     m_reconciling.insert(operation);
     const auto collection = receipt.value("kind", std::string("design")) == "model" ? "/model-jobs/" : "/operations/";
-    wxWeakRef<AdvancedCreationFeatureHost> weak(this);
-    auto failed = [weak, operation, context, current](std::string message) {
-        wxGetApp().CallAfter([weak, operation, context, current, message = std::move(message)] {
-            if (!weak || weak->m_shutdown) return;
-            weak->m_reconciling.erase(operation);
-            if (current && weak->m_session.matches(context)) {
-                weak->m_command_pending = false; weak->m_message = message; weak->publish();
+    auto* self = this;
+    const auto alive = std::weak_ptr<int>(m_lifetime);
+    auto failed = [self, alive, operation, context, current](std::string message) {
+        wxGetApp().CallAfter([self, alive, operation, context, current, message = std::move(message)] {
+            if (alive.expired()) return;
+            self->m_reconciling.erase(operation);
+            if (current && self->m_session.matches(context)) {
+                self->m_command_pending = false; self->m_message = message; self->publish();
             }
         });
     };

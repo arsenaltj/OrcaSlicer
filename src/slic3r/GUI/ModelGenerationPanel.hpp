@@ -107,6 +107,7 @@ public:
     bool library_asset_switch_allowed() const { return can_replace_model_asset(); }
     void request_library_local_import();
     void set_smart_creation_presentation(bool smart);
+    void set_smart_creation_presented(bool presented);
     void unmount_assets();
     void set_history_navigation_handler(std::function<void(bool)> handler) { m_history_navigation = std::move(handler); }
     void set_history_model_open_handler(ModelHistoryOpenHandler handler) { m_history_model_open = std::move(handler); }
@@ -131,6 +132,7 @@ public:
     bool request_open_history(const std::string& job_id);
     bool request_open_workbench_artifact(const WorkbenchOpenRequest& request);
     bool request_open_generated_artifact();
+    std::optional<WorkbenchOpenRequest> snapshot_generated_artifact() const;
     bool request_open_image_history(const std::string& job_id);
     void set_service_availability(bool available, const std::string& message = {});
     void set_service_availability(bool available, bool generation_available, const std::string& message);
@@ -232,6 +234,8 @@ private:
     void apply_smart_ui_state(ModelGenerationUIState& state);
     bool m_smart_mode {false};
     bool m_shell_smart_creation {false};
+    ModelGenerationPresentation::SmartTaskRestoreGuard m_smart_restore_guard;
+    bool m_smart_restore_pending {false};
     SmartGenerationFlow m_smart_flow;
     bool m_smart_dispatch_pending {false};
     using GeneratedModelEntry = ModelLibraryEntry;
@@ -467,7 +471,7 @@ private:
     void handle_error(const std::string& error, uint64_t sequence);
     void handle_poll_error(const std::string& error, uint64_t sequence);
     void schedule_poll();
-    void restore_latest_job(bool require_visible = true);
+    void restore_latest_job(bool require_visible = true, bool unfinished_smart_only = false);
     void restore_job(AIModelGenerationClient::JobStatus status, uint64_t sequence);
     void download_restored_input(uint64_t sequence);
     void update_adaptive_text_height(wxTextCtrl* control, int minimum_lines, int maximum_lines);

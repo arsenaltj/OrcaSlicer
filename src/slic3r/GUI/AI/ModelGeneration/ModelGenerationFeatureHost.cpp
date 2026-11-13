@@ -270,6 +270,11 @@ bool ModelGenerationFeatureHost::request_restore_latest()
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_restore_latest();
 }
 
+void ModelGenerationFeatureHost::set_smart_creation_presented(bool presented)
+{
+    if (m_impl->model_generation) m_impl->model_generation->set_smart_creation_presented(presented);
+}
+
 bool ModelGenerationFeatureHost::request_restart()
 {
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_restart();
@@ -295,6 +300,9 @@ bool ModelGenerationFeatureHost::request_open_workbench_artifact(const Workbench
 { return m_impl->model_generation && m_impl->model_generation->request_open_workbench_artifact(request); }
 bool ModelGenerationFeatureHost::request_open_generated_artifact()
 { return m_impl->model_generation && m_impl->model_generation->request_open_generated_artifact(); }
+
+std::optional<WorkbenchOpenRequest> ModelGenerationFeatureHost::snapshot_generated_artifact() const
+{ return m_impl->model_generation ? m_impl->model_generation->snapshot_generated_artifact() : std::nullopt; }
 
 bool ModelGenerationFeatureHost::request_open_history(const std::string& job_id)
 {

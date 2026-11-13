@@ -1,4 +1,5 @@
 #include "RedesignShell.hpp"
+#include "GenerationCompletionToast.hpp"
 #include "AdvancedCreationWorkspace.hpp"
 #include "RedesignTheme.hpp"
 #include "../AI/ModelGeneration/WorkbenchStyle.hpp"
@@ -84,6 +85,7 @@ private:
 bool RedesignShell::begin_workbench_presentation(bool history_loading)
 {
     if (m_workbench_transition) return true;
+    if (m_generation_toast) m_generation_toast->dismiss();
     auto* source = active_page_focus_root();
     auto* content = m_content_host ? m_content_host->GetSizer() : nullptr;
     if (!source || !content) return false;
@@ -94,7 +96,7 @@ bool RedesignShell::begin_workbench_presentation(bool history_loading)
         {int(m_active_page), int(m_model_view)}, {int(Page::Model), int(ModelView::Workbench)});
     if (!token) return false;
     if (!m_pending_workbench_return_advanced &&
-        !(m_active_page == Page::Model && m_model_view != ModelView::Result && m_workbench_return_advanced))
+        !(m_active_page == Page::Model && m_workbench_return_advanced))
         m_pending_workbench_return_advanced = m_advanced_mode;
     m_workbench_transition = *token;
     m_workbench_source_index = 0;
@@ -351,9 +353,6 @@ void RedesignShell::finish_workbench_presentation(bool ready, bool report_failur
         m_model_generation_host->finish_history_model_open(true);
         m_history_open_request = 0;
         m_model_generation_state = m_model_generation_host->snapshot();
-        m_model_route_locked = true;
-        m_model_route_session = m_model_generation_state.model_generation_session;
-        m_model_route_id = model_generation_route_id(m_model_generation_state);
     }
     if (ready) {
         if (m_pending_workbench_return_advanced) m_workbench_return_advanced = m_pending_workbench_return_advanced;
@@ -370,6 +369,9 @@ void RedesignShell::finish_workbench_presentation(bool ready, bool report_failur
     }
     m_pending_workbench_return_advanced.reset();
     restore_workbench_source_page();
+    if (!ready) {
+        if (auto* restored = active_page_focus_root()) restored->Show();
+    }
     if (m_advanced_workspace) m_advanced_workspace->Show(m_active_page == Page::Image && m_advanced_mode);
     if (m_advanced_mode) m_image_page->Hide();
     sync_page_settings_visibility(m_active_page);

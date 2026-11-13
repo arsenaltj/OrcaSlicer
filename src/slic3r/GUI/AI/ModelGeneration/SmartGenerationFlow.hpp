@@ -28,6 +28,11 @@ public:
         if (geometry && phase == Phase::Preparation) phase = Phase::Geometry;
         started = std::chrono::steady_clock::now();
     }
+    void observe_job_state(const std::string& state, bool busy) {
+        // While a resume request is in flight, state still describes the old
+        // checkpoint. Only an idle terminal observation ends the new intent.
+        if (!busy && (state == "failed" || state == "stopped" || state == "cancelled")) stop();
+    }
     bool claim_geometry(bool eligible) {
         if (!armed || stopped || submitted || !eligible) return false;
         submitted = true; phase = Phase::Geometry; return true;

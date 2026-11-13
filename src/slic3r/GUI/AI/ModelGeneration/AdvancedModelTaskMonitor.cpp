@@ -3,23 +3,22 @@
 #include "slic3r/GUI/AISidecarClient.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include <boost/filesystem.hpp>
-#include <wx/weakref.h>
 
 namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
 AdvancedModelTaskMonitor::AdvancedModelTaskMonitor()
     : m_client(AISidecarClient::default_endpoint()), m_timer(this)
 {
-    wxWeakRef<AdvancedModelTaskMonitor> weak(this);
+    const auto alive = std::weak_ptr<int>(m_lifetime);
     m_flow = std::make_unique<AdvancedModelTaskFlow>(AdvancedModelTaskFlow::Ports{
-        [this, weak](const std::string& job, auto complete, auto failed) {
-            m_client.get_status(job, [weak, complete](auto status) {
-                wxGetApp().CallAfter([weak, complete, status = std::move(status)]() mutable {
-                    if (weak) complete(std::move(status));
+        [this, alive](const std::string& job, auto complete, auto failed) {
+            m_client.get_status(job, [alive, complete](auto status) {
+                wxGetApp().CallAfter([alive, complete, status = std::move(status)]() mutable {
+                    if (!alive.expired()) complete(std::move(status));
                 });
-            }, [weak, failed](auto message) {
-                wxGetApp().CallAfter([weak, failed, message = std::move(message)]() mutable {
-                    if (weak) failed(std::move(message));
+            }, [alive, failed](auto message) {
+                wxGetApp().CallAfter([alive, failed, message = std::move(message)]() mutable {
+                    if (!alive.expired()) failed(std::move(message));
                 });
             });
         },
@@ -34,7 +33,7 @@ AdvancedModelTaskMonitor::AdvancedModelTaskMonitor()
     });
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) { m_flow->poll(); }, m_timer.GetId());
 }
-AdvancedModelTaskMonitor::~AdvancedModelTaskMonitor() { m_flow.reset(); }
+AdvancedModelTaskMonitor::~AdvancedModelTaskMonitor() { m_lifetime.reset(); m_flow.reset(); }
 void AdvancedModelTaskMonitor::cancel_requests()
 {
     m_timer.Stop(); m_client.cancel_current(); m_acquisition.cancel();
@@ -57,8 +56,8 @@ void AdvancedModelTaskMonitor::prepare(AI::GeneratedModelArtifact artifact,
     if (m_worker.joinable()) m_worker.join();
     m_cancel = std::make_shared<std::atomic<bool>>(false);
     const auto cancel = m_cancel;
-    wxWeakRef<AdvancedModelTaskMonitor> weak(this);
-    m_worker = std::thread([weak, cancel, artifact, status, reference, complete, failed] {
+    const auto alive = std::weak_ptr<int>(m_lifetime);
+    m_worker = std::thread([this, alive, cancel, artifact, status, reference, complete, failed] {
         const auto start = std::chrono::steady_clock::now();
         std::string error;
         ModelLibraryEntry entry;
@@ -109,9 +108,9 @@ void AdvancedModelTaskMonitor::prepare(AI::GeneratedModelArtifact artifact,
                     error = "模型文件已保留，但模型记录暂时无法保存。";
             }
         } catch (const std::exception& e) { error = e.what(); }
-        wxGetApp().CallAfter([weak, cancel, error, entry = std::move(entry), complete, failed]() mutable {
-            if (!weak || cancel->load()) return;
-            if (weak->m_worker.joinable()) weak->m_worker.join();
+        wxGetApp().CallAfter([this, alive, cancel, error, entry = std::move(entry), complete, failed]() mutable {
+            if (alive.expired() || cancel->load()) return;
+            if (m_worker.joinable()) m_worker.join();
             if (!error.empty() || entry.model_path.empty()) failed(error);
             else complete(std::move(entry));
         });

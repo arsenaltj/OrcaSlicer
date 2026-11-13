@@ -322,7 +322,7 @@ TEST_CASE("History source resolution rejects escaping paths and mismatched publi
     CHECK_FALSE(request->check);
 }
 
-TEST_CASE("History presentation owns routing independently of check and edit eligibility", "[ModelHistoryOpen][UiRedesign]")
+TEST_CASE("History state publication never navigates independently of its explicit opening transaction", "[ModelHistoryOpen][UiRedesign]")
 {
     ModelGenerationUIState current, next;
     current.revision = 1; current.model_generation_session = 3;
@@ -330,13 +330,12 @@ TEST_CASE("History presentation owns routing independently of check and edit eli
     next.model_generation_context = true; next.model_asset_id = "history-model";
     for (const auto stage : {ModelGenerationUIStage::LoadingModel, ModelGenerationUIStage::ModelReady}) {
         next.stage = stage;
-        CHECK(model_generation_route_action(next, current, false, 0, {}, true) == RedesignModelRouteAction::Refresh);
-        CHECK(model_generation_route_action(next, current, false, 0, {}) == RedesignModelRouteAction::Model);
+        CHECK(model_generation_route_action(next, current) == RedesignModelRouteAction::Refresh);
     }
     next.revision = 0;
-    CHECK(model_generation_route_action(next, current, false, 0, {}, true) == RedesignModelRouteAction::Ignore);
+    CHECK(model_generation_route_action(next, current) == RedesignModelRouteAction::Ignore);
     next.revision = 2; next.model_generation_context = false; next.job_id = "image";
-    CHECK(model_generation_route_action(next, current, false, 0, {}) == RedesignModelRouteAction::Image);
+    CHECK(model_generation_route_action(next, current) == RedesignModelRouteAction::Refresh);
 }
 
 TEST_CASE("History cancellation retains its request until the running parser drains", "[ModelHistoryOpen]")

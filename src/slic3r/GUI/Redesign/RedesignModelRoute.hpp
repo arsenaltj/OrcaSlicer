@@ -7,7 +7,7 @@
 
 namespace Slic3r::GUI {
 
-enum class RedesignModelRouteAction { Ignore, Refresh, Model, Image };
+enum class RedesignModelRouteAction { Ignore, Refresh };
 
 enum class RedesignPrimaryAction { Design, Model };
 
@@ -113,51 +113,27 @@ inline const std::string& model_generation_route_id(const ModelGenerationUIState
     return state.model_generation_context && !state.model_asset_id.empty() ? state.model_asset_id : state.job_id;
 }
 
-inline bool model_generation_preserves_workbench(const ModelGenerationUIState& state,
-    RedesignModelRouteAction action, bool workbench_visible)
-{
-    return workbench_visible && action == RedesignModelRouteAction::Model &&
-        state.stage == ModelGenerationUIStage::ModelReady &&
-        !state.model_asset_id.empty();
-}
-
-inline bool model_generation_route_revokes_workbench_presentation(
-    RedesignModelRouteAction action, bool preserve_workbench)
-{
-    return !preserve_workbench &&
-        (action == RedesignModelRouteAction::Model || action == RedesignModelRouteAction::Image);
-}
-
+// State publication updates its source presentation only. Navigation is an
+// explicit Shell command, including history recovery and artifact opening.
 inline RedesignModelRouteAction model_generation_route_action(
-    const ModelGenerationUIState& state, const ModelGenerationUIState& current,
-    bool locked, std::uint64_t route_session, const std::string& route_id, bool opening_history = false)
+    const ModelGenerationUIState& state, const ModelGenerationUIState& current)
 {
     if (state.revision < current.revision ||
         state.model_generation_session < current.model_generation_session)
         return RedesignModelRouteAction::Ignore;
-
-    // The explicit history presentation owns routing until its current first
-    // frame commits or rolls back. State publication may only refresh it.
-    if (opening_history) return RedesignModelRouteAction::Refresh;
-    const bool new_session = state.model_generation_session > current.model_generation_session;
-    const std::string& state_route_id = model_generation_route_id(state);
-    if (new_session && state_route_id.empty())
+    const bool same_session = state.model_generation_session == current.model_generation_session;
+    const auto& incoming = model_generation_route_id(state);
+    const auto& selected = model_generation_route_id(current);
+    // The original explicit restart clears a task without starting a new
+    // generation session. Its newer idle publication must clear inline status.
+    if (same_session && state.revision > current.revision && !state.busy &&
+        state.stage == ModelGenerationUIStage::Input && state.job_id.empty() &&
+        !state.model_ready && state.model_path.empty() && !state.model_generation_context)
+        return RedesignModelRouteAction::Refresh;
+    if (!same_session && incoming.empty()) return RedesignModelRouteAction::Ignore;
+    if (same_session && current.model_generation_context &&
+        (!state.model_generation_context || (!incoming.empty() && !selected.empty() && incoming != selected)))
         return RedesignModelRouteAction::Ignore;
-    if (locked) {
-        if (state.model_generation_session < route_session)
-            return RedesignModelRouteAction::Ignore;
-        if (state.model_generation_session == route_session &&
-            (!state.model_generation_context ||
-             (!route_id.empty() && !state_route_id.empty() && state_route_id != route_id)))
-            return RedesignModelRouteAction::Ignore;
-    }
-
-    // A successful history restore owns a new session, even when both records
-    // already have a model context. Polls only refresh the selected page.
-    if (new_session)
-        return state.model_generation_context ? RedesignModelRouteAction::Model : RedesignModelRouteAction::Image;
-    if (!locked && state.model_generation_context && !current.model_generation_context)
-        return RedesignModelRouteAction::Model;
     return RedesignModelRouteAction::Refresh;
 }
 

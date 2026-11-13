@@ -41,7 +41,13 @@ bool ModelGenerationPanel::request_open_workbench_artifact(const WorkbenchOpenRe
 }
 bool ModelGenerationPanel::request_open_generated_artifact()
 {
-    if (!m_generation_artifact_ready || m_artifact_path.empty()) return false;
+    const auto request = snapshot_generated_artifact();
+    return request && request_open_workbench_artifact(*request);
+}
+
+std::optional<WorkbenchOpenRequest> ModelGenerationPanel::snapshot_generated_artifact() const
+{
+    if (!m_generation_artifact_ready || m_artifact_path.empty()) return std::nullopt;
     WorkbenchOpenRequest request;
     auto& entry = request.entry;
     entry.model_path = m_artifact_path; entry.job_id = m_job_id;
@@ -52,7 +58,7 @@ bool ModelGenerationPanel::request_open_generated_artifact()
     entry.color_intent_sha256 = m_color_intent_sha256; entry.title = _L("生成模型");
     request.artifact.local_path = entry.model_path; request.artifact.job_id = entry.job_id;
     request.expected_sha256 = m_generation_artifact_sha256;
-    return request_open_workbench_artifact(request);
+    return request;
 }
 
 bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& model_path,
@@ -108,7 +114,9 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
             [&](const auto& entry) { return entry.model_path == model_path; });
         if (found != m_library_entries.end()) request->repairs = found->repair_index;
     }
-    const bool direct_history = !new_asset && bool(m_history_model_open);
+    // Local imports and library assets use the same retained-source transaction.
+    // new_asset still controls the original edit/check policy below.
+    const bool direct_history = bool(m_history_model_open);
     if (direct_history || restoration) {
         request->generation = ++m_history_open_generation;
         if (!restoration) {

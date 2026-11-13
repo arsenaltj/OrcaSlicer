@@ -1498,6 +1498,72 @@ class SidecarHealthContractTests(unittest.TestCase):
                     PRODUCTION._JOBS.clear()
                     PRODUCTION._JOBS.update(previous)
 
+    def test_latest_restores_terminal_smart_task_instead_of_older_ready_model(self):
+        for terminal in ("stopped", "failed"):
+            for source in ("text", "image"):
+                with self.subTest(state=terminal, source=source), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    old = PRODUCTION.Job(id=str(uuid.uuid4()), source="text", directory=root / "old")
+                    old.directory.mkdir()
+                    old.state = "ready"
+                    old.artifact_path = old.directory / "model.glb"
+                    old.artifact_path.write_bytes(b"existing model")
+                    old.updated_at = 10.0
+                    saved_id = str(uuid.uuid4())
+                    saved = PRODUCTION.Job(id=saved_id, source=source, directory=root / saved_id)
+                    saved.directory.mkdir()
+                    saved.workflow_mode = "smart"
+                    saved.state = saved.phase = terminal
+                    saved.user_prompt = "用户输入的小鸭玩具"
+                    saved.flow_id = str(uuid.uuid4())
+                    saved.smart_stop_intent = terminal == "stopped"
+                    saved.attempts = [{"generation_task_id": str(uuid.uuid4()), "status": "rejected"}]
+                    if source == "image":
+                        saved.input_path = saved.directory / "input.png"
+                        saved.input_path.write_bytes(valid_png_bytes())
+                    saved.updated_at = 20.0
+                    PRODUCTION._persist_job(saved, touch=False)
+                    restored = PRODUCTION._load_job(saved.directory)
+                    self.assertIsNotNone(restored)
+                    with PRODUCTION._JOBS_LOCK:
+                        previous = dict(PRODUCTION._JOBS)
+                        PRODUCTION._JOBS.clear()
+                        PRODUCTION._JOBS.update({old.id: old, restored.id: restored})
+                    try:
+                        with mock.patch.object(PRODUCTION, "_submit") as submit, sidecar_server(PRODUCTION.Handler) as port:
+                            request = urllib.request.Request(
+                                f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/latest",
+                                headers={"X-OrcaSlicer-Client": "native"},
+                            )
+                            with urllib.request.urlopen(request, timeout=5) as response:
+                                public = json.load(response)["job"]
+                        self.assertEqual(public["id"], saved.id)
+                        self.assertEqual(public["state"], terminal)
+                        self.assertEqual(public["flow_id"], saved.flow_id)
+                        self.assertEqual(public["provider_tasks"]["generation_task_id"], saved.attempts[0]["generation_task_id"])
+                        submit.assert_not_called()
+                    finally:
+                        with PRODUCTION._JOBS_LOCK:
+                            PRODUCTION._JOBS.clear()
+                            PRODUCTION._JOBS.update(previous)
+
+    def test_terminal_latest_keeps_legacy_advanced_and_unrecoverable_input_exclusions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = PRODUCTION.Job(id=str(uuid.uuid4()), source="text", directory=Path(directory), state="stopped")
+            job.user_prompt = "用户输入"
+            self.assertFalse(PRODUCTION._latest_job_is_restorable(job))
+            job.workflow_mode = "smart"
+            job.creation_kind = "advanced_multiview_v1"
+            self.assertFalse(PRODUCTION._latest_job_is_restorable(job))
+            job.creation_kind = ""
+            job.user_prompt = ""
+            job.prepared_prompt = "internal calibration fixture"
+            self.assertFalse(PRODUCTION._latest_job_is_restorable(job))
+            job.source = "image"
+            job.user_prompt = "用户输入"
+            job.input_path = job.directory / "missing.png"
+            self.assertFalse(PRODUCTION._latest_job_is_restorable(job))
+
     def test_legacy_realistic_portrait_with_severe_material_islands_is_blocked_on_restore(self):
         with tempfile.TemporaryDirectory() as directory:
             job = PRODUCTION.Job(

@@ -1,5 +1,6 @@
 #include "ModelGenerationStatusText.hpp"
 #include "ModelGenerationSubmissionState.hpp"
+#include "ModelGenerationHost.hpp"
 
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "slic3r/GUI/GUI.hpp"
@@ -40,8 +41,11 @@ wxString localized_service_error(const std::string& error)
     return _L("操作失败：") + message;
 }
 
-wxString localized_job_status(const AIModelGenerationClient::JobStatus& status)
+wxString localized_job_status(const AIModelGenerationClient::JobStatus& status, bool advanced)
 {
+    if (advanced && status.state != "queued" && status.state != "running" && status.state != "ready" &&
+        status.state != "stopping" && status.state != "stopped" && status.state != "cancelled" && status.state != "failed")
+        return _L("正在处理当前3D模型任务…");
     if (status.state == "recommending_palette")
         return wxString::Format(
             _L("AI 正在分析主体并推荐 %llu 种目标色..."),
@@ -68,36 +72,47 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status)
             : _L("预览未通过 3D 输入检查，请按提示重新生成。");
     if (status.state == "queued")
         return _L("3D 生成任务已排队...");
-    if (status.state == "running" && status.phase == "preparing_multiview")
+    if (!advanced && status.state == "running" && status.phase == "preparing_multiview")
         return _L("正在生成并核对写实人像四视图，尚未提交付费 3D 任务...");
     if (status.state == "running" && status.phase == "generating")
         return status.progress >= 69
             ? _L("远端正在收尾并封装高精度几何，可能停留数分钟；任务已保存，重启后会继续恢复...")
             : _L("AI 正在生成 3D 模型...");
-    if (status.state == "running" && status.phase == "texturing")
+    if (status.state == "running" && status.phase == "texturing") {
+        if (advanced) return _L("正在生成模型纹理…");
         return status.progress >= 69
             ? _L("远端正在烘焙最终写实纹理，可能停留数分钟；请勿重复提交...")
             : _L("正在保留历史造型并重新生成写实颜色...");
-    if (status.state == "running" && status.phase == "converting")
+    }
+    if (status.state == "running" && status.phase == "converting") {
+        if (advanced) return _L("正在转换模型文件…");
         return status.progress >= 94
             ? _L("远端 OBJ 转换正在封装最后文件，完成后会自动下载并检查...")
             : _L("正在转换高精度彩色 OBJ...");
+    }
     if (status.state == "running" && status.phase == "downloading_artifact")
         return _L("正在整理模型文件...");
     if (status.state == "running" && status.phase == "checking_model") {
+        if (advanced) return _L("正在校验模型文件…");
         if (status.progress <= 96) return _L("正在下载并把纹理烘焙为模型顶点色...");
         if (status.progress == 97) return _L("正在生成四视图并分离肤色、衣物、头发和底座...");
         if (status.progress == 98) return _L("正在清理杂色小块并平滑材料边界...");
         return _L("正在检查拓扑、底座、薄壁和高面数模型；高质量档可能需要几分钟...");
     }
+    if (status.state == "running" && status.phase == "checking_visual" && advanced)
+        return _L("正在检查模型外观…");
     if (status.state == "running" && status.phase == "checking_visual")
         return _L("正在生成五视图，对照原图检查人脸相似度和材料串色...");
+    if (status.state == "ready" && advanced)
+        return _L("3D模型已生成，正在准备本地预览。");
     if (status.state == "ready")
         return status.visual_quality.available && !status.visual_quality.import_recommended
             ? _L("模型已完成，但人脸相似度或材料串色检查未通过；请先查看风险项。")
             : _L("3D 模型生成与质量检查完成。");
     if (status.state == "stopping")
         return _L("正在停止生成任务...");
+    if (status.state == "stopped" && advanced)
+        return _L("生成已停止，已保留四视图和当前任务。");
     if (status.state == "stopped")
         return _L("生成已停止，可使用当前配色重新生成图片预览。");
     if (status.state == "cancelled")
@@ -140,12 +155,14 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status)
             message = _L("Tripo 任务已返回，但模型文件下载或校验失败。可以恢复当前任务重试下载，不会重复创建付费任务。");
         else if (status.provider_error_code == "model_validation_failed")
             message = _L("模型文件已返回，但本地校验未通过。请保留诊断信息后重试或返回 2D 设计。");
+        else if (advanced)
+            message = _L("模型生成未完成，请保留任务信息并查看诊断记录。");
         else
             message = status.message.empty() ? _L("生成任务失败。") : localized_service_error(status.message);
-        if (!status.provider_error_category.empty())
+        if (!advanced && !status.provider_error_category.empty())
             message += "\n" + _L("故障分类：") + from_u8(status.provider_error_category);
         if (!status.provider_task_id.empty())
-            message += "\n" + _L("Provider 任务 ID：") + from_u8(status.provider_task_id);
+            message += "\n" + (advanced ? _L("模型服务任务 ID：") : _L("Provider 任务 ID：")) + from_u8(status.provider_task_id);
         if (!status.provider_conversion_task_id.empty())
             message += "\n" + _L("转换任务 ID：") + from_u8(status.provider_conversion_task_id);
         if (status.provider_error_ambiguous)
@@ -154,7 +171,51 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status)
             message += "\n" + _L("诊断 ID：") + from_u8(status.id);
         return message;
     }
+    if (advanced) return _L("正在处理当前3D模型任务…");
     return status.message.empty() ? _L("正在处理...") : from_u8(status.message);
+}
+
+void localize_advanced_model_state(ModelGenerationUIState& state)
+{
+    if (state.smart_mode || state.job_id.empty()) return;
+    AIModelGenerationClient::JobStatus status;
+    status.id = state.job_id;
+    status.state = state.job_state;
+    status.phase = state.job_phase;
+    status.provider_error_code = state.provider_error_code;
+    status.provider_error_ambiguous = state.provider_error_ambiguous;
+    status.provider_task_id = state.provider_task_id;
+    status.provider_conversion_task_id = state.provider_conversion_task_id;
+    // UI progress can be estimated/remapped; it cannot imply a provider's final phase.
+    status.progress = 0;
+    wxString text;
+    switch (state.stage) {
+    case ModelGenerationUIStage::LoadingModel:
+        text = _L("正在下载、校验并加载3D模型…"); break;
+    case ModelGenerationUIStage::ModelReady:
+        text = _L("3D模型已生成，可进入工作台编辑。"); break;
+    case ModelGenerationUIStage::GeneratingModel:
+        // The observer keeps the last provider phase while reconnecting. Preserve
+        // its existing Chinese connection notice instead of reusing that old phase.
+        if (state.status_text == "正在重新连接当前任务")
+            text = _L("正在重新连接当前任务…");
+        break;
+    case ModelGenerationUIStage::Stopping:
+        status.state = "stopping"; break;
+    case ModelGenerationUIStage::Stopped:
+        if (status.state != "stopped" && status.state != "cancelled")
+            text = _L("模型本地加载已取消，原任务与成果已保留。");
+        break;
+    case ModelGenerationUIStage::Failed:
+        if (status.state != "failed")
+            text = _L("模型本地加载未完成，原任务与成果已保留；可按原入口重试加载。");
+        break;
+    default: break;
+    }
+    if (text.empty()) text = localized_job_status(status, true);
+    state.status_text = text.ToStdString(wxConvUTF8);
+    // Raw messages remain on the original host snapshot; the display uses the mapped reason.
+    state.summary_text.clear();
 }
 
 wxString model_input_quality_label(const std::string& code)

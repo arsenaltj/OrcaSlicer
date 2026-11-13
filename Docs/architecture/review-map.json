@@ -718,7 +718,31 @@
       "id": "advanced_creation_workspace",
       "path": "src/slic3r/GUI/Redesign/AdvancedCreationWorkspace.cpp",
       "needle": "struct AdvancedCreationWorkspace::Impl {",
-      "detail": "高级四图创作界面，只适配独立 Session；已移除重复编辑宿主与独立导入，3D查看交给 Shell 的唯一工作台。GPT／YOYOClaw目录和四图规则保持。"
+      "detail": "高级四图创作界面，只适配独立 Session；2D四图与页内3D展示按当前阶段互斥，用户返回2D后任务刷新不强切3D。完成后显式交接成果给 Shell 唯一编辑工作台；GPT／YOYOClaw目录和四图规则保持。"
+    },
+    {
+      "id": "inline_generation_state",
+      "path": "src/slic3r/GUI/Redesign/InlineModelGenerationState.hpp",
+      "needle": "class InlineModelGenerationState {",
+      "detail": "仅持有来源／上下文／任务／成果的展示投影、局部呈现代次和新成果提示去重；远端就绪与本地有效首帧分开。路径、摘要或色板变化失效旧帧，不拥有生成资格、持久化或提交规则。"
+    },
+    {
+      "id": "inline_generation_view",
+      "path": "src/slic3r/GUI/Redesign/InlineModelGenerationView.cpp",
+      "needle": "InlineModelGenerationView::InlineModelGenerationView(",
+      "detail": "智能／高级分别挂载中央进度与只读模型预览；CPU准备协作取消并排空旧线程，GUI线程安装GL模型，有效可见首帧后开放完成动作。隐藏／最小化暂停呈现等待，本地重载不提交远端生成。"
+    },
+    {
+      "id": "creation_artifact_handoff",
+      "path": "src/slic3r/GUI/Redesign/RedesignCreationModel.cpp",
+      "needle": "void RedesignShell::open_creation_artifact(CreationSource source)",
+      "detail": "状态回调只刷新来源页；用户动作冻结当前可见成果，复用原资产校验、编辑保护及工作台首帧／失败回滚事务。同一已编辑资产恢复编辑现场，生成完成不替换编辑对象。"
+    },
+    {
+      "id": "generation_completion_toast",
+      "path": "src/slic3r/GUI/Redesign/GenerationCompletionToast.cpp",
+      "needle": "GenerationCompletionToast::GenerationCompletionToast(wxWindow* owner)",
+      "detail": "页内当前新生成成果首次有效呈现后的非模态提示；窗口位置／尺寸／DPI变化重定位，隐藏／最小化／切来源或进入工作台时消失，不拥有导航或任务状态。"
     },
     {
       "id": "advanced_multiview_models",
@@ -748,7 +772,7 @@
       "id": "workbench_page_presentation",
       "path": "src/slic3r/GUI/Redesign/RedesignWorkbenchPresentation.cpp",
       "needle": "bool RedesignShell::begin_workbench_presentation(bool history_loading)",
-      "detail": "The existing page-transition token retains the completed source page for result entry and direct history entry, including in-workbench model changes. Layout and current model frames gate reveal; checks run only afterwards. History notifications are generation/asset bound and ordinary state publication cannot reroute preparation. Failure, cancellation and timeout restore the previous model, route and AI settings before uncovering. The retained source includes settings and content but excludes fixed navigation; target settings visibility and final width precede frame validation."
+      "detail": "The existing page-transition token retains smart/advanced creation and direct history/local/library entry sources, including in-workbench model changes. Layout and current model frames gate reveal; checks run only afterwards. An empty workbench opens without waiting for a model frame. History notifications are generation/asset bound and ordinary state publication cannot reroute preparation. Failure, cancellation and timeout restore the previous model, visible source route and AI settings before uncovering. The retained source includes settings and content but excludes fixed navigation; target settings visibility and final width precede frame validation."
     },
     {
       "id": "shared_view_navigator",
@@ -1881,19 +1905,28 @@
           "src/slic3r/GUI/ModelGenerationPanel*",
           "src/slic3r/GUI/AI/ModelGeneration/ModelGeneration*",
           "src/slic3r/GUI/AIModelGenerationClient*",
-          "src/slic3r/GUI/AI/Text"
+          "src/slic3r/GUI/AI/Text",
+          "src/slic3r/GUI/Redesign/InlineModelGeneration*",
+          "src/slic3r/GUI/Redesign/RedesignCreationModel.cpp",
+          "src/slic3r/GUI/Redesign/GenerationCompletionToast*"
         ],
         "evidence": [
           "generation_host",
-          "generate_confirmation"
+          "generate_confirmation",
+          "inline_generation_state",
+          "inline_generation_view",
+          "creation_artifact_handoff",
+          "generation_completion_toast"
         ],
         "tests": [
           "tests/slic3rutils/test_model_generation*",
-          "tools/ai/test_atomic_capabilities.py"
+          "tools/ai/test_atomic_capabilities.py",
+          "tests/slic3rutils/test_inline_model_generation.cpp",
+          "tests/slic3rutils/test_ui_redesign.cpp"
         ],
-        "state_owner": "ModelGenerationUIState 投影本地任务",
-        "contract": "确认后创建任务；完成产物显式交接",
-        "note": "与后处理共享 Panel，属于主要耦合点。",
+        "state_owner": "原Host／Session拥有任务与资格；ModelGenerationUIState及InlineModelGenerationState仅投影任务和本地呈现，WorkbenchModelContext独立持有编辑资产",
+        "contract": "确认后创建任务；状态刷新不导航；当前成果有效首帧后才开放完成动作，显式交接统一工作台",
+        "note": "两模式各自中央展示及重生成命令；工作台Tab直接编辑，独立等待／结果页已移除。原智能完整链、高级确认四图、历史及下游命令沿用。与后处理共享 Panel 的既有耦合保持。",
         "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
       },
       {
@@ -2021,7 +2054,7 @@
         ],
         "state_owner": "旧 Job / JobRepository 持有原任务；高级组仓库独立持有当前上传引用、待处理集合、四图版本、operation模型与尝试，AdvancedCreation Session 持有高级桌面草稿、完整图像模型ID与选择；AdvancedModelTaskFlow只持有本地观察投影及请求代次，不创建远端任务",
         "contract": "只有首次／新建创建高级组；同组输入或风格变化强制重生对应视角并在待处理清空前禁止3D；YOYOClaw目录无精确Qwen时不自动回落，operation冻结模型且失败重试沿原模型；确认、取消、响应恢复与幂等提交在应用入口处理",
-        "note": "智能与高级创作Session／任务独立，生成等待、结果与编辑接入Shell唯一工作台；高级不额外执行2D。供应商协议、预算确认与原文件兼容不变。",
+        "note": "智能与高级创作Session／任务独立，生成等待与结果留各自创作页，成果显式交接Shell唯一编辑工作台；高级重新生成复用确认四图且不额外执行2D。供应商协议、预算确认与原文件兼容不变。",
         "build_boundary": "任务应用为本地 Python sidecar 模块；高级 Session 编入 libslic3r_gui STATIC，二者不具有独立部署边界。"
       },
       {

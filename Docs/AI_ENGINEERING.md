@@ -22,6 +22,7 @@
 |---|---|---|
 | 生成界面/结果交互 | [ModelGeneration FeatureHost](../src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp) | `ModelGenerationPanel.cpp`、`ModelGenerationPresentation*`、`ModelGenerationArtifactFlow.cpp`、`AIModelGenerationClient.cpp` |
 | 高级多视角创作 | [高级独立宿主](../src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.hpp)、[原子能力说明](../tools/ai/README_atomic_capabilities.md) | `AdvancedCreationSession`持有草稿／选择，`AdvancedCreationWorkspace`消费投影；`advanced_multiview_application.py`冻结相机／单次调用契约，workflow／repository编排版本、失败保留和显式重试，独立Job-v2冻结四图建模；AdvancedModelTaskMonitor观察明确Job，共享产物获取后显式进入唯一编辑工作台；智能仍走原连续流程 |
+| 创作页内3D与编辑交接 | [共用展示](../src/slic3r/GUI/Redesign/InlineModelGenerationView.hpp)、[来源适配](../src/slic3r/GUI/Redesign/RedesignCreationModel.cpp)、[平台说明](architecture/PLATFORM_ARCHITECTURE.md#统一工作台与生成来源2026-11-12) | 智能／高级在各自中央显示任务及真实模型；来源／任务／成果与有效首帧控制完成动作，状态刷新不导航。显式进入工作台沿原资产校验及呈现／回滚事务，Tab直达编辑；原Host／Session仍拥有提交、资格及恢复，Plater拥有工程及下游 |
 | Provider/任务/质量 | [Gateway](../tools/ai/model_provider_gateway.py)、[任务应用](../tools/ai/model_job_application.py) | `model_job_lifecycle.py`、`model_job_repository.py`及对应能力/供应商模块；HTTP与界面调用应用入口 |
 | 后处理/配色/候选历史 | [BeautyWorkbenchSession](../src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchSession.hpp) | TransactionController、`ModelGenerationBeauty*`和预览/文件Ports；候选生命周期与原生工程撤销分别定位 |
 | 账号与本机会话 | [PlatformAccountService](../src/slic3r/GUI/Redesign/PlatformAccountService.hpp)、[HonorSession](../src/slic3r/Utils/HonorAccount/HonorSession.hpp) | 账号页和模型库共享Session；HonorClient/Store保有凭据，HTML只接身份展示投影 |

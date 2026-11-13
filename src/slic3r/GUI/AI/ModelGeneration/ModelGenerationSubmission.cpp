@@ -183,7 +183,7 @@ void ModelGenerationPanel::apply_smart_ui_state(ModelGenerationUIState& state)
         state.can_generate_model = state.can_generate_model && m_model_input_eligible && m_palette_quality_ok;
         const bool local = m_ready || m_preview_loading || m_job_phase == "downloading_artifact" ||
             m_job_phase == "checking_model" || m_job_phase == "checking_visual";
-        if (m_job_state == "failed" || m_job_state == "stopped" || m_job_state == "cancelled") m_smart_flow.stop();
+        m_smart_flow.observe_job_state(m_job_state, state.busy);
         if (m_awaiting_confirmation && (!m_model_input_eligible || !m_palette_quality_ok)) m_smart_flow.stop();
         const int stage_progress = m_smart_flow.phase == SmartGenerationFlow::Phase::Preparation
             ? remap_progress(state.progress, 10, 35, 0, 100) : state.progress;

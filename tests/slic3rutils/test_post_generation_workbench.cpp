@@ -3677,6 +3677,34 @@ TEST_CASE("color card imports grow physical slots to the entire ordered palette"
     CHECK(live.filament_presets == names);
 }
 
+TEST_CASE("color card imports normalize restored appearance arrays without changing the live project", "[PrinterFilamentImport][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    auto live = printer_filament_fixture(6, 6);
+    const char* key = GENERATE("filament_multi_colour", "filament_colour_type");
+    const size_t retained = GENERATE(0u, 1u, 3u);
+    live.project_config.option<ConfigOptionStrings>(key)->values.resize(retained);
+    const auto project = live.project_config;
+    const auto names = live.filament_presets;
+    const auto pack = filament_import_card(6);
+    PrinterFilamentConfig::StagedColorPackImport staged;
+    std::string error;
+    INFO(key);
+    INFO(retained);
+    INFO(error);
+    REQUIRE(PrinterFilamentConfig::stage_workbench_color_pack_import(live, pack, staged, error));
+    REQUIRE(staged.configuration);
+    CHECK(staged.bindings == std::vector<size_t>{0, 1, 2, 3, 4, 5});
+    CHECK(staged.changes.empty());
+    CHECK(staged.configuration->project_config.option<ConfigOptionStrings>("filament_multi_colour")->values == pack.colors);
+    CHECK(staged.configuration->project_config.option<ConfigOptionStrings>("filament_colour_type")->values ==
+        std::vector<std::string>(6, "1"));
+    CHECK(ProjectConfigRestore::validate(staged.configuration->project_config,
+        staged.configuration->filament_presets, *staged.configuration, error));
+    CHECK(live.project_config == project);
+    CHECK(live.filament_presets == names);
+}
+
 TEST_CASE("color card imports shrink extra slots and allow idle nozzles", "[PrinterFilamentImport][PostGenerationWorkbench]")
 {
     const size_t nozzles = GENERATE(1u, 4u, 6u);
