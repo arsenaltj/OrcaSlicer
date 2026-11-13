@@ -1,3 +1,4 @@
+#include "Presentation/UiRuntime.hpp"
 #include "MainFrame.hpp"
 
 #include <wx/event.h>
@@ -169,6 +170,7 @@
 #include <cassert>
 #include <wx/display.h>
 #include <wx/window.h>
+#include <wx/wupdlock.h>
 
 
 using json = nlohmann::json;
@@ -414,12 +416,8 @@ wxDEFINE_EVENT(EVT_SYNC_CLOUD_PRESET,     SimpleEvent);
 
 #ifdef __APPLE__
 static const wxString ctrl = ("Ctrl+");
-// FIXME: maybe should be using GUI::shortkey_ctrl_prefix() or equivalent?
-static const std::string ctrl_t = u8"\u2318+"; // "Command" on macOS
 #else
 static const wxString ctrl = _L("Ctrl+");
-// FIXME: maybe should be using GUI::shortkey_ctrl_prefix() or equivalent?
-static const wxString ctrl_t = ctrl;
 #endif
 static const wxString shift = _L("Shift+");
 
@@ -588,10 +586,7 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
     //Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_plater->new_project(); }, wxID_HIGHEST + wxID_NEW);
     //Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_plater->load_project(); }, wxID_HIGHEST + wxID_OPEN);
     //// BBS: close save project
-    //Bind(wxEVT_MENU, [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Save Project", TAB_ID_PROJECT)) return; if (m_plater) m_plater->save_project(); }, wxID_HIGHEST + wxID_SAVE);
-    //Bind(wxEVT_MENU, [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Save Project as", TAB_ID_PROJECT)) return; if (m_plater) m_plater->save_project(true); }, wxID_HIGHEST + wxID_SAVEAS);
     ////Bind(wxEVT_MENU, [this](wxCommandEvent&) { if (m_plater) m_plater->add_model(); }, wxID_HIGHEST + wxID_ADD);
-    ////Bind(wxEVT_MENU, [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Delete Selected", TAB_ID_PROJECT)) return; m_plater->remove_selected(); }, wxID_HIGHEST + wxID_DELETE);
     //Bind(wxEVT_MENU, [this](wxCommandEvent&) {
     //        if (!can_add_models())
     //            return;
@@ -609,8 +604,6 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
     //    if (m_plater->is_view3D_shown())
     //        m_plater->redo();
     //    }, wxID_HIGHEST + wxID_REDO);
-    //Bind(wxEVT_MENU, [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Copy", TAB_ID_PROJECT)) return; m_plater->copy_selection_to_clipboard(); }, wxID_HIGHEST + wxID_COPY);
-    //Bind(wxEVT_MENU, [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Paste", TAB_ID_PROJECT)) return; m_plater->paste_from_clipboard(); }, wxID_HIGHEST + wxID_PASTE);
     //Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_plater->cut_selection_to_clipboard(); }, wxID_HIGHEST + wxID_CUT);
 
     //BBS
@@ -691,103 +684,12 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
 
     update_title();
 
-    m_close_poll_timer.SetOwner(this);
-    Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
-        if (m_close_phase != ClosePhase::WaitingForPrinterTransfer)
-            return;
-        if (m_plater && !m_plater->poll_printer_transfer_shutdown())
-            return;
-
-        m_close_poll_timer.Stop();
-        m_close_phase = ClosePhase::Idle;
-        BOOST_LOG_TRIVIAL(info) << "[AppShutdown] close_resumed reason=printer_transfer_idle";
-        Close(false);
-    }, m_close_poll_timer.GetId());
+    init_close_controller();
 
     // declare events
     Bind(wxEVT_CLOSE_WINDOW, [this](wxCloseEvent& event) {
-        const char* phase = m_close_phase == ClosePhase::Idle ? "idle" :
-                            m_close_phase == ClosePhase::WaitingForPrinterTransfer ? "waiting_for_printer_transfer" :
-                            "shutting_down";
-        BOOST_LOG_TRIVIAL(info) << "[AppShutdown] close_received phase=" << phase
-                                << " can_veto=" << event.CanVeto();
-
-        if (m_close_phase != ClosePhase::Idle) {
-            BOOST_LOG_TRIVIAL(info) << "[AppShutdown] duplicate_close_ignored phase=" << phase;
-            if (event.CanVeto())
-                event.Veto();
-            return;
-        }
-
-        if (!m_close_confirmed && event.CanVeto() && m_plater->get_view3D_canvas3D()->get_gizmos_manager().is_in_editing_mode(true)) {
-            // prevents to open the save dirty project dialog
-            event.Veto();
-            BOOST_LOG_TRIVIAL(info) << "[AppShutdown] close_cancelled reason=gizmo_editing";
-            return;
-        }
-
-        //BBS:
-        //if (event.CanVeto() && !wxGetApp().check_and_save_current_preset_changes(_L("Application is closing"), _L("Closing Application while some presets are modified."))) {
-        //    event.Veto();
-        //    return;
-        //}
-        auto check = [](bool yes_or_no) {
-            if (yes_or_no)
-                return true;
-            return wxGetApp().check_and_save_current_preset_changes(_L("Closing application"), _L("Closing Application while some presets are modified."));
-        };
-
-        // BBS: close save project
-        if (!m_close_confirmed) {
-            int result;
-            if (event.CanVeto() && ((result = m_plater->close_with_confirm(check)) == wxID_CANCEL)) {
-                event.Veto();
-                BOOST_LOG_TRIVIAL(info) << "[AppShutdown] close_cancelled reason=project_confirmation";
-                return;
-            }
-            if (event.CanVeto() && !wxGetApp().check_print_host_queue()) {
-                event.Veto();
-                BOOST_LOG_TRIVIAL(info) << "[AppShutdown] close_cancelled reason=print_host_queue";
-                return;
-            }
-        }
-
-    #if 0 // BBS
-        //if (m_plater != nullptr) {
-        //    int saved_project = m_plater->save_project_if_dirty(_L("Closing Application. Current project is modified."));
-        //    if (saved_project == wxID_CANCEL) {
-        //        event.Veto();
-        //        return;
-        //    }
-        //    // check unsaved changes only if project wasn't saved
-        //    else if (plater()->is_project_dirty() && saved_project == wxID_NO && event.CanVeto() &&
-        //             (plater()->is_presets_dirty() && !wxGetApp().check_and_save_current_preset_changes(_L("Application is closing"), _L("Closing Application while some presets are modified.")))) {
-        //        event.Veto();
-        //        return;
-        //    }
-        //}
-    #endif
-
-        if (!m_close_confirmed) {
-            m_close_confirmed = true;
-            MarkdownTip::ExitTip();
-            // Prevent queued selection/UI refresh work from running as normal while transfer cancellation completes.
-            wxGetApp().set_closing(true);
-            wxGetApp().start_exit_watchdog();
-        }
-
-        if (m_plater && !m_plater->request_printer_transfer_shutdown()) {
-            if (event.CanVeto()) {
-                m_close_phase = ClosePhase::WaitingForPrinterTransfer;
-                m_close_poll_timer.Start(50);
-                BOOST_LOG_TRIVIAL(info) << "[AppShutdown] close_deferred reason=printer_transfer";
-                event.Veto();
-                return;
-            }
-            BOOST_LOG_TRIVIAL(warning) << "[AppShutdown] close_cannot_defer reason=non_vetoable_event";
-        }
-
-        m_close_phase = ClosePhase::ShuttingDown;
+        if (!m_close_controller->request_close(event)) return;
+        wxGetApp().start_exit_watchdog();
         BOOST_LOG_TRIVIAL(info) << "[AppShutdown] plater_reset_begin";
         m_plater->reset();
         BOOST_LOG_TRIVIAL(info) << "[AppShutdown] plater_reset_end";
@@ -883,6 +785,44 @@ bool MainFrame::handle_global_shortcut(const KeyChord& chord)
         return false;
 
     switch (*shortcut) {
+    case Shortcut::GoToHome:    m_tabpanel->SelectPageByName(TAB_ID_HOME); break;
+#ifdef SLIC3R_CAD
+    case Shortcut::GoToDesign:  m_tabpanel->SelectPageByName(TAB_ID_DESIGN); break;
+#endif
+    case Shortcut::GoToPrepare: m_tabpanel->SelectPageByName(TAB_ID_PREPARE); break;
+    case Shortcut::GoToPreview: m_tabpanel->SelectPageByName(TAB_ID_PREVIEW); break;
+    case Shortcut::GoToDevice:
+        if (!m_tabpanel->SelectPageByName(TAB_ID_MONITOR))
+            m_tabpanel->SelectPageByName(TAB_ID_MONITOR_WEB);
+        break;
+    case Shortcut::GoToMultiDevice: m_tabpanel->SelectPageByName(TAB_ID_MULTI_DEVICE); break;
+    case Shortcut::GoToProject:     m_tabpanel->SelectPageByName(TAB_ID_PROJECT); break;
+    case Shortcut::GoToCalibration: m_tabpanel->SelectPageByName(TAB_ID_CALIBRATION); break;
+    case Shortcut::TabNext:
+    case Shortcut::TabPrevious: {
+        // Cycle through the tab bar, wrapping around at either end
+        const int count = int(m_tabpanel->GetPageCount());
+        int       sel   = m_tabpanel->GetSelection();
+        if (count > 1 && sel != wxNOT_FOUND) {
+            const int step = (*shortcut == Shortcut::TabNext) ? 1 : count - 1;
+            // Skip a tab that vetoes the switch, such as Device without the network plug-in
+            for (int tried = 1; tried < count; ++tried) {
+                sel = (sel + step) % count;
+                m_tabpanel->SetSelection(size_t(sel));
+                if (m_tabpanel->GetSelection() == sel)
+                    break;
+            }
+            // Focus the tab bar on any page but the canvases, since CHAR_HOOK gets no keys while a web page has focus
+            wxWindow* const page = m_tabpanel->GetCurrentPage();
+            bool keeps_focus = page == m_plater;
+#ifdef SLIC3R_CAD
+            keeps_focus = keeps_focus || page == m_design_page;
+#endif
+            if (!keeps_focus)
+                m_tabpanel->GetBtnsListCtrl()->SetFocus();
+        }
+        break;
+    }
     case Shortcut::SlicePlate:
         if (m_slice_enable) {
             wxGetApp().plater()->update(true, true);
@@ -1269,6 +1209,14 @@ void MainFrame::init_tabpanel() {
 #else
     m_tabpanel->Bind(wxEVT_NOTEBOOK_PAGE_CHANGED, [this](wxBookCtrlEvent& e) {
 #endif
+        // A page's own book (the Calibration page's Tabbook) emits the same event, and it propagates
+        // up here. Treating it as a main tab change resets the selected tab and the undo/redo state,
+        // and the SetFocus() below re-activates the main window on wxGTK, which dismisses the Speed
+        // Dial when the page is built in the background while the dial is open.
+        if (e.GetEventObject() != m_tabpanel) {
+            e.Skip();
+            return;
+        }
         //BBS
         wxWindow* panel = m_tabpanel->GetCurrentPage();
         //wxString page_text = m_tabpanel->GetPageText(sel);
@@ -1764,8 +1712,10 @@ void MainFrame::publish_project()
     // published 3MF); a null pointer means "fresh", keeping the dirty defaults.
     std::vector<std::string> pending_keys;
     std::vector<Slic3r::PublishedMaterialEntry> pending_material;
-    const bool has_prior = m_plater->get_pending_published(pending_keys, pending_material);
-    PublishSettingsDialog dlg(this, has_prior ? &pending_keys : nullptr, has_prior ? &pending_material : nullptr);
+    bool pending_legacy_process = false;
+    const bool has_prior = m_plater->get_pending_published(pending_keys, pending_material, pending_legacy_process);
+    PublishSettingsDialog dlg(this, has_prior ? &pending_keys : nullptr, has_prior ? &pending_material : nullptr,
+                              pending_legacy_process);
     if (dlg.ShowModal() != wxID_OK)
         return;
     m_plater->set_pending_published(dlg.GetPublishedKeys(), dlg.GetPublishedMaterialKeys());

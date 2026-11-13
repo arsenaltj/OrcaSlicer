@@ -86,7 +86,11 @@ private:
     }
     bool same_source_path(const boost::filesystem::path& source, const boost::filesystem::path& selected) const {
         if (key(source) == key(selected)) return true;
-        const auto entry = m_nodes.find(key(selected));
+        auto entry = m_nodes.find(key(selected));
+        // A creator displays the downloaded mirror even when the scan keeps
+        // only the task copy. Resolve either end through the indexed job;
+        // current_chain still verifies both files against the recorded hash.
+        if (entry == m_nodes.end()) entry = m_nodes.find(key(source));
         if (entry == m_nodes.end() || source.extension() != selected.extension()) return false;
         const auto extension = selected.extension().string();
         if (extension != ".glb" && extension != ".obj") return false;

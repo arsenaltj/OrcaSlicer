@@ -27,6 +27,7 @@ public:
     CallbackContext context() const { return {m_epoch, m_opening_id}; }
     bool matches(const CallbackContext& context) const;
     bool apply_snapshot(GroupSnapshot snapshot, const CallbackContext& context, bool restore_draft = false);
+    bool apply_model_job(const ModelJobProjection& job, const CallbackContext& context);
     CommandContext command_context() const;
     bool matches_command(const CommandContext& context, bool uses_selection = true) const;
 
@@ -42,6 +43,7 @@ private:
     struct PendingClick { ViewId view; std::uint64_t due; };
     InputDraft m_draft;
     std::optional<GroupSnapshot> m_group;
+    std::optional<ModelJobProjection> m_accepted_model;
     std::array<bool, 4> m_selected {};
     std::optional<PendingClick> m_pending_click;
     std::string m_opening_id;

@@ -6,7 +6,6 @@
 #include "ModelImageDisplayCopy.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI.hpp"
-#include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include <boost/log/trivial.hpp>
 #include <wx/checkbox.h>
@@ -18,42 +17,6 @@
 
 namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
-
-bool ModelGenerationPanel::request_open_workbench_artifact(const WorkbenchOpenRequest& request)
-{
-    if (!can_replace_model_asset()) return false;
-    const auto rejected = [this](const wxString& message) {
-        show_redesign_confirmation(this, message, _L("无法打开工作台"), {wxOK});
-        return false;
-    };
-    if (request.artifact.local_path.empty() || request.artifact.job_id.empty() ||
-        request.artifact.local_path != request.entry.model_path || request.artifact.job_id != request.entry.job_id ||
-        (!request.expected_sha256.empty() && AI::model_artifact_sha256(request.artifact.local_path) != request.expected_sha256))
-        return rejected(_L("模型文件或任务信息已变化，当前模型已保留。请重新打开对应结果或刷新历史后重试。"));
-    boost::system::error_code ec;
-    if (!boost::filesystem::is_regular_file(request.artifact.local_path, ec))
-        return rejected(_L("模型文件已不存在或无法读取，当前模型已保留。请恢复文件或刷新历史后重试。"));
-    const auto& entry = request.entry;
-    return load_library_entry(entry.model_path, entry.reference_image_path, entry.ai_image_path,
-        entry.palette, entry.palette_roles, entry.use_printable_colors, entry.color_intent_path,
-        entry.color_intent_schema, entry.color_intent_sha256, entry.job_id, entry.title, false, entry.repair_index,
-        {}, request.expected_sha256);
-}
-bool ModelGenerationPanel::request_open_generated_artifact()
-{
-    if (!m_generation_artifact_ready || m_artifact_path.empty()) return false;
-    WorkbenchOpenRequest request;
-    auto& entry = request.entry;
-    entry.model_path = m_artifact_path; entry.job_id = m_job_id;
-    entry.reference_image_path = m_reference_image_path; entry.ai_image_path = m_raw_preview_path;
-    entry.palette = m_job_palette; entry.palette_roles = m_job_palette_roles;
-    entry.use_printable_colors = m_job_use_printable_colors;
-    entry.color_intent_path = m_color_intent_path; entry.color_intent_schema = m_color_intent_schema;
-    entry.color_intent_sha256 = m_color_intent_sha256; entry.title = _L("生成模型");
-    request.artifact.local_path = entry.model_path; request.artifact.job_id = entry.job_id;
-    request.expected_sha256 = m_generation_artifact_sha256;
-    return request_open_workbench_artifact(request);
-}
 
 bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& model_path,
                                                const boost::filesystem::path& reference_image_path,
@@ -67,8 +30,22 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
                                                const std::string& job_id, const wxString& title, bool new_asset,
                                                std::shared_ptr<const ModelHistoryRepairIndex> repairs,
                                                std::shared_ptr<ModelHistoryOpenRequest> restoration,
-                                               const std::string& expected_sha256)
+                                               const std::string& expected_model_sha256)
 {
+    if (m_role != Role::WorkbenchAssets && !restoration && !model_path.empty()) {
+        if (!m_asset_open) return false;
+        WorkbenchOpenRequest request;
+        request.origin = WorkbenchOpenRequest::Origin::History;
+        request.return_context = m_role == Role::SmartCreation ? "smart" : "advanced";
+        request.new_asset = new_asset;
+        auto& entry = request.entry;
+        entry.model_path = model_path; entry.reference_image_path = reference_image_path;
+        entry.ai_image_path = ai_image_path; entry.palette = palette; entry.palette_roles = palette_roles;
+        entry.use_printable_colors = use_printable_colors; entry.color_intent_path = color_intent_path;
+        entry.color_intent_schema = color_intent_schema; entry.color_intent_sha256 = color_intent_sha256;
+        entry.job_id = job_id; entry.title = title; entry.repair_index = std::move(repairs);
+        return m_asset_open(std::move(request));
+    }
     if (m_model_preview == nullptr || m_shutdown || m_preview_loading || (m_history_open && !restoration)) return false;
     if (model_path.empty()) {
         if (can_replace_model_asset()) load_design_library_entry(job_id);
@@ -88,9 +65,9 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     }
     if (!restoration && !can_replace_model_asset()) return false;
     auto request = restoration ? restoration : std::make_shared<ModelHistoryOpenRequest>();
+    request->expected_model_sha256 = expected_model_sha256;
     request->selected_asset = job_id;
     request->root = generated_models_root();
-    request->expected_source = model_path; request->expected_source_sha256 = expected_sha256;
     request->entry.model_path = model_path;
     request->entry.reference_image_path = reference_image_path;
     request->entry.ai_image_path = ai_image_path;
@@ -108,27 +85,21 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
             [&](const auto& entry) { return entry.model_path == model_path; });
         if (found != m_library_entries.end()) request->repairs = found->repair_index;
     }
-    const bool direct_history = !new_asset && bool(m_history_model_open);
+    const bool direct_history = bool(m_history_model_open) && (m_role == Role::WorkbenchAssets || !new_asset);
     if (direct_history || restoration) {
         request->generation = ++m_history_open_generation;
         if (!restoration) {
             const auto previous = std::find_if(m_library_entries.begin(), m_library_entries.end(),
-                [&](const auto& entry) { return entry.model_path == m_workbench_model.path; });
+                [&](const auto& entry) { return entry.model_path == m_displayed_model_path; });
             if (previous != m_library_entries.end()) request->previous = *previous;
             else {
-                request->previous.model_path = m_workbench_model.path;
-                request->previous.job_id = m_workbench_model.asset_id;
-                request->previous.palette = m_workbench_model.palette;
-                request->previous.palette_roles = m_workbench_model.palette_roles;
-                request->previous.use_printable_colors = m_workbench_model.use_printable_colors;
-                request->previous.reference_image_path = m_workbench_model.reference_image_path;
-                request->previous.ai_image_path = m_workbench_model.design_image_path;
-                request->previous.color_intent_path = m_workbench_model.color_intent_path;
-                request->previous.color_intent_schema = m_workbench_model.color_intent_schema;
-                request->previous.color_intent_sha256 = m_workbench_model.color_intent_sha256;
+                request->previous.model_path = m_displayed_model_path;
+                request->previous.job_id = m_displayed_model_job_id;
+                request->previous.palette = m_displayed_model_palette;
+                request->previous.palette_roles = m_displayed_model_palette_roles;
             }
-            if (m_workbench_check_path == m_workbench_model.path.string() &&
-                m_workbench_check_revision == m_workbench_model.revision) request->previous_check = m_workbench_check_result;
+            if (m_workbench_check_path == m_displayed_model_path.string() &&
+                m_workbench_check_revision == m_sequence) request->previous_check = m_workbench_check_result;
             const bool previous_workbench = m_finishing_workbench;
             const bool previous_editing = m_workbench_editing;
             const auto previous_view = m_model_preview->view_state();
@@ -144,7 +115,7 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
                 m_status->SetLabel(previous_status);
                 m_result_summary->SetLabel(previous_summary);
                 m_workbench_load_error = previous_load_error;
-                if (m_workbench_model.ready) m_model_preview->restore_view(previous_view);
+                if (m_model_preview_ready) m_model_preview->restore_view(previous_view);
                 refresh_post_generation_workbench();
             };
             m_history_open = request;
@@ -201,6 +172,7 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     const wxImage ai_image = ai_image_path.empty() ? wxImage() : wxImage(ai_image_path.wstring());
     m_history_display_image = load_model_image_display_copy(ai_image_path);
     m_history_display_source = ai_image_path;
+    m_ui_model_generation_context = true;
     nlohmann::json metadata;
     std::map<std::string, std::string> encoded_fields;
     if (!history_metadata->take_if_current(library_metadata_path(job_id), metadata, encoded_fields)) {
@@ -221,42 +193,153 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
             BOOST_LOG_TRIVIAL(warning) << "Unable to update model load metrics for " << job_id;
     }
 
-    ++m_workbench_model.revision;
-    m_workbench_model.format = AI::model_artifact_format(model_path);
-    m_workbench_model.color_encoding = m_workbench_model.format == "glb" ? "textures_or_vertex_colors" : "vertex_colors";
-    m_workbench_model.sha256 = m_model_preview->model_sha256();
-    m_workbench_model.reference_image_path = reference_image_path;
-    m_workbench_model.design_image_path = ai_image_path;
-    m_workbench_model.use_printable_colors = use_printable_colors;
-    m_workbench_model.color_intent_path = color_intent_path;
-    m_workbench_model.color_intent_schema = color_intent_schema;
-    m_workbench_model.color_intent_sha256 = color_intent_sha256;
+    m_poll_timer.Stop();
+    m_client.cancel_current();
+    ++m_sequence;
+    ++m_model_generation_session;
+    // The old download callbacks are invalidated above. Clear their busy and
+    // output state only after the historical model has loaded successfully.
+    m_preview_download_in_flight = false;
+    m_preview_download_cancelled = false;
+    m_preview_output_available = false;
+    m_preview_output = "preview";
+    m_preview_path.clear();
+    m_job_id.clear();
+    m_job_palette = palette;
+    m_job_palette_roles = palette_roles.empty() ? automatic_palette_roles(palette) : palette_roles;
+    m_job_use_printable_colors = use_printable_colors;
+    m_custom_palette = palette;
+    m_palette_roles = m_job_palette_roles;
+    m_palette_roles_source = palette;
+    m_palette_source->SetSelection(use_printable_colors && !palette.empty() ? 2 : 1);
+    m_palette_recommendation_confirmed = !palette.empty();
+    m_awaiting_palette_confirmation = false;
+    // Replace the visible input atomically after the new model has loaded.
+    // Legacy records may have no input context; never borrow it from the last model.
+    const auto input_string = [&metadata](const char* key) {
+        const auto value = metadata.find(key);
+        return value != metadata.end() && value->is_string() ? value->get<std::string>() : std::string();
+    };
+    m_job_generation_options = AIModelGenerationClient::restore_generation_options(metadata);
+    m_selected_design_provider = m_job_generation_options.design_provider;
+    m_selected_design_model = m_job_generation_options.design_model;
+    m_selected_geometry_model = m_job_generation_options.geometry_model;
+    const std::string& texture_quality = m_job_generation_options.texture_quality;
+    const auto saved_face_limit = metadata.find("face_limit");
+    const int historical_face_limit = saved_face_limit != metadata.end() && saved_face_limit->is_number_integer()
+        ? saved_face_limit->get<int>() : 1000000;
+    m_job_face_limit = m_job_generation_options.face_limit;
+    m_legacy_generation_defaults = historical_face_limit != m_job_face_limit;
+    m_job_generation_profile = m_job_face_limit <= 300000 ? "performance" : "quality";
+    m_provider->SetSelection(m_job_generation_options.provider == "yoyoclaw" ? 1 : 0);
+    refresh_provider_options();
+    m_quality->SetSelection(m_job_face_limit <= 300000 ? 0 : m_job_face_limit == 2000000 && m_quality->GetCount() == 3 ? 2 : 1);
+    m_geometry_quality->SetSelection(m_geometry_quality->GetCount() > 1 && m_job_generation_options.geometry_quality == "detailed" ? 1 : 0);
+    m_texture_quality->SetSelection(m_texture_quality->GetCount() == 1 ? 0 : texture_quality == "extreme" ? 2 : texture_quality == "detailed" ? 1 : 0);
+    m_output_format->SetSelection(m_job_generation_options.output_format == "obj" ? 1 : 0);
+    m_job_provider_name = m_job_generation_options.provider;
+    m_job_provider_task_id = input_string("provider_task_id");
+    m_job_provider_conversion_task_id = input_string("provider_conversion_task_id");
+    std::string saved_prompt = input_string("prompt");
+    if (saved_prompt == INTERNAL_DEFAULT_IMAGE_INSTRUCTION || input_string("source") == "local_finishing" || input_string("source")=="local_import")
+        saved_prompt.clear();
+    m_job_prompt = from_u8(saved_prompt);
+    m_job_style = input_string("style");
+    m_job_custom_style = input_string("custom_style");
+    m_prompt->ChangeValue(m_job_prompt);
+    m_prepared_prompt->ChangeValue(wxString());
+    m_custom_style->ChangeValue(from_u8(m_job_custom_style));
+    m_style->SetSelection(m_job_style.empty() ? wxNOT_FOUND : style_selection(m_job_style));
+    m_stylized_style->SetSelection(m_job_style.empty() ? wxNOT_FOUND : stylized_style_selection(m_job_style));
+    m_style->SetToolTip(m_job_style.empty() ? _L("该历史记录未保存风格；再次生成前请选择风格。") : wxString());
+    m_style_user_selected = !m_job_style.empty();
+    ++m_style_recommendation_sequence;
+    m_style_recommendation_loading = false;
+    m_style_recommendation_available = false;
+    m_style_recommendation = {};
+    m_restoring_input = false;
+    m_job_image_path = reference_image.IsOk() ? reference_image_path : boost::filesystem::path();
+    m_selected_image_path = m_job_image_path;
+    m_selected_image->SetLabel(m_selected_image_path.empty()
+        ? _L("该历史记录没有可用参考图") : wxString(m_selected_image_path.filename().wstring()));
+    m_job_preview_expected = reference_image.IsOk() || ai_image.IsOk();
+    m_reference_image_path = reference_image.IsOk() ? reference_image_path : boost::filesystem::path();
+    m_raw_preview_path = ai_image.IsOk() ? ai_image_path : boost::filesystem::path();
+    m_reference_image = reference_image.IsOk() ? reference_image.Copy() : wxImage();
+    m_raw_preview_image = ai_image.IsOk() ? ai_image.Copy() : wxImage();
+    m_model_reference_image = wxImage();
+    m_strict_preview_image = wxImage();
+    m_model_views_image = wxImage();
+    m_clean_preview_image = ai_image.IsOk() ? ai_image.Copy() : wxImage();
+    m_heatmap_image = wxImage();
+    m_raw_preview_available = ai_image.IsOk();
+    m_model_reference_available = false;
+    m_strict_preview_available = false;
+    m_model_views_available = false;
+    m_heatmap_available = false;
+    m_style_preview_ready = ai_image.IsOk();
+    m_local_image_history = false;
+    m_history_model_design_reusable = ai_image.IsOk() && input_string("source") == "image";
+    m_style_preview_placeholder = ai_image.IsOk()
+        ? wxString()
+        : _L("该历史记录未保存 AI 生成图");
+    if (m_preview_stage != nullptr)
+        m_preview_stage->SetSelection(0);
+    m_artifact_path = model_path;
+    m_artifact_format = AI::model_artifact_format(model_path);
+    m_artifact_color_encoding = m_artifact_format == "glb" ? "textures_or_vertex_colors" : "vertex_colors";
+    m_color_intent_path = color_intent_path;
+    m_color_intent_schema = color_intent_schema;
+    m_color_intent_sha256 = color_intent_sha256;
     m_busy = false;
-    m_workbench_model.path = model_path;
-    m_workbench_model.asset_id = job_id;
-    m_workbench_model.palette = palette;
-    m_workbench_model.palette_roles = palette_roles.empty() ? automatic_palette_roles(palette) : palette_roles;
-    m_workbench_model.ready = true;
+    m_awaiting_confirmation = false;
+    m_ready = true;
+    m_artifact_download_started = true;
+    if (m_use_printable_colors != nullptr)
+        m_use_printable_colors->SetValue(use_printable_colors);
+    m_displayed_model_path = model_path;
+    m_displayed_model_job_id = job_id;
+    m_displayed_model_palette = palette;
+    m_displayed_model_palette_roles = m_job_palette_roles;
+    m_model_preview_ready = true;
     m_workbench_load_error = false;
     if (m_finishing_status != nullptr)
-        m_finishing_status->SetLabel(m_workbench_model.format == "glb"
+        m_finishing_status->SetLabel(m_artifact_format == "glb"
             ? _L("点选拼图改色，调整范围后保存新版本。原件和未改区域的纹理保留。")
             : _L("当前历史模型已加载，处理结果将另存为新版本。"));
     show_model_comparison();
     m_library_model_loaded = true;
+    // Historical records do not persist every print-control value. Compare
+    // later edits against the restored controls, as active-job restore does.
+    m_job_print_settings = current_print_settings();
+    m_job_palette_color_count = current_palette_color_count();
     restore_portrait_draft();
+    clear_model_quality();
+    update_progress(100, 4, _L("检查并导入"));
     m_model_stats->SetLabel(wxString::Format(
         _L("%llu 个三角面 · %llu 个原始色值\n%.1f × %.1f × %.1f mm\n%s"),
         static_cast<unsigned long long>(triangle_count), static_cast<unsigned long long>(color_count),
         dimensions.x(), dimensions.y(), dimensions.z(),
         model_load_summary(triangle_count, load_seconds).c_str()));
     m_model_preview_message->SetLabel(_L("历史模型已自动摆正；可同时对照原图和 AI 图后再导入。"));
+    m_status->SetLabel(_L("已加载历史模型：") + title);
+    m_result_summary->SetLabel(_L("历史模型已加载到结果对照，可继续检查图片并导入准备页。"));
+    m_preview_message->SetLabel(reference_image.IsOk() && ai_image.IsOk()
+        ? _L("历史素材已恢复：原图与 AI 生成图可同屏对照。")
+        : reference_image.IsOk()
+            ? _L("已恢复原图；该历史记录未保存 AI 生成图。")
+            : ai_image.IsOk()
+                ? _L("已恢复 AI 生成图；该任务没有可用原图。")
+                : _L("旧历史记录未保存关联图片，3D 模型仍可正常预览。"));
+    if (m_preview_book != nullptr)
+        m_preview_book->SetSelection(0);
+    apply_preview_stage(true);
     m_model_preview->refresh();
     // Restore evidence before controls, presentation or automatic checking can
     // observe the new asset identity. Uncertified originals use the normal check.
     m_workbench_check_result = request->check.value_or(WorkbenchCheckResult{});
     m_workbench_check_path = request->check ? model_path.string() : std::string{};
-    m_workbench_check_revision = request->check ? m_workbench_model.revision : 0;
+    m_workbench_check_revision = request->check ? m_sequence : 0;
     m_workbench_check_card_visible = false;
     refresh_controls();
     if (request->restoring) {
@@ -267,6 +350,36 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         m_history_model_open({request->generation, request->selected_asset, ModelHistoryOpenEvent::Phase::Loaded,
             ModelHistoryOpenEvent::Stage::Displaying, job_id});
     }
+    const uint64_t sequence = m_sequence;
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    m_client.get_status(job_id,
+        [weak, sequence, job_id](AIModelGenerationClient::JobStatus status) mutable {
+            if (!weak) return;
+            wxGetApp().CallAfter([weak, sequence, job_id, status = std::move(status)]() mutable {
+                if (!weak || weak->m_shutdown || sequence != weak->m_sequence ||
+                    weak->m_displayed_model_job_id != job_id)
+                    return;
+                if (!status.palette_roles.empty() && status.palette == weak->m_displayed_model_palette) {
+                    weak->m_job_palette_roles = status.palette_roles;
+                    weak->m_displayed_model_palette_roles = status.palette_roles;
+                }
+                weak->update_library_provider_tasks(job_id, status);
+                weak->apply_model_quality(status.model_quality);
+                weak->apply_visual_quality(status.visual_quality);
+                weak->apply_model_refinement(status.refinement);
+                weak->refresh_controls();
+            });
+        },
+        [weak, sequence, job_id](std::string) {
+            if (!weak) return;
+            wxGetApp().CallAfter([weak, sequence, job_id]() {
+                if (!weak || weak->m_shutdown || sequence != weak->m_sequence ||
+                    weak->m_displayed_model_job_id != job_id)
+                    return;
+                weak->refresh_model_quality_card();
+                weak->refresh_controls();
+            });
+        });
     }, [this, previous_model_stats, request, direct_history](std::string error) {
         m_workbench_load_error = true;
         m_model_stats->SetLabel(previous_model_stats);
@@ -277,22 +390,21 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
             // Never expose a failed target as if it were the previous asset.
             m_model_preview->retain_history_rollback(false);
             m_model_preview->clear();
-            m_workbench_model.ready = false;
-            m_workbench_model.path.clear();
-            m_workbench_model.asset_id.clear();
+            m_model_preview_ready = false;
+            m_ready = false;
+            m_displayed_model_path.clear();
+            m_displayed_model_job_id.clear();
             m_workbench_check_result = {};
             if (m_history_open == request) m_history_open.reset();
             if (request->restored) request->restored();
         } else if (direct_history && m_history_open == request) {
-            m_history_model_open({request->generation, request->selected_asset, ModelHistoryOpenEvent::Phase::Failed});
+            m_history_model_open({request->generation, request->selected_asset,
+                ModelHistoryOpenEvent::Phase::Failed, ModelHistoryOpenEvent::Stage::Reading, {}, error});
         }
     }, library_metadata_path(job_id), history_metadata,
        [this, request, direct_history] {
            return !request->canceled && (!direct_history || m_history_open == request) &&
-               (request->expected_source_sha256.empty() ||
-                AI::model_artifact_sha256(request->expected_source) == request->expected_source_sha256) &&
-               (request->restoring || (AI::model_artifact_sha256(request->entry.model_path) == request->model_hash &&
-                AI::model_artifact_sha256(library_metadata_path(request->entry.job_id)) == request->record_hash));
+               (request->restoring || (request->verified_files && request->verified_files->current()));
        }, request);
     return true;
 }
@@ -320,10 +432,13 @@ void ModelGenerationPanel::finish_history_model_open(bool accepted, std::functio
     if (previous.model_path.empty()) {
         m_model_preview->retain_history_rollback(false);
         m_model_preview->clear();
-        m_workbench_model.path.clear();
-        m_workbench_model.asset_id.clear();
-        m_workbench_model.ready = false;
-        ++m_workbench_model.revision;
+        m_displayed_model_path.clear();
+        m_displayed_model_job_id.clear();
+        m_model_preview_ready = false;
+        m_ready = false;
+        m_ui_model_generation_context = false;
+        ++m_sequence;
+        ++m_model_generation_session;
         if (request->restore_presentation) request->restore_presentation();
         refresh_controls();
         if (complete) complete();

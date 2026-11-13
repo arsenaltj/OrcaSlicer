@@ -2,6 +2,7 @@
 #include <wx/string.h>
 #include <algorithm>
 #include <map>
+#include <set>
 
 namespace Slic3r::PlatformLibrary {
 namespace {
@@ -48,23 +49,27 @@ Json page(Json items,const Json& filters) {
     return {{"items",std::move(selected)},{"offset",offset},{"limit",24},{"total",total},{"hasMore",offset+24<total}};
 }
 }
-Json Client::owned_models(Cancellation cancel) const {
+Json Client::owned_models(Cancellation cancel, std::size_t* unreadable) const {
     if(m_identity.bearer.empty()) throw Error(401,"请先登录");
-    Json items=Json::array();std::map<std::string,bool> seen;
+    Json items=Json::array();std::map<std::string,bool> seen;std::set<std::string> pages;
+    if(unreadable) *unreadable=0;
     for(std::size_t offset=0;;offset+=100) {
         check(cancel);if(offset>9999999) throw Error(0,"本人作品数量超出分页范围");
         const auto batch=query("/v1/me/models?offset="+std::to_string(offset),cancel);check(cancel);
         if(!batch.is_array() || batch.size()>100) throw Error(0,"本人作品分页无效");
-        std::size_t added=0;
+        if(batch.size()==100 && !pages.insert(batch.dump()).second)
+            throw Error(0,"本人作品分页未推进，请刷新重试");
         for(const auto& source:batch) {
-            auto card=owned_card(source,m_identity);
-            if(seen.emplace(key(card),true).second) {items.push_back(std::move(card));++added;}
+            try {
+                auto card=owned_card(source,m_identity);
+                if(seen.emplace(key(card),true).second) items.push_back(std::move(card));
+            } catch(const std::exception&) {if(unreadable) ++*unreadable;}
         }
         if(batch.size()<100) return items;
-        if(!added) throw Error(0,"本人作品分页未推进，请刷新重试");
     }
 }
-Json Client::personal(const std::string& filter,const Json& filters,Cancellation cancel,Json cache) const {
+Json Client::personal(const std::string& filter,const Json& filters,Cancellation cancel,Json cache,
+                      std::function<void(const Json&)> progress) const {
     if(m_identity.bearer.empty()) return {{"items",Json::array()},{"hasMore",false},{"cache",Json::object()}};
     if(filter!="all" && filter!="models") throw Error(0,"个人筛选无效");
     if(!cache.is_object() || cache.value("account","")!=m_identity.subject ||
@@ -74,7 +79,10 @@ Json Client::personal(const std::string& filter,const Json& filters,Cancellation
     const auto read=[&](const std::string& kind) {
         if(cache.contains(kind)) return;
         try {
-            if(kind=="models") {cache[kind]=owned_models(cancel);return;}
+            if(kind=="models") {
+                std::size_t unreadable=0;cache[kind]=owned_models(cancel,&unreadable);
+                cache["modelsPartial"]=unreadable!=0;return;
+            }
             Json items=Json::array();std::size_t offset=0;
             for(;;) {
                 check(cancel);const auto batch=activity(kind,{{"offset",std::to_string(offset)}},cancel);
@@ -88,7 +96,7 @@ Json Client::personal(const std::string& filter,const Json& filters,Cancellation
         } catch(const Error& error) {check(cancel);warnings.push_back(kind);reauth=reauth || error.status==401;}
           catch(const std::exception&) {check(cancel);warnings.push_back(kind);}
     };
-    read("models");if(filter=="all") for(const char* kind:{"likes","favorites","downloads","views"}) read(kind);
+    const auto project=[&] {
     check(cancel);std::map<std::string,Json> merged;
     const auto append=[&](const std::string& kind) {
         if(!cache.contains(kind)) return;
@@ -102,8 +110,18 @@ Json Client::personal(const std::string& filter,const Json& filters,Cancellation
     };
     append("models");if(filter=="all") for(const char* kind:{"likes","favorites","downloads","views"}) append(kind);
     Json items=Json::array();for(auto& pair:merged) items.push_back(std::move(pair.second));
-    auto result=page(std::move(items),filters);result["cache"]=std::move(cache);result["unavailable"]=std::move(warnings);
+    auto result=page(std::move(items),filters);result["cache"]=cache;result["unavailable"]=warnings;
+    if(cache.value("modelsPartial",false)) result["unavailable"].push_back("models");
     result["reauthRequired"]=reauth;return result;
+    };
+    read("models");
+    if(filter=="all") {
+        if(progress) progress(project());
+        for(const char* kind:{"likes","favorites","downloads","views"}) {
+            read(kind);if(progress) progress(project());
+        }
+    }
+    return project();
 }
 Json Client::presentation_detail(const std::string& id,int version,const std::string& visitor,Cancellation cancel) const {
     auto result=detail(id,version,cancel);check(cancel);

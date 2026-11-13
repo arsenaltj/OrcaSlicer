@@ -7,9 +7,7 @@
 #include "../Plater.hpp"
 #include "../PartPlate.hpp"
 #include "../GUI_App.hpp"
-#include <future>
-#include <atomic>
-#include <wx/timer.h>
+#include "../Presentation/UiRuntime.hpp"
 
 namespace Slic3r::GUI {
 
@@ -19,10 +17,15 @@ class RedesignSlicingTools final {
 public:
     RedesignSlicingTools(Plater& plater, std::function<void()> changed)
         : m_plater(plater), m_changed(std::move(changed)) {
-        m_timer.Bind(wxEVT_TIMER, [this](wxTimerEvent&) { finish(); });
+        Presentation::background_tasks().on_shutdown(this, [this] {
+            m_stopping = true; m_tasks.cancel();
+        });
     }
-    ~RedesignSlicingTools() { m_timer.Stop(); m_cancel = true; if (m_work.valid()) m_work.wait(); }
-    bool busy() const { return m_work.valid(); }
+    ~RedesignSlicingTools() {
+        Presentation::background_tasks().remove_shutdown_hook(this);
+        m_alive.reset(); m_tasks.cancel();
+    }
+    bool busy() const { return m_busy; }
     const std::vector<std::string>& palette() const { return m_palette; }
     const WorkbenchCheckResult& check() const { return m_check; }
     const std::string& message() const { return m_message; }
@@ -61,7 +64,7 @@ public:
         if (busy() || m_plater.is_background_process_slicing()) return false;
         auto* plate = m_plater.get_partplate_list().get_curr_plate();
         if (!plate) return false;
-        std::vector<TriangleMesh> meshes;
+        std::vector<std::shared_ptr<const TriangleMesh>> meshes;
         const auto& objects = m_plater.model().objects;
         for (size_t i = 0; i < objects.size(); ++i) {
             const auto* object = objects[i]; if (!object) continue;
@@ -69,16 +72,17 @@ public:
             for (size_t j = 0; j < object->instances.size(); ++j)
                 on_plate |= plate->contain_instance(int(i), int(j));
             if (on_plate) for (const auto* volume : object->volumes)
-                if (volume && volume->is_model_part()) meshes.push_back(volume->mesh());
+                if (volume && volume->is_model_part()) meshes.push_back(volume->mesh_ptr());
         }
         if (meshes.empty()) return false;
         m_guard = OrcaWorkspaceAdapter(&m_plater, {}).capture_topology_guard();
         m_check_guard = m_guard;
         m_check.status = WorkbenchCheckStatus::Running;
-        m_work = std::async(std::launch::async, [this, meshes = std::move(meshes)] {
+        const bool accepted = submit("slicing-check", [meshes = std::move(meshes)](const Presentation::TaskContext& task) {
             Result result; result.is_check = true; result.check.status = WorkbenchCheckStatus::Normal;
             for (const auto& mesh : meshes) {
-                const auto checked = inspect_workbench_mesh(mesh, [this] { return m_cancel.load(); });
+                if (task.canceled()) break;
+                const auto checked = inspect_workbench_mesh(*mesh, [&task] { return task.canceled(); });
                 if (checked.status == WorkbenchCheckStatus::Failed) { result.check = checked; break; }
                 result.check.boundary_edges += checked.boundary_edges;
                 result.check.nonmanifold_edges += checked.nonmanifold_edges;
@@ -97,7 +101,8 @@ public:
                     std::to_string(c.inconsistent_edges) + "。壁厚、悬垂和自交未检查。";
             return result;
         });
-        m_timer.Start(100); m_changed(); return true;
+        if (!accepted) { m_check = {}; m_check_guard = {}; }
+        return accepted;
     }
 
     bool request_colors(bool portrait, int source, size_t count,
@@ -127,12 +132,12 @@ public:
             if (channel.slot < compatible.size()) compatible[channel.slot] = channel.compatible;
         count = std::clamp(count, size_t(1), portrait ? size_t(6) : size_t(32));
         auto packs = m_packs;
-        m_work = std::async(std::launch::async, [this, mesh = volume->mesh(), painting = m_source, base = m_base,
+        return submit("slicing-colors", [mesh = volume->mesh_ptr(), painting = m_source, base = m_base,
             colors = std::move(colors), compatible = std::move(compatible), portrait, source, count,
-            packs = std::move(packs), manual = std::move(manual)] {
+            packs = std::move(packs), manual = std::move(manual)](const Presentation::TaskContext&) {
             Result result;
             try {
-                SlicingModelPalette::Selector selector(mesh); selector.deserialize(painting);
+                SlicingModelPalette::Selector selector(*mesh); selector.deserialize(painting);
                 const auto weights = selector.areas(base);
                 PreviewPalette::Histogram histogram;
                 for (size_t i = 0; i < colors.size() && i < weights.size(); ++i) {
@@ -147,12 +152,11 @@ public:
                 }
                 const auto targets = SlicingModelPalette::select_targets(histogram, colors, compatible,
                     count, source, manual, preferred);
-                result.success = SlicingModelPalette::prepare(mesh, painting, base, colors, compatible,
+                result.success = SlicingModelPalette::prepare(*mesh, painting, base, colors, compatible,
                     targets, result.painting, result.used, result.error);
             } catch (const std::exception& error) { result.error = error.what(); }
             return result;
         });
-        m_timer.Start(100); m_changed(); return true;
     }
     static PreviewPalette::Color rgb(const std::string& hex) {
         const wxColour color(wxString::FromUTF8(hex));
@@ -187,11 +191,29 @@ private:
         }
         return part;
     }
-    void finish() {
-        if (!m_work.valid() || m_work.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
-        m_timer.Stop();
-        Result result;
-        try { result = m_work.get(); } catch (const std::exception& error) { result.error = error.what(); }
+    template<class Work> bool submit(const char* identity, Work work) {
+        if (m_stopping || m_busy) return false;
+        const auto task = m_tasks.begin(identity, Presentation::TaskLifetime::Transaction);
+        const auto alive = std::weak_ptr<const char>(m_alive);
+        m_busy = true;
+        const bool accepted = Presentation::background_tasks().submit(task, std::move(work),
+            [this, alive, task](Presentation::TaskResult<Result> outcome) {
+                if (alive.expired() || !m_tasks.matches(task)) return;
+                m_busy = false;
+                if (m_stopping || outcome.canceled) return;
+                auto result = std::move(outcome.value).value_or(Result{});
+                if (outcome.error) {
+                    try { std::rethrow_exception(outcome.error); }
+                    catch (const std::exception& error) { result.error = error.what(); }
+                    catch (...) { result.error = "当前处理未完成，模型保持原状。"; }
+                }
+                finish(std::move(result));
+            }, Presentation::TaskPriority::Visible);
+        if (!accepted) { m_busy = false; return false; }
+        m_changed(); return true;
+    }
+    void finish(Result result) {
+        Presentation::assert_gui_thread();
         if (!result.is_check && m_check.status == WorkbenchCheckStatus::Running) {
             m_check.status = WorkbenchCheckStatus::Failed; m_check.summary = result.error;
         }
@@ -231,9 +253,9 @@ private:
     Plater& m_plater;
     std::function<void()> m_changed;
     std::function<bool()> m_guard, m_check_guard;
-    wxTimer m_timer;
-    std::future<Result> m_work;
-    std::atomic<bool> m_cancel{false};
+    Presentation::TaskScope m_tasks;
+    std::shared_ptr<const char> m_alive{std::make_shared<const char>(0)};
+    bool m_busy{false}, m_stopping{false};
     ObjectID m_target_id, m_source_id;
     std::string m_geometry, m_message;
     TriangleSelector::TriangleSplittingData m_source;

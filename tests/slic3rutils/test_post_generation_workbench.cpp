@@ -8,6 +8,8 @@
 #include "slic3r/GUI/AI/ModelGeneration/ModelPreviewTextureColor.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportSession.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportEligibility.hpp"
+#include "slic3r/GUI/Presentation/UiRuntime.hpp"
+#include <wx/init.h>
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportUiGuard.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchProjectColor.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
@@ -35,6 +37,7 @@
 #include "slic3r/GUI/AI/Orca/LocalPrintModelImport.hpp"
 #include "slic3r/GUI/AI/Orca/SlicingModelPalette.hpp"
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
+#include "slic3r/GUI/Redesign/RedesignWorkspaceNavigation.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelPreviewColorState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PrinterFilamentPreview.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyCandidateSnapshot.hpp"
@@ -56,6 +59,61 @@
 #include <vector>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("Returning through advanced creation reacquires the shared smart history without changing drawer preferences",
+          "[PostGenerationWorkbench][WorkbenchHistorySidebar]")
+{
+    const bool collapsed = GENERATE(false, true);
+    WorkbenchHistorySidebarState state;
+    if (collapsed) state.toggle(true, false);
+    state.toggle(false, false); // Workbench preference remains independent.
+    const bool creation_open = state.creation_open;
+    const bool workbench_open = state.workbench_open;
+    using Page = RedesignWorkspacePage;
+    using Action = WorkbenchHistoryMountAction;
+
+    // The shared drawer is taken back by the workbench, then the creator
+    // returns to advanced mode. Neither retained page may claim the drawer.
+    CHECK_FALSE(creation_history_sidebar_active(Page::Model, true, true));
+    CHECK_FALSE(creation_history_sidebar_active(Page::Image, true, true));
+    CHECK(creation_history_sidebar_active(Page::Image, true, false));
+    CHECK(workbench_history_mount_action(false, false, false) == Action::Attach);
+    CHECK(state.panel_visible(true, false, false) == creation_open);
+
+    // Repeated navigation/restore notifications refresh the same attachment;
+    // they must never add a second sizer item or reset a collapsed drawer.
+    for (int cycle = 0; cycle < 20; ++cycle) {
+        CHECK(workbench_history_mount_action(true, true, true) == Action::Refresh);
+        CHECK(state.panel_visible(true, false, false) == creation_open);
+        CHECK(state.workbench_open == workbench_open);
+        CHECK_FALSE(creation_history_sidebar_active(Page::Image, true, true));
+        CHECK(creation_history_sidebar_active(Page::Image, true, false));
+    }
+}
+
+TEST_CASE("History mounting preserves temporary import ownership and refuses a different retained host",
+          "[PostGenerationWorkbench][WorkbenchHistorySidebar]")
+{
+    using Action = WorkbenchHistoryMountAction;
+    CHECK(workbench_history_mount_action(false, false, true) == Action::Skip);
+    CHECK(workbench_history_mount_action(true, false, true) == Action::Skip);
+    CHECK(workbench_history_mount_action(true, false, false) == Action::Skip);
+    // Import rollback restores the home before the smart page can reacquire it.
+    CHECK(workbench_history_mount_action(false, false, false) == Action::Attach);
+    CHECK(workbench_history_mount_action(true, true, true) == Action::Refresh);
+}
+
+TEST_CASE("A deferred smart history refresh cannot claim another page or creation mode",
+          "[PostGenerationWorkbench][WorkbenchHistorySidebar]")
+{
+    using Page = RedesignWorkspacePage;
+    CHECK(creation_history_sidebar_active(Page::Image, true, false));
+    const auto destination = GENERATE(Page::Assets, Page::Model, Page::Print, Page::Account);
+    CHECK_FALSE(creation_history_sidebar_active(destination, true, false));
+    CHECK_FALSE(creation_history_sidebar_active(Page::Image, true, true));
+    CHECK_FALSE(creation_history_sidebar_active(Page::Image, false, false));
+    CHECK(creation_history_sidebar_active(Page::Image, true, false));
+}
 
 TEST_CASE("History drawers retain independent page preferences across temporary hiding",
           "[PostGenerationWorkbench][WorkbenchHistorySidebar]")
@@ -995,6 +1053,56 @@ TEST_CASE("closed and explicitly unchecked imports use their own current evidenc
     CHECK(workbench_import_request_allowed(state, request));
     state.check.model_sha256 = std::string(64, 'e');
     CHECK_FALSE(workbench_import_request_allowed(state, request));
+}
+
+TEST_CASE("An asynchronous color match admits slicing from the released editor instead of a stale busy view", "[WorkbenchImportEligibility][PostGenerationWorkbench][UiLifecycle]")
+{
+    wxInitializer init;
+    REQUIRE(init.IsOk());
+    PostGenerationWorkbenchState live;
+    live.asset_id = "matched-model";
+    live.model_path = "generated/matched.glb";
+    live.check.status = WorkbenchCheckStatus::Normal;
+    live.check.model_sha256 = std::string(64, 'a');
+    live.can_import_for_slicing = true;
+    // The Shell snapshot was published while the match was still running.
+    const auto cached_busy = live;
+    Slic3r::AI::ModelImportRequest request;
+    request.artifact.local_path = live.model_path;
+    request.topology_check_sha256 = live.check.model_sha256;
+    CHECK_FALSE(workbench_import_request_allowed(cached_busy, request));
+    const int change = GENERATE(0, 1, 2, 3, 4, 5);
+    Presentation::TaskScope scope;
+    const auto context = scope.begin(live.asset_id);
+    std::promise<std::function<void()>> delivery;
+    auto queued = delivery.get_future();
+    Presentation::TaskRunner tasks([&](auto callback) { delivery.set_value(std::move(callback)); });
+    WorkbenchImportSession transaction;
+    unsigned commits = 0;
+    const auto gui_thread = std::this_thread::get_id();
+    REQUIRE(tasks.submit(context, [request](const auto&) { return request; },
+        [&](Presentation::TaskResult<Slic3r::AI::ModelImportRequest> result) {
+            REQUIRE(std::this_thread::get_id() == gui_thread);
+            REQUIRE_FALSE(result.error);
+            if (!scope.matches(context) || result.canceled || !result.value) return;
+            // Completion releases processing before requesting the next action.
+            live.actions.can_import = change != 4;
+            if (current_workbench_import_source(*result.value, [&] { return live; }) &&
+                transaction.advance(WorkbenchImportPhase::Committing)) ++commits;
+        }));
+    REQUIRE(queued.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    if (change == 1) scope.cancel();
+    if (change == 2) live.model_path = "generated/replacement.glb";
+    if (change == 3) live.check.model_sha256 = std::string(64, 'b');
+    if (change == 5) scope.begin("newer-asset");
+    queued.get()();
+    REQUIRE(tasks.idle());
+    CHECK(commits == (change == 0 ? 1u : 0u));
+    CHECK_FALSE(workbench_import_request_allowed(cached_busy, request));
+    if (change == 0) {
+        CHECK_FALSE(transaction.advance(WorkbenchImportPhase::Committing));
+        CHECK(current_workbench_import_source(request, [&] { return live; }).has_value());
+    }
 }
 
 TEST_CASE("background import handoffs preserve the UI tracker list and source guard", "[WorkbenchImportUiGuard][PostGenerationWorkbench]")
@@ -3207,9 +3315,8 @@ TEST_CASE("partially loaded printers retain their spools through native purge no
     const size_t nozzles = GENERATE(4u, 6u);
     const size_t spools = nozzles - 2;
     auto bundle = printer_filament_fixture(nozzles, spools);
-    // Runtime normalization operates on the already loaded project. The
-    // selection-restoration helper pads short saved preset lists before their
-    // parallel project arrays are loaded; it is not this workbench entry point.
+    // Purge normalization follows actual loaded spools, independently of
+    // available nozzles or the selection-restoration entry point.
     bundle.update_multi_material_filament_presets();
     const auto state = PrinterFilamentConfig::capture(bundle);
     CHECK(state.ready);
@@ -3223,15 +3330,50 @@ TEST_CASE("partially loaded printers retain their spools through native purge no
     CHECK(valid);
 }
 
-TEST_CASE("restoring a short preset selection retains the native nozzle minimum", "[PrinterFilamentRecipes][PrinterFilaments]")
+TEST_CASE("restoring a short preset selection aligns project arrays without loading idle nozzles", "[PrinterFilamentRecipes][PrinterFilaments]")
 {
     const size_t nozzles = GENERATE(4u, 6u);
+    const size_t spools = nozzles - 2;
     auto bundle = printer_filament_fixture(nozzles, nozzles);
-    bundle.filament_presets.resize(nozzles - 2);
+    bundle.project_config.option<Slic3r::ConfigOptionStrings>("filament_multi_colour")->values[0] = "#123456 #654321";
+    bundle.project_config.option<Slic3r::ConfigOptionStrings>("filament_colour_type")->values[0] = "2";
+    bundle.project_config.option<Slic3r::ConfigOptionInts>("filament_map")->values[0] = 2;
+    bundle.project_config.option<Slic3r::ConfigOptionFloats>("flush_volumes_matrix")->values[1] = 321.;
+    bundle.filament_presets.resize(spools);
+    const auto selected = bundle.filament_presets;
     bundle.update_filament_count();
-    CHECK(bundle.filament_presets.size() == nozzles);
+    CHECK(bundle.filament_presets == selected);
+    CHECK(bundle.filament_presets.size() == spools);
     CHECK(bundle.get_printer_extruder_count() == nozzles);
-    CHECK(PrinterFilamentConfig::capture(bundle).ready);
+    const auto state = PrinterFilamentConfig::capture(bundle);
+    CHECK(state.ready);
+    CHECK(state.physical_count == spools);
+    CHECK(state.idle_nozzles == 2);
+    CHECK(bundle.project_config.option<Slic3r::ConfigOptionStrings>("filament_multi_colour")->values[0] == "#123456 #654321");
+    CHECK(bundle.project_config.option<Slic3r::ConfigOptionStrings>("filament_colour_type")->values[0] == "2");
+    CHECK(bundle.project_config.option<Slic3r::ConfigOptionInts>("filament_map")->values[0] == 2);
+    CHECK(bundle.project_config.option<Slic3r::ConfigOptionFloats>("flush_volumes_matrix")->values[1] == 321.);
+    std::string error;
+    const bool valid = ProjectConfigRestore::validate(bundle.project_config, bundle.filament_presets, bundle, error);
+    INFO(error);
+    CHECK(valid);
+    const auto normalized = bundle.project_config;
+    bundle.update_filament_count();
+    CHECK(bundle.project_config == normalized);
+}
+
+TEST_CASE("restoring material selections preserves valid retained mixed recipes", "[PrinterFilamentRecipes][PrinterFilaments]")
+{
+    auto bundle = printer_filament_fixture(6, 6);
+    bundle.project_config.option<Slic3r::ConfigOptionBools>("filament_is_mixed")->values[3] = true;
+    bundle.project_config.option<Slic3r::ConfigOptionStrings>("filament_mixed_components")->values[3] = "1,2";
+    bundle.project_config.option<Slic3r::ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[3] = "0.4,0.6";
+    bundle.filament_presets.resize(4);
+    bundle.update_filament_count();
+    CHECK(bundle.filament_presets.size() == 4);
+    CHECK(bundle.project_config.option<Slic3r::ConfigOptionBools>("filament_is_mixed")->values[3]);
+    CHECK(bundle.project_config.option<Slic3r::ConfigOptionStrings>("filament_mixed_components")->values[3] == "1,2");
+    CHECK(bundle.project_config.option<Slic3r::ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[3] == "0.4,0.6");
     std::string error;
     const bool valid = ProjectConfigRestore::validate(bundle.project_config, bundle.filament_presets, bundle, error);
     INFO(error);
@@ -4613,6 +4755,27 @@ TEST_CASE("Saved native metadata cannot replace a previously owned certificate w
     std::string error;
     CHECK_FALSE(prepare_workbench_import_topology(candidate, false, result, error, {}, &fixture.request));
     CHECK_FALSE(error.empty());
+}
+
+TEST_CASE("Canceling native import preparation leaves its request and publication untouched",
+          "[WorkbenchNativeImport][UiLifecycle]")
+{
+    using namespace Slic3r;
+    NativeImportFixture fixture;
+    fixture.save_and_reopen(false);
+    auto request = fixture.request;
+    request.native_portrait_partition_references = {fixture.cache_reference};
+    const auto references = request.native_portrait_partition_references;
+    const auto model_hash = AI::model_artifact_sha256(fixture.carrier);
+    const auto record_hash = AI::model_artifact_sha256(fixture.metadata);
+    const size_t cancel_on = GENERATE(size_t(1), size_t(2));
+    size_t polls = 0;
+    CHECK_THROWS(freeze_native_import_topology_proof(request, fixture.reference,
+        fixture.commit.at("workbench_check_certificate"), [&] { return ++polls >= cancel_on; }));
+    CHECK(request.native_portrait_partition_references == references);
+    CHECK_FALSE(has_native_import_topology_proof(request));
+    CHECK(AI::model_artifact_sha256(fixture.carrier) == model_hash);
+    CHECK(AI::model_artifact_sha256(fixture.metadata) == record_hash);
 }
 
 TEST_CASE("Copied repaired history restores its original proof only while both publications remain unchanged",

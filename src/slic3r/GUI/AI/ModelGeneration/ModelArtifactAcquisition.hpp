@@ -1,6 +1,7 @@
 #pragma once
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "slic3r/AI/Contracts/GeneratedModelArtifact.hpp"
+#include "slic3r/GUI/Presentation/UiRuntime.hpp"
 #include <wx/event.h>
 #include <nlohmann/json.hpp>
 
@@ -20,6 +21,7 @@ public:
     static bool publish_library_record(const std::string& job, nlohmann::json metadata);
 private:
     AIModelGenerationClient m_client;
+    Presentation::TaskScope m_validation;
     std::uint64_t m_generation {0};
 };
 }

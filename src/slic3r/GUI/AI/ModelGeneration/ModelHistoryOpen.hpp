@@ -1,6 +1,7 @@
 #pragma once
 #include "ModelLibraryEntry.hpp"
 #include "PostGenerationWorkbenchState.hpp"
+#include "VerifiedModelFiles.hpp"
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -16,6 +17,7 @@ struct ModelHistoryOpenEvent {
     Phase phase {Phase::Begin};
     Stage stage {Stage::Reading};
     std::string resolved_asset;
+    std::string error; // Internal diagnostic; the existing failure dialog owns presentation.
 
     bool matches(uint64_t generation, const std::string& selected_asset) const {
         return request != 0 && request == generation && asset == selected_asset;
@@ -31,8 +33,8 @@ struct ModelHistoryOpenRequest {
     ModelLibraryEntry entry, previous;
     boost::filesystem::path root;
     std::string model_hash, record_hash;
-    boost::filesystem::path expected_source;
-    std::string expected_source_sha256;
+    std::shared_ptr<VerifiedModelFiles> verified_files;
+    std::string expected_model_sha256; // Optional immutable creator-preview identity.
     std::shared_ptr<const ModelHistoryRepairIndex> repairs;
     std::optional<WorkbenchCheckResult> check, previous_check;
     std::atomic<bool> canceled {false};

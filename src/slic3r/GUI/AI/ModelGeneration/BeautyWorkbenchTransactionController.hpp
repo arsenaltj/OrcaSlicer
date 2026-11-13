@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -32,6 +33,7 @@ public:
         Reoptimizing,
         CancelRequested,
         Failed,
+        Restoring,
     };
 
     struct InteractionCapabilities {
@@ -60,6 +62,8 @@ public:
         std::function<bool()> can_redo;
         std::function<bool()> restore_undo;
         std::function<bool()> restore_redo;
+        std::function<void(std::function<void(bool)>)> restore_undo_async;
+        std::function<void(std::function<void(bool)>)> restore_redo_async;
     };
 
     using StateChanged = std::function<void(TaskState)>;
@@ -70,7 +74,8 @@ public:
     const InteractionCapabilities& capabilities() const { return m_capabilities; }
     bool processing() const {
         return m_state == TaskState::Submitting || m_state == TaskState::Accepting ||
-            m_state == TaskState::Reoptimizing || m_state == TaskState::CancelRequested;
+            m_state == TaskState::Reoptimizing || m_state == TaskState::CancelRequested ||
+            m_state == TaskState::Restoring;
     }
 
     bool begin(OperationKind kind)
@@ -129,6 +134,7 @@ public:
 
     void reset()
     {
+        ++m_history_generation;
         m_entries.clear();
         m_redo.clear();
         m_last_error.clear();
@@ -149,7 +155,8 @@ public:
 
     void record(Entry entry)
     {
-        if (processing() || (!entry.undo && !entry.restore_undo) || (!entry.redo && !entry.restore_redo)) return;
+        if (processing() || (!entry.undo && !entry.restore_undo && !entry.restore_undo_async) ||
+            (!entry.redo && !entry.restore_redo && !entry.restore_redo_async)) return;
         m_entries.push_back(std::move(entry));
         m_redo.clear();
         if (m_state != TaskState::PreviewReady) m_state = TaskState::Editing;
@@ -159,7 +166,7 @@ public:
 
     bool undo()
     {
-        if (processing() || m_entries.empty()) return false;
+        if (processing() || m_entries.empty() || m_entries.back().restore_undo_async) return false;
         if (m_entries.back().can_undo && !m_entries.back().can_undo()) {
             mark_failed("Beauty history source is missing or changed");
             return false;
@@ -179,7 +186,7 @@ public:
 
     bool redo()
     {
-        if (processing() || m_redo.empty()) return false;
+        if (processing() || m_redo.empty() || m_redo.back().restore_redo_async) return false;
         if (m_redo.back().can_redo && !m_redo.back().can_redo()) {
             mark_failed("Beauty history candidate is missing or changed");
             return false;
@@ -200,6 +207,42 @@ public:
     const std::string& last_error() const { return m_last_error; }
     size_t undo_count() const { return m_entries.size(); }
     size_t redo_count() const { return m_redo.size(); }
+
+private:
+    void restore_history_async(bool redo, std::function<void(bool)> complete)
+    {
+        auto& source = redo ? m_redo : m_entries;
+        if (processing() || source.empty()) { if (complete) complete(false); return; }
+        const auto restore = redo ? source.back().restore_redo_async : source.back().restore_undo_async;
+        if (!restore) { const bool ok = redo ? this->redo() : undo(); if (complete) complete(ok); return; }
+        const auto generation = ++m_history_generation;
+        const auto lifetime = std::weak_ptr<const char>(m_lifetime);
+        const auto delivered = std::make_shared<bool>(false);
+        m_state = TaskState::Restoring; recompute_capabilities(); notify();
+        auto finished = [this, lifetime, generation, delivered, redo, complete = std::move(complete)](bool ok) {
+            if (lifetime.expired() || *delivered || generation != m_history_generation) return;
+            *delivered = true;
+            auto& from = redo ? m_redo : m_entries;
+            auto& to = redo ? m_entries : m_redo;
+            if (ok && !from.empty()) {
+                to.push_back(std::move(from.back())); from.pop_back();
+                m_last_error.clear();
+                if (m_state != TaskState::PreviewReady) m_state = TaskState::Editing;
+                recompute_capabilities(); notify();
+            } else { ok = false; mark_failed("Beauty history source could not be restored"); }
+            if (complete) complete(ok);
+        };
+        try { restore(finished); }
+        catch (...) { finished(false); }
+    }
+
+public:
+    void undo_async(std::function<void(bool)> complete) { restore_history_async(false, std::move(complete)); }
+    void redo_async(std::function<void(bool)> complete) { restore_history_async(true, std::move(complete)); }
+    bool begin_restore() {
+        if (processing()) return false;
+        m_state = TaskState::Restoring; recompute_capabilities(); notify(); return true;
+    }
 
 private:
     void recompute_capabilities()
@@ -229,6 +272,8 @@ private:
     std::vector<Entry> m_redo;
     std::string m_last_error;
     StateChanged m_state_changed;
+    std::shared_ptr<const char> m_lifetime {std::make_shared<const char>(0)};
+    std::size_t m_history_generation {0};
 };
 
 } // namespace Slic3r::GUI

@@ -1,5 +1,6 @@
 #include "ModelGenerationStatusText.hpp"
 #include "ModelGenerationSubmissionState.hpp"
+#include "ModelGenerationHost.hpp"
 
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "slic3r/GUI/GUI.hpp"
@@ -37,11 +38,70 @@ wxString localized_service_error(const std::string& error)
         return _L("无法连接本地 AI 服务，请确认正式服务已启动后重试。");
     if (message.Contains("large square cutout") || message.Contains("missing body region"))
         return _L("人物出现方形缺口或身体区域缺失，本次未提交付费 3D 任务；请点击“换一张”重新生成。");
-    return _L("操作失败：") + message;
+    return _L("操作未能完成，请保留任务记录并查看诊断日志后重试。");
 }
 
-wxString localized_job_status(const AIModelGenerationClient::JobStatus& status)
+wxString localized_advanced_service_error(const std::string& error)
 {
+    // HTTP adapter preserves a structured code before ':'. Never append the
+    // supplier's untrusted/free-form English explanation to the visible UI.
+    const auto separator = error.find(':');
+    const auto code = separator == std::string::npos ? std::string() : error.substr(0, separator);
+    const bool valid_code = !code.empty() && code.size() <= 64 && std::all_of(code.begin(), code.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+    });
+    if (!valid_code) return localized_service_error(error);
+    wxString message = code == "stale_plan" || code == "stale_confirmation" || code == "confirmation_changed" || code == "revision_conflict"
+        ? _L("当前设计或确认计划已变化，请刷新状态后重新确认。")
+        : code == "group_busy" || code == "model_busy" ? _L("当前组仍有任务处理中，请等待或停止当前任务。")
+        : code == "unsupported_multiview" ? _L("当前模型服务暂不支持四视角建模，请检查服务配置。")
+        : code == "provider_task_ambiguous" ? _L("任务受理结果暂不明确，请核对或恢复原任务，不要重复提交。")
+        : code == "idempotency_conflict" || code == "snapshot_unavailable"
+            ? _L("原任务身份或记录暂时无法核对，请保留请求记录后恢复原任务。")
+            : _L("高级任务处理未能完成，当前输入和已有结果已保留，请查看诊断日志。");
+    return message + "\n" + _L("错误码：") + from_u8(code);
+}
+
+wxString localized_job_status(const AIModelGenerationClient::JobStatus& status, bool advanced_model)
+{
+    if (advanced_model) {
+        if (status.state == "accepted") return _L("3D 任务已受理，正在读取任务进度…");
+        if (status.state == "queued") return _L("3D 任务已受理，正在排队…");
+        if (status.state == "stopping") return _L("正在停止当前 3D 任务，已有结果会保留…");
+        if (status.state == "stopped") return _L("3D 生成已停止，可恢复当前任务或返回高级创作。");
+        if (status.state == "cancelled") return _L("3D 任务已取消，四视角设计和已有结果已保留。");
+        if (status.state == "ready") return _L("3D 模型生成完成，可打开工作台进行检查和编辑。");
+        if (status.state == "running") {
+            if (status.phase == "accepted" || status.phase == "queued") return _L("3D 任务已受理，正在等待模型服务…");
+            if (status.phase == "preparing_multiview") return _L("正在准备已确认的四视角模型输入…");
+            if (status.phase == "generating") return _L("正在生成 3D 模型…");
+            if (status.phase == "texturing") return _L("正在生成模型纹理…");
+            if (status.phase == "converting") return _L("正在转换模型格式…");
+            if (status.phase == "downloading_artifact") return _L("正在下载和整理模型文件…");
+            if (status.phase == "checking_model") return _L("正在处理和校验生成文件…");
+            if (status.phase == "checking_visual") return _L("正在检查生成模型的外观…");
+            return _L("3D 任务正在处理中，正在读取最新进度…");
+        }
+        if (status.state == "failed") {
+            const auto& code = status.provider_error_code;
+            wxString message = status.provider_error_ambiguous
+                ? _L("任务受理结果暂不明确，请核对或恢复原任务，不要重复提交。")
+                : code == "provider_rate_limited" ? _L("模型服务请求较多，请稍后恢复当前任务。")
+                : code == "provider_timeout" ? _L("模型服务响应超时，请核对原任务状态后恢复。")
+                : code == "provider_rejected" ? _L("模型服务拒绝了当前请求，请检查四视角设计与模型参数。")
+                : code == "provider_unavailable" || code == "sidecar_unavailable"
+                    ? _L("模型服务暂时不可用，当前任务和四视角设计已保留。")
+                : code.find("provider_upload_") == 0 ? _L("四视角输入上传未完成，请检查网络并恢复原任务。")
+                : code == "artifact_download_failed" ? _L("模型已生成，但文件下载或校验失败，可恢复原任务继续处理。")
+                : code == "model_validation_failed" ? _L("生成文件校验未通过，请保留诊断信息后恢复原任务。")
+                : _L("3D 任务未能完成，当前任务和四视角设计已保留，请查看诊断日志。");
+            if (!code.empty()) message += "\n" + _L("错误码：") + from_u8(code);
+            if (!status.provider_task_id.empty()) message += "\n" + _L("供应商任务 ID：") + from_u8(status.provider_task_id);
+            if (!status.id.empty()) message += "\n" + _L("任务 ID：") + from_u8(status.id);
+            return message;
+        }
+        return _L("正在读取 3D 任务状态，当前四视角设计已保留…");
+    }
     if (status.state == "recommending_palette")
         return wxString::Format(
             _L("AI 正在分析主体并推荐 %llu 种目标色..."),
@@ -145,7 +205,7 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status)
         if (!status.provider_error_category.empty())
             message += "\n" + _L("故障分类：") + from_u8(status.provider_error_category);
         if (!status.provider_task_id.empty())
-            message += "\n" + _L("Provider 任务 ID：") + from_u8(status.provider_task_id);
+            message += "\n" + _L("供应商任务 ID：") + from_u8(status.provider_task_id);
         if (!status.provider_conversion_task_id.empty())
             message += "\n" + _L("转换任务 ID：") + from_u8(status.provider_conversion_task_id);
         if (status.provider_error_ambiguous)
@@ -154,7 +214,35 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status)
             message += "\n" + _L("诊断 ID：") + from_u8(status.id);
         return message;
     }
-    return status.message.empty() ? _L("正在处理...") : from_u8(status.message);
+    return _L("正在处理，请等待任务状态更新…");
+}
+
+void present_advanced_model(ModelGenerationUIState& state)
+{
+    AIModelGenerationClient::JobStatus job;
+    job.id = state.job_id; job.state = state.job_state; job.phase = state.job_phase;
+    if (state.stage == ModelGenerationUIStage::Stopping) job.state = "stopping";
+    if (state.stage == ModelGenerationUIStage::Failed) job.state = "failed";
+    if (state.stage == ModelGenerationUIStage::Stopped && job.state != "cancelled") job.state = "stopped";
+    job.provider_error_code = state.provider_error_code;
+    job.provider_error_ambiguous = state.provider_error_ambiguous;
+    job.provider_task_id = state.provider_task_id;
+    state.status_text = localized_job_status(job, true).ToUTF8().data();
+    state.workflow_guidance = _L("任务记录已保留，进度更新不会重复提交生成请求。").ToUTF8().data();
+    if (state.stage == ModelGenerationUIStage::LoadingModel) {
+        state.status_text = _L("正在解析模型文件并加载 3D 预览…").ToUTF8().data();
+        state.summary_text = _L("模型生成已完成，预览准备完成后可打开工作台。").ToUTF8().data();
+    } else if (state.stage == ModelGenerationUIStage::Failed) {
+        state.summary_text = _L("当前任务、四视角设计和已有结果已保留，可核对原任务后恢复。").ToUTF8().data();
+    } else if (state.stage == ModelGenerationUIStage::Stopped || state.stage == ModelGenerationUIStage::Stopping) {
+        state.summary_text = _L("停止不会删除四视角设计或已有模型，恢复仍使用原任务。").ToUTF8().data();
+    } else if (state.stage == ModelGenerationUIStage::ModelReady) {
+        state.status_text = _L("3D 模型生成完成，可打开工作台进行检查和编辑。").ToUTF8().data();
+        // The adapter's ready summary includes the real format and file size.
+        if (state.summary_text.empty()) state.summary_text = state.status_text;
+    } else {
+        state.summary_text = state.status_text;
+    }
 }
 
 wxString model_input_quality_label(const std::string& code)

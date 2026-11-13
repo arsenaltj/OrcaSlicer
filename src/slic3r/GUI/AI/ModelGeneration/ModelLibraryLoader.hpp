@@ -8,6 +8,8 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <deque>
+#include <limits>
 
 namespace Slic3r::GUI {
 
@@ -60,23 +62,36 @@ public:
         return true;
     }
     void cancel() { std::lock_guard<std::mutex> lock(m_mutex); cancel_locked(); }
-    void stop() {
+    std::thread begin_shutdown() {
         { std::lock_guard<std::mutex> lock(m_mutex); cancel_locked(); m_stopping = true; }
         m_wake.notify_one();
-        if (m_worker.joinable()) m_worker.join();
+        return std::move(m_worker);
+    }
+    void stop() {
+        auto thread = begin_shutdown();
+        if (thread.joinable()) thread.join();
     }
     bool loading() const {
         std::lock_guard<std::mutex> lock(m_mutex);
         return bool(m_pending) || (m_active && !m_active->cancelled) || m_snapshot.has_value() || !m_thumbnails.empty();
     }
-    void take(std::optional<Snapshot>& snapshot, std::vector<Thumbnail>& thumbnails) {
+    void take(std::optional<Snapshot>& snapshot, std::vector<Thumbnail>& thumbnails,
+              size_t limit = std::numeric_limits<size_t>::max()) {
         std::lock_guard<std::mutex> lock(m_mutex);
         snapshot = std::move(m_snapshot); m_snapshot.reset();
-        thumbnails.swap(m_thumbnails);
+        thumbnails.clear();
+        const auto count = std::min(limit, m_thumbnails.size());
+        thumbnails.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            thumbnails.push_back(std::move(m_thumbnails.front())); m_thumbnails.pop_front();
+        }
+        m_wake.notify_all();
     }
-    void defer(const Thumbnail& thumbnail) {
+    bool defer(const Thumbnail& thumbnail) {
         std::lock_guard<std::mutex> lock(m_mutex);
-        if (!m_stopping && m_accept_deferred && thumbnail.revision == m_revision) m_thumbnails.push_back(thumbnail);
+        if (m_stopping || !m_accept_deferred || thumbnail.revision != m_revision ||
+            m_thumbnails.size() >= max_thumbnails) return false;
+        m_thumbnails.push_back(thumbnail); return true;
     }
 private:
     void cancel_locked() {
@@ -84,6 +99,7 @@ private:
         if (m_active) m_active->cancelled = true;
         if (m_pending) m_pending->cancelled = true;
         m_pending.reset(); m_snapshot.reset(); m_thumbnails.clear();
+        m_wake.notify_all();
     }
     void run() {
         for (;;) {
@@ -100,6 +116,12 @@ private:
                 if (!m_stopping && !request->cancelled) m_snapshot = std::move(snapshot);
             } else {
                 for (size_t index = 0; index < request->entries.size() && !request->cancelled; ++index) {
+                    {
+                        std::unique_lock<std::mutex> lock(m_mutex);
+                        m_wake.wait(lock, [&] { return m_stopping || request->cancelled ||
+                            m_thumbnails.size() < max_thumbnails; });
+                        if (m_stopping || request->cancelled) break;
+                    }
                     const size_t destination = request->indices.empty() ? index : request->indices.at(index);
                     Thumbnail thumbnail {request->revision, destination, request->for_shell};
                     try {
@@ -108,7 +130,9 @@ private:
                                                           request->edge, request->cancelled);
                     } catch (...) {} // A bad thumbnail never removes an asset.
                     thumbnail.revision = request->revision; thumbnail.index = destination; thumbnail.for_shell = request->for_shell;
-                    std::lock_guard<std::mutex> lock(m_mutex);
+                    std::unique_lock<std::mutex> lock(m_mutex);
+                    m_wake.wait(lock, [&] { return m_stopping || request->cancelled ||
+                        m_thumbnails.size() < max_thumbnails; });
                     if (m_stopping || request->cancelled) break;
                     m_thumbnails.push_back(std::move(thumbnail));
                 }
@@ -125,7 +149,8 @@ private:
     uint64_t m_revision {0};
     std::shared_ptr<Request> m_pending, m_active;
     std::optional<Snapshot> m_snapshot;
-    std::vector<Thumbnail> m_thumbnails;
+    static constexpr size_t max_thumbnails = 64;
+    std::deque<Thumbnail> m_thumbnails;
     std::thread m_worker;
 };
 

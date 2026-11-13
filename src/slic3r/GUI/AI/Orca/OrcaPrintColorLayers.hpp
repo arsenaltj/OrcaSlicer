@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <openssl/evp.h>
 
 namespace Slic3r::GUI::OrcaPrintColorLayers {
 using Json = nlohmann::json;
@@ -63,6 +64,9 @@ inline std::string identity(const ModelObject& object,const DynamicPrintConfig& 
         out["volumes"].push_back({{"id",volume->id().id},{"type",int(volume->type())},
             {"matrix",matrix_identity(volume->get_matrix())},{"config",config_identity(volume->config.get())},{"material",material},
             {"paint_stamp",volume->mmu_segmentation_facets.timestamp()},
+            {"modifier_paint_stamp",volume->painted_modifier_facets.timestamp()},
+            {"modifier_depth",volume->painted_modifier_depth},
+            {"modifier_host",volume->painted_modifier_host.id},
             {"vertices",hash_bytes(mesh.vertices.data(),mesh.vertices.size()*sizeof(Vec3f))},
             {"faces",hash_bytes(mesh.indices.data(),mesh.indices.size()*sizeof(mesh.indices.front()))}});
     }

@@ -29,6 +29,7 @@
 | 导入与颜色保真 | [导入契约](../src/slic3r/AI/Contracts/IModelArtifactConsumer.hpp)、[ColorIntent](../src/slic3r/AI/Contracts/ColorIntent.hpp) | [OrcaWorkspaceAdapter](../src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.cpp)、OBJ/Model/ObjColorUtils；查消费者是否实际使用元数据 |
 | 智能切片 | [SmartSlicingCoordinator](../src/slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.cpp) | `AI/SmartSlicing/Domain`、`Ports`、`GUI/AI/SmartSlicing`、`GUI/AI/Orca` |
 | 原生尺寸/底座与 AI 连续流程 | [原生 UX 审查、修改前后与回归表](audits/2026-09-08-native-ai-workflow-ux.md) | `GUI/AI/Orca/OrcaModelPreparation*`；几何计算先于原生快照提交，既有涂色和原件保留；实际 GUI 验收与离线引擎测试分开记录 |
+| 页面生命周期／刷新／UX 改版 | [平台架构](architecture/PLATFORM_ARCHITECTURE.md#页面生命周期后台任务与刷新2026-11-12)、[ADR-008](architecture/ADR-008-ui-lifecycle-and-refresh.md) | `GUI/Presentation/UiLifecycle`／`UiRuntime`／`WindowMountLease` → `RedesignPageCoordinator` → Shell 和工作台 Presenter；唯一工作台／3D 页不变。先构建ui_lifecycle_tests并直接运行其[UiLifecycle]用例，再重建GUI消费者；CTest共享标签可能命中旧二进制，不能替代重建。实机延迟与视觉另验 |
 | 桌面组合/运行时 | [AIDesktopFeatureHost](../src/slic3r/GUI/AI/AIDesktopFeatureHost.cpp)、集成锁的 ownership | MainFrame/Plater、AIServiceManager/AISidecarClient、network_policy；共享入口需遵守既有集成所有权 |
 | 原生切片/配方 | [Print](../src/libslic3r/Print.cpp)、[ColorDecomposeRecipe](../src/libslic3r/ColorDecomposeRecipe.hpp) | PrintConfig、GCode、ToolOrdering、Format；先与锁定基线对照，区分继承与本地增量 |
 | CAD/原生编辑 | [DesignPanel](../src/slic3r/GUI/CAD/DesignPanel.cpp)、[几何内核](../src/libslic3r/CAD) | CAD文档/求解、Model/GLCanvas；沿用原生工程与撤销边界，兼顾上游同步 |
@@ -51,6 +52,7 @@
 | PR文档同步 | `python scripts/check_documentation_sync.py --base HEAD --worktree`提示范围；带`--pr-body-file`检查声明，见[机制说明](coordination/documentation-sync.md) |
 | 单个 Python 模块 | `./dev.ps1 Test -TestPattern test_<对应模块>.py`，或 `python scripts/run_ai_offline_tests.py --pattern test_<对应模块>.py`；确认测试已 mock 提供商 |
 | AI 集成 Python 回归（影响集成时） | `python scripts/run_ai_offline_tests.py`；保留离线防护，真实生成脚本不属于该命令的替代品 |
+| 页面任务身份／刷新调度 | `./dev.ps1 CppTest -TestSuite ui_lifecycle_tests -TestLabel UiLifecycle -Jobs 2`；消费者在 slic3rutils_tests 按实际标签运行，重点含 ModelHistoryOpen／ModelPreviewLoad／AdvancedCreation；模型库 HTML 用 `node --test tests/web/test_model_library.cjs`。`ORCASLICER_UI_LATENCY_TRACE=1` 采集 UiTask／UiCommit／UiWindowMotion／UiRestoreSnapshot／UiAdvancedLayout／UiImage；纯移动不得截图、布局或重采样。离屏测试不代替 GUI P95、GPU首帧和视觉验收 |
 | C++ AI DTO/面板/智能切片 | `slic3rutils_tests`；按 [tests/AGENTS.md](../tests/AGENTS.md) 配置、构建和运行，Windows 需 `-C Release` |
 | 网格/格式/颜色数据 | `libslic3r_tests` 中对应测试；产生切片/G-code 的行为用 `fff_print_tests` |
 | GUI/导入/组合流程 | 使用确定的可执行文件、datadir、端口和模型 SHA；核实导入无隐式切片/配置改变，以及 AI 关闭/离线时普通 Orca 流程 |
@@ -61,3 +63,5 @@
 新架构决策继续放已有 architecture/ADR 体系；通用知识不写成 Skill。只有反复发生且可明确输入、步骤、输出的一类任务才新增 SOP。历史 phase/plans/proposal 按需读取，不当作当前完成状态。
 
 已有 Git 路径混用 `Docs/` 与 `docs/`；新链接按目标的 Git 拼写定位。跨平台归一化应另立可验证改动，不顺手批量重命名。不要将用户照片、生成大文件、包或供应商配置复制进导航或 Skill。
+
+固定官方 Nightly 的来源／版本契约见 [ADR-003](architecture/ADR-003-upstream-lineage-ai-integration.md)。更新来源时同时维护 v5 集成锁、`verify_ai_integration.py`、`fetch_ai_provenance.py`、产物消费者及两条候选工作流；移动标签只留观察证据。原生新体类型进入 AI 消费者前检查实体筛选与快照身份，`PAINTED_MODIFIER` 的宿主、深度和涂绘不能遗漏。

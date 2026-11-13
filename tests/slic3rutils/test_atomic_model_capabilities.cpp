@@ -16,6 +16,68 @@
 using namespace Slic3r;
 using namespace Slic3r::GUI;
 
+TEST_CASE("Library thumbnails remain bounded and every requested thumbnail is delivered", "[AtomicModelCapabilities][UiLifecycle]")
+{
+    std::mutex mutex;
+    std::condition_variable changed;
+    size_t decoded = 0;
+    ModelLibraryLoader loader({{}, [&](const auto&, const auto&, int, const auto&) {
+        { std::lock_guard<std::mutex> lock(mutex); ++decoded; changed.notify_all(); }
+        ModelLibraryLoader::Thumbnail result {0, 0};
+        result.width = result.height = 1; result.rgb = {4, 5, 6}; return result;
+    }});
+    auto request = std::make_shared<ModelLibraryLoader::Request>();
+    request->revision = 1; request->entries.resize(130);
+    REQUIRE(loader.submit(request));
+    bool filled;
+    { std::unique_lock<std::mutex> lock(mutex);
+      filled = changed.wait_for(lock, std::chrono::seconds(3), [&] { return decoded >= 64; }); }
+    std::optional<ModelLibraryLoader::Snapshot> snapshot;
+    std::vector<ModelLibraryLoader::Thumbnail> batch;
+    std::vector<size_t> delivered;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (delivered.size() < 130 && std::chrono::steady_clock::now() < deadline) {
+        loader.take(snapshot, batch, 2);
+        CHECK(batch.size() <= 2);
+        for (const auto& thumbnail : batch) delivered.push_back(thumbnail.index);
+        std::this_thread::yield();
+    }
+    loader.stop();
+    REQUIRE(filled);
+    REQUIRE(delivered.size() == 130);
+    for (size_t i = 0; i < delivered.size(); ++i) CHECK(delivered[i] == i);
+}
+
+TEST_CASE("Canceling a full thumbnail queue permits a replacement scan and shutdown", "[AtomicModelCapabilities][UiLifecycle]")
+{
+    std::mutex mutex;
+    std::condition_variable changed;
+    size_t decoded = 0;
+    ModelLibraryLoader loader({[](const auto&, const auto&) { return std::vector<ModelLibraryEntry>{}; },
+        [&](const auto&, const auto&, int, const auto&) {
+            { std::lock_guard<std::mutex> lock(mutex); ++decoded; changed.notify_all(); }
+            return ModelLibraryLoader::Thumbnail {0, 0};
+        }});
+    auto thumbnails = std::make_shared<ModelLibraryLoader::Request>();
+    thumbnails->revision = 1; thumbnails->entries.resize(200);
+    REQUIRE(loader.submit(thumbnails));
+    bool filled;
+    { std::unique_lock<std::mutex> lock(mutex);
+      filled = changed.wait_for(lock, std::chrono::seconds(3), [&] { return decoded >= 64; }); }
+    loader.cancel();
+    auto scan = std::make_shared<ModelLibraryLoader::Request>(); scan->revision = 2; scan->scan = true;
+    REQUIRE(loader.submit(scan));
+    std::optional<ModelLibraryLoader::Snapshot> snapshot;
+    std::vector<ModelLibraryLoader::Thumbnail> batch;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!snapshot && std::chrono::steady_clock::now() < deadline) { loader.take(snapshot, batch, 2); std::this_thread::yield(); }
+    loader.stop();
+    REQUIRE(filled);
+    REQUIRE(snapshot.has_value());
+    REQUIRE(snapshot->revision == 2);
+    REQUIRE(batch.empty());
+}
+
 TEST_CASE("Saved versions in one task retain independent asset and thumbnail identities", "[AtomicModelCapabilities][WorkbenchHistory]")
 {
     ModelLibraryEntry original, saved;

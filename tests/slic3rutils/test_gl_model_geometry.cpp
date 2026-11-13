@@ -1,4 +1,5 @@
 #include "slic3r/GUI/GLModel.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelPreviewGeometry.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <array>
@@ -17,6 +18,49 @@
 
 using namespace Slic3r;
 using namespace Slic3r::GUI;
+
+TEST_CASE("A prepared manual overlay preserves triangle order normals and exact packed colors", "[GLModelGeometry][UiLifecycle]")
+{
+    indexed_triangle_set mesh;
+    mesh.vertices = {Vec3f(-0.f, 0.f, 0.f), Vec3f(1.f, 0.f, 0.f),
+        Vec3f(0.f, 1.f, 0.f), Vec3f(0.f, 0.f, 1.f)};
+    mesh.indices = {Vec3i32(0, 1, 2), Vec3i32(2, 3, 0)};
+    const std::vector<Vec3f> normals = {Vec3f(0, 0, 1), Vec3f(0, 0, 1), Vec3f(0, 0, 1),
+        Vec3f(1, 0, 0), Vec3f(1, 0, 0), Vec3f(1, 0, 0)};
+    const std::vector<std::pair<size_t, std::array<float, 3>>> colors = {
+        {1, {0.15f, 0.65f, 1.f}}, {0, {1.f, 0.f, 0.5f}}};
+    const auto geometry = ModelPreviewGeometry::manual_color_geometry(mesh, normals, colors);
+    REQUIRE(geometry.vertices_count() == 6);
+    REQUIRE(geometry.indices == std::vector<uint32_t>{0, 1, 2, 3, 4, 5});
+    for (size_t face = 0; face < colors.size(); ++face) for (size_t corner = 0; corner < 3; ++corner) {
+        const auto source = colors[face].first;
+        const auto position = geometry.extract_position_3(face * 3 + corner);
+        const auto normal = geometry.extract_normal_3(face * 3 + corner);
+        const auto texture = geometry.extract_tex_coord_2(face * 3 + corner);
+        const auto& rgb = colors[face].second;
+        const Vec2f expected(float(preview_rgb8(rgb[0], rgb[1], rgb[2])), -1.f);
+        CHECK(std::memcmp(position.data(), mesh.vertices[mesh.indices[source][corner]].data(), 3 * sizeof(float)) == 0);
+        CHECK(std::memcmp(normal.data(), normals[source * 3 + corner].data(), 3 * sizeof(float)) == 0);
+        CHECK(std::memcmp(texture.data(), expected.data(), 2 * sizeof(float)) == 0);
+    }
+}
+
+TEST_CASE("Manual overlay preparation cancels and rejects mismatched source attributes", "[GLModelGeometry][UiLifecycle]")
+{
+    indexed_triangle_set mesh;
+    mesh.vertices = {Vec3f(0, 0, 0), Vec3f(1, 0, 0), Vec3f(0, 1, 0)};
+    mesh.indices = {Vec3i32(0, 1, 2)};
+    std::vector<Vec3f> normals(3, Vec3f(0, 0, 1));
+    std::vector<std::pair<size_t, std::array<float, 3>>> colors = {{0, {1.f, 0.f, 0.f}}};
+    REQUIRE_THROWS(ModelPreviewGeometry::manual_color_geometry(mesh, normals, colors, [] { return true; }));
+    REQUIRE_THROWS(ModelPreviewGeometry::manual_color_geometry(mesh, {}, colors));
+    colors[0].first = 1;
+    REQUIRE_THROWS(ModelPreviewGeometry::manual_color_geometry(mesh, normals, colors));
+    colors[0].first = 0;
+    mesh.indices[0][1] = 3;
+    REQUIRE_THROWS(ModelPreviewGeometry::manual_color_geometry(mesh, normals, colors));
+    REQUIRE(ModelPreviewGeometry::manual_color_geometry(mesh, {}, {}).is_empty());
+}
 
 namespace {
 BoundingBoxf3 reference_bounds(const GLModel::Geometry& geometry)

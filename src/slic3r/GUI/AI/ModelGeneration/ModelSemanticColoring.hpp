@@ -1,4 +1,5 @@
 #pragma once
+#include <thread>
 
 #include "slic3r/AI/ModelGeneration/SemanticColoring/SemanticColoring.hpp"
 #include "slic3r/GUI/GLModel.hpp"
@@ -102,6 +103,7 @@ public:
                   std::shared_ptr<const NativePortrait::NativePortraitPartition> native_partition = {});
     void cancel();
     void cancel_and_wait();
+    std::thread begin_shutdown();
     std::unique_ptr<Result> poll();
     bool busy() const;
     int progress() const;

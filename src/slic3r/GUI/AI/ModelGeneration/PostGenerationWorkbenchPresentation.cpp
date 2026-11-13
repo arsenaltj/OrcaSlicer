@@ -176,72 +176,86 @@ void present_workbench_controls(wxWindow* root, wxWindow* viewport = nullptr)
 }
 }
 
-void ModelGenerationPanel::queue_workbench_surface_refresh()
+void ModelGenerationPanel::queue_workbench_surface_refresh(bool barrier, Presentation::Dirty flags)
 {
-    ++m_workbench_surface_revision;
-    if (m_shutdown || m_workbench_surface_refresh_pending) return;
-    m_workbench_surface_refresh_pending = true;
+    Presentation::assert_gui_thread();
+    if (m_shutdown) return;
+    if (Presentation::has(flags, Presentation::Dirty::Layout) ||
+        Presentation::has(flags, Presentation::Dirty::Viewport) || Presentation::has(flags, Presentation::Dirty::Visibility))
+        ++m_workbench_surface_revision;
+    m_workbench_surface_refresh.configure([this] {
+        if (m_shutdown || (!m_workbench_presented && !m_workbench_preparing) ||
+            !m_finishing_workbench || !m_workbench_shell || !m_workbench_shell->IsShownOnScreen()) return false;
+        const auto* owner = wxDynamicCast(wxGetTopLevelParent(m_workbench_shell), wxTopLevelWindow);
+        return !owner || !owner->IsIconized();
+    }, [this](Presentation::Dirty flags) { commit_workbench_surface(flags); }, "workbench");
+    using Presentation::Dirty;
+    if (barrier || m_workbench_preparing) flags = flags | Dirty::Barrier;
+    m_workbench_surface_refresh.request(flags);
+}
+
+void ModelGenerationPanel::commit_workbench_surface(Presentation::Dirty flags)
+{
     wxWeakRef<ModelGenerationPanel> weak(this);
-    CallAfter([weak] {
-        if (!weak) return;
-        // Requests made by the final layout/card placement belong to this
-        // update too; release the coalescing flag only after they have settled.
-        Slic3r::ScopeGuard pending_guard([weak] {
-            if (weak) weak->m_workbench_surface_refresh_pending = false;
-        });
-        (void)pending_guard;
-        if (weak->m_shutdown || (!weak->m_workbench_presented && !weak->m_workbench_preparing) ||
-            !weak->m_finishing_workbench || !weak->m_workbench_shell ||
-            !weak->m_workbench_shell->IsShownOnScreen()) return;
-        const auto* owner = wxDynamicCast(wxGetTopLevelParent(weak->m_workbench_shell), wxTopLevelWindow);
-        if (owner && owner->IsIconized()) return;
-        const auto started = std::chrono::steady_clock::now();
-        // Paint only after all synchronous layout/visibility changes have
-        // settled. Hidden editor children must not paint an intermediate frame.
+    const bool barrier = Presentation::has(flags, Presentation::Dirty::Barrier);
+    const auto started = std::chrono::steady_clock::now();
+    // Paint only after all synchronous layout/visibility changes have
+    // settled. Hidden editor children must not paint an intermediate frame.
+    if (Presentation::has(flags, Presentation::Dirty::Content)) weak->apply_workbench_snapshot();
+    else if (!weak->m_workbench_preparing) weak->update_workbench_check_card();
+    if (Presentation::has(flags, Presentation::Dirty::Layout) || Presentation::has(flags, Presentation::Dirty::Viewport))
         weak->layout_workbench_history_toggle(true);
-        if (!weak->m_workbench_preparing) weak->update_workbench_check_card();
-        auto* viewport = weak->workbench_import_viewport();
-        auto* handle = weak->m_workbench_history_toggle;
-        // Finish the exposed native backgrounds before their overlapping leaf.
-        // No other presentation layer may flush this subtree independently.
-        present_workbench_controls(weak->m_workbench_shell, viewport);
-        if (handle && handle->IsShownOnScreen()) {
-            handle->Raise();
-            handle->Refresh(false);
-            handle->Update();
-        }
-        present_workbench_controls(weak->m_workbench_check_card);
-        const auto controls_presented = std::chrono::steady_clock::now();
-        if (weak->m_workbench_preparing && weak->m_model_preview) {
-            const auto revision = weak->m_workbench_surface_revision;
-            const auto model_path = weak->m_workbench_model.path;
-            weak->m_model_preview->observe_presentation_frame([weak, revision, model_path] {
-                if (!weak || weak->m_shutdown || !weak->m_workbench_preparing) return;
-                if (revision != weak->m_workbench_surface_revision ||
-                    model_path != weak->m_workbench_model.path) {
-                    weak->queue_workbench_surface_refresh();
-                    return;
-                }
-                if (!weak->m_workbench_model.ready || weak->m_preview_loading ||
-                    !weak->m_model_preview->showing_model(model_path)) return;
-                auto ready = weak->m_workbench_preparation_ready;
-                if (ready) ready();
-            });
-        }
-        // One complete GL frame follows the native controls in this same pass.
-        // A top-level restore can then expose the window without an old frame.
-        if (viewport && viewport->IsShownOnScreen()) {
-            viewport->Refresh(false);
-            viewport->Update();
-        }
-        wxString trace;
-        if (wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace) && trace == "1")
-            BOOST_LOG_TRIVIAL(info) << "Workbench surface presented: controls_ms="
-                << std::chrono::duration<double, std::milli>(controls_presented - started).count()
-                << ", total_ms="
-                << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count()
-                << ", history_open=" << weak->m_workbench_history_state.workbench_open;
-    });
+    auto* viewport = weak->workbench_import_viewport();
+    auto* handle = weak->m_workbench_history_toggle;
+    // Finish the exposed native backgrounds before their overlapping leaf.
+    // No other presentation layer may flush this subtree independently.
+    if (barrier) present_workbench_controls(weak->m_workbench_shell, viewport);
+    else weak->m_workbench_shell->Refresh(false);
+    if (handle && handle->IsShownOnScreen()) {
+        handle->Raise();
+        handle->Refresh(false);
+        if (barrier) handle->Update();
+    }
+    if (barrier) present_workbench_controls(weak->m_workbench_check_card);
+    else if (weak->m_workbench_check_card && weak->m_workbench_check_card->IsShownOnScreen())
+        weak->m_workbench_check_card->Refresh(false);
+    const auto controls_presented = std::chrono::steady_clock::now();
+    if (weak->m_workbench_preparing && weak->m_model_preview) {
+        const auto revision = weak->m_workbench_surface_revision;
+        const auto model_path = weak->m_displayed_model_path;
+        // Installing the observer invalidates the frame once. Sample afterwards
+        // so the stamp describes the frame we are actually waiting for.
+        auto stamp = std::make_shared<Presentation::PresentationStamp>();
+        weak->m_model_preview->observe_presentation_frame([weak, revision, model_path, stamp] {
+            if (!weak || weak->m_shutdown || !weak->m_workbench_preparing) return;
+            if (revision != weak->m_workbench_surface_revision ||
+                model_path != weak->m_displayed_model_path ||
+                !(*stamp == weak->m_model_preview->presentation_stamp(
+                    weak->m_workbench_presentation_sequence, weak->m_workbench_surface_revision))) {
+                weak->queue_workbench_surface_refresh();
+                return;
+            }
+            if (!weak->m_model_preview_ready || weak->m_preview_loading ||
+                !weak->m_model_preview->showing_model(model_path)) return;
+            auto ready = weak->m_workbench_preparation_ready;
+            if (ready) ready();
+        });
+        *stamp = weak->m_model_preview->presentation_stamp(
+            weak->m_workbench_presentation_sequence, revision);
+    }
+    // One complete GL frame follows the native controls in this same pass.
+    // A top-level restore can then expose the window without an old frame.
+    if (viewport && viewport->IsShownOnScreen()) {
+        viewport->Refresh(false);
+        if (barrier) viewport->Update();
+    }
+    wxString trace;
+    if (wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace) && trace == "1")
+        BOOST_LOG_TRIVIAL(info) << "Workbench surface presented: controls_ms="
+            << std::chrono::duration<double, std::milli>(controls_presented - started).count()
+            << ", total_ms="
+            << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count()
+            << ", history_open=" << weak->m_workbench_history_state.workbench_open;
 }
 
 bool ModelGenerationPanel::position_workbench_check_card(bool preparing)
@@ -394,7 +408,7 @@ void ModelGenerationPanel::acknowledge_workbench_risk()
     if (m_workbench_check_running || m_workbench_check_result.status != WorkbenchCheckStatus::Attention ||
         !m_workbench_check_result.force_import_risk || m_workbench_check_result.model_sha256.empty()) return;
     m_workbench_force_import_ack_hash = m_workbench_check_result.model_sha256;
-    m_workbench_force_import_ack_revision = m_workbench_model.revision;
+    m_workbench_force_import_ack_revision = m_sequence;
     m_workbench_operation_notice = "已确认开放边界风险；可点击“去切片”继续，导入后请复核逐层切片结果。";
     hide_workbench_check_card();
     refresh_post_generation_workbench();
@@ -412,7 +426,7 @@ void ModelGenerationPanel::show_workbench_check_details()
         actions.push_back({wxID_APPLY, _L("定位问题区域"), false});
     actions.push_back({wxID_OK, _L("关闭"), false});
     if (show_redesign_details(m_workbench_shell, detail_text, _L("检查修复详情"), actions) == wxID_APPLY &&
-        m_model_preview && AI::model_artifact_sha256(m_workbench_model.path) == m_workbench_check_result.model_sha256) {
+        m_model_preview && m_model_preview->model_sha256() == m_workbench_check_result.model_sha256) {
         m_workbench_editing = true;
         refresh_post_generation_workbench();
         m_model_preview->select_face_evidence(m_workbench_check_result.issue_faces);
@@ -637,6 +651,11 @@ void ModelGenerationPanel::layout_workbench_history_toggle(bool force)
 
 void ModelGenerationPanel::refresh_post_generation_workbench()
 {
+    queue_workbench_surface_refresh(false, Presentation::Dirty::Content | Presentation::Dirty::Paint);
+}
+
+void ModelGenerationPanel::apply_workbench_snapshot()
+{
     if (!m_workbench_shell || !m_finishing_workbench || m_refreshing_workbench_layout) return;
     // Layout sends synchronous size events back to this refresh function.
     m_refreshing_workbench_layout = true;
@@ -644,7 +663,7 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     const auto state = post_generation_ui_state();
     const auto snapshot = workbench_snapshot();
     const auto appearance_state = workbench_original_appearance_state(state.status, m_preview_loading,
-        m_workbench_model.ready && m_model_preview->has_model() && !m_workbench_model.path.empty(),
+        m_model_preview_ready && m_model_preview->has_model() && !m_displayed_model_path.empty(),
         m_model_preview->original_comparison_available(), !m_model_preview->original_appearance_error().empty());
     const bool original_appearance_available = appearance_state == WorkbenchOriginalAppearanceState::Available;
     const bool model_unavailable = appearance_state == WorkbenchOriginalAppearanceState::Empty ||
@@ -656,7 +675,7 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     m_model_preview->set_workbench_palette_hint(original_appearance_reason);
     update_workbench_history_actions();
     const auto title_path = !m_finishing_candidate.empty() && !m_finishing_source.empty()
-        ? m_finishing_source : m_workbench_model.path;
+        ? m_finishing_source : m_displayed_model_path;
     bool accepted = !m_finishing_accepted_path.empty() && title_path == m_finishing_accepted_path;
     for (const auto& entry : m_library_entries) {
         if (entry.model_path != title_path) continue;
@@ -720,7 +739,7 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         layout_changed = true;
     }
     layout_changed = set_workbench_shown(m_workbench_settings, true) || layout_changed;
-    const bool finishing_ready = m_workbench_model.ready && is_nonempty_model(m_workbench_model.path);
+    const bool finishing_ready = m_model_preview_ready && is_nonempty_model(m_displayed_model_path);
     const bool show_finishing_panel = m_workbench_editing &&
         (finishing_ready || m_finishing_running || !m_finishing_candidate.empty());
     layout_changed = set_workbench_shown(m_finishing_panel, show_finishing_panel) || layout_changed;
@@ -866,7 +885,7 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
             m_workbench_grid->SetValue(grid_visible);
         set_workbench_enabled(m_workbench_grid, m_model_preview->has_model());
     }
-    const bool can_import = (snapshot.can_import_for_slicing || snapshot.can_force_import) && is_nonempty_model(m_workbench_model.path);
+    const bool can_import = (snapshot.can_import_for_slicing || snapshot.can_force_import) && is_nonempty_model(m_displayed_model_path);
     if (auto* portrait = FindWindowByName("portrait_r6_entry", m_workbench_shell)) {
         set_workbench_enabled(portrait, snapshot.actions.can_edit && snapshot.portrait_available);
         layout_changed = set_workbench_label(portrait,
@@ -914,9 +933,6 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         FromDIP(210), false) || layout_changed;
     layout_changed = set_workbench_shown(m_workbench_palette_status, !palette_status.empty()) || layout_changed;
     if (layout_changed) {
-        m_workbench_settings_scroll->Layout();
-        m_comparison_panel->Layout();
-        m_workbench_view_host->Layout();
         m_workbench_shell->Layout();
         layout_workbench_history_toggle(true);
     } else layout_workbench_history_toggle();

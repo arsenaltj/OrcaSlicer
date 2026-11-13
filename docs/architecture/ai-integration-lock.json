@@ -1,5 +1,5 @@
 {
-  "schema": "orcaslicer.ai-integration-lock/v4",
+  "schema": "orcaslicer.ai-integration-lock/v5",
   "integration_branch": "codex/team/integration",
   "branch_policy": {
     "long_lived_branches": {
@@ -28,14 +28,17 @@
   "upstream": {
     "remote": "upstream",
     "branch": "main",
-    "ref": "upstream/main",
-    "sha": "b6ef6cf1be428b931d669dcc31b7f43ae320be85"
+    "ref": "93941dc34e8a534ce3966a5979fe1edac002cb68",
+    "sha": "93941dc34e8a534ce3966a5979fe1edac002cb68",
+    "kind": "commit",
+    "version": "2.6.0-dev"
   },
   "candidate_baseline": {
     "remote": "upstream",
-    "tag": "v2.5.0-beta",
-    "sha": "345efec64c7b95a05ce5cf96df0dde66a158835c",
-    "purpose": "official_tag_candidate_diff_base"
+    "kind": "commit",
+    "sha": "93941dc34e8a534ce3966a5979fe1edac002cb68",
+    "purpose": "official_commit_candidate_diff_base",
+    "observed_ref": "refs/tags/nightly-builds"
   },
   "feature_sources": {
     "model_generation": {

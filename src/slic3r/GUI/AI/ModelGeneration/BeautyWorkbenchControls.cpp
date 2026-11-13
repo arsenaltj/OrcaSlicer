@@ -1,6 +1,7 @@
 #include "BeautyWorkbenchControls.hpp"
 #include "BeautyPartitionSelection.hpp"
 #include "ModelPreview3D.hpp"
+#include "slic3r/GUI/Presentation/UiRuntime.hpp"
 #include "libslic3r/Utils.hpp"
 #include "WorkbenchStyle.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
@@ -467,6 +468,11 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
         update_text();
     });
     Hide();
+    Presentation::background_tasks().on_shutdown(this, [this] {
+        m_partition_timer.Stop();
+        cancel_partition();
+        Presentation::background_tasks().retire(m_partition_worker);
+    });
 }
 
 void BeautyWorkbenchControls::update_secondary_details()
@@ -987,11 +993,12 @@ void BeautyWorkbenchControls::on_history_key(wxKeyEvent& event)
 
 BeautyWorkbenchControls::~BeautyWorkbenchControls()
 {
+    Presentation::background_tasks().remove_shutdown_hook(this);
     if (m_history_key_host)
         m_history_key_host->Unbind(wxEVT_CHAR_HOOK, &BeautyWorkbenchControls::on_history_key, this);
     m_partition_timer.Stop();
     cancel_partition();
-    if (m_partition_worker.joinable()) m_partition_worker.join();
+    if (m_partition_worker.joinable()) m_partition_worker.join(); // Final destruction fallback only.
     if (m_preview) m_preview->set_beauty_pick_callback({});
 }
 
@@ -1043,7 +1050,7 @@ void BeautyWorkbenchControls::start_partition(const nlohmann::json& saved)
     const auto started = std::chrono::steady_clock::now();
     const auto pending_source = std::move(m_pending_secondary_partition_source);
     m_pending_secondary_partition_source.clear();
-    if (m_partition_worker.joinable()) m_partition_worker.join();
+    Presentation::background_tasks().retire(m_partition_worker);
     auto task = m_partition_task = std::make_shared<PartitionTask>();
     task->geometry = m_geometry_id;
     task->source = m_source;
@@ -1149,7 +1156,7 @@ void BeautyWorkbenchControls::finish_partition()
 {
     if (!m_partition_task || !m_partition_task->done.load()) return;
     m_partition_timer.Stop();
-    if (m_partition_worker.joinable()) m_partition_worker.join();
+    Presentation::background_tasks().retire(m_partition_worker);
     auto task = std::move(m_partition_task);
     const auto current_locks = m_preview->active_editing_shape_locks();
     const bool canceled = task->canceled.load();
@@ -1415,7 +1422,7 @@ void BeautyWorkbenchControls::reset_asset()
 {
     cancel_partition();
     m_partition_timer.Stop();
-    if (m_partition_worker.joinable()) m_partition_worker.join();
+    Presentation::background_tasks().retire(m_partition_worker);
     m_partition_task.reset();
     m_partition_semantics_attempted = false;
     m_automatic_partition_started = false;

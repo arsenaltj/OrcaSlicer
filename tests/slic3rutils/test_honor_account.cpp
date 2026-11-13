@@ -337,7 +337,7 @@ TEST_CASE("Platform configuration accepts only a public HTTPS origin and fixed c
     REQUIRE_THROWS_AS(parse_config(invalid.dump()), Error);
 }
 
-TEST_CASE("Platform API provisioning reads only ORCA_PLATFORM_API_URL", "[HonorAccount]")
+TEST_CASE("Platform API environment provisioning takes precedence over installed defaults", "[HonorAccount]")
 {
     SECTION("valid origin") {
         ScopedEnvironment environment("ORCA_PLATFORM_API_URL", "https://provisioned.example.test");
@@ -1006,7 +1006,7 @@ TEST_CASE("Old direct credentials are erased while the browser profile is retain
     memory->put("browser-reset-" + *profile, "pending");
 
     Session session(std::make_unique<MemoryStore>(memory));
-    REQUIRE(session.config().api_url.empty());
+    REQUIRE(session.config().api_url == "https://api.cutelion.top");
     REQUIRE(session.config().browser_profile_key == *profile);
     REQUIRE_FALSE(memory->has("session-" + *profile));
     REQUIRE_FALSE(memory->has("browser-reset-" + *profile));
@@ -1055,3 +1055,74 @@ TEST_CASE("Windows protected storage atomically rotates long UTF8 platform sessi
     REQUIRE_FALSE(store->load("long").has_value());
 }
 #endif
+
+TEST_CASE("An injected account executor keeps cancellation and late session results isolated", "[HonorAccount][UiLifecycle]")
+{
+    const auto saved = platform_session();
+    auto memory = configured_memory(saved);
+    std::vector<std::function<void()>> work;
+    int requests = 0;
+    Session session(std::make_unique<MemoryStore>(memory),
+        [&](const Request&, Cancellation) { ++requests; return Response{200, account_response(saved.identity)}; },
+        nullptr, [&](std::function<void()> operation) { work.push_back(std::move(operation)); return true; });
+    session.restore();
+    REQUIRE(work.size() == 1);
+    REQUIRE(requests == 0);
+    session.stop_accepting();
+    work.front()();
+    session.poll();
+    REQUIRE(session.snapshot().state != State::SignedIn);
+    REQUIRE_FALSE(session.access().has_value());
+}
+
+TEST_CASE("Account executor rejection and exceptions release the request busy state", "[HonorAccount][UiLifecycle]")
+{
+    for (bool throwing : {false, true}) {
+        auto memory = configured_memory(platform_session());
+        Session session(std::make_unique<MemoryStore>(memory),
+            [](const Request&, Cancellation) { return Response{}; }, nullptr,
+            [throwing](std::function<void()>) -> bool {
+                if (throwing) throw std::runtime_error("executor unavailable");
+                return false;
+            });
+        session.restore();
+        session.poll();
+        REQUIRE_FALSE(session.snapshot().busy());
+        REQUIRE_FALSE(session.access().has_value());
+    }
+}
+
+TEST_CASE("Fresh installations persist the public platform default without developer configuration or credentials", "[HonorAccount]")
+{
+    ScopedEnvironment environment("ORCA_PLATFORM_API_URL", "");
+    auto profile = std::make_shared<Memory>();
+    auto application = std::make_shared<Memory>();
+    int network_calls = 0;
+    Transport offline = [&](const Request&, Cancellation) { ++network_calls; return Response{503, ""}; };
+    {
+        Session installed(std::make_unique<MemoryStore>(profile), offline, std::make_unique<MemoryStore>(application));
+        CHECK(installed.config().api_url == "https://api.cutelion.top");
+        CHECK(installed.config().validate().empty());
+        CHECK(installed.config().browser_profile_key.empty());
+        CHECK_FALSE(profile->has(session_key(installed.config())));
+        CHECK(profile->get("configuration") == serialize_config(installed.config()));
+        REQUIRE(application->get("configuration"));
+        CHECK(parse_config(*application->get("configuration")).api_url == installed.config().api_url);
+    }
+    Session reopened(std::make_unique<MemoryStore>(profile), offline);
+    CHECK(reopened.config().api_url == "https://api.cutelion.top");
+    CHECK(network_calls == 0);
+}
+
+TEST_CASE("Installed platform defaults preserve explicit profile and application origins", "[HonorAccount]")
+{
+    ScopedEnvironment environment("ORCA_PLATFORM_API_URL", "");
+    auto application = configured_memory();
+    auto profile = std::make_shared<Memory>();
+    Session inherited(std::make_unique<MemoryStore>(profile), https_request, std::make_unique<MemoryStore>(application));
+    CHECK(inherited.config().api_url == configuration().api_url);
+    auto explicit_config = configuration(); explicit_config.api_url = "https://profile.example.test";
+    profile->put("configuration", serialize_config(explicit_config));
+    Session explicit_profile(std::make_unique<MemoryStore>(profile), https_request, std::make_unique<MemoryStore>(application));
+    CHECK(explicit_profile.config().api_url == explicit_config.api_url);
+}

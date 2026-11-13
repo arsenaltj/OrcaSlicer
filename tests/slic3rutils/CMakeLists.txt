@@ -15,6 +15,7 @@ add_executable(${_TEST_NAME}_tests
 	../local_print_recipe_fixture.hpp
     ${_TEST_NAME}_tests_main.cpp
     test_bambu_filament_ids.cpp
+    test_bbl_cert_dir.cpp
     test_bed_exclusion_fields.cpp
     test_cloud_delete_queue.cpp
     test_config_value_formatter.cpp
@@ -24,12 +25,17 @@ add_executable(${_TEST_NAME}_tests
     test_device_access.cpp
     test_honor_forge_discovery.cpp
     test_moonraker_printer_agent.cpp
+    test_snapmaker_filament_match.cpp
     test_network_discovery.cpp
     test_filament_bitmap_utils.cpp
     test_colour_picker_field.cpp
     test_filament_color_picker.cpp
     test_ams_materials_setting.cpp
     test_gcode_preview_colors.cpp
+    # The reduced toolpath set's end bands, from libvgcode's layer table.
+    test_libvgcode_layers.cpp
+    # The vertex that stands for a role when the solid model takes the toolpaths' colours.
+    test_libvgcode_sampling.cpp
     test_device_progress.cpp
     test_device_manager_integration.cpp
     test_web_media_controller.cpp
@@ -97,10 +103,12 @@ add_executable(${_TEST_NAME}_tests
     test_plugin_capabilities_in_use.cpp
     test_plugin_status.cpp
     test_printer_agent.cpp
+    test_qidi_printer_agent.cpp
     test_plugin_install.cpp
     test_plugin_lifecycle.cpp
     test_plugin_resource_texture.cpp
     test_plugin_printer_agent.cpp
+    test_post_processor.cpp
     test_printhost.cpp
     test_slicing_pipeline_bindings.cpp
     test_slicing_pipeline_config.cpp
@@ -108,7 +116,10 @@ add_executable(${_TEST_NAME}_tests
     test_plugin_cloud_metadata.cpp
     test_plugin_audit.cpp
     test_plugin_json_depth.cpp
+    test_plugin_permission_validation.cpp
     test_shortcuts.cpp
+    test_speed_dial_dismiss.cpp
+    test_speed_dial_position.cpp
     test_texture_color_palette.cpp
     test_texture_island_view.cpp
     test_timelapse_codecs.cpp
@@ -171,6 +182,7 @@ add_executable(${_TEST_NAME}_tests
     test_smart_slice_engine.cpp
     test_smart_slice_applier.cpp
     test_slicing_recommendation_client.cpp
+    test_geometry_import.cpp
     ../fff_print/test_helpers.cpp
     )
 
@@ -251,6 +263,15 @@ if (ORCA_BUNDLED_UV_EXECUTABLE)
 endif()
 
 orcaslicer_discover_tests(${_TEST_NAME}_tests)
+
+# Presentation contracts do not depend on the application or slicing kernel.
+# Keep their concurrency/lifecycle gate runnable before migrating consumers.
+add_executable(ui_lifecycle_tests test_ui_lifecycle.cpp)
+target_include_directories(ui_lifecycle_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(ui_lifecycle_tests PRIVATE test_common Catch2::Catch2WithMain orca_ui_runtime)
+set_property(TARGET ui_lifecycle_tests PROPERTY FOLDER "tests")
+orcaslicer_copy_test_dlls(ui_lifecycle_tests)
+orcaslicer_discover_tests(ui_lifecycle_tests)
 
 # Offline contour replay only; this target is not a software production entry.
 add_executable(surface_partition_tool ${CMAKE_SOURCE_DIR}/tools/ai/surface_partition_tool.cpp)

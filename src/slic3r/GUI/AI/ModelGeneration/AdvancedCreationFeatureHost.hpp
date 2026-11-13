@@ -4,6 +4,7 @@
 #include "AdvancedMultiviewClient.hpp"
 #include "AdvancedModelTaskMonitor.hpp"
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
+#include "slic3r/GUI/Presentation/UiRuntime.hpp"
 #include <wx/event.h>
 #include <wx/timer.h>
 #include <wx/weakref.h>
@@ -39,6 +40,8 @@ public:
     void retry_local_model() { m_model_monitor.retry_local(); }
     void get_provider_catalog(const std::string& role, const std::string& provider,
         AIModelGenerationClient::CatalogFn complete, AIModelGenerationClient::ErrorFn error);
+    void set_model_job_listener(std::function<void(const AdvancedCreation::ModelJobEvent&)> listener)
+    { m_model_job_listener = std::move(listener); }
     void set_start_guard(std::function<bool()> guard) { m_start_guard = std::move(guard); }
     void set_service_available(bool available);
     void refresh_capabilities();
@@ -75,6 +78,8 @@ private:
     bool receipt_is_current(const Json& receipt) const;
     void settle_receipt(const std::string& operation, bool announce);
     void reconcile_submission(bool announce_recovery);
+    AdvancedCreation::ModelJobEvent begin_model_request(const std::string& job);
+    bool accept_model_job(const Json& job, const AdvancedCreation::ModelJobEvent& request);
     AdvancedCreation::Capabilities capabilities() const;
     wxWeakRef<wxWindow> m_owner;
     AdvancedCreation::Session m_session;
@@ -87,6 +92,9 @@ private:
     wxTimer m_save_timer;
     std::function<void()> m_listener;
     std::function<void(const ModelGenerationUIState&, bool)> m_model_state_listener;
+    std::function<void(const AdvancedCreation::ModelJobEvent&)> m_model_job_listener;
+    std::optional<AdvancedCreation::ModelJobEvent> m_model_request;
+    std::uint64_t m_model_request_sequence {0};
     std::function<bool()> m_start_guard;
     ProviderCatalog m_image_catalog;
     std::uint64_t m_image_catalog_sequence {0};
@@ -100,5 +108,6 @@ private:
     bool m_command_pending {false};
     bool m_poll_pending {false};
     bool m_shutdown {false};
+    Presentation::TaskScope m_cache_scope;
 };
 }

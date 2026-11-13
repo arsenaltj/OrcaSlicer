@@ -1,6 +1,8 @@
 # Shared source inventory for desktop and Android OrcaSlicer::Core.
 # Platform replacements and optional CAD compilation are explicit.
 set(ORCA_SLIC3R_CORE_SOURCES
+    "${ORCA_SLIC3R_CORE_SOURCE_DIR}/Format/ImportNames.hpp"
+    "${ORCA_SLIC3R_CORE_SOURCE_DIR}/Format/ImportNames.cpp"
     "${ORCA_SLIC3R_CORE_SOURCE_DIR}/Sha256Digest.cpp"
     "${ORCA_SLIC3R_CORE_SOURCE_DIR}/Sha256Digest.hpp"
     "${ORCA_SLIC3R_CORE_SOURCE_DIR}/AABBMesh.cpp"

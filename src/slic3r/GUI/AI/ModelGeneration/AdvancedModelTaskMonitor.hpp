@@ -3,7 +3,7 @@
 #include "AdvancedModelTaskFlow.hpp"
 #include <wx/timer.h>
 #include <atomic>
-#include <thread>
+#include "slic3r/GUI/Presentation/UiRuntime.hpp"
 #include <optional>
 
 namespace Slic3r::GUI {
@@ -29,8 +29,7 @@ private:
     AIModelGenerationClient m_client;
     ModelArtifactAcquisition m_acquisition;
     wxTimer m_timer;
-    std::thread m_worker;
-    std::shared_ptr<std::atomic<bool>> m_cancel;
+    Presentation::TaskScope m_preparation;
     std::unique_ptr<AdvancedModelTaskFlow> m_flow;
 };
 }

@@ -8,6 +8,15 @@ namespace Slic3r::GUI {
 
 inline wxSize workbench_history_handle_size() { return {18, 42}; }
 
+enum class WorkbenchHistoryMountAction { Skip, Attach, Refresh };
+
+inline WorkbenchHistoryMountAction workbench_history_mount_action(
+    bool mounted, bool same_host, bool temporary_home)
+{
+    if (mounted) return same_host ? WorkbenchHistoryMountAction::Refresh : WorkbenchHistoryMountAction::Skip;
+    return temporary_home ? WorkbenchHistoryMountAction::Skip : WorkbenchHistoryMountAction::Attach;
+}
+
 // Each retained page owns its drawer preference; temporary hiding is not a user action.
 struct WorkbenchHistorySidebarState {
     bool workbench_open {true};

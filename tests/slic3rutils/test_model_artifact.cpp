@@ -1,6 +1,7 @@
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/LocalModelImportState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelPreviewTextureColor.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelPreviewTexture.hpp"
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
 #include "slic3r/GUI/AI/Model/GlbGeometryEditing.hpp"
 #include "slic3r/GUI/AI/Model/VertexColorRegionEditor.hpp"
@@ -31,6 +32,36 @@ using namespace Slic3r;
 using namespace Slic3r::AI;
 using Catch::Matchers::WithinAbs;
 using namespace Slic3r::GUI;
+
+TEST_CASE("Background texture preparation preserves UVs alpha and complete mip levels without a GL context", "[ModelPreviewTexture][UiLifecycle]")
+{
+    indexed_triangle_set mesh;
+    mesh.vertices = {{0,0,0},{1,0,0},{0,1,0}};
+    mesh.indices = {{0,1,2}};
+    ModelArtifactTextureSurface surface;
+    ModelArtifactTextureSurface::Image image;
+    image.width = image.height = 2;
+    image.rgba = {255,0,0,255, 0,255,0,128, 0,0,255,64, 255,255,255,0};
+    surface.images.push_back(image);
+    surface.faces.emplace_back();
+    auto& face = surface.faces.front();
+    face.image = 0; face.min_filter = 9987;
+    face.alpha_mode = ModelArtifactTextureSurface::AlphaMode::Blend;
+    face.corners[1].uv = {1.f,0.f}; face.corners[2].uv = {0.f,1.f};
+    std::vector<Vec3f> normals(3, Vec3f(0,0,1));
+    const auto prepared = ModelPreviewTexture::prepare(surface, mesh, normals);
+    REQUIRE(prepared.vertices.size() == 36);
+    REQUIRE(prepared.batches.size() == 1);
+    REQUIRE(prepared.blend_faces.size() == 1);
+    REQUIRE(prepared.images.size() == 1);
+    REQUIRE(prepared.images.front().size() == 2);
+    REQUIRE(prepared.images.front().front().rgba == image.rgba);
+    REQUIRE(prepared.vertices[12 + 6] == 1.f);
+    REQUIRE(prepared.vertices[24 + 7] == 1.f);
+    REQUIRE_THROWS(ModelPreviewTexture::prepare(surface, mesh, normals, {}, [] { return true; }));
+    face.image = 2;
+    REQUIRE_THROWS(ModelPreviewTexture::prepare(surface, mesh, normals));
+}
 
 TEST_CASE("Local preview edits preserve untouched texture faces and encode solid colors in linear RGB", "[ModelArtifact][ModelPreviewTexture]")
 {

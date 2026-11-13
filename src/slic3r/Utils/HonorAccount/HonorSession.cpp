@@ -39,10 +39,10 @@ const char* Session::browser_reset_key()
 }
 
 Session::Session(std::unique_ptr<Store> store, Transport transport,
-                 std::unique_ptr<Store> application_configuration)
+                 std::unique_ptr<Store> application_configuration, Executor executor)
     : m_store(std::move(store)),
       m_application_configuration(std::move(application_configuration)),
-      m_transport(std::move(transport))
+      m_transport(std::move(transport)), m_executor(std::move(executor))
 {
     try {
         const auto profile_raw = m_store->load("configuration");
@@ -127,6 +127,11 @@ Session::Session(std::unique_ptr<Store> store, Transport transport,
                 profile_legacy ? *profile_legacy : *application_legacy;
         }
 
+        // Public product default is compiled into every installation. Keep
+        // environment and existing profile/application provisioning precedence;
+        // no developer environment, private account or token is required.
+        if (m_config.api_url.empty()) m_config.api_url = "https://api.cutelion.top";
+
         if (profile_raw && profile_legacy) {
             if (!migrate_legacy(*m_store, *profile_raw, m_config, true)) {
                 m_snapshot.message =
@@ -171,7 +176,7 @@ Session::Session(std::unique_ptr<Store> store, Transport transport,
             << (provisioned && *provisioned ? "environment"
                                             : profile_config ? "profile"
                                                              : application_config ? "application"
-                                                                                  : "none");
+                                                                                  : "built_in");
         if (const auto error = m_config.validate(); !error.empty())
             m_snapshot.message = error;
     } catch (...) {
@@ -230,8 +235,36 @@ void Session::share_configuration()
 
 Session::~Session()
 {
-    cancel_task();
-    cancel_revoke();
+    stop_accepting();
+    for (auto& work : m_workers) if (work.thread.joinable()) work.thread.join();
+}
+void Session::stop_accepting()
+{
+    m_stopping = true; cancel_task(); cancel_revoke();
+}
+bool Session::execute(std::function<void()> operation)
+{
+    if (m_stopping) return false;
+    if (m_executor) {
+        try { return m_executor(std::move(operation)); }
+        catch (...) { return false; }
+    }
+    // Non-GUI consumers/tests own their threads too. Only reap completed work
+    // here; cancellation itself never waits for a network request.
+    for (auto it = m_workers.begin(); it != m_workers.end();) {
+        if (it->done->load()) { it->thread.join(); it = m_workers.erase(it); }
+        else ++it;
+    }
+    auto done = std::make_shared<std::atomic_bool>(false);
+    try {
+        // Allocate before launching; allocation failure must never destroy a
+        // temporary joinable thread or leave a request permanently busy.
+        m_workers.reserve(m_workers.size() + 1);
+        m_workers.push_back({std::thread([operation = std::move(operation), done] {
+            operation(); done->store(true);
+        }), done});
+    } catch (...) { return false; }
+    return true;
 }
 
 std::string Session::session_key() const
@@ -284,7 +317,7 @@ void Session::start(TaskKind kind,
     auto task = m_task = std::make_shared<Task>();
     task->kind = kind;
     task->generation = m_generation;
-    std::thread([task, operation = std::move(operation)] {
+    const bool accepted = execute([task, operation = std::move(operation)] {
         std::optional<TaskResult> result;
         Failure failure = Failure::Temporary;
         std::string message;
@@ -304,7 +337,11 @@ void Session::start(TaskKind kind,
             task->message = std::move(message);
             task->done = true;
         }
-    }).detach();
+    });
+    if (!accepted) {
+        std::lock_guard<std::mutex> lock(task->mutex);
+        task->message = "平台账号请求未完成，请重试"; task->done = true;
+    }
 }
 
 bool Session::save_session(const PlatformSession& session)
@@ -585,7 +622,7 @@ void Session::start_revoke(const std::string& refresh_token)
     task->generation = m_generation;
     const auto config = m_config;
     const auto transport = m_transport;
-    std::thread([task, config, transport, refresh_token] {
+    const bool accepted = execute([task, config, transport, refresh_token] {
         bool success = false;
         try {
             Client(transport).revoke(config, refresh_token, task->cancel);
@@ -597,7 +634,8 @@ void Session::start_revoke(const std::string& refresh_token)
             task->success = success;
             task->done = true;
         }
-    }).detach();
+    });
+    if (!accepted) { std::lock_guard<std::mutex> lock(task->mutex); task->done = true; }
 }
 
 bool Session::logout(bool clear_browser)

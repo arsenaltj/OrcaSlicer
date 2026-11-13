@@ -44,6 +44,10 @@ public:
         m_operation.stopped = true; ++m_operation.revision; m_operation.cancel = true;
         if (m_operation.worker.joinable()) m_operation.worker.join();
     }
+    std::thread begin_shutdown() {
+        m_operation.stopped = true; ++m_operation.revision; m_operation.cancel = true;
+        return std::move(m_operation.worker);
+    }
     void checkpoint() {
         if (!editable()) return;
         m_draft.undo.push_back(m_draft.input.identity); m_draft.redo.clear();

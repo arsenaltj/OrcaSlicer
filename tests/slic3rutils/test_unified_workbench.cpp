@@ -117,6 +117,7 @@ struct TaskHarness {
     }
     static Status status(std::string job, std::string state = "generating", double updated = 10) {
         Status value; value.id = std::move(job); value.state = std::move(state);
+        value.creation_kind = "advanced_multiview_v1";
         value.phase = value.state == "ready" ? "ready" : "generating";
         value.provider_name = "tripo"; value.provider_task_id = "provider-task";
         value.updated_at = updated; value.progress = 50;
@@ -193,7 +194,8 @@ TEST_CASE("A failed local download retries the same remote artifact without a ne
     h.preparations[0].error("invalid geometry");
     CHECK_FALSE(h.flow->snapshot().model_ready);
     CHECK_FALSE(h.flow->artifact());
-    CHECK(h.flow->snapshot().summary_text == "invalid geometry");
+    CHECK(h.flow->snapshot().summary_text == "操作未能完成，请保留任务记录并查看诊断日志后重试。");
+    CHECK(h.flow->snapshot().summary_text.find("invalid geometry") == std::string::npos);
 }
 
 TEST_CASE("Cancelling local acquisition rejects late download and parser completions", "[UnifiedWorkbench]")
@@ -319,4 +321,19 @@ TEST_CASE("Mismatched advanced responses never install or prepare another task",
     CHECK(h.preparations.empty());
     CHECK_FALSE(h.flow->snapshot().model_ready);
     CHECK(h.flow->snapshot().stage == ModelGenerationUIStage::Failed);
+}
+
+TEST_CASE("Advanced observation rejects a smart task even when its job identity matches", "[UnifiedWorkbench]")
+{
+    TaskHarness h; h.flow->observe("advanced", {});
+    auto status = TaskHarness::status("advanced", "ready");
+    status.creation_kind = "smart";
+    h.queries[0].done(status);
+    CHECK(h.downloads.empty());
+    CHECK_FALSE(h.flow->snapshot().model_ready);
+    CHECK(h.flow->snapshot().status_text == "正在重新连接当前任务");
+    h.flow->poll();
+    REQUIRE(h.queries.size() == 2);
+    h.queries[1].done(TaskHarness::status("advanced", "ready"));
+    CHECK(h.downloads.size() == 1);
 }

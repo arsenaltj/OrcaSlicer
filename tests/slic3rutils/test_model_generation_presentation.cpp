@@ -3,6 +3,7 @@
 
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationLegacyState.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelGenerationStatusText.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryThumbnail.hpp"
 #include "slic3r/GUI/AIModelOutputDirectory.hpp"
 #include "slic3r/GUI/AIModelGenerationHttpError.hpp"
@@ -71,6 +72,27 @@ TEST_CASE("Restoring a smart task requires explicit intent before the next paid 
     REQUIRE(model_generation_route_action(state, current, true, 1, "stable-flow") == RedesignModelRouteAction::Refresh);
 }
 using namespace Slic3r::GUI::ModelGenerationPresentation;
+
+TEST_CASE("Background creator progress preserves the foreground editor and selected creation mode", "[SingleWorkbench][SmartGenerationFlow]")
+{
+    using namespace Slic3r::GUI;
+    ModelGenerationUIState current, state;
+    state.revision = 3;
+    state.model_generation_session = 2;
+    state.model_generation_context = true;
+    state.model_asset_id = "smart-result";
+    REQUIRE(model_generation_route_action(state, current, false, 0, {}, true) == RedesignModelRouteAction::Refresh);
+    current = state;
+    state.stage = ModelGenerationUIStage::ModelReady;
+    ++state.revision;
+    CHECK(model_generation_route_action(state, current, false, 0, {}, true) == RedesignModelRouteAction::Refresh);
+    // Returning to AI creation replays the current snapshot without treating
+    // already observed progress as a new foreground generation request.
+    current = state;
+    CHECK(model_generation_route_action(state, current, false, 0, {}) == RedesignModelRouteAction::Refresh);
+    ++state.model_generation_session;
+    CHECK(model_generation_route_action(state, current, false, 0, {}) == RedesignModelRouteAction::Model);
+}
 
 TEST_CASE("Static WebP keeps transparency and damaged replacements are rejected", "[ModelGenerationPresentation][ImageSelection][SmartGenerationFlow]")
 {
@@ -1575,4 +1597,91 @@ TEST_CASE("Image history rejects escaped or corrupt previews without discarding 
     REQUIRE(write_json(temporary.path() / id / "job.json", record));
     CHECK_FALSE(read_image_history_entry(temporary.path(), id));
     CHECK_FALSE(read_image_history_entry(temporary.path(), "../" + id));
+}
+
+TEST_CASE("Advanced model progress uses Chinese state and phase descriptions without smart portrait preparation",
+          "[ModelGenerationPresentation][AdvancedCreation]")
+{
+    using namespace Slic3r::GUI::ModelGenerationStatusText;
+    const auto phase = GENERATE("accepted", "queued", "preparing_multiview", "generating", "texturing", "converting",
+        "downloading_artifact", "checking_model", "checking_visual", "unrecognized_phase", "");
+    AIModelGenerationClient::JobStatus job;
+    job.state = "running"; job.phase = phase; job.message = "Raw English provider message must stay in diagnostics.";
+    const auto text = localized_job_status(job, true);
+    CHECK_FALSE(text.empty());
+    CHECK_FALSE(text.Contains("Raw English"));
+    CHECK_FALSE(text.Contains(wxString::FromUTF8("人像")));
+    CHECK_FALSE(text.Contains(wxString::FromUTF8("肤色")));
+    CHECK_FALSE(text.Contains(wxString::FromUTF8("尚未提交付费")));
+    CHECK_FALSE(text.Contains(wxString::FromUTF8("检查通过")));
+    if (job.phase == "converting") CHECK(text.Contains(wxString::FromUTF8("转换")));
+    if (job.phase == "texturing") CHECK(text.Contains(wxString::FromUTF8("纹理")));
+    if (job.phase == "downloading_artifact") CHECK(text.Contains(wxString::FromUTF8("下载")));
+}
+
+TEST_CASE("Advanced model failures preserve technical identities but hide free form supplier explanations",
+          "[ModelGenerationPresentation][AdvancedCreation]")
+{
+    using namespace Slic3r::GUI::ModelGenerationStatusText;
+    const auto code = GENERATE("provider_rejected", "provider_timeout", "provider_rate_limited", "artifact_download_failed",
+        "model_validation_failed", "future_error_code", "");
+    AIModelGenerationClient::JobStatus job;
+    job.state = "failed"; job.message = "English failure with sensitive supplier implementation detail";
+    job.id = "job-unchanged-123"; job.provider_task_id = "Tripo-task-XYZ";
+    job.provider_error_code = code;
+    const auto text = localized_job_status(job, true);
+    CHECK_FALSE(text.Contains("English failure"));
+    CHECK(text.Contains("job-unchanged-123"));
+    CHECK(text.Contains("Tripo-task-XYZ"));
+    if (!job.provider_error_code.empty()) CHECK(text.Contains(wxString::FromUTF8(code)));
+    job.provider_error_ambiguous = true;
+    CHECK(localized_job_status(job, true).Contains(wxString::FromUTF8("不要重复提交")));
+    CHECK_FALSE(localized_advanced_service_error("future_error_code: Raw English explanation").Contains("Raw English"));
+    CHECK(localized_advanced_service_error("future_error_code: Raw English explanation").Contains("future_error_code"));
+    CHECK_FALSE(localized_advanced_service_error("Raw English explanation").Contains("Raw English"));
+}
+
+TEST_CASE("Advanced model presentation keeps real progress timing and generation separate from workbench checks",
+          "[ModelGenerationPresentation][AdvancedCreation]")
+{
+    using namespace Slic3r::GUI;
+    const auto stage = GENERATE(ModelGenerationUIStage::GeneratingDesign, ModelGenerationUIStage::LoadingModel,
+        ModelGenerationUIStage::Stopping, ModelGenerationUIStage::Stopped, ModelGenerationUIStage::Failed,
+        ModelGenerationUIStage::ModelReady);
+    ModelGenerationUIState state;
+    state.stage = stage; state.job_state = stage == ModelGenerationUIStage::ModelReady ? "ready" :
+        stage == ModelGenerationUIStage::Failed ? "failed" : stage == ModelGenerationUIStage::Stopped ? "stopped" : "running";
+    state.job_phase = "checking_model";
+    state.status_text = "Raw English status"; state.workflow_guidance = "Smart portrait preparation";
+    state.progress = 63; state.model_elapsed_seconds = 123; state.model_progress_estimated = true;
+    state.provider_name = "Tripo"; state.provider_task_id = "provider-task-id";
+    state.options.output_format = "OBJ";
+    const auto projected = advanced_model_presentation_state(state, true, true);
+    CHECK(projected.progress == 63);
+    CHECK(projected.model_elapsed_seconds == 123);
+    CHECK(projected.model_progress_estimated);
+    CHECK(projected.provider_name == "Tripo");
+    CHECK(projected.provider_task_id == "provider-task-id");
+    CHECK(projected.options.output_format == "OBJ");
+    CHECK(projected.status_text.find("Raw English") == std::string::npos);
+    CHECK(projected.workflow_guidance.find("Smart portrait") == std::string::npos);
+    CHECK(projected.status_text.find("检查通过") == std::string::npos);
+    if (stage == ModelGenerationUIStage::GeneratingDesign)
+        CHECK(projected.stage == ModelGenerationUIStage::GeneratingModel);
+    if (stage == ModelGenerationUIStage::ModelReady)
+        CHECK(projected.status_text.find("生成完成") != std::string::npos);
+    if (stage == ModelGenerationUIStage::Stopping)
+        CHECK(projected.status_text.find("正在停止") != std::string::npos);
+}
+
+TEST_CASE("Unrecognized job progress uses a Chinese fallback without changing known smart preparation",
+          "[ModelGenerationPresentation][SmartGenerationFlow]")
+{
+    using namespace Slic3r::GUI::ModelGenerationStatusText;
+    AIModelGenerationClient::JobStatus job;
+    job.state = "future_state"; job.phase = "future_phase"; job.message = "Unhandled server wording";
+    CHECK_FALSE(localized_job_status(job).Contains("Unhandled server wording"));
+    job.state = "running"; job.phase = "preparing_multiview";
+    CHECK(localized_job_status(job).Contains(wxString::FromUTF8("人像")));
+    CHECK_FALSE(localized_job_status(job, true).Contains(wxString::FromUTF8("人像")));
 }

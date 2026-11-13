@@ -348,7 +348,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
                 !weak->m_beauty_transactions || weak->m_beauty_transactions->processing()) return;
             const auto binding = weak->m_model_preview->color_trial_state().base_binding;
             if (!binding || !binding->valid() || binding->physical_slot == slot) return;
-            const auto path = weak->m_workbench_model.path;
+            const auto path = weak->m_displayed_model_path;
             const auto geometry = weak->m_model_preview->geometry_id();
             const auto appearance = weak->m_model_preview->semantic_source_content_id();
             const bool dirty = weak->m_beauty_manual_color_dirty;
@@ -358,7 +358,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
             // semantic evidence or printer match belonging to the portrait.
             const auto restore = [weak, path, geometry, appearance](size_t target, bool was_dirty) {
                 if (!weak || weak->m_shutdown || !weak->m_model_preview ||
-                    weak->m_workbench_model.path != path || !weak->m_model_preview->showing_model(path) ||
+                    weak->m_displayed_model_path != path || !weak->m_model_preview->showing_model(path) ||
                     weak->m_model_preview->geometry_id() != geometry ||
                     weak->m_model_preview->semantic_source_content_id() != appearance ||
                     !weak->m_model_preview->set_independent_base_slot(target)) return false;
@@ -417,26 +417,34 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
             weak->m_workbench_honor_semantic_active = false;
             weak->update_finishing_selection();
             weak->refresh_model_finishing();
-            if (colored && same_config && weak->apply_model_palette_to_filaments()) {
-                weak->record_beauty_candidate(BeautyWorkbenchTransactionController::OperationKind::AppearanceRecolor, before);
-                return;
-            }
-            const std::string notice = !colored
-                ? (weak->m_model_preview->semantic_error().empty()
-                    ? std::string("套装配色未完成或已取消，模型与耗材保持原状。")
-                    : weak->m_model_preview->semantic_error().ToStdString(wxConvUTF8))
-                : !same_config ? "识别期间打印机或耗材已变化，套装未提交；请重新选择。"
-                : weak->m_workbench_operation_notice;
-            if (weak->m_model_preview->leaf_edit_revision() == weak->m_honor_suite_edit_revision || colored) {
-                before->project_config.reset();
-                if (!weak->restore_beauty_candidate(*before))
-                    BOOST_LOG_TRIVIAL(error) << "Honor suite could not restore its previous appearance";
-            }
-            weak->m_workbench_operation_notice = notice;
-            weak->m_workbench_printer_filament_notice = notice;
-            weak->m_workbench_printer_filament_notice_error = true;
-            weak->refresh_controls();
-            weak->publish_workbench_state();
+            const auto edit_revision = weak->m_honor_suite_edit_revision;
+            auto finish = [weak, before, colored, same_config, edit_revision](bool applied) {
+                if (!weak || weak->m_shutdown || !weak->m_model_preview) return;
+                if (applied) {
+                    weak->record_beauty_candidate(BeautyWorkbenchTransactionController::OperationKind::AppearanceRecolor, before);
+                    return;
+                }
+                const std::string notice = !colored
+                    ? (weak->m_model_preview->semantic_error().empty()
+                        ? std::string("套装配色未完成或已取消，模型与耗材保持原状。")
+                        : weak->m_model_preview->semantic_error().ToStdString(wxConvUTF8))
+                    : !same_config ? "识别期间打印机或耗材已变化，套装未提交；请重新选择。"
+                    : weak->m_workbench_operation_notice;
+                auto report = [weak, notice](bool restored) {
+                    if (!weak || weak->m_shutdown) return;
+                    if (!restored) BOOST_LOG_TRIVIAL(error) << "Honor suite could not restore its previous appearance";
+                    weak->m_workbench_operation_notice = notice;
+                    weak->m_workbench_printer_filament_notice = notice;
+                    weak->m_workbench_printer_filament_notice_error = true;
+                    weak->refresh_controls(); weak->publish_workbench_state();
+                };
+                if (weak->m_model_preview->leaf_edit_revision() == edit_revision || colored) {
+                    before->project_config.reset(); before->project_presets.clear();
+                    weak->restore_beauty_candidate_async(*before, std::move(report));
+                } else report(true);
+            };
+            if (colored && same_config) weak->apply_model_palette_to_filaments(std::move(finish));
+            else finish(false);
         });
         m_model_preview->set_honor_suite_semantic_progress_callback(
             [weak](const ModelPreview3D::HonorSuiteSemanticPresentation& state) {
