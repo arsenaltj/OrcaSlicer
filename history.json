@@ -1,5 +1,15 @@
 [
   {
+    "pr": 69,
+    "run": 43362626826,
+    "head": "b7cf35cd02c2e33d0dd0e92f9f0e3bfe2d184f02",
+    "base": "072f52d5e898519a09e283d5d4fab6c36ed24827",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "受控验收：问题跟踪与修复重审",
+    "path": "pr/69/b7cf35cd02c2e33d0dd0e92f9f0e3bfe2d184f02/43362626826",
+    "created": "2026-11-13T04:04:12+00:00"
+  },
+  {
     "pr": 68,
     "run": 43172998551,
     "head": "d7c2d205d45295f6e12e6ebb2908ea8102a71b89",

@@ -1,0 +1,27 @@
+{
+  "pr": 69,
+  "run": 43362626826,
+  "head": "b7cf35cd02c2e33d0dd0e92f9f0e3bfe2d184f02",
+  "base": "072f52d5e898519a09e283d5d4fab6c36ed24827",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "受控验收：问题跟踪与修复重审",
+  "path": "pr/69/b7cf35cd02c2e33d0dd0e92f9f0e3bfe2d184f02/43362626826",
+  "created": "2026-11-13T04:04:12+00:00",
+  "files": {
+    "index.html": "c48e5d1002e07eec0f4e689166ef6ba897322164024cf5c6aec2aabe88c35513",
+    "details.html": "89f42d6c06ce1d828884a74af0297a9c7e26c1b7078024e10128e35a2f4cb4f0",
+    "report.json": "33b277c60f4f8c7a2658d433f0fd41f47578908c51646cb2790820745c021ecf",
+    "summary.md": "0c600dc8fd8d0ea653ce4ce3b1a92763ef4b53c2cfe0a0954208a12e75c5a408",
+    "archify-receipts.json": "8b7672e46e61756a0e4088141695307233c5abd0be1ceb7823d533b4530c0a6a",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "092caf6297c4d246e89c6838b93e6f5515e4cb053783c20af97eba5f0316b14f",
+    "l1-modules.json": "23b89ed0a2b10476242f91ea42e893cd4d2da69aa3dedccec8f348f7d3003eaa",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
