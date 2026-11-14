@@ -13,6 +13,7 @@
 #include <chrono>
 #include <iomanip>
 #include <map>
+#include <set>
 #include <sstream>
 #include <utility>
 
@@ -87,7 +88,8 @@ bool tcp_port_reachable(const std::string& host, uint16_t port, const std::funct
 
 HonorForgePrinterAgent::HonorForgePrinterAgent(std::string log_dir)
     : HonorForgePrinterAgent(std::move(log_dir),
-                             {make_mdns_printer_discovery_provider(), make_subnet_printer_discovery_provider()},
+                             {make_local_virtual_printer_discovery_provider(), make_mdns_printer_discovery_provider(),
+                              make_subnet_printer_discovery_provider()},
                              enumerate_printer_network_interfaces)
 {
 }
@@ -226,6 +228,13 @@ HonorForgePrinterAgent::ProbeResult HonorForgePrinterAgent::probe_candidate(
     }
 
     result.dev_name = info.dev_name;
+    if (candidate.source == PrinterDiscoverySource::LocalVirtualPrinter &&
+        (candidate.instance_uuid.empty() || candidate.instance_uuid != info.virtual_printer_uuid)) {
+        result.error = ProbeError::ProtocolMismatch;
+        result.error_code = "local_virtual_printer_identity_mismatch";
+        return result;
+    }
+    result.virtual_printer_uuid = info.virtual_printer_uuid;
     result.name_source = info.name_source;
     if (result.dev_name.empty() && candidate.source == PrinterDiscoverySource::Mdns && !candidate.service_name.empty()) {
         result.dev_name = candidate.service_name;
@@ -360,6 +369,7 @@ void HonorForgePrinterAgent::run_discovery(uint64_t generation)
     size_t network_failures = 0;
     size_t timeout_failures = 0;
     bool provider_error = false;
+    std::set<std::string> emitted_identities;
 
     for (const auto& provider : m_providers) {
         if (!provider || cancelled())
@@ -383,8 +393,8 @@ void HonorForgePrinterAgent::run_discovery(uint64_t generation)
         std::map<std::string, ProbeResult> physical_devices;
         std::map<std::string, size_t> endpoint_counts;
         for (const auto& device : batch.validated) {
-            const std::string key = device.candidate.host.empty() ?
-                device.candidate.host + ":" + std::to_string(device.candidate.port) : device.candidate.host;
+            const std::string key = device.virtual_printer_uuid.empty() ? device.candidate.host :
+                "virtual:" + device.virtual_printer_uuid;
             ++endpoint_counts[key];
             auto current = physical_devices.find(key);
             if (current == physical_devices.end() ||
@@ -395,6 +405,9 @@ void HonorForgePrinterAgent::run_discovery(uint64_t generation)
         for (const auto& [host, device] : physical_devices) {
             if (cancelled())
                 break;
+            // Local provider runs first. A shared simulator seen again through mDNS keeps its loopback endpoint.
+            if (emitted_identities.count(host) != 0)
+                continue;
             const size_t endpoint_count = endpoint_counts[host];
             if (endpoint_count > 1) {
                 BOOST_LOG_TRIVIAL(info) << "[PrinterDiscovery] physical_device_grouped request=" << generation
@@ -415,6 +428,7 @@ void HonorForgePrinterAgent::run_discovery(uint64_t generation)
             info.version = device.version;
             info.klippy_state = device.klippy_state;
             if (emit_discovered_device(info, printer_discovery_source_name(device.candidate.source))) {
+                emitted_identities.insert(host);
                 ++total_emitted;
                 BOOST_LOG_TRIVIAL(info) << "[PrinterDiscovery] device_emitted request=" << generation
                                         << " agent=" << request.agent_id
@@ -431,7 +445,7 @@ void HonorForgePrinterAgent::run_discovery(uint64_t generation)
         });
 
         // A validated mDNS result is authoritative; subnet probing is only the fallback.
-        if (total_validated > 0)
+        if (total_validated > 0 && provider->source() != PrinterDiscoverySource::LocalVirtualPrinter)
             break;
     }
 

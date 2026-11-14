@@ -1245,12 +1245,25 @@ StrictMeshTopologyReport inspect_strict_topology(const indexed_triangle_set &mes
     struct EdgeUse {
         std::size_t forward = 0;
         std::size_t reverse = 0;
-        std::vector<std::size_t> faces;
+        std::array<std::size_t, 2> faces {};
+        std::size_t count = 0;
     };
     StrictMeshTopologyReport report;
-    std::set<std::array<std::uint32_t, 3>> unique_faces;
+    struct FaceHash {
+        std::size_t operator()(const std::array<std::uint32_t, 3>& face) const {
+            std::size_t value = face[0];
+            for (std::size_t corner = 1; corner < 3; ++corner)
+                value ^= std::size_t(face[corner]) + 0x9e3779b9 + (value << 6) + (value >> 2);
+            return value;
+        }
+    };
+    std::unordered_set<std::array<std::uint32_t, 3>, FaceHash> unique_faces;
+    unique_faces.reserve(mesh.indices.size());
     std::unordered_map<std::uint64_t, EdgeUse> edges;
-    std::vector<std::vector<std::size_t>> vertex_faces(mesh.vertices.size());
+    // Contiguous incidence preserves source-face order without one heap
+    // allocation per vertex. Count every corner, including invalid degeneracy
+    // patterns, so the report retains the original strict semantics.
+    std::vector<std::size_t> vertex_offsets(mesh.vertices.size() + 1, 0);
     edges.reserve(mesh.indices.size() * 2);
     for (std::size_t face_index = 0; face_index < mesh.indices.size(); ++face_index) {
         if ((face_index & 4095) == 0)
@@ -1262,13 +1275,14 @@ StrictMeshTopologyReport inspect_strict_topology(const indexed_triangle_set &mes
                 !mesh.vertices[std::size_t(face[corner])].allFinite())
                 throw std::runtime_error("Strict mesh inspection found an invalid triangle index or vertex.");
             ids[std::size_t(corner)] = std::uint32_t(face[corner]);
-            vertex_faces[std::size_t(face[corner])].push_back(face_index);
+            ++vertex_offsets[std::size_t(face[corner]) + 1];
         }
         const Vec3d a = mesh.vertices[ids[0]].cast<double>();
         const Vec3d b = mesh.vertices[ids[1]].cast<double>();
         const Vec3d c = mesh.vertices[ids[2]].cast<double>();
+        const double squared_area = (b - a).cross(c - a).squaredNorm();
         if (ids[0] == ids[1] || ids[1] == ids[2] || ids[2] == ids[0] ||
-            !std::isfinite((b - a).cross(c - a).squaredNorm()) || (b - a).cross(c - a).squaredNorm() == 0.)
+            !std::isfinite(squared_area) || squared_area == 0.)
             ++report.degenerate_faces;
         auto face_key = ids;
         std::sort(face_key.begin(), face_key.end());
@@ -1281,7 +1295,20 @@ StrictMeshTopologyReport inspect_strict_topology(const indexed_triangle_set &mes
             const std::uint64_t key = (std::uint64_t(low) << 32) | std::uint64_t(high);
             auto &use = edges[key];
             ++(from == low ? use.forward : use.reverse);
-            use.faces.push_back(face_index);
+            if (use.count < use.faces.size()) use.faces[use.count] = face_index;
+            ++use.count;
+        }
+    }
+
+    for (std::size_t vertex = 1; vertex < vertex_offsets.size(); ++vertex)
+        vertex_offsets[vertex] += vertex_offsets[vertex - 1];
+    std::vector<std::size_t> incident_faces(vertex_offsets.back());
+    auto vertex_cursor = vertex_offsets;
+    for (std::size_t face_index = 0; face_index < mesh.indices.size(); ++face_index) {
+        if ((face_index & 4095) == 0) strict_check_canceled(canceled);
+        for (int corner = 0; corner < 3; ++corner) {
+            const auto vertex = std::size_t(mesh.indices[face_index][corner]);
+            incident_faces[vertex_cursor[vertex]++] = face_index;
         }
     }
 
@@ -1289,7 +1316,7 @@ StrictMeshTopologyReport inspect_strict_topology(const indexed_triangle_set &mes
     std::vector<std::size_t> boundary_degree(mesh.vertices.size(), 0);
     std::vector<std::size_t> nonmanifold_degree(mesh.vertices.size(), 0);
     for (const auto &[key, use] : edges) {
-        const std::size_t count = use.faces.size();
+        const std::size_t count = use.count;
         const std::uint32_t low = std::uint32_t(key >> 32), high = std::uint32_t(key & 0xffffffffu);
         if (count == 1) {
             ++report.open_edges;
@@ -1310,19 +1337,19 @@ StrictMeshTopologyReport inspect_strict_topology(const indexed_triangle_set &mes
 
     std::vector<std::size_t> seen(mesh.indices.size(), std::numeric_limits<std::size_t>::max());
     std::vector<std::size_t> stack;
-    for (std::size_t vertex = 0; vertex < vertex_faces.size(); ++vertex) {
+    for (std::size_t vertex = 0; vertex < mesh.vertices.size(); ++vertex) {
         if ((vertex & 4095) == 0)
             strict_check_canceled(canceled);
-        const auto &incident = vertex_faces[vertex];
-        if (incident.empty())
+        const auto incident_begin = vertex_offsets[vertex], incident_end = vertex_offsets[vertex + 1];
+        if (incident_begin == incident_end)
             continue;
         if (nonmanifold_degree[vertex] != 0 ||
             (boundary_degree[vertex] != 0 && boundary_degree[vertex] != 2)) {
             ++report.nonmanifold_vertices;
             continue;
         }
-        stack.assign(1, incident.front());
-        seen[incident.front()] = vertex;
+        stack.assign(1, incident_faces[incident_begin]);
+        seen[incident_faces[incident_begin]] = vertex;
         std::size_t connected = 0;
         while (!stack.empty()) {
             const std::size_t face_index = stack.back();
@@ -1339,7 +1366,7 @@ StrictMeshTopologyReport inspect_strict_topology(const indexed_triangle_set &mes
                 }
             }
         }
-        if (connected != incident.size())
+        if (connected != incident_end - incident_begin)
             ++report.nonmanifold_vertices;
     }
 

@@ -186,6 +186,7 @@ set(ORCA_SLIC3R_CORE_SOURCES
     "${ORCA_SLIC3R_CORE_SOURCE_DIR}/TextureToColor/TextureToColor.hpp"
     "${ORCA_SLIC3R_CORE_SOURCE_DIR}/TextureToColor/TextureToColor.cpp"
     "${ORCA_SLIC3R_CORE_SOURCE_DIR}/TextureToColor/ColorUtils.hpp"
+    "${ORCA_SLIC3R_CORE_SOURCE_DIR}/TextureToColor/ColorDistancePrepared.hpp"
     "${ORCA_SLIC3R_CORE_SOURCE_DIR}/TextureToColor/ColorUtils.cpp"
     "${ORCA_SLIC3R_CORE_SOURCE_DIR}/Flow.cpp"
     "${ORCA_SLIC3R_CORE_SOURCE_DIR}/Flow.hpp"

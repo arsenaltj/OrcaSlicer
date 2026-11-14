@@ -20,14 +20,15 @@ public:
     using Json = nlohmann::json;
     using Confirm = std::function<bool(const Json&)>;
     using ProviderCatalog = AIModelGenerationClient::ProviderCatalog;
-    explicit AdvancedCreationFeatureHost(wxWindow* owner);
+    explicit AdvancedCreationFeatureHost(wxWindow* owner, std::string endpoint = {});
     ~AdvancedCreationFeatureHost() override;
     AdvancedCreation::Session& session() { return m_session; }
     const AdvancedCreation::Session& session() const { return m_session; }
     AdvancedCreation::Eligibility eligibility() const;
     const std::string& message() const { return m_message; }
     const Json& history() const { return m_history; }
-    bool command_pending() const { return m_command_pending; }
+    bool command_pending() const { return m_command_state != CommandState::Idle; }
+    bool draft_editing_locked() const { return m_command_state == CommandState::Exclusive; }
     bool has_pending_receipt() const;
     const ProviderCatalog& image_catalog() const { return m_image_catalog; }
     void reconcile_submission();
@@ -68,7 +69,7 @@ private:
     void observe_model_job(const std::string& job, bool open_route, bool restart = false);
     void poll(bool restore = false);
     void ingest(Json group, AdvancedCreation::CallbackContext context, bool restore,
-                std::function<void()> done = {});
+                std::function<void()> done = {}, std::optional<AdvancedCreation::InputDraft> saved_input = {});
     void save_draft(std::function<void()> done);
     void prepare(const std::string& group, Json request, Confirm confirm,
                  AdvancedCreation::CommandContext context, bool new_group);
@@ -105,7 +106,9 @@ private:
     bool m_restore_receipts {true};
     std::string m_message;
     bool m_service_available {false};
-    bool m_command_pending {false};
+    // Auto-save serializes requests without disabling the editor or its IME.
+    enum class CommandState { Idle, BackgroundDraftSave, Exclusive };
+    CommandState m_command_state {CommandState::Idle};
     bool m_poll_pending {false};
     bool m_shutdown {false};
     Presentation::TaskScope m_cache_scope;

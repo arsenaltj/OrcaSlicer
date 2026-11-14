@@ -80,6 +80,28 @@ class ArchitectureReviewTests(unittest.TestCase):
         self.assertEqual(ar.module_for("src/GUI/AI/Orca/Adapter.cpp", config), "adapter")
         self.assertEqual(ar.module_for("unmapped.bin", config), "unknown")
 
+    def test_every_registered_module_can_be_shown_without_overlapping(self):
+        config = ar.load_map(Path(__file__).resolve().parents[1])
+        report = {"modules": [dict(module, changed=1, potential=0) for module in config["modules"]],
+                  "relationships": [], "changes": [], "potential_files": [],
+                  "mode": "fixture", "base": "a" * 40, "head": "b" * 40}
+        components = ar.archify_spec(report)["components"]
+        self.assertEqual({component["id"] for component in components},
+                         {module["id"] for module in config["modules"]})
+        for index, first in enumerate(components):
+            x, y = first["pos"]
+            width, height = first["size"]
+            self.assertGreaterEqual(x, 0)
+            self.assertGreaterEqual(y, 0)
+            self.assertGreater(width, 0)
+            self.assertGreater(height, 0)
+            for second in components[index + 1:]:
+                other_x, other_y = second["pos"]
+                other_width, other_height = second["size"]
+                self.assertTrue(x + width <= other_x or other_x + other_width <= x or
+                                y + height <= other_y or other_y + other_height <= y,
+                                f"Overlapping modules: {first['id']} and {second['id']}")
+
     def test_deleted_dependency_keeps_old_consumers_visible(self):
         config = {"modules": [{"id": "lib", "label": "库", "paths": ["lib"]}, {"id": "app", "label": "应用", "paths": ["app"]}]}
         baseline = {"edges": [{"source": "app/a.py", "target": "lib/b.py", "kind": "CALLS"}], "files": ["app/a.py", "lib/b.py"], "identity": "a", "cache_hit": False}

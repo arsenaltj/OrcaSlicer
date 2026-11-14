@@ -56,6 +56,7 @@
 #include "libslic3r/miniz_extension.hpp"
 #include "slic3r/GUI/DeviceCore/DevStorage.h"
 #include "slic3r/Utils/IPrinterAgent.hpp"
+#include "slic3r/Utils/Http.hpp"
 #include "slic3r/Utils/MoonrakerPrinterAgent.hpp"
 #include "slic3r/Utils/bambu_networking.hpp"
 #include "test_utils.hpp"
@@ -1217,4 +1218,88 @@ TEST_CASE("A file that is not a 3MF is uploaded as it is, named after the job wh
     CHECK(upload.find("filename=\"" + file_name + "\"") != std::string::npos);
     CHECK(upload.find("; plain G-code") != std::string::npos);
     CHECK(std::distance(boost::filesystem::directory_iterator(dir.path()), boost::filesystem::directory_iterator()) == 1);
+}
+
+// Explicit opt-in against an isolated local simulator, using the production agent and network adapters.
+TEST_CASE("The production Moonraker agent uploads controls and monitors the local simulator", "[.VirtualPrinterLive]")
+{
+    const char* path = boost::nowide::getenv("HF_VP_RUNTIME");
+    REQUIRE(path != nullptr);
+    boost::filesystem::ifstream declaration(path);
+    const auto runtime = nlohmann::json::parse(declaration);
+    const std::string port = std::to_string(runtime.at("port").get<int>());
+    struct Reports {
+        std::mutex mutex;
+        std::condition_variable changed;
+        std::string phase;
+    } reports;
+    class LiveAgent final : public ConnectAgent {
+    public:
+        using ConnectAgent::ConnectAgent;
+        using MoonrakerPrinterAgent::send_gcode_sync;
+    protected:
+        bool accepts_3mf() const override { return false; }
+    } agent("");
+    agent.set_on_local_message_fn([&](std::string, std::string text) {
+        const auto message = nlohmann::json::parse(text, nullptr, false);
+        if (!message.is_object() || !message.contains("print")) return;
+        std::lock_guard<std::mutex> lock(reports.mutex);
+        const auto& print = message["print"];
+        if (print.contains("gcode_state")) reports.phase = print["gcode_state"].get<std::string>();
+        reports.changed.notify_all();
+    });
+    const auto wait_phase = [&](const std::string& phase) {
+        std::unique_lock<std::mutex> lock(reports.mutex);
+        return reports.changed.wait_for(lock, 10s, [&] { return reports.phase == phase; });
+    };
+    const auto wait_idle = [&] {
+        std::unique_lock<std::mutex> lock(reports.mutex);
+        return reports.changed.wait_for(lock, 10s, [&] {
+            return reports.phase == "IDLE" || reports.phase == "FINISH" || reports.phase == "FAILED";
+        });
+    };
+    PrinterConnectionParams connection;
+    connection.dev_id = "virtual-printer-live";
+    connection.host = "127.0.0.1";
+    connection.port = port;
+    REQUIRE(agent.connect_printer(connection) == BAMBU_NETWORK_SUCCESS);
+    REQUIRE(wait_idle());
+    ScopedTemporaryFile file(".gcode");
+    boost::filesystem::ofstream(file.path()) << "G28\nG1 X30 Y30 Z.2 F1200\nM104 S200\nG4 S600\n";
+    PrintParams params{};
+    params.dev_id = connection.dev_id;
+    params.dst_file = file.string();
+    params.task_name = "Native-Agent-Live";
+    REQUIRE(agent.start_send_gcode_to_sdcard(params, nullptr, nullptr, nullptr) == BAMBU_NETWORK_SUCCESS);
+    CHECK(wait_idle());
+    REQUIRE(agent.start_local_print(params, nullptr, nullptr) == BAMBU_NETWORK_SUCCESS);
+    REQUIRE(wait_phase("RUNNING"));
+    params.task_name = "Native-Agent-Queued";
+    CHECK(agent.start_send_gcode_to_sdcard(params, nullptr, nullptr, nullptr) == BAMBU_NETWORK_SUCCESS);
+    REQUIRE(agent.send_gcode_sync(connection.dev_id, "PAUSE"));
+    REQUIRE(wait_phase("PAUSE"));
+    REQUIRE(agent.send_gcode_sync(connection.dev_id, "RESUME"));
+    REQUIRE(wait_phase("RUNNING"));
+    // AMS sync mutates the GUI's DeviceManager directly, rather than emitting a
+    // status callback. Exercise that consumer in the real main-window check;
+    // this headless test verifies its real HTTP input without constructing wxApp.
+    std::string lane_response;
+    Http::get("http://127.0.0.1:" + port + "/server/database/item?namespace=lane_data")
+        .timeout_max(5)
+        .on_complete([&](std::string body, unsigned status) { if (status == 200) lane_response = std::move(body); })
+        .perform_sync();
+    REQUIRE_FALSE(lane_response.empty());
+    const auto lanes = nlohmann::json::parse(lane_response).at("result").at("value");
+    REQUIRE_FALSE(lanes.empty());
+    for (const auto& lane : lanes) {
+        CHECK(lane.contains("lane"));
+        CHECK(lane.contains("color"));
+        CHECK(lane.contains("material"));
+        CHECK(lane.contains("nozzle_temp"));
+        CHECK(lane.contains("bed_temp"));
+    }
+    CHECK(agent.get_camera_url().find(":" + port + "/webcam/") != std::string::npos);
+    REQUIRE(agent.send_gcode_sync(connection.dev_id, "CANCEL_PRINT"));
+    REQUIRE(wait_phase("FAILED"));
+    CHECK(agent.disconnect_printer() == BAMBU_NETWORK_SUCCESS);
 }

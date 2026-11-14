@@ -29,6 +29,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySidebar.hpp"
 #include "AI/ModelGeneration/WorkbenchOpenRequest.hpp"
 #include "Presentation/UiRuntime.hpp"
+#include "DiagnosticStageTimer.hpp"
 #include "Presentation/WindowMountLease.hpp"
 #include "AI/ModelGeneration/WorkbenchImportSession.hpp"
 
@@ -301,6 +302,12 @@ private:
     std::unordered_set<std::string> m_workbench_repair_attempts;
     bool m_workbench_check_running {false};
     bool m_workbench_check_queued {false};
+    // Diagnostics only: no permission or business state is derived from this clock.
+    std::shared_ptr<DiagnosticStageTimer> m_workbench_check_timing;
+    bool m_workbench_check_timing_armed {false};
+    void begin_workbench_check_timing();
+    void finish_workbench_check_timing(const char* stage);
+    void observe_workbench_check_usable();
     bool m_workbench_import_running {false};
     bool m_workbench_auto_repair {false};
     bool m_workbench_auto_palette_pending {false};

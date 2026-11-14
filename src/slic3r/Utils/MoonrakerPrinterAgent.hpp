@@ -94,6 +94,7 @@ protected:
         std::string name_source;
         std::string version;
         std::string klippy_state;
+        std::string virtual_printer_uuid;
         bool        use_ssl = false;
     } device_info;
 

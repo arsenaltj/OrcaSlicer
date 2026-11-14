@@ -52,6 +52,7 @@ public:
         std::string name_source;
         std::string version;
         std::string klippy_state;
+        std::string virtual_printer_uuid;
     };
 
 protected:

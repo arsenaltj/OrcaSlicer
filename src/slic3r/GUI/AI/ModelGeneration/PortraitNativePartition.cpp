@@ -20,6 +20,8 @@
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
+#include <thread>
+#include <tbb/task_arena.h>
 
 namespace Slic3r::GUI::NativePortrait {
 namespace {
@@ -595,7 +597,7 @@ PaintMeshRepairCallback native_mesh_repair_callback(StrictMeshRepairResult* stri
     };
 }
 
-NativeWorkbenchPartition build_native_workbench_partition(
+static NativeWorkbenchPartition build_native_workbench_partition_impl(
     const TexturedMesh& texture_mesh,
     PaintMeshRepairCallback repair, const PaintCancelCallback& cancel,
     NativePortraitPartitionBuildReport* report)
@@ -680,6 +682,18 @@ NativeWorkbenchPartition build_native_workbench_partition(
         finish_report(false, failure.what());
         throw;
     }
+}
+
+NativeWorkbenchPartition build_native_workbench_partition(
+    const TexturedMesh& texture_mesh, PaintMeshRepairCallback repair,
+    const PaintCancelCallback& cancel, NativePortraitPartitionBuildReport* report)
+{
+    const auto available = std::max(1u, std::thread::hardware_concurrency());
+    const auto threads = int(std::min(4u, available > 1 ? available - 1 : 1u));
+    tbb::task_arena arena(threads);
+    return arena.execute([&] {
+        return build_native_workbench_partition_impl(texture_mesh, std::move(repair), cancel, report);
+    });
 }
 
 NativeWorkbenchPartition build_native_portrait_partition(

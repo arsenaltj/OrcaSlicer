@@ -29,7 +29,8 @@
     "src/slic3r/GUI/GLCanvas3D.hpp",
     "src/orca_model_sdk",
     "src/slic3r/Utils/PlatformLibrary",
-    "src/slic3r/GUI/Presentation"
+    "src/slic3r/GUI/Presentation",
+    "tools/virtual_printer"
   ],
   "modules": [
     {
@@ -172,6 +173,15 @@
         "deps_src"
       ],
       "purpose": "资源、翻译和构建依赖"
+    },
+    {
+      "id": "virtual_printer",
+      "label": "本地虚拟打印机",
+      "ownership": [],
+      "paths": [
+        "tools/virtual_printer"
+      ],
+      "purpose": "独立后台与中文中控，共享VirtualPrinterSession状态；自包含Windows安装与协议联调"
     }
   ],
   "evidence": [
@@ -334,7 +344,7 @@
       "id": "honor_forge_discovery",
       "path": "src/slic3r/Utils/HonorForgePrinterAgent.cpp",
       "needle": "bool HonorForgePrinterAgent::start_discovery(bool start, bool sending)",
-      "detail": "Honor Forge owns an agent-scoped asynchronous discovery generation; existing Bonjour mDNS and bounded subnet candidates must pass Moonraker /server/info validation before the existing DeviceManager callback receives them."
+      "detail": "Honor Forge validates local runtime declarations against server UUID before mDNS and bounded subnet discovery; virtual UUID dedup prefers loopback and retains other physical printers."
     },
     {
       "id": "accepted_ux_controls",
@@ -759,6 +769,24 @@
       "detail": "Manual native color publication preserves region semantics, color reduction, slot binding, atomic history and content-bound topology certificates. WorkbenchModelInspection restores unchanged legacy appearance geometry only after verifying its complete native ancestry and ordered corners. WorkbenchHistoryEvidence resolves an original publication only while both model copies and both full metadata records match; check, publication and native import still validate the original bound proof. Missing original-appearance companions recover only through the hash-bound source chain. Ordinary saved certificates cannot authorize native claims. History loading validates these same complete certificates on its worker before automatic check scheduling; the in-memory source index never grants check success."
     },
     {
+      "id": "native_region_smoothing",
+      "path": "src/libslic3r/TextureToColor/ColorUtils.cpp",
+      "needle": "struct RegionSmoothingWorkspace::Impl {",
+      "detail": "仅按一般拓扑、读写依赖及不可变几何优化，禁止样本身份或专属阈值。CPU请求内复用连续半边关联及原Lab色板转换，保留原面序、CIEDE2000与平局规则；只对采用标签执行一次几何平滑。FPS独立距离局部并行，质心及选点保序；CGAL公开visitor只作被动计时，固定配方补丁仅并行只读查询、局部修补保序，失败恢复原候选串行处理。精确投影以冲突安全批次执行，保留同顶点次数／顺序、平面浮点表示和Windows Kd-tree保护。所有精确查询及后备最多四线程，实际输出仍接受独立严格终检。取消不安装部分结果；不持有GUI或业务会话。"
+    },
+    {
+      "id": "normalized_soup_orientation",
+      "path": "src/libslic3r/PolygonSoupPreparation.hpp",
+      "needle": "PolygonSoupOrientation orient_prepared_polygon_soup(",
+      "detail": "仅固定CGAL6.2.1、完整规范化后按通用拓扑资格省去已证明无作用的定向；前判失败／异常保留原定向及最终判定。点字节与面序不变，保留实际float及独立严格终检，不按样本身份分流。"
+    },
+    {
+      "id": "workbench_check_usable_timing",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchPresentation.cpp",
+      "needle": "void ModelGenerationPanel::observe_workbench_check_usable()",
+      "detail": "可选诊断从检查受理计至当前资产、视口及DPI的完整GPU首帧与编辑解锁；与原页面观察者独立，不授予检查或编辑权限，不混淆首次修复与凭证复用。"
+    },
+    {
       "id": "workbench_page_presentation",
       "path": "src/slic3r/GUI/Redesign/RedesignWorkbenchPresentation.cpp",
       "needle": "bool RedesignShell::begin_workbench_presentation(bool history_loading)",
@@ -843,6 +871,24 @@
       "path": "src/slic3r/GUI/Presentation/WindowMountLease.hpp",
       "needle": "class WindowMountLease",
       "detail": "wx parent管理控件；跨宿主挂载保留原parent/sizer位置/显隐/焦点，仅栈顶代次可恢复。原布局替换时仍安全归还，避免临时宿主删除Plater。"
+    },
+    {
+      "id": "virtual_printer_session",
+      "path": "tools/virtual_printer/hf_virtual_printer/session.py",
+      "needle": "class VirtualPrinterSession:",
+      "detail": "Single owner of simulated hardware, files, task, clock, faults and persistence; independent of browsers."
+    },
+    {
+      "id": "virtual_printer_protocol",
+      "path": "tools/virtual_printer/hf_virtual_printer/server.py",
+      "needle": "def create_app(",
+      "detail": "Moonraker and management adapters share the session, with local-only management and actual-port camera URLs."
+    },
+    {
+      "id": "virtual_printer_launcher",
+      "path": "tools/virtual_printer/hf_virtual_printer/launcher.py",
+      "needle": "class Application:",
+      "detail": "Per-user instance lock, loopback default, port fallback, runtime declaration, optional LAN advertisement and tray."
     }
   ],
   "journeys": [
@@ -1213,6 +1259,7 @@
       "group": "设计与生成",
       "evidence": [
         "native_workbench_partition",
+        "native_region_smoothing",
         "native_workbench_publication",
         "portrait_suite_binding",
         "portrait_native_repair",
@@ -1484,7 +1531,8 @@
       "boundary": "修复内部候选通过拓扑、几何和外观验证才自动发布；CGAL 与增强修复回退，失败不放行风险导入",
       "group": "资产与工作区",
       "evidence": [
-        "workbench_check"
+        "workbench_check",
+        "workbench_check_usable_timing"
       ],
       "modules": [
         "generation"
@@ -1578,6 +1626,25 @@
       ],
       "modules": [
         "desktop"
+      ],
+      "impact_scope": "evidence"
+    },
+    {
+      "id": "virtual_printer",
+      "label": "虚拟打印机联调",
+      "detail": "本机发现、实际G-code上传、仿真打印、实时监控与异常恢复",
+      "boundary": "VirtualPrinterSession唯一持有虚拟设备状态；HTTP与两种WebSocket共用可信Host/Origin及本机管理门禁，就绪探测直连并核对UUID；桌面沿用DeviceManager与Job，物理打印与跨电脑安装另行验收",
+      "group": "设备与打印",
+      "evidence": [
+        "virtual_printer_session",
+        "virtual_printer_protocol",
+        "virtual_printer_launcher",
+        "honor_forge_discovery"
+      ],
+      "modules": [
+        "virtual_printer",
+        "desktop",
+        "core"
       ],
       "impact_scope": "evidence"
     }
@@ -2070,7 +2137,7 @@
           "tools/ai/test_advanced_multiview_models.py",
           "tests/slic3rutils/test_unified_workbench.cpp"
         ],
-        "state_owner": "旧 Job / JobRepository 持有原任务；高级组仓库独立持有当前上传引用、待处理集合、四图版本、operation模型与尝试，AdvancedCreation Session 持有高级桌面草稿、完整图像模型ID与选择；AdvancedModelTaskFlow只持有本地观察投影及请求代次，不创建远端任务",
+        "state_owner": "旧 Job / JobRepository 持有原任务；高级组仓库独立持有当前上传引用、待处理集合、四图版本、operation模型与尝试，AdvancedCreation Session 持有高级桌面草稿、完整图像模型ID与选择；FeatureHost单一CommandState区分后台草稿保存与独占命令，保存回执保留较新本地编辑；AdvancedModelTaskFlow只持有本地观察投影及请求代次，不创建远端任务",
         "contract": "只有首次／新建创建高级组；同组输入或风格变化强制重生对应视角并在待处理清空前禁止3D；YOYOClaw目录无精确Qwen时不自动回落，operation冻结模型且失败重试沿原模型；确认、取消、响应恢复与幂等提交在应用入口处理",
         "note": "智能与高级创作Session／任务独立，生成等待、结果与编辑接入Shell唯一工作台；高级不额外执行2D。供应商协议、预算确认与原文件兼容不变。",
         "build_boundary": "任务应用为本地 Python sidecar 模块；高级 Session 编入 libslic3r_gui STATIC，二者不具有独立部署边界。"
@@ -2293,11 +2360,13 @@
           "src/libslic3r/TextureToColor"
         ],
         "evidence": [
-          "native_model"
+          "native_model",
+          "native_region_smoothing"
         ],
         "tests": [
           "tests/libslic3r/test_model*",
-          "tests/libslic3r/test_trianglemesh*"
+          "tests/libslic3r/test_trianglemesh*",
+          "tests/libslic3r/test_mesh_repair.cpp"
         ],
         "state_owner": "原生 Model / Mesh 与几何数据",
         "contract": "纯几何运算不掌握供应商任务或账号令牌",
