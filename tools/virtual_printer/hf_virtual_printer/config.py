@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 
 
 class PrinterError(Exception):
@@ -83,12 +84,8 @@ def validate_config(value: dict) -> dict:
         if not isinstance(slot["material"], str) or len(slot["material"]) > 40:
             raise PrinterError("材料名称过长")
         color = slot["color"]
-        if not isinstance(color, str) or len(color) != 7 or not color.startswith("#"):
+        if not isinstance(color, str) or re.fullmatch(r"#[0-9A-Fa-f]{6}", color) is None:
             raise PrinterError("颜色格式应为 #RRGGBB")
-        try:
-            int(color[1:], 16)
-        except ValueError as exc:
-            raise PrinterError("颜色格式应为 #RRGGBB") from exc
         number(slot["remaining_g"], 0, 100000, "耗材余量")
         number(slot["nozzle_temperature"], 0, 370, "耗材喷头温度")
         number(slot["bed_temperature"], 0, 120, "耗材热床温度")

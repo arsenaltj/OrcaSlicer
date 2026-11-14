@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -9,12 +10,24 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
 import httpx
 from PIL import Image
 from websockets.sync.client import connect
+from websockets.exceptions import InvalidStatus
+
+
+class RejectProxyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.server.requests.append(self.path)
+        self.send_response(502)
+        self.end_headers()
+
+    def log_message(self, *_):
+        pass
 
 
 class NetworkTests(unittest.TestCase):
@@ -32,6 +45,13 @@ class NetworkTests(unittest.TestCase):
             cls.environment["PATH"] = str(Path(os.environ["SystemRoot"]) / "System32")
             cls.environment.pop("PYTHONPATH", None)
             cls.environment.pop("PYTHONHOME", None)
+        cls.proxy = ThreadingHTTPServer(("127.0.0.1", 0), RejectProxyHandler)
+        cls.proxy.requests = []
+        cls.proxy_thread = threading.Thread(target=cls.proxy.serve_forever, kwargs={"poll_interval": .01})
+        cls.proxy_thread.start()
+        proxy_url = f"http://127.0.0.1:{cls.proxy.server_port}"
+        cls.environment.update({"HTTP_PROXY": proxy_url, "http_proxy": proxy_url,
+                                "ALL_PROXY": proxy_url, "all_proxy": proxy_url, "NO_PROXY": "", "no_proxy": ""})
         cls.blocker = socket.socket()
         try:
             cls.blocker.bind(("127.0.0.1", 7125))
@@ -53,6 +73,9 @@ class NetworkTests(unittest.TestCase):
             time.sleep(.1)
         cls.process.terminate()
         cls.process.wait(timeout=10)
+        cls.proxy.shutdown()
+        cls.proxy.server_close()
+        cls.proxy_thread.join(5)
         raise RuntimeError((cls.root / "virtual-printer.log").read_text(encoding="utf-8"))
 
     @classmethod
@@ -66,6 +89,9 @@ class NetworkTests(unittest.TestCase):
                 cls.process.terminate()
                 cls.process.wait(timeout=10)
             cls.blocker.close()
+            cls.proxy.shutdown()
+            cls.proxy.server_close()
+            cls.proxy_thread.join(5)
             cls.temp.cleanup()
 
     def tearDown(self):
@@ -84,8 +110,41 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(duplicate.returncode, 0)
         # A Windows venv redirector may launch the actual interpreter as a child process.
         self.assertEqual(json.loads(self.runtime.read_text(encoding="utf-8"))["pid"], self.declaration["pid"])
+        self.assertEqual(self.proxy.requests, [])
         for path in ["/", "/assets/app.js", "/assets/style.css"]:
             self.assertEqual(self.http.get(path).status_code, 200)
+
+    def test_untrusted_host_and_origin_are_rejected_by_the_real_listener(self):
+        saved = (self.root / "config.json").read_bytes()
+        host = f"rebind.example:{self.declaration['port']}"
+        headers = {"Host": host, "Origin": f"http://{host}"}
+        for path in ["/", "/sim/api/v1/config", "/server/info", "/webcam/?action=snapshot"]:
+            self.assertEqual(self.http.get(path, headers=headers).status_code, 403)
+        config = self.http.get("/sim/api/v1/config").json()
+        config["name"] = "must-not-be-written"
+        self.assertEqual(self.http.put("/sim/api/v1/config", json=config, headers=headers).status_code, 403)
+        self.assertEqual((self.root / "config.json").read_bytes(), saved)
+        for path in ["/websocket", "/sim/events"]:
+            with self.subTest(path=path):
+                with socket.create_connection(("127.0.0.1", self.declaration["port"])) as transport:
+                    with self.assertRaises(InvalidStatus) as rejected:
+                        with connect(f"ws://{host}{path}", sock=transport, origin=f"http://{host}", proxy=None):
+                            pass
+                    self.assertEqual(rejected.exception.response.status_code, 403)
+        self.assertEqual(self.http.get("/server/info", headers={"Origin": "null"}).status_code, 403)
+        with connect(self.base.replace("http", "ws", 1) + "/sim/events", origin=self.base, proxy=None) as ws:
+            self.assertEqual(json.loads(ws.recv(timeout=5))["instance_uuid"], self.declaration["instance_uuid"])
+
+    def test_invalid_colors_never_persist_over_real_http(self):
+        saved = (self.root / "config.json").read_bytes()
+        config = self.http.get("/sim/api/v1/config").json()
+        for color in ["#+00000", "#-00001", "#00_000", "# 00000"]:
+            with self.subTest(color=color):
+                config["slots"][0]["color"] = color
+                self.assertEqual(self.http.post("/sim/api/v1/config/validate", json=config).status_code, 400)
+                self.assertEqual(self.http.put("/sim/api/v1/config", json=config).status_code, 400)
+                self.assertEqual((self.root / "config.json").read_bytes(), saved)
+        self.assertEqual(self.http.get("/webcam/?action=snapshot").status_code, 200)
 
     def test_real_websocket_notifications_camera_and_print_controls(self):
         self.assertEqual(self.upload("网络联调.gcode", b"G28\nM104 S180\nG1 X100 Y100 Z.2 E3 F600\nG4 S600\n").status_code, 200)

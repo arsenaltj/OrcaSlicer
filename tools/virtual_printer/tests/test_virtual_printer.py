@@ -23,7 +23,8 @@ class SimulatorTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="HF 虚拟打印机 ")
         self.root = Path(self.temp.name)
         self.session = VirtualPrinterSession(self.root)
-        self.client = TestClient(create_app(self.session, engine=False))
+        self.client = TestClient(create_app(self.session, engine=False),
+                                 base_url="http://127.0.0.1:7125", client=("127.0.0.1", 50000))
         self.client.__enter__()
 
     def tearDown(self):
@@ -75,6 +76,39 @@ class SimulatorTests(unittest.TestCase):
                 with self.assertRaises(PrinterError):
                     validate_config(config)
 
+    def test_invalid_color_spellings_never_replace_the_saved_configuration(self):
+        original = copy.deepcopy(self.session.config)
+        saved = (self.root / "config.json").read_bytes()
+        for color in ["#+00000", "#-00001", "#00_000", "# 00000", "#00000 ", "#１２３４５６", "#00FF00\n"]:
+            with self.subTest(color=color):
+                config = copy.deepcopy(original)
+                config["slots"][0]["color"] = color
+                with self.assertRaises(PrinterError):
+                    validate_config(config)
+                self.assertEqual(self.client.post("/sim/api/v1/config/validate", json=config).status_code, 400)
+                self.assertEqual(self.client.put("/sim/api/v1/config", json=config).status_code, 400)
+                self.assertEqual(self.session.config, original)
+                self.assertEqual((self.root / "config.json").read_bytes(), saved)
+        restarted = VirtualPrinterSession(self.root)
+        try:
+            CameraRenderer(restarted).render()
+            self.assertEqual(restarted.config, original)
+        finally:
+            restarted.close()
+
+    def test_valid_hex_colors_survive_save_reload_and_camera_rendering(self):
+        for color in ["#000000", "#FFFFFF", "#a1B2c3"]:
+            with self.subTest(color=color):
+                config = copy.deepcopy(self.session.config)
+                config["slots"][0]["color"] = color
+                self.assertEqual(self.client.put("/sim/api/v1/config", json=config).status_code, 200)
+                restarted = VirtualPrinterSession(self.root)
+                try:
+                    CameraRenderer(restarted).render()
+                    self.assertEqual(restarted.config["slots"][0]["color"], color)
+                finally:
+                    restarted.close()
+
     def test_malformed_requests_fail_explicitly_without_server_errors(self):
         for value in [{"params": []}, {"filename": 42}, {"params": None}]:
             self.assertEqual(self.client.post("/printer/print/start", json=value).status_code, 400)
@@ -111,11 +145,12 @@ class SimulatorTests(unittest.TestCase):
     def test_protocol_websocket_rejects_remote_and_foreign_origins(self):
         from starlette.websockets import WebSocketDisconnect
         with self.assertRaises(WebSocketDisconnect):
-            with self.client.websocket_connect("/websocket", headers={"Origin": "https://unrelated.invalid"}):
+            with self.client.websocket_connect("ws://127.0.0.1:7125/websocket", headers={"Origin": "https://unrelated.invalid"}):
                 pass
-        remote = TestClient(create_app(self.session, engine=False), client=("192.0.2.1", 50000))
+        remote = TestClient(create_app(self.session, engine=False),
+                            base_url="http://127.0.0.1:7125", client=("192.0.2.1", 50000))
         with self.assertRaises(WebSocketDisconnect):
-            with remote.websocket_connect("/websocket"):
+            with remote.websocket_connect("ws://127.0.0.1:7125/websocket"):
                 pass
 
     def test_camera_retains_old_layers_after_execution_buffer_rolls_over(self):
@@ -305,7 +340,8 @@ class SimulatorTests(unittest.TestCase):
         self.assertEqual(self.client.get("/server/info").status_code, 200)
 
     def test_webcam_urls_preserve_port_and_snapshot_is_valid_jpeg(self):
-        client = TestClient(create_app(self.session, engine=False), base_url="http://127.0.0.1:7128")
+        client = TestClient(create_app(self.session, engine=False), base_url="http://127.0.0.1:7128",
+                            client=("127.0.0.1", 50000))
         urls = client.get("/server/webcams/list").json()["result"]["webcams"][0]
         self.assertEqual(urls["snapshot_url"], "http://127.0.0.1:7128/webcam/?action=snapshot")
         response = client.get("/webcam/?action=snapshot")
@@ -313,7 +349,7 @@ class SimulatorTests(unittest.TestCase):
         self.assertEqual(Image.open(io.BytesIO(response.content)).size, (640, 360))
 
     def test_websocket_identification_subscription_query_and_unknown_method(self):
-        with self.client.websocket_connect("/websocket") as ws:
+        with self.client.websocket_connect("ws://127.0.0.1:7125/websocket") as ws:
             ws.send_json({"jsonrpc": "2.0", "id": 0, "method": "server.connection.identify", "params": {"client_name": "OrcaSlicer"}})
             self.assertIn("connection_id", ws.receive_json()["result"])
             ws.send_json({"jsonrpc": "2.0", "id": 1, "method": "printer.objects.subscribe", "params": {"objects": {"print_stats": None, "extruder": ["temperature"]}}})
@@ -363,6 +399,91 @@ class SimulatorTests(unittest.TestCase):
     def test_cross_origin_management_requests_are_rejected(self):
         response = self.client.post("/sim/api/v1/action", json={"action": "recover"}, headers={"Origin": "https://unrelated.invalid"})
         self.assertEqual(response.status_code, 403)
+
+    def test_foreign_host_cannot_authorize_its_own_origin_or_access_local_data(self):
+        saved = (self.root / "config.json").read_bytes()
+        for host in ["rebind.example:7125", "localhost.rebind.example:7125", "127.0.0.1.rebind.example:7125"]:
+            with self.subTest(host=host):
+                headers = {"Host": host, "Origin": f"http://{host}"}
+                self.assertEqual(self.client.get("/sim/api/v1/config", headers=headers).status_code, 403)
+                self.assertEqual(self.client.get("/sim/api/v1/config", headers={"Host": host}).status_code, 403)
+                self.assertEqual(self.client.get("/server/info", headers=headers).status_code, 403)
+                self.assertEqual(self.client.post("/sim/api/v1/action", json={"action": "demo"},
+                                                 headers=headers).status_code, 403)
+                config = copy.deepcopy(self.session.config)
+                config["name"] = "must-not-be-saved"
+                self.assertEqual(self.client.put("/sim/api/v1/config", json=config,
+                                                headers=headers).status_code, 403)
+        self.assertEqual((self.root / "config.json").read_bytes(), saved)
+        self.assertEqual(self.session.file_list(), [])
+
+    def test_both_websockets_reject_untrusted_authorities_and_origins(self):
+        from starlette.websockets import WebSocketDisconnect
+        for path in ["/sim/events", "/websocket"]:
+            for headers in [{"Host": "rebind.example:7125", "Origin": "http://rebind.example:7125"},
+                            {"Host": "rebind.example:7125"},
+                            {"Origin": "null"}, {"Origin": "http://127.0.0.1:7126"}]:
+                with self.subTest(path=path, headers=headers):
+                    with self.assertRaises(WebSocketDisconnect) as closed:
+                        with self.client.websocket_connect("ws://127.0.0.1:7125" + path, headers=headers):
+                            pass
+                    self.assertEqual(closed.exception.code, 1008)
+
+    def test_malformed_ambiguous_or_wrong_port_authorities_are_rejected(self):
+        for host in ["user@127.0.0.1:7125", "127.0.0.1:7125/path", "127.0.0.1:7125?query",
+                     "127.0.0.1:7125#fragment", "127.0.0.1:7125,other", "127.0.0.1:0",
+                     "127.0.0.1:7126", "127.0.0.1:99999", "127.0.0.1:7125 ", "[::1",
+                     "[::1]rebind.example:7125", "[::1]:+7125", "127.0.0.1:"]:
+            with self.subTest(host=host):
+                self.assertEqual(self.client.get("/sim/api/v1/config", headers={"Host": host}).status_code, 403)
+        for header in ["Host", "Origin"]:
+            with self.subTest(duplicate=header):
+                self.assertEqual(self.client.get("/sim/api/v1/config", headers=[
+                    (header, "127.0.0.1:7125" if header == "Host" else "http://127.0.0.1:7125"),
+                    (header, "rebind.example:7125" if header == "Host" else "http://rebind.example:7125")
+                ]).status_code, 403)
+
+    def test_malformed_origins_cannot_read_either_api_or_open_either_websocket(self):
+        from starlette.websockets import WebSocketDisconnect
+        for origin in ["", "null", "https://127.0.0.1:7125", "http://user@127.0.0.1:7125",
+                       "http://127.0.0.1:7125/path", "http://127.0.0.1:7125?", "http://127.0.0.1:7125#",
+                       "http://127.0.0.1:7125 http://rebind.example:7125"]:
+            with self.subTest(origin=origin):
+                for path in ["/sim/api/v1/state", "/server/info"]:
+                    self.assertEqual(self.client.get(path, headers={"Origin": origin}).status_code, 403)
+                for path in ["/sim/events", "/websocket"]:
+                    with self.assertRaises(WebSocketDisconnect) as closed:
+                        with self.client.websocket_connect("ws://127.0.0.1:7125" + path,
+                                                           headers={"Origin": origin}):
+                            pass
+                    self.assertEqual(closed.exception.code, 1008)
+
+    def test_loopback_authorities_work_with_matching_browser_origins(self):
+        for host in ["127.0.0.1:7125", "localhost:7125", "LOCALHOST:7125", "[::1]:7125"]:
+            with self.subTest(host=host):
+                headers = {"Host": host, "Origin": f"http://{host}"}
+                self.assertEqual(self.client.get("/sim/api/v1/state", headers=headers).status_code, 200)
+                self.assertEqual(self.client.post("/sim/api/v1/action", json={"action": "recover"},
+                                                 headers=headers).status_code, 200)
+                with self.client.websocket_connect("ws://127.0.0.1:7125/sim/events", headers=headers) as ws:
+                    self.assertEqual(ws.receive_json()["instance_uuid"], self.session.instance_uuid)
+
+    def test_lan_protocol_and_advertised_mdns_name_keep_management_local(self):
+        config = copy.deepcopy(self.session.config)
+        config["lan_enabled"] = True
+        self.session.configure(config)
+        mdns = f"hf-virtual-{self.session.instance_uuid[:12]}.local"
+        for host in ["192.0.2.2", mdns, mdns + "."]:
+            with TestClient(create_app(self.session, engine=False), base_url=f"http://{host}:7125",
+                            client=("192.0.2.10", 50001)) as remote:
+                self.assertEqual(remote.get("/server/info").status_code, 200)
+                self.assertEqual(remote.get("/webcam/?action=snapshot").status_code, 200)
+                self.assertEqual(remote.post("/printer/gcode/script", json={"script": "G28"}).status_code, 200)
+                self.assertEqual(remote.get("/sim/api/v1/config").status_code, 403)
+                with remote.websocket_connect(f"ws://{host}:7125/websocket") as ws:
+                    ws.send_json({"jsonrpc": "2.0", "id": 1, "method": "server.info"})
+                    self.assertTrue(ws.receive_json()["result"]["hf_virtual_printer"])
+                self.assertEqual(remote.get("/server/info", headers={"Host": "rebind.example:7125"}).status_code, 403)
 
     def test_upload_size_limit_does_not_need_a_gigabyte_allocation(self):
         import hf_virtual_printer.session as session_module

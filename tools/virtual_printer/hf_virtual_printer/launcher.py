@@ -49,16 +49,30 @@ class InstanceLock:
             self.handle = None
 
 
+class LocalProbeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # A response from a different endpoint cannot establish this listener's readiness.
+        return None
+
+
 def existing_endpoint(runtime_file):
     try:
         declaration = json.loads(runtime_file.read_text(encoding="utf-8"))
+        if not isinstance(declaration, dict):
+            return None
         port = declaration["port"]
-        if declaration.get("schema") != 1 or declaration.get("host") != "127.0.0.1" or type(port) is not int or not 7125 <= port <= 7135:
+        identity_id = declaration.get("instance_uuid")
+        if (type(declaration.get("schema")) is not int or declaration["schema"] != 1 or
+                declaration.get("host") != "127.0.0.1" or type(port) is not int or not 7125 <= port <= 7135 or
+                not isinstance(identity_id, str) or not identity_id):
             return None
         endpoint = f"http://127.0.0.1:{port}"
-        with urllib.request.urlopen(endpoint + "/server/info", timeout=1) as response:
-            identity = json.load(response)["result"]
-        if identity.get("hf_virtual_printer") is True and identity.get("instance_uuid") == declaration["instance_uuid"]:
+        # Keep the proxy policy local to this request; do not change the global opener or user settings.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), LocalProbeRedirectHandler())
+        with opener.open(endpoint + "/server/info", timeout=1) as response:
+            payload = json.load(response)
+        identity = payload.get("result") if isinstance(payload, dict) else None
+        if isinstance(identity, dict) and identity.get("hf_virtual_printer") is True and identity.get("instance_uuid") == identity_id:
             return endpoint
     except (OSError, ValueError, KeyError):
         pass

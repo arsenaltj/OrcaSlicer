@@ -5,9 +5,11 @@ import asyncio
 import contextlib
 import ipaddress
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -23,15 +25,63 @@ def local_host(host: str | None) -> bool:
     try:
         return ipaddress.ip_address(host or "").is_loopback
     except ValueError:
-        return host in {"testclient", "localhost"}
+        return (host or "").lower() == "localhost"
 
 
-def require_local(connection):
-    if not local_host(connection.client.host if connection.client else None):
+def parse_authority(value: str, scheme: str) -> tuple[str, int]:
+    """Parse a single literal authority without DNS resolution or permissive URL cleanup."""
+    if re.fullmatch(r"(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(?::[0-9]+)?", value) is None:
+        raise PrinterError("连接地址格式不正确", 403)
+    try:
+        parsed = urlsplit(f"{scheme}://{value}")
+        host, port = parsed.hostname, parsed.port
+        if not host or parsed.netloc != value or parsed.path or parsed.query or parsed.fragment:
+            raise ValueError()
+        if port is None:
+            port = 443 if scheme == "https" else 80
+        if not 1 <= port <= 65535:
+            raise ValueError()
+        return host.lower().removesuffix("."), port
+    except ValueError as exc:
+        raise PrinterError("连接地址格式不正确", 403) from exc
+
+
+def require_connection(connection, session, *, management=False):
+    """One HTTP/WebSocket gate: peer scope, trusted Host, listening port, then Origin."""
+    hosts, origins = connection.headers.getlist("host"), connection.headers.getlist("origin")
+    scheme = {"http": "http", "https": "https", "ws": "http", "wss": "https"}.get(connection.scope["scheme"])
+    if len(hosts) != 1 or len(origins) > 1 or scheme is None:
+        raise PrinterError("连接地址或来源不明确", 403)
+    host, port = parse_authority(hosts[0], scheme)
+    # The launcher records the bound port before accepting traffic. ASGI tests use their listener scope.
+    listener = connection.scope.get("server")
+    expected_port = urlsplit(session.endpoint).port if session.endpoint else (listener[1] if listener else None)
+    if port != expected_port:
+        raise PrinterError("连接端口不匹配", 403)
+    local_peer = local_host(connection.client.host if connection.client else None)
+    local_authority = local_host(host)
+    if management and not (local_peer and local_authority):
         raise PrinterError("中控管理仅允许本机访问；局域网可使用打印机协议接口", 403)
-    origin = connection.headers.get("origin")
-    if origin and origin != f"{connection.url.scheme.replace('ws', 'http')}://{connection.headers.get('host')}":
-        raise PrinterError("中控请求来源不匹配", 403)
+    if not management:
+        trusted = local_authority
+        if session.config["lan_enabled"]:
+            try:
+                address = ipaddress.ip_address(host)
+                trusted = not (address.is_unspecified or address.is_multicast)
+            except ValueError:
+                trusted = trusted or host == f"hf-virtual-{session.instance_uuid[:12]}.local"
+        if not trusted or (not session.config["lan_enabled"] and not local_peer):
+            raise PrinterError("当前连接地址未获允许", 403)
+    if origins:
+        origin = origins[0]
+        try:
+            parsed = urlsplit(origin)
+            if (origin != f"{parsed.scheme}://{parsed.netloc}" or parsed.scheme != scheme or
+                    parsed.path or parsed.query or parsed.fragment or
+                    parse_authority(parsed.netloc, scheme) != (host, port)):
+                raise ValueError()
+        except ValueError as exc:
+            raise PrinterError("请求来源不匹配", 403) from exc
 
 
 def create_app(session, *, engine=True, network_changed=None, shutdown=None) -> FastAPI:
@@ -106,19 +156,12 @@ def create_app(session, *, engine=True, network_changed=None, shutdown=None) -> 
 
     @app.middleware("http")
     async def gate(request: Request, call_next):
-        path = request.url.path
+        path = request.scope["path"]
         management = path == "/" or path.startswith(("/sim/", "/assets/"))
         try:
-            if management:
-                require_local(request)
-            elif not session.config["lan_enabled"] and not local_host(request.client.host if request.client else None):
-                raise PrinterError("当前设备仅允许本机连接", 403)
-            elif session.faults["offline"]:
+            require_connection(request, session, management=management)
+            if not management and session.faults["offline"]:
                 raise PrinterError("模拟设备离线", 503)
-            if request.method not in {"GET", "HEAD", "OPTIONS"} and not management:
-                origin = request.headers.get("origin")
-                if origin and origin != f"{request.url.scheme}://{request.headers.get('host')}":
-                    raise PrinterError("请求来源不匹配", 403)
             if path not in {"/webcam/", "/sim/api/v1/state"} and not path.startswith("/assets/"):
                 with session.lock:
                     session.log("api", f"{request.method} {path}")
@@ -282,9 +325,9 @@ def create_app(session, *, engine=True, network_changed=None, shutdown=None) -> 
 
     @app.websocket("/websocket")
     async def moonraker_websocket(ws: WebSocket):
-        origin = ws.headers.get("origin")
-        if ((not session.config["lan_enabled"] and not local_host(ws.client.host if ws.client else None)) or
-                (origin and origin != f"{ws.url.scheme.replace('ws', 'http')}://{ws.headers.get('host')}")):
+        try:
+            require_connection(ws, session)
+        except PrinterError:
             await ws.close(code=1008)
             return
         if session.faults["offline"]:
@@ -387,7 +430,7 @@ def create_app(session, *, engine=True, network_changed=None, shutdown=None) -> 
     @app.websocket("/sim/events")
     async def console_events(ws: WebSocket):
         try:
-            require_local(ws)
+            require_connection(ws, session, management=True)
         except PrinterError:
             await ws.close(code=1008)
             return

@@ -1633,7 +1633,7 @@
       "id": "virtual_printer",
       "label": "虚拟打印机联调",
       "detail": "本机发现、实际G-code上传、仿真打印、实时监控与异常恢复",
-      "boundary": "VirtualPrinterSession唯一持有虚拟设备状态；桌面沿用DeviceManager与Job，物理打印与跨电脑安装另行验收",
+      "boundary": "VirtualPrinterSession唯一持有虚拟设备状态；HTTP与两种WebSocket共用可信Host/Origin及本机管理门禁，就绪探测直连并核对UUID；桌面沿用DeviceManager与Job，物理打印与跨电脑安装另行验收",
       "group": "设备与打印",
       "evidence": [
         "virtual_printer_session",
