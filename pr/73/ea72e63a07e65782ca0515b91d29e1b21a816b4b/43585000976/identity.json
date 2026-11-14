@@ -1,0 +1,27 @@
+{
+  "pr": 73,
+  "run": 43585000976,
+  "head": "ea72e63a07e65782ca0515b91d29e1b21a816b4b",
+  "base": "f57d0b8b57517195211169843c5c583963e15f08",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "通用检查修复提速、高级输入稳定性与虚拟打印机联调",
+  "path": "pr/73/ea72e63a07e65782ca0515b91d29e1b21a816b4b/43585000976",
+  "created": "2026-11-14T10:26:35+00:00",
+  "files": {
+    "index.html": "a5dd63311a2c7c59153bfccdce08057fb766f2765163033c45c7400ea53a4e6c",
+    "details.html": "f0227e747438386f35e968b511712308ce82eaa30b3e3e75b7670357f29f1156",
+    "report.json": "312c44cbabe7d47c91e6246b1bdf11bafb31e00fc95da37dfd0129c22776c0f5",
+    "summary.md": "81fe88ad26beb5553b5ecf7c719754be6485eb4ddd005225a62f22353a056248",
+    "archify-receipts.json": "6695217bec9969fa264b03e1ccf4e31589ae85e441cfdcf4c1f140c061571a5c",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "32988594d85ad8ea16dfd7d4402a696e52e9ab8af1e20c40ce2b290365fcfebf",
+    "l1-modules.json": "93e79e27f32b610355eb33fe8621b45f3b64ff3473058b8acaa8e5434fb9e2a8",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
