@@ -55,6 +55,7 @@ void ModelGenerationPanel::queue_workbench_check()
     if (m_workbench_check_path == m_displayed_model_path.string() &&
         m_workbench_check_revision == m_sequence &&
         m_workbench_check_result.status != WorkbenchCheckStatus::NotRun) return;
+    begin_workbench_check_timing();
     m_workbench_check_queued = true;
     wxWeakRef<ModelGenerationPanel> weak(this);
     CallAfter([weak] {
@@ -100,6 +101,8 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     const auto native_portrait = m_model_preview ? m_model_preview->native_portrait_partition() : nullptr;
     const bool portrait_recheck = native_portrait && native_portrait->valid();
     if (!can_start_workbench_check()) return false;
+    if (!automatic) finish_workbench_check_timing("superseded");
+    begin_workbench_check_timing();
     Presentation::background_tasks().retire(m_workbench_check_worker);
     const auto source = m_displayed_model_path;
     const auto revision = m_sequence;

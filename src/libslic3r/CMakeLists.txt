@@ -82,6 +82,7 @@ add_library(libslic3r_cgal STATIC
     CutSurface.hpp CutSurface.cpp
     IntersectionPoints.hpp IntersectionPoints.cpp
     MeshBoolean.hpp MeshBoolean.cpp
+    PolygonSoupPreparation.hpp
     MeshRepair.hpp MeshRepair.cpp
     TryCatchSignal.hpp TryCatchSignal.cpp
     Triangulation.hpp Triangulation.cpp

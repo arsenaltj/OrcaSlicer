@@ -176,6 +176,56 @@ void present_workbench_controls(wxWindow* root, wxWindow* viewport = nullptr)
 }
 }
 
+void ModelGenerationPanel::begin_workbench_check_timing()
+{
+    if (!m_workbench_check_timing && std::getenv("ORCASLICER_UI_LATENCY_TRACE")) {
+        m_workbench_check_timing = std::make_shared<DiagnosticStageTimer>(
+            "ORCASLICER_UI_LATENCY_TRACE", "WorkbenchCheckUsable", ModelGenerationPresentation::new_request_id());
+        m_workbench_check_timing_armed = false;
+        (*m_workbench_check_timing)("accepted");
+    }
+}
+
+void ModelGenerationPanel::observe_workbench_check_usable()
+{
+    if (!m_workbench_check_timing || !m_model_preview) return;
+    const bool processing = m_native_workbench_partition_running || m_workbench_check_running ||
+        (m_workbench_auto_repair && m_finishing_running) || m_workbench_evidence_running;
+    const auto outcome = workbench_check_outcome(m_workbench_check_result, processing);
+    if (outcome == WorkbenchCheckOutcome::Failed) {
+        finish_workbench_check_timing("failed-or-canceled");
+        return;
+    }
+    if (m_workbench_check_timing_armed) return;
+    if (outcome != WorkbenchCheckOutcome::Passed || !post_generation_ui_state().can_edit ||
+        !m_workbench_presented || m_workbench_preparing || m_preview_loading ||
+        !m_model_preview_ready || m_model_preview->workbench_input_locked()) return;
+    m_workbench_check_timing_armed = true;
+    const auto timing = m_workbench_check_timing;
+    const auto revision = m_sequence;
+    const auto model_hash = m_model_preview->model_sha256();
+    (*timing)("controls-ready");
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    m_model_preview->observe_diagnostic_frame([weak, timing, revision, model_hash] {
+        if (!weak || weak->m_shutdown || weak->m_workbench_check_timing != timing) return;
+        weak->m_workbench_check_timing_armed = false;
+        // This callback is already bound to a complete GPU frame, viewport and DPI.
+        // Recheck the business permission without granting or changing it.
+        if (revision != weak->m_sequence || model_hash != weak->m_model_preview->model_sha256() ||
+            !weak->m_workbench_presented || weak->m_workbench_preparing ||
+            weak->m_model_preview->workbench_input_locked() || !weak->post_generation_ui_state().can_edit) return;
+        weak->finish_workbench_check_timing("usable-first-frame");
+    });
+}
+
+void ModelGenerationPanel::finish_workbench_check_timing(const char* stage)
+{
+    if (m_workbench_check_timing) (*m_workbench_check_timing)(stage);
+    m_workbench_check_timing.reset();
+    m_workbench_check_timing_armed = false;
+    if (m_model_preview) m_model_preview->observe_diagnostic_frame({});
+}
+
 void ModelGenerationPanel::queue_workbench_surface_refresh(bool barrier, Presentation::Dirty flags)
 {
     Presentation::assert_gui_thread();
@@ -243,6 +293,7 @@ void ModelGenerationPanel::commit_workbench_surface(Presentation::Dirty flags)
         *stamp = weak->m_model_preview->presentation_stamp(
             weak->m_workbench_presentation_sequence, revision);
     }
+    observe_workbench_check_usable();
     // One complete GL frame follows the native controls in this same pass.
     // A top-level restore can then expose the window without an old frame.
     if (viewport && viewport->IsShownOnScreen()) {
@@ -319,6 +370,7 @@ void ModelGenerationPanel::raise_workbench_modal()
 
 void ModelGenerationPanel::detach_workbench_floating_card()
 {
+    finish_workbench_check_timing("presentation-left");
     cancel_workbench_presentation();
     m_workbench_presented = false;
     ++m_workbench_presentation_sequence;

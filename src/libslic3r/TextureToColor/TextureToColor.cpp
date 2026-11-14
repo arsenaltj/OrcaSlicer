@@ -744,6 +744,10 @@ static bool repair_cluster_smooth(
 
     report(0, "Repairing mesh");
     if (cancelled()) return false;
+    // Only the strict result sets this flag. Resampling moves that same
+    // immutable geometry and changes colors, so its checked topology remains
+    // valid until clustering. Other repair paths still run their own checks.
+    bool strict_halfedges_verified = false;
 
     // Resample face colors onto a repaired mesh via centroid nearest-neighbor.
     auto resample_face_colors = [&](TriMesh&& repaired_mesh) -> bool {
@@ -752,7 +756,7 @@ static bool repair_cluster_smooth(
         auto aabb_tree = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(old_vertices, old_indices);
         mesh = std::move(repaired_mesh);
 
-        if (is_closed(mesh)) {
+        if (strict_halfedges_verified || is_closed(mesh)) {
             BOOST_LOG_TRIVIAL(debug) << log_prefix << ": repaired mesh is closed.";
         } else {
             BOOST_LOG_TRIVIAL(debug) << log_prefix << ": repaired mesh is open.";
@@ -822,6 +826,7 @@ static bool repair_cluster_smooth(
                     << ": strict mesh repair result failed closed/halfedge verification.";
                 return false;
             }
+            strict_halfedges_verified = true;
             report(10, "Resampling face colors");
             if (!resample_face_colors(std::move(strict_mesh)))
                 return false;
@@ -863,7 +868,7 @@ static bool repair_cluster_smooth(
     // halfedge repair nor color smoothing may invalidate their face identities.
     const bool needs_halfedges = settings.face_color_overrides.empty() &&
         (settings.fixed_palette.empty() || settings.smooth_weight > 0.0);
-    if (needs_halfedges && !cgalutils::is_mesh_halfedge_compatible(mesh)) {
+    if (needs_halfedges && !strict_halfedges_verified && !cgalutils::is_mesh_halfedge_compatible(mesh)) {
         if (settings.strict_mesh_repair) {
             BOOST_LOG_TRIVIAL(error) << log_prefix
                 << ": strict mesh repair result became halfedge-incompatible; aborting before clustering.";
@@ -901,6 +906,11 @@ static bool repair_cluster_smooth(
             source_sample_color_count >= configured_min_k
         ? std::min(configured_min_k, adaptive_max_k) : 1;
     std::size_t adaptive_min_k = std::min(configured_min_k, adaptive_max_k);
+    SmoothParameters smooth_parameters;
+    smooth_parameters.smooth_weight = settings.smooth_weight;
+    smooth_parameters.cancel_callback = cancel_callback;
+    std::unique_ptr<RegionSmoothingWorkspace> smoothing;
+    std::vector<std::size_t> geometry_labels;
 
     for (;;) {
         mesh = unsmoothed_mesh;
@@ -908,6 +918,7 @@ static bool repair_cluster_smooth(
         clustered_face_labels.assign(face_colors.size(), 0);
         out_clustered_face_colors = face_colors;
 
+        const auto clustering_started = std::chrono::steady_clock::now();
         if (!fixed_centers.empty()) {
             cluster_centers = settings.fixed_palette;
         } else if (adaptive_cluster) {
@@ -929,6 +940,9 @@ static bool repair_cluster_smooth(
             cluster_centers = cluster_k_means(face_colors, para);
             if (cancelled()) return false;
         }
+        BOOST_LOG_TRIVIAL(info) << "[NativeClustering] stage=select_palette elapsed_ms="
+            << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - clustering_started).count()
+            << " count=" << cluster_centers.size();
 
         BOOST_LOG_TRIVIAL(debug) << log_prefix << ": k = " << cluster_centers.size() << ".";
         if (cluster_centers.empty()) {
@@ -939,7 +953,9 @@ static bool repair_cluster_smooth(
         report(40, "Assigning cluster labels");
         if (cancelled()) return false;
 
+        const auto labeling_started = std::chrono::steady_clock::now();
         {
+            const ColorDistancePalette nearest_centers(cluster_centers);
             std::atomic<size_t> done{0};
             std::atomic<bool> cancel_requested{false};
             const size_t total = mesh.indices.size();
@@ -951,7 +967,7 @@ static bool repair_cluster_smooth(
                     if (!fixed_centers.empty())
                         nearest_id = fixed_palette_nearest(face_colors[fid], fixed_centers);
                     else
-                        calc_nearest_color_id(cluster_centers, face_colors[fid], nearest_id);
+                        nearest_centers.nearest(face_colors[fid], nearest_id);
                     clustered_face_labels[fid] = nearest_id;
                     out_clustered_face_colors[fid] = cluster_centers[nearest_id];
                     size_t cnt = done.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -963,6 +979,9 @@ static bool repair_cluster_smooth(
             });
             if (cancel_requested.load() || cancelled()) return false;
         }
+        BOOST_LOG_TRIVIAL(info) << "[NativeClustering] stage=face_labels elapsed_ms="
+            << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - labeling_started).count()
+            << " count=" << mesh.indices.size();
         if (adaptive_cluster && fixed_centers.empty()) {
             if (!discard_unused_cluster_centers(cluster_centers, clustered_face_labels, "cluster assignment"))
                 return false;
@@ -982,12 +1001,15 @@ static bool repair_cluster_smooth(
         report(65, "Smoothing colors");
         if (cancelled()) return false;
 
-        SmoothParameters smooth_parameters;
-        smooth_parameters.smooth_weight = settings.smooth_weight;
-        if (needs_halfedges && !smooth_region(mesh, clustered_face_labels, smooth_parameters)) {
+        if (needs_halfedges && !smoothing)
+            smoothing = std::make_unique<RegionSmoothingWorkspace>(unsmoothed_mesh, smooth_parameters);
+        if (needs_halfedges && !smoothing->apply_topology(clustered_face_labels, smooth_parameters)) {
             BOOST_LOG_TRIVIAL(debug) << log_prefix << ": smooth region failed.";
             return false;
         }
+        // Fixed-K seed restoration below may change labels. Geometry must
+        // still use the pre-restoration labels, as in the original pipeline.
+        if (needs_halfedges) geometry_labels = clustered_face_labels;
         if (adaptive_cluster && fixed_centers.empty()) {
             if (!discard_unused_cluster_centers(cluster_centers, clustered_face_labels, "color smoothing"))
                 return false;
@@ -1012,6 +1034,10 @@ static bool repair_cluster_smooth(
             << next_min_k << ".";
         adaptive_min_k = next_min_k;
     }
+
+    // A rejected cluster pass never changes geometry. Only the accepted
+    // topology receives the original geometric pass, then one ordered export.
+    if (needs_halfedges && !smoothing->finish(mesh, geometry_labels, smooth_parameters)) return false;
 
     report(90, "Updating face colors");
     if (cancelled()) return false;
