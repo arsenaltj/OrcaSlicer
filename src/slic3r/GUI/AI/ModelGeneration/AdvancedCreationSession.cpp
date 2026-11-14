@@ -95,7 +95,8 @@ bool Session::set_upload(ViewId view, std::string path)
 
 void Session::mark_draft_saved(const DesignDraft& saved)
 {
-    if (saved == m_draft.design) m_draft_dirty = false;
+    if (saved == m_draft.design && (!m_group || m_draft.uploads == m_group->uploads))
+        m_draft_dirty = false;
 }
 
 bool Session::inputs_match_results() const
@@ -133,7 +134,8 @@ bool Session::matches(const CallbackContext& context) const
     return context.epoch == m_epoch && context.group_id == m_opening_id;
 }
 
-bool Session::apply_snapshot(GroupSnapshot snapshot, const CallbackContext& callback, bool restore_draft)
+bool Session::apply_snapshot(GroupSnapshot snapshot, const CallbackContext& callback, bool restore_draft,
+                             const InputDraft* saved_input)
 {
     if (!matches(callback) || snapshot.id != m_opening_id || snapshot.input_epoch.empty()) return false;
     if (m_group && m_group->id == snapshot.id && snapshot.revision < m_group->revision) return false;
@@ -157,13 +159,24 @@ bool Session::apply_snapshot(GroupSnapshot snapshot, const CallbackContext& call
         if (!incoming.usable) { incoming.version_id.clear(); incoming.image_path.clear(); }
     }
     if (restore_draft || inputs_changed) {
-        m_draft.uploads = snapshot.uploads;
-        m_draft.design = snapshot.saved_draft;
+        // A save acknowledges its captured input, not edits made while its
+        // request/cache verification was running. Still adopt canonical upload
+        // paths for slots that have not changed since that request.
+        auto uploads = snapshot.uploads;
+        auto design = snapshot.saved_draft;
+        if (saved_input && !restore_draft) {
+            if (m_draft.design != saved_input->design) design = m_draft.design;
+            for (ViewId view : AllViews)
+                if (m_draft.uploads[index(view)] != saved_input->uploads[index(view)])
+                    uploads[index(view)] = m_draft.uploads[index(view)];
+        }
+        m_draft.uploads = std::move(uploads);
+        m_draft.design = std::move(design);
         if (restore_draft) m_selected.fill(false);
         for (ViewId view : AllViews)
             if (snapshot.pending_views[index(view)])
                 m_selected[index(view)] = true;
-        m_draft_dirty = false;
+        m_draft_dirty = m_draft.design != snapshot.saved_draft || m_draft.uploads != snapshot.uploads;
         m_pending_click.reset();
         ++m_draft_revision;
         ++m_selection_revision;

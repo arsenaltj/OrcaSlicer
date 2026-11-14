@@ -26,7 +26,8 @@ public:
     CallbackContext new_creation();
     CallbackContext context() const { return {m_epoch, m_opening_id}; }
     bool matches(const CallbackContext& context) const;
-    bool apply_snapshot(GroupSnapshot snapshot, const CallbackContext& context, bool restore_draft = false);
+    bool apply_snapshot(GroupSnapshot snapshot, const CallbackContext& context, bool restore_draft = false,
+                        const InputDraft* saved_input = nullptr);
     bool apply_model_job(const ModelJobProjection& job, const CallbackContext& context);
     CommandContext command_context() const;
     bool matches_command(const CommandContext& context, bool uses_selection = true) const;

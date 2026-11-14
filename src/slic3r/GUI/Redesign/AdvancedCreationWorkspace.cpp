@@ -1387,7 +1387,7 @@ struct AdvancedCreationWorkspace::Impl {
         inputs->Add(prompt_box, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, page.FromDIP(16));
         prompt->Bind(wxEVT_TEXT, [this](wxCommandEvent&) {
             auto draft = host.session().draft().design; draft.prompt = prompt->GetValue().ToUTF8().data();
-            host.session().set_design_draft(std::move(draft)); host.changed();
+            if (host.session().set_design_draft(std::move(draft))) host.changed();
         });
         count_error = new wxStaticText(design_inputs, wxID_ANY, wxEmptyString);
         style_smart_creation_text(count_error, 12, wxColour(255, 128, 112));
@@ -1446,7 +1446,7 @@ struct AdvancedCreationWorkspace::Impl {
         inputs->Add(custom_style_panel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, page.FromDIP(16));
         custom_style->Bind(wxEVT_TEXT, [this](wxCommandEvent&) {
             auto draft = host.session().draft().design; draft.custom_style = custom_style->GetValue().ToUTF8().data();
-            host.session().set_design_draft(std::move(draft)); host.changed();
+            if (host.session().set_design_draft(std::move(draft))) host.changed();
         });
         auto* image_label = new wxStaticText(design_inputs, wxID_ANY, t("图像模型选择"));
         style_smart_creation_text(image_label, 14, wxColour(255, 255, 255, 230), wxFONTWEIGHT_MEDIUM);
@@ -1912,7 +1912,7 @@ struct AdvancedCreationWorkspace::Impl {
         };
     }
     bool input_editable() const {
-        return !polish_pending && model_host.can_replace_asset() && !host.command_pending() && !host.has_pending_receipt() && (!host.session().group() ||
+        return !polish_pending && model_host.can_replace_asset() && !host.draft_editing_locked() && !host.has_pending_receipt() && (!host.session().group() ||
                (host.session().group()->active_operation_id.empty() && !host.session().group()->model_busy));
     }
     void choose(ViewId view) {

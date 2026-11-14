@@ -2,8 +2,15 @@
 #include <catch2/generators/catch_generators.hpp>
 
 #include "slic3r/GUI/AI/ModelGeneration/AdvancedCreationSession.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/AdvancedMultiviewClient.hpp"
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
+#include "../test_utils.hpp"
+#include <wx/app.h>
+#include <wx/evtloop.h>
+#include <wx/init.h>
+#include <wx/socket.h>
+#include <chrono>
 
 using Slic3r::GUI::AdvancedMultiviewClient;
 using namespace Slic3r::GUI::AdvancedCreation;
@@ -171,6 +178,151 @@ TEST_CASE("Advanced polling and sidebar changes preserve edited text selection a
     session.mark_draft_saved(group.saved_draft);
     CHECK(session.draft_dirty());
     session.mark_draft_saved(draft);
+    CHECK_FALSE(session.draft_dirty());
+}
+
+TEST_CASE("Advanced auto-save leaves editing available while explicit commands retain their lock",
+          "[AdvancedCreation][AdvancedDraftInput]")
+{
+    const bool exclusive = GENERATE(false, true);
+    wxInitializer init;
+    REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-draft-input"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.path().string());
+    wxIPV4address address;
+    REQUIRE(address.Hostname("127.0.0.1"));
+    REQUIRE(address.Service(0));
+    wxSocketServer server(address, wxSOCKET_NOWAIT);
+    REQUIRE(server.IsOk());
+    REQUIRE(server.GetLocal(address));
+    REQUIRE(address.Service() != 0);
+    const std::string endpoint = "http://127.0.0.1:" + std::to_string(address.Service());
+    Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, endpoint);
+    host.session() = ready_session();
+    auto draft = host.session().draft().design;
+    draft.prompt = "Editing before save";
+    REQUIRE(host.session().set_design_draft(draft));
+    wxEventLoop loop;
+    wxEventLoopActivator active(&loop);
+    const auto until = [&](auto ready) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!ready() && std::chrono::steady_clock::now() < deadline) {
+            wxTheApp->ProcessPendingEvents();
+            loop.DispatchTimeout(20);
+        }
+        return ready();
+    };
+    // Hold the real client's request open; there is no generation or external service.
+    if (exclusive) host.open_group("22222222-2222-2222-2222-222222222222");
+    else host.changed();
+    REQUIRE(until([&] { return host.command_pending(); }));
+    CHECK(host.draft_editing_locked() == exclusive);
+    if (!exclusive) {
+        draft.prompt = "Editing continues while saving";
+        REQUIRE(host.session().set_design_draft(draft));
+        host.changed();
+        CHECK_FALSE(host.draft_editing_locked());
+    }
+    std::unique_ptr<wxSocketBase> connection;
+    REQUIRE(until([&] {
+        if (!connection) connection.reset(server.Accept(false));
+        return bool(connection);
+    }));
+    const std::string response = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    connection->Write(response.data(), response.size());
+    REQUIRE(connection->LastCount() == response.size());
+    connection->Close();
+    REQUIRE(until([&] { return !host.command_pending(); }));
+    CHECK_FALSE(host.draft_editing_locked());
+    CHECK(host.session().draft().design.prompt == draft.prompt);
+    CHECK(host.session().draft_dirty());
+    host.shutdown();
+}
+
+TEST_CASE("Advanced save acknowledgements preserve newer text and pending view selection",
+          "[AdvancedCreation][AdvancedDraftInput]")
+{
+    auto session = ready_session();
+    auto draft = session.draft().design;
+    draft.style = "custom";
+    draft.custom_style = "First style";
+    REQUIRE(session.set_design_draft(draft));
+    const auto submitted = session.draft();
+    auto saved = *session.group();
+    ++saved.revision;
+    saved.input_epoch = "saved-style-epoch";
+    saved.saved_draft = submitted.design;
+    saved.pending_views.fill(true);
+    draft.prompt = u8"换一个方向\n中文与 English 继续输入";
+    draft.custom_style = u8"第二次风格编辑";
+    REQUIRE(session.set_design_draft(draft));
+    REQUIRE(session.apply_snapshot(saved, session.context(), false, &submitted));
+    session.mark_draft_saved(submitted.design);
+    CHECK(session.draft().design == draft);
+    CHECK(session.draft_dirty());
+    for (ViewId view : AllViews) CHECK(session.selection()[index(view)]);
+    // Cache completion is a second ordinary snapshot, not a draft restore.
+    REQUIRE(session.apply_snapshot(saved, session.context()));
+    CHECK(session.draft().design == draft);
+    CHECK(session.draft_dirty());
+    auto latest = session.draft();
+    saved.saved_draft = latest.design;
+    saved.input_epoch = "latest-style-epoch";
+    ++saved.revision;
+    REQUIRE(session.apply_snapshot(saved, session.context(), false, &latest));
+    session.mark_draft_saved(latest.design);
+    CHECK_FALSE(session.draft_dirty());
+}
+
+TEST_CASE("Advanced upload acknowledgements adopt canonical paths without losing newer replacements",
+          "[AdvancedCreation][AdvancedDraftInput]")
+{
+    auto session = ready_session();
+    REQUIRE(session.set_upload(ViewId::Front, "chosen-front.png"));
+    const auto submitted = session.draft();
+    auto saved = *session.group();
+    ++saved.revision;
+    saved.input_epoch = "saved-upload-epoch";
+    saved.uploads[index(ViewId::Front)] = "cache/front-asset.png";
+    REQUIRE(session.set_upload(ViewId::Right, "newer-right.png"));
+    REQUIRE(session.apply_snapshot(saved, session.context(), false, &submitted));
+    session.mark_draft_saved(submitted.design);
+    CHECK(session.draft().uploads[index(ViewId::Front)] == "cache/front-asset.png");
+    CHECK(session.draft().uploads[index(ViewId::Right)] == "newer-right.png");
+    CHECK(session.draft_dirty());
+}
+
+TEST_CASE("Advanced unchanged upload acknowledgements finish saving after canonicalization",
+          "[AdvancedCreation][AdvancedDraftInput]")
+{
+    auto session = ready_session();
+    REQUIRE(session.set_upload(ViewId::Front, "chosen-front.png"));
+    const auto submitted = session.draft();
+    auto saved = *session.group();
+    ++saved.revision;
+    saved.input_epoch = "saved-upload-epoch";
+    saved.uploads[index(ViewId::Front)] = "cache/front-asset.png";
+    REQUIRE(session.apply_snapshot(saved, session.context(), false, &submitted));
+    session.mark_draft_saved(submitted.design);
+    CHECK(session.draft().uploads == saved.uploads);
+    CHECK_FALSE(session.draft_dirty());
+}
+
+TEST_CASE("Advanced late saves cannot replace a new group and explicit restores still restore text",
+          "[AdvancedCreation][AdvancedDraftInput]")
+{
+    auto session = ready_session();
+    const auto old = session.context();
+    const auto submitted = session.draft();
+    const auto saved = *session.group();
+    session.new_creation();
+    auto draft = session.draft().design;
+    draft.prompt = "New creation text";
+    REQUIRE(session.set_design_draft(draft));
+    REQUIRE_FALSE(session.apply_snapshot(saved, old, false, &submitted));
+    CHECK(session.draft().design == draft);
+    REQUIRE(session.apply_snapshot(saved, session.begin_open(saved.id), true, &submitted));
+    CHECK(session.draft().design == saved.saved_draft);
     CHECK_FALSE(session.draft_dirty());
 }
 
