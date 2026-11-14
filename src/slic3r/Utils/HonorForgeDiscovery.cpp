@@ -7,6 +7,10 @@
 #include <boost/asio/ip/host_name.hpp>
 #include <boost/asio/ip/udp.hpp>
 #include <boost/log/trivial.hpp>
+#include <boost/nowide/cstdlib.hpp>
+#include <boost/nowide/fstream.hpp>
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -69,6 +73,61 @@ void append_resolved_interfaces(std::vector<PrinterNetworkInterface>& result)
     } catch (...) {
     }
 }
+
+class LocalVirtualPrinterDiscoveryProvider final : public IPrinterDiscoveryProvider
+{
+public:
+    explicit LocalVirtualPrinterDiscoveryProvider(std::string path) : m_path(std::move(path)) {}
+
+    PrinterDiscoverySource source() const override { return PrinterDiscoverySource::LocalVirtualPrinter; }
+
+    PrinterDiscoveryProviderResult discover(const PrinterDiscoveryRequest& request,
+                                             const std::vector<PrinterNetworkInterface>&,
+                                             const Cancelled& cancelled) override
+    {
+        PrinterDiscoveryProviderResult result;
+        if (cancelled_or_expired(request, cancelled))
+            return {PrinterDiscoveryProviderError::Cancelled, {}};
+        try {
+            boost::nowide::ifstream stream(m_path, std::ios::binary);
+            if (!stream)
+                return result;
+            stream.seekg(0, std::ios::end);
+            const auto length = stream.tellg();
+            if (length <= 0 || length > 4096)
+                return result;
+            stream.seekg(0);
+            const auto value = nlohmann::json::parse(stream, nullptr, false);
+            if (!value.is_object() || value.value("schema", 0) != 1 ||
+                value.value("host", std::string()) != "127.0.0.1" ||
+                value.value("state", std::string()) != "ready" ||
+                !value.contains("port") || !value["port"].is_number_integer())
+                return result;
+            const int port = value["port"].get<int>();
+            const std::string identity = value.value("instance_uuid", std::string());
+            if (port < 7125 || port > 7135 || identity.size() != 36)
+                return result;
+            for (size_t i = 0; i < identity.size(); ++i) {
+                const bool dash = i == 8 || i == 13 || i == 18 || i == 23;
+                const char c = identity[i];
+                if (dash ? c != '-' : !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
+                    return result;
+            }
+            PrinterDiscoveryCandidate candidate;
+            candidate.source = source();
+            candidate.host = "127.0.0.1";
+            candidate.port = static_cast<uint16_t>(port);
+            candidate.instance_uuid = identity;
+            result.candidates.push_back(std::move(candidate));
+        } catch (const std::exception&) {
+            // A missing, stale or partially replaced declaration is not a LAN discovery failure.
+        }
+        return result;
+    }
+
+private:
+    std::string m_path;
+};
 
 class MdnsPrinterDiscoveryProvider final : public IPrinterDiscoveryProvider
 {
@@ -237,6 +296,7 @@ const char* printer_discovery_source_name(PrinterDiscoverySource source)
     switch (source) {
     case PrinterDiscoverySource::Mdns: return "mdns";
     case PrinterDiscoverySource::SubnetProbe: return "subnet_probe";
+    case PrinterDiscoverySource::LocalVirtualPrinter: return "local_virtual_printer";
     }
     return "unknown";
 }
@@ -310,6 +370,26 @@ std::shared_ptr<IPrinterDiscoveryProvider> make_mdns_printer_discovery_provider(
 std::shared_ptr<IPrinterDiscoveryProvider> make_subnet_printer_discovery_provider()
 {
     return std::make_shared<SubnetPrinterDiscoveryProvider>();
+}
+
+std::shared_ptr<IPrinterDiscoveryProvider> make_local_virtual_printer_discovery_provider(std::string path)
+{
+    if (path.empty()) {
+        if (const char* override_path = boost::nowide::getenv("ORCASLICER_VIRTUAL_PRINTER_RUNTIME"))
+            path = override_path;
+    }
+    if (path.empty()) {
+#ifdef _WIN32
+        if (const char* local = boost::nowide::getenv("LOCALAPPDATA"))
+            path = std::string(local) + "/HonorForge/VirtualPrinter/runtime.json";
+#else
+        if (const char* state = boost::nowide::getenv("XDG_STATE_HOME"))
+            path = std::string(state) + "/HonorForge/VirtualPrinter/runtime.json";
+        else if (const char* home_dir = boost::nowide::getenv("HOME"))
+            path = std::string(home_dir) + "/.local/state/HonorForge/VirtualPrinter/runtime.json";
+#endif
+    }
+    return std::make_shared<LocalVirtualPrinterDiscoveryProvider>(std::move(path));
 }
 
 } // namespace Slic3r
