@@ -28,6 +28,7 @@
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
 #include <wx/timer.h>
+#include <wx/wupdlock.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -1818,6 +1819,10 @@ struct AdvancedCreationWorkspace::Impl {
         if (!generation_view || closing) return;
         const bool content = model_tab && generation_view->has_content();
         const bool complete = content && generation_view->ready();
+        const bool completion_changed = completion_actions->IsShown() != complete;
+        std::unique_ptr<wxWindowUpdateLocker> content_handoff;
+        if (generation_view->IsShown() != content)
+            content_handoff = std::make_unique<wxWindowUpdateLocker>(grid->GetParent());
         show(grid, !content); show(generation_view, content);
         show(completion_actions, complete);
         show(model, model_tab && !complete);
@@ -1826,6 +1831,12 @@ struct AdvancedCreationWorkspace::Impl {
         completion_actions->set_enabled(eligibility.generate_model,
             generation_view->ready() && host.model_state().can_open_workbench && !host.command_pending());
         generation_view->set_presented(presented && content);
+        if (completion_changed) {
+            // The first-frame callback runs outside apply_snapshot(). Commit
+            // only the footer geometry before its display protection ends.
+            action_panel->GetParent()->Layout();
+            action_panel->Layout();
+        }
     }
     void apply_model_snapshot(bool new_generation = false) {
         if (!generation_view || closing) return;

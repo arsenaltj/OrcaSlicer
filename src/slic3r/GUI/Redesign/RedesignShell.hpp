@@ -29,6 +29,7 @@
 #include <thread>
 #include <chrono>
 #include <optional>
+#include <tuple>
 #include <memory>
 #include <vector>
 
@@ -52,6 +53,22 @@ class wxTextCtrl;
 class wxWindow;
 
 namespace Slic3r::GUI {
+
+// A display cache is committed only after a complete bitmap is installed.
+// Content generations, rather than paths, distinguish an explicitly reloaded file.
+class CreationBitmapCache {
+public:
+    bool current(std::uint64_t content, const wxSize& bounds, double dpi) const {
+        return m_installed && *m_installed == std::make_tuple(content, bounds, dpi);
+    }
+    void installed(std::uint64_t content, const wxSize& bounds, double dpi) {
+        m_installed = std::make_tuple(content, bounds, dpi);
+    }
+    bool has_bitmap() const { return m_installed.has_value(); }
+    void reset() { m_installed.reset(); }
+private:
+    std::optional<std::tuple<std::uint64_t, wxSize, double>> m_installed;
+};
 
 class WorkbenchLabel;
 
@@ -433,6 +450,9 @@ private:
     boost::filesystem::path m_selected_image_path;
     boost::filesystem::path m_design_image_path;
     wxSize m_last_preview_bounds;
+    std::uint64_t m_image_content_generation {0};
+    CreationBitmapCache m_source_bitmap_cache, m_design_bitmap_cache, m_upload_bitmap_cache;
+    std::optional<std::tuple<bool, int, std::string, bool>> m_applied_style_controls;
     wxTimer m_preview_resize_timer;
     std::uint64_t m_image_request_generation { 0 };
     std::uint64_t m_design_image_request_generation { 0 };

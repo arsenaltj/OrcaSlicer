@@ -44,6 +44,14 @@ inline bool inline_generation_active(const ModelGenerationUIState& state) {
         state.stage == ModelGenerationUIStage::Stopping;
 }
 
+inline bool inline_generation_handoff(const ModelGenerationUIState& state) {
+    // Smart preparation publishes its confirmed design before dispatching 3D.
+    // Retain the feedback through that display handoff without changing the
+    // host's busy flag, command eligibility or submission sequence.
+    return state.smart_mode && state.model_generation_context && !state.smart_flow_id.empty() &&
+        (state.stage == ModelGenerationUIStage::DesignReady || state.stage == ModelGenerationUIStage::Saving3DOptions);
+}
+
 inline std::string inline_generation_task(const ModelGenerationUIState& state) {
     return state.smart_mode && !state.smart_flow_id.empty() ? state.smart_flow_id : state.job_id;
 }
@@ -105,7 +113,7 @@ public:
             request.entry.model_path.lexically_normal().generic_string(), request.sha256).second;
     }
     bool has_content() const {
-        return m_artifact || inline_generation_active(m_state) ||
+        return m_artifact || inline_generation_active(m_state) || inline_generation_handoff(m_state) ||
             (m_state.model_generation_context && !m_state.model_path.empty()) ||
             (m_state.model_generation_context && (m_state.stage == ModelGenerationUIStage::Failed ||
                 m_state.stage == ModelGenerationUIStage::Stopped));

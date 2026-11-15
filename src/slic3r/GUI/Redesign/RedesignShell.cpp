@@ -53,6 +53,7 @@
 
 #include <wx/dnd.h>
 #include <wx/button.h>
+#include <wx/wupdlock.h>
 #include <wx/filedlg.h>
 #include <wx/filedlgcustomize.h>
 #include <wx/colour.h>
@@ -171,18 +172,6 @@ wxColour background_colour()
 wxColour flow_background_colour()
 {
     return RedesignTheme::flow_background_colour();
-}
-
-// Moving child windows can preserve pixels from their old positions on MSW.
-// Invalidate the whole visible center after layout, including card backgrounds
-// and labels, instead of relying on the newly exposed resize strip alone.
-void refresh_image_surface(wxWindow* window)
-{
-    if (!window || !window->IsShown())
-        return;
-    window->Refresh();
-    for (auto* child : window->GetChildren())
-        refresh_image_surface(child);
 }
 
 wxColour panel_colour()
@@ -2735,8 +2724,10 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
 
     if (show_design_bitmap)
         update_preview_bitmap();
-    else if (m_result_preview != nullptr)
+    else if (m_result_preview != nullptr) {
+        m_design_bitmap_cache.reset();
         m_result_preview->SetPlaceholder(placeholder, placeholder_mode);
+    }
     if (m_result_preview != nullptr) {
         if (image_stage == ModelGenerationUIStage::GeneratingDesign)
             m_result_preview->SetDesignTiming(state.job_id, state.design_elapsed_seconds, state.design_estimated_seconds);
@@ -2775,6 +2766,10 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
 
 void RedesignShell::update_generation_style_controls()
 {
+    const auto display = std::make_tuple(m_smart_creation, m_style_filter, m_selected_style_id,
+                                        generation_input_editable());
+    if (m_applied_style_controls == display) return;
+    m_applied_style_controls = display;
     if (m_smart_styles) {
         m_smart_styles->Show(m_smart_creation);
         // wxGridSizer counts hidden items when calculating its row count.
@@ -3385,6 +3380,7 @@ void RedesignShell::restore_image_input(const ModelGenerationUIInput& input)
     // Explicit context switches replace the source and the design together.
     // Ordinary refreshes must not overwrite an uploaded, unsubmitted draft.
     ++m_image_request_generation;
+    ++m_image_content_generation;
     m_selected_image_path = boost::filesystem::path(wxString::FromUTF8(input.image_path).ToStdWstring());
     m_selected_image = wxImage();
     if (!m_selected_image_path.empty()) {
@@ -3888,6 +3884,7 @@ void RedesignShell::accept_image(const wxString& path)
             return;
         }
         m_selected_image = std::move(image);
+        ++m_image_content_generation;
         m_selected_image_path = selected_path;
         m_image_design_draft.begin(m_model_generation_state);
         clear_design_image(); // Invalidates any queued load of the previous 2D result.
@@ -3897,7 +3894,12 @@ void RedesignShell::accept_image(const wxString& path)
         m_last_preview_bounds = wxDefaultSize;
         BOOST_LOG_TRIVIAL(info) << "[ImageUpload] load=" << generation << " stage=preview_update_begin"
             << " elapsed_ms=" << image_diagnostic_elapsed(started);
-        update_image_state();
+        {
+            // Only the synchronous widget handoff is frozen. File decoding and
+            // host input synchronization remain outside this short layout scope.
+            wxWindowUpdateLocker handoff(m_image_page);
+            update_image_state();
+        }
         BOOST_LOG_TRIVIAL(info) << "[ImageUpload] load=" << generation << " stage=input_sync_begin"
             << " elapsed_ms=" << image_diagnostic_elapsed(started);
         synchronize_generation_input();
@@ -3915,6 +3917,7 @@ void RedesignShell::clear_image()
     ++m_image_request_generation;
     m_preview_resize_timer.Stop();
     m_selected_image = wxImage();
+    ++m_image_content_generation;
     m_selected_image_path.clear();
     m_image_state = ImageState::Empty;
     m_last_preview_bounds = wxDefaultSize;
@@ -3927,29 +3930,16 @@ void RedesignShell::clear_image()
 void RedesignShell::update_preview_bitmap()
 {
     m_preview_resize_timer.Stop();
-    if (!m_image_page)
+    // Progress snapshots must not invalidate the native windows covering the
+    // inline feedback, or resample an input bitmap that is currently hidden.
+    if (!m_image_page || !m_preview_host || !m_preview_host->IsShownOnScreen() || !m_preview ||
+        !m_result_preview || !m_source_preview_card || !m_result_preview_card)
         return;
-    m_image_page->Layout();
-    auto refresh_center = [this] {
-        m_image_page->Refresh();
-        refresh_image_surface(m_guide_panel);
-        refresh_image_surface(m_preview_host);
-    };
-    // Empty placeholders need the same responsive card sizes as loaded images.
-    // Only the guide view skips preview layout, not the absence of a bitmap.
-    if (!m_preview_host || !m_preview_host->IsShown() || !m_preview ||
-        !m_result_preview || !m_source_preview_card || !m_result_preview_card) {
-        if (m_guide_panel)
-            m_guide_panel->Layout();
-        refresh_center();
-        return;
-    }
-    const bool source_ready = m_image_state == ImageState::Ready && m_selected_image.IsOk();
+    const bool source_ready = (m_image_state == ImageState::Ready || m_image_state == ImageState::Loading)
+                              && m_selected_image.IsOk();
     const wxSize available = m_preview_host->GetClientSize();
-    if (available.x < FromDIP(240) || available.y < FromDIP(240)) {
-        refresh_center();
+    if (available.x < FromDIP(240) || available.y < FromDIP(240))
         return;
-    }
 
     const int gap = FromDIP(16);
     const int maximum_width = std::max(FromDIP(96), source_ready
@@ -3977,64 +3967,105 @@ void RedesignShell::update_preview_bitmap()
         m_result_preview_card->SetMinSize(card_size);
         m_result_preview_card->SetMaxSize(card_size);
     }
-    m_preview_host->Layout();
-    m_source_preview_card->Layout();
-    m_result_preview_card->Layout();
-    const wxBitmap bitmap = source_ready ? rounded_thumbnail(m_selected_image, image_bounds, FromDIP(10), true, true) : wxBitmap();
-    m_preview->SetBitmap(bitmap);
-    // Placeholder/spinner repainting must not clear the active task clock.
-    if (m_design_image_state == ImageState::Ready && m_design_image.IsOk()) {
-        m_result_preview->SetBitmap(
-            rounded_thumbnail(m_design_image, image_bounds, FromDIP(10), true, true));
+    if (bounds_changed) {
+        m_preview_host->Layout();
+        m_source_preview_card->Layout();
+        m_result_preview_card->Layout();
+        m_preview_host->Refresh(false);
     }
-    refresh_center();
+    const double dpi = GetDPIScaleFactor();
+    if (source_ready && !m_source_bitmap_cache.current(m_image_content_generation, image_bounds, dpi)) {
+        const auto bitmap = rounded_thumbnail(m_selected_image, image_bounds, FromDIP(10), true, true);
+        m_preview->SetBitmap(bitmap);
+        if (bitmap.IsOk()) m_source_bitmap_cache.installed(m_image_content_generation, image_bounds, dpi);
+        wxString trace;
+        if (wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace) && trace == "1")
+            BOOST_LOG_TRIVIAL(info) << "[UiCreationPreview] action=source_bitmap content=" << m_image_content_generation;
+    } else if (!source_ready && m_source_bitmap_cache.has_bitmap()) {
+        m_preview->SetBitmap(wxBitmap());
+        m_source_bitmap_cache.reset();
+    }
+    // Placeholder/spinner repainting must not clear the active task clock.
+    if (m_design_image_state == ImageState::Ready && m_design_image.IsOk() &&
+        !m_design_bitmap_cache.current(m_design_image_request_generation, image_bounds, dpi)) {
+        const auto bitmap = rounded_thumbnail(m_design_image, image_bounds, FromDIP(10), true, true);
+        m_result_preview->SetBitmap(bitmap);
+        if (bitmap.IsOk()) m_design_bitmap_cache.installed(m_design_image_request_generation, image_bounds, dpi);
+    }
 }
 
 void RedesignShell::update_image_state()
 {
     const bool ready = m_image_state == ImageState::Ready;
     const bool loading = m_image_state == ImageState::Loading;
-    m_upload_icon->GetParent()->Show(!ready);
-    m_upload_thumbnail->Show(ready);
-    m_upload_status->Show(!ready);
-    if (m_upload_link) m_upload_link->Show(!ready && !loading && m_image_state != ImageState::Failed);
-    m_upload_filename->Show(false);
-    m_upload_hint->Show(!ready);
+    bool upload_layout = false, center_layout = false;
+    const auto show = [](wxWindow* window, bool value, bool& dirty) {
+        if (window && window->IsShown() != value) { window->Show(value); dirty = true; }
+    };
+    const auto label = [&upload_layout](wxWindow* window, const wxString& value) {
+        if (window->GetLabel() != value) { window->SetLabel(value); upload_layout = true; }
+    };
+    show(m_upload_icon->GetParent(), !ready, upload_layout);
+    show(m_upload_thumbnail, ready, upload_layout);
+    show(m_upload_status, !ready, upload_layout);
+    show(m_upload_link, !ready && !loading && m_image_state != ImageState::Failed, upload_layout);
+    show(m_upload_filename, false, upload_layout);
+    show(m_upload_hint, !ready, upload_layout);
     if (loading) {
-        m_upload_icon->SetLabel(text("◌"));
-        m_upload_status->SetLabel(text("读取中..."));
-        m_upload_hint->SetLabel(text("本地图片处理中"));
+        label(m_upload_icon, text("◌"));
+        label(m_upload_status, text("读取中..."));
+        label(m_upload_hint, text("本地图片处理中"));
     } else if (m_image_state == ImageState::Failed) {
-        m_upload_icon->SetLabel(text("+"));
-        m_upload_status->SetLabel(text("图片不可用，点击重试"));
-        m_upload_hint->SetLabel(text("支持：PNG、JPG、JPEG、WebP，最大 20MB"));
+        label(m_upload_icon, text("+"));
+        label(m_upload_status, text("图片不可用，点击重试"));
+        label(m_upload_hint, text(m_smart_creation ? "支持：png，jpg，jpeg，webp 最大20MB" : "支持：PNG、JPG、JPEG、WebP，最大 20MB"));
     } else {
-        m_upload_icon->SetLabel(text("+"));
-        m_upload_status->SetLabel(text(m_smart_creation ? "将图片拖到此处，或" : "点击、拖拽选择图片"));
-        m_upload_hint->SetLabel(text("支持：PNG、JPG、JPEG、WebP，最大 20MB"));
+        label(m_upload_icon, text("+"));
+        label(m_upload_status, text(m_smart_creation ? "将图片拖到此处，或" : "点击、拖拽选择图片"));
+        label(m_upload_hint, text(m_smart_creation ? "支持：png，jpg，jpeg，webp 最大20MB" : "支持：PNG、JPG、JPEG、WebP，最大 20MB"));
     }
-    if (m_smart_creation && !loading) m_upload_hint->SetLabel(text("支持：png，jpg，jpeg，webp 最大20MB"));
     if (ready) {
         const int edge = FromDIP(m_smart_creation ? 100 : 134);
-        const wxBitmap thumbnail = rounded_thumbnail(m_selected_image, wxSize(edge, edge), FromDIP(8));
-        m_upload_thumbnail->SetBitmap(thumbnail);
-        m_upload_thumbnail->SetToolTip(wxString(m_selected_image_path.filename().wstring()));
+        const wxSize bounds(edge, edge);
+        if (!m_upload_bitmap_cache.current(m_image_content_generation, bounds, GetDPIScaleFactor())) {
+            const wxBitmap thumbnail = rounded_thumbnail(m_selected_image, bounds, FromDIP(8));
+            m_upload_thumbnail->SetBitmap(thumbnail);
+            if (thumbnail.IsOk()) m_upload_bitmap_cache.installed(m_image_content_generation, bounds, GetDPIScaleFactor());
+            m_upload_thumbnail->SetToolTip(wxString(m_selected_image_path.filename().wstring()));
+        }
     }
     // Preserve text-only designs and active placeholders while retaining
     // the responsive workspace after its first use.
-    const bool show_preview = ready || (!m_smart_creation && (m_design_image_state == ImageState::Ready ||
+    const bool source_visible = ready || (loading && m_selected_image.IsOk());
+    const bool show_preview = source_visible || (!m_smart_creation && (m_design_image_state == ImageState::Ready ||
         m_model_generation_state.stage != ModelGenerationUIStage::Input ||
         m_preview_host->IsShown()));
-    m_result_preview_card->Show(!m_smart_creation);
-    m_source_preview_card->Show(ready);
-    m_source_preview_card->GetContainingSizer()->Show(size_t(1), ready && !m_smart_creation);
+    show(m_result_preview_card, !m_smart_creation, center_layout);
+    show(m_source_preview_card, source_visible, center_layout);
+    auto* spacer = m_source_preview_card->GetContainingSizer()->GetItem(size_t(1));
+    if (spacer->IsShown() != (source_visible && !m_smart_creation)) {
+        spacer->Show(source_visible && !m_smart_creation); center_layout = true;
+    }
     const bool inline_model = m_smart_generation_view && m_smart_generation_view->has_content();
-    m_guide_panel->Show(!inline_model && !show_preview);
-    m_preview_host->Show(!inline_model && show_preview);
+    // Retain the source pixels until the feedback's synchronous show/layout
+    // handoff is complete; hiding the source first exposes the parent briefly.
+    std::unique_ptr<wxWindowUpdateLocker> inline_handoff;
+    if (m_smart_generation_view && m_smart_generation_view->IsShown() != inline_model)
+        inline_handoff = std::make_unique<wxWindowUpdateLocker>(m_image_page);
+    show(m_guide_panel, !inline_model && !show_preview, center_layout);
+    show(m_preview_host, !inline_model && show_preview, center_layout);
     refresh_inline_generation();
-    m_upload_surface->Layout();
-    m_upload_surface->GetParent()->Layout();
-    m_image_page->Layout();
+    if (upload_layout) {
+        m_upload_surface->Layout();
+        m_upload_surface->GetParent()->Layout();
+    }
+    if (center_layout) {
+        m_image_page->Layout();
+        m_image_page->Refresh(false);
+        wxString trace;
+        if (wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace) && trace == "1")
+            BOOST_LOG_TRIVIAL(info) << "[UiCreationPreview] action=center_layout";
+    }
     update_preview_bitmap();
 }
 

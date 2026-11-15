@@ -12,9 +12,11 @@
 #include "../wxExtensions.hpp"
 #include "../Widgets/Label.hpp"
 #include <wx/dcbuffer.h>
+#include <wx/frame.h>
 #include <wx/sizer.h>
 #include <wx/timer.h>
 #include <wx/toplevel.h>
+#include <wx/wupdlock.h>
 #include <wx/weakref.h>
 #include <atomic>
 
@@ -30,6 +32,7 @@ class GenerationFeedback final : public RedesignPaintPanel {
 public:
     explicit GenerationFeedback(wxWindow* parent) : RedesignPaintPanel(parent) {
         SetBackgroundColour(background_colour()); SetBackgroundStyle(wxBG_STYLE_PAINT);
+        paint_owns_background();
         SetWindowStyleFlag(GetWindowStyleFlag() | wxCLIP_CHILDREN);
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) { paint(); });
     }
@@ -93,6 +96,9 @@ struct InlineModelGenerationView::Impl {
     InlineModelCallbacks callbacks;
     InlineModelGenerationState state;
     GenerationFeedback* feedback;
+    wxFrame* first_frame_cover {nullptr};
+    GenerationFeedback* retained_feedback {nullptr};
+    bool cover_requested {false};
     RoundedActionButton* recover;
     ModelPreview3D* preview {nullptr};
     std::shared_ptr<Preparation> preparation;
@@ -138,26 +144,62 @@ struct InlineModelGenerationView::Impl {
         preparation_scope.cancel();
         if (preparation) preparation->canceled = true;
         if (preview) preview->observe_presentation_frame({});
+        if (first_frame_cover) { first_frame_cover->Hide(); first_frame_cover->Destroy(); first_frame_cover = nullptr; }
         preparation.reset(); callbacks = {};
     }
     void changed() { if (callbacks.changed) callbacks.changed(); }
+    void sync_first_frame_cover() {
+        // Like the workbench's retained source, a separate non-activating native
+        // window keeps the feedback visible without clipping WM_PAINT on GL.
+        // It owns no task state and exists only for this local first-frame handoff.
+        const bool show = cover_requested && state.phase() != InlinePreviewPhase::Failed && visible();
+        if (!show) {
+            if (first_frame_cover) first_frame_cover->Hide();
+            return;
+        }
+        if (!first_frame_cover) {
+            first_frame_cover = new wxFrame(wxGetTopLevelParent(&view), wxID_ANY, wxEmptyString,
+                wxDefaultPosition, wxDefaultSize, wxBORDER_NONE | wxFRAME_NO_TASKBAR | wxFRAME_FLOAT_ON_PARENT);
+            first_frame_cover->SetName("inline-first-frame-feedback");
+            first_frame_cover->SetBackgroundColour(background_colour());
+            auto* sizer = new wxBoxSizer(wxVERTICAL);
+            first_frame_cover->SetSizer(sizer);
+            retained_feedback = new GenerationFeedback(first_frame_cover);
+            sizer->Add(retained_feedback, 1, wxEXPAND);
+            first_frame_cover->Bind(wxEVT_CLOSE_WINDOW, [](wxCloseEvent& event) { event.Veto(); });
+        }
+        const wxRect bounds(view.ClientToScreen(wxPoint()), view.GetClientSize());
+        if (bounds.IsEmpty()) return;
+        if (first_frame_cover->GetRect() != bounds) {
+            first_frame_cover->SetSize(bounds); first_frame_cover->Layout();
+        }
+        retained_feedback->title = feedback->title; retained_feedback->detail = feedback->detail;
+        retained_feedback->progress = feedback->progress; retained_feedback->animate = feedback->animate;
+        retained_feedback->elapsed = feedback->elapsed;
+        const bool reveal = !first_frame_cover->IsShown();
+        if (reveal) first_frame_cover->ShowWithoutActivating();
+        retained_feedback->Refresh(false);
+        if (reveal) retained_feedback->Update(); // One handoff barrier, never an ordinary progress update.
+    }
     void layout() {
         const auto size = view.GetClientSize();
-        if (preview) preview->SetSize(view.GetClientRect());
+        if (preview && preview->GetRect() != view.GetClientRect()) preview->SetSize(view.GetClientRect());
         const bool installed = state.phase() == InlinePreviewPhase::AwaitingFirstFrame || state.ready();
         // The GL viewport keeps its final size while the small feedback overlays it.
-        feedback->SetSize(installed ? wxRect(0, std::max(0, size.y - view.FromDIP(110)), size.x, view.FromDIP(100)) : view.GetClientRect());
+        const auto bounds = installed ? wxRect(0, std::max(0, size.y - view.FromDIP(110)), size.x, view.FromDIP(100)) : view.GetClientRect();
+        if (feedback->GetRect() != bounds) feedback->SetSize(bounds);
         // Keep the action inside the painted surface so its buffered redraws
         // cannot cover a sibling recovery button on Windows.
         const auto feedback_size = feedback->GetClientSize();
-        recover->SetSize(std::max(0, (feedback_size.x - view.FromDIP(190)) / 2),
+        const wxRect action(std::max(0, (feedback_size.x - view.FromDIP(190)) / 2),
             std::max(0, feedback_size.y / 2 + view.FromDIP(110)), view.FromDIP(190), view.FromDIP(36));
-        feedback->Raise();
+        if (recover->GetRect() != action) recover->SetSize(action);
+        sync_first_frame_cover();
     }
     void render() {
         const auto& snapshot = state.snapshot();
         if (snapshot.stage != ModelGenerationUIStage::GeneratingDesign) design_wait.clear();
-        feedback->animate = inline_generation_active(snapshot) ||
+        feedback->animate = inline_generation_active(snapshot) || inline_generation_handoff(snapshot) ||
             (state.artifact() && !state.ready() && state.phase() != InlinePreviewPhase::Failed);
         feedback->progress = -1;
         feedback->detail = t(snapshot.status_text.c_str());
@@ -170,6 +212,8 @@ struct InlineModelGenerationView::Impl {
             feedback->detail = state.phase() == InlinePreviewPhase::AwaitingFirstFrame ?
                 t("正在显示模型预览") : t("正在解析本地模型文件");
         } else switch (snapshot.stage) {
+        case ModelGenerationUIStage::DesignReady:
+        case ModelGenerationUIStage::Saving3DOptions:
         case ModelGenerationUIStage::GeneratingDesign:
             feedback->title = t(snapshot.smart_mode ? "正在准备建模参考图…" : "正在准备模型输入");
             if (snapshot.smart_mode)
@@ -200,12 +244,17 @@ struct InlineModelGenerationView::Impl {
             feedback->detail = t("模型文件缺失或无法读取，请恢复原文件或从历史中重新打开。");
         }
         const bool retry_preview = state.phase() == InlinePreviewPhase::Failed;
-        recover->SetLabel(retry_preview ? t("重新加载预览") : snapshot.can_retry_service ? t("重新检测服务") :
-            snapshot.can_retry_model ? t("恢复当前任务") : t("恢复上次任务"));
-        recover->Show(retry_preview || (!state.ready() && !snapshot.busy &&
-            (snapshot.can_retry_model || snapshot.can_retry_service || snapshot.can_restore_latest)));
-        feedback->Show(!state.ready());
-        if (preview) preview->Show(state.phase() == InlinePreviewPhase::AwaitingFirstFrame || state.ready());
+        const auto action = retry_preview ? t("重新加载预览") : snapshot.can_retry_service ? t("重新检测服务") :
+            snapshot.can_retry_model ? t("恢复当前任务") : t("恢复上次任务");
+        if (recover->GetLabel() != action) recover->SetLabel(action);
+        const bool recovery_shown = retry_preview || (!state.ready() && !snapshot.busy &&
+            (snapshot.can_retry_model || snapshot.can_retry_service || snapshot.can_restore_latest));
+        if (recover->IsShown() != recovery_shown) recover->Show(recovery_shown);
+        bool stacking_changed = false;
+        if (feedback->IsShown() != !state.ready()) { feedback->Show(!state.ready()); stacking_changed = true; }
+        const bool preview_shown = state.phase() == InlinePreviewPhase::AwaitingFirstFrame || state.ready();
+        if (preview && preview->IsShown() != preview_shown) { preview->Show(preview_shown); stacking_changed = true; }
+        if (stacking_changed && feedback->IsShown()) feedback->Raise();
         view.SetName(feedback->title + (feedback->detail.empty() ? wxString() : " · " + feedback->detail));
         layout(); feedback->Refresh(false); recover->Refresh(false);
     }
@@ -258,8 +307,11 @@ struct InlineModelGenerationView::Impl {
         auto request = std::move(preparation);
         error = request->error;
         if (error.empty()) {
+            cover_requested = true;
+            sync_first_frame_cover();
             if (!preview) {
                 preview = new ModelPreview3D(&view); preview->set_preview_background(background_colour());
+                preview->Hide();
                 preview->set_selection_enabled(false); preview->set_color_controls_visible(false);
             }
             size_t triangles = 0, colors = 0; Vec3d dimensions = Vec3d::Zero();
@@ -280,11 +332,21 @@ struct InlineModelGenerationView::Impl {
             auto& self = *weak->m_impl;
             if (!self.visible() || !self.state.advance(generation, InlinePreviewPhase::Ready)) return;
             self.preview->observe_presentation_frame({});
-            self.render(); self.changed(); self.notify();
+            self.render(); self.changed(); self.finish_first_frame_handoff(); self.notify();
         });
     }
+    void finish_first_frame_handoff() {
+        if (!cover_requested || !state.ready() || !visible()) return;
+        // Completion actions can relayout the parent. Submit the resulting GL
+        // frame while feedback still covers native invalidation, then repair
+        // the exposed canvas synchronously as the local cover is withdrawn.
+        preview->refresh();
+        cover_requested = false;
+        sync_first_frame_cover();
+        preview->refresh();
+    }
     void notify() {
-        if (state.consume_completion(visible()) && callbacks.completed) callbacks.completed();
+        if (!cover_requested && state.consume_completion(visible()) && callbacks.completed) callbacks.completed();
     }
     void tick() {
         if (closing) return;
@@ -292,6 +354,8 @@ struct InlineModelGenerationView::Impl {
         const bool shown = visible();
         animation.synchronize(feedback->animate, shown, now_seconds());
         feedback->elapsed = animation.elapsed(now_seconds());
+        sync_first_frame_cover();
+        finish_first_frame_handoff();
         if (state.phase() == InlinePreviewPhase::AwaitingFirstFrame &&
             deadline.observe(RedesignPresentationDeadline::Clock::now(), !shown)) {
             preview->observe_presentation_frame({}); error = "模型预览未能显示，请重新加载预览。";
@@ -314,24 +378,68 @@ void InlineModelGenerationView::apply_snapshot(const GenerationBinding& binding,
     if (m_impl->closing) return;
     const auto generation = m_impl->state.generation();
     const bool ready_before = ready();
+    const auto stage_before = m_impl->state.snapshot().stage;
+    const bool content_before = has_content();
     std::optional<InlineModelArtifact> model;
     if (artifact) model = InlineModelArtifact {std::move(*artifact)};
     if (!m_impl->state.apply(binding, snapshot, std::move(model))) return;
+    std::unique_ptr<wxWindowUpdateLocker> content_handoff;
+    if (generation != m_impl->state.generation() && m_impl->visible())
+        content_handoff = std::make_unique<wxWindowUpdateLocker>(this);
     if (generation != m_impl->state.generation()) {
+        m_impl->cover_requested = false;
+        m_impl->sync_first_frame_cover();
         m_impl->design_wait.clear();
         if (m_impl->preparation) m_impl->preparation->canceled = true;
         m_impl->preparation_scope.cancel(); m_impl->preparation.reset();
-        if (m_impl->preview) { m_impl->preview->observe_presentation_frame({}); m_impl->preview->clear(); }
         m_impl->error.clear();
+        if (m_impl->preview) {
+            // Retire a completed preview only after the new feedback is drawn.
+            // Clearing the still-visible GL canvas exposes an empty frame.
+            m_impl->preview->observe_presentation_frame({});
+            if (m_impl->visible()) {
+                m_impl->render();
+                if (m_impl->feedback->IsShown()) m_impl->feedback->Update();
+            }
+            m_impl->preview->clear();
+        }
+    }
+    if (generation != m_impl->state.generation() || stage_before != snapshot.stage || content_before != has_content()) {
+        // A newly shown child must already have its current feedback. Ordinary
+        // progress still uses the existing coalesced refresh path.
+        m_impl->render();
+        wxString trace;
+        if (wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace) && trace == "1")
+            BOOST_LOG_TRIVIAL(info) << "[InlineModelPresentation] source=" << int(binding.source)
+                << " stage=" << int(snapshot.stage) << " content=" << has_content()
+                << " generation=" << m_impl->state.generation();
     }
     m_impl->refresh.request(Presentation::Dirty::Content);
     if (ready_before != ready()) m_impl->changed();
+    if (content_handoff) {
+        // Hide/Show on native siblings can expose their parent before buffered
+        // feedback is painted. Complete this local handoff before returning.
+        content_handoff.reset();
+        if (m_impl->feedback->IsShown()) m_impl->feedback->Update();
+    }
 }
 void InlineModelGenerationView::set_presented(bool active) {
     if (m_impl->closing) return;
-    if (active && !m_impl->presented && m_impl->preview) m_impl->preview->refresh();
+    const bool reveal = active && !m_impl->presented;
+    if (reveal) {
+        // A previously hidden view may still have its initial zero-size bounds.
+        // Commit its local slot before the first visible feedback paint.
+        GetParent()->Layout();
+        m_impl->render();
+        if (m_impl->feedback->IsShown()) m_impl->feedback->Update();
+    }
+    if (reveal && m_impl->preview) m_impl->preview->refresh();
     m_impl->presented = active; m_impl->tick();
     if (active) m_impl->refresh.resume();
+    if (reveal && m_impl->visible() && m_impl->feedback->IsShown()) {
+        m_impl->render();
+        m_impl->feedback->Update(); // One initial display handoff, never each progress snapshot.
+    }
 }
 void InlineModelGenerationView::retry_preview() {
     if (m_impl->closing || !m_impl->state.artifact()) return;
@@ -342,6 +450,8 @@ void InlineModelGenerationView::retry_preview() {
 }
 void InlineModelGenerationView::generation_started() { m_impl->state.generation_started(); }
 void InlineModelGenerationView::invalidate_context() {
+    m_impl->cover_requested = false;
+    m_impl->sync_first_frame_cover();
     if (m_impl->preparation) m_impl->preparation->canceled = true;
     m_impl->preparation_scope.cancel(); m_impl->preparation.reset();
     if (m_impl->preview) { m_impl->preview->observe_presentation_frame({}); m_impl->preview->clear(); }

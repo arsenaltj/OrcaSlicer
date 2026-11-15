@@ -1,4 +1,5 @@
 #include "slic3r/GUI/Redesign/RedesignCommand.hpp"
+#include "slic3r/GUI/Redesign/RedesignShell.hpp"
 #include "slic3r/GUI/Redesign/RedesignFeatureFlags.hpp"
 #include "slic3r/GUI/Redesign/OrcaBusinessAdapter.hpp"
 #include "slic3r/GUI/Redesign/RedesignState.hpp"
@@ -31,6 +32,38 @@
 #include <string>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("Creation bitmaps invalidate on content size and DPI instead of file paths", "[UiRedesign][CreationPreview]")
+{
+    CreationBitmapCache cache;
+    const wxSize bounds(503, 671);
+    CHECK_FALSE(cache.current(1, bounds, 1.0));
+    cache.installed(1, bounds, 1.0);
+    CHECK(cache.current(1, bounds, 1.0));
+    // A successful reload gets a new content generation even for the same path.
+    CHECK_FALSE(cache.current(2, bounds, 1.0));
+    CHECK_FALSE(cache.current(1, wxSize(402, 536), 1.0));
+    CHECK_FALSE(cache.current(1, bounds, 1.25));
+    cache.installed(2, wxSize(402, 536), 1.25);
+    CHECK(cache.current(2, wxSize(402, 536), 1.25));
+    cache.reset();
+    CHECK_FALSE(cache.has_bitmap());
+    CHECK_FALSE(cache.current(2, wxSize(402, 536), 1.25));
+}
+
+TEST_CASE("An uninstalled creation bitmap stays dirty until its actual handoff", "[UiRedesign][CreationPreview]")
+{
+    CreationBitmapCache cache;
+    cache.installed(7, wxSize(100, 100), 1.0);
+    // Preparing a replacement, hiding, or rejecting its result must not cache it.
+    for (int update = 0; update < 100; ++update) {
+        CHECK(cache.current(7, wxSize(100, 100), 1.0));
+        CHECK_FALSE(cache.current(8, wxSize(100, 100), 1.0));
+    }
+    cache.installed(8, wxSize(100, 100), 1.0);
+    CHECK_FALSE(cache.current(7, wxSize(100, 100), 1.0));
+    CHECK(cache.current(8, wxSize(100, 100), 1.0));
+}
 
 TEST_CASE("AI history retains the settings and content together without covering fixed navigation", "[UiRedesign][WorkbenchPresentation]")
 {

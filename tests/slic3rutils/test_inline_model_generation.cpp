@@ -12,6 +12,7 @@ ModelGenerationUIState generating(bool smart = true) {
     result.stage = smart ? ModelGenerationUIStage::GeneratingDesign : ModelGenerationUIStage::GeneratingModel;
     result.busy = true; return result;
 }
+
 InlineModelArtifact artifact(std::string hash = "hash-a") {
     InlineModelArtifact result;
     result.request.entry.job_id = "job"; result.request.entry.model_path = "model.obj";
@@ -56,6 +57,27 @@ TEST_CASE("Smart preparation retains its flow when the final model job arrives",
     snapshot.stage=ModelGenerationUIStage::ModelReady; snapshot.model_ready=true; snapshot.busy=false; ++snapshot.revision;
     REQUIRE(view.apply(source,snapshot,artifact())); ready(view);
     CHECK(view.consume_completion(true));
+}
+
+TEST_CASE("Smart dispatch retains feedback through confirmed design and option saving only", "[InlineModelGeneration]") {
+    InlineModelGenerationState view;
+    auto snapshot = generating();
+    REQUIRE(view.apply({}, snapshot, {}));
+    const auto generation = view.generation();
+    for (const auto stage : {ModelGenerationUIStage::DesignReady, ModelGenerationUIStage::Saving3DOptions}) {
+        snapshot.stage = stage; snapshot.busy = false; snapshot.can_generate_model = true; ++snapshot.revision;
+        REQUIRE(view.apply({}, snapshot, {}));
+        CHECK(view.has_content()); CHECK_FALSE(view.ready());
+        CHECK(view.generation() == generation);
+        CHECK_FALSE(view.snapshot().busy); CHECK(view.snapshot().can_generate_model);
+        CHECK_FALSE(view.consume_completion(true));
+    }
+    snapshot.stage = ModelGenerationUIStage::Input; ++snapshot.revision;
+    REQUIRE(view.apply({}, snapshot, {})); CHECK_FALSE(view.has_content());
+    snapshot.stage = ModelGenerationUIStage::DesignReady; snapshot.smart_mode = false; ++snapshot.revision;
+    REQUIRE(view.apply({}, snapshot, {})); CHECK_FALSE(view.has_content());
+    snapshot.smart_mode = true; snapshot.smart_flow_id.clear(); ++snapshot.revision;
+    REQUIRE(view.apply({}, snapshot, {})); CHECK_FALSE(view.has_content());
 }
 
 TEST_CASE("Late preparation and first frames cannot complete a replacement artifact", "[InlineModelGeneration]") {
@@ -182,4 +204,44 @@ TEST_CASE("Invalidating a creation context hides its old progress and rejects la
     const auto old = view.generation(); view.invalidate();
     CHECK_FALSE(view.has_content()); CHECK_FALSE(view.ready());
     CHECK_FALSE(view.advance(old,InlinePreviewPhase::Ready));
+}
+
+TEST_CASE("Repeated progress consumes every snapshot without restarting the current presentation", "[InlineModelGeneration]") {
+    InlineModelGenerationState view;
+    auto snapshot = generating();
+    REQUIRE(view.apply({}, snapshot, {}));
+    const auto generation = view.generation();
+    for (int progress = 0; progress < 100; ++progress) {
+        snapshot.progress = progress; ++snapshot.revision;
+        snapshot.status_text = "progress-" + std::to_string(progress);
+        REQUIRE(view.apply({}, snapshot, {}));
+        CHECK(view.generation() == generation);
+        CHECK(view.snapshot().revision == snapshot.revision);
+        CHECK(view.snapshot().progress == progress);
+        CHECK(view.snapshot().status_text == snapshot.status_text);
+    }
+    snapshot.stage = ModelGenerationUIStage::Stopped; snapshot.busy = false;
+    snapshot.can_retry_model = true; ++snapshot.revision;
+    REQUIRE(view.apply({}, snapshot, {}));
+    CHECK(view.snapshot().stage == ModelGenerationUIStage::Stopped);
+    CHECK(view.snapshot().can_retry_model);
+    CHECK_FALSE(view.ready());
+}
+
+TEST_CASE("A timed out first frame cannot announce completion after context invalidation", "[InlineModelGeneration]") {
+    InlineModelGenerationState view;
+    auto snapshot = generating(false);
+    REQUIRE(view.apply({}, snapshot, {})); view.generation_started();
+    snapshot.stage = ModelGenerationUIStage::ModelReady;
+    snapshot.model_ready = true; snapshot.busy = false; ++snapshot.revision;
+    REQUIRE(view.apply({}, snapshot, artifact()));
+    const auto old = view.generation();
+    REQUIRE(view.advance(old, InlinePreviewPhase::Preparing));
+    REQUIRE(view.advance(old, InlinePreviewPhase::AwaitingFirstFrame));
+    REQUIRE(view.advance(old, InlinePreviewPhase::Failed));
+    CHECK_FALSE(view.advance(old, InlinePreviewPhase::Ready));
+    CHECK_FALSE(view.consume_completion(true));
+    view.invalidate();
+    CHECK_FALSE(view.advance(old, InlinePreviewPhase::Ready));
+    CHECK_FALSE(view.has_content());
 }
