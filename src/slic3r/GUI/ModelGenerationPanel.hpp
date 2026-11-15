@@ -476,6 +476,8 @@ private:
     void clear_selected_image();
     void publish_ui_state();
     bool can_generate_design_from_shell() const;
+    bool can_restart_failed_smart_preparation() const;
+    bool is_failed_smart_preparation() const;
     void initialize_page(bool require_visible);
     void on_first_visible_idle(wxIdleEvent& event);
     void build_page();
@@ -1026,6 +1028,7 @@ private:
     std::string m_job_id;
     std::string m_job_state;
     std::string m_job_phase;
+    std::string m_job_smart_phase;
     ModelGenerationPresentation::ModelGenerationProgress m_model_progress;
     std::string m_design_timing_job_id;
     double m_design_elapsed_seconds { -1.0 };

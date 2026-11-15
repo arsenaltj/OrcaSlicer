@@ -76,6 +76,7 @@ struct ModelGenerationUIState
     bool service_availability_known { false };
     bool busy { false };
     bool can_generate_design { false };
+    bool can_restart_failed_smart_preparation { false };
     bool can_generate_model { false };
     bool can_stop { false };
     bool can_retry_service { false };

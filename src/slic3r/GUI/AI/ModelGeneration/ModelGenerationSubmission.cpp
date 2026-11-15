@@ -143,7 +143,7 @@ bool ModelGenerationPanel::request_stop()
 bool ModelGenerationPanel::request_generate_smart()
 {
     if (m_advanced_only) return false;
-    if (m_provider_error_ambiguous && job_inputs_match()) {
+    if (m_provider_error_ambiguous && job_inputs_match() && !can_restart_failed_smart_preparation()) {
         show_input_hint(_L("上次提交结果不明确，请先核对远端任务状态。当前不会重复创建相同输入的付费任务。")); return false;
     }
     if (!can_generate_design_from_shell() || !generation_provider_available("geometry") ||
@@ -167,6 +167,13 @@ bool ModelGenerationPanel::request_generate_smart()
     m_smart_mode = true;
     const bool recover_pending = m_smart_mode && m_job_id.empty() && !m_smart_flow.flow_id.empty();
     const auto flow = recover_pending ? m_smart_flow.flow_id : new_request_id();
+    const bool restart_failed_preparation = is_failed_smart_preparation();
+    const auto previous_flow = m_smart_flow;
+    const auto sequence = m_sequence;
+    const auto previous_pending_flow = wxGetApp().app_config
+        ? wxGetApp().app_config->get("smart_generation_pending_flow") : std::string();
+    const auto previous_pending_input = wxGetApp().app_config
+        ? wxGetApp().app_config->get("smart_generation_pending_input") : std::string();
     m_smart_flow.begin(flow);
     if (wxGetApp().app_config) {
         wxGetApp().app_config->set("smart_generation_pending_flow", flow);
@@ -175,7 +182,24 @@ bool ModelGenerationPanel::request_generate_smart()
     }
     ++m_model_generation_session;
     wxCommandEvent event; on_preprocess(event);
-    if (!m_busy) { m_smart_flow.stop(); return false; }
+    if (!m_busy) {
+        if (restart_failed_preparation && m_last_submission == ModelGenerationSubmissionResult::Rejected &&
+            m_sequence == sequence && m_smart_flow.flow_id == flow) {
+            // A local validation rejection never sent this intent. Keep the
+            // old failed job and its recovery receipt intact.
+            m_smart_flow = previous_flow;
+            // show_input_hint may already have published the attempted flow.
+            // Restoring its predecessor needs a newer presentation context.
+            ++m_model_generation_session;
+            if (wxGetApp().app_config) {
+                wxGetApp().app_config->set("smart_generation_pending_flow", previous_pending_flow);
+                wxGetApp().app_config->set("smart_generation_pending_input", previous_pending_input);
+                wxGetApp().app_config->save();
+            }
+            publish_ui_state();
+        } else m_smart_flow.stop();
+        return false;
+    }
     return true;
 }
 
@@ -730,6 +754,7 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     m_job_id = status.id;
     m_job_state = status.state;
     m_job_phase = status.phase;
+    m_job_smart_phase = status.smart_phase;
     m_design_timing_job_id = status.id;
     m_design_elapsed_seconds = status.design_elapsed_seconds;
     m_design_estimated_seconds = status.design_estimated_seconds;

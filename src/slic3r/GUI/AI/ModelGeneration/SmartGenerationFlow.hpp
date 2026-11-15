@@ -12,6 +12,15 @@ class SmartGenerationFlow
 {
 public:
     enum class Phase { Preparation, Geometry, Local, Complete };
+    static bool can_restart_failed_preparation(bool smart, const std::string& job_id,
+        const std::string& job_state, const std::string& job_phase, bool geometry_submitted,
+        bool remote_task, bool artifact, bool may_generate)
+    {
+        // Use the job's persisted phase, never the mutable draft's local phase.
+        // A missing model-task ID alone does not prove that 3D was not submitted.
+        return smart && !job_id.empty() && job_state == "failed" && job_phase == "preparation" &&
+            !geometry_submitted && !remote_task && !artifact && may_generate;
+    }
     void begin(std::string id) {
         flow_id = std::move(id); phase = Phase::Preparation; progress = 0;
         armed = true; submitted = false; stopped = false;

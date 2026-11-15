@@ -2154,6 +2154,9 @@ struct AdvancedCreationWorkspace::Impl {
     void apply_snapshot(Presentation::Dirty flags) {
         if (closing) return;
         layout_changed=layout_changed || Presentation::has(flags,Presentation::Dirty::Layout);
+        if (presented && !host.command_pending() && !host.has_pending_receipt() &&
+            host.session().consume_initial_design_guidance())
+            switch_stage(true);
         const auto& session = host.session(); const auto& draft = session.draft(); const auto eligibility = host.eligibility();
         stage_tabs->set_model_tab(model_tab);
         show(design_inputs, !model_tab); show(model_inputs, model_tab);

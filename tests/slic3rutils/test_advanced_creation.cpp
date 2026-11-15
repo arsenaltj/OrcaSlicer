@@ -36,6 +36,115 @@ Session ready_session()
 }
 }
 
+TEST_CASE("An accepted initial design guides once while historical snapshots do not", "[AdvancedCreation][AdvancedInitialGuidance]")
+{
+    auto session = ready_session();
+    CHECK_FALSE(session.consume_initial_design_guidance());
+    session.arm_initial_design_guidance(session.context());
+    REQUIRE(session.consume_initial_design_guidance());
+    CHECK_FALSE(session.consume_initial_design_guidance());
+    session.arm_initial_design_guidance(session.context());
+    CHECK_FALSE(session.consume_initial_design_guidance());
+    auto snapshot = complete_group();
+    ++snapshot.revision;
+    REQUIRE(session.apply_snapshot(snapshot, session.context()));
+    CHECK_FALSE(session.consume_initial_design_guidance());
+}
+
+TEST_CASE("An initial design guides only after its missing views become usable", "[AdvancedCreation][AdvancedInitialGuidance]")
+{
+    const auto usable_count = GENERATE(0, 1, 2, 3);
+    Session session;
+    const auto context = session.begin_open("group-a");
+    session.arm_initial_design_guidance(context);
+    auto snapshot = complete_group();
+    for (std::size_t i = usable_count; i < snapshot.views.size(); ++i)
+        snapshot.views[i] = {};
+    REQUIRE(session.apply_snapshot(snapshot, context, true));
+    CHECK_FALSE(session.consume_initial_design_guidance());
+    snapshot = complete_group();
+    ++snapshot.revision;
+    REQUIRE(session.apply_snapshot(snapshot, context));
+    REQUIRE(session.consume_initial_design_guidance());
+    CHECK_FALSE(session.consume_initial_design_guidance());
+}
+
+TEST_CASE("Unresolved design attempts and retained old images cannot trigger initial guidance", "[AdvancedCreation][AdvancedInitialGuidance]")
+{
+    const std::string blocker = GENERATE("queued", "submitting", "failed", "blocked", "stopped",
+        "ambiguous", "result_pending", "result_saved", "active", "stop", "pending",
+        "asset", "display", "version");
+    auto session = ready_session();
+    session.arm_initial_design_guidance(session.context());
+    auto snapshot = complete_group();
+    ++snapshot.revision;
+    auto& view = snapshot.views[0];
+    if (blocker == "active") snapshot.active_operation_id = "initial-operation";
+    else if (blocker == "stop") snapshot.stop_intent = true;
+    else if (blocker == "pending") snapshot.pending_views[0] = true;
+    else if (blocker == "asset") {
+        view.usable = false; view.asset_pending = true;
+        view.canonical_version_id = "front-v2";
+    } else if (blocker == "display") view.display_error = true;
+    else if (blocker == "version") view.canonical_version_id = "front-v2";
+    else view.attempt_state = blocker;
+    REQUIRE(session.apply_snapshot(snapshot, session.context()));
+    CHECK_FALSE(session.consume_initial_design_guidance());
+    snapshot = complete_group();
+    snapshot.revision += 2;
+    REQUIRE(session.apply_snapshot(snapshot, session.context()));
+    CHECK(session.consume_initial_design_guidance());
+}
+
+TEST_CASE("Initial guidance waits for the current draft and survives hidden observation", "[AdvancedCreation][AdvancedInitialGuidance]")
+{
+    auto session = ready_session();
+    session.arm_initial_design_guidance(session.context());
+    auto draft = session.draft().design;
+    draft.prompt = "a revised design";
+    REQUIRE(session.set_design_draft(draft));
+    CHECK_FALSE(session.consume_initial_design_guidance());
+    auto snapshot = complete_group();
+    snapshot.saved_draft = draft;
+    snapshot.latest_submitted_draft = draft;
+    ++snapshot.revision;
+    REQUIRE(session.apply_snapshot(snapshot, session.context()));
+    // Background snapshots update the Session without consuming navigation.
+    ++snapshot.revision;
+    REQUIRE(session.apply_snapshot(snapshot, session.context()));
+    CHECK(session.consume_initial_design_guidance());
+    CHECK_FALSE(session.consume_initial_design_guidance());
+}
+
+TEST_CASE("Opening another context invalidates its predecessor's initial guidance", "[AdvancedCreation][AdvancedInitialGuidance]")
+{
+    auto session = ready_session();
+    const auto old_context = session.context();
+    session.arm_initial_design_guidance(old_context);
+    const auto context = session.begin_open("group-b");
+    session.arm_initial_design_guidance(old_context);
+    CHECK_FALSE(session.apply_snapshot(complete_group(), old_context));
+    auto snapshot = complete_group();
+    snapshot.id = "group-b";
+    REQUIRE(session.apply_snapshot(snapshot, context, true));
+    CHECK_FALSE(session.consume_initial_design_guidance());
+    session.arm_initial_design_guidance(context);
+    CHECK(session.consume_initial_design_guidance());
+    session.new_creation();
+    CHECK_FALSE(session.consume_initial_design_guidance());
+}
+
+TEST_CASE("Initial design guidance is independent of model provider availability", "[AdvancedCreation][AdvancedInitialGuidance]")
+{
+    auto session = ready_session();
+    Capabilities capabilities;
+    HostGuards guards;
+    CHECK_FALSE(session.eligibility(capabilities, guards).generate_model);
+    session.arm_initial_design_guidance(session.context());
+    CHECK(session.consume_initial_design_guidance());
+    CHECK_FALSE(session.eligibility(capabilities, guards).generate_model);
+}
+
 TEST_CASE("An unchanged verified advanced image stays ready while another view generates", "[AdvancedCreation][AdvancedImageRefresh]")
 {
     auto session = ready_session();

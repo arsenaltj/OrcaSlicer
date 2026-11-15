@@ -677,6 +677,7 @@ void AdvancedCreationFeatureHost::run_plan(const std::string& group, Json plan, 
             m_command_pending = false;
             if (new_group) m_session.begin_open(group);
             const auto callback = m_session.context();
+            if (new_group) m_session.arm_initial_design_guidance(callback);
             m_poll_pending = true;
             m_client.request("GET", "/groups/" + group, {}, complete([this, callback, new_group, operation](Json value) {
                 if (!m_session.matches(callback)) return;
@@ -808,6 +809,11 @@ void AdvancedCreationFeatureHost::settle_receipt(const std::string& operation, b
             const bool restore = !m_session.group() || m_session.group()->id != group;
             auto callback = context;
             if (restore) callback = m_session.begin_open(group);
+            // Only a request made in this live Session can introduce guidance.
+            // Durable receipts restored at startup have no _session_epoch.
+            if (!model_request && receipt.value("new_group", false) &&
+                receipt.value("_session_epoch", std::uint64_t(0)) == context.epoch)
+                m_session.arm_initial_design_guidance(callback);
             // Restart recovery has no installed group yet. Register the real
             // group/task before acceptance; image validation remains asynchronous.
             if (restore && model_request) {

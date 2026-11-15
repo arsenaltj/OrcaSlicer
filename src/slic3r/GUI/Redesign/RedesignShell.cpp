@@ -2697,9 +2697,11 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     if (m_smart_creation) {
         primary_label = text("生成3D模型");
         primary_enabled = m_input_sync_ok && m_option_sync_ok && state.can_generate_design && editable && selected_provider_ready();
-        if (state.provider_error_ambiguous && state.inputs_match_job) primary_enabled = false;
+        const bool ambiguous_submission_blocked = state.provider_error_ambiguous && state.inputs_match_job &&
+            !state.can_restart_failed_smart_preparation;
+        if (ambiguous_submission_blocked) primary_enabled = false;
         m_generate_button->SetToolTip(primary_enabled ? text("自动准备输入并生成3D模型") :
-            state.provider_error_ambiguous ? text("上次提交结果待核对，当前不会重复创建任务") :
+            ambiguous_submission_blocked ? text("上次提交结果待核对，当前不会重复创建任务") :
             text("请填写有效输入，并检查GPT准备服务、3D模型配置和当前工作台状态"));
     }
     if (m_image_page_view_only && (m_secondary_action == SecondaryAction::None ||

@@ -33,6 +33,115 @@
 
 using Slic3r::GUI::AIModelGenerationClient;
 
+TEST_CASE("A known failed smart preparation permits a fresh user intent with unchanged inputs", "[SmartGenerationFlow]")
+{
+    using Slic3r::GUI::SmartGenerationFlow;
+    REQUIRE(SmartGenerationFlow::can_restart_failed_preparation(
+        true, "failed-preparation", "failed", "preparation", false, false, false, true));
+    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
+        true, "failed-preparation", "failed", "preparation", false, false, false, false));
+    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
+        true, "", "failed", "preparation", false, false, false, true));
+    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
+        false, "advanced-preparation", "failed", "preparation", false, false, false, true));
+}
+
+TEST_CASE("Only a persisted preparation failure permits the new smart generation exception", "[SmartGenerationFlow]")
+{
+    using Slic3r::GUI::SmartGenerationFlow;
+    const std::string state = GENERATE("preprocessing", "queued", "running", "awaiting_confirmation",
+        "stopping", "stopped", "cancelled", "ready", "");
+    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
+        true, "job", state, "preparation", false, false, false, true));
+}
+
+TEST_CASE("Editing a draft cannot turn an uncertain model submission into a preparation failure", "[SmartGenerationFlow]")
+{
+    using Slic3r::GUI::SmartGenerationFlow;
+    SmartGenerationFlow edited_draft;
+    REQUIRE(edited_draft.phase == SmartGenerationFlow::Phase::Preparation);
+    for (const std::string phase : {"geometry", "local", "complete", ""})
+        CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
+            true, "job", "failed", phase, edited_draft.submitted, false, false, true));
+    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
+        true, "job", "failed", "preparation", true, false, false, true));
+    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
+        true, "job", "failed", "preparation", false, true, false, true));
+    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
+        true, "job", "failed", "preparation", false, false, true, true));
+}
+
+TEST_CASE("A changed smart restart capability publishes even when the displayed failure is unchanged", "[SmartGenerationFlow]")
+{
+    Slic3r::GUI::ModelGenerationUIState original;
+    original.smart_mode = true;
+    original.job_id = "failed-preparation";
+    original.stage = Slic3r::GUI::ModelGenerationUIStage::Failed;
+    auto updated = original;
+    CHECK(updated.same_content(original));
+    updated.can_restart_failed_smart_preparation = true;
+    CHECK_FALSE(updated.same_content(original));
+    CHECK_FALSE(original.same_content(updated));
+}
+
+TEST_CASE("A locally rejected smart intent restores its failed task through a newer presentation context", "[SmartGenerationFlow][ModelGenerationRoute]")
+{
+    using namespace Slic3r::GUI;
+    ModelGenerationUIState failed;
+    failed.smart_mode = true; failed.smart_flow_id = "original-flow";
+    failed.job_id = "original-failed-job"; failed.stage = ModelGenerationUIStage::Failed;
+    failed.model_generation_context = true; failed.model_generation_session = 4; failed.revision = 10;
+    auto attempted = failed;
+    attempted.smart_flow_id = "unsent-flow";
+    ++attempted.model_generation_session; ++attempted.revision;
+    REQUIRE(model_generation_route_action(attempted, failed) == RedesignModelRouteAction::Refresh);
+    auto restored = failed;
+    restored.model_generation_session = attempted.model_generation_session + 1;
+    restored.revision = attempted.revision + 1;
+    CHECK(model_generation_route_action(restored, attempted) == RedesignModelRouteAction::Refresh);
+    CHECK(model_generation_route_id(restored) == "original-flow");
+    CHECK(model_generation_route_action(attempted, restored) == RedesignModelRouteAction::Ignore);
+    auto updated = restored; ++updated.revision;
+    updated.can_restart_failed_smart_preparation = true;
+    CHECK(model_generation_route_action(updated, restored) == RedesignModelRouteAction::Refresh);
+}
+
+TEST_CASE("Editing a failed preparation retains its route until an explicit new generation", "[SmartGenerationFlow][ModelGenerationRoute]")
+{
+    using namespace Slic3r::GUI;
+    ModelGenerationUIState failed;
+    failed.smart_mode = true; failed.smart_flow_id = "failed-flow";
+    failed.job_id = "failed-job"; failed.job_state = "failed";
+    failed.stage = ModelGenerationUIStage::Failed;
+    failed.model_generation_context = true;
+    failed.model_generation_session = 4; failed.revision = 10;
+    failed.input.image_path = "old.png"; failed.input.style = "realistic";
+    SmartGenerationFlow flow;
+    flow.flow_id = failed.smart_flow_id;
+    flow.restore(10, 2, false);
+    REQUIRE(SmartGenerationFlow::can_restart_failed_preparation(
+        true, failed.job_id, failed.job_state, "preparation", flow.submitted, false, false, true));
+    auto edited = failed;
+    const auto change = GENERATE(0, 1, 2, 3);
+    if (change == 0 || change == 3) edited.input.image_path = "new.png";
+    if (change == 1 || change == 3) edited.input.prompt = "current description";
+    if (change == 2 || change == 3) edited.input.style = "sculpture";
+    ++edited.revision;
+    REQUIRE_FALSE(edited.input == failed.input);
+    CHECK(model_generation_route_action(edited, failed) == RedesignModelRouteAction::Refresh);
+    CHECK_FALSE(flow.claim_geometry(true));
+    auto obsolete = failed;
+    CHECK(model_generation_route_action(obsolete, edited) == RedesignModelRouteAction::Ignore);
+    flow.begin("new-user-flow");
+    auto submitted = edited;
+    submitted.smart_flow_id = flow.flow_id;
+    ++submitted.revision; ++submitted.model_generation_session;
+    submitted.busy = true; submitted.stage = ModelGenerationUIStage::GeneratingDesign;
+    CHECK(model_generation_route_action(submitted, edited) == RedesignModelRouteAction::Refresh);
+    CHECK(submitted.input == edited.input);
+    CHECK(model_generation_route_action(edited, submitted) == RedesignModelRouteAction::Ignore);
+}
+
 TEST_CASE("Startup restoration rejects callbacks from a departed page or edited input", "[SmartGenerationFlow]")
 {
     using Slic3r::GUI::ModelGenerationPresentation::SmartTaskRestoreGuard;
