@@ -1,5 +1,6 @@
 #include "Exception.hpp"
 #include "MeshBoolean.hpp"
+#include "PolygonSoupPreparation.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/TryCatchSignal.hpp"
 #include "libslic3r/format.hpp"
@@ -37,7 +38,11 @@
 #include <boost/next_prior.hpp>
 #include "boost/log/trivial.hpp"
 #include <chrono>
+#include <cstdlib>
 #include <limits>
+#include <thread>
+#include <type_traits>
+#include <tbb/task_arena.h>
 // Include igl first. It defines "L" macro which then clashes with our localization
 #include <igl/copyleft/cgal/mesh_boolean.h>
 #undef L
@@ -46,6 +51,7 @@
 #include <CGAL/Polygon_mesh_processing/corefinement.h>
 #include <CGAL/Exact_integer.h>
 #include <CGAL/Surface_mesh.h>
+#include <CGAL/version.h>
 #include <CGAL/Cartesian_converter.h>
 #include <CGAL/Polygon_mesh_processing/orient_polygon_soup.h>
 #include <CGAL/Polygon_mesh_processing/repair.h>
@@ -76,6 +82,29 @@ namespace MeshBoolean {
 namespace {
 
 constexpr size_t invalid_repair_metric = std::numeric_limits<size_t>::max();
+
+template<class Mesh> bool checked_self_intersection_query(const Mesh& mesh)
+{
+    // The predicate is read-only and exact. Bound only this query's work, and
+    // respect a narrower enclosing arena; never alter global TBB limits.
+    const auto available = std::max(1u, std::thread::hardware_concurrency());
+    const auto threads = std::min({4, int(available > 1 ? available - 1 : 1u),
+        tbb::this_task_arena::max_concurrency()});
+    if (threads > 1) {
+        try {
+            tbb::task_arena arena(threads);
+            return arena.execute([&] {
+                return CGAL::Polygon_mesh_processing::does_self_intersect<CGAL::Parallel_if_available_tag>(mesh);
+            });
+        } catch (const std::exception& failure) {
+            // A failed parallel query is never a successful validation. The
+            // original predicate must finish, or propagate its own failure.
+            BOOST_LOG_TRIVIAL(warning) << "[CgalRepair] parallel self-intersection query failed; retrying sequentially: "
+                << failure.what();
+        }
+    }
+    return CGAL::Polygon_mesh_processing::does_self_intersect(mesh);
+}
 
 class CgalRepairStageTimer
 {
@@ -207,6 +236,128 @@ struct CGALMesh {
 
 namespace {
 
+// Passive, request-local timing through CGAL's public visitor. CGAL copies
+// the visitor, so each synchronous copy points to this caller-owned state.
+// These phases describe hook boundaries, not individual CGAL algorithms.
+class IntersectionRepairTiming
+{
+public:
+    enum class Phase : std::size_t { Setup, Discovery, Component, Loop, Tail };
+    explicit IntersectionRepairTiming(const char* stage, const char* query_mode)
+        : m_stage(stage), m_query_mode(query_mode), m_enabled(std::getenv("ORCASLICER_UI_LATENCY_TRACE") != nullptr),
+          m_last(m_enabled ? Clock::now() : Clock::time_point{}) {}
+    ~IntersectionRepairTiming() noexcept { finish(false, false); }
+
+    void enter(Phase phase) noexcept
+    {
+        if (!m_enabled) return;
+        const auto now = Clock::now();
+        m_elapsed[std::size_t(m_phase)] += now - m_last;
+        m_last = now;
+        m_phase = phase;
+    }
+    void start_loop() noexcept { enter(Phase::Loop); }
+    void start_iteration() noexcept { ++m_iterations; enter(Phase::Discovery); }
+    void status_update() noexcept
+    {
+        if (m_phase == Phase::Discovery) enter(Phase::Loop);
+    }
+    void start_component() noexcept { ++m_components; enter(Phase::Component); }
+    void end_component() noexcept { enter(Phase::Loop); }
+    void end_iteration() noexcept { enter(Phase::Loop); }
+    // An empty discovery exits CGAL's loop without end_iteration(). Charging
+    // the current phase here also accounts for that unmatched final iteration.
+    void end_loop() noexcept { m_main_ended = true; enter(Phase::Tail); }
+    void finish(bool returned, bool resolved) noexcept
+    {
+        if (m_finished) return;
+        enter(m_phase);
+        m_finished = true;
+        if (!m_enabled) return;
+        const auto ms = [&](Phase phase) {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(m_elapsed[std::size_t(phase)]).count();
+        };
+        try {
+            BOOST_LOG_TRIVIAL(info) << "[CgalRepairDetail] stage=" << m_stage
+                << " query_mode=" << m_query_mode
+                << " returned=" << returned << " resolved=" << resolved
+                << " setup_ms=" << ms(Phase::Setup)
+                << " discovery_and_selection_ms=" << ms(Phase::Discovery)
+                << " component_ms=" << ms(Phase::Component)
+                << " loop_overhead_ms=" << ms(Phase::Loop)
+                << " post_main_ms=" << ms(Phase::Tail)
+                << " post_main_complete=" << (returned && m_main_ended)
+                << " iterations=" << m_iterations << " components=" << m_components;
+        } catch (...) { /* Diagnostics must not change a repair outcome. */ }
+    }
+private:
+    using Clock = std::chrono::steady_clock;
+    const char* m_stage;
+    const char* m_query_mode;
+    bool m_enabled;
+    Clock::time_point m_last;
+    std::array<Clock::duration, 5> m_elapsed{};
+    Phase m_phase = Phase::Setup;
+    std::size_t m_iterations = 0, m_components = 0;
+    bool m_main_ended = false, m_finished = false;
+};
+
+struct IntersectionRepairVisitor : CGALProc::experimental::Remove_self_intersection_default_visitor<_EpicMesh>
+{
+    explicit IntersectionRepairVisitor(IntersectionRepairTiming& timing) : timing(&timing) {}
+    // stop() and parameters_used() retain CGAL's default behavior.
+    void start_main_loop() noexcept { timing->start_loop(); }
+    void end_main_loop() noexcept { timing->end_loop(); }
+    void start_iteration() noexcept { timing->start_iteration(); }
+    void end_iteration() noexcept { timing->end_iteration(); }
+    void start_component_handling() noexcept { timing->start_component(); }
+    void end_component_handling() noexcept { timing->end_component(); }
+    template<class Faces> void status_update(const Faces&) noexcept { timing->status_update(); }
+    IntersectionRepairTiming* timing;
+};
+
+bool remove_intersections_with_diagnostics(_EpicMesh& mesh, const char* stage,
+    const std::function<bool()>& is_canceled)
+{
+    // Use the whole-mesh overload with the default point map and traits. In
+    // CGAL 6.2.1 its return value is the final exact query over all live faces;
+    // a subrange result cannot certify the rest of the mesh.
+    const auto available = std::max(1u, std::thread::hardware_concurrency());
+    const int threads = std::min({4, int(available > 1 ? available - 1 : 1u),
+        std::max(1, tbb::this_task_arena::max_concurrency())});
+    tbb::task_arena arena(threads);
+    const auto run = [&](const auto& tag) {
+        return arena.execute([&] {
+            const char* mode = std::is_same_v<std::decay_t<decltype(tag)>, CGAL::Sequential_tag> ? "sequential" : "parallel";
+            IntersectionRepairTiming timing(stage, mode);
+            const bool result = CGALProc::experimental::remove_self_intersections(mesh,
+                CGAL::parameters::number_of_iterations(7).apply_per_connected_component(false)
+                    .use_smoothing(true).preserve_genus(false).visitor(IntersectionRepairVisitor(timing))
+                    .concurrency_tag(tag));
+            timing.finish(true, result);
+            return result;
+        });
+    };
+    if constexpr (std::is_same_v<CGAL::Parallel_if_available_tag, CGAL::Sequential_tag>)
+        return run(CGAL::Sequential_tag{});
+    if (threads <= 1) return run(CGAL::Sequential_tag{});
+    // A failed parallel attempt must never retry from partially patched data.
+    // If the snapshot itself cannot be allocated, the original mesh is intact.
+    std::optional<_EpicMesh> original;
+    try { original.emplace(mesh); }
+    catch (const std::exception&) { return run(CGAL::Sequential_tag{}); }
+    try {
+        if (run(CGAL::Parallel_if_available_tag{}))
+            return true;
+    } catch (const std::exception& failure) {
+        BOOST_LOG_TRIVIAL(warning) << "[CgalRepair] parallel repair queries failed; restoring original candidate: " << failure.what();
+    }
+    mesh = std::move(*original);
+    original.reset();
+    if (is_canceled && is_canceled()) return false;
+    return run(CGAL::Sequential_tag{});
+}
+
 bool is_valid_closed_volume_candidate(const _EpicMesh &mesh)
 {
     if (num_faces(mesh) == 0 || !mesh.is_valid())
@@ -229,21 +380,38 @@ bool triangle_mesh_to_repaired_polygon_mesh(const TriangleMesh &source, _EpicMes
     std::vector<std::array<std::size_t, 3>> polygons;
     points.reserve(source.its.vertices.size());
     polygons.reserve(source.its.indices.size());
-    for (const auto &vertex : source.its.vertices)
-        points.emplace_back(vertex.x(), vertex.y(), vertex.z());
-    for (const auto &face : source.its.indices)
-        polygons.push_back({size_t(face[0]), size_t(face[1]), size_t(face[2])});
-
-    CGALProc::repair_polygon_soup(points, polygons);
-    CGALProc::orient_polygon_soup(points, polygons);
-    if (polygons.empty() || !CGALProc::is_polygon_soup_a_polygon_mesh(polygons))
+    {
+        CgalRepairStageTimer stage("repaired_soup_copy", source.its.vertices.size(), source.its.indices.size());
+        for (const auto &vertex : source.its.vertices)
+            points.emplace_back(vertex.x(), vertex.y(), vertex.z());
+        for (const auto &face : source.its.indices)
+            polygons.push_back({size_t(face[0]), size_t(face[1]), size_t(face[2])});
+    }
+    {
+        CgalRepairStageTimer stage("repaired_soup_normalize", points.size(), polygons.size());
+        CGALProc::repair_polygon_soup(points, polygons);
+        stage.finish(points.size(), polygons.size());
+    }
+    detail::PolygonSoupOrientation orientation;
+    {
+        CgalRepairStageTimer stage("repaired_soup_orient_and_validate", points.size(), polygons.size());
+        orientation = detail::orient_prepared_polygon_soup(points, polygons);
+        stage.finish(points.size(), polygons.size());
+    }
+    BOOST_LOG_TRIVIAL(info) << "[CgalRepair] normalized_soup_orientation_reused=" << orientation.reused_existing;
+    if (!orientation.valid)
         return false;
 
     mesh.clear();
     const size_t normalized_faces = polygons.size();
-    CGALProc::polygon_soup_to_polygon_mesh(points, polygons, mesh);
-    CGALProc::remove_isolated_vertices(mesh);
-    mesh.collect_garbage();
+    {
+        CgalRepairStageTimer stage("repaired_soup_install", points.size(), polygons.size());
+        CGALProc::polygon_soup_to_polygon_mesh(points, polygons, mesh);
+        CGALProc::remove_isolated_vertices(mesh);
+        mesh.collect_garbage();
+        stage.finish(num_vertices(mesh), num_faces(mesh));
+    }
+    CgalRepairStageTimer stage("repaired_soup_validate", num_vertices(mesh), num_faces(mesh));
     return num_faces(mesh) == normalized_faces && is_valid_closed_volume_candidate(mesh);
 }
 
@@ -573,7 +741,7 @@ template<class Op> void _cgal_do(Op &&op, CGALMesh &A, CGALMesh &B)
 void minus(CGALMesh &A, CGALMesh &B) { _cgal_do(_cgal_diff, A, B); }
 void plus(CGALMesh &A, CGALMesh &B) { _cgal_do(_cgal_union, A, B); }
 void intersect(CGALMesh &A, CGALMesh &B) { _cgal_do(_cgal_intersection, A, B); }
-bool does_self_intersect(const CGALMesh &mesh) { return CGALProc::does_self_intersect(mesh.m); }
+bool does_self_intersect(const CGALMesh &mesh) { return checked_self_intersection_query(mesh.m); }
 // BBS
 void segment(CGALMesh& src, std::vector<CGALMesh>& dst, double smoothing_alpha = 0.5, int segment_number=5)
 {
@@ -738,7 +906,7 @@ bool does_self_intersect(const TriangleMesh &mesh)
 {
     CGALMesh cgalm;
     triangle_mesh_to_cgal(mesh.its.vertices, mesh.its.indices, cgalm.m);
-    return CGALProc::does_self_intersect(cgalm.m);
+    return checked_self_intersection_query(cgalm.m);
 }
 
 void CGALMeshDeleter::operator()(CGALMesh *ptr) { delete ptr; }
@@ -912,20 +1080,26 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
         // require an independently checked closed result before publishing it.
         if (canceled())
             return false;
-        if (PMP::does_self_intersect(cgal_mesh)) {
+        if (checked_self_intersection_query(cgal_mesh)) {
             const _EpicMesh closed_source = cgal_mesh;
             CgalRepairStageTimer stage("repair_self_intersections", num_vertices(cgal_mesh), num_faces(cgal_mesh));
             bool resolved = false;
             try {
-                resolved = PMP::experimental::remove_self_intersections(cgal_mesh,
-                    CGAL::parameters::number_of_iterations(7).apply_per_connected_component(false)
-                        .use_smoothing(true).preserve_genus(false));
+                resolved = remove_intersections_with_diagnostics(cgal_mesh, "repair_self_intersections", is_canceled);
             } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(warning) << "[CgalRepair] local intersection repair failed: " << e.what();
             }
             stage.finish(num_vertices(cgal_mesh), num_faces(cgal_mesh));
             if (canceled()) return false;
-            if (!resolved || num_faces(cgal_mesh) == 0 || !CGAL::is_closed(cgal_mesh) || PMP::does_self_intersect(cgal_mesh)) {
+            bool valid_repaired_candidate = resolved && num_faces(cgal_mesh) != 0 && CGAL::is_closed(cgal_mesh);
+            // The pinned whole-mesh implementation already queried this exact
+            // revision on return. No mutation occurred since then. Keep a
+            // conservative re-query for other CGAL versions until reviewed.
+#if CGAL_VERSION_NR != 1060211000
+            if (valid_repaired_candidate)
+                valid_repaired_candidate = !checked_self_intersection_query(cgal_mesh);
+#endif
+            if (!valid_repaired_candidate) {
                 // The existing libigl/CGAL solid-union implementation handles
                 // overlapping patches that local hole filling cannot resolve.
                 // Start from the untouched closed shell, not the failed patch.
@@ -995,26 +1169,42 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
         // Repair residual intersections in that actual storage representation
         // rather than accepting a double-only solution. Bound the retries and
         // keep the caller's mesh untouched if quantization cannot be repaired.
-        for (size_t attempt = 0; attempt < 3 && !candidate.empty() && does_self_intersect(candidate); ++attempt) {
+        const auto check_float_intersections = [&] {
+            CgalRepairStageTimer stage("check_float_self_intersections", candidate.its.vertices.size(), candidate.its.indices.size());
+            return !candidate.empty() && does_self_intersect(candidate);
+        };
+        bool candidate_intersects = check_float_intersections();
+        for (size_t attempt = 0; attempt < 3 && !candidate.empty() && candidate_intersects; ++attempt) {
             if (canceled()) return false;
             CgalRepairStageTimer stage("repair_float_intersections", candidate.its.vertices.size(), candidate.its.indices.size());
             _EpicMesh rounded;
             if (!triangle_mesh_to_repaired_polygon_mesh(candidate, rounded))
                 break;
-            if (PMP::does_self_intersect(rounded) &&
-                (!PMP::experimental::remove_self_intersections(rounded,
-                    CGAL::parameters::number_of_iterations(7).apply_per_connected_component(false)
-                        .use_smoothing(true).preserve_genus(false)) || !is_valid_closed_volume_candidate(rounded)))
-                break;
+            bool rounded_intersects;
+            {
+                CgalRepairStageTimer query_stage("float_candidate_query", num_vertices(rounded), num_faces(rounded));
+                rounded_intersects = checked_self_intersection_query(rounded);
+            }
+            if (rounded_intersects) {
+                if (!remove_intersections_with_diagnostics(rounded, "repair_float_intersections", is_canceled))
+                    break;
+                CgalRepairStageTimer validity_stage("float_repair_validate", num_vertices(rounded), num_faces(rounded));
+                if (!is_valid_closed_volume_candidate(rounded))
+                    break;
+            }
             rounded.collect_garbage();
             candidate = TriangleMesh(cgal_to_indexed_triangle_set(rounded), errs);
             if (candidate.volume() < 0.f) candidate.flip_triangles();
             stage.finish(candidate.its.vertices.size(), candidate.its.indices.size());
+            // Every mutated float candidate receives a fresh exact check.
+            candidate_intersects = check_float_intersections();
         }
         // Float conversion is part of the delivery format. A closed CGAL mesh
         // alone is insufficient if rounding reintroduces intersections.
         const size_t open = its_num_open_edges(candidate.its);
-        const bool intersecting = !candidate.empty() && does_self_intersect(candidate);
+        // No mutation occurred since the check above. Strict repair still
+        // performs its independent full topology check after this returns.
+        const bool intersecting = candidate_intersects;
         if (candidate.empty() || !std::isfinite(candidate.volume()) || candidate.volume() <= 0.f ||
             open != 0 || intersecting) {
             if (error) *error = "Repair failed: exported mesh volume=" + std::to_string(candidate.volume()) +

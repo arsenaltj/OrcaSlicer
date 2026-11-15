@@ -4,8 +4,11 @@
 #include "slic3r/Utils/HonorForgeDiscovery.hpp"
 #include "slic3r/Utils/HonorForgePrinterAgent.hpp"
 #include "slic3r/Utils/NetworkAgentFactory.hpp"
+#include "test_utils.hpp"
 
 #include <nlohmann/json.hpp>
+#include <boost/nowide/fstream.hpp>
+#include <boost/nowide/cstdlib.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -84,9 +87,10 @@ class ProbeAgent final : public HonorForgePrinterAgent
 public:
     ProbeAgent(std::vector<std::shared_ptr<IPrinterDiscoveryProvider>> providers,
                ProbeError result = ProbeError::None,
-               std::chrono::milliseconds budget = std::chrono::seconds(9))
-        : HonorForgePrinterAgent("", std::move(providers), [] {
-              return std::vector<PrinterNetworkInterface>{{"test-wifi", "192.0.2.4", 24}};
+               std::chrono::milliseconds budget = std::chrono::seconds(9), bool has_network = true)
+        : HonorForgePrinterAgent("", std::move(providers), [has_network] {
+              return has_network ? std::vector<PrinterNetworkInterface>{{"test-wifi", "192.0.2.4", 24}} :
+                                   std::vector<PrinterNetworkInterface>{};
           }, budget)
         , m_result(result)
     {}
@@ -107,6 +111,7 @@ protected:
         result.dev_name = "Workshop Printer";
         result.version = "fixture-version";
         result.klippy_state = "ready";
+        result.virtual_printer_uuid = value.instance_uuid;
         return result;
     }
 
@@ -306,4 +311,98 @@ TEST_CASE("Subnet discovery stays inside the bounded local prefix", "[HonorForge
         CHECK(value.host != "192.168.7.42");
         CHECK(value.port == (index < 253 ? 7125 : 80));
     }
+}
+
+TEST_CASE("Local virtual printer declarations reject unrelated addresses and malformed identities", "[HonorForgeDiscovery]")
+{
+    ScopedTemporaryFile file(".json");
+    const nlohmann::json valid{{"schema", 1}, {"host", "127.0.0.1"}, {"port", 7128},
+                               {"state", "ready"}, {"instance_uuid", "3cc075a7-e25d-4de1-b433-dd6981eca8ad"}};
+    auto provider = make_local_virtual_printer_discovery_provider(file.string());
+    PrinterDiscoveryRequest request;
+    request.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    const auto check = [&](const nlohmann::json& value) {
+        { boost::nowide::ofstream stream(file.string()); stream << value.dump(); }
+        return provider->discover(request, {}, [] { return false; });
+    };
+    const auto result = check(valid);
+    REQUIRE(result.candidates.size() == 1);
+    CHECK(result.candidates.front().host == "127.0.0.1");
+    CHECK(result.candidates.front().port == 7128);
+    CHECK(result.candidates.front().instance_uuid == valid["instance_uuid"]);
+    const auto [key, value] = GENERATE(table<std::string, nlohmann::json>({
+        {"host", "192.0.2.10"}, {"host", "localhost"}, {"port", 80}, {"port", 7136},
+        {"port", "7125"}, {"state", "starting"}, {"schema", 2}, {"instance_uuid", "not-a-uuid"}}));
+    auto invalid = valid;
+    invalid[key] = value;
+    CHECK(check(invalid).candidates.empty());
+    CHECK(provider->discover(request, {}, [] { return true; }).error == PrinterDiscoveryProviderError::Cancelled);
+}
+
+TEST_CASE("A validated local virtual printer remains discoverable without a network interface", "[HonorForgeDiscovery]")
+{
+    auto local = candidate(PrinterDiscoverySource::LocalVirtualPrinter, "127.0.0.1", 7129);
+    local.instance_uuid = "3cc075a7-e25d-4de1-b433-dd6981eca8ad";
+    auto provider = std::make_shared<FixedProvider>(PrinterDiscoverySource::LocalVirtualPrinter,
+        std::vector<PrinterDiscoveryCandidate>{local});
+    ProbeAgent agent({provider}, HonorForgePrinterAgent::ProbeError::None, std::chrono::seconds(2), false);
+    nlohmann::json emitted;
+    agent.set_on_ssdp_msg_fn([&](std::string payload) { emitted = nlohmann::json::parse(payload); });
+    REQUIRE(agent.start_discovery(true, false));
+    const auto status = wait_for_terminal(agent);
+    REQUIRE(status.result == PrinterDiscoveryBackendResult::DevicesFound);
+    REQUIRE(emitted.is_object());
+    CHECK(emitted.at("dev_ip") == "127.0.0.1:7129");
+    CHECK(emitted.at("discovery_source") == "local_virtual_printer");
+}
+
+TEST_CASE("A virtual printer keeps its local endpoint while mDNS can still find other printers", "[HonorForgeDiscovery]")
+{
+    auto local = candidate(PrinterDiscoverySource::LocalVirtualPrinter, "127.0.0.1", 7130);
+    local.instance_uuid = "3cc075a7-e25d-4de1-b433-dd6981eca8ad";
+    auto lan = candidate(PrinterDiscoverySource::Mdns, "192.0.2.44", 7130);
+    lan.instance_uuid = local.instance_uuid;
+    auto local_provider = std::make_shared<FixedProvider>(PrinterDiscoverySource::LocalVirtualPrinter,
+        std::vector<PrinterDiscoveryCandidate>{local});
+    auto mdns = std::make_shared<FixedProvider>(PrinterDiscoverySource::Mdns,
+        std::vector<PrinterDiscoveryCandidate>{lan, candidate(PrinterDiscoverySource::Mdns, "192.0.2.45")});
+    auto subnet = std::make_shared<FixedProvider>(PrinterDiscoverySource::SubnetProbe,
+        std::vector<PrinterDiscoveryCandidate>{});
+    ProbeAgent agent({local_provider, mdns, subnet});
+    std::vector<nlohmann::json> emitted;
+    agent.set_on_ssdp_msg_fn([&](std::string payload) { emitted.push_back(nlohmann::json::parse(payload)); });
+    REQUIRE(agent.start_discovery(true, false));
+    const auto status = wait_for_terminal(agent);
+    CHECK(status.validated_count == 3);
+    CHECK(status.emitted_count == 2);
+    REQUIRE(emitted.size() == 2);
+    CHECK(emitted.front().at("dev_ip") == "127.0.0.1:7130");
+    CHECK(mdns->calls == 1);
+    CHECK(subnet->calls == 0);
+}
+
+// Explicit opt-in: this is a real service launched with isolated task data, never a printer on the LAN.
+TEST_CASE("Honor Forge verifies the running local simulator identity over HTTP", "[.VirtualPrinterLive]")
+{
+    const char* runtime_path = boost::nowide::getenv("HF_VP_RUNTIME");
+    REQUIRE(runtime_path != nullptr);
+    const std::string path(runtime_path);
+    boost::nowide::ifstream input(path);
+    const auto runtime = nlohmann::json::parse(input);
+    class LiveAgent final : public HonorForgePrinterAgent {
+    public:
+        using HonorForgePrinterAgent::probe_candidate;
+        explicit LiveAgent(const std::string& runtime)
+            : HonorForgePrinterAgent("", {make_local_virtual_printer_discovery_provider(runtime)}, [] {
+                  return std::vector<PrinterNetworkInterface>{};
+              }) {}
+    } agent(path);
+    std::vector<nlohmann::json> emitted;
+    agent.set_on_ssdp_msg_fn([&](std::string payload) { emitted.push_back(nlohmann::json::parse(payload)); });
+    REQUIRE(agent.start_discovery(true, false));
+    REQUIRE(wait_for_terminal(agent).result == PrinterDiscoveryBackendResult::DevicesFound);
+    REQUIRE(emitted.size() == 1);
+    auto wrong = candidate(PrinterDiscoverySource::LocalVirtualPrinter, "127.0.0.1", runtime["port"].get<uint16_t>());
+    wrong.instance_uuid = "00000000-0000-0000-0000-000000000000";
+    CHECK(agent.probe_candidate(wrong, [] { return false; }).error == HonorForgePrinterAgent::ProbeError::ProtocolMismatch);
 }

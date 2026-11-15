@@ -6,6 +6,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/ModelOriginalAppearance.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitNativePartition.hpp"
+#include <tbb/task_arena.h>
 #include "slic3r/GUI/AI/ModelGeneration/PortraitNativePartitionCache.hpp"
 #include "slic3r/GUI/AI/Model/BeautyPuzzle.hpp"
 #include "slic3r/GUI/AI/Orca/FilamentColorPack.hpp"
@@ -530,6 +531,30 @@ TEST_CASE("Native workbench clustering rejects smoothing below six for a six col
         {210,70,150},{70,180,90},{230,70,60},{45,45,45}};
     CHECK_THROWS_AS(NP::build_native_workbench_partition(
         mesh, identity_mesh_repair()), std::runtime_error);
+}
+
+TEST_CASE("Native repair bounds its computation without changing the caller arena", "[PortraitNativePartition][RegionSmoothing]")
+{
+    const auto source = native_workbench_cluster_sample(2);
+    int before = 0, during = 0, after = 0;
+    tbb::task_arena caller(1);
+    NP::NativeWorkbenchPartition result;
+    caller.execute([&] {
+        before = tbb::this_task_arena::max_concurrency();
+        result = NP::build_native_workbench_partition(source,
+            [&](const indexed_triangle_set& input, indexed_triangle_set& output,
+                std::function<void(const char*, unsigned)>, std::function<bool()>, std::string*) {
+                during = tbb::this_task_arena::max_concurrency();
+                output = input;
+                return true;
+            });
+        after = tbb::this_task_arena::max_concurrency();
+    });
+    CHECK(result.valid());
+    CHECK(during >= 1);
+    CHECK(during <= 4);
+    CHECK(after == before);
+    CHECK(before == 1);
 }
 
 TEST_CASE("Six color requests preserve independent actual color counts", "[PortraitNativePartition][P0]")

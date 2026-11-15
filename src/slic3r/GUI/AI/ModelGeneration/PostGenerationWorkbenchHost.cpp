@@ -510,6 +510,7 @@ void ModelGenerationPanel::set_workbench_presented(bool presented)
     m_workbench_presented = active;
     ++m_workbench_presentation_sequence;
     if (!active) {
+        finish_workbench_check_timing("presentation-left");
         if (m_model_preview) m_model_preview->cancel_view_navigation();
         if (m_workbench_check_running && m_workbench_check_cancel)
             m_workbench_check_cancel->store(true);

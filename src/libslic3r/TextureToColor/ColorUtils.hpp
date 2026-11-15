@@ -4,6 +4,8 @@
 #include "TriMesh.hpp"
 #include <array>
 #include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <vector>
 #include <functional>
 
@@ -39,10 +41,30 @@ struct ClusterParameters {
     std::size_t max_iter = 50;  // Maximum number of iterations
 
     std::function<bool()> cancel_callback;  // Optional cancellation check; returns true when the caller requests abort
+    // Passive CPU stage timings; never used to choose a clustering result.
+    std::function<void(const char*, std::uint64_t, std::size_t)> diagnostic_callback;
 };
 
 struct SmoothParameters {
     double smooth_weight = 0.5;  // Controls smoothing intensity; larger values produce smoother results. Range: [0.0, 1.0]
+    std::function<bool()> cancel_callback;
+    // Diagnostic callbacks are optional and never participate in success.
+    std::function<void(const char*, std::uint64_t, std::size_t)> diagnostic_callback;
+};
+
+// CPU-only, request-local state. Retrying labels never repeats mesh conversion
+// or geometric smoothing. The original CGAL face order survives until export.
+class RegionSmoothingWorkspace {
+public:
+    explicit RegionSmoothingWorkspace(const TriMesh& mesh, const SmoothParameters& parameters = {});
+    ~RegionSmoothingWorkspace();
+    RegionSmoothingWorkspace(const RegionSmoothingWorkspace&) = delete;
+    RegionSmoothingWorkspace& operator=(const RegionSmoothingWorkspace&) = delete;
+    bool apply_topology(std::vector<std::size_t>& labels, const SmoothParameters& parameters);
+    bool finish(TriMesh& mesh, const std::vector<std::size_t>& labels, const SmoothParameters& parameters);
+private:
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
 };
 
 /**
@@ -197,6 +219,18 @@ bool get_components(const TriMesh& mesh, const std::vector<Vec2f>& vertex_uvs, s
  * @return true on success, false on failure.
  */
 bool calc_nearest_color_id(const std::vector<RGB>& colors, const RGB& color, std::size_t& nearest_color_id);
+
+// Request-local immutable palette. Reuse the original Lab conversion without
+// changing CIEDE2000, center order or first-match tie breaking. Const queries
+// may share it across workers; no model identity or persistent cache is used.
+class ColorDistancePalette
+{
+public:
+    explicit ColorDistancePalette(const std::vector<RGB>& colors);
+    bool nearest(const RGB& color, std::size_t& nearest_color_id) const;
+private:
+    std::vector<ColorDouble> m_lab_colors;
+};
 
 /**
  * @brief Cluster mesh face colors based on given cluster centers.

@@ -763,7 +763,8 @@ def archify_spec(report):
                  "slicing": [880, 260], "adapter": [470, 60], "tests": [470, 460],
                  "core": [880, 60], "engineering": [60, 460], "assets": [880, 460],
                  "unknown": [60, 660], "honor_account": [470, 660],
-                 "model_sdk": [880, 660], "slicing_sdk": [60, 860]}
+                 "model_sdk": [880, 660], "slicing_sdk": [60, 860],
+                 "virtual_printer": [470, 860]}
     components = []
     for module in report["modules"]:
         key = module["id"]

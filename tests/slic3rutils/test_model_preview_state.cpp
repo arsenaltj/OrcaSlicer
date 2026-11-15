@@ -19,6 +19,8 @@
 #include <cstring>
 #include <future>
 #include <string_view>
+#include "libslic3r/Sha256Digest.hpp"
+#include "libslic3r/Utils.hpp"
 
 using Slic3r::GUI::ModelPreview3D;
 using Slic3r::GUI::ModelPreviewFrameState;
@@ -2240,4 +2242,80 @@ TEST_CASE("Saved v11 native workbench partitions reopen by identity and preserve
     const auto valid_cache = cache_root /
         (valid_reference.at("content_id").get<std::string>() + ".json");
     CHECK(boost::filesystem::is_regular_file(valid_cache));
+}
+
+
+TEST_CASE("Frozen first repairs report ordered output and substage timings", "[.NativeWorkbenchPerformance]")
+{
+    const auto environment = [](const char* key) {
+        const auto* value = boost::nowide::getenv(key);
+        return value ? std::string(value) : std::string{};
+    };
+    const auto input = environment("ORCA_NATIVE_WORKBENCH_REPLAY_MODEL");
+    const auto output = environment("ORCA_NATIVE_WORKBENCH_REPLAY_REPORT");
+    if (input.empty() || output.empty()) SKIP("Set an immutable local model and a fresh report path.");
+    struct RestoreLogging {
+        unsigned level = Slic3r::get_logging_level();
+        ~RestoreLogging() { Slic3r::set_logging_level(level); }
+    } restore_logging;
+    Slic3r::set_logging_level(3);
+    const auto started = std::chrono::steady_clock::now();
+    const boost::filesystem::path source(input);
+    const auto source_sha256 = Slic3r::AI::model_artifact_sha256(source);
+    REQUIRE(source_sha256.size() == 64);
+    Slic3r::GUI::DecodedWorkbenchModel decoded;
+    std::string error;
+    REQUIRE(Slic3r::GUI::decode_workbench_model(source, decoded, error));
+    REQUIRE(decoded.texture);
+    REQUIRE(Slic3r::GUI::normalize_decoded_workbench_model_to_millimeters(decoded, error));
+    const auto decoded_at = std::chrono::steady_clock::now();
+    namespace native = Slic3r::GUI::NativePortrait;
+    native::NativePortraitPartitionBuildReport report;
+    const auto partition = native::build_native_workbench_partition(*decoded.texture,
+        native::native_mesh_repair_callback(&report.strict_repair), {}, &report);
+    const auto prepared_at = std::chrono::steady_clock::now();
+    REQUIRE(report.success);
+    REQUIRE(report.strict_repair.success);
+    REQUIRE(report.strict_repair.output_topology.safe());
+    REQUIRE(partition.valid());
+    Slic3r::Sha256Digest ordered;
+    bool hashed = true;
+    const std::uint64_t counts[] = {partition.painted.vertices.size(), partition.painted.indices.size(),
+        partition.painted.face_colors.size(), partition.face_cluster_ids.size(), partition.face_region_ids.size()};
+    hashed = ordered.update(counts, sizeof(counts));
+    for (const auto& vertex : partition.painted.vertices) hashed = ordered.update(vertex.data(), 3 * sizeof(float)) && hashed;
+    for (const auto& face : partition.painted.indices) hashed = ordered.update(face.data(), 3 * sizeof(std::int32_t)) && hashed;
+    for (const auto& color : partition.painted.face_colors) hashed = ordered.update(color.data(), sizeof(color)) && hashed;
+    hashed = ordered.update(partition.face_cluster_ids.data(), partition.face_cluster_ids.size() * sizeof(partition.face_cluster_ids[0])) && hashed;
+    hashed = ordered.update(partition.face_region_ids.data(), partition.face_region_ids.size() * sizeof(partition.face_region_ids[0])) && hashed;
+    REQUIRE(hashed);
+    const auto signature = ordered.final_hex();
+    REQUIRE(signature.size() == 64);
+    auto document = native::encode_native_portrait_partition_build_report(report);
+    const auto ms = [](auto duration) { return std::chrono::duration_cast<std::chrono::milliseconds>(duration).count(); };
+    document["replay"] = {{"source_sha256", source_sha256}, {"geometry_id", partition.geometry_id},
+        {"partition_digest", partition.partition_digest}, {"ordered_output_sha256", signature},
+        {"input_faces", decoded.texture->indices.size()}, {"output_faces", partition.painted.indices.size()},
+        {"colors", partition.painted.cluster_colors.size()}, {"decode_ms", ms(decoded_at - started)},
+        {"cpu_first_repair_ms", ms(prepared_at - started)},
+        {"scope", "First algorithm and decode only; excludes publication, GUI, GPU and user acceptance"}};
+    {
+        boost::filesystem::ofstream stream(output);
+        REQUIRE(stream.good());
+        stream << document.dump(2);
+        REQUIRE(stream.good());
+    }
+    CHECK(Slic3r::AI::model_artifact_sha256(source) == source_sha256);
+    if (const auto* expected_path = boost::nowide::getenv("ORCA_NATIVE_WORKBENCH_REPLAY_EXPECTED")) {
+        nlohmann::json expected;
+        boost::filesystem::ifstream stream(expected_path);
+        REQUIRE(stream.good());
+        stream >> expected;
+        if (expected.contains("native_portrait_partition")) expected = expected.at("native_portrait_partition");
+        CHECK(expected.at("source_sha256").get<std::string>() == source_sha256);
+        CHECK(expected.at("geometry_id").get<std::string>() == partition.geometry_id);
+        CHECK(expected.at("partition_digest").get<std::string>() == partition.partition_digest);
+        if (expected.contains("ordered_output_sha256"))
+            CHECK(expected.at("ordered_output_sha256").get<std::string>() == signature);
+    }
 }

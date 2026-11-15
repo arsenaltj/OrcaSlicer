@@ -1,4 +1,5 @@
 #include "ColorUtils.hpp"
+#include "ColorDistancePrepared.hpp"
 
 #include <CGAL/Aff_transformation_3.h>
 #include <CGAL/boost/graph/graph_traits_Surface_mesh.h>
@@ -14,14 +15,24 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cfenv>
+#include <cfloat>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <iostream>
 #include <limits>
 #include <map>
 #include <numeric>
+#include <new>
+#include <thread>
+
+#if defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2) || defined(__SSE2__)
+#include <xmmintrin.h>
+#endif
 
 #include <boost/next_prior.hpp>
 
@@ -39,6 +50,7 @@
 #include <CGAL/mesh_segmentation.h>
 #include <string>
 #include <tbb/parallel_for.h>
+#include <tbb/task_arena.h>
 
 #include "CgalUtils.hpp"
 #include "TriMesh.hpp"
@@ -184,45 +196,76 @@ static bool save_polylines(const std::string& file_name, const std::vector<std::
     return true;
 }
 
-static bool smooth_region_topo_boundary(CGALMesh& mesh, std::vector<std::size_t>& face_labels, std::size_t max_iters = 20) {
-    // Topological smoothing: reassign face labels
+using SmoothingClock = std::chrono::steady_clock;
+
+static bool smoothing_canceled(const SmoothParameters& parameters)
+{
+    return parameters.cancel_callback && parameters.cancel_callback();
+}
+
+static void record_smoothing_stage(const SmoothParameters& parameters, const char* stage,
+                                  SmoothingClock::time_point started, std::size_t count = 0)
+{
+    const auto elapsed = std::uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+        SmoothingClock::now() - started).count());
+    BOOST_LOG_TRIVIAL(info) << "[NativeSmoothing] stage=" << stage << " elapsed_ms=" << elapsed << " count=" << count;
+    if (parameters.diagnostic_callback) {
+        try { parameters.diagnostic_callback(stage, elapsed, count); }
+        catch (...) { /* Diagnostics must not invalidate a repair. */ }
+    }
+}
+
+static bool smooth_region_topo_boundary(const CGALMesh& mesh, std::vector<std::size_t>& face_labels,
+    const std::vector<std::array<std::size_t, 3>>& neighbors, const SmoothParameters& parameters,
+    std::size_t max_iters = 20)
+{
+    const auto started = SmoothingClock::now();
     std::size_t iter = 0;
     while (iter < max_iters) {
         ++iter;
         bool flip_flag = false;
         for (auto face : mesh.faces()) {
-            std::size_t same_label_count = 0;
-            std::unordered_map<std::size_t, std::size_t> map_label_to_cnt;
-            std::size_t max_adj_cnt = 0;
+            if ((std::size_t(face) & 4095) == 0 && smoothing_canceled(parameters)) return false;
+            std::size_t same_label_count = 0, max_adj_cnt = 0;
             std::size_t max_adj_label = face_labels[face];
-            for (auto adj_face : mesh.faces_around_face(mesh.halfedge(face))) {
-                if (adj_face == CGALMesh::null_face() || !mesh.is_valid(adj_face) || mesh.is_removed(adj_face)) {
-                    continue;
-                }
-                if (face_labels[adj_face] == face_labels[face]) {
-                    ++same_label_count;
-                } else {
-                    ++map_label_to_cnt[face_labels[adj_face]];
-                    if (map_label_to_cnt[face_labels[adj_face]] > max_adj_cnt) {
-                        max_adj_cnt = map_label_to_cnt[face_labels[adj_face]];
-                        max_adj_label = face_labels[adj_face];
-                    }
+            std::array<std::size_t, 3> labels {}, counts {};
+            std::size_t used = 0;
+            // Preserve face, neighbor and tie-breaking order from the original
+            // in-place sweep. Triangles have at most three adjacent faces.
+            for (const auto adjacent : neighbors[face]) {
+                if (adjacent == std::numeric_limits<std::size_t>::max()) continue;
+                const auto label = face_labels[adjacent];
+                if (label == face_labels[face]) { ++same_label_count; continue; }
+                std::size_t slot = 0;
+                while (slot < used && labels[slot] != label) ++slot;
+                if (slot == used) labels[used++] = label;
+                if (++counts[slot] > max_adj_cnt) {
+                    max_adj_cnt = counts[slot]; max_adj_label = label;
                 }
             }
             if (max_adj_cnt > same_label_count) {
-                face_labels[face] = max_adj_label;
-                flip_flag = true;
+                face_labels[face] = max_adj_label; flip_flag = true;
             }
         }
-
-        if (!flip_flag) {
-            break;
-        }
+        if (!flip_flag) break;
     }
-    return true;
+    record_smoothing_stage(parameters, "topology", started, iter);
+    return !smoothing_canceled(parameters);
 }
 
-static bool smooth_region_geom_boundary(CGALMesh& mesh, std::vector<std::size_t>& face_labels, const SmoothParameters& smooth_parameters) {
+static bool smooth_region_geom_boundary(CGALMesh& mesh, const std::vector<std::size_t>& face_labels,
+                                       const SmoothParameters& smooth_parameters, bool optimized = true) {
+    if (smoothing_canceled(smooth_parameters)) return false;
+    const auto extraction_started = SmoothingClock::now();
+    std::vector<CGALKernel::Vector_3> face_normals(mesh.num_faces());
+    std::vector<std::uint8_t> normal_ready(mesh.num_faces(), 0);
+    const auto normal = [&](CGALMesh::Face_index face) -> const CGALKernel::Vector_3& {
+        if (!normal_ready[face]) {
+            face_normals[face] = PMP::compute_face_normal(face, mesh);
+            normal_ready[face] = 1;
+        }
+        return face_normals[face];
+    };
     // 1. extract boundary vertices and make polines
     std::unordered_map<CGAL::SM_Vertex_index, std::size_t> map_vtx_to_degree;
     std::unordered_set<CGAL::SM_Edge_index> segment_boundary_edges;
@@ -230,6 +273,7 @@ static bool smooth_region_geom_boundary(CGALMesh& mesh, std::vector<std::size_t>
     std::unordered_set<CGAL::SM_Vertex_index> feature_vertices;
     constexpr double feature_angle = 45;
     for (const auto& edge : mesh.edges()) {
+        if ((std::size_t(edge) & 4095) == 0 && smoothing_canceled(smooth_parameters)) return false;
         if (!mesh.is_valid(edge) || mesh.is_border(edge)) {
             continue;
         }
@@ -237,8 +281,8 @@ static bool smooth_region_geom_boundary(CGALMesh& mesh, std::vector<std::size_t>
         auto target = mesh.target(mesh.halfedge(edge));
         auto face_1 = mesh.face(mesh.halfedge(edge));
         auto face_2 = mesh.face(mesh.opposite(mesh.halfedge(edge)));
-        auto normal_1 = PMP::compute_face_normal(face_1, mesh);
-        auto normal_2 = PMP::compute_face_normal(face_2, mesh);
+        const auto& normal_1 = normal(face_1);
+        const auto& normal_2 = normal(face_2);
         double angle = get_angle_between_vectors(normal_1, normal_2);
         if (angle > feature_angle) {
             feature_edges.insert(edge);
@@ -259,26 +303,24 @@ static bool smooth_region_geom_boundary(CGALMesh& mesh, std::vector<std::size_t>
     std::vector<std::vector<CGAL::SM_Vertex_index>> polylines;
     std::unordered_set<CGAL::SM_Edge_index> visited_edges;
 
-    std::function<void(std::vector<CGAL::SM_Vertex_index>&)> trace_polyline = [&](std::vector<CGAL::SM_Vertex_index>& polyline) -> void {
-        if (polyline.empty()) {
-            return;
-        }
-        CGAL::SM_Vertex_index curr_vtx = polyline.back();
-        if (map_vtx_to_degree[curr_vtx] != 2) {
-            return;
-        }
-        for (const auto& halfedge : mesh.halfedges_around_target(mesh.halfedge(curr_vtx))) {
-            CGAL::SM_Edge_index edge = mesh.edge(halfedge);
-            if (visited_edges.count(edge) || !segment_boundary_edges.count(edge)) {
-                continue;
+    const auto trace_polyline = [&](std::vector<CGAL::SM_Vertex_index>& polyline) {
+        // The former tail recursion can exhaust the Windows stack on a long
+        // color boundary. Retain the same first-edge order iteratively.
+        while (!polyline.empty() && !smoothing_canceled(smooth_parameters)) {
+            const auto current = polyline.back();
+            if (map_vtx_to_degree[current] != 2) return;
+            bool advanced = false;
+            for (const auto halfedge : mesh.halfedges_around_target(mesh.halfedge(current))) {
+                const auto edge = mesh.edge(halfedge);
+                if (visited_edges.count(edge) || !segment_boundary_edges.count(edge)) continue;
+                visited_edges.insert(edge);
+                const auto adjacent = mesh.source(halfedge);
+                if (!map_vtx_to_degree.count(adjacent)) continue;
+                polyline.push_back(adjacent);
+                advanced = true;
+                break;
             }
-            visited_edges.insert(edge);
-            CGAL::SM_Vertex_index adj_vtx = mesh.source(halfedge);
-            if (!map_vtx_to_degree.count(adj_vtx)) {
-                continue;
-            }
-            polyline.push_back(adj_vtx);
-            return trace_polyline(polyline);
+            if (!advanced) return;
         }
     };
 
@@ -318,6 +360,8 @@ static bool smooth_region_geom_boundary(CGALMesh& mesh, std::vector<std::size_t>
         polylines.push_back(std::move(polyline));
     }
 
+    record_smoothing_stage(smooth_parameters, "boundary-extraction", extraction_started, polylines.size());
+    if (smoothing_canceled(smooth_parameters)) return false;
     // 3. smooth boundary
     // AABB face primitives keep a reference to the mesh geometry. Keep that
     // geometry immutable while the working mesh is moved by the smoothing
@@ -330,29 +374,99 @@ static bool smooth_region_geom_boundary(CGALMesh& mesh, std::vector<std::size_t>
     // CGAL's optional Kd-tree is not needed for the exact AABB projection and
     // its destruction is unstable for some imported meshes on Windows.
     boundary_tree.do_not_accelerate_distance_queries();
+    const auto index_started = SmoothingClock::now();
+    boundary_tree.build(); // Finish lazy construction before any parallel const query.
+    record_smoothing_stage(smooth_parameters, "projection-index", index_started, projection_mesh.number_of_faces());
+    const auto projection_started = SmoothingClock::now();
+    std::size_t projection_count = 0;
+    tbb::task_arena projection_arena(std::max(1, std::min(4, tbb::this_task_arena::max_concurrency())));
+    const auto project_point = [&](const CGALKernel::Point_3& query, CGALMesh::Vertex_index vertex) {
+        if (!optimized) return boundary_tree.closest_point(query);
+        return cgalutils::closest_point_with_strict_hint(boundary_tree, query, projection_mesh.point(vertex));
+    };
 
     constexpr std::size_t max_iters = 5;
     const double smooth_weight = smooth_parameters.smooth_weight;  // Controls smoothing intensity; larger values produce smoother results. Range: 0.1~1.0.
     double origin_weight = std::max(1.0 - smooth_weight, 0.0);
+
+    // Short polylines dominate imported color boundaries. Batch only paths
+    // with disjoint writes and no read/write dependency, retaining the original
+    // order at every shared mutable vertex. A batch bounds cancellation delay;
+    // callbacks and diagnostics stay on the calling thread.
+    struct ProjectionBatch { std::size_t begin, end; };
+    std::vector<std::size_t> active_paths, point_offsets(polylines.size() + 1, 0);
+    std::vector<ProjectionBatch> batches;
+    std::vector<std::size_t> read_stamp(mesh.num_vertices(), 0), write_stamp(mesh.num_vertices(), 0);
+    std::size_t stamp = 1, batch_begin = 0, batch_points = 0, iteration_queries = 0;
+    const auto flush_batch = [&] {
+        if (batch_begin != active_paths.size()) batches.push_back({batch_begin, active_paths.size()});
+        batch_begin = active_paths.size(); batch_points = 0; ++stamp;
+    };
+    for (std::size_t path = 0; path < polylines.size(); ++path) {
+        if (smoothing_canceled(smooth_parameters)) return false;
+        const auto& polyline = polylines[path];
+        point_offsets[path + 1] = point_offsets[path] + polyline.size();
+        const bool closed = polyline.front() == polyline.back();
+        // The old loop discarded every prepared point for this closed path.
+        if (optimized && closed && feature_vertices.count(polyline.front())) continue;
+        const auto writes = [&](std::size_t index) {
+            return !feature_vertices.count(polyline[index]) &&
+                (closed || (index > 0 && index + 1 < polyline.size()));
+        };
+        bool conflicts = false;
+        for (std::size_t index = 0; index < polyline.size(); ++index) {
+            const auto vertex = std::size_t(polyline[index]);
+            conflicts = conflicts || write_stamp[vertex] == stamp ||
+                (writes(index) && read_stamp[vertex] == stamp);
+        }
+        if (conflicts || active_paths.size() - batch_begin >= 128 || batch_points + polyline.size() > 4096)
+            flush_batch();
+        for (std::size_t index = 0; index < polyline.size(); ++index) {
+            const auto vertex = std::size_t(polyline[index]);
+            read_stamp[vertex] = stamp;
+            if (writes(index)) write_stamp[vertex] = stamp;
+            if (index > 0 && index + 1 < polyline.size() && (!optimized || writes(index))) ++iteration_queries;
+        }
+        if (closed) ++iteration_queries;
+        active_paths.push_back(path);
+        batch_points += polyline.size();
+    }
+    flush_batch();
+    record_smoothing_stage(smooth_parameters, "projection-plan", projection_started, batches.size());
+    std::vector<CGALKernel::Point_3> projected_points(point_offsets.back());
     for (std::size_t iter = 0; iter < max_iters; ++iter) {
-        for (const auto& polyline : polylines) {
+        const auto process_path = [&](std::size_t active) {
+            const auto path = active_paths[active];
+            const auto& polyline = polylines[path];
             std::size_t pt_cnt = polyline.size();
-            std::vector<CGALKernel::Point_3> points(pt_cnt);
-            for (std::size_t pt_idx = 1; pt_idx + 1 < pt_cnt; ++pt_idx) {
-                std::vector<CGALKernel::Point_3> pts{mesh.point(polyline[pt_idx - 1]), mesh.point(polyline[pt_idx + 1])};
+            auto* points = projected_points.data() + point_offsets[path];
+            const auto project = [&](std::size_t pt_idx) {
+                if (optimized && feature_vertices.count(polyline[pt_idx])) return;
+                const std::array<CGALKernel::Point_3, 2> pts {mesh.point(polyline[pt_idx - 1]), mesh.point(polyline[pt_idx + 1])};
                 CGALKernel::Point_3 smooth_pt = CGAL::ORIGIN + ((CGAL::centroid(pts.begin(), pts.end()) - CGAL::ORIGIN) * smooth_weight +
                                                                 (mesh.point(polyline[pt_idx]) - CGAL::ORIGIN) * origin_weight);
-                points[pt_idx] = boundary_tree.closest_point(smooth_pt);
+                // An exact vertex on the immutable projection surface is a
+                // valid distance bound, without enabling CGAL's unsafe Kd-tree.
+                points[pt_idx] = project_point(smooth_pt, polyline[pt_idx]);
+            };
+            if (optimized && pt_cnt > 257) {
+                projection_arena.execute([&] {
+                    tbb::parallel_for(tbb::blocked_range<std::size_t>(1, pt_cnt - 1, 128),
+                        [&](const tbb::blocked_range<std::size_t>& range) {
+                            for (auto index = range.begin(); index != range.end(); ++index) project(index);
+                        });
+                });
+            } else {
+                for (std::size_t index = 1; index + 1 < pt_cnt; ++index) project(index);
             }
-
             if (polyline.front() == polyline.back()) {
                 if (feature_vertices.count(polyline.front())) {
-                    continue;
+                    return;
                 }
-                std::vector<CGALKernel::Point_3> pts{mesh.point(polyline[1]), mesh.point(polyline[pt_cnt - 2])};
+                const std::array<CGALKernel::Point_3, 2> pts {mesh.point(polyline[1]), mesh.point(polyline[pt_cnt - 2])};
                 CGALKernel::Point_3 smooth_pt = CGAL::ORIGIN + ((CGAL::centroid(pts.begin(), pts.end()) - CGAL::ORIGIN) * smooth_weight +
                                                                 (mesh.point(polyline.front()) - CGAL::ORIGIN) * origin_weight);
-                mesh.point(polyline.front()) = boundary_tree.closest_point(smooth_pt);
+                mesh.point(polyline.front()) = project_point(smooth_pt, polyline.front());
             }
 
             for (std::size_t pt_idx = 1; pt_idx + 1 < pt_cnt; ++pt_idx) {
@@ -361,16 +475,55 @@ static bool smooth_region_geom_boundary(CGALMesh& mesh, std::vector<std::size_t>
                 }
                 mesh.point(polyline[pt_idx]) = points[pt_idx];
             }
+        };
+        for (const auto batch : batches) {
+            if (smoothing_canceled(smooth_parameters)) return false;
+            if (optimized && batch.end - batch.begin > 1) {
+                projection_arena.execute([&] {
+                    tbb::parallel_for(tbb::blocked_range<std::size_t>(batch.begin, batch.end, 1),
+                        [&](const tbb::blocked_range<std::size_t>& range) {
+                            for (auto path = range.begin(); path != range.end(); ++path) process_path(path);
+                        });
+                });
+            } else {
+                for (auto path = batch.begin; path != batch.end; ++path) process_path(path);
+            }
+        }
+        projection_count += iteration_queries;
+    }
+
+    // Final projection only reads and writes its own vertex. Preserve the
+    // number and order of repeated projections for each vertex (including
+    // closed endpoints), then evaluate different vertices independently.
+    std::vector<std::size_t> final_counts(mesh.num_vertices(), 0);
+    std::vector<CGALMesh::Vertex_index> final_vertices;
+    for (const auto& polyline : polylines)
+        for (const auto vertex : polyline) {
+            if (final_counts[vertex]++ == 0) final_vertices.push_back(vertex);
+            ++projection_count;
+        }
+    for (std::size_t begin = 0; begin < final_vertices.size(); begin += 512) {
+        if (smoothing_canceled(smooth_parameters)) return false;
+        const auto end = std::min(begin + 512, final_vertices.size());
+        const auto project_final = [&](std::size_t index) {
+            const auto vertex = final_vertices[index];
+            for (std::size_t repeat = 0; repeat < final_counts[vertex]; ++repeat)
+                mesh.point(vertex) = project_point(mesh.point(vertex), vertex);
+        };
+        if (optimized) {
+            projection_arena.execute([&] {
+                tbb::parallel_for(tbb::blocked_range<std::size_t>(begin, end, 32),
+                    [&](const tbb::blocked_range<std::size_t>& range) {
+                        for (auto index = range.begin(); index != range.end(); ++index) project_final(index);
+                    });
+            });
+        } else {
+            for (auto index = begin; index < end; ++index) project_final(index);
         }
     }
 
-    for (auto& polyline : polylines) {
-        for (auto& vtx : polyline) {
-            mesh.point(vtx) = boundary_tree.closest_point(mesh.point(vtx));
-        }
-    }
-
-    return true;
+    record_smoothing_stage(smooth_parameters, "projection", projection_started, projection_count);
+    return !smoothing_canceled(smooth_parameters);
 }
 
 // HSV, XYZ, and LAB are only used internally for computing color differences, so they are declared in this cpp file only.
@@ -654,6 +807,128 @@ static double ciede2000(const std::array<double, 3>& lab1, const std::array<doub
     return deltaE;
 }
 
+namespace detail {
+
+bool has_default_lab_chroma_environment() {
+#if defined(__FAST_MATH__) || defined(_M_FP_FAST) || \
+    (defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__ > 0)
+    // Runtime controls cannot qualify compile-time reassociation assumptions.
+    return false;
+#elif defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2) || defined(__SSE2__)
+    // Compare default exception masks, rounding and FTZ/DAZ controls,
+    // never sticky exception flags. Unknown architectures keep scalar.
+    constexpr unsigned int control_mask = 0xFFC0u;
+    constexpr unsigned int default_controls = 0x1F80u;
+    return FLT_EVAL_METHOD == 0 && std::fegetround() == FE_TONEAREST &&
+           (_mm_getcsr() & control_mask) == default_controls;
+#else
+    return false;
+#endif
+}
+
+bool prepare_lab_chroma(const std::array<double, 3>& lab, double& chroma) {
+    if (!has_default_lab_chroma_environment() ||
+        !std::isfinite(lab[0]) || !std::isfinite(lab[1]) || !std::isfinite(lab[2]))
+        return false;
+    const double a = lab[1], b = lab[2];
+    const double prepared_chroma = std::sqrt(a * a + b * b);
+    if (!std::isfinite(prepared_chroma))
+        return false;
+    chroma = prepared_chroma;
+    return true;
+}
+
+double ciede2000_prepared(const std::array<double, 3>& lab1, const std::array<double, 3>& lab2,
+                          double chroma1, double chroma2) {
+    // Parameters in the CIE L*C*h* formula
+    double L1 = lab1[0], a1 = lab1[1], b1 = lab1[2];
+    double L2 = lab2[0], a2 = lab2[1], b2 = lab2[2];
+
+    // Original raw chroma, prepared from these exact corresponding inputs.
+    double C1 = chroma1;
+    double C2 = chroma2;
+    double C_avg = (C1 + C2) / 2.0;
+
+    // G factor (compensates for non-linearity in the mid-low chroma region)
+    double C7 = C_avg * C_avg * C_avg * C_avg * C_avg * C_avg * C_avg;
+    double G = 0.5 * (1.0 - std::sqrt(C7 / (C7 + 6103515625.0)));
+
+    // a1' and a2'
+    double a1_prime = (1.0 + G) * a1;
+    double a2_prime = (1.0 + G) * a2;
+
+    // C'1 and C'2
+    double C1_prime = std::sqrt(a1_prime * a1_prime + b1 * b1);
+    double C2_prime = std::sqrt(a2_prime * a2_prime + b2 * b2);
+    double C_prime_avg = (C1_prime + C2_prime) / 2.0;
+
+    // h'1 and h'2
+    double h1_prime = std::atan2(b1, a1_prime);
+    double h2_prime = std::atan2(b2, a2_prime);
+    if (h1_prime < 0) {
+        h1_prime += 2 * M_PI;
+    }
+    if (h2_prime < 0) {
+        h2_prime += 2 * M_PI;
+    }
+
+    // Compute dh'
+    double dh_prime;
+    if (C1_prime * C2_prime == 0.0) {
+        dh_prime = 0.0;
+    } else if (std::abs(h1_prime - h2_prime) <= M_PI) {
+        dh_prime = h2_prime - h1_prime;
+    } else if (h2_prime <= h1_prime) {
+        dh_prime = h2_prime - h1_prime + 2 * M_PI;
+    } else {
+        dh_prime = h2_prime - h1_prime - 2 * M_PI;
+    }
+
+    // Compute dH'
+    double dH_prime = 2.0 * std::sqrt(C1_prime * C2_prime) * std::sin(dh_prime / 2.0);
+
+    // Compute dL'
+    double dL_prime = L2 - L1;
+
+    // Compute dC'
+    double dC_prime = C2_prime - C1_prime;
+
+    // Compute h_prime_avg
+    double h_prime_avg;
+    if (C1_prime * C2_prime == 0.0) {
+        h_prime_avg = h1_prime + h2_prime;
+    } else if (std::abs(h1_prime - h2_prime) > M_PI) {
+        const double sum = h1_prime + h2_prime;
+        h_prime_avg = (sum + (sum < 2 * M_PI ? 2 * M_PI : -2 * M_PI)) / 2.0;
+    } else {
+        h_prime_avg = (h1_prime + h2_prime) / 2.0;
+    }
+
+    // Compute T
+    double T = 1.0 - 0.17 * std::cos(h_prime_avg - M_PI / 6.0) + 0.24 * std::cos(2.0 * h_prime_avg) + 0.32 * std::cos(3.0 * h_prime_avg + M_PI / 30.0) -
+               0.20 * std::cos(4.0 * h_prime_avg - 63.0 * M_PI / 180.0);
+
+    // Compute rotation term R_T = -R_C * sin(2*delta_theta), where delta_theta = 30 * exp(-((h_bar'-275)/25)^2)
+    // h_prime_avg is in radians; convert to degrees for delta_theta; 2*delta_theta = 60 * exp(...), convert back to radians for sin
+    double h_prime_avg_deg = h_prime_avg * 180.0 / M_PI;
+    double C_prime_avg_7 = std::pow(C_prime_avg, 7);
+    double R = -2.0 * std::sqrt(C_prime_avg_7 / (C_prime_avg_7 + 6103515625.0)) *
+               std::sin((60.0 * M_PI / 180.0) * std::exp(-std::pow((h_prime_avg_deg - 275.0) / 25.0, 2)));
+
+    // Compute SL, SC, SH
+    double L_prime_avg = (L1 + L2) / 2.0;
+    double SL = 1.0 + 0.015 * std::pow(L_prime_avg - 50.0, 2) / std::sqrt(20 + std::pow(L_prime_avg - 50.0, 2));
+    double SC = 1.0 + 0.045 * C_prime_avg;
+    double SH = 1.0 + 0.015 * C_prime_avg * T;
+
+    // Final color difference
+    double deltaE = std::sqrt(std::pow(dL_prime / SL, 2) + std::pow(dC_prime / SC, 2) + std::pow(dH_prime / SH, 2) + R * (dC_prime / SC) * (dH_prime / SH));
+
+    return deltaE;
+}
+
+} // namespace detail
+
 double calc_lab_color_difference_by_ciede2000(const ColorDouble& lab1, const ColorDouble& lab2) {
     return ciede2000(lab1, lab2);
 }
@@ -673,10 +948,124 @@ double calc_rgb_color_difference_by_ciede2000_srgb01(const ColorDouble& rgb1, co
 // Working-space distance function type: inputs are two colors in the same space (RGB-double or Lab)
 using WorkingDistFunc = double (*)(const ColorDouble&, const ColorDouble&);
 
+namespace {
+
+// One immutable working-color set and one K trial own this optional cache.
+// All writes happen between parallel passes. Readers never lazily initialize
+// or invalidate it; RGB and unqualified Lab inputs use the original scalar.
+class PreparedWorkingDistances {
+public:
+    PreparedWorkingDistances(const std::vector<ColorDouble>& working_colors,
+                             std::size_t k, WorkingDistFunc dist_func)
+        : m_working_colors(working_colors), m_dist_func(dist_func) {
+        if (dist_func != ciede2000 || !detail::has_default_lab_chroma_environment())
+            return;
+        try {
+            m_point_chroma.resize(working_colors.size());
+            m_center_chroma.resize(k);
+        } catch (const std::bad_alloc&) {
+            disable();
+            return;
+        }
+        for (std::size_t i = 0; i < working_colors.size(); ++i) {
+            if (!detail::prepare_lab_chroma(working_colors[i], m_point_chroma[i])) {
+                disable();
+                return;
+            }
+        }
+        m_prepared = true;
+    }
+
+    // Used only after the original ordered centroid accumulation/division.
+    // Failure invalidates the whole trial before any reader is launched.
+    void prepare_color(const ColorDouble& color, double& chroma) {
+        if (m_prepared && !detail::prepare_lab_chroma(color, chroma))
+            disable();
+    }
+
+    // The caller refreshes immediately after writing all three components,
+    // including empty-cluster replacement. In-place center update order stays
+    // observable to the following empty-cluster search, exactly as before.
+    void refresh_center(std::size_t index, const ColorDouble& center) {
+        if (m_prepared && !detail::prepare_lab_chroma(center, m_center_chroma[index]))
+            disable();
+    }
+
+    void refresh_centers(const std::vector<ColorDouble>& centers) {
+        for (std::size_t i = 0; i < centers.size() && m_prepared; ++i)
+            refresh_center(i, centers[i]);
+    }
+
+    // Called once at each reader range entry, never once per pair. Cached
+    // values are valid only in the same verified default floating-point mode.
+    bool can_use_on_this_thread() const {
+        return m_prepared && detail::has_default_lab_chroma_environment();
+    }
+
+    double point_to_color(std::size_t index, const ColorDouble& color, double chroma,
+                          bool use_prepared) const {
+        if (use_prepared)
+            return detail::ciede2000_prepared(m_working_colors[index], color,
+                                              m_point_chroma[index], chroma);
+        return m_dist_func(m_working_colors[index], color);
+    }
+
+    double point_to_center(std::size_t point, std::size_t center_index,
+                           const ColorDouble& center, bool use_prepared) const {
+        if (use_prepared)
+            return detail::ciede2000_prepared(m_working_colors[point], center,
+                                              m_point_chroma[point], m_center_chroma[center_index]);
+        return m_dist_func(m_working_colors[point], center);
+    }
+
+private:
+    void disable() {
+        m_prepared = false;
+        std::vector<double>().swap(m_point_chroma);
+        std::vector<double>().swap(m_center_chroma);
+    }
+
+    const std::vector<ColorDouble>& m_working_colors;
+    WorkingDistFunc m_dist_func;
+    std::vector<double> m_point_chroma;
+    std::vector<double> m_center_chroma;
+    bool m_prepared {false};
+};
+
+} // namespace
+
 // Farthest Point Sampling (FPS) initialization algorithm.
 // The first center is the point nearest to the global centroid; subsequent centers are the points farthest from the existing set.
-static std::vector<ColorDouble> farthest_point_sampling_init(const std::vector<ColorDouble>& working_colors, std::size_t k, WorkingDistFunc dist_func) {
+static std::vector<ColorDouble> farthest_point_sampling_init(const std::vector<ColorDouble>& working_colors, std::size_t k, PreparedWorkingDistances& distances) {
+    const bool trace = std::getenv("ORCASLICER_UI_LATENCY_TRACE") != nullptr;
+    const auto started = trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     std::vector<ColorDouble> centers(k);
+    const auto available = std::max(1u, std::thread::hardware_concurrency());
+    const int threads = std::min({4, int(available > 1 ? available - 1 : 1u),
+        std::max(1, tbb::this_task_arena::max_concurrency())});
+    tbb::task_arena arena(threads);
+    bool parallel = threads > 1 && working_colors.size() >= 256;
+    const auto for_each_point = [&](const auto& operation) {
+        if (parallel) {
+            try {
+                arena.execute([&] {
+                    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, working_colors.size(), 256),
+                        [&](const tbb::blocked_range<std::size_t>& range) {
+                            const bool use_prepared = distances.can_use_on_this_thread();
+                            for (std::size_t i = range.begin(); i < range.end(); ++i) operation(i, use_prepared);
+                        });
+                });
+                return;
+            } catch (const std::exception& failure) {
+                // Distance writes are independent and min updates idempotent.
+                // Recompute the entire pass before selecting any center.
+                parallel = false;
+                BOOST_LOG_TRIVIAL(warning) << "[NativeClustering] seed distance pass failed; retrying sequentially: " << failure.what();
+            }
+        }
+        const bool use_prepared = distances.can_use_on_this_thread();
+        for (std::size_t i = 0; i < working_colors.size(); ++i) operation(i, use_prepared);
+    };
 
     // 1. Compute the global centroid and pick the nearest point as the first center
     ColorDouble centroid = {0.0, 0.0, 0.0};
@@ -689,20 +1078,27 @@ static std::vector<ColorDouble> farthest_point_sampling_init(const std::vector<C
     centroid[0] /= n;
     centroid[1] /= n;
     centroid[2] /= n;
+    double centroid_chroma = 0.0;
+    distances.prepare_color(centroid, centroid_chroma);
 
     double best_dist = std::numeric_limits<double>::max();
     std::size_t first_idx = 0;
+    // Reuse the original minimum-distance buffer. Only independent distances
+    // run in parallel; centroid sums and all first-match choices stay ordered.
+    std::vector<double> min_distances(working_colors.size());
+    for_each_point([&](std::size_t i, bool use_prepared) { min_distances[i] = distances.point_to_color(i, centroid, centroid_chroma, use_prepared); });
     for (std::size_t i = 0; i < working_colors.size(); ++i) {
-        double d = dist_func(working_colors[i], centroid);
+        const double d = min_distances[i];
         if (d < best_dist) {
             best_dist = d;
             first_idx = i;
         }
     }
     centers[0] = working_colors[first_idx];
+    distances.refresh_center(0, centers[0]);
 
     // Minimum distance from each point to the already-selected center set
-    std::vector<double> min_distances(working_colors.size(), std::numeric_limits<double>::max());
+    std::fill(min_distances.begin(), min_distances.end(), std::numeric_limits<double>::max());
 
     // 2. Greedily select the remaining K-1 centers: pick the point with the largest min_distance each time
     for (std::size_t i = 1; i < k; ++i) {
@@ -711,11 +1107,13 @@ static std::vector<ColorDouble> farthest_point_sampling_init(const std::vector<C
         // Update each point's minimum distance with the newly added center
         double farthest_dist = -1.0;
         std::size_t farthest_idx = 0;
-        for (std::size_t c_idx = 0; c_idx < working_colors.size(); ++c_idx) {
-            double d = dist_func(working_colors[c_idx], last_center);
+        for_each_point([&](std::size_t c_idx, bool use_prepared) {
+            const double d = distances.point_to_center(c_idx, i - 1, last_center, use_prepared);
             if (d < min_distances[c_idx]) {
                 min_distances[c_idx] = d;
             }
+        });
+        for (std::size_t c_idx = 0; c_idx < working_colors.size(); ++c_idx) {
             if (min_distances[c_idx] > farthest_dist) {
                 farthest_dist = min_distances[c_idx];
                 farthest_idx = c_idx;
@@ -723,8 +1121,13 @@ static std::vector<ColorDouble> farthest_point_sampling_init(const std::vector<C
         }
 
         centers[i] = working_colors[farthest_idx];
+        distances.refresh_center(i, centers[i]);
     }
 
+    if (trace)
+        BOOST_LOG_TRIVIAL(info) << "[NativeClustering] stage=seed elapsed_ms="
+            << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count()
+            << " samples=" << working_colors.size() << " centers=" << k << " workers=" << (parallel ? threads : 1);
     return centers;
 }
 
@@ -932,28 +1335,86 @@ bool is_closed(const TriMesh& bbs_mesh) {
     return CGAL::is_closed(cgal_mesh);
 }
 
-static bool smooth_region_labels(TriMesh& tri_mesh, std::vector<std::size_t>& face_labels, const SmoothParameters& smooth_parameters) {
+struct RegionSmoothingWorkspace::Impl {
     CGALMesh mesh;
-    cgalutils::convert_trimesh_to_cgal(tri_mesh, mesh);
+    std::vector<std::array<std::size_t, 3>> neighbors;
+    bool valid = false;
+    bool finished = false;
+};
 
-    if (mesh.number_of_faces() != face_labels.size()) {
-        BOOST_LOG_TRIVIAL(warning) << "Face count does not match label count";
+RegionSmoothingWorkspace::RegionSmoothingWorkspace(const TriMesh& source, const SmoothParameters& parameters)
+    : m_impl(std::make_unique<Impl>())
+{
+    const auto started = SmoothingClock::now();
+    if (smoothing_canceled(parameters) || !cgalutils::convert_trimesh_to_cgal(source, m_impl->mesh) ||
+        m_impl->mesh.number_of_faces() != source.indices.size()) return;
+    auto& mesh = m_impl->mesh;
+    m_impl->neighbors.resize(mesh.num_faces());
+    for (auto face : mesh.faces()) {
+        if ((std::size_t(face) & 4095) == 0 && smoothing_canceled(parameters)) return;
+        auto& adjacent = m_impl->neighbors[face];
+        adjacent.fill(std::numeric_limits<std::size_t>::max());
+        std::size_t count = 0;
+        for (auto neighbor : mesh.faces_around_face(mesh.halfedge(face))) {
+            if (neighbor == CGALMesh::null_face() || !mesh.is_valid(neighbor) || mesh.is_removed(neighbor)) continue;
+            if (count == adjacent.size()) return;
+            adjacent[count++] = std::size_t(neighbor);
+        }
+    }
+    m_impl->valid = true;
+    record_smoothing_stage(parameters, "prepare", started, mesh.number_of_faces());
+}
+
+RegionSmoothingWorkspace::~RegionSmoothingWorkspace() = default;
+
+bool RegionSmoothingWorkspace::apply_topology(std::vector<std::size_t>& labels, const SmoothParameters& parameters)
+{
+    if (!m_impl->valid || m_impl->finished) return false;
+    if (labels.size() != m_impl->mesh.number_of_faces() || smoothing_canceled(parameters)) {
+        m_impl->valid = false;
         return false;
     }
+    const bool success = !(parameters.smooth_weight >= TOPO_SMOOTH_WEIGHT_THRESHOLD) ||
+        smooth_region_topo_boundary(m_impl->mesh, labels, m_impl->neighbors, parameters);
+    if (!success) m_impl->valid = false;
+    return success;
+}
 
-    if (smooth_parameters.smooth_weight >= TOPO_SMOOTH_WEIGHT_THRESHOLD) {
-        // Topological smoothing: reassign face labels.
-        smooth_region_topo_boundary(mesh, face_labels);
+bool RegionSmoothingWorkspace::finish(TriMesh& output, const std::vector<std::size_t>& labels,
+                                     const SmoothParameters& parameters)
+{
+    if (!m_impl->valid || m_impl->finished) return false;
+    // A canceled or failed finish cannot later install its partial workspace.
+    m_impl->valid = false;
+    if (labels.size() != m_impl->mesh.number_of_faces() || smoothing_canceled(parameters)) return false;
+    if (parameters.smooth_weight > EPSILON) {
+        std::vector<CGALKernel::Point_3> original_points;
+        original_points.reserve(m_impl->mesh.num_vertices());
+        for (auto vertex : m_impl->mesh.vertices()) original_points.push_back(m_impl->mesh.point(vertex));
+        try {
+            if (!smooth_region_geom_boundary(m_impl->mesh, labels, parameters)) return false;
+        } catch (const std::exception&) {
+            if (smoothing_canceled(parameters)) return false;
+            // A failed optimized query cannot feed the fallback mutated data.
+            std::size_t index = 0;
+            for (auto vertex : m_impl->mesh.vertices()) m_impl->mesh.point(vertex) = original_points[index++];
+            BOOST_LOG_TRIVIAL(warning) << "[NativeSmoothing] retrying exact serial projection from immutable geometry";
+            if (!smooth_region_geom_boundary(m_impl->mesh, labels, parameters, false)) return false;
+        }
     }
-
-    if (smooth_parameters.smooth_weight > EPSILON) {
-        // Geometric smoothing: smooth polylines and project back onto the original mesh.
-        smooth_region_geom_boundary(mesh, face_labels, smooth_parameters);
-    }
-
-    tri_mesh = cgalutils::cgal_to_trimesh(mesh);
-
+    const auto started = SmoothingClock::now();
+    auto result = cgalutils::cgal_to_trimesh(m_impl->mesh);
+    if (smoothing_canceled(parameters)) return false;
+    output = std::move(result);
+    m_impl->finished = true;
+    record_smoothing_stage(parameters, "export", started, output.indices.size());
     return true;
+}
+
+static bool smooth_region_labels(TriMesh& tri_mesh, std::vector<std::size_t>& face_labels, const SmoothParameters& parameters)
+{
+    RegionSmoothingWorkspace workspace(tri_mesh, parameters);
+    return workspace.apply_topology(face_labels, parameters) && workspace.finish(tri_mesh, face_labels, parameters);
 }
 
 bool smooth_region(TriMesh& tri_mesh, std::vector<std::array<std::size_t, 3>>& face_colors, const SmoothParameters& smooth_parameters) {
@@ -1002,23 +1463,53 @@ double calc_rgb_color_difference_by_squared_rgb(const RGB& c1, const RGB& c2) {
     return calc_rgb_color_difference_by_squared_rgb_double(c1d, c2d);
 }
 
+static void record_clustering_stage(const ClusterParameters& parameters, const char* stage,
+                                    SmoothingClock::duration elapsed, std::size_t count)
+{
+    const auto milliseconds = std::uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
+    BOOST_LOG_TRIVIAL(info) << "[NativeClustering] stage=" << stage << " elapsed_ms=" << milliseconds << " count=" << count;
+    if (parameters.diagnostic_callback) {
+        try { parameters.diagnostic_callback(stage, milliseconds, count); }
+        catch (...) { /* Diagnostics must not change clustering or repair success. */ }
+    }
+}
+
 // K-Means core: run FPS initialization + assign/update iterations in working space, return cluster centers
-static std::vector<ColorDouble> kmeans_core(const std::vector<ColorDouble>& working_colors, std::size_t k, std::size_t max_iter, WorkingDistFunc dist_func,
-                                            const std::function<bool()>& cancel_cb = nullptr) {
-    std::vector<ColorDouble> centers = farthest_point_sampling_init(working_colors, k, dist_func);
+static std::vector<ColorDouble> kmeans_core(const std::vector<ColorDouble>& working_colors, std::size_t k, std::size_t max_iter,
+                                            const ClusterParameters& parameters, PreparedWorkingDistances& distances) {
+    const auto fps_started = SmoothingClock::now();
+    std::vector<ColorDouble> centers = farthest_point_sampling_init(working_colors, k, distances);
+    record_clustering_stage(parameters, "kmeans.fps", SmoothingClock::now() - fps_started, k);
     std::vector<std::size_t> assignments(working_colors.size());
+    SmoothingClock::duration assignment_time{}, update_time{};
+    std::size_t assignment_count = 0, update_count = 0, stable_centers = 0;
+    std::size_t pending_stable_columns = 0, assignment_reusable_columns = 0;
+    const auto record_iterations = [&] {
+        record_clustering_stage(parameters, "kmeans.assignment", assignment_time, assignment_count);
+        record_clustering_stage(parameters, "kmeans.update", update_time, update_count);
+        record_clustering_stage(parameters, "kmeans.stable_centers", {}, stable_centers);
+        record_clustering_stage(parameters, "kmeans.center_comparisons", {}, k * update_count);
+        record_clustering_stage(parameters, "kmeans.assignment_reusable_columns", {}, assignment_reusable_columns);
+        record_clustering_stage(parameters, "kmeans.assignment_column_comparisons", {},
+            assignment_count > 0 ? k * (assignment_count - 1) : 0);
+        record_clustering_stage(parameters, "kmeans.working_colors", {}, working_colors.size());
+    };
+    const auto& cancel_cb = parameters.cancel_callback;
 
     for (std::size_t iter = 0; iter < max_iter; ++iter) {
-        if (cancel_cb && cancel_cb()) return centers;
+        if (cancel_cb && cancel_cb()) { record_iterations(); return centers; }
+        const auto stable_columns_for_pass = pending_stable_columns;
         std::atomic<bool> changed(false);
 
+        const auto assignment_started = SmoothingClock::now();
         tbb::parallel_for(tbb::blocked_range<std::size_t>(0, working_colors.size()), [&](const tbb::blocked_range<size_t>& range) {
+            const bool use_prepared = distances.can_use_on_this_thread();
             for (std::size_t i = range.begin(); i < range.end(); ++i) {
                 double min_dist = std::numeric_limits<double>::max();
                 std::size_t best_cluster = 0;
 
                 for (std::size_t j = 0; j < k; ++j) {
-                    double d = dist_func(working_colors[i], centers[j]);
+                    double d = distances.point_to_center(i, j, centers[j], use_prepared);
                     if (d < min_dist) {
                         min_dist = d;
                         best_cluster = j;
@@ -1031,11 +1522,18 @@ static std::vector<ColorDouble> kmeans_core(const std::vector<ColorDouble>& work
                 }
             }
         });
+        assignment_time += SmoothingClock::now() - assignment_started;
+        ++assignment_count;
+        // Count only stable centers consumed by a complete next assignment.
+        // Final updates, cancellation and failed passes cannot claim a hit.
+        assignment_reusable_columns += stable_columns_for_pass;
+        pending_stable_columns = 0;
 
         if (!changed.load()) {
             break;
         }
 
+        const auto update_started = SmoothingClock::now();
         std::vector<ColorDouble> new_centers(k, {0.0, 0.0, 0.0});
         std::vector<std::size_t> counts(k, 0);
 
@@ -1048,7 +1546,9 @@ static std::vector<ColorDouble> kmeans_core(const std::vector<ColorDouble>& work
         }
 
         for (std::size_t i = 0; i < k; ++i) {
+            const auto previous_center = centers[i];
             if (counts[i] == 0) {
+                const bool use_prepared = distances.can_use_on_this_thread();
                 double max_min_dist = -1.0;
                 std::size_t best_idx = 0;
                 for (std::size_t p = 0; p < working_colors.size(); ++p) {
@@ -1057,7 +1557,7 @@ static std::vector<ColorDouble> kmeans_core(const std::vector<ColorDouble>& work
                         if (c == i || counts[c] == 0) {
                             continue;
                         }
-                        double d = dist_func(working_colors[p], centers[c]);
+                        double d = distances.point_to_center(p, c, centers[c], use_prepared);
                         if (d < nearest) {
                             nearest = d;
                         }
@@ -1073,9 +1573,19 @@ static std::vector<ColorDouble> kmeans_core(const std::vector<ColorDouble>& work
                 centers[i][1] = new_centers[i][1] / counts[i];
                 centers[i][2] = new_centers[i][2] / counts[i];
             }
+            distances.refresh_center(i, centers[i]);
+            // Passive evidence for future request-local reuse. It neither
+            // selects a computation path nor changes the original update order.
+            if (std::memcmp(previous_center.data(), centers[i].data(), 3 * sizeof(double)) == 0) {
+                ++stable_centers;
+                ++pending_stable_columns;
+            }
         }
+        update_time += SmoothingClock::now() - update_started;
+        ++update_count;
     }
 
+    record_iterations();
     return centers;
 }
 
@@ -1124,7 +1634,8 @@ std::vector<Color> cluster_k_means(const std::vector<Color>& colors, const Clust
     // ==========================================
     // 2. K-Means clustering
     // ==========================================
-    auto centers = kmeans_core(working_colors, k, max_iter, working_dist_func, cluster_parameters.cancel_callback);
+    PreparedWorkingDistances distances(working_colors, k, working_dist_func);
+    auto centers = kmeans_core(working_colors, k, max_iter, cluster_parameters, distances);
 
     // ==========================================
     // 3. Output: convert from working space back to RGB
@@ -1275,6 +1786,7 @@ std::vector<Color> cluster_adaptive(const std::vector<Color>& colors, const Clus
     // ==========================================
     // 1. Deduplicate + convert to working space
     // ==========================================
+    const auto prepare_started = SmoothingClock::now();
     std::vector<Color> unique_colors = colors;
     std::sort(unique_colors.begin(), unique_colors.end());
     auto last = std::unique(unique_colors.begin(), unique_colors.end());
@@ -1299,6 +1811,7 @@ std::vector<Color> cluster_adaptive(const std::vector<Color>& colors, const Clus
             working_colors[i] = {static_cast<double>(unique_colors[i][0]), static_cast<double>(unique_colors[i][1]), static_cast<double>(unique_colors[i][2])};
         }
     }
+    record_clustering_stage(cluster_parameters, "adaptive.prepare", SmoothingClock::now() - prepare_started, unique_colors.size());
 
     // ==========================================
     // 2. Binary search k: find the smallest k where P99 radius <= max_color_distance
@@ -1318,13 +1831,15 @@ std::vector<Color> cluster_adaptive(const std::vector<Color>& colors, const Clus
         double percentile {0.0};
         double tail {0.0};
     };
-    auto calc_radius = [&](const std::vector<ColorDouble>& centers) -> ClusterRadius {
+    auto calc_radius = [&](const std::vector<ColorDouble>& centers, PreparedWorkingDistances& prepared_distances) -> ClusterRadius {
+        prepared_distances.refresh_centers(centers);
         std::vector<double> distances(working_colors.size());
         tbb::parallel_for(tbb::blocked_range<std::size_t>(0, working_colors.size()), [&](const tbb::blocked_range<size_t>& range) {
+            const bool use_prepared = prepared_distances.can_use_on_this_thread();
             for (std::size_t i = range.begin(); i < range.end(); ++i) {
                 double min_dist = std::numeric_limits<double>::max();
-                for (const auto& center : centers) {
-                    double d = working_dist_func(working_colors[i], center);
+                for (std::size_t j = 0; j < centers.size(); ++j) {
+                    double d = prepared_distances.point_to_center(i, j, centers[j], use_prepared);
                     if (d < min_dist) {
                         min_dist = d;
                     }
@@ -1346,9 +1861,12 @@ std::vector<Color> cluster_adaptive(const std::vector<Color>& colors, const Clus
     while (lo <= hi) {
         if (cancel_cb && cancel_cb()) return {};
         std::size_t mid = lo + (hi - lo) / 2;
-        auto centers = kmeans_core(working_colors, mid, max_iter, working_dist_func, cancel_cb);
+        PreparedWorkingDistances distances(working_colors, mid, working_dist_func);
+        auto centers = kmeans_core(working_colors, mid, max_iter, cluster_parameters, distances);
         if (cancel_cb && cancel_cb()) return {};
-        const ClusterRadius radius = calc_radius(centers);
+        const auto radius_started = SmoothingClock::now();
+        const ClusterRadius radius = calc_radius(centers, distances);
+        record_clustering_stage(cluster_parameters, "adaptive.radius", SmoothingClock::now() - radius_started, mid);
 
         BOOST_LOG_TRIVIAL(debug) << "cluster_adaptive binary search: k=" << mid
                                  << " p99_radius=" << radius.percentile
@@ -1367,7 +1885,8 @@ std::vector<Color> cluster_adaptive(const std::vector<Color>& colors, const Clus
 
     if (best_k == 0) {
         best_k = std::min<std::size_t>(max_k, unique_colors.size());
-        best_centers = kmeans_core(working_colors, best_k, max_iter, working_dist_func, cancel_cb);
+        PreparedWorkingDistances distances(working_colors, best_k, working_dist_func);
+        best_centers = kmeans_core(working_colors, best_k, max_iter, cluster_parameters, distances);
         BOOST_LOG_TRIVIAL(warning) << "cluster_adaptive: binary search found no k satisfying max_radius<="
                                    << max_color_distance << ", fallback to k=" << best_k;
     }
@@ -1463,6 +1982,28 @@ bool get_components(const TriMesh& bbs_mesh, const std::vector<Vec2f>& bbs_verte
         component_vertex_uvs.push_back(std::move(bbs_vertex_uvs));
     }
 
+    return true;
+}
+
+ColorDistancePalette::ColorDistancePalette(const std::vector<RGB>& colors)
+{
+    m_lab_colors.reserve(colors.size());
+    for (const auto& color : colors) m_lab_colors.push_back(convert_rgb_to_lab(color));
+}
+
+bool ColorDistancePalette::nearest(const RGB& color, std::size_t& nearest_color_id) const
+{
+    if (m_lab_colors.empty()) return false;
+    const auto lab = convert_rgb_to_lab(color);
+    double min_dist = std::numeric_limits<double>::max();
+    nearest_color_id = 0;
+    for (std::size_t i = 0; i < m_lab_colors.size(); ++i) {
+        const auto distance = ciede2000(m_lab_colors[i], lab);
+        if (distance < min_dist) {
+            min_dist = distance;
+            nearest_color_id = i;
+        }
+    }
     return true;
 }
 

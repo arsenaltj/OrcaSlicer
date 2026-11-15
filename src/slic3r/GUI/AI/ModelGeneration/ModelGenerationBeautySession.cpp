@@ -449,6 +449,7 @@ void ModelGenerationPanel::reset_beauty_asset()
     if (m_workbench_check_cancel) m_workbench_check_cancel->store(true);
     Presentation::background_tasks().retire(m_workbench_check_worker);
     m_workbench_check_cancel.reset();
+    finish_workbench_check_timing("asset-replaced");
     m_workbench_check_running = m_workbench_auto_repair = false;
     clear_pending_workbench_ai_palette();
     m_workbench_check_path.clear();

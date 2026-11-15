@@ -1585,6 +1585,9 @@ bool MoonrakerPrinterAgent::fetch_device_info_with_timeout(const std::string&   
     }
     info.version = optional_json_string(result, "moonraker_version");
     info.klippy_state = optional_json_string(result, "klippy_state");
+    const auto virtual_flag = result.find("hf_virtual_printer");
+    info.virtual_printer_uuid = virtual_flag != result.end() && virtual_flag->is_boolean() && virtual_flag->get<bool>() ?
+        optional_json_string(result, "instance_uuid") : std::string();
 
     // Some Moonraker builds omit hostname from /server/info but expose it through
     // Klippy's /printer/info endpoint. Failure here must not reject a server whose

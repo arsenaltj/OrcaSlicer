@@ -13,7 +13,8 @@ namespace Slic3r {
 
 enum class PrinterDiscoverySource {
     Mdns = 0,
-    SubnetProbe
+    SubnetProbe,
+    LocalVirtualPrinter
 };
 
 const char* printer_discovery_source_name(PrinterDiscoverySource source);
@@ -36,6 +37,8 @@ struct PrinterDiscoveryCandidate
     std::string service_type;
     std::string service_name;
     std::string hostname;
+    // Present only for a user-local runtime declaration; verified against /server/info.
+    std::string instance_uuid;
 };
 
 enum class PrinterDiscoveryProviderError {
@@ -78,6 +81,7 @@ public:
 std::vector<PrinterNetworkInterface> enumerate_printer_network_interfaces();
 std::shared_ptr<IPrinterDiscoveryProvider> make_mdns_printer_discovery_provider();
 std::shared_ptr<IPrinterDiscoveryProvider> make_subnet_printer_discovery_provider();
+std::shared_ptr<IPrinterDiscoveryProvider> make_local_virtual_printer_discovery_provider(std::string declaration_path = {});
 
 } // namespace Slic3r
 

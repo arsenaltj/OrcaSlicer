@@ -3373,6 +3373,13 @@ public:
             m_canvas->Refresh(false);
         }
     }
+    // Independent one-shot diagnostics; neither existing workflow observer is replaced.
+    void observe_diagnostic_frame(std::function<void()> observer) {
+        ++m_diagnostic_frame_sequence;
+        m_diagnostic_frame_observer = std::move(observer);
+        if (m_diagnostic_frame_observer) m_canvas->Refresh(false);
+    }
+    bool workbench_input_locked() const { return m_workbench_input_locked; }
     void cancel_view_navigation() {
         if (m_navigator) m_navigator->reset();
         finish_drag();
@@ -4876,6 +4883,22 @@ private:
                 observer();
             });
         }
+        if (frame_submitted && navigation_submitted && m_has_model && m_color_shader &&
+            !m_gpu_upload_pending && !m_gpu_upload_failed && m_diagnostic_frame_observer) {
+            const auto sequence = m_diagnostic_frame_sequence;
+            const auto identity = m_model_sha256;
+            wxWeakRef<ModelPreview3D> weak(this);
+            CallAfter([weak, frame, sequence, identity] {
+                if (!weak || sequence != weak->m_diagnostic_frame_sequence ||
+                    !weak->m_diagnostic_frame_observer || identity != weak->m_model_sha256 ||
+                    !weak->m_has_model || weak->m_gpu_upload_pending || weak->m_gpu_upload_failed) return;
+                if (!weak->m_preview_frame.current(frame, weak->m_canvas->GetClientSize(),
+                        weak->m_canvas->GetDPIScaleFactor(), weak->m_canvas->IsShownOnScreen())) return;
+                auto observer = std::move(weak->m_diagnostic_frame_observer);
+                ++weak->m_diagnostic_frame_sequence;
+                observer();
+            });
+        }
         if (navigation_animating || !navigation_submitted) m_canvas->Refresh(false);
         if (frame_submitted && m_after_preview_frame) {
             const auto sequence = m_after_preview_sequence;
@@ -4914,6 +4937,8 @@ private:
     std::uint64_t m_after_preview_sequence {0};
     std::function<void()> m_presentation_frame_observer;
     std::uint64_t m_presentation_observer_sequence {0};
+    std::function<void()> m_diagnostic_frame_observer;
+    std::uint64_t m_diagnostic_frame_sequence {0};
     wxPanel* m_comparison_header {nullptr};
     std::vector<wxStaticText*> m_comparison_labels;
     wxSizerItem* m_overlay_top {nullptr};
