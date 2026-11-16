@@ -1,5 +1,15 @@
 [
   {
+    "pr": 77,
+    "run": 43834292695,
+    "head": "459c527835f33d64fd0a1dc767e0a9f46aeefa49",
+    "base": "d3764bdc72c07d7a237fc77cd399539b898a19f5",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "清理自研退役代码并优化窗口动作批量采集，兼容最新主线",
+    "path": "pr/77/459c527835f33d64fd0a1dc767e0a9f46aeefa49/43834292695",
+    "created": "2026-11-16T08:51:51+00:00"
+  },
+  {
     "pr": 76,
     "run": 43787335484,
     "head": "70e8e7e25f940fcc3998215a6c02ed4df103028f",

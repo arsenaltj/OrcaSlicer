@@ -1,0 +1,27 @@
+{
+  "pr": 77,
+  "run": 43834292695,
+  "head": "459c527835f33d64fd0a1dc767e0a9f46aeefa49",
+  "base": "d3764bdc72c07d7a237fc77cd399539b898a19f5",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "清理自研退役代码并优化窗口动作批量采集，兼容最新主线",
+  "path": "pr/77/459c527835f33d64fd0a1dc767e0a9f46aeefa49/43834292695",
+  "created": "2026-11-16T08:51:51+00:00",
+  "files": {
+    "index.html": "1a38aca7eb9b9a12056b6272729d7f7cc1e4e4a74ca8a47b2f51ec96528c6f15",
+    "details.html": "b4651b894f921531c2806e0de8cadd7a71d23d31dc99f76ab4f63eabd18ffbe2",
+    "report.json": "15b35d376dd48fbc513aeb3e5e5cc21d9c062dbbf982becedcf4fefb4730ccf8",
+    "summary.md": "99c67e4a314a6aa727b5305a6c728967f7298c835c9367ba71251aa75d324d12",
+    "archify-receipts.json": "1696056f6ee25f42c28e35b6444906d0523097569df975df30de989abc25622c",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "f70588757b30ed15cd36c2d05953471d3e5af79a7f735d5433c52c95718954b1",
+    "l1-modules.json": "4e6cef0e52efda08bf5b19ad660c5d649f66ef28fe02bdbd23ead79f9fcb6780",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
