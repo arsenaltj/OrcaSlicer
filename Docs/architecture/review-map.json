@@ -730,13 +730,13 @@
       "id": "advanced_creation_host",
       "path": "src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.cpp",
       "needle": "void AdvancedCreationFeatureHost::generate_model(Confirm confirm)",
-      "detail": "高级提交／停止／恢复和产物由现有适配执行；先登记真实任务再通知唯一3D页，不等待四图缓存。按资源身份复用验证／解码结果，迟到结果不覆盖新组或版本。"
+      "detail": "高级提交／停止／恢复和产物由现有适配执行；先登记真实任务再通知所属创作页，不等待四图缓存；任务刷新不导航。按资源身份复用验证／解码结果，迟到结果不覆盖新组或版本。"
     },
     {
       "id": "advanced_creation_workspace",
       "path": "src/slic3r/GUI/Redesign/AdvancedCreationWorkspace.cpp",
       "needle": "struct AdvancedCreationWorkspace::Impl {",
-      "detail": "高级四图控件通过统一刷新应用快照；后台解码缩放，资源／像素尺寸／DPI相同复用位图，重生成期间保留旧图。Shell独占唯一3D页与工作台路由。"
+      "detail": "高级四图控件通过统一刷新应用快照；后台解码缩放，资源／像素尺寸／DPI相同复用位图，重生成期间保留旧图。页内3D进度与预览沿原高级Session，Shell独占唯一工作台路由。"
     },
     {
       "id": "workbench_asset_handoff",
@@ -877,6 +877,30 @@
       "path": "src/slic3r/GUI/Presentation/WindowMountLease.hpp",
       "needle": "class WindowMountLease",
       "detail": "wx parent管理控件；跨宿主挂载保留原parent/sizer位置/显隐/焦点，仅栈顶代次可恢复。原布局替换时仍安全归还，避免临时宿主删除Plater。"
+    },
+    {
+      "id": "inline_generation_state",
+      "path": "src/slic3r/GUI/Redesign/InlineModelGenerationState.hpp",
+      "needle": "class InlineModelGenerationState {",
+      "detail": "仅持有来源／上下文／任务／成果的展示投影、局部呈现代次和新成果提示去重；远端就绪与本地有效首帧分开。路径、摘要或色板变化失效旧帧，不拥有生成资格、持久化或提交规则。"
+    },
+    {
+      "id": "inline_generation_view",
+      "path": "src/slic3r/GUI/Redesign/InlineModelGenerationView.cpp",
+      "needle": "InlineModelGenerationView::InlineModelGenerationView(",
+      "detail": "智能／高级分别挂载中央进度与只读模型预览；CPU解析及渲染几何由有界TaskRunner和TaskScope准备，协作取消并过滤旧回调，GUI不join，GUI线程安装GL模型，有效可见首帧后开放完成动作。隐藏／最小化暂停呈现等待，本地重载不提交远端生成。"
+    },
+    {
+      "id": "creation_artifact_handoff",
+      "path": "src/slic3r/GUI/Redesign/RedesignCreationModel.cpp",
+      "needle": "void RedesignShell::open_creation_artifact(CreationSource source)",
+      "detail": "状态回调只刷新来源页；用户动作冻结当前可见成果，复用原资产校验、编辑保护及工作台首帧／失败回滚事务。同一已编辑资产恢复编辑现场，生成完成不替换编辑对象。"
+    },
+    {
+      "id": "generation_completion_toast",
+      "path": "src/slic3r/GUI/Redesign/GenerationCompletionToast.cpp",
+      "needle": "GenerationCompletionToast::GenerationCompletionToast(wxWindow* owner)",
+      "detail": "页内当前新生成成果首次有效呈现后的非模态提示；窗口位置／尺寸／DPI变化重定位，隐藏／最小化／切来源或进入工作台时消失，不拥有导航或任务状态。"
     },
     {
       "id": "virtual_printer_session",
@@ -1998,7 +2022,7 @@
           "tests/slic3rutils/test_redesign_restore_capture.cpp"
         ],
         "state_owner": "Plater持有当前工程；既有Session拥有业务；Shell持有PageCoordinator唯一页面状态，Presenter只消费快照",
-        "contract": "单一工作台及共用3D页；主线程GUI提交、挂载租约、合并dirty、有效首帧与退出排空，业务与展示资格分别校验",
+        "contract": "单一编辑工作台及两种创作页复用的3D只读预览；主线程GUI提交、挂载租约、合并dirty、有效首帧与退出排空，业务与展示资格分别校验",
         "note": "逻辑入口集中；不是所有业务均已离开主窗口。",
         "build_boundary": "C++17桌面；orca_ui_runtime为GUI执行／刷新静态库，页面消费者仍编译进libslic3r_gui，原生执行器不整体重写"
       },

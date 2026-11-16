@@ -27,15 +27,15 @@ public:
     void select_page(Page page) { if (m_page != page) { m_page = page; changed(); } }
     void select_view(View view) { if (m_view != view) { m_view = view; changed(); } }
     void select_mode(bool advanced) { if (m_advanced != advanced) { m_advanced = advanced; changed(); } }
-    static std::size_t key(Page page, View view = View::Result, bool advanced = false) {
+    static std::size_t key(Page page, View view = View::Workbench, bool advanced = false) {
         switch (page) {
         case Page::Assets: return 0;
         case Page::Image: return advanced ? 2 : 1;
         case Page::Model: return 3 + static_cast<std::size_t>(view);
-        case Page::Print: return 7;
-        case Page::Account: return 8;
+        case Page::Print: return 6;
+        case Page::Account: return 7;
         }
-        return 8;
+        return 7;
     }
     void register_page(Page page, View view, bool advanced, Adapter adapter) {
         auto& slot = m_pages[key(page, view, advanced)];
@@ -74,7 +74,7 @@ public:
         }
         m_presented.reset();
     }
-    Lifetime lifetime(Page page, View view = View::Result, bool advanced = false) const {
+    Lifetime lifetime(Page page, View view = View::Workbench, bool advanced = false) const {
         return m_pages[key(page, view, advanced)].lifetime;
     }
 private:
@@ -92,10 +92,10 @@ private:
     }
     std::size_t current_key() const { return key(m_page, m_view, m_advanced); }
     Page m_page {Page::Account};
-    View m_view {View::Result};
+    View m_view {View::Workbench};
     bool m_advanced {false};
     std::uint64_t m_epoch {0};
-    std::array<Adapter, 9> m_pages;
+    std::array<Adapter, 8> m_pages;
     std::optional<std::size_t> m_presented;
     RedesignPageTransition m_transition;
 };

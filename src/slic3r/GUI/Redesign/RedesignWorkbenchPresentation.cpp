@@ -1,4 +1,5 @@
 #include "RedesignShell.hpp"
+#include "GenerationCompletionToast.hpp"
 #include "AdvancedCreationWorkspace.hpp"
 #include "RedesignTheme.hpp"
 #include "../AI/ModelGeneration/WorkbenchStyle.hpp"
@@ -84,6 +85,7 @@ private:
 bool RedesignShell::begin_workbench_presentation(bool history_loading)
 {
     if (m_workbench_transition) return true;
+    if (m_generation_toast) m_generation_toast->dismiss();
     auto* source = active_page_focus_root();
     auto* content = m_content_host ? m_content_host->GetSizer() : nullptr;
     if (!source || !content) return false;
@@ -334,7 +336,6 @@ void RedesignShell::finish_workbench_presentation(bool ready, bool report_failur
     }
     if (ready) {
         m_image_page_view_only = false;
-        m_advanced_model_route = false;
         if (m_advanced_workspace && m_advanced_workspace != m_workbench_transition_source)
             m_advanced_workspace->Hide();
         m_page_coordinator.select_page(Page::Model);
@@ -348,6 +349,11 @@ void RedesignShell::finish_workbench_presentation(bool ready, bool report_failur
         m_page_coordinator.select_view(static_cast<ModelView>(source.view));
     }
     restore_workbench_source_page();
+    if (!ready) {
+        if (auto* restored = active_page_focus_root()) restored->Show();
+    }
+    if (m_advanced_workspace) m_advanced_workspace->Show(m_page_coordinator.page() == Page::Image && m_page_coordinator.advanced());
+    if (m_page_coordinator.advanced()) m_image_page->Hide();
     sync_page_settings_visibility(m_page_coordinator.page());
     refresh_navigation();
     refresh_workflow_layout();

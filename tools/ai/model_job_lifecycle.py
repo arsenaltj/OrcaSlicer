@@ -410,11 +410,14 @@ class ModelJobLifecycle:
         Prepared-only text fixtures and abandoned internal jobs have no user input
         that the panel can display.  Letting one of those win `/latest` clears a
         newer user's recoverable image journey after restart.
+        Stopped/failed smart journeys remain visible for explicit recovery; this
+        lookup never resumes work or authorizes another provider submission.
         """
 
         if job.creation_kind == "advanced_multiview_v1":
             return False  # The advanced group, not legacy latest, owns this source.
-        if job.state not in {
+        smart_terminal = job.workflow_mode == "smart" and job.state in {"stopped", "failed"}
+        if not smart_terminal and job.state not in {
             "recommending_palette", "awaiting_palette_confirmation", "preprocessing",
             "awaiting_confirmation", "queued", "running", "stopping", "ready",
         }:

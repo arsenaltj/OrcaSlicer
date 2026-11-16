@@ -7,6 +7,8 @@
 
 相关文档：[验收用例](2026-11-07-advanced-multiview-acceptance.md)、[开发主计划](../2026-09-25-product-convergence-and-lightweight-plan.md)、[平台维护入口](../../architecture/PLATFORM_ARCHITECTURE.md#开发时怎样用)。开发状态仅在主计划与短状态维护，本文不作为另一份执行台账。
 
+2026-11-12最新需求：[创作页内3D生成与工作台直达编辑V1.0](2026-11-12-inline-3d-generation-requirements.md)替代下方WB-01／WB-03／WB-05／WB-10中“等待／结果在工作台及自动跳转”的描述，并调整WB-B的结果页中转路径。智能与高级分别在自己的中央区域生成和显示成果，完成后显式进入唯一编辑工作台。原四图、任务隔离、保护、返回来源及下游业务继续有效；新版需求文档交付不代表产品已实施，提示条时长等未定项见新版第14节。
+
 <a id="mv-workbench-requirements"></a>
 
 ## 2026-11-11 统一工作台需求V3.0（已确认）

@@ -21,6 +21,8 @@ public:
     bool draft_dirty() const { return m_draft_dirty; }
     void mark_draft_saved(const DesignDraft& saved);
     bool inputs_match_results() const;
+    void arm_initial_design_guidance(const CallbackContext& context);
+    bool consume_initial_design_guidance();
 
     CallbackContext begin_open(std::string group_id);
     CallbackContext new_creation();
@@ -41,6 +43,8 @@ public:
     Eligibility eligibility(const Capabilities& capabilities, const HostGuards& guards) const;
 
 private:
+    enum class InitialDesignGuidance { Unarmed, Pending, Consumed };
+    InitialDesignGuidance m_initial_design_guidance {InitialDesignGuidance::Unarmed};
     struct PendingClick { ViewId view; std::uint64_t due; };
     InputDraft m_draft;
     std::optional<GroupSnapshot> m_group;

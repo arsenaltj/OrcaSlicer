@@ -114,7 +114,31 @@ CallbackContext Session::begin_open(std::string group_id)
     m_opening_id = std::move(group_id);
     m_pending_click.reset();
     m_accepted_model.reset();
+    m_initial_design_guidance = InitialDesignGuidance::Unarmed;
     return context();
+}
+
+void Session::arm_initial_design_guidance(const CallbackContext& callback)
+{
+    if (matches(callback) && !callback.group_id.empty() &&
+        m_initial_design_guidance == InitialDesignGuidance::Unarmed)
+        m_initial_design_guidance = InitialDesignGuidance::Pending;
+}
+
+bool Session::consume_initial_design_guidance()
+{
+    if (m_initial_design_guidance != InitialDesignGuidance::Pending || !m_group ||
+        m_group->id != m_opening_id || !m_group->active_operation_id.empty() ||
+        m_group->stop_intent || !inputs_match_results())
+        return false;
+    for (const auto& view : m_group->views)
+        if (!view.usable || view.asset_pending || view.display_error ||
+            view.version_id.empty() || view.image_path.empty() ||
+            view.version_id != view.canonical_version_id ||
+            design_attempt_generating(view.attempt_state) || design_attempt_failed(view.attempt_state))
+            return false;
+    m_initial_design_guidance = InitialDesignGuidance::Consumed;
+    return true;
 }
 
 CallbackContext Session::new_creation()

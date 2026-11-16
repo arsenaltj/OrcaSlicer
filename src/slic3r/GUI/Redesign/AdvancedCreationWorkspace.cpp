@@ -1,4 +1,6 @@
 #include "AdvancedCreationWorkspace.hpp"
+#include "InlineModelGenerationView.hpp"
+#include "../AI/ModelGeneration/ModelGenerationStatusText.hpp"
 #include "RedesignWidgets.hpp"
 #include "RedesignMessageDialog.hpp"
 #include "SmartCreationControls.hpp"
@@ -26,7 +28,7 @@
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
 #include <wx/timer.h>
-#include <wx/weakref.h>
+#include <wx/wupdlock.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -1120,10 +1122,15 @@ struct AdvancedCreationWorkspace::Impl {
     wxPanel* creation {nullptr};
     wxPanel* legacy {nullptr};
     bool polish_pending {false}, closing {false};
-    std::uint64_t model_open_sequence {0};
+    // Worker callbacks carry this token without touching wx tracker lists.
+    std::shared_ptr<int> lifetime {std::make_shared<int>(0)};
     std::function<void(const ModelGenerationUIState&)> model_state_changed;
     std::function<void(const ModelJobEvent&)> model_job_event;
     wxPanel* grid {nullptr};
+    InlineModelGenerationView* generation_view {nullptr};
+    GenerationCompletionActions* completion_actions {nullptr};
+    std::function<void()> open_workbench, completed;
+    bool presented {false};
     wxScrolledWindow* input_scroll {nullptr};
     wxPanel* input_content {nullptr};
     wxPanel* design_inputs {nullptr};
@@ -1207,7 +1214,9 @@ struct AdvancedCreationWorkspace::Impl {
         visit(&page);
     }
     void set_presented(bool visible) {
+        presented = visible;
         sync_image_activity(visible);
+        if (generation_view) generation_view->set_presented(visible && model_tab && generation_view->has_content());
         if (visible) refresh.resume();
     }
     void on_iconize(wxIconizeEvent& event) {
@@ -1266,20 +1275,9 @@ struct AdvancedCreationWorkspace::Impl {
                 if (self.model_state_changed) self.model_state_changed(state);
             });
         });
-        host.set_model_state_listener([weak](const ModelGenerationUIState& state, bool explicit_open) {
+        host.set_model_state_listener([weak](const ModelGenerationUIState& state, bool) {
             if (!weak || weak->m_impl->closing) return;
             auto& self = *weak->m_impl;
-            if (explicit_open && self.page.IsShownOnScreen()) {
-                const auto& session = self.host.session();
-                if (session.group()) {
-                    ModelJobEvent event {session.context(), state.job_id, ++self.model_open_sequence};
-                    if (self.model_job_event) {
-                        self.model_job_event(event);
-                        event.phase = ModelJobEvent::Phase::Accepted;
-                        self.model_job_event(event);
-                    }
-                }
-            }
             if (self.model_state_changed) self.model_state_changed(state);
             self.render();
         });
@@ -1517,6 +1515,10 @@ struct AdvancedCreationWorkspace::Impl {
         style_smart_creation_text(model, 16, *wxWHITE, wxFONTWEIGHT_MEDIUM);
         actions->Add(model, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM, page.FromDIP(16));
         model->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { host.generate_model(model_confirmation()); });
+        completion_actions = new GenerationCompletionActions(action_panel,
+            [this] { host.generate_model(model_confirmation()); },
+            [this] { if (open_workbench) open_workbench(); });
+        actions->Add(completion_actions, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, page.FromDIP(16));
         view_model = new RoundedActionButton(action_panel, t("查看3D模型"), false, 32);
         view_model->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { open_model(); });
         actions->Add(view_model, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, page.FromDIP(16));
@@ -1544,6 +1546,14 @@ struct AdvancedCreationWorkspace::Impl {
         status->SetMinSize(wxSize(0, -1)); center_sizer->Add(status, 0, wxEXPAND | wxBOTTOM, page.FromDIP(6));
         grid = new wxPanel(center); grid->SetBackgroundColour(background_colour()); grid->SetMinSize(wxSize(0, 0));
         center_sizer->Add(grid, 1, wxEXPAND);
+        generation_view = new InlineModelGenerationView(center, {
+            [this] {
+                const auto& state = host.model_state();
+                if (state.job_state == "ready" && state.can_retry_model) host.retry_local_model();
+                else host.resume_model();
+            }, [this] { update_model_presentation(); },
+            [this] { if (completed) completed(); }});
+        center_sizer->Add(generation_view, 1, wxEXPAND); generation_view->Hide();
         for (auto view : AllViews) {
             const auto i = index(view); cards[i] = new ViewCard(grid, central_title(view)); cards[i]->SetName(t("advanced-design-") + t(view_name(view)));
             cards[i]->Bind(wxEVT_LEFT_UP, [this, view, i](wxMouseEvent&) {
@@ -1684,10 +1694,12 @@ struct AdvancedCreationWorkspace::Impl {
     ~Impl() { shutdown(); }
     void shutdown() {
         if (closing) return; closing = true;
+        lifetime.reset();
         if (activity_owner) activity_owner->Unbind(wxEVT_ICONIZE,&Impl::on_iconize,this);
         refresh.stop();
         sync_image_activity();
         click_timer.Stop();
+        if (generation_view) generation_view->shutdown();
         if (polish_request) polish_request->cancel();
         model_host.set_advanced_state_listener({});
         model_host.unmount_legacy_creation();
@@ -1762,19 +1774,20 @@ struct AdvancedCreationWorkspace::Impl {
         }
         value.provider = selected_provider; value.state = "checking"; value.connection_state.clear();
         const std::uint64_t sequence = ++value.sequence; apply_provider_status(geometry);
-        wxWeakRef<AdvancedCreationWorkspace> weak(&page);
+        auto* target = &page;
+        const auto alive = std::weak_ptr<int>(lifetime);
         host.get_provider_catalog(geometry ? "geometry" : "image", selected_provider,
-            [weak, geometry, sequence, selected_provider](AIModelGenerationClient::ProviderCatalog catalog) {
-                if (!weak) return;
-                auto& self = *weak->m_impl;
+            [target, alive, geometry, sequence, selected_provider](AIModelGenerationClient::ProviderCatalog catalog) {
+                if (alive.expired()) return;
+                auto& self = *target->m_impl;
                 auto& status = geometry ? self.geometry_status : self.image_status;
                 if (self.closing || status.sequence != sequence || status.provider != selected_provider) return;
                 status.state = catalog.ready() ? "ready" : catalog.state;
                 status.connection_state = catalog.connection_state;
-                self.render();
-            }, [weak, geometry, sequence, selected_provider](std::string) {
-                if (!weak) return;
-                auto& self = *weak->m_impl;
+                self.apply_provider_status(geometry);
+            }, [target, alive, geometry, sequence, selected_provider](std::string) {
+                if (alive.expired()) return;
+                auto& self = *target->m_impl;
                 auto& status = geometry ? self.geometry_status : self.image_status;
                 if (self.closing || status.sequence != sequence || status.provider != selected_provider) return;
                 status.state = "error"; status.connection_state.clear(); self.render();
@@ -1802,8 +1815,53 @@ struct AdvancedCreationWorkspace::Impl {
         }
         return true;
     }
+    void update_model_presentation() {
+        if (!generation_view || closing) return;
+        const bool content = model_tab && generation_view->has_content();
+        const bool complete = content && generation_view->ready();
+        const bool completion_changed = completion_actions->IsShown() != complete;
+        std::unique_ptr<wxWindowUpdateLocker> content_handoff;
+        if (generation_view->IsShown() != content)
+            content_handoff = std::make_unique<wxWindowUpdateLocker>(grid->GetParent());
+        show(grid, !content); show(generation_view, content);
+        show(completion_actions, complete);
+        show(model, model_tab && !complete);
+        show(view_model, false);
+        const auto eligibility = host.eligibility();
+        completion_actions->set_enabled(eligibility.generate_model,
+            generation_view->ready() && host.model_state().can_open_workbench && !host.command_pending());
+        generation_view->set_presented(presented && content);
+        if (completion_changed) {
+            // The first-frame callback runs outside apply_snapshot(). Commit
+            // only the footer geometry before its display protection ends.
+            action_panel->GetParent()->Layout();
+            action_panel->Layout();
+        }
+    }
+    void apply_model_snapshot(bool new_generation = false) {
+        if (!generation_view || closing) return;
+        const auto context = host.session().context();
+        auto state = host.model_state();
+        std::optional<WorkbenchOpenRequest> request;
+        const auto& group = host.session().group();
+        if (!group || (!new_generation && group->model_job_id != state.job_id)) state = {};
+        else if (host.model_artifact() && host.model_artifact()->job_id == state.job_id) {
+            request.emplace(); request->entry = *host.model_artifact();
+            request->artifact.local_path = request->entry.model_path;
+            request->artifact.job_id = request->entry.job_id;
+            request->sha256 = request->entry.content_sha256;
+            request->origin = WorkbenchOpenRequest::Origin::Advanced;
+            request->generation = state.model_generation_session;
+            request->return_context = "advanced";
+        }
+        ModelGenerationStatusText::localize_advanced_model_state(state);
+        generation_view->apply_snapshot({CreationSource::Advanced, context.group_id, context.epoch}, state, std::move(request));
+        if (new_generation) generation_view->generation_started();
+        update_model_presentation();
+    }
     void open_model() {
         if (!host.session().group() || !input_editable()) return;
+        switch_stage(true);
         host.show_model();
     }
     void open_legacy() {
@@ -1845,17 +1903,19 @@ struct AdvancedCreationWorkspace::Impl {
             request.reference_image_path = boost::filesystem::path(reference->path.ToStdWstring());
             request.has_reference_image = true;
         }
-        polish_pending = true; render(); wxWeakRef<AdvancedCreationWorkspace> weak(&page);
+        polish_pending = true; render();
+        auto* target = &page;
+        const auto alive = std::weak_ptr<int>(lifetime);
         polish_request = text_client->polish_image_prompt(request,
-            [weak, context, reference](AITextClient::PolishResult result) {
-                if (weak) weak->CallAfter([weak, context, result] {
-                    if (!weak || weak->m_impl->closing || !weak->IsShownOnScreen()) return;
-                    auto& self = *weak->m_impl;
+            [target, alive, context, reference](AITextClient::PolishResult result) {
+                wxGetApp().CallAfter([target, alive, context, result] {
+                    if (alive.expired() || target->m_impl->closing || !target->IsShownOnScreen()) return;
+                    auto& self = *target->m_impl;
                     if (!self.host.session().matches(context.callback)) return;
                     self.polish_pending = false;
                     if (self.host.session().matches_command(context, false)) {
                         if (!result.optimized_prompt.empty() &&
-                            show_generation_confirmation(weak, t(result.optimized_prompt.c_str()), t("使用润色后的描述？")) == wxID_YES) {
+                            show_generation_confirmation(target, t(result.optimized_prompt.c_str()), t("使用润色后的描述？")) == wxID_YES) {
                             if (self.host.session().matches_command(context, false)) {
                                 auto draft = self.host.session().draft().design; draft.prompt = result.optimized_prompt;
                                 self.host.session().set_design_draft(std::move(draft)); self.host.changed();
@@ -1864,37 +1924,39 @@ struct AdvancedCreationWorkspace::Impl {
                             wxString feedback;
                             for (const auto& warning : result.warnings) { if (!feedback.empty()) feedback += "\n"; feedback += t(warning.c_str()); }
                             if (feedback.empty()) feedback = result.status == "needs_input" ? t("请补充描述内容。") : t("描述存在歧义，请补充后重试。");
-                            show_redesign_details(weak, feedback, t("请补充润色描述"));
+                            show_redesign_details(target, feedback, t("请补充润色描述"));
                         }
                     }
                     self.render();
                 });
-            }, [weak, context, reference](AITextClient::Error error) {
-                if (weak) weak->CallAfter([weak, context, error] {
-                    if (!weak || weak->m_impl->closing || !weak->IsShownOnScreen()) return;
-                    if (!weak->m_impl->host.session().matches(context.callback)) return;
-                    weak->m_impl->polish_pending = false;
-                    show_redesign_details(weak, t(error.message.c_str()), t("AI 润色暂不可用")); weak->render();
+            }, [target, alive, context, reference](AITextClient::Error error) {
+                wxGetApp().CallAfter([target, alive, context, error] {
+                    if (alive.expired() || target->m_impl->closing || !target->IsShownOnScreen()) return;
+                    if (!target->m_impl->host.session().matches(context.callback)) return;
+                    target->m_impl->polish_pending = false;
+                    show_redesign_details(target, t(error.message.c_str()), t("AI 润色暂不可用")); target->render();
                 });
             });
     }
     AdvancedCreationFeatureHost::Confirm model_confirmation() {
-        wxWeakRef<AdvancedCreationWorkspace> weak(&page);
-        return [weak](const nlohmann::json& plan) {
-            if (!weak) return false;
+        auto* target = &page;
+        const auto alive = std::weak_ptr<int>(lifetime);
+        return [target, alive](const nlohmann::json& plan) {
+            if (alive.expired()) return false;
             const auto& options = plan.at("options");
             auto message = t("使用正、左、后、右四张设计图生成同一个3D模型。\n供应商：") +
                 t(options.at("provider").get<std::string>().c_str()) + t("\n模型：") + t(options.at("geometry_model").get<std::string>().c_str()) +
                 wxString::Format(t("\n目标面数：%d\n本次最多提交1个3D任务，不会新增生图请求。"), options.at("face_limit").get<int>());
             if (options.at("output_format") == "obj") message += t("\nOBJ 还需最多1次格式转换任务。");
-            return show_generation_confirmation(weak, message, t("确认生成3D模型")) == wxID_YES;
+            return show_generation_confirmation(target, message, t("确认生成3D模型")) == wxID_YES;
         };
     }
 
     AdvancedCreationFeatureHost::Confirm confirmation() {
-        wxWeakRef<AdvancedCreationWorkspace> weak(&page);
-        return [weak](const nlohmann::json& plan) {
-            if (!weak) return false;
+        auto* target = &page;
+        const auto alive = std::weak_ptr<int>(lifetime);
+        return [target, alive](const nlohmann::json& plan) {
+            if (alive.expired()) return false;
             const auto& draft = plan.at("draft");
             wxString views;
             for (const auto& value : plan.at("targets")) {
@@ -1908,7 +1970,7 @@ struct AdvancedCreationWorkspace::Impl {
                  wxString::Format(t("\n本次最多生成 %d 张设计图。确认后开始生成。"), calls));
             if (plan.contains("dependency_views") && !plan.at("dependency_views").empty())
                 message += t("\n需先补生成主视角，再生成依赖它的视角；上方范围及张数已包含该主视角。");
-            return show_generation_confirmation(weak, message, t("确认生成2D设计图")) == wxID_YES;
+            return show_generation_confirmation(target, message, t("确认生成2D设计图")) == wxID_YES;
         };
     }
     bool input_editable() const {
@@ -2092,6 +2154,9 @@ struct AdvancedCreationWorkspace::Impl {
     void apply_snapshot(Presentation::Dirty flags) {
         if (closing) return;
         layout_changed=layout_changed || Presentation::has(flags,Presentation::Dirty::Layout);
+        if (presented && !host.command_pending() && !host.has_pending_receipt() &&
+            host.session().consume_initial_design_guidance())
+            switch_stage(true);
         const auto& session = host.session(); const auto& draft = session.draft(); const auto eligibility = host.eligibility();
         stage_tabs->set_model_tab(model_tab);
         show(design_inputs, !model_tab); show(model_inputs, model_tab);
@@ -2188,14 +2253,28 @@ struct AdvancedCreationWorkspace::Impl {
         wxString status_text = reason_text(model_tab ? eligibility.model_reason : eligibility.design_reason);
         if (group && group->model_state == "ready" && eligibility.model_reason.empty())
             status_text = t("已有3D模型，可查看生成时的四视角版本。");
-        if (group && group->model_busy) status_text = t(group->model_message.c_str());
+        const auto raw_model_state = host.model_state();
+        auto model_display = raw_model_state;
+        const bool current_model = group && !group->model_job_id.empty() && group->model_job_id == model_display.job_id;
+        if (current_model) ModelGenerationStatusText::localize_advanced_model_state(model_display);
+        if (group && group->model_busy)
+            status_text = current_model ? t(model_display.status_text.c_str()) : t("正在处理当前3D模型任务…");
         if (group && !group->active_operation_id.empty()) status_text = group->execution_state == "queued" ?
             t("排队中：等待前一个请求结束，随后开始生成设计图。") : t("正在生成设计图，成功结果会逐张更新。");
         if (group && group->stop_intent) status_text = t("已停止本地后续生成；远端已发请求可能仍完成。原图和已取得结果保留。");
-        if (!host.message().empty()) status_text = t(host.message().c_str());
+        if (!host.message().empty()) {
+            const auto stage = raw_model_state.stage;
+            const bool model_notice = model_tab && group && (group->model_busy || (current_model &&
+                (stage == ModelGenerationUIStage::GeneratingModel || stage == ModelGenerationUIStage::LoadingModel ||
+                 stage == ModelGenerationUIStage::Stopping || stage == ModelGenerationUIStage::Stopped ||
+                 stage == ModelGenerationUIStage::Failed)));
+            status_text = model_notice ? (current_model ? t(model_display.status_text.c_str()) :
+                t("正在处理当前3D模型任务…")) : t(host.message().c_str());
+        }
         label(status, status_text);
         if (history_dirty || history_view_signature() != history_signature) apply_history();
         enable(history_refresh, !host.command_pending());
+        apply_model_snapshot();
         for (auto* child : history_scroll->GetChildren())
             if (auto* card = dynamic_cast<HistorySetCard*>(child)) enable(card, navigation_allowed());
         if (layout_changed) {
@@ -2217,11 +2296,15 @@ struct AdvancedCreationWorkspace::Impl {
 AdvancedCreationWorkspace::AdvancedCreationWorkspace(wxWindow* parent, AdvancedCreationFeatureHost& host,
                                                      std::function<void()> show_smart, ModelGenerationFeatureHost& shared_models,
                                                      std::function<void(const ModelGenerationUIState&)> model_state_changed,
-                                                     std::function<void(const AdvancedCreation::ModelJobEvent&)> model_job_event)
+                                                     std::function<void(const AdvancedCreation::ModelJobEvent&)> model_job_event,
+                                                     std::function<void()> open_workbench, std::function<void()> completed)
     : wxPanel(parent), m_impl(std::make_unique<Impl>(*this, host, std::move(show_smart), shared_models, std::move(model_state_changed), std::move(model_job_event)))
 {
-    wxWeakRef<AdvancedCreationWorkspace> weak(this);
-    host.set_listener([weak] { if (weak) weak->render(); });
+    m_impl->open_workbench = std::move(open_workbench);
+    m_impl->completed = std::move(completed);
+    auto* target = this;
+    const auto alive = std::weak_ptr<int>(m_impl->lifetime);
+    host.set_listener([target, alive] { if (!alive.expired()) target->render(); });
 }
 AdvancedCreationWorkspace::~AdvancedCreationWorkspace() = default;
 void AdvancedCreationWorkspace::render() { m_impl->render(); }
@@ -2229,4 +2312,10 @@ void AdvancedCreationWorkspace::set_presented(bool visible) { m_impl->set_presen
 void AdvancedCreationWorkspace::set_service_available(bool available) { m_impl->set_service_available(available); }
 bool AdvancedCreationWorkspace::navigation_allowed() { return m_impl->navigation_allowed(); }
 void AdvancedCreationWorkspace::shutdown() { m_impl->shutdown(); }
+void AdvancedCreationWorkspace::apply_model_state(const ModelGenerationUIState&, bool new_generation) {
+    m_impl->apply_model_snapshot(new_generation);
+}
+std::optional<WorkbenchOpenRequest> AdvancedCreationWorkspace::displayed_artifact() const {
+    return m_impl->generation_view ? m_impl->generation_view->displayed_artifact() : std::nullopt;
+}
 }

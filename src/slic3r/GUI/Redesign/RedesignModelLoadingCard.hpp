@@ -50,7 +50,9 @@ inline RedesignModelLoadingCard create_model_loading_card(wxWindow* owner,
     auto* card = new WorkbenchFloatingCard(owner);
     auto* frame = new WorkbenchPaintedPanel(card, wxColour(45, 45, 49), 8, wxColour(72, 72, 78));
     frame->SetName("ai_content_color");
-    frame->SetMinSize(owner->FromDIP(wxSize(410, 184)));
+    // A fully specified minimum also becomes wx's best size, hiding controls
+    // below it. Keep the width stable and let the sizer fit the cancel row.
+    frame->SetMinSize(owner->FromDIP(wxSize(410, -1)));
 #ifdef __WXMSW__
     frame->SetDoubleBuffered(true);
 #endif

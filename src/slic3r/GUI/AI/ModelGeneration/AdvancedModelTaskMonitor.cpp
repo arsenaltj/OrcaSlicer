@@ -10,16 +10,16 @@ using namespace ModelGenerationPresentation;
 AdvancedModelTaskMonitor::AdvancedModelTaskMonitor()
     : m_client(AISidecarClient::default_endpoint()), m_timer(this)
 {
-    wxWeakRef<AdvancedModelTaskMonitor> weak(this);
+    const auto alive = std::weak_ptr<int>(m_lifetime);
     m_flow = std::make_unique<AdvancedModelTaskFlow>(AdvancedModelTaskFlow::Ports{
-        [this, weak](const std::string& job, auto complete, auto failed) {
-            m_client.get_status(job, [weak, complete](auto status) {
-                Presentation::post_gui([weak, complete, status = std::move(status)]() mutable {
-                    if (weak) complete(std::move(status));
+        [this, alive](const std::string& job, auto complete, auto failed) {
+            m_client.get_status(job, [alive, complete](auto status) {
+                Presentation::post_gui([alive, complete, status = std::move(status)]() mutable {
+                    if (!alive.expired()) complete(std::move(status));
                 });
-            }, [weak, failed](auto message) {
-                Presentation::post_gui([weak, failed, message = std::move(message)]() mutable {
-                    if (weak) failed(std::move(message));
+            }, [alive, failed](auto message) {
+                Presentation::post_gui([alive, failed, message = std::move(message)]() mutable {
+                    if (!alive.expired()) failed(std::move(message));
                 });
             });
         },
@@ -34,7 +34,7 @@ AdvancedModelTaskMonitor::AdvancedModelTaskMonitor()
     });
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) { m_flow->poll(); }, m_timer.GetId());
 }
-AdvancedModelTaskMonitor::~AdvancedModelTaskMonitor() { m_flow.reset(); }
+AdvancedModelTaskMonitor::~AdvancedModelTaskMonitor() { m_lifetime.reset(); m_flow.reset(); }
 void AdvancedModelTaskMonitor::cancel_requests()
 {
     m_timer.Stop(); m_client.cancel_current(); m_acquisition.cancel();
@@ -53,7 +53,8 @@ void AdvancedModelTaskMonitor::prepare(AI::GeneratedModelArtifact artifact,
     std::function<void(ModelLibraryEntry)> complete, AIModelGenerationClient::ErrorFn failed)
 {
     const auto task = m_preparation.begin(artifact.job_id, Presentation::TaskLifetime::Session);
-    wxWeakRef<AdvancedModelTaskMonitor> weak(this);
+    auto* weak = this;
+    const auto alive = std::weak_ptr<int>(m_lifetime);
     struct Prepared { ModelLibraryEntry entry; std::string error; };
     const bool accepted = Presentation::background_tasks().submit(task,
         [artifact = std::move(artifact), status = std::move(status), reference = std::move(reference)](
@@ -109,8 +110,8 @@ void AdvancedModelTaskMonitor::prepare(AI::GeneratedModelArtifact artifact,
             }
         } catch (const std::exception& e) { error = e.what(); }
         return Prepared {std::move(entry), std::move(error)};
-    }, [weak, task, complete = std::move(complete), failed](Presentation::TaskResult<Prepared> result) mutable {
-        if (!weak || !weak->m_preparation.matches(task) || result.canceled) return;
+    }, [weak, alive, task, complete = std::move(complete), failed](Presentation::TaskResult<Prepared> result) mutable {
+        if (alive.expired() || !weak->m_preparation.matches(task) || result.canceled) return;
         if (!result.value || result.error) { failed("模型本地准备未完成，已保留生成结果，请重试加载。"); return; }
         if (!result.value->error.empty() || result.value->entry.model_path.empty())
             failed(result.value->error.empty() ? "模型本地准备未完成，已保留生成结果，请重试加载。" : result.value->error);

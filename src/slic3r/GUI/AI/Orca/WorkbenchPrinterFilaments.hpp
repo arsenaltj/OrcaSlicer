@@ -441,6 +441,14 @@ inline bool import_color_pack(PresetBundle& staged, const FilamentColorPack& pac
         error = "色卡颜色或槽位数据无效，未导入"; return false;
     }
     PresetBundle candidate(staged);
+    // Restored projects may already have enough preset slots while optional
+    // appearance arrays are shorter. Normalize the private draft even when
+    // this import does not add a slot, before indexing or retiring recipes.
+    if (!candidate.filament_presets.empty() && candidate.filament_presets.size() <= limit) {
+        auto& types = candidate.project_config.option<ConfigOptionStrings>("filament_colour_type")->values;
+        if (types.empty()) types.push_back("1");
+        resize(candidate, candidate.filament_presets.size());
+    }
     auto pending_changes = changes;
     auto state = capture(candidate);
     // Retire old virtual recipes before growing physical slots. Otherwise a

@@ -1,4 +1,6 @@
 #include "RedesignShell.hpp"
+#include "InlineModelGenerationView.hpp"
+#include "GenerationCompletionToast.hpp"
 #include <wx/frame.h>
 #include "ImageHistorySidebar.hpp"
 #include "ImageWorkspaceLayout.hpp"
@@ -51,6 +53,7 @@
 
 #include <wx/dnd.h>
 #include <wx/button.h>
+#include <wx/wupdlock.h>
 #include <wx/filedlg.h>
 #include <wx/filedlgcustomize.h>
 #include <wx/colour.h>
@@ -169,18 +172,6 @@ wxColour background_colour()
 wxColour flow_background_colour()
 {
     return RedesignTheme::flow_background_colour();
-}
-
-// Moving child windows can preserve pixels from their old positions on MSW.
-// Invalidate the whole visible center after layout, including card backgrounds
-// and labels, instead of relying on the newly exposed resize strip alone.
-void refresh_image_surface(wxWindow* window)
-{
-    if (!window || !window->IsShown())
-        return;
-    window->Refresh();
-    for (auto* child : window->GetChildren())
-        refresh_image_surface(child);
 }
 
 wxColour panel_colour()
@@ -1454,7 +1445,6 @@ RedesignShell::~RedesignShell()
     Presentation::background_tasks().remove_shutdown_hook(this);
     m_surface_refresh.stop();
     m_creation_history_refresh.stop();
-    m_result_preview_scope.cancel();
     m_design_image_scope.cancel();
     m_page_coordinator.dispose();
     if (m_advanced_workspace) m_advanced_workspace->shutdown();
@@ -1465,7 +1455,6 @@ RedesignShell::~RedesignShell()
     if (m_print_page != nullptr)
         m_print_page->set_active(false);
     disconnect_model_generation_host();
-    ++m_model_preview_request_generation;
 }
 
 void RedesignShell::configure_page_lifecycle()
@@ -1473,9 +1462,10 @@ void RedesignShell::configure_page_lifecycle()
     Presentation::background_tasks().on_shutdown(this, [this] {
         m_presentation_stopping = true;
         m_surface_refresh.stop(); m_creation_history_refresh.stop();
-        m_result_preview_scope.cancel(); m_design_image_scope.cancel();
+        m_design_image_scope.cancel();
         m_preview_resize_timer.Stop(); m_workbench_transition_timer.Stop();
-        m_advanced_route_intent.cancel();
+        if (m_smart_generation_view) m_smart_generation_view->shutdown();
+        if (m_generation_toast) m_generation_toast->dismiss();
         if (m_advanced_workspace) m_advanced_workspace->shutdown();
         if (m_advanced_host) m_advanced_host->shutdown();
         cancel_prompt_polish(true);
@@ -1509,23 +1499,27 @@ void RedesignShell::configure_page_lifecycle()
             adapter.presented = [this] { if (m_print_page) m_print_page->set_active(true); };
             adapter.hidden = [this] { if (m_print_page) m_print_page->set_active(false); };
         }
-        m_page_coordinator.register_page(page, ModelView::Result, false, std::move(adapter));
-    }
-    for (const auto view : {ModelView::Result, ModelView::Workbench, ModelView::Slicing, ModelView::Preview}) {
-        Adapter adapter;
-        if (view == ModelView::Result) {
-            adapter.presented = [this] { ensure_model_preview(displayed_model_state()); };
+        if (page == Page::Image) {
+            adapter.presented = [this] { refresh_inline_generation(); };
             adapter.hidden = [this] {
-                m_result_preview_scope.cancel(); ++m_model_preview_request_generation;
-                m_model_preview_loading = false; m_loading_model_path.clear();
+                if (m_model_generation_host) m_model_generation_host->set_smart_creation_presented(false);
+                if (m_smart_generation_view) m_smart_generation_view->set_presented(false);
+                if (m_generation_toast) m_generation_toast->dismiss();
             };
         }
+        m_page_coordinator.register_page(page, ModelView::Workbench, false, std::move(adapter));
+    }
+    for (const auto view : {ModelView::Workbench, ModelView::Slicing, ModelView::Preview}) {
+        Adapter adapter;
         m_page_coordinator.register_page(Page::Model, view, false, std::move(adapter));
     }
     Adapter advanced;
     advanced.presented = [this] { if (m_advanced_workspace) m_advanced_workspace->set_presented(true); };
-    advanced.hidden = [this] { if (m_advanced_workspace) m_advanced_workspace->set_presented(false); };
-    m_page_coordinator.register_page(Page::Image, ModelView::Result, true, std::move(advanced));
+    advanced.hidden = [this] {
+        if (m_advanced_workspace) m_advanced_workspace->set_presented(false);
+        if (m_generation_toast) m_generation_toast->dismiss();
+    };
+    m_page_coordinator.register_page(Page::Image, ModelView::Workbench, true, std::move(advanced));
     Bind(wxEVT_SHOW, [this](wxShowEvent& event) {
         event.Skip(); if (event.IsShown()) m_surface_refresh.resume();
     });
@@ -1533,8 +1527,9 @@ void RedesignShell::configure_page_lifecycle()
 
 void RedesignShell::disconnect_model_generation_host()
 {
+    if (m_smart_generation_view) m_smart_generation_view->shutdown();
+    if (m_generation_toast) m_generation_toast->dismiss();
     ++m_creation_navigation_epoch;
-    m_advanced_route_intent.cancel();
     if (m_advanced_workspace) m_advanced_workspace->shutdown();
     if (m_advanced_host) m_advanced_host->shutdown();
     update_print_preview(false, false, true);
@@ -1685,7 +1680,8 @@ void RedesignShell::switch_creation_mode(bool advanced)
                 apply_advanced_model_state(state);
             }, [this](const AdvancedCreation::ModelJobEvent& event) {
                 on_advanced_model_job(event);
-            });
+            }, [this] { open_creation_artifact(CreationSource::Advanced); },
+            [this] { show_generation_completion(); });
         m_content_host->GetSizer()->Add(m_advanced_workspace, 1, wxEXPAND);
         const auto status = static_cast<AIServiceStatus>(m_last_service_status);
         m_advanced_workspace->set_service_available(status == AIServiceStatus::Connected ||
@@ -1696,7 +1692,7 @@ void RedesignShell::switch_creation_mode(bool advanced)
     {
         wxWindowUpdateLocker lock(this);
         ++m_creation_navigation_epoch;
-        m_advanced_route_intent.cancel();
+        if (m_generation_toast) m_generation_toast->dismiss();
         m_page_coordinator.select_mode(advanced);
         // Each mode retains its own widgets, session, history and in-flight client.
         // The existing smart input and options are never copied to advanced state.
@@ -1708,6 +1704,7 @@ void RedesignShell::switch_creation_mode(bool advanced)
         m_content_host->Layout(); m_content_host->GetParent()->Layout(); Layout();
     }
     if (m_advanced_workspace && advanced) m_advanced_workspace->render();
+    refresh_inline_generation();
     queue_creation_history_refresh();
     present_active_page();
 }
@@ -2144,6 +2141,9 @@ void RedesignShell::build_image_workspace()
     m_generate_button->Enable(false);
     m_generate_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { request_primary_action(); });
     action_sizer->Add(m_generate_button, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(sidebar_padding));
+    m_smart_completion_actions = new GenerationCompletionActions(action_panel,
+        [this] { request_primary_action(); }, [this] { open_creation_artifact(CreationSource::Smart); });
+    action_sizer->Add(m_smart_completion_actions, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(sidebar_padding));
     m_secondary_action_button = new RoundedActionButton(action_panel, wxEmptyString, false, 40);
     m_secondary_action_button->SetName("generation-secondary-action");
     m_secondary_action_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { request_secondary_action(); });
@@ -2156,7 +2156,7 @@ void RedesignShell::build_image_workspace()
         style_smart_creation_text(m_creation_lock_hint, 12, secondary_text_colour());
         m_creation_lock_hint->Hide();
         action_sizer->Add(m_creation_lock_hint, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(sidebar_padding));
-        action_sizer->AddSpacer(FromDIP(16));
+        m_smart_action_bottom_padding = action_sizer->AddSpacer(FromDIP(16));
     }
     settings_sizer->Add(action_panel, 0, wxEXPAND);
 
@@ -2238,6 +2238,12 @@ void RedesignShell::build_image_workspace()
     preview_sizer->AddStretchSpacer(1);
     image_center_sizer->Add(m_preview_host, 1, wxEXPAND);
     m_preview_host->Hide();
+    m_smart_generation_view = new InlineModelGenerationView(image_center, {
+        [this] { recover_smart_generation(); },
+        [this] { refresh_inline_generation(); },
+        [this] { show_generation_completion(); }});
+    image_center_sizer->Add(m_smart_generation_view, 1, wxEXPAND);
+    m_smart_generation_view->Hide();
     if (m_smart_creation) {
         m_smart_model_history_host = new wxPanel(m_image_page, wxID_ANY, wxDefaultPosition, wxDefaultSize,
             wxTAB_TRAVERSAL | wxCLIP_CHILDREN);
@@ -2288,7 +2294,7 @@ void RedesignShell::build_image_workspace()
     m_assets_page->Hide();
     m_pages[static_cast<std::size_t>(Page::Assets)] = m_assets_page;
     m_pages[static_cast<std::size_t>(Page::Image)] = m_image_page;
-    m_pages[static_cast<std::size_t>(Page::Model)] = build_model_workspace();
+    // The actual editing root is registered by build_model_workflow().
     m_print_page = new PrinterWorkspace(m_content_host, m_plater);
     m_print_page->set_interactive_preview_handler([this](bool active, bool layers, bool support) {
         return update_print_preview(active && m_page_coordinator.page() == Page::Print, layers, support);
@@ -2334,118 +2340,6 @@ void RedesignShell::build_image_workspace()
     navigate_to(Page::Image);
 }
 
-wxPanel* RedesignShell::build_model_workspace()
-{
-    if (m_model_page) return m_model_page; // One retained progress/result page for both creators.
-    m_model_page = new wxPanel(m_content_host, wxID_ANY, wxDefaultPosition, wxDefaultSize,
-                               wxTAB_TRAVERSAL | wxCLIP_CHILDREN);
-    m_model_page->SetBackgroundColour(background_colour());
-    // ModelPreview3D supplies the GL swap-chain. Native parent buffering on
-    // Windows may obscure that child even though the frame was submitted.
-    auto* outer = new wxBoxSizer(wxVERTICAL);
-    m_model_page->SetSizer(outer);
-
-    m_model_stage_title = new wxStaticText(m_model_page, wxID_ANY, text("工作台"));
-    style_text(m_model_stage_title, primary_text_colour(), 24, true);
-    auto* header = new wxBoxSizer(wxHORIZONTAL);
-    header->Add(m_model_stage_title, 0, wxALIGN_CENTER_VERTICAL);
-    outer->Add(header, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(42));
-
-    auto* body = new wxBoxSizer(wxHORIZONTAL);
-    m_model_visual_host = new wxPanel(m_model_page, wxID_ANY);
-    m_model_visual_host->SetBackgroundColour(background_colour());
-    auto* visual_sizer = new wxBoxSizer(wxVERTICAL);
-    m_model_visual_host->SetSizer(visual_sizer);
-    m_model_stage_visual = new ImagePreview(m_model_visual_host, text("等待 3D 生成"));
-    m_model_stage_visual->SetMinSize(wxSize(FromDIP(420), FromDIP(480)));
-    visual_sizer->Add(m_model_stage_visual, 1, wxEXPAND);
-    m_model_preview_3d = new ModelPreview3D(m_model_visual_host);
-    m_model_preview_3d->SetBackgroundColour(background_colour());
-    m_model_preview_3d->set_selection_enabled(false);
-    m_model_preview_3d->set_color_controls_visible(false);
-    m_model_preview_3d->Hide();
-    visual_sizer->Add(m_model_preview_3d, 1, wxEXPAND);
-    body->Add(m_model_visual_host, 1, wxEXPAND | wxRIGHT, FromDIP(34));
-
-    auto* status_column = new wxPanel(m_model_page, wxID_ANY, wxDefaultPosition,
-                                      wxSize(FromDIP(340), -1));
-    m_model_details_column = status_column;
-    status_column->SetMinSize(wxSize(FromDIP(300), -1));
-    status_column->SetMaxSize(wxSize(FromDIP(380), -1));
-    status_column->SetBackgroundColour(background_colour());
-    auto* status_sizer = new wxBoxSizer(wxVERTICAL);
-    status_column->SetSizer(status_sizer);
-    // Keep the description, statistics and camera actions together. Only the
-    // space between this content group and the primary actions may stretch.
-    auto* details_sizer = new wxBoxSizer(wxVERTICAL);
-    status_sizer->Add(details_sizer, 0, wxEXPAND);
-    auto* progress_heading = new wxStaticText(status_column, wxID_ANY, text("详情信息"));
-    style_text(progress_heading, primary_text_colour(), model_details_heading_point_size, true);
-    details_sizer->Add(progress_heading, 0, wxBOTTOM, FromDIP(12));
-    m_model_task_status = new wxStaticText(status_column, wxID_ANY, text("尚未开始"));
-    style_text(m_model_task_status, primary_text_colour(), 11);
-    details_sizer->Add(m_model_task_status, 0, wxEXPAND | wxBOTTOM, FromDIP(20));
-    m_model_stage_summary = new Label(status_column, wxGetApp().normal_font(), wxEmptyString,
-                                      LB_AUTO_WRAP, FromDIP(wxSize(300, -1)));
-    style_text(m_model_stage_summary, secondary_text_colour(), 10);
-    m_model_stage_summary->SetMinSize(wxSize(1, -1));
-    details_sizer->Add(m_model_stage_summary, 0, wxEXPAND);
-    m_model_preview_details = new Label(status_column, wxGetApp().normal_font(), wxEmptyString,
-                                        LB_AUTO_WRAP, FromDIP(wxSize(300, -1)));
-    style_text(m_model_preview_details, secondary_text_colour(), 9);
-    m_model_preview_details->SetMinSize(wxSize(1, -1));
-    m_model_preview_details->Hide();
-    details_sizer->Add(m_model_preview_details, 0, wxEXPAND | wxTOP, FromDIP(6));
-    m_model_view_controls = new wxPanel(status_column, wxID_ANY);
-    m_model_view_controls->SetBackgroundColour(background_colour());
-    auto* view_controls_sizer = new wxBoxSizer(wxHORIZONTAL);
-    m_model_view_controls->SetSizer(view_controls_sizer);
-    auto* front_view = new RoundedActionButton(m_model_view_controls, text("正视图"), false, 34);
-    front_view->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        if (m_model_preview_3d != nullptr)
-            m_model_preview_3d->front_view();
-    });
-    view_controls_sizer->Add(front_view, 1, wxRIGHT, FromDIP(8));
-    auto* reset_view = new RoundedActionButton(m_model_view_controls, text("重置视角"), false, 34);
-    reset_view->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        if (m_model_preview_3d != nullptr)
-            m_model_preview_3d->reset_view();
-    });
-    view_controls_sizer->Add(reset_view, 1);
-    m_model_view_controls->Hide();
-    details_sizer->Add(m_model_view_controls, 0, wxEXPAND | wxTOP, FromDIP(14));
-    status_sizer->AddStretchSpacer(1);
-    m_model_action_button = new RoundedActionButton(status_column, wxEmptyString, true, 46);
-    m_model_action_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { request_model_page_action(); });
-    m_model_action_button->Hide();
-    status_sizer->Add(m_model_action_button, 0, wxEXPAND | wxTOP, FromDIP(14));
-    m_model_back_to_design_button = new RoundedActionButton(status_column, (m_smart_creation ? text("返回AI创作") : text("返回图像设计")), false, 40);
-    m_model_back_to_design_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { return_to_image_design(); });
-    m_model_back_to_design_button->Hide();
-    status_sizer->Add(m_model_back_to_design_button, 0, wxEXPAND | wxTOP, FromDIP(10));
-    m_model_stop_button = new RoundedActionButton(status_column, text("停止生成"), false, 40);
-    m_model_stop_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        if (m_advanced_model_route && m_advanced_host) {
-            if (m_advanced_host->eligibility().stop) m_advanced_host->stop();
-            return;
-        }
-        if (m_model_generation_host != nullptr && m_model_generation_host->request_stop())
-            apply_model_generation_state(m_model_generation_host->snapshot());
-    });
-    m_model_stop_button->Hide();
-    status_sizer->Add(m_model_stop_button, 0, wxEXPAND | wxTOP, FromDIP(10));
-    status_column->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
-        event.Skip();
-        layout_model_details();
-    });
-    body->Add(status_column, 0, wxEXPAND);
-    outer->Add(body, 1, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM, FromDIP(42));
-
-    m_content_host->GetSizer()->Add(m_model_page, 1, wxEXPAND);
-    m_model_page->Hide();
-    return m_model_page;
-}
-
 void RedesignShell::connect_model_generation_host()
 {
     if (m_model_generation_host == nullptr) {
@@ -2485,11 +2379,8 @@ void RedesignShell::connect_model_generation_host()
             weak->m_saved_creation_input = weak->current_generation_input();
             weak->m_saved_creation_options = weak->current_generation_options();
         }
-        weak->navigate_to(design ? Page::Image : Page::Model);
-        // History first restores the completed model. Entering the workbench
-        // before its asynchronous load finishes would run the legacy check and
-        // skip the portrait transaction owned by the explicit workbench action.
-        if (!design) weak->show_model_view(ModelView::Result);
+        if (design) weak->navigate_to_image_view();
+        if (!design) weak->show_model_view(ModelView::Workbench);
     });
     m_model_generation_host->set_history_model_open_handler([weak](const ModelHistoryOpenEvent& event) {
         if (!weak || !weak->m_model_generation_host) return false;
@@ -2534,74 +2425,6 @@ void RedesignShell::connect_model_generation_host()
     });
 }
 
-const ModelGenerationUIState& RedesignShell::displayed_model_state() const
-{
-    return m_advanced_model_route ? m_advanced_model_state : m_model_generation_state;
-}
-
-void RedesignShell::apply_advanced_model_state(const ModelGenerationUIState& state)
-{
-    if (m_presentation_stopping) return;
-    bool can_stop = state.can_stop;
-    bool can_resume = state.can_retry_model && state.job_state == "ready";
-    if (m_advanced_host && m_advanced_host->session().group()) {
-        const auto& group = *m_advanced_host->session().group();
-        can_stop = can_stop || m_advanced_host->eligibility().stop;
-        can_resume = can_resume || (group.model_resumable &&
-            (group.model_state == "failed" || group.model_state == "stopped"));
-    }
-    m_advanced_model_state = advanced_model_presentation_state(state, can_stop, can_resume);
-    if (m_advanced_model_route) {
-        update_model_page(m_advanced_model_state);
-    }
-    queue_advanced_model_route();
-}
-
-void RedesignShell::on_advanced_model_job(const AdvancedCreation::ModelJobEvent& event)
-{
-    if (!m_advanced_host || !m_advanced_host->session().matches(event.context)) return;
-    if (event.phase == AdvancedCreation::ModelJobEvent::Phase::Requested) {
-        if (m_page_coordinator.page() == Page::Image && m_page_coordinator.advanced())
-            m_advanced_route_intent.request(event, m_creation_navigation_epoch);
-    } else {
-        m_advanced_route_intent.accept(event);
-    }
-    queue_advanced_model_route();
-}
-
-void RedesignShell::queue_advanced_model_route()
-{
-    if (!m_advanced_route_intent.pending() || m_advanced_route_refresh_pending) return;
-    m_advanced_route_refresh_pending = true;
-    wxWeakRef<RedesignShell> weak(this);
-    CallAfter([weak] {
-        if (!weak) return;
-        weak->m_advanced_route_refresh_pending = false;
-        if (!weak->m_advanced_host || !weak->m_advanced_host->session().group()) return;
-        const auto& session = weak->m_advanced_host->session();
-        auto* frame = wxDynamicCast(wxGetTopLevelParent(weak.get()), wxTopLevelWindow);
-        const bool blocked = weak->m_page_coordinator.transition().active() || weak->m_import_in_progress ||
-            (frame && frame->IsIconized());
-        if (!weak->m_advanced_route_intent.ready(session.context(), session.group()->model_job_id,
-            weak->m_advanced_model_state, weak->m_creation_navigation_epoch,
-            weak->m_page_coordinator.page() == Page::Image && weak->m_page_coordinator.advanced(), blocked) ||
-            weak->block_workbench_navigation()) return;
-        const auto old_view = weak->m_page_coordinator.view();
-        const bool old_route = weak->m_advanced_model_route;
-        weak->m_advanced_model_route = true;
-        weak->m_page_coordinator.select_view(ModelView::Result);
-        weak->clear_model_preview();
-        weak->update_model_page(weak->m_advanced_model_state);
-        if (weak->navigate_to(Page::Model)) {
-            weak->m_advanced_route_intent.cancel();
-        } else {
-            // A temporary transition must not consume the user's intent.
-            weak->m_page_coordinator.select_view(old_view);
-            weak->m_advanced_model_route = old_route;
-        }
-    });
-}
-
 void RedesignShell::mount_smart_model_history()
 {
     if (!creation_history_sidebar_active(m_page_coordinator.page(), m_smart_creation, m_page_coordinator.advanced()) ||
@@ -2633,18 +2456,13 @@ void RedesignShell::sync_smart_model_history()
 
 void RedesignShell::queue_creation_history_refresh()
 {
-    queue_advanced_model_route();
     m_creation_history_refresh.request(Presentation::Dirty::Layout | Presentation::Dirty::Overlay | Presentation::Dirty::Paint);
 }
 
 void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& state)
 {
     if (m_presentation_stopping) return;
-    const bool creator_route_visible = m_page_coordinator.page() == Page::Image ||
-        (m_page_coordinator.page() == Page::Model && m_page_coordinator.view() == ModelView::Result);
-    const auto route_action = model_generation_route_action(state, m_model_generation_state,
-        m_model_route_locked, m_model_route_session, m_model_route_id,
-        m_history_open_request != 0 || !creator_route_visible || m_page_coordinator.transition().active() || m_page_coordinator.advanced());
+    const auto route_action = model_generation_route_action(state, m_model_generation_state);
     if (route_action == RedesignModelRouteAction::Ignore)
         return;
     const bool preserve_creation_draft = m_smart_creation && m_saved_creation_input.has_value();
@@ -2657,14 +2475,6 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         restore_image_input(state.input);
     m_image_design_draft.observe(state);
     const auto image_stage = m_image_design_draft.stage(state);
-    const bool preserve_model_workbench = model_generation_preserves_workbench(state, route_action,
-        m_page_coordinator.page() == Page::Model && m_page_coordinator.view() == ModelView::Workbench);
-    // Revoke foreground ownership before mutating or presenting the result route.
-    // Otherwise a check started for the previous workbench can briefly keep its
-    // floating card alive while a newly generated model is still on Result.
-    if (m_model_generation_host &&
-        model_generation_route_revokes_workbench_presentation(route_action, preserve_model_workbench))
-        m_model_generation_host->set_workbench_presented(false);
     const bool history_changed = image_design_refreshes_history(state, m_model_generation_state) ||
         (m_smart_creation && (state.job_id != m_model_generation_state.job_id ||
          state.job_state != m_model_generation_state.job_state));
@@ -2674,13 +2484,6 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     if (m_prompt && !state.busy && state.job_id == m_model_generation_state.job_id) {
         const auto encoded = m_prompt->GetValue().ToUTF8();
         preserve_over_limit_prompt = encoded && encoded.length() > ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES;
-    }
-    if (route_action == RedesignModelRouteAction::Model || route_action == RedesignModelRouteAction::Image) {
-        m_model_route_locked = route_action == RedesignModelRouteAction::Model;
-        m_model_route_session = state.model_generation_session;
-        m_model_route_id = model_generation_route_id(state);
-        if (!preserve_model_workbench)
-            m_page_coordinator.select_view(ModelView::Result);
     }
     m_model_generation_state = state;
     if (m_image_history) {
@@ -2883,15 +2686,21 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         update_design_preview();
         break;
     case ModelGenerationUIStage::Input:
+        if (!m_smart_creation && state.can_restore_latest) {
+            m_secondary_action = SecondaryAction::RestoreLatest;
+            secondary_label = text("恢复上次任务");
+        }
         break;
     }
 
     if (m_smart_creation) {
         primary_label = text("生成3D模型");
         primary_enabled = m_input_sync_ok && m_option_sync_ok && state.can_generate_design && editable && selected_provider_ready();
-        if (state.provider_error_ambiguous && state.inputs_match_job) primary_enabled = false;
+        const bool ambiguous_submission_blocked = state.provider_error_ambiguous && state.inputs_match_job &&
+            !state.can_restart_failed_smart_preparation;
+        if (ambiguous_submission_blocked) primary_enabled = false;
         m_generate_button->SetToolTip(primary_enabled ? text("自动准备输入并生成3D模型") :
-            state.provider_error_ambiguous ? text("上次提交结果待核对，当前不会重复创建任务") :
+            ambiguous_submission_blocked ? text("上次提交结果待核对，当前不会重复创建任务") :
             text("请填写有效输入，并检查GPT准备服务、3D模型配置和当前工作台状态"));
     }
     if (m_image_page_view_only && (m_secondary_action == SecondaryAction::None ||
@@ -2916,8 +2725,10 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
 
     if (show_design_bitmap)
         update_preview_bitmap();
-    else if (m_result_preview != nullptr)
+    else if (m_result_preview != nullptr) {
+        m_design_bitmap_cache.reset();
         m_result_preview->SetPlaceholder(placeholder, placeholder_mode);
+    }
     if (m_result_preview != nullptr) {
         if (image_stage == ModelGenerationUIStage::GeneratingDesign)
             m_result_preview->SetDesignTiming(state.job_id, state.design_elapsed_seconds, state.design_estimated_seconds);
@@ -2947,12 +2758,8 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     // Connection presentation is owned by set_service_status(). Generation
     // availability only gates actions; it must not overwrite a connected service.
     refresh_prompt_polish_controls();
-    if (!m_advanced_model_route) update_model_page(state);
+    apply_smart_inline_generation();
     update_image_state();
-    if (creator_route_visible && !m_page_coordinator.transition().active() && !m_page_coordinator.advanced() && route_action == RedesignModelRouteAction::Model)
-        navigate_to(Page::Model);
-    else if (creator_route_visible && !m_page_coordinator.transition().active() && !m_page_coordinator.advanced() && route_action == RedesignModelRouteAction::Image)
-        navigate_to(Page::Image);
     if (m_image_settings_panel != nullptr)
         m_image_settings_panel->Layout();
     layout_image_settings();
@@ -2960,6 +2767,10 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
 
 void RedesignShell::update_generation_style_controls()
 {
+    const auto display = std::make_tuple(m_smart_creation, m_style_filter, m_selected_style_id,
+                                        generation_input_editable());
+    if (m_applied_style_controls == display) return;
+    m_applied_style_controls = display;
     if (m_smart_styles) {
         m_smart_styles->Show(m_smart_creation);
         // wxGridSizer counts hidden items when calculating its row count.
@@ -3570,6 +3381,7 @@ void RedesignShell::restore_image_input(const ModelGenerationUIInput& input)
     // Explicit context switches replace the source and the design together.
     // Ordinary refreshes must not overwrite an uploaded, unsubmitted draft.
     ++m_image_request_generation;
+    ++m_image_content_generation;
     m_selected_image_path = boost::filesystem::path(wxString::FromUTF8(input.image_path).ToStdWstring());
     m_selected_image = wxImage();
     if (!m_selected_image_path.empty()) {
@@ -3605,6 +3417,7 @@ void RedesignShell::request_generate_design()
     }
     m_submit_in_progress = false;
     apply_model_generation_state(m_model_generation_host->snapshot());
+    if (m_smart_creation && m_smart_generation_view) m_smart_generation_view->generation_started();
 }
 
 void RedesignShell::request_generate_model()
@@ -3623,8 +3436,7 @@ void RedesignShell::request_generate_model()
         apply_model_generation_state(m_model_generation_state);
         return;
     }
-    // The host presents confirmation on the current image page. Only its
-    // confirmed submission state may enter and lock the model route.
+    // Confirmation stays on the creation page; accepted state updates its inline view.
     // A false return can also mean asynchronous history preparation is still
     // pending; the state listener handles that submission when it is ready.
     if (m_model_generation_host != nullptr)
@@ -3666,417 +3478,6 @@ void RedesignShell::request_secondary_action()
     }
     if (handled)
         apply_model_generation_state(m_model_generation_host->snapshot());
-}
-
-void RedesignShell::request_model_page_action()
-{
-    bool handled = false;
-    switch (m_model_page_action) {
-    case ModelPageAction::RetryService:
-        handled = !m_advanced_model_route && m_model_generation_host != nullptr &&
-            m_model_generation_host->request_retry_service();
-        break;
-    case ModelPageAction::RetryModel:
-        if (m_advanced_model_route && m_advanced_host) {
-            const auto& group = m_advanced_host->session().group();
-            handled = group && group->model_resumable &&
-                (group->model_state == "failed" || group->model_state == "stopped");
-            if (displayed_model_state().can_retry_model && displayed_model_state().job_state == "ready") {
-                handled = true; m_advanced_host->retry_local_model();
-            } else if (handled) m_advanced_host->resume_model();
-        } else {
-            handled = m_model_generation_host != nullptr && m_model_generation_host->request_retry_model();
-        }
-        break;
-    case ModelPageAction::RestoreLatest:
-        handled = !m_advanced_model_route && m_model_generation_host != nullptr &&
-            m_model_generation_host->request_restore_latest();
-        break;
-    case ModelPageAction::BackToDesign:
-        return_to_image_design();
-        return;
-    case ModelPageAction::ReloadPreview:
-        m_model_preview_failed = false;
-        m_model_preview_error.clear();
-        m_loaded_model_path.clear();
-        ensure_model_preview(displayed_model_state());
-        update_model_page(displayed_model_state());
-        return;
-    case ModelPageAction::Import: {
-        const auto& source = displayed_model_state();
-        if (m_advanced_model_route && m_advanced_host && m_advanced_host->model_artifact() &&
-            source.model_ready && source.model_asset_id == m_advanced_host->model_state().model_asset_id &&
-            source.model_generation_session == m_advanced_host->model_state().model_generation_session) {
-            WorkbenchOpenRequest request;
-            request.entry = *m_advanced_host->model_artifact();
-            request.artifact.local_path = request.entry.model_path;
-            request.artifact.job_id = request.entry.job_id;
-            request.sha256 = request.entry.content_sha256;
-            request.generation = source.model_generation_session;
-            request.origin = WorkbenchOpenRequest::Origin::Advanced;
-            request.return_context = "advanced";
-            request.new_asset = true;
-            handled = m_model_generation_host && m_model_generation_host->request_open_workbench_artifact(std::move(request));
-        } else handled = m_model_generation_host &&
-            m_model_generation_host->request_open_generated_workbench(m_advanced_model_route, source);
-        break;
-    }
-    case ModelPageAction::None:
-        return;
-    }
-    if (handled && !m_advanced_model_route)
-        apply_model_generation_state(m_model_generation_host->snapshot());
-}
-
-void RedesignShell::update_model_page(const ModelGenerationUIState&)
-{
-    if (m_presentation_stopping || m_page_coordinator.page() != Page::Model ||
-        m_page_coordinator.view() != ModelView::Result) return;
-    // The business snapshot was already accepted by its Session/adapter. Only
-    // the current result surface may touch these controls or prepare its GL.
-    m_surface_refresh.request(Presentation::Dirty::Content | Presentation::Dirty::Paint);
-}
-
-void RedesignShell::apply_model_page_snapshot(const ModelGenerationUIState& state)
-{
-    if (m_model_page == nullptr || m_model_stage_visual == nullptr)
-        return;
-    m_model_page_action = ModelPageAction::None;
-    wxString title = text("工作台");
-    wxString status = text("完成 2D 设计后可开始生成 3D 模型");
-    wxString progress_label = text("尚未开始");
-    wxString summary;
-    wxString action_label;
-    wxString visual_label = text("等待 3D 生成");
-    ImagePreview::PlaceholderMode visual_mode = ImagePreview::PlaceholderMode::Idle;
-    int progress = -1;
-    bool show_stop = false;
-
-    if (state.stage == ModelGenerationUIStage::LoadingModel) {
-        title = text("正在加载 3D 模型");
-        status = !state.status_text.empty() ? wxString::FromUTF8(state.status_text.c_str())
-                                            : text("正在解析本地模型文件");
-        progress_label = text("加载中");
-        visual_label = text("正在加载 3D 模型预览");
-        visual_mode = ImagePreview::PlaceholderMode::Generating;
-        summary = text("模型加载完成后可继续查看、编辑或导入。");
-    } else if (state.stage == ModelGenerationUIStage::GeneratingModel || state.stage == ModelGenerationUIStage::Stopping ||
-               (state.smart_mode && state.stage == ModelGenerationUIStage::GeneratingDesign)) {
-        const bool stopping = state.stage == ModelGenerationUIStage::Stopping;
-        title = stopping ? text("正在停止 3D 生成") : state.smart_mode && state.stage == ModelGenerationUIStage::GeneratingDesign ? text("正在准备模型输入") : text("正在生成 3D 模型");
-        status = !state.status_text.empty() ? wxString::FromUTF8(state.status_text.c_str())
-                                            : text("任务已提交，正在等待现有生成流程完成");
-        visual_label = text("正在生成 3D 模型");
-        visual_mode = ImagePreview::PlaceholderMode::Generating;
-        progress = ModelGenerationPresentation::ModelGenerationProgress::viewport_progress(state.progress, false);
-        progress_label = stopping ? text("正在停止") : text("生成中");
-        if (state.model_progress_estimated)
-            status += wxString::Format(text(" · 估算进度（已等待 %d 秒）"), state.model_elapsed_seconds);
-        summary = wxString::FromUTF8(state.workflow_guidance.c_str());
-        summary.Trim(true).Trim(false);
-        // The center already describes generation. Reserve Details for useful
-        // guidance, including later updates, rather than repeating that title.
-        if (summary == _L("正在生成 3D 模型，可在这里查看进度") || summary == _L("正在生成 3D 模型。"))
-            summary.clear();
-        show_stop = !stopping && state.can_stop;
-    } else if (state.stage == ModelGenerationUIStage::Failed && state.model_generation_context) {
-        title = text("3D 模型生成未完成");
-        status = !state.status_text.empty() ? wxString::FromUTF8(state.status_text.c_str())
-                                            : text("现有生成流程返回错误");
-        progress_label = text("生成失败");
-        visual_label = text("3D 模型生成失败");
-        visual_mode = ImagePreview::PlaceholderMode::Error;
-        summary = !state.summary_text.empty() ? wxString::FromUTF8(state.summary_text.c_str())
-                                              : text("当前任务和输入已保留，请按现有恢复入口继续。");
-        if (!state.provider_error_code.empty()) {
-            summary += "\n" + text("错误码：") + wxString::FromUTF8(state.provider_error_code.c_str());
-        }
-        if (!state.provider_task_id.empty()) {
-            summary += "\n" + text("供应商任务 ID：") + wxString::FromUTF8(state.provider_task_id.c_str());
-        }
-        if (state.provider_error_ambiguous) {
-            summary += "\n" + text("提交结果不明确，请先确认远端任务状态，避免重复计费。");
-        }
-        if (state.can_retry_model) {
-            m_model_page_action = ModelPageAction::RetryModel;
-            action_label = state.provider_task_id.empty() ? text("重试当前任务") : text("恢复当前任务");
-        } else if (state.can_retry_service) {
-            m_model_page_action = ModelPageAction::RetryService;
-            action_label = text("重新检测服务");
-        } else if (state.can_restore_latest) {
-            m_model_page_action = ModelPageAction::RestoreLatest;
-            action_label = text("恢复上次任务");
-        } else {
-            m_model_page_action = ModelPageAction::BackToDesign;
-            action_label = (m_smart_creation ? text("返回AI创作") : text("返回图像设计"));
-        }
-    } else if (state.stage == ModelGenerationUIStage::Stopped && state.model_generation_context) {
-        title = text("3D 模型生成已停止");
-        status = !state.status_text.empty() ? wxString::FromUTF8(state.status_text.c_str())
-                                            : text("已停止本地等待");
-        progress_label = text("已停止");
-        visual_label = text("生成已停止");
-        visual_mode = ImagePreview::PlaceholderMode::Stopped;
-        summary = text("远端任务可能仍继续运行并计费；恢复操作会继续查询同一任务。");
-        if (state.can_retry_model) {
-            m_model_page_action = ModelPageAction::RetryModel;
-            action_label = state.provider_task_id.empty() ? text("重试当前任务") : text("恢复当前任务");
-        } else if (state.can_restore_latest) {
-            m_model_page_action = ModelPageAction::RestoreLatest;
-            action_label = text("恢复上次任务");
-        } else {
-            m_model_page_action = ModelPageAction::BackToDesign;
-            action_label = (m_smart_creation ? text("返回AI创作") : text("返回图像设计"));
-        }
-    } else if (state.stage == ModelGenerationUIStage::ModelReady) {
-        title = text("3D 模型已生成");
-        status = !state.status_text.empty() ? wxString::FromUTF8(state.status_text.c_str())
-                                            : text("生成结果已就绪");
-        progress_label = text("完成");
-        visual_label = text("正在加载 3D 模型预览");
-        visual_mode = ImagePreview::PlaceholderMode::Generating;
-        summary = !state.summary_text.empty() ? wxString::FromUTF8(state.summary_text.c_str()) : wxString();
-        ensure_model_preview(state);
-        const bool host_preview_unavailable = !state.busy &&
-            !(owns_model_workflow() ? state.can_open_workbench : state.can_import);
-        if (host_preview_unavailable) {
-            visual_label = text("3D 模型预览未就绪");
-            visual_mode = ImagePreview::PlaceholderMode::Error;
-            progress_label = text("预览不可用");
-            summary = status + (summary.empty() ? wxString() : "\n\n" + summary);
-        } else if (m_model_preview_failed) {
-            visual_label = text("3D 模型预览加载失败");
-            visual_mode = ImagePreview::PlaceholderMode::Error;
-            progress_label = text("预览不可用");
-            summary = m_advanced_model_route || m_model_preview_error.empty() ? text("模型文件缺失或无法解析，请保留任务记录并查看诊断日志。")
-                                                    : wxString::FromUTF8(m_model_preview_error.c_str());
-            m_model_page_action = ModelPageAction::ReloadPreview;
-            action_label = text("重新加载预览");
-        } else if (!m_loaded_model_path.empty()) {
-            visual_label.clear();
-            visual_mode = ImagePreview::PlaceholderMode::Idle;
-            const bool model_action_available = owns_model_workflow()
-                ? state.can_open_workbench : state.can_import;
-            if (model_action_available) {
-                m_model_page_action = ModelPageAction::Import;
-                action_label = owns_model_workflow() ? text("打开工作台") : text("导入");
-            }
-        }
-    } else if (!state.model_generation_context) {
-        clear_model_preview();
-    }
-
-    bool layout_changed = m_model_result_layout_size != m_model_page->GetClientSize();
-    m_model_result_layout_size = m_model_page->GetClientSize();
-    const auto label = [&](wxWindow* control, const wxString& value) {
-        if (control->GetLabel() == value) return;
-        const auto previous = control->GetEffectiveMinSize();
-        control->SetLabel(value);
-        if (control->IsShown() && previous != control->GetEffectiveMinSize()) layout_changed = true;
-    };
-    const auto show = [&](wxWindow* control, bool value) {
-        if (control && control->IsShown() != value) {control->Show(value);layout_changed=true;}
-    };
-    label(m_model_stage_title,title);
-    const bool generating_model = state.stage == ModelGenerationUIStage::GeneratingModel || state.stage == ModelGenerationUIStage::Stopping ||
-        (state.smart_mode && state.stage == ModelGenerationUIStage::GeneratingDesign);
-    // The header status row is gone. Keep loading/error/stop diagnostics in
-    // Details; generation status already appears in the center, and a ready
-    // result has its own summary and model details.
-    if (!generating_model && state.stage != ModelGenerationUIStage::ModelReady &&
-        !status.empty() && summary.Find(status) == wxNOT_FOUND)
-        summary = summary.empty() ? status : status + "\n\n" + summary;
-    label(m_model_task_status,progress_label);
-    summary.Trim(true).Trim(false);
-    if (m_model_result_summary != summary) {
-        const auto previous = m_model_stage_summary->GetMinSize();
-        m_model_result_summary = summary;
-        m_model_stage_summary->SetLabel(summary);
-        // The details column has a fixed width. A changed elapsed time or
-        // percentage on the same wrapped lines must not lay out the viewport.
-        if (m_model_stage_summary->IsShown() && m_model_details_column->GetClientSize().x > 0) {
-            m_model_stage_summary->Wrap(m_model_details_column->GetClientSize().x);
-            wxClientDC dc(m_model_stage_summary);
-            dc.SetFont(m_model_stage_summary->GetFont());
-            m_model_stage_summary->SetMinSize(wxSize(1,
-                dc.GetMultiLineTextExtent(m_model_stage_summary->GetLabel()).y + FromDIP(2)));
-            if (previous != m_model_stage_summary->GetMinSize()) layout_changed = true;
-        }
-    }
-    show(m_model_stage_summary, !summary.empty());
-    const bool show_model_preview = state.stage == ModelGenerationUIStage::ModelReady && !state.busy &&
-        !m_loaded_model_path.empty() && !m_model_preview_loading && !m_model_preview_failed &&
-        m_loaded_model_path == boost::filesystem::path(wxString::FromUTF8(state.model_path.c_str()).ToStdWstring());
-    const bool showing_model_progress = generating_model || state.stage == ModelGenerationUIStage::LoadingModel ||
-        (state.stage == ModelGenerationUIStage::ModelReady && !show_model_preview && !m_model_preview_failed &&
-         (state.busy || m_model_preview_loading || (owns_model_workflow() ? state.can_open_workbench : state.can_import)));
-    if (showing_model_progress)
-        progress = ModelGenerationPresentation::ModelGenerationProgress::viewport_progress(state.progress, false);
-    show(m_model_stage_visual, !show_model_preview);
-    show(m_model_preview_3d, show_model_preview);
-    if (!show_model_preview) {
-        if (showing_model_progress)
-            m_model_stage_visual->SetModelGenerationProgress(status, progress);
-        else
-            m_model_stage_visual->SetPlaceholder(visual_label, visual_mode);
-    } else {
-        // Completion ends the animation session; a later task starts afresh.
-        m_model_stage_visual->SetPlaceholder(wxEmptyString, ImagePreview::PlaceholderMode::Idle);
-    }
-    if (show_model_preview)
-        m_model_preview_3d->SetName(text("3D 模型预览 · 100%"));
-    if (m_model_preview_details != nullptr)
-        show(m_model_preview_details, show_model_preview);
-    if (m_model_view_controls != nullptr)
-        show(m_model_view_controls, show_model_preview);
-    label(m_model_action_button,action_label);
-    show(m_model_action_button, m_model_page_action != ModelPageAction::None);
-    m_model_action_button->Enable(m_model_page_action != ModelPageAction::None &&
-        (m_model_page_action == ModelPageAction::BackToDesign ? can_return_to_image_design() : !state.busy));
-    const bool show_back_to_design = (m_advanced_model_route || m_model_route_locked) && state.model_generation_context &&
-                                     m_model_page_action != ModelPageAction::BackToDesign;
-    label(m_model_back_to_design_button,m_advanced_model_route ? text("返回高级创作") :
-        (m_smart_creation ? text("返回AI创作") : text("返回图像设计")));
-    show(m_model_back_to_design_button, show_back_to_design);
-    m_model_back_to_design_button->Enable(show_back_to_design && can_return_to_image_design());
-    show(m_model_stop_button, show_stop);
-    m_model_stop_button->Enable(show_stop);
-    if (layout_changed) {
-        m_model_page->Layout();
-        if (m_model_visual_host) m_model_visual_host->Layout();
-        layout_model_details();
-        if (std::getenv("ORCASLICER_UI_LATENCY_TRACE"))
-            BOOST_LOG_TRIVIAL(info) << "UiModelProgressLayout: width=" << m_model_result_layout_size.x
-                << ", height=" << m_model_result_layout_size.y;
-    }
-}
-
-void RedesignShell::layout_model_details()
-{
-    if (m_model_details_column == nullptr || m_model_details_column->GetClientSize().x <= 0)
-        return;
-    const int width = m_model_details_column->GetClientSize().x;
-    for (auto* label : {m_model_stage_summary, m_model_preview_details}) {
-        if (label == nullptr || !label->IsShown())
-            continue;
-        // Measure the displayed lines with their actual font. A static text
-        // control's best size can include more height than the visible text.
-        static_cast<Label*>(label)->Wrap(width);
-        wxClientDC dc(label);
-        dc.SetFont(label->GetFont());
-        label->SetMinSize(wxSize(1, dc.GetMultiLineTextExtent(label->GetLabel()).y + FromDIP(2)));
-    }
-    m_model_details_column->Layout();
-    if (m_model_view_controls != nullptr && m_model_view_controls->IsShown())
-        m_model_view_controls->Layout();
-}
-
-void RedesignShell::ensure_model_preview(const ModelGenerationUIState& state)
-{
-    if (owns_model_workflow() && m_page_coordinator.view() != ModelView::Result) return;
-    const bool model_action_available = owns_model_workflow()
-        ? state.can_open_workbench : state.can_import;
-    if (m_model_preview_3d == nullptr || !state.model_ready || state.busy || !model_action_available ||
-        state.model_path.empty())
-        return;
-    const wxString decoded = wxString::FromUTF8(state.model_path.c_str());
-    if (decoded.empty()) {
-        m_model_preview_failed = true;
-        m_model_preview_error = "模型路径无法读取。";
-        return;
-    }
-    const boost::filesystem::path path(decoded.ToStdWstring());
-    if (path == m_loaded_model_path || (m_model_preview_loading && path == m_loading_model_path))
-        return;
-    if (!ModelGenerationPresentation::is_nonempty_model(path)) {
-        m_model_preview_failed = true;
-        m_model_preview_error = "模型文件缺失或为空。";
-        return;
-    }
-
-    const std::uint64_t generation = ++m_model_preview_request_generation;
-    m_model_preview_loading = true;
-    m_model_preview_failed = false;
-    m_model_preview_error.clear();
-    m_loading_model_path = path;
-    const boost::filesystem::path metadata_path = state.job_id.empty()
-        ? boost::filesystem::path()
-        : ModelGenerationPresentation::library_metadata_path(state.job_id);
-    auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
-    wxWeakRef<RedesignShell> weak(this);
-    try {
-        const auto task = m_result_preview_scope.begin(path.string());
-        const bool accepted = Presentation::background_tasks().submit(task,
-            [path, metadata_path, prepared](const Presentation::TaskContext& context) {
-                std::string error;
-                try {
-                    const auto canceled = [&context] { return context.canceled(); };
-                    ModelPreview3D::prepare_model(path, *prepared, error, {}, metadata_path, true, canceled);
-                    if (error.empty() && !context.canceled()) prepared->prepare_render_geometry(canceled);
-                } catch (const std::exception& exception) { error = exception.what(); }
-                return error;
-            }, [weak, task, generation, path, prepared](Presentation::TaskResult<std::string> outcome) mutable {
-                if (!weak || !weak->m_result_preview_scope.matches(task)) return;
-                auto* self = weak.get();
-                std::string error = outcome.value.value_or("模型预览准备失败。");
-                if (generation != self->m_model_preview_request_generation)
-                    return;
-                self->m_model_preview_loading = false;
-                self->m_loading_model_path.clear();
-                size_t triangles = 0;
-                size_t colors = 0;
-                Vec3d dimensions;
-                std::string load_error = error;
-                if (!load_error.empty() || !self->m_model_preview_3d->load_prepared_model(
-                        std::move(*prepared), {}, triangles, dimensions, colors, load_error)) {
-                    self->m_model_preview_failed = true;
-                    self->m_model_preview_error = load_error.empty() ? "模型预览无法加载。" : load_error;
-                    self->m_loaded_model_path.clear();
-                } else {
-                    self->m_model_preview_failed = false;
-                    self->m_model_preview_error.clear();
-                    self->m_loaded_model_path = path;
-                    self->m_model_preview_3d->set_selection_enabled(false);
-                    self->m_model_preview_3d->set_color_controls_visible(false);
-                    self->m_model_preview_details->SetLabel(wxString::Format(
-                        text("%llu 个三角面 · %.1f × %.1f × %.1f mm · %llu 种模型颜色"),
-                        static_cast<unsigned long long>(triangles), dimensions.x(), dimensions.y(), dimensions.z(),
-                        static_cast<unsigned long long>(colors)));
-                }
-                if (self->m_advanced_model_route)
-                    self->update_model_page(self->m_advanced_model_state);
-                else if (self->m_image_page_view_only)
-                    self->apply_model_generation_state(self->m_model_generation_state);
-                else
-                    self->update_model_page(self->m_model_generation_state);
-            }, Presentation::TaskPriority::Visible);
-        if (!accepted) throw std::runtime_error("模型预览任务暂时无法启动。");
-    } catch (const std::exception& exception) {
-        m_model_preview_loading = false;
-        m_loading_model_path.clear();
-        m_model_preview_failed = true;
-        m_model_preview_error = exception.what();
-    }
-}
-
-void RedesignShell::clear_model_preview()
-{
-    if (!m_model_preview_loading && !m_model_preview_failed && m_loading_model_path.empty() &&
-        m_loaded_model_path.empty())
-        return;
-    ++m_model_preview_request_generation;
-    m_result_preview_scope.cancel();
-    m_model_preview_loading = false;
-    m_model_preview_failed = false;
-    m_model_preview_error.clear();
-    m_loading_model_path.clear();
-    m_loaded_model_path.clear();
-    if (m_model_preview_3d != nullptr)
-        m_model_preview_3d->clear();
-    if (m_model_preview_details != nullptr) {
-        m_model_preview_details->SetLabel(wxEmptyString);
-        m_model_preview_details->Hide();
-    }
 }
 
 void RedesignShell::ensure_design_image(const std::string& path)
@@ -4150,7 +3551,6 @@ wxWindow* RedesignShell::page_route_root(Page page, ModelView view) const
     if (index >= m_pages.size()) return nullptr;
     if (page != Page::Model) return m_pages[index];
     switch (view) {
-    case ModelView::Result: return m_model_page;
     case ModelView::Workbench: return m_workbench_page;
     case ModelView::Slicing:
     case ModelView::Preview: return m_slicing_page;
@@ -4193,7 +3593,6 @@ bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
         m_page_coordinator.page() == Page::Model && m_page_coordinator.view() == ModelView::Workbench;
     if (block_workbench_navigation(!keeps_presented_workbench)) return false;
     if (m_import_in_progress || m_page_coordinator.transition().active()) return false;
-    if (page == Page::Image && m_model_route_locked && !allow_locked_image_view) return false;
     const std::size_t index = static_cast<std::size_t>(page);
     if (index >= m_pages.size() || m_pages[index] == nullptr)
         return false;
@@ -4219,7 +3618,7 @@ bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
 
     {
         wxWindowUpdateLocker lock(this);
-        m_image_page_view_only = page == Page::Image && ((allow_locked_image_view && m_model_route_locked) || (m_smart_creation && m_saved_creation_input.has_value()));
+        m_image_page_view_only = page == Page::Image && m_smart_creation && m_saved_creation_input.has_value();
         m_page_coordinator.select_page(page);
         switch (page) {
         case Page::Assets:
@@ -4243,7 +3642,7 @@ bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
         const auto model_index = static_cast<std::size_t>(Page::Model);
         for (std::size_t i = 0; i < m_pages.size(); ++i) {
             const bool active = i == index;
-            const bool show_page = active && (i != model_index || m_page_coordinator.view() == ModelView::Result);
+            const bool show_page = active && (i != model_index || m_page_coordinator.view() == ModelView::Workbench);
             if (m_pages[i] != nullptr) m_pages[i]->Show(show_page);
         }
         refresh_navigation();
@@ -4266,7 +3665,6 @@ bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
         return false;
     }
     ++m_creation_navigation_epoch;
-    m_advanced_route_intent.cancel();
     if (m_model_generation_host)
         m_model_generation_host->set_workbench_presented(page == Page::Model &&
             m_page_coordinator.view() == ModelView::Workbench);
@@ -4290,13 +3688,7 @@ void RedesignShell::refresh_navigation()
 
 bool RedesignShell::navigate_to_workbench()
 {
-    if (owns_model_workflow()) {
-        const bool ready = OrcaPrinterAdapter(m_plater).snapshot().gcode_ready;
-        const auto route = workbench_resume_route({m_last_workbench_page, m_page_coordinator.view()},
-            m_print_page && m_print_page->monitoring(), ready);
-        if (route.page == Page::Model) return show_model_view(route.view);
-    }
-    return navigate_to(m_last_workbench_page);
+    return show_model_view(ModelView::Workbench);
 }
 
 bool RedesignShell::navigate_to_image_view()
@@ -4472,6 +3864,7 @@ void RedesignShell::accept_image(const wxString& path)
             return;
         }
         m_selected_image = std::move(image);
+        ++m_image_content_generation;
         m_selected_image_path = selected_path;
         m_image_design_draft.begin(m_model_generation_state);
         clear_design_image(); // Invalidates any queued load of the previous 2D result.
@@ -4481,7 +3874,12 @@ void RedesignShell::accept_image(const wxString& path)
         m_last_preview_bounds = wxDefaultSize;
         BOOST_LOG_TRIVIAL(info) << "[ImageUpload] load=" << generation << " stage=preview_update_begin"
             << " elapsed_ms=" << image_diagnostic_elapsed(started);
-        update_image_state();
+        {
+            // Only the synchronous widget handoff is frozen. File decoding and
+            // host input synchronization remain outside this short layout scope.
+            wxWindowUpdateLocker handoff(m_image_page);
+            update_image_state();
+        }
         BOOST_LOG_TRIVIAL(info) << "[ImageUpload] load=" << generation << " stage=input_sync_begin"
             << " elapsed_ms=" << image_diagnostic_elapsed(started);
         synchronize_generation_input();
@@ -4499,6 +3897,7 @@ void RedesignShell::clear_image()
     ++m_image_request_generation;
     m_preview_resize_timer.Stop();
     m_selected_image = wxImage();
+    ++m_image_content_generation;
     m_selected_image_path.clear();
     m_image_state = ImageState::Empty;
     m_last_preview_bounds = wxDefaultSize;
@@ -4511,29 +3910,16 @@ void RedesignShell::clear_image()
 void RedesignShell::update_preview_bitmap()
 {
     m_preview_resize_timer.Stop();
-    if (!m_image_page)
+    // Progress snapshots must not invalidate the native windows covering the
+    // inline feedback, or resample an input bitmap that is currently hidden.
+    if (!m_image_page || !m_preview_host || !m_preview_host->IsShownOnScreen() || !m_preview ||
+        !m_result_preview || !m_source_preview_card || !m_result_preview_card)
         return;
-    m_image_page->Layout();
-    auto refresh_center = [this] {
-        m_image_page->Refresh();
-        refresh_image_surface(m_guide_panel);
-        refresh_image_surface(m_preview_host);
-    };
-    // Empty placeholders need the same responsive card sizes as loaded images.
-    // Only the guide view skips preview layout, not the absence of a bitmap.
-    if (!m_preview_host || !m_preview_host->IsShown() || !m_preview ||
-        !m_result_preview || !m_source_preview_card || !m_result_preview_card) {
-        if (m_guide_panel)
-            m_guide_panel->Layout();
-        refresh_center();
-        return;
-    }
-    const bool source_ready = m_image_state == ImageState::Ready && m_selected_image.IsOk();
+    const bool source_ready = (m_image_state == ImageState::Ready || m_image_state == ImageState::Loading)
+                              && m_selected_image.IsOk();
     const wxSize available = m_preview_host->GetClientSize();
-    if (available.x < FromDIP(240) || available.y < FromDIP(240)) {
-        refresh_center();
+    if (available.x < FromDIP(240) || available.y < FromDIP(240))
         return;
-    }
 
     const int gap = FromDIP(16);
     const int maximum_width = std::max(FromDIP(96), source_ready
@@ -4561,62 +3947,105 @@ void RedesignShell::update_preview_bitmap()
         m_result_preview_card->SetMinSize(card_size);
         m_result_preview_card->SetMaxSize(card_size);
     }
-    m_preview_host->Layout();
-    m_source_preview_card->Layout();
-    m_result_preview_card->Layout();
-    const wxBitmap bitmap = source_ready ? rounded_thumbnail(m_selected_image, image_bounds, FromDIP(10), true, true) : wxBitmap();
-    m_preview->SetBitmap(bitmap);
-    // Placeholder/spinner repainting must not clear the active task clock.
-    if (m_design_image_state == ImageState::Ready && m_design_image.IsOk()) {
-        m_result_preview->SetBitmap(
-            rounded_thumbnail(m_design_image, image_bounds, FromDIP(10), true, true));
+    if (bounds_changed) {
+        m_preview_host->Layout();
+        m_source_preview_card->Layout();
+        m_result_preview_card->Layout();
+        m_preview_host->Refresh(false);
     }
-    refresh_center();
+    const double dpi = GetDPIScaleFactor();
+    if (source_ready && !m_source_bitmap_cache.current(m_image_content_generation, image_bounds, dpi)) {
+        const auto bitmap = rounded_thumbnail(m_selected_image, image_bounds, FromDIP(10), true, true);
+        m_preview->SetBitmap(bitmap);
+        if (bitmap.IsOk()) m_source_bitmap_cache.installed(m_image_content_generation, image_bounds, dpi);
+        wxString trace;
+        if (wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace) && trace == "1")
+            BOOST_LOG_TRIVIAL(info) << "[UiCreationPreview] action=source_bitmap content=" << m_image_content_generation;
+    } else if (!source_ready && m_source_bitmap_cache.has_bitmap()) {
+        m_preview->SetBitmap(wxBitmap());
+        m_source_bitmap_cache.reset();
+    }
+    // Placeholder/spinner repainting must not clear the active task clock.
+    if (m_design_image_state == ImageState::Ready && m_design_image.IsOk() &&
+        !m_design_bitmap_cache.current(m_design_image_request_generation, image_bounds, dpi)) {
+        const auto bitmap = rounded_thumbnail(m_design_image, image_bounds, FromDIP(10), true, true);
+        m_result_preview->SetBitmap(bitmap);
+        if (bitmap.IsOk()) m_design_bitmap_cache.installed(m_design_image_request_generation, image_bounds, dpi);
+    }
 }
 
 void RedesignShell::update_image_state()
 {
     const bool ready = m_image_state == ImageState::Ready;
     const bool loading = m_image_state == ImageState::Loading;
-    m_upload_icon->GetParent()->Show(!ready);
-    m_upload_thumbnail->Show(ready);
-    m_upload_status->Show(!ready);
-    if (m_upload_link) m_upload_link->Show(!ready && !loading && m_image_state != ImageState::Failed);
-    m_upload_filename->Show(false);
-    m_upload_hint->Show(!ready);
+    bool upload_layout = false, center_layout = false;
+    const auto show = [](wxWindow* window, bool value, bool& dirty) {
+        if (window && window->IsShown() != value) { window->Show(value); dirty = true; }
+    };
+    const auto label = [&upload_layout](wxWindow* window, const wxString& value) {
+        if (window->GetLabel() != value) { window->SetLabel(value); upload_layout = true; }
+    };
+    show(m_upload_icon->GetParent(), !ready, upload_layout);
+    show(m_upload_thumbnail, ready, upload_layout);
+    show(m_upload_status, !ready, upload_layout);
+    show(m_upload_link, !ready && !loading && m_image_state != ImageState::Failed, upload_layout);
+    show(m_upload_filename, false, upload_layout);
+    show(m_upload_hint, !ready, upload_layout);
     if (loading) {
-        m_upload_icon->SetLabel(text("◌"));
-        m_upload_status->SetLabel(text("读取中..."));
-        m_upload_hint->SetLabel(text("本地图片处理中"));
+        label(m_upload_icon, text("◌"));
+        label(m_upload_status, text("读取中..."));
+        label(m_upload_hint, text("本地图片处理中"));
     } else if (m_image_state == ImageState::Failed) {
-        m_upload_icon->SetLabel(text("+"));
-        m_upload_status->SetLabel(text("图片不可用，点击重试"));
-        m_upload_hint->SetLabel(text("支持：PNG、JPG、JPEG、WebP，最大 20MB"));
+        label(m_upload_icon, text("+"));
+        label(m_upload_status, text("图片不可用，点击重试"));
+        label(m_upload_hint, text(m_smart_creation ? "支持：png，jpg，jpeg，webp 最大20MB" : "支持：PNG、JPG、JPEG、WebP，最大 20MB"));
     } else {
-        m_upload_icon->SetLabel(text("+"));
-        m_upload_status->SetLabel(text(m_smart_creation ? "将图片拖到此处，或" : "点击、拖拽选择图片"));
-        m_upload_hint->SetLabel(text("支持：PNG、JPG、JPEG、WebP，最大 20MB"));
+        label(m_upload_icon, text("+"));
+        label(m_upload_status, text(m_smart_creation ? "将图片拖到此处，或" : "点击、拖拽选择图片"));
+        label(m_upload_hint, text(m_smart_creation ? "支持：png，jpg，jpeg，webp 最大20MB" : "支持：PNG、JPG、JPEG、WebP，最大 20MB"));
     }
-    if (m_smart_creation && !loading) m_upload_hint->SetLabel(text("支持：png，jpg，jpeg，webp 最大20MB"));
     if (ready) {
         const int edge = FromDIP(m_smart_creation ? 100 : 134);
-        const wxBitmap thumbnail = rounded_thumbnail(m_selected_image, wxSize(edge, edge), FromDIP(8));
-        m_upload_thumbnail->SetBitmap(thumbnail);
-        m_upload_thumbnail->SetToolTip(wxString(m_selected_image_path.filename().wstring()));
+        const wxSize bounds(edge, edge);
+        if (!m_upload_bitmap_cache.current(m_image_content_generation, bounds, GetDPIScaleFactor())) {
+            const wxBitmap thumbnail = rounded_thumbnail(m_selected_image, bounds, FromDIP(8));
+            m_upload_thumbnail->SetBitmap(thumbnail);
+            if (thumbnail.IsOk()) m_upload_bitmap_cache.installed(m_image_content_generation, bounds, GetDPIScaleFactor());
+            m_upload_thumbnail->SetToolTip(wxString(m_selected_image_path.filename().wstring()));
+        }
     }
     // Preserve text-only designs and active placeholders while retaining
     // the responsive workspace after its first use.
-    const bool show_preview = ready || (!m_smart_creation && (m_design_image_state == ImageState::Ready ||
+    const bool source_visible = ready || (loading && m_selected_image.IsOk());
+    const bool show_preview = source_visible || (!m_smart_creation && (m_design_image_state == ImageState::Ready ||
         m_model_generation_state.stage != ModelGenerationUIStage::Input ||
         m_preview_host->IsShown()));
-    m_result_preview_card->Show(!m_smart_creation);
-    m_source_preview_card->Show(ready);
-    m_source_preview_card->GetContainingSizer()->Show(size_t(1), ready && !m_smart_creation);
-    m_guide_panel->Show(!show_preview);
-    m_preview_host->Show(show_preview);
-    m_upload_surface->Layout();
-    m_upload_surface->GetParent()->Layout();
-    m_image_page->Layout();
+    show(m_result_preview_card, !m_smart_creation, center_layout);
+    show(m_source_preview_card, source_visible, center_layout);
+    auto* spacer = m_source_preview_card->GetContainingSizer()->GetItem(size_t(1));
+    if (spacer->IsShown() != (source_visible && !m_smart_creation)) {
+        spacer->Show(source_visible && !m_smart_creation); center_layout = true;
+    }
+    const bool inline_model = m_smart_generation_view && m_smart_generation_view->has_content();
+    // Retain the source pixels until the feedback's synchronous show/layout
+    // handoff is complete; hiding the source first exposes the parent briefly.
+    std::unique_ptr<wxWindowUpdateLocker> inline_handoff;
+    if (m_smart_generation_view && m_smart_generation_view->IsShown() != inline_model)
+        inline_handoff = std::make_unique<wxWindowUpdateLocker>(m_image_page);
+    show(m_guide_panel, !inline_model && !show_preview, center_layout);
+    show(m_preview_host, !inline_model && show_preview, center_layout);
+    refresh_inline_generation();
+    if (upload_layout) {
+        m_upload_surface->Layout();
+        m_upload_surface->GetParent()->Layout();
+    }
+    if (center_layout) {
+        m_image_page->Layout();
+        m_image_page->Refresh(false);
+        wxString trace;
+        if (wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace) && trace == "1")
+            BOOST_LOG_TRIVIAL(info) << "[UiCreationPreview] action=center_layout";
+    }
     update_preview_bitmap();
 }
 

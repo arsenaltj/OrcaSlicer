@@ -127,6 +127,11 @@ public:
     void set_text_colour(const wxColour& colour) { m_text_colour = colour; Refresh(); }
     void set_generation_gradient(bool value) { m_generation_gradient = value; Refresh(); }
     void set_corner_radius(int radius) { m_corner_radius = radius; Refresh(); }
+    // Opt in for the Figma completion pair; existing controls retain their style.
+    void set_generation_completion_style(bool primary) {
+        m_completion_style = true; m_generation_gradient = primary;
+        m_icon_gap = 6; m_horizontal_padding = 12; Refresh();
+    }
 
 private:
     void paint()
@@ -159,17 +164,31 @@ private:
             const int alpha = IsEnabled() ? (m_pressed ? 205 : m_hovered ? 255 : 235) : 85;
             gc->SetBrush(gc->CreateLinearGradientBrush(0, 0, size.x, 0,
                 wxColour(254, 165, 17, alpha), wxColour(78, 113, 255, alpha)));
+            if (m_completion_style) {
+                wxGraphicsGradientStops stops(wxColour(254,165,17),wxColour(78,113,255));
+                stops.Add(wxColour(106,83,237),0.51923078f);
+                // Figma/CSS angle96.702553 degrees, measured clockwise from up.
+                const double dx=0.9931657, dy=0.1167152;
+                const double half=(size.x*dx+size.y*dy)/2.0;
+                gc->SetBrush(gc->CreateLinearGradientBrush(size.x/2.0-dx*half,size.y/2.0-dy*half,
+                    size.x/2.0+dx*half,size.y/2.0+dy*half,stops));
+                if (!IsEnabled()) gc->SetBrush(gc->CreateLinearGradientBrush(0,0,size.x,0,
+                    wxColour(254,165,17,85),wxColour(78,113,255,85)));
+            }
             foreground = IsEnabled() ? wxColour(255, 255, 255) : wxColour(175, 175, 180);
         }
         gc->SetPen(FindFocus() == this ? wxPen(RedesignTheme::accent_colour(), std::max(1, FromDIP(1))) : *wxTRANSPARENT_PEN);
+        if (m_completion_style && !m_generation_gradient && FindFocus() != this)
+            gc->SetPen(wxPen(wxColour(255,255,255,23),std::max(1,FromDIP(1))));
         gc->DrawRoundedRectangle(FromDIP(1), FromDIP(1), size.x - FromDIP(2), size.y - FromDIP(2), FromDIP(m_corner_radius));
         dc.SetFont(GetFont());
         if (IsEnabled() && m_text_colour.IsOk()) foreground = m_text_colour;
         dc.SetTextForeground(foreground);
         const int horizontal_padding = FromDIP(m_horizontal_padding);
         const int icon_horizontal_padding = FromDIP(m_icon_horizontal_padding);
-        const int icon_gap = m_icon.IsOk() ? FromDIP(7) : 0;
-        const int icon_width = m_icon.IsOk() ? m_icon.GetLogicalWidth() + FromDIP(12) : 0;
+        const int icon_gap = m_icon.IsOk() ? FromDIP(m_icon_gap) : 0;
+        const int icon_width = m_icon.IsOk() ? m_icon.GetLogicalWidth() +
+            (m_completion_style ? icon_gap : FromDIP(12)) : 0;
         const auto caption = wxControl::Ellipsize(GetLabel(), dc, wxELLIPSIZE_END,
             std::max(0, size.x - 2 * horizontal_padding - icon_width));
         const wxSize extent = dc.GetTextExtent(caption);
@@ -196,8 +215,10 @@ private:
     int m_horizontal_padding { 16 };
     int m_corner_radius { 10 };
     int m_icon_horizontal_padding { 12 };
+    int m_icon_gap {7};
     bool m_primary { false };
     bool m_generation_gradient { false };
+    bool m_completion_style {false};
     bool m_icon_on_left { false };
     bool m_hovered { false };
     bool m_pressed { false };

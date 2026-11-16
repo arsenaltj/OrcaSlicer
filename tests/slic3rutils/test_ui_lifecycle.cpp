@@ -318,7 +318,7 @@ TEST_CASE("Native snapshots survive hidden routes and minimization without paint
     RedesignPageCoordinator pages;
     using Page = RedesignWorkspacePage;
     using View = RedesignModelView;
-    pages.register_page(Page::Image, View::Result, false, {});
+    pages.register_page(Page::Image, View::Workbench, false, {});
     pages.register_page(Page::Model, View::Slicing, false, {});
     pages.select_page(Page::Image); pages.presented_current();
     bool minimized = false;
@@ -357,10 +357,10 @@ TEST_CASE("Abandoning a prepared page preserves the retained source and its sess
     using Page = RedesignWorkspacePage;
     using View = RedesignModelView;
     int hidden = 0;
-    coordinator.register_page(Page::Image, View::Result, false, {});
+    coordinator.register_page(Page::Image, View::Workbench, false, {});
     RedesignPageCoordinator::Adapter target;
     target.hidden = [&] { ++hidden; };
-    coordinator.register_page(Page::Model, View::Result, false, target);
+    coordinator.register_page(Page::Model, View::Workbench, false, target);
     coordinator.select_page(Page::Image); coordinator.presented_current();
     coordinator.select_page(Page::Model); coordinator.prepare_current();
     coordinator.select_page(Page::Image);
@@ -394,9 +394,9 @@ TEST_CASE("Retained page adapters activate once and preserve their own mode", "[
     adapter.presented = [&] { ++smart; };
     adapter.hidden = [&] { ++hidden; };
     adapter.dispose = [&] { ++disposed; };
-    coordinator.register_page(Page::Image, View::Result, false, adapter);
+    coordinator.register_page(Page::Image, View::Workbench, false, adapter);
     adapter.presented = [&] { ++advanced; };
-    coordinator.register_page(Page::Image, View::Result, true, adapter);
+    coordinator.register_page(Page::Image, View::Workbench, true, adapter);
     coordinator.select_page(Page::Image);
     for (int i = 0; i < 20; ++i) {
         coordinator.select_mode(false); coordinator.prepare_current(); coordinator.presented_current();
@@ -578,7 +578,7 @@ TEST_CASE("Page rollback retains the visible source and releases abandoned prepa
     RedesignPageCoordinator::Adapter source, target;
     source.hidden = [&] { ++source_hidden; };
     target.hidden = [&] { ++target_hidden; };
-    pages.register_page(Page::Image, View::Result, false, source);
+    pages.register_page(Page::Image, View::Workbench, false, source);
     pages.register_page(Page::Model, View::Workbench, false, target);
     pages.select_page(Page::Image); pages.prepare_current(); pages.presented_current();
     pages.select_page(Page::Model); pages.select_view(View::Workbench); pages.prepare_current();

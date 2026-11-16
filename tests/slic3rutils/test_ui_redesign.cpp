@@ -1,4 +1,5 @@
 #include "slic3r/GUI/Redesign/RedesignCommand.hpp"
+#include "slic3r/GUI/Redesign/RedesignShell.hpp"
 #include "slic3r/GUI/Redesign/RedesignFeatureFlags.hpp"
 #include "slic3r/GUI/Redesign/OrcaBusinessAdapter.hpp"
 #include "slic3r/GUI/Redesign/RedesignState.hpp"
@@ -31,6 +32,38 @@
 #include <string>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("Creation bitmaps invalidate on content size and DPI instead of file paths", "[UiRedesign][CreationPreview]")
+{
+    CreationBitmapCache cache;
+    const wxSize bounds(503, 671);
+    CHECK_FALSE(cache.current(1, bounds, 1.0));
+    cache.installed(1, bounds, 1.0);
+    CHECK(cache.current(1, bounds, 1.0));
+    // A successful reload gets a new content generation even for the same path.
+    CHECK_FALSE(cache.current(2, bounds, 1.0));
+    CHECK_FALSE(cache.current(1, wxSize(402, 536), 1.0));
+    CHECK_FALSE(cache.current(1, bounds, 1.25));
+    cache.installed(2, wxSize(402, 536), 1.25);
+    CHECK(cache.current(2, wxSize(402, 536), 1.25));
+    cache.reset();
+    CHECK_FALSE(cache.has_bitmap());
+    CHECK_FALSE(cache.current(2, wxSize(402, 536), 1.25));
+}
+
+TEST_CASE("An uninstalled creation bitmap stays dirty until its actual handoff", "[UiRedesign][CreationPreview]")
+{
+    CreationBitmapCache cache;
+    cache.installed(7, wxSize(100, 100), 1.0);
+    // Preparing a replacement, hiding, or rejecting its result must not cache it.
+    for (int update = 0; update < 100; ++update) {
+        CHECK(cache.current(7, wxSize(100, 100), 1.0));
+        CHECK_FALSE(cache.current(8, wxSize(100, 100), 1.0));
+    }
+    cache.installed(8, wxSize(100, 100), 1.0);
+    CHECK_FALSE(cache.current(7, wxSize(100, 100), 1.0));
+    CHECK(cache.current(8, wxSize(100, 100), 1.0));
+}
 
 TEST_CASE("AI history retains the settings and content together without covering fixed navigation", "[UiRedesign][WorkbenchPresentation]")
 {
@@ -577,7 +610,7 @@ TEST_CASE("Reentering the workbench retains its stage and sends invalid print pr
 {
     using Page = RedesignWorkspacePage;
     using View = RedesignModelView;
-    for (auto view : {View::Result, View::Workbench, View::Slicing, View::Preview}) {
+    for (auto view : {View::Workbench, View::Slicing, View::Preview}) {
         const auto route = workbench_resume_route({Page::Model, view}, false, true);
         CHECK(route.page == Page::Model);
         CHECK(route.view == view);
@@ -927,7 +960,7 @@ TEST_CASE("Explicit history switches restore both image inputs while refreshes r
     history.input.image_path = "B/reference.png";
     history.design_image_path = "B/design.png";
     CHECK(image_design_restores_input(history, current));
-    CHECK(model_generation_route_action(history, current, false, 0, {}) == RedesignModelRouteAction::Model);
+    CHECK(model_generation_route_action(history, current) == RedesignModelRouteAction::Refresh);
 
     ImageDesignDraft draft;
     draft.begin(history); // User uploads C after returning from B.
@@ -964,14 +997,11 @@ TEST_CASE("Saving a local version and undoing or redoing it preserve the workben
         next.model_asset_id = asset;
         // Undo can restore the original generation job as well as its asset.
         next.job_id = next.model_asset_id == "original" ? "original-task" : "";
-        const auto route = model_generation_route_action(next, current, true,
-            current.model_generation_session, model_generation_route_id(current));
-        CHECK(route == RedesignModelRouteAction::Model);
-        CHECK(model_generation_preserves_workbench(next, route, true));
+        const auto route = model_generation_route_action(next, current);
+        CHECK(route == RedesignModelRouteAction::Refresh);
         auto delayed = current;
         delayed.revision = next.revision + 1;
-        CHECK(model_generation_route_action(delayed, next, true,
-            next.model_generation_session, model_generation_route_id(next)) == RedesignModelRouteAction::Ignore);
+        CHECK(model_generation_route_action(delayed, next) == RedesignModelRouteAction::Ignore);
         current = next;
     }
 }
@@ -990,7 +1020,7 @@ TEST_CASE("Repeated returns to image editing do not depend on retaining the mode
         CHECK(model_generation_return_to_design_allowed(state, workbench, false));
         auto refresh = state;
         ++refresh.revision;
-        CHECK(model_generation_route_action(refresh, state, false, 0, {}) == RedesignModelRouteAction::Refresh);
+        CHECK(model_generation_route_action(refresh, state) == RedesignModelRouteAction::Refresh);
         state = refresh;
     }
     state.busy = true;
@@ -1607,10 +1637,10 @@ TEST_CASE("Local design history replaces a locked model session without reusing 
     design.model_generation_context = false;
     design.stage = ModelGenerationUIStage::DesignReady;
     design.job_id = "selected-design";
-    CHECK(model_generation_route_action(design, current, true, 3, current.job_id) == RedesignModelRouteAction::Ignore);
+    CHECK(model_generation_route_action(design, current) == RedesignModelRouteAction::Ignore);
     ++design.model_generation_session;
-    CHECK(model_generation_route_action(design, current, true, 3, current.job_id) == RedesignModelRouteAction::Image);
-    CHECK(model_generation_route_action(current, design, false, 0, {}) == RedesignModelRouteAction::Ignore);
+    CHECK(model_generation_route_action(design, current) == RedesignModelRouteAction::Refresh);
+    CHECK(model_generation_route_action(current, design) == RedesignModelRouteAction::Ignore);
 }
 
 TEST_CASE("A design stays on its page until a confirmed model submission starts", "[UiRedesign][ModelGenerationRoute]")
@@ -1621,7 +1651,7 @@ TEST_CASE("A design stays on its page until a confirmed model submission starts"
     design.job_id = "current-design";
     design.stage = ModelGenerationUIStage::DesignReady;
     // Dismissing confirmation leaves the host state unchanged.
-    CHECK(model_generation_route_action(design, design, false, 3, design.job_id) == RedesignModelRouteAction::Refresh);
+    CHECK(model_generation_route_action(design, design) == RedesignModelRouteAction::Refresh);
 
     auto submitted = design;
     ++submitted.revision;
@@ -1629,11 +1659,11 @@ TEST_CASE("A design stays on its page until a confirmed model submission starts"
     submitted.model_generation_context = true;
     submitted.busy = true;
     submitted.stage = ModelGenerationUIStage::GeneratingModel;
-    CHECK(model_generation_route_action(submitted, design, false, 3, design.job_id) == RedesignModelRouteAction::Model);
-    CHECK(model_generation_route_action(design, submitted, true, 4, submitted.job_id) == RedesignModelRouteAction::Ignore);
+    CHECK(model_generation_route_action(submitted, design) == RedesignModelRouteAction::Refresh);
+    CHECK(model_generation_route_action(design, submitted) == RedesignModelRouteAction::Ignore);
 }
 
-TEST_CASE("History preparation stays on the image page and routes only its confirmed child task", "[UiRedesign][ModelGenerationRoute]")
+TEST_CASE("History preparation and its confirmed child task only refresh their source", "[UiRedesign][ModelGenerationRoute]")
 {
     ModelGenerationUIState design;
     design.revision = 10;
@@ -1643,12 +1673,12 @@ TEST_CASE("History preparation stays on the image page and routes only its confi
     auto preparing = design;
     ++preparing.revision;
     preparing.busy = true;
-    CHECK(model_generation_route_action(preparing, design, false, 3, design.job_id) == RedesignModelRouteAction::Refresh);
+    CHECK(model_generation_route_action(preparing, design) == RedesignModelRouteAction::Refresh);
 
     auto failed = preparing;
     ++failed.revision;
     failed.busy = false;
-    CHECK(model_generation_route_action(failed, preparing, false, 3, design.job_id) == RedesignModelRouteAction::Refresh);
+    CHECK(model_generation_route_action(failed, preparing) == RedesignModelRouteAction::Refresh);
 
     auto submitted = preparing;
     ++submitted.revision;
@@ -1656,14 +1686,14 @@ TEST_CASE("History preparation stays on the image page and routes only its confi
     submitted.job_id = "new-child-task";
     submitted.model_generation_context = true;
     submitted.stage = ModelGenerationUIStage::GeneratingModel;
-    CHECK(model_generation_route_action(submitted, preparing, false, 3, design.job_id) == RedesignModelRouteAction::Model);
+    CHECK(model_generation_route_action(submitted, preparing) == RedesignModelRouteAction::Refresh);
 
     // A late preparation notification must not undo the child task's route.
     preparing.revision = submitted.revision + 1;
-    CHECK(model_generation_route_action(preparing, submitted, true, 4, submitted.job_id) == RedesignModelRouteAction::Ignore);
+    CHECK(model_generation_route_action(preparing, submitted) == RedesignModelRouteAction::Ignore);
 }
 
-TEST_CASE("A restored failed model opens its result page after leaving a history workbench", "[UiRedesign][ModelGenerationRoute]")
+TEST_CASE("A restored failed model refreshes state without automatic navigation", "[UiRedesign][ModelGenerationRoute]")
 {
     ModelGenerationUIState current;
     current.revision = 20;
@@ -1676,14 +1706,14 @@ TEST_CASE("A restored failed model opens its result page after leaving a history
     restored.model_generation_session = 4;
     restored.job_id = "failed-model";
     restored.stage = ModelGenerationUIStage::Failed;
-    CHECK(model_generation_route_action(restored, current, true, 3, current.job_id) == RedesignModelRouteAction::Model);
+    CHECK(model_generation_route_action(restored, current) == RedesignModelRouteAction::Refresh);
 
     restored.model_generation_context = false;
     restored.stage = ModelGenerationUIStage::DesignReady;
-    CHECK(model_generation_route_action(restored, current, true, 3, current.job_id) == RedesignModelRouteAction::Image);
+    CHECK(model_generation_route_action(restored, current) == RedesignModelRouteAction::Refresh);
 
     restored.job_id.clear();
-    CHECK(model_generation_route_action(restored, current, true, 3, current.job_id) == RedesignModelRouteAction::Ignore);
+    CHECK(model_generation_route_action(restored, current) == RedesignModelRouteAction::Ignore);
 }
 
 TEST_CASE("A historical model routes by its asset identity without an active generation job", "[UiRedesign][ModelGenerationRoute]")
@@ -1701,20 +1731,16 @@ TEST_CASE("A historical model routes by its asset identity without an active gen
     restored.model_generation_session = 4;
     restored.job_id.clear();
     restored.model_asset_id = "historical-model";
-    const auto restored_action = model_generation_route_action(restored, current, true, 3,
-        model_generation_route_id(current));
-    CHECK(restored_action == RedesignModelRouteAction::Model);
-    CHECK(model_generation_preserves_workbench(restored, restored_action, true));
-    CHECK_FALSE(model_generation_preserves_workbench(restored, restored_action, false));
+    const auto restored_action = model_generation_route_action(restored, current);
+    CHECK(restored_action == RedesignModelRouteAction::Refresh);
 
     auto stale = restored;
     ++stale.revision;
     stale.model_asset_id = "different-model";
-    CHECK(model_generation_route_action(stale, restored, true, 4,
-        model_generation_route_id(restored)) == RedesignModelRouteAction::Ignore);
+    CHECK(model_generation_route_action(stale, restored) == RedesignModelRouteAction::Ignore);
 }
 
-TEST_CASE("A newly submitted model still leaves the design page for its result view", "[UiRedesign][ModelGenerationRoute]")
+TEST_CASE("A newly submitted model refreshes its source without revoking the editing workbench", "[UiRedesign][ModelGenerationRoute]")
 {
     ModelGenerationUIState design;
     design.revision = 10;
@@ -1728,11 +1754,8 @@ TEST_CASE("A newly submitted model still leaves the design page for its result v
     submitted.model_generation_context = true;
     submitted.job_id = "new-model-task";
     const auto action = model_generation_route_action(
-        submitted, design, false, design.model_generation_session, design.job_id);
-    CHECK(action == RedesignModelRouteAction::Model);
-    const bool preserves_workbench = model_generation_preserves_workbench(submitted, action, true);
-    CHECK_FALSE(preserves_workbench);
-    CHECK(model_generation_route_revokes_workbench_presentation(action, preserves_workbench));
+        submitted, design);
+    CHECK(action == RedesignModelRouteAction::Refresh);
 
     WorkbenchCheckResult running_check;
     running_check.source = WorkbenchCheckSource::Automatic;
@@ -1742,23 +1765,16 @@ TEST_CASE("A newly submitted model still leaves the design page for its result v
     CHECK_FALSE(workbench_check_card_should_show(
         true, false, true, true, false, running_check));
 
-    // Result-page polls do not change presentation ownership. Only an explicit
-    // workbench page commit can set it again.
-    CHECK_FALSE(model_generation_route_revokes_workbench_presentation(
-        RedesignModelRouteAction::Refresh, false));
 }
 
-TEST_CASE("Saved model versions keep an already presented workbench", "[UiRedesign][ModelGenerationRoute]")
+TEST_CASE("Saved model versions publish only a refresh", "[UiRedesign][ModelGenerationRoute]")
 {
     ModelGenerationUIState saved;
     saved.stage = ModelGenerationUIStage::ModelReady;
     saved.model_generation_context = true;
     saved.model_asset_id = "saved-version";
-    const bool preserves_workbench = model_generation_preserves_workbench(
-        saved, RedesignModelRouteAction::Model, true);
-    CHECK(preserves_workbench);
-    CHECK_FALSE(model_generation_route_revokes_workbench_presentation(
-        RedesignModelRouteAction::Model, preserves_workbench));
+    saved.revision = 1;
+    CHECK(model_generation_route_action(saved, {}) == RedesignModelRouteAction::Refresh);
 }
 
 TEST_CASE("Returning to image design is available only after model work is stable", "[UiRedesign][ModelGenerationRoute]")
@@ -1809,7 +1825,7 @@ TEST_CASE("Advanced model presentation skips smart preparation and keeps advance
     CHECK(presented.can_retry_model);
 }
 
-TEST_CASE("An explicit return ignores same-session model refreshes but a new model session still routes", "[UiRedesign][ModelGenerationRoute]")
+TEST_CASE("An explicit return and a new model session both retain the selected page", "[UiRedesign][ModelGenerationRoute]")
 {
     ModelGenerationUIState model;
     model.revision = 20;
@@ -1820,14 +1836,14 @@ TEST_CASE("An explicit return ignores same-session model refreshes but a new mod
 
     auto same_session = model;
     ++same_session.revision;
-    CHECK(model_generation_route_action(same_session, model, false, 0, {}) == RedesignModelRouteAction::Refresh);
+    CHECK(model_generation_route_action(same_session, model) == RedesignModelRouteAction::Refresh);
 
     auto new_session = same_session;
     ++new_session.revision;
     ++new_session.model_generation_session;
     new_session.job_id = "new-model";
     new_session.stage = ModelGenerationUIStage::GeneratingModel;
-    CHECK(model_generation_route_action(new_session, same_session, false, 0, {}) == RedesignModelRouteAction::Model);
+    CHECK(model_generation_route_action(new_session, same_session) == RedesignModelRouteAction::Refresh);
 }
 
 TEST_CASE("Old revisions and task identities cannot replace the selected model route", "[UiRedesign][ModelGenerationRoute]")
@@ -1839,19 +1855,19 @@ TEST_CASE("Old revisions and task identities cannot replace the selected model r
     current.job_id = "active-model";
     auto stale = current;
     stale.revision = 19;
-    CHECK(model_generation_route_action(stale, current, true, 3, current.job_id) == RedesignModelRouteAction::Ignore);
+    CHECK(model_generation_route_action(stale, current) == RedesignModelRouteAction::Ignore);
 
     stale.revision = 21;
     stale.model_generation_session = 2;
-    CHECK(model_generation_route_action(stale, current, true, 3, current.job_id) == RedesignModelRouteAction::Ignore);
+    CHECK(model_generation_route_action(stale, current) == RedesignModelRouteAction::Ignore);
 
     stale.model_generation_session = 3;
     stale.job_id = "previous-model";
-    CHECK(model_generation_route_action(stale, current, true, 3, current.job_id) == RedesignModelRouteAction::Ignore);
+    CHECK(model_generation_route_action(stale, current) == RedesignModelRouteAction::Ignore);
 
     stale.job_id = current.job_id;
     stale.model_generation_context = false;
-    CHECK(model_generation_route_action(stale, current, true, 3, current.job_id) == RedesignModelRouteAction::Ignore);
+    CHECK(model_generation_route_action(stale, current) == RedesignModelRouteAction::Ignore);
 }
 
 TEST_CASE("Task updates preserve the selected model view across failure and recovery", "[UiRedesign][ModelGenerationRoute]")
@@ -1865,11 +1881,23 @@ TEST_CASE("Task updates preserve the selected model view across failure and reco
     for (const auto stage : {ModelGenerationUIStage::GeneratingModel, ModelGenerationUIStage::Failed,
                             ModelGenerationUIStage::Stopped, ModelGenerationUIStage::ModelReady}) {
         update.stage = stage;
-        CHECK(model_generation_route_action(update, current, true, 3, current.job_id) == RedesignModelRouteAction::Refresh);
+        CHECK(model_generation_route_action(update, current) == RedesignModelRouteAction::Refresh);
     }
 }
 
-TEST_CASE("Returning to the design page is preserved until a new model session starts", "[UiRedesign][ModelGenerationRoute]")
+TEST_CASE("An explicit idle reset clears the generation presentation in the same session", "[UiRedesign][ModelGenerationRoute]")
+{
+    ModelGenerationUIState previous;
+    previous.revision = 20; previous.model_generation_session = 3;
+    previous.model_generation_context = true; previous.job_id = "stopped-task";
+    previous.stage = ModelGenerationUIStage::Stopped;
+    ModelGenerationUIState reset;
+    reset.revision = previous.revision + 1; reset.model_generation_session = previous.model_generation_session;
+    CHECK(model_generation_route_action(reset, previous) == RedesignModelRouteAction::Refresh);
+    CHECK(model_generation_route_action(previous, reset) == RedesignModelRouteAction::Ignore);
+}
+
+TEST_CASE("Returning to the design page survives a new model session", "[UiRedesign][ModelGenerationRoute]")
 {
     ModelGenerationUIState current;
     current.model_generation_session = 3;
@@ -1877,10 +1905,10 @@ TEST_CASE("Returning to the design page is preserved until a new model session s
     current.job_id = "active-model";
     auto update = current;
     update.revision = 1;
-    CHECK(model_generation_route_action(update, current, false, 0, {}) == RedesignModelRouteAction::Refresh);
+    CHECK(model_generation_route_action(update, current) == RedesignModelRouteAction::Refresh);
 
     ++update.model_generation_session;
-    CHECK(model_generation_route_action(update, current, false, 0, {}) == RedesignModelRouteAction::Model);
+    CHECK(model_generation_route_action(update, current) == RedesignModelRouteAction::Refresh);
 }
 
 TEST_CASE("Reanalysis stays hidden until current analysis and estimate reach a terminal state", "[UiRedesign][CloudRecommendationPresentation]")

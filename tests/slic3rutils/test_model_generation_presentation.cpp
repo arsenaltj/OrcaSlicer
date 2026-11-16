@@ -2,6 +2,7 @@
 #include <catch2/generators/catch_generators.hpp>
 
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelGenerationStatusText.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationLegacyState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationStatusText.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryThumbnail.hpp"
@@ -30,6 +31,282 @@
 #include <stdexcept>
 
 using Slic3r::GUI::AIModelGenerationClient;
+
+TEST_CASE("A known failed smart preparation permits a fresh user intent with unchanged inputs", "[SmartGenerationFlow]")
+{
+    using Slic3r::GUI::SmartGenerationFlow;
+    REQUIRE(SmartGenerationFlow::can_restart_failed_preparation(
+        true, "failed-preparation", "failed", "preparation", false, false, false, true));
+    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
+        true, "failed-preparation", "failed", "preparation", false, false, false, false));
+    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
+        true, "", "failed", "preparation", false, false, false, true));
+    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
+        false, "advanced-preparation", "failed", "preparation", false, false, false, true));
+}
+
+TEST_CASE("Only a persisted preparation failure permits the new smart generation exception", "[SmartGenerationFlow]")
+{
+    using Slic3r::GUI::SmartGenerationFlow;
+    const std::string state = GENERATE("preprocessing", "queued", "running", "awaiting_confirmation",
+        "stopping", "stopped", "cancelled", "ready", "");
+    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
+        true, "job", state, "preparation", false, false, false, true));
+}
+
+TEST_CASE("Editing a draft cannot turn an uncertain model submission into a preparation failure", "[SmartGenerationFlow]")
+{
+    using Slic3r::GUI::SmartGenerationFlow;
+    SmartGenerationFlow edited_draft;
+    REQUIRE(edited_draft.phase == SmartGenerationFlow::Phase::Preparation);
+    for (const std::string phase : {"geometry", "local", "complete", ""})
+        CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
+            true, "job", "failed", phase, edited_draft.submitted, false, false, true));
+    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
+        true, "job", "failed", "preparation", true, false, false, true));
+    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
+        true, "job", "failed", "preparation", false, true, false, true));
+    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
+        true, "job", "failed", "preparation", false, false, true, true));
+}
+
+TEST_CASE("A changed smart restart capability publishes even when the displayed failure is unchanged", "[SmartGenerationFlow]")
+{
+    Slic3r::GUI::ModelGenerationUIState original;
+    original.smart_mode = true;
+    original.job_id = "failed-preparation";
+    original.stage = Slic3r::GUI::ModelGenerationUIStage::Failed;
+    auto updated = original;
+    CHECK(updated.same_content(original));
+    updated.can_restart_failed_smart_preparation = true;
+    CHECK_FALSE(updated.same_content(original));
+    CHECK_FALSE(original.same_content(updated));
+}
+
+TEST_CASE("A locally rejected smart intent restores its failed task through a newer presentation context", "[SmartGenerationFlow][ModelGenerationRoute]")
+{
+    using namespace Slic3r::GUI;
+    ModelGenerationUIState failed;
+    failed.smart_mode = true; failed.smart_flow_id = "original-flow";
+    failed.job_id = "original-failed-job"; failed.stage = ModelGenerationUIStage::Failed;
+    failed.model_generation_context = true; failed.model_generation_session = 4; failed.revision = 10;
+    auto attempted = failed;
+    attempted.smart_flow_id = "unsent-flow";
+    ++attempted.model_generation_session; ++attempted.revision;
+    REQUIRE(model_generation_route_action(attempted, failed) == RedesignModelRouteAction::Refresh);
+    auto restored = failed;
+    restored.model_generation_session = attempted.model_generation_session + 1;
+    restored.revision = attempted.revision + 1;
+    CHECK(model_generation_route_action(restored, attempted) == RedesignModelRouteAction::Refresh);
+    CHECK(model_generation_route_id(restored) == "original-flow");
+    CHECK(model_generation_route_action(attempted, restored) == RedesignModelRouteAction::Ignore);
+    auto updated = restored; ++updated.revision;
+    updated.can_restart_failed_smart_preparation = true;
+    CHECK(model_generation_route_action(updated, restored) == RedesignModelRouteAction::Refresh);
+}
+
+TEST_CASE("Editing a failed preparation retains its route until an explicit new generation", "[SmartGenerationFlow][ModelGenerationRoute]")
+{
+    using namespace Slic3r::GUI;
+    ModelGenerationUIState failed;
+    failed.smart_mode = true; failed.smart_flow_id = "failed-flow";
+    failed.job_id = "failed-job"; failed.job_state = "failed";
+    failed.stage = ModelGenerationUIStage::Failed;
+    failed.model_generation_context = true;
+    failed.model_generation_session = 4; failed.revision = 10;
+    failed.input.image_path = "old.png"; failed.input.style = "realistic";
+    SmartGenerationFlow flow;
+    flow.flow_id = failed.smart_flow_id;
+    flow.restore(10, 2, false);
+    REQUIRE(SmartGenerationFlow::can_restart_failed_preparation(
+        true, failed.job_id, failed.job_state, "preparation", flow.submitted, false, false, true));
+    auto edited = failed;
+    const auto change = GENERATE(0, 1, 2, 3);
+    if (change == 0 || change == 3) edited.input.image_path = "new.png";
+    if (change == 1 || change == 3) edited.input.prompt = "current description";
+    if (change == 2 || change == 3) edited.input.style = "sculpture";
+    ++edited.revision;
+    REQUIRE_FALSE(edited.input == failed.input);
+    CHECK(model_generation_route_action(edited, failed) == RedesignModelRouteAction::Refresh);
+    CHECK_FALSE(flow.claim_geometry(true));
+    auto obsolete = failed;
+    CHECK(model_generation_route_action(obsolete, edited) == RedesignModelRouteAction::Ignore);
+    flow.begin("new-user-flow");
+    auto submitted = edited;
+    submitted.smart_flow_id = flow.flow_id;
+    ++submitted.revision; ++submitted.model_generation_session;
+    submitted.busy = true; submitted.stage = ModelGenerationUIStage::GeneratingDesign;
+    CHECK(model_generation_route_action(submitted, edited) == RedesignModelRouteAction::Refresh);
+    CHECK(submitted.input == edited.input);
+    CHECK(model_generation_route_action(edited, submitted) == RedesignModelRouteAction::Ignore);
+}
+
+TEST_CASE("Startup restoration rejects callbacks from a departed page or edited input", "[SmartGenerationFlow]")
+{
+    using Slic3r::GUI::ModelGenerationPresentation::SmartTaskRestoreGuard;
+    SmartTaskRestoreGuard guard;
+    CHECK_FALSE(guard.eligible());
+    guard.set_presented(true);
+    const auto query = guard.epoch();
+    REQUIRE(guard.accepts(query));
+    guard.set_presented(true);
+    CHECK(guard.accepts(query)); // Normal state refresh does not invalidate a lookup.
+    guard.set_presented(false);
+    CHECK_FALSE(guard.accepts(query));
+    guard.set_presented(true);
+    CHECK_FALSE(guard.accepts(query));
+    const auto newer = guard.epoch();
+    REQUIRE(guard.accepts(newer));
+    guard.input_changed();
+    CHECK_FALSE(guard.accepts(newer));
+    guard.set_presented(false); guard.set_presented(true);
+    CHECK_FALSE(guard.eligible()); // Clearing or revisiting must not restore over the new draft.
+}
+
+TEST_CASE("Smart startup recovers unfinished work while completed local models stay in history", "[SmartGenerationFlow]")
+{
+    using Slic3r::GUI::ModelGenerationPresentation::is_unfinished_smart_job;
+    AIModelGenerationClient::JobStatus job;
+    job.id = "original-job"; job.generation_options.workflow_mode = "smart";
+    job.generation_options.flow_id = "original-flow";
+    for (const auto* state : {"preprocessing", "queued", "running", "stopping", "stopped", "cancelled", "failed", "awaiting_confirmation"}) {
+        DYNAMIC_SECTION(state) {
+            job.state = state;
+            CHECK(is_unfinished_smart_job(job, false));
+            CHECK(is_unfinished_smart_job(job, true));
+        }
+    }
+    job.state = "ready"; job.artifact_ready = true;
+    CHECK(is_unfinished_smart_job(job, false)); // Remote ready is not a published local model.
+    CHECK_FALSE(is_unfinished_smart_job(job, true));
+    job.state = "failed"; job.creation_kind = "advanced_multiview_v1";
+    CHECK_FALSE(is_unfinished_smart_job(job, false));
+    job.creation_kind.clear(); job.generation_options.workflow_mode = "legacy";
+    CHECK_FALSE(is_unfinished_smart_job(job, false));
+    job.generation_options.workflow_mode = "smart"; job.generation_options.flow_id.clear();
+    CHECK_FALSE(is_unfinished_smart_job(job, false));
+    job.generation_options.flow_id = "flow"; job.state = "unknown-state";
+    CHECK_FALSE(is_unfinished_smart_job(job, false));
+}
+
+TEST_CASE("Advanced generation shares common Chinese status mapping and hides unknown supplier messages", "[ModelGenerationStatusText][ModelGenerationPresentation]")
+{
+    using namespace Slic3r::GUI::ModelGenerationStatusText;
+    AIModelGenerationClient::JobStatus job;
+    job.message = "Generating one model from the four approved design views.";
+    for (const auto* state : {"queued", "running", "stopping"}) {
+        DYNAMIC_SECTION(state) {
+            job.state = state; job.phase = "generating"; job.progress = 0;
+            CHECK(localized_job_status(job, true) == localized_job_status(job));
+            CHECK_FALSE(localized_job_status(job, true).Contains("Generating one model"));
+        }
+    }
+    job.state = "unknown-state";
+    CHECK_FALSE(localized_job_status(job).Contains("Generating one model"));
+    CHECK_FALSE(localized_job_status(job, true).Contains("Generating one model"));
+}
+
+TEST_CASE("Advanced stage text describes four view generation instead of smart portrait processing", "[ModelGenerationStatusText][AdvancedCreation]")
+{
+    using namespace Slic3r::GUI::ModelGenerationStatusText;
+    AIModelGenerationClient::JobStatus job;
+    job.state = "running"; job.progress = 97;
+    job.phase = "checking_model";
+    CHECK_FALSE(localized_job_status(job, true).Contains(wxString::FromUTF8("肤色")));
+    CHECK(localized_job_status(job).Contains(wxString::FromUTF8("肤色")));
+    job.phase = "converting";
+    CHECK_FALSE(localized_job_status(job, true).Contains("OBJ"));
+    job.state = "stopped";
+    CHECK(localized_job_status(job, true).Contains(wxString::FromUTF8("四视图")));
+    CHECK_FALSE(localized_job_status(job, true).Contains(wxString::FromUTF8("图片预览")));
+}
+
+TEST_CASE("Advanced failures use Chinese reasons and retain diagnostic identity without raw English", "[ModelGenerationStatusText][AdvancedCreation]")
+{
+    using namespace Slic3r::GUI::ModelGenerationStatusText;
+    AIModelGenerationClient::JobStatus job;
+    job.state = "failed"; job.id = "original-job"; job.provider_task_id = "original-provider-task";
+    job.message = "Unexpected vendor failure with a long raw diagnostic";
+    job.provider_error_category = "unexpected_vendor_category";
+    for (const auto* code : {"provider_rate_limited", "provider_unavailable", "artifact_download_failed", "model_validation_failed", "unknown-code"}) {
+        DYNAMIC_SECTION(code) {
+            job.provider_error_code = code;
+            const auto text = localized_job_status(job, true);
+            CHECK_FALSE(text.Contains("Unexpected vendor failure"));
+            CHECK_FALSE(text.Contains("unexpected_vendor_category"));
+            CHECK(text.Contains("original-job"));
+            CHECK(text.Contains("original-provider-task"));
+            CHECK(job.message == "Unexpected vendor failure with a long raw diagnostic");
+        }
+    }
+    job.provider_error_ambiguous = true;
+    CHECK(localized_job_status(job, true).Contains(wxString::FromUTF8("避免重复计费")));
+    CHECK_FALSE(localized_job_status(job, true).Contains("Unexpected vendor failure"));
+}
+
+TEST_CASE("Advanced display localization changes no task eligibility progress or failure identity", "[ModelGenerationStatusText][AdvancedCreation]")
+{
+    using namespace Slic3r::GUI;
+    ModelGenerationUIState original;
+    original.job_id = "original-job"; original.job_state = "running"; original.job_phase = "generating";
+    original.stage = ModelGenerationUIStage::GeneratingModel; original.busy = original.can_stop = true;
+    original.progress = 95; original.model_progress_estimated = true;
+    original.revision = 15; original.model_generation_session = 3;
+    original.status_text = "Generating one model from the four approved design views.";
+    original.summary_text = "Original diagnostic";
+    auto display = original;
+    ModelGenerationStatusText::localize_advanced_model_state(display);
+    CHECK_FALSE(display.status_text == original.status_text);
+    CHECK_FALSE(wxString::FromUTF8(display.status_text).Contains(wxString::FromUTF8("收尾")));
+    CHECK(original.summary_text == "Original diagnostic");
+    CHECK(display.summary_text.empty());
+    display.status_text = original.status_text; display.summary_text = original.summary_text;
+    CHECK(display.same_content(original));
+    original.smart_mode = true;
+    display = original;
+    ModelGenerationStatusText::localize_advanced_model_state(display);
+    CHECK(display.same_content(original));
+}
+
+TEST_CASE("Advanced local loading failures and cancellation never imply a completed model", "[ModelGenerationStatusText][AdvancedCreation]")
+{
+    using namespace Slic3r::GUI;
+    ModelGenerationUIState state;
+    state.job_id = "remote-ready"; state.job_state = "ready"; state.job_phase = "ready";
+    state.status_text = "Raw local failure"; state.summary_text = "Raw parser error";
+    state.stage = GENERATE(ModelGenerationUIStage::LoadingModel, ModelGenerationUIStage::Failed, ModelGenerationUIStage::Stopped);
+    const auto stage = state.stage;
+    ModelGenerationStatusText::localize_advanced_model_state(state);
+    CHECK(state.stage == stage);
+    CHECK_FALSE(state.model_ready);
+    CHECK_FALSE(state.can_open_workbench);
+    CHECK_FALSE(wxString::FromUTF8(state.status_text).Contains("Raw"));
+    CHECK_FALSE(wxString::FromUTF8(state.summary_text).Contains("Raw"));
+    CHECK(state.job_id == "remote-ready");
+}
+
+TEST_CASE("Advanced reconnect notices survive localization of the last observed provider phase", "[ModelGenerationStatusText][AdvancedCreation]")
+{
+    using namespace Slic3r::GUI;
+    ModelGenerationUIState raw;
+    raw.job_id = "same-job"; raw.job_state = "running"; raw.job_phase = "generating";
+    raw.stage = ModelGenerationUIStage::GeneratingModel; raw.busy = true;
+    raw.status_text = "正在重新连接当前任务"; raw.summary_text = "Raw connection failure";
+    const auto original = raw;
+    auto display = raw;
+    ModelGenerationStatusText::localize_advanced_model_state(display);
+    CHECK(wxString::FromUTF8(display.status_text).Contains(wxString::FromUTF8("重新连接")));
+    CHECK(display.summary_text.empty());
+    CHECK(raw.same_content(original));
+    display.status_text = original.status_text; display.summary_text = original.summary_text;
+    CHECK(display.same_content(original));
+    raw.status_text = "Generating one model from the four approved design views.";
+    raw.summary_text.clear();
+    ModelGenerationStatusText::localize_advanced_model_state(raw);
+    CHECK_FALSE(wxString::FromUTF8(raw.status_text).Contains(wxString::FromUTF8("重新连接")));
+    CHECK_FALSE(wxString::FromUTF8(raw.status_text).Contains("Generating one model"));
+    CHECK(raw.job_id == "same-job");
+}
 
 TEST_CASE("Smart generation advances once and retains completed stages across retries", "[SmartGenerationFlow]")
 {
@@ -66,10 +343,32 @@ TEST_CASE("Restoring a smart task requires explicit intent before the next paid 
     ModelGenerationUIState state, current;
     state.smart_mode = true; state.smart_flow_id = "stable-flow";
     state.model_generation_context = true; state.model_generation_session = 1;
-    REQUIRE(model_generation_route_action(state, current, false, 0, "") == RedesignModelRouteAction::Model);
+    REQUIRE(model_generation_route_action(state, current) == RedesignModelRouteAction::Refresh);
     current = state; state.job_id = "server-job"; ++state.revision;
-    REQUIRE(model_generation_route_action(state, current, true, 1, "stable-flow") == RedesignModelRouteAction::Refresh);
+    REQUIRE(model_generation_route_action(state, current) == RedesignModelRouteAction::Refresh);
 }
+TEST_CASE("Resuming a smart task ignores its previous terminal checkpoint while busy", "[SmartGenerationFlow]")
+{
+    using Slic3r::GUI::SmartGenerationFlow;
+    for (const auto* terminal : {"failed", "stopped", "cancelled"}) {
+        SmartGenerationFlow flow;
+        flow.begin("flow");
+        REQUIRE(flow.claim_geometry(true));
+        REQUIRE(flow.observe(20, false, false) == 42);
+        flow.observe_job_state(terminal, false);
+        REQUIRE(flow.stopped);
+        flow.resume(true);
+        flow.observe_job_state(terminal, true);
+        CHECK_FALSE(flow.stopped);
+        CHECK_FALSE(flow.claim_geometry(true));
+        CHECK(flow.observe(80, false, false) == 78);
+        flow.observe_job_state("running", true);
+        CHECK_FALSE(flow.stopped);
+        flow.observe_job_state(terminal, false);
+        CHECK(flow.stopped);
+    }
+}
+
 using namespace Slic3r::GUI::ModelGenerationPresentation;
 
 TEST_CASE("Background creator progress preserves the foreground editor and selected creation mode", "[SingleWorkbench][SmartGenerationFlow]")
@@ -80,17 +379,17 @@ TEST_CASE("Background creator progress preserves the foreground editor and selec
     state.model_generation_session = 2;
     state.model_generation_context = true;
     state.model_asset_id = "smart-result";
-    REQUIRE(model_generation_route_action(state, current, false, 0, {}, true) == RedesignModelRouteAction::Refresh);
+    REQUIRE(model_generation_route_action(state, current) == RedesignModelRouteAction::Refresh);
     current = state;
     state.stage = ModelGenerationUIStage::ModelReady;
     ++state.revision;
-    CHECK(model_generation_route_action(state, current, false, 0, {}, true) == RedesignModelRouteAction::Refresh);
+    CHECK(model_generation_route_action(state, current) == RedesignModelRouteAction::Refresh);
     // Returning to AI creation replays the current snapshot without treating
     // already observed progress as a new foreground generation request.
     current = state;
-    CHECK(model_generation_route_action(state, current, false, 0, {}) == RedesignModelRouteAction::Refresh);
+    CHECK(model_generation_route_action(state, current) == RedesignModelRouteAction::Refresh);
     ++state.model_generation_session;
-    CHECK(model_generation_route_action(state, current, false, 0, {}) == RedesignModelRouteAction::Model);
+    CHECK(model_generation_route_action(state, current) == RedesignModelRouteAction::Refresh);
 }
 
 TEST_CASE("Static WebP keeps transparency and damaged replacements are rejected", "[ModelGenerationPresentation][ImageSelection][SmartGenerationFlow]")

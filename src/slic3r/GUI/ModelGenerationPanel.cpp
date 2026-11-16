@@ -142,6 +142,22 @@ bool ModelGenerationPanel::input_editable() const
            !m_preview_loading && !m_finishing_running && !m_design_history_loading && !m_saving_generation_options;
 }
 
+bool ModelGenerationPanel::can_restart_failed_smart_preparation() const
+{
+    return is_failed_smart_preparation() && input_editable() && can_generate_design_from_shell() &&
+        generation_provider_available("geometry") && generation_options_valid() &&
+        m_selected_design_provider == "gpt";
+}
+
+bool ModelGenerationPanel::is_failed_smart_preparation() const
+{
+    return SmartGenerationFlow::can_restart_failed_preparation(
+        m_smart_mode && m_job_generation_options.workflow_mode == "smart", m_job_id, m_job_state,
+        m_job_smart_phase, m_smart_flow.submitted || m_journey_model_submitted,
+        !m_job_provider_task_id.empty() || !m_job_provider_conversion_task_id.empty(),
+        m_ready || m_model_preview_ready || !m_displayed_model_path.empty(), true);
+}
+
 bool ModelGenerationPanel::request_retry_service()
 {
     if (m_shutdown || !m_page_initialized || m_retry_service == nullptr || !m_retry_service->IsEnabled())
@@ -189,6 +205,7 @@ bool ModelGenerationPanel::request_refresh_history()
 
 bool ModelGenerationPanel::synchronize_ui_input(const ModelGenerationUIInput& input)
 {
+    if (m_shell_smart_creation && !(input == m_ui_state.input)) m_smart_restore_guard.input_changed();
     if (m_shutdown || !m_page_initialized || m_busy || m_preview_download_in_flight ||
         m_finishing_running || m_design_history_loading || m_saving_generation_options)
         return false;
@@ -220,7 +237,11 @@ bool ModelGenerationPanel::synchronize_ui_input(const ModelGenerationUIInput& in
     } else if (image_path != m_selected_image_path && !set_selected_image(image_path, false)) {
         return false;
     }
-    if (changed && !m_smart_flow.flow_id.empty()) {
+    // Keep the settled failure's presentation identity while editing its next
+    // input. Clearing it makes the Shell reject the synchronized snapshot as
+    // an unrelated route and later restore the old prompt on submission.
+    // Only an explicit generation command starts the next flow.
+    if (changed && !m_smart_flow.flow_id.empty() && !is_failed_smart_preparation()) {
         m_smart_flow = SmartGenerationFlow();
         if (wxGetApp().app_config) wxGetApp().app_config->set("smart_generation_pending_flow", "");
     }
@@ -243,6 +264,7 @@ bool ModelGenerationPanel::synchronize_ui_input(const ModelGenerationUIInput& in
 
 bool ModelGenerationPanel::synchronize_ui_options(const ModelGenerationUIOptions& options)
 {
+    if (m_shell_smart_creation && !(options == m_ui_state.options)) m_smart_restore_guard.input_changed();
     if (m_shutdown || !m_page_initialized || m_busy || m_preview_download_in_flight ||
         m_finishing_running || m_design_history_loading || m_saving_generation_options)
         return false;
@@ -358,6 +380,7 @@ void ModelGenerationPanel::publish_ui_state()
     state.service_availability_known = m_service_availability_known;
     state.busy = m_busy || m_preview_download_in_flight || m_saving_generation_options;
     state.can_generate_design = can_generate_design_from_shell();
+    state.can_restart_failed_smart_preparation = can_restart_failed_smart_preparation();
     state.inputs_match_job = job_inputs_match();
     state.model_options_match = model_options_match_job();
     const bool can_reuse_model = can_reuse_ready_model_design() && !state.busy &&
@@ -564,6 +587,7 @@ void ModelGenerationPanel::set_service_availability(bool available, bool generat
             : _L("在线生成尚未配置，可从模型库打开已有模型。"));
         update_workflow();
         restore_latest_job();
+        if (m_shell_smart_creation) restore_latest_job(false, true);
     } else if (!m_busy) {
         m_status->SetLabel(_L("本地服务连接未就绪。点击“重新检测服务”即可重试。"));
         m_result_summary->SetLabel(_L("服务恢复后会自动载入最近任务，当前本地模型不会丢失。"));
@@ -585,27 +609,66 @@ void ModelGenerationPanel::show_input_hint(const wxString& message, wxWindow* fo
     if (focus != nullptr) focus->SetFocus();
 }
 
-void ModelGenerationPanel::restore_latest_job(bool require_visible)
+void ModelGenerationPanel::set_smart_creation_presented(bool presented)
+{
+    m_smart_restore_guard.set_presented(presented);
+    if (!presented && m_smart_restore_pending) {
+        m_restore_checked = false;
+        m_smart_restore_pending = false;
+    }
+    if (presented) restore_latest_job(false, true);
+}
+
+void ModelGenerationPanel::restore_latest_job(bool require_visible, bool unfinished_smart_only)
 {
     if (m_advanced_only) return; // Advanced opens only its explicit group-linked or legacy advanced job.
     if (m_shutdown || !m_page_initialized || (require_visible && !IsShownOnScreen()) ||
         !m_service_available || m_restore_checked || !m_job_id.empty())
         return;
+    if (unfinished_smart_only && (!m_shell_smart_creation || !m_smart_restore_guard.eligible() ||
+        m_busy || m_preview_download_in_flight || m_design_history_loading || m_saving_generation_options ||
+        !m_prompt->GetValue().empty() || !m_selected_image_path.empty() || !m_custom_style->GetValue().empty()))
+        return;
     m_restore_checked = true;
+    if (unfinished_smart_only) m_smart_restore_pending = true;
+    if (unfinished_smart_only) BOOST_LOG_TRIVIAL(info) << "[SmartTaskRestore] querying unfinished smart task";
+    const auto restore_epoch = m_smart_restore_guard.epoch();
     const uint64_t sequence = ++m_sequence;
     wxWeakRef<ModelGenerationPanel> weak(this);
     m_client.get_latest(
-        [weak, sequence](std::optional<AIModelGenerationClient::JobStatus> status) mutable {
-            if (!weak || !status) return;
-            wxGetApp().CallAfter([weak, sequence, status = std::move(*status)]() mutable {
-                if (weak) weak->restore_job(std::move(status), sequence);
+        [weak, sequence, unfinished_smart_only, restore_epoch](std::optional<AIModelGenerationClient::JobStatus> status) mutable {
+            if (!weak) return;
+            wxGetApp().CallAfter([weak, sequence, unfinished_smart_only, restore_epoch, status = std::move(status)]() mutable {
+                if (!weak || weak->m_shutdown || sequence != weak->m_sequence) return;
+                if (unfinished_smart_only) {
+                    if (!weak->m_smart_restore_guard.accepts(restore_epoch)) return;
+                    weak->m_smart_restore_pending = false;
+                    if (!status) return;
+                    if (!is_unfinished_smart_job(*status, false)) return;
+                    // A ready remote job still needs recovery until its local model and record exist.
+                    if (status->state == "ready") {
+                        boost::system::error_code ec;
+                        const bool published = is_nonempty_model(temp_path(status->id, status->artifact_format)) &&
+                            boost::filesystem::is_regular_file(library_metadata_path(status->id), ec);
+                        if (!is_unfinished_smart_job(*status, published)) {
+                            BOOST_LOG_TRIVIAL(info) << "[SmartTaskRestore] completed model remains in history job=" << status->id;
+                            return;
+                        }
+                    }
+                    BOOST_LOG_TRIVIAL(info) << "[SmartTaskRestore] restoring original job=" << status->id << " state=" << status->state;
+                }
+                if (status) weak->restore_job(std::move(*status), sequence);
             });
         },
-        [weak, sequence](std::string error) {
+        [weak, sequence, unfinished_smart_only, restore_epoch](std::string error) {
             if (!weak) return;
             BOOST_LOG_TRIVIAL(warning) << "Unable to restore the latest generated-model job: " << error;
-            wxGetApp().CallAfter([weak, sequence, error = std::move(error)] {
+            wxGetApp().CallAfter([weak, sequence, unfinished_smart_only, restore_epoch, error = std::move(error)] {
                 if (!weak || weak->m_shutdown || sequence != weak->m_sequence || !weak->m_job_id.empty()) return;
+                if (unfinished_smart_only) {
+                    if (!weak->m_smart_restore_guard.accepts(restore_epoch)) return;
+                    weak->m_smart_restore_pending = false;
+                }
                 if (is_transient_sidecar_poll_error(error)) {
                     weak->m_restore_checked = false;
                     weak->set_service_availability(false, false, error);
@@ -700,7 +763,15 @@ void ModelGenerationPanel::restore_generation_input_projection(const AIModelGene
     if (status.generation_options.workflow_mode == "smart" && (status.source != "image" || !status.input_ready))
         clear_selected_image();
     if (status.source == "image" && status.input_ready) {
-        m_job_image_path = temp_path(status.id + "-input", "png");
+        std::string input_copy = status.id + "-input";
+        if (status.generation_options.workflow_mode == "smart" &&
+            status.state == "failed" && status.smart_phase == "preparation") {
+            // A restored failure may already have a displayed input cache.
+            // Download into a separate copy so materializing the input does
+            // not replace the copy being read during restoration.
+            input_copy += "-" + new_request_id();
+        }
+        m_job_image_path = temp_path(input_copy, "png");
         m_selected_image_path = m_job_image_path;
         m_restoring_input = true;
     }
@@ -781,6 +852,12 @@ void ModelGenerationPanel::download_restored_input(uint64_t sequence)
                 if (!weak->m_awaiting_palette_confirmation && weak->m_preview_output_available &&
                     !weak->m_preview_download_in_flight && !weak->m_style_preview_ready)
                     weak->download_preview(sequence);
+                // A failed smart preparation may be restored before its input
+                // file arrives. Publish the materialized input as a restored
+                // context so the Shell can display it and enable the same-input action.
+                if (weak->m_smart_mode && weak->m_job_state == "failed" &&
+                    weak->m_job_smart_phase == "preparation")
+                    ++weak->m_model_generation_session;
                 weak->refresh_controls();
             });
         },
@@ -4279,6 +4356,7 @@ void ModelGenerationPanel::reset(bool remove_remote)
     m_job_id.clear();
     m_job_state.clear();
     m_job_phase.clear();
+    m_job_smart_phase.clear();
     m_job_provider_name.clear();
     m_job_provider_task_id.clear();
     m_job_provider_conversion_task_id.clear();

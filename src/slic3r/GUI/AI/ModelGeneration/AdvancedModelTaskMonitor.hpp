@@ -3,6 +3,8 @@
 #include "AdvancedModelTaskFlow.hpp"
 #include <wx/timer.h>
 #include <atomic>
+#include <memory>
+#include <thread>
 #include "slic3r/GUI/Presentation/UiRuntime.hpp"
 #include <optional>
 
@@ -31,5 +33,6 @@ private:
     wxTimer m_timer;
     Presentation::TaskScope m_preparation;
     std::unique_ptr<AdvancedModelTaskFlow> m_flow;
+    std::shared_ptr<int> m_lifetime {std::make_shared<int>(0)};
 };
 }

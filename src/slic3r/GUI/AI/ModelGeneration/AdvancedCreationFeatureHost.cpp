@@ -93,6 +93,7 @@ void AdvancedCreationFeatureHost::shutdown()
 {
     if (m_shutdown) return;
     m_shutdown = true;
+    m_lifetime.reset();
     m_poll_timer.Stop(); m_save_timer.Stop(); m_listener = {}; m_model_state_listener = {};
     m_model_monitor.set_listener({}); m_model_monitor.reset(); m_catalog_client.cancel_current();
     m_cache_scope.cancel();
@@ -102,11 +103,12 @@ void AdvancedCreationFeatureHost::shutdown()
 
 AdvancedCreationFeatureHost::Complete AdvancedCreationFeatureHost::complete(std::function<void(Json)> callback, bool release_command, bool release_poll, bool session_bound)
 {
-    wxWeakRef<AdvancedCreationFeatureHost> weak(this);
+    auto* weak = this;
+    const auto alive = std::weak_ptr<int>(m_lifetime);
     const auto context = m_session.context();
-    return [weak, context, callback = std::move(callback), release_command, release_poll, session_bound](Json value) {
-        Presentation::post_gui([weak, context, callback, release_command, release_poll, session_bound, value = std::move(value)]() mutable {
-            if (!weak || weak->m_shutdown) return;
+    return [weak, alive, context, callback = std::move(callback), release_command, release_poll, session_bound](Json value) {
+        Presentation::post_gui([weak, alive, context, callback, release_command, release_poll, session_bound, value = std::move(value)]() mutable {
+            if (alive.expired() || weak->m_shutdown) return;
             if (session_bound && !weak->m_session.matches(context)) return;
             try { callback(std::move(value)); }
             catch (const Json::exception&) {
@@ -121,11 +123,12 @@ AdvancedCreationFeatureHost::Complete AdvancedCreationFeatureHost::complete(std:
 
 AdvancedMultiviewClient::Error AdvancedCreationFeatureHost::error(bool release_command, bool release_poll)
 {
-    wxWeakRef<AdvancedCreationFeatureHost> weak(this);
+    auto* weak = this;
+    const auto alive = std::weak_ptr<int>(m_lifetime);
     const auto context = m_session.context();
-    return [weak, context, release_command, release_poll](std::string message) {
-        Presentation::post_gui([weak, context, release_command, release_poll, message = std::move(message)] {
-            if (!weak || weak->m_shutdown || !weak->m_session.matches(context)) return;
+    return [weak, alive, context, release_command, release_poll](std::string message) {
+        Presentation::post_gui([weak, alive, context, release_command, release_poll, message = std::move(message)] {
+            if (alive.expired() || weak->m_shutdown || !weak->m_session.matches(context)) return;
             weak->m_message = ModelGenerationStatusText::localized_advanced_service_error(message).ToUTF8().data();
             if (release_command) weak->m_command_state = CommandState::Idle;
             if (release_poll) weak->m_poll_pending = false;
@@ -139,14 +142,15 @@ void AdvancedCreationFeatureHost::set_listener(std::function<void()> listener)
 void AdvancedCreationFeatureHost::get_provider_catalog(const std::string& role, const std::string& provider,
     AIModelGenerationClient::CatalogFn complete, AIModelGenerationClient::ErrorFn error)
 {
-    wxWeakRef<AdvancedCreationFeatureHost> weak(this);
-    m_catalog_client.get_provider_catalog(role, provider, [weak, complete](auto catalog) {
-        Presentation::post_gui([weak, complete, catalog = std::move(catalog)]() mutable {
-            if (weak && !weak->m_shutdown && complete) complete(std::move(catalog));
+    auto* weak = this;
+    const auto alive = std::weak_ptr<int>(m_lifetime);
+    m_catalog_client.get_provider_catalog(role, provider, [weak, alive, complete](auto catalog) {
+        Presentation::post_gui([weak, alive, complete, catalog = std::move(catalog)]() mutable {
+            if (!alive.expired() && !weak->m_shutdown && complete) complete(std::move(catalog));
         });
-    }, [weak, error](auto message) {
-        Presentation::post_gui([weak, error, message = std::move(message)]() mutable {
-            if (weak && !weak->m_shutdown && error) error(std::move(message));
+    }, [weak, alive, error](auto message) {
+        Presentation::post_gui([weak, alive, error, message = std::move(message)]() mutable {
+            if (!alive.expired() && !weak->m_shutdown && error) error(std::move(message));
         });
     });
 }
@@ -197,10 +201,11 @@ void AdvancedCreationFeatureHost::refresh_image_catalog()
     const auto sequence = ++m_image_catalog_sequence;
     m_image_catalog = image_catalog_state("checking", {}, {}, false, "checking");
     if (!m_service_available) { publish(); return; }
-    wxWeakRef<AdvancedCreationFeatureHost> weak(this);
+    auto* weak = this;
+    const auto alive = std::weak_ptr<int>(m_lifetime);
     get_provider_catalog("image", "yoyoclaw",
-        [weak, sequence](ProviderCatalog catalog) mutable {
-            if (!weak || weak->m_shutdown || sequence != weak->m_image_catalog_sequence) return;
+        [weak, alive, sequence](ProviderCatalog catalog) mutable {
+            if (alive.expired() || weak->m_shutdown || sequence != weak->m_image_catalog_sequence) return;
             if (catalog.role != "image" || catalog.provider != "yoyoclaw") {
                 catalog = image_catalog_state("error", "invalid_catalog",
                                               "YOYOClaw image catalog is invalid.", false, "error");
@@ -217,8 +222,8 @@ void AdvancedCreationFeatureHost::refresh_image_catalog()
             weak->refresh_capabilities();
             weak->publish();
         },
-        [weak, sequence](std::string message) {
-            if (!weak || weak->m_shutdown || sequence != weak->m_image_catalog_sequence) return;
+        [weak, alive, sequence](std::string message) {
+            if (alive.expired() || weak->m_shutdown || sequence != weak->m_image_catalog_sequence) return;
             weak->m_image_catalog = image_catalog_state(
                 "error", "catalog_unavailable", std::move(message), true, "error");
             weak->publish();
@@ -311,7 +316,8 @@ void AdvancedCreationFeatureHost::ingest(Json group, CallbackContext context, bo
     const auto group_id = snapshot.id;
     const auto task = m_cache_scope.begin(group_id, Presentation::TaskLifetime::Session);
     const auto cache = m_cache;
-    wxWeakRef<AdvancedCreationFeatureHost> weak(this);
+    auto* weak = this;
+    const auto alive = std::weak_ptr<int>(m_lifetime);
     auto verify = [snapshot, assets, cache, group_id, decoded](const Presentation::TaskContext& worker) {
         Verified result; result.snapshot = snapshot;
         std::map<std::pair<std::string,std::string>,bool> checked;
@@ -339,8 +345,8 @@ void AdvancedCreationFeatureHost::ingest(Json group, CallbackContext context, bo
         }
         return result;
     };
-    auto finish = [weak, task, context, done](Presentation::TaskResult<Verified> outcome) {
-        if (!weak || weak->m_shutdown || !weak->m_cache_scope.matches(task) || !weak->m_session.matches(context)) return;
+    auto finish = [weak, alive, task, context, done](Presentation::TaskResult<Verified> outcome) {
+        if (alive.expired() || weak->m_shutdown || !weak->m_cache_scope.matches(task) || !weak->m_session.matches(context)) return;
         weak->m_poll_pending = false;
         bool cache_error = outcome.canceled || outcome.error || !outcome.value;
         if (!cache_error) {
@@ -362,20 +368,20 @@ void AdvancedCreationFeatureHost::ingest(Json group, CallbackContext context, bo
         if (weak->m_session.group() && !weak->m_session.group()->model_job_id.empty())
             weak->observe_model_job(weak->m_session.group()->model_job_id, false);
         if (done) done();
-        if (!weak || weak->m_shutdown || !weak->m_cache_scope.matches(task) || !weak->m_session.matches(context)) return;
+        if (alive.expired() || weak->m_shutdown || !weak->m_cache_scope.matches(task) || !weak->m_session.matches(context)) return;
         if (cache_error) weak->m_message = "高级图片缓存暂时无法读取，当前输入与结果已保留。";
         weak->publish();
     };
     const bool accepted = Presentation::background_tasks().submit(task, verify,
-        [weak, task, context, group_id, verify, finish](Presentation::TaskResult<Verified> outcome) {
-            if (!weak || weak->m_shutdown || !weak->m_cache_scope.matches(task) || !weak->m_session.matches(context)) return;
+        [weak, alive, task, context, group_id, verify, finish](Presentation::TaskResult<Verified> outcome) {
+            if (alive.expired() || weak->m_shutdown || !weak->m_cache_scope.matches(task) || !weak->m_session.matches(context)) return;
             if (!outcome.value || outcome.error || outcome.value->missing.empty()) { finish(std::move(outcome)); return; }
             const auto missing = outcome.value->missing;
             weak->m_session.apply_snapshot(std::move(outcome.value->snapshot), context, false);
             weak->publish();
             auto count = std::make_shared<std::size_t>(missing.size());
-            auto downloaded = [weak, task, context, count, verify, finish](std::string error) {
-                if (!weak || weak->m_shutdown || !weak->m_cache_scope.matches(task) || !weak->m_session.matches(context)) return;
+            auto downloaded = [weak, alive, task, context, count, verify, finish](std::string error) {
+                if (alive.expired() || weak->m_shutdown || !weak->m_cache_scope.matches(task) || !weak->m_session.matches(context)) return;
                 if (!error.empty()) weak->m_message = ModelGenerationStatusText::localized_advanced_service_error(error).ToUTF8().data();
                 if (--*count != 0) return;
                 if (!Presentation::background_tasks().submit(task, verify, finish)) finish({});
@@ -680,6 +686,7 @@ void AdvancedCreationFeatureHost::run_plan(const std::string& group, Json plan, 
             m_command_state = CommandState::Idle;
             if (new_group) m_session.begin_open(group);
             const auto callback = m_session.context();
+            if (new_group) m_session.arm_initial_design_guidance(callback);
             m_poll_pending = true;
             m_client.request("GET", "/groups/" + group, {}, complete([this, callback, new_group, operation](Json value) {
                 if (!m_session.matches(callback)) return;
@@ -769,10 +776,11 @@ void AdvancedCreationFeatureHost::settle_receipt(const std::string& operation, b
     if (current) m_command_state = CommandState::Exclusive;
     m_reconciling.insert(operation);
     const auto collection = receipt.value("kind", std::string("design")) == "model" ? "/model-jobs/" : "/operations/";
-    wxWeakRef<AdvancedCreationFeatureHost> weak(this);
-    auto failed = [weak, operation, context, current](std::string message) {
-        Presentation::post_gui([weak, operation, context, current, message = std::move(message)] {
-            if (!weak || weak->m_shutdown) return;
+    auto* weak = this;
+    const auto alive = std::weak_ptr<int>(m_lifetime);
+    auto failed = [weak, alive, operation, context, current](std::string message) {
+        Presentation::post_gui([weak, alive, operation, context, current, message = std::move(message)] {
+            if (alive.expired() || weak->m_shutdown) return;
             weak->m_reconciling.erase(operation);
             if (current && weak->m_session.matches(context)) {
                 weak->m_command_state = CommandState::Idle;
@@ -810,6 +818,11 @@ void AdvancedCreationFeatureHost::settle_receipt(const std::string& operation, b
             const bool restore = !m_session.group() || m_session.group()->id != group;
             auto callback = context;
             if (restore) callback = m_session.begin_open(group);
+            // Only a request made in this live Session can introduce guidance.
+            // Durable receipts restored at startup have no _session_epoch.
+            if (!model_request && receipt.value("new_group", false) &&
+                receipt.value("_session_epoch", std::uint64_t(0)) == context.epoch)
+                m_session.arm_initial_design_guidance(callback);
             // Restart recovery has no installed group yet. Register the real
             // group/task before acceptance; image validation remains asynchronous.
             if (restore && model_request) {

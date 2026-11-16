@@ -91,6 +91,142 @@ class SmartGenerationTests(unittest.TestCase):
         return {"workflow_mode": "smart", "flow_id": flow, "request_id": flow,
                 "prompt": "a green vase", "style": "realistic"}
 
+    def test_fresh_intent_preserves_a_failed_preparation_and_replays_only_its_new_job(self):
+        for ambiguous in (False, True):
+            with self.subTest(ambiguous=ambiguous), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                jobs = {}
+                app = self.make_application(root, jobs)
+                original_request = self.request()
+                original_id = app.create_text_job(original_request).payload["job"]["id"]
+                original = jobs[original_id]
+                original.state = "failed"
+                original.phase = "failed"
+                original.preprocess_failure = {"code": "image_connection_failed", "ambiguous": ambiguous}
+                evidence = original.directory / "failure-evidence.txt"
+                evidence.write_bytes(b"original evidence")
+                _persist_job(original)
+                self.submit.reset_mock()
+
+                flow = str(uuid.uuid4())
+                fresh_request = {**original_request, "flow_id": flow, "request_id": flow}
+                fresh = app.create_text_job(fresh_request)
+                fresh_id = fresh.payload["job"]["id"]
+                self.assertNotEqual(fresh_id, original_id)
+                self.assertNotEqual(jobs[fresh_id].flow_id, original.flow_id)
+                self.assertEqual(jobs[fresh_id].user_prompt, original.user_prompt)
+                self.assertEqual(len(jobs), 2)
+                self.submit.assert_called_once()
+                self.assertIs(self.submit.call_args.args[1], app.ports.preprocess_text)
+                self.assertEqual(app.create_text_job(fresh_request).payload, fresh.payload)
+                self.assertEqual(self.submit.call_count, 1)
+                self.assertEqual(original.state, "failed")
+                self.assertEqual(original.preprocess_failure["ambiguous"], ambiguous)
+                self.assertEqual(evidence.read_bytes(), b"original evidence")
+
+                restored_jobs = {job_id: _load_job(job.directory) for job_id, job in jobs.items()}
+                restarted = self.make_application(root, restored_jobs)
+                self.assertEqual(restarted.create_text_job(fresh_request).payload, fresh.payload)
+                self.submit.assert_not_called()
+                if ambiguous:
+                    with self.assertRaises(RequestError) as caught:
+                        restarted.retry_preparation(original_id, {})
+                    self.assertEqual(caught.exception.code, "preparation_ambiguous")
+                    self.submit.assert_not_called()
+
+    def test_fresh_image_intent_uses_current_bytes_without_removing_failed_inputs(self):
+        for same_image in (False, True):
+            with self.subTest(same_image=same_image), tempfile.TemporaryDirectory() as directory:
+                app = self.make_application(Path(directory), {})
+                output = BytesIO()
+                Image.new("RGB", (256, 256), "blue").save(output, "PNG")
+                original_bytes = output.getvalue()
+                request = self.request()
+                original_id = app.create_image_job(request, original_bytes, "image/png").payload["job"]["id"]
+                original = app.ports.jobs[original_id]
+                original.state = "failed"
+                original.preprocess_failure = {"ambiguous": True}
+                _persist_job(original)
+                self.submit.reset_mock()
+                output = BytesIO()
+                Image.new("RGB", (256, 256), "blue" if same_image else "green").save(output, "PNG")
+                current_bytes = output.getvalue()
+                flow = str(uuid.uuid4())
+                fresh_id = app.create_image_job({**request, "flow_id": flow, "request_id": flow},
+                                               current_bytes, "image/png").payload["job"]["id"]
+                fresh = app.ports.jobs[fresh_id]
+                self.assertNotEqual(fresh_id, original_id)
+                self.assertEqual(original.input_path.read_bytes(), original_bytes)
+                self.assertEqual(fresh.input_path.read_bytes(), current_bytes)
+                self.submit.assert_called_once()
+                self.assertIs(self.submit.call_args.args[1], app.ports.preprocess_image)
+
+    def test_fresh_intent_keeps_current_text_style_and_image_instruction(self):
+        for image_mode in (False, True):
+            for changed_prompt, changed_style in ((True, False), (False, True), (True, True)):
+                with self.subTest(image=image_mode, prompt=changed_prompt, style=changed_style), tempfile.TemporaryDirectory() as directory:
+                    app = self.make_application(Path(directory), {})
+                    original_request = self.request()
+                    output = BytesIO()
+                    Image.new("RGB", (256, 256), "blue").save(output, "PNG")
+                    data = output.getvalue()
+                    if image_mode:
+                        original_request["instruction"] = original_request.pop("prompt")
+                    create = lambda request: (app.create_image_job(request, data, "image/png")
+                                              if image_mode else app.create_text_job(request))
+                    original_id = create(original_request).payload["job"]["id"]
+                    original = app.ports.jobs[original_id]
+                    original.state = "failed"
+                    original.preprocess_failure = {"ambiguous": True}
+                    _persist_job(original)
+                    self.submit.reset_mock()
+                    flow = str(uuid.uuid4())
+                    current = {**original_request, "flow_id": flow, "request_id": flow}
+                    if changed_prompt:
+                        current["instruction" if image_mode else "prompt"] = "A rounded blue toy"
+                    if changed_style:
+                        current.update(style="custom", custom_style="Soft clay sculpture")
+                    fresh_id = create(current).payload["job"]["id"]
+                    fresh = app.ports.jobs[fresh_id]
+                    self.assertNotEqual(fresh_id, original_id)
+                    self.assertEqual(fresh.user_prompt, current["instruction" if image_mode else "prompt"])
+                    self.assertEqual(fresh.style, current["style"])
+                    self.assertEqual(fresh.custom_style, current.get("custom_style", ""))
+                    self.assertEqual(original.user_prompt, "a green vase")
+                    self.assertEqual(original.style, "realistic")
+                    self.assertEqual(original.state, "failed")
+                    self.submit.assert_called_once()
+                    self.assertIs(self.submit.call_args.args[1],
+                                  app.ports.preprocess_image if image_mode else app.ports.preprocess_text)
+
+    def test_repeated_confirmed_preparation_failures_require_a_new_explicit_intent_each_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            jobs = {}
+            app = self.make_application(Path(directory), jobs)
+            original_request = self.request()
+            current_id = app.create_text_job(original_request).payload["job"]["id"]
+            preserved = []
+            self.submit.reset_mock()
+            for round_index in range(3):
+                current = jobs[current_id]
+                current.state = "failed"
+                current.phase = "failed"
+                current.preprocess_failure = {"code": "image_connection_failed", "ambiguous": True}
+                _persist_job(current)
+                preserved.append(current_id)
+                flow = str(uuid.uuid4())
+                request = {**original_request, "flow_id": flow, "request_id": flow}
+                response = app.create_text_job(request)
+                current_id = response.payload["job"]["id"]
+                self.assertNotIn(current_id, preserved)
+                self.assertEqual(app.create_text_job(request).payload, response.payload)
+                self.assertEqual(self.submit.call_count, round_index + 1)
+                for old_id in preserved:
+                    self.assertEqual(jobs[old_id].state, "failed")
+                    self.assertTrue(jobs[old_id].preprocess_failure["ambiguous"])
+                    self.assertTrue((jobs[old_id].directory / "job.json").is_file())
+            self.assertEqual(len(jobs), 4)
+
     def test_replayed_creation_survives_restart_without_a_second_submission(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

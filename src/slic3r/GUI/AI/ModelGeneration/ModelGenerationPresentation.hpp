@@ -134,6 +134,22 @@ private:
     double m_elapsed { 0.0 }, m_estimate { 0.0 }, m_synced_at { 0.0 };
 };
 bool is_transient_sidecar_poll_error(const std::string& error);
+// Only guards a read-only startup lookup. Task state and resume stay in the host.
+class SmartTaskRestoreGuard
+{
+public:
+    void set_presented(bool presented) {
+        if (m_presented != presented) { m_presented = presented; ++m_epoch; }
+    }
+    void input_changed() { m_edited = true; ++m_epoch; }
+    bool eligible() const { return m_presented && !m_edited; }
+    uint64_t epoch() const { return m_epoch; }
+    bool accepts(uint64_t epoch) const { return eligible() && epoch == m_epoch; }
+private:
+    bool m_presented {false}, m_edited {false};
+    uint64_t m_epoch {0};
+};
+bool is_unfinished_smart_job(const AIModelGenerationClient::JobStatus& status, bool published_local_model);
 std::string new_request_id();
 bool is_supported_image(const boost::filesystem::path& path);
 bool is_nonempty_model(const boost::filesystem::path& path);
