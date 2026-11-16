@@ -23,8 +23,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
-if ($DistributionChannel -eq 'commercial' -and $KnownIntegrationReport) {
-    throw 'Commercial packages require a fresh release integration check; KnownIntegrationReport is internal-only.'
+if ($PSBoundParameters.ContainsKey('KnownIntegrationReport')) {
+    throw 'KnownIntegrationReport is retired. All packages require a complete zero-error integration check.'
 }
 if ($SevenZipExecutable) {
     if (-not (Test-Path -LiteralPath $SevenZipExecutable -PathType Leaf)) { throw '7-Zip executable does not exist.' }
@@ -50,10 +50,6 @@ $bundledPython = $pythonMatch.Groups[1].Value.Trim()
 $sourceArguments = @('-I', (Join-Path $repoRoot 'scripts\package_source_identity.py'), '--root', $repoRoot)
 if (-not [string]::IsNullOrWhiteSpace($SourceManifest)) {
     $sourceArguments += @('--manifest', (Resolve-Path -LiteralPath $SourceManifest).Path)
-}
-if ($KnownIntegrationReport) {
-    if (-not $SourceManifest) { throw 'A source snapshot manifest is required with KnownIntegrationReport.' }
-    $KnownIntegrationReport = (Resolve-Path -LiteralPath $KnownIntegrationReport).Path
 }
 function Get-PackageSourceIdentity {
     $sourceJson = & $bundledPython @sourceArguments
@@ -152,14 +148,14 @@ $integrationChannel = if ($DistributionChannel -eq 'commercial') { 'release' } e
 $integrationArguments = @('-I', (Join-Path $repoRoot 'scripts\package_integration_check.py'),
     '--root', $repoRoot, '--report', $integrationReportPath, '--channel', $integrationChannel)
 if ($SourceManifest) { $integrationArguments += @('--source-manifest', (Resolve-Path -LiteralPath $SourceManifest).Path) }
-if ($KnownIntegrationReport) { $integrationArguments += @('--known-report', $KnownIntegrationReport) }
 & $bundledPython @integrationArguments
 if ($LASTEXITCODE -ne 0) {
     throw "AI integration guardrails failed with exit code $LASTEXITCODE."
 }
 $integrationValidation = Get-Content -LiteralPath $integrationReportPath -Raw | ConvertFrom-Json
-if (-not $integrationValidation.decision.integration_passed) {
-    $packageKind = 'internal-validation'
+if (-not $integrationValidation.decision.package_allowed -or -not $integrationValidation.decision.integration_passed -or
+    $integrationValidation.source_identity_sha256 -ne $sourceIdentity.source_identity_sha256) {
+    throw 'AI integration verification is missing or belongs to another snapshot.'
 }
 
 # An incremental build is normally a no-op, but it prevents a stale binary from

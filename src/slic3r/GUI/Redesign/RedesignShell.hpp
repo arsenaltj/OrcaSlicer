@@ -132,7 +132,6 @@ private:
     void update_navigation();
     wxPanel* m_assets_page {nullptr};
     AssetsWorkspace* m_assets_workspace {nullptr};
-    wxPanel* create_placeholder_page(const wxString& title, const wxString& body);
     void connect_model_generation_host();
     void apply_advanced_model_state(const ModelGenerationUIState& state, bool new_generation = false);
     void on_advanced_model_job(const AdvancedCreation::ModelJobEvent& event);

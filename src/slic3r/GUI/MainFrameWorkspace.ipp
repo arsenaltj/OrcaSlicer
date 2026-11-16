@@ -20,19 +20,28 @@ void finish_redesign_restore(wxWindow* root)
 {
     const auto hwnd = root->GetHandle();
     if (!::GetPropW(hwnd, redesign_restore_pending) || ::IsIconic(hwnd)) return;
+    const auto started = std::chrono::steady_clock::now();
     ::GdiFlush();
+    const auto gdi_done = std::chrono::steady_clock::now();
     using FlushComposition = HRESULT (WINAPI*)();
     static const auto flush = reinterpret_cast<FlushComposition>(
         ::GetProcAddress(::GetModuleHandleW(L"dwmapi.dll"), "DwmFlush"));
     if (flush) flush();
+    const auto dwm_done = std::chrono::steady_clock::now();
     cloak_redesign_restore(hwnd, false);
     ::RemovePropW(hwnd, redesign_restore_pending);
+    if (redesign_restore_trace_enabled())
+        BOOST_LOG_TRIVIAL(info) << "[UiRedesignRestore] id=" << redesign_restore_snapshot_count()
+            << " phase=final_commit final_gdi_flushes=1 dwm_flushes=" << (flush ? 1 : 0)
+            << " final_gdi_ms=" << std::chrono::duration<double, std::milli>(gdi_done - started).count()
+            << " dwm_ms=" << std::chrono::duration<double, std::milli>(dwm_done - gdi_done).count()
+            << " reveal_ms=" << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - dwm_done).count();
     BOOST_LOG_TRIVIAL(info) << "[UiRedesignRestore] restored content presented at "
         << root->GetClientSize().x << 'x' << root->GetClientSize().y;
 }
 #endif
 
-void present_redesign_workspace(wxWindow* root, RedesignShell* shell)
+void present_redesign_workspace(wxWindow* root, RedesignShell* shell, double queue_ms)
 {
     auto* frame = dynamic_cast<wxTopLevelWindow*>(root);
     if (!frame || frame->IsIconized() || !shell) return;
@@ -55,19 +64,19 @@ void present_redesign_workspace(wxWindow* root, RedesignShell* shell)
     root->Update();
     shell->present_restore_frame();
     const auto request_done = std::chrono::steady_clock::now();
-    wxString trace;
-    if (wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace) && trace == "1")
-        BOOST_LOG_TRIVIAL(info) << "[UiRedesignRestore] host presentation: layout_ms="
-            << std::chrono::duration<double, std::milli>(layout_done - started).count()
-            << ", request_ms="
-            << std::chrono::duration<double, std::milli>(request_done - layout_done).count()
-            << ", native_ms="
-            << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - request_done).count();
 #ifdef __WXMSW__
     if (::GetPropW(root->GetHandle(), redesign_restore_pending))
         finish_redesign_restore(root);
     release_redesign_restore_frames(root);
 #endif
+    wxString trace;
+    if (wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace) && trace == "1")
+        BOOST_LOG_TRIVIAL(info) << "[UiRedesignRestore] id=" << redesign_restore_snapshot_count()
+            << " phase=host_present queue_ms=" << queue_ms << " layout_ms="
+            << std::chrono::duration<double, std::milli>(layout_done - started).count()
+            << " presenter_ms=" << std::chrono::duration<double, std::milli>(request_done - layout_done).count()
+            << " native_ms=" << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - request_done).count()
+            << " elapsed_ms=" << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
 }
 
 }
@@ -89,8 +98,10 @@ void MainFrame::bind_workspace_window_events()
         *pending = true;
         // wx commits deferred child positions after the size event returns.
         // Coalesce nested size/iconize events and paint at the final viewport.
-        CallAfter([this, pending] {
-            present_redesign_workspace(this, m_redesign_shell);
+        const auto queued = std::chrono::steady_clock::now();
+        CallAfter([this, pending, queued] {
+            present_redesign_workspace(this, m_redesign_shell,
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - queued).count());
             *pending = false;
         });
     };
@@ -294,7 +305,9 @@ WXLRESULT MainFrame::MSWWindowProc(WXUINT nMsg, WXWPARAM wParam, WXLPARAM lParam
     case WM_SYSCOMMAND:
         if (m_redesign_shell_active && ((wParam & 0xfff0) == SC_MINIMIZE ||
             (wParam & 0xfff0) == SC_MAXIMIZE || (wParam & 0xfff0) == SC_RESTORE))
-            retain_redesign_restore_frames_once(this);
+            retain_redesign_restore_frames_once(this,
+                (wParam & 0xfff0) == SC_MINIMIZE ? "minimize" :
+                (wParam & 0xfff0) == SC_MAXIMIZE ? "maximize" : "restore", "system_command");
         break;
     case WM_ENTERSIZEMOVE:
         // Native movement preserves client dimensions and pixels. It must not

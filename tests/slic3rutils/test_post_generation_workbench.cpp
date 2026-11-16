@@ -487,21 +487,6 @@ TEST_CASE("Workbench import keeps round base preparation opt-in",
     request.apply_round_base_preparation = true;
     CHECK(request.apply_round_base_preparation);
 }
-TEST_CASE("Legacy deferred portrait repair is rejected after v9 partitioning", "[PostGenerationWorkbench][PortraitNativeRepair]")
-{
-    PostGenerationWorkbenchState state;state.actions.can_import=true;state.model_path="portrait.obj";
-    state.deferred_native_repair=true;state.native_repair_source_sha256=std::string(64,'a');
-    Slic3r::AI::ModelImportRequest request;request.artifact.local_path=state.model_path;
-    request.native_repair_before_slice=true;request.native_repair_source_sha256=state.native_repair_source_sha256;
-    request.matched_colors.emplace();request.matched_colors->source_sha256=state.native_repair_source_sha256;
-    CHECK_FALSE(workbench_import_request_allowed(state,request));
-    CHECK_FALSE(state.can_import_for_slicing);
-    request.native_repair_source_sha256=std::string(64,'b');CHECK_FALSE(workbench_import_request_allowed(state,request));
-    request.native_repair_source_sha256=state.native_repair_source_sha256;
-    state.dirty=true;CHECK_FALSE(workbench_import_request_allowed(state,request));state.dirty=false;
-    state.deferred_native_repair=false;CHECK_FALSE(workbench_import_request_allowed(state,request));
-}
-
 TEST_CASE("Workbench placement adds a round base only to its detached import copy",
           "[PostGenerationWorkbench][OrcaModelPreparation][LocalPrintModelImport]")
 {
@@ -965,96 +950,6 @@ TEST_CASE("Canceled or unavailable final topology checks cannot authorize an imp
     CHECK_FALSE(prepare_workbench_import_topology(mesh, true, result, error, [] { return true; }));
 }
 
-TEST_CASE("confirmed risky imports reach the asynchronous host without claiming topology safety", "[WorkbenchImportEligibility]")
-{
-    PostGenerationWorkbenchState state;
-    state.actions.can_import = true;
-    state.model_path = "generated/portrait.glb";
-    state.can_force_import = true;
-    state.check.status = WorkbenchCheckStatus::Attention;
-    state.check.force_import_risk = true;
-    state.check.model_sha256 = std::string(64, 'a');
-    state.force_import_acknowledged = true;
-    Slic3r::AI::ModelImportRequest request;
-    request.artifact.local_path = state.model_path;
-    request.topology_check_sha256 = state.check.model_sha256;
-    CHECK_FALSE(workbench_import_request_allowed(state, request));
-    request.topology_risk_confirmed = true;
-    CHECK(workbench_import_request_allowed(state, request));
-    CHECK_FALSE(state.can_import_for_slicing);
-
-    SECTION("a changed model or topology report invalidates confirmation") {
-        request.artifact.local_path = "generated/other.glb";
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-        request.artifact.local_path = state.model_path;
-        request.topology_check_sha256 = std::string(64, 'b');
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-    }
-    SECTION("pending edits and repair processing remain blocked") {
-        state.dirty = true;
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-        state.dirty = false;
-        state.candidate_path = "generated/repair.obj";
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-        state.candidate_path.clear();
-        state.check.candidate_status = RepairCandidateStatus::Ready;
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-        state.check.candidate_status = RepairCandidateStatus::Generating;
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-        state.check.candidate_status = RepairCandidateStatus::None;
-        state.check.status = WorkbenchCheckStatus::Running;
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-    }
-    SECTION("busy projects and invalid filament matching cannot use the exception") {
-        state.actions.can_import = false;
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-        state.actions.can_import = true;
-        state.can_force_import = false;
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-    }
-
-    SECTION("only an acknowledged attention result can use the exception") {
-        for (const auto status : {WorkbenchCheckStatus::NotRun, WorkbenchCheckStatus::Invalid,
-                                  WorkbenchCheckStatus::Failed}) {
-            state.check.status = status;
-            CHECK_FALSE(workbench_import_request_allowed(state, request));
-        }
-        state.check.status = WorkbenchCheckStatus::Attention;
-        state.force_import_acknowledged = false;
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-        state.force_import_acknowledged = true;
-        state.check.force_import_risk = false;
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-    }
-}
-
-TEST_CASE("closed and explicitly unchecked imports use their own current evidence", "[WorkbenchImportEligibility]")
-{
-    PostGenerationWorkbenchState state;
-    state.actions.can_import = true;
-    state.model_path = "generated/closed.obj";
-    state.check.status = WorkbenchCheckStatus::Normal;
-    state.check.model_sha256 = std::string(64, 'c');
-    state.can_import_for_slicing = true;
-    Slic3r::AI::ModelImportRequest request;
-    request.artifact.local_path = state.model_path;
-    request.topology_check_sha256 = state.check.model_sha256;
-    CHECK(workbench_import_request_allowed(state, request));
-
-    state.can_import_for_slicing = false;
-    state.can_force_import = true;
-    state.check.status = WorkbenchCheckStatus::Attention;
-    state.check.force_import_risk = true;
-    state.check.model_sha256 = std::string(64, 'd');
-    state.force_import_acknowledged = true;
-    request.topology_check_sha256 = state.check.model_sha256;
-    CHECK_FALSE(workbench_import_request_allowed(state, request));
-    request.topology_risk_confirmed = true;
-    CHECK(workbench_import_request_allowed(state, request));
-    state.check.model_sha256 = std::string(64, 'e');
-    CHECK_FALSE(workbench_import_request_allowed(state, request));
-}
-
 TEST_CASE("An asynchronous color match admits slicing from the released editor instead of a stale busy view", "[WorkbenchImportEligibility][PostGenerationWorkbench][UiLifecycle]")
 {
     wxInitializer init;
@@ -1063,6 +958,7 @@ TEST_CASE("An asynchronous color match admits slicing from the released editor i
     live.asset_id = "matched-model";
     live.model_path = "generated/matched.glb";
     live.check.status = WorkbenchCheckStatus::Normal;
+    live.check.self_intersections_checked = true;
     live.check.model_sha256 = std::string(64, 'a');
     live.can_import_for_slicing = true;
     // The Shell snapshot was published while the match was still running.
@@ -5108,4 +5004,33 @@ TEST_CASE("A rebuilt real native portrait imports with exact closed topology and
     volume->set_mesh(std::move(candidate));
     CHECK(volume->mmu_segmentation_facets.get_data() == painting);
     CHECK(AI::model_artifact_sha256(carrier) == carrier_sha256);
+}
+
+TEST_CASE("Legacy risk and deferred repair requests cannot bypass current strict evidence", "[WorkbenchImportEligibility][PortraitNativeRepair]")
+{
+    PostGenerationWorkbenchState state;
+    state.actions.can_import = true;
+    state.can_import_for_slicing = true;
+    state.model_path = "generated/current.glb";
+    state.check.status = WorkbenchCheckStatus::Normal;
+    state.check.self_intersections_checked = true;
+    state.check.model_sha256 = std::string(64, 'a');
+    Slic3r::AI::ModelImportRequest request;
+    request.artifact.local_path = state.model_path;
+    request.topology_check_sha256 = state.check.model_sha256;
+    REQUIRE(workbench_import_request_allowed(state, request));
+    const int blocker = GENERATE(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
+    if (blocker == 0) request.native_repair_before_slice = true;
+    if (blocker == 1) request.topology_risk_confirmed = true;
+    if (blocker == 2) request.topology_check_sha256 = std::string(64, 'b');
+    if (blocker == 3) request.artifact.local_path = "other.glb";
+    if (blocker == 4) state.dirty = true;
+    if (blocker == 5) state.candidate_path = "candidate.glb";
+    if (blocker == 6) state.check.candidate_status = RepairCandidateStatus::Ready;
+    if (blocker == 7) state.check.status = WorkbenchCheckStatus::Attention;
+    if (blocker == 8) state.check.self_intersections_checked = false;
+    if (blocker == 9) state.actions.can_import = false;
+    if (blocker == 10) state.can_import_for_slicing = false;
+    if (blocker == 11) state.check.model_sha256.clear();
+    CHECK_FALSE(workbench_import_request_allowed(state, request));
 }

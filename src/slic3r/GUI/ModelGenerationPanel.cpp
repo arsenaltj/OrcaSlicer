@@ -1,6 +1,5 @@
 #include "AI/ModelGeneration/LocalModelImportState.hpp"
 #include "ModelGenerationPanel.hpp"
-#include "AI/ColorMatching/LocalPrintColorPanel.hpp"
 #include "AI/ModelGeneration/BeautyWorkbenchControls.hpp"
 #include "AI/ModelGeneration/DesignGenerationAvailability.hpp"
 #include "AI/ModelGeneration/WorkbenchStyle.hpp"
@@ -682,7 +681,6 @@ void ModelGenerationPanel::restore_latest_job(bool require_visible, bool unfinis
 void ModelGenerationPanel::restore_generation_input_projection(const AIModelGenerationClient::JobStatus& status)
 {
     reset_portrait_session();
-    m_portrait_entered = true; // Restored tasks never initiate portrait recognition.
     m_job_palette = status.palette;
     m_job_palette_color_count = status.palette_color_count;
     m_legacy_generation_state.restore_palette_color_count(status.palette_color_count);
@@ -907,7 +905,7 @@ void ModelGenerationPanel::begin_background_shutdown()
         preserve_portrait_draft(true);
     m_shutdown = m_shutdown_draining = true;
     ++m_sequence;
-    m_poll_timer.Stop(); m_library_timer.Stop(); m_workbench_sync_timer.Stop(); m_portrait_timer.Stop();
+    m_poll_timer.Stop(); m_library_timer.Stop(); m_workbench_sync_timer.Stop();
     m_ui_state_listener = {};
     m_workbench_surface_refresh.stop();
     m_workbench_evidence_scope.cancel(); m_preview_task_scope.cancel(); m_artifact_validation_scope.cancel();
@@ -950,10 +948,8 @@ void ModelGenerationPanel::shutdown()
     cancel_native_workbench_partition();
     if (m_workbench_check_cancel) m_workbench_check_cancel->store(true);
     m_workbench_sync_timer.Stop();
-    m_portrait_timer.Stop();
     if (m_portrait_task) m_portrait_task->finish(PortraitOutcome::Cancelled);
     if (m_workbench_check_worker.joinable()) m_workbench_check_worker.join();
-    if (m_workbench_color_matching) m_workbench_color_matching->shutdown();
     m_ui_state_listener = {};
     stop_library_loading();
     stop_model_finishing();
@@ -3978,11 +3974,6 @@ std::string ModelGenerationPanel::current_custom_style() const
     return value.ToUTF8().data();
 }
 
-wxString ModelGenerationPanel::current_style_label() const
-{
-    return style_label(current_style());
-}
-
 int ModelGenerationPanel::current_face_limit() const
 {
     const int selection = m_quality ? m_quality->GetSelection() : 1;
@@ -3992,11 +3983,6 @@ int ModelGenerationPanel::current_face_limit() const
 std::string ModelGenerationPanel::current_generation_profile() const
 {
     return current_face_limit() <= 300000 ? "performance" : "quality";
-}
-
-wxString ModelGenerationPanel::current_generation_profile_label() const
-{
-    return current_generation_profile() == "performance" ? _L("高性能") : _L("高质量（推荐）");
 }
 
 AIModelGenerationClient::GenerationOptions ModelGenerationPanel::current_generation_options() const

@@ -35,8 +35,6 @@ foreach ($name in @('evaluator_render_export.py', 'glb_artifact.py',
                     'local_semantic_render.py', 'local_semantic_transform.py')) {
     Copy-Item -LiteralPath (Join-Path $root "tools\ai\$name") -Destination (Join-Path $render $name)
 }
-$raster = Join-Path $root '.tmp\dev\run\resources\tools\ai\local_semantic_raster.dll'
-if (Test-Path -LiteralPath $raster) { Copy-Item -LiteralPath $raster -Destination (Join-Path $render 'local_semantic_raster.dll') }
 foreach ($name in @('evaluator_trial_launcher.cmd', 'evaluator_trial_launcher.ps1')) {
     Copy-Item -LiteralPath (Join-Path $root "tools\ai\$name") -Destination (Join-Path $target $name)
 }

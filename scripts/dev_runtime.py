@@ -136,10 +136,13 @@ def setup_identity(root: Path, build: Path) -> dict:
 
 
 def modules(root: Path, build: Path | None = None) -> list[str]:
+    if build:
+        cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+        if re.search(r"^ORCA_AI_LEGACY_FARL_RUNTIME:BOOL=(?:ON|TRUE|1|YES)$", cache, re.MULTILINE | re.IGNORECASE):
+            raise ValueError("Legacy FaRL runtime is retired; reconfigure with the native recognizer")
     cmake = (root / "CMakeLists.txt").read_text(encoding="utf-8")
     block = cmake.split("set(ORCA_AI_SIDECAR_RUNTIME_FILES", 1)[1].split("install(FILES", 1)[0]
     components = {
-        "ORCA_LOCAL_SEMANTIC_RUNTIME_FILES": "tools/ai/local_semantic_runtime_files.cmake",
         "ORCA_MODEL_CAPABILITY_RUNTIME_FILES": "tools/ai/model_runtime_files.cmake",
     }
     for variable, relative_path in components.items():
@@ -147,16 +150,6 @@ def modules(root: Path, build: Path | None = None) -> list[str]:
         if marker in block:
             component = root / relative_path
             content = component.read_text(encoding="utf-8")
-            cache = (build / "CMakeCache.txt").read_text(encoding="utf-8") if build else ""
-            for option in ("ORCA_AI_PORTRAIT_RECOGNITION", "ORCA_AI_LEGACY_FARL_RUNTIME"):
-                conditional = re.compile(
-                    rf"^if\({option}\)\s*\n(.*?)^endif\(\)[ \t]*$",
-                    re.MULTILINE | re.DOTALL)
-                if conditional.search(content):
-                    enabled = re.search(rf"^{option}:BOOL=(ON|OFF)$", cache, re.MULTILINE)
-                    if enabled is None:
-                        raise ValueError(f"Cannot resolve configured runtime option: {option}")
-                    content = conditional.sub(lambda match: match[1] if enabled[1] == "ON" else "", content)
             if re.search(r"^[ \t]*(?:if|elseif|else|endif)\s*\(", content, re.MULTILINE):
                 raise ValueError("Unsupported sidecar runtime condition; update modules() before refreshing")
             block = block.replace(marker, content)
@@ -170,31 +163,6 @@ def modules(root: Path, build: Path | None = None) -> list[str]:
     # CMake permits the same source in a shared component and its caller.
     # All matches use the same canonical tools/ai directory; check each once.
     return list(dict.fromkeys(names))
-
-
-def prepared_portrait_source(build: Path) -> Path:
-    """Resolve the CPU bundle from the generated installation rules."""
-    script = (build / "src/cmake_install.cmake").read_text(encoding="utf-8")
-    sources = re.findall(
-        r'file\(INSTALL DESTINATION "\$\{CMAKE_INSTALL_PREFIX\}/(?:\./)?resources/beauty-runtime"'
-        r'\s+TYPE DIRECTORY FILES "([^"]+)"\)', script)
-    if len(sources) != 1 or not Path(sources[0]).is_absolute() or not Path(sources[0]).is_dir():
-        raise ValueError("Cannot identify configured portrait runtime source")
-    return Path(sources[0]).resolve()
-
-
-def verify_sealed_portrait_manifest(source: Path, runtime: Path, raster: Path) -> None:
-    """Allow only the install-time seal of the exact Release accelerator."""
-    expected = read_json(source / "runtime-manifest.json")
-    if expected.get("schema") != "orca.offline-portrait-runtime/v1" or not all(
-            isinstance(expected.get(key), dict) for key in ("files", "modules")):
-        raise ValueError("Invalid prepared portrait runtime manifest")
-    record = {"size": raster.stat().st_size, "sha256": digest(raster)}
-    expected["files"]["modules/local_semantic_raster.dll"] = record
-    expected["modules"]["local_semantic_raster.dll"] = record
-    expected["raster_required"] = True
-    if read_json(runtime / "runtime-manifest.json") != expected:
-        raise ValueError("Installed portrait runtime manifest does not match source/build")
 
 
 def refresh_catalogs(root: Path) -> dict:
@@ -261,12 +229,11 @@ def verify_runtime(root: Path, build: Path, installed: list[str], runtime: Path 
     pairs["resources/tools/ai/orca_ai_runtime_dependencies.json"] = build / "orca_ai_runtime_dependencies.json"
     cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
     portrait_enabled = bool(re.search(r"^ORCA_AI_PORTRAIT_RECOGNITION:BOOL=ON$", cache, re.MULTILINE))
-    legacy_farl_enabled = bool(re.search(r"^ORCA_AI_LEGACY_FARL_RUNTIME:BOOL=ON$", cache, re.MULTILINE))
     metadata = read_json(build / "orca_ai_runtime_dependencies.json")
     portrait_metadata = metadata.get("portrait_recognition", {})
     if portrait_metadata.get("enabled") is not portrait_enabled:
         raise ValueError("Installed runtime has inconsistent portrait capabilities")
-    if portrait_metadata.get("legacy_farl_enabled", False) is not legacy_farl_enabled:
+    if portrait_metadata.get("legacy_farl_enabled", False) is not False:
         raise ValueError("Installed runtime has inconsistent legacy FaRL capability")
     native = runtime / "ai/portrait_semantics"
     if portrait_enabled:
@@ -276,27 +243,13 @@ def verify_runtime(root: Path, build: Path, installed: list[str], runtime: Path 
         verify_lightweight_portrait_runtime(root, runtime)
     elif native.exists():
         raise ValueError("Portrait-disabled runtime contains native portrait resources")
-    if not legacy_farl_enabled:
-        leftovers = ("resources/beauty-runtime",
-                     "resources/tools/ai/local_semantic_raster.dll",
-                     *("resources/tools/ai/portrait_parent_cleanup_" + name + ".json"
-                       for name in ("catalog", "fangfei", "partition", "locks")))
-        if any((runtime / name).exists() for name in leftovers):
-            raise ValueError("Native-only runtime contains retired portrait resources")
-    raster = re.search(r"^ORCA_BEAUTY_RASTER_BINARY:FILEPATH=(.+)$", cache, re.MULTILINE)
-    if legacy_farl_enabled and raster:
-        source = Path(raster[1].strip())
-        expected = re.search(r"^ORCA_BEAUTY_RASTER_SHA256:STRING=([0-9a-f]{64})$", cache, re.MULTILINE)
-        if expected is None or not source.is_file() or digest(source) != expected[1]:
-            raise ValueError("Preserved Beauty raster binary identity changed")
-        pairs["resources/tools/ai/local_semantic_raster.dll"] = source
-    elif legacy_farl_enabled:
-        source = build / "Release/local_semantic_raster.dll"
-    if legacy_farl_enabled:
-        for name in ("resources/tools/ai/local_semantic_raster.dll",
-                     "resources/beauty-runtime/modules/local_semantic_raster.dll"):
-            if name in installed:
-                pairs[name] = source
+    leftovers = ("resources/beauty-runtime", "resources/tools/ai/local_semantic_raster.dll",
+                 "resources/tools/ai/local_semantic_worker.py", "resources/tools/ai/local_semantic_request.py",
+                 *("resources/tools/ai/portrait_parent_cleanup_" + name + ".json"
+                   for name in ("catalog", "fangfei", "partition", "locks")))
+    if any((runtime / name).exists() for name in leftovers) or any(
+            name.startswith("resources/beauty-runtime/") for name in installed):
+        raise ValueError("Native-only runtime contains retired portrait resources")
     # uv is installed from CMake's configured/downloaded tool, not resources/.
     uv_name = "resources/tools/uv/uv.exe"
     if uv_name in installed:
@@ -313,26 +266,9 @@ def verify_runtime(root: Path, build: Path, installed: list[str], runtime: Path 
             raise ValueError(f"Runtime does not match the build/source: {name}")
         checks[name] = digest(target)
     # The install manifest proves membership; compare resource bytes as well.
-    beauty = re.search(r"^ORCA_BEAUTY_RUNTIME_ROOT:PATH=(.+)$", cache, re.MULTILINE) if legacy_farl_enabled else None
-    beauty_root = Path(beauty[1].strip()) if beauty else None
-    sealed_manifest = "resources/beauty-runtime/runtime-manifest.json"
-    if beauty_root is None and any(name.startswith("resources/beauty-runtime/") for name in installed):
-        beauty_root = prepared_portrait_source(build)
-        raster_name = "resources/beauty-runtime/modules/local_semantic_raster.dll"
-        if sealed_manifest not in installed or raster_name not in pairs:
-            raise ValueError("Prepared portrait runtime is missing its manifest or accelerator")
-        verify_sealed_portrait_manifest(beauty_root, runtime / "resources/beauty-runtime", pairs[raster_name])
-    else:
-        sealed_manifest = None
     for name in installed:
         if name.startswith("resources/") and not name.startswith("resources/tools/ai/") and name not in pairs:
-            if name == sealed_manifest:
-                continue  # Its complete parsed contents were checked above.
             source = source_path(root, name)
-            if name.startswith("resources/beauty-runtime/"):
-                if beauty_root is None:
-                    raise ValueError("Cannot identify configured beauty runtime source")
-                source = source_path(beauty_root, name.removeprefix("resources/beauty-runtime/"))
             if not source.is_file() or digest(source) != checks[name]:
                 raise ValueError(f"Runtime resource does not match source: {name}")
     for name in ("python/python.exe", "python/pythonw.exe", "resources/i18n/zh_CN/OrcaSlicer.mo"):

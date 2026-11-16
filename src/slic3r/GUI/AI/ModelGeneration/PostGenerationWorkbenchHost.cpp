@@ -432,15 +432,6 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
         state.check.candidate_status == RepairCandidateStatus::Ready;
     const bool topology_safe = workbench_topology_safe(state.check);
     state.can_import_for_slicing = state.actions.can_import && !candidate_pending && !state.dirty && topology_safe;
-    // Portrait v9 has already completed native repair before clustering.
-    // Legacy deferred repair is intentionally never advertised to import.
-    state.deferred_native_repair = false;
-    state.native_repair_source_sha256.clear();
-    // Failed checks never authorize a risky import. Detailed topology remains
-    // available for diagnosis while the user can retry or select another asset.
-    state.force_import_acknowledged = false;
-    state.can_force_import = false;
-    state.import_has_topology_risk = false;
     if (!m_workbench_check_running && !m_native_workbench_partition_running &&
         (state.check.status == WorkbenchCheckStatus::Attention || state.check.status == WorkbenchCheckStatus::Invalid))
         state.check.status = WorkbenchCheckStatus::Failed;
@@ -674,7 +665,7 @@ void ModelGenerationPanel::complete_return_overview()
 bool ModelGenerationPanel::request_workbench_color_matching(const BeautyColorGateResult* prepared_match)
 {
     const auto state = workbench_snapshot();
-    if ((!state.can_import_for_slicing && !state.can_force_import && !state.deferred_native_repair) || (!m_color_matching && !m_workbench_import)) return false;
+    if (!state.can_import_for_slicing || (!m_color_matching && !m_workbench_import)) return false;
     if (m_workbench_import && !prepared_match) {
         wxWeakRef<ModelGenerationPanel> weak(this);
         return request_workbench_filament_match([weak](BeautyColorGateResult match) {
@@ -765,11 +756,11 @@ bool ModelGenerationPanel::request_workbench_color_matching(const BeautyColorGat
             return false;
         }
         request.face_color_geometry_id = m_model_preview->geometry_id();
-        request.topology_risk_confirmed = state.force_import_acknowledged && !state.can_import_for_slicing;
+        request.topology_risk_confirmed = false;
         request.topology_risk_reason = state.import_topology_reason;
         request.topology_check_sha256 = state.check.model_sha256;
-        request.native_repair_before_slice = state.deferred_native_repair;
-        request.native_repair_source_sha256 = state.native_repair_source_sha256;
+        request.native_repair_before_slice = false;
+        request.native_repair_source_sha256.clear();
         request.apply_round_base_preparation = m_model_preview->round_base_preview_enabled();
         request.base_binding = m_model_preview->color_trial_state().base_binding;
         if (!workbench_import_request_allowed(state, request)) {
@@ -864,17 +855,6 @@ bool ModelGenerationPanel::request_enable_portrait(bool enabled)
     if (m_beauty_controls) m_beauty_controls->set_portrait_enabled(enabled);
     refresh_model_finishing();
     publish_workbench_state();
-    return true;
-}
-
-bool ModelGenerationPanel::request_workbench_results()
-{
-    if (m_shutdown || m_finishing_running || workbench_snapshot().modal_blocking) {
-        raise_workbench_modal();
-        return false;
-    }
-    set_finishing_workbench(false);
-    if (m_workbench_results) m_workbench_results();
     return true;
 }
 

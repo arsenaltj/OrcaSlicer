@@ -455,24 +455,11 @@ void ModelGenerationPanel::cancel_workbench_check()
     if (m_workbench_check_cancel_button) m_workbench_check_cancel_button->Disable();
 }
 
-void ModelGenerationPanel::acknowledge_workbench_risk()
-{
-    if (m_workbench_check_running || m_workbench_check_result.status != WorkbenchCheckStatus::Attention ||
-        !m_workbench_check_result.force_import_risk || m_workbench_check_result.model_sha256.empty()) return;
-    m_workbench_force_import_ack_hash = m_workbench_check_result.model_sha256;
-    m_workbench_force_import_ack_revision = m_sequence;
-    m_workbench_operation_notice = "已确认开放边界风险；可点击“去切片”继续，导入后请复核逐层切片结果。";
-    hide_workbench_check_card();
-    refresh_post_generation_workbench();
-    publish_workbench_state();
-}
-
 void ModelGenerationPanel::show_workbench_check_details()
 {
     if (!m_workbench_shell) return;
     hide_workbench_check_card();
-    const wxString detail_text = from_u8(workbench_check_detail_text(m_workbench_check_result,
-        workbench_snapshot().force_import_acknowledged));
+    const wxString detail_text = from_u8(workbench_check_detail_text(m_workbench_check_result));
     std::vector<RedesignDialogAction> actions;
     if (!m_workbench_check_result.issue_faces.empty())
         actions.push_back({wxID_APPLY, _L("定位问题区域"), false});
@@ -937,7 +924,7 @@ void ModelGenerationPanel::apply_workbench_snapshot()
             m_workbench_grid->SetValue(grid_visible);
         set_workbench_enabled(m_workbench_grid, m_model_preview->has_model());
     }
-    const bool can_import = (snapshot.can_import_for_slicing || snapshot.can_force_import) && is_nonempty_model(m_displayed_model_path);
+    const bool can_import = snapshot.can_import_for_slicing && is_nonempty_model(m_displayed_model_path);
     if (auto* portrait = FindWindowByName("portrait_r6_entry", m_workbench_shell)) {
         set_workbench_enabled(portrait, snapshot.actions.can_edit && snapshot.portrait_available);
         layout_changed = set_workbench_label(portrait,
@@ -952,9 +939,9 @@ void ModelGenerationPanel::apply_workbench_snapshot()
         ? _L("拓扑正常；点击重新检查") : _L("检查并修复模型，复检通过后自动保存新版本；原模型保留。"));
     wxString check_text = m_native_workbench_partition_running ? _L("正在修复模型……") :
         m_workbench_auto_repair && m_finishing_running ? _L("正在保存修复结果……") :
-        from_u8(workbench_check_status_line(snapshot.check, snapshot.force_import_acknowledged));
+        from_u8(workbench_check_status_line(snapshot.check));
     const wxString check_details = from_u8(workbench_check_detail_text(
-        snapshot.check, snapshot.force_import_acknowledged));
+        snapshot.check));
     set_workbench_tooltip(m_workbench_check_status, check_details);
     layout_changed = set_wrapped_workbench_text(m_workbench_check_status, check_text,
         FromDIP(210), false) || layout_changed;

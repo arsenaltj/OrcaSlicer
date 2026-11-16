@@ -91,8 +91,6 @@ struct BeautyColorItem;
 struct BeautyPartitionSnapshot;
 struct SemanticRegionEvidence;
 struct SecondaryRegionEvidence;
-namespace PortraitResidual { struct Document; }
-class LocalPrintColorPanel;
 class Plater;
 class WorkbenchImportSession;
 struct BeautyRestorePreparation;
@@ -150,7 +148,6 @@ public:
         std::shared_ptr<WorkbenchImportSession>, WorkbenchImportProgress, WorkbenchImportCompletion, std::function<bool()>)>;
     void set_local_import_executor(LocalImportExecutor executor) { m_local_import_executor = std::move(executor); }
     void set_workbench_import_running(bool running);
-    void show_workbench_color_matching(const AI::GeneratedModelArtifact& artifact, Plater* plater);
     bool request_open_workbench();
     void set_workbench_presented(bool presented);
     void present_workbench_restore_frame();
@@ -165,8 +162,6 @@ public:
     bool request_portrait_optimization(wxString& reason);
     void cancel_portrait_optimization();
     wxWindow* build_portrait_optimization(wxWindow* parent);
-    void update_portrait_optimization();
-    void queue_portrait_reoptimization();
     void finish_portrait_optimization(PortraitOutcome outcome, const wxString& reason = wxString());
     void portrait_preview_ready();
     void reset_portrait_session();
@@ -177,13 +172,10 @@ public:
     bool prepare_workbench_import_request_async(AI::ModelImportRequest request,
         std::shared_ptr<WorkbenchImportSession> session,
         std::function<void(AI::ModelImportRequest, std::string)> completion);
-    void prepare_portrait_import(AI::ModelImportRequest& request);
     std::function<void(AI::ModelImportRequest&)> capture_portrait_import_preparation(
         const AI::ModelImportRequest& request) const;
     bool request_check_workbench(bool automatic = false);
     bool request_save_and_return();
-    bool request_workbench_results();
-    void set_workbench_results_handler(std::function<void()> handler) { m_workbench_results = std::move(handler); }
     void set_workbench_return_to_design_handler(std::function<void()> handler)
     {
         m_workbench_return_to_design = std::move(handler);
@@ -280,23 +272,7 @@ private:
     wxStaticText* m_library_operation_status {nullptr};
     bool m_portrait_mode {false}; // Optional R6 protection; independent of the editing mode.
     SemanticMode m_semantic_mode {SemanticMode::General};
-    bool m_portrait_entered {false}, m_portrait_preview_drawn {false};
-    bool m_portrait_cancel_requested {false};
-    bool m_auto_portrait_active {false};
-    std::string m_auto_portrait_geometry;
-    bool m_portrait_reoptimization_pending {false};
-    int m_portrait_reoptimization_count {0};
-    int m_portrait_observed_automatic_count {0};
-    std::chrono::steady_clock::time_point m_portrait_reoptimization_deadline {};
     std::shared_ptr<PortraitOptimizationTask> m_portrait_task;
-    wxPanel* m_portrait_card {nullptr};
-    Button* m_portrait_start {nullptr};
-    Button* m_portrait_cancel {nullptr};
-    wxStaticText* m_portrait_status {nullptr};
-    wxStaticText* m_portrait_time {nullptr};
-    wxWindow* m_portrait_gauge {nullptr};
-    wxWindow* m_portrait_mode_choice {nullptr};
-    wxTimer m_portrait_timer;
     WorkbenchCheckResult m_workbench_check_result;
     std::string m_workbench_check_path;
     std::uint64_t m_workbench_check_revision {0};
@@ -317,8 +293,6 @@ private:
     std::uint64_t m_workbench_auto_palette_revision {0};
     boost::filesystem::path m_workbench_auto_palette_path;
     WorkbenchCheckSource m_workbench_check_source {WorkbenchCheckSource::Automatic};
-    std::string m_workbench_force_import_ack_hash;
-    std::uint64_t m_workbench_force_import_ack_revision {0};
     wxDialog* m_workbench_check_card {nullptr};
     wxPanel* m_workbench_check_modal {nullptr};
     WorkbenchLabel* m_workbench_check_phase {nullptr};
@@ -368,7 +342,6 @@ private:
     void on_workbench_card_overlay_size(wxSizeEvent& event);
     void show_workbench_check_details();
     void cancel_workbench_check();
-    void acknowledge_workbench_risk();
     void ensure_workbench_check();
     bool can_start_workbench_check() const;
     void queue_workbench_check();
@@ -466,17 +439,12 @@ private:
     bool m_workbench_printer_filament_notice_error {false};
     void finish_printer_filament_application(bool success);
     bool commit_printer_filament_application(std::string& error);
-    std::function<void()> m_workbench_results;
     std::function<void()> m_workbench_return_to_design;
     void finish_workbench_save();
     void publish_workbench_state();
     std::function<void()> m_prepare_navigation;
     std::function<void(const AI::GeneratedModelArtifact&)> m_color_matching;
     std::function<void(const AI::ModelImportRequest&)> m_workbench_import;
-    LocalPrintColorPanel* m_workbench_color_matching {nullptr};
-    wxWeakRef<wxWindow> m_color_matching_entry;
-    uint64_t m_color_matching_entry_sequence {0};
-    void close_workbench_color_matching(bool restore_entry = true);
     bool input_editable() const;
     void show_input_hint(const wxString& message, wxWindow* focus = nullptr);
     bool set_selected_image(const boost::filesystem::path& path, bool request_recommendation);
@@ -542,9 +510,7 @@ private:
     bool use_printable_colors() const;
     std::string current_style() const;
     std::string current_custom_style() const;
-    wxString current_style_label() const;
     std::string current_generation_profile() const;
-    wxString current_generation_profile_label() const;
     AIModelGenerationClient::GenerationOptions current_generation_options() const;
     // A ready historical model has no active polling job after it is loaded,
     // but its persisted model job id can still be used to fork a new model
@@ -640,8 +606,6 @@ private:
     void stop_model_finishing();
     void select_local_finishing_version(const boost::filesystem::path& path, const std::string& id);
     void load_library_entries(bool for_shell = false);
-    static std::vector<GeneratedModelEntry> read_library_entries(
-        const boost::filesystem::path& root, const std::atomic<bool>& cancelled);
     void start_library_worker();
     void cancel_library_loading();
     void stop_library_loading();
@@ -800,7 +764,6 @@ private:
     std::shared_ptr<std::atomic<bool>> m_preview_canceled;
     std::shared_ptr<std::atomic<bool>> m_finishing_canceled;
     std::shared_ptr<std::atomic<bool>> m_beauty_publication_committed;
-    std::shared_ptr<const PortraitResidual::Document> m_residual_review;
     boost::filesystem::path m_finishing_source, m_finishing_candidate, m_finishing_undo_path, m_finishing_accepted_path;
     std::string m_finishing_id;
     AI::ModelFinishingResult m_finishing_result;

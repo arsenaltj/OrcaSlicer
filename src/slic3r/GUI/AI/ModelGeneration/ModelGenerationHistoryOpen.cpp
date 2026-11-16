@@ -165,7 +165,6 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     }
     m_finishing_options.selected_faces.clear();
     m_finishing_before = false;
-    m_portrait_entered = !new_asset; // Only a newly imported asset may auto-start on explicit Portrait entry.
     m_portrait_mode = false;
     if (m_beauty_controls) m_beauty_controls->set_portrait_enabled(false);
     const wxImage reference_image = reference_image_path.empty() ? wxImage() : wxImage(reference_image_path.wstring());

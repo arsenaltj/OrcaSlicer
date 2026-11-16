@@ -84,7 +84,6 @@ set(ORCA_AI_SMART_SLICING_SOURCES
     SmartSlicing/Infrastructure/InMemoryUserMarkedRegionRegistry.hpp
     SmartSlicing/Ports/IOfficialSliceGateway.hpp
     SmartSlicing/Ports/IOrcaWorkspace.hpp
-    SmartSlicing/Ports/IParameterAdvisor.hpp
     SmartSlicing/Ports/IModelFeatureAnalyzer.hpp
     SmartSlicing/Ports/IProtectedRegionSource.hpp
     SmartSlicing/Ports/IRecommendationSessionJournal.hpp

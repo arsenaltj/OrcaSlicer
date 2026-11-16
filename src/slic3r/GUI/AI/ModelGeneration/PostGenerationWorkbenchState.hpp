@@ -53,7 +53,6 @@ struct WorkbenchCheckResult {
     bool appearance_mapped {false};
     double appearance_confidence {0.0};
     std::string appearance_reason;
-    bool force_import_risk {false};
 };
 
 inline bool workbench_automatic_check_should_start(bool workbench_open, bool workbench_presented,
@@ -196,8 +195,7 @@ inline bool workbench_navigation_allowed(bool modal_blocking, bool leaves_workbe
     return !modal_blocking || !leaves_workbench;
 }
 
-inline std::string workbench_check_status_line(const WorkbenchCheckResult& check,
-                                               bool risk_acknowledged = false)
+inline std::string workbench_check_status_line(const WorkbenchCheckResult& check)
 {
     if (check.candidate_status == RepairCandidateStatus::Ready)
         return "修复复检通过，正在保存……";
@@ -217,11 +215,10 @@ inline std::string workbench_check_status_line(const WorkbenchCheckResult& check
     return "模型尚未检查";
 }
 
-inline std::string workbench_check_detail_text(const WorkbenchCheckResult& check,
-                                               bool risk_acknowledged = false)
+inline std::string workbench_check_detail_text(const WorkbenchCheckResult& check)
 {
     std::ostringstream text;
-    text << workbench_check_status_line(check, risk_acknowledged);
+    text << workbench_check_status_line(check);
     if (!check.summary.empty()) text << "\n\n检查说明\n" << check.summary;
     if (!check.repair_reason.empty()) text << "\n\n修复说明\n" << check.repair_reason;
     if (check.after_faces || check.after_vertices) {
@@ -262,8 +259,6 @@ inline std::string workbench_check_detail_text(const WorkbenchCheckResult& check
              << std::clamp(check.appearance_confidence, 0.0, 1.0) * 100.0 << "%";
         if (!check.appearance_reason.empty()) text << "\n说明：" << check.appearance_reason;
     }
-    if (risk_acknowledged && check.status == WorkbenchCheckStatus::Attention)
-        text << "\n\n风险处理\n开放边界风险已由用户确认，许可仅绑定当前模型检查结果。";
     return text.str();
 }
 
@@ -366,11 +361,6 @@ struct PostGenerationWorkbenchState {
     std::string reoptimization_reason;
     bool can_edit_project_colors {false};
     bool can_import_for_slicing {false};
-    bool deferred_native_repair {false};
-    std::string native_repair_source_sha256;
-    bool can_force_import {false};
-    bool force_import_acknowledged {false};
-    bool import_has_topology_risk {false};
     std::string import_topology_reason;
     bool can_print {false};
     AI::PrintablePaletteSnapshot project_palette;

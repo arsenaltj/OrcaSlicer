@@ -354,8 +354,8 @@
     },
     {
       "id": "accepted_ux_image_workspace",
-      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationInputLayout.cpp",
-      "needle": "wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)",
+      "path": "src/slic3r/GUI/Redesign/RedesignShell.cpp",
+      "needle": "void RedesignShell::build_image_workspace()",
       "detail": "Accepted shell form and guide use the current generation, history and draft state."
     },
     {
@@ -811,10 +811,10 @@
       "detail": "高级只读任务观察／下载／本地准备生命周期；Ports隔离请求、取消、过期回调，不具备付费提交入口。"
     },
     {
-      "id": "workbench_model_context",
-      "path": "src/slic3r/GUI/AI/ModelGeneration/WorkbenchModelContext.hpp",
-      "needle": "struct WorkbenchModelContext",
-      "detail": "纯值资产投影；实际唯一编辑状态由应用级Role::WorkbenchAssets面板及Beauty Session持有，生成会话独立，返回上下文归FeatureHost。"
+      "id": "workbench_open_request",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/WorkbenchOpenRequest.hpp",
+      "needle": "struct WorkbenchOpenRequest",
+      "detail": "显式模型打开请求；实际唯一编辑状态由应用级Role::WorkbenchAssets面板及Beauty Session持有，生成会话独立，返回上下文归FeatureHost。"
     },
     {
       "id": "library_workspace_service",
@@ -853,6 +853,12 @@
       "path": "src/slic3r/GUI/Presentation/UiRuntime.cpp",
       "needle": "void RefreshScheduler::commit_pending",
       "detail": "每surface单pending，隐藏保留dirty，提交期间新增变化留下一轮；高级页通知亦合并，只有几何变化提交布局。纯平移不采集恢复帧。TaskRunner提供有界数据工作、取消身份及GUI回调排空，旧执行器通过shutdown hook保留原事务。"
+    },
+    {
+      "id": "window_restore_capture",
+      "path": "src/slic3r/GUI/Redesign/RedesignPaintPanel.hpp",
+      "needle": "inline bool capture_redesign_native_batch",
+      "detail": "GUI线程每动作单批屏幕复制和采集flush；物理像素裁剪及256MiB总预算，核对宿主／尺寸／DPI。隐藏失效、最小化保留旧帧，失败不逐控件重试；工作台和GL呈现所有权保持。"
     },
     {
       "id": "model_preview_load_result",
@@ -1997,19 +2003,23 @@
           "src/slic3r/GUI/Redesign/RedesignModelWorkflow*",
           "src/slic3r/GUI/GUI_App*",
           "src/slic3r/GUI/Presentation/*",
-          "src/slic3r/GUI/Redesign/RedesignPageCoordinator*"
+          "src/slic3r/GUI/Redesign/RedesignPageCoordinator*",
+          "src/slic3r/GUI/Redesign/RedesignPaintPanel.hpp",
+          "src/slic3r/GUI/Redesign/RedesignRestorePixels.hpp"
         ],
         "evidence": [
           "desktop_host",
           "native_output",
           "page_lifecycle",
           "ui_refresh_runtime",
+          "window_restore_capture",
           "window_mount_lease"
         ],
         "tests": [
           "tests/slic3rutils/test_orca_*",
           "tests/ui_redesign/*",
-          "tests/slic3rutils/test_ui_lifecycle.cpp"
+          "tests/slic3rutils/test_ui_lifecycle.cpp",
+          "tests/slic3rutils/test_redesign_restore_capture.cpp"
         ],
         "state_owner": "Plater持有当前工程；既有Session拥有业务；Shell持有PageCoordinator唯一页面状态，Presenter只消费快照",
         "contract": "单一编辑工作台及两种创作页复用的3D只读预览；主线程GUI提交、挂载租约、合并dirty、有效首帧与退出排空，业务与展示资格分别校验",
@@ -2176,7 +2186,6 @@
           "src/slic3r/GUI/AI/ModelGeneration/PortraitColor*",
           "src/slic3r/GUI/AI/ColorMatching",
           "src/slic3r/GUI/AI/Model",
-          "src/slic3r/GUI/AI/ModelGeneration/WorkbenchModelContext.hpp",
           "src/slic3r/GUI/AI/ModelGeneration/WorkbenchOpenRequest.hpp"
         ],
         "evidence": [
@@ -2186,7 +2195,7 @@
           "beauty_session_discard",
           "workbench_portrait_color_blocks",
           "beauty_physical_handoff",
-          "workbench_model_context"
+          "workbench_open_request"
         ],
         "tests": [
           "tests/slic3rutils/test_beauty*",
@@ -2194,7 +2203,7 @@
           "tests/slic3rutils/test_model_color*",
           "tests/slic3rutils/test_unified_workbench.cpp"
         ],
-        "state_owner": "Session私有持有候选基线、历史检查点、候选/已发布文件与草稿revision；TransactionController持有撤销时间线；当前模型身份与元数据由应用级WorkbenchAssets唯一面板持有；WorkbenchModelContext仅作纯值契约，FeatureHost持返回上下文，Shell只适配导航",
+        "state_owner": "Session私有持有候选基线、历史检查点、候选/已发布文件与草稿revision；TransactionController持有撤销时间线；当前模型身份与元数据由应用级WorkbenchAssets唯一面板持有；WorkbenchOpenRequest只作资产交接契约，FeatureHost持返回上下文，Shell只适配导航",
         "contract": "保存成功才完成接受；过期回调不接受新草稿；恢复成功才清理待选文件/历史；原生交接保持明确应用",
         "note": "配色候选生命周期通过Session操作；预览、持久化、耗材原生提交与人像编辑上下文仍由宿主适配。未宣称整个后处理已无GUI依赖。",
         "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"

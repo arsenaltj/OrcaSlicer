@@ -97,7 +97,7 @@
 
 **本次增量：** 统一资产/图像/3D/打印；保留工程与原生能力，区分去页面与执行业务。
 
-1. 在DesktopWorkspaceNavigation及既有宿主明确图像、资产、模型总览、工程准备/预览、打印中心目的地及返回点；不把控件数组下标当身份。
+1. 在RedesignShell及既有宿主明确图像、资产、模型总览、工程准备/预览、打印中心目的地及返回点；不把控件数组下标当身份。
 2. 3D无模型时可解释并引导生成/加载；打印无切片时显示当前缺口/去切片/设备入口，点击导航不触发导入、生成或打印。
 3. 右栏类型/选中资产/当前加载版本/草稿分开投影，页面隐藏不取消任务；原生GL保持宿主和相机。
 
@@ -107,7 +107,7 @@
 | AC-0929-02-02 | 任务进行时切页后返回保持任务ID/进度且请求数不增加；只读投影测试覆盖缺模型/忙碌/待确认。 | 逻辑/GUI |
 | AC-0929-02-03 | 带草稿返回、开库、取消使用另一资产均保留草稿与当前加载项；工程/预览/原生入口仍可达。 | GUI |
 
-**验证落点：** 修改投影时筛选ModelGenerationPresentation；修改跨宿主契约才跑verify_ai_integration.py --json。检查MainFrame、AIDesktopFeatureHost、DesktopWorkspaceNavigation与原打印回调。
+**验证落点：** 修改投影时筛选ModelGenerationPresentation；修改跨宿主契约才跑verify_ai_integration.py --json。检查MainFrame、AIDesktopFeatureHost、RedesignShell与原打印回调。
 
 **结果：** 原验收状态：PASS 1, PARTIAL 1, NOT_RUN 1。仅全部必需条款满足才整卡通过；详见设计映射的原AC编号。本次PR18合入后的受影响消费者验证单列，旧证据不冒充本轮重跑。
 

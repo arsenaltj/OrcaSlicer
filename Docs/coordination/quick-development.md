@@ -72,7 +72,7 @@ C++ 逻辑修改增量构建对应 `<suite>_tests`，再按 CTest 标签或名�
 
 加载优化的同机对照还应比较探针 `loaded_mesh_colors_sha256`（顶点、面和逐顶点 RGBA 的有序字节签名）与最终 `output_sha256`，不能仅凭量化后槽位相同判定原色无变化；字节签名限定同平台/工具链，峰值包含计时外的签名验证内存。
 
-质量诊断在模型回归命令追加 `--quality`（不能同时使用 `--repeats`），生成绑定输入哈希的原生几何/面均色/工作台无识别回退配色数组；不是性能探针的 180 区效果。然后运行 `python scripts/beauty_color_quality.py --manifest <quality/manifest.json> --output <新目录>`，可选 `--renderer-module <与仓库一致的 local_semantic_render.py 副本>`，其旁可复用已构建的 raster DLL 加速。生成固定四视图、面积加权 CIEDE2000 和逐面最近色下界；目标/人工修正及语义标注缺失保留为空，不输出合格判定。测试：`python -m unittest discover -s scripts -p 'test_beauty*.py' -v`。依赖现有 NumPy/Pillow，模型/渲染副本留忽略目录，勿上传私人资产。
+质量诊断在模型回归命令追加 `--quality`（不能同时使用 `--repeats`），生成绑定输入哈希的原生几何/面均色/工作台无识别回退配色数组；不是性能探针的 180 区效果。然后运行 `python scripts/beauty_color_quality.py --manifest <quality/manifest.json> --output <新目录>`，可选 `--renderer-module <与仓库一致的 local_semantic_render.py 副本>`；渲染使用保留的可移植离线实现，旧 raster DLL 加载已退役。生成固定四视图、面积加权 CIEDE2000 和逐面最近色下界；目标/人工修正及语义标注缺失保留为空，不输出合格判定。测试：`python -m unittest discover -s scripts -p 'test_beauty*.py' -v`。依赖现有 NumPy/Pillow，模型/渲染副本留忽略目录，勿上传私人资产。
 
 同条件分阶段定位可追加 `--quality --quality-stages`：导出 `01-create28`、`02-regularize`、`03-smooth`，每步使用相同配色，并断言末步与工作台回退完整状态一致；`04-ablation-no-regularize` 仅为跳过边界整理、保留初始预算/平滑/配色的测试对照，不是生产开关。各目录的 `manifest.json` 复用同一质量评估命令；另有带哈希的 `components.u32` / `topology.json` 记录表面邻接连通分量。测试访问仅限测试翻译单元，不改变生产头文件可见性。
 

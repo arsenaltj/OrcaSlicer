@@ -920,7 +920,6 @@ void RedesignShell::build_model_workflow()
         if (outside != weak->m_preview_toolpath_outside)
             weak->apply_slicing_state(weak->m_slicing_state);
     });
-    m_model_generation_host->set_workbench_results_handler([weak] { if (weak) weak->return_to_image_design(); });
     m_model_generation_host->set_workbench_return_to_design_handler([weak] {
         if (weak) weak->return_to_image_design();
     });

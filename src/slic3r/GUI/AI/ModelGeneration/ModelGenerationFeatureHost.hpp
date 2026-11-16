@@ -62,9 +62,6 @@ public:
     void get_provider_catalog(const std::string& role, const std::string& provider,
                               AIModelGenerationClient::CatalogFn on_complete,
                               AIModelGenerationClient::ErrorFn on_error);
-    void get_advanced_provider_catalog(const std::string& role, const std::string& provider,
-                                      AIModelGenerationClient::CatalogFn on_complete,
-                                      AIModelGenerationClient::ErrorFn on_error);
     ModelGenerationSubmissionResult request_generate_design();
     ModelGenerationSubmissionResult request_generate_model();
     bool request_generate_smart();
@@ -80,7 +77,6 @@ public:
     bool request_open_image_history(const std::string& job_id);
     PostGenerationWorkbenchState workbench_snapshot() const;
     void set_workbench_listener(PostGenerationWorkbenchListener listener);
-    void set_workbench_results_handler(std::function<void()> handler);
     void set_workbench_return_to_design_handler(std::function<void()> handler);
     void mount_workbench(wxWindow* parent);
     wxWindow* workbench_import_viewport() const;

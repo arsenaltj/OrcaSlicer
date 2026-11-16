@@ -145,7 +145,6 @@ struct ModelGenerationFeatureHost::Impl
             if (!panel) continue;
             panel->set_ui_state_listener({});
             panel->set_workbench_listener({});
-            panel->set_workbench_results_handler({});
             panel->set_service_retry_handler({});
             panel->set_prepare_navigation_handler({});
             panel->set_color_matching_handler({});
@@ -384,19 +383,6 @@ void ModelGenerationFeatureHost::get_provider_catalog(
 bool ModelGenerationFeatureHost::request_generate_smart()
 { return can_replace_asset() && m_impl->model_generation && m_impl->model_generation->request_generate_smart(); }
 
-void ModelGenerationFeatureHost::get_advanced_provider_catalog(
-    const std::string& role, const std::string& provider,
-    AIModelGenerationClient::CatalogFn on_complete,
-    AIModelGenerationClient::ErrorFn on_error)
-{
-    // Each creator owns its catalog cache and request generation as well as
-    // its jobs, so querying advanced providers cannot invalidate smart queries.
-    if (auto* creator = m_impl->legacy_panel())
-        creator->get_provider_catalog(role, provider, std::move(on_complete), std::move(on_error));
-    else if (on_error)
-        on_error("Advanced generation adapter is unavailable.");
-}
-
 ModelGenerationSubmissionResult ModelGenerationFeatureHost::request_generate_design()
 {
     return can_replace_asset() && m_impl->model_generation ? m_impl->model_generation->request_generate_design() : ModelGenerationSubmissionResult::Rejected;
@@ -475,11 +461,6 @@ void ModelGenerationFeatureHost::set_workbench_listener(PostGenerationWorkbenchL
         if (listener) listener(state);
         m_impl->maybe_import(state);
     });
-}
-
-void ModelGenerationFeatureHost::set_workbench_results_handler(std::function<void()> handler)
-{
-    m_impl->workbench->set_workbench_results_handler(std::move(handler));
 }
 
 void ModelGenerationFeatureHost::set_workbench_return_to_design_handler(std::function<void()> handler)

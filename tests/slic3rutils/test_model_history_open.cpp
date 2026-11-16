@@ -8,6 +8,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <boost/nowide/cstdlib.hpp>
+#include <chrono>
+#include <filesystem>
 #include <future>
 #include <thread>
 #include <wx/init.h>
@@ -559,7 +561,12 @@ TEST_CASE("A newly published repair is reused before the sidebar finishes refres
     const auto original = fixture.model("original", nullptr, false, false);
     fixture.model("finish-older", &original, true, true, 2);
     auto request = fixture.open(original);
+    const auto directory = std::filesystem::path((fixture.root / "downloads").native());
+    const auto previous_stamp = std::filesystem::last_write_time(directory);
     const auto latest = fixture.model("finish-latest", &original, true, true, 3);
+    // Windows may coalesce rapid directory writes into the same timestamp.
+    // This case exercises an observably invalidated scan, without a wall-clock sleep.
+    std::filesystem::last_write_time(directory, previous_stamp + std::chrono::seconds(2));
     REQUIRE_FALSE(request->repairs->current());
     REQUIRE(fixture.prepare(request));
     CHECK(request->entry.model_path == latest.model_path);

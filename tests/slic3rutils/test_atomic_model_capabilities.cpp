@@ -154,7 +154,7 @@ TEST_CASE("Workbench check summary stays compact while details retain diagnostic
     CHECK(details.find("修复前：10 面 / 12 点") != std::string::npos);
     CHECK(details.find("拓扑指标") != std::string::npos);
     result.status = WorkbenchCheckStatus::Attention;
-    CHECK(workbench_check_status_line(result, true) == "检查失败");
+    CHECK(workbench_check_status_line(result) == "检查失败");
     CHECK(workbench_check_detail_text(result).find("自交检测：尚未完成") != std::string::npos);
     result.self_intersections_checked = true;
     CHECK(workbench_check_detail_text(result).find("自交检测：未发现自交") != std::string::npos);
@@ -494,7 +494,9 @@ TEST_CASE("Color computation fails safely without a frozen surface", "[AtomicMod
 {
     ColorMatchingComputationRequest request; request.input = input(); std::atomic<bool> cancelled {false};
     const auto result = compute_color_matching(std::move(request), cancelled);
-    CHECK_FALSE(result.matching.ok()); CHECK_FALSE(result.matching.error.empty()); CHECK_FALSE(result.evidence);
+    CHECK_FALSE(result.matching.ok());
+    CHECK_FALSE(result.matching.error.empty());
+    CHECK_FALSE(result.matching.cancelled);
 }
 
 TEST_CASE("Production color computation composes with source identity without a GUI", "[AtomicModelCapabilities]")

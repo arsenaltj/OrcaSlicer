@@ -67,25 +67,14 @@ startup/service health, history/state recovery, relevant editing undo/redo,
 color-import cancel/confirm and preparation-page handoff, plus ordinary Orca
 regressions. Report package creation and GUI acceptance separately.
 
-For an explicitly requested internal test package with already documented architecture
-diff budget findings, `-KnownIntegrationReport <prior-full-check.json>` records a
-narrow exception. It requires `-SourceManifest`, the same source HEAD, complete Git
-checks, and exactly the same finding codes and messages. Clean committed source
-and complete uncommitted snapshots may both use this exception. The internal
-packager explicitly supplies `--channel internal`; the standalone check defaults
-to `release`, which cannot use budget exceptions. Every check still runs; new
-findings, changed budgets, non-budget failures and release packages remain blocked.
-`integration-check.json` and the package manifest preserve the actual failed
-integration result, source cleanliness and channel. An exception is labelled
-`internal-validation`, including when built on the integration branch. This option
-does not approve remote integration or public release and does not change the
-architecture lock.
-
-The wrapper also supplies the verified internal report to the guardrail tests.
-Their repository-budget and JSON CLI assertions then require exactly the recorded
-findings, including failure status; all other tests remain unchanged. Running the
-test suite normally still requires zero findings. The recorded package source
-identity is checked before using these expectations.
+All distribution channels require the complete integration check with zero errors.
+`-KnownIntegrationReport`, `--known-report`, and guardrail-test
+`--internal-package-report` are retired and fail explicitly, even for a passing
+candidate. Historical reports remain evidence only; they cannot authorize a new
+package or set expected test failures. Source snapshots, full Git checks, exact
+artifact identity, and ordinary budget thresholds remain mandatory.
+The guardrail test runner also rejects its former `--source-manifest` companion;
+source manifests remain supported by the package snapshot and validation tools.
 
 ## Package contents and tester configuration
 
@@ -115,22 +104,19 @@ Remote source submission, if separately requested, follows the
 [team SOP](../Docs/coordination/team-integration-sop.md). Building an internal
 package does not authorize sending it, pushing code or contacting testers.
 
-## Offline beauty runtime for the Windows internal candidate
+## Native portrait recognition runtime
 
-For the UX branch, follow the [Windows portrait dependency and build guide](../Docs/coordination/portrait-dependencies-windows.md).
-Run `python scripts/portrait_dependencies.py prepare`, then configure with its
-generated CMake initial cache. This supplies `ORCA_AI_WEIGHTS_DIR`,
-`ORCA_AI_PORTRAIT_SITE_PACKAGES` and the native semantic runtime from a fixed,
-file-hashed dependency attachment. The package includes four weights and the
-verified CPython 3.12 x64 CPU stack. Application Python modules and the raster
-DLL continue to come from the current source build, not the dependency archive.
+Portrait recognition uses the native MediaPipe runtime configured by
+`ORCA_AI_PORTRAIT_RECOGNITION`, `ORCA_ENABLE_MEDIAPIPE_NATIVE`, and
+`ORCA_SEMANTIC_RUNTIME_DIR`; see [the current Windows runtime guide](../Docs/coordination/portrait-dependencies-windows.md).
+The existing sealed files, models, licenses, and provider checks remain required.
+The capability manifest keeps `legacy_farl_enabled: false` for compatibility.
 
-The older `scripts/stage_beauty_runtime.py` / `ORCA_BEAUTY_RUNTIME_ROOT` path does
-not provision these newer installer inputs. Do not use another developer's
-absolute cache paths. Runtime libraries, weights and licenses are installed under
-`resources/beauty-runtime`; no user configuration or provider credentials belong
-in the dependency attachment. A user `local_semantic_runtime.json` still overrides
-automatic bundled runtime discovery, including explicit opt-out.
+FaRL/Torch staging, inference subprocesses, raster DLL, and their installation
+rules have been retired. A CMake cache that enables `ORCA_AI_LEGACY_FARL_RUNTIME`
+or supplies `ORCA_BEAUTY_RUNTIME_ROOT` / `ORCA_BEAUTY_RASTER_BINARY` fails during
+configuration. Do not copy old research runtimes into an installation. Existing
+user runtime, weights, evidence, and historical appearance data are not deleted.
 
 Content inspection supports bounded ZIP/TAR/gzip/bzip2/xz containers and the
 646 MB pinned parsing model. Public examples in audited dependency files are

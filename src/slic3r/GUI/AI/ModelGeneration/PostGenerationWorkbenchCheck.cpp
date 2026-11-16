@@ -151,8 +151,6 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     m_workbench_check_path = source.string();
     m_workbench_check_revision = revision;
     m_workbench_check_source = automatic ? WorkbenchCheckSource::Automatic : WorkbenchCheckSource::Manual;
-    m_workbench_force_import_ack_hash.clear();
-    m_workbench_force_import_ack_revision = 0;
     m_workbench_check_result = {};
     m_workbench_check_result.source = m_workbench_check_source;
     m_workbench_check_result.purpose = check_purpose;
@@ -354,9 +352,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                     result.candidate_path.clear();
                     result.summary = "已取消检查与修复，当前模型保持不变。";
                     result.repair_reason.clear();
-                    result.force_import_risk = false;
                 } else if (attempted) self->m_workbench_repair_attempts.insert(key);
-                result.force_import_risk = false;
                 self->m_workbench_check_result = result;
                 if (!canceled->load() && !source_hash.empty() && !source_proof->current()) {
                     cleanup();
@@ -366,7 +362,6 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                     self->m_workbench_check_result.source = check_source;
                     self->m_workbench_check_result.purpose = check_purpose;
                     self->m_workbench_check_result.summary = "模型文件在检查期间已变化，已丢弃结果，请重新加载。";
-                    self->m_workbench_check_result.force_import_risk = false;
                     self->m_status->SetLabel(wxString::FromUTF8(self->m_workbench_check_result.summary));
                     self->refresh_controls();
                     return;
@@ -382,7 +377,6 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                     result.summary = "修复未通过几何或外观验证，原模型保留；可重新检查。";
                     result.repair_reason = result.appearance_reason.empty()
                         ? "未保存无法验证的修复版本。" : result.appearance_reason;
-                    result.force_import_risk = false;
                     self->m_workbench_check_result = result;
                 } else if (!canceled->load() && repair.success && repair.changed() && error.empty() &&
                     result.candidate_status == RepairCandidateStatus::Ready &&
@@ -482,7 +476,6 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
         m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
         m_workbench_check_result.source = automatic ? WorkbenchCheckSource::Automatic : WorkbenchCheckSource::Manual;
         m_workbench_check_result.purpose = check_purpose;
-        m_workbench_check_result.force_import_risk = false;
         m_workbench_check_result.phase = WorkbenchCheckPhase::Idle;
         m_workbench_check_result.summary = error.what();
         m_status->SetLabel(wxString::FromUTF8(m_workbench_check_result.summary));

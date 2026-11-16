@@ -196,7 +196,6 @@ void ModelGenerationPanel::restore_portrait_draft()
                 if (!preview->set_saved_semantic_result(std::move(result->colors),std::move(result->subfaces))) throw std::runtime_error("Portrait draft preview failed");
                 weak->m_portrait_draft_before = before;
                 weak->m_semantic_mode = SemanticMode::Portrait;
-                weak->m_portrait_entered = true;
                 preview->set_portrait_mode(true);
                 weak->m_portrait_task = std::make_shared<PortraitOptimizationTask>(ModelGenerationPresentation::new_request_id(),sha,sequence);
                 if (weak->m_beauty_controls) weak->m_beauty_controls->set_dirty(true);

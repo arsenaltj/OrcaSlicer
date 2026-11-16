@@ -875,12 +875,6 @@ void ModelGenerationPanel::stop_model_finishing()
 
     if (m_finishing_worker.joinable()) m_finishing_worker.join();
 
-    m_residual_review.reset();
-
-    if(m_model_preview)m_model_preview->clear_portrait_residual_preview();
-
-    if(m_beauty_controls)m_beauty_controls->set_residual_review(false);
-
     m_finishing_running = false;
 
     // Publication may complete while the close request waits for the worker.

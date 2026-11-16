@@ -782,13 +782,14 @@ void BBLTopbar::Rescale() {
 
 void BBLTopbar::OnIconize(wxAuiToolBarEvent& event)
 {
-    if (m_honor_branding) retain_redesign_restore_frames_once(m_frame);
+    if (m_honor_branding) retain_redesign_restore_frames_once(m_frame, "minimize", "caption");
     m_frame->Iconize();
 }
 
 void BBLTopbar::OnFullScreen(wxAuiToolBarEvent& event)
 {
-    if (m_honor_branding) retain_redesign_restore_frames_once(m_frame);
+    if (m_honor_branding) retain_redesign_restore_frames_once(m_frame,
+        m_frame->IsMaximized() ? "restore" : "maximize", "caption");
 #ifdef __WXGTK__
     GtkWindow* gtk_window = GTK_WINDOW(m_frame->m_widget);
     if (gtk_window_is_maximized(gtk_window)) {
