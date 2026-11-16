@@ -1,3 +1,24 @@
+# MAINLINE-BUGFIX-001：当前已构建版本安装包（2026-11-16）
+
+- 授权/归属：用户要求先将task/mainline-bugfix当前已构建版本打包成安装包；mainline-package-20261116单writer，固定源码/缓存归属核对通过。保留原四项未提交成果及运行PID33624/sidecar，未实施历史删除修复、恢复算法目标或操作用户窗口。
+- 来源/构建：基线df36ee3a02f44f9d3e0282f0d0601847f586eb88，完整未提交快照fea181bacf713047e121bceb8f2ca53e651c83744a8488a9180654c5abcbacf5，source_clean=false；release/build_internal.ps1绑定修订20261116-df36ee3a02-snapshot-fea181bacf，完整集成含Git核对零错误。包装版本元数据更新触发部分增量重编译，实际包中EXE/DLL及build_info逐SHA与最终构建匹配；不能把重编译后字节冒充原运行二进制，原EXE/DLL及缓存来源备份在package-20261116/before-build，原运行二进制保持不变。
+- 交付/核验：安装包D:\TEST\packages\current\mainline-bugfix\Honor_Forge_Studio_Internal_V1.0.3_20261116-df36ee3a02-snapshot-fea181bacf_x64.exe（249.1 MiB）、便携包D:\TEST\packages\current\mainline-bugfix\Honor_Forge_Studio_Internal_V1.0.3_20261116-df36ee3a02-snapshot-fea181bacf_x64_portable.zip；SHA-256、schema4 manifest、完整源差异、内容检查范围及准确日志随包/证据保存。安装包7-Zip完整性、EXE/ZIP内容检查、两种包中的EXE/DLL/元数据、ZIP资源/sidecar源码及内置Python/原生MediaPipe依赖核验通过。入口测试摘要：Ran 58 tests in 6.236s; OK; All tests passed (9061 assertions in 72 test cases); All tests passed (3622 assertions in 259 test cases); Everything is Ok。完整结果见D:/TEST/artifacts/mainline-bugfix/evidence/package-20261116/delivery.json及payload-verification.json；新CPack中间树核对无进程引用后清理，独立虚拟打印机的既有交付逐文件SHA不变。
+- 验收边界/下一步：未签名内部开发包；本轮不执行安装器、不宣称干净Windows或标准用户Program Files安装/用户模型目录写入通过，也不宣称新主窗口、用户视觉或打印色彩验收。右侧历史删除仍为已知未修复；此前P4/DPI、IME、几何等未验及PR77审查保留，算法持续优化保持暂停。下一步可由用户安装/解压试用；后续历史删除修复沿原任务承接。本轮无新增业务代码、提交推送、合入、生成或打印，收尾两份文档在包冻结后更新并另记来源。
+# MAINLINE-BUGFIX-001：右侧历史模型删除不可用排查（2026-11-16）
+
+- 范围／基线：用户确认“删除模型能点击，之后没有反应”。mainline-history-delete-20261116沿原分支只读排查，逐SHA确认上轮四项未提交成果不变；仅认领writer更新本计划及短状态，不修改业务代码、模型或运行树，不操作用户窗口。
+- 已查明：NativeWorkbenchPartition发布source_model／model_path使用绝对路径，而ModelLibraryMetadata::model_dependencies只接受相对路径。删除入口扫描downloads目录的其他json／draft，一旦读到原生记录就异常退出，尚未进入删除确认。桌面入口实际指向本checkout固定datadir；只读核对38份记录，其中12份原生发布记录的24个绝对路径都位于当前模型库内，属于生产格式与删除读取契约不兼容，不能当作损坏记录删掉。
+- 反馈缺口：失败只写ModelGenerationPanel的旧m_status；当前工作台仅在预览加载／加载错误时显示其镜像，普通就绪状态及右侧历史计数不会显示这次拒绝，因此呈现为无响应。另有独立边界：忙碌时当前卡片仍启用、菜单未按删除资格禁用，而入口可直接返回；该边界由代码确认，不冒充本次现场忙碌复现。
+- 验证／证据：复用已匹配源码的测试程序运行ModelLibraryMetadata标签，12／12通过；原用例覆盖相对路径和拒绝非法绝对路径，没有覆盖原生绝对路径记录参与整目录删除核对。未编译新程序，未实际点击或删除用户模型；证据为history-delete-analysis-20261116/findings.json及metadata-regression.log，自动检查与实窗结果分别记录。
+- 最小修复范围：删除依赖读取在实际库root上下文内兼容既有原生绝对路径，保留规范路径、源文件依赖及不确定时拒绝的保护；不改写历史文档或重签凭证。拒绝／忙碌原因进入当前可见反馈，菜单资格与执行入口一致；补无关原生记录、真正被引用原件、异常元数据、取消及当前模型删除回退的生产链回归。本轮仅完成排查，修复待实施；PR77待审、此前文案视觉和窗口P4／DPI等未验保留，算法优化继续暂停。
+
+# MAINLINE-BUGFIX-001：工作台色卡提示文案（2026-11-16）
+
+- 授权／基线：按用户截图去掉色卡说明中的“未检测到人物／人像”，其余描述保留；沿task/mainline-bugfix／df36ee3a02，mainline-palette-copy-20261116单writer，修改前工作区干净，四份原文件及源码身份保存在palette-status-copy-20261116/before.json。PR #77已按用户要求转为Open／待审，准确状态收据见submit-cleanup-window-20261116/pr-ready-receipt.json；先前Draft记录保留为历史事实。
+- 实施：仅在workbench_palette_status_line呈现时去除该句话及其紧邻分隔符，兼容当前和历史回退说明；保留近色回退、其他原因和实际用色数量。保存的识别结果、回退原因、历史格式和配色算法均保持原语义。
+- 验证／交付：既有色卡说明回归覆盖当前“近色回退”、旧历史的全局匹配说明及其他识别失败原因保留。CppTest20261116-182509-255的119项工作台回归全部通过，完整集成零错误、映射136锚点／2972库存／29能力通过。首轮181603仅编译后主动中断，保留记录并以4线程复用增量对象继续，不计为测试通过。Run20261116-185556-128五步通过，以NoLaunch更新同一桌面入口；测试与Run源码身份均为5d27d73c8e10，新EXE83c0b4966c3c／DLLf02818c8e3e9逐SHA与构建一致，旧主程序二进制已备份。未启动窗口，真实显示和用户视觉待确认；准确交付见palette-status-copy-20261116/delivery.json及validation.json，收尾只更新进度文档，不冒充额外编译。
+- 保留／下一步：PR77的P4性能／视觉、资源／DPI、非作者复核和其他既有未验不改变；模型修复算法优化继续暂停。本轮不自动提交、推送、合并、打包、生成或打印。
+
 # MAINLINE-BUGFIX-001：清理与窗口优化成果提交、主线同步（2026-11-16）
 
 - 授权／基线：用户明确要求将当前改动本地提交、与远端解决冲突后提交合并PR；沿task/mainline-bugfix／ea72e63a07，mainline-submit-20261116单writer。186项改动与上一轮final-source逐项一致，暂存区为空，完整差异、文件／删除清单、SHA-256及refs已保存在submit-cleanup-window-20261116；PR #73已于2026-11-14合入，后续新建PR。

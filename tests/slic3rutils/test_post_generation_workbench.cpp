@@ -274,7 +274,7 @@ TEST_CASE("Manual and automatic repairs publish only verified topology geometry 
     }
 }
 
-TEST_CASE("Workbench palette status keeps Honor fallback reasons visible",
+TEST_CASE("Workbench palette status keeps fallback details without detection absence notices",
           "[PostGenerationWorkbench][ModelPreviewPalette][UiRedesign]")
 {
     CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, false, 0, 6) == "当前色卡 · 6 色");
@@ -282,7 +282,15 @@ TEST_CASE("Workbench palette status keeps Honor fallback reasons visible",
         "荣耀耗材套装 · 模型当前使用 5/6 色");
     CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, true, 4, 4,
         "未检测到人物，已回退为全局相近色匹配。") ==
-        "未检测到人物，已回退为全局相近色匹配。\n模型当前使用 4/6 色");
+        "已回退为全局相近色匹配。\n模型当前使用 4/6 色");
+    CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, true, 5, 6,
+        "近色回退：未检测到人物。") == "近色回退\n模型当前使用 5/6 色");
+    CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, true, 5, 6,
+        "近色回退：未检测到人像，保留 AI 源色区域并近色匹配。") ==
+        "近色回退：保留 AI 源色区域并近色匹配。\n模型当前使用 5/6 色");
+    CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, true, 5, 6,
+        "近色回退：本地人物语义识别不可用。") ==
+        "近色回退：本地人物语义识别不可用。\n模型当前使用 5/6 色");
 }
 
 TEST_CASE("Workbench defers original appearance diagnostics until the current model is loaded",

@@ -308,9 +308,24 @@ inline std::string workbench_palette_status_line(WorkbenchOriginalAppearanceStat
     if (!honor_suite_active)
         return "当前色卡 · " + std::to_string(palette_color_count) + " 色";
     const std::string usage = "模型当前使用 " + std::to_string(honor_suite_used_colors) + "/6 色";
-    return honor_fallback_reason.empty()
+    // Omit detection absence from this label without changing saved diagnostics.
+    std::string fallback = honor_fallback_reason;
+    for (const std::string notice : {"未检测到人物", "未检测到人像"}) {
+        const size_t position = fallback.find(notice);
+        if (position == std::string::npos) continue;
+        size_t length = notice.size();
+        for (const std::string punctuation : {"。", "，", "；"}) {
+            if (fallback.compare(position + length, punctuation.size(), punctuation) == 0) {
+                length += punctuation.size();
+                break;
+            }
+        }
+        fallback.erase(position, length);
+    }
+    if (fallback == "近色回退：") fallback = "近色回退";
+    return fallback.empty()
         ? "荣耀耗材套装 · " + usage
-        : honor_fallback_reason + "\n" + usage;
+        : fallback + "\n" + usage;
 }
 
 // Native workbench configuration is independent of the six-channel AI port.
