@@ -109,6 +109,8 @@ public:
                 menu.Append(export_id, _L("导出模型"));
                 menu.AppendSeparator();
                 menu.Append(remove_id, _L("删除模型"));
+                menu.Enable(export_id, m_actions_allowed);
+                menu.Enable(remove_id, m_actions_allowed);
                 menu.Bind(wxEVT_MENU, [action, key, remove_id](wxCommandEvent& command) {
                     action(key, command.GetId() == remove_id);
                 });
@@ -124,6 +126,7 @@ public:
                 bool current, bool can_switch)
     {
         m_entry = entry;
+        m_actions_allowed = can_switch;
         m_key = workbench_history_key(entry);
         for (wxWindow* window : std::array<wxWindow*, 5>{{this, m_surface, m_visual, m_name, m_state}})
             if (window->GetBackgroundColour() != wxColour(22, 22, 25)) window->SetBackgroundColour(wxColour(22, 22, 25));
@@ -166,6 +169,7 @@ public:
     }
     void update_actions(bool can_switch, const boost::filesystem::path& displayed)
     {
+        m_actions_allowed = can_switch;
         const bool current = m_entry.model_path == displayed;
         if (m_current != current) {
             m_surface->set_selected(current);
@@ -184,7 +188,7 @@ private:
     WorkbenchHistoryThumbnail* m_visual;
     wxStaticText *m_name, *m_state;
     uint64_t m_thumbnail_revision {0};
-    bool m_initialized {false}, m_current {false};
+    bool m_initialized {false}, m_current {false}, m_actions_allowed {false};
 };
 
 std::vector<const ModelLibraryEntry*> filtered_workbench_history_entries(
@@ -426,11 +430,15 @@ void ModelGenerationPanel::export_workbench_history_entry(const std::string& key
 
 void ModelGenerationPanel::delete_workbench_history_entry(const std::string& key)
 {
-    if (m_workbench_import_feedback || !can_replace_model_asset()) return;
+    if (m_shutdown) return;
+    if (!can_replace_model_asset()) {
+        report_library_deletion_error(_L("当前模型正在处理或有未保存的修改，请完成或取消当前操作后再删除。"));
+        return;
+    }
     const auto found = std::find_if(m_library_entries.begin(), m_library_entries.end(),
         [&](const auto& entry) { return workbench_history_key(entry) == key; });
     if (found == m_library_entries.end()) {
-        m_workbench_history_status->SetLabel(_L("模型列表已变化，旧菜单操作已取消。"));
+        report_library_deletion_error(_L("模型列表已变化，旧菜单操作已取消。"));
         return;
     }
 

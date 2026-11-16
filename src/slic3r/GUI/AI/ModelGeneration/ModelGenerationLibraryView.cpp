@@ -700,6 +700,7 @@ wxWindow* ModelGenerationPanel::create_library_card(const GeneratedModelEntry& e
         export_copy->Bind(wxEVT_BUTTON, [this, entry](wxCommandEvent&) { export_library_entry(entry); });
         actions->Add(export_copy, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
         auto* remove = new wxButton(card, wxID_ANY, _L("删除本地"), wxDefaultPosition, wxSize(FromDIP(104), -1));
+        remove->Enable(can_replace_model_asset());
         remove->Bind(wxEVT_BUTTON, [this, entry](wxCommandEvent&) {
             delete_library_entry(entry);
         });

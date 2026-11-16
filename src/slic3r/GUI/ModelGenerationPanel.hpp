@@ -629,6 +629,7 @@ private:
                              std::shared_ptr<ModelHistoryOpenRequest> restoration = {},
                              const std::string& expected_model_sha256 = {});
     bool delete_library_entry(const GeneratedModelEntry& entry);
+    bool report_library_deletion_error(const wxString& message);
     void export_library_entry(const GeneratedModelEntry& entry);
     void update_library_provider_tasks(const std::string& job_id,
                                        const AIModelGenerationClient::JobStatus& status);

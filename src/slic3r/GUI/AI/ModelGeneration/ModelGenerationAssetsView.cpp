@@ -70,7 +70,11 @@ void ModelGenerationPanel::export_library_entry(const GeneratedModelEntry& entry
 
 bool ModelGenerationPanel::request_library_action(ModelLibraryCommand command, const ModelLibraryEntry& entry)
 {
-    if (!can_replace_model_asset()) return false;
+    if (!can_replace_model_asset()) {
+        if (command == ModelLibraryCommand::Remove)
+            return report_library_deletion_error(_L("当前模型正在处理或有未保存的修改，请完成或取消当前操作后再删除。"));
+        return false;
+    }
     initialize_for_shell_host();
     if (!m_page_initialized || !can_replace_model_asset()) return false;
     switch (command) {

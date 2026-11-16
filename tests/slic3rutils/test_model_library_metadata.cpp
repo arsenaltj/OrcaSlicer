@@ -15,6 +15,25 @@
 using Slic3r::GUI::ModelLibraryMetadata;
 using Json = nlohmann::json;
 
+TEST_CASE("Native absolute history paths do not block an unrelated deletion", "[ModelLibraryMetadata][ModelLibraryDeletion]")
+{
+    ScopedTemporaryDir temporary("orca-native-history-delete");
+    const auto root = temporary.path();
+    boost::filesystem::create_directories(root / "downloads");
+    for (const char* name : {"source.obj", "native.obj", "other.obj"}) {
+        boost::filesystem::ofstream output(root / "downloads" / name);
+        output << "model";
+    }
+    const Json record {{"schema", "orca.native-workbench-partition-commit/v1"},
+        {"source", "native_workbench_partition"},
+        {"source_model", (root / "downloads/source.obj").generic_string()},
+        {"model_path", (root / "downloads/native.obj").generic_string()}};
+    std::istringstream unrelated(record.dump());
+    CHECK_FALSE(ModelLibraryMetadata::references_model(unrelated, "downloads/other.obj", {}, root));
+    std::istringstream original(record.dump());
+    CHECK(ModelLibraryMetadata::references_model(original, "downloads/source.obj", {}, root));
+}
+
 TEST_CASE("Saved versions and drafts protect every referenced model", "[ModelLibraryMetadata]")
 {
     std::istringstream saved(R"({"model_path":"downloads/version.obj","source_model":"models/original.glb",
@@ -47,6 +66,204 @@ TEST_CASE("Model dependency paths are normalized and cannot escape the library",
         std::istringstream invalid("{\"source_model\":" + Json(value).dump() + "}");
         CHECK_THROWS(ModelLibraryMetadata::model_dependencies(invalid));
     }
+}
+
+namespace {
+struct DeletionLibrary {
+    ScopedTemporaryDir directory {"orca-library-delete-preflight"};
+    boost::filesystem::path root {directory.path()};
+    boost::filesystem::path file(const boost::filesystem::path& relative, const std::string& content = "model") const {
+        const auto path = root / relative;
+        boost::filesystem::create_directories(path.parent_path());
+        boost::filesystem::ofstream output(path, std::ios::binary);
+        output << content;
+        return path;
+    }
+    boost::filesystem::path record(const std::string& name, const Json& value) const {
+        return file(boost::filesystem::path("downloads") / name, value.dump());
+    }
+};
+using DeletionStatus = ModelLibraryMetadata::DeletionStatus;
+}
+
+TEST_CASE("Deletion preflight scans mixed production history without changing files", "[ModelLibraryMetadata][ModelLibraryDeletion]")
+{
+    DeletionLibrary library;
+    const auto target = library.file("downloads/selected.glb");
+    const auto original = library.file("models/original.glb");
+    const auto native = library.file("downloads/native.obj");
+    const auto selected = library.record("selected.json", {{"model_path", "downloads/selected.glb"}});
+    const auto record = library.record("native.json", {{"schema", "orca.native-workbench-partition-commit/v1"},
+        {"source", "native_workbench_partition"}, {"source_model", original.generic_string()},
+        {"model_path", native.generic_string()}});
+    library.record("relative.json", {{"model_path", "downloads/relative.obj"}, {"source_model", "models/original.glb"}});
+    // Optional observations cannot acquire dependencies, even if unreadable.
+    library.file("downloads/native.observations.json", "not-json");
+    const auto before = Slic3r::AI::model_artifact_sha256(record);
+    const auto allowed = ModelLibraryMetadata::preflight_deletion(library.root, selected, target);
+    CHECK(allowed.status == DeletionStatus::Allowed);
+    CHECK_FALSE(allowed.appearance_carrier_referenced);
+    CHECK(ModelLibraryMetadata::preflight_deletion(library.root, selected, original).status == DeletionStatus::Referenced);
+    CHECK(Slic3r::AI::model_artifact_sha256(record) == before);
+    CHECK(boost::filesystem::is_regular_file(target));
+}
+
+TEST_CASE("Fresh deletion preflight observes dependencies added during confirmation", "[ModelLibraryMetadata][ModelLibraryDeletion]")
+{
+    DeletionLibrary library;
+    const auto target = library.file("downloads/selected.obj");
+    const auto selected = library.record("selected.json", {{"model_path", "downloads/selected.obj"}});
+    CHECK(ModelLibraryMetadata::preflight_deletion(library.root, selected, target).status == DeletionStatus::Allowed);
+    library.record("new-version.json", {{"model_path", "downloads/version.obj"}, {"source_model", target.generic_string()}});
+    CHECK(ModelLibraryMetadata::preflight_deletion(library.root, selected, target).status == DeletionStatus::Referenced);
+    CHECK(boost::filesystem::is_regular_file(target));
+}
+
+TEST_CASE("Shared appearance carriers survive deletion of an independent version", "[ModelLibraryMetadata][ModelLibraryDeletion]")
+{
+    DeletionLibrary library;
+    const auto target = library.file("downloads/selected.obj");
+    const auto carrier = library.file("models/shared.source-appearance.obj");
+    const auto selected = library.record("selected.json", {{"model_path", "downloads/selected.obj"}});
+    library.record("other.json", {{"model_path", "downloads/other.obj"},
+        {"original_appearance", {{"carrier_model", carrier.generic_string()}}}});
+    const auto result = ModelLibraryMetadata::preflight_deletion(library.root, selected, target, carrier);
+    CHECK(result.status == DeletionStatus::Allowed);
+    CHECK(result.appearance_carrier_referenced);
+    CHECK(ModelLibraryMetadata::preflight_deletion(library.root, selected, carrier).status == DeletionStatus::Referenced);
+}
+
+TEST_CASE("Recursive history cleanup cannot remove a borrowed companion in the same directory", "[ModelLibraryMetadata][ModelLibraryDeletion]")
+{
+    DeletionLibrary library;
+    const auto target = library.file("selected/main.obj");
+    const auto companion = library.file("selected/puzzle-base.obj");
+    const auto unrelated = library.file("selected-other/unused.obj");
+    const auto selected = library.record("selected.json", {{"model_path", "selected/main.obj"}});
+    library.record("borrower.json", {{"model_path", "selected/other.obj"},
+        {"beauty_workbench", {{"puzzle_base_file", "puzzle-base.obj"}}}});
+    const auto result = ModelLibraryMetadata::preflight_deletion(library.root, selected, target);
+    REQUIRE(result.status == DeletionStatus::Allowed);
+    CHECK(ModelLibraryMetadata::deletion_protects(result, library.root, companion));
+    CHECK(ModelLibraryMetadata::deletion_protects(result, library.root, target.parent_path(), true));
+    CHECK_FALSE(ModelLibraryMetadata::deletion_protects(result, library.root, target));
+    CHECK_FALSE(ModelLibraryMetadata::deletion_protects(result, library.root, unrelated.parent_path(), true));
+}
+
+TEST_CASE("Absolute draft owners protect their relative puzzle base", "[ModelLibraryMetadata][ModelLibraryDeletion]")
+{
+    DeletionLibrary library;
+    const auto base = library.file("downloads/base.obj");
+    const auto owner = library.file("downloads/owner.obj");
+    const auto selected = library.record("selected.json", {{"model_path", "downloads/base.obj"}});
+    library.record("owner.json", {{"model_path", owner.generic_string()}});
+    const auto draft = library.file("downloads/owner.json.draft", Json{
+        {"beauty_puzzle_draft", {{"puzzle_base_file", "base.obj"}}}}.dump());
+    CHECK(ModelLibraryMetadata::preflight_deletion(library.root, selected, base).status == DeletionStatus::Referenced);
+    boost::filesystem::remove(library.root / "downloads/owner.json");
+    CHECK(ModelLibraryMetadata::preflight_deletion(library.root, selected, base).status == DeletionStatus::Uncertain);
+    CHECK(boost::filesystem::is_regular_file(draft));
+}
+
+TEST_CASE("Uncertain deletion metadata fails closed without hiding a dependency", "[ModelLibraryMetadata][ModelLibraryDeletion]")
+{
+    DeletionLibrary library;
+    const auto target = library.file("downloads/selected.obj");
+    const auto selected = library.record("selected.json", {{"model_path", "downloads/selected.obj"}});
+    for (const auto& content : {std::string("not-json"), Json{{"source_model", 3}}.dump(),
+             Json{{"source_model", "../outside.obj"}}.dump(),
+             Json{{"source_model", (library.root.parent_path() / "outside.obj").generic_string()}}.dump(),
+             Json{{"model_path", "downloads/owner.obj"}, {"beauty_workbench", {{"puzzle_base_file", "/outside.obj"}}}}.dump()}) {
+        DYNAMIC_SECTION(content) {
+            library.file("downloads/broken.json", content);
+            CHECK(ModelLibraryMetadata::preflight_deletion(library.root, selected, target).status == DeletionStatus::Uncertain);
+            CHECK(boost::filesystem::is_regular_file(target));
+        }
+    }
+}
+
+TEST_CASE("Missing files retain their normalized dependency identity", "[ModelLibraryMetadata][ModelLibraryDeletion]")
+{
+    DeletionLibrary library;
+    const auto missing = library.root / "models/missing.obj";
+    const Json record {{"source_model", missing.generic_string()}, {"model_path", "downloads/saved.obj"}};
+    std::istringstream input(record.dump());
+    CHECK(ModelLibraryMetadata::references_model(input, "models/missing.obj", {}, library.root));
+    std::istringstream context_free(record.dump());
+    CHECK_THROWS(ModelLibraryMetadata::model_dependencies(context_free));
+}
+
+TEST_CASE("Deletion dependency paths preserve Unicode and reject similarly named roots", "[ModelLibraryMetadata][ModelLibraryDeletion]")
+{
+    DeletionLibrary library;
+    const auto relative = boost::filesystem::path(std::filesystem::u8path(u8"模型/原件.obj").native());
+    const auto original = library.file(relative);
+    const auto encoded = std::filesystem::path(original.native()).generic_u8string();
+    std::istringstream input(Json{{"source_model", encoded}}.dump());
+    CHECK(ModelLibraryMetadata::references_model(input, relative, {}, library.root));
+    const auto sibling = library.root.parent_path() / (library.root.filename().string() + "-sibling") / "model.obj";
+    std::istringstream outside(Json{{"source_model", sibling.generic_string()}}.dump());
+    CHECK_THROWS(ModelLibraryMetadata::references_model(outside, relative, {}, library.root));
+#ifdef _WIN32
+    const auto source = library.file("downloads/Source.OBJ");
+    std::istringstream mixed_case(Json{{"source_model", source.generic_string()}}.dump());
+    CHECK(ModelLibraryMetadata::references_model(mixed_case, "DOWNLOADS/source.obj", {}, library.root));
+    std::istringstream drive_relative(R"({"source_model":"C:outside.obj"})");
+    CHECK_THROWS(ModelLibraryMetadata::references_model(drive_relative, relative, {}, library.root));
+#endif
+}
+
+TEST_CASE("Deletion recognizes hard linked models as the same dependency", "[ModelLibraryMetadata][ModelLibraryDeletion]")
+{
+    DeletionLibrary library;
+    const auto original = library.file("downloads/original.obj");
+    boost::system::error_code error;
+    boost::filesystem::create_hard_link(original, library.root / "downloads/alias.obj", error);
+    if (error) SKIP("The temporary filesystem does not support hard links");
+    std::istringstream input(R"({"source_model":"downloads/alias.obj"})");
+    CHECK(ModelLibraryMetadata::references_model(input, "downloads/original.obj", {}, library.root));
+}
+
+TEST_CASE("Deletion preflight rejects symlinked dependencies and records", "[ModelLibraryMetadata][ModelLibraryDeletion]")
+{
+    DeletionLibrary library;
+    const auto target = library.file("downloads/selected.obj");
+    const auto selected = library.record("selected.json", {{"model_path", "downloads/selected.obj"}});
+    boost::system::error_code error;
+    const auto link = library.root / "downloads/link.obj";
+    boost::filesystem::create_symlink(target, link, error);
+    if (error) SKIP("Creating Windows symlinks requires privileges unavailable in this environment");
+    library.record("other.json", {{"source_model", "downloads/link.obj"}});
+    CHECK(ModelLibraryMetadata::preflight_deletion(library.root, selected, target).status == DeletionStatus::Uncertain);
+    boost::filesystem::remove(library.root / "downloads/other.json");
+    boost::filesystem::create_symlink(selected, library.root / "downloads/other.json");
+    CHECK(ModelLibraryMetadata::preflight_deletion(library.root, selected, target).status == DeletionStatus::Uncertain);
+}
+
+TEST_CASE("Existing mixed history deletion preflight preserves every inspected record", "[.][ModelLibraryDeletionQA]")
+{
+    const char* configured = boost::nowide::getenv("ORCA_HISTORY_DELETION_ROOT");
+    REQUIRE(configured != nullptr);
+    const boost::filesystem::path root(std::filesystem::u8path(configured).native());
+    size_t allowed = 0, referenced = 0;
+    for (const auto& item : boost::filesystem::directory_iterator(root / "downloads")) {
+        if (item.path().extension() != ".json" || item.path().stem().extension() == ".observations") continue;
+        boost::filesystem::ifstream input(item.path());
+        const auto summary = ModelLibraryMetadata::parse(input);
+        if (!summary.contains("model_path")) continue;
+        const auto model = boost::filesystem::path(std::filesystem::u8path(summary.at("model_path").get<std::string>()).native());
+        const auto asset = model.is_absolute() ? model : root / model;
+        if (!boost::filesystem::is_regular_file(asset)) continue;
+        const auto before = Slic3r::AI::model_artifact_sha256(item.path());
+        const auto result = ModelLibraryMetadata::preflight_deletion(root, item.path(), asset);
+        CHECK(result.status != DeletionStatus::Uncertain);
+        CHECK(Slic3r::AI::model_artifact_sha256(item.path()) == before);
+        if (result.status == DeletionStatus::Allowed) ++allowed;
+        if (result.status == DeletionStatus::Referenced) ++referenced;
+    }
+    std::cout << "Read-only existing history: allowed=" << allowed << ", protected=" << referenced << '\n';
+    CHECK(allowed > 0);
+    CHECK(referenced > 0);
 }
 
 TEST_CASE("Only an owned original appearance companion is eligible for cleanup", "[ModelLibraryMetadata]")

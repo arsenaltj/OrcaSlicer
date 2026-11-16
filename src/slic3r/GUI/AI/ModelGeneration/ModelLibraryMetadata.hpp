@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <chrono>
+#include <cwchar>
 #include <map>
 #include <optional>
 #include <set>
@@ -29,7 +30,8 @@ public:
     // every model dependency that can keep an original or appearance carrier
     // alive. Returned paths are normalized relative to the model-library root.
     static std::set<std::string> model_dependencies(
-        std::istream& input, const boost::filesystem::path& owning_model = {})
+        std::istream& input, const boost::filesystem::path& owning_model = {},
+        const boost::filesystem::path& library_root = {})
     {
         using Json = nlohmann::json;
         const auto record = Json::parse(input, [](int depth, Json::parse_event_t event, Json& value) {
@@ -43,15 +45,10 @@ public:
             return false;
         }, false);
         if (!record.is_object()) throw std::runtime_error("Unreadable history metadata");
-        const auto normalize = [](const std::string& text) {
-            const boost::filesystem::path path(text);
-            if (path.empty() || path.is_absolute() || path.has_root_path())
-                throw std::runtime_error("Invalid model dependency path");
-            const auto normalized = path.lexically_normal();
-            if (normalized.empty() || normalized == "." ||
-                std::any_of(normalized.begin(), normalized.end(), [](const auto& part) { return part == ".."; }))
-                throw std::runtime_error("Invalid model dependency path");
-            return normalized.generic_string();
+        const auto root = library_root.empty() ? library_root : boost::filesystem::canonical(library_root);
+        const auto normalize = [&](const std::string& text) {
+            if (text.find('\0') != std::string::npos) throw std::runtime_error("Invalid model dependency path");
+            return dependency_text(dependency_path(boost::filesystem::path(std::filesystem::u8path(text).native()), root));
         };
         std::set<std::string> dependencies;
         const auto add = [&](const Json& object, const char* key) {
@@ -70,11 +67,11 @@ public:
         }
         boost::filesystem::path owner = owning_model;
         if (!owner.empty())
-            owner = boost::filesystem::path(normalize(owner.generic_string())).parent_path();
+            owner = dependency_path(owner, root).parent_path();
         const auto model = record.find("model_path");
         if (model != record.end()) {
             if (!model->is_string()) throw std::runtime_error("Invalid history model path");
-            owner = boost::filesystem::path(normalize(model->get<std::string>())).parent_path();
+            owner = boost::filesystem::path(std::filesystem::u8path(normalize(model->get<std::string>())).native()).parent_path();
         }
         for (const char* key : {"beauty_workbench", "beauty_puzzle_draft"}) {
             const auto it = record.find(key);
@@ -83,20 +80,98 @@ public:
             if (base == it->end()) continue;
             if (!base->is_string() || owner.empty())
                 throw std::runtime_error("Puzzle dependency has no owning model path");
-            dependencies.insert(normalize((owner / base->get<std::string>()).generic_string()));
+            const auto base_path = boost::filesystem::path(std::filesystem::u8path(base->get<std::string>()).native());
+            if (base_path.empty() || base_path.has_root_path())
+                throw std::runtime_error("Invalid puzzle dependency path");
+            dependencies.insert(normalize(dependency_text(owner / base_path)));
         }
         return dependencies;
     }
 
     static bool references_model(std::istream& input, const boost::filesystem::path& relative_model,
-                                 const boost::filesystem::path& owning_model = {})
+                                 const boost::filesystem::path& owning_model = {},
+                                 const boost::filesystem::path& library_root = {})
     {
         if (relative_model.empty() || relative_model.is_absolute() || relative_model.has_root_path() ||
             std::any_of(relative_model.begin(), relative_model.end(), [](const auto& part) { return part == ".."; }))
             throw std::runtime_error("Invalid deletion target path");
-        const auto target = relative_model.lexically_normal().generic_string();
-        const auto dependencies = model_dependencies(input, owning_model);
-        return dependencies.count(target) != 0;
+        const auto root = library_root.empty() ? library_root : boost::filesystem::canonical(library_root);
+        const auto target = dependency_path(relative_model, root);
+        return dependency_matches(model_dependencies(input, owning_model, root), target, root);
+    }
+
+    enum class DeletionStatus { Allowed, Referenced, Uncertain };
+    struct DeletionPreflight {
+        DeletionStatus status { DeletionStatus::Uncertain };
+        bool appearance_carrier_referenced { false };
+        std::set<std::string> protected_models;
+    };
+
+    // The panel and regression tests use the same fresh, read-only directory
+    // scan. Each document is parsed once, including when checking a carrier.
+    static DeletionPreflight preflight_deletion(const boost::filesystem::path& library_root,
+        const boost::filesystem::path& metadata_path, const boost::filesystem::path& model = {},
+        const boost::filesystem::path& appearance_carrier = {})
+    {
+        DeletionPreflight result;
+        try {
+            const auto root = boost::filesystem::canonical(library_root);
+            const auto record = root / dependency_path(metadata_path, root);
+            const auto target = model.empty() ? model : dependency_path(model, root);
+            const auto carrier = appearance_carrier.empty() ? appearance_carrier : dependency_path(appearance_carrier, root);
+            for (boost::filesystem::directory_iterator it(record.parent_path()), end; it != end; ++it) {
+                const auto& path = it->path();
+                if ((path.extension() != ".json" && path.extension() != ".draft") ||
+                    same_dependency_path(path, record) || path.stem().extension() == ".observations") continue;
+                // Do not follow metadata or draft links, even if their contents
+                // would claim to refer to a file inside this library.
+                dependency_path(path, root);
+                boost::filesystem::path owner;
+                if (path.extension() == ".draft") {
+                    auto owner_record = path;
+                    owner_record.replace_extension();
+                    dependency_path(owner_record, root);
+                    boost::filesystem::ifstream owner_input(owner_record);
+                    const auto owner_metadata = parse(owner_input);
+                    if (!owner_metadata.contains("model_path") || !owner_metadata["model_path"].is_string())
+                        throw std::runtime_error("Unable to identify beauty draft owner");
+                    owner = boost::filesystem::path(std::filesystem::u8path(owner_metadata["model_path"].get<std::string>()).native());
+                }
+                boost::filesystem::ifstream input(path);
+                if (!input) throw std::runtime_error("Unable to inspect model dependency");
+                const auto dependencies = model_dependencies(input, owner, root);
+                result.protected_models.insert(dependencies.begin(), dependencies.end());
+                if (!target.empty() && dependency_matches(dependencies, target, root)) {
+                    result.status = DeletionStatus::Referenced;
+                    return result;
+                }
+                if (!carrier.empty() && dependency_matches(dependencies, carrier, root))
+                    result.appearance_carrier_referenced = true;
+            }
+            result.status = DeletionStatus::Allowed;
+        } catch (...) { result.status = DeletionStatus::Uncertain; }
+        return result;
+    }
+
+    static bool deletion_protects(const DeletionPreflight& check, const boost::filesystem::path& library_root,
+                                  const boost::filesystem::path& candidate, bool subtree = false)
+    {
+        if (check.status != DeletionStatus::Allowed) return true;
+        try {
+            const auto root = boost::filesystem::canonical(library_root);
+            const auto target = dependency_path(candidate, root);
+            if (dependency_matches(check.protected_models, target, root)) return true;
+            if (subtree) for (const auto& text : check.protected_models) {
+                const boost::filesystem::path path(std::filesystem::u8path(text).native());
+                auto prefix = target.begin(), part = path.begin();
+                while (prefix != target.end() && part != path.end() && same_dependency_path(*prefix, *part)) {
+                    ++prefix;
+                    ++part;
+                }
+                if (prefix == target.end()) return true;
+            }
+            return false;
+        } catch (...) { return true; }
     }
 
     static std::optional<boost::filesystem::path> owned_original_appearance_companion(
@@ -194,6 +269,75 @@ public:
     }
 
 private:
+    static std::string dependency_text(const boost::filesystem::path& path)
+    {
+        return std::filesystem::path(path.native()).generic_u8string();
+    }
+    static bool same_dependency_path(const boost::filesystem::path& left, const boost::filesystem::path& right)
+    {
+#ifdef _WIN32
+        const auto preferred_left = left.lexically_normal().make_preferred();
+        const auto preferred_right = right.lexically_normal().make_preferred();
+        return ::_wcsicmp(preferred_left.native().c_str(), preferred_right.native().c_str()) == 0;
+#else
+        return left == right;
+#endif
+    }
+    static boost::filesystem::path relative_dependency(const boost::filesystem::path& root,
+                                                       const boost::filesystem::path& absolute)
+    {
+        auto base = root.begin(), part = absolute.begin();
+        for (; base != root.end(); ++base, ++part)
+            if (part == absolute.end() || !same_dependency_path(*base, *part))
+                throw std::runtime_error("Model dependency escapes the library");
+        boost::filesystem::path result;
+        for (; part != absolute.end(); ++part) result /= *part;
+        return result;
+    }
+    static boost::filesystem::path dependency_path(const boost::filesystem::path& path,
+                                                  const boost::filesystem::path& root)
+    {
+        if (path.empty() || (path.has_root_path() && (!path.is_absolute() || root.empty())))
+            throw std::runtime_error("Invalid model dependency path");
+        const auto relative = path.is_absolute() ? relative_dependency(root, path) : path;
+        const auto normalized = relative.lexically_normal();
+        if (normalized.empty() || normalized == "." ||
+            std::any_of(normalized.begin(), normalized.end(), [](const auto& part) { return part == ".."; }))
+            throw std::runtime_error("Invalid model dependency path");
+        if (root.empty()) return normalized;
+        auto candidate = root;
+        size_t depth = 0;
+        for (const auto& part : relative) {
+            if (part == ".") continue;
+            if (part == "..") {
+                if (depth == 0) throw std::runtime_error("Model dependency escapes the library");
+                --depth;
+            } else ++depth;
+            candidate /= part;
+            boost::system::error_code error;
+            const auto status = boost::filesystem::symlink_status(candidate, error);
+            if ((error && error != boost::system::errc::no_such_file_or_directory) ||
+                boost::filesystem::is_symlink(status))
+                throw std::runtime_error("Unable to identify model dependency safely");
+        }
+        boost::system::error_code error;
+        const auto resolved = boost::filesystem::weakly_canonical(root / relative, error);
+        if (error) throw std::runtime_error("Unable to resolve model dependency");
+        const auto result = relative_dependency(root, resolved).lexically_normal();
+        if (result.empty() || result == ".") throw std::runtime_error("Model dependency names the library root");
+        return result;
+    }
+    static bool dependency_matches(const std::set<std::string>& dependencies,
+                                   const boost::filesystem::path& target, const boost::filesystem::path& root)
+    {
+        for (const auto& text : dependencies) {
+            const boost::filesystem::path path(std::filesystem::u8path(text).native());
+            if (same_dependency_path(path, target)) return true;
+            boost::system::error_code error;
+            if (!root.empty() && boost::filesystem::equivalent(root / path, root / target, error) && !error) return true;
+        }
+        return false;
+    }
     struct Stamp {
         std::filesystem::file_time_type modified;
         uintmax_t size;

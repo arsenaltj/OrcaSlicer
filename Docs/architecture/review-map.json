@@ -1388,7 +1388,7 @@
       "id": "history",
       "label": "历史与恢复",
       "detail": "保存任务和资产，重新打开历史结果；按任务及模型路径复用卡片和缩略图，保持搜索、分页与滚动；AI创作与工作台分别保留折叠偏好，按钮跟随实际侧栏边界；查看模型目录、导出独立 GLB/图片副本并浏览模型图库",
-      "boundary": "恢复已有记录不等于重新生成",
+      "boundary": "恢复已有记录不等于重新生成；删除在实际库根内核对原件及共享资源依赖，确认后重新核对，拒绝必须可见",
       "group": "资产与工作区",
       "evidence": [
         "history",
@@ -2236,6 +2236,7 @@
         "paths": [
           "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryApplication*",
           "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryRepository*",
+          "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryMetadata.hpp",
           "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryLoader*",
           "src/slic3r/GUI/AI/ModelGeneration/ModelWorkspaceFeatureHost*",
           "src/slic3r/GUI/AI/ModelGeneration/LibraryWorkspaceService*",
@@ -2254,7 +2255,7 @@
         ],
         "state_owner": "LibraryWorkspaceService管理目录、个人记录和下载代次；ModelLibraryApplication管理本地资产身份",
         "contract": "请求绑定页面代次、账号及版本；后台暂存校验后原子登记，现有工作台仍验证检查凭证；本人100条分页完整归一化后筛选，来源独立失败，缓存隔离账号代次",
-        "note": "网站原件仅在内容摘要验证后与账号记录关联；原生格式走既有工程/几何导入，GLB/OBJ保留历史直达及修复索引。",
+        "note": "网站原件仅在内容摘要验证后与账号记录关联；原生格式走既有工程/几何导入，GLB/OBJ保留历史直达及修复索引。本地删除复用ModelLibraryMetadata只读预检，兼容库内原生绝对路径，保护源文件、外观载体和草稿基础文件；UI负责确认、资格复核和可见中文反馈。",
         "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
       },
       {

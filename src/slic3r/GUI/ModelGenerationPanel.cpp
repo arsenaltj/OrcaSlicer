@@ -4626,80 +4626,88 @@ void ModelGenerationPanel::record_library_print_feedback(const std::string& job_
     load_library_entries();
 }
 
-bool ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry)
+bool ModelGenerationPanel::report_library_deletion_error(const wxString& message)
 {
-    if (m_busy || m_finishing_running || !m_finishing_candidate.empty())
-        return false;
+    if (m_shutdown) return false;
+    if (m_status) m_status->SetLabel(message);
+    if (m_workbench_history_status) m_workbench_history_status->SetLabel(message);
+    show_redesign_confirmation(wxGetTopLevelParent(this), message, _L("无法删除模型"),
+        {wxOK, 105, {{wxID_OK, _L("知道了"), true}}});
+    return false;
+}
+
+bool ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& selected)
+{
+    if (m_shutdown) return false;
+    if (!can_replace_model_asset())
+        return report_library_deletion_error(_L("当前模型正在处理或有未保存的修改，请完成或取消当前操作后再删除。"));
+    // Confirmation runs an event loop; list refreshes must not invalidate the
+    // selected entry or silently redirect the deletion to a different asset.
+    const GeneratedModelEntry entry = selected;
     const boost::filesystem::path root = generated_models_root();
     const auto asset_path = entry.design_only ? entry.preview_path : entry.model_path;
     boost::system::error_code ec;
     if (!boost::filesystem::is_directory(root, ec) || !path_is_inside(root, asset_path)) {
-        m_status->SetLabel(_L("删除已阻止：模型路径不在模型文件夹中。"));
-        return false;
+        return report_library_deletion_error(_L("删除已阻止：模型路径不在模型文件夹中。"));
     }
     const auto canonical_root = boost::filesystem::canonical(root, ec);
     const auto canonical_model = boost::filesystem::canonical(asset_path, ec);
     if (ec) {
-        m_status->SetLabel(_L("无法确认模型路径，已保留文件；请刷新历史后重试。"));
-        return false;
+        return report_library_deletion_error(_L("无法确认模型路径，已保留文件；请刷新历史后重试。"));
     }
-    const auto relative_model = canonical_model.lexically_relative(canonical_root).lexically_normal();
-    const auto current_metadata = read_json(library_metadata_path(entry.job_id));
+    const auto metadata_path = library_metadata_path(entry.job_id);
+    const auto current_metadata = read_json(metadata_path);
     const auto owned_appearance_carrier =
         ModelLibraryMetadata::owned_original_appearance_companion(current_metadata, root);
     const auto owned_observations = ModelLibraryObservations::owned_observations_companion(
-        library_metadata_path(entry.job_id), current_metadata);
-    bool appearance_carrier_referenced = false;
-    // Saved versions and drafts may depend on a direct parent, immutable
-    // appearance carrier, origin model or puzzle base. Read fresh metadata
-    // instead of relying on a possibly older asynchronous list.
-    try {
-        const auto records = library_metadata_path(entry.job_id).parent_path();
-        for (boost::filesystem::directory_iterator it(records), end; it != end; ++it) {
-            // Optional display observations cannot own a model dependency.
-            if (it->path().extension() == ".json" && it->path().stem().extension() == ".observations") continue;
-            if ((it->path().extension() != ".json" && it->path().extension() != ".draft") ||
-                it->path() == library_metadata_path(entry.job_id)) continue;
-            boost::filesystem::path draft_owner;
-            if (it->path().extension() == ".draft") {
-                auto owner_record = it->path();
-                owner_record.replace_extension();
-                const auto owner_metadata = read_json(owner_record);
-                if (!owner_metadata.is_object() || !owner_metadata.contains("model_path") ||
-                    !owner_metadata["model_path"].is_string())
-                    throw std::runtime_error("Unable to identify beauty draft owner");
-                draft_owner = boost::filesystem::path(owner_metadata["model_path"].get<std::string>());
-            }
-            boost::filesystem::ifstream input(it->path());
-            if (!input || (!entry.design_only &&
-                ModelLibraryMetadata::references_model(input, relative_model, draft_owner))) {
-                m_status->SetLabel(_L("无法删除：其他美颜版本或草稿仍需要这个原始模型，请先保留原件。"));
-                return false;
-            }
-            if (owned_appearance_carrier) {
-                const auto carrier_relative = owned_appearance_carrier->lexically_relative(canonical_root).lexically_normal();
-                boost::filesystem::ifstream carrier_input(it->path());
-                if (!carrier_input) throw std::runtime_error("Unable to inspect appearance dependency");
-                appearance_carrier_referenced = appearance_carrier_referenced ||
-                    ModelLibraryMetadata::references_model(carrier_input, carrier_relative, draft_owner);
-            }
-        }
-    } catch (...) {
-        m_status->SetLabel(_L("无法确认美颜版本的原件依赖，已保留文件；请刷新历史后重试。"));
-        return false;
-    }
-    if (show_redesign_confirmation(this,
+        metadata_path, current_metadata);
+    const auto preflight = [&] {
+        return ModelLibraryMetadata::preflight_deletion(root, metadata_path,
+            asset_path,
+            owned_appearance_carrier.value_or(boost::filesystem::path{}));
+    };
+    const auto accept_preflight = [&](const ModelLibraryMetadata::DeletionPreflight& check) {
+        if (check.status == ModelLibraryMetadata::DeletionStatus::Referenced)
+            return report_library_deletion_error(_L("无法删除：其他美颜版本或草稿仍需要这个原始模型，请先保留原件。"));
+        if (check.status != ModelLibraryMetadata::DeletionStatus::Allowed)
+            return report_library_deletion_error(_L("无法确认历史版本的文件依赖，已保留文件；请刷新历史后重试。"));
+        return true;
+    };
+    if (!accept_preflight(preflight())) return false;
+    // These observations detect changes across the confirmation event loop;
+    // they are not a model-validation cache or a replacement for certificates.
+    const auto observe_file = [](const boost::filesystem::path& path) {
+        boost::system::error_code error;
+        if (!boost::filesystem::exists(path, error) && !error)
+            return std::make_pair(uintmax_t(0), std::time_t(0));
+        const auto bytes = boost::filesystem::file_size(path, error);
+        if (error) return std::make_pair(uintmax_t(-1), std::time_t(0));
+        const auto modified = boost::filesystem::last_write_time(path, error);
+        return std::make_pair(error ? uintmax_t(-1) : bytes, modified);
+    };
+    const auto asset_observation = observe_file(canonical_model);
+    const auto metadata_observation = observe_file(metadata_path);
+    if (asset_observation.first == uintmax_t(-1) || metadata_observation.first == uintmax_t(-1))
+        return report_library_deletion_error(_L("无法读取模型或历史记录，已保留文件；请刷新历史后重试。"));
+    if (show_redesign_confirmation(wxGetTopLevelParent(this),
         _L("要删除这个历史资产的本地文件、预览和元数据吗？\n\n此操作不会取消远端任务，也无法撤销。"),
         _L("删除本地资产")) != wxID_YES)
         return false;
 
+    if (!can_replace_model_asset())
+        return report_library_deletion_error(_L("当前模型状态已变化，请完成或取消当前操作后再删除。"));
     if (!boost::filesystem::is_directory(root, ec) || !path_is_inside(root, asset_path)) {
-        m_status->SetLabel(_L("删除已阻止：模型路径不在模型文件夹中。"));
-        return false;
+        return report_library_deletion_error(_L("删除已阻止：模型路径不在模型文件夹中。"));
     }
+    if (boost::filesystem::canonical(root, ec) != canonical_root || ec ||
+        boost::filesystem::canonical(asset_path, ec) != canonical_model || ec ||
+        observe_file(canonical_model) != asset_observation || observe_file(metadata_path) != metadata_observation)
+        return report_library_deletion_error(_L("模型或历史记录已变化，删除已取消；请刷新历史后重试。"));
+    const auto final_preflight = preflight();
+    if (!accept_preflight(final_preflight)) return false;
+    const bool appearance_carrier_referenced = final_preflight.appearance_carrier_referenced;
     if (entry.design_only && !read_design_history_entry(root, entry.job_id, false)) {
-        m_status->SetLabel(_L("设计记录已变化，请刷新历史后重试。"));
-        return false;
+        return report_library_deletion_error(_L("设计记录已变化，请刷新历史后重试。"));
     }
 
     bool displayed_model_deleted = false;
@@ -4714,7 +4722,8 @@ bool ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
     const bool downloaded_model = boost::filesystem::is_directory(downloads, ec) &&
         boost::filesystem::equivalent(model_parent, downloads, ec) && !ec;
     size_t removed_count = 0;
-    const bool shared_directory = std::any_of(m_library_entries.begin(), m_library_entries.end(),
+    const bool shared_directory = ModelLibraryMetadata::deletion_protects(final_preflight, root, model_parent, true) ||
+        std::any_of(m_library_entries.begin(), m_library_entries.end(),
         [&](const GeneratedModelEntry& other) {
             const bool same_entry = other.job_id == entry.job_id && other.model_path == entry.model_path &&
                 other.design_only == entry.design_only;
@@ -4752,6 +4761,7 @@ bool ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
             targets.push_back(image_path);
     }
     for (const boost::filesystem::path& target : targets) {
+        if (ModelLibraryMetadata::deletion_protects(final_preflight, root, target)) continue;
         if (std::any_of(m_library_entries.begin(), m_library_entries.end(), [&](const GeneratedModelEntry& other) {
             if (other.job_id == entry.job_id && other.model_path == entry.model_path &&
                 other.design_only == entry.design_only) return false;
@@ -4779,9 +4789,8 @@ bool ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
     }
 
     if (ec) {
-        m_status->SetLabel(_L("本地模型删除不完整，请检查文件权限。"));
         load_library_entries();
-        return false;
+        return report_library_deletion_error(_L("本地模型删除不完整，请检查文件权限。"));
     }
     if (displayed_model_deleted) {
         invalidate_printer_filament_trial_for_model_change();
