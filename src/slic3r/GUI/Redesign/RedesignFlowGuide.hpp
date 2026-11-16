@@ -51,6 +51,7 @@ public:
     {
         SetMinSize(wxSize(-1, FromDIP(259)));
         SetBackgroundStyle(wxBG_STYLE_PAINT);
+        paint_owns_background();
         SetBackgroundColour(flow_background_colour());
         Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
             Refresh(false);

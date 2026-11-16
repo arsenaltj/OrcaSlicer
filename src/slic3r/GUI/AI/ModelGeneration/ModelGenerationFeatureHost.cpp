@@ -427,6 +427,11 @@ bool ModelGenerationFeatureHost::request_restore_latest()
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_restore_latest();
 }
 
+void ModelGenerationFeatureHost::set_smart_creation_presented(bool presented)
+{
+    if (m_impl->model_generation) m_impl->model_generation->set_smart_creation_presented(presented);
+}
+
 bool ModelGenerationFeatureHost::request_restart()
 {
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_restart();
@@ -594,9 +599,18 @@ bool ModelGenerationFeatureHost::request_open_legacy_image_history(const std::st
 { auto* panel = m_impl->legacy_panel(); return panel && panel->request_open_image_history(job_id); }
 bool ModelGenerationFeatureHost::request_open_workbench_artifact(WorkbenchOpenRequest request)
 {
-    if (!request.identifies_asset() || request.origin != WorkbenchOpenRequest::Origin::Advanced ||
+    if (!request.identifies_asset() ||
+        (request.origin != WorkbenchOpenRequest::Origin::Advanced && request.origin != WorkbenchOpenRequest::Origin::Smart) ||
         request.sha256.size() != 64 || !request.generation) return false;
     return m_impl->open_asset(std::move(request));
+}
+std::optional<WorkbenchOpenRequest> ModelGenerationFeatureHost::snapshot_generated_artifact() const
+{
+    if (!m_impl->model_generation || !m_impl->model_generation->ui_state_snapshot().model_ready)
+        return std::nullopt;
+    auto request = m_impl->model_generation->generated_workbench_request(WorkbenchOpenRequest::Origin::Smart);
+    if (!request.identifies_asset() || request.sha256.size() != 64) return std::nullopt;
+    return request;
 }
 bool ModelGenerationFeatureHost::request_open_generated_workbench(bool advanced, const ModelGenerationUIState& displayed)
 {

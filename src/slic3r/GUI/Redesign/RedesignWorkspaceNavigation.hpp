@@ -5,7 +5,7 @@
 namespace Slic3r::GUI {
 
 enum class RedesignWorkspacePage { Assets, Image, Model, Print, Account };
-enum class RedesignModelView { Result, Workbench, Slicing, Preview };
+enum class RedesignModelView { Workbench, Slicing, Preview };
 
 inline bool creation_history_sidebar_active(RedesignWorkspacePage page, bool smart_creation, bool advanced)
 {

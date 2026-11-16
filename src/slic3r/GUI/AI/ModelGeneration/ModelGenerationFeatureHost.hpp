@@ -9,6 +9,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include "slic3r/AI/Contracts/GeneratedModelArtifact.hpp"
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
@@ -48,6 +49,7 @@ public:
     ModelWorkspaceFeatureHost& workspace_capabilities();
     void initialize_for_shell();
     void set_smart_creation_presentation(bool smart);
+    void set_smart_creation_presented(bool presented);
     void mount_assets(wxWindow* parent);
     void unmount_assets();
     void set_history_navigation_handler(std::function<void(bool)> handler);
@@ -70,6 +72,7 @@ public:
     bool request_stop();
     bool request_retry_service();
     bool request_restore_latest();
+    std::optional<WorkbenchOpenRequest> snapshot_generated_artifact() const;
     bool request_restart();
     bool request_import();
     bool request_refresh_history();

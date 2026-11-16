@@ -219,6 +219,10 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                 TriangleMesh final_mesh = object.volumes.front()->mesh();
                 if (!prepare_workbench_import_topology(final_mesh, request.topology_risk_confirmed,
                         prepared->result, prepared->result.error, stopped, &request)) {
+                    // Inspection reports cancellation in its diagnostic too.
+                    // Leave a cancelled preparation for the completion handler;
+                    // it must not become a failed repair or update the check UI.
+                    if (stopped()) { prepared->result.error.clear(); return; }
                     if (prepared->result.error.empty()) prepared->result.error = "最终网格复检未通过，已回滚导入。";
                     prepared->result.outcome = AI::ModelImportOutcome::RepairFailed;
                     return;

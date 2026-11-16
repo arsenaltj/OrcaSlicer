@@ -129,6 +129,7 @@ add_executable(${_TEST_NAME}_tests
     test_sequential_clearance.cpp
     test_object_list.cpp
     test_ui_redesign.cpp
+    test_inline_model_generation.cpp
     test_honor_account.cpp
     test_platform_library.cpp
     test_diagnostic_logs.cpp

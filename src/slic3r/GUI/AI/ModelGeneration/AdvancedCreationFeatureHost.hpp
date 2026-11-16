@@ -10,6 +10,7 @@
 #include <wx/weakref.h>
 #include <wx/window.h>
 #include <map>
+#include <memory>
 #include <set>
 
 namespace Slic3r::GUI {
@@ -33,6 +34,7 @@ public:
     const ProviderCatalog& image_catalog() const { return m_image_catalog; }
     void reconcile_submission();
     void set_listener(std::function<void()> listener);
+    // The flag identifies an accepted new generation, never a navigation request.
     void set_model_state_listener(std::function<void(const ModelGenerationUIState&, bool)> listener)
     { m_model_state_listener = std::move(listener); }
     const ModelGenerationUIState& model_state() const { return m_model_monitor.snapshot(); }
@@ -66,7 +68,7 @@ private:
                       bool session_bound = true);
     AdvancedMultiviewClient::Error error(bool release_command = true, bool release_poll = false);
     void publish();
-    void observe_model_job(const std::string& job, bool open_route, bool restart = false);
+    void observe_model_job(const std::string& job, bool new_generation, bool restart = false);
     void poll(bool restore = false);
     void ingest(Json group, AdvancedCreation::CallbackContext context, bool restore,
                 std::function<void()> done = {}, std::optional<AdvancedCreation::InputDraft> saved_input = {});
@@ -111,6 +113,8 @@ private:
     CommandState m_command_state {CommandState::Idle};
     bool m_poll_pending {false};
     bool m_shutdown {false};
+    // Only checked on the GUI thread; worker callbacks copy the weak token.
+    std::shared_ptr<int> m_lifetime {std::make_shared<int>(0)};
     Presentation::TaskScope m_cache_scope;
 };
 }

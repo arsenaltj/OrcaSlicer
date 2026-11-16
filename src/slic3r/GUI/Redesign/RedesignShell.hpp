@@ -3,6 +3,8 @@
 #include "ImageDesignDraft.hpp"
 #include "NativeWorkspaceTheme.hpp"
 #include "RedesignModelRoute.hpp"
+#include "InlineModelGenerationState.hpp"
+#include "RedesignPageTransition.hpp"
 #include "RedesignPageCoordinator.hpp"
 #include "../Presentation/UiRuntime.hpp"
 #include "../Presentation/WindowMountLease.hpp"
@@ -27,6 +29,7 @@
 #include <thread>
 #include <chrono>
 #include <optional>
+#include <tuple>
 #include <memory>
 #include <vector>
 
@@ -38,6 +41,7 @@
 #include <wx/eventfilter.h>
 
 class wxBoxSizer;
+class wxSizerItem;
 class wxActivityIndicator;
 class wxDialog;
 class wxFrame;
@@ -49,6 +53,22 @@ class wxTextCtrl;
 class wxWindow;
 
 namespace Slic3r::GUI {
+
+// A display cache is committed only after a complete bitmap is installed.
+// Content generations, rather than paths, distinguish an explicitly reloaded file.
+class CreationBitmapCache {
+public:
+    bool current(std::uint64_t content, const wxSize& bounds, double dpi) const {
+        return m_installed && *m_installed == std::make_tuple(content, bounds, dpi);
+    }
+    void installed(std::uint64_t content, const wxSize& bounds, double dpi) {
+        m_installed = std::make_tuple(content, bounds, dpi);
+    }
+    bool has_bitmap() const { return m_installed.has_value(); }
+    void reset() { m_installed.reset(); }
+private:
+    std::optional<std::tuple<std::uint64_t, wxSize, double>> m_installed;
+};
 
 class WorkbenchLabel;
 
@@ -73,6 +93,9 @@ class WorkbenchSlider;
 class AccountWorkspace;
 class PlatformAccountService;
 class LibraryWorkspaceService;
+class InlineModelGenerationView;
+class GenerationCompletionActions;
+class GenerationCompletionToast;
 
 class RedesignShell final : public wxPanel
 {
@@ -101,7 +124,6 @@ public:
 private:
     enum class ImageState { Empty, Loading, Ready, Failed };
     enum class SecondaryAction { None, Stop, RetryService, RestoreLatest, Restart, ReturnToDesign };
-    enum class ModelPageAction { None, RetryService, RetryModel, RestoreLatest, BackToDesign, ReloadPreview, Import };
 
     void build_image_workspace();
     void switch_creation_mode(bool advanced);
@@ -110,16 +132,17 @@ private:
     void update_navigation();
     wxPanel* m_assets_page {nullptr};
     AssetsWorkspace* m_assets_workspace {nullptr};
-    wxPanel* build_model_workspace();
     wxPanel* create_placeholder_page(const wxString& title, const wxString& body);
     void connect_model_generation_host();
-    void apply_advanced_model_state(const ModelGenerationUIState& state);
+    void apply_advanced_model_state(const ModelGenerationUIState& state, bool new_generation = false);
     void on_advanced_model_job(const AdvancedCreation::ModelJobEvent& event);
-    void queue_advanced_model_route();
-    AdvancedModelRouteIntent m_advanced_route_intent;
+    std::optional<AdvancedCreation::ModelJobEvent> m_inline_model_request;
     std::uint64_t m_creation_navigation_epoch {0};
-    bool m_advanced_route_refresh_pending {false};
-    const ModelGenerationUIState& displayed_model_state() const;
+    void apply_smart_inline_generation();
+    void refresh_inline_generation();
+    void recover_smart_generation();
+    void open_creation_artifact(CreationSource source);
+    void show_generation_completion();
     void mount_smart_model_history();
     void restore_smart_model_history();
     void sync_smart_model_history();
@@ -163,14 +186,8 @@ private:
     void request_generate_model();
     void request_primary_action();
     void request_secondary_action();
-    void request_model_page_action();
     bool can_return_to_image_design() const;
     bool return_to_image_design();
-    void update_model_page(const ModelGenerationUIState& state);
-    void apply_model_page_snapshot(const ModelGenerationUIState& state);
-    void layout_model_details();
-    void ensure_model_preview(const ModelGenerationUIState& state);
-    void clear_model_preview();
     void ensure_design_image(const std::string& path);
     void clear_design_image();
     void choose_image();
@@ -250,7 +267,6 @@ private:
     wxBoxSizer* m_sizer { nullptr };
     wxPanel* m_content_host { nullptr };
     wxPanel* m_image_page { nullptr };
-    wxPanel* m_model_page { nullptr };
     wxPanel* m_workbench_page { nullptr };
     wxPanel* m_slicing_page { nullptr };
     wxPanel* m_slicing_settings { nullptr };
@@ -363,7 +379,6 @@ private:
     RedesignPageCoordinator m_page_coordinator;
     Presentation::RefreshScheduler m_surface_refresh;
     bool m_presentation_stopping {false};
-    Presentation::TaskScope m_result_preview_scope;
     Presentation::TaskScope m_design_image_scope;
     std::optional<RedesignPageTransition::Token> m_import_transition;
     bool m_saved_sidebar_collapsed {false};
@@ -414,20 +429,10 @@ private:
     wxPanel* m_result_preview_card { nullptr };
     ImagePreview* m_preview { nullptr };
     ImagePreview* m_result_preview { nullptr };
-    ImagePreview* m_model_stage_visual { nullptr };
-    wxSize m_model_result_layout_size;
-    wxString m_model_result_summary;
-    ModelPreview3D* m_model_preview_3d { nullptr };
-    wxPanel* m_model_visual_host { nullptr };
-    wxPanel* m_model_details_column { nullptr };
-    wxPanel* m_model_view_controls { nullptr };
-    wxStaticText* m_model_stage_title { nullptr };
-    wxStaticText* m_model_stage_summary { nullptr };
-    wxStaticText* m_model_preview_details { nullptr };
-    wxStaticText* m_model_task_status { nullptr };
-    wxWindow* m_model_action_button { nullptr };
-    wxWindow* m_model_back_to_design_button { nullptr };
-    wxWindow* m_model_stop_button { nullptr };
+    InlineModelGenerationView* m_smart_generation_view {nullptr};
+    GenerationCompletionActions* m_smart_completion_actions {nullptr};
+    wxSizerItem* m_smart_action_bottom_padding {nullptr};
+    GenerationCompletionToast* m_generation_toast {nullptr};
     std::array<wxWindow*, 3> m_nav_buttons {};
     std::array<wxPanel*, 5> m_pages {};
     std::array<wxWeakRef<wxWindow>, 5> m_page_focus;
@@ -439,18 +444,18 @@ private:
     bool m_account_started {false};
     bool m_account_startup {true};
     bool m_account_was_exchanging {false};
-    std::array<wxWeakRef<wxWindow>, 4> m_model_view_focus;
+    std::array<wxWeakRef<wxWindow>, 3> m_model_view_focus;
     wxImage m_selected_image;
     wxImage m_design_image;
     boost::filesystem::path m_selected_image_path;
     boost::filesystem::path m_design_image_path;
-    boost::filesystem::path m_loaded_model_path;
-    boost::filesystem::path m_loading_model_path;
     wxSize m_last_preview_bounds;
+    std::uint64_t m_image_content_generation {0};
+    CreationBitmapCache m_source_bitmap_cache, m_design_bitmap_cache, m_upload_bitmap_cache;
+    std::optional<std::tuple<bool, int, std::string, bool>> m_applied_style_controls;
     wxTimer m_preview_resize_timer;
     std::uint64_t m_image_request_generation { 0 };
     std::uint64_t m_design_image_request_generation { 0 };
-    std::uint64_t m_model_preview_request_generation { 0 };
     ModelGenerationFeatureHost* m_model_generation_host { nullptr };
     AITextFeatureHost* m_text_feature_host { nullptr };
     std::shared_ptr<AITextClient::RequestHandle> m_text_availability_request;
@@ -479,22 +484,11 @@ private:
     ImageState m_image_state { ImageState::Empty };
     ImageState m_design_image_state { ImageState::Empty };
     SecondaryAction m_secondary_action { SecondaryAction::None };
-    ModelPageAction m_model_page_action { ModelPageAction::None };
-    // A model submission owns the Shell route until the user explicitly
-    // chooses "返回图像设计". The session and route identity reject stale
-    // callbacks that could otherwise repaint the old image page.
-    bool m_model_route_locked { false };
-    bool m_advanced_model_route { false };
-    std::uint64_t m_model_route_session { 0 };
-    std::string m_model_route_id;
     bool m_image_page_view_only { false };
     bool m_input_sync_ok { false };
     bool m_option_sync_ok { false };
     bool m_submit_in_progress { false };
     bool m_applying_model_generation_state { false };
-    bool m_model_preview_loading { false };
-    bool m_model_preview_failed { false };
-    std::string m_model_preview_error;
 };
 
 }
