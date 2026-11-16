@@ -262,9 +262,12 @@ orcaslicer_discover_tests(${_TEST_NAME}_tests)
 
 # Presentation contracts do not depend on the application or slicing kernel.
 # Keep their concurrency/lifecycle gate runnable before migrating consumers.
-add_executable(ui_lifecycle_tests test_ui_lifecycle.cpp)
+add_executable(ui_lifecycle_tests test_ui_lifecycle.cpp test_redesign_restore_capture.cpp)
 target_include_directories(ui_lifecycle_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(ui_lifecycle_tests PRIVATE test_common Catch2::Catch2WithMain orca_ui_runtime)
+if(WIN32)
+    target_link_libraries(ui_lifecycle_tests PRIVATE glad ${_opengl_link_lib})
+endif()
 set_property(TARGET ui_lifecycle_tests PROPERTY FOLDER "tests")
 orcaslicer_copy_test_dlls(ui_lifecycle_tests)
 orcaslicer_discover_tests(ui_lifecycle_tests)
