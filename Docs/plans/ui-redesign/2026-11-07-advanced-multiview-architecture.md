@@ -1,6 +1,6 @@
 # AI 创作高级模式：多视角软件架构方案
 
-2026-11-12主线同步实施对照：保留本地应用级Role::WorkbenchAssets及唯一Beauty Session；Smart／Legacy面板仅创作，不构造工作台。合并主线AdvancedModelTaskFlow／Monitor和ModelArtifactAcquisition承接四图任务、下载及历史登记，保留YOYOClaw模型选择、队列和多回执恢复。WorkbenchModelContext只作纯值契约，不另设可写编辑状态；返回上下文归唯一FeatureHost。受理先登记Session、Shell独占共用3D页导航，图片缓存及manifest校验后台执行。当前构建／回归和用户实窗分别记录于主计划，以下V3.0为设计基线。
+2026-11-12主线同步实施对照：保留本地应用级Role::WorkbenchAssets及唯一Beauty Session；Smart／Legacy面板仅创作，不构造工作台。合并主线AdvancedModelTaskFlow／Monitor和ModelArtifactAcquisition承接四图任务、下载及历史登记，保留YOYOClaw模型选择、队列和多回执恢复。WorkbenchOpenRequest只作纯值契约，不另设可写编辑状态；返回上下文归唯一FeatureHost。受理先登记Session、Shell独占共用3D页导航，图片缓存及manifest校验后台执行。当前构建／回归和用户实窗分别记录于主计划，以下V3.0为设计基线。
 
 - 日期：2026-11-07；当前提案：设计 V3.0（2026-11-11单工作台目标架构，开发方案待确认）；原实施基线保留。
 - 任务：`UX/ADVANCED-MULTIVIEW-20261107`。
@@ -44,7 +44,7 @@ flowchart TD
 | 等待与结果 | 共用既有Page::Model；包括首次进入、左导航、幂等刷新、合法重入及历史恢复。状态按模式、任务／会话和该来源revision校验，不能跨来源比较revision或固定读取智能状态。 |
 | 产物契约 | GeneratedModelArtifact保持无GUI／供应商依赖；共享获取复用现有客户端、校验、元数据及文件发布。GUI来源／返回锚点不进入libslic3r或供应商请求。 |
 | 工作台打开 | 普通3D打开只加载模型／编辑元数据，不调用会清任务／覆盖输入的生成恢复路径；复用原ModelHistoryOpen及首帧、取消drain、保留页和回滚接缝。 |
-| 当前编辑与事务 | 唯一WorkbenchAssets面板持有模型身份／格式／颜色／元数据（WorkbenchModelContext仅纯值契约），BeautyWorkbenchSession持有原编辑事务／候选；检查、保存、历史和导入消费者读取当前模型，而非智能生成临时字段。 |
+| 当前编辑与事务 | 唯一WorkbenchAssets面板持有模型身份／格式／颜色／元数据（WorkbenchOpenRequest仅纯值契约），BeautyWorkbenchSession持有原编辑事务／候选；检查、保存、历史和导入消费者读取当前模型，而非智能生成临时字段。 |
 | 返回与历史 | Shell只保存来源身份和工作区epoch；普通历史切换不覆盖创作草稿，尊重显式新建／切组。单模型未保存保护沿现有规则，不新增两份未保存编辑或返回会话持久化。 |
 | 原生工程与流程 | Plater保持项目／配置／耗材／原生撤销真值；导入统一经原Shell呈现和Adapter，提交与目标视图就绪分开，已提交后视图恢复不能重复导入。 |
 | 清理与保护 | 迁移有效观察／目录／历史能力后删除高级内部工作台、完整model_host、独立导入／错误路由及无消费者依赖。移除实例级advanced_only时保留按实际任务来源识别的Job-v2防错保护。 |

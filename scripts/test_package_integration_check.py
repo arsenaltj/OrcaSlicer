@@ -1,129 +1,80 @@
-"""Internal packaging must retain all integration failures and enforce the channel."""
-from __future__ import annotations
-
-import copy
+"""Delivery never turns a known integration failure into a passing check."""
+import json
+from pathlib import Path
+import subprocess
+import shutil
+import sys
 import unittest
-
-from package_integration_check import internal_budget_expectation, packaging_decision
+from package_integration_check import packaging_decision
+from verify_ai_integration import SCHEMA
 
 
 class PackageIntegrationTests(unittest.TestCase):
     def setUp(self):
-        self.source = {
-            "source_commit": "a" * 40,
-            "source_clean": False,
-            "source_identity_sha256": "b" * 64,
-        }
-        self.known = {
-            "schema": "orcaslicer.ai-integration-lock/v5",
-            "ok": False,
-            "git_checks_skipped": False,
-            "git": {"head": "a" * 40},
-            "errors": [{"code": "architecture.diff_budget", "message": "Existing.cpp exceeds its budget"}],
-        }
+        self.source = {"source_commit": "a" * 40, "source_clean": False}
+        self.passed = {"schema": SCHEMA, "git_checks_skipped": False,
+                       "git": {"head": self.source["source_commit"]}, "ok": True, "errors": []}
 
-    def test_complete_passing_check_needs_no_exception(self):
-        report = dict(self.known, ok=True, errors=[])
-        result = packaging_decision(report, dict(self.source, source_clean=True))
-        self.assertTrue(result["package_allowed"])
-        self.assertTrue(result["integration_passed"])
-        self.assertEqual(result["status"], "PASSED")
+    def test_zero_errors_pass_for_both_channels_and_source_states(self):
+        for channel in ("internal", "release"):
+            for clean in (False, True):
+                with self.subTest(channel=channel, clean=clean):
+                    decision = packaging_decision(self.passed, dict(self.source, source_clean=clean), channel=channel)
+                    self.assertTrue(decision["package_allowed"])
+                    self.assertTrue(decision["integration_passed"])
+                    self.assertEqual("PASSED", decision["status"])
 
-    def test_failure_without_explicit_baseline_blocks(self):
-        self.assertFalse(packaging_decision(self.known, self.source, channel="internal")["package_allowed"])
+    def test_every_failure_blocks_even_when_an_exact_historical_report_exists(self):
+        for code in ("architecture.diff_budget", "architecture.file_budget", "boundary.contract", "source.credentials"):
+            report = dict(self.passed, ok=False, errors=[{"code": code, "message": "existing error"}])
+            for channel in ("internal", "release"):
+                for known in (None, report, self.passed):
+                    with self.subTest(code=code, channel=channel, known=known):
+                        decision = packaging_decision(report, self.source, known, channel=channel)
+                        self.assertFalse(decision["package_allowed"])
+                        self.assertFalse(decision["integration_passed"])
 
-    def test_exact_known_snapshot_findings_are_recorded_as_not_passed(self):
-        result = packaging_decision(copy.deepcopy(self.known), self.source, self.known, channel="internal")
-        self.assertTrue(result["package_allowed"])
-        self.assertFalse(result["integration_passed"])
-        self.assertEqual(result["known_findings_count"], 1)
-        self.assertEqual(result["status"], "KNOWN_ARCHITECTURE_BUDGET_FINDINGS")
+    def test_retired_report_cannot_be_supplied_even_to_a_passing_candidate(self):
+        self.assertFalse(packaging_decision(self.passed, self.source, self.passed, channel="internal")["package_allowed"])
 
-    def test_new_or_changed_findings_block(self):
-        for errors in (
-            self.known["errors"] + [{"code": "architecture.diff_budget", "message": "New.cpp exceeds its budget"}],
-            [{"code": "architecture.diff_budget", "message": "Existing.cpp now has a larger diff"}],
-            self.known["errors"] * 2,
-        ):
-            with self.subTest(errors=errors):
-                self.assertFalse(packaging_decision(dict(self.known, errors=errors), self.source, self.known, channel="internal")["package_allowed"])
-
-    def test_non_budget_failure_cannot_be_allowlisted(self):
-        for code in ("boundary.contract", "source.credentials", "architecture.diff_base", "lock.read"):
-            report = dict(self.known, errors=[{"code": code, "message": "Existing failure"}])
-            with self.subTest(code=code):
-                self.assertFalse(packaging_decision(report, self.source, report, channel="internal")["package_allowed"])
-
-    def test_other_head_or_schema_blocks(self):
-        for field, value in (("git", {"head": "c" * 40}), ("schema", "unknown")):
-            report = dict(self.known, **{field: value})
-            with self.subTest(field=field):
-                self.assertFalse(packaging_decision(self.known, self.source, report, channel="internal")["package_allowed"])
-                self.assertFalse(packaging_decision(report, self.source, self.known, channel="internal")["package_allowed"])
-
-    def test_clean_internal_source_can_record_known_findings_without_passing_integration(self):
-        result = packaging_decision(self.known, dict(self.source, source_clean=True),
-                                    self.known, channel="internal")
-        self.assertTrue(result["package_allowed"])
-        self.assertFalse(result["integration_passed"])
-        self.assertEqual(result["known_findings_count"], 1)
-
-    def test_release_and_unspecified_channels_block_exceptions_for_both_source_states(self):
-        for clean in (True, False):
-            source = dict(self.source, source_clean=clean)
-            with self.subTest(clean=clean):
-                self.assertFalse(packaging_decision(self.known, source, self.known)["package_allowed"])
-                for channel in ("release", "", "unknown"):
-                    self.assertFalse(packaging_decision(self.known, source, self.known,
-                                                       channel=channel)["package_allowed"])
-
-    def test_clean_internal_source_still_rejects_missing_changed_and_non_budget_baselines(self):
-        source = dict(self.source, source_clean=True)
-        self.assertFalse(packaging_decision(self.known, source, channel="internal")["package_allowed"])
-        for code in ("architecture.diff_budget", "source.credentials"):
-            report = dict(self.known, errors=[{"code": code, "message": "New failure"}])
-            self.assertFalse(packaging_decision(report, source, self.known,
-                                               channel="internal")["package_allowed"])
-        self.assertFalse(packaging_decision(report, source, report,
-                                           channel="internal")["package_allowed"])
-
-    def test_exception_requires_boolean_source_cleanliness(self):
-        for clean in (None, 0, 1, "false"):
-            with self.subTest(clean=clean):
-                self.assertFalse(packaging_decision(self.known, dict(self.source, source_clean=clean),
-                                                   self.known, channel="internal")["package_allowed"])
-
-    def test_internal_test_expectations_preserve_exact_budget_failures(self):
-        record = {"distribution_channel": "internal", "source_clean": False,
-                  "source_identity_sha256": self.source["source_identity_sha256"],
-                  "integration_report": self.known,
-                  "decision": packaging_decision(self.known, self.source, self.known, channel="internal")}
-        self.assertEqual(self.known["errors"], internal_budget_expectation(record, self.source))
-        for key, value in (("distribution_channel", "release"), ("source_clean", True),
-                           ("source_identity_sha256", "other"), ("decision", {}),
-                           ("integration_report", dict(self.known, git_checks_skipped=True))):
-            with self.subTest(key=key), self.assertRaises(ValueError):
-                internal_budget_expectation(dict(record, **{key: value}), self.source)
-
-    def test_non_budget_and_passing_reports_cannot_set_internal_test_expectations(self):
-        for report in (dict(self.known, ok=True, errors=[]),
-                       dict(self.known, errors=[{"code": "source.credentials", "message": "secret"}])):
-            record = {"distribution_channel": "internal", "source_clean": False,
-                      "source_identity_sha256": self.source["source_identity_sha256"],
-                      "integration_report": report,
-                      "decision": packaging_decision(report, self.source, report, channel="internal")}
-            with self.assertRaises(ValueError):
-                internal_budget_expectation(record, self.source)
-
-    def test_skipped_git_checks_block_even_when_report_says_pass(self):
-        for report in (dict(self.known, git_checks_skipped=True), dict(self.known, ok=True, errors=[], git_checks_skipped=True)):
+    def test_incomplete_wrong_source_skipped_and_inconsistent_reports_block(self):
+        for report in ({}, [], dict(self.passed, git={"head": "b" * 40}),
+                       dict(self.passed, schema="unknown"), dict(self.passed, git_checks_skipped=True),
+                       dict(self.passed, ok=False), dict(self.passed, errors=[{}]),
+                       dict(self.passed, errors=[{"code": "x", "message": "failure"}])):
             with self.subTest(report=report):
-                self.assertFalse(packaging_decision(report, self.source, self.known, channel="internal")["package_allowed"])
+                self.assertFalse(packaging_decision(report, self.source)["package_allowed"])
 
-    def test_inconsistent_and_malformed_reports_block(self):
-        for report in ({}, [], dict(self.known, ok=True), dict(self.known, errors=[]), dict(self.known, errors=[{}])):
-            with self.subTest(report=report):
-                self.assertFalse(packaging_decision(report, self.source, self.known, channel="internal")["package_allowed"])
+    def test_unknown_channel_blocks(self):
+        for channel in ("", "unknown"):
+            self.assertFalse(packaging_decision(self.passed, self.source, channel=channel)["package_allowed"])
+
+    def test_legacy_command_line_parameters_fail_before_running_or_reading_reports(self):
+        root = Path(__file__).resolve().parents[1]
+        commands = [
+            [sys.executable, str(root / "scripts/package_integration_check.py"), "--root", str(root),
+             "--report", "unused.json", "--known-report", "nonexistent.json"],
+            [sys.executable, str(root / "tools/ai/test_integration_guardrails.py"),
+             "--internal-package-report", "nonexistent.json"],
+            [sys.executable, str(root / "tools/ai/test_integration_guardrails.py"),
+             "--source-manifest", "nonexistent.json"],
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                result = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(2, result.returncode)
+                self.assertIn("retired", result.stderr)
+
+    @unittest.skipUnless(shutil.which("pwsh"), "PowerShell Core unavailable")
+    def test_legacy_powershell_parameters_fail_before_using_the_build_tree(self):
+        root = Path(__file__).resolve().parents[1]
+        for script in ("scripts/package_internal_fast.ps1", "release/build_internal.ps1"):
+            for channel in ("internal", "commercial"):
+                result = subprocess.run(["pwsh", "-NoProfile", "-File", str(root / script),
+                    "-BuildDir", "nonexistent", "-KnownIntegrationReport", "nonexistent.json",
+                    "-DistributionChannel", channel, "-ValidateOnly"], capture_output=True)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn(b"KnownIntegrationReport is retired", result.stderr)
 
 
 if __name__ == "__main__":

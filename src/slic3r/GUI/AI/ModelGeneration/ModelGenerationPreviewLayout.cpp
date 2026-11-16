@@ -1,7 +1,6 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
 #include "ModelPreview3D.hpp"
 #include "slic3r/GUI/AI/AIWindowAppearance.hpp"
-#include "slic3r/GUI/AI/ColorMatching/LocalPrintColorPanel.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include <wx/notebook.h>
 #include <wx/scrolwin.h>
@@ -9,50 +8,6 @@
 #include <wx/tglbtn.h>
 
 namespace Slic3r::GUI {
-
-void ModelGenerationPanel::show_workbench_color_matching(const AI::GeneratedModelArtifact& artifact, Plater* plater)
-{
-    if (m_shutdown || !m_preview_book || !plater) return;
-    if (!m_workbench_color_matching) {
-        m_workbench_color_matching = new LocalPrintColorPanel(
-            m_preview_book, plater,
-            [this] {
-                close_workbench_color_matching(false);
-                if (m_prepare_navigation) m_prepare_navigation();
-            },
-            [this] { close_workbench_color_matching(); });
-        refresh_ai_appearance(m_workbench_color_matching);
-        m_preview_book->AddPage(m_workbench_color_matching, _L("颜色匹配"), false);
-    }
-    const wxWeakRef<wxWindow> entry(wxWindow::FindFocus());
-    if (!m_workbench_color_matching->open_artifact(artifact)) return;
-    m_color_matching_entry = entry;
-    m_color_matching_entry_sequence = m_sequence;
-    m_preview_book->SetSelection(m_preview_book->FindPage(m_workbench_color_matching));
-    m_preview_book->GetParent()->Layout();
-}
-
-void ModelGenerationPanel::close_workbench_color_matching(bool restore_entry)
-{
-    if (!m_preview_book || !m_workbench_color_matching) return;
-    if (m_preview_book->GetSelection() != m_preview_book->FindPage(m_workbench_color_matching)) return;
-    m_preview_book->SetSelection(0);
-    m_preview_book->GetParent()->Layout();
-    const auto entry = m_color_matching_entry;
-    const auto sequence = m_color_matching_entry_sequence;
-    m_color_matching_entry = nullptr;
-    if (!restore_entry) return;
-    wxWeakRef<ModelGenerationPanel> weak(this);
-    // Restore keyboard navigation only after the original page is visible.
-    // A new route/model or destroyed/disabled entry must not steal focus.
-    CallAfter([weak, entry, sequence]() {
-        if (!weak || weak->m_shutdown || weak->m_busy || sequence != weak->m_sequence ||
-            !weak->m_preview_book || weak->m_preview_book->GetSelection() != 0 ||
-            !entry || !weak->IsDescendant(entry.get()) ||
-            !entry->IsShownOnScreen() || !entry->IsEnabled()) return;
-        entry->SetFocus();
-    });
-}
 
 void ModelGenerationPanel::show_model_comparison()
 {
@@ -63,7 +18,6 @@ void ModelGenerationPanel::show_model_comparison()
 
 void ModelGenerationPanel::refresh_comparison_layout(bool reset_scroll)
 {
-    if (m_workbench_color_matching && m_workbench_color_matching->IsShown()) return;
     if (m_updating_comparison_layout || !m_model_page || !m_model_preview || !m_expand_images)
         return;
     auto* row = dynamic_cast<wxBoxSizer*>(m_comparison_panel->GetSizer());

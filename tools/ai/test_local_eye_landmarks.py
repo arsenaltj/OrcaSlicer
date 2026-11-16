@@ -3,7 +3,6 @@ import copy
 import unittest
 import numpy as np
 import local_eye_landmarks as eyes
-import local_semantic_request as request
 
 
 class EyeHintsTests(unittest.TestCase):
@@ -40,19 +39,7 @@ class EyeHintsTests(unittest.TestCase):
         result = eyes.associate(observations,regions)
         self.assertEqual(len(result),1)
         self.assertEqual(result[0]['iris_faces'], list(range(7,13)))
-        request._validate_eye_details(result, regions)
 
-    def test_surface_hints_reject_faces_outside_verified_eye_and_injected_fields(self):
-        regions = [{'subject_id':'one','label':'re','samples':[[i] for i in range(20)]}]
-        hint = {'subject_id':'one','label':'re','aperture_faces':list(range(20)),'iris_faces':list(range(7,13))}
-        for change in ('outside','duplicate','subject','authority','white'):
-            h = copy.deepcopy(hint)
-            if change == 'outside': h['iris_faces'] = [500]
-            if change == 'duplicate': h['iris_faces'] = [7,7]
-            if change == 'subject': h['subject_id'] = 'two'
-            if change == 'authority': h['confirmed'] = True
-            if change == 'white': h['label'] = 'eye_white'
-            with self.assertRaises(request.RequestError): request._validate_eye_details([h],regions)
 
     def test_resolved_frontal_eye_with_unknown_gaps_beats_small_occluded_profile(self):
         regions = [{'subject_id':'one','label':'le','samples':[[i] for i in range(40)]}]
@@ -62,7 +49,6 @@ class EyeHintsTests(unittest.TestCase):
         result = eyes.associate(observations,regions)
         self.assertEqual(result[0]['iris_faces'], list(range(12,32)))
         self.assertEqual(result[0]['aperture_faces'], list(range(40)))
-        request._validate_eye_details(result,regions)
 
 
 if __name__ == '__main__':

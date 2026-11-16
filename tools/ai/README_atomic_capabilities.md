@@ -66,7 +66,7 @@ flowchart TD
 - “新建创作”立即重置本地工作区／epoch，不等待草稿、轮询或配置；历史／原件／文件／日志保留。桌面回执保存为`advanced-cache/pending-submissions/<operation-id>.json`并兼容读取旧`pending-submission.json`，仅核对／归档对应操作。停止意图可先于受理写入`stopped-submissions/<operation-id>.json`，后到POST不得发旧任务后续请求；旧回调不修改新会话或释放其忙碌。已提交请求可仍计费，其晚到候选只归旧组。保留内部旧retry/recover合同，但统一新生成入口不沿旧模型重试或复用候选。
 - `/model-plans` 与 `/model-jobs` 将完整四图冻结到同一Job-v2。`resume/reconcile/stop` 始终沿原身份处理，未知提交阻止新创建；旧单图路由拒绝重生带高级四图来源的Job。
 
-组文件位于用户模型目录 `advanced-multiview/<group-id>`；原件、设计版本与操作收据分别持久化。桌面选择仅影响2D目标，不过滤3D四图。旧Job-v1单图历史保留显式入口；智能与高级共享Shell内的一套等待／结果／编辑工作台，创作Session仍各自独立。高级通过无编辑UI的AdvancedModelTaskMonitor观察明确Job并复用ModelArtifactAcquisition；显式产物打开和3D历史不覆盖创作输入，编辑与导入使用当前WorkbenchModelContext。导入沿原确认／进度／原生保护接回切片及预览。实际类型／路由与失败恢复详见[架构实施对照](../../Docs/plans/ui-redesign/2026-11-07-advanced-multiview-architecture.md#实施对照2026-11-08)、[详细设计](../../Docs/plans/ui-redesign/2026-11-07-advanced-multiview-detailed-design.md)及[逐项测试报告](../../Docs/plans/ui-redesign/2026-11-08-advanced-multiview-test-report.md)。
+组文件位于用户模型目录 `advanced-multiview/<group-id>`；原件、设计版本与操作收据分别持久化。桌面选择仅影响2D目标，不过滤3D四图。旧Job-v1单图历史保留显式入口；智能与高级共享Shell内的一套等待／结果／编辑工作台，创作Session仍各自独立。高级通过无编辑UI的AdvancedModelTaskMonitor观察明确Job并复用ModelArtifactAcquisition；显式产物打开和3D历史通过WorkbenchOpenRequest交接，编辑模型由唯一工作台持有，不覆盖创作输入。导入沿原确认／进度／原生保护接回切片及预览。实际类型／路由与失败恢复详见[架构实施对照](../../Docs/plans/ui-redesign/2026-11-07-advanced-multiview-architecture.md#实施对照2026-11-08)、[详细设计](../../Docs/plans/ui-redesign/2026-11-07-advanced-multiview-detailed-design.md)及[逐项测试报告](../../Docs/plans/ui-redesign/2026-11-08-advanced-multiview-test-report.md)。
 
 运行恢复限制：侧车单独重启后，现有桌面认证nonce会失效；本轮真实验证通过正常重启应用、打开原组并显式恢复原3D任务继续，保持同一远端task且不新建。不能把此路径描述为服务自动重连；共享会话认证的变更不属于高级业务隔离范围。GPT和Tripo保留既有真实证据；YOYOClaw三种白名单图像模型已有官方协议和三参考图中转验证，其中Doubao样本曾在输出内容审核阶段失败，不能把审核通过或所有输入内容可用性写成已保证。
 
@@ -136,3 +136,10 @@ features.mount_assets(container);
 `model_runtime_files.cmake` 明确列出新的生产模块，主 CMake 和快捷刷新均使用该组件。集成校验检查入口存在、打包成员一致、循环依赖、host/UI 反向依赖及动态命名空间注入；单个能力文件上限 1500 行，Sidecar 上限由 9450 降为 2000 行。现有 upstream/shared/native 门禁保留。架构映射支持从多个文件提取同一 Job 状态，移动文件不再误报状态删除。
 
 `ModelWorkspaceSources.cmake` 显式列出原生能力与兼容视图成员，共享 CMake 预算不放宽。原生核心文件禁止导入旧面板/宿主及窗口/工程状态，视图适配器也禁止导入旧生成面板；每个新增能力文件上限 500 行。相关检查：`scripts/verify_ai_integration.py --json`、`test_atomic_capabilities.py`、`test_packaged_sidecar.py`、`scripts/test_atomic_capabilities_architecture.py`、`scripts/test_architecture_review.py` 与原生 AtomicModelCapabilities/配色/图库/美颜回归。完整部署和集成 CI 状态另行记录于主计划和短状态。
+
+
+## 已退役能力与保留消费者
+
+FaRL/Torch 本地研究 worker、请求执行、残差提案客户端及权重/raster装配已退役；不得从旧配置、历史请求或 CMake 缓存重新启用。当前识别继续由原生 MediaPipe 接口承接，旧一键任务仍返回 workflow_removed。LocalSemanticEvidence、ShapeLock、历史外观和成果凭证的读取校验继续有效。
+
+离线工具实际引用的 glb_artifact、local_semantic_geometry/render/projection、面部边界与父级证据模块继续保留；它们不在安装清单中。保留的样例分区／锁 JSON 被离线候选工具和历史兼容回归使用，不能作为当前自动推理成果或默认部署资源。颜色匹配只执行当前冻结拓扑、配方与严格源文件核验，不再启动无界面的旧细节识别分支。

@@ -1,6 +1,5 @@
 # Model capability and compatibility-view membership is explicit.
 set(ORCA_MODEL_WORKSPACE_SOURCES
-    GUI/AI/ModelGeneration/WorkbenchModelContext.hpp
     GUI/AI/ModelGeneration/ModelArtifactAcquisition.hpp
     GUI/AI/ModelGeneration/ModelArtifactAcquisition.cpp
     GUI/AI/ModelGeneration/AdvancedModelTaskMonitor.hpp

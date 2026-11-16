@@ -215,8 +215,50 @@ class SourceIdentityTests(unittest.TestCase):
                 rejected = subprocess.run(args + ["-KnownIntegrationReport", "absent.json"], capture_output=True,
                                           text=True, encoding="utf-8", errors="replace", timeout=40)
                 self.assertNotEqual(rejected.returncode, 0)
-                self.assertIn("internal-only", rejected.stderr)
+                self.assertIn("KnownIntegrationReport is retired", rejected.stderr)
                 self.assertFalse(output.exists())
+
+    @unittest.skipUnless(os.name == "nt" and (shutil.which("pwsh") or shutil.which("powershell")), "Windows PowerShell entry point")
+    def test_packaging_rejects_a_failed_fresh_check_before_any_build(self):
+        project = Path(__file__).resolve().parents[1]
+        for name in ("scripts/package_source_identity.py", "scripts/package_internal_fast.ps1",
+                     "scripts/package_integration_check.py", "scripts/verify_ai_integration.py",
+                     ".github/team-collaboration.json"):
+            self.write(name, (project / name).read_text(encoding="utf-8-sig"))
+        # The real checker must reject this incomplete source, rather than use
+        # a historical report or proceed to any native build/package operation.
+        self.write("docs/architecture/ai-integration-lock.json", "{}")
+        self.write(".gitignore", ".tmp/\n__pycache__/\n")
+        self.run_git("add", ".")
+        self.run_git("commit", "-qm", "install failed integration fixture")
+        self.head = self.run_git("rev-parse", "HEAD").strip()
+        marker = self.root / ".tmp/build-was-invoked.txt"
+        self.write(".tmp/never-build.ps1", "Set-Content -LiteralPath '" + marker.as_posix() + "' -Value invoked\nthrow 'Build must never run'\n")
+        tool = self.root / ".tmp/never-build.ps1"
+        build = self.root / ".tmp/build"
+        output = self.root / ".tmp/output"
+        self.write(".tmp/build/CPackConfig.cmake", "# no packaging is allowed")
+        self.write(".tmp/build/CMakeCache.txt", "\n".join([
+            f"CMAKE_HOME_DIRECTORY:INTERNAL={self.root}", f"Python3_EXECUTABLE:FILEPATH={sys.executable}",
+            f"CMAKE_COMMAND:INTERNAL={tool}", f"CMAKE_CPACK_COMMAND:INTERNAL={tool}",
+            "ORCA_AI_WINDOWS_INSTALLER:BOOL=ON", "ORCA_AI_DISTRIBUTION_CHANNEL:STRING=internal",
+            "ORCA_AI_PACKAGE_REVISION:STRING=fixture", "ORCA_AI_INTERNAL_DEFAULTS_FILE:FILEPATH=", ""]))
+        self.write(".tmp/build/orca_ai_build_info.json", json.dumps({"schema_version": 1,
+            "application_commit": self.head, "package_revision": "fixture", "distribution_channel": "internal",
+            "sidecar_protocol_version": 2, "sidecar_version": "orcaslicer-ai-sidecar-v11"}))
+        result = subprocess.run([shutil.which("pwsh") or shutil.which("powershell"), "-NoProfile", "-File",
+            str(self.root / "scripts/package_internal_fast.ps1"), "-BuildDir", str(build),
+            "-OutputDir", str(output), "-Revision", "fixture"], capture_output=True,
+            text=True, encoding="utf-8", errors="replace", timeout=40)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("AI integration guardrails failed", result.stderr)
+        report_path = output / "integration-check.json"
+        self.assertTrue(report_path.is_file(), result.stdout + result.stderr)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertFalse(report["decision"]["package_allowed"])
+        self.assertFalse(report["decision"]["integration_passed"])
+        self.assertTrue(report["integration_report"]["errors"])
+        self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":

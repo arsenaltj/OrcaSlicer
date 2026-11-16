@@ -7,7 +7,6 @@ float32 Z-up millimetres; raster/depth/barycentric calculations use float64.
 No inference, camera policy, process launch, file output or import path changes.
 """
 import base64
-import ctypes
 import io
 import json
 import math
@@ -28,35 +27,6 @@ MAX_IMAGE_BYTES = 64 * 1024 * 1024
 MAX_IMAGE_PIXELS = 16 * 1024 * 1024
 MAX_TOTAL_IMAGE_PIXELS = 32 * 1024 * 1024
 MAX_IMAGE_DIMENSION = 8192
-_native_raster = None
-
-
-def _native_raster_kernel():
-    """Load only the installed sibling accelerator; absence keeps Python exact."""
-    global _native_raster
-    if _native_raster is not None:
-        return _native_raster[1]
-    if os.name != 'nt':
-        return None
-    path = Path(__file__).resolve().parent / 'local_semantic_raster.dll'
-    if not path.exists():
-        return None
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
-        raise ValueError('Invalid installed semantic raster accelerator')
-    library = ctypes.CDLL(str(path))
-    version = library.semantic_raster_abi_version
-    version.argtypes = []
-    version.restype = ctypes.c_int
-    if version() != 1:
-        raise ValueError('Unsupported semantic raster accelerator')
-    function = library.raster_triangles
-    function.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int32, ctypes.c_int32,
-                         ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-    function.restype = ctypes.c_int
-    _native_raster = (library, function)
-    return function
-
-
 def _extensions(value, allowed=()):
     extensions = value.get('extensions', {})
     if not isinstance(extensions, dict) or set(extensions)-set(allowed):
@@ -335,17 +305,6 @@ def raster(vertices, faces, basis, center, half_height, size, double_sided=None)
         raise ValueError('Invalid triangle indices')
     sided = np.zeros(len(faces), dtype=bool) if double_sided is None else np.asarray(double_sided)
     if sided.shape != (len(faces),) or sided.dtype != np.bool_: raise ValueError('Invalid per-face doubleSided flags')
-    accelerator = _native_raster_kernel()
-    if accelerator is not None:
-        triangles = np.ascontiguousarray(projected[faces], dtype=np.float64)
-        sided_bytes = np.ascontiguousarray(sided, dtype=np.uint8)
-        ids = np.empty((size, size), dtype=np.int32)
-        depths = np.empty((size, size), dtype=np.float64)
-        bary = np.empty((size, size, 3), dtype=np.float64)
-        result = accelerator(triangles.ctypes.data, sided_bytes.ctypes.data, len(faces), size,
-                             ids.ctypes.data, depths.ctypes.data, bary.ctypes.data)
-        if result != 0: raise ValueError('Semantic raster accelerator rejected the view')
-        return ids, depths, bary
     triangles = projected[faces]
     # Clip in float before integer conversion, including triangles far offscreen.
     lower = np.clip(np.ceil(triangles[:, :, :2].min(1)-.5), 0, size).astype(int)

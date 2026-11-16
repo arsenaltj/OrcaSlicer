@@ -9,7 +9,6 @@ add_executable(${_TEST_NAME}_tests
     test_beauty_cell_domain.cpp
     test_parent_surface_visibility.cpp
     test_portrait_parent_cleanup.cpp
-    test_portrait_residual_proposal.cpp
     test_portrait_surface_ownership_v2.cpp
     test_surface_partition.cpp
 	../local_print_recipe_fixture.hpp
@@ -93,7 +92,6 @@ add_executable(${_TEST_NAME}_tests
     test_portrait_color_plan.cpp
     test_portrait_shape_details.cpp
     test_portrait_surface_ownership.cpp
-    test_local_semantic_worker_client.cpp
     test_model_color_import.cpp
     test_plugin_host_api.cpp
     # Exercise seam enums and predicates through the embedded Python host API.
@@ -150,8 +148,6 @@ add_executable(${_TEST_NAME}_tests
     test_beauty_surface.cpp
     test_beauty_puzzle.cpp
     test_beauty_persistence.cpp
-    test_beauty_edit_regions.cpp
-    test_beauty_boundary_drag.cpp
     test_beauty_boundary_contours.cpp
     test_model_artifact.cpp
     test_orca_model_preparation.cpp

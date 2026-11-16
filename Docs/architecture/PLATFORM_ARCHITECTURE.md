@@ -327,7 +327,7 @@ Panel不再直接写上述五项生命周期状态的引用。进入配色、局
 
 智能和高级的创作 Session、输入和任务继续独立。高级的 `AdvancedModelTaskFlow` 通过 Ports 观察明确 Job，wx 适配器负责轮询、共享下载及本地解析；它不拥有编辑控件、Beauty Session、Plater或生成提交能力。目录请求不取消任务下载。智能沿原2D准备→3D链，高级只观察既有四图的3D阶段，保留原进度算法。
 
-应用级 `ModelGenerationFeatureHost` 唯一创建 `Role::WorkbenchAssets` 面板及 Beauty 编辑会话，`WorkbenchInstanceLease` 拒绝第二实例；智能及旧单图面板只承载创作。实际编辑路径／哈希、格式、色板、ColorIntent和参考图归资产面板，`WorkbenchModelContext` 仅保留纯值契约，不增设第二份可写状态。生成状态刷新及新建创作不替换编辑对象；显式打开产物或3D历史才经原 `ModelHistoryOpen` 准备、代次过滤、首帧呈现和回滚安装。历史3D打开不恢复生成输入；明确的未完成任务恢复仍走原来源命令，Job-v2不能从旧单图重试。FeatureHost保存打开请求的返回上下文，Shell按该上下文适配导航；历史切换及本地保存不改来源，返回使用对应Session的最新创作工作区。
+应用级 `ModelGenerationFeatureHost` 唯一创建 `Role::WorkbenchAssets` 面板及 Beauty 编辑会话，`WorkbenchInstanceLease` 拒绝第二实例；智能及旧单图面板只承载创作。实际编辑路径／哈希、格式、色板、ColorIntent和参考图归资产面板，`WorkbenchOpenRequest` 只携带模型交接身份与返回上下文，不增设第二份可写状态。生成状态刷新及新建创作不替换编辑对象；显式打开产物或3D历史才经原 `ModelHistoryOpen` 准备、代次过滤、首帧呈现和回滚安装。历史3D打开不恢复生成输入；明确的未完成任务恢复仍走原来源命令，Job-v2不能从旧单图重试。FeatureHost保存打开请求的返回上下文，Shell按该上下文适配导航；历史切换及本地保存不改来源，返回使用对应Session的最新创作工作区。
 
 高级受理先登记Session，再以组／任务／请求／导航代次通知Shell；图片缓存与manifest强校验使用有界后台队列，不阻塞进度页。多收据核对、YOYOClaw模型目录和失败恢复保留。高级页内第二套完整宿主、独立导入进度框和导入跳打印分支已移除。耗材匹配完成先发布解除忙碌状态，再继续导入；Shell和异步宿主受理时重读唯一资产快照，继续校验模型及检查摘要，避免旧UI忙碌投影静默拒绝。两个来源的检查／修复、美颜、保存、撤销及导入都消费当前编辑模型，导入继续通过Shell原确认／进度／工程提交／切片／预览，Plater仍持原生工程真值。实现验证及未覆盖项见[本轮测试报告](../plans/ui-redesign/2026-11-08-advanced-multiview-test-report.md)，不由源码说明推断实窗通过。
 
@@ -383,3 +383,14 @@ Honor Forge 发现链先读取当前用户的 schema-1 运行声明，只接受 
 官方 b3f8d0af15 在CGAL转换副本上移除未引用顶点，防止体积判定访问不存在的半边；原网格和检查凭证不被改写。原本地“转换后仍拒绝孤立顶点”的辅助函数测试已按该已核实语义改为验证副本压缩、面数／体积及原始顶点／面索引不变，并保留官方开放网格拒绝用例。工作台完整原始资产、来源、拓扑和外观检查仍由原消费者负责，CGAL转换结果不替代强凭证。
 
 `ApplicationUpdatePolicy.hpp` 是官方软件升级唯一开关，保持关闭。自动与手动查询、帮助命令、偏好项、通知、强制升级事件生产和消费都先核对它；旧配置中的升级缓存不触发安装地址或关闭程序。预设同步、网络插件、设备固件和账号仍遵守各自规则。新版依赖的 TLS 主机名与证书验证保持开启；不因此禁用正常业务网络。
+
+
+## 自研退役边界与交付门禁（2026-11-16）
+
+当前创作布局与导航归 RedesignShell；未构建的 DesktopWorkspaceNavigation、旧输入布局及静态 model_gallery 已退役。当前模型库仍使用 resources/web/model_library，WebView 创建／加载失败时由原生回退面板承接。唯一工作台归 WorkbenchAssets 面板和 BeautyWorkbenchSession，跨入口只传 WorkbenchOpenRequest；不保留无消费者的第二套编辑上下文或测试专用预览状态。
+
+原生 MediaPipe 识别、历史外观、细节锁及凭证校验继续保留。FaRL／Torch 子进程客户端、推理入口、raster DLL、权重装配和安装链已退役；旧 CMake 缓存显式开启研究能力时配置报错，能力字段 legacy_farl_enabled 固定 false。离线渲染、几何／边界分析及其实际消费者仍保留，不能据旧安装清单整批删除。历史缓存只读兼容不意味着允许重新启动旧算法；workflow_removed 对旧一键请求的拒绝继续生效。
+
+工作台不再维护 force-import／deferred-repair 展示状态。旧 ModelImportRequest 字段保留格式兼容，但不能授权导入；当前资产、严格检查、摘要、候选及事务门禁同时满足才准入。发布、CPU 准备、GUI 安装及首帧链路沿用原实现。
+
+内部与正式交付均要求完整集成检查零错误。KnownIntegrationReport、--known-report 及测试中的 --internal-package-report 作为退役参数显式报错；历史失败报告可供追溯，不能作为新候选的通过期望。预算阈值、官方来源锁及历史集成收据不改变。

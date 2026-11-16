@@ -111,7 +111,6 @@ private:
     wxPanel* m_assets_page {nullptr};
     AssetsWorkspace* m_assets_workspace {nullptr};
     wxPanel* build_model_workspace();
-    wxPanel* create_placeholder_page(const wxString& title, const wxString& body);
     void connect_model_generation_host();
     void apply_advanced_model_state(const ModelGenerationUIState& state);
     void on_advanced_model_job(const AdvancedCreation::ModelJobEvent& event);

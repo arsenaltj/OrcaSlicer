@@ -65,3 +65,10 @@
 已有 Git 路径混用 `Docs/` 与 `docs/`；新链接按目标的 Git 拼写定位。跨平台归一化应另立可验证改动，不顺手批量重命名。不要将用户照片、生成大文件、包或供应商配置复制进导航或 Skill。
 
 固定官方 Nightly 的来源／版本契约见 [ADR-003](architecture/ADR-003-upstream-lineage-ai-integration.md)。更新来源时同时维护 v5 集成锁、`verify_ai_integration.py`、`fetch_ai_provenance.py`、产物消费者及两条候选工作流；移动标签只留观察证据。原生新体类型进入 AI 消费者前检查实体筛选与快照身份，`PAINTED_MODIFIER` 的宿主、深度和涂绘不能遗漏。
+
+
+## 退役边界
+
+2026-11-16 清理后，当前页面入口只在 RedesignShell／FeatureHost／WorkbenchOpenRequest 注册；旧导航、旧输入布局、静态 model_gallery、测试空壳和无调用包装已删除。后续 UX 不接回这些旧路径，仍复用唯一工作台及共用3D页。
+
+Windows 人像识别仅使用 [原生运行时配置](../cmake/OrcaSemanticRuntime.cmake)及其精确清单；旧 FaRL/Torch 权重准备、推理子进程和 raster 安装不再支持。离线诊断实际引用的网格、边界和样例验证工具继续保留，不属于生产安装资源。当前包装规则见 [发布维护入口](../release/README.md)：内部包同样要求完整集成检查零错误，旧预算例外参数直接报错。

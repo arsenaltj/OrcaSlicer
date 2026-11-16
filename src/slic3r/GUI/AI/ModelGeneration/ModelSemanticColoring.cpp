@@ -3,7 +3,6 @@
 #include "PortraitContourProposal.hpp"
 #include "ModelColorPreviewShader.hpp"
 #include "ModelPreviewNormals.hpp"
-#include "LocalSemanticWorkerClient.hpp"
 #include "PortraitColorPlanBuild.hpp"
 #include "PortraitParentCleanup.hpp"
 #include "PortraitParentCleanupLive.hpp"
@@ -139,38 +138,7 @@ bool portrait_recognition_enabled()
 
 std::string portrait_shape_runtime_fingerprint()
 {
-#if defined(ORCA_ENABLE_LEGACY_FARL_RUNTIME)
-    LocalSemanticWorker::Configuration config;
-    std::string reason;
-    const auto modules = LocalSemanticWorker::runtime_modules_directory(boost::filesystem::path(Slic3r::resources_dir()));
-    if (!LocalSemanticWorker::read_runtime_configuration(boost::filesystem::path(Slic3r::data_dir()) / "local_semantic_runtime.json",
-            boost::filesystem::path(Slic3r::resources_dir()) / "beauty-runtime", config, reason) || !config.enabled) return {};
-    std::string identity = AI::model_artifact_sha256(config.python_executable);
-    const auto inventory=config.python_executable.parent_path().parent_path()/"runtime-manifest.json";
-    if(config.python_executable.parent_path().parent_path().filename()=="beauty-runtime") {
-        const auto hash=AI::model_artifact_sha256(inventory);if(hash.empty())return {};identity+=hash;
-    }
-    for (const char* name : {"glb_artifact.py", "local_semantic_worker.py", "local_semantic_geometry.py", "local_semantic_render.py",
-            "local_semantic_transform.py", "local_semantic_views.py", "local_semantic_projection.py", "local_semantic_pipeline.py",
-            "local_semantic_request.py", "local_eye_landmarks.py", "local_face_landmarks.py", "local_shape_constraints.py", "local_brow_boundary.py", "local_body_regions.py",
-            "local_contour_proposals.py","local_surface_contours.py","local_leaf_boundaries.py","beauty_leaf_domain.py",
-            "local_hair_expansion_guard.py", "local_region_mask_consensus.py", "local_region_mask_projection.py",
-            "local_surface_region_consensus.py", "local_surface_region_holes.py"}) {
-        const auto hash = AI::model_artifact_sha256(modules / name);
-        if (hash.empty()) return {};
-        identity += std::string(name) + hash;
-    }
-    for (const char* name : {"mobilenet0.25_Final.pth", "face_parsing.farl.celebm.main_ema_181500_jit.pt", "face_landmarker.task"}) {
-        const auto hash = AI::model_artifact_sha256(config.weights_directory / name);
-        if (hash.empty()) return {};
-        identity += std::string(name) + hash;
-    }
-    const auto raster = modules / "local_semantic_raster.dll";
-    if (boost::filesystem::exists(raster)) identity += AI::model_artifact_sha256(raster);
-    return PortraitShapeCache::digest(identity);
-#else
     return {};
-#endif
 }
 
 PortraitRecognitionCapability inspect_portrait_recognition_runtime(const std::filesystem::path& runtime)
@@ -453,10 +421,6 @@ struct ModelSemanticColoring::Impl {
             result->analysis_only = task->request.analysis_only;
             const auto portrait = task->request.portrait_progress;
             std::string contour_evidence;
-#if defined(ORCA_ENABLE_LEGACY_FARL_RUNTIME)
-            if (task->request.shapes)
-                contour_evidence = " 连续边界：恢复已保存的同源细节；父级证据独立校验。";
-#endif
             const auto report = [portrait](const PortraitProgress& progress) { if (portrait) portrait->report(progress); };
             report({PortraitStage::Preparing, "校验模型、原始贴图与运行时", 0, 0});
             const SC::Cancel cancel = [task] { return task->canceled.load(); };
@@ -591,14 +555,10 @@ struct ModelSemanticColoring::Impl {
                                 << " nonmanifold=" << diagnostic.nonmanifold_edges
                                 << " historical_locked=" << diagnostic.historical_locked_edges;
                             result->color_blocks->appearance(result->automatic,result->automatic_subfaces);
-#if defined(ORCA_ENABLE_LEGACY_FARL_RUNTIME)
-                            result->shape_details=task->request.shapes;
-#else
                             // Saved contours remain readable on their historical
                             // appearance. Fresh native V2 work starts only from
                             // current model colors, manual edits and native labels.
                             result->shape_details.reset();
-#endif
                             std::map<std::string, SC::Color> cell_colors = task->request.manual_cells;
                             if (strategy == PortraitColorBlocks::Strategy::ColorRegionMajorityV2 &&
                                 result->shape_details && result->shape_details->surface_partition &&
@@ -768,181 +728,6 @@ struct ModelSemanticColoring::Impl {
                         result->native_automatic_subfaces = result->automatic_subfaces;
                         const auto fingerprint = portrait_shape_runtime_fingerprint();
                         PortraitParentCleanup::Result parent_cleanup;
-#if defined(ORCA_ENABLE_LEGACY_FARL_RUNTIME)
-                        const auto previous_shapes = task->request.shapes && task->request.shapes->compatible(
-                            source.geometry_id, source.mesh.indices.size()) ? task->request.shapes : nullptr;
-                        result->shape_details = task->request.shapes;
-                        if (result->shape_details && (!result->shape_details->compatible(source.geometry_id, source.mesh.indices.size()) ||
-                                (!result->shape_details->surface_partition && (fingerprint.empty() ||
-                                 result->shape_details->runtime_fingerprint != fingerprint)))) result->shape_details.reset();
-                        const auto semantic_modules = LocalSemanticWorker::runtime_modules_directory(
-                            boost::filesystem::path(Slic3r::resources_dir()));
-                        const auto cleanup_roots = std::array<boost::filesystem::path,2>{semantic_modules,
-                            boost::filesystem::path(Slic3r::resources_dir()) / "beauty-runtime" / "modules"};
-                        const auto source_hash = previous_shapes ? previous_shapes->locks.source_sha256 :
-                            task->request.source_path.empty() ? std::string() :
-                            AI::model_artifact_sha256(boost::filesystem::path(task->request.source_path.native()));
-                        for (const auto& root : cleanup_roots) {
-                            if (cancel()) break;
-                            const auto* current = result->shape_details.get();
-                            // A shipped historical table is not evidence for a new request.
-                            // Reuse it only alongside current source-bound evidence with
-                            // the identical evidence/runtime/policy identity.
-                            if (!current || !current->current_parent_evidence(fingerprint)) {
-                                result->parent_repair_status = "reviewed_candidate_requires_current_evidence";
-                                continue;
-                            }
-                            const auto bundle = PortraitParentCleanup::load_bundle(root, source_hash,
-                                source.geometry_id, source.mesh.indices.size());
-                            if (!bundle.partition) { result->parent_repair_status = bundle.reason; continue; }
-                            const auto& parent_identity=current->parent_evidence_identity;
-                            const auto evidence_hash=parent_identity.empty() ? nlohmann::json(current->locks.evidence_sha256) : parent_identity.at("evidence_sha256");
-                            const auto runtime_hash=parent_identity.empty() ? nlohmann::json(current->locks.runtime_sha256) : parent_identity.at("runtime_sha256");
-                            const auto policy_hash=parent_identity.empty() ? nlohmann::json(current->locks.policy_sha256) : parent_identity.at("policy_sha256");
-                            if(bundle.partition->at("evidence_sha256")!=evidence_hash || bundle.partition->at("runtime_sha256")!=runtime_hash ||
-                               bundle.partition->at("policy_sha256")!=policy_hash) {
-                                result->parent_repair_status = "reviewed_candidate_evidence_identity_changed";
-                                continue;
-                            }
-                            if (!PortraitParentCleanup::can_adopt(bundle,
-                                    current ? current->surface_partition.get() : nullptr,
-                                    current ? current->contour_locks.get() : nullptr, task->request.allow_boundary_upgrade)) {
-                                result->parent_repair_status = "edited_or_frozen_boundary_preserved";
-                                continue;
-                            }
-                            const auto colors = PortraitParentCleanup::colors(bundle, task->request.palette_roles, task->request.targets);
-                            if (!colors.applied) { result->parent_repair_status = colors.reason; continue; }
-                            PortraitShapeCache::preserve_source(boost::filesystem::path(Slic3r::data_dir()) / "cache",
-                                previous_shapes ? PortraitShapeCache::verified_source(boost::filesystem::path(Slic3r::data_dir()) / "cache", source_hash) :
-                                    boost::filesystem::path(task->request.source_path.native()), source_hash);
-                            auto details = current ? std::make_shared<PortraitShapeDetails>(*current) : std::make_shared<PortraitShapeDetails>();
-                            details->locks = {};
-                            details->locks.geometry_id = source.geometry_id;
-                            details->locks.source_sha256 = source_hash;
-                            details->locks.face_count = source.mesh.indices.size();
-                            details->locks.evidence_sha256 = bundle.partition->at("evidence_sha256");
-                            details->locks.runtime_sha256 = bundle.partition->at("runtime_sha256");
-                            details->locks.policy_sha256 = bundle.partition->at("policy_sha256");
-                            details->surface_ownership.reset();
-                            details->color_inheritance.reset();
-                            details->surface_partition = bundle.partition;
-                            details->contour_locks = bundle.locks;
-                            details->cell_colors = current ? PortraitParentCleanup::inherited_cell_colors(bundle, current->cell_colors) :
-                                std::map<std::string, SC::Color>{};
-                            details->base_colors = previous_shapes ? previous_shapes->base_colors :
-                                source.face_colors.size() == source.mesh.indices.size() ? source.face_colors :
-                                    AI::beauty_source_face_colors(source.mesh, source.vertex_colors);
-                            details->runtime_fingerprint = fingerprint;
-                            std::set<std::string> subjects;
-                            for (const auto& lock : bundle.locks->document.at("locks")) subjects.insert(lock.at("subject_id").get<std::string>());
-                            details->subjects.assign(subjects.begin(), subjects.end());
-                            details->confirmed_parent_roots = colors.root_labels;
-                            details->confirmed_parent_cell_labels = colors.cell_labels;
-                            if (!details->compatible(source.geometry_id, source.mesh.indices.size()))
-                                throw std::runtime_error("Reviewed parent partition source mapping changed.");
-                            result->shape_details = std::move(details);
-                            result->verified_original_source = true;
-                            parent_cleanup = colors;
-                            break;
-                        }
-                        const bool refresh_parent = result->shape_details && result->shape_details->surface_partition &&
-                            !result->shape_details->current_parent_evidence(fingerprint) && !parent_cleanup.applied;
-                        const auto retained_shapes = result->shape_details;
-                        if ((!result->shape_details || refresh_parent) && !task->request.source_path.empty() && !cancel()) {
-                          try {
-                            LocalSemanticWorker::Configuration config;
-                            std::string reason;
-                            const auto data = boost::filesystem::path(Slic3r::data_dir());
-                            const auto modules = LocalSemanticWorker::runtime_modules_directory(
-                                boost::filesystem::path(Slic3r::resources_dir()));
-                            if (LocalSemanticWorker::read_runtime_configuration(data / "local_semantic_runtime.json",
-                                    boost::filesystem::path(Slic3r::resources_dir()) / "beauty-runtime", config, reason) && config.enabled) {
-                                const auto requests = data / "beauty_semantic_requests";
-                                boost::filesystem::create_directories(requests);
-                                const auto owned = requests / boost::filesystem::unique_path("portrait-%%%%-%%%%-%%%%");
-                                const auto cache = data / "cache";
-                                const auto original = previous_shapes
-                                    ? PortraitShapeCache::verified_source(cache, previous_shapes->locks.source_sha256)
-                                    : PortraitShapeCache::preserve_source(cache, boost::filesystem::path(task->request.source_path.native()),
-                                        AI::model_artifact_sha256(boost::filesystem::path(task->request.source_path.native())));
-                                if (portrait) portrait->history(result->cache_hit ? "native-cached-" : "native-cold-",{});
-                                const auto local = LocalSemanticWorker::analyze(config, modules, owned,
-                                    original, source.mesh, task->canceled, data / "beauty_semantic_cache", portrait);
-                                std::string cleanup;
-                                LocalSemanticWorker::cleanup_request(owned, requests, cleanup);
-                                if (local.process.status == LocalSemanticWorker::Status::Ready && !cancel()) {
-                                    contour_evidence = local.cache_hit
-                                        ? " 连续裁切与父级：复用当前源、几何、运行时和策略匹配的本地证据缓存。"
-                                        : " 连续裁切与父级：本次从当前资产重新识别并校验证据。";
-                                    auto details = refresh_parent ? std::make_shared<PortraitShapeDetails>(*retained_shapes) :
-                                        std::make_shared<PortraitShapeDetails>();
-                                    if (!refresh_parent) {
-                                    details->locks = AI::ShapeLockSet::from_evidence(local.evidence, local.evidence_sha256);
-                                    details->subjects = local.evidence.subjects;
-                                    details->runtime_fingerprint = fingerprint;
-                                    details->base_colors = previous_shapes ? previous_shapes->base_colors :
-                                        source.face_colors.size() == source.mesh.indices.size() ? source.face_colors :
-                                            AI::beauty_source_face_colors(source.mesh, source.vertex_colors);
-                                    std::set<size_t> reserved;
-                                    for (const auto& region : local.evidence.regions) if (AI::ShapeLockSet::supported_label(region.label))
-                                        reserved.insert(region.faces.begin(), region.faces.end());
-                                    for (const auto& shape : local.evidence.shape_details) {
-                                        reserved.insert(shape.accepted_faces.begin(), shape.accepted_faces.end());
-                                        reserved.insert(shape.rejected_faces.begin(), shape.rejected_faces.end());
-                                    }
-                                    details->reserved_faces.assign(reserved.begin(), reserved.end());
-                                    if(!local.contour_request.is_null()) {
-                                      try {
-                                        auto partition=build_verified_contour_partition(local.contour_request,local.evidence,source.mesh,local.evidence_sha256);
-                                        const auto hash=PortraitShapeCache::digest(partition.dump());
-                                        details->contour_locks=std::make_shared<AI::BeautySurfaceShapeLock>(
-                                            AI::BeautySurfaceShapeLock::from_partition(partition,local.evidence.shape_details,hash));
-                                        details->surface_partition=std::make_shared<nlohmann::json>(std::move(partition));
-                                      } catch(const std::exception& error) {
-                                        details->locks.locks.clear();
-                                        result->shape_error=std::string("Contour proposal retained the previous appearance: ")+error.what();
-                                      }
-                                    }
-                                    }
-                                    details->bind_parent_evidence(local.evidence,local.evidence_sha256,fingerprint);
-                                    if(local.contour_request.contains("parent_proposal")) {
-                                        PortraitParentCoverage::validate(local.contour_request.at("parent_proposal"),*details);
-                                        details->parent_proposal=std::make_shared<nlohmann::json>(local.contour_request.at("parent_proposal"));
-                                    }
-                                    if (!details->compatible(source.geometry_id, source.mesh.indices.size())) throw std::runtime_error("Local shape source mapping changed.");
-                                    result->shape_details = std::move(details);
-                                } else result->shape_error = local.process.diagnostic.empty() ? local.process.reason :
-                                    local.process.diagnostic + " [" + local.process.reason + "]";
-                            } else result->shape_error = reason.empty() ? "local_semantic_runtime_disabled" : reason;
-                          } catch (const std::exception& error) {
-                              result->shape_details=refresh_parent ? retained_shapes : nullptr;
-                              result->shape_error = error.what();
-                          }
-                        }
-                        if (portrait && !result->shape_error.empty() &&
-                            (!result->shape_details || !result->shape_details->current_parent_evidence(fingerprint))) {
-                            // The lightweight native recognizer deliberately
-                            // does not ship the legacy Python/weights worker
-                            // that produces contour-parent evidence. Native
-                            // face/body recognition is still sufficient for
-                            // the safe whole-face and subface preview, so do
-                            // not turn the expected missing legacy worker into
-                            // a failed optimization. Any other evidence error
-                            // remains fatal and preserves the pre-optimization
-                            // appearance as before.
-                            const bool lightweight_native = !result->region_runtime_identity.empty();
-                            const bool legacy_runtime_missing =
-                                result->shape_error == "bundled_semantic_runtime_unavailable" ||
-                                result->shape_error == "portrait_recognition_disabled";
-                            if (lightweight_native && legacy_runtime_missing) {
-                                result->shape_details.reset();
-                                result->shape_error.clear();
-                                contour_evidence.clear();
-                            } else {
-                                throw std::runtime_error("Local portrait evidence failed: " + result->shape_error);
-                            }
-                        }
-#endif
                         report({PortraitStage::Coloring, "校验连续裁切，合成手工颜色、受保护细节和父级配色", 0, 0});
                         SC::FaceColors locked_colors;
                         const bool contour_plan=result->shape_details && result->shape_details->surface_partition;

@@ -39,7 +39,7 @@
 | 高级输入、四图版本、套图、模型计划／任务与命令资格 | AdvancedCreationSession／FeatureHost及原侧车Application | 提交、停止、恢复仍走高级入口；工作台不能改变四图计划或用旧单图接口重建Job-v2。 |
 | 高级3D任务观察与本地产物获取 | 拟AdvancedModelTaskMonitor，由AdvancedCreationFeatureHost持有 | 只观察明确Job、投影状态并调用共享下载／校验；不持有BeautySession、原生工程或编辑控件，不新增生成业务真值。 |
 | 等待页当前来源、页面切换、返回锚点 | RedesignShell现有路由上下文扩展 | 保存来源及任务／工作区身份、路由代次；消费两模式快照。不能在Shell再编排供应商生成或持久化第二份草稿。 |
-| 当前3D资产身份、路径／哈希、格式／颜色及工作台元数据 | WorkbenchAssets面板及原Beauty Session，归唯一应用级宿主 | WorkbenchModelContext仅保留纯值契约，不设第二可写状态；PostGenerationWorkbenchState只是投影，不能与生成字段各维护一份编辑真值。 |
+| 当前3D资产身份、路径／哈希、格式／颜色及工作台元数据 | WorkbenchAssets面板及原Beauty Session，归唯一应用级宿主 | WorkbenchOpenRequest仅保留纯值契约，不设第二可写状态；PostGenerationWorkbenchState只是投影，不能与生成字段各维护一份编辑真值。 |
 | 未保存编辑、候选、保存事务和工作台撤销 | 既有BeautyWorkbenchSession及TransactionController | 保留原事务／文件恢复及revision；与当前模型身份组合校验，不另建高级编辑Session。 |
 | 项目、耗材配置、原生撤销、切片和G-code | Plater及既有Orca Adapter | 保持原生工程真值；生成、导航和UI不静默更改工程。 |
 
@@ -116,7 +116,7 @@ WB-B使用GUI内的返回锚点：来源模式、组／创作工作区身份及�
 | AI/ModelGeneration/ModelGenerationFeatureHost.{hpp,cpp}、GUI/ModelGenerationPanel.{hpp,cpp} | 增加产物打开入口，隔离生成和编辑上下文／代次；只保留一个编辑实例。 |
 | ModelGenerationArtifactFlow.cpp及拟ModelArtifactAcquisition.{hpp,cpp} | 提取已有下载、校验和发布能力供两来源使用；保留格式、路径、元数据及本地恢复语义。 |
 | ModelGenerationHistoryOpen.cpp、ModelGenerationLibraryView.cpp、ModelGenerationWorkbenchHistory.cpp、ModelGenerationSubmission.cpp | 普通3D打开与生成恢复拆开；历史打开不污染草稿，不误恢复latest／误重建Job-v2。 |
-| WorkbenchModelContext.hpp／WorkbenchOpenRequest.hpp及PostGenerationWorkbenchHost.cpp、ModelGenerationBeauty*的相关消费者 | WorkbenchModelContext保留为纯值契约，不持有第二份编辑状态；当前编辑身份／元数据由唯一资产面板及原Session持有，打开令牌沿现有事务和Ports传递，不重写美颜／修复算法。 |
+| WorkbenchOpenRequest.hpp及PostGenerationWorkbenchHost.cpp、ModelGenerationBeauty*的相关消费者 | WorkbenchOpenRequest保留为纯值契约，不持有第二份编辑状态；当前编辑身份／元数据由唯一资产面板及原Session持有，打开令牌沿现有事务和Ports传递，不重写美颜／修复算法。 |
 | ModelWorkspaceSources.cmake、对应CMake清单与tests/slic3rutils | 注册实际新增接缝及定向测试，删除确无消费者的专用依赖；不复制构建缓存。 |
 | 本需求／设计／架构／验收文档、平台架构说明、原子能力说明及review-map | 同步真实状态所有者、共享工作台入口、历史／返回行为和失效锚点；方案阶段只标明目标，实际映射随代码维护。 |
 
@@ -180,7 +180,7 @@ python scripts/check_documentation_sync.py --base HEAD --worktree
 | --- | --- |
 | 删除高级model_host连带丢失进度／目录／本地加载 | WBD-2先迁移有效职责，WAIT／JOB／REG验证，再执行WBD-6删除。 |
 | 工作台打开覆盖智能草稿、任务或进度 | 明确产物入口、来源内revision及生成／编辑代次隔离，HAND-03／04、RET、JOB竞态覆盖。 |
-| 高级编辑保存或导入借用智能格式／色板／身份 | 唯一WorkbenchAssets面板及原编辑Session为编辑元数据源，WorkbenchModelContext仅传递值；HAND-01／08、EDIT及PIPE断言绑定文件／哈希。 |
+| 高级编辑保存或导入借用智能格式／色板／身份 | 唯一WorkbenchAssets面板及原编辑Session为编辑元数据源，WorkbenchOpenRequest仅传递值；HAND-01／08、EDIT及PIPE断言绑定文件／哈希。 |
 | 取消／首帧失败丢失原模型或候选 | 复用ModelHistoryOpen的准备、drain、提交／回滚及保留页门槛，HAND-06／07、RET-05及PIPE故障覆盖。 |
 | 移除advanced_only后Job-v2误走旧重试 | 按实际任务来源／协议守卫，JOB-02／03及REG-05／06；不新增后端协议或降级输入。 |
 | 导入已提交但视图失败重复添加模型 | 沿用原提交结果及视图恢复，PIPE-07检查工程对象数与提交次数。 |

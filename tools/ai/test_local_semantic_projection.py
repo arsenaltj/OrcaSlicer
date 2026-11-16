@@ -35,13 +35,6 @@ def shared_rasters(items):
 
 
 class ProjectionTests(unittest.TestCase):
-    def test_schema_matches_worker_without_loading_models(self):
-        import local_semantic_worker as worker
-        self.assertEqual(tuple(worker.LABEL_NAMES), p.LABEL_NAMES)
-        # Clothing is accepted only from the optional body supplement; enabling
-        # it in FaRL projection would change the established face baseline.
-        self.assertEqual(tuple(worker.SUPPORTED_LABELS), p.SUPPORTED_LABELS + ('cloth',))
-
     def test_empty_no_face_and_low_detection_are_unknown(self):
         for items in ([], [observation("a", [-1], labels=0)], [observation("a", [0], detection=.89)]):
             result = p.project(items, 8)

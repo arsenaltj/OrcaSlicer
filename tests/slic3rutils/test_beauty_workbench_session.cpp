@@ -315,3 +315,21 @@ TEST_CASE("A failed asynchronous rollback retains its source and releases the bu
     CHECK(session.transactions().undo_count() == 0);
     CHECK(workbench.removed == std::vector<Path>{"pending.glb"});
 }
+
+TEST_CASE("Returning to the same asset cannot revive a discarded publication", "[BeautyWorkbenchSession][BeautyPersistence]")
+{
+    Workbench workbench;
+    auto& session = workbench.session;
+    auto first = workbench.snapshot(1, "first.glb");
+    session.start_draft(first);
+    const auto stale = session.revision();
+    session.clear_draft();
+    session.start_draft(workbench.snapshot(2, "second.glb"));
+    session.start_draft(first);
+    CHECK_FALSE(session.complete_accept(stale, "late.glb", {}, workbench.accepted(1, 9)));
+    CHECK(session.source() == first);
+    CHECK(session.transactions().undo_count() == 0);
+    REQUIRE(session.complete_accept(session.revision(), "current.glb", {}, workbench.accepted(1, 3)));
+    CHECK_FALSE(session.complete_accept(stale, "late.glb", {}));
+    CHECK(session.transactions().undo_count() == 1);
+}

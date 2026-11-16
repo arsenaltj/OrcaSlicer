@@ -234,18 +234,6 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
     m_regenerate_evidence = workbench_button(this, _L("生成六视角渲染包"));
     m_regenerate_evidence->SetToolTip(_L("为当前模型生成新的六视角只读渲染证据包；不会修改模型、颜色或材料树。"));
     secondary_row->Add(m_regenerate_evidence, 0, wxEXPAND | wxTOP, FromDIP(4));
-    m_residual_proposal = workbench_button(this, _L("AI 杂色治理（本地）"));
-    m_residual_proposal->SetToolTip(_L("用户主动启动离线残色提议；不调用 Provider，不修改材料树，先显示提议再决定是否应用。"));
-    secondary_row->Add(m_residual_proposal, 0, wxEXPAND | wxTOP, FromDIP(4));
-    m_residual_apply=workbench_button(this,_L("应用杂色提议"));
-    m_residual_cancel=workbench_button(this,_L("取消杂色预览"));
-    secondary_row->Add(m_residual_apply,0,wxEXPAND|wxTOP,FromDIP(4));
-    secondary_row->Add(m_residual_cancel,0,wxEXPAND|wxTOP,FromDIP(4));
-    m_residual_apply->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {if(on_residual_apply)on_residual_apply();});
-    m_residual_cancel->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {if(on_residual_cancel)on_residual_cancel();});
-    m_residual_proposal->Hide();
-    m_residual_apply->Hide();
-    m_residual_cancel->Hide();
     root->Add(secondary_row, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
     auto* partition_row = new wxBoxSizer(wxHORIZONTAL);
     m_auto_partition = workbench_button(this, _L("重新自动划区"));
@@ -373,9 +361,6 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
     });
     m_regenerate_evidence->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (on_regenerate_readonly_evidence) on_regenerate_readonly_evidence();
-    });
-    m_residual_proposal->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        if (on_residual_proposal) on_residual_proposal();
     });
     m_pick_partition->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (!m_partition || m_partition_task) return;
@@ -805,11 +790,6 @@ void BeautyWorkbenchControls::update_text()
     m_auto_match->Enable(active && semantic);
     m_import_secondary->Enable(active && !m_source.empty());
     m_regenerate_evidence->Enable(active && !m_source.empty());
-    // Residual AI review remains paused; parent cleanup uses portrait optimization.
-    m_residual_proposal->Hide();
-    m_residual_proposal->Disable();
-    m_residual_apply->Hide();m_residual_apply->Disable();
-    m_residual_cancel->Hide();m_residual_cancel->Disable();
     const bool secondary_ready = m_preview && m_preview->secondary_regions_ready() && m_auto_detail->GetCount() > 1;
     m_preview_protected_row->Hide();
     m_preview_protected->Enable(active && secondary_ready && m_portrait_enabled);

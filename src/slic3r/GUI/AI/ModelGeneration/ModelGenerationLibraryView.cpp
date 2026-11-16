@@ -38,12 +38,6 @@
 namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
 
-std::vector<ModelGenerationPanel::GeneratedModelEntry> ModelGenerationPanel::read_library_entries(
-    const boost::filesystem::path& root, const std::atomic<bool>& cancelled)
-{
-    return ModelLibraryRepository::read(root, cancelled);
-}
-
 namespace {
 
 // Keep thumbnail painting in one fixed, clipped surface, independently of the
