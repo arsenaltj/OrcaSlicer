@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "L2 · 模型生成主路径",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [
+      980,
+      630
+    ]
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "业务阶段（归并状态，不是实时进度）"
+    },
+    {
+      "id": "waiting",
+      "label": "等待与异常（支线状态清单）"
+    },
+    {
+      "id": "terminal",
+      "label": "停止结果（不保证远端任务已取消）"
+    }
+  ],
+  "states": [
+    {
+      "id": "prepare",
+      "type": "start",
+      "label": "设计准备",
+      "sublabel": "预处理或颜色建议",
+      "lane": "main",
+      "col": 0,
+      "step": "1"
+    },
+    {
+      "id": "confirm",
+      "type": "waiting",
+      "label": "等待确认",
+      "sublabel": "awaiting_confirmation",
+      "lane": "main",
+      "col": 1,
+      "step": "2"
+    },
+    {
+      "id": "generate",
+      "type": "active",
+      "label": "排队与生成",
+      "sublabel": "queued / running",
+      "lane": "main",
+      "col": 2,
+      "step": "3"
+    },
+    {
+      "id": "ready",
+      "type": "active",
+      "label": "结果可用",
+      "sublabel": "ready ＋产物检查",
+      "lane": "main",
+      "col": 3,
+      "step": "4"
+    },
+    {
+      "id": "import",
+      "type": "success",
+      "label": "用户导入",
+      "sublabel": "准备页继续编辑",
+      "lane": "main",
+      "col": 4,
+      "step": "5"
+    },
+    {
+      "id": "state-awaiting_palette_confirmation",
+      "type": "waiting",
+      "label": "配色待确认",
+      "sublabel": "awaiting_palette_confirmation",
+      "lane": "waiting",
+      "col": 0
+    },
+    {
+      "id": "state-failed",
+      "type": "neutral",
+      "label": "失败待处理",
+      "sublabel": "failed",
+      "lane": "waiting",
+      "col": 1
+    },
+    {
+      "id": "state-stopping",
+      "type": "active",
+      "label": "停止处理中",
+      "sublabel": "stopping",
+      "lane": "waiting",
+      "col": 2
+    },
+    {
+      "id": "state-stopped",
+      "type": "neutral",
+      "label": "本地已停止",
+      "sublabel": "stopped",
+      "lane": "terminal",
+      "col": 0
+    }
+  ],
+  "transitions": [],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "关键条件",
+      "items": [
+        "确认后提交付费任务",
+        "停止不保证远端取消"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "异常及等待",
+      "items": [
+        "10 个源码状态见分层入口的状态表",
+        "未连线的支线状态是清单，触发与恢复条件见分层入口"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "源码依据",
+      "items": [
+        "阶段顺序为维护的业务说明，不是自动推导的完整状态机",
+        "未执行真实生成或切片；验收状态未知"
+      ]
+    }
+  ]
+}
