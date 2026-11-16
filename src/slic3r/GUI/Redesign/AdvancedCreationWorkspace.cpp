@@ -21,6 +21,7 @@
 #include <wx/dnd.h>
 #include <wx/filedlg.h>
 #include <wx/filename.h>
+#include <wx/menu.h>
 #include <wx/popupwin.h>
 #include <wx/scrolwin.h>
 #include <wx/settings.h>
@@ -28,7 +29,9 @@
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
 #include <wx/timer.h>
+#include <wx/utils.h>
 #include <wx/wupdlock.h>
+#include <boost/filesystem.hpp>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -926,9 +929,10 @@ class HistorySetCard final : public wxPanel {
 public:
     HistorySetCard(wxWindow* parent, HistorySetPreview preview, bool selected,
                    std::function<void(const std::string&)> open,
-                   std::function<void(const std::string&, std::uint64_t, std::string)> rename)
+                   std::function<void(const std::string&, std::uint64_t, std::string)> rename,
+                   std::function<void(const std::string&, wxPoint)> context_menu)
         : wxPanel(parent), m_preview(std::move(preview)), m_open_timer(this), m_selected(selected),
-          m_open(std::move(open)), m_rename(std::move(rename))
+          m_open(std::move(open)), m_rename(std::move(rename)), m_context_menu(std::move(context_menu))
     {
         SetName(t("advanced-history-group-") + t(m_preview.id.c_str()));
         SetMinSize(FromDIP(wxSize(132, 164)));
@@ -968,6 +972,16 @@ public:
         Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
             if (IsEnabled() && !m_editing && m_open) m_open(m_preview.id);
         }, m_open_timer.GetId());
+        Bind(wxEVT_CONTEXT_MENU, [this](wxContextMenuEvent& event) {
+            if (!IsEnabled() || m_editing || !m_context_menu) { event.Skip(); return; }
+            m_open_timer.Stop();
+            const auto id = m_preview.id;
+            const auto position = event.GetPosition() == wxDefaultPosition
+                ? ClientToScreen(wxPoint(GetClientSize().x / 2, GetClientSize().y / 2)) : event.GetPosition();
+            // A refresh during the native menu may destroy this card.
+            const auto context_menu = m_context_menu;
+            context_menu(id, position);
+        });
         Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
             if (IsEnabled() && (event.GetKeyCode() == WXK_RETURN || event.GetKeyCode() == WXK_SPACE)) {
                 if (m_open) m_open(m_preview.id);
@@ -1106,6 +1120,7 @@ private:
     bool m_editing {false};
     std::function<void(const std::string&)> m_open;
     std::function<void(const std::string&, std::uint64_t, std::string)> m_rename;
+    std::function<void(const std::string&, wxPoint)> m_context_menu;
 };
 }
 
@@ -2067,6 +2082,42 @@ struct AdvancedCreationWorkspace::Impl {
         for (const auto& view : group->views) append(view.version_id);
         return signature;
     }
+    void open_history_folder(const std::string& id) {
+        if (closing || !presented || !page.IsShownOnScreen() ||
+            !AdvancedMultiviewClient::valid_id(id) || !navigation_allowed()) return;
+        const auto directory = ModelGenerationPresentation::generated_models_root() / "advanced-multiview" / id / "designs";
+        boost::system::error_code error;
+        const auto status = boost::filesystem::status(directory, error);
+        wxString message;
+        // Boost on Windows may retain ENOENT for a file_not_found status.
+        if (status.type() == boost::filesystem::file_not_found &&
+            (!error || error == boost::system::errc::no_such_file_or_directory)) {
+            message = t("未找到该套图的本地设计图文件夹。");
+        } else {
+            if (!error && boost::filesystem::is_directory(status)) {
+                // Check access without scanning versions or changing any files.
+                (void)boost::filesystem::directory_iterator(directory, error);
+                if (!error && wxLaunchDefaultApplication(wxString(directory.wstring()))) return;
+            }
+            message = t("无法打开设计图文件夹，请检查目录是否可访问。");
+        }
+        RedesignMessageDialog dialog(wxGetTopLevelParent(&page), message, t("在文件夹中打开"), wxOK | wxICON_WARNING);
+        dialog.ShowModal();
+    }
+    void show_history_context_menu(const std::string& id, wxPoint screen_position) {
+        if (closing || !presented || !page.IsShownOnScreen() ||
+            !AdvancedMultiviewClient::valid_id(id) || !navigation_allowed()) return;
+        wxWindow* const menu_host = wxGetTopLevelParent(&page);
+        if (!menu_host) return;
+        wxMenu menu;
+        menu.Append(wxID_OPEN, t("在文件夹中打开"));
+        const auto alive = std::weak_ptr<int>(lifetime);
+        menu.Bind(wxEVT_MENU, [this, alive, id](wxCommandEvent&) {
+            if (!alive.expired()) open_history_folder(id);
+        }, wxID_OPEN);
+        // The top-level window survives card replacement while PopupMenu pumps events.
+        menu_host->PopupMenu(&menu, menu_host->ScreenToClient(screen_position));
+    }
     void rebuild_history() { history_dirty=true; render(); }
     void apply_history() {
         history_dirty=false; history_layout_changed=true; layout_changed=true;
@@ -2135,7 +2186,8 @@ struct AdvancedCreationWorkspace::Impl {
                     if (host.session().group() && host.session().group()->id == id)
                         revision = host.session().group()->revision;
                     host.rename_group(id, revision, std::move(name));
-                });
+                },
+                [this](const std::string& id, wxPoint position) { show_history_context_menu(id, position); });
             card->Enable(navigation_allowed());
             history_rows->Add(card, 1, wxEXPAND);
         }

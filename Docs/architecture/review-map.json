@@ -736,7 +736,7 @@
       "id": "advanced_creation_workspace",
       "path": "src/slic3r/GUI/Redesign/AdvancedCreationWorkspace.cpp",
       "needle": "struct AdvancedCreationWorkspace::Impl {",
-      "detail": "高级四图控件通过统一刷新应用快照；后台解码缩放，资源／像素尺寸／DPI相同复用位图，重生成期间保留旧图。页内3D进度与预览沿原高级Session，Shell独占唯一工作台路由。"
+      "detail": "高级四图控件通过统一刷新应用快照；后台解码缩放，资源／像素尺寸／DPI相同复用位图，重生成期间保留旧图。页内3D进度与预览沿原高级Session，Shell独占唯一工作台路由。历史卡片右键按组ID打开本地designs目录，主窗口承载菜单，不切组或改写业务状态。"
     },
     {
       "id": "workbench_asset_handoff",
