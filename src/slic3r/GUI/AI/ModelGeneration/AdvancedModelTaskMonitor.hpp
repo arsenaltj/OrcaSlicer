@@ -15,7 +15,8 @@ class AdvancedModelTaskMonitor final : public wxEvtHandler {
 public:
     AdvancedModelTaskMonitor();
     ~AdvancedModelTaskMonitor() override;
-    void observe(const std::string& job, boost::filesystem::path reference, bool restart = false);
+    void observe(const std::string& job, boost::filesystem::path reference, bool restart = false,
+                 ModelGenerationVisualReference visual = {});
     void reset();
     void set_available(bool available);
     void set_listener(ModelGenerationUIStateListener listener);

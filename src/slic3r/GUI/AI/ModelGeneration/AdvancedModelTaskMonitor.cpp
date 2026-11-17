@@ -44,8 +44,9 @@ void AdvancedModelTaskMonitor::reset() { m_flow->reset(); }
 void AdvancedModelTaskMonitor::set_listener(ModelGenerationUIStateListener listener)
 { m_flow->set_listener(std::move(listener)); }
 void AdvancedModelTaskMonitor::set_available(bool available) { m_flow->set_available(available); }
-void AdvancedModelTaskMonitor::observe(const std::string& job, boost::filesystem::path reference, bool restart)
-{ m_flow->observe(job, std::move(reference), restart); }
+void AdvancedModelTaskMonitor::observe(const std::string& job, boost::filesystem::path reference, bool restart,
+    ModelGenerationVisualReference visual)
+{ m_flow->observe(job, std::move(reference), restart, std::move(visual)); }
 void AdvancedModelTaskMonitor::retry_local() { m_flow->retry_local(); }
 
 void AdvancedModelTaskMonitor::prepare(AI::GeneratedModelArtifact artifact,

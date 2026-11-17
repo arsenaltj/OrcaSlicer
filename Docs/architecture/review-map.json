@@ -882,7 +882,31 @@
       "id": "inline_generation_view",
       "path": "src/slic3r/GUI/Redesign/InlineModelGenerationView.cpp",
       "needle": "InlineModelGenerationView::InlineModelGenerationView(",
-      "detail": "智能／高级分别挂载中央进度与只读模型预览；CPU解析及渲染几何由有界TaskRunner和TaskScope准备，协作取消并过滤旧回调，GUI不join，GUI线程安装GL模型，有效可见首帧后开放完成动作。隐藏／最小化暂停呈现等待，本地重载不提交远端生成。"
+      "detail": "智能／高级分别挂载中央进度与只读模型预览；当前flow／冻结正视图后台准备有界粒子，停止／隐藏暂停，任务更换先失效旧图。模型安装留一次粒子完成帧，原首帧保护层复用位图；有效模型首帧后开放完成动作。TaskScope拒绝旧结果，GUI不join，本地重载不提交生成。"
+    },
+    {
+      "id": "generation_particle_shape",
+      "path": "src/slic3r/GUI/Redesign/GenerationParticleModel.hpp",
+      "needle": "inline std::shared_ptr<const Shape> prepare(",
+      "detail": "只读共用遮罩采样：alpha／本地分割保留孔洞和分离部件，颜色回退保守拒绝；等比与点数上限，不是真实三维模型或业务状态。"
+    },
+    {
+      "id": "generation_particle_image",
+      "path": "src/slic3r/GUI/Redesign/GenerationParticleImage.hpp",
+      "needle": "inline std::shared_ptr<const Shape> load(",
+      "detail": "有界后台签名解码、JPEG方向和摘要核验；高级只接受原Job-v2冻结正视图。有效alpha优先，普通图使用本地通用前景模型，不按无摘要绑定的历史mask猜测同版；失败／取消回退。"
+    },
+    {
+      "id": "generation_foreground",
+      "path": "src/slic3r/GUI/Redesign/GenerationForeground.cpp",
+      "needle": "MaskResult infer_foreground(",
+      "detail": "仅展示CPU分割：固定U2NetP及ORT资源摘要、安装目录动态加载、单缓存会话／并发、两CPU线程与RunOptions取消／截止；人物、动物、建筑共用，不调用网络或修改业务状态。"
+    },
+    {
+      "id": "generation_particle_canvas",
+      "path": "src/slic3r/GUI/Redesign/GenerationParticleCanvas.cpp",
+      "needle": "struct GenerationParticleCanvas::Impl {",
+      "detail": "借用共享GL上下文，批量2.5D白粒子、状态隔离、CPU／静态降档与单次首帧留帧；不访问任务命令或供应商。"
     },
     {
       "id": "creation_artifact_handoff",

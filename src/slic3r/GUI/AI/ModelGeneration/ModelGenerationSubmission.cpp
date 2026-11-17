@@ -175,6 +175,7 @@ bool ModelGenerationPanel::request_generate_smart()
     const auto previous_pending_input = wxGetApp().app_config
         ? wxGetApp().app_config->get("smart_generation_pending_input") : std::string();
     m_smart_flow.begin(flow);
+    m_generation_visual_reference = {};
     if (wxGetApp().app_config) {
         wxGetApp().app_config->set("smart_generation_pending_flow", flow);
         wxGetApp().app_config->set("smart_generation_pending_input", fingerprint);
@@ -533,6 +534,7 @@ bool ModelGenerationPanel::request_retry_model()
         m_smart_flow.resume(false);
         const bool regenerate = !m_model_input_eligible || !m_palette_quality_ok;
         if (regenerate) {
+            m_generation_visual_reference = {};
             m_style_preview_ready = false; m_preview_path.clear(); m_raw_preview_path.clear();
             m_preview_output_available = false;
         }

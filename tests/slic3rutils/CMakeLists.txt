@@ -130,6 +130,7 @@ add_executable(${_TEST_NAME}_tests
     test_object_list.cpp
     test_ui_redesign.cpp
     test_inline_model_generation.cpp
+    test_generation_particles.cpp
     test_honor_account.cpp
     test_platform_library.cpp
     test_diagnostic_logs.cpp
@@ -202,6 +203,11 @@ if (ORCA_SEMANTIC_RUNTIME_DIR)
         ORCA_TEST_SEMANTIC_RUNTIME_DIR=R"\(${ORCA_SEMANTIC_RUNTIME_DIR}\)")
 endif()
 set_property(TARGET ${_TEST_NAME}_tests PROPERTY FOLDER "tests")
+get_property(_foreground_test_runtime GLOBAL PROPERTY ORCA_FOREGROUND_RUNTIME)
+if(_foreground_test_runtime)
+    set_property(SOURCE test_generation_particles.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+        "ORCA_TEST_GENERATION_FOREGROUND_RUNTIME=\"${_foreground_test_runtime}\"")
+endif()
 
 orcaslicer_copy_test_dlls(${_TEST_NAME}_tests)
 

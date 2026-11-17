@@ -158,8 +158,20 @@ void AdvancedCreationFeatureHost::observe_model_job(const std::string& job, bool
 {
     m_model_context = m_session.context();
     boost::filesystem::path reference;
+    ModelGenerationVisualReference visual;
+    if (AdvancedMultiviewClient::valid_id(job)) {
+        // The service freezes these inputs before accepting the job. Current
+        // group images may have changed since an older job was generated.
+        const auto directory = ModelGenerationPresentation::generated_models_root() / job;
+        const auto front = directory / "inputs" / "front.png";
+        visual = {job, "confirmed-front:" + job,
+            wxString(front.wstring()).ToUTF8().data(), {}, true};
+        visual.verification_manifest = wxString((directory / "job.json").wstring()).ToUTF8().data();
+    }
+    // Keep the existing artifact/library reference behavior independent of the
+    // display-only frozen input.
     if (m_session.group()) reference = m_session.group()->views[0].image_path;
-    m_model_monitor.observe(job, reference, restart);
+    m_model_monitor.observe(job, reference, restart, std::move(visual));
     if (open_route && m_model_state_listener) m_model_state_listener(m_model_monitor.snapshot(), true);
 }
 void AdvancedCreationFeatureHost::show_model()

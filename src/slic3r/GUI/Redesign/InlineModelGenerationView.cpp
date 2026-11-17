@@ -4,7 +4,10 @@
 #include "RedesignWidgets.hpp"
 #include "libslic3r/Utils.hpp"
 #include "SmartCreationControls.hpp"
-#include "ModelGenerationStarfieldRenderer.hpp"
+#include "ModelGenerationStarfield.hpp"
+#include "GenerationParticleCanvas.hpp"
+#include "GenerationParticleImage.hpp"
+#include "GenerationForeground.hpp"
 #include "../AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "../AI/ModelGeneration/ModelPreview3D.hpp"
 #include "../Presentation/UiRuntime.hpp"
@@ -12,8 +15,10 @@
 #include "../wxExtensions.hpp"
 #include "../Widgets/Label.hpp"
 #include <wx/dcbuffer.h>
+#include <wx/dcclient.h>
 #include <wx/frame.h>
 #include <wx/sizer.h>
+#include <wx/stdpaths.h>
 #include <wx/timer.h>
 #include <wx/toplevel.h>
 #include <wx/wupdlock.h>
@@ -30,35 +35,74 @@ double now_seconds() {
 
 class GenerationFeedback final : public RedesignPaintPanel {
 public:
-    explicit GenerationFeedback(wxWindow* parent) : RedesignPaintPanel(parent) {
+    explicit GenerationFeedback(wxWindow* parent, bool retained = false) : RedesignPaintPanel(parent) {
         SetBackgroundColour(background_colour()); SetBackgroundStyle(wxBG_STYLE_PAINT);
         paint_owns_background();
         SetWindowStyleFlag(GetWindowStyleFlag() | wxCLIP_CHILDREN);
+        if (!retained) particles = new GenerationParticleCanvas(this);
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) { paint(); });
+        Bind(wxEVT_SIZE, [this](wxSizeEvent& event) { layout_content(); event.Skip(); });
     }
     wxString title, detail;
     int progress {-1};
     bool animate {false};
     double elapsed {0};
+    GenerationParticleCanvas* particles {nullptr};
+    wxWindow* action {nullptr};
+    wxBitmap retained_particles;
+    GenerationParticles::Frame particle_frame;
+    void set_frame(GenerationParticles::Frame frame) {
+        particle_frame = std::move(frame);
+        if (particles) particles->present(particle_frame);
+    }
+    void layout_content() {
+        wxClientDC dc(this); const auto box = geometry(dc);
+        if (particles) {
+            if (particles->GetRect() != box.shape) particles->SetSize(box.shape);
+            const bool show = box.shape.height > 0;
+            if (particles->IsShown() != show) particles->Show(show);
+        }
+        if (action && action->IsShown()) {
+            const wxRect bounds((GetClientSize().x-FromDIP(190))/2, box.action_y, FromDIP(190), FromDIP(36));
+            if (action->GetRect() != bounds) action->SetSize(bounds);
+        }
+    }
 private:
+    struct Geometry { wxRect shape; int width, left, top, height, action_y; wxString heading, description; wxSize title, detail; };
+    Geometry geometry(wxDC& dc) {
+        const auto size = GetClientSize(); Geometry box;
+        box.width = std::max(1,std::min(FromDIP(380),size.x-FromDIP(32)));
+        dc.SetFont(smart_creation_font(16,wxFONTWEIGHT_MEDIUM));
+        box.title = Label::split_lines(dc,box.width,title,box.heading);
+        dc.SetFont(smart_creation_font(14));
+        box.detail = Label::split_lines(dc,box.width,detail,box.description);
+        box.height = box.title.y+FromDIP(8)+box.detail.y+FromDIP(16)+(animate?FromDIP(24):0);
+        const int action_height = action && action->IsShown() ? FromDIP(52) : 0;
+        const int shape_height = std::max(0,std::min(FromDIP(420),size.y-box.height-action_height-FromDIP(56)));
+        const int shape_width = std::max(1,std::min(FromDIP(460),size.x-FromDIP(32)));
+        const int total = shape_height+(shape_height?FromDIP(16):0)+box.height+action_height;
+        const int start = std::max(FromDIP(8),(size.y-total)/2);
+        box.shape = wxRect((size.x-shape_width)/2,start,shape_width,shape_height);
+        box.top = start+shape_height+(shape_height?FromDIP(16):0);
+        box.left=(size.x-box.width)/2; box.action_y=box.top+box.height+FromDIP(8);
+        return box;
+    }
     void paint() {
         wxAutoBufferedPaintDC dc(this); dc.SetBackground(wxBrush(background_colour())); dc.Clear();
         auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
         if (!gc) return;
         const auto size = GetClientSize();
-        const int width = std::max(1, std::min(FromDIP(334), size.x - FromDIP(32)));
-        wxString heading, description;
-        dc.SetFont(smart_creation_font(16, wxFONTWEIGHT_MEDIUM));
-        const auto title_size = Label::split_lines(dc, width, title, heading);
-        dc.SetFont(smart_creation_font(14));
-        const auto detail_size = Label::split_lines(dc, width, detail, description);
+        const auto box = geometry(dc);
+        const int width=box.width, left=box.left, top=box.top, height=box.height;
+        const auto title_size=box.title, detail_size=box.detail;
+        const auto& heading=box.heading; const auto& description=box.description;
         const int row_height = FromDIP(24);
-        const int height = title_size.y + FromDIP(8) + detail_size.y + FromDIP(16) + (animate ? row_height : 0);
-        const int top = std::max(FromDIP(8), (size.y - height) / 2);
-        const int left = (size.x - width) / 2;
-        if (animate) draw_model_generation_starfield(*gc, m_stars, elapsed, size,
-            wxRect(left - FromDIP(12), top - FromDIP(12), width + FromDIP(24), height + FromDIP(24)),
-            double(FromDIP(100)) / 100.0);
+        if (retained_particles.IsOk() && box.shape.height > 0) {
+            const double factor=std::min(double(box.shape.width)/retained_particles.GetWidth(),
+                double(box.shape.height)/retained_particles.GetHeight());
+            const double w=retained_particles.GetWidth()*factor,h=retained_particles.GetHeight()*factor;
+            gc->DrawBitmap(retained_particles,box.shape.x+(box.shape.width-w)/2,box.shape.y+(box.shape.height-h)/2,w,h);
+        }
         dc.SetFont(smart_creation_font(16, wxFONTWEIGHT_MEDIUM));
         dc.SetTextForeground(smart_creation_opaque_colour(wxColour(255,255,255,230), background_colour()));
         dc.DrawLabel(heading, wxRect(left, top, width, title_size.y), wxALIGN_CENTER_HORIZONTAL);
@@ -80,7 +124,6 @@ private:
         dc.DrawLabel(progress >= 0 ? wxString::Format("%d%%", progress) : t("…"),
             wxRect(left + bar_width + FromDIP(10), top + height - row_height, FromDIP(36), row_height), wxALIGN_CENTER_VERTICAL);
     }
-    ModelGenerationStarfield m_stars;
 };
 }
 
@@ -108,6 +151,13 @@ struct InlineModelGenerationView::Impl {
     wxTimer timer;
     RedesignPresentationDeadline deadline;
     ModelGenerationAnimationClock animation;
+    Presentation::TaskScope particle_scope, logo_scope;
+    std::shared_ptr<const GenerationParticles::Shape> logo, subject;
+    ModelGenerationVisualReference requested_reference;
+    std::string particle_task;
+    bool logo_requested {false};
+    double particle_seconds {0}, transition_start {-1};
+    wxBitmap retained_particle_frame;
     ModelGenerationPresentation::DesignGenerationWait design_wait;
     std::string error;
     bool presented {false}, closing {false};
@@ -119,6 +169,7 @@ struct InlineModelGenerationView::Impl {
         refresh.configure([this] { return visible(); }, [this](Presentation::Dirty) { render(); tick(); }, "inline-generation");
         view.SetName("inline-model-generation");
         recover->SetName("inline-generation-recover"); recover->Hide();
+        feedback->action = recover;
         recover->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
             if (state.phase() == InlinePreviewPhase::Failed) view.retry_preview();
             else if (callbacks.recover) callbacks.recover();
@@ -141,7 +192,8 @@ struct InlineModelGenerationView::Impl {
     void shutdown() {
         if (closing) return;
         closing = true; timer.Stop(); refresh.stop(); lifetime.reset();
-        preparation_scope.cancel();
+        preparation_scope.cancel(); particle_scope.cancel(); logo_scope.cancel();
+        if (feedback->particles) feedback->particles->release();
         if (preparation) preparation->canceled = true;
         if (preview) preview->observe_presentation_frame({});
         if (first_frame_cover) { first_frame_cover->Hide(); first_frame_cover->Destroy(); first_frame_cover = nullptr; }
@@ -164,7 +216,7 @@ struct InlineModelGenerationView::Impl {
             first_frame_cover->SetBackgroundColour(background_colour());
             auto* sizer = new wxBoxSizer(wxVERTICAL);
             first_frame_cover->SetSizer(sizer);
-            retained_feedback = new GenerationFeedback(first_frame_cover);
+            retained_feedback = new GenerationFeedback(first_frame_cover, true);
             sizer->Add(retained_feedback, 1, wxEXPAND);
             first_frame_cover->Bind(wxEVT_CLOSE_WINDOW, [](wxCloseEvent& event) { event.Veto(); });
         }
@@ -176,6 +228,8 @@ struct InlineModelGenerationView::Impl {
         retained_feedback->title = feedback->title; retained_feedback->detail = feedback->detail;
         retained_feedback->progress = feedback->progress; retained_feedback->animate = feedback->animate;
         retained_feedback->elapsed = feedback->elapsed;
+        retained_feedback->retained_particles = retained_particle_frame;
+        retained_feedback->layout_content();
         const bool reveal = !first_frame_cover->IsShown();
         if (reveal) first_frame_cover->ShowWithoutActivating();
         retained_feedback->Refresh(false);
@@ -190,10 +244,7 @@ struct InlineModelGenerationView::Impl {
         if (feedback->GetRect() != bounds) feedback->SetSize(bounds);
         // Keep the action inside the painted surface so its buffered redraws
         // cannot cover a sibling recovery button on Windows.
-        const auto feedback_size = feedback->GetClientSize();
-        const wxRect action(std::max(0, (feedback_size.x - view.FromDIP(190)) / 2),
-            std::max(0, feedback_size.y / 2 + view.FromDIP(110)), view.FromDIP(190), view.FromDIP(36));
-        if (recover->GetRect() != action) recover->SetSize(action);
+        feedback->layout_content();
         sync_first_frame_cover();
     }
     void render() {
@@ -307,6 +358,7 @@ struct InlineModelGenerationView::Impl {
         auto request = std::move(preparation);
         error = request->error;
         if (error.empty()) {
+            retained_particle_frame = feedback->particles ? feedback->particles->retain_frame() : wxBitmap();
             cover_requested = true;
             sync_first_frame_cover();
             if (!preview) {
@@ -348,12 +400,90 @@ struct InlineModelGenerationView::Impl {
     void notify() {
         if (!cover_requested && state.consume_completion(visible()) && callbacks.completed) callbacks.completed();
     }
+    void synchronize_particles() {
+        const auto& snapshot = state.snapshot();
+        const auto key = GenerationParticles::task_key(state.binding(),snapshot);
+        if (key != particle_task) {
+            particle_scope.cancel(); particle_task=key; requested_reference={}; subject.reset();
+            transition_start=-1; particle_seconds=0;
+            animation.synchronize(false,false,now_seconds());
+        }
+        if (!logo_requested && visible()) {
+            logo_requested=true;
+            const auto task=logo_scope.begin("waiting-logo");
+            ModelGenerationVisualReference source;
+            source.path=wxString((boost::filesystem::path(Slic3r::resources_dir())/"images"/"generation_wait_logo.png").wstring()).ToUTF8().data();
+            const auto alive=std::weak_ptr<int>(lifetime); auto* target=&view;
+            Presentation::background_tasks().submit(task,[source](const Presentation::TaskContext& worker) {
+                return GenerationParticles::load(source,true,[&] { return worker.canceled(); });
+            },[target,alive,task](Presentation::TaskResult<std::shared_ptr<const GenerationParticles::Shape>> result) {
+                if (alive.expired()) return;
+                auto& self=*target->m_impl;
+                if (self.closing || !self.logo_scope.matches(task) || result.canceled) return;
+                if (result.value && !result.error) self.logo=*result.value;
+                self.refresh.request(Presentation::Dirty::Paint);
+            },Presentation::TaskPriority::Visible);
+        }
+        const bool terminal = snapshot.stage == ModelGenerationUIStage::Stopping || snapshot.stage == ModelGenerationUIStage::Stopped ||
+            snapshot.stage == ModelGenerationUIStage::Failed || state.phase() == InlinePreviewPhase::Failed;
+        if (terminal) {
+            particle_scope.cancel();
+            if (!subject) requested_reference={};
+            return;
+        }
+        if (snapshot.stage == ModelGenerationUIStage::GeneratingDesign && snapshot.visual_reference.owner_id.empty()) {
+            particle_scope.cancel(); requested_reference={}; subject.reset(); transition_start=-1;
+            return;
+        }
+        if (state.ready() || !GenerationParticles::usable_reference(snapshot) ||
+            GenerationParticles::same_image(requested_reference,snapshot.visual_reference)) return;
+        requested_reference=snapshot.visual_reference;
+        const auto source=requested_reference;
+        const auto task=particle_scope.begin(key);
+        const auto runtime=boost::filesystem::path(wxStandardPaths::Get().GetExecutablePath().ToStdWstring())
+            .parent_path()/"ai"/"generation_foreground";
+        const auto alive=std::weak_ptr<int>(lifetime); auto* target=&view;
+        const bool accepted=Presentation::background_tasks().submit(task,[source,runtime](const Presentation::TaskContext& worker) {
+            const auto begin = std::chrono::steady_clock::now();
+            GenerationParticles::PreparationDetails details;
+            const auto shape = GenerationParticles::load(source,false,[&] { return worker.canceled(); },
+                [runtime](const auto& image,const auto& canceled) {
+                    return GenerationParticles::infer_foreground(image,runtime,canceled);
+                },&details);
+            BOOST_LOG_TRIVIAL(info) << "[GenerationParticles] preparation_ms="
+                << std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count()
+                << " method=" << details.method << " reason=" << details.reason
+                << " canceled=" << worker.canceled() << " points=" << (shape?shape->points.size():0);
+            return shape;
+        },[target,alive,task,source,key](Presentation::TaskResult<std::shared_ptr<const GenerationParticles::Shape>> result) {
+            if (alive.expired()) return;
+            auto& self=*target->m_impl;
+            if (self.closing || !self.particle_scope.matches(task) || result.canceled || self.particle_task!=key ||
+                !GenerationParticles::same_image(self.requested_reference,source)) return;
+            if (result.value && !result.error && *result.value) {
+                self.subject=*result.value; self.transition_start=self.animation.elapsed(now_seconds());
+            }
+            BOOST_LOG_TRIVIAL(info) << "[GenerationParticles] source=" << int(self.state.binding().source)
+                << " shape=" << (self.subject?"subject":"logo-fallback");
+            self.refresh.request(Presentation::Dirty::Paint);
+        },Presentation::TaskPriority::Visible);
+        if (!accepted) BOOST_LOG_TRIVIAL(info) << "[GenerationParticles] shape=logo-fallback queue=busy";
+    }
+    void update_particle_frame() {
+        synchronize_particles();
+        const bool moving = feedback->animate && state.snapshot().stage != ModelGenerationUIStage::Stopping;
+        // A terminal/hidden view pauses presentation time. Only a new logical
+        // task resets it, so resuming the same task retains its shape.
+        animation.synchronize(true, visible() && moving, now_seconds());
+        particle_seconds=feedback->elapsed=animation.elapsed(now_seconds());
+        const double weight=subject && transition_start>=0 ? std::clamp((particle_seconds-transition_start)/0.30,0.0,1.0) : 0.0;
+        feedback->set_frame({logo,subject,particle_seconds,weight,particle_task});
+    }
     void tick() {
         if (closing) return;
+        update_particle_frame();
         install(); start();
         const bool shown = visible();
-        animation.synchronize(feedback->animate, shown, now_seconds());
-        feedback->elapsed = animation.elapsed(now_seconds());
         sync_first_frame_cover();
         finish_first_frame_handoff();
         if (state.phase() == InlinePreviewPhase::AwaitingFirstFrame &&
@@ -364,7 +494,9 @@ struct InlineModelGenerationView::Impl {
         if (shown && feedback->animate) feedback->Refresh(false);
         notify();
         const bool needs_timer = shown && (feedback->animate || state.phase() == InlinePreviewPhase::AwaitingFirstFrame);
-        if (needs_timer && !timer.IsRunning()) timer.Start(42);
+        // Leave room for the native paint queue and SwapBuffers' vblank wait.
+        // A 33ms timer yielded ~22 completed frames/s on the Windows GL surface.
+        if (needs_timer && !timer.IsRunning()) timer.Start(16);
         else if (!needs_timer) timer.Stop();
     }
 };
@@ -383,6 +515,8 @@ void InlineModelGenerationView::apply_snapshot(const GenerationBinding& binding,
     std::optional<InlineModelArtifact> model;
     if (artifact) model = InlineModelArtifact {std::move(*artifact)};
     if (!m_impl->state.apply(binding, snapshot, std::move(model))) return;
+    // Invalidate old subject/callbacks before any synchronous render/Update.
+    m_impl->update_particle_frame();
     std::unique_ptr<wxWindowUpdateLocker> content_handoff;
     if (generation != m_impl->state.generation() && m_impl->visible())
         content_handoff = std::make_unique<wxWindowUpdateLocker>(this);
@@ -400,6 +534,7 @@ void InlineModelGenerationView::apply_snapshot(const GenerationBinding& binding,
             if (m_impl->visible()) {
                 m_impl->render();
                 if (m_impl->feedback->IsShown()) m_impl->feedback->Update();
+                if (m_impl->feedback->particles) m_impl->feedback->particles->Update();
             }
             m_impl->preview->clear();
         }
@@ -455,7 +590,7 @@ void InlineModelGenerationView::invalidate_context() {
     if (m_impl->preparation) m_impl->preparation->canceled = true;
     m_impl->preparation_scope.cancel(); m_impl->preparation.reset();
     if (m_impl->preview) { m_impl->preview->observe_presentation_frame({}); m_impl->preview->clear(); }
-    m_impl->state.invalidate(); m_impl->render(); m_impl->changed();
+    m_impl->state.invalidate(); m_impl->update_particle_frame(); m_impl->render(); m_impl->changed();
 }
 bool InlineModelGenerationView::has_content() const { return m_impl->state.has_content(); }
 bool InlineModelGenerationView::ready() const { return m_impl->state.ready(); }

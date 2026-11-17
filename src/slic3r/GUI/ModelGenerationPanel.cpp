@@ -438,6 +438,8 @@ void ModelGenerationPanel::publish_ui_state()
     state.cost_summary = text_to_utf8(m_generation_cost->GetLabel());
     state.original_image_path = path_to_utf8(!m_reference_image_path.empty() ? m_reference_image_path : m_selected_image_path);
     state.design_image_path = path_to_utf8(!m_preview_path.empty() ? m_preview_path : m_raw_preview_path);
+    if (state.smart_mode && m_generation_visual_reference.owner_id == state.smart_flow_id)
+        state.visual_reference = m_generation_visual_reference;
     state.model_path = path_to_utf8(!m_displayed_model_path.empty() ? m_displayed_model_path : m_artifact_path);
     state.history_entries = m_ui_history_entries;
     state.history_loading = m_ui_history_loading;
@@ -2731,6 +2733,11 @@ void ModelGenerationPanel::download_preview(uint64_t sequence)
                 weak->m_clean_preview_image = image;
                 weak->m_preview_zoom_factor = 1.0;
                 weak->m_style_preview_ready = true;
+                if (weak->m_smart_mode && !weak->m_smart_flow.flow_id.empty()) {
+                    weak->m_generation_visual_reference = {weak->m_smart_flow.flow_id,
+                        "design:" + weak->m_job_id + ":" + weak->m_preview_output,
+                        wxString(path.wstring()).ToUTF8().data(), {}, true};
+                }
                 weak->m_client.record_journey_event("preview_ready", weak->m_job_id);
                 weak->m_style_preview_placeholder.clear();
                 weak->m_preview_kind->SetLabel(_L("结果对照"));

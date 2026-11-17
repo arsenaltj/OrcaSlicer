@@ -46,12 +46,26 @@ public:
         publish();
         if (available) poll(); else m_ports.schedule(0);
     }
-    void observe(const std::string& job, boost::filesystem::path reference, bool restart = false) {
+    void observe(const std::string& job, boost::filesystem::path reference, bool restart = false,
+                 ModelGenerationVisualReference visual = {}) {
         if (job.empty()) return;
-        if (m_state.job_id == job && !restart) { publish(); return; }
+        if (visual.owner_id != job) visual = {};
+        if (m_state.job_id == job && !restart) {
+            auto& bound = m_state.visual_reference;
+            // Cache completion may make the frozen input available. A group
+            // refresh cannot replace that input with another view/version.
+            if (bound.version.empty() || (bound.version == visual.version && bound.sha256 == visual.sha256)) {
+                if (!visual.version.empty() && (!bound.ready || visual.ready)) {
+                    bound = std::move(visual);
+                    if (!reference.empty()) m_reference = std::move(reference);
+                }
+            }
+            publish(); return;
+        }
         reset(); m_state.job_id = job; m_state.model_generation_context = true;
         m_state.busy = true; m_state.stage = ModelGenerationUIStage::GeneratingModel;
-        m_reference = std::move(reference); m_progress.begin(job); publish(); poll();
+        m_reference = std::move(reference); m_state.visual_reference = std::move(visual);
+        m_progress.begin(job); publish(); poll();
     }
     void poll() {
         if (!m_available || m_pending || m_local || m_terminal || m_state.job_id.empty()) return;

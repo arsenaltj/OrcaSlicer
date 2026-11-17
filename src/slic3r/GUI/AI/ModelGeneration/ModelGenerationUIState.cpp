@@ -55,7 +55,7 @@ bool ModelGenerationUIState::same_content(const ModelGenerationUIState& other) c
            status_text == other.status_text && summary_text == other.summary_text &&
            workflow_phase == other.workflow_phase && workflow_guidance == other.workflow_guidance &&
            cost_summary == other.cost_summary && original_image_path == other.original_image_path &&
-           design_image_path == other.design_image_path && model_path == other.model_path &&
+           design_image_path == other.design_image_path && visual_reference == other.visual_reference && model_path == other.model_path &&
            history_entries == other.history_entries && history_loading == other.history_loading &&
            history_error == other.history_error;
 }

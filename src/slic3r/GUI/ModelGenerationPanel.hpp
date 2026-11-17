@@ -265,6 +265,7 @@ private:
     bool m_smart_restore_pending {false};
     const bool m_advanced_only;
     SmartGenerationFlow m_smart_flow;
+    ModelGenerationVisualReference m_generation_visual_reference;
     bool m_smart_dispatch_pending {false};
     using GeneratedModelEntry = ModelLibraryEntry;
     PostGenerationWorkbenchListener m_workbench_listener;
