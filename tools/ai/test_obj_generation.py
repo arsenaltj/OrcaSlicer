@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 import importlib.util
+import errno
 import hashlib
+import http.client
 import io
 import json
 import math
 import os
 import stat
+import socket
+import ssl
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.error
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -305,10 +311,15 @@ class AutomaticVisualDeliveryGateTests(unittest.TestCase):
 
 
 class TripoArtifactSecurityTests(unittest.TestCase):
-    def test_exact_official_cdn_allows_proxy_fake_ip(self):
-        address = [(2, 1, 6, "", ("198.18.0.1", 443))]
-        with mock.patch.object(TRIPO.socket, "getaddrinfo", return_value=address):
+    def setUp(self):
+        sleep = mock.patch.object(TRIPO.time, "sleep")
+        self.sleep = sleep.start()
+        self.addCleanup(sleep.stop)
+
+    def test_exact_official_cdn_does_not_require_a_local_dns_lookup(self):
+        with mock.patch.object(TRIPO.socket, "getaddrinfo", side_effect=socket.gaierror(11002, "temporary DNS failure")) as resolve:
             TRIPO._validate_artifact_url("https://openapi.cdn.tripo3d.com/tasks/model.zip?signature=test")
+        resolve.assert_not_called()
 
     def test_cdn_lookalike_is_rejected_before_dns(self):
         with mock.patch.object(TRIPO.socket, "getaddrinfo") as resolve:
@@ -380,6 +391,251 @@ class TripoArtifactSecurityTests(unittest.TestCase):
                 request, None, 302, "Found", {}, "https://openapi.cdn.tripo3d.com/second.zip"
             )
         self.assertEqual(redirected.get_header("Range"), "bytes=42-")
+
+
+class TripoArtifactDownloadTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.destination = Path(temp.name) / "artifact.download"
+        self.url = "https://openapi.cdn.tripo3d.com/tasks/model.glb?signature=private-signature"
+        self.task = {"output": {"model_url": self.url}}
+        self.opener = mock.Mock()
+        for attribute, value in (("build_network_opener", self.opener),):
+            patch = mock.patch.object(TRIPO, attribute, return_value=value)
+            patch.start(); self.addCleanup(patch.stop)
+        patch = mock.patch.object(TRIPO.time, "sleep")
+        self.sleep = patch.start(); self.addCleanup(patch.stop)
+
+    def response(self, data=b"glTFmodel", *, status=200, headers=None):
+        response = mock.MagicMock()
+        response.status = status
+        response.headers = {"Content-Length": str(len(data))} if headers is None else headers
+        response.read = io.BytesIO(data).read
+        response.__enter__.return_value = response
+        return response
+
+    def download(self, **kwargs):
+        return TRIPO.download_task_artifact(self.task, self.destination, **kwargs)
+
+    def test_normal_download_keeps_the_signed_url_and_adds_no_delay(self):
+        self.opener.open.return_value = self.response()
+        self.assertEqual(self.download().read_bytes(), b"glTFmodel")
+        self.opener.open.assert_called_once()
+        request = self.opener.open.call_args.args[0]
+        self.assertEqual(request.full_url, self.url)
+        self.assertEqual(request.get_method(), "GET")
+        self.assertEqual(self.opener.open.call_args.kwargs["timeout"], 120.0)
+        self.sleep.assert_not_called()
+
+    def test_dns_failures_recover_on_the_second_or_third_attempt(self):
+        for failures, waits in ((1, [1.0]), (2, [1.0, 3.0])):
+            with self.subTest(failures=failures):
+                self.opener.reset_mock(); self.sleep.reset_mock()
+                self.opener.open.side_effect = [urllib.error.URLError(socket.gaierror(11002, "temporary"))
+                                                for _ in range(failures)] + [self.response()]
+                self.assertEqual(self.download().read_bytes(), b"glTFmodel")
+                self.assertEqual(self.opener.open.call_count, failures + 1)
+                self.assertEqual(self.sleep.call_args_list, [mock.call(value) for value in waits])
+
+    def test_persistent_dns_failure_is_bounded_and_retains_the_original_errno(self):
+        failure = urllib.error.URLError(socket.gaierror(11002, "temporary resolver failure"))
+        self.opener.open.side_effect = failure
+        self.destination.write_bytes(b"previous complete result")
+        with mock.patch.object(TRIPO, "diagnostic_event") as event, self.assertRaises(TRIPO.TripoError) as raised:
+            self.download()
+        self.assertEqual(raised.exception.failure_kind, "dns")
+        self.assertEqual(raised.exception.__cause__, failure)
+        self.assertEqual(self.opener.open.call_count, 3)
+        self.assertEqual(self.sleep.call_args_list, [mock.call(1.0), mock.call(3.0)])
+        self.assertEqual(self.destination.read_bytes(), b"previous complete result")
+        self.assertFalse(self.destination.with_suffix(".download.part").exists())
+        final = [call for call in event.call_args_list if call.args[0] == "tripo.artifact_download.failed"]
+        self.assertEqual(len(final), 1)
+        self.assertEqual(final[0].kwargs["attempt"], 3)
+        self.assertEqual(final[0].kwargs["exception_chain"][1]["errno"], 11002)
+        self.assertNotIn("private-signature", str(event.call_args_list))
+
+    def test_network_interruptions_retry_without_changing_the_task(self):
+        failures = (TimeoutError("read timed out"), ConnectionResetError("reset"),
+                    http.client.RemoteDisconnected("disconnected"), http.client.IncompleteRead(b"short", 10))
+        for failure in failures:
+            with self.subTest(error=type(failure).__name__):
+                self.opener.reset_mock(); self.sleep.reset_mock()
+                self.opener.open.side_effect = [failure, self.response()]
+                self.assertEqual(self.download().read_bytes(), b"glTFmodel")
+                self.assertEqual(self.opener.open.call_count, 2)
+                self.assertEqual({call.args[0].full_url for call in self.opener.open.call_args_list}, {self.url})
+
+    def test_temporary_http_statuses_use_the_same_three_attempt_limit(self):
+        for status in (408, 425, 429, 500, 502, 503, 504):
+            with self.subTest(status=status):
+                self.opener.reset_mock(); self.sleep.reset_mock()
+                self.opener.open.side_effect = urllib.error.HTTPError(self.url, status, "temporary", {}, None)
+                with self.assertRaises(TRIPO.TripoError) as raised:
+                    self.download()
+                self.assertEqual(raised.exception.http_status, status)
+                self.assertEqual(self.opener.open.call_count, 3)
+                self.assertEqual(self.sleep.call_args_list, [mock.call(1.0), mock.call(3.0)])
+
+    def test_permanent_http_statuses_fail_without_retrying_or_refreshing_the_url(self):
+        for status in (400, 401, 403, 404, 407, 410, 422):
+            with self.subTest(status=status):
+                self.opener.reset_mock(); self.sleep.reset_mock()
+                self.opener.open.side_effect = urllib.error.HTTPError(self.url, status, "denied", {}, None)
+                with self.assertRaises(TRIPO.TripoError) as raised:
+                    self.download()
+                self.assertEqual(raised.exception.failure_kind, "http")
+                self.assertEqual(raised.exception.http_status, status)
+                self.opener.open.assert_called_once()
+                self.sleep.assert_not_called()
+
+    def test_direct_and_wrapped_tls_failures_are_not_retried(self):
+        for failure in (ssl.SSLCertVerificationError(1, "certificate verify failed"),
+                        urllib.error.URLError(ssl.SSLCertVerificationError(1, "certificate verify failed"))):
+            with self.subTest(wrapped=isinstance(failure, urllib.error.URLError)):
+                self.opener.reset_mock(); self.sleep.reset_mock()
+                self.opener.open.side_effect = failure
+                with self.assertRaises(TRIPO.TripoError) as raised:
+                    self.download()
+                self.assertEqual(raised.exception.failure_kind, "tls_certificate")
+                self.opener.open.assert_called_once()
+                self.sleep.assert_not_called()
+
+    def test_invalid_locations_are_rejected_before_any_download(self):
+        for url in ("http://openapi.cdn.tripo3d.com/model.glb", "https://user:pass@openapi.cdn.tripo3d.com/model.glb",
+                    "https://openapi.cdn.tripo3d.com.attacker.invalid/model.glb",
+                    "https://openapi.cdn.tripo3d.com:invalid/model.glb"):
+            with self.subTest(url=url), self.assertRaises(TRIPO.TripoError):
+                TRIPO.download_task_artifact({"output": {"model_url": url}}, self.destination)
+        self.opener.open.assert_not_called()
+        self.sleep.assert_not_called()
+
+    def test_redirects_keep_signed_parameters_and_reject_untrusted_hosts(self):
+        request = TRIPO.urllib.request.Request(self.url, headers={"Range": "bytes=3-"})
+        target = "https://openapi.cdn.tripo3d.com/next.glb?signature=next-private"
+        redirected = TRIPO._SafeArtifactRedirects().redirect_request(request, None, 302, "Found", {}, target)
+        self.assertEqual(redirected.full_url, target)
+        self.assertEqual(redirected.get_header("Range"), "bytes=3-")
+        for target in ("http://openapi.cdn.tripo3d.com/next.glb", "https://untrusted.invalid/model.glb"):
+            with self.subTest(target=target), self.assertRaises(TRIPO.TripoError):
+                TRIPO._SafeArtifactRedirects().redirect_request(request, None, 302, "Found", {}, target)
+
+    def test_a_200_response_replaces_only_the_current_partial_download(self):
+        part = self.destination.with_name(self.destination.name + ".part")
+        part.write_bytes(b"old partial")
+        self.opener.open.return_value = self.response()
+        self.assertEqual(self.download().read_bytes(), b"glTFmodel")
+        self.assertEqual(self.opener.open.call_args.args[0].get_header("Range"), "bytes=11-")
+        self.assertFalse(part.exists())
+
+    def test_oversized_responses_are_rejected_without_retrying(self):
+        for headers in ({"Content-Length": "9"}, {}):
+            with self.subTest(headers=headers):
+                self.opener.reset_mock()
+                self.opener.open.return_value = self.response(headers=headers)
+                with self.assertRaises(TRIPO.TripoError):
+                    self.download(max_bytes=3)
+                self.opener.open.assert_called_once()
+                self.sleep.assert_not_called()
+                self.assertFalse(self.destination.exists())
+                self.assertFalse(self.destination.with_name(self.destination.name + ".part").exists())
+
+    def test_file_permission_space_and_publish_failures_are_not_retried(self):
+        for failure, method in ((PermissionError(errno.EACCES, "denied"), "open"),
+                                (OSError(errno.ENOSPC, "full"), "open"),
+                                (PermissionError(errno.EACCES, "locked destination"), "replace")):
+            with self.subTest(method=method, error=failure.errno):
+                self.opener.reset_mock(); self.sleep.reset_mock()
+                self.opener.open.return_value = self.response()
+                self.opener.open.side_effect = None
+                self.destination.write_bytes(b"original")
+                target = mock.patch.object(Path, "open", side_effect=failure) if method == "open" else mock.patch.object(TRIPO.os, "replace", side_effect=failure)
+                with target, self.assertRaises(TRIPO.TripoError) as raised:
+                    self.download()
+                self.assertEqual(raised.exception.failure_kind, "file")
+                self.assertEqual(self.destination.read_bytes(), b"original")
+                self.opener.open.assert_called_once()
+                self.sleep.assert_not_called()
+
+    def test_stopped_download_does_not_start_a_connection(self):
+        stop = threading.Event(); stop.set()
+        with self.assertRaises(TRIPO.TripoError) as raised:
+            self.download(stop_event=stop)
+        self.assertEqual(raised.exception.failure_kind, "cancelled")
+        self.opener.open.assert_not_called()
+
+    def test_stop_and_shutdown_interrupt_either_backoff_before_another_request(self):
+        for waiting_attempt in (1, 2):
+            with self.subTest(waiting_attempt=waiting_attempt):
+                self.opener.reset_mock(); self.sleep.reset_mock()
+                self.opener.open.side_effect = socket.gaierror(11002, "temporary")
+                stop = mock.Mock(); stop.is_set.return_value = False
+                def wait(_delay):
+                    if stop.wait.call_count == waiting_attempt:
+                        stop.is_set.return_value = True
+                stop.wait.side_effect = wait
+                with self.assertRaises(TRIPO.TripoError) as raised:
+                    self.download(stop_event=stop)
+                self.assertEqual(raised.exception.failure_kind, "cancelled")
+                self.assertEqual(self.opener.open.call_count, waiting_attempt)
+                self.sleep.assert_not_called()
+
+    def test_a_real_stop_event_wakes_the_download_backoff_promptly(self):
+        for waiting_attempt in (1, 2):
+            with self.subTest(waiting_attempt=waiting_attempt):
+                self.opener.reset_mock()
+                self.opener.open.side_effect = socket.gaierror(11002, "temporary")
+                entered = threading.Event()
+                stop = threading.Event()
+                actual_wait = stop.wait
+                waits = []
+                def wait(delay):
+                    waits.append(delay)
+                    if len(waits) < waiting_attempt:
+                        return False
+                    entered.set()
+                    return actual_wait(delay)
+                errors = []
+                def run():
+                    try:
+                        self.download(stop_event=stop)
+                    except BaseException as error:
+                        errors.append(error)
+                with mock.patch.object(stop, "wait", side_effect=wait):
+                    worker = threading.Thread(target=run)
+                    worker.start()
+                    reached_wait = entered.wait(1.0)
+                    stop.set()
+                    worker.join(1.0)
+                self.assertTrue(reached_wait)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(len(errors), 1)
+                self.assertEqual(errors[0].failure_kind, "cancelled")
+                self.assertEqual(self.opener.open.call_count, waiting_attempt)
+                self.assertFalse(self.destination.exists())
+
+    def test_a_late_response_or_final_chunk_cannot_publish_after_stop(self):
+        for stop_on in ("response", "read"):
+            with self.subTest(stop_on=stop_on):
+                self.opener.reset_mock()
+                stop = threading.Event()
+                response = self.response()
+                if stop_on == "response":
+                    def enter():
+                        stop.set(); return response
+                    response.__enter__.side_effect = enter
+                else:
+                    def read(_size):
+                        stop.set(); return b"glTFmodel"
+                    response.read = read
+                self.opener.open.side_effect = None
+                self.opener.open.return_value = response
+                with self.assertRaises(TRIPO.TripoError):
+                    self.download(stop_event=stop)
+                self.assertFalse(self.destination.exists())
+                self.assertFalse(self.destination.with_name(self.destination.name + ".part").exists())
+                self.opener.open.assert_called_once()
 
 
 class PrintablePaletteTests(unittest.TestCase):
@@ -2224,6 +2480,42 @@ class ObjGenerationTests(unittest.TestCase):
         self.assertEqual(self.job.message, "OBJ conversion failed")
         self.assertEqual(len(self.job.attempts), 1)
         self.assertEqual(self.job.attempts[0]["status"], "rejected")
+
+    def test_exhausted_download_failure_ends_the_job_without_another_provider_task(self):
+        gateway = self._provider_gateway()
+        error = SIDECAR.ProviderGatewayError(
+            "The artifact host could not be resolved after retrying.", code="artifact_dns_failed",
+            category="download", provider="tripo", operation="artifact_download", retryable=False)
+        with mock.patch.object(SIDECAR, "_MODEL_PROVIDER_GATEWAY", gateway), \
+                mock.patch.object(SIDECAR, "_download_generation_artifact", side_effect=error) as download, \
+                mock.patch.object(SIDECAR, "_fail_job", wraps=SIDECAR._fail_job) as fail:
+            SIDECAR._generate_job(self.job, "printable object", False, self._paid_authorization())
+        self.assertEqual(self.job.state, "failed")
+        self.assertIsNone(self.job.artifact_path)
+        self.assertEqual(len(self.job.attempts), 1)
+        self.assertEqual(self.job.attempts[0]["provider_error_code"], "artifact_dns_failed")
+        self.assertFalse(self.job.attempts[0]["provider_error_retryable"])
+        self.assertFalse(self.job.attempts[0]["provider_terminal_failure"])
+        download.assert_called_once()
+        fail.assert_called_once()
+        gateway.start_or_reuse_model_task.assert_called_once()
+        gateway.start_or_reuse_conversion.assert_not_called()
+        gateway.start_or_reuse_texture_task.assert_not_called()
+
+    def test_both_tripo_artifact_paths_forward_the_job_stop_event(self):
+        for output_format in ("glb", "obj"):
+            with self.subTest(output_format=output_format):
+                job = SIDECAR._new_job("text", self.palette)
+                job.output_format = output_format
+                job.attempts = [{"generation_task_id": "completed-generation"}]
+                gateway = self._provider_gateway()
+                gateway.download_artifact.side_effect = SIDECAR.ProviderGatewayError(
+                    "download failure", code="artifact_dns_failed", category="download")
+                with mock.patch.object(SIDECAR, "_MODEL_PROVIDER_GATEWAY", gateway), \
+                        self.assertRaises(SIDECAR.ProviderGatewayError):
+                    SIDECAR._download_generation_artifact(job, "completed-generation")
+                self.assertIs(gateway.download_artifact.call_args.kwargs["stop_event"], job.stop_event)
+                gateway.download_artifact.assert_called_once()
 
     def test_quality_failure_does_not_create_a_second_paid_task(self):
         quality_error = SIDECAR.TripoError(

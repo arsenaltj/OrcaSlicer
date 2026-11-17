@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import email.utils
+import errno
 import http.client
-import ipaddress
 import json
 import os
 import socket
@@ -36,14 +36,17 @@ _TRANSIENT_CODES = {408, 425, 429, 500, 502, 503, 504}
 # generation request.
 _UPLOAD_STATUS_RETRIES = 1
 _ARTIFACT_DOWNLOAD_ATTEMPTS = 3
+_ARTIFACT_RETRY_DELAYS = (1.0, 3.0)
 
 
 class TripoError(RuntimeError):
     """A Tripo request or task failed safely."""
 
-    def __init__(self, message: str, *, task_id: str = "", terminal: bool = False, provider_code: str = ""):
+    def __init__(self, message: str, *, task_id: str = "", terminal: bool = False, provider_code: str = "",
+                 failure_kind: str = "", http_status: int | None = None):
         super().__init__(message)
         self.task_id, self.terminal, self.provider_code = task_id, terminal, provider_code
+        self.failure_kind, self.http_status = failure_kind, http_status
 
 
 class _ArtifactDownloadInterrupted(RuntimeError):
@@ -559,28 +562,18 @@ def _artifact_url(task_result: Mapping[str, Any]) -> str:
 
 
 def _validate_artifact_url(url: str) -> None:
-    parsed = urllib.parse.urlsplit(url)
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        parsed.port  # Reject malformed ports before the connection is attempted.
+    except ValueError:
+        raise TripoError("Tripo returned an unsafe artifact location.", failure_kind="unsafe") from None
     if parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username or parsed.password:
-        raise TripoError("Tripo returned an unsafe artifact location.")
+        raise TripoError("Tripo returned an unsafe artifact location.", failure_kind="unsafe")
     hostname = parsed.hostname.lower().rstrip(".")
     if hostname not in _ARTIFACT_HOSTS:
-        raise TripoError("Tripo returned an unsafe artifact location.")
-    try:
-        addresses = socket.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
-    except socket.gaierror:
-        raise TripoError("The artifact host could not be resolved.") from None
-    if not addresses:
-        raise TripoError("The artifact host could not be resolved.")
-    for address in addresses:
-        try:
-            ip = ipaddress.ip_address(address[4][0].split("%", 1)[0])
-        except ValueError:
-            raise TripoError("Tripo returned an unsafe artifact location.") from None
-        # Windows proxy clients may return an RFC 2544 fake IP for an exact,
-        # allowlisted HTTPS host. TLS still authenticates the hostname, while
-        # lookalike and redirect hosts remain rejected above.
-        if not ip.is_global and hostname not in _ARTIFACT_HOSTS:
-            raise TripoError("Tripo returned an unsafe artifact location.")
+        raise TripoError("Tripo returned an unsafe artifact location.", failure_kind="unsafe")
+    # The actual HTTPS connection resolves its destination through the selected
+    # route. A separate local lookup would wrongly gate HTTP CONNECT proxies.
 
 
 class _SafeArtifactRedirects(urllib.request.HTTPRedirectHandler):
@@ -622,9 +615,62 @@ def _artifact_response_size(response: Any, offset: int, resumed: bool) -> int | 
     return total
 
 
+def _artifact_failure(error: BaseException, network_io: bool) -> tuple[str, bool, int | None]:
+    if isinstance(error, TripoError):
+        return error.failure_kind or "validation", False, error.http_status
+    if not network_io:
+        return "file", False, None
+    if isinstance(error, urllib.error.HTTPError):
+        return "http", error.code in _TRANSIENT_CODES, error.code
+    if isinstance(error, (_ArtifactDownloadInterrupted, http.client.IncompleteRead)):
+        return "incomplete", True, None
+    kind = classify_connection_error(error)
+    if kind in {"tls", "tls_certificate"}:
+        return kind, False, None
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OSError) and current.errno in {
+            errno.EACCES, errno.EPERM, errno.ENOSPC, errno.EROFS, errno.ENOENT,
+        }:
+            return "file", False, None
+        reason = getattr(current, "reason", None)
+        current = reason if isinstance(reason, BaseException) else current.__cause__ or current.__context__
+    retryable = isinstance(error, (
+        urllib.error.URLError, socket.gaierror, TimeoutError, ConnectionError, http.client.HTTPException,
+    )) or (isinstance(error, OSError) and error.errno in {
+        errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ECONNABORTED,
+        errno.ECONNRESET, errno.ECONNREFUSED, errno.ETIMEDOUT,
+        10050, 10051, 10053, 10054, 10060, 10061, 10064, 10065,
+    })
+    return kind, retryable, None
+
+
+def _artifact_stop_boundary(stop_event: Any) -> None:
+    if stop_event is not None and stop_event.is_set():
+        raise TripoError("The operation was cancelled.", failure_kind="cancelled")
+
+
+def _artifact_failure_message(kind: str, http_status: int | None) -> str:
+    if kind == "dns":
+        return "The artifact host could not be resolved after retrying."
+    if kind == "timeout":
+        return "The artifact download timed out after retrying."
+    if kind == "incomplete":
+        return "The artifact download was incomplete after retrying."
+    if kind == "http":
+        return f"The artifact download failed (HTTP {http_status})."
+    if kind == "file":
+        return "The artifact file could not be written."
+    if kind in {"tls", "tls_certificate"}:
+        return "The artifact TLS connection could not be verified."
+    return "The artifact could not be downloaded after retrying."
+
+
 def download_task_artifact(
     task_result: Mapping[str, Any], output_path: str | os.PathLike[str], max_bytes: int = 500 * 1024 * 1024,
-    *, progress: Callable[[int, int | None], None] | None = None,
+    *, progress: Callable[[int, int | None], None] | None = None, stop_event: Any = None,
 ) -> Path:
     if max_bytes <= 0:
         raise TripoError("The artifact size limit must be positive.")
@@ -637,95 +683,99 @@ def download_task_artifact(
         max_bytes=max_bytes,
         timeout_seconds=_REQUEST_TIMEOUT,
         network=network,
+        max_attempts=_ARTIFACT_DOWNLOAD_ATTEMPTS,
     )
     _validate_artifact_url(url)
     destination = Path(output_path)
     part = destination.with_name(destination.name + ".part")
-    last_error: BaseException | None = None
-    for _ in range(_ARTIFACT_DOWNLOAD_ATTEMPTS):
-        try:
-            offset = part.stat().st_size if part.is_file() else 0
-            if offset > max_bytes:
-                raise TripoError("The artifact exceeds the configured size limit.")
-            request_headers = {"Accept": "application/octet-stream"}
-            if offset:
-                request_headers["Range"] = f"bytes={offset}-"
-            request = urllib.request.Request(url, headers=request_headers, method="GET")
-            with build_network_opener(_SafeArtifactRedirects()).open(
-                request, timeout=_REQUEST_TIMEOUT
-            ) as response:
-                resumed = offset > 0 and getattr(response, "status", 200) == 206
-                if not resumed:
-                    offset = 0
-                expected_size = _artifact_response_size(response, offset, resumed)
-                if expected_size is not None and expected_size > max_bytes:
-                    raise TripoError("The artifact exceeds the configured size limit.")
-                total = offset
-                if progress is not None:
-                    progress(total, expected_size)
-                with part.open("ab" if resumed else "wb") as stream:
-                    while chunk := response.read(min(64 * 1024, max_bytes + 1 - total)):
-                        total += len(chunk)
-                        if total > max_bytes:
-                            raise TripoError("The artifact exceeds the configured size limit.")
-                        stream.write(chunk)
-                        if progress is not None:
-                            progress(total, expected_size)
-            if expected_size is not None and total != expected_size:
-                raise _ArtifactDownloadInterrupted(
-                    f"The artifact download stopped at {total} of {expected_size} bytes."
-                )
-            if total <= 0:
-                raise _ArtifactDownloadInterrupted("The artifact download returned no data.")
-            os.replace(part, destination)
-            diagnostic_event(
-                "tripo.artifact_download.completed",
-                endpoint=safe_endpoint(url),
-                response_bytes=total,
-                elapsed_ms=round((time.monotonic() - started) * 1000),
-                attempt=_ + 1,
-                network=network,
-            )
-            return destination
-        except TripoError as exc:
-            try:
-                part.unlink(missing_ok=True)
-            except OSError:
-                pass
-            diagnostic_event(
-                "tripo.artifact_download.failed",
-                level="ERROR",
-                endpoint=safe_endpoint(url),
-                elapsed_ms=round((time.monotonic() - started) * 1000),
-                attempt=_ + 1,
-                network=network,
-                exception_chain=exception_details(exc),
-            )
-            raise
-        except (
-            urllib.error.HTTPError,
-            urllib.error.URLError,
-            TimeoutError,
-            OSError,
-            _ArtifactDownloadInterrupted,
-        ) as exc:
-            last_error = exc
-            diagnostic_event(
-                "tripo.artifact_download.retry",
-                level="WARNING",
-                endpoint=safe_endpoint(url),
-                elapsed_ms=round((time.monotonic() - started) * 1000),
-                attempt=_ + 1,
-                retrying=_ + 1 < _ARTIFACT_DOWNLOAD_ATTEMPTS,
-                network=network,
-                failure_kind=classify_connection_error(exc),
-                exception_chain=exception_details(exc),
-            )
-
     try:
-        part.unlink(missing_ok=True)
-    except OSError:
-        pass
-    if isinstance(last_error, _ArtifactDownloadInterrupted):
-        raise TripoError("The artifact download was incomplete after retrying.") from None
-    raise TripoError("The artifact could not be downloaded after retrying.") from None
+        for attempt in range(1, _ARTIFACT_DOWNLOAD_ATTEMPTS + 1):
+            network_io = False
+            try:
+                _artifact_stop_boundary(stop_event)
+                offset = part.stat().st_size if part.is_file() else 0
+                if offset > max_bytes:
+                    raise TripoError("The artifact exceeds the configured size limit.")
+                request_headers = {"Accept": "application/octet-stream"}
+                if offset:
+                    request_headers["Range"] = f"bytes={offset}-"
+                request = urllib.request.Request(url, headers=request_headers, method="GET")
+                network = network_diagnostics(url)
+                network_io = True
+                with build_network_opener(_SafeArtifactRedirects()).open(
+                    request, timeout=_REQUEST_TIMEOUT
+                ) as response:
+                    _artifact_stop_boundary(stop_event)
+                    resumed = offset > 0 and getattr(response, "status", 200) == 206
+                    if not resumed:
+                        offset = 0
+                    expected_size = _artifact_response_size(response, offset, resumed)
+                    if expected_size is not None and expected_size > max_bytes:
+                        raise TripoError("The artifact exceeds the configured size limit.")
+                    total = offset
+                    if progress is not None:
+                        progress(total, expected_size)
+                    network_io = False
+                    with part.open("ab" if resumed else "wb") as stream:
+                        while True:
+                            _artifact_stop_boundary(stop_event)
+                            network_io = True
+                            chunk = response.read(min(64 * 1024, max_bytes + 1 - total))
+                            _artifact_stop_boundary(stop_event)
+                            if not chunk:
+                                break
+                            total += len(chunk)
+                            if total > max_bytes:
+                                raise TripoError("The artifact exceeds the configured size limit.")
+                            network_io = False
+                            stream.write(chunk)
+                            if progress is not None:
+                                progress(total, expected_size)
+                        network_io = False  # File flush/close failures are not transport failures.
+                    network_io = True
+                if expected_size is not None and total != expected_size:
+                    raise _ArtifactDownloadInterrupted(
+                        f"The artifact download stopped at {total} of {expected_size} bytes."
+                    )
+                if total <= 0:
+                    raise _ArtifactDownloadInterrupted("The artifact download returned no data.")
+                _artifact_stop_boundary(stop_event)
+                network_io = False
+                os.replace(part, destination)
+                diagnostic_event(
+                    "tripo.artifact_download.completed", endpoint=safe_endpoint(url), response_bytes=total,
+                    elapsed_ms=round((time.monotonic() - started) * 1000), attempt=attempt, network=network,
+                )
+                return destination
+            except (TripoError, urllib.error.URLError, OSError, http.client.HTTPException,
+                    _ArtifactDownloadInterrupted) as exc:
+                kind, retryable, http_status = _artifact_failure(exc, network_io)
+                if isinstance(exc, urllib.error.HTTPError):
+                    exc.close()
+                retrying = retryable and attempt < _ARTIFACT_DOWNLOAD_ATTEMPTS
+                diagnostic_event(
+                    "tripo.artifact_download.retry" if retrying else "tripo.artifact_download.failed",
+                    level="WARNING" if retrying else "ERROR", endpoint=safe_endpoint(url),
+                    elapsed_ms=round((time.monotonic() - started) * 1000), attempt=attempt,
+                    retrying=retrying, network=network, failure_kind=kind, http_status=http_status,
+                    exception_chain=exception_details(exc),
+                )
+                if not retrying:
+                    if isinstance(exc, TripoError):
+                        if not exc.failure_kind:
+                            exc.failure_kind = kind
+                        raise
+                    raise TripoError(_artifact_failure_message(kind, http_status),
+                                     failure_kind=kind, http_status=http_status) from exc
+                delay = _ARTIFACT_RETRY_DELAYS[attempt - 1]
+                if stop_event is None:
+                    time.sleep(delay)
+                else:
+                    stop_event.wait(delay)
+                _artifact_stop_boundary(stop_event)
+    finally:
+        try:
+            part.unlink(missing_ok=True)
+        except OSError:
+            pass
+    raise TripoError("The artifact could not be downloaded after retrying.", failure_kind="network")

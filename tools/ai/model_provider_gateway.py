@@ -180,6 +180,11 @@ def _classify_tripo_error(
     retryable = False
     ambiguous = False
     upload_operation = operation.endswith("_input_upload")
+    if operation == "artifact_download" and error.failure_kind not in {"", "cancelled", "unsafe"}:
+        code = {"dns": "artifact_dns_failed", "timeout": "artifact_download_timeout"}.get(
+            error.failure_kind, "artifact_transfer_failed")
+        return ProviderGatewayError(message, code=code, category="download", provider="tripo",
+                                    operation=operation, retryable=False, status=error.http_status)
     if error.terminal:
         return ProviderGatewayError(message, code="provider_task_failed", category="provider",
             provider="tripo", operation=operation, retryable=True, task_id=error.task_id, terminal=True)
@@ -541,7 +546,7 @@ class ModelProviderGateway:
         task_result: Mapping[str, Any],
         output_path: str | os.PathLike[str],
         max_bytes: int,
-        *, progress: Callable[[int, int | None], None] | None = None,
+        *, progress: Callable[[int, int | None], None] | None = None, stop_event: Any = None,
     ) -> Path:
         if max_bytes <= 0:
             raise ProviderGatewayError(
@@ -553,6 +558,8 @@ class ModelProviderGateway:
             )
         try:
             options = {"progress": progress} if progress is not None else {}
+            if stop_event is not None:
+                options["stop_event"] = stop_event
             return self._download_task_artifact(task_result, output_path, max_bytes, **options)
         except TripoError as error:
             raise _classify_tripo_error(error, "artifact_download") from None

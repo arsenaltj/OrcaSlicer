@@ -169,6 +169,33 @@ class ModelTests(unittest.TestCase):
                 self.assertEqual(self.gateway.start_or_reuse_model_task.call_args.kwargs["existing_task_id"], "")
                 self.assertIsNotNone(self.gateway.start_or_reuse_model_task.call_args.kwargs["authorization"])
 
+    def test_download_failure_ends_the_advanced_job_until_a_new_explicit_operation(self):
+        error = ProviderGatewayError("Download exhausted", code="artifact_dns_failed", category="download",
+                                     operation="artifact_download", provider="tripo", retryable=False)
+        with mock.patch.object(self.ports, "download_artifact", side_effect=error) as download, \
+                mock.patch.object(self.ports, "fail", wraps=self.ports.fail) as fail:
+            job = self.execute(self.plan())
+            self.drain()
+        self.assertEqual(job.state, "failed")
+        self.assertIsNone(job.artifact_path)
+        self.assertEqual(job.attempts[0]["provider_error_code"], "artifact_dns_failed")
+        self.assertFalse(job.attempts[0]["provider_error_retryable"])
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(len(job.attempts), 1)
+        self.assertEqual(self.queue, [])
+        download.assert_called_once()
+        fail.assert_called_once()
+        with self.assertRaises(RequestError) as caught:
+            self.models.resume(self.group["id"], job.id)
+        self.assertEqual(caught.exception.code, "generation_restart_required")
+        self.assertEqual(len(self.requests), 1)
+        fresh = self.execute(self.plan())
+        self.drain()
+        self.assertNotEqual(job.id, fresh.id)
+        self.assertEqual(fresh.state, "ready")
+        self.assertEqual(len(self.requests), 2)
+        self.assertEqual(self.gateway.start_or_reuse_model_task.call_args.kwargs["existing_task_id"], "")
+
     def test_ended_ambiguous_submission_does_not_block_a_new_user_operation(self):
         self.gateway.start_or_reuse_model_task.side_effect = ProviderGatewayError("lost response", code="ambiguous", category="provider", ambiguous=True)
         job = self.execute(self.plan()); self.drain()

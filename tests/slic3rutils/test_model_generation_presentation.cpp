@@ -170,6 +170,34 @@ TEST_CASE("Advanced stage text describes four view generation instead of smart p
     CHECK_FALSE(localized_job_status(job, true).Contains(wxString::FromUTF8("图片预览")));
 }
 
+TEST_CASE("Download failures explain the exhausted transfer in both generation modes", "[ModelGenerationStatusText][ModelGenerationPresentation]")
+{
+    using namespace Slic3r::GUI::ModelGenerationStatusText;
+    const auto code = GENERATE("artifact_dns_failed", "artifact_download_timeout", "artifact_transfer_failed");
+    const bool advanced = GENERATE(false, true);
+    AIModelGenerationClient::JobStatus job;
+    job.id = "failed-download-job"; job.provider_task_id = "completed-cloud-task";
+    job.state = "failed"; job.phase = "failed"; job.progress = 97;
+    job.provider_error_code = code; job.provider_error_category = "download";
+    job.message = "Raw transfer diagnostic"; job.artifact_ready = false;
+    const auto text = localized_job_status(job, advanced);
+    CHECK(text.Contains(wxString::FromUTF8("模型下载失败")));
+    CHECK(text.Contains(wxString::FromUTF8("重新生成")));
+    CHECK_FALSE(text.Contains("Raw transfer diagnostic"));
+    CHECK_FALSE(text.Contains(wxString::FromUTF8("补下载")));
+    CHECK_FALSE(text.Contains(wxString::FromUTF8("已有模型")));
+    CHECK(text.Contains("failed-download-job"));
+    CHECK(text.Contains("completed-cloud-task"));
+    if (std::string(code) == "artifact_dns_failed")
+        CHECK(text.Contains(wxString::FromUTF8("无法解析")));
+    if (std::string(code) == "artifact_download_timeout")
+        CHECK(text.Contains(wxString::FromUTF8("超时")));
+    CHECK(job.state == "failed");
+    CHECK(job.progress == 97);
+    CHECK_FALSE(job.artifact_ready);
+    CHECK(job.provider_error_code == code);
+}
+
 TEST_CASE("Advanced failures use Chinese reasons and retain diagnostic identity without raw English", "[ModelGenerationStatusText][AdvancedCreation]")
 {
     using namespace Slic3r::GUI::ModelGenerationStatusText;

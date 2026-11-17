@@ -173,6 +173,12 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status, 
             message = _L("参考图上传到 Tripo 失败，尚未创建付费 3D 任务。请检查代理或网络后重试，程序会有限重试上传。");
         else if (status.provider_error_code == "provider_upload_failed")
             message = _L("参考图上传失败，尚未创建付费 3D 任务。请检查图片和服务配置后重试。");
+        else if (status.provider_error_code == "artifact_dns_failed")
+            message = _L("模型下载失败：无法解析下载服务器域名。请检查网络后重新生成。");
+        else if (status.provider_error_code == "artifact_download_timeout")
+            message = _L("模型下载失败：连接或传输超时。请检查网络后重新生成。");
+        else if (status.provider_error_code == "artifact_transfer_failed")
+            message = _L("模型下载失败，请查看诊断日志后重新生成。");
         else if (status.provider_error_code == "artifact_download_failed")
             message = _L("Tripo 任务已返回，但模型文件下载或校验失败。已有模型文件仍保留；可以从历史查看，或重新生成新任务。");
         else if (status.provider_error_code == "model_validation_failed")

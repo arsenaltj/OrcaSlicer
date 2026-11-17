@@ -573,7 +573,8 @@ class ModelArtifactWorkflow:
             gateway.download_artifact(result, raw, MAX_ARTIFACT_BYTES, output_format=job.output_format,
                                       progress=self.download_progress(job))
         else:
-            gateway.download_artifact(result, raw, MAX_ARTIFACT_BYTES, progress=self.download_progress(job))
+            gateway.download_artifact(result, raw, MAX_ARTIFACT_BYTES, progress=self.download_progress(job),
+                                      stop_event=job.stop_event)
         self.ports.stop_boundary(job)
         with raw.open("rb") as stream:
             is_glb = stream.read(4) == b"glTF"
@@ -670,7 +671,7 @@ class ModelArtifactWorkflow:
             work_directory.mkdir(parents=False, exist_ok=False)
         destination = work_directory / "artifact-raw.download"
         self.ports.tripo_gateway().download_artifact(result, destination, MAX_ARTIFACT_BYTES,
-                                                   progress=self.download_progress(job))
+                                                   progress=self.download_progress(job), stop_event=job.stop_event)
         self.ports.stop_boundary(job)
         if format_name == "obj":
             pass
