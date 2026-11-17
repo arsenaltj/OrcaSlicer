@@ -33,7 +33,7 @@ def _error(error: YoYoClawError, operation: str) -> ProviderGatewayError:
     return ProviderGatewayError(
         str(error), code=error.code, category=error.category, provider="yoyoclaw",
         operation=operation, retryable=error.retryable, ambiguous=error.ambiguous,
-        status=error.status, provider_message=error.provider_message, request_id=error.request_id,
+        status=error.status, provider_message=error.provider_message, provider_code=error.provider_code, request_id=error.request_id,
     )
 
 

@@ -94,6 +94,7 @@ class ProviderGatewayError(RuntimeError):
         terminal: bool = False,
         status: int | None = None,
         provider_message: str = "",
+        provider_code: str = "",
         request_id: str = "",
     ) -> None:
         super().__init__(message)
@@ -106,6 +107,7 @@ class ProviderGatewayError(RuntimeError):
         self.task_id, self.terminal = task_id, terminal
         self.status = status
         self.provider_message = provider_message
+        self.provider_code = provider_code
         self.request_id = request_id
 
 

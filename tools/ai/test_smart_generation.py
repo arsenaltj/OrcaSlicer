@@ -131,7 +131,7 @@ class SmartGenerationTests(unittest.TestCase):
                 if ambiguous:
                     with self.assertRaises(RequestError) as caught:
                         restarted.retry_preparation(original_id, {})
-                    self.assertEqual(caught.exception.code, "preparation_ambiguous")
+                    self.assertEqual(caught.exception.code, "generation_restart_required")
                     self.submit.assert_not_called()
 
     def test_fresh_image_intent_uses_current_bytes_without_removing_failed_inputs(self):
@@ -257,7 +257,7 @@ class SmartGenerationTests(unittest.TestCase):
                 app.create_text_job(self.request())
             self.submit.assert_not_called()
 
-    def test_stop_intent_and_progress_are_durable_and_reference_retry_does_not_generate(self):
+    def test_stop_is_durable_and_does_not_offer_reference_recovery(self):
         with tempfile.TemporaryDirectory() as directory:
             jobs = {}
             app = self.make_application(Path(directory), jobs)
@@ -272,10 +272,95 @@ class SmartGenerationTests(unittest.TestCase):
             self.assertTrue(restored.smart_stop_intent)
             self.assertEqual(restored.smart_progress, 29)
             self.submit.reset_mock()
-            app.retry_preparation(job.id, {})
+            with self.assertRaises(RequestError) as caught:
+                app.retry_preparation(job.id, {})
+            self.assertEqual(caught.exception.code, "generation_restart_required")
             self.submit.assert_not_called()
-            self.assertEqual(job.state, "awaiting_confirmation")
-            self.assertFalse(job.smart_stop_intent)
+            self.assertEqual(job.state, "stopped")
+            self.assertTrue(job.smart_stop_intent)
+            self.assertTrue(job.preview_path.is_file())
+
+    def test_each_user_operation_has_new_identity_for_all_previous_outcomes(self):
+        for previous in ("ready", "failed", "stopped", "cancelled", "awaiting_confirmation"):
+            for changed in (False, True):
+                with self.subTest(previous=previous, changed=changed), tempfile.TemporaryDirectory() as directory:
+                    jobs = {}; app = self.make_application(Path(directory), jobs)
+                    first_request = self.request()
+                    first = jobs[app.create_text_job(first_request).payload["job"]["id"]]
+                    first.state = previous
+                    first.preview_path = first.directory / "preview.png"
+                    Image.new("RGB", (256, 256), "white").save(first.preview_path)
+                    original = first.preview_path.read_bytes()
+                    next_request = self.request()
+                    if changed: next_request.update(prompt="a red building", style="custom", custom_style="ink relief")
+                    second = jobs[app.create_text_job(next_request).payload["job"]["id"]]
+                    self.assertNotEqual(first.id, second.id)
+                    self.assertNotEqual(first.flow_id, second.flow_id)
+                    self.assertEqual(second.user_prompt, next_request["prompt"])
+                    self.assertEqual(second.style, next_request["style"])
+                    self.assertEqual(first.preview_path.read_bytes(), original)
+                    self.assertEqual(self.submit.call_count, 2)
+                    app.create_text_job(next_request)
+                    self.assertEqual(self.submit.call_count, 2)  # Network replay within the new operation.
+
+    def test_stopped_operations_freeze_each_latest_generation_option(self):
+        changes = ({"prompt": "new building"}, {"style": "cartoon"},
+                   {"style": "custom", "custom_style": "ink sculpture"},
+                   {"design_model": "current-image-model"}, {"provider": "yoyoclaw"},
+                   {"geometry_model": "current-geometry-model"}, {"face_limit": 300000},
+                   {"geometry_quality": "detailed"}, {"texture_quality": "detailed"},
+                   {"output_format": "glb"})
+        for image_mode in (False, True):
+            for change in changes:
+                with self.subTest(image=image_mode, change=change), tempfile.TemporaryDirectory() as directory:
+                    jobs = {}; app = self.make_application(Path(directory), jobs)
+                    factory = Mock(side_effect=app.ports.new_job)
+                    app.ports = replace(app.ports, new_job=factory)
+                    encoded = BytesIO(); Image.new("RGB", (256, 256), "blue").save(encoded, "PNG")
+                    def create(request):
+                        return app.create_image_job(request, encoded.getvalue(), "image/png") if image_mode else app.create_text_job(request)
+                    old = jobs[create(self.request()).payload["job"]["id"]]
+                    old.state = "stopped"; old.smart_stop_intent = True
+                    request = {**self.request(), **change}
+                    if image_mode: request["instruction"] = request.pop("prompt")
+                    current = jobs[create(request).payload["job"]["id"]]
+                    self.assertNotEqual(current.id, old.id)
+                    self.assertNotEqual(current.flow_id, old.flow_id)
+                    self.assertEqual(factory.call_args.kwargs["generation_options"], request)
+                    self.assertEqual(factory.call_args.kwargs["provider"], request.get("provider", "tripo"))
+                    self.assertEqual(current.user_prompt, request["instruction"] if image_mode else request["prompt"])
+                    self.assertEqual(current.design_model, request.get("design_model", ""))
+                    self.assertEqual(current.style, request["style"])
+                    self.assertEqual(current.custom_style, request.get("custom_style", ""))
+                    self.assertEqual(self.submit.call_count, 2)
+                    self.assertTrue(old.smart_stop_intent)
+                    create(request)
+                    self.assertEqual(self.submit.call_count, 2)
+
+    def test_content_advice_never_vetoes_a_valid_geometry_request(self):
+        from model_request import _validate_image_file
+        from model_provider_gateway import ProviderGatewayError
+        from types import SimpleNamespace
+        for color in ("white", "black", (255, 255, 255, 0)):
+            for quality in (None, False, "raises"):
+                with self.subTest(color=color, quality=quality), tempfile.TemporaryDirectory() as directory:
+                    jobs = {}; app = self.make_application(Path(directory), jobs)
+                    job = jobs[app.create_text_job(self.request()).payload["job"]["id"]]
+                    job.state = "awaiting_confirmation"; job.raw_preview_path = job.directory / "design.png"
+                    Image.new("RGBA", (256, 256), color).save(job.raw_preview_path)
+                    job.preview_path = job.raw_preview_path; job.image_metrics["design_reference"] = "ai-design-v1"
+                    job.image_metrics["generation_input_quality"] = {"model_input_eligible": quality, "blockers": ["subject_cropped"], "boundary_ratio": .1965}
+                    advice = Mock(side_effect=RuntimeError("diagnostic unavailable")) if quality == "raises" else Mock()
+                    app.ports = replace(app.ports, validate_image=_validate_image_file, assess_reference=advice,
+                        gateway=lambda _: SimpleNamespace(model_generation_available=lambda: True), clear_artifact=lambda _: None)
+                    self.submit.reset_mock()
+                    app.generate(job.id, {"prepared_prompt": ""})
+                    self.submit.assert_called_once()
+                    self.assertEqual(job.state, "queued")
+                    self.assertEqual(job.image_metrics["generation_input_quality"]["model_input_eligible"], quality)
+                    self.assertFalse(app.ports.validate_image is advice)
+                    app.generate(job.id, {"prepared_prompt": ""})
+                    self.assertEqual(self.submit.call_count, 1)
 
     def test_static_webp_decodes_and_animated_or_corrupt_webp_is_rejected(self):
         output = BytesIO()
@@ -301,7 +386,7 @@ class SmartGenerationTests(unittest.TestCase):
             self.assertEqual(len({r.payload["job"]["id"] for r in responses}), 1)
             self.assertEqual(self.submit.call_count, 1)
 
-    def test_saved_model_receipt_is_replayed_and_stop_requires_explicit_resume(self):
+    def test_same_operation_receipt_replays_but_stopped_task_cannot_resume(self):
         with tempfile.TemporaryDirectory() as directory:
             jobs = {}
             app = self.make_application(Path(directory), jobs)
@@ -315,7 +400,7 @@ class SmartGenerationTests(unittest.TestCase):
             job.state = "stopped"; job.smart_stop_intent = True
             with self.assertRaises(RequestError) as caught:
                 app.generate(job.id, {"prepared_prompt": ""})
-            self.assertEqual(caught.exception.code, "stopped")
+            self.assertEqual(caught.exception.code, "generation_restart_required")
             self.submit.assert_not_called()
 
     def test_explicit_preparation_retry_preserves_failed_evidence_and_never_submits_3d(self):
@@ -329,12 +414,13 @@ class SmartGenerationTests(unittest.TestCase):
             evidence = job.preview_path
             job.state = "failed"
             self.submit.reset_mock()
-            app.retry_preparation(job.id, {"regenerate": True})
-            self.submit.assert_called_once()
-            self.assertIs(self.submit.call_args.args[1], app.ports.preprocess_text)
-            self.assertIsNone(job.preview_path)
+            with self.assertRaises(RequestError) as caught:
+                app.retry_preparation(job.id, {"regenerate": True})
+            self.assertEqual(caught.exception.code, "generation_restart_required")
+            self.submit.assert_not_called()
+            self.assertEqual(job.preview_path, evidence)
             self.assertTrue(evidence.is_file())
-            self.assertEqual(job.state, "preprocessing")
+            self.assertEqual(job.state, "failed")
 
     def test_ambiguous_preparation_failure_is_not_blindly_resubmitted(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -346,7 +432,7 @@ class SmartGenerationTests(unittest.TestCase):
             self.submit.reset_mock()
             with self.assertRaises(RequestError) as caught:
                 app.retry_preparation(job.id, {})
-            self.assertEqual(caught.exception.code, "preparation_ambiguous")
+            self.assertEqual(caught.exception.code, "generation_restart_required")
             self.submit.assert_not_called()
 
     def test_webp_keeps_original_bytes_and_uses_lossless_png_for_preparation(self):
@@ -367,6 +453,134 @@ class SmartGenerationTests(unittest.TestCase):
                 self.assertEqual(decoded.convert("RGBA").tobytes(), original.tobytes())
             loaded = _load_job(job.directory)
             self.assertEqual(loaded.input_path.read_bytes(), data)
+
+    def lifecycle(self, root, jobs):
+        from model_job_lifecycle import ModelJobLifecycle, ModelJobLifecyclePorts
+        def denied(*args, **kwargs):
+            raise AssertionError("Restart must not run generation or quality work")
+        values = {field.name: denied for field in fields(ModelJobLifecyclePorts)}
+        values.update(jobs=jobs, lock=threading.RLock(), model_output_root=lambda: root,
+                      persist_job=_persist_job, submit=Mock())
+        return ModelJobLifecycle(ModelJobLifecyclePorts(**values))
+
+    def test_restart_never_resumes_saved_smart_work_and_preserves_every_asset(self):
+        for state in ("preprocessing", "awaiting_confirmation", "queued", "running", "stopping", "stopped", "failed", "ready"):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); jobs = {}; app = self.make_application(root, jobs)
+                job = jobs[app.create_text_job(self.request()).payload["job"]["id"]]
+                job.state = job.phase = state
+                job.attempts = [{"generation_task_id": "original-task", "provider_error_code": "provider_task_failed",
+                    "provider_detail_code": "FailedOperation.InnerError", "provider_detail_message": "输入图片生成几何失败"}]
+                job.artifact_path = job.directory / "model.glb"; job.artifact_path.write_bytes(b"original completed artifact")
+                job.artifact_format = "glb"
+                job.preview_path = job.directory / "preview.png"; Image.new("RGB", (256, 256), "white").save(job.preview_path)
+                job.image_metrics["generation_input_quality"] = {"model_input_eligible": False, "boundary_ratio": .1965}
+                _persist_job(job)
+                before = {path.name: path.read_bytes() for path in (job.artifact_path, job.preview_path)}
+                lifecycle = self.lifecycle(root, {})
+                restored, = lifecycle.restore_jobs()
+                self.assertEqual(restored.state, state if state in {"ready", "failed", "stopped"} else "stopped")
+                self.assertEqual(restored.attempts[0]["generation_task_id"], "original-task")
+                self.assertEqual(restored.image_metrics["generation_input_quality"]["boundary_ratio"], .1965)
+                for path in (restored.artifact_path, restored.preview_path): self.assertEqual(path.read_bytes(), before[path.name])
+                self.assertEqual(lifecycle.latest_job_is_restorable(restored), state == "ready")
+                public = lifecycle.public_job(restored)
+                self.assertEqual(public["provider_failure"]["code"], "provider_task_failed")
+                self.assertEqual(public["provider_failure"]["provider_code"], "FailedOperation.InnerError")
+                self.assertEqual(public["provider_failure"]["provider_message"], "输入图片生成几何失败")
+                lifecycle.ports.submit.assert_not_called()
+
+    def test_stop_is_idempotent_and_cannot_delete_a_completed_asset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            jobs = {}; app = self.make_application(Path(directory), jobs)
+            job = jobs[app.create_text_job(self.request()).payload["job"]["id"]]
+            job.state = "awaiting_confirmation"
+            self.submit.reset_mock()
+            app.stop(job.id, {}); app.stop(job.id, {})
+            self.assertEqual(job.state, "stopped")
+            self.assertTrue(job.smart_stop_intent)
+            self.submit.assert_not_called()
+            job.state = "ready"; job.artifact_path = job.directory / "model.glb"
+            job.artifact_path.write_bytes(b"completed before stop")
+            app.stop(job.id, {})
+            self.assertEqual(job.state, "ready")
+            self.assertEqual(job.artifact_path.read_bytes(), b"completed before stop")
+            self.assertTrue(job.smart_stop_intent)
+
+    def test_false_quality_reports_cover_all_subjects_and_boundary_ratios(self):
+        from model_request import _validate_image_file
+        from types import SimpleNamespace
+        subjects = ("person", "figurine", "cat", "dog", "animal", "building", "product", "people", "relief")
+        for subject in subjects:
+            for ratio in (.1799, .18, .1801, .1965):
+                with self.subTest(subject=subject, ratio=ratio), tempfile.TemporaryDirectory() as directory:
+                    jobs = {}; app = self.make_application(Path(directory), jobs)
+                    request = self.request(); request["prompt"] = subject
+                    job = jobs[app.create_text_job(request).payload["job"]["id"]]
+                    job.state = "awaiting_confirmation"; job.raw_preview_path = job.directory / "design.png"
+                    Image.new("RGB", (256, 256), "white").save(job.raw_preview_path)
+                    job.preview_path = job.raw_preview_path; job.image_metrics["design_reference"] = "ai-design-v1"
+                    report = {"model_input_eligible": False, "boundary_ratio": ratio, "blockers": ["subject_cropped"]}
+                    job.image_metrics.update(generation_input_quality=report.copy(), model_input_quality=report.copy(), palette_quality_ok=False)
+                    app.ports = replace(app.ports, validate_image=_validate_image_file, assess_reference=Mock(side_effect=TimeoutError()),
+                        gateway=lambda _: SimpleNamespace(model_generation_available=lambda: True), clear_artifact=lambda _: None)
+                    self.submit.reset_mock(); app.generate(job.id, {"prepared_prompt": ""})
+                    self.submit.assert_called_once()
+                    self.assertEqual(job.state, "queued")
+                    self.assertEqual(job.image_metrics["generation_input_quality"], report)
+                    app.ports.assess_reference.assert_not_called()
+
+    def test_real_invalid_reference_files_never_reach_paid_submission(self):
+        from model_request import _validate_image_file
+        for payload in (b"", b"broken PNG", b"\x89PNG\r\n\x1a\ncorrupt"):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as directory:
+                jobs = {}; app = self.make_application(Path(directory), jobs)
+                job = jobs[app.create_text_job(self.request()).payload["job"]["id"]]
+                job.state = "awaiting_confirmation"; job.source = "image"
+                job.raw_preview_path = job.directory / "design.png"; job.raw_preview_path.write_bytes(payload)
+                job.image_metrics["design_reference"] = "ai-design-v1"
+                app.ports = replace(app.ports, validate_image=_validate_image_file)
+                self.submit.reset_mock()
+                with self.assertRaises(RequestError) as caught: app.generate(job.id, {"prepared_prompt": ""})
+                self.assertEqual(caught.exception.code, "invalid_model_reference")
+                self.submit.assert_not_called()
+
+    def test_design_preparation_keeps_valid_flat_images_when_advice_is_unavailable(self):
+        from design_workflow import DesignWorkflow, DesignWorkflowPorts
+        from model_request import _validate_image_file
+        for color in ("white", "black", (255, 255, 255, 0)):
+            for diagnostic in (ValueError, RuntimeError, TimeoutError, TypeError, KeyError):
+                with self.subTest(color=color, diagnostic=diagnostic), tempfile.TemporaryDirectory() as directory:
+                    job = Job(str(uuid.uuid4()), "text", Path(directory), workflow_mode="smart")
+                    def generate(_prompt, path, *_args, **_kwargs): Image.new("RGBA", (256, 256), color).save(path)
+                    values = {field.name: Mock() for field in fields(DesignWorkflowPorts)}
+                    values.update(lock=threading.RLock(), persist=_persist_job, validate_image=_validate_image_file,
+                        image_provider_status=lambda *_: {"provider": "gpt", "configured": True},
+                        generate_image=generate, assess_reference=Mock(side_effect=diagnostic("advice unavailable")))
+                    ports = DesignWorkflowPorts(**values)
+                    DesignWorkflow(ports).preprocess_text(job, "one object")
+                    self.assertEqual(job.state, "awaiting_confirmation")
+                    self.assertTrue(job.raw_preview_path.is_file())
+                    self.assertTrue(job.image_metrics["quality_advice_unavailable"])
+                    ports.fail.assert_not_called(); ports.fail_preprocess.assert_not_called()
+
+    def test_stopping_during_optional_quality_analysis_does_not_finish_preparation(self):
+        from design_workflow import DesignWorkflow, DesignWorkflowPorts
+        from model_contracts import JobStopped
+        from model_request import _validate_image_file
+        with tempfile.TemporaryDirectory() as directory:
+            job = Job(str(uuid.uuid4()), "text", Path(directory), workflow_mode="smart")
+            def generate(_prompt, path, *_args, **_kwargs):
+                Image.new("RGB", (256, 256), "white").save(path)
+            values = {field.name: Mock() for field in fields(DesignWorkflowPorts)}
+            values.update(lock=threading.RLock(), generate_image=generate, validate_image=_validate_image_file,
+                image_provider_status=lambda *_: {"provider": "gpt", "configured": True},
+                assess_reference=Mock(side_effect=JobStopped()))
+            ports = DesignWorkflowPorts(**values)
+            DesignWorkflow(ports).preprocess_text(job, "an object")
+            ports.mark_stopped.assert_called_once_with(job)
+            ports.fail.assert_not_called()
+            self.assertNotEqual(job.state, "awaiting_confirmation")
 
 
 if __name__ == "__main__":

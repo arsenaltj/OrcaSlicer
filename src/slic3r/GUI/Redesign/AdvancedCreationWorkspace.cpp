@@ -1543,7 +1543,7 @@ struct AdvancedCreationWorkspace::Impl {
         stop = new RoundedActionButton(action_panel, t("停止生成"), false, 32);
         stop->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { host.stop(); });
         actions->Add(stop, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, page.FromDIP(16));
-        reconcile = new RoundedActionButton(action_panel, t("恢复已确认请求"), false, 32);
+        reconcile = new RoundedActionButton(action_panel, t("核对本次请求"), false, 32);
         reconcile->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { host.reconcile_submission(); });
         actions->Add(reconcile, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, page.FromDIP(16));
         left->Add(action_panel, 0, wxEXPAND);
@@ -1565,7 +1565,7 @@ struct AdvancedCreationWorkspace::Impl {
             [this] {
                 const auto& state = host.model_state();
                 if (state.job_state == "ready" && state.can_retry_model) host.retry_local_model();
-                else host.resume_model();
+
             }, [this] { update_model_presentation(); },
             [this] { if (completed) completed(); }});
         center_sizer->Add(generation_view, 1, wxEXPAND); generation_view->Hide();
@@ -2298,8 +2298,7 @@ struct AdvancedCreationWorkspace::Impl {
         enable(generate, eligibility.generate_design); enable(model, eligibility.generate_model);
         const auto* group = session.group() ? &*session.group() : nullptr;
         show(view_model, model_tab && group && group->model_state == "ready"); enable(view_model, input_editable());
-        show(resume, model_tab && group && group->model_resumable &&
-                     (group->model_state == "failed" || group->model_state == "stopped")); enable(resume, input_editable());
+        show(resume, false); enable(resume, false);
         show(stop, eligibility.stop); enable(stop, eligibility.stop);
         show(reconcile, host.has_pending_receipt()); enable(reconcile, !host.command_pending());
         wxString status_text = reason_text(model_tab ? eligibility.model_reason : eligibility.design_reason);

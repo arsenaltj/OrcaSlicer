@@ -104,7 +104,7 @@ DFX 按用户确认定义为**诊断、日志、故障定位、性能与可靠�
 
 | 业务 | 主要入口/状态归属 | 交接约束 |
 | --- | --- | --- |
-| AI 文本/图片/模型工作流 | `tools/ai/model_job_application.py`、`model_job_lifecycle.py`、`model_job_repository.py`；GUI 提交/展示在 ModelGenerationPanel / FeatureHost | 确认、供应商 task id、本地 job id、取消和重启恢复分别处理；HTTP Handler 不产生第二套业务规则 |
+| AI 文本/图片/模型工作流 | `tools/ai/model_job_application.py`、`model_job_lifecycle.py`、`model_job_repository.py`；GUI 提交/展示在 ModelGenerationPanel / FeatureHost | 智能／高级每次有效操作新任务；当前操作内幂等和查询，停止／重启不恢复旧生成，完成资产独立保留；HTTP Handler 不产生第二套业务规则 |
 | 高级多视角创作 | `AdvancedCreationSession*` 持有桌面草稿、模型ID、选择及已验证可见版本；Application拥有当前模型的混合编辑／补图计划与依赖预算，workflow校验发布，repository持有组／current和不可变版本；Host拥有任务级回执、缓存和epoch适配 | 独立认证路由 `/v1/orcaslicer/advanced-multiview`；GPT全部参数保持原规格，YOYOClaw实时白名单、精确Qwen默认及最多三张有序参考不变。失败保留旧图／空位，由主按钮以当前模型新生成；旧未知结果保留事实，不锁新2D意图、不自动重发，3D四图／未决状态保护不变。新建立即重置，停止未提交旧视角；按操作回执兼容旧单文件，stop先于execute仍有效。执行器保持串行并投影queued；逐图缓存失败不吞终态，可见基图与服务端current分别冻结并比较。独立Job-v2及智能业务保持；两模式生成等待／结果／编辑进入Shell唯一工作台；编译／离线结果不代替真实供应商或GUI验收 |
 | 3D 后处理/人像/配色 | `GUI/AI/ModelGeneration/BeautyWorkbenchSession*`、`BeautyWorkbenchTransactionController*`、`PostGenerationWorkbench*`、`GUI/AI/ColorMatching` | 候选、当前作品、预览和历史需区分；颜色、几何与实物打印质量分别验证 |
 | 原生导入/应用 | `AI/Contracts/IModelArtifactConsumer.hpp`、`GUI/AI/Orca`、`PlaterWorkbenchImport*.ipp`、`PlaterAITransaction.ipp` | Plater/Model/Config 保有工程真值；明确应用和撤销；侧车不直接修改原生工程 |
@@ -161,7 +161,11 @@ AI设置栏是内容区外的同级控件，普通路由与历史呈现共用显
 
 ## 2026-11-11：单一工作台与创作资产交接
 
-创作步骤引导与准备失败新意图（2026-11-15）：AdvancedCreationSession仅为当前会话明确受理的新组初次设计保留一次性引导；当前输入匹配、四个当前版本本地校验可用且无活动／未决操作后，由可见Workspace消费并调用原Tab切换。后台完成不导航，返回同一任务时消费一次；历史打开、重启及消费后的局部更新不布防，切Tab不提交3D。智能原按钮在已知Job明确失败于持久化preparation阶段、无3D提交／任务／产物且原门禁满足时允许用户主动新建flow／Job，包括相同输入及ambiguous的2D失败。资格由Panel／SmartGenerationFlow推导并以只读能力交给Shell，提交时重新校验；编辑该失败的下一轮输入时保留已停止flow的呈现身份，避免同步快照被旧路由保护拒绝而回写旧值，只有显式生成才创建新flow。已确认准备失败的新意图在发送前被本地拒绝时恢复原意图；普通智能首次／重新生成保留原拒绝处理，已发送但无Job回执仍复用原flow。旧Job、错误及资产保留，原ambiguous retry_preparation和3D防重不放宽。失败输入下载到独立缓存副本后沿原呈现代次通知Shell，恢复展示不授权生成；中央提示、编辑和下游归属保持。
+历史侧栏的“失败记录”仅查看智能／高级已保存的失败诊断。Presentation在有界后台执行器中读取大小受限的本地记录，复用客户端字段校验及诊断脱敏；展示原任务编号、已保存错误，缺详情的旧记录明确说明信息不足。查看不调用供应商、不绑定活动任务、不回填草稿、不改写历史；离页或关闭后取消展示。完成模型列表及原资产打开路径保持独立。
+
+创作引导与每次新建（2026-11-17）：AdvancedCreationSession仅为当前会话明确受理的新组初次设计保留一次性引导；当前输入匹配、四个当前版本本地校验可用且无活动／未决操作后，由可见Workspace消费原Tab切换。后台完成不导航，历史打开、重启及消费后的更新不布防，切Tab不提交3D。智能按钮先同步当前控件和模型选项，再新建flow／request／job并重新2D→3D；上次成功／失败／停止、输入是否相同均不选择旧恢复。编辑下一轮输入保留原呈现身份，避免Route拒绝合法草稿后回填旧值；旧options／保存回执不能覆盖更新输入。已发送但回执丢失时只重传本次冻结请求，仍使用原request；当前操作未决不放行第二次创建。高级基于当前确认四图新plan／job，输入变更导致四图失配时要求重新准备确认，不暗中重画。旧Job、错误和资产保留。
+
+停止收尾由原Panel／SmartGenerationFlow、高级Host／AdvancedModelTaskFlow和Python应用共同处理：立即撤销自动3D及旧产物安装意图，保留找到原请求所需的临时身份；`stopping`只是受理，确认本地终止后才提示“已停止生成”并解锁。停止失败仍可再次停止；停止早于受理时旧回执只用于终止，不重新绑定或导航。回调同时核对会话和请求身份，同组新任务也不能被旧请求释放命令锁或覆盖投影。已完成资产保留，显式本地查看可重新加载文件，不恢复供应商生成。质量报告、18%启发式、配色和粒子失败只作建议／展示回退，不阻止有效文件建模；真实文件、四图摘要及能力契约保持。YOYO具体错误经可选详情字段贯穿网关、attempt、public job及中文状态，公共终态不变，未知原因不推断积分。
 
 高级3D受理与页内呈现（2026-11-13）：Job-v2响应先核对确认计划／收据及组、任务、来源身份，再登记Advanced Session的模型投影并通知适配器；完整四图缓存不作为进度显示门槛。当前组核对使用原epoch及普通快照，不重新恢复草稿／选择；旧缓存任务和旧任务更新时间不能回写受理／恢复后的投影。Workspace转交带group／job／epoch／操作代次的事件；Shell仅为当前新任务布防一次完成提示，任务更新不导航。智能与高级分别在各自中央区域展示进度与最终模型，点击“进入工作台”才交给唯一编辑工作台。临时过渡、最小化及离页沿既有生命周期和刷新队列处理，隐藏不取消已受理生成。中文说明统一由ModelGenerationStatusText按真实阶段及结构化错误投影，生成完成与工作台检查通过保持独立，不直接显示英文服务说明或高级流程不适用的智能人像准备提示。
 
@@ -350,7 +354,7 @@ Windows x64默认启用`ORCA_GENERATION_FOREGROUND_NATIVE`；CMake模块`OrcaGen
 
 应用级 `ModelGenerationFeatureHost` 唯一创建 `Role::WorkbenchAssets` 面板及 Beauty 编辑会话，`WorkbenchInstanceLease` 拒绝第二实例；智能及旧单图面板只承载创作。实际编辑路径／哈希、格式、色板、ColorIntent和参考图归资产面板，`WorkbenchModelContext` 仅保留纯值契约，不增设第二份可写状态。生成状态刷新及新建创作不替换编辑对象；显式打开产物或3D历史才经原 `ModelHistoryOpen` 准备、代次过滤、首帧呈现和回滚安装。历史3D打开不恢复生成输入；明确的未完成任务恢复仍走原来源命令，Job-v2不能从旧单图重试。FeatureHost保存打开请求的返回上下文，Shell按该上下文适配导航；历史切换及本地保存不改来源，返回使用对应Session的最新创作工作区。
 
-智能重启恢复的服务候选资格仍由原 `ModelJobLifecycle.latest_job_is_restorable` 决定：有可恢复用户输入的智能停止／失败任务保留候选资格，避免回退到更旧的完成成果。智能创作页实际可见且服务就绪时，经原Host只读查询最近任务；Input空态隐藏“恢复上次任务”及其占位，已发布完成模型留在右侧历史。适用的未完成智能任务，以及远端ready但本地模型或发布记录未齐的任务，沿原 `restore_job` 还原展示，不自动推进新的付费阶段；页面代次及输入意图检查拒绝离页或用户编辑后的旧回调。停止／失败及中央恢复继续调用原命令，反馈控件不另建业务状态。高级套图仍由自身组恢复，旧非智能终态、无原输入的内部预备任务及缺失图片保持排除。
+智能／高级重启不恢复旧生成：`ModelJobLifecycle`读取旧记录时终止未完成生成，不启动工作流；智能latest只保留完成资产候选，创作页不自动恢复最近任务，也不提供停止／失败任务恢复按钮。高级组仍可读取草稿、四图和诊断；旧模型收据仅核对终止，已终止旧creating／ambiguous记录不阻挡新plan，当前未决创建仍防重复。当前会话未停止任务在切页／短时断线后继续GET展示，不新增请求。已完成模型从历史或显式本地预览入口打开，资产操作不能重新授权供应商。旧非智能消费者保留其兼容接口，不批量删除历史或改写质量报告。
 
 独立生成等待／结果页及 `Result` 路由已移除，工作台Tab直接进入唯一编辑区；无模型时直接显示空态及历史，不等待模型帧。`RedesignCreationModel.cpp` 从当前可见成果冻结 `WorkbenchOpenRequest`，复用原资产摘要校验、编辑保护及工作台呈现事务。事务保留智能／高级来源画面，目标布局及首帧有效后才提交；取消、失败及超时恢复原编辑对象与可见来源页。同一已编辑资产的重入保留编辑现场，切片／预览继续使用明确的原入口。
 

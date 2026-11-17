@@ -1,7 +1,9 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
 #include "WorkbenchStyle.hpp"
 #include "ModelGenerationPresentation.hpp"
+#include "ModelGenerationStatusText.hpp"
 #include "WorkbenchHistorySnapshot.hpp"
+#include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include "slic3r/GUI/Widgets/TextInput.hpp"
 #include <wx/statbmp.h>
@@ -14,6 +16,9 @@
 #include <wx/menu.h>
 #include <wx/sizer.h>
 #include <wx/wupdlock.h>
+#include <wx/choicdlg.h>
+#include <wx/weakref.h>
+#include <wx/datetime.h>
 #include <cstring>
 
 namespace Slic3r::GUI {
@@ -221,7 +226,13 @@ wxWindow* ModelGenerationPanel::build_workbench_history(wxWindow* parent)
     m_workbench_history_title = new wxStaticText(panel, wxID_ANY,
         m_shell_smart_creation ? _L("历史模型") : _L("选择模型"));
     m_workbench_history_title->SetForegroundColour(wxColour(235, 235, 235));
-    root->Add(m_workbench_history_title, 0, wxEXPAND | wxALL, FromDIP(12));
+    auto* heading = new wxBoxSizer(wxHORIZONTAL);
+    heading->Add(m_workbench_history_title, 1, wxALIGN_CENTER_VERTICAL);
+    auto* failures = workbench_button(panel, _L("失败记录"));
+    failures->SetToolTip(_L("只读查看生成失败原因，不恢复或重新生成任务"));
+    failures->Bind(wxEVT_BUTTON, [this, failures](wxCommandEvent&) { show_model_failure_history(failures); });
+    heading->Add(failures, 0, wxALIGN_CENTER_VERTICAL);
+    root->Add(heading, 0, wxEXPAND | wxALL, FromDIP(12));
     auto* search = new TextInput(panel, wxEmptyString, wxEmptyString, "workbench_search");
     search->SetName("ai_content_color");
     search->SetBackgroundColor(StateColor(wxColour(49, 49, 54)));
@@ -410,6 +421,52 @@ void ModelGenerationPanel::open_workbench_history_entry(const std::string& key)
     load_library_entry(found->model_path, found->reference_image_path, found->ai_image_path,
         found->palette, found->palette_roles, found->use_printable_colors, found->color_intent_path,
         found->color_intent_schema, found->color_intent_sha256, found->job_id, found->title, false, found->repair_index);
+}
+
+void ModelGenerationPanel::show_model_failure_history(wxWindow* trigger)
+{
+    if (m_shutdown || !m_workbench_history_panel || !m_workbench_history_panel->IsShownOnScreen()) return;
+    trigger->Disable();
+    const auto task = m_failure_history_scope.begin("model-failure-history");
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    wxWeakRef<wxWindow> button(trigger);
+    const auto root = generated_models_root();
+    const bool accepted = Presentation::background_tasks().submit(task,
+        [root](const Presentation::TaskContext& context) { return read_model_failure_history(root, *context.cancellation); },
+        [weak, button, task](Presentation::TaskResult<std::vector<AIModelGenerationClient::JobStatus>> outcome) {
+            if (!weak || !weak->m_failure_history_scope.owns(task)) return;
+            if (button) button->Enable();
+            if (weak->m_shutdown || outcome.canceled || !weak->m_workbench_history_panel->IsShownOnScreen()) return;
+            if (outcome.error || !outcome.value || outcome.value->empty()) {
+                RedesignMessageDialog dialog(wxGetTopLevelParent(weak.get()),
+                    outcome.error ? _L("失败记录读取失败，已有记录和当前输入已保留。") : _L("没有可查看的生成失败记录。"), _L("失败记录"));
+                dialog.ShowModal(); return;
+            }
+            const auto& entries = *outcome.value;
+            wxArrayString labels;
+            for (const auto& entry : entries) {
+                const wxDateTime date(static_cast<std::time_t>(entry.updated_at));
+                labels.Add((entry.updated_at > 0.0 && date.IsValid() ? date.FormatISODate() + " " + date.FormatISOTime() : _L("未知时间")) +
+                    " | " + (entry.provider_name == "yoyoclaw" ? "YOYOClaw" : entry.provider_name == "tripo" ? "Tripo" : _L("模型服务")) +
+                    " | " + wxString::FromUTF8(entry.id.substr(0, 8)));
+            }
+            wxSingleChoiceDialog selector(wxGetTopLevelParent(weak.get()),
+                _L("选择记录查看已保存的错误信息。此操作不会恢复或重新生成任务。"), _L("失败记录"), labels);
+            if (selector.ShowModal() != wxID_OK || selector.GetSelection() == wxNOT_FOUND) return;
+            if (!weak || weak->m_shutdown || !weak->m_failure_history_scope.matches(task) ||
+                !weak->m_workbench_history_panel->IsShownOnScreen()) return;
+            const auto& entry = entries[static_cast<size_t>(selector.GetSelection())];
+            auto message = ModelGenerationStatusText::localized_job_status(entry, true);
+            if (entry.provider_detail_code.empty() && entry.provider_detail_message.empty())
+                message += "\n\n" + _L("此历史记录未保存供应商详细原因，无法据此判断是否积分不足。");
+            message += "\n\n" + _L("仅查看记录，当前输入和模型不变。");
+            RedesignMessageDialog details(wxGetTopLevelParent(weak.get()), message, _L("生成失败详情"), wxOK, false, true);
+            details.ShowModal();
+        });
+    if (!accepted) {
+        trigger->Enable();
+        m_workbench_history_status->SetLabel(_L("后台任务繁忙，请稍后查看失败记录。"));
+    }
 }
 
 void ModelGenerationPanel::export_workbench_history_entry(const std::string& key)

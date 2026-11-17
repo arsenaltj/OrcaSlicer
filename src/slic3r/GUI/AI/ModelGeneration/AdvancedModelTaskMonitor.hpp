@@ -24,6 +24,8 @@ public:
     const std::optional<ModelLibraryEntry>& artifact() const { return m_flow->artifact(); }
     void retry_local();
     void stop_local() { m_flow->stop_local(); }
+    void request_stop() { m_flow->request_stop(); }
+    void finish_stop(const std::string& job = {}) { m_flow->finish_stop(job); }
 private:
     void cancel_requests();
     void prepare(AI::GeneratedModelArtifact artifact, AIModelGenerationClient::JobStatus status,

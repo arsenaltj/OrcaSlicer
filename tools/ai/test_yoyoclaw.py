@@ -628,6 +628,36 @@ class YoYoClawTaskQueryTests(unittest.TestCase):
                 self.assertEqual(len(session.requests), 1)
                 self.assertEqual(clock.sleeps, [])
 
+    def test_terminal_error_messages_redact_credentials_and_sensitive_urls(self):
+        message = "token=private-token Authorization: Bearer private-bearer https://user:secret@cdn.example.invalid/failure?token=private-query#private-fragment\n" + "中" * 700
+        client, session, clock = self.client([_TransportResponse(200, {"status": "failed", "error": {
+            "code": "FailedOperation.InnerError", "message": message}})])
+        with self.assertRaises(YoYoClawError) as caught: client.wait_3d("model", "existing-task")
+        self.assertLessEqual(len(caught.exception.provider_message), 512)
+        for secret in ("private-token", "private-bearer", "private-query", "private-fragment", "user:secret"):
+            self.assertNotIn(secret, caught.exception.provider_message)
+        self.assertNotIn("\n", caught.exception.provider_message)
+        self.assertEqual(len(session.requests), 1)
+        self.assertEqual(clock.sleeps, [])
+
+    def test_terminal_failure_preserves_bounded_provider_details_without_retries(self):
+        for terminal in ("failed", "error", "cancelled", "canceled", "expired"):
+            for code, message in (("FailedOperation.InnerError", "输入图片生成几何失败，请更换图片或重试"),
+                                  ("InsufficientBalance", "余额不足"), (None, None), ([], {}),
+                                  ("x" * 101, "line\n" + "中" * 600)):
+                with self.subTest(terminal=terminal, code=code):
+                    client, session, clock = self.client([_TransportResponse(200, {"status": terminal, "error": {"code": code, "message": message}})])
+                    with self.assertRaises(YoYoClawError) as caught: client.wait_3d("model", "saved-task")
+                    error = caught.exception
+                    self.assertEqual(error.code, "provider_task_failed")
+                    self.assertFalse(error.retryable)
+                    self.assertFalse(error.ambiguous)
+                    self.assertLessEqual(len(error.provider_message), 512)
+                    self.assertNotIn("\n", error.provider_message)
+                    if isinstance(code, str) and len(code) <= 100: self.assertEqual(error.provider_code, code)
+                    self.assertEqual(len(session.requests), 1)
+                    self.assertEqual(clock.sleeps, [])
+
     def test_malformed_successful_status_responses_are_retried(self):
         for payload in (None, [], {"data": []}, {"status": " "}, {"status": ["completed"]}):
             with self.subTest(payload=payload):

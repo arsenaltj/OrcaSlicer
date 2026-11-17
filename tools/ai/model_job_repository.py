@@ -87,8 +87,7 @@ def _persist_job(job: Job, *, touch: bool = True, required: bool = False) -> Non
                 else: stage = 2 if not job.attempts else max(5, min(85, 5 + (job.progress - 20) * 80 // 50))
                 mapped = 30 + stage * 60 // 100
             else:
-                eligible = job.image_metrics.get("generation_input_quality", {}).get("model_input_eligible", True)
-                mapped = 30 if job.state == "awaiting_confirmation" and eligible else max(0, min(29, (job.progress - 5) * 18 // 10))
+                mapped = 30 if job.state == "awaiting_confirmation" else max(0, min(29, (job.progress - 5) * 18 // 10))
             job.smart_progress = max(job.smart_progress, mapped)
             job.smart_phase = "local" if local else "geometry" if geometry else "preparation"
             job.smart_elapsed_seconds = max(job.smart_elapsed_seconds, time.time() - job.smart_started_at)

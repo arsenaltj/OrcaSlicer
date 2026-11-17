@@ -135,6 +135,7 @@ class YoYoClawError(RuntimeError):
         ambiguous: bool = False,
         status: int | None = None,
         provider_message: str = "",
+        provider_code: str = "",
         request_id: str = "",
     ) -> None:
         super().__init__(message)
@@ -144,6 +145,7 @@ class YoYoClawError(RuntimeError):
         self.ambiguous = ambiguous
         self.status = status
         self.provider_message = provider_message
+        self.provider_code = provider_code
         self.request_id = request_id
 
 
@@ -340,6 +342,7 @@ def _safe_provider_error(result: Mapping[str, Any]) -> tuple[str, str, str]:
         provider_code = "provider_http_error"
     raw_message = error.get("message") or result.get("message")
     provider_message = redact_text(raw_message).strip() if isinstance(raw_message, str) else ""
+    provider_message = "".join(c if c.isprintable() else " " for c in provider_message)[:512]
     raw_request_id = (result.get("requestId") or result.get("request_id") or
                       error.get("requestId") or error.get("request_id"))
     request_id = raw_request_id.strip() if isinstance(raw_request_id, str) else ""
@@ -550,6 +553,7 @@ class YoYoClawClient:
             raise YoYoClawError(
                 message, code=code, category=category, retryable=retryable,
                 ambiguous=ambiguous, status=status, provider_message=provider_message,
+                provider_code=provider_code if valid_object else "",
                 request_id=request_id,
             )
         if stream:
@@ -983,7 +987,11 @@ class YoYoClawClient:
             if status in {"completed", "succeeded", "success"}:
                 return dict(result)
             if status in {"failed", "error", "cancelled", "canceled", "expired"}:
-                raise YoYoClawError(f"YOYOClaw 3D task failed ({status}).", code="provider_task_failed", category="provider")
+                provider_code, provider_message, request_id = _safe_provider_error(result)
+                raise YoYoClawError(
+                    f"YOYOClaw 3D task failed ({status}).", code="provider_task_failed", category="provider",
+                    provider_code=provider_code, provider_message=provider_message, request_id=request_id,
+                )
             pause(interval)
         diagnostic_event("yoyoclaw.task_query.timed_out", level="WARNING", endpoint=endpoint)
         raise _poll_timeout_error()

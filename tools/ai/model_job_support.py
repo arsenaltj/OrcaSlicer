@@ -126,24 +126,25 @@ def assess_job_model_reference(job: Any) -> dict[str, Any]:
 def model_input_quality_message(quality: dict[str, Any]) -> str:
     blockers = quality.get("blockers", [])
     primary = str(blockers[0]) if blockers else ""
-    return {
-        "subject_not_detected": "No clear subject was found; use a clearer image or regenerate the preview.",
-        "subject_too_small": "The subject is too small; enlarge it and regenerate the preview.",
-        "subject_or_background_fills_frame": "The subject or background fills the frame; regenerate with clear margins.",
-        "subject_cropped": "The subject touches the frame and may be cropped; regenerate with the complete silhouette visible.",
-        "fragmented_subject": "The reference contains disconnected subjects or fragments; regenerate with one connected subject.",
-        "excessive_semitransparency": "The subject contains too much transparency for reliable 3D generation.",
-        "background_not_isolated": "The background is too complex; regenerate on a transparent or plain background.",
-        "subject_has_rectangular_cutout": "The portrait contains a large square cutout or missing body region; regenerate the preview before paying for 3D generation.",
-        "portrait_shoulder_silhouette_unverified": "The portrait shoulder silhouette still contains an unverified gap or background remnant; regenerate the preview before paying for 3D generation.",
-        "preview_identity_mismatch": "The prepared face differs too much from the original; regenerate the portrait preview.",
-        "preview_face_geometry_drift": "The prepared face shape or landmarks drifted; regenerate the portrait preview.",
-        "preview_age_expression_drift": "The prepared age or expression changed; regenerate the portrait preview.",
-        "preview_material_mixing": "Skin, clothing, hair, or base colors are mixed; regenerate the portrait preview.",
-        "preview_base_mixing": "The pedestal contains another material color; regenerate the portrait preview.",
-        "preview_pose_clothing_drift": "The prepared pose or clothing differs from the original; regenerate the portrait preview.",
-        "preview_modeling_reference_unclear": "The portrait is not a reliable 3D reference; regenerate the preview.",
-    }.get(primary, "The preview does not meet the image-to-3D input requirements; regenerate it.")
+    advice = {
+        "subject_not_detected": "The subject could not be distinguished from its background.",
+        "subject_too_small": "The subject occupies a small part of the image.",
+        "subject_or_background_fills_frame": "The subject or background fills the frame.",
+        "subject_cropped": "The subject touches the frame and may be cropped.",
+        "fragmented_subject": "The image may contain disconnected subjects or fragments.",
+        "excessive_semitransparency": "The image contains substantial transparency.",
+        "background_not_isolated": "The image has a complex background.",
+        "subject_has_rectangular_cutout": "The image may contain a rectangular gap.",
+        "portrait_shoulder_silhouette_unverified": "The subject silhouette could not be verified.",
+        "preview_identity_mismatch": "The prepared face may differ from the original.",
+        "preview_face_geometry_drift": "The prepared face shape or landmarks may differ.",
+        "preview_age_expression_drift": "The prepared age or expression may differ.",
+        "preview_material_mixing": "Subject material colors may be mixed.",
+        "preview_base_mixing": "The pedestal may contain another material color.",
+        "preview_pose_clothing_drift": "The prepared pose or clothing may differ.",
+        "preview_modeling_reference_unclear": "The subject reference could not be assessed reliably.",
+    }.get(primary, "The image has content quality suggestions.")
+    return advice + " Content checks are advisory and do not prevent 3D generation."
 
 
 def printable_preview_message(job: Any, fallback: str) -> str:
@@ -161,19 +162,19 @@ def printable_preview_message(job: Any, fallback: str) -> str:
         continuity = float(job.image_metrics.get("largest_subject_component_ratio", 0.0))
         detached_span = float(job.image_metrics.get("largest_detached_subject_diagonal_ratio", 0.0))
         if subject_ratio < 0.18:
-            return "The printable subject is too small in the preview; regenerate with a larger subject."
+            return "The printable subject may be small. This advice does not prevent 3D generation."
         if continuity < 0.90:
-            return "The printable subject is disconnected; regenerate with one connected subject."
+            return "The printable subject may be disconnected. This advice does not prevent 3D generation."
         if detached_span >= 0.08:
-            return "A long thin structure is detached from the subject; reconnect handles, branches, or supports and regenerate."
+            return "A thin structure may be detached. Check the resulting model; 3D generation remains available."
         if not bool(job.image_metrics.get("material_fragmentation_ok", True)):
-            return "Skin or garment colors are fragmented into incorrect patches; regenerate the portrait preview before 3D."
-        return "The printable preview failed its geometry quality check; regenerate the preview."
+            return "Material colors may be fragmented. This advice does not prevent 3D generation."
+        return "The preview has geometry quality suggestions; 3D generation remains available."
     return fallback
 
 
 def apply_legacy_material_fragmentation_gate(job: Any) -> None:
-    """Conservatively block severe pre-gate portrait previews after an upgrade."""
+    """Retain legacy fragmentation diagnostics as non-blocking advice."""
 
     metrics = job.image_metrics
     if "material_fragmentation_ok" in metrics:
@@ -209,6 +210,6 @@ def apply_legacy_material_fragmentation_gate(job: Any) -> None:
     warnings = metrics.get("quality_warnings", [])
     if not isinstance(warnings, list):
         warnings = []
-    if "portrait_material_fragmentation_blocks_3d" not in warnings:
-        warnings.append("portrait_material_fragmentation_blocks_3d")
+    if "portrait_material_fragmentation_advice" not in warnings:
+        warnings.append("portrait_material_fragmentation_advice")
     metrics["quality_warnings"] = warnings

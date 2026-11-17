@@ -305,51 +305,11 @@ class ModelJobApplication:
     def retry_preparation(self, job_id: str, request: dict[str, Any]) -> ApplicationResult:
         self._require_legacy_source(job_id)
         job = self.ports.get_job(job_id)
-        if job is None: raise RequestError("job_not_found", "Model job not found.", 404)
-        with self.ports.lock:
-            if job.workflow_mode != "smart" or job.smart_model_request_id or self.ports.latest_task_id(job):
-                raise RequestError("invalid_job_state", "This job must resume its existing model stage.", 409)
-            if job.state not in {"failed", "stopped", "awaiting_confirmation"}:
-                raise RequestError("invalid_job_state", "Preparation is already active.", 409)
-            regenerate = _boolean_field(request.get("regenerate"), "regenerate", default=False)
-            if job.preprocess_failure.get("ambiguous") is True and (regenerate or not job.preview_path):
-                raise RequestError("preparation_ambiguous", "The previous preparation result is unknown. Verify it before creating another paid request.", 409)
-            if job.preview_path and job.preview_path.is_file() and not regenerate:
-                job.state = "awaiting_confirmation"; job.phase = "awaiting_confirmation"
-                job.smart_stop_intent = False; job.stop_event.clear()
-                job.smart_started_at = time.time() - job.smart_elapsed_seconds
-                self.ports.persist(job, required=True)
-                return ApplicationResult(200, {"job": self.ports.present(job)})
-            if not self._design_status("gpt", job.design_model).get("available", False):
-                raise RequestError("feature_unavailable", "The configured GPT image model is unavailable.", 503)
-            job.state = "preprocessing"; job.phase = "preprocessing"
-            if regenerate:
-                # Keep old files as evidence, but never reuse failed eligibility.
-                evidence = job.directory / ("preparation-evidence-" + uuid.uuid4().hex)
-                evidence.mkdir()
-                for path in {job.preview_path, job.raw_preview_path, job.strict_preview_path,
-                             job.model_reference_path, job.geometry_reference_path} - {None}:
-                    if path.is_file() and path.resolve().is_relative_to(job.directory.resolve()):
-                        shutil.copy2(path, evidence / path.name)
-                (evidence / "metrics.json").write_text(json.dumps(job.image_metrics, ensure_ascii=False), encoding="utf-8")
-                job.preview_path = job.raw_preview_path = job.strict_preview_path = None
-                job.model_reference_path = job.geometry_reference_path = None
-                job.image_metrics.clear()
-            job.smart_stop_intent = False; job.stop_event.clear()
-            job.smart_started_at = time.time() - job.smart_elapsed_seconds
-            self.ports.persist(job, required=True)
-        try:
-            if job.source == "text": self.ports.submit(job, self.ports.preprocess_text, job.user_prompt)
-            elif job.input_path:
-                normalized = job.directory / "input-normalized.png"
-                self.ports.submit(job, self.ports.preprocess_image, normalized if normalized.is_file() else job.input_path,
-                                  _normalize_image_instruction(job.user_prompt))
-            else: raise RequestError("input_unavailable", "The original image is missing.", 409)
-        except Exception:
-            with self.ports.lock:
-                job.state = "failed"; job.phase = "failed"; self.ports.persist(job)
-            raise
-        return ApplicationResult(202, {"job": self.ports.present(job)})
+        if job is None:
+            raise RequestError("job_not_found", "Model job not found.", 404)
+        if job.workflow_mode == "smart":
+            raise RequestError("generation_restart_required", "Start a new generation from the current inputs.", 409)
+        raise RequestError("invalid_job_state", "Preparation retry is unavailable for this workflow.", 409)
 
     def confirm_palette(self, job_id: str, request: dict[str, Any]) -> ApplicationResult:
         self._require_legacy_source(job_id)
@@ -463,8 +423,8 @@ class ModelJobApplication:
         with self.ports.lock:
             if job.workflow_mode == "smart" and job.smart_model_request_id and job.state in {"queued", "running", "ready"}:
                 return ApplicationResult(200, {"job": self.ports.present(job)})
-            if job.workflow_mode == "smart" and job.smart_stop_intent and not explicit_resume:
-                raise RequestError("stopped", "The flow was stopped; resume explicitly to continue.", 409)
+            if job.workflow_mode == "smart" and (job.smart_stop_intent or resume_existing or explicit_resume or job.state in {"failed", "stopped", "cancelled"}):
+                raise RequestError("generation_restart_required", "Start a new generation from the current inputs.", 409)
             provider_task_id = self.ports.latest_task_id(job)
             if retry_failed:
                 raise RequestError("workflow_removed", "Portrait automatic retries have been removed.", 410)
@@ -508,7 +468,7 @@ class ModelJobApplication:
                     self.ports.validate_image(
                         reference,
                         minimum_edge=MIN_MODEL_REFERENCE_EDGE,
-                        require_visual_detail=True,
+                        require_visual_detail=False,
                     )
                 except ValueError as exc:
                     raise RequestError(
@@ -516,7 +476,8 @@ class ModelJobApplication:
                         f"The generated image is not suitable for 3D input: {exc}",
                         409,
                     ) from None
-                self.ports.assess_reference(job)
+                # Preparation already retained any content advice. Submission
+                # only validates the actual file; it never waits for diagnostics.
             if not self.ports.gateway(provider).model_generation_available():
                 raise RequestError("feature_unavailable", "Model generation is not configured.", 503)
             next_attempt = len(job.attempts) + 1
@@ -611,7 +572,7 @@ class ModelJobApplication:
                 self.ports.validate_image(
                     reference,
                     minimum_edge=MIN_MODEL_REFERENCE_EDGE,
-                    require_visual_detail=True,
+                    require_visual_detail=False,
                 )
             except ValueError as exc:
                 raise RequestError("invalid_model_reference", str(exc), 409) from None
@@ -720,6 +681,10 @@ class ModelJobApplication:
                 job.phase = "stopped"
                 job.message = "Model generation stopped."
                 job.progress = 0
+                self.ports.persist(job)
+            elif job.workflow_mode == "smart" and job.state in {"ready", "failed", "cancelled"}:
+                # The completion won the race. Preserve its asset/diagnostic;
+                # the desktop ends local consumption without installing it.
                 self.ports.persist(job)
             elif job.state != "stopped":
                 raise RequestError("invalid_job_state", "Job cannot be stopped in its current state.", 409)

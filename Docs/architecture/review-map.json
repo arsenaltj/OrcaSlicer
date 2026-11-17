@@ -476,6 +476,11 @@
       "needle": "void ModelGenerationPanel::refresh_workbench_history()"
     },
     {
+      "id": "model_failure_history_readonly",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationWorkbenchHistory.cpp",
+      "needle": "void ModelGenerationPanel::show_model_failure_history(wxWindow* trigger)"
+    },
+    {
       "id": "workbench_history_snapshot",
       "path": "src/slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySnapshot.hpp",
       "needle": "inline std::string workbench_history_key("
@@ -730,7 +735,7 @@
       "id": "advanced_creation_host",
       "path": "src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.cpp",
       "needle": "void AdvancedCreationFeatureHost::generate_model(Confirm confirm)",
-      "detail": "高级提交／停止／恢复和产物由现有适配执行；先登记真实任务再通知所属创作页，不等待四图缓存；任务刷新不导航。按资源身份复用验证／解码结果，迟到结果不覆盖新组或版本。"
+      "detail": "高级每次有效操作基于当前确认四图新plan／job，当前操作内核对幂等；停止收尾不恢复旧生成，旧回调按组／会话／请求隔离。先登记真实任务再通知所属创作页，不等待四图缓存；任务刷新不导航，完成资产可独立加载。"
     },
     {
       "id": "advanced_creation_workspace",
@@ -748,7 +753,7 @@
       "id": "advanced_multiview_models",
       "path": "tools/ai/advanced_multiview_models.py",
       "needle": "class AdvancedMultiviewModels:",
-      "detail": "四具名版本冻结为 Job-v2；模型确认、受理链接和原任务恢复。"
+      "detail": "每次有效操作将四具名版本冻结为新Job-v2；模型确认和同次受理核对保留，已终止旧未决操作不阻挡新建，停止／重启不恢复旧生成。"
     },
     {
       "id": "advanced_multiview_model_workflow",
@@ -1023,12 +1028,12 @@
         "recommending_palette": "推荐配色（源码引用）",
         "awaiting_palette_confirmation": "等待配色确认",
         "awaiting_confirmation": "等待用户确认生成",
-        "queued": "排队或恢复任务",
+        "queued": "本次生成排队",
         "running": "生成或下载处理中",
         "ready": "模型结果可用；不等于已导入",
         "stopping": "停止本地任务处理中",
         "stopped": "本地流程已停止；远端可能仍计费",
-        "failed": "当前任务失败；需判断恢复方式"
+        "failed": "当前任务失败；保留诊断，主动生成创建新任务"
       },
       "rules": [
         {
@@ -1049,8 +1054,8 @@
           ]
         },
         {
-          "title": "响应中断先恢复原任务",
-          "detail": "生成提交响应中断时保留任务编号继续查询，避免为恢复界面重复付费提交。",
+          "title": "同次幂等与新操作新建",
+          "detail": "当前操作响应中断只沿原请求核对，避免重复付费；停止／重启不恢复生成，下一次主动操作使用最新输入新建。质量报告和等待粒子不决定建模资格。",
           "evidence": [
             "generate_confirmation"
           ]
@@ -1364,7 +1369,7 @@
       "id": "generation",
       "label": "模型生成",
       "detail": "排队、执行远端任务并获取模型",
-      "boundary": "中断先恢复原任务，避免重复提交",
+      "boundary": "每次有效操作新建，当前操作内幂等；停止／重启不恢复旧生成",
       "group": "设计与生成",
       "evidence": [
         "submit_generation",

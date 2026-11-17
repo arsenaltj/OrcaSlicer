@@ -12,34 +12,26 @@ class SmartGenerationFlow
 {
 public:
     enum class Phase { Preparation, Geometry, Local, Complete };
-    static bool can_restart_failed_preparation(bool smart, const std::string& job_id,
-        const std::string& job_state, const std::string& job_phase, bool geometry_submitted,
-        bool remote_task, bool artifact, bool may_generate)
-    {
-        // Use the job's persisted phase, never the mutable draft's local phase.
-        // A missing model-task ID alone does not prove that 3D was not submitted.
-        return smart && !job_id.empty() && job_state == "failed" && job_phase == "preparation" &&
-            !geometry_submitted && !remote_task && !artifact && may_generate;
-    }
     void begin(std::string id) {
         flow_id = std::move(id); phase = Phase::Preparation; progress = 0;
         armed = true; submitted = false; stopped = false;
         elapsed_base = 0; started = std::chrono::steady_clock::now();
     }
     void stop() { elapsed_base = elapsed(); started = {}; armed = false; stopped = true; }
+    bool complete_stop(const std::string& state) {
+        if (!stopped || (state != "ready" && state != "failed" && state != "stopped" && state != "cancelled")) return false;
+        stop(); return true;
+    }
     void restore(int checkpoint, int seconds, bool geometry) {
         progress = std::max(progress, std::min(99, checkpoint)); elapsed_base = std::max(elapsed_base, seconds);
         started = {}; armed = false; stopped = true; submitted = geometry;
         phase = geometry ? Phase::Geometry : Phase::Preparation;
     }
-    void resume(bool geometry) {
-        armed = true; stopped = false; submitted = geometry;
-        if (geometry && phase == Phase::Preparation) phase = Phase::Geometry;
+    void load_completed_asset() {
+        armed = false; stopped = false; submitted = true; phase = Phase::Local;
         started = std::chrono::steady_clock::now();
     }
     void observe_job_state(const std::string& state, bool busy) {
-        // While a resume request is in flight, state still describes the old
-        // checkpoint. Only an idle terminal observation ends the new intent.
         if (!busy && (state == "failed" || state == "stopped" || state == "cancelled")) stop();
     }
     bool claim_geometry(bool eligible) {

@@ -42,6 +42,8 @@ class AdvancedMultiviewModels:
     def _require_resolved(self, group_id: str) -> None:
         with self.ports.lock:
             for job in self._group_jobs(group_id):
+                if job.state in {"stopped", "cancelled", "failed", "ready"}:
+                    continue  # A new user operation cannot be held by an ended task.
                 attempt = job.attempts[-1] if job.attempts else {}
                 if (not attempt.get("generation_task_id") and
                         (attempt.get("status") == "creating" or attempt.get("provider_error_ambiguous"))):
@@ -202,24 +204,8 @@ class AdvancedMultiviewModels:
             return job
     def resume(self, group_id: str, job_id: str) -> Job:
         identity(job_id, "job_id")
-        with self.repository.transaction(), self.ports.lock:
-            group = self.repository.load(group_id)
-            job = self.ports.jobs.get(job_id)
-            if not job or not any(link["job_id"] == job_id for link in group["model_links"]):
-                raise RequestError("job_not_found", "The group's model task was not found.", 404)
-            if job.state not in {"stopped", "failed"} or not any(a.get("generation_task_id") for a in job.attempts):
-                raise RequestError("provider_task_reference_missing", "Only a saved remote model task can be resumed.", 409)
-            if group["active_operation_id"] or self.busy(group_id):
-                raise RequestError("group_busy", "Finish the active operation before resuming.", 409)
-            job.stop_event.clear(); job.state, job.phase = "queued", "resuming"
-            self.ports.workflow_ports.persist(job, required=True)
-            try:
-                self.ports.submit(job, self.workflow.generate, "", True, None)
-            except Exception:
-                job.state = job.phase = "stopped"
-                self.ports.workflow_ports.persist(job, required=True)
-                raise
-            return job
+        self.repository.load(group_id)
+        raise RequestError("generation_restart_required", "Start a new model plan from the confirmed four views.", 409)
 
 
 def configured_model_capability(provider: str, model: str) -> dict[str, Any]:

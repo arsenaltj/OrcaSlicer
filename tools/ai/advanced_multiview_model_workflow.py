@@ -78,6 +78,8 @@ class AdvancedMultiviewModelWorkflow:
                 if job.attempts:
                     self.ports.record_attempt(job, 1, status="rejected", error=str(error),
                         provider_error_code=getattr(error, "code", "advanced_model_failed"),
+                        provider_detail_code=getattr(error, "provider_code", ""),
+                        provider_detail_message=getattr(error, "provider_message", ""),
                         provider_error_category=getattr(error, "category", "advanced_model"),
                         provider_error_ambiguous=getattr(error, "ambiguous", False),
                         provider_error_retryable=getattr(error, "retryable", False))

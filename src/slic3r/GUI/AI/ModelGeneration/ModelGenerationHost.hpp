@@ -90,7 +90,6 @@ struct ModelGenerationUIState
     bool service_availability_known { false };
     bool busy { false };
     bool can_generate_design { false };
-    bool can_restart_failed_smart_preparation { false };
     bool can_generate_model { false };
     bool can_stop { false };
     bool can_retry_service { false };
@@ -126,6 +125,7 @@ struct ModelGenerationUIState
     std::string job_state;
     std::string job_phase;
     std::string provider_error_code;
+    std::string provider_detail_code, provider_detail_message;
     std::string provider_error_category;
     std::string provider_name;
     std::string provider_task_id;

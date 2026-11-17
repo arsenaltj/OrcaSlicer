@@ -76,10 +76,13 @@ AdvancedCreationFeatureHost::AdvancedCreationFeatureHost(wxWindow* owner, std::s
             if (value.is_object() && value.value("schema", std::string()) == "advanced-desktop-submission-v1" &&
                 AdvancedMultiviewClient::valid_id(value.value("group_id", std::string())) &&
                 AdvancedMultiviewClient::valid_id(value.value("operation_id", std::string()))) {
+                if (value.value("kind", std::string()) == "model") value["stop_intent"] = true;
                 value["_receipt_path"] = receipt.string();
                 const auto operation = value.at("operation_id").get<std::string>();
+                const bool model_receipt = value.value("kind", std::string()) == "model";
                 m_pending_receipts[operation] = std::move(value);
-                m_message = "上次确认的请求等待核对，请恢复原请求。";
+                m_message = model_receipt
+                    ? "上次模型生成已结束，正在核对终止收尾。" : "上次确认的图片请求等待核对。";
             } else {
                 m_pending_receipts[receipt.string()] = Json::object();
                 m_message = "生成请求记录损坏，请检查本地记录后恢复。";
@@ -156,6 +159,16 @@ void AdvancedCreationFeatureHost::get_provider_catalog(const std::string& role, 
 }
 void AdvancedCreationFeatureHost::observe_model_job(const std::string& job, bool open_route, bool restart)
 {
+    const auto& group = m_session.group();
+    const bool live = m_model_request && m_model_request->job_id == job && m_session.matches(m_model_request->context);
+    if (!live && (!group || group->model_state != "ready")) return;
+    if (m_stopping_model_job == job && m_model_monitor.snapshot().stage == ModelGenerationUIStage::Stopped) {
+        // Explicitly viewing a committed asset starts only its local loading.
+        // Group polling must never reopen a stopped generation by itself.
+        if (!open_route || !group || group->model_job_id != job || group->model_state != "ready") return;
+        restart = true;
+        m_stopping_model_job.clear();
+    }
     m_model_context = m_session.context();
     boost::filesystem::path reference;
     ModelGenerationVisualReference visual;
@@ -271,9 +284,16 @@ Capabilities AdvancedCreationFeatureHost::capabilities() const
 Eligibility AdvancedCreationFeatureHost::eligibility() const
 {
     HostGuards guards;
-    guards.can_start = !command_pending() && !m_poll_pending && !has_pending_receipt() && (!m_start_guard || m_start_guard());
+    guards.can_start = !command_pending() && !model_stop_pending() && !m_poll_pending && !has_pending_receipt() && (!m_start_guard || m_start_guard());
     guards.model_service_available = m_service_available;
-    return m_session.eligibility(capabilities(), guards);
+    auto result = m_session.eligibility(capabilities(), guards);
+    if (m_model_request && m_model_request->phase == ModelJobEvent::Phase::Requested && m_stopping_model_job.empty())
+        result.stop = true;
+    if (model_stop_pending()) {
+        result.generate_design = result.generate_model = false;
+        result.stop = !command_pending();
+    }
+    return result;
 }
 
 void AdvancedCreationFeatureHost::changed()
@@ -598,8 +618,11 @@ void AdvancedCreationFeatureHost::generate_model(Confirm confirm)
                     {{"command_id", plan.at("id")}, {"plan_id", plan.at("id")},
                      {"confirmation_fingerprint", plan.at("confirmation_fingerprint")}},
                     complete([this, request](Json response) {
+                        if (!model_request_is_current(request)) return;
                         m_command_state = CommandState::Idle;
-                        if (!m_session.matches(request.context)) return;
+                        if (m_stopping_model_job == request.job_id) {
+                            settle_receipt(request.job_id, false); return;
+                        }
                         const auto receipt = m_pending_receipts.find(request.job_id);
                         if (receipt == m_pending_receipts.end() ||
                             receipt->second.value("group_id", std::string()) != request.context.group_id ||
@@ -608,7 +631,7 @@ void AdvancedCreationFeatureHost::generate_model(Confirm confirm)
                             publish(); return;
                         }
                         reconcile_submission(false);
-                    }), error());
+                    }), model_request_error(request));
             }), error());
     });
     publish();
@@ -616,10 +639,38 @@ void AdvancedCreationFeatureHost::generate_model(Confirm confirm)
 
 ModelJobEvent AdvancedCreationFeatureHost::begin_model_request(const std::string& job)
 {
+    m_stopping_model_job.clear();
     ModelJobEvent request {m_session.context(), job, ++m_model_request_sequence};
     m_model_request = request;
     if (m_model_job_listener) m_model_job_listener(request);
     return request;
+}
+
+bool AdvancedCreationFeatureHost::model_request_is_current(const ModelJobEvent& request) const
+{
+    return m_model_request && m_model_request->same_request(request) && m_session.matches(request.context);
+}
+
+bool AdvancedCreationFeatureHost::model_stop_pending() const
+{
+    const auto& state = m_model_monitor.snapshot();
+    return !m_stopping_model_job.empty() &&
+        (state.job_id != m_stopping_model_job || state.stage != ModelGenerationUIStage::Stopped);
+}
+
+AdvancedMultiviewClient::Error AdvancedCreationFeatureHost::model_request_error(const ModelJobEvent& request)
+{
+    auto* weak = this;
+    const auto alive = std::weak_ptr<int>(m_lifetime);
+    return [weak, alive, request](std::string message) {
+        Presentation::post_gui([weak, alive, request, message = std::move(message)] {
+            if (alive.expired() || weak->m_shutdown || !weak->model_request_is_current(request)) return;
+            weak->m_command_state = CommandState::Idle;
+            weak->m_message = ModelGenerationStatusText::localized_advanced_service_error(message).ToUTF8().data();
+            if (weak->m_stopping_model_job == request.job_id) weak->settle_receipt(request.job_id, false);
+            weak->publish();
+        });
+    };
 }
 
 bool AdvancedCreationFeatureHost::accept_model_job(const Json& job, const ModelJobEvent& request)
@@ -642,23 +693,8 @@ bool AdvancedCreationFeatureHost::accept_model_job(const Json& job, const ModelJ
 
 void AdvancedCreationFeatureHost::resume_model()
 {
-    if (command_pending() || has_pending_receipt() || !m_session.group()) return;
-    const auto& group = *m_session.group();
-    if (group.model_busy || !group.active_operation_id.empty() || !group.model_resumable ||
-        (group.model_state != "stopped" && group.model_state != "failed")) return;
-    const auto request = begin_model_request(group.model_job_id);
-    m_command_state = CommandState::Exclusive;
-    m_client.request("POST", "/groups/" + group.id + "/model-jobs/" + group.model_job_id + "/resume", Json::object(),
-        complete([this, request](Json value) {
-            m_command_state = CommandState::Idle;
-            if (!m_session.matches(request.context)) return;
-            if (!accept_model_job(value.at("job"), request)) {
-                m_message = "恢复任务的身份暂时无法核对，当前任务和输入已保留。";
-            }
-            poll();
-            publish();
-        }), error());
-    publish();
+    // Retained for binary/source compatibility; creation never resumes an old task.
+    m_message = "请使用当前确认四图重新生成，新操作将创建新任务。"; publish();
 }
 
 void AdvancedCreationFeatureHost::prepare(const std::string& group, Json request, Confirm confirm,
@@ -783,9 +819,15 @@ void AdvancedCreationFeatureHost::settle_receipt(const std::string& operation, b
     if (!receipt.contains("group_id")) return;
     const auto group = receipt.at("group_id").get<std::string>();
     const bool abandoned = receipt.value("stop_intent", false);
-    const bool current = receipt_is_current(receipt);
+    const bool model_receipt = receipt.value("kind", std::string("design")) == "model";
+    const auto request = model_receipt && m_model_request && m_model_request->job_id == operation
+        ? m_model_request : std::optional<ModelJobEvent>();
     const auto context = m_session.context();
-    if (current) m_command_state = CommandState::Exclusive;
+    const bool owned = model_receipt ? request && model_request_is_current(*request) : receipt_is_current(receipt);
+    const auto current = [this, context, request, owned] {
+        return owned && m_session.matches(context) && (!request || model_request_is_current(*request));
+    };
+    if (current()) m_command_state = CommandState::Exclusive;
     m_reconciling.insert(operation);
     const auto collection = receipt.value("kind", std::string("design")) == "model" ? "/model-jobs/" : "/operations/";
     auto* weak = this;
@@ -794,7 +836,7 @@ void AdvancedCreationFeatureHost::settle_receipt(const std::string& operation, b
         Presentation::post_gui([weak, alive, operation, context, current, message = std::move(message)] {
             if (alive.expired() || weak->m_shutdown) return;
             weak->m_reconciling.erase(operation);
-            if (current && weak->m_session.matches(context)) {
+            if (current()) {
                 weak->m_command_state = CommandState::Idle;
                 weak->m_message = ModelGenerationStatusText::localized_advanced_service_error(message).ToUTF8().data();
                 weak->publish();
@@ -816,11 +858,39 @@ void AdvancedCreationFeatureHost::settle_receipt(const std::string& operation, b
                 settle_receipt(operation, false); return;
             }
             if (abandoned && value.at("accepted").get<bool>()) {
+                if (current() && collection == "/model-jobs/") {
+                    m_model_context = context;
+                    m_model_monitor.observe(operation, {});
+                    m_model_monitor.request_stop();
+                }
                 m_client.request("POST", "/groups/" + group + collection + operation + "/stop", Json::object(),
-                    complete([this, operation](Json) { clear_pending_receipt(operation); }, false, false, false), failed);
+                    complete([this, operation, context, current](Json value) {
+                        clear_pending_receipt(operation);
+                        if (current()) {
+                            m_command_state = CommandState::Idle;
+                            if (value.contains("job")) {
+                                const auto state = value["job"].value("state", std::string());
+                                if (state == "ready" || state == "failed" || state == "stopped" || state == "cancelled")
+                                    m_model_monitor.finish_stop(operation);
+                            }
+                            poll(); publish();
+                        }
+                    }, false, false, false), failed);
                 return;
             }
-            if (!current || !m_session.matches(context)) { clear_pending_receipt(operation); return; }
+            if (abandoned) {
+                clear_pending_receipt(operation);
+                if (current()) {
+                    m_command_state = CommandState::Idle;
+                    if (collection == "/model-jobs/") {
+                        m_model_context = context;
+                        m_model_monitor.finish_stop(operation);
+                    }
+                    m_message = "已停止生成"; publish();
+                }
+                return;
+            }
+            if (!current()) { clear_pending_receipt(operation); return; }
             m_command_state = CommandState::Idle;
             if (!m_session.matches(context)) return;
             if (!value.at("accepted").get<bool>()) {
@@ -857,14 +927,15 @@ void AdvancedCreationFeatureHost::settle_receipt(const std::string& operation, b
             }
             // Reconcile the current group in place. Image synchronization must
             // not reset its selection or delay the accepted task projection.
-            ingest(std::move(value.at("group")), callback, restore && !model_request, [this, operation, announce_recovery] {
+            ingest(std::move(value.at("group")), callback, restore && !model_request, [this, operation, announce_recovery, current] {
                 clear_pending_receipt(operation);
+                if (!current()) return;
                 if (!has_pending_receipt()) m_message = announce_recovery
                     ? "原请求已恢复，没有新建生成请求。" : std::string();
                 refresh_history();
             });
         }, false, false, false), failed);
-    if (current) publish();
+    if (current()) publish();
 }
 
 void AdvancedCreationFeatureHost::retry(ViewId view, Confirm confirm)
@@ -884,11 +955,36 @@ void AdvancedCreationFeatureHost::stop()
 {
     if (m_model_monitor.snapshot().stage == ModelGenerationUIStage::LoadingModel &&
         m_session.matches(m_model_context)) {
+        m_stopping_model_job = m_model_monitor.snapshot().job_id;
         m_model_monitor.stop_local(); return;
+    }
+    if (m_model_request && m_model_request->phase == ModelJobEvent::Phase::Requested &&
+        m_session.matches(m_model_request->context)) {
+        const auto operation = m_model_request->job_id;
+        const auto receipt = m_pending_receipts.find(operation);
+        if (receipt != m_pending_receipts.end()) {
+            m_stopping_model_job = operation;
+            auto stopped = receipt->second; stopped["stop_intent"] = true;
+            save_pending_receipt(std::move(stopped));
+            m_command_state = CommandState::Idle; m_message = "正在停止生成…";
+            settle_receipt(operation, false); publish(); return;
+        }
     }
     if (!eligibility().stop || !m_session.group()) return;
     const auto& group = *m_session.group(); m_command_state = CommandState::Exclusive;
-    const auto route = group.model_busy ? "/model-jobs/" + group.model_job_id : "/operations/" + group.active_operation_id;
+    const auto model_job = model_stop_pending() ? m_stopping_model_job : group.model_busy ? group.model_job_id : std::string();
+    if (!model_job.empty()) {
+        m_stopping_model_job = model_job;
+        m_model_monitor.request_stop();
+        const auto request = m_model_request;
+        m_client.request("POST", "/groups/" + group.id + "/model-jobs/" + model_job + "/stop", Json::object(),
+            complete([this, request](Json) {
+                if (!request || !model_request_is_current(*request)) return;
+                m_command_state = CommandState::Idle; poll(); publish();
+            }), request ? model_request_error(*request) : error());
+        return;
+    }
+    const auto route = "/operations/" + group.active_operation_id;
     m_client.request("POST", "/groups/" + group.id + route + "/stop", Json::object(),
         complete([this](Json) { m_command_state = CommandState::Idle; poll(); publish(); }), error());
 }

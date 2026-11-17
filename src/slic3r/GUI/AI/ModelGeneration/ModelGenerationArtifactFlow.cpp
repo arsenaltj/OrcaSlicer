@@ -122,6 +122,10 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
                     }
                     if (!prepared && error.empty()) error = "模型预览准备已取消。";
                     if (history_open && history_open->worker_finished()) return;
+                    if (sequence != self->m_sequence || self->m_preview_canceled != canceled) {
+                        if (local_cancel) complete_local_model_import(self->m_library_import, local_cancel, true);
+                        return;
+                    }
                     if (!self->m_preview_task_scope.matches(task) || outcome.canceled) {
                         if (local_cancel) complete_local_model_import(self->m_library_import, local_cancel, true);
                         if (sequence == self->m_sequence) {

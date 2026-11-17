@@ -131,7 +131,7 @@ class ModelGenerationWorkflow:
                         self.ports.validate_image(
                             preview,
                             minimum_edge=MIN_MODEL_REFERENCE_EDGE,
-                            require_visual_detail=True,
+                            require_visual_detail=False,
                         )
                     except ValueError as exc:
                         raise ProviderGatewayError(
@@ -236,6 +236,8 @@ class ModelGenerationWorkflow:
                     if isinstance(exc, ProviderGatewayError):
                         updates.update(
                             provider_error_code=exc.code,
+                            provider_detail_code=exc.provider_code,
+                            provider_detail_message=exc.provider_message,
                             provider_error_category=exc.category,
                             provider_error_retryable=exc.retryable,
                             provider_error_ambiguous=exc.ambiguous,
@@ -294,6 +296,8 @@ class ModelGenerationWorkflow:
                         status="rejected",
                         error=str(exc),
                         provider_error_code=exc.code,
+                        provider_detail_code=exc.provider_code,
+                        provider_detail_message=exc.provider_message,
                         provider_error_category=exc.category,
                         provider_error_retryable=exc.retryable,
                         provider_error_ambiguous=exc.ambiguous,
@@ -361,7 +365,7 @@ class ModelGenerationWorkflow:
                 self.ports.validate_image(
                     reference,
                     minimum_edge=MIN_MODEL_REFERENCE_EDGE,
-                    require_visual_detail=True,
+                    require_visual_detail=False,
                 )
             except ValueError as exc:
                 raise ProviderGatewayError(
@@ -449,6 +453,8 @@ class ModelGenerationWorkflow:
                 status="rejected",
                 error=str(exc),
                 provider_error_code=exc.code,
+                provider_detail_code=exc.provider_code,
+                provider_detail_message=exc.provider_message,
                 provider_error_category=exc.category,
                 provider_error_retryable=exc.retryable,
                 provider_error_ambiguous=exc.ambiguous,

@@ -204,17 +204,30 @@ class TripoGenerationProfileRequestTests(unittest.TestCase):
 
 class AutomaticVisualDeliveryGateTests(unittest.TestCase):
     def test_unavailable_reference_checks_return_advice(self):
+        for error in (SIDECAR.ModelInputImageQualityError, TypeError, KeyError, TimeoutError):
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as directory:
+                job = SIDECAR.Job(id="reference-advice", source="image", directory=Path(directory))
+                with (
+                    mock.patch.object(SIDECAR, "_assess_job_model_reference", side_effect=error("unavailable")),
+                    mock.patch.object(SIDECAR, "_assess_job_generation_reference", side_effect=error("unavailable")),
+                ):
+                    reports = SIDECAR._assess_reference_advice(job)
+                for report in reports:
+                    self.assertEqual(report["status"], "unavailable")
+                    self.assertIn("reference_quality_unavailable", report["warnings"])
+                    self.assertNotIn("model_input_eligible", report)
+
+    def test_quality_advice_keeps_user_cancellation_authoritative(self):
+        from model_contracts import JobStopped
         with tempfile.TemporaryDirectory() as directory:
             job = SIDECAR.Job(id="reference-advice", source="image", directory=Path(directory))
             with (
-                mock.patch.object(SIDECAR, "_assess_job_model_reference", side_effect=SIDECAR.ModelInputImageQualityError("unavailable")),
-                mock.patch.object(SIDECAR, "_assess_job_generation_reference", side_effect=SIDECAR.ModelInputImageQualityError("unavailable")),
+                mock.patch.object(SIDECAR, "_assess_job_model_reference", side_effect=JobStopped()),
+                mock.patch.object(SIDECAR, "_assess_job_generation_reference") as second,
             ):
-                reports = SIDECAR._assess_reference_advice(job)
-            for report in reports:
-                self.assertEqual(report["status"], "unavailable")
-                self.assertIn("reference_quality_unavailable", report["warnings"])
-                self.assertTrue(report["model_input_eligible"])
+                with self.assertRaises(JobStopped):
+                    SIDECAR._assess_reference_advice(job)
+            second.assert_not_called()
 
     def test_preview_visual_review_retains_identity_drift_advice(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -446,6 +459,33 @@ class ObjGenerationTests(unittest.TestCase):
 
     def _paid_authorization(self):
         return SIDECAR.PaidTaskAuthorization.confirmed(f"{self.job.id}:model:1")
+
+    def test_valid_flat_reference_reaches_provider_and_preserves_terminal_details(self):
+        for color in ("white", "black", (255, 255, 255, 0)):
+            with self.subTest(color=color):
+                self.job.attempts.clear(); self.job.stop_event.clear()
+                self.job.workflow_mode = "smart"; self.job.provider = "yoyoclaw"
+                self.job.geometry_model = "3d-model-library/hy-3d-3.1"
+                self.job.raw_preview_path = self.job.directory / "flat.png"
+                Image.new("RGBA", (256, 256), color).save(self.job.raw_preview_path)
+                self.job.image_metrics["design_reference"] = "ai-design-v1"
+                gateway = self._provider_gateway("known-task")
+                gateway.wait_for_task.side_effect = SIDECAR.ProviderGatewayError(
+                    "confirmed geometry failure", code="provider_task_failed", category="provider", provider="yoyoclaw",
+                    provider_code="FailedOperation.InnerError", provider_message="输入图片生成几何失败")
+                authorization = SIDECAR.PaidTaskAuthorization.confirmed(f"{self.job.id}:model:1", "yoyoclaw")
+                with mock.patch.object(SIDECAR, "_model_gateway", return_value=gateway):
+                    SIDECAR._generate_job(self.job, "", authorization=authorization)
+                gateway.start_or_reuse_model_task.assert_called_once()
+                gateway.wait_for_task.assert_called_once()
+                self.assertEqual(self.job.state, "failed")
+                attempt, = self.job.attempts
+                self.assertEqual(attempt["provider_error_code"], "provider_task_failed")
+                self.assertEqual(attempt["provider_detail_code"], "FailedOperation.InnerError")
+                restored = SIDECAR._load_job(self.job.directory)
+                failure = SIDECAR._public_job(restored)["provider_failure"]
+                self.assertEqual(failure["provider_message"], "输入图片生成几何失败")
+                self.assertEqual(failure["provider_code"], "FailedOperation.InnerError")
 
     def test_multicolor_generation_uses_silhouette_clean_detail_reference(self):
         raw = self.job.directory / "style-preview-raw.png"

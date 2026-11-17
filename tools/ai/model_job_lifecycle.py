@@ -175,12 +175,15 @@ class ModelJobLifecycle:
             job = _load_job(directory)
             if job is None:
                 continue
-            if job.creation_kind == "advanced_multiview_v1":
-                # Advanced inputs are already approved. Never run legacy portrait
-                # preparation, its source-selection policy or automatic paid retry.
-                if job.state in {"queued", "running", "stopping"}:
+            if job.creation_kind == "advanced_multiview_v1" or job.workflow_mode == "smart":
+                # Saved data is an asset/diagnostic, never a new authorization to
+                # resume generation. Do not rerun legacy quality or retry paths.
+                if job.state not in {"ready", "failed", "stopped", "cancelled"}:
                     job.state = job.phase = "stopped"
-                    job.message = "Advanced model restored. Resume its saved task explicitly."
+                    job.message = "Generation ended. Start a new task from the current inputs."
+                if job.state != "ready":
+                    job.smart_stop_intent = True
+                    job.stop_event.set()
                 restored.append(job)
                 continue
             if job.input_path is not None:
@@ -333,7 +336,7 @@ class ModelJobLifecycle:
     def resume_restored_jobs(self, restored: list[Job]) -> None:
         for job in restored:
             if job.creation_kind == "advanced_multiview_v1": continue
-            if job.workflow_mode == "smart" or job.retired_workflow: continue  # Explicit desktop resume owns the next action.
+            if job.workflow_mode == "smart" or job.retired_workflow: continue  # Only a new desktop operation can start generation.
             if job.state == "queued" and job.phase == "resuming":
                 latest_attempt = job.attempts[-1] if job.attempts else {}
                 if latest_attempt.get("provider_operation") == "model_texture":
@@ -410,14 +413,15 @@ class ModelJobLifecycle:
         Prepared-only text fixtures and abandoned internal jobs have no user input
         that the panel can display.  Letting one of those win `/latest` clears a
         newer user's recoverable image journey after restart.
-        Stopped/failed smart journeys remain visible for explicit recovery; this
-        lookup never resumes work or authorizes another provider submission.
+        Smart journeys expose completed assets only; stopped/failed records remain
+        diagnostics and never reauthorize another provider submission.
         """
 
         if job.creation_kind == "advanced_multiview_v1":
             return False  # The advanced group, not legacy latest, owns this source.
-        smart_terminal = job.workflow_mode == "smart" and job.state in {"stopped", "failed"}
-        if not smart_terminal and job.state not in {
+        if job.workflow_mode == "smart":
+            return job.state == "ready" and _file_info(job.artifact_path)[0]
+        if job.state not in {
             "recommending_palette", "awaiting_palette_confirmation", "preprocessing",
             "awaiting_confirmation", "queued", "running", "stopping", "ready",
         }:
@@ -486,6 +490,8 @@ class ModelJobLifecycle:
                 "category": category if isinstance(category, str) else "",
                 "retryable": latest_attempt.get("provider_error_retryable") is True,
                 "ambiguous": latest_attempt.get("provider_error_ambiguous") is True,
+                "provider_code": latest_attempt.get("provider_detail_code", ""),
+                "provider_message": latest_attempt.get("provider_detail_message", ""),
             }
         elif job.preprocess_failure:
             provider_failure = {

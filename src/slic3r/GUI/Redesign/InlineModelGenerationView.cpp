@@ -288,7 +288,7 @@ struct InlineModelGenerationView::Impl {
             state.phase() != InlinePreviewPhase::Failed) {
             if (!snapshot.summary_text.empty() && snapshot.summary_text != snapshot.status_text)
                 feedback->detail += "\n" + t(snapshot.summary_text.c_str());
-            if (snapshot.provider_error_ambiguous) feedback->detail += "\n" + t("提交结果待核对，请先恢复原任务，避免重复生成。");
+            if (snapshot.provider_error_ambiguous) feedback->detail += "\n" + t("提交结果待核对；请先确认服务端状态，程序不会自动重复生成。");
         }
         if (!snapshot.model_ready && !snapshot.busy && !snapshot.model_path.empty() && !state.artifact()) {
             feedback->title = t("3D模型文件不可用");
@@ -296,7 +296,7 @@ struct InlineModelGenerationView::Impl {
         }
         const bool retry_preview = state.phase() == InlinePreviewPhase::Failed;
         const auto action = retry_preview ? t("重新加载预览") : snapshot.can_retry_service ? t("重新检测服务") :
-            snapshot.can_retry_model ? t("恢复当前任务") : t("恢复上次任务");
+            snapshot.can_retry_model ? t("重新加载预览") : t("查看已有模型");
         if (recover->GetLabel() != action) recover->SetLabel(action);
         const bool recovery_shown = retry_preview || (!state.ready() && !snapshot.busy &&
             (snapshot.can_retry_model || snapshot.can_retry_service || snapshot.can_restore_latest));

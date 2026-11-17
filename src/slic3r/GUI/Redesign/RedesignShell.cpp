@@ -2611,6 +2611,10 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         primary_enabled = false;
         placeholder = text("正在停止");
         placeholder_mode = ImagePreview::PlaceholderMode::Stopped;
+        if (state.can_stop) {
+            m_secondary_action = SecondaryAction::Stop;
+            secondary_label = text("再次停止");
+        }
         break;
     case ModelGenerationUIStage::Failed:
         if (state.model_generation_context)
@@ -2697,8 +2701,7 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     if (m_smart_creation) {
         primary_label = text("生成3D模型");
         primary_enabled = m_input_sync_ok && m_option_sync_ok && state.can_generate_design && editable && selected_provider_ready();
-        const bool ambiguous_submission_blocked = state.provider_error_ambiguous && state.inputs_match_job &&
-            !state.can_restart_failed_smart_preparation;
+        const bool ambiguous_submission_blocked = state.busy && state.provider_error_ambiguous && state.inputs_match_job;
         if (ambiguous_submission_blocked) primary_enabled = false;
         m_generate_button->SetToolTip(primary_enabled ? text("自动准备输入并生成3D模型") :
             ambiguous_submission_blocked ? text("上次提交结果待核对，当前不会重复创建任务") :
@@ -3400,7 +3403,7 @@ void RedesignShell::request_generate_design()
     if (m_prompt_polish_state.active() || m_submit_in_progress || !generation_input_editable())
         return;
     m_submit_in_progress = true;
-    apply_model_generation_state(m_model_generation_state);
+    // Capture the current controls before any snapshot can refill the draft.
     if (!synchronize_generation_options() || !synchronize_generation_input()) {
         m_submit_in_progress = false;
         apply_model_generation_state(m_model_generation_host->snapshot());

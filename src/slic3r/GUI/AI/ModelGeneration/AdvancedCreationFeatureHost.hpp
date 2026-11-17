@@ -29,7 +29,7 @@ public:
     const std::string& message() const { return m_message; }
     const Json& history() const { return m_history; }
     bool command_pending() const { return m_command_state != CommandState::Idle; }
-    bool draft_editing_locked() const { return m_command_state == CommandState::Exclusive; }
+    bool draft_editing_locked() const { return m_command_state == CommandState::Exclusive || model_stop_pending(); }
     bool has_pending_receipt() const;
     const ProviderCatalog& image_catalog() const { return m_image_catalog; }
     void reconcile_submission();
@@ -82,6 +82,9 @@ private:
     void settle_receipt(const std::string& operation, bool announce);
     void reconcile_submission(bool announce_recovery);
     AdvancedCreation::ModelJobEvent begin_model_request(const std::string& job);
+    bool model_request_is_current(const AdvancedCreation::ModelJobEvent& request) const;
+    bool model_stop_pending() const;
+    AdvancedMultiviewClient::Error model_request_error(const AdvancedCreation::ModelJobEvent& request);
     bool accept_model_job(const Json& job, const AdvancedCreation::ModelJobEvent& request);
     AdvancedCreation::Capabilities capabilities() const;
     wxWeakRef<wxWindow> m_owner;
@@ -98,6 +101,7 @@ private:
     std::function<void(const AdvancedCreation::ModelJobEvent&)> m_model_job_listener;
     std::optional<AdvancedCreation::ModelJobEvent> m_model_request;
     std::uint64_t m_model_request_sequence {0};
+    std::string m_stopping_model_job;
     std::function<bool()> m_start_guard;
     ProviderCatalog m_image_catalog;
     std::uint64_t m_image_catalog_sequence {0};
