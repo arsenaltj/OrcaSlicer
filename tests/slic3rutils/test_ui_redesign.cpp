@@ -712,6 +712,14 @@ TEST_CASE("Workbench preparation counts visible time and resumes with its remain
     CHECK(deadline.observe(start + std::chrono::minutes(10) + std::chrono::seconds(7), false));
     deadline.begin(start + std::chrono::minutes(11));
     CHECK_FALSE(deadline.observe(start + std::chrono::minutes(11) + std::chrono::seconds(1), false));
+
+    // A slow parser does not spend the first-frame budget before it can
+    // present anything. The full visible budget remains after parsing drains.
+    deadline.begin(start);
+    CHECK_FALSE(deadline.observe(start + std::chrono::minutes(2), true));
+    CHECK_FALSE(deadline.observe(start + std::chrono::minutes(2), false));
+    CHECK_FALSE(deadline.observe(start + std::chrono::minutes(2) + std::chrono::seconds(14), false));
+    CHECK(deadline.observe(start + std::chrono::minutes(2) + std::chrono::seconds(15), false));
 }
 
 TEST_CASE("A stalled preview times out without committing and can retry the same G-code result",

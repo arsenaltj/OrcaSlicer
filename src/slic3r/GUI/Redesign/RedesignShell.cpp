@@ -1621,6 +1621,8 @@ void RedesignShell::disconnect_model_generation_host()
         m_plater->Hide();
     }
     if (m_model_generation_host != nullptr) {
+        m_model_generation_host->set_creation_workflow_listener({});
+        m_model_generation_host->set_import_navigation_guard({});
         restore_smart_model_history();
         m_model_generation_host->set_workbench_presented(false);
         m_model_generation_host->set_workbench_listener({});
@@ -1667,6 +1669,7 @@ void RedesignShell::set_service_status(AIServiceStatus status)
 
 void RedesignShell::switch_creation_mode(bool advanced)
 {
+    if (m_model_generation_host && m_model_generation_host->creation_editing_locked()) return;
     if (m_page_coordinator.advanced() && m_advanced_workspace && !m_advanced_workspace->navigation_allowed()) return;
     if (advanced == m_page_coordinator.advanced() || m_import_in_progress || m_page_coordinator.transition().active() ||
         block_workbench_navigation()) return;
@@ -1683,6 +1686,8 @@ void RedesignShell::switch_creation_mode(bool advanced)
                 on_advanced_model_job(event);
             }, [this] { open_creation_artifact(CreationSource::Advanced); },
             [this] { show_generation_completion(); });
+        m_advanced_workspace->set_creation_return_handler([this] { return_to_image_design(); },
+            [this] { return can_return_to_image_design(); });
         m_content_host->GetSizer()->Add(m_advanced_workspace, 1, wxEXPAND);
         const auto status = static_cast<AIServiceStatus>(m_last_service_status);
         m_advanced_workspace->set_service_available(status == AIServiceStatus::Connected ||
@@ -2143,7 +2148,10 @@ void RedesignShell::build_image_workspace()
     m_generate_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { request_primary_action(); });
     action_sizer->Add(m_generate_button, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(sidebar_padding));
     m_smart_completion_actions = new GenerationCompletionActions(action_panel,
-        [this] { request_primary_action(); }, [this] { open_creation_artifact(CreationSource::Smart); });
+        [this] {
+            if (m_model_generation_host && m_model_generation_host->creation_editing_locked()) return_to_image_design();
+            else request_primary_action();
+        }, [this] { open_creation_artifact(CreationSource::Smart); });
     action_sizer->Add(m_smart_completion_actions, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(sidebar_padding));
     m_secondary_action_button = new RoundedActionButton(action_panel, wxEmptyString, false, 40);
     m_secondary_action_button->SetName("generation-secondary-action");
@@ -2372,10 +2380,19 @@ void RedesignShell::connect_model_generation_host()
             }});
     m_assets_workspace->attach(m_asset_service,library);
     m_model_generation_host->set_smart_creation_presentation(m_smart_creation);
+    m_model_generation_host->set_creation_workflow_listener([weak] {
+        if (weak && !weak->m_presentation_stopping) weak->refresh_creation_workflow();
+    });
+    m_model_generation_host->set_import_navigation_guard([weak]() -> std::function<bool()> {
+        const auto epoch = weak ? weak->m_page_coordinator.epoch() : 0;
+        return [weak, epoch] {
+            return weak && !weak->m_presentation_stopping && weak->m_page_coordinator.epoch() == epoch;
+        };
+    });
     sync_smart_model_history();
     m_model_generation_host->set_history_navigation_handler([weak](bool design) {
         if (!weak || !weak->m_model_generation_host) return;
-        if (!design && weak->m_smart_creation && weak->m_page_coordinator.page() == Page::Image && !weak->m_saved_creation_input) {
+        if (!design && weak->m_smart_creation && !weak->m_page_coordinator.advanced() && weak->m_page_coordinator.page() == Page::Image && !weak->m_saved_creation_input) {
             weak->cancel_prompt_polish(true);
             weak->m_saved_creation_input = weak->current_generation_input();
             weak->m_saved_creation_options = weak->current_generation_options();
@@ -2387,7 +2404,7 @@ void RedesignShell::connect_model_generation_host()
         if (!weak || !weak->m_model_generation_host) return false;
         if (event.phase == ModelHistoryOpenEvent::Phase::Begin) {
             if (weak->m_history_open_request || weak->m_page_coordinator.transition().active()) return false;
-            if (weak->m_smart_creation && weak->m_page_coordinator.page() == Page::Image && !weak->m_saved_creation_input) {
+            if (weak->m_smart_creation && !weak->m_page_coordinator.advanced() && weak->m_page_coordinator.page() == Page::Image && !weak->m_saved_creation_input) {
                 weak->cancel_prompt_polish(true);
                 weak->m_saved_creation_input = weak->current_generation_input();
                 weak->m_saved_creation_options = weak->current_generation_options();
@@ -2707,15 +2724,19 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
             ambiguous_submission_blocked ? text("上次提交结果待核对，当前不会重复创建任务") :
             text("请填写有效输入，并检查GPT准备服务、3D模型配置和当前工作台状态"));
     }
-    if (m_image_page_view_only && (m_secondary_action == SecondaryAction::None ||
-        (m_smart_creation && !state.busy && can_return_to_image_design()))) {
+    if (m_image_page_view_only) {
+        primary_label = text("返回工作台");
+        primary_enabled = true;
         m_secondary_action = SecondaryAction::ReturnToDesign;
         secondary_label = (m_smart_creation ? text("返回AI创作") : text("返回图像设计"));
     }
 
     if (m_creation_lock_hint) {
         wxString hint;
-        if (m_image_page_view_only || state.busy) {
+        if (m_image_page_view_only) {
+            hint = can_return_to_image_design() ? text("当前为只读查看，点击“返回AI创作”恢复编辑") :
+                text("当前为只读查看，工作台处理中，完成后可返回AI创作");
+        } else if (state.busy) {
             hint = state.stage == ModelGenerationUIStage::Stopping ? text("正在停止生成，请稍候") :
                 (state.stage == ModelGenerationUIStage::GeneratingDesign || state.stage == ModelGenerationUIStage::GeneratingModel) ? text("模型生成中，暂不可编辑") :
                 state.busy ? text("模型正在加载或导入，暂不可编辑") :
@@ -3363,7 +3384,7 @@ void RedesignShell::refresh_prompt_polish_controls()
 bool RedesignShell::generation_input_editable() const
 {
     return m_image_state != ImageState::Loading && !m_submit_in_progress && !m_model_generation_state.busy &&
-           !m_image_page_view_only &&
+           !(m_model_generation_host && m_model_generation_host->creation_editing_locked()) &&
            m_model_generation_state.stage != ModelGenerationUIStage::GeneratingDesign &&
            m_model_generation_state.stage != ModelGenerationUIStage::GeneratingModel;
 }
@@ -3451,6 +3472,10 @@ void RedesignShell::request_generate_model()
 
 void RedesignShell::request_primary_action()
 {
+    if (m_model_generation_host && m_model_generation_host->creation_editing_locked()) {
+        navigate_to_workbench();
+        return;
+    }
     const auto stage = m_image_design_draft.stage(m_model_generation_state);
     if (!m_smart_creation && redesign_primary_action(m_model_generation_state, stage) == RedesignPrimaryAction::Model)
         request_generate_model();
@@ -3613,15 +3638,24 @@ void RedesignShell::restore_active_page_focus()
 bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
 {
     if (m_presentation_stopping) return false;
-    if (m_page_coordinator.advanced() && m_advanced_workspace && !m_advanced_workspace->navigation_allowed()) return false;
-    const bool keeps_presented_workbench = page == Page::Model &&
-        m_page_coordinator.page() == Page::Model && m_page_coordinator.view() == ModelView::Workbench;
-    if (block_workbench_navigation(!keeps_presented_workbench)) return false;
-    if (m_import_in_progress || m_page_coordinator.transition().active()) return false;
+    release_navigation_waits();
+    if (m_page_coordinator.transition().active()) {
+        queue_navigation(page, m_page_coordinator.view());
+        return true;
+    }
+    m_queued_navigation.reset();
     const std::size_t index = static_cast<std::size_t>(page);
     if (index >= m_pages.size() || m_pages[index] == nullptr)
         return false;
 
+    // Orca may select preview directly when a native slice completes. Remember
+    // the visible native subview before hiding it, including that automatic path.
+    if (page != Page::Model && m_native_slicing && native_workspace_visible() &&
+        (m_page_coordinator.view() == ModelView::Slicing || m_page_coordinator.view() == ModelView::Preview)) {
+        const auto* plate = m_plater->get_partplate_list().get_curr_plate();
+        m_page_coordinator.select_view(m_plater->is_preview_shown() && plate && plate->is_slice_result_valid()
+            ? ModelView::Preview : ModelView::Slicing);
+    }
     remember_active_page_focus();
     const auto transition = m_page_coordinator.transition().begin(
         {int(m_page_coordinator.page()), m_page_coordinator.page() == Page::Model ? int(m_page_coordinator.view()) : -1},
@@ -3643,7 +3677,7 @@ bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
 
     {
         wxWindowUpdateLocker lock(this);
-        m_image_page_view_only = page == Page::Image && m_smart_creation && m_saved_creation_input.has_value();
+        m_image_page_view_only = page == Page::Image && m_model_generation_host && m_model_generation_host->creation_editing_locked();
         m_page_coordinator.select_page(page);
         switch (page) {
         case Page::Assets:
@@ -3713,7 +3747,8 @@ void RedesignShell::refresh_navigation()
 
 bool RedesignShell::navigate_to_workbench()
 {
-    return show_model_view(ModelView::Workbench);
+    if (m_last_workbench_page == Page::Print) return navigate_to(Page::Print);
+    return show_model_view(m_page_coordinator.view());
 }
 
 bool RedesignShell::navigate_to_image_view()
@@ -3726,13 +3761,9 @@ bool RedesignShell::navigate_to_image_view()
 
 bool RedesignShell::navigate_to_tab(const wxString& id)
 {
-    if (m_page_coordinator.advanced() && m_advanced_workspace && !m_advanced_workspace->navigation_allowed()) return false;
-    if (m_import_in_progress || m_page_coordinator.transition().active()) return false;
+    release_navigation_waits();
     if (id.empty())
         return true;
-    const bool keeps_presented_workbench = id == TAB_ID_GENERATE_3D &&
-        m_page_coordinator.page() == Page::Model && m_page_coordinator.view() == ModelView::Workbench;
-    if (block_workbench_navigation(!keeps_presented_workbench)) return false;
     if (owns_model_workflow() && (id == TAB_ID_PREPARE || id == TAB_ID_PREVIEW)) {
         return show_model_view(id == TAB_ID_PREVIEW ? ModelView::Preview : ModelView::Slicing);
     }

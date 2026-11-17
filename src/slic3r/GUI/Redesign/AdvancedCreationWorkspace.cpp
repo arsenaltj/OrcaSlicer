@@ -1145,6 +1145,8 @@ struct AdvancedCreationWorkspace::Impl {
     InlineModelGenerationView* generation_view {nullptr};
     GenerationCompletionActions* completion_actions {nullptr};
     std::function<void()> open_workbench, completed;
+    std::function<void()> return_creation;
+    std::function<bool()> can_return;
     bool presented {false};
     wxScrolledWindow* input_scroll {nullptr};
     wxPanel* input_content {nullptr};
@@ -1185,6 +1187,8 @@ struct AdvancedCreationWorkspace::Impl {
     RoundedActionButton* polish {nullptr};
     RoundedActionButton* view_model {nullptr};
     RoundedActionButton* resume {nullptr};
+    RoundedActionButton* return_button {nullptr};
+    RoundedActionButton* fresh_button {nullptr};
     RoundedActionButton* generate {nullptr};
     RoundedActionButton* model {nullptr};
     RoundedActionButton* stop {nullptr};
@@ -1277,7 +1281,8 @@ struct AdvancedCreationWorkspace::Impl {
         model_host.legacy_creation_panel()->Reparent(legacy); legacy->GetSizer()->Add(model_host.legacy_creation_panel(), 1, wxEXPAND);
         root->Add(legacy, 1, wxEXPAND); legacy->Hide();
         text_client = std::make_unique<AITextClient>(AISidecarClient::default_endpoint());
-        host.set_start_guard([this] { return !polish_pending && model_host.can_replace_asset(); });
+        host.set_start_guard([this] { return !polish_pending && !model_host.creation_editing_locked() && model_host.can_replace_asset(); });
+        host.set_editing_guard([this] { return !model_host.creation_editing_locked(); });
         wxWeakRef<AdvancedCreationWorkspace> weak(&page);
         model_host.set_advanced_state_listener([weak](const auto& state) {
             if (!weak) return;
@@ -1341,12 +1346,14 @@ struct AdvancedCreationWorkspace::Impl {
         upload_header->Add(upload_info, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, page.FromDIP(4));
         upload_header->AddStretchSpacer();
         auto* fresh = new RoundedActionButton(design_inputs, t("新建创作"), true, 32);
+        fresh_button = fresh;
         fresh->SetName("advanced-design-new-creation");
         fresh->SetMinSize(page.FromDIP(wxSize(112, 32)));
         fresh->SetMaxSize(page.FromDIP(wxSize(112, 32)));
         fresh->set_corner_radius(16);
         style_smart_creation_text(fresh, 13, wxColour(20, 20, 20), wxFONTWEIGHT_MEDIUM);
         fresh->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+            if (model_host.creation_editing_locked()) return;
             click_timer.Stop(); suppress_until.fill(0);
             if (polish_request) { polish_request->cancel(); polish_request.reset(); }
             polish_pending = false;
@@ -1399,6 +1406,7 @@ struct AdvancedCreationWorkspace::Impl {
         prompt_sizer->Add(count, 0, wxALIGN_RIGHT | wxRIGHT | wxBOTTOM | wxTOP, page.FromDIP(12));
         inputs->Add(prompt_box, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, page.FromDIP(16));
         prompt->Bind(wxEVT_TEXT, [this](wxCommandEvent&) {
+            if (!input_editable()) return;
             auto draft = host.session().draft().design; draft.prompt = prompt->GetValue().ToUTF8().data();
             if (host.session().set_design_draft(std::move(draft))) host.changed();
         });
@@ -1458,6 +1466,7 @@ struct AdvancedCreationWorkspace::Impl {
         style_smart_creation_text(custom_hint, 12, secondary_text_colour()); custom_sizer->Add(custom_hint, 0, wxTOP, page.FromDIP(6));
         inputs->Add(custom_style_panel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, page.FromDIP(16));
         custom_style->Bind(wxEVT_TEXT, [this](wxCommandEvent&) {
+            if (!input_editable()) return;
             auto draft = host.session().draft().design; draft.custom_style = custom_style->GetValue().ToUTF8().data();
             if (host.session().set_design_draft(std::move(draft))) host.changed();
         });
@@ -1465,6 +1474,7 @@ struct AdvancedCreationWorkspace::Impl {
         style_smart_creation_text(image_label, 14, wxColour(255, 255, 255, 230), wxFONTWEIGHT_MEDIUM);
         inputs->Add(image_label, 0, wxLEFT | wxRIGHT | wxTOP, page.FromDIP(16));
         provider = new AdvancedChoicePicker(design_inputs, {t("GPT"), t("YOYOClaw")}, [this](int selection) {
+            if (!input_editable()) return;
             auto draft = host.session().draft().design; draft.provider = selection == 1 ? "yoyoclaw" : "gpt"; draft.model.clear();
             host.session().set_design_draft(std::move(draft)); host.changed();
             if (selection == 1) host.refresh_image_catalog(); else host.refresh_capabilities();
@@ -1476,6 +1486,7 @@ struct AdvancedCreationWorkspace::Impl {
         style_smart_creation_text(image_model_label, 14, wxColour(255, 255, 255, 230), wxFONTWEIGHT_MEDIUM);
         inputs->Add(image_model_label, 0, wxLEFT | wxRIGHT | wxTOP, page.FromDIP(16));
         image_model = new AdvancedChoicePicker(design_inputs, {}, [this](int selection) {
+            if (!input_editable()) return;
             if (selection < 0 || selection >= static_cast<int>(image_model_ids.size())) return;
             auto draft = host.session().draft().design;
             draft.model = image_model_ids[selection];
@@ -1535,7 +1546,10 @@ struct AdvancedCreationWorkspace::Impl {
             [this] { if (open_workbench) open_workbench(); });
         actions->Add(completion_actions, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, page.FromDIP(16));
         view_model = new RoundedActionButton(action_panel, t("查看3D模型"), false, 32);
-        view_model->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { open_model(); });
+        view_model->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+            if (model_host.creation_editing_locked()) { if (open_workbench) open_workbench(); }
+            else open_model();
+        });
         actions->Add(view_model, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, page.FromDIP(16));
         resume = new RoundedActionButton(action_panel, t("恢复原3D任务"), false, 32);
         resume->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { host.resume_model(); });
@@ -1546,6 +1560,13 @@ struct AdvancedCreationWorkspace::Impl {
         reconcile = new RoundedActionButton(action_panel, t("核对本次请求"), false, 32);
         reconcile->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { host.reconcile_submission(); });
         actions->Add(reconcile, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, page.FromDIP(16));
+        return_button = new RoundedActionButton(action_panel, t("返回AI创作"), false, 40);
+        return_button->SetName("advanced-return-creation");
+        return_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+            if (can_return && can_return() && return_creation) return_creation();
+        });
+        actions->Add(return_button, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, page.FromDIP(16));
+        return_button->Hide();
         left->Add(action_panel, 0, wxEXPAND);
         model_inputs->Hide(); model->Hide(); view_model->Hide(); resume->Hide(); stop->Hide(); reconcile->Hide();
         auto* center = new wxPanel(creation); center->SetBackgroundColour(background_colour()); center->SetMinSize(wxSize(0, 0));
@@ -1572,6 +1593,7 @@ struct AdvancedCreationWorkspace::Impl {
         for (auto view : AllViews) {
             const auto i = index(view); cards[i] = new ViewCard(grid, central_title(view)); cards[i]->SetName(t("advanced-design-") + t(view_name(view)));
             cards[i]->Bind(wxEVT_LEFT_UP, [this, view, i](wxMouseEvent&) {
+                if (model_host.creation_editing_locked()) return;
                 if (now_ms() <= suppress_until[i]) { suppress_until[i] = 0; return; }
                 host.session().click(view, now_ms(), double_click_ms()); click_timer.StartOnce(double_click_ms() + 5); render();
             });
@@ -1589,7 +1611,10 @@ struct AdvancedCreationWorkspace::Impl {
             grid_layout_size = size;
             if (!applying_layout) refresh.request(Presentation::Dirty::Layout);
         });
-        page.Bind(wxEVT_TIMER, [this](wxTimerEvent&) { host.session().flush_click(now_ms()); render(); }, click_timer.GetId());
+        page.Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
+            if (!model_host.creation_editing_locked()) host.session().flush_click(now_ms());
+            render();
+        }, click_timer.GetId());
         auto* drawer_host = new wxPanel(creation); drawer_host->SetBackgroundColour(background_colour());
         auto* drawer_sizer = new wxBoxSizer(wxHORIZONTAL); drawer_host->SetSizer(drawer_sizer);
         outer->Add(drawer_host, 0, wxEXPAND | wxLEFT, page.FromDIP(10));
@@ -1718,7 +1743,7 @@ struct AdvancedCreationWorkspace::Impl {
         if (polish_request) polish_request->cancel();
         model_host.set_advanced_state_listener({});
         model_host.unmount_legacy_creation();
-        host.set_start_guard({}); host.set_model_job_listener({}); host.set_listener({});
+        host.set_start_guard({}); host.set_editing_guard({}); host.set_model_job_listener({}); host.set_listener({});
     }
     void switch_stage(bool selected_model, bool reset = false) {
         if (!reset && model_tab == selected_model) return;
@@ -1816,7 +1841,7 @@ struct AdvancedCreationWorkspace::Impl {
         render();
     }
     void options_changed() {
-        if (!geometry_provider || !face_limit) return;
+        if (!geometry_provider || !face_limit || !input_editable()) return;
         auto options = host.session().draft().geometry;
         options.provider = "tripo"; options.model.clear();
         options.face_limit = face_limit->selection() == 1 ? 2000000 :
@@ -1825,23 +1850,26 @@ struct AdvancedCreationWorkspace::Impl {
         host.session().set_model_options(std::move(options)); host.changed();
     }
     bool navigation_allowed() {
-        if (model_host.workbench_snapshot().modal_blocking) {
-            model_host.raise_workbench_modal(); return false;
-        }
-        return true;
+        return !closing;
     }
     void update_model_presentation() {
         if (!generation_view || closing) return;
         const bool content = model_tab && generation_view->has_content();
         const bool complete = content && generation_view->ready();
+        const bool readonly = model_host.creation_editing_locked();
         const bool completion_changed = completion_actions->IsShown() != complete;
         std::unique_ptr<wxWindowUpdateLocker> content_handoff;
         if (generation_view->IsShown() != content)
             content_handoff = std::make_unique<wxWindowUpdateLocker>(grid->GetParent());
         show(grid, !content); show(generation_view, content);
-        show(completion_actions, complete);
-        show(model, model_tab && !complete);
-        show(view_model, false);
+        show(completion_actions, complete && !readonly);
+        show(model, model_tab && !complete && !readonly);
+        show(generate, !model_tab && !readonly);
+        show(view_model, readonly);
+        label(view_model, readonly ? t("返回工作台") : t("查看3D模型"));
+        enable(view_model, readonly);
+        show(return_button, readonly);
+        enable(return_button, readonly && can_return && can_return());
         const auto eligibility = host.eligibility();
         completion_actions->set_enabled(eligibility.generate_model,
             generation_view->ready() && host.model_state().can_open_workbench && !host.command_pending());
@@ -1931,7 +1959,7 @@ struct AdvancedCreationWorkspace::Impl {
                     if (self.host.session().matches_command(context, false)) {
                         if (!result.optimized_prompt.empty() &&
                             show_generation_confirmation(target, t(result.optimized_prompt.c_str()), t("使用润色后的描述？")) == wxID_YES) {
-                            if (self.host.session().matches_command(context, false)) {
+                            if (!self.model_host.creation_editing_locked() && self.host.session().matches_command(context, false)) {
                                 auto draft = self.host.session().draft().design; draft.prompt = result.optimized_prompt;
                                 self.host.session().set_design_draft(std::move(draft)); self.host.changed();
                             }
@@ -1989,7 +2017,7 @@ struct AdvancedCreationWorkspace::Impl {
         };
     }
     bool input_editable() const {
-        return !polish_pending && model_host.can_replace_asset() && !host.draft_editing_locked() && !host.has_pending_receipt() && (!host.session().group() ||
+        return !model_host.creation_editing_locked() && !polish_pending && model_host.can_replace_asset() && !host.draft_editing_locked() && !host.has_pending_receipt() && (!host.session().group() ||
                (host.session().group()->active_operation_id.empty() && !host.session().group()->model_busy));
     }
     void choose(ViewId view) {
@@ -2323,6 +2351,11 @@ struct AdvancedCreationWorkspace::Impl {
                 t("正在处理当前3D模型任务…")) : t(host.message().c_str());
         }
         label(status, status_text);
+        if (model_host.creation_editing_locked()) {
+            label(status, can_return && can_return() ? t("当前为只读查看，点击“返回AI创作”恢复编辑") :
+                t("当前为只读查看，工作台处理中，完成后可返回AI创作"));
+        }
+        enable(fresh_button, !model_host.creation_editing_locked());
         if (history_dirty || history_view_signature() != history_signature) apply_history();
         enable(history_refresh, !host.command_pending());
         apply_model_snapshot();
@@ -2362,6 +2395,9 @@ void AdvancedCreationWorkspace::render() { m_impl->render(); }
 void AdvancedCreationWorkspace::set_presented(bool visible) { m_impl->set_presented(visible); }
 void AdvancedCreationWorkspace::set_service_available(bool available) { m_impl->set_service_available(available); }
 bool AdvancedCreationWorkspace::navigation_allowed() { return m_impl->navigation_allowed(); }
+void AdvancedCreationWorkspace::set_creation_return_handler(std::function<void()> action, std::function<bool()> allowed) {
+    m_impl->return_creation = std::move(action); m_impl->can_return = std::move(allowed);
+}
 void AdvancedCreationWorkspace::shutdown() { m_impl->shutdown(); }
 void AdvancedCreationWorkspace::apply_model_state(const ModelGenerationUIState&, bool new_generation) {
     m_impl->apply_model_snapshot(new_generation);

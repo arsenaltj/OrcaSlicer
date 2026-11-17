@@ -512,8 +512,6 @@ void ModelGenerationPanel::set_workbench_presented(bool presented)
     if (!active) {
         finish_workbench_check_timing("presentation-left");
         if (m_model_preview) m_model_preview->cancel_view_navigation();
-        if (m_workbench_check_running && m_workbench_check_cancel)
-            m_workbench_check_cancel->store(true);
         m_workbench_check_card_visible = false;
         m_workbench_honor_semantic_active = false;
         m_workbench_honor_semantic_progress = 0;

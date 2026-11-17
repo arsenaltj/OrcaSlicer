@@ -133,6 +133,17 @@ TEST_CASE("Foreground inference declines missing resources invalid input and can
     CHECK(GP::infer_foreground(im,directory.path(),[]{return true;}).reason=="canceled");
 }
 #ifdef ORCA_TEST_GENERATION_FOREGROUND_RUNTIME
+TEST_CASE("Foreground sessions release before native teardown and initialize again", "[GenerationParticles][GenerationForeground]") {
+    const auto expected=GP::infer_foreground(picture(),ORCA_TEST_GENERATION_FOREGROUND_RUNTIME,{});
+    REQUIRE(expected.reason=="ready");
+    REQUIRE_FALSE(expected.mask.alpha.empty());
+    GP::release_foreground_runtime();
+    GP::release_foreground_runtime();
+    const auto reopened=GP::infer_foreground(picture(),ORCA_TEST_GENERATION_FOREGROUND_RUNTIME,{});
+    CHECK(reopened.reason=="ready");
+    CHECK(reopened.mask.alpha==expected.mask.alpha);
+    GP::release_foreground_runtime();
+}
 TEST_CASE("Foreground runtime corruption cannot load an unverified native library", "[GenerationParticles][GenerationForeground]") {
     ScopedTemporaryDir directory("foreground-corrupt");
     const auto runtime=boost::filesystem::path(ORCA_TEST_GENERATION_FOREGROUND_RUNTIME);

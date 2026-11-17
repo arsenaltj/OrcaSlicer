@@ -39,6 +39,11 @@ public:
     bool request_open_workbench_artifact(WorkbenchOpenRequest request);
     bool request_open_generated_workbench(bool advanced, const ModelGenerationUIState& displayed);
     bool workbench_returns_to_advanced() const;
+    bool creation_editing_locked() const;
+    bool commit_current_creation(const WorkbenchOpenRequest& request);
+    void restore_creation_editing();
+    void set_creation_workflow_listener(std::function<void()> listener);
+    void set_import_navigation_guard(std::function<std::function<bool()>()> capture);
     bool can_replace_asset() const;
     ~ModelGenerationFeatureHost();
 
@@ -98,6 +103,7 @@ public:
         std::shared_ptr<WorkbenchImportSession> session, WorkbenchImportProgress progress,
         WorkbenchImportCompletion completion);
     bool request_open_workbench();
+    void present_existing_workbench();
     void set_workbench_presented(bool presented);
     void present_workbench_restore_frame();
     void prepare_workbench_presentation(std::function<void()> ready);

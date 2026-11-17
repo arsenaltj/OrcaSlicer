@@ -412,6 +412,9 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
 void ModelGenerationPanel::finish_history_model_open(bool accepted, std::function<void()> complete)
 {
     if (!accepted && m_history_open) {
+        if (!m_history_open->canceled.load())
+            BOOST_LOG_TRIVIAL(info) << "[ModelPreviewLoad] cancel requested request="
+                << m_history_open->generation << " worker_pending=" << m_history_open->worker_pending;
         wxWeakRef<ModelGenerationPanel> weak(this);
         if (m_history_open->cancel_after_drain([weak, complete] {
                 if (weak && !weak->m_shutdown) weak->finish_history_model_open(false, complete);

@@ -1,14 +1,94 @@
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelContext.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchOpenRequest.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelArtifactAcquisition.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/AdvancedModelTaskFlow.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
+#include "slic3r/GUI/Redesign/RedesignPageCoordinator.hpp"
 #include "../test_utils.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
 using namespace Slic3r;
 using namespace Slic3r::GUI;
+
+TEST_CASE("Only a successfully committed creation handoff locks its source draft", "[UnifiedWorkbench][CreationWorkflow]")
+{
+    const bool advanced = GENERATE(false, true);
+    const bool accepted = GENERATE(false, true);
+    CreationWorkbenchContext context;
+    WorkbenchOpenRequest request;
+    request.origin = advanced ? WorkbenchOpenRequest::Origin::Advanced : WorkbenchOpenRequest::Origin::Smart;
+    request.entry.job_id = "created"; request.entry.model_path = "created.glb";
+    request.return_context = advanced ? "advanced" : "smart"; request.generation = 17;
+    CHECK_FALSE(context.locked());
+    context.stage(request);
+    CHECK_FALSE(context.locked());
+    context.finish(accepted);
+    CHECK(context.locked() == accepted);
+    if (accepted) {
+        REQUIRE(context.anchor());
+        CHECK(context.anchor()->advanced == advanced);
+        CHECK(context.anchor()->asset_id == "created");
+        CHECK(context.anchor()->generation == 17);
+    }
+}
+
+TEST_CASE("Failed replacement and library handoffs preserve the committed creation source", "[UnifiedWorkbench][CreationWorkflow]")
+{
+    CreationWorkbenchContext context;
+    WorkbenchOpenRequest first;
+    first.origin = WorkbenchOpenRequest::Origin::Advanced;
+    first.entry.job_id = "first"; first.entry.model_path = "first.glb";
+    first.return_context = "advanced"; first.generation = 4;
+    context.stage(first); context.finish(true);
+    auto replacement = first;
+    replacement.entry.job_id = "second"; replacement.return_context = "smart";
+    context.stage(replacement); context.finish(false);
+    REQUIRE(context.anchor());
+    CHECK(context.anchor()->asset_id == "first");
+    context.stage(WorkbenchOpenRequest{}); context.finish(true);
+    REQUIRE(context.anchor());
+    CHECK(context.anchor()->asset_id == "first");
+    CHECK(context.anchor()->advanced);
+}
+
+TEST_CASE("Page round trips retain the workflow lock and remembered workbench view", "[UnifiedWorkbench][CreationWorkflow][UiRedesign]")
+{
+    const auto view = GENERATE(RedesignModelView::Workbench, RedesignModelView::Slicing, RedesignModelView::Preview);
+    RedesignPageCoordinator pages;
+    CreationWorkbenchContext context;
+    WorkbenchOpenRequest request;
+    request.origin = WorkbenchOpenRequest::Origin::Smart;
+    request.entry.job_id = "job"; request.entry.model_path = "model.obj"; request.return_context = "smart";
+    context.stage(request); context.finish(true);
+    pages.select_view(view);
+    for (int i = 0; i < 20; ++i) {
+        pages.select_page(RedesignWorkspacePage::Image);
+        CHECK(context.locked());
+        pages.select_page(RedesignWorkspacePage::Model);
+        CHECK(pages.view() == view);
+        CHECK(context.locked());
+    }
+    context.restore_editing();
+    CHECK_FALSE(context.locked());
+    CHECK(pages.view() == view);
+}
+
+TEST_CASE("An explicit return prevents old handoff completion from relocking creation", "[UnifiedWorkbench][CreationWorkflow]")
+{
+    CreationWorkbenchContext context;
+    WorkbenchOpenRequest request;
+    request.origin = WorkbenchOpenRequest::Origin::Smart;
+    request.entry.job_id = "job"; request.entry.model_path = "model.obj"; request.return_context = "smart";
+    context.stage(request); context.finish(true);
+    context.stage(request);
+    context.restore_editing();
+    context.finish(true);
+    CHECK_FALSE(context.locked());
+    CreationWorkbenchContext restarted;
+    CHECK_FALSE(restarted.locked());
+}
 
 TEST_CASE("The selected task keeps its own progress and recovery across workbench reentry", "[UnifiedWorkbench]")
 {

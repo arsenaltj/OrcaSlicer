@@ -638,4 +638,20 @@ void GenerationCompletionActions::set_enabled(bool regenerate, bool open_workben
     if (m_regenerate->IsEnabled() != regenerate) { m_regenerate->Enable(regenerate); m_regenerate->Refresh(false); }
     if (m_workbench->IsEnabled() != open_workbench) { m_workbench->Enable(open_workbench); m_workbench->Refresh(false); }
 }
+void GenerationCompletionActions::set_read_only(bool readonly) {
+    const auto left = readonly ? t("返回AI创作") : t("重新生成");
+    const auto right = readonly ? t("返回工作台") : t("进入工作台");
+    if (m_regenerate->GetLabel() != left) {
+        m_regenerate->SetLabel(left);
+        // The longer return label needs an equal share of the narrow sidebar.
+        auto* row = m_regenerate->GetContainingSizer();
+        m_regenerate->SetMinSize(FromDIP(wxSize(readonly ? 153 : 120, 44)));
+        m_workbench->SetMinSize(FromDIP(wxSize(readonly ? 153 : 186, 44)));
+        row->GetItem(m_regenerate)->SetProportion(readonly ? 1 : 120);
+        row->GetItem(m_workbench)->SetProportion(readonly ? 1 : 186);
+        Layout();
+        m_regenerate->Refresh(false);
+    }
+    if (m_workbench->GetLabel() != right) { m_workbench->SetLabel(right); m_workbench->Refresh(false); }
+}
 } // namespace Slic3r::GUI

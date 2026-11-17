@@ -29,7 +29,7 @@ public:
     const std::string& message() const { return m_message; }
     const Json& history() const { return m_history; }
     bool command_pending() const { return m_command_state != CommandState::Idle; }
-    bool draft_editing_locked() const { return m_command_state == CommandState::Exclusive || model_stop_pending(); }
+    bool draft_editing_locked() const { return (m_editing_guard && !m_editing_guard()) || m_command_state == CommandState::Exclusive || model_stop_pending(); }
     bool has_pending_receipt() const;
     const ProviderCatalog& image_catalog() const { return m_image_catalog; }
     void reconcile_submission();
@@ -46,6 +46,7 @@ public:
     void set_model_job_listener(std::function<void(const AdvancedCreation::ModelJobEvent&)> listener)
     { m_model_job_listener = std::move(listener); }
     void set_start_guard(std::function<bool()> guard) { m_start_guard = std::move(guard); }
+    void set_editing_guard(std::function<bool()> guard) { m_editing_guard = std::move(guard); }
     void set_service_available(bool available);
     void refresh_capabilities();
     void refresh_image_catalog();
@@ -103,6 +104,7 @@ private:
     std::uint64_t m_model_request_sequence {0};
     std::string m_stopping_model_job;
     std::function<bool()> m_start_guard;
+    std::function<bool()> m_editing_guard;
     ProviderCatalog m_image_catalog;
     std::uint64_t m_image_catalog_sequence {0};
     Json m_capabilities;

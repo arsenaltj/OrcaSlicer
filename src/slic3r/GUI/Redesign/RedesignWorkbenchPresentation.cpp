@@ -82,6 +82,56 @@ private:
 };
 }
 
+void RedesignShell::queue_navigation(Page page, ModelView view)
+{
+    const bool queued = m_queued_navigation.has_value();
+    m_queued_navigation = RedesignWorkbenchRoute {page, view};
+    if (queued) return;
+    wxWeakRef<RedesignShell> weak(this);
+    CallAfter([weak] {
+        if (!weak || weak->m_presentation_stopping || !weak->m_queued_navigation) return;
+        const auto route = *weak->m_queued_navigation;
+        weak->m_queued_navigation.reset();
+        if (route.page == Page::Model) weak->show_model_view(route.view);
+        else weak->navigate_to(route.page);
+    });
+}
+
+void RedesignShell::release_navigation_waits()
+{
+    // Release presentation ownership only. Accepted history/import work keeps
+    // its request and write gate until its own completion drains.
+    if (m_workbench_transition && !m_workbench_presentation_detached) {
+        m_workbench_presentation_detached = true;
+        m_page_coordinator.transition().rollback(*m_workbench_transition);
+        restore_workbench_source_page();
+        if (m_workbench_transition_cover) m_workbench_transition_cover->Hide();
+        if (m_history_loading) m_history_loading->Hide();
+        if (m_model_generation_host) m_model_generation_host->cancel_workbench_presentation();
+        BOOST_LOG_TRIVIAL(info) << "[WorkbenchPresentation] navigation detached token=" << *m_workbench_transition;
+        if (!m_workbench_history_loading && !m_history_rollback_pending)
+            finish_workbench_presentation(true);
+    }
+    if (m_preview_transition) {
+        m_preview_transition_timer.Stop();
+        m_preview_frame_gate.finish();
+        m_page_coordinator.transition().rollback(*m_preview_transition);
+        m_preview_transition.reset();
+        if (m_preview_transition_cover) m_preview_transition_cover->Hide();
+    }
+    if (m_import_in_progress && !m_import_navigation_detached) {
+        m_import_navigation_detached = true;
+        if (m_import_transition) m_page_coordinator.transition().rollback(*m_import_transition);
+        restore_import_source_page();
+        m_import_target_staged = false;
+        m_import_target_presenting = false;
+        m_import_awaiting_frame = false;
+        if (m_import_loading) m_import_loading->Hide();
+        if (m_import_transition_cover) m_import_transition_cover->Hide();
+        if (m_import_project_committed) finish_import_loading(true);
+    }
+}
+
 bool RedesignShell::begin_workbench_presentation(bool history_loading)
 {
     if (m_workbench_transition) return true;
@@ -96,6 +146,7 @@ bool RedesignShell::begin_workbench_presentation(bool history_loading)
         {int(m_page_coordinator.page()), int(m_page_coordinator.view())}, {int(Page::Model), int(ModelView::Workbench)});
     if (!token) return false;
     m_workbench_transition = *token;
+    m_workbench_presentation_detached = false;
     if (!m_workbench_transition_cover) {
         m_workbench_transition_cover = new RetainedWorkbenchPageFrame(wxGetTopLevelParent(this));
         m_workbench_transition_cover->SetName("workbench-open-transition");
@@ -106,7 +157,10 @@ bool RedesignShell::begin_workbench_presentation(bool history_loading)
         Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
             if (!m_workbench_transition) return;
             auto* owner = wxDynamicCast(wxGetTopLevelParent(this), wxTopLevelWindow);
-            const bool paused = !owner || owner->IsIconized() || !IsShownOnScreen();
+            // Parsing owns its worker/cancel lifetime. The first-frame budget
+            // measures visible presentation only, not time reading a large asset.
+            const bool paused = m_workbench_history_loading || m_history_rollback_pending ||
+                m_workbench_presentation_detached || !owner || owner->IsIconized() || !IsShownOnScreen();
             layout_workbench_transition_cover();
             if (!m_history_rollback_pending &&
                 m_workbench_presentation_deadline.observe(RedesignPresentationDeadline::Clock::now(), paused))
@@ -138,7 +192,7 @@ bool RedesignShell::begin_workbench_presentation(bool history_loading)
         return false;
     }
     m_workbench_transition_source = source;
-    m_workbench_transition_input_filter = std::make_unique<RetainedPageInputFilter>(this, source,
+    m_workbench_transition_input_filter = std::make_unique<RetainedPageInputFilter>(m_content_host, source,
         history_loading ? m_history_loading : nullptr);
     m_workbench_prepared_size = wxSize();
     m_workbench_history_loading = history_loading;
@@ -172,13 +226,17 @@ bool RedesignShell::continue_workbench_presentation()
     if (m_history_open_request) update_history_loading(ModelHistoryOpenEvent::Stage::Displaying);
     wxWeakRef<RedesignShell> weak(this);
     m_model_generation_host->prepare_workbench_presentation([weak, token] {
-        if (weak && weak->m_page_coordinator.transition().current(token) && weak->m_workbench_transition == token)
+        if (weak && weak->m_workbench_transition == token)
             weak->finish_workbench_presentation(true);
     });
     restore_smart_model_history();
     if (!m_model_generation_host->request_open_workbench()) {
         finish_workbench_presentation(false);
         return false;
+    }
+    if (m_workbench_presentation_detached) {
+        finish_workbench_presentation(true);
+        return true;
     }
     m_workbench_page->Show();
     m_content_host->Layout();
@@ -191,6 +249,11 @@ bool RedesignShell::continue_workbench_presentation()
 void RedesignShell::layout_workbench_transition_cover()
 {
     if (!m_workbench_transition || !m_workbench_transition_cover) return;
+    if (m_workbench_presentation_detached) {
+        m_workbench_transition_cover->Hide();
+        if (m_history_loading) m_history_loading->Hide();
+        return;
+    }
     auto* owner = wxDynamicCast(wxGetTopLevelParent(this), wxTopLevelWindow);
     if (!owner || owner->IsIconized() || !m_content_host->IsShownOnScreen()) {
         m_workbench_transition_cover->Hide();
@@ -255,6 +318,7 @@ void RedesignShell::update_history_loading(ModelHistoryOpenEvent::Stage stage)
 void RedesignShell::layout_history_loading()
 {
     if (!m_history_loading || !m_history_open_request || !m_workbench_transition) return;
+    if (m_workbench_presentation_detached) { m_history_loading->Hide(); return; }
     auto* owner = wxDynamicCast(wxGetTopLevelParent(this), wxTopLevelWindow);
     if (!owner || owner->IsIconized() || !IsShownOnScreen()) { m_history_loading->Hide(); return; }
     const auto elapsed = wxString::Format(_L("已用时 %.1f 秒"),
@@ -314,27 +378,29 @@ void RedesignShell::finish_workbench_presentation(bool ready, bool report_failur
         return;
     }
     const auto token = *m_workbench_transition;
+    const bool detached = m_workbench_presentation_detached;
     auto* owner = wxDynamicCast(wxGetTopLevelParent(this), wxTopLevelWindow);
-    if (ready && (!owner || owner->IsIconized() || !IsShownOnScreen())) return;
-    if (ready && m_workbench_prepared_size != m_content_host->GetClientSize()) {
+    if (ready && !detached && (!owner || owner->IsIconized() || !IsShownOnScreen())) return;
+    if (ready && !detached && m_workbench_prepared_size != m_content_host->GetClientSize()) {
         layout_workbench_transition_cover();
         return;
     }
     m_workbench_transition_timer.Stop();
     const auto source = m_page_coordinator.transition().source();
     m_model_generation_host->cancel_workbench_presentation();
-    if (ready) {
+    if (ready && !detached) {
         m_page_coordinator.transition().mark_ready(token);
         ready = m_page_coordinator.transition().commit(token);
     }
     if (!ready) m_page_coordinator.transition().rollback(token);
     m_workbench_transition.reset();
+    m_workbench_presentation_detached = false;
     m_workbench_history_loading = false;
     if (ready && m_history_open_request) {
         m_model_generation_host->finish_history_model_open(true);
         m_history_open_request = 0;
     }
-    if (ready) {
+    if (ready && !detached) {
         m_image_page_view_only = false;
         if (m_advanced_workspace && m_advanced_workspace != m_workbench_transition_source)
             m_advanced_workspace->Hide();
@@ -343,13 +409,13 @@ void RedesignShell::finish_workbench_presentation(bool ready, bool report_failur
         m_page_coordinator.select_view(ModelView::Workbench);
         m_active_tab_id = TAB_ID_GENERATE_3D;
         for (auto* page : m_pages) if (page && page != m_workbench_transition_source) page->Hide();
-    } else {
+    } else if (!detached) {
         m_workbench_page->Hide();
         m_page_coordinator.select_page(static_cast<Page>(source.page));
         m_page_coordinator.select_view(static_cast<ModelView>(source.view));
     }
     restore_workbench_source_page();
-    if (!ready) {
+    if (!ready && !detached) {
         if (auto* restored = active_page_focus_root()) restored->Show();
     }
     if (m_advanced_workspace) m_advanced_workspace->Show(m_page_coordinator.page() == Page::Image && m_page_coordinator.advanced());
@@ -357,8 +423,8 @@ void RedesignShell::finish_workbench_presentation(bool ready, bool report_failur
     sync_page_settings_visibility(m_page_coordinator.page());
     refresh_navigation();
     refresh_workflow_layout();
-    m_model_generation_host->set_workbench_presented(ready ||
-        (m_page_coordinator.page() == Page::Model && m_page_coordinator.view() == ModelView::Workbench));
+    m_model_generation_host->set_workbench_presented(
+        m_page_coordinator.page() == Page::Model && m_page_coordinator.view() == ModelView::Workbench);
     sync_smart_model_history();
     queue_creation_history_refresh();
     restore_active_page_focus();
@@ -366,6 +432,7 @@ void RedesignShell::finish_workbench_presentation(bool ready, bool report_failur
     m_workbench_transition_cover->Hide();
     finish_history_loading();
     static_cast<RetainedWorkbenchPageFrame*>(m_workbench_transition_cover)->release();
+    refresh_creation_workflow();
     BOOST_LOG_TRIVIAL(info) << "[WorkbenchPresentation] " << (ready ? "committed" : "rolled back") << " token=" << token;
     if (!ready && report_failure) {
         BOOST_LOG_TRIVIAL(error) << "[WorkbenchPresentation] failure token=" << token

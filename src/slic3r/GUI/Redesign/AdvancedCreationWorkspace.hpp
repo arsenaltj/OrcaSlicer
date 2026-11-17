@@ -23,6 +23,7 @@ public:
     void set_presented(bool visible);
     void set_service_available(bool available);
     bool navigation_allowed();
+    void set_creation_return_handler(std::function<void()> action, std::function<bool()> allowed);
     void shutdown();
     void apply_model_state(const ModelGenerationUIState& state, bool new_generation);
     std::optional<WorkbenchOpenRequest> displayed_artifact() const;

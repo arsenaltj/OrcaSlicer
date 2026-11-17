@@ -921,3 +921,45 @@ TEST_CASE("Advanced image cache completion cannot restore an older stopped model
     CHECK(session.group()->model_state == "ready");
     CHECK_FALSE(session.group()->model_busy);
 }
+
+TEST_CASE("The shared workflow lock rejects advanced draft replacement until explicit return",
+          "[AdvancedCreation][CreationWorkflow]")
+{
+    wxInitializer init;
+    REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-workflow-lock"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.path().string());
+    Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, "http://127.0.0.1:1");
+    host.session() = ready_session();
+    const auto context = host.session().context();
+    const auto original = host.session().draft();
+    const auto selection = host.session().selection();
+    host.session().click(ViewId::Left, 100, 500);
+    bool unlocked = false;
+    host.set_editing_guard([&] { return unlocked; });
+    CHECK(host.draft_editing_locked());
+    CHECK_FALSE(host.eligibility().generate_design);
+    CHECK_FALSE(host.eligibility().generate_model);
+    host.new_creation();
+    CHECK(host.session().matches(context));
+    CHECK(host.session().draft().design == original.design);
+    CHECK(host.session().draft().uploads == original.uploads);
+    const auto& geometry = host.session().draft().geometry;
+    CHECK(geometry.provider == original.geometry.provider);
+    CHECK(geometry.model == original.geometry.model);
+    CHECK(geometry.face_limit == original.geometry.face_limit);
+    CHECK(geometry.geometry_quality == original.geometry.geometry_quality);
+    CHECK(geometry.texture_quality == original.geometry.texture_quality);
+    CHECK(geometry.output_format == original.geometry.output_format);
+    host.open_group("another-group");
+    host.rename_group("group-a", 4, "changed name");
+    host.generate_design({}); host.generate_model({});
+    CHECK(host.session().selection() == selection);
+    CHECK(host.session().matches(context));
+    CHECK_FALSE(host.command_pending());
+    unlocked = true;
+    CHECK_FALSE(host.draft_editing_locked());
+    host.new_creation();
+    CHECK_FALSE(host.session().matches(context));
+    host.shutdown();
+}

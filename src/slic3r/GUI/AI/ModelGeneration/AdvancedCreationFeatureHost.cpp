@@ -287,6 +287,10 @@ Eligibility AdvancedCreationFeatureHost::eligibility() const
     guards.can_start = !command_pending() && !model_stop_pending() && !m_poll_pending && !has_pending_receipt() && (!m_start_guard || m_start_guard());
     guards.model_service_available = m_service_available;
     auto result = m_session.eligibility(capabilities(), guards);
+    if (m_editing_guard && !m_editing_guard()) {
+        result.generate_design = result.generate_model = result.retry = result.recover = false;
+        result.design_reason = result.model_reason = "creation_read_only";
+    }
     if (m_model_request && m_model_request->phase == ModelJobEvent::Phase::Requested && m_stopping_model_job.empty())
         result.stop = true;
     if (model_stop_pending()) {
@@ -298,6 +302,7 @@ Eligibility AdvancedCreationFeatureHost::eligibility() const
 
 void AdvancedCreationFeatureHost::changed()
 {
+    if (m_editing_guard && !m_editing_guard()) return;
     m_message.clear(); m_save_timer.StartOnce(650); publish();
 }
 
@@ -486,6 +491,7 @@ void AdvancedCreationFeatureHost::save_draft(std::function<void()> done)
 
 void AdvancedCreationFeatureHost::open_group(const std::string& id)
 {
+    if (m_editing_guard && !m_editing_guard()) return;
     if (command_pending() || m_poll_pending || has_pending_receipt() || (m_start_guard && !m_start_guard()) || !AdvancedMultiviewClient::valid_id(id)) return;
     m_command_state = CommandState::Exclusive;
     save_draft([this, id] {
@@ -495,6 +501,7 @@ void AdvancedCreationFeatureHost::open_group(const std::string& id)
 
 void AdvancedCreationFeatureHost::rename_group(const std::string& id, std::uint64_t revision, std::string display_name)
 {
+    if (m_editing_guard && !m_editing_guard()) return;
     if (command_pending() || m_poll_pending || has_pending_receipt() ||
         (m_start_guard && !m_start_guard()) || !AdvancedMultiviewClient::valid_id(id)) return;
     m_command_state = CommandState::Exclusive;
@@ -529,6 +536,7 @@ void AdvancedCreationFeatureHost::rename_group(const std::string& id, std::uint6
 
 void AdvancedCreationFeatureHost::new_creation()
 {
+    if (m_editing_guard && !m_editing_guard()) return;
     std::map<std::string, Json> old;
     for (const auto& [id, receipt] : m_pending_receipts)
         if (receipt.contains("group_id") && receipt_is_current(receipt)) old[id] = receipt;
@@ -557,6 +565,7 @@ void AdvancedCreationFeatureHost::new_creation()
 
 void AdvancedCreationFeatureHost::generate_design(Confirm confirm)
 {
+    if (m_editing_guard && !m_editing_guard()) return;
     m_session.flush_click(std::numeric_limits<std::uint64_t>::max());
     if (!eligibility().generate_design) return;
     m_command_state = CommandState::Exclusive; m_message.clear(); m_save_timer.Stop();
@@ -590,6 +599,7 @@ void AdvancedCreationFeatureHost::generate_design(Confirm confirm)
 
 void AdvancedCreationFeatureHost::generate_model(Confirm confirm)
 {
+    if (m_editing_guard && !m_editing_guard()) return;
     m_session.flush_click(std::numeric_limits<std::uint64_t>::max());
     if (!eligibility().generate_model || !m_session.group()) return;
     m_command_state = CommandState::Exclusive; m_message.clear(); m_save_timer.Stop();
@@ -605,7 +615,8 @@ void AdvancedCreationFeatureHost::generate_model(Confirm confirm)
             complete([this, group, context, confirm](Json value) {
                 if (!m_session.matches_command(context, false)) { m_command_state = CommandState::Idle; publish(); return; }
                 const auto& plan = value.at("plan");
-                if (!confirm || !confirm(plan) || !m_session.matches_command(context, false)) {
+                if ((m_editing_guard && !m_editing_guard()) || !confirm || !confirm(plan) ||
+                    (m_editing_guard && !m_editing_guard()) || !m_session.matches_command(context, false)) {
                     if (m_session.matches(context.callback)) { m_command_state = CommandState::Idle; publish(); }
                     return;
                 }
@@ -702,10 +713,12 @@ void AdvancedCreationFeatureHost::prepare(const std::string& group, Json request
 {
     m_client.request("POST", "/groups/" + group + "/plans", request,
         complete([this, group, confirm, context, new_group](Json value) {
-            if (!m_session.matches_command(context)) { m_command_state = CommandState::Idle; publish(); return; }
+            if ((m_editing_guard && !m_editing_guard()) || !m_session.matches_command(context)) {
+                m_command_state = CommandState::Idle; publish(); return;
+            }
             auto plan = value.at("plan");
             const bool accepted = confirm && confirm(plan);
-            if (!accepted || !m_session.matches_command(context)) {
+            if (!accepted || (m_editing_guard && !m_editing_guard()) || !m_session.matches_command(context)) {
                 if (m_session.matches(context.callback)) { m_command_state = CommandState::Idle; publish(); }
                 return;
             }

@@ -204,6 +204,9 @@ private:
     void layout_workbench_transition_cover();
     void finish_workbench_presentation(bool ready, bool report_failure = true, std::string error = {});
     void restore_workbench_source_page();
+    void release_navigation_waits();
+    void queue_navigation(Page page, ModelView view);
+    void refresh_creation_workflow();
     void sync_page_settings_visibility(Page page);
     wxRect workbench_transition_bounds() const;
     void update_history_loading(ModelHistoryOpenEvent::Stage stage);
@@ -338,6 +341,9 @@ private:
     wxFrame* m_preview_transition_cover {nullptr};
     wxTimer m_preview_transition_timer;
     std::optional<RedesignPageTransition::Token> m_workbench_transition;
+    bool m_workbench_presentation_detached {false};
+    bool m_import_navigation_detached {false};
+    std::optional<RedesignWorkbenchRoute> m_queued_navigation;
     uint64_t m_history_open_request {0};
     std::string m_history_open_asset;
     wxDialog* m_history_loading {nullptr};

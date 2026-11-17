@@ -782,8 +782,10 @@ void RedesignShell::build_model_workflow()
     m_history_elapsed = history_card.elapsed;
     m_history_cancel = history_card.cancel;
     m_history_cancel->Bind(wxEVT_BUTTON, [weak](wxCommandEvent&) {
-        if (weak && weak->m_history_open_request && !weak->m_history_rollback_pending)
+        if (weak && weak->m_history_open_request && !weak->m_history_rollback_pending) {
+            BOOST_LOG_TRIVIAL(info) << "[ModelPreviewLoad] user canceled request=" << weak->m_history_open_request;
             weak->finish_workbench_presentation(false, false);
+        }
     });
     m_history_loading->Bind(wxEVT_CLOSE_WINDOW, [weak](wxCloseEvent& event) {
         if (weak && weak->m_history_open_request) event.Veto();
@@ -930,8 +932,6 @@ void RedesignShell::build_model_workflow()
 
 bool RedesignShell::open_model_workbench()
 {
-    if (m_workbench_transition) return true;
-    if (m_import_in_progress || m_page_coordinator.transition().active() || !owns_model_workflow()) return false;
     return show_model_view(ModelView::Workbench);
 }
 
@@ -952,20 +952,16 @@ void RedesignShell::return_model_overview()
 
 bool RedesignShell::show_model_view(ModelView view)
 {
-    if (view == ModelView::Workbench && m_workbench_transition) return true;
-    if (block_workbench_navigation(view != ModelView::Workbench)) return false;
-    if (view == ModelView::Preview && m_preview_transition &&
-        m_page_coordinator.transition().current(*m_preview_transition)) return true;
-    if (!owns_model_workflow() || m_import_in_progress || m_page_coordinator.transition().active()) return false;
+    if (m_presentation_stopping || !owns_model_workflow()) return false;
+    release_navigation_waits();
+    if (m_page_coordinator.transition().active()) {
+        queue_navigation(Page::Model, view);
+        return true;
+    }
+    m_queued_navigation.reset();
     if (view == ModelView::Workbench) {
-        // Creation sources keep their presented pixels until the editing frame commits.
-        if (m_page_coordinator.page() == Page::Image && !m_workbench_state.model_path.empty())
-            return begin_workbench_presentation();
         restore_smart_model_history();
-        if (!m_model_generation_host->request_open_workbench()) {
-            if (m_page_coordinator.page() == Page::Image) mount_smart_model_history();
-            return false;
-        }
+        m_model_generation_host->present_existing_workbench();
     }
     if (view == ModelView::Preview) {
         auto* plate = m_plater->get_partplate_list().get_curr_plate();
@@ -993,6 +989,7 @@ bool RedesignShell::show_model_view(ModelView view)
     }
 
     remember_active_page_focus();
+    ++m_creation_navigation_epoch;
     const auto transition = m_page_coordinator.transition().begin(
         {int(m_page_coordinator.page()), int(m_page_coordinator.view())}, {int(Page::Model), int(view)});
     if (!transition) return false;
@@ -1203,7 +1200,7 @@ void RedesignShell::finish_preview_transition(RedesignPageTransition::Token toke
 
 void RedesignShell::request_viewport_frame()
 {
-    if (m_workbench_transition) {
+    if (m_workbench_transition && !m_workbench_presentation_detached) {
         layout_workbench_transition_cover();
         return;
     }
@@ -1229,7 +1226,7 @@ void RedesignShell::request_viewport_frame()
 void RedesignShell::present_restore_frame()
 {
     Presentation::assert_gui_thread();
-    if (m_workbench_transition) {
+    if (m_workbench_transition && !m_workbench_presentation_detached) {
         layout_workbench_transition_cover();
         if (m_model_generation_host) m_model_generation_host->present_workbench_restore_frame();
         return;
@@ -1243,13 +1240,14 @@ void RedesignShell::refresh_workflow_layout()
 {
     update_navigation();
     refresh_inline_generation();
-    sync_page_settings_visibility(m_workbench_transition ? Page::Model : m_page_coordinator.page());
+    const bool presenting_workbench = m_workbench_transition && !m_workbench_presentation_detached;
+    sync_page_settings_visibility(presenting_workbench ? Page::Model : m_page_coordinator.page());
     if (!owns_model_workflow()) return;
     const bool model = m_page_coordinator.page() == Page::Model;
     const bool slicing = model && (m_page_coordinator.view() == ModelView::Slicing || m_page_coordinator.view() == ModelView::Preview);
     const bool render_slicing = slicing || m_import_target_staged;
     const bool render_print = m_page_coordinator.page() == Page::Print && m_print_canvas_mounted;
-    m_workbench_page->Show(m_workbench_transition || m_import_target_staged || (model && m_page_coordinator.view() == ModelView::Workbench));
+    m_workbench_page->Show(presenting_workbench || m_import_target_staged || (model && m_page_coordinator.view() == ModelView::Workbench));
     m_slicing_page->Show(render_slicing);
     m_plater->Show(render_slicing || render_print);
     m_slicing_settings->Show(!m_native_slicing);
@@ -1403,14 +1401,18 @@ void RedesignShell::apply_workbench_state(const PostGenerationWorkbenchState& st
     refresh_project_save_actions();
     if (m_image_page_view_only)
         apply_model_generation_state(m_model_generation_state);
+    if (m_advanced_workspace && m_model_generation_host && m_model_generation_host->creation_editing_locked())
+        m_advanced_workspace->render();
     if (!m_pending_workbench_job.empty() && state.asset_id == m_pending_workbench_job && state.actions.can_edit) {
         m_pending_workbench_job.clear();
-        open_model_workbench();
+        // A completed hidden operation updates its model, never the user's route.
     }
 }
 
 bool RedesignShell::can_return_to_image_design() const
 {
+    if (m_workbench_transition || m_preview_transition || m_import_in_progress ||
+        (m_plater && m_plater->is_background_process_slicing()) || (m_slice_tools && m_slice_tools->busy())) return false;
     if (m_page_coordinator.page() == Page::Model && m_page_coordinator.view() == ModelView::Workbench)
         return !m_workbench_state.modal_blocking && !m_import_in_progress &&
             post_generation_return_to_design_allowed(m_workbench_state.actions);
@@ -1422,7 +1424,8 @@ bool RedesignShell::can_return_to_image_design() const
 bool RedesignShell::return_to_image_design()
 {
     const bool from_editor = m_page_coordinator.page() == Page::Model;
-    const bool return_advanced = from_editor && m_model_generation_host ?
+    const bool return_advanced = m_model_generation_host && m_model_generation_host->creation_editing_locked() ?
+        m_model_generation_host->workbench_returns_to_advanced() : from_editor && m_model_generation_host ?
         m_model_generation_host->workbench_returns_to_advanced() : m_page_coordinator.advanced();
     if (block_workbench_navigation()) return false;
     if (!can_return_to_image_design())
@@ -1436,7 +1439,10 @@ bool RedesignShell::return_to_image_design()
             return false;
     }
 
-    if (return_advanced != m_page_coordinator.advanced()) switch_creation_mode(return_advanced);
+    // The lock anchors the source mode. A return command alone may change it.
+    if (return_advanced != m_page_coordinator.advanced()) {
+        m_page_coordinator.select_mode(return_advanced);
+    }
     if (return_advanced != m_page_coordinator.advanced()) return false;
 
     const bool view_only = m_image_page_view_only;
@@ -1453,6 +1459,7 @@ bool RedesignShell::return_to_image_design()
         m_saved_creation_options = saved_options;
         return false;
     }
+    if (m_model_generation_host) m_model_generation_host->restore_creation_editing();
     if (saved_input && saved_options && m_model_generation_host) {
         // Existing-asset navigation never replaces the creation draft. Returning
         // synchronizes editable inputs only; it does not submit or restart a job.
@@ -1489,6 +1496,7 @@ void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& reque
         {int(m_page_coordinator.page()), int(m_page_coordinator.view())}, {int(Page::Model), int(ModelView::Slicing)});
     if (!transition) return;
     m_import_transition = *transition;
+    m_import_navigation_detached = false;
     m_import_in_progress = true;
     m_import_project_committed = false;
     m_import_view_retry_available = false;
@@ -1502,16 +1510,16 @@ void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& reque
     const auto session = m_import_session;
     const auto token = *transition;
     CallAfter([weak, session, request, token] {
-        if (!weak || !session->valid() || !weak->m_page_coordinator.transition().current(token)) return;
+        if (!weak || !session->valid() || weak->m_import_session != session || weak->m_import_transition != token) return;
         if (session->cancelled()) { weak->finish_import_loading(); return; }
         try {
             const bool started = weak->m_model_generation_host && weak->m_model_generation_host->import_workbench_model_async(request, session,
                 [weak, session, token](auto phase, const auto& message) {
-                    if (weak && session->valid() && weak->m_page_coordinator.transition().current(token))
+                    if (weak && session->valid() && weak->m_import_session == session && weak->m_import_transition == token)
                         weak->update_import_loading(phase, message);
                 },
                 [weak, session, request, token](const auto& result) {
-                    if (!weak || !session->valid() || !weak->m_page_coordinator.transition().current(token)) return;
+                    if (!weak || !session->valid() || weak->m_import_session != session || weak->m_import_transition != token) return;
                     if (!result.imported()) {
                         weak->finish_import_loading();
                         if (result.outcome != AI::ModelImportOutcome::Cancelled)
@@ -1583,6 +1591,7 @@ void RedesignShell::update_import_loading(WorkbenchImportPhase phase, const std:
 void RedesignShell::layout_import_loading()
 {
     if (!m_import_in_progress || !m_import_loading || !m_model_generation_host) return;
+    if (m_import_navigation_detached) { m_import_loading->Hide(); return; }
     wxWindow* viewport = m_model_generation_host->workbench_import_viewport();
     if (!viewport) return;
     auto* owner = wxGetTopLevelParent(this);
@@ -1612,6 +1621,7 @@ void RedesignShell::layout_import_loading()
 
 void RedesignShell::stage_import_target_view()
 {
+    if (m_import_navigation_detached) { finish_import_loading(true); return; }
     if (!m_import_in_progress || !m_import_project_committed || m_import_target_staged ||
         !m_plater || !m_slicing_page || !m_workbench_page) return;
     auto* content_sizer = m_content_host->GetSizer();
@@ -1656,6 +1666,10 @@ void RedesignShell::stage_import_target_view()
 
 void RedesignShell::layout_import_transition_cover()
 {
+    if (m_import_navigation_detached) {
+        if (m_import_transition_cover) m_import_transition_cover->Hide();
+        return;
+    }
     if (!m_import_target_staged || !m_import_transition_cover || !m_content_host) return;
     auto* owner = dynamic_cast<wxTopLevelWindow*>(wxGetTopLevelParent(this));
     if (!owner || owner->IsIconized() || !m_content_host->IsShownOnScreen()) {
@@ -1785,6 +1799,7 @@ void RedesignShell::retry_import_target_view()
         {int(m_page_coordinator.page()), int(m_page_coordinator.view())}, {int(Page::Model), int(ModelView::Slicing)});
     if (!transition) return;
     m_import_transition = *transition;
+    m_import_navigation_detached = false;
     m_import_in_progress = true;
     m_import_project_committed = true;
     m_import_session = std::make_shared<WorkbenchImportSession>();

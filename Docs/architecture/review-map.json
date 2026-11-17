@@ -208,7 +208,8 @@
     {
       "id": "generation_host",
       "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp",
-      "needle": "struct ModelGenerationFeatureHost::Impl"
+      "needle": "struct ModelGenerationFeatureHost::Impl",
+      "detail": "应用级唯一工作台及创作交接上下文；成功交接才锁定智能／高级草稿，显式返回才解锁；页面导航不参与业务归属。"
     },
     {
       "id": "portrait_suite_binding",
@@ -851,7 +852,7 @@
       "id": "page_lifecycle",
       "path": "src/slic3r/GUI/Redesign/RedesignPageCoordinator.hpp",
       "needle": "class RedesignPageCoordinator",
-      "detail": "Shell持有唯一页面路由及原过渡令牌。保留页面幂等准备、呈现、隐藏与销毁；不持有生成或编辑业务状态。"
+      "detail": "Shell持有唯一页面路由及原过渡令牌。业务等待允许切页并释放展示独占；后台结果按原请求提交，不覆盖较新导航。页面不持有创作锁或工程状态。"
     },
     {
       "id": "ui_refresh_runtime",

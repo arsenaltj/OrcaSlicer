@@ -86,6 +86,14 @@ std::shared_ptr<Runtime> installed_runtime;
 boost::filesystem::path installed_root;
 #endif
 }
+void release_foreground_runtime()
+{
+#ifdef ORCA_GENERATION_FOREGROUND_NATIVE
+    std::lock_guard<std::mutex> lock(runtime_mutex);
+    installed_runtime.reset();
+    installed_root.clear();
+#endif
+}
 MaskResult infer_foreground(const Image& image, const boost::filesystem::path& root,
     const std::function<bool()>& canceled)
 {
