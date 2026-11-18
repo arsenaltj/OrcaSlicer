@@ -1,7 +1,7 @@
 # 2026-11-19 移动Native修复 M2增强GLB候选
 
 主线：task-20261117023152718-8561d6；M1真实Core接缝9b4755a已独立review/QA限定通过，原SDK04/锁保留。
-本轮：实际桌面repair_mesh接入顶层glb-repair-v2，895/78真实GLB写回、原encoded通道/材质保留、逐corner来源投影与canonical Core-frame读回ID、真实残余检查/原子receipt；正在最终host/NDK与边界验证。
+本轮：M2 r2独立review发现POSITION缺bounds，NG-GLB-CARRIER-POSITION-BOUNDS-01首修轮1；从实际序列化Core float计算min/max并逐项读回核符，补原反例/负值非等轴回归，冻结r3前host/NDK与两真实件验证。
 未结：独立review/QA、Android设备资源/实际渲染与父移动消费；完整AI strict/IGL仍缺CORE/LEDA，geometry偏差未跑不伪pass，compat不授制造安全。
 下一步：冻结精确新SDK候选及两真实见证/计时/资源和失败记录，独立review→不同QA后才父移动消费。不得覆盖04/Slicing或恢复暂停优化。
 计划变更：用户A允许必要外观重建；保原件和PBR/normal/alpha，strict与native-compatible凭证分列；首轮78资源超限已保留，重排同检查后降峰，768MiB估算/120s合作边界未提高。

@@ -89,7 +89,23 @@ J enhanced_glb_carrier(Context& c, const Glb& g, const Topology& input, const To
         doc["accessors"].push_back({{"bufferView",view_id},{"componentType",component},{"count",count},{"type",type}});
         return id;
     };
-    J attrs={{"POSITION",accessor(position_bytes,"VEC3",exported_vertex_count,5126)}};
+    // Bounds belong to the accessor's raw Core-float frame, not source metres
+    // or the canonical display root. Read the bytes actually being serialized.
+    V position_min{},position_max{};
+    require(exported_vertex_count>0 && position_bytes.size()==exported_vertex_count*12,"Invalid serialized POSITION length");
+    for(size_t i=0;i<exported_vertex_count;++i) {
+        if((i&4095)==0)check_cancel(c);
+        for(size_t k=0;k<3;++k) {
+            const uint32_t bits=u32(position_bytes,i*12+k*4);float value;std::memcpy(&value,&bits,4);
+            require(std::isfinite(value),"Non-finite serialized POSITION");
+            if(i==0)position_min[k]=position_max[k]=value;
+            else {position_min[k]=std::min(position_min[k],double(value));position_max[k]=std::max(position_max[k],double(value));}
+        }
+    }
+    const auto position_accessor=accessor(position_bytes,"VEC3",exported_vertex_count,5126);
+    doc["accessors"][position_accessor]["min"]=position_min;
+    doc["accessors"][position_accessor]["max"]=position_max;
+    J attrs={{"POSITION",position_accessor}};
     if(!uv.empty())attrs["TEXCOORD_0"]=accessor(uv_bytes,"VEC2",exported_vertex_count,5126);
     if(!normals.empty())attrs["NORMAL"]=accessor(normal_bytes,"VEC3",exported_vertex_count,5126);
     position_bytes.clear();position_bytes.shrink_to_fit();uv_bytes.clear();uv_bytes.shrink_to_fit();normal_bytes.clear();normal_bytes.shrink_to_fit();
@@ -109,7 +125,13 @@ J enhanced_glb_carrier(Context& c, const Glb& g, const Topology& input, const To
     require(readback.doc.at("nodes")[0].at("matrix")==matrix,"Carrier coordinate frame mismatch");
     auto rp=readback.accessor(attrs.at("POSITION"),"VEC3");auto ri=readback.accessor(derived.at("indices"),"SCALAR",true);
     std::vector<V> read_vertices;std::vector<T> read_faces;
-    for(size_t i=0;i<rp.size();i+=3)read_vertices.push_back({rp[i],rp[i+1],rp[i+2]});
+    V actual_min{rp.at(0),rp.at(1),rp.at(2)},actual_max=actual_min;
+    for(size_t i=0;i<rp.size();i+=3) {
+        read_vertices.push_back({rp[i],rp[i+1],rp[i+2]});
+        for(size_t k=0;k<3;++k){actual_min[k]=std::min(actual_min[k],rp[i+k]);actual_max[k]=std::max(actual_max[k],rp[i+k]);}
+    }
+    const auto& serialized_position=readback.item("accessors",position_accessor);
+    require(serialized_position.at("min")==J(actual_min) && serialized_position.at("max")==J(actual_max),"Serialized POSITION bounds differ from actual readback");
     for(size_t i=0;i<ri.size();i+=3)read_faces.push_back({uint32_t(ri[i]),uint32_t(ri[i+1]),uint32_t(ri[i+2])});
     proof["readbackGeometryId"]=enhanced_core_id(read_vertices,read_faces);
     require(proof.at("readbackGeometryId")==proof.at("outputGeometryId"),"Serialized geometry differs from native output");

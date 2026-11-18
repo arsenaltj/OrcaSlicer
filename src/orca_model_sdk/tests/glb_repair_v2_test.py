@@ -21,7 +21,7 @@ def fixture(textured=False):
  v=[(-0.,0.,0.),(1.,0.,0.),(0.,1.,0.),(0.,0.,1.)];f=[(0,2,1),(0,1,3),(0,3,2),(1,2,3)]
  b=b''.join(struct.pack('<fff',*x) for x in v)+b''.join(struct.pack('<III',*x) for x in f)
  doc={'asset':{'version':'2.0'},'bufferViews':[{'buffer':0,'byteLength':48},{'buffer':0,'byteOffset':48,'byteLength':48}],
- 'accessors':[{'bufferView':0,'componentType':5126,'count':4,'type':'VEC3'},{'bufferView':1,'componentType':5125,'count':12,'type':'SCALAR'}],
+ 'accessors':[{'bufferView':0,'componentType':5126,'count':4,'type':'VEC3','min':[min(p[k] for p in v) for k in range(3)],'max':[max(p[k] for p in v) for k in range(3)]},{'bufferView':1,'componentType':5125,'count':12,'type':'SCALAR'}],
  'meshes':[{'primitives':[{'attributes':{'POSITION':0},'indices':1,'mode':4}]}],'nodes':[{'mesh':0}],'scenes':[{'nodes':[0]}],'scene':0}
  if textured:
   uv=struct.pack('<8f',0,0,1,0,0,1,1,1);png=base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jit8AAAAASUVORK5CYII=')
@@ -67,6 +67,12 @@ with tempfile.TemporaryDirectory(prefix='orca-v2-cabi-') as directory:
     assert hashlib.sha256(candidate.read_bytes()).hexdigest()==result['candidate']['sha256']
     assert hashlib.sha256(receipt.read_bytes()).hexdigest()==result['receipt']['sha256']
     rd,rb=decode(candidate.read_bytes());assert rd['nodes'][0]['matrix']==[.001,0,0,0,0,0,-.001,0,0,.001,0,0,0,0,0,1]
+    position=rd['accessors'][rd['meshes'][0]['primitives'][0]['attributes']['POSITION']]
+    view=rd['bufferViews'][position['bufferView']];offset=view.get('byteOffset',0)+position.get('byteOffset',0)
+    stride=view.get('byteStride',12)
+    values=[struct.unpack_from('<fff',rb,offset+i*stride) for i in range(position['count'])]
+    assert position.get('min')==[min(p[k] for p in values) for k in range(3)],('missing or wrong serialized POSITION min',position)
+    assert position.get('max')==[max(p[k] for p in values) for k in range(3)],('missing or wrong serialized POSITION max',position)
     for field in ['materials','textures','images','samplers']:assert rd.get(field)==doc.get(field)
     assert rb[:len(binary)]==binary
     if replay:
@@ -75,6 +81,11 @@ with tempfile.TemporaryDirectory(prefix='orca-v2-cabi-') as directory:
   finally:lib.orca_model_destroy(handle)
   cases+=1;print('PASS',name,flush=True)
  run('unit_negative_zero',replay=True)
+ d,b=fixture();points=[(-.25,-.5,-1.25),(1.5,-.5,-1.25),(-.25,2.75,-1.25),(-.25,-.5,3.5)]
+ b=b''.join(struct.pack('<fff',*v) for v in points)+b[48:]
+ d['accessors'][0]['min']=[min(v[k] for v in points) for k in range(3)]
+ d['accessors'][0]['max']=[max(v[k] for v in points) for k in range(3)]
+ run('negative_nonuniform_position_bounds',d,b)
  d,b=fixture(True);run('pbr_alpha_wrap_normal_channels',d,b)
  for phase in ['reading','repairing','verifying','appearanceMapping','publishing','candidatePublished','receiptPublished']:
   run('cancel_'+phase,cancel=phase,expect='CANCELED')

@@ -8,6 +8,7 @@
 - M1验收后继续M2 GLB/PBR与两真实见证，原strict五项定义不变；新glb-repair-v2政策只在真实导出重读/通道证明后接App/API，不以本阶段return true发布成功。原04包和消费锁不变。
 - M1经独立review5.1/不同QA1.0限定passed，首门仅Core。M2真实host两见证已实际候选读回ID一致/encoded2或3通道语义保持；895残余自交failed、78自交passed、geometry偏差not_run，均只native-compatible而非strict安全。新SDK仍待最终host/NDK/边界与独立门禁。
 - 资源首轮78观测827953152B超过768MiB，保首失败；将相同残余检查前移并释放carrier缓冲后两件降至约469/465MiB。此为实际Windows暖缓存测量，非硬RSS保护/手机性能；原估算准入和合作120s未提高。
+- M2 r2 review1.0 changes_requested：NG-GLB-CARRIER-POSITION-BOUNDS-01/P2初反馈，合法原件validator0error→carrier缺POSITION min/max为1error。首修轮1从真实序列化Core float计算/读回bounds，新增负值非等轴及独立validator复验；原源包/反例保留，新r3经review再QA，不降低structure。
 - 当前唯一writer session-native-repair-dev-20261118，task-20261117023152718-8561d6；后续实际编译/阶段阻塞按control任务及artifact证据记录，dev→不同review→不同QA。
 
 ## Native04历史计划原文（仅保留追溯，不作为待审执行队列）

@@ -290,3 +290,7 @@ A positive boolean `does_self_intersect` proves a risk but does not enumerate
 intersection pairs: failed count is null and details.riskFlag=true. A negative
 predicate permits passed/count0. Unknown topology enumeration is likewise null;
 actual edge/face and non-manifold vertex counts are retained when available.
+
+POSITION accessor min/max are computed per axis from the serialized Core float
+bytes and checked against actual readback before structure may pass. They stay
+in that raw accessor frame; the display root is not applied to these bounds.
