@@ -7,7 +7,7 @@ lib.orca_model_execute.argtypes=[C.c_void_p,C.c_char_p,CB,C.c_void_p,C.POINTER(C
 lib.orca_model_cancel.argtypes=[C.c_void_p];lib.orca_model_destroy.argtypes=[C.c_void_p];lib.orca_model_free_string.argtypes=[C.c_void_p]
 lib.orca_model_capabilities.restype=C.c_char_p
 cap=json.loads(lib.orca_model_capabilities());assert cap['glbRepairV2']['supportedCompletions']==['native_compatible']
-assert cap['glbRepairV2']['preservesOriginal'] and cap['glbRepairV2']['maxGeneratedFaceLimit']==1000000
+assert cap['glbRepairV2']['preservesOriginal'] and cap['glbRepairV2']['maxGeneratedFaceLimit']==2000000
 
 def encode(doc,binary):
  doc=copy.deepcopy(doc);doc['buffers']=[{'byteLength':len(binary)}]
@@ -108,6 +108,13 @@ with tempfile.TemporaryDirectory(prefix='orca-v2-cabi-') as directory:
  d['accessors'][0]['count']=2500000;d['accessors'][1]['count']=6000000
  run('resource_preflight_real_dense_layout',d,positions+faces,expect='RESOURCE_LIMIT')
  del positions,faces
+ d,b=fixture();faces=b[48:]*500000+b[48:60]
+ d['accessors'][1]['count']=6000003;d['bufferViews'][1]['byteLength']=len(faces)
+ run('face_limit_plus_one_real_layout',d,b[:48]+faces,expect='INVALID_GLB');del faces
+ d,b=fixture();positions=b[:48]+b'\0'*((2500001)*12-48)
+ d['accessors'][0]['count']=2500001;d['bufferViews'][0]['byteLength']=len(positions);d['bufferViews'][1]['byteOffset']=len(positions)
+ run('vertex_limit_plus_one_real_layout',d,positions+b[48:],expect='INVALID_GLB');del positions
+ d,b=fixture();run('input_file_limit_real_bytes',d,b+b'\0'*(100*1024*1024-len(b)),expect='FILE_LIMIT')
  d,b=fixture(True);d['images'][0]['uri']='https://invalid.example/x.png';run('external_image',d,b,expect='INVALID_GLB')
  d,b=fixture();d['meshes'][0]['primitives']*=2;run('multi_primitive_explicit_rejection',d,b,expect='INVALID_GLB')
  def alias(dest,source,identity):

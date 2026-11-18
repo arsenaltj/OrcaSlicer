@@ -1,3 +1,11 @@
+# MOBILE-GLB-REPAIR-005：2M资源隔离子流（2026-11-19）
+
+- task-20261119-model-2m-resource-envelope/session-model-2m-dev-20261119 独立WT基f0cca33，不触r5/父/移动锁/旧19库。原768MiB估算/120s合作/100MiB/2.5M顶点不提高。
+- 紧凑计数/uint32索引/逐面映射与死数据释放；初2M885047296B超限作为NG-MODEL-2M-RESOURCE-ENVELOPE-01初反馈保留。root批准私有精确CGAL完整函数仅clear死set，双SHA/anchor/license/平凡积分ID守卫与完整检查均保。
+- 首修轮1两真2M host499.87/518.78MiB约26.23/26.34s，source/output/readback ID及全部corner/PBR/validator实际核。geometry仍not_run/native_compatible；首次估算低估及坏layout资源夹具红保留，开发自测不冒独立通过。
+- 根批准布局触发对齐64MiB，100MiB硬界不动，保所有活跃image bytes/材质UV normal/ref。旧72MB结果保留，新无纹理布局必要复验完成。最终consumer实际Dart打印/Android由组合QA核。
+- 最终待审candidate2M能力须真实重编getter、NDK/strip LOAD/单旧TBB闭包后冻结，独立review→不同QA才可消费。无SDK远端push/设备/供应商/paid，原失败轮数不重置。
+
 # MOBILE-GLB-REPAIR-005：r5运行加载身份守卫（2026-11-19）
 
 - NG-ANDROID-STRIP-LOAD-IDENTITY-01/P2初反馈：r4真实guard可被section重指向掩盖LOAD内代码变造；未执行变造SO，实际r4正式包独立未发现运行码变化，两事实保留。

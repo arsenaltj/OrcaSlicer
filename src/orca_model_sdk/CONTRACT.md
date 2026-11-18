@@ -314,3 +314,19 @@ actual edge/face and non-manifold vertex counts are retained when available.
 POSITION accessor min/max are computed per axis from the serialized Core float
 bytes and checked against actual readback before structure may pass. They stay
 in that raw accessor frame; the display root is not applied to these bounds.
+
+
+## v2 2M resource candidate
+
+The opt-in v2 Release candidate can advertise generated2M after actual bounded
+host checks; v1 stays generated1M. See repair_core/RESOURCE_ENVELOPE.md for phase
+admission, explicit carrier checks, preserved CGAL predicates and the private
+pinned lifetime adapter. Limits remain768MiB estimated/120s cooperative/100MiB/
+2.5M vertices, and resource errors publish nothing. Actual Android runtime and
+independent review/QA remain required; no arbitrary-model success is promised.
+
+Candidate layouts may compact inactive source geometry to fit the existing64MiB
+display target, retaining every active encoded image and material/texture/sampler
+semantic. Only image bufferView identities are rebased; encoded bytes are checked
+per image and ordered native geometry is actually reread. Original files are
+unchanged. Whole-source-BIN equality remains required for uncompacted layouts.

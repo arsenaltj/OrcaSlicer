@@ -1,3 +1,13 @@
+# 2026-11-19 独立2M资源子流
+
+主线：task-20261119-model-2m-resource-envelope，基f0cca33；r5/父包只读。
+本轮：首个844.05MiB超限为NG-MODEL-2M-RESOURCE-ENVELOPE-01初次反馈保；首修轮1两真2M host499.87/518.78MiB已转正，64MiB新布局另实证。紧凑计数/uint32/逐面映射/借用源字节/精确CGAL死set释放，完整检查保留。
+未结：最终待审候选caps2M实际重编、NDK旧cc重链/包及独立review→不同QA；Android/任意模型100%/strict制造安全未验。
+下一步：冻结实际2M/全corner/PBR/validator和资源负例来源，新SDK保持精确旧TBB与19批准库，移动消费等门禁。
+计划变更：DEC-2M-03仅私有同源完整函数clear死set；DEC-2M-04紧凑布局64MiB触发，100MiB/768MiB/120s不变。
+
+## 基线r5记录（保留，不冒本子流已完成）
+
 # 2026-11-19 r5 strip实际加载字节守卫首修
 
 主线：task-20261119-model-approved-tbb-binding；原r4源18214/包保留，NG-ANDROID-STRIP-LOAD-IDENTITY-01初反馈→首修轮1。

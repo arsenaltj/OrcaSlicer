@@ -116,7 +116,7 @@ const char* orca_model_capabilities()
         capabilities["glbRepairV2"]={{"policyVersion","glb-repair-v2"},{"operations",{"repairGlbArtifact"}},
           {"supportedCompletions",{"native_compatible"}},{"repairEntries",{"repair_mesh"}},
           {"appearancePolicyVersion","appearance-reconstruction-v1"},{"preservesOriginal",true},
-          {"strictAiChain",false},{"manufacturingAcceptance",false},{"maxGeneratedFaceLimit",1000000},
+          {"strictAiChain",false},{"manufacturingAcceptance",false},{"maxGeneratedFaceLimit",2000000},
           {"profile","static-embedded-unextended-single-primitive-uv0"},
           {"limits",{{"inputBytes",104857600},{"vertices",2500000},{"triangles",2000000},{"estimatedWorkspaceBytes",805306368},{"cooperativeMilliseconds",120000}}}};
 #endif
