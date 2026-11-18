@@ -1,3 +1,13 @@
+# 2026-11-19 r5 strip实际加载字节守卫首修
+
+主线：task-20261119-model-approved-tbb-binding；原r4源18214/包保留，NG-ANDROID-STRIP-LOAD-IDENTITY-01初反馈→首修轮1。
+本轮：真实复现旧guard接受section重指向+LOAD代码翻字节；补ALLOC文件/VA映射、真实PT_LOAD字节和精确三项section-only头字段例外。原反例拒绝/官方strip正例保，10项实际负例与正例全过。
+未结：新r5源/包待独立review→不同QA；实际原r4包未发现非预期加载码变化，guard缺口与正式包事实分开。旧TBB/19SO及Core算法不动。
+下一步：沿真实build42d仅新producer封存r5，包装commit独立记录，不重编CXX/NDK/重跑大件，不提前移动消费。
+计划变更：无算法/SDK能力变更；proof更新elf64-load-identity-v2，所有旧失败与轮次保留。
+
+## r4历史开发记录（不倒改）
+
 # 2026-11-19 Android Model批准TBB绑定（独立子流）
 
 主线：task-20261119-model-approved-tbb-binding；从父M2 r3 cb505独立，父现场/包冻结供bounds独立review。

@@ -88,3 +88,10 @@ with LLVM --strip-debug, retaining the full raw Model outside the consumer SDK.
 It refuses changed allocated sections, program headers or PT_LOAD entries; the
 manifest binds raw/tool/command/packaged SHA and the consumer uses packaged SHA.
 This does not change the old approved Slicing/runtime bytes or repair behavior.
+
+Proof v2 also binds ALLOC file offsets to PT_LOAD address mapping and checks all
+actual loaded bytes, including section gaps. Its only byte exceptions are the
+three validated ELF64 section-table coordinates; it never ignores a whole header
+or page. Independent r4 review found the old section-only hash could be fooled by
+redirecting a section and changing the real loaded code. That counterexample is
+now rejected; the actual r4 package did not have that loaded-code modification.

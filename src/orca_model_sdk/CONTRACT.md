@@ -299,6 +299,13 @@ tool version/hash/command, raw and packaged hashes, runtime identity proof, and
 separate buildSourceCommit/packagingSourceCommit. Consumer locks bind the actual
 packaged hash. Approved Slicing, TBB/malloc and Model04 are never postprocessed.
 
+The `elf64-load-identity-v2` proof additionally validates each file-backed ALLOC
+section's file offset against its actual PT_LOAD virtual-address mapping and
+hashes every loaded file byte, including padding outside sections. Only ELF64
+`e_shoff`, `e_shnum` and `e_shstrndx` may differ; their section tables must still
+be valid. Every other ELF-header byte and all program headers remain identical.
+Section-header redirection cannot substitute out-of-load copies for loaded code.
+
 A positive boolean `does_self_intersect` proves a risk but does not enumerate
 intersection pairs: failed count is null and details.riskFlag=true. A negative
 predicate permits passed/count0. Unknown topology enumeration is likewise null;

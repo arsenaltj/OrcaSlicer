@@ -1,3 +1,10 @@
+# MOBILE-GLB-REPAIR-005：r5运行加载身份守卫（2026-11-19）
+
+- NG-ANDROID-STRIP-LOAD-IDENTITY-01/P2初反馈：r4真实guard可被section重指向掩盖LOAD内代码变造；未执行变造SO，实际r4正式包独立未发现运行码变化，两事实保留。
+- 原dev在child首修轮1仅producer guard/tests/docs：验证ALLOC file↔VA映射与真实LOAD字节（含padding），只允许合法ELF64 e_shoff/shnum/shstrndx差异；其他header/PH不忽略。原review反例before接受/after拒绝；官方strip正例及10tests实际通过。
+- 新r5保原raw/build42d/CAPI/Core/GLB/PBR/旧19SO与所有limits；只有包装commit变化，不需CXX/NDK重编或大件机械复测。原r4包/ZIP/反例与所有失败保留。
+- 待新r5精确源/SDK冻结交原review复检，再不同QA；未通过不得移动消费。完整strict/2M/设备/渲染/制造安全边界均保持。
+
 # MOBILE-GLB-REPAIR-005：Android批准TBB闭包子流（2026-11-19）
 
 - task-20261119-model-approved-tbb-binding/session-model-approved-tbb-dev-20261119 独立writer，基于父r3 cb505。NG-ANDROID-TBB-RUNTIME-COLLISION-01是初次跨流打包阻断，未冒实际ABI崩溃；父bounds首修轮次另保。
