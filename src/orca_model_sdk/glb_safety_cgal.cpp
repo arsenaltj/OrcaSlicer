@@ -7,6 +7,10 @@
 #include <CGAL/Polygon_mesh_processing/manifoldness.h>
 #include <CGAL/Polygon_mesh_processing/polygon_soup_to_polygon_mesh.h>
 #include <CGAL/squared_distance_3.h>
+#ifdef ORCA_MODEL_HAS_REPAIR_CORE
+#include "BoundedCgalSoup.hpp"
+#endif
+
 
 namespace orca_model_detail {
 J glb_removed_deviation(Context& c, const std::vector<V>& vertices, const std::vector<T>& faces, const std::set<size_t>& removed)
@@ -91,11 +95,27 @@ J glb_removed_deviation(Context& c, const std::vector<V>& vertices, const std::v
     // Every removed triangle must lie entirely in one retained convex triangle;
     // nearest-point tolerances alone cannot prove redundant surface coverage.
 }
-J glb_strict_predicates(Context& c, const std::vector<V>& vertices, const std::vector<T>& triangles)
+J glb_strict_predicates(Context& c, const std::vector<V>& vertices, const std::vector<T>& triangles, const std::function<void(const char*)>& phase)
 {
     using Kernel  = CGAL::Exact_predicates_inexact_constructions_kernel;
     using Surface = CGAL::Surface_mesh<Kernel::Point_3>;
     Surface mesh;
+    // Incremental add_face rejects some temporarily disconnected vertex fans
+    // even when the final soup is valid. Validate the complete indexed soup
+    // before construction, avoiding an input face-order dependency.
+    check_cancel(c);
+    if(phase)phase("residualSoup");
+#ifdef ORCA_MODEL_HAS_REPAIR_CORE
+    const bool soup_valid=CGAL::Polygon_mesh_processing::orca_model_bounded::is_polygon_soup_a_polygon_mesh(triangles);
+#else
+    const bool soup_valid=CGAL::Polygon_mesh_processing::is_polygon_soup_a_polygon_mesh(triangles);
+#endif
+    if (!soup_valid)
+        return {{"topologyValid", false},
+                {"failureStage", "polygon_soup_topology"},
+                {"selfIntersectionPerformed", false},
+                {"selfIntersects", nullptr}};
+    if(phase)phase("residualSurface");
     std::vector<Kernel::Point_3> points;
     points.reserve(vertices.size());
     for (size_t i = 0; i < vertices.size(); ++i) {
@@ -104,16 +124,9 @@ J glb_strict_predicates(Context& c, const std::vector<V>& vertices, const std::v
         const auto& p = vertices[i];
         points.emplace_back(p[0], p[1], p[2]);
     }
-    // Incremental add_face rejects some temporarily disconnected vertex fans
-    // even when the final soup is valid. Validate the complete indexed soup
-    // before construction, avoiding an input face-order dependency.
-    check_cancel(c);
-    if (!CGAL::Polygon_mesh_processing::is_polygon_soup_a_polygon_mesh(triangles))
-        return {{"topologyValid", false},
-                {"failureStage", "polygon_soup_topology"},
-                {"selfIntersectionPerformed", false},
-                {"selfIntersects", nullptr}};
     CGAL::Polygon_mesh_processing::polygon_soup_to_polygon_mesh(points, triangles, mesh);
+    points.clear();points.shrink_to_fit();
+    if(phase)phase("residualVertexLinks");
     // Desktop also regards a disconnected vertex link as invalid topology.
     std::vector<Surface::Halfedge_index> non_manifold;
     CGAL::Polygon_mesh_processing::non_manifold_vertices(mesh, std::back_inserter(non_manifold));
@@ -125,7 +138,9 @@ J glb_strict_predicates(Context& c, const std::vector<V>& vertices, const std::v
                 {"selfIntersectionPerformed", false},
                 {"selfIntersects", nullptr}};
     check_cancel(c);
+    if(phase)phase("residualIntersections");
     const bool intersects = CGAL::Polygon_mesh_processing::does_self_intersect(mesh);
+    if(phase)phase("residualComplete");
     check_cancel(c);
     return {{"topologyValid", true}, {"selfIntersectionPerformed", true}, {"selfIntersects", intersects}};
 }

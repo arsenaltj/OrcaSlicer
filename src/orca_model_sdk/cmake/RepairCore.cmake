@@ -4,6 +4,12 @@ if(NOT ORCA_MODEL_DEPENDENCY_ROOT OR NOT ORCA_MODEL_CGAL_INCLUDE)
  message(FATAL_ERROR "Repair core requires explicit pinned dependency source roots")
 endif()
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/../repair_core/extract_bounded_cgal.py"
+ "${ORCA_MODEL_CGAL_INCLUDE}/CGAL/Polygon_mesh_processing/polygon_soup_to_polygon_mesh.h"
+ "${CMAKE_CURRENT_BINARY_DIR}/generated/BoundedCgalSoup.hpp" COMMAND_ERROR_IS_FATAL ANY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+ "${ORCA_MODEL_CGAL_INCLUDE}/CGAL/Polygon_mesh_processing/polygon_soup_to_polygon_mesh.h"
+ "${CMAKE_CURRENT_LIST_DIR}/../repair_core/extract_bounded_cgal.py")
 set(repair_generated "${CMAKE_CURRENT_BINARY_DIR}/generated/MeshBooleanRepair.cpp")
 execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/../repair_core/extract_desktop_repair.py"
  "${CMAKE_CURRENT_LIST_DIR}/../../libslic3r/MeshBoolean.cpp" "${repair_generated}" COMMAND_ERROR_IS_FATAL ANY)
@@ -103,4 +109,11 @@ endif()
 if(ORCA_MODEL_BUILD_TESTS)
  add_test(NAME glb_repair_v2_native COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/../tests/glb_repair_v2_test.py" $<TARGET_FILE:orca_model_sdk>)
  set_tests_properties(glb_repair_v2_native PROPERTIES TIMEOUT 120)
+endif()
+
+if(ORCA_MODEL_BUILD_TESTS)
+ add_executable(orca_bounded_cgal_soup_consumer "${CMAKE_CURRENT_LIST_DIR}/../tests/bounded_cgal_soup_test.cpp")
+ target_link_libraries(orca_bounded_cgal_soup_consumer PRIVATE orca_model_repair_core)
+ target_compile_definitions(orca_bounded_cgal_soup_consumer PRIVATE CGAL_DISABLE_GMP=1 CGAL_NO_CORE=1)
+ add_test(NAME cgal_dead_workspace_equivalence COMMAND orca_bounded_cgal_soup_consumer)
 endif()

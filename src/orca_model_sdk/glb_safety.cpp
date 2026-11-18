@@ -594,10 +594,12 @@ J glb_safety(Context& c, const J& request)
         const uint64_t core=B+3*dense+2*core_float+Vn*32+Fn*64;
         // Surface connectivity/points and predicate boxes coexist with both
         // immutable input and repaired output. CGAL is not an OS hard RSS cap.
-        const uint64_t residual=B+3*dense+Vn*(sizeof(V)+32)+Fn*(3*16+8+72);
+        const uint64_t directed_edge_node=sizeof(std::pair<const uint32_t,uint32_t>)+4*sizeof(void*)+32;
+        const uint64_t soup_validation=B+2*dense+Fn*3*directed_edge_node;
+        const uint64_t residual=std::max(soup_validation,B+3*dense+Vn*(sizeof(V)+32)+Fn*(3*16+8+72));
         resource_estimate=std::max({decode,counting,core,residual})+reserve;
-        workspace_plan={{"policy","phase-live-containers-v1"},{"decodeBytes",decode},{"countingBytes",counting},
-            {"coreBytes",core},{"residualBytes",residual},{"reserveBytes",reserve},{"admissionBytes",resource_estimate},
+        workspace_plan={{"policy","phase-live-containers-v2"},{"decodeBytes",decode},{"countingBytes",counting},
+            {"coreBytes",core},{"soupValidationBytes",soup_validation},{"residualBytes",residual},{"reserveBytes",reserve},{"admissionBytes",resource_estimate},
             {"carrierCheckedDynamically",true},{"hardRssLimit",false}};
     }
     if (resource_estimate > 768ull * 1024 * 1024)
@@ -609,7 +611,6 @@ J glb_safety(Context& c, const J& request)
         require(request.at("operation") == "repairGlbArtifact", "Repair v2 requires repair operation");
         event("repairing");
         const auto core_started=std::chrono::steady_clock::now();
-        auto input = mesh;
         require(g.doc.at("meshes")[0].at("primitives").size()==1,"Enhanced profile requires one material primitive");
         auto proof = enhanced_glb_geometry(c, mesh.vertices, mesh.faces,[&](int progress){
             check_cancel(c);
@@ -620,11 +621,14 @@ J glb_safety(Context& c, const J& request)
         const auto residual_started=std::chrono::steady_clock::now();
         event("verifying");
         proof["topologyCounts"]=enhanced_topology_counts(c,mesh.vertices,mesh.faces);
-        proof["residualChecks"]=glb_strict_predicates(c,mesh.vertices,mesh.faces);
+        proof["residualChecks"]=glb_strict_predicates(c,mesh.vertices,mesh.faces,event);
 #endif
         proof["workspaceAdmission"]=workspace_plan;
         event("appearance");
         const auto carrier_started=std::chrono::steady_clock::now();
+        // Original geometry is needed only by projection, not simultaneously
+        // with Core repair or CGAL scratch. Rebuild from the immutable source.
+        auto input=topology(c,g);
         auto result=enhanced_glb_carrier(c,g,input,mesh,request,proof,path,event);
         J phase{{"decodePreflightMs",std::chrono::duration_cast<std::chrono::milliseconds>(core_started-operation_started).count()},
                 {"coreMs",proof.at("wallMs")},

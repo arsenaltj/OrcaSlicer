@@ -92,7 +92,11 @@ with tempfile.TemporaryDirectory(prefix='orca-v2-cabi-') as directory:
  run('wrong_source_hash',edit=lambda r:r['identity'].update(sourceSha256='0'*64),expect='INVALID_GLB')
  run('unknown_policy',edit=lambda r:r.update(policyVersion='unknown'),expect='INVALID_GLB')
  d,b=fixture();bad=bytearray(b);struct.pack_into('<f',bad,0,float('nan'));run('nonfinite',d,bytes(bad),expect='INVALID_GLB')
- d,b=fixture();d['accessors'][0]['count']=2500000;d['accessors'][1]['count']=6000000;run('resource_preflight',d,b,expect='RESOURCE_LIMIT')
+ d,b=fixture();positions=b[:48]+b'\0'*(2500000*12-48);faces=b[48:]*500000
+ d['bufferViews'][0]['byteLength']=len(positions);d['bufferViews'][1]['byteOffset']=len(positions);d['bufferViews'][1]['byteLength']=len(faces)
+ d['accessors'][0]['count']=2500000;d['accessors'][1]['count']=6000000
+ run('resource_preflight_real_dense_layout',d,positions+faces,expect='RESOURCE_LIMIT')
+ del positions,faces
  d,b=fixture(True);d['images'][0]['uri']='https://invalid.example/x.png';run('external_image',d,b,expect='INVALID_GLB')
  d,b=fixture();d['meshes'][0]['primitives']*=2;run('multi_primitive_explicit_rejection',d,b,expect='INVALID_GLB')
  def alias(dest,source,identity):

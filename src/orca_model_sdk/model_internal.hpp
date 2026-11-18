@@ -127,7 +127,7 @@ void enhanced_corner_sources(Context&, const std::vector<V>&, const std::vector<
 J enhanced_glb_geometry(Context&, std::vector<V>&, std::vector<T>&, const std::function<void(int)>&);
 J glb_safety(Context&, const J&);
 #ifdef ORCA_MODEL_HAS_GLB_CGAL
-J glb_strict_predicates(Context&, const std::vector<V>&, const std::vector<T>&);
+J glb_strict_predicates(Context&, const std::vector<V>&, const std::vector<T>&, const std::function<void(const char*)>& = {});
 J glb_removed_deviation(Context&, const std::vector<V>&, const std::vector<T>&, const std::set<size_t>&);
 #endif
 J open_document(Context&, const J&);
