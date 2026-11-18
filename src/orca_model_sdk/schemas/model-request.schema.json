@@ -7,6 +7,7 @@
   "properties": {
     "schemaVersion": { "const": 1 },
     "operation": { "enum": ["capabilities", "inspect", "import", "importConverted", "create", "getScene", "transform", "paint", "assignMaterial", "undo", "redo", "save", "load", "pick", "analyze", "weldExact", "selectRegion", "prepareCandidate", "acceptCandidate", "discardCandidate", "exportManufacturing", "manufacturingSnapshot", "sliceDocument", "recommendDocument", "platformAI", "slicing", "inspectGlbArtifact", "repairGlbArtifact"] },
+    "policyVersion": { "enum": ["glb-safety-v1", "glb-repair-v2"] },
     "sourcePath": { "type": "string", "minLength": 1 },
     "outputDirectory": { "type": "string", "minLength": 1 },
     "identity": {"type":"object","additionalProperties":false,"required":["accountId","jobId","assetId","assetVersion","sourceSha256","operationId"],"properties":{"accountId":{"type":"string","minLength":1,"maxLength":128},"jobId":{"type":"string","minLength":1,"maxLength":128},"assetId":{"type":"string","minLength":1,"maxLength":128},"assetVersion":{"type":"integer","minimum":1},"sourceSha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"operationId":{"type":"string","minLength":1,"maxLength":128}}},

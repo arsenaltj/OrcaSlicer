@@ -517,10 +517,14 @@ std::set<size_t> safe_removals(Context& c, const Topology& mesh)
         }
     return removed;
 }
+#ifdef ORCA_MODEL_HAS_REPAIR_CORE
+#include "repair_core/EnhancedGlbCarrier.inc"
+#endif
 } // namespace
 
 J glb_safety(Context& c, const J& request)
 {
+    const auto operation_started=std::chrono::steady_clock::now();
     struct Deadline
     {
         Context& context;
@@ -530,6 +534,7 @@ J glb_safety(Context& c, const J& request)
         }
         ~Deadline() { context.safety_deadline = {}; }
     } deadline(c);
+    require(!request.contains("policyVersion") || request.at("policyVersion")=="glb-safety-v1" || request.at("policyVersion")=="glb-repair-v2", "Unknown GLB repair policy");
     const auto identity = request.at("identity");
     require(identity.is_object() && identity.size() == 6, "Safety identity must contain exactly the six bound fields");
     for (const char* field : {"accountId", "jobId", "assetId", "sourceSha256", "operationId"}) {
@@ -574,6 +579,41 @@ J glb_safety(Context& c, const J& request)
         throw Error("RESOURCE_LIMIT", "Estimated GLB safety workspace exceeds 768 MiB policy");
     event("geometry");
     auto mesh = topology(c, g);
+    if (request.value("policyVersion", std::string()) == "glb-repair-v2") {
+#ifdef ORCA_MODEL_HAS_REPAIR_CORE
+        require(request.at("operation") == "repairGlbArtifact", "Repair v2 requires repair operation");
+        event("repairing");
+        const auto core_started=std::chrono::steady_clock::now();
+        auto input = mesh;
+        require(g.doc.at("meshes")[0].at("primitives").size()==1,"Enhanced profile requires one material primitive");
+        auto proof = enhanced_glb_geometry(c, mesh.vertices, mesh.faces,[&](int progress){
+            check_cancel(c);
+            if(c.event){auto message=J{{"schemaVersion",1},{"type","glbSafetyProgress"},{"identity",identity},{"sequence",++sequence},{"phase","repairing"},{"progress",progress}}.dump();c.event(message.c_str(),c.event_user);}
+            check_cancel(c);
+        });
+#ifdef ORCA_MODEL_HAS_GLB_CGAL
+        const auto residual_started=std::chrono::steady_clock::now();
+        event("verifying");
+        proof["topologyCounts"]=enhanced_topology_counts(c,mesh.vertices,mesh.faces);
+        proof["residualChecks"]=glb_strict_predicates(c,mesh.vertices,mesh.faces);
+#endif
+        event("appearance");
+        const auto carrier_started=std::chrono::steady_clock::now();
+        auto result=enhanced_glb_carrier(c,g,input,mesh,request,proof,path,event);
+        J phase{{"decodePreflightMs",std::chrono::duration_cast<std::chrono::milliseconds>(core_started-operation_started).count()},
+                {"coreMs",proof.at("wallMs")},
+                {"carrierTotalMs",std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-carrier_started).count()},
+                {"operationTotalMs",std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-operation_started).count()}};
+#ifdef ORCA_MODEL_HAS_GLB_CGAL
+        phase["residualMs"]=std::chrono::duration_cast<std::chrono::milliseconds>(carrier_started-residual_started).count();
+#endif
+        result["phaseWallMilliseconds"]=phase;
+        return result;
+#else
+        throw Error("UNSUPPORTED", "Desktop enhanced repair Core is not compiled");
+#endif
+    }
+
     std::string candidate_bytes;
     bool appearance_equivalent = true;
     J geometry_deviation = {{"performed", false}, {"status", "not_run"}, {"count", nullptr}, {"details", "No topology repair performed"}};

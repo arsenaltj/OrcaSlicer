@@ -45,3 +45,12 @@ M2 must bind source/output geometry to a real re-read GLB, preserve or reconstru
 each appearance channel under `appearance-reconstruction-v1`, and distinguish
 `glb-repair-v2` strict verification from native compatibility. It must not infer
 strict success from this consumer, a boolean return, or a new geometry hash.
+
+
+## M2 opt-in SDK operation
+
+The same option now links this Core into Model SDK `repairGlbArtifact` only when
+explicit policyVersion=glb-repair-v2 is requested. See CONTRACT.md for supported
+profile, preserved appearance channels, canonical Core-frame carrier, real
+residual checks, publication and limits. M1 historical link evidence above is
+not the M2 quality evidence. The full strict branch remains unsupported.

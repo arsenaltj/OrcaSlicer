@@ -223,3 +223,65 @@ desktop enhanced `repair_mesh` Core to a standalone link consumer. Its M1 result
 is `geometry_only_stage`, not a Model SDK operation/receipt or strict completion.
 See [repair Core boundary](repair_core/README.md) for actual source/dependency
 binding, tested scope and the unsupported full strict numeric dependency.
+
+
+## Enhanced GLB repair policy v2
+
+Only builds with `ORCA_MODEL_REPAIR_CORE=ON` advertise `glbRepairV2`.
+`repairGlbArtifact` accepts top-level `policyVersion:"glb-repair-v2"` with the
+same six-field `identity`, private `sourcePath` and `outputDirectory`. Missing
+policy continues v1; unknown policies fail. The current v2 profile is static,
+embedded, unextended GLB, one primitive/material with POSITION, optional NORMAL
+and TEXCOORD_0. Additional primitives, transformed input nodes, tangent/color
+attributes or extensions are explicitly unsupported; they are never stripped.
+Two/three texture channels of the measured witnesses are supported, not a claim
+of universal GLTF material conversion. Input/original bytes remain immutable.
+
+The actual entry is desktop323c `repair_mesh`, not `strict_repair_mesh`.
+`completion:"native_compatible"` requires actual native success, finite indexed
+nonempty output, actual serialized GLB readback with identical ordered geometryId,
+structure and appearance passed. Full bidirectional geometric deviation is
+`performed:false/status:not_run/count:null`; topology/self-intersection are actual
+CGAL facts and residual failures remain visible. This completion does not grant
+manufacturing safety. The current build does not advertise strict_verified.
+
+Raw result and private receipt retain sibling `identity`, `source`, `candidate`,
+`checks` (five facts), `completion`, `repairApplied`, and `nativeProof`. Candidate
+and source retain path/sha256/bytes/format/mediaType. `receipt` in the raw response
+has path/sha256/bytes; the receipt itself has no self hash, receiptSha256 or bundle
+hash. The App verifies and attaches receipt/bundle identities to its API summary.
+NativeProof records actual repairEntry/coreSourceCommit, source/output/readback
+geometry IDs, nativeRepairSucceeded, geometryValid/readbackVerified, cancellation
+and resource facts, appearancePolicyVersion; private evidence may be richer than
+API's closed summary. Runtime timings are in the response, excluded from stable
+receipt equality. Replays actually re-execute and verify source -> candidate;
+they do not trust a preexisting sidecar or replace different bytes.
+
+Geometry is converted once into Core Z-up millimetre float coordinates. Carrier
+POSITION preserves those raw floats (including signed zero); a single canonical
+root matrix expresses Y-up metres. Actual readback decodes those raw coordinates
+in the declared Core frame, avoiding a float divide/multiply roundtrip. Triangle
+order is preserved. Per-corner appearance uses exact-face lookup first, then the
+existing Core AABB tree and barycentric projection, bounded by 0.002 of the repaired model
+scale. UV seams split vertices, subject to the original vertex cap. Source encoded
+image bytes and material/texture/sampler semantics are retained, including PBR,
+alpha and normal-texture factors. Normals, when provided, are projected, normalized
+and aligned to repaired winding; tangent basis is derived from repaired UV/normal
+by the GLTF renderer, not claimed byte-identical. Files without authored NORMAL
+retain GLTF's derived normals. CPU/bytes/projection checks do not claim rendered
+pixels are identical; visual/device validation is reported separately.
+
+Limits remain 100 MiB input/candidate, 2.5M vertices, 2M triangles, generated1M,
+768 MiB **estimated** workspace admission and 120s cooperative deadline. This is
+not an OS hard RSS cap or preemption inside every native instruction. Actual host
+peak measurements are reported; cancellation and limit errors do not publish a
+new accepted candidate/receipt. Publication uses exclusive temporary files,
+flush and atomic no-replace rename/link; late cancel cleans newly created files,
+never prior validated files or the original. Application-run/account/op fencing
+remains the host's responsibility around the bound native identity.
+
+Progress remains `type:glbSafetyProgress`, exact identity, monotonic sequence.
+Core progress is real; mapping/carrier/readback/publishing phases are stage events.
+The enhanced build additionally requires the same built oneTBB runtime: tbb12.dll
+on Windows and libtbb.so on Android. Immutable packaging must include its exact
+binary/notice/source provenance; the old Model04/Slicing bundle is unchanged.
