@@ -52,8 +52,8 @@ std::string enhanced_core_id(const std::vector<V>& vertices, const std::vector<T
     return Slic3r::mesh_repair_geometry_id(mesh);
 }
 // Spatial projection uses the existing Core AABB tree, never an R x F scan.
-std::vector<std::array<double,11>> enhanced_corner_sources(Context& c, const std::vector<V>& input,
- const std::vector<T>& input_faces, const std::vector<V>& output, const std::vector<T>& output_faces)
+void enhanced_corner_sources(Context& c, const std::vector<V>& input,
+ const std::vector<T>& input_faces, const std::vector<V>& output, const std::vector<T>& output_faces, const std::function<void(size_t,const std::array<double,11>&)>& emit)
 {
     std::vector<Slic3r::Vec3f> vertices; std::vector<Slic3r::Vec3i32> faces;
     vertices.reserve(input.size()); faces.reserve(input_faces.size());
@@ -67,7 +67,6 @@ std::vector<std::array<double,11>> enhanced_corner_sources(Context& c, const std
     for(size_t i=0;i<faces.size();++i)exact.push_back({key({vertices[faces[i][0]],vertices[faces[i][1]],vertices[faces[i][2]]}),i});
     std::sort(exact.begin(),exact.end());
     Slic3r::AABBTreeIndirect::Tree<3,float> tree;
-    std::vector<std::array<double,11>> result; result.reserve(output_faces.size());
     for (size_t i=0;i<output_faces.size();++i) {
         if ((i&1023)==0) check_cancel(c);
         const auto& f=output_faces[i];
@@ -101,9 +100,8 @@ std::vector<std::array<double,11>> enhanced_corner_sources(Context& c, const std
             double y=(vv*w.dot(u)-uv*w.dot(v))/den,z=(uu*w.dot(v)-uv*w.dot(u))/den;
             map[1+k*3]=1-y-z;map[2+k*3]=y;map[3+k*3]=z;
         }
-        result.push_back(map);
+        emit(i,map);
     }
-    return result;
 }
 
 }

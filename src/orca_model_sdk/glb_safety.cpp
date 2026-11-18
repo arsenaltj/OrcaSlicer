@@ -276,7 +276,8 @@ struct Glb
         require(offset <= bin_size && length <= bin_size - offset, "View outside BIN");
         return {bin + offset, length};
     }
-    std::vector<double> accessor(size_t index, const std::string& type, bool indices = false) const
+    template<class Value = double>
+    std::vector<Value> accessor(size_t index, const std::string& type, bool indices = false) const
     {
         const auto& a = item("accessors", index);
         require(a.at("type") == type && !a.contains("sparse") && !a.value("normalized", false), "Unsupported accessor layout");
@@ -292,7 +293,7 @@ struct Glb
         require(stride >= components * width && stride <= 252 && stride % width == 0 && offset % width == 0 && offset <= length &&
                     components * width <= length - offset && count - 1 <= (length - offset - components * width) / stride,
                 "Accessor outside view");
-        std::vector<double> values;
+        std::vector<Value> values;
         values.reserve(count * components);
         for (size_t i = 0; i < count; ++i)
             for (size_t j = 0; j < components; ++j) {
@@ -322,12 +323,37 @@ struct Topology
     size_t degenerate = 0, duplicate = 0, boundary = 0, nonmanifold = 0, inconsistent = 0;
     std::vector<size_t> primitive_faces;
 };
+// Contiguous exact counts, no per-face/per-edge tree nodes. Sorting changes
+// only the counting workspace, never the output triangle or vertex order.
+std::array<size_t,5> compact_topology_counts(Context& c,const std::vector<V>& vertices,const std::vector<T>& faces)
+{
+    std::vector<T> keys;keys.reserve(faces.size());
+    std::vector<uint64_t> edges;edges.reserve(faces.size()*3);
+    size_t degenerate=0,duplicate=0,boundary=0,nonmanifold=0,inconsistent=0;
+    for(size_t i=0;i<faces.size();++i) {
+        if((i&4095)==0)check_cancel(c);
+        const auto& f=faces[i];const auto& a=vertices.at(f[0]);const auto& b=vertices.at(f[1]);const auto& d=vertices.at(f[2]);
+        V u{b[0]-a[0],b[1]-a[1],b[2]-a[2]},v{d[0]-a[0],d[1]-a[1],d[2]-a[2]};
+        if(V{u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]}==V{})++degenerate;
+        auto key=f;std::sort(key.begin(),key.end());keys.push_back(key);
+        for(size_t k=0;k<3;++k){auto x=f[k],y=f[(k+1)%3];edges.push_back(((uint64_t(std::min(x,y))<<32)|std::max(x,y))*2+(x<y?0:1));}
+    }
+    check_cancel(c);std::sort(keys.begin(),keys.end());check_cancel(c);
+    for(size_t i=1;i<keys.size();++i)if(keys[i]==keys[i-1])++duplicate;
+    keys.clear();keys.shrink_to_fit();
+    std::sort(edges.begin(),edges.end());check_cancel(c);
+    for(size_t i=0;i<edges.size();) {
+        const auto key=edges[i]>>1;size_t forward=0,reverse=0;
+        do{if(edges[i]&1)++reverse;else ++forward;++i;}while(i<edges.size()&&(edges[i]>>1)==key);
+        const auto total=forward+reverse;if(total==1)++boundary;if(total>2)++nonmanifold;
+        if(total==2&&(forward==2||reverse==2))++inconsistent;
+    }
+    return {degenerate,duplicate,boundary,nonmanifold,inconsistent};
+}
 Topology topology(Context& c, const Glb& g)
 {
     Topology out;
     std::map<V, uint32_t> canonical;
-    std::set<std::array<uint32_t, 3>> unique;
-    std::map<std::pair<uint32_t, uint32_t>, std::array<size_t, 2>> edges;
     // Identity-only node hierarchies are accepted, but repeated mesh instances,
     // cycles, orphan nodes and transformations cannot escape the checked scene.
     require(g.doc.at("meshes").size() == 1 && g.doc.at("nodes").size() <= 128 && g.doc.at("scenes").size() == 1,
@@ -382,9 +408,9 @@ Topology topology(Context& c, const Glb& g)
             auto values = g.accessor(ref.get<size_t>(), name == "NORMAL" ? "VEC3" : "VEC2");
             require(values.size() == count * (name == "NORMAL" ? 3 : 2), "Attribute count mismatch");
         }
-        std::vector<double> indexes;
+        std::vector<uint32_t> indexes;
         if (primitive.contains("indices"))
-            indexes = g.accessor(primitive.at("indices").get<size_t>(), "SCALAR", true);
+            indexes = g.accessor<uint32_t>(primitive.at("indices").get<size_t>(), "SCALAR", true);
         else {
             indexes.resize(count);
             std::iota(indexes.begin(), indexes.end(), 0.);
@@ -399,34 +425,13 @@ Topology topology(Context& c, const Glb& g)
                 require(indexes[i + j] < count, "Index out of bounds");
                 face[j] = remap[size_t(indexes[i + j])];
             }
-            const auto& a = out.vertices[face[0]];
-            const auto& b = out.vertices[face[1]];
-            const auto& d = out.vertices[face[2]];
-            V u{b[0] - a[0], b[1] - a[1], b[2] - a[2]}, v{d[0] - a[0], d[1] - a[1], d[2] - a[2]};
-            V cross{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
-            if (cross == V{})
-                ++out.degenerate;
-            auto key = face;
-            std::sort(key.begin(), key.end());
-            if (!unique.insert(key).second)
-                ++out.duplicate;
-            for (size_t j = 0; j < 3; ++j) {
-                auto x = face[j], y = face[(j + 1) % 3];
-                auto& use = edges[{std::min(x, y), std::max(x, y)}];
-                ++use[x < y ? 0 : 1];
-            }
             out.faces.push_back(face);
         }
     }
     require(!out.faces.empty() && out.vertices.size() >= 3, "Empty model");
-    for (const auto& [edge, use] : edges) {
-        if (use[0] + use[1] == 1)
-            ++out.boundary;
-        if (use[0] + use[1] > 2)
-            ++out.nonmanifold;
-        if (use[0] + use[1] == 2 && (use[0] == 2 || use[1] == 2))
-            ++out.inconsistent;
-    }
+    canonical.clear();
+    const auto counts=compact_topology_counts(c,out.vertices,out.faces);
+    out.degenerate=counts[0];out.duplicate=counts[1];out.boundary=counts[2];out.nonmanifold=counts[3];out.inconsistent=counts[4];
     return out;
 }
 void put32(std::string& bytes, uint32_t value)
@@ -442,7 +447,7 @@ std::string filtered_glb(const Glb& original, const std::set<size_t>& removed)
     for (auto& primitive : doc.at("meshes")[0].at("primitives")) {
         const auto position_count =
             original.item("accessors", primitive.at("attributes").at("POSITION").get<size_t>()).at("count").get<size_t>();
-        std::vector<double> indexes;
+        std::vector<uint32_t> indexes;
         if (primitive.contains("indices"))
             indexes = original.accessor(primitive.at("indices").get<size_t>(), "SCALAR", true);
         else {

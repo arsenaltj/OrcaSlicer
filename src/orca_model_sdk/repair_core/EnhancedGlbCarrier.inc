@@ -2,20 +2,13 @@
 J enhanced_topology_counts(Context& c,const std::vector<V>& vertices,const std::vector<T>& faces)
 {
     std::map<V,uint32_t> points;std::vector<uint32_t> remap;remap.reserve(vertices.size());
-    for(const auto& v:vertices){auto [it,inserted]=points.emplace(v,uint32_t(points.size()));remap.push_back(it->second);}
-    std::set<std::array<uint32_t,3>> unique;
-    std::map<std::pair<uint32_t,uint32_t>,std::array<size_t,2>> edges;
-    size_t degenerate=0,duplicate=0,boundary=0,nonmanifold=0,inconsistent=0;
-    for(size_t i=0;i<faces.size();++i) {
-        if((i&4095)==0)check_cancel(c);const auto& f=faces[i];
-        const auto& a=vertices.at(f[0]);const auto& b=vertices.at(f[1]);const auto& d=vertices.at(f[2]);
-        V u{b[0]-a[0],b[1]-a[1],b[2]-a[2]},v{d[0]-a[0],d[1]-a[1],d[2]-a[2]};
-        if(V{u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]}==V{})++degenerate;
-        T canonical{remap.at(f[0]),remap.at(f[1]),remap.at(f[2])},key=canonical;std::sort(key.begin(),key.end());
-        if(!unique.insert(key).second)++duplicate;
-        for(size_t k=0;k<3;++k){auto x=canonical[k],y=canonical[(k+1)%3];++edges[{std::min(x,y),std::max(x,y)}][x<y?0:1];}
-    }
-    for(const auto& entry:edges){const auto& use=entry.second;if(use[0]+use[1]==1)++boundary;if(use[0]+use[1]>2)++nonmanifold;if(use[0]+use[1]==2&&(use[0]==2||use[1]==2))++inconsistent;}
+    for(size_t i=0;i<vertices.size();++i){if((i&4095)==0)check_cancel(c);auto [it,inserted]=points.emplace(vertices[i],uint32_t(i));remap.push_back(it->second);}
+    points.clear();
+    std::vector<T> canonical;canonical.reserve(faces.size());
+    for(size_t i=0;i<faces.size();++i){if((i&4095)==0)check_cancel(c);const auto& f=faces[i];canonical.push_back({remap.at(f[0]),remap.at(f[1]),remap.at(f[2])});}
+    remap.clear();remap.shrink_to_fit();
+    const auto counts=compact_topology_counts(c,vertices,canonical);
+    const auto degenerate=counts[0],duplicate=counts[1],boundary=counts[2],nonmanifold=counts[3],inconsistent=counts[4];
     return {{"boundaryEdges",boundary},{"nonManifoldEdges",nonmanifold},{"inconsistentEdges",inconsistent},{"degenerateFaces",degenerate},{"duplicateFaces",duplicate},{"defects",boundary+nonmanifold+inconsistent+degenerate+duplicate}};
 }
 
@@ -29,28 +22,28 @@ J enhanced_glb_carrier(Context& c, const Glb& g, const Topology& input, const To
     const auto& primitives=g.doc.at("meshes")[0].at("primitives");
     require(primitives.size()==1,"Enhanced appearance currently requires one primitive");
     const auto& primitive=primitives[0];const auto& attributes=primitive.at("attributes");
-    const auto positions=g.accessor(attributes.at("POSITION"),"VEC3");
+    const auto position_count=g.item("accessors",attributes.at("POSITION").get<size_t>()).at("count").get<size_t>();
     auto uv=attributes.contains("TEXCOORD_0")?g.accessor(attributes.at("TEXCOORD_0"),"VEC2"):std::vector<double>{};
     auto normals=attributes.contains("NORMAL")?g.accessor(attributes.at("NORMAL"),"VEC3"):std::vector<double>{};
-    std::vector<double> indices;
-    if(primitive.contains("indices")) indices=g.accessor(primitive.at("indices"),"SCALAR",true);
-    else {indices.resize(positions.size()/3);std::iota(indices.begin(),indices.end(),0.);}
-    auto mappings=enhanced_corner_sources(c,input.vertices,input.faces,output.vertices,output.faces);
-    timings["mappingMs"]=elapsed();event("carrierWriting");
+    std::vector<uint32_t> indices;
+    if(primitive.contains("indices")) indices=g.accessor<uint32_t>(primitive.at("indices"),"SCALAR",true);
+    else {indices.resize(position_count);std::iota(indices.begin(),indices.end(),0.);}
+    event("carrierWriting");
     V low=output.vertices.front(),high=low;
     for(const auto& v:output.vertices)for(size_t k=0;k<3;++k){low[k]=std::min(low[k],v[k]);high[k]=std::max(high[k],v[k]);}
     double diagonal=0;for(size_t k=0;k<3;++k)diagonal+=(high[k]-low[k])*(high[k]-low[k]);diagonal=std::sqrt(diagonal);
-    double maximum_projection=0;for(const auto& m:mappings)maximum_projection=std::max(maximum_projection,m[10]);
-    require(diagonal>0&&maximum_projection<=diagonal*.002,"Appearance source projection exceeds bounded displacement");
+    double maximum_projection=0;require(diagonal>0,"Invalid output extent");
     J doc=g.doc;
     std::string bin=g.source.substr(g.bin,g.doc.at("buffers")[0].at("byteLength").get<size_t>());
     size_t exported_vertex_count=0;
     std::string position_bytes,uv_bytes,normal_bytes,index_bytes;
     std::map<std::array<uint32_t,8>,uint32_t> split;
     auto append_float=[](std::string& bytes,float f){uint32_t bits;std::memcpy(&bits,&f,4);put32(bytes,bits);};
-    for(size_t face=0;face<output.faces.size();++face) {
+    enhanced_corner_sources(c,input.vertices,input.faces,output.vertices,output.faces,[&](size_t face,const std::array<double,11>& mapping) {
         if((face&1023)==0)check_cancel(c);
-        const auto& mapping=mappings.at(face);const auto source_face=size_t(mapping[0]);T result_face;
+        maximum_projection=std::max(maximum_projection,mapping[10]);
+        require(maximum_projection<=diagonal*.002,"Appearance source projection exceeds bounded displacement");
+        const auto source_face=size_t(mapping[0]);T result_face;
         for(size_t corner=0;corner<3;++corner) {
             const auto& v=output.vertices[output.faces[face][corner]];
             float u=0,w=0;V normal{};
@@ -80,8 +73,8 @@ J enhanced_glb_carrier(Context& c, const Glb& g, const Topology& input, const To
             result_face[corner]=it->second;put32(index_bytes,it->second);
         }
 
-    }
-    mappings.clear();mappings.shrink_to_fit();split.clear();
+    });
+    timings["mappingAndWritingMs"]=elapsed();split.clear();indices.clear();indices.shrink_to_fit();
     auto accessor=[&](const std::string& data,const char* type,size_t count,unsigned component) {
         while(bin.size()%4)bin.push_back(0);
         const size_t offset=bin.size(),view_id=doc["bufferViews"].size(),id=doc["accessors"].size();bin+=data;
@@ -123,7 +116,7 @@ J enhanced_glb_carrier(Context& c, const Glb& g, const Topology& input, const To
     timings["carrierReadyMs"]=elapsed();event("carrierReadback");
     const Glb readback(bytes);
     require(readback.doc.at("nodes")[0].at("matrix")==matrix,"Carrier coordinate frame mismatch");
-    auto rp=readback.accessor(attrs.at("POSITION"),"VEC3");auto ri=readback.accessor(derived.at("indices"),"SCALAR",true);
+    auto rp=readback.accessor(attrs.at("POSITION"),"VEC3");auto ri=readback.accessor<uint32_t>(derived.at("indices"),"SCALAR",true);
     std::vector<V> read_vertices;std::vector<T> read_faces;
     V actual_min{rp.at(0),rp.at(1),rp.at(2)},actual_max=actual_min;
     for(size_t i=0;i<rp.size();i+=3) {
