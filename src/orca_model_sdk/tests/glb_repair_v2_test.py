@@ -73,8 +73,18 @@ with tempfile.TemporaryDirectory(prefix='orca-v2-cabi-') as directory:
     values=[struct.unpack_from('<fff',rb,offset+i*stride) for i in range(position['count'])]
     assert position.get('min')==[min(p[k] for p in values) for k in range(3)],('missing or wrong serialized POSITION min',position)
     assert position.get('max')==[max(p[k] for p in values) for k in range(3)],('missing or wrong serialized POSITION max',position)
-    for field in ['materials','textures','images','samplers']:assert rd.get(field)==doc.get(field)
-    assert rb[:len(binary)]==binary
+    for field in ['materials','textures','samplers']:assert rd.get(field)==doc.get(field)
+    if result['nativeProof']['appearanceCarrierLayout']=='original-bin-prefix':
+     assert rd.get('images')==doc.get('images') and rb[:len(binary)]==binary
+    else:
+     assert result['nativeProof']['appearanceCarrierLayout']=='active-encoded-images'
+     assert len(rd.get('images',[]))==len(doc.get('images',[]))
+     for source_image,target_image in zip(doc.get('images',[]),rd.get('images',[])):
+      before=doc['bufferViews'][source_image['bufferView']];after=rd['bufferViews'][target_image['bufferView']]
+      assert binary[before.get('byteOffset',0):before.get('byteOffset',0)+before['byteLength']]==rb[after.get('byteOffset',0):after.get('byteOffset',0)+after['byteLength']]
+      restored=copy.deepcopy(target_image);restored['bufferView']=source_image['bufferView'];assert restored==source_image
+     assert len(candidate.read_bytes())<64*1024*1024
+     assert len(rb)<len(binary)
     if replay:
      saved=receipt.read_bytes();events.clear();code2,again=execute();assert code2==0 and receipt.read_bytes()==saved,(name,again)
    assert [e['sequence'] for e in events]==list(range(1,len(events)+1))
@@ -87,7 +97,8 @@ with tempfile.TemporaryDirectory(prefix='orca-v2-cabi-') as directory:
  d['accessors'][0]['max']=[max(v[k] for v in points) for k in range(3)]
  run('negative_nonuniform_position_bounds',d,b)
  d,b=fixture(True);run('pbr_alpha_wrap_normal_channels',d,b)
- for phase in ['reading','repairing','verifying','appearanceMapping','publishing','candidatePublished','receiptPublished']:
+ d,b=fixture(True);run('compact_inactive_bin_keep_all_pbr_images',d,b+b'\0'*(70*1024*1024-len(b)))
+ for phase in ['reading','repairing','verifying','appearanceMapping','publishing','candidatePublished','receiptPublished','residualSoup','residualSurface','residualVertexLinks','residualIntersections']:
   run('cancel_'+phase,cancel=phase,expect='CANCELED')
  run('wrong_source_hash',edit=lambda r:r['identity'].update(sourceSha256='0'*64),expect='INVALID_GLB')
  run('unknown_policy',edit=lambda r:r.update(policyVersion='unknown'),expect='INVALID_GLB')

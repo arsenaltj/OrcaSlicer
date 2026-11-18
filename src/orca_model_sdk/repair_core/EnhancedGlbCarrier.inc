@@ -96,7 +96,8 @@ J enhanced_glb_carrier(Context& c, const Glb& g, Topology& input, const Topology
     // source geometry would exceed the candidate cap, keep all encoded images
     // with exact material/texture/sampler semantics and rebase only their views.
     const auto source_bin_size=g.doc.at("buffers")[0].at("byteLength").get<size_t>();
-    const bool compact_bin=source_bin_size+position_bytes.size()+uv_bytes.size()+normal_bytes.size()+index_bytes.size()+g.bin+4096>max_bytes;
+    const uint64_t preferred_display_bytes=64ull*1024*1024;
+    const bool compact_bin=source_bin_size+position_bytes.size()+uv_bytes.size()+normal_bytes.size()+index_bytes.size()+g.bin+4096>preferred_display_bytes;
     size_t active_image_bytes=0;
     for(const auto& image:g.doc.value("images",J::array()))active_image_bytes+=g.view(image.at("bufferView").get<size_t>()).second+3;
     const auto bin_bound=(compact_bin?active_image_bytes:source_bin_size)+position_bytes.size()+uv_bytes.size()+normal_bytes.size()+index_bytes.size()+16;
@@ -187,6 +188,7 @@ J enhanced_glb_carrier(Context& c, const Glb& g, Topology& input, const Topology
     }
     require(source_images==candidate_images,"Image semantics changed");
     if(!compact_bin)require(readback.source.compare(readback.bin,source_bin_size,g.source,g.bin,source_bin_size)==0,"Source encoded appearance payload changed");
+    proof["carrierLayoutSelectionBytes"]=preferred_display_bytes;
     proof["appearanceCarrierLayout"]=compact_bin?"active-encoded-images":"original-bin-prefix";
 
     timings["readbackReadyMs"]=elapsed();event("appearanceVerification");
