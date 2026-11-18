@@ -312,3 +312,107 @@ WIN-06优先复用仍有效的任务；确需新生成时使用此前已授权�
 ### 9.4 交付边界
 
 最终测试数据位于独立`.tmp/dev/data/creation-workbench-navigation-20261117`，QA PID32412及sidecar24360均已结束，原用户实例／工程／2227份源资产保留。运行树`.tmp/dev/run/Honor Forge Studio.exe`为已验证内部版本；按用户追加授权，本稿与代码／测试／维护文档形成普通本地Git提交，两份进度文档继续排除；不推送、不打包发布。模型首次朝向、粒子主观视觉评审、旧性能目标及其他历史未验项仍按原记录保留，不能由这44项通过推出完成。
+
+## 10. 高级只读操作区UX对齐补充方案（2026-11-17）
+
+当前授权／状态：用户已追加“实施并验收全部用例通过”，本节方案获批；2026-11-18进一步明确“授权1次完整智能生成，完成第10项”。当前代码修改、223／223项定向测试及ADV-UX-01～10全部通过，追加一次2D设计＋YOYO 3D已用1／1、零Tripo。首轮9项实际证据见10.7，智能续验及最终结算见10.8。
+
+归属：MAINLINE-BUGFIX-001／workbench-navigation-and-initial-view-20261117范围内补充，当前会话单writer，沿codex/team/integration／ad75c3bffb。用户先审批方案，后明确批准实施；10.1～10.6保留获批设计，10.7记录当前实测，前文44项验收不移作本次UX通过证据。
+
+### 10.1 目标与范围
+
+以用户认可的智能模式截图为标准，对齐“高级模式已有3D成果→进入工作台→侧栏AI创作”后的左侧底部操作区。左侧“返回AI创作”为带图标的灰色次按钮，右侧“返回工作台”为带图标的渐变主按钮及底部光晕；横向等宽、高44DIP，沿用共用组件现有字体、圆角、间距及交互样式。只读提示位于双按钮下方，采用智能模式相同字号、颜色、内边距和换行规则。
+
+本次仅改高级页操作区的呈现和已有动作的绑定适配。ModelGenerationFeatureHost的CreationWorkbenchContext继续拥有只读归属，原Shell继续拥有返回资格／恢复／导航；高级Session继续拥有草稿／组／选项，Plater继续拥有工程／预览／G-code／撤销。供应商、下载、生成流程和历史格式均不在本次修改范围；验证复用已有真实模型，不新增生成或Tripo真实调用。
+
+### 10.2 状态与行为
+
+| 当前状态 | 左按钮 | 右按钮 | 提示／退出行为 |
+| --- | --- | --- | --- |
+| 已交接、只读、允许恢复 | 返回AI创作，启用 | 返回工作台，启用 | “当前为只读查看，点击“返回AI创作”恢复编辑”；左键走既有显式恢复及确认 |
+| 已交接、只读、暂不允许恢复 | 返回AI创作，禁用 | 返回工作台，启用 | “当前为只读查看，工作台处理中，完成后可返回AI创作”；忙碌结束只更新资格，不自动解锁 |
+| 未交接的普通完成态 | 重新生成，沿原资格 | 进入工作台，沿原资格 | 保留原完成态和原首次交接保护，无只读提示 |
+| 显式恢复后的普通创作态 | 按原2D／3D阶段显示动作 | 按原2D／3D阶段显示动作 | 移除只读提示，恢复原草稿编辑，不自动发起生成 |
+
+只读操作区的显示依据是现有创作锁，不依赖当前2D／3D页签或模型预览是否重新就绪。页签切换、输入禁用及历史保护沿用已有资格，不借本次UX修改放宽。
+
+### 10.3 具体改动
+
+1. 高级只读态复用现有GenerationCompletionActions，调用其set_read_only／set_enabled；不复制一套按钮绘制或修改共用组件样式。普通完成态继续使用同一组件原有行为。
+2. 左按钮回调按当前只读状态分发：只读时重新校验can_return并调用return_creation；非只读时调用原高级生成入口。右按钮继续使用既有open_workbench回调，其只读路径恢复已有工作场景。不得把只读左键误接为重新生成，也不得为右键新增导入／交接路径。
+3. 只读态不再显示旧的纵排view_model／return_button；移除仅服务该纵排恢复入口的冗余控件及引用，保留普通查看模型的既有语义。
+4. 在高级action_panel内添加底部只读提示，文本及视觉规则与智能一致；中央status不重复显示相同只读提示，非只读阶段的状态／错误消息按原逻辑显示。
+5. 操作区统一投影最终显示状态，按实际显隐／提示尺寸变化更新布局；避免apply／模型首帧回调重新覆盖只读按钮。两种只读状态之间刷新时更新启用和提示，退出只读时恢复普通完成态布局及标签。
+
+### 10.4 预计文件与验证方式
+
+- 生产代码原则上仅修改`src/slic3r/GUI/Redesign/AdvancedCreationWorkspace.cpp`。`InlineModelGenerationView`已有API足够，本方案不要求更改共用按钮类、Shell、Host或业务契约。
+- 随实现同步`Docs/architecture/PLATFORM_ARCHITECTURE.md`中现有创作／工作台说明，补充两模式只读操作区共用呈现规则；无需新增ADR、架构模块或进度台账。
+- 自动验证复用`slic3rutils_tests`中已有AdvancedCreation、CreationWorkflow、UiRedesign、InlineModelGeneration相关定向用例，覆盖恢复资格、锁保持、完成门禁和来源保留。只有发现现有行为测试缺口时补充必要用例，不以控件字符串／源码匹配测试代替UX验收。
+- Windows复用本checkout的`dev.ps1`和`.tmp/dev/{build,run,data}`，审批后先改代码，再增量构建／定向测试、安装完整匹配运行文件，最后进行真实主窗口验收。使用独立配置及已有成功高级四图／模型副本，保留原件及用户实例，不新生成、不调用Tripo。
+
+### 10.5 核心测试用例（10项）
+
+| 编号 | 场景／操作 | 通过标准与验证层次 |
+| --- | --- | --- |
+| ADV-UX-01 | 高级已有3D成果→进入工作台→侧栏AI创作，查看3D阶段只读操作区 | 实窗：横向左“返回AI创作”／右“返回工作台”，等宽44DIP、图标／字体／圆角／渐变／光晕与智能一致；没有旧纵排按钮 |
+| ADV-UX-02 | 沿现有允许的路径分别查看高级2D／3D阶段的只读页 | 实窗：两阶段底部返回入口和提示均可见，不依赖3D预览重新就绪；中央不重复只读提示，输入及页签资格保持原规则 |
+| ADV-UX-03 | 真实工作台处理期间切到高级AI页，等待处理终态 | 定向测试＋实窗：左按钮可见但禁用，右按钮可用；底部显示处理中原因。终态后按原资格启用左按钮并更新提示，不自动解锁；点击时仍校验资格 |
+| ADV-UX-04 | 只读页点击“返回工作台”，包括已有切片预览的场景 | 实窗：回到原工作场景／最近有效子视图，同一模型及有效G-code保留；不再次导入、不自动切片，创作锁保持 |
+| ADV-UX-05 | 允许恢复时点击“返回AI创作” | 定向测试＋实窗：显式恢复原高级组／四图／描述／风格／建模选项，解除只读并隐藏提示；不新增任务或自动重新生成，工作台已有模型仍保留 |
+| ADV-UX-06 | 工作台有未保存修改时，点返回AI创作，分别取消和确认 | 实窗：沿原确认流程；取消后仍只读、操作区保持；确认后才恢复编辑，保留既有工作台工程保护，不丢失或覆盖原模型 |
+| ADV-UX-07 | 高级未交接完成态及普通创作状态回归 | 定向测试＋实窗：未交接仍为“重新生成／进入工作台”，恢复后按当前2D／3D阶段显示原动作；生成中／失败／停止的原控制规则由既有定向测试覆盖，不误套只读返回动作 |
+| ADV-UX-08 | 连续5轮工作台／AI往返，伴随状态刷新并检查重复点击 | 实窗：锁、组／任务及选项保持；按钮不回退旧布局、不重复出现、不触发意外生成／导入或额外确认；迟到刷新不恢复只读页的生成动作 |
+| ADV-UX-09 | 当前DPI下常用窗口及窄窗口，缩放、最小化恢复 | 实窗：两按钮文案完整，无遮挡／重叠；提示可换行且操作区可见，光晕不覆盖提示。记录实际窗口尺寸／DPI，窄窗优先复用可达的1251×781，不外推未测DPI |
+| ADV-UX-10 | 智能模式相同只读旅程及普通完成态对照 | 实窗：用户认可的按钮UX、提示、忙碌禁用、显式恢复和普通完成态均保持；同DPI／相近侧栏宽度截取操作区对照 |
+
+### 10.6 执行顺序与交付判定
+
+审批后依次完成：高级操作区改动与维护说明→增量构建及相关定向测试→完整匹配Windows主窗口10项验收→diff复核与结果交付。实际失败在此范围修正后重验相关项；任何未执行／不具备条件的用例须明确列出，不记为通过。
+
+证据沿忽略目录`.tmp/dev/evidence/advanced-readonly-actions-20261117/`保存实际源码／产物身份、定向测试结果、操作区截图、真实旅程及组／任务身份核对。原44项及Tripo下载验收沿其各自版本保留，本次不复用为新通过结论。审批时仅提交本稿，后续实施以10.7实际记录为准；本方案本身不授权Git提交、推送或发布。
+
+### 10.7 实施与当前验收结果（2026-11-18）
+
+本节保留追加生成授权前的9／10结果及当时限制，最终10／10结算见10.8。
+
+实现限于`src/slic3r/GUI/Redesign/AdvancedCreationWorkspace.cpp`：只读时复用共用横向双按钮，左回调重新检查原恢复资格，右回调沿原工作台导航；底部提示采用智能字号／颜色／内边距和换行规则，中央不重复显示。2D／3D均按原Host创作锁投影，忙碌终态只更新资格；未交接完成态仍显示原生成／交接动作。未修改智能页、共用按钮样式、业务状态、供应商、下载或历史格式。维护文档同步`Docs/architecture/PLATFORM_ARCHITECTURE.md`“AI创作与工作台往返”段；工程导航及契约没有变化，无需新增ADR或修改review-map。
+
+验证版本：HEAD `ad75c3bffb3a4d6250f790121b530bccfaf3d1a0`加上述未提交改动，源码文件SHA256 `3042db87dbfd48ee35dd218c35180e66e1cb01a37a154f0db9afb626ba55c549`。`dev.ps1 CppTest`按`AdvancedCreation|CreationWorkflow|UiRedesign|InlineModelGeneration`筛选，223／223通过（`.tmp/dev/logs/20261117-235153-297`）；`dev.ps1 Run -NoLaunch`五步PREPARED（`20261117-235454-479`），19656运行文件匹配，native identity `7a1e8678ce7cfc4b78c33ed39ec9aa726ee3e7e6a06eb643a22d5f4b4f7041b5`。EXE SHA256 `650068ff02444de85260d68e08ed3b77390348ef1dac2c2dbe3e2957087d81a3`，DLL SHA256 `709c59e87943632453067e722e9a9c455cc02f9eeec59531e9b084c2cb5a26ff`。构建／逻辑测试／实窗分别取证，不把223项累计成界面验收项数。
+
+以下`E`指`.tmp/dev/evidence/advanced-readonly-actions-20261117`，`G`指`E/gui`。独立datadir为`.tmp/dev/data/advanced-readonly-actions-20261117`，使用原高级组`9f0a36ec-26f9-4206-bc0e-cfa29762b309`及真实任务`4cafa542-c827-4003-9120-32d5475fd222`副本；智能已复制原成功任务`8097f158-52ad-44a3-b2d6-e2ea5951c5b0`及其完整资产登记，但未将其伪装成新生成会话。
+
+| 编号 | 当前结果 | 本次版本证据 |
+| --- | --- | --- |
+| ADV-UX-01 | 通过 | `G/009-advanced-readonly-3d-tab.png`、`021-advanced-readonly-normal-window.png`；实见横排等宽双按钮、图标、渐变、光晕及下方提示，复用原共用组件绘制；智能新版本完整对照另记10 |
+| ADV-UX-02 | 通过 | `G/008-advanced-readonly-busy-3d.png`、`009-advanced-readonly-3d-tab.png`、`034-dirty-workbench-ai-navigation.png`；高级两阶段均有只读出口，输入禁用、中央无重复提示 |
+| ADV-UX-03 | 通过 | `G/008`、`010-advanced-busy-restore-click-rejected.png`、`020-round05-ai.png`；真实检查／修复期间左禁用右可用，禁用左键重复点击无效，处理终态更新提示但保持锁；资格逻辑由223项相关回归覆盖 |
+| ADV-UX-04 | 通过 | `G/058-native-preview-before-roundtrip.png`～`061-native-preview-verified-after-roundtrip.png`；真实原生兔模型工程本地切片后，高级只读页右键返回原有效预览。`E/native-preview-before.json`及`native-preview-after.json`中同一19997872字节G-code的SHA256 `9bc772067243745595e58bf378c50a5b7c985a843d074ec8cd42479fa790ba1d`、mtime及1次成功切片计数不变，往返增量日志无导入／切片事件 |
+| ADV-UX-05 | 通过 | `G/025-advanced-explicit-return-to-editing.png`、`026-advanced-completed-after-unlock.png`、`039-unsaved-return-confirm-restores-draft.png`；显式恢复同组、四图、172字节描述及原建模选项，提示消失且控件启用，无新增Job／attempt |
+| ADV-UX-06 | 通过 | `G/033-apply-real-unsaved-color-edit.png`实改592252个面；`035`确认弹窗、`037-unsaved-return-cancel-keeps-lock.png`取消保锁、`039`确认后编辑；`040-after-confirm-workbench-edit-preserved.png`原工作台改色仍在。随后将副本修改保存为独立美颜成果，没有覆盖原模型 |
+| ADV-UX-07 | 通过 | `G/005-advanced-completed-unlocked.png`、`026`、`045-advanced-normal-complete-before-rehandoff.png`；未交接3D完成态仍为重新生成／进入工作台，2D恢复原动作；生成／失败／停止控制由已有定向自动测试覆盖，本轮没有新生成来冒充实窗覆盖 |
+| ADV-UX-08 | 通过 | `G/011-round01-return-workbench-double.png`～`020-round05-ai.png`；5轮往返，其中第1／5轮右键双击，并经历真实处理终态刷新；锁、原组／描述保持，无旧纵排或额外生成／导入 |
+| ADV-UX-09 | 通过 | `G/008`、`021`、`024-advanced-restored-rehydrated.png`；窗口截图坐标尺寸1251×781及1560×992，当前运行日志dpi=2，按钮／提示完整、可换行，最小化恢复后不变；不外推其他DPI／GPU |
+| ADV-UX-10 | 未完成，等待额外授权 | `G/067-switch-smart-for-comparison.png`、`068-refresh-complete-smart-history-copies.png`只验证智能初始页。智能页挂载工作台历史，现有WorkbenchAssets过滤smart记录，且智能旧生成会话不会恢复；已有成功副本无法进入本次版本的智能普通完成态。未修改恢复业务或伪造会话，不借旧截图宣称本轮通过。已请求1次完整智能生成（2D＋YOYO 3D、零Tripo）授权，获准后仅补此旅程 |
+
+原件与调用核对：`E/originals-and-jobs-check.json`中1786份来源文件摘要全部不变，QA仅原2份Job、attempt文件一致、无新Job。高级Job字节一致；智能Job副本有两处既有读取规范化差异：重算`smart_elapsed_seconds`，并补齐`image_metrics.material_fragmentation_ok=true`；任务／状态／attempt不变，不把该副本元数据说成字节相同。`E/service-calls-audit.json`当前为0个本地POST、0个供应商事件，新增生成／Tripo真实调用均0。原生工程另存`E/qa-native-session.3mf`，G-code另存`E/qa-native-preview.gcode`；原工程及模型保留。
+
+QA PID42364及sidecar15216均正常退出，exit code均0（`E/qa-exit.json`），没有在等待授权时遗留运行任务。
+
+Diff检查通过；文档同步候选检查没有错误，提示无PR声明的REVIEW_NEEDED，不能冒充PR检查通过。没有新提交／推送／打包。当前只结算9／10通过，第10项待上述授权与实际完成后另记；原44项、下载交付和其他未验／暂停目标保持。
+
+### 10.8 智能对照续验（2026-11-18）
+
+用户明确授权一次完整智能生成（2D设计＋YOYO 3D、零Tripo），取代10.1／10.4本次验收零新增生成限制，产品修改范围不扩大。沿10.7同一源码／EXE／DLL和独立配置，经真实主窗口输入原企鹅描述、选择YOYOClaw、提交一次完整智能生成；生成任务`749597de-a8e7-42d4-958f-ba72038ccb2c`、flow`bb17786d-464c-46a4-8cb4-3aa98ee7d60c`、YOYO task`1514441350593945600`，1次2D请求和1个3D attempt，ready／ready。最终GLB26349800字节，未追加第二次生成或调用Tripo。以下`S`为`E/smart-validation-20261118`，完整旧证据保留。
+
+ADV-UX-10通过：`S/gui/012-smart-normal-completion-actions.png`显示普通完成态仍为重新生成／进入工作台；显式交接成功后`015-smart-readonly-idle.png`显示横排返回双按钮及底部提示，输入禁用。真实本地网格修复期间`029-smart-readonly-mesh-repair-busy.png`的左按钮禁用、右按钮启用，`030`双击禁用左键无动作，`031`返回原美颜场景且候选待确认保护仍在。恢复修改前并结束处理后，`034-smart-readonly-after-processing-no-auto-unlock.png`重新允许恢复但保持只读；`035-smart-explicit-restore-editing.png`才显式解锁，原64字节描述、多色写实风格及YOYO选择保留，提示消失、普通动作恢复。`036-smart-workbench-preserved-after-unlock.png`确认工作台成果仍保留，无额外生成或导入。
+
+外观对照通过：`S/readonly-ux-comparison.png`由本次智能015／029和同一受测版本高级021／008的底部操作区原尺寸裁剪组成，未缩放。当前dpi=2、两页侧栏344像素，横向双按钮的等宽、图标、字体、圆角、渐变／光晕和底部提示一致；焦点／悬停状态不作逐像素相同要求，不外推其他DPI／GPU。完整源截图、裁剪坐标及人工核对见`S/ux-comparison.json`。
+
+测试准备及证据限制：在独立配置中尝试按模型配色配置耗材，现有单槽耗材未满足配色，随后按现有入口适配并保存独立白色美颜副本用于真实网格修复；原生成GLB／图片保持。快速配色尝试及已有检查缓存没有被算作修复忙碌证据，忙碌判定仅使用029／030的实际禁用树和截图。修复候选选择恢复修改前，正常结束后才验证显式恢复；未修改智能恢复业务或伪造会话。
+
+收尾核对：`S/assets-and-jobs-check.json`中1786份来源、原4份Job／attempt及新Job／attempt／GLB／preview往返前后摘要全部不变，仅新增上述一个Job及一个attempt。既有原生G-code SHA256仍为`9bc772067243745595e58bf378c50a5b7c985a843d074ec8cd42479fa790ba1d`。QA PID32460及sidecar44632均正常退出、exit0（`S/qa-exit.json`）。源码／EXE／DLL与10.7身份完全一致，本轮只补实窗，不重复构建和已通过测试。最终**ADV-UX-01～10共10／10通过，相关自动测试223／223通过**，总表及逐项映射为`E/validation.json`。本需求无未结用例，其他历史未验／暂停目标保持；没有Git提交／推送／打包。
+
+### 10.9 本地Git交付（2026-11-18）
+
+用户追加“提交代码，形成代码提交记录”，取代此前不提交限制。沿`codex/team/integration`，以`ad75c3bffb3a4d6250f790121b530bccfaf3d1a0`为父提交，将本次`AdvancedCreationWorkspace.cpp`、平台维护说明及本验收方案三文件形成普通本地提交；两份含历史改动的主计划／短状态继续保留本地。提交号、逐文件blob／SHA及原验收身份映射保存`E/git-commit.json`；验证沿用10.7／10.8的同一源码、223／223项定向测试及10／10项验收。此次仅增加Git交付，无新增构建、应用操作或供应商调用，不推送或打包发布。

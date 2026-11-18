@@ -1187,7 +1187,8 @@ struct AdvancedCreationWorkspace::Impl {
     RoundedActionButton* polish {nullptr};
     RoundedActionButton* view_model {nullptr};
     RoundedActionButton* resume {nullptr};
-    RoundedActionButton* return_button {nullptr};
+    wxStaticText* creation_lock_hint {nullptr};
+    wxString creation_lock_hint_text;
     RoundedActionButton* fresh_button {nullptr};
     RoundedActionButton* generate {nullptr};
     RoundedActionButton* model {nullptr};
@@ -1542,14 +1543,15 @@ struct AdvancedCreationWorkspace::Impl {
         actions->Add(model, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM, page.FromDIP(16));
         model->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { host.generate_model(model_confirmation()); });
         completion_actions = new GenerationCompletionActions(action_panel,
-            [this] { host.generate_model(model_confirmation()); },
+            [this] {
+                if (model_host.creation_editing_locked()) {
+                    if (can_return && can_return() && return_creation) return_creation();
+                } else host.generate_model(model_confirmation());
+            },
             [this] { if (open_workbench) open_workbench(); });
         actions->Add(completion_actions, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, page.FromDIP(16));
         view_model = new RoundedActionButton(action_panel, t("查看3D模型"), false, 32);
-        view_model->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-            if (model_host.creation_editing_locked()) { if (open_workbench) open_workbench(); }
-            else open_model();
-        });
+        view_model->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { open_model(); });
         actions->Add(view_model, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, page.FromDIP(16));
         resume = new RoundedActionButton(action_panel, t("恢复原3D任务"), false, 32);
         resume->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { host.resume_model(); });
@@ -1560,13 +1562,11 @@ struct AdvancedCreationWorkspace::Impl {
         reconcile = new RoundedActionButton(action_panel, t("核对本次请求"), false, 32);
         reconcile->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { host.reconcile_submission(); });
         actions->Add(reconcile, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, page.FromDIP(16));
-        return_button = new RoundedActionButton(action_panel, t("返回AI创作"), false, 40);
-        return_button->SetName("advanced-return-creation");
-        return_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-            if (can_return && can_return() && return_creation) return_creation();
-        });
-        actions->Add(return_button, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, page.FromDIP(16));
-        return_button->Hide();
+        creation_lock_hint = new wxStaticText(action_panel, wxID_ANY, wxEmptyString);
+        creation_lock_hint->SetName("advanced-creation-lock-hint");
+        style_smart_creation_text(creation_lock_hint, 12, secondary_text_colour());
+        actions->Add(creation_lock_hint, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, page.FromDIP(16));
+        creation_lock_hint->Hide();
         left->Add(action_panel, 0, wxEXPAND);
         model_inputs->Hide(); model->Hide(); view_model->Hide(); resume->Hide(); stop->Hide(); reconcile->Hide();
         auto* center = new wxPanel(creation); center->SetBackgroundColour(background_colour()); center->SetMinSize(wxSize(0, 0));
@@ -1857,22 +1857,33 @@ struct AdvancedCreationWorkspace::Impl {
         const bool content = model_tab && generation_view->has_content();
         const bool complete = content && generation_view->ready();
         const bool readonly = model_host.creation_editing_locked();
-        const bool completion_changed = completion_actions->IsShown() != complete;
+        const bool can_restore = readonly && can_return && can_return();
+        const bool actions_visible = readonly || complete;
+        const wxString hint = !readonly ? wxString{} : can_restore ?
+            t("当前为只读查看，点击“返回AI创作”恢复编辑") :
+            t("当前为只读查看，工作台处理中，完成后可返回AI创作");
+        const bool hint_changed = creation_lock_hint_text != hint;
+        const bool completion_changed = completion_actions->IsShown() != actions_visible ||
+            creation_lock_hint->IsShown() != readonly || hint_changed;
         std::unique_ptr<wxWindowUpdateLocker> content_handoff;
         if (generation_view->IsShown() != content)
             content_handoff = std::make_unique<wxWindowUpdateLocker>(grid->GetParent());
         show(grid, !content); show(generation_view, content);
-        show(completion_actions, complete && !readonly);
+        completion_actions->set_read_only(readonly);
+        show(completion_actions, actions_visible);
         show(model, model_tab && !complete && !readonly);
         show(generate, !model_tab && !readonly);
-        show(view_model, readonly);
-        label(view_model, readonly ? t("返回工作台") : t("查看3D模型"));
-        enable(view_model, readonly);
-        show(return_button, readonly);
-        enable(return_button, readonly && can_return && can_return());
+        show(view_model, false);
+        if (hint_changed) {
+            creation_lock_hint_text = hint;
+            creation_lock_hint->SetLabel(hint);
+            creation_lock_hint->Wrap(page.FromDIP(312));
+            layout_changed = true;
+        }
+        show(creation_lock_hint, readonly);
         const auto eligibility = host.eligibility();
-        completion_actions->set_enabled(eligibility.generate_model,
-            generation_view->ready() && host.model_state().can_open_workbench && !host.command_pending());
+        completion_actions->set_enabled(readonly ? can_restore : eligibility.generate_model,
+            readonly || (generation_view->ready() && host.model_state().can_open_workbench && !host.command_pending()));
         generation_view->set_presented(presented && content);
         if (completion_changed) {
             // The first-frame callback runs outside apply_snapshot(). Commit
@@ -2322,10 +2333,9 @@ struct AdvancedCreationWorkspace::Impl {
             smart_creation_opaque_colour(wxColour(255, 255, 255, 115), wxColour(21, 21, 23))); count->Refresh();
         label(count_error, over_limit ? t("描述超过 2000 字节，请缩短后生成。") : wxEmptyString);
         show(count_error, over_limit);
-        show(generate, !model_tab); show(model, model_tab);
         enable(generate, eligibility.generate_design); enable(model, eligibility.generate_model);
         const auto* group = session.group() ? &*session.group() : nullptr;
-        show(view_model, model_tab && group && group->model_state == "ready"); enable(view_model, input_editable());
+        enable(view_model, input_editable());
         show(resume, false); enable(resume, false);
         show(stop, eligibility.stop); enable(stop, eligibility.stop);
         show(reconcile, host.has_pending_receipt()); enable(reconcile, !host.command_pending());
@@ -2350,11 +2360,7 @@ struct AdvancedCreationWorkspace::Impl {
             status_text = model_notice ? (current_model ? t(model_display.status_text.c_str()) :
                 t("正在处理当前3D模型任务…")) : t(host.message().c_str());
         }
-        label(status, status_text);
-        if (model_host.creation_editing_locked()) {
-            label(status, can_return && can_return() ? t("当前为只读查看，点击“返回AI创作”恢复编辑") :
-                t("当前为只读查看，工作台处理中，完成后可返回AI创作"));
-        }
+        label(status, model_host.creation_editing_locked() ? wxString{} : status_text);
         enable(fresh_button, !model_host.creation_editing_locked());
         if (history_dirty || history_view_signature() != history_signature) apply_history();
         enable(history_refresh, !host.command_pending());
