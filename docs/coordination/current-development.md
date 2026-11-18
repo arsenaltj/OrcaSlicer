@@ -1,4 +1,18 @@
-# 2026-11-14 当前：PR #73 虚拟打印机三项补修
+# 2026-11-17 移动原GLB保真安全检查SDK（独立任务）
+
+主线：task-20261117023152718-8561d6，独立worktree基于d3764bdc；承接移动AI原GLB下载后的本地检查/安全修复/复验要求，不接管PR73、平板或其他运行现场。
+
+本轮：native02安全子集已独立review/QA有限通过并封Model-only包。父移动真实host长scope流程发现NG-WINDOWS-LONGPATH-01；native03首修独立review发现合法285字符源的ordinary canonical遗漏，原失败证据保留；native04第2轮补安全模块canonical，及实际308字符root发现的SDK初始化/runner控制IO必要Windows表示适配。身份/私有guard不放宽，普通模型IO和Android算法保持；补真正runner长源/输出/root三矩阵。
+
+未结：最终host/Android受测身份、独立review/QA及父移动FGS集成；895原件保留真实拓扑需处理结果，未完成自交不宣称存在或不存在自交；iOS未验。
+
+下一步：冻结native04双平台实际构建、新真实runner三矩阵及原安全/普通ABI回归，独立review→QA（含新不可变包）后才能父移动消费；旧02包保留，不部署、付费、自动推送或替换用户程序。
+
+计划变更：新增独立移动native支持流；通用补洞/非流形重建不在无UV映射证明时猜测修复。未恢复旧性能持续目标。
+
+---
+
+# 2026-11-14 此前：PR #73 虚拟打印机三项补修
 
 主线：MAINLINE-BUGFIX-001／task/mainline-bugfix／PR #73，起始3f74760939；fetch确认团队主线仍为f57d0b8b57，沿原PR追加，不实际合入。
 

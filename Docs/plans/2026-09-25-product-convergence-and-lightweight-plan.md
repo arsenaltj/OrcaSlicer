@@ -1,3 +1,10 @@
+# MOBILE-GLB-SAFETY-001：移动原GLB保真本地检查/受限修复（2026-11-17）
+
+- 目标与范围：task-20261117023152718-8561d6独立worktree/同名分支、session-native-glb-dev-20261117唯一writer；父移动任务负责FGS/私有存储/身份和调度。本流为既有Model SDK C ABI增加原GLB结构/几何/拓扑/CGAL自交/编码外观保真检查，以及可证安全的孤立双面片索引修复与独立候选复验。不得将云轻量简模、无纹理OBJ、weldExact或未运行自交当成完整模型成功。
+- 状态：native02经三问题首修后独立review/QA有限通过，Model-only增量包已封存，旧Slicing来源保持。父移动host整链暴露NG-WINDOWS-LONGPATH-01，native03仅Windows安全文件I/O支持长私有路径，独立runner cold重放作为必测；新源码/包仍须独立review/QA，不以Python宿主、旧02或短路径成功代替长scope验收。
+- 判定：glb-safety-v1五项required checks必须performed+passed且无其他failed才verified；否则needs_attention/unsupported。原件hash保持，图像编码/UV/材质不变，安全阈值沿桌面0.002采样偏差和0.02面积变化，不能保证的拓扑修复不发布。895为真实本机样本，只记录hash/诊断，不提交用户模型；检查失败未跑自交不能猜其自交状态。
+- 证据与下一步：D:/Codex/artifacts/task-20261117023152718-8561d6/evidence保存契约、定向原生结果和最终受测manifest；最终检视后验收和移动联合验证仍待完成。无生产/付费/设备/自动提交推送合并部署授权扩张；原PR73及既有未验任务保留。
+
 # MAINLINE-BUGFIX-001：PR #73 虚拟打印机三项补修（2026-11-14）
 
 - 授权／边界：承接用户“进行三项修复回归”及前轮提交远端授权，沿 task/mainline-bugfix／PR #73；开始HEAD为3f74760939d85ad9d0e66463fadb526bd750689e，已fetch的团队主线仍为f57d0b8b57517195211169843c5c583963e15f08。mainline-pr73-fix-20261114唯一writer，前像、完整差异及SHA已保护。仅修改虚拟设备Python、测试和对应维护文档；用户已安装实例PID6140及配置保持，不恢复性能目标，不实际合入、打包、部署、生成或操作用户窗口。

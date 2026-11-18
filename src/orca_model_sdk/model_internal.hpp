@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <chrono>
 #include <cstring>
 #include <cstdlib>
 #include <filesystem>
@@ -79,6 +80,7 @@ struct Context
     F::path root;
     std::mutex mutex;
     std::atomic<bool> cancel{false};
+    std::chrono::steady_clock::time_point safety_deadline{};
     Document doc, candidate;
     uint64_t candidate_base = 0;
     uint64_t generation = 0, candidate_generation = 0, candidate_geometry = 0;
@@ -120,6 +122,11 @@ J orca_model_select_region(const Document&, const J&, std::atomic<bool>&);
 void expected(Context&, const J&);
 J commit(Context&, Document);
 J execute(Context&, const J&);
+J glb_safety(Context&, const J&);
+#ifdef ORCA_MODEL_HAS_GLB_CGAL
+J glb_strict_predicates(Context&, const std::vector<V>&, const std::vector<T>&);
+J glb_removed_deviation(Context&, const std::vector<V>&, const std::vector<T>&, const std::set<size_t>&);
+#endif
 J open_document(Context&, const J&);
 J manufacturing_bridge(Context&, const J&);
 } // namespace orca_model_detail
