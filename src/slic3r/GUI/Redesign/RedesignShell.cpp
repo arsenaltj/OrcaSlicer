@@ -1624,7 +1624,6 @@ void RedesignShell::disconnect_model_generation_host()
         restore_smart_model_history();
         m_model_generation_host->set_workbench_presented(false);
         m_model_generation_host->set_workbench_listener({});
-        m_model_generation_host->set_workbench_results_handler({});
         m_model_generation_host->set_workbench_return_to_design_handler({});
         m_model_generation_host->set_workbench_import_handler({});
         m_model_generation_host->unmount_workbench();
@@ -3531,27 +3530,6 @@ void RedesignShell::clear_design_image()
     m_design_image_state = ImageState::Empty;
 }
 
-wxPanel* RedesignShell::create_placeholder_page(const wxString& title, const wxString& body)
-{
-    auto* page = new wxPanel(m_content_host, wxID_ANY);
-    page->SetBackgroundColour(background_colour());
-    auto* sizer = new wxBoxSizer(wxVERTICAL);
-    page->SetSizer(sizer);
-    sizer->AddStretchSpacer(1);
-    auto* heading = new wxStaticText(page, wxID_ANY, title, wxDefaultPosition, wxDefaultSize, wxALIGN_CENTER);
-    style_text(heading, primary_text_colour(), 24, true);
-    sizer->Add(heading, 0, wxALIGN_CENTER | wxBOTTOM, FromDIP(18));
-    auto* description = new wxStaticText(page, wxID_ANY, body, wxDefaultPosition,
-                                         wxSize(FromDIP(460), -1), wxALIGN_CENTER);
-    description->Wrap(FromDIP(460));
-    style_text(description, secondary_text_colour(), 11);
-    sizer->Add(description, 0, wxALIGN_CENTER);
-    sizer->AddStretchSpacer(1);
-    m_content_host->GetSizer()->Add(page, 1, wxEXPAND);
-    page->Hide();
-    return page;
-}
-
 bool RedesignShell::navigate_to(Page page)
 {
     return navigate_to_impl(page, false);
@@ -3610,6 +3588,7 @@ void RedesignShell::restore_active_page_focus()
 bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
 {
     if (m_presentation_stopping) return false;
+    if (m_preview_transition && page != Page::Model) cancel_preview_presentation();
     if (m_page_coordinator.advanced() && m_advanced_workspace && !m_advanced_workspace->navigation_allowed()) return false;
     const bool keeps_presented_workbench = page == Page::Model &&
         m_page_coordinator.page() == Page::Model && m_page_coordinator.view() == ModelView::Workbench;

@@ -32,8 +32,6 @@
 #include "PortraitNativePartitionCache.hpp"
 #include "NativeWorkbenchCheckpoint.hpp"
 #include "PrinterFilamentRestoreSnapshot.hpp"
-#include "PortraitResidualProposal.hpp"
-#include "PortraitResidualRequest.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include <unordered_set>
 #include <functional>
@@ -887,8 +885,7 @@ public:
                 if (!native_partition_reference.is_object() ||
                     native_partition_reference.at("schema") !=
                         "orca.native-workbench-partition-reference/v2" ||
-                    native_partition_reference.at("algorithm").get<uint32_t>() !=
-                        NativePortrait::algorithm_version ||
+                    !NativePortrait::supported_partition_algorithm(native_partition_reference.at("algorithm").get<uint32_t>()) ||
                     native_partition_reference.at("coordinate_units") != "mm" ||
                     native_partition_reference.at("carrier_sha256") != current_hash ||
                     native_partition_reference.at("geometry_id") != prepared.geometry_id ||
@@ -900,8 +897,9 @@ public:
                         native_partition_reference.at("source_bounds_mm"), source_bounds_mm) ||
                     !NativePortrait::decode_native_workbench_bounds(
                         native_partition_reference.at("carrier_bounds_mm"), carrier_bounds_mm) ||
-                    !NativePortrait::native_workbench_bounds_compatible(
-                        source_bounds_mm, carrier_bounds_mm, block_error) ||
+                    (!native_partition_reference.value("native_repair_compatible", false) &&
+                     !NativePortrait::native_workbench_bounds_compatible(
+                        source_bounds_mm, carrier_bounds_mm, block_error)) ||
                     !NativePortrait::native_workbench_bounds_compatible(
                         carrier_bounds_mm,
                         NativePortrait::native_workbench_bounds(its), block_error))
@@ -929,6 +927,9 @@ public:
 
                 if (!NativePortrait::same_native_triangle_corners(its, exact_native_mesh.its, canceled))
                     throw std::runtime_error("Native cached topology differs from the ordered carrier corners.");
+                if (native_partition_reference.contains("native_acceptance") &&
+                    !native_repair_receipt_matches(native_partition_reference.at("native_acceptance"), exact_native_mesh.its))
+                    throw std::runtime_error("原生修复缓存与实际修复输出身份不匹配。");
                 auto partition = NativePortrait::restore_native_workbench_partition(
                     exact_native_mesh.its, identity, block_error);
                 if (!partition.valid())
@@ -1615,6 +1616,7 @@ private:
         if (m_navigator) m_navigator->reset();
         if (!preserve_frame) m_resize_frame_valid = false;
         m_gpu_upload_pending = m_gpu_upload_failed = false;
+        m_installation_frame_completion.cancel();
         ++m_after_preview_sequence;
         m_after_preview_frame = {};
         cancel_surface_selection();
@@ -1679,7 +1681,6 @@ private:
         m_workbench_grid_geometry.clear();
         m_comparison_divider.reset();
         m_semantic_model.reset();
-        m_residual_preview_model.reset();
         m_partition_model.reset();
         m_beauty_pick = {};
         m_selection_model.reset();
@@ -2068,179 +2069,6 @@ public:
         colors.erase(std::remove_if(colors.begin(),colors.end(),[&](const auto& item){return explicit_roots.count(item.face_id)!=0;}),colors.end());
         return colors;
     }
-    // Build a conservative local residual request from the verified portrait
-    // surface. The request contains no provider endpoint or
-    // credential and excludes every currently locked face.
-    nlohmann::json portrait_residual_request() const {
-        if(cell_editing() || (m_portrait_shapes && m_portrait_shapes->surface_partition))
-            throw std::invalid_argument("residual_cleanup_paused_for_contour_candidate");
-        if (!m_portrait_shapes || !m_portrait_shapes->compatible(m_geometry_id,m_triangle_count) ||
-            !m_color_trial || m_color_trial->semantic_palette().empty() ||
-            m_portrait_shapes->runtime_fingerprint!=portrait_shape_runtime_fingerprint())
-            throw std::invalid_argument("verified_local_portrait_evidence_unavailable");
-        const auto editor=m_leaf_editing ? m_leaf_editing->canonical_editor : m_region_editor;
-        if(!editor || !editor->ready()) throw std::invalid_argument("verified_parent_topology_unavailable");
-        const auto& locks=m_portrait_shapes->locks;
-        PortraitShapeCache::verified_source(boost::filesystem::path(Slic3r::data_dir())/"cache",locks.source_sha256);
-        nlohmann::json request = {
-            {"schema", "orca.portrait-residual-request/v1"},
-            {"source_sha256", locks.source_sha256}, {"geometry_id", m_geometry_id},
-            {"face_count", m_triangle_count}, {"evidence_sha256", locks.evidence_sha256},
-            {"shape_lock_sha256", PortraitShapeCache::digest(locks.encode().dump())},
-            {"runtime_sha256", locks.runtime_sha256}, {"policy_sha256", locks.policy_sha256},
-            {"candidate_sha256",AI::model_artifact_sha256(m_model_path)},
-            {"palette",m_color_trial->semantic_palette()},
-            {"appearance_sha256",PortraitShapeCache::digest(semantic_result_metadata().dump())},
-            {"manual_sha256",PortraitShapeCache::digest(face_color_metadata().dump())},
-            {"leaf_revision",m_leaf_edit_revision},
-            {"remaining_triangle_budget", 15}, {"frozen_faces", nlohmann::json::array()},
-            {"units", nlohmann::json::array()}
-        };
-        std::set<size_t> frozen;
-        if (m_portrait_shapes) for (const auto& lock : m_portrait_shapes->locks.locks)
-            frozen.insert(lock.locked_faces.begin(), lock.locked_faces.end());
-        for (const auto face : frozen) request["frozen_faces"].push_back(face);
-        std::set<size_t> blocked=frozen;
-        blocked.insert(m_portrait_shapes->reserved_faces.begin(),m_portrait_shapes->reserved_faces.end());
-        for(const auto& color:m_face_color_overrides) blocked.insert(color.first);
-        for(const auto& color:m_manual_leaf_colors) blocked.insert(color.first.source_face_id);
-        for(const auto& color:import_subface_color_overrides()) blocked.insert(color.face_id);
-        for(size_t f=0;f<m_protected_faces.size();++f) if(m_protected_faces[f])
-            blocked.insert(m_leaf_editing ? m_leaf_editing->source_face(f) : f);
-        request["units"]=PortraitResidual::parent_units(*m_portrait_shapes,m_color_trial->semantic_palette(),
-            m_color_trial->semantic_portrait_card(),import_face_color_overrides(),blocked,editor->face_adjacency());
-        request["audit"]={{"total_faces",m_triangle_count},{"blocked_faces",blocked.size()},
-            {"verified_parent_samples",m_portrait_shapes->parent_samples.size()}};
-        return request;
-    }
-    // Apply only a user-approved, identity-matched local proposal.  This is
-    // deliberately separate from proposal generation so a stale or malformed
-    // result can never mutate the current preview.
-    bool apply_portrait_residual_proposal(const PortraitResidual::Document& document,
-                                          size_t& applied, size_t& skipped, std::string& error) {
-        applied = skipped = 0;
-        error.clear();
-        try {
-            const auto request=portrait_residual_request();
-            document.bind_to_request(request,PortraitShapeCache::digest(request.dump()));
-            const auto expected=PortraitResidual::Document::decode_identity(request);
-            if (document.status != "READY" && document.status != "PROTECTED_R9") {
-                error = "residual_proposal_not_ready"; return false;
-            }
-            if (!m_region_evidence || !m_region_evidence->compatible(m_geometry_id, m_triangle_count, m_region_runtime_identity)) {
-                error = "residual_region_evidence_unavailable"; return false;
-            }
-            if (m_portrait_shapes && !m_portrait_shapes->locks.compatible(
-                    m_geometry_id, expected.source_sha256, m_triangle_count,
-                    expected.evidence_sha256, expected.runtime_sha256, expected.policy_sha256)) {
-                error = "residual_shape_lock_drift"; return false;
-            }
-
-            std::set<size_t> locked_faces;
-            std::set<AI::BeautyLeafKey> locked_leaves;
-            if (m_portrait_shapes) for (const auto& lock : m_portrait_shapes->locks.locks) {
-                locked_faces.insert(lock.locked_faces.begin(), lock.locked_faces.end());
-                locked_leaves.insert(lock.locked_leaves.begin(), lock.locked_leaves.end());
-            }
-            const auto key_from = [](const std::array<size_t, 3>& value) {
-                return AI::BeautyLeafKey{value[0], uint8_t(value[1]), uint8_t(value[2])};
-            };
-            auto root_colors = std::map<size_t, std::array<float, 3>>(
-                m_face_color_overrides.begin(), m_face_color_overrides.end());
-            auto leaf_colors = m_manual_leaf_colors;
-            size_t changed_roots = 0, changed_leaves = 0;
-            for (const auto& item : document.proposals) {
-                if (!item.actionable_with_target() || item.status != "PROPOSED") { ++skipped; continue; }
-                if (item.subject_id.empty() || item.parent_region.empty() ||
-                    std::find(m_portrait_shapes->subjects.begin(),m_portrait_shapes->subjects.end(),item.subject_id)==m_portrait_shapes->subjects.end() ||
-                    (item.kind == "skin" && item.parent_region != "skin") ||
-                    (item.kind == "hair" && item.parent_region != "hair") ||
-                    (item.kind == "cloth" && item.parent_region != "cloth") || item.view_support < 2) {
-                    ++skipped; continue;
-                }
-                const std::array<float, 3> target = *item.target_rgb;
-                bool valid = true;
-                for (const auto face : item.source_faces) {
-                    if (item.leaf_keys.empty() && (locked_faces.count(face) ||
-                        (m_portrait_shapes && m_portrait_shapes->locks.leaf_domain &&
-                         std::any_of(locked_leaves.begin(), locked_leaves.end(), [face](const auto& key) {
-                             return key.source_face_id == face;
-                         })))) { valid = false; break; }
-                }
-                if (!valid) { ++skipped; continue; }
-                if (!item.leaf_keys.empty()) {
-                    if (!m_leaf_editing && !ensure_region_editor()) { ++skipped; continue; }
-                    if (!m_leaf_editing) { ++skipped; continue; }
-                    for (const auto& encoded : item.leaf_keys) {
-                        const auto key = key_from(encoded);
-                        if (locked_leaves.count(key) || !std::binary_search(item.source_faces.begin(), item.source_faces.end(), key.source_face_id)) {
-                            valid = false; break;
-                        }
-                        try { (void)m_leaf_editing->index(key); }
-                        catch (...) { valid = false; break; }
-                    }
-                }
-                if (!valid) { ++skipped; continue; }
-                size_t local_changes = 0;
-                if (item.leaf_keys.empty()) {
-                    for (const auto face : item.source_faces) if (!root_colors.count(face)) {
-                        root_colors[face] = target; ++local_changes;
-                    }
-                    if (local_changes) changed_roots += local_changes;
-                } else {
-                    for (const auto& encoded : item.leaf_keys) {
-                        const auto key = key_from(encoded);
-                        // An existing explicit root color is a higher-priority
-                        // manual edit and therefore blocks AI leaf paint.
-                        if (root_colors.count(key.source_face_id) || leaf_colors.count(key)) continue;
-                        leaf_colors[key] = {target[0], target[1], target[2]}; ++local_changes;
-                    }
-                    if (local_changes) changed_leaves += local_changes;
-                }
-                if (!local_changes) ++skipped;
-            }
-            if (!changed_roots && !changed_leaves) { error = "no_safe_residual_proposals"; return false; }
-            m_face_color_overrides.clear();
-            m_face_color_overrides.reserve(root_colors.size());
-            for (const auto& item : root_colors) m_face_color_overrides.emplace_back(item.first, item.second);
-            if (changed_leaves) {
-                m_manual_leaf_colors = std::move(leaf_colors);
-                m_pending_leaf_edits = nullptr;
-                ++m_leaf_edit_revision;
-                if (m_leaf_editing && m_portrait_shapes)
-                    (void)AI::BeautyLeafEdits::capture(*m_leaf_editing, m_portrait_shapes->locks,
-                        m_manual_leaf_colors, selection_state());
-            }
-            if (m_leaf_editing && (changed_leaves || changed_roots)) refresh_leaf_colors();
-            else if (m_semantic_ready) rebuild_semantic_preview_from_cached_result();
-            else if (m_canvas) m_canvas->Refresh(false);
-            applied = changed_roots + changed_leaves;
-            return true;
-        } catch (const std::exception& exception) {
-            error = exception.what();
-            return false;
-        } catch (...) {
-            error = "residual_apply_failed";
-            return false;
-        }
-    }
-    bool preview_portrait_residual(const PortraitResidual::Document& document,std::string& error) {
-        try {
-            const auto request=portrait_residual_request();
-            document.bind_to_request(request,PortraitShapeCache::digest(request.dump()));
-            auto roots=import_face_color_overrides();
-            auto children=import_subface_color_overrides();
-            std::map<size_t,std::array<float,3>> colors(roots.begin(),roots.end());
-            for(const auto& item:document.proposals) if(item.actionable_with_target() && item.leaf_keys.empty())
-                for(const auto face:item.source_faces) colors[face]=*item.target_rgb;
-            roots.assign(colors.begin(),colors.end());
-            auto geometry=build_semantic_colored_geometry(*m_semantic_source,roots,children);
-            if(!m_context || !m_canvas->SetCurrent(*m_context)) throw std::runtime_error("preview_context_unavailable");
-            auto model=std::make_unique<GLModel>();model->init_from(std::move(geometry));
-            m_residual_preview_model=std::move(model);m_canvas->Refresh(false);error.clear();return true;
-        } catch(const std::exception& e) {error=e.what();return false;}
-    }
-    void clear_portrait_residual_preview() { m_residual_preview_model.reset();if(m_canvas)m_canvas->Refresh(false); }
     bool portrait_shapes_unlocked() const { return m_shapes_unlocked; }
     void restore_portrait_shapes(std::shared_ptr<const PortraitShapeDetails> details, bool unlocked = false) {
         const bool changed_domain = m_portrait_shapes && details &&
@@ -3359,6 +3187,21 @@ public:
         m_after_preview_frame = std::move(fn);
         m_canvas->Refresh(false);
     }
+    void after_model_installation_frame(std::function<void(bool)> callback) {
+        m_installation_frame_completion.request(m_model_sha256, std::move(callback));
+        if (m_installation_frame_completion.pending()) m_canvas->Refresh(false);
+    }
+    void cancel_model_installation_frame() { m_installation_frame_completion.cancel(); }
+    bool model_installation_frame_pending() const { return m_installation_frame_completion.pending(); }
+    void fail_model_installation_frame() {
+        if (!m_installation_frame_completion.pending()) return;
+        const auto token = m_installation_frame_completion.token();
+        const auto identity = m_model_sha256;
+        wxWeakRef<ModelPreview3D> weak(this);
+        CallAfter([weak, token, identity] {
+            if (weak) weak->m_installation_frame_completion.complete(token, identity, false);
+        });
+    }
     // Independent of the portrait workflow's one-shot frame callback.
     Presentation::PresentationStamp presentation_stamp(std::uint64_t page, std::uint64_t layout) const {
         const auto frame = m_preview_frame.begin(m_canvas->GetClientSize(), m_canvas->GetDPIScaleFactor());
@@ -3378,6 +3221,10 @@ public:
         ++m_diagnostic_frame_sequence;
         m_diagnostic_frame_observer = std::move(observer);
         if (m_diagnostic_frame_observer) m_canvas->Refresh(false);
+    }
+    void observe_overlay_frame(std::function<void()> observer) {
+        m_overlay_frame_completion.request(std::move(observer));
+        if (m_overlay_frame_completion.pending()) m_canvas->Refresh(false);
     }
     bool workbench_input_locked() const { return m_workbench_input_locked; }
     void cancel_view_navigation() {
@@ -4475,7 +4322,9 @@ private:
         if (!m_canvas->IsShownOnScreen() || drawable_size.x <= 0 || drawable_size.y <= 0)
             return;
         if (m_gpu_upload_pending) {
-            if (!m_context || !m_context->IsOK() || !m_canvas->SetCurrent(*m_context) || !wxGetApp().init_opengl()) return;
+            if (!m_context || !m_context->IsOK() || !m_canvas->SetCurrent(*m_context) || !wxGetApp().init_opengl()) {
+                fail_model_installation_frame(); return;
+            }
             const auto step = [this] {
                 for (auto& model : m_models) if (model && !model->upload_step()) return false;
                 for (auto* model : {m_current_appearance_model.get(), m_direct_original_model.get(), m_manual_color_model.get()})
@@ -4489,6 +4338,7 @@ private:
                 try { m_gpu_upload_pending = !step(); }
                 catch (const std::exception& error) {
                     m_gpu_upload_failed = true;
+                    fail_model_installation_frame();
                     BOOST_LOG_TRIVIAL(error) << "[UiUpload] failed: " << error.what();
                 }
             }
@@ -4512,10 +4362,14 @@ private:
                                     << ", shown=" << m_canvas->IsShownOnScreen();
             m_paint_diagnostics_logged = true;
         }
-        if (!current_ok)
+        if (!current_ok) {
+            fail_model_installation_frame();
             return;
-        if (!wxGetApp().init_opengl())
+        }
+        if (!wxGetApp().init_opengl()) {
+            fail_model_installation_frame();
             return;
+        }
 
         int width = drawable_size.x;
         int height = drawable_size.y;
@@ -4559,6 +4413,7 @@ private:
                 if (!initialize_model_color_shader(*m_color_shader)) {
                     BOOST_LOG_TRIVIAL(error) << "AI model vertex-color shader could not be initialized";
                     m_color_shader.reset();
+                    fail_model_installation_frame();
                 }
             }
             GLShaderProgram* shader = m_color_shader.get();
@@ -4698,9 +4553,6 @@ private:
                         } else if (m_direct_original_model) {
                             m_direct_original_model->render(shader);
                         }
-                    } else if (m_residual_preview_model) {
-                        shader->set_uniform("preview_color_count", 0);
-                        m_residual_preview_model->render(shader);
                     } else if (m_semantic_ready && m_semantic_model && !gray_view &&
                                (honor_suite_v2_appearance_active() || (m_leaf_editing &&
                                 (!m_manual_leaf_colors.empty() || !m_manual_cell_colors.empty())))) {
@@ -4718,7 +4570,7 @@ private:
                     if (!source_view && m_wireframe_view)
                         glsafe(::glPolygonMode(GL_FRONT_AND_BACK, polygon_mode[0]));
 
-                    if (!source_view && m_manual_color_model && !m_residual_preview_model && !gray_view) {
+                    if (!source_view && m_manual_color_model && !gray_view) {
                         shader->set_uniform("preview_texture_enabled", false);
                         GLint depth_func = GL_LESS;
                         glsafe(::glGetIntegerv(GL_DEPTH_FUNC, &depth_func));
@@ -4866,9 +4718,44 @@ private:
         // GL children are opaque, so clearing that surface alone masks a zoomed
         // model with a rectangle even when the navigator itself is transparent.
         if (m_navigator) m_navigator->set_preview_frame(m_resize_frame_valid ? m_resize_frame_texture : 0, m_canvas);
-        const bool navigation_submitted = !m_navigator || m_navigator->present_surface(
-            m_beauty_view && m_has_model, !m_workbench_input_locked && !m_drawing_selection && !m_dragging);
+        bool navigation_submitted;
+        try {
+            navigation_submitted = !m_navigator || m_navigator->present_surface(
+                m_beauty_view && m_has_model, !m_workbench_input_locked && !m_drawing_selection && !m_dragging);
+        } catch (const std::exception& failure) {
+            BOOST_LOG_TRIVIAL(error) << "Model installation navigation frame failed: " << failure.what();
+            if (m_context) m_canvas->SetCurrent(*m_context);
+            fail_model_installation_frame();
+            return;
+        }
         if (m_context) m_canvas->SetCurrent(*m_context);
+        if (!frame_submitted || (m_navigator && m_navigator->presentation_failed()))
+            fail_model_installation_frame();
+        if (frame_submitted && navigation_submitted && m_has_model && m_color_shader &&
+            !m_gpu_upload_pending && !m_gpu_upload_failed && m_installation_frame_completion.pending()) {
+            const auto token = m_installation_frame_completion.token();
+            const auto identity = m_model_sha256;
+            wxWeakRef<ModelPreview3D> weak(this);
+            CallAfter([weak, frame, token, identity] {
+                if (!weak) return;
+                const bool current = weak->m_preview_frame.current(frame, weak->m_canvas->GetClientSize(),
+                    weak->m_canvas->GetDPIScaleFactor(), weak->m_canvas->IsShownOnScreen());
+                const bool uploaded = weak->m_has_model && weak->m_color_shader &&
+                    !weak->m_gpu_upload_pending && !weak->m_gpu_upload_failed;
+                weak->m_installation_frame_completion.complete(token, weak->m_model_sha256, true,
+                    current && identity == weak->m_model_sha256, uploaded);
+                if (!current && weak->m_canvas->IsShownOnScreen()) weak->m_canvas->Refresh(false);
+            });
+        }
+        if (frame_submitted && navigation_submitted && m_overlay_frame_completion.pending()) {
+            const auto token = m_overlay_frame_completion.token();
+            wxWeakRef<ModelPreview3D> weak(this);
+            CallAfter([weak, frame, token] {
+                if (!weak || !weak->m_preview_frame.current(frame, weak->m_canvas->GetClientSize(),
+                    weak->m_canvas->GetDPIScaleFactor(), weak->m_canvas->IsShownOnScreen())) return;
+                weak->m_overlay_frame_completion.complete(token);
+            });
+        }
         if (frame_submitted && navigation_submitted && m_has_model && m_color_shader && m_presentation_frame_observer) {
             const auto sequence = m_presentation_observer_sequence;
             const auto identity = m_model_sha256;
@@ -4936,6 +4823,8 @@ private:
     bool m_resize_frame_valid {false};
     std::uint64_t m_after_preview_sequence {0};
     std::function<void()> m_presentation_frame_observer;
+    ModelPreviewOverlayCompletion m_overlay_frame_completion;
+    ModelPreviewInstallationCompletion m_installation_frame_completion;
     std::uint64_t m_presentation_observer_sequence {0};
     std::function<void()> m_diagnostic_frame_observer;
     std::uint64_t m_diagnostic_frame_sequence {0};
@@ -4998,7 +4887,6 @@ private:
     std::string m_secondary_region_evidence_error;
     size_t m_semantic_selection_protected {0}, m_semantic_selection_low_confidence {0};
     std::unique_ptr<GLModel> m_semantic_model;
-    std::unique_ptr<GLModel> m_residual_preview_model;
     std::shared_ptr<const PortraitColorBlocks::Result> m_color_blocks;
     std::shared_ptr<const NativePortrait::NativePortraitPartition> m_native_portrait_partition;
     nlohmann::json m_native_workbench_partition_reference;

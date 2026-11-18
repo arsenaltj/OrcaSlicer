@@ -17,8 +17,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
-if ($DistributionChannel -eq 'commercial' -and $KnownIntegrationReport) {
-    throw 'Commercial packages require a fresh release integration check; KnownIntegrationReport is internal-only.'
+if ($PSBoundParameters.ContainsKey('KnownIntegrationReport')) {
+    throw 'KnownIntegrationReport is retired. All packages require a complete zero-error integration check.'
 }
 
 function Resolve-OperatorPath {
@@ -105,10 +105,6 @@ if (-not [string]::IsNullOrWhiteSpace($SourceManifest)) {
     $SourceManifest = Resolve-OperatorPath -Path $SourceManifest -Label 'Source manifest' -RequireLeaf
     $sourceArguments += @('--manifest', $SourceManifest)
 }
-if ($KnownIntegrationReport) {
-    if (-not $SourceManifest) { throw 'A source snapshot manifest is required with KnownIntegrationReport.' }
-    $KnownIntegrationReport = Resolve-OperatorPath -Path $KnownIntegrationReport -Label 'Known integration report' -RequireLeaf
-}
 function Get-InternalSourceIdentity {
     $sourceJson = & $sourcePython @sourceArguments
     if ($LASTEXITCODE -ne 0) { throw 'Internal source snapshot verification failed.' }
@@ -185,9 +181,6 @@ if ($SevenZipExecutable) {
 if ($SourceManifest) {
     $packageArguments.SourceManifest = $SourceManifest
 }
-if ($KnownIntegrationReport) {
-    $packageArguments.KnownIntegrationReport = $KnownIntegrationReport
-}
 & (Join-Path $repoRoot 'scripts\package_internal_fast.ps1') @packageArguments
 if ($LASTEXITCODE -ne 0) {
     throw "Internal packaging failed with exit code $LASTEXITCODE."
@@ -202,15 +195,11 @@ if (-not $SkipTargetedTests) {
     $pythonPath = $pythonMatch.Groups[1].Value.Trim()
     # The packager already ran the full check and recorded its exact decision.
     $integrationValidation = Get-Content -LiteralPath (Join-Path $outputPath 'integration-check.json') -Raw | ConvertFrom-Json
-    if (-not $integrationValidation.decision.package_allowed -or
+    if (-not $integrationValidation.decision.package_allowed -or -not $integrationValidation.decision.integration_passed -or
         $integrationValidation.source_identity_sha256 -ne $sourceIdentity.source_identity_sha256) {
         throw 'AI integration verification is missing or belongs to another snapshot.'
     }
     $guardrailArguments = @('-I', (Join-Path $repoRoot 'tools\ai\test_integration_guardrails.py'))
-    if (-not $integrationValidation.decision.integration_passed) {
-        $guardrailArguments += @('--internal-package-report', (Join-Path $outputPath 'integration-check.json'),
-            '--source-manifest', $SourceManifest)
-    }
     & $pythonPath @guardrailArguments
     if ($LASTEXITCODE -ne 0) { throw 'Python integration guardrail tests failed.' }
 

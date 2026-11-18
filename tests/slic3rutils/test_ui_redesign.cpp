@@ -134,6 +134,153 @@ TEST_CASE("Repeated parameter visibility preserves layout while hiding and resto
     CHECK(rows.GetMinSize().y == 30);
 }
 
+TEST_CASE("Unchanged slicing notifications neither assign parameter rows nor request a page repaint",
+          "[UiRedesign][SlicingRefresh]")
+{
+    using namespace Slic3r::AI::SmartSlicing;
+    SmartSlicingWorkbenchState state;
+    state.session.workspace_revision = {1, 2, 3, "plate-a"};
+    state.has_selected_goal = true;
+    SliceParameterGroup ready{{"0.20 mm", "0.28 mm", "0.12 mm"}, {{"time", "60 min", "native"}, {"material", "20 g", "native"}}};
+    SlicingParameterPresentation display;
+    REQUIRE(display.submit(state, ready, true, false));
+    int assignments = 0, page_paints = 0;
+    for (int tick = 0; tick < 60; ++tick) {
+        if (display.submit(state, ready, true, false)) ++assignments;
+        if (slicing_surface_paint_required(Presentation::Dirty::Content | Presentation::Dirty::Overlay)) ++page_paints;
+    }
+    CHECK(assignments == 0);
+    CHECK(page_paints == 0);
+    CHECK(slicing_surface_paint_required(Presentation::Dirty::Layout));
+    CHECK(slicing_surface_paint_required(Presentation::Dirty::Barrier));
+    CHECK(slicing_surface_paint_required(Presentation::Dirty::Paint));
+}
+
+TEST_CASE("A matching completed parameter group survives analysis and is replaced atomically by complete metrics",
+          "[UiRedesign][SlicingRefresh]")
+{
+    SmartSlicingWorkbenchState state;
+    state.session.workspace_revision = {1, 2, 3, "plate-a"};
+    state.has_selected_goal = true;
+    SlicingParameterPresentation display;
+    const SliceParameterGroup old{{"0.20", "0.28", "0.12"}, {{"layer", "0.20", {}}, {"time", "60", {}}}};
+    auto pending = old;
+    pending.layers[0] = "0.22";
+    pending.details[0].value = "0.22";
+    pending.details[1].value = "waiting";
+    REQUIRE(display.submit(state, old, true, false));
+    state.analyzing = true; // Running controls still consume this live Session value.
+    CHECK_FALSE(display.submit(state, pending, false, false));
+    CHECK(display.group() == old);
+    state.analyzing = false;
+    pending.details[1].value = "55";
+    CHECK(display.submit(state, pending, true, false));
+    CHECK(display.group() == pending);
+    auto official = pending;
+    official.details[1] = {"time", "57", "official"};
+    CHECK(display.submit(state, official, true, false));
+    CHECK(display.group() == official);
+}
+
+TEST_CASE("Project source and goal changes cannot reuse another parameter group's display",
+          "[UiRedesign][SlicingRefresh]")
+{
+    using namespace Slic3r::AI::SmartSlicing;
+    SmartSlicingWorkbenchState state;
+    state.session.workspace_revision = {1, 2, 3, "plate-a"};
+    state.has_selected_goal = true;
+    const SliceParameterGroup ready{{"0.20", "0.28", "0.12"}, {{"time", "60", {}}}};
+    const SliceParameterGroup pending{{"waiting", "waiting", "waiting"}, {{"time", "waiting", {}}}};
+    for (int identity = 0; identity < 3; ++identity) {
+        SlicingParameterPresentation display;
+        auto current = state;
+        REQUIRE(display.submit(current, ready, true, false));
+        if (identity == 0) ++current.session.workspace_revision.model_revision;
+        if (identity == 1) current.recommendation_source = SlicingRecommendationSource::Cloud;
+        if (identity == 2) current.selected_goal = RecommendationGoal::Quality;
+        CHECK(display.submit(current, pending, false, false));
+        CHECK(display.group() == pending);
+    }
+}
+
+TEST_CASE("Canceled failed and unavailable parameter results terminate retained presentation immediately",
+          "[UiRedesign][SlicingRefresh]")
+{
+    using namespace Slic3r::AI::SmartSlicing;
+    SmartSlicingWorkbenchState state;
+    state.session.workspace_revision = {1, 2, 3, "plate-a"};
+    state.has_selected_goal = true;
+    const SliceParameterGroup ready{{"0.20", "0.28", "0.12"}, {{"time", "60", {}}}};
+    const SliceParameterGroup failed{{"unavailable", {}, {}}, {{"time", "unavailable", {}}}};
+    for (int failure = 0; failure < 4; ++failure) {
+        SlicingParameterPresentation display;
+        auto current = state;
+        REQUIRE(display.submit(current, ready, true, false));
+        if (failure == 0) current.session.state = RecommendationSessionState::Canceled;
+        if (failure == 1) current.cloud_recommendation.status = CloudRecommendationStatus::Failed;
+        if (failure == 2) current.diagnostic = "estimate_unavailable";
+        if (failure == 3) {
+            current.exact_estimate.status = ExactEstimateStatus::Failed;
+            current.exact_estimate.revision = current.session.workspace_revision;
+            current.exact_estimate.goal = current.selected_goal;
+        }
+        REQUIRE(slicing_parameter_group_terminal(current, current.selected_goal));
+        CHECK(display.submit(current, failed, false, true));
+        CHECK(display.group() == failed);
+    }
+}
+
+TEST_CASE("Only estimates bound to the displayed recommendation complete its parameter group",
+          "[UiRedesign][SlicingRefresh]")
+{
+    using namespace Slic3r::AI::SmartSlicing;
+    SmartSlicingWorkbenchState state;
+    state.session.workspace_revision = {1, 2, 3, "plate-a"};
+    state.has_selected_goal = true;
+    state.lightweight_analysis.emplace();
+    state.lightweight_analysis->completed = true;
+    auto& plan = state.lightweight_analysis->recommendations[0];
+    plan.mode = SliceMode::BALANCED;
+    plan.layer_height_mm = 0.20;
+    state.exact_estimate.status = ExactEstimateStatus::Ready;
+    state.exact_estimate.revision = state.session.workspace_revision;
+    state.exact_estimate.goal = state.selected_goal;
+    state.exact_estimate.parameters = plan;
+    CHECK(slicing_parameter_group_complete(state, state.selected_goal, false));
+    state.exact_estimate.status = ExactEstimateStatus::Running;
+    CHECK_FALSE(slicing_parameter_group_complete(state, state.selected_goal, false));
+    state.exact_estimate.status = ExactEstimateStatus::Ready;
+    ++state.exact_estimate.revision.config_revision;
+    CHECK_FALSE(slicing_parameter_group_complete(state, state.selected_goal, false));
+    state.exact_estimate.revision = state.session.workspace_revision;
+    state.exact_estimate.parameters->layer_height_mm = 0.12;
+    CHECK_FALSE(slicing_parameter_group_complete(state, state.selected_goal, false));
+    state.exact_estimate.parameters = plan;
+    state.exact_estimate.goal = RecommendationGoal::Speed;
+    CHECK_FALSE(slicing_parameter_group_complete(state, state.selected_goal, false));
+    CHECK(slicing_parameter_group_complete(state, state.selected_goal, true));
+}
+
+TEST_CASE("Cancel and unavailable estimates immediately replace calculating text with the existing fallback",
+          "[UiRedesign][SlicingRefresh]")
+{
+    using namespace Slic3r::AI::SmartSlicing;
+    SmartSlicingWorkbenchState state;
+    state.session.workspace_revision = {1, 2, 3, "plate-a"};
+    SliceRecommendation parameters;
+    state.session.state = RecommendationSessionState::Canceled;
+    const auto estimate = slicing_display_estimate(state, state.selected_goal, parameters);
+    CHECK(estimate.status == ExactEstimateStatus::Failed);
+    const auto rows = exact_estimate_detail_rows(parameters, estimate);
+    REQUIRE(rows.size() > 2);
+    CHECK(rows[0].value != _L("计算中..."));
+    // A ready result from a different revision or goal never replaces this fallback.
+    state.exact_estimate.status = ExactEstimateStatus::Ready;
+    state.exact_estimate.parameters = parameters;
+    state.exact_estimate.revision = {1, 9, 3, "old-plate"};
+    CHECK(slicing_display_estimate(state, state.selected_goal, parameters).status == ExactEstimateStatus::Failed);
+}
+
 TEST_CASE("Image history yields space to the center in a narrow window", "[UiRedesign][ImageWorkspaceLayout]")
 {
     ImageWorkspaceLayout layout;
@@ -2051,4 +2198,30 @@ TEST_CASE("Printer devices expose offline available connecting connected and rea
           PrinterDeviceConnectionState::Connected);
     CHECK(printer_device_connection_state(true, false, true, true) ==
           PrinterDeviceConnectionState::Ready);
+}
+
+TEST_CASE("Slice preview covers only the visible GL viewport", "[UiRedesign][PreviewPresentation]")
+{
+    const wxRect owner(100,70,1200,800), canvas(320,110,720,660);
+    const auto bounds = preview_cover_bounds(canvas, owner);
+    REQUIRE(bounds); CHECK(*bounds == canvas);
+    const auto clipped = preview_cover_bounds(wxRect(-100,100,500,500), owner);
+    REQUIRE(clipped); CHECK(*clipped == wxRect(100,100,300,500));
+    CHECK_FALSE(preview_cover_bounds(wxRect(), owner));
+    CHECK_FALSE(preview_cover_bounds(wxRect(-800,0,100,100), owner));
+}
+
+TEST_CASE("Minimized slice preview pauses its deadline and demands a new restored frame", "[UiRedesign][PreviewPresentation]")
+{
+    using Status = RedesignPreviewFrameGate::Status;
+    RedesignPreviewFrameGate gate; const auto start = RedesignPreviewFrameGate::Clock::now();
+    gate.begin(1,7,start);
+    CHECK(gate.observe(1,7,true,true,800,600,4,start) == Status::Waiting);
+    gate.set_paused(true,start + std::chrono::seconds(1));
+    CHECK(gate.observe(1,7,true,true,800,600,5,start + std::chrono::minutes(4)) == Status::Waiting);
+    gate.set_paused(false,start + std::chrono::minutes(4));
+    CHECK(gate.observe(1,7,true,true,800,600,5,start + std::chrono::minutes(4)) == Status::Waiting);
+    CHECK(gate.observe(1,7,true,true,800,600,6,start + std::chrono::minutes(4)) == Status::Ready);
+    gate.finish();
+    CHECK(gate.observe(1,7,true,true,800,600,7,start + std::chrono::minutes(4)) == Status::Stale);
 }

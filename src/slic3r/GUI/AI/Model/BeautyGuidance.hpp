@@ -1,4 +1,5 @@
 #pragma once
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "LocalSemanticEvidence.hpp"
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -37,7 +38,7 @@ struct BeautyGuidance {
                                  const std::string& source_hash,size_t count) {
         auto require=[](bool ok){if(!ok)throw std::runtime_error("Invalid saved recognition aids.");};
         const bool v2=json.value("schema","")=="orca.beauty-guidance/v2";
-        require(count>0 && count<=2000000 && json.is_object() && json.size()==(v2?7:6) &&
+        require(count>0 && count<=MeshResourceBudget::maximum_faces && json.is_object() && json.size()==(v2?7:6) &&
             (v2 || json.at("schema")=="orca.beauty-guidance/v1") && json.at("geometry")==geometry && json.at("source")==source_hash);
         auto integer=[&](const nlohmann::json& v,size_t max) {
             require(v.is_number_integer() && (!v.is_number_unsigned()?v.get<int64_t>()>=0:true));

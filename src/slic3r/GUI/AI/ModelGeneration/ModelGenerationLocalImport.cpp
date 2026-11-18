@@ -130,6 +130,7 @@ void ModelGenerationPanel::import_local_model(const boost::filesystem::path& sou
                 }
                 return;
             }
+            weak->queue_library_commit(id, ModelLibraryCommitReason::Imported);
             // Keep the local token through parsing: neither phase may stop
             // a remote generation job or commit a late canceled preview.
             operation->parsing=true;

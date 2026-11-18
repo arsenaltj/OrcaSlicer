@@ -17,6 +17,8 @@ public:
     ModelLibraryPanel(wxWindow* parent, std::shared_ptr<ModelLibraryApplication> application);
     ~ModelLibraryPanel() override;
     void refresh_assets();
+    void apply_removals();
+    void apply_commit();
     void shutdown();
 private:
     void rebuild();
@@ -28,6 +30,9 @@ private:
     std::unique_ptr<ModelLibraryLoader> m_loader;
     wxTimer m_timer;
     uint64_t m_request_revision {0};
+    uint64_t m_scan_removal_revision {0};
+    uint64_t m_scan_commit_revision {0};
+    bool m_scan_running {false}, m_rescan_pending {false};
     wxListBox* m_list;
     wxTextCtrl* m_search;
     wxChoice* m_category;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "BeautyLeafDomain.hpp"
 #include "SurfaceTriangulation.hpp"
 #include "libslic3r/ClipperUtils.hpp"
@@ -600,7 +601,7 @@ inline Json build(const Json& request) {
     for (const auto* field : {"geometry_id", "source_sha256", "evidence_sha256", "runtime_sha256", "policy_sha256", "baseline_sha256", "boundary_policy_sha256"})
         require(hash(identity.at(field).get<std::string>()), "Invalid surface identity.");
     const size_t count = identity.at("face_count").get<size_t>();
-    require(count > 0 && count <= 2000000, "Invalid source face count.");
+    require(count > 0 && count <= MeshResourceBudget::maximum_faces, "Invalid source face count.");
     const size_t budget = request.at("triangle_budget").get<size_t>();
     size_t added = request.at("existing_added_triangles").get<size_t>();
     require(budget <= std::min(size_t(20000), count*2/100) && added <= budget, "Invalid partition budget.");

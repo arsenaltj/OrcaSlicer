@@ -85,12 +85,12 @@ void LibraryWorkspaceService::visible(bool value) {
     if(m_visible==value) return;
     if(!value) emit({{"type","inactive"}});
     m_visible=value;
-    if(!value) {invalidate();++m_scan;m_loader->cancel();return;}
+    if(!value) {invalidate();++m_scan;m_loader->cancel();m_local_scan_running=m_local_rescan_pending=false;return;}
     m_personal=Json::object();m_resume_detail=!m_detail_key.empty();m_account->start();publish_account();refresh_local();
     if(m_ready) list();
 }
 void LibraryWorkspaceService::ready(bool value) {
-    if(!value) {m_ready=false;invalidate();++m_scan;m_loader->cancel();return;}
+    if(!value) {m_ready=false;invalidate();++m_scan;m_loader->cancel();m_local_scan_running=m_local_rescan_pending=false;return;}
     if(m_ready) return;
     m_ready=true;publish_account();if(m_visible) {refresh_local();list();}
 }
@@ -100,13 +100,18 @@ bool LibraryWorkspaceService::require_login() {
 }
 void LibraryWorkspaceService::refresh_local() {
     if(!m_local) return;
+    if(m_local_scan_running) {m_local_rescan_pending=true;return;}
     auto request=std::make_shared<ModelLibraryLoader::Request>();request->revision=++m_scan;
     request->root=m_local->root();request->scan=true;
-    if(!m_loader->submit(std::move(request)))
+    m_scan_removal_revision=m_local->removal_revision();
+    m_scan_commit_revision=m_local->commit_revision();
+    m_local_scan_running=m_loader->submit(std::move(request));
+    if(!m_local_scan_running)
         emit({{"type","error"},{"message","本地模型读取队列暂不可用，已有模型已保留，请重试。"}});
 }
 void LibraryWorkspaceService::local_cards() {
     if(!m_local) return;
+    m_seen_local_revision=m_local->revision();
     Json cards=Json::array();
     for(const auto& e:m_local->entries()) {
         cards.push_back({{"key",e.job_id},{"title",utf8(e.title)},{"details",utf8(e.details)},
@@ -204,7 +209,7 @@ void LibraryWorkspaceService::local_action(const Json& command) {
        (action=="colors" || action=="retexture")) return;
     if(!m_local->execute(copy.design_only && action=="open"?ModelLibraryCommand::OpenImage:found->second,token))
         emit({{"type","error"},{"message","当前模型正在处理或此操作暂不可用"}});
-    refresh_local();
+    if(found->second==ModelLibraryCommand::Remove) local_cards();else refresh_local();
 }
 void LibraryWorkspaceService::command(const Json& message) {
     if(!m_visible || !message.is_object()) return;
@@ -254,18 +259,28 @@ void LibraryWorkspaceService::poll() {
     try {
     const auto lease=m_account->session().access();
     if(m_generation!=m_account->session().generation() || m_subject!=(lease?lease->subject:"")) account_changed();
+    if(m_local && m_seen_removal_revision!=m_local->removal_revision()) {
+        m_seen_removal_revision=m_local->removal_revision();++m_scan;m_loader->cancel();
+        m_local_scan_running=m_local_rescan_pending=false;
+        if(m_visible && !m_local->removal_active()) refresh_local();
+    }
+    if(m_visible && m_local && m_seen_local_revision!=m_local->revision()) {local_cards();refresh_local();}
     std::optional<ModelLibraryLoader::Snapshot> snapshot;std::vector<ModelLibraryLoader::Thumbnail> thumbnails;
     m_loader->take(snapshot,thumbnails,4);
+    if(snapshot && snapshot->revision==m_scan) m_local_scan_running=false;
     if(m_visible && snapshot && snapshot->revision==m_scan && snapshot->failed)
         emit({{"type","error"},{"message","本地模型读取失败，已有模型与原文件已保留，请刷新重试。"}});
     if(m_visible && snapshot && snapshot->revision==m_scan && !snapshot->failed && m_local) {
-        m_local->replace(std::move(snapshot->entries));local_cards();
+        m_local->replace(std::move(snapshot->entries),m_scan_removal_revision,m_scan_commit_revision);local_cards();
         auto request=std::make_shared<ModelLibraryLoader::Request>();request->revision=m_scan;request->root=m_local->root();
-        request->entries=m_local->entries();request->edge=420;m_loader->submit(std::move(request));
+        request->entries=m_local->entries();request->edge=420;
+        m_thumbnail_local_revision=m_local->revision();m_loader->submit(std::move(request));
     }
-    for(const auto& thumbnail:thumbnails) if(m_visible && thumbnail.revision==m_scan && m_local && thumbnail.index<m_local->entries().size()) {
+    for(const auto& thumbnail:thumbnails) if(m_visible && thumbnail.revision==m_scan && m_local &&
+        m_thumbnail_local_revision==m_local->revision() && thumbnail.index<m_local->entries().size()) {
         emit({{"type","image"},{"key",m_local->entries()[thumbnail.index].job_id},{"data",thumbnail_data(thumbnail)}});
     }
+    if(m_visible && !m_local_scan_running && m_local_rescan_pending) {m_local_rescan_pending=false;refresh_local();}
     if(m_downloading) {const auto bytes=m_worker.bytes();emit({{"type","loading"},{"active",true},
         {"stage",bytes.first?"正在下载并校验模型…":"正在验证下载资格…"},{"done",bytes.first},{"total",bytes.second},{"cancelable",true}});}
     for(auto& result:m_worker.take()) {

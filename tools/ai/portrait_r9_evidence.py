@@ -2,6 +2,8 @@
 import argparse
 import importlib.metadata
 import json
+import os
+import sys
 from pathlib import Path
 import shutil
 
@@ -9,11 +11,19 @@ import numpy as np
 
 from beauty_leaf_domain import digest
 import local_body_regions as body
-from local_semantic_worker import restrict_network
 from portrait_r5_baseline import sha
 from portrait_r5_visual_review import basis, publish
 from portrait_r6_repair import load_render, verify
 from portrait_r7_review import camera_identity, render
+
+
+def restrict_network():
+    """Keep this offline evidence tool from starting Python network requests."""
+    os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_TELEMETRY="1")
+    def reject(event, args):
+        if event in ("socket.connect", "socket.getaddrinfo", "socket.bind", "socket.sendto"):
+            raise RuntimeError("network_attempt_rejected")
+    sys.addaudithook(reject)
 
 
 def camera_family(camera):

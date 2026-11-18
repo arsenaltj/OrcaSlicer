@@ -1,27 +1,214 @@
 #pragma once
 #include "libslic3r/Point.hpp"
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "TriMesh.hpp"
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/Surface_mesh.h>
 #include <CGAL/Polygon_mesh_processing/repair.h>
+#include <CGAL/Polygon_mesh_processing/self_intersections.h>
 #include <CGAL/Surface_mesh/Surface_mesh.h>
 #include <chrono>
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cmath>
+#include <functional>
 #include <limits>
+#include <memory>
 #include <cstdio>
 #include <map>
 #include <queue>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <tbb/blocked_range.h>
+#include <tbb/parallel_for.h>
+#include <tbb/task_arena.h>
 
 namespace Slic3r { namespace tex2color {
 namespace cgalutils {
 
 using Kernel = CGAL::Exact_predicates_inexact_constructions_kernel;
 using CGALMesh = CGAL::Surface_mesh<Kernel::Point_3>;
+
+struct FloatMoveValidation {
+    const char* reason = "valid";
+    std::size_t face = std::numeric_limits<std::size_t>::max();
+    std::size_t other_face = std::numeric_limits<std::size_t>::max();
+    bool original_pair_intersects = false;
+};
+
+// Traverse immutable node bounds only. The visitor tests the final triangles
+// with the same exact predicate as the full CGAL self-intersection check;
+// intersecting each old triangle with a query cuboid first is redundant.
+template<class Tree, class Visitor>
+struct MovedFaceTraversal {
+    Visitor& visitor;
+    bool go_further() const { return true; }
+    void intersection(const CGAL::Bbox_3&, const typename Tree::Primitive& primitive) {
+        visitor(primitive.id());
+    }
+    bool do_intersect(const CGAL::Bbox_3& query, const CGAL::AABB_node<typename Tree::AABB_traits>& node) const {
+        return CGAL::do_overlap(query, node.bbox());
+    }
+};
+
+// The immutable tree already used by projection bounds every unchanged face.
+// Only faces incident to an actually moved vertex can gain an intersection.
+// Expand the final query by the largest movement on each axis, so the old
+// bounds also contain candidates which moved into that query. Validate float
+// export coordinates, without rebuilding or checking the entire mesh again.
+template<class Tree>
+bool validate_float_vertex_moves(CGALMesh& mesh, const CGALMesh& original,
+    const Tree& original_tree, const std::vector<CGALMesh::Vertex_index>& vertices,
+    const std::function<bool()>& canceled = {}, FloatMoveValidation* diagnostic = nullptr,
+    tbb::task_arena* query_arena = nullptr)
+{
+    if (diagnostic) *diagnostic = {};
+    const auto reject = [&](const char* reason) {
+        if (diagnostic) diagnostic->reason = reason;
+        return false;
+    };
+    if (canceled && canceled()) return reject("canceled");
+    std::array<double, 3> movement {};
+    std::vector<std::uint8_t> visited(mesh.num_faces(), 0);
+    std::vector<CGALMesh::Face_index> changed_faces;
+    for (auto vertex : vertices) {
+        if (canceled && canceled()) return reject("canceled");
+        if (!mesh.is_valid(vertex) || mesh.is_removed(vertex) ||
+            !original.is_valid(vertex) || original.is_removed(vertex)) return reject("invalid-vertex");
+        const auto& point = mesh.point(vertex);
+        const std::array<float, 3> rounded {float(point.x()), float(point.y()), float(point.z())};
+        if (!std::all_of(rounded.begin(), rounded.end(), [](float v) { return std::isfinite(v); })) return reject("non-finite-output");
+        mesh.point(vertex) = Kernel::Point_3(rounded[0], rounded[1], rounded[2]);
+        const auto& before = original.point(vertex);
+        const auto& after = mesh.point(vertex);
+        if (before == after) continue;
+        for (int axis = 0; axis < 3; ++axis)
+            movement[axis] = std::max(movement[axis], std::nextafter(
+                std::abs(CGAL::to_double(after[axis] - before[axis])), std::numeric_limits<double>::infinity()));
+        const auto halfedge = mesh.halfedge(vertex);
+        if (halfedge == CGALMesh::null_halfedge()) return reject("missing-halfedge");
+        for (auto h : mesh.halfedges_around_target(halfedge)) {
+            const auto face = mesh.face(h);
+            if (face != CGALMesh::null_face() && !visited[face]) {
+                visited[face] = 1; changed_faces.push_back(face);
+            }
+        }
+    }
+    const Kernel kernel;
+    const auto triangle = [&](CGALMesh::Face_index face) {
+        const auto h = mesh.halfedge(face);
+        return kernel.construct_triangle_3_object()(mesh.point(mesh.target(h)),
+            mesh.point(mesh.target(mesh.next(h))), mesh.point(mesh.source(h)));
+    };
+    // Dense local checks revisit each neighbor's box many times. Compute the
+    // exact final boxes once, without changing query or predicate order. A
+    // sparse edit keeps the former path, and the optional array never exceeds
+    // one transient block. Larger meshes retain the bounded traversal below.
+    std::unique_ptr<CGAL::Bbox_3[]> final_bounds;
+    if (!changed_faces.empty() && changed_faces.size() >= mesh.num_faces() / 8 &&
+        mesh.num_faces() <= MeshResourceBudget::block_bytes / sizeof(CGAL::Bbox_3)) {
+        final_bounds = std::make_unique<CGAL::Bbox_3[]>(mesh.num_faces());
+        for (auto face : mesh.faces()) {
+            if ((size_t(face) & 4095) == 0 && canceled && canceled()) return reject("canceled");
+            final_bounds[size_t(face)] = triangle(face).bbox();
+        }
+    }
+    const auto bounds_for = [&](CGALMesh::Face_index face) {
+        return final_bounds ? final_bounds[size_t(face)] : triangle(face).bbox();
+    };
+    for (auto face : changed_faces) {
+        if (canceled && canceled()) return reject("canceled");
+        if (triangle(face).is_degenerate()) {
+            if (diagnostic) diagnostic->face = std::size_t(face);
+            return reject("degenerate-output-face");
+        }
+    }
+    struct Rejected {};
+    // Queries read only the rounded final mesh and the already-built immutable
+    // tree. Keep failures private, then select the first in the former face
+    // order. Cancellation and diagnostics are committed by the calling thread.
+    const auto check_face = [&](CGALMesh::Face_index face, FloatMoveValidation& failure,
+                                std::size_t& queries, bool poll_cancel) {
+        try {
+            const auto bounds = bounds_for(face);
+            std::array<double, 3> low, high;
+            for (int axis = 0; axis < 3; ++axis) {
+                low[axis] = std::nextafter(bounds.min(axis) - movement[axis], -std::numeric_limits<double>::infinity());
+                high[axis] = std::nextafter(bounds.max(axis) + movement[axis], std::numeric_limits<double>::infinity());
+                if (!std::isfinite(low[axis]) || !std::isfinite(high[axis])) {
+                    failure.reason = "non-finite-query";
+                    return false;
+                }
+            }
+            const CGAL::Bbox_3 query(low[0], low[1], low[2], high[0], high[1], high[2]);
+            const auto visit = [&](auto other) {
+                if ((++queries & 4095) == 0 && poll_cancel && canceled && canceled()) {
+                    failure.reason = "canceled";
+                    throw Rejected {};
+                }
+                // A pair of changed faces needs one exact test. Unchanged
+                // faces are always tested from the changed endpoint.
+                if (face == other || (visited[other] && other < face) ||
+                    !CGAL::do_overlap(bounds, bounds_for(other))) return;
+                if (CGAL::Polygon_mesh_processing::internal::do_faces_intersect<Kernel>(
+                        face, other, mesh, mesh.points(), kernel.construct_segment_3_object(),
+                        kernel.construct_triangle_3_object(), kernel.do_intersect_3_object())) {
+                    failure.reason = "intersecting-output-faces";
+                    failure.face = std::size_t(face);
+                    failure.other_face = std::size_t(other);
+                    if (diagnostic)
+                        failure.original_pair_intersects = CGAL::Polygon_mesh_processing::internal::do_faces_intersect<Kernel>(
+                            face, other, original, original.points(), kernel.construct_segment_3_object(),
+                            kernel.construct_triangle_3_object(), kernel.do_intersect_3_object());
+                    throw Rejected {};
+                }
+            };
+            MovedFaceTraversal<Tree, decltype(visit)> traversal {visit};
+            original_tree.traversal(query, traversal);
+        } catch (const Rejected&) {
+            return false;
+        }
+        return true;
+    };
+    constexpr std::size_t batch_size = 512;
+    if (query_arena && query_arena->max_concurrency() > 1 && changed_faces.size() >= 256) {
+        std::array<FloatMoveValidation, batch_size> failures;
+        std::array<std::uint8_t, batch_size> valid;
+        for (std::size_t begin = 0; begin < changed_faces.size(); begin += batch_size) {
+            if (canceled && canceled()) return reject("canceled");
+            const auto count = std::min(batch_size, changed_faces.size() - begin);
+            query_arena->execute([&] {
+                tbb::parallel_for(tbb::blocked_range<std::size_t>(0, count, 32),
+                    [&](const tbb::blocked_range<std::size_t>& range) {
+                        for (auto index = range.begin(); index != range.end(); ++index) {
+                            failures[index] = {};
+                            std::size_t queries = 0;
+                            valid[index] = check_face(changed_faces[begin + index], failures[index], queries, false);
+                        }
+                    });
+            });
+            if (canceled && canceled()) return reject("canceled");
+            for (std::size_t index = 0; index < count; ++index)
+                if (!valid[index]) {
+                    if (diagnostic) *diagnostic = failures[index];
+                    return false;
+                }
+        }
+    } else {
+        std::size_t queries = 0;
+        for (auto face : changed_faces) {
+            if (canceled && canceled()) return reject("canceled");
+            FloatMoveValidation failure;
+            if (!check_face(face, failure, queries, true)) {
+                if (diagnostic) *diagnostic = failure;
+                return canceled && canceled() ? reject("canceled") : false;
+            }
+        }
+    }
+    return canceled && canceled() ? reject("canceled") : true;
+}
 
 template<class Tree>
 Kernel::Point_3 closest_point_with_strict_hint(const Tree& tree,

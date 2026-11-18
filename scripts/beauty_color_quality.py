@@ -196,8 +196,7 @@ def renderer_module(path=None):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module, {'source_sha256': digest(path),
-                    'accelerator_sha256': digest(path.with_name('local_semantic_raster.dll'))
-                    if path.with_name('local_semantic_raster.dll').exists() else None}
+                    'accelerator_sha256': None}
 
 
 def render_sheet(arrays, renderer, output, size=256):

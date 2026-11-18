@@ -2,6 +2,8 @@
 
 #include <nlohmann/json.hpp>
 #include "PostGenerationWorkbenchState.hpp"
+#include "NativeRepairGeometry.hpp"
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "slic3r/GUI/AI/Model/BeautyLeafDomain.hpp"
 #include "slic3r/AI/Contracts/ModelBaseBinding.hpp"
 #include <array>
@@ -20,6 +22,12 @@ inline bool workbench_topology_safe(const WorkbenchCheckResult& result)
         result.nonmanifold_edges == 0 && result.nonmanifold_vertices == 0 &&
         result.degenerate_faces == 0 && result.duplicate_faces == 0 &&
         result.inconsistent_edges == 0 && result.self_intersections_checked && result.self_intersections == 0;
+}
+
+inline bool workbench_topology_accepted(const WorkbenchCheckResult& result)
+{
+    return workbench_topology_safe(result) || (result.status == WorkbenchCheckStatus::Normal &&
+        valid_native_repair_receipt(result.native_repair_acceptance));
 }
 }
 
@@ -111,6 +119,13 @@ inline nlohmann::json encode_workbench_check_certificate(
         {"self_intersections_checked", check.self_intersections_checked},
         {"self_intersections", check.self_intersections}
     };
+    if (!check.native_repair_acceptance.is_null()) {
+        if (!valid_native_repair_receipt(check.native_repair_acceptance))
+            throw std::invalid_argument("Invalid native repair acceptance.");
+        certificate["schema"] = "orca.workbench-check-certificate/v2";
+        certificate["checker_version"] = 2;
+        certificate["native_acceptance"] = check.native_repair_acceptance;
+    }
     certificate["certificate_sha256"] = AI::beauty_leaf_digest(certificate.dump());
     return certificate;
 }
@@ -124,8 +139,11 @@ inline bool valid_workbench_check_certificate(
 {
     try {
         if (purpose == WorkbenchCheckPurpose::GeneralImport || !certificate.is_object() ||
-            certificate.at("schema") != "orca.workbench-check-certificate/v1" ||
-            certificate.at("checker_version").get<uint32_t>() != workbench_check_certificate_version ||
+            !((certificate.at("schema") == "orca.workbench-check-certificate/v1" &&
+                certificate.at("checker_version") == 1 && !certificate.contains("native_acceptance")) ||
+              (certificate.at("schema") == "orca.workbench-check-certificate/v2" &&
+                certificate.at("checker_version") == 2 &&
+                valid_native_repair_receipt(certificate.at("native_acceptance")))) ||
             certificate.at("purpose") != workbench_check_purpose_id(purpose) ||
             !valid_sha256(model_sha256) || certificate.at("model_sha256") != model_sha256 ||
             geometry_id.empty() || certificate.at("geometry_id") != geometry_id ||
@@ -145,15 +163,15 @@ inline bool valid_workbench_check_certificate(
             const auto value = certificate.at(key).get<uint64_t>();
             return value <= maximum;
         };
-        if (!bounded("faces", 2000000) || certificate.at("faces").get<uint64_t>() == 0 ||
-            !bounded("vertices", 6000000) || !bounded("boundary_edges", 6000000) ||
-            !bounded("boundary_loops", 2000000) || !bounded("nonmanifold_edges", 6000000) ||
-            !bounded("nonmanifold_vertices", 6000000) || !bounded("degenerate_faces", 2000000) ||
-            !bounded("duplicate_faces", 2000000) || !bounded("inconsistent_edges", 6000000) ||
-            !bounded("isolated_components", 2000000) || !bounded("small_faces", 2000000) ||
-            !bounded("self_intersections", 2000000) ||
+        if (!bounded("faces", MeshResourceBudget::maximum_faces) || certificate.at("faces").get<uint64_t>() == 0 ||
+            !bounded("vertices", MeshResourceBudget::maximum_vertices) || !bounded("boundary_edges", MeshResourceBudget::maximum_faces * 3) ||
+            !bounded("boundary_loops", MeshResourceBudget::maximum_faces) || !bounded("nonmanifold_edges", MeshResourceBudget::maximum_faces * 3) ||
+            !bounded("nonmanifold_vertices", MeshResourceBudget::maximum_faces * 3) || !bounded("degenerate_faces", MeshResourceBudget::maximum_faces) ||
+            !bounded("duplicate_faces", MeshResourceBudget::maximum_faces) || !bounded("inconsistent_edges", MeshResourceBudget::maximum_faces * 3) ||
+            !bounded("isolated_components", MeshResourceBudget::maximum_faces) || !bounded("small_faces", MeshResourceBudget::maximum_faces) ||
+            !bounded("self_intersections", MeshResourceBudget::maximum_faces) ||
             !certificate.at("boundary_loop_sizes").is_array() ||
-            certificate.at("boundary_loop_sizes").size() > 2000000 ||
+            certificate.at("boundary_loop_sizes").size() > MeshResourceBudget::maximum_faces ||
             !certificate.at("summary").is_string() ||
             certificate.at("summary").get<std::string>().size() > 4096) return false;
         const auto status = certificate.at("status").get<std::string>();
@@ -164,7 +182,17 @@ inline bool valid_workbench_check_certificate(
             ? partition_digest.empty() && topology_hash.empty() &&
                 !metadata.contains("native_portrait_partition")
             : valid_sha256(partition_digest) && valid_sha256(topology_hash);
-        return status == "normal" && bound_topology &&
+        const bool partition_native_accepted = certificate.contains("native_acceptance") &&
+            metadata.contains("native_portrait_topology_certificate") &&
+            native_repair_topology_allowed(metadata.at("partition_build_report").at("strict_repair"),
+                metadata.at("native_portrait_topology_certificate")) &&
+            native_repair_workbench_facts_match(certificate, metadata.at("native_portrait_topology_certificate").at("topology")) &&
+            metadata.at("native_portrait_topology_certificate").at("native_acceptance") == certificate.at("native_acceptance");
+        const bool saved_native_accepted = purpose == WorkbenchCheckPurpose::SavedModelReadOnly &&
+            certificate.contains("native_acceptance") && metadata.contains("native_repair_evidence") &&
+            valid_native_repair_evidence(metadata.at("native_repair_evidence"), certificate.at("native_acceptance")) &&
+            native_repair_workbench_facts_match(certificate, metadata.at("native_repair_evidence").at("topology"));
+        return status == "normal" && bound_topology && (partition_native_accepted || saved_native_accepted || (
             certificate.at("boundary_edges").get<uint64_t>() == 0 &&
             certificate.at("nonmanifold_edges").get<uint64_t>() == 0 &&
             certificate.at("nonmanifold_vertices").get<uint64_t>() == 0 &&
@@ -172,7 +200,7 @@ inline bool valid_workbench_check_certificate(
             certificate.at("duplicate_faces").get<uint64_t>() == 0 &&
             certificate.at("inconsistent_edges").get<uint64_t>() == 0 &&
             certificate.at("self_intersections_checked").get<bool>() &&
-            certificate.at("self_intersections").get<uint64_t>() == 0;
+            certificate.at("self_intersections").get<uint64_t>() == 0));
     } catch (const std::exception&) {
         return false;
     }
@@ -218,6 +246,12 @@ inline bool decode_workbench_check_certificate(const nlohmann::json& certificate
         decoded.small_faces = certificate.at("small_faces").get<size_t>();
         decoded.self_intersections_checked = certificate.at("self_intersections_checked").get<bool>();
         decoded.self_intersections = certificate.at("self_intersections").get<size_t>();
+        const auto schema = certificate.at("schema").get<std::string>();
+        if (schema == "orca.workbench-check-certificate/v2" && certificate.at("checker_version") == 2) {
+            decoded.native_repair_acceptance = certificate.at("native_acceptance");
+            if (!valid_native_repair_receipt(decoded.native_repair_acceptance)) return false;
+        } else if (schema != "orca.workbench-check-certificate/v1" || certificate.at("checker_version") != 1 ||
+                   certificate.contains("native_acceptance")) return false;
         decoded.candidate_status = RepairCandidateStatus::None;
         decoded.appearance_mapped = decoded.purpose == WorkbenchCheckPurpose::PortraitPostColorReadOnly;
         decoded.appearance_confidence = decoded.appearance_mapped ? 1.0 : 0.0;
@@ -252,6 +286,10 @@ inline bool valid_native_partition_bounds(const nlohmann::json& reference)
         std::array<double, 3> carrier_minimum, carrier_maximum;
         if (!decode(reference.at("source_bounds_mm"), source_minimum, source_maximum) ||
             !decode(reference.at("carrier_bounds_mm"), carrier_minimum, carrier_maximum)) return false;
+        // The caller must also validate the matching hashed topology policy.
+        // Native repair may remove a broken extremity; both frames remain mm
+        // and the actual carrier is still compared with its own exact bounds.
+        if (reference.value("native_repair_compatible", false)) return true;
         double diagonal_squared = 0.0;
         for (int axis = 0; axis < 3; ++axis) {
             const double extent = source_maximum[axis] - source_minimum[axis];
@@ -273,7 +311,7 @@ inline bool valid_native_partition_reference(const nlohmann::json& reference,
     try {
         if (!reference.is_object() ||
             reference.at("schema") != "orca.native-workbench-partition-reference/v2" ||
-            reference.at("algorithm").get<uint32_t>() != 12 ||
+            (reference.at("algorithm") != 12 && reference.at("algorithm") != 13) ||
             !valid_native_partition_bounds(reference) ||
             !valid_sha256(reference.at("partition_digest").get<std::string>()) ||
             !valid_sha256(reference.at("topology_hash").get<std::string>()) ||
@@ -289,14 +327,15 @@ inline bool valid_native_partition_reference(const nlohmann::json& reference,
             reference.at("geometry_id").get<std::string>().empty() ||
             reference.at("appearance_id").get<std::string>().empty() ||
             !reference.at("cache_reference").is_object() ||
-            reference.at("cache_reference").at("schema") !=
-                "orca.native-workbench-partition-cache-reference/v1" ||
+            (reference.at("cache_reference").at("schema") !=
+                "orca.native-workbench-partition-cache-reference/v1" && reference.at("cache_reference").at("schema") !=
+                "orca.native-workbench-partition-cache-reference/v2") ||
             reference.at("cache_reference").at("content_id") != reference.at("cache_sha256") ||
             reference.at("cache_reference").at("partition_digest") !=
                 reference.at("partition_digest") ||
             reference.at("cache_reference").at("geometry_id") != reference.at("geometry_id")) return false;
         if (reference.at("cache_reference").at("face_count").get<size_t>() == 0 ||
-            reference.at("cache_reference").at("face_count").get<size_t>() > 1000000) return false;
+            reference.at("cache_reference").at("face_count").get<size_t>() > MeshResourceBudget::maximum_faces) return false;
         return (digest.empty() || reference.at("partition_digest") == digest) &&
             (topology.empty() || reference.at("topology_hash") == topology);
     } catch (const std::exception&) {
@@ -368,7 +407,7 @@ inline bool valid_native_color_reduction(const nlohmann::json& reduction,
     try {
         if (!valid_sha256(digest) || region_count == 0 || !reduction.is_object() ||
             reduction.at("schema") != "orca.native-workbench-color-reduction/v12" ||
-            reduction.at("algorithm").get<uint32_t>() != 12 ||
+            (reduction.at("algorithm") != 12 && reduction.at("algorithm") != 13) ||
             reduction.at("partition_digest") != digest ||
             reduction.at("requested_color_count").get<size_t>() != 5 ||
             reduction.at("actual_color_count").get<size_t>() == 0 ||
@@ -439,14 +478,18 @@ inline bool valid_final_slot_binding(const nlohmann::json& binding,
 inline bool valid_post_color_check(const nlohmann::json& check,
                                    const nlohmann::json& reference) {
     try {
+        const bool native_accepted = check.value("schema", std::string{}) == "orca.portrait-post-color-check/v2" &&
+            valid_native_repair_receipt(check.at("native_acceptance")) &&
+            check.at("native_acceptance") == reference.at("native_acceptance");
         return valid_native_partition_reference(reference) && check.is_object() &&
-            check.at("schema") == "orca.portrait-post-color-check/v1" &&
+            (native_accepted || (check.at("schema") == "orca.portrait-post-color-check/v1" &&
+                !check.contains("native_acceptance"))) &&
             check.at("status") == "normal" &&
             check.at("model_sha256") == reference.at("carrier_sha256") &&
             check.at("geometry_id") == reference.at("geometry_id") &&
             check.at("partition_digest") == reference.at("partition_digest") &&
             check.at("topology_hash") == reference.at("topology_hash") &&
-            check.at("faces").get<size_t>() > 0 &&
+            check.at("faces").get<size_t>() > 0 && (native_accepted || (
             check.at("boundary_edges").get<size_t>() == 0 &&
             check.at("nonmanifold_edges").get<size_t>() == 0 &&
             check.at("nonmanifold_vertices").get<size_t>() == 0 &&
@@ -454,7 +497,7 @@ inline bool valid_post_color_check(const nlohmann::json& check,
             check.at("duplicate_faces").get<size_t>() == 0 &&
             check.at("inconsistent_edges").get<size_t>() == 0 &&
             check.at("self_intersections_checked").get<bool>() &&
-            check.at("self_intersections").get<size_t>() == 0;
+            check.at("self_intersections").get<size_t>() == 0));
     } catch (const std::exception&) {
         return false;
     }

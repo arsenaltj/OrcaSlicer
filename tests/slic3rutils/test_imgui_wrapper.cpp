@@ -484,3 +484,22 @@ TEST_CASE("an active ImGui field claims every key, whether it edits text or not"
     CHECK(f.imgui.claim_key_event(key_event(wxEVT_KEY_DOWN, key, wxMOD_CONTROL)));
     CHECK(f.imgui.claim_key_event(key_event(wxEVT_KEY_UP, key, wxMOD_CONTROL)));
 }
+
+TEST_CASE("Workbench navigation follows the GL edge when beauty reduces its viewport", "[View3DNavigator]")
+{
+    using Slic3r::GUI::workbench_navigator_bounds;
+    const wxRect host(0,0,1200,800), footer(0,700,1200,100);
+    const auto overview = workbench_navigator_bounds(wxRect(0,0,1200,700), footer, host, 128);
+    REQUIRE(overview); CHECK(overview->x == 1072); CHECK(overview->y == 672);
+    const auto beauty = workbench_navigator_bounds(wxRect(0,0,800,700), footer, host, 128);
+    REQUIRE(beauty); CHECK(beauty->x == 672); CHECK(beauty->y == overview->y);
+    CHECK(beauty->GetRight() < 800);
+    const auto narrow = workbench_navigator_bounds(wxRect(0,0,800,700), wxRect(850,700,350,100), host, 128);
+    REQUIRE(narrow); CHECK(narrow->y == 572);
+    const auto protected_tools = workbench_navigator_bounds(wxRect(0,0,800,700), footer, host, 128, {wxRect(680,710,40,40)});
+    REQUIRE(protected_tools); CHECK(protected_tools->y == 572);
+    CHECK_FALSE(workbench_navigator_bounds(wxRect(0,0,100,700), footer, host, 128));
+    CHECK_FALSE(workbench_navigator_bounds(wxRect(), footer, host, 128));
+    const auto moved = workbench_navigator_bounds(wxRect(70,20,800,700), wxRect(70,720,800,100), wxRect(70,20,1200,800), 128);
+    REQUIRE(moved); CHECK(moved->x == beauty->x + 70); CHECK(moved->y == beauty->y + 20);
+}

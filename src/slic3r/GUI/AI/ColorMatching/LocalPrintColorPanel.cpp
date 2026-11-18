@@ -21,7 +21,6 @@
 #include "slic3r/GUI/AI/Model/BeautyPrintColorHandoff.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls.hpp"
 #include "slic3r/GUI/AI/Model/LocalSemanticDraft.hpp"
-#include "slic3r/GUI/AI/ModelGeneration/LocalSemanticWorkerClient.hpp"
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_ObjectList.hpp"
@@ -484,7 +483,6 @@ struct LocalPrintColorPanel::Impl {
                 preview->reset_view();
                 artifact = item; model_name = title; target_volume = destination; source_mesh = std::move(*mesh); source_colors = std::move(*colors);
                 native_mesh = std::move(*native);
-                semantic_evidence.reset(); semantic_notice.clear();
                 target_source = expected_source; target_paint_stamp = expected_paint; target_config_stamp = expected_config;
                 input = {}; input.faces = std::move(*samples);
                 input.identity.requested_color_count = size_t(count->GetValue());
@@ -530,7 +528,7 @@ struct LocalPrintColorPanel::Impl {
                     has_result = true; restored_confirmation = true;
                     accept_error->SetValue(computed.unresolved_count() != 0);
                     display_palette(); display(); refresh();
-                } else compute(!beauty->has_value());
+                } else compute();
             });
         });
     }
@@ -657,7 +655,7 @@ struct LocalPrintColorPanel::Impl {
         }catch(const std::exception& e){busy=false;layer_busy=false;refresh();message(u8(e.what()));}
     }
 
-    void compute(bool recognize_details = false)
+    void compute()
     {
         if (busy || input.faces.empty() || stopped) return;
         Presentation::background_tasks().retire(worker);
@@ -665,7 +663,7 @@ struct LocalPrintColorPanel::Impl {
         cancel = false; busy = true; has_result = false; restored_confirmation = false;
         const auto revision = ++operation_revision;
         accept_error->SetValue(false); refresh();
-        message(recognize_details ? _L("正在检查本地细节识别并匹配颜色，可取消……") : _L("正在计算逐面色差与整体耗材分配……"));
+        message(_L("正在计算逐面色差与整体耗材分配……"));
         auto task = input; task.cancelled = [this] { return cancel.load(); };
         auto recipe_input = LocalPrintColorRecipes::from_workspace(snapshot);
         recipe_input.cancelled = task.cancelled;
@@ -673,36 +671,22 @@ struct LocalPrintColorPanel::Impl {
         // consults mutable preparation-page geometry while refining boundaries.
         auto topology = std::make_shared<const indexed_triangle_set>(native_mesh);
         const auto source = artifact.local_path;
-        const auto config_path = fs::path(data_dir()) / "local_semantic_runtime.json";
-        const auto module_directory = fs::path(resources_dir()) / "tools" / "ai";
-        const auto temporary_parent = version_directory() / "semantic_requests";
-        const auto semantic_cache = version_directory() / "semantic_cache";
         const auto expected_source = input.identity.source_sha256, expected_geometry = input.identity.geometry_id;
         wxWeakRef<LocalPrintColorPanel> weak(owner);
-        worker = std::thread([this, weak, task = std::move(task), recipe_input = std::move(recipe_input), topology, source, config_path, module_directory,
-                             temporary_parent, semantic_cache, recognize_details, revision, expected_source, expected_geometry]() mutable {
-            auto outcome = compute_color_matching({std::move(task), std::move(recipe_input), topology, source,
-                config_path, module_directory, temporary_parent, semantic_cache, recognize_details}, cancel);
+        worker = std::thread([this, weak, task = std::move(task), recipe_input = std::move(recipe_input), topology, source, revision, expected_source, expected_geometry]() mutable {
+            auto outcome = compute_color_matching({std::move(task), std::move(recipe_input), topology, source}, cancel);
             auto result = std::move(outcome.matching);
-            auto evidence = std::move(outcome.evidence);
-            const auto notice = _L(outcome.notice), cleanup_notice = _L(outcome.cleanup_notice);
-            wxGetApp().CallAfter([this, weak, result = std::move(result), evidence, notice, cleanup_notice, recognize_details, revision,
+            wxGetApp().CallAfter([this, weak, result = std::move(result), revision,
                                  expected_source, expected_geometry]() mutable {
                 if (!weak || stopped || revision != operation_revision) return;
                 Presentation::background_tasks().retire(worker); busy = false;
-                if (!result.ok() || cancel) { message((cancel || result.cancelled ? _L("已取消，准备页未修改。\n") : u8(result.error)) + cleanup_notice); refresh(); return; }
+                if (!result.ok() || cancel) { message((cancel || result.cancelled ? _L("已取消，准备页未修改。\n") : u8(result.error))); refresh(); return; }
                 if (input.identity.source_sha256 != expected_source || input.identity.geometry_id != expected_geometry) {
                     message(_L("模型在计算期间已改变，请重新打开。")); refresh(); return;
-                }
-                if (recognize_details) {
-                    semantic_evidence = evidence; semantic_notice = notice;
-                    input.identity.regions = result.result.regions;
-                    initial = input.identity;
                 }
                 if (!session.publish(revision, expected_source, expected_geometry, std::move(result))) {
                     message(_L("结果已失效，请重新匹配。")); refresh(); return;
                 }
-                if (!cleanup_notice.empty()) computed.notices.push_back("Local semantic request cleanup incomplete.");
                 display_palette(); display(); refresh();
             });
         });
@@ -758,16 +742,6 @@ struct LocalPrintColorPanel::Impl {
         if (!snapshot.material_metadata_complete) text += _L("耗材温度或类型资料不完整，请先完善工程耗材配置。\n");
         text += _L("当前使用面角颜色采样。\n");
         if (restored_confirmation) text += _L("本次未重新识别细节。\n");
-        else if (semantic_evidence) {
-            size_t active_faces = 0;
-            for (const auto& region : computed.regions)
-                if (region.id.find("auto-semantic:") == 0 && !region.user_protected && !region.locked_physical_slot)
-                    active_faces += region.faces.size();
-            text += wxString::Format(_L("本地识别可靠标注 %d 面，未知 %d 面；当前采用 %d 面。\n"),
-                int(semantic_evidence->known_faces), int(semantic_evidence->unknown_faces), int(active_faces));
-            text += _L("未知区域按原色匹配；未单独识别牙齿、瞳孔或眼白。\n");
-        }
-        if (!restored_confirmation) text += semantic_notice;
         for (const auto& notice : computed.notices) {
             if (notice.find("Local material locks reused existing physical groups") == 0)
                 text += _L("局部锁色已复用现有耗材分组；与同样锁色约束的原计算方案相比，整体和保护区域的预测色差未退步。\n");
@@ -936,8 +910,7 @@ struct LocalPrintColorPanel::Impl {
     bool& busy {session.operation().busy}; bool& stopped {session.operation().stopped};
     bool& has_result {session.draft().has_result}; bool& restored_confirmation {session.draft().restored_confirmation};
     uint64_t& operation_revision {session.operation().revision};
-    std::shared_ptr<const LocalSemanticEvidence::Evidence> semantic_evidence;
-    wxString semantic_notice, layer_notice;
+    wxString layer_notice;
     Button* layer_button {nullptr}; Button* layer_cancel_button {nullptr};
     bool& layer_busy {session.operation().layer_busy};
     AI::GeneratedModelArtifact& artifact {session.draft().artifact};

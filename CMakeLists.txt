@@ -1419,8 +1419,6 @@ if (WIN32)
                 endif()
             endforeach()
         ]])
-        include("${CMAKE_SOURCE_DIR}/tools/ai/local_semantic_runtime_files.cmake")
-        include("${CMAKE_SOURCE_DIR}/cmake/OrcaBeautyRuntime.cmake")
         include("${CMAKE_SOURCE_DIR}/tools/ai/model_runtime_files.cmake")
         set(ORCA_AI_SIDECAR_RUNTIME_FILES
             ${ORCA_MODEL_CAPABILITY_RUNTIME_FILES}
@@ -1435,7 +1433,6 @@ if (WIN32)
             "${CMAKE_SOURCE_DIR}/tools/ai/ai_diagnostics.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/color_intent.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/glb_artifact.py"
-            ${ORCA_LOCAL_SEMANTIC_RUNTIME_FILES}
             "${CMAKE_SOURCE_DIR}/tools/ai/model_input_image_quality.py" "${CMAKE_SOURCE_DIR}/tools/ai/model_job_support.py" "${CMAKE_SOURCE_DIR}/tools/ai/model_provider_gateway.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/design_generation_timing.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/image_preprocessing_policy.py"

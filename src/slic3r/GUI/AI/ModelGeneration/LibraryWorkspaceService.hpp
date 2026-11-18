@@ -57,6 +57,9 @@ private:
     std::string m_scope {"library"},m_filter {"all"},m_detail_key,m_subject,m_visitor;
     std::string m_pending_download_file,m_pending_download_key;
     std::uint64_t m_epoch {1},m_generation {0},m_scan {0};
+    std::uint64_t m_scan_removal_revision {0},m_scan_commit_revision {0},m_seen_removal_revision {0},m_seen_local_revision {0};
+    std::uint64_t m_thumbnail_local_revision {0};
+    bool m_local_scan_running {false},m_local_rescan_pending {false};
     std::shared_ptr<const std::string> m_geometry;
     std::size_t m_geometry_offset {0};
     bool m_visible {false},m_ready {false},m_project {false},m_downloading {false},m_mutating {false},m_resume_detail {false};

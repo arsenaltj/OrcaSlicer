@@ -4,6 +4,11 @@
 #include "I18N.hpp"
 #include "MeshBoolean.hpp"
 #include "TriangleMesh.hpp"
+#include "Sha256Digest.hpp"
+#include "MeshResourceBudget.hpp"
+#include <cstring>
+#include <deque>
+#include <system_error>
 
 #include <CGAL/AABB_face_graph_triangle_primitive.h>
 #include <CGAL/AABB_traits_3.h>
@@ -55,6 +60,7 @@
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
 #include <tbb/parallel_sort.h>
+#include <tbb/task_arena.h>
 
 #include <algorithm>
 #include <array>
@@ -67,6 +73,7 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <cstdlib>
 #include <numeric>
 #include <limits>
 #include <set>
@@ -720,6 +727,9 @@ bool fill_planar_region(Mesh &mesh, const std::vector<const BorderLoop *> &loops
             for (std::size_t k = 0; k < vh.size(); ++k)
                 cdt.insert_constraint(vh[k], vh[(k + 1) % vh.size()]);
         }
+    } catch (const std::bad_alloc&) { throw;
+    } catch (const std::length_error&) { throw;
+    } catch (const std::system_error&) { throw;
     } catch (const std::exception &) {
         return false;
     }
@@ -874,6 +884,9 @@ std::size_t remove_local_self_intersections(Mesh &shell)
         shell.collect_garbage();
         if (CGAL::is_valid_polygon_mesh(shell) && CGAL::is_closed(shell) && std::abs(signed_volume(shell) - volume) <= 1e-3 * std::abs(volume))
             return pairs.size();
+    } catch (const std::bad_alloc&) { throw;
+    } catch (const std::length_error&) { throw;
+    } catch (const std::system_error&) { throw;
     } catch (const std::exception &) {
     }
     shell = std::move(backup);
@@ -1236,11 +1249,129 @@ void strict_check_canceled(const std::function<bool()> &canceled)
         throw StrictCanceled {};
 }
 
+void strict_self_intersection_fact(StrictMeshTopologyReport& report, const indexed_triangle_set& mesh,
+    const std::function<bool()>& canceled, const MeshBoolean::cgal::FloatOutputValidation* validation)
+{
+    strict_check_canceled(canceled);
+    try {
+        if (validation && validation->matches(mesh)) {
+            report.self_intersects = false;
+            report.self_intersections_checked = true;
+            if (std::getenv("ORCASLICER_UI_LATENCY_TRACE"))
+                BOOST_LOG_TRIVIAL(info) << "[StrictRepair] reused_float_output_intersection_check=1";
+        } else {
+            report.self_intersects = MeshBoolean::cgal::does_self_intersect(TriangleMesh(mesh));
+            report.self_intersections_checked = true;
+        }
+    } catch (const CGAL::Failure_exception&) {
+        // An unavailable predicate is not strict success. Only the real native
+        // execution may later authorize its separate compatible semantics.
+    }
+    strict_check_canceled(canceled);
+}
+
+// Bounded storage for meshes that previously could not reach partitioning.
+// Preserve the established small-mesh inspection and traversal unchanged.
+StrictMeshTopologyReport inspect_chunked_topology(const indexed_triangle_set& mesh,
+    const std::function<bool()>& canceled, const MeshBoolean::cgal::FloatOutputValidation* validation)
+{
+    const size_t nf = mesh.indices.size(), nv = mesh.vertices.size();
+    // Edges + incidence + fixed-degree neighbors + per-vertex cursors/degrees.
+    // Native mesh/CGAL representations are accounted separately from scratch.
+    if (!MeshResourceBudget::editable(nv, nf) || nf > UINT32_MAX / 3 ||
+        uint64_t(nf) * 80 + uint64_t(nv + 1) * 16 > MeshResourceBudget::scratch_bytes)
+        throw std::length_error("大模型拓扑检查暂存资源不足，原件保留。");
+    struct Edge { uint64_t key; uint32_t face, from;
+        bool operator<(const Edge& o) const { return std::tie(key, face, from) < std::tie(o.key, o.face, o.from); }
+    };
+    std::deque<Edge> edges;
+    std::deque<std::array<uint32_t, 3>> keys;
+    std::deque<uint32_t> offsets(nv + 1, 0);
+    StrictMeshTopologyReport report;
+    for (uint32_t f = 0; f < nf; ++f) {
+        if ((f & 4095) == 0) strict_check_canceled(canceled);
+        const auto& face = mesh.indices[f];
+        std::array<uint32_t, 3> ids;
+        for (int c = 0; c < 3; ++c) {
+            if (face[c] < 0 || size_t(face[c]) >= nv || !mesh.vertices[face[c]].allFinite())
+                throw std::runtime_error("Strict mesh inspection found an invalid triangle index or vertex.");
+            ids[c] = uint32_t(face[c]); ++offsets[ids[c] + 1];
+        }
+        const Vec3d a = mesh.vertices[ids[0]].cast<double>();
+        const double area = (mesh.vertices[ids[1]].cast<double>() - a).cross(
+            mesh.vertices[ids[2]].cast<double>() - a).squaredNorm();
+        if (ids[0] == ids[1] || ids[1] == ids[2] || ids[2] == ids[0] || !std::isfinite(area) || area == 0.)
+            ++report.degenerate_faces;
+        auto key = ids; std::sort(key.begin(), key.end()); keys.push_back(key);
+        for (int c = 0; c < 3; ++c) {
+            const auto from = ids[c], to = ids[(c + 1) % 3];
+            edges.push_back({(uint64_t(std::min(from, to)) << 32) | std::max(from, to), f, from});
+        }
+    }
+    std::sort(keys.begin(), keys.end());
+    for (size_t i = 1; i < keys.size(); ++i) report.duplicate_faces += keys[i] == keys[i - 1];
+    std::deque<std::array<uint32_t, 3>>().swap(keys);
+    for (size_t v = 1; v < offsets.size(); ++v) offsets[v] += offsets[v - 1];
+    std::deque<uint32_t> incident(offsets.back()), cursor = offsets;
+    for (uint32_t f = 0; f < nf; ++f) {
+        if ((f & 4095) == 0) strict_check_canceled(canceled);
+        for (int c = 0; c < 3; ++c) incident[cursor[mesh.indices[f][c]]++] = f;
+    }
+    std::deque<uint32_t>().swap(cursor);
+    std::deque<std::array<uint32_t, 3>> neighbors(nf);
+    std::deque<uint8_t> degree(nf, 0);
+    std::deque<uint32_t> boundary(nv, 0), nonmanifold(nv, 0);
+    std::sort(edges.begin(), edges.end());
+    for (size_t first = 0; first < edges.size();) {
+        if ((first & 4095) == 0) strict_check_canceled(canceled);
+        size_t end = first + 1;
+        while (end < edges.size() && edges[end].key == edges[first].key) ++end;
+        const auto low = uint32_t(edges[first].key >> 32), high = uint32_t(edges[first].key);
+        if (end - first == 1) { ++report.open_edges; ++boundary[low]; ++boundary[high]; }
+        else if (end - first > 2) { ++report.nonmanifold_edges; ++nonmanifold[low]; ++nonmanifold[high]; }
+        else {
+            const auto a = edges[first].face, b = edges[first + 1].face;
+            report.inconsistent_edges += edges[first].from == edges[first + 1].from;
+            neighbors[a][degree[a]++] = b; neighbors[b][degree[b]++] = a;
+        }
+        first = end;
+    }
+    std::deque<Edge>().swap(edges);
+    std::deque<uint32_t> seen(nf, UINT32_MAX), stack;
+    for (uint32_t v = 0; v < nv; ++v) {
+        if ((v & 4095) == 0) strict_check_canceled(canceled);
+        const auto begin = offsets[v], end = offsets[v + 1];
+        if (begin == end) continue;
+        if (nonmanifold[v] || (boundary[v] && boundary[v] != 2)) { ++report.nonmanifold_vertices; continue; }
+        stack.assign(1, incident[begin]); seen[incident[begin]] = v;
+        size_t connected = 0;
+        while (!stack.empty()) {
+            const auto f = stack.back(); stack.pop_back(); ++connected;
+            for (uint8_t i = 0; i < degree[f]; ++i) {
+                const auto n = neighbors[f][i];
+                if (seen[n] == v) continue;
+                const auto& face = mesh.indices[n];
+                if (uint32_t(face[0]) == v || uint32_t(face[1]) == v || uint32_t(face[2]) == v) {
+                    seen[n] = v; stack.push_back(n);
+                }
+            }
+        }
+        if (connected != end - begin) ++report.nonmanifold_vertices;
+    }
+    if (report.open_edges == 0 && report.nonmanifold_edges == 0 && report.nonmanifold_vertices == 0 &&
+        report.degenerate_faces == 0 && report.duplicate_faces == 0 && report.inconsistent_edges == 0) {
+        strict_self_intersection_fact(report, mesh, canceled, validation);
+    }
+    strict_check_canceled(canceled);
+    return report;
+}
+
 StrictMeshTopologyReport inspect_strict_topology(const indexed_triangle_set &mesh,
-                                                 const std::function<bool()> &canceled)
+    const std::function<bool()> &canceled, const MeshBoolean::cgal::FloatOutputValidation* validation = nullptr)
 {
     if (mesh.vertices.empty() || mesh.indices.empty())
         throw std::runtime_error("Strict mesh inspection requires non-empty geometry.");
+    if (mesh.indices.size() > 1000000) return inspect_chunked_topology(mesh, canceled, validation);
 
     struct EdgeUse {
         std::size_t forward = 0;
@@ -1372,28 +1503,67 @@ StrictMeshTopologyReport inspect_strict_topology(const indexed_triangle_set &mes
 
     if (report.open_edges == 0 && report.nonmanifold_edges == 0 && report.nonmanifold_vertices == 0 &&
         report.degenerate_faces == 0 && report.duplicate_faces == 0 && report.inconsistent_edges == 0) {
-        strict_check_canceled(canceled);
-        report.self_intersects = MeshBoolean::cgal::does_self_intersect(TriangleMesh(mesh));
-        report.self_intersections_checked = true;
+        strict_self_intersection_fact(report, mesh, canceled, validation);
     }
     strict_check_canceled(canceled);
     return report;
 }
 
-double strict_surface_area(const indexed_triangle_set &surface, const std::function<bool()> &canceled)
+using StrictSurfaceFace = std::array<std::array<float, 3>, 3>;
+struct StrictSurfaceFaceHash {
+    std::size_t operator()(const StrictSurfaceFace &key) const
+    {
+        uint64_t hash = 14695981039346656037ULL;
+        for (const auto &point : key)
+            for (float coordinate : point) {
+                // Coordinate equality, including signed zero, still
+                // decides duplicates. Hash each float word once.
+                uint32_t bits = 0;
+                if (coordinate != 0.f) std::memcpy(&bits, &coordinate, sizeof(bits));
+                hash = (hash ^ bits) * 1099511628211ULL;
+            }
+        return std::size_t(hash ^ (hash >> 32));
+    }
+};
+using StrictSurfaceFaces = std::unordered_set<StrictSurfaceFace, StrictSurfaceFaceHash>;
+
+double strict_surface_area(const indexed_triangle_set &surface, const std::function<bool()> &canceled,
+                          std::unique_ptr<StrictSurfaceFaces>* retained_faces = nullptr)
 {
-    using FaceKey = std::array<std::array<float, 3>, 3>;
-    struct FaceHash {
-        std::size_t operator()(const FaceKey &key) const
-        {
-            std::size_t hash = 0;
-            for (const auto &point : key)
-                for (float coordinate : point)
-                    hash ^= std::hash<float>{}(coordinate) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
-            return hash;
+    using FaceKey = StrictSurfaceFace;
+    if (surface.indices.size() > 1000000) {
+        struct Entry { FaceKey key; uint32_t face;
+            bool operator<(const Entry& other) const { return std::tie(key, face) < std::tie(other.key, other.face); }
+        };
+        if (uint64_t(surface.indices.size()) > MeshResourceBudget::scratch_bytes / (sizeof(Entry) + 1))
+            throw std::length_error("大模型表面积检查暂存资源不足。");
+        std::deque<Entry> entries;
+        for (uint32_t f = 0; f < surface.indices.size(); ++f) {
+            if ((f & 4095) == 0) strict_check_canceled(canceled);
+            FaceKey key;
+            for (int c = 0; c < 3; ++c) for (int a = 0; a < 3; ++a)
+                key[c][a] = surface.vertices[surface.indices[f][c]][a];
+            std::sort(key.begin(), key.end()); entries.push_back({key, f});
         }
-    };
-    std::unordered_set<FaceKey, FaceHash> unique;
+        std::sort(entries.begin(), entries.end());
+        std::deque<uint8_t> duplicate(surface.indices.size(), 0);
+        for (size_t i = 1; i < entries.size(); ++i)
+            if (entries[i].key == entries[i-1].key) duplicate[entries[i].face] = 1;
+        std::deque<Entry>().swap(entries);
+        double area = 0.;
+        // Preserve original source-face accumulation, including duplicate
+        // removal. Chunking must not change the measured geometry policy.
+        for (size_t f = 0; f < surface.indices.size(); ++f) {
+            if ((f & 4095) == 0) strict_check_canceled(canceled);
+            if (duplicate[f]) continue;
+            const auto& face = surface.indices[f];
+            const Vec3d a = surface.vertices[face[0]].cast<double>();
+            area += (surface.vertices[face[1]].cast<double>() - a).cross(
+                surface.vertices[face[2]].cast<double>() - a).norm() * .5;
+        }
+        return area;
+    }
+    StrictSurfaceFaces unique;
     unique.reserve(surface.indices.size());
     double area = 0.;
     for (std::size_t index = 0; index < surface.indices.size(); ++index) {
@@ -1411,7 +1581,26 @@ double strict_surface_area(const indexed_triangle_set &surface, const std::funct
         area += (surface.vertices[std::size_t(face[1])].cast<double>() - a)
                     .cross(surface.vertices[std::size_t(face[2])].cast<double>() - a).norm() * .5;
     }
+    // Reuse the exact set already needed for area deduplication. Retain at
+    // most one block's conservative node/bucket allowance per surface; larger
+    // inputs preserve the former release and distance-query path.
+    constexpr auto retained_face_bytes = sizeof(FaceKey) + sizeof(void*) * 8;
+    if (retained_faces && surface.indices.size() <= MeshResourceBudget::block_bytes / retained_face_bytes)
+        *retained_faces = std::make_unique<StrictSurfaceFaces>(std::move(unique));
     return area;
+}
+
+bool strict_same_surface(const StrictSurfaceFaces* left, const StrictSurfaceFaces* right,
+                         const std::function<bool()>& canceled)
+{
+    if (!left || !right || left->size() != right->size()) return false;
+    std::size_t checked = 0;
+    for (const auto& face : *left) {
+        if ((checked++ & 4095) == 0) strict_check_canceled(canceled);
+        if (right->find(face) == right->end()) return false;
+    }
+    strict_check_canceled(canceled);
+    return true;
 }
 
 double strict_sampled_deviation(const indexed_triangle_set &from, const indexed_triangle_set &to,
@@ -1420,8 +1609,10 @@ double strict_sampled_deviation(const indexed_triangle_set &from, const indexed_
     const auto tree = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(to.vertices, to.indices);
     double maximum = 0.;
     const std::size_t stride = std::max(std::size_t(1), from.indices.size() / 8192);
-    for (std::size_t face_index = 0; face_index < from.indices.size(); face_index += stride) {
-        strict_check_canceled(canceled);
+    const std::size_t count = (from.indices.size() - 1) / stride + 1;
+    tbb::task_arena arena(std::max(1, std::min(4, tbb::this_task_arena::max_concurrency())));
+    const auto distance = [&](std::size_t sample) {
+        const auto face_index = sample * stride;
         const auto &face = from.indices[face_index];
         const Vec3d query = (from.vertices[std::size_t(face[0])].cast<double>() +
                              from.vertices[std::size_t(face[1])].cast<double>() +
@@ -1432,12 +1623,58 @@ double strict_sampled_deviation(const indexed_triangle_set &from, const indexed_
             to.vertices, to.indices, tree, query, nearest_face, nearest);
         if (!std::isfinite(squared_distance) || squared_distance < 0.)
             throw std::runtime_error("Strict mesh repair geometry deviation could not be verified.");
-        maximum = std::max(maximum, std::sqrt(squared_distance));
+        return std::sqrt(squared_distance);
+    };
+    // Queries are independent reads of the same immutable acceleration tree.
+    // Keep the exact sample positions and ordered maximum reduction. The
+    // caller alone invokes cancellation, at bounded batch boundaries.
+    std::array<double, 2048> distances;
+    for (std::size_t begin = 0; begin < count; begin += distances.size()) {
+        strict_check_canceled(canceled);
+        const auto size = std::min(distances.size(), count - begin);
+        if (size > 256) arena.execute([&] {
+            tbb::parallel_for(tbb::blocked_range<std::size_t>(0, size, 64), [&](const auto& range) {
+                for (auto i = range.begin(); i != range.end(); ++i) distances[i] = distance(begin + i);
+            });
+        });
+        else for (std::size_t i = 0; i < size; ++i) distances[i] = distance(begin + i);
+        for (std::size_t i = 0; i < size; ++i) maximum = std::max(maximum, distances[i]);
     }
+    strict_check_canceled(canceled);
     return maximum;
 }
 
 } // namespace
+
+std::string mesh_repair_geometry_id(const indexed_triangle_set& mesh)
+{
+    if (mesh.vertices.empty() || mesh.indices.empty()) return {};
+    for (const auto& vertex : mesh.vertices) if (!vertex.allFinite()) return {};
+    Sha256Digest digest;
+    constexpr char domain[] = "orca.native-repair-geometry/v1";
+    if (!digest.update(domain, sizeof(domain))) return {};
+    // Buffered hashing bounds temporary storage and avoids one provider call
+    // per coordinate. Explicit little endian float bits are portable.
+    std::array<unsigned char, 36 * 1024> buffer;
+    size_t used = 0;
+    for (const auto& face : mesh.indices) {
+        for (int corner = 0; corner < 3; ++corner) {
+            if (face[corner] < 0 || size_t(face[corner]) >= mesh.vertices.size()) return {};
+            for (int axis = 0; axis < 3; ++axis) {
+                const float value = mesh.vertices[size_t(face[corner])][axis];
+                uint32_t bits;
+                std::memcpy(&bits, &value, sizeof(bits));
+                for (int byte = 0; byte < 4; ++byte) buffer[used++] = uint8_t(bits >> (8 * byte));
+            }
+        }
+        if (used == buffer.size()) {
+            if (!digest.update(buffer.data(), used)) return {};
+            used = 0;
+        }
+    }
+    if (used && !digest.update(buffer.data(), used)) return {};
+    return digest.final_hex();
+}
 
 StrictMeshRepairResult strict_repair_mesh(
     const indexed_triangle_set &source,
@@ -1449,14 +1686,16 @@ StrictMeshRepairResult strict_repair_mesh(
     const auto total_started = StrictClock::now();
     auto finish = [&] {
         result.timings.total_ms = strict_elapsed_ms(total_started);
-        BOOST_LOG_TRIVIAL(info) << "strict_repair_mesh: success=" << result.success
-            << " input_check=" << result.timings.input_check_ms
-            << " ms first_cgal=" << result.timings.first_cgal_ms
-            << " ms enhanced=" << result.timings.enhanced_repair_ms
-            << " ms second_cgal=" << result.timings.second_cgal_ms
-            << " ms final_check=" << result.timings.final_check_ms
-            << " ms geometry=" << result.timings.geometry_validation_ms
-            << " ms total=" << result.timings.total_ms << " ms";
+        try {
+            BOOST_LOG_TRIVIAL(info) << "strict_repair_mesh: success=" << result.success
+                << " input_check=" << result.timings.input_check_ms
+                << " ms first_cgal=" << result.timings.first_cgal_ms
+                << " ms enhanced=" << result.timings.enhanced_repair_ms
+                << " ms second_cgal=" << result.timings.second_cgal_ms
+                << " ms final_check=" << result.timings.final_check_ms
+                << " ms geometry=" << result.timings.geometry_validation_ms
+                << " ms total=" << result.timings.total_ms << " ms";
+        } catch (...) { /* A logging sink cannot change repair acceptance or error handling. */ }
     };
     auto report = [&](const char *message, unsigned value) {
         if (progress)
@@ -1477,19 +1716,28 @@ StrictMeshRepairResult strict_repair_mesh(
         result.timings.input_check_ms = strict_elapsed_ms(stage_started);
 
         TriangleMesh candidate(source);
-        const double source_area = strict_surface_area(source, canceled);
+        std::unique_ptr<StrictSurfaceFaces> source_surface;
+        const double source_area = result.input_topology.safe() ? 0. : strict_surface_area(source, canceled, &source_surface);
         const double diagonal = bounding_box(source).size().cast<double>().norm();
         // Each strategy must satisfy the complete delivery contract before it
         // can stop the fallback chain. A closed but distorted CGAL result must
         // not prevent enhanced repair from trying the immutable original.
-        const auto verify = [&](bool topology_checked = false) {
+        const auto verify = [&](bool topology_checked = false, const indexed_triangle_set* native_input = nullptr,
+                                const MeshBoolean::cgal::FloatOutputValidation* validation = nullptr) {
             strict_check_canceled(canceled);
             report("Verifying repaired native portrait topology", 82);
             auto checked_at = StrictClock::now();
             if (!topology_checked)
-                result.output_topology = inspect_strict_topology(candidate.its, canceled);
+                result.output_topology = inspect_strict_topology(candidate.its, canceled, validation);
             result.timings.final_check_ms += strict_elapsed_ms(checked_at);
-            if (!result.output_topology.safe()) {
+            const bool native_repaired = native_input != nullptr;
+            bool native_acceptance = native_repaired && options.acceptance == MeshRepairAcceptance::OrcaNative;
+            // A sampled carrier is not the immutable native input. It may keep
+            // its existing strict success, but cannot authorize native-only
+            // acceptance for a different revision.
+            if (native_acceptance && !result.output_topology.safe() && options.native_source && native_input != options.native_source)
+                native_acceptance = mesh_repair_geometry_id(*native_input) == mesh_repair_geometry_id(*options.native_source);
+            if (!result.output_topology.safe() && !native_acceptance) {
                 std::ostringstream message;
                 message << "Strict mesh repair topology verification failed: open=" << result.output_topology.open_edges
                         << ", nonmanifold_edges=" << result.output_topology.nonmanifold_edges
@@ -1503,21 +1751,62 @@ StrictMeshRepairResult strict_repair_mesh(
             }
             report("Verifying repaired native portrait geometry", 92);
             checked_at = StrictClock::now();
-            const double repaired_area = strict_surface_area(candidate.its, canceled);
-            result.area_change_ratio = std::abs(repaired_area - source_area) / std::max(source_area, 1e-30);
-            result.sampled_deviation = std::max(strict_sampled_deviation(source, candidate.its, canceled),
-                                                strict_sampled_deviation(candidate.its, source, canceled));
-            result.sampled_deviation_ratio = diagonal > 0. ? result.sampled_deviation / diagonal
-                                                           : std::numeric_limits<double>::infinity();
+            const auto& reference = native_input ? *native_input : source;
+            // This call is used only for the untouched, already checked
+            // private copy. Its deviation and area change are exactly zero;
+            // two nearest-surface scans would only add rounding noise.
+            if (topology_checked && &reference == &source) {
+                result.area_change_ratio = result.sampled_deviation = result.sampled_deviation_ratio = 0.;
+            } else {
+                std::unique_ptr<StrictSurfaceFaces> reference_surface, candidate_surface;
+                const double reference_area = &reference == &source ? source_area :
+                    strict_surface_area(reference, canceled, &reference_surface);
+                const double reference_diagonal = &reference == &source ? diagonal : bounding_box(reference).size().cast<double>().norm();
+                const double repaired_area = strict_surface_area(candidate.its, canceled, &candidate_surface);
+                result.area_change_ratio = std::abs(repaired_area - reference_area) / std::max(reference_area, 1e-30);
+                // Index welding, duplicate removal and reordering can preserve
+                // every actual surface triangle. Exact coordinate-set equality
+                // proves zero geometric distance; topology still receives the
+                // independent full final check above, and area keeps its former
+                // accumulation. A hash alone never authorizes this reuse.
+                result.sampled_deviation = strict_same_surface(&reference == &source ? source_surface.get() :
+                    reference_surface.get(), candidate_surface.get(), canceled) ? 0. :
+                    std::max(strict_sampled_deviation(reference, candidate.its, canceled),
+                             strict_sampled_deviation(candidate.its, reference, canceled));
+                result.sampled_deviation_ratio = reference_diagonal > 0. ? result.sampled_deviation / reference_diagonal
+                                                               : std::numeric_limits<double>::infinity();
+            }
             result.geometry_verified = result.sampled_deviation_ratio <= options.maximum_sampled_deviation_ratio &&
                                        result.area_change_ratio <= options.maximum_area_change_ratio;
+            if (native_acceptance && result.output_topology.safe() && !result.geometry_verified &&
+                options.native_source && native_input != options.native_source)
+                native_acceptance = mesh_repair_geometry_id(*native_input) == mesh_repair_geometry_id(*options.native_source);
+            result.native_repair_compatible = (!result.geometry_verified || !result.output_topology.safe()) && native_repaired &&
+                (options.allow_native_repair_geometry_change || native_acceptance) &&
+                (options.acceptance != MeshRepairAcceptance::OrcaNative || native_acceptance) &&
+                std::isfinite(result.sampled_deviation_ratio) && result.sampled_deviation_ratio >= 0.0 &&
+                std::isfinite(result.area_change_ratio) && result.area_change_ratio >= 0.0;
             result.timings.geometry_validation_ms += strict_elapsed_ms(checked_at);
             strict_check_canceled(canceled);
-            if (options.reject_geometry_change && !result.geometry_verified) {
+            if (options.reject_geometry_change && !result.geometry_verified && !result.native_repair_compatible) {
                 std::ostringstream message;
                 message << "Strict mesh repair exceeded geometry limits: sampled deviation ratio="
                         << result.sampled_deviation_ratio << ", area change ratio=" << result.area_change_ratio << '.';
                 throw std::runtime_error(message.str());
+            }
+            // Preserve the established successful geometry-change path and
+            // its smoothing/output identity. New native acceptance is needed
+            // only for facts the strict path rejected, or an intact-source
+            // fallback that could not use that established path.
+            const bool legacy_geometry_acceptance = result.output_topology.safe() &&
+                options.allow_native_repair_geometry_change && native_input == &source;
+            if (native_acceptance && result.native_repair_compatible && !legacy_geometry_acceptance) {
+                result.native_source_geometry_id = mesh_repair_geometry_id(*native_input);
+                result.native_output_geometry_id = mesh_repair_geometry_id(candidate.its);
+                if (result.native_source_geometry_id.empty() || result.native_output_geometry_id.empty())
+                    throw std::runtime_error("Native repair produced invalid geometry identity.");
+                result.native_repair_succeeded = true;
+                result.acceptance = MeshRepairAcceptance::OrcaNative;
             }
         };
         if (result.input_topology.safe()) {
@@ -1532,16 +1821,23 @@ StrictMeshRepairResult strict_repair_mesh(
             stage_started = StrictClock::now();
             try {
                 RepairedMeshErrors errors;
+                MeshBoolean::cgal::FloatOutputValidation validation;
                 const bool ok = MeshBoolean::cgal::repair(candidate, &errors, &first_error,
-                    [&] { return canceled && canceled(); });
+                    [&] { return canceled && canceled(); }, &validation);
                 result.timings.first_cgal_ms = strict_elapsed_ms(stage_started);
                 strict_check_canceled(canceled);
                 if (!ok) throw std::runtime_error(first_error.empty() ? "CGAL repair failed." : first_error);
-                verify();
+                verify(false, nullptr, &validation);
                 result.cgal_errors = errors;
                 result.strategy = "strict-cgal";
                 accepted = true;
             } catch (const StrictCanceled&) {
+                throw;
+            } catch (const std::bad_alloc&) {
+                throw;
+            } catch (const std::length_error&) {
+                throw;
+            } catch (const std::system_error&) {
                 throw;
             } catch (const std::exception& error) {
                 strict_check_canceled(canceled);
@@ -1564,16 +1860,58 @@ StrictMeshRepairResult strict_repair_mesh(
                         });
                     result.timings.enhanced_repair_ms = strict_elapsed_ms(stage_started);
                     strict_check_canceled(canceled);
-                    if (!enhanced_ok)
+                    if (!enhanced_ok || !enhanced_error.empty())
                         throw std::runtime_error(enhanced_error.empty() ? "Enhanced repair failed." : enhanced_error);
-                    verify();
-                    result.strategy = "strict-enhanced";
+                    verify(false, &source);
+                    result.strategy = result.native_repair_compatible ? "orca-native" : "strict-enhanced";
                     accepted = true;
                 } catch (const StrictCanceled&) {
+                    throw;
+                } catch (const std::bad_alloc&) {
+                    throw;
+                } catch (const std::length_error&) {
+                    throw;
+                } catch (const std::system_error&) {
                     throw;
                 } catch (const std::exception& error) {
                     strict_check_canceled(canceled);
                     enhanced_error = error.what();
+                }
+                // Only after the original optimized path cannot accept its
+                // result, try the intact pre-sampling input once. Keep the
+                // enhanced candidate private for its existing CGAL fallback.
+                if (!accepted && options.acceptance == MeshRepairAcceptance::OrcaNative && options.native_source &&
+                    options.native_source != &source &&
+                    mesh_repair_geometry_id(source) != mesh_repair_geometry_id(*options.native_source)) {
+                    strict_check_canceled(canceled);
+                    if (mesh_repair_geometry_id(*options.native_source).empty())
+                        throw std::runtime_error("Native repair source geometry is invalid.");
+                    TriangleMesh enhanced_candidate(std::move(candidate));
+                    candidate = TriangleMesh(*options.native_source);
+                    try {
+                        MeshRepairStats stats;
+                        std::string error;
+                        const auto started = StrictClock::now();
+                        const bool ok = repair_mesh(candidate, &stats, &error, [&](int value) {
+                            strict_check_canceled(canceled);
+                            report("Repairing immutable model with Orca native repair", unsigned(40 + value / 4));
+                        });
+                        result.timings.enhanced_repair_ms += strict_elapsed_ms(started);
+                        strict_check_canceled(canceled);
+                        if (!ok || !error.empty()) throw std::runtime_error(error.empty() ? "Native repair failed." : error);
+                        verify(false, options.native_source);
+                        result.enhanced_stats = stats;
+                        result.strategy = result.native_repair_compatible ? "orca-native" : "strict-enhanced";
+                        accepted = true;
+                    } catch (const StrictCanceled&) { throw; }
+                      catch (const std::bad_alloc&) { throw; }
+                      catch (const std::length_error&) { throw; }
+                      catch (const std::system_error&) { throw; }
+                      catch (const std::exception& error) {
+                        strict_check_canceled(canceled);
+                        enhanced_error += "; immutable native repair: " + std::string(error.what());
+                        candidate = std::move(enhanced_candidate);
+                    }
                 }
                 if (!accepted && enhanced_ok) {
                     result.second_cgal_attempted = true;
@@ -1581,17 +1919,24 @@ StrictMeshRepairResult strict_repair_mesh(
                     stage_started = StrictClock::now();
                     std::string second_error;
                     RepairedMeshErrors errors;
+                    MeshBoolean::cgal::FloatOutputValidation validation;
                     const bool ok = MeshBoolean::cgal::repair(candidate, &errors, &second_error,
-                        [&] { return canceled && canceled(); });
+                        [&] { return canceled && canceled(); }, &validation);
                     result.timings.second_cgal_ms = strict_elapsed_ms(stage_started);
                     strict_check_canceled(canceled);
                     try {
                         if (!ok) throw std::runtime_error(second_error.empty() ? "CGAL recheck failed." : second_error);
-                        verify();
+                        verify(false, nullptr, &validation);
                         result.cgal_errors = errors;
                         result.strategy = "strict-enhanced-plus-cgal";
                         accepted = true;
                     } catch (const StrictCanceled&) {
+                        throw;
+                    } catch (const std::bad_alloc&) {
+                        throw;
+                    } catch (const std::length_error&) {
+                        throw;
+                    } catch (const std::system_error&) {
                         throw;
                     } catch (const std::exception& error) {
                         strict_check_canceled(canceled);
@@ -1609,6 +1954,18 @@ StrictMeshRepairResult strict_repair_mesh(
     } catch (const StrictCanceled &) {
         result.canceled = true;
         result.error = "Strict mesh repair canceled.";
+        result.repaired_mesh.clear();
+    } catch (const std::bad_alloc&) {
+        result.resource_failure = true;
+        result.error = "网格修复内存不足，未重试其他算法；原件保留。";
+        result.repaired_mesh.clear();
+    } catch (const std::length_error&) {
+        result.resource_failure = true;
+        result.error = "网格修复容量超出资源预算，未重试其他算法；原件保留。";
+        result.repaired_mesh.clear();
+    } catch (const std::system_error&) {
+        result.resource_failure = true;
+        result.error = "网格修复计算资源不可用，未重试其他算法；原件保留。";
         result.repaired_mesh.clear();
     } catch (const std::exception &error) {
         result.error = error.what();

@@ -282,9 +282,9 @@ if (Test-Path -LiteralPath (Join-Path $outputPath 'resources/tools/ai/orca_ai_in
 $cmakeSource = Get-Content -LiteralPath (Join-Path $repoRoot 'CMakeLists.txt') -Raw
 $runtimeBlock = [regex]::Match($cmakeSource, '(?s)set\(ORCA_AI_SIDECAR_RUNTIME_FILES\s+(.*?)\)\s*install\(FILES')
 $runtimeBlockText = $runtimeBlock.Groups[1].Value
-if ($runtimeBlockText.Contains('${ORCA_LOCAL_SEMANTIC_RUNTIME_FILES}')) {
-    $component = Get-Content -LiteralPath (Join-Path $repoRoot 'tools/ai/local_semantic_runtime_files.cmake') -Raw
-    $runtimeBlockText = $runtimeBlockText.Replace('${ORCA_LOCAL_SEMANTIC_RUNTIME_FILES}', $component)
+if ($runtimeBlockText.Contains('${ORCA_MODEL_CAPABILITY_RUNTIME_FILES}')) {
+    $component = Get-Content -LiteralPath (Join-Path $repoRoot 'tools/ai/model_runtime_files.cmake') -Raw
+    $runtimeBlockText = $runtimeBlockText.Replace('${ORCA_MODEL_CAPABILITY_RUNTIME_FILES}', $component)
 }
 $runtimeFiles = @([regex]::Matches($runtimeBlockText, '/tools/ai/([^"/]+\.py)"') |
     ForEach-Object { $_.Groups[1].Value })
@@ -292,16 +292,8 @@ if ($runtimeFiles.Count -lt 3 -or $runtimeFiles -notcontains 'orca_ai_installed_
     $runtimeFiles -notcontains 'orca_ai_sidecar.py' -or $runtimeFiles -notcontains 'verify_bundled_runtime.py') {
     throw 'Unable to resolve the complete Sidecar install manifest.'
 }
-$runtimeNativeFiles = @()
-$nativeSidecar = Join-Path $outputPath 'resources/tools/ai/local_semantic_raster.dll'
-if (Test-Path -LiteralPath $nativeSidecar -PathType Leaf) {
-    $runtimeNativeFiles += 'local_semantic_raster.dll'
-    $nativeBuild = Join-Path $buildPath 'Release/local_semantic_raster.dll'
-    if (-not (Test-Path -LiteralPath $nativeBuild -PathType Leaf) -or
-        (Get-FileHash -LiteralPath $nativeSidecar -Algorithm SHA256).Hash -ne
-        (Get-FileHash -LiteralPath $nativeBuild -Algorithm SHA256).Hash) {
-        throw 'Installed native Sidecar differs from the current build: local_semantic_raster.dll'
-    }
+if (Test-Path -LiteralPath (Join-Path $outputPath 'resources/tools/ai/local_semantic_raster.dll')) {
+    throw 'Retired semantic raster runtime must not be staged.'
 }
 foreach ($name in $runtimeFiles) {
     $staged = Require-File "resources/tools/ai/$name"
@@ -309,7 +301,7 @@ foreach ($name in $runtimeFiles) {
     if ((Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash -ne
         (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash) { throw "Stale Sidecar source in runtime: $name" }
 }
-$allowedAiFiles = $runtimeFiles + $runtimeNativeFiles + @('orca_ai_build_info.json', 'orca_ai_runtime_dependencies.json')
+$allowedAiFiles = $runtimeFiles + @('orca_ai_build_info.json', 'orca_ai_runtime_dependencies.json')
 foreach ($entry in Get-ChildItem -LiteralPath (Join-Path $outputPath 'resources/tools/ai') -Force) {
     if ($entry.PSIsContainer -and $entry.Name -eq '__pycache__') { continue }
     if ($entry.Name -notin $allowedAiFiles) { throw "Unexpected/stale file in Sidecar directory: $($entry.Name)" }
@@ -347,7 +339,7 @@ Invoke-Logged (Require-File 'python/python.exe') @('-I', '-B',
     (Join-Path $outputPath 'python'), '--expect-python', '3.12.13', '--expect-pillow', '12.2.0', '--expect-yoyoclaw', '--json') 'verify.log'
 
 $hashes = [ordered]@{}
-foreach ($relative in $required + @($runtimeFiles + $runtimeNativeFiles | ForEach-Object { "resources/tools/ai/$_" })) {
+foreach ($relative in $required + @($runtimeFiles | ForEach-Object { "resources/tools/ai/$_" })) {
     $hashes[$relative] = (Get-FileHash -LiteralPath (Require-File $relative) -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 $sourceDirty = -not [string]::IsNullOrWhiteSpace((& git -C $repoRoot status --porcelain --untracked-files=normal) -join "`n")

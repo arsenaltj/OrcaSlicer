@@ -1,4 +1,5 @@
 #include "AdvancedModelTaskMonitor.hpp"
+#include "slic3r/Utils/PlatformLibrary/LibraryClient.hpp"
 #include "ModelPreview3D.hpp"
 #include "slic3r/GUI/AISidecarClient.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
@@ -52,16 +53,18 @@ void AdvancedModelTaskMonitor::prepare(AI::GeneratedModelArtifact artifact,
     AIModelGenerationClient::JobStatus status, boost::filesystem::path reference,
     std::function<void(ModelLibraryEntry)> complete, AIModelGenerationClient::ErrorFn failed)
 {
+    const auto request = ModelLibraryCommit::next_request();
     const auto task = m_preparation.begin(artifact.job_id, Presentation::TaskLifetime::Session);
     auto* weak = this;
     const auto alive = std::weak_ptr<int>(m_lifetime);
-    struct Prepared { ModelLibraryEntry entry; std::string error; };
+    struct Prepared { ModelLibraryEntry entry; std::string error; std::optional<ModelLibraryCommit> event; };
     const bool accepted = Presentation::background_tasks().submit(task,
-        [artifact = std::move(artifact), status = std::move(status), reference = std::move(reference)](
+        [artifact = std::move(artifact), status = std::move(status), reference = std::move(reference), request](
                 const Presentation::TaskContext& context) {
         const auto start = std::chrono::steady_clock::now();
         std::string error;
         ModelLibraryEntry entry;
+        std::optional<ModelLibraryCommit> event;
         try {
             ModelPreview3D::PreparedModel prepared;
             if (ModelPreview3D::prepare_model(artifact.local_path, prepared, error, {}, {}, true,
@@ -107,11 +110,25 @@ void AdvancedModelTaskMonitor::prepare(AI::GeneratedModelArtifact artifact,
                 }
                 if (!context.canceled() && !ModelArtifactAcquisition::publish_library_record(status.id, std::move(record)))
                     error = "模型文件已保留，但模型记录暂时无法保存。";
+                else if (!context.canceled()) {
+                    const std::atomic<bool> reading_commit {false};
+                    auto entries = ModelLibraryRepository::read(root, reading_commit, false, status.id);
+                    if (!entries.empty()) {
+                        entry = entries.front();
+                        event = ModelLibraryCommit {entry, PlatformLibrary::file_digest(library_metadata_path(status.id))};
+                        event->request = request;
+                    }
+                }
             }
         } catch (const std::exception& e) { error = e.what(); }
-        return Prepared {std::move(entry), std::move(error)};
+        return Prepared {std::move(entry), std::move(error), std::move(event)};
     }, [weak, alive, task, complete = std::move(complete), failed](Presentation::TaskResult<Prepared> result) mutable {
-        if (alive.expired() || !weak->m_preparation.matches(task) || result.canceled) return;
+        if (alive.expired()) return;
+        if (result.value && result.value->event && weak->m_library_commit_listener) {
+            result.value->event->foreground = weak->m_preparation.matches(task) && !result.canceled;
+            weak->m_library_commit_listener(std::move(*result.value->event));
+        }
+        if (!weak->m_preparation.matches(task) || result.canceled) return;
         if (!result.value || result.error) { failed("模型本地准备未完成，已保留生成结果，请重试加载。"); return; }
         if (!result.value->error.empty() || result.value->entry.model_path.empty())
             failed(result.value->error.empty() ? "模型本地准备未完成，已保留生成结果，请重试加载。" : result.value->error);

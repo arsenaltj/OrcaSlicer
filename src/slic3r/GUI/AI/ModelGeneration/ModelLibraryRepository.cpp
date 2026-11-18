@@ -2,6 +2,7 @@
 #include "ModelHistoryRepairIndex.hpp"
 #include "ModelLibraryMetadata.hpp"
 #include "ModelLibraryObservations.hpp"
+#include "ModelLibraryDeletion.hpp"
 #include "slic3r/Utils/PlatformLibrary/LibraryClient.hpp"
 #include "ModelLibraryThumbnail.hpp"
 #include "ModelGenerationPresentation.hpp"
@@ -16,7 +17,7 @@
 namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
 std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
-    const boost::filesystem::path& root, const std::atomic<bool>& cancelled, bool include_native)
+    const boost::filesystem::path& root, const std::atomic<bool>& cancelled, bool include_native, const std::string& only_job)
 {
     // Resolve the root before dispatch; no app configuration is read here.
     // The summary reader may maintain its cache beneath the supplied root.
@@ -35,7 +36,11 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
         return path_is_inside(base, path) && is_supported_image(path) ? path : boost::filesystem::path();
     };
     thread_local ModelLibraryMetadata summaries;
-    const auto read_json = [](const boost::filesystem::path& path) {
+    const auto read_json = [&only_job](const boost::filesystem::path& path) {
+        if (!only_job.empty() && path.filename() == "orcaslicer-ai-" + only_job + ".json") {
+            boost::filesystem::ifstream input(path);
+            return ModelLibraryObservations::overlay(input ? ModelLibraryMetadata::parse(input) : nlohmann::json{}, path);
+        }
         return ModelLibraryObservations::overlay(summaries.read(path), path);
     };
     boost::system::error_code ec;
@@ -61,6 +66,7 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
         for (boost::filesystem::directory_iterator it(downloads, ec), end; !ec && it != end; it.increment(ec)) {
             if (cancelled) return {};
             const boost::filesystem::path path = it->path();
+            if (ModelLibraryDeletion::appearance_companion(path)) continue;
             boost::system::error_code entry_ec;
             if (!boost::filesystem::is_regular_file(path, entry_ec) || !AI::is_model_artifact(path))
                 continue;
@@ -106,9 +112,11 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
     for (boost::filesystem::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
         if (cancelled) return {};
         const auto job_id = it->path().filename().string();
+        if (!only_job.empty() && job_id != only_job) continue;
         if (models.count(job_id)) continue;
         const auto design = read_design_history_entry(root, job_id, false);
         if (!design) continue;
+        if (ModelLibraryDeletion::removed(root, job_id, design->preview_path, true)) continue;
         ModelLibraryEntry entry;
         entry.design_only = true;
         entry.job_id = job_id;
@@ -131,6 +139,8 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
     }
     for (const auto& [job_id, model_path] : models) {
         if (cancelled) return {};
+        if (!only_job.empty() && job_id != only_job) continue;
+        if (ModelLibraryDeletion::removed(root, job_id, model_path)) continue;
         boost::system::error_code entry_ec;
         ModelLibraryEntry entry;
         entry.job_id = job_id;
@@ -303,9 +313,11 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
         return lhs.job_id < rhs.job_id;
     });
     auto repairs = std::make_shared<ModelHistoryRepairIndex>(root);
-    for (const auto& entry : entries) {
+    // Retained removed models still participate in provenance restoration;
+    // list visibility is not the lifetime of an immutable source dependency.
+    for (const auto& [job_id, model_path] : models) {
         if (cancelled) return {};
-        if (!entry.model_path.empty()) repairs->add(entry.model_path, library_metadata_path(entry.job_id), entry.job_id);
+        repairs->add(model_path, library_metadata_path(job_id), job_id);
     }
     for (auto& entry : entries) entry.repair_index = repairs;
     return entries;

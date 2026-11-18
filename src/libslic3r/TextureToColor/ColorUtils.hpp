@@ -61,7 +61,8 @@ public:
     RegionSmoothingWorkspace(const RegionSmoothingWorkspace&) = delete;
     RegionSmoothingWorkspace& operator=(const RegionSmoothingWorkspace&) = delete;
     bool apply_topology(std::vector<std::size_t>& labels, const SmoothParameters& parameters);
-    bool finish(TriMesh& mesh, const std::vector<std::size_t>& labels, const SmoothParameters& parameters);
+    bool finish(TriMesh& mesh, const std::vector<std::size_t>& labels, const SmoothParameters& parameters,
+                bool validate_geometry = false);
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;

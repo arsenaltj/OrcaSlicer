@@ -1,6 +1,5 @@
 # Model capability and compatibility-view membership is explicit.
 set(ORCA_MODEL_WORKSPACE_SOURCES
-    GUI/AI/ModelGeneration/WorkbenchModelContext.hpp
     GUI/AI/ModelGeneration/ModelArtifactAcquisition.hpp
     GUI/AI/ModelGeneration/ModelArtifactAcquisition.cpp
     GUI/AI/ModelGeneration/AdvancedModelTaskMonitor.hpp
@@ -15,21 +14,27 @@ set(ORCA_MODEL_WORKSPACE_SOURCES
     GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.cpp
     GUI/AI/ModelGeneration/ModelGenerationUIState.cpp
     GUI/AI/ModelGeneration/NativeWorkbenchPartition.cpp
+    GUI/AI/ModelGeneration/NativeRepairGeometry.hpp
     GUI/AI/ModelGeneration/NativeWorkbenchPublication.hpp
     GUI/AI/ModelGeneration/NativeWorkbenchCheckpoint.hpp
     GUI/AI/ModelGeneration/ModelGenerationSubmissionResult.hpp
     GUI/AI/ModelGeneration/WorkbenchArtifactValidation.hpp
     GUI/AI/ModelGeneration/PortraitNativeCheckpoint.hpp
     GUI/AI/ModelGeneration/ModelOriginalSurfaceSampler.hpp
+    GUI/AI/Model/ModelSurfaceSampler.hpp
     GUI/AI/ModelGeneration/PortraitNativePartition.hpp
     GUI/AI/ModelGeneration/PortraitNativePartition.cpp
     GUI/AI/ModelGeneration/PortraitSuiteBinding.hpp
     GUI/AI/ModelGeneration/ModelHistoryRepairIndex.hpp
     GUI/AI/ModelGeneration/ModelHistoryOpen.hpp
+    GUI/AI/ModelGeneration/ModelLibraryRemovalState.hpp
+    GUI/AI/ModelGeneration/ModelGenerationLibraryRemoval.cpp
     GUI/AI/ModelGeneration/ModelHistoryPreview.hpp
     GUI/AI/ModelGeneration/ModelLibraryEntry.hpp
     GUI/AI/ModelGeneration/ModelLibraryRepository.hpp
     GUI/AI/ModelGeneration/ModelLibraryRepository.cpp
+    GUI/AI/ModelGeneration/ModelLibraryDeletion.hpp
+    GUI/AI/ModelGeneration/ModelLibraryDeletion.cpp
     GUI/AI/ModelGeneration/ModelLibraryLoader.hpp
     GUI/AI/ModelGeneration/ModelLibraryLoaderFactory.hpp
     GUI/AI/ModelGeneration/ModelLibraryLoaderFactory.cpp
@@ -50,6 +55,8 @@ set(ORCA_MODEL_WORKSPACE_SOURCES
     GUI/AI/ColorMatching/ColorMatchingFeatureHost.cpp
     GUI/ModelGenerationPanel.cpp
     GUI/AI/ModelGeneration/ModelGenerationHistoryOpen.cpp
+    GUI/AI/ModelGeneration/ModelGenerationLibraryCommit.cpp
+    GUI/AI/ModelGeneration/ModelLibraryPublication.hpp
     GUI/AI/ModelGeneration/ModelGenerationLibraryView.cpp
     GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp
     GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp

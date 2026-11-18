@@ -1275,6 +1275,11 @@ struct AdvancedCreationWorkspace::Impl {
                 if (self.model_state_changed) self.model_state_changed(state);
             });
         });
+        host.set_library_commit_listener([weak](ModelLibraryCommit event) {
+            if (!weak || weak->m_impl->closing) return;
+            event.foreground = event.foreground && weak->IsShownOnScreen();
+            weak->m_impl->model_host.publish_library_commit(std::move(event));
+        });
         host.set_model_state_listener([weak](const ModelGenerationUIState& state, bool) {
             if (!weak || weak->m_impl->closing) return;
             auto& self = *weak->m_impl;

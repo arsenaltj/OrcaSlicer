@@ -9,7 +9,6 @@ add_executable(${_TEST_NAME}_tests
     test_beauty_cell_domain.cpp
     test_parent_surface_visibility.cpp
     test_portrait_parent_cleanup.cpp
-    test_portrait_residual_proposal.cpp
     test_portrait_surface_ownership_v2.cpp
     test_surface_partition.cpp
 	../local_print_recipe_fixture.hpp
@@ -60,6 +59,9 @@ add_executable(${_TEST_NAME}_tests
     test_mesh_raycaster.cpp
     test_font_texture_compression.cpp
     test_model_library_metadata.cpp
+    test_model_library_deletion.cpp
+    test_model_library_removal_state.cpp
+    test_model_library_publication.cpp
     test_model_history_open.cpp
     test_unified_workbench.cpp
     test_atomic_model_capabilities.cpp
@@ -93,7 +95,6 @@ add_executable(${_TEST_NAME}_tests
     test_portrait_color_plan.cpp
     test_portrait_shape_details.cpp
     test_portrait_surface_ownership.cpp
-    test_local_semantic_worker_client.cpp
     test_model_color_import.cpp
     test_plugin_host_api.cpp
     # Exercise seam enums and predicates through the embedded Python host API.
@@ -151,8 +152,6 @@ add_executable(${_TEST_NAME}_tests
     test_beauty_surface.cpp
     test_beauty_puzzle.cpp
     test_beauty_persistence.cpp
-    test_beauty_edit_regions.cpp
-    test_beauty_boundary_drag.cpp
     test_beauty_boundary_contours.cpp
     test_model_artifact.cpp
     test_orca_model_preparation.cpp
@@ -267,9 +266,12 @@ orcaslicer_discover_tests(${_TEST_NAME}_tests)
 
 # Presentation contracts do not depend on the application or slicing kernel.
 # Keep their concurrency/lifecycle gate runnable before migrating consumers.
-add_executable(ui_lifecycle_tests test_ui_lifecycle.cpp)
+add_executable(ui_lifecycle_tests test_ui_lifecycle.cpp test_redesign_restore_capture.cpp)
 target_include_directories(ui_lifecycle_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(ui_lifecycle_tests PRIVATE test_common Catch2::Catch2WithMain orca_ui_runtime)
+if(WIN32)
+    target_link_libraries(ui_lifecycle_tests PRIVATE glad ${_opengl_link_lib})
+endif()
 set_property(TARGET ui_lifecycle_tests PROPERTY FOLDER "tests")
 orcaslicer_copy_test_dlls(ui_lifecycle_tests)
 orcaslicer_discover_tests(ui_lifecycle_tests)

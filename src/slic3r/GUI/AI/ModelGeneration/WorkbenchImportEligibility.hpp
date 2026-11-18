@@ -1,14 +1,14 @@
 #pragma once
 
 #include "PostGenerationWorkbenchState.hpp"
+#include "WorkbenchArtifactValidation.hpp"
 #include <optional>
 #include <utility>
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 
 namespace Slic3r::GUI {
 
-// Both the workbench and its asynchronous host must recognize the explicitly
-// confirmed risk path without treating it as a topology-safe import.
+// A legacy risk/deferred-repair flag never grants admission to the editor import.
 inline bool workbench_import_request_allowed(const PostGenerationWorkbenchState& state,
     const AI::ModelImportRequest& request)
 {
@@ -20,15 +20,9 @@ inline bool workbench_import_request_allowed(const PostGenerationWorkbenchState&
         return false;
     // v9 repairs only before clustering. A legacy request that asks to repair
     // already painted faces must be rebuilt from the original model instead.
-    if (request.native_repair_before_slice) return false;
-    if (state.deferred_native_repair || request.topology_check_sha256 != state.check.model_sha256) return false;
-    if (state.can_import_for_slicing) return true;
-    // Only a confirmed, low-severity boundary risk can use the exception path.
-    // Invalid, failed, unchecked and changed reports are never force-importable.
-    return state.can_force_import && state.force_import_acknowledged &&
-        state.check.status == WorkbenchCheckStatus::Attention &&
-        state.check.force_import_risk && request.topology_risk_confirmed &&
-        !state.check.model_sha256.empty();
+    if (request.native_repair_before_slice || request.topology_risk_confirmed) return false;
+    return state.can_import_for_slicing && !state.check.model_sha256.empty() &&
+        workbench_topology_accepted(state.check) && request.topology_check_sha256 == state.check.model_sha256;
 }
 
 // An asynchronous preparation may have published a temporarily busy view.
