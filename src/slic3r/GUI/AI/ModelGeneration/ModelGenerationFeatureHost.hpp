@@ -6,6 +6,7 @@
 #include "PostGenerationWorkbenchState.hpp"
 #include "WorkbenchImportSession.hpp"
 #include "ModelHistoryOpen.hpp"
+#include "ModelLibraryApplication.hpp"
 
 #include <functional>
 #include <memory>
@@ -73,6 +74,7 @@ public:
     bool request_restart();
     bool request_import();
     bool request_refresh_history();
+    void publish_library_commit(ModelLibraryCommit event);
     bool request_open_history(const std::string& job_id);
     bool request_open_image_history(const std::string& job_id);
     PostGenerationWorkbenchState workbench_snapshot() const;

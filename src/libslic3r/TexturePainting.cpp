@@ -376,7 +376,10 @@ bool texture_to_painting(
     tex2color::TriMesh input_mesh;
     std::vector<std::vector<Vec2f>> uv_coords;
 
-    const bool multi_tex = textured.textures.size() > 1 && !textured.material_texture_map.empty();
+    const bool multi_tex = !textured.material_texture_map.empty() &&
+        (textured.textures.size() > 1 || std::any_of(textured.material_ids.begin(), textured.material_ids.end(),
+            [&](int material) { return material >= 0 && size_t(material) < textured.material_texture_map.size() &&
+                textured.material_texture_map[size_t(material)] < 0; }));
 
     if (multi_tex) {
         if (!build_multi_texture_atlas(textured, texture, uv_coords))
@@ -440,6 +443,10 @@ bool texture_to_painting(
     algo_settings.mesh_repair_decision_required = settings.mesh_repair_decision_required;
     algo_settings.mesh_repair_callback = settings.mesh_repair_callback;
     algo_settings.strict_mesh_repair = settings.strict_mesh_repair;
+    algo_settings.allow_color_fallback = settings.allow_color_fallback;
+    algo_settings.preserve_repaired_geometry = settings.preserve_repaired_geometry;
+    algo_settings.color_fallback_reason = settings.color_fallback_reason;
+    algo_settings.color_fallback_diagnostic = settings.color_fallback_diagnostic;
 
     bool ok = tex2color::TextureToColor(
         input_mesh, uv_coords, texture,
@@ -498,6 +505,10 @@ bool face_colors_to_painting(
     algo_settings.mesh_repair_decision_required = settings.mesh_repair_decision_required;
     algo_settings.mesh_repair_callback = settings.mesh_repair_callback;
     algo_settings.strict_mesh_repair = settings.strict_mesh_repair;
+    algo_settings.allow_color_fallback = settings.allow_color_fallback;
+    algo_settings.preserve_repaired_geometry = settings.preserve_repaired_geometry;
+    algo_settings.color_fallback_reason = settings.color_fallback_reason;
+    algo_settings.color_fallback_diagnostic = settings.color_fallback_diagnostic;
 
     tex2color::AlgoProgressCallback algo_progress = nullptr;
     if (progress) {

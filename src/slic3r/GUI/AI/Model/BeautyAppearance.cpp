@@ -1,3 +1,4 @@
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "BeautyAppearance.hpp"
 #include "ModelArtifact.hpp"
 #include "GlbGeometryEditing.hpp"
@@ -604,7 +605,7 @@ std::array<size_t, 3> dense_corner_accessor(const Document& doc, size_t index, c
     const size_t length = integer(view, "byteLength"), count = integer(accessor, "count");
     const size_t stride = view.value("byteStride", width);
     const size_t component_width = component == 5121 ? 1 : component == 5123 ? 2 : 4;
-    require(count > 0 && count <= 6000000 && stride >= width && stride <= 252 && stride % component_width == 0 &&
+    require(count > 0 && count <= MeshResourceBudget::maximum_vertices && stride >= width && stride <= 252 && stride % component_width == 0 &&
         (offset + local) % component_width == 0 && !view.contains("extensions") &&
         offset <= doc.binary.size() && length <= doc.binary.size() - offset && local <= length &&
         width <= length - local && count - 1 <= (length - local - width) / stride,
@@ -1033,7 +1034,7 @@ BeautyAppearanceResult edit_glb_appearance(const boost::filesystem::path& source
         parameter(options.denoise,0,1); parameter(options.soften,0,1); parameter(options.detail_preserve,0,1);
         require(model_artifact_format(destination) == "glb", "Save appearance edits as a new GLB version.");
         require(!boost::filesystem::exists(destination) && !boost::filesystem::is_symlink(destination), "The output already exists; choose a new GLB version.");
-        require(!options.face_weights.empty() && options.face_weights.size() <= 2000000, "Appearance editing requires a nonempty face selection.");
+        require(!options.face_weights.empty() && options.face_weights.size() <= MeshResourceBudget::maximum_faces, "Appearance editing requires a nonempty face selection.");
         bool selected = false;
         for (float weight : options.face_weights) { parameter(weight,0,1); selected = selected || weight > 0; }
         std::vector<BeautyLeafKey> leaf_keys;
@@ -1129,7 +1130,7 @@ BeautyAppearanceResult edit_glb_appearance(const boost::filesystem::path& source
         require(load_assimp_textured_model(source.string(),mesh,&error,absolute ? &raw_vertex_colors : nullptr), "Cannot load the GLB texture surface.");
         require(mesh.indices.size() == options.face_weights.size() && mesh.material_ids.size() == mesh.indices.size(),
             "The selection no longer matches the GLB triangle layout; reload the model.");
-        require(mesh.vertices.size() <= 6000000, "The GLB exceeds the editable vertex limit.");
+        require(mesh.vertices.size() <= MeshResourceBudget::maximum_vertices, "The GLB exceeds the editable vertex limit.");
         std::vector<std::array<int,3>> corner_map;
         if (!options.leaves.empty() || !options.cells.empty()) {
             TriangleMesh canonical; ObjInfo info;

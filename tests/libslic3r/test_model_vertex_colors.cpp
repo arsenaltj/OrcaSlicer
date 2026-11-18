@@ -6,8 +6,10 @@
 #include "libslic3r/TexturePainting.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/TextureToColor/ColorUtils.hpp"
+#include "libslic3r/TextureToColor/ColorFallback.hpp"
 #include <cstring>
 #include "test_utils.hpp"
+#include "diagnostic_log_capture.hpp"
 
 #include <array>
 #include <algorithm>
@@ -23,12 +25,325 @@
 #include <functional>
 #include <stdexcept>
 #include <cstdint>
+
+TEST_CASE("Clustering batches diagnostics while preserving ordered callbacks and cancellation", "[ModelVertexColors][ClusteringDiagnostics]")
+{
+    namespace colors = Slic3r::tex2color::color_utils;
+    const bool adaptive = GENERATE(false, true);
+    std::vector<colors::Color> input;
+    for (size_t i = 0; i < 32; ++i) input.push_back({i * 7, 255 - i * 5, i * 3});
+    colors::ClusterParameters parameters;
+    parameters.cluster_k = 4;
+    parameters.max_cluster_k = 8;
+    parameters.max_iter = 4;
+    std::vector<std::tuple<std::string, std::uint64_t, size_t>> callbacks;
+    parameters.diagnostic_callback = [&](const char* stage, std::uint64_t ms, size_t count) {
+        callbacks.emplace_back(stage, ms, count);
+    };
+    Slic3r::Test::DiagnosticLogCapture capture("[NativeClustering]");
+    for (size_t attempt = 0; attempt < 2; ++attempt) {
+        callbacks.clear();
+        CHECK_FALSE((adaptive ? colors::cluster_adaptive(input, parameters) : colors::cluster_k_means(input, parameters)).empty());
+        REQUIRE_FALSE(callbacks.empty());
+        const auto backend = capture.sink->locked_backend();
+        REQUIRE(backend->messages.size() == attempt + 1);
+        const auto& message = backend->messages.back();
+        size_t offset = 0;
+        for (const auto& [stage, ms, count] : callbacks) {
+            const auto text = "stage=" + stage + " elapsed_ms=" + std::to_string(ms) + " count=" + std::to_string(count);
+            const auto found = message.find(text, offset);
+            REQUIRE(found != std::string::npos);
+            offset = found + text.size();
+        }
+    }
+    int checks = 0;
+    parameters.cancel_callback = [&] { return ++checks >= 2; };
+    (void)(adaptive ? colors::cluster_adaptive(input, parameters) : colors::cluster_k_means(input, parameters));
+    CHECK(capture.sink->locked_backend()->messages.size() == 3);
+}
+
+TEST_CASE("Clustering log failures cannot change colors or suppress diagnostic callbacks", "[ModelVertexColors][ClusteringDiagnostics]")
+{
+    namespace colors = Slic3r::tex2color::color_utils;
+    const bool adaptive = GENERATE(false, true);
+    const std::vector<colors::Color> input {{10,20,30},{200,210,220},{70,80,90},{120,130,140}};
+    colors::ClusterParameters parameters;
+    parameters.cluster_k = 2;
+    parameters.max_cluster_k = 3;
+    size_t calls = 0;
+    parameters.diagnostic_callback = [&](const char*, std::uint64_t, size_t) { ++calls; };
+    Slic3r::Test::DiagnosticLogCapture capture("[NativeClustering]");
+    const auto expected = adaptive ? colors::cluster_adaptive(input, parameters) : colors::cluster_k_means(input, parameters);
+    const auto expected_calls = calls;
+    REQUIRE(expected_calls > 0);
+    calls = 0;
+    capture.sink->locked_backend()->fail = true;
+    std::vector<colors::Color> actual;
+    REQUIRE_NOTHROW(actual = adaptive ? colors::cluster_adaptive(input, parameters) : colors::cluster_k_means(input, parameters));
+    CHECK(actual == expected);
+    CHECK(calls == expected_calls);
+}
+
+TEST_CASE("Repair callbacks copy their callable and geometry policy together",
+          "[ModelVertexColors][PaintMeshRepairCallback][NativeRepairCompatibility]")
+{
+    using namespace Slic3r;
+    bool preserve_geometry = true;
+    size_t calls = 0;
+    PaintMeshRepairCallback original = [&](const indexed_triangle_set&, indexed_triangle_set&,
+        std::function<void(const char*, unsigned)>, std::function<bool()> cancel, std::string*) {
+        ++calls;
+        return !cancel || !cancel();
+    };
+    original.preserve_repaired_geometry = [&] { return preserve_geometry; };
+    PaintMeshRepairCallback mutable_copy(original);
+    const auto& immutable = original;
+    PaintMeshRepairCallback const_copy(immutable);
+    PaintMeshRepairCallback moved(std::move(mutable_copy));
+    PaintMeshRepairCallback assigned; assigned = original;
+    PaintMeshRepairCallback const_assigned; const_assigned = immutable;
+    PaintMeshRepairCallback move_assigned; move_assigned = std::move(assigned);
+    const std::array<PaintMeshRepairCallback*, 5> callbacks {
+        &original, &const_copy, &moved, &const_assigned, &move_assigned};
+    indexed_triangle_set input, output;
+    for (auto* callback : callbacks) {
+        REQUIRE(static_cast<bool>(*callback));
+        REQUIRE(callback->preserve_repaired_geometry);
+        CHECK(callback->preserve_repaired_geometry());
+        CHECK((*callback)(input, output, {}, [] { return false; }, nullptr));
+    }
+    CHECK(calls == callbacks.size());
+    preserve_geometry = false;
+    for (auto* callback : callbacks) {
+        CHECK_FALSE(callback->preserve_repaired_geometry());
+        CHECK_FALSE((*callback)(input, output, {}, [] { return true; }, nullptr));
+    }
+    CHECK(calls == 2 * callbacks.size());
+}
+
+TEST_CASE("Fallback color diagnostics retain scalar values through reuse and cache eviction",
+          "[ModelVertexColors][NativeRepairCompatibility]")
+{
+    using RGB = std::array<size_t, 3>;
+    Slic3r::tex2color::FallbackColorDifferences differences;
+    double expected_sum = 0., actual_sum = 0.;
+    for (size_t i = 0; i < 200000; ++i) {
+        // More distinct pairs than cache slots, then revisit earlier pairs.
+        const size_t j = i < 10000 ? i : 19999 - i;
+        const RGB source {(j * 43) % 256, (j / 17) % 256, (j * 117) % 256};
+        const RGB target {(j * 7) % 256, (j * 73) % 256, (j / 31) % 256};
+        const double expected = Slic3r::tex2color::color_utils::calc_rgb_color_difference_by_ciede2000(source, target);
+        const double actual = differences(source, target);
+        REQUIRE(std::memcmp(&actual, &expected, sizeof(double)) == 0);
+        const double reused = differences(source, target);
+        REQUIRE(std::memcmp(&reused, &expected, sizeof(double)) == 0);
+        expected_sum += expected; actual_sum += actual;
+    }
+    CHECK(std::memcmp(&actual_sum, &expected_sum, sizeof(double)) == 0);
+}
+
+TEST_CASE("Deterministic color fallback preserves real colors and ignores input order",
+          "[ModelVertexColors][NativeRepairCompatibility]")
+{
+    using RGB = std::array<size_t, 3>;
+    const size_t count = GENERATE(size_t(2), size_t(31), size_t(600));
+    std::vector<RGB> colors;
+    for (size_t i = 0; i < count; ++i)
+        colors.push_back({(i * 43) % 256, (i * 73) % 256, (i * 117) % 256});
+    std::vector<RGB> palette, reversed_palette;
+    std::vector<size_t> labels, reversed_labels;
+    REQUIRE(Slic3r::tex2color::fallback_color_labels(colors, palette, labels, {}));
+    REQUIRE(palette.size() > 1);
+    REQUIRE(palette.size() <= 32);
+    if (count <= 32) CHECK(palette.size() == count);
+    std::reverse(colors.begin(), colors.end());
+    REQUIRE(Slic3r::tex2color::fallback_color_labels(colors, reversed_palette, reversed_labels, {}));
+    CHECK(reversed_palette == palette);
+    std::reverse(reversed_labels.begin(), reversed_labels.end());
+    CHECK(reversed_labels == labels);
+    CHECK_FALSE(Slic3r::tex2color::fallback_color_labels(colors, palette, labels, [] { return true; }));
+    colors.front()[0] = 256;
+    CHECK_FALSE(Slic3r::tex2color::fallback_color_labels(colors, palette, labels, {}));
+}
 #include <tbb/task_arena.h>
 #include <CGAL/AABB_face_graph_triangle_primitive.h>
 #include <CGAL/AABB_traits_3.h>
 #include <CGAL/AABB_tree.h>
 
 using namespace Slic3r;
+
+namespace {
+template<class Tree> struct ObservedMovedFaceTree {
+    using Primitive = typename Tree::Primitive;
+    using AABB_traits = typename Tree::AABB_traits;
+    const Tree& tree;
+    std::atomic<std::size_t>& queries;
+    template<class Query, class Visitor> void traversal(const Query& query, Visitor& visitor) const {
+        ++queries;
+        tree.traversal(query, visitor);
+    }
+};
+}
+
+TEST_CASE("Moved float output faces reject intersections against old and moving surfaces",
+          "[ModelVertexColors][StrictMeshRepair][FinalSmoothedGeometry]")
+{
+    namespace geometry = Slic3r::tex2color::cgalutils;
+    using Mesh = geometry::CGALMesh;
+    using Point = geometry::Kernel::Point_3;
+    using Primitive = CGAL::AABB_face_graph_triangle_primitive<Mesh>;
+    using Tree = CGAL::AABB_tree<CGAL::AABB_traits_3<geometry::Kernel, Primitive>>;
+    const bool both_move = GENERATE(false, true);
+    Mesh original;
+    const auto triangle = [&](double z, double size) {
+        const auto a = original.add_vertex(Point(-size, -size, z));
+        const auto b = original.add_vertex(Point(size, -size, z));
+        const auto c = original.add_vertex(Point(0., size, z));
+        REQUIRE(original.add_face(a, b, c) != Mesh::null_face());
+        return std::array<Mesh::Vertex_index, 3>{a, b, c};
+    };
+    const auto bottom = triangle(0., 2.);
+    const auto top = triangle(10., 1.);
+    Tree tree(original.faces().begin(), original.faces().end(), original);
+    tree.do_not_accelerate_distance_queries(); tree.build();
+    auto moved = original;
+    std::vector<Mesh::Vertex_index> vertices;
+    const double z = both_move ? 5. : 0.;
+    for (auto v : top) { const auto p = moved.point(v); moved.point(v) = Point(p.x(), p.y(), z); vertices.push_back(v); }
+    if (both_move) for (auto v : bottom) {
+        const auto p = moved.point(v); moved.point(v) = Point(p.x(), p.y(), z); vertices.push_back(v);
+    }
+    CHECK_FALSE(geometry::validate_float_vertex_moves(moved, original, tree, vertices));
+    for (auto v : top) CHECK(original.point(v).z() == 10.);
+    for (auto v : bottom) CHECK(original.point(v).z() == 0.);
+}
+
+TEST_CASE("Final smoothing permits shared edges but rejects overlap float collapse and cancellation",
+          "[ModelVertexColors][StrictMeshRepair][FinalSmoothedGeometry]")
+{
+    namespace geometry = Slic3r::tex2color::cgalutils;
+    using Mesh = geometry::CGALMesh;
+    using Point = geometry::Kernel::Point_3;
+    using Primitive = CGAL::AABB_face_graph_triangle_primitive<Mesh>;
+    using Tree = CGAL::AABB_tree<CGAL::AABB_traits_3<geometry::Kernel, Primitive>>;
+    Mesh original;
+    const auto a = original.add_vertex(Point(0, 0, 0)), b = original.add_vertex(Point(2, 0, 0));
+    const auto c = original.add_vertex(Point(2, 2, 0)), d = original.add_vertex(Point(0, 2, 0));
+    REQUIRE(original.add_face(a, b, c) != Mesh::null_face());
+    REQUIRE(original.add_face(a, c, d) != Mesh::null_face());
+    Tree tree(original.faces().begin(), original.faces().end(), original);
+    tree.do_not_accelerate_distance_queries(); tree.build();
+    auto moved = original;
+    moved.point(c) = Point(2, 2, .1);
+    CHECK(geometry::validate_float_vertex_moves(moved, original, tree, {c}));
+    moved = original; moved.point(d) = Point(.5, .2, 0);
+    CHECK_FALSE(geometry::validate_float_vertex_moves(moved, original, tree, {d}));
+    moved = original; moved.point(c) = Point(2. + 1e-10, 1e-50, 0.);
+    geometry::FloatMoveValidation diagnostic;
+    CHECK_FALSE(geometry::validate_float_vertex_moves(moved, original, tree, {c}, {}, &diagnostic));
+    CHECK(std::string(diagnostic.reason) == "degenerate-output-face");
+    CHECK(diagnostic.face != std::numeric_limits<std::size_t>::max());
+    moved = original;
+    CHECK_FALSE(geometry::validate_float_vertex_moves(moved, original, tree, {c}, [] { return true; }));
+    CHECK(geometry::validate_float_vertex_moves(moved, original, tree, {}));
+}
+
+TEST_CASE("Moved face queries agree with full self intersection checks across deterministic perturbations",
+          "[ModelVertexColors][StrictMeshRepair][FinalSmoothedGeometry]")
+{
+    namespace geometry = Slic3r::tex2color::cgalutils;
+    using Mesh = geometry::CGALMesh;
+    using Point = geometry::Kernel::Point_3;
+    using Primitive = CGAL::AABB_face_graph_triangle_primitive<Mesh>;
+    using Tree = CGAL::AABB_tree<CGAL::AABB_traits_3<geometry::Kernel, Primitive>>;
+    const int face_count = GENERATE(16, 320);
+    const int columns = face_count == 16 ? 4 : 20;
+    Mesh original;
+    for (int face = 0; face < face_count; ++face) {
+        const double x = (face % columns) * 3., y = (face / columns) * 3.;
+        const auto a = original.add_vertex(Point(x, y, 0));
+        const auto b = original.add_vertex(Point(x + 2, y, 0));
+        const auto c = original.add_vertex(Point(x, y + 2, 0));
+        REQUIRE(original.add_face(a, b, c) != Mesh::null_face());
+    }
+    Tree tree(original.faces().begin(), original.faces().end(), original);
+    tree.do_not_accelerate_distance_queries(); tree.build();
+    tbb::task_arena arena(4);
+    std::mt19937 random(12345);
+    std::uniform_real_distribution<double> delta(-1., 1.);
+    size_t accepted = 0, rejected = 0;
+    for (int trial = 0; trial < 60; ++trial) {
+        auto moved = original;
+        std::vector<Mesh::Vertex_index> vertices;
+        const double scale = trial % 2 ? 4. : .02;
+        for (auto vertex : moved.vertices()) {
+            if (size_t(vertex) % 5 == size_t(trial) % 5) continue;
+            const auto& p = original.point(vertex);
+            const float x = float(p.x() + scale * delta(random));
+            const float y = float(p.y() + scale * delta(random));
+            const float z = float(p.z() + scale * delta(random));
+            moved.point(vertex) = Point(x, y, z);
+            vertices.push_back(vertex);
+        }
+        std::shuffle(vertices.begin(), vertices.end(), random);
+        const bool expected = !CGAL::Polygon_mesh_processing::does_self_intersect(moved);
+        INFO("trial=" << trial);
+        auto serial = moved;
+        geometry::FloatMoveValidation serial_diagnostic, parallel_diagnostic;
+        CHECK(geometry::validate_float_vertex_moves(serial, original, tree, vertices, {}, &serial_diagnostic) == expected);
+        CHECK(geometry::validate_float_vertex_moves(moved, original, tree, vertices, {}, &parallel_diagnostic, &arena) == expected);
+        CHECK(std::string(parallel_diagnostic.reason) == serial_diagnostic.reason);
+        CHECK(parallel_diagnostic.face == serial_diagnostic.face);
+        CHECK(parallel_diagnostic.other_face == serial_diagnostic.other_face);
+        CHECK(parallel_diagnostic.original_pair_intersects == serial_diagnostic.original_pair_intersects);
+        for (auto vertex : moved.vertices()) CHECK(moved.point(vertex) == serial.point(vertex));
+        if (expected) ++accepted; else ++rejected;
+    }
+    CHECK(accepted > 0);
+    CHECK(rejected > 0);
+}
+
+TEST_CASE("Parallel moved face validation cancels between bounded batches on its calling thread",
+          "[ModelVertexColors][StrictMeshRepair][FinalSmoothedGeometry]")
+{
+    namespace geometry = Slic3r::tex2color::cgalutils;
+    using Mesh = geometry::CGALMesh;
+    using Point = geometry::Kernel::Point_3;
+    using Primitive = CGAL::AABB_face_graph_triangle_primitive<Mesh>;
+    using Tree = CGAL::AABB_tree<CGAL::AABB_traits_3<geometry::Kernel, Primitive>>;
+    Mesh original;
+    for (int face = 0; face < 1200; ++face) {
+        const double x = face * 3.;
+        const auto a = original.add_vertex(Point(x, 0, 0));
+        const auto b = original.add_vertex(Point(x + 2, 0, 0));
+        const auto c = original.add_vertex(Point(x, 2, 0));
+        REQUIRE(original.add_face(a, b, c) != Mesh::null_face());
+    }
+    Tree tree(original.faces().begin(), original.faces().end(), original);
+    tree.do_not_accelerate_distance_queries(); tree.build();
+    auto moved = original;
+    std::vector<Mesh::Vertex_index> vertices;
+    for (auto vertex : moved.vertices()) {
+        const auto p = moved.point(vertex);
+        moved.point(vertex) = Point(p.x(), p.y(), .25);
+        vertices.push_back(vertex);
+    }
+    std::atomic<std::size_t> queries {0};
+    const ObservedMovedFaceTree<Tree> observed {tree, queries};
+    tbb::task_arena arena(GENERATE(1, 2, 4));
+    const auto caller = std::this_thread::get_id();
+    std::atomic<bool> wrong_callback_thread {false};
+    const auto canceled = [&] {
+        if (std::this_thread::get_id() != caller) wrong_callback_thread = true;
+        return queries.load() != 0;
+    };
+    geometry::FloatMoveValidation diagnostic;
+    CHECK_FALSE(geometry::validate_float_vertex_moves(moved, original, observed, vertices, canceled, &diagnostic, &arena));
+    CHECK(std::string(diagnostic.reason) == "canceled");
+    CHECK_FALSE(wrong_callback_thread.load());
+    CHECK(queries.load() > 0);
+    CHECK(queries.load() <= 512);
+}
 
 TEST_CASE("Fixed import palettes keep edited target colors and source regions", "[ModelVertexColors][FixedPalette]")
 {
@@ -670,7 +985,7 @@ TEST_CASE("Canceled geometric smoothing never installs a partially modified mesh
     require_identical_smoothing_mesh(result, input);
 }
 
-TEST_CASE("Smoothing diagnostics cannot fail a valid model", "[ModelVertexColors][RegionSmoothing]")
+TEST_CASE("Smoothing diagnostics cannot fail a valid model", "[ModelVertexColors][RegionSmoothing][StageDiagnostics]")
 {
     namespace colors = Slic3r::tex2color::color_utils;
     auto input = smoothing_torus();
@@ -679,8 +994,45 @@ TEST_CASE("Smoothing diagnostics cannot fail a valid model", "[ModelVertexColors
     parameters.diagnostic_callback = [](const char*, std::uint64_t, std::size_t) {
         throw std::runtime_error("diagnostic receiver unavailable");
     };
+    Slic3r::Test::DiagnosticLogCapture capture("[NativeSmoothing]");
+    capture.sink->locked_backend()->fail = GENERATE(false, true);
     REQUIRE(colors::smooth_region(input, labels, parameters));
     CHECK(input.indices.size() == labels.size());
+}
+
+TEST_CASE("A failed color diagnostic sink preserves painting and progress", "[ModelVertexColors][StageDiagnostics]")
+{
+    TexturedMesh source;
+    source.vertices = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+    source.indices = {{0,2,4},{2,1,4},{1,3,4},{3,0,4},{2,0,5},{1,2,5},{3,1,5},{0,3,5}};
+    source.precomputed_face_colors.assign(8, {220,60,40});
+    for (size_t i = 4; i < 8; ++i) source.precomputed_face_colors[i] = {40,70,220};
+    TexturePaintingSettings settings;
+    settings.target_colors_num = 2;
+    settings.min_cluster_k = 2;
+    settings.smooth_weight = .2;
+    const auto run = [&](PaintedMesh& output, std::vector<std::string>& progress) {
+        return face_colors_to_painting(source, output, settings,
+            [&](int, const char* stage) { progress.emplace_back(stage); });
+    };
+    PaintedMesh expected;
+    std::vector<std::string> expected_progress;
+    REQUIRE(run(expected, expected_progress));
+    Slic3r::Test::DiagnosticLogCapture capture("[Native");
+    const bool failed_sink = GENERATE(false, true);
+    capture.sink->locked_backend()->fail = failed_sink;
+    PaintedMesh actual;
+    std::vector<std::string> progress;
+    bool succeeded = false;
+    REQUIRE_NOTHROW(succeeded = run(actual, progress));
+    REQUIRE(succeeded);
+    CHECK(progress == expected_progress);
+    CHECK(actual.indices == expected.indices);
+    CHECK(actual.face_colors == expected.face_colors);
+    REQUIRE(actual.vertices.size() == expected.vertices.size());
+    for (size_t i = 0; i < actual.vertices.size(); ++i)
+        CHECK(std::memcmp(actual.vertices[i].data(), expected.vertices[i].data(), 3 * sizeof(float)) == 0);
+
 }
 
 TEST_CASE("Parallel boundary paths preserve serial coordinates at shared endpoints", "[ModelVertexColors][RegionSmoothing]")
@@ -1218,6 +1570,99 @@ void compare(const std::vector<Color>& input, const Parameters& parameters)
 } // namespace frozen_clustering
 } // namespace
 
+TEST_CASE("Clustering reuses unchanged centers without changing ordered scalar iterations", "[ModelVertexColors][ClusteringStableDistances]")
+{
+    namespace oracle = frozen_clustering;
+    namespace colors = Slic3r::tex2color::color_utils;
+    std::vector<oracle::Color> input;
+    for (std::size_t r = 0; r < 8; ++r)
+        for (std::size_t g = 0; g < 8; ++g)
+            for (std::size_t b = 0; b < 8; ++b) input.push_back({r * 35, g * 35, b * 35});
+    std::reverse(input.begin(), input.end());
+    const auto method = GENERATE(colors::ColorDifferenceMethod::RGB, colors::ColorDifferenceMethod::Lab);
+    const auto iterations = GENERATE(1u, 3u, 50u);
+    oracle::Parameters parameters;
+    parameters.color_difference_method = method;
+    parameters.max_iter = iterations;
+    const auto points = oracle::working(oracle::unique(input), method != colors::ColorDifferenceMethod::RGB);
+    const oracle::Distance distance = method == colors::ColorDifferenceMethod::RGB ?
+        colors::calc_rgb_color_difference_by_squared_rgb_double : colors::calc_lab_color_difference_by_ciede2000;
+    for (const std::size_t k : {3u, 19u, 32u, 65u}) {
+        parameters.cluster_k = k;
+        oracle::Trial expected_trace;
+        std::size_t expected_checks = 0;
+        parameters.cancel_callback = [&] { ++expected_checks; return false; };
+        const auto expected = oracle::output(oracle::fit(points, k, parameters, distance, expected_trace),
+                                             method != colors::ColorDifferenceMethod::RGB);
+        for (const int threads : {1, 4}) {
+            CAPTURE(k, iterations, threads, int(method));
+            std::map<std::string, std::size_t> stages;
+            std::size_t actual_checks = 0;
+            parameters.cancel_callback = [&] { ++actual_checks; return false; };
+            parameters.diagnostic_callback = [&](const char* stage, std::uint64_t, std::size_t count) { stages[stage] = count; };
+            tbb::task_arena arena(threads);
+            const auto actual = arena.execute([&] { return colors::cluster_k_means(input, parameters); });
+            CHECK(actual == expected);
+            CHECK(actual_checks == expected_checks);
+            CHECK(stages["kmeans.assignment"] == expected_trace.assignments);
+            CHECK(stages["kmeans.update"] == expected_trace.updates);
+            CHECK(stages["kmeans.assignment_cache_bytes"] <= Slic3r::MeshResourceBudget::block_bytes);
+            if (method == colors::ColorDifferenceMethod::Lab && k <= 64 && iterations == 50)
+                CHECK(stages["kmeans.assignment_distance_reuses"] > 0);
+            if (method == colors::ColorDifferenceMethod::RGB || k > 64)
+                CHECK(stages["kmeans.assignment_distance_reuses"] == 0);
+        }
+    }
+}
+
+TEST_CASE("Clustering exceeding the optional distance workspace keeps its scalar result", "[ModelVertexColors][ClusteringStableDistances]")
+{
+    namespace oracle = frozen_clustering;
+    namespace colors = Slic3r::tex2color::color_utils;
+    const std::size_t k = 32;
+    const auto count = Slic3r::MeshResourceBudget::block_bytes / ((k + 1) * sizeof(double)) + 1;
+    std::vector<oracle::Color> input;
+    for (std::size_t i = 0; i < count; ++i) input.push_back({i & 255u, (i >> 8) & 255u, (i >> 16) & 255u});
+    oracle::Parameters parameters;
+    parameters.cluster_k = k;
+    parameters.max_iter = 1;
+    parameters.color_difference_method = colors::ColorDifferenceMethod::Lab;
+    oracle::Trial trace;
+    const auto points = oracle::working(oracle::unique(input), true);
+    const auto expected = oracle::output(oracle::fit(points, k, parameters, colors::calc_lab_color_difference_by_ciede2000, trace), true);
+    std::map<std::string, std::size_t> stages;
+    parameters.diagnostic_callback = [&](const char* stage, std::uint64_t, std::size_t n) { stages[stage] = n; };
+    tbb::task_arena arena(4);
+    const auto actual = arena.execute([&] { return colors::cluster_k_means(input, parameters); });
+    CHECK(actual == expected);
+    CHECK(stages["kmeans.assignment_cache_bytes"] == 0);
+    CHECK(stages["kmeans.assignment_distance_reuses"] == 0);
+}
+
+TEST_CASE("Clustering with reusable distances retains cancellation checkpoints", "[ModelVertexColors][ClusteringStableDistances]")
+{
+    namespace oracle = frozen_clustering;
+    namespace colors = Slic3r::tex2color::color_utils;
+    std::vector<oracle::Color> input;
+    for (std::size_t i = 0; i < 512; ++i) input.push_back({(i * 17) & 255u, (i * 73) & 255u, i >> 1});
+    oracle::Parameters parameters;
+    parameters.color_difference_method = colors::ColorDifferenceMethod::Lab;
+    parameters.min_cluster_k = 6; parameters.max_cluster_k = 32;
+    parameters.max_iter = 50;
+    const auto cancel_at = GENERATE(1u, 2u, 6u, 20u);
+    std::size_t expected_checks = 0;
+    parameters.cancel_callback = [&] { return ++expected_checks == cancel_at; };
+    const auto expected = oracle::adaptive(input, parameters);
+    for (const int threads : {1, 4}) {
+        std::size_t actual_checks = 0;
+        parameters.cancel_callback = [&] { return ++actual_checks == cancel_at; };
+        tbb::task_arena arena(threads);
+        const auto actual = arena.execute([&] { return colors::cluster_adaptive(input, parameters); });
+        CHECK(actual == expected);
+        CHECK(actual_checks == expected_checks);
+    }
+}
+
 TEST_CASE("Adaptive clustering preserves its scalar convergence and iteration boundaries", "[ModelVertexColors][ClusteringRadiusReuse]")
 {
     namespace oracle = frozen_clustering;
@@ -1716,8 +2161,11 @@ TEST_CASE("Public clustering keeps scalar results and cancellation on an unquali
     namespace colors = Slic3r::tex2color::color_utils;
     const auto iterations = GENERATE(1u, 50u);
     const auto mode = GENERATE(0u, 1u, 2u);
-    const std::vector<oracle::Color> input {{0,0,0},{1,1,1},{2,2,2},{127,32,240},
+    std::vector<oracle::Color> input {{0,0,0},{1,1,1},{2,2,2},{127,32,240},
         {200,200,200},{201,201,201},{202,202,202}};
+    // Exceed the optional assignment-cache threshold while retaining an
+    // unqualified worker, so scalar fallback is tested on that real boundary.
+    for (std::size_t i = 0; i < 512; ++i) input.push_back({(i * 17) & 255u, (i * 73) & 255u, i >> 1});
     const auto caller_round = std::fegetround();
 #if ORCA_TEST_HAS_SSE2_FP_CONTROLS
     const auto caller_mxcsr = _mm_getcsr();

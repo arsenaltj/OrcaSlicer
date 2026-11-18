@@ -1,5 +1,8 @@
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "ModelFinishing.hpp"
+#include <tbb/task_arena.h>
 #include "ModelArtifact.hpp"
+#include "ModelSurfaceSampler.hpp"
 #include "GlbGeometryEditing.hpp"
 #include "ModelColorCleanup.hpp"
 #include "VertexColorRegionEditor.hpp"
@@ -127,8 +130,8 @@ ModelFinishingResult finish_recolored_artifact(const boost::filesystem::path& so
         std::string error;
         if (!load_model_artifact(source, mesh, colors, error))
             throw std::runtime_error(error);
-        if (mesh.its.vertices.size() > 6000000 || mesh.its.indices.size() > 2000000)
-            throw std::runtime_error("This model exceeds the local recoloring limit of two million triangles.");
+        if (mesh.its.vertices.size() > MeshResourceBudget::maximum_vertices || mesh.its.indices.size() > MeshResourceBudget::maximum_faces)
+            throw std::runtime_error("This model exceeds the local recoloring resource budget.");
         for (const size_t face : options.selected_faces)
             if (face >= mesh.its.indices.size())
                 throw std::runtime_error("The selected face index is outside this model. Reload it and select its surface again.");
@@ -230,8 +233,8 @@ ModelFinishingResult finish_model_obj(const boost::filesystem::path& source,
         }
         if (local_selection && options.repair_mesh)
             throw std::runtime_error("Local surface smoothing cannot include whole-model mesh repair. Disable mesh repair for a selection.");
-        if (!boost::filesystem::is_regular_file(source) || boost::filesystem::file_size(source) > 512ull * 1024 * 1024)
-            throw std::runtime_error("The source OBJ is missing or exceeds 512 MB.");
+        if (!boost::filesystem::is_regular_file(source) || boost::filesystem::file_size(source) > MeshResourceBudget::local_obj_bytes)
+            throw std::runtime_error("The source OBJ is missing or exceeds the local file resource budget.");
         if (boost::filesystem::exists(destination) || boost::filesystem::exists(temporary))
             throw std::runtime_error("The output already exists; choose a new model version.");
         if (boost::filesystem::canonical(source.parent_path()) != boost::filesystem::canonical(destination.parent_path()))
@@ -289,8 +292,8 @@ ModelFinishingResult finish_model_obj(const boost::filesystem::path& source,
                 faces.push_back(std::move(f));
             }
             lines.push_back(std::move(line));
-            if (vertices.size() > 4000000 || faces.size() > 2000000)
-                throw std::runtime_error("This model exceeds the local finishing limit of two million triangles.");
+            if (vertices.size() > MeshResourceBudget::maximum_vertices || faces.size() > MeshResourceBudget::maximum_faces)
+                throw std::runtime_error("This model exceeds the local finishing resource budget.");
         }
         if (!input.eof()) throw std::runtime_error("The source OBJ could not be read completely.");
         if (vertices.empty() || faces.empty()) throw std::runtime_error("The OBJ has no triangle surface.");
@@ -649,23 +652,26 @@ ModelFinishingResult finish_model_artifact(const boost::filesystem::path& source
             auto check_cancel = [&] { if (canceled && canceled()) throw Canceled {}; };
             check_cancel();
             result.source_sha256 = file_hash(source, canceled);
-            TriangleMesh mesh; ObjInfo info; std::string error;
-            if (!load_model_artifact(source, mesh, info, error, canceled)) throw std::runtime_error(error);
-            const auto original_vertices = mesh.its.vertices;
-            const auto original_faces = mesh.its.indices;
-            const auto original_surface = mesh.its;
-            auto original_colors = info.vertex_colors;
-            result.faces_before = mesh.its.indices.size();
-            result.vertices = mesh.its.vertices.size();
-            if (original_colors.size() != original_vertices.size())
-                original_colors.assign(original_vertices.size(), RGBA {1.f, 1.f, 1.f, 1.f});
+            TriangleMesh original_mesh, mesh; ObjInfo info; std::string error;
+            if (!load_model_artifact(source, original_mesh, info, error, canceled)) throw std::runtime_error(error);
+            const auto& original_surface = original_mesh.its;
+            const auto& original_vertices = original_surface.vertices;
+            const auto& original_faces = original_surface.indices;
+            const auto& original_colors = info.vertex_colors;
+            result.faces_before = original_faces.size();
+            result.vertices = original_vertices.size();
             StrictMeshRepairOptions strict_options;
-            // Repairs are published automatically only after the same geometry
-            // limits as native partitioning pass. There is no manual review of
-            // an over-limit topology candidate.
-            auto strict = strict_repair_mesh(original_surface, strict_options, {}, canceled);
+            // Native-compatible acceptance still requires the actual native
+            // repair and full float-output topology verification. Geometric
+            // deviation is recorded separately from the strict certificate.
+            strict_options.allow_native_repair_geometry_change = true;
+            strict_options.acceptance = MeshRepairAcceptance::OrcaNative;
+            tbb::task_arena repair_arena(std::max(1, std::min(4, tbb::this_task_arena::max_concurrency())));
+            auto strict = repair_arena.execute([&] {
+                return strict_repair_mesh(original_surface, strict_options, {}, canceled);
+            });
             check_cancel();
-            if (!strict.success)
+            if (!strict.accepted())
                 throw std::runtime_error(strict.error.empty() ?
                     "严格网格修复未生成可复检候选。" : strict.error);
             mesh = TriangleMesh(std::move(strict.repaired_mesh));
@@ -684,6 +690,9 @@ ModelFinishingResult finish_model_artifact(const boost::filesystem::path& source
             result.repair_area_change_ratio = strict.area_change_ratio;
             result.repair_sampled_deviation = strict.sampled_deviation;
             result.repair_geometry_verified = strict.geometry_verified;
+            result.repair_native_compatible = strict.native_repair_compatible;
+            std::vector<RGBA> colors;
+            if (original_colors.size() == original_vertices.size()) {
             // Exact source vertices retain their sampled appearance. Newly
             // created intersection/patch vertices sample the closest source
             // triangle; never silently copy vertex zero when a lookup misses.
@@ -695,8 +704,9 @@ ModelFinishingResult finish_model_artifact(const boost::filesystem::path& source
             std::unordered_map<Key, std::vector<size_t>, Hash> grid;
             grid.reserve(original_vertices.size());
             for (size_t i = 0; i < original_vertices.size(); ++i) grid[key_of(original_vertices[i])].push_back(i);
-            std::vector<RGBA> colors(mesh.its.vertices.size(), RGBA {1.f, 1.f, 1.f, 1.f});
+            colors.assign(mesh.its.vertices.size(), RGBA {1.f, 1.f, 1.f, 1.f});
             std::optional<AABBTreeIndirect::Tree<3, float>> source_tree;
+            std::vector<Vec3i32> projection_faces;
             for (size_t i = 0; i < mesh.its.vertices.size(); ++i) {
                 if ((i & 4095) == 0) check_cancel();
                 const auto base = key_of(mesh.its.vertices[i]);
@@ -712,15 +722,23 @@ ModelFinishingResult finish_model_artifact(const boost::filesystem::path& source
                 if (best_distance != std::numeric_limits<double>::max()) {
                     colors[i] = original_colors[best];
                 } else {
-                    if (!source_tree) source_tree = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(original_vertices, original_faces);
+                    if (!source_tree) {
+                        for (const auto& face : original_faces) {
+                            const auto cross = (original_vertices[face[1]] - original_vertices[face[0]]).cast<double>().cross(
+                                (original_vertices[face[2]] - original_vertices[face[0]]).cast<double>());
+                            if (cross.allFinite() && cross.squaredNorm() > 0.) projection_faces.push_back(face);
+                        }
+                        if (projection_faces.empty()) throw std::runtime_error("原始外观没有可投影的有效来源面。");
+                        source_tree = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(original_vertices, projection_faces);
+                    }
                     size_t face = 0;
                     Vec3d nearest;
                     const Vec3d query = mesh.its.vertices[i].cast<double>();
                     const double distance = AABBTreeIndirect::squared_distance_to_indexed_triangle_set(
-                        original_vertices, original_faces, *source_tree, query, face, nearest);
-                    if (distance < 0. || face >= original_faces.size())
+                        original_vertices, projection_faces, *source_tree, query, face, nearest);
+                    if (!std::isfinite(distance) || distance < 0. || face >= projection_faces.size() || !nearest.allFinite())
                         throw std::runtime_error("Repair appearance mapping failed; the original model is preserved.");
-                    const auto& f = original_faces[face];
+                    const auto& f = projection_faces[face];
                     const Vec3d a = original_vertices[f[0]].cast<double>();
                     const Vec3d u = original_vertices[f[1]].cast<double>() - a;
                     const Vec3d v = original_vertices[f[2]].cast<double>() - a;
@@ -735,6 +753,43 @@ ModelFinishingResult finish_model_artifact(const boost::filesystem::path& source
                             y * original_colors[f[1]][channel] + z * original_colors[f[2]][channel]);
                 }
             }
+            } else if (!info.has_uv_png && info.face_colors.size() == original_faces.size() &&
+                       std::all_of(info.face_colors.begin(), info.face_colors.end(),
+                           [&](const auto& value) { return value == info.face_colors.front(); })) {
+                colors.assign(mesh.its.vertices.size(), info.face_colors.front());
+            } else {
+                // Non-vertex appearance needs face/corner identities: sharing
+                // one output vertex across a material seam would lose colours.
+                ModelArtifactTextureSurface no_texture;
+                auto sampler = info.has_uv_png
+                    ? ModelSurfaceSampler::load(source, result.source_sha256, mesh.its, error, canceled)
+                    : ModelSurfaceSampler::load(source, result.source_sha256, mesh.its, error, canceled,
+                        &original_mesh, &info, &no_texture);
+                if (!sampler) throw std::runtime_error(error.empty() ? "原始外观映射失败。" : error);
+                if (mesh.its.indices.size() > MeshResourceBudget::maximum_vertices / 3 ||
+                    !MeshResourceBudget::editable(mesh.its.indices.size() * 3, mesh.its.indices.size()))
+                    throw std::length_error("修复外观角点数据超出编辑资源预算，原件保留。");
+                indexed_triangle_set split;
+                split.vertices.reserve(mesh.its.indices.size() * 3);
+                split.indices.reserve(mesh.its.indices.size());
+                colors.reserve(mesh.its.indices.size() * 3);
+                for (size_t face = 0; face < mesh.its.indices.size(); ++face) {
+                    if ((face & 4095) == 0) check_cancel();
+                    const int base = int(split.vertices.size());
+                    split.indices.emplace_back(base, base + 1, base + 2);
+                    for (int corner = 0; corner < 3; ++corner) {
+                        std::array<float,3> bary{}; bary[corner] = 1.f;
+                        const auto sampled = sampler->sample(face, bary);
+                        for (float channel : sampled)
+                            if (!std::isfinite(channel) || channel < 0.f || channel > 1.f)
+                                throw std::runtime_error("修复外观插值颜色无效。");
+                        colors.push_back({sampled[0], sampled[1], sampled[2], 1.f});
+                        split.vertices.push_back(mesh.its.vertices[mesh.its.indices[face][corner]]);
+                    }
+                }
+                mesh = TriangleMesh(std::move(split));
+            }
+            result.vertices = mesh.its.vertices.size();
             check_cancel();
             if (file_hash(source, canceled) != result.source_sha256)
                 throw std::runtime_error("The source model changed during repair; the candidate was discarded.");
@@ -745,6 +800,7 @@ ModelFinishingResult finish_model_artifact(const boost::filesystem::path& source
             result.changed_edit_record = strict.cgal_errors.repaired() ||
                 strict.enhanced_stats.modified ||
                 mesh.its.indices != original_faces || mesh.its.vertices != original_vertices;
+            result.repair_evidence = std::make_shared<const StrictMeshRepairResult>(std::move(strict));
             return result;
         } catch (const Canceled&) { result.canceled = true; }
           catch (const std::exception& error) { result.error = error.what(); }

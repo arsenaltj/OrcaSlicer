@@ -47,6 +47,10 @@ struct TextureToColorSettings {
 
     MeshRepairCallback mesh_repair_callback;
     bool strict_mesh_repair = false;
+    bool allow_color_fallback = false;
+    std::function<bool()> preserve_repaired_geometry;
+    std::string* color_fallback_reason = nullptr;
+    std::function<void(size_t, double, double)> color_fallback_diagnostic;
     // Fixed targets retain user-edited colors; optional source centers retain
     // region membership using the same Oklab metric as the desktop trial.
     std::vector<std::array<std::size_t, 3>> fixed_palette;

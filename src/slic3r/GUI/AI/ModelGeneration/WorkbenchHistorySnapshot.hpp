@@ -27,6 +27,30 @@ inline std::optional<std::string> workbench_history_fallback_key(
     return std::nullopt;
 }
 
+inline std::vector<std::string> workbench_history_fallback_keys(
+    const std::vector<std::string>& ordered_keys, const std::string& removed_key)
+{
+    const auto found = std::find(ordered_keys.begin(), ordered_keys.end(), removed_key);
+    if (found == ordered_keys.end()) return {};
+    std::vector<std::string> result(std::next(found), ordered_keys.end());
+    for (auto before = found; before != ordered_keys.begin();) result.push_back(*--before);
+    return result;
+}
+
+inline std::vector<const ModelLibraryEntry*> filtered_workbench_history_entries(
+    const std::vector<ModelLibraryEntry>& library, const wxString& query, int filter)
+{
+    std::vector<const ModelLibraryEntry*> entries;
+    for (const auto& entry : library) {
+        if (entry.design_only || entry.model_path.empty() ||
+            (!query.empty() && !entry.title.Lower().Contains(query))) continue;
+        if ((filter == 1 && entry.palette.size() != 1) ||
+            (filter == 2 && entry.palette.size() < 2) || (filter == 3 && !entry.palette.empty())) continue;
+        entries.push_back(&entry);
+    }
+    return entries;
+}
+
 inline std::string workbench_thumbnail_source(const ModelLibraryEntry& entry,
                                               const boost::filesystem::path& root, int edge)
 {

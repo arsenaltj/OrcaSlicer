@@ -1,5 +1,6 @@
 #pragma once
 
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "BeautySurface.hpp"
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -97,7 +98,7 @@ struct BeautyDocument {
             const uint64_t value=v.get<uint64_t>();require(value<=limit,"Beauty record integer exceeds limit.");return size_t(value);
         };
         require(json.is_object() && json.value("schema","")=="orca.beauty-workbench/v1","Unsupported beauty record.");
-        require(json.at("geometry_id")==geometry && integer(json.at("face_count"),2000000)==faces,"Beauty record belongs to different geometry.");
+        require(json.at("geometry_id")==geometry && integer(json.at("face_count"),MeshResourceBudget::maximum_faces)==faces,"Beauty record belongs to different geometry.");
         require(integer(json.at("patch_algorithm"),100)==BeautySurface::algorithm_version,"Unsupported beauty patch version.");
         BeautyDocument result;result.geometry_id=geometry;result.face_count=faces;
         const auto& runs=json.at("patch_runs");require(runs.is_array() && runs.size()<=faces,"Invalid patch cache.");

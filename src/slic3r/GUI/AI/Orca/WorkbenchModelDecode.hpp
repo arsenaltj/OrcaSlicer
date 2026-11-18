@@ -3,7 +3,9 @@
 #include "libslic3r/Format/AssimpImport.hpp"
 #include "libslic3r/Format/OBJ.hpp"
 #include "libslic3r/Model.hpp"
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "libslic3r/TexturePainting.hpp"
+#include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include <algorithm>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/filesystem/path.hpp>
@@ -68,18 +70,15 @@ inline bool decode_workbench_model(const boost::filesystem::path& path, DecodedW
     };
     if (stopped()) return false;
     if (boost::algorithm::iequals(path.extension().string(), ".obj")) {
-        ObjParser::MtlData materials;
-        if (!load_obj(path.string().c_str(), &decoded.mesh, decoded.colors, error, &materials, canceled)) return false;
+        auto texture = std::make_shared<TexturedMesh>();
+        if (!AI::load_model_artifact(path, decoded.mesh, decoded.colors, error, canceled, nullptr, texture.get())) return false;
         const auto& colors = decoded.colors;
         const auto& its = decoded.mesh.its;
         if (explicit_obj_colors && (!colors.vertex_colors.empty() || (!colors.face_colors.empty() && !colors.has_uv_png)))
             return !stopped();
         if (colors.has_uv_png && !colors.uvs.empty()) {
-            auto texture = std::make_shared<TexturedMesh>();
-            if (obj_to_textured_mesh(colors, its, materials, path.parent_path().string(), *texture))
-                decoded.texture = std::move(texture);
+            decoded.texture = std::move(texture);
         } else if (!colors.vertex_colors.empty() || !colors.face_colors.empty()) {
-            auto texture = std::make_shared<TexturedMesh>();
             texture->vertices.reserve(its.vertices.size());
             texture->indices.reserve(its.indices.size());
             for (const auto& vertex : its.vertices) texture->vertices.push_back({vertex.x(), vertex.y(), vertex.z()});
@@ -130,6 +129,10 @@ inline bool decode_workbench_model(const boost::filesystem::path& path, DecodedW
     }
     if (stopped()) return false;
     if (decoded.mesh.empty()) { error = "The supplied model has no printable geometry."; return false; }
+    if (!MeshResourceBudget::editable(decoded.mesh.its.vertices.size(), decoded.mesh.its.indices.size())) {
+        error = "模型解码后的编辑数据超出资源预算，原件保留。";
+        return false;
+    }
     return true;
 }
 

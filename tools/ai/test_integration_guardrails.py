@@ -263,6 +263,11 @@ class IntegrationGuardrailTests(unittest.TestCase):
         artifact_flow = REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp"
         if artifact_flow.is_file():
             panel_sources += artifact_flow.read_text(encoding="utf-8")
+        # History persistence now runs in the background commit path; the
+        # manifest digest must still be written by that actual producer.
+        library_commit = (
+            REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationLibraryCommit.cpp"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("color_intent_ready", client_header)
         self.assertIn("download_color_intent", client_header)
@@ -271,7 +276,7 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertIn("validate_color_intent_manifest_file", client_source)
         self.assertIn("m_color_intent_path", panel_header)
         self.assertIn("request.artifact.color_intent_manifest", panel_sources)
-        self.assertIn('metadata["color_intent_sha256"]', panel_sources)
+        self.assertIn('metadata["color_intent_sha256"] = m_color_intent_sha256', library_commit)
         self.assertNotIn("ColorDecomposeRecipe", panel_sources)
 
     def test_model_generation_import_boundary_rejects_auto_slice_tokens(self) -> None:

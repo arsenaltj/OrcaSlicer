@@ -17,6 +17,8 @@ public:
     void mount_assets(wxWindow* parent);
     void unmount_assets();
     void refresh_assets();
+    void apply_library_removals();
+    void apply_library_commit();
     bool open_colors(wxWindow* parent, const AI::GeneratedModelArtifact& artifact);
     std::shared_ptr<ColorMatchingSession> color_session() const { return m_colors.session(); }
     ModelWorkspaceCapabilities& capabilities() { return m_capabilities; }

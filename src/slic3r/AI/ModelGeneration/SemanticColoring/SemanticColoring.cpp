@@ -1,3 +1,4 @@
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "SemanticColoring.hpp"
 #include "SemanticMaskRefinement.hpp"
 #include "SemanticMaterialRegions.hpp"
@@ -20,7 +21,7 @@
 namespace Slic3r::AI::SemanticColoring {
 namespace {
 constexpr uint32_t no_face = std::numeric_limits<uint32_t>::max();
-constexpr size_t maximum_faces = 2000000, maximum_vertices = 6000000;
+constexpr size_t maximum_faces = MeshResourceBudget::maximum_faces, maximum_vertices = MeshResourceBudget::maximum_vertices;
 constexpr size_t maximum_subface_evidence = 1000000;
 bool stopped(const Cancel& cancel) { return cancel && cancel(); }
 bool valid_color(const Color& c)
@@ -44,8 +45,7 @@ Color corner_color(const MeshSnapshot& source, size_t face, int corner)
 }
 std::string validate_snapshot(const MeshSnapshot& source)
 {
-    if (source.mesh.indices.empty() || source.mesh.indices.size() > maximum_faces ||
-        source.mesh.vertices.empty() || source.mesh.vertices.size() > maximum_vertices)
+    if (!MeshResourceBudget::editable(source.mesh.vertices.size(), source.mesh.indices.size()))
         return "The semantic analysis mesh is empty or exceeds the editable mesh limit.";
     if (source.vertex_colors.size() != source.mesh.vertices.size() && source.face_colors.size() != source.mesh.indices.size())
         return "Semantic analysis requires original vertex or face colors.";

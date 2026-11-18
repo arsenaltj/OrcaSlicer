@@ -182,8 +182,15 @@ bool ModelGenerationPanel::show_finishing_version_prepared(const boost::filesyst
     return true;
 }
 
-void ModelGenerationPanel::select_local_finishing_version(const boost::filesystem::path& path, const std::string& id)
+void ModelGenerationPanel::select_local_finishing_version(const boost::filesystem::path& path, const std::string& id,
+                                                         bool continues_history)
 {
+    ModelLibraryEntry before, after;
+    before.model_path = m_displayed_model_path; before.job_id = m_displayed_model_job_id;
+    after.model_path = path; after.job_id = id;
+    if (continues_history) m_workbench_library_binding.replace_checked_asset(*m_library_removals, before, after);
+    else m_workbench_library_binding = {after, after};
+    m_native_workbench_partition_retry.reset();
     if (m_native_workbench_partition_running)
         cancel_native_workbench_partition();
     m_native_workbench_context = {};
@@ -245,7 +252,7 @@ void ModelGenerationPanel::accept_model_finishing(std::optional<AI::ModelMatched
         return;
     }
     if (topology_candidate && !workbench_repair_publication_allowed(
-            m_workbench_check_result, m_finishing_result.repair_geometry_verified)) {
+            m_workbench_check_result, m_finishing_result.repair_geometry_verified, m_finishing_result.repair_native_compatible)) {
         report(_L("修复未通过拓扑、几何或配色复检，原模型保留；可重新检查。")); return;
     }
     // A repair already has a loaded candidate and a captured colour trial.
@@ -344,6 +351,7 @@ void ModelGenerationPanel::accept_model_finishing(std::optional<AI::ModelMatched
             {"boundary_edges", m_finishing_result.boundary_edges}, {"nonmanifold_edges", m_finishing_result.nonmanifold_edges},
             {"max_displacement_source_units", m_finishing_result.max_displacement},
             {"repair_geometry_verified", m_finishing_result.repair_geometry_verified},
+            {"repair_native_compatible", m_finishing_result.repair_native_compatible},
             {"repair_sampled_deviation", m_finishing_result.repair_sampled_deviation},
             {"repair_area_change_ratio", m_finishing_result.repair_area_change_ratio},
             {"repair_strategy", m_finishing_result.repair_strategy}}}
@@ -473,7 +481,7 @@ void ModelGenerationPanel::accept_model_finishing(std::optional<AI::ModelMatched
         m_workbench_auto_palette_path == source &&
         workbench_ai_palette_should_resume_after_accept(
             m_workbench_auto_palette_pending, verified_check.source,
-            workbench_topology_safe(verified_check), verified_check.candidate_status);
+            workbench_topology_accepted(verified_check), verified_check.candidate_status);
     const auto session_revision = m_beauty_session->revision();
     wxWeakRef<ModelGenerationPanel> weak(this);
     m_finishing_running = m_busy = true;
@@ -546,6 +554,8 @@ void ModelGenerationPanel::accept_model_finishing(std::optional<AI::ModelMatched
                     certify_native_workbench_publication(metadata, metadata_path, final_check);
                 } else {
                     final_check.purpose = WorkbenchCheckPurpose::SavedModelReadOnly;
+                    if (!final_check.native_repair_evidence.is_null())
+                        metadata["native_repair_evidence"] = final_check.native_repair_evidence;
                     auto saved_check = final_check;
                     if (topology_candidate) {
                         saved_check.before_faces = final_check.after_faces;
@@ -574,6 +584,10 @@ void ModelGenerationPanel::accept_model_finishing(std::optional<AI::ModelMatched
             wxGetApp().CallAfter([weak, revision, session_revision, canceled, committed, candidate, before, after,
                 source, source_hash, source_context, region_cache_unsaved, topology_candidate, filament_application, native_proof,
                 resume_automatic_palette_after_accept, final_check, metadata_path, error]() mutable {
+                if (weak && !weak->m_shutdown && committed->load()) {
+                    const auto id = metadata_path.stem().string().substr(std::string("orcaslicer-ai-").size());
+                    weak->queue_library_commit(id, ModelLibraryCommitReason::Beauty, revision == weak->m_sequence);
+                }
                 if (!weak || weak->m_shutdown || revision != weak->m_sequence ||
                     !weak->m_beauty_session->is_current(session_revision) ||
                     weak->m_beauty_publication_committed != committed) return;
@@ -640,7 +654,7 @@ void ModelGenerationPanel::accept_model_finishing(std::optional<AI::ModelMatched
                 self->m_finishing_undo_path = self->m_finishing_source;
                 self->m_finishing_restore_context = source_context;
                 self->m_finishing_accepted_path = candidate;
-                self->select_local_finishing_version(candidate, self->m_finishing_id);
+                self->select_local_finishing_version(candidate, self->m_finishing_id, topology_candidate);
                 self->publish_native_workbench_context();
                 if (resume_automatic_palette_after_accept) {
                     self->m_workbench_auto_palette_pending = true;

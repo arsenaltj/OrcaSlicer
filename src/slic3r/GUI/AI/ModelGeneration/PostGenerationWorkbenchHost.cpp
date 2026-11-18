@@ -430,7 +430,7 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
     const bool candidate_pending = !state.candidate_path.empty() ||
         state.check.candidate_status == RepairCandidateStatus::Generating ||
         state.check.candidate_status == RepairCandidateStatus::Ready;
-    const bool topology_safe = workbench_topology_safe(state.check);
+    const bool topology_safe = workbench_topology_accepted(state.check);
     state.can_import_for_slicing = state.actions.can_import && !candidate_pending && !state.dirty && topology_safe;
     if (!m_workbench_check_running && !m_native_workbench_partition_running &&
         (state.check.status == WorkbenchCheckStatus::Attention || state.check.status == WorkbenchCheckStatus::Invalid))
@@ -446,13 +446,18 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
         state.faces = m_model_preview->triangle_count();
         state.vertices = m_model_preview->vertex_count();
     }
+    if (m_library_removals->active() && m_busy) {
+        state.check = {};
+        state.check.summary = "正在删除历史模型…";
+        state.can_import_for_slicing = false;
+    }
     return state;
 }
 
 bool ModelGenerationPanel::can_replace_model_asset() const
 {
     if (m_asset_replace_guard && !m_asset_replace_guard()) return false;
-    return !m_shutdown && !m_history_open && !m_preview_loading && !m_beauty_restore_running && !m_workbench_import_feedback && !m_portrait_draft_before &&
+    return !m_shutdown && !m_library_removals->active() && !m_history_open && !m_preview_loading && !m_beauty_restore_running && !m_workbench_import_feedback && !m_portrait_draft_before &&
         !(m_portrait_task && m_portrait_task->snapshot().running()) && post_generation_asset_switch_allowed(
         m_busy || m_preview_download_in_flight || m_workbench_check_running || m_workbench_import_running,
         m_finishing_running,
@@ -501,7 +506,9 @@ void ModelGenerationPanel::set_workbench_presented(bool presented)
     m_workbench_presented = active;
     ++m_workbench_presentation_sequence;
     if (!active) {
+        m_native_workbench_partition_retry.reset();
         finish_workbench_check_timing("presentation-left");
+        if (m_model_preview) m_model_preview->observe_overlay_frame({});
         if (m_model_preview) m_model_preview->cancel_view_navigation();
         if (m_workbench_check_running && m_workbench_check_cancel)
             m_workbench_check_cancel->store(true);
@@ -541,7 +548,10 @@ void ModelGenerationPanel::cancel_workbench_presentation()
     m_workbench_preparing = false;
     m_workbench_preparation_ready = {};
     ++m_workbench_surface_revision;
-    if (m_model_preview) m_model_preview->observe_presentation_frame({});
+    if (m_model_preview) {
+        m_model_preview->observe_presentation_frame({});
+        m_model_preview->observe_overlay_frame({});
+    }
 }
 
 bool ModelGenerationPanel::request_open_workbench()

@@ -10,6 +10,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <nlohmann/json.hpp>
 
 namespace Slic3r::GUI {
 
@@ -40,6 +41,10 @@ struct WorkbenchCheckResult {
     size_t nonmanifold_vertices {0};
     size_t self_intersections {0};
     bool self_intersections_checked {false};
+    // Populated only from a verified publication/certificate, never from a
+    // general inspection or a caller's success flag.
+    nlohmann::json native_repair_acceptance;
+    nlohmann::json native_repair_evidence;
     size_t small_faces {0};
     std::vector<size_t> issue_faces;
     size_t isolated_components {0};
@@ -308,9 +313,24 @@ inline std::string workbench_palette_status_line(WorkbenchOriginalAppearanceStat
     if (!honor_suite_active)
         return "当前色卡 · " + std::to_string(palette_color_count) + " 色";
     const std::string usage = "模型当前使用 " + std::to_string(honor_suite_used_colors) + "/6 色";
-    return honor_fallback_reason.empty()
+    // Omit detection absence from this label without changing saved diagnostics.
+    std::string fallback = honor_fallback_reason;
+    for (const std::string notice : {"未检测到人物", "未检测到人像"}) {
+        const size_t position = fallback.find(notice);
+        if (position == std::string::npos) continue;
+        size_t length = notice.size();
+        for (const std::string punctuation : {"。", "，", "；"}) {
+            if (fallback.compare(position + length, punctuation.size(), punctuation) == 0) {
+                length += punctuation.size();
+                break;
+            }
+        }
+        fallback.erase(position, length);
+    }
+    if (fallback == "近色回退：") fallback = "近色回退";
+    return fallback.empty()
         ? "荣耀耗材套装 · " + usage
-        : honor_fallback_reason + "\n" + usage;
+        : fallback + "\n" + usage;
 }
 
 // Native workbench configuration is independent of the six-channel AI port.

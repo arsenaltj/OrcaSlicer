@@ -2,6 +2,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchOpenRequest.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/VerifiedModelFiles.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryRepository.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelLibraryDeletion.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
 #include "../test_utils.hpp"
@@ -1009,4 +1010,45 @@ TEST_CASE("A downloaded creator handoff discovers repairs without a sidebar entr
         CHECK(stale->entry.model_path == original.model_path);
         CHECK(fixture.read(repair) == metadata_before);
     }
+}
+
+TEST_CASE("A removed history selection cannot reopen retained bytes or a repaired descendant", "[ModelHistoryOpen][DeletedHistory]")
+{
+    wxInitializer init; REQUIRE(init.IsOk()); HistoryFixture fixture;
+    const auto original = fixture.model("removed-selection", nullptr, false, false);
+    const auto repaired = fixture.model("retained-repair", &original, true, true, 2);
+    auto request = fixture.open(original);
+    REQUIRE(ModelLibraryDeletion::remove(fixture.root, original, {original, repaired}).committed);
+    REQUIRE(boost::filesystem::exists(original.model_path));
+    CHECK_FALSE(fixture.prepare(request));
+}
+
+TEST_CASE("A removed repair stays readable as evidence but cannot become the installed history result", "[ModelHistoryOpen][DeletedHistory]")
+{
+    wxInitializer init; REQUIRE(init.IsOk()); HistoryFixture fixture;
+    const auto original = fixture.model("live-original", nullptr, false, false);
+    const auto repaired = fixture.model("removed-repair", &original, true, true, 2);
+    auto request = fixture.open(original);
+    // An independent consumer keeps the exact certified file alive.
+    auto consumer = repaired; consumer.job_id = "other-consumer";
+    REQUIRE(ModelLibraryDeletion::remove(fixture.root, repaired, {original, repaired, consumer}).committed);
+    REQUIRE(boost::filesystem::exists(repaired.model_path));
+    REQUIRE(fixture.prepare(request));
+    CHECK(request->entry.model_path == original.model_path);
+    CHECK_FALSE(request->check);
+}
+
+TEST_CASE("Deletion during render preparation prevents the prepared result from being installed", "[ModelHistoryOpen][DeletedHistory]")
+{
+    wxInitializer init;REQUIRE(init.IsOk());HistoryFixture fixture;
+    const auto original=fixture.model("deleted-after-prepare",nullptr,false,false);
+    auto request=fixture.open(original);
+    bool removed=false;
+    request->progress=[&](ModelHistoryOpenEvent::Stage stage) {
+        if(stage!=ModelHistoryOpenEvent::Stage::Preview || removed) return;
+        auto consumer=original;consumer.job_id="separate-consumer";
+        removed=ModelLibraryDeletion::remove(fixture.root,original,{original,consumer}).committed;
+    };
+    const auto result=prepare_model_preview_load(original.model_path,{},std::make_shared<ModelHistoryMetadata>(),request,[] {return false;},false);
+    CHECK(removed);CHECK_FALSE(result.error.empty());CHECK_FALSE(request->verified_files);
 }

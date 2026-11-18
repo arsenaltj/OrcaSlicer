@@ -1,5 +1,6 @@
 #pragma once
 
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "slic3r/AI/ModelGeneration/SemanticColoring/SemanticColoring.hpp"
 #include "ModelPreviewPalette.hpp"
 #include "PortraitNativePartition.hpp"
@@ -56,7 +57,7 @@ enum class Strategy : uint8_t {
     ColorRegionMajorityV2
 };
 inline constexpr float same_color_distance = .0025f;
-inline constexpr size_t maximum_units = 2000000;
+inline constexpr size_t maximum_units = MeshResourceBudget::maximum_faces;
 // The color-region postprocess is deliberately limited to the four-to-six
 // color portrait workflow.  Other counts keep the ordinary palette matcher;
 // this is shared by the UI, worker and cache migration code.

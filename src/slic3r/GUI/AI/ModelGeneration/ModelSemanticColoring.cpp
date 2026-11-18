@@ -1,3 +1,4 @@
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "ModelSemanticColoring.hpp"
 #include "slic3r/GUI/Presentation/UiRuntime.hpp"
 #include "PortraitContourProposal.hpp"
@@ -90,7 +91,7 @@ bool decode_semantic_result(const nlohmann::json& value,const std::string& geome
         if (!value.is_object() || value.at("schema")!="orca.semantic-result/v1" ||
             value.at("geometry_id")!=geometry || value.at("face_count")!=count ||
             !value.at("faces").is_array() || value.at("faces").size()>count ||
-            !value.at("subfaces").is_array() || value.at("subfaces").size()>2000000)
+            !value.at("subfaces").is_array() || value.at("subfaces").size()>MeshResourceBudget::maximum_faces)
             throw std::invalid_argument("Invalid saved semantic identity.");
         const auto integer=[](const nlohmann::json& field)->uint64_t {
             if (!field.is_number_integer() || field.get<int64_t>()<0)

@@ -22,7 +22,7 @@ inline bool workbench_import_request_allowed(const PostGenerationWorkbenchState&
     // already painted faces must be rebuilt from the original model instead.
     if (request.native_repair_before_slice || request.topology_risk_confirmed) return false;
     return state.can_import_for_slicing && !state.check.model_sha256.empty() &&
-        workbench_topology_safe(state.check) && request.topology_check_sha256 == state.check.model_sha256;
+        workbench_topology_accepted(state.check) && request.topology_check_sha256 == state.check.model_sha256;
 }
 
 // An asynchronous preparation may have published a temporarily busy view.

@@ -2,6 +2,7 @@
 #include "ModelHistoryOpen.hpp"
 #include "ModelHistoryRepairIndex.hpp"
 #include "ModelLibraryRepository.hpp"
+#include "ModelLibraryDeletion.hpp"
 #include "ModelPreview3D.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "WorkbenchHistoryEvidence.hpp"
@@ -15,6 +16,11 @@ inline bool prepare_history_preview(std::shared_ptr<ModelPreview3D::PreparedMode
     if (canceled()) return false;
     const auto& root = request->root;
     const auto original = request->entry;
+    if (request->selection.model_path.empty()) request->selection = original;
+    if (ModelLibraryDeletion::removed(root, original.job_id, original.model_path)) {
+        error = "该历史模型已删除，请选择其他模型。";
+        return false;
+    }
     if (!request->expected_model_sha256.empty() &&
         AI::model_artifact_sha256(original.model_path) != request->expected_model_sha256) {
         error = "模型内容已变化，请重新打开模型后重试。";
@@ -80,6 +86,7 @@ inline bool prepare_history_preview(std::shared_ptr<ModelPreview3D::PreparedMode
     if (request->repairs && !request->restoring) {
         for (const auto& candidate : candidates) {
             if (canceled()) return false;
+            if (ModelLibraryDeletion::removed(root, candidate.job_id, candidate.model)) continue;
             progress(Stage::Validating);
             if (!request->repairs->current_chain(candidate, original.model_path, canceled)) continue;
             ModelLibraryEntry entry;
@@ -166,6 +173,13 @@ inline ModelPreviewLoadResult prepare_model_preview_load(const boost::filesystem
         if (stopped()) { result.error = "模型预览准备已取消。"; return result; }
         if (history_open) {
             result.stage = "file_validation";
+            const auto& selection = history_open->selection;
+            const auto& resolved = history_open->entry;
+            if (ModelLibraryDeletion::removed(history_open->root, selection.job_id, selection.model_path) ||
+                ModelLibraryDeletion::removed(history_open->root, resolved.job_id, resolved.model_path)) {
+                result.error = "该历史模型在加载期间已删除，请选择其他模型。";
+                return result;
+            }
             history_open->model_hash = result.prepared->artifact_sha256;
             const auto record = history_open->root / "downloads" /
                 ("orcaslicer-ai-" + history_open->entry.job_id + ".json");

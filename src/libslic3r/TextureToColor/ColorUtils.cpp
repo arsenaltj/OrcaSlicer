@@ -1,4 +1,5 @@
 #include "ColorUtils.hpp"
+#include <system_error>
 #include "ColorDistancePrepared.hpp"
 
 #include <CGAL/Aff_transformation_3.h>
@@ -29,6 +30,7 @@
 #include <numeric>
 #include <new>
 #include <thread>
+#include <sstream>
 
 #if defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2) || defined(__SSE2__)
 #include <xmmintrin.h>
@@ -208,7 +210,9 @@ static void record_smoothing_stage(const SmoothParameters& parameters, const cha
 {
     const auto elapsed = std::uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
         SmoothingClock::now() - started).count());
-    BOOST_LOG_TRIVIAL(info) << "[NativeSmoothing] stage=" << stage << " elapsed_ms=" << elapsed << " count=" << count;
+    try {
+        BOOST_LOG_TRIVIAL(info) << "[NativeSmoothing] stage=" << stage << " elapsed_ms=" << elapsed << " count=" << count;
+    } catch (...) { /* Diagnostic output cannot suppress callbacks or invalidate geometry. */ }
     if (parameters.diagnostic_callback) {
         try { parameters.diagnostic_callback(stage, elapsed, count); }
         catch (...) { /* Diagnostics must not invalidate a repair. */ }
@@ -254,7 +258,8 @@ static bool smooth_region_topo_boundary(const CGALMesh& mesh, std::vector<std::s
 }
 
 static bool smooth_region_geom_boundary(CGALMesh& mesh, const std::vector<std::size_t>& face_labels,
-                                       const SmoothParameters& smooth_parameters, bool optimized = true) {
+                                       const SmoothParameters& smooth_parameters, bool optimized = true,
+                                       bool validate_geometry = false) {
     if (smoothing_canceled(smooth_parameters)) return false;
     const auto extraction_started = SmoothingClock::now();
     std::vector<CGALKernel::Vector_3> face_normals(mesh.num_faces());
@@ -523,6 +528,20 @@ static bool smooth_region_geom_boundary(CGALMesh& mesh, const std::vector<std::s
     }
 
     record_smoothing_stage(smooth_parameters, "projection", projection_started, projection_count);
+    if (validate_geometry) {
+        const auto validation_started = SmoothingClock::now();
+        cgalutils::FloatMoveValidation diagnostic;
+        const bool valid = cgalutils::validate_float_vertex_moves(mesh, projection_mesh,
+            boundary_tree, final_vertices, smooth_parameters.cancel_callback, &diagnostic,
+            optimized ? &projection_arena : nullptr);
+        record_smoothing_stage(smooth_parameters, "final-moved-geometry", validation_started, final_vertices.size());
+        if (!valid) {
+            BOOST_LOG_TRIVIAL(warning) << "[NativeSmoothing] final_geometry=" << diagnostic.reason
+                << " face=" << diagnostic.face << " other_face=" << diagnostic.other_face
+                << " original_pair_intersects=" << diagnostic.original_pair_intersects;
+            return false;
+        }
+    }
     return !smoothing_canceled(smooth_parameters);
 }
 
@@ -950,6 +969,58 @@ using WorkingDistFunc = double (*)(const ColorDouble&, const ColorDouble&);
 
 namespace {
 
+class ClusteringDiagnostics;
+thread_local ClusteringDiagnostics* current_clustering_diagnostics = nullptr;
+
+class ClusteringDiagnostics
+{
+public:
+    ClusteringDiagnostics() : m_previous(current_clustering_diagnostics) { current_clustering_diagnostics = this; }
+    ~ClusteringDiagnostics()
+    {
+        current_clustering_diagnostics = m_previous;
+        flush();
+    }
+    static void record(const char* stage, std::uint64_t milliseconds, size_t count, size_t centers = 0, int workers = 0)
+    {
+        const Event event {stage, milliseconds, count, centers, workers};
+        if (auto* batch = current_clustering_diagnostics) {
+            if (batch->m_count == batch->m_events.size()) batch->flush();
+            batch->m_events[batch->m_count++] = event;
+        } else write(&event, 1);
+    }
+private:
+    struct Event {
+        const char* stage;
+        std::uint64_t milliseconds;
+        size_t count;
+        size_t centers;
+        int workers;
+    };
+    static void write(const Event* events, size_t count) noexcept
+    {
+        try {
+            std::ostringstream message;
+            for (size_t i = 0; i < count; ++i) {
+                const auto& event = events[i];
+                if (i) message << '\n';
+                message << "[NativeClustering] stage=" << event.stage << " elapsed_ms=" << event.milliseconds;
+                if (event.workers) message << " samples=" << event.count << " centers=" << event.centers << " workers=" << event.workers;
+                else message << " count=" << event.count;
+            }
+            BOOST_LOG_TRIVIAL(info) << message.str();
+        } catch (...) { /* Logging cannot change colors or suppress callbacks. */ }
+    }
+    void flush() noexcept
+    {
+        if (m_count) write(m_events.data(), m_count);
+        m_count = 0;
+    }
+    ClusteringDiagnostics* m_previous;
+    std::array<Event, 128> m_events;
+    size_t m_count = 0;
+};
+
 // One immutable working-color set and one K trial own this optional cache.
 // All writes happen between parallel passes. Readers never lazily initialize
 // or invalidate it; RGB and unqualified Lab inputs use the original scalar.
@@ -965,7 +1036,7 @@ public:
             m_center_chroma.resize(k);
         } catch (const std::bad_alloc&) {
             disable();
-            return;
+            throw;
         }
         for (std::size_t i = 0; i < working_colors.size(); ++i) {
             if (!detail::prepare_lab_chroma(working_colors[i], m_point_chroma[i])) {
@@ -1056,6 +1127,9 @@ static std::vector<ColorDouble> farthest_point_sampling_init(const std::vector<C
                         });
                 });
                 return;
+            } catch (const std::bad_alloc&) { throw;
+            } catch (const std::length_error&) { throw;
+            } catch (const std::system_error&) { throw;
             } catch (const std::exception& failure) {
                 // Distance writes are independent and min updates idempotent.
                 // Recompute the entire pass before selecting any center.
@@ -1125,9 +1199,8 @@ static std::vector<ColorDouble> farthest_point_sampling_init(const std::vector<C
     }
 
     if (trace)
-        BOOST_LOG_TRIVIAL(info) << "[NativeClustering] stage=seed elapsed_ms="
-            << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count()
-            << " samples=" << working_colors.size() << " centers=" << k << " workers=" << (parallel ? threads : 1);
+        ClusteringDiagnostics::record("seed", std::uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count()), working_colors.size(), k, parallel ? threads : 1);
     return centers;
 }
 
@@ -1381,7 +1454,7 @@ bool RegionSmoothingWorkspace::apply_topology(std::vector<std::size_t>& labels, 
 }
 
 bool RegionSmoothingWorkspace::finish(TriMesh& output, const std::vector<std::size_t>& labels,
-                                     const SmoothParameters& parameters)
+                                     const SmoothParameters& parameters, bool validate_geometry)
 {
     if (!m_impl->valid || m_impl->finished) return false;
     // A canceled or failed finish cannot later install its partial workspace.
@@ -1392,14 +1465,20 @@ bool RegionSmoothingWorkspace::finish(TriMesh& output, const std::vector<std::si
         original_points.reserve(m_impl->mesh.num_vertices());
         for (auto vertex : m_impl->mesh.vertices()) original_points.push_back(m_impl->mesh.point(vertex));
         try {
-            if (!smooth_region_geom_boundary(m_impl->mesh, labels, parameters)) return false;
+            if (!smooth_region_geom_boundary(m_impl->mesh, labels, parameters, true, validate_geometry)) return false;
+        } catch (const std::bad_alloc&) {
+            throw;
+        } catch (const std::length_error&) {
+            throw;
+        } catch (const std::system_error&) {
+            throw;
         } catch (const std::exception&) {
             if (smoothing_canceled(parameters)) return false;
             // A failed optimized query cannot feed the fallback mutated data.
             std::size_t index = 0;
             for (auto vertex : m_impl->mesh.vertices()) m_impl->mesh.point(vertex) = original_points[index++];
             BOOST_LOG_TRIVIAL(warning) << "[NativeSmoothing] retrying exact serial projection from immutable geometry";
-            if (!smooth_region_geom_boundary(m_impl->mesh, labels, parameters, false)) return false;
+            if (!smooth_region_geom_boundary(m_impl->mesh, labels, parameters, false, validate_geometry)) return false;
         }
     }
     const auto started = SmoothingClock::now();
@@ -1467,7 +1546,7 @@ static void record_clustering_stage(const ClusterParameters& parameters, const c
                                     SmoothingClock::duration elapsed, std::size_t count)
 {
     const auto milliseconds = std::uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
-    BOOST_LOG_TRIVIAL(info) << "[NativeClustering] stage=" << stage << " elapsed_ms=" << milliseconds << " count=" << count;
+    ClusteringDiagnostics::record(stage, milliseconds, count);
     if (parameters.diagnostic_callback) {
         try { parameters.diagnostic_callback(stage, milliseconds, count); }
         catch (...) { /* Diagnostics must not change clustering or repair success. */ }
@@ -1484,6 +1563,25 @@ static std::vector<ColorDouble> kmeans_core(const std::vector<ColorDouble>& work
     SmoothingClock::duration assignment_time{}, update_time{};
     std::size_t assignment_count = 0, update_count = 0, stable_centers = 0;
     std::size_t pending_stable_columns = 0, assignment_reusable_columns = 0;
+    // Cache only exact distances already computed by an assignment pass.
+    // A row is owned by one worker; bitwise-unchanged centers are the only
+    // columns retained between passes. No centroid sum or comparison moves.
+    std::unique_ptr<double[]> assignment_distances;
+    std::vector<std::uint64_t> assignment_valid;
+    std::uint64_t unchanged_columns = 0;
+    std::size_t assignment_distance_reuses = 0, assignment_cache_bytes = 0;
+    if (k > 0 && k <= 64 && working_colors.size() >= 256 && distances.can_use_on_this_thread() &&
+        working_colors.size() <= MeshResourceBudget::block_bytes / ((k + 1) * sizeof(double))) {
+        try {
+            assignment_valid.resize(working_colors.size(), 0);
+            assignment_distances.reset(new double[working_colors.size() * k]);
+            assignment_cache_bytes = working_colors.size() * (k * sizeof(double) + sizeof(std::uint64_t));
+        } catch (const std::bad_alloc&) {
+            // Optional storage must not remove an otherwise valid scalar path.
+            std::vector<std::uint64_t>().swap(assignment_valid);
+            assignment_distances.reset();
+        }
+    }
     const auto record_iterations = [&] {
         record_clustering_stage(parameters, "kmeans.assignment", assignment_time, assignment_count);
         record_clustering_stage(parameters, "kmeans.update", update_time, update_count);
@@ -1493,6 +1591,8 @@ static std::vector<ColorDouble> kmeans_core(const std::vector<ColorDouble>& work
         record_clustering_stage(parameters, "kmeans.assignment_column_comparisons", {},
             assignment_count > 0 ? k * (assignment_count - 1) : 0);
         record_clustering_stage(parameters, "kmeans.working_colors", {}, working_colors.size());
+        record_clustering_stage(parameters, "kmeans.assignment_cache_bytes", {}, assignment_cache_bytes);
+        record_clustering_stage(parameters, "kmeans.assignment_distance_reuses", {}, assignment_distance_reuses);
     };
     const auto& cancel_cb = parameters.cancel_callback;
 
@@ -1500,19 +1600,40 @@ static std::vector<ColorDouble> kmeans_core(const std::vector<ColorDouble>& work
         if (cancel_cb && cancel_cb()) { record_iterations(); return centers; }
         const auto stable_columns_for_pass = pending_stable_columns;
         std::atomic<bool> changed(false);
+        std::atomic<std::size_t> reused_distances {0};
 
         const auto assignment_started = SmoothingClock::now();
         tbb::parallel_for(tbb::blocked_range<std::size_t>(0, working_colors.size()), [&](const tbb::blocked_range<size_t>& range) {
             const bool use_prepared = distances.can_use_on_this_thread();
+            std::size_t local_reuses = 0;
             for (std::size_t i = range.begin(); i < range.end(); ++i) {
                 double min_dist = std::numeric_limits<double>::max();
                 std::size_t best_cluster = 0;
 
-                for (std::size_t j = 0; j < k; ++j) {
-                    double d = distances.point_to_center(i, j, centers[j], use_prepared);
-                    if (d < min_dist) {
-                        min_dist = d;
-                        best_cluster = j;
+                if (assignment_distances && use_prepared) {
+                    auto valid = assignment_valid[i] & unchanged_columns;
+                    double* row = assignment_distances.get() + i * k;
+                    for (std::size_t j = 0; j < k; ++j) {
+                        const auto bit = std::uint64_t(1) << j;
+                        double d;
+                        if (valid & bit) { d = row[j]; ++local_reuses; }
+                        else {
+                            d = row[j] = distances.point_to_center(i, j, centers[j], true);
+                            valid |= bit;
+                        }
+                        if (d < min_dist) { min_dist = d; best_cluster = j; }
+                    }
+                    assignment_valid[i] = valid;
+                } else {
+                    // An unqualified FP worker never reads or publishes cache
+                    // entries, even if a preceding default-mode pass did.
+                    if (assignment_distances) assignment_valid[i] = 0;
+                    for (std::size_t j = 0; j < k; ++j) {
+                        double d = distances.point_to_center(i, j, centers[j], use_prepared);
+                        if (d < min_dist) {
+                            min_dist = d;
+                            best_cluster = j;
+                        }
                     }
                 }
 
@@ -1521,8 +1642,10 @@ static std::vector<ColorDouble> kmeans_core(const std::vector<ColorDouble>& work
                     assignments[i] = best_cluster;
                 }
             }
+            if (local_reuses) reused_distances.fetch_add(local_reuses, std::memory_order_relaxed);
         });
         assignment_time += SmoothingClock::now() - assignment_started;
+        assignment_distance_reuses += reused_distances.load(std::memory_order_relaxed);
         ++assignment_count;
         // Count only stable centers consumed by a complete next assignment.
         // Final updates, cancellation and failed passes cannot claim a hit.
@@ -1534,6 +1657,7 @@ static std::vector<ColorDouble> kmeans_core(const std::vector<ColorDouble>& work
         }
 
         const auto update_started = SmoothingClock::now();
+        unchanged_columns = 0;
         std::vector<ColorDouble> new_centers(k, {0.0, 0.0, 0.0});
         std::vector<std::size_t> counts(k, 0);
 
@@ -1574,11 +1698,13 @@ static std::vector<ColorDouble> kmeans_core(const std::vector<ColorDouble>& work
                 centers[i][2] = new_centers[i][2] / counts[i];
             }
             distances.refresh_center(i, centers[i]);
-            // Passive evidence for future request-local reuse. It neither
-            // selects a computation path nor changes the original update order.
+            // Retain only the exact previous assignment's center identity.
+            // Empty-cluster searches above still use the original mixed
+            // old/new centers and do not consume this assignment cache.
             if (std::memcmp(previous_center.data(), centers[i].data(), 3 * sizeof(double)) == 0) {
                 ++stable_centers;
                 ++pending_stable_columns;
+                if (assignment_distances) unchanged_columns |= std::uint64_t(1) << i;
             }
         }
         update_time += SmoothingClock::now() - update_started;
@@ -1591,6 +1717,7 @@ static std::vector<ColorDouble> kmeans_core(const std::vector<ColorDouble>& work
 
 // K-Means clustering algorithm
 std::vector<Color> cluster_k_means(const std::vector<Color>& colors, const ClusterParameters& cluster_parameters) {
+    ClusteringDiagnostics diagnostics;
     std::size_t k = cluster_parameters.cluster_k;
     std::size_t max_iter = cluster_parameters.max_iter;
 
@@ -1773,6 +1900,7 @@ struct ColorPCA {
 }
 
 std::vector<Color> cluster_adaptive(const std::vector<Color>& colors, const ClusterParameters& cluster_parameters) {
+    ClusteringDiagnostics diagnostics;
     if (colors.empty()) {
         return {};
     }

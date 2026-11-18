@@ -134,11 +134,11 @@ inline void load_verified_native_mesh(const AI::ModelImportRequest& request,
             geometry_id, appearance_id, reference.at("metadata_path").get<std::string>(),
             metadata, partition_digest, topology_hash) &&
         WorkbenchArtifacts::decode_workbench_check_certificate(certificate, checked) &&
-        workbench_topology_safe(checked) && checked.before_faces == face_count,
+        workbench_topology_accepted(checked) && checked.before_faces == face_count,
         "Native import workbench certificate mismatch.");
 
     const auto& native = metadata.at("native_portrait_topology_certificate");
-    require(native.at("schema") == "orca.native-workbench-topology-certificate/v1" &&
+    require(native_repair_topology_allowed(metadata.at("partition_build_report").at("strict_repair"), native) &&
         AI::beauty_leaf_digest(native.dump()) == topology_hash &&
         native.at("carrier_sha256") == carrier_sha256 &&
         native.at("geometry_id") == geometry_id &&
@@ -146,24 +146,17 @@ inline void load_verified_native_mesh(const AI::ModelImportRequest& request,
         native.at("native_mesh_sha256") == cache_reference.at("native_mesh_sha256") &&
         native.at("coordinate_units") == reference.at("coordinate_units") &&
         native.at("source_bounds_mm") == reference.at("source_bounds_mm") &&
-        native.at("carrier_bounds_mm") == reference.at("carrier_bounds_mm"),
+        native.at("carrier_bounds_mm") == reference.at("carrier_bounds_mm") &&
+        native.value("native_repair_compatible", false) == reference.value("native_repair_compatible", false),
         "Native import strict topology identity mismatch.");
     const auto& report = metadata.at("partition_build_report");
     const auto& strict = report.at("strict_repair");
     require(report.at("schema") == "orca.native-workbench-partition-build-report/v1" &&
         report.at("success").get<bool>() && strict.at("success").get<bool>() &&
-        !strict.at("canceled").get<bool>() && strict.at("geometry_verified").get<bool>() &&
+        !strict.at("canceled").get<bool>() &&
         strict.at("output_topology") == native.at("topology"),
         "Native import strict repair report mismatch.");
-    const auto deviation = strict.at("sampled_deviation_ratio").get<double>();
-    const auto area_change = strict.at("area_change_ratio").get<double>();
-    const StrictMeshRepairOptions limits;
-    require(std::isfinite(deviation) && deviation >= 0.0 &&
-        deviation <= limits.maximum_sampled_deviation_ratio &&
-        std::isfinite(area_change) && area_change >= 0.0 &&
-        area_change <= limits.maximum_area_change_ratio &&
-        native.at("sampled_deviation_ratio").get<double>() == deviation &&
-        native.at("area_change_ratio").get<double>() == area_change,
+    require(native_repair_geometry_allowed(strict, native),
         "Native import strict geometry report mismatch.");
     const auto& topology = native.at("topology");
     require(checked.boundary_edges == topology.at("open_edges").get<size_t>() &&
@@ -187,6 +180,9 @@ inline void load_verified_native_mesh(const AI::ModelImportRequest& request,
     require(identity.geometry_id == geometry_id && identity.partition_digest == partition_digest &&
         checked.before_vertices == exact_mesh.its.vertices.size(),
         "Native import exact mesh identity or vertex count changed.");
+    if (!checked.native_repair_acceptance.is_null())
+        require(native_repair_receipt_matches(checked.native_repair_acceptance, exact_mesh.its),
+            "Native import execution output identity mismatch.");
     checkpoint();
     verify_files();
     require(AI::model_artifact_sha256(metadata_path) == proof.at("metadata_file_sha256"),

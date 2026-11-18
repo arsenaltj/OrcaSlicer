@@ -13,6 +13,7 @@
 #include <cstring>
 #include <random>
 #include <type_traits>
+#include "diagnostic_log_capture.hpp"
 #include <tbb/task_arena.h>
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/Surface_mesh.h>
@@ -23,10 +24,14 @@
 
 #include <libslic3r/MeshBoolean.hpp>
 #include <libslic3r/MeshRepair.hpp>
+#include <libslic3r/Model.hpp>
 #include <libslic3r/PolygonSoupPreparation.hpp>
 #include <libslic3r/Point.hpp>
 #include <libslic3r/libslic3r.h>
 #include <libslic3r/TriangleMesh.hpp>
+#include <libslic3r/TriangleMeshSlicer.hpp>
+#include <libslic3r/ClipperUtils.hpp>
+#include <libslic3r/Utils.hpp>
 
 using namespace Slic3r;
 using Catch::Matchers::WithinRel;
@@ -62,6 +67,25 @@ indexed_triangle_set soup(const indexed_triangle_set &its)
 }
 
 double regular_polygon_area(int sides, double radius) { return 0.5 * sides * radius * radius * std::sin(2. * PI / sides); }
+
+indexed_triangle_set open_pipe(int sides, double outer, double inner, double height)
+{
+    indexed_triangle_set mesh;
+    for (const double radius : {outer, inner})
+        for (int k = 0; k < sides; ++k) {
+            const double angle = 2. * PI * k / sides;
+            mesh.vertices.emplace_back(float(radius * std::cos(angle)), float(radius * std::sin(angle)), 0.f);
+            mesh.vertices.emplace_back(float(radius * std::cos(angle)), float(radius * std::sin(angle)), float(height));
+        }
+    for (int k = 0; k < sides; ++k) {
+        const int a0 = 2 * k, b0 = a0 + 1, a1 = 2 * ((k + 1) % sides), b1 = a1 + 1;
+        mesh.indices.emplace_back(a0, a1, b1);
+        mesh.indices.emplace_back(a0, b1, b0);
+        mesh.indices.emplace_back(2 * sides + a0, 2 * sides + b1, 2 * sides + a1);
+        mesh.indices.emplace_back(2 * sides + a0, 2 * sides + b0, 2 * sides + b1);
+    }
+    return mesh;
+}
 
 // Closed by vertex indices, outward oriented and free of self-intersections.
 void check_solid(const TriangleMesh &mesh, double volume)
@@ -442,6 +466,142 @@ TEST_CASE("Crossing shells stay separate parts and are made solid", "[MeshRepair
     CHECK(mesh.split().size() == 2);
 }
 
+TEST_CASE("Native acceptance preserves crossing shells accepted by the official volume repair", "[MeshRepair][NativeRepairCompatibility]")
+{
+    const double size = GENERATE(1., 20., 1000.);
+    auto second = cube(size, Vec3d(size * .5, size * .5, size * .5));
+    its_flip_triangles(second);
+    const auto original = merged({cube(size), second});
+    Model reference;
+    auto* volume = reference.add_object()->add_volume(TriangleMesh(original));
+    // add_volume centers its copy for placement; compare the same local input
+    // to the official algorithm rather than comparing different transforms.
+    volume->set_mesh(TriangleMesh(original));
+    MeshRepairStats stats;
+    std::string error;
+    REQUIRE(volume->repair(true, &stats, &error));
+    REQUIRE(error.empty());
+    const auto& official = volume->mesh();
+    REQUIRE(MeshBoolean::cgal::does_self_intersect(official));
+    StrictMeshRepairOptions options;
+    options.allow_native_repair_geometry_change = true;
+    options.acceptance = MeshRepairAcceptance::OrcaNative;
+    const auto candidate = strict_repair_mesh(original, options);
+    INFO(candidate.error);
+    REQUIRE(candidate.success);
+    CHECK(candidate.native_repair_succeeded);
+    CHECK(candidate.acceptance == MeshRepairAcceptance::OrcaNative);
+    CHECK(candidate.output_topology.self_intersects);
+    CHECK_FALSE(candidate.output_topology.safe());
+    CHECK(candidate.repaired_mesh.indices == official.its.indices);
+    REQUIRE(candidate.repaired_mesh.vertices.size() == official.its.vertices.size());
+    for (size_t i = 0; i < official.its.vertices.size(); ++i)
+        CHECK(candidate.repaired_mesh.vertices[i] == official.its.vertices[i]);
+    CHECK(original.indices == merged({cube(size), second}).indices);
+}
+
+TEST_CASE("Official positive volume repairs retain their slicing semantics through candidate acceptance",
+          "[MeshRepair][NativeRepairCompatibility][OfficialRepairMatrix]")
+{
+    const int scenario = GENERATE(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13);
+    const bool reordered = GENERATE(false, true);
+    CAPTURE(scenario, reordered);
+    auto input = cube(20.);
+    switch (scenario) {
+    case 1: input.indices.erase(input.indices.begin(), input.indices.begin() + 3); break;
+    case 2: std::swap(input.indices[0][1], input.indices[0][2]); break;
+    case 3: its_flip_triangles(input); break;
+    case 4:
+        input = soup(input);
+        for (size_t v = 0; v < 6; ++v) input.vertices[v] += Vec3f(1e-5f, -1e-5f, 1e-5f);
+        break;
+    case 5:
+        input.vertices = {{0,0,0},{20,0,0},{20,20,0},{0,20,0},{0,0,20},{20,0,20},{20,20,20},{0,20,20},{10,0,20}};
+        input.indices = {{0,2,1},{0,3,2},{4,8,7},{8,6,7},{8,5,6},{0,1,5},{0,5,4},
+            {1,2,6},{1,6,5},{2,3,7},{2,7,6},{3,0,4},{3,4,7}};
+        break;
+    case 6: {
+        auto cavity = cube(10., {5.,5.,5.}); its_flip_triangles(cavity);
+        input = merged({input, cavity}); break;
+    }
+    case 7: input = merged({input, cube(10., {5.,5.,5.})}); break;
+    case 8: input = soup(merged({input, cube(20., {20.,0.,0.})})); break;
+    case 9: {
+        auto back = input; its_flip_triangles(back); input = soup(merged({input, back})); break;
+    }
+    case 10:
+        input.vertices.insert(input.vertices.end(), {{30,0,0},{40,0,0},{30,10,0}});
+        input.indices.emplace_back(8,9,10); break;
+    case 11: input = merged({input, cube(5., {30.,5.,5.})}); break;
+    case 12: input = open_pipe(64, 10., 7., 20.); break;
+    case 13: input = soup(input); break;
+    default: break;
+    }
+    if (reordered) {
+        std::mt19937 random(610219); std::shuffle(input.indices.begin(), input.indices.end(), random);
+    }
+    const auto untouched = input;
+    Model model;
+    auto* volume = model.add_object()->add_volume(TriangleMesh(input), ModelVolumeType::MODEL_PART, false);
+    MeshRepairStats stats;
+    std::string error;
+    REQUIRE(volume->repair(true, &stats, &error));
+    REQUIRE(error.empty());
+    REQUIRE_FALSE(volume->mesh().empty());
+    StrictMeshRepairOptions options;
+    options.acceptance = MeshRepairAcceptance::OrcaNative;
+    options.allow_native_repair_geometry_change = true;
+    const auto candidate = strict_repair_mesh(input, options);
+    INFO(candidate.error);
+    REQUIRE(candidate.accepted());
+    REQUIRE_FALSE(candidate.repaired_mesh.indices.empty());
+    // Slice with the same nonzero rule used by native printing. Inward shells
+    // must remain cavities; same-direction internal shells add no solid area.
+    const std::vector<float> heights {1.f, 6.f, 10.f, 14.f, 19.f};
+    const auto official_slices = slice_mesh_ex(volume->mesh().its, heights);
+    const auto actual_slices = slice_mesh_ex(candidate.repaired_mesh, heights);
+    REQUIRE(actual_slices.size() == official_slices.size());
+    for (size_t i = 0; i < actual_slices.size(); ++i) {
+        const auto missing = diff_ex(official_slices[i], actual_slices[i]);
+        const auto extra = diff_ex(actual_slices[i], official_slices[i]);
+        double changed_area = 0.;
+        for (const auto& polygon : missing) changed_area += polygon.area();
+        for (const auto& polygon : extra) changed_area += polygon.area();
+        CHECK(changed_area * SCALING_FACTOR * SCALING_FACTOR <= 1e-3);
+    }
+    CHECK(input.indices == untouched.indices);
+    CHECK(input.vertices == untouched.vertices);
+}
+
+TEST_CASE("Native acceptance binds actual output and rejects invalid inputs and cancellation",
+          "[MeshRepair][NativeRepairCompatibility]")
+{
+    auto original = cube(20.);
+    const auto hash = mesh_repair_geometry_id(original);
+    REQUIRE(hash.size() == 64);
+    auto expanded = original;
+    expanded.vertices.clear(); expanded.indices.clear();
+    for (const auto& face : original.indices) {
+        const int offset = int(expanded.vertices.size());
+        for (int c = 0; c < 3; ++c) expanded.vertices.push_back(original.vertices[face[c]]);
+        expanded.indices.emplace_back(offset, offset + 1, offset + 2);
+    }
+    CHECK(mesh_repair_geometry_id(expanded) == hash);
+    expanded.vertices.front().x() += 1.f;
+    CHECK(mesh_repair_geometry_id(expanded) != hash);
+    StrictMeshRepairOptions options;
+    options.acceptance = MeshRepairAcceptance::OrcaNative;
+    const auto canceled = strict_repair_mesh(original, options, {}, [] { return true; });
+    CHECK(canceled.canceled);
+    CHECK_FALSE(canceled.accepted());
+    original.indices.front()[0] = int(original.vertices.size());
+    CHECK(mesh_repair_geometry_id(original).empty());
+    const auto invalid = strict_repair_mesh(original, options);
+    CHECK_FALSE(invalid.success);
+    CHECK_FALSE(invalid.accepted());
+    CHECK_FALSE(invalid.enhanced_repair_attempted);
+}
+
 TEST_CASE("Solids touching face to face in a soup lose the wall between them", "[MeshRepair]")
 {
     // The mirrored copy shares the wall at x = 10 with exactly the same triangles, reversed.
@@ -479,21 +639,7 @@ TEST_CASE("A pipe missing its end caps gets annular caps", "[MeshRepair]")
 {
     const int    n = 64;
     const double h = 20., r_out = 10., r_in = 7.;
-    indexed_triangle_set its;
-    for (const double r : {r_out, r_in})
-        for (int k = 0; k < n; ++k) {
-            const double a = 2. * PI * k / n;
-            its.vertices.emplace_back(float(r * std::cos(a)), float(r * std::sin(a)), 0.f);
-            its.vertices.emplace_back(float(r * std::cos(a)), float(r * std::sin(a)), float(h));
-        }
-    for (int k = 0; k < n; ++k) {
-        const int a0 = 2 * k, b0 = a0 + 1, a1 = 2 * ((k + 1) % n), b1 = a1 + 1;
-        its.indices.emplace_back(a0, a1, b1);
-        its.indices.emplace_back(a0, b1, b0);
-        its.indices.emplace_back(2 * n + a0, 2 * n + b1, 2 * n + a1);
-        its.indices.emplace_back(2 * n + a0, 2 * n + b0, 2 * n + b1);
-    }
-    TriangleMesh mesh(std::move(its));
+    TriangleMesh mesh(open_pipe(n, r_out, r_in, h));
     REQUIRE(repair_mesh(mesh));
     check_solid(mesh, h * (regular_polygon_area(n, r_out) - regular_polygon_area(n, r_in)));
 }
@@ -558,6 +704,61 @@ TEST_CASE("Progress is reported in order and throwing from it cancels the repair
     CHECK(canceled.its.indices == original.its.indices);
 }
 
+TEST_CASE("Repair diagnostics batch every completed stage and flush canceled attempts independently", "[MeshRepair][RepairDiagnostics]")
+{
+    Slic3r::Test::DiagnosticLogCapture capture;
+    auto source = cube(20.);
+    source.indices.pop_back();
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        TriangleMesh mesh(source);
+        std::string error;
+        REQUIRE(MeshBoolean::cgal::repair(mesh, nullptr, &error));
+        CHECK(strict_repair_mesh(mesh.its).input_topology.safe());
+        const auto backend = capture.sink->locked_backend();
+        REQUIRE(backend->messages.size() == size_t(attempt + 1));
+        const auto& message = backend->messages.back();
+        CHECK(message.find("begin stage=repair_mesh_total") != std::string::npos);
+        CHECK(message.find("end stage=repair_polygon_soup") != std::string::npos);
+        CHECK(message.find("end stage=check_float_self_intersections") != std::string::npos);
+        CHECK(message.find("end stage=repair_mesh_total") != std::string::npos);
+        CHECK(message.find("elapsed_us=") != std::string::npos);
+        CHECK(message.find("offset_us=") != std::string::npos);
+    }
+    TriangleMesh canceled(source);
+    int checks = 0;
+    std::string error;
+    CHECK_FALSE(MeshBoolean::cgal::repair(canceled, nullptr, &error, [&] { return ++checks >= 4; }));
+    CHECK(error == "Repair canceled");
+    CHECK(canceled.its.vertices == source.vertices);
+    CHECK(canceled.its.indices == source.indices);
+    const auto backend = capture.sink->locked_backend();
+    REQUIRE(backend->messages.size() == 3);
+    CHECK(backend->messages.back().find("end stage=repair_mesh_total") != std::string::npos);
+}
+
+TEST_CASE("A failed diagnostic sink cannot reject a successfully repaired mesh", "[MeshRepair][RepairDiagnostics]")
+{
+    Slic3r::Test::DiagnosticLogCapture capture;
+    capture.sink->locked_backend()->fail = true;
+    auto source = cube(20.);
+    source.indices.pop_back();
+    TriangleMesh mesh(source);
+    std::string error;
+    REQUIRE(MeshBoolean::cgal::repair(mesh, nullptr, &error));
+    CHECK(error.empty());
+    CHECK(strict_repair_mesh(mesh.its).input_topology.safe());
+}
+
+TEST_CASE("A failed repair summary sink preserves the accepted result", "[MeshRepair][RepairDiagnostics][StageDiagnostics]")
+{
+    Slic3r::Test::DiagnosticLogCapture capture("strict_repair_mesh:");
+    capture.sink->locked_backend()->fail = true;
+    StrictMeshRepairResult result;
+    REQUIRE_NOTHROW(result = strict_repair_mesh(cube(20.)));
+    REQUIRE(result.success);
+    CHECK(result.output_topology.safe());
+}
+
 TEST_CASE("Strict mesh repair certifies valid geometry without a second repair", "[MeshRepair][StrictMeshRepair]")
 {
     const indexed_triangle_set source = cube(20.);
@@ -597,6 +798,190 @@ TEST_CASE("Strict mesh repair rejects cancellation without publishing geometry",
     const StrictMeshRepairResult result = strict_repair_mesh(source, {}, {}, [&] { return ++checks >= 2; });
     CHECK_FALSE(result.success);
     CHECK(result.canceled);
+    CHECK(result.repaired_mesh.empty());
+}
+
+TEST_CASE("Native compatible repair accepts necessary hole filling without changing the strict default", "[MeshRepair][StrictMeshRepair][NativeRepairCompatibility]")
+{
+    const double scale = GENERATE(1.0, 20.0, 1000.0);
+    auto source = cube(scale);
+    const bool triangle_soup = GENERATE(false, true);
+    source.indices.pop_back();
+    if (triangle_soup) source = soup(source);
+    const auto original = source;
+    TriangleMesh native(source);
+    REQUIRE(repair_mesh(native));
+    const auto strict = strict_repair_mesh(source);
+    CHECK_FALSE(strict.success);
+    CHECK_FALSE(strict.native_repair_compatible);
+    StrictMeshRepairOptions options;
+    options.allow_native_repair_geometry_change = true;
+    options.acceptance = GENERATE(MeshRepairAcceptance::Strict, MeshRepairAcceptance::OrcaNative);
+    const auto compatible = strict_repair_mesh(source, options);
+    REQUIRE(compatible.success);
+    CHECK(compatible.native_repair_compatible);
+    CHECK_FALSE(compatible.geometry_verified);
+    CHECK(compatible.strategy == "orca-native");
+    CHECK(compatible.enhanced_repair_attempted);
+    CHECK_FALSE(compatible.second_cgal_attempted);
+    CHECK(compatible.output_topology.safe());
+    CHECK(compatible.acceptance == MeshRepairAcceptance::Strict);
+    CHECK_FALSE(compatible.native_repair_succeeded);
+    CHECK(compatible.repaired_mesh.vertices == native.its.vertices);
+    CHECK(compatible.repaired_mesh.indices == native.its.indices);
+    CHECK(source.vertices == original.vertices);
+    CHECK(source.indices == original.indices);
+}
+
+TEST_CASE("Enabling native compatibility adds no repair pass for an already safe mesh", "[MeshRepair][StrictMeshRepair][NativeRepairCompatibility]")
+{
+    const auto source = cube(20.0);
+    StrictMeshRepairOptions options;
+    options.allow_native_repair_geometry_change = true;
+    const auto result = strict_repair_mesh(source, options);
+    REQUIRE(result.success);
+    CHECK(result.geometry_verified);
+    CHECK(result.area_change_ratio == 0.);
+    CHECK(result.sampled_deviation == 0.);
+    CHECK(result.sampled_deviation_ratio == 0.);
+    CHECK_FALSE(result.native_repair_compatible);
+    CHECK_FALSE(result.first_cgal_attempted);
+    CHECK_FALSE(result.enhanced_repair_attempted);
+    CHECK(result.repaired_mesh.vertices == source.vertices);
+    CHECK(result.repaired_mesh.indices == source.indices);
+}
+
+TEST_CASE("Read only deviation queries preserve repair output and geometry facts across thread counts",
+          "[MeshRepair][StrictMeshRepair][NativeRepairCompatibility]")
+{
+    auto source = make_sphere(10., PI / 24.).its;
+    source.indices.pop_back();
+    StrictMeshRepairOptions options;
+    options.allow_native_repair_geometry_change = true;
+    const auto serial = tbb::task_arena(1).execute([&] { return strict_repair_mesh(source, options); });
+    const auto parallel = tbb::task_arena(4).execute([&] { return strict_repair_mesh(source, options); });
+    REQUIRE(serial.success);
+    REQUIRE(parallel.success);
+    CHECK(serial.repaired_mesh.vertices == parallel.repaired_mesh.vertices);
+    CHECK(serial.repaired_mesh.indices == parallel.repaired_mesh.indices);
+    CHECK(serial.sampled_deviation == parallel.sampled_deviation);
+    CHECK(serial.sampled_deviation_ratio == parallel.sampled_deviation_ratio);
+    CHECK(serial.area_change_ratio == parallel.area_change_ratio);
+    CHECK(serial.geometry_verified == parallel.geometry_verified);
+    CHECK(serial.native_repair_compatible == parallel.native_repair_compatible);
+    CHECK(serial.strategy == parallel.strategy);
+    CHECK(serial.output_topology.safe());
+    CHECK(parallel.output_topology.safe());
+}
+
+TEST_CASE("Float output validation binds a completed intersection check to the actual geometry and clears on cancellation",
+          "[MeshRepair][StrictMeshRepair][NativeRepairCompatibility]")
+{
+    const bool fill_hole = GENERATE(false, true);
+    auto source = cube(20.);
+    if (fill_hole) source.indices.pop_back();
+    TriangleMesh checked(source), ordinary(source);
+    MeshBoolean::cgal::FloatOutputValidation validation;
+    CHECK_FALSE(validation.matches(source));
+    std::string error;
+    REQUIRE(MeshBoolean::cgal::repair(checked, nullptr, &error, {}, &validation));
+    CHECK(error.empty());
+    REQUIRE(MeshBoolean::cgal::repair(ordinary));
+    CHECK(validation.matches(checked.its));
+    CHECK(checked.its.vertices == ordinary.its.vertices);
+    CHECK(checked.its.indices == ordinary.its.indices);
+    CHECK_FALSE(MeshBoolean::cgal::does_self_intersect(checked));
+    auto changed = checked.its;
+    changed.vertices.front().x() += .5f;
+    CHECK_FALSE(validation.matches(changed));
+    changed = checked.its;
+    std::reverse(changed.indices.begin(), changed.indices.end());
+    CHECK_FALSE(validation.matches(changed));
+    changed = checked.its;
+    changed.indices.front()[0] = int(changed.vertices.size());
+    CHECK_FALSE(validation.matches(changed));
+    changed = checked.its;
+    changed.vertices.front().x() = std::numeric_limits<float>::infinity();
+    CHECK_FALSE(validation.matches(changed));
+    TriangleMesh canceled(source);
+    CHECK_FALSE(MeshBoolean::cgal::repair(canceled, nullptr, &error, [] { return true; }, &validation));
+    CHECK_FALSE(validation.matches(checked.its));
+    CHECK(canceled.its.vertices == source.vertices);
+    CHECK(canceled.its.indices == source.indices);
+}
+
+TEST_CASE("Geometry change measurements ignore duplicate faces with signed zero corners",
+          "[MeshRepair][StrictMeshRepair][NativeRepairCompatibility]")
+{
+    const bool negative_zero = GENERATE(false, true);
+    auto source = soup(cube(20.));
+    source.indices.pop_back();
+    const int offset = int(source.vertices.size());
+    const auto first = source.indices.front();
+    for (int c = 0; c < 3; ++c) {
+        auto point = source.vertices[first[c]];
+        if (negative_zero) for (int axis = 0; axis < 3; ++axis) if (point[axis] == 0.f) point[axis] = -0.f;
+        source.vertices.push_back(point);
+    }
+    source.indices.emplace_back(offset, offset + 1, offset + 2);
+    StrictMeshRepairOptions options;
+    options.allow_native_repair_geometry_change = true;
+    const auto result = strict_repair_mesh(source, options);
+    INFO(result.error);
+    REQUIRE(result.success);
+    CHECK(result.output_topology.safe());
+    CHECK_THAT(result.area_change_ratio, WithinRel(1. / 11., 1e-12));
+    CHECK(result.sampled_deviation > 0.);
+}
+
+TEST_CASE("Exact unchanged surfaces retain zero deviation after duplicate removal welding and face reordering",
+          "[MeshRepair][StrictMeshRepair][NativeRepairCompatibility]")
+{
+    const bool triangle_soup = GENERATE(false, true);
+    const bool reorder = GENERATE(false, true);
+    auto source = make_sphere(10., PI / 24.).its;
+    source.indices.push_back(source.indices.front());
+    source.indices.push_back(source.indices[source.indices.size() / 3]);
+    if (triangle_soup) source = soup(source);
+    if (reorder) {
+        std::mt19937 random(21937);
+        std::shuffle(source.indices.begin(), source.indices.end(), random);
+    }
+    const auto original = source;
+    StrictMeshRepairOptions options;
+    options.maximum_sampled_deviation_ratio = 0.;
+    options.maximum_area_change_ratio = 1e-12;
+    const auto result = strict_repair_mesh(source, options);
+    INFO(result.error);
+    REQUIRE(result.success);
+    CHECK(result.output_topology.safe());
+    CHECK(result.geometry_verified);
+    CHECK(result.sampled_deviation == 0.);
+    CHECK(result.sampled_deviation_ratio == 0.);
+    CHECK(result.area_change_ratio <= options.maximum_area_change_ratio);
+    CHECK_FALSE(result.enhanced_repair_attempted);
+    CHECK(source.vertices == original.vertices);
+    CHECK(source.indices == original.indices);
+}
+
+TEST_CASE("Resource exhaustion never starts a second repair strategy", "[MeshRepair][NativeRepairCompatibility]")
+{
+    auto source = cube(20.);
+    source.indices.pop_back();
+    StrictMeshRepairOptions options;
+    options.acceptance = MeshRepairAcceptance::OrcaNative;
+    bool exhausted = false;
+    const auto result = strict_repair_mesh(source, options, [&](const char* message, unsigned) {
+        if (std::string(message).find("Repairing") != std::string::npos) {
+            exhausted = true;
+            throw std::bad_alloc();
+        }
+    });
+    REQUIRE(exhausted);
+    CHECK_FALSE(result.success);
+    CHECK(result.resource_failure);
+    CHECK_FALSE(result.enhanced_repair_attempted);
+    CHECK_FALSE(result.second_cgal_attempted);
     CHECK(result.repaired_mesh.empty());
 }
 

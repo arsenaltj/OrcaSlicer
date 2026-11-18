@@ -428,7 +428,8 @@
     {
       "id": "model_library_application",
       "path": "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryApplication.hpp",
-      "needle": "class ModelLibraryApplication final"
+      "needle": "class ModelLibraryApplication final",
+      "detail": "Owns library identity, committed-entry epochs, duplicate/stale publication rejection and merge of commits newer than a scan; removal projection wins."
     },
     {
       "id": "minimal_model_gui",
@@ -760,7 +761,7 @@
       "id": "native_workbench_partition",
       "path": "src/slic3r/GUI/AI/ModelGeneration/NativeWorkbenchPartition.cpp",
       "needle": "bool ModelGenerationPanel::ensure_native_workbench_partition(",
-      "detail": "原生修复、配色和发布仍由唯一工作台持有。CPU几何只准备一次，完整发布凭证附加后直接交接GUI；预览失败重试先严格验证已发布成果并复用，不能重复修复或删除既有成果。"
+      "detail": "唯一工作台编排严格优先、不可变原件原生兼容后备及标签后备。真实原生执行绑定源和输出几何身份，严格safe语义不变；v12/v13、拓扑凭证及分块缓存由保存、历史和导入统一验证。CPU预览只准备一次，独立完整GPU/导航首帧后解除门禁，上传期间检查点不能提前放行；失败恢复原画面与历史绑定。发布前失败限当前资产/代次/编辑修订保留完成分区，重试实读全部源和外部纹理，在后台逐字段比较后复用原始完成事实；取消及身份变化失效。质量与完整速度双门禁未通过不宣称全面兼容。"
     },
     {
       "id": "native_workbench_publication",
@@ -772,7 +773,7 @@
       "id": "native_region_smoothing",
       "path": "src/libslic3r/TextureToColor/ColorUtils.cpp",
       "needle": "struct RegionSmoothingWorkspace::Impl {",
-      "detail": "仅按一般拓扑、读写依赖及不可变几何优化，禁止样本身份或专属阈值。CPU请求内复用连续半边关联及原Lab色板转换，保留原面序、CIEDE2000与平局规则；只对采用标签执行一次几何平滑。FPS独立距离局部并行，质心及选点保序；CGAL公开visitor只作被动计时，固定配方补丁仅并行只读查询、局部修补保序，失败恢复原候选串行处理。精确投影以冲突安全批次执行，保留同顶点次数／顺序、平面浮点表示和Windows Kd-tree保护。所有精确查询及后备最多四线程，实际输出仍接受独立严格终检。取消不安装部分结果；不持有GUI或业务会话。"
+      "detail": "仅按一般拓扑、读写依赖及不可变几何优化，禁止样本身份或专属阈值。CPU请求内复用连续半边关联及原Lab色板转换，保留原面序、CIEDE2000与平局规则；只对采用标签执行一次几何平滑。FPS独立距离局部并行，质心及选点保序；CGAL公开visitor只作被动计时，固定配方补丁仅并行只读查询、局部修补保序，失败恢复原候选串行处理。精确投影以冲突安全批次执行，保留同顶点次数／顺序、平面浮点表示和Windows Kd-tree保护。所有精确查询及后备最多四线程，严格报告与实际发布输出的一致性继续按专项验证，未完成不宣称独立终检通过。取消不安装部分结果；不持有GUI或业务会话。"
     },
     {
       "id": "normalized_soup_orientation",
@@ -784,7 +785,7 @@
       "id": "workbench_check_usable_timing",
       "path": "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchPresentation.cpp",
       "needle": "void ModelGenerationPanel::observe_workbench_check_usable()",
-      "detail": "可选诊断从检查受理计至当前资产、视口及DPI的完整GPU首帧与编辑解锁；与原页面观察者独立，不授予检查或编辑权限，不混淆首次修复与凭证复用。"
+      "detail": "可选诊断从检查受理计至当前资产、视口及DPI的完整GPU首帧与编辑解锁；与原页面观察者独立，不授予检查或编辑权限，不混淆首次修复与凭证复用。 拉手另由独立一次帧完成通知在GL/XYZ之后补绘，页面/布局/视口/DPI/宿主校验，不覆盖本诊断观察者。"
     },
     {
       "id": "workbench_page_presentation",
@@ -796,7 +797,7 @@
       "id": "shared_view_navigator",
       "path": "src/slic3r/GUI/View3DNavigator.cpp",
       "needle": "ImGuizmo::ViewManipulateResult draw_view_navigator(",
-      "detail": "GUI-only shared navigator styling and Z-up mapping. Native Camera and the workbench orthographic camera retain separate ownership; workbench ImGui context and per-canvas ImGuizmo gesture/interpolation are isolated."
+      "detail": "Independent ImGui and GL surface follows the actual model viewport, avoids footer controls and suppresses itself when it cannot fit without blocking a valid model frame."
     },
     {
       "id": "model_history_open",
@@ -852,7 +853,7 @@
       "id": "ui_refresh_runtime",
       "path": "src/slic3r/GUI/Presentation/UiRuntime.cpp",
       "needle": "void RefreshScheduler::commit_pending",
-      "detail": "每surface单pending，隐藏保留dirty，提交期间新增变化留下一轮；高级页通知亦合并，只有几何变化提交布局。纯平移不采集恢复帧。TaskRunner提供有界数据工作、取消身份及GUI回调排空，旧执行器通过shutdown hook保留原事务。"
+      "detail": "每surface单pending，隐藏保留dirty，提交期间新增变化留下一轮；高级页通知亦合并，只有几何变化提交布局。纯平移不采集恢复帧。TaskRunner提供有界数据工作、取消身份及GUI回调排空，旧执行器通过shutdown hook保留原事务。 切片状态仅内容/浮层提交，不刷新整页或GL；相同参数投影不改控件，完整组按工程/来源/方案缓存，终态即时反馈。"
     },
     {
       "id": "window_restore_capture",
@@ -1388,7 +1389,7 @@
       "id": "history",
       "label": "历史与恢复",
       "detail": "保存任务和资产，重新打开历史结果；按任务及模型路径复用卡片和缩略图，保持搜索、分页与滚动；AI创作与工作台分别保留折叠偏好，按钮跟随实际侧栏边界；查看模型目录、导出独立 GLB/图片副本并浏览模型图库",
-      "boundary": "恢复已有记录不等于重新生成",
+      "boundary": "恢复已有记录不等于重新生成；删除确认不读盘，现有后台事务核对实际库根和共享依赖，独立删除记录先提交；共享原件及精确凭证保留，失败必须可见；新增仅依据记录原子提交通知，旧扫描合并较新提交，缩略图失败不丢模型，隐藏页不抢编辑焦点",
       "group": "资产与工作区",
       "evidence": [
         "history",
@@ -2078,6 +2079,7 @@
           "src/slic3r/GUI/Redesign/AssetsWorkspace*",
           "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryPanel*",
           "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationAssetsView*",
+          "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationLibraryRemoval*",
           "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationLibraryView*"
         ],
         "evidence": [
@@ -2236,6 +2238,9 @@
         "paths": [
           "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryApplication*",
           "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryRepository*",
+          "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryMetadata.hpp",
+          "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryDeletion*",
+          "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryRemovalState.hpp",
           "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryLoader*",
           "src/slic3r/GUI/AI/ModelGeneration/ModelWorkspaceFeatureHost*",
           "src/slic3r/GUI/AI/ModelGeneration/LibraryWorkspaceService*",
@@ -2254,7 +2259,7 @@
         ],
         "state_owner": "LibraryWorkspaceService管理目录、个人记录和下载代次；ModelLibraryApplication管理本地资产身份",
         "contract": "请求绑定页面代次、账号及版本；后台暂存校验后原子登记，现有工作台仍验证检查凭证；本人100条分页完整归一化后筛选，来源独立失败，缓存隔离账号代次",
-        "note": "网站原件仅在内容摘要验证后与账号记录关联；原生格式走既有工程/几何导入，GLB/OBJ保留历史直达及修复索引。",
+        "note": "网站原件仅在内容摘要验证后与账号记录关联；原生格式走既有工程/几何导入。UI立即确认；ModelLibraryDeletion在现有TaskRunner执行依赖扫描和文件事务。删除记录独立于精确凭证，先提交后清理；被引用或不确定资源保留但历史项不重现。删除受理以共享内存投影立即更新，原始选择／最终解析资产共同约束当前工作台；自动检查和拓扑修复延续原选择，精确路径仅识别显示／登记别名，显式保存独立。提交时完整卸载，旧扫描和旧安装不能恢复删除项。隐藏来源仍供修复索引验证，外观载体不注册为历史卡片。",
         "build_boundary": "桌面 C++；主要共同编译进 libslic3r_gui STATIC，并非每个能力一个库或进程。"
       },
       {

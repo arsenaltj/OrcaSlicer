@@ -1,5 +1,6 @@
 #pragma once
 
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "slic3r/AI/ModelGeneration/SemanticColoring/SemanticColoring.hpp"
 #include "slic3r/GUI/AI/Model/SurfaceSelectionState.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
@@ -105,7 +106,7 @@ struct SemanticRegionEvidence {
             evidence->person_detected = doc.value("person_detected", true);
             if (doc.contains("subfaces")) {
                 const auto& leaves = doc.at("subfaces");
-                if (!leaves.is_array() || leaves.size() > 2000000) throw std::runtime_error("Invalid semantic leaves");
+                if (!leaves.is_array() || leaves.size() > MeshResourceBudget::maximum_faces) throw std::runtime_error("Invalid semantic leaves");
                 for (const auto& leaf : leaves) {
                     if (!leaf.is_array() || leaf.size() != 6 || leaf[1].get<unsigned>() > 2 ||
                         leaf[2].get<unsigned>() > 255 || leaf[3].get<unsigned>() >= SC::label_count)

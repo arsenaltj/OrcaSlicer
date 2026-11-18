@@ -256,16 +256,10 @@ void ModelGenerationPanel::commit_workbench_surface(Presentation::Dirty flags)
     if (Presentation::has(flags, Presentation::Dirty::Layout) || Presentation::has(flags, Presentation::Dirty::Viewport))
         weak->layout_workbench_history_toggle(true);
     auto* viewport = weak->workbench_import_viewport();
-    auto* handle = weak->m_workbench_history_toggle;
     // Finish the exposed native backgrounds before their overlapping leaf.
     // No other presentation layer may flush this subtree independently.
     if (barrier) present_workbench_controls(weak->m_workbench_shell, viewport);
     else weak->m_workbench_shell->Refresh(false);
-    if (handle && handle->IsShownOnScreen()) {
-        handle->Raise();
-        handle->Refresh(false);
-        if (barrier) handle->Update();
-    }
     if (barrier) present_workbench_controls(weak->m_workbench_check_card);
     else if (weak->m_workbench_check_card && weak->m_workbench_check_card->IsShownOnScreen())
         weak->m_workbench_check_card->Refresh(false);
@@ -294,11 +288,36 @@ void ModelGenerationPanel::commit_workbench_surface(Presentation::Dirty flags)
             weak->m_workbench_presentation_sequence, revision);
     }
     observe_workbench_check_usable();
+    // The floating leaf overlaps the native preview subtree. Its repaint must
+    // follow both the final GL swap and XYZ relocation, never precede them.
+    auto* handle = weak->m_workbench_history_toggle;
+    if (handle && handle->IsShownOnScreen() && weak->m_model_preview) {
+        const auto stamp = weak->m_model_preview->presentation_stamp(
+            weak->m_workbench_presentation_sequence, weak->m_workbench_surface_revision);
+        wxWeakRef<wxWindow> parent(weak->m_workbench_shell->GetParent());
+        wxWeakRef<wxWindow> leaf(handle);
+        const auto bounds = handle->GetRect();
+        weak->m_model_preview->observe_overlay_frame([weak, parent, leaf, stamp, bounds] {
+            if (!weak || weak->m_shutdown || !parent || !leaf ||
+                (!weak->m_workbench_presented && !weak->m_workbench_preparing) ||
+                weak->m_workbench_shell->GetParent() != parent.get() ||
+                leaf->GetParent() != weak->m_workbench_shell || !leaf->IsShownOnScreen() ||
+                leaf->GetRect() != bounds || !(stamp == weak->m_model_preview->presentation_stamp(
+                    weak->m_workbench_presentation_sequence, weak->m_workbench_surface_revision))) return;
+            leaf->Raise();
+            leaf->Refresh(false);
+        });
+    }
     // One complete GL frame follows the native controls in this same pass.
     // A top-level restore can then expose the window without an old frame.
     if (viewport && viewport->IsShownOnScreen()) {
         viewport->Refresh(false);
         if (barrier) viewport->Update();
+    }
+    if (barrier && handle && handle->IsShownOnScreen()) {
+        handle->Raise();
+        handle->Refresh(false);
+        handle->Update();
     }
     wxString trace;
     if (wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace) && trace == "1")
@@ -370,6 +389,7 @@ void ModelGenerationPanel::raise_workbench_modal()
 
 void ModelGenerationPanel::detach_workbench_floating_card()
 {
+    m_native_workbench_partition_retry.reset();
     finish_workbench_check_timing("presentation-left");
     cancel_workbench_presentation();
     m_workbench_presented = false;
@@ -443,6 +463,7 @@ void ModelGenerationPanel::cancel_workbench_check()
     }
     if (m_native_workbench_partition_running && m_native_workbench_partition_cancel) {
         m_native_workbench_partition_cancel->store(true);
+        if (m_model_preview) m_model_preview->fail_model_installation_frame();
         if (m_workbench_check_message)
             m_workbench_check_message->SetLabel(_L("正在取消严格修复，当前模型保持不变……"));
         if (m_workbench_check_cancel_button) m_workbench_check_cancel_button->Disable();

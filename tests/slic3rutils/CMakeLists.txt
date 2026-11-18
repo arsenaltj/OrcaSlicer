@@ -59,6 +59,9 @@ add_executable(${_TEST_NAME}_tests
     test_mesh_raycaster.cpp
     test_font_texture_compression.cpp
     test_model_library_metadata.cpp
+    test_model_library_deletion.cpp
+    test_model_library_removal_state.cpp
+    test_model_library_publication.cpp
     test_model_history_open.cpp
     test_unified_workbench.cpp
     test_atomic_model_capabilities.cpp

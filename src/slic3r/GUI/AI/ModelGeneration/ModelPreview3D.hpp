@@ -885,8 +885,7 @@ public:
                 if (!native_partition_reference.is_object() ||
                     native_partition_reference.at("schema") !=
                         "orca.native-workbench-partition-reference/v2" ||
-                    native_partition_reference.at("algorithm").get<uint32_t>() !=
-                        NativePortrait::algorithm_version ||
+                    !NativePortrait::supported_partition_algorithm(native_partition_reference.at("algorithm").get<uint32_t>()) ||
                     native_partition_reference.at("coordinate_units") != "mm" ||
                     native_partition_reference.at("carrier_sha256") != current_hash ||
                     native_partition_reference.at("geometry_id") != prepared.geometry_id ||
@@ -898,8 +897,9 @@ public:
                         native_partition_reference.at("source_bounds_mm"), source_bounds_mm) ||
                     !NativePortrait::decode_native_workbench_bounds(
                         native_partition_reference.at("carrier_bounds_mm"), carrier_bounds_mm) ||
-                    !NativePortrait::native_workbench_bounds_compatible(
-                        source_bounds_mm, carrier_bounds_mm, block_error) ||
+                    (!native_partition_reference.value("native_repair_compatible", false) &&
+                     !NativePortrait::native_workbench_bounds_compatible(
+                        source_bounds_mm, carrier_bounds_mm, block_error)) ||
                     !NativePortrait::native_workbench_bounds_compatible(
                         carrier_bounds_mm,
                         NativePortrait::native_workbench_bounds(its), block_error))
@@ -927,6 +927,9 @@ public:
 
                 if (!NativePortrait::same_native_triangle_corners(its, exact_native_mesh.its, canceled))
                     throw std::runtime_error("Native cached topology differs from the ordered carrier corners.");
+                if (native_partition_reference.contains("native_acceptance") &&
+                    !native_repair_receipt_matches(native_partition_reference.at("native_acceptance"), exact_native_mesh.its))
+                    throw std::runtime_error("原生修复缓存与实际修复输出身份不匹配。");
                 auto partition = NativePortrait::restore_native_workbench_partition(
                     exact_native_mesh.its, identity, block_error);
                 if (!partition.valid())
@@ -1613,6 +1616,7 @@ private:
         if (m_navigator) m_navigator->reset();
         if (!preserve_frame) m_resize_frame_valid = false;
         m_gpu_upload_pending = m_gpu_upload_failed = false;
+        m_installation_frame_completion.cancel();
         ++m_after_preview_sequence;
         m_after_preview_frame = {};
         cancel_surface_selection();
@@ -3183,6 +3187,21 @@ public:
         m_after_preview_frame = std::move(fn);
         m_canvas->Refresh(false);
     }
+    void after_model_installation_frame(std::function<void(bool)> callback) {
+        m_installation_frame_completion.request(m_model_sha256, std::move(callback));
+        if (m_installation_frame_completion.pending()) m_canvas->Refresh(false);
+    }
+    void cancel_model_installation_frame() { m_installation_frame_completion.cancel(); }
+    bool model_installation_frame_pending() const { return m_installation_frame_completion.pending(); }
+    void fail_model_installation_frame() {
+        if (!m_installation_frame_completion.pending()) return;
+        const auto token = m_installation_frame_completion.token();
+        const auto identity = m_model_sha256;
+        wxWeakRef<ModelPreview3D> weak(this);
+        CallAfter([weak, token, identity] {
+            if (weak) weak->m_installation_frame_completion.complete(token, identity, false);
+        });
+    }
     // Independent of the portrait workflow's one-shot frame callback.
     Presentation::PresentationStamp presentation_stamp(std::uint64_t page, std::uint64_t layout) const {
         const auto frame = m_preview_frame.begin(m_canvas->GetClientSize(), m_canvas->GetDPIScaleFactor());
@@ -3202,6 +3221,10 @@ public:
         ++m_diagnostic_frame_sequence;
         m_diagnostic_frame_observer = std::move(observer);
         if (m_diagnostic_frame_observer) m_canvas->Refresh(false);
+    }
+    void observe_overlay_frame(std::function<void()> observer) {
+        m_overlay_frame_completion.request(std::move(observer));
+        if (m_overlay_frame_completion.pending()) m_canvas->Refresh(false);
     }
     bool workbench_input_locked() const { return m_workbench_input_locked; }
     void cancel_view_navigation() {
@@ -4299,7 +4322,9 @@ private:
         if (!m_canvas->IsShownOnScreen() || drawable_size.x <= 0 || drawable_size.y <= 0)
             return;
         if (m_gpu_upload_pending) {
-            if (!m_context || !m_context->IsOK() || !m_canvas->SetCurrent(*m_context) || !wxGetApp().init_opengl()) return;
+            if (!m_context || !m_context->IsOK() || !m_canvas->SetCurrent(*m_context) || !wxGetApp().init_opengl()) {
+                fail_model_installation_frame(); return;
+            }
             const auto step = [this] {
                 for (auto& model : m_models) if (model && !model->upload_step()) return false;
                 for (auto* model : {m_current_appearance_model.get(), m_direct_original_model.get(), m_manual_color_model.get()})
@@ -4313,6 +4338,7 @@ private:
                 try { m_gpu_upload_pending = !step(); }
                 catch (const std::exception& error) {
                     m_gpu_upload_failed = true;
+                    fail_model_installation_frame();
                     BOOST_LOG_TRIVIAL(error) << "[UiUpload] failed: " << error.what();
                 }
             }
@@ -4336,10 +4362,14 @@ private:
                                     << ", shown=" << m_canvas->IsShownOnScreen();
             m_paint_diagnostics_logged = true;
         }
-        if (!current_ok)
+        if (!current_ok) {
+            fail_model_installation_frame();
             return;
-        if (!wxGetApp().init_opengl())
+        }
+        if (!wxGetApp().init_opengl()) {
+            fail_model_installation_frame();
             return;
+        }
 
         int width = drawable_size.x;
         int height = drawable_size.y;
@@ -4383,6 +4413,7 @@ private:
                 if (!initialize_model_color_shader(*m_color_shader)) {
                     BOOST_LOG_TRIVIAL(error) << "AI model vertex-color shader could not be initialized";
                     m_color_shader.reset();
+                    fail_model_installation_frame();
                 }
             }
             GLShaderProgram* shader = m_color_shader.get();
@@ -4687,9 +4718,44 @@ private:
         // GL children are opaque, so clearing that surface alone masks a zoomed
         // model with a rectangle even when the navigator itself is transparent.
         if (m_navigator) m_navigator->set_preview_frame(m_resize_frame_valid ? m_resize_frame_texture : 0, m_canvas);
-        const bool navigation_submitted = !m_navigator || m_navigator->present_surface(
-            m_beauty_view && m_has_model, !m_workbench_input_locked && !m_drawing_selection && !m_dragging);
+        bool navigation_submitted;
+        try {
+            navigation_submitted = !m_navigator || m_navigator->present_surface(
+                m_beauty_view && m_has_model, !m_workbench_input_locked && !m_drawing_selection && !m_dragging);
+        } catch (const std::exception& failure) {
+            BOOST_LOG_TRIVIAL(error) << "Model installation navigation frame failed: " << failure.what();
+            if (m_context) m_canvas->SetCurrent(*m_context);
+            fail_model_installation_frame();
+            return;
+        }
         if (m_context) m_canvas->SetCurrent(*m_context);
+        if (!frame_submitted || (m_navigator && m_navigator->presentation_failed()))
+            fail_model_installation_frame();
+        if (frame_submitted && navigation_submitted && m_has_model && m_color_shader &&
+            !m_gpu_upload_pending && !m_gpu_upload_failed && m_installation_frame_completion.pending()) {
+            const auto token = m_installation_frame_completion.token();
+            const auto identity = m_model_sha256;
+            wxWeakRef<ModelPreview3D> weak(this);
+            CallAfter([weak, frame, token, identity] {
+                if (!weak) return;
+                const bool current = weak->m_preview_frame.current(frame, weak->m_canvas->GetClientSize(),
+                    weak->m_canvas->GetDPIScaleFactor(), weak->m_canvas->IsShownOnScreen());
+                const bool uploaded = weak->m_has_model && weak->m_color_shader &&
+                    !weak->m_gpu_upload_pending && !weak->m_gpu_upload_failed;
+                weak->m_installation_frame_completion.complete(token, weak->m_model_sha256, true,
+                    current && identity == weak->m_model_sha256, uploaded);
+                if (!current && weak->m_canvas->IsShownOnScreen()) weak->m_canvas->Refresh(false);
+            });
+        }
+        if (frame_submitted && navigation_submitted && m_overlay_frame_completion.pending()) {
+            const auto token = m_overlay_frame_completion.token();
+            wxWeakRef<ModelPreview3D> weak(this);
+            CallAfter([weak, frame, token] {
+                if (!weak || !weak->m_preview_frame.current(frame, weak->m_canvas->GetClientSize(),
+                    weak->m_canvas->GetDPIScaleFactor(), weak->m_canvas->IsShownOnScreen())) return;
+                weak->m_overlay_frame_completion.complete(token);
+            });
+        }
         if (frame_submitted && navigation_submitted && m_has_model && m_color_shader && m_presentation_frame_observer) {
             const auto sequence = m_presentation_observer_sequence;
             const auto identity = m_model_sha256;
@@ -4757,6 +4823,8 @@ private:
     bool m_resize_frame_valid {false};
     std::uint64_t m_after_preview_sequence {0};
     std::function<void()> m_presentation_frame_observer;
+    ModelPreviewOverlayCompletion m_overlay_frame_completion;
+    ModelPreviewInstallationCompletion m_installation_frame_completion;
     std::uint64_t m_presentation_observer_sequence {0};
     std::function<void()> m_diagnostic_frame_observer;
     std::uint64_t m_diagnostic_frame_sequence {0};

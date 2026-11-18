@@ -1,5 +1,6 @@
 #pragma once
 
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "SurfaceSelectionState.hpp"
 #include <atomic>
 #include <openssl/evp.h>
@@ -9,7 +10,7 @@ namespace Slic3r::GUI::LocalSemanticGeometry {
 // itself. The host still calls LocalSemanticEvidence::prove_ordered_faces.
 // LE header: magic[8], vertex_count:u64, face_count:u64, source_sha[64],
 // geometry_sha[64]; float32 vertices, uint32 triangle indices, SHA256[32].
-inline constexpr size_t max_vertices = 6000000, max_faces = 2000000;
+inline constexpr size_t max_vertices = MeshResourceBudget::maximum_vertices, max_faces = MeshResourceBudget::maximum_faces;
 inline constexpr size_t header_bytes = 152, max_bytes = 184 + 12 * (max_vertices + max_faces);
 struct Packet { std::string source_sha256, geometry_id; indexed_triangle_set mesh; };
 namespace detail {

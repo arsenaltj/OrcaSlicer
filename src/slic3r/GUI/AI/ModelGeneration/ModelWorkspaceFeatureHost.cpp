@@ -33,6 +33,11 @@ void ModelWorkspaceFeatureHost::mount_assets(wxWindow* parent)
 }
 void ModelWorkspaceFeatureHost::unmount_assets() { if (m_library) m_library->Hide(); }
 void ModelWorkspaceFeatureHost::refresh_assets() { if (!m_stopped && m_library) m_library->refresh_assets(); }
+void ModelWorkspaceFeatureHost::apply_library_commit() { if (!m_stopped && m_library) m_library->apply_commit(); }
+void ModelWorkspaceFeatureHost::apply_library_removals() {
+    if (m_stopped) return;
+    if (m_library) m_library->apply_removals(); else m_capabilities.library->apply_removals();
+}
 bool ModelWorkspaceFeatureHost::open_colors(wxWindow* parent, const AI::GeneratedModelArtifact& artifact)
 { return !m_stopped && m_colors.open(parent, artifact); }
 void ModelWorkspaceFeatureHost::shutdown()

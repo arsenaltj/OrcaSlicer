@@ -1,3 +1,4 @@
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "BeautySurface.hpp"
 #include "SurfaceSelectionState.hpp"
 #include <boost/unordered/unordered_flat_map.hpp>
@@ -127,8 +128,8 @@ std::shared_ptr<BeautySurface> BeautySurface::build_impl(const indexed_triangle_
     const std::vector<RGBA>& colors,const std::vector<uint32_t>& saved_partition,
     const std::function<bool()>& canceled,bool vertex_graph,bool respect_normal_guard)
 {
-    require(!mesh.vertices.empty() && !mesh.indices.empty() && mesh.indices.size()<=2000000 && mesh.vertices.size()<=6000000,
-        "Beauty editing supports up to two million triangles.");
+    require(MeshResourceBudget::editable(mesh.vertices.size(), mesh.indices.size()),
+        "Beauty mesh exceeds the available editing resource budget.");
     require(colors.empty() || colors.size()==mesh.vertices.size(), "Beauty colors do not match model vertices.");
     require(saved_partition.empty() || saved_partition.size()==mesh.indices.size(), "Saved patches belong to a different model.");
     checkpoint(canceled);

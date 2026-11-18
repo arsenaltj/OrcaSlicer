@@ -41,6 +41,33 @@ void directory(const boost::filesystem::path& root,const char* name) {
     const auto path=root/name;boost::filesystem::create_directories(path);
     if(boost::filesystem::canonical(path)!=path) throw Error(0,"模型目录指向了其他位置");
 }
+// Only the explicit, verified download transaction may restore its history
+// card. Ordinary library scans never clear removal receipts.
+void restore_download_history(const boost::filesystem::path& root, const DownloadSpec& spec) {
+    const auto receipt = root / "downloads" / ("orcaslicer-ai-" + spec.key() + ".removed");
+    try {
+        boost::system::error_code ec;
+        const auto status = boost::filesystem::symlink_status(receipt, ec);
+        if (status.type() == boost::filesystem::file_not_found || ec == boost::system::errc::no_such_file_or_directory) return;
+        if (ec || !boost::filesystem::is_regular_file(status) || boost::filesystem::canonical(receipt) != receipt)
+            throw Error(0, "下载成果已保留，但无法安全恢复历史记录，请检查文件权限后重试");
+        if (boost::filesystem::file_size(receipt) > 16 * 1024) return;
+        boost::filesystem::ifstream input(receipt, std::ios::binary);
+        if (!input) throw Error(0, "下载成果已保留，但无法读取历史删除记录，请检查文件权限后重试");
+        const auto record = Json::parse(input, nullptr, false);
+        input.close();
+        const auto asset = (root / "website" / spec.key() / ("model" + spec.extension())).lexically_relative(root).generic_string();
+        if (!record.is_object() || record.value("schema", "") != "orca.model-library-removal/v1" ||
+            record.value("job_id", "") != spec.key() || record.value("design_only", false) ||
+            record.value("asset", "") != asset) return;
+        if (!boost::filesystem::remove(receipt, ec) || ec)
+            throw Error(0, "下载成果已保留，但历史记录恢复失败，请检查文件权限后重试");
+    } catch (const Json::exception&) {
+        // Malformed/foreign receipts are ignored by the repository as well.
+    } catch (const boost::filesystem::filesystem_error&) {
+        throw Error(0, "下载成果已保留，但历史记录恢复失败，请检查文件权限后重试");
+    }
+}
 struct Receiver {
     Cancellation cancel; Binary value; std::size_t limit, received {0};
     std::function<bool(const char*,std::size_t)> sink;
@@ -228,7 +255,7 @@ std::shared_ptr<StagedDownload> StagedDownload::prepare(const Client& client,con
     return staged;
 }
 std::string StagedDownload::commit(Cancellation cancel) {
-    check(cancel);if(m_committed) return m_spec.key();
+    check(cancel);if(m_committed) {restore_download_history(m_root,m_spec);return m_spec.key();}
     if(boost::filesystem::canonical(m_root)!=m_root) throw Error(0,"模型目录已经变化");
     directory(m_root,"website");directory(m_root,"downloads");
     const auto marker=m_root/"downloads"/("orcaslicer-ai-"+m_spec.key()+".json");
@@ -241,7 +268,7 @@ std::string StagedDownload::commit(Cancellation cancel) {
            record.value("website_version_id","")!=m_spec.version || record.value("website_file_id","")!=m_spec.file ||
            record.value("model_path","")!=(m_final/("model"+ext)).lexically_relative(m_root).generic_string())
             throw Error(0,"已有登记与下载版本不一致，已保留原件");
-        m_committed=true;return m_spec.key();
+        m_committed=true;restore_download_history(m_root,m_spec);return m_spec.key();
     }
     const auto pending=marker.parent_path()/boost::filesystem::unique_path(".register-%%%%%%%%.tmp");
     Json metadata={{"source","website_download"},{"job_id",m_spec.key()},{"prompt",m_spec.title},
@@ -252,10 +279,11 @@ std::string StagedDownload::commit(Cancellation cancel) {
         boost::filesystem::ofstream output(pending,std::ios::binary);output<<metadata.dump(2);output.close();
         if(!output) throw Error(0,"无法登记下载模型");check(cancel);
         if(!m_reused) {boost::filesystem::rename(m_staging,m_final);m_staging.clear();}
-        boost::filesystem::rename(pending,marker);m_committed=true;return m_spec.key();
+        boost::filesystem::rename(pending,marker);m_committed=true;
+        restore_download_history(m_root,m_spec);return m_spec.key();
     } catch(...) {
         boost::system::error_code ec;boost::filesystem::remove(pending,ec);
-        if(!m_reused && m_staging.empty()) boost::filesystem::remove_all(m_final,ec);throw;
+        if(!m_committed && !m_reused && m_staging.empty()) boost::filesystem::remove_all(m_final,ec);throw;
     }
 }
 }
