@@ -1,5 +1,15 @@
 [
   {
+    "pr": 78,
+    "run": 44241111312,
+    "head": "7b85570fb124f70012cb27d87ced172fc6a9ee90",
+    "base": "19400ff9ad14eddf0110ec019eccc819cfb62af0",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "修复历史资产同步与工作台呈现，补齐Orca原生修复和大模型链路",
+    "path": "pr/78/7b85570fb124f70012cb27d87ced172fc6a9ee90/44241111312",
+    "created": "2026-11-18T05:04:04+00:00"
+  },
+  {
     "pr": 77,
     "run": 43842123367,
     "head": "df36ee3a02f44f9d3e0282f0d0601847f586eb88",

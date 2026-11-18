@@ -1,0 +1,27 @@
+{
+  "pr": 78,
+  "run": 44241111312,
+  "head": "7b85570fb124f70012cb27d87ced172fc6a9ee90",
+  "base": "19400ff9ad14eddf0110ec019eccc819cfb62af0",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "修复历史资产同步与工作台呈现，补齐Orca原生修复和大模型链路",
+  "path": "pr/78/7b85570fb124f70012cb27d87ced172fc6a9ee90/44241111312",
+  "created": "2026-11-18T05:04:04+00:00",
+  "files": {
+    "index.html": "a442a9533e34bd821b720b64bae49a9a1f22b1ca56d839de65a867267e8c1da5",
+    "details.html": "9706b77a07368e4a237ca1edc3e24abd766c4b501a88873ad72fa0bc0c718f02",
+    "report.json": "2fac5a8dff00fd8e05d7d1a33e0c05ae5b85185ec154c56b42068e83ad48a616",
+    "summary.md": "602427308c5e9f11bc78477b98bf45ea91bfbb55a85c183059e6cc4b1c138082",
+    "archify-receipts.json": "98125b057ae721f7f810bbcda81098db0be43d3532b9d9c240dc42003e649839",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "20d45fc98ca8ce6f4ea514feac571e5fe64e75a7368384ea103f482e6073d45a",
+    "l1-modules.json": "c83aa9fccc51d93b3bf5e6a556a6e53cf293b3887d53f174149ee71cebef86bf",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
