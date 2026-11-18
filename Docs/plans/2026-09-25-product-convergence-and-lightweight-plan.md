@@ -4,6 +4,8 @@
 - 已将Native04的14文件逐SHA/完整ZIP/binarypatch保护，并commit为1eee8b599bbad686d920044b48d4a6b2531befc1；普通接入最新323c，保留两边真实成果。原包/消费锁只读，新包未经不同review/QA不进入APK。
 - 首批实现：GUI-free repair core接缝及host/NDK实际链接consumer→带来源外观GLB候选→实际复验/receipt；严格与native-compatible事实分列，未跑不伪0，120s/768MiB不提高。
 - 两真实见证895=1M、78=975273实际可重读候选尚未取得，保持未完成。新实现不修改桌面已暂停算法，不做ULP/样本特化或620桌面全量性能续跑。
+- M1实际结果（2026-11-19）：原repair_mesh增强Core及真实依赖在Windows/NDK arm64 API24链接成功；host 1CTest内闭合tetra与重复面tetra两几何断言通过。只标geometry_only_stage，未生成GLB/质量receipt。full strict实际IGL fallback受CORE/LEDA依赖阻塞，未删除/伪替代该路径；明确不支持。
+- M1验收后继续M2 GLB/PBR与两真实见证，原strict五项定义不变；新glb-repair-v2政策只在真实导出重读/通道证明后接App/API，不以本阶段return true发布成功。原04包和消费锁不变。
 - 当前唯一writer session-native-repair-dev-20261118，task-20261117023152718-8561d6；后续实际编译/阶段阻塞按control任务及artifact证据记录，dev→不同review→不同QA。
 
 ## Native04历史计划原文（仅保留追溯，不作为待审执行队列）

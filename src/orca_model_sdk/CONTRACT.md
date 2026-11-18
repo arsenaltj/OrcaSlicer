@@ -217,3 +217,9 @@ derived project; unloaded plates, auxiliary payloads and original vendor preset
 payloads remain in the preserved source. Unknown/blocked semantics fail rather
 than pretending to round-trip an arbitrary source project. `repairMesh` invalidates
 face/appearance identity after an explicitly confirmed topology change.
+
+An experimental, opt-in `ORCA_MODEL_REPAIR_CORE` build target exposes the exact
+desktop enhanced `repair_mesh` Core to a standalone link consumer. Its M1 result
+is `geometry_only_stage`, not a Model SDK operation/receipt or strict completion.
+See [repair Core boundary](repair_core/README.md) for actual source/dependency
+binding, tested scope and the unsupported full strict numeric dependency.

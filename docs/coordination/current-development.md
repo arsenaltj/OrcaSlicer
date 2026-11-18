@@ -1,10 +1,10 @@
-# 2026-11-18 移动Native完整修复实施
+# 2026-11-19 移动Native修复 M1 Core接缝冻结
 
-主线：task-20261117023152718-8561d6，Native04安全子集保留，正常合入最新桌面323c成熟内核；用户已明确选择保外观，可重建贴图或颜色。
-本轮：14文件完整ZIP/SHA/patch与checkpoint1eee8b599b已保护；仅做portable Core修复接缝/外观候选及实际host/NDK验证，不启动桌面GUI冷构建。
-未结：895及78的真实修复candidate、外观通道与strict/native兼容事实、Android资源验证；不伪成功，不提高120s/768MiB。
-下一步：先编译可调用现repair_mesh/strict_repair_mesh的GUI-free consumer，再接受控GLB写回与重读；新SDK独立review/QA前不进入mobile，原SDK04/锁不动。
-计划变更：按用户A确认恢复移动修复实施；桌面此前暂停优化仍暂停。APK体积child71d/5a573另已冻结，不混Native改动。
+主线：task-20261117023152718-8561d6；Native04批准成果已保护并正常合入桌面323c，保外观A与strict/native-compatible政策不混义。
+本轮：真实原repair_mesh增强路径已Windows编译链接、1CTest内2合成几何断言通过；NDK arm64/API24 Core与consumer已链接，正在冻结M1供独立review/QA。
+未结：full strict真实IGL依赖CORE/LEDA缺失；GLB/PBR映射、895/78真实候选、资源/取消证明和Android运行未完成，M1只geometry_only_stage。
+下一步：M1独立review→不同QA后推进M2真实GLB/逐通道外观/重读身份；原Model04/Slicing/锁和APK不改，不恢复桌面暂停优化。
+计划变更：冻结范围从完整修复拆出真实可审Core首门，不降低最终两见证与质量凭证验收要求。
 
 ## Native04历史短状态原文（已完成有限review/QA，非当前执行队列）
 
