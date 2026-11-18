@@ -17,7 +17,13 @@ p.add_argument('--android-slicing-build', type=pathlib.Path)
 p.add_argument('--windows-runtime-dir',type=pathlib.Path)
 p.add_argument('--cgal-source-archive',type=pathlib.Path)
 p.add_argument('--repair-tbb-source',type=pathlib.Path)
+p.add_argument('--android-strip-tool',type=pathlib.Path)
+p.add_argument('--android-debug-output',type=pathlib.Path)
 args = p.parse_args()
+if bool(args.android_strip_tool) != bool(args.android_debug_output):
+    raise SystemExit('Release Model stripping requires explicit tool and separate debug output together')
+if args.android_debug_output and args.android_debug_output.resolve().is_relative_to(args.output.resolve()):
+    raise SystemExit('Full debug Model must remain outside the consumer SDK')
 if bool(args.windows_slicing_build) != bool(args.android_slicing_build):
     raise SystemExit('Both Slicing build roots must be supplied together')
 source = pathlib.Path(__file__).resolve().parents[1]
@@ -104,6 +110,12 @@ if complete:
 for name, file in files.items():
     if not file.is_file():
         raise SystemExit(f'Missing required artifact: {file}')
+model_postprocessing = None
+if args.android_strip_tool:
+    # Only this NEW Model binary is transformed. Never strip approved runtimes.
+    from strip_android_model import strip_model
+    name='android/arm64-v8a/liborca_model_sdk_c.so'
+    files[name],model_postprocessing=strip_model(files[name],args.android_strip_tool,args.android_debug_output)
 tracked_diff = subprocess.check_output(['git', '-C', str(repo), 'diff', '--binary', 'HEAD'])
 sources = []
 for file in sorted(source.rglob('*')):
@@ -146,6 +158,8 @@ manifest = {'schemaVersion': 1, 'sdkVersion': 'orca-model-sdk/1.0.0',
                           'multi-material execution/new Slicing SDK artifact',
                           'actual platform transport supplied by host; real provider calls not tested'],
             'files': []}
+if model_postprocessing:
+    manifest['androidModelPostprocessing']=model_postprocessing
 if repair:
     manifest['scope']='enhanced-glb-repair-v2-native-compatible-candidate'
     manifest['repairCore']={'entry':'repair_mesh','coreSourceCommit':'323c6c1c9ca7e5f94c7b7161af64584af0a69f3c',
@@ -198,6 +212,7 @@ manifest['capabilities']='capabilities.json'
 if repair:
     manifest['packagingSourceCommit']=manifest['sourceCommit']
     manifest['sourceCommit']=capabilities['sourceCommit']
+    manifest['buildSourceCommit']=capabilities['sourceCommit']
     for build in [args.windows_build,args.android_build]:
         text=(build/'CMakeCache.txt').read_text(encoding='utf-8')
         values=[line.split('=',1)[1] for line in text.splitlines() if line.startswith('ORCA_MODEL_SOURCE_COMMIT:STRING=')]

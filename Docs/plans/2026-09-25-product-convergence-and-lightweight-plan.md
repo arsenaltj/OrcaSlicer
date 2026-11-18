@@ -2,7 +2,7 @@
 
 - task-20261119-model-approved-tbb-binding/session-model-approved-tbb-dev-20261119 独立writer，基于父r3 cb505。NG-ANDROID-TBB-RUNTIME-COLLISION-01是初次跨流打包阻断，未冒实际ABI崩溃；父bounds首修轮次另保。
 - 精确既有Slicing TBB SHA cc093ffa…/726384B + 139pinnedheaders显式导入，真实Model/consumer -z defs重链，不改Core/GLB/PBR算法或父r3/旧Slicing/19runtime/移动锁。producer记录旧Mobile Git1b96991/Orca50247来源而非当前新编。
-- 8项Python/CMake/producer边界已实际通过；完整host/NDK Model链接与包尚待执行，执行结果在该子任务证据/报告记录，不以独立SE小probe代替。
+- 8项Python/CMake/producer边界和5项新Model strip-debug运行段/恶意篡改拒绝实际通过；完整host/NDK Model及runner/consumer实际链接0，host4CTest0。新Model可证分离调试段，原raw/tool/打包SHA及ALLOC/PT_LOAD/动态符号/版本/unwind/16K保持证据单列，完整debug不入消费包。
 - 新SDK另名runtime-bound-r4；冻结后独立review/不同QA与M2组合门禁，未经允许不移动消费/设备/远端push。Android运行/资源、完整strict/IGL、制造安全与视觉限制保持。
 
 # MOBILE-GLB-REPAIR-005：桌面成熟内核与保外观候选（2026-11-18）

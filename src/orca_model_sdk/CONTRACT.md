@@ -290,6 +290,15 @@ Model and its consumer are actually relinked against that imported library.
 The package records existing-slicing-runtime provenance separately from the new
 Model source commit; the old Model04/Slicing/TBB/malloc bundles are unchanged.
 
+Release packaging may explicitly apply LLVM `--strip-debug` to the new Android
+Model library only. It preserves the full unstripped library outside the SDK.
+Every SHF_ALLOC section (including dynamic symbols/versions, NEEDED strings and
+unwind data) remains byte-identical; all PT_LOAD entries, addresses, sizes, flags
+and alignment must match. A difference refuses publication. The producer records
+tool version/hash/command, raw and packaged hashes, runtime identity proof, and
+separate buildSourceCommit/packagingSourceCommit. Consumer locks bind the actual
+packaged hash. Approved Slicing, TBB/malloc and Model04 are never postprocessed.
+
 A positive boolean `does_self_intersect` proves a risk but does not enumerate
 intersection pairs: failed count is null and details.riskFlag=true. A negative
 predicate permits passed/count0. Unknown topology enumeration is likewise null;

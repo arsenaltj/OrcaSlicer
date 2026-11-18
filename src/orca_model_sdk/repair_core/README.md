@@ -81,3 +81,10 @@ with different bytes. Its approval record preserves Mobile Git
 `50247bb89ecb9d4af364242bc8c6ba037395e774` independently of the new Model producer.
 Complete native linking and ELF dependency checks are build evidence; Android
 same-process execution and resource validation remain separate device gates.
+
+Release producer may accept explicit --android-strip-tool and a separate absolute
+--android-debug-output directory. This postprocesses only the newly linked Model
+with LLVM --strip-debug, retaining the full raw Model outside the consumer SDK.
+It refuses changed allocated sections, program headers or PT_LOAD entries; the
+manifest binds raw/tool/command/packaged SHA and the consumer uses packaged SHA.
+This does not change the old approved Slicing/runtime bytes or repair behavior.
