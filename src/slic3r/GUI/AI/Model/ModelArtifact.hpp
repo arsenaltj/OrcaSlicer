@@ -5,11 +5,13 @@
 #include <vector>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/Format/OBJ.hpp"
 #include <boost/filesystem/path.hpp>
 
+namespace Slic3r { struct TexturedMesh; }
 namespace Slic3r::AI {
 
 // Display-only texture data keeps original face order; it never enters the printable mesh.
@@ -34,7 +36,8 @@ std::vector<ModelArtifactTextureSurface::Image> model_texture_mipmaps(const Mode
 // Y-up metres and linear COLOR_0; conversion occurs only at this boundary.
 bool load_model_artifact(const boost::filesystem::path& path, TriangleMesh& mesh,
                          ObjInfo& colors, std::string& error, const std::function<bool()>& canceled = {},
-                         ModelArtifactTextureSurface* texture_surface = nullptr);
+                         ModelArtifactTextureSurface* texture_surface = nullptr,
+                         TexturedMesh* obj_texture = nullptr);
 bool write_model_artifact(const boost::filesystem::path& path, const indexed_triangle_set& mesh,
                           const std::vector<RGBA>& colors, std::string& error);
 // Rebind original colors after coincident vertices were split for face colors.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "BeautySurface.hpp"
 #include "slic3r/AI/Contracts/ColorIntent.hpp"
 #include "libslic3r/TextureToColor/ColorUtils.hpp"
@@ -49,7 +50,7 @@ struct BeautyPuzzle {
     std::map<uint32_t, float> region_semantic_confidence;
     uint32_t next_id {1};
 
-    static constexpr size_t max_faces = 2000000;
+    static constexpr size_t max_faces = MeshResourceBudget::maximum_faces;
     static constexpr uint32_t max_id = 1000000000;
     static constexpr size_t max_native_color_slots = 32;
 

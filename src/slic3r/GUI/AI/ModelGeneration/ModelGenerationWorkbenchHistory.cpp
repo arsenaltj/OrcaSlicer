@@ -123,7 +123,7 @@ public:
     }
 
     void update(const ModelLibraryEntry& entry, const ModelGenerationUIHistoryEntry* image,
-                bool current, bool can_switch)
+                bool current, bool can_switch, bool highlighted)
     {
         m_entry = entry;
         m_actions_allowed = can_switch;
@@ -142,10 +142,10 @@ public:
         const auto label = current ? _L("当前模型") : entry.accepted_finishing ? _L("已接受版本") : _L("历史模型");
         if (m_state->GetLabel() != label) m_state->SetLabel(label);
         const auto state_colour = current ? wxColour(255, 194, 39) : wxColour(165, 165, 170);
-        if (!m_initialized || m_current != current || m_state->GetForegroundColour() != state_colour) {
-            m_surface->set_selected(current);
+        if (!m_initialized || m_current != current || m_highlighted != highlighted || m_state->GetForegroundColour() != state_colour) {
+            m_surface->set_selected(current || highlighted);
             m_state->SetForegroundColour(state_colour);
-            m_current = current;
+            m_current = current; m_highlighted = highlighted;
         }
         const bool enabled = can_switch || current;
         if (IsEnabled() != enabled) Enable(enabled);
@@ -172,7 +172,7 @@ public:
         m_actions_allowed = can_switch;
         const bool current = m_entry.model_path == displayed;
         if (m_current != current) {
-            m_surface->set_selected(current);
+            m_surface->set_selected(current || m_highlighted);
             m_state->SetLabel(current ? _L("当前模型") :
                 m_entry.accepted_finishing ? _L("已接受版本") : _L("历史模型"));
             m_state->SetForegroundColour(current ? wxColour(255, 194, 39) : wxColour(165, 165, 170));
@@ -188,23 +188,11 @@ private:
     WorkbenchHistoryThumbnail* m_visual;
     wxStaticText *m_name, *m_state;
     uint64_t m_thumbnail_revision {0};
+    bool m_highlighted {false};
     bool m_initialized {false}, m_current {false}, m_actions_allowed {false};
 };
 
-std::vector<const ModelLibraryEntry*> filtered_workbench_history_entries(
-    const std::vector<ModelLibraryEntry>& library, const wxString& query, int filter)
-{
-    std::vector<const ModelLibraryEntry*> entries;
-    for (const auto& entry : library) {
-        if (entry.design_only || entry.model_path.empty() || !is_nonempty_model(entry.model_path) ||
-            (!query.empty() && !entry.title.Lower().Contains(query))) continue;
-        if ((filter == 1 && entry.palette.size() != 1) ||
-            (filter == 2 && entry.palette.size() < 2) ||
-            (filter == 3 && !entry.palette.empty())) continue;
-        entries.push_back(&entry);
-    }
-    return entries;
-}
+
 }
 
 void ModelGenerationPanel::update_workbench_history_actions()
@@ -342,6 +330,12 @@ void ModelGenerationPanel::refresh_workbench_history()
     constexpr size_t page_size = 10;
     const size_t pages = std::max<size_t>(1, (entries.size() + page_size - 1) / page_size);
     m_workbench_history_pages = pages;
+    if (m_workbench_history_reveal) {
+        const auto target = std::find_if(entries.begin(), entries.end(), [&](const auto* entry) {
+            return entry->job_id == m_workbench_history_highlight;
+        });
+        if (target != entries.end()) m_workbench_history_page = size_t(target - entries.begin()) / page_size;
+    }
     m_workbench_history_page = std::min(m_workbench_history_page, pages - 1);
     m_workbench_history_page_label->SetLabel(wxString::Format("%llu / %llu",
         static_cast<unsigned long long>(m_workbench_history_page + 1), static_cast<unsigned long long>(pages)));
@@ -374,7 +368,13 @@ void ModelGenerationPanel::refresh_workbench_history()
             [&](const auto& value) { return value.asset_key == key; });
         sizes_changed = sizes_changed || cached->GetMinSize() != FromDIP(wxSize(112, 162));
         static_cast<WorkbenchHistoryCard*>(cached)->update(entry,
-            found == m_ui_history_entries.end() ? nullptr : &*found, current, can_switch);
+            found == m_ui_history_entries.end() ? nullptr : &*found, current, can_switch, entry.job_id == m_workbench_history_highlight);
+    }
+    for (size_t i = 0; i < m_workbench_history_filters.size(); ++i) {
+        const StateColor colour(i == size_t(m_workbench_history_filter)
+            ? wxColour(77, 77, 79) : wxColour(22, 22, 25));
+        if (m_workbench_history_filters[i]->GetBackgroundColor() != colour)
+            m_workbench_history_filters[i]->SetBackgroundColor(colour);
     }
     if (visible != m_workbench_history_visible_keys || sizes_changed) {
         wxWindowUpdateLocker lock(m_workbench_history_scroller);
@@ -385,13 +385,11 @@ void ModelGenerationPanel::refresh_workbench_history()
             card->Show(); m_workbench_history_grid->Add(card, 0, wxEXPAND);
         }
         m_workbench_history_visible_keys = std::move(visible);
-        for (size_t i = 0; i < m_workbench_history_filters.size(); ++i)
-            m_workbench_history_filters[i]->SetBackgroundColor(i == size_t(m_workbench_history_filter)
-                ? wxColour(77, 77, 79) : wxColour(22, 22, 25));
         m_workbench_history_scroller->Layout();
         m_workbench_history_scroller->FitInside();
-        m_workbench_history_scroller->Scroll(0, scroll_y);
+        m_workbench_history_scroller->Scroll(0, m_workbench_history_reveal ? 0 : scroll_y);
     }
+    m_workbench_history_reveal = false;
     for (auto it = m_workbench_history_cards.begin(); it != m_workbench_history_cards.end();) {
         if (!all_keys.count(it->first)) { it->second->Destroy(); it = m_workbench_history_cards.erase(it); }
         else ++it;
@@ -442,26 +440,7 @@ void ModelGenerationPanel::delete_workbench_history_entry(const std::string& key
         return;
     }
 
-    const bool current = found->model_path == m_displayed_model_path;
-    std::optional<GeneratedModelEntry> fallback;
-    if (current) {
-        const auto filtered = filtered_workbench_history_entries(
-            m_library_entries, m_workbench_history_search->GetValue().Lower(), m_workbench_history_filter);
-        std::vector<std::string> ordered_keys;
-        ordered_keys.reserve(filtered.size());
-        for (const auto* entry : filtered) ordered_keys.push_back(workbench_history_key(*entry));
-        if (const auto fallback_key = workbench_history_fallback_key(ordered_keys, key)) {
-            const auto neighbor = std::find_if(m_library_entries.begin(), m_library_entries.end(),
-                [&](const auto& entry) { return workbench_history_key(entry) == *fallback_key; });
-            if (neighbor != m_library_entries.end()) fallback = *neighbor;
-        }
-    }
-
-    const GeneratedModelEntry selected = *found;
-    if (!delete_library_entry(selected) || !current || !fallback) return;
-    load_library_entry(fallback->model_path, fallback->reference_image_path, fallback->ai_image_path,
-        fallback->palette, fallback->palette_roles, fallback->use_printable_colors, fallback->color_intent_path,
-        fallback->color_intent_schema, fallback->color_intent_sha256, fallback->job_id, fallback->title);
+    delete_library_entry(*found);
 }
 
 } // namespace Slic3r::GUI

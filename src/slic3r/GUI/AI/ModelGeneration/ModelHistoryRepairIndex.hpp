@@ -132,7 +132,8 @@ private:
                     name == "schema" || name == "transaction_status" || name == "model_path" ||
                     name == "source_model" || name == "source_sha256" || name == "model_sha256" ||
                     name == "finishing" || name == "workbench_check_certificate";
-                if (depth == 2) return name == "repair_mesh" || name == "repair_geometry_verified" || name == "metadata_path";
+                if (depth == 2) return name == "repair_mesh" || name == "repair_geometry_verified" ||
+                    name == "repair_native_compatible" || name == "repair_strategy" || name == "metadata_path";
                 return false;
             }, false);
             if (!data.is_object()) return node;
@@ -178,7 +179,8 @@ private:
             node.published = native || saved;
             const auto finishing = data.value("finishing", Json::object());
             node.repaired = node.published && (native || (finishing.value("repair_mesh", false) &&
-                finishing.value("repair_geometry_verified", false)));
+                (finishing.value("repair_geometry_verified", false) ||
+                 (finishing.value("repair_native_compatible", false) && finishing.value("repair_strategy", "") == "orca-native"))));
         } catch (const std::exception&) {}
         return node;
     }

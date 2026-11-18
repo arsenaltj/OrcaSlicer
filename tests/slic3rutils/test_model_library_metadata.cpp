@@ -4,6 +4,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryMetadata.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchArtifactValidation.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryObservations.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelLibraryRepository.hpp"
 #include "test_utils.hpp"
 
 #include <boost/nowide/cstdlib.hpp>
@@ -14,6 +15,22 @@
 
 using Slic3r::GUI::ModelLibraryMetadata;
 using Json = nlohmann::json;
+
+TEST_CASE("Appearance carriers stay available without becoming history cards", "[ModelLibraryDeletion][ModelLibraryMetadata]")
+{
+    ScopedTemporaryDir temporary("orca-history-carriers");
+    const auto root = temporary.path();
+    boost::filesystem::create_directories(root / "downloads");
+    for (const auto* file : {"orcaslicer-ai-source.obj", "orcaslicer-ai-source.source-appearance.obj"}) {
+        boost::filesystem::ofstream output(root / "downloads" / file);
+        output << "v 0 0 0\n";
+    }
+    const std::atomic<bool> canceled {false};
+    const auto entries = Slic3r::GUI::ModelLibraryRepository::read(root, canceled);
+    REQUIRE(entries.size() == 1);
+    CHECK(entries.front().job_id == "source");
+    CHECK(boost::filesystem::exists(root / "downloads/orcaslicer-ai-source.source-appearance.obj"));
+}
 
 TEST_CASE("Native absolute history paths do not block an unrelated deletion", "[ModelLibraryMetadata][ModelLibraryDeletion]")
 {

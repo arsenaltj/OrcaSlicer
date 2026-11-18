@@ -415,6 +415,7 @@ void ModelGenerationPanel::submit_confirmed_model()
     m_client.record_journey_event("model_submitted", m_job_id);
     reset_portrait_session();
     m_journey_model_submitted = true;
+    m_library_foreground_job = m_job_id;
     m_ui_model_generation_context = true;
     if (!m_smart_mode) ++m_model_generation_session;
     m_busy = true;

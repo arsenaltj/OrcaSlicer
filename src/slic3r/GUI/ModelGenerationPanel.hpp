@@ -8,6 +8,7 @@
 #include "AI/ModelGeneration/BeautyWorkbenchSession.hpp"
 #include "AI/ModelGeneration/BeautyWorkbenchColorGate.hpp"
 #include "AI/ModelGeneration/ModelLibraryEntry.hpp"
+#include "AI/ModelGeneration/ModelLibraryRemovalState.hpp"
 #include "AI/ModelGeneration/ModelHistoryOpen.hpp"
 #include "AI/ModelGeneration/ModelLibraryApplication.hpp"
 #include "AI/ModelGeneration/ModelLibraryLoader.hpp"
@@ -239,6 +240,8 @@ private:
     bool m_honor_suite_partition_resume_queued {false};
     NativeWorkbenchPartitionContext m_native_workbench_context;
     NativeWorkbenchPartitionContext m_native_workbench_partition_context;
+    struct NativeWorkbenchPartitionRetry;
+    std::shared_ptr<NativeWorkbenchPartitionRetry> m_native_workbench_partition_retry;
     nlohmann::json m_native_workbench_partition_reference;
     nlohmann::json m_native_workbench_partition_report;
     nlohmann::json m_native_workbench_partition_certificate;
@@ -604,8 +607,11 @@ private:
     wxButton* m_finishing_color_match { nullptr };
     void accept_model_finishing(std::optional<AI::ModelMatchedColors> prepared_match = {});
     void stop_model_finishing();
-    void select_local_finishing_version(const boost::filesystem::path& path, const std::string& id);
-    void load_library_entries(bool for_shell = false);
+    void select_local_finishing_version(const boost::filesystem::path& path, const std::string& id,
+                                        bool continues_history = false);
+    void load_library_entries(bool for_shell = false, bool preserve_list_feedback = false);
+    void queue_library_commit(std::string job, ModelLibraryCommitReason reason, bool foreground = false);
+    void apply_library_commit(const ModelLibraryCommit& event);
     void start_library_worker();
     void cancel_library_loading();
     void stop_library_loading();
@@ -629,6 +635,10 @@ private:
                              std::shared_ptr<ModelHistoryOpenRequest> restoration = {},
                              const std::string& expected_model_sha256 = {});
     bool delete_library_entry(const GeneratedModelEntry& entry);
+    void apply_library_removal_projection(bool retain_scan = false);
+    void notify_library_removal(const ModelLibraryRemovalState::Event& event);
+    bool library_removal_affects_current(const ModelLibraryEntry& entry) const;
+    void unload_removed_workbench_model();
     bool report_library_deletion_error(const wxString& message);
     void export_library_entry(const GeneratedModelEntry& entry);
     void update_library_provider_tasks(const std::string& job_id,
@@ -933,6 +943,22 @@ private:
     wxButton*       m_library_next { nullptr };
     wxTimer         m_library_timer;
     std::unique_ptr<ModelLibraryLoader> m_library_load_state;
+    Presentation::TaskScope m_library_deletion_scope;
+    std::shared_ptr<ModelLibraryRemovalState> m_library_removals {
+        std::make_shared<ModelLibraryRemovalState>(ModelGenerationPresentation::generated_models_root())};
+    std::function<void(const ModelLibraryRemovalState::Event&)> m_library_removal_listener;
+    Presentation::RefreshScheduler m_library_removal_refresh;
+    std::vector<GeneratedModelEntry> m_library_snapshot_entries;
+    std::map<std::string, ModelGenerationUIHistoryEntry> m_library_removed_thumbnails;
+    uint64_t m_library_scan_removal_revision {0};
+    uint64_t m_library_scan_commit_revision {0};
+    bool m_library_rescan_pending {false};
+    std::shared_ptr<ModelLibraryApplication> m_library_application;
+    std::function<void(ModelLibraryCommit)> m_library_commit_listener;
+    std::string m_workbench_history_highlight;
+    std::string m_library_foreground_job;
+    bool m_workbench_history_reveal {false};
+    WorkbenchLibraryBinding m_workbench_library_binding;
     size_t         m_library_page { 0 };
     size_t         m_library_page_size { 12 };
     uint64_t       m_library_revision { 0 };

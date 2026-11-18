@@ -16,6 +16,8 @@
 
 ## 按任务定位
 
+历史删除反馈沿 `ModelGenerationLibraryRemoval` → 共享 `ModelLibraryRemovalState` → 既有刷新调度；文件提交和清理仍在 `ModelLibraryDeletion` 后台事务。当前工作台必须同时核对原始选择与实际解析资产，完整卸载后才沿原历史加载器选择邻项；不能只删除卡片或清空路径。自动检查／拓扑修复通过 `WorkbenchLibraryBinding` 延续原选择，显示与登记别名仅按精确资产路径识别；显式保存版本独立，删除排除键和凭证规则不扩张。
+
 当前能力文件、同事分工及后续极简界面组合入口见 [原子能力说明](../tools/ai/README_atomic_capabilities.md)。模型生成应用层以 `ModelJobApplication` 为入口；不要在 HTTP Handler 或新视图里再写一份设计/生成/恢复规则。能力目录会明确原生接口和仍依赖旧面板的工作台。
 
 | 任务 | 先读 | 再沿调用链阅读 |
@@ -72,4 +74,17 @@
 
 2026-11-16 清理后，当前页面入口只在 RedesignShell／FeatureHost／WorkbenchOpenRequest 注册；旧导航、旧输入布局、静态 model_gallery、测试空壳和无调用包装已删除。后续 UX 不接回这些旧路径，仍复用唯一工作台及共用3D页。
 
+历史删除沿 `ModelGenerationAssetsView` → `ModelLibraryDeletion` → 现有 `TaskRunner`，GUI确认前不扫描文件。被引用模型移除历史项时保留依赖及原始凭证，`.removed` 记录阻止重新登记；`ModelLibraryRepository` 仍向修复索引提供保留的隐藏来源。修复保形／原生兼容策略在 `MeshRepair` 产出明确结果，`NativeRepairGeometry` 统一恢复与原生导入的凭证消费，不在页面复制一套几何成功规则。
+
+历史移除只清理独占文件和已空目录。主动重新下载通过既有 `StagedDownload` 完整校验及登记后恢复同一资源卡片，普通扫描不清除删除记录；恢复失败保持已登记文件可重试，不重复传输已验证内容。
+
 Windows 人像识别仅使用 [原生运行时配置](../cmake/OrcaSemanticRuntime.cmake)及其精确清单；旧 FaRL/Torch 权重准备、推理子进程和 raster 安装不再支持。离线诊断实际引用的网格、边界和样例验证工具继续保留，不属于生产安装资源。当前包装规则见 [发布维护入口](../release/README.md)：内部包同样要求完整集成检查零错误，旧预算例外参数直接报错。
+
+
+历史新增同步入口：ModelGenerationLibraryCommit.cpp负责生成记录后台原子保存和已提交条目准备，ModelGenerationFeatureHost分发到工作台／创作历史／本地资产；ModelLibraryApplication合并提交代次与扫描，删除投影始终生效，无新增提交时保留原浏览顺序。队列拒绝和写入失败同时更新当前历史错误快照；恢复任务不消费新生成的清筛选／高亮资格。回归标签ModelLibraryPublication覆盖空列表新增、重复／乱序完成、扫描与删除交错和原子保存失败。View3DNavigator的实际视口定位使用View3DNavigator标签；切片预览局部遮罩、最小化等待和过期帧使用PreviewPresentation标签。
+
+以ORCASLICER_UI_LATENCY_TRACE=1启动隔离配置，复用已有模型，核对导入／检查／美颜保存后历史变化、美颜进出XYZ位置及原生切片与已有G-code重开。HistoryPublication记录归档／提交／条目准备，SlicePreviewRoute记录累计原生加载／布局／GUI提交，差分后才是单段耗时；RedesignPreview的staged→presented不是输入到反馈时间。UiCommit的history-removal标签也用于新增合并，workbench标签包含同步原生／GL呈现。隐藏页面queue_ms、模态确认框停留和自动化工具往返不能当输入延迟；实窗、连续录像和固定样本P95需单独验收。使用独立配置和副本，不为补测新增生成或发送打印。
+
+## 原生修复兼容专项维护（2026-11-17）
+
+严格／原生接收、v12／v13 与分块缓存契约见 [ADR-009](architecture/ADR-009-native-repair-acceptance.md)。核心验证使用 libslic3r 的 `MeshRepair|NativeRepairCompatibility|StrictMeshRepair|ModelVertexColors`，消费者使用 slic3rutils 的 `PortraitNativePartition|NativePartitionRetry|NativePartitionChunks|NativeRepairGeometry|WorkbenchArtifactValidation|ModelPreviewState|ModelFinishing|OriginalAppearance`。`NativePartitionRetry` 核对连续发布失败及全部解码字段变化，OBJ外部材质／图片变化也必须使复用失效。隐藏 `OfficialRepairReference` 逐完整原生体执行对照，`NativeLargeModel` 验证容量边界，不能用隐藏CPU性能用例替代完整首帧验收。性能测量串行交替旧／新程序，期间不构建；首次处理与凭证复用分列。当前专项证据位于任务 evidence/native-repair-compatibility-20261117，不覆盖原基线或失败记录。

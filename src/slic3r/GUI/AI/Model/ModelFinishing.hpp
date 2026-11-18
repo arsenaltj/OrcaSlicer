@@ -11,6 +11,7 @@
 #include "BeautyAppearance.hpp"
 #include <nlohmann/json.hpp>
 
+namespace Slic3r { struct StrictMeshRepairResult; }
 namespace Slic3r::AI {
 struct BeautySurface;
 
@@ -76,9 +77,13 @@ struct ModelFinishingResult {
     size_t changed_texture_pixels {0};
     bool changed_edit_record {false};
     bool repair_geometry_verified {false};
+    bool repair_native_compatible {false};
     double repair_sampled_deviation {0.0};
     double repair_area_change_ratio {0.0};
     std::string repair_strategy;
+    // Immutable, mesh-free execution evidence. A native success flag alone
+    // must never authorize publication of a different candidate.
+    std::shared_ptr<const StrictMeshRepairResult> repair_evidence;
     bool changed() const {
         return moved_vertices || removed_degenerate_faces || removed_duplicate_faces || reversed_faces || recolored_vertices || recolored_faces || changed_texture_pixels || changed_edit_record;
     }

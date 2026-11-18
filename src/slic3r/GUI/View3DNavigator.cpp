@@ -10,6 +10,7 @@
 #include <wx/dcclient.h>
 #include <wx/glcanvas.h>
 #include <wx/weakref.h>
+#include <wx/control.h>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -100,7 +101,8 @@ struct WorkbenchViewNavigator::Impl {
     wxGLContext* gl_context {nullptr};
     std::function<Transform3d()> rotation;
     std::function<void(const Transform3d&)> changed;
-    bool input_enabled {false}, visible {false};
+    bool input_enabled {false}, visible {false}, layout_suppressed {false};
+    bool presentation_failed {false};
 
     Impl() {
         ImGuiContextScope restore(ImGui::GetCurrentContext());
@@ -233,33 +235,57 @@ void WorkbenchViewNavigator::show_surface(bool visible)
     auto& self = *m_impl;
     if (!self.surface || !self.bottom_anchor) return;
     self.visible = visible;
+    self.layout_suppressed = false;
     if (!visible || !self.preview_texture || !self.preview || self.preview_size != self.preview->GetClientSize()) {
         if (!visible) reset();
         self.surface->Hide();
         return;
     }
     const int side = self.surface->FromDIP(int(view_navigator_size));
-    const auto anchor_size = self.bottom_anchor->GetClientSize();
-    const auto anchor = self.surface->GetParent()->ScreenToClient(
-        self.bottom_anchor->ClientToScreen(wxPoint(anchor_size.x, anchor_size.y)));
-    const wxRect bounds(anchor - wxPoint(side, side), wxSize(side, side));
-    if (self.surface->GetRect() != bounds) self.surface->SetSize(bounds);
-    self.surface->Show();
-    self.surface->Raise();
+    auto* parent = self.surface->GetParent();
+    const wxRect viewport(parent->ScreenToClient(self.preview->ClientToScreen(wxPoint())), self.preview->GetClientSize());
+    const wxRect footer(parent->ScreenToClient(self.bottom_anchor->ClientToScreen(wxPoint())), self.bottom_anchor->GetClientSize());
+    std::vector<wxRect> tools;
+    const auto collect_tools = [&](const auto& collect, wxWindow* window) -> void {
+        for (auto* child : window->GetChildren()) {
+            if (!child->IsShownOnScreen()) continue;
+            if (dynamic_cast<wxControl*>(child)) tools.emplace_back(parent->ScreenToClient(child->ClientToScreen(wxPoint())), child->GetClientSize());
+            else collect(collect, child);
+        }
+    };
+    collect_tools(collect_tools, self.bottom_anchor.get());
+    const auto bounds = workbench_navigator_bounds(viewport, footer, parent->GetClientRect(), side, tools);
+    self.layout_suppressed = !bounds;
+    if (!bounds || !self.preview->IsShownOnScreen()) { reset(); self.surface->Hide(); return; }
+    if (self.surface->GetRect() != *bounds) {
+        const auto previous = self.surface->GetRect();
+        self.surface->SetSize(*bounds);
+        const auto exposed = wxRect(previous).Intersect(parent->GetClientRect());
+        if (!exposed.IsEmpty()) parent->RefreshRect(exposed, false);
+        const auto preview_exposed = wxRect(previous).Intersect(viewport);
+        if (!preview_exposed.IsEmpty())
+            self.preview->RefreshRect(wxRect(preview_exposed.GetPosition() - viewport.GetPosition(),
+                preview_exposed.GetSize()), false);
+    }
+    if (!self.surface->IsShown()) { self.surface->Show(); self.surface->Raise(); }
 }
 
 bool WorkbenchViewNavigator::present_surface(bool visible, bool enabled)
 {
     auto& self = *m_impl;
+    self.presentation_failed = false;
     if (!self.surface) return true;
     self.input_enabled = enabled;
     show_surface(visible);
-    if (!visible) return true;
+    if (!visible || self.layout_suppressed) return true;
     if (!self.surface->IsShownOnScreen() && self.preview) self.preview->Refresh(false);
-    if (!self.surface->IsShownOnScreen() || !self.gl_context || !self.rotation) return false;
+    if (!self.surface->IsShownOnScreen()) return false;
+    if (!self.gl_context || !self.rotation) { self.presentation_failed = true; return false; }
     const auto size = self.surface->GetClientSize();
-    if (size.x <= 0 || size.y <= 0 || !self.surface->SetCurrent(*self.gl_context) || !wxGetApp().init_opengl())
-        return false;
+    if (size.x <= 0 || size.y <= 0) return false;
+    if (!self.surface->SetCurrent(*self.gl_context) || !wxGetApp().init_opengl()) {
+        self.presentation_failed = true; return false;
+    }
     int width = size.x, height = size.y;
 #if defined(__APPLE__)
     width = int(std::lround(width * self.surface->GetDPIScaleFactor()));
@@ -276,11 +302,14 @@ bool WorkbenchViewNavigator::present_surface(bool visible, bool enabled)
     const bool active = begin(rotation, size, self.surface->GetDPIScaleFactor(), true, enabled);
     render();
     const bool submitted = self.surface->SwapBuffers();
+    self.presentation_failed = !submitted;
     if (active) {
         if (self.changed) self.changed(rotation);
         self.surface->Refresh(false);
     }
     return submitted;
 }
+
+bool WorkbenchViewNavigator::presentation_failed() const { return m_impl->presentation_failed; }
 
 } // namespace Slic3r::GUI

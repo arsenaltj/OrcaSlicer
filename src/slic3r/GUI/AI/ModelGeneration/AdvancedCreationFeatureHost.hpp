@@ -37,6 +37,13 @@ public:
     // The flag identifies an accepted new generation, never a navigation request.
     void set_model_state_listener(std::function<void(const ModelGenerationUIState&, bool)> listener)
     { m_model_state_listener = std::move(listener); }
+    void set_library_commit_listener(std::function<void(ModelLibraryCommit)> listener)
+    { m_model_monitor.set_library_commit_listener([this, listener = std::move(listener)](ModelLibraryCommit event) {
+        if (m_shutdown || !listener) return;
+        event.foreground = event.foreground && event.entry.job_id == m_library_foreground_job && m_session.matches(m_model_context);
+        if (event.entry.job_id == m_library_foreground_job) m_library_foreground_job.clear();
+        listener(std::move(event));
+    }); }
     const ModelGenerationUIState& model_state() const { return m_model_monitor.snapshot(); }
     const std::optional<ModelLibraryEntry>& model_artifact() const { return m_model_monitor.artifact(); }
     void show_model();
@@ -95,6 +102,7 @@ private:
     wxTimer m_save_timer;
     std::function<void()> m_listener;
     std::function<void(const ModelGenerationUIState&, bool)> m_model_state_listener;
+    std::string m_library_foreground_job;
     std::function<void(const AdvancedCreation::ModelJobEvent&)> m_model_job_listener;
     std::optional<AdvancedCreation::ModelJobEvent> m_model_request;
     std::uint64_t m_model_request_sequence {0};

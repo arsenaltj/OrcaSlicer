@@ -40,7 +40,7 @@ inline bool prepare_workbench_import_topology(TriangleMesh& mesh, bool confirmed
     if (its_num_open_edges(mesh.its) != 0) stitch_exact_mesh_seams(mesh);
     const auto check = inspect_workbench_mesh(mesh, canceled);
     const size_t open = its_num_open_edges(mesh.its);
-    const bool safe = open == 0 && workbench_topology_safe(check);
+    const bool safe = open == 0 && workbench_topology_accepted(check);
     result.topology_risk = !safe;
     result.manual_repair_required = !safe;
     result.topology_risk_reason = safe ? std::string {} : check.summary +

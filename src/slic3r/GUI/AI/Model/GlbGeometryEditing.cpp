@@ -1,3 +1,4 @@
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "GlbGeometryEditing.hpp"
 #include "ModelArtifact.hpp"
 
@@ -20,8 +21,8 @@ namespace Slic3r::AI {
 namespace {
 using Json = nlohmann::json;
 constexpr size_t max_bytes = 512ull * 1024 * 1024;
-constexpr size_t max_vertices = 6000000;
-constexpr size_t max_faces = 2000000;
+constexpr size_t max_vertices = MeshResourceBudget::maximum_vertices;
+constexpr size_t max_faces = MeshResourceBudget::maximum_faces;
 
 void require(bool condition, const char* message)
 {

@@ -3588,6 +3588,7 @@ void RedesignShell::restore_active_page_focus()
 bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
 {
     if (m_presentation_stopping) return false;
+    if (m_preview_transition && page != Page::Model) cancel_preview_presentation();
     if (m_page_coordinator.advanced() && m_advanced_workspace && !m_advanced_workspace->navigation_allowed()) return false;
     const bool keeps_presented_workbench = page == Page::Model &&
         m_page_coordinator.page() == Page::Model && m_page_coordinator.view() == ModelView::Workbench;

@@ -1,6 +1,7 @@
 #include "ModelArtifactAcquisition.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "ModelLibraryObservations.hpp"
+#include "ModelLibraryPublication.hpp"
 #include "slic3r/GUI/AISidecarClient.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include <wx/weakref.h>
@@ -77,13 +78,6 @@ void ModelArtifactAcquisition::start(const AIModelGenerationClient::JobStatus& s
 
 bool ModelArtifactAcquisition::publish_library_record(const std::string& job, nlohmann::json metadata)
 {
-    const auto path = library_metadata_path(job);
-    const auto previous = read_json(path);
-    // Download/recovery cannot replace a certified editing record.
-    if (ModelLibraryObservations::has_check_certificate(previous)) return true;
-    if (previous.is_object()) for (const auto* key : {"generated_at", "imported_at", "print_feedback", "print_feedback_at"})
-        if (previous.contains(key)) metadata[key] = previous.at(key);
-    if (!metadata.contains("generated_at")) metadata["generated_at"] = std::time(nullptr);
-    return write_json(path, metadata);
+    return publish_model_library_record(library_metadata_path(job), std::move(metadata));
 }
 }

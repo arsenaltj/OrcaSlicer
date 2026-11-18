@@ -10,11 +10,11 @@ inline nlohmann::json encode_portrait_post_color_check(
     const WorkbenchCheckResult& check,
     const nlohmann::json& partition_reference)
 {
-    if (!workbench_topology_safe(check) ||
+    if (!workbench_topology_accepted(check) ||
         !WorkbenchArtifacts::valid_native_partition_reference(partition_reference) ||
         check.model_sha256 != partition_reference.at("carrier_sha256"))
         throw std::runtime_error("着色后只读拓扑检查未通过。");
-    return {{"schema", "orca.portrait-post-color-check/v1"}, {"status", "normal"},
+    nlohmann::json result {{"schema", "orca.portrait-post-color-check/v1"}, {"status", "normal"},
         {"model_sha256", check.model_sha256},
         {"geometry_id", partition_reference.at("geometry_id")},
         {"partition_digest", partition_reference.at("partition_digest")},
@@ -30,6 +30,11 @@ inline nlohmann::json encode_portrait_post_color_check(
         {"isolated_components", check.isolated_components}, {"small_faces", check.small_faces},
         {"self_intersections_checked", check.self_intersections_checked},
         {"self_intersections", check.self_intersections}, {"issue_faces", check.issue_faces}};
+    if (!check.native_repair_acceptance.is_null()) {
+        result["schema"] = "orca.portrait-post-color-check/v2";
+        result["native_acceptance"] = check.native_repair_acceptance;
+    }
+    return result;
 }
 
 // Native geometry and its color layer have separate identities. Manual saves

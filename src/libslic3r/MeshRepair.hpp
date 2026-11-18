@@ -47,6 +47,14 @@ struct StrictMeshTopologyReport
     }
 };
 
+// Inspection facts remain strict. Only an actual native execution may grant
+// OrcaNative acceptance; callers must retain its source/output identities.
+enum class MeshRepairAcceptance { Strict, OrcaNative };
+
+// Ordered triangle coordinates, independent of carrier-only vertex splitting.
+// Empty on invalid/non-finite geometry. Used only for native acceptance proofs.
+std::string mesh_repair_geometry_id(const indexed_triangle_set& mesh);
+
 struct StrictMeshRepairTimings
 {
     std::uint64_t input_check_ms = 0;
@@ -64,16 +72,30 @@ struct StrictMeshRepairOptions
     double maximum_area_change_ratio = 0.02;
     // Automatic publication requires verified geometry as well as topology.
     bool reject_geometry_change = true;
+    // Opt in only for an explicit native-compatible workflow. The native
+    // repair must succeed and its actual float output must be inspected;
+    // strict safety and native acceptance remain distinct recorded facts.
+    bool allow_native_repair_geometry_change = false;
+    MeshRepairAcceptance acceptance = MeshRepairAcceptance::Strict;
+    // Optional immutable pre-sampling geometry. Only native fallback reads it;
+    // the existing optimized successful path is unchanged.
+    const indexed_triangle_set* native_source = nullptr;
 };
 
 struct StrictMeshRepairResult
 {
     bool success = false;
     bool canceled = false;
+    bool resource_failure = false;
     bool first_cgal_attempted = false;
     bool enhanced_repair_attempted = false;
     bool second_cgal_attempted = false;
     bool geometry_verified = false;
+    bool native_repair_compatible = false;
+    MeshRepairAcceptance acceptance = MeshRepairAcceptance::Strict;
+    bool native_repair_succeeded = false;
+    std::string native_source_geometry_id;
+    std::string native_output_geometry_id;
     indexed_triangle_set repaired_mesh;
     StrictMeshTopologyReport input_topology;
     StrictMeshTopologyReport output_topology;
@@ -85,11 +107,18 @@ struct StrictMeshRepairResult
     std::string strategy;
     std::string error;
     StrictMeshRepairTimings timings;
+
+    bool accepted() const {
+        return success && !canceled && (output_topology.safe() ||
+            (acceptance == MeshRepairAcceptance::OrcaNative && native_repair_succeeded &&
+             native_source_geometry_id.size() == 64 && native_output_geometry_id.size() == 64));
+    }
 };
 
 // Strict whole-mesh repair used by automatic workflows. Every fallback starts
-// from the immutable input. Success certifies topology, sampled geometry and
-// surface-area limits; cancellation or any unverifiable check leaves no mesh.
+// from the immutable input. Success certifies topology and either the strict
+// geometry limits or the explicit native-compatible result (recorded separately).
+// Cancellation or an unverifiable output leaves no mesh.
 StrictMeshRepairResult strict_repair_mesh(
     const indexed_triangle_set &mesh,
     const StrictMeshRepairOptions &options = {},

@@ -96,6 +96,13 @@ inline bool read_validated_workbench_history_check(
         if ((canceled && canceled()) || AI::model_artifact_sha256(metadata_path) != record_hash ||
             AI::model_artifact_sha256(model) != model_hash ||
             !PP::decode_workbench_check_certificate(certificate, out)) return false;
+        if (!out.native_repair_acceptance.is_null() && metadata.contains("native_repair_evidence")) {
+            TriangleMesh actual; ObjInfo colors; std::string failure;
+            if (!AI::load_model_artifact(model, actual, colors, failure, canceled) || (canceled && canceled()) ||
+                !native_repair_receipt_matches(out.native_repair_acceptance, actual.its) ||
+                AI::model_artifact_sha256(model) != model_hash) return false;
+            out.native_repair_evidence = metadata.at("native_repair_evidence");
+        }
         if (record_identity) *record_identity = record_hash;
         return true;
     };
@@ -109,7 +116,7 @@ inline bool read_validated_workbench_history_check(
             model_hash, geometry_id, appearance_id, u8(evidence.metadata), metadata)) {
         WorkbenchCheckResult restored;
         if (PP::decode_workbench_check_certificate(embedded, restored) &&
-            workbench_topology_safe(restored) &&
+            workbench_topology_accepted(restored) &&
             metadata.value("triangle_count", size_t(0)) == restored.before_faces)
             return complete(embedded);
         return false;
@@ -127,7 +134,7 @@ inline bool read_validated_workbench_history_check(
                 reference.at("topology_hash").get<std::string>())) return false;
         WorkbenchCheckResult restored;
         if (!PP::decode_workbench_check_certificate(certificate, restored) ||
-            !workbench_topology_safe(restored) ||
+            !workbench_topology_accepted(restored) ||
             metadata.at("triangle_count").get<size_t>() != restored.before_faces) return false;
         if (require_post_color) {
             const auto& check = metadata.at("post_color_check");

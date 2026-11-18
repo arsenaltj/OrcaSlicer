@@ -9,7 +9,8 @@ namespace Slic3r::GUI {
 class ModelLibraryRepository final {
 public:
     static std::vector<ModelLibraryEntry> read(const boost::filesystem::path& root,
-                                              const std::atomic<bool>& cancelled, bool include_native = false);
+                                              const std::atomic<bool>& cancelled, bool include_native = false,
+                                              const std::string& only_job = {});
 };
 
 } // namespace Slic3r::GUI

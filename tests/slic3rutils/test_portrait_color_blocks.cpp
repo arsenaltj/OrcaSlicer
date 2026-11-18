@@ -6,6 +6,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/ModelOriginalAppearance.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitNativePartition.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitNativeCheckpoint.hpp"
 #include <tbb/task_arena.h>
 #include "slic3r/GUI/AI/ModelGeneration/PortraitNativePartitionCache.hpp"
 #include "slic3r/GUI/AI/Model/BeautyPuzzle.hpp"
@@ -363,6 +364,155 @@ TEST_CASE("Native portrait partition cache is independent and content addressed"
     CHECK_FALSE(NP::load_native_portrait_partition_cache(corrupt, cache, identity, error));
 }
 
+TEST_CASE("Chunked native caches preserve exact geometry and archive their complete dependencies",
+          "[PortraitNativePartition][NativePartitionChunks]")
+{
+    const auto partition = NP::finalize_native_portrait_partition(native_partition_sample());
+    const auto directory = boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("orca-native-chunks-%%%%-%%%%");
+    struct Cleanup { boost::filesystem::path path;
+        ~Cleanup() { boost::system::error_code ignored; boost::filesystem::remove_all(path, ignored); }
+    } cleanup {directory};
+    const auto cache = directory / "cache";
+    auto reference = NP::chunk_cache::save(partition, cache);
+    NP::NativeWorkbenchPartitionIdentity identity;
+    TriangleMesh mesh;
+    std::string error;
+    REQUIRE(NP::load_native_portrait_partition_cache(reference, cache, identity, error, &mesh));
+    CHECK(identity.face_cluster_ids == partition.face_cluster_ids);
+    CHECK(identity.face_region_ids == partition.face_region_ids);
+    CHECK(identity.algorithm == partition.algorithm);
+    indexed_triangle_set expected;
+    for (const auto& v : partition.painted.vertices) expected.vertices.emplace_back(v[0], v[1], v[2]);
+    for (const auto& f : partition.painted.indices) expected.indices.emplace_back(f[0], f[1], f[2]);
+    CHECK(NP::same_native_triangle_corners(mesh.its, expected));
+    const auto archives = directory / "archive";
+    NP::archive_native_portrait_partitions({reference}, cache, archives);
+    REQUIRE(NP::restore_native_portrait_partition_archive(archives, directory / "restored") == 1);
+    REQUIRE(NP::load_native_portrait_partition_cache(reference, directory / "restored", identity, error, &mesh));
+    const auto expected_mesh = mesh.its;
+    const auto expected_digest = identity.partition_digest;
+    SECTION("A missing dependency cannot publish a partial output") {
+        const auto members = NP::chunk_cache::members(reference, cache);
+        REQUIRE(members.size() > 1);
+        boost::filesystem::remove(members.back());
+    }
+    SECTION("A changed block cannot be accepted by its old content identity") {
+        const auto members = NP::chunk_cache::members(reference, cache);
+        boost::filesystem::ofstream output(members.back(), std::ios::app | std::ios::binary);
+        output << " ";
+    }
+    SECTION("Rehashed manifests cannot reorder geometry sections") {
+        auto manifest = NP::chunk_cache::read(cache, reference.at("content_id"), ".json");
+        std::swap(manifest["chunks"][0], manifest["chunks"][1]);
+        manifest["native_mesh_sha256"] = AI::beauty_leaf_digest(NP::chunk_cache::mesh_descriptor(manifest).dump());
+        reference = NP::chunk_cache::reference_for(manifest, NP::chunk_cache::publish(manifest, cache, ".json"));
+    }
+    SECTION("Rehashed manifests cannot omit the final label section") {
+        auto manifest = NP::chunk_cache::read(cache, reference.at("content_id"), ".json");
+        manifest["chunks"].erase(manifest["chunks"].end() - 1);
+        reference = NP::chunk_cache::reference_for(manifest, NP::chunk_cache::publish(manifest, cache, ".json"));
+    }
+    CHECK_FALSE(NP::load_native_portrait_partition_cache(reference, cache, identity, error, &mesh));
+    CHECK_FALSE(error.empty());
+    CHECK(identity.partition_digest == expected_digest);
+    CHECK(mesh.its.indices == expected_mesh.indices);
+    CHECK(mesh.its.vertices == expected_mesh.vertices);
+}
+
+TEST_CASE("Native partitions cross the former face limits without changing connected regions",
+          "[.NativeLargeModel][NativePartitionChunks]")
+{
+    // Closed torus grids cross both former hard limits, with one region
+    // spanning every processing block. No online model generation is involved.
+    const size_t rings = GENERATE(size_t(250), size_t(500));
+    const size_t columns = GENERATE(size_t(1999), size_t(2001));
+    PaintedMesh painted;
+    painted.vertices.reserve(rings * columns);
+    painted.indices.reserve(rings * columns * 2);
+    for (size_t r = 0; r < rings; ++r) for (size_t c = 0; c < columns; ++c) {
+        const double a = 2. * PI * double(r) / rings, b = 2. * PI * double(c) / columns;
+        painted.vertices.push_back({float((20. + 5. * std::cos(a)) * std::cos(b)),
+            float((20. + 5. * std::cos(a)) * std::sin(b)), float(5. * std::sin(a))});
+        const auto index = [&](size_t row, size_t column) { return int((row % rings) * columns + column % columns); };
+        painted.indices.push_back({index(r,c), index(r+1,c), index(r,c+1)});
+        painted.indices.push_back({index(r,c+1), index(r+1,c), index(r+1,c+1)});
+    }
+    painted.cluster_colors = {{210, 100, 30}};
+    painted.face_colors.assign(painted.indices.size(), painted.cluster_colors.front());
+    const auto partition = NP::finalize_native_workbench_partition(std::move(painted));
+    REQUIRE(partition.valid());
+    CHECK(partition.region_members.size() == 1);
+    CHECK(partition.region_members.front().size() == rings * columns * 2);
+    CHECK(partition.boundary.open_edges == 0);
+    const auto directory = boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("orca-native-large-%%%%-%%%%");
+    struct Cleanup { boost::filesystem::path path;
+        ~Cleanup() { boost::system::error_code ignored; boost::filesystem::remove_all(path, ignored); }
+    } cleanup {directory};
+    const auto reference = NP::save_native_portrait_partition_cache(partition, directory);
+    NP::NativeWorkbenchPartitionIdentity identity;
+    TriangleMesh mesh; std::string error;
+    REQUIRE(NP::load_native_portrait_partition_cache(reference, directory, identity, error, &mesh));
+    CHECK(identity.face_region_ids == partition.face_region_ids);
+    CHECK(identity.partition_digest == partition.partition_digest);
+    CHECK(mesh.its.indices.size() == partition.painted.indices.size());
+}
+
+TEST_CASE("Native compatible shells keep independent colors with and without diagnostic reports",
+          "[PortraitNativePartition][NativeRepairCompatibility][NativePartitionChunks]")
+{
+    auto geometry = make_cube(20., 20., 20.).its;
+    auto second = make_cube(20., 20., 20.);
+    second.translate(10.f, 10.f, 10.f); its_flip_triangles(second.its);
+    const size_t first_faces = geometry.indices.size();
+    its_merge(geometry, second.its);
+    TexturedMesh source;
+    for (const auto& v : geometry.vertices) source.vertices.push_back({v.x(), v.y(), v.z()});
+    for (const auto& f : geometry.indices) source.indices.push_back({f[0], f[1], f[2]});
+    source.precomputed_face_colors.assign(first_faces, {230, 30, 20});
+    source.precomputed_face_colors.insert(source.precomputed_face_colors.end(), second.its.indices.size(), {20, 30, 230});
+    NP::NativePortraitPartitionBuildReport report;
+    const auto partition = NP::build_native_workbench_partition(source,
+        NP::native_mesh_repair_callback(&report.strict_repair), {}, &report);
+    REQUIRE(partition.valid());
+    CHECK(report.strict_repair.native_repair_succeeded);
+    CHECK(partition.algorithm == NP::compatible_algorithm_version);
+    CHECK(partition.painted.cluster_colors.size() == 2);
+    const auto quiet = NP::build_native_workbench_partition(source, NP::native_mesh_repair_callback());
+    REQUIRE(quiet.valid());
+    CHECK(quiet.partition_digest == partition.partition_digest);
+    CHECK(quiet.painted.indices == partition.painted.indices);
+    const auto receipt = GUI::native_repair_receipt(report.strict_repair);
+    indexed_triangle_set actual_geometry;
+    for (const auto& v : partition.painted.vertices) actual_geometry.vertices.emplace_back(v[0], v[1], v[2]);
+    for (const auto& f : partition.painted.indices) actual_geometry.indices.emplace_back(f[0], f[1], f[2]);
+    TriangleMesh actual(std::move(actual_geometry));
+    REQUIRE(GUI::native_repair_receipt_matches(receipt, actual.its));
+    const auto root = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path("orca-native-compatible-%%%%");
+    struct Cleanup { boost::filesystem::path path;
+        ~Cleanup() { boost::system::error_code ec; boost::filesystem::remove_all(path, ec); }
+    } cleanup {root};
+    const auto reference = NP::save_native_portrait_partition_cache(partition, root / "cache");
+    NP::NativeWorkbenchPartitionIdentity identity; std::string error;
+    REQUIRE(NP::load_native_portrait_partition_cache(reference, root / "cache", identity, error, &actual));
+    CHECK(GUI::native_repair_receipt_matches(receipt, actual.its));
+    std::string hash;
+    REQUIRE(NP::write_native_portrait_carrier(root / "carrier.obj", partition,
+        NP::native_workbench_bounds(partition), hash, error));
+    ObjInfo colors;
+    REQUIRE(AI::load_model_artifact(root / "carrier.obj", actual, colors, error));
+    CHECK(GUI::native_repair_receipt_matches(receipt, actual.its));
+    NP::archive_native_portrait_partitions({reference}, root / "cache", root / "archive");
+    const auto destination = root / "restored";
+    boost::filesystem::create_directories(destination);
+    const auto members = NP::chunk_cache::members(reference, root / "cache");
+    REQUIRE(members.size() > 1);
+    { boost::filesystem::ofstream corrupt(destination / members.back().filename()); corrupt << "corrupt"; }
+    CHECK(NP::restore_native_portrait_partition_archive(root / "archive", destination) == 0);
+    CHECK_FALSE(boost::filesystem::exists(destination / members.front().filename()));
+}
+
 TEST_CASE("Native portrait exact mesh cache rejects changed topology and reads legacy identity only",
           "[PortraitNativePartition][WorkbenchNativeImport][P0]")
 {
@@ -503,12 +653,41 @@ TEST_CASE("Native workbench repairs solid material models without an image textu
     CHECK(mesh.indices.size() == 5);
 }
 
-TEST_CASE("Native workbench keeps the strict repair rejection reason for retry details",
+TEST_CASE("Native workbench accepts the native repair of a missing face and retains the original",
           "[PortraitNativePartition][PortraitNativeRepair][Regression]")
 {
     auto mesh = native_workbench_cluster_sample(1);
     mesh.indices.pop_back();
-    mesh.precomputed_face_colors.pop_back();
+    indexed_triangle_set source;
+    for (const auto& vertex : mesh.vertices) source.vertices.emplace_back(vertex[0], vertex[1], vertex[2]);
+    for (const auto& face : mesh.indices) source.indices.emplace_back(face[0], face[1], face[2]);
+    TriangleMesh native(source);
+    REQUIRE(repair_mesh(native));
+    StrictMeshRepairResult report;
+    indexed_triangle_set repaired;
+    std::string error;
+    REQUIRE(NP::native_mesh_repair_callback(&report)(source, repaired, {}, {}, &error));
+    CHECK(report.success);
+    CHECK(report.output_topology.safe());
+    CHECK(report.native_repair_compatible);
+    CHECK_FALSE(report.geometry_verified);
+    CHECK_FALSE(repaired.empty());
+    CHECK(source.indices.size() == 3);
+    CHECK(mesh.indices.size() == 3);
+    NP::NativePortraitPartitionBuildReport build;
+    const auto partition = NP::build_native_workbench_partition(mesh,
+        NP::native_mesh_repair_callback(&build.strict_repair), {}, &build);
+    REQUIRE(build.success);
+    CHECK(partition.valid());
+    CHECK(build.strict_repair.native_repair_compatible);
+}
+
+TEST_CASE("Native workbench keeps the strict repair rejection reason for retry details",
+          "[PortraitNativePartition][PortraitNativeRepair][Regression]")
+{
+    auto mesh = native_workbench_cluster_sample(1);
+    mesh.indices.resize(1);
+    mesh.precomputed_face_colors.resize(1);
     NP::NativePortraitPartitionBuildReport report;
     CHECK_THROWS_AS(NP::build_native_workbench_partition(mesh,
         NP::native_mesh_repair_callback(&report.strict_repair), {}, &report), std::runtime_error);
@@ -517,10 +696,141 @@ TEST_CASE("Native workbench keeps the strict repair rejection reason for retry d
     CHECK(report.strict_repair.enhanced_repair_attempted);
     CHECK_FALSE(report.strict_repair.error.empty());
     CHECK(report.error.find(report.strict_repair.error) != std::string::npos);
-    CHECK(mesh.indices.size() == 3);
+    CHECK(mesh.indices.size() == 1);
 }
 
-TEST_CASE("Native workbench clustering rejects smoothing below six for a six color source",
+TEST_CASE("Completed partitions survive repeated publication failures without repeating repair",
+          "[PortraitNativePartition][NativePartitionRetry][Regression]")
+{
+    auto source = std::make_shared<TexturedMesh>(native_workbench_cluster_sample(1));
+    auto original = std::make_shared<NP::NativePortraitPartitionBuildReport>();
+    auto repair = NP::native_mesh_repair_callback(&original->strict_repair);
+    const PaintMeshRepairFunction native_repair = static_cast<const PaintMeshRepairFunction&>(repair);
+    size_t repair_calls = 0;
+    repair = [&](const indexed_triangle_set& input, indexed_triangle_set& output,
+        std::function<void(const char*, unsigned)> progress, std::function<bool()> cancel,
+        std::string* error) {
+        ++repair_calls;
+        return native_repair(input, output, progress, cancel, error);
+    };
+    GUI::NativeWorkbenchPreparedPartition prepared;
+    prepared.source = source;
+    prepared.partition = std::make_shared<NP::NativeWorkbenchPartition>(
+        NP::build_native_workbench_partition(*source, repair, {}, original.get()));
+    prepared.report = original;
+    prepared.source_bounds = NP::native_workbench_bounds(*source);
+    REQUIRE(prepared.partition->valid());
+    REQUIRE(original->strict_repair.accepted());
+    const size_t completed_repairs = repair_calls;
+    REQUIRE(completed_repairs > 0);
+    const auto digest = prepared.partition->partition_digest;
+    const auto vertices = prepared.partition->painted.vertices;
+    const auto root = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path("orca-publication-retry-%%%%");
+    struct Cleanup { boost::filesystem::path path;
+        ~Cleanup() { boost::system::error_code ec; boost::filesystem::remove_all(path, ec); }
+    } cleanup {root};
+    const auto blocked = root / "blocked.obj";
+    boost::filesystem::create_directories(blocked);
+    const auto bounds = NP::native_workbench_bounds(*prepared.partition);
+    std::string published_hash, publication_error;
+    REQUIRE_FALSE(NP::write_native_portrait_carrier(blocked, *prepared.partition, bounds,
+        published_hash, publication_error));
+    REQUIRE_FALSE(publication_error.empty());
+    original->success = false;
+    original->error = publication_error;
+    original->stage(NP::BuildStage::CarrierPublish).status = NP::BuildStageStatus::Failed;
+    for (int retry = 0; retry < 3; ++retry) {
+        NP::NativePortraitPartitionBuildReport attempt;
+        attempt.stage(NP::BuildStage::SourceCheck) = {NP::BuildStageStatus::Succeeded, 13, "Actual digest verified"};
+        attempt.stage(NP::BuildStage::Decode) = {NP::BuildStageStatus::Succeeded, 27, "Actual dependencies decoded"};
+        REQUIRE(prepared.restore_build_report(*source, attempt));
+        CHECK(attempt.success);
+        CHECK(attempt.error.empty());
+        CHECK(attempt.total_ms == 0);
+        CHECK(attempt.stage(NP::BuildStage::StrictRepair).status == NP::BuildStageStatus::Skipped);
+        CHECK(attempt.stage(NP::BuildStage::SourceCheck).duration_ms == 13);
+        CHECK(attempt.stage(NP::BuildStage::Decode).duration_ms == 27);
+        CHECK(attempt.strict_repair.strategy == original->strict_repair.strategy);
+        CHECK(attempt.strict_repair.output_topology.safe());
+        CHECK(original->stage(NP::BuildStage::RegionEnumeration).status == NP::BuildStageStatus::Succeeded);
+        CHECK(repair_calls == completed_repairs);
+        CHECK(prepared.partition->partition_digest == digest);
+        CHECK(prepared.partition->painted.vertices == vertices);
+        CHECK_FALSE(NP::write_native_portrait_carrier(blocked, *prepared.partition, bounds,
+            published_hash, publication_error));
+        // This attempt may fail too; it never replaces the original completed facts.
+        attempt.success = false;
+        attempt.stage(NP::BuildStage::MetadataPublish).status = NP::BuildStageStatus::Failed;
+    }
+    REQUIRE(NP::write_native_portrait_carrier(root / "ready.obj", *prepared.partition, bounds,
+        published_hash, publication_error));
+    CHECK(published_hash.size() == 64);
+    CHECK(repair_calls == completed_repairs);
+}
+
+TEST_CASE("Prepared partition reuse checks every decoded geometry and appearance field",
+          "[PortraitNativePartition][NativePartitionRetry][Regression]")
+{
+    auto source = std::make_shared<TexturedMesh>(native_workbench_cluster_sample(1));
+    source->uvs = {{0.f,0.f},{1.f,0.f},{0.f,1.f},{1.f,1.f}};
+    source->uv_coords = source->uvs;
+    source->uv_indices = source->indices;
+    source->material_ids.assign(source->indices.size(), 0);
+    source->material_texture_map = {0};
+    source->material_colors = {{1.f,1.f,1.f,1.f}};
+    source->precomputed_vertex_colors.assign(source->vertices.size(), {1.f,0.f,0.f,1.f});
+    source->textures.push_back({1, 1, 4, {230,70,60,255}});
+    auto report = std::make_shared<NP::NativePortraitPartitionBuildReport>();
+    GUI::NativeWorkbenchPreparedPartition prepared;
+    prepared.source = source;
+    prepared.partition = std::make_shared<NP::NativeWorkbenchPartition>(
+        NP::build_native_workbench_partition(*source,
+            NP::native_mesh_repair_callback(&report->strict_repair), {}, report.get()));
+    prepared.report = report;
+    prepared.source_bounds = NP::native_workbench_bounds(*source);
+    REQUIRE(prepared.matches(*source));
+    const auto field = GENERATE("vertices", "indices", "face order", "uvs", "uv_coords", "uv_indices",
+        "material_ids", "material_texture_map", "material_colors", "face colors", "vertex colors",
+        "texture width", "texture height", "texture channels", "texture bytes", "texture count");
+    CAPTURE(field);
+    auto changed = *source;
+    if (field == std::string("vertices")) changed.vertices[0][0] += .25f;
+    else if (field == std::string("indices")) std::swap(changed.indices[0][1], changed.indices[0][2]);
+    else if (field == std::string("face order")) std::swap(changed.indices[0], changed.indices[1]);
+    else if (field == std::string("uvs")) changed.uvs[0][0] = .5f;
+    else if (field == std::string("uv_coords")) changed.uv_coords[0][0] = .5f;
+    else if (field == std::string("uv_indices")) changed.uv_indices[0][0] = 1;
+    else if (field == std::string("material_ids")) changed.material_ids[0] = 1;
+    else if (field == std::string("material_texture_map")) changed.material_texture_map[0] = -1;
+    else if (field == std::string("material_colors")) changed.material_colors[0][0] = .5f;
+    else if (field == std::string("face colors")) changed.precomputed_face_colors[0][0] = 0;
+    else if (field == std::string("vertex colors")) changed.precomputed_vertex_colors[0][0] = .5f;
+    else if (field == std::string("texture width")) changed.textures[0].width = 2;
+    else if (field == std::string("texture height")) changed.textures[0].height = 2;
+    else if (field == std::string("texture channels")) changed.textures[0].channels = 3;
+    else if (field == std::string("texture bytes")) changed.textures[0].data[0] = 0;
+    else changed.textures.clear();
+    NP::NativePortraitPartitionBuildReport attempt;
+    CHECK_FALSE(prepared.restore_build_report(changed, attempt));
+    CHECK_FALSE(attempt.success);
+    CHECK(prepared.matches(*source));
+    CHECK_FALSE(prepared.matches(*source, [] { return true; }));
+    report->strict_repair.success = false;
+    CHECK_FALSE(prepared.matches(*source));
+    report->strict_repair.success = true;
+    report->stage(NP::BuildStage::RegionEnumeration).status = NP::BuildStageStatus::Failed;
+    CHECK_FALSE(prepared.matches(*source));
+    report->stage(NP::BuildStage::RegionEnumeration).status = NP::BuildStageStatus::Skipped;
+    CHECK_FALSE(prepared.matches(*source));
+    report->stage(NP::BuildStage::RegionEnumeration).status = NP::BuildStageStatus::Succeeded;
+    report->strict_repair.canceled = true;
+    CHECK_FALSE(prepared.matches(*source));
+    report->strict_repair.canceled = false;
+    prepared.partition->face_region_ids.clear();
+    CHECK_FALSE(prepared.matches(*source));
+}
+
+TEST_CASE("Strict color smoothing rejects lost colors while the workbench restores unsmoothed labels",
           "[PortraitNativePartition][P0]")
 {
     TexturedMesh mesh;
@@ -529,8 +839,24 @@ TEST_CASE("Native workbench clustering rejects smoothing below six for a six col
         {2,0,5},{1,2,5},{3,1,5},{0,3,5}};
     mesh.precomputed_face_colors = {{230,70,60},{45,45,45},{235,220,190},{50,100,210},
         {210,70,150},{70,180,90},{230,70,60},{45,45,45}};
-    CHECK_THROWS_AS(NP::build_native_workbench_partition(
-        mesh, identity_mesh_repair()), std::runtime_error);
+    TexturePaintingSettings strict;
+    strict.target_colors_num = 0; strict.min_cluster_k = 6; strict.max_cluster_k = 32;
+    strict.max_color_distance = 10.; strict.max_tail_color_distance = 18.;
+    strict.mesh_repair_decision = TexturePaintingSettings::MeshRepairDecision::RepairAndImport;
+    strict.strict_mesh_repair = true; strict.mesh_repair_callback = identity_mesh_repair();
+    PaintedMesh rejected;
+    CHECK_FALSE(face_colors_to_painting(mesh, rejected, strict));
+    NP::NativePortraitPartitionBuildReport report;
+    const auto partition = NP::build_native_workbench_partition(mesh, identity_mesh_repair(), {}, &report);
+    REQUIRE(partition.valid());
+    CHECK(partition.algorithm == NP::compatible_algorithm_version);
+    CHECK(partition.painted.cluster_colors.size() >= 6);
+    CHECK(partition.painted.vertices == mesh.vertices);
+    CHECK(partition.painted.indices == mesh.indices);
+    CHECK(report.color_fallback == "unsmoothed-labels/v1");
+    CHECK(report.fallback_color_count >= 6);
+    CHECK(std::isfinite(report.fallback_mean_delta_e));
+    CHECK(report.fallback_max_delta_e >= report.fallback_mean_delta_e);
 }
 
 TEST_CASE("Native repair bounds its computation without changing the caller arena", "[PortraitNativePartition][RegionSmoothing]")

@@ -1,3 +1,4 @@
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "SemanticMaterialRegions.hpp"
 
 #include <algorithm>
@@ -783,7 +784,7 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
     const size_t count = source.mesh.indices.size(), vertex_count = source.mesh.vertices.size();
     if (!analysis.person_detected || analysis.canceled || !analysis.error.empty() ||
         source.geometry_id != analysis.geometry_id || source.content_id != analysis.content_id ||
-        count == 0 || count > 2000000 || vertex_count == 0 || vertex_count > 6000000 ||
+        count == 0 || count > MeshResourceBudget::maximum_faces || vertex_count == 0 || vertex_count > MeshResourceBudget::maximum_vertices ||
         palette.empty() || palette.size() > 6 || analysis.face_labels.size() != count ||
         analysis.face_confidence.size() != count) return;
     // Keep the six-color material repairs isolated from compact test meshes

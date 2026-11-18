@@ -10,6 +10,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <nlohmann/json.hpp>
 
 namespace Slic3r::GUI {
 
@@ -40,6 +41,10 @@ struct WorkbenchCheckResult {
     size_t nonmanifold_vertices {0};
     size_t self_intersections {0};
     bool self_intersections_checked {false};
+    // Populated only from a verified publication/certificate, never from a
+    // general inspection or a caller's success flag.
+    nlohmann::json native_repair_acceptance;
+    nlohmann::json native_repair_evidence;
     size_t small_faces {0};
     std::vector<size_t> issue_faces;
     size_t isolated_components {0};

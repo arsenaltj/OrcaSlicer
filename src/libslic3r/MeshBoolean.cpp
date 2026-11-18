@@ -1,5 +1,6 @@
 #include "Exception.hpp"
 #include "MeshBoolean.hpp"
+#include "MeshRepair.hpp"
 #include "PolygonSoupPreparation.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/TryCatchSignal.hpp"
@@ -23,6 +24,7 @@
 #include <CGAL/Named_function_parameters.h>
 #include <exception>
 #include <optional>
+#include <system_error>
 #include <CGAL/Polygon_mesh_processing/measure.h>
 #include <csignal>
 #include <CGAL/Polygon_mesh_processing/self_intersections.h>
@@ -42,6 +44,7 @@
 #include <limits>
 #include <thread>
 #include <type_traits>
+#include <sstream>
 #include <tbb/task_arena.h>
 // Include igl first. It defines "L" macro which then clashes with our localization
 #include <igl/copyleft/cgal/mesh_boolean.h>
@@ -83,6 +86,60 @@ namespace {
 
 constexpr size_t invalid_repair_metric = std::numeric_limits<size_t>::max();
 
+class CgalRepairDiagnostics;
+thread_local CgalRepairDiagnostics* current_repair_diagnostics = nullptr;
+
+class CgalRepairDiagnostics
+{
+public:
+    CgalRepairDiagnostics() : m_previous(current_repair_diagnostics) { current_repair_diagnostics = this; }
+    ~CgalRepairDiagnostics()
+    {
+        current_repair_diagnostics = m_previous;
+        flush();
+    }
+
+    void record(const char* stage, size_t vertices, size_t faces, bool finished, long long elapsed_us = 0)
+    {
+        if (m_count == m_events.size()) flush();
+        m_events[m_count++] = {stage, vertices, faces, finished, elapsed_us,
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - m_started).count()};
+    }
+
+private:
+    struct Event {
+        const char* stage;
+        size_t vertices;
+        size_t faces;
+        bool finished;
+        long long elapsed_us;
+        long long offset_us;
+    };
+    void flush() noexcept
+    {
+        if (!m_count) return;
+        // A fixed, call-local buffer retains every event, including partial
+        // attempts. Full batches flush before reuse; no timer or thread is
+        // needed. Diagnostic failures must never reject a repaired result.
+        try {
+            std::ostringstream message;
+            for (size_t i = 0; i < m_count; ++i) {
+                const auto& event = m_events[i];
+                if (i) message << '\n';
+                message << "[CgalRepair] " << (event.finished ? "end" : "begin") << " stage=" << event.stage;
+                if (event.finished) message << " elapsed_ms=" << event.elapsed_us / 1000 << " elapsed_us=" << event.elapsed_us;
+                message << " vertices=" << event.vertices << " faces=" << event.faces << " offset_us=" << event.offset_us;
+            }
+            BOOST_LOG_TRIVIAL(info) << message.str();
+        } catch (...) { /* Logging is not part of geometry acceptance. */ }
+        m_count = 0;
+    }
+    CgalRepairDiagnostics* m_previous;
+    std::chrono::steady_clock::time_point m_started = std::chrono::steady_clock::now();
+    std::array<Event, 128> m_events;
+    size_t m_count = 0;
+};
+
 template<class Mesh> bool checked_self_intersection_query(const Mesh& mesh)
 {
     // The predicate is read-only and exact. Bound only this query's work, and
@@ -96,6 +153,9 @@ template<class Mesh> bool checked_self_intersection_query(const Mesh& mesh)
             return arena.execute([&] {
                 return CGAL::Polygon_mesh_processing::does_self_intersect<CGAL::Parallel_if_available_tag>(mesh);
             });
+        } catch (const std::bad_alloc&) { throw;
+        } catch (const std::length_error&) { throw;
+        } catch (const std::system_error&) { throw;
         } catch (const std::exception& failure) {
             // A failed parallel query is never a successful validation. The
             // original predicate must finish, or propagate its own failure.
@@ -111,10 +171,16 @@ class CgalRepairStageTimer
 public:
     CgalRepairStageTimer(const char *stage, size_t vertices = 0, size_t faces = 0)
         : m_stage(stage), m_vertices(vertices), m_faces(faces),
-          m_started(std::chrono::steady_clock::now())
+          m_started(std::chrono::steady_clock::now()),
+          m_diagnostics(current_repair_diagnostics)
     {
-        BOOST_LOG_TRIVIAL(info) << "[CgalRepair] begin stage=" << m_stage
-            << " vertices=" << m_vertices << " faces=" << m_faces;
+        if (m_diagnostics) m_diagnostics->record(m_stage, m_vertices, m_faces, false);
+        else {
+            try {
+                BOOST_LOG_TRIVIAL(info) << "[CgalRepair] begin stage=" << m_stage
+                    << " vertices=" << m_vertices << " faces=" << m_faces;
+            } catch (...) { /* Diagnostics cannot change repair behavior. */ }
+        }
     }
 
     ~CgalRepairStageTimer() { finish(); }
@@ -128,11 +194,16 @@ public:
         if (faces != invalid_repair_metric)
             m_faces = faces;
 
-        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        const auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - m_started).count();
-        BOOST_LOG_TRIVIAL(info) << "[CgalRepair] end stage=" << m_stage
-            << " elapsed_ms=" << elapsed_ms
-            << " vertices=" << m_vertices << " faces=" << m_faces;
+        if (m_diagnostics) m_diagnostics->record(m_stage, m_vertices, m_faces, true, elapsed_us);
+        else {
+            try {
+                BOOST_LOG_TRIVIAL(info) << "[CgalRepair] end stage=" << m_stage
+                    << " elapsed_ms=" << elapsed_us / 1000 << " elapsed_us=" << elapsed_us
+                    << " vertices=" << m_vertices << " faces=" << m_faces;
+            } catch (...) { /* Diagnostics cannot change repair behavior. */ }
+        }
         m_finished = true;
     }
 
@@ -141,6 +212,7 @@ private:
     size_t m_vertices;
     size_t m_faces;
     std::chrono::steady_clock::time_point m_started;
+    CgalRepairDiagnostics* m_diagnostics;
     bool m_finished = false;
 };
 
@@ -344,11 +416,13 @@ bool remove_intersections_with_diagnostics(_EpicMesh& mesh, const char* stage,
     // A failed parallel attempt must never retry from partially patched data.
     // If the snapshot itself cannot be allocated, the original mesh is intact.
     std::optional<_EpicMesh> original;
-    try { original.emplace(mesh); }
-    catch (const std::exception&) { return run(CGAL::Sequential_tag{}); }
+    original.emplace(mesh);
     try {
         if (run(CGAL::Parallel_if_available_tag{}))
             return true;
+    } catch (const std::bad_alloc&) { throw;
+    } catch (const std::length_error&) { throw;
+    } catch (const std::system_error&) { throw;
     } catch (const std::exception& failure) {
         BOOST_LOG_TRIVIAL(warning) << "[CgalRepair] parallel repair queries failed; restoring original candidate: " << failure.what();
     }
@@ -921,12 +995,18 @@ bool empty(const CGALMesh &mesh)
     return mesh.m.is_empty();
 }
 
+bool FloatOutputValidation::matches(const indexed_triangle_set& mesh) const
+{
+    return !m_geometry_id.empty() && m_geometry_id == mesh_repair_geometry_id(mesh);
+}
+
 bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string* error,
-            const std::function<bool()> &is_canceled)
+            const std::function<bool()> &is_canceled, FloatOutputValidation* validation)
 {
     using namespace CGAL;
     namespace PMP = CGAL::Polygon_mesh_processing;
 
+    if (validation) *validation = {};
     const auto canceled = [&]() {
         if (!is_canceled || !is_canceled())
             return false;
@@ -940,6 +1020,9 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
         return true;
 
     try {
+        // Flush after total_stage unwinds, including cancellation/failure.
+        // The caller's repair timing includes this final diagnostic write.
+        CgalRepairDiagnostics diagnostics;
         CgalRepairStageTimer total_stage("repair_mesh_total", mesh.its.vertices.size(), mesh.its.indices.size());
 
         // 1) Convert to polygon soup
@@ -976,9 +1059,11 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
         }
 
         // 3) Convert soup → mesh
+        CgalRepairStageTimer mesh_setup_stage("create_surface_mesh");
         if (canceled())
             return false;
         _EpicMesh cgal_mesh;
+        mesh_setup_stage.finish();
         {
             CgalRepairStageTimer stage("polygon_soup_to_polygon_mesh", points.size(), polygons.size());
             PMP::polygon_soup_to_polygon_mesh(points, polygons, cgal_mesh);
@@ -1080,13 +1165,21 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
         // require an independently checked closed result before publishing it.
         if (canceled())
             return false;
-        if (checked_self_intersection_query(cgal_mesh)) {
+        const bool intersects = [&] {
+            CgalRepairStageTimer stage("check_repaired_self_intersections", num_vertices(cgal_mesh), num_faces(cgal_mesh));
+            return checked_self_intersection_query(cgal_mesh);
+        }();
+        if (intersects) {
             const _EpicMesh closed_source = cgal_mesh;
             CgalRepairStageTimer stage("repair_self_intersections", num_vertices(cgal_mesh), num_faces(cgal_mesh));
             bool resolved = false;
             try {
                 resolved = remove_intersections_with_diagnostics(cgal_mesh, "repair_self_intersections", is_canceled);
+            } catch (const std::bad_alloc&) { throw;
+            } catch (const std::length_error&) { throw;
+            } catch (const std::system_error&) { throw;
             } catch (const std::exception& e) {
+                if (canceled()) return false;
                 BOOST_LOG_TRIVIAL(warning) << "[CgalRepair] local intersection repair failed: " << e.what();
             }
             stage.finish(num_vertices(cgal_mesh), num_faces(cgal_mesh));
@@ -1133,7 +1226,11 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
             if (error) *error = "Repair failed: repaired mesh topology is invalid.";
             return false;
         }
-        if (!PMP::does_bound_a_volume(cgal_mesh)) {
+        const bool bounds_volume = [&] {
+            CgalRepairStageTimer stage("check_repaired_volume", num_vertices(cgal_mesh), num_faces(cgal_mesh));
+            return PMP::does_bound_a_volume(cgal_mesh);
+        }();
+        if (!bounds_volume) {
             CgalRepairStageTimer stage("orient_to_bound_a_volume", num_vertices(cgal_mesh), num_faces(cgal_mesh));
             PMP::orient_to_bound_a_volume(cgal_mesh);
             stage.finish(num_vertices(cgal_mesh), num_faces(cgal_mesh));
@@ -1202,8 +1299,8 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
         // Float conversion is part of the delivery format. A closed CGAL mesh
         // alone is insufficient if rounding reintroduces intersections.
         const size_t open = its_num_open_edges(candidate.its);
-        // No mutation occurred since the check above. Strict repair still
-        // performs its independent full topology check after this returns.
+        // No mutation occurred since the check above. The strict consumer
+        // still inspects all topology, and may reuse this exact float fact.
         const bool intersecting = candidate_intersects;
         if (candidate.empty() || !std::isfinite(candidate.volume()) || candidate.volume() <= 0.f ||
             open != 0 || intersecting) {
@@ -1211,13 +1308,23 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
                 ", open edges=" + std::to_string(open) + ", self-intersections=" + std::to_string(intersecting) + ".";
             return false;
         }
+        FloatOutputValidation checked_output;
+        if (validation) {
+            checked_output.m_geometry_id = mesh_repair_geometry_id(candidate.its);
+            if (checked_output.m_geometry_id.empty())
+                throw std::runtime_error("Validated float repair output has invalid geometry identity.");
+        }
         if (canceled()) return false;
         mesh = std::move(candidate);
 
         if (repaired_errors)
             *repaired_errors = errs;
+        if (validation) *validation = std::move(checked_output);
 
         return true;
+    } catch (const std::bad_alloc&) { throw;
+    } catch (const std::length_error&) { throw;
+    } catch (const std::system_error&) { throw;
     } catch (const std::exception& e) {
         if (error)
             *error = e.what();

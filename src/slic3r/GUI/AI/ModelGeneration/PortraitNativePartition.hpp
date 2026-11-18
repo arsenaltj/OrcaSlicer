@@ -1,6 +1,7 @@
 #pragma once
 
 #include "libslic3r/MeshRepair.hpp"
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "libslic3r/TexturePainting.hpp"
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 #include "slic3r/AI/ModelGeneration/SemanticColoring/SemanticColoring.hpp"
@@ -17,13 +18,17 @@ namespace Slic3r::GUI::NativePortrait {
 namespace SC = AI::SemanticColoring;
 
 inline constexpr uint32_t algorithm_version = 12;
+inline constexpr uint32_t compatible_algorithm_version = 13;
+inline constexpr bool supported_partition_algorithm(uint32_t value) {
+    return value == algorithm_version || value == compatible_algorithm_version;
+}
 inline constexpr uint32_t legacy_portrait_algorithm_version = 9;
 inline constexpr size_t minimum_color_count = 1;
 inline constexpr size_t maximum_color_count = 32;
 inline constexpr size_t default_model_color_count = 6;
 inline constexpr size_t portrait_model_color_count = 5;
 inline constexpr float minimum_semantic_confidence = 0.70f;
-inline constexpr size_t maximum_face_count = 1000000;
+inline constexpr size_t maximum_face_count = MeshResourceBudget::maximum_faces;
 inline constexpr double maximum_bounds_deviation_ratio = 0.0025;
 
 enum class BuildStage : uint8_t {
@@ -58,6 +63,9 @@ struct NativePortraitPartitionBuildReport {
     uint64_t total_ms {0};
     bool success {false};
     std::string error;
+    std::string color_fallback;
+    size_t fallback_color_count {0};
+    double fallback_mean_delta_e {0.}, fallback_max_delta_e {0.};
 
     BuildStageReport& stage(BuildStage value) { return stages[size_t(value)]; }
     const BuildStageReport& stage(BuildStage value) const { return stages[size_t(value)]; }
@@ -88,6 +96,7 @@ struct NativeMillimeterBounds {
 // The native texture pipeline is the sole owner of this geometry and region
 // membership. Semantic consumers receive it by const reference only.
 struct NativeWorkbenchPartition {
+    uint32_t algorithm {algorithm_version};
     PaintedMesh painted;
     // SurfaceSelectionPersistence identity of the final native face/corner
     // sequence. It intentionally survives carrier-only vertex splitting.
@@ -131,7 +140,8 @@ struct NativeWorkbenchPartitionIdentity {
 
 using NativePortraitPartitionIdentity = NativeWorkbenchPartitionIdentity;
 
-PaintMeshRepairCallback native_mesh_repair_callback(StrictMeshRepairResult* result = nullptr);
+PaintMeshRepairCallback native_mesh_repair_callback(StrictMeshRepairResult* result = nullptr,
+    const indexed_triangle_set* immutable_source = nullptr);
 
 NativeWorkbenchPartition build_native_workbench_partition(
     const TexturedMesh& texture_mesh,
@@ -152,7 +162,7 @@ NativeWorkbenchPartition build_native_portrait_partition(
 // and focused tests; it performs no color or semantic decisions.
 NativeWorkbenchPartition finalize_native_workbench_partition(
     PaintedMesh painted,
-    const PaintCancelCallback& cancel = {});
+    const PaintCancelCallback& cancel = {}, uint32_t algorithm = algorithm_version);
 NativeWorkbenchPartition finalize_native_portrait_partition(
     PaintedMesh painted,
     const PaintCancelCallback& cancel = {});

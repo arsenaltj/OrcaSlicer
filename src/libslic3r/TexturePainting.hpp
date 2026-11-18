@@ -62,11 +62,31 @@ struct PaintedMesh {
 
 using PaintProgressCallback = std::function<void(int percent, const char* message)>;
 using PaintCancelCallback   = std::function<bool()>;
-using PaintMeshRepairCallback = std::function<bool(const indexed_triangle_set& mesh,
+using PaintMeshRepairFunction = std::function<bool(const indexed_triangle_set& mesh,
                                                    indexed_triangle_set&       repaired_mesh,
                                                    std::function<void(const char* message, unsigned progress)> progress_callback,
                                                    std::function<bool()> cancel_callback,
                                                    std::string* error_message)>;
+
+// Per-call execution metadata travels with its callback, independently of
+// optional timing reports. Ordinary callbacks retain their default behavior.
+struct PaintMeshRepairCallback : PaintMeshRepairFunction {
+    using PaintMeshRepairFunction::PaintMeshRepairFunction;
+    using PaintMeshRepairFunction::operator=;
+    PaintMeshRepairCallback() = default;
+    PaintMeshRepairCallback(const PaintMeshRepairCallback&) = default;
+    PaintMeshRepairCallback(PaintMeshRepairCallback&&) noexcept = default;
+    PaintMeshRepairCallback& operator=(const PaintMeshRepairCallback&) = default;
+    PaintMeshRepairCallback& operator=(PaintMeshRepairCallback&&) noexcept = default;
+    // A non-const lvalue otherwise selects std::function's inherited forwarding
+    // constructor/assignment and recursively wraps this derived callable.
+    PaintMeshRepairCallback(PaintMeshRepairCallback& other)
+        : PaintMeshRepairCallback(static_cast<const PaintMeshRepairCallback&>(other)) {}
+    PaintMeshRepairCallback& operator=(PaintMeshRepairCallback& other) {
+        return *this = static_cast<const PaintMeshRepairCallback&>(other);
+    }
+    std::function<bool()> preserve_repaired_geometry;
+};
 
 struct TexturePaintingSettings {
     std::size_t target_colors_num  = 4;
@@ -92,6 +112,10 @@ struct TexturePaintingSettings {
     // Failure, an open result, or a halfedge-incompatible result aborts before
     // clustering. Ordinary texture import keeps the legacy fallback by default.
     bool strict_mesh_repair = false;
+    bool allow_color_fallback = false;
+    std::function<bool()> preserve_repaired_geometry;
+    std::string* color_fallback_reason = nullptr;
+    std::function<void(size_t, double, double)> color_fallback_diagnostic;
     // Explicit target colors bypass clustering. Empty preserves legacy behavior.
     std::vector<std::array<std::size_t, 3>> fixed_palette;
     std::vector<std::array<std::size_t, 3>> fixed_mapping_palette;

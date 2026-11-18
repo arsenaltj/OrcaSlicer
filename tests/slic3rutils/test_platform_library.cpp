@@ -5,8 +5,11 @@
 #include "slic3r/Utils/HonorAccount/HonorSession.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryRepository.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryExport.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelLibraryDeletion.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/VerifiedModelFiles.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelPreview3D.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <boost/nowide/cstdlib.hpp>
@@ -193,6 +196,86 @@ TEST_CASE("A verified download atomically registers without overwriting source o
     REQUIRE_FALSE(boost::filesystem::exists(destination/"model.glb"));
     boost::filesystem::ifstream original(root.path/"downloads"/"original.json");std::string text;original>>text;REQUIRE(text=="untouched");
 }
+TEST_CASE("An explicit verified download restores removed history while cancellation keeps it hidden", "[PlatformLibrary][ModelLibraryDeletion]") {
+    const bool shared = GENERATE(false, true);
+    CAPTURE(shared);
+    Directory root;
+    const std::string bytes = "complete";
+    const auto spec = DownloadSpec::from_detail(detail(bytes), file);
+    StagedDownload::prepare(fixture_client(bytes), spec, root.path, cancellation())->commit(cancellation());
+    const auto entries = Slic3r::GUI::ModelLibraryRepository::read(root.path, *cancellation());
+    REQUIRE(entries.size() == 1);
+    const auto selected = entries.front();
+    if (shared) {
+        boost::filesystem::ofstream reference(root.path / "downloads/retained-version.json");
+        reference << Json{{"source_model", selected.model_path.generic_string()}}.dump();
+    }
+    const auto removed = Slic3r::GUI::ModelLibraryDeletion::remove(root.path, selected, entries);
+    REQUIRE(removed.committed);
+    CHECK(removed.retained_dependencies == shared);
+    REQUIRE(Slic3r::GUI::ModelLibraryRepository::read(root.path, *cancellation()).empty());
+
+    const auto cancel = cancellation();
+    auto retry = StagedDownload::prepare(fixture_client(bytes), spec, root.path, cancel);
+    *cancel = true;
+    REQUIRE_THROWS(retry->commit(cancel));
+    CHECK(Slic3r::GUI::ModelLibraryDeletion::removed(root.path, selected.job_id, selected.model_path));
+    CHECK(Slic3r::GUI::ModelLibraryRepository::read(root.path, *cancellation()).empty());
+    retry.reset();
+
+    retry = StagedDownload::prepare(fixture_client(bytes), spec, root.path, cancellation());
+    REQUIRE(retry->commit(cancellation()) == spec.key());
+    CHECK_FALSE(Slic3r::GUI::ModelLibraryDeletion::removed(root.path, selected.job_id, selected.model_path));
+    const auto restored = Slic3r::GUI::ModelLibraryRepository::read(root.path, *cancellation());
+    REQUIRE(restored.size() == 1);
+    CHECK(restored.front().model_path == selected.model_path);
+    CHECK(file_digest(restored.front().model_path) == spec.sha256);
+    CHECK(retry->commit(cancellation()) == spec.key());
+}
+
+#ifdef _WIN32
+TEST_CASE("Failed history restoration preserves the registered download and can retry without another transfer", "[PlatformLibrary][ModelLibraryDeletion]") {
+    Directory root;
+    const std::string bytes = "complete";
+    const auto spec = DownloadSpec::from_detail(detail(bytes), file);
+    StagedDownload::prepare(fixture_client(bytes), spec, root.path, cancellation())->commit(cancellation());
+    const auto entries = Slic3r::GUI::ModelLibraryRepository::read(root.path, *cancellation());
+    REQUIRE(entries.size() == 1);
+    REQUIRE(Slic3r::GUI::ModelLibraryDeletion::remove(root.path, entries.front(), entries).committed);
+    const auto receipt = root.path / "downloads" / ("orcaslicer-ai-" + spec.key() + ".removed");
+    auto retry = StagedDownload::prepare(fixture_client(bytes), spec, root.path, cancellation());
+    {
+        Slic3r::GUI::VerifiedModelFiles lease;
+        REQUIRE(lease.verify(receipt, Slic3r::AI::model_artifact_sha256(receipt)));
+        REQUIRE_THROWS_AS(retry->commit(cancellation()), Error);
+        CHECK(boost::filesystem::exists(receipt));
+        CHECK(file_digest(entries.front().model_path) == spec.sha256);
+        CHECK(boost::filesystem::exists(root.path / "downloads" / ("orcaslicer-ai-" + spec.key() + ".json")));
+    }
+    REQUIRE(retry->commit(cancellation()) == spec.key());
+    CHECK_FALSE(boost::filesystem::exists(receipt));
+    CHECK(Slic3r::GUI::ModelLibraryRepository::read(root.path, *cancellation()).size() == 1);
+}
+#endif
+
+TEST_CASE("Explicit download registration leaves removal records for a different resource unchanged", "[PlatformLibrary][ModelLibraryDeletion]") {
+    Directory root;
+    const std::string bytes = "complete";
+    const auto spec = DownloadSpec::from_detail(detail(bytes), file);
+    const auto receipt = root.path / "downloads" / ("orcaslicer-ai-" + spec.key() + ".removed");
+    boost::filesystem::create_directories(receipt.parent_path());
+    {
+        boost::filesystem::ofstream output(receipt);
+        output << Json{{"schema", "orca.model-library-removal/v1"}, {"job_id", spec.key()},
+            {"asset", "another/model.glb"}, {"design_only", false}}.dump();
+    }
+    const auto before = file_digest(receipt);
+    const auto prepared = StagedDownload::prepare(fixture_client(bytes), spec, root.path, cancellation());
+    REQUIRE(prepared->commit(cancellation()) == spec.key());
+    CHECK(file_digest(receipt) == before);
+    CHECK(Slic3r::GUI::ModelLibraryRepository::read(root.path, *cancellation()).size() == 1);
+}
+
 TEST_CASE("Size or digest mismatches and cancellation leave no registered asset", "[PlatformLibrary]") {
     Directory root;const auto spec=DownloadSpec::from_detail(detail("complete"),file);
     REQUIRE_THROWS(StagedDownload::prepare(fixture_client("wrong"),spec,root.path,cancellation()));

@@ -4,6 +4,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationUiState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitWorkbenchEntry.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySidebar.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelPreviewTextureColor.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportSession.hpp"
@@ -43,6 +44,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/BeautyCandidateSnapshot.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyPartitionSelection.hpp"
+
 #include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchColorGate.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchPrinterFilaments.hpp"
 #include "slic3r/GUI/PrinterFilamentSlotRemap.hpp"
@@ -59,6 +61,23 @@
 #include <vector>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("Partition consumers cannot activate a new choice from an uploading checkpoint",
+          "[PostGenerationWorkbench][WorkbenchCheckLifecycle][PortraitNativePartition]")
+{
+    namespace PP = Slic3r::GUI::WorkbenchArtifacts;
+    const auto automatic = PP::native_workbench_partition_consumer(PP::NativeWorkbenchPartitionConsumer::AutomaticPalette);
+    const auto suite = PP::native_workbench_partition_consumer(PP::NativeWorkbenchPartitionConsumer::HonorSuite);
+    const auto both = PP::native_workbench_partition_consumers(
+        PP::NativeWorkbenchPartitionConsumer::AutomaticPalette, PP::NativeWorkbenchPartitionConsumer::HonorSuite);
+    CHECK(PP::native_workbench_partition_can_join(automatic, suite, false));
+    CHECK(PP::native_workbench_partition_can_join(automatic, automatic, true));
+    CHECK_FALSE(PP::native_workbench_partition_can_join(automatic, suite, true));
+    CHECK_FALSE(PP::native_workbench_partition_can_join(automatic, both, true));
+    CHECK(PP::native_workbench_partition_can_join(both, suite, true));
+    CHECK(PP::native_workbench_partition_can_join(automatic, suite, false));
+    CHECK_FALSE(PP::native_workbench_partition_can_join(automatic, 0, false));
+}
 
 TEST_CASE("Returning through advanced creation reacquires the shared smart history without changing drawer preferences",
           "[PostGenerationWorkbench][WorkbenchHistorySidebar]")
@@ -1277,6 +1296,19 @@ TEST_CASE("background workbench decoding preserves native geometry units and tex
     CHECK_THAT(av->source.mesh_offset.norm(),
         Catch::Matchers::WithinAbs(0., 1e-6));
     CHECK(av->source.input_file == ev->source.input_file);
+    if (!expected.texture_mesh) {
+        // An uncoloured OBJ now supplies the real Orca default material to
+        // workbench partitioning. Its native geometry still matches above.
+        REQUIRE(path.extension() == ".obj");
+        REQUIRE(actual->texture_mesh);
+        const auto& material = *actual->texture_mesh;
+        CHECK(material.textures.empty());
+        CHECK(material.indices.size() == am.indices.size());
+        REQUIRE(material.precomputed_face_colors.size() == am.indices.size());
+        for (const auto& color : material.precomputed_face_colors)
+            CHECK((color == std::array<size_t, 3>{192, 192, 192}));
+        return;
+    }
     REQUIRE(bool(actual->texture_mesh) == bool(expected.texture_mesh));
     if (actual->texture_mesh) {
         const auto& at = *actual->texture_mesh;

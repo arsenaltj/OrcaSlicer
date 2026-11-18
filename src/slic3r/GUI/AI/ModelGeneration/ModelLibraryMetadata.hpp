@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <chrono>
 #include <cwchar>
 #include <map>
@@ -71,7 +72,9 @@ public:
         const auto model = record.find("model_path");
         if (model != record.end()) {
             if (!model->is_string()) throw std::runtime_error("Invalid history model path");
-            owner = boost::filesystem::path(std::filesystem::u8path(normalize(model->get<std::string>())).native()).parent_path();
+            const auto normalized = normalize(model->get<std::string>());
+            dependencies.insert(normalized);
+            owner = boost::filesystem::path(std::filesystem::u8path(normalized).native()).parent_path();
         }
         for (const char* key : {"beauty_workbench", "beauty_puzzle_draft"}) {
             const auto it = record.find(key);
@@ -111,7 +114,7 @@ public:
     // scan. Each document is parsed once, including when checking a carrier.
     static DeletionPreflight preflight_deletion(const boost::filesystem::path& library_root,
         const boost::filesystem::path& metadata_path, const boost::filesystem::path& model = {},
-        const boost::filesystem::path& appearance_carrier = {})
+        const boost::filesystem::path& appearance_carrier = {}, const std::function<bool()>& canceled = {})
     {
         DeletionPreflight result;
         try {
@@ -119,10 +122,15 @@ public:
             const auto record = root / dependency_path(metadata_path, root);
             const auto target = model.empty() ? model : dependency_path(model, root);
             const auto carrier = appearance_carrier.empty() ? appearance_carrier : dependency_path(appearance_carrier, root);
+            auto draft = record;
+            draft += ".draft";
+            bool referenced = false;
             for (boost::filesystem::directory_iterator it(record.parent_path()), end; it != end; ++it) {
+                if (canceled && canceled()) return result;
                 const auto& path = it->path();
                 if ((path.extension() != ".json" && path.extension() != ".draft") ||
-                    same_dependency_path(path, record) || path.stem().extension() == ".observations") continue;
+                    same_dependency_path(path, record) || same_dependency_path(path, draft) ||
+                    path.stem().extension() == ".observations") continue;
                 // Do not follow metadata or draft links, even if their contents
                 // would claim to refer to a file inside this library.
                 dependency_path(path, root);
@@ -142,13 +150,12 @@ public:
                 const auto dependencies = model_dependencies(input, owner, root);
                 result.protected_models.insert(dependencies.begin(), dependencies.end());
                 if (!target.empty() && dependency_matches(dependencies, target, root)) {
-                    result.status = DeletionStatus::Referenced;
-                    return result;
+                    referenced = true;
                 }
                 if (!carrier.empty() && dependency_matches(dependencies, carrier, root))
                     result.appearance_carrier_referenced = true;
             }
-            result.status = DeletionStatus::Allowed;
+            result.status = referenced ? DeletionStatus::Referenced : DeletionStatus::Allowed;
         } catch (...) { result.status = DeletionStatus::Uncertain; }
         return result;
     }
@@ -156,7 +163,7 @@ public:
     static bool deletion_protects(const DeletionPreflight& check, const boost::filesystem::path& library_root,
                                   const boost::filesystem::path& candidate, bool subtree = false)
     {
-        if (check.status != DeletionStatus::Allowed) return true;
+        if (check.status == DeletionStatus::Uncertain) return true;
         try {
             const auto root = boost::filesystem::canonical(library_root);
             const auto target = dependency_path(candidate, root);

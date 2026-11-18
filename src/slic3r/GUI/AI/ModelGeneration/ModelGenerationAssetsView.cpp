@@ -2,6 +2,8 @@
 #include "ModelGenerationInputStyle.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "ModelLibraryExport.hpp"
+#include "ModelLibraryDeletion.hpp"
+#include "ModelPreview3D.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AIModelOutputDirectory.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
@@ -14,8 +16,20 @@
 #include <wx/scrolwin.h>
 #include <wx/sizer.h>
 #include <wx/utils.h>
+#include <wx/stattext.h>
+#include <wx/weakref.h>
 
 namespace Slic3r::GUI {
+
+bool ModelGenerationPanel::report_library_deletion_error(const wxString& message)
+{
+    if (m_shutdown) return false;
+    if (m_status) m_status->SetLabel(message);
+    if (m_workbench_history_status) m_workbench_history_status->SetLabel(message);
+    show_redesign_confirmation(wxGetTopLevelParent(this), message, _L("无法删除模型"),
+        {wxOK, 105, {{wxID_OK, _L("知道了"), true}}});
+    return false;
+}
 
 void ModelGenerationPanel::export_library_entry(const GeneratedModelEntry& entry)
 {
