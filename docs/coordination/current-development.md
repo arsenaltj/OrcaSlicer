@@ -1,5 +1,7 @@
 # 2026-11-19 独立2M资源子流
 
+当前修复：r1独立review退回NG-MODEL-APPEARANCE-SOURCE-FACES-01首修轮1：释放前固定源面数，normalPolicy使用既有has_normal；仅私有凭据事实修正，四面反绕序/五面重复与有无作者NORMAL实际CABI对照。原r1源包与错误receipt保留；新r2需host/NDK真实重编/新包后原review→不同QA。资源问题轮1仍独立保留，不重跑未受算法影响的2M大件，不更新Mobile锁。
+
 主线：task-20261119-model-2m-resource-envelope，基f0cca33；r5/父包只读。
 本轮：首个844.05MiB超限为NG-MODEL-2M-RESOURCE-ENVELOPE-01初次反馈保；首修轮1两真2M host499.87/518.78MiB已转正，64MiB新布局另实证。紧凑计数/uint32/逐面映射/借用源字节/精确CGAL死set释放，完整检查保留。
 未结：最终待审候选caps2M实际重编、NDK旧cc重链/包及独立review→不同QA；Android/任意模型100%/strict制造安全未验。

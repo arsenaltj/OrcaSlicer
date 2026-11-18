@@ -1,5 +1,6 @@
 # MOBILE-GLB-REPAIR-005：2M资源隔离子流（2026-11-19）
 
+- r1独立review发现释放容器后sourceFaces错误为0、normalPolicy错误丢作者来源；NG-MODEL-APPEARANCE-SOURCE-FACES-01首修轮1仅捕获不可变源面数并消费has_normal，保算法/预算/输出几何。真实4面反绕序及5→4重复面、有/无NORMAL回执与源/输出/readbackID须对照，新r2 host/NDK/包身份重冻后原review→不同QA。原资源轮1、超限证据与r1错误receipt独立保留。
 - task-20261119-model-2m-resource-envelope/session-model-2m-dev-20261119 独立WT基f0cca33，不触r5/父/移动锁/旧19库。原768MiB估算/120s合作/100MiB/2.5M顶点不提高。
 - 紧凑计数/uint32索引/逐面映射与死数据释放；初2M885047296B超限作为NG-MODEL-2M-RESOURCE-ENVELOPE-01初反馈保留。root批准私有精确CGAL完整函数仅clear死set，双SHA/anchor/license/平凡积分ID守卫与完整检查均保。
 - 首修轮1两真2M host499.87/518.78MiB约26.23/26.34s，source/output/readback ID及全部corner/PBR/validator实际核。geometry仍not_run/native_compatible；首次估算低估及坏layout资源夹具红保留，开发自测不冒独立通过。

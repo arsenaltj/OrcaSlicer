@@ -1,6 +1,9 @@
 # v2 bounded 2M resource envelope
 
 The repair entry, CGAL residual predicates and appearance policy are unchanged.
+Source face count and authored-normal policy are captured before temporary
+appearance geometry/attributes are released; receipt provenance must never be
+inferred from an emptied container or the repaired output face count.
 The 768 MiB estimated workspace ceiling, 120s cooperative deadline, 100 MiB
 source/candidate and 2.5M exported vertices are not raised. Release candidates
 advertising generated2M remain unqualified until independent review and QA.

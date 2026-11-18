@@ -113,6 +113,7 @@ J enhanced_glb_carrier(Context& c, const Glb& g, Topology& input, const Topology
             bin.append(g.source,view.first,view.second);doc["images"][i]["bufferView"]=id;
         }
     } else bin=g.source.substr(g.bin,source_bin_size);
+    const auto source_face_count=input.faces.size();
     const bool has_uv=!uv.empty(),has_normal=!normals.empty();
     uv.clear();uv.shrink_to_fit();normals.clear();normals.shrink_to_fit();
     input.vertices.clear();input.vertices.shrink_to_fit();input.faces.clear();input.faces.shrink_to_fit();
@@ -232,7 +233,7 @@ J enhanced_glb_carrier(Context& c, const Glb& g, Topology& input, const Topology
              {"candidate",{{"path",path.u8string()},{"sha256",sha256(bytes)},{"bytes",bytes.size()},{"format","glb"},{"mediaType","model/gltf-binary"}}},
              {"checks",checks},{"nativeProof",proof},{"repairApplied",proof.at("modified")},
              {"geometryVerified",false},{"appearanceVerified",true},{"manufacturingSafe",false},{"vertices",exported_vertex_count},{"triangles",output.faces.size()},
-             {"appearanceEvidence",{{"policyVersion","appearance-reconstruction-v1"},{"encodedImages",channel_evidence},{"maximumCornerProjectionMillimetres",maximum_projection},{"maximumCornerProjectionRatio",maximum_projection/diagonal},{"uvMapping","exact-face-first-or-Core-AABB-barycentric"},{"mappedCorners",output.faces.size()*3},{"outputFaces",output.faces.size()},{"sourcePrimitive",0},{"sourceFaces",input.faces.size()},{"normalPolicy",normals.empty()?"GLTF-generated normals":"source-projected-normalized-and-winding-aligned"},{"tangentPolicy","GLTF-renderer-derived-from-repaired-UV-and-normal"},{"coordinateFrame","raw-Core-float-mm-Z-up-with-canonical-GLTF-root"}}}};
+             {"appearanceEvidence",{{"policyVersion","appearance-reconstruction-v1"},{"encodedImages",channel_evidence},{"maximumCornerProjectionMillimetres",maximum_projection},{"maximumCornerProjectionRatio",maximum_projection/diagonal},{"uvMapping","exact-face-first-or-Core-AABB-barycentric"},{"mappedCorners",output.faces.size()*3},{"outputFaces",output.faces.size()},{"sourcePrimitive",0},{"sourceFaces",source_face_count},{"normalPolicy",has_normal?"source-projected-normalized-and-winding-aligned":"GLTF-generated normals"},{"tangentPolicy","GLTF-renderer-derived-from-repaired-UV-and-normal"},{"coordinateFrame","raw-Core-float-mm-Z-up-with-canonical-GLTF-root"}}}};
     // Stable receipt identity excludes runtime durations. Actual current durations
     // remain in the response; replay re-executes and proves source -> output.
     auto durable=result;durable["nativeProof"].erase("wallMs");durable["nativeProof"].erase("cpuMs");

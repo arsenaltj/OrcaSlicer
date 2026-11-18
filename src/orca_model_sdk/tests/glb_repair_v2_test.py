@@ -66,6 +66,12 @@ with tempfile.TemporaryDirectory(prefix='orca-v2-cabi-') as directory:
     candidate=pathlib.Path(result['candidate']['path']);receipt=pathlib.Path(result['receipt']['path'])
     assert hashlib.sha256(candidate.read_bytes()).hexdigest()==result['candidate']['sha256']
     assert hashlib.sha256(receipt.read_bytes()).hexdigest()==result['receipt']['sha256']
+    source_primitive=doc['meshes'][0]['primitives'][0]
+    source_faces=doc['accessors'][source_primitive['indices']]['count']//3 if 'indices' in source_primitive else doc['accessors'][source_primitive['attributes']['POSITION']]['count']//3
+    normal_policy='source-projected-normalized-and-winding-aligned' if 'NORMAL' in source_primitive['attributes'] else 'GLTF-generated normals'
+    for facts in [result['appearanceEvidence'],json.loads(receipt.read_bytes())['appearanceEvidence']]:
+     assert facts['sourceFaces']==source_faces,(name,'source face count must survive buffer release',facts)
+     assert facts['normalPolicy']==normal_policy,(name,'authored-normal fact must survive buffer release',facts)
     rd,rb=decode(candidate.read_bytes());assert rd['nodes'][0]['matrix']==[.001,0,0,0,0,0,-.001,0,0,.001,0,0,0,0,0,1]
     position=rd['accessors'][rd['meshes'][0]['primitives'][0]['attributes']['POSITION']]
     view=rd['bufferViews'][position['bufferView']];offset=view.get('byteOffset',0)+position.get('byteOffset',0)
@@ -90,7 +96,25 @@ with tempfile.TemporaryDirectory(prefix='orca-v2-cabi-') as directory:
    assert [e['sequence'] for e in events]==list(range(1,len(events)+1))
   finally:lib.orca_model_destroy(handle)
   cases+=1;print('PASS',name,flush=True)
+  if not expect:return result
  run('unit_negative_zero',replay=True)
+ for duplicate in [False,True]:
+  for authored in [False,True]:
+   d,b=fixture();indices=[(0,1,2),(0,1,3),(0,3,2),(1,2,3)]
+   if duplicate:indices.append(indices[0])
+   faces=b''.join(struct.pack('<III',*f) for f in indices);b=b[:48]+faces
+   d['bufferViews'][1]['byteLength']=len(faces);d['accessors'][1]['count']=len(indices)*3
+   if authored:
+    normals=struct.pack('<12f',*( [0.,0.,1.]*4 ))
+    d['bufferViews'].append({'buffer':0,'byteOffset':len(b),'byteLength':len(normals)})
+    d['accessors'].append({'bufferView':2,'componentType':5126,'count':4,'type':'VEC3'})
+    d['meshes'][0]['primitives'][0]['attributes']['NORMAL']=2;b+=normals
+   name=('duplicate5' if duplicate else 'winding4')+('_authored_normal' if authored else '_no_normal')
+   result=run(name,d,b);proof=result['nativeProof'];assert proof['modified'] and proof['sourceGeometryId']!=proof['outputGeometryId'],(name,proof)
+   assert result['triangles']==4 and result['appearanceEvidence']['sourceFaces']==(5 if duplicate else 4)
+   candidate_doc,_=decode(pathlib.Path(result['candidate']['path']).read_bytes())
+   assert ('NORMAL' in candidate_doc['meshes'][0]['primitives'][0]['attributes'])==authored
+   print('SOURCE_FACTS',json.dumps({'case':name,'sourceFaces':result['appearanceEvidence']['sourceFaces'],'outputFaces':result['triangles'],'normalPolicy':result['appearanceEvidence']['normalPolicy'],'sourceGeometryId':proof['sourceGeometryId'],'outputGeometryId':proof['outputGeometryId'],'readbackGeometryId':proof['readbackGeometryId'],'candidateSha256':result['candidate']['sha256'],'receiptSha256':result['receipt']['sha256']}),flush=True)
  d,b=fixture();points=[(-.25,-.5,-1.25),(1.5,-.5,-1.25),(-.25,2.75,-1.25),(-.25,-.5,3.5)]
  b=b''.join(struct.pack('<fff',*v) for v in points)+b[48:]
  d['accessors'][0]['min']=[min(v[k] for v in points) for k in range(3)]
