@@ -42,8 +42,7 @@ if repair:
     if not tbb.is_dir() or not (tbb/'LICENSE.txt').is_file():
         raise SystemExit('Repair package requires the exact oneTBB source/notice root')
     files.update({'bin/tbb12.dll':args.windows_build/'Release/tbb12.dll',
-                  'android/arm64-v8a/libtbb.so':args.android_build/'clang_19.0_cxx17_64_release/libtbb.so',
-                  'licenses/oneTBB-LICENSE.txt':tbb/'LICENSE.txt'})
+                  'android/arm64-v8a/libtbb.so':args.android_build/'clang_19.0_cxx17_64_release/libtbb.so'})
     files['repair-core/README.md']=source/'repair_core/README.md'
     if not args.cgal_source_archive or not args.cgal_source_archive.is_file() or hashlib.sha256(args.cgal_source_archive.read_bytes()).hexdigest()!='eebd737d9b7f0199647ba5c1f9f6c7a3d0651aacef9c2fd4dedc52da6c25edbe':
         raise SystemExit('Repair SDK requires the actual pinned CGAL source archive')
@@ -182,6 +181,15 @@ capability_file.write_text(json.dumps(capabilities,indent=2),encoding='utf-8')
 data=capability_file.read_bytes()
 manifest['files'].append({'path':'capabilities.json','sha256':hashlib.sha256(data).hexdigest(),'sizeBytes':len(data)})
 manifest['capabilities']='capabilities.json'
+if repair:
+    manifest['packagingSourceCommit']=manifest['sourceCommit']
+    manifest['sourceCommit']=capabilities['sourceCommit']
+    for build in [args.windows_build,args.android_build]:
+        text=(build/'CMakeCache.txt').read_text(encoding='utf-8')
+        values=[line.split('=',1)[1] for line in text.splitlines() if line.startswith('ORCA_MODEL_SOURCE_COMMIT:STRING=')]
+        if values!=[capabilities['sourceCommit']]:
+            raise SystemExit('Runtime/source provenance differs across Model builds')
+
 if complete:
     def record(name):
         data=(args.output/name).read_bytes()
