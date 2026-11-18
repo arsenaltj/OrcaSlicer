@@ -143,7 +143,16 @@ J enhanced_glb_carrier(Context& c, const Glb& g, const Topology& input, const To
     proof.erase("residualChecks");
     checks["topology"]=check(residual.at("topologyValid").get<bool>()&&counts.at("defects")==0,counts.at("defects").get<size_t>()+(residual.at("topologyValid").get<bool>()?0:1),"Actual edge/face counts plus CGAL soup/vertex link; invalid vertex link adds one risk flag");
     checks["topology"]["details"]={{"edgeFaceCounts",counts},{"CGAL",residual}};
-    if(residual.at("selfIntersectionPerformed").get<bool>())checks["selfIntersection"]=check(!residual.at("selfIntersects").get<bool>(),residual.at("selfIntersects").get<bool>()?1:0,"Actual CGAL self-intersection predicate; risk flag");
+    if(residual.at("selfIntersectionPerformed").get<bool>()) {
+        const bool risk=residual.at("selfIntersects").get<bool>();
+        checks["selfIntersection"]=check(!risk,0);
+        if(risk)checks["selfIntersection"]["count"]=nullptr;
+        checks["selfIntersection"]["details"]={{"predicate","CGAL does_self_intersect"},{"riskFlag",risk},{"intersectionPairsEnumerated",false}};
+    }
+    if(!residual.at("topologyValid").get<bool>()) {
+        if(residual.contains("nonManifoldVertexFans"))checks["topology"]["count"]=counts.at("defects").get<size_t>()+residual.at("nonManifoldVertexFans").get<size_t>();
+        else checks["topology"]["count"]=nullptr;
+    }
 #endif
     const auto dir=private_output(c,F::u8path(request.at("outputDirectory").get<std::string>())/"verified-enhanced");
     const auto basename=sha256(request.at("identity").dump()+"glb-repair-v2");

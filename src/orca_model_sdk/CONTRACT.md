@@ -285,3 +285,8 @@ Core progress is real; mapping/carrier/readback/publishing phases are stage even
 The enhanced build additionally requires the same built oneTBB runtime: tbb12.dll
 on Windows and libtbb.so on Android. Immutable packaging must include its exact
 binary/notice/source provenance; the old Model04/Slicing bundle is unchanged.
+
+A positive boolean `does_self_intersect` proves a risk but does not enumerate
+intersection pairs: failed count is null and details.riskFlag=true. A negative
+predicate permits passed/count0. Unknown topology enumeration is likewise null;
+actual edge/face and non-manifold vertex counts are retained when available.
