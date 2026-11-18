@@ -2,7 +2,7 @@
 
 主线：task/mainline-bugfix → codex/team/integration，最新19400ff9ad14eddf0110ec019eccc819cfb62af0已包含PR77；本轮不重复计入已合功能。
 
-本轮：129项成果已提交为0decbba5cc，普通同步merge为6cc93a9259，无文本冲突且源码树不变；此前d22da3c0ec和0aaf63472f一并推送。已创建开放[PR #78](https://github.com/arsenaltj/OrcaSlicer/pull/78)，中文说明全部相对主线行为、验证边界并附完整文件清单；v19源文件对应与提交前快照保留。
+本轮：129项成果已提交为0decbba5cc，普通同步merge为6cc93a9259，无文本冲突且源码树不变；此前d22da3c0ec和0aaf63472f一并推送。已创建开放[PR #78](https://github.com/arsenaltj/OrcaSlicer/pull/78)，中文说明全部相对主线行为、验证边界并附完整文件清单；v19源文件对应与提交前快照保留。7b85570fb1的Windows构建及本地集成／架构／文档检查通过；远端守卫复现1项旧测试未跟随后台登记迁移，补修为检查实际写入入口且保留摘要绑定断言，58项定向回归通过。加入该测试文件后相对主线共130项，最终提交CI单独核对，原生实现未变。
 
 未结：最新base/head远端检查、非作者复核及受保护合入；Team integration candidate目前被仓库手动禁用，缺失结果不能视为通过，本次不改工作流／保护规则。完整速度、跨平台/DPI和实窗矩阵继续披露。新增真实约97.5万面纹理模型报告129.8秒并成功呈现，颜色聚类67.9秒为主要热点，不代替P95或视觉验收。
 
