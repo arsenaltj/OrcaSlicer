@@ -176,9 +176,10 @@ J check(bool passed, size_t count = 0, const char* details = "")
 struct Glb
 {
     J doc;
-    std::string source;
+    const std::string& source;
     size_t bin = 0, bin_size = 0;
-    explicit Glb(std::string bytes) : source(std::move(bytes))
+    Glb(std::string&&) = delete;
+    explicit Glb(const std::string& bytes) : source(bytes)
     {
         require(source.size() >= 28 && u32(source, 0) == 0x46546c67 && u32(source, 4) == 2 && u32(source, 8) == source.size(),
                 "Invalid GLB header");
@@ -449,7 +450,7 @@ std::string filtered_glb(const Glb& original, const std::set<size_t>& removed)
             original.item("accessors", primitive.at("attributes").at("POSITION").get<size_t>()).at("count").get<size_t>();
         std::vector<uint32_t> indexes;
         if (primitive.contains("indices"))
-            indexes = original.accessor(primitive.at("indices").get<size_t>(), "SCALAR", true);
+            indexes = original.accessor<uint32_t>(primitive.at("indices").get<size_t>(), "SCALAR", true);
         else {
             indexes.resize(position_count);
             std::iota(indexes.begin(), indexes.end(), 0.);
@@ -579,7 +580,26 @@ J glb_safety(Context& c, const J& request)
             require(indexes % 3 == 0 && indexes / 3 <= glb_faces - estimated_faces, "Combined triangle policy exceeded");
             estimated_faces += indexes / 3;
         }
-    const uint64_t resource_estimate = uint64_t(bytes.size()) * 4 + estimated_vertices * 96 + estimated_faces * 448;
+    J workspace_plan=nullptr;
+    uint64_t resource_estimate=uint64_t(bytes.size())*4+estimated_vertices*96+estimated_faces*448;
+    if(request.value("policyVersion",std::string())=="glb-repair-v2") {
+        // Phase maxima, not a replacement global face coefficient. Later carrier
+        // allocations are separately gated on actual split count/AABB lifetime.
+        const uint64_t Vn=estimated_vertices,Fn=estimated_faces,B=bytes.size();
+        const uint64_t reserve=128ull*1024*1024+uint64_t(g.bin)*16;
+        const uint64_t map_node=sizeof(std::pair<const V,uint32_t>)+4*sizeof(void*)+32;
+        const uint64_t decode=B+std::max(Vn*(4*sizeof(V)+sizeof(uint32_t)+map_node),Vn*(3*sizeof(V)+sizeof(uint32_t)+map_node)+Fn*(2*sizeof(T)+3*sizeof(uint32_t)));
+        const uint64_t counting=B+Vn*2*sizeof(V)+Fn*(3*sizeof(T)+3*sizeof(uint64_t));
+        const uint64_t dense=Vn*sizeof(V)+Fn*sizeof(T),core_float=Vn*12+Fn*12;
+        const uint64_t core=B+3*dense+2*core_float+Vn*32+Fn*64;
+        // Surface connectivity/points and predicate boxes coexist with both
+        // immutable input and repaired output. CGAL is not an OS hard RSS cap.
+        const uint64_t residual=B+3*dense+Vn*(sizeof(V)+32)+Fn*(3*16+8+72);
+        resource_estimate=std::max({decode,counting,core,residual})+reserve;
+        workspace_plan={{"policy","phase-live-containers-v1"},{"decodeBytes",decode},{"countingBytes",counting},
+            {"coreBytes",core},{"residualBytes",residual},{"reserveBytes",reserve},{"admissionBytes",resource_estimate},
+            {"carrierCheckedDynamically",true},{"hardRssLimit",false}};
+    }
     if (resource_estimate > 768ull * 1024 * 1024)
         throw Error("RESOURCE_LIMIT", "Estimated GLB safety workspace exceeds 768 MiB policy");
     event("geometry");
@@ -602,6 +622,7 @@ J glb_safety(Context& c, const J& request)
         proof["topologyCounts"]=enhanced_topology_counts(c,mesh.vertices,mesh.faces);
         proof["residualChecks"]=glb_strict_predicates(c,mesh.vertices,mesh.faces);
 #endif
+        proof["workspaceAdmission"]=workspace_plan;
         event("appearance");
         const auto carrier_started=std::chrono::steady_clock::now();
         auto result=enhanced_glb_carrier(c,g,input,mesh,request,proof,path,event);

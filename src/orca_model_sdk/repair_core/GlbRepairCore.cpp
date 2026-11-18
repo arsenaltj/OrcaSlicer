@@ -53,8 +53,10 @@ std::string enhanced_core_id(const std::vector<V>& vertices, const std::vector<T
 }
 // Spatial projection uses the existing Core AABB tree, never an R x F scan.
 void enhanced_corner_sources(Context& c, const std::vector<V>& input,
- const std::vector<T>& input_faces, const std::vector<V>& output, const std::vector<T>& output_faces, const std::function<void(size_t,const std::array<double,11>&)>& emit)
+ const std::vector<T>& input_faces, const std::vector<V>& output, const std::vector<T>& output_faces, const std::function<void(size_t,const std::array<double,11>&)>& emit, const std::function<void(uint64_t)>& admit_workspace)
 {
+    const uint64_t base_workspace=input.size()*sizeof(Slic3r::Vec3f)+input_faces.size()*(sizeof(Slic3r::Vec3i32)+sizeof(std::pair<std::array<float,9>,size_t>));
+    admit_workspace(base_workspace);
     std::vector<Slic3r::Vec3f> vertices; std::vector<Slic3r::Vec3i32> faces;
     vertices.reserve(input.size()); faces.reserve(input_faces.size());
     for (const auto& v : input) vertices.emplace_back(float(v[0]*1000),float(-v[2]*1000),float(v[1]*1000));
@@ -78,7 +80,7 @@ void enhanced_corner_sources(Context& c, const std::vector<V>& input,
         const auto wanted=key(output_points);auto found=std::lower_bound(exact.begin(),exact.end(),std::make_pair(wanted,size_t(0)));
         double distance=0;
         if(found!=exact.end()&&found->first==wanted) hit=found->second;
-        else { if(tree.empty()) tree=Slic3r::AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(vertices,faces);
+        else { if(tree.empty()) {admit_workspace(base_workspace+uint64_t(faces.size())*96);tree=Slic3r::AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(vertices,faces);}
           distance=Slic3r::AABBTreeIndirect::squared_distance_to_indexed_triangle_set(vertices,faces,tree,center,hit,point); }
         if (!std::isfinite(distance)||distance<0) throw Error("APPEARANCE_UNSUPPORTED","Cannot project appearance");
         const auto& sf=faces.at(hit);

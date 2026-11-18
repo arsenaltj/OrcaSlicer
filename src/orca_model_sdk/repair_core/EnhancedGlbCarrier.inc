@@ -13,7 +13,7 @@ J enhanced_topology_counts(Context& c,const std::vector<V>& vertices,const std::
 }
 
 // Included only in the private GLB safety translation unit, with its path guards.
-J enhanced_glb_carrier(Context& c, const Glb& g, const Topology& input, const Topology& output,
+J enhanced_glb_carrier(Context& c, const Glb& g, Topology& input, const Topology& output,
                        const J& request, J proof, const F::path& source, const std::function<void(const char*)>& event)
 {
     const auto started=std::chrono::steady_clock::now();
@@ -34,10 +34,25 @@ J enhanced_glb_carrier(Context& c, const Glb& g, const Topology& input, const To
     double diagonal=0;for(size_t k=0;k<3;++k)diagonal+=(high[k]-low[k])*(high[k]-low[k]);diagonal=std::sqrt(diagonal);
     double maximum_projection=0;require(diagonal>0,"Invalid output extent");
     J doc=g.doc;
-    std::string bin=g.source.substr(g.bin,g.doc.at("buffers")[0].at("byteLength").get<size_t>());
+    std::string bin;
     size_t exported_vertex_count=0;
     std::string position_bytes,uv_bytes,normal_bytes,index_bytes;
     std::map<std::array<uint32_t,8>,uint32_t> split;
+    const auto export_capacity=std::min<size_t>(glb_vertices,output.faces.size()*3);
+    uint64_t mapping_workspace=0,carrier_estimated_peak=0;
+    const uint64_t strings_bound=uint64_t(export_capacity)*(12+(uv.empty()?0:8)+(normals.empty()?0:12))+output.faces.size()*12;
+    const uint64_t fixed_workspace=g.source.size()+uint64_t(g.bin)*16+128ull*1024*1024
+        +(input.vertices.capacity()+output.vertices.capacity())*sizeof(V)
+        +(input.faces.capacity()+output.faces.capacity())*sizeof(T)
+        +(uv.capacity()+normals.capacity())*sizeof(double)+indices.capacity()*sizeof(uint32_t)+strings_bound;
+    auto admit=[&](uint64_t prospective_nodes) {
+        const uint64_t used=fixed_workspace+mapping_workspace+prospective_nodes*96;
+        carrier_estimated_peak=std::max(carrier_estimated_peak,used);
+        if(used>768ull*1024*1024)throw Error("RESOURCE_LIMIT","Carrier live allocation plan exceeds 768 MiB policy");
+    };
+    admit(0);
+    position_bytes.reserve(export_capacity*12);if(!uv.empty())uv_bytes.reserve(export_capacity*8);
+    if(!normals.empty())normal_bytes.reserve(export_capacity*12);index_bytes.reserve(output.faces.size()*12);
     auto append_float=[](std::string& bytes,float f){uint32_t bits;std::memcpy(&bits,&f,4);put32(bytes,bits);};
     enhanced_corner_sources(c,input.vertices,input.faces,output.vertices,output.faces,[&](size_t face,const std::array<double,11>& mapping) {
         if((face&1023)==0)check_cancel(c);
@@ -62,6 +77,7 @@ J enhanced_glb_carrier(Context& c, const Glb& g, const Topology& input, const To
             }
             std::array<float,8> values{float(v[0]),float(v[1]),float(v[2]),u,w,float(normal[0]),float(normal[1]),float(normal[2])};
             std::array<uint32_t,8> key;std::memcpy(key.data(),values.data(),sizeof(key));
+            admit(exported_vertex_count+1);
             auto [it,inserted]=split.emplace(key,uint32_t(exported_vertex_count));
             if(inserted) {
                 require(exported_vertex_count<glb_vertices,"Appearance seam splitting exceeds vertex budget");
@@ -73,8 +89,32 @@ J enhanced_glb_carrier(Context& c, const Glb& g, const Topology& input, const To
             result_face[corner]=it->second;put32(index_bytes,it->second);
         }
 
-    });
+    },[&](uint64_t workspace){mapping_workspace=workspace;admit(exported_vertex_count);});
+    proof["workspaceAdmission"]["carrierPeakPlanBytes"]=carrier_estimated_peak;
     timings["mappingAndWritingMs"]=elapsed();split.clear();indices.clear();indices.shrink_to_fit();
+    // The original buffer remains byte-for-byte on disk. If carrying inactive
+    // source geometry would exceed the candidate cap, keep all encoded images
+    // with exact material/texture/sampler semantics and rebase only their views.
+    const auto source_bin_size=g.doc.at("buffers")[0].at("byteLength").get<size_t>();
+    const bool compact_bin=source_bin_size+position_bytes.size()+uv_bytes.size()+normal_bytes.size()+index_bytes.size()+g.bin+4096>max_bytes;
+    size_t active_image_bytes=0;
+    for(const auto& image:g.doc.value("images",J::array()))active_image_bytes+=g.view(image.at("bufferView").get<size_t>()).second+3;
+    const auto bin_bound=(compact_bin?active_image_bytes:source_bin_size)+position_bytes.size()+uv_bytes.size()+normal_bytes.size()+index_bytes.size()+16;
+    if(bin_bound>max_bytes)throw Error("RESOURCE_LIMIT","Active candidate payload exceeds 100 MiB policy");
+    bin.reserve(bin_bound);
+    if(compact_bin) {
+        doc["bufferViews"]=J::array();doc["accessors"]=J::array();
+        for(size_t i=0;i<doc.value("images",J::array()).size();++i) {
+            const auto view=g.view(g.doc["images"][i]["bufferView"].get<size_t>());
+            while(bin.size()%4)bin.push_back(0);
+            const auto id=doc["bufferViews"].size();
+            doc["bufferViews"].push_back({{"buffer",0},{"byteOffset",bin.size()},{"byteLength",view.second}});
+            bin.append(g.source,view.first,view.second);doc["images"][i]["bufferView"]=id;
+        }
+    } else bin=g.source.substr(g.bin,source_bin_size);
+    const bool has_uv=!uv.empty(),has_normal=!normals.empty();
+    uv.clear();uv.shrink_to_fit();normals.clear();normals.shrink_to_fit();
+    input.vertices.clear();input.vertices.shrink_to_fit();input.faces.clear();input.faces.shrink_to_fit();
     auto accessor=[&](const std::string& data,const char* type,size_t count,unsigned component) {
         while(bin.size()%4)bin.push_back(0);
         const size_t offset=bin.size(),view_id=doc["bufferViews"].size(),id=doc["accessors"].size();bin+=data;
@@ -99,8 +139,8 @@ J enhanced_glb_carrier(Context& c, const Glb& g, const Topology& input, const To
     doc["accessors"][position_accessor]["min"]=position_min;
     doc["accessors"][position_accessor]["max"]=position_max;
     J attrs={{"POSITION",position_accessor}};
-    if(!uv.empty())attrs["TEXCOORD_0"]=accessor(uv_bytes,"VEC2",exported_vertex_count,5126);
-    if(!normals.empty())attrs["NORMAL"]=accessor(normal_bytes,"VEC3",exported_vertex_count,5126);
+    if(has_uv)attrs["TEXCOORD_0"]=accessor(uv_bytes,"VEC2",exported_vertex_count,5126);
+    if(has_normal)attrs["NORMAL"]=accessor(normal_bytes,"VEC3",exported_vertex_count,5126);
     position_bytes.clear();position_bytes.shrink_to_fit();uv_bytes.clear();uv_bytes.shrink_to_fit();normal_bytes.clear();normal_bytes.shrink_to_fit();
     auto derived=primitive;derived["attributes"]=attrs;derived["indices"]=accessor(index_bytes,"SCALAR",output.faces.size()*3,5125);
     doc["meshes"]=J::array({{{"primitives",J::array({derived})}}});
@@ -110,7 +150,7 @@ J enhanced_glb_carrier(Context& c, const Glb& g, const Topology& input, const To
     index_bytes.clear();index_bytes.shrink_to_fit();
     auto json=doc.dump();while(json.size()%4)json+=' ';
     require(json.size()<=8388608,"Candidate JSON exceeds budget");
-    std::string bytes;put32(bytes,0x46546c67);put32(bytes,2);put32(bytes,uint32_t(28+json.size()+bin.size()));
+    std::string bytes;bytes.reserve(28+json.size()+bin.size());put32(bytes,0x46546c67);put32(bytes,2);put32(bytes,uint32_t(28+json.size()+bin.size()));
     put32(bytes,uint32_t(json.size()));put32(bytes,0x4e4f534a);bytes+=json;put32(bytes,uint32_t(bin.size()));put32(bytes,0x004e4942);bytes+=bin;bin.clear();bin.shrink_to_fit();
     require(bytes.size()<=max_bytes,"Candidate exceeds byte budget");
     timings["carrierReadyMs"]=elapsed();event("carrierReadback");
@@ -126,6 +166,7 @@ J enhanced_glb_carrier(Context& c, const Glb& g, const Topology& input, const To
     const auto& serialized_position=readback.item("accessors",position_accessor);
     require(serialized_position.at("min")==J(actual_min) && serialized_position.at("max")==J(actual_max),"Serialized POSITION bounds differ from actual readback");
     for(size_t i=0;i<ri.size();i+=3)read_faces.push_back({uint32_t(ri[i]),uint32_t(ri[i+1]),uint32_t(ri[i+2])});
+    rp.clear();rp.shrink_to_fit();ri.clear();ri.shrink_to_fit();
     proof["readbackGeometryId"]=enhanced_core_id(read_vertices,read_faces);
     require(proof.at("readbackGeometryId")==proof.at("outputGeometryId"),"Serialized geometry differs from native output");
     require(!proof.at("readbackGeometryId").get<std::string>().empty(),"Invalid serialized geometry identity");
@@ -133,9 +174,20 @@ J enhanced_glb_carrier(Context& c, const Glb& g, const Topology& input, const To
     proof["geometryValid"]=true;
     proof["canceled"]=false;proof["resourceFailure"]=false;
     proof["appearancePolicyVersion"]="appearance-reconstruction-v1";
-    for(const char* field:{"materials","textures","images","samplers"})
+    for(const char* field:{"materials","textures","samplers"})
         require(readback.doc.value(field,J::array())==g.doc.value(field,J::array()),"Appearance channel semantics changed");
-    require(readback.source.compare(readback.bin,g.doc.at("buffers")[0].at("byteLength").get<size_t>(),g.source,g.bin,g.doc.at("buffers")[0].at("byteLength").get<size_t>())==0,"Source encoded appearance payload changed");
+    auto source_images=g.doc.value("images",J::array()),candidate_images=readback.doc.value("images",J::array());
+    require(source_images.size()==candidate_images.size(),"Image count changed");
+    for(size_t i=0;i<source_images.size();++i) {
+        // View identity may be rebased, image semantics and encoded bytes may not.
+        const auto original=g.view(source_images[i]["bufferView"].get<size_t>());
+        const auto derived_view=readback.view(candidate_images[i]["bufferView"].get<size_t>());
+        require(original.second==derived_view.second && g.source.compare(original.first,original.second,readback.source,derived_view.first,derived_view.second)==0,"Active encoded image bytes changed");
+        candidate_images[i]["bufferView"]=source_images[i]["bufferView"];
+    }
+    require(source_images==candidate_images,"Image semantics changed");
+    if(!compact_bin)require(readback.source.compare(readback.bin,source_bin_size,g.source,g.bin,source_bin_size)==0,"Source encoded appearance payload changed");
+    proof["appearanceCarrierLayout"]=compact_bin?"active-encoded-images":"original-bin-prefix";
 
     timings["readbackReadyMs"]=elapsed();event("appearanceVerification");
     J checks{{"structure",check(true)},
@@ -150,8 +202,8 @@ J enhanced_glb_carrier(Context& c, const Glb& g, const Topology& input, const To
         require(original==derived,"Encoded image identity differs");
         channel_evidence.push_back({{"imageIndex",i},{"mimeType",g.doc["images"][i]["mimeType"]},{"sourceSha256",original},{"candidateSha256",derived}});
     }
-    if(!uv.empty())require(readback.accessor(attrs.at("TEXCOORD_0"),"VEC2").size()==exported_vertex_count*2,"Invalid serialized UV channel");
-    if(!normals.empty())require(readback.accessor(attrs.at("NORMAL"),"VEC3").size()==exported_vertex_count*3,"Invalid serialized normal channel");
+    if(has_uv)require(readback.accessor(attrs.at("TEXCOORD_0"),"VEC2").size()==exported_vertex_count*2,"Invalid serialized UV channel");
+    if(has_normal)require(readback.accessor(attrs.at("NORMAL"),"VEC3").size()==exported_vertex_count*3,"Invalid serialized normal channel");
 #ifdef ORCA_MODEL_HAS_GLB_CGAL
     const auto residual=proof.at("residualChecks");
     const auto counts=proof.at("topologyCounts");proof.erase("topologyCounts");

@@ -123,7 +123,7 @@ void expected(Context&, const J&);
 J commit(Context&, Document);
 J execute(Context&, const J&);
 std::string enhanced_core_id(const std::vector<V>&, const std::vector<T>&);
-void enhanced_corner_sources(Context&, const std::vector<V>&, const std::vector<T>&, const std::vector<V>&, const std::vector<T>&, const std::function<void(size_t,const std::array<double,11>&)>&);
+void enhanced_corner_sources(Context&, const std::vector<V>&, const std::vector<T>&, const std::vector<V>&, const std::vector<T>&, const std::function<void(size_t,const std::array<double,11>&)>&, const std::function<void(uint64_t)>&);
 J enhanced_glb_geometry(Context&, std::vector<V>&, std::vector<T>&, const std::function<void(int)>&);
 J glb_safety(Context&, const J&);
 #ifdef ORCA_MODEL_HAS_GLB_CGAL
