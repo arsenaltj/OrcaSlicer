@@ -1,3 +1,10 @@
+# MOBILE-GLB-REPAIR-005：Android批准TBB闭包子流（2026-11-19）
+
+- task-20261119-model-approved-tbb-binding/session-model-approved-tbb-dev-20261119 独立writer，基于父r3 cb505。NG-ANDROID-TBB-RUNTIME-COLLISION-01是初次跨流打包阻断，未冒实际ABI崩溃；父bounds首修轮次另保。
+- 精确既有Slicing TBB SHA cc093ffa…/726384B + 139pinnedheaders显式导入，真实Model/consumer -z defs重链，不改Core/GLB/PBR算法或父r3/旧Slicing/19runtime/移动锁。producer记录旧Mobile Git1b96991/Orca50247来源而非当前新编。
+- 8项Python/CMake/producer边界已实际通过；完整host/NDK Model链接与包尚待执行，执行结果在该子任务证据/报告记录，不以独立SE小probe代替。
+- 新SDK另名runtime-bound-r4；冻结后独立review/不同QA与M2组合门禁，未经允许不移动消费/设备/远端push。Android运行/资源、完整strict/IGL、制造安全与视觉限制保持。
+
 # MOBILE-GLB-REPAIR-005：桌面成熟内核与保外观候选（2026-11-18）
 
 - 用户已明确选择保外观、允许重建贴图或颜色；原件及PBR/法线/alpha不得静默丢弃。Native04安全子集已有限review/QA通过，本轮目标是完整修复能力，不是APK压缩或恢复暂停桌面性能优化。

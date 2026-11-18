@@ -282,9 +282,13 @@ remains the host's responsibility around the bound native identity.
 
 Progress remains `type:glbSafetyProgress`, exact identity, monotonic sequence.
 Core progress is real; mapping/carrier/readback/publishing phases are stage events.
-The enhanced build additionally requires the same built oneTBB runtime: tbb12.dll
-on Windows and libtbb.so on Android. Immutable packaging must include its exact
-binary/notice/source provenance; the old Model04/Slicing bundle is unchanged.
+The enhanced build requires private source-built tbb12.dll on Windows. Android
+explicitly imports the already approved Slicing libtbb.so, pinned by byte size,
+SHA256 and the same 139 source headers (see repair_core/approved_tbb.json).
+Missing inputs, mismatched bytes or a conflicting TBB target fail configuration.
+Model and its consumer are actually relinked against that imported library.
+The package records existing-slicing-runtime provenance separately from the new
+Model source commit; the old Model04/Slicing/TBB/malloc bundles are unchanged.
 
 A positive boolean `does_self_intersect` proves a risk but does not enumerate
 intersection pairs: failed count is null and details.riskFlag=true. A negative

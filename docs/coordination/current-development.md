@@ -1,3 +1,13 @@
+# 2026-11-19 Android Model批准TBB绑定（独立子流）
+
+主线：task-20261119-model-approved-tbb-binding；从父M2 r3 cb505独立，父现场/包冻结供bounds独立review。
+本轮：显式IMPORTED既有Slicing libtbb.so cc093ffa/726384B，139同源headers逐SHA守卫，producer分列existing-slicing-runtime来源；8项真实Python/CMake/producer负例已过，下一步自有host/NDK完整Model/runner重链。
+未结：完整重链/闭包及包身份尚未验证；Android同进程/资源/实际渲染仍未测。不改变Core/GLB/PBR/质量/资源限制，旧Slicing及19runtime字节保留。
+下一步：记录真实host/NDK链接、CABI和新runtime-bound-r4制品，冻结后独立review→不同QA，再由根协调移动消费。
+计划变更：采用精确批准旧runtime而非新TBB同名覆盖，不尝试unsupported static或改移动锁；完整strict仍不支持，原M2所有失败/轮次保留。
+
+## 父M2冻结记录（以下保留，不在本子流写父现场）
+
 # 2026-11-19 移动Native修复 M2增强GLB候选
 
 主线：task-20261117023152718-8561d6；M1真实Core接缝9b4755a已独立review/QA限定通过，原SDK04/锁保留。

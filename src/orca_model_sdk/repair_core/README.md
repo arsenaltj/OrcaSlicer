@@ -8,7 +8,8 @@ The default Model SDK build and its existing capabilities/receipt remain unchang
 Configure the Model SDK with `ORCA_MODEL_REPAIR_CORE=ON`, explicit pinned
 `ORCA_MODEL_DEPENDENCY_ROOT` and `ORCA_MODEL_CGAL_INCLUDE`, then build
 `orca_repair_core_consumer`. The dependency root contains the existing Boost,
-Eigen, cereal and oneTBB source directories; oneTBB is built in this build tree.
+Eigen, cereal and oneTBB source directories. Windows builds oneTBB in this build
+tree. Android instead requires the explicit approved runtime described below.
 No GUI, provider, file upload or desktop application build is needed.
 
 `extract_desktop_repair.py` checks normalized source SHA256 and unique anchors
@@ -54,3 +55,29 @@ explicit policyVersion=glb-repair-v2 is requested. See CONTRACT.md for supported
 profile, preserved appearance channels, canonical Core-frame carrier, real
 residual checks, publication and limits. M1 historical link evidence above is
 not the M2 quality evidence. The full strict branch remains unsupported.
+
+## Android runtime binding
+
+Android enhanced builds require absolute `ORCA_MODEL_ANDROID_TBB_RUNTIME` pointing
+to the previously approved Slicing `libtbb.so` (726384 bytes, SHA256
+`cc093ffa23653600950960121ab5c4261e6586aa14f7dadc91aab6773daaa038`).
+`approved_tbb.json` pins its original Mobile Git blob/source provenance and all
+139 public oneTBB headers. The pinned source is v2021.5.0/interface12050; matching
+version strings alone are not accepted. `verify_approved_tbb.py` rejects missing,
+different or ambiguous inputs before CMake creates the imported target. Changed
+runtime/header bytes force reconfiguration and validation. There is no search
+for a latest library, alternative Android TBB build, or pick-first rule.
+
+The Model SDK and link consumer use `TBB::tbb` as an imported shared target and
+link with `-z defs`. The dependency keeps its real SONAME `libtbb.so`. This is
+reuse of **existing-slicing-runtime**, not a runtime built from this producer's
+current source commit. `approved-tbb-binding.json` captures the exact input;
+the packager revalidates it and the Android CMake cache before copying that
+original binary. Windows still has its private source-built `tbb12.dll`.
+
+The Model-only package must not replace the old Slicing/TBB/malloc runtime group
+with different bytes. Its approval record preserves Mobile Git
+`1b96991f715368ac8a5f80ecde0ca512760083db` and original Orca source
+`50247bb89ecb9d4af364242bc8c6ba037395e774` independently of the new Model producer.
+Complete native linking and ELF dependency checks are build evidence; Android
+same-process execution and resource validation remain separate device gates.
