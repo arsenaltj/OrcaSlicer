@@ -1,3 +1,13 @@
+# 2026-11-19 Native safe IO diagnostic child
+
+Mainline: task-20261119-native-safe-io-diagnostics from qualified0778; NC-IO-DIAGNOSTIC-01 instrumentation, MC-NATIVE-RECOVERY-IO-01 actual device cause unknown.
+This round: closed optional IO boundary/kind only; file operations, atomic publication, Core and policies unchanged. No hardlink-policy claim or fallback.
+Open: exact new host/NDK package review and different QA, then separate Mobile consumer gates; no phone runtime inference.
+Next: guarded final source builds, actual small helper fault/Windows tests and source/package freeze.
+Plan change: none to paused Desktop work, device/production/paid/PR/push prohibited.
+
+## Previous short-state evidence retained
+
 # 2026-11-19 用户样本静态profile兼容修复
 
 主线：task-20261119-model-gltf-specular-transform，qualified33db独立WT；NG-GLB-STATIC-PROFILE-01 initial旧封存runner150ms明确INVALID_GLB，原SHA不变。

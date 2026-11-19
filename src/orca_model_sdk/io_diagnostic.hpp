@@ -5,7 +5,7 @@ enum class IoBoundary { file_open, file_read, temp_create, temp_write, temp_flus
 enum class IoKind { unknown, access_denied, no_space, quota_exceeded, read_only, not_found, too_many_files, unsupported, cross_device, io_failure, interrupted };
 struct IoDiagnostic { IoBoundary boundary; IoKind kind; };
 #ifdef ORCA_MODEL_IO_TESTING
-inline int io_test_boundary=-1,io_test_code=0,io_test_mode=0;
+inline int io_test_boundary=-1,io_test_code=0;
 inline bool io_fault(IoBoundary boundary) {
     if(io_test_boundary!=static_cast<int>(boundary))return false;
     io_test_boundary=-1;errno=io_test_code;

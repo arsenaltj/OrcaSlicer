@@ -1,3 +1,12 @@
+# MOBILE-NATIVE-SAFE-IO-007 (2026-11-19)
+
+- Isolated task-20261119-native-safe-io-diagnostics, NC-IO-DIAGNOSTIC-01 initial instrumentation gap. Existing user IO issue MC-NATIVE-RECOVERY-IO-01 remains unresolved.
+- Add only closed failure JSON boundary+OS kind at actual existing IO_ERROR points; no public C ABI, success proof, atomic/link/rename/permission/resource/repair policy changes.
+- Exact guarded host/NDK source and new package, independent review then different QA precede separate Mobile SDK import. Windows small tests do not establish Android syscall cause.
+- Preserve all prior failures; AOSP policy hypothesis unverified, no bypass/fallback or device/paid/production/PRpush.
+
+## Previous plan evidence retained
+
 # MOBILE-GLB-STATIC-PROFILE-006：用户034a兼容子流（2026-11-19）
 
 - task-20261119-model-gltf-specular-transform/session-specular-transform-native-dev-20261119，独立WT基33db；NG-GLB-STATIC-PROFILE-01 initial150ms旧runner拒绝，首修轮1。只材质factor-only profile与scene world bake，不恢复暂停桌面算法。

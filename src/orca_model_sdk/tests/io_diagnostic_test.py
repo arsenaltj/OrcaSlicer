@@ -8,8 +8,10 @@ for name in ['orca_model_test_io_fault','orca_model_test_errno_kind']:
     try:getattr(production,name);raise AssertionError('Production exported test control')
     except AttributeError:pass
 mapping={0:'unknown',errno.EACCES:'access_denied',errno.EPERM:'access_denied',errno.ENOSPC:'no_space',errno.EROFS:'read_only',errno.ENOENT:'not_found',errno.EMFILE:'too_many_files',errno.ENFILE:'too_many_files',errno.ENOSYS:'unsupported',errno.EXDEV:'cross_device',errno.EIO:'io_failure',errno.EINTR:'interrupted',123456:'unknown'}
-if hasattr(errno,'EDQUOT'):mapping[errno.EDQUOT]='quota_exceeded'
-for code,kind in mapping.items():assert lib.orca_model_test_errno_kind(code).decode()==kind
+# Python Windows exposes Winsock EDQUOT, not a CRT errno constant. It is
+# deliberately unknown to the errno classifier; Win32 quota uses its own code.
+if hasattr(errno,'EDQUOT'):mapping[errno.EDQUOT]='unknown' if sys.platform=='win32' else 'quota_exceeded'
+for code,kind in mapping.items():assert lib.orca_model_test_errno_kind(code).decode()==kind,(code,kind)
 with tempfile.TemporaryDirectory(prefix='safe-io-cabi-')as directory:
     root=pathlib.Path(directory);doc,binary=scope['fixture']();data=scope['encode'](doc,binary);source=root/'SECRET-source.glb';source.write_bytes(data);count=0
     def run(index,code,kind,boundary):
@@ -36,5 +38,5 @@ with tempfile.TemporaryDirectory(prefix='safe-io-cabi-')as directory:
     run(3,-2,'unknown','temp_write') # successful short write must ignore stale OS code
     # Actual Windows operations are faulted with immediate captured Win32 codes.
     for boundary,index in [('temp_create',2),('temp_write',3),('temp_flush',4),('output_publish',5)]:
-        for code,kind in [(5,'access_denied'),(112,'no_space'),(1816,'unknown'),(50,'unsupported'),(17,'cross_device'),(995,'interrupted'),(0,'unknown')]:run(index,code,kind,boundary)
+        for code,kind in [(5,'access_denied'),(112,'no_space'),(1295,'quota_exceeded'),(19,'read_only'),(2,'not_found'),(4,'too_many_files'),(1117,'io_failure'),(1816,'unknown'),(50,'unsupported'),(17,'cross_device'),(995,'interrupted'),(0,'unknown')]:run(index,code,kind,boundary)
 print(json.dumps({'actualProductionHelperCabiFaultCases':count,'errnoClassificationCases':len(mapping),'productionControlSymbolsAbsent':True,'windowsFaultInjection':True,'posixSyscallsExecuted':False}))
