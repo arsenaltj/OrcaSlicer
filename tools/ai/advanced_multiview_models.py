@@ -58,11 +58,11 @@ class AdvancedMultiviewModels:
     def prepare(self, group_id: str, request: dict[str, Any]) -> dict[str, Any]:
         command = identity(request.get("command_id"), "command_id")
         provider = _generation_provider(request)
-        face_limit = _normalize_face_limit(request.get("face_limit", 1000000))
+        face_limit = 0 if provider == "yoyoclaw" else _normalize_face_limit(request.get("face_limit", 1000000))
         geometry, texture, output = _generation_options(request, face_limit)
-        if face_limit not in {300000, 1000000, 2000000}:
+        if provider != "yoyoclaw" and face_limit not in {300000, 1000000, 2000000}:
             raise RequestError("invalid_generation_options", "Choose a supported model generation profile.", 400)
-        capability = self.ports.capability(provider, _geometry_model(request))
+        capability = self.ports.capability(provider, "" if provider == "yoyoclaw" else _geometry_model(request))
         if capability.get("named_four_view_model") != "supported" or not capability.get("available"):
             raise RequestError("unsupported_multiview", "The selected model's named four-view input is unavailable.", 503)
         options = {"provider": provider, "face_limit": face_limit, "geometry_quality": geometry,
@@ -105,6 +105,13 @@ class AdvancedMultiviewModels:
             return plan
 
     def execute(self, group_id: str, request: dict[str, Any]) -> Job:
+        result = self._execute(group_id, request)
+        if isinstance(result, Job):
+            return result
+        provider, model = result
+        return self._execute(group_id, request, self.ports.capability(provider, model))
+
+    def _execute(self, group_id: str, request: dict[str, Any], capability=None):
         command = identity(request.get("command_id"), "command_id")
         with self.repository.transaction():
             plan = self.repository.read_record(group_id, f"model-plans/{command}.json")
@@ -131,7 +138,10 @@ class AdvancedMultiviewModels:
                         raise RequestError("group_busy", "The group has an active operation.", 409)
                     self._require_resolved(group_id)
                     options = plan["options"]
-                    capability = self.ports.capability(options["provider"], options["geometry_model"])
+                    if options["provider"] == "yoyoclaw" and options["face_limit"] != 0:
+                        raise RequestError("stale_confirmation", "Confirm a new YOYOClaw plan using its default face count.", 409)
+                    if capability is None:
+                        return options["provider"], options["geometry_model"]
                     if capability.get("named_four_view_model") != "supported" or not capability.get("available"):
                         raise RequestError("unsupported_multiview", "The confirmed model is no longer available.", 503)
                     for view in VIEWS:
@@ -150,7 +160,7 @@ class AdvancedMultiviewModels:
                               message="Four-view model accepted; no supplier task has started.", style=draft["style"], custom_style=draft["custom_style"],
                               user_prompt=draft["prompt"], design_provider=draft["design_provider"], design_model=draft["design_model"],
                               provider=options["provider"], geometry_model=options["geometry_model"], face_limit=options["face_limit"],
-                              generation_profile="quality" if options["face_limit"] >= 500000 else "performance",
+                              generation_profile="quality" if options["face_limit"] == 0 or options["face_limit"] >= 500000 else "performance",
                               geometry_quality=options["geometry_quality"], texture_quality=options["texture_quality"], output_format=options["output_format"])
                     job.preview_path = job.model_reference_path = directory / "inputs/front.png"
                     job.preview_content_type = "image/png"

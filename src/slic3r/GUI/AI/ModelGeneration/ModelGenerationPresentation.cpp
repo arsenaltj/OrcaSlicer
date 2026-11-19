@@ -444,59 +444,6 @@ std::vector<DesignHistoryEntry> read_smart_model_history(const boost::filesystem
     return entries;
 }
 
-std::vector<AIModelGenerationClient::JobStatus> read_model_failure_history(
-    const boost::filesystem::path& root, const std::atomic<bool>& cancelled)
-{
-    std::vector<AIModelGenerationClient::JobStatus> entries;
-    const auto text = [](const nlohmann::json& data, const char* key) -> std::string {
-        const auto found = data.find(key);
-        return found != data.end() && found->is_string() ? found->get<std::string>() : std::string();
-    };
-    const auto code = [&text](const nlohmann::json& data, const char* key) {
-        const auto value = text(data, key);
-        return value.size() <= 100 && value.find_first_not_of(
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-") == std::string::npos ? value : std::string();
-    };
-    boost::system::error_code ec;
-    for (boost::filesystem::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
-        if (cancelled) return {};
-        try {
-            const auto directory = it->path(), path = directory / "job.json";
-            const auto id = directory.filename().string();
-            if (id.size() != 36 || !valid_provider_task_id(id) ||
-                !path_is_inside(root, directory) || !path_is_inside(directory, path) ||
-                !boost::filesystem::is_regular_file(path) || boost::filesystem::file_size(path) > 64 * 1024) continue;
-            const auto saved = read_json(path);
-            if (!saved.is_object() || saved.value("version", 0) != 1 || text(saved, "id") != id ||
-                text(saved, "state") != "failed" ||
-                (text(saved, "workflow_mode") != "smart" && text(saved, "creation_kind") != "advanced_multiview_v1")) continue;
-            // Project only error fields through the existing client validation.
-            // Never surface raw job messages, prompts, paths or provider payloads.
-            nlohmann::json job {{"id", id}, {"state", "failed"}, {"phase", "failed"}};
-            if (saved.contains("updated_at") && saved["updated_at"].is_number()) {
-                const double updated = saved["updated_at"].get<double>();
-                if (std::isfinite(updated) && updated >= 0.0 && updated <= 4102444800.0) job["updated_at"] = updated;
-            }
-            const auto attempts = saved.find("attempts");
-            if (attempts != saved.end() && attempts->is_array() && !attempts->empty() && attempts->back().is_object()) {
-                const auto& attempt = attempts->back();
-                job["provider_tasks"] = {{"provider", text(saved, "provider")},
-                    {"generation_task_id", text(attempt, "generation_task_id")}};
-                job["provider_failure"] = {{"code", code(attempt, "provider_error_code")},
-                    {"category", code(attempt, "provider_error_category")},
-                    {"provider_code", code(attempt, "provider_detail_code")},
-                    {"provider_message", Diagnostics::redact_log_text(text(attempt, "provider_detail_message"))}};
-            }
-            if (auto status = AIModelGenerationClient::parse_job(job)) entries.emplace_back(std::move(*status));
-        } catch (const boost::filesystem::filesystem_error&) {
-        } catch (const nlohmann::json::exception&) { /* One corrupt record cannot hide the other failures. */ }
-    }
-    std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
-        return a.updated_at == b.updated_at ? a.id < b.id : a.updated_at > b.updated_at;
-    });
-    return entries;
-}
-
 std::vector<DesignHistoryEntry> read_image_history(const boost::filesystem::path& root)
 {
     std::vector<DesignHistoryEntry> entries;

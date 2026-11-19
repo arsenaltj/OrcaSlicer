@@ -1201,7 +1201,7 @@ class ObjGenerationTests(unittest.TestCase):
             mock.patch.object(SIDECAR, "_MODEL_PROVIDER_GATEWAY", gateway),
             mock.patch.object(SIDECAR, "_validate_artifact") as validate,
         ):
-            result = SIDECAR._download_conversion(self.job, "existing-generation", "obj", 1, True)
+            result = SIDECAR._model_artifact_workflow().download_conversion(self.job, "existing-generation", "obj", 1, True)
 
         self.assertEqual(result, candidate)
         validate.assert_called_once_with(candidate, "obj", allow_repairable_obj=True)
@@ -1229,7 +1229,7 @@ class ObjGenerationTests(unittest.TestCase):
             "thresholds": {"max_faces": 1000000},
         }), encoding="utf-8")
 
-        SIDECAR._refresh_stale_face_limit_report(candidate, self.palette)
+        SIDECAR._model_artifact_workflow().refresh_stale_face_limit_report(candidate, self.palette)
 
         refreshed = json.loads(report_path.read_text(encoding="utf-8"))
         self.assertEqual(refreshed["gate_version"], SIDECAR.MODEL_QUALITY_GATE_VERSION)
@@ -1259,7 +1259,7 @@ class ObjGenerationTests(unittest.TestCase):
             mock.patch.object(SIDECAR, "_validate_artifact", side_effect=SIDECAR.TripoError("invalid")),
             mock.patch.object(SIDECAR, "_prepare_obj_artifact", return_value=recovered) as prepare,
         ):
-            result = SIDECAR._download_conversion(self.job, "existing-generation", "obj", 1, True)
+            result = SIDECAR._model_artifact_workflow().download_conversion(self.job, "existing-generation", "obj", 1, True)
 
         self.assertEqual(result, recovered)
         gateway.wait_for_task.assert_called_once()
@@ -1287,7 +1287,8 @@ class ObjGenerationTests(unittest.TestCase):
         ):
             SIDECAR._generate_job(self.job, "printable object", False, self._paid_authorization())
 
-        download.assert_called_once_with(self.job, "generation-id", 1, False)
+        download.assert_called_once_with(self.job, "generation-id", 1, False, mock.ANY)
+        self.assertTrue(download.call_args.args[4].matches(self.job.provider, self.job.geometry_model, "generation-id"))
         self.assertEqual(self.job.state, "ready")
         self.assertEqual(self.job.artifact_format, "obj")
         self.assertEqual(self.job.artifact_path, artifact)
@@ -2095,7 +2096,7 @@ class ObjGenerationTests(unittest.TestCase):
             return destination
 
         with mock.patch.object(SIDECAR, "edit_image", side_effect=edit) as image_edit:
-            SIDECAR._create_portrait_multiview_sheet(self.job, sheet)
+            SIDECAR._portrait_multiview_workflow().create_portrait_multiview_sheet(self.job, sheet)
 
         image_edit.assert_called_once()
         self.assertTrue(sheet.is_file())
@@ -2199,16 +2200,16 @@ class ObjGenerationTests(unittest.TestCase):
         sheet.parent.mkdir(parents=True)
         Image.new("RGB", (1024, 1024), "white").save(sheet)
 
-        self.assertTrue(SIDECAR._can_reuse_multiview_candidate(self.job, sheet))
-        SIDECAR._mark_multiview_candidate_rejected(self.job, sheet, "identity_consistency_gate")
-        self.assertTrue(SIDECAR._can_reuse_multiview_candidate(self.job, sheet))
+        self.assertTrue(SIDECAR._portrait_multiview_workflow().can_reuse_multiview_candidate(self.job, sheet))
+        SIDECAR._portrait_multiview_workflow().mark_multiview_candidate_rejected(self.job, sheet, "identity_consistency_gate")
+        self.assertTrue(SIDECAR._portrait_multiview_workflow().can_reuse_multiview_candidate(self.job, sheet))
         self.job.image_metrics["multiview_candidate_review"] = {
             "status": "review",
             "score": 70,
             "warnings": ["identity"],
             "checks": {},
         }
-        self.assertFalse(SIDECAR._can_reuse_multiview_candidate(self.job, sheet))
+        self.assertFalse(SIDECAR._portrait_multiview_workflow().can_reuse_multiview_candidate(self.job, sheet))
 
     def test_quality_portrait_multiview_is_persisted_and_reused(self):
         self.job.source = "image"
@@ -2319,7 +2320,7 @@ class ObjGenerationTests(unittest.TestCase):
 
         with mock.patch.object(SIDECAR, "edit_image", side_effect=edit) as image_edit, \
                 self.assertRaises(SIDECAR.OpenAIPreprocessorError):
-            SIDECAR._create_portrait_multiview_sheet(self.job, sheet)
+            SIDECAR._portrait_multiview_workflow().create_portrait_multiview_sheet(self.job, sheet)
 
         self.assertFalse(sheet.exists())
         image_edit.assert_called_once()
@@ -2462,7 +2463,7 @@ class ObjGenerationTests(unittest.TestCase):
 
         gateway.start_or_reuse_model_task.assert_called_once()
         self.assertIsNone(gateway.start_or_reuse_model_task.call_args.kwargs["authorization"])
-        download.assert_called_once_with(self.job, "existing-generation", 1, True)
+        download.assert_called_once_with(self.job, "existing-generation", 1, True, mock.ANY)
         self.assertEqual(self.job.state, "ready")
         self.assertEqual(self.job.attempts[0]["error"], "")
 
@@ -2475,7 +2476,7 @@ class ObjGenerationTests(unittest.TestCase):
         ):
             SIDECAR._generate_job(self.job, "printable object", False, self._paid_authorization())
 
-        download.assert_called_once_with(self.job, "generation-id", 1, False)
+        download.assert_called_once_with(self.job, "generation-id", 1, False, mock.ANY)
         self.assertEqual(self.job.state, "failed")
         self.assertEqual(self.job.message, "OBJ conversion failed")
         self.assertEqual(len(self.job.attempts), 1)
@@ -2643,7 +2644,7 @@ class ObjGenerationTests(unittest.TestCase):
             mock.patch.object(SIDECAR, "_MODEL_PROVIDER_GATEWAY", gateway),
             mock.patch.object(SIDECAR, "_prepare_obj_artifact", return_value=Path("model.obj")) as prepare,
         ):
-            SIDECAR._download_conversion(self.job, "generation", "obj")
+            SIDECAR._model_artifact_workflow().download_conversion(self.job, "generation", "obj")
         self.assertEqual(prepare.call_args.args[3], self.job.palette_roles)
         self.assertTrue(prepare.call_args.args[4])
         self.assertTrue(prepare.call_args.kwargs["build_aligned_portrait_reference"])

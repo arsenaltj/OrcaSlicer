@@ -825,7 +825,7 @@ TEST_CASE("Historical face targets are displayed without rewriting retained gene
     CHECK(historical.geometry_quality == "detailed");
 }
 
-TEST_CASE("Non-Tripo face choices exclude unsupported detailed geometry and retain provider models", "[UiRedesign][ModelFaceLimitChoice]")
+TEST_CASE("YOYOClaw face choices use supplier defaults and retain provider models", "[UiRedesign][ModelFaceLimitChoice]")
 {
     ModelGenerationUIOptions options;
     options.provider = "yoyoclaw";
@@ -833,10 +833,10 @@ TEST_CASE("Non-Tripo face choices exclude unsupported detailed geometry and reta
     options.design_model = "retained-image-model";
     options.geometry_model = "retained-geometry-model";
     options.output_format = "obj";
-    CHECK(model_face_limit_choices(options) == std::vector<int> {1000000});
+    CHECK(model_face_limit_choices(options) == std::vector<int> {0});
     options.texture_quality = "detailed";
     const auto compatible = model_generation_options_for_face_limit(options, 2000000);
-    CHECK(compatible.face_limit == 1000000);
+    CHECK(compatible.face_limit == 0);
     CHECK(compatible.geometry_quality == "standard");
     CHECK(compatible.texture_quality == "standard");
     CHECK(compatible.provider == options.provider);
@@ -846,7 +846,7 @@ TEST_CASE("Non-Tripo face choices exclude unsupported detailed geometry and reta
     CHECK(compatible.output_format == options.output_format);
     options.face_limit = 300000;
     const auto retained = options;
-    CHECK((model_face_limit_choices(options) == std::vector<int> {1000000, 300000}));
+    CHECK((model_face_limit_choices(options) == std::vector<int> {0}));
     CHECK(options == retained);
 }
 

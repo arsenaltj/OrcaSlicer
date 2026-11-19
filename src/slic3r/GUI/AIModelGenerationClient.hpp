@@ -255,6 +255,8 @@ public:
         std::string error_message;
         bool        retryable { false };
         std::string connection_state;
+        bool single_image {false};
+        bool named_four_view {false};
 
         bool ready() const {
             if (state != "ready") return false;
@@ -350,6 +352,8 @@ public:
     static GenerationOptions restore_generation_options(const nlohmann::json& saved);
     // Pure decoder shared by status, history and offline contract verification.
     static std::optional<JobStatus> parse_job(const nlohmann::json& job);
+    static std::optional<ProviderCatalog> parse_provider_catalog(const std::string& body,
+                                                                 const std::string& role, const std::string& provider);
     static bool validate_color_intent_manifest_file(const boost::filesystem::path& manifest_path,
                                                     const std::string& schema, const std::string& sha256,
                                                     const boost::filesystem::path& artifact_path);

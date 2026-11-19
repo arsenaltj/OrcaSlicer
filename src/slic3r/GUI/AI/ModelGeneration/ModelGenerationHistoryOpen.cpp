@@ -230,7 +230,7 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         ? saved_face_limit->get<int>() : 1000000;
     m_job_face_limit = m_job_generation_options.face_limit;
     m_legacy_generation_defaults = historical_face_limit != m_job_face_limit;
-    m_job_generation_profile = m_job_face_limit <= 300000 ? "performance" : "quality";
+    m_job_generation_profile = m_job_face_limit != 0 && m_job_face_limit <= 300000 ? "performance" : "quality";
     m_provider->SetSelection(m_job_generation_options.provider == "yoyoclaw" ? 1 : 0);
     refresh_provider_options();
     m_quality->SetSelection(m_job_face_limit <= 300000 ? 0 : m_job_face_limit == 2000000 && m_quality->GetCount() == 3 ? 2 : 1);

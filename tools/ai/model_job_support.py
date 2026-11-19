@@ -13,6 +13,8 @@ MAX_MODEL_FACE_RATIO = 1.25
 
 
 def validate_face_target(face_count: int, face_limit: int) -> str:
+    if face_limit == 0:
+        return ""
     maximum = min(MAX_MODEL_FACES, math.ceil(face_limit * MAX_MODEL_FACE_RATIO))
     if face_count > maximum:
         return (

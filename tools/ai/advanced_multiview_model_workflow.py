@@ -4,7 +4,7 @@ from __future__ import annotations
 from advanced_multiview_model_contracts import CREATION_KIND, approved_paths
 from model_contracts import Job, JobStopped, RequestError, SidecarRestart
 from model_job_support import validate_face_target
-from model_provider_gateway import ModelTaskRequest, PaidTaskAuthorization, ProviderGatewayError
+from model_provider_gateway import ModelTaskRequest, ObservedModelResult, PaidTaskAuthorization, ProviderGatewayError
 from tripo_client import TripoError
 
 
@@ -46,10 +46,11 @@ class AdvancedMultiviewModelWorkflow:
             self.ports.record_attempt(job, 1, generation_task_id=task.task_id, status="running", error="")
             self.ports.persist(job, required=True)
             self.ports.stop_boundary(job)
-            gateway.wait_for_task(task.task_id, stop_event=job.stop_event,
+            result = gateway.wait_for_task(task.task_id, stop_event=job.stop_event,
                                   progress=self.ports.progress_callback(job, 20, 70), model_id=job.geometry_model)
             self.ports.stop_boundary(job)
-            candidate = self.ports.download_artifact(job, task.task_id, 1, resume)
+            candidate = self.ports.download_artifact(job, task.task_id, 1, resume,
+                ObservedModelResult(job.provider, job.geometry_model, task.task_id, result))
             faces, _, _ = self.ports.validate_topology(self.ports.analysis_artifact(candidate), quality_advisory=True)
             warning = validate_face_target(faces, job.face_limit)
             job.image_metrics["model_delivery_warnings"] = [warning] if warning else []

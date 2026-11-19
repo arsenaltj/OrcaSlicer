@@ -16,6 +16,7 @@ from model_creation_policy import _use_unrestricted_creation
 from model_job_support import validate_face_target as _validate_face_target
 from model_provider_gateway import (
     ModelTaskRequest,
+    ObservedModelResult,
     PaidTaskAuthorization,
     ProviderGatewayError,
     TextureTaskRequest,
@@ -208,7 +209,7 @@ class ModelGenerationWorkflow:
                         provider_error_ambiguous=False,
                     )
                 self.ports.stop_boundary(job)
-                gateway.wait_for_task(
+                result = gateway.wait_for_task(
                     generation_id,
                     stop_event=job.stop_event,
                     progress=self.ports.progress_callback(job, 20, 70),
@@ -216,7 +217,8 @@ class ModelGenerationWorkflow:
                 )
                 self.ports.stop_boundary(job)
                 try:
-                    candidate = self.ports.download_artifact(job, generation_id, attempt_number, resume)
+                    candidate = self.ports.download_artifact(job, generation_id, attempt_number, resume,
+                        ObservedModelResult(job.provider, job.geometry_model, generation_id, result))
                     face_count, _, _ = self.ports.validate_topology(self.ports.analysis_artifact(candidate), quality_advisory=True)
                     warning = _validate_face_target(face_count, job.face_limit)
                     job.image_metrics["model_delivery_warnings"] = [warning] if warning else []

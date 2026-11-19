@@ -183,7 +183,6 @@ private:
     void refresh_provider_choice(bool geometry_mode);
     bool request_open_history(const std::string& job_id);
     void request_generate_design();
-    void request_generate_model();
     void request_primary_action();
     void request_secondary_action();
     bool can_return_to_image_design() const;

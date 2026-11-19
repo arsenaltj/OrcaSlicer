@@ -625,8 +625,6 @@ private:
     void layout_mounted_workbench_history_sidebar();
     void update_workbench_history_actions();
     void open_workbench_history_entry(const std::string& key);
-    void show_model_failure_history(wxWindow* trigger);
-    Presentation::TaskScope m_failure_history_scope;
     void export_workbench_history_entry(const std::string& key);
     void delete_workbench_history_entry(const std::string& key);
     void rescale_post_generation_workbench();

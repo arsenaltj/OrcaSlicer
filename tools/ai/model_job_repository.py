@@ -207,14 +207,14 @@ def _load_job(directory: Path) -> Job | None:
         palette_color_count = _normalize_palette_color_count(payload.get("palette_color_count"))
         style = _normalize_style(payload.get("style"))
         custom_style = _normalize_custom_style(payload.get("custom_style"), style)
-        face_limit = _normalize_face_limit(payload.get("face_limit", DEFAULT_MODEL_FACE_LIMIT))
+        face_limit = _normalize_face_limit(payload.get("face_limit", DEFAULT_MODEL_FACE_LIMIT), payload.get("provider", "tripo"))
         # Drafts with an incompatible model choice must remain recoverable so the
         # user can correct that choice before submitting any paid model task.
         geometry_quality, texture_quality, output_format = _generation_options(
             payload, face_limit, validate_provider_constraints=False)
         raw_generation_profile = payload.get("generation_profile")
         generation_profile = _normalize_generation_profile(raw_generation_profile) if raw_generation_profile is not None else \
-            ("quality" if face_limit >= 500000 else "performance")
+            ("quality" if face_limit == 0 or face_limit >= 500000 else "performance")
         print_settings = _normalize_print_settings(payload.get("print_settings"))
         palette_recommendation = _normalize_palette_recommendation(
             payload.get("palette_recommendation"), palette_color_count

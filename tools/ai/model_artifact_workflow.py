@@ -32,7 +32,7 @@ from model_obj_io import (
 )
 from model_texture_baking import _bake_obj_texture_to_vertex_colors, _quantize_vertex_color_obj
 from openai_preprocessor import OpenAIPreprocessorError
-from model_provider_gateway import ProviderGatewayError
+from model_provider_gateway import ObservedModelResult, ProviderGatewayError
 from pathlib import Path
 from portrait_model_materials import (
     _capture_portrait_front_face_details,
@@ -539,7 +539,8 @@ class ModelArtifactWorkflow:
                     self.ports.persist(job)
         return report
 
-    def download_generation_artifact(self, job: Job, generation_id: str, attempt_number: int = 1, resume: bool = False) -> Path:
+    def download_generation_artifact(self, job: Job, generation_id: str, attempt_number: int = 1,
+                                     resume: bool = False, observed: ObservedModelResult | None = None) -> Path:
         existing = job.attempts[attempt_number - 1] if len(job.attempts) >= attempt_number else {}
         # GLB consumes the original generation result. OBJ explicitly includes one
         # basic provider conversion; frozen conversions keep their existing task ID.
@@ -566,15 +567,28 @@ class ModelArtifactWorkflow:
         # sidecar restart. Tripo retains its existing call shape.
         if job.provider == "yoyoclaw" and job.geometry_model:
             wait_kwargs["model_id"] = job.geometry_model
-        result = gateway.wait_for_task(generation_id, **wait_kwargs)
+        reused_terminal = bool(observed is not None and observed.matches(job.provider, job.geometry_model, generation_id)
+                               and isinstance(observed.payload, Mapping) and observed.payload)
+        result = observed.payload if reused_terminal else gateway.wait_for_task(generation_id, **wait_kwargs)
         self.ports.stop_boundary(job)
         raw = directory / "artifact-raw.download"
-        if job.provider == "yoyoclaw":
-            gateway.download_artifact(result, raw, MAX_ARTIFACT_BYTES, output_format=job.output_format,
-                                      progress=self.download_progress(job))
-        else:
-            gateway.download_artifact(result, raw, MAX_ARTIFACT_BYTES, progress=self.download_progress(job),
-                                      stop_event=job.stop_event)
+        def download(payload):
+            if job.provider == "yoyoclaw":
+                gateway.download_artifact(payload, raw, MAX_ARTIFACT_BYTES, output_format=job.output_format,
+                                          progress=self.download_progress(job))
+            else:
+                gateway.download_artifact(payload, raw, MAX_ARTIFACT_BYTES, progress=self.download_progress(job),
+                                          stop_event=job.stop_event)
+        try:
+            download(result)
+        except ProviderGatewayError as exc:
+            if not reused_terminal or exc.status not in {403, 410}:
+                raise
+            # Only refresh the same accepted task's possibly expired asset URL.
+            self.ports.stop_boundary(job)
+            refreshed = gateway.wait_for_task(generation_id, **wait_kwargs)
+            self.ports.stop_boundary(job)
+            download(refreshed)
         self.ports.stop_boundary(job)
         with raw.open("rb") as stream:
             is_glb = stream.read(4) == b"glTF"

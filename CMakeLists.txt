@@ -1440,7 +1440,6 @@ if (WIN32)
             "${CMAKE_SOURCE_DIR}/tools/ai/design_generation_timing.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/image_preprocessing_policy.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/image_preprocessing_prompts.py"
-            "${CMAKE_SOURCE_DIR}/tools/ai/image_preprocessing_debug.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/nonportrait_reference.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/model_refinement.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/network_policy.py"

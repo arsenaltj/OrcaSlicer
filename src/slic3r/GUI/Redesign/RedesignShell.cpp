@@ -2578,7 +2578,8 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
                                                          m_generation_options.design_model;
         return m_provider_catalog.role == (m_generation_geometry_mode ? "geometry" : "image") &&
             m_provider_catalog.provider == (m_generation_geometry_mode ? m_generation_options.provider : m_generation_options.design_provider) &&
-            m_provider_catalog.supports_model(yoyoclaw ? model : std::string());
+            m_provider_catalog.supports_model(yoyoclaw ? model : std::string()) &&
+            (!m_smart_creation || !m_generation_geometry_mode || !yoyoclaw || m_provider_catalog.single_image);
     };
 
     wxString primary_label = m_image_design_draft.replaces_design()
@@ -2889,9 +2890,11 @@ ModelGenerationUIOptions RedesignShell::current_generation_options() const
             options.design_provider = provider == 1 ? "yoyoclaw" : "gpt";
     }
     if (options.provider == "yoyoclaw") {
-        options.face_limit = std::min(options.face_limit, 1000000);
+        options.face_limit = 0;
         options.geometry_quality = "standard";
         options.texture_quality = "standard";
+    } else if (options.face_limit == 0) {
+        options.face_limit = 1000000;
     }
     return options;
 }
@@ -2918,7 +2921,7 @@ void RedesignShell::apply_generation_options(const ModelGenerationUIOptions& opt
         for (const int face_limit : model_face_limit_choices(options)) {
             if (face_limit == options.face_limit)
                 selection = static_cast<int>(choices.size());
-            choices.Add(face_limit == 2000000 ? text("200 万面（高模）") :
+            choices.Add(face_limit == 0 ? text("供应商默认面数") : face_limit == 2000000 ? text("200 万面（高模）") :
                         face_limit == 300000 ? text("30 万面（历史设置）") : text("100 万面（低模，推荐）"));
         }
         picker->set_choices(std::move(choices), selection);
@@ -2950,8 +2953,10 @@ void RedesignShell::refresh_provider_choice(bool geometry_mode)
                 m_provider_catalog.state.empty() || m_provider_catalog.state == "checking")
                 status_text = text("检测中");
             else if (m_provider_catalog.ready()) {
-                status_text = m_provider_catalog.remotely_connected() ? text("已连接") : text("已配置");
-                status_ready = true;
+                const bool protocol_ready = selected_provider != "yoyoclaw" || m_provider_catalog.single_image;
+                status_text = protocol_ready ? (m_provider_catalog.remotely_connected() ? text("已连接") : text("已配置")) :
+                    text("单图生成不可用");
+                status_ready = protocol_ready;
             }
             else if (m_provider_catalog.state == "not_configured")
                 status_text = text("未配置");
@@ -3062,8 +3067,7 @@ void RedesignShell::on_generation_option_changed()
         return;
     refresh_provider_choice(m_generation_geometry_mode);
     const auto options = current_generation_options();
-    m_generation_options = options;
-    refresh_provider_catalog();
+    apply_generation_options(options);
     const bool valid = options.face_limit != 2000000 || options.geometry_quality == "detailed";
     if (!valid) {
         m_option_sync_ok = false;
@@ -3431,9 +3435,7 @@ void RedesignShell::request_generate_design()
         return;
     }
     m_image_design_draft.begin_submission();
-    const bool requested = m_model_generation_host != nullptr && (m_smart_creation
-        ? m_model_generation_host->request_generate_smart()
-        : submission_accepted(m_model_generation_host->request_generate_design()));
+    const bool requested = m_model_generation_host != nullptr && m_model_generation_host->request_generate_smart();
     m_image_design_draft.end_submission(m_model_generation_host != nullptr ? m_model_generation_host->snapshot() : ModelGenerationUIState());
     if (!requested) {
         m_submit_in_progress = false;
@@ -3442,32 +3444,7 @@ void RedesignShell::request_generate_design()
     }
     m_submit_in_progress = false;
     apply_model_generation_state(m_model_generation_host->snapshot());
-    if (m_smart_creation && m_smart_generation_view) m_smart_generation_view->generation_started();
-}
-
-void RedesignShell::request_generate_model()
-{
-    const bool model_ready_reuse = m_model_generation_state.stage == ModelGenerationUIStage::ModelReady &&
-        m_model_generation_state.inputs_match_job && !m_model_generation_state.model_options_match;
-    if (m_prompt_polish_state.active() || m_submit_in_progress || m_image_design_draft.pending() ||
-        !generation_input_editable() ||
-        (!model_ready_reuse && m_model_generation_state.stage != ModelGenerationUIStage::DesignReady) ||
-        !m_model_generation_state.inputs_match_job || m_design_image_state != ImageState::Ready)
-        return;
-    m_submit_in_progress = true;
-    apply_model_generation_state(m_model_generation_state);
-    if (!synchronize_generation_options()) {
-        m_submit_in_progress = false;
-        apply_model_generation_state(m_model_generation_state);
-        return;
-    }
-    // Confirmation stays on the creation page; accepted state updates its inline view.
-    // A false return can also mean asynchronous history preparation is still
-    // pending; the state listener handles that submission when it is ready.
-    if (m_model_generation_host != nullptr)
-        m_model_generation_host->request_generate_model();
-    m_submit_in_progress = false;
-    apply_model_generation_state(m_model_generation_host != nullptr ? m_model_generation_host->snapshot() : ModelGenerationUIState());
+    if (m_smart_generation_view) m_smart_generation_view->generation_started();
 }
 
 void RedesignShell::request_primary_action()
@@ -3476,11 +3453,7 @@ void RedesignShell::request_primary_action()
         navigate_to_workbench();
         return;
     }
-    const auto stage = m_image_design_draft.stage(m_model_generation_state);
-    if (!m_smart_creation && redesign_primary_action(m_model_generation_state, stage) == RedesignPrimaryAction::Model)
-        request_generate_model();
-    else
-        request_generate_design();
+    request_generate_design();
 }
 
 void RedesignShell::request_secondary_action()

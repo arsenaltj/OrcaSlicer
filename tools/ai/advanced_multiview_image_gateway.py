@@ -207,17 +207,19 @@ class AdvancedMultiviewImageGateway:
             except gpt.OpenAIPreprocessorError:
                 base["reason"] = "provider_not_configured"
         elif provider == "yoyoclaw":
-            return self._yoyoclaw_capability(model, self.yoyoclaw.catalog(IMAGE_ROLE))
+            return self._yoyoclaw_capability(model, self.yoyoclaw.catalog(IMAGE_ROLE, fresh=True))
         else:
             base["reason"] = "unsupported_provider"
         return base
 
     def generate(self, request: DesignImageRequest, destination: Path) -> DesignImageResult:
         if request.provider == "yoyoclaw":
-            capability = self.capabilities(request.provider, request.model)
-            if capability.get("initial_text") != "supported":
+            # The generation gateway verifies whitelist membership with the
+            # same client used for submission. Only the local protocol check
+            # belongs here; a second remote catalog read duplicates that work.
+            if request.model not in SUPPORTED_YOYOCLAW_IMAGE_MODELS:
                 raise ProviderGatewayError("The selected YOYOClaw image model is unavailable.",
-                                           code=str(capability.get("reason") or "model_unavailable"),
+                                           code="unverified_image_model",
                                            category="availability", provider="yoyoclaw")
             if len(request.references) > 3:
                 raise ProviderGatewayError("YOYOClaw accepts at most three ordered references.",

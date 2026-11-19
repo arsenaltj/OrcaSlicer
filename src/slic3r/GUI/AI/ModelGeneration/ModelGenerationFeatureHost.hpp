@@ -31,13 +31,7 @@ public:
 
     ModelGenerationFeatureHost(wxWindow* parent, Plater* plater, NavigateAfterImportFn navigate_after_import,
                                RetryServiceFn retry_service);
-    wxWindow* legacy_creation_panel();
-    void unmount_legacy_creation();
-    void set_advanced_state_listener(ModelGenerationUIStateListener listener);
-    ModelGenerationUIState advanced_snapshot() const;
-    bool request_open_legacy_image_history(const std::string& job_id);
     bool request_open_workbench_artifact(WorkbenchOpenRequest request);
-    bool request_open_generated_workbench(bool advanced, const ModelGenerationUIState& displayed);
     bool workbench_returns_to_advanced() const;
     bool creation_editing_locked() const;
     bool commit_current_creation(const WorkbenchOpenRequest& request);
@@ -67,9 +61,6 @@ public:
     void get_provider_catalog(const std::string& role, const std::string& provider,
                               AIModelGenerationClient::CatalogFn on_complete,
                               AIModelGenerationClient::ErrorFn on_error);
-    void get_advanced_provider_catalog(const std::string& role, const std::string& provider,
-                                      AIModelGenerationClient::CatalogFn on_complete,
-                                      AIModelGenerationClient::ErrorFn on_error);
     ModelGenerationSubmissionResult request_generate_design();
     ModelGenerationSubmissionResult request_generate_model();
     bool request_generate_smart();

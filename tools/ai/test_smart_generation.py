@@ -81,6 +81,7 @@ class SmartGenerationTests(unittest.TestCase):
                       persist=_persist_job, present=lambda j: {"id": j.id, "state": j.state},
                       submit=self.submit, preprocess_text=denied, preprocess_image=denied,
                       image_provider_status=lambda *a: {"available": True},
+                      smart_geometry_capability=lambda *a: {"available": True, "model": "fixture-hy-3d"},
                       get_job=jobs.get, fallback_enabled=lambda: False,
                       latest_task_id=lambda j: "", cleanup=lambda j: None,
                       can_retry_unsubmitted=lambda j: False)
@@ -90,6 +91,20 @@ class SmartGenerationTests(unittest.TestCase):
         flow = str(uuid.uuid4())
         return {"workflow_mode": "smart", "flow_id": flow, "request_id": flow,
                 "prompt": "a green vase", "style": "realistic"}
+
+    def test_unavailable_yoyoclaw_does_not_start_gpt_preparation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jobs = {}
+            original = self.make_application(root, jobs)
+            check = Mock(return_value={"available": False, "reason": "model_unavailable"})
+            app = ModelJobApplication(replace(original.ports, smart_geometry_capability=check))
+            with self.assertRaises(RequestError) as error:
+                app.create_text_job({**self.request(), "provider": "yoyoclaw"})
+            self.assertEqual(error.exception.code, "model_unavailable")
+            check.assert_called_once_with("image")
+            self.submit.assert_not_called()
+            self.assertEqual(list(root.iterdir()), [])
 
     def test_fresh_intent_preserves_a_failed_preparation_and_replays_only_its_new_job(self):
         for ambiguous in (False, True):
@@ -326,7 +341,11 @@ class SmartGenerationTests(unittest.TestCase):
                     current = jobs[create(request).payload["job"]["id"]]
                     self.assertNotEqual(current.id, old.id)
                     self.assertNotEqual(current.flow_id, old.flow_id)
-                    self.assertEqual(factory.call_args.kwargs["generation_options"], request)
+                    expected = dict(request)
+                    if expected.get("provider") == "yoyoclaw":
+                        expected.update(geometry_model="fixture-hy-3d", face_limit=0,
+                                        geometry_quality="standard", texture_quality="standard")
+                    self.assertEqual(factory.call_args.kwargs["generation_options"], expected)
                     self.assertEqual(factory.call_args.kwargs["provider"], request.get("provider", "tripo"))
                     self.assertEqual(current.user_prompt, request["instruction"] if image_mode else request["prompt"])
                     self.assertEqual(current.design_model, request.get("design_model", ""))

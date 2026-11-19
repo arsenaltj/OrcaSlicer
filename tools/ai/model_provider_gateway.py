@@ -79,6 +79,17 @@ class ProviderTaskRef:
     reused: bool
 
 
+@dataclass(frozen=True)
+class ObservedModelResult:
+    provider: str
+    model_id: str
+    task_id: str
+    payload: Mapping[str, Any]
+
+    def matches(self, provider: str, model_id: str, task_id: str) -> bool:
+        return (self.provider, self.model_id, self.task_id) == (provider, model_id, task_id)
+
+
 class ProviderGatewayError(RuntimeError):
     def __init__(
         self,

@@ -152,11 +152,6 @@ bool ModelGenerationPanel::request_generate_smart()
     m_smart_mode = true;
     m_smart_flow.begin(new_request_id());
     m_generation_visual_reference = {};
-    if (wxGetApp().app_config) {
-        wxGetApp().app_config->set("smart_generation_pending_flow", "");
-        wxGetApp().app_config->set("smart_generation_pending_input", "");
-        wxGetApp().app_config->save();
-    }
     ++m_model_generation_session;
     wxCommandEvent event; on_preprocess(event);
     if (!m_busy) { m_smart_flow.stop(); return false; }
@@ -243,7 +238,11 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
         show_input_hint(_L("颜色模式或耗材色板发生了变化，请先重新生成预览。"));
         return;
     }
-    const auto confirmed_options = current_generation_options();
+    auto confirmed_options = current_generation_options();
+    if (m_smart_mode && confirmed_options.provider == "yoyoclaw") {
+        confirmed_options.geometry_model = m_job_generation_options.geometry_model;
+        confirmed_options.face_limit = m_job_generation_options.face_limit;
+    }
     const auto confirmed_profile = current_generation_profile();
     const wxString provider_label = confirmed_options.provider == "yoyoclaw" ? wxString("YOYOClaw") : wxString("Tripo");
     wxString message = wxString::Format(image_mode
@@ -260,7 +259,11 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
     }
     // The modal pumps events: restore, service loss or a late status may have
     // changed the job while the user was reading the confirmation.
-    const auto current_options = current_generation_options();
+    auto current_options = current_generation_options();
+    if (m_smart_mode && current_options.provider == "yoyoclaw") {
+        current_options.geometry_model = m_job_generation_options.geometry_model;
+        current_options.face_limit = m_job_generation_options.face_limit;
+    }
     const auto option_values = [](const AIModelGenerationClient::GenerationOptions& options) {
         return std::tie(options.provider, options.design_provider, options.design_model, options.geometry_model,
                         options.face_limit, options.geometry_quality,
@@ -677,10 +680,6 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
         }
         m_smart_mode = true;
         m_smart_flow.progress = std::max(m_smart_flow.progress, status.smart_progress);
-        if (wxGetApp().app_config) {
-            wxGetApp().app_config->set("smart_generation_pending_flow", "");
-            wxGetApp().app_config->save();
-        }
     } else if (job_changed && !m_smart_flow.armed) { m_smart_mode = false; }
     m_job_id = status.id;
     m_job_state = status.state;

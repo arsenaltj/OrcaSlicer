@@ -258,11 +258,13 @@ def _normalize_custom_style(value: Any, style: str) -> str:
         raise RequestError("invalid_custom_style", "custom_style is only allowed when style is custom.", 400)
     return ""
 
-def _normalize_face_limit(value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value not in MODEL_FACE_LIMITS:
+def _normalize_face_limit(value: Any, provider: str = "tripo") -> int:
+    # Zero records supplier default; it is never a Tripo target or a claim
+    # about the triangle count of the downloaded artifact.
+    if isinstance(value, bool) or not isinstance(value, int) or (value not in MODEL_FACE_LIMITS and not (provider == "yoyoclaw" and value == 0)):
         raise RequestError(
             "invalid_face_limit",
-            "face_limit must be 100000, 300000, 500000, 1000000, or 2000000 triangles.",
+            "face_limit must be a supported triangle target, or 0 for YOYOClaw's default.",
             400,
         )
     return value

@@ -477,11 +477,6 @@
       "needle": "void ModelGenerationPanel::refresh_workbench_history()"
     },
     {
-      "id": "model_failure_history_readonly",
-      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationWorkbenchHistory.cpp",
-      "needle": "void ModelGenerationPanel::show_model_failure_history(wxWindow* trigger)"
-    },
-    {
       "id": "workbench_history_snapshot",
       "path": "src/slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySnapshot.hpp",
       "needle": "inline std::string workbench_history_key("
@@ -597,7 +592,7 @@
       "id": "advanced_creation_session",
       "path": "src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationSession.hpp",
       "needle": "class Session {",
-      "detail": "高级创作独立维护四图版本与3D任务；同版本同SHA已验证图片保持就绪，其他视角生成不重置完成图。任务受理先登记再通知，核对不重开当前组。"
+      "detail": "高级创作独立维护四图版本与3D任务；供应商往返从当前组已提交设计恢复绑定模型，独立输入变更仍保留守卫。同版本同SHA已验证图片保持就绪，其他视角生成不重置完成图。任务受理先登记再通知，核对不重开当前组；换组或新建清理临时停止观察身份，持久回执保留收尾。"
     },
     {
       "id": "advanced_multiview_application",
@@ -754,13 +749,13 @@
       "id": "advanced_multiview_models",
       "path": "tools/ai/advanced_multiview_models.py",
       "needle": "class AdvancedMultiviewModels:",
-      "detail": "每次有效操作将四具名版本冻结为新Job-v2；模型确认和同次受理核对保留，已终止旧未决操作不阻挡新建，停止／重启不恢复旧生成。"
+      "detail": "四个具名版本冻结为新Job-v2；供应商能力在锁外复核，受理时重新核对修订、确认和已有收据。YOYOClaw共用实际目录数字最新版规则，单图／脚本四图均用供应商默认面数，face_limit=0不发送面数字段或进行目标偏差判断；真实接口错误不自动重发。停止／重启不续跑旧生成。"
     },
     {
       "id": "advanced_multiview_model_workflow",
       "path": "tools/ai/advanced_multiview_model_workflow.py",
       "needle": "class AdvancedMultiviewModelWorkflow:",
-      "detail": "只使用已确认四图，复用模型网关和产物端口；不自动重生设计。"
+      "detail": "只使用已确认四图，复用模型网关及带原任务身份的远端终态供产物下载；不自动重生设计。"
     },
     {
       "id": "native_workbench_partition",

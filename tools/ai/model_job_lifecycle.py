@@ -80,10 +80,10 @@ class ModelJobLifecycle:
         generation_options: dict[str, Any] | None = None,
     ) -> Job:
         options = dict(generation_options or {}, provider=provider)
-        face_limit = options.get("face_limit", DEFAULT_MODEL_FACE_LIMIT)
+        face_limit = 0 if provider == "yoyoclaw" else options.get("face_limit", DEFAULT_MODEL_FACE_LIMIT)
         if isinstance(face_limit, str) and len(face_limit) <= 7 and face_limit.isascii() and face_limit.isdecimal():
             face_limit = int(face_limit)
-        face_limit = _normalize_face_limit(face_limit)
+        face_limit = _normalize_face_limit(face_limit, provider)
         # A design preview has no 3D provider request. Preserve the draft choices;
         # the explicit model confirmation validates their provider-specific combination.
         geometry, texture, output = _generation_options(options, face_limit, validate_provider_constraints=False)
@@ -111,7 +111,7 @@ class ModelJobLifecycle:
             design_model=str(options.get("design_model", "")) if isinstance(options.get("design_model", ""), str) else "",
             geometry_model=str(options.get("geometry_model", "")) if isinstance(options.get("geometry_model", ""), str) else "",
             face_limit=face_limit,
-            generation_profile="quality" if face_limit >= 500000 else "performance",
+            generation_profile="quality" if face_limit == 0 or face_limit >= 500000 else "performance",
             geometry_quality=geometry,
             texture_quality=texture,
             output_format=output,

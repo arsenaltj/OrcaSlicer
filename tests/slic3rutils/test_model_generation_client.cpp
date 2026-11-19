@@ -1,8 +1,176 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/address.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/read_until.hpp>
+#include <boost/asio/streambuf.hpp>
+#include <boost/asio/write.hpp>
+#include <chrono>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <thread>
+
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 
 using Slic3r::GUI::AIModelGenerationClient;
+
+namespace {
+
+// An in-process loopback fixture exercises the production HTTP callback. It is
+// never installed or used for desktop/provider acceptance.
+class CatalogReplyServer
+{
+public:
+    CatalogReplyServer(std::string body, bool disconnect = false)
+        : m_acceptor(m_io, {boost::asio::ip::make_address("127.0.0.1"), 0})
+    {
+        using Socket = boost::asio::ip::tcp::socket;
+        m_acceptor.async_accept([this, body = std::move(body), disconnect](boost::system::error_code ec, Socket socket) {
+            if (ec) return;
+            auto connection = std::make_shared<Socket>(std::move(socket));
+            auto buffer = std::make_shared<boost::asio::streambuf>();
+            boost::asio::async_read_until(*connection, *buffer, "\r\n\r\n",
+                [connection, buffer, body, disconnect](boost::system::error_code read_error, size_t) {
+                    if (read_error || disconnect) return;
+                    auto response = std::make_shared<std::string>(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
+                        std::to_string(body.size()) + "\r\n\r\n" + body);
+                    boost::asio::async_write(*connection, boost::asio::buffer(*response),
+                        [connection, response](boost::system::error_code, size_t) {});
+                });
+        });
+        m_thread = std::thread([this] { m_io.run(); });
+    }
+
+    ~CatalogReplyServer() { m_io.stop(); m_thread.join(); }
+    std::string url() const { return "http://127.0.0.1:" + std::to_string(m_acceptor.local_endpoint().port()); }
+
+private:
+    boost::asio::io_context m_io;
+    boost::asio::ip::tcp::acceptor m_acceptor;
+    std::thread m_thread;
+};
+
+struct CatalogCallbacks
+{
+    std::mutex mutex;
+    std::condition_variable changed;
+    unsigned completed {0};
+    unsigned failed {0};
+    std::string error;
+    bool ready {false};
+
+};
+
+std::shared_ptr<CatalogCallbacks> observe_catalog(AIModelGenerationClient& client)
+{
+    // Shared ownership protects the timeout path from a late HTTP callback
+    // addressing a destroyed test stack frame.
+    auto calls = std::make_shared<CatalogCallbacks>();
+    client.get_provider_catalog("geometry", "yoyoclaw",
+        [calls](AIModelGenerationClient::ProviderCatalog catalog) {
+            {
+                std::lock_guard<std::mutex> lock(calls->mutex);
+                ++calls->completed;
+                calls->ready = catalog.ready();
+            }
+            calls->changed.notify_all();
+        },
+        [calls](std::string error) {
+            {
+                std::lock_guard<std::mutex> lock(calls->mutex);
+                ++calls->failed;
+                calls->error = std::move(error);
+            }
+            calls->changed.notify_all();
+        });
+    return calls;
+}
+
+} // namespace
+
+TEST_CASE("Invalid successful provider responses complete through exactly one error callback",
+          "[ModelGenerationClient][ProviderCatalogCallback]")
+{
+    const nlohmann::json valid {{"role", "geometry"}, {"provider", "yoyoclaw"}, {"state", "empty"},
+                               {"models", nlohmann::json::array()}, {"error", nullptr}};
+    std::vector<std::string> bodies {"{"};
+    for (const std::string field : {"role", "provider", "state", "models", "error", "default_model", "connection_state"}) {
+        auto malformed = valid;
+        malformed[field] = 42;
+        bodies.push_back(malformed.dump());
+    }
+    auto malformed = valid;
+    malformed["models"] = nlohmann::json::array({{{"id", "model"}, {"name", "model"}, {"available", "yes"}}});
+    bodies.push_back(malformed.dump());
+    for (const auto& body : bodies) {
+        DYNAMIC_SECTION(body) {
+            CatalogReplyServer server(body);
+            AIModelGenerationClient client(server.url());
+            const auto calls = observe_catalog(client);
+            std::unique_lock<std::mutex> lock(calls->mutex);
+            REQUIRE(calls->changed.wait_for(lock, std::chrono::seconds(3), [&] { return calls->failed + calls->completed > 0; }));
+            CHECK(calls->failed == 1);
+            CHECK(calls->completed == 0);
+            CHECK_FALSE(calls->error.empty());
+        }
+    }
+}
+
+TEST_CASE("Provider catalog transport failure invokes the error callback without success",
+          "[ModelGenerationClient][ProviderCatalogCallback]")
+{
+    CatalogReplyServer server("", true);
+    AIModelGenerationClient client(server.url());
+    const auto calls = observe_catalog(client);
+    std::unique_lock<std::mutex> lock(calls->mutex);
+    REQUIRE(calls->changed.wait_for(lock, std::chrono::seconds(3), [&] { return calls->failed + calls->completed > 0; }));
+    CHECK(calls->failed == 1);
+    CHECK(calls->completed == 0);
+}
+
+TEST_CASE("Legacy connected empty catalogs finish successfully without enabling generation",
+          "[ModelGenerationClient][ProviderCatalogCallback]")
+{
+    CatalogReplyServer server(R"({"role":"geometry","provider":"yoyoclaw","state":"empty","models":[],"error":null})");
+    AIModelGenerationClient client(server.url());
+    const auto calls = observe_catalog(client);
+    std::unique_lock<std::mutex> lock(calls->mutex);
+    REQUIRE(calls->changed.wait_for(lock, std::chrono::seconds(3), [&] { return calls->failed + calls->completed > 0; }));
+    CHECK(calls->failed == 0);
+    CHECK(calls->completed == 1);
+    CHECK_FALSE(calls->ready);
+}
+
+TEST_CASE("Provider catalog decoding rejects wrong types without throwing", "[ModelGenerationClient]")
+{
+    const auto parse = [](const nlohmann::json& body) {
+        return AIModelGenerationClient::parse_provider_catalog(body.dump(), "geometry", "yoyoclaw");
+    };
+    const nlohmann::json valid {{"role", "geometry"}, {"provider", "yoyoclaw"}, {"state", "empty"},
+                               {"models", nlohmann::json::array()}, {"error", nullptr}};
+    REQUIRE(parse(valid));
+    CHECK_FALSE(parse(valid)->ready());
+    CHECK_FALSE(parse(valid)->single_image);
+    auto capable = valid;
+    capable["single_image"] = true;
+    capable["named_four_view"] = true;
+    CHECK(parse(capable)->single_image);
+    CHECK(parse(capable)->named_four_view);
+    CHECK_FALSE(AIModelGenerationClient::parse_provider_catalog("{", "geometry", "yoyoclaw"));
+    for (const std::string field : {"role", "provider", "state", "default_model", "connection_state", "models", "error", "single_image", "named_four_view"}) {
+        DYNAMIC_SECTION(field) {
+            auto malformed = valid;
+            malformed[field] = 42;
+            CHECK_FALSE(parse(malformed));
+        }
+    }
+    auto malformed = valid;
+    malformed["models"] = nlohmann::json::array({{{"id", "model"}, {"name", "model"}, {"available", "yes"}}});
+    CHECK_FALSE(parse(malformed));
+}
 
 TEST_CASE("Legacy Tripo choices restore the same standard face cap without editing saved history",
           "[ModelGenerationClient][Regression]")
@@ -24,6 +192,18 @@ TEST_CASE("Legacy Tripo choices restore the same standard face cap without editi
                 }
             }
         }
+    }
+}
+
+TEST_CASE("YOYOClaw default and historical face choices remain distinct when reading saved jobs",
+          "[ModelGenerationClient][Regression]")
+{
+    for (const int faces : {0, 300000, 1000000}) {
+        const nlohmann::json saved {{"provider", "yoyoclaw"}, {"face_limit", faces},
+                                    {"geometry_quality", "standard"}};
+        const auto restored = AIModelGenerationClient::restore_generation_options(saved);
+        CHECK(restored.provider == "yoyoclaw");
+        CHECK(restored.face_limit == faces);
     }
 }
 

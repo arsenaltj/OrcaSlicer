@@ -124,7 +124,7 @@ class GenerationOptionsRecoveryTests(unittest.TestCase):
         self.addCleanup(jobs.stop)
         self.job = sidecar._new_job("text", ())
 
-    def test_design_creation_preserves_model_choices_until_model_confirmation(self):
+    def test_design_creation_preserves_tripo_choices_and_records_yoyoclaw_default_faces(self):
         image = io.BytesIO()
         Image.new("RGB", (512, 512), "gray").save(image, format="PNG")
         for source in ("text", "image"):
@@ -153,6 +153,8 @@ class GenerationOptionsRecoveryTests(unittest.TestCase):
                     restored = sidecar._load_job(job.directory)
                     self.assertIsNotNone(restored)
                     for key, expected in options.items():
+                        if provider == "yoyoclaw" and key == "face_limit":
+                            expected = 0
                         self.assertEqual(getattr(restored, key), expected)
 
     def test_design_creation_still_rejects_malformed_model_option_fields(self):

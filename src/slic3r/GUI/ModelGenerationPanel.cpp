@@ -228,7 +228,6 @@ bool ModelGenerationPanel::synchronize_ui_input(const ModelGenerationUIInput& in
     // Only an explicit generation command starts the next flow.
     if (changed && !m_smart_flow.flow_id.empty()) {
         m_smart_flow.stop(); // Keep the route identity while the next draft is edited.
-        if (wxGetApp().app_config) wxGetApp().app_config->set("smart_generation_pending_flow", "");
     }
     m_prompt->ChangeValue(prompt);
     m_custom_style->ChangeValue(custom_style);
@@ -255,7 +254,7 @@ bool ModelGenerationPanel::synchronize_ui_options(const ModelGenerationUIOptions
         return false;
     const bool tripo = options.provider == "tripo";
     const bool yoyoclaw = options.provider == "yoyoclaw";
-    const bool valid_face_limit = options.face_limit == 300000 || options.face_limit == 1000000 ||
+    const bool valid_face_limit = (yoyoclaw && options.face_limit == 0) || options.face_limit == 300000 || options.face_limit == 1000000 ||
                                   (tripo && options.face_limit == 2000000);
     const bool valid_geometry = options.geometry_quality == "standard" ||
                                 (tripo && options.geometry_quality == "detailed");
@@ -315,7 +314,6 @@ bool ModelGenerationPanel::synchronize_ui_options(const ModelGenerationUIOptions
     m_legacy_generation_defaults = false;
     if (!m_smart_flow.flow_id.empty()) {
         m_smart_flow.stop();
-        if (wxGetApp().app_config) wxGetApp().app_config->set("smart_generation_pending_flow", "");
     }
     BOOST_LOG_TRIVIAL(info) << "[GenerationOptions] synchronized design_provider=" << options.design_provider
         << " design_model=" << options.design_model << " geometry_provider=" << options.provider
@@ -897,7 +895,6 @@ void ModelGenerationPanel::begin_background_shutdown()
     m_workbench_surface_refresh.stop();
     m_workbench_evidence_scope.cancel(); m_preview_task_scope.cancel(); m_artifact_validation_scope.cancel();
     m_import_preparation_scope.cancel();
-    m_failure_history_scope.cancel();
     if (m_local_import_session) m_local_import_session->invalidate();
     m_beauty_restore_scope.cancel();
     m_client.cancel_current();
@@ -3999,13 +3996,16 @@ wxString ModelGenerationPanel::current_style_label() const
 
 int ModelGenerationPanel::current_face_limit() const
 {
+    if (m_provider && m_provider->GetSelection() == 1)
+        return 0;
     const int selection = m_quality ? m_quality->GetSelection() : 1;
     return selection == 0 ? 300000 : selection == 2 && (!m_provider || m_provider->GetSelection() == 0) ? 2000000 : 1000000;
 }
 
 std::string ModelGenerationPanel::current_generation_profile() const
 {
-    return current_face_limit() <= 300000 ? "performance" : "quality";
+    const int face_limit = current_face_limit();
+    return face_limit != 0 && face_limit <= 300000 ? "performance" : "quality";
 }
 
 wxString ModelGenerationPanel::current_generation_profile_label() const
@@ -4074,7 +4074,7 @@ void ModelGenerationPanel::refresh_provider_options()
         m_quality->Append(_L("200 万面（需精细几何）"));
     }
     m_quality->SetToolTip(limited_provider
-        ? _L("面数是生成目标，实际结果可能不同。YOYOClaw 可选择 30 万或 100 万面。")
+        ? _L("YOYOClaw 使用供应商默认面数，实际面数以生成模型为准。")
         : _L("面数是生成目标，实际结果可能不同。200 万面需 Tripo v3.1 精细几何；更多面数会增加下载、预览和导入耗时。"));
     if (limited_provider && m_geometry_quality->GetCount() != 1) {
         m_geometry_quality->Set(wxArrayString {_L("标准")});
@@ -4101,8 +4101,8 @@ wxString ModelGenerationPanel::generation_options_summary(bool image_mode) const
 {
     const auto options = current_generation_options();
     if (options.provider == "yoyoclaw") {
-        return wxString::Format(_L("YOYOClaw · %d 万面 · %s\n费用未报价，以 YOYOClaw 所选模型的实际账单为准；不含设计图费用。"),
-            options.face_limit / 10000, options.output_format == "obj" ? "OBJ" : "GLB");
+        return wxString::Format(_L("YOYOClaw · 供应商默认面数 · %s\n费用未报价，以 YOYOClaw 所选模型的实际账单为准；不含设计图费用。"),
+            options.output_format == "obj" ? "OBJ" : "GLB");
     }
     const int base = image_mode ? 30 : 20;
     const int geometry = options.geometry_quality == "detailed" ? 20 : 0;

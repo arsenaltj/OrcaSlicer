@@ -614,51 +614,63 @@ void AIModelGenerationClient::get_provider_catalog(const std::string& role, cons
         return;
     }
     const std::string path = "/v1/orcaslicer/model-provider-catalog?role=" + role + "&provider=" + provider;
+    auto on_parse_error = on_error;
     get_json(path,
-             [role, provider, on_complete = std::move(on_complete), on_error](std::string body) mutable {
-                 const auto parsed = json::parse(body, nullptr, false);
-                 if (parsed.is_discarded() || !parsed.is_object()) {
-                     if (on_error) on_error("AI sidecar returned an invalid provider catalog.");
+             [role, provider, on_complete = std::move(on_complete), on_parse_error = std::move(on_parse_error)](std::string body) {
+                 auto catalog = parse_provider_catalog(body, role, provider);
+                 if (!catalog) {
+                     if (on_parse_error) on_parse_error("AI sidecar returned an invalid provider catalog.");
                      return;
                  }
-                 ProviderCatalog catalog;
-                 catalog.role = parsed.value("role", std::string());
-                 catalog.provider = parsed.value("provider", std::string());
-                 catalog.state = parsed.value("state", std::string("error"));
-                 catalog.default_model = parsed.value("default_model", std::string());
-                 catalog.connection_state = parsed.value("connection_state", std::string());
-                 if (catalog.connection_state.empty()) {
-                     catalog.connection_state = catalog.state == "ready"
-                         ? (provider == "yoyoclaw" ? "connected" : "configured")
-                         : catalog.state;
-                 }
-                 if (parsed.contains("error") && parsed["error"].is_object()) {
-                     catalog.error_code = parsed["error"].value("code", std::string());
-                     catalog.error_message = parsed["error"].value("message", std::string());
-                     catalog.retryable = parsed["error"].value("retryable", false);
-                 }
-                 if (parsed.contains("models") && parsed["models"].is_array()) {
-                     for (const auto& item : parsed["models"]) {
-                         if (!item.is_object()) continue;
-                         const std::string id = item.value("id", std::string());
-                         const std::string name = item.value("name", std::string());
-                         if (id.empty() || id.size() > 256 || name.empty() || name.size() > 256) continue;
-                         catalog.models.push_back({id, name, item.value("available", true)});
-                         if (catalog.models.size() >= 64) break;
-                     }
-                 }
-                 const bool valid_connection_state = catalog.connection_state == "connected" ||
-                     catalog.connection_state == "configured" || catalog.connection_state == "not_configured" ||
-                     catalog.connection_state == "checking" || catalog.connection_state == "empty" ||
-                     catalog.connection_state == "error";
-                 if (catalog.role != role || catalog.provider != provider || catalog.state.empty() ||
-                     !valid_connection_state) {
-                     if (on_error) on_error("AI sidecar returned an incomplete provider catalog.");
-                     return;
-                 }
-                 if (on_complete) on_complete(std::move(catalog));
+                 if (on_complete) on_complete(std::move(*catalog));
              },
              std::move(on_error), 30);
+}
+
+std::optional<AIModelGenerationClient::ProviderCatalog> AIModelGenerationClient::parse_provider_catalog(
+    const std::string& body, const std::string& role, const std::string& provider)
+{
+    try {
+        const auto parsed = json::parse(body, nullptr, false);
+        if (!parsed.is_object()) return std::nullopt;
+        ProviderCatalog catalog;
+        catalog.role = parsed.value("role", std::string());
+        catalog.provider = parsed.value("provider", std::string());
+        catalog.state = parsed.value("state", std::string());
+        catalog.default_model = parsed.value("default_model", std::string());
+        catalog.connection_state = parsed.value("connection_state", std::string());
+        catalog.single_image = parsed.value("single_image", false);
+        catalog.named_four_view = parsed.value("named_four_view", false);
+        if (catalog.connection_state.empty())
+            catalog.connection_state = catalog.state == "ready"
+                ? (provider == "yoyoclaw" ? "connected" : "configured") : catalog.state;
+        if (const auto error = parsed.find("error"); error != parsed.end() && !error->is_null()) {
+            if (!error->is_object()) return std::nullopt;
+            catalog.error_code = error->value("code", std::string());
+            catalog.error_message = error->value("message", std::string());
+            catalog.retryable = error->value("retryable", false);
+        }
+        if (const auto models = parsed.find("models"); models != parsed.end()) {
+            if (!models->is_array()) return std::nullopt;
+            for (const auto& item : *models) {
+                if (!item.is_object()) return std::nullopt;
+                const auto id = item.value("id", std::string());
+                const auto name = item.value("name", std::string());
+                const bool available = item.value("available", true);
+                if (id.empty() || id.size() > 256 || name.empty() || name.size() > 256) return std::nullopt;
+                if (catalog.models.size() < 64) catalog.models.push_back({id, name, available});
+            }
+        }
+        const auto& state = catalog.state;
+        const auto& connection = catalog.connection_state;
+        if (catalog.role != role || catalog.provider != provider ||
+            (state != "ready" && state != "empty" && state != "not_configured" && state != "checking" && state != "error") ||
+            (connection != "connected" && connection != "configured" && connection != "not_configured" &&
+             connection != "checking" && connection != "empty" && connection != "error")) return std::nullopt;
+        return catalog;
+    } catch (const json::exception&) {
+        return std::nullopt;
+    }
 }
 
 void AIModelGenerationClient::recheck(const std::string& job_id, StatusFn on_complete, ErrorFn on_error)

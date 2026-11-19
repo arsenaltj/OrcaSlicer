@@ -100,6 +100,37 @@ class ModelTests(unittest.TestCase):
         self.drain(); self.execute(plan)
         self.assertEqual(len(self.requests), 1)
 
+    def test_yoyoclaw_default_faces_roundtrip_and_confirmed_model_stays_frozen(self):
+        from dataclasses import replace
+        selected = "Hy-3D-3.10-YOYO"
+        seen = []
+        def capability(provider, model):
+            seen.append((provider, model))
+            return {"available": True, "named_four_view_model": "supported", "model": model or selected}
+        self.models.ports = replace(self.models.ports, capability=capability)
+        plan = self.plan(provider="yoyoclaw", face_limit=1000000, geometry_quality="standard")
+        self.assertEqual(plan["options"]["face_limit"], 0)
+        self.assertEqual(plan["options"]["geometry_model"], selected)
+        selected = "Hy-3D-4.0-YOYO"
+        def start(request, **kwargs):
+            self.requests.append(request)
+            kwargs["authorization"].consume("yoyoclaw", "model_generation")
+            return SimpleNamespace(task_id="frozen-yoyo-task", reused=False)
+        self.gateway.start_or_reuse_model_task.side_effect = start
+        job = self.execute(plan)
+        self.execute(plan)
+        self.drain()
+        self.assertEqual(job.state, "ready")
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(self.requests[0].model_id, "Hy-3D-3.10-YOYO")
+        self.assertEqual(self.requests[0].face_limit, 0)
+        self.assertEqual(seen, [("yoyoclaw", ""), ("yoyoclaw", "Hy-3D-3.10-YOYO")])
+        restored = _load_job(job.directory)
+        self.assertEqual(restored.face_limit, 0)
+        self.assertEqual(restored.generation_profile, "quality")
+        self.assertEqual(restored.approved_multiview_snapshot, plan["approved_multiview_snapshot"])
+        self.assertEqual(restored.image_metrics["model_delivery_warnings"], [])
+
     def test_new_job_version_roundtrips_and_cannot_be_forged_as_single_image(self):
         job = self.execute(self.plan()); restored = _load_job(job.directory)
         self.assertEqual(restored.approved_multiview_snapshot, job.approved_multiview_snapshot)
