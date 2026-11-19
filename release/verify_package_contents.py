@@ -77,8 +77,12 @@ def audited_library_record(member, data):
     normalized = dependency_classification_path(member)
     record = next((record for path, record in AUDITED_LIBRARY_LITERALS.items()
                    if normalized == path or normalized.endswith("/" + path)), None)
-    if record and hashlib.sha256(data).hexdigest() == record["file_sha256"]:
-        return record
+    if record:
+        # LF/CRLF variants are separate, explicitly audited full-file hashes.
+        # Do not normalize bytes or classify an entire module by path alone.
+        exact_hashes = {record["file_sha256"], *record.get("file_sha256_variants", [])}
+        if hashlib.sha256(data).hexdigest() in exact_hashes:
+            return record
     return None
 
 

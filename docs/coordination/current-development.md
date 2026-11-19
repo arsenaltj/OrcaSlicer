@@ -1,4 +1,46 @@
-# 2026-11-19 当前：AI创作整改本地提交交付，62/64项闭合
+# 2026-11-19 当前：提交V1.0.4修订并创建AI创作集成PR
+
+主线：DELIVERY/WINDOWS-INSTALLER-20261119追加交付，codex/task/ai-creation-v1.0.4-20261119，本会话单writer；用户明确授权提交8份文件，并将全部本地新增提交通过PR提交到codex/team/integration。
+
+本轮：已刷新origin，集成仍为323c6c1c9c；从已验证合并头dc76651724建立专用PR分支，保留原有8个本地提交。6份版本／打包非进度来源与原受测快照逐字节匹配；正在提交、核对文档声明并准备Draft PR。[完整范围](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#windows-installer-v1.0.4-20261119)。
+
+未结：当前提交／推送／PR尚待完成；对应HEAD的CI、非作者复核与维护人合入待执行。新版安装／GUI、1项符号链接权限跳过、原62/64及模型信息面板待评审状态保持。
+
+下一步：完成普通提交、当前版本集成与文档声明检查，推送专用分支并创建Draft PR；不直接推送集成分支，不自动替代非作者审批。证据.tmp/dev/evidence/pr-ai-creation-v1.0.4-20261119。
+
+计划变更：最新明确授权覆盖此前“不提交／不推送／不建PR”；产品范围、已交付包身份与生成预算不变。
+
+---
+
+# 2026-11-19 此前：远端合并与V1.0.4 Windows安装包交付完成
+
+主线：DELIVERY/WINDOWS-INSTALLER-20261119，codex/team/integration／dc76651724，本会话单writer；已完成用户授权的远端同步merge、版本1.0.4及不含移动端SDK的内部安装包。
+
+本轮：远端323c6c1c9c已安全合并，10份冲突闭合，两份待评审文档及恢复stash保留。第四轮EXE／ZIP构建退出0，实际负载版本1.0.4.0、移动SDK0项；内容扫描无检出／缺口。展示75项、智能切片259项、生命周期38项通过；合并回归378通过／1跳过／0失败，各组不累加。源码身份6a2ecdefd2；[完整交付与证据](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#windows-installer-v1.0.4-20261119)。
+
+未结：1项符号链接回归因Windows权限跳过；实际安装／新版主窗口GUI未执行。原62/64、YMV-40／AICR-24视觉未达标及AICR-17精确GUI覆盖边界保留。模型信息面板仍待评审，不实施。
+
+下一步：产物在.tmp/dev/package-v1.0.4-20261119-r4，最终收据在.tmp/dev/evidence/windows-installer-v1.0.4-20261119/final-validation.json。按新明确反馈续接；返回creation-model-info-panel-20261119评审稿，不自动启动／安装、推送或新增生成。
+
+计划变更：本轮同步与打包交付闭合；版本及打包修改随source-r4完整快照进入产物，未另建普通提交。构建退出后仅增量更新两份进度文档，六份非进度来源及EXE／DLL身份不变；不扩大产品范围，原3/20预算不变。
+
+---
+
+# 2026-11-19 此前：AI 创作四项模型信息面板，开发方案待评审
+
+主线：UX/CREATION-MODEL-INFO-20261119，`creation-model-info-panel-20261119`；`codex/team/integration`／`90a91d1ae5`，本会话单代理。用户最新要求输出开发方案和核心用例、评审后再实施；仅四项面板，其它 UX 不动。
+
+本轮：承接已核实的 Figma 原始参数，细化[开发方案与核心测试评审稿](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#creation-model-info-panel-20261119)：状态归属／显隐、字段契约、拟修改文件、GL与缩窗缓存顺序、7步实施及验收；保留MI-01～08并展开24个核心子例，均待执行。原始设计证据仍在`.tmp/dev/evidence/creation-model-info-panel-20261119/figma-panel-specs.json`。
+
+未结：待用户评审；R1字体资源、R2超长值、R3中央区域锚点为明确决策项，16DIP定位仅推荐且未核实与画板坐标等价；实现／构建／产品测试／GUI均未执行。返回点：此前本地提交`90a91d1ae5`、原62/64及YMV-40／AICR-24视觉未达标、AICR-17精确GUI覆盖边界保持。
+
+下一步：按用户评审结论修订或在明确授权范围内实施；当前不写产品代码，不新增生成、启动窗口或恢复旧平台拒绝。
+
+计划变更：沿原编号把可行性分析扩为开发方案和24个核心子例，未新增实施授权或调用预算；本轮仅更新既有两份进度文档并做内容／引用／diff检查，无产品／Figma修改、构建、产品测试、GUI或供应商调用，不提交／推送／打包。
+
+---
+
+# 2026-11-19 此前：AI创作整改本地提交交付，62/64项闭合
 
 主线：MAINLINE-BUGFIX-001／`ai-creation-source-review-20261118`联动高级四图，`codex/team/integration`，实施基线`d652b772ab`；本轮追加普通本地提交授权，单writer。
 
