@@ -1,3 +1,13 @@
+# MODEL-SDK-PUBLICATION-20261120
+
+Mainline: isolated task-20261120-model-sdk-pr-publication, from qualified SDK source 6aa69c2; explicit user authorization to submit this conversation's changes as PRs.
+This round: normal merge of integration 8f1b, preserving both progress histories; SDK and libslic3r implementation blobs unchanged. Document separate Model/Device SDK consumption and immutable 6aa producer identity.
+Open: independent review and different QA of this publication candidate; Android real-device/visual/manufacturing and full desktop build are not established by this source publication.
+Next: bounded source/contract/integration checks, then root-controlled draft PR to codex/team/integration. No automatic merge, deployment, new SDK package or paid task.
+Plan change: publication is now authorized; earlier no-push entries below are historical scope, not current publication instructions. No paused algorithm work resumes.
+
+## Earlier records retained
+
 # 2026-11-19 Native safe IO diagnostic child
 
 Mainline: task-20261119-native-safe-io-diagnostics from qualified0778; NC-IO-DIAGNOSTIC-01 instrumentation, MC-NATIVE-RECOVERY-IO-01 actual device cause unknown.

@@ -1,5 +1,24 @@
 # Model SDK v1 / ABI 1
 
+## Host integration and source publication
+
+The Model SDK is a separately built library. Updating an Android consumer's SDK
+bundle does not update the desktop GUI: that GUI currently calls the desktop
+finishing core directly, while its Device SDK is a different target. Shared
+Model SDK changes can affect any host that actually adopts this library; the
+Android-only publication branch does not make the whole library Android-only.
+
+The qualified Android bundle `sdk-native05-android-exclusive-publish-20261119-r1`
+was built and packaged from source `6aa69c260afe3d811f4a7a8eaf350d45f1b51385`.
+Later integration merges or documentation commits do not change that immutable
+producer identity and are not evidence of a rebuilt bundle or desktop installer.
+Software/package checks and Android device acceptance remain separate gates.
+
+Model repair is local processing, not account task admission. A desktop or mobile
+host integrating platform generation must implement the platform run and download
+admission protocols; this C ABI does not allocate account concurrency slots,
+acquire a remote execution lease, or authorize a new paid generation.
+
 ## Original GLB safety policy v1
 
 `capabilities.glbSafetyV1` advertises `policyVersion:"glb-safety-v1"`, the
