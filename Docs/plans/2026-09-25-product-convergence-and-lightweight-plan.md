@@ -21,7 +21,11 @@
    完整源码身份`6a2ecdefd2a2bc34ef175ab1246628dd1d11d482dc87a7173782ba4cfb646119`，冻结来源为`source-r4/manifest.json`。版本及打包修改仍为本地工作区快照，未另建普通提交；本轮merge已有独立提交。全部构建／测试退出后才更新当前交付进度；相较冻结来源，仅两份进度文档增加结算，其余6份未提交来源逐字节未变，HEAD及已打包EXE／DLL未变，不为进度文字重建产物。
 6. 实际安装、安装后主窗口及跨环境验证与构建／内容核验分开记录，不把旧版实窗结果冒充新版通过。此前助手自动启动的明确平台拒绝仍保持，不换入口重试；这不阻止本次已授权的构建和离线包检查。
 
-7. 2026-11-19追加本地提交与远端PR交付：当前准备将用户确认的8份文件形成普通提交；PR包含原有8个本地提交及本轮版本／SDK排除／内容扫描修订，目标codex/team/integration，集成基线323c6c1c9ca7e5f94c7b7161af64584af0a69f3c。不重写已有提交，不直接推送集成分支。新分支用于本次PR承载，不启动新产品事项；后续提交／PR身份见`.tmp/dev/evidence/pr-ai-creation-v1.0.4-20261119/`。项目SOP要求对应版本主窗口证据、非作者复核及维护人合入；当前新版主窗口未验，先建Draft PR，保留原62/64和符号链接跳过边界，不以本机测试代替CI或审核。模型信息面板仍仅方案待评审。完整打包快照与本轮提交的对应关系通过6份非进度来源逐字节摘要及提交blob记录核对，旧安装包仍标原source-r4身份。
+7. 2026-11-19追加本地提交与远端PR交付已完成：用户确认的8份文件形成普通提交`cb9ca6b9edb4414a979571ca003d116bded78297`，标题“build: 升级至 V1.0.4 并排除桌面包移动端 SDK”。8份提交blob与工作区规范化对象一致，6份非进度来源仍与原受测source-r4逐字节匹配；提交后完整集成零错误、README_CURRENT、MAP_CURRENT（140锚点／29能力）及PR文档同步声明通过，完整PR差异检查通过。
+
+   已推送专用分支`codex/task/ai-creation-v1.0.4-20261119`，创建[Draft PR #79](https://github.com/arsenaltj/OrcaSlicer/pull/79)，目标`codex/team/integration`，集成基线`323c6c1c9ca7e5f94c7b7161af64584af0a69f3c`。PR包含原有8个本地提交、本轮版本／打包提交及交付状态归档，覆盖103份文件，保留原始提交历史；没有直接推送或合并集成分支。PR源码身份、最终提交列表、远端当前检查／合并状态以`.tmp/dev/evidence/pr-ai-creation-v1.0.4-20261119/git-pr.json`回执为准。
+
+   非作者复核、维护人合入及对应HEAD的远端候选CI仍须按SOP完成；新版安装／主窗口未验，故保留Draft，不把本机自动测试当作GUI、CI或人工批准。原62/64、符号链接权限跳过及模型信息面板待评审状态保持。本轮没有产品新改动、重建、新GUI或生成调用，包仍标原source-r4身份，不重标为PR提交构建；原“未普通提交／不推送／不建PR”仅为打包阶段历史，由本次用户追加授权承接。两份进度文档在同PR归档，不纳入运行时输入变化。
 
 证据目录：[本机合并及安装包证据](../../.tmp/dev/evidence/windows-installer-v1.0.4-20261119)。`pre-merge.json`及原文／补丁保存未提交评审稿和stash身份，`merge-conflicts/`保存三方及原冲突文件，`merge-resolutions.json`逐项记录取舍，`merge-integration-check.json`保存合并前完整检查，`package-result-r2.json`／日志保存第二轮真实失败，`merge-fix-integration-r3.json`与`merge-result-r3.json`保存补修及最终merge依据，`package-result-r3.json`／实际内容报告保存第三轮扫描拦截，`literal-audit-r3.json`仅记录两项常量的摘要匹配，`package-content-tests-r4.log`保存25项扫描器回归。第四轮交付以`final-validation.json`、`package-result-r4.json`／`package-build-r4.log`、`actual-package-audit.json`、`merge-native-junit.xml`及`ui-lifecycle-tests.log`为准；源码与产物哈希已最终复核。实际安装及新版主窗口GUI未执行，原62/64和模型信息面板待评审状态保持；本轮新增生成0，原3/20预算不变。
 

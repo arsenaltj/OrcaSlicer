@@ -1,14 +1,14 @@
-# 2026-11-19 当前：提交V1.0.4修订并创建AI创作集成PR
+# 2026-11-19 当前：V1.0.4修订已提交，Draft PR #79已创建
 
-主线：DELIVERY/WINDOWS-INSTALLER-20261119追加交付，codex/task/ai-creation-v1.0.4-20261119，本会话单writer；用户明确授权提交8份文件，并将全部本地新增提交通过PR提交到codex/team/integration。
+主线：DELIVERY/WINDOWS-INSTALLER-20261119追加交付，codex/task/ai-creation-v1.0.4-20261119，本会话单writer；用户授权的本地提交／专用分支推送／集成PR创建已完成。
 
-本轮：已刷新origin，集成仍为323c6c1c9c；从已验证合并头dc76651724建立专用PR分支，保留原有8个本地提交。6份版本／打包非进度来源与原受测快照逐字节匹配；正在提交、核对文档声明并准备Draft PR。[完整范围](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#windows-installer-v1.0.4-20261119)。
+本轮：8份修改提交cb9ca6b9ed；保留原8个本地提交并推送专用PR分支，创建[Draft PR #79](https://github.com/arsenaltj/OrcaSlicer/pull/79)指向codex/team/integration，覆盖103份文件。6份非进度来源与受测快照一致，集成、架构映射／README、文档同步及完整PR diff检查通过；两份进度文档同步归档。[完整范围](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#windows-installer-v1.0.4-20261119)。
 
-未结：当前提交／推送／PR尚待完成；对应HEAD的CI、非作者复核与维护人合入待执行。新版安装／GUI、1项符号链接权限跳过、原62/64及模型信息面板待评审状态保持。
+未结：对应HEAD的远端CI、非作者复核和维护人合入；实际安装／新版GUI未验，1项Windows符号链接权限跳过、原62/64及模型信息面板待评审状态保持，PR保留Draft。
 
-下一步：完成普通提交、当前版本集成与文档声明检查，推送专用分支并创建Draft PR；不直接推送集成分支，不自动替代非作者审批。证据.tmp/dev/evidence/pr-ai-creation-v1.0.4-20261119。
+下一步：按PR当前检查及复核结果续接；源码／提交列表／远端状态见.tmp/dev/evidence/pr-ai-creation-v1.0.4-20261119/git-pr.json。不直接推送集成分支，不自动替代非作者审批或新增生成。
 
-计划变更：最新明确授权覆盖此前“不提交／不推送／不建PR”；产品范围、已交付包身份与生成预算不变。
+计划变更：追加提交及PR授权已执行，取代此前本轮不提交／推送／建PR的限制；不扩大产品范围，不重标旧安装包身份，原生成预算不变。
 
 ---
 
