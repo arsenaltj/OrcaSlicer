@@ -3,7 +3,9 @@ import argparse
 
 
 def progress_percent(completed: int, total: int) -> int:
-    return completed * 100 // total
+    if total <= 0:
+        return 0
+    return max(0, min(100, completed * 100 // total))
 
 
 def main() -> None:
