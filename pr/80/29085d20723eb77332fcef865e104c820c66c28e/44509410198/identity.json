@@ -1,0 +1,27 @@
+{
+  "pr": 80,
+  "run": 44509410198,
+  "head": "29085d20723eb77332fcef865e104c820c66c28e",
+  "base": "ecce6e92dfddef4b69b511d560e4feded812a7a3",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "受控验收：PR-Agent 只读审核与单次完成通知",
+  "path": "pr/80/29085d20723eb77332fcef865e104c820c66c28e/44509410198",
+  "created": "2026-11-19T10:54:31+00:00",
+  "files": {
+    "index.html": "0c86f5db228dee316649ad06688256ef86cf674692704fa7af364d2f45b6fd46",
+    "details.html": "b70813318ba1cf097cd8160b6e63fd2a2ec03557e53aa88717dbda059ec7040c",
+    "report.json": "53ea2feb7ca1fe8e3707c57d76ccf01a3e7a60f4edfb436fdffeb7d0869c1f64",
+    "summary.md": "7d70a23f7789006b821dc9d197895b8277feb8d0b158ec455af98647d0e8d4ee",
+    "archify-receipts.json": "e3bc602c4c4608306a38ed00bec5f0b8b30fe36f79c7b8d2047c140be859730c",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "5daa0364baa4b02adfe1b1d957602dcfe3a3589eac009f8c203eca8cfd25d8be",
+    "l1-modules.json": "6e8e713070fbc84f7c62e33555b22c06b66903960473247e1087f4af05a7b537",
+    "l2-generation.html": "5ab5558ef137d23eda721ae0ddaa25f82afe2839900e0e142691cb8020e85350",
+    "l2-generation.json": "9d870a02f238a819088346855f3b6c4f912a733fb48dec971a7ab4e6ed8caea5",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}

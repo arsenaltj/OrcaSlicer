@@ -1,5 +1,15 @@
 [
   {
+    "pr": 80,
+    "run": 44509410198,
+    "head": "29085d20723eb77332fcef865e104c820c66c28e",
+    "base": "ecce6e92dfddef4b69b511d560e4feded812a7a3",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "受控验收：PR-Agent 只读审核与单次完成通知",
+    "path": "pr/80/29085d20723eb77332fcef865e104c820c66c28e/44509410198",
+    "created": "2026-11-19T10:54:31+00:00"
+  },
+  {
     "pr": 79,
     "run": 44502296058,
     "head": "a721553f1c2f0973e80c55bbeab4097e0c6a571d",
