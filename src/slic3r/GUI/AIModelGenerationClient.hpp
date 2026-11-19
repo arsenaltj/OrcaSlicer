@@ -216,6 +216,7 @@ public:
         std::vector<std::string> model_input_blockers;
         std::vector<std::string> model_input_warnings;
         std::string provider_error_code;
+        std::string provider_detail_code, provider_detail_message;
         std::string provider_error_category;
         bool        provider_error_retryable { false };
         bool        provider_error_ambiguous { false };
@@ -254,6 +255,8 @@ public:
         std::string error_message;
         bool        retryable { false };
         std::string connection_state;
+        bool single_image {false};
+        bool named_four_view {false};
 
         bool ready() const {
             if (state != "ready") return false;
@@ -347,6 +350,10 @@ public:
     // Restores editable choices without changing the historical job or silently
     // upgrading pre-option Tripo jobs to a costlier geometry tier.
     static GenerationOptions restore_generation_options(const nlohmann::json& saved);
+    // Pure decoder shared by status, history and offline contract verification.
+    static std::optional<JobStatus> parse_job(const nlohmann::json& job);
+    static std::optional<ProviderCatalog> parse_provider_catalog(const std::string& body,
+                                                                 const std::string& role, const std::string& provider);
     static bool validate_color_intent_manifest_file(const boost::filesystem::path& manifest_path,
                                                     const std::string& schema, const std::string& sha256,
                                                     const boost::filesystem::path& artifact_path);
@@ -361,7 +368,6 @@ private:
     void get_json(const std::string& path, std::function<void(std::string)> on_complete,
                   ErrorFn on_error, long timeout_seconds = 30);
     void parse_status_response(std::string body, StatusFn on_complete, ErrorFn on_error);
-    static std::optional<JobStatus> parse_job(const json& job);
     static json serialize_print_settings(const ImagePrintSettings& settings);
     void download(const std::string& path, const boost::filesystem::path& destination, size_t size_limit,
                   PathFn on_complete, ErrorFn on_error, DownloadValidator validator = {},

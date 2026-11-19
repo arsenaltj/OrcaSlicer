@@ -877,16 +877,6 @@ def _quality_portrait_multiview_enabled(job: Job) -> bool:
     return _portrait_multiview_workflow().quality_portrait_multiview_enabled(job)
 
 
-def _portrait_multiview_prompt(background_instruction: str | None = None) -> str:
-    # Keep this below conservative image-edit prompt limits. The supplied image
-    # owns identity, materials, pose and base; the prompt owns only view layout.
-    return _portrait_multiview_workflow().portrait_multiview_prompt(background_instruction)
-
-
-def _portrait_geometry_material_prompt(palette_roles: Mapping[str, str]) -> str:
-    return _portrait_multiview_workflow().portrait_geometry_material_prompt(palette_roles)
-
-
 def _prepare_portrait_geometry_material_views(
     natural_turntable: Path,
     output_directory: Path,
@@ -895,24 +885,8 @@ def _prepare_portrait_geometry_material_views(
     return _portrait_multiview_workflow().prepare_portrait_geometry_material_views(natural_turntable, output_directory, palette_roles)
 
 
-def _create_portrait_multiview_sheet(job: Job, sheet: Path) -> None:
-    return _portrait_multiview_workflow().create_portrait_multiview_sheet(job, sheet)
-
-
 def _multiview_paths_from_metrics(job: Job, key: str) -> dict[str, Path] | None:
     return _portrait_multiview_workflow().multiview_paths_from_metrics(job, key)
-
-
-def _multiview_sheet_fingerprint(sheet: Path) -> str:
-    return _portrait_multiview_workflow().multiview_sheet_fingerprint(sheet)
-
-
-def _mark_multiview_candidate_rejected(job: Job, sheet: Path, reason: str) -> None:
-    return _portrait_multiview_workflow().mark_multiview_candidate_rejected(job, sheet, reason)
-
-
-def _can_reuse_multiview_candidate(job: Job, sheet: Path) -> bool:
-    return _portrait_multiview_workflow().can_reuse_multiview_candidate(job, sheet)
 
 
 def _ensure_portrait_multiview(job: Job) -> dict[str, Path] | None:
@@ -1012,22 +986,13 @@ def _record_attempt(job: Job, attempt_number: int, **updates: Any) -> None:
         _persist_job(job)
 
 
-def _refresh_stale_face_limit_report(path: Path, palette: tuple[str, ...]) -> None:
-    return _model_artifact_workflow().refresh_stale_face_limit_report(path, palette)
-
-
 def _analysis_artifact(artifact: Path) -> Path:
     return _model_artifact_workflow().analysis_artifact(artifact)
 
 
-def _download_generation_artifact(job: Job, generation_id: str, attempt_number: int = 1, resume: bool = False) -> Path:
-    return _model_artifact_workflow().download_generation_artifact(job, generation_id, attempt_number, resume)
-
-
-def _download_conversion(
-    job: Job, generation_id: str, format_name: str, attempt_number: int = 1, resume: bool = False
-) -> Path:
-    return _model_artifact_workflow().download_conversion(job, generation_id, format_name, attempt_number, resume)
+def _download_generation_artifact(job: Job, generation_id: str, attempt_number: int = 1,
+                                  resume: bool = False, observed=None) -> Path:
+    return _model_artifact_workflow().download_generation_artifact(job, generation_id, attempt_number, resume, observed)
 
 
 def _latest_generation_task_id(job: Job) -> str:
@@ -1216,6 +1181,7 @@ def _job_application(get_job=None) -> ModelJobApplication:
         analyze_model=lambda *args, **kwargs: analyze_printable_obj(*args, **kwargs),
         write_quality=lambda *args, **kwargs: write_model_quality_report(*args, **kwargs),
         review_model=lambda *args, **kwargs: review_model_visual_quality(*args, **kwargs),
+        smart_geometry_capability=_YOYOCLAW_PROVIDER_GATEWAY.geometry_capability,
     ))
 
 

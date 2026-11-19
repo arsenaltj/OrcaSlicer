@@ -42,6 +42,8 @@ class AdvancedMultiviewModels:
     def _require_resolved(self, group_id: str) -> None:
         with self.ports.lock:
             for job in self._group_jobs(group_id):
+                if job.state in {"stopped", "cancelled", "failed", "ready"}:
+                    continue  # A new user operation cannot be held by an ended task.
                 attempt = job.attempts[-1] if job.attempts else {}
                 if (not attempt.get("generation_task_id") and
                         (attempt.get("status") == "creating" or attempt.get("provider_error_ambiguous"))):
@@ -56,11 +58,11 @@ class AdvancedMultiviewModels:
     def prepare(self, group_id: str, request: dict[str, Any]) -> dict[str, Any]:
         command = identity(request.get("command_id"), "command_id")
         provider = _generation_provider(request)
-        face_limit = _normalize_face_limit(request.get("face_limit", 1000000))
+        face_limit = 0 if provider == "yoyoclaw" else _normalize_face_limit(request.get("face_limit", 1000000))
         geometry, texture, output = _generation_options(request, face_limit)
-        if face_limit not in {300000, 1000000, 2000000}:
+        if provider != "yoyoclaw" and face_limit not in {300000, 1000000, 2000000}:
             raise RequestError("invalid_generation_options", "Choose a supported model generation profile.", 400)
-        capability = self.ports.capability(provider, _geometry_model(request))
+        capability = self.ports.capability(provider, "" if provider == "yoyoclaw" else _geometry_model(request))
         if capability.get("named_four_view_model") != "supported" or not capability.get("available"):
             raise RequestError("unsupported_multiview", "The selected model's named four-view input is unavailable.", 503)
         options = {"provider": provider, "face_limit": face_limit, "geometry_quality": geometry,
@@ -103,6 +105,13 @@ class AdvancedMultiviewModels:
             return plan
 
     def execute(self, group_id: str, request: dict[str, Any]) -> Job:
+        result = self._execute(group_id, request)
+        if isinstance(result, Job):
+            return result
+        provider, model = result
+        return self._execute(group_id, request, self.ports.capability(provider, model))
+
+    def _execute(self, group_id: str, request: dict[str, Any], capability=None):
         command = identity(request.get("command_id"), "command_id")
         with self.repository.transaction():
             plan = self.repository.read_record(group_id, f"model-plans/{command}.json")
@@ -129,7 +138,10 @@ class AdvancedMultiviewModels:
                         raise RequestError("group_busy", "The group has an active operation.", 409)
                     self._require_resolved(group_id)
                     options = plan["options"]
-                    capability = self.ports.capability(options["provider"], options["geometry_model"])
+                    if options["provider"] == "yoyoclaw" and options["face_limit"] != 0:
+                        raise RequestError("stale_confirmation", "Confirm a new YOYOClaw plan using its default face count.", 409)
+                    if capability is None:
+                        return options["provider"], options["geometry_model"]
                     if capability.get("named_four_view_model") != "supported" or not capability.get("available"):
                         raise RequestError("unsupported_multiview", "The confirmed model is no longer available.", 503)
                     for view in VIEWS:
@@ -148,7 +160,7 @@ class AdvancedMultiviewModels:
                               message="Four-view model accepted; no supplier task has started.", style=draft["style"], custom_style=draft["custom_style"],
                               user_prompt=draft["prompt"], design_provider=draft["design_provider"], design_model=draft["design_model"],
                               provider=options["provider"], geometry_model=options["geometry_model"], face_limit=options["face_limit"],
-                              generation_profile="quality" if options["face_limit"] >= 500000 else "performance",
+                              generation_profile="quality" if options["face_limit"] == 0 or options["face_limit"] >= 500000 else "performance",
                               geometry_quality=options["geometry_quality"], texture_quality=options["texture_quality"], output_format=options["output_format"])
                     job.preview_path = job.model_reference_path = directory / "inputs/front.png"
                     job.preview_content_type = "image/png"
@@ -202,24 +214,8 @@ class AdvancedMultiviewModels:
             return job
     def resume(self, group_id: str, job_id: str) -> Job:
         identity(job_id, "job_id")
-        with self.repository.transaction(), self.ports.lock:
-            group = self.repository.load(group_id)
-            job = self.ports.jobs.get(job_id)
-            if not job or not any(link["job_id"] == job_id for link in group["model_links"]):
-                raise RequestError("job_not_found", "The group's model task was not found.", 404)
-            if job.state not in {"stopped", "failed"} or not any(a.get("generation_task_id") for a in job.attempts):
-                raise RequestError("provider_task_reference_missing", "Only a saved remote model task can be resumed.", 409)
-            if group["active_operation_id"] or self.busy(group_id):
-                raise RequestError("group_busy", "Finish the active operation before resuming.", 409)
-            job.stop_event.clear(); job.state, job.phase = "queued", "resuming"
-            self.ports.workflow_ports.persist(job, required=True)
-            try:
-                self.ports.submit(job, self.workflow.generate, "", True, None)
-            except Exception:
-                job.state = job.phase = "stopped"
-                self.ports.workflow_ports.persist(job, required=True)
-                raise
-            return job
+        self.repository.load(group_id)
+        raise RequestError("generation_restart_required", "Start a new model plan from the confirmed four views.", 409)
 
 
 def configured_model_capability(provider: str, model: str) -> dict[str, Any]:

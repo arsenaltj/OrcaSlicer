@@ -27,7 +27,6 @@ from tools.ai.yoyoclaw_provider_gateway import (
     GEOMETRY_ROLE,
     IMAGE_LIBRARY,
     IMAGE_ROLE,
-    PREFERRED_GEOMETRY_MODEL,
     PREFERRED_IMAGE_MODEL,
     YoYoClawModelProviderGateway,
     generate_design_image,
@@ -233,7 +232,68 @@ class YoYoClawConfigTests(unittest.TestCase):
 
 
 class YoYoClawCatalogTests(unittest.TestCase):
-    def test_image_catalog_exposes_all_available_models_and_geometry_keeps_one_preferred_model(self):
+    def test_numeric_versions_select_the_same_default_for_single_and_four_view_inputs(self):
+        client = _FakeYoYoClawClient(geometry_default="Hy-3D-3.9-YOYO", geometry_models=[
+            {"name": "Hy-3D-3.9-YOYO"}, {"name": "Hy-3D-3.10-YOYO"},
+            {"name": "Hy-3D-4.1-Texture"}, {"name": "Hy-3D-5.0-YOYO", "available": False},
+        ])
+        gateway = YoYoClawModelProviderGateway(lambda: client)
+        model = GEOMETRY_LIBRARY + "/Hy-3D-3.10-YOYO"
+        self.assertEqual(gateway.catalog(GEOMETRY_ROLE)["default_model"], model)
+        for source in ("image", "multiview"):
+            capability = gateway.geometry_capability(source)
+            self.assertTrue(capability["available"])
+            self.assertEqual(capability["model"], model)
+            self.assertEqual(capability["reason"], "")
+        self.assertTrue(gateway.catalog(GEOMETRY_ROLE)["single_image"])
+        self.assertTrue(gateway.catalog(GEOMETRY_ROLE)["named_four_view"])
+
+    def test_geometry_payload_keeps_named_views_and_uses_supplier_default_faces(self):
+        client = YoYoClawClient(session=_TransportSession([]))
+        client._submit_3d_payload = mock.Mock(return_value="fixture-task")
+        with tempfile.TemporaryDirectory() as directory:
+            views = {}
+            for view in ("right", "back", "front", "left"):
+                path = Path(directory) / (view + ".png")
+                path.write_bytes(b"\x89PNG\r\n\x1a\n" + view.encode())
+                views[view] = path
+            for source in ({"front": views["front"]}, views):
+                task = (client.submit_multiview_3d("fixture-model", source) if len(source) == 4
+                        else client.submit_3d("fixture-model", source["front"]))
+                self.assertEqual(task, "fixture-task")
+                payload = client._submit_3d_payload.call_args.args[0]
+                self.assertEqual(set(payload), {"model", "image_base64", "multi_view_images"} if len(source) == 4
+                                 else {"model", "image_base64"})
+                self.assertEqual(base64.b64decode(payload["image_base64"]), views["front"].read_bytes())
+                self.assertEqual([row["view_type"] for row in payload.get("multi_view_images", [])],
+                                 ["left", "right", "back"] if len(source) == 4 else [])
+                for row in payload.get("multi_view_images", []):
+                    self.assertEqual(base64.b64decode(row["view_image_base64"]), views[row["view_type"]].read_bytes())
+                client._submit_3d_payload.assert_called_once()
+                client._submit_3d_payload.reset_mock()
+            with self.assertRaises(YoYoClawError):
+                client.submit_multiview_3d("fixture-model", {"front": views["front"]})
+            views["left"].unlink()
+            with self.assertRaises(YoYoClawError):
+                client.submit_multiview_3d("fixture-model", views)
+            client._submit_3d_payload.assert_not_called()
+
+    def test_geometry_does_not_guess_size_limits_or_repeat_a_rejected_create(self):
+        client = YoYoClawClient(session=_TransportSession([]))
+        client.api = mock.Mock(side_effect=YoYoClawError("Payload rejected", code="provider_http_error", status=413))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "large.png"
+            path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * (6 * 1024 * 1024))
+            for views in (None, {view: path for view in ("front", "left", "right", "back")}):
+                client.api.reset_mock()
+                with self.assertRaises(YoYoClawError) as caught:
+                    (client.submit_multiview_3d("fixture-model", views) if views else
+                     client.submit_3d("fixture-model", path))
+                self.assertEqual(caught.exception.status, 413)
+                client.api.assert_called_once()
+                self.assertGreater(len(client.api.call_args.args[2]["image_base64"]), 6 * 1024 * 1024)
+
+    def test_image_catalog_keeps_its_default_and_geometry_picks_newest_without_losing_valid_old_models(self):
         client = _FakeYoYoClawClient(
             image_models=[
                 {"name": "Qwen-Image-3.0-PC-YOYO"},
@@ -262,8 +322,9 @@ class YoYoClawCatalogTests(unittest.TestCase):
             "image-model-library/Doubao-Seedream-5.0-Pro-PC-YOYO",
         ])
         self.assertEqual(image["default_model"], PREFERRED_IMAGE_MODEL)
-        self.assertEqual([item["id"] for item in geometry["models"]], [PREFERRED_GEOMETRY_MODEL])
-        self.assertEqual(geometry["default_model"], PREFERRED_GEOMETRY_MODEL)
+        self.assertEqual([item["id"] for item in geometry["models"]], ["3d-model-library/Hy-3D-3.2-PC-YOYO"])
+        self.assertEqual(geometry["default_model"], "3d-model-library/Hy-3D-3.2-PC-YOYO")
+        self.assertEqual(geometry["admitted_models"], ["3d-model-library/Hy-3D-3.1-PC-YOYO", geometry["default_model"]])
 
     def test_image_catalog_never_substitutes_for_missing_qwen_default(self):
         client = _FakeYoYoClawClient(
@@ -627,6 +688,36 @@ class YoYoClawTaskQueryTests(unittest.TestCase):
                 self.assertFalse(raised.exception.retryable)
                 self.assertEqual(len(session.requests), 1)
                 self.assertEqual(clock.sleeps, [])
+
+    def test_terminal_error_messages_redact_credentials_and_sensitive_urls(self):
+        message = "token=private-token Authorization: Bearer private-bearer https://user:secret@cdn.example.invalid/failure?token=private-query#private-fragment\n" + "中" * 700
+        client, session, clock = self.client([_TransportResponse(200, {"status": "failed", "error": {
+            "code": "FailedOperation.InnerError", "message": message}})])
+        with self.assertRaises(YoYoClawError) as caught: client.wait_3d("model", "existing-task")
+        self.assertLessEqual(len(caught.exception.provider_message), 512)
+        for secret in ("private-token", "private-bearer", "private-query", "private-fragment", "user:secret"):
+            self.assertNotIn(secret, caught.exception.provider_message)
+        self.assertNotIn("\n", caught.exception.provider_message)
+        self.assertEqual(len(session.requests), 1)
+        self.assertEqual(clock.sleeps, [])
+
+    def test_terminal_failure_preserves_bounded_provider_details_without_retries(self):
+        for terminal in ("failed", "error", "cancelled", "canceled", "expired"):
+            for code, message in (("FailedOperation.InnerError", "输入图片生成几何失败，请更换图片或重试"),
+                                  ("InsufficientBalance", "余额不足"), (None, None), ([], {}),
+                                  ("x" * 101, "line\n" + "中" * 600)):
+                with self.subTest(terminal=terminal, code=code):
+                    client, session, clock = self.client([_TransportResponse(200, {"status": terminal, "error": {"code": code, "message": message}})])
+                    with self.assertRaises(YoYoClawError) as caught: client.wait_3d("model", "saved-task")
+                    error = caught.exception
+                    self.assertEqual(error.code, "provider_task_failed")
+                    self.assertFalse(error.retryable)
+                    self.assertFalse(error.ambiguous)
+                    self.assertLessEqual(len(error.provider_message), 512)
+                    self.assertNotIn("\n", error.provider_message)
+                    if isinstance(code, str) and len(code) <= 100: self.assertEqual(error.provider_code, code)
+                    self.assertEqual(len(session.requests), 1)
+                    self.assertEqual(clock.sleeps, [])
 
     def test_malformed_successful_status_responses_are_retried(self):
         for payload in (None, [], {"data": []}, {"status": " "}, {"status": ["completed"]}):

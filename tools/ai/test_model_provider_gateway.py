@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import threading
 import tempfile
 import unittest
 from pathlib import Path
@@ -153,6 +154,50 @@ class ModelTaskGatewayTests(unittest.TestCase):
         gateway.download_artifact({}, Path("artifact.download"), 100, progress=progress)
         dependencies["download_task_artifact"].assert_called_once_with({}, Path("artifact.download"), 100, progress=progress)
         dependencies["create_text_task"].assert_not_called()
+        dependencies["create_conversion"].assert_not_called()
+
+    def test_download_forwards_the_existing_stop_event_without_submitting_tasks(self):
+        gateway, dependencies = self.gateway()
+        stop = threading.Event()
+        gateway.download_artifact({}, Path("artifact.download"), 100, stop_event=stop)
+        dependencies["download_task_artifact"].assert_called_once_with(
+            {}, Path("artifact.download"), 100, stop_event=stop)
+        for name, dependency in dependencies.items():
+            if name != "download_task_artifact":
+                dependency.assert_not_called()
+
+    def test_final_download_failures_preserve_the_reason_without_upper_layer_retries(self):
+        for kind, code, status in (("dns", "artifact_dns_failed", None),
+                                   ("timeout", "artifact_download_timeout", None),
+                                   ("http", "artifact_transfer_failed", 403),
+                                   ("http", "artifact_transfer_failed", 503),
+                                   ("tls_certificate", "artifact_transfer_failed", None),
+                                   ("file", "artifact_transfer_failed", None),
+                                   ("incomplete", "artifact_transfer_failed", None)):
+            with self.subTest(kind=kind, status=status):
+                gateway, dependencies = self.gateway(download_task_artifact=mock.Mock(
+                    side_effect=TripoError("original diagnostic", failure_kind=kind, http_status=status)))
+                with self.assertRaises(ProviderGatewayError) as raised:
+                    gateway.download_artifact({}, Path("artifact.download"), 100)
+                error = raised.exception
+                self.assertEqual((error.code, error.category, error.status), (code, "download", status))
+                self.assertEqual(str(error), "original diagnostic")
+                self.assertFalse(error.retryable)
+                self.assertFalse(error.ambiguous)
+                self.assertFalse(error.terminal)
+                dependencies["download_task_artifact"].assert_called_once()
+                for name, dependency in dependencies.items():
+                    if name != "download_task_artifact":
+                        dependency.assert_not_called()
+
+    def test_stopped_download_retains_cancellation_classification(self):
+        gateway, dependencies = self.gateway(download_task_artifact=mock.Mock(
+            side_effect=TripoError("The operation was cancelled.", failure_kind="cancelled")))
+        with self.assertRaises(ProviderGatewayError) as raised:
+            gateway.download_artifact({}, Path("artifact.download"), 100)
+        self.assertEqual(raised.exception.code, "provider_cancelled")
+        self.assertEqual(raised.exception.category, "cancellation")
+        self.assertFalse(raised.exception.retryable)
         dependencies["create_conversion"].assert_not_called()
 
     def test_unsafe_artifact_error_is_classified_without_model_fallback(self):

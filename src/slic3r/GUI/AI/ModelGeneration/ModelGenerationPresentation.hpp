@@ -9,6 +9,7 @@
 #include <wx/string.h>
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <ctime>
 #include <map>
@@ -182,6 +183,7 @@ std::optional<DesignHistoryEntry> read_image_history_entry(
     const boost::filesystem::path& root, const std::string& job_id, bool validate_images = true);
 std::vector<DesignHistoryEntry> read_image_history(const boost::filesystem::path& root);
 std::vector<DesignHistoryEntry> read_smart_model_history(const boost::filesystem::path& root);
+// Diagnostics only: never binds or restores a generation session, and writes no history.
 bool hide_image_history_entry(const boost::filesystem::path& root, const std::string& job_id);
 bool image_history_matches(const DesignHistoryEntry& entry, const wxString& query);
 bool has_persisted_generation_assets(const boost::filesystem::path& root, const std::string& job_id);

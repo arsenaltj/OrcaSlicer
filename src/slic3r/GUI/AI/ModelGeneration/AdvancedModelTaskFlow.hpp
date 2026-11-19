@@ -10,7 +10,7 @@
 
 namespace Slic3r::GUI {
 
-// Local observation lifecycle only. Submission and resume belong to the advanced Session.
+// Local observation lifecycle only. New submissions belong to the advanced Session.
 // Ports return on the owning thread; their cancellation need not suppress late callbacks.
 class AdvancedModelTaskFlow {
 public:
@@ -39,19 +39,33 @@ public:
         ++m_epoch; m_ports.cancel();
         const auto revision = m_state.revision + 1, session = m_state.model_generation_session + 1;
         m_state = {}; m_state.revision = revision; m_state.model_generation_session = session;
-        m_status = {}; m_artifact.reset(); m_pending = m_local = m_terminal = false;
+        m_status = {}; m_artifact.reset(); m_pending = m_local = m_terminal = m_stop_intent = false;
     }
     void set_available(bool available) {
         m_available = available;
         publish();
         if (available) poll(); else m_ports.schedule(0);
     }
-    void observe(const std::string& job, boost::filesystem::path reference, bool restart = false) {
+    void observe(const std::string& job, boost::filesystem::path reference, bool restart = false,
+                 ModelGenerationVisualReference visual = {}) {
         if (job.empty()) return;
-        if (m_state.job_id == job && !restart) { publish(); return; }
+        if (visual.owner_id != job) visual = {};
+        if (m_state.job_id == job && !restart) {
+            auto& bound = m_state.visual_reference;
+            // Cache completion may make the frozen input available. A group
+            // refresh cannot replace that input with another view/version.
+            if (bound.version.empty() || (bound.version == visual.version && bound.sha256 == visual.sha256)) {
+                if (!visual.version.empty() && (!bound.ready || visual.ready)) {
+                    bound = std::move(visual);
+                    if (!reference.empty()) m_reference = std::move(reference);
+                }
+            }
+            publish(); return;
+        }
         reset(); m_state.job_id = job; m_state.model_generation_context = true;
         m_state.busy = true; m_state.stage = ModelGenerationUIStage::GeneratingModel;
-        m_reference = std::move(reference); m_progress.begin(job); publish(); poll();
+        m_reference = std::move(reference); m_state.visual_reference = std::move(visual);
+        m_progress.begin(job); publish(); poll();
     }
     void poll() {
         if (!m_available || m_pending || m_local || m_terminal || m_state.job_id.empty()) return;
@@ -74,13 +88,24 @@ public:
         });
     }
     void retry_local() { if (!m_state.busy && m_status.state == "ready" && m_status.artifact_ready) acquire(); }
-    void stop_local() {
-        if (!m_local) return;
-        ++m_epoch; m_ports.cancel(); m_local = m_pending = false;
-        m_state.busy = false; m_state.can_stop = false; m_state.can_retry_model = true;
-        m_state.stage = ModelGenerationUIStage::Stopped; m_state.status_text = "模型本地加载已取消";
-        m_state.summary_text = "远端模型已保留，可重新加载同一产物。"; publish();
+    void request_stop() {
+        if (m_stop_intent && m_terminal && m_state.stage == ModelGenerationUIStage::Stopped) return;
+        if (m_local) { finish_stop(); return; }
+        m_stop_intent = true; m_state.busy = true; m_state.can_stop = true;
+        m_state.stage = ModelGenerationUIStage::Stopping;
+        m_state.status_text = "正在停止生成…"; publish();
     }
+    void finish_stop(const std::string& job = {}) {
+        if (m_stop_intent && m_terminal && m_state.stage == ModelGenerationUIStage::Stopped &&
+            (job.empty() || job == m_state.job_id)) return;
+        if (!job.empty() && m_state.job_id != job) { reset(); m_state.job_id = job; }
+        ++m_epoch; m_ports.cancel(); m_local = m_pending = false; m_terminal = m_stop_intent = true;
+        m_state.busy = m_state.can_stop = m_state.can_retry_model = false;
+        m_state.stage = ModelGenerationUIStage::Stopped; m_state.job_state = "stopped";
+        m_state.status_text = "已停止生成";
+        m_state.summary_text = "输入和已有资产已保留，再次生成将创建新任务。"; publish();
+    }
+    void stop_local() { if (m_local) finish_stop(); }
 
 private:
     std::function<bool()> callback_guard() const {
@@ -93,16 +118,20 @@ private:
         if (m_listener) m_listener(m_state);
     }
     void reconnect(std::string message) {
-        m_state.status_text = "正在重新连接当前任务"; m_state.summary_text = ModelGenerationStatusText::localized_advanced_service_error(message).ToUTF8().data();
+        m_state.status_text = m_stop_intent ? "停止尚未完成，请再次停止或等待核对" : "正在重新连接当前任务";
+        m_state.summary_text = ModelGenerationStatusText::localized_advanced_service_error(message).ToUTF8().data();
         publish(); if (m_available) m_ports.schedule(1200);
     }
     void received(Status status) {
         m_status = std::move(status);
+        if (m_stop_intent && (m_status.state == "ready" || m_status.state == "failed" ||
+            m_status.state == "stopped" || m_status.state == "cancelled")) { finish_stop(); return; }
         m_state.job_state = m_status.state; m_state.job_phase = m_status.phase;
         m_state.status_text = ModelGenerationStatusText::localized_job_status(m_status, true).ToUTF8().data(); m_state.summary_text.clear();
         m_state.provider_name = m_status.provider_name; m_state.provider_task_id = m_status.provider_task_id;
         m_state.provider_conversion_task_id = m_status.provider_conversion_task_id;
         m_state.provider_error_code = m_status.provider_error_code;
+        m_state.provider_detail_code = m_status.provider_detail_code; m_state.provider_detail_message = m_status.provider_detail_message;
         m_state.provider_error_category = m_status.provider_error_category;
         m_state.provider_error_retryable = m_status.provider_error_retryable;
         m_state.provider_error_ambiguous = m_status.provider_error_ambiguous;
@@ -113,8 +142,10 @@ private:
             (m_status.state == "stopped" || m_status.state == "cancelled") ? ModelGenerationUIStage::Stopped :
             m_status.state == "stopping" ? ModelGenerationUIStage::Stopping : ModelGenerationUIStage::GeneratingModel;
         m_terminal = m_state.stage == ModelGenerationUIStage::Failed || m_state.stage == ModelGenerationUIStage::Stopped;
-        m_state.busy = !m_terminal; publish();
-        if (m_status.artifact_ready && m_status.state == "ready") acquire();
+        m_state.busy = !m_terminal;
+        if (m_stop_intent && !m_terminal) m_state.stage = ModelGenerationUIStage::Stopping;
+        m_state.can_stop = !m_terminal; publish();
+        if (!m_stop_intent && m_status.artifact_ready && m_status.state == "ready") acquire();
         else if (!m_terminal) m_ports.schedule(1200);
     }
     void fail(std::string error) {
@@ -123,7 +154,7 @@ private:
         m_state.summary_text = ModelGenerationStatusText::localized_advanced_service_error(error).ToUTF8().data(); m_state.can_retry_model = m_status.artifact_ready; publish();
     }
     void acquire() {
-        if (m_local) return;
+        if (m_local || m_stop_intent) return;
         ++m_epoch; m_preparing = false;
         m_local = m_terminal = true; m_state.busy = m_state.can_stop = true; m_state.can_retry_model = false;
         m_state.stage = ModelGenerationUIStage::LoadingModel;
@@ -162,6 +193,6 @@ private:
     ModelGenerationUIStateListener m_listener;
     std::uint64_t m_epoch {0};
     std::uint64_t m_query {0};
-    bool m_available {false}, m_pending {false}, m_local {false}, m_terminal {false}, m_preparing {false};
+    bool m_available {false}, m_pending {false}, m_local {false}, m_terminal {false}, m_preparing {false}, m_stop_intent {false};
 };
 } // namespace Slic3r::GUI

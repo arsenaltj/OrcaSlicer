@@ -80,6 +80,20 @@ bool Session::set_design_draft(DesignDraft draft)
     return true;
 }
 
+bool Session::set_design_provider(std::string provider)
+{
+    if (provider == m_draft.design.provider) return false;
+    auto draft = m_draft.design;
+    draft.provider = std::move(provider);
+    draft.model.clear();
+    // The submitted draft owns the model that produced the current four views.
+    // Returning to that provider must also restore its otherwise hidden model.
+    if (m_group && m_group->latest_submitted_draft &&
+        m_group->latest_submitted_draft->provider == draft.provider)
+        draft.model = m_group->latest_submitted_draft->model;
+    return set_design_draft(std::move(draft));
+}
+
 bool Session::set_upload(ViewId view, std::string path)
 {
     if (m_draft.uploads.at(index(view)) == path) return false;

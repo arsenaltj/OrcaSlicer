@@ -208,7 +208,8 @@
     {
       "id": "generation_host",
       "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp",
-      "needle": "struct ModelGenerationFeatureHost::Impl"
+      "needle": "struct ModelGenerationFeatureHost::Impl",
+      "detail": "应用级唯一工作台及创作交接上下文；成功交接才锁定智能／高级草稿，显式返回才解锁；页面导航不参与业务归属。"
     },
     {
       "id": "portrait_suite_binding",
@@ -592,7 +593,7 @@
       "id": "advanced_creation_session",
       "path": "src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationSession.hpp",
       "needle": "class Session {",
-      "detail": "高级创作独立维护四图版本与3D任务；同版本同SHA已验证图片保持就绪，其他视角生成不重置完成图。任务受理先登记再通知，核对不重开当前组。"
+      "detail": "高级创作独立维护四图版本与3D任务；供应商往返从当前组已提交设计恢复绑定模型，独立输入变更仍保留守卫。同版本同SHA已验证图片保持就绪，其他视角生成不重置完成图。任务受理先登记再通知，核对不重开当前组；换组或新建清理临时停止观察身份，持久回执保留收尾。"
     },
     {
       "id": "advanced_multiview_application",
@@ -731,13 +732,13 @@
       "id": "advanced_creation_host",
       "path": "src/slic3r/GUI/AI/ModelGeneration/AdvancedCreationFeatureHost.cpp",
       "needle": "void AdvancedCreationFeatureHost::generate_model(Confirm confirm)",
-      "detail": "高级提交／停止／恢复和产物由现有适配执行；先登记真实任务再通知所属创作页，不等待四图缓存；任务刷新不导航。按资源身份复用验证／解码结果，迟到结果不覆盖新组或版本。"
+      "detail": "高级每次有效操作基于当前确认四图新plan／job，当前操作内核对幂等；停止收尾不恢复旧生成，旧回调按组／会话／请求隔离。先登记真实任务再通知所属创作页，不等待四图缓存；任务刷新不导航，完成资产可独立加载。"
     },
     {
       "id": "advanced_creation_workspace",
       "path": "src/slic3r/GUI/Redesign/AdvancedCreationWorkspace.cpp",
       "needle": "struct AdvancedCreationWorkspace::Impl {",
-      "detail": "高级四图控件通过统一刷新应用快照；后台解码缩放，资源／像素尺寸／DPI相同复用位图，重生成期间保留旧图。页内3D进度与预览沿原高级Session，Shell独占唯一工作台路由。"
+      "detail": "高级四图控件通过统一刷新应用快照；后台解码缩放，资源／像素尺寸／DPI相同复用位图，重生成期间保留旧图。页内3D进度与预览沿原高级Session，Shell独占唯一工作台路由。历史卡片右键按组ID打开本地designs目录，主窗口承载菜单，不切组或改写业务状态。"
     },
     {
       "id": "workbench_asset_handoff",
@@ -749,13 +750,13 @@
       "id": "advanced_multiview_models",
       "path": "tools/ai/advanced_multiview_models.py",
       "needle": "class AdvancedMultiviewModels:",
-      "detail": "四具名版本冻结为 Job-v2；模型确认、受理链接和原任务恢复。"
+      "detail": "四个具名版本冻结为新Job-v2；供应商能力在锁外复核，受理时重新核对修订、确认和已有收据。YOYOClaw共用实际目录数字最新版规则，单图／脚本四图均用供应商默认面数，face_limit=0不发送面数字段或进行目标偏差判断；真实接口错误不自动重发。停止／重启不续跑旧生成。"
     },
     {
       "id": "advanced_multiview_model_workflow",
       "path": "tools/ai/advanced_multiview_model_workflow.py",
       "needle": "class AdvancedMultiviewModelWorkflow:",
-      "detail": "只使用已确认四图，复用模型网关和产物端口；不自动重生设计。"
+      "detail": "只使用已确认四图，复用模型网关及带原任务身份的远端终态供产物下载；不自动重生设计。"
     },
     {
       "id": "native_workbench_partition",
@@ -847,7 +848,7 @@
       "id": "page_lifecycle",
       "path": "src/slic3r/GUI/Redesign/RedesignPageCoordinator.hpp",
       "needle": "class RedesignPageCoordinator",
-      "detail": "Shell持有唯一页面路由及原过渡令牌。保留页面幂等准备、呈现、隐藏与销毁；不持有生成或编辑业务状态。"
+      "detail": "Shell持有唯一页面路由及原过渡令牌。业务等待允许切页并释放展示独占；后台结果按原请求提交，不覆盖较新导航。页面不持有创作锁或工程状态。"
     },
     {
       "id": "ui_refresh_runtime",
@@ -889,7 +890,31 @@
       "id": "inline_generation_view",
       "path": "src/slic3r/GUI/Redesign/InlineModelGenerationView.cpp",
       "needle": "InlineModelGenerationView::InlineModelGenerationView(",
-      "detail": "智能／高级分别挂载中央进度与只读模型预览；CPU解析及渲染几何由有界TaskRunner和TaskScope准备，协作取消并过滤旧回调，GUI不join，GUI线程安装GL模型，有效可见首帧后开放完成动作。隐藏／最小化暂停呈现等待，本地重载不提交远端生成。"
+      "detail": "智能／高级分别挂载中央进度与只读模型预览；当前flow／冻结正视图后台准备有界粒子，停止／隐藏暂停，任务更换先失效旧图。模型安装留一次粒子完成帧，原首帧保护层复用位图；有效模型首帧后开放完成动作。TaskScope拒绝旧结果，GUI不join，本地重载不提交生成。"
+    },
+    {
+      "id": "generation_particle_shape",
+      "path": "src/slic3r/GUI/Redesign/GenerationParticleModel.hpp",
+      "needle": "inline std::shared_ptr<const Shape> prepare(",
+      "detail": "只读共用遮罩采样：alpha／本地分割保留孔洞和分离部件，颜色回退保守拒绝；等比与点数上限，不是真实三维模型或业务状态。"
+    },
+    {
+      "id": "generation_particle_image",
+      "path": "src/slic3r/GUI/Redesign/GenerationParticleImage.hpp",
+      "needle": "inline std::shared_ptr<const Shape> load(",
+      "detail": "本展示模块持有20MiB／16Mi像素限制及有界JPEG方向解析，复用当前图片尺寸读取，不依赖退役单图输入；后台签名解码和摘要核验，高级只接受原Job-v2冻结正视图。有效alpha优先，普通图使用本地通用前景模型，不按无摘要绑定的历史mask猜测同版；失败／取消回退。"
+    },
+    {
+      "id": "generation_foreground",
+      "path": "src/slic3r/GUI/Redesign/GenerationForeground.cpp",
+      "needle": "MaskResult infer_foreground(",
+      "detail": "仅展示CPU分割：固定U2NetP及ORT资源摘要、安装目录动态加载、单缓存会话／并发、两CPU线程与RunOptions取消／截止；人物、动物、建筑共用，不调用网络或修改业务状态。"
+    },
+    {
+      "id": "generation_particle_canvas",
+      "path": "src/slic3r/GUI/Redesign/GenerationParticleCanvas.cpp",
+      "needle": "struct GenerationParticleCanvas::Impl {",
+      "detail": "借用共享GL上下文，批量2.5D白粒子、状态隔离、CPU／静态降档与单次首帧留帧；不访问任务命令或供应商。"
     },
     {
       "id": "creation_artifact_handoff",
@@ -1006,12 +1031,12 @@
         "recommending_palette": "推荐配色（源码引用）",
         "awaiting_palette_confirmation": "等待配色确认",
         "awaiting_confirmation": "等待用户确认生成",
-        "queued": "排队或恢复任务",
+        "queued": "本次生成排队",
         "running": "生成或下载处理中",
         "ready": "模型结果可用；不等于已导入",
         "stopping": "停止本地任务处理中",
         "stopped": "本地流程已停止；远端可能仍计费",
-        "failed": "当前任务失败；需判断恢复方式"
+        "failed": "当前任务失败；保留诊断，主动生成创建新任务"
       },
       "rules": [
         {
@@ -1032,8 +1057,8 @@
           ]
         },
         {
-          "title": "响应中断先恢复原任务",
-          "detail": "生成提交响应中断时保留任务编号继续查询，避免为恢复界面重复付费提交。",
+          "title": "同次幂等与新操作新建",
+          "detail": "当前操作响应中断只沿原请求核对，避免重复付费；停止／重启不恢复生成，下一次主动操作使用最新输入新建。质量报告和等待粒子不决定建模资格。",
           "evidence": [
             "generate_confirmation"
           ]
@@ -1347,7 +1372,7 @@
       "id": "generation",
       "label": "模型生成",
       "detail": "排队、执行远端任务并获取模型",
-      "boundary": "中断先恢复原任务，避免重复提交",
+      "boundary": "每次有效操作新建，当前操作内幂等；停止／重启不恢复旧生成",
       "group": "设计与生成",
       "evidence": [
         "submit_generation",

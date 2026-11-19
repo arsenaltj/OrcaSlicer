@@ -143,16 +143,26 @@ def parse_upload(stream: BinaryIO, content_type: str, length: int) -> tuple[dict
             return fields, images
 
 
-def dispatch(handler: Any, runtime: Any, method: str) -> bool:
+def dispatch(handler: Any, runtime: Any, method: str, describe=None) -> bool:
     route = urlsplit(handler.path)
     if not (route.path == PREFIX or route.path.startswith(PREFIX + "/")):
         return False
     if not handler._require_native_client():
         return True
     try:
+        parts = route.path[len(PREFIX):].strip("/").split("/")
+        if method == "GET" and parts == ["capabilities"] and describe is not None:
+            query = parse_qs(route.query, keep_blank_values=True)
+            scopes = query.get("scope", [""])
+            if len(scopes) != 1 or scopes[0] not in {"", "image", "geometry"}:
+                raise RequestError("invalid_request", "Unknown capability scope.", 400)
+            providers = query.get("provider", [""])
+            if len(providers) != 1 or providers[0] not in {"", "tripo", "yoyoclaw"} or (providers[0] and scopes[0] != "geometry"):
+                raise RequestError("invalid_request", "Unknown capability provider.", 400)
+            handler.send_json(200, describe(scopes[0], providers[0]))
+            return True
         if callable(runtime):
             runtime = runtime()
-        parts = route.path[len(PREFIX):].strip("/").split("/")
         application, repository = runtime.application, runtime.repository
         if method == "GET" and parts == ["capabilities"]:
             handler.send_json(200, runtime.capabilities())

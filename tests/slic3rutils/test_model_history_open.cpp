@@ -81,6 +81,59 @@ TEST_CASE("An unlocked prepared file rejects changed bytes with the same size an
 #endif
 
 namespace WA = Slic3r::GUI::WorkbenchArtifacts;
+
+TEST_CASE("Canceled history work settles its busy state before starting restoration", "[ModelHistoryOpen][CreationWorkflow]")
+{
+    ModelHistoryOpenRequest request;
+    request.worker_pending = true;
+    bool busy = true;
+    bool saw_settled = false;
+    int restores = 0, settlements = 0;
+    REQUIRE(request.cancel_after_drain([&] {
+        saw_settled = !busy;
+        ++restores;
+        busy = true; // A restoration acquires the same gate synchronously.
+    }));
+    CHECK(busy);
+    CHECK(restores == 0);
+    REQUIRE(request.worker_finished([&] { busy = false; ++settlements; }));
+    CHECK(saw_settled);
+    CHECK(busy);
+    CHECK(restores == 1);
+    CHECK(settlements == 1);
+    CHECK_FALSE(request.worker_finished([&] { busy = false; ++settlements; }));
+    CHECK(busy);
+    CHECK(settlements == 1);
+}
+
+TEST_CASE("Queued history cancellation never needs a parsed model to release its request", "[ModelHistoryOpen][CreationWorkflow]")
+{
+    ModelHistoryOpenRequest request;
+    request.worker_pending = true;
+    bool busy = true;
+    int restored = 0;
+    REQUIRE(request.cancel_after_drain([&] { ++restored; }));
+    REQUIRE(request.worker_finished([&] { busy = false; }));
+    CHECK_FALSE(busy);
+    CHECK_FALSE(request.worker_pending);
+    CHECK_FALSE(request.installed);
+    CHECK(restored == 1);
+}
+
+TEST_CASE("Old history drainage preserves a newer request's busy ownership", "[ModelHistoryOpen][CreationWorkflow]")
+{
+    ModelHistoryOpenRequest old;
+    old.worker_pending = true;
+    int owner = 2;
+    bool busy = true;
+    REQUIRE(old.cancel_after_drain([] {}));
+    REQUIRE(old.worker_finished([&] {
+        if (owner == 1) busy = false;
+    }));
+    CHECK(busy);
+    CHECK(owner == 2);
+    CHECK_FALSE(old.worker_pending);
+}
 namespace {
 struct HistoryFixture {
     ScopedTemporaryDir temporary {"orca-history-open"};
@@ -309,8 +362,14 @@ TEST_CASE("Async preview handoff preserves canceled and invalid input failures w
     HistoryFixture fixture;
     const auto original=fixture.model("async-failure",nullptr,false,false);
     auto request=fixture.open(original);
-    const bool cancel=GENERATE(false,true);
-    if (!cancel) request->entry.model_path=fixture.root/"missing.obj";
+    const int failure = GENERATE(0, 1, 2); // Missing, canceled, malformed.
+    const bool cancel = failure == 1;
+    if (failure == 0) request->entry.model_path=fixture.root/"missing.obj";
+    if (failure == 2) {
+        boost::filesystem::ofstream output(original.model_path, std::ios::trunc);
+        output << "v malformed OBJ bytes\nf 1 2 3\n";
+        REQUIRE(output.good());
+    }
     auto metadata=std::make_shared<ModelHistoryMetadata>();
     const auto result=prepare_model_preview_load(request->entry.model_path,fixture.record(original),metadata,request,
         [cancel] { return cancel; },false);
@@ -319,6 +378,36 @@ TEST_CASE("Async preview handoff preserves canceled and invalid input failures w
     REQUIRE(result.prepared->render_data().is_empty());
     REQUIRE_FALSE(request->verified_files);
 }
+
+#ifdef _WIN32
+TEST_CASE("An unreadable history source reports failure without replacing the retained asset", "[ModelHistoryOpen][ModelPreviewLoad]")
+{
+    HistoryFixture fixture;
+    const auto retained = fixture.model("retained-readable", nullptr, false, false);
+    const auto selected = fixture.model("selected-unreadable", nullptr, false, false);
+    auto request = fixture.open(selected);
+    request->previous = retained;
+    const auto retained_hash = AI::model_artifact_sha256(retained.model_path);
+    struct ExclusiveFile {
+        HANDLE value {INVALID_HANDLE_VALUE};
+        ~ExclusiveFile() { if (value != INVALID_HANDLE_VALUE) ::CloseHandle(value); }
+    } exclusive;
+    exclusive.value = ::CreateFileW(selected.model_path.c_str(), GENERIC_READ,
+        0, nullptr, OPEN_EXISTING, 0, nullptr);
+    REQUIRE(exclusive.value != INVALID_HANDLE_VALUE);
+    auto metadata = std::make_shared<ModelHistoryMetadata>();
+    const auto result = prepare_model_preview_load(selected.model_path, fixture.record(selected),
+        metadata, request, [] { return false; }, false);
+    CHECK_FALSE(result.error.empty());
+    REQUIRE(result.prepared);
+    CHECK(result.prepared->render_data().is_empty());
+    CHECK_FALSE(result.prepared->render_geometry);
+    CHECK_FALSE(request->verified_files);
+    CHECK_FALSE(request->installed);
+    CHECK(request->previous.model_path == retained.model_path);
+    CHECK(AI::model_artifact_sha256(retained.model_path) == retained_hash);
+}
+#endif
 
 // Opt-in copies only: this covers the production CPU -> GUI data delivery,
 // not GPU upload, a presented main window or visual acceptance.

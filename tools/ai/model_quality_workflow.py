@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from glb_artifact import GlbError
 from model_contracts import (
     Job,
+    JobStopped,
     MAX_ARTIFACT_BYTES,
     PORTRAIT_GEOMETRY_PROVIDER_FILENAME,
     RequestError,
@@ -142,9 +143,10 @@ class ModelQualityWorkflow:
         ):
             try:
                 report = assess(job)
-            except ModelInputImageQualityError:
+            except JobStopped:
+                raise
+            except Exception:
                 report = {
-                    "model_input_eligible": True,
                     "warnings": ["reference_quality_unavailable"],
                     "blockers": [],
                     "status": "unavailable",

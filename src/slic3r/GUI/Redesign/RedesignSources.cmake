@@ -1,6 +1,8 @@
 # Assemble the redesigned workflows on the existing native GUI target.
 include(${CMAKE_CURRENT_LIST_DIR}/../Presentation/PresentationRuntime.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../../Utils/HonorAccount/HonorAccountSources.cmake)
+include("${CMAKE_SOURCE_DIR}/cmake/OrcaGenerationForeground.cmake")
+orca_configure_generation_foreground()
 set(ORCA_REDESIGN_WORKFLOW_SOURCES
     GUI/NativeSlicingEvents.hpp
     GUI/Presentation/UiLifecycle.hpp
@@ -75,6 +77,12 @@ set(ORCA_REDESIGN_WORKFLOW_SOURCES
     GUI/Redesign/InlineModelGenerationState.hpp
     GUI/Redesign/InlineModelGenerationView.hpp
     GUI/Redesign/InlineModelGenerationView.cpp
+    GUI/Redesign/GenerationParticleModel.hpp
+    GUI/Redesign/GenerationParticleImage.hpp
+    GUI/Redesign/GenerationForeground.hpp
+    GUI/Redesign/GenerationForeground.cpp
+    GUI/Redesign/GenerationParticleCanvas.hpp
+    GUI/Redesign/GenerationParticleCanvas.cpp
     GUI/Redesign/GenerationCompletionToast.hpp
     GUI/Redesign/GenerationCompletionToast.cpp
     GUI/Redesign/RedesignCreationModel.cpp

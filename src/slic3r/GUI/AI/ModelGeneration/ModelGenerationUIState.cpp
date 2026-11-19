@@ -31,7 +31,6 @@ bool ModelGenerationUIState::same_content(const ModelGenerationUIState& other) c
            service_available == other.service_available &&
            service_availability_known == other.service_availability_known && busy == other.busy &&
            can_generate_design == other.can_generate_design && can_generate_model == other.can_generate_model &&
-           can_restart_failed_smart_preparation == other.can_restart_failed_smart_preparation &&
            can_stop == other.can_stop && can_retry_service == other.can_retry_service &&
            can_retry_model == other.can_retry_model &&
            can_restore_latest == other.can_restore_latest && can_import == other.can_import &&
@@ -47,6 +46,7 @@ bool ModelGenerationUIState::same_content(const ModelGenerationUIState& other) c
            design_elapsed_seconds == other.design_elapsed_seconds &&
            design_estimated_seconds == other.design_estimated_seconds &&
            job_phase == other.job_phase && provider_error_code == other.provider_error_code &&
+           provider_detail_code == other.provider_detail_code && provider_detail_message == other.provider_detail_message &&
            provider_error_category == other.provider_error_category && provider_name == other.provider_name &&
            provider_task_id == other.provider_task_id &&
            provider_conversion_task_id == other.provider_conversion_task_id &&
@@ -55,7 +55,7 @@ bool ModelGenerationUIState::same_content(const ModelGenerationUIState& other) c
            status_text == other.status_text && summary_text == other.summary_text &&
            workflow_phase == other.workflow_phase && workflow_guidance == other.workflow_guidance &&
            cost_summary == other.cost_summary && original_image_path == other.original_image_path &&
-           design_image_path == other.design_image_path && model_path == other.model_path &&
+           design_image_path == other.design_image_path && visual_reference == other.visual_reference && model_path == other.model_path &&
            history_entries == other.history_entries && history_loading == other.history_loading &&
            history_error == other.history_error;
 }

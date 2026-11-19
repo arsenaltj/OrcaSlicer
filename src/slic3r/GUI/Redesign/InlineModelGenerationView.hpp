@@ -38,6 +38,7 @@ public:
     GenerationCompletionActions(wxWindow* parent, std::function<void()> regenerate,
                                 std::function<void()> open_workbench);
     void set_enabled(bool regenerate, bool open_workbench);
+    void set_read_only(bool readonly);
 private:
     void paint();
     wxWindow* m_regenerate;

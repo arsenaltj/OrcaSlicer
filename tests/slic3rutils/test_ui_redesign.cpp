@@ -859,6 +859,14 @@ TEST_CASE("Workbench preparation counts visible time and resumes with its remain
     CHECK(deadline.observe(start + std::chrono::minutes(10) + std::chrono::seconds(7), false));
     deadline.begin(start + std::chrono::minutes(11));
     CHECK_FALSE(deadline.observe(start + std::chrono::minutes(11) + std::chrono::seconds(1), false));
+
+    // A slow parser does not spend the first-frame budget before it can
+    // present anything. The full visible budget remains after parsing drains.
+    deadline.begin(start);
+    CHECK_FALSE(deadline.observe(start + std::chrono::minutes(2), true));
+    CHECK_FALSE(deadline.observe(start + std::chrono::minutes(2), false));
+    CHECK_FALSE(deadline.observe(start + std::chrono::minutes(2) + std::chrono::seconds(14), false));
+    CHECK(deadline.observe(start + std::chrono::minutes(2) + std::chrono::seconds(15), false));
 }
 
 TEST_CASE("A stalled preview times out without committing and can retry the same G-code result",
@@ -964,7 +972,7 @@ TEST_CASE("Historical face targets are displayed without rewriting retained gene
     CHECK(historical.geometry_quality == "detailed");
 }
 
-TEST_CASE("Non-Tripo face choices exclude unsupported detailed geometry and retain provider models", "[UiRedesign][ModelFaceLimitChoice]")
+TEST_CASE("YOYOClaw face choices use supplier defaults and retain provider models", "[UiRedesign][ModelFaceLimitChoice]")
 {
     ModelGenerationUIOptions options;
     options.provider = "yoyoclaw";
@@ -972,10 +980,10 @@ TEST_CASE("Non-Tripo face choices exclude unsupported detailed geometry and reta
     options.design_model = "retained-image-model";
     options.geometry_model = "retained-geometry-model";
     options.output_format = "obj";
-    CHECK(model_face_limit_choices(options) == std::vector<int> {1000000});
+    CHECK(model_face_limit_choices(options) == std::vector<int> {0});
     options.texture_quality = "detailed";
     const auto compatible = model_generation_options_for_face_limit(options, 2000000);
-    CHECK(compatible.face_limit == 1000000);
+    CHECK(compatible.face_limit == 0);
     CHECK(compatible.geometry_quality == "standard");
     CHECK(compatible.texture_quality == "standard");
     CHECK(compatible.provider == options.provider);
@@ -985,7 +993,7 @@ TEST_CASE("Non-Tripo face choices exclude unsupported detailed geometry and reta
     CHECK(compatible.output_format == options.output_format);
     options.face_limit = 300000;
     const auto retained = options;
-    CHECK((model_face_limit_choices(options) == std::vector<int> {1000000, 300000}));
+    CHECK((model_face_limit_choices(options) == std::vector<int> {0}));
     CHECK(options == retained);
 }
 

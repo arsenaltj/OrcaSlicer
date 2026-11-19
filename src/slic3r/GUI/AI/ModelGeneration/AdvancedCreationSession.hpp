@@ -16,6 +16,7 @@ public:
     void set_sidebar_expanded(bool expanded) { m_sidebar_expanded = expanded; }
 
     bool set_design_draft(DesignDraft draft);
+    bool set_design_provider(std::string provider);
     bool set_upload(ViewId view, std::string path);
     void set_model_options(ModelOptions options) { m_draft.geometry = std::move(options); ++m_draft_revision; }
     bool draft_dirty() const { return m_draft_dirty; }

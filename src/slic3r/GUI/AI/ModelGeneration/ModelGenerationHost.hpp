@@ -64,6 +64,20 @@ struct ModelGenerationUIHistoryEntry
     bool operator==(const ModelGenerationUIHistoryEntry& other) const;
 };
 
+// Read-only presentation input. The owner is the smart flow or explicit advanced
+// job, never the mutable draft. No pixels, task commands or persistent state.
+struct ModelGenerationVisualReference
+{
+    std::string owner_id, version, path, sha256;
+    bool ready {false};
+    // Optional immutable Job-v2 receipt, verified off the GUI thread.
+    std::string verification_manifest;
+    bool operator==(const ModelGenerationVisualReference& other) const {
+        return owner_id == other.owner_id && version == other.version && path == other.path &&
+            sha256 == other.sha256 && ready == other.ready && verification_manifest == other.verification_manifest;
+    }
+};
+
 struct ModelGenerationUIState
 {
     bool smart_mode {false};
@@ -76,7 +90,6 @@ struct ModelGenerationUIState
     bool service_availability_known { false };
     bool busy { false };
     bool can_generate_design { false };
-    bool can_restart_failed_smart_preparation { false };
     bool can_generate_model { false };
     bool can_stop { false };
     bool can_retry_service { false };
@@ -112,6 +125,7 @@ struct ModelGenerationUIState
     std::string job_state;
     std::string job_phase;
     std::string provider_error_code;
+    std::string provider_detail_code, provider_detail_message;
     std::string provider_error_category;
     std::string provider_name;
     std::string provider_task_id;
@@ -125,6 +139,7 @@ struct ModelGenerationUIState
     std::string cost_summary;
     std::string original_image_path;
     std::string design_image_path;
+    ModelGenerationVisualReference visual_reference;
     std::string model_path;
     std::vector<ModelGenerationUIHistoryEntry> history_entries;
     bool history_loading { false };

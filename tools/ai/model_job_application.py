@@ -51,7 +51,7 @@ from pathlib import Path
 from portrait_geometry_reference import _model_generation_reference
 from printable_model_quality import ModelQualityError
 from tripo_client import TripoError
-from typing import Any, Callable, ContextManager, MutableMapping
+from typing import Any, Callable, ContextManager, Mapping, MutableMapping
 
 @dataclass(frozen=True)
 class ModelJobApplicationPorts:
@@ -83,6 +83,7 @@ class ModelJobApplicationPorts:
     analyze_model: Callable[..., Any]
     write_quality: Callable[..., None]
     review_model: Callable[..., Any]
+    smart_geometry_capability: Callable[..., Mapping[str, Any]] | None = None
 
 
 # HTTP composition creates a new application per request. The create lock must
@@ -110,13 +111,35 @@ def _smart_creation(method):
         digest = hashlib.sha256(json.dumps(canonical, sort_keys=True, ensure_ascii=False).encode())
         if args: digest.update(args[0])
         fingerprint = digest.hexdigest()
-        with _smart_create_lock:
+        def accepted():
             with self.ports.lock:
                 for job in self.ports.jobs.values():
                     if job.request_id == request_id or job.flow_id == flow:
                         if job.input_fingerprint != fingerprint:
                             raise RequestError("request_conflict", "The request ID belongs to different inputs.", 409)
                         return ApplicationResult(200, {"job": self.ports.present(job)})
+            return None
+
+        previous = accepted()
+        if previous is not None:
+            return previous
+        if _generation_provider(fields) == "yoyoclaw" and self.ports.smart_geometry_capability:
+            _generation_options({**fields, "geometry_quality": fields.get("geometry_quality", "standard")}, 0)
+            capability = self.ports.smart_geometry_capability("image")
+            if not capability.get("available"):
+                previous = accepted()
+                if previous is not None:
+                    return previous
+                raise RequestError(capability.get("reason") or "feature_unavailable",
+                                   "YOYOClaw's single-image mode is unavailable.", 503)
+            # Resolve once before starting paid GPT preparation; the request
+            # fingerprint stays tied to the original client intent on replay.
+            fields = {**fields, "geometry_model": capability["model"], "face_limit": 0,
+                      "geometry_quality": "standard", "texture_quality": "standard"}
+        with _smart_create_lock:
+            previous = accepted()
+            if previous is not None:
+                return previous
             if not self._design_status("gpt", _design_model(fields)).get("available", False):
                 raise RequestError("feature_unavailable", "The configured GPT image model is unavailable.", 503)
             # Available only to this synchronous call; it never enters supplier policy.
@@ -305,51 +328,11 @@ class ModelJobApplication:
     def retry_preparation(self, job_id: str, request: dict[str, Any]) -> ApplicationResult:
         self._require_legacy_source(job_id)
         job = self.ports.get_job(job_id)
-        if job is None: raise RequestError("job_not_found", "Model job not found.", 404)
-        with self.ports.lock:
-            if job.workflow_mode != "smart" or job.smart_model_request_id or self.ports.latest_task_id(job):
-                raise RequestError("invalid_job_state", "This job must resume its existing model stage.", 409)
-            if job.state not in {"failed", "stopped", "awaiting_confirmation"}:
-                raise RequestError("invalid_job_state", "Preparation is already active.", 409)
-            regenerate = _boolean_field(request.get("regenerate"), "regenerate", default=False)
-            if job.preprocess_failure.get("ambiguous") is True and (regenerate or not job.preview_path):
-                raise RequestError("preparation_ambiguous", "The previous preparation result is unknown. Verify it before creating another paid request.", 409)
-            if job.preview_path and job.preview_path.is_file() and not regenerate:
-                job.state = "awaiting_confirmation"; job.phase = "awaiting_confirmation"
-                job.smart_stop_intent = False; job.stop_event.clear()
-                job.smart_started_at = time.time() - job.smart_elapsed_seconds
-                self.ports.persist(job, required=True)
-                return ApplicationResult(200, {"job": self.ports.present(job)})
-            if not self._design_status("gpt", job.design_model).get("available", False):
-                raise RequestError("feature_unavailable", "The configured GPT image model is unavailable.", 503)
-            job.state = "preprocessing"; job.phase = "preprocessing"
-            if regenerate:
-                # Keep old files as evidence, but never reuse failed eligibility.
-                evidence = job.directory / ("preparation-evidence-" + uuid.uuid4().hex)
-                evidence.mkdir()
-                for path in {job.preview_path, job.raw_preview_path, job.strict_preview_path,
-                             job.model_reference_path, job.geometry_reference_path} - {None}:
-                    if path.is_file() and path.resolve().is_relative_to(job.directory.resolve()):
-                        shutil.copy2(path, evidence / path.name)
-                (evidence / "metrics.json").write_text(json.dumps(job.image_metrics, ensure_ascii=False), encoding="utf-8")
-                job.preview_path = job.raw_preview_path = job.strict_preview_path = None
-                job.model_reference_path = job.geometry_reference_path = None
-                job.image_metrics.clear()
-            job.smart_stop_intent = False; job.stop_event.clear()
-            job.smart_started_at = time.time() - job.smart_elapsed_seconds
-            self.ports.persist(job, required=True)
-        try:
-            if job.source == "text": self.ports.submit(job, self.ports.preprocess_text, job.user_prompt)
-            elif job.input_path:
-                normalized = job.directory / "input-normalized.png"
-                self.ports.submit(job, self.ports.preprocess_image, normalized if normalized.is_file() else job.input_path,
-                                  _normalize_image_instruction(job.user_prompt))
-            else: raise RequestError("input_unavailable", "The original image is missing.", 409)
-        except Exception:
-            with self.ports.lock:
-                job.state = "failed"; job.phase = "failed"; self.ports.persist(job)
-            raise
-        return ApplicationResult(202, {"job": self.ports.present(job)})
+        if job is None:
+            raise RequestError("job_not_found", "Model job not found.", 404)
+        if job.workflow_mode == "smart":
+            raise RequestError("generation_restart_required", "Start a new generation from the current inputs.", 409)
+        raise RequestError("invalid_job_state", "Preparation retry is unavailable for this workflow.", 409)
 
     def confirm_palette(self, job_id: str, request: dict[str, Any]) -> ApplicationResult:
         self._require_legacy_source(job_id)
@@ -395,7 +378,7 @@ class ModelJobApplication:
         if request_keys != legacy_keys and request_keys != model_keys:
             raise RequestError("invalid_request", "Complete generation options are required.", 400)
         provider = _generation_provider(request)
-        face_limit = _normalize_face_limit(request["face_limit"])
+        face_limit = _normalize_face_limit(request["face_limit"], provider)
         geometry, texture, output = _generation_options(request, face_limit)
         with self.ports.lock:
             job = self.ports.get_job(job_id)
@@ -407,11 +390,15 @@ class ModelJobApplication:
                      "design_provider", "design_model", "geometry_model")
             previous = tuple(getattr(job, name) for name in names)
             values = (
-                provider, face_limit, "quality" if face_limit >= 500000 else "performance", geometry, texture, output,
+                provider, face_limit, "quality" if face_limit == 0 or face_limit >= 500000 else "performance", geometry, texture, output,
                 _design_provider(request) if "design_provider" in request else job.design_provider,
                 _design_model(request) if "design_model" in request else job.design_model,
                 _geometry_model(request) if "geometry_model" in request else job.geometry_model,
             )
+            if job.workflow_mode == "smart" and "yoyoclaw" in {job.provider, provider}:
+                if values != previous:
+                    raise RequestError("stale_confirmation", "The confirmed YOYOClaw options cannot change.", 409)
+                return ApplicationResult(200, {"job": self.ports.present(job)})
             for name, value in zip(names, values):
                 setattr(job, name, value)
             try:
@@ -451,20 +438,23 @@ class ModelJobApplication:
         job = self.ports.get_job(job_id)
         if job is None:
             raise RequestError("job_not_found", "Model job not found.", 404)
-        if "generation_profile" in request and "face_limit" not in request:
+        provider = _generation_provider(request)
+        if provider == "yoyoclaw":
+            face_limit = job.face_limit if resume_existing else 0
+            generation_profile = "quality"
+        elif "generation_profile" in request and "face_limit" not in request:
             generation_profile = _normalize_generation_profile(request.get("generation_profile"))
             face_limit = GENERATION_PROFILE_FACE_LIMITS[generation_profile]
         else:
             face_limit = _normalize_face_limit(request.get("face_limit", DEFAULT_MODEL_FACE_LIMIT))
             generation_profile = "quality" if face_limit >= 500000 else "performance"
         geometry_quality, texture_quality, output_format = _generation_options(request, face_limit)
-        provider = _generation_provider(request)
         requested_geometry_model = _geometry_model(request)
         with self.ports.lock:
             if job.workflow_mode == "smart" and job.smart_model_request_id and job.state in {"queued", "running", "ready"}:
                 return ApplicationResult(200, {"job": self.ports.present(job)})
-            if job.workflow_mode == "smart" and job.smart_stop_intent and not explicit_resume:
-                raise RequestError("stopped", "The flow was stopped; resume explicitly to continue.", 409)
+            if job.workflow_mode == "smart" and (job.smart_stop_intent or resume_existing or explicit_resume or job.state in {"failed", "stopped", "cancelled"}):
+                raise RequestError("generation_restart_required", "Start a new generation from the current inputs.", 409)
             provider_task_id = self.ports.latest_task_id(job)
             if retry_failed:
                 raise RequestError("workflow_removed", "Portrait automatic retries have been removed.", 410)
@@ -496,6 +486,9 @@ class ModelJobApplication:
             if resume_existing and provider != job.provider:
                 raise RequestError("invalid_request", "A resumed provider task must keep its original provider.", 409)
             geometry_model = requested_geometry_model or job.geometry_model
+            if job.workflow_mode == "smart" and (job.provider == "yoyoclaw" or provider == "yoyoclaw"):
+                if provider != job.provider or face_limit != job.face_limit or geometry_model != job.geometry_model:
+                    raise RequestError("stale_confirmation", "The confirmed YOYOClaw model and face target cannot change.", 409)
             if provider == "yoyoclaw" and not geometry_model:
                 raise RequestError("model_required", "A YOYOClaw 3D model must be selected.", 409)
             _use_unrestricted_creation(job)
@@ -508,7 +501,7 @@ class ModelJobApplication:
                     self.ports.validate_image(
                         reference,
                         minimum_edge=MIN_MODEL_REFERENCE_EDGE,
-                        require_visual_detail=True,
+                        require_visual_detail=False,
                     )
                 except ValueError as exc:
                     raise RequestError(
@@ -516,7 +509,8 @@ class ModelJobApplication:
                         f"The generated image is not suitable for 3D input: {exc}",
                         409,
                     ) from None
-                self.ports.assess_reference(job)
+                # Preparation already retained any content advice. Submission
+                # only validates the actual file; it never waits for diagnostics.
             if not self.ports.gateway(provider).model_generation_available():
                 raise RequestError("feature_unavailable", "Model generation is not configured.", 503)
             next_attempt = len(job.attempts) + 1
@@ -611,7 +605,7 @@ class ModelJobApplication:
                 self.ports.validate_image(
                     reference,
                     minimum_edge=MIN_MODEL_REFERENCE_EDGE,
-                    require_visual_detail=True,
+                    require_visual_detail=False,
                 )
             except ValueError as exc:
                 raise RequestError("invalid_model_reference", str(exc), 409) from None
@@ -720,6 +714,10 @@ class ModelJobApplication:
                 job.phase = "stopped"
                 job.message = "Model generation stopped."
                 job.progress = 0
+                self.ports.persist(job)
+            elif job.workflow_mode == "smart" and job.state in {"ready", "failed", "cancelled"}:
+                # The completion won the race. Preserve its asset/diagnostic;
+                # the desktop ends local consumption without installing it.
                 self.ports.persist(job)
             elif job.state != "stopped":
                 raise RequestError("invalid_job_state", "Job cannot be stopped in its current state.", 409)

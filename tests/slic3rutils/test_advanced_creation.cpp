@@ -215,6 +215,100 @@ TEST_CASE("Advanced selection toggles independently and derives a fixed ordered 
     CHECK(session.draft().design.prompt == "An object");
 }
 
+TEST_CASE("Returning to the submitted image provider restores its model and four view eligibility",
+          "[AdvancedCreation][AdvancedDraftInput][Regression]")
+{
+    const std::string provider = GENERATE("gpt", "yoyoclaw");
+    auto group = complete_group();
+    group.saved_draft.provider = provider;
+    group.saved_draft.model = provider == "gpt" ? "gpt-image-2" : "image-model-library/Qwen-Image-3.0-PC-YOYO";
+    group.latest_submitted_draft = group.saved_draft;
+    Session session;
+    REQUIRE(session.apply_snapshot(group, session.begin_open(group.id), true));
+    REQUIRE(session.toggle(ViewId::Left));
+    const auto selection = session.selection();
+    const auto geometry = session.draft().geometry;
+    const auto original_command = session.command_context();
+    const Capabilities capabilities {true, true, true, true, true};
+    const HostGuards guards {true, true, true};
+    REQUIRE(session.eligibility(capabilities, guards).generate_model);
+
+    REQUIRE(session.set_design_provider(provider == "gpt" ? "yoyoclaw" : "gpt"));
+    CHECK(session.draft().design.model.empty());
+    CHECK_FALSE(session.inputs_match_results());
+    CHECK_FALSE(session.eligibility(capabilities, guards).generate_model);
+    REQUIRE(session.set_design_provider(provider));
+    CHECK(session.draft().design == group.saved_draft);
+    CHECK(session.inputs_match_results());
+    CHECK(session.eligibility(capabilities, guards).generate_model);
+    CHECK(session.selection() == selection);
+    CHECK(session.draft().geometry.provider == geometry.provider);
+    CHECK(session.draft().geometry.face_limit == geometry.face_limit);
+    CHECK_FALSE(session.matches_command(original_command));
+    CHECK(session.draft_dirty());
+    const auto current_command = session.command_context();
+    CHECK_FALSE(session.set_design_provider(provider));
+    CHECK(session.matches_command(current_command));
+    CHECK(session.draft().design.model == group.saved_draft.model);
+}
+
+TEST_CASE("Restoring the submitted provider model preserves independent input changes",
+          "[AdvancedCreation][AdvancedDraftInput][Regression]")
+{
+    const std::string changed = GENERATE("prompt", "style", "upload");
+    auto group = complete_group();
+    group.saved_draft.model = "gpt-image-2";
+    group.latest_submitted_draft = group.saved_draft;
+    Session session;
+    REQUIRE(session.apply_snapshot(group, session.begin_open(group.id), true));
+    REQUIRE(session.set_design_provider("yoyoclaw"));
+    auto draft = session.draft().design;
+    if (changed == "prompt") draft.prompt = "A changed object";
+    else if (changed == "style") { draft.style = "custom"; draft.custom_style = "New sculpted style"; }
+    else REQUIRE(session.set_upload(ViewId::Front, "replacement.png"));
+    if (changed != "upload") REQUIRE(session.set_design_draft(draft));
+    REQUIRE(session.set_design_provider("gpt"));
+    CHECK(session.draft().design.model == "gpt-image-2");
+    if (changed == "prompt") CHECK(session.draft().design.prompt == draft.prompt);
+    else if (changed == "style") CHECK(session.draft().design.custom_style == draft.custom_style);
+    else CHECK(session.draft().uploads[0] == "replacement.png");
+    CHECK_FALSE(session.inputs_match_results());
+    const Capabilities capabilities {true, true, true, true, true};
+    const HostGuards guards {true, true, true};
+    CHECK_FALSE(session.eligibility(capabilities, guards).generate_model);
+    CHECK(session.eligibility(capabilities, guards).model_reason == "draft_changed");
+}
+
+TEST_CASE("Image provider model restoration uses only the current group's submitted design",
+          "[AdvancedCreation][AdvancedDraftInput][Regression]")
+{
+    auto group = complete_group();
+    group.saved_draft.model = "gpt-image-2";
+    group.latest_submitted_draft = group.saved_draft;
+    Session session;
+    REQUIRE(session.apply_snapshot(group, session.begin_open(group.id), true));
+    session.new_creation();
+    REQUIRE(session.set_design_provider("yoyoclaw"));
+    REQUIRE(session.set_design_provider("gpt"));
+    CHECK(session.draft().design.model.empty());
+
+    group.id = "group-b";
+    group.saved_draft.model = "other-submitted-model";
+    group.latest_submitted_draft = group.saved_draft;
+    REQUIRE(session.apply_snapshot(group, session.begin_open(group.id), true));
+    REQUIRE(session.set_design_provider("yoyoclaw"));
+    REQUIRE(session.set_design_provider("gpt"));
+    CHECK(session.draft().design.model == "other-submitted-model");
+
+    group.id = "group-c";
+    group.latest_submitted_draft.reset();
+    REQUIRE(session.apply_snapshot(group, session.begin_open(group.id), true));
+    REQUIRE(session.set_design_provider("yoyoclaw"));
+    REQUIRE(session.set_design_provider("gpt"));
+    CHECK(session.draft().design.model.empty());
+    CHECK_FALSE(session.inputs_match_results());
+}
+
 TEST_CASE("Advanced double click preserves both selected and unselected images", "[AdvancedCreation]")
 {
     const bool selected = GENERATE(false, true);
@@ -345,6 +439,113 @@ TEST_CASE("Advanced auto-save leaves editing available while explicit commands r
     CHECK_FALSE(host.draft_editing_locked());
     CHECK(host.session().draft().design.prompt == draft.prompt);
     CHECK(host.session().draft_dirty());
+    host.shutdown();
+}
+
+TEST_CASE("Capability discovery errors hide raw transport explanations in either scope",
+          "[AdvancedCreation][ModelGenerationStatusText][Regression]")
+{
+    const std::string scope = GENERATE("image", "geometry");
+    wxInitializer init;
+    REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-capability-errors"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.path().string());
+    // The production client's endpoint guard rejects this before any networking.
+    Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, "https://not-a-local-service.invalid");
+    wxEventLoop loop;
+    wxEventLoopActivator active(&loop);
+    host.set_service_available(true);
+    wxTheApp->ProcessPendingEvents();
+    const auto context = host.session().context();
+    std::vector<std::string> messages;
+    host.set_listener([&] { messages.push_back(host.message()); });
+    const auto before = messages.size();
+    host.refresh_capabilities(scope);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (messages.size() == before && std::chrono::steady_clock::now() < deadline) {
+        wxTheApp->ProcessPendingEvents();
+        loop.DispatchTimeout(20);
+    }
+    REQUIRE(messages.size() > before);
+    for (std::size_t i = before; i < messages.size(); ++i) {
+        CHECK_FALSE(messages[i].empty());
+        CHECK(messages[i].find("Advanced creation requires") == std::string::npos);
+        CHECK(messages[i].find("not-a-local-service.invalid") == std::string::npos);
+    }
+    CHECK(host.session().matches(context));
+    CHECK_FALSE(host.command_pending());
+    CHECK_FALSE(host.eligibility().generate_design);
+    CHECK_FALSE(host.eligibility().generate_model);
+    host.shutdown();
+}
+
+TEST_CASE("Opening history or starting a creation releases the previous model stop observation",
+          "[AdvancedCreation][AdvancedStopNavigation][Regression]")
+{
+    const bool fresh = GENERATE(false, true);
+    wxInitializer init;
+    REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-stop-navigation"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.path().string());
+    wxIPV4address address;
+    REQUIRE(address.Hostname("127.0.0.1"));
+    REQUIRE(address.Service(0));
+    wxSocketServer server(address, wxSOCKET_NOWAIT);
+    REQUIRE(server.IsOk());
+    REQUIRE(server.GetLocal(address));
+    const std::string endpoint = "http://127.0.0.1:" + std::to_string(address.Service());
+    Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, endpoint);
+    auto group = complete_group();
+    group.id = "11111111-1111-4111-8111-111111111111";
+    group.model_job_id = "22222222-2222-4222-8222-222222222222";
+    group.model_state = "running";
+    group.model_busy = true;
+    REQUIRE(host.session().apply_snapshot(group, host.session().begin_open(group.id), true));
+    REQUIRE(host.eligibility().stop);
+    wxEventLoop loop;
+    wxEventLoopActivator active(&loop);
+    const auto until = [&](auto ready) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!ready() && std::chrono::steady_clock::now() < deadline) {
+            wxTheApp->ProcessPendingEvents();
+            loop.DispatchTimeout(20);
+        }
+        return ready();
+    };
+    // The production client uses loopback only. No provider or generation runs.
+    host.stop();
+    REQUIRE(host.command_pending());
+    std::unique_ptr<wxSocketBase> connection;
+    REQUIRE(until([&] {
+        if (!connection) connection.reset(server.Accept(false));
+        return bool(connection);
+    }));
+    const std::string response = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    connection->Write(response.data(), response.size());
+    REQUIRE(connection->LastCount() == response.size());
+    connection->Close();
+    REQUIRE(until([&] { return !host.command_pending(); }));
+    group.model_busy = false;
+    group.model_state = "stopped";
+    ++group.revision;
+    REQUIRE(host.session().apply_snapshot(group, host.session().context()));
+    // Keep the stale observation rather than synthesizing monitor callbacks.
+    REQUIRE(host.draft_editing_locked());
+    const auto previous = host.session().context();
+    if (fresh) host.new_creation();
+    else host.open_group(group.id);
+    CHECK_FALSE(host.session().matches(previous));
+    CHECK_FALSE(host.command_pending());
+    CHECK_FALSE(host.draft_editing_locked());
+    CHECK_FALSE(host.eligibility().stop);
+    CHECK_FALSE(host.has_pending_receipt());
+    if (fresh) CHECK_FALSE(host.session().group());
+    else {
+        REQUIRE(host.session().apply_snapshot(group, host.session().context(), true));
+        CHECK_FALSE(host.draft_editing_locked());
+        CHECK_FALSE(host.eligibility().stop);
+        CHECK(host.eligibility().model_reason == "service_unavailable");
+    }
     host.shutdown();
 }
 
@@ -920,4 +1121,46 @@ TEST_CASE("Advanced image cache completion cannot restore an older stopped model
     REQUIRE(session.apply_snapshot(old_snapshot, session.context()));
     CHECK(session.group()->model_state == "ready");
     CHECK_FALSE(session.group()->model_busy);
+}
+
+TEST_CASE("The shared workflow lock rejects advanced draft replacement until explicit return",
+          "[AdvancedCreation][CreationWorkflow]")
+{
+    wxInitializer init;
+    REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-workflow-lock"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.path().string());
+    Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, "http://127.0.0.1:1");
+    host.session() = ready_session();
+    const auto context = host.session().context();
+    const auto original = host.session().draft();
+    const auto selection = host.session().selection();
+    host.session().click(ViewId::Left, 100, 500);
+    bool unlocked = false;
+    host.set_editing_guard([&] { return unlocked; });
+    CHECK(host.draft_editing_locked());
+    CHECK_FALSE(host.eligibility().generate_design);
+    CHECK_FALSE(host.eligibility().generate_model);
+    host.new_creation();
+    CHECK(host.session().matches(context));
+    CHECK(host.session().draft().design == original.design);
+    CHECK(host.session().draft().uploads == original.uploads);
+    const auto& geometry = host.session().draft().geometry;
+    CHECK(geometry.provider == original.geometry.provider);
+    CHECK(geometry.model == original.geometry.model);
+    CHECK(geometry.face_limit == original.geometry.face_limit);
+    CHECK(geometry.geometry_quality == original.geometry.geometry_quality);
+    CHECK(geometry.texture_quality == original.geometry.texture_quality);
+    CHECK(geometry.output_format == original.geometry.output_format);
+    host.open_group("another-group");
+    host.rename_group("group-a", 4, "changed name");
+    host.generate_design({}); host.generate_model({});
+    CHECK(host.session().selection() == selection);
+    CHECK(host.session().matches(context));
+    CHECK_FALSE(host.command_pending());
+    unlocked = true;
+    CHECK_FALSE(host.draft_editing_locked());
+    host.new_creation();
+    CHECK_FALSE(host.session().matches(context));
+    host.shutdown();
 }

@@ -4,6 +4,7 @@
 #include "ModelLibraryRepository.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AIModelOutputDirectory.hpp"
+#include "slic3r/Utils/DiagnosticLogs.hpp"
 
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/I18N.hpp"
@@ -141,15 +142,10 @@ std::string new_request_id()
     return boost::uuids::to_string(boost::uuids::random_generator()());
 }
 
-bool is_unfinished_smart_job(const AIModelGenerationClient::JobStatus& status, bool published_local_model)
+bool is_unfinished_smart_job(const AIModelGenerationClient::JobStatus&, bool)
 {
-    if (status.id.empty() || status.creation_kind == "advanced_multiview_v1" ||
-        status.generation_options.workflow_mode != "smart" || status.generation_options.flow_id.empty())
-        return false;
-    if (status.state == "ready") return !published_local_model;
-    return status.state == "preprocessing" || status.state == "queued" || status.state == "running" ||
-        status.state == "stopping" || status.state == "stopped" || status.state == "cancelled" ||
-        status.state == "failed" || status.state == "awaiting_confirmation";
+    // Saved jobs are assets/diagnostics. Startup cannot re-authorize generation.
+    return false;
 }
 
 bool is_supported_image(const boost::filesystem::path& path)

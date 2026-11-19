@@ -78,6 +78,12 @@ source manifests remain supported by the package snapshot and validation tools.
 
 ## Package contents and tester configuration
 
+Desktop packages exclude the MobileDeviceSDK shared/static development libraries
+and public headers. Desktop device integration continues to link its static SDK;
+the independent `ORCA_MOBILE_DEVICE_SDK_ONLY=ON` build retains SDK installation.
+Verify the completed EXE and ZIP payloads as well as the CMake install rules when
+checking this boundary.
+
 Platform login uses the built-in public API endpoint `https://api.cutelion.top`.
 Fresh installations do not need a developer's environment or configuration file.
 An explicit `ORCA_PLATFORM_API_URL` overrides the saved profile configuration,
@@ -90,6 +96,11 @@ Internal shared packages contain no provider credentials, user images or generat
 assets. Tester configuration stays outside the package and source control. The
 package content inspector remains mandatory; its recorded scope and limitations
 must accompany each artifact. It does not submit a generation request.
+
+Audited public protocol literals are bound to an exact member path, full-file
+SHA-256 and individual literal digests. LF and CRLF files may use separately
+recorded exact hashes; other byte changes invalidate the classification. All
+remaining field and token scans stay active, including appended credentials.
 
 ```powershell
 python -I release/verify_package_contents.py <artifact.exe-or.zip> --report <report.json>

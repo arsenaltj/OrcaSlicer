@@ -16,7 +16,8 @@ class AdvancedModelTaskMonitor final : public wxEvtHandler {
 public:
     AdvancedModelTaskMonitor();
     ~AdvancedModelTaskMonitor() override;
-    void observe(const std::string& job, boost::filesystem::path reference, bool restart = false);
+    void observe(const std::string& job, boost::filesystem::path reference, bool restart = false,
+                 ModelGenerationVisualReference visual = {});
     void reset();
     void set_available(bool available);
     void set_listener(ModelGenerationUIStateListener listener);
@@ -25,6 +26,8 @@ public:
     void retry_local();
     void set_library_commit_listener(std::function<void(ModelLibraryCommit)> listener) { m_library_commit_listener = std::move(listener); }
     void stop_local() { m_flow->stop_local(); }
+    void request_stop() { m_flow->request_stop(); }
+    void finish_stop(const std::string& job = {}) { m_flow->finish_stop(job); }
 private:
     void cancel_requests();
     void prepare(AI::GeneratedModelArtifact artifact, AIModelGenerationClient::JobStatus status,

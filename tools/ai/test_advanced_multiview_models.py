@@ -100,6 +100,37 @@ class ModelTests(unittest.TestCase):
         self.drain(); self.execute(plan)
         self.assertEqual(len(self.requests), 1)
 
+    def test_yoyoclaw_default_faces_roundtrip_and_confirmed_model_stays_frozen(self):
+        from dataclasses import replace
+        selected = "Hy-3D-3.10-YOYO"
+        seen = []
+        def capability(provider, model):
+            seen.append((provider, model))
+            return {"available": True, "named_four_view_model": "supported", "model": model or selected}
+        self.models.ports = replace(self.models.ports, capability=capability)
+        plan = self.plan(provider="yoyoclaw", face_limit=1000000, geometry_quality="standard")
+        self.assertEqual(plan["options"]["face_limit"], 0)
+        self.assertEqual(plan["options"]["geometry_model"], selected)
+        selected = "Hy-3D-4.0-YOYO"
+        def start(request, **kwargs):
+            self.requests.append(request)
+            kwargs["authorization"].consume("yoyoclaw", "model_generation")
+            return SimpleNamespace(task_id="frozen-yoyo-task", reused=False)
+        self.gateway.start_or_reuse_model_task.side_effect = start
+        job = self.execute(plan)
+        self.execute(plan)
+        self.drain()
+        self.assertEqual(job.state, "ready")
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(self.requests[0].model_id, "Hy-3D-3.10-YOYO")
+        self.assertEqual(self.requests[0].face_limit, 0)
+        self.assertEqual(seen, [("yoyoclaw", ""), ("yoyoclaw", "Hy-3D-3.10-YOYO")])
+        restored = _load_job(job.directory)
+        self.assertEqual(restored.face_limit, 0)
+        self.assertEqual(restored.generation_profile, "quality")
+        self.assertEqual(restored.approved_multiview_snapshot, plan["approved_multiview_snapshot"])
+        self.assertEqual(restored.image_metrics["model_delivery_warnings"], [])
+
     def test_new_job_version_roundtrips_and_cannot_be_forged_as_single_image(self):
         job = self.execute(self.plan()); restored = _load_job(job.directory)
         self.assertEqual(restored.approved_multiview_snapshot, job.approved_multiview_snapshot)
@@ -153,20 +184,89 @@ class ModelTests(unittest.TestCase):
                 getattr(app, name)(job.id, {})
             self.assertEqual(result.exception.code, "advanced_plan_required")
 
-    def test_resume_reuses_original_remote_task_and_four_frozen_inputs(self):
-        job = self.execute(self.plan()); self.drain(); job.state = "failed"
-        self.models.resume(self.group["id"], job.id); self.drain()
-        self.assertEqual(job.state, "ready")
-        self.assertEqual(len(self.requests), 2)
-        self.assertEqual(self.gateway.start_or_reuse_model_task.call_args.kwargs["existing_task_id"], "saved-task")
-        self.assertIsNone(self.gateway.start_or_reuse_model_task.call_args.kwargs["authorization"])
+    def test_new_operation_uses_confirmed_views_and_never_resumes_an_ended_task(self):
+        for terminal in ("ready", "failed", "stopped"):
+            with self.subTest(terminal=terminal):
+                job = self.execute(self.plan()); self.drain(); job.state = terminal
+                frozen = dict(job.approved_multiview_snapshot["views"])
+                before = len(self.requests)
+                with self.assertRaises(RequestError) as caught: self.models.resume(self.group["id"], job.id)
+                self.assertEqual(caught.exception.code, "generation_restart_required")
+                self.assertEqual(len(self.requests), before)
+                fresh = self.execute(self.plan()); self.drain()
+                self.assertNotEqual(job.id, fresh.id)
+                self.assertEqual(fresh.approved_multiview_snapshot["views"], frozen)
+                self.assertEqual(len(self.requests), before + 1)
+                self.assertEqual(self.gateway.start_or_reuse_model_task.call_args.kwargs["existing_task_id"], "")
+                self.assertIsNotNone(self.gateway.start_or_reuse_model_task.call_args.kwargs["authorization"])
 
-    def test_ambiguous_submission_cannot_create_a_replacement_during_resume(self):
+    def test_download_failure_ends_the_advanced_job_until_a_new_explicit_operation(self):
+        error = ProviderGatewayError("Download exhausted", code="artifact_dns_failed", category="download",
+                                     operation="artifact_download", provider="tripo", retryable=False)
+        with mock.patch.object(self.ports, "download_artifact", side_effect=error) as download, \
+                mock.patch.object(self.ports, "fail", wraps=self.ports.fail) as fail:
+            job = self.execute(self.plan())
+            self.drain()
+        self.assertEqual(job.state, "failed")
+        self.assertIsNone(job.artifact_path)
+        self.assertEqual(job.attempts[0]["provider_error_code"], "artifact_dns_failed")
+        self.assertFalse(job.attempts[0]["provider_error_retryable"])
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(len(job.attempts), 1)
+        self.assertEqual(self.queue, [])
+        download.assert_called_once()
+        fail.assert_called_once()
+        with self.assertRaises(RequestError) as caught:
+            self.models.resume(self.group["id"], job.id)
+        self.assertEqual(caught.exception.code, "generation_restart_required")
+        self.assertEqual(len(self.requests), 1)
+        fresh = self.execute(self.plan())
+        self.drain()
+        self.assertNotEqual(job.id, fresh.id)
+        self.assertEqual(fresh.state, "ready")
+        self.assertEqual(len(self.requests), 2)
+        self.assertEqual(self.gateway.start_or_reuse_model_task.call_args.kwargs["existing_task_id"], "")
+
+    def test_ended_ambiguous_submission_does_not_block_a_new_user_operation(self):
         self.gateway.start_or_reuse_model_task.side_effect = ProviderGatewayError("lost response", code="ambiguous", category="provider", ambiguous=True)
         job = self.execute(self.plan()); self.drain()
         with self.assertRaises(RequestError): self.models.resume(self.group["id"], job.id)
-        with self.assertRaises(RequestError): self.plan()
+        self.plan()  # No submission: explicit new user confirmation still required.
         self.assertEqual(self.gateway.start_or_reuse_model_task.call_count, 1)
+        job.state = "running"
+        with self.assertRaises(RequestError): self.plan()  # Current unresolved create remains protected.
+
+    def test_new_model_options_preserve_four_views_without_extra_design_work(self):
+        from dataclasses import replace
+        original_capability = self.models.ports.capability
+        self.models.ports = replace(self.models.ports, capability=lambda provider, model: {
+            **original_capability("tripo", model), "model": model or "model-a"})
+        original = self.execute(self.plan()); self.drain()
+        frozen = deepcopy(original.approved_multiview_snapshot["views"])
+        for options in ({"provider": "yoyoclaw", "geometry_quality": "standard"}, {"geometry_model": "model-b"},
+                        {"face_limit": 300000}, {"geometry_quality": "detailed"},
+                        {"texture_quality": "detailed"}, {"output_format": "glb"}):
+            with self.subTest(options=options):
+                plan = self.plan(**options)
+                self.assertEqual(plan["max_new_image_calls"], 0)
+                job = self.execute(plan)
+                job.image_metrics.update(generation_input_quality={"model_input_eligible": False}, palette_quality_ok=False)
+                # The controlled gateway below consumes the actual provider authorization.
+                def start(request, **kwargs):
+                    self.requests.append(request)
+                    self.assertFalse(kwargs.get("existing_task_id"))
+                    kwargs["authorization"].consume(job.provider, "model_generation")
+                    return SimpleNamespace(task_id="new-task-" + job.id, reused=False)
+                self.gateway.start_or_reuse_model_task.side_effect = start
+                self.drain()
+                self.assertEqual(job.state, "ready")
+                self.assertNotEqual(job.id, original.id)
+                self.assertEqual(job.approved_multiview_snapshot["views"], frozen)
+                for name, value in options.items(): self.assertEqual(getattr(job, name), value)
+                self.assertEqual(list(self.requests[-1].image_paths), list(VIEWS))
+        self.assertEqual(len(self.requests), 7)
+        self.ports.ensure_multiview.assert_not_called()
+        self.ports.automatic_visual_review.assert_not_called()
 
     def test_job_acceptance_survives_failed_group_link_commit_without_second_submission(self):
         plan = self.plan()
@@ -180,6 +280,39 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(job.state, "stopped")
         self.assertFalse(self.models.busy(self.group["id"]))
         self.plan()  # A known unsubmitted receipt does not permanently block the group.
+
+    def test_stop_before_acceptance_records_a_negative_receipt_and_rejects_the_late_post(self):
+        plan = self.plan()
+        self.assertFalse(self.models.reconcile(self.group["id"], plan["job_id"])["accepted"])
+        with self.assertRaises(RequestError) as caught: self.execute(plan)
+        self.assertEqual(caught.exception.code, "submission_not_accepted")
+        self.assertEqual(self.queue, [])
+        self.assertEqual(self.requests, [])
+        fresh = self.plan(); job = self.execute(fresh)
+        self.assertNotEqual(job.id, plan["job_id"])
+        self.drain()
+        self.assertEqual(len(self.requests), 1)
+
+    def test_restart_ends_unfinished_four_view_jobs_without_rewriting_the_inputs(self):
+        from dataclasses import fields
+        from model_job_lifecycle import ModelJobLifecycle, ModelJobLifecyclePorts
+        for state in ("running", "stopping", "stopped", "queued", "awaiting_confirmation"):
+            with self.subTest(state=state):
+                old = self.execute(self.plan()); self.queue.clear()
+                old.state = old.phase = state
+                _persist_job(old)
+                before = {view: path.read_bytes() for view, path in approved_paths(old.approved_multiview_snapshot, old.directory).items()}
+                def denied(*_args, **_kwargs): raise AssertionError("Restart must not submit or analyze")
+                values = {field.name: denied for field in fields(ModelJobLifecyclePorts)}
+                values.update(jobs={}, lock=threading.RLock(), model_output_root=lambda: old.directory.parent,
+                    persist_job=_persist_job, submit=mock.Mock())
+                lifecycle = ModelJobLifecycle(ModelJobLifecyclePorts(**values)); lifecycle.restore_jobs()
+                restored = lifecycle.ports.jobs[old.id]
+                self.assertEqual(restored.state, "stopped")
+                self.assertFalse(lifecycle.latest_job_is_restorable(restored))
+                self.assertEqual({v: p.read_bytes() for v, p in approved_paths(restored.approved_multiview_snapshot, restored.directory).items()}, before)
+                lifecycle.ports.submit.assert_not_called()
+                old.state = "stopped"  # The in-process fixture now mirrors startup's installed objects.
 
     def test_model_reconcile_repairs_link_without_submitting(self):
         plan = self.plan()
@@ -201,8 +334,9 @@ class ModelTests(unittest.TestCase):
         with mock.patch.object(self.models, "ports", AdvancedModelPorts(self.jobs, self.ports.lock, self.ports,
                 mock.Mock(side_effect=RequestError("unavailable", "busy", 503)), lambda job: {}, lambda *_: {})):
             with self.assertRaises(RequestError): self.models.resume(self.group["id"], job.id)
-        self.assertEqual(job.state, "stopped")
+        self.assertEqual(job.state, "failed")
         self.assertEqual(job.attempts[0]["generation_task_id"], "original")
+        self.plan()
 
     def test_reconciliation_reports_original_receipt_and_never_generates(self):
         runtime = AdvancedMultiviewRuntime.__new__(AdvancedMultiviewRuntime)

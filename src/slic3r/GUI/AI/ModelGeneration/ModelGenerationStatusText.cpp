@@ -54,9 +54,9 @@ wxString localized_advanced_service_error(const std::string& error)
         ? _L("当前设计或确认计划已变化，请刷新状态后重新确认。")
         : code == "group_busy" || code == "model_busy" ? _L("当前组仍有任务处理中，请等待或停止当前任务。")
         : code == "unsupported_multiview" ? _L("当前模型服务暂不支持四视角建模，请检查服务配置。")
-        : code == "provider_task_ambiguous" ? _L("任务受理结果暂不明确，请核对或恢复原任务，不要重复提交。")
+        : code == "provider_task_ambiguous" ? _L("本次请求的受理结果暂不明确，请核对本次请求，不要重复提交。")
         : code == "idempotency_conflict" || code == "snapshot_unavailable"
-            ? _L("原任务身份或记录暂时无法核对，请保留请求记录后恢复原任务。")
+            ? _L("本次请求身份或记录暂时无法核对，请保留请求记录并查看诊断日志。")
             : _L("高级任务处理未能完成，当前输入和已有结果已保留，请查看诊断日志。");
     return message + "\n" + _L("错误码：") + from_u8(code);
 }
@@ -89,9 +89,7 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status, 
                   "reference_visual_review_unavailable") != status.model_input_warnings.end())
         return _L("图片已生成；AI 视觉复核暂不可用。本地输入检查已通过，请对照原图确认后继续。");
     if (status.state == "awaiting_confirmation")
-        return status.palette_quality_ok && status.model_input_eligible
-            ? _L("预览已准备完成，请确认后继续生成 3D 模型。")
-            : _L("预览未通过 3D 输入检查，请按提示重新生成。");
+        return _L("设计图已准备完成，可以生成 3D 模型；内容检查仅供参考。");
     if (status.state == "queued")
         return _L("3D 生成任务已排队...");
     if (advanced && status.state == "running" && status.phase == "preparing_multiview")
@@ -100,7 +98,7 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status, 
         return _L("正在生成并核对写实人像四视图，尚未提交付费 3D 任务...");
     if (status.state == "running" && status.phase == "generating")
         return status.progress >= 69
-            ? _L("远端正在收尾并封装高精度几何，可能停留数分钟；任务已保存，重启后会继续恢复...")
+            ? _L("远端正在收尾并封装高精度几何，可能停留数分钟；请保持软件运行，停止或退出后不会恢复本次生成。")
             : _L("AI 正在生成 3D 模型...");
     if (status.state == "running" && status.phase == "texturing") {
         if (advanced) return _L("正在生成模型纹理…");
@@ -136,9 +134,9 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status, 
     if (status.state == "stopping")
         return _L("正在停止生成任务...");
     if (status.state == "stopped" && advanced)
-        return _L("生成已停止，已保留四视图和当前任务。");
+        return _L("已停止生成，四视图已保留；再次生成将创建新任务。");
     if (status.state == "stopped")
-        return _L("生成已停止，可使用当前配色重新生成图片预览。");
+        return _L("已停止生成，输入与已有图片已保留；再次生成将创建新任务。");
     if (status.state == "cancelled")
         return _L("生成任务已取消。");
     if (status.state == "failed") {
@@ -156,7 +154,7 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status, 
         else if (status.provider_error_code == "image_connection_failed")
             message = _L("连接图片服务失败，本次结果可能不明确。程序不会自动重试，请检查网络后手动重新生成。");
         else if (status.provider_error_code == "local_image_processing_failed")
-            message = _L("图片已经生成，但本地可打印色检查失败。请点击“使用当前配色生成预览”重试；若再次失败请反馈任务编号。");
+            message = _L("图片已经生成，但本地处理未完成。请保留任务编号和已有图片，再按当前输入重新生成。");
         else if (status.provider_error_ambiguous)
             message = _L("模型服务提交结果不明确，远端可能已创建付费任务。为避免重复计费，程序不会自动重试；请先到服务端确认任务状态。");
         else if (status.provider_error_code == "provider_rejected")
@@ -168,22 +166,43 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status, 
         else if (status.provider_error_code == "sidecar_unavailable")
             message = _L("本地 AI 服务不可用，请先重新检测服务；当前任务和输入已保留。");
         else if (status.provider_error_code == "provider_unavailable")
-            message = _L("本地 AI 服务已连接，但 Tripo 暂时不可达。请检查代理或网络后恢复当前任务；不会自动创建新的付费任务。");
+            message = _L("本地 AI 服务已连接，但 Tripo 暂时不可达。请检查代理或网络后重新生成；不会自动创建新的付费任务。");
         else if (status.provider_error_code == "provider_upload_unavailable" ||
                  status.provider_error_code == "provider_upload_timeout" ||
                  status.provider_error_code == "provider_upload_rate_limited")
             message = _L("参考图上传到 Tripo 失败，尚未创建付费 3D 任务。请检查代理或网络后重试，程序会有限重试上传。");
         else if (status.provider_error_code == "provider_upload_failed")
             message = _L("参考图上传失败，尚未创建付费 3D 任务。请检查图片和服务配置后重试。");
+        else if (status.provider_error_code == "artifact_dns_failed")
+            message = _L("模型下载失败：无法解析下载服务器域名。请检查网络后重新生成。");
+        else if (status.provider_error_code == "artifact_download_timeout")
+            message = _L("模型下载失败：连接或传输超时。请检查网络后重新生成。");
+        else if (status.provider_error_code == "artifact_transfer_failed")
+            message = _L("模型下载失败，请查看诊断日志后重新生成。");
         else if (status.provider_error_code == "artifact_download_failed")
-            message = _L("Tripo 任务已返回，但模型文件下载或校验失败。可以恢复当前任务重试下载，不会重复创建付费任务。");
+            message = _L("Tripo 任务已返回，但模型文件下载或校验失败。已有模型文件仍保留；可以从历史查看，或重新生成新任务。");
         else if (status.provider_error_code == "model_validation_failed")
             message = _L("模型文件已返回，但本地校验未通过。请保留诊断信息后重试或返回 2D 设计。");
+        else if (status.provider_error_category == "authentication")
+            message = _L("模型服务认证或权限异常，请检查服务账户配置。");
+        else if (status.provider_error_category == "rate_limit")
+            message = _L("模型服务请求过多，请稍后重新生成。");
+        else if (status.provider_error_category == "network")
+            message = _L("模型服务连接异常或超时，请检查网络后重试。");
         else if (advanced)
             message = _L("模型生成未完成，请保留任务信息并查看诊断记录。");
         else
             message = status.message.empty() ? _L("生成任务失败。") : localized_service_error(status.message);
-        if (advanced && !status.provider_error_code.empty())
+        if (!status.provider_detail_code.empty() || !status.provider_detail_message.empty()) {
+            const auto detail = from_u8(status.provider_detail_code).Lower();
+            if (detail.Contains("insufficient") && (detail.Contains("balance") || detail.Contains("credit") || detail.Contains("quota")))
+                message = _L("模型服务积分或额度不足，请检查服务账户。");
+            else if (status.provider_detail_code == "FailedOperation.InnerError")
+                message = _L("YOYOClaw生成几何失败。");
+            if (!status.provider_detail_message.empty()) message += "\n" + from_u8(status.provider_detail_message);
+            if (!status.provider_detail_code.empty()) message += "\n" + _L("错误码：") + from_u8(status.provider_detail_code);
+        }
+        if (advanced && status.provider_detail_code.empty() && !status.provider_error_code.empty())
             message += "\n" + _L("错误码：") + from_u8(status.provider_error_code);
         if (!advanced && !status.provider_error_category.empty())
             message += "\n" + _L("故障分类：") + from_u8(status.provider_error_category);
@@ -209,6 +228,7 @@ void localize_advanced_model_state(ModelGenerationUIState& state)
     status.state = state.job_state;
     status.phase = state.job_phase;
     status.provider_error_code = state.provider_error_code;
+    status.provider_detail_code = state.provider_detail_code; status.provider_detail_message = state.provider_detail_message;
     status.provider_error_ambiguous = state.provider_error_ambiguous;
     status.provider_task_id = state.provider_task_id;
     status.provider_conversion_task_id = state.provider_conversion_task_id;
@@ -252,23 +272,18 @@ void present_advanced_model(ModelGenerationUIState& state)
 
 wxString model_input_quality_label(const std::string& code)
 {
-    if (code == "subject_not_detected") return _L("未识别到清晰主体，请换一张主体明确的图片或重新生成。");
-    if (code == "subject_too_small") return _L("主体太小，请放大主体后重新生成图片预览。");
-    if (code == "subject_or_background_fills_frame") return _L("主体或背景铺满画面，请保留清晰留白后重新生成。");
-    if (code == "subject_cropped") return _L("主体贴边且可能被裁切，请让完整轮廓出现在画面内。");
-    if (code == "fragmented_subject") return _L("图片包含多个断开的主体或碎片，请重新生成一个连贯主体。");
-    if (code == "excessive_semitransparency") return _L("主体半透明区域过多，不适合作为 3D 输入，请重新生成。");
-    if (code == "background_not_isolated") return _L("背景过于复杂，请使用透明或纯色背景后重新生成。");
-    if (code == "subject_has_rectangular_cutout") return _L("人物出现方形缺口或身体区域缺失，本次未提交付费 3D 任务；请点击“换一张”。");
-    if (code == "portrait_shoulder_silhouette_unverified") return _L("肩颈轮廓仍有缺口或背景残影，本次未提交付费 3D 任务；请点击“换一张”。");
-    if (code == "preview_identity_mismatch") return _L("生成图的人脸与原图差异较大，已阻止进入 3D；请点击“重新生成图片预览”。");
-    if (code == "preview_face_geometry_drift") return _L("生成图的脸型或五官位置发生漂移，已阻止进入 3D；请重新生成。");
-    if (code == "preview_age_expression_drift") return _L("生成图改变了人物年龄感或表情，已阻止进入 3D；请重新生成。");
-    if (code == "preview_material_mixing") return _L("图片中仍有肤色、衣服、头发或底座串色，已阻止进入 3D；请重新生成。");
-    if (code == "preview_base_mixing") return _L("底座中混入了其他材质色，已阻止进入 3D；请重新生成。");
-    if (code == "preview_pose_clothing_drift") return _L("生成图改变了姿态或服装结构，已阻止进入 3D；请重新生成。");
-    if (code == "preview_modeling_reference_unclear") return _L("当前图片不适合作为可靠的 3D 参考，请重新生成。");
-    return _L("图片未通过 3D 输入检查，请按预览提示重新生成。");
+    wxString advice;
+    if (code == "subject_not_detected") advice = _L("未能区分主体与背景。");
+    else if (code == "subject_too_small") advice = _L("主体在画面中所占比例较小。");
+    else if (code == "subject_or_background_fills_frame") advice = _L("主体或背景铺满画面。");
+    else if (code == "subject_cropped") advice = _L("主体贴边，可能存在裁切。");
+    else if (code == "fragmented_subject") advice = _L("图片可能包含断开的主体或碎片。");
+    else if (code == "excessive_semitransparency") advice = _L("图片包含较多半透明区域。");
+    else if (code == "background_not_isolated") advice = _L("图片背景较复杂。");
+    else if (code == "subject_has_rectangular_cutout") advice = _L("图片可能存在方形缺口。");
+    else if (code == "portrait_shoulder_silhouette_unverified") advice = _L("暂时无法确认完整主体轮廓。");
+    else advice = _L("图片存在内容质量建议。");
+    return advice + _L("检查仅供参考，不影响3D生成；请确认最终模型效果。");
 }
 
 } // namespace Slic3r::GUI::ModelGenerationStatusText

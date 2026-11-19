@@ -1274,7 +1274,7 @@ class SidecarHealthContractTests(unittest.TestCase):
                 self.assertIs(submit.call_args.args[1], PRODUCTION._preprocess_image_job if source == "image" else PRODUCTION._preprocess_text_job)
                 if source == "image": self.assertEqual(job.input_path.read_bytes(), valid_png_bytes())
 
-    def test_new_design_routes_preserve_all_generation_options(self):
+    def test_new_design_routes_preserve_choices_and_normalize_yoyoclaw_default_faces(self):
         cases = (
             {"provider": "yoyoclaw", "face_limit": 1000000, "geometry_quality": "standard", "texture_quality": "standard", "output_format": "obj"},
             {"provider": "tripo", "face_limit": 2000000, "geometry_quality": "detailed", "texture_quality": "extreme", "output_format": "obj"},
@@ -1304,11 +1304,13 @@ class SidecarHealthContractTests(unittest.TestCase):
                     restored = PRODUCTION._load_job(PRODUCTION._JOBS[public["id"]].directory)
                     expected = {"provider": "tripo", "face_limit": PRODUCTION.DEFAULT_MODEL_FACE_LIMIT,
                                 "geometry_quality": None, "texture_quality": "standard", "output_format": "glb", **options}
+                    if expected["provider"] == "yoyoclaw":
+                        expected["face_limit"] = 0
                     for key, value in expected.items():
                         self.assertEqual(public[key], value)
                         self.assertEqual(getattr(restored, key), value)
                     self.assertEqual(restored.attempts, [])
-                    self.assertEqual(restored.generation_profile, "quality" if expected["face_limit"] >= 500000 else "performance")
+                    self.assertEqual(restored.generation_profile, "quality" if expected["face_limit"] == 0 or expected["face_limit"] >= 500000 else "performance")
                     submit.assert_called_once()
                     self.assertIs(submit.call_args.args[1], PRODUCTION._preprocess_image_job if "image" in route else PRODUCTION._preprocess_text_job)
 
@@ -1498,7 +1500,7 @@ class SidecarHealthContractTests(unittest.TestCase):
                     PRODUCTION._JOBS.clear()
                     PRODUCTION._JOBS.update(previous)
 
-    def test_latest_restores_terminal_smart_task_instead_of_older_ready_model(self):
+    def test_latest_keeps_terminal_smart_tasks_as_diagnostics_and_restores_ready_model(self):
         for terminal in ("stopped", "failed"):
             for source in ("text", "image"):
                 with self.subTest(state=terminal, source=source), tempfile.TemporaryDirectory() as directory:
@@ -1537,10 +1539,20 @@ class SidecarHealthContractTests(unittest.TestCase):
                             )
                             with urllib.request.urlopen(request, timeout=5) as response:
                                 public = json.load(response)["job"]
-                        self.assertEqual(public["id"], saved.id)
-                        self.assertEqual(public["state"], terminal)
-                        self.assertEqual(public["flow_id"], saved.flow_id)
-                        self.assertEqual(public["provider_tasks"]["generation_task_id"], saved.attempts[0]["generation_task_id"])
+                            diagnostic_request = urllib.request.Request(
+                                f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{saved.id}",
+                                headers={"X-OrcaSlicer-Client": "native"},
+                            )
+                            with urllib.request.urlopen(diagnostic_request, timeout=5) as response:
+                                diagnostic = json.load(response)["job"]
+                        self.assertEqual(public["id"], old.id)
+                        self.assertEqual(public["state"], "ready")
+                        self.assertEqual(diagnostic["id"], saved.id)
+                        self.assertEqual(diagnostic["state"], terminal)
+                        self.assertEqual(diagnostic["flow_id"], saved.flow_id)
+                        self.assertEqual(diagnostic["provider_tasks"]["generation_task_id"], saved.attempts[0]["generation_task_id"])
+                        self.assertEqual(old.artifact_path.read_bytes(), b"existing model")
+                        self.assertTrue((saved.directory / "job.json").is_file())
                         submit.assert_not_called()
                     finally:
                         with PRODUCTION._JOBS_LOCK:
@@ -1564,7 +1576,7 @@ class SidecarHealthContractTests(unittest.TestCase):
             job.input_path = job.directory / "missing.png"
             self.assertFalse(PRODUCTION._latest_job_is_restorable(job))
 
-    def test_legacy_realistic_portrait_with_severe_material_islands_is_blocked_on_restore(self):
+    def test_legacy_realistic_portrait_retains_severe_material_islands_as_advice(self):
         with tempfile.TemporaryDirectory() as directory:
             job = PRODUCTION.Job(
                 id=str(uuid.uuid4()),
@@ -1594,7 +1606,8 @@ class SidecarHealthContractTests(unittest.TestCase):
 
         self.assertFalse(job.image_metrics["material_fragmentation_ok"])
         self.assertFalse(job.image_metrics["palette_quality_ok"])
-        self.assertIn("portrait_material_fragmentation_blocks_3d", job.image_metrics["quality_warnings"])
+        self.assertIn("portrait_material_fragmentation_advice", job.image_metrics["quality_warnings"])
+        self.assertNotIn("portrait_material_fragmentation_blocks_3d", job.image_metrics["quality_warnings"])
 
     def test_generate_route_passes_one_shot_authorization_after_validation(self):
         job_id = str(uuid.uuid4())
@@ -1746,6 +1759,9 @@ class SidecarHealthContractTests(unittest.TestCase):
             job.state = "awaiting_confirmation"
             job.phase = "awaiting_confirmation"
             job.preview_path = reference
+            advice, generation_advice = PRODUCTION._assess_reference_advice(job)
+            saved_advice = json.loads(json.dumps(advice))
+            saved_generation_advice = json.loads(json.dumps(generation_advice))
             with PRODUCTION._JOBS_LOCK:
                 previous = dict(PRODUCTION._JOBS)
                 PRODUCTION._JOBS.clear()
@@ -1755,6 +1771,7 @@ class SidecarHealthContractTests(unittest.TestCase):
             try:
                 with (
                     mock.patch.object(PRODUCTION, "_MODEL_PROVIDER_GATEWAY", gateway),
+                    mock.patch.object(PRODUCTION, "_assess_reference_advice", side_effect=AssertionError("Submission must not rerun diagnostics")) as assess,
                     mock.patch.object(PRODUCTION, "_submit") as submit,
                     sidecar_server(PRODUCTION.Handler) as port,
                 ):
@@ -1775,7 +1792,10 @@ class SidecarHealthContractTests(unittest.TestCase):
 
                 self.assertEqual(payload["job"]["state"], "queued")
                 submit.assert_called_once()
+                assess.assert_not_called()
                 self.assertFalse(job.image_metrics["model_input_quality"]["model_input_eligible"])
+                self.assertEqual(job.image_metrics["model_input_quality"], saved_advice)
+                self.assertEqual(job.image_metrics["generation_input_quality"], saved_generation_advice)
             finally:
                 with PRODUCTION._JOBS_LOCK:
                     PRODUCTION._JOBS.clear()
@@ -1799,16 +1819,21 @@ class SidecarHealthContractTests(unittest.TestCase):
                         job = PRODUCTION.Job(id=root.name, source="image", directory=root)
                         job.state = job.phase = "awaiting_confirmation"
                         job.preview_path = reference
+                        PRODUCTION._assess_reference_advice(job)
+                        saved_advice = json.loads(json.dumps(job.image_metrics["model_input_quality"]))
                         PRODUCTION._JOBS[job.id] = job
                         request = urllib.request.Request(
                             f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job.id}/generate",
                             data=json.dumps({"prepared_prompt": "", "palette": [], "generation_profile": "quality"}).encode(),
                             method="POST", headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
                         )
-                        with urllib.request.urlopen(request, timeout=5) as response:
-                            self.assertEqual(response.status, 200)
+                        with mock.patch.object(PRODUCTION, "_assess_reference_advice", side_effect=AssertionError("Submission must not rerun diagnostics")) as assess:
+                            with urllib.request.urlopen(request, timeout=5) as response:
+                                self.assertEqual(response.status, 200)
+                            assess.assert_not_called()
                         self.assertEqual(job.state, "queued")
                         advice = job.image_metrics["model_input_quality"]
+                        self.assertEqual(advice, saved_advice)
                         self.assertTrue(advice["blockers"] or advice["warnings"])
                         if size < 256:
                             self.assertIn("low_resolution", advice["warnings"])

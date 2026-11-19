@@ -173,10 +173,6 @@ class AdvancedMultiviewApplication:
                     selected = tuple(v for v in VIEWS if v == "front" or v in selected)
                     bases["front"] = None
             modes = {v: "initial" if initial or not bases[v] else "edit" for v in selected}
-            capability = self.capabilities(draft["design_provider"], draft["design_model"])
-            self._check_capability(capability, modes.values(), group["source"])
-            if capability.get("model"):
-                draft["design_model"] = capability["model"]
             frozen = {"input_epoch": group["input_epoch"], "uploads": deepcopy(group["uploads"]),
                       "source": group["source"], "context": context,
                       "pending_views": list(group["pending_views"]),
@@ -195,6 +191,15 @@ class AdvancedMultiviewApplication:
                     "publication_bases": {v: group["views"][v]["current_version_id"] for v in selected},
                     "reusable_versions": reusable,
                     "max_new_image_calls": len(selected) - len(reusable), "max_new_model_tasks": 0}
+        capability = self.capabilities(draft["design_provider"], draft["design_model"])
+        self._check_capability(capability, modes.values(), group["source"])
+        if capability.get("model"):
+            draft["design_model"] = capability["model"]
+        with self.repository.transaction():
+            current = self.repository.load(group_id)
+            check_revision(current, plan["expected_group_revision"])
+            if current["active_operation_id"] or self.model_busy(group_id):
+                raise RequestError("group_busy", "The group already has an active operation.", 409)
             content_hash = fingerprint(plan)
             relative = f"plans/{command_id}.json"
             path = self.repository.path(group_id, relative, must_exist=False)
@@ -223,6 +228,14 @@ class AdvancedMultiviewApplication:
         return result
 
     def execute(self, group_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        result = self._execute(group_id, request)
+        if isinstance(result, dict):
+            return result
+        provider, model = result
+        capability = self.capabilities(provider, model)
+        return self._execute(group_id, request, capability)
+
+    def _execute(self, group_id: str, request: dict[str, Any], capability=None):
         command_id = identity(request.get("command_id"), "command_id")
         if request.get("plan_id") != command_id:
             raise RequestError("invalid_request", "The command and plan IDs must match.", 400)
@@ -254,9 +267,11 @@ class AdvancedMultiviewApplication:
                 raise RequestError("group_busy", "The group already has an active operation.", 409)
             if group["input_epoch"] != plan["frozen"]["input_epoch"]:
                 raise RequestError("stale_confirmation", "The creation input changed.", 409)
-            capability = self.capabilities(plan["draft"]["design_provider"], plan["draft"]["design_model"])
-            self._check_capability(capability, plan.get("target_modes", {v: "initial" if plan["initial"] else "edit"
-                                                                       for v in plan["targets"]}).values(), group["source"])
+            if not stopped:
+                if capability is None:
+                    return plan["draft"]["design_provider"], plan["draft"]["design_model"]
+                self._check_capability(capability, plan.get("target_modes", {v: "initial" if plan["initial"] else "edit"
+                                                                           for v in plan["targets"]}).values(), group["source"])
             operation = {**deepcopy(plan), "schema": OPERATION_SCHEMA, "state": "stopped" if stopped else "queued",
                          "new_image_calls": 0, "stop_intent": stopped, "created_at": time.time(),
                          "attempts": {v: {"id": new_id(), "view": v, "base_version_id": plan["base_versions"][v],

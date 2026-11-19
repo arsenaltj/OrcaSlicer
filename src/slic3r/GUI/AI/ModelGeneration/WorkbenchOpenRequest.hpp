@@ -3,6 +3,8 @@
 #include "slic3r/AI/Contracts/GeneratedModelArtifact.hpp"
 #include "ModelLibraryEntry.hpp"
 #include <atomic>
+#include <optional>
+#include <utility>
 #include <stdexcept>
 
 namespace Slic3r::GUI {
@@ -28,6 +30,32 @@ struct WorkbenchOpenRequest {
         return identifies_asset() && !asset_id.empty() && entry.job_id == asset_id &&
             generation == creator_generation;
     }
+};
+
+// Application-owned handoff state. Browsing a page or opening a library asset
+// cannot restore creation editing; only the explicit return command does that.
+class CreationWorkbenchContext {
+public:
+    struct Anchor {
+        bool advanced {false};
+        std::string asset_id;
+        std::uint64_t generation {0};
+    };
+    void stage(const WorkbenchOpenRequest& request) {
+        m_pending.reset();
+        if (request.identifies_asset() &&
+            (request.return_context == "smart" || request.return_context == "advanced"))
+            m_pending = Anchor {request.return_context == "advanced", request.entry.job_id, request.generation};
+    }
+    void finish(bool accepted) {
+        if (accepted && m_pending) m_committed = std::move(m_pending);
+        m_pending.reset();
+    }
+    bool locked() const { return m_committed.has_value(); }
+    const std::optional<Anchor>& anchor() const { return m_committed; }
+    void restore_editing() { m_committed.reset(); m_pending.reset(); }
+private:
+    std::optional<Anchor> m_committed, m_pending;
 };
 
 // Fail before a second editor or import owner can be installed.
