@@ -143,63 +143,18 @@ bool ModelGenerationPanel::request_stop()
 bool ModelGenerationPanel::request_generate_smart()
 {
     if (m_advanced_only) return false;
-    if (m_provider_error_ambiguous && job_inputs_match() && !can_restart_failed_smart_preparation()) {
-        show_input_hint(_L("上次提交结果不明确，请先核对远端任务状态。当前不会重复创建相同输入的付费任务。")); return false;
-    }
-    if (!can_generate_design_from_shell() || !generation_provider_available("geometry") ||
+    if (m_ui_stopping || !can_generate_design_from_shell() || !generation_provider_available("geometry") ||
         !generation_options_valid() || m_selected_design_provider != "gpt") {
         show_input_hint(_L("请检查输入、GPT准备服务、3D模型配置及当前工作台状态后重试。")); return false;
     }
-    const auto options = current_generation_options();
-    std::string identity;
-    const auto add = [&identity](const std::string& value) { identity += std::to_string(value.size()) + ":" + value; };
-    for (const auto& value : {m_prompt->GetValue().ToStdString(wxConvUTF8), current_style(), current_custom_style(),
-            wxString(m_selected_image_path.wstring()).ToStdString(wxConvUTF8), options.provider, options.geometry_model, options.geometry_quality,
-            options.texture_quality, options.output_format, std::to_string(options.face_limit)}) add(value);
-    boost::system::error_code ec;
-    if (!m_selected_image_path.empty()) add(std::to_string(boost::filesystem::last_write_time(m_selected_image_path, ec)));
-    const auto fingerprint = boost::uuids::to_string(boost::uuids::name_generator_sha1(boost::uuids::ns::dns())(identity));
-    if (m_smart_flow.flow_id.empty() && wxGetApp().app_config &&
-        wxGetApp().app_config->get("smart_generation_pending_input") == fingerprint) {
-        const auto saved = wxGetApp().app_config->get("smart_generation_pending_flow");
-        if (valid_provider_task_id(saved) && saved.size() == 36) m_smart_flow.flow_id = saved;
-    }
+    // Every user operation starts from the current draft. Network replay within
+    // this operation uses its request ID; a previous flow is never re-armed.
     m_smart_mode = true;
-    const bool recover_pending = m_smart_mode && m_job_id.empty() && !m_smart_flow.flow_id.empty();
-    const auto flow = recover_pending ? m_smart_flow.flow_id : new_request_id();
-    const bool restart_failed_preparation = is_failed_smart_preparation();
-    const auto previous_flow = m_smart_flow;
-    const auto sequence = m_sequence;
-    const auto previous_pending_flow = wxGetApp().app_config
-        ? wxGetApp().app_config->get("smart_generation_pending_flow") : std::string();
-    const auto previous_pending_input = wxGetApp().app_config
-        ? wxGetApp().app_config->get("smart_generation_pending_input") : std::string();
-    m_smart_flow.begin(flow);
-    if (wxGetApp().app_config) {
-        wxGetApp().app_config->set("smart_generation_pending_flow", flow);
-        wxGetApp().app_config->set("smart_generation_pending_input", fingerprint);
-        wxGetApp().app_config->save();
-    }
+    m_smart_flow.begin(new_request_id());
+    m_generation_visual_reference = {};
     ++m_model_generation_session;
     wxCommandEvent event; on_preprocess(event);
-    if (!m_busy) {
-        if (restart_failed_preparation && m_last_submission == ModelGenerationSubmissionResult::Rejected &&
-            m_sequence == sequence && m_smart_flow.flow_id == flow) {
-            // A local validation rejection never sent this intent. Keep the
-            // old failed job and its recovery receipt intact.
-            m_smart_flow = previous_flow;
-            // show_input_hint may already have published the attempted flow.
-            // Restoring its predecessor needs a newer presentation context.
-            ++m_model_generation_session;
-            if (wxGetApp().app_config) {
-                wxGetApp().app_config->set("smart_generation_pending_flow", previous_pending_flow);
-                wxGetApp().app_config->set("smart_generation_pending_input", previous_pending_input);
-                wxGetApp().app_config->save();
-            }
-            publish_ui_state();
-        } else m_smart_flow.stop();
-        return false;
-    }
+    if (!m_busy) { m_smart_flow.stop(); return false; }
     return true;
 }
 
@@ -207,11 +162,9 @@ void ModelGenerationPanel::apply_smart_ui_state(ModelGenerationUIState& state)
 {
     if (m_smart_mode && !m_smart_flow.flow_id.empty()) {
         state.model_generation_context = true;
-        state.can_generate_model = state.can_generate_model && m_model_input_eligible && m_palette_quality_ok;
         const bool local = m_ready || m_preview_loading || m_job_phase == "downloading_artifact" ||
             m_job_phase == "checking_model" || m_job_phase == "checking_visual";
         m_smart_flow.observe_job_state(m_job_state, state.busy);
-        if (m_awaiting_confirmation && (!m_model_input_eligible || !m_palette_quality_ok)) m_smart_flow.stop();
         const int stage_progress = m_smart_flow.phase == SmartGenerationFlow::Phase::Preparation
             ? remap_progress(state.progress, 10, 35, 0, 100) : state.progress;
         // Unknown provider progress stays active without persisting a fabricated percentage.
@@ -227,8 +180,8 @@ void ModelGenerationPanel::apply_smart_ui_state(ModelGenerationUIState& state)
         if (m_ready && local_attempted && !state.model_ready && !state.busy && !m_preview_loading && !m_artifact_download_started) {
             m_smart_flow.stop();
             state.stage = m_preview_download_cancelled ? ModelGenerationUIStage::Stopped : ModelGenerationUIStage::Failed;
-            state.can_retry_model = true;
-            state.summary_text = "模型结果已保留，可重试本地加载。";
+            state.can_retry_model = !m_preview_download_cancelled;
+            state.summary_text = "模型结果已保留，可从历史查看或重新加载预览。";
         }
         if (state.stage == ModelGenerationUIStage::GeneratingDesign) {
             state.status_text = "正在准备模型输入";
@@ -242,18 +195,11 @@ void ModelGenerationPanel::apply_smart_ui_state(ModelGenerationUIState& state)
         if (m_smart_flow.phase == SmartGenerationFlow::Phase::Preparation && state.stage == ModelGenerationUIStage::Stopped) {
             state.status_text = "模型输入准备已停止"; state.summary_text = "原始输入已保留，停止后不会自动生成3D模型。";
         }
-        if (!state.busy && m_awaiting_confirmation && (!state.can_generate_model || !m_smart_flow.armed) && !m_smart_flow.submitted) {
-            m_smart_flow.stop();
-            state.stage = ModelGenerationUIStage::Failed;
-            state.status_text = state.can_generate_model ? "已恢复任务，点击继续生成" : "模型输入尚不满足生成条件";
-            state.summary_text = m_model_input_primary_blocker.empty() ? "请返回AI创作调整输入，或重试当前准备阶段。" : m_model_input_primary_blocker;
+        if (!state.busy && m_awaiting_confirmation && m_smart_flow.armed && !state.can_generate_model) {
+            state.status_text = "模型输入尚未就绪";
+            state.summary_text = "请检查实际文件、当前输入和服务配置。";
         }
-        if (!state.busy && m_awaiting_confirmation && m_smart_flow.submitted) {
-            m_smart_flow.stop(); state.stage = ModelGenerationUIStage::Failed;
-            state.status_text = m_job_phase == "multiview_retry" ? "模型输入检查未通过" : "模型提交尚未完成";
-            state.summary_text = "已保留准备结果，请恢复当前任务或返回AI创作修改。";
-            if (!m_model_input_eligible || !m_palette_quality_ok) state.can_retry_model = false;
-        }
+
         if (m_smart_flow.armed && !m_smart_dispatch_pending && !state.busy && state.can_generate_model &&
             state.design_ready && state.inputs_match_job && !m_smart_flow.submitted) {
             m_smart_dispatch_pending = true;
@@ -292,7 +238,11 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
         show_input_hint(_L("颜色模式或耗材色板发生了变化，请先重新生成预览。"));
         return;
     }
-    const auto confirmed_options = current_generation_options();
+    auto confirmed_options = current_generation_options();
+    if (m_smart_mode && confirmed_options.provider == "yoyoclaw") {
+        confirmed_options.geometry_model = m_job_generation_options.geometry_model;
+        confirmed_options.face_limit = m_job_generation_options.face_limit;
+    }
     const auto confirmed_profile = current_generation_profile();
     const wxString provider_label = confirmed_options.provider == "yoyoclaw" ? wxString("YOYOClaw") : wxString("Tripo");
     wxString message = wxString::Format(image_mode
@@ -309,7 +259,11 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
     }
     // The modal pumps events: restore, service loss or a late status may have
     // changed the job while the user was reading the confirmation.
-    const auto current_options = current_generation_options();
+    auto current_options = current_generation_options();
+    if (m_smart_mode && current_options.provider == "yoyoclaw") {
+        current_options.geometry_model = m_job_generation_options.geometry_model;
+        current_options.face_limit = m_job_generation_options.face_limit;
+    }
     const auto option_values = [](const AIModelGenerationClient::GenerationOptions& options) {
         return std::tie(options.provider, options.design_provider, options.design_model, options.geometry_model,
                         options.face_limit, options.geometry_quality,
@@ -458,6 +412,10 @@ void ModelGenerationPanel::submit_confirmed_model()
                 if (!weak || weak->m_shutdown ||
                     !submission.matches(weak->m_job_id, weak->current_generation_options().provider, weak->m_sequence))
                     return;
+                if (weak->m_smart_mode && weak->m_ui_stopping) {
+                    weak->handle_poll_error(error, sequence);
+                    return;
+                }
                 // A transient failure here is ambiguous: the sidecar may have
                 // accepted and persisted the paid task before its HTTP response
                 // was interrupted.  Keep polling the same job id so users do not
@@ -523,36 +481,12 @@ bool ModelGenerationPanel::request_open_history(const std::string& job_id)
 
 bool ModelGenerationPanel::request_retry_model()
 {
-    if (m_advanced_only) return false; // Advanced supplier tasks use their frozen model plan/resume endpoint.
+    if (m_advanced_only) return false;
     if (m_smart_mode && !m_busy && m_ready && !m_model_preview_ready && !m_artifact_download_started) {
-        m_smart_flow.resume(true); m_preview_download_cancelled = false;
+        m_smart_flow.load_completed_asset(); m_preview_download_cancelled = false;
         wxCommandEvent event; on_import(event); return true;
     }
-    if (m_smart_mode && !m_shutdown && !m_busy && !m_job_id.empty() &&
-        m_job_provider_task_id.empty() && m_smart_flow.phase == SmartGenerationFlow::Phase::Preparation) {
-        if (!job_inputs_match()) return false;
-        m_smart_flow.resume(false);
-        const bool regenerate = !m_model_input_eligible || !m_palette_quality_ok;
-        if (regenerate) {
-            m_style_preview_ready = false; m_preview_path.clear(); m_raw_preview_path.clear();
-            m_preview_output_available = false;
-        }
-        m_busy = true; m_ui_stopping = false; m_preview_download_cancelled = false;
-        const auto sequence = ++m_sequence;
-        wxWeakRef<ModelGenerationPanel> weak(this);
-        m_client.retry_preparation(m_job_id,
-            [weak, sequence](AIModelGenerationClient::JobStatus status) {
-                if (weak) weak->CallAfter([weak, sequence, status] { if (weak) weak->handle_status(status, sequence); });
-            }, [weak, sequence](std::string error) {
-                if (weak) weak->CallAfter([weak, sequence, error] { if (weak) weak->handle_error(error, sequence); });
-            }, regenerate);
-        refresh_controls(); return true;
-    }
-    if (m_smart_mode && !m_busy && m_awaiting_confirmation && job_inputs_match() && m_generate->IsEnabled() &&
-        m_model_input_eligible && m_palette_quality_ok) {
-        m_smart_flow.resume(false); m_smart_flow.submitted = false;
-        refresh_controls(); return true;
-    }
+    if (m_shell_smart_creation || m_smart_mode) return false; // No cross-operation provider recovery.
     if (m_shutdown || !m_page_initialized || !generation_provider_available("geometry", &m_job_generation_options) || m_busy || m_job_id.empty() ||
         (m_job_state != "failed" && m_job_state != "stopped"))
         return false;
@@ -561,7 +495,6 @@ bool ModelGenerationPanel::request_retry_model()
         return false;
     }
 
-    if (m_smart_mode) m_smart_flow.resume(true);
     const uint64_t sequence = ++m_sequence;
     // A failed job may leave the provider selector editable. Recovery must
     // follow the provider recorded with the job, otherwise a changed UI
@@ -637,27 +570,9 @@ void ModelGenerationPanel::handle_error(const std::string& error, uint64_t seque
     m_job_state = "failed";
     m_job_phase = "failed";
     m_model_progress.pause();
-    const bool paid_preflight_rejected =
-        error.find("large square cutout") != std::string::npos ||
-        error.find("missing body region") != std::string::npos ||
-        error.find("shoulder silhouette") != std::string::npos ||
-        error.find("background remnant") != std::string::npos ||
-        error.find("not suitable for 3D input") != std::string::npos ||
-        error.find("before paying for 3D generation") != std::string::npos;
-    m_awaiting_confirmation = paid_preflight_rejected;
-    if (!paid_preflight_rejected) {
-        m_awaiting_palette_confirmation = false;
-        m_palette_recommendation_confirmed = false;
-    } else {
-        // The preview itself remains a useful user artifact, but it may not be
-        // resubmitted until a regenerated geometry reference passes preflight.
-        m_model_input_eligible = false;
-        m_model_input_primary_blocker =
-            error.find("shoulder silhouette") != std::string::npos ||
-            error.find("background remnant") != std::string::npos
-                ? "portrait_shoulder_silhouette_unverified"
-                : "subject_has_rectangular_cutout";
-    }
+    m_awaiting_confirmation = false;
+    m_awaiting_palette_confirmation = false;
+    m_palette_recommendation_confirmed = false;
     m_ready = false;
     m_artifact_download_started = false;
     m_model_preview_ready = false;
@@ -695,6 +610,16 @@ void ModelGenerationPanel::handle_poll_error(const std::string& error, uint64_t 
 {
     if (m_shutdown || sequence != m_sequence)
         return;
+    if (m_smart_mode && m_ui_stopping) {
+        // An unconfirmed stop must not unlock a competing generation. Keep the
+        // same operation and retry status/stop; never turn this into a new job.
+        m_busy = true;
+        m_status->SetLabel(_L("停止尚未完成，正在核对当前任务；可再次点击停止。"));
+        m_result_summary->SetLabel(localized_service_error(error));
+        m_poll_timer.StartOnce(3000);
+        refresh_controls();
+        return;
+    }
     if (!is_transient_sidecar_poll_error(error)) {
         handle_error(error, sequence);
         return;
@@ -719,6 +644,15 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
 {
     if (m_shutdown || sequence != m_sequence)
         return;
+    if (m_smart_mode && m_smart_flow.stopped && !m_ui_stopping &&
+        (m_job_state == "stopped" || m_job_state == "cancelled")) return;
+    const bool stopping_smart = m_smart_mode && m_ui_stopping;
+    const bool stop_settled = stopping_smart && m_smart_flow.complete_stop(status.state);
+    if (stop_settled) {
+        // Completion/failure may win the service race. End local consumption
+        // without changing its saved asset or diagnostic, or installing a preview.
+        status.state = status.phase = "stopped";
+    }
     m_submission_state.reconcile({status.id, current_generation_options().provider, sequence}, status.state);
     m_poll_connection_failures = 0;
     const bool became_model_ready = !m_ready && status.state == "ready" && status.artifact_ready;
@@ -731,7 +665,7 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
         m_job_provider_name.clear();
         m_job_provider_task_id.clear();
         m_job_provider_conversion_task_id.clear();
-        m_provider_error_code.clear();
+        m_provider_error_code.clear(); m_provider_detail_code.clear(); m_provider_detail_message.clear();
         m_provider_error_category.clear();
         m_provider_error_retryable = false;
         m_provider_error_ambiguous = false;
@@ -747,10 +681,6 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
         }
         m_smart_mode = true;
         m_smart_flow.progress = std::max(m_smart_flow.progress, status.smart_progress);
-        if (wxGetApp().app_config) {
-            wxGetApp().app_config->set("smart_generation_pending_flow", "");
-            wxGetApp().app_config->save();
-        }
     } else if (job_changed && !m_smart_flow.armed) { m_smart_mode = false; }
     m_job_id = status.id;
     m_job_state = status.state;
@@ -761,6 +691,7 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     m_design_estimated_seconds = status.design_estimated_seconds;
     if (!status.provider_error_code.empty()) {
         m_provider_error_code = status.provider_error_code;
+        m_provider_detail_code = status.provider_detail_code; m_provider_detail_message = status.provider_detail_message;
         m_provider_error_category = status.provider_error_category;
         m_provider_error_retryable = status.provider_error_retryable;
         m_provider_error_ambiguous = status.provider_error_ambiguous;
@@ -770,7 +701,7 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
         classify_submission_error(status.message, m_provider_error_code, m_provider_error_category,
                                   m_provider_error_retryable, m_provider_error_ambiguous);
     } else if (status.state == "queued" || status.state == "running" || status.state == "ready") {
-        m_provider_error_code.clear();
+        m_provider_error_code.clear(); m_provider_detail_code.clear(); m_provider_detail_message.clear();
         m_provider_error_category.clear();
         m_provider_error_retryable = false;
         m_provider_error_ambiguous = false;
@@ -829,6 +760,8 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     m_status->SetLabel(localized_job_status(status, m_role == Role::AdvancedCreation));
     m_busy = status.state == "recommending_palette" || status.state == "preprocessing" ||
              status.state == "queued" || status.state == "running" || status.state == "stopping";
+    if (stopping_smart && status.state != "stopped" && status.state != "cancelled" && status.state != "failed")
+        m_busy = true;
     m_awaiting_palette_confirmation = status.state == "awaiting_palette_confirmation";
     m_awaiting_confirmation = status.state == "awaiting_confirmation";
     m_ready = status.state == "ready" && status.artifact_ready;
@@ -887,7 +820,7 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
         m_job_palette_roles = status.palette_roles;
     if (!status.prepared_prompt.empty())
         m_prepared_prompt->SetValue(wxString::FromUTF8(status.prepared_prompt));
-    if (m_preview_output_available && !m_preview_download_cancelled &&
+    if (!m_ui_stopping && !(m_smart_mode && m_smart_flow.stopped) && m_preview_output_available && !m_preview_download_cancelled &&
         !m_preview_download_in_flight && !m_style_preview_ready && !m_restoring_input) {
         m_status->SetLabel(_L("正在加载 AI 风格预览..."));
         m_style_preview_placeholder = _L("正在加载 AI 生成图...");
@@ -911,23 +844,23 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
             _L("四视图在付费前检查阶段停止，当前预览和配色均已保留；可重试，或先换一张图片。"));
     } else if (m_awaiting_confirmation) {
         if (status.preview_ready && !status.model_input_eligible) {
-            m_result_summary->SetLabel(model_input_quality_label(m_model_input_primary_blocker));
+            m_result_summary->SetLabel(_L("图片内容检查仅供参考，不影响3D生成；生成后请检查主体完整性。"));
         } else if (status.preview_ready && !status.palette.empty() && !status.palette_quality_ok) {
             const int required_colors = std::min<int>(status.palette.size(), 3);
             if (status.meaningful_subject_color_count < required_colors) {
                 m_result_summary->SetLabel(wxString::Format(
-                    _L("配色不足：主体只有 %d 种有效耗材色，至少需要 %d 种。请重新生成预览。"),
+                    _L("配色建议：主体有 %d 种有效耗材色，参考目标为 %d 种；不影响3D生成。"),
                     status.meaningful_subject_color_count, required_colors));
             } else if (status.printable_subject_area_ratio < 0.18) {
-                m_result_summary->SetLabel(_L("主体占画面比例过小，请放大主体后重新生成预览。"));
+                m_result_summary->SetLabel(_L("构图建议：主体占比较小，可放大主体；不影响3D生成。"));
             } else if (status.largest_subject_component_ratio < 0.90) {
-                m_result_summary->SetLabel(_L("主体被背景分成多个不相连区域，请调整构图后重新生成预览。"));
+                m_result_summary->SetLabel(_L("构图建议：主体可能包含分离区域，生成后请检查连接；不影响3D生成。"));
             } else if (status.largest_detached_subject_diagonal_ratio >= 0.08) {
-                m_result_summary->SetLabel(_L("检测到细长部件与主体分离，请重新生成并确认把手、枝条或支撑已连接。"));
+                m_result_summary->SetLabel(_L("结构建议：细长部件可能分离，生成后请检查把手、枝条或支撑；不影响3D生成。"));
             } else if (!status.material_fragmentation_ok) {
-                m_result_summary->SetLabel(_L("检测到肤色或衣服颜色形成错误杂色块，请重新生成图片预览后再生成 3D。"));
+                m_result_summary->SetLabel(_L("配色建议：部分颜色可能形成杂色块，生成后请检查；不影响3D生成。"));
             } else {
-                m_result_summary->SetLabel(_L("预览未通过打印性检查，请调整构图或配色后重新生成。"));
+                m_result_summary->SetLabel(_L("预览有构图或配色建议，不影响3D生成；生成后请检查模型。"));
             }
         } else if (status.preview_ready &&
                    std::find(status.model_input_warnings.begin(), status.model_input_warnings.end(),
@@ -978,18 +911,36 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     if (m_busy)
         m_poll_timer.StartOnce(1500);
     refresh_controls();
-    if (m_ready && !m_artifact_download_started && !m_model_preview_ready) {
+    if (!m_ui_stopping && !(m_smart_mode && m_smart_flow.stopped) && m_ready && !m_artifact_download_started && !m_model_preview_ready) {
         m_artifact_download_started = true;
         download_model_preview(sequence);
     }
-    if (new_model_views && !m_preview_path.empty())
+    if (new_model_views && !m_ui_stopping && !m_smart_flow.stopped && !m_preview_path.empty())
         download_auxiliary_previews(sequence, 2);
+    if (stop_settled) {
+        m_smart_flow.stop(); m_busy = m_ui_stopping = false;
+        m_preview_download_cancelled = true; m_smart_dispatch_pending = false;
+        m_poll_timer.Stop(); ++m_sequence;
+        m_status->SetLabel(_L("已停止生成"));
+        m_result_summary->SetLabel(_L("输入与已有图片已保留，再次生成将创建新任务。"));
+        refresh_controls();
+    }
 }
 
 void ModelGenerationPanel::schedule_poll()
 {
+    if (!m_shutdown && m_busy && m_job_id.empty() && m_preparation_submission) {
+        const auto replay = m_preparation_submission;
+        replay();
+        return;
+    }
     if (m_shutdown || m_job_id.empty() || !m_busy)
         return;
+    if (m_smart_mode && m_ui_stopping) {
+        wxCommandEvent event;
+        on_stop(event);
+        return;
+    }
     const uint64_t sequence = m_sequence;
     const SubmissionContext request {m_job_id, current_generation_options().provider, sequence};
     wxWeakRef<ModelGenerationPanel> weak(this);

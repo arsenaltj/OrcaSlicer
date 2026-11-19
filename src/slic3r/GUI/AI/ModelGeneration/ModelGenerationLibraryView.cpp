@@ -181,14 +181,8 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
             m_library_refresh_pending = false;
         } else {
             workbench_metadata_updated = true;
-            if (m_advanced_only) {
-                auto& entries = snapshot->entries;
-                entries.erase(std::remove_if(entries.begin(), entries.end(), [](const GeneratedModelEntry& entry) {
-                    const auto metadata = ModelGenerationPresentation::read_json(
-                        ModelGenerationPresentation::generated_models_root() / entry.job_id / "job.json");
-                    return metadata.is_object() && metadata.value("workflow_mode", std::string()) == "smart";
-                }), entries.end());
-            }
+            // The workbench owns the history shared by both creation modes.
+            // Its generation restriction must not hide completed smart assets.
             const size_t anchor_index = m_library_page * m_library_page_size;
             const std::string anchor = anchor_index < m_library_entries.size() ? m_library_entries[anchor_index].job_id : std::string();
             const auto position = std::find_if(snapshot->entries.begin(), snapshot->entries.end(),
@@ -380,7 +374,7 @@ void ModelGenerationPanel::persist_generation_options()
             if (!weak || weak->m_shutdown || sequence != weak->m_sequence || weak->m_job_id != job_id) return;
             weak->m_job_generation_options = options;
             weak->m_job_face_limit = options.face_limit;
-            weak->m_job_generation_profile = options.face_limit <= 300000 ? "performance" : "quality";
+            weak->m_job_generation_profile = options.face_limit != 0 && options.face_limit <= 300000 ? "performance" : "quality";
             weak->m_provider->SetSelection(options.provider == "yoyoclaw" ? 1 : 0);
             weak->refresh_provider_options();
             weak->m_quality->SetSelection(options.face_limit <= 300000 ? 0 : options.face_limit == 2000000 && weak->m_quality->GetCount() == 3 ? 2 : 1);

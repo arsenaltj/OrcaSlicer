@@ -29,7 +29,7 @@ public:
     const std::string& message() const { return m_message; }
     const Json& history() const { return m_history; }
     bool command_pending() const { return m_command_state != CommandState::Idle; }
-    bool draft_editing_locked() const { return m_command_state == CommandState::Exclusive; }
+    bool draft_editing_locked() const { return (m_editing_guard && !m_editing_guard()) || m_command_state == CommandState::Exclusive || model_stop_pending(); }
     bool has_pending_receipt() const;
     const ProviderCatalog& image_catalog() const { return m_image_catalog; }
     void reconcile_submission();
@@ -46,15 +46,15 @@ public:
     }); }
     const ModelGenerationUIState& model_state() const { return m_model_monitor.snapshot(); }
     const std::optional<ModelLibraryEntry>& model_artifact() const { return m_model_monitor.artifact(); }
-    void show_model();
     void retry_local_model() { m_model_monitor.retry_local(); }
     void get_provider_catalog(const std::string& role, const std::string& provider,
         AIModelGenerationClient::CatalogFn complete, AIModelGenerationClient::ErrorFn error);
     void set_model_job_listener(std::function<void(const AdvancedCreation::ModelJobEvent&)> listener)
     { m_model_job_listener = std::move(listener); }
     void set_start_guard(std::function<bool()> guard) { m_start_guard = std::move(guard); }
+    void set_editing_guard(std::function<bool()> guard) { m_editing_guard = std::move(guard); }
     void set_service_available(bool available);
-    void refresh_capabilities();
+    void refresh_capabilities(const std::string& scope = {});
     void refresh_image_catalog();
     void refresh_history();
     void changed();
@@ -63,7 +63,6 @@ public:
     void new_creation();
     void generate_design(Confirm confirm);
     void generate_model(Confirm confirm);
-    void resume_model();
     void retry(AdvancedCreation::ViewId view, Confirm confirm);
     void stop();
     void recover(AdvancedCreation::ViewId view);
@@ -89,6 +88,9 @@ private:
     void settle_receipt(const std::string& operation, bool announce);
     void reconcile_submission(bool announce_recovery);
     AdvancedCreation::ModelJobEvent begin_model_request(const std::string& job);
+    bool model_request_is_current(const AdvancedCreation::ModelJobEvent& request) const;
+    bool model_stop_pending() const;
+    AdvancedMultiviewClient::Error model_request_error(const AdvancedCreation::ModelJobEvent& request);
     bool accept_model_job(const Json& job, const AdvancedCreation::ModelJobEvent& request);
     AdvancedCreation::Capabilities capabilities() const;
     wxWeakRef<wxWindow> m_owner;
@@ -106,10 +108,15 @@ private:
     std::function<void(const AdvancedCreation::ModelJobEvent&)> m_model_job_listener;
     std::optional<AdvancedCreation::ModelJobEvent> m_model_request;
     std::uint64_t m_model_request_sequence {0};
+    std::string m_stopping_model_job;
     std::function<bool()> m_start_guard;
+    std::function<bool()> m_editing_guard;
     ProviderCatalog m_image_catalog;
     std::uint64_t m_image_catalog_sequence {0};
-    Json m_capabilities;
+    Json m_image_capabilities;
+    Json m_geometry_capabilities;
+    std::uint64_t m_image_capability_sequence {0};
+    std::uint64_t m_geometry_capability_sequence {0};
     Json m_history = Json::array();
     std::map<std::string, Json> m_pending_receipts;
     std::set<std::string> m_reconciling;

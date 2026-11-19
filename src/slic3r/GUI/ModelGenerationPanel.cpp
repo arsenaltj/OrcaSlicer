@@ -126,7 +126,7 @@ bool ModelGenerationPanel::can_generate_design_from_shell() const
     input.style = current_style();
     input.custom_style = current_custom_style();
     const bool busy = (m_asset_replace_guard && !m_asset_replace_guard()) ||
-        m_busy || m_preview_download_in_flight || m_saving_generation_options ||
+        m_busy || m_ui_stopping || m_preview_download_in_flight || m_saving_generation_options ||
         m_preview_loading || m_design_history_loading || m_finishing_running ||
         m_workbench_check_running || m_workbench_import_running ||
         (m_beauty_transactions && m_beauty_transactions->processing()) ||
@@ -138,24 +138,8 @@ bool ModelGenerationPanel::can_generate_design_from_shell() const
 
 bool ModelGenerationPanel::input_editable() const
 {
-    return m_page_initialized && !m_shutdown && !m_busy && !m_preview_download_in_flight &&
+    return m_page_initialized && !m_shutdown && !m_busy && !m_ui_stopping && !m_preview_download_in_flight &&
            !m_preview_loading && !m_finishing_running && !m_design_history_loading && !m_saving_generation_options;
-}
-
-bool ModelGenerationPanel::can_restart_failed_smart_preparation() const
-{
-    return is_failed_smart_preparation() && input_editable() && can_generate_design_from_shell() &&
-        generation_provider_available("geometry") && generation_options_valid() &&
-        m_selected_design_provider == "gpt";
-}
-
-bool ModelGenerationPanel::is_failed_smart_preparation() const
-{
-    return SmartGenerationFlow::can_restart_failed_preparation(
-        m_smart_mode && m_job_generation_options.workflow_mode == "smart", m_job_id, m_job_state,
-        m_job_smart_phase, m_smart_flow.submitted || m_journey_model_submitted,
-        !m_job_provider_task_id.empty() || !m_job_provider_conversion_task_id.empty(),
-        m_ready || m_model_preview_ready || !m_displayed_model_path.empty(), true);
 }
 
 bool ModelGenerationPanel::request_retry_service()
@@ -241,9 +225,8 @@ bool ModelGenerationPanel::synchronize_ui_input(const ModelGenerationUIInput& in
     // input. Clearing it makes the Shell reject the synchronized snapshot as
     // an unrelated route and later restore the old prompt on submission.
     // Only an explicit generation command starts the next flow.
-    if (changed && !m_smart_flow.flow_id.empty() && !is_failed_smart_preparation()) {
-        m_smart_flow = SmartGenerationFlow();
-        if (wxGetApp().app_config) wxGetApp().app_config->set("smart_generation_pending_flow", "");
+    if (changed && !m_smart_flow.flow_id.empty()) {
+        m_smart_flow.stop(); // Keep the route identity while the next draft is edited.
     }
     m_prompt->ChangeValue(prompt);
     m_custom_style->ChangeValue(custom_style);
@@ -270,7 +253,7 @@ bool ModelGenerationPanel::synchronize_ui_options(const ModelGenerationUIOptions
         return false;
     const bool tripo = options.provider == "tripo";
     const bool yoyoclaw = options.provider == "yoyoclaw";
-    const bool valid_face_limit = options.face_limit == 300000 || options.face_limit == 1000000 ||
+    const bool valid_face_limit = (yoyoclaw && options.face_limit == 0) || options.face_limit == 300000 || options.face_limit == 1000000 ||
                                   (tripo && options.face_limit == 2000000);
     const bool valid_geometry = options.geometry_quality == "standard" ||
                                 (tripo && options.geometry_quality == "detailed");
@@ -328,14 +311,14 @@ bool ModelGenerationPanel::synchronize_ui_options(const ModelGenerationUIOptions
     }
 
     m_legacy_generation_defaults = false;
-    if (m_job_id.empty() && !m_smart_flow.flow_id.empty()) {
-        m_smart_flow = SmartGenerationFlow();
-        if (wxGetApp().app_config) wxGetApp().app_config->set("smart_generation_pending_flow", "");
+    if (!m_smart_flow.flow_id.empty()) {
+        m_smart_flow.stop();
     }
     BOOST_LOG_TRIVIAL(info) << "[GenerationOptions] synchronized design_provider=" << options.design_provider
         << " design_model=" << options.design_model << " geometry_provider=" << options.provider
         << " geometry_model=" << options.geometry_model;
-    persist_generation_options();
+    if (!m_shell_smart_creation) persist_generation_options();
+    else refresh_controls();
     return true;
 }
 
@@ -378,9 +361,8 @@ void ModelGenerationPanel::publish_ui_state()
     state.options.output_format = options.output_format;
     state.service_available = m_service_available;
     state.service_availability_known = m_service_availability_known;
-    state.busy = m_busy || m_preview_download_in_flight || m_saving_generation_options;
+    state.busy = m_busy || m_ui_stopping || m_preview_download_in_flight || m_saving_generation_options;
     state.can_generate_design = can_generate_design_from_shell();
-    state.can_restart_failed_smart_preparation = can_restart_failed_smart_preparation();
     state.inputs_match_job = job_inputs_match();
     state.model_options_match = model_options_match_job();
     const bool can_reuse_model = can_reuse_ready_model_design() && !state.busy &&
@@ -393,10 +375,8 @@ void ModelGenerationPanel::publish_ui_state()
         !m_provider_error_ambiguous &&
         (!m_job_provider_task_id.empty() || m_provider_error_retryable ||
          m_provider_error_code == "provider_unavailable" || m_provider_error_code == "sidecar_unavailable");
-    if (m_smart_mode && !state.busy && !m_job_id.empty() &&
-        (m_job_state == "failed" || m_job_state == "stopped" || m_awaiting_confirmation) && !m_provider_error_ambiguous)
-        state.can_retry_model = m_service_available;
-    state.can_restore_latest = m_service_available && !state.busy && m_job_id.empty();
+    if (m_shell_smart_creation || m_smart_mode) state.can_retry_model = false;
+    state.can_restore_latest = !m_shell_smart_creation && !m_smart_mode && m_service_available && !state.busy && m_job_id.empty();
     state.can_import = m_import->IsEnabled();
     state.can_restart = m_discard->IsEnabled();
     state.design_ready = m_style_preview_ready;
@@ -426,6 +406,7 @@ void ModelGenerationPanel::publish_ui_state()
     state.job_state = m_job_state;
     state.job_phase = m_job_phase;
     state.provider_error_code = m_provider_error_code;
+    state.provider_detail_code = m_provider_detail_code; state.provider_detail_message = m_provider_detail_message;
     state.provider_error_category = m_provider_error_category;
     state.provider_name = m_job_provider_name.empty() ? options.provider : m_job_provider_name;
     state.provider_task_id = m_job_provider_task_id;
@@ -439,6 +420,8 @@ void ModelGenerationPanel::publish_ui_state()
     state.cost_summary = text_to_utf8(m_generation_cost->GetLabel());
     state.original_image_path = path_to_utf8(!m_reference_image_path.empty() ? m_reference_image_path : m_selected_image_path);
     state.design_image_path = path_to_utf8(!m_preview_path.empty() ? m_preview_path : m_raw_preview_path);
+    if (state.smart_mode && m_generation_visual_reference.owner_id == state.smart_flow_id)
+        state.visual_reference = m_generation_visual_reference;
     state.model_path = path_to_utf8(!m_displayed_model_path.empty() ? m_displayed_model_path : m_artifact_path);
     state.history_entries = m_ui_history_entries;
     state.history_loading = m_ui_history_loading;
@@ -623,7 +606,7 @@ void ModelGenerationPanel::set_smart_creation_presented(bool presented)
 
 void ModelGenerationPanel::restore_latest_job(bool require_visible, bool unfinished_smart_only)
 {
-    if (m_advanced_only) return; // Advanced opens only its explicit group-linked or legacy advanced job.
+    if (m_advanced_only || m_shell_smart_creation || unfinished_smart_only) return; // No old generation session is restored.
     if (m_shutdown || !m_page_initialized || (require_visible && !IsShownOnScreen()) ||
         !m_service_available || m_restore_checked || !m_job_id.empty())
         return;
@@ -2487,16 +2470,18 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
         if (!weak)
             return;
         wxGetApp().CallAfter([weak, sequence, status = std::move(status)]() mutable {
-            if (weak) {
+            if (weak && !weak->m_shutdown && sequence == weak->m_sequence) {
+                weak->m_preparation_submission = {};
                 const bool stopped = weak->m_smart_mode && weak->m_smart_flow.stopped;
                 const auto id = status.id;
+                if (stopped) weak->m_ui_stopping = true;
                 weak->handle_status(std::move(status), sequence);
                 if (stopped && sequence == weak->m_sequence && !id.empty()) {
                     weak->m_ui_stopping = true;
                     weak->m_client.stop(id, [weak, sequence](AIModelGenerationClient::JobStatus stopped_status) {
                         if (weak) weak->CallAfter([weak, sequence, stopped_status] { if (weak) weak->handle_status(stopped_status, sequence); });
                     }, [weak, sequence](std::string error) {
-                        if (weak) weak->CallAfter([weak, sequence, error] { if (weak) weak->handle_error(error, sequence); });
+                        if (weak) weak->CallAfter([weak, sequence, error] { if (weak) weak->handle_poll_error(error, sequence); });
                     });
                 }
             }
@@ -2506,21 +2491,30 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
         if (!weak)
             return;
         wxGetApp().CallAfter([weak, sequence, error = std::move(error)]() {
-            if (weak)
-                weak->handle_error(error, sequence);
+            if (!weak || weak->m_shutdown || sequence != weak->m_sequence) return;
+            if (weak->m_smart_mode && is_transient_sidecar_poll_error(error)) {
+                weak->m_status->SetLabel(_L("提交响应中断，正在核对本次输入准备请求…"));
+                weak->m_poll_timer.StartOnce(1500);
+                weak->refresh_controls();
+                return;
+            }
+            weak->m_preparation_submission = {};
+            weak->handle_error(error, sequence);
         });
     };
     m_last_submission = ModelGenerationSubmissionResult::Submitted;
-    if (image_mode)
-        m_client.preprocess_image(m_smart_mode ? m_smart_flow.flow_id : new_request_id(), prompt, m_selected_image_path, m_job_palette, m_job_palette_roles,
-                                  m_palette_recommendation_confirmed, m_job_style, m_job_custom_style,
-                                  m_job_print_settings,
-                                  std::move(success), std::move(failure), m_job_generation_options);
-    else
-        m_client.preprocess_text(m_smart_mode ? m_smart_flow.flow_id : new_request_id(), prompt, m_job_palette, m_job_palette_roles,
-                                 m_palette_recommendation_confirmed, m_job_style, m_job_custom_style,
-                                 m_job_print_settings,
-                                 std::move(success), std::move(failure), m_job_generation_options);
+    const auto request_id = m_smart_mode ? m_smart_flow.flow_id : new_request_id();
+    m_preparation_submission = [weak, sequence, image_mode, request_id, prompt,
+        image = m_job_image_path, palette = m_job_palette, roles = m_job_palette_roles,
+        confirmed = m_palette_recommendation_confirmed, style = m_job_style, custom_style,
+        settings = m_job_print_settings, options = m_job_generation_options, success, failure] {
+        if (!weak || weak->m_shutdown || sequence != weak->m_sequence) return;
+        if (image_mode) weak->m_client.preprocess_image(request_id, prompt, image, palette, roles,
+            confirmed, style, custom_style, settings, success, failure, options);
+        else weak->m_client.preprocess_text(request_id, prompt, palette, roles,
+            confirmed, style, custom_style, settings, success, failure, options);
+    };
+    m_preparation_submission();
 }
 
 void ModelGenerationPanel::on_retexture_from_library(const std::string& geometry_job_id,
@@ -2588,7 +2582,13 @@ void ModelGenerationPanel::on_retexture_from_library(const std::string& geometry
 
 void ModelGenerationPanel::on_stop(wxCommandEvent&)
 {
-    if (m_saving_generation_options) return;
+    if (m_saving_generation_options && !m_smart_mode) return;
+    if (m_saving_generation_options) {
+        // Stop also covers the short gap between design readiness and 3D.
+        // An old options PUT must not refill controls or dispatch geometry.
+        m_saving_generation_options = false;
+        ++m_sequence;
+    }
     if (m_smart_mode) m_smart_flow.stop();
     if (auto* local = local_model_import_state(m_library_import); local && local->cancel) {
         local->cancel->store(true);
@@ -2626,7 +2626,7 @@ void ModelGenerationPanel::on_stop(wxCommandEvent&)
         m_style_preview_ready = false;
     }
     m_client.cancel_current();
-    if (preview_download_was_active) {
+    if (preview_download_was_active && !m_smart_mode) {
         ++m_sequence;
         // The client cancels all its HTTP downloads. Allow an interrupted
         // model download to be reloaded too, without losing a running job.
@@ -2644,11 +2644,17 @@ void ModelGenerationPanel::on_stop(wxCommandEvent&)
     }
     if (m_ready && m_artifact_download_started && !m_model_preview_ready) {
         ++m_sequence;
+        if (m_preview_canceled) m_preview_canceled->store(true);
+        m_preview_task_scope.cancel();
+        m_artifact_validation_scope.cancel();
+        m_preview_loading = false;
         m_busy = false;
         m_restoring_input = false;
         m_artifact_download_started = false;
-        m_status->SetLabel(_L("已取消本地模型加载。"));
-        m_result_summary->SetLabel(_L("生成结果仍然保留，可点击“重新加载 3D 模型”继续。"));
+        m_artifact_path.clear();
+        m_ui_stopping = false; m_job_state = "stopped"; m_preview_download_cancelled = true;
+        m_status->SetLabel(_L("已停止生成"));
+        m_result_summary->SetLabel(_L("生成结果仍然保留，可从历史查看；再次生成将创建新任务。"));
         m_model_stats->SetLabel(_L("模型尚未加载"));
         refresh_controls();
         return;
@@ -2735,6 +2741,11 @@ void ModelGenerationPanel::download_preview(uint64_t sequence)
                 weak->m_clean_preview_image = image;
                 weak->m_preview_zoom_factor = 1.0;
                 weak->m_style_preview_ready = true;
+                if (weak->m_smart_mode && !weak->m_smart_flow.flow_id.empty()) {
+                    weak->m_generation_visual_reference = {weak->m_smart_flow.flow_id,
+                        "design:" + weak->m_job_id + ":" + weak->m_preview_output,
+                        wxString(path.wstring()).ToUTF8().data(), {}, true};
+                }
                 weak->m_client.record_journey_event("preview_ready", weak->m_job_id);
                 weak->m_style_preview_placeholder.clear();
                 weak->m_preview_kind->SetLabel(_L("结果对照"));
@@ -3136,7 +3147,7 @@ void ModelGenerationPanel::refresh_controls()
     if (m_shutdown || !m_page_initialized)
         return;
     if (m_preview_loading || m_finishing_running || m_design_history_loading || m_saving_generation_options) m_busy = true;
-    const bool busy = m_busy || m_preview_download_in_flight;
+    const bool busy = m_busy || m_preview_download_in_flight || m_ui_stopping;
     update_adaptive_text_height(m_prompt, 2, 6);
     update_adaptive_text_height(m_custom_style, 2, 5);
     refresh_palette();
@@ -3155,7 +3166,7 @@ void ModelGenerationPanel::refresh_controls()
     const bool show_review = m_awaiting_confirmation && !image_job && !stale_job;
     const bool local_artifact = is_nonempty_model(m_artifact_path) ||
         (!m_job_id.empty() && is_nonempty_model(temp_path(m_job_id, m_artifact_format)));
-    const bool preview_quality_ok = m_palette_quality_ok && m_model_input_eligible;
+    const bool preview_quality_ok = true; // Content reports are advice, not submission eligibility.
     const bool multiview_retry = m_job_phase == "multiview_retry";
 
     m_preprocess->SetLabel(m_awaiting_confirmation && image_job && !stale_job
@@ -3252,9 +3263,9 @@ void ModelGenerationPanel::refresh_controls()
     m_preprocess->Enable(generation_provider_available("image") && !busy && valid_input &&
                          (ai_palette_source || !printable_colors || !m_palette.empty()));
     m_prepared_prompt->Enable(generation_provider_available("geometry") && !busy && show_review);
-    m_generate->Enable((!m_smart_mode || preview_quality_ok) && generation_options_valid() && generation_provider_available("geometry") && !busy && m_awaiting_confirmation && !stale_job &&
+    m_generate->Enable(generation_options_valid() && generation_provider_available("geometry") && !busy && m_awaiting_confirmation && !stale_job &&
                        (!image_job || m_style_preview_ready));
-    m_stop->Enable(!m_saving_generation_options && !m_ui_stopping &&
+    m_stop->Enable((!m_saving_generation_options || m_smart_mode) &&
         ((local_import_active && !local_import->cancel->load()) || m_design_history_loading || (busy && !m_job_id.empty() &&
         (local_model_loading || m_preview_download_in_flight || m_service_available))));
     m_retry_service->Enable(!m_service_available && !busy && static_cast<bool>(m_service_retry_handler));
@@ -3280,7 +3291,7 @@ void ModelGenerationPanel::refresh_controls()
          (m_awaiting_confirmation && image_job));
     m_preprocess->Show(m_service_available && show_preprocess);
     m_generate->Show(m_service_available && !busy && m_awaiting_confirmation);
-    m_stop->Show(busy && !m_saving_generation_options && !m_ui_stopping);
+    m_stop->Show(busy && (!m_saving_generation_options || m_smart_mode));
     m_retry_service->Show(!m_service_available && !busy);
     m_import->Show(model_import_action_visible(
         m_ready, m_model_preview_ready, is_nonempty_model(m_displayed_model_path), busy, stale_job));
@@ -3984,13 +3995,16 @@ std::string ModelGenerationPanel::current_custom_style() const
 
 int ModelGenerationPanel::current_face_limit() const
 {
+    if (m_provider && m_provider->GetSelection() == 1)
+        return 0;
     const int selection = m_quality ? m_quality->GetSelection() : 1;
     return selection == 0 ? 300000 : selection == 2 && (!m_provider || m_provider->GetSelection() == 0) ? 2000000 : 1000000;
 }
 
 std::string ModelGenerationPanel::current_generation_profile() const
 {
-    return current_face_limit() <= 300000 ? "performance" : "quality";
+    const int face_limit = current_face_limit();
+    return face_limit != 0 && face_limit <= 300000 ? "performance" : "quality";
 }
 
 AIModelGenerationClient::GenerationOptions ModelGenerationPanel::current_generation_options() const
@@ -4054,7 +4068,7 @@ void ModelGenerationPanel::refresh_provider_options()
         m_quality->Append(_L("200 万面（需精细几何）"));
     }
     m_quality->SetToolTip(limited_provider
-        ? _L("面数是生成目标，实际结果可能不同。YOYOClaw 可选择 30 万或 100 万面。")
+        ? _L("YOYOClaw 使用供应商默认面数，实际面数以生成模型为准。")
         : _L("面数是生成目标，实际结果可能不同。200 万面需 Tripo v3.1 精细几何；更多面数会增加下载、预览和导入耗时。"));
     if (limited_provider && m_geometry_quality->GetCount() != 1) {
         m_geometry_quality->Set(wxArrayString {_L("标准")});
@@ -4081,8 +4095,8 @@ wxString ModelGenerationPanel::generation_options_summary(bool image_mode) const
 {
     const auto options = current_generation_options();
     if (options.provider == "yoyoclaw") {
-        return wxString::Format(_L("YOYOClaw · %d 万面 · %s\n费用未报价，以 YOYOClaw 所选模型的实际账单为准；不含设计图费用。"),
-            options.face_limit / 10000, options.output_format == "obj" ? "OBJ" : "GLB");
+        return wxString::Format(_L("YOYOClaw · 供应商默认面数 · %s\n费用未报价，以 YOYOClaw 所选模型的实际账单为准；不含设计图费用。"),
+            options.output_format == "obj" ? "OBJ" : "GLB");
     }
     const int base = image_mode ? 30 : 20;
     const int geometry = options.geometry_quality == "detailed" ? 20 : 0;
@@ -4347,6 +4361,7 @@ void ModelGenerationPanel::refresh_palette()
 
 void ModelGenerationPanel::reset(bool remove_remote)
 {
+    m_preparation_submission = {};
     m_local_image_history = false;
     m_ui_model_generation_context = false;
     m_ui_stopping = false;
@@ -4368,7 +4383,7 @@ void ModelGenerationPanel::reset(bool remove_remote)
     m_job_provider_name.clear();
     m_job_provider_task_id.clear();
     m_job_provider_conversion_task_id.clear();
-    m_provider_error_code.clear();
+    m_provider_error_code.clear(); m_provider_detail_code.clear(); m_provider_detail_message.clear();
     m_provider_error_category.clear();
     m_provider_error_retryable = false;
     m_provider_error_ambiguous = false;

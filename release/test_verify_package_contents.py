@@ -185,19 +185,40 @@ class PackageInspectionTests(unittest.TestCase):
     def test_checked_in_yoyoclaw_placeholders_match_windows_package_bytes(self):
         name = "resources/tools/ai/yoyoclaw_client.py"
         source = (Path(__file__).resolve().parents[1] / "tools/ai/yoyoclaw_client.py").read_bytes()
-        windows_bytes = source.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+        lf_bytes = source.replace(b"\r\n", b"\n")
+        windows_bytes = lf_bytes.replace(b"\n", b"\r\n")
         record = inspection.AUDITED_LIBRARY_LITERALS[name]
         self.assertEqual(hashlib.sha256(windows_bytes).hexdigest(), record["file_sha256"])
+        self.assertIn(hashlib.sha256(lf_bytes).hexdigest(), record["file_sha256_variants"])
 
-        clean = self.check({name: windows_bytes})
-        self.assertEqual(clean["status"], "NOT_DETECTED_WITHIN_SCOPE")
-        audited = {row["field"]: row["category"] for row in clean["config_fields"]}
-        self.assertEqual(audited["DEFAULT_ROOT_SECRET"], "AUDITED_PUBLIC_LIBRARY_LITERAL")
-        self.assertEqual(audited["DEFAULT_HMAC_SECRET"], "AUDITED_PUBLIC_LIBRARY_LITERAL")
-        self.assertEqual(
-            self.check({name: windows_bytes + b'\r\nNEW_SECRET="fixture-opaque-value"\r\n'})["status"],
-            "BLOCKED_FINDINGS",
-        )
+        for payload in (lf_bytes, windows_bytes):
+            with self.subTest(crlf=b"\r\n" in payload):
+                clean = self.check({name: payload})
+                self.assertEqual(clean["status"], "NOT_DETECTED_WITHIN_SCOPE")
+                audited = {row["field"]: row["category"] for row in clean["config_fields"]}
+                self.assertEqual(audited["DEFAULT_ROOT_SECRET"], "AUDITED_PUBLIC_LIBRARY_LITERAL")
+                self.assertEqual(audited["DEFAULT_HMAC_SECRET"], "AUDITED_PUBLIC_LIBRARY_LITERAL")
+                self.assertEqual(
+                    self.check({name: payload + b'\nNEW_SECRET="fixture-opaque-value"\n'})["status"],
+                    "BLOCKED_FINDINGS",
+                )
+                self.assertEqual(self.check({"config.py": payload})["status"], "BLOCKED_FINDINGS")
+
+    def test_audited_file_variants_reject_changed_literals_and_added_fields(self):
+        name = "resources/beauty-runtime/python/Lib/site-packages/library.py"
+        literal = b"recorded-protocol-constant"
+        lf_bytes = b'api_key="' + literal + b'"\n'
+        crlf_bytes = lf_bytes.replace(b"\n", b"\r\n")
+        record = {"file_sha256": hashlib.sha256(lf_bytes).hexdigest(),
+                  "file_sha256_variants": [hashlib.sha256(crlf_bytes).hexdigest()],
+                  "fields": {"api_key": [hashlib.sha256(literal).hexdigest()]}}
+        with patch.object(inspection, "AUDITED_LIBRARY_LITERALS", {name: record}):
+            for payload in (lf_bytes, crlf_bytes):
+                self.assertEqual(self.check({name: payload})["status"], "NOT_DETECTED_WITHIN_SCOPE")
+                self.assertEqual(self.check({name: payload.replace(literal, b"changed-protocol-constant")})["status"],
+                                 "BLOCKED_FINDINGS")
+                self.assertEqual(self.check({name: payload + b'password="fixture-opaque-value"'})["status"],
+                                 "BLOCKED_FINDINGS")
 
     def test_audited_protocol_token_requires_exact_path_file_and_token(self):
         name = "resources/beauty-runtime/python/Lib/site-packages/library.py"

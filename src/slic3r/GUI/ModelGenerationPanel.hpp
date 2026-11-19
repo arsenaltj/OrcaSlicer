@@ -260,7 +260,10 @@ private:
     bool m_smart_restore_pending {false};
     const bool m_advanced_only;
     SmartGenerationFlow m_smart_flow;
+    ModelGenerationVisualReference m_generation_visual_reference;
     bool m_smart_dispatch_pending {false};
+    // Same-operation transport replay; cleared once a real job is known.
+    std::function<void()> m_preparation_submission;
     using GeneratedModelEntry = ModelLibraryEntry;
     PostGenerationWorkbenchListener m_workbench_listener;
     wxWindow* m_assets_home_parent {nullptr};
@@ -454,8 +457,6 @@ private:
     void clear_selected_image();
     void publish_ui_state();
     bool can_generate_design_from_shell() const;
-    bool can_restart_failed_smart_preparation() const;
-    bool is_failed_smart_preparation() const;
     void initialize_page(bool require_visible);
     void on_first_visible_idle(wxIdleEvent& event);
     void build_page();
@@ -1034,6 +1035,7 @@ private:
     std::string m_job_provider_task_id;
     std::string m_job_provider_conversion_task_id;
     std::string m_provider_error_code;
+    std::string m_provider_detail_code, m_provider_detail_message;
     std::string m_provider_error_category;
     bool m_provider_error_retryable { false };
     bool m_provider_error_ambiguous { false };

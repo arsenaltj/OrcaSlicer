@@ -233,7 +233,7 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         ? saved_face_limit->get<int>() : 1000000;
     m_job_face_limit = m_job_generation_options.face_limit;
     m_legacy_generation_defaults = historical_face_limit != m_job_face_limit;
-    m_job_generation_profile = m_job_face_limit <= 300000 ? "performance" : "quality";
+    m_job_generation_profile = m_job_face_limit != 0 && m_job_face_limit <= 300000 ? "performance" : "quality";
     m_provider->SetSelection(m_job_generation_options.provider == "yoyoclaw" ? 1 : 0);
     refresh_provider_options();
     m_quality->SetSelection(m_job_face_limit <= 300000 ? 0 : m_job_face_limit == 2000000 && m_quality->GetCount() == 3 ? 2 : 1);
@@ -418,6 +418,9 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
 void ModelGenerationPanel::finish_history_model_open(bool accepted, std::function<void()> complete)
 {
     if (!accepted && m_history_open) {
+        if (!m_history_open->canceled.load())
+            BOOST_LOG_TRIVIAL(info) << "[ModelPreviewLoad] cancel requested request="
+                << m_history_open->generation << " worker_pending=" << m_history_open->worker_pending;
         wxWeakRef<ModelGenerationPanel> weak(this);
         if (m_history_open->cancel_after_drain([weak, complete] {
                 if (weak && !weak->m_shutdown) weak->finish_history_model_open(false, complete);

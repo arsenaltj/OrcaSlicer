@@ -32,57 +32,6 @@
 
 using Slic3r::GUI::AIModelGenerationClient;
 
-TEST_CASE("A known failed smart preparation permits a fresh user intent with unchanged inputs", "[SmartGenerationFlow]")
-{
-    using Slic3r::GUI::SmartGenerationFlow;
-    REQUIRE(SmartGenerationFlow::can_restart_failed_preparation(
-        true, "failed-preparation", "failed", "preparation", false, false, false, true));
-    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
-        true, "failed-preparation", "failed", "preparation", false, false, false, false));
-    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
-        true, "", "failed", "preparation", false, false, false, true));
-    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
-        false, "advanced-preparation", "failed", "preparation", false, false, false, true));
-}
-
-TEST_CASE("Only a persisted preparation failure permits the new smart generation exception", "[SmartGenerationFlow]")
-{
-    using Slic3r::GUI::SmartGenerationFlow;
-    const std::string state = GENERATE("preprocessing", "queued", "running", "awaiting_confirmation",
-        "stopping", "stopped", "cancelled", "ready", "");
-    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
-        true, "job", state, "preparation", false, false, false, true));
-}
-
-TEST_CASE("Editing a draft cannot turn an uncertain model submission into a preparation failure", "[SmartGenerationFlow]")
-{
-    using Slic3r::GUI::SmartGenerationFlow;
-    SmartGenerationFlow edited_draft;
-    REQUIRE(edited_draft.phase == SmartGenerationFlow::Phase::Preparation);
-    for (const std::string phase : {"geometry", "local", "complete", ""})
-        CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
-            true, "job", "failed", phase, edited_draft.submitted, false, false, true));
-    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
-        true, "job", "failed", "preparation", true, false, false, true));
-    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
-        true, "job", "failed", "preparation", false, true, false, true));
-    CHECK_FALSE(SmartGenerationFlow::can_restart_failed_preparation(
-        true, "job", "failed", "preparation", false, false, true, true));
-}
-
-TEST_CASE("A changed smart restart capability publishes even when the displayed failure is unchanged", "[SmartGenerationFlow]")
-{
-    Slic3r::GUI::ModelGenerationUIState original;
-    original.smart_mode = true;
-    original.job_id = "failed-preparation";
-    original.stage = Slic3r::GUI::ModelGenerationUIStage::Failed;
-    auto updated = original;
-    CHECK(updated.same_content(original));
-    updated.can_restart_failed_smart_preparation = true;
-    CHECK_FALSE(updated.same_content(original));
-    CHECK_FALSE(original.same_content(updated));
-}
-
 TEST_CASE("A locally rejected smart intent restores its failed task through a newer presentation context", "[SmartGenerationFlow][ModelGenerationRoute]")
 {
     using namespace Slic3r::GUI;
@@ -101,7 +50,7 @@ TEST_CASE("A locally rejected smart intent restores its failed task through a ne
     CHECK(model_generation_route_id(restored) == "original-flow");
     CHECK(model_generation_route_action(attempted, restored) == RedesignModelRouteAction::Ignore);
     auto updated = restored; ++updated.revision;
-    updated.can_restart_failed_smart_preparation = true;
+    updated.input.style = "sculpture";
     CHECK(model_generation_route_action(updated, restored) == RedesignModelRouteAction::Refresh);
 }
 
@@ -118,8 +67,7 @@ TEST_CASE("Editing a failed preparation retains its route until an explicit new 
     SmartGenerationFlow flow;
     flow.flow_id = failed.smart_flow_id;
     flow.restore(10, 2, false);
-    REQUIRE(SmartGenerationFlow::can_restart_failed_preparation(
-        true, failed.job_id, failed.job_state, "preparation", flow.submitted, false, false, true));
+    CHECK(flow.stopped);
     auto edited = failed;
     const auto change = GENERATE(0, 1, 2, 3);
     if (change == 0 || change == 3) edited.input.image_path = "new.png";
@@ -163,7 +111,7 @@ TEST_CASE("Startup restoration rejects callbacks from a departed page or edited 
     CHECK_FALSE(guard.eligible()); // Clearing or revisiting must not restore over the new draft.
 }
 
-TEST_CASE("Smart startup recovers unfinished work while completed local models stay in history", "[SmartGenerationFlow]")
+TEST_CASE("Smart startup never reauthorizes saved unfinished or completed generation", "[SmartGenerationFlow]")
 {
     using Slic3r::GUI::ModelGenerationPresentation::is_unfinished_smart_job;
     AIModelGenerationClient::JobStatus job;
@@ -172,12 +120,12 @@ TEST_CASE("Smart startup recovers unfinished work while completed local models s
     for (const auto* state : {"preprocessing", "queued", "running", "stopping", "stopped", "cancelled", "failed", "awaiting_confirmation"}) {
         DYNAMIC_SECTION(state) {
             job.state = state;
-            CHECK(is_unfinished_smart_job(job, false));
-            CHECK(is_unfinished_smart_job(job, true));
+            CHECK_FALSE(is_unfinished_smart_job(job, false));
+            CHECK_FALSE(is_unfinished_smart_job(job, true));
         }
     }
     job.state = "ready"; job.artifact_ready = true;
-    CHECK(is_unfinished_smart_job(job, false)); // Remote ready is not a published local model.
+    CHECK_FALSE(is_unfinished_smart_job(job, false)); // Completed assets are opened explicitly through history.
     CHECK_FALSE(is_unfinished_smart_job(job, true));
     job.state = "failed"; job.creation_kind = "advanced_multiview_v1";
     CHECK_FALSE(is_unfinished_smart_job(job, false));
@@ -219,6 +167,34 @@ TEST_CASE("Advanced stage text describes four view generation instead of smart p
     job.state = "stopped";
     CHECK(localized_job_status(job, true).Contains(wxString::FromUTF8("四视图")));
     CHECK_FALSE(localized_job_status(job, true).Contains(wxString::FromUTF8("图片预览")));
+}
+
+TEST_CASE("Download failures explain the exhausted transfer in both generation modes", "[ModelGenerationStatusText][ModelGenerationPresentation]")
+{
+    using namespace Slic3r::GUI::ModelGenerationStatusText;
+    const auto code = GENERATE("artifact_dns_failed", "artifact_download_timeout", "artifact_transfer_failed");
+    const bool advanced = GENERATE(false, true);
+    AIModelGenerationClient::JobStatus job;
+    job.id = "failed-download-job"; job.provider_task_id = "completed-cloud-task";
+    job.state = "failed"; job.phase = "failed"; job.progress = 97;
+    job.provider_error_code = code; job.provider_error_category = "download";
+    job.message = "Raw transfer diagnostic"; job.artifact_ready = false;
+    const auto text = localized_job_status(job, advanced);
+    CHECK(text.Contains(wxString::FromUTF8("模型下载失败")));
+    CHECK(text.Contains(wxString::FromUTF8("重新生成")));
+    CHECK_FALSE(text.Contains("Raw transfer diagnostic"));
+    CHECK_FALSE(text.Contains(wxString::FromUTF8("补下载")));
+    CHECK_FALSE(text.Contains(wxString::FromUTF8("已有模型")));
+    CHECK(text.Contains("failed-download-job"));
+    CHECK(text.Contains("completed-cloud-task"));
+    if (std::string(code) == "artifact_dns_failed")
+        CHECK(text.Contains(wxString::FromUTF8("无法解析")));
+    if (std::string(code) == "artifact_download_timeout")
+        CHECK(text.Contains(wxString::FromUTF8("超时")));
+    CHECK(job.state == "failed");
+    CHECK(job.progress == 97);
+    CHECK_FALSE(job.artifact_ready);
+    CHECK(job.provider_error_code == code);
 }
 
 TEST_CASE("Advanced failures use Chinese reasons and retain diagnostic identity without raw English", "[ModelGenerationStatusText][AdvancedCreation]")
@@ -308,65 +284,75 @@ TEST_CASE("Advanced reconnect notices survive localization of the last observed 
     CHECK(raw.job_id == "same-job");
 }
 
-TEST_CASE("Smart generation advances once and retains completed stages across retries", "[SmartGenerationFlow]")
+TEST_CASE("Smart generation submits once and a new user operation resets its stages", "[SmartGenerationFlow]")
 {
     using Slic3r::GUI::SmartGenerationFlow;
     SmartGenerationFlow flow;
-    flow.begin("flow");
+    flow.begin("first");
     REQUIRE(flow.observe(90, false, false) == 27);
     REQUIRE_FALSE(flow.claim_geometry(false));
     REQUIRE(flow.claim_geometry(true));
     REQUIRE_FALSE(flow.claim_geometry(true));
-    REQUIRE(flow.observe(0, false, false) == 30);
     REQUIRE(flow.observe(80, false, false) == 78);
     flow.stop();
-    REQUIRE_FALSE(flow.claim_geometry(true));
-    REQUIRE(flow.observe(95, true, false) == 78);
-    flow.resume(true);
-    REQUIRE(flow.observe(20, false, false) == 78);
-    REQUIRE(flow.observe(96, true, false) == 96);
-    REQUIRE(flow.observe(100, true, false) == 99);
-    REQUIRE(flow.observe(100, true, true) == 100);
-    flow.begin("new");
-    REQUIRE(flow.observe(0, false, false) == 0);
+    CHECK_FALSE(flow.claim_geometry(true));
+    CHECK(flow.observe(95, true, false) == 78);
+    flow.begin("second");
+    CHECK(flow.flow_id == "second");
+    CHECK(flow.observe(0, false, false) == 0);
+    CHECK_FALSE(flow.submitted);
+    REQUIRE(flow.claim_geometry(true));
+    CHECK_FALSE(flow.claim_geometry(true));
+    CHECK(flow.observe(100, true, true) == 100);
 }
 
-TEST_CASE("Restoring a smart task requires explicit intent before the next paid stage", "[SmartGenerationFlow]")
-{
-    using namespace Slic3r::GUI;
-    SmartGenerationFlow flow;
-    flow.restore(28, 60, false);
-    REQUIRE_FALSE(flow.claim_geometry(true));
-    REQUIRE(flow.observe(100, false, false) == 28);
-    flow.resume(false);
-    REQUIRE(flow.claim_geometry(true));
-    ModelGenerationUIState state, current;
-    state.smart_mode = true; state.smart_flow_id = "stable-flow";
-    state.model_generation_context = true; state.model_generation_session = 1;
-    REQUIRE(model_generation_route_action(state, current) == RedesignModelRouteAction::Refresh);
-    current = state; state.job_id = "server-job"; ++state.revision;
-    REQUIRE(model_generation_route_action(state, current) == RedesignModelRouteAction::Refresh);
-}
-TEST_CASE("Resuming a smart task ignores its previous terminal checkpoint while busy", "[SmartGenerationFlow]")
+TEST_CASE("Saved smart checkpoints remain read only until a fresh operation", "[SmartGenerationFlow]")
 {
     using Slic3r::GUI::SmartGenerationFlow;
-    for (const auto* terminal : {"failed", "stopped", "cancelled"}) {
-        SmartGenerationFlow flow;
-        flow.begin("flow");
-        REQUIRE(flow.claim_geometry(true));
-        REQUIRE(flow.observe(20, false, false) == 42);
-        flow.observe_job_state(terminal, false);
-        REQUIRE(flow.stopped);
-        flow.resume(true);
-        flow.observe_job_state(terminal, true);
-        CHECK_FALSE(flow.stopped);
+    const bool geometry = GENERATE(false, true);
+    SmartGenerationFlow flow;
+    flow.flow_id = "old"; flow.restore(58, 60, geometry);
+    CHECK_FALSE(flow.claim_geometry(true));
+    CHECK(flow.stopped);
+    CHECK(flow.observe(100, false, false) == 58);
+    flow.begin("new");
+    CHECK(flow.progress == 0);
+    CHECK(flow.elapsed() == 0);
+    CHECK_FALSE(flow.stopped);
+    CHECK(flow.claim_geometry(true));
+}
+
+TEST_CASE("A smart stop waits for a terminal acknowledgement without authorizing late geometry", "[SmartGenerationFlow]")
+{
+    using Slic3r::GUI::SmartGenerationFlow;
+    const bool geometry = GENERATE(false, true);
+    SmartGenerationFlow flow;
+    flow.begin("stopped-operation");
+    if (geometry) REQUIRE(flow.claim_geometry(true));
+    flow.stop();
+    for (const auto* pending : {"preprocessing", "awaiting_confirmation", "queued", "running", "stopping", ""}) {
+        CHECK_FALSE(flow.complete_stop(pending));
         CHECK_FALSE(flow.claim_geometry(true));
-        CHECK(flow.observe(80, false, false) == 78);
-        flow.observe_job_state("running", true);
-        CHECK_FALSE(flow.stopped);
-        flow.observe_job_state(terminal, false);
-        CHECK(flow.stopped);
     }
+    const std::string terminal = GENERATE("ready", "failed", "stopped", "cancelled");
+    REQUIRE(flow.complete_stop(terminal));
+    CHECK(flow.stopped);
+    CHECK_FALSE(flow.claim_geometry(true));
+    flow.begin("fresh-operation");
+    CHECK_FALSE(flow.complete_stop(terminal));
+    CHECK(flow.claim_geometry(true));
+    CHECK_FALSE(flow.claim_geometry(true));
+}
+
+TEST_CASE("Reloading a completed local model cannot authorize a provider submission", "[SmartGenerationFlow]")
+{
+    Slic3r::GUI::SmartGenerationFlow flow;
+    flow.begin("completed");
+    flow.claim_geometry(true); flow.stop();
+    flow.load_completed_asset();
+    CHECK_FALSE(flow.claim_geometry(true));
+    CHECK(flow.observe(96, true, false) == 96);
+    CHECK(flow.observe(100, true, true) == 100);
 }
 
 using namespace Slic3r::GUI::ModelGenerationPresentation;
@@ -1825,4 +1811,59 @@ TEST_CASE("Unrecognized job progress uses a Chinese fallback without changing kn
     job.state = "running"; job.phase = "preparing_multiview";
     CHECK(localized_job_status(job).Contains(wxString::FromUTF8("人像")));
     CHECK_FALSE(localized_job_status(job, true).Contains(wxString::FromUTF8("人像")));
+}
+
+TEST_CASE("Provider failure text reports geometry and account failures with their real reasons", "[ModelGenerationStatusText][ModelGenerationPresentation]")
+{
+    using namespace Slic3r::GUI;
+    const bool advanced = GENERATE(false, true);
+    AIModelGenerationClient::JobStatus status;
+    status.id = "diagnostic-job"; status.state = "failed";
+    status.provider_error_code = "provider_task_failed"; status.provider_name = "yoyoclaw";
+    status.provider_task_id = "existing-task";
+    status.provider_detail_code = "FailedOperation.InnerError";
+    status.provider_detail_message = "输入图片生成几何失败，请更换图片或重试";
+    const auto geometry = ModelGenerationStatusText::localized_job_status(status, advanced);
+    CHECK(geometry.Contains(wxString::FromUTF8("生成几何失败")));
+    CHECK(geometry.Contains(wxString::FromUTF8(status.provider_detail_message)));
+    CHECK_FALSE(geometry.Contains(wxString::FromUTF8("积分")));
+    status.provider_detail_code = "InsufficientBalance";
+    status.provider_detail_message = "账户余额不足";
+    const auto balance = ModelGenerationStatusText::localized_job_status(status, advanced);
+    CHECK(balance.Contains(wxString::FromUTF8("积分或额度不足")));
+    for (const auto category : {"authentication", "rate_limit", "network"}) {
+        DYNAMIC_SECTION(category) {
+            status.provider_error_category = category;
+            status.provider_detail_code = "provider_http_error"; status.provider_detail_message.clear();
+            const auto text = ModelGenerationStatusText::localized_job_status(status, advanced);
+            CHECK_FALSE(text.Contains(wxString::FromUTF8("积分")));
+            CHECK(text.Contains(category == std::string("authentication") ? wxString::FromUTF8("认证") :
+                category == std::string("rate_limit") ? wxString::FromUTF8("请求过多") : wxString::FromUTF8("连接异常或超时")));
+        }
+    }
+    ModelGenerationUIState before, after;
+    after = before; after.provider_detail_message = "新详情";
+    CHECK_FALSE(before.same_content(after));
+    after = before; after.provider_detail_code = "NewCode";
+    CHECK_FALSE(before.same_content(after));
+}
+
+TEST_CASE("Creation status guidance never promises recovery of an ended generation", "[ModelGenerationStatusText][ModelGenerationPresentation]")
+{
+    using namespace Slic3r::GUI;
+    const bool advanced = GENERATE(false, true);
+    AIModelGenerationClient::JobStatus status;
+    status.state = "running"; status.phase = "generating"; status.progress = 69;
+    const auto running = ModelGenerationStatusText::localized_job_status(status, advanced);
+    CHECK_FALSE(running.Contains(wxString::FromUTF8("会继续恢复")));
+    for (const auto* state : {"stopped", "failed"}) {
+        status.state = state; status.provider_error_code = "local_image_processing_failed";
+        const auto terminal = ModelGenerationStatusText::localized_job_status(status, advanced);
+        CHECK_FALSE(terminal.Contains(wxString::FromUTF8("使用当前配色生成预览")));
+    }
+    for (const auto* error : {"provider_task_ambiguous: unknown", "idempotency_conflict: unknown", "snapshot_unavailable: unknown"}) {
+        const auto hint = ModelGenerationStatusText::localized_advanced_service_error(error);
+        CHECK_FALSE(hint.Contains(wxString::FromUTF8("恢复原任务")));
+        CHECK(hint.Contains(wxString::FromUTF8("本次请求")));
+    }
 }

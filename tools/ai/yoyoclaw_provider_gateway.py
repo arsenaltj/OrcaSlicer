@@ -1,16 +1,20 @@
 """YoYoClaw adapters for model generation and provider catalog discovery."""
 from __future__ import annotations
 
+from concurrent.futures import Future
+from copy import deepcopy
 from pathlib import Path
 import re
+import threading
+import time
 from typing import Any, Mapping
 
 try:
     from .model_provider_gateway import ModelTaskRequest, PaidTaskAuthorization, ProviderGatewayError, ProviderTaskRef
-    from .yoyoclaw_client import YoYoClawClient, YoYoClawError
+    from .yoyoclaw_client import YoYoClawClient, YoYoClawConfig, YoYoClawError
 except ImportError:  # pragma: no cover - direct sidecar execution
     from model_provider_gateway import ModelTaskRequest, PaidTaskAuthorization, ProviderGatewayError, ProviderTaskRef
-    from yoyoclaw_client import YoYoClawClient, YoYoClawError
+    from yoyoclaw_client import YoYoClawClient, YoYoClawConfig, YoYoClawError
 
 
 IMAGE_LIBRARY = "image-model-library"
@@ -18,13 +22,12 @@ GEOMETRY_LIBRARY = "3d-model-library"
 IMAGE_ROLE = "image"
 GEOMETRY_ROLE = "geometry"
 PREFERRED_IMAGE_MODEL = f"{IMAGE_LIBRARY}/Qwen-Image-3.0-PC-YOYO"
-PREFERRED_GEOMETRY_MODEL = f"{GEOMETRY_LIBRARY}/Hy-3D-3.1-PC-YOYO"
 
 
 def validate_options(face_limit: int, geometry_quality: str, texture_quality: str) -> None:
-    if face_limit not in {300000, 1000000} or geometry_quality != "standard" or texture_quality != "standard":
+    if face_limit not in {0, 300000, 1000000} or geometry_quality != "standard" or texture_quality != "standard":
         raise ProviderGatewayError(
-            "YOYOClaw supports 300000 or 1000000 faces here, with standard geometry and texture.",
+            "YOYOClaw uses its default face count, with standard geometry and texture.",
             code="invalid_model_request", category="validation", provider="yoyoclaw", operation="model_generation",
         )
 
@@ -33,7 +36,7 @@ def _error(error: YoYoClawError, operation: str) -> ProviderGatewayError:
     return ProviderGatewayError(
         str(error), code=error.code, category=error.category, provider="yoyoclaw",
         operation=operation, retryable=error.retryable, ambiguous=error.ambiguous,
-        status=error.status, provider_message=error.provider_message, request_id=error.request_id,
+        status=error.status, provider_message=error.provider_message, provider_code=error.provider_code, request_id=error.request_id,
     )
 
 
@@ -146,58 +149,70 @@ def _model_entries(raw: list[dict[str, Any]], library: str) -> list[dict[str, An
 
 def _compatible_version(model_id: str, role: str) -> tuple[int, ...] | None:
     name = model_id.rsplit("/", 1)[-1].strip().lower()
+    if role == GEOMETRY_ROLE and set(re.split(r"[-_.]", name)) & {
+        "texture", "texturing", "rigging", "motion", "format", "polygen", "convert",
+    }:
+        return None
     pattern = r"qwen-image-(\d+(?:\.\d+)*)(?:[-_].*)?" if role == IMAGE_ROLE else \
-              r"hy-3d-(\d+(?:\.\d+)*)(?:[-_].*)?"
+              r"hy-3d-(\d{1,8}(?:\.\d{1,8}){0,7})(?:[-_].*)?"
     match = re.fullmatch(pattern, name)
     if match is None:
         return None
-    return tuple(int(part) for part in match.group(1).split("."))
+    components = [int(part) for part in match.group(1).split(".")]
+    while len(components) > 1 and components[-1] == 0:
+        components.pop()
+    return tuple(components)
 
 
 def _resolve_preferred_model(entries: list[dict[str, Any]], role: str,
                              server_default: str = "") -> dict[str, Any] | None:
-    preferred = PREFERRED_IMAGE_MODEL if role == IMAGE_ROLE else PREFERRED_GEOMETRY_MODEL
     by_id = {
         str(item.get("id", "")).casefold(): item
         for item in entries if isinstance(item.get("id"), str)
     }
-    exact = by_id.get(preferred.casefold())
-    if exact is not None:
-        return exact
-
-    # Image generation has a product-defined default.  Its absence must not
-    # silently switch a new advanced draft to another paid model.
     if role == IMAGE_ROLE:
-        return None
-
-    library = IMAGE_LIBRARY if role == IMAGE_ROLE else GEOMETRY_LIBRARY
-    if isinstance(server_default, str) and server_default.strip():
-        normalized_default = _normalise_model(server_default, library)
-        candidate = by_id.get(normalized_default.casefold())
-        if candidate is not None and _compatible_version(str(candidate["id"]), role) is not None:
-            return candidate
-
+        return by_id.get(PREFERRED_IMAGE_MODEL.casefold())
     compatible = [
-        (_compatible_version(str(item["id"]), role), str(item["id"]).casefold(), item)
-        for item in entries
-        if _compatible_version(str(item["id"]), role) is not None
+        (version, item) for item in by_id.values()
+        if (version := _compatible_version(str(item["id"]), role)) is not None
     ]
     if not compatible:
         return None
-    compatible.sort(key=lambda candidate: (candidate[0], candidate[1]), reverse=True)
-    return compatible[0][2]
+    newest = max(version for version, _ in compatible)
+    candidates = [item for version, item in compatible if version == newest]
+    if len(candidates) == 1:
+        return candidates[0]
+    if isinstance(server_default, str) and server_default.strip():
+        candidate = by_id.get(_normalise_model(server_default, GEOMETRY_LIBRARY).casefold())
+        if candidate in candidates:
+            return candidate
+    explicit = [item for item in candidates if item.get("default") is True]
+    return explicit[0] if len(explicit) == 1 else None
+
+
+def _close_client(client: Any) -> None:
+    close = getattr(client, "close", None)
+    if callable(close):
+        close()
 
 
 class YoYoClawModelProviderGateway:
     def __init__(self, client_factory: Any = YoYoClawClient) -> None:
         self._client_factory = client_factory
         self._task_models: dict[str, str] = {}
+        self._catalog_lock = threading.Lock()
+        self._catalog_inflight: dict[tuple[str, YoYoClawConfig], Future] = {}
+        self._catalog_cache: dict[str, tuple[YoYoClawConfig, float, dict[str, Any]]] = {}
 
     def _client(self) -> YoYoClawClient:
         return self._client_factory()
 
     def model_generation_available(self) -> bool:
-        return bool(self._client().config.configured)
+        client = self._client()
+        try:
+            return bool(client.config.configured)
+        finally:
+            _close_client(client)
 
     @staticmethod
     def _entries(client: YoYoClawClient, library: str) -> tuple[list[dict[str, Any]], str]:
@@ -211,19 +226,53 @@ class YoYoClawModelProviderGateway:
             server_default = ""
         return _model_entries(raw_models, library), server_default
 
-    def catalog(self, role: str) -> dict[str, Any]:
+    def catalog(self, role: str, *, fresh: bool = False) -> dict[str, Any]:
         if role not in {IMAGE_ROLE, GEOMETRY_ROLE}:
             return {
                 "role": role, "provider": "yoyoclaw", "state": "error", "models": [],
                 "default_model": "", "error": {"code": "invalid_role", "message": "Unsupported model catalog role."},
             }
+        client = self._client()
+        try:
+            config = client.config
+            if not isinstance(config, YoYoClawConfig):
+                return self._read_catalog(client, role)
+            key = (role, config)
+            with self._catalog_lock:
+                pending = self._catalog_inflight.get(key)
+                cached = self._catalog_cache.get(role)
+                if pending is None and not fresh and cached and cached[0] == config and cached[1] > time.monotonic():
+                    return deepcopy(cached[2])
+                owner = pending is None
+                if owner:
+                    pending = self._catalog_inflight[key] = Future()
+            if not owner:
+                return deepcopy(pending.result())
+            try:
+                result = self._read_catalog(client, role)
+                with self._catalog_lock:
+                    if result["state"] in {"ready", "empty"}:
+                        self._catalog_cache[role] = (config, time.monotonic() + 5, result)
+                    elif self._catalog_cache.get(role, (None,))[0] == config:
+                        self._catalog_cache.pop(role, None)
+                pending.set_result(result)
+                return deepcopy(result)
+            except BaseException as error:
+                pending.set_exception(error)
+                raise
+            finally:
+                with self._catalog_lock:
+                    self._catalog_inflight.pop(key, None)
+        finally:
+            _close_client(client)
+
+    def _read_catalog(self, client: Any, role: str) -> dict[str, Any]:
         library = IMAGE_LIBRARY if role == IMAGE_ROLE else GEOMETRY_LIBRARY
-        if not self.model_generation_available():
+        if not client.config.configured:
             return {
                 "role": role, "provider": "yoyoclaw", "state": "not_configured", "models": [],
                 "default_model": "", "error": {"code": "provider_not_configured", "message": "YOYOClaw credentials are not configured."},
             }
-        client = self._client()
         try:
             entries, server_default = self._entries(client, library)
         except YoYoClawError as exc:
@@ -236,7 +285,7 @@ class YoYoClawModelProviderGateway:
         selected_models = entries if role == IMAGE_ROLE else [selected] if selected is not None else []
         default = str(selected["id"]) if selected is not None else ""
         available = bool(selected_models)
-        return {
+        catalog = {
             "role": role, "provider": "yoyoclaw", "state": "ready" if available else "empty",
             "models": selected_models, "default_model": default,
             "error": None if available else {
@@ -244,6 +293,22 @@ class YoYoClawModelProviderGateway:
                 "message": "No compatible YOYOClaw model is available for this function.",
             },
         }
+        if role == GEOMETRY_ROLE:
+            catalog["admitted_models"] = [entry["id"] for entry in entries
+                                          if _compatible_version(entry["id"], role) is not None]
+            catalog.update(single_image=available, named_four_view=available)
+        return catalog
+
+    def geometry_capability(self, source: str, model: str = "", *, fresh: bool = True) -> dict[str, Any]:
+        catalog = self.catalog(GEOMETRY_ROLE, fresh=fresh)
+        selected = model or catalog.get("default_model", "")
+        present = selected in catalog.get("admitted_models", [])
+        supported = present and source in {"image", "multiview"}
+        error = catalog.get("error") or {}
+        return {"available": supported, "model": selected,
+                "named_four_view_model": "supported" if source == "multiview" and supported else "unknown",
+                "reason": "" if supported else "unsupported_input" if present else
+                          error.get("code", "model_unavailable")}
 
     def _image_client_and_model(self, model_id: str) -> tuple[YoYoClawClient, str]:
         if not isinstance(model_id, str) or not model_id.strip():
@@ -256,10 +321,12 @@ class YoYoClawModelProviderGateway:
         try:
             entries, _ = self._entries(client, IMAGE_LIBRARY)
         except YoYoClawError as exc:
+            _close_client(client)
             raise _error(exc, "image_catalog") from None
         selected = next((str(item["id"]) for item in entries
                          if str(item.get("id", "")).casefold() == normalized.casefold()), "")
         if not selected:
+            _close_client(client)
             raise ProviderGatewayError(
                 "The selected YOYOClaw image model is unavailable.",
                 code="model_unavailable", category="availability", provider="yoyoclaw",
@@ -275,12 +342,17 @@ class YoYoClawModelProviderGateway:
             return client.generate_image_response(selected, prompt, image_paths)
         except YoYoClawError as exc:
             raise _error(exc, "image_generation") from None
+        finally:
+            _close_client(client)
 
     def download_design_response(self, response: Mapping[str, Any], output_path: str | Path) -> Path:
+        client = self._client()
         try:
-            return self._client().download_generated_image(response, Path(output_path))
+            return client.download_generated_image(response, Path(output_path))
         except YoYoClawError as exc:
             raise _error(exc, "image_download") from None
+        finally:
+            _close_client(client)
 
     def _validate_geometry_model(self, model_id: str) -> str:
         if not isinstance(model_id, str) or not model_id.strip():
@@ -308,7 +380,11 @@ class YoYoClawModelProviderGateway:
         existing = existing_task_id.strip()
         if existing:
             return ProviderTaskRef("yoyoclaw", existing, True)
-        if request.source != "image" or request.image_path is None or not Path(request.image_path).is_file():
+        if request.source == "image" and request.image_path is not None and Path(request.image_path).is_file():
+            views = {"front": Path(request.image_path)}
+        elif request.source == "multiview" and request.image_paths and set(request.image_paths) == {"front", "left", "right", "back"}:
+            views = request.image_paths
+        else:
             raise ProviderGatewayError(
                 "YOYOClaw requires the confirmed 2D design image as its 3D input.",
                 code="invalid_model_request", category="validation", provider="yoyoclaw", operation="model_generation",
@@ -316,11 +392,8 @@ class YoYoClawModelProviderGateway:
         if request.output_format not in {"glb", "obj"}:
             raise ProviderGatewayError("Unsupported YOYOClaw output format.", code="invalid_model_request", category="validation", provider="yoyoclaw", operation="model_generation")
         model_id = self._validate_geometry_model(request.model_id)
-        catalog = self.catalog(GEOMETRY_ROLE)
-        available_models = {
-            item.get("id") for item in catalog.get("models", []) if isinstance(item, Mapping)
-        }
-        if catalog.get("state") != "ready" or model_id not in available_models:
+        catalog = self.catalog(GEOMETRY_ROLE, fresh=True)
+        if model_id not in catalog.get("admitted_models", []):
             error = catalog.get("error") if isinstance(catalog.get("error"), Mapping) else {}
             raise ProviderGatewayError(
                 str(error.get("message") or "The selected YOYOClaw 3D model is unavailable."),
@@ -335,9 +408,12 @@ class YoYoClawModelProviderGateway:
         client = self._client()
         authorization.consume("yoyoclaw", "model_generation")
         try:
-            task_id = client.submit_3d(model_id, Path(request.image_path))
+            task_id = (client.submit_multiview_3d(model_id, views) if request.source == "multiview"
+                       else client.submit_3d(model_id, views["front"]))
         except YoYoClawError as exc:
             raise _error(exc, "model_generation") from None
+        finally:
+            _close_client(client)
         self._task_models[task_id] = model_id
         return ProviderTaskRef("yoyoclaw", task_id, False)
 
@@ -356,8 +432,9 @@ class YoYoClawModelProviderGateway:
             )
         model_id = self._validate_geometry_model(model_id)
         self._task_models[task_id] = model_id
+        client = self._client()
         try:
-            return self._client().wait_3d(model_id, task_id, stop_event=stop_event, progress=progress)
+            return client.wait_3d(model_id, task_id, stop_event=stop_event, progress=progress)
         except YoYoClawError as exc:
             error = _error(exc, "task_poll")
             # Only this code is emitted after a confirmed terminal task status.
@@ -365,6 +442,8 @@ class YoYoClawModelProviderGateway:
             error.terminal = exc.code == "provider_task_failed"
             error.task_id = task_id
             raise error from None
+        finally:
+            _close_client(client)
 
     def download_artifact(
         self,

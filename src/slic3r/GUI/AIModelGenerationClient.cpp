@@ -614,51 +614,63 @@ void AIModelGenerationClient::get_provider_catalog(const std::string& role, cons
         return;
     }
     const std::string path = "/v1/orcaslicer/model-provider-catalog?role=" + role + "&provider=" + provider;
+    auto on_parse_error = on_error;
     get_json(path,
-             [role, provider, on_complete = std::move(on_complete), on_error](std::string body) mutable {
-                 const auto parsed = json::parse(body, nullptr, false);
-                 if (parsed.is_discarded() || !parsed.is_object()) {
-                     if (on_error) on_error("AI sidecar returned an invalid provider catalog.");
+             [role, provider, on_complete = std::move(on_complete), on_parse_error = std::move(on_parse_error)](std::string body) {
+                 auto catalog = parse_provider_catalog(body, role, provider);
+                 if (!catalog) {
+                     if (on_parse_error) on_parse_error("AI sidecar returned an invalid provider catalog.");
                      return;
                  }
-                 ProviderCatalog catalog;
-                 catalog.role = parsed.value("role", std::string());
-                 catalog.provider = parsed.value("provider", std::string());
-                 catalog.state = parsed.value("state", std::string("error"));
-                 catalog.default_model = parsed.value("default_model", std::string());
-                 catalog.connection_state = parsed.value("connection_state", std::string());
-                 if (catalog.connection_state.empty()) {
-                     catalog.connection_state = catalog.state == "ready"
-                         ? (provider == "yoyoclaw" ? "connected" : "configured")
-                         : catalog.state;
-                 }
-                 if (parsed.contains("error") && parsed["error"].is_object()) {
-                     catalog.error_code = parsed["error"].value("code", std::string());
-                     catalog.error_message = parsed["error"].value("message", std::string());
-                     catalog.retryable = parsed["error"].value("retryable", false);
-                 }
-                 if (parsed.contains("models") && parsed["models"].is_array()) {
-                     for (const auto& item : parsed["models"]) {
-                         if (!item.is_object()) continue;
-                         const std::string id = item.value("id", std::string());
-                         const std::string name = item.value("name", std::string());
-                         if (id.empty() || id.size() > 256 || name.empty() || name.size() > 256) continue;
-                         catalog.models.push_back({id, name, item.value("available", true)});
-                         if (catalog.models.size() >= 64) break;
-                     }
-                 }
-                 const bool valid_connection_state = catalog.connection_state == "connected" ||
-                     catalog.connection_state == "configured" || catalog.connection_state == "not_configured" ||
-                     catalog.connection_state == "checking" || catalog.connection_state == "empty" ||
-                     catalog.connection_state == "error";
-                 if (catalog.role != role || catalog.provider != provider || catalog.state.empty() ||
-                     !valid_connection_state) {
-                     if (on_error) on_error("AI sidecar returned an incomplete provider catalog.");
-                     return;
-                 }
-                 if (on_complete) on_complete(std::move(catalog));
+                 if (on_complete) on_complete(std::move(*catalog));
              },
              std::move(on_error), 30);
+}
+
+std::optional<AIModelGenerationClient::ProviderCatalog> AIModelGenerationClient::parse_provider_catalog(
+    const std::string& body, const std::string& role, const std::string& provider)
+{
+    try {
+        const auto parsed = json::parse(body, nullptr, false);
+        if (!parsed.is_object()) return std::nullopt;
+        ProviderCatalog catalog;
+        catalog.role = parsed.value("role", std::string());
+        catalog.provider = parsed.value("provider", std::string());
+        catalog.state = parsed.value("state", std::string());
+        catalog.default_model = parsed.value("default_model", std::string());
+        catalog.connection_state = parsed.value("connection_state", std::string());
+        catalog.single_image = parsed.value("single_image", false);
+        catalog.named_four_view = parsed.value("named_four_view", false);
+        if (catalog.connection_state.empty())
+            catalog.connection_state = catalog.state == "ready"
+                ? (provider == "yoyoclaw" ? "connected" : "configured") : catalog.state;
+        if (const auto error = parsed.find("error"); error != parsed.end() && !error->is_null()) {
+            if (!error->is_object()) return std::nullopt;
+            catalog.error_code = error->value("code", std::string());
+            catalog.error_message = error->value("message", std::string());
+            catalog.retryable = error->value("retryable", false);
+        }
+        if (const auto models = parsed.find("models"); models != parsed.end()) {
+            if (!models->is_array()) return std::nullopt;
+            for (const auto& item : *models) {
+                if (!item.is_object()) return std::nullopt;
+                const auto id = item.value("id", std::string());
+                const auto name = item.value("name", std::string());
+                const bool available = item.value("available", true);
+                if (id.empty() || id.size() > 256 || name.empty() || name.size() > 256) return std::nullopt;
+                if (catalog.models.size() < 64) catalog.models.push_back({id, name, available});
+            }
+        }
+        const auto& state = catalog.state;
+        const auto& connection = catalog.connection_state;
+        if (catalog.role != role || catalog.provider != provider ||
+            (state != "ready" && state != "empty" && state != "not_configured" && state != "checking" && state != "error") ||
+            (connection != "connected" && connection != "configured" && connection != "not_configured" &&
+             connection != "checking" && connection != "empty" && connection != "error")) return std::nullopt;
+        return catalog;
+    } catch (const json::exception&) {
+        return std::nullopt;
+    }
 }
 
 void AIModelGenerationClient::recheck(const std::string& job_id, StatusFn on_complete, ErrorFn on_error)
@@ -1026,33 +1038,49 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
     }
     if (job.contains("image_metrics") && job["image_metrics"].is_object()) {
         const auto& metrics = job["image_metrics"];
-        status.image_score = metrics.value("score", 0.0);
-        status.mean_color_error = metrics.value("mean_color_error", 0.0);
-        status.small_region_ratio = metrics.value("small_region_ratio_after", 0.0);
-        status.changed_pixel_ratio = metrics.value("changed_pixel_ratio", 0.0);
-        status.boundary_complexity = metrics.value("boundary_complexity", 0.0);
-        status.minimum_feature_px = metrics.value("minimum_feature_px", 0);
-        status.meaningful_palette_count = metrics.value("meaningful_palette_count", 0);
-        status.meaningful_subject_color_count = metrics.value("meaningful_subject_color_count", 0);
-        status.printable_subject_area_ratio = metrics.value("printable_subject_area_ratio", 0.0);
-        status.largest_subject_component_ratio = metrics.value("largest_subject_component_ratio", 0.0);
-        status.largest_detached_subject_diagonal_ratio = metrics.value(
-            "largest_detached_subject_diagonal_ratio", 0.0);
-        status.palette_quality_ok = metrics.value("design_reference", std::string()) == "ai-design-v1" ||
-                                    metrics.value("palette_quality_ok", true);
-        status.material_fragmentation_ok = metrics.value("material_fragmentation_ok", true);
-        // The generic preview check runs before the portrait-specific geometry
-        // reference is built.  Prefer the later paid-task preflight result when
-        // it is available; otherwise the UI can keep enabling "Generate 3D"
-        // even though the exact image that would be sent to Tripo was rejected.
+        // Optional advice from older or unavailable analyzers must not prevent
+        // consumption of an otherwise valid job. Leave the saved report intact.
+        const auto number = [](const json& report, const char* name) {
+            const auto value = report.find(name);
+            if (value == report.end() || !value->is_number()) return 0.0;
+            const auto result = value->get<double>();
+            return std::isfinite(result) ? result : 0.0;
+        };
+        const auto integer = [](const json& report, const char* name) {
+            const auto value = report.find(name);
+            if (value == report.end() || !value->is_number_integer()) return 0;
+            const auto result = value->get<double>();
+            return result >= std::numeric_limits<int>::min() && result <= std::numeric_limits<int>::max()
+                ? value->get<int>() : 0;
+        };
+        const auto flag = [](const json& report, const char* name) {
+            const auto value = report.find(name);
+            return value != report.end() && value->is_boolean() ? value->get<bool>() : true;
+        };
+        status.image_score = number(metrics, "score");
+        status.mean_color_error = number(metrics, "mean_color_error");
+        status.small_region_ratio = number(metrics, "small_region_ratio_after");
+        status.changed_pixel_ratio = number(metrics, "changed_pixel_ratio");
+        status.boundary_complexity = number(metrics, "boundary_complexity");
+        status.minimum_feature_px = integer(metrics, "minimum_feature_px");
+        status.meaningful_palette_count = integer(metrics, "meaningful_palette_count");
+        status.meaningful_subject_color_count = integer(metrics, "meaningful_subject_color_count");
+        status.printable_subject_area_ratio = number(metrics, "printable_subject_area_ratio");
+        status.largest_subject_component_ratio = number(metrics, "largest_subject_component_ratio");
+        status.largest_detached_subject_diagonal_ratio = number(metrics, "largest_detached_subject_diagonal_ratio");
+        status.palette_quality_ok = (metrics.contains("design_reference") && metrics["design_reference"] == "ai-design-v1") ||
+                                    flag(metrics, "palette_quality_ok");
+        status.material_fragmentation_ok = flag(metrics, "material_fragmentation_ok");
+        // Prefer advice for the actual provider image over the generic preview;
+        // neither report controls permission to generate a model.
         const nlohmann::json* input_quality = nullptr;
         if (metrics.contains("generation_input_quality") && metrics["generation_input_quality"].is_object())
             input_quality = &metrics["generation_input_quality"];
         else if (metrics.contains("model_input_quality") && metrics["model_input_quality"].is_object())
             input_quality = &metrics["model_input_quality"];
         if (input_quality != nullptr) {
-            status.model_input_score = input_quality->value("score", 0.0);
-            status.model_input_eligible = input_quality->value("model_input_eligible", true);
+            status.model_input_score = number(*input_quality, "score");
+            status.model_input_eligible = flag(*input_quality, "model_input_eligible");
             const auto read_codes = [input_quality](const char* name, std::vector<std::string>& output) {
                 if (!input_quality->contains(name) || !(*input_quality)[name].is_array())
                     return;
@@ -1067,6 +1095,15 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
         const auto& failure = job["provider_failure"];
         status.provider_error_code = failure.value("code", std::string());
         status.provider_error_category = failure.value("category", std::string());
+        if (failure.contains("provider_code") && failure["provider_code"].is_string()) {
+            const auto value = failure["provider_code"].get<std::string>();
+            if (value.size() <= 100 && value.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-") == std::string::npos)
+                status.provider_detail_code = value;
+        }
+        if (failure.contains("provider_message") && failure["provider_message"].is_string()) {
+            status.provider_detail_message = wxString::FromUTF8(failure["provider_message"].get<std::string>()).Left(512).ToUTF8().data();
+            for (auto& c : status.provider_detail_message) if (static_cast<unsigned char>(c) < 32 || c == 127) c = ' ';
+        }
         status.provider_error_retryable = failure.value("retryable", false);
         status.provider_error_ambiguous = failure.value("ambiguous", false);
     }

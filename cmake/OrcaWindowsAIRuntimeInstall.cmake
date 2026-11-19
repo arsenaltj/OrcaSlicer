@@ -2,6 +2,7 @@
 if(SLIC3R_GUI)
     include("${CMAKE_SOURCE_DIR}/cmake/OrcaSemanticRuntime.cmake")
     orca_stage_semantic_runtime(OrcaSlicer)
+    orca_stage_generation_foreground(OrcaSlicer)
 endif()
 
 if(ORCA_AI_WINDOWS_INSTALLER)

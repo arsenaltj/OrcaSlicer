@@ -60,9 +60,9 @@ struct ModelGenerationFeatureHost::Impl
                         request.origin = WorkbenchOpenRequest::Origin::Library;
                         opened = open_asset(std::move(request));
                         import_on_history_commit = opened;
-                    } else opened = command == ModelLibraryCommand::OpenImage
-                        ? model_generation->request_library_action(command, entry)
-                        : workbench->request_library_action(command, entry);
+                    } else if (command == ModelLibraryCommand::OpenImage) {
+                        opened = !creation_context.locked() && model_generation->request_library_action(command, entry);
+                    } else opened = workbench->request_library_action(command, entry);
                     if (opened && history_navigation && command == ModelLibraryCommand::OpenImage)
                         history_navigation(true);
                     if (opened && command == ModelLibraryCommand::Import) capabilities->refresh_assets();
@@ -73,7 +73,7 @@ struct ModelGenerationFeatureHost::Impl
         configure_library_publication(model_generation);
         workbench->m_library_removal_listener = [this](const ModelLibraryRemovalState::Event& event) {
             if (shutdown_requested) return;
-            for (auto* panel : {model_generation, legacy_creation}) {
+            for (auto* panel : {model_generation}) {
                 if (!panel) continue;
                 panel->apply_library_removal_projection();
                 if (event.phase == ModelLibraryRemovalState::Phase::Committed) panel->m_library_removed_thumbnails.clear();
@@ -143,13 +143,13 @@ struct ModelGenerationFeatureHost::Impl
     {
         if (shutdown_requested) return;
         if (event.entry.job_id.empty()) {
-            for (auto* panel : {workbench, model_generation, legacy_creation}) if (panel) panel->load_library_entries(true, true);
+            for (auto* panel : {workbench, model_generation}) if (panel) panel->load_library_entries(true, true);
             capabilities->refresh_assets();
             return;
         }
         const auto committed = capabilities->capabilities().library->commit(std::move(event));
         if (!committed) return;
-        for (auto* panel : {workbench, model_generation, legacy_creation})
+        for (auto* panel : {workbench, model_generation})
             if (panel) panel->apply_library_commit(*committed);
         capabilities->apply_library_commit();
     }
@@ -159,8 +159,11 @@ struct ModelGenerationFeatureHost::Impl
         panel->set_local_import_executor([this](const AI::ModelImportRequest& request,
             std::shared_ptr<WorkbenchImportSession> session, WorkbenchImportProgress progress,
             WorkbenchImportCompletion completion, std::function<bool()> current) {
-            auto finished = [completion = std::move(completion), current, navigate = local_import_navigation](const AI::ModelImportResult& result) {
-                if (result.imported() && current && current() && navigate) navigate();
+            auto navigation_current = capture_import_navigation ? capture_import_navigation() : std::function<bool()>{};
+            auto finished = [completion = std::move(completion), current, navigate = local_import_navigation,
+                             navigation_current = std::move(navigation_current)](const AI::ModelImportResult& result) {
+                if (result.imported() && current && current() && navigate &&
+                    (!navigation_current || navigation_current())) navigate();
                 if (completion) completion(result);
             };
             return !shutdown_requested && workspace->import_workbench_artifact_async(request,
@@ -176,7 +179,7 @@ struct ModelGenerationFeatureHost::Impl
         preparation_lifetime.reset();
         if (capabilities) capabilities->shutdown();
         if (import_session) import_session->invalidate();
-        for (auto* panel : {model_generation, workbench, legacy_creation}) {
+        for (auto* panel : {model_generation, workbench}) {
             if (!panel) continue;
             panel->set_ui_state_listener({});
             panel->set_workbench_listener({});
@@ -198,13 +201,20 @@ struct ModelGenerationFeatureHost::Impl
     bool open_asset(WorkbenchOpenRequest request)
     {
         if (shutdown_requested || !workbench || !workbench->library_asset_switch_allowed()) return false;
-        if (request.origin == WorkbenchOpenRequest::Origin::Smart ||
-            request.origin == WorkbenchOpenRequest::Origin::Legacy) {
-            const auto* creator = request.origin == WorkbenchOpenRequest::Origin::Smart ? model_generation : legacy_creation;
-            if (!creator || !request.matches_creator(creator->m_displayed_model_job_id, creator->m_model_generation_session)) return false;
+        if (request.origin == WorkbenchOpenRequest::Origin::Legacy) return false;
+        if (request.origin == WorkbenchOpenRequest::Origin::Smart) {
+            if (!model_generation || !request.matches_creator(model_generation->m_displayed_model_job_id,
+                                                              model_generation->m_model_generation_session)) return false;
         }
         const auto context = request.return_context;
+        auto creation_request = request;
+        // History carries a return page, but does not represent the explicit
+        // creator-to-workbench handoff that acquires the editing lock.
+        if (request.origin == WorkbenchOpenRequest::Origin::History ||
+            request.origin == WorkbenchOpenRequest::Origin::Library)
+            creation_request.return_context.clear();
         if (!workbench->open_workbench_asset(std::move(request))) return false;
+        creation_context.stage(creation_request);
         if (!context.empty()) {
             previous_return_context = return_context;
             return_context = context;
@@ -233,27 +243,6 @@ struct ModelGenerationFeatureHost::Impl
         });
     }
 
-    ModelGenerationPanel* legacy_panel()
-    {
-        if (shutdown_requested) return nullptr;
-        if (!legacy_creation) {
-            legacy_creation = new ModelGenerationPanel(model_generation->GetParent(), *workspace, *workspace,
-                ModelGenerationPanel::Role::AdvancedCreation);
-            legacy_creation->m_library_removals = workbench->m_library_removals;
-            configure_library_publication(legacy_creation);
-            configure_local_import(legacy_creation);
-            legacy_creation->set_asset_replace_guard([this] { return workbench->library_asset_switch_allowed(); });
-            legacy_creation->set_asset_open_handler([this](WorkbenchOpenRequest request) { return open_asset(std::move(request)); });
-            legacy_creation->initialize_for_shell_host();
-            legacy_creation->set_service_availability(service_available, generation_available, service_message);
-            legacy_creation->set_ui_state_listener([this](const ModelGenerationUIState& state) {
-                if (advanced_state_listener) advanced_state_listener(state);
-            });
-            legacy_creation->Hide();
-        }
-        return legacy_creation;
-    }
-
     ModelGenerationUIState latest_state;
     ModelGenerationUIStateListener state_listener;
 
@@ -263,15 +252,14 @@ struct ModelGenerationFeatureHost::Impl
     std::function<void(bool)> history_navigation;
     ModelGenerationPanel* model_generation { nullptr };
     ModelGenerationPanel* workbench { nullptr };
-    ModelGenerationPanel* legacy_creation { nullptr };
-    ModelGenerationUIStateListener advanced_state_listener;
     std::string return_context;
+    CreationWorkbenchContext creation_context;
+    std::function<void()> creation_workflow_listener;
+    std::function<std::function<bool()>()> capture_import_navigation;
     std::optional<std::string> previous_return_context;
     bool import_on_history_commit {false};
     std::string pending_import_asset;
     std::uint64_t pending_import_generation {0};
-    bool service_available {false}, generation_available {false};
-    std::string service_message;
     bool shutdown_requested { false };
     std::shared_ptr<WorkbenchImportSession> import_session;
     std::shared_ptr<const char> preparation_lifetime {std::make_shared<const char>(0)};
@@ -399,11 +387,13 @@ void ModelGenerationFeatureHost::set_state_listener(ModelGenerationUIStateListen
 
 bool ModelGenerationFeatureHost::synchronize_input(const ModelGenerationUIInput& input)
 {
+    if (creation_editing_locked()) return m_impl->latest_state.input == input;
     return m_impl->model_generation != nullptr && m_impl->model_generation->synchronize_ui_input(input);
 }
 
 bool ModelGenerationFeatureHost::synchronize_options(const ModelGenerationUIOptions& options)
 {
+    if (creation_editing_locked()) return m_impl->latest_state.options == options;
     return m_impl->model_generation != nullptr && m_impl->model_generation->synchronize_ui_options(options);
 }
 
@@ -420,20 +410,21 @@ void ModelGenerationFeatureHost::get_provider_catalog(
 }
 
 bool ModelGenerationFeatureHost::request_generate_smart()
-{ return can_replace_asset() && m_impl->model_generation && m_impl->model_generation->request_generate_smart(); }
+{ return !creation_editing_locked() && can_replace_asset() && m_impl->model_generation && m_impl->model_generation->request_generate_smart(); }
 
 ModelGenerationSubmissionResult ModelGenerationFeatureHost::request_generate_design()
 {
-    return can_replace_asset() && m_impl->model_generation ? m_impl->model_generation->request_generate_design() : ModelGenerationSubmissionResult::Rejected;
+    return !creation_editing_locked() && can_replace_asset() && m_impl->model_generation ? m_impl->model_generation->request_generate_design() : ModelGenerationSubmissionResult::Rejected;
 }
 
 ModelGenerationSubmissionResult ModelGenerationFeatureHost::request_generate_model()
 {
-    return can_replace_asset() && m_impl->model_generation ? m_impl->model_generation->request_generate_model() : ModelGenerationSubmissionResult::Rejected;
+    return !creation_editing_locked() && can_replace_asset() && m_impl->model_generation ? m_impl->model_generation->request_generate_model() : ModelGenerationSubmissionResult::Rejected;
 }
 
 bool ModelGenerationFeatureHost::request_retry_model()
 {
+    if (creation_editing_locked()) return false;
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_retry_model();
 }
 
@@ -449,6 +440,7 @@ bool ModelGenerationFeatureHost::request_retry_service()
 
 bool ModelGenerationFeatureHost::request_restore_latest()
 {
+    if (creation_editing_locked()) return false;
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_restore_latest();
 }
 
@@ -459,6 +451,7 @@ void ModelGenerationFeatureHost::set_smart_creation_presented(bool presented)
 
 bool ModelGenerationFeatureHost::request_restart()
 {
+    if (creation_editing_locked()) return false;
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_restart();
 }
 
@@ -481,11 +474,13 @@ bool ModelGenerationFeatureHost::request_refresh_history()
 
 bool ModelGenerationFeatureHost::request_open_image_history(const std::string& job_id)
 {
+    if (creation_editing_locked()) return false;
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_open_image_history(job_id);
 }
 
 bool ModelGenerationFeatureHost::request_open_history(const std::string& job_id)
 {
+    if (creation_editing_locked()) return false;
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_open_history(job_id);
 }
 
@@ -513,6 +508,13 @@ void ModelGenerationFeatureHost::set_workbench_return_to_design_handler(std::fun
 }
 
 bool ModelGenerationFeatureHost::request_open_workbench() { return m_impl->workbench->request_open_workbench(); }
+void ModelGenerationFeatureHost::present_existing_workbench()
+{
+    auto* panel = m_impl->workbench;
+    if (!panel || m_impl->shutdown_requested) return;
+    panel->initialize_for_shell_host();
+    if (!panel->m_finishing_workbench) panel->set_finishing_workbench(true);
+}
 void ModelGenerationFeatureHost::set_workbench_presented(bool presented)
 {
     if (!presented) m_impl->pending_import_asset.clear();
@@ -551,6 +553,7 @@ void ModelGenerationFeatureHost::set_history_model_open_handler(ModelHistoryOpen
 { m_impl->workbench->set_history_model_open_handler(std::move(handler)); }
 void ModelGenerationFeatureHost::finish_history_model_open(bool accepted, std::function<void()> complete)
 {
+    m_impl->creation_context.finish(accepted);
     if (!accepted) {
         if (m_impl->previous_return_context) m_impl->return_context = *m_impl->previous_return_context;
         m_impl->import_on_history_commit = false;
@@ -558,6 +561,7 @@ void ModelGenerationFeatureHost::finish_history_model_open(bool accepted, std::f
     }
     m_impl->previous_return_context.reset();
     m_impl->workbench->finish_history_model_open(accepted, std::move(complete));
+    if (m_impl->creation_workflow_listener) m_impl->creation_workflow_listener();
     if (accepted && m_impl->import_on_history_commit) {
         m_impl->import_on_history_commit = false;
         const auto state = m_impl->workbench->workbench_snapshot();
@@ -583,13 +587,9 @@ void ModelGenerationFeatureHost::set_service_availability(bool available, const 
 
 void ModelGenerationFeatureHost::set_service_availability(bool available, bool generation_available, const std::string& message)
 {
-    m_impl->service_available = available;
-    m_impl->generation_available = generation_available;
-    m_impl->service_message = message;
     if (m_impl->model_generation != nullptr)
         m_impl->model_generation->set_service_availability(available, generation_available, message);
     m_impl->workbench->set_service_availability(available, false, message);
-    if (m_impl->legacy_creation) m_impl->legacy_creation->set_service_availability(available, generation_available, message);
 }
 
 void ModelGenerationFeatureHost::shutdown()
@@ -608,20 +608,6 @@ void ModelGenerationFeatureHost::cancel_portrait_optimization() {
     if (!m_impl->shutdown_requested) m_impl->workbench->cancel_portrait_optimization();
 }
 
-wxWindow* ModelGenerationFeatureHost::legacy_creation_panel() { return m_impl->legacy_panel(); }
-void ModelGenerationFeatureHost::unmount_legacy_creation()
-{
-    if (!m_impl->legacy_creation) return;
-    auto* panel = m_impl->legacy_creation;
-    if (auto* sizer = panel->GetContainingSizer()) sizer->Detach(panel);
-    panel->Hide(); panel->Reparent(m_impl->model_generation->GetParent());
-}
-void ModelGenerationFeatureHost::set_advanced_state_listener(ModelGenerationUIStateListener listener)
-{ m_impl->advanced_state_listener = std::move(listener); }
-ModelGenerationUIState ModelGenerationFeatureHost::advanced_snapshot() const
-{ return m_impl->legacy_creation ? m_impl->legacy_creation->ui_state_snapshot() : ModelGenerationUIState{}; }
-bool ModelGenerationFeatureHost::request_open_legacy_image_history(const std::string& job_id)
-{ auto* panel = m_impl->legacy_panel(); return panel && panel->request_open_image_history(job_id); }
 bool ModelGenerationFeatureHost::request_open_workbench_artifact(WorkbenchOpenRequest request)
 {
     if (!request.identifies_asset() ||
@@ -637,17 +623,35 @@ std::optional<WorkbenchOpenRequest> ModelGenerationFeatureHost::snapshot_generat
     if (!request.identifies_asset() || request.sha256.size() != 64) return std::nullopt;
     return request;
 }
-bool ModelGenerationFeatureHost::request_open_generated_workbench(bool advanced, const ModelGenerationUIState& displayed)
-{
-    auto* creator = advanced ? m_impl->legacy_panel() : m_impl->model_generation;
-    if (!creator || !displayed.model_ready || !creator->ui_state_snapshot().model_ready) return false;
-    auto request = creator->generated_workbench_request(advanced
-        ? WorkbenchOpenRequest::Origin::Legacy : WorkbenchOpenRequest::Origin::Smart);
-    if (!request.matches_creator(displayed.model_asset_id, displayed.model_generation_session)) return false;
-    return m_impl->open_asset(std::move(request));
-}
 bool ModelGenerationFeatureHost::workbench_returns_to_advanced() const
-{ return m_impl->return_context == "advanced"; }
+{ return m_impl->creation_context.anchor() ? m_impl->creation_context.anchor()->advanced : m_impl->return_context == "advanced"; }
+
+bool ModelGenerationFeatureHost::creation_editing_locked() const
+{ return m_impl->creation_context.locked(); }
+
+bool ModelGenerationFeatureHost::commit_current_creation(const WorkbenchOpenRequest& request)
+{
+    const auto current = workbench_snapshot();
+    if (request.origin == WorkbenchOpenRequest::Origin::History ||
+        request.origin == WorkbenchOpenRequest::Origin::Library || !request.identifies_asset() ||
+        current.asset_id != request.entry.job_id || current.model_path.empty()) return false;
+    m_impl->creation_context.stage(request);
+    m_impl->creation_context.finish(true);
+    if (m_impl->creation_workflow_listener) m_impl->creation_workflow_listener();
+    return true;
+}
+
+void ModelGenerationFeatureHost::restore_creation_editing()
+{
+    m_impl->creation_context.restore_editing();
+    if (m_impl->creation_workflow_listener) m_impl->creation_workflow_listener();
+}
+
+void ModelGenerationFeatureHost::set_creation_workflow_listener(std::function<void()> listener)
+{ m_impl->creation_workflow_listener = std::move(listener); }
+
+void ModelGenerationFeatureHost::set_import_navigation_guard(std::function<std::function<bool()>()> capture)
+{ m_impl->capture_import_navigation = std::move(capture); }
 
 ModelWorkspaceFeatureHost& ModelGenerationFeatureHost::workspace_capabilities() { return *m_impl->capabilities; }
 

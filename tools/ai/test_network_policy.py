@@ -4,6 +4,8 @@ import io
 import http.client
 import json
 import os
+import socket
+import ssl
 from pathlib import Path
 import tempfile
 import unittest
@@ -145,6 +147,43 @@ class NetworkPolicyTests(unittest.TestCase):
         started = next(call for call in event.call_args_list if call.args[0] == "tripo.request.started")
         self.assertEqual(started.kwargs["network"], diagnostics)
         self.assertNotIn("test-key", json.dumps(started.kwargs))
+
+    def test_tripo_https_download_uses_the_registry_proxy_without_resolving_the_target(self) -> None:
+        target = "openapi.cdn.tripo3d.com"
+        signed_path = "/model.glb?signature=private-download-signature"
+        connection = mock.MagicMock()
+        connection.makefile.side_effect = [
+            io.BytesIO(b"HTTP/1.0 200 Connection established\r\n\r\n"),
+            io.BytesIO(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nglTFtest"),
+        ]
+        def resolve(host, port, *args, **kwargs):
+            if host == target:
+                raise socket.gaierror(11002, "local target resolution unavailable")
+            self.assertEqual((host, port), ("proxy.example", 8080))
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 8080))]
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(network_policy, "_is_windows", return_value=True), \
+                mock.patch.object(network_policy.urllib.request, "getproxies_environment", return_value={}), \
+                mock.patch.object(network_policy, "_windows_registry_proxies",
+                                  return_value={"https": "http://proxy.example:8080"}), \
+                mock.patch.object(network_policy.urllib.request, "proxy_bypass", return_value=False), \
+                mock.patch.object(socket, "getaddrinfo", side_effect=resolve) as lookup, \
+                mock.patch.object(socket, "socket", return_value=connection), \
+                mock.patch.object(ssl.SSLContext, "wrap_socket", return_value=connection) as tls, \
+                mock.patch.object(tripo_client, "diagnostic_event") as event:
+            output = tripo_client.download_task_artifact(
+                {"output": {"model_url": "https://" + target + signed_path}}, Path(directory) / "model.glb")
+            self.assertEqual(output.read_bytes(), b"glTFtest")
+        self.assertEqual(lookup.call_count, 1)
+        self.assertEqual(lookup.call_args.args[:2], ("proxy.example", 8080))
+        self.assertEqual(tls.call_args.kwargs["server_hostname"], target)
+        sent = b"".join(call.args[0] for call in connection.sendall.call_args_list)
+        self.assertIn(b"CONNECT openapi.cdn.tripo3d.com:443", sent)
+        self.assertIn(("GET " + signed_path).encode(), sent)
+        completed = next(call for call in event.call_args_list if call.args[0] == "tripo.artifact_download.completed")
+        self.assertEqual(completed.kwargs["network"],
+                         {"source": "windows_registry", "schemes": ["https"], "bypass": False})
+        self.assertNotIn("private-download-signature", str(event.call_args_list))
 
     def test_tripo_upload_retries_connection_reset_before_paid_creation(self) -> None:
         payload = b'{"code":0,"data":{"file_token":"upload-token"}}'

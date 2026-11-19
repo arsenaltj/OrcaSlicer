@@ -14,6 +14,9 @@
 #include <wx/menu.h>
 #include <wx/sizer.h>
 #include <wx/wupdlock.h>
+#include <wx/choicdlg.h>
+#include <wx/weakref.h>
+#include <wx/datetime.h>
 #include <cstring>
 
 namespace Slic3r::GUI {
@@ -94,6 +97,18 @@ public:
             wxST_ELLIPSIZE_END | wxST_NO_AUTORESIZE);
         row->Add(m_state, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
         m_surface->SetSizer(row);
+        Bind(wxEVT_CHAR_HOOK, [this, open](wxKeyEvent& event) {
+            const int key = event.GetKeyCode();
+            if (event.GetModifiers() != wxMOD_NONE ||
+                (key != WXK_RETURN && key != WXK_NUMPAD_ENTER && key != WXK_SPACE)) {
+                event.Skip();
+                return;
+            }
+            if (IsEnabled() && !m_key.empty()) {
+                const std::string selected_key = m_key;
+                open(selected_key);
+            }
+        });
         for (wxWindow* window : std::array<wxWindow*, 5>{{this, m_surface, m_visual, m_name, m_state}}) {
             window->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
                 SetFocus();
@@ -213,7 +228,9 @@ wxWindow* ModelGenerationPanel::build_workbench_history(wxWindow* parent)
     m_workbench_history_title = new wxStaticText(panel, wxID_ANY,
         m_shell_smart_creation ? _L("历史模型") : _L("选择模型"));
     m_workbench_history_title->SetForegroundColour(wxColour(235, 235, 235));
-    root->Add(m_workbench_history_title, 0, wxEXPAND | wxALL, FromDIP(12));
+    auto* heading = new wxBoxSizer(wxHORIZONTAL);
+    heading->Add(m_workbench_history_title, 1, wxALIGN_CENTER_VERTICAL);
+    root->Add(heading, 0, wxEXPAND | wxALL, FromDIP(12));
     auto* search = new TextInput(panel, wxEmptyString, wxEmptyString, "workbench_search");
     search->SetName("ai_content_color");
     search->SetBackgroundColor(StateColor(wxColour(49, 49, 54)));

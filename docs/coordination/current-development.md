@@ -75,6 +75,135 @@ Plan change: none to paused Desktop work, device/production/paid/PR/push prohibi
 ---
 
 # 最新桌面323c记录（完整保留；不据历史记录恢复暂停工作）
+# 2026-11-19 当前：V1.0.4修订已提交，Draft PR #79已创建
+
+主线：DELIVERY/WINDOWS-INSTALLER-20261119追加交付，codex/task/ai-creation-v1.0.4-20261119，本会话单writer；用户授权的本地提交／专用分支推送／集成PR创建已完成。
+
+本轮：8份修改提交cb9ca6b9ed；保留原8个本地提交并推送专用PR分支，创建[Draft PR #79](https://github.com/arsenaltj/OrcaSlicer/pull/79)指向codex/team/integration，覆盖103份文件。6份非进度来源与受测快照一致，集成、架构映射／README、文档同步及完整PR diff检查通过；两份进度文档同步归档。[完整范围](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#windows-installer-v1.0.4-20261119)。
+
+未结：对应HEAD的远端CI、非作者复核和维护人合入；实际安装／新版GUI未验，1项Windows符号链接权限跳过、原62/64及模型信息面板待评审状态保持，PR保留Draft。
+
+下一步：按PR当前检查及复核结果续接；源码／提交列表／远端状态见.tmp/dev/evidence/pr-ai-creation-v1.0.4-20261119/git-pr.json。不直接推送集成分支，不自动替代非作者审批或新增生成。
+
+计划变更：追加提交及PR授权已执行，取代此前本轮不提交／推送／建PR的限制；不扩大产品范围，不重标旧安装包身份，原生成预算不变。
+
+---
+
+# 2026-11-19 此前：远端合并与V1.0.4 Windows安装包交付完成
+
+主线：DELIVERY/WINDOWS-INSTALLER-20261119，codex/team/integration／dc76651724，本会话单writer；已完成用户授权的远端同步merge、版本1.0.4及不含移动端SDK的内部安装包。
+
+本轮：远端323c6c1c9c已安全合并，10份冲突闭合，两份待评审文档及恢复stash保留。第四轮EXE／ZIP构建退出0，实际负载版本1.0.4.0、移动SDK0项；内容扫描无检出／缺口。展示75项、智能切片259项、生命周期38项通过；合并回归378通过／1跳过／0失败，各组不累加。源码身份6a2ecdefd2；[完整交付与证据](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#windows-installer-v1.0.4-20261119)。
+
+未结：1项符号链接回归因Windows权限跳过；实际安装／新版主窗口GUI未执行。原62/64、YMV-40／AICR-24视觉未达标及AICR-17精确GUI覆盖边界保留。模型信息面板仍待评审，不实施。
+
+下一步：产物在.tmp/dev/package-v1.0.4-20261119-r4，最终收据在.tmp/dev/evidence/windows-installer-v1.0.4-20261119/final-validation.json。按新明确反馈续接；返回creation-model-info-panel-20261119评审稿，不自动启动／安装、推送或新增生成。
+
+计划变更：本轮同步与打包交付闭合；版本及打包修改随source-r4完整快照进入产物，未另建普通提交。构建退出后仅增量更新两份进度文档，六份非进度来源及EXE／DLL身份不变；不扩大产品范围，原3/20预算不变。
+
+---
+
+# 2026-11-19 此前：AI 创作四项模型信息面板，开发方案待评审
+
+主线：UX/CREATION-MODEL-INFO-20261119，`creation-model-info-panel-20261119`；`codex/team/integration`／`90a91d1ae5`，本会话单代理。用户最新要求输出开发方案和核心用例、评审后再实施；仅四项面板，其它 UX 不动。
+
+本轮：承接已核实的 Figma 原始参数，细化[开发方案与核心测试评审稿](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#creation-model-info-panel-20261119)：状态归属／显隐、字段契约、拟修改文件、GL与缩窗缓存顺序、7步实施及验收；保留MI-01～08并展开24个核心子例，均待执行。原始设计证据仍在`.tmp/dev/evidence/creation-model-info-panel-20261119/figma-panel-specs.json`。
+
+未结：待用户评审；R1字体资源、R2超长值、R3中央区域锚点为明确决策项，16DIP定位仅推荐且未核实与画板坐标等价；实现／构建／产品测试／GUI均未执行。返回点：此前本地提交`90a91d1ae5`、原62/64及YMV-40／AICR-24视觉未达标、AICR-17精确GUI覆盖边界保持。
+
+下一步：按用户评审结论修订或在明确授权范围内实施；当前不写产品代码，不新增生成、启动窗口或恢复旧平台拒绝。
+
+计划变更：沿原编号把可行性分析扩为开发方案和24个核心子例，未新增实施授权或调用预算；本轮仅更新既有两份进度文档并做内容／引用／diff检查，无产品／Figma修改、构建、产品测试、GUI或供应商调用，不提交／推送／打包。
+
+---
+
+# 2026-11-19 此前：AI创作整改本地提交交付，62/64项闭合
+
+主线：MAINLINE-BUGFIX-001／`ai-creation-source-review-20261118`联动高级四图，`codex/team/integration`，实施基线`d652b772ab`；本轮追加普通本地提交授权，单writer。
+
+本轮：按用户要求归档56份相关代码、测试及文档；77份受测来源SHA匹配最终实窗收据，覆盖全部54份非进度变更。本轮只补主计划／短状态和Git核对；准确提交SHA、父提交及文件／blob映射见[本地提交回执](../../.tmp/dev/evidence/ai-creation-source-review-20261118/git-commit.json)，既有验证见[原实窗最终收据](../../.tmp/dev/evidence/ai-creation-source-review-20261118/windows-live-20261118/localized-live-final-verified-20261119.json)。
+
+未结：62/64项闭合；YMV-40视觉不达标、AICR-24联合条件随40未满足。两处偏差已存在于供应商原始产物，本地与原产物四向渲染逐像素相同。AICR-17精确真实迟到完成GUI回调未投递仍为覆盖边界，不称64/64或实物打印通过；[原64项矩阵](../../.tmp/dev/evidence/ai-creation-source-review-20261118/review.md#implementation-evidence-20261118)。
+
+下一步：交付本地提交记录，后续按明确反馈续接；质量两项须有改善后的真实产物再按原标准复验。不自动新增生成、恢复暂停目标或重试旧平台启动拒绝。
+
+计划变更：新增本地commit交付，取代本轮此前“不提交”；两份进度文档一并归档，不推送／建PR／打包。产品范围、判定标准和计数不变；复用459项Python及最新59/59原生与匹配运行版，交叉计数不累加。本轮无产品改动、重建、新GUI或供应商调用，预算保持3/20。
+
+---
+
+# 2026-11-18 此前：高级 YOYOClaw 首轮方案评审（范围与预算由上节覆盖）
+
+主线：UX/ADVANCED-MULTIVIEW-20261107／advanced-yoyoclaw-multiview-20261118补充；codex/team/integration／d652b772ab，本会话单代理，仅方案评审，用户明确确认后再实施。
+
+本轮：完成[开发方案与40项核心用例](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#开发方案与核心测试用例评审稿2026-11-18)，明确修改文件、状态归属、7步实施、兼容边界及分层证据。只补现有UI／Gateway／客户端／高级能力接缝，保留任务格式及下游业务；控制能力概览外调阻塞，显式列出智能新任务选模同步点与建议真实预算。
+
+未结：待用户评审确认后实施；百万面字段／透传、新版协议／限额待核实，40项产品用例均未执行。建议最多1次新YOYOClaw四图3D、零2D／Tripo尚未授权；此前高级只读10／10、本地提交及其他未验／暂停目标保持，返回点见主计划下节。
+
+下一步：按用户评审结果修订或在明确确认的范围内实施；本轮仅源码核对及方案／引用／编号／diff检查，不启动构建、测试、GUI或供应商请求。
+
+计划变更：沿原编号增加可评审开发方案和40项用例，原分析保留来源；不新增任务台账、实施授权或调用预算，不扩大为业务重构、单图面数修正及下游算法优化。仅增量更新原两份进度文档。
+
+---
+
+# 2026-11-18 此前：高级只读操作区本地提交完成，10／10项通过
+
+主线：MAINLINE-BUGFIX-001／workbench-navigation-and-initial-view-20261117补充；codex/team/integration／d652b772ab，当前会话单writer。
+
+本轮：按新增授权完成本地提交d652b772ab，三文件包括高级页代码、平台维护说明及验收方案，两份进度文档继续保留本地；提交范围／blob／源码摘要核对通过，索引为空。高级页共用横向双按钮及底部提示已实施；223／223相关测试及ADV-UX-01～10全部通过。追加授权的一次2D＋YOYO智能生成ready，job749597de／task1514441350593945600、1 attempt；实窗完成普通态、交接只读、真实修复禁用／候选保护、终态保锁、显式恢复及同DPI外观对照。源码／EXE／DLL与原受测版本一致，1786份来源及原任务摘要不变；新旧QA与sidecar均正常退出。[最终验收](../../Docs/plans/2026-11-17-creation-workbench-navigation-and-readonly.md#108-智能对照续验2026-11-18)。
+
+未结：本次10项无未结；其他旧未验／暂停目标保持，不由本次验收推出完成。
+
+下一步：可试用.tmp/dev/run/Honor Forge Studio.exe；完整证据advanced-readonly-actions-20261117/validation.json，智能续验保存在smart-validation-20261118子目录，本次提交映射见同目录git-commit.json。按新反馈继续，不自动新增生成／推送／打包。
+
+计划变更：新增普通本地Git提交授权已执行，取代此前不提交限制；三文件内容与已验快照一致，本轮未重建、启动应用或新增供应商调用，未推送／打包。原10项产品范围不扩大；追加一次智能生成授权已使用1／1，Tripo0次，原9项与本轮第10项结算10／10，不沿用旧调用余额。
+
+---
+
+# 2026-11-17 此前：Tripo 下载容错及本地Git提交完成
+
+主线：MAINLINE-BUGFIX-001／tripo-download-reliability-20261117；codex/team/integration／ad75c3bffb（实施基线55e89a776624），当前会话单writer。
+
+本轮：按追加授权提交ad75c3bffb，标题“fix(ai): 增强 Tripo 模型下载容错与错误提示”。10份代码／测试／维护说明与已验快照一致，暂存范围及blob／diff核对通过，索引为空；两份进度文档继续排除。沿用241项Python、9项原生及24项分层验收，运行文件19656项匹配；本轮没有重建、启动应用或新增接口调用，真实请求仍为2/10、零新增生成。
+
+未结：德国现场网络未复现；代理／故障路径为离线注入，实窗仅独立记录副本的只读提示展示，不冒充新生成失败全流程。此前工作台44项及其提交已完成；模型朝向、粒子主观视觉／性能及历史未验／暂停目标继续保留。
+
+下一步：可试用.tmp/dev/run/Honor Forge Studio.exe；完整24项映射和限制在主计划本节，受测身份保留于.tmp/dev/evidence/tripo-download-reliability-20261117/validation.json，本次提交映射在同目录git-commit.json。按新反馈继续，不自动使用剩余调用额度或恢复旧暂停目标。
+
+计划变更：新增普通本地Git提交授权，取代此前不提交限制，代码范围不变；不推送、打包或部署，两份进度文档仍保留本地。此前6/6生成记录保留，本轮10次请求授权仅用2次，不新增补下载、跨次恢复、URL刷新、系统DNS配置或自动付费重生成。
+
+---
+
+# 2026-11-17 此前：工作台往返／只读44项验收通过
+
+主线：MAINLINE-BUGFIX-001／workbench-navigation-and-initial-view-20261117；codex/team/integration／55e89a7766（实施基线7221efa760），单writer。
+
+本轮：按追加授权提交55e89a7766，标题“fix(ai): 修复工作台往返与创作只读恢复流程”，30文件包含代码／测试／维护文档及[44项验收稿](../../Docs/plans/2026-11-17-creation-workbench-navigation-and-readonly.md#9-实施与验收结果2026-11-17)。27份代码／测试与已验快照一致，未重复构建／产品测试。原36项逻辑／消费者与8项真实主窗口通过，386／48／74项自动检查交叉不累加；2227原件摘要不变。validation.json保留受测身份，提交映射见同目录git-commit.json；提交后仅两份排除的进度文档保留本地修改。
+
+未结：模型首次朝向独立保留，未纳入本次实施；原粒子主观视觉／性能、历史缺口及旧暂停目标不变。当前DPI／GPU验证不外推其他环境。
+
+下一步：用户可试用.tmp/dev/run/Honor Forge Studio.exe；QA及sidecar已结束，最终工程另存qa-native-final.3mf。后续按反馈处理，不自动扩展相机或恢复旧任务。
+
+计划变更：本方案开发／验收及本地Git交付完成；追加提交授权取代此前不提交限制，不推送／打包，两份进度文档继续排除。此前实窗修正及失败证据保留；本次提交不新增生成，原YOYO2次成功／Tripo6/6不变。
+
+---
+
+# 2026-11-16 此前：高级历史套图文件夹入口核心验证完成
+
+主线：MAINLINE-BUGFIX-001；codex/team/integration／1607014e82（实施基线d3764bdc72），advanced-history-folder-20261116单writer，沿已确认单项菜单范围本地交付。
+
+本轮：按新授权仅提交代码／平台说明／映射三文件，提交1607014e82；主计划与本短状态保留本地未提交，未推送。已实现“在文件夹中打开”，Windows修正版五步构建／运行树核验及既有高级49/49回归通过；实窗验证目标目录、取消／改名兼容、缺失／普通文件错误、中文路径／显式根目录及服务离线。原173项素材摘要不变，故障副本恢复，测试实例正常退出；证据.tmp/dev/evidence/advanced-history-folder-20261116/validation.json。
+
+未结：跨页、真实生成中、ACL／OS默认启动失败、菜单销毁及自动保存精确竞争子项未测，详见主计划FOLDER-01～10实际结果；原导出／删除仅备选，旧未验和暂停性能目标保留。
+
+下一步：可使用.tmp/dev/run/Honor Forge Studio.exe试用该入口，按本需求反馈继续；不恢复此前远端操作，源码／产物完整身份见验证证据。
+
+计划变更：新增排除两份进度文档的本地Git提交授权，取代此前不提交限制；用户确认实施的范围已完成核心验证；明确部分覆盖及原始失败修正，不扩大为全部边界通过，不新增导出／删除或生成。
+
+---
+
+# 2026-11-14 此前：PR #73 虚拟打印机三项补修
+
+---
 
 # MAINLINE-BUGFIX-001：全部现有成果提交与主线PR（2026-11-18）
 

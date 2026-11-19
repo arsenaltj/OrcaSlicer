@@ -92,16 +92,22 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
         if (!weak || weak->m_shutdown) return;
         auto* self = weak.get();
         if (history_open && history_open->canceled) {
-            self->m_preview_loading = false; self->m_busy = false;
-            if (!history_open->worker_finished()) self->refresh_controls();
+            if (!history_open->worker_finished([self, sequence, canceled] {
+                    if (sequence == self->m_sequence && self->m_preview_canceled == canceled) {
+                        self->m_preview_loading = false; self->m_busy = false;
+                    }
+                })) self->refresh_controls();
             return;
         }
         try {
             const auto start = std::chrono::steady_clock::now();
             const auto task = self->m_preview_task_scope.begin(path.string());
             const bool accepted = Presentation::background_tasks().submit(task,
-                [path, metadata_path, local_cancel, canceled, history_metadata,
+                [path, metadata_path, local_cancel, canceled, history_metadata, sequence,
                  share_exact_vertices, history_open](const Presentation::TaskContext& context) {
+                    BOOST_LOG_TRIVIAL(info) << "[ModelPreviewLoad] worker started request="
+                        << (history_open ? history_open->generation : sequence)
+                        << " sequence=" << sequence << " history=" << bool(history_open);
                     const auto stopped = [&context, canceled, local_cancel, history_open] {
                         return context.canceled() || canceled->load() || (local_cancel && local_cancel->load()) ||
                             (history_open && history_open->canceled.load());
@@ -111,6 +117,7 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
                 }, [weak, palette, sequence, start, loaded, failed, local_cancel, canceled,
                     may_install, history_open, task](Presentation::TaskResult<ModelPreviewLoadResult> outcome) mutable {
                     if (!weak || weak->m_shutdown) return;
+                    if (history_open && !history_open->worker_pending) return;
                     auto* self = weak.get();
                     auto result = outcome.value ? std::move(*outcome.value) : ModelPreviewLoadResult{};
                     auto prepared = std::move(result.prepared);
@@ -121,7 +128,20 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
                         catch (...) { error = "模型预览准备失败。"; }
                     }
                     if (!prepared && error.empty()) error = "模型预览准备已取消。";
-                    if (history_open && history_open->worker_finished()) return;
+                    const auto settle = [self, sequence, canceled, history_open] {
+                        if (sequence != self->m_sequence || self->m_preview_canceled != canceled) return;
+                        self->m_preview_loading = false; self->m_busy = false;
+                        BOOST_LOG_TRIVIAL(info) << "[ModelPreviewLoad] settled request="
+                            << (history_open ? history_open->generation : sequence)
+                            << " canceled=" << bool(history_open && history_open->canceled.load());
+                    };
+                    if (history_open) {
+                        if (history_open->worker_finished(settle)) return;
+                    } else settle();
+                    if (sequence != self->m_sequence || self->m_preview_canceled != canceled) {
+                        if (local_cancel) complete_local_model_import(self->m_library_import, local_cancel, true);
+                        return;
+                    }
                     if (!self->m_preview_task_scope.matches(task) || outcome.canceled) {
                         if (local_cancel) complete_local_model_import(self->m_library_import, local_cancel, true);
                         if (sequence == self->m_sequence) {
@@ -189,8 +209,15 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
                 }, Presentation::TaskPriority::Visible);
             if (!accepted) throw std::runtime_error("模型预览任务暂时无法启动。");
         } catch (const std::exception& e) {
-            self->m_preview_loading = false; self->m_busy = false;
-            if (history_open && history_open->worker_finished()) return;
+            const auto settle = [self, sequence, canceled] {
+                if (sequence == self->m_sequence && self->m_preview_canceled == canceled) {
+                    self->m_preview_loading = false; self->m_busy = false;
+                }
+            };
+            if (history_open) {
+                if (history_open->worker_finished(settle)) return;
+            } else settle();
+            if (sequence != self->m_sequence || self->m_preview_canceled != canceled) return;
             if(local_cancel) complete_local_model_import(self->m_library_import,local_cancel,false);
             failed(e.what());
         }

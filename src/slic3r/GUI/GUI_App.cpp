@@ -1,4 +1,5 @@
 #include "Presentation/UiRuntime.hpp"
+#include "Redesign/GenerationForeground.hpp"
 #include "CloudProvider.hpp"
 #include "ExportPresetBundleDialog.hpp"
 #include "ICloudServiceAgent.hpp"
@@ -3122,6 +3123,10 @@ void GUI_App::init_networking_callbacks()
 GUI_App::~GUI_App()
 {
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__<< boost::format(": enter");
+
+    // The close controller has drained presentation workers. ONNX sessions
+    // must be released before the loader starts detaching dependent DLLs.
+    GenerationParticles::release_foreground_runtime();
 
     if (m_agent)
         m_agent->set_printer_agent(nullptr);

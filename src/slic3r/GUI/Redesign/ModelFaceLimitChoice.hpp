@@ -6,6 +6,8 @@ namespace Slic3r::GUI {
 
 inline std::vector<int> model_face_limit_choices(const ModelGenerationUIOptions& options)
 {
+    if (options.provider == "yoyoclaw")
+        return {0};
     std::vector<int> choices {1000000};
     if (options.provider == "tripo")
         choices.push_back(2000000);
@@ -18,7 +20,7 @@ inline std::vector<int> model_face_limit_choices(const ModelGenerationUIOptions&
 inline ModelGenerationUIOptions model_generation_options_for_face_limit(ModelGenerationUIOptions options,
                                                                        int face_limit)
 {
-    options.face_limit = options.provider != "tripo" && face_limit > 1000000 ? 1000000 : face_limit;
+    options.face_limit = options.provider == "yoyoclaw" ? 0 : face_limit;
     options.geometry_quality = options.face_limit == 2000000 ? "detailed" : "standard";
     if (options.provider != "tripo")
         options.texture_quality = "standard";

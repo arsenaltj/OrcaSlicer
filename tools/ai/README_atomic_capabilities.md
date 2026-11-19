@@ -10,7 +10,7 @@
 | 人像及各类别提示词 | `image_preprocessing_prompts.py`、`openai_preprocessor.py::build_geometry_reference_prompt_layers` | 策略 → 精确规则层 | 独立调优；详见 [前处理说明](README_image_preprocessing.md) |
 | 图像/文字设计生成 | `design_workflow.py::DesignWorkflow` | Job/输入 → 等待确认的设计 | 独立应用能力；图像服务通过端口注入 |
 | 高级四视角设计 | `advanced_multiview_application.py`、`advanced_multiview_design_workflow.py`、`advanced_multiview_image_gateway.py` | 0～4具名上传／正文／完整图像模型ID → 四图组／当前图编辑；每目标一次生图 | 复用原单图image-to-3D核心提示；GPT保持原多参考规格，YOYOClaw三种已验证白名单模型接收最多三张有序参考图；operation冻结供应商与模型，下载恢复不重复提交；高级独立组、版本及计划确认，智能仍沿原Job流程 |
-| 高级四图建模 | `advanced_multiview_models.py`、`advanced_multiview_model_workflow.py` | 冻结的正左后右四图 → 一个Job-v2 | Tripo具名多图；恢复原task，未核实能力禁止单图降级 |
+| 高级四图建模 | `advanced_multiview_models.py`、`advanced_multiview_model_workflow.py` | 冻结的正左后右四图 → 一个Job-v2 | 每次有效操作新plan／job，当前操作内核对幂等；Tripo具名多图，未核实能力禁止单图降级 |
 | 3D 生成/保留几何贴图 | `model_generation_workflow.py::ModelGenerationWorkflow` | 确认的 Job/授权 → 3D Job | 独立应用能力；供应商/下载/执行通过端口注入 |
 | 请求与选项校验 | `model_request.py` | 字段/图片 → 合法值或 RequestError | 无 HTTP、队列或生成调用 |
 | 已有模型/参考质量 | `model_quality_workflow.py::ModelQualityWorkflow`、`nonportrait_reference.py` | 已注册模型/参考 → 报告 | 独立检查；可选付费视觉复核单独注入 |
@@ -19,7 +19,7 @@
 | 色彩距离/贴图烘焙/区域整理 | `model_color_space.py`、`model_texture_baking.py`、`model_color_regions.py` | 文件/色板 → 顶点色/整理报告 | 算法与文件处理独立；写入只针对调用方给定文件 |
 | 局部网格修复 | `model_mesh_repair.py` | OBJ/报告路径 → 修复结果 | 独立；不自动创建 3D 或修复历史模型 |
 | 旧人像几何、材质与多视图 | `portrait_geometry_reference.py`、`portrait_model_materials.py`、`portrait_multiview_workflow.py` | 显式参考/文件/Job → 参考/产物 | 从主入口移出；旧历史和显式开关保留 |
-| 任务 DTO、创建、恢复、取消与状态 | `model_contracts.py`、`model_job_lifecycle.py` | 请求/目录/任务 → Job/状态 | 独立；默认恢复不创建新付费任务 |
+| 任务 DTO、创建、取消与状态 | `model_contracts.py`、`model_job_lifecycle.py` | 请求/目录/任务 → Job/状态 | 智能／高级停止后和重启后不恢复生成；已完成资产保留，当前操作内查询不新建 |
 | 历史落盘与相对路径 | `model_job_repository.py` | Job ↔ 有界 job.json | 独立；存储回调可替换 |
 | 用户命令与确认 | `model_job_application.py::ModelJobApplication` | 命令/字段/Job ID → ApplicationResult | HTTP 和新界面共用的应用入口 |
 | 配置建议 | `config_proposal.py` | 允许项/建议 JSON → 受约束提案 | 提示词与白名单验证独立；调用服务仍由 host 组装 |
@@ -64,11 +64,15 @@ flowchart TD
 - YOYOClaw响应先保存受限响应信封再下载，下载失败恢复时不重复购买生成。失败记录和脱敏日志保存HTTP状态、供应商错误码、限长message、requestId、operation／attempt／view／provider／model、耗时及retryable／ambiguous；不保存Token、Prompt、Data URL或原始响应体。
 - `PUT /groups/<id>/draft` 保存正文／参数并返回完整运行快照；`GET /groups/<id>` 暴露可选`execution_state`（queued／running等），保留全局串行，排队显示等待原因。单个桌面资产失败不吞掉整组终态：Session保留已验证可见版本，计划`base_versions`固定该基图，`publication_bases`固定服务端current进行发布比较，3D仍拒绝未展示的错图。
 - “新建创作”立即重置本地工作区／epoch，不等待草稿、轮询或配置；历史／原件／文件／日志保留。桌面回执保存为`advanced-cache/pending-submissions/<operation-id>.json`并兼容读取旧`pending-submission.json`，仅核对／归档对应操作。停止意图可先于受理写入`stopped-submissions/<operation-id>.json`，后到POST不得发旧任务后续请求；旧回调不修改新会话或释放其忙碌。已提交请求可仍计费，其晚到候选只归旧组。保留内部旧retry/recover合同，但统一新生成入口不沿旧模型重试或复用候选。
-- `/model-plans` 与 `/model-jobs` 将完整四图冻结到同一Job-v2。`resume/reconcile/stop` 始终沿原身份处理，未知提交阻止新创建；旧单图路由拒绝重生带高级四图来源的Job。
+- `/model-plans` 与 `/model-jobs` 每次有效生成操作将当前完整四图冻结到新Job-v2，不隐式重画四图。当前操作未决时沿原身份`reconcile/stop`，继续防重复；已终止旧操作不阻挡新计划，`resume`明确要求重新生成。旧单图路由拒绝重生带高级四图来源的Job。
 
-组文件位于用户模型目录 `advanced-multiview/<group-id>`；原件、设计版本与操作收据分别持久化。桌面选择仅影响2D目标，不过滤3D四图。旧Job-v1单图历史保留显式入口；智能与高级共享Shell内的一套等待／结果／编辑工作台，创作Session仍各自独立。高级通过无编辑UI的AdvancedModelTaskMonitor观察明确Job并复用ModelArtifactAcquisition；显式产物打开和3D历史通过WorkbenchOpenRequest交接，编辑模型由唯一工作台持有，不覆盖创作输入。导入沿原确认／进度／原生保护接回切片及预览。实际类型／路由与失败恢复详见[架构实施对照](../../Docs/plans/ui-redesign/2026-11-07-advanced-multiview-architecture.md#实施对照2026-11-08)、[详细设计](../../Docs/plans/ui-redesign/2026-11-07-advanced-multiview-detailed-design.md)及[逐项测试报告](../../Docs/plans/ui-redesign/2026-11-08-advanced-multiview-test-report.md)。
+组文件位于用户模型目录 `advanced-multiview/<group-id>`；原件、设计版本与操作收据分别持久化。桌面选择仅影响2D目标，不过滤3D四图。保留 Job-v1 读取及旧已完成资产，不再构造高级旧单图专用宿主。两种模式共享Shell内的一套等待／结果／编辑工作台，创作Session仍各自独立。高级只通过 AdvancedModelTaskMonitor 观察明确 Job 并复用 ModelArtifactAcquisition；显式产物打开和3D历史通过 WorkbenchOpenRequest 交接，编辑模型由唯一工作台持有，不覆盖创作输入。导入沿原确认／进度／原生保护接回切片及预览。高级 image 与 geometry 能力探测相互独立。YOYOClaw 两模式沿同一实际目录的数字最新版规则，新任务用供应商默认面数（Job/plan的`face_limit=0`），不传未知面数字段；旧历史目标如实读取。单图发送`image_base64`；四图按外部脚本附`multi_view_images`，顺序为left/right/back，每项含`view_type`及`view_image_base64`。不预判供应商图片／包络限额；本地缺失／空文件拒绝，供应商错误沿原结构化错误链呈现且不自动重发创建。目录投影`single_image`／`named_four_view`，确认及执行继续复核冻结模型。旧pending配置清空及安装版调试CLI已精简，后者工程源码／测试仍保留。实际类型／路由与兼容依据见[统一实施](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#ai-creation-unified-design-20261118)。
 
-运行恢复限制：侧车单独重启后，现有桌面认证nonce会失效；本轮真实验证通过正常重启应用、打开原组并显式恢复原3D任务继续，保持同一远端task且不新建。不能把此路径描述为服务自动重连；共享会话认证的变更不属于高级业务隔离范围。GPT和Tripo保留既有真实证据；YOYOClaw三种白名单图像模型已有官方协议和三参考图中转验证，其中Doubao样本曾在输出内容审核阶段失败，不能把审核通过或所有输入内容可用性写成已保证。
+生成生命周期：智能每次有效操作新flow／request／job，重新准备2D再提交3D；高级每次基于当前确认四图新plan／job。停止先失效后续派发和安装意图，完成本地收尾后提示成功，不提供旧3D恢复。重启只读取资产／诊断并终止旧未完成生成；旧收据核对仅用于终止收尾。当前会话未停止任务的GET查询、短时断线与切页连续性仍沿原job，受理响应丢失的同次重传保持幂等。侧车单独重启后原桌面nonce可能失效，不能将重启应用描述为自动重连。GPT和Tripo既有真实证据保留；YOYOClaw三种白名单图像模型的协议验证不保证所有输入均能通过审核或生成成功。
+
+Tripo结果下载：URL和每次重定向只校验HTTPS、无内嵌凭据及精确官方域名，域名解析交给既有network_policy选定的实际连接，不先用本机DNS阻断代理。一次下载最多3次尝试，失败后分别等待1秒、3秒；仅DNS／连接／超时／不完整传输及HTTP 408、425、429、500、502、503、504重试，永久HTTP、TLS校验、非法地址及本地文件错误立即结束。保留本次Range续传和原子发布，停止事件可唤醒退避，并在连接／读取／发布边界检查；系统阻塞中的连接或读取仍受既有120秒socket超时约束，不承诺整体120秒截止。完整签名仅用于请求，日志去除查询参数并保留原异常链、errno、状态、尝试次数与脱敏路由。耗尽后沿既有failed结束，不触发上层重试、新付费任务或URL刷新；两模式分别呈现DNS、超时和其他下载失败中文提示，下次显式操作创建新生成。
+
+内容质量报告（含18%边界、配色和前景结果）仅作建议，不作为建模资格。实际文件格式／字节／像素、四图确认／摘要和供应商能力仍严格校验；质量诊断异常或粒子失败不授权重画、重买或恢复任务。YOYO失败保持公共终态`provider_task_failed`，可选`provider_code/provider_message`经脱敏和限长后贯穿attempt、public job及GUI；只有明确额度错误才提示积分不足，缺详情保持未知。
 
 `capability_catalog.py` 给出稳定能力 ID、源码入口、输入/输出、作用范围及确认点。离线查看：
 
@@ -88,7 +92,7 @@ job_id = draft.payload["job"]["id"]
 result = application.execute_job("generate", job_id, {"prepared_prompt": reviewed_prompt})
 ```
 
-这段分阶段组合不会跳过 Job 校验、付费授权、重复提交保护、已有任务恢复和取消逻辑。恢复有供应商任务 ID 的任务使用原有 `resume_existing`，不能拿新任务代替恢复。界面改成一个输入框/少量按钮时，仍应保留设计确认和原生候选应用的必要决策。
+这段分阶段组合保留Job校验、付费授权、同次重复提交保护和取消逻辑。智能／高级的新用户操作始终新建；旧task只作为资产／诊断，不能使用`resume_existing`复活停止或重启前的生成。其它兼容消费者的接口不因此删除。界面简化后仍保留高级四图确认和原生候选应用的必要决策。
 
 目录提供四种组合清单：图片到模型、文字到模型、已有模型到切片候选、本地资产到配色。清单不是自动执行器：客户端按阶段状态组织交互，通过原生接口完成导入/准备/切片；Sidecar 不宣称原生能力可以经 HTTP 执行。
 

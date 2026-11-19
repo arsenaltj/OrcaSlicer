@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import hashlib
 import logging
 from pathlib import Path
+import threading
 import time
 from typing import Any, Callable
 
@@ -47,6 +48,8 @@ class AdvancedMultiviewDesignWorkflow:
         self.repository = repository
         self.generate_image = generate_image
         self.recover_image = recover_image
+        self._recovery_lock = threading.Lock()
+        self._recovering: set[str] = set()
 
     @staticmethod
     def _request(operation: dict[str, Any], view: str, references=()) -> DesignImageRequest:
@@ -317,11 +320,40 @@ class AdvancedMultiviewDesignWorkflow:
                 group["active_operation_id"] = None
                 self.repository.save(group)
 
-    def recover_interrupted(self, group_id: str) -> None:
-        """Startup/open recovery only commits known local results; it never calls a supplier."""
+    def recover_interrupted(self, group_id: str, expected_revision: int | None = None,
+                            *, expected_operation: str | None = None,
+                            operation_running: Callable[[str], bool] | None = None) -> None:
+        """Finish an existing receipt without issuing a supplier creation request."""
+        with self._recovery_lock:
+            if group_id in self._recovering:
+                return
+            self._recovering.add(group_id)
+        try:
+            self._recover_interrupted(group_id, expected_revision, expected_operation, operation_running)
+        finally:
+            with self._recovery_lock:
+                self._recovering.remove(group_id)
+
+    def _saved_attempt_version(self, group_id: str, operation_id: str, view: str, attempt_id: str):
+        versions = self.repository.directory(group_id) / "designs" / view
+        for path in versions.glob("*/version.json"):
+            record = self.repository.read_json(path)
+            if record.get("operation_id") == operation_id and record.get("attempt_id") == attempt_id:
+                return self.repository.version(group_id, view, record["id"])["id"]
+        return None
+
+    def _recover_interrupted(self, group_id: str, expected_revision: int | None,
+                             expected_operation: str | None,
+                             operation_running: Callable[[str], bool] | None) -> None:
         with self.repository.transaction():
             group = self.repository.load(group_id)
+            if expected_revision is not None and group["revision"] != expected_revision:
+                return
             operation_id = group["active_operation_id"]
+            if expected_operation and operation_id and operation_id != expected_operation:
+                return
+            if operation_id and operation_running and operation_running(operation_id):
+                return
             if not operation_id:
                 # A terminal local failure releases 2D eligibility. Known receipts
                 # remain recoverable until a newer intent supersedes that target.
@@ -330,6 +362,8 @@ class AdvancedMultiviewDesignWorkflow:
                                  {"submitting", "result_saved", "result_pending"}}
                 if len(operation_ids) == 1:
                     candidate_id = operation_ids.pop()
+                    if expected_operation and candidate_id != expected_operation:
+                        return
                     candidate = self._operation(group_id, candidate_id)
                     if (candidate["frozen"]["input_epoch"] == group["input_epoch"] and all(
                             (group["views"][view].get("latest_attempt") or {}).get("operation_id") == candidate_id
@@ -343,6 +377,8 @@ class AdvancedMultiviewDesignWorkflow:
                 operations = self.repository.directory(group_id) / "operations"
                 for path in operations.glob("*/operation.json"):
                     orphan = self.repository.read_json(path)
+                    if expected_operation and orphan.get("id") != expected_operation:
+                        continue
                     if orphan.get("state") == "queued" and all(
                             a.get("state") == "queued" for a in orphan.get("attempts", {}).values()):
                         orphan["state"] = "stopped"
@@ -362,27 +398,47 @@ class AdvancedMultiviewDesignWorkflow:
                             group = self.repository.save(group)
                 return
             operation = self._operation(group_id, operation_id)
+            epoch = group["input_epoch"]
+            reads = {}
+            if self.recover_image:
+                for view, attempt in operation["attempts"].items():
+                    if (attempt["state"] in {"submitting", "result_pending"}
+                            and not self._saved_attempt_version(group_id, operation_id, view, attempt["id"])):
+                        reads[attempt["id"]] = self.repository.path(
+                            group_id, f"staging/{attempt['id']}/{attempt.get('staging_name', 'result.png')}", must_exist=False)
+
+        # These are previously obtained responses, never new generation. Do
+        # not block other groups while the supplier's download is slow.
+        retrieved = {}
+        for attempt_id, output in reads.items():
+            try:
+                retrieved[attempt_id] = (self.recover_image(output), False)
+            except (RequestError, ProviderGatewayError):
+                retrieved[attempt_id] = (None, True)
+
+        with self.repository.transaction():
+            group = self.repository.load(group_id)
+            if group["active_operation_id"] != operation_id or group["input_epoch"] != epoch:
+                return
+            if operation_running and operation_running(operation_id):
+                return
+            operation = self._operation(group_id, operation_id)
             for view in list(operation["attempts"]):
                 attempt = operation["attempts"][view]
                 if attempt["state"] in {"submitting", "result_pending"}:
                     # The version receipt might have committed just before the
                     # operation write failed; reuse it instead of generating again.
-                    versions = self.repository.directory(group_id) / "designs" / view
-                    for path in versions.glob("*/version.json"):
-                        record = self.repository.read_json(path)
-                        if record.get("operation_id") == operation_id and record.get("attempt_id") == attempt["id"]:
-                            self.repository.version(group_id, view, record["id"])
-                            attempt.update(state="result_saved", version_id=record["id"])
-                            break
+                    version = self._saved_attempt_version(group_id, operation_id, view, attempt["id"])
+                    if version:
+                        attempt.update(state="result_saved", version_id=version)
                     if attempt["state"] != "result_saved":
                         output = self.repository.path(
                             group_id, f"staging/{attempt['id']}/{attempt.get('staging_name', 'result.png')}",
                             must_exist=False)
                         result = None
                         if self.recover_image:
-                            try:
-                                result = self.recover_image(output)
-                            except (RequestError, ProviderGatewayError):
+                            result, failed = retrieved.get(attempt["id"], (None, False))
+                            if failed:
                                 attempt["state"] = "result_pending"
                         elif output.exists():
                             result = DesignImageResult()

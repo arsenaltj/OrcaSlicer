@@ -115,7 +115,6 @@ DEFAULT_CLIENT_ID = 'change-hmac-client-id'
 SIGNED_HEADERS = "date;x-client-id;x-request-nonce;x-content-sha256"
 HKDF_SALT = b"hclaw-gateway-client-security"
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
-MAX_IMAGE_BASE64_BYTES = 6 * 1024 * 1024
 MAX_MODEL_BYTES = 512 * 1024 * 1024
 DEFAULT_POLL_INTERVAL_SECONDS = 10.0
 DEFAULT_TASK_TIMEOUT_SECONDS = 1800.0
@@ -135,6 +134,7 @@ class YoYoClawError(RuntimeError):
         ambiguous: bool = False,
         status: int | None = None,
         provider_message: str = "",
+        provider_code: str = "",
         request_id: str = "",
     ) -> None:
         super().__init__(message)
@@ -144,6 +144,7 @@ class YoYoClawError(RuntimeError):
         self.ambiguous = ambiguous
         self.status = status
         self.provider_message = provider_message
+        self.provider_code = provider_code
         self.request_id = request_id
 
 
@@ -340,6 +341,7 @@ def _safe_provider_error(result: Mapping[str, Any]) -> tuple[str, str, str]:
         provider_code = "provider_http_error"
     raw_message = error.get("message") or result.get("message")
     provider_message = redact_text(raw_message).strip() if isinstance(raw_message, str) else ""
+    provider_message = "".join(c if c.isprintable() else " " for c in provider_message)[:512]
     raw_request_id = (result.get("requestId") or result.get("request_id") or
                       error.get("requestId") or error.get("request_id"))
     request_id = raw_request_id.strip() if isinstance(raw_request_id, str) else ""
@@ -550,6 +552,7 @@ class YoYoClawClient:
             raise YoYoClawError(
                 message, code=code, category=category, retryable=retryable,
                 ambiguous=ambiguous, status=status, provider_message=provider_message,
+                provider_code=provider_code if valid_object else "",
                 request_id=request_id,
             )
         if stream:
@@ -891,14 +894,30 @@ class YoYoClawClient:
         return self.download(image_url, destination, MAX_IMAGE_BYTES)
 
     def submit_3d(self, model: str, image_path: Path) -> str:
+        return self._submit_3d_payload({"model": model, "image_base64": self._encode_3d_image(image_path)})
+
+    @staticmethod
+    def _encode_3d_image(path: Path) -> str:
         try:
-            raw = image_path.read_bytes()
+            raw = Path(path).read_bytes()
         except OSError:
             raise YoYoClawError("The YOYOClaw 3D reference image could not be read.", code="invalid_model_request", category="validation") from None
-        encoded = base64.b64encode(raw).decode("ascii")
-        if not encoded or len(encoded) > MAX_IMAGE_BASE64_BYTES:
-            raise YoYoClawError("The YOYOClaw 3D reference image exceeds the 6 MB encoded limit.", code="invalid_model_request", category="validation")
-        result = self.api("POST", "/yoyoclaw/model/chat/completions", {"model": model, "image_base64": encoded}, timeout=180, creation=True)
+        if not raw:
+            raise YoYoClawError("The YOYOClaw 3D reference image is empty.", code="invalid_model_request", category="validation")
+        return base64.b64encode(raw).decode("ascii")
+
+    def submit_multiview_3d(self, model: str, views: Mapping[str, Path]) -> str:
+        if set(views) != {"front", "left", "right", "back"}:
+            raise YoYoClawError("Four named YOYOClaw design views are required.", code="invalid_model_request", category="validation")
+        # Follow the existing integration script. The supplier chooses face
+        # count and validates its own image/request limits on this single POST.
+        payload = {"model": model, "image_base64": self._encode_3d_image(views["front"]),
+                   "multi_view_images": [{"view_type": view, "view_image_base64": self._encode_3d_image(views[view])}
+                                         for view in ("left", "right", "back")]}
+        return self._submit_3d_payload(payload)
+
+    def _submit_3d_payload(self, payload: Mapping[str, Any]) -> str:
+        result = self.api("POST", "/yoyoclaw/model/chat/completions", payload, timeout=180, creation=True)
         task_id = result.get("id") if isinstance(result, Mapping) else None
         if not isinstance(task_id, str) or not task_id.strip():
             raise YoYoClawError("YOYOClaw did not return a 3D task reference.", code="missing_task_reference", category="validation", ambiguous=True)
@@ -983,7 +1002,11 @@ class YoYoClawClient:
             if status in {"completed", "succeeded", "success"}:
                 return dict(result)
             if status in {"failed", "error", "cancelled", "canceled", "expired"}:
-                raise YoYoClawError(f"YOYOClaw 3D task failed ({status}).", code="provider_task_failed", category="provider")
+                provider_code, provider_message, request_id = _safe_provider_error(result)
+                raise YoYoClawError(
+                    f"YOYOClaw 3D task failed ({status}).", code="provider_task_failed", category="provider",
+                    provider_code=provider_code, provider_message=provider_message, request_id=request_id,
+                )
             pause(interval)
         diagnostic_event("yoyoclaw.task_query.timed_out", level="WARNING", endpoint=endpoint)
         raise _poll_timeout_error()
@@ -1005,7 +1028,8 @@ class YoYoClawClient:
             response = session.get(target_url, stream=True, timeout=(15, 180), allow_redirects=False)
             status = int(getattr(response, "status_code", 0) or 0)
             if status != 200:
-                raise YoYoClawError(f"YOYOClaw artifact download failed (HTTP {status}).", code="artifact_download_failed", category="network", retryable=status >= 500)
+                raise YoYoClawError(f"YOYOClaw artifact download failed (HTTP {status}).", code="artifact_download_failed",
+                                   category="network", retryable=status >= 500, status=status)
             headers = getattr(response, "headers", {})
             length = str(headers.get("Content-Length", ""))
             expected_size = int(length) if length.isascii() and length.isdigit() and len(length) <= 20 else 0

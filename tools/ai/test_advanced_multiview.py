@@ -34,7 +34,7 @@ class _FakeYoYoImageGateway:
         self.download_calls = []
         self.download_error = None
 
-    def catalog(self, role):
+    def catalog(self, role, *, fresh=False):
         return {"role": role, "provider": "yoyoclaw", "state": "ready",
                 "default_model": QWEN_IMAGE,
                 "models": [{"id": model, "name": model.rsplit("/", 1)[-1], "available": True}
@@ -911,6 +911,40 @@ class MultiviewTests(unittest.TestCase):
         self.assertTrue(self.repository.snapshot(group["id"])["views"]["front"]["current"])
         self.assertEqual(self.requests, [])
 
+    def test_saved_result_download_releases_the_group_store_and_respects_stop(self):
+        group = self.create()
+        plan = self.plan(group)
+        self.execute(plan)
+        self.queue.clear()
+        operation = self.application.operation(group["id"], plan["id"])
+        operation["attempts"]["front"]["state"] = "submitting"
+        self.repository.write_record(group["id"], f"operations/{plan['id']}/operation.json", operation)
+        entered, release = threading.Event(), threading.Event()
+
+        def download(output):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("Timed out waiting for the stop transaction")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(png())
+            return DesignImageResult(provider_request_id="original-request")
+
+        workflow = AdvancedMultiviewDesignWorkflow(self.repository, mock.Mock(), download)
+        with ThreadPoolExecutor(max_workers=2) as worker:
+            pending = worker.submit(workflow.recover_interrupted, group["id"])
+            try:
+                self.assertTrue(entered.wait(5))
+                stopped = worker.submit(self.application.stop, group["id"], plan["id"]).result(timeout=3)
+                self.assertTrue(stopped["stop_intent"])
+            finally:
+                release.set()
+            pending.result(timeout=5)
+        self.assertIsNone(self.repository.snapshot(group["id"])["views"]["front"]["current"])
+        attempt = self.application.operation(group["id"], plan["id"])["attempts"]["front"]
+        self.assertEqual(attempt["state"], "stopped")
+        self.assertEqual(attempt["provider_request_id"], "original-request")
+        workflow.generate_image.assert_not_called()
+
     def test_yoyoclaw_gateway_routes_selected_model_and_recovers_saved_response_without_resubmission(self):
         from advanced_multiview_design_workflow import DesignImageRequest
         from advanced_multiview_image_gateway import AdvancedMultiviewImageGateway
@@ -1185,6 +1219,48 @@ class MultiviewTests(unittest.TestCase):
         factory = mock.Mock()
         self.assertTrue(dispatch(handler, factory, "GET"))
         factory.assert_not_called()
+
+    def test_scoped_geometry_discovery_does_not_construct_a_group_runtime(self):
+        from advanced_multiview_runtime import _capabilities
+
+        handler = mock.Mock()
+        handler.path = PREFIX + "/capabilities?scope=geometry&provider=tripo"
+        handler._require_native_client.return_value = True
+        image = mock.Mock()
+        model = mock.Mock(return_value={"available": True, "named_four_view_model": "supported"})
+        runtime = mock.Mock(side_effect=AssertionError("Unexpected group recovery"))
+        self.assertTrue(dispatch(handler, runtime, "GET", lambda scope, provider: _capabilities(scope, image, model, provider)))
+        runtime.assert_not_called()
+        image.catalog_capabilities.assert_not_called()
+        model.assert_called_once_with("tripo", "")
+        status, document = handler.send_json.call_args.args
+        self.assertEqual(status, 200)
+        self.assertEqual(document["model_providers"], {"tripo": model.return_value})
+
+    def test_stop_can_win_while_design_admission_waits_for_provider_capability(self):
+        group = self.create()
+        plan = self.plan(group)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def capability(*_):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("The stop did not finish while discovery was pending")
+            return self.capability
+
+        self.application.capabilities = capability
+        with ThreadPoolExecutor(max_workers=2) as worker:
+            pending = worker.submit(self.execute, plan)
+            try:
+                self.assertTrue(entered.wait(5))
+                stopped = worker.submit(self.application.stop, group["id"], plan["id"]).result(timeout=3)
+                self.assertTrue(stopped["stop_intent"])
+            finally:
+                release.set()
+            self.assertEqual(pending.result(timeout=5)["state"], "stopped")
+        self.assertEqual(self.queue, [])
+        self.assertEqual(self.requests, [])
 
     def test_input_update_multipart_keeps_the_group_and_enforces_the_main_reference(self):
         from advanced_multiview_runtime import AdvancedMultiviewRuntime

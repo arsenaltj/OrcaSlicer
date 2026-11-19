@@ -53,8 +53,12 @@ struct ModelHistoryOpenRequest {
         if (!drained) drained = std::move(resume);
         return true;
     }
-    bool worker_finished() {
+    bool worker_finished(std::function<void()> settle = {}) {
+        if (!worker_pending) return false;
         worker_pending = false;
+        // Settlement belongs to the completed request and precedes callbacks
+        // which may synchronously acquire the busy gate for a restoration.
+        if (settle) settle();
         auto resume = std::move(drained);
         drained = {};
         if (resume) { resume(); return true; }

@@ -3,12 +3,91 @@
 #include "slic3r/GUI/AI/ModelGeneration/AdvancedModelTaskFlow.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
+#include "slic3r/GUI/Redesign/RedesignPageCoordinator.hpp"
 #include "../test_utils.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
 using namespace Slic3r;
 using namespace Slic3r::GUI;
+
+TEST_CASE("Only a successfully committed creation handoff locks its source draft", "[UnifiedWorkbench][CreationWorkflow]")
+{
+    const bool advanced = GENERATE(false, true);
+    const bool accepted = GENERATE(false, true);
+    CreationWorkbenchContext context;
+    WorkbenchOpenRequest request;
+    request.origin = advanced ? WorkbenchOpenRequest::Origin::Advanced : WorkbenchOpenRequest::Origin::Smart;
+    request.entry.job_id = "created"; request.entry.model_path = "created.glb";
+    request.return_context = advanced ? "advanced" : "smart"; request.generation = 17;
+    CHECK_FALSE(context.locked());
+    context.stage(request);
+    CHECK_FALSE(context.locked());
+    context.finish(accepted);
+    CHECK(context.locked() == accepted);
+    if (accepted) {
+        REQUIRE(context.anchor());
+        CHECK(context.anchor()->advanced == advanced);
+        CHECK(context.anchor()->asset_id == "created");
+        CHECK(context.anchor()->generation == 17);
+    }
+}
+
+TEST_CASE("Failed replacement and library handoffs preserve the committed creation source", "[UnifiedWorkbench][CreationWorkflow]")
+{
+    CreationWorkbenchContext context;
+    WorkbenchOpenRequest first;
+    first.origin = WorkbenchOpenRequest::Origin::Advanced;
+    first.entry.job_id = "first"; first.entry.model_path = "first.glb";
+    first.return_context = "advanced"; first.generation = 4;
+    context.stage(first); context.finish(true);
+    auto replacement = first;
+    replacement.entry.job_id = "second"; replacement.return_context = "smart";
+    context.stage(replacement); context.finish(false);
+    REQUIRE(context.anchor());
+    CHECK(context.anchor()->asset_id == "first");
+    context.stage(WorkbenchOpenRequest{}); context.finish(true);
+    REQUIRE(context.anchor());
+    CHECK(context.anchor()->asset_id == "first");
+    CHECK(context.anchor()->advanced);
+}
+
+TEST_CASE("Page round trips retain the workflow lock and remembered workbench view", "[UnifiedWorkbench][CreationWorkflow][UiRedesign]")
+{
+    const auto view = GENERATE(RedesignModelView::Workbench, RedesignModelView::Slicing, RedesignModelView::Preview);
+    RedesignPageCoordinator pages;
+    CreationWorkbenchContext context;
+    WorkbenchOpenRequest request;
+    request.origin = WorkbenchOpenRequest::Origin::Smart;
+    request.entry.job_id = "job"; request.entry.model_path = "model.obj"; request.return_context = "smart";
+    context.stage(request); context.finish(true);
+    pages.select_view(view);
+    for (int i = 0; i < 20; ++i) {
+        pages.select_page(RedesignWorkspacePage::Image);
+        CHECK(context.locked());
+        pages.select_page(RedesignWorkspacePage::Model);
+        CHECK(pages.view() == view);
+        CHECK(context.locked());
+    }
+    context.restore_editing();
+    CHECK_FALSE(context.locked());
+    CHECK(pages.view() == view);
+}
+
+TEST_CASE("An explicit return prevents old handoff completion from relocking creation", "[UnifiedWorkbench][CreationWorkflow]")
+{
+    CreationWorkbenchContext context;
+    WorkbenchOpenRequest request;
+    request.origin = WorkbenchOpenRequest::Origin::Smart;
+    request.entry.job_id = "job"; request.entry.model_path = "model.obj"; request.return_context = "smart";
+    context.stage(request); context.finish(true);
+    context.stage(request);
+    context.restore_editing();
+    context.finish(true);
+    CHECK_FALSE(context.locked());
+    CreationWorkbenchContext restarted;
+    CHECK_FALSE(restarted.locked());
+}
 
 TEST_CASE("The selected task keeps its own progress and recovery across workbench reentry", "[UnifiedWorkbench]")
 {
@@ -181,7 +260,7 @@ TEST_CASE("Cancelling local acquisition rejects late download and parser complet
     if (parsing) h.downloads[0].done(TaskHarness::artifact("advanced"));
     h.flow->stop_local();
     CHECK(h.flow->snapshot().stage == ModelGenerationUIStage::Stopped);
-    CHECK(h.flow->snapshot().can_retry_model);
+    CHECK_FALSE(h.flow->snapshot().can_retry_model);
     const auto revision = h.flow->snapshot().revision;
     h.downloads[0].progress(100, 100);
     h.downloads[0].done(TaskHarness::artifact("advanced"));
@@ -189,8 +268,54 @@ TEST_CASE("Cancelling local acquisition rejects late download and parser complet
     CHECK(h.flow->snapshot().revision == revision);
     CHECK_FALSE(h.flow->artifact());
     h.flow->retry_local();
-    CHECK(h.downloads.size() == 2);
+    CHECK(h.downloads.size() == 1);
     CHECK(h.queries.size() == 1);
+    h.flow->observe("new-operation", "front.png");
+    CHECK(h.flow->snapshot().job_id == "new-operation");
+    CHECK(h.queries.size() == 2);
+}
+
+TEST_CASE("Advanced stop keeps its operation locked until a terminal status and rejects late success", "[UnifiedWorkbench]")
+{
+    const std::string terminal = GENERATE("stopped", "cancelled", "ready");
+    TaskHarness h;
+    h.flow->observe("old", "front.png");
+    h.flow->request_stop();
+    CHECK(h.flow->snapshot().busy);
+    CHECK(h.flow->snapshot().stage == ModelGenerationUIStage::Stopping);
+    h.queries[0].error("AI sidecar is not reachable");
+    CHECK(h.flow->snapshot().busy);
+    CHECK(h.flow->snapshot().stage == ModelGenerationUIStage::Stopping);
+    CHECK(h.flow->snapshot().can_stop);
+    CHECK(h.flow->snapshot().status_text.find("已停止") == std::string::npos);
+    h.flow->poll();
+    REQUIRE(h.queries.size() == 2);
+    h.queries[1].done(TaskHarness::status("old", terminal));
+    CHECK(h.flow->snapshot().stage == ModelGenerationUIStage::Stopped);
+    CHECK_FALSE(h.flow->snapshot().busy);
+    CHECK_FALSE(h.flow->snapshot().can_retry_model);
+    CHECK(h.downloads.empty());
+    const auto revision = h.flow->snapshot().revision;
+    h.queries[1].done(TaskHarness::status("old", "ready", 20));
+    h.flow->poll();
+    CHECK(h.flow->snapshot().revision == revision);
+    h.flow->observe("new", "front.png");
+    h.queries[0].done(TaskHarness::status("old", "ready", 30));
+    CHECK(h.flow->snapshot().job_id == "new");
+    CHECK(h.downloads.empty());
+}
+
+TEST_CASE("Advanced stop before acceptance cannot revive the old operation", "[UnifiedWorkbench]")
+{
+    TaskHarness h;
+    h.flow->finish_stop("unaccepted");
+    CHECK(h.flow->snapshot().status_text == "已停止生成");
+    h.flow->observe("unaccepted", "front.png");
+    CHECK(h.queries.empty());
+    CHECK_FALSE(h.flow->snapshot().can_retry_model);
+    h.flow->observe("new", "front.png");
+    REQUIRE(h.queries.size() == 1);
+    CHECK(h.queries[0].id == "new");
 }
 
 TEST_CASE("New advanced workspaces ignore callbacks belonging to the previous job", "[UnifiedWorkbench]")
@@ -312,6 +437,23 @@ TEST_CASE("Advanced observation rejects a smart task even when its job identity 
     REQUIRE(h.queries.size() == 2);
     h.queries[1].done(TaskHarness::status("advanced", "ready"));
     CHECK(h.downloads.size() == 1);
+}
+
+TEST_CASE("Advanced provider failure details reach the shared creation view", "[UnifiedWorkbench]")
+{
+    TaskHarness h; h.flow->observe("advanced", "front.png");
+    auto status = TaskHarness::status("advanced", "failed");
+    status.provider_name = "yoyoclaw"; status.provider_error_code = "provider_task_failed";
+    status.provider_detail_code = "FailedOperation.InnerError";
+    status.provider_detail_message = "输入图片生成几何失败";
+    h.queries[0].done(status);
+    const auto& state = h.flow->snapshot();
+    CHECK(state.stage == ModelGenerationUIStage::Failed);
+    CHECK(state.provider_detail_code == status.provider_detail_code);
+    CHECK(state.provider_detail_message == status.provider_detail_message);
+    CHECK(state.status_text.find("输入图片生成几何失败") != std::string::npos);
+    CHECK_FALSE(state.can_retry_model);
+    CHECK(h.downloads.empty());
 }
 
 TEST_CASE("An asset handoff retains appearance and rejects a different creator or model", "[UnifiedWorkbench][SingleWorkbench]")

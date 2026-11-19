@@ -50,6 +50,14 @@ class DesignWorkflow:
         self.ports = ports
 
 
+    def record_reference_advice(self, job: Job) -> None:
+        try:
+            self.ports.assess_reference(job)
+        except JobStopped:
+            raise
+        except Exception:
+            job.image_metrics["quality_advice_unavailable"] = True
+
     def preprocess_text(self, job: Job, prompt: str) -> None:
         _use_unrestricted_creation(job)
         self.begin_timing(job)
@@ -72,7 +80,7 @@ class DesignWorkflow:
             self.ports.validate_image(
                 raw_preview,
                 minimum_edge=MIN_MODEL_REFERENCE_EDGE,
-                require_visual_detail=True,
+                require_visual_detail=False,
             )
             job.raw_preview_path = raw_preview
             if job.palette:
@@ -90,9 +98,9 @@ class DesignWorkflow:
             validated = self.ports.validate_image(
                 raw_preview,
                 minimum_edge=MIN_MODEL_REFERENCE_EDGE,
-                require_visual_detail=True,
+                require_visual_detail=False,
             )
-            self.ports.assess_reference(job)
+            self.record_reference_advice(job)
             (job.directory / "preview-colors.json").write_text(
                 json.dumps(
                     {
@@ -186,7 +194,7 @@ class DesignWorkflow:
             self.ports.validate_image(
                 raw_preview,
                 minimum_edge=MIN_MODEL_REFERENCE_EDGE,
-                require_visual_detail=True,
+                require_visual_detail=False,
             )
             job.raw_preview_path = raw_preview
             job.geometry_reference_path = geometry_reference
@@ -212,12 +220,12 @@ class DesignWorkflow:
                 "detected": portrait_detected,
                 "evidence": "source_face_lock" if face_lock.is_file() else "legacy_material_cleanup" if portrait_detected else "none",
             }
-            self.ports.assess_reference(job)
+            self.record_reference_advice(job)
             preview = job.preview_path or preview
             validated = self.ports.validate_image(
                 raw_preview,
                 minimum_edge=MIN_MODEL_REFERENCE_EDGE,
-                require_visual_detail=True,
+                require_visual_detail=False,
             )
             if policy["specialized"]:
                 self.ports.stop_boundary(job)
