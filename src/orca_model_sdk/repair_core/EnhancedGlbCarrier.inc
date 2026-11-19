@@ -25,9 +25,16 @@ J enhanced_glb_carrier(Context& c, const Glb& g, Topology& input, const Topology
     const auto position_count=g.item("accessors",attributes.at("POSITION").get<size_t>()).at("count").get<size_t>();
     auto uv=attributes.contains("TEXCOORD_0")?g.accessor(attributes.at("TEXCOORD_0"),"VEC2"):std::vector<double>{};
     auto normals=attributes.contains("NORMAL")?g.accessor(attributes.at("NORMAL"),"VEC3"):std::vector<double>{};
+    const auto source_world=input.world;
+    for(size_t i=0;i<normals.size();i+=3) {
+        if((i&4095)==0)check_cancel(c);
+        const auto transformed=source_world.normal({normals[i],normals[i+1],normals[i+2]});
+        for(size_t k=0;k<3;++k)normals[i+k]=transformed[k];
+    }
     std::vector<uint32_t> indices;
     if(primitive.contains("indices")) indices=g.accessor<uint32_t>(primitive.at("indices"),"SCALAR",true);
     else {indices.resize(position_count);std::iota(indices.begin(),indices.end(),0.);}
+    if(source_world.reflected())for(size_t i=0;i<indices.size();i+=3)std::swap(indices[i+1],indices[i+2]);
     event("carrierWriting");
     V low=output.vertices.front(),high=low;
     for(const auto& v:output.vertices)for(size_t k=0;k<3;++k){low[k]=std::min(low[k],v[k]);high[k]=std::max(high[k],v[k]);}
@@ -178,6 +185,8 @@ J enhanced_glb_carrier(Context& c, const Glb& g, Topology& input, const Topology
     proof["appearancePolicyVersion"]="appearance-reconstruction-v1";
     for(const char* field:{"materials","textures","samplers"})
         require(readback.doc.value(field,J::array())==g.doc.value(field,J::array()),"Appearance channel semantics changed");
+    for(const char* field:{"extensionsUsed","extensionsRequired"})
+        require(readback.doc.value(field,J::array())==g.doc.value(field,J::array()),"Appearance extension declaration changed");
     auto source_images=g.doc.value("images",J::array()),candidate_images=readback.doc.value("images",J::array());
     require(source_images.size()==candidate_images.size(),"Image count changed");
     for(size_t i=0;i<source_images.size();++i) {
@@ -234,6 +243,10 @@ J enhanced_glb_carrier(Context& c, const Glb& g, Topology& input, const Topology
              {"checks",checks},{"nativeProof",proof},{"repairApplied",proof.at("modified")},
              {"geometryVerified",false},{"appearanceVerified",true},{"manufacturingSafe",false},{"vertices",exported_vertex_count},{"triangles",output.faces.size()},
              {"appearanceEvidence",{{"policyVersion","appearance-reconstruction-v1"},{"encodedImages",channel_evidence},{"maximumCornerProjectionMillimetres",maximum_projection},{"maximumCornerProjectionRatio",maximum_projection/diagonal},{"uvMapping","exact-face-first-or-Core-AABB-barycentric"},{"mappedCorners",output.faces.size()*3},{"outputFaces",output.faces.size()},{"sourcePrimitive",0},{"sourceFaces",source_face_count},{"normalPolicy",has_normal?"source-projected-normalized-and-winding-aligned":"GLTF-generated normals"},{"tangentPolicy","GLTF-renderer-derived-from-repaired-UV-and-normal"},{"coordinateFrame","raw-Core-float-mm-Z-up-with-canonical-GLTF-root"}}}};
+    result["appearanceEvidence"]["sourceWorldMatrix"]=source_world.matrix;
+    result["appearanceEvidence"]["sourceReflectionWindingCorrected"]=source_world.reflected();
+    result["appearanceEvidence"]["materialDescriptorSha256"]=sha256(g.doc.value("materials",J::array()).dump());
+    result["appearanceEvidence"]["sceneTransformPolicy"]="static-single-instance-world-TRS-affine-v1";
     // Stable receipt identity excludes runtime durations. Actual current durations
     // remain in the response; replay re-executes and proves source -> output.
     auto durable=result;durable["nativeProof"].erase("wallMs");durable["nativeProof"].erase("cpuMs");

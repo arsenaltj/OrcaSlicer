@@ -1,3 +1,12 @@
+# 2026-11-19 用户样本静态profile兼容修复
+
+主线：task-20261119-model-gltf-specular-transform，qualified33db独立WT；NG-GLB-STATIC-PROFILE-01 initial旧封存runner150ms明确INVALID_GLB，原SHA不变。
+本轮：首修轮1窄factor-only specular保原描述；活动单实例world TRS/matrix真实POSITION/NORMAL变换与反射corner绑定，Core算法及严格质量/预算不变。
+未结：新source小CABI/用户原样本与host/NDK/新包独立review→不同QA；当前移动f4dd及旧Native不冒本样本已修。
+下一步：冻结源码guarded build，先小fixtures再一次真实样本。
+计划变更：仅本Native独立bugfix，不恢复桌面暂停算法优化；无设备/生产/付费/PRpush。
+
+## 原短状态（保留，不作为本轮新结论）
 # 2026-11-19 独立2M资源子流
 
 当前修复：r1独立review退回NG-MODEL-APPEARANCE-SOURCE-FACES-01首修轮1：释放前固定源面数，normalPolicy使用既有has_normal；仅私有凭据事实修正，四面反绕序/五面重复与有无作者NORMAL实际CABI对照。原r1源包与错误receipt保留；新r2需host/NDK真实重编/新包后原review→不同QA。资源问题轮1仍独立保留，不重跑未受算法影响的2M大件，不更新Mobile锁。

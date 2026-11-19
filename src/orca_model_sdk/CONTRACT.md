@@ -330,3 +330,25 @@ display target, retaining every active encoded image and material/texture/sample
 semantic. Only image bufferView identities are rebased; encoded bytes are checked
 per image and ordered native geometry is actually reread. Original files are
 unchanged. Whole-source-BIN equality remains required for uncompacted layouts.
+
+## Static scene and specular factor input profile
+
+The static single-mesh scene may use finite, invertible affine node matrices or
+exclusive TRS with a near-unit quaternion (squared norm tolerance 1e-5, normalized
+before use). World = parent * local, TRS = T * R * S. Every node belongs to the
+one active scene, with one mesh instance; cycles, shared children, orphans,
+skins, animations, matrix/TRS conflicts and singular transforms are rejected.
+World POSITION is baked in metres/Y-up before the existing single Core frame
+conversion. Authored NORMAL uses the world inverse transpose and normalization;
+negative determinant reverses source corners together with UV/normal references.
+Output still uses the canonical Core mm/Z-up root, not the original transform.
+
+Only factor-only KHR_materials_specular is additionally supported: the extension
+object contains exactly specularFactor, a finite number in [0,1]. Its used/required
+declarations and full material descriptor survive export and independent readback.
+Other material extensions, unknown keys, specular textures and color semantics
+remain unsupported. Zero is preserved, not treated as a default/no-op. Encoded
+image hashes and existing per-corner projection checks remain required. Private
+appearance evidence records the actual source world matrix, reflection handling
+and material descriptor hash. This is no device pixel-equivalence claim and does
+not promote native-compatible output to strict manufacturing safety.

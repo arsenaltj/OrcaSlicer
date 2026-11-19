@@ -193,8 +193,15 @@ struct Glb
                 "Embedded GLB2 buffer required");
         const auto size = doc.at("buffers")[0].at("byteLength").get<size_t>();
         require(size <= bin_size && bin_size - size <= 3, "Incomplete BIN payload");
-        require(doc.value("extensionsRequired", J::array()).empty() && doc.value("extensionsUsed", J::array()).empty() &&
-                    !doc.contains("extensions") && !doc.contains("skins") && !doc.contains("animations"),
+        for (const char* field : {"extensionsUsed", "extensionsRequired"}) {
+            const auto extensions = doc.value(field, J::array());
+            require(extensions.is_array() && extensions.size() <= 1, "Unsupported extension declaration");
+            for (const auto& extension : extensions)
+                require(extension.is_string() && extension == "KHR_materials_specular", "Unsupported extension declaration");
+        }
+        require(doc.value("extensionsRequired", J::array()).empty() || !doc.value("extensionsUsed", J::array()).empty(),
+                "Required extension must be declared used");
+        require(!doc.contains("extensions") && !doc.contains("skins") && !doc.contains("animations"),
                 "Compressed, extended or animated GLB is not supported by this safety policy");
         for (const auto& image : doc.value("images", J::array())) {
             require(!image.contains("uri") && image.contains("bufferView"), "All texture images must be embedded");
@@ -260,7 +267,16 @@ struct Glb
             for (const char* name : {"baseColorTexture", "metallicRoughnessTexture"})
                 if (pbr.contains(name))
                     validate_texture(pbr.at(name));
-            require(!material.contains("extensions"), "Extended materials unsupported by safety policy");
+            if (material.contains("extensions")) {
+                const auto& extensions = material.at("extensions");
+                require(extensions.is_object() && extensions.size() == 1 && extensions.contains("KHR_materials_specular") &&
+                            !doc.value("extensionsUsed", J::array()).empty(), "Unsupported material extension");
+                const auto& specular = extensions.at("KHR_materials_specular");
+                require(specular.is_object() && specular.size() == 1 && specular.contains("specularFactor") &&
+                            specular.at("specularFactor").is_number(), "Only factor-only specular is supported");
+                const auto factor = specular.at("specularFactor").get<double>();
+                require(std::isfinite(factor) && factor >= 0 && factor <= 1, "Invalid specular factor");
+            }
         }
     }
     const J& item(const char* list, size_t index) const
@@ -317,12 +333,14 @@ struct Glb
         return values;
     }
 };
+#include "glb_scene_transform.inc"
 struct Topology
 {
     std::vector<V> vertices;
     std::vector<T> faces;
     size_t degenerate = 0, duplicate = 0, boundary = 0, nonmanifold = 0, inconsistent = 0;
     std::vector<size_t> primitive_faces;
+    SceneTransform world;
 };
 // Contiguous exact counts, no per-face/per-edge tree nodes. Sorting changes
 // only the counting workspace, never the output triangle or vertex order.
@@ -355,28 +373,8 @@ Topology topology(Context& c, const Glb& g)
 {
     Topology out;
     std::map<V, uint32_t> canonical;
-    // Identity-only node hierarchies are accepted, but repeated mesh instances,
-    // cycles, orphan nodes and transformations cannot escape the checked scene.
-    require(g.doc.at("meshes").size() == 1 && g.doc.at("nodes").size() <= 128 && g.doc.at("scenes").size() == 1,
-            "One static mesh scene required");
-    std::set<size_t> visited;
-    size_t meshes = 0, total_position_vertices = 0;
-    std::function<void(size_t)> visit = [&](size_t id) {
-        require(visited.insert(id).second, "Repeated or cyclic scene node");
-        const auto& node = g.item("nodes", id);
-        require(!node.contains("matrix") && !node.contains("translation") && !node.contains("rotation") && !node.contains("scale") &&
-                    !node.contains("skin") && !node.contains("weights") && !node.contains("extensions"),
-                "Bake node transformations before local safety checking");
-        if (node.contains("mesh")) {
-            require(node.at("mesh") == 0, "Invalid mesh reference");
-            ++meshes;
-        }
-        for (const auto& child : node.value("children", J::array()))
-            visit(child.get<size_t>());
-    };
-    for (const auto& root : g.doc.at("scenes")[0].at("nodes"))
-        visit(root.get<size_t>());
-    require(meshes == 1 && visited.size() == g.doc.at("nodes").size(), "Every node must belong to the checked mesh scene");
+    out.world = scene_world_transform(g);
+    size_t total_position_vertices = 0;
     for (const auto& primitive : g.doc.at("meshes")[0].at("primitives")) {
         check_cancel(c);
         require(primitive.value("mode", 4) == 4 && !primitive.contains("targets") && !primitive.contains("extensions"),
@@ -396,7 +394,7 @@ Topology topology(Context& c, const Glb& g)
         for (size_t i = 0; i < count; ++i) {
             if ((i & 4095) == 0)
                 check_cancel(c);
-            V value{p[i * 3], p[i * 3 + 1], p[i * 3 + 2]};
+            V value = out.world.position({p[i * 3], p[i * 3 + 1], p[i * 3 + 2]});
             auto [it, inserted] = canonical.emplace(value, uint32_t(out.vertices.size()));
             if (inserted)
                 out.vertices.push_back(value);
@@ -426,6 +424,7 @@ Topology topology(Context& c, const Glb& g)
                 require(indexes[i + j] < count, "Index out of bounds");
                 face[j] = remap[size_t(indexes[i + j])];
             }
+            if (out.world.reflected()) std::swap(face[1], face[2]);
             out.faces.push_back(face);
         }
     }

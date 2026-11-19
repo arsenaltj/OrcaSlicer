@@ -1,3 +1,11 @@
+# MOBILE-GLB-STATIC-PROFILE-006：用户034a兼容子流（2026-11-19）
+
+- task-20261119-model-gltf-specular-transform/session-specular-transform-native-dev-20261119，独立WT基33db；NG-GLB-STATIC-PROFILE-01 initial150ms旧runner拒绝，首修轮1。只材质factor-only profile与scene world bake，不恢复暂停桌面算法。
+- 保specularFactor0/material/extensions声明/encodedPNG；世界POSITION、inverse-transpose NORMAL及负det corner/UV一致。Core严格/compat/768MiB/120s/100MiB/2M与旧TBB/19SO不改。
+- 待源freeze→真实host/NDK与tinyfixtures/用户样本一次→不可变SDK→独立review/不同QA；通过后另Mobileconsumer新锁门禁。当前中间APK不是本修复。
+- 禁止原件修改、任意pass-through/删除扩展求绿、未验严格制造/实机像素声明、设备/生产/paid/PRpush。
+
+## 原主计划记录（保留）
 # MOBILE-GLB-REPAIR-005：2M资源隔离子流（2026-11-19）
 
 - r1独立review发现释放容器后sourceFaces错误为0、normalPolicy错误丢作者来源；NG-MODEL-APPEARANCE-SOURCE-FACES-01首修轮1仅捕获不可变源面数并消费has_normal，保算法/预算/输出几何。真实4面反绕序及5→4重复面、有/无NORMAL回执与源/输出/readbackID须对照，新r2 host/NDK/包身份重冻后原review→不同QA。原资源轮1、超限证据与r1错误receipt独立保留。
