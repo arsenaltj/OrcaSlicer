@@ -1,5 +1,15 @@
 [
   {
+    "pr": 79,
+    "run": 44502296058,
+    "head": "a721553f1c2f0973e80c55bbeab4097e0c6a571d",
+    "base": "323c6c1c9ca7e5f94c7b7161af64584af0a69f3c",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "统一 AI 创作与 YOYOClaw 四图流程，交付 V1.0.4 桌面包",
+    "path": "pr/79/a721553f1c2f0973e80c55bbeab4097e0c6a571d/44502296058",
+    "created": "2026-11-19T10:08:59+00:00"
+  },
+  {
     "pr": 78,
     "run": 44242084706,
     "head": "685449a3d2255f4cddb3b054c54ce6c6602c5f5b",

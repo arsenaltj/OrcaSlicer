@@ -1,0 +1,27 @@
+{
+  "pr": 79,
+  "run": 44502296058,
+  "head": "a721553f1c2f0973e80c55bbeab4097e0c6a571d",
+  "base": "323c6c1c9ca7e5f94c7b7161af64584af0a69f3c",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "统一 AI 创作与 YOYOClaw 四图流程，交付 V1.0.4 桌面包",
+  "path": "pr/79/a721553f1c2f0973e80c55bbeab4097e0c6a571d/44502296058",
+  "created": "2026-11-19T10:08:59+00:00",
+  "files": {
+    "index.html": "5999622280adbc58444b17cc6410b394e5a9ea8a68bce043b24323fa84063d70",
+    "details.html": "78a26cf0ac5b4b015ef23778104af875fa95b4e52de1f4bd4cdcb3db9e56cc4a",
+    "report.json": "858b7e5291d93afbe7616b4848ece0cd7e953e9a67a92a6eac8995fac1bad488",
+    "summary.md": "b1791df0bdd0cddc6092652bcf64ba73f6d5b721522bfbfef032eb096f638231",
+    "archify-receipts.json": "79b86c06a6bcdb1d06387fcb0228f16c0f6cee848bd961391168379473010a4f",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "2f804d9fe17f2ca2f571b3e437ee9727820864cbf69a5fe0daeed5081faa8bd2",
+    "l1-modules.json": "53a81fd8939bd9d79cfa00cdf52fd566dcf8919759bc359e1d9411ce033431e2",
+    "l2-generation.html": "5ab5558ef137d23eda721ae0ddaa25f82afe2839900e0e142691cb8020e85350",
+    "l2-generation.json": "9d870a02f238a819088346855f3b6c4f912a733fb48dec971a7ab4e6ed8caea5",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
