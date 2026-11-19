@@ -3,8 +3,111 @@
   "$id": "urn:orca:model-sdk:response:v1",
   "title": "Model SDK v1 envelope",
   "type": "object",
-  "required": ["schemaVersion", "ok"],
-  "properties": { "schemaVersion": { "const": 1 }, "ok": { "type": "boolean" }, "result": { "type": "object" }, "error": { "type": "object", "required": ["code", "message"], "properties": { "code": { "type": "string" }, "message": { "type": "string" } } } },
-  "allOf": [ { "if": { "properties": { "ok": { "const": true } } }, "then": { "required": ["result"] }, "else": { "required": ["error"] } } ],
+  "required": [
+    "schemaVersion",
+    "ok"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "result": {
+      "type": "object"
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "ioDiagnostic": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schemaVersion",
+            "boundary",
+            "kind"
+          ],
+          "properties": {
+            "schemaVersion": {
+              "const": 1
+            },
+            "boundary": {
+              "enum": [
+                "file_open",
+                "file_read",
+                "temp_create",
+                "temp_write",
+                "temp_flush",
+                "output_publish"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "unknown",
+                "access_denied",
+                "no_space",
+                "quota_exceeded",
+                "read_only",
+                "not_found",
+                "too_many_files",
+                "unsupported",
+                "cross_device",
+                "io_failure",
+                "interrupted"
+              ]
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "ioDiagnostic"
+            ]
+          },
+          "then": {
+            "properties": {
+              "code": {
+                "const": "IO_ERROR"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "ok": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "result"
+        ]
+      },
+      "else": {
+        "required": [
+          "error"
+        ]
+      }
+    }
+  ],
   "additionalProperties": true
 }

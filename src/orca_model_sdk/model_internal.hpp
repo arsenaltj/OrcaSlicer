@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
+#include <optional>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -28,6 +29,7 @@
 #else
 #include <dlfcn.h>
 #endif
+#include "io_diagnostic.hpp"
 
 namespace orca_model_detail {
 
@@ -39,7 +41,9 @@ constexpr size_t max_bytes = 100u * 1024u * 1024u, max_faces = 2500000, max_vert
 struct Error : std::runtime_error
 {
     std::string code;
+    const std::optional<IoDiagnostic> io_diagnostic;
     Error(const char* c, const std::string& m) : runtime_error(m), code(c) {}
+    Error(const char* m, IoBoundary boundary, IoKind kind) : runtime_error(m), code("IO_ERROR"), io_diagnostic(IoDiagnostic{boundary,kind}) {}
 };
 struct Mesh
 {

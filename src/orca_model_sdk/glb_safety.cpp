@@ -78,27 +78,39 @@ bool publish_exclusive(const F::path& destination, const std::string& bytes, con
     const F::path temporary = destination.u8string() + ".tmp-" + suffix;
 #ifdef _WIN32
     const auto temporary_api = win32_file_path(temporary), destination_api = win32_file_path(destination);
-    HANDLE file = CreateFileW(temporary_api.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+    HANDLE file = io_fault(IoBoundary::temp_create)?INVALID_HANDLE_VALUE:CreateFileW(temporary_api.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
-    if (file == INVALID_HANDLE_VALUE)
-        throw Error("IO_ERROR", "Cannot exclusively create private temporary output");
+    if (file == INVALID_HANDLE_VALUE) {
+        const auto error=GetLastError();
+        throw Error("Cannot exclusively create private temporary output",IoBoundary::temp_create,io_windows(error));
+    }
     try {
         for (size_t offset = 0; offset < bytes.size();) {
             DWORD written = 0, amount = DWORD(std::min<size_t>(bytes.size() - offset, 16 * 1024 * 1024));
-            if (!WriteFile(file, bytes.data() + offset, amount, &written, nullptr) || written != amount)
-                throw Error("IO_ERROR", "Incomplete private temporary write");
+            const auto ok=io_fault(IoBoundary::temp_write)?FALSE:WriteFile(file, bytes.data() + offset, amount, &written, nullptr);
+#ifdef ORCA_MODEL_IO_TESTING
+            const auto tested_ok=(!ok && io_test_code==-2)?TRUE:ok;
+#else
+            const auto tested_ok=ok;
+#endif
+            const auto error=tested_ok?ERROR_SUCCESS:GetLastError();
+            if (!tested_ok || written != amount)
+                throw Error("Incomplete private temporary write",IoBoundary::temp_write,tested_ok?IoKind::unknown:io_windows(error));
             offset += written;
         }
-        if (!FlushFileBuffers(file))
-            throw Error("IO_ERROR", "Cannot flush private temporary output");
+        if (io_fault(IoBoundary::temp_flush) || !FlushFileBuffers(file)) {
+            const auto error=GetLastError();
+            throw Error("Cannot flush private temporary output",IoBoundary::temp_flush,io_windows(error));
+        }
         CloseHandle(file);
         file = INVALID_HANDLE_VALUE;
-        if (!MoveFileExW(temporary_api.c_str(), destination_api.c_str(), MOVEFILE_WRITE_THROUGH)) {
-            if (GetLastError() == ERROR_ALREADY_EXISTS || GetLastError() == ERROR_FILE_EXISTS) {
+        if (io_fault(IoBoundary::output_publish) || !MoveFileExW(temporary_api.c_str(), destination_api.c_str(), MOVEFILE_WRITE_THROUGH)) {
+            const auto error=GetLastError();
+            if (error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS) {
                 DeleteFileW(temporary_api.c_str());
                 return existing();
             }
-            throw Error("IO_ERROR", "Cannot publish without replacing an existing file");
+            throw Error("Cannot publish without replacing an existing file",IoBoundary::output_publish,io_windows(error));
         }
     } catch (...) {
         if (file != INVALID_HANDLE_VALUE)
@@ -107,28 +119,34 @@ bool publish_exclusive(const F::path& destination, const std::string& bytes, con
         throw;
     }
 #else
-    int file = ::open(temporary.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
-    if (file < 0)
-        throw Error("IO_ERROR", "Cannot exclusively create private temporary output");
+    int file = io_fault(IoBoundary::temp_create)? -1 : ::open(temporary.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
+    if (file < 0) {
+        const int error=errno;
+        throw Error("Cannot exclusively create private temporary output",IoBoundary::temp_create,io_errno(error));
+    }
     try {
         for (size_t offset = 0; offset < bytes.size();) {
-            const auto written = ::write(file, bytes.data() + offset, bytes.size() - offset);
-            if (written < 0 && errno == EINTR)
+            const auto written = io_fault(IoBoundary::temp_write)? -1 : ::write(file, bytes.data() + offset, bytes.size() - offset);
+            const int error=written<0?errno:0;
+            if (written < 0 && error == EINTR)
                 continue;
             if (written <= 0)
-                throw Error("IO_ERROR", "Incomplete private temporary write");
+                throw Error("Incomplete private temporary write",IoBoundary::temp_write,written<0?io_errno(error):IoKind::unknown);
             offset += size_t(written);
         }
-        if (::fsync(file) != 0)
-            throw Error("IO_ERROR", "Cannot flush private temporary output");
+        if (io_fault(IoBoundary::temp_flush) || ::fsync(file) != 0) {
+            const int error=errno;
+            throw Error("Cannot flush private temporary output",IoBoundary::temp_flush,io_errno(error));
+        }
         ::close(file);
         file = -1;
-        if (::link(temporary.c_str(), destination.c_str()) != 0) {
-            if (errno == EEXIST) {
+        if (io_fault(IoBoundary::output_publish) || ::link(temporary.c_str(), destination.c_str()) != 0) {
+            const int error=errno;
+            if (error == EEXIST) {
                 ::unlink(temporary.c_str());
                 return existing();
             }
-            throw Error("IO_ERROR", "Cannot publish without replacing an existing file");
+            throw Error("Cannot publish without replacing an existing file",IoBoundary::output_publish,io_errno(error));
         }
         ::unlink(temporary.c_str());
     } catch (...) {

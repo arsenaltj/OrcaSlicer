@@ -352,3 +352,7 @@ image hashes and existing per-corner projection checks remain required. Private
 appearance evidence records the actual source world matrix, reflection handling
 and material descriptor hash. This is no device pixel-equivalence claim and does
 not promote native-compatible output to strict manufacturing safety.
+
+## Safe optional IO failure facts
+
+Only explicit IO_ERROR throws at actual file_open/file_read/temp_create/temp_write/temp_flush/output_publish sites may add error.ioDiagnostic with schemaVersion1 and a closed kind (unknown/access_denied/no_space/quota_exceeded/read_only/not_found/too_many_files/unsupported/cross_device/io_failure/interrupted). OS errors are captured immediately before cleanup. Stream calls clear errno before each operation; no error or successful short writes are unknown. No numeric code/path/system text or guessed candidate/receipt role is added. Public C ABI, SDK version, IO actions, retry/cleanup/EEXIST/atomic publication and successful proof are unchanged. Test controls exist only in separately compiled orca_model_io_test, not installed production SDK or ENV. Diagnostic instrumentation is not a fix or diagnosis of any device IO fault.

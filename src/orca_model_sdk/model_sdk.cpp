@@ -1,5 +1,11 @@
 #include "model_internal.hpp"
 using namespace orca_model_detail;
+#ifdef ORCA_MODEL_IO_TESTING
+extern "C" ORCA_MODEL_API void orca_model_test_io_fault(int boundary,int code) {
+    io_test_boundary=boundary;io_test_code=code;
+}
+extern "C" ORCA_MODEL_API const char* orca_model_test_errno_kind(int code) { return io_name(io_errno(code)); }
+#endif
 namespace {
 std::mutex module_mutex;
 std::map<std::string, std::pair<std::string, void*>> modules;
@@ -188,6 +194,8 @@ int orca_model_execute(orca_model_context* handle, const char* request, orca_mod
                    (e.code == "IO_ERROR" || e.code == "FILE_LIMIT") ? ORCA_MODEL_IO :
                                                                       ORCA_MODEL_INVALID;
         response = {{"ok", false}, {"schemaVersion", 1}, {"error", {{"code", e.code}, {"message", e.what()}}}};
+        if(e.code=="IO_ERROR" && e.io_diagnostic && io_name(e.io_diagnostic->boundary) && io_name(e.io_diagnostic->kind))
+            response["error"]["ioDiagnostic"]={{"schemaVersion",1},{"boundary",io_name(e.io_diagnostic->boundary)},{"kind",io_name(e.io_diagnostic->kind)}};
     } catch (const nlohmann::json::exception& e) {
         code     = ORCA_MODEL_INVALID;
         response = {{"ok", false}, {"schemaVersion", 1}, {"error", {{"code", "INVALID_JSON"}, {"message", e.what()}}}};
