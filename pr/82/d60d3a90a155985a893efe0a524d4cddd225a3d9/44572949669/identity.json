@@ -1,0 +1,27 @@
+{
+  "pr": 82,
+  "run": 44572949669,
+  "head": "d60d3a90a155985a893efe0a524d4cddd225a3d9",
+  "base": "8f1b7bbf98df0641f37cd18a8a1088b7725da5b4",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "feat(model-sdk): 提交原始GLB修复、保外观处理与Android安全发布",
+  "path": "pr/82/d60d3a90a155985a893efe0a524d4cddd225a3d9/44572949669",
+  "created": "2026-11-19T17:07:15+00:00",
+  "files": {
+    "index.html": "4e7e6261ecb60fd8541fabb5badda9bf31a51a2b24bb07cb9a9980d66bfd612c",
+    "details.html": "fa138823196153146a5427bf6f9f30685604fc19316400082c0a3462ee71940b",
+    "report.json": "01e453d1e54af8ce15c551dbaf385ebf6421241a4cf115a49c1d52e75b9a0d0b",
+    "summary.md": "9ffd082a1be8d9af9346efff912591ec0bddd8a8d64c47be74071d09337bfc82",
+    "archify-receipts.json": "9f70e249e4f618762d9ee939212a69687cbca56e89aab855abf5587a809cd379",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "ea0a7771207839f4012b0c9505444d3befc69d988dc43d559ca1fc246adfa499",
+    "l1-modules.json": "9aeeef92b775804af86dc3aee27055f43f50c74b45c6df4808b8e8dcdcfe1b64",
+    "l2-generation.html": "5ab5558ef137d23eda721ae0ddaa25f82afe2839900e0e142691cb8020e85350",
+    "l2-generation.json": "9d870a02f238a819088346855f3b6c4f912a733fb48dec971a7ab4e6ed8caea5",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
