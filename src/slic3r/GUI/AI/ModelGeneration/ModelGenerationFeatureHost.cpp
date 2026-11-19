@@ -38,6 +38,7 @@ struct ModelGenerationFeatureHost::Impl
         workbench->initialize_workbench_assets();
         workbench->Hide();
         model_generation = new ModelGenerationPanel(parent, *workspace, *workspace, ModelGenerationPanel::Role::SmartCreation);
+        model_generation->m_library_removals = workbench->m_library_removals;
         configure_local_import(model_generation);
         model_generation->set_asset_replace_guard([this] { return workbench->library_asset_switch_allowed(); });
         model_generation->set_asset_open_handler([this](WorkbenchOpenRequest request) { return open_asset(std::move(request)); });
@@ -64,9 +65,25 @@ struct ModelGenerationFeatureHost::Impl
                     } else opened = workbench->request_library_action(command, entry);
                     if (opened && history_navigation && command == ModelLibraryCommand::OpenImage)
                         history_navigation(true);
-                    if (opened && (command == ModelLibraryCommand::Remove || command == ModelLibraryCommand::Import)) capabilities->refresh_assets();
+                    if (opened && command == ModelLibraryCommand::Import) capabilities->refresh_assets();
                     return opened;
                 }, [this] { workbench->request_library_local_import(); }});
+        capabilities->capabilities().library->set_removal_state(workbench->m_library_removals);
+        configure_library_publication(workbench);
+        configure_library_publication(model_generation);
+        workbench->m_library_removal_listener = [this](const ModelLibraryRemovalState::Event& event) {
+            if (shutdown_requested) return;
+            for (auto* panel : {model_generation}) {
+                if (!panel) continue;
+                panel->apply_library_removal_projection();
+                if (event.phase == ModelLibraryRemovalState::Phase::Committed) panel->m_library_removed_thumbnails.clear();
+                if (event.phase == ModelLibraryRemovalState::Phase::Finished || event.phase == ModelLibraryRemovalState::Phase::Failed)
+                    panel->load_library_entries(true, true);
+            }
+            capabilities->apply_library_removals();
+            if (event.phase == ModelLibraryRemovalState::Phase::Finished || event.phase == ModelLibraryRemovalState::Phase::Failed)
+                capabilities->refresh_assets();
+        };
         workbench->set_project_color_handler([this](size_t slot) {
             auto* owner = wxGetTopLevelParent(workbench);
             if (!workbench->workbench_snapshot().can_edit_project_colors) {
@@ -103,10 +120,7 @@ struct ModelGenerationFeatureHost::Impl
             });
         });
         model_generation->set_ui_state_listener([this](const ModelGenerationUIState& state) {
-            const bool assets_changed = state.model_asset_id != latest_state.model_asset_id ||
-                (latest_state.busy && !state.busy && !state.job_id.empty());
             latest_state = state;
-            if (assets_changed) capabilities->refresh_assets();
             if (state_listener)
                 state_listener(latest_state);
         });
@@ -117,6 +131,27 @@ struct ModelGenerationFeatureHost::Impl
         });
         model_generation->Hide();
         BOOST_LOG_TRIVIAL(info) << "AI model generation startup: model generation panel created";
+    }
+
+    void configure_library_publication(ModelGenerationPanel* panel)
+    {
+        panel->m_library_application = capabilities->capabilities().library;
+        panel->m_library_commit_listener = [this](ModelLibraryCommit event) { publish_library_commit(std::move(event)); };
+    }
+
+    void publish_library_commit(ModelLibraryCommit event)
+    {
+        if (shutdown_requested) return;
+        if (event.entry.job_id.empty()) {
+            for (auto* panel : {workbench, model_generation}) if (panel) panel->load_library_entries(true, true);
+            capabilities->refresh_assets();
+            return;
+        }
+        const auto committed = capabilities->capabilities().library->commit(std::move(event));
+        if (!committed) return;
+        for (auto* panel : {workbench, model_generation})
+            if (panel) panel->apply_library_commit(*committed);
+        capabilities->apply_library_commit();
     }
 
     void configure_local_import(ModelGenerationPanel* panel)
@@ -148,7 +183,6 @@ struct ModelGenerationFeatureHost::Impl
             if (!panel) continue;
             panel->set_ui_state_listener({});
             panel->set_workbench_listener({});
-            panel->set_workbench_results_handler({});
             panel->set_service_retry_handler({});
             panel->set_prepare_navigation_handler({});
             panel->set_color_matching_handler({});
@@ -158,6 +192,8 @@ struct ModelGenerationFeatureHost::Impl
             panel->set_project_filament_edit_handler({});
             panel->set_project_filament_delete_handler({});
             panel->set_asset_open_handler({});
+            panel->m_library_removal_listener = {};
+            panel->m_library_commit_listener = {};
             panel->shutdown();
         }
     }
@@ -424,6 +460,11 @@ bool ModelGenerationFeatureHost::request_import()
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_import();
 }
 
+void ModelGenerationFeatureHost::publish_library_commit(ModelLibraryCommit event)
+{
+    m_impl->publish_library_commit(std::move(event));
+}
+
 bool ModelGenerationFeatureHost::request_refresh_history()
 {
     m_impl->capabilities->refresh_assets();
@@ -459,11 +500,6 @@ void ModelGenerationFeatureHost::set_workbench_listener(PostGenerationWorkbenchL
         if (listener) listener(state);
         m_impl->maybe_import(state);
     });
-}
-
-void ModelGenerationFeatureHost::set_workbench_results_handler(std::function<void()> handler)
-{
-    m_impl->workbench->set_workbench_results_handler(std::move(handler));
 }
 
 void ModelGenerationFeatureHost::set_workbench_return_to_design_handler(std::function<void()> handler)

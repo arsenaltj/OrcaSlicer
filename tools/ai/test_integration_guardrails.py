@@ -21,7 +21,6 @@ SPEC.loader.exec_module(GUARDRAILS)
 
 
 class IntegrationGuardrailTests(unittest.TestCase):
-    expected_architecture_findings: list[dict] = []
 
     def setUp(self) -> None:
         self.document = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
@@ -264,6 +263,11 @@ class IntegrationGuardrailTests(unittest.TestCase):
         artifact_flow = REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp"
         if artifact_flow.is_file():
             panel_sources += artifact_flow.read_text(encoding="utf-8")
+        # History persistence now runs in the background commit path; the
+        # manifest digest must still be written by that actual producer.
+        library_commit = (
+            REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationLibraryCommit.cpp"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("color_intent_ready", client_header)
         self.assertIn("download_color_intent", client_header)
@@ -272,7 +276,7 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertIn("validate_color_intent_manifest_file", client_source)
         self.assertIn("m_color_intent_path", panel_header)
         self.assertIn("request.artifact.color_intent_manifest", panel_sources)
-        self.assertIn('metadata["color_intent_sha256"]', panel_sources)
+        self.assertIn('metadata["color_intent_sha256"] = m_color_intent_sha256', library_commit)
         self.assertNotIn("ColorDecomposeRecipe", panel_sources)
 
     def test_model_generation_import_boundary_rejects_auto_slice_tokens(self) -> None:
@@ -368,7 +372,7 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertTrue(any(error["code"] == "build.source_ownership" for error in errors))
 
     def test_repository_architecture_budgets_match_expected_findings(self) -> None:
-        self.assertCountEqual(self.expected_architecture_findings,
+        self.assertCountEqual([],
                               GUARDRAILS.validate_architecture_budgets(self.document, REPO_ROOT))
 
     def test_architecture_line_budget_rejects_growth(self) -> None:
@@ -854,12 +858,12 @@ class IntegrationGuardrailTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        self.assertEqual(1 if self.expected_architecture_findings else 0,
+        self.assertEqual(0,
                          completed.returncode, completed.stderr)
         report = json.loads(completed.stdout)
-        self.assertEqual(not self.expected_architecture_findings, report["ok"])
+        self.assertTrue(report["ok"])
         self.assertTrue(report["git_checks_skipped"])
-        self.assertCountEqual(self.expected_architecture_findings, report["errors"])
+        self.assertCountEqual([], report["errors"])
 
 
 class FixedBaselineGitTests(unittest.TestCase):
@@ -914,18 +918,6 @@ if __name__ == "__main__":
     parser.add_argument("--internal-package-report", type=Path)
     parser.add_argument("--source-manifest", type=Path)
     args, remaining = parser.parse_known_args()
-    if args.internal_package_report:
-        if not args.source_manifest:
-            parser.error("Internal budget expectations require a verified source manifest.")
-        sys.path.insert(0, str(REPO_ROOT / "scripts"))
-        from package_integration_check import internal_budget_expectation
-        from package_source_identity import capture
-        try:
-            record = json.loads(args.internal_package_report.read_text(encoding="utf-8-sig"))
-            source = capture(REPO_ROOT, args.source_manifest)
-            IntegrationGuardrailTests.expected_architecture_findings = internal_budget_expectation(record, source)
-        except (OSError, ValueError, KeyError) as exc:
-            parser.error(str(exc))
-        print(f"Internal package tests retain {len(IntegrationGuardrailTests.expected_architecture_findings)} "
-              "known architecture findings; integration has not passed.", flush=True)
+    if args.internal_package_report is not None or args.source_manifest is not None:
+        parser.error("--internal-package-report and its --source-manifest companion are retired for guardrail tests; architecture errors must fail the tests.")
     unittest.main(argv=[sys.argv[0], *remaining])

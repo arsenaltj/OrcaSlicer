@@ -5,7 +5,9 @@
 #include "PortraitNativeCheckpoint.hpp"
 #include "PortraitNativePartitionCache.hpp"
 #include "WorkbenchHistoryEvidence.hpp"
+#include "NativeRepairGeometry.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
+#include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
 #include "libslic3r/MeshBoolean.hpp"
 #include "libslic3r/MeshRepair.hpp"
@@ -20,10 +22,50 @@ namespace Slic3r::GUI {
 
 
 inline bool workbench_repair_publication_allowed(const WorkbenchCheckResult& result,
-    bool geometry_verified)
+    bool geometry_verified, bool native_repair_compatible = false)
 {
-    return result.candidate_status == RepairCandidateStatus::Ready && geometry_verified &&
-        workbench_topology_safe(result) && result.appearance_mapped && result.appearance_confidence >= 0.99;
+    return result.candidate_status == RepairCandidateStatus::Ready && (geometry_verified || native_repair_compatible) &&
+        workbench_topology_accepted(result) && result.appearance_mapped && result.appearance_confidence >= 0.99;
+}
+
+// Called only with execution evidence or metadata already bound by its full
+// saved certificate. Check the real ordered output before granting acceptance.
+inline bool apply_native_workbench_evidence(const TriangleMesh& mesh, const nlohmann::json& evidence,
+    WorkbenchCheckResult& result)
+{
+    if (evidence.is_null() || !evidence.contains("receipt") ||
+        !valid_native_repair_evidence(evidence, evidence.at("receipt")) ||
+        !native_repair_receipt_matches(evidence.at("receipt"), mesh.its)) return false;
+    const auto& t = evidence.at("topology");
+    result.status = WorkbenchCheckStatus::Normal;
+    result.before_faces = mesh.its.indices.size(); result.before_vertices = mesh.its.vertices.size();
+    result.boundary_edges = t.at("open_edges").get<size_t>();
+    result.nonmanifold_edges = t.at("nonmanifold_edges").get<size_t>();
+    result.nonmanifold_vertices = t.at("nonmanifold_vertices").get<size_t>();
+    result.degenerate_faces = t.at("degenerate_faces").get<size_t>();
+    result.duplicate_faces = t.at("duplicate_faces").get<size_t>();
+    result.inconsistent_edges = t.at("inconsistent_edges").get<size_t>();
+    result.self_intersections_checked = t.at("self_intersections_checked").get<bool>();
+    result.self_intersections = t.at("self_intersects").get<bool>() ? 1 : 0;
+    result.native_repair_acceptance = evidence.at("receipt");
+    result.native_repair_evidence = evidence;
+    result.summary = "已按 Orca 原生修复结果接收；拓扑检查事实与几何变化已记录，原件保留。";
+    return true;
+}
+
+inline WorkbenchCheckResult inspect_native_repair_candidate(const boost::filesystem::path& path,
+    const AI::ModelFinishingResult& repair, const std::function<bool()>& canceled = {})
+{
+    WorkbenchCheckResult result;
+    TriangleMesh mesh; ObjInfo colors; std::string error;
+    if (!repair.success || !repair.repair_evidence ||
+        !AI::load_model_artifact(path, mesh, colors, error, canceled) || (canceled && canceled()) ||
+        !apply_native_workbench_evidence(mesh, native_repair_evidence(*repair.repair_evidence), result) ||
+        AI::model_artifact_sha256(path) != repair.output_sha256) {
+        result = {}; result.status = WorkbenchCheckStatus::Failed;
+        result.summary = error.empty() ? "原生修复成果身份无法验证，原件保留。" : error;
+    } else result.model_sha256 = repair.output_sha256;
+    return result;
 }
 
 inline WorkbenchCheckResult inspect_workbench_mesh(const TriangleMesh& mesh,
@@ -170,7 +212,6 @@ inline WorkbenchCheckResult inspect_workbench_mesh(const TriangleMesh& mesh,
         result.status = result.nonmanifold_edges || result.nonmanifold_vertices || result.degenerate_faces || result.duplicate_faces || result.inconsistent_edges || result.self_intersections
             ? WorkbenchCheckStatus::Invalid : result.boundary_edges
                 ? WorkbenchCheckStatus::Attention : WorkbenchCheckStatus::Normal;
-        result.force_import_risk = result.status == WorkbenchCheckStatus::Attention;
         result.summary = "开放边 " + std::to_string(result.boundary_edges) + "；非流形边 " +
             std::to_string(result.nonmanifold_edges) + "；退化面 " + std::to_string(result.degenerate_faces) +
             "；重复面 " + std::to_string(result.duplicate_faces) + "；方向不一致 " +
@@ -290,8 +331,7 @@ inline bool decode_native_publication_certificate(
         verify_files();
 
         const auto& native = metadata.at("native_portrait_topology_certificate");
-        require(native.at("schema") ==
-                    "orca.native-workbench-topology-certificate/v1" &&
+        require(native_repair_topology_allowed(metadata.at("partition_build_report").at("strict_repair"), native) &&
                 AI::beauty_leaf_digest(native.dump()) == proof.topology_hash &&
                 native.at("carrier_sha256") == proof.carrier_sha256 &&
                 native.at("geometry_id") == proof.geometry_id &&
@@ -300,7 +340,8 @@ inline bool decode_native_publication_certificate(
                 native.at("partition_digest") == proof.partition_digest &&
                 native.at("coordinate_units") == reference.at("coordinate_units") &&
                 native.at("source_bounds_mm") == reference.at("source_bounds_mm") &&
-                native.at("carrier_bounds_mm") == reference.at("carrier_bounds_mm"),
+                native.at("carrier_bounds_mm") == reference.at("carrier_bounds_mm") &&
+                native.value("native_repair_compatible", false) == reference.value("native_repair_compatible", false),
                 "Native topology certificate identity mismatch.");
 
         const auto& report = metadata.at("partition_build_report");
@@ -310,19 +351,20 @@ inline bool decode_native_publication_certificate(
                 report.at("success").get<bool>() &&
                 strict.at("success").get<bool>() &&
                 !strict.at("canceled").get<bool>() &&
-                strict.at("geometry_verified").get<bool>() &&
                 strict.at("output_topology") == native.at("topology"),
                 "Native strict repair certificate mismatch.");
-        const double deviation = strict.at("sampled_deviation_ratio").get<double>();
-        const double area_change = strict.at("area_change_ratio").get<double>();
-        const StrictMeshRepairOptions limits;
-        require(std::isfinite(deviation) && deviation >= 0.0 &&
-                deviation <= limits.maximum_sampled_deviation_ratio &&
-                std::isfinite(area_change) && area_change >= 0.0 &&
-                area_change <= limits.maximum_area_change_ratio &&
-                native.at("sampled_deviation_ratio").get<double>() == deviation &&
-                native.at("area_change_ratio").get<double>() == area_change,
+        require(native_repair_geometry_allowed(strict, native),
                 "Native strict geometry certificate mismatch.");
+        if (native.contains("native_acceptance")) {
+            const auto cache_path = boost::filesystem::path(boost::nowide::widen(reference.at("cache_path").get<std::string>()));
+            NativePortrait::NativePortraitPartitionIdentity identity;
+            TriangleMesh exact;
+            std::string error;
+            require(NativePortrait::load_native_portrait_partition_cache(reference.at("cache_reference"),
+                    cache_path.parent_path(), identity, error, &exact) &&
+                native_repair_receipt_matches(native.at("native_acceptance"), exact.its),
+                "Native execution output geometry mismatch.");
+        }
 
         const auto& certificate = metadata.at("workbench_check_certificate");
         WorkbenchCheckResult checked;
@@ -332,7 +374,7 @@ inline bool decode_native_publication_certificate(
                     evidence_path, metadata,
                     proof.partition_digest, proof.topology_hash) &&
                 WorkbenchArtifacts::decode_workbench_check_certificate(certificate, checked) &&
-                workbench_topology_safe(checked) &&
+                workbench_topology_accepted(checked) &&
                 checked.before_faces == proof.face_count,
                 "Native workbench certificate mismatch.");
         const auto& topology = native.at("topology");
@@ -424,6 +466,22 @@ inline bool restore_workbench_appearance_topology(TriangleMesh& mesh,
             if (!AI::load_model_artifact(current, carrier, colors, error, canceled) ||
                 !same_corners(mesh.its, carrier.its)) return false;
             ancestry.push_back({current, metadata_path, hash, metadata_hash});
+            if (!metadata.contains("native_portrait_partition") && metadata.contains("native_repair_evidence")) {
+                const auto& cert = metadata.at("workbench_check_certificate");
+                const auto location = workbench_history_evidence_location(current, metadata_path, metadata, canceled);
+                if (!WorkbenchArtifacts::valid_workbench_check_certificate(cert, WorkbenchCheckPurpose::SavedModelReadOnly,
+                        hash, cert.at("geometry_id").get<std::string>(), cert.at("appearance_id").get<std::string>(),
+                        boost::nowide::narrow(location.metadata.wstring()), metadata)) return false;
+                WorkbenchCheckResult checked;
+                if (!apply_native_workbench_evidence(mesh, metadata.at("native_repair_evidence"), checked) ||
+                    AI::model_artifact_sha256(current) != hash ||
+                    AI::model_artifact_sha256(metadata_path) != metadata_hash ||
+                    AI::model_artifact_sha256(candidate) != candidate_hash) return false;
+                checked.model_sha256 = checked.source_sha256 = candidate_hash;
+                checked.purpose = WorkbenchCheckPurpose::SavedModelReadOnly;
+                if (verified) *verified = std::move(checked);
+                return true;
+            }
             if (metadata.contains("native_portrait_partition")) {
                 const auto& reference = metadata.at("native_portrait_partition");
                 WorkbenchNativeTopologyCertificate proof;
@@ -492,21 +550,28 @@ inline WorkbenchCheckResult inspect_workbench_publication(const boost::filesyste
         // Invalid proof always takes the full path, but safe geometry alone
         // cannot authorize changed publication identities.
         const auto full_check = inspect_workbench_model(candidate, canceled);
-        if (!workbench_topology_safe(full_check))
+        if (!workbench_topology_accepted(full_check))
             throw std::runtime_error(
                 "Native publication certificate rejected; full inspection failed: " +
                 full_check.summary);
         throw std::runtime_error("Native publication certificate identity mismatch: " +
             (rejection.empty() ? std::string("incompatible repair candidate") : rejection));
     }
-    if (repair && (!workbench_topology_safe(*repair) ||
+    if (repair && (!workbench_topology_accepted(*repair) ||
         AI::model_artifact_sha256(candidate) != repair->candidate_sha256 ||
         AI::model_artifact_sha256(source) != repair->source_sha256))
         throw std::runtime_error("修复候选或原模型已变化，请重新检查。");
     // A new color candidate has not published its metadata yet. Its source is
     // supplied by the owning save transaction, then verified like history.
-    auto checked = inspect_workbench_model(candidate, canceled, source);
-    if (!workbench_topology_safe(checked))
+    WorkbenchCheckResult checked;
+    if (repair && !repair->native_repair_acceptance.is_null()) {
+        TriangleMesh mesh; ObjInfo colors; std::string error;
+        if (!AI::load_model_artifact(candidate, mesh, colors, error, canceled) || (canceled && canceled()) ||
+            !apply_native_workbench_evidence(mesh, repair->native_repair_evidence, checked))
+            throw std::runtime_error("原生修复成果的实际几何与执行凭证不匹配。");
+        checked.model_sha256 = AI::model_artifact_sha256(candidate);
+    } else checked = inspect_workbench_model(candidate, canceled, source);
+    if (!workbench_topology_accepted(checked))
         throw std::runtime_error("候选最终拓扑检查未通过：" + checked.summary);
     if (repair) {
         // Keep the operation's original counts while the final inspection

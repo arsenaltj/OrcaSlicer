@@ -144,6 +144,7 @@ public:
     }
     void input_changed() { m_edited = true; ++m_epoch; }
     bool eligible() const { return m_presented && !m_edited; }
+    bool presented() const { return m_presented; }
     uint64_t epoch() const { return m_epoch; }
     bool accepts(uint64_t epoch) const { return eligible() && epoch == m_epoch; }
 private:

@@ -15,15 +15,19 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <deque>
+#include <system_error>
 #include <unordered_map>
 
 #include <boost/next_prior.hpp>
 #include "Callbacks.hpp"
 #include "CgalUtils.hpp"
 #include "ColorUtils.hpp"
+#include "ColorFallback.hpp"
 #include "TriMesh.hpp"
 #include "libslic3r/Point.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "libslic3r/MeshSeamRepair.hpp"
 #include <filesystem>
 #include <fstream>
@@ -735,11 +739,14 @@ static bool repair_cluster_smooth(
         return false;
     };
 
-    std::vector<RGB> source_sample_colors = face_colors;
-    std::sort(source_sample_colors.begin(), source_sample_colors.end());
-    source_sample_colors.erase(
-        std::unique(source_sample_colors.begin(), source_sample_colors.end()),
-        source_sample_colors.end());
+    // Only the quality-floor comparison below needs this count. Bound the
+    // set by that floor instead of allocating and sorting a full color copy.
+    std::set<RGB> source_sample_colors;
+    const size_t color_floor = std::max<size_t>(1, settings.min_cluster_k);
+    for (size_t i = 0; i < face_colors.size() && source_sample_colors.size() < color_floor; ++i) {
+        if ((i & 4095) == 0 && cancelled()) return false;
+        source_sample_colors.insert(face_colors[i]);
+    }
     const std::size_t source_sample_color_count = source_sample_colors.size();
 
     report(0, "Repairing mesh");
@@ -751,8 +758,67 @@ static bool repair_cluster_smooth(
 
     // Resample face colors onto a repaired mesh via centroid nearest-neighbor.
     auto resample_face_colors = [&](TriMesh&& repaired_mesh) -> bool {
+        if (mesh.indices == repaired_mesh.indices && mesh.vertices == repaired_mesh.vertices) {
+            mesh = std::move(repaired_mesh);
+            return true;
+        }
+        std::deque<size_t> exact_sources;
+        if (settings.preserve_repaired_geometry && settings.preserve_repaired_geometry()) {
+            // Only the newly accepted native route needs this correspondence;
+            // retain the established successful path and its cost unchanged.
+            using Key = std::array<float, 9>;
+            struct SourceFace { Key key; size_t face; };
+            const auto key = [](const TriMesh& input, size_t id) {
+                std::array<std::array<float, 3>, 3> corners;
+                for (int c = 0; c < 3; ++c) for (int a = 0; a < 3; ++a)
+                    corners[c][a] = input.vertices[input.indices[id][c]][a];
+                std::sort(corners.begin(), corners.end());
+                Key result;
+                for (int c = 0; c < 3; ++c) for (int a = 0; a < 3; ++a) result[c * 3 + a] = corners[c][a];
+                return result;
+            };
+            if (mesh.facets_count() > (256ULL * 1024 * 1024) / (sizeof(SourceFace) + sizeof(size_t) * 2))
+                throw std::length_error("原生外观映射暂存资源不足，原件保留。");
+            std::deque<SourceFace> sources;
+            for (size_t f = 0; f < mesh.facets_count(); ++f) sources.push_back({key(mesh, f), f});
+            std::sort(sources.begin(), sources.end(), [](const auto& a, const auto& b) {
+                return std::tie(a.key, a.face) < std::tie(b.key, b.face);
+            });
+            std::deque<size_t> occurrences(mesh.facets_count(), 0);
+            exact_sources.assign(repaired_mesh.facets_count(), size_t(-1));
+            for (size_t f = 0; f < repaired_mesh.facets_count(); ++f) {
+                if ((f & 4095) == 0 && cancelled()) return false;
+                const auto target = key(repaired_mesh, f);
+                const auto first = std::lower_bound(sources.begin(), sources.end(), target,
+                    [](const auto& entry, const Key& value) { return entry.key < value; });
+                if (first != sources.end() && first->key == target) {
+                    const auto last = std::upper_bound(first, sources.end(), target,
+                        [](const Key& value, const auto& entry) { return value < entry.key; });
+                    const auto offset = size_t(first - sources.begin());
+                    exact_sources[f] = (first + (occurrences[offset]++ % size_t(last - first)))->face;
+                }
+            }
+        }
         TriVertices old_vertices = std::move(mesh.vertices);
         TriFaces    old_indices  = std::move(mesh.indices);
+        std::vector<size_t> source_ids;
+        TriFaces valid_indices;
+        // A zero-area source has no defined nearest-surface interpolation.
+        const auto usable = [&](const auto& f) {
+            const double area = (old_vertices[f[1]] - old_vertices[f[0]]).cast<double>().cross(
+                (old_vertices[f[2]] - old_vertices[f[0]]).cast<double>()).squaredNorm();
+            return std::isfinite(area) && area > 0.;
+        };
+        const bool filtered = std::find_if(old_indices.begin(), old_indices.end(),
+            [&](const auto& f) { return !usable(f); }) != old_indices.end();
+        if (filtered) {
+            valid_indices.reserve(old_indices.size()); source_ids.reserve(old_indices.size());
+            for (size_t i = 0; i < old_indices.size(); ++i) if (usable(old_indices[i])) {
+                valid_indices.push_back(old_indices[i]); source_ids.push_back(i);
+            }
+            if (valid_indices.empty()) return false;
+            old_indices = std::move(valid_indices);
+        }
         auto aabb_tree = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(old_vertices, old_indices);
         mesh = std::move(repaired_mesh);
 
@@ -763,17 +829,26 @@ static bool repair_cluster_smooth(
         }
 
         std::vector<RGB> new_face_colors(mesh.facets_count());
+        std::atomic<bool> projection_failed {false};
         tbb::parallel_for(tbb::blocked_range<std::size_t>(0, mesh.facets_count()), [&](const tbb::blocked_range<size_t>& range) {
             for (std::size_t fid = range.begin(); fid < range.end(); ++fid) {
+                if (!exact_sources.empty() && exact_sources[fid] != size_t(-1)) {
+                    new_face_colors[fid] = face_colors[exact_sources[fid]];
+                    continue;
+                }
                 const auto& face = mesh.indices[fid];
                 Vec3f center = (mesh.vertices[face[0]] + mesh.vertices[face[1]] + mesh.vertices[face[2]]) / 3.0f;
                 size_t hit_idx = 0;
                 Vec3f  closest;
-                AABBTreeIndirect::squared_distance_to_indexed_triangle_set(
+                const auto distance = AABBTreeIndirect::squared_distance_to_indexed_triangle_set(
                     old_vertices, old_indices, aabb_tree, center, hit_idx, closest);
-                new_face_colors[fid] = face_colors[hit_idx];
+                if (!std::isfinite(distance) || distance < 0 || hit_idx >= old_indices.size() || !closest.allFinite()) {
+                    projection_failed.store(true); continue;
+                }
+                new_face_colors[fid] = face_colors[filtered ? source_ids[hit_idx] : hit_idx];
             }
         });
+        if (projection_failed.load() || cancelled()) return false;
         face_colors = std::move(new_face_colors);
         return true;
     };
@@ -821,7 +896,8 @@ static bool repair_cluster_smooth(
             }
             if (cancelled()) return false;
             TriMesh strict_mesh(std::move(repaired_its));
-            if (!is_closed(strict_mesh) || !cgalutils::is_mesh_halfedge_compatible(strict_mesh)) {
+            if ((!is_closed(strict_mesh) || !cgalutils::is_mesh_halfedge_compatible(strict_mesh)) &&
+                !(settings.preserve_repaired_geometry && settings.preserve_repaired_geometry())) {
                 BOOST_LOG_TRIVIAL(error) << log_prefix
                     << ": strict mesh repair result failed closed/halfedge verification.";
                 return false;
@@ -866,7 +942,8 @@ static bool repair_cluster_smooth(
     // it does not need a CGAL halfedge conversion or topology repair.
     // Explicit face colors are bound to the source surface. Neither implicit
     // halfedge repair nor color smoothing may invalidate their face identities.
-    const bool needs_halfedges = settings.face_color_overrides.empty() &&
+    const bool preserve_geometry = settings.preserve_repaired_geometry && settings.preserve_repaired_geometry();
+    const bool needs_halfedges = !preserve_geometry && settings.face_color_overrides.empty() &&
         (settings.fixed_palette.empty() || settings.smooth_weight > 0.0);
     if (needs_halfedges && !strict_halfedges_verified && !cgalutils::is_mesh_halfedge_compatible(mesh)) {
         if (settings.strict_mesh_repair) {
@@ -911,6 +988,49 @@ static bool repair_cluster_smooth(
     smooth_parameters.cancel_callback = cancel_callback;
     std::unique_ptr<RegionSmoothingWorkspace> smoothing;
     std::vector<std::size_t> geometry_labels;
+    std::vector<RGB> unsmoothed_centers;
+    std::vector<size_t> unsmoothed_labels;
+    const auto fallback = [&](const char* reason) {
+        if (!settings.allow_color_fallback || cancelled()) return false;
+        mesh = unsmoothed_mesh;
+        if (!unsmoothed_centers.empty() && unsmoothed_labels.size() == face_colors.size()) {
+            cluster_centers = std::move(unsmoothed_centers);
+            clustered_face_labels = std::move(unsmoothed_labels);
+        } else if (!fallback_color_labels(face_colors, cluster_centers, clustered_face_labels,
+                cancel_callback ? std::function<bool()>(cancel_callback) : std::function<bool()>{})) return false;
+        out_clustered_face_colors.resize(face_colors.size());
+        double total_delta = 0., maximum_delta = 0.;
+        FallbackColorDifferences differences{bool(settings.color_fallback_diagnostic)};
+        for (size_t i = 0; i < face_colors.size(); ++i) {
+            if ((i & 4095) == 0 && cancelled()) return false;
+            if (clustered_face_labels[i] >= cluster_centers.size()) return false;
+            out_clustered_face_colors[i] = cluster_centers[clustered_face_labels[i]];
+            if (settings.color_fallback_diagnostic) {
+                const auto delta = differences(face_colors[i], out_clustered_face_colors[i]);
+                if (!std::isfinite(delta) || delta < 0.) return false;
+                total_delta += delta; maximum_delta = std::max(maximum_delta, delta);
+            }
+        }
+        if (settings.color_fallback_reason) *settings.color_fallback_reason = reason;
+        if (settings.color_fallback_diagnostic)
+            settings.color_fallback_diagnostic(cluster_centers.size(), total_delta / face_colors.size(), maximum_delta);
+        report(100, "Completed with deterministic color fallback");
+        return true;
+    };
+    // Algorithm failures may retain accepted geometry and complete labels.
+    // Allocation/capacity, invalid inputs and worker-resource failures must
+    // propagate; trying another algorithm would compound the original fault.
+    const auto color_operation = [&](const auto& operation) {
+        try { return operation(); }
+        catch (const std::bad_alloc&) { throw; }
+        catch (const std::length_error&) { throw; }
+        catch (const std::invalid_argument&) { throw; }
+        catch (const std::system_error&) { throw; }
+        catch (const std::exception&) {
+            if (!settings.allow_color_fallback) throw;
+            return false;
+        }
+    };
 
     for (;;) {
         mesh = unsmoothed_mesh;
@@ -919,6 +1039,7 @@ static bool repair_cluster_smooth(
         out_clustered_face_colors = face_colors;
 
         const auto clustering_started = std::chrono::steady_clock::now();
+        const bool clustered = color_operation([&] {
         if (!fixed_centers.empty()) {
             cluster_centers = settings.fixed_palette;
         } else if (adaptive_cluster) {
@@ -940,14 +1061,19 @@ static bool repair_cluster_smooth(
             cluster_centers = cluster_k_means(face_colors, para);
             if (cancelled()) return false;
         }
-        BOOST_LOG_TRIVIAL(info) << "[NativeClustering] stage=select_palette elapsed_ms="
-            << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - clustering_started).count()
-            << " count=" << cluster_centers.size();
+        return true;
+        });
+        if (!clustered) return fallback("weighted-median-cut/v1");
+        try {
+            BOOST_LOG_TRIVIAL(info) << "[NativeClustering] stage=select_palette elapsed_ms="
+                << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - clustering_started).count()
+                << " count=" << cluster_centers.size();
+        } catch (...) { /* Diagnostics cannot reject a completed palette. */ }
 
         BOOST_LOG_TRIVIAL(debug) << log_prefix << ": k = " << cluster_centers.size() << ".";
         if (cluster_centers.empty()) {
             BOOST_LOG_TRIVIAL(debug) << log_prefix << ": no cluster center generated.";
-            return false;
+            return fallback("weighted-median-cut/v1");
         }
 
         report(40, "Assigning cluster labels");
@@ -979,9 +1105,11 @@ static bool repair_cluster_smooth(
             });
             if (cancel_requested.load() || cancelled()) return false;
         }
-        BOOST_LOG_TRIVIAL(info) << "[NativeClustering] stage=face_labels elapsed_ms="
-            << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - labeling_started).count()
-            << " count=" << mesh.indices.size();
+        try {
+            BOOST_LOG_TRIVIAL(info) << "[NativeClustering] stage=face_labels elapsed_ms="
+                << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - labeling_started).count()
+                << " count=" << mesh.indices.size();
+        } catch (...) { /* Diagnostics cannot reject completed face labels. */ }
         if (adaptive_cluster && fixed_centers.empty()) {
             if (!discard_unused_cluster_centers(cluster_centers, clustered_face_labels, "cluster assignment"))
                 return false;
@@ -1000,12 +1128,24 @@ static bool repair_cluster_smooth(
 
         report(65, "Smoothing colors");
         if (cancelled()) return false;
+        if (settings.allow_color_fallback) {
+            unsmoothed_centers = cluster_centers;
+            unsmoothed_labels = clustered_face_labels;
+        }
+        // The former partition domain ended at one million faces. New larger
+        // inputs retain native geometry when a halfedge smoothing workspace
+        // would exceed the transient budget; this is label-only completion,
+        // not decimation or a second geometry repair.
+        if (needs_halfedges && settings.allow_color_fallback && mesh.facets_count() > 1000000 &&
+            uint64_t(mesh.vertices.size()) * 96 + uint64_t(mesh.facets_count()) * 192 > MeshResourceBudget::scratch_bytes)
+            return fallback("bounded-unsmoothed-labels/v1");
 
-        if (needs_halfedges && !smoothing)
-            smoothing = std::make_unique<RegionSmoothingWorkspace>(unsmoothed_mesh, smooth_parameters);
-        if (needs_halfedges && !smoothing->apply_topology(clustered_face_labels, smooth_parameters)) {
+        if (needs_halfedges && !color_operation([&] {
+                if (!smoothing) smoothing = std::make_unique<RegionSmoothingWorkspace>(unsmoothed_mesh, smooth_parameters);
+                return smoothing->apply_topology(clustered_face_labels, smooth_parameters);
+            })) {
             BOOST_LOG_TRIVIAL(debug) << log_prefix << ": smooth region failed.";
-            return false;
+            return fallback("unsmoothed-labels/v1");
         }
         // Fixed-K seed restoration below may change labels. Geometry must
         // still use the pre-restoration labels, as in the original pipeline.
@@ -1025,7 +1165,7 @@ static bool repair_cluster_smooth(
                 << cluster_centers.size() << " clusters, below required "
                 << required_effective_clusters << " after retrying through k="
                 << adaptive_max_k << ".";
-            return false;
+            return fallback("unsmoothed-labels/v1");
         }
         const std::size_t next_min_k = std::min(adaptive_max_k,
             std::max(adaptive_min_k + 1, adaptive_min_k * 2));
@@ -1037,7 +1177,10 @@ static bool repair_cluster_smooth(
 
     // A rejected cluster pass never changes geometry. Only the accepted
     // topology receives the original geometric pass, then one ordered export.
-    if (needs_halfedges && !smoothing->finish(mesh, geometry_labels, smooth_parameters)) return false;
+    if (needs_halfedges && !color_operation([&] {
+            return smoothing->finish(mesh, geometry_labels, smooth_parameters, settings.strict_mesh_repair);
+        }))
+        return fallback("accepted-geometry-unsmoothed-labels/v1");
 
     report(90, "Updating face colors");
     if (cancelled()) return false;

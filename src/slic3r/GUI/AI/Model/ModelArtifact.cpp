@@ -1,3 +1,4 @@
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "ModelArtifact.hpp"
 
 #include "libslic3r/Format/AssimpImport.hpp"
@@ -179,14 +180,16 @@ bool is_model_artifact(const boost::filesystem::path& path) {
     boost::system::error_code ec;
     if (model_artifact_format(path).empty() || !boost::filesystem::is_regular_file(path, ec) || ec) return false;
     const auto size = boost::filesystem::file_size(path, ec);
-    return !ec && size > 0 && size <= max_bytes;
+    return !ec && size > 0 && size <= (model_artifact_format(path) == "obj" ? MeshResourceBudget::local_obj_bytes : max_bytes);
 }
 
 bool load_model_artifact(const boost::filesystem::path& path, TriangleMesh& mesh, ObjInfo& info, std::string& error,
-                         const std::function<bool()>& canceled, ModelArtifactTextureSurface* texture_surface) {
+                         const std::function<bool()>& canceled, ModelArtifactTextureSurface* texture_surface,
+                         TexturedMesh* obj_texture) {
     error.clear();
     info = ObjInfo {};
     if (texture_surface) *texture_surface = {};
+    if (obj_texture) *obj_texture = {};
     auto stop_if_canceled = [&] {
         if (!canceled || !canceled()) return false;
         mesh = TriangleMesh {};info = ObjInfo {};
@@ -195,8 +198,82 @@ bool load_model_artifact(const boost::filesystem::path& path, TriangleMesh& mesh
     };
     try {
         if (stop_if_canceled()) return false;
-        if (!is_model_artifact(path)) throw std::runtime_error("The OBJ/GLB model is missing or exceeds 512 MB.");
-        if (model_artifact_format(path) == "obj") return load_obj(path.string().c_str(), &mesh, info, error, nullptr, canceled);
+        if (!is_model_artifact(path)) throw std::runtime_error("The OBJ/GLB model is missing or exceeds the format resource budget.");
+        if (model_artifact_format(path) == "obj") {
+            ObjParser::MtlData materials;
+            if (!load_obj(path.string().c_str(), &mesh, info, error, &materials, canceled)) return false;
+            if (!MeshResourceBudget::editable(mesh.its.vertices.size(), mesh.its.indices.size()))
+                throw std::runtime_error("OBJ editing resource budget exceeded; source preserved.");
+            if (info.has_uv_png) {
+                TexturedMesh textured;
+                if (info.uvs.size() != mesh.its.indices.size() ||
+                    !obj_to_textured_mesh(info, mesh.its, materials, path.parent_path().string(), textured))
+                    throw std::runtime_error("OBJ 声明的纹理或 UV 数据缺失，未替换为单色。");
+                for (const auto& entry : info.uv_map_pngs) {
+                    if (entry.first < 0 || size_t(entry.first) >= textured.material_ids.size())
+                        throw std::runtime_error("OBJ 纹理面关联无效。");
+                    const int material = textured.material_ids[size_t(entry.first)];
+                    if (material < 0 || size_t(material) >= textured.material_texture_map.size() ||
+                        textured.material_texture_map[size_t(material)] < 0)
+                        throw std::runtime_error("OBJ 声明的贴图文件缺失，未替换为单色。");
+                }
+                ModelArtifactTextureSurface exact;
+                if (texture_surface) exact.images.resize(textured.textures.size());
+                for (size_t i = 0; i < textured.textures.size(); ++i) {
+                    if (stop_if_canceled()) return false;
+                    const auto& image = textured.textures[i];
+                    std::vector<unsigned char> bgr; int width = 0, height = 0;
+                    if (!decode_texture_to_pixels(image, bgr, width, height) || width <= 0 || height <= 0 ||
+                        uint64_t(width) * height > 64ULL * 1024 * 1024)
+                        throw std::runtime_error("OBJ 颜色贴图损坏或超过资源预算，原件保留。");
+                    if (!texture_surface) continue;
+                    const bool jpeg = image.data.size() >= 2 && image.data[0] == 0xff && image.data[1] == 0xd8;
+                    const cv::Mat pixels = jpeg ? cv::Mat(height, width, CV_8UC3, bgr.data())
+                        : cv::imdecode(image.data, cv::IMREAD_UNCHANGED);
+                    if (pixels.empty() || pixels.depth() != CV_8U ||
+                        (pixels.channels() != 3 && pixels.channels() != 4))
+                        throw std::runtime_error("OBJ 颜色贴图不是有效 RGB／RGBA 图片。");
+                    auto& out = exact.images[i]; out.width = width; out.height = height;
+                    out.rgba.resize(size_t(width) * height * 4);
+                    for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
+                        const auto* in = pixels.ptr<unsigned char>(y) + size_t(x) * pixels.channels();
+                        auto* pixel = out.rgba.data() + (size_t(y) * width + x) * 4;
+                        pixel[0] = in[2]; pixel[1] = in[1]; pixel[2] = in[0];
+                        pixel[3] = pixels.channels() == 4 ? in[3] : 255;
+                    }
+                }
+                if (texture_surface) {
+                    exact.faces.resize(mesh.its.indices.size());
+                    for (size_t face = 0; face < exact.faces.size(); ++face) {
+                        if ((face & 4095) == 0 && stop_if_canceled()) return false;
+                        auto& out = exact.faces[face];
+                        const int material = textured.material_ids[face];
+                        std::array<float,4> factor {1,1,1,1};
+                        if (material >= 0 && size_t(material) < textured.material_colors.size()) {
+                            factor = textured.material_colors[size_t(material)];
+                            out.image = textured.material_texture_map[size_t(material)];
+                        }
+                        for (int corner = 0; corner < 3; ++corner) {
+                            out.corners[corner].uv = textured.uv_coords[size_t(textured.uv_indices[face][corner])];
+                            for (int channel = 0; channel < 4; ++channel) {
+                                if (!std::isfinite(factor[channel]) || factor[channel] < 0 || factor[channel] > 1)
+                                    throw std::runtime_error("OBJ 材质颜色范围无效。");
+                                const float value = factor[channel];
+                                out.corners[corner].multiplier[channel] = channel == 3 ? value :
+                                    (value <= .04045f ? value / 12.92f : std::pow((value + .055f) / 1.055f, 2.4f));
+                            }
+                        }
+                    }
+                    *texture_surface = std::move(exact);
+                }
+                if (obj_texture) *obj_texture = std::move(textured);
+            } else if (info.vertex_colors.empty() && info.face_colors.empty()) {
+                // Match Orca's uncoloured surface material. This is an actual
+                // default, never a replacement for a declared broken texture.
+                info.face_colors.assign(mesh.its.indices.size(), RGBA{192.f/255.f,192.f/255.f,192.f/255.f,1.f});
+            }
+            return true;
+        }
         const auto doc = glb_description(path);
         // Assimp's glTF LazyDict assigns indices on first retrieval, not from
         // JSON array positions. Static scenes retrieve child nodes before the
@@ -234,7 +311,7 @@ bool load_model_artifact(const boost::filesystem::path& path, TriangleMesh& mesh
         if (!load_assimp_textured_model(path.string(), textured, &error, &vertex_colors,
                 raw_fallback_only && !texture_surface ? AssimpRawColorPolicy::FallbackOnly : AssimpRawColorPolicy::Always, &imported_materials)) return false;
         if (stop_if_canceled()) return false;
-        if (textured.vertices.empty() || textured.vertices.size() > 6000000 || textured.indices.size() > 2000000)
+        if (!MeshResourceBudget::editable(textured.vertices.size(), textured.indices.size()))
             throw std::runtime_error("GLB model exceeds the editable mesh limit.");
         indexed_triangle_set its;
         its.vertices.reserve(textured.vertices.size());
@@ -488,7 +565,7 @@ static bool write_model_artifact_impl(const boost::filesystem::path& path, const
     std::string prepared_hash;
     if (written_sha256) written_sha256->clear();
     try {
-        if (mesh.vertices.empty() || mesh.indices.empty() || colors.size() != mesh.vertices.size())
+        if (!MeshResourceBudget::editable(mesh.vertices.size(), mesh.indices.size()) || colors.size() != mesh.vertices.size())
             throw std::runtime_error("The edited model has incomplete geometry or colors.");
         if (boost::filesystem::exists(path) || boost::filesystem::exists(temporary))
             throw std::runtime_error("The output already exists; choose a new model version.");
@@ -657,7 +734,7 @@ static bool write_model_artifact_impl(const boost::filesystem::path& path, const
             write_u32(output, uint32_t(binary.size())); write_u32(output, 0x004e4942); output.write(reinterpret_cast<const char*>(binary.data()), binary.size());
         }
         output.close();
-        if (!output || boost::filesystem::file_size(temporary) > max_bytes) throw std::runtime_error("Unable to write the complete model.");
+        if (!output || boost::filesystem::file_size(temporary) > (model_artifact_format(path) == "obj" ? MeshResourceBudget::local_obj_bytes : max_bytes)) throw std::runtime_error("Unable to write the complete model.");
         // Windows OBJ imports already hashed the exact bytes sent to the
         // writer. Other formats/toolchains retain the read-back path.
         if (written_sha256 && prepared_hash.empty()) {
@@ -759,8 +836,8 @@ bool archive_local_model(const boost::filesystem::path& source,const boost::file
                 // OBJ vertex RGB is already sRGB. Assimp supplies a gray default
                 // material even when the file assigns none; baking that factor
                 // would darken every local import and change its source groups.
-                if(vertex_mesh.its.indices.size()>2000000 || vertex_mesh.its.vertices.size()>6000000)
-                    throw std::runtime_error("模型超过当前工作台支持的 200 万三角面。");
+                if(!MeshResourceBudget::editable(vertex_mesh.its.vertices.size(), vertex_mesh.its.indices.size()))
+                    throw std::runtime_error("模型的编辑数据超出资源预算，原件保留。");
                 if(!write_model_artifact_impl(staged,vertex_mesh.its,vertex_info.vertex_colors,error,nullptr))
                     throw std::runtime_error(error);
                 owned=true;
@@ -768,8 +845,10 @@ bool archive_local_model(const boost::filesystem::path& source,const boost::file
             vertex_mesh=TriangleMesh(); vertex_info=ObjInfo();
             TexturedMesh mesh;std::vector<RGBA> colors;
             if(!load_assimp_textured_model(source.string(),mesh,&error,&colors))throw std::runtime_error(error);
-            if(mesh.indices.empty() || mesh.indices.size()>2000000 || mesh.vertices.size()>6000000 || colors.size()!=mesh.vertices.size())
-                throw std::runtime_error("模型超过当前工作台支持的 200 万三角面。");
+            if(!MeshResourceBudget::editable(mesh.vertices.size(), mesh.indices.size()))
+                throw std::runtime_error("模型的编辑数据超出资源预算，原件保留。");
+            if(colors.size()!=mesh.vertices.size())
+                throw std::runtime_error("模型颜色数据不完整，原件保留。");
             using Json=nlohmann::json;
             Json doc={{"asset",{{"version","2.0"},{"generator","Orca local model import"}}},
                 {"scene",0},{"scenes",{{{"nodes",{0}}}}},{"nodes",{{{"mesh",0}}}},

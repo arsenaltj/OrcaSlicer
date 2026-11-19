@@ -1,5 +1,6 @@
 #pragma once
 
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "BeautySurface.hpp"
 #include "SurfaceSelectionState.hpp"
 #include <nlohmann/json.hpp>
@@ -75,7 +76,7 @@ struct BeautyLeafDomain {
         }
     }
     static std::vector<BeautyLeafKey> decode_keys(const nlohmann::json& value, size_t count) {
-        if (!value.is_array() || value.size() > 2000000) throw std::invalid_argument("Invalid leaf list.");
+        if (!value.is_array() || value.size() > MeshResourceBudget::maximum_faces) throw std::invalid_argument("Invalid leaf list.");
         std::vector<BeautyLeafKey> result;
         for (const auto& item : value) {
             if (!item.is_array() || item.size() != 3) throw std::invalid_argument("Invalid leaf record.");
@@ -94,7 +95,7 @@ struct BeautyLeafDomain {
         return result;
     }
     void validate() const {
-        if (canonical_geometry_id.size() != 64 || !source_face_count || source_face_count > 2000000)
+        if (canonical_geometry_id.size() != 64 || !source_face_count || source_face_count > MeshResourceBudget::maximum_faces)
             throw std::invalid_argument("Invalid canonical leaf geometry.");
         validate_keys(split_leaves, source_face_count);
         std::map<size_t, double> coverage;

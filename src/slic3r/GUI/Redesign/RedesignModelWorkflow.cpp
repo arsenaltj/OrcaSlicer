@@ -1,6 +1,7 @@
 #include "../AI/ModelGeneration/WorkbenchImportEligibility.hpp"
 #include <glad/gl.h>
 #include "RedesignShell.hpp"
+#include "../DiagnosticStageTimer.hpp"
 #include "AdvancedCreationWorkspace.hpp"
 #include "RedesignMessageDialog.hpp"
 #include "HonorBrandMark.hpp"
@@ -161,7 +162,7 @@ bool set_wrapped_label(wxStaticText* label, const wxString& text, int width)
     dc.SetFont(label->GetFont());
     wxString wrapped;
     const wxSize extent = Label::split_lines(dc, width, text, wrapped);
-    const bool changed = set_control_label(label, wrapped);
+    const bool changed = set_slicing_detail_label(*label, wrapped);
     // MSW can retain the previous control height after wrapping a longer label.
     const wxSize minimum(-1, extent.y + label->FromDIP(2));
     if (label->GetMinSize() != minimum) { label->SetMinSize(minimum); return true; }
@@ -724,7 +725,7 @@ void RedesignShell::build_model_workflow()
         weak->m_slicing_dirty.invalidate(Presentation::Dirty::Overlay);
         if (weak->native_workspace_visible() &&
             weak->m_slice_progress_gate.accept(weak->m_slice_progress_phase, event.status.percent >= 100))
-            weak->m_surface_refresh.request(Presentation::Dirty::Overlay | Presentation::Dirty::Paint);
+            weak->m_surface_refresh.request(Presentation::Dirty::Overlay);
     });
     m_plater->Bind(EVT_PROCESS_COMPLETED, [weak](SlicingProcessCompletedEvent& event) {
         event.Skip();
@@ -922,7 +923,6 @@ void RedesignShell::build_model_workflow()
         if (outside != weak->m_preview_toolpath_outside)
             weak->apply_slicing_state(weak->m_slicing_state);
     });
-    m_model_generation_host->set_workbench_results_handler([weak] { if (weak) weak->return_to_image_design(); });
     m_model_generation_host->set_workbench_return_to_design_handler([weak] {
         if (weak) weak->return_to_image_design();
     });
@@ -952,7 +952,9 @@ void RedesignShell::return_model_overview()
 
 bool RedesignShell::show_model_view(ModelView view)
 {
+    DiagnosticStageTimer timing("ORCASLICER_UI_LATENCY_TRACE", "SlicePreviewRoute");
     if (m_presentation_stopping || !owns_model_workflow()) return false;
+    if (block_workbench_navigation(view != ModelView::Workbench)) return false;
     release_navigation_waits();
     if (m_page_coordinator.transition().active()) {
         queue_navigation(Page::Model, view);
@@ -1004,6 +1006,7 @@ bool RedesignShell::show_model_view(ModelView view)
     }
     if (view == ModelView::Slicing || view == ModelView::Preview) {
         m_plater->select_view_3D(view == ModelView::Preview ? "Preview" : "3D");
+        timing("native-view-loaded");
         m_plater->get_current_canvas3D()->use_workbench_appearance();
         m_plater->collapse_sidebar(!m_native_slicing);
         if (m_native_slicing) {
@@ -1020,6 +1023,7 @@ bool RedesignShell::show_model_view(ModelView view)
     }
     if (m_content_host) target_root->SetSize(m_content_host->GetClientRect());
     target_root->Layout();
+    timing("target-layout");
     if (view != ModelView::Preview && !m_page_coordinator.transition().mark_ready(*transition)) {
         m_page_coordinator.transition().rollback(*transition);
         return false;
@@ -1048,6 +1052,7 @@ bool RedesignShell::show_model_view(ModelView view)
     }
     if (m_print_page) m_print_page->set_active(false);
     present_active_page(view == ModelView::Preview);
+    timing("gui-submitted");
     if (view == ModelView::Preview) {
         // The retained preview is in its final layout behind the cover. Only
         // a newly presented frame may commit this route.
@@ -1104,18 +1109,29 @@ bool RedesignShell::prepare_preview_transition()
     return true;
 }
 
+void RedesignShell::cancel_preview_presentation()
+{
+    if (!m_preview_transition) return;
+    m_preview_transition_timer.Stop();
+    m_page_coordinator.transition().rollback(*m_preview_transition);
+    m_preview_transition.reset();
+    m_preview_frame_gate.finish();
+    if (m_preview_transition_cover) m_preview_transition_cover->Hide();
+}
+
 void RedesignShell::layout_preview_transition_cover()
 {
-    if (!m_preview_transition || !m_preview_transition_cover || !m_content_host) return;
+    if (!m_preview_transition || !m_preview_transition_cover) return;
     auto* owner = dynamic_cast<wxTopLevelWindow*>(wxGetTopLevelParent(this));
-    if (!owner || owner->IsIconized() || !m_content_host->IsShownOnScreen()) {
-        m_preview_transition_cover->Hide();
-        return;
-    }
-    const wxRect bounds(m_content_host->ClientToScreen(wxPoint(0, 0)), m_content_host->GetClientSize());
-    if (bounds.IsEmpty()) return;
-    if (m_preview_transition_cover->GetRect() != bounds) {
-        m_preview_transition_cover->SetSize(bounds);
+    auto* canvas = m_plater ? m_plater->get_preview_canvas3D()->get_wxglcanvas() : nullptr;
+    const bool paused = !owner || owner->IsIconized() || !owner->IsShown();
+    m_preview_frame_gate.set_paused(paused, std::chrono::steady_clock::now());
+    const auto bounds = !paused && canvas && canvas->IsShownOnScreen()
+        ? preview_cover_bounds(wxRect(canvas->ClientToScreen(wxPoint()), canvas->GetClientSize()),
+            wxRect(owner->ClientToScreen(wxPoint()), owner->GetClientSize())) : std::nullopt;
+    if (!bounds) { m_preview_transition_cover->Hide(); return; }
+    if (m_preview_transition_cover->GetRect() != *bounds) {
+        m_preview_transition_cover->SetSize(*bounds);
         m_preview_transition_cover->Layout();
     }
     if (!m_preview_transition_cover->IsShown()) m_preview_transition_cover->ShowWithoutActivating();
@@ -1126,6 +1142,8 @@ void RedesignShell::check_preview_first_frame(RedesignPageTransition::Token toke
     if (!m_preview_transition || *m_preview_transition != token || !m_page_coordinator.transition().current(token) || !m_plater)
         return;
     layout_preview_transition_cover();
+    auto* owner = dynamic_cast<wxTopLevelWindow*>(wxGetTopLevelParent(this));
+    if (!owner || owner->IsIconized() || !owner->IsShown()) return;
     auto* canvas = m_plater->get_preview_canvas3D();
     auto* plate = m_plater->get_partplate_list().get_curr_plate();
     const auto size = canvas->get_canvas_size();
@@ -1370,8 +1388,9 @@ void RedesignShell::commit_active_page(Presentation::Dirty flags)
         if (Presentation::has(flags, Presentation::Dirty::Barrier))
             m_model_generation_host->present_workbench_restore_frame();
     } else {
-        root->Refresh(false);
-        if (m_image_settings_panel && m_image_settings_panel->IsShownOnScreen())
+        const bool paint_surface = !native_workspace_visible() || slicing_surface_paint_required(flags);
+        if (paint_surface) root->Refresh(false);
+        if (paint_surface && m_image_settings_panel && m_image_settings_panel->IsShownOnScreen())
             m_image_settings_panel->Refresh(false);
         // A synchronous native/GL barrier is reserved for an existing import
         // or first-frame transition, never an ordinary status update.
@@ -1386,7 +1405,8 @@ void RedesignShell::commit_active_page(Presentation::Dirty flags)
             root->Update();
 #endif
         }
-        if (viewport && viewport->IsShownOnScreen()) {
+        if (viewport && viewport->IsShownOnScreen() &&
+            (Presentation::has(flags, Presentation::Dirty::Viewport) || Presentation::has(flags, Presentation::Dirty::Barrier))) {
             viewport->Refresh(false);
             if (Presentation::has(flags, Presentation::Dirty::Barrier)) viewport->Update();
         }
@@ -2257,9 +2277,10 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
         m_slice_progress_percent = 0; m_slice_progress_stage = _L("正在切片…");
         ++m_slice_progress_phase;
     }
-    m_slicing_dirty.invalidate(Presentation::Dirty::Content | Presentation::Dirty::Overlay | Presentation::Dirty::Paint);
+    ++m_slicing_notifications;
+    m_slicing_dirty.invalidate(Presentation::Dirty::Content | Presentation::Dirty::Overlay);
     if (native_workspace_visible())
-        m_surface_refresh.request(Presentation::Dirty::Content | Presentation::Dirty::Overlay | Presentation::Dirty::Paint);
+        m_surface_refresh.request(Presentation::Dirty::Content | Presentation::Dirty::Overlay);
 }
 
 void RedesignShell::apply_slicing_snapshot()
@@ -2268,6 +2289,8 @@ void RedesignShell::apply_slicing_snapshot()
     if (m_presentation_stopping || !native_workspace_visible()) return;
     // Freeze one projection even if its native consumers publish another
     // state synchronously. That invalidation belongs to the next commit.
+    const auto started = std::chrono::steady_clock::now();
+    ++m_slicing_commits;
     const auto state = m_slicing_state;
     const bool background_slicing = m_plater && m_plater->is_background_process_slicing();
     const bool external_toolpath = m_plater &&
@@ -2327,7 +2350,7 @@ void RedesignShell::apply_slicing_snapshot()
     };
     const auto stats = _L("拓扑\t三角面\n面数\t") + grouped_count(faces) +
         _L("\n顶点数\t") + grouped_count(vertices);
-    bool layout_changed = set_control_label(m_slice_model_stats, stats);
+    bool layout_changed = set_slicing_detail_label(*m_slice_model_stats, stats);
     m_slice_stats_overlay->update(stats);
     update_slicing_tools();
     const std::array<wxString, 3> titles {_L("综合最优"), _L("速度优先"), _L("质量优先")};
@@ -2338,9 +2361,11 @@ void RedesignShell::apply_slicing_snapshot()
             index == 2 ? AI::SmartSlicing::SliceMode::QUALITY : AI::SmartSlicing::SliceMode::BALANCED;
         return state.lightweight_analysis->find(mode);
     };
+    SliceParameterGroup parameter_group;
+    std::array<wxString, 3> availabilities;
     for (size_t i = 0; i < titles.size(); ++i) {
         const auto& goal = state.session.recommendation.goal_result(RECOMMENDATION_GOALS[i]);
-        wxString layer;
+        auto& layer = parameter_group.layers[i];
         if (state.recommendation_source == SlicingRecommendationSource::Local)
             for (const auto& parameter : state.effective_parameters[i])
                 if (parameter.key == "layer_height") { layer = parameter_value(parameter); break; }
@@ -2351,23 +2376,13 @@ void RedesignShell::apply_slicing_snapshot()
         const bool quick_available = quick_recommendation(i) != nullptr;
         const bool cloud = state.recommendation_source == SlicingRecommendationSource::Cloud;
         const auto cloud_status = state.cloud_recommendation.status;
-        const wxString availability = cloud && !quick_available ?
+        availabilities[i] = cloud && !quick_available ?
             ((cloud_status == CloudRecommendationStatus::Requesting ||
               state.analyzing) ? _L("AI推理中...") :
              cloud_status == CloudRecommendationStatus::Failed ? _L("未完成 · 可重试") : _L("待推荐")) : quick_available ? _L("可用于原生切片") :
             !state.analyzing && state.candidates[i] ? goal_status(goal.status) :
             state.analyzing ? _L("分析中…") : _L("待分析");
-        m_slice_goals[i]->Enable(!state.analyzing && (cloud || state.candidates[i].has_value() || quick_available) &&
-            !running && !state.official.workspace_mutated && !m_slice_tools->busy());
-        auto* button = static_cast<SlicingGoalCard*>(m_slice_goals[i]);
-        const bool pending = workbench_goal_is_pending(state, RECOMMENDATION_GOALS[i]);
-        button->update(layer.empty() ? availability : layer,
-            workbench_goal_is_currently_selected(state, RECOMMENDATION_GOALS[i]) || pending,
-            workbench_goal_was_last_sliced(state, RECOMMENDATION_GOALS[i]));
-        wxString tooltip = layer+"\n"+availability;
-        if (workbench_goal_was_last_sliced(state, RECOMMENDATION_GOALS[i]))
-            tooltip += _L("\n上次切片成功");
-        set_control_tooltip(button, tooltip);
+        if (layer.empty()) layer = availabilities[i];
     }
     const auto display_goal = state.has_selected_goal ? state.selected_goal :
         state.pending_slice_goal.value_or(state.last_sliced_goal.value_or(RECOMMENDATION_GOALS.front()));
@@ -2396,52 +2411,76 @@ void RedesignShell::apply_slicing_snapshot()
         detail_rows = candidate_detail_rows(state.effective_parameters[selected], state.metrics[selected],
             official_ready ? official_detail_rows(plate) : std::vector<SliceDetailRow>{});
     else if (selected_quick != nullptr) {
-        ExactEstimateView estimate = state.exact_estimate;
-        if (!exact_estimate_matches(estimate, state.session.workspace_revision, display_goal, *selected_quick))
-            estimate.status = ExactEstimateStatus::None;
-        const bool use_slice_estimate = state.slice_estimate && estimate.status != ExactEstimateStatus::Ready;
-        if (use_slice_estimate)
-            estimate = *state.slice_estimate;
+        const auto estimate = slicing_display_estimate(state, display_goal, *selected_quick);
         detail_rows = exact_estimate_detail_rows(*selected_quick, estimate,
             official_ready ? official_detail_rows(plate) : std::vector<SliceDetailRow>{},
-            use_slice_estimate && estimate.revision != state.session.workspace_revision, running);
+            estimate.revision != state.session.workspace_revision, running);
     }
     else if (official_ready)
         detail_rows = official_detail_rows(plate);
 
-    const bool has_details = !detail_rows.empty();
-    layout_changed = m_slice_parameter_panel->Show(has_details) || layout_changed;
-    if (auto* parameters = m_slice_parameter_panel->GetSizer()) {
-        while (m_slice_parameter_labels.size() < detail_rows.size()) {
-            auto* label = new wxStaticText(m_slice_parameter_panel, wxID_ANY, wxEmptyString);
-            RedesignTheme::style_text(label, RedesignTheme::secondary_text_colour(), 12);
-            parameters->Add(label, 0, wxALIGN_CENTER_VERTICAL);
-            auto* value = new wxStaticText(m_slice_parameter_panel, wxID_ANY, wxEmptyString);
-            RedesignTheme::style_text(value, RedesignTheme::primary_text_colour(), 12);
-            parameters->Add(value, 0, wxALIGN_RIGHT | wxALIGN_CENTER_VERTICAL);
-            m_slice_parameter_labels.push_back(label);
-            m_slice_parameter_values.push_back(value);
-            layout_changed = true;
+    const bool complete = slicing_parameter_group_complete(state, display_goal, official_ready);
+    const bool terminal = slicing_parameter_group_terminal(state, display_goal);
+    if (!complete && !terminal) {
+        // Never expose a new parameter set with numbers from an older estimate.
+        // The presentation cache may retain an entire matching completed group.
+        if (state.analyzing || selected_quick) {
+            for (auto& layer : parameter_group.layers) layer = _L("计算中...");
+            for (auto& row : detail_rows) { row.value = _L("计算中..."); row.section.clear(); }
         }
-        bool parameter_layout_changed = false;
-        for (size_t i = 0; i < m_slice_parameter_labels.size(); ++i) {
-            const bool visible = i < detail_rows.size();
-            const wxString label_text = visible ? detail_rows[i].label : wxEmptyString;
-            const wxString value_text = visible ? detail_rows[i].value : wxEmptyString;
-            parameter_layout_changed = set_slicing_detail_visible(
-                *parameters->GetItem(m_slice_parameter_labels[i]), visible) || parameter_layout_changed;
-            parameter_layout_changed = set_slicing_detail_visible(
-                *parameters->GetItem(m_slice_parameter_values[i]), visible) || parameter_layout_changed;
-            parameter_layout_changed = set_control_label(m_slice_parameter_labels[i],
-                label_text) || parameter_layout_changed;
-            parameter_layout_changed = set_control_label(m_slice_parameter_values[i],
-                value_text) || parameter_layout_changed;
-            set_control_tooltip(m_slice_parameter_labels[i], visible ? detail_rows[i].section : wxEmptyString);
-            set_control_tooltip(m_slice_parameter_values[i], visible ? detail_rows[i].section : wxEmptyString);
-        }
-        if (parameter_layout_changed) {
-            parameters->Layout();
-            layout_changed = true;
+    }
+    parameter_group.details = std::move(detail_rows);
+    const bool parameters_changed = m_slicing_parameters.submit(state, std::move(parameter_group), complete, terminal);
+    const auto& displayed = m_slicing_parameters.group();
+    detail_rows = displayed.details;
+    for (size_t i = 0; i < titles.size(); ++i) {
+        const bool cloud = state.recommendation_source == SlicingRecommendationSource::Cloud;
+        m_slice_goals[i]->Enable(!state.analyzing && (cloud || state.candidates[i].has_value() || quick_recommendation(i)) &&
+            !running && !state.official.workspace_mutated && !m_slice_tools->busy());
+        auto* button = static_cast<SlicingGoalCard*>(m_slice_goals[i]);
+        button->update(displayed.layers[i], workbench_goal_is_currently_selected(state, RECOMMENDATION_GOALS[i]) ||
+            workbench_goal_is_pending(state, RECOMMENDATION_GOALS[i]),
+            workbench_goal_was_last_sliced(state, RECOMMENDATION_GOALS[i]));
+        wxString tooltip = displayed.layers[i] + "\n" + availabilities[i];
+        if (workbench_goal_was_last_sliced(state, RECOMMENDATION_GOALS[i])) tooltip += _L("\n上次切片成功");
+        set_control_tooltip(button, tooltip);
+    }
+    if (parameters_changed) {
+        ++m_slicing_parameter_updates;
+        const bool has_details = !detail_rows.empty();
+        layout_changed = m_slice_parameter_panel->Show(has_details) || layout_changed;
+        if (auto* parameters = m_slice_parameter_panel->GetSizer()) {
+            while (m_slice_parameter_labels.size() < detail_rows.size()) {
+                auto* label = new wxStaticText(m_slice_parameter_panel, wxID_ANY, wxEmptyString);
+                RedesignTheme::style_text(label, RedesignTheme::secondary_text_colour(), 12);
+                parameters->Add(label, 0, wxALIGN_CENTER_VERTICAL);
+                auto* value = new wxStaticText(m_slice_parameter_panel, wxID_ANY, wxEmptyString);
+                RedesignTheme::style_text(value, RedesignTheme::primary_text_colour(), 12);
+                parameters->Add(value, 0, wxALIGN_RIGHT | wxALIGN_CENTER_VERTICAL);
+                m_slice_parameter_labels.push_back(label);
+                m_slice_parameter_values.push_back(value);
+                layout_changed = true;
+            }
+            bool parameter_layout_changed = false;
+            for (size_t i = 0; i < m_slice_parameter_labels.size(); ++i) {
+                const bool visible = i < detail_rows.size();
+                const wxString label_text = visible ? detail_rows[i].label : wxEmptyString;
+                const wxString value_text = visible ? detail_rows[i].value : wxEmptyString;
+                parameter_layout_changed = set_slicing_detail_visible(
+                    *parameters->GetItem(m_slice_parameter_labels[i]), visible) || parameter_layout_changed;
+                parameter_layout_changed = set_slicing_detail_visible(
+                    *parameters->GetItem(m_slice_parameter_values[i]), visible) || parameter_layout_changed;
+                parameter_layout_changed = set_slicing_detail_label(*m_slice_parameter_labels[i],
+                    label_text) || parameter_layout_changed;
+                parameter_layout_changed = set_slicing_detail_label(*m_slice_parameter_values[i],
+                    value_text) || parameter_layout_changed;
+                set_control_tooltip(m_slice_parameter_labels[i], visible ? detail_rows[i].section : wxEmptyString);
+                set_control_tooltip(m_slice_parameter_values[i], visible ? detail_rows[i].section : wxEmptyString);
+            }
+            if (parameter_layout_changed) {
+                parameters->Layout();
+                layout_changed = true;
+            }
         }
     }
     const bool lightweight_ready = state.lightweight_analysis && state.lightweight_analysis->completed;
@@ -2622,14 +2661,19 @@ void RedesignShell::apply_slicing_snapshot()
         });
     }
     if (layout_changed) {
+        ++m_slicing_layouts;
         m_slice_status->GetParent()->Layout();
         if (auto* scroll = dynamic_cast<wxScrolledWindow*>(m_slice_status->GetParent())) scroll->FitInside();
         if (auto* scroll = dynamic_cast<wxScrolledWindow*>(m_ai_slicing_controls->GetParent())) scroll->FitInside();
     }
-    if (std::getenv("ORCASLICER_UI_REDESIGN_REFRESH_TRACE"))
-        BOOST_LOG_TRIVIAL(info) << "[SlicingRefresh] layout_changed=" << layout_changed
-            << " rows=" << detail_rows.size() << " running=" << running;
     layout_slicing_overlays();
+    const double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    if (std::getenv("ORCASLICER_UI_LATENCY_TRACE") &&
+        (parameters_changed || layout_changed || m_slicing_commits % 60 == 0 || elapsed > 50.))
+        BOOST_LOG_TRIVIAL(info) << "[SlicingRefresh] notifications=" << m_slicing_notifications
+            << " commits=" << m_slicing_commits << " parameter_updates=" << m_slicing_parameter_updates
+            << " layouts=" << m_slicing_layouts << " parameters_changed=" << parameters_changed
+            << " layout_changed=" << layout_changed << " commit_ms=" << elapsed;
 }
 
 bool RedesignShell::can_save_print_project() const

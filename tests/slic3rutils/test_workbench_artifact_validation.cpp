@@ -3,15 +3,57 @@
 #include "slic3r/GUI/AI/ModelGeneration/PortraitColorBlockPostprocess.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitNativePartitionCache.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchArtifactValidation.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/NativeRepairGeometry.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitWorkbenchEntry.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationSubmissionResult.hpp"
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "test_utils.hpp"
 #include <tuple>
 
+TEST_CASE("Native repair geometry acceptance requires matching explicit evidence", "[WorkbenchArtifactValidation][NativeRepairGeometry]")
+{
+    nlohmann::json strict {{"success",true}, {"canceled",false}, {"geometry_verified",false},
+        {"native_repair_compatible",true}, {"enhanced_repair_attempted",true}, {"strategy","orca-native"},
+        {"sampled_deviation_ratio",0.15}, {"area_change_ratio",0.25}};
+    nlohmann::json native {{"native_repair_compatible",true},
+        {"sampled_deviation_ratio",0.15}, {"area_change_ratio",0.25}};
+    REQUIRE(Slic3r::GUI::native_repair_geometry_allowed(strict, native));
+    const int change = GENERATE(0,1,2,3,4,5,6);
+    if (change == 0) native.erase("native_repair_compatible");
+    if (change == 1) strict["enhanced_repair_attempted"] = false;
+    if (change == 2) strict["strategy"] = "strict-cgal";
+    if (change == 3) native["area_change_ratio"] = 0.1;
+    if (change == 4) strict["geometry_verified"] = true;
+    if (change == 5) strict["canceled"] = true;
+    if (change == 6) strict["success"] = false;
+    CHECK_FALSE(Slic3r::GUI::native_repair_geometry_allowed(strict, native));
+}
+
 namespace PP = Slic3r::GUI::WorkbenchArtifacts;
 namespace PC = Slic3r::GUI::PortraitColorBlocks;
 namespace NP = Slic3r::GUI::NativePortrait;
+TEST_CASE("Native evidence records unavailable predicates without granting strict safety",
+          "[WorkbenchArtifactValidation][NativeRepairGeometry]")
+{
+    using namespace Slic3r;
+    using namespace Slic3r::GUI;
+    StrictMeshRepairResult execution;
+    execution.success = true; execution.native_repair_succeeded = true;
+    execution.acceptance = MeshRepairAcceptance::OrcaNative;
+    execution.native_source_geometry_id = std::string(64, 'a');
+    execution.native_output_geometry_id = std::string(64, 'b');
+    execution.output_topology.nonmanifold_edges = 1;
+    const auto receipt = native_repair_receipt(execution);
+    const auto evidence = native_repair_evidence(execution);
+    REQUIRE(valid_native_repair_evidence(evidence, receipt));
+    CHECK_FALSE(execution.output_topology.safe());
+    CHECK_FALSE(evidence.at("topology").at("self_intersections_checked").get<bool>());
+    auto invalid = evidence;
+    invalid["topology"]["open_edges"] = -1;
+    CHECK_FALSE(valid_native_repair_evidence(invalid, receipt));
+    invalid = evidence; invalid["receipt"]["output_geometry_id"] = std::string(64, 'c');
+    CHECK_FALSE(valid_native_repair_evidence(invalid, receipt));
+}
 namespace {
 std::string sha(char c) { return std::string(64,c); }
 Slic3r::GUI::WorkbenchCheckResult certified_check(

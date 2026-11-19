@@ -256,16 +256,10 @@ void ModelGenerationPanel::commit_workbench_surface(Presentation::Dirty flags)
     if (Presentation::has(flags, Presentation::Dirty::Layout) || Presentation::has(flags, Presentation::Dirty::Viewport))
         weak->layout_workbench_history_toggle(true);
     auto* viewport = weak->workbench_import_viewport();
-    auto* handle = weak->m_workbench_history_toggle;
     // Finish the exposed native backgrounds before their overlapping leaf.
     // No other presentation layer may flush this subtree independently.
     if (barrier) present_workbench_controls(weak->m_workbench_shell, viewport);
     else weak->m_workbench_shell->Refresh(false);
-    if (handle && handle->IsShownOnScreen()) {
-        handle->Raise();
-        handle->Refresh(false);
-        if (barrier) handle->Update();
-    }
     if (barrier) present_workbench_controls(weak->m_workbench_check_card);
     else if (weak->m_workbench_check_card && weak->m_workbench_check_card->IsShownOnScreen())
         weak->m_workbench_check_card->Refresh(false);
@@ -294,11 +288,36 @@ void ModelGenerationPanel::commit_workbench_surface(Presentation::Dirty flags)
             weak->m_workbench_presentation_sequence, revision);
     }
     observe_workbench_check_usable();
+    // The floating leaf overlaps the native preview subtree. Its repaint must
+    // follow both the final GL swap and XYZ relocation, never precede them.
+    auto* handle = weak->m_workbench_history_toggle;
+    if (handle && handle->IsShownOnScreen() && weak->m_model_preview) {
+        const auto stamp = weak->m_model_preview->presentation_stamp(
+            weak->m_workbench_presentation_sequence, weak->m_workbench_surface_revision);
+        wxWeakRef<wxWindow> parent(weak->m_workbench_shell->GetParent());
+        wxWeakRef<wxWindow> leaf(handle);
+        const auto bounds = handle->GetRect();
+        weak->m_model_preview->observe_overlay_frame([weak, parent, leaf, stamp, bounds] {
+            if (!weak || weak->m_shutdown || !parent || !leaf ||
+                (!weak->m_workbench_presented && !weak->m_workbench_preparing) ||
+                weak->m_workbench_shell->GetParent() != parent.get() ||
+                leaf->GetParent() != weak->m_workbench_shell || !leaf->IsShownOnScreen() ||
+                leaf->GetRect() != bounds || !(stamp == weak->m_model_preview->presentation_stamp(
+                    weak->m_workbench_presentation_sequence, weak->m_workbench_surface_revision))) return;
+            leaf->Raise();
+            leaf->Refresh(false);
+        });
+    }
     // One complete GL frame follows the native controls in this same pass.
     // A top-level restore can then expose the window without an old frame.
     if (viewport && viewport->IsShownOnScreen()) {
         viewport->Refresh(false);
         if (barrier) viewport->Update();
+    }
+    if (barrier && handle && handle->IsShownOnScreen()) {
+        handle->Raise();
+        handle->Refresh(false);
+        handle->Update();
     }
     wxString trace;
     if (wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace) && trace == "1")
@@ -370,6 +389,7 @@ void ModelGenerationPanel::raise_workbench_modal()
 
 void ModelGenerationPanel::detach_workbench_floating_card()
 {
+    m_native_workbench_partition_retry.reset();
     finish_workbench_check_timing("presentation-left");
     cancel_workbench_presentation();
     m_workbench_presented = false;
@@ -443,6 +463,7 @@ void ModelGenerationPanel::cancel_workbench_check()
     }
     if (m_native_workbench_partition_running && m_native_workbench_partition_cancel) {
         m_native_workbench_partition_cancel->store(true);
+        if (m_model_preview) m_model_preview->fail_model_installation_frame();
         if (m_workbench_check_message)
             m_workbench_check_message->SetLabel(_L("正在取消严格修复，当前模型保持不变……"));
         if (m_workbench_check_cancel_button) m_workbench_check_cancel_button->Disable();
@@ -455,24 +476,11 @@ void ModelGenerationPanel::cancel_workbench_check()
     if (m_workbench_check_cancel_button) m_workbench_check_cancel_button->Disable();
 }
 
-void ModelGenerationPanel::acknowledge_workbench_risk()
-{
-    if (m_workbench_check_running || m_workbench_check_result.status != WorkbenchCheckStatus::Attention ||
-        !m_workbench_check_result.force_import_risk || m_workbench_check_result.model_sha256.empty()) return;
-    m_workbench_force_import_ack_hash = m_workbench_check_result.model_sha256;
-    m_workbench_force_import_ack_revision = m_sequence;
-    m_workbench_operation_notice = "已确认开放边界风险；可点击“去切片”继续，导入后请复核逐层切片结果。";
-    hide_workbench_check_card();
-    refresh_post_generation_workbench();
-    publish_workbench_state();
-}
-
 void ModelGenerationPanel::show_workbench_check_details()
 {
     if (!m_workbench_shell) return;
     hide_workbench_check_card();
-    const wxString detail_text = from_u8(workbench_check_detail_text(m_workbench_check_result,
-        workbench_snapshot().force_import_acknowledged));
+    const wxString detail_text = from_u8(workbench_check_detail_text(m_workbench_check_result));
     std::vector<RedesignDialogAction> actions;
     if (!m_workbench_check_result.issue_faces.empty())
         actions.push_back({wxID_APPLY, _L("定位问题区域"), false});
@@ -937,7 +945,7 @@ void ModelGenerationPanel::apply_workbench_snapshot()
             m_workbench_grid->SetValue(grid_visible);
         set_workbench_enabled(m_workbench_grid, m_model_preview->has_model());
     }
-    const bool can_import = (snapshot.can_import_for_slicing || snapshot.can_force_import) && is_nonempty_model(m_displayed_model_path);
+    const bool can_import = snapshot.can_import_for_slicing && is_nonempty_model(m_displayed_model_path);
     if (auto* portrait = FindWindowByName("portrait_r6_entry", m_workbench_shell)) {
         set_workbench_enabled(portrait, snapshot.actions.can_edit && snapshot.portrait_available);
         layout_changed = set_workbench_label(portrait,
@@ -952,9 +960,9 @@ void ModelGenerationPanel::apply_workbench_snapshot()
         ? _L("拓扑正常；点击重新检查") : _L("检查并修复模型，复检通过后自动保存新版本；原模型保留。"));
     wxString check_text = m_native_workbench_partition_running ? _L("正在修复模型……") :
         m_workbench_auto_repair && m_finishing_running ? _L("正在保存修复结果……") :
-        from_u8(workbench_check_status_line(snapshot.check, snapshot.force_import_acknowledged));
+        from_u8(workbench_check_status_line(snapshot.check));
     const wxString check_details = from_u8(workbench_check_detail_text(
-        snapshot.check, snapshot.force_import_acknowledged));
+        snapshot.check));
     set_workbench_tooltip(m_workbench_check_status, check_details);
     layout_changed = set_wrapped_workbench_text(m_workbench_check_status, check_text,
         FromDIP(210), false) || layout_changed;

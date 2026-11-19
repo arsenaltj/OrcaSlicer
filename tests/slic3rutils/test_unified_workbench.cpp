@@ -1,4 +1,3 @@
-#include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelContext.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchOpenRequest.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelArtifactAcquisition.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/AdvancedModelTaskFlow.hpp"
@@ -114,30 +113,6 @@ TEST_CASE("History and saved versions retain the editor return source until anot
     CHECK(workbench_return_advanced(true, anchor, !origin) == origin);
     CHECK(workbench_return_advanced(false, anchor, !origin) == !origin);
     CHECK(workbench_return_advanced(true, std::nullopt, origin) == origin);
-}
-
-TEST_CASE("Editor import metadata follows the opened asset independently of generation inputs", "[UnifiedWorkbench]")
-{
-    WorkbenchModelContext current;
-    current.path = "advanced.glb"; current.asset_id = "four-view";
-    current.format = "glb"; current.color_encoding = "textures_or_vertex_colors";
-    current.palette = {"#ff0000", "#00ff00"}; current.palette_roles = {{"primary", "#ff0000"}};
-    current.use_printable_colors = true;
-    current.color_intent_path = "advanced-color.json";
-    current.color_intent_schema = "schema"; current.color_intent_sha256 = std::string(64, 'a');
-    auto first = current.artifact();
-    current.path = "finish-version.obj"; current.asset_id = "saved";
-    current.format = "obj"; current.color_encoding = "vertex_colors";
-    current.palette.clear(); current.use_printable_colors = false; current.color_intent_path.clear();
-    const auto saved = current.artifact();
-    CHECK(saved.local_path == boost::filesystem::path("finish-version.obj"));
-    CHECK(saved.job_id == "saved"); CHECK(saved.format == "obj");
-    CHECK(saved.generation_palette.empty()); CHECK_FALSE(saved.used_printable_colors);
-    CHECK_FALSE(saved.color_intent_manifest);
-    CHECK(first.job_id == "four-view"); CHECK(first.format == "glb");
-    REQUIRE(first.color_intent_manifest);
-    CHECK(first.color_intent_manifest->local_path == "advanced-color.json");
-    CHECK(first.generation_palette.size() == 2);
 }
 
 TEST_CASE("Acquisition keeps the existing supported model and color contract for both sources", "[UnifiedWorkbench]")
@@ -479,4 +454,34 @@ TEST_CASE("Advanced provider failure details reach the shared creation view", "[
     CHECK(state.status_text.find("输入图片生成几何失败") != std::string::npos);
     CHECK_FALSE(state.can_retry_model);
     CHECK(h.downloads.empty());
+}
+
+TEST_CASE("An asset handoff retains appearance and rejects a different creator or model", "[UnifiedWorkbench][SingleWorkbench]")
+{
+    WorkbenchOpenRequest request;
+    request.entry.job_id = "four-view";
+    request.entry.model_path = "advanced.glb";
+    request.artifact.local_path = request.entry.model_path;
+    request.artifact.job_id = request.entry.job_id;
+    request.artifact.format = "glb";
+    request.artifact.color_encoding = "textures_or_vertex_colors";
+    request.artifact.generation_palette = {"#ff0000", "#00ff00"};
+    request.artifact.used_printable_colors = true;
+    request.artifact.color_intent_manifest = AI::ColorIntentManifestRef{
+        "advanced-color.json", "schema", std::string(64, 'a')};
+    request.origin = WorkbenchOpenRequest::Origin::Advanced;
+    request.generation = 12;
+    const auto original = request;
+    REQUIRE(request.matches_creator("four-view", 12));
+    CHECK_FALSE(request.matches_creator("smart-task", 12));
+    CHECK_FALSE(request.matches_creator("four-view", 11));
+    request.entry.model_path = "saved.glb";
+    CHECK_FALSE(request.identifies_asset());
+    request.entry.model_path = original.entry.model_path;
+    request.entry.job_id = "other";
+    CHECK_FALSE(request.identifies_asset());
+    CHECK(original.artifact.generation_palette == std::vector<std::string>{"#ff0000", "#00ff00"});
+    REQUIRE(original.artifact.color_intent_manifest);
+    CHECK(original.artifact.color_intent_manifest->local_path == "advanced-color.json");
+    CHECK(original.artifact.used_printable_colors);
 }

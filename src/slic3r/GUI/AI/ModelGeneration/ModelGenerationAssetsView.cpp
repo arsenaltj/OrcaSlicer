@@ -2,6 +2,8 @@
 #include "ModelGenerationInputStyle.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "ModelLibraryExport.hpp"
+#include "ModelLibraryDeletion.hpp"
+#include "ModelPreview3D.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AIModelOutputDirectory.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
@@ -14,8 +16,20 @@
 #include <wx/scrolwin.h>
 #include <wx/sizer.h>
 #include <wx/utils.h>
+#include <wx/stattext.h>
+#include <wx/weakref.h>
 
 namespace Slic3r::GUI {
+
+bool ModelGenerationPanel::report_library_deletion_error(const wxString& message)
+{
+    if (m_shutdown) return false;
+    if (m_status) m_status->SetLabel(message);
+    if (m_workbench_history_status) m_workbench_history_status->SetLabel(message);
+    show_redesign_confirmation(wxGetTopLevelParent(this), message, _L("无法删除模型"),
+        {wxOK, 105, {{wxID_OK, _L("知道了"), true}}});
+    return false;
+}
 
 void ModelGenerationPanel::export_library_entry(const GeneratedModelEntry& entry)
 {
@@ -70,7 +84,11 @@ void ModelGenerationPanel::export_library_entry(const GeneratedModelEntry& entry
 
 bool ModelGenerationPanel::request_library_action(ModelLibraryCommand command, const ModelLibraryEntry& entry)
 {
-    if (!can_replace_model_asset()) return false;
+    if (!can_replace_model_asset()) {
+        if (command == ModelLibraryCommand::Remove)
+            return report_library_deletion_error(_L("当前模型正在处理或有未保存的修改，请完成或取消当前操作后再删除。"));
+        return false;
+    }
     initialize_for_shell_host();
     if (!m_page_initialized || !can_replace_model_asset()) return false;
     switch (command) {

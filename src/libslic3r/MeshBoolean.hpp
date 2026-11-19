@@ -86,8 +86,19 @@ indexed_triangle_set remesh_isotropic(const indexed_triangle_set &mesh, double t
 // Repair a mesh using CGAL. Cancellation is checked between CGAL calls and while
 // copying input; individual CGAL calls cannot be interrupted. On cancellation,
 // returns false without changing mesh or repaired_errors.
+// A transient, content-bound fact produced only after the actual float output
+// passes the complete intersection check. It cannot be serialized or authorized
+// by a caller-supplied boolean; modified output no longer matches.
+class FloatOutputValidation {
+public:
+    bool matches(const indexed_triangle_set& mesh) const;
+private:
+    std::string m_geometry_id;
+    friend bool repair(TriangleMesh&, RepairedMeshErrors*, std::string*,
+                       const std::function<bool()>&, FloatOutputValidation*);
+};
 bool repair(TriangleMesh &mesh, RepairedMeshErrors *repaired_errors = nullptr, std::string *error = nullptr,
-            const std::function<bool()> &is_canceled = {});
+            const std::function<bool()> &is_canceled = {}, FloatOutputValidation* validation = nullptr);
 }
 
 namespace mcut {

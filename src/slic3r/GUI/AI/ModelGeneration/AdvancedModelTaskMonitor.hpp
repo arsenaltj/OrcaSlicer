@@ -1,6 +1,7 @@
 #pragma once
 #include "ModelArtifactAcquisition.hpp"
 #include "AdvancedModelTaskFlow.hpp"
+#include "ModelLibraryApplication.hpp"
 #include <wx/timer.h>
 #include <atomic>
 #include <memory>
@@ -23,6 +24,7 @@ public:
     const ModelGenerationUIState& snapshot() const { return m_flow->snapshot(); }
     const std::optional<ModelLibraryEntry>& artifact() const { return m_flow->artifact(); }
     void retry_local();
+    void set_library_commit_listener(std::function<void(ModelLibraryCommit)> listener) { m_library_commit_listener = std::move(listener); }
     void stop_local() { m_flow->stop_local(); }
     void request_stop() { m_flow->request_stop(); }
     void finish_stop(const std::string& job = {}) { m_flow->finish_stop(job); }
@@ -37,5 +39,6 @@ private:
     Presentation::TaskScope m_preparation;
     std::unique_ptr<AdvancedModelTaskFlow> m_flow;
     std::shared_ptr<int> m_lifetime {std::make_shared<int>(0)};
+    std::function<void(ModelLibraryCommit)> m_library_commit_listener;
 };
 }

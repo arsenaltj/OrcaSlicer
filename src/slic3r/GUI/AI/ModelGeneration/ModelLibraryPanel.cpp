@@ -71,9 +71,11 @@ ModelLibraryPanel::ModelLibraryPanel(wxWindow* parent, std::shared_ptr<ModelLibr
         std::vector<ModelLibraryLoader::Thumbnail> thumbnails;
         m_loader->take(snapshot, thumbnails);
         if (snapshot && snapshot->revision == m_request_revision) {
+            m_scan_running = false;
             if (snapshot->failed) m_status->SetLabel(_L("读取失败，当前资产仍保留；可刷新重试。"));
-            else { m_application.replace(std::move(snapshot->entries)); rebuild(); }
+            else { m_application.replace(std::move(snapshot->entries), m_scan_removal_revision, m_scan_commit_revision); rebuild(); }
         }
+        if (!m_scan_running && m_rescan_pending) { m_rescan_pending = false; refresh_assets(); }
         if (!m_loader->loading()) m_timer.Stop();
     });
     ModelGenerationInputStyle::apply(this, true);
@@ -86,9 +88,25 @@ void ModelLibraryPanel::shutdown() { if (m_stopped) return; m_stopped = true; Di
 void ModelLibraryPanel::refresh_assets()
 {
     if (m_stopped) return;
+    if (m_scan_running) { m_rescan_pending = true; return; }
     auto request = std::make_shared<ModelLibraryLoader::Request>();
     request->revision = ++m_request_revision; request->scan = true; request->root = m_application.root();
+    m_scan_removal_revision = m_application.removal_revision();
+    m_scan_commit_revision = m_application.commit_revision(); m_scan_running = true;
     m_loader->submit(std::move(request)); m_status->SetLabel(_L("正在读取历史资产…")); m_timer.Start(50);
+}
+void ModelLibraryPanel::apply_removals()
+{
+    if (m_stopped) return;
+    ++m_request_revision; m_loader->cancel(); m_timer.Stop();
+    m_scan_running = m_rescan_pending = false;
+    m_application.apply_removals(); rebuild();
+}
+void ModelLibraryPanel::apply_commit()
+{
+    if (m_stopped) return;
+    rebuild();
+    if (m_scan_running) m_rescan_pending = true;
 }
 void ModelLibraryPanel::rebuild()
 {

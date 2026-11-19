@@ -29,6 +29,16 @@ constexpr bool native_workbench_partition_requested(
     return (consumers & native_workbench_partition_consumer(consumer)) != 0;
 }
 
+// Activation choices are frozen before uploading the frame. Repeating an
+// existing request may wait for it; a new choice must wait until installation
+// finishes so it cannot consume a CPU-only checkpoint or invalidate that frame.
+constexpr bool native_workbench_partition_can_join(
+    NativeWorkbenchPartitionConsumers active,
+    NativeWorkbenchPartitionConsumers requested, bool installing)
+{
+    return requested != 0 && (!installing || (requested & ~active) == 0);
+}
+
 inline bool palette_allows_automatic_workbench(int source, const std::string& suite_id, bool has_color_card)
 {
     if (!suite_id.empty()) return suite_id == "honor.people.six";

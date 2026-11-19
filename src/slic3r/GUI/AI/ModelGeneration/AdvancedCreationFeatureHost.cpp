@@ -666,7 +666,8 @@ void AdvancedCreationFeatureHost::generate_model(Confirm confirm)
                     {"group_id", group}, {"operation_id", plan.at("job_id")}, {"new_group", false}})) {
                     m_command_state = CommandState::Idle; publish(); return;
                 }
-                const auto request = begin_model_request(plan.at("job_id").get<std::string>());
+                m_library_foreground_job = plan.at("job_id").get<std::string>();
+                const auto request = begin_model_request(m_library_foreground_job);
                 m_client.request("POST", "/groups/" + group + "/model-jobs",
                     {{"command_id", plan.at("id")}, {"plan_id", plan.at("id")},
                      {"confirmation_fingerprint", plan.at("confirmation_fingerprint")}},

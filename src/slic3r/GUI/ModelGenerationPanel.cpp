@@ -1,6 +1,5 @@
 #include "AI/ModelGeneration/LocalModelImportState.hpp"
 #include "ModelGenerationPanel.hpp"
-#include "AI/ColorMatching/LocalPrintColorPanel.hpp"
 #include "AI/ModelGeneration/BeautyWorkbenchControls.hpp"
 #include "AI/ModelGeneration/DesignGenerationAvailability.hpp"
 #include "AI/ModelGeneration/WorkbenchStyle.hpp"
@@ -393,6 +392,8 @@ void ModelGenerationPanel::publish_ui_state()
     // candidate and dirty-state checks for the actual import operation.
     state.can_open_workbench = state.model_ready && !state.busy &&
         m_model_preview_ready && is_nonempty_model(m_displayed_model_path);
+    ModelLibraryEntry displayed; displayed.model_path = m_displayed_model_path; displayed.job_id = m_displayed_model_job_id;
+    state.can_open_workbench = state.can_open_workbench && !m_library_removals->blocked(displayed);
     state.progress = m_generation_progress->GetValue();
     state.model_progress_estimated = m_model_progress.estimated();
     state.model_elapsed_seconds = m_model_progress.elapsed_seconds();
@@ -665,7 +666,6 @@ void ModelGenerationPanel::restore_latest_job(bool require_visible, bool unfinis
 void ModelGenerationPanel::restore_generation_input_projection(const AIModelGenerationClient::JobStatus& status)
 {
     reset_portrait_session();
-    m_portrait_entered = true; // Restored tasks never initiate portrait recognition.
     m_job_palette = status.palette;
     m_job_palette_color_count = status.palette_color_count;
     m_legacy_generation_state.restore_palette_color_count(status.palette_color_count);
@@ -775,6 +775,7 @@ void ModelGenerationPanel::restore_job(AIModelGenerationClient::JobStatus status
 {
     if (m_shutdown || sequence != m_sequence || !m_job_id.empty())
         return;
+    m_library_foreground_job.clear();
     restore_generation_input_projection(status);
     m_status->SetLabel(_L("正在恢复上次模型生成任务..."));
     m_ui_model_generation_context = status.artifact_ready || !status.provider_task_id.empty() ||
@@ -890,11 +891,13 @@ void ModelGenerationPanel::begin_background_shutdown()
         preserve_portrait_draft(true);
     m_shutdown = m_shutdown_draining = true;
     ++m_sequence;
-    m_poll_timer.Stop(); m_library_timer.Stop(); m_workbench_sync_timer.Stop(); m_portrait_timer.Stop();
+    m_poll_timer.Stop(); m_library_timer.Stop(); m_workbench_sync_timer.Stop();
     m_ui_state_listener = {};
     m_workbench_surface_refresh.stop();
     m_workbench_evidence_scope.cancel(); m_preview_task_scope.cancel(); m_artifact_validation_scope.cancel();
     m_import_preparation_scope.cancel();
+    m_library_deletion_scope.cancel();
+    m_library_removal_refresh.stop();
     if (m_local_import_session) m_local_import_session->invalidate();
     m_beauty_restore_scope.cancel();
     m_client.cancel_current();
@@ -933,10 +936,8 @@ void ModelGenerationPanel::shutdown()
     cancel_native_workbench_partition();
     if (m_workbench_check_cancel) m_workbench_check_cancel->store(true);
     m_workbench_sync_timer.Stop();
-    m_portrait_timer.Stop();
     if (m_portrait_task) m_portrait_task->finish(PortraitOutcome::Cancelled);
     if (m_workbench_check_worker.joinable()) m_workbench_check_worker.join();
-    if (m_workbench_color_matching) m_workbench_color_matching->shutdown();
     m_ui_state_listener = {};
     stop_library_loading();
     stop_model_finishing();
@@ -2535,6 +2536,7 @@ void ModelGenerationPanel::on_retexture_from_library(const std::string& geometry
     m_client.record_journey_event("model_submitted", reference_job_id);
     reset_portrait_session();
     m_journey_model_submitted = true;
+    m_library_foreground_job.clear();
     m_busy = true;
     m_awaiting_confirmation = false;
     m_ready = false;
@@ -2565,7 +2567,9 @@ void ModelGenerationPanel::on_retexture_from_library(const std::string& geometry
         [weak, sequence](AIModelGenerationClient::JobStatus status) mutable {
             if (!weak) return;
             wxGetApp().CallAfter([weak, sequence, status = std::move(status)]() mutable {
-                if (weak) weak->handle_status(std::move(status), sequence);
+                if (!weak || weak->m_shutdown || sequence != weak->m_sequence) return;
+                weak->m_library_foreground_job = status.id;
+                weak->handle_status(std::move(status), sequence);
             });
         },
         [weak, sequence](std::string error) mutable {
@@ -3989,11 +3993,6 @@ std::string ModelGenerationPanel::current_custom_style() const
     return value.ToUTF8().data();
 }
 
-wxString ModelGenerationPanel::current_style_label() const
-{
-    return style_label(current_style());
-}
-
 int ModelGenerationPanel::current_face_limit() const
 {
     if (m_provider && m_provider->GetSelection() == 1)
@@ -4006,11 +4005,6 @@ std::string ModelGenerationPanel::current_generation_profile() const
 {
     const int face_limit = current_face_limit();
     return face_limit != 0 && face_limit <= 300000 ? "performance" : "quality";
-}
-
-wxString ModelGenerationPanel::current_generation_profile_label() const
-{
-    return current_generation_profile() == "performance" ? _L("高性能") : _L("高质量（推荐）");
 }
 
 AIModelGenerationClient::GenerationOptions ModelGenerationPanel::current_generation_options() const
@@ -4471,106 +4465,6 @@ void ModelGenerationPanel::cleanup_files()
 }
 
 
-void ModelGenerationPanel::save_library_entry(size_t artifact_size, size_t triangle_count, double width,
-                                               double depth, double height, size_t color_count,
-                                               double load_seconds)
-{
-    if (m_job_id.empty() || m_displayed_model_path.empty())
-        return;
-    const boost::filesystem::path metadata_path = library_metadata_path(m_job_id);
-    const nlohmann::json previous = read_json(metadata_path);
-    std::time_t generated_at = std::time(nullptr);
-    // Automatic job recovery also saves this entry. Keep its first recorded generation time.
-    if (previous.is_object()) {
-        const auto saved_time = previous.find("generated_at");
-        if (saved_time != previous.end() && saved_time->is_number_integer()) {
-            const auto timestamp = saved_time->get<std::time_t>();
-            if (timestamp > 0)
-                generated_at = timestamp;
-        }
-    }
-    const boost::filesystem::path root = generated_models_root();
-    const boost::filesystem::path reference_image = archive_library_image(
-        !m_reference_image_path.empty() ? m_reference_image_path : m_job_image_path,
-        m_job_id, "reference");
-    const boost::filesystem::path ai_image = archive_library_image(
-        !m_raw_preview_path.empty() ? m_raw_preview_path : m_preview_path,
-        m_job_id, "ai");
-    if (!reference_image.empty())
-        m_reference_image_path = reference_image;
-    if (!ai_image.empty())
-        m_raw_preview_path = ai_image;
-    // Archive the presentation separately; raw provider output remains intact.
-    const wxImage& display = m_model_reference_image.IsOk() ? m_model_reference_image : m_clean_preview_image;
-    if (!ai_image.empty() && display.IsOk()) {
-        auto display_path = ai_image; display_path += ".display.png";
-        if (display.SaveFile(display_path.wstring(), wxBITMAP_TYPE_PNG)) {
-            m_history_display_source = ai_image;
-            m_history_display_image = display.Copy();
-        }
-    }
-    nlohmann::json metadata {
-        {"schema_version", 6},
-        {"job_id", m_job_id},
-        {"model_path", m_displayed_model_path.lexically_relative(root).generic_string()},
-        {"source", job_uses_image() ? (m_job_prompt.empty() ? "image" : "text_image") : "text"},
-        {"style", m_job_style},
-        {"custom_style", m_job_custom_style},
-        {"generation_profile", m_job_generation_profile},
-        {"face_limit", m_job_face_limit},
-        {"provider", m_job_generation_options.provider},
-        {"geometry_quality", m_job_generation_options.geometry_quality},
-        {"texture_quality", m_job_generation_options.texture_quality},
-        {"output_format", m_job_generation_options.output_format},
-        {"prompt", std::string(m_job_prompt.ToUTF8().data())},
-        {"palette", m_job_palette},
-        {"palette_roles", m_job_palette_roles},
-        {"use_printable_colors", m_job_use_printable_colors},
-        {"generated_at", generated_at},
-        {"artifact_size", artifact_size},
-        {"triangle_count", triangle_count},
-        {"color_count", color_count},
-        {"load_seconds", load_seconds},
-        {"dimensions", {width, depth, height}}
-    };
-    // Reloading the generated artifact refreshes its statistics, not the user's
-    // import and print history for this same job.
-    if (previous.is_object()) {
-        for (const char* key : {"imported_at", "print_feedback", "print_feedback_at"}) {
-            const auto saved = previous.find(key);
-            if (saved != previous.end())
-                metadata[key] = *saved;
-        }
-    }
-    if (!m_job_provider_task_id.empty()) {
-        metadata["provider"] = m_job_provider_name;
-        metadata["provider_task_id"] = m_job_provider_task_id;
-        if (!m_job_provider_conversion_task_id.empty())
-            metadata["provider_conversion_task_id"] = m_job_provider_conversion_task_id;
-    }
-    if (!m_preview_path.empty())
-        metadata["preview_path"] = m_preview_path.lexically_relative(root).generic_string();
-    if (!reference_image.empty())
-        metadata["reference_image_path"] = reference_image.lexically_relative(root).generic_string();
-    if (!ai_image.empty())
-        metadata["ai_image_path"] = ai_image.lexically_relative(root).generic_string();
-    if (!m_color_intent_path.empty() && path_is_inside(root, m_color_intent_path)) {
-        metadata["color_intent_path"] = m_color_intent_path.lexically_relative(root).generic_string();
-        metadata["color_intent_schema"] = m_color_intent_schema;
-        metadata["color_intent_sha256"] = m_color_intent_sha256;
-    }
-
-    boost::filesystem::ofstream stream(metadata_path);
-    if (!stream) {
-        BOOST_LOG_TRIVIAL(warning) << "Unable to write generated model library metadata for " << m_job_id;
-    } else {
-        stream << metadata.dump(2);
-        stream.close();
-    }
-    load_library_entries();
-}
-
-
 void ModelGenerationPanel::update_library_provider_tasks(
     const std::string& job_id, const AIModelGenerationClient::JobStatus& status)
 {
@@ -4653,206 +4547,6 @@ void ModelGenerationPanel::record_library_print_feedback(const std::string& job_
         ? _L("已记录实际打印结果：成功。")
         : _L("已记录实际打印结果：有问题，建议保留模型用于复盘。"));
     load_library_entries();
-}
-
-bool ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry)
-{
-    if (m_busy || m_finishing_running || !m_finishing_candidate.empty())
-        return false;
-    const boost::filesystem::path root = generated_models_root();
-    const auto asset_path = entry.design_only ? entry.preview_path : entry.model_path;
-    boost::system::error_code ec;
-    if (!boost::filesystem::is_directory(root, ec) || !path_is_inside(root, asset_path)) {
-        m_status->SetLabel(_L("删除已阻止：模型路径不在模型文件夹中。"));
-        return false;
-    }
-    const auto canonical_root = boost::filesystem::canonical(root, ec);
-    const auto canonical_model = boost::filesystem::canonical(asset_path, ec);
-    if (ec) {
-        m_status->SetLabel(_L("无法确认模型路径，已保留文件；请刷新历史后重试。"));
-        return false;
-    }
-    const auto relative_model = canonical_model.lexically_relative(canonical_root).lexically_normal();
-    const auto current_metadata = read_json(library_metadata_path(entry.job_id));
-    const auto owned_appearance_carrier =
-        ModelLibraryMetadata::owned_original_appearance_companion(current_metadata, root);
-    const auto owned_observations = ModelLibraryObservations::owned_observations_companion(
-        library_metadata_path(entry.job_id), current_metadata);
-    bool appearance_carrier_referenced = false;
-    // Saved versions and drafts may depend on a direct parent, immutable
-    // appearance carrier, origin model or puzzle base. Read fresh metadata
-    // instead of relying on a possibly older asynchronous list.
-    try {
-        const auto records = library_metadata_path(entry.job_id).parent_path();
-        for (boost::filesystem::directory_iterator it(records), end; it != end; ++it) {
-            // Optional display observations cannot own a model dependency.
-            if (it->path().extension() == ".json" && it->path().stem().extension() == ".observations") continue;
-            if ((it->path().extension() != ".json" && it->path().extension() != ".draft") ||
-                it->path() == library_metadata_path(entry.job_id)) continue;
-            boost::filesystem::path draft_owner;
-            if (it->path().extension() == ".draft") {
-                auto owner_record = it->path();
-                owner_record.replace_extension();
-                const auto owner_metadata = read_json(owner_record);
-                if (!owner_metadata.is_object() || !owner_metadata.contains("model_path") ||
-                    !owner_metadata["model_path"].is_string())
-                    throw std::runtime_error("Unable to identify beauty draft owner");
-                draft_owner = boost::filesystem::path(owner_metadata["model_path"].get<std::string>());
-            }
-            boost::filesystem::ifstream input(it->path());
-            if (!input || (!entry.design_only &&
-                ModelLibraryMetadata::references_model(input, relative_model, draft_owner))) {
-                m_status->SetLabel(_L("无法删除：其他美颜版本或草稿仍需要这个原始模型，请先保留原件。"));
-                return false;
-            }
-            if (owned_appearance_carrier) {
-                const auto carrier_relative = owned_appearance_carrier->lexically_relative(canonical_root).lexically_normal();
-                boost::filesystem::ifstream carrier_input(it->path());
-                if (!carrier_input) throw std::runtime_error("Unable to inspect appearance dependency");
-                appearance_carrier_referenced = appearance_carrier_referenced ||
-                    ModelLibraryMetadata::references_model(carrier_input, carrier_relative, draft_owner);
-            }
-        }
-    } catch (...) {
-        m_status->SetLabel(_L("无法确认美颜版本的原件依赖，已保留文件；请刷新历史后重试。"));
-        return false;
-    }
-    if (show_redesign_confirmation(this,
-        _L("要删除这个历史资产的本地文件、预览和元数据吗？\n\n此操作不会取消远端任务，也无法撤销。"),
-        _L("删除本地资产")) != wxID_YES)
-        return false;
-
-    if (!boost::filesystem::is_directory(root, ec) || !path_is_inside(root, asset_path)) {
-        m_status->SetLabel(_L("删除已阻止：模型路径不在模型文件夹中。"));
-        return false;
-    }
-    if (entry.design_only && !read_design_history_entry(root, entry.job_id, false)) {
-        m_status->SetLabel(_L("设计记录已变化，请刷新历史后重试。"));
-        return false;
-    }
-
-    bool displayed_model_deleted = false;
-    ec.clear();
-    if (!m_displayed_model_path.empty())
-        displayed_model_deleted = boost::filesystem::equivalent(
-            m_displayed_model_path, entry.model_path, ec) && !ec;
-
-    const boost::filesystem::path model_parent = entry.design_only ? root / entry.job_id : asset_path.parent_path();
-    const boost::filesystem::path downloads = root / "downloads";
-    ec.clear();
-    const bool downloaded_model = boost::filesystem::is_directory(downloads, ec) &&
-        boost::filesystem::equivalent(model_parent, downloads, ec) && !ec;
-    size_t removed_count = 0;
-    const bool shared_directory = std::any_of(m_library_entries.begin(), m_library_entries.end(),
-        [&](const GeneratedModelEntry& other) {
-            const bool same_entry = other.job_id == entry.job_id && other.model_path == entry.model_path &&
-                other.design_only == entry.design_only;
-            return !same_entry && (path_is_inside(model_parent, other.model_path) ||
-                path_is_inside(model_parent, other.preview_path) || path_is_inside(model_parent, other.reference_image_path) ||
-                path_is_inside(model_parent, other.ai_image_path) || path_is_inside(model_parent, other.color_intent_path));
-        });
-    if (!shared_directory && !downloaded_model && model_parent.filename().string() == entry.job_id &&
-        path_is_inside(root, model_parent)) {
-        ec.clear();
-        removed_count = boost::filesystem::remove_all(model_parent, ec);
-    }
-    std::vector<boost::filesystem::path> targets {
-        entry.model_path,
-        entry.color_intent_path,
-        library_metadata_path(entry.job_id),
-        boost::filesystem::path(library_metadata_path(entry.job_id).string() + ".draft"),
-        temp_path(entry.job_id, "png"),
-        temp_path(entry.job_id + "-raw", "png"),
-        temp_path(entry.job_id + "-strict", "png"),
-        temp_path(entry.job_id + "-clean", "png"),
-        temp_path(entry.job_id + "-heatmap", "png"),
-        temp_path(entry.job_id + "-input", "png")
-    };
-    if (owned_appearance_carrier && !appearance_carrier_referenced)
-        targets.push_back(*owned_appearance_carrier);
-    if (owned_observations) targets.push_back(*owned_observations);
-    if (entry.design_only) {
-        targets.push_back(model_parent / "job.json");
-        for (const auto& path : {entry.preview_path, entry.ai_image_path, entry.reference_image_path})
-            if (path_is_inside(model_parent, path)) targets.push_back(path);
-    }
-    for (const boost::filesystem::path& image_path : {entry.reference_image_path, entry.ai_image_path}) {
-        if (is_archived_library_image(image_path, entry.job_id))
-            targets.push_back(image_path);
-    }
-    for (const boost::filesystem::path& target : targets) {
-        if (std::any_of(m_library_entries.begin(), m_library_entries.end(), [&](const GeneratedModelEntry& other) {
-            if (other.job_id == entry.job_id && other.model_path == entry.model_path &&
-                other.design_only == entry.design_only) return false;
-            for (const auto& shared : {other.model_path, other.preview_path, other.reference_image_path,
-                                      other.ai_image_path, other.color_intent_path}) {
-                boost::system::error_code shared_ec;
-                if (!target.empty() && !shared.empty() &&
-                    boost::filesystem::equivalent(target, shared, shared_ec) && !shared_ec) return true;
-            }
-            return false;
-        })) continue;
-        boost::system::error_code target_ec;
-        if (!boost::filesystem::exists(target, target_ec))
-            continue;
-        if (!path_is_inside(root, target)) {
-            ec = boost::system::errc::make_error_code(boost::system::errc::permission_denied);
-            break;
-        }
-        if (boost::filesystem::remove(target, target_ec))
-            ++removed_count;
-        if (target_ec) {
-            ec = target_ec;
-            break;
-        }
-    }
-
-    if (ec) {
-        m_status->SetLabel(_L("本地模型删除不完整，请检查文件权限。"));
-        load_library_entries();
-        return false;
-    }
-    if (displayed_model_deleted) {
-        invalidate_printer_filament_trial_for_model_change();
-        if (m_model_preview != nullptr)
-            m_model_preview->clear();
-        m_displayed_model_path.clear();
-        m_displayed_model_job_id.clear();
-        m_displayed_model_palette.clear();
-        m_displayed_model_palette_roles.clear();
-        m_artifact_path.clear();
-        m_color_intent_path.clear();
-        m_color_intent_schema.clear();
-        m_color_intent_sha256.clear();
-        m_reference_image_path.clear();
-        m_raw_preview_path.clear();
-        m_reference_image = wxImage();
-        m_raw_preview_image = wxImage();
-        m_clean_preview_image = wxImage();
-        m_style_preview_image = wxImage();
-        m_style_preview_ready = false;
-        m_model_preview_ready = false;
-        m_library_model_loaded = false;
-        if (m_job_id.empty())
-            m_ready = false;
-        m_model_stats->SetLabel(_L("模型尚未加载"));
-        m_model_preview_message->SetLabel(_L("已删除当前显示的本地模型。"));
-    }
-    if (entry.design_only) {
-        if (m_job_id == entry.job_id) {
-            m_selected_image_path.clear();
-            reset(false);
-        }
-        // Forget the stopped/completed local job as well as its files, so it cannot
-        // be offered for recovery until the sidecar is restarted.
-        m_client.remove(entry.job_id, [] {}, [](std::string) {});
-    }
-    m_status->SetLabel(removed_count > 0
-        ? _L("历史模型的本地文件已删除，无法撤销。")
-        : _L("没有找到可删除的本地文件。"));
-    load_library_entries();
-    refresh_controls();
-    return true;
 }
 
 void ModelGenerationPanel::show_selected_image_preview()

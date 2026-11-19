@@ -10,6 +10,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <nlohmann/json.hpp>
 
 namespace Slic3r::GUI {
 
@@ -40,6 +41,10 @@ struct WorkbenchCheckResult {
     size_t nonmanifold_vertices {0};
     size_t self_intersections {0};
     bool self_intersections_checked {false};
+    // Populated only from a verified publication/certificate, never from a
+    // general inspection or a caller's success flag.
+    nlohmann::json native_repair_acceptance;
+    nlohmann::json native_repair_evidence;
     size_t small_faces {0};
     std::vector<size_t> issue_faces;
     size_t isolated_components {0};
@@ -53,7 +58,6 @@ struct WorkbenchCheckResult {
     bool appearance_mapped {false};
     double appearance_confidence {0.0};
     std::string appearance_reason;
-    bool force_import_risk {false};
 };
 
 inline bool workbench_automatic_check_should_start(bool workbench_open, bool workbench_presented,
@@ -196,8 +200,7 @@ inline bool workbench_navigation_allowed(bool modal_blocking, bool leaves_workbe
     return !modal_blocking || !leaves_workbench;
 }
 
-inline std::string workbench_check_status_line(const WorkbenchCheckResult& check,
-                                               bool risk_acknowledged = false)
+inline std::string workbench_check_status_line(const WorkbenchCheckResult& check)
 {
     if (check.candidate_status == RepairCandidateStatus::Ready)
         return "修复复检通过，正在保存……";
@@ -217,11 +220,10 @@ inline std::string workbench_check_status_line(const WorkbenchCheckResult& check
     return "模型尚未检查";
 }
 
-inline std::string workbench_check_detail_text(const WorkbenchCheckResult& check,
-                                               bool risk_acknowledged = false)
+inline std::string workbench_check_detail_text(const WorkbenchCheckResult& check)
 {
     std::ostringstream text;
-    text << workbench_check_status_line(check, risk_acknowledged);
+    text << workbench_check_status_line(check);
     if (!check.summary.empty()) text << "\n\n检查说明\n" << check.summary;
     if (!check.repair_reason.empty()) text << "\n\n修复说明\n" << check.repair_reason;
     if (check.after_faces || check.after_vertices) {
@@ -262,8 +264,6 @@ inline std::string workbench_check_detail_text(const WorkbenchCheckResult& check
              << std::clamp(check.appearance_confidence, 0.0, 1.0) * 100.0 << "%";
         if (!check.appearance_reason.empty()) text << "\n说明：" << check.appearance_reason;
     }
-    if (risk_acknowledged && check.status == WorkbenchCheckStatus::Attention)
-        text << "\n\n风险处理\n开放边界风险已由用户确认，许可仅绑定当前模型检查结果。";
     return text.str();
 }
 
@@ -313,9 +313,24 @@ inline std::string workbench_palette_status_line(WorkbenchOriginalAppearanceStat
     if (!honor_suite_active)
         return "当前色卡 · " + std::to_string(palette_color_count) + " 色";
     const std::string usage = "模型当前使用 " + std::to_string(honor_suite_used_colors) + "/6 色";
-    return honor_fallback_reason.empty()
+    // Omit detection absence from this label without changing saved diagnostics.
+    std::string fallback = honor_fallback_reason;
+    for (const std::string notice : {"未检测到人物", "未检测到人像"}) {
+        const size_t position = fallback.find(notice);
+        if (position == std::string::npos) continue;
+        size_t length = notice.size();
+        for (const std::string punctuation : {"。", "，", "；"}) {
+            if (fallback.compare(position + length, punctuation.size(), punctuation) == 0) {
+                length += punctuation.size();
+                break;
+            }
+        }
+        fallback.erase(position, length);
+    }
+    if (fallback == "近色回退：") fallback = "近色回退";
+    return fallback.empty()
         ? "荣耀耗材套装 · " + usage
-        : honor_fallback_reason + "\n" + usage;
+        : fallback + "\n" + usage;
 }
 
 // Native workbench configuration is independent of the six-channel AI port.
@@ -366,11 +381,6 @@ struct PostGenerationWorkbenchState {
     std::string reoptimization_reason;
     bool can_edit_project_colors {false};
     bool can_import_for_slicing {false};
-    bool deferred_native_repair {false};
-    std::string native_repair_source_sha256;
-    bool can_force_import {false};
-    bool force_import_acknowledged {false};
-    bool import_has_topology_risk {false};
     std::string import_topology_reason;
     bool can_print {false};
     AI::PrintablePaletteSnapshot project_palette;

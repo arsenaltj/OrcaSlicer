@@ -7,6 +7,9 @@
 #include <memory>
 #include <functional>
 #include <wx/gdicmn.h>
+#include <optional>
+#include <algorithm>
+#include <vector>
 
 class wxMouseEvent;
 class wxWindow;
@@ -14,6 +17,29 @@ class wxWindow;
 namespace Slic3r::GUI {
 
 inline constexpr float view_navigator_size = 128.f;
+
+// All rectangles use the surface parent's client coordinates. Keep the right
+// edge on the actual model canvas, even when the footer spans a beauty panel.
+inline std::optional<wxRect> workbench_navigator_bounds(const wxRect& viewport,
+    const wxRect& footer, const wxRect& host, int side, const std::vector<wxRect>& tools = {})
+{
+    if (side <= 0 || viewport.IsEmpty() || host.IsEmpty()) return {};
+    const auto usable = viewport.Intersect(host);
+    if (usable.width < side || usable.height < side) return {};
+    const int right = usable.x + usable.width;
+    const int baseline = footer.IsEmpty() ? usable.y + usable.height : footer.y + footer.height;
+    wxRect candidate(right - side, baseline - side, side, side);
+    // The part below the canvas may use only the footer area on its model
+    // side. If the toolbar cannot accommodate it, keep the entire control GL-local.
+    const wxRect strip(usable.x, usable.y, usable.width,
+        std::max(usable.height, baseline - usable.y));
+    if (!host.Contains(candidate) || !strip.Contains(candidate) ||
+        (!footer.IsEmpty() && candidate.y + side > usable.y + usable.height &&
+         (footer.x > candidate.x || footer.x + footer.width < right)) ||
+        std::any_of(tools.begin(), tools.end(), [&](const auto& tool) { return tool.Intersects(candidate); }))
+        candidate = wxRect(right - side, usable.y + usable.height - side, side, side);
+    return host.Contains(candidate) ? std::optional<wxRect>(candidate) : std::nullopt;
+}
 
 // ImGui 1.83 polls button state once per frame. Preserve transitions when wx
 // delivers a complete click before the next paint, while coalescing motion.
@@ -75,6 +101,7 @@ public:
     void set_preview_frame(unsigned int texture, wxWindow* preview);
     void show_surface(bool visible);
     bool present_surface(bool visible, bool enabled);
+    bool presentation_failed() const;
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;

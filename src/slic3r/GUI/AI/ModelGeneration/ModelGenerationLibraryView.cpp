@@ -38,12 +38,6 @@
 namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
 
-std::vector<ModelGenerationPanel::GeneratedModelEntry> ModelGenerationPanel::read_library_entries(
-    const boost::filesystem::path& root, const std::atomic<bool>& cancelled)
-{
-    return ModelLibraryRepository::read(root, cancelled);
-}
-
 namespace {
 
 // Keep thumbnail painting in one fixed, clipped surface, independently of the
@@ -116,7 +110,7 @@ void ModelGenerationPanel::stop_library_loading()
     m_library_load_state.reset();
 }
 
-void ModelGenerationPanel::load_library_entries(bool for_shell)
+void ModelGenerationPanel::load_library_entries(bool for_shell, bool preserve_list_feedback)
 {
     if (m_shutdown) return;
     const bool legacy_visible = m_library_scroller != nullptr && m_library_scroller->IsShownOnScreen();
@@ -125,13 +119,13 @@ void ModelGenerationPanel::load_library_entries(bool for_shell)
         cancel_library_loading();
         return;
     }
-    if (m_library_scan_pending && m_library_requested_by_shell == for_shell) return;
-    if (for_shell && m_library_requested_by_shell && m_library_load_state && m_library_load_state->loading()) return;
+    if (m_library_scan_pending) { m_library_rescan_pending = true; return; }
+    if (for_shell && m_library_requested_by_shell && m_library_load_state && m_library_load_state->loading()) { m_library_rescan_pending = true; return; }
     cancel_library_loading();
     m_library_scan_pending = true;
     m_library_requested_by_shell = for_shell;
     if (for_shell) {
-        m_ui_history_loading = true;
+        m_ui_history_loading = !preserve_list_feedback;
         m_ui_history_error.clear();
         publish_ui_state();
     }
@@ -141,6 +135,8 @@ void ModelGenerationPanel::load_library_entries(bool for_shell)
     request->scan = true;
     request->for_shell = for_shell;
     request->root = ModelGenerationPresentation::generated_models_root();
+    m_library_scan_removal_revision = m_library_removals->revision();
+    m_library_scan_commit_revision = m_library_application ? m_library_application->commit_revision() : 0;
     m_library_load_state->submit(std::move(request));
     if (legacy_visible) {
         m_library_empty->SetLabel(_L("正在读取历史资产…"));
@@ -193,7 +189,10 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
                 [&](const GeneratedModelEntry& entry) { return entry.job_id == anchor; });
             if (!anchor.empty() && position != snapshot->entries.end())
                 m_library_page = size_t(position - snapshot->entries.begin()) / m_library_page_size;
-            m_library_entries = std::move(snapshot->entries);
+            m_library_removals->reconcile(snapshot->entries, m_library_scan_removal_revision);
+            if (m_library_application) m_library_application->merge_commits(snapshot->entries, m_library_scan_commit_revision);
+            m_library_snapshot_entries = std::move(snapshot->entries);
+            m_library_entries = m_library_removals->project(m_library_snapshot_entries);
             if (snapshot->for_shell || m_finishing_workbench || m_workbench_history_sidebar_mounted) {
                 const auto text_to_utf8 = [](const wxString& value) {
                     const wxScopedCharBuffer encoded = value.ToUTF8();
@@ -298,7 +297,10 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
     // worker has no queued or active work; it will be restarted by the next
     // refresh or page change.
     const bool loading = m_library_load_state->loading();
-    if (!loading && !m_library_refresh_pending) m_library_timer.Stop();
+    if (!loading && m_library_rescan_pending) {
+        m_library_rescan_pending = false;
+        load_library_entries(true, true);
+    } else if (!loading && !m_library_refresh_pending) m_library_timer.Stop();
 }
 
 void ModelGenerationPanel::request_library_thumbnails(bool for_shell)
@@ -325,7 +327,7 @@ void ModelGenerationPanel::request_library_thumbnails(bool for_shell)
             if (!target.thumbnail_ready) { request->entries.push_back(m_library_entries[i]); request->indices.push_back(i); }
         }
         m_ui_history_thumbnails_pending = request->entries.size();
-        m_ui_history_loading = !request->entries.empty();
+        m_ui_history_loading = false; // Metadata/cards are usable while thumbnails arrive.
         if (request->entries.empty()) { m_library_requested_by_shell = false; return; }
         m_library_shell_thumbnails_running = true;
     } else {
@@ -700,6 +702,7 @@ wxWindow* ModelGenerationPanel::create_library_card(const GeneratedModelEntry& e
         export_copy->Bind(wxEVT_BUTTON, [this, entry](wxCommandEvent&) { export_library_entry(entry); });
         actions->Add(export_copy, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
         auto* remove = new wxButton(card, wxID_ANY, _L("删除本地"), wxDefaultPosition, wxSize(FromDIP(104), -1));
+        remove->Enable(can_replace_model_asset());
         remove->Bind(wxEVT_BUTTON, [this, entry](wxCommandEvent&) {
             delete_library_entry(entry);
         });

@@ -26,6 +26,8 @@
 #include <wx/weakref.h>
 #include <chrono>
 #include <ctime>
+#include <system_error>
+#include <utility>
 
 namespace Slic3r::GUI {
 namespace PP = WorkbenchArtifacts;
@@ -56,7 +58,15 @@ WorkbenchCheckResult portrait_partition_check_result(
     result.purpose = WorkbenchCheckPurpose::PortraitPostColorReadOnly;
     result.model_sha256 = carrier_hash;
     result.source_sha256 = carrier_hash;
-    result.summary = "Orca 原生分区严格修复与完整拓扑复检已通过。";
+    result.summary = build.strict_repair.acceptance == MeshRepairAcceptance::OrcaNative
+        ? "已按 Orca 原生修复结果接收；交叠等检查事实和几何变化已记录，原件保留。"
+        : build.strict_repair.native_repair_compatible
+        ? "Orca 原生修复与完整拓扑复检已通过；已接收必要几何变化，原模型保留。"
+        : "Orca 原生分区严格修复与完整拓扑复检已通过。";
+    if (build.strict_repair.native_repair_compatible)
+        result.repair_reason = "原生兼容修复；双向采样偏差比例 " +
+            std::to_string(build.strict_repair.sampled_deviation_ratio) + "，表面积变化 " +
+            std::to_string(build.strict_repair.area_change_ratio * 100.) + "% 。";
     result.boundary_edges = topology.open_edges;
     result.nonmanifold_edges = topology.nonmanifold_edges;
     result.nonmanifold_vertices = topology.nonmanifold_vertices;
@@ -65,6 +75,7 @@ WorkbenchCheckResult portrait_partition_check_result(
     result.inconsistent_edges = topology.inconsistent_edges;
     result.self_intersections_checked = topology.self_intersections_checked;
     result.self_intersections = topology.self_intersects ? 1 : 0;
+    result.native_repair_acceptance = native_repair_receipt(build.strict_repair);
     result.before_faces = partition.painted.indices.size();
     result.before_vertices = partition.painted.vertices.size();
     result.candidate_status = RepairCandidateStatus::None;
@@ -90,6 +101,7 @@ void log_native_portrait_partition_report(
 
 struct NativeWorkbenchActivationRollback {
     BeautyCandidateSnapshot beauty;
+    WorkbenchLibraryBinding library_binding;
     boost::filesystem::path displayed_model_path;
     std::string displayed_model_job_id;
     nlohmann::json partition_reference;
@@ -101,6 +113,12 @@ struct NativeWorkbenchActivationRollback {
     std::uint64_t workbench_check_revision {0};
 };
 }
+struct ModelGenerationPanel::NativeWorkbenchPartitionRetry {
+    NativeWorkbenchPartitionContext context;
+    NativeWorkbenchPreparedPartition prepared;
+    std::uint64_t presentation_sequence {0};
+};
+
 bool ModelGenerationPanel::native_workbench_context_matches(
     const NativeWorkbenchPartitionContext& context) const
 {
@@ -143,6 +161,7 @@ void ModelGenerationPanel::publish_native_workbench_context()
         next.generation = m_sequence;
     }
     if (next != m_native_workbench_context) {
+        m_native_workbench_partition_retry.reset();
         if (m_native_workbench_partition_running) cancel_native_workbench_partition();
         m_native_workbench_context = std::move(next);
         m_native_workbench_partition_reference = nullptr;
@@ -156,7 +175,9 @@ void ModelGenerationPanel::publish_native_workbench_context()
 
 void ModelGenerationPanel::cancel_native_workbench_partition()
 {
+    m_native_workbench_partition_retry.reset();
     const bool was_running = m_native_workbench_partition_running;
+    if (m_model_preview) m_model_preview->cancel_model_installation_frame();
     if (m_native_workbench_partition_cancel) m_native_workbench_partition_cancel->store(true);
     if (m_native_workbench_partition_worker.joinable()) {
         m_native_workbench_partition_draining = true;
@@ -263,8 +284,17 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
     if (m_model_preview->has_native_portrait_partition_conflict() ||
         (m_beauty_controls && m_beauty_controls->has_changes())) return false;
 
+    if (m_native_workbench_partition_running) {
+        if (m_native_workbench_partition_context != m_native_workbench_context ||
+            !PP::native_workbench_partition_can_join(m_native_workbench_partition_consumers,
+                consumers, m_model_preview->model_installation_frame_pending())) return false;
+        m_native_workbench_partition_consumers |= consumers;
+        return true;
+    }
+
     auto activation_before = std::make_shared<NativeWorkbenchActivationRollback>();
     activation_before->beauty = capture_beauty_candidate();
+    activation_before->library_binding = m_workbench_library_binding;
     activation_before->displayed_model_path = m_displayed_model_path;
     activation_before->displayed_model_job_id = m_displayed_model_job_id;
     activation_before->partition_reference = m_native_workbench_partition_reference;
@@ -289,6 +319,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 auto* self = weak.get();
                 self->m_displayed_model_path = activation_before->displayed_model_path;
                 self->m_displayed_model_job_id = activation_before->displayed_model_job_id;
+                self->m_workbench_library_binding = activation_before->library_binding;
                 self->m_native_workbench_partition_reference = activation_before->partition_reference;
                 self->m_native_workbench_partition_report = activation_before->partition_report;
                 self->m_native_workbench_partition_certificate = activation_before->partition_certificate;
@@ -314,11 +345,6 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
         m_native_workbench_partition_consumers &= std::uint8_t(~consumers);
         return completed;
     }
-    if (m_native_workbench_partition_running) {
-        if (m_native_workbench_partition_context != m_native_workbench_context) return false;
-        m_native_workbench_partition_consumers |= consumers;
-        return true;
-    }
     Presentation::background_tasks().retire(m_native_workbench_partition_worker);
 
     const auto source_appearance = m_model_preview->original_appearance_reference();
@@ -330,6 +356,16 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
     const auto context = m_native_workbench_context;
     const auto source_job = m_displayed_model_job_id;
     const auto edit_revision = m_model_preview->leaf_edit_revision();
+    // Keep the old checkpoint owned until the worker is successfully started;
+    // allocation or thread creation failure must not discard a valid retry.
+    auto previous_preparation = m_native_workbench_partition_retry;
+    if (previous_preparation && (previous_preparation->context != context ||
+            previous_preparation->prepared.edit_revision != edit_revision ||
+            previous_preparation->presentation_sequence != m_workbench_presentation_sequence)) previous_preparation.reset();
+    auto retained_preparation = std::make_shared<NativeWorkbenchPartitionRetry>();
+    retained_preparation->context = context;
+    retained_preparation->prepared.edit_revision = edit_revision;
+    retained_preparation->presentation_sequence = m_workbench_presentation_sequence;
     const auto asset_id = "native-workbench-partition-v12-" +
         ModelGenerationPresentation::new_request_id();
     const auto destination = ModelGenerationPresentation::temp_path(asset_id, "obj");
@@ -344,6 +380,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
     const auto canceled = m_native_workbench_partition_cancel = std::make_shared<std::atomic<bool>>(false);
     const auto committed = std::make_shared<std::atomic<bool>>(false);
     auto report = std::make_shared<NativePortrait::NativePortraitPartitionBuildReport>();
+    if (previous_preparation) retained_preparation->prepared = previous_preparation->prepared;
+    else retained_preparation->prepared.report = report;
     auto reference = std::make_shared<nlohmann::json>();
     auto workbench_certificate = std::make_shared<nlohmann::json>();
     auto commit_document = std::make_shared<nlohmann::json>();
@@ -366,11 +404,13 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
             source_appearance_error, asset_id,
             context, source_job, edit_revision, destination = destination, metadata_path = metadata_path, appearance_carrier,
             appearance_root, cache_root, share_exact_vertices, canceled, committed, report, reference,
-            workbench_certificate, commit_document, report_started, activation_before]() mutable {
-            auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
-            auto partition = std::make_shared<NativePortrait::NativePortraitPartition>();
+            workbench_certificate, commit_document, report_started, activation_before,
+            previous_preparation, retained_preparation]() mutable {
+            std::shared_ptr<ModelPreview3D::PreparedModel> prepared;
+            std::shared_ptr<NativePortrait::NativePortraitPartition> partition;
             std::string output_hash;
             std::string error;
+            bool resource_failure = false;
             std::string topology_hash;
             nlohmann::json topology_certificate;
             std::optional<WorkbenchCheckResult> restored_check;
@@ -401,6 +441,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 boost::filesystem::remove(metadata_path, ignored);
             };
             try {
+                prepared = std::make_shared<ModelPreview3D::PreparedModel>();
+                partition = std::make_shared<NativePortrait::NativePortraitPartition>();
                 auto retry = std::make_shared<ModelHistoryOpenRequest>();
                 retry->root = appearance_root;retry->entry.model_path = context.model_path;
                 retry->entry.job_id = source_job;retry->expected_model_sha256 = context.source_sha256;
@@ -451,21 +493,43 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 if (!source_bounds_mm.valid())
                     throw std::runtime_error("原始模型毫米包围盒无效，未建立分区。");
                 finish_stage(NativePortrait::BuildStageStatus::Succeeded);
-                *partition = NativePortrait::build_native_workbench_partition(
-                    *decoded.texture,
-                    NativePortrait::native_mesh_repair_callback(&report->strict_repair), stopped, report.get());
-                if (!partition->valid() || !report->strict_repair.success ||
-                    !report->strict_repair.output_topology.safe())
+                if (previous_preparation) {
+                    if (!previous_preparation->prepared.restore_build_report(*decoded.texture, *report, stopped)) {
+                        retained_preparation->prepared = {};
+                        if (stopped()) throw std::runtime_error("原生人像分区已取消。");
+                        report->stage(NativePortrait::BuildStage::SourceCheck).status = NativePortrait::BuildStageStatus::Failed;
+                        throw std::runtime_error("原始模型的几何、材质或纹理已变化，请重新打开模型后检查。");
+                    }
+                    partition = previous_preparation->prepared.partition;
+                    // Keep the original completed algorithm facts. This
+                    // attempt reports skipped work, which is not a new proof
+                    // of completion if publication fails again.
+                    retained_preparation->prepared.report = previous_preparation->prepared.report;
+                    timing("prepared-partition-reused");
+                } else {
+                    if (stopped()) throw std::runtime_error("原生人像分区已取消。");
+                    *partition = NativePortrait::build_native_workbench_partition(
+                        *decoded.texture,
+                        NativePortrait::native_mesh_repair_callback(&report->strict_repair, &decoded.mesh.its), stopped, report.get());
+                }
+                previous_preparation.reset();
+                if (!partition->valid() || !report->strict_repair.accepted())
                     throw std::runtime_error("严格修复或原生分区证书无效，未发布分区。");
                 const auto carrier_bounds_mm = NativePortrait::native_workbench_bounds(*partition);
-                if (!NativePortrait::native_workbench_bounds_compatible(
+                if (!report->strict_repair.native_repair_compatible && !NativePortrait::native_workbench_bounds_compatible(
                         source_bounds_mm, carrier_bounds_mm, error))
                     throw std::runtime_error(error);
+                // These objects already exist for the current operation. Keep
+                // their ownership only if a later publication stage fails.
+                retained_preparation->prepared.source = decoded.texture;
+                retained_preparation->prepared.partition = partition;
+                retained_preparation->prepared.source_bounds = source_bounds_mm;
 
                 begin_stage(NativePortrait::BuildStage::CarrierPublish,
                     "Publish native color-boundary carrier.");
                 if (!NativePortrait::write_native_portrait_carrier(
-                        destination, *partition, source_bounds_mm, output_hash, error))
+                        destination, *partition, report->strict_repair.native_repair_compatible
+                            ? carrier_bounds_mm : source_bounds_mm, output_hash, error))
                     throw std::runtime_error(error.empty() ? "原生人像颜色载体写出失败。" : error);
                 if (AI::model_artifact_sha256(destination) != output_hash)
                     throw std::runtime_error("原生人像颜色载体校验失败。");
@@ -493,7 +557,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 if (!prepared->semantic_source || prepared->geometry_id != partition->geometry_id)
                     throw std::runtime_error("原生分区载体与原始外观身份不匹配。");
                 if (!NativePortrait::native_workbench_bounds_compatible(
-                        source_bounds_mm,
+                        carrier_bounds_mm,
                         NativePortrait::native_workbench_bounds(prepared->mesh), error))
                     throw std::runtime_error(error.empty()
                         ? "原生分区预览尺寸与原模型不一致。" : error);
@@ -523,12 +587,21 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     {"carrier_bounds_mm", NativePortrait::encode_native_workbench_bounds(carrier_bounds_mm)},
                     {"topology", portrait_topology_report(report->strict_repair.output_topology)},
                     {"sampled_deviation_ratio", report->strict_repair.sampled_deviation_ratio},
-                    {"area_change_ratio", report->strict_repair.area_change_ratio}};
+                    {"area_change_ratio", report->strict_repair.area_change_ratio},
+                    {"native_repair_compatible", report->strict_repair.native_repair_compatible}};
+                const auto native_acceptance = native_repair_receipt(report->strict_repair);
+                if (!native_acceptance.is_null()) {
+                    if (!native_repair_receipt_matches(native_acceptance, prepared->mesh))
+                        throw std::runtime_error("原生修复后几何身份变化，未发布兼容凭证。");
+                    topology_certificate["schema"] = "orca.native-workbench-topology-certificate/v2";
+                    topology_certificate["native_acceptance"] = native_acceptance;
+                }
                 topology_hash = AI::beauty_leaf_digest(topology_certificate.dump());
                 if (!AI::SurfaceSelectionPersistence::detail::valid_fingerprint(topology_hash))
                     throw std::runtime_error("原生人像拓扑证书无法生成。");
                 *reference = {{"schema", "orca.native-workbench-partition-reference/v2"},
-                    {"algorithm", NativePortrait::algorithm_version},
+                    {"native_repair_compatible", report->strict_repair.native_repair_compatible},
+                    {"algorithm", partition->algorithm},
                     {"partition_digest", partition->partition_digest}, {"topology_hash", topology_hash},
                     {"coordinate_units", "mm"},
                     {"source_bounds_mm", NativePortrait::encode_native_workbench_bounds(source_bounds_mm)},
@@ -540,6 +613,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     {"cache_path", u8(cache_path)}, {"cache_sha256", cache_sha256},
                     {"metadata_path", u8(metadata_path)}, {"geometry_id", partition->geometry_id},
                     {"appearance_id", appearance_id}, {"cache_reference", cache_reference}};
+                if (!native_acceptance.is_null()) (*reference)["native_acceptance"] = native_acceptance;
                 if (!PP::valid_native_partition_reference(*reference,
                         partition->partition_digest, topology_hash))
                     throw std::runtime_error("原生人像分区引用无效。");
@@ -634,16 +708,22 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                         metadata.detail = "Final commit publication or read-back validation failed.";
                     }
                 }
-                error = failure.what();
+                resource_failure = dynamic_cast<const std::bad_alloc*>(&failure) ||
+                    dynamic_cast<const std::length_error*>(&failure) || dynamic_cast<const std::system_error*>(&failure);
+                error = resource_failure ? "当前阶段资源不足，未重试其他算法；原件及已发布成果保留。" : failure.what();
                 report->success = false;
                 report->error = error;
                 report->total_ms = portrait_elapsed_ms(*report_started);
                 cleanup();
             }
+            // Only failed precommit work needs retention. Drop the immutable
+            // source on this worker before the GUI installs a successful result.
+            if (committed->load()) retained_preparation->prepared = {};
             wxGetApp().CallAfter([weak, context, edit_revision,
                 destination, metadata_path, appearance_carrier, canceled, committed, prepared,
                 partition, report, reference, workbench_certificate, commit_document,
                 output_hash, restored_check, retry_files, report_started, activation_before,
+                retained_preparation, resource_failure,
                 error = std::move(error)]() mutable {
                 const auto cleanup = [&] {
                     if (committed->load()) return;
@@ -653,6 +733,10 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     boost::filesystem::remove(metadata_path, ignored);
                 };
                 if (!weak) { cleanup(); return; }
+                if (committed->load() && !weak->m_shutdown) {
+                    const auto id = metadata_path.stem().string().substr(std::string("orcaslicer-ai-").size());
+                    weak->queue_library_commit(id, ModelLibraryCommitReason::Checked);
+                }
                 auto* self = weak.get();
                 if (self->m_native_workbench_partition_cancel != canceled) { cleanup(); return; }
                 Presentation::background_tasks().retire(self->m_native_workbench_partition_worker);
@@ -661,14 +745,17 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     (consumers & std::uint8_t(NativeWorkbenchPartitionConsumer::AutomaticPalette)) != 0;
                 const bool honor_suite_requested =
                     (consumers & std::uint8_t(NativeWorkbenchPartitionConsumer::HonorSuite)) != 0;
-                self->m_native_workbench_partition_running = false;
-                self->m_native_workbench_partition_cancel.reset();
-                self->m_workbench_check_card_visible = false;
-                self->m_busy = false;
+                const auto release_operation = [self] {
+                    self->m_native_workbench_partition_running = false;
+                    self->m_native_workbench_partition_cancel.reset();
+                    self->m_workbench_check_card_visible = false;
+                    self->m_busy = false;
+                };
                 if (self->m_shutdown || canceled->load() ||
                     !self->native_workbench_context_matches(context) ||
                     (retry_files && !retry_files->current()) ||
                     self->m_model_preview->leaf_edit_revision() != edit_revision) {
+                    release_operation();
                     report->total_ms = portrait_elapsed_ms(*report_started);
                     log_native_portrait_partition_report(*report, "discarded");
                     cleanup();
@@ -690,13 +777,23 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     self->publish_workbench_state();
                     return;
                 }
-                if (!error.empty() || !partition->valid()) {
+                if (!error.empty() || !partition || !partition->valid()) {
+                    release_operation();
+                    if (!committed->load() && retained_preparation->prepared.partition &&
+                        self->m_workbench_presented && retained_preparation->presentation_sequence == self->m_workbench_presentation_sequence)
+                        self->m_native_workbench_partition_retry = retained_preparation;
                     cleanup();
                     report->total_ms = portrait_elapsed_ms(*report_started);
                     log_native_portrait_partition_report(*report, "failed");
 
-                    const auto failure = committed->load()
+                    const auto failure = resource_failure ? error
+                        : committed->load()
                         ? std::string("检查修复成果已保存，但预览准备失败；重新检查可恢复已有成果。原文件已保留。")
+                        : report->stage(NativePortrait::BuildStage::SourceCheck).status == NativePortrait::BuildStageStatus::Failed ||
+                            report->stage(NativePortrait::BuildStage::Decode).status == NativePortrait::BuildStageStatus::Failed
+                            ? std::string("原始模型、材质或纹理校验失败，请重新打开模型；原件与旧成果已保留。")
+                        : self->m_native_workbench_partition_retry
+                            ? std::string("检查修复和颜色分区已完成，但成果发布失败；本次会话重试会核对原件并复用完成结果。原文件已保留。")
                         : report->stage(NativePortrait::BuildStage::MetadataPublish).status == NativePortrait::BuildStageStatus::Failed
                             ? std::string("检查修复成果发布失败，原文件已保留，请检查磁盘空间及目录权限。")
                             : std::string("模型检查修复未完成，原文件与旧成果已保留，请重试或查看诊断日志。");
@@ -723,6 +820,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 self->invalidate_printer_filament_trial_for_model_change();
                 if (!self->m_model_preview->load_prepared_model(
                         std::move(*prepared), {}, triangles, dimensions, colors, load_error)) {
+                    release_operation();
                     auto& preview = report->stage(NativePortrait::BuildStage::PreviewSwitch);
                     preview.status = NativePortrait::BuildStageStatus::Failed;
                     preview.duration_ms += portrait_elapsed_ms(preview_started);
@@ -731,7 +829,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     report->error = load_error;
                     report->total_ms = portrait_elapsed_ms(*report_started);
                     log_native_portrait_partition_report(*report, "preview-failed");
-                    const auto failure =
+                    const std::string failure =
                         "检查修复成果已保存，但预览安装失败；重新检查可恢复已有成果。原文件已保留。";
                     self->fail_workbench_check(failure);
                     if (automatic_requested) self->clear_pending_workbench_ai_palette();
@@ -742,18 +840,31 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     }
                     self->m_native_workbench_partition_consumers = 0;
                     self->m_native_workbench_partition_context = {};
-                    self->refresh_controls();
-                    self->refresh_post_generation_workbench();
-                    self->publish_workbench_state();
+                    self->restore_beauty_candidate_async(activation_before->beauty,
+                        [weak, activation_before, failure](bool restored) {
+                        if (!weak || weak->m_shutdown) return;
+                        auto* self = weak.get();
+                        self->m_displayed_model_path = activation_before->displayed_model_path;
+                        self->m_displayed_model_job_id = activation_before->displayed_model_job_id;
+                        self->m_workbench_library_binding = activation_before->library_binding;
+                        self->m_native_workbench_context = {};
+                        self->publish_native_workbench_context();
+                        self->m_native_workbench_partition_reference = activation_before->partition_reference;
+                        self->m_native_workbench_partition_report = activation_before->partition_report;
+                        self->m_native_workbench_partition_certificate = activation_before->partition_certificate;
+                        self->m_native_workbench_partition_commit = activation_before->partition_commit;
+                        self->fail_workbench_check(restored ? failure : failure + " 旧预览恢复失败，请重新打开原模型。");
+                        self->refresh_controls(); self->refresh_post_generation_workbench(); self->publish_workbench_state();
+                    });
                     return;
                 }
                 self->m_model_preview->restore_view(view);
                 gui_timing("gui-installed");
                 auto& preview = report->stage(NativePortrait::BuildStage::PreviewSwitch);
-                preview.status = NativePortrait::BuildStageStatus::Succeeded;
+                preview.status = NativePortrait::BuildStageStatus::NotRun;
                 preview.duration_ms += portrait_elapsed_ms(preview_started);
                 preview.detail = "Committed carrier loaded for transactional consumer activation.";
-                report->success = true;
+                report->success = false;
                 report->error.clear();
                 report->total_ms = portrait_elapsed_ms(*report_started);
                 bool automatic_applied = true;
@@ -765,6 +876,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
 
 
                 if (!automatic_applied) {
+                    release_operation();
                     preview.status = NativePortrait::BuildStageStatus::Failed;
                     preview.detail = "Native partition loaded, but the requested six-colour automatic mapping failed; activation rolled back.";
                     report->success = false;
@@ -772,6 +884,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     report->total_ms = portrait_elapsed_ms(*report_started);
                     self->m_displayed_model_path = activation_before->displayed_model_path;
                     self->m_displayed_model_job_id = activation_before->displayed_model_job_id;
+                    self->m_workbench_library_binding = activation_before->library_binding;
                     self->restore_beauty_candidate_async(activation_before->beauty,
                         [weak, activation_before, context, automatic_requested, honor_suite_requested, report](bool preview_restored) {
                         if (!weak || weak->m_shutdown) return;
@@ -805,16 +918,18 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     return;
                 }
 
+                // Selecting the committed version advances the asset identity;
+                // it must not cancel this same task's installation waiter.
+                self->m_native_workbench_partition_running = false;
                 self->select_local_finishing_version(destination,
-                    "native-workbench-partition-" + partition->partition_digest.substr(0, 16));
+                    "native-workbench-partition-" + partition->partition_digest.substr(0, 16), true);
+                self->m_native_workbench_partition_running = true;
                 self->m_model_preview_ready = true;
                 self->m_model_stats->SetLabel(wxString::Format(
                     _L("%llu 个三角面 · %llu 个原始色值\n%.1f × %.1f × %.1f mm"),
                     static_cast<unsigned long long>(triangles), static_cast<unsigned long long>(colors),
                     dimensions.x(), dimensions.y(), dimensions.z()));
-                preview.detail = "Committed carrier and all requested consumers activated transactionally.";
-                report->total_ms = portrait_elapsed_ms(*report_started);
-                log_native_portrait_partition_report(*report, "succeeded");
+                preview.detail = "CPU installation complete; waiting for uploaded model and navigation frame.";
                 self->m_native_workbench_partition_reference = *reference;
                 self->m_native_workbench_partition_report =
                     restored_check ? commit_document->value("partition_build_report", nlohmann::json{}) :
@@ -824,21 +939,84 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 self->m_native_workbench_context = {destination, output_hash,
                     self->m_model_preview->geometry_id(),
                     self->m_model_preview->semantic_source_content_id(), self->m_sequence};
-                self->m_workbench_check_result = restored_check ? *restored_check : portrait_partition_check_result(
+                const auto accepted_check = restored_check ? *restored_check : portrait_partition_check_result(
                     *partition, *report, output_hash);
+                self->m_workbench_check_result = accepted_check;
+                self->m_workbench_check_result.status = WorkbenchCheckStatus::Running;
+                self->m_workbench_check_result.phase = WorkbenchCheckPhase::Rechecking;
+                self->m_workbench_check_result.summary = "检查成果已保存，正在上传并准备完整预览……";
+                self->m_workbench_check_card_visible = true;
                 self->m_workbench_check_path = destination.string();
                 self->m_workbench_check_revision = self->m_sequence;
-                if (automatic_requested) self->clear_pending_workbench_ai_palette();
-                self->m_native_workbench_partition_consumers = 0;
-                self->m_native_workbench_partition_context = {};
-                if (honor_suite_requested)
-                    self->queue_honor_suite_after_native_partition();
+                const auto installed_context = self->m_native_workbench_context;
+                self->m_native_workbench_partition_context = installed_context;
+                self->m_model_preview->after_model_installation_frame(
+                    [weak, installed_context, canceled, accepted_check, report, report_started,
+                     preview_started, activation_before, automatic_requested, honor_suite_requested](bool presented) {
+                    if (!weak || weak->m_shutdown || weak->m_native_workbench_partition_cancel != canceled ||
+                        !weak->native_workbench_context_matches(installed_context)) return;
+                    auto* self = weak.get();
+                    auto& preview = report->stage(NativePortrait::BuildStage::PreviewSwitch);
+                    preview.duration_ms = portrait_elapsed_ms(preview_started);
+                    report->total_ms = portrait_elapsed_ms(*report_started);
+                    self->m_native_workbench_partition_running = false;
+                    self->m_native_workbench_partition_cancel.reset();
+                    self->m_native_workbench_partition_consumers = 0;
+                    self->m_native_workbench_partition_context = {};
+                    self->m_workbench_check_card_visible = false;
+                    self->m_busy = false;
+                    if (!presented || canceled->load()) {
+                        preview.status = NativePortrait::BuildStageStatus::Failed;
+                        preview.detail = canceled->load() ? "Installation canceled after publication." :
+                            "GPU upload, shader or frame submission failed after publication.";
+                        report->success = false; report->error = preview.detail;
+                        log_native_portrait_partition_report(*report, "presentation-failed");
+                        self->m_displayed_model_path = activation_before->displayed_model_path;
+                        self->m_displayed_model_job_id = activation_before->displayed_model_job_id;
+                        self->m_workbench_library_binding = activation_before->library_binding;
+                        self->restore_beauty_candidate_async(activation_before->beauty,
+                            [weak, activation_before, automatic_requested, honor_suite_requested](bool restored) {
+                            if (!weak || weak->m_shutdown) return;
+                            auto* self = weak.get();
+                            self->m_native_workbench_context = {};
+                            self->publish_native_workbench_context();
+                            self->m_native_workbench_partition_reference = activation_before->partition_reference;
+                            self->m_native_workbench_partition_report = activation_before->partition_report;
+                            self->m_native_workbench_partition_certificate = activation_before->partition_certificate;
+                            self->m_native_workbench_partition_commit = activation_before->partition_commit;
+                            self->m_workbench_check_result = activation_before->workbench_check;
+                            self->m_workbench_check_path = activation_before->workbench_check_path;
+                            self->m_workbench_check_revision = self->m_sequence;
+                            if (automatic_requested) self->clear_pending_workbench_ai_palette();
+                            if (honor_suite_requested) {
+                                self->m_honor_suite_partition_pending = false;
+                                self->m_honor_suite_partition_resume_queued = false;
+                            }
+                            self->fail_workbench_check(restored ?
+                                "检查成果已保存，但完整预览未完成；已恢复原模型，重新检查可复用成果。" :
+                                "检查成果已保存，但原预览恢复失败；请重新打开模型。成果不会重复修复。");
+                            self->refresh_controls(); self->refresh_post_generation_workbench(); self->publish_workbench_state();
+                        });
+                        return;
+                    }
+                    preview.status = NativePortrait::BuildStageStatus::Succeeded;
+                    preview.detail = "Committed carrier and matching complete GPU/navigation frame presented.";
+                    report->success = true; report->error.clear();
+                    self->m_workbench_check_result = accepted_check;
+                    self->m_native_workbench_partition_report = NativePortrait::encode_native_portrait_partition_build_report(*report);
+                    if (automatic_requested) self->clear_pending_workbench_ai_palette();
+                    if (honor_suite_requested) self->queue_honor_suite_after_native_partition();
+                    log_native_portrait_partition_report(*report, "succeeded");
+                    self->refresh_controls(); self->refresh_post_generation_workbench(); self->publish_workbench_state();
+                });
                 self->refresh_controls();
                 self->refresh_post_generation_workbench();
                 self->publish_workbench_state();
             });
         });
+        m_native_workbench_partition_retry.reset();
     } catch (const std::exception& failure) {
+        m_native_workbench_partition_retry = previous_preparation;
         const auto consumers = m_native_workbench_partition_consumers;
         const bool automatic_requested =
             (consumers & std::uint8_t(NativeWorkbenchPartitionConsumer::AutomaticPalette)) != 0;
@@ -873,7 +1051,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
 
 bool ModelGenerationPanel::restore_workbench_check_certificate()
 {
-    if (!m_model_preview || !m_model_preview_ready || m_displayed_model_path.empty() ||
+    if (m_native_workbench_partition_running || !m_model_preview || !m_model_preview_ready || m_displayed_model_path.empty() ||
         !m_model_preview->showing_model(m_displayed_model_path) ||
         m_model_preview->model_path() != m_displayed_model_path) return false;
     const auto source = m_displayed_model_path;
@@ -908,6 +1086,7 @@ bool ModelGenerationPanel::restore_workbench_check_certificate()
         }, [weak, task, source, revision](Presentation::TaskResult<Evidence> result) {
             if (!weak || weak->m_shutdown || !weak->m_workbench_evidence_scope.matches(task)) return;
             weak->m_workbench_evidence_running = false;
+            if (weak->m_native_workbench_partition_running) return;
             if (source != weak->m_displayed_model_path || revision != weak->m_sequence) {
                 weak->queue_workbench_check(); return;
             }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PortraitNativePartition.hpp"
+#include "NativePartitionChunkCache.hpp"
 #include "slic3r/GUI/AI/Model/BeautyLeafDomain.hpp"
 #include "slic3r/GUI/AI/Model/BeautyMetadata.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
@@ -291,6 +292,15 @@ inline nlohmann::json save_native_portrait_partition_cache(
     const NativePortraitPartition& partition,
     const boost::filesystem::path& cache)
 {
+    // The JSON tree, identity copy and encoded bytes coexist in v1. Select
+    // bounded storage before allocating them, including just below the former
+    // face limit. The algorithm/partition identity is independent of storage.
+    const auto legacy_scratch = uint64_t(partition.painted.vertices.size()) * 160 +
+        uint64_t(partition.painted.indices.size()) * 352 +
+        uint64_t(partition.region_cluster_ids.size()) * 192;
+    if (legacy_scratch > MeshResourceBudget::scratch_bytes ||
+        partition.painted.indices.size() > 1000000 || partition.algorithm == compatible_algorithm_version)
+        return chunk_cache::save(partition, cache);
     const auto identity = native_portrait_partition_identity(partition);
     auto document = encode_native_portrait_partition_identity(identity);
     document["native_topology_mesh"] = native_topology_mesh_document(partition);
@@ -338,6 +348,11 @@ inline bool load_native_portrait_partition_cache(
 {
     error.clear();
     try {
+        if (reference.is_object() && reference.value("schema", std::string{}) ==
+                "orca.native-workbench-partition-cache-reference/v2") {
+            chunk_cache::load(reference, cache, identity, exact_mesh);
+            return true;
+        }
         if (!reference.is_object() ||
             reference.at("schema") != "orca.native-workbench-partition-cache-reference/v1")
             throw std::runtime_error("原生工作台分区缓存引用版本不受支持或已过期。");
@@ -407,14 +422,12 @@ inline void archive_native_portrait_partitions(
         const auto directory = auxiliaries / "OrcaNativeWorkbenchPartitions";
         boost::filesystem::create_directories(directory);
         const auto content_id = reference.at("content_id").get<std::string>();
-        const auto source = cache / (content_id + ".json");
-        const auto destination = directory / (content_id + ".json");
-        if (!boost::filesystem::exists(destination)) {
-            boost::filesystem::copy_file(source, destination);
-            if (AI::model_artifact_sha256(destination) != content_id)
-                throw std::runtime_error("原生人像分区归档写入失败。");
-        } else if (AI::model_artifact_sha256(destination) != content_id) {
-            throw std::runtime_error("原生人像分区归档已损坏。");
+        for (const auto& source : chunk_cache::members(reference, cache)) {
+            const auto destination = directory / source.filename();
+            const auto hash = source.stem().string();
+            if (!boost::filesystem::exists(destination)) boost::filesystem::copy_file(source, destination);
+            if (boost::filesystem::is_symlink(destination) || AI::model_artifact_sha256(destination) != hash)
+                throw std::runtime_error("原生人像分区归档已损坏。");
         }
     }
 }
@@ -429,7 +442,7 @@ inline size_t restore_native_portrait_partition_archive(
     size_t restored = 0;
     size_t visited = 0;
     for (boost::filesystem::directory_iterator iterator(directory), end;
-         iterator != end && visited++ < 256; ++iterator) {
+         iterator != end && visited < 256; ++iterator) {
         try {
             const auto file = iterator->path();
             const auto content_id = file.stem().string();
@@ -438,13 +451,44 @@ inline size_t restore_native_portrait_partition_archive(
                 boost::filesystem::is_symlink(file) ||
                 boost::filesystem::file_size(file) > maximum_partition_cache_bytes ||
                 AI::model_artifact_sha256(file) != content_id) continue;
+            ++visited;
             boost::filesystem::ifstream input(file, std::ios::binary);
             NativePortraitPartitionIdentity identity;
             std::string error;
-            if (!decode_native_portrait_partition_identity(nlohmann::json::parse(input), identity, error)) continue;
-            const auto destination = cache / (content_id + ".json");
-            if (!boost::filesystem::exists(destination)) boost::filesystem::copy_file(file, destination);
-            if (AI::model_artifact_sha256(destination) == content_id) ++restored;
+            const auto document = nlohmann::json::parse(input);
+            nlohmann::json reference;
+            if (document.value("schema", std::string{}) == "orca.native-workbench-partition-chunks/v2") {
+                reference = chunk_cache::reference_for(document, content_id);
+                chunk_cache::load(reference, directory, identity, nullptr);
+            } else {
+                if (!decode_native_portrait_partition_identity(document, identity, error)) continue;
+                reference = {{"content_id", content_id}, {"schema", "orca.native-workbench-partition-cache-reference/v1"}};
+            }
+            auto members = chunk_cache::members(reference, directory);
+            // The manifest is the commit point. Install dependencies first;
+            // never expose a manifest that refers to a partially copied set.
+            std::rotate(members.begin(), members.begin() + 1, members.end());
+            bool valid = true;
+            for (const auto& source : members) {
+                const auto destination = cache / source.filename();
+                const auto hash = source.stem().string();
+                if (!boost::filesystem::exists(destination)) {
+                    const auto staging = cache / boost::filesystem::unique_path("partition-restore-%%%%-%%%%.tmp");
+                    try {
+                        boost::filesystem::copy_file(source, staging);
+                        if (AI::model_artifact_sha256(staging) != hash)
+                            throw std::runtime_error("原生分区归档在恢复期间变化。");
+                        boost::filesystem::rename(staging, destination);
+                    } catch (...) {
+                        boost::system::error_code ignored; boost::filesystem::remove(staging, ignored); throw;
+                    }
+                }
+                if (boost::filesystem::is_symlink(destination) || AI::model_artifact_sha256(destination) != hash) {
+                    valid = false;
+                    break;
+                }
+            }
+            if (valid) ++restored;
         } catch (const std::exception&) {
             // Optional damaged archive entries never block ordinary project loading.
         }

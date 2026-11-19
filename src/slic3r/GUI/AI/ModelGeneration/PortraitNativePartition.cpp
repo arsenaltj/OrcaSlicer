@@ -1,6 +1,7 @@
 #include "PortraitNativePartition.hpp"
 
 #include "ModelPreviewPalette.hpp"
+#include "NativeRepairGeometry.hpp"
 #include "libslic3r/MeshRepair.hpp"
 #include "libslic3r/Sha256Digest.hpp"
 #include "libslic3r/TriangleMesh.hpp"
@@ -21,6 +22,7 @@
 #include <type_traits>
 #include <unordered_map>
 #include <thread>
+#include <deque>
 #include <tbb/task_arena.h>
 
 namespace Slic3r::GUI::NativePortrait {
@@ -105,9 +107,10 @@ struct EdgeRecord {
     }
 };
 
-class DisjointSet {
+template<class Parent = std::vector<uint32_t>, class Rank = std::vector<uint8_t>>
+class BasicDisjointSet {
 public:
-    explicit DisjointSet(size_t count) : m_parent(count), m_rank(count, 0)
+    explicit BasicDisjointSet(size_t count) : m_parent(count), m_rank(count, 0)
     {
         std::iota(m_parent.begin(), m_parent.end(), uint32_t(0));
     }
@@ -135,9 +138,11 @@ public:
     }
 
 private:
-    std::vector<uint32_t> m_parent;
-    std::vector<uint8_t> m_rank;
+    Parent m_parent;
+    Rank m_rank;
 };
+
+using DisjointSet = BasicDisjointSet<>;
 
 template<class Integer>
 bool digest_integer(Sha256Digest& digest, Integer value)
@@ -163,8 +168,8 @@ bool digest_position(Sha256Digest& digest, float value)
 std::string digest_partition(const NativePortraitPartition& partition)
 {
     Sha256Digest digest;
-    constexpr char schema[] = "orca.native-workbench-partition/v12";
-    if (!digest.update(schema, sizeof(schema)) ||
+    const char* schema = partition.algorithm == algorithm_version ? "orca.native-workbench-partition/v12" : "orca.native-workbench-partition/v13";
+    if (!digest.update(schema, std::strlen(schema) + 1) ||
         !digest_integer(digest, uint64_t(partition.painted.indices.size())) ||
         !digest_integer(digest, uint64_t(partition.painted.cluster_colors.size())) ||
         !digest_integer(digest, uint64_t(partition.region_members.size()))) return {};
@@ -202,7 +207,8 @@ std::string digest_partition(const NativePortraitPartition& partition)
     return digest.final_hex();
 }
 
-std::string digest_boundaries(const std::vector<EdgeRecord>& edges,
+template<class Edges>
+std::string digest_boundaries(const Edges& edges,
                               const std::vector<size_t>& clusters,
                               const std::vector<uint32_t>& regions,
                               BoundarySummary& summary)
@@ -408,12 +414,19 @@ nlohmann::json encode_native_portrait_partition_build_report(
     const auto& strict = report.strict_repair;
     return {{"schema", "orca.native-workbench-partition-build-report/v1"},
         {"success", report.success}, {"error", report.error}, {"total_ms", report.total_ms},
-        {"stages", std::move(stages)},
+        {"stages", std::move(stages)}, {"color_fallback", report.color_fallback},
+        {"fallback_color_count", report.fallback_color_count},
+        {"fallback_mean_delta_e", report.fallback_mean_delta_e}, {"fallback_max_delta_e", report.fallback_max_delta_e},
         {"strict_repair", {{"success", strict.success}, {"canceled", strict.canceled},
+            {"resource_failure", strict.resource_failure},
             {"first_cgal_attempted", strict.first_cgal_attempted},
             {"enhanced_repair_attempted", strict.enhanced_repair_attempted},
             {"second_cgal_attempted", strict.second_cgal_attempted},
             {"geometry_verified", strict.geometry_verified},
+            {"native_repair_compatible", strict.native_repair_compatible},
+            {"acceptance", strict.acceptance == MeshRepairAcceptance::OrcaNative ? "orca-native" : "strict"},
+            {"native_repair_succeeded", strict.native_repair_succeeded},
+            {"native_acceptance", native_repair_receipt(strict)},
             {"sampled_deviation", strict.sampled_deviation},
             {"sampled_deviation_ratio", strict.sampled_deviation_ratio},
             {"area_change_ratio", strict.area_change_ratio}, {"strategy", strict.strategy},
@@ -507,7 +520,7 @@ bool decode_native_workbench_bounds(const nlohmann::json& document,
 bool NativeWorkbenchPartition::valid() const
 {
     const size_t faces = painted.indices.size();
-    if (faces == 0 || faces > maximum_face_count || painted.vertices.empty() ||
+    if (!supported_partition_algorithm(algorithm) || faces == 0 || faces > maximum_face_count || painted.vertices.empty() ||
         painted.face_colors.size() != faces || painted.cluster_colors.size() < minimum_color_count ||
         painted.cluster_colors.size() > maximum_color_count || face_cluster_ids.size() != faces ||
         face_region_ids.size() != faces || region_members.empty() ||
@@ -515,8 +528,8 @@ bool NativeWorkbenchPartition::valid() const
         region_members.size() != region_adjacency.size() ||
         region_members.size() != region_areas.size() || geometry_id.size() != 64 ||
         partition_digest.size() != 64 ||
-        boundary_digest.size() != 64 || boundary.open_edges != 0 ||
-        boundary.nonmanifold_edges != 0) return false;
+        boundary_digest.size() != 64 || (algorithm == algorithm_version && boundary.open_edges != 0) ||
+        (algorithm == algorithm_version && boundary.nonmanifold_edges != 0)) return false;
     std::vector<uint8_t> seen(faces, 0);
     for (size_t region = 0; region < region_members.size(); ++region) {
         if (region_members[region].empty() || region_cluster_ids[region] >= painted.cluster_colors.size() ||
@@ -547,14 +560,14 @@ bool NativeWorkbenchPartition::valid() const
 
 bool NativeWorkbenchPartitionIdentity::valid() const
 {
-    if (algorithm != algorithm_version || geometry_id.size() != 64 || face_count == 0 ||
+    if (!supported_partition_algorithm(algorithm) || geometry_id.size() != 64 || face_count == 0 ||
         face_count > maximum_face_count || cluster_colors.size() < minimum_color_count ||
         cluster_colors.size() > maximum_color_count || face_cluster_ids.size() != face_count ||
         face_region_ids.size() != face_count || region_cluster_ids.empty() ||
         region_adjacency.size() != region_cluster_ids.size() ||
         region_areas.size() != region_cluster_ids.size() ||
         partition_digest.size() != 64 || boundary_digest.size() != 64 ||
-        boundary.open_edges != 0 || boundary.nonmanifold_edges != 0) return false;
+        (algorithm == algorithm_version && boundary.open_edges != 0) || (algorithm == algorithm_version && boundary.nonmanifold_edges != 0)) return false;
     for (const auto& color : cluster_colors)
         if (color[0] > 255 || color[1] > 255 || color[2] > 255) return false;
     std::vector<uint8_t> seen(region_cluster_ids.size(), 0);
@@ -578,23 +591,32 @@ bool NativeWorkbenchPartitionIdentity::valid() const
     return std::find(seen.begin(), seen.end(), uint8_t(0)) == seen.end();
 }
 
-PaintMeshRepairCallback native_mesh_repair_callback(StrictMeshRepairResult* strict_result)
+PaintMeshRepairCallback native_mesh_repair_callback(StrictMeshRepairResult* strict_result,
+    const indexed_triangle_set* immutable_source)
 {
-    return [strict_result](const indexed_triangle_set& mesh, indexed_triangle_set& repaired_mesh,
+    const auto native_execution = std::make_shared<bool>(false);
+    PaintMeshRepairCallback callback = [strict_result, immutable_source, native_execution](const indexed_triangle_set& mesh, indexed_triangle_set& repaired_mesh,
               std::function<void(const char*, unsigned)> progress,
               std::function<bool()> cancel, std::string* error) {
+        *native_execution = false;
         StrictMeshRepairOptions options;
         options.reject_geometry_change = true;
+        options.allow_native_repair_geometry_change = true;
+        options.acceptance = MeshRepairAcceptance::OrcaNative;
+        options.native_source = immutable_source;
         auto result = strict_repair_mesh(mesh, options, progress, cancel);
         if (!result.success) {
             if (error) *error = result.error.empty() ? "Native portrait strict repair failed." : result.error;
             if (strict_result) *strict_result = std::move(result);
             return false;
         }
+        *native_execution = result.accepted() && result.acceptance == MeshRepairAcceptance::OrcaNative;
         repaired_mesh = std::move(result.repaired_mesh);
         if (strict_result) *strict_result = std::move(result);
         return true;
     };
+    callback.preserve_repaired_geometry = [native_execution] { return *native_execution; };
+    return callback;
 }
 
 static NativeWorkbenchPartition build_native_workbench_partition_impl(
@@ -634,8 +656,16 @@ static NativeWorkbenchPartition build_native_workbench_partition_impl(
     settings.fixed_mapping_palette.clear();
     settings.face_color_overrides.clear();
     settings.mesh_repair_decision = TexturePaintingSettings::MeshRepairDecision::RepairAndImport;
+    settings.preserve_repaired_geometry = repair.preserve_repaired_geometry;
     settings.mesh_repair_callback = std::move(repair);
     settings.strict_mesh_repair = true;
+    std::string fallback_reason;
+    settings.allow_color_fallback = true;
+    settings.color_fallback_reason = &fallback_reason;
+    if (report) settings.color_fallback_diagnostic = [report](size_t count, double mean, double maximum) {
+        report->fallback_color_count = count;
+        report->fallback_mean_delta_e = mean; report->fallback_max_delta_e = maximum;
+    };
     PaintedMesh painted;
     // GLB can carry a solid baseColorFactor without any image texture.
     // Use the existing material sampler so those models reach strict repair
@@ -662,7 +692,10 @@ static NativeWorkbenchPartition build_native_workbench_partition_impl(
     tracker.finish(BuildStageStatus::Succeeded);
     const auto enumeration_started = BuildClock::now();
     try {
-        auto partition = finalize_native_workbench_partition(std::move(painted), cancel);
+        if (report) report->color_fallback = fallback_reason;
+        const bool native = settings.preserve_repaired_geometry && settings.preserve_repaired_geometry();
+        auto partition = finalize_native_workbench_partition(std::move(painted), cancel,
+            native || !fallback_reason.empty() ? compatible_algorithm_version : algorithm_version);
         if (report) {
             auto& enumeration = report->stage(BuildStage::RegionEnumeration);
             enumeration.status = BuildStageStatus::Succeeded;
@@ -679,7 +712,9 @@ static NativeWorkbenchPartition build_native_workbench_partition_impl(
         throw;
     }
     } catch (const std::exception& failure) {
-        finish_report(false, failure.what());
+        const bool resource = dynamic_cast<const std::bad_alloc*>(&failure) ||
+            dynamic_cast<const std::length_error*>(&failure) || dynamic_cast<const std::system_error*>(&failure);
+        finish_report(false, resource ? "颜色处理资源不足，未执行颜色后备重试；原件保留。" : failure.what());
         throw;
     }
 }
@@ -706,9 +741,13 @@ NativeWorkbenchPartition build_native_portrait_partition(
     return build_native_workbench_partition(texture_mesh, std::move(repair), cancel, report);
 }
 
-NativeWorkbenchPartition finalize_native_workbench_partition(PaintedMesh painted, const PaintCancelCallback& cancel)
+template<class Edges>
+static NativeWorkbenchPartition finalize_partition_impl(PaintedMesh painted, const PaintCancelCallback& cancel, uint32_t algorithm)
 {
     const size_t face_count = painted.indices.size();
+    if (!MeshResourceBudget::editable(painted.vertices.size(), face_count) ||
+        !MeshResourceBudget::partition_workspace(face_count))
+        throw std::runtime_error("原生分区资源预算不足，原件保留；未执行压面或丢色。");
     if (face_count == 0 || face_count > maximum_face_count || painted.vertices.empty() ||
         painted.face_colors.size() != face_count ||
         painted.cluster_colors.size() < minimum_color_count ||
@@ -729,6 +768,7 @@ NativeWorkbenchPartition finalize_native_workbench_partition(PaintedMesh painted
     painted.cluster_colors = std::move(unique_clusters);
 
     NativePortraitPartition result;
+    result.algorithm = algorithm;
     result.painted = std::move(painted);
     std::map<std::array<size_t, 3>, size_t> cluster_ids;
     for (size_t cluster = 0; cluster < result.painted.cluster_colors.size(); ++cluster) {
@@ -737,8 +777,8 @@ NativeWorkbenchPartition finalize_native_workbench_partition(PaintedMesh painted
             throw std::invalid_argument("Native workbench cluster centers are duplicated.");
     }
     result.face_cluster_ids.reserve(face_count);
-    std::vector<EdgeRecord> edges;
-    edges.reserve(face_count * 3);
+    Edges edges;
+    if constexpr (std::is_same_v<Edges, std::vector<EdgeRecord>>) edges.reserve(face_count * 3);
     for (size_t face = 0; face < face_count; ++face) {
         if ((face & 4095) == 0 && cancel && cancel())
             throw std::runtime_error("Native portrait partition canceled.");
@@ -757,7 +797,10 @@ NativeWorkbenchPartition finalize_native_workbench_partition(PaintedMesh painted
     }
     std::sort(edges.begin(), edges.end());
 
-    DisjointSet connected(face_count);
+    constexpr bool chunked = !std::is_same_v<Edges, std::vector<EdgeRecord>>;
+    using Parent = std::conditional_t<chunked, std::deque<uint32_t>, std::vector<uint32_t>>;
+    using Rank = std::conditional_t<chunked, std::deque<uint8_t>, std::vector<uint8_t>>;
+    BasicDisjointSet<Parent, Rank> connected(face_count);
     size_t begin = 0;
     while (begin < edges.size()) {
         size_t end = begin + 1;
@@ -776,18 +819,28 @@ NativeWorkbenchPartition finalize_native_workbench_partition(PaintedMesh painted
 
     result.face_region_ids.resize(face_count);
     std::unordered_map<uint32_t, uint32_t> root_regions;
-    root_regions.reserve(face_count);
+    if constexpr (!chunked) root_regions.reserve(face_count);
+    Parent root_table;
+    if constexpr (chunked) root_table.assign(face_count, UINT32_MAX);
     for (uint32_t face = 0; face < face_count; ++face) {
         const uint32_t root = connected.find(face);
-        auto [found, inserted] = root_regions.emplace(root, uint32_t(result.region_members.size()));
+        uint32_t region; bool inserted;
+        if constexpr (chunked) {
+            inserted = root_table[root] == UINT32_MAX;
+            if (inserted) root_table[root] = uint32_t(result.region_members.size());
+            region = root_table[root];
+        } else {
+            const auto found = root_regions.emplace(root, uint32_t(result.region_members.size()));
+            inserted = found.second; region = found.first->second;
+        }
         if (inserted) {
             result.region_members.emplace_back();
             result.region_cluster_ids.push_back(result.face_cluster_ids[face]);
             result.region_areas.push_back(0.);
         }
-        result.face_region_ids[face] = found->second;
-        result.region_members[found->second].push_back(face);
-        result.region_areas[found->second] += triangle_area(result.painted, face);
+        result.face_region_ids[face] = region;
+        result.region_members[region].push_back(face);
+        result.region_areas[region] += triangle_area(result.painted, face);
     }
     result.region_adjacency.resize(result.region_members.size());
     begin = 0;
@@ -812,18 +865,20 @@ NativeWorkbenchPartition finalize_native_workbench_partition(PaintedMesh painted
     result.boundary_digest = digest_boundaries(edges, result.face_cluster_ids,
         result.face_region_ids, result.boundary);
     if (result.boundary_digest.empty()) throw std::runtime_error("Cannot identify native portrait boundaries.");
-    indexed_triangle_set geometry;
-    geometry.vertices.reserve(result.painted.vertices.size());
-    geometry.indices.reserve(result.painted.indices.size());
-    for (const auto& vertex : result.painted.vertices)
-        geometry.vertices.emplace_back(vertex[0], vertex[1], vertex[2]);
-    for (const auto& face : result.painted.indices)
-        geometry.indices.emplace_back(face[0], face[1], face[2]);
-    result.geometry_id = AI::SurfaceSelectionPersistence::geometry_fingerprint(geometry);
+    result.geometry_id = AI::SurfaceSelectionPersistence::geometry_fingerprint_data(
+        result.painted.vertices, result.painted.indices);
     result.partition_digest = digest_partition(result);
     if (result.partition_digest.empty() || !result.valid())
         throw std::runtime_error("Native portrait partition validation failed.");
     return result;
+}
+
+NativeWorkbenchPartition finalize_native_workbench_partition(PaintedMesh painted,
+    const PaintCancelCallback& cancel, uint32_t algorithm)
+{
+    if (painted.indices.size() > 1000000)
+        return finalize_partition_impl<std::deque<EdgeRecord>>(std::move(painted), cancel, algorithm);
+    return finalize_partition_impl<std::vector<EdgeRecord>>(std::move(painted), cancel, algorithm);
 }
 
 NativeWorkbenchPartition finalize_native_portrait_partition(PaintedMesh painted,
@@ -837,6 +892,7 @@ NativeWorkbenchPartitionIdentity native_workbench_partition_identity(
 {
     if (!partition.valid()) throw std::invalid_argument("Native portrait partition is invalid.");
     NativeWorkbenchPartitionIdentity identity;
+    identity.algorithm = partition.algorithm;
     identity.geometry_id = partition.geometry_id;
     identity.face_count = partition.painted.indices.size();
     identity.cluster_colors = partition.painted.cluster_colors;
@@ -860,7 +916,7 @@ NativePortraitPartitionIdentity native_portrait_partition_identity(
 nlohmann::json encode_native_portrait_partition_identity(const NativePortraitPartitionIdentity& identity)
 {
     if (!identity.valid()) throw std::invalid_argument("Native portrait partition identity is invalid.");
-    return {{"schema", "orca.native-workbench-partition-identity/v12"},
+    return {{"schema", identity.algorithm == algorithm_version ? "orca.native-workbench-partition-identity/v12" : "orca.native-workbench-partition-identity/v13"},
         {"algorithm", identity.algorithm}, {"geometry_id", identity.geometry_id},
         {"face_count", identity.face_count}, {"cluster_colors", identity.cluster_colors},
         {"face_cluster_ids", identity.face_cluster_ids}, {"face_region_ids", identity.face_region_ids},
@@ -881,10 +937,12 @@ bool decode_native_portrait_partition_identity(const nlohmann::json& document,
 {
     error.clear();
     try {
-        if (!document.is_object() || document.at("schema") != "orca.native-workbench-partition-identity/v12")
+        if (!document.is_object() || (document.at("schema") != "orca.native-workbench-partition-identity/v12" && document.at("schema") != "orca.native-workbench-partition-identity/v13"))
             throw std::invalid_argument("Native workbench partition identity schema is unsupported or stale.");
         NativePortraitPartitionIdentity decoded;
         decoded.algorithm = document.at("algorithm").get<uint32_t>();
+        if ((decoded.algorithm == algorithm_version) != (document.at("schema") == "orca.native-workbench-partition-identity/v12"))
+            throw std::invalid_argument("Partition policy/schema mismatch.");
         decoded.geometry_id = document.at("geometry_id").get<std::string>();
         decoded.face_count = document.at("face_count").get<size_t>();
         decoded.cluster_colors = document.at("cluster_colors").get<decltype(decoded.cluster_colors)>();
@@ -920,6 +978,7 @@ NativeWorkbenchPartition restore_native_workbench_partition(
         error = "Native portrait partition identity does not match the carrier.";
         return result;
     }
+    result.algorithm = identity.algorithm;
     result.geometry_id = AI::SurfaceSelectionPersistence::geometry_fingerprint(mesh);
     if (result.geometry_id != identity.geometry_id) {
         error = "Native portrait carrier geometry changed.";
@@ -962,7 +1021,7 @@ NativePortraitPartition restore_native_portrait_partition(
 
 bool PortraitRegionAnnotations::valid_for(const NativePortraitPartition& partition) const
 {
-    if (!partition.valid() || algorithm != algorithm_version || partition_digest != partition.partition_digest ||
+    if (!partition.valid() || algorithm != partition.algorithm || partition_digest != partition.partition_digest ||
         regions.size() != partition.region_members.size() || face_slots.size() != partition.painted.indices.size() ||
         !subface_slots.empty()) return false;
     for (size_t region = 0; region < regions.size(); ++region) {
@@ -1028,6 +1087,7 @@ PortraitRegionAnnotations annotate_native_portrait_regions(
         throw std::invalid_argument("Native portrait semantics do not match the fixed partition.");
 
     PortraitRegionAnnotations result;
+    result.algorithm = partition.algorithm;
     result.partition_digest = partition.partition_digest;
     result.face_slots.resize(face_count);
     result.regions.reserve(partition.region_members.size());
@@ -1142,7 +1202,7 @@ PortraitRegionAnnotations annotate_native_portrait_regions(
 
 bool NativeColorReduction::valid_for(const NativeWorkbenchPartition& partition) const
 {
-    if (!partition.valid() || algorithm != algorithm_version ||
+    if (!partition.valid() || algorithm != partition.algorithm ||
         partition_digest != partition.partition_digest || requested_color_count < minimum_color_count ||
         requested_color_count > maximum_color_count || actual_color_count == 0 ||
         actual_color_count > requested_color_count ||
@@ -1172,7 +1232,7 @@ bool NativeColorReduction::valid_for(const NativeWorkbenchPartition& partition) 
 
 bool NativeColorReduction::valid_for(const NativeWorkbenchPartitionIdentity& partition) const
 {
-    if (!partition.valid() || algorithm != algorithm_version ||
+    if (!partition.valid() || algorithm != partition.algorithm ||
         partition_digest != partition.partition_digest || requested_color_count < minimum_color_count ||
         requested_color_count > maximum_color_count || actual_color_count == 0 ||
         actual_color_count > requested_color_count ||
@@ -1237,7 +1297,7 @@ bool decode_native_color_reduction(const nlohmann::json& document,
             return decoded;
         };
         NativeColorReduction decoded;
-        decoded.algorithm = uint32_t(bounded(document.at("algorithm"), algorithm_version));
+        decoded.algorithm = uint32_t(bounded(document.at("algorithm"), compatible_algorithm_version));
         decoded.partition_digest = document.at("partition_digest").get<std::string>();
         decoded.requested_color_count = size_t(bounded(
             document.at("requested_color_count"), maximum_color_count));
@@ -1315,6 +1375,7 @@ NativeColorReduction reduce_native_workbench_partition(
     });
 
     NativeColorReduction result;
+    result.algorithm = partition.algorithm;
     result.partition_digest = partition.partition_digest;
     result.requested_color_count = target_color_count;
     std::vector<ReductionGroupState> selected_groups;

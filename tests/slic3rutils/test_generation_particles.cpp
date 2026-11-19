@@ -385,9 +385,9 @@ TEST_CASE("Missing corrupt and oversized image sources decline without writing t
     ModelGenerationVisualReference source{"job","v",file.string(),{},true};
     CHECK_FALSE(GP::load(source,false,{}));
     write_bytes(file.path(),"invalid image"); CHECK_FALSE(GP::load(source,false,{}));
-    boost::filesystem::resize_file(file.path(),MAX_INPUT_IMAGE_BYTES+1);
+    boost::filesystem::resize_file(file.path(),GP::MAX_REFERENCE_IMAGE_BYTES+1);
     CHECK_FALSE(GP::load(source,false,{}));
-    CHECK(boost::filesystem::file_size(file.path())==MAX_INPUT_IMAGE_BYTES+1);
+    CHECK(boost::filesystem::file_size(file.path())==GP::MAX_REFERENCE_IMAGE_BYTES+1);
 }
 TEST_CASE("The bundled logo keeps its ring hole when sampled as white particles", "[GenerationParticles]") {
     const auto path=boost::filesystem::path(TEST_DATA_DIR).parent_path().parent_path()/"resources/images/generation_wait_logo.png";
@@ -397,18 +397,25 @@ TEST_CASE("The bundled logo keeps its ring hole when sampled as white particles"
     for(const auto& p:shape->points) CHECK(p.x*p.x+p.y*p.y>0.25f*0.25f);
 }
 TEST_CASE("JPEG particles honor camera orientation and Unicode paths without rewriting bytes", "[GenerationParticles]") {
+    const int orientation=GENERATE(1,2,3,4,5,6,7,8);
+    const bool big_endian=GENERATE(false,true);
     ScopedTemporaryDir directory("particle-jpeg");
     const auto path=directory.path()/boost::filesystem::path(L"中文 空格.jpg");
     wxImage image(100,100); const auto im=picture();
     for(int i=0;i<10000;++i) for(int c=0;c<3;++c) image.GetData()[3*i+c]=im.rgba[4*i+c];
     wxMemoryOutputStream stream; wxJPEGHandler handler; REQUIRE(handler.SaveFile(&image,stream));
     std::string bytes(stream.GetSize(),'\0'); stream.CopyTo(bytes.data(),bytes.size());
-    const unsigned char exif[]={255,225,0,34,'E','x','i','f',0,0,'I','I',42,0,8,0,0,0,1,0,18,1,3,0,1,0,0,0,6,0,0,0,0,0,0,0};
-    bytes.insert(2,reinterpret_cast<const char*>(exif),sizeof(exif)); write_bytes(path,bytes);
+    const auto value=static_cast<unsigned char>(orientation);
+    const std::vector<unsigned char> exif=big_endian
+        ? std::vector<unsigned char>{255,225,0,34,'E','x','i','f',0,0,'M','M',0,42,0,0,0,8,0,1,1,18,0,3,0,0,0,1,0,value,0,0,0,0,0,0}
+        : std::vector<unsigned char>{255,225,0,34,'E','x','i','f',0,0,'I','I',42,0,8,0,0,0,1,0,18,1,3,0,1,0,0,0,value,0,0,0,0,0,0,0};
+    bytes.insert(2,reinterpret_cast<const char*>(exif.data()),exif.size()); write_bytes(path,bytes);
     ModelGenerationVisualReference source{"job","v",wxString(path.wstring()).ToUTF8().data(),digest(bytes),true};
     const auto shape=GP::load(source,false,{}); REQUIRE(shape);
     float x=0,y=0; for(const auto& p:shape->points) { x=std::max(x,std::abs(p.x)); y=std::max(y,std::abs(p.y)); }
-    CHECK(x>y);
+    INFO(orientation); INFO(big_endian);
+    if (orientation>=5) CHECK(x>y);
+    else CHECK(y>x);
     boost::filesystem::ifstream after(path,std::ios::binary);
     CHECK(std::string((std::istreambuf_iterator<char>(after)),{})==bytes); after.close();
     bytes.resize(bytes.size()-2); write_bytes(path,bytes); source.sha256=digest(bytes);

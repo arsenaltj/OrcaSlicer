@@ -737,10 +737,10 @@
     },
     "input": {
       "files": [
-        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationInputLayout.cpp",
+        "src/slic3r/GUI/Redesign/RedesignShell.cpp",
         "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationInputStyle.hpp",
-        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationInputWelcome.hpp",
-        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationImageInput.hpp"
+        "src/slic3r/GUI/Redesign/SmartCreationControls.hpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.cpp"
       ],
       "notes": "R2：共享验证后替换路径；原生文件选择、文件拖入、位图/文件剪贴板；文本编辑保持原生行为。"
     },
@@ -781,7 +781,7 @@
         "src/slic3r/GUI/AI/Model/ModelArtifact.hpp",
         "src/slic3r/GUI/AI/Model/ModelArtifact.cpp",
         "src/slic3r/GUI/AI/ModelGeneration/ModelPreviewTexture.hpp",
-        "src/slic3r/GUI/AI/ModelGeneration/ModelPreviewPuzzle.hpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelPreviewGeometry.cpp",
         "src/slic3r/GUI/AI/ModelGeneration/ModelColorPreviewShader.hpp"
       ],
       "notes": "原生GL及现有编辑/保存/撤销，保留模型版本"
@@ -833,7 +833,7 @@
         "src/slic3r/GUI/MainFrame.cpp",
         "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
         "src/slic3r/GUI/AI/AIDesktopFeatureHost.cpp",
-        "src/slic3r/GUI/AI/DesktopWorkspaceNavigation.cpp"
+        "src/slic3r/GUI/Redesign/RedesignShell.hpp"
       ],
       "notes": "m_tabpanel当前为Notebook*；使用TAB_ID_*与宿主子视图窄接口；不推断为Tabbook"
     },

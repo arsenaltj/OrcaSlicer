@@ -2,6 +2,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitNativePartition.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitNativePartitionCache.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitNativeCheckpoint.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchHistoryEvidence.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
@@ -15,9 +16,13 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <boost/nowide/cstdlib.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include <cmath>
 #include <cstring>
 #include <future>
+#include <tbb/task_arena.h>
+#include <iomanip>
+#include <thread>
 #include <string_view>
 #include "libslic3r/Sha256Digest.hpp"
 #include "libslic3r/Utils.hpp"
@@ -27,6 +32,162 @@ using Slic3r::GUI::ModelPreviewFrameState;
 using Slic3r::Vec3d;
 namespace selection = Slic3r::AI::SurfaceSelectionPersistence;
 namespace trial = Slic3r::AI::ColorTrialPersistence;
+
+TEST_CASE("Installation waits for its uploaded current frame independently of other observers",
+          "[ModelPreviewState][ModelPreviewFrame][WorkbenchCheckLifecycle]")
+{
+    Slic3r::GUI::ModelPreviewInstallationCompletion installation;
+    Slic3r::GUI::ModelPreviewOverlayCompletion overlay;
+    ModelPreviewFrameState frames;
+    int installed = 0, overlays = 0;
+    installation.request("model-a", [&](bool ok) { installed += ok ? 1 : -1; });
+    overlay.request([&] { ++overlays; });
+    const auto token = installation.token();
+    const auto frame = frames.begin({640, 480}, 1.);
+    CHECK_FALSE(installation.complete(token, "model-a", true, true, false));
+    CHECK_FALSE(installation.complete(token, "model-b", true));
+    CHECK_FALSE(installation.complete(token, "model-a", true,
+        frames.current(frame, {640, 480}, 1., false)));
+    CHECK_FALSE(installation.complete(token, "model-a", true,
+        frames.current(frame, {800, 480}, 1., true)));
+    CHECK_FALSE(installation.complete(token, "model-a", true,
+        frames.current(frame, {640, 480}, 2., true)));
+    CHECK(overlay.complete(overlay.token()));
+    CHECK(installed == 0);
+    CHECK(overlays == 1);
+    frames.invalidate();
+    CHECK_FALSE(installation.complete(token, "model-a", true,
+        frames.current(frame, {640, 480}, 1., true)));
+    const auto final_frame = frames.begin({640, 480}, 1.);
+    CHECK(installation.complete(token, "model-a", true,
+        frames.current(final_frame, {640, 480}, 1., true)));
+    CHECK_FALSE(installation.complete(token, "model-a", true));
+    CHECK(installed == 1);
+}
+
+TEST_CASE("Installation failure cancellation and replacement cannot release a later model",
+          "[ModelPreviewState][ModelPreviewFrame][WorkbenchCheckLifecycle]")
+{
+    Slic3r::GUI::ModelPreviewInstallationCompletion completion;
+    int failures = 0, successes = 0;
+    const auto record = [&](bool ok) { if (ok) ++successes; else ++failures; };
+    completion.request("old", record);
+    const auto old = completion.token();
+    completion.cancel();
+    completion.request("new", record);
+    const auto current = completion.token();
+    CHECK_FALSE(completion.complete(old, "old", true));
+    CHECK_FALSE(completion.complete(old, "old", false));
+    CHECK(completion.complete(current, "new", false, false, false));
+    CHECK_FALSE(completion.complete(current, "new", true));
+    CHECK(failures == 1);
+    CHECK(successes == 0);
+    completion.request("retry", record);
+    CHECK(completion.complete(completion.token(), "retry", true));
+    CHECK(successes == 1);
+}
+
+TEST_CASE("Native accepted overlaps survive repair publication history and color only import",
+          "[ModelPreviewState][NativeRepairCompatibility][WorkbenchSavedReopen]")
+{
+    using namespace Slic3r;
+    using namespace Slic3r::GUI;
+    namespace PP = WorkbenchArtifacts;
+    ScopedTemporaryDir directory("orca-native-overlap-publication");
+    const auto root = directory.path();
+    const auto source = root / "source.obj", candidate = root / "candidate.obj";
+    auto first = make_cube(20.,20.,20.).its;
+    auto second = make_cube(20.,20.,20.);
+    second.translate(10.f,10.f,10.f);
+    its_flip_triangles(second.its);
+    its_merge(first, second.its);
+    std::vector<RGBA> colors(first.vertices.size(), {1.f, .2f, .1f, 1.f});
+    std::string error;
+    REQUIRE(AI::write_model_artifact(source, first, colors, error));
+    AI::ModelFinishingOptions options;
+    options.smooth_surface = false;
+    const auto repair = AI::finish_model_artifact(source, candidate, options);
+    INFO(repair.error);
+    REQUIRE(repair.success);
+    REQUIRE(repair.repair_evidence);
+    REQUIRE(repair.repair_evidence->native_repair_succeeded);
+    auto checked = inspect_native_repair_candidate(candidate, repair);
+    REQUIRE(workbench_topology_accepted(checked));
+    CHECK_FALSE(workbench_topology_safe(checked));
+    checked.candidate_status = RepairCandidateStatus::Ready;
+    checked.candidate_sha256 = repair.output_sha256;
+    checked.source_sha256 = repair.source_sha256;
+    auto final = inspect_workbench_publication(candidate, source, &checked);
+    REQUIRE(workbench_topology_accepted(final));
+    CHECK(final.self_intersections == 1);
+    TriangleMesh actual; ObjInfo info;
+    REQUIRE(AI::load_model_artifact(candidate, actual, info, error));
+    const auto geometry = selection::geometry_fingerprint(actual.its);
+    const auto record = AI::beauty_metadata_path(candidate, root);
+    nlohmann::json metadata {{"source", "local_finishing"}, {"schema_version", 4},
+        {"model_path", candidate.filename().string()}, {"model_sha256", repair.output_sha256},
+        {"triangle_count", actual.its.indices.size()}, {"source_model", source.filename().string()},
+        {"source_sha256", repair.source_sha256}, {"native_repair_evidence", final.native_repair_evidence}};
+    final.before_faces = actual.its.indices.size(); final.before_vertices = actual.its.vertices.size();
+    const auto certificate = PP::encode_workbench_check_certificate(final, WorkbenchCheckPurpose::SavedModelReadOnly,
+        geometry, repair.output_sha256, record.string(), metadata);
+    metadata["workbench_check_certificate"] = certificate;
+    REQUIRE(PP::valid_workbench_check_certificate(certificate, WorkbenchCheckPurpose::SavedModelReadOnly,
+        repair.output_sha256, geometry, repair.output_sha256, record.string(), metadata));
+    boost::filesystem::create_directories(record.parent_path());
+    { boost::filesystem::ofstream output(record, std::ios::binary); output << metadata.dump(); }
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        WorkbenchCheckResult reopened;
+        REQUIRE(read_validated_workbench_history_check(candidate, record, repair.output_sha256,
+            geometry, repair.output_sha256, reopened));
+        CHECK(workbench_topology_accepted(reopened));
+        CHECK_FALSE(workbench_topology_safe(reopened));
+        const auto inspected = inspect_workbench_model(candidate);
+        CHECK(workbench_topology_accepted(inspected));
+    }
+    const auto original_hash = AI::model_artifact_sha256(source);
+    SECTION("A stale receipt cannot authorize changed output") {
+        actual.its.vertices.front().x() += 1.f;
+        CHECK_FALSE(apply_native_workbench_evidence(actual, final.native_repair_evidence, checked));
+    }
+    SECTION("A receipt without its execution facts cannot authorize a saved result") {
+        metadata.erase("native_repair_evidence");
+        const auto forged = PP::encode_workbench_check_certificate(final, WorkbenchCheckPurpose::SavedModelReadOnly,
+            geometry, repair.output_sha256, record.string(), metadata);
+        CHECK_FALSE(PP::valid_workbench_check_certificate(forged, WorkbenchCheckPurpose::SavedModelReadOnly,
+            repair.output_sha256, geometry, repair.output_sha256, record.string(), metadata));
+    }
+    CHECK(AI::model_artifact_sha256(source) == original_hash);
+    CHECK(AI::model_artifact_sha256(candidate) == repair.output_sha256);
+}
+
+TEST_CASE("A final overlay frame completion is independent one shot and rejects replaced or canceled requests",
+          "[ModelPreviewState][WorkbenchPresentation]")
+{
+    Slic3r::GUI::ModelPreviewOverlayCompletion overlay;
+    int repaints = 0, other_observers = 0;
+    overlay.request([&] { ++repaints; });
+    const auto obsolete = overlay.token();
+    overlay.request([&] { repaints += 10; });
+    CHECK_FALSE(overlay.complete(obsolete));
+    const auto current = overlay.token();
+    CHECK(overlay.complete(current));
+    CHECK(repaints == 10);
+    CHECK_FALSE(overlay.complete(current));
+    CHECK_FALSE(overlay.pending());
+    overlay.request([&] { ++repaints; });
+    const auto hidden = overlay.token();
+    overlay.request({});
+    CHECK_FALSE(overlay.complete(hidden));
+    CHECK(repaints == 10);
+    // A completion can arm the next layout without the old token consuming it.
+    overlay.request([&] { ++other_observers; overlay.request([&] { ++repaints; }); });
+    REQUIRE(overlay.complete(overlay.token()));
+    REQUIRE(overlay.pending());
+    CHECK(overlay.complete(overlay.token()));
+    CHECK(other_observers == 1);
+    CHECK(repaints == 11);
+}
 
 TEST_CASE("Navigator orientations include every axis and remain continuous when orbiting",
           "[ModelPreviewState][ModelPreviewCamera]")
@@ -2271,12 +2432,25 @@ TEST_CASE("Frozen first repairs report ordered output and substage timings", "[.
     const auto decoded_at = std::chrono::steady_clock::now();
     namespace native = Slic3r::GUI::NativePortrait;
     native::NativePortraitPartitionBuildReport report;
-    const auto partition = native::build_native_workbench_partition(*decoded.texture,
-        native::native_mesh_repair_callback(&report.strict_repair), {}, &report);
+    native::NativeWorkbenchPartition partition;
+    try {
+        partition = native::build_native_workbench_partition(*decoded.texture,
+            native::native_mesh_repair_callback(&report.strict_repair, &decoded.mesh.its), {}, &report);
+    } catch (const std::exception& failure) {
+        report.success = false;
+        if (report.error.empty()) report.error = failure.what();
+        boost::filesystem::ofstream stream(output);
+        REQUIRE(stream.good());
+        stream << native::encode_native_portrait_partition_build_report(report).dump(2);
+        stream.close();
+        FAIL(report.error);
+    }
     const auto prepared_at = std::chrono::steady_clock::now();
     REQUIRE(report.success);
     REQUIRE(report.strict_repair.success);
-    REQUIRE(report.strict_repair.output_topology.safe());
+    REQUIRE(report.strict_repair.accepted());
+    if (report.strict_repair.acceptance == Slic3r::MeshRepairAcceptance::Strict)
+        REQUIRE(report.strict_repair.output_topology.safe());
     REQUIRE(partition.valid());
     Slic3r::Sha256Digest ordered;
     bool hashed = true;
@@ -2299,6 +2473,14 @@ TEST_CASE("Frozen first repairs report ordered output and substage timings", "[.
         {"colors", partition.painted.cluster_colors.size()}, {"decode_ms", ms(decoded_at - started)},
         {"cpu_first_repair_ms", ms(prepared_at - started)},
         {"scope", "First algorithm and decode only; excludes publication, GUI, GPU and user acceptance"}};
+    const auto audit_carrier = environment("ORCA_NATIVE_WORKBENCH_AUDIT_CARRIER");
+    if (!audit_carrier.empty()) {
+        REQUIRE_FALSE(boost::filesystem::exists(audit_carrier));
+        std::string hash;
+        REQUIRE(native::write_native_portrait_carrier(audit_carrier, partition,
+            native::native_workbench_bounds(partition), hash, error));
+        document["audit_carrier_sha256"] = hash;
+    }
     {
         boost::filesystem::ofstream stream(output);
         REQUIRE(stream.good());
@@ -2317,5 +2499,322 @@ TEST_CASE("Frozen first repairs report ordered output and substage timings", "[.
         CHECK(expected.at("partition_digest").get<std::string>() == partition.partition_digest);
         if (expected.contains("ordered_output_sha256"))
             CHECK(expected.at("ordered_output_sha256").get<std::string>() == signature);
+    }
+}
+
+TEST_CASE("Published geometry is audited independently of stored repair certificates",
+          "[.NativePublishedGeometryAudit]")
+{
+    const auto environment = [](const char* key) {
+        const auto* value = boost::nowide::getenv(key);
+        return value ? std::string(value) : std::string{};
+    };
+    const auto input = environment("ORCA_NATIVE_GEOMETRY_AUDIT_MODEL");
+    const auto output = environment("ORCA_NATIVE_GEOMETRY_AUDIT_REPORT");
+    const auto expected = environment("ORCA_NATIVE_GEOMETRY_AUDIT_EXPECTED_ID");
+    if (input.empty() || output.empty() || expected.empty()) SKIP("Set an immutable carrier, its expected geometry identity and a fresh audit report.");
+    REQUIRE_FALSE(boost::filesystem::exists(output));
+    const auto before = Slic3r::AI::model_artifact_sha256(input);
+    Slic3r::TriangleMesh mesh;
+    Slic3r::ObjInfo appearance;
+    std::string error;
+    REQUIRE(Slic3r::AI::load_model_artifact(input, mesh, appearance, error));
+    const auto geometry = selection::geometry_fingerprint(mesh.its);
+    REQUIRE(geometry == expected);
+    tbb::task_arena arena(int(std::min(4u, std::max(1u, std::thread::hardware_concurrency()))));
+    const auto inspection = arena.execute([&] { return Slic3r::GUI::inspect_workbench_mesh(mesh); });
+    const nlohmann::json document {{"geometry_id", geometry}, {"model_sha256", before},
+        {"faces", mesh.its.indices.size()}, {"open_edges", inspection.boundary_edges},
+        {"nonmanifold_edges", inspection.nonmanifold_edges}, {"nonmanifold_vertices", inspection.nonmanifold_vertices},
+        {"degenerate_faces", inspection.degenerate_faces}, {"duplicate_faces", inspection.duplicate_faces},
+        {"inconsistent_edges", inspection.inconsistent_edges}, {"self_intersections_checked", inspection.self_intersections_checked},
+        {"self_intersects", inspection.self_intersections != 0}, {"summary", inspection.summary},
+        {"scope", "Independent actual carrier inspection without certificate reuse; no repair or write to the input"}};
+    boost::filesystem::ofstream stream(output);
+    REQUIRE(stream.good()); stream << document.dump(2); stream.close();
+    CHECK(inspection.self_intersections_checked);
+    CHECK(Slic3r::AI::model_artifact_sha256(input) == before);
+}
+
+TEST_CASE("Large workbench geometry completes repair partition publication reopen and CPU upload preparation",
+          "[.NativeLargeModelWorkflow]")
+{
+    using namespace Slic3r;
+    namespace NP = Slic3r::GUI::NativePortrait;
+    const size_t rings = GENERATE(size_t(250), size_t(500));
+    const size_t columns = GENERATE(size_t(1999), size_t(2001));
+    const size_t count = 2 * rings * columns;
+    const auto started = std::chrono::steady_clock::now();
+    indexed_triangle_set original;
+    original.vertices.reserve(rings * columns); original.indices.reserve(count);
+    for (size_t r = 0; r < rings; ++r) for (size_t c = 0; c < columns; ++c) {
+        const double a = 2. * PI * double(r) / rings, b = 2. * PI * double(c) / columns;
+        const std::array<float, 3> point {float((20. + 5. * std::cos(a)) * std::cos(b)),
+            float((20. + 5. * std::cos(a)) * std::sin(b)), float(5. * std::sin(a))};
+        original.vertices.emplace_back(point[0], point[1], point[2]);
+        const auto index = [&](size_t row, size_t column) { return int((row % rings) * columns + column % columns); };
+        for (const auto& face : {std::array<int,3>{index(r,c),index(r+1,c),index(r,c+1)},
+                                std::array<int,3>{index(r,c+1),index(r+1,c),index(r+1,c+1)}}) {
+            original.indices.emplace_back(face[0], face[1], face[2]);
+        }
+    }
+    ScopedTemporaryDir directory("orca-large-complete-workflow");
+    std::string error, hash;
+    const auto source = directory.path() / "source.obj";
+    // This torus is inward-facing. Exercise the real decoder's orientation
+    // normalization before repair, as production does, instead of bypassing
+    // import and comparing an unnormalized partition to a normalized OBJ.
+    REQUIRE(its_volume(original) < 0.);
+    const bool source_written = AI::write_model_artifact(source, original,
+        std::vector<RGBA>(original.vertices.size(), {210.f/255.f,100.f/255.f,30.f/255.f,1.f}), error);
+    INFO(error);
+    REQUIRE(source_written);
+    original = {};
+    GUI::DecodedWorkbenchModel decoded;
+    REQUIRE(GUI::decode_workbench_model(source, decoded, error));
+    REQUIRE(GUI::normalize_decoded_workbench_model_to_millimeters(decoded, error));
+    REQUIRE(decoded.texture);
+    REQUIRE(decoded.mesh.volume() > 0.);
+    NP::NativePortraitPartitionBuildReport report;
+    const auto partition = NP::build_native_workbench_partition(*decoded.texture,
+        NP::native_mesh_repair_callback(&report.strict_repair, &decoded.mesh.its), {}, &report);
+    REQUIRE(report.strict_repair.accepted());
+    REQUIRE(report.success);
+    REQUIRE(partition.valid());
+    CHECK(partition.painted.indices.size() == count);
+    CHECK(partition.region_members.size() == 1);
+    CHECK(partition.boundary.open_edges == 0);
+    const auto carrier = directory.path() / "carrier.obj", cache = directory.path() / "cache";
+    const auto reference = NP::save_native_portrait_partition_cache(partition, cache);
+    CHECK(reference.at("schema") == "orca.native-workbench-partition-cache-reference/v2");
+    NP::NativeWorkbenchPartitionIdentity identity;
+    TriangleMesh exact;
+    REQUIRE(NP::load_native_portrait_partition_cache(reference, cache, identity, error, &exact));
+    CHECK(identity.partition_digest == partition.partition_digest);
+    const bool published = NP::write_native_portrait_carrier(
+        carrier, partition, NP::native_workbench_bounds(partition), hash, error);
+    INFO(error);
+    CAPTURE(count);
+    REQUIRE(published);
+    REQUIRE(hash.size() == 64);
+    ModelPreview3D::PreparedModel prepared;
+    REQUIRE(ModelPreview3D::prepare_model(carrier, prepared, error));
+    INFO(error);
+    CHECK(prepared.triangles == count);
+    prepared.prepare_render_geometry({}, true);
+    CHECK(prepared.render_preparation == ModelPreview3D::PreparedModel::RenderPreparation::Ready);
+    std::cout << "LARGE_WORKFLOW " << nlohmann::json({{"faces", count},
+        {"geometry_id", partition.geometry_id}, {"carrier_sha256", hash},
+        {"carrier_bytes", boost::filesystem::file_size(carrier)},
+        {"elapsed_ms", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started).count()},
+        {"scope", "Repair, partition, cache, carrier, readback and CPU upload preparation; GPU not measured"}}).dump() << std::endl;
+}
+
+TEST_CASE("Large appearance bindings retain exact faces and query only valid source surfaces",
+          "[.NativeLargeModelMapping]")
+{
+    using namespace Slic3r;
+    ScopedTemporaryDir directory("orca-large-appearance-mapping");
+    const auto path = directory.path() / "source.obj";
+    indexed_triangle_set original;
+    original.vertices = {{0,0,0},{2,0,0},{0,2,0}}; original.indices = {{0,1,2}};
+    const std::vector<RGBA> colors(original.vertices.size(), {1.f, .25f, .5f, 1.f});
+    std::string error;
+    REQUIRE(AI::write_model_artifact(path, original, colors, error));
+    auto current = original;
+    current.indices.resize(1000001, original.indices.front());
+    current.vertices.insert(current.vertices.end(), {{.1f,.1f,1.f},{1.f,.1f,1.f},{.1f,1.f,1.f}});
+    current.indices.back() = {3,4,5};
+    auto sampler = AI::ModelSurfaceSampler::load(path, AI::model_artifact_sha256(path), current, error);
+    INFO(error); REQUIRE(sampler);
+    const auto unchanged = sampler->sample(0, {.2f,.3f,.5f});
+    const auto projected = sampler->sample(current.indices.size()-1, {.2f,.3f,.5f});
+    for (int channel = 0; channel < 3; ++channel) {
+        CHECK_THAT(unchanged[channel], Catch::Matchers::WithinAbs(colors.front()[channel], 1e-5f));
+        CHECK_THAT(projected[channel], Catch::Matchers::WithinAbs(colors.front()[channel], 1e-5f));
+    }
+}
+
+TEST_CASE("Pinned Orca reference repairs each intact volume without candidate acceptance", "[.OfficialRepairReference]")
+{
+    using namespace Slic3r;
+    const auto environment = [](const char* key) {
+        const auto* value = boost::nowide::getenv(key);
+        return value ? std::string(value) : std::string{};
+    };
+    // Nowide's Windows environment buffer is replaced by the next lookup.
+    const auto input = environment("ORCA_NATIVE_WORKBENCH_REPLAY_MODEL");
+    const auto output = environment("ORCA_NATIVE_WORKBENCH_REPLAY_REPORT");
+    if (input.empty() || output.empty()) SKIP("Set a protected input copy and a private report path.");
+    const boost::filesystem::path source(input), destination(output);
+    const auto hash = AI::model_artifact_sha256(source);
+    REQUIRE(hash.size() == 64);
+    Model model;
+    const auto extension = boost::algorithm::to_lower_copy(source.extension().string());
+    std::string decode_error;
+    if (extension == ".3mf" || extension == ".stl") {
+        model = Model::read_from_file(source.string());
+    } else if (extension == ".obj") {
+        TriangleMesh mesh; ObjInfo ignored;
+        REQUIRE(load_obj(source.string().c_str(), &mesh, ignored, decode_error));
+        model.add_object()->add_volume(std::move(mesh), ModelVolumeType::MODEL_PART, false);
+    } else {
+        GUI::DecodedWorkbenchModel decoded;
+        REQUIRE(GUI::decode_workbench_model(source, decoded, decode_error));
+        REQUIRE(GUI::normalize_decoded_workbench_model_to_millimeters(decoded, decode_error));
+        // GLB is a workbench-only format. Decode alone supplies one intact
+        // native input; never run candidate repair, partition or acceptance.
+        const auto mesh = std::move(decoded.mesh);
+        auto* volume = model.add_object()->add_volume(mesh);
+        volume->set_mesh(mesh);
+    }
+    nlohmann::json rows = nlohmann::json::array();
+    bool success = true;
+    const auto started = std::chrono::steady_clock::now();
+    tbb::task_arena arena(int(std::min(4u, std::max(1u, std::thread::hardware_concurrency()))));
+    arena.execute([&] {
+        for (auto* object : model.objects) for (auto* volume : object->volumes) {
+            if (volume->is_painted_modifier()) continue;
+            const auto before = mesh_repair_geometry_id(volume->mesh().its);
+            MeshRepairStats stats;
+            std::string error;
+            bool repaired = false;
+            try { repaired = volume->repair(true, &stats, &error); }
+            catch (const std::exception& failure) { error = failure.what(); }
+            const auto after = mesh_repair_geometry_id(volume->mesh().its);
+            const bool valid = repaired && error.empty() && !before.empty() && !after.empty();
+            success &= valid;
+            const auto path = destination.parent_path() / ("official-volume-" + std::to_string(rows.size()) + ".obj");
+            if (valid) {
+                boost::filesystem::ofstream stream(path, std::ios::binary);
+                stream << std::setprecision(std::numeric_limits<float>::max_digits10);
+                for (const auto& v : volume->mesh().its.vertices) stream << "v " << v.x() << ' ' << v.y() << ' ' << v.z() << '\n';
+                for (const auto& f : volume->mesh().its.indices) stream << "f " << f[0]+1 << ' ' << f[1]+1 << ' ' << f[2]+1 << '\n';
+                stream.close();
+                if (!stream) { error = "Reference output write failed."; success = false; }
+            }
+            rows.push_back({{"returned_success", repaired}, {"error", error}, {"canceled", false},
+                {"input_geometry", before}, {"output_geometry", after}, {"valid", valid},
+                {"modified", stats.modified}, {"output_faces", volume->mesh().its.indices.size()},
+                {"output_file_sha256", valid ? AI::model_artifact_sha256(path) : std::string{}}});
+        }
+    });
+    success &= !rows.empty();
+    const nlohmann::json document {{"official", "93941dc34e8a534ce3966a5979fe1edac002cb68"},
+        {"source_sha256", hash}, {"success", success}, {"volumes", rows},
+        {"elapsed_ms", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started).count()},
+        {"scope", "ModelVolume::repair per intact native volume; no candidate policy, color processing, publication or GUI"}};
+    boost::filesystem::ofstream stream(destination);
+    REQUIRE(stream.good());
+    stream << document.dump(2); stream.close();
+    REQUIRE(stream.good());
+    CHECK(AI::model_artifact_sha256(source) == hash);
+    CHECK(success);
+}
+
+TEST_CASE("Uncoloured OBJ repair retains Orca default appearance through preview",
+          "[ModelPreviewState][NativeRepairCompatibility][ModelFinishing]")
+{
+    using namespace Slic3r;
+    using namespace Slic3r::GUI;
+    ScopedTemporaryDir directory("orca-default-material-repair");
+    const auto source = directory.path()/"source.obj", output = directory.path()/"repaired.obj";
+    auto cube = make_cube(10.,10.,10.);
+    REQUIRE(store_obj(source.string().c_str(), &cube));
+    DecodedWorkbenchModel decoded; std::string error;
+    REQUIRE(decode_workbench_model(source, decoded, error));
+    REQUIRE(decoded.texture);
+    REQUIRE(decoded.texture->precomputed_face_colors.size() == cube.its.indices.size());
+    CHECK((decoded.texture->precomputed_face_colors.front() == std::array<size_t,3>{192,192,192}));
+    auto sampler = AI::ModelSurfaceSampler::load(source, AI::model_artifact_sha256(source), decoded.mesh.its, error);
+    INFO(error); REQUIRE(sampler);
+    const auto sampled = sampler->sample(0, {1,0,0});
+    CHECK_THAT(sampled[0], Catch::Matchers::WithinAbs(192.f/255.f, 1e-6f));
+    AI::ModelFinishingOptions options; options.smooth_surface = false;
+    const auto repaired = AI::finish_model_artifact(source, output, options);
+    INFO(repaired.error); REQUIRE(repaired.success);
+    TriangleMesh mesh; ObjInfo colors;
+    REQUIRE(AI::load_model_artifact(output, mesh, colors, error));
+    REQUIRE_FALSE(colors.vertex_colors.empty());
+    CHECK_THAT(colors.vertex_colors.front()[0], Catch::Matchers::WithinAbs(192.f/255.f, 1e-6f));
+}
+
+TEST_CASE("OBJ repair retains distinct material corners and validates declared textures",
+          "[ModelPreviewState][NativeRepairCompatibility][ModelFinishing][OriginalAppearance][NativePartitionRetry]")
+{
+    using namespace Slic3r;
+    using namespace Slic3r::GUI;
+    ScopedTemporaryDir directory("orca-obj-material-repair");
+    const auto source = directory.path()/"source.obj", output = directory.path()/"repaired.obj";
+    const bool textured = GENERATE(false, true);
+    {
+        boost::filesystem::ofstream mtl(directory.path()/"source.mtl");
+        mtl << "newmtl red\nKa 0 0 0\nKd 1 0 0\n";
+        if (textured) mtl << "map_Kd red.png\n";
+        mtl << "newmtl green\nKa 0 0 0\nKd 0 1 0\n";
+    }
+    if (textured) {
+        cv::Mat pixels(2,2,CV_8UC3,cv::Scalar(0,0,255));
+        std::vector<unsigned char> encoded;
+        REQUIRE(cv::imencode(".png", pixels, encoded));
+        boost::filesystem::ofstream image(directory.path()/"red.png",std::ios::binary);
+        image.write(reinterpret_cast<const char*>(encoded.data()), std::streamsize(encoded.size()));
+    }
+    {
+        boost::filesystem::ofstream obj(source);
+        obj << "mtllib source.mtl\nv 0 0 0\nv 10 0 0\nv 0 10 0\nv 0 0 10\n"
+               "vt 0 0\nvt 1 0\nvt 0 1\nusemtl red\nf 1/1 3/3 2/2\n"
+               "usemtl green\nf 1/1 2/2 4/3\nf 2/1 3/2 4/3\nf 3/1 1/2 4/3\n";
+    }
+    TriangleMesh original; ObjInfo appearance; AI::ModelArtifactTextureSurface exact; std::string error;
+    REQUIRE(AI::load_model_artifact(source, original, appearance, error, {}, &exact));
+    if (textured) { REQUIRE(exact.faces.size() == original.its.indices.size()); REQUIRE_FALSE(exact.images.empty()); }
+    AI::ModelFinishingOptions options; options.smooth_surface = false;
+    const auto repaired = AI::finish_model_artifact(source, output, options);
+    INFO(repaired.error); REQUIRE(repaired.success);
+    TriangleMesh actual; ObjInfo colors;
+    REQUIRE(AI::load_model_artifact(output, actual, colors, error));
+    REQUIRE(actual.its.indices.size() == original.its.indices.size());
+    REQUIRE(colors.vertex_colors.size() == actual.its.vertices.size());
+    for (size_t face = 0; face < actual.its.indices.size(); ++face) for (int corner = 0; corner < 3; ++corner) {
+        const auto& color = colors.vertex_colors[size_t(actual.its.indices[face][corner])];
+        CHECK_THAT(color[0], Catch::Matchers::WithinAbs(face == 0 ? 1.f : 0.f, 1e-6f));
+        CHECK_THAT(color[1], Catch::Matchers::WithinAbs(face == 0 ? 0.f : 1.f, 1e-6f));
+    }
+    const auto obj_hash = AI::model_artifact_sha256(source);
+    DecodedWorkbenchModel decoded;
+    REQUIRE(decode_workbench_model(source, decoded, error));
+    REQUIRE(normalize_decoded_workbench_model_to_millimeters(decoded, error));
+    auto report = std::make_shared<NativePortrait::NativePortraitPartitionBuildReport>();
+    NativeWorkbenchPreparedPartition prepared;
+    prepared.source = decoded.texture;
+    prepared.partition = std::make_shared<NativePortrait::NativeWorkbenchPartition>(
+        NativePortrait::build_native_workbench_partition(*decoded.texture,
+            NativePortrait::native_mesh_repair_callback(&report->strict_repair), {}, report.get()));
+    prepared.report = report;
+    prepared.source_bounds = NativePortrait::native_workbench_bounds(*decoded.texture);
+    REQUIRE(prepared.matches(*decoded.texture));
+    if (textured) {
+        cv::Mat pixels(2,2,CV_8UC3,cv::Scalar(255,0,0));
+        std::vector<unsigned char> encoded;
+        REQUIRE(cv::imencode(".png", pixels, encoded));
+        boost::filesystem::ofstream image(directory.path()/"red.png",std::ios::binary);
+        image.write(reinterpret_cast<const char*>(encoded.data()), std::streamsize(encoded.size()));
+    } else {
+        boost::filesystem::ofstream mtl(directory.path()/"source.mtl");
+        mtl << "newmtl red\nKa 0 0 0\nKd 0 0 1\nnewmtl green\nKa 0 0 0\nKd 0 1 0\n";
+    }
+    DecodedWorkbenchModel changed;
+    REQUIRE(decode_workbench_model(source, changed, error));
+    REQUIRE(normalize_decoded_workbench_model_to_millimeters(changed, error));
+    CHECK(AI::model_artifact_sha256(source) == obj_hash);
+    CHECK_FALSE(prepared.matches(*changed.texture));
+    if (textured) {
+        // A missing/corrupt declared image is not an uncoloured model.
+        { boost::filesystem::ofstream broken(directory.path()/"red.png", std::ios::binary); broken << "invalid PNG"; }
+        DecodedWorkbenchModel rejected;
+        CHECK_FALSE(decode_workbench_model(source, rejected, error));
+        CHECK_FALSE(error.empty());
+        CHECK(boost::filesystem::exists(source));
     }
 }

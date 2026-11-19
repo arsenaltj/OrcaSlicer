@@ -292,9 +292,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         m_workbench_check_card->Bind(wxEVT_CLOSE_WINDOW, [](wxCloseEvent& event) { event.Veto(); });
         m_workbench_check_cancel_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { cancel_workbench_check(); });
         m_workbench_check_continue_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-            if (m_workbench_check_result.status == WorkbenchCheckStatus::Attention && m_workbench_check_result.force_import_risk)
-                acknowledge_workbench_risk();
-            else request_check_workbench(false);
+            request_check_workbench(false);
         });
         m_workbench_check_details_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show_workbench_check_details(); });
         m_workbench_check_close_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {

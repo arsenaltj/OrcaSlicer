@@ -6,6 +6,8 @@
 #include "slic3r/GUI/Presentation/AsyncPreviewImage.hpp"
 #include "slic3r/GUI/Presentation/WindowCloseController.hpp"
 #include "slic3r/GUI/Redesign/RedesignPageCoordinator.hpp"
+#include "slic3r/GUI/Redesign/RedesignSlicingDetails.hpp"
+#include <wx/stattext.h>
 #include <wx/init.h>
 #include <wx/app.h>
 #include <atomic>
@@ -30,6 +32,24 @@ public:
     bool OnInit() override { return true; }
 };
 wxIMPLEMENT_APP_NO_MAIN(LifecycleTestApp);
+
+TEST_CASE("Slicing labels retain their native control focus and layout for unchanged or equally sized text",
+          "[UiLifecycle][SlicingRefresh]")
+{
+    wxInitializer init;
+    REQUIRE(init.IsOk());
+    auto* frame = new wxFrame(nullptr, wxID_ANY, "slicing-label-test");
+    auto* label = new wxStaticText(frame, wxID_ANY, "111");
+    label->SetFont(wxFont(wxFontInfo(12).Family(wxFONTFAMILY_TELETYPE)));
+    const auto original = label->GetBestSize();
+    for (int tick = 0; tick < 60; ++tick) CHECK_FALSE(set_slicing_detail_label(*label, "111"));
+    CHECK_FALSE(set_slicing_detail_label(*label, "222"));
+    CHECK(label->GetLabel() == "222");
+    CHECK(label->GetBestSize() == original);
+    CHECK(set_slicing_detail_label(*label, "222\n333"));
+    CHECK(label->GetBestSize().y > original.y);
+    delete frame;
+}
 
 TEST_CASE("Deferred close confirms once and rejects duplicate requests until presentation drains", "[UiLifecycle][CloseAdmission]")
 {

@@ -4,6 +4,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationUiState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitWorkbenchEntry.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySidebar.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelPreviewTextureColor.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportSession.hpp"
@@ -43,6 +44,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/BeautyCandidateSnapshot.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyPartitionSelection.hpp"
+
 #include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchColorGate.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchPrinterFilaments.hpp"
 #include "slic3r/GUI/PrinterFilamentSlotRemap.hpp"
@@ -59,6 +61,23 @@
 #include <vector>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("Partition consumers cannot activate a new choice from an uploading checkpoint",
+          "[PostGenerationWorkbench][WorkbenchCheckLifecycle][PortraitNativePartition]")
+{
+    namespace PP = Slic3r::GUI::WorkbenchArtifacts;
+    const auto automatic = PP::native_workbench_partition_consumer(PP::NativeWorkbenchPartitionConsumer::AutomaticPalette);
+    const auto suite = PP::native_workbench_partition_consumer(PP::NativeWorkbenchPartitionConsumer::HonorSuite);
+    const auto both = PP::native_workbench_partition_consumers(
+        PP::NativeWorkbenchPartitionConsumer::AutomaticPalette, PP::NativeWorkbenchPartitionConsumer::HonorSuite);
+    CHECK(PP::native_workbench_partition_can_join(automatic, suite, false));
+    CHECK(PP::native_workbench_partition_can_join(automatic, automatic, true));
+    CHECK_FALSE(PP::native_workbench_partition_can_join(automatic, suite, true));
+    CHECK_FALSE(PP::native_workbench_partition_can_join(automatic, both, true));
+    CHECK(PP::native_workbench_partition_can_join(both, suite, true));
+    CHECK(PP::native_workbench_partition_can_join(automatic, suite, false));
+    CHECK_FALSE(PP::native_workbench_partition_can_join(automatic, 0, false));
+}
 
 TEST_CASE("Returning through advanced creation reacquires the shared smart history without changing drawer preferences",
           "[PostGenerationWorkbench][WorkbenchHistorySidebar]")
@@ -274,7 +293,7 @@ TEST_CASE("Manual and automatic repairs publish only verified topology geometry 
     }
 }
 
-TEST_CASE("Workbench palette status keeps Honor fallback reasons visible",
+TEST_CASE("Workbench palette status keeps fallback details without detection absence notices",
           "[PostGenerationWorkbench][ModelPreviewPalette][UiRedesign]")
 {
     CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, false, 0, 6) == "当前色卡 · 6 色");
@@ -282,7 +301,15 @@ TEST_CASE("Workbench palette status keeps Honor fallback reasons visible",
         "荣耀耗材套装 · 模型当前使用 5/6 色");
     CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, true, 4, 4,
         "未检测到人物，已回退为全局相近色匹配。") ==
-        "未检测到人物，已回退为全局相近色匹配。\n模型当前使用 4/6 色");
+        "已回退为全局相近色匹配。\n模型当前使用 4/6 色");
+    CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, true, 5, 6,
+        "近色回退：未检测到人物。") == "近色回退\n模型当前使用 5/6 色");
+    CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, true, 5, 6,
+        "近色回退：未检测到人像，保留 AI 源色区域并近色匹配。") ==
+        "近色回退：保留 AI 源色区域并近色匹配。\n模型当前使用 5/6 色");
+    CHECK(workbench_palette_status_line(WorkbenchOriginalAppearanceState::Available, true, 5, 6,
+        "近色回退：本地人物语义识别不可用。") ==
+        "近色回退：本地人物语义识别不可用。\n模型当前使用 5/6 色");
 }
 
 TEST_CASE("Workbench defers original appearance diagnostics until the current model is loaded",
@@ -487,21 +514,6 @@ TEST_CASE("Workbench import keeps round base preparation opt-in",
     request.apply_round_base_preparation = true;
     CHECK(request.apply_round_base_preparation);
 }
-TEST_CASE("Legacy deferred portrait repair is rejected after v9 partitioning", "[PostGenerationWorkbench][PortraitNativeRepair]")
-{
-    PostGenerationWorkbenchState state;state.actions.can_import=true;state.model_path="portrait.obj";
-    state.deferred_native_repair=true;state.native_repair_source_sha256=std::string(64,'a');
-    Slic3r::AI::ModelImportRequest request;request.artifact.local_path=state.model_path;
-    request.native_repair_before_slice=true;request.native_repair_source_sha256=state.native_repair_source_sha256;
-    request.matched_colors.emplace();request.matched_colors->source_sha256=state.native_repair_source_sha256;
-    CHECK_FALSE(workbench_import_request_allowed(state,request));
-    CHECK_FALSE(state.can_import_for_slicing);
-    request.native_repair_source_sha256=std::string(64,'b');CHECK_FALSE(workbench_import_request_allowed(state,request));
-    request.native_repair_source_sha256=state.native_repair_source_sha256;
-    state.dirty=true;CHECK_FALSE(workbench_import_request_allowed(state,request));state.dirty=false;
-    state.deferred_native_repair=false;CHECK_FALSE(workbench_import_request_allowed(state,request));
-}
-
 TEST_CASE("Workbench placement adds a round base only to its detached import copy",
           "[PostGenerationWorkbench][OrcaModelPreparation][LocalPrintModelImport]")
 {
@@ -965,96 +977,6 @@ TEST_CASE("Canceled or unavailable final topology checks cannot authorize an imp
     CHECK_FALSE(prepare_workbench_import_topology(mesh, true, result, error, [] { return true; }));
 }
 
-TEST_CASE("confirmed risky imports reach the asynchronous host without claiming topology safety", "[WorkbenchImportEligibility]")
-{
-    PostGenerationWorkbenchState state;
-    state.actions.can_import = true;
-    state.model_path = "generated/portrait.glb";
-    state.can_force_import = true;
-    state.check.status = WorkbenchCheckStatus::Attention;
-    state.check.force_import_risk = true;
-    state.check.model_sha256 = std::string(64, 'a');
-    state.force_import_acknowledged = true;
-    Slic3r::AI::ModelImportRequest request;
-    request.artifact.local_path = state.model_path;
-    request.topology_check_sha256 = state.check.model_sha256;
-    CHECK_FALSE(workbench_import_request_allowed(state, request));
-    request.topology_risk_confirmed = true;
-    CHECK(workbench_import_request_allowed(state, request));
-    CHECK_FALSE(state.can_import_for_slicing);
-
-    SECTION("a changed model or topology report invalidates confirmation") {
-        request.artifact.local_path = "generated/other.glb";
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-        request.artifact.local_path = state.model_path;
-        request.topology_check_sha256 = std::string(64, 'b');
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-    }
-    SECTION("pending edits and repair processing remain blocked") {
-        state.dirty = true;
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-        state.dirty = false;
-        state.candidate_path = "generated/repair.obj";
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-        state.candidate_path.clear();
-        state.check.candidate_status = RepairCandidateStatus::Ready;
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-        state.check.candidate_status = RepairCandidateStatus::Generating;
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-        state.check.candidate_status = RepairCandidateStatus::None;
-        state.check.status = WorkbenchCheckStatus::Running;
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-    }
-    SECTION("busy projects and invalid filament matching cannot use the exception") {
-        state.actions.can_import = false;
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-        state.actions.can_import = true;
-        state.can_force_import = false;
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-    }
-
-    SECTION("only an acknowledged attention result can use the exception") {
-        for (const auto status : {WorkbenchCheckStatus::NotRun, WorkbenchCheckStatus::Invalid,
-                                  WorkbenchCheckStatus::Failed}) {
-            state.check.status = status;
-            CHECK_FALSE(workbench_import_request_allowed(state, request));
-        }
-        state.check.status = WorkbenchCheckStatus::Attention;
-        state.force_import_acknowledged = false;
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-        state.force_import_acknowledged = true;
-        state.check.force_import_risk = false;
-        CHECK_FALSE(workbench_import_request_allowed(state, request));
-    }
-}
-
-TEST_CASE("closed and explicitly unchecked imports use their own current evidence", "[WorkbenchImportEligibility]")
-{
-    PostGenerationWorkbenchState state;
-    state.actions.can_import = true;
-    state.model_path = "generated/closed.obj";
-    state.check.status = WorkbenchCheckStatus::Normal;
-    state.check.model_sha256 = std::string(64, 'c');
-    state.can_import_for_slicing = true;
-    Slic3r::AI::ModelImportRequest request;
-    request.artifact.local_path = state.model_path;
-    request.topology_check_sha256 = state.check.model_sha256;
-    CHECK(workbench_import_request_allowed(state, request));
-
-    state.can_import_for_slicing = false;
-    state.can_force_import = true;
-    state.check.status = WorkbenchCheckStatus::Attention;
-    state.check.force_import_risk = true;
-    state.check.model_sha256 = std::string(64, 'd');
-    state.force_import_acknowledged = true;
-    request.topology_check_sha256 = state.check.model_sha256;
-    CHECK_FALSE(workbench_import_request_allowed(state, request));
-    request.topology_risk_confirmed = true;
-    CHECK(workbench_import_request_allowed(state, request));
-    state.check.model_sha256 = std::string(64, 'e');
-    CHECK_FALSE(workbench_import_request_allowed(state, request));
-}
-
 TEST_CASE("An asynchronous color match admits slicing from the released editor instead of a stale busy view", "[WorkbenchImportEligibility][PostGenerationWorkbench][UiLifecycle]")
 {
     wxInitializer init;
@@ -1063,6 +985,7 @@ TEST_CASE("An asynchronous color match admits slicing from the released editor i
     live.asset_id = "matched-model";
     live.model_path = "generated/matched.glb";
     live.check.status = WorkbenchCheckStatus::Normal;
+    live.check.self_intersections_checked = true;
     live.check.model_sha256 = std::string(64, 'a');
     live.can_import_for_slicing = true;
     // The Shell snapshot was published while the match was still running.
@@ -1373,6 +1296,19 @@ TEST_CASE("background workbench decoding preserves native geometry units and tex
     CHECK_THAT(av->source.mesh_offset.norm(),
         Catch::Matchers::WithinAbs(0., 1e-6));
     CHECK(av->source.input_file == ev->source.input_file);
+    if (!expected.texture_mesh) {
+        // An uncoloured OBJ now supplies the real Orca default material to
+        // workbench partitioning. Its native geometry still matches above.
+        REQUIRE(path.extension() == ".obj");
+        REQUIRE(actual->texture_mesh);
+        const auto& material = *actual->texture_mesh;
+        CHECK(material.textures.empty());
+        CHECK(material.indices.size() == am.indices.size());
+        REQUIRE(material.precomputed_face_colors.size() == am.indices.size());
+        for (const auto& color : material.precomputed_face_colors)
+            CHECK((color == std::array<size_t, 3>{192, 192, 192}));
+        return;
+    }
     REQUIRE(bool(actual->texture_mesh) == bool(expected.texture_mesh));
     if (actual->texture_mesh) {
         const auto& at = *actual->texture_mesh;
@@ -5108,4 +5044,33 @@ TEST_CASE("A rebuilt real native portrait imports with exact closed topology and
     volume->set_mesh(std::move(candidate));
     CHECK(volume->mmu_segmentation_facets.get_data() == painting);
     CHECK(AI::model_artifact_sha256(carrier) == carrier_sha256);
+}
+
+TEST_CASE("Legacy risk and deferred repair requests cannot bypass current strict evidence", "[WorkbenchImportEligibility][PortraitNativeRepair]")
+{
+    PostGenerationWorkbenchState state;
+    state.actions.can_import = true;
+    state.can_import_for_slicing = true;
+    state.model_path = "generated/current.glb";
+    state.check.status = WorkbenchCheckStatus::Normal;
+    state.check.self_intersections_checked = true;
+    state.check.model_sha256 = std::string(64, 'a');
+    Slic3r::AI::ModelImportRequest request;
+    request.artifact.local_path = state.model_path;
+    request.topology_check_sha256 = state.check.model_sha256;
+    REQUIRE(workbench_import_request_allowed(state, request));
+    const int blocker = GENERATE(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
+    if (blocker == 0) request.native_repair_before_slice = true;
+    if (blocker == 1) request.topology_risk_confirmed = true;
+    if (blocker == 2) request.topology_check_sha256 = std::string(64, 'b');
+    if (blocker == 3) request.artifact.local_path = "other.glb";
+    if (blocker == 4) state.dirty = true;
+    if (blocker == 5) state.candidate_path = "candidate.glb";
+    if (blocker == 6) state.check.candidate_status = RepairCandidateStatus::Ready;
+    if (blocker == 7) state.check.status = WorkbenchCheckStatus::Attention;
+    if (blocker == 8) state.check.self_intersections_checked = false;
+    if (blocker == 9) state.actions.can_import = false;
+    if (blocker == 10) state.can_import_for_slicing = false;
+    if (blocker == 11) state.check.model_sha256.clear();
+    CHECK_FALSE(workbench_import_request_allowed(state, request));
 }

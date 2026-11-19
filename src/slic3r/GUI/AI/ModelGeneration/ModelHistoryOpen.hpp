@@ -30,7 +30,8 @@ using ModelHistoryOpenHandler = std::function<bool(const ModelHistoryOpenEvent&)
 struct ModelHistoryOpenRequest {
     uint64_t generation {0};
     std::string selected_asset; // Immutable while the worker resolves a repaired version.
-    ModelLibraryEntry entry, previous;
+    ModelLibraryEntry entry, previous, selection;
+    uint64_t removal_revision {0};
     boost::filesystem::path root;
     std::string model_hash, record_hash;
     std::shared_ptr<VerifiedModelFiles> verified_files;

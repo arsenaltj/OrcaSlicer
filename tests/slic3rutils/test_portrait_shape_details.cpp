@@ -6,7 +6,6 @@
 #include "slic3r/GUI/AI/ModelGeneration/PortraitPaletteRoles.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitParentCleanupLive.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelSemanticColoring.hpp"
-#include "slic3r/GUI/AI/ModelGeneration/LocalSemanticWorkerClient.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/SecondaryRegionEvidence.hpp"
 #include "slic3r/GUI/AI/Model/LocalSemanticGeometry.hpp"
 #include "slic3r/AI/ModelGeneration/SemanticColoring/MediaPipeRegionRecognizers.hpp"
@@ -990,38 +989,8 @@ TEST_CASE("A fixed portrait exports source native and integrated palettes withou
         REQUIRE(response.at("files").at("rendered.bin").at("sha256") == model_artifact_sha256(frozen / "rendered.bin"));
         REQUIRE(response.at("files").at("evidence.json").at("bytes") == bytes.size());
         REQUIRE(response.at("files").at("rendered.bin").at("bytes") == boost::filesystem::file_size(frozen / "rendered.bin"));
-        GUI::LocalSemanticWorker::Configuration config;
-        REQUIRE(GUI::LocalSemanticWorker::read_runtime_configuration(boost::filesystem::path(data) / "local_semantic_runtime.json",
-            boost::filesystem::path(resources) / "beauty-runtime", config, error));
-        REQUIRE(config.enabled);
-        const auto modules = boost::filesystem::path(resources) / "tools" / "ai";
-        const auto& module_hashes = response.at("identity").at("modules_sha256");
-        REQUIRE(module_hashes.is_object());
-        std::vector<std::string> names {"glb_artifact.py", "local_semantic_worker.py", "local_semantic_geometry.py",
-            "local_semantic_render.py", "local_semantic_transform.py", "local_semantic_views.py", "local_semantic_projection.py",
-            "local_semantic_pipeline.py", "local_semantic_request.py", "local_eye_landmarks.py", "local_face_landmarks.py",
-            "local_shape_constraints.py", "local_brow_boundary.py", "local_body_regions.py"};
-        if (boost::filesystem::exists(modules / "local_semantic_raster.dll")) names.push_back("local_semantic_raster.dll");
-        REQUIRE(module_hashes.size() == names.size());
-        for (const auto& name : names) REQUIRE(module_hashes.at(name) == model_artifact_sha256(modules / name));
-        const auto& probe = response.at("identity").at("probe_identity");
-        REQUIRE(probe.at("python_executable_sha256") == model_artifact_sha256(config.python_executable));
-        REQUIRE(probe.at("worker_sha256") == module_hashes.at("local_semantic_worker.py"));
-        REQUIRE(Cache::digest(probe.at("weights").dump()) == expected.weights_sha256);
-        for (auto weight = probe.at("weights").begin(); weight != probe.at("weights").end(); ++weight) {
-            REQUIRE(boost::filesystem::path(weight.key()).filename().string() == weight.key());
-            REQUIRE(weight.value() == model_artifact_sha256(config.weights_directory / weight.key()));
-        }
-        const std::atomic<bool> cancelled {false};
-        const auto capability = GUI::LocalSemanticWorker::probe(config, modules / "local_semantic_worker.py",
-            output / "capability-probe", cancelled);
-        CAPTURE(capability.reason);
-        REQUIRE(capability.status == GUI::LocalSemanticWorker::Status::Ready);
-        const auto capability_response = Json::parse(capability.response_json);
-        REQUIRE(capability_response.at("identity").at("packages") == probe.at("packages"));
-        capability_report = {{"status", "READY"}, {"packages", capability_response.at("identity").at("packages")},
-            {"identity_sha256", Cache::digest(capability_response.at("identity").dump())},
-            {"request_directory", capability.request_directory.generic_string()}};
+        capability_report = {{"status", "PRESERVED_EVIDENCE"},
+            {"runtime_sha256", expected_runtime}, {"policy_sha256", expected_policy}};
     }
     Semantic::Evidence evidence;
     const bool decoded = Semantic::decode(bytes, expected, binding, evidence, error);

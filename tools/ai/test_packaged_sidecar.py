@@ -31,16 +31,27 @@ def packaged_runtime_files(portrait_enabled: bool = False,
 
 
 class PackagedSidecarTests(unittest.TestCase):
-    def test_retired_portrait_modules_follow_only_the_legacy_research_capability(self) -> None:
-        for portrait_enabled, legacy_enabled in ((False, False), (True, False), (True, True)):
-            with self.subTest(portrait_enabled=portrait_enabled, legacy_enabled=legacy_enabled):
-                names = {path.name for path in packaged_runtime_files(portrait_enabled, legacy_enabled)}
-                for name in ("portrait_parent_cleanup_catalog.json",
-                             "portrait_parent_cleanup_fangfei.json",
-                             "portrait_parent_cleanup_partition.json",
-                             "portrait_parent_cleanup_locks.json"):
-                    self.assertEqual(name in names, legacy_enabled)
-                self.assertEqual("local_semantic_worker.py" in names, legacy_enabled)
+    def test_native_portrait_packages_never_include_retired_research_payloads(self) -> None:
+        for enabled in (False, True):
+            names = {path.name for path in packaged_runtime_files(enabled)}
+            self.assertNotIn("local_semantic_worker.py", names)
+            self.assertNotIn("local_semantic_request.py", names)
+            self.assertFalse(any(name.startswith("portrait_parent_cleanup_") for name in names))
+        with self.assertRaisesRegex(ValueError, "retired"):
+            packaged_runtime_files(True, True)
+
+    def test_cmake_rejects_a_legacy_cache_before_resolving_dependencies(self) -> None:
+        import shutil
+        cmake = shutil.which("cmake")
+        if not cmake:
+            self.skipTest("CMake is unavailable")
+        with tempfile.TemporaryDirectory(prefix="orca-retired-switch-") as directory:
+            script = Path(directory) / "retired.cmake"
+            script.write_text('set(ORCA_AI_LEGACY_FARL_RUNTIME ON)\ninclude("' +
+                (REPO_ROOT / "cmake/OrcaWindowsAIRuntime.cmake").as_posix() + '")\n', encoding="utf-8")
+            result = subprocess.run([cmake, "-P", str(script)], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("retired", result.stderr)
 
     def test_runtime_list_contains_all_local_imports(self) -> None:
         files = packaged_runtime_files()

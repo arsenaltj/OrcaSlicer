@@ -47,6 +47,8 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         return m_asset_open(std::move(request));
     }
     if (m_model_preview == nullptr || m_shutdown || m_preview_loading || (m_history_open && !restoration)) return false;
+    ModelLibraryEntry selected; selected.model_path = model_path; selected.job_id = job_id;
+    if (m_library_removals->blocked(selected)) return false;
     if (model_path.empty()) {
         if (can_replace_model_asset()) load_design_library_entry(job_id);
         return false;
@@ -79,6 +81,8 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     request->entry.color_intent_sha256 = color_intent_sha256;
     request->entry.job_id = job_id;
     request->entry.title = title;
+    request->selection = request->entry;
+    request->removal_revision = m_library_removals->revision();
     request->repairs = std::move(repairs);
     if (!request->repairs && !restoration) {
         const auto found = std::find_if(m_library_entries.begin(), m_library_entries.end(),
@@ -165,7 +169,6 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     }
     m_finishing_options.selected_faces.clear();
     m_finishing_before = false;
-    m_portrait_entered = !new_asset; // Only a newly imported asset may auto-start on explicit Portrait entry.
     m_portrait_mode = false;
     if (m_beauty_controls) m_beauty_controls->set_portrait_enabled(false);
     const wxImage reference_image = reference_image_path.empty() ? wxImage() : wxImage(reference_image_path.wstring());
@@ -299,6 +302,7 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         m_use_printable_colors->SetValue(use_printable_colors);
     m_displayed_model_path = model_path;
     m_displayed_model_job_id = job_id;
+    m_workbench_library_binding = {request->selection, request->entry};
     m_displayed_model_palette = palette;
     m_displayed_model_palette_roles = m_job_palette_roles;
     m_model_preview_ready = true;
@@ -403,7 +407,9 @@ bool ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         }
     }, library_metadata_path(job_id), history_metadata,
        [this, request, direct_history] {
-           return !request->canceled && (!direct_history || m_history_open == request) &&
+           return !request->canceled && request->removal_revision == m_library_removals->revision() &&
+               !m_library_removals->blocked(request->selection) && !m_library_removals->blocked(request->entry) &&
+               (!direct_history || m_history_open == request) &&
                (request->restoring || (request->verified_files && request->verified_files->current()));
        }, request);
     return true;

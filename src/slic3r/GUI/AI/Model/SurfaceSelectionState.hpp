@@ -62,7 +62,8 @@ inline void assign(SelectionState& state, size_t face, uint8_t value)
 // boundaries preserves identity; reordered faces or changed positions do not.
 // The encoding is little-endian IEEE float32 and normalizes negative zero.
 // No rendered color, camera, or semantic labels participate in this identity.
-inline std::string geometry_fingerprint(const indexed_triangle_set& mesh)
+template<class Vertices, class Faces>
+inline std::string geometry_fingerprint_data(const Vertices& vertices, const Faces& indices)
 {
     static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559,
                   "Surface selection identity requires IEEE float32.");
@@ -70,18 +71,19 @@ inline std::string geometry_fingerprint(const indexed_triangle_set& mesh)
     constexpr char schema[] = "orca.surface-selection.geometry/v1";
     if (!digest.update(schema, sizeof(schema))) return {};
     std::array<unsigned char, 8> count_bytes {};
-    for (size_t i = 0; i < count_bytes.size(); ++i) count_bytes[i] = static_cast<unsigned char>(uint64_t(mesh.indices.size()) >> (i * 8));
+    for (size_t i = 0; i < count_bytes.size(); ++i) count_bytes[i] = static_cast<unsigned char>(uint64_t(indices.size()) >> (i * 8));
     if (!digest.update(count_bytes.data(), count_bytes.size())) return {};
     // Hash 1024 complete faces per digest call, keeping memory independent of
     // mesh size and avoiding millions of calls for a production-sized model.
     std::array<unsigned char, 1024 * 3 * 3 * 4> buffer {};
     size_t used = 0;
-    for (const auto& face : mesh.indices) {
+    for (const auto& face : indices) {
         for (int corner = 0; corner < 3; ++corner) {
             const int vertex = face[corner];
-            if (vertex < 0 || size_t(vertex) >= mesh.vertices.size() || !mesh.vertices[vertex].allFinite()) return {};
+            if (vertex < 0 || size_t(vertex) >= vertices.size()) return {};
             for (int axis = 0; axis < 3; ++axis) {
-                const float value = mesh.vertices[vertex][axis] == 0.0f ? 0.0f : mesh.vertices[vertex][axis];
+                if (!std::isfinite(vertices[vertex][axis])) return {};
+                const float value = vertices[vertex][axis] == 0.0f ? 0.0f : vertices[vertex][axis];
                 uint32_t bits;
                 std::memcpy(&bits, &value, sizeof(bits));
                 for (size_t byte = 0; byte < 4; ++byte) buffer[used++] = static_cast<unsigned char>(bits >> (byte * 8));
@@ -94,6 +96,11 @@ inline std::string geometry_fingerprint(const indexed_triangle_set& mesh)
     }
     if (used && !digest.update(buffer.data(), used)) return {};
     return digest.final_hex();
+}
+
+inline std::string geometry_fingerprint(const indexed_triangle_set& mesh)
+{
+    return geometry_fingerprint_data(mesh.vertices, mesh.indices);
 }
 
 // Connectivity identity intentionally excludes vertex positions and colors.

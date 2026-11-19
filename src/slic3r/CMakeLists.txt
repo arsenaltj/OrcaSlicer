@@ -405,7 +405,6 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/SmartSlicing/SmartSlicingFeatureHost.cpp
     GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp
     ${ORCA_REDESIGN_WORKFLOW_SOURCES}
-    GUI/AI/ModelGeneration/BeautyPreparationTicket.hpp
     GUI/AIModelGenerationClient.cpp
     GUI/AIModelGenerationClient.hpp
     GUI/AISidecarClient.cpp

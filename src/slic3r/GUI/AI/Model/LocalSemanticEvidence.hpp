@@ -1,5 +1,6 @@
 #pragma once
 
+#include "libslic3r/MeshResourceBudget.hpp"
 #include "SurfaceSelectionState.hpp"
 #include "slic3r/AI/Contracts/LocalPrintColorResult.hpp"
 #include <map>
@@ -10,7 +11,7 @@ namespace Slic3r::GUI::LocalSemanticEvidence {
 using Json = nlohmann::json;
 inline constexpr const char* schema = "orcaslicer.local-semantic-evidence.v1";
 inline constexpr const char* label_schema = "farl-celebm-face19-subset-v1";
-inline constexpr size_t max_faces = 2000000, max_vertices = 6000000;
+inline constexpr size_t max_faces = MeshResourceBudget::maximum_faces, max_vertices = MeshResourceBudget::maximum_vertices;
 inline constexpr size_t max_bytes = 128ULL * 1024 * 1024, max_subjects = 32, max_regions = 416;
 
 inline bool supported_label(const std::string& value)

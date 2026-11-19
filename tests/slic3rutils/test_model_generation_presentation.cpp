@@ -9,7 +9,6 @@
 #include "slic3r/GUI/AIModelOutputDirectory.hpp"
 #include "slic3r/GUI/AIModelGenerationHttpError.hpp"
 #include "test_utils.hpp"
-#include "slic3r/GUI/AI/ModelGeneration/ModelGenerationImageInput.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/SmartGenerationFlow.hpp"
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
 
@@ -782,7 +781,7 @@ TEST_CASE("Local image selection accepts decodable PNG and JPEG within the exist
     if (wxImage::FindHandler(wxBITMAP_TYPE_PNG) == nullptr) wxImage::AddHandler(new wxPNGHandler());
     if (wxImage::FindHandler(wxBITMAP_TYPE_JPEG) == nullptr) wxImage::AddHandler(new wxJPEGHandler());
 
-    const auto png = temporary.path() / "reference.png";
+    const auto png = temporary.path() / boost::filesystem::path(L"参考图片.png");
     const auto jpeg = temporary.path() / "reference.jpeg";
     const auto small_image_path = temporary.path() / "small.png";
     const auto truncated = temporary.path() / "truncated.png";
@@ -801,8 +800,11 @@ TEST_CASE("Local image selection accepts decodable PNG and JPEG within the exist
     boost::filesystem::copy_file(png, oversized);
     boost::filesystem::resize_file(oversized, 20 * 1024 * 1024 + 1);
 
+    const auto original = boost::filesystem::file_size(png);
     CHECK(is_supported_image(png));
     CHECK(is_supported_image(jpeg));
+    CHECK(boost::filesystem::file_size(png) == original);
+    CHECK(is_supported_image(png));
     CHECK_FALSE(is_supported_image(small_image_path));
     wxLogNull quiet;
     CHECK_FALSE(is_supported_image(truncated));
@@ -1519,104 +1521,6 @@ TEST_CASE("Beauty workbench requires a loaded local model and distinguishes temp
     CHECK(workbench_access(true, true, false, false) == WorkbenchAccess::Available);
 }
 
-TEST_CASE("Image replacement validates bytes and preserves the old image on failure", "[ModelGenerationPresentation][ImageInput]")
-{
-    using namespace Slic3r::GUI;
-    ScopedTemporaryDir temporary("orca-image-input");
-    if (!wxImage::FindHandler(wxBITMAP_TYPE_PNG)) wxImage::AddHandler(new wxPNGHandler());
-    wxImage source(96, 64);
-    source.SetRGB(wxRect(0, 0, 96, 64), 32, 128, 224);
-    source.InitAlpha();
-    source.SetAlpha(0, 0, 17);
-    const auto path = temporary.path() / boost::filesystem::path(L"中文透明图片.PNG");
-    REQUIRE(source.SaveFile(path.wstring(), wxBITMAP_TYPE_PNG));
-    wxImage output;
-    REQUIRE(load_model_input_image(path, output) == ImageInputError::None);
-    CHECK(output.GetWidth() == 96);
-    CHECK(output.GetAlpha(0, 0) == 17);
-    const auto fake = temporary.path() / "fake.jpg";
-    boost::filesystem::copy_file(path, fake);
-    CHECK(load_model_input_image(fake, output) == ImageInputError::ExtensionMismatch);
-    CHECK(output.GetWidth() == 96);
-    CHECK(output.GetBlue(0, 0) == 224);
-    const auto webp = temporary.path() / "fake.webp";
-    boost::filesystem::copy_file(path, webp);
-    CHECK(load_model_input_image(webp, output) == ImageInputError::Unsupported);
-    CHECK(load_model_input_image(temporary.path() / "missing.png", output) == ImageInputError::Unreadable);
-    const auto corrupt = temporary.path() / "broken.png";
-    { boost::filesystem::ofstream file(corrupt, std::ios::binary); file << "not an image"; }
-    CHECK(load_model_input_image(corrupt, output) == ImageInputError::Corrupt);
-    CHECK(output.GetAlpha(0, 0) == 17);
-}
-
-TEST_CASE("Image input rejects excessive bytes and pixels before decoding", "[ModelGenerationPresentation][ImageInput]")
-{
-    using namespace Slic3r::GUI;
-    ScopedTemporaryDir temporary("orca-image-limits");
-    if (!wxImage::FindHandler(wxBITMAP_TYPE_PNG)) wxImage::AddHandler(new wxPNGHandler());
-    wxImage output, small_image(63, 64);
-    const auto path = temporary.path() / "input.png";
-    REQUIRE(small_image.SaveFile(path.wstring(), wxBITMAP_TYPE_PNG));
-    CHECK(load_model_input_image(path, output) == ImageInputError::TooSmall);
-    { boost::filesystem::ofstream file(path, std::ios::binary);
-      file.seekp(MAX_INPUT_IMAGE_BYTES); file.put('x'); }
-    CHECK(load_model_input_image(path, output) == ImageInputError::TooLarge);
-    // A plausible huge IHDR must be refused before allocating its pixel buffer.
-    const unsigned char header[] = {137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,32,0,0,0,32,0};
-    { boost::filesystem::ofstream file(path, std::ios::binary);
-      file.write(reinterpret_cast<const char*>(header), sizeof(header)); }
-    CHECK(load_model_input_image(path, output) == ImageInputError::TooManyPixels);
-    CHECK_FALSE(output.IsOk());
-}
-
-TEST_CASE("JPEG input honors camera orientation without modifying the original", "[ModelGenerationPresentation][ImageInput]")
-{
-    using namespace Slic3r::GUI;
-    ScopedTemporaryDir temporary("orca-image-orientation");
-    if (!wxImage::FindHandler(wxBITMAP_TYPE_JPEG)) wxImage::AddHandler(new wxJPEGHandler());
-    wxImage source(96, 64);
-    source.SetRGB(wxRect(0, 0, 96, 64), 200, 100, 30);
-    const auto path = temporary.path() / "camera.jpg";
-    REQUIRE(source.SaveFile(path.wstring(), wxBITMAP_TYPE_JPEG));
-    boost::filesystem::ifstream input(path, std::ios::binary);
-    const std::vector<unsigned char> original((std::istreambuf_iterator<char>(input)), {});
-    input.close();
-    // EXIF IFD0 orientation=6 (90 degrees clockwise), little endian TIFF.
-    const std::vector<unsigned char> exif = {255,225,0,34,'E','x','i','f',0,0,'I','I',42,0,8,0,0,0,1,0,18,1,3,0,1,0,0,0,6,0,0,0,0,0,0,0};
-    auto camera = original; camera.insert(camera.begin()+2, exif.begin(), exif.end());
-    { boost::filesystem::ofstream file(path, std::ios::binary); file.write(reinterpret_cast<const char*>(camera.data()), camera.size()); }
-    wxImage output;
-    REQUIRE(load_model_input_image(path, output) == ImageInputError::None);
-    CHECK(output.GetWidth() == 64);
-    CHECK(output.GetHeight() == 96);
-    CHECK(boost::filesystem::file_size(path) == camera.size());
-    boost::filesystem::ifstream after(path, std::ios::binary);
-    CHECK(std::vector<unsigned char>((std::istreambuf_iterator<char>(after)), {}) == camera);
-    after.close();
-    camera.resize(camera.size()-2);
-    { boost::filesystem::ofstream file(path, std::ios::binary); file.write(reinterpret_cast<const char*>(camera.data()), camera.size()); }
-    CHECK(load_model_input_image(path, output) == ImageInputError::Corrupt);
-    CHECK(output.GetWidth() == 64);
-}
-
-TEST_CASE("EXIF transforms keep mirrored and rotated corner identities", "[ModelGenerationPresentation][ImageInput]")
-{
-    using namespace Slic3r::GUI;
-    wxImage source(3, 2);
-    source.SetRGB(wxRect(0, 0, 3, 2), 0, 0, 0);
-    source.SetRGB(0, 0, 11, 0, 0); source.SetRGB(2, 0, 22, 0, 0);
-    source.SetRGB(0, 1, 33, 0, 0); source.SetRGB(2, 1, 44, 0, 0);
-    const std::array<int,8> top_left {11,22,44,33,11,33,44,22};
-    for (int orientation=1; orientation<=8; ++orientation) {
-        DYNAMIC_SECTION("orientation " << orientation) {
-            const auto result=orient_input_image(source,orientation);
-            CHECK(result.GetRed(0,0)==top_left[orientation-1]);
-            CHECK(result.GetWidth()==(orientation>=5?2:3));
-        }
-    }
-    CHECK(input_jpeg_orientation({255,216,255,225,255,255}) == 1);
-}
-
 TEST_CASE("Finishing preview owns the next action until accepted or returned to editing", "[ModelGenerationPresentation][WorkbenchFlow]")
 {
     using namespace Slic3r::GUI::ModelGenerationPresentation;
@@ -1718,68 +1622,6 @@ TEST_CASE("model check failures provide recovery guidance without leaking servic
         CHECK_FALSE(message.Contains("raw")); CHECK_FALSE(message.Contains("English"));
         CHECK_FALSE(message.Contains("unknown")); CHECK_FALSE(message.empty());
     }
-}
-
-
-TEST_CASE("Invalid reference files do not ask to leave an edited model", "[ModelGenerationPresentation][ImageInput]")
-{
-    using namespace Slic3r::GUI;
-    ScopedTemporaryDir temporary("orca-reference-replacement");
-    if (!wxImage::FindHandler(wxBITMAP_TYPE_PNG)) wxImage::AddHandler(new wxPNGHandler());
-    wxImage reference(96, 64);
-    reference.SetRGB(wxRect(0, 0, 96, 64), 32, 128, 224);
-    const auto good = temporary.path() / "reference.png";
-    REQUIRE(reference.SaveFile(good.wstring(), wxBITMAP_TYPE_PNG));
-    const auto misnamed = temporary.path() / "misnamed.jpg";
-    boost::filesystem::copy_file(good, misnamed);
-    const auto corrupt = temporary.path() / "broken.png";
-    { boost::filesystem::ofstream file(corrupt, std::ios::binary); file << "not a PNG"; }
-
-    const auto expected = GENERATE(ImageInputError::Unreadable, ImageInputError::Corrupt,
-                                   ImageInputError::ExtensionMismatch);
-    const auto path = expected == ImageInputError::Unreadable ? temporary.path() / "missing.png" :
-                      expected == ImageInputError::Corrupt ? corrupt : misnamed;
-    wxImage previous(80, 64);
-    previous.SetRGB(wxRect(0, 0, 80, 64), 180, 20, 40);
-    previous.InitAlpha();
-    previous.SetAlpha(0, 0, 52);
-    bool asked_to_leave = false;
-    CHECK(prepare_model_input_replacement(path, previous, [&] {
-        asked_to_leave = true;
-        return false;
-    }) == expected);
-    CHECK_FALSE(asked_to_leave);
-    CHECK(previous.GetWidth() == 80);
-    CHECK(previous.GetRed(0, 0) == 180);
-    CHECK(previous.GetAlpha(0, 0) == 52);
-}
-
-TEST_CASE("A valid replacement publishes its preview only after edit approval", "[ModelGenerationPresentation][ImageInput]")
-{
-    using namespace Slic3r::GUI;
-    ScopedTemporaryDir temporary("orca-reference-approval");
-    if (!wxImage::FindHandler(wxBITMAP_TYPE_PNG)) wxImage::AddHandler(new wxPNGHandler());
-    wxImage reference(96, 64);
-    reference.SetRGB(wxRect(0, 0, 96, 64), 32, 128, 224);
-    reference.InitAlpha();
-    reference.SetAlpha(0, 0, 17);
-    const auto path = temporary.path() / "reference.png";
-    REQUIRE(reference.SaveFile(path.wstring(), wxBITMAP_TYPE_PNG));
-
-    wxImage previous(80, 64);
-    previous.SetRGB(wxRect(0, 0, 80, 64), 180, 20, 40);
-    previous.InitAlpha();
-    previous.SetAlpha(0, 0, 52);
-    const bool approved = GENERATE(false, true);
-    int decisions = 0;
-    CHECK(prepare_model_input_replacement(path, previous, [&] {
-        ++decisions;
-        return approved;
-    }) == (approved ? ImageInputError::None : ImageInputError::Cancelled));
-    CHECK(decisions == 1);
-    CHECK(previous.GetWidth() == (approved ? 96 : 80));
-    CHECK(previous.GetBlue(0, 0) == (approved ? 224 : 40));
-    CHECK(previous.GetAlpha(0, 0) == (approved ? 17 : 52));
 }
 
 

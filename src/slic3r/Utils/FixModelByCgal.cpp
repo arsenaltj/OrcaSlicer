@@ -13,6 +13,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <tbb/task_arena.h>
 
 #include <boost/log/trivial.hpp>
 
@@ -188,6 +189,9 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
     auto worker_thread = std::thread([&model_object, volume_idx, &ivolume, on_progress, &success, &canceled, &finished, &fix_result, &staged_paint_removed, &staged_modified, keep_painting]() {
         try {
 	        set_current_thread_name("cgal_fix_model");
+            const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
+            tbb::task_arena repair_arena(int(std::min(4u, cores > 1 ? cores - 1 : 1u)));
+            repair_arena.execute([&] {
 
             size_t start_volume = volume_idx == -1 ? 0 : size_t(volume_idx);
             size_t end_volume   = volume_idx == -1 ? std::numeric_limits<size_t>::max() : size_t(volume_idx);
@@ -203,6 +207,28 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
                 ModelVolume *volume = model_object.volumes[ivolume];
                 if (volume->is_painted_modifier())
                     continue;
+                // Match the pinned official entry: repair one intact volume.
+                // Splitting first destroys nested voids and changes winding.
+                MeshRepairStats native_stats;
+                std::string native_error;
+                const bool had_native_painting = volume->is_any_painted();
+                bool native_ok;
+                {
+                    RepairStageTimer stage("repair_native_volume", ivolume, invalid_repair_index, &canceled);
+                    native_ok = volume->repair(keep_painting, &native_stats, &native_error, [&](int percent) {
+                        if (canceled) throw RepairCanceledException();
+                        on_progress(_u8L("Repairing model object"), unsigned(percent));
+                    });
+                }
+                if (canceled) throw RepairCanceledException();
+                if (native_ok && native_error.empty() && !mesh_repair_geometry_id(volume->mesh().its).empty()) {
+                    staged_modified |= native_stats.modified;
+                    staged_paint_removed |= native_stats.modified && !keep_painting && had_native_painting;
+                    continue;
+                }
+                // Only an actual native failure enters the former seam/split
+                // compatibility path, still in private atomic staging.
+                BOOST_LOG_TRIVIAL(info) << "[CgalRepair] native_failed; trying legacy compatibility";
                 // A painted modifier follows the complete host mesh. Let the
                 // official repair handle that host without fragmenting it.
                 const bool has_painted_modifiers = std::any_of(model_object.volumes.begin(), model_object.volumes.end(),
@@ -307,13 +333,14 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
                                            part_volume->mesh().its.vertices.size(), part_volume->mesh().its.indices.size());
                     // Run the official volume repair on private staging. In particular,
                     // closed meshes may still need orientation or nonmanifold repairs.
-                    if (!part_volume->repair(keep_painting, &stats, &error, [&](int percent) {
+                    const bool part_ok = part_volume->repair(keep_painting, &stats, &error, [&](int percent) {
                         if (canceled)
                             throw RepairCanceledException();
                         const size_t count = std::max<size_t>(1, part_end - ivolume + 1);
                         on_progress(_u8L("Repairing model object"),
                                     unsigned((100 * (part_idx - ivolume) + size_t(percent)) / count));
-                    })) {
+                    });
+                    if (!part_ok || !error.empty() || mesh_repair_geometry_id(part_volume->mesh().its).empty()) {
                         if (canceled)
                             throw RepairCanceledException();
                         throw Slic3r::RuntimeError(error.empty() ? _u8L("Repair failed") : error);
@@ -338,6 +365,7 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
             if (ivolume > 0)
                 --ivolume;
             on_progress(_u8L("Repair finished"), 100);
+            });
             success = true;
             finished = true;
         } catch (RepairCanceledException &) {

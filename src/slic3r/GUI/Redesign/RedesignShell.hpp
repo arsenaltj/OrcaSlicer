@@ -9,6 +9,7 @@
 #include "../Presentation/UiRuntime.hpp"
 #include "../Presentation/WindowMountLease.hpp"
 #include "RedesignPreviewPresentation.hpp"
+#include "RedesignSlicingDetails.hpp"
 #include "RedesignPresentationDeadline.hpp"
 #include "RedesignWorkspaceNavigation.hpp"
 #include "../AI/ModelGeneration/ModelGenerationHost.hpp"
@@ -132,7 +133,6 @@ private:
     void update_navigation();
     wxPanel* m_assets_page {nullptr};
     AssetsWorkspace* m_assets_workspace {nullptr};
-    wxPanel* create_placeholder_page(const wxString& title, const wxString& body);
     void connect_model_generation_host();
     void apply_advanced_model_state(const ModelGenerationUIState& state, bool new_generation = false);
     void on_advanced_model_job(const AdvancedCreation::ModelJobEvent& event);
@@ -241,6 +241,7 @@ private:
     void check_preview_first_frame(RedesignPageTransition::Token token);
     void finish_preview_transition(RedesignPageTransition::Token token, bool ready);
     void layout_preview_transition_cover();
+    void cancel_preview_presentation();
     bool can_save_print_project() const;
     void refresh_project_save_actions();
     void save_print_project();
@@ -329,6 +330,8 @@ private:
     SmartSlicingFeatureHost* m_slicing_host { nullptr };
     PostGenerationWorkbenchState m_workbench_state;
     SmartSlicingWorkbenchState m_slicing_state;
+    SlicingParameterPresentation m_slicing_parameters;
+    std::uint64_t m_slicing_notifications {0}, m_slicing_commits {0}, m_slicing_parameter_updates {0}, m_slicing_layouts {0};
     Presentation::RefreshState m_slicing_dirty;
     bool m_native_slicing {false};
     bool m_preview_toolpath_outside {false};
