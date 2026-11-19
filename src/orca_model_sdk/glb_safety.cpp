@@ -6,9 +6,30 @@
 #include <unistd.h>
 #include <cerrno>
 #endif
+#ifdef __ANDROID__
+#include <android/api-level.h>
+#include <dlfcn.h>
+#include "android_publish.hpp"
+#endif
 
 namespace orca_model_detail {
 namespace {
+#ifdef __ANDROID__
+static_assert(AT_FDCWD == -100 && RENAME_NOREPLACE == 1, "Exclusive Android rename flags");
+ExclusiveRename android_exclusive_rename()
+{
+    static const auto function = []() -> ExclusiveRename {
+        if (android_get_device_api_level() < 30) return nullptr;
+        void* libc = ::dlopen("libc.so", RTLD_NOW | RTLD_LOCAL);
+        if (!libc) return nullptr;
+        const auto result = reinterpret_cast<ExclusiveRename>(::dlsym(libc, "renameat2"));
+        // libc is already a permanent dependency of this library.
+        ::dlclose(libc);
+        return result;
+    }();
+    return function;
+}
+#endif
 #ifdef _WIN32
 // Identity and containment use the original canonical filesystem paths. Only
 // the final Win32 API spelling is extended, independent of process manifests
@@ -140,7 +161,20 @@ bool publish_exclusive(const F::path& destination, const std::string& bytes, con
         }
         ::close(file);
         file = -1;
-        if (io_fault(IoBoundary::output_publish) || ::link(temporary.c_str(), destination.c_str()) != 0) {
+        bool consumed_temporary = false;
+        const bool fault = io_fault(IoBoundary::output_publish);
+        int status = -1;
+        if (!fault) {
+#ifdef __ANDROID__
+            const auto published = android_exclusive_publish(android_get_device_api_level(), android_exclusive_rename(),
+                                                             ::link, temporary.c_str(), destination.c_str());
+            status = published.status;
+            consumed_temporary = published.consumed_temporary;
+#else
+            status = ::link(temporary.c_str(), destination.c_str());
+#endif
+        }
+        if (status != 0) {
             const int error=errno;
             if (error == EEXIST) {
                 ::unlink(temporary.c_str());
@@ -148,7 +182,7 @@ bool publish_exclusive(const F::path& destination, const std::string& bytes, con
             }
             throw Error("Cannot publish without replacing an existing file",IoBoundary::output_publish,io_errno(error));
         }
-        ::unlink(temporary.c_str());
+        if (!consumed_temporary) ::unlink(temporary.c_str());
     } catch (...) {
         if (file >= 0)
             ::close(file);
