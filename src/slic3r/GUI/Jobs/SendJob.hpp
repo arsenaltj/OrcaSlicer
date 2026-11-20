@@ -30,6 +30,8 @@ class SendJob : public Job
     bool                m_is_check_mode{false};
     bool                m_check_and_continue{false};
     std::function<void()> m_success_fun{nullptr};
+    std::function<void(bool, bool)> m_transfer_finished;
+    bool m_upload_succeeded = false;
     std::function<void(int)> m_enter_ip_address_fun_fail{nullptr};
     std::function<void()> m_enter_ip_address_fun_success{nullptr};
     Plater *m_plater;
@@ -64,6 +66,7 @@ public:
     void set_check_mode() {m_is_check_mode = true;};
     void check_and_continue() {m_check_and_continue = true;};
     bool is_finished() { return m_job_finished;  }
+    void on_transfer_finished(std::function<void(bool, bool)> callback) { m_transfer_finished = std::move(callback); }
     void process(Ctl &ctl) override;
     void on_success(std::function<void()> success);
     void on_check_ip_address_fail(std::function<void(int)> func);

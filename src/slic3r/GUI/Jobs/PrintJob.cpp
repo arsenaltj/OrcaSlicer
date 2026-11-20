@@ -172,6 +172,9 @@ void PrintJob::process(Ctl &ctl)
     }
     const auto traits = m_agent->get_printer_agent()->get_traits();
     const std::string agent_id = m_agent->get_printer_agent()->get_agent_info().id;
+    const bool is_moonraker = traits.protocol_family == PrinterAgentTraits::ProtocolFamily::Moonraker;
+    const auto upload_failure_message = is_moonraker ?
+        _u8L("Failed to upload the file to the printer's storage. Please try again.") : upload_ftp_failed_str;
 
     if (this->connection_type == "lan") {
         msg = _u8L("Sending print job over LAN");
@@ -461,7 +464,9 @@ void PrintJob::process(Ctl &ctl)
         &is_try_lan_mode_failed,
         &msg,
         &curr_percent,
-        StagePercentPoint
+        StagePercentPoint,
+        is_moonraker,
+        upload_failure_message
     ](int stage, int code, std::string info) {
 
                         if (stage == SendingPrintJobStage::PrintingStageCreate && !is_try_lan_mode_failed) {
@@ -529,7 +534,7 @@ void PrintJob::process(Ctl &ctl)
                             }else if (code == BAMBU_NETWORK_ERR_PRINT_WR_FILE_NOT_EXIST || code == BAMBU_NETWORK_ERR_PRINT_SP_FILE_NOT_EXIST){
                                 m_plater->update_print_error_info(code, desc_fail_not_exist, info);
                             }else if (code == BAMBU_NETWORK_ERR_PRINT_LP_UPLOAD_FTP_FAILED || code == BAMBU_NETWORK_ERR_PRINT_SG_UPLOAD_FTP_FAILED) {
-                                m_plater->update_print_error_info(code, desc_upload_ftp_failed, info);
+                                m_plater->update_print_error_info(code, is_moonraker ? upload_failure_message : desc_upload_ftp_failed, info);
                             }else {
                                 m_plater->update_print_error_info(code, desc_network_error, info);
                             }
@@ -737,7 +742,7 @@ void PrintJob::process(Ctl &ctl)
         } else if (result == BAMBU_NETWORK_ERR_PRINT_WR_GET_NOTIFICATION_TIMEOUT || result == BAMBU_NETWORK_ERR_PRINT_SP_GET_NOTIFICATION_TIMEOUT) {
             msg_text = timeout_to_upload_str;
         } else if (result == BAMBU_NETWORK_ERR_PRINT_LP_UPLOAD_FTP_FAILED || result == BAMBU_NETWORK_ERR_PRINT_SG_UPLOAD_FTP_FAILED) {
-            msg_text = upload_ftp_failed_str;
+            msg_text = upload_failure_message;
         } else if (result == BAMBU_NETWORK_ERR_CANCELED) {
             msg_text = print_canceled_str;
             ctl.update_status(0, msg_text);
@@ -793,6 +798,8 @@ void PrintJob::finalize(bool canceled, std::exception_ptr &eptr) {
         m_lifecycle_finished = true;
     }
 
+    if (m_transfer_finished)
+        m_transfer_finished(m_lifecycle_success && !eptr, canceled);
     if (canceled || eptr)
         return;
 }

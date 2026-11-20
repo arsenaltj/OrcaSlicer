@@ -133,6 +133,7 @@ add_executable(${_TEST_NAME}_tests
     test_inline_model_generation.cpp
     test_generation_particles.cpp
     test_honor_account.cpp
+    test_honor_services.cpp
     test_platform_library.cpp
     test_diagnostic_logs.cpp
     test_account_avatar.cpp

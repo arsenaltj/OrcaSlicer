@@ -29,6 +29,7 @@ struct ModelLibraryEntry {
     std::string website_model_id, website_version_id, website_file_id, website_sha256;
     bool website_original_verified {false};
     bool use_printable_colors {false}, design_only {false}, accepted_finishing {false};
+    bool can_direct_import {false};
     std::shared_ptr<const ModelHistoryRepairIndex> repair_index;
 };
 

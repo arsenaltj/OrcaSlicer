@@ -4,6 +4,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Slic3r::HonorAccount {
@@ -47,8 +48,11 @@ struct Authorization {
 enum class Failure { Temporary, InvalidCredentials, Configuration, Protocol, Cancelled };
 class Error : public std::runtime_error {
 public:
-    Error(Failure kind, const std::string& safe_message) : std::runtime_error(safe_message), kind(kind) {}
+    Error(Failure kind, const std::string& safe_message, unsigned status = 0, std::string code = {})
+        : std::runtime_error(safe_message), kind(kind), status(status), code(std::move(code)) {}
     Failure kind;
+    unsigned status;
+    std::string code;
 };
 
 std::int64_t now_seconds();

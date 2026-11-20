@@ -73,6 +73,7 @@
 #include <wx/timer.h>
 #include "BitmapCache.hpp"
 #include "Redesign/PrinterTransferDialogStyle.hpp"
+#include "Redesign/PrinterTransferProgress.hpp"
 #include "Redesign/PrinterWorkspaceState.hpp"
 
 #include "DeviceCore/DevManager.h"
@@ -416,15 +417,27 @@ SendToPrinterDialog::SendToPrinterDialog(Plater *plater, PrinterTransferPresenta
     m_sizer_pcont->Add(m_button_ensure, 0, wxEXPAND | wxBOTTOM, FromDIP(10));
     m_sizer_prepare->Add(m_sizer_pcont, 0, wxEXPAND, 0);
     m_panel_prepare->SetSizer(m_sizer_prepare);
+    if (m_presentation.redesign())
+        set_printer_transfer_footer_layout(m_panel_prepare, m_button_ensure);
     m_panel_prepare->Layout();
     m_simplebook->AddPage(m_panel_prepare, wxEmptyString, true);
 
     // sending mode
-    m_status_bar    = std::make_shared<BBLStatusBarSend>(m_simplebook);
-    m_panel_sending = m_status_bar->get_panel();
+    std::shared_ptr<ProgressIndicator> progress;
+    if (m_presentation.redesign()) {
+        m_transfer_progress = std::make_shared<PrinterTransferProgress>(m_simplebook);
+        m_panel_sending = m_transfer_progress->panel();
+        progress = m_transfer_progress;
+        m_simplebook->SetMinSize(printer_transfer_footer_size(this));
+        m_simplebook->SetMaxSize(printer_transfer_footer_size(this));
+    } else {
+        m_status_bar = std::make_shared<BBLStatusBarSend>(m_simplebook);
+        m_panel_sending = m_status_bar->get_panel();
+        progress = m_status_bar;
+    }
     m_simplebook->AddPage(m_panel_sending, wxEmptyString, false);
     
-    m_worker = std::make_unique<PlaterWorker<BoostThreadWorker>>(this, m_status_bar, "send_worker");
+    m_worker = std::make_unique<PlaterWorker<BoostThreadWorker>>(this, progress, "send_worker");
 
     // finish mode
     m_panel_finish = new wxPanel(m_simplebook, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL);
@@ -659,6 +672,7 @@ SendToPrinterDialog::SendToPrinterDialog(Plater *plater, PrinterTransferPresenta
         m_button_ensure->SetLabel(_L("开始上传"));
         apply_printer_transfer_redesign_theme(this);
         style_printer_transfer_primary_button(m_button_ensure);
+        m_transfer_progress->rescale();
     }
     Layout();
     Fit();
@@ -799,7 +813,10 @@ void SendToPrinterDialog::prepare_mode()
         validate_presentation_target("prepare", true);
     show_print_failed_info(false);
 
-    m_status_bar->reset();
+    if (m_status_bar)
+        m_status_bar->reset();
+    if (m_transfer_progress)
+        m_transfer_progress->reset();
     if (m_simplebook->GetSelection() != 0) {
         m_simplebook->SetSelection(0);
     }
@@ -809,7 +826,10 @@ void SendToPrinterDialog::sending_mode()
 {
     m_is_in_sending_mode = true;
     m_comboBox_printer->Disable();
-    if (m_simplebook->GetSelection() != 1){
+    if (m_transfer_progress && m_simplebook->GetSelection() != 1) {
+        wxWindowUpdateLocker locker(m_simplebook);
+        m_simplebook->ChangeSelection(1);
+    } else if (m_simplebook->GetSelection() != 1){
         m_simplebook->SetSelection(1);
         Layout();
         Fit();
@@ -896,6 +916,11 @@ void SendToPrinterDialog::init_timer()
 
 void SendToPrinterDialog::on_cancel(wxCloseEvent &event)
 {
+    if (m_transfer_progress && m_transfer_progress->active() && event.CanVeto()) {
+        m_transfer_progress->cancel();
+        event.Veto();
+        return;
+    }
     m_worker->cancel_all();
 
     if (m_task_timer && m_task_timer->IsRunning()) {
@@ -979,7 +1004,8 @@ void SendToPrinterDialog::on_ok(wxCommandEvent &event)
     m_is_canceled = false;
     m_export_3mf_cancel = false;
     m_app_shutdown_requested = false;
-    Enable_Send_Button(false);
+    if (!m_transfer_progress)
+        Enable_Send_Button(false);
     if (m_is_in_sending_mode)
         return;
 
@@ -1008,11 +1034,7 @@ void SendToPrinterDialog::on_ok(wxCommandEvent &event)
                             << " payload=" << printer_job_payload_name(traits.job_payload);
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", print_job: for send task, current printer id =  " << m_printer_last_select << std::endl;
-    show_status(PrintDialogStatus::PrintStatusSending);
-
-    m_status_bar->reset();
-    m_status_bar->set_prog_block();
-    m_status_bar->set_cancel_callback_fina([this]() {
+    auto cancel_upload = [this]() {
         BOOST_LOG_TRIVIAL(info) << "print_job: enter canceled";
         m_worker->cancel_all();
 
@@ -1030,7 +1052,15 @@ void SendToPrinterDialog::on_ok(wxCommandEvent &event)
         m_is_canceled = true;
         wxCommandEvent* event = new wxCommandEvent(EVT_PRINT_JOB_CANCEL);
         wxQueueEvent(this, event);
-    });
+    };
+    if (m_transfer_progress) {
+        m_transfer_progress->begin(std::move(cancel_upload));
+    } else {
+        m_status_bar->reset();
+        m_status_bar->set_prog_block();
+        m_status_bar->set_cancel_callback_fina(std::move(cancel_upload));
+    }
+    show_status(PrintDialogStatus::PrintStatusSending);
 
     if (m_is_canceled) {
         BOOST_LOG_TRIVIAL(info) << "send_job: m_is_canceled";
@@ -1059,7 +1089,10 @@ void SendToPrinterDialog::on_ok(wxCommandEvent &event)
             bool     cancelled = false;
             wxString msg       = _L("Preparing print job");
             // export_3mf holds pointers into the project; do not dispatch nested user input here.
-            m_status_bar->update_status(msg, cancelled, 10, false);
+            if (m_transfer_progress)
+                m_transfer_progress->set_progress(10);
+            else
+                m_status_bar->update_status(msg, cancelled, 10, false);
             m_export_3mf_cancel = cancel = cancelled;
         });
     }
@@ -1081,7 +1114,10 @@ void SendToPrinterDialog::on_ok(wxCommandEvent &event)
     if (result < 0) {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": Abnormal print file data. Please slice again";
         wxString msg = _L("Abnormal print file data. Please slice again");
-        m_status_bar->set_status_text(msg);
+        if (m_transfer_progress)
+            m_transfer_progress->finish(msg);
+        else
+            m_status_bar->set_status_text(msg);
         return;
     }
 
@@ -1090,6 +1126,8 @@ void SendToPrinterDialog::on_ok(wxCommandEvent &event)
             result = m_plater->export_config_3mf(m_print_plate_idx);
             if (result < 0) {
                 BOOST_LOG_TRIVIAL(info) << "export_config_3mf failed, result = " << result;
+                if (m_transfer_progress)
+                    m_transfer_progress->finish(_L("准备上传文件失败，请重新切片后重试。"));
                 return;
             }
         }
@@ -1132,9 +1170,14 @@ void SendToPrinterDialog::on_ok(wxCommandEvent &event)
         m_task_timer->SetOwner(this);
 
         this->Bind(wxEVT_TIMER, [this](auto e){
-                show_status(PrintDialogStatus::PrintStatusPublicUploadFiled);
-                m_filetransfer_uploadfile_job->cancel();
-                update_print_status_msg(_L("Upload file timeout, please check if the firmware version supports it."), false, true);
+                if (m_transfer_progress)
+                    m_transfer_progress->finish(_L("Upload file timeout, please check if the firmware version supports it."));
+                else {
+                    show_status(PrintDialogStatus::PrintStatusPublicUploadFiled);
+                    update_print_status_msg(_L("Upload file timeout, please check if the firmware version supports it."), false, true);
+                }
+                if (m_filetransfer_uploadfile_job)
+                    m_filetransfer_uploadfile_job->cancel();
         },m_task_timer->GetId());
         m_task_timer->StartOnce(timeout_period);
     }
@@ -1165,11 +1208,22 @@ void SendToPrinterDialog::on_ok(wxCommandEvent &event)
             : m_send_job->sdcard_state == DevStorage::SdcardState::HAS_SDCARD_NORMAL;
         m_send_job->set_project_name(m_current_project_name.utf8_string());
 
+        if (m_transfer_progress) {
+            m_send_job->on_transfer_finished([this](bool succeeded, bool cancelled) {
+                m_is_in_sending_mode = false;
+                const auto detail = m_transfer_progress->failure_detail();
+                m_transfer_progress->finish(succeeded ? _L("G-code 已上传") :
+                    (cancelled || m_is_canceled) ? _L("已取消上传") :
+                    detail.empty() ? _L("上传失败，请检查设备连接后重试。") : detail, succeeded);
+            });
+        }
+
         enable_prepare_mode = false;
 
         m_send_job->on_check_ip_address_fail([this, token = std::weak_ptr(m_token)](int result) {
              CallAfter([token, this] {
                 if (token.expired()) { return; }
+                if (m_transfer_progress) { return; }
                 SendFailedConfirm sfcDlg;
                 auto res = sfcDlg.ShowModal();
                 m_status_bar->cancel();
@@ -1248,6 +1302,11 @@ void SendToPrinterDialog::on_refresh(wxCommandEvent &event)
 void SendToPrinterDialog::on_print_job_cancel(wxCommandEvent &evt)
 {
     BOOST_LOG_TRIVIAL(info) << "print_job: canceled";
+    if (m_transfer_progress) {
+        if (m_worker->is_idle())
+            m_transfer_progress->finish(_L("已取消上传"));
+        return;
+    }
     show_status(PrintDialogStatus::PrintStatusSendingCanceled);
     // enter prepare mode
     prepare_mode();
@@ -1419,6 +1478,8 @@ void SendToPrinterDialog::update_printer_combobox(wxCommandEvent &event)
 
 void SendToPrinterDialog::on_timer(wxTimerEvent &event)
 {
+    if (m_transfer_progress && m_transfer_progress->showing_transfer())
+        return;
     update_show_status();
 }
 
@@ -1742,11 +1803,15 @@ void SendToPrinterDialog::Enable_Send_Button(bool en)
     if (!en) {
         if (m_button_ensure->IsEnabled()) {
             m_button_ensure->Disable();
-            m_storage_panel->Hide();
+            if (!m_transfer_progress || !m_transfer_progress->showing_transfer())
+                m_storage_panel->Hide();
+            else
+                m_storage_panel->Disable();
         }
     } else {
         if (!m_button_ensure->IsEnabled()) {
             m_button_ensure->Enable();
+            m_storage_panel->Enable();
             m_storage_panel->Show();
         }
     }
@@ -1756,9 +1821,14 @@ void SendToPrinterDialog::on_dpi_changed(const wxRect &suggested_rect)
 {
     m_button_refresh->Rescale(); // ORCA
     m_button_ensure->Rescale(); // ORCA
-    m_status_bar->msw_rescale();
-    if (m_presentation.redesign())
+    if (m_transfer_progress) {
+        m_simplebook->SetMinSize(printer_transfer_footer_size(this));
+        m_simplebook->SetMaxSize(printer_transfer_footer_size(this));
+        m_transfer_progress->rescale();
         style_printer_transfer_primary_button(m_button_ensure);
+    } else {
+        m_status_bar->msw_rescale();
+    }
     Fit();
     Refresh();
 }
@@ -1799,7 +1869,8 @@ void SendToPrinterDialog::set_default()
     m_comboBox_printer->SetValue(wxEmptyString);
     m_comboBox_printer->Enable();
     // rset status bar
-    m_status_bar->reset();
+    if (m_status_bar)
+        m_status_bar->reset();
 
     NetworkAgent* agent = wxGetApp().getAgent();
     if (agent) {
@@ -1811,6 +1882,8 @@ void SendToPrinterDialog::set_default()
     // thumbmail
     //wxBitmap bitmap;
     ThumbnailData &data   = m_plater->get_partplate_list().get_curr_plate()->thumbnail_data;
+    if (m_presentation.redesign())
+        m_panel_image->Show(data.is_valid());
     if (data.is_valid()) {
         wxImage image(data.width, data.height);
         image.InitAlpha();
@@ -1910,6 +1983,7 @@ void SendToPrinterDialog::on_change_color_mode()
     }
     apply_printer_transfer_redesign_theme(this);
     style_printer_transfer_primary_button(m_button_ensure);
+    m_transfer_progress->rescale();
 }
 
 extern wxString hide_passwd(wxString url, std::vector<wxString> const &passwords);
@@ -2263,7 +2337,13 @@ void SendToPrinterDialog::UploadFileProgressCallback(int progress)
 {
     bool     cancelled = false;
     wxString msg       = _L("Sending...");
-    m_status_bar->update_status(msg, cancelled, 10 + std::floor(progress * 0.9), true);
+    const int percent = 10 + std::floor(progress * 0.9);
+    if (m_transfer_progress) {
+        m_transfer_progress->set_status_text(_u8L("正在上传 G-code…").c_str());
+        m_transfer_progress->set_progress(percent);
+    } else {
+        m_status_bar->update_status(msg, cancelled, percent, true);
+    }
 
     if (m_task_timer && m_task_timer->IsRunning()) m_task_timer->Stop();
 
@@ -2274,9 +2354,13 @@ void SendToPrinterDialog::UploadFileProgressCallback(int progress)
         this->Bind(
             wxEVT_TIMER,
             [this](auto e) {
-                show_status(PrintDialogStatus::PrintStatusPublicUploadFiled);
-                update_print_status_msg(
-                    _L("File upload timed out. Please check if the firmware version supports this operation or verify if the printer is functioning properly."), false, true);
+                const auto message = _L("File upload timed out. Please check if the firmware version supports this operation or verify if the printer is functioning properly.");
+                if (m_transfer_progress)
+                    m_transfer_progress->finish(message);
+                else {
+                    show_status(PrintDialogStatus::PrintStatusPublicUploadFiled);
+                    update_print_status_msg(message, false, true);
+                }
             },
             m_task_timer->GetId());
         m_task_timer->StartOnce(timeout_period);
@@ -2287,10 +2371,21 @@ void SendToPrinterDialog::UploadFileRessultCallback(int res, int resp_ec, std::s
 {
         if (m_task_timer && m_task_timer->IsRunning()) m_task_timer->Stop();
 
+        if (m_transfer_progress) {
+            const auto detail = ParseErrorCode(resp_ec);
+            m_transfer_progress->finish(res == 0 ? _L("G-code 已上传") :
+                detail.empty() ? _L("上传失败，请检查设备连接后重试。") : detail, res == 0);
+            if (res != 0) {
+                m_filetransfer_uploadfile_job.reset();
+                return;
+            }
+        }
+
         if (res == 0)
         {
             BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ":upload success to:" << m_selected_storage ;
-            show_status(PrintDialogStatus::PrintStatusReadingFinished);
+            if (!m_transfer_progress)
+                show_status(PrintDialogStatus::PrintStatusReadingFinished);
             wxCommandEvent *evt = new wxCommandEvent(m_plater->get_send_finished_event());
             evt->SetString(from_u8(m_current_project_name.utf8_string()));
             wxQueueEvent(m_plater, evt);

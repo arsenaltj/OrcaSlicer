@@ -80,6 +80,9 @@
 #include <boost/algorithm/string/case_conv.hpp>
 #include "slic3r/GUI/Widgets/StateColor.hpp"
 #include "slic3r/GUI/Redesign/PrinterTransferDialogStyle.hpp"
+#include "Redesign/PrinterTransferFilamentPanel.hpp"
+#include "Redesign/PrinterTransferProgress.hpp"
+#include "slic3r/Utils/MoonrakerPrinterAgent.hpp"
 #include "slic3r/GUI/Redesign/PrinterWorkspaceState.hpp"
 #include <wx/dcclient.h>
 #include "libslic3r/Print.hpp"
@@ -478,23 +481,29 @@ SelectMachineDialog::SelectMachineDialog(Plater *plater, PrinterTransferPresenta
 
 
     /*filaments info*/
+    wxWindow* filament_editor_parent = m_scroll_area;
+    if (m_presentation.redesign()) {
+        filament_editor_parent = new wxPanel(m_scroll_area);
+        filament_editor_parent->Hide();
+        m_filament_comparison = new PrinterTransferFilamentPanel(m_scroll_area);
+    }
     wxBoxSizer* sizer_split_filament = new wxBoxSizer(wxHORIZONTAL);
 
-    auto m_stext_filament_title = new Label(m_scroll_area, _L("Filament"));
+    auto m_stext_filament_title = new Label(filament_editor_parent, _L("Filament"));
     m_stext_filament_title->SetFont(::Label::Head_13);
     m_stext_filament_title->SetForegroundColour(0x909090);
 
-    auto m_split_line_filament = new wxPanel(m_scroll_area, wxID_ANY, wxDefaultPosition, wxSize(-1, 1), wxTAB_TRAVERSAL);
+    auto m_split_line_filament = new wxPanel(filament_editor_parent, wxID_ANY, wxDefaultPosition, wxSize(-1, 1), wxTAB_TRAVERSAL);
     m_split_line_filament->SetBackgroundColour(0xeeeeee);
     m_split_line_filament->SetMinSize(wxSize(-1, 1));
     m_split_line_filament->SetMaxSize(wxSize(-1, 1));
 
     m_sizer_autorefill = new wxBoxSizer(wxHORIZONTAL);
-    m_ams_backup_tip = new Label(m_scroll_area, _L("Auto Refill"));
+    m_ams_backup_tip = new Label(filament_editor_parent, _L("Auto Refill"));
     m_ams_backup_tip->SetFont(::Label::Head_13);
     m_ams_backup_tip->SetForegroundColour(wxColour("#009688"));
     m_ams_backup_tip->SetBackgroundColour(*wxWHITE);
-    img_ams_backup = new wxStaticBitmap(m_scroll_area, wxID_ANY, create_scaled_bitmap("automatic_material_renewal", this, 16), wxDefaultPosition, wxSize(FromDIP(16), FromDIP(16)), 0);
+    img_ams_backup = new wxStaticBitmap(filament_editor_parent, wxID_ANY, create_scaled_bitmap("automatic_material_renewal", this, 16), wxDefaultPosition, wxSize(FromDIP(16), FromDIP(16)), 0);
     img_ams_backup->SetBackgroundColour(*wxWHITE);
 
     m_sizer_autorefill->Add(0, 0, 1, wxEXPAND, 0);
@@ -519,7 +528,7 @@ SelectMachineDialog::SelectMachineDialog(Plater *plater, PrinterTransferPresenta
     sizer_split_filament->Add(m_sizer_autorefill, 0, wxALIGN_CENTER, 0);
     /*filament area*/
     /*1 extruder*/
-    m_filament_panel = new StaticBox(m_scroll_area);
+    m_filament_panel = new StaticBox(filament_editor_parent);
     m_filament_panel->SetBackgroundColour(wxColour("#F8F8F8"));
     m_filament_panel->SetBorderWidth(0);
     m_filament_panel->SetMinSize(wxSize(FromDIP(637), -1));
@@ -535,7 +544,7 @@ SelectMachineDialog::SelectMachineDialog(Plater *plater, PrinterTransferPresenta
     /*left & right extruder*/
     m_sizer_filament_2extruder = new wxBoxSizer(wxHORIZONTAL);
 
-    m_filament_left_panel = new StaticBox(m_scroll_area);
+    m_filament_left_panel = new StaticBox(filament_editor_parent);
     m_filament_left_panel->SetBackgroundColour(wxColour("#F8F8F8"));
     m_filament_left_panel->SetBorderWidth(0);
     m_filament_left_panel->SetMinSize(wxSize(FromDIP(315), -1));
@@ -554,7 +563,7 @@ SelectMachineDialog::SelectMachineDialog(Plater *plater, PrinterTransferPresenta
     m_filament_left_panel->SetSizer(m_filament_panel_left_sizer);
     m_filament_left_panel->Layout();
 
-    m_filament_right_panel = new StaticBox(m_scroll_area);
+    m_filament_right_panel = new StaticBox(filament_editor_parent);
     m_filament_right_panel->SetBorderWidth(0);
     m_filament_right_panel->SetBackgroundColour(wxColour("#F8F8F8"));
     m_filament_right_panel->SetMinSize(wxSize(FromDIP(315), -1));
@@ -589,7 +598,7 @@ SelectMachineDialog::SelectMachineDialog(Plater *plater, PrinterTransferPresenta
 
     /*ams mapping suggestions*/
 
-    m_link_edit_nozzle = new Label(m_scroll_area, wxEmptyString);
+    m_link_edit_nozzle = new Label(filament_editor_parent, wxEmptyString);
     m_link_edit_nozzle->SetFont(::Label::Body_13);
     m_link_edit_nozzle->SetForegroundColour("#009688");
     m_link_edit_nozzle->SetBackgroundColour(*wxWHITE);
@@ -628,7 +637,8 @@ SelectMachineDialog::SelectMachineDialog(Plater *plater, PrinterTransferPresenta
     m_label_ext_change_assist->SetToolTip(_L("Manually change external spool during printing for multi-color printing"));
 
     wxSizer* suggestion_sizer = new wxBoxSizer(wxHORIZONTAL);
-    suggestion_sizer->Add(m_link_edit_nozzle, 0, wxLEFT, 0);
+    if (!m_presentation.redesign())
+        suggestion_sizer->Add(m_link_edit_nozzle, 0, wxLEFT, 0);
     suggestion_sizer->Add(0, 0, 1, wxEXPAND, 0);
     suggestion_sizer->Add(m_check_ext_change_assist, 0, wxRIGHT, FromDIP(10));
     suggestion_sizer->Add(m_label_ext_change_assist, 0, wxRIGHT, 0);
@@ -765,8 +775,9 @@ SelectMachineDialog::SelectMachineDialog(Plater *plater, PrinterTransferPresenta
     option_pa_value->Hide();
 
     m_simplebook   = new wxSimplebook(this, wxID_ANY, wxDefaultPosition, SELECT_MACHINE_DIALOG_SIMBOOK_SIZE2, 0);
-    m_simplebook->SetMinSize(SELECT_MACHINE_DIALOG_SIMBOOK_SIZE2);
-    m_simplebook->SetMaxSize(SELECT_MACHINE_DIALOG_SIMBOOK_SIZE2);
+    const auto footer_size = m_presentation.redesign() ? printer_transfer_footer_size(this) : SELECT_MACHINE_DIALOG_SIMBOOK_SIZE2;
+    m_simplebook->SetMinSize(footer_size);
+    m_simplebook->SetMaxSize(footer_size);
 
     // perpare mode
     m_panel_prepare = new wxPanel(m_simplebook, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL);
@@ -785,15 +796,25 @@ SelectMachineDialog::SelectMachineDialog(Plater *plater, PrinterTransferPresenta
     m_sizer_prepare->Add(m_sizer_pcont, 0, wxALIGN_CENTER, 0);
 
     m_panel_prepare->SetSizer(m_sizer_prepare);
+    if (m_presentation.redesign())
+        set_printer_transfer_footer_layout(m_panel_prepare, m_button_ensure);
     m_panel_prepare->Layout();
     m_simplebook->AddPage(m_panel_prepare, wxEmptyString, true);
 
     // sending mode
-    m_status_bar    = std::make_shared<BBLStatusBarPrint>(m_simplebook);
-    m_panel_sending = m_status_bar->get_panel();
+    std::shared_ptr<ProgressIndicator> progress;
+    if (m_presentation.redesign()) {
+        m_transfer_progress = std::make_shared<PrinterTransferProgress>(m_simplebook);
+        m_panel_sending = m_transfer_progress->panel();
+        progress = m_transfer_progress;
+    } else {
+        m_status_bar = std::make_shared<BBLStatusBarPrint>(m_simplebook);
+        m_panel_sending = m_status_bar->get_panel();
+        progress = m_status_bar;
+    }
     m_simplebook->AddPage(m_panel_sending, wxEmptyString, false);
     
-    m_worker = std::make_unique<PlaterWorker<BoostThreadWorker>>(this, m_status_bar, "send_worker");
+    m_worker = std::make_unique<PlaterWorker<BoostThreadWorker>>(this, progress, "send_worker");
 
     // finish mode
     m_panel_finish = new wxPanel(m_simplebook, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL);
@@ -905,9 +926,18 @@ SelectMachineDialog::SelectMachineDialog(Plater *plater, PrinterTransferPresenta
     m_scroll_sizer->AddStretchSpacer();
     m_scroll_sizer->Add(m_basic_panel, 0, wxEXPAND|wxLEFT|wxRIGHT, FromDIP(15));
     m_scroll_sizer->Add(0, 0, 0, wxTOP, FromDIP(14));
-    m_scroll_sizer->Add(sizer_split_filament, 1, wxEXPAND|wxLEFT|wxRIGHT, FromDIP(15));
-    m_scroll_sizer->Add(m_filament_panel, 0, wxALIGN_CENTER|wxLEFT|wxRIGHT, FromDIP(15));
-    m_scroll_sizer->Add(m_sizer_filament_2extruder, 0, wxEXPAND|wxLEFT|wxRIGHT, FromDIP(15));
+    if (m_filament_comparison) {
+        auto* editor_sizer = new wxBoxSizer(wxVERTICAL);
+        editor_sizer->Add(sizer_split_filament);
+        editor_sizer->Add(m_filament_panel);
+        editor_sizer->Add(m_sizer_filament_2extruder);
+        filament_editor_parent->SetSizer(editor_sizer);
+        m_scroll_sizer->Add(m_filament_comparison, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(22));
+    } else {
+        m_scroll_sizer->Add(sizer_split_filament, 1, wxEXPAND|wxLEFT|wxRIGHT, FromDIP(15));
+        m_scroll_sizer->Add(m_filament_panel, 0, wxALIGN_CENTER|wxLEFT|wxRIGHT, FromDIP(15));
+        m_scroll_sizer->Add(m_sizer_filament_2extruder, 0, wxEXPAND|wxLEFT|wxRIGHT, FromDIP(15));
+    }
     m_scroll_sizer->Add(0, 0, 0, wxTOP, FromDIP(6));
     m_scroll_sizer->Add(m_statictext_ams_msg, 0, wxLEFT|wxRIGHT, FromDIP(15));
     m_scroll_sizer->Add(0, 0, 0, wxTOP, FromDIP(10));
@@ -938,10 +968,11 @@ SelectMachineDialog::SelectMachineDialog(Plater *plater, PrinterTransferPresenta
     SetSizer(sizer_main);
     if (m_presentation.redesign()) {
         m_line_top->Hide();
-        m_button_ensure->SetLabel(_L("确认上传并打印"));
+        m_button_ensure->SetLabel(_L("上传并打印"));
         m_printer_box->GetPrinterComboBox()->Disable();
         apply_printer_transfer_redesign_theme(this);
         style_printer_transfer_primary_button(m_button_ensure);
+        m_transfer_progress->rescale();
     }
     Layout();
     Fit();
@@ -1099,7 +1130,10 @@ void SelectMachineDialog::prepare_mode(bool refresh_button)
         Enable_Send_Button(true);
     }
 
-    m_status_bar->reset();
+    if (m_status_bar)
+        m_status_bar->reset();
+    if (m_transfer_progress)
+        m_transfer_progress->reset();
     if (m_simplebook->GetSelection() != 0) {
         m_simplebook->SetSelection(0);
         Layout();
@@ -1121,7 +1155,10 @@ void SelectMachineDialog::sending_mode()
     EnableEditing(false);
 
     m_is_in_sending_mode = true;
-    if (m_simplebook->GetSelection() != 1){
+    if (m_transfer_progress && m_simplebook->GetSelection() != 1) {
+        wxWindowUpdateLocker locker(m_simplebook);
+        m_simplebook->ChangeSelection(1);
+    } else if (m_simplebook->GetSelection() != 1){
         m_simplebook->SetSelection(1);
         Layout();
         Fit();
@@ -2008,6 +2045,78 @@ void SelectMachineDialog::prepare(int print_plate_idx)
     m_print_plate_idx = print_plate_idx;
 }
 
+void SelectMachineDialog::update_filament_comparison()
+{
+    if (!m_filament_comparison)
+        return;
+
+    auto& plates = m_plater->get_partplate_list();
+    auto* plate = m_print_type == PrintFromType::FROM_NORMAL && m_print_plate_idx == plates.get_curr_plate_index() ?
+        plates.get_curr_plate() : nullptr;
+    auto* slice = plate && plate->is_valid_gcode_file() ? plate->get_slice_result() : nullptr;
+    const auto slice_id = slice ? std::optional<unsigned int>(slice->id) : std::nullopt;
+    if (m_comparison_slice_id != slice_id) {
+        m_comparison_slice_id = slice_id;
+        m_comparison_read = {};
+        m_comparison_read_started = false;
+
+        std::vector<SlicedTransferFilament> filaments;
+        if (slice) {
+            const auto& config = plates.get_current_fff_print().config();
+            const bool uses_klipper_tools = config.gcode_flavor.value == gcfKlipper &&
+                !config.manual_filament_change.value && !m_plater->using_exported_file();
+            for (const int filament_number : plate->get_used_filaments()) {
+                if (filament_number <= 0)
+                    continue;
+                const int id = filament_number - 1;
+                TransferFilament filament;
+                if (size_t(id) < config.filament_type.values.size())
+                    filament.material = transfer_filament_material(config.filament_type.values[id]);
+                if (size_t(id) < config.filament_colour.values.size())
+                    filament.color = transfer_filament_color(config.filament_colour.values[id]);
+                if (filament.color.empty() && size_t(id) < slice->extruder_colors.size())
+                    filament.color = transfer_filament_color(slice->extruder_colors[id]);
+                const auto& saved = plate->get_slice_filaments_info();
+                const auto entry = std::find_if(saved.begin(), saved.end(), [id](const FilamentInfo& value) { return value.id == id; });
+                if (entry != saved.end())
+                    apply_transfer_filament_metadata(filament, {entry->type, entry->color});
+                filaments.push_back({id, uses_klipper_tools ? std::optional<int>(id) : std::nullopt, std::move(filament)});
+            }
+        }
+        m_filament_comparison->set_filaments(filaments);
+        m_scroll_area->Layout();
+        m_scroll_area->FitInside();
+    }
+
+    auto* manager = wxGetApp().getDeviceManager();
+    auto* target = manager ? manager->get_selected_machine() : nullptr;
+    if (!slice || !target || target->get_dev_id() != m_presentation.device_id ||
+        manager->get_current_printer_agent_id() != m_presentation.agent_id || !target->is_info_ready()) {
+        if (m_comparison_read_started) {
+            m_comparison_read = {};
+            m_comparison_read_started = false;
+            m_filament_comparison->show_device_filaments({});
+        }
+        return;
+    }
+    if (!m_comparison_read_started) {
+        m_comparison_read_started = true;
+        auto* network = wxGetApp().getAgent();
+        const auto agent = network ? std::dynamic_pointer_cast<MoonrakerPrinterAgent>(network->get_printer_agent()) : nullptr;
+        if (agent)
+            m_comparison_read = agent->read_transfer_filaments(m_presentation.device_id);
+        m_filament_comparison->show_device_filaments({}, m_comparison_read.valid());
+    }
+    if (m_comparison_read.valid() && m_comparison_read.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        DeviceTransferFilaments device;
+        try {
+            device = m_comparison_read.get();
+        } catch (const std::exception&) {
+        }
+        m_filament_comparison->show_device_filaments(device);
+    }
+}
+
 void SelectMachineDialog::update_print_status_msg()
 {
     bool is_ams_update =  m_statictext_ams_msg->UpdateInfos(m_pre_print_checker.filamentList);
@@ -2432,6 +2541,8 @@ void SelectMachineDialog::show_status(PrintDialogStatus status, std::vector<wxSt
         Enable_Refresh_Button(false);
         Enable_Send_Button(false);
         sending_mode();
+        if (m_transfer_progress)
+            return;
     } else if (status == PrintDialogStatus::PrintStatusLanModeNoSdcard) {
         Enable_Refresh_Button(true);
         Enable_Send_Button(false);
@@ -2633,6 +2744,11 @@ void SelectMachineDialog::init_timer()
 
 void SelectMachineDialog::on_cancel(wxCloseEvent &event)
 {
+    if (m_transfer_progress && m_transfer_progress->active() && event.CanVeto()) {
+        m_transfer_progress->cancel();
+        event.Veto();
+        return;
+    }
     if (m_mapping_popup.IsShown())
         m_mapping_popup.Dismiss();
 
@@ -3158,11 +3274,14 @@ void SelectMachineDialog::update_option_opts(MachineObject *obj)
     }
 
     /*bed_leveling*/
-    if (obj->is_support_bed_leveling == 2) {
+    const auto* leveling_device_manager = wxGetApp().getDeviceManager();
+    const bool submit_leveling = leveling_device_manager &&
+        leveling_device_manager->get_current_printer_agent_id() == BBL_PRINTER_AGENT_ID;
+    if (submit_leveling && obj->is_support_bed_leveling == 2) {
         m_checkbox_list["bed_leveling"]->Show();
         m_checkbox_list["bed_leveling"]->update_options(ops_auto, _L("This checks the flatness of heatbed. Leveling makes extruded height uniform.\n*Automatic mode: Run a "
                                                                      "leveling check(about 10 seconds). Skip if surface is fine."));
-    } else if (obj->is_support_bed_leveling == 1) {
+    } else if (submit_leveling && obj->is_support_bed_leveling == 1) {
         m_checkbox_list["bed_leveling"]->Show();
         m_checkbox_list["bed_leveling"]->update_options(ops_no_auto, _L("This checks the flatness of heatbed. Leveling makes extruded height uniform."));
     } else {
@@ -3621,27 +3740,40 @@ void SelectMachineDialog::on_send_print()
     if (obj_ == nullptr) { return; }
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", print_job: for send task, current printer id =  " << m_printer_last_select << std::endl;
-    show_status(PrintDialogStatus::PrintStatusSending);
-
-    m_status_bar->reset();
-    m_status_bar->set_prog_block();
-    m_status_bar->set_cancel_callback_fina([this]() {
+    auto cancel_upload = [this]() {
         BOOST_LOG_TRIVIAL(info) << "print_job: enter canceled";
         m_worker->cancel_all();
         m_is_canceled = true;
         wxCommandEvent* event = new wxCommandEvent(EVT_PRINT_JOB_CANCEL);
         wxQueueEvent(this, event);
-        });
+    };
+    if (m_transfer_progress) {
+        update_filament_comparison();
+        if (m_comparison_read.valid()) {
+            m_comparison_read = {};
+            m_filament_comparison->show_device_filaments({});
+        }
+        m_transfer_progress->begin(std::move(cancel_upload));
+    } else {
+        m_status_bar->reset();
+        m_status_bar->set_prog_block();
+        m_status_bar->set_cancel_callback_fina(std::move(cancel_upload));
+    }
+    show_status(PrintDialogStatus::PrintStatusSending);
 
     if (m_is_canceled) {
         BOOST_LOG_TRIVIAL(info) << "print_job: m_is_canceled";
-        m_status_bar->set_status_text(task_canceled_text);
+        if (m_transfer_progress)
+            m_transfer_progress->finish(_L("已取消上传"));
+        else
+            m_status_bar->set_status_text(task_canceled_text);
         return;
     }
 
-    // enter sending mode
-    sending_mode();
-    m_status_bar->enable_cancel_button();
+    if (m_status_bar) {
+        sending_mode();
+        m_status_bar->enable_cancel_button();
+    }
 
     // get ams_mapping_result
     std::string ams_mapping_array;
@@ -3655,19 +3787,28 @@ void SelectMachineDialog::on_send_print()
             if (this->m_is_canceled) return;
             bool     cancelled = false;
             wxString msg = _L("Preparing print job");
-            m_status_bar->update_status(msg, cancelled, 10, true);
+            if (m_transfer_progress)
+                m_transfer_progress->set_progress(10);
+            else
+                m_status_bar->update_status(msg, cancelled, 10, true);
             m_export_3mf_cancel = cancel = cancelled;
             });
 
         if (m_is_canceled || m_export_3mf_cancel) {
             BOOST_LOG_TRIVIAL(info) << "print_job: m_export_3mf_cancel or m_is_canceled";
-            m_status_bar->set_status_text(task_canceled_text);
+            if (m_transfer_progress)
+                m_transfer_progress->finish(_L("已取消上传"));
+            else
+                m_status_bar->set_status_text(task_canceled_text);
             return;
         }
 
         if (result < 0) {
             wxString msg = _L("Abnormal print file data. Please slice again");
-            m_status_bar->set_status_text(msg);
+            if (m_transfer_progress)
+                m_transfer_progress->finish(msg);
+            else
+                m_status_bar->set_status_text(msg);
             return;
         }
 
@@ -3676,12 +3817,17 @@ void SelectMachineDialog::on_send_print()
             result = m_plater->export_config_3mf(m_print_plate_idx);
             if (result < 0) {
                 BOOST_LOG_TRIVIAL(info) << "export_config_3mf failed, result = " << result;
+                if (m_transfer_progress)
+                    m_transfer_progress->finish(_L("准备上传文件失败，请重新切片后重试。"));
                 return;
             }
         }
         if (m_is_canceled || m_export_3mf_cancel) {
             BOOST_LOG_TRIVIAL(info) << "print_job: m_export_3mf_cancel or m_is_canceled";
-            m_status_bar->set_status_text(task_canceled_text);
+            if (m_transfer_progress)
+                m_transfer_progress->finish(_L("已取消上传"));
+            else
+                m_status_bar->set_status_text(task_canceled_text);
             return;
         }
     }
@@ -3807,9 +3953,22 @@ void SelectMachineDialog::on_send_print()
     BOOST_LOG_TRIVIAL(info) << "print_job: timelapse_option = " << timelapse_option;
     BOOST_LOG_TRIVIAL(info) << "print_job: use_ams = " << m_print_job->task_use_ams;
 
-    m_print_job->on_success([this]() { finish_mode(); });
+    if (m_transfer_progress) {
+        m_print_job->on_transfer_finished([this](bool succeeded, bool cancelled) {
+            m_print_page_mode = PrintPageModeFinish;
+            m_is_in_sending_mode = false;
+            const auto detail = m_transfer_progress->failure_detail();
+            m_transfer_progress->finish(succeeded ? _L("上传完成，打印已启动") :
+                (cancelled || m_is_canceled) ? _L("已取消上传") :
+                detail.empty() ? _L("上传或启动打印失败，请检查设备后重试。") : detail, succeeded);
+        });
+    } else {
+        m_print_job->on_success([this]() { finish_mode(); });
+    }
 
     m_print_job->on_check_ip_address_fail([this]() {
+        if (m_transfer_progress)
+            return;
         // Invoked from the PrintJob worker thread when the LAN pre-flight (file upload
         // verification) fails. Marshal device/UI access to the main thread.
         CallAfter([this]()
@@ -3961,6 +4120,11 @@ void SelectMachineDialog::on_set_finish_mapping(wxCommandEvent &evt)
 void SelectMachineDialog::on_print_job_cancel(wxCommandEvent &evt)
 {
     BOOST_LOG_TRIVIAL(info) << "print_job: canceled";
+    if (m_transfer_progress) {
+        if (m_worker->is_idle())
+            m_transfer_progress->finish(_L("已取消上传"));
+        return;
+    }
 
     EnableEditing(true);
     show_status(PrintDialogStatus::PrintStatusInit);
@@ -4270,6 +4434,9 @@ void SelectMachineDialog::update_printer_combobox(wxCommandEvent &event)
 
 void SelectMachineDialog::on_timer(wxTimerEvent &event)
 {
+    if (m_transfer_progress && m_transfer_progress->showing_transfer())
+        return;
+    update_filament_comparison();
     DeviceManager* dev_ = Slic3r::GUI::wxGetApp().getDeviceManager();
     if(!dev_) return;
     MachineObject* obj_ = dev_->get_my_machine(m_printer_last_select);
@@ -4317,7 +4484,8 @@ void SelectMachineDialog::on_timer(wxTimerEvent &event)
 void SelectMachineDialog::on_selection_changed(wxCommandEvent &event)
 {
     /* reset timeout and reading printer info */
-    m_status_bar->reset();
+    if (m_status_bar)
+        m_status_bar->reset();
     m_timeout_count      = 0;
     s_nozzle_mapping_last_request_time = 0;
     m_ams_mapping_res  = false;
@@ -4894,8 +5062,12 @@ void SelectMachineDialog::update_show_status(MachineObject* obj_)
 
     reset_timeout();
 
+    const auto printer_agent = agent->get_printer_agent();
+    const auto traits = printer_agent ? printer_agent->get_traits() : PrinterAgentTraits{};
+    const bool uses_read_only_comparison = m_filament_comparison &&
+        traits.storage_model == PrinterAgentTraits::StorageModel::VirtualGcodeRoot;
     // Orca: pull-mode agents only refresh their filament data when asked, so ask before the mapping uses it
-    if (m_pull_filament_pending) {
+    if (m_pull_filament_pending && !uses_read_only_comparison) {
         m_pull_filament_pending = false;
         if (agent->get_filament_sync_mode() == FilamentSyncMode::pull) {
             wxBusyCursor busy;
@@ -4905,8 +5077,6 @@ void SelectMachineDialog::update_show_status(MachineObject* obj_)
             }
         }
     }
-    const auto printer_agent = agent->get_printer_agent();
-    const auto traits = printer_agent ? printer_agent->get_traits() : PrinterAgentTraits{};
     if (traits.storage_model == PrinterAgentTraits::StorageModel::VirtualGcodeRoot) {
         if (!traits.supports_upload_and_print) {
             show_status(PrintDialogStatus::PrintStatusUnsupportedPrinter);
@@ -5536,9 +5706,14 @@ void SelectMachineDialog::on_dpi_changed(const wxRect &suggested_rect)
         if (img_amsmapping_tip)img_amsmapping_tip->SetBitmap(ams_mapping_help_icon->bmp());
     }
     m_button_ensure->Rescale(); // ORCA
-    if (m_presentation.redesign())
+    if (m_transfer_progress) {
         style_printer_transfer_primary_button(m_button_ensure);
-    m_status_bar->msw_rescale();
+        m_simplebook->SetMinSize(printer_transfer_footer_size(this));
+        m_simplebook->SetMaxSize(printer_transfer_footer_size(this));
+        m_transfer_progress->rescale();
+    } else {
+        m_status_bar->msw_rescale();
+    }
 
     for (auto material1 : m_materialList) {
         material1.second->item->msw_rescale();
@@ -5614,7 +5789,8 @@ void SelectMachineDialog::set_default()
     m_warn_when_drying_sizer->Show(false);
 
     // rset status bar
-    m_status_bar->reset();
+    if (m_status_bar)
+        m_status_bar->reset();
 
     NetworkAgent* agent = wxGetApp().getAgent();
     if (agent) {
@@ -6515,6 +6691,7 @@ void SelectMachineDialog::sys_color_changed()
     if (m_presentation.redesign()) {
         apply_printer_transfer_redesign_theme(this);
         style_printer_transfer_primary_button(m_button_ensure);
+        m_transfer_progress->rescale();
         return;
     }
     if (wxGetApp(). dark_mode()) {
@@ -6549,6 +6726,8 @@ bool SelectMachineDialog::Show(bool show)
         };
     } else {
         m_refresh_timer->Stop();
+        m_comparison_read = {};
+        m_comparison_read_started = false;
         return DPIDialog::Show(false);
     }
     show_init();
@@ -6574,10 +6753,12 @@ bool SelectMachineDialog::Show(bool show)
     else {
         apply_printer_transfer_redesign_theme(this);
         style_printer_transfer_primary_button(m_button_ensure);
+        m_transfer_progress->rescale();
     }
     wxGetApp().reset_to_active();
     set_default();
     update_user_machine_list();
+    update_filament_comparison();
 
     Layout();
     Fit();

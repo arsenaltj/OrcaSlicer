@@ -8,14 +8,95 @@
 #include "ModelGenerationPresentation.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/I18N.hpp"
+#include "libslic3r/Utils.hpp"
+#include "libslic3r/miniz_extension.hpp"
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/filesystem.hpp>
+#include <expat.h>
 #include <nlohmann/json.hpp>
 #include <wx/datetime.h>
 #include <algorithm>
 #include <map>
+#include <string_view>
 
 namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
+
+namespace {
+
+bool has_3mf_mesh(mz_zip_archive& archive, mz_uint index, const std::atomic<bool>& cancelled)
+{
+    const auto parser = XML_ParserCreateNS(nullptr, '|');
+    if (!parser)
+        return false;
+    ScopeGuard free_parser([parser] { XML_ParserFree(parser); });
+    struct MeshProbe {
+        XML_Parser parser;
+        const std::atomic<bool>& cancelled;
+        size_t remaining {8 * 1024 * 1024};
+        bool found {false};
+    } probe {parser, cancelled};
+    XML_SetUserData(parser, &probe);
+    XML_SetStartDoctypeDeclHandler(parser, [](void* context, const XML_Char*, const XML_Char*, const XML_Char*, int) {
+        XML_StopParser(static_cast<MeshProbe*>(context)->parser, XML_FALSE);
+    });
+    XML_SetStartElementHandler(parser, [](void* context, const XML_Char* name, const XML_Char**) {
+        if (std::string_view(name) == "mesh" || boost::algorithm::ends_with(std::string_view(name), "|mesh")) {
+            auto& state = *static_cast<MeshProbe*>(context);
+            state.found = true;
+            XML_StopParser(state.parser, XML_FALSE);
+        }
+    });
+    mz_zip_reader_extract_to_callback(&archive, index, [](void* context, mz_uint64, const void* bytes, size_t size) -> size_t {
+        auto& state = *static_cast<MeshProbe*>(context);
+        if (state.cancelled || size > state.remaining)
+            return 0;
+        state.remaining -= size;
+        return XML_Parse(state.parser, static_cast<const char*>(bytes), static_cast<int>(size), XML_FALSE) == XML_STATUS_OK ? size : 0;
+    }, &probe, 0);
+    return probe.found;
+}
+
+bool can_import_directly(const boost::filesystem::path& model_path, const std::atomic<bool>& cancelled)
+{
+    const auto extension = model_path.extension().string();
+    if (extension.empty() || !PlatformLibrary::supported_format(extension.substr(1)) ||
+        !AI::model_artifact_format(model_path).empty())
+        return false;
+
+    boost::system::error_code error;
+    if (!boost::filesystem::is_regular_file(model_path, error) || error ||
+        boost::filesystem::file_size(model_path, error) == 0 || error)
+        return false;
+    if (!boost::algorithm::iequals(extension, ".3mf"))
+        return true;
+    if (boost::algorithm::iends_with(model_path.filename().string(), ".gcode.3mf"))
+        return false;
+
+    mz_zip_archive archive {};
+    if (!open_zip_reader(&archive, model_path.string()))
+        return false;
+    ScopeGuard close_archive([&archive] { close_zip_reader(&archive); });
+    for (mz_uint index = 0; index < mz_zip_reader_get_num_files(&archive); ++index) {
+        if (cancelled)
+            return false;
+        mz_zip_archive_file_stat part;
+        if (!mz_zip_reader_file_stat(&archive, index, &part))
+            return false;
+        std::string part_name = part.m_filename;
+        std::replace(part_name.begin(), part_name.end(), '\\', '/');
+        while (boost::algorithm::starts_with(part_name, "./"))
+            part_name.erase(0, 2);
+        if (!part.m_is_directory && part.m_uncomp_size > 0 &&
+            boost::algorithm::istarts_with(part_name, "3D/") && boost::algorithm::iends_with(part_name, ".model") &&
+            has_3mf_mesh(archive, index, cancelled))
+            return true;
+    }
+    return false;
+}
+
+}
+
 std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
     const boost::filesystem::path& root, const std::atomic<bool>& cancelled, bool include_native, const std::string& only_job)
 {
@@ -145,6 +226,7 @@ std::vector<ModelLibraryEntry> ModelLibraryRepository::read(
         ModelLibraryEntry entry;
         entry.job_id = job_id;
         entry.model_path = model_path;
+        entry.can_direct_import = include_native && can_import_directly(model_path, cancelled);
         entry.generated_at = boost::filesystem::last_write_time(model_path, entry_ec);
         if (entry_ec)
             entry.generated_at = 0;

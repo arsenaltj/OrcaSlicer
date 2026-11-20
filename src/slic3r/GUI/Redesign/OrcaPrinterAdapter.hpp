@@ -55,7 +55,6 @@ public:
     bool can_import_model() const;
     bool import_model() const;
     bool control_task(const PrinterCommandTarget& target, PrinterTaskAction action) const;
-    bool set_bed_leveling(const std::string& device_id, bool enabled) const;
     bool set_recording(const std::string& device_id, bool enabled) const;
     bool set_detection(const std::string& device_id, bool enabled) const;
     wxImage plate_preview() const;

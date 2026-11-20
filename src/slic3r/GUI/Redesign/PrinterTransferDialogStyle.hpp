@@ -42,7 +42,7 @@ public:
         RedesignTheme::style_medium_text(caption, RedesignTheme::primary_text_colour(), 12);
         layout->Add(caption, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(10));
 
-        auto* close = new Button(this, wxEmptyString, "figma_ux_0929_dialog_close", wxBORDER_NONE, 16);
+        auto* close = new Button(this, wxEmptyString, "redesign_startup_close", wxBORDER_NONE, 16);
         close->SetCanFocus(false);
         close->SetMinSize(FromDIP(wxSize(40, 40)));
         close->SetMaxSize(FromDIP(wxSize(40, 40)));
@@ -117,6 +117,10 @@ inline void apply_printer_transfer_redesign_theme(wxWindow* window)
         RedesignTheme::style_text(text, RedesignTheme::primary_text_colour(), 10);
     if (auto* checkbox = wxDynamicCast(window, wxCheckBox))
         RedesignTheme::style_text(checkbox, RedesignTheme::primary_text_colour(), 10);
+    if (auto* editor = wxDynamicCast(window, wxTextCtrl)) {
+        editor->SetBackgroundColour(control);
+        editor->SetForegroundColour(RedesignTheme::primary_text_colour());
+    }
     if (auto* box = dynamic_cast<StaticBox*>(window)) {
         box->SetBackgroundColor(panel);
         box->SetBorderColor(divider);

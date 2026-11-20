@@ -12,24 +12,20 @@ if (TARGET dep_OpenSSL)
 endif()
 
 if (MSVC)
-    set(_source_dir "${CMAKE_BINARY_DIR}/dep_FFMPEG-prefix/src/dep_FFMPEG")
-
-    set(PREBUILD_URL_arm64 "https://github.com/Noisyfox/FFmpeg-Builds-Orca/releases/download/autobuild-2026-09-18-16-50/ffmpeg-n7.0.3-33-g887d4b4919-winarm64-orca-shared-7.0.zip")
-    set(PREBUILD_HASH_arm64 "da480cbb39680056de824c57ec4dc3bd577b479ebbc310ff1f9dc55cf014b4c1")
-    set(PREBUILD_URL_x64 "https://github.com/Noisyfox/FFmpeg-Builds-Orca/releases/download/autobuild-2026-09-18-16-50/ffmpeg-n7.0.3-33-g887d4b4919-win64-orca-shared-7.0.zip")
-    set(PREBUILD_HASH_x64 "85da19daf198f5548259d8aabb349db84997a3f6e6886d8d7764114add9c6dae")
-
     ExternalProject_Add(dep_FFMPEG
-        ${_ffmpeg_depends}
-        URL ${PREBUILD_URL_${DEPS_ARCH}}
-        URL_HASH SHA256=${PREBUILD_HASH_${DEPS_ARCH}}
+        URL https://ffmpeg.org/releases/ffmpeg-7.0.3.tar.xz
+        URL_HASH SHA256=bbb18f3cc5c1c34b21cf176c0168c4d9aa97697542a97f60d491a58a814dea65
         DOWNLOAD_DIR ${DEP_DOWNLOAD_DIR}/FFMPEG
+        BUILD_IN_SOURCE ON
         CONFIGURE_COMMAND ""
-        BUILD_COMMAND ""
+        BUILD_COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_LIST_DIR}/build_windows.ps1"
+            -SourceDir <SOURCE_DIR> -InstallDir <INSTALL_DIR>
+            -Architecture ${DEPS_ARCH}
         INSTALL_COMMAND
-            COMMAND ${CMAKE_COMMAND} -E copy_directory  "${_source_dir}/bin" "${DESTDIR}/bin"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory  "${_source_dir}/lib" "${DESTDIR}/lib"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory  "${_source_dir}/include" "${DESTDIR}/include"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "<INSTALL_DIR>/bin" "${DESTDIR}/bin"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "<INSTALL_DIR>/lib" "${DESTDIR}/lib"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "<INSTALL_DIR>/include" "${DESTDIR}/include"
     )
 
 else ()
@@ -85,14 +81,14 @@ else ()
             --disable-filters
             --enable-filter=*null*,afade,*fifo,*format,*resample,aeval,allrgb,allyuv,atempo,pan,*bars,color,*key,crop,draw*,eq*,framerate,*_qsv,*_vaapi,*v4l2*,hw*,scale,volume,test*
             --disable-protocols
-            --enable-protocol=file,fd,pipe,http,https,rtp,tcp,udp
+            --enable-protocol=file,fd,pipe,http,https,tls,rtp,tcp,udp
             --disable-muxers
             --enable-muxer=rtp
             --disable-encoders
             --disable-decoders
-            --enable-decoder=*aac*,h264*,mp3*,mjpeg,rv*
+            --enable-decoder=*aac*,h264*,hevc*,mp3*,mjpeg,rv*
             --disable-demuxers
-            --enable-demuxer=h264,mp3,mov,mpjpeg,rtsp,sdp
+            --enable-demuxer=h264,mp3,mov,mjpeg,mpjpeg,rtsp,sdp,hls,mpegts
             --disable-zlib
             --disable-avdevice
         BUILD_IN_SOURCE ON

@@ -283,6 +283,7 @@ function installedPage() {
       return null;
     }
     remove() { if (this.parent) this.parent.children = this.parent.children.filter(x => x !== this); }
+    getBoundingClientRect() { return {right: 240, bottom: 180}; }
     focus() {}
   }
   const directory = path.resolve(__dirname, "../../resources/web/model_library");
@@ -312,9 +313,9 @@ function installedPage() {
     window.modelLibraryReceive({type: "init", nonce: `nonce-${doc}`, documentGeneration: doc});
     assert.equal(sent.at(-1).command, "ready");
   }
-  function login(tag = "account", nextGeneration = 1) {
+  function login(tag = "account", nextGeneration = 1, avatarData = "") {
     account = tag; generation = nextGeneration;
-    receive({type: "account", signedIn: tag !== "anonymous", name: "用户", projectAvailable: true});
+    receive({type: "account", signedIn: tag !== "anonymous", name: "用户", projectAvailable: true, avatarData});
   }
   function flush() { let budget = 20; while (frames.length && budget--) frames.shift()(); assert.ok(budget > 0); }
   return {ids, scopes, sent, receive, handshake, login, flush};
@@ -387,4 +388,108 @@ test("installed download and cancel buttons send exact identities and always rec
   page.handshake(2);page.login("anonymous", 2);
   page.receive({type: "catalog", documentGeneration: 1, items: [scriptCard], replace: true});page.flush();
   assert.equal(page.ids.get("grid").children.length, 0);
+});
+
+test("local card menus expose only opening and server-confirmed direct slicing", () => {
+  const cases = [
+    {key: "native", extension: ".stl", canDirectImport: true, labels: ["打开模型", "导入切片"]},
+    {key: "workbench", extension: ".obj", canDirectImport: false, labels: ["打开模型"]},
+    {key: "unknown", extension: ".stl", labels: ["打开模型"]},
+    {key: "design", designOnly: true, labels: ["打开设计图"]},
+  ];
+  for (const {labels, ...asset} of cases) {
+    const page = installedPage();
+    page.handshake();
+    page.login();
+    page.scopes[0].onclick();
+    page.receive({type: "local", revision: 15, items: [{
+      title: asset.key, local: true, imported: true, generatedAt: 1, ...asset,
+    }]});
+    page.flush();
+    const more = page.ids.get("grid").querySelector(".menu-button");
+    const menu = page.ids.get("menu");
+    more.onclick({stopPropagation() {}});
+    assert.deepEqual(menu.children.map(button => button.textContent), labels);
+    menu.children[0].onclick();
+    assert.equal(menu.hidden, true);
+    const opened = page.sent.at(-1);
+    assert.deepEqual([opened.command, opened.action, opened.key, opened.revision], ["local", "open", asset.key, 15]);
+    if (asset.canDirectImport) {
+      more.onclick({stopPropagation() {}});
+      menu.children[1].onclick();
+      const imported = page.sent.at(-1);
+      assert.deepEqual([imported.command, imported.action, imported.key, imported.revision], ["local", "import", asset.key, 15]);
+    }
+  }
+});
+
+test("account avatar changes update only local and owned card images in place", () => {
+  const page = installedPage();
+  const first = "data:image/png;base64,AAAA";
+  const next = "data:image/png;base64,AQID";
+  const author = "data:image/png;base64,BAUG";
+  const guest = "data:image/png;base64,BwgJ";
+  page.handshake();
+  page.login("account", 1, first);
+  page.scopes[0].onclick();
+  page.receive({type: "local", revision: 2, items: [
+    {key: "shape", title: "本地模型", local: true, generatedAt: 1},
+    {key: "design", title: "设计图", local: true, designOnly: true, generatedAt: 2},
+  ]});
+  page.receive({type: "catalog", items: [
+    {...scriptCard, title: "自有作品", owned: true, author: {displayName: "我"}},
+    {...scriptCard, id: "by-other", title: "收藏作品", author: {displayName: "作者", avatarUrl: author}},
+  ], replace: true});
+  page.flush();
+  const grid = page.ids.get("grid");
+  const card = title => grid.children.find(node => node.querySelector(".name").textContent === title);
+  const avatarOf = node => node.querySelector(".avatar").querySelector("img");
+  const owned = [card("本地模型"), card("设计图"), card("自有作品")];
+  const other = card("收藏作品");
+  const otherImage = avatarOf(other);
+  assert.equal(otherImage.src, author);
+  for (const node of owned) assert.equal(avatarOf(node).src, first);
+
+  page.login("account", 1, next);
+  page.flush();
+  for (const node of owned) {
+    assert.ok(grid.children.includes(node));
+    assert.equal(avatarOf(node).src, next);
+  }
+  assert.equal(avatarOf(other), otherImage);
+
+  page.login("anonymous", 2, guest);
+  page.receive({type: "account", accountGeneration: 1, accountTag: "account", signedIn: true, avatarData: next});
+  page.flush();
+  assert.equal(avatarOf(card("本地模型")).src, guest);
+  assert.equal(avatarOf(card("设计图")).src, guest);
+  assert.equal(card("自有作品"), undefined);
+});
+
+test("public card menus always open the selected version's details", () => {
+  const page = installedPage();
+  page.handshake();
+  page.login("account", 1, "data:image/png;base64,AAAA");
+  page.receive({type: "local", revision: 3, items: [{
+    key: "download", title: "本地副本", local: true, extension: ".3mf", canDirectImport: true,
+    modelId: scriptCard.id, versionId: scriptCard.versionId, sourceVerified: true, sha256: "a".repeat(64),
+  }]});
+  const authorAvatar = "data:image/png;base64,AQID";
+  const firstVersion = {...scriptCard, author: {...scriptCard.author, avatarUrl: authorAvatar}};
+  const otherVersion = {...firstVersion, version: 2, versionId: "version-two"};
+  page.receive({type: "catalog", items: [firstVersion, otherVersion], replace: true});
+  page.flush();
+  const [downloaded, publicCard] = page.ids.get("grid").children;
+  assert.match(downloaded.textContent, /已下载/);
+  assert.doesNotMatch(publicCard.textContent, /已下载/);
+  const menu = page.ids.get("menu");
+  for (const [card, versionId] of [[downloaded, scriptCard.versionId], [publicCard, otherVersion.versionId]]) {
+    assert.equal(card.querySelector(".avatar").querySelector("img").src, authorAvatar);
+    card.querySelector(".menu-button").onclick({stopPropagation() {}});
+    assert.deepEqual(menu.children.map(button => button.textContent), ["模型详情"]);
+    menu.children[0].onclick();
+    assert.equal(menu.hidden, true);
+    assert.equal(page.sent.at(-1).command, "detail");
+    assert.equal(page.sent.at(-1).key, `${scriptCard.id}:${versionId}`);
+  }
 });

@@ -73,16 +73,16 @@ jobs:
         shell: pwsh
 
 
-      - name: Install MSYS2 (clangarm64) with GMP/MPFR and LLVM tools
-        if: runner.os == 'Windows' && inputs.arch == 'arm64'
+      - name: Set up MSYS2 for Windows FFmpeg and ARM64 dependencies
+        if: runner.os == 'Windows'
+        id: windows-msys2
         uses: msys2/setup-msys2@v2
         with:
-          msystem: CLANGARM64
+          msystem: ${{ inputs.arch == 'arm64' && 'CLANGARM64' || 'MSYS' }}
           update: true
           install: >-
-            mingw-w64-clang-aarch64-gmp
-            mingw-w64-clang-aarch64-mpfr
-            mingw-w64-clang-aarch64-llvm
+            make perl
+            ${{ inputs.arch == 'arm64' && 'mingw-w64-clang-aarch64-gmp mingw-w64-clang-aarch64-mpfr mingw-w64-clang-aarch64-llvm' || 'mingw-w64-x86_64-nasm' }}
 
       - name: Stage ARM64 GMP/MPFR (no prebuilt blobs exist for win-arm64)
         # GMP/MPFR ship prebuilt x64/x86 blobs in-tree but none for ARM64.
@@ -125,6 +125,9 @@ jobs:
             if ("${{ startsWith(inputs.os, 'orca-') }}" -ne "true") {
               choco install strawberryperl
             }
+            $msys2 = '${{ steps.windows-msys2.outputs.msys2-location }}'
+            $env:ORCA_FFMPEG_MAKE = Join-Path $msys2 'usr/bin/make.exe'
+            $env:Path = "$(Join-Path $msys2 'mingw64/bin');$env:Path"
             # cache-path is the install directory inside the deps build directory.
             $deps = (Split-Path "${{ github.workspace }}/${{ inputs.cache-path }}").Replace('\', '/')
             # -l compiles with Visual Studio's clang-cl and -x builds with Ninja; --msvc --msbuild is cl under the Visual Studio generator.
