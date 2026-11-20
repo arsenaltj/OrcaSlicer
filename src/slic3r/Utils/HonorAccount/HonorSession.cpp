@@ -12,7 +12,14 @@ std::optional<SessionAccess> Session::access() const
     if (m_snapshot.state != State::SignedIn || !m_session ||
         m_session->access_expires_at <= now_seconds()) return std::nullopt;
     return SessionAccess {m_config.api_url, m_session->access_token,
-        m_session->identity.subject, m_generation};
+        m_session->identity.subject, m_generation, m_access_lifetime};
+}
+
+std::optional<Services> Session::services() const
+{
+    const auto lease = access();
+    if (!lease) return std::nullopt;
+    return Services(*lease, m_transport);
 }
 
 bool Session::refresh_access(std::uint64_t expected_generation)
@@ -20,6 +27,28 @@ bool Session::refresh_access(std::uint64_t expected_generation)
     if (expected_generation != m_generation || !m_session || m_task ||
         m_snapshot.state != State::SignedIn) return false;
     return start_refresh();
+}
+
+bool Session::save_avatar(const std::string& png)
+{
+    if (m_task || !access() || m_snapshot.avatar_update == AvatarUpdate::SyncFailed) return false;
+    const auto config = m_config;
+    const auto previous = *m_session;
+    const auto transport = m_transport;
+    m_snapshot.avatar_update = AvatarUpdate::Saving;
+    start(TaskKind::SaveAvatar, [config, previous, transport, png](Cancellation cancel) -> TaskResult {
+        Client(transport).update_avatar(config, previous, png, cancel);
+        return std::monostate{};
+    });
+    return true;
+}
+
+bool Session::retry_avatar_sync()
+{
+    if (m_task || !access() || m_snapshot.avatar_update != AvatarUpdate::SyncFailed) return false;
+    m_snapshot.avatar_update = AvatarUpdate::Synchronizing;
+    start_profile_sync(TaskKind::ReadAvatar);
+    return true;
 }
 namespace {
 
@@ -272,11 +301,17 @@ std::string Session::session_key() const
     return "platform-session-" + m_config.key();
 }
 
-void Session::cancel_task()
+void Session::cancel_task(bool retain_avatar)
 {
+    m_access_lifetime->store(true);
+    m_access_lifetime = std::make_shared<std::atomic_bool>(false);
     ++m_generation;
     if (m_task) m_task->cancel->store(true);
     m_task.reset();
+    if (!retain_avatar) {
+        m_snapshot.avatar_url.reset();
+        m_snapshot.avatar_update = AvatarUpdate::Idle;
+    }
     m_authorization_url.reset();
     m_authorization_expires_at = 0;
     m_verifier.clear();
@@ -368,6 +403,8 @@ bool Session::erase_session()
 bool Session::start_refresh()
 {
     if (!m_session) return false;
+    m_access_lifetime->store(true);
+    m_access_lifetime = std::make_shared<std::atomic_bool>(false);
     if (m_session->refresh_expires_at <= now_seconds()) {
         const bool erased = erase_session();
         m_session.reset();
@@ -409,11 +446,21 @@ bool Session::start_refresh()
     return true;
 }
 
+void Session::start_profile_sync(TaskKind kind)
+{
+    const auto config = m_config;
+    const auto previous = *m_session;
+    const auto transport = m_transport;
+    start(kind, [config, previous, transport](Cancellation cancel) -> TaskResult {
+        return Client(transport).validate(config, previous, cancel);
+    });
+}
+
 void Session::restore()
 {
     if (m_snapshot.busy()) return;
     BOOST_LOG_TRIVIAL(info) << "[HonorAccount] stage=restore result=start";
-    cancel_task();
+    cancel_task(m_session.has_value() && !m_task);
     m_retry_enabled = false;
     if (const auto error = m_config.validate(); !error.empty()) {
         m_snapshot.state = State::SignedOut;
@@ -733,14 +780,25 @@ bool Session::poll()
                 m_authorization_url = authorization.url;
                 m_authorization_expires_at = authorization.expires_at;
                 m_snapshot.state = State::Authorizing;
-                m_snapshot.message = "请在下方荣耀页面完成登录或注册";
+                m_snapshot.message = "请完成荣耀账号授权";
                 BOOST_LOG_TRIVIAL(info)
                     << "[HonorAccount] stage=authorize result=ready";
+            } else if (task->kind == TaskKind::SaveAvatar) {
+                m_snapshot.avatar_update = AvatarUpdate::Synchronizing;
+                start_profile_sync(TaskKind::ReadAvatar);
+            } else if (task->kind == TaskKind::Profile || task->kind == TaskKind::ReadAvatar) {
+                m_session->identity = std::get<PlatformSession>(*result).identity;
+                m_snapshot.identity = m_session->identity;
+                m_snapshot.avatar_url = m_snapshot.identity.picture.value_or("");
+                if (task->kind == TaskKind::ReadAvatar) m_snapshot.avatar_update = AvatarUpdate::Complete;
+                if (m_snapshot.persistent) m_snapshot.persistent = save_session(*m_session);
             } else {
                 auto session = std::get<PlatformSession>(*result);
                 const bool persistent = save_session(session);
                 m_session = std::move(session);
                 m_snapshot.identity = m_session->identity;
+                if (task->kind == TaskKind::Validate)
+                    m_snapshot.avatar_url = m_snapshot.identity.picture.value_or("");
                 m_snapshot.state = State::SignedIn;
                 m_snapshot.persistent = persistent;
                 m_snapshot.message =
@@ -760,6 +818,23 @@ bool Session::poll()
                             : task->kind == TaskKind::Refresh ? "refresh"
                                                               : "restore")
                     << " result=verified persistent=" << persistent;
+                if (task->kind == TaskKind::Exchange ||
+                    (task->kind == TaskKind::Refresh && !m_snapshot.avatar_url))
+                    start_profile_sync();
+            }
+        } else if (task->kind == TaskKind::SaveAvatar) {
+            m_snapshot.avatar_update = AvatarUpdate::SaveFailed;
+        } else if (task->kind == TaskKind::ReadAvatar) {
+            m_snapshot.avatar_update = AvatarUpdate::SyncFailed;
+        } else if (task->kind == TaskKind::Profile) {
+            if (failure == Failure::InvalidCredentials) {
+                cancel_task();
+                const bool erased = erase_session();
+                m_session.reset();
+                m_snapshot = {};
+                m_snapshot.state = State::Failed;
+                m_snapshot.message = erased ? message : "平台会话已失效但无法安全清除，请重新打开软件后重试";
+                m_retry_enabled = false;
             }
         } else if (task->kind == TaskKind::Refresh) {
             erase_session();

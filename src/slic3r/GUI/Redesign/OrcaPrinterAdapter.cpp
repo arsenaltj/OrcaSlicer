@@ -1,4 +1,5 @@
 #include "OrcaPrinterAdapter.hpp"
+#include "slic3r/Utils/NetworkAgentFactory.hpp"
 
 #include "../GUI_App.hpp"
 #include "../DeviceManager.hpp"
@@ -112,8 +113,12 @@ PrinterWorkspaceSnapshot OrcaPrinterAdapter::snapshot() const
                                 !m_plater->is_export_gcode_scheduled() && !preview_toolpath_outside();
             if (state.gcode_ready) {
                 state.gcode_name = m_plater->get_export_gcode_filename(".gcode", true).ToUTF8().data();
-                if (state.gcode_name.empty())
-                    state.gcode_name = boost::filesystem::path(plate->get_gcode_filename()).filename().string();
+                if (state.gcode_name.empty() || state.gcode_name == ".gcode") {
+                    const auto plate_name = plate->get_plate_name();
+                    state.gcode_name = (plate_name.empty()
+                        ? "打印盘 " + std::to_string(m_plater->get_partplate_list().get_curr_plate_index() + 1)
+                        : plate_name) + ".gcode";
+                }
                 if (auto* result = plate->get_slice_result())
                     state.estimated_seconds = static_cast<int>(result->print_statistics.modes[
                         static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time);
@@ -183,9 +188,9 @@ PrinterWorkspaceSnapshot OrcaPrinterAdapter::snapshot() const
     state.media_state = orca_device_media_state(media);
     // Never keep stale telemetry or enabled task actions when a device drops.
     if (!state.info_ready) return state;
-    const bool agent_camera_available = active_printer_agent &&
-        printer_agent->get_camera_stream_mode() != CameraStreamMode::none &&
-        !printer_agent->get_camera_url().empty();
+    const auto camera_mode = active_printer_agent ? printer_agent->get_camera_stream_mode() : CameraStreamMode::none;
+    const bool agent_camera_available = camera_mode == CameraStreamMode::webrtc ||
+        (camera_mode != CameraStreamMode::none && !printer_agent->get_camera_url().empty());
     state.has_camera = machine->has_ipcam || agent_camera_available;
     if (!machine->job_id_.empty() || !machine->task_id_.empty() || !machine->subtask_id_.empty() || !machine->obj_subtask_id.empty())
         state.task_id = machine->job_id_ + "/" + machine->task_id_ + "/" + machine->subtask_id_ + "/" + machine->obj_subtask_id;
@@ -208,12 +213,11 @@ PrinterWorkspaceSnapshot OrcaPrinterAdapter::snapshot() const
         state.bed_temperature = static_cast<int>(bed->GetBedTemp());
         state.bed_target_temperature = static_cast<int>(bed->GetBedTempTarget());
     }
-    state.can_level = machine->is_support_bed_leveling != 0;
-    state.bed_leveling = wxGetApp().app_config->get(machine->printer_type, "bed_leveling") != "off";
+    const bool native_settings = state.active_agent_id == BBL_PRINTER_AGENT_ID;
     state.recording = machine->camera_recording_when_printing;
-    state.can_record = state.has_camera && machine->GetStorage() &&
+    state.can_record = native_settings && machine->has_ipcam && machine->GetStorage() &&
         machine->GetStorage()->get_sdcard_state() == DevStorage::HAS_SDCARD_NORMAL;
-    state.can_detect = !machine->xcam_disable_ai_detection_display &&
+    state.can_detect = native_settings && !machine->xcam_disable_ai_detection_display &&
         (machine->is_support_spaghetti_detection || machine->xcam_ai_monitoring);
     state.detection_enabled = machine->xcam_ai_monitoring;
     state.device_warning = machine->print_error != 0;
@@ -569,26 +573,20 @@ bool OrcaPrinterAdapter::control_task(const PrinterCommandTarget& target, Printe
     return result == 0;
 }
 
-bool OrcaPrinterAdapter::set_bed_leveling(const std::string& id, bool enabled) const
-{
-    auto* machine = selected_target(id);
-    const auto state = snapshot();
-    if (!machine || !state.can_level || printer_task_active(state.phase)) return false;
-    wxGetApp().app_config->set(machine->printer_type, "bed_leveling", enabled ? "on" : "off");
-    return true;
-}
-
 bool OrcaPrinterAdapter::set_recording(const std::string& id, bool enabled) const
 {
     auto* machine = selected_target(id);
-    return machine && snapshot().can_record && machine->command_ipcam_record(enabled) == 0;
+    const auto state = snapshot();
+    return machine && state.info_ready && state.can_record && machine->command_ipcam_record(enabled) == 0;
 }
 
 bool OrcaPrinterAdapter::set_detection(const std::string& id, bool enabled) const
 {
     auto* machine = selected_target(id);
-    return machine && snapshot().can_detect && machine->command_xcam_control_ai_monitoring(
-        enabled, machine->xcam_ai_monitoring_sensitivity.empty() ? "medium" : machine->xcam_ai_monitoring_sensitivity) == 0;
+    const auto state = snapshot();
+    return machine && state.info_ready && state.can_detect && machine->command_xcam_control(
+        "printing_monitor", enabled,
+        machine->xcam_ai_monitoring_sensitivity.empty() ? "medium" : machine->xcam_ai_monitoring_sensitivity) == 0;
 }
 
 wxImage OrcaPrinterAdapter::plate_preview() const

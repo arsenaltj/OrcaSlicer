@@ -61,7 +61,7 @@
         "src/slic3r/GUI/Redesign/AccountWorkspace.hpp",
         "src/slic3r/GUI/Redesign/PlatformAccountService.hpp"
       ],
-      "purpose": "应用共享平台Session、官方OAuth校验与本机凭据；账号页与模型库共用身份，不承接AI供应商凭据"
+      "purpose": "共享桌面 OAuth 会话、安全凭据、后端头像读写和展示状态，以及原生积分和云文件服务。模型生成沿用供应商配置"
     },
     {
       "id": "desktop",
@@ -677,6 +677,11 @@
       "id": "honor_identity",
       "path": "src/slic3r/Utils/HonorAccount/HonorSession.hpp",
       "needle": "class Session"
+    },
+    {
+      "id": "honor_native_services",
+      "path": "src/slic3r/Utils/HonorAccount/HonorServices.hpp",
+      "needle": "class Services {"
     },
     {
       "id": "artifact_contract",
@@ -2289,21 +2294,23 @@
       },
       {
         "id": "identity",
-        "label": "OAuth 与本机会话",
+        "label": "桌面 OAuth、会话与账户服务",
         "paths": [
           "src/slic3r/Utils/HonorAccount",
           "src/slic3r/GUI/Redesign/PlatformAccountService*"
         ],
         "evidence": [
           "honor_identity",
+          "honor_native_services",
           "platform_account_service"
         ],
         "tests": [
-          "tests/slic3rutils/test_honor*"
+          "tests/slic3rutils/test_honor*",
+          "tests/slic3rutils/test_account_avatar.cpp"
         ],
-        "state_owner": "应用共享PlatformAccountService拥有唯一HonorAccount Session",
-        "contract": "原生凭据不进入HTML；取消、过期、刷新及注销均使旧请求失效",
-        "note": "应用接入配置与用户令牌应分开维护。",
+        "state_owner": "HonorSession 确认账号资料，PlatformAccountService 持有共享头像展示状态。",
+        "contract": "软件内 WebView 拦截固定桌面回调，再由当前登录代次完成 PKCE 交换。头像经 PATCH 保存和 GET 回读，原生会话约束头像、积分和云文件结果的账号范围。",
+        "note": "后端在成功鉴权请求后统计客户端活跃。积分与云文件服务供未来界面调用。",
         "build_boundary": "HonorAccountSources.cmake 纳入 libslic3r_gui；本地系统凭据存储另有平台实现。"
       },
       {

@@ -186,8 +186,10 @@ std::string optional_json_string(const nlohmann::json& object, const char* key)
 std::string absolute_camera_url(const std::string& base_url, const std::string& value)
 {
     if (value.empty() || boost::istarts_with(value, "http://") || boost::istarts_with(value, "https://") ||
-        boost::istarts_with(value, "rtsp://"))
+        boost::istarts_with(value, "rtsp://") || boost::istarts_with(value, "rtsps://"))
         return value;
+    if (value.find("://") != std::string::npos)
+        return {};
     const bool secure = boost::istarts_with(base_url, "https://");
     if (boost::istarts_with(value, "//"))
         return std::string(secure ? "https:" : "http:") + value;
@@ -208,7 +210,8 @@ Slic3r::CameraStreamMode camera_mode_for_url(const std::string& url)
 {
     if (boost::istarts_with(url, "https://")) return Slic3r::CameraStreamMode::https;
     if (boost::istarts_with(url, "http://")) return Slic3r::CameraStreamMode::http;
-    if (boost::istarts_with(url, "rtsp://")) return Slic3r::CameraStreamMode::rtsp;
+    if (boost::istarts_with(url, "rtsp://") || boost::istarts_with(url, "rtsps://"))
+        return Slic3r::CameraStreamMode::rtsp;
     return Slic3r::CameraStreamMode::none;
 }
 
@@ -887,6 +890,36 @@ void MoonrakerPrinterAgent::build_ams_payload(int ams_count, int max_lane_index,
         ota_info.sw_ver = "1.0.0";  // Placeholder version for Moonraker printers
         obj->module_vers.emplace("ota", ota_info);
     }
+}
+
+std::future<DeviceTransferFilaments> MoonrakerPrinterAgent::read_transfer_filaments(const std::string& dev_id)
+{
+    MoonrakerDeviceInfo target;
+    {
+        std::lock_guard<std::recursive_mutex> lock(connect_mutex);
+        if (device_info.dev_id != dev_id || device_info.virtual_printer_uuid.empty())
+            return {};
+        target = device_info;
+    }
+
+    auto result = std::make_shared<std::promise<DeviceTransferFilaments>>();
+    auto future = result->get_future();
+    try {
+        auto http = Http::get(join_url(target.base_url, "/sim/api/v1/state"));
+        if (!target.api_key.empty())
+            http.header("X-Api-Key", target.api_key);
+        http.timeout_connect(2).timeout_max(4).size_limit(2 * 1024 * 1024)
+            .on_complete([result, uuid = target.virtual_printer_uuid](std::string body, unsigned status) {
+                auto filaments = status == 200 ? read_virtual_printer_transfer_filaments(
+                    nlohmann::json::parse(body, nullptr, false), uuid) : DeviceTransferFilaments{};
+                result->set_value(std::move(filaments));
+            })
+            .on_error([result](std::string, std::string, unsigned) { result->set_value({}); })
+            .perform();
+    } catch (const std::exception&) {
+        return {};
+    }
+    return future;
 }
 
 bool MoonrakerPrinterAgent::fetch_filament_info(std::string dev_id, FilamentSyncMode /*sync_mode*/)
@@ -1657,21 +1690,17 @@ bool MoonrakerPrinterAgent::parse_webcam_info(const nlohmann::json& response, co
         const std::string snapshot = absolute_camera_url(base_url, optional_json_string(webcam, "snapshot_url"));
         CameraStreamMode mode = camera_mode_for_url(stream);
         const CameraStreamMode snapshot_mode = camera_mode_for_url(snapshot);
-        // Moonraker's common /webcam/?action=stream endpoint is multipart MJPEG,
-        // which Windows Media Foundation does not decode reliably. Prefer the
-        // existing WebView snapshot controller when the same camera exposes one.
         if ((mode == CameraStreamMode::http || mode == CameraStreamMode::https) &&
-            snapshot_mode != CameraStreamMode::none)
-            mode = CameraStreamMode::http_snapshot;
-        else if (mode == CameraStreamMode::none && snapshot_mode != CameraStreamMode::none)
-            mode = CameraStreamMode::http_snapshot;
-        if (mode == CameraStreamMode::none)
-            continue;
-        info.mode = mode;
-        info.name = optional_json_string(webcam, "name");
-        info.stream_url = stream;
-        info.snapshot_url = snapshot;
-        return true;
+            boost::istarts_with(optional_json_string(webcam, "service"), "webrtc"))
+            mode = CameraStreamMode::none;
+        const std::string name = optional_json_string(webcam, "name");
+        if (mode != CameraStreamMode::none) {
+            info = { mode, name, stream, snapshot };
+            return true;
+        }
+        if (info.mode == CameraStreamMode::none &&
+            (snapshot_mode == CameraStreamMode::http || snapshot_mode == CameraStreamMode::https))
+            info = { CameraStreamMode::http_snapshot, name, {}, snapshot };
     }
     return true;
 }
@@ -2936,6 +2965,7 @@ void MoonrakerPrinterAgent::perform_connection_async(const std::string& dev_id, 
             device_info.name_source  = fetched_info.name_source;
             device_info.version      = fetched_info.version;
             device_info.klippy_state = fetched_info.klippy_state;
+            device_info.virtual_printer_uuid = fetched_info.virtual_printer_uuid;
         }
 
         MoonrakerWebcamInfo fetched_webcam;

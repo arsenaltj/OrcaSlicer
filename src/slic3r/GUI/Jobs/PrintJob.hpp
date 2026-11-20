@@ -44,6 +44,7 @@ public:
 class PrintJob : public Job
 {
     std::function<void()> m_success_fun{nullptr};
+    std::function<void(bool, bool)> m_transfer_finished;
     std::string         m_dev_id;
     bool                m_job_finished{ false };
     bool                m_lifecycle_started{ false };
@@ -128,6 +129,7 @@ public:
     }
 
     bool is_finished() { return m_job_finished;  }
+    void on_transfer_finished(std::function<void(bool, bool)> callback) { m_transfer_finished = std::move(callback); }
     void set_print_job_finished_event(int event_id, wxString evt_data = wxEmptyString) {
         m_print_job_completed_id = event_id;
         m_completed_evt_data = evt_data;

@@ -47,6 +47,7 @@ public:
     {
         return got_frame_ && frame_ ? wxSize{frame_->width, frame_->height} : wxSize{};
     }
+    std::int64_t frame_timestamp() const { return frame_->best_effort_timestamp; }
 
 private:
     AVCodecContext *codec_ctx_ = nullptr;

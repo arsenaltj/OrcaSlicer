@@ -776,12 +776,34 @@ TEST_CASE("Reentering the workbench retains its stage and sends invalid print pr
 TEST_CASE("Print preparation requires a valid result and returns to the matching slicing stage",
           "[UiRedesign][WorkbenchNavigation]")
 {
-    CHECK(workbench_print_preparation_allowed(true, false));
-    CHECK_FALSE(workbench_print_preparation_allowed(false, false));
-    CHECK_FALSE(workbench_print_preparation_allowed(true, true));
-    CHECK_FALSE(workbench_print_preparation_allowed(false, true));
+    CHECK(workbench_print_preparation_allowed(true, false, false));
+    CHECK_FALSE(workbench_print_preparation_allowed(false, false, false));
+    CHECK_FALSE(workbench_print_preparation_allowed(true, true, false));
+    CHECK_FALSE(workbench_print_preparation_allowed(false, true, false));
     CHECK(workbench_return_view(true) == RedesignModelView::Preview);
     CHECK(workbench_return_view(false) == RedesignModelView::Slicing);
+}
+
+TEST_CASE("Print preparation waits for an active preview transition to commit or roll back",
+          "[UiRedesign][WorkbenchNavigation]")
+{
+    RedesignPageTransition page;
+    const RedesignPageRoute slicing {int(RedesignWorkspacePage::Model), int(RedesignModelView::Slicing)};
+    const RedesignPageRoute preview {int(RedesignWorkspacePage::Model), int(RedesignModelView::Preview)};
+    const auto pending = page.begin(slicing, preview);
+    REQUIRE(pending);
+    CHECK_FALSE(workbench_print_preparation_allowed(true, false, page.active()));
+    REQUIRE(page.mark_ready(*pending));
+    CHECK_FALSE(workbench_print_preparation_allowed(true, false, page.active()));
+    REQUIRE(page.commit(*pending));
+    CHECK(workbench_print_preparation_allowed(true, false, page.active()));
+
+    const auto retry = page.begin(slicing, preview);
+    REQUIRE(retry);
+    CHECK_FALSE(workbench_print_preparation_allowed(true, false, page.active()));
+    REQUIRE(page.rollback(*retry));
+    CHECK(workbench_print_preparation_allowed(true, false, page.active()));
+    CHECK_FALSE(workbench_print_preparation_allowed(false, false, page.active()));
 }
 
 TEST_CASE("Slicing completion presents each valid result once after Plater becomes idle",

@@ -321,7 +321,7 @@ OrcaTrialSliceInput OrcaSmartSlicingAdapter::capture_trial_slice_input() const
 
     OrcaTrialSliceInput input;
     input.model                    = current_plate_model_copy(*m_plater, *plate);
-    input.config                   = wxGetApp().preset_bundle->full_config();
+    input.config                   = wxGetApp().preset_bundle->full_config(false);
     input.config.apply(*plate->config(), true);
     input.plate_index              = plates.get_curr_plate_index();
     input.plate_id                 = plate->id().id;

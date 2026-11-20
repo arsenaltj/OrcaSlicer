@@ -1,6 +1,6 @@
 #include "slic3r/GUI/Redesign/AccountAvatar.hpp"
 #include <catch2/catch_test_macros.hpp>
-#include <wx/dir.h>
+#include <wx/filename.h>
 #include <wx/imagjpeg.h>
 #include <wx/imagpng.h>
 
@@ -28,30 +28,19 @@ void write(const wxString& path, const std::string& bytes)
 }
 }
 
-TEST_CASE("Account avatars use the platform account UUID as their stable local identity", "[AccountAvatar]")
-{
-    const auto first = Avatar::account_path("/user-data","subject-one");
-    REQUIRE(first.Contains("/honor-avatars/"));
-    REQUIRE_FALSE(first.Contains("subject-one"));
-    REQUIRE(Avatar::account_path("/user-data","").empty());
-    REQUIRE(Avatar::account_path("","subject-one").empty());
-    REQUIRE(first != Avatar::account_path("/user-data","subject-two"));
-    REQUIRE(first == Avatar::account_path("/user-data","subject-one"));
-}
-
 TEST_CASE("Avatar previews crop the center and preserve transparent image appearance", "[AccountAvatar]")
 {
     auto wide = solid(600,300,255,0,0);
     wide.SetRGB(wxRect(150,0,300,300),0,80,160);
     const auto cropped = Avatar::square(wide);
-    REQUIRE(cropped.GetSize() == wxSize(256,256));
-    REQUIRE(cropped.GetRed(0,128) == 0);
-    REQUIRE(cropped.GetBlue(255,128) == 160);
+    REQUIRE(cropped.GetSize() == wxSize(96,96));
+    REQUIRE(cropped.GetRed(0,48) == 0);
+    REQUIRE(cropped.GetBlue(95,48) == 160);
     auto transparent = solid(30,60,255,0,0);transparent.InitAlpha();
     std::memset(transparent.GetAlpha(),0,30*60);
     const auto white = Avatar::square(transparent);
     REQUIRE_FALSE(white.HasAlpha());
-    REQUIRE(white.GetGreen(128,128) == 255);
+    REQUIRE(white.GetGreen(48,48) == 255);
     const auto round = Avatar::circle(cropped,72);
     REQUIRE(round.GetAlpha(0,0) == 0);
     REQUIRE(round.GetAlpha(36,36) == 255);
@@ -85,6 +74,30 @@ TEST_CASE("Untrusted image headers are bounded before raster allocation", "[Acco
     REQUIRE(Avatar::encoded_size("GIF89a",type).x <= 0);
 }
 
+TEST_CASE("Account avatars decode bounded HTTPS and inline PNG without platform credentials", "[AccountAvatar]")
+{
+    Images files;
+    const auto image = solid(12, 18);
+    wxMemoryOutputStream stream;
+    REQUIRE(image.SaveFile(stream, wxBITMAP_TYPE_PNG));
+    std::string encoded(stream.GetSize(), '\0');
+    stream.CopyTo(encoded.data(), encoded.size());
+    unsigned requests = 0;
+    const HA::Transport mock = [&](const HA::Request& request, HA::Cancellation) {
+        ++requests;
+        REQUIRE(request.bearer.empty());
+        REQUIRE(request.headers.empty());
+        REQUIRE(request.response_limit == Avatar::max_bytes);
+        return HA::Response{200, encoded};
+    };
+    REQUIRE(Avatar::fetch("https://avatar.example.test/profile.jpg", {}, mock).GetSize() == image.GetSize());
+    REQUIRE_FALSE(Avatar::fetch("http://avatar.example.test/profile.jpg", {}, mock).IsOk());
+    REQUIRE_FALSE(Avatar::fetch("https://user@avatar.example.test/profile.jpg", {}, mock).IsOk());
+    const auto inline_png = "data:image/png;base64," + wxBase64Encode(encoded.data(), encoded.size()).ToStdString();
+    REQUIRE(Avatar::fetch(inline_png, {}, mock).GetSize() == image.GetSize());
+    REQUIRE(requests == 1);
+}
+
 TEST_CASE("Repeated avatar previews leave cached source pixels and alpha unchanged", "[AccountAvatar]")
 {
     auto source=solid(72,72);source.InitAlpha();
@@ -98,44 +111,16 @@ TEST_CASE("Repeated avatar previews leave cached source pixels and alpha unchang
     REQUIRE(source.GetBlue(0,0) == 160);
 }
 
-TEST_CASE("Saved avatars survive source removal and reset without affecting another account", "[AccountAvatar]")
+TEST_CASE("Avatar uploads encode a bounded 96 pixel PNG", "[AccountAvatar]")
 {
     Images files;
-    const auto path=Avatar::account_path(files.directory,"first");
-    const auto other=Avatar::account_path(files.directory,"second");
-    REQUIRE(solid(100,200).SaveFile(files.path("source.png"),wxBITMAP_TYPE_PNG));
-    REQUIRE(Avatar::save(path,Avatar::square(Avatar::read(files.path("source.png")))));
-    REQUIRE(Avatar::save(other,Avatar::square(solid(60,30,200,0,0))));
-    REQUIRE(wxRemoveFile(files.path("source.png")));
-    REQUIRE(Avatar::read(path).GetSize() == wxSize(256,256));
-    REQUIRE(Avatar::read(path).GetBlue(128,128) == 160);
-    REQUIRE(Avatar::save(path,Avatar::square(solid(200,100,0,200,0))));
-    REQUIRE(Avatar::read(path).GetGreen(128,128) == 200);
-    REQUIRE_FALSE(Avatar::save(path,wxImage{}));
-    REQUIRE(Avatar::read(path).GetGreen(128,128) == 200);
-    REQUIRE(Avatar::reset(path));
-    REQUIRE_FALSE(wxFileExists(path));
-    REQUIRE(Avatar::read(other).GetRed(128,128) == 200);
-    REQUIRE(Avatar::reset(path));
-}
-
-TEST_CASE("Avatar write failures preserve the previous image and leave no temporary files", "[AccountAvatar]")
-{
-    Images files;const auto path=files.path("saved.png");
-    REQUIRE(Avatar::save(path,Avatar::square(solid(60,60))));
-#ifdef __WXMSW__
-    HANDLE lock=::CreateFileW(path.wc_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);
-    REQUIRE(lock != INVALID_HANDLE_VALUE);
-    const bool saved=Avatar::save(path,Avatar::square(solid(60,60,200,0,0)));
-    const bool reset=Avatar::reset(path);
-    ::CloseHandle(lock);
-    REQUIRE_FALSE(saved);
-    REQUIRE_FALSE(reset);
-    REQUIRE(Avatar::read(path).GetBlue(128,128) == 160);
-#endif
-    write(files.path("blocked"),"regular file");
-    REQUIRE_FALSE(Avatar::save(files.path("blocked/image.png"),Avatar::square(solid(20,20))));
-    wxArrayString leftovers;
-    wxDir::GetAllFiles(files.directory,&leftovers,"saved.png.*",wxDIR_FILES);
-    REQUIRE(leftovers.empty());
+    const auto bytes = Avatar::png_data(Avatar::square(solid(200,100,0,200,0)));
+    REQUIRE(bytes.rfind("data:image/png;base64,", 0) == 0);
+    REQUIRE(bytes.size() <= 65536);
+    const auto decoded = Avatar::fetch(bytes, {});
+    REQUIRE(decoded.IsOk());
+    REQUIRE(decoded.GetSize() == wxSize(96,96));
+    REQUIRE(decoded.GetGreen(48,48) == 200);
+    REQUIRE(Avatar::png_data(solid(95,96)).empty());
+    REQUIRE(Avatar::png_data(wxImage{}).empty());
 }

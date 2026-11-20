@@ -8,6 +8,8 @@
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryDeletion.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/VerifiedModelFiles.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelPreview3D.hpp"
+#include "libslic3r/Utils.hpp"
+#include "libslic3r/miniz_extension.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <boost/filesystem.hpp>
@@ -189,6 +191,7 @@ TEST_CASE("A verified download atomically registers without overwriting source o
     auto entries=Slic3r::GUI::ModelLibraryRepository::read(root.path,*cancellation(),true);
     REQUIRE(entries.size()==1);REQUIRE(entries.front().website_model_id==model);REQUIRE(entries.front().model_path.extension()==".3mf");
     REQUIRE(entries.front().website_original_verified);
+    CHECK_FALSE(entries.front().can_direct_import);
     boost::filesystem::path destination;std::string error;
     Slic3r::GUI::ModelLibraryExportRequest export_request;export_request.model=entries.front().model_path;export_request.id=id;
     REQUIRE(Slic3r::GUI::export_model_library_copy(export_request,root.path,destination,error));
@@ -196,6 +199,52 @@ TEST_CASE("A verified download atomically registers without overwriting source o
     REQUIRE_FALSE(boost::filesystem::exists(destination/"model.glb"));
     boost::filesystem::ifstream original(root.path/"downloads"/"original.json");std::string text;original>>text;REQUIRE(text=="untouched");
 }
+
+TEST_CASE("Local library cards distinguish native import from workbench import", "[PlatformLibrary][ModelLibraryDirectImport]")
+{
+    const auto filename = GENERATE("model.STL", "model.step", "model.stp", "model.GLB", "model.obj");
+    const bool direct = std::string_view(filename) != "model.GLB" && std::string_view(filename) != "model.obj";
+    Directory root;
+    const std::string bytes = "registered model";
+    const auto spec = DownloadSpec::from_detail(detail(bytes, filename), file);
+    StagedDownload::prepare(fixture_client(bytes), spec, root.path, cancellation())->commit(cancellation());
+
+    const auto entries = Slic3r::GUI::ModelLibraryRepository::read(root.path, *cancellation(), true);
+    REQUIRE(entries.size() == 1);
+    CHECK(entries.front().can_direct_import == direct);
+    REQUIRE(boost::filesystem::remove(entries.front().model_path));
+    CHECK(Slic3r::GUI::ModelLibraryRepository::read(root.path, *cancellation(), true).empty());
+}
+
+TEST_CASE("A 3MF needs a mesh to offer direct slicing", "[PlatformLibrary][ModelLibraryDirectImport]")
+{
+    const bool has_mesh = GENERATE(false, true);
+    const bool has_toolpath = GENERATE(false, true);
+    Directory root;
+    mz_zip_archive archive {};
+    REQUIRE(mz_zip_writer_init_heap(&archive, 0, 0));
+    Slic3r::ScopeGuard close_archive([&archive] { mz_zip_writer_end(&archive); });
+    const std::string model_xml = has_mesh ?
+        R"(<model xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources><object id="1"><mesh><vertices/><triangles/></mesh></object></resources><build><item objectid="1"/></build></model>)" :
+        "<model><resources/><build/></model>";
+    REQUIRE(mz_zip_writer_add_mem(&archive, "3D/3dmodel.model", model_xml.data(), model_xml.size(), 0));
+    if (has_toolpath) {
+        const std::string toolpath = "; preview";
+        REQUIRE(mz_zip_writer_add_mem(&archive, "Metadata/plate_1.gcode", toolpath.data(), toolpath.size(), 0));
+    }
+    void* data = nullptr;
+    size_t size = 0;
+    REQUIRE(mz_zip_writer_finalize_heap_archive(&archive, &data, &size));
+    Slic3r::ScopeGuard free_data([data] { mz_free(data); });
+    const std::string bytes(static_cast<const char*>(data), size);
+    const auto spec = DownloadSpec::from_detail(detail(bytes, "model.3mf"), file);
+    StagedDownload::prepare(fixture_client(bytes), spec, root.path, cancellation())->commit(cancellation());
+
+    const auto entries = Slic3r::GUI::ModelLibraryRepository::read(root.path, *cancellation(), true);
+    REQUIRE(entries.size() == 1);
+    CHECK(entries.front().can_direct_import == has_mesh);
+}
+
 TEST_CASE("An explicit verified download restores removed history while cancellation keeps it hidden", "[PlatformLibrary][ModelLibraryDeletion]") {
     const bool shared = GENERATE(false, true);
     CAPTURE(shared);

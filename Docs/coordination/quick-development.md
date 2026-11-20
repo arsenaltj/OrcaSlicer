@@ -24,6 +24,8 @@
 
 每台电脑可在忽略的`.tmp/dev/settings.json`保存`python`、`cmake`、`deps_prefix`工具路径，不进入Git、不放凭据；也可首次显式执行`./dev.ps1 Setup -PythonPath <Python3.12+路径> -CMakePath <cmake.exe路径> -DepsPrefix <已安装依赖前缀>`。Setup使用Visual Studio 2022 x64，开启测试和内部运行文件安装，只配置不编译；已有cache会核对源码归属并重新配置，也可恢复未完成的配置。第三方C++依赖使用该电脑已有前缀；CMake若缺少固定Pillow wheel会尝试从官方PyPI文件站下载。依赖和缓存是否可用以本次检查为准。旧[构建存储说明](local-build-storage.md)保留历史配置，不直接照抄路径。
 
+首次构建 Windows `dep_FFMPEG` 需要 MSVC、MSYS2 的 `make` 与 `perl`，x64 还需要 PATH 中的 `nasm`。可用 `ORCA_FFMPEG_MAKE` 指定 MSYS2 的 `usr/bin/make.exe`。依赖从固定的 FFmpeg 7.0.3 源码构建，生成支持 HTTP(S)、MJPEG、RTSP 和 HLS 的共享库。更新已有依赖时，DLL、头文件、导入库须处于同一前缀并重新配置应用，让安装过程带入本次构建的 DLL。
+
 `Test` 必须指定文件名或 glob，复用现有离线测试器的凭据清理与 Python 外网防护；只需要 Python，不要求 CMake cache，不编译、不复制运行环境、不启动 GUI。测试失败或未匹配均失败。此防护不是 OS 沙箱，测试仍须实际隔离提供商。
 
 C++ 逻辑修改增量构建对应 `<suite>_tests`，再按 CTest 标签或名称选择测试，见 [tests/AGENTS.md](../../tests/AGENTS.md)。纯文档检查内容、链接和 diff。检查通过后，只有相关源码、配置、依赖、测试条件变化或新失败证据才重验。

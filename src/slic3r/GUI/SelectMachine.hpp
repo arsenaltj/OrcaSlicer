@@ -69,6 +69,8 @@
 #include <wx/hashmap.h>
 
 #include "Jobs/Worker.hpp"
+#include "slic3r/Utils/PrinterFilamentComparison.hpp"
+#include <future>
 
 #define  PRINT_OPT_BG_GRAY       0xF8F8F8
 #define  PRINT_OPT_ITEM_BG_GRAY  0xEEEEEE
@@ -80,6 +82,9 @@ namespace Slic3r{
 }
 
 namespace Slic3r { namespace GUI {
+
+class PrinterTransferFilamentPanel;
+class PrinterTransferProgress;
 
 std::string get_nozzle_volume_type_cloud_string(NozzleVolumeType nozzle_volume_type);
 void        print_ams_mapping_result(std::vector<FilamentInfo> &result);
@@ -351,6 +356,11 @@ private:
     std::unordered_map<int, int>        m_nozzle_mapping_result; // cached rack print-dispatch mapping: filament/group id -> physical nozzle pos
     std::vector<int>                    m_filaments_map;
     std::shared_ptr<BBLStatusBarPrint>  m_status_bar;
+    std::shared_ptr<PrinterTransferProgress> m_transfer_progress;
+    PrinterTransferFilamentPanel*       m_filament_comparison = nullptr;
+    std::optional<unsigned int>         m_comparison_slice_id;
+    std::future<DeviceTransferFilaments> m_comparison_read;
+    bool                                m_comparison_read_started = false;
     std::unique_ptr<Worker>             m_worker;
 
     Slic3r::DynamicPrintConfig          m_required_data_config;
@@ -497,6 +507,7 @@ public:
     bool is_redesign_presentation() const { return m_presentation.redesign(); }
     void reset_ams_material();
     void update_show_status(MachineObject* obj_ = nullptr);
+    void update_filament_comparison();
 
     void UpdateStatusCheckWarning_ExtensionTool(MachineObject* obj_);
 

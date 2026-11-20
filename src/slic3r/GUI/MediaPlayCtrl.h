@@ -49,7 +49,7 @@ public:
 
     ~MediaPlayCtrl();
 
-    void SetMachineObject(MachineObject * obj);
+    void SetMachineObject(MachineObject* obj, const std::string& custom_url = {}, const std::string& custom_scope = {});
 
     void SetWebMediaController(IMediaController *ctrl);
 
@@ -70,6 +70,7 @@ public:
     void jump_to_play();
 
     bool TryAutoPlay();
+    void RetryPlayback();
 
 protected:
     void onStateChanged(wxMediaEvent & event);
@@ -82,6 +83,7 @@ protected:
 
     void SetStatus(wxString const &msg, bool hyperlink = true);
     void on_webrtc_status(WebRtcMediaController::Status status);
+    void schedule_retry();
 
 private:
     void load();
@@ -113,6 +115,7 @@ private:
     CameraStreamMode m_last_mode = CameraStreamMode::none;
     std::uint64_t m_webrtc_epoch = 0;
     std::string m_agent_camera_url;
+    CameraStreamMode m_custom_camera_mode { CameraStreamMode::none };
     wxString m_idle_image;
     bool m_web_user_stopped = false;
     wxMediaState m_last_state = MEDIASTATE_IDLE;

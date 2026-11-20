@@ -60,6 +60,8 @@ class FileTransferJob;
 
 namespace GUI {
 
+class PrinterTransferProgress;
+
 class SendToPrinterDialog : public DPIDialog
 {
 private:
@@ -140,6 +142,7 @@ private:
     std::unique_ptr<wxTimer>            m_task_timer{ nullptr };
     std::unique_ptr<wxTimer>            m_url_timer{nullptr};
     std::shared_ptr<BBLStatusBarSend>   m_status_bar;
+    std::shared_ptr<PrinterTransferProgress> m_transfer_progress;
     std::unique_ptr<Worker>             m_worker;
     wxScrolledWindow                   *m_sw_print_failed_info{nullptr};
     std::shared_ptr<int>                m_token = std::make_shared<int>(0);
