@@ -1,5 +1,11 @@
 #include "model_internal.hpp"
 using namespace orca_model_detail;
+#ifdef ORCA_MODEL_IO_TESTING
+extern "C" ORCA_MODEL_API void orca_model_test_io_fault(int boundary,int code) {
+    io_test_boundary=boundary;io_test_code=code;
+}
+extern "C" ORCA_MODEL_API const char* orca_model_test_errno_kind(int code) { return io_name(io_errno(code)); }
+#endif
 namespace {
 std::mutex module_mutex;
 std::map<std::string, std::pair<std::string, void*>> modules;
@@ -87,7 +93,39 @@ const char* orca_model_capabilities()
                           {"platformAIRequiresHostTransport", true},
                           {"multiMaterialExecution", false},
                           {"advancedRepair", false},
+                          {"glbSafetyV1",
+                           {{"policyVersion", "glb-safety-v1"},
+                            {"operations", {"inspectGlbArtifact", "repairGlbArtifact"}},
+                            {"preservesOriginal", true},
+                            {"preservesEncodedAppearance", true},
+#ifdef ORCA_MODEL_HAS_GLB_CGAL
+                            {"strictSelfIntersection", true},
+#else
+                            {"strictSelfIntersection", false},
+#endif
+#ifdef ORCA_MODEL_HAS_GLB_CGAL
+                            {"safeRepairStrategies", {"isolated_coincident_two_face_shell_removal"}},
+#else
+                            {"safeRepairStrategies", J::array()},
+#endif
+                            {"generalTopologyRepair", false},
+                            {"platform", "native"},
+                            {"maxGeneratedFaceLimit", 1000000},
+                            {"limits",
+                             {{"inputBytes", 104857600},
+                              {"vertices", 2500000},
+                              {"triangles", 2000000},
+                              {"estimatedWorkspaceBytes", 805306368},
+                              {"cooperativeMilliseconds", 120000}}}}},
                           {"sceneFormat", "ORCASC01"}};
+#ifdef ORCA_MODEL_HAS_REPAIR_CORE
+        capabilities["glbRepairV2"]={{"policyVersion","glb-repair-v2"},{"operations",{"repairGlbArtifact"}},
+          {"supportedCompletions",{"native_compatible"}},{"repairEntries",{"repair_mesh"}},
+          {"appearancePolicyVersion","appearance-reconstruction-v1"},{"preservesOriginal",true},
+          {"strictAiChain",false},{"manufacturingAcceptance",false},{"maxGeneratedFaceLimit",2000000},
+          {"profile","static-embedded-unextended-single-primitive-uv0"},
+          {"limits",{{"inputBytes",104857600},{"vertices",2500000},{"triangles",2000000},{"estimatedWorkspaceBytes",805306368},{"cooperativeMilliseconds",120000}}}};
+#endif
 #ifdef ORCA_MODEL_HAS_REGION_CORE
         capabilities["operations"].push_back("selectRegion");
         capabilities["nativeRegionCore"] = true;
@@ -105,7 +143,16 @@ orca_model_context* orca_model_create(const char* workspace)
     try {
         auto c  = std::make_shared<Context>();
         c->root = F::absolute(F::u8path(workspace));
+#ifdef _WIN32
+        // Preserve the caller's root identity; only mkdir's Win32 spelling
+        // needs extending when this DLL is loaded by a non-aware host.
+        auto spelling = c->root.lexically_normal().native();
+        if (spelling.rfind(L"\\\\?\\", 0) != 0)
+            spelling = spelling.rfind(L"\\\\", 0) == 0 ? L"\\\\?\\UNC\\" + spelling.substr(2) : L"\\\\?\\" + spelling;
+        F::create_directories(F::path(spelling));
+#else
         F::create_directories(c->root);
+#endif
         auto id = sequence.fetch_add(1);
         std::lock_guard<std::mutex> lock(registry_mutex);
         registry.emplace(id, std::move(c));
@@ -147,6 +194,8 @@ int orca_model_execute(orca_model_context* handle, const char* request, orca_mod
                    (e.code == "IO_ERROR" || e.code == "FILE_LIMIT") ? ORCA_MODEL_IO :
                                                                       ORCA_MODEL_INVALID;
         response = {{"ok", false}, {"schemaVersion", 1}, {"error", {{"code", e.code}, {"message", e.what()}}}};
+        if(e.code=="IO_ERROR" && e.io_diagnostic && io_name(e.io_diagnostic->boundary) && io_name(e.io_diagnostic->kind))
+            response["error"]["ioDiagnostic"]={{"schemaVersion",1},{"boundary",io_name(e.io_diagnostic->boundary)},{"kind",io_name(e.io_diagnostic->kind)}};
     } catch (const nlohmann::json::exception& e) {
         code     = ORCA_MODEL_INVALID;
         response = {{"ok", false}, {"schemaVersion", 1}, {"error", {{"code", "INVALID_JSON"}, {"message", e.what()}}}};

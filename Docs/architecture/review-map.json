@@ -49,7 +49,7 @@
       "paths": [
         "src/orca_model_sdk"
       ],
-      "purpose": "通过公开 C ABI 提供模型文档、场景、编辑、候选、制造快照及统一平台 API 适配；原生切片通过固定制品桥接"
+      "purpose": "通过公开 C ABI 提供模型文档、场景、编辑、候选、制造快照及统一平台 API 适配；原生切片通过固定制品桥接；原始GLB安全策略在独立无GUI模块执行结构、保真拓扑与可选CGAL严格谓词，未完成检查不发布成功候选；可选repair Core以固定桌面源码接缝复用enhanced repair_mesh，M1仅geometry_only_stage；v2可选Core复用桌面repair_mesh与有序ID读回/外观投影及原子receipt，native_compatible保真实残余、不授制造安全或冒完整strict链；v2候选2M使用分阶段资源账本/紧凑计数/逐面外观映射及私有精确CGAL死workspace释放，完整风险检查与原限额保持；Android Model构建显式IMPORTED既有Slicing批准TBB，runtime及139headers逐SHA守卫，producer分列旧runtime来源、不覆盖旧Slicing闭包"
     },
     {
       "id": "honor_account",

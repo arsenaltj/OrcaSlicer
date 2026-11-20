@@ -1,5 +1,7 @@
 # 快速开发与跨电脑同步
 
+移动Model来源凭据回归使用独立SDK构建目录的`ctest -C Release -R glb_repair_v2_native --output-on-failure`，或`python src/orca_model_sdk/tests/glb_repair_v2_test.py <本次真实SDK库>`；它执行真实CABI并核候选/receipt/source面数与NORMAL来源，不能以toy替代2M资源/Android运行验收。只改来源元数据时仍重编Host/NDK和封新包，不必重复未改算法大件。
+
 默认单 Agent 完成“定位 → 改动 → 最小充分验证 → 检查 diff → 结束”。逻辑优先自动测试，界面行为检查受影响的真实主窗口；跨模块、共享接口、凭据、付费、上传、删除等按风险升级，不按文件数量判断。完整规则见[根 AGENTS](../../AGENTS.md)。
 
 ## 日常入口
