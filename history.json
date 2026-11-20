@@ -1,6 +1,16 @@
 [
   {
     "pr": 82,
+    "run": 44655179696,
+    "head": "d60d3a90a155985a893efe0a524d4cddd225a3d9",
+    "base": "8f1b7bbf98df0641f37cd18a8a1088b7725da5b4",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "feat(model-sdk): 提交原始GLB修复、保外观处理与Android安全发布",
+    "path": "pr/82/d60d3a90a155985a893efe0a524d4cddd225a3d9/44655179696",
+    "created": "2026-11-20T01:43:28+00:00"
+  },
+  {
+    "pr": 82,
     "run": 44572949669,
     "head": "d60d3a90a155985a893efe0a524d4cddd225a3d9",
     "base": "8f1b7bbf98df0641f37cd18a8a1088b7725da5b4",
