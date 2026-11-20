@@ -300,7 +300,6 @@ private:
     std::vector<wxStaticText*> m_slice_parameter_labels;
     std::vector<wxStaticText*> m_slice_parameter_values;
     wxStaticText* m_slice_status { nullptr };
-    wxStaticText* m_slice_check_status { nullptr };
     wxStaticText* m_slice_model_stats { nullptr };
     wxBoxSizer* m_slice_palette { nullptr };
     wxPanel* m_slice_palette_host {nullptr};
@@ -309,7 +308,6 @@ private:
     WorkbenchSlider* m_slice_color_count {nullptr};
     wxStaticText* m_slice_color_count_label {nullptr};
     wxWindow* m_slice_palette_all {nullptr};
-    wxWindow* m_slice_check {nullptr};
     std::unique_ptr<RedesignSlicingTools> m_slice_tools;
     SlicingCanvasOverlay* m_slice_stats_overlay {nullptr};
     SlicingCanvasOverlay* m_slice_progress_overlay {nullptr};

@@ -396,7 +396,7 @@ void RedesignShell::build_model_workflow()
     auto* root = new wxBoxSizer(wxVERTICAL);
     settings->SetSizer(root);
     row->Add(settings, 0, wxEXPAND | wxRIGHT, FromDIP(8));
-    m_slice_return_overview = command(settings, _L("← 返回模型总览"));
+    m_slice_return_overview = command(settings, _L("← 返回模型编辑"));
     m_slice_return_overview->SetName("slicing-return-model-overview");
     m_slice_return_overview->SetMinSize(FromDIP(wxSize(-1,40)));
     m_slice_return_overview->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { return_model_overview(); });
@@ -415,53 +415,15 @@ void RedesignShell::build_model_workflow()
     inset->AddSpacer(FromDIP(24)); inset->Add(scroll,1,wxEXPAND); inset->AddSpacer(FromDIP(7));
     root->Add(inset, 1, wxEXPAND | wxTOP, FromDIP(12));
 
-    auto heading = [&](wxWindow* parent, wxSizer* target, const wxString& title) {
-        auto* line = new wxBoxSizer(wxHORIZONTAL);
-        auto* label = new wxStaticText(parent, wxID_ANY, title);
-        RedesignTheme::style_text(label, RedesignTheme::primary_text_colour(), 12);
-        line->Add(label, 0, wxALIGN_CENTER_VERTICAL);
-        if (title == _L("检查修复")) {
-            auto* info = slicing_link(parent, wxEmptyString);
-            info->SetPaddingSize(FromDIP(wxSize(0,0)));
-            info->set_scaled_icon("workbench_info",16);
-            info->SetMinSize(FromDIP(wxSize(24,24)));
-            info->SetName(title + _L("信息"));
-            line->Add(info, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(6));
-            info->Bind(wxEVT_BUTTON, [this, title](wxCommandEvent&) {
-                wxMessageBox(title == _L("检查修复") ? wxString::FromUTF8(m_slice_tools->check().summary.empty()
-                    ? "检查当前打印板模型的开放边、非流形边、退化面、重复面和方向。" : m_slice_tools->check().summary)
-                    : _L("进入现有 3D 美颜工作台；保存并重新导入后更新当前工程。"), title, wxOK, this);
-            });
-        }
-        target->Add(line, 0, wxEXPAND | wxTOP | wxBOTTOM, FromDIP(12));
-    };
-    heading(scroll, controls, _L("检查修复"));
-    auto* check_row = new WorkbenchPanel(scroll, true);
-    check_row->set_corner_radius(12);
-    check_row->SetBackgroundColour(slicing_control_colour());
-    auto* check_sizer = new wxBoxSizer(wxHORIZONTAL); check_row->SetSizer(check_sizer);
-    m_slice_check = slicing_link(check_row, _L("一键检查"));
-    static_cast<WorkbenchButton*>(m_slice_check)->SetCenter(false);
-    static_cast<WorkbenchButton*>(m_slice_check)->SetPaddingSize(FromDIP(wxSize(16,0)));
-    static_cast<WorkbenchButton*>(m_slice_check)->SetLeftPadding(FromDIP(16));
-    m_slice_check->SetMinSize(FromDIP(wxSize(-1,56)));
-    RedesignTheme::style_text(m_slice_check,RedesignTheme::primary_text_colour(),12);
-    check_sizer->Add(m_slice_check, 1, wxEXPAND);
-    m_slice_check_status = new SlicingCheckBadge(check_row);
-    m_slice_check_status->SetLabel(_L("未检查"));
-    RedesignTheme::style_text(m_slice_check_status, RedesignTheme::secondary_text_colour(), 9);
-    auto badge_font=m_slice_check_status->GetFont(); badge_font.SetFractionalPointSize(10.5);
-    m_slice_check_status->SetFont(badge_font);
-    check_sizer->Add(m_slice_check_status, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(16));
-    m_slice_check->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_slice_tools->request_check(); });
-    controls->Add(check_row, 0, wxEXPAND);
     // Keep the controls alive for the existing palette and beauty workflows,
     // but omit their container from this page's layout.
     auto* hidden_sections = new wxPanel(scroll);
     auto* hidden_controls = new wxBoxSizer(wxVERTICAL);
     hidden_sections->SetSizer(hidden_controls);
     hidden_sections->Hide();
-    heading(hidden_sections, hidden_controls, _L("多色模型"));
+    auto* color_heading = new wxStaticText(hidden_sections, wxID_ANY, _L("多色模型"));
+    RedesignTheme::style_text(color_heading, RedesignTheme::primary_text_colour(), 12);
+    hidden_controls->Add(color_heading, 0, wxTOP | wxBOTTOM, FromDIP(12));
     m_slice_color_mode = new WorkbenchPaletteChoice(hidden_sections);
     m_slice_color_mode->set_minimum_height(56);
     m_slice_color_mode->set_corner_radius(12);
@@ -1013,8 +975,6 @@ bool RedesignShell::show_model_view(ModelView view)
             if (auto* parameters = wxGetApp().params_panel()) parameters->OnActivate();
             refresh_native_theme();
         }
-        if (view == ModelView::Slicing && !m_native_slicing && m_slice_tools->check().status == WorkbenchCheckStatus::NotRun)
-            m_slice_tools->request_check();
     }
     auto* target_root = page_route_root(Page::Model, view);
     if (!target_root) {
@@ -2077,27 +2037,6 @@ void RedesignShell::update_slicing_tools()
     set_control_tooltip(m_slice_color_mode, edit_reason); set_control_tooltip(m_slice_color_source, edit_reason);
     set_control_tooltip(m_slice_color_count, edit_reason);
     set_control_tooltip(m_slice_color_count_label, wxString::FromUTF8(m_slice_tools->message()));
-    m_slice_check->Enable(!m_slice_tools->busy() && !running);
-    const auto& check=m_slice_tools->check();
-    const std::array<wxString,6> labels{_L("未检查"),_L("检查中"),_L("正常"),_L("需注意"),_L("异常"),_L("检查失败")};
-    bool badge_changed = set_control_label(m_slice_check_status, labels[size_t(check.status)]);
-    const auto foreground = check.status==WorkbenchCheckStatus::Normal ? wxColour(255,255,255)
-        : check.status==WorkbenchCheckStatus::Invalid || check.status==WorkbenchCheckStatus::Failed ? wxColour(255,150,146)
-        : RedesignTheme::primary_text_colour();
-    const auto background = check.status==WorkbenchCheckStatus::Normal ? wxColour(21,194,82)
-        : slicing_control_colour();
-    const auto minimum = FromDIP(wxSize(check.status==WorkbenchCheckStatus::Failed ? 80 : 60,36));
-    if (m_slice_check_status->GetForegroundColour() != foreground) {
-        m_slice_check_status->SetForegroundColour(foreground); badge_changed = true;
-    }
-    if (m_slice_check_status->GetBackgroundColour() != background) {
-        m_slice_check_status->SetBackgroundColour(background); badge_changed = true;
-    }
-    if (m_slice_check_status->GetMinSize() != minimum) {
-        m_slice_check_status->SetMinSize(minimum); badge_changed = true;
-    }
-    if (badge_changed) m_slice_check_status->Refresh(false);
-    set_control_tooltip(m_slice_check_status, wxString::FromUTF8(check.summary));
     const auto& palette=m_slice_tools->palette();
     m_slice_palette_all->Show(palette.size()>6 || m_slicing_state.has_selected_goal || !m_slice_tools->message().empty());
     if (!palette.empty() && !m_slice_tools->busy() && !m_slice_color_count->HasCapture()) {
@@ -2143,8 +2082,9 @@ void RedesignShell::update_slicing_tools()
 void RedesignShell::layout_slicing_overlays()
 {
     if (!m_slice_stats_overlay || !m_plater) return;
-    const bool visible=native_workspace_visible() && !m_native_slicing;
-    auto* canvas=m_plater->get_current_canvas3D()->get_wxglcanvas();
+    const bool visible = native_workspace_visible() && !m_native_slicing;
+    auto* view = m_plater->get_current_canvas3D();
+    auto* canvas = view->get_wxglcanvas();
     bool overlay_changed = false;
     if (m_slice_stats_overlay->GetParent()!=canvas) {
         m_slice_stats_overlay->Reparent(canvas); m_slice_progress_overlay->Reparent(canvas);
@@ -2159,25 +2099,25 @@ void RedesignShell::layout_slicing_overlays()
     const int max_y = std::max(0, size.y - progress_size.y - margin);
     const int y = std::clamp(size.y - (navigator_height + progress_size.y) / 2,
         std::min(margin, max_y), max_y);
-    const wxRect preferred(std::max(FromDIP(10),size.x-FromDIP(440)),
-        y, progress_size.x, progress_size.y);
+    const wxRect preferred(size.x - canvas->FromDIP(440), y, progress_size.x, progress_size.y);
     auto* notifications = m_plater->get_notification_manager();
     const auto progress_bounds = progress_above_notifications(preferred, size,
-        notifications->visible_notification_bounds(*m_plater->get_current_canvas3D()),
-        canvas->FromDIP(8), margin);
-    if (progress_bounds && m_slice_progress_overlay->GetRect() != *progress_bounds) {
+        notifications->visible_notification_bounds(*view), canvas->FromDIP(8), margin);
+    // Leave room for both the stage label and the percentage on a narrow canvas.
+    const bool progress_fits = progress_bounds && progress_bounds->GetWidth() >= canvas->FromDIP(96);
+    if (progress_fits && m_slice_progress_overlay->GetRect() != *progress_bounds) {
         m_slice_progress_overlay->SetSize(*progress_bounds);
         overlay_changed = true;
     }
     const bool running = workbench_slice_running(m_plater->is_background_process_slicing(),
                                                  m_slicing_state.official.phase);
-    const bool show_progress = visible && running && progress_bounds.has_value();
+    const bool show_progress = visible && running && progress_fits;
     if (m_slice_progress_overlay->IsShown() != show_progress) {
         m_slice_progress_overlay->Show(show_progress);
         overlay_changed = true;
     }
     if (show_progress && overlay_changed) m_slice_progress_overlay->Raise();
-    if (overlay_changed) m_plater->get_current_canvas3D()->set_as_dirty();
+    if (overlay_changed) view->set_as_dirty();
 }
 
 void RedesignShell::layout_slicing_camera_loading()

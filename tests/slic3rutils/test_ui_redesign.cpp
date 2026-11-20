@@ -329,8 +329,8 @@ TEST_CASE("Slicing progress keeps its position until the notification column rea
     const wxSize canvas(1000, 800);
     REQUIRE(progress_above_notifications(preferred, canvas, {}, 8, 10));
     CHECK(*progress_above_notifications(preferred, canvas, {}, 8, 10) == preferred);
-    CHECK(*progress_above_notifications(preferred, canvas, {{600, 770, 380, 20}}, 8, 10) == preferred);
-    const auto moved = progress_above_notifications(preferred, canvas, {{600, 720, 380, 60}}, 8, 10);
+    CHECK(*progress_above_notifications(preferred, canvas, {{{600, 770, 380, 20}}, {}}, 8, 10) == preferred);
+    const auto moved = progress_above_notifications(preferred, canvas, {{{600, 720, 380, 60}}, {}}, 8, 10);
     REQUIRE(moved);
     CHECK(moved->GetBottom() + 8 < 720);
 }
@@ -339,25 +339,65 @@ TEST_CASE("Slicing progress clears the full notification stack and ignores other
 {
     const wxRect preferred(560, 700, 320, 46);
     const auto moved = progress_above_notifications(preferred, {1000, 800},
-        {{600, 720, 380, 60}, {600, 630, 380, 80}, {0, 10, 100, 200}, {600, -200, 380, 80}}, 8, 10);
+        {{{600, 720, 380, 60}, {600, 630, 380, 80}, {0, 10, 100, 200}, {600, -200, 380, 80}}, {}}, 8, 10);
     REQUIRE(moved);
     CHECK(moved->GetBottom() + 8 < 630);
     CHECK(moved->x == preferred.x);
     CHECK(moved->GetSize() == preferred.GetSize());
-    CHECK_FALSE(progress_above_notifications(preferred, {1000, 800}, {{600, 20, 380, 760}}, 8, 10));
+    CHECK_FALSE(progress_above_notifications(preferred, {1000, 800}, {{{600, 20, 380, 760}}, {}}, 8, 10));
+}
+
+TEST_CASE("Slicing progress shares the object card's horizontal bounds while avoiding the warning stack",
+          "[UiRedesign][CanvasNotificationLayout]")
+{
+    const wxRect preferred(560, 700, 320, 46);
+    const wxRect object_info(600, 720, 380, 60);
+    const wxRect warning(960, 650, 30, 60);
+    const auto on_card = progress_above_notifications(preferred, {1000, 800},
+        {{object_info, warning}, object_info}, 8, 10);
+    REQUIRE(on_card);
+    CHECK(on_card->GetLeft() == object_info.GetLeft());
+    CHECK(on_card->GetWidth() == object_info.GetWidth());
+    CHECK(on_card->GetBottom() + 8 < warning.GetTop());
+
+    const auto without_card = progress_above_notifications(preferred, {1000, 800}, {{warning}, {}}, 8, 10);
+    REQUIRE(without_card);
+    CHECK(*without_card == preferred);
+}
+
+TEST_CASE("Slicing progress keeps its horizontal bounds inside a narrow canvas", "[UiRedesign][CanvasNotificationLayout]")
+{
+    const wxRect preferred(-190, 310, 320, 46);
+    const wxRect clipped_card(-20, 325, 230, 60);
+    const auto on_card = progress_above_notifications(preferred, {250, 400}, {{clipped_card}, clipped_card}, 8, 10);
+    REQUIRE(on_card);
+    CHECK(on_card->GetLeft() == 0);
+    CHECK(on_card->GetRight() == clipped_card.GetRight());
+
+    const auto fallback = progress_above_notifications(preferred, {250, 400}, {}, 8, 10);
+    REQUIRE(fallback);
+    CHECK(fallback->GetLeft() == 10);
+    CHECK(fallback->GetRight() == 239);
+    CHECK_FALSE(progress_above_notifications(preferred, {20, 400}, {}, 8, 10));
 }
 
 TEST_CASE("Notification occupancy expires on canvas or size changes and clears when closed", "[UiRedesign][CanvasNotificationLayout]")
 {
     CanvasNotificationLayout layout;
     int prepare = 0, preview = 0;
-    CHECK(layout.update(&prepare, {1000, 800}, {{600, 720, 380, 60}}));
-    CHECK_FALSE(layout.update(&prepare, {1000, 800}, {{600, 720, 380, 60}}));
-    CHECK(layout.bounds(&prepare, {1000, 800}).size() == 1);
-    CHECK(layout.bounds(&preview, {1000, 800}).empty());
-    CHECK(layout.bounds(&prepare, {1200, 900}).empty());
+    const wxRect object_info(600, 720, 380, 60);
+    CHECK(layout.update(&prepare, {1000, 800}, {{object_info}, {}}));
+    CHECK(layout.update(&prepare, {1000, 800}, {{object_info}, object_info}));
+    CHECK_FALSE(layout.update(&prepare, {1000, 800}, {{object_info}, object_info}));
+    CHECK(layout.bounds(&prepare, {1000, 800}).visible.size() == 1);
+    CHECK(layout.bounds(&prepare, {1000, 800}).object_info == object_info);
+    CHECK(layout.bounds(&preview, {1000, 800}).visible.empty());
+    CHECK(layout.bounds(&preview, {1000, 800}).object_info.IsEmpty());
+    CHECK(layout.bounds(&prepare, {1200, 900}).visible.empty());
+    CHECK(layout.bounds(&prepare, {1200, 900}).object_info.IsEmpty());
     CHECK(layout.update(&prepare, {1000, 800}, {}));
-    CHECK(layout.bounds(&prepare, {1000, 800}).empty());
+    CHECK(layout.bounds(&prepare, {1000, 800}).visible.empty());
+    CHECK(layout.bounds(&prepare, {1000, 800}).object_info.IsEmpty());
 }
 
 TEST_CASE("Generation animation continues across progress refreshes and pauses outside the visible page",
