@@ -2,6 +2,12 @@
 
 ## Host integration and source publication
 
+The standalone CMake default keeps SDK consumer and IO diagnostics tests enabled,
+with optional RegionCore and RepairCore disabled. The IO diagnostic target copies
+the SDK's actual link dependencies only when present; the SDK-only profile has no
+link dependency and must configure and generate without a NOTFOUND library.
+RepairCore profiles retain their real core and transitive runtime dependencies.
+
 The Model SDK is a separately built library. Updating an Android consumer's SDK
 bundle does not update the desktop GUI: that GUI currently calls the desktop
 finishing core directly, while its Device SDK is a different target. Shared

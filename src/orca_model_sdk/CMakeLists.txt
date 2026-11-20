@@ -73,7 +73,11 @@ if(ORCA_MODEL_BUILD_TESTS AND NOT ANDROID)
  add_library(orca_model_io_test SHARED ${io_sources})
  target_include_directories(orca_model_io_test PRIVATE ${io_includes})
  target_compile_definitions(orca_model_io_test PRIVATE ${io_definitions} ORCA_MODEL_IO_TESTING)
- target_link_libraries(orca_model_io_test PRIVATE ${io_links})
+ # LINK_LIBRARIES is unset in the default SDK-only profile. CMake returns
+ # io_links-NOTFOUND in that case; only propagate actual optional dependencies.
+ if(io_links)
+  target_link_libraries(orca_model_io_test PRIVATE ${io_links})
+ endif()
  find_package(Python3 COMPONENTS Interpreter REQUIRED)
- add_test(NAME io_diagnostics_native COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/io_diagnostic_test.py $<TARGET_FILE:orca_model_io_test> $<TARGET_FILE:orca_model_sdk>)
+ add_test(NAME io_diagnostics_native COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/io_diagnostic_test.py $<TARGET_FILE:orca_model_io_test> $<TARGET_FILE:orca_model_sdk> $<IF:$<BOOL:${ORCA_MODEL_REPAIR_CORE}>,ON,OFF>)
 endif()

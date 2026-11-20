@@ -1,3 +1,12 @@
+# MODEL-SDK-DEFAULT-CMAKE-D1 (2026-11-20)
+
+Mainline: task-20261120-model-sdk-default-cmake from d60d3a9; PR82 is now formally open by explicit user request. D1 repair round 1 fixes an absent LINK_LIBRARIES property without disabling default tests.
+This round: default SDK-only MSVC configure/build succeeds; IO diagnostics asserts the CMake-declared RepairCore capability, exercising unsupported + file-read checks when OFF and the complete 52-case fault matrix when ON.
+Open: final RepairCore build/test and independent review then different QA. No new Android bundle, GUI/real-device or manufacturing qualification.
+Next: freeze the minimal build/test/docs increment, review/QA, then root-controlled ordinary update of PR82. No automatic merge or deployment.
+Plan change: four-platform review D1 is accepted for repair; other paused algorithm and product work stays unchanged.
+
+## Earlier records retained
 # MODEL-SDK-PUBLICATION-20261120
 
 Mainline: isolated task-20261120-model-sdk-pr-publication, from qualified SDK source 6aa69c2; explicit user authorization to submit this conversation's changes as PRs.
