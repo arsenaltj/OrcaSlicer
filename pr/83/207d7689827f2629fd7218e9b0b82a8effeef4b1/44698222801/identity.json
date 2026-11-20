@@ -1,0 +1,27 @@
+{
+  "pr": 83,
+  "run": 44698222801,
+  "head": "207d7689827f2629fd7218e9b0b82a8effeef4b1",
+  "base": "c50da0ef6e0148169ec65bc65c69a49b2f3166a5",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "桌面打印、实时监控、模型库与账号更新",
+  "path": "pr/83/207d7689827f2629fd7218e9b0b82a8effeef4b1/44698222801",
+  "created": "2026-11-20T07:56:42+00:00",
+  "files": {
+    "index.html": "08b8c01fbba6411331a8da7f27e61fe6552550a44828a0d15707c75a92f86501",
+    "details.html": "38e1da9b714ee35bac97c049772b312766414f3f2d0c8857d6ec43dacb0127a8",
+    "report.json": "e83230624144dc9fda0a18604a4323640c4d0c706dd0476ac550f8160d7bc991",
+    "summary.md": "8d989dee7ea4336638c53482507530cec5508198eb06f589c5ef14e36a070f6b",
+    "archify-receipts.json": "39615998f4ff085f27629bcf7e29db07e1c1e0d3a7b79559140bc683275ee5bb",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "5d9ce79af0a298083cca4805863ec813311fd2818261c5d63727c404871aa683",
+    "l1-modules.json": "0592a05598421250e26320b6805d15a98370c2710a67dbac677ca1bf3e263dca",
+    "l2-generation.html": "5ab5558ef137d23eda721ae0ddaa25f82afe2839900e0e142691cb8020e85350",
+    "l2-generation.json": "9d870a02f238a819088346855f3b6c4f912a733fb48dec971a7ab4e6ed8caea5",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
