@@ -225,7 +225,7 @@
       "defaultMaterialId": "generic/pla",
       "schemaSourceRef": {
         "path": "src/libslic3r/PrintConfig.cpp",
-        "sha256": "35ffc428b1a2a95264858149cafde8d9b6b06f21aa62711ce6040850db6859fd",
+        "sha256": "654499beff3e2c02151aff435eff5b80cfc2d19cebb93359245cd108d1209695",
         "hashFormat": "utf8-lf"
       },
       "unsupportedSourceOptions": {
@@ -279,6 +279,686 @@
         ],
         "filament_scarf_gap": [
           "15%"
+        ],
+        "filament_scarf_length": [
+          "10"
+        ]
+      }
+    },
+    {
+      "id": "honor/forge-6-head-0.4",
+      "name": "APEX / Honor Forge · 6 × 0.4 mm",
+      "summary": "Repository Honor Forge machine, process and WonderMaker PLA. Verify live firmware, macros and actual loading before manufacturing.",
+      "requiresConfirmation": true,
+      "resetScopes": [
+        "device",
+        "material",
+        "process"
+      ],
+      "config": {
+        "nozzle_diameter": [
+          "0.4",
+          "0.4",
+          "0.4",
+          "0.4",
+          "0.4",
+          "0.4"
+        ],
+        "printer_variant": "0.4",
+        "support_chamber_temp_control": "1",
+        "printer_technology": "FFF",
+        "deretraction_speed": [
+          "30"
+        ],
+        "enable_long_retraction_when_cut": [
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "extruder_colour": [
+          "#018001"
+        ],
+        "extruder_offset": [
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0",
+          "0x0"
+        ],
+        "gcode_flavor": "klipper",
+        "long_retractions_when_cut": [
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "machine_max_acceleration_extruding": [
+          "20000",
+          "20000"
+        ],
+        "machine_max_acceleration_retracting": [
+          "5000",
+          "5000"
+        ],
+        "machine_min_extruding_rate": [
+          "0",
+          "0"
+        ],
+        "machine_min_travel_rate": [
+          "0",
+          "0"
+        ],
+        "max_layer_height": [
+          "0.28"
+        ],
+        "min_layer_height": [
+          "0.08"
+        ],
+        "printable_height": "290",
+        "extruder_clearance_radius": "134",
+        "extruder_clearance_height_to_rod": "36",
+        "extruder_clearance_height_to_lid": "140",
+        "printer_settings_id": "Honor Forge 0.4 nozzle",
+        "retraction_minimum_travel": [
+          "1"
+        ],
+        "retract_before_wipe": [
+          "0%"
+        ],
+        "retract_when_changing_layer": [
+          "1"
+        ],
+        "retraction_distances_when_cut": [
+          "18"
+        ],
+        "retraction_length": [
+          "0.8"
+        ],
+        "retract_length_toolchange": [
+          "2"
+        ],
+        "z_hop": [
+          "0.4"
+        ],
+        "retract_restart_extra": [
+          "0"
+        ],
+        "retract_restart_extra_toolchange": [
+          "0"
+        ],
+        "retraction_speed": [
+          "30"
+        ],
+        "single_extruder_multi_material": "0",
+        "support_air_filtration": "1",
+        "wipe": [
+          "1"
+        ],
+        "default_filament_profile": [
+          "WonderMaker PLA Basic",
+          "WonderMaker PLA Basic",
+          "WonderMaker PLA Basic",
+          "WonderMaker PLA Basic",
+          "WonderMaker PLA Basic",
+          "WonderMaker PLA Basic"
+        ],
+        "default_print_profile": "0.20mm Standard @Honor Forge",
+        "upward_compatible_machine": [],
+        "before_layer_change_gcode": ";BEFORE_LAYER_CHANGE\n;[layer_z]\nG92 E0\n",
+        "machine_start_gcode": "START_PRINT EXTRUDER=[nozzle_temperature_initial_layer] BED=[bed_temperature_initial_layer_single] CHAMBER=[chamber_temperature] INITIAL_TOOL=[initial_tool]  MESH_MIN_X={adaptive_bed_mesh_min[0]}  MESH_MIN_Y={adaptive_bed_mesh_min[1]} MESH_MAX_X={adaptive_bed_mesh_max[0]} MESH_MAX_Y={adaptive_bed_mesh_max[1]} PROBE_COUNT_X={bed_mesh_probe_count[0]} PROBE_COUNT_Y={bed_mesh_probe_count[1]}\n",
+        "machine_end_gcode": ";PRINT_END",
+        "printable_area": [
+          "0x0",
+          "300x0",
+          "300x270",
+          "0x270"
+        ],
+        "auxiliary_fan": "1",
+        "bed_exclude_area": [],
+        "machine_max_acceleration_travel": [
+          "9000",
+          "9000"
+        ],
+        "retract_lift_below": [
+          "279",
+          "279",
+          "279",
+          "279",
+          "279",
+          "279"
+        ],
+        "nozzle_volume": "107",
+        "printer_structure": "corexy",
+        "best_object_pos": "0.5x0.5",
+        "z_hop_types": [
+          "Auto Lift"
+        ],
+        "support_multi_bed_types": "1",
+        "scan_first_layer": "0",
+        "nozzle_type": "hardened_steel",
+        "layer_change_gcode": "",
+        "change_filament_gcode": "",
+        "machine_pause_gcode": "PAUSE",
+        "time_lapse_gcode": ";TIMELAPSE_TAKE_FRAME",
+        "default_bed_type": "4",
+        "bed_mesh_min": [
+          "10",
+          "10"
+        ],
+        "bed_mesh_max": [
+          "290",
+          "260"
+        ],
+        "bed_mesh_probe_distance": [
+          "50",
+          "50"
+        ],
+        "machine_tool_change_time": "10",
+        "machine_load_filament_time": "0",
+        "machine_unload_filament_time": "0",
+        "printer_model": "Honor Forge",
+        "printer_agent": "honor_forge",
+        "reduce_crossing_wall": "0",
+        "bridge_flow": "1",
+        "bridge_speed": "25",
+        "brim_width": "5",
+        "print_sequence": "by layer",
+        "default_acceleration": "10000",
+        "bridge_no_support": "0",
+        "elefant_foot_compensation": "0.15",
+        "outer_wall_line_width": "0.42",
+        "ironing_inset": "0.21",
+        "outer_wall_speed": "200",
+        "line_width": "0.42",
+        "infill_direction": "45",
+        "sparse_infill_density": "15%",
+        "sparse_infill_pattern": "zig-zag",
+        "initial_layer_line_width": "0.5",
+        "initial_layer_print_height": "0.2",
+        "initial_layer_speed": "50",
+        "gap_infill_speed": "250",
+        "infill_combination": "0",
+        "sparse_infill_line_width": "0.45",
+        "infill_wall_overlap": "15%",
+        "sparse_infill_speed": "270",
+        "interface_shells": "0",
+        "detect_overhang_wall": "1",
+        "reduce_infill_retraction": "1",
+        "filename_format": "{input_filename_base}_{filament_type[initial_tool]}_{print_time}.gcode",
+        "wall_loops": "2",
+        "inner_wall_line_width": "0.45",
+        "inner_wall_speed": "300",
+        "print_settings_id": "",
+        "raft_layers": "0",
+        "seam_position": "aligned",
+        "skirt_distance": "2",
+        "skirt_height": "1",
+        "minimum_sparse_infill_area": "15",
+        "internal_solid_infill_line_width": "0.42",
+        "internal_solid_infill_speed": "250",
+        "spiral_mode": "0",
+        "standby_temperature_delta": "-80",
+        "enable_support": "0",
+        "support_filament": "0",
+        "support_line_width": "0.42",
+        "support_interface_filament": "0",
+        "support_on_build_plate_only": "0",
+        "support_top_z_distance": "0.25",
+        "support_interface_loop_pattern": "0",
+        "support_interface_top_layers": "2",
+        "support_interface_spacing": "0.5",
+        "support_interface_speed": "80",
+        "support_interface_pattern": "auto",
+        "support_base_pattern": "default",
+        "support_base_pattern_spacing": "2.5",
+        "support_speed": "150",
+        "support_threshold_angle": "30",
+        "support_object_xy_distance": "0.35",
+        "detect_thin_wall": "0",
+        "top_surface_line_width": "0.42",
+        "top_surface_speed": "200",
+        "travel_speed": "500",
+        "enable_prime_tower": "1",
+        "prime_tower_width": "24",
+        "xy_hole_compensation": "0",
+        "xy_contour_compensation": "0",
+        "scarf_angle_threshold": "155",
+        "exclude_object": "1",
+        "max_travel_detour_distance": "0",
+        "bottom_surface_pattern": "monotonic",
+        "bottom_shell_layers": "3",
+        "bottom_shell_thickness": "0",
+        "accel_to_decel_enable": "0",
+        "brim_object_gap": "0.1",
+        "draft_shield": "disabled",
+        "enable_arc_fitting": "0",
+        "outer_wall_acceleration": "5000",
+        "inner_wall_acceleration": "8000",
+        "initial_layer_acceleration": "500",
+        "ironing_flow": "10%",
+        "ironing_spacing": "0.15",
+        "ironing_speed": "30",
+        "ironing_type": "no ironing",
+        "layer_height": "0.2",
+        "overhang_1_4_speed": "0",
+        "overhang_2_4_speed": "40",
+        "overhang_3_4_speed": "20",
+        "overhang_4_4_speed": "10",
+        "only_one_wall_top": "1",
+        "skirt_loops": "0",
+        "initial_layer_infill_speed": "105",
+        "resolution": "0.012",
+        "support_type": "normal(auto)",
+        "support_style": "default",
+        "support_bottom_z_distance": "0.2",
+        "support_interface_bottom_layers": "2",
+        "support_expansion": "0",
+        "tree_support_branch_diameter": "2",
+        "tree_support_branch_angle": "45",
+        "tree_support_wall_count": "0",
+        "max_bridge_length": "0",
+        "top_surface_pattern": "monotonicline",
+        "top_surface_acceleration": "2000",
+        "top_shell_layers": "5",
+        "top_shell_thickness": "1.0",
+        "wipe_tower_no_sparse_layers": "0",
+        "wall_generator": "classic",
+        "wipe_tower_cone_angle": "15",
+        "wipe_tower_wall_type": "cone",
+        "ooze_prevention": "1",
+        "preheat_time": "30",
+        "prime_volume": "15",
+        "activate_air_filtration": [
+          "0"
+        ],
+        "close_fan_the_first_x_layers": [
+          "1"
+        ],
+        "complete_print_exhaust_fan_speed": [
+          "70"
+        ],
+        "cool_plate_temp": [
+          "35"
+        ],
+        "cool_plate_temp_initial_layer": [
+          "35"
+        ],
+        "during_print_exhaust_fan_speed": [
+          "70"
+        ],
+        "eng_plate_temp": [
+          "0"
+        ],
+        "eng_plate_temp_initial_layer": [
+          "0"
+        ],
+        "fan_cooling_layer_time": [
+          "100"
+        ],
+        "fan_max_speed": [
+          "100"
+        ],
+        "fan_min_speed": [
+          "100"
+        ],
+        "filament_cost": [
+          "24.99",
+          "24.99",
+          "24.99",
+          "24.99",
+          "24.99",
+          "24.99"
+        ],
+        "filament_density": [
+          "1.26",
+          "1.26",
+          "1.26",
+          "1.26",
+          "1.26",
+          "1.26"
+        ],
+        "filament_diameter": [
+          "1.75",
+          "1.75",
+          "1.75",
+          "1.75",
+          "1.75",
+          "1.75"
+        ],
+        "filament_flow_ratio": [
+          "0.98",
+          "0.98",
+          "0.98",
+          "0.98",
+          "0.98",
+          "0.98"
+        ],
+        "filament_is_support": [
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "filament_max_volumetric_speed": [
+          "21",
+          "21",
+          "21",
+          "21",
+          "21",
+          "21"
+        ],
+        "filament_minimal_purge_on_wipe_tower": [
+          "15",
+          "15",
+          "15",
+          "15",
+          "15",
+          "15"
+        ],
+        "filament_settings_id": [
+          "",
+          "",
+          "",
+          "",
+          "",
+          ""
+        ],
+        "filament_soluble": [
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0"
+        ],
+        "filament_type": [
+          "PLA",
+          "PLA",
+          "PLA",
+          "PLA",
+          "PLA",
+          "PLA"
+        ],
+        "filament_vendor": [
+          "WonderMaker",
+          "WonderMaker",
+          "WonderMaker",
+          "WonderMaker",
+          "WonderMaker",
+          "WonderMaker"
+        ],
+        "full_fan_speed_layer": [
+          "0"
+        ],
+        "filament_shrink": [
+          "100%",
+          "100%",
+          "100%",
+          "100%",
+          "100%",
+          "100%"
+        ],
+        "hot_plate_temp": [
+          "55"
+        ],
+        "hot_plate_temp_initial_layer": [
+          "55"
+        ],
+        "nozzle_temperature": [
+          "220"
+        ],
+        "nozzle_temperature_initial_layer": [
+          "220"
+        ],
+        "overhang_fan_speed": [
+          "100"
+        ],
+        "overhang_fan_threshold": [
+          "50%"
+        ],
+        "reduce_fan_stop_start_freq": [
+          "1"
+        ],
+        "required_nozzle_HRC": [
+          "3"
+        ],
+        "supertack_plate_temp": [
+          "45"
+        ],
+        "supertack_plate_temp_initial_layer": [
+          "45"
+        ],
+        "slow_down_for_layer_cooling": [
+          "1"
+        ],
+        "slow_down_layer_time": [
+          "4"
+        ],
+        "slow_down_min_speed": [
+          "20"
+        ],
+        "temperature_vitrification": [
+          "45"
+        ],
+        "textured_plate_temp": [
+          "55"
+        ],
+        "textured_plate_temp_initial_layer": [
+          "55"
+        ],
+        "additional_cooling_fan_speed": [
+          "70"
+        ],
+        "nozzle_temperature_range_low": [
+          "190"
+        ],
+        "nozzle_temperature_range_high": [
+          "240"
+        ],
+        "filament_multitool_ramming": [
+          "1",
+          "1",
+          "1",
+          "1",
+          "1",
+          "1"
+        ],
+        "filament_map": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ]
+      },
+      "sourceRefs": [
+        {
+          "path": "resources/profiles/WonderMaker/machine/fdm_machine_common.json",
+          "sha256": "8ddb2a26f525966e613e752ad762102cd5d2ea4b99d5db166f4a10d438a3d611",
+          "hashFormat": "utf8-lf"
+        },
+        {
+          "path": "resources/profiles/WonderMaker/machine/fdm_klipper_common.json",
+          "sha256": "8752a3885af9804077aed9e4a5c07c7cdc4eda65a4353b5a851eb7600e7da8c0",
+          "hashFormat": "utf8-lf"
+        },
+        {
+          "path": "resources/profiles/WonderMaker/machine/fdm_ultra_common.json",
+          "sha256": "64fd4259b4282786daf3c3a157605b422817782fbc575f315c56aea85752d305",
+          "hashFormat": "utf8-lf"
+        },
+        {
+          "path": "resources/profiles/WonderMaker/machine/WonderMaker ZR Ultra 0.4 nozzle.json",
+          "sha256": "8fd94713ddf1f300fa909c74add9c7bfbe46bdb0a043e8760a2487b1d5291161",
+          "hashFormat": "utf8-lf"
+        },
+        {
+          "path": "resources/profiles/WonderMaker/machine/WonderMaker ZR Ultra S 0.4 nozzle.json",
+          "sha256": "4e720decef8df496c240215db1c0d4dec3a8954ec4cc557bc7aa81871a79043b",
+          "hashFormat": "utf8-lf"
+        },
+        {
+          "path": "resources/profiles/WonderMaker/machine/Honor Forge 0.4 nozzle.json",
+          "sha256": "e293f06237e4e051cc91acb297aed9de4056feefae6d8baef38a8552cd3b6837",
+          "hashFormat": "utf8-lf"
+        },
+        {
+          "path": "resources/profiles/WonderMaker/process/fdm_process_common.json",
+          "sha256": "8c65173980a9ffeff5f251e50595c1cc1936fe5a7ab87579f3577977ee0009f0",
+          "hashFormat": "utf8-lf"
+        },
+        {
+          "path": "resources/profiles/WonderMaker/process/fdm_process_wm_common.json",
+          "sha256": "6926060e040cfc184514ad761bc832ac448eaecc2aa5d860599da70a161f29ef",
+          "hashFormat": "utf8-lf"
+        },
+        {
+          "path": "resources/profiles/WonderMaker/process/fdm_process_wm_0.20.json",
+          "sha256": "8e1e8ed31ee3aeea106142de6dfc3ede24726b9e3a0b9a653251cb17bc41d6a3",
+          "hashFormat": "utf8-lf"
+        },
+        {
+          "path": "resources/profiles/WonderMaker/process/0.20mm Standard @WonderMaker ZR Ultra.json",
+          "sha256": "66190e01633a65c5a507c746e1cdc17424150c773901958fe869d3fc8ec3dcf7",
+          "hashFormat": "utf8-lf"
+        },
+        {
+          "path": "resources/profiles/WonderMaker/process/0.20mm Standard @Honor Forge.json",
+          "sha256": "e5ec38c96145d2c779f3bec117af315b95ea9be0faf83bab08b7f54732d51df9",
+          "hashFormat": "utf8-lf"
+        },
+        {
+          "path": "resources/profiles/WonderMaker/filament/fdm_filament_common.json",
+          "sha256": "a3283ba76c005434e325f33a27f19fb0145e7ab8a2d418230183a156a38a29a2",
+          "hashFormat": "utf8-lf"
+        },
+        {
+          "path": "resources/profiles/WonderMaker/filament/fdm_filament_pla.json",
+          "sha256": "6643d751b4a3f9e2de439ed811827e4e01aa52b004fda3ac4b35bfd78b285a8e",
+          "hashFormat": "utf8-lf"
+        },
+        {
+          "path": "resources/profiles/WonderMaker/filament/WonderMaker PLA Basic.json",
+          "sha256": "f1ae19113b34628df733d07ca64e8a99f048315fb494bced3f9e9a6b14cbdc5b",
+          "hashFormat": "utf8-lf"
+        }
+      ],
+      "schemaSourceRef": {
+        "path": "src/libslic3r/PrintConfig.cpp",
+        "sha256": "654499beff3e2c02151aff435eff5b80cfc2d19cebb93359245cd108d1209695",
+        "hashFormat": "utf8-lf"
+      },
+      "unsupportedSourceOptions": {
+        "machine_max_acceleration_e": [
+          "5000",
+          "5000"
+        ],
+        "machine_max_acceleration_x": [
+          "20000",
+          "20000"
+        ],
+        "machine_max_acceleration_y": [
+          "20000",
+          "20000"
+        ],
+        "machine_max_acceleration_z": [
+          "500",
+          "200"
+        ],
+        "machine_max_speed_e": [
+          "25",
+          "25"
+        ],
+        "machine_max_speed_x": [
+          "600",
+          "200"
+        ],
+        "machine_max_speed_y": [
+          "600",
+          "200"
+        ],
+        "machine_max_speed_z": [
+          "20",
+          "20"
+        ],
+        "machine_max_jerk_e": [
+          "2.5",
+          "2.5"
+        ],
+        "machine_max_jerk_x": [
+          "9",
+          "9"
+        ],
+        "machine_max_jerk_y": [
+          "9",
+          "9"
+        ],
+        "machine_max_jerk_z": [
+          "3",
+          "3"
+        ],
+        "enable_filament_mapping": "1",
+        "filament_swap_gcode": "M117 Swap filament for tool {next_extruder}\nPAUSE",
+        "wall_infill_order": "inner wall/outer wall/infill",
+        "chamber_temperatures": [
+          "0"
+        ],
+        "filament_deretraction_speed": [
+          "nil"
+        ],
+        "filament_long_retractions_when_cut": [
+          "nil"
+        ],
+        "filament_retract_before_wipe": [
+          "nil"
+        ],
+        "filament_retract_restart_extra": [
+          "nil"
+        ],
+        "filament_retract_when_changing_layer": [
+          "nil"
+        ],
+        "filament_retraction_distances_when_cut": [
+          "nil"
+        ],
+        "filament_retraction_length": [
+          "nil"
+        ],
+        "filament_retraction_minimum_travel": [
+          "nil"
+        ],
+        "filament_retraction_speed": [
+          "nil"
+        ],
+        "filament_wipe": [
+          "nil"
+        ],
+        "filament_wipe_distance": [
+          "nil"
+        ],
+        "filament_z_hop": [
+          "nil"
+        ],
+        "filament_z_hop_types": [
+          "nil"
+        ],
+        "filament_scarf_seam_type": [
+          "none"
+        ],
+        "filament_scarf_height": [
+          "10%"
+        ],
+        "filament_scarf_gap": [
+          "0%"
         ],
         "filament_scarf_length": [
           "10"
@@ -477,7 +1157,7 @@
       ],
       "schemaSourceRef": {
         "path": "src/libslic3r/PrintConfig.cpp",
-        "sha256": "35ffc428b1a2a95264858149cafde8d9b6b06f21aa62711ce6040850db6859fd",
+        "sha256": "654499beff3e2c02151aff435eff5b80cfc2d19cebb93359245cd108d1209695",
         "hashFormat": "utf8-lf"
       },
       "unsupportedSourceOptions": {
@@ -716,7 +1396,7 @@
       ],
       "schemaSourceRef": {
         "path": "src/libslic3r/PrintConfig.cpp",
-        "sha256": "35ffc428b1a2a95264858149cafde8d9b6b06f21aa62711ce6040850db6859fd",
+        "sha256": "654499beff3e2c02151aff435eff5b80cfc2d19cebb93359245cd108d1209695",
         "hashFormat": "utf8-lf"
       },
       "unsupportedSourceOptions": {
@@ -785,7 +1465,7 @@
     },
     {
       "path": "src/libslic3r/PrintConfig.cpp",
-      "sha256": "35ffc428b1a2a95264858149cafde8d9b6b06f21aa62711ce6040850db6859fd",
+      "sha256": "654499beff3e2c02151aff435eff5b80cfc2d19cebb93359245cd108d1209695",
       "hashFormat": "utf8-lf"
     },
     {

@@ -122,6 +122,9 @@ for file in sorted(source.rglob('*')):
     if file.is_file() and '__pycache__' not in file.parts:
         sources.append({'path': file.relative_to(repo).as_posix(),
                         'sha256': hashlib.sha256(file.read_bytes()).hexdigest()})
+for file in sorted((repo/'src/slic3r/AI/Color').rglob('*')):
+    if file.is_file():
+        sources.append({'path':file.relative_to(repo).as_posix(),'sha256':hashlib.sha256(file.read_bytes()).hexdigest()})
 for name in ['src/slic3r/GUI/AI/Model/VertexColorRegionEditor.cpp',
              'src/slic3r/GUI/AI/Model/VertexColorRegionEditor.hpp',
              'src/orca_mobile_slicing_sdk/platform/AndroidSha256Digest.cpp',

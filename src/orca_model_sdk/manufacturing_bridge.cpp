@@ -4,6 +4,8 @@ namespace orca_model_detail {
 J manufacturing_bridge(Context& context, const J& request)
 {
     expected(context, request);
+    if(context.doc.appearance.contains("printColorDraft"))
+        throw Error("COLOR_TRIAL_ONLY", "Bind real materials and confirm the color plan before manufacturing");
     const auto operation = request.at("operation").get<std::string>();
     J native             = request.value("request", J::object());
     if (!native.is_object())

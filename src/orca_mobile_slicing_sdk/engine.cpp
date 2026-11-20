@@ -6,6 +6,7 @@
 #include "libslic3r/Exception.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/Format/bbs_3mf.hpp"
+#include "libslic3r/TriangleSelector.hpp"
 #include <tbb/global_control.h>
 #include <algorithm>
 #include <chrono>
@@ -17,6 +18,7 @@
 #include <stdexcept>
 #include <set>
 #include <optional>
+#include <iomanip>
 #if defined(__linux__) || defined(__ANDROID__)
 #include <unistd.h>
 #endif
@@ -211,6 +213,8 @@ Json export_native_project(LoadedProject& project,const Json& request,const std:
         {"artifacts",Json::array({{{"kind","manufacturingProject"},{"format","3mf"},{"path",target.u8string()},
                                    {"sha256",file_sha256(target.u8string())},{"sizeBytes",bytes}}})}};
 }
+
+#include "color_document_export.inc"
 
 void validate_material_compatibility(const LoadedProject& project)
 {
@@ -412,6 +416,15 @@ Json Engine::execute(const Json& raw,const EventSink& sink)
     LoadedProject project=load(request,workspace_);
     budget.check();
     if(operation=="exportProject") return export_native_project(project,request,workspace_);
+    if(operation=="exportColorDocument") return export_color_document(project,request,workspace_,budget);
+    if(operation=="applyColorDocument") {
+        apply_color_document(project,request,workspace_,budget);
+        budget.check();
+        // Persist a native 3MF derivative to retain objects, volumes, instances,
+        // current effective configuration and applied native paint together.
+        Json exportedRequest=request;exportedRequest["confirmDerivedProject"]=true;
+        return export_native_project(project,exportedRequest,workspace_);
+    }
     if(operation=="preset") {
         apply_preset(project,text(request,"kind"),text(request,"presetId"));
         budget.check();

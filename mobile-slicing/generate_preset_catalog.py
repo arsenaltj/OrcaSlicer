@@ -42,7 +42,7 @@ def resolve(path, stack=()):
     merged, refs = {}, []
     if value.get('inherits'):
         base = value['inherits']
-        candidates = [p for p in (ROOT / 'resources/profiles/OrcaFilamentLibrary/filament').rglob('*.json')
+        candidates = [p for p in path.parent.rglob('*.json')
                       if p.stem == base]
         if len(candidates) != 1:
             raise ValueError('Missing/ambiguous inherits: ' + base)
@@ -74,9 +74,34 @@ def generate():
     device['schemaSourceRef'] = digest(schema)
     device['unsupportedSourceOptions'] = materials[0]['unsupportedSourceOptions']
     device['config'].update(materials[0]['config'])
+    # User-confirmed APEX alias: repository Honor Forge six-nozzle machine.
+    # Resolve machine/process/material independently before composing native config.
+    apex_parts = [resolve(ROOT / 'resources/profiles/WonderMaker' / group / name)
+                  for group, name in [('machine', 'Honor Forge 0.4 nozzle.json'),
+                                      ('process', '0.20mm Standard @Honor Forge.json'),
+                                      ('filament', 'WonderMaker PLA Basic.json')]]
+    apex_config, apex_refs, apex_unsupported = {}, [], {}
+    for config, refs in apex_parts:
+        apex_refs.extend(refs)
+        for key, value in config.items():
+            if key in known_keys:
+                apex_config[key] = value
+            else:
+                apex_unsupported[key] = value
+    apex_config['filament_map'] = ['1','2','3','4','5','6']
+    apex_config['printer_settings_id'] = 'Honor Forge 0.4 nozzle'
+    # Scalar per-filament vectors describe the same PLA at each physical tool.
+    for key, value in list(apex_config.items()):
+        if key.startswith('filament_') and isinstance(value, list) and len(value) == 1:
+            apex_config[key] = value * 6
+    apex = {'id': 'honor/forge-6-head-0.4', 'name': 'APEX / Honor Forge · 6 × 0.4 mm',
+            'summary': 'Repository Honor Forge machine, process and WonderMaker PLA. Verify live firmware, macros and actual loading before manufacturing.',
+            'requiresConfirmation': True, 'resetScopes': ['device','material','process'],
+            'config': apex_config, 'sourceRefs': list({r['path']: r for r in apex_refs}.values()),
+            'schemaSourceRef': digest(schema), 'unsupportedSourceOptions': apex_unsupported}
     catalog = {'version': 'p1-offline-v1',
                'devices': [{'id': 'source/current', 'name': 'Source / current project',
-                            'summary': 'Restore the original embedded machine, material and process profile.', 'restoreSource': True, 'available': False, 'reason': 'Refresh this project to capture the original source profile before restoring it.'}, device],
+                            'summary': 'Restore the original embedded machine, material and process profile.', 'restoreSource': True, 'available': False, 'reason': 'Refresh this project to capture the original source profile before restoring it.'}, device, apex],
                'materials': [{'id': 'source/current', 'name': 'Source material',
                               'summary': 'Restore original source material options, leaving the machine/process unchanged.', 'restoreSource': True, 'available': False, 'reason': 'Refresh this project to capture the original source profile before restoring it.'}] + materials,
                'sourceRefs': [digest(curated), digest(schema)] + list({r['path']: r for m in materials for r in m['sourceRefs']}.values())}

@@ -5,14 +5,17 @@ import sys
 
 source=pathlib.Path(sys.argv[1]);target=pathlib.Path(sys.argv[2])
 text=source.read_text(encoding='utf-8')
-expected='6c097b3f98ea98f9ac6dc4737f55730a6d9f92eeac22400c0ef26326bd07d891'
-if hashlib.sha256(source.read_bytes()).hexdigest()!=expected:
+expected={'6c097b3f98ea98f9ac6dc4737f55730a6d9f92eeac22400c0ef26326bd07d891',
+          '3b5bb9de4e70908cb30710784fdd8900b6adc50cc5c5f4bc5a322e90535feb55'}
+if hashlib.sha256(source.read_bytes()).hexdigest() not in expected:
     raise SystemExit('MeshBoolean source changed; re-review parameterization extraction anchors')
 def section(start,end):
     if text.count(start)!=1 or text.count(end)!=1:raise SystemExit('Ambiguous Core extraction anchor')
     return text[text.index(start):text.index(end)]
 convert=section('template<class _Mesh>\nvoid triangle_mesh_to_cgal(const std::vector<stl_vertex>', 'inline Vec3f to_vec3f(const _EpicMesh::Point& v)')
 algorithm=section('std::optional<std::vector<Vec2f>> parameterize_lscm(const indexed_triangle_set &mesh)', '// /////////////////////////////////////////////////////////////////////////////\n// Boolean operations for CGAL meshes')
+if hashlib.sha256(convert.encode()).hexdigest()!='a1a1be77777b1f0a317b9f316ba1c338263d214a3c9d102b9c72a79d114bb589' or hashlib.sha256(algorithm.encode()).hexdigest()!='9d29bf6ed4aed19bd5a7041f638daea3071223806e93ce6645b8ef36acf31e7d':
+    raise SystemExit('Parameterization function content changed; review exact shared algorithm')
 header='''// Generated from the fixed original MeshBoolean.cpp; never edit the algorithm here.
 #include "libslic3r/MeshBoolean.hpp"
 #include "libslic3r/TriangleMesh.hpp"

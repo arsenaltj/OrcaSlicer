@@ -1,4 +1,5 @@
 #include "ColorUtils.hpp"
+#include "slic3r/AI/Color/ColorDifference.hpp"
 #include <system_error>
 #include "ColorDistancePrepared.hpp"
 
@@ -738,93 +739,7 @@ static Color convert_lab_to_rgb(const LAB& lab) {
  * @param lab2 LAB values of the second color.
  * @return Color difference (typically < 1.0 is imperceptible to the human eye).
  */
-static double ciede2000(const std::array<double, 3>& lab1, const std::array<double, 3>& lab2) {
-    // Parameters in the CIE L*C*h* formula
-    double L1 = lab1[0], a1 = lab1[1], b1 = lab1[2];
-    double L2 = lab2[0], a2 = lab2[1], b2 = lab2[2];
-
-    // Compute C1 and C2
-    double C1 = std::sqrt(a1 * a1 + b1 * b1);
-    double C2 = std::sqrt(a2 * a2 + b2 * b2);
-    double C_avg = (C1 + C2) / 2.0;
-
-    // G factor (compensates for non-linearity in the mid-low chroma region)
-    double C7 = C_avg * C_avg * C_avg * C_avg * C_avg * C_avg * C_avg;
-    double G = 0.5 * (1.0 - std::sqrt(C7 / (C7 + 6103515625.0)));
-
-    // a1' and a2'
-    double a1_prime = (1.0 + G) * a1;
-    double a2_prime = (1.0 + G) * a2;
-
-    // C'1 and C'2
-    double C1_prime = std::sqrt(a1_prime * a1_prime + b1 * b1);
-    double C2_prime = std::sqrt(a2_prime * a2_prime + b2 * b2);
-    double C_prime_avg = (C1_prime + C2_prime) / 2.0;
-
-    // h'1 and h'2
-    double h1_prime = std::atan2(b1, a1_prime);
-    double h2_prime = std::atan2(b2, a2_prime);
-    if (h1_prime < 0) {
-        h1_prime += 2 * M_PI;
-    }
-    if (h2_prime < 0) {
-        h2_prime += 2 * M_PI;
-    }
-
-    // Compute dh'
-    double dh_prime;
-    if (C1_prime * C2_prime == 0.0) {
-        dh_prime = 0.0;
-    } else if (std::abs(h1_prime - h2_prime) <= M_PI) {
-        dh_prime = h2_prime - h1_prime;
-    } else if (h2_prime <= h1_prime) {
-        dh_prime = h2_prime - h1_prime + 2 * M_PI;
-    } else {
-        dh_prime = h2_prime - h1_prime - 2 * M_PI;
-    }
-
-    // Compute dH'
-    double dH_prime = 2.0 * std::sqrt(C1_prime * C2_prime) * std::sin(dh_prime / 2.0);
-
-    // Compute dL'
-    double dL_prime = L2 - L1;
-
-    // Compute dC'
-    double dC_prime = C2_prime - C1_prime;
-
-    // Compute h_prime_avg
-    double h_prime_avg;
-    if (C1_prime * C2_prime == 0.0) {
-        h_prime_avg = h1_prime + h2_prime;
-    } else if (std::abs(h1_prime - h2_prime) > M_PI) {
-        const double sum = h1_prime + h2_prime;
-        h_prime_avg = (sum + (sum < 2 * M_PI ? 2 * M_PI : -2 * M_PI)) / 2.0;
-    } else {
-        h_prime_avg = (h1_prime + h2_prime) / 2.0;
-    }
-
-    // Compute T
-    double T = 1.0 - 0.17 * std::cos(h_prime_avg - M_PI / 6.0) + 0.24 * std::cos(2.0 * h_prime_avg) + 0.32 * std::cos(3.0 * h_prime_avg + M_PI / 30.0) -
-               0.20 * std::cos(4.0 * h_prime_avg - 63.0 * M_PI / 180.0);
-
-    // Compute rotation term R_T = -R_C * sin(2*delta_theta), where delta_theta = 30 * exp(-((h_bar'-275)/25)^2)
-    // h_prime_avg is in radians; convert to degrees for delta_theta; 2*delta_theta = 60 * exp(...), convert back to radians for sin
-    double h_prime_avg_deg = h_prime_avg * 180.0 / M_PI;
-    double C_prime_avg_7 = std::pow(C_prime_avg, 7);
-    double R = -2.0 * std::sqrt(C_prime_avg_7 / (C_prime_avg_7 + 6103515625.0)) *
-               std::sin((60.0 * M_PI / 180.0) * std::exp(-std::pow((h_prime_avg_deg - 275.0) / 25.0, 2)));
-
-    // Compute SL, SC, SH
-    double L_prime_avg = (L1 + L2) / 2.0;
-    double SL = 1.0 + 0.015 * std::pow(L_prime_avg - 50.0, 2) / std::sqrt(20 + std::pow(L_prime_avg - 50.0, 2));
-    double SC = 1.0 + 0.045 * C_prime_avg;
-    double SH = 1.0 + 0.015 * C_prime_avg * T;
-
-    // Final color difference
-    double deltaE = std::sqrt(std::pow(dL_prime / SL, 2) + std::pow(dC_prime / SC, 2) + std::pow(dH_prime / SH, 2) + R * (dC_prime / SC) * (dH_prime / SH));
-
-    return deltaE;
-}
+static double ciede2000(const std::array<double,3>& a,const std::array<double,3>& b) { return Slic3r::AI::ColorDifference::ciede2000(a,b); }
 
 namespace detail {
 
