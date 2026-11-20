@@ -1,6 +1,16 @@
 [
   {
     "pr": 83,
+    "run": 44698666084,
+    "head": "f9d52e76ba0c87d2a44f6e9e5064ff63ad8e8e58",
+    "base": "c50da0ef6e0148169ec65bc65c69a49b2f3166a5",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "桌面打印、实时监控、模型库与账号更新",
+    "path": "pr/83/f9d52e76ba0c87d2a44f6e9e5064ff63ad8e8e58/44698666084",
+    "created": "2026-11-20T08:00:38+00:00"
+  },
+  {
+    "pr": 83,
     "run": 44698222801,
     "head": "207d7689827f2629fd7218e9b0b82a8effeef4b1",
     "base": "c50da0ef6e0148169ec65bc65c69a49b2f3166a5",
