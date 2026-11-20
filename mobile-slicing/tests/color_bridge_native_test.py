@@ -93,7 +93,9 @@ for route in result['activeMaterialRoutes']:
     assert route['physicalSlot']==route['toolId']==route['materialId']+4
     assert route['materialPresetVersion'] and route['family']=='PLA'
 
+negativeCases=0
 def fails(request,name,error):
+    global negativeCases
     request=dict(schemaVersion=2,**request)
     raw=C.c_void_p();code=s.orca_mobile_slicing_execute(sh,json.dumps(request).encode(),event,None,C.byref(raw))
     try:r=json.loads(C.string_at(raw))
@@ -101,6 +103,7 @@ def fails(request,name,error):
     (root/(name+'.request.json')).write_text(json.dumps(request,indent=2))
     (root/(name+'.result.json')).write_text(json.dumps(r,indent=2))
     assert code!=0 and not r['ok'] and error in json.dumps(r),(name,r)
+    negativeCases+=1
 
 def saved_request(name):return json.loads((root/(name+'.request.json')).read_text())
 def without_schema(request):return {k:v for k,v in request.items() if k!='schemaVersion'}
@@ -228,6 +231,63 @@ assert supportSlice['activeMaterialIds']==[0,1,2]
 supportRoute=next(route for route in supportSlice['activeMaterialRoutes'] if route['materialId']==2)
 assert supportRoute['purpose']=='support' and supportRoute['toolId']==2
 assert supportSlice['filamentVolumePerSlotMm3']['2']>0
+
+# SDK-COLOR-01: an appearance SHA identifies bytes; it does not make a support
+# spool eligible for model painting, or make conflicting ID/RGB semantics valid.
+def appearance_case(name,mutate,expected_error=None,request_mutation=None,overflow=False):
+    data=json.loads(pathlib.Path(supportSide['path']).read_text());mutate(data)
+    text=json.dumps(data,allow_nan=False)
+    if overflow:text=text.replace('"__overflow__"','1e400')
+    path=root/(name+'.appearance.json');path.write_text(text,encoding='utf8')
+    request=without_schema(saved_request('support-rebind'))
+    request.update(appearancePath=str(path),appearanceSha256=hashlib.sha256(path.read_bytes()).hexdigest(),outputDir=str(root/name))
+    if request_mutation:request_mutation(request)
+    if expected_error:fails(request,name,expected_error)
+    else:S(request,name)
+appearance_case('support-id-on-model',lambda a:a.update(materialIds=[2]*len(a['materialIds'])),'COLOR_REBIND_MODEL_MATERIAL_NOT_IN_PLAN')
+def support_white(a):
+    a['materialIds']=[2]*len(a['materialIds']);a['faceColors']=[[1,1,1,1] for _ in a['faceColors']]
+appearance_case('support-id-and-color-on-model',support_white,'COLOR_REBIND_MODEL_MATERIAL_NOT_IN_PLAN')
+appearance_case('swapped-model-ids-same-colors',lambda a:a.update(materialIds=[1-x for x in a['materialIds']]),'COLOR_REBIND_FACE_COLOR_MISMATCH')
+appearance_case('changed-plan-palette-color',lambda a:a['appearanceMetadata']['printColorPlan']['palette'][0].update(color=[0,1,0]),'COLOR_REBIND_MANUFACTURING_CONFIG_CHANGED')
+appearance_case('changed-plan-palette-slot',lambda a:a['appearanceMetadata']['printColorPlan']['palette'][0].update(slot=2),'COLOR_REBIND_MANUFACTURING_CONFIG_CHANGED')
+appearance_case('wrong-binding-role',lambda a:None,'COLOR_REBIND_MANUFACTURING_CONFIG_CHANGED',lambda r:r['bindings'][0].update(purpose='support'))
+appearance_case('missing-face-color',lambda a:a['faceColors'].pop(),'COLOR_REBIND_FACE_COLOR_COUNT')
+appearance_case('invalid-rgba-shape',lambda a:a['faceColors'][0].pop(),'COLOR_REBIND_FACE_COLOR_INVALID')
+for name,channel,value in [('rgb-null',0,None),('rgb-negative',1,-1e-8),('rgb-above-one',0,1.00000001),
+                           ('alpha-null',3,None),('alpha-negative',3,-1e-8),('alpha-above-one',3,1.00000001)]:
+    appearance_case(name,lambda a,c=channel,v=value:a['faceColors'][0].__setitem__(c,v),'COLOR_REBIND_FACE_COLOR_INVALID')
+appearance_case('rgb-nonfinite-overflow',lambda a:a['faceColors'][0].__setitem__(0,'__overflow__'),'INVALID_JSON',overflow=True)
+appearance_case('fractional-material-id',lambda a:a['materialIds'].__setitem__(0,0.5),'COLOR_REBIND_MATERIAL_OUT_OF_RANGE')
+appearance_case('negative-material-id',lambda a:a['materialIds'].__setitem__(0,-1),'COLOR_REBIND_MATERIAL_OUT_OF_RANGE')
+appearance_case('too-large-material-id',lambda a:a['materialIds'].__setitem__(0,256),'COLOR_REBIND_MATERIAL_OUT_OF_RANGE')
+# The producer uses float32 physical RGB, then writes doubles into RGBA JSON.
+# This is a serialization tolerance, not another approximate color match.
+appearance_case('rgb-within-serialization-tolerance',lambda a:a['faceColors'][0].__setitem__(1,5e-8))
+appearance_case('rgb-at-serialization-tolerance',lambda a:a['faceColors'][0].__setitem__(1,1e-7))
+appearance_case('rgb-beyond-serialization-tolerance',lambda a:a['faceColors'][0].__setitem__(1,2e-7),'COLOR_REBIND_FACE_COLOR_MISMATCH')
+
+# Real Model-produced non-primary colors exercise actual float32 rounding;
+# Alpha endpoints and a fractional alpha remain legal Model RGBA, not physical opacity proof.
+nonprimaryBindings=copy.deepcopy(supportBindings)
+nonprimaryBindings[0]['color']='#123456';nonprimaryBindings[1]['color']='#ABCDEF'
+nonprimaryPrepared=S(dict(**supportBase,operation='prepareColorManufacturingConfig',devicePresetId='honor/forge-6-head-0.4',bindings=nonprimaryBindings),'nonprimary-prepare')
+M(dict(operation='paint',expectedRevision=supportRev,faces=list(range(6)),color=[18/255,52/255,86/255,0]),'nonprimary-red-alpha-zero');supportRev+=1
+M(dict(operation='paint',expectedRevision=supportRev,faces=list(range(6,12)),color=[18/255,52/255,86/255,0.37]),'nonprimary-red-alpha-fraction');supportRev+=1
+M(dict(operation='paint',expectedRevision=supportRev,faces=list(range(12,24)),color=[171/255,205/255,239/255,1]),'nonprimary-blue-range');supportRev+=1
+nonprimaryPlan=M(dict(operation='matchPrintColors',documentId=supportId,expectedRevision=supportRev,requestedColorCount=2,
+                      palette=nonprimaryPrepared['palette'],materialFingerprint=nonprimaryPrepared['materialFingerprint'],processFingerprint=nonprimaryPrepared['processFingerprint']),'nonprimary-match')
+M(dict(operation='applyPrintColors',documentId=supportId,expectedRevision=supportRev,candidateId=nonprimaryPlan['candidateId'],materialFingerprint=nonprimaryPrepared['materialFingerprint'],
+       processFingerprint=nonprimaryPrepared['processFingerprint'],confirmMaterialMapping=True,acceptColorError=True),'nonprimary-apply');supportRev+=1
+nonprimaryManufacturing=M(dict(operation='exportManufacturing',expectedRevision=supportRev),'nonprimary-manufacturing')
+nonprimarySide=nonprimaryManufacturing['artifacts'][1];nonprimaryAppearance=json.loads(pathlib.Path(nonprimarySide['path']).read_text())
+paletteById={item['materialId']:item['color'] for item in nonprimaryPrepared['palette']}
+maxRgbDifference=max(abs(rgba[c]-paletteById[mid][c]) for rgba,mid in zip(nonprimaryAppearance['faceColors'],nonprimaryAppearance['materialIds']) for c in range(3))
+assert 0<maxRgbDifference<1e-7 and {rgba[3] for rgba in nonprimaryAppearance['faceColors']}=={0,0.37,1}
+S(dict(**supportBase,operation='applyColorDocument',appearancePath=nonprimarySide['path'],appearanceSha256=nonprimarySide['sha256'],manufacturingConfig=nonprimaryPrepared['manufacturingConfig'],
+       materialFingerprint=nonprimaryPrepared['materialFingerprint'],processFingerprint=nonprimaryPrepared['processFingerprint'],devicePresetId='honor/forge-6-head-0.4',bindings=nonprimaryBindings,
+       confirmMaterialMapping=True),'nonprimary-producer-control')
+(root/'rgb-serialization-control.json').write_text(json.dumps(dict(maxRgbDifference=maxRgbDifference,tolerance=1e-7,normalizedAlphaValues=[0,0.37,1],physicalOpacityVerified=False),indent=2))
 sourceChanged=dict(baseRequest,operation='prepareColorManufacturingConfig',
                    devicePresetId='honor/forge-6-head-0.4',bindings=bindings,
                    config={'layer_height':'0.12','nozzle_diameter':'0.8,0.8,0.8,0.8,0.8,0.8',
@@ -248,6 +308,7 @@ generic=S(dict(inputPath=str(source),projectId='generic-unchanged',projectRevisi
                outputDir=str(root/'generic'),operation='slice',quality='standard'),'slice-generic-no-adapter')
 assert generic['physicalToolGcodeReparsed'] is False and generic['activeMaterialIds']==[0]
 summary=dict(state='passed',nativeTwoMaterialGcode=True,nativeSingleMaterialReceipt=True,
-             nativeSupportGcode=True,nativeSingleLoadedMaterial=True,negativeCases=17,enhancedRepairHealthyAndHole=True,physicalPrinterVerified=False)
+             nativeSupportGcode=True,nativeSingleLoadedMaterial=True,negativeCases=negativeCases,enhancedRepairHealthyAndHole=True,
+             modelPaletteAndFaceRgbValidated=True,physicalPrinterVerified=False)
 (root/'summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps(summary))
 s.orca_mobile_slicing_destroy(sh);m.orca_model_destroy(mh)

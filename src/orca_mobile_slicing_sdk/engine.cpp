@@ -22,6 +22,8 @@
 #include <set>
 #include <optional>
 #include <iomanip>
+#include <array>
+#include <cmath>
 #if defined(__linux__) || defined(__ANDROID__)
 #include <unistd.h>
 #endif

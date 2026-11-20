@@ -83,6 +83,43 @@ void apply_color_document(LoadedProject& project,const Json& request,const std::
     const auto prepared=prepare_color_config(project,request);
     if(prepared.at("manufacturingConfig")!=request.at("manufacturingConfig")||prepared.at("processFingerprint")!=request.at("processFingerprint")||
        prepared.at("materialFingerprint")!=request.at("materialFingerprint")||prepared.at("palette")!=plan.at("palette"))throw std::runtime_error("COLOR_REBIND_MANUFACTURING_CONFIG_CHANGED");
+    // Validate the complete face assignment before changing the detached native
+    // Model. The configured filament array also contains support-only materials;
+    // it is not the set of materials permitted to paint model surfaces.
+    std::map<int,std::array<double,3>> modelPalette;
+    const auto& nativeBindings=prepared.at("bindings");
+    for(const auto& material:prepared.at("palette")){
+        const int id=material.at("materialId").get<int>();
+        const auto route=std::find_if(nativeBindings.begin(),nativeBindings.end(),[&](const auto& x){return x.at("materialId")==id;});
+        if(route==nativeBindings.end()||route->at("purpose")!="model"||route->at("slot")!=material.at("slot")||
+           !modelPalette.emplace(id,material.at("color").get<std::array<double,3>>()).second)
+            throw std::runtime_error("COLOR_REBIND_MODEL_BINDING_MISMATCH");
+    }
+    const auto& faceColors=appearance.at("faceColors");
+    if(!faceColors.is_array()||faceColors.size()!=ids.size())throw std::runtime_error("COLOR_REBIND_FACE_COLOR_COUNT");
+    // Direct matching uses PreviewPalette::Color (float32); Mesh and its JSON
+    // sidecar store those channels as doubles. 1e-7 absolute normalized sRGB
+    // covers float32 rounding (<6e-8), far below one 8-bit step (1/255).
+    // Alpha follows the existing Model RGBA contract: finite in [0,1], retained
+    // without claiming physical opacity equivalence. Only RGB binds the spool.
+    constexpr double faceRgbSerializationTolerance=1e-7;
+    for(size_t f=0;f<ids.size();++f){
+        budget.check();
+        if(!ids.at(f).is_number_integer())throw std::runtime_error("COLOR_REBIND_MATERIAL_OUT_OF_RANGE");
+        const auto wide=ids.at(f).get<int64_t>();
+        if(wide<0||wide>255)throw std::runtime_error("COLOR_REBIND_MATERIAL_OUT_OF_RANGE");
+        const auto material=modelPalette.find(int(wide));
+        if(material==modelPalette.end())throw std::runtime_error("COLOR_REBIND_MODEL_MATERIAL_NOT_IN_PLAN");
+        const auto& rgba=faceColors.at(f);
+        if(!rgba.is_array()||rgba.size()!=4)throw std::runtime_error("COLOR_REBIND_FACE_COLOR_INVALID");
+        for(size_t channel=0;channel<4;++channel){
+            if(!rgba.at(channel).is_number())throw std::runtime_error("COLOR_REBIND_FACE_COLOR_INVALID");
+            const double value=rgba.at(channel).get<double>();
+            if(!std::isfinite(value)||value<0||value>1)throw std::runtime_error("COLOR_REBIND_FACE_COLOR_INVALID");
+            if(channel<3&&std::abs(value-material->second[channel])>faceRgbSerializationTolerance)
+                throw std::runtime_error("COLOR_REBIND_FACE_COLOR_MISMATCH");
+        }
+    }
     apply_config_overrides(project.config,prepared.at("manufacturingConfig"));
     const auto* colors=project.config.option<Slic3r::ConfigOptionStrings>("filament_colour");
     std::map<std::pair<size_t,size_t>,Json> assigned;
