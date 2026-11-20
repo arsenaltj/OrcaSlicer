@@ -19,6 +19,7 @@ p.add_argument('--cgal-source-archive',type=pathlib.Path)
 p.add_argument('--repair-tbb-source',type=pathlib.Path)
 p.add_argument('--android-strip-tool',type=pathlib.Path)
 p.add_argument('--android-debug-output',type=pathlib.Path)
+p.add_argument('--dependency-input-manifest',type=pathlib.Path)
 args = p.parse_args()
 if bool(args.android_strip_tool) != bool(args.android_debug_output):
     raise SystemExit('Release Model stripping requires explicit tool and separate debug output together')
@@ -79,6 +80,21 @@ if repair:
 
 complete = args.windows_slicing_build is not None
 if complete:
+    if not args.dependency_input_manifest or not args.dependency_input_manifest.is_file():
+        raise SystemExit('Complete SDK requires the exact dependency source-file input manifest')
+    dependency_inputs=json.loads(args.dependency_input_manifest.read_text(encoding='utf-8'))
+    dependency_cache={}
+    for line in (args.windows_slicing_build/'CMakeCache.txt').read_text(encoding='utf-8').splitlines():
+        if not line.startswith(('#','//')) and ':' in line and '=' in line:
+            dependency_cache[line.split(':',1)[0]]=line.split('=',1)[1]
+    for item in dependency_inputs:
+        folder=pathlib.Path(item['path'])
+        if pathlib.Path(dependency_cache.get(item['key'],'')).resolve()!=folder.resolve():
+            raise SystemExit('Dependency source input differs from configured producer: '+item['key'])
+        for entry in item['files']:
+            original=folder/entry['path']
+            if not original.resolve().is_relative_to(folder.resolve()) or hashlib.sha256(original.read_bytes()).hexdigest()!=entry['sha256']:
+                raise SystemExit('Dependency source file changed: '+str(original))
     if not args.cgal_source_archive or not args.cgal_source_archive.is_file():
         raise SystemExit('Complete SDK requires the original pinned CGAL source archive')
     expected_cgal='eebd737d9b7f0199647ba5c1f9f6c7a3d0651aacef9c2fd4dedc52da6c25edbe'
@@ -122,9 +138,10 @@ for file in sorted(source.rglob('*')):
     if file.is_file() and '__pycache__' not in file.parts:
         sources.append({'path': file.relative_to(repo).as_posix(),
                         'sha256': hashlib.sha256(file.read_bytes()).hexdigest()})
-for file in sorted((repo/'src/slic3r/AI/Color').rglob('*')):
-    if file.is_file():
-        sources.append({'path':file.relative_to(repo).as_posix(),'sha256':hashlib.sha256(file.read_bytes()).hexdigest()})
+for folder in ['src/slic3r/AI/Color','src/slic3r/AI/Contracts']:
+    for file in sorted((repo/folder).rglob('*')):
+        if file.is_file():
+            sources.append({'path':file.relative_to(repo).as_posix(),'sha256':hashlib.sha256(file.read_bytes()).hexdigest()})
 for name in ['src/slic3r/GUI/AI/Model/VertexColorRegionEditor.cpp',
              'src/slic3r/GUI/AI/Model/VertexColorRegionEditor.hpp',
              'src/orca_mobile_slicing_sdk/platform/AndroidSha256Digest.cpp',
@@ -139,6 +156,21 @@ if complete:
         file=repo/name
         if name not in known and file.is_file():
             sources.append({'path':name,'sha256':hashlib.sha256(file.read_bytes()).hexdigest()})
+            known.add(name)
+    # Include every actual native preset source referenced by the generated
+    # catalog, including inherited machine/process/material profiles.
+    catalog=json.loads((repo/'mobile-slicing/preset-catalog-v1.json').read_text(encoding='utf-8'))
+    def preset_refs(value):
+        if isinstance(value,dict):
+            if value.get('hashFormat')=='utf8-lf' and 'path' in value:
+                yield value['path']
+            for child in value.values():yield from preset_refs(child)
+        elif isinstance(value,list):
+            for child in value:yield from preset_refs(child)
+    for name in sorted(set(preset_refs(catalog))):
+        file=repo/name
+        if name not in known and file.is_file():
+            sources.append({'path':name,'sha256':hashlib.sha256(file.read_bytes()).hexdigest()});known.add(name)
 if repair:
     known={item['path'] for item in sources}
     for folder in ['src/libslic3r','src/orca_mobile_slicing_sdk/platform','deps_src/admesh','deps_src/clipper2','deps_src/qhull','deps_src/libigl']:
@@ -240,6 +272,7 @@ if complete:
     manifest['toolchain']=build_configs
     manifest['slicingLibrary']='bin/orca_mobile_slicing_sdk_c.dll'
     manifest['scope']='sdk-core-compilation-candidate-not-complete-desktop-acceptance'
+    manifest['dependencySourceInputs']=[{key:value for key,value in item.items() if key!='files'} for item in dependency_inputs]
     manifest['knownGaps']=['Real provider quality, mobile device behavior and physical printing are not verified',
                            'Texture-to-material mapping requires an explicit verified conversion; source warnings retained',
                            'Only declared supported native 3MF semantics can manufacture; unknown extensions fail explicitly']
@@ -249,6 +282,11 @@ if complete:
             output.write(repo/item['path'],item['path'])
         output.writestr('tracked-uncommitted.patch',tracked_diff)
         output.writestr('source-files.json',json.dumps(sources,indent=2))
+        output.writestr('dependency-source-inputs.json',json.dumps(dependency_inputs,indent=2))
+        for item in dependency_inputs:
+            if item['key']=='ORCA_MOBILE_EXPAT_SOURCE':
+                for entry in item['files']:
+                    output.write(pathlib.Path(item['path'])/entry['path'],'dependencies/expat-source/'+entry['path'])
     record('source-snapshot.zip')
     # Include upstream dependency notices verbatim. The manifest makes no
     # redistribution/licensing approval claim beyond retaining these notices.

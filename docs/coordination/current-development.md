@@ -1,3 +1,12 @@
+# MOBILE-COLOR-SDK-20261120
+
+Mainline: isolated task-20261120-color-model-sdk, merged desktop reference f9d52e76ba via d6ba6e4153. User authorized mobile color workbench and native manufacturing implementation; no push, deployment or physical print.
+This round: share the existing desktop Direct/CIEDE2000 core with transactional Model commands, authoritative native project export/rebind and native material config preparation; preserve current process and explicit model/support routing.
+Open: independent review and different QA, final Android producer bundle/runtime qualification, real device/visual/physical loading and printing. Enhanced repair stays bounded; the separate full strict repair path is unsupported.
+Next: finish sparse physical-tool G-code/file-readback and support regressions, freeze exact source/manifest, then independently review and accept the combined mobile consumer.
+Plan change: original project remains unchanged; device/process/material configuration applies only to the derivative. Trial colors are preview/draft-only and require a new confirmed native match before manufacturing.
+
+## Earlier records retained
 # MODEL-SDK-DEFAULT-CMAKE-D1 (2026-11-20)
 
 Mainline: task-20261120-model-sdk-default-cmake from d60d3a9; PR82 is now formally open by explicit user request. D1 repair round 1 fixes an absent LINK_LIBRARIES property without disabling default tests.

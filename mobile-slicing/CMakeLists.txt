@@ -55,7 +55,30 @@ FetchContent_MakeAvailable(cereal)
 FetchContent_Declare(tbb
     URL https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2021.5.0.zip
     URL_HASH SHA256=83ea786c964a384dd72534f9854b419716f412f9d43c0be88d41874763e7bb47)
+if(ANDROID)
+    # Model and Slicing are loaded into one process. Bind both to the exact
+    # qualified runtime instead of packaging two different libtbb.so files.
+    set(ORCA_MOBILE_ANDROID_TBB_RUNTIME "" CACHE FILEPATH "Explicit approved Android libtbb.so shared with Model")
+    if(NOT IS_ABSOLUTE "${ORCA_MOBILE_ANDROID_TBB_RUNTIME}")
+        message(FATAL_ERROR "Android Slicing requires absolute ORCA_MOBILE_ANDROID_TBB_RUNTIME")
+    endif()
+    set(TBB_BUILD OFF CACHE BOOL "Use qualified runtime; only allocator is compiled" FORCE)
+endif()
 FetchContent_MakeAvailable(tbb)
+if(ANDROID)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    execute_process(COMMAND "${Python3_EXECUTABLE}"
+        "${ORCA_SOURCE_ROOT}/src/orca_model_sdk/repair_core/verify_approved_tbb.py"
+        --library "${ORCA_MOBILE_ANDROID_TBB_RUNTIME}" --include "${tbb_SOURCE_DIR}/include"
+        --manifest "${ORCA_SOURCE_ROOT}/src/orca_model_sdk/repair_core/approved_tbb.json"
+        --output "${CMAKE_CURRENT_BINARY_DIR}/approved-tbb-binding.json"
+        COMMAND_ERROR_IS_FATAL ANY)
+    add_library(orca_slicing_approved_tbb SHARED IMPORTED GLOBAL)
+    set_target_properties(orca_slicing_approved_tbb PROPERTIES
+        IMPORTED_LOCATION "${ORCA_MOBILE_ANDROID_TBB_RUNTIME}" IMPORTED_SONAME "libtbb.so"
+        INTERFACE_INCLUDE_DIRECTORIES "${tbb_SOURCE_DIR}/include")
+    add_library(TBB::tbb ALIAS orca_slicing_approved_tbb)
+endif()
 if(TARGET tbbmalloc AND ANDROID)
     set_target_properties(tbbmalloc PROPERTIES LINK_FLAGS "" LINK_DEPENDS "")
 endif()
@@ -200,6 +223,10 @@ if(ORCA_MOBILE_REAL_TRIANGULATION)
  execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/extract_parameterization.py"
   "${ORCA_SOURCE_ROOT}/src/libslic3r/MeshBoolean.cpp" "${CMAKE_CURRENT_BINARY_DIR}/generated/MeshParameterization.cpp"
   COMMAND_ERROR_IS_FATAL ANY)
+ execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/extract_enhanced_repair.py"
+  "${ORCA_SOURCE_ROOT}/src/libslic3r/MeshRepair.cpp" "${CMAKE_CURRENT_BINARY_DIR}/generated/MobileEnhancedRepair.cpp"
+  COMMAND_ERROR_IS_FATAL ANY)
+ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ORCA_SOURCE_ROOT}/src/libslic3r/MeshRepair.cpp" "${CMAKE_CURRENT_LIST_DIR}/extract_enhanced_repair.py")
  if(NOT EXISTS "${ORCA_MOBILE_CGAL_INCLUDE}/CGAL/version.h")
   message(FATAL_ERROR "Executable triangulation requires verified CGAL 6.2.1 public headers")
  endif()
@@ -210,13 +237,13 @@ if(ORCA_MOBILE_REAL_TRIANGULATION)
   "${ORCA_SOURCE_ROOT}/src/libslic3r/SLA/IndexedMesh.cpp"
   "${ORCA_SOURCE_ROOT}/src/libslic3r/Triangulation.cpp"
   "${ORCA_SOURCE_ROOT}/src/libslic3r/IntersectionPoints.cpp"
-  "${ORCA_SOURCE_ROOT}/src/libslic3r/MeshRepair.cpp")
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/MobileEnhancedRepair.cpp")
  # CGAL's existing Boost multiprecision backend avoids importing host GMP DLLs
  # into the Android artifact. Core algorithms and their public API stay unchanged.
  set_source_files_properties(
   "${ORCA_SOURCE_ROOT}/src/libslic3r/Triangulation.cpp"
   "${ORCA_SOURCE_ROOT}/src/libslic3r/IntersectionPoints.cpp"
-  "${ORCA_SOURCE_ROOT}/src/libslic3r/MeshRepair.cpp"
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/MobileEnhancedRepair.cpp"
   "${CMAKE_CURRENT_BINARY_DIR}/generated/MeshParameterization.cpp"
   PROPERTIES COMPILE_DEFINITIONS "CGAL_DISABLE_GMP=1;CGAL_NO_CORE=1"
   SKIP_PRECOMPILE_HEADERS ON
@@ -335,14 +362,29 @@ if(EXISTS "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/c_api.cpp" AND EXISTS
     set_target_properties(orca_mobile_slicing_sdk PROPERTIES OUTPUT_NAME orca_mobile_slicing_sdk_c CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
     if(ANDROID)
      target_link_options(orca_mobile_slicing_sdk PRIVATE "-Wl,--no-undefined" "-Wl,--version-script=${CMAKE_CURRENT_LIST_DIR}/exports/slicing.map")
+     set_property(TARGET orca_mobile_slicing_sdk APPEND PROPERTY LINK_DEPENDS "${ORCA_MOBILE_ANDROID_TBB_RUNTIME}")
+     add_custom_command(TARGET orca_mobile_slicing_sdk POST_BUILD
+         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ORCA_MOBILE_ANDROID_TBB_RUNTIME}" "$<TARGET_FILE_DIR:orca_mobile_slicing_sdk>/libtbb.so"
+         COMMENT "Copying exact qualified shared TBB runtime without transformation")
     endif()
     if(MSVC)
      target_compile_definitions(orca_mobile_slicing_sdk PRIVATE _USE_MATH_DEFINES __TBB_NO_IMPLICIT_LINKAGE=1 __TBBMALLOC_NO_IMPLICIT_LINKAGE=1)
      target_compile_options(orca_mobile_slicing_sdk PRIVATE /utf-8 /bigobj /Zc:lambda)
+     target_link_options(orca_mobile_slicing_sdk PRIVATE /OPT:REF)
+    else()
+     target_link_options(orca_mobile_slicing_sdk PRIVATE -Wl,--gc-sections)
     endif()
     add_executable(orca_mobile_slicing_json_gate "${CMAKE_CURRENT_LIST_DIR}/slicing_json_gate.cpp")
     target_include_directories(orca_mobile_slicing_json_gate PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/include")
     target_link_libraries(orca_mobile_slicing_json_gate PRIVATE orca_mobile_slicing_sdk)
+    if(ORCA_SDK_HOST)
+        add_executable(orca_honor_tool_routing_test "${CMAKE_CURRENT_LIST_DIR}/tests/honor_forge_routing_test.cpp")
+        target_link_libraries(orca_honor_tool_routing_test PRIVATE OrcaSlicer::Core)
+        if(MSVC)
+            target_compile_options(orca_honor_tool_routing_test PRIVATE /utf-8 /bigobj)
+            target_compile_definitions(orca_honor_tool_routing_test PRIVATE BOOST_ALL_NO_LIB __TBB_NO_IMPLICIT_LINKAGE=1 __TBBMALLOC_NO_IMPLICIT_LINKAGE=1)
+        endif()
+    endif()
 endif()
 
 add_executable(orca_mobile_stl_gate "${CMAKE_CURRENT_LIST_DIR}/stl_gcode_gate.cpp")

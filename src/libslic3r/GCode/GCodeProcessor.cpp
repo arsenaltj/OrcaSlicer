@@ -13,6 +13,7 @@
 #include "libslic3r/PrintBase.hpp"
 #include "libslic3r/Polygon.hpp"
 #include "PrintConfig.hpp"
+#include "libslic3r/HonorForgeToolRouting.hpp"
 #include "libslic3r/TriangleSelector.hpp"
 #include "libslic3r/libslic3r.h"
 #include "libslic3r/Utils.hpp"
@@ -1535,6 +1536,10 @@ void GCodeProcessor::run_post_process()
         }
         if (cmd.size() >= 2) {
             if (tool_number != -1) {
+                if(m_honor_forge_physical_tools){
+                    if(tool_number<0||tool_number>=32)throw std::runtime_error("HONOR_PHYSICAL_TOOL_INVALID");
+                    tool_number=int(HonorForgeToolRouting::logical_from_zero_based(m_filament_maps,unsigned(tool_number)));
+                }
                 if (tool_number < 0 || (int)m_filament_nozzle_temp.size() <= tool_number) {
                     // found an invalid value, clamp it to a valid one
                     tool_number = std::clamp<int>(0, m_filament_nozzle_temp.size() - 1, tool_number);
@@ -1581,7 +1586,9 @@ void GCodeProcessor::run_post_process()
                             out += " S" + std::to_string(temperature) + "\n";
                             return out;
                         } else {
-                            const int real_tool = tool_number < m_physical_extruder_map.size() ? m_physical_extruder_map[tool_number] : tool_number;
+                            const int real_tool = m_honor_forge_physical_tools ?
+                                int(HonorForgeToolRouting::physical_from_zero_based(m_filament_maps,unsigned(tool_number))) :
+                                (tool_number < m_physical_extruder_map.size() ? m_physical_extruder_map[tool_number] : tool_number);
                             std::string comment = "preheat T" + std::to_string(real_tool) +
                                                 " time: " + std::to_string((int) std::round(time_diffs[0])) + "s";
                             return GCodeWriter::set_temperature(temperature, this->m_flavor, false, real_tool, comment);
@@ -1596,7 +1603,10 @@ void GCodeProcessor::run_post_process()
 
                             float val;
                             if (gline.has_value('T', val) && gline.raw().find("cooldown") != std::string::npos) {
-                                if (static_cast<int>(val) == (tool_number < m_physical_extruder_map.size() ? m_physical_extruder_map[tool_number] : tool_number))
+                                const int real_tool=m_honor_forge_physical_tools ?
+                                    int(HonorForgeToolRouting::physical_from_zero_based(m_filament_maps,unsigned(tool_number))) :
+                                    (tool_number < m_physical_extruder_map.size() ? m_physical_extruder_map[tool_number] : tool_number);
+                                if (static_cast<int>(val) == real_tool)
                                     return std::string("; removed M104\n");
                             }
                         }
@@ -1715,6 +1725,8 @@ void GCodeProcessor::run_post_process()
             int fid;
             str >> fid;
             if (!str.fail() && 0 <= fid && fid < 255) {
+                if(m_honor_forge_physical_tools)
+                    fid=int(HonorForgeToolRouting::logical_from_zero_based(m_filament_maps,unsigned(fid)));
                 int nozzle_id = -1; char param;
                 while (str >> param) { if (param == 'H') { if (!(str >> nozzle_id)) BOOST_LOG_TRIVIAL(warning) << "Invalid nozzle id format in T command: " << gcode_line; break; } }
                 handle_filament_change(fid, line_id, nozzle_id);
@@ -3131,6 +3143,7 @@ bool GCodeProcessor::check_multi_extruder_gcode_valid(const int                 
 
 void GCodeProcessor::apply_config(const PrintConfig& config)
 {
+    m_honor_forge_physical_tools=HonorForgeToolRouting::enabled(config);
     m_parser.apply_config(config);
 
     m_flavor = config.gcode_flavor;
@@ -3299,6 +3312,7 @@ void GCodeProcessor::apply_config(const PrintConfig& config)
 
 void GCodeProcessor::apply_config(const DynamicPrintConfig& config)
 {
+    m_honor_forge_physical_tools=HonorForgeToolRouting::enabled(config);
     m_parser.apply_config(config);
 
     // Belt printer: remember the file's belt keys for export_config_for_render(). The
@@ -3728,6 +3742,7 @@ void GCodeProcessor::apply_config(const DynamicPrintConfig& config)
 
 void GCodeProcessor::reset()
 {
+    m_honor_forge_physical_tools=false;
     m_units = EUnits::Millimeters;
     m_global_positioning_type = EPositioningType::Absolute;
     m_e_local_positioning_type = EPositioningType::Absolute;
@@ -6617,6 +6632,12 @@ void GCodeProcessor::process_M83(const GCodeReader::GCodeLine& line)
 void GCodeProcessor::process_M104(const GCodeReader::GCodeLine& line)
 {
     int filament_id = get_filament_id();
+    float physical_tool;
+    if(m_honor_forge_physical_tools && line.has_value('T',physical_tool)){
+        if(!std::isfinite(physical_tool)||physical_tool<0||physical_tool>=32||physical_tool!=std::floor(physical_tool))
+            throw std::runtime_error("HONOR_PHYSICAL_TOOL_INVALID");
+        filament_id=int(HonorForgeToolRouting::logical_from_zero_based(m_filament_maps,unsigned(physical_tool)));
+    }
     float new_temp;
     if (line.has_value('S', new_temp))
         m_extruder_temps[filament_id] = new_temp;
@@ -6697,6 +6718,14 @@ void GCodeProcessor::process_M109(const GCodeReader::GCodeLine& line)
         simulate_st_synchronize();
     int filament_id = get_filament_id();
     float new_temp;
+    float physical_tool;
+    if(m_honor_forge_physical_tools && line.has_value('T',physical_tool)){
+        if(!std::isfinite(physical_tool)||physical_tool<0||physical_tool>=32||physical_tool!=std::floor(physical_tool))
+            throw std::runtime_error("HONOR_PHYSICAL_TOOL_INVALID");
+        filament_id=int(HonorForgeToolRouting::logical_from_zero_based(m_filament_maps,unsigned(physical_tool)));
+        if(line.has_value('R',new_temp)||line.has_value('S',new_temp))m_extruder_temps[filament_id]=new_temp;
+        return;
+    }
     if (line.has_value('R', new_temp)) {
         float val;
         if (line.has_value('T', val)) {
@@ -7142,6 +7171,11 @@ void GCodeProcessor::process_T(const std::string_view command, int nozzle_id)
     auto         ret          = std::from_chars(command.data() + 1, command.data()+command.size(), eid);
     if (std::errc::invalid_argument == ret.ec)
         return;
+    if(m_honor_forge_physical_tools){
+        if(ret.ec!=std::errc()||ret.ptr!=command.data()+command.size()||eid>254)
+            throw std::runtime_error("HONOR_PHYSICAL_TOOL_INVALID");
+        eid=HonorForgeToolRouting::logical_from_zero_based(m_filament_maps,eid);
+    }
 
     int curr_filament_id = get_filament_id(false);
     int curr_extruder_id = get_extruder_id(false);

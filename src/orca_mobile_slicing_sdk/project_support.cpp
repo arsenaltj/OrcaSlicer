@@ -626,7 +626,7 @@ void apply_preset(LoadedProject& project,const std::string& kind,const std::stri
         // Existing nonzero assignments must be remapped explicitly, not clamped.
         apply_config_overrides(project.config,match->at("config"));
     }
-    if(presetId!="source/current") {
+    if(presetId!="source/current" && !(kind=="device" && presetId=="honor/forge-6-head-0.4")) {
         // The generated material is a one-slot profile; preserve a usable source
         // color for this slot, while scene/sourceColors remains the original set.
         const auto source=project.metadata.value("sourceColors",Json::array());
@@ -634,6 +634,15 @@ void apply_preset(LoadedProject& project,const std::string& kind,const std::stri
         int physical=1;
         if(kind=="material") if(const auto* maps=project.config.option<ConfigOptionInts>("filament_map"); maps && !maps->values.empty()) physical=maps->values.front();
         project.config.set_key_value("filament_map",new ConfigOptionInts({physical}));
+    }
+    if(kind=="device" && presetId=="honor/forge-6-head-0.4") {
+        // The preset describes six tools, not six known loaded spool colors.
+        // Keep the source display color as an unconfirmed placeholder; the
+        // manufacturing helper requires explicit per-slot actual bindings.
+        const auto source=project.metadata.value("sourceColors",Json::array());
+        const std::string display=source.empty()?"#FFFFFF":source.front().get<std::string>();
+        project.config.set_key_value("filament_colour",new ConfigOptionStrings(std::vector<std::string>(6,display)));
+        project.metadata["actualFilamentLoadingVerified"]=false;
     }
     // Retain user consent across a profile reset, but never manufacture it.
     if(project.metadata.value("outputMode",std::string())=="singleMaterial") project.config.set("enable_prime_tower",false,true);

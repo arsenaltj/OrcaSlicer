@@ -4,8 +4,8 @@ const path = require('node:path');
 const cp = require('node:child_process');
 const crypto = require('node:crypto');
 const root = path.resolve(__dirname, '..');
-const build = path.join(__dirname, 'build-android-arm64');
-const evidence = process.env.ORCA_SLICING_EVIDENCE || path.resolve(root, '..', '..', '..', 'artifacts', 'task-20261020172216196-253d95', 'evidence', 'native-v2');
+const build = process.env.ORCA_SLICING_BUILD_DIR ? path.resolve(process.env.ORCA_SLICING_BUILD_DIR) : path.join(__dirname, 'build-android-arm64');
+const evidence = process.env.ORCA_SLICING_EVIDENCE || path.join(root, '.tmp', 'slicing-build-evidence');
 fs.mkdirSync(evidence, { recursive: true });
 const cmake = process.env.CMAKE || 'cmake';
 const ninja = process.env.NINJA || 'C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe';
@@ -20,7 +20,11 @@ function run(args) {
  if(r.status!==0) throw new Error('CMake failed ('+r.status+'); see '+log);
 }
 if(!process.argv.includes('--verify-only')) {
- run(['-S',path.join(root,'mobile-slicing'),'-B',build,'-G','Ninja','-DCMAKE_MAKE_PROGRAM='+ninja,'-DCMAKE_TOOLCHAIN_FILE='+path.join(ndk,'build/cmake/android.toolchain.cmake'),'-DANDROID_ABI=arm64-v8a','-DANDROID_PLATFORM=android-24','-DANDROID_STL=c++_static','-DCMAKE_BUILD_TYPE=Release']);
+ const runtime=process.env.ORCA_SLICING_TBB_RUNTIME;
+ if(!runtime||!path.isAbsolute(runtime))throw new Error('Set explicit absolute ORCA_SLICING_TBB_RUNTIME to the qualified Model/Slicing runtime');
+ const extra=JSON.parse(process.env.ORCA_SLICING_CONFIGURE_ARGS||'[]');
+ if(!Array.isArray(extra)||extra.some(arg=>typeof arg!=='string'))throw new Error('ORCA_SLICING_CONFIGURE_ARGS must be an array of exact CMake arguments');
+ run(['-S',path.join(root,'mobile-slicing'),'-B',build,'-G','Ninja','-DCMAKE_MAKE_PROGRAM='+ninja,'-DCMAKE_TOOLCHAIN_FILE='+path.join(ndk,'build/cmake/android.toolchain.cmake'),'-DANDROID_ABI=arm64-v8a','-DANDROID_PLATFORM=android-24','-DANDROID_STL=c++_static','-DCMAKE_BUILD_TYPE=Release','-DORCA_MOBILE_ANDROID_TBB_RUNTIME='+runtime,...extra]);
  run(['--build',build,'--target','orca_mobile_slicing_sdk','orca_mobile_stl_gate','orca_mobile_slicing_json_gate','-j2']);
 }
 const library=path.join(build,'liborca_mobile_slicing_sdk_c.so');
@@ -61,7 +65,11 @@ while(queue.length){
   const dependency=sharedFiles.get(name);if(!dependency)throw new Error('Missing runtime dependency '+name);
   seen.add(name);queue.push(dependency);
   const destination=path.join(packageDir,name);
-  cp.execFileSync(strip,['--strip-unneeded',dependency,'-o',destination],{windowsHide:true});
+  if(name==='libtbb.so') {
+   const approved=JSON.parse(fs.readFileSync(path.join(root,'src/orca_model_sdk/repair_core/approved_tbb.json'),'utf8'));
+   if(sha(fs.readFileSync(dependency))!==approved.runtime.sha256)throw new Error('Qualified shared TBB runtime changed');
+   fs.copyFileSync(dependency,destination);
+  } else cp.execFileSync(strip,['--strip-unneeded',dependency,'-o',destination],{windowsHide:true});
   const data=fs.readFileSync(destination);const po=Number(data.readBigUInt64LE(32)),ps=data.readUInt16LE(54),pn=data.readUInt16LE(56);
   for(let i=0;i<pn;i++){const at=po+i*ps;if(data.readUInt32LE(at)===1&&(data.readBigUInt64LE(at+48)<16384n||data.readBigUInt64LE(at+8)%16384n!==data.readBigUInt64LE(at+16)%16384n))throw new Error('Dependency fails 16KiB alignment: '+name);}
   dependencies.push({name,source:dependency,path:destination,size:data.length,sha256:sha(data)});

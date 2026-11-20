@@ -99,6 +99,20 @@ def generate():
             'requiresConfirmation': True, 'resetScopes': ['device','material','process'],
             'config': apex_config, 'sourceRefs': list({r['path']: r for r in apex_refs}.values()),
             'schemaSourceRef': digest(schema), 'unsupportedSourceOptions': apex_unsupported}
+    wonder_config, wonder_refs = apex_parts[2]
+    wonder_supported = {key: value for key, value in wonder_config.items() if key in known_keys}
+    materials.append({'id': 'wondermaker/pla-basic', 'name': 'WonderMaker PLA Basic',
+                      'summary': 'Repository WonderMaker PLA Basic; actual per-slot loading requires confirmation.',
+                      'config': wonder_supported, 'sourceRefs': wonder_refs,
+                      'schemaSourceRef': digest(schema),
+                      'unsupportedSourceOptions': {key: value for key, value in wonder_config.items() if key not in known_keys}})
+    for material in materials:
+        # Immutable native preset identity, independent of the catalog envelope
+        # version. Clients must not substitute a family for a registered preset.
+        material['family'] = material['config']['filament_type'][0]
+        identity = {key: material[key] for key in ('config', 'sourceRefs', 'schemaSourceRef')}
+        material['presetVersion'] = hashlib.sha256(json.dumps(
+            identity, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
     catalog = {'version': 'p1-offline-v1',
                'devices': [{'id': 'source/current', 'name': 'Source / current project',
                             'summary': 'Restore the original embedded machine, material and process profile.', 'restoreSource': True, 'available': False, 'reason': 'Refresh this project to capture the original source profile before restoring it.'}, device, apex],
