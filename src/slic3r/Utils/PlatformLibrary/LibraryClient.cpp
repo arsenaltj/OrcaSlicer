@@ -1,5 +1,6 @@
 #include "LibraryClient.hpp"
 #include "slic3r/Utils/HonorAccount/HonorOAuth.hpp"
+#include "slic3r/Utils/HonorAccount/HonorClient.hpp"
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <curl/curl.h>
@@ -139,7 +140,11 @@ Binary transfer(const Identity& identity,const std::string& path,const std::stri
     curl_easy_setopt(curl.get(),CURLOPT_NOPROGRESS,0L); curl_easy_setopt(curl.get(),CURLOPT_XFERINFOFUNCTION,progress);
     curl_easy_setopt(curl.get(),CURLOPT_XFERINFODATA,&r);
     curl_slist* list=nullptr; list=curl_slist_append(list,"Content-Type: application/json");
-    if(!identity.bearer.empty()) list=curl_slist_append(list,("Authorization: Bearer "+identity.bearer).c_str());
+    if(!identity.bearer.empty()) {
+        list=curl_slist_append(list,("Authorization: Bearer "+identity.bearer).c_str());
+        for (const auto& [name, value] : HonorAccount::desktop_client_headers())
+            if (auto* added = curl_slist_append(list, (name + ": " + value).c_str())) list = added;
+    }
     std::unique_ptr<curl_slist,decltype(&curl_slist_free_all)> headers(list,curl_slist_free_all);
     curl_easy_setopt(curl.get(),CURLOPT_HTTPHEADER,list);
     if(method!="GET") {curl_easy_setopt(curl.get(),CURLOPT_CUSTOMREQUEST,method.c_str());

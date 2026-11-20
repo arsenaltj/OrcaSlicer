@@ -599,8 +599,8 @@ std::string serialize_session(const PlatformSession& session)
                  {"avatarCustomized", session.identity.avatar_customized},
                  {"status", session.identity.status},
                  {"roles", session.identity.roles}};
-    return Json{{"version", 2},
-                {"kind", "mobile"},
+    return Json{{"version", 3},
+                {"kind", "desktop"},
                 {"session_id", session.session_id},
                 {"access_token", session.access_token},
                 {"refresh_token", session.refresh_token},
@@ -616,8 +616,8 @@ PlatformSession parse_session(const std::string& value)
         const auto json = Json::parse(value);
         if (!exact_keys(json, {"version", "kind", "session_id", "access_token", "refresh_token",
                                "access_expires_at", "refresh_expires_at", "account"}) ||
-            !json["version"].is_number_integer() || json["version"] != 2 ||
-            !json["kind"].is_string() || json["kind"] != "mobile" ||
+            !json["version"].is_number_integer() || json["version"] != 3 ||
+            !json["kind"].is_string() || json["kind"] != "desktop" ||
             !json["session_id"].is_string() || !json["access_token"].is_string() ||
             !json["refresh_token"].is_string() || !json["access_expires_at"].is_number_integer() ||
             !json["refresh_expires_at"].is_number_integer())
@@ -644,14 +644,14 @@ PlatformSession parse_session(const std::string& value)
 
 std::string serialize_refresh_tombstone()
 {
-    return Json{{"version", 2}, {"refresh_pending", true}}.dump();
+    return Json{{"version", 3}, {"refresh_pending", true}}.dump();
 }
 
 bool is_refresh_tombstone(const std::string& value)
 {
     const auto json = Json::parse(value, nullptr, false);
     return exact_keys(json, {"version", "refresh_pending"}) &&
-           json["version"].is_number_integer() && json["version"] == 2 &&
+           json["version"].is_number_integer() && (json["version"] == 2 || json["version"] == 3) &&
            json["refresh_pending"].is_boolean() && json["refresh_pending"] == true;
 }
 
@@ -662,7 +662,7 @@ PlatformSession parse_session_response(const std::string& value)
         if (!exact_keys(json, {"account", "sessionId", "kind", "accessToken", "refreshToken",
                                "accessExpiresAt", "refreshExpiresAt"}) ||
             !json["sessionId"].is_string() || !json["kind"].is_string() ||
-            json["kind"] != "mobile" || !json["accessToken"].is_string() ||
+            json["kind"] != "desktop" || !json["accessToken"].is_string() ||
             !json["refreshToken"].is_string() || !json["accessExpiresAt"].is_string() ||
             !json["refreshExpiresAt"].is_string())
             protocol("平台会话响应不完整，请重新登录");

@@ -16,7 +16,10 @@
 #include <thread>
 
 #include <nlohmann/json.hpp>
+#include <future>
 #include <vector>
+
+#include "PrinterFilamentComparison.hpp"
 
 namespace Slic3r { class ICloudServiceAgent; }
 
@@ -72,6 +75,7 @@ public:
     // Pull-mode agent (on-demand filament sync)
     FilamentSyncMode get_filament_sync_mode() const override { return FilamentSyncMode::pull; }
     bool fetch_filament_info(std::string dev_id, FilamentSyncMode sync_mode = FilamentSyncMode::pull) override;
+    std::future<DeviceTransferFilaments> read_transfer_filaments(const std::string& dev_id);
     CameraStreamMode get_camera_stream_mode() const override;
     std::string get_camera_url() const override;
 

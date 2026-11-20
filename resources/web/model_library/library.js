@@ -19,6 +19,8 @@
       local: [],
       images: new Map(),
       cardImages: new Map(),
+      accountAvatars: new Map(),
+      avatarData: "",
       accountTag: "",
       taxonomy: [],
       signedIn: false,
@@ -53,6 +55,23 @@
     if (cls) n.className = cls;
     if (text !== undefined) n.textContent = String(text);
     return n;
+  }
+  function displayAvatar(node, data, fallback) {
+    if (!window.libraryState.safeImage(data)) {
+      node.textContent = fallback;
+      return;
+    }
+    const image = el("img");
+    image.src = data;
+    image.alt = "";
+    node.replaceChildren(image);
+  }
+  function updateAccountAvatar(data) {
+    const png = typeof data === "string" && data.length <= 65536 &&
+      data.startsWith("data:image/png;base64,") && window.libraryState.safeImage(data) ? data : "";
+    if (png === state.avatarData) return;
+    state.avatarData = png;
+    for (const [node, fallback] of state.accountAvatars) displayAvatar(node, png, fallback);
   }
   function send(command, rest = {}) {
     if (!state.nonce || !window.wx?.postMessage || (command !== "ready" && !state.connected)) {
@@ -160,50 +179,22 @@
   function menu(item, anchor) {
     const host = $("menu");
     host.replaceChildren();
-    const add = (label, fn, disabled = false) => {
+    const add = (label, fn) => {
       const b = el("button", "", label);
       b.setAttribute("role", "menuitem");
-      b.disabled = disabled;
       b.onclick = () => {
         host.hidden = true;
         fn();
       };
       host.append(b);
     };
-    if (item?.local) {
-      add(item.designOnly ? "打开设计图" : "打开模型", () =>
-        localAction(item, "open"),
-      );
-      if (!item.designOnly) {
+    if (item.local) {
+      add(item.designOnly ? "打开设计图" : "打开模型", () => open(item));
+      if (!item.designOnly && item.canDirectImport === true)
         add("导入切片", () => localAction(item, "import"));
-        if (window.libraryState.workbench(item.extension)) {
-          add("配色匹配", () => localAction(item, "colors"));
-          add("更换贴图", () => localAction(item, "retexture"));
-        }
-      }
-      add("导出副本", () => localAction(item, "export"));
-      if (item.imported)
-        add("记录实际打印结果", () => localAction(item, "print"));
-      add("删除本地", () => localAction(item, "remove"));
-    } else if (item) {
+    } else {
       add("模型详情", () => open(item));
-      for (const asset of item.linkedLocals || []) {
-        const suffix =
-          item.linkedLocals.length > 1
-            ? "（" + asset.extension.slice(1).toUpperCase() + "）"
-            : "";
-        add("打开本地模型" + suffix, () => localAction(asset, "open"));
-        add("导入切片" + suffix, () => localAction(asset, "import"));
-      }
     }
-    add("导入本地模型", () => send("chooseLocal"));
-    add("打开模型文件夹", () => send("storage"));
-    add(
-      "保存当前工程（3MF）",
-      () => send("saveProject"),
-      !state.projectAvailable,
-    );
-    add("刷新", () => send("refresh"));
     host.hidden = false;
     const rect = anchor.getBoundingClientRect();
     host.style.left =
@@ -256,6 +247,7 @@
       grid = $("grid");
     grid.replaceChildren();
     state.cardImages.clear();
+    state.accountAvatars.clear();
     for (const item of items) {
       const card = el("article", "card"),
         cover = el("button", "cover");
@@ -317,16 +309,12 @@
       const authorName = item.local
         ? "本地资产"
         : item.author?.displayName || "作者";
-      author.append(
-        el("span", "avatar", authorName.slice(0, 1)),
-        document.createTextNode(authorName),
-      );
-      if (window.libraryState.safeImage(item.author?.avatarUrl)) {
-        const image = el("img");
-        image.src = item.author.avatarUrl;
-        image.alt = "";
-        author.querySelector(".avatar").replaceChildren(image);
-      }
+      const avatar = el("span", "avatar");
+      const useAccountAvatar = item.local || (state.scope === "mine" && item.owned === true);
+      const fallback = authorName.slice(0, 1);
+      if (useAccountAvatar) state.accountAvatars.set(avatar, fallback);
+      displayAvatar(avatar, useAccountAvatar ? state.avatarData : item.author?.avatarUrl, fallback);
+      author.append(avatar, document.createTextNode(authorName));
       footer.append(author);
       if (!item.local)
         footer.append(
@@ -455,6 +443,7 @@
         state.documentGeneration = message.documentGeneration;
         state.accountGeneration = state.requestGeneration = 0;
         state.connected = false;
+        updateAccountAvatar("");
       }
       filters();
       send("ready");
@@ -468,11 +457,14 @@
     switch (message.type) {
       case "account": {
         const changed = state.accountTag !== message.accountTag || state.accountGeneration !== message.accountGeneration;
+        const redraw = changed || !state.connected || state.signedIn !== message.signedIn ||
+          state.projectAvailable !== message.projectAvailable;
         state.accountTag = message.accountTag;
         state.accountGeneration = message.accountGeneration;
         state.connected = true;
         state.signedIn = message.signedIn;
         state.projectAvailable = message.projectAvailable;
+        updateAccountAvatar(message.avatarData);
         if (changed) {
           busy(false);
           state.cloud = [];
@@ -489,7 +481,7 @@
           $("listing").hidden = false;
           notice("");
         }
-        render();
+        if (redraw) render();
         break;
       }
       case "inactive":
@@ -505,6 +497,7 @@
         filters();
         break;
       case "local":
+        $("menu").hidden = true;
         state.local = message.items;
         state.revision = message.revision;
         render();

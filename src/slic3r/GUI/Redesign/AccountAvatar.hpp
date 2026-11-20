@@ -1,32 +1,23 @@
 #pragma once
 
-#include "../../Utils/HonorAccount/HonorOAuth.hpp"
+#include "../../Utils/HonorAccount/HonorClient.hpp"
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
+#include <string_view>
+#include <wx/base64.h>
 #include <wx/file.h>
-#include <wx/filename.h>
 #include <wx/image.h>
 #include <wx/log.h>
 #include <wx/mstream.h>
-#ifdef __WXMSW__
-#include <wx/msw/wrapwin.h>
-#endif
 
 namespace Slic3r::GUI::AccountAvatar {
 
 constexpr size_t max_bytes = 10 * 1024 * 1024;
 constexpr int max_edge = 4096;
-constexpr int stored_edge = 256;
-
-// No raw account identifiers or original image paths in filenames/settings.
-inline wxString account_path(const wxString& data, const std::string& subject)
-{
-    if (data.empty() || subject.empty()) return {};
-    const auto key = HonorAccount::digest("orca-platform-account-avatar-v2\n" + subject);
-    return data + "/honor-avatars/" + wxString::FromUTF8(key) + ".png";
-}
+constexpr int stored_edge = 96;
+constexpr size_t max_data_url = 65536;
+constexpr std::string_view png_prefix = "data:image/png;base64,";
 
 // Check dimensions before decoding, so a small compressed file cannot allocate
 // an unbounded raster. Decode the same bounded bytes (not a reopened source).
@@ -67,15 +58,10 @@ inline wxSize encoded_size(const std::string& bytes, wxBitmapType& type)
     return {};
 }
 
-inline wxImage read(const wxString& path)
+inline wxImage decode(const std::string& bytes)
 {
-    wxLogNull quiet; // Decoder messages can contain private source paths.
-    wxFile input(path, wxFile::read);
-    if (!input.IsOpened()) return {};
-    const auto length = input.Length();
-    if (length <= 0 || length > wxFileOffset(max_bytes)) return {};
-    std::string bytes(size_t(length), '\0');
-    if (input.Read(bytes.data(), bytes.size()) != wxFileOffset(bytes.size())) return {};
+    wxLogNull quiet;
+    if (bytes.empty() || bytes.size() > max_bytes) return {};
     wxBitmapType type = wxBITMAP_TYPE_INVALID;
     const auto size = encoded_size(bytes, type);
     if (size.x <= 0 || size.y <= 0) return {};
@@ -83,6 +69,43 @@ inline wxImage read(const wxString& path)
     wxImage image(stream, type);
     if (!image.IsOk() || image.GetSize() != size) return {};
     return image;
+}
+
+inline wxImage read(const wxString& path)
+{
+    if (path.empty()) return {};
+    wxLogNull quiet;
+    wxFile input(path, wxFile::read);
+    if (!input.IsOpened()) return {};
+    const auto length = input.Length();
+    if (length <= 0 || length > wxFileOffset(max_bytes)) return {};
+    std::string bytes(size_t(length), '\0');
+    if (input.Read(bytes.data(), bytes.size()) != wxFileOffset(bytes.size())) return {};
+    return decode(bytes);
+}
+
+inline wxImage fetch(const std::string& url, HonorAccount::Cancellation cancel,
+                     const HonorAccount::Transport& transport = HonorAccount::https_request)
+{
+    if (cancel && cancel->load()) return {};
+    if (url.compare(0, png_prefix.size(), png_prefix) == 0 && url.size() <= max_data_url) {
+        const auto bytes = wxBase64Decode(url.data() + png_prefix.size(), url.size() - png_prefix.size());
+        if (!bytes.GetDataLen()) return {};
+        const std::string encoded(static_cast<const char*>(bytes.GetData()), bytes.GetDataLen());
+        if (encoded.compare(0, 8, "\x89PNG\r\n\x1a\n") != 0) return {};
+        return decode(encoded);
+    }
+    if (!HonorAccount::valid_authorization_url(url)) return {};
+    try {
+        HonorAccount::Request request;
+        request.url = url;
+        request.accept = "image/png, image/jpeg";
+        request.response_limit = max_bytes;
+        const auto response = transport(request, cancel);
+        if (response.status == 200 && (!cancel || !cancel->load())) return decode(response.body);
+    } catch (const HonorAccount::Error&) {
+    }
+    return {};
 }
 
 inline wxImage square(const wxImage& source)
@@ -123,43 +146,17 @@ inline wxImage circle(const wxImage& source, int edge)
     return result;
 }
 
-// Use a sibling temporary and a single replace. No truncate-in-place fallback:
-// failing to save must leave the previous avatar intact.
-inline bool replace(const wxString& from, const wxString& to)
+inline std::string png_data(const wxImage& image)
 {
-#ifdef __WXMSW__
-    return ::MoveFileExW(from.wc_str(), to.wc_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-#else
-    return ::rename(from.utf8_str(), to.utf8_str()) == 0;
-#endif
-}
-
-inline bool save(const wxString& path, const wxImage& image)
-{
-    if (path.empty() || !image.IsOk() || image.GetSize() != wxSize(stored_edge, stored_edge)) return false;
+    if (!image.IsOk() || image.GetSize() != wxSize(stored_edge, stored_edge)) return {};
     wxLogNull quiet;
-    const auto parent = wxFileName(path).GetPath();
-    if (!wxFileName::DirExists(parent) && !wxFileName::Mkdir(parent, wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL)) return false;
-    wxFile temporary;
-    const auto name = wxFileName::CreateTempFileName(path + ".", &temporary);
-    if (name.empty()) return false;
     wxMemoryOutputStream encoded;
-    bool ok = image.SaveFile(encoded, wxBITMAP_TYPE_PNG);
-    if (ok) {
-        std::string bytes(encoded.GetSize(), '\0'); encoded.CopyTo(bytes.data(), bytes.size());
-        ok = temporary.Write(bytes.data(), bytes.size()) == bytes.size() && temporary.Flush();
-    }
-    const bool closed = temporary.Close();
-    ok = ok && closed && replace(name, path);
-    if (!ok) wxRemoveFile(name);
-    return ok;
-}
-
-inline bool reset(const wxString& path)
-{
-    if (path.empty()) return false;
-    wxLogNull quiet;
-    return !wxFileExists(path) || wxRemoveFile(path);
+    if (!image.SaveFile(encoded, wxBITMAP_TYPE_PNG)) return {};
+    std::string bytes(encoded.GetSize(), '\0');
+    encoded.CopyTo(bytes.data(), bytes.size());
+    const auto base64 = wxBase64Encode(bytes.data(), bytes.size());
+    if (base64.empty() || base64.size() + png_prefix.size() > max_data_url) return {};
+    return std::string(png_prefix) + std::string(base64.utf8_string());
 }
 
 } // namespace Slic3r::GUI::AccountAvatar

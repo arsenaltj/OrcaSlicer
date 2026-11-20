@@ -196,8 +196,6 @@ struct PrinterWorkspaceSnapshot
     bool has_camera { false };
     bool can_record { false };
     bool recording { false };
-    bool can_level { false };
-    bool bed_leveling { true };
     bool can_detect { false };
     bool detection_enabled { false };
     bool device_warning { false };

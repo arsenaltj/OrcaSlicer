@@ -3678,6 +3678,7 @@ bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
         m_page_coordinator.transition().rollback(*transition);
         return false;
     }
+    if (native_workspace_visible()) refresh_print_preparation_action();
     ++m_creation_navigation_epoch;
     if (m_model_generation_host)
         m_model_generation_host->set_workbench_presented(page == Page::Model &&

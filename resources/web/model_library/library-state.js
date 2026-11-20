@@ -22,15 +22,15 @@
     const remote = cloud.map((x) => ({ ...x, key: x.id + ":" + x.versionId }));
     const linked = new Set();
     for (const item of remote) {
-      item.linkedLocals = local.filter(
+      const linkedLocals = local.filter(
         (x) =>
           x.sourceVerified &&
           x.modelId === item.id &&
           x.versionId === item.versionId &&
           /^[0-9a-f]{64}$/.test(x.sha256 || ""),
       );
-      item.linkedLocal = item.linkedLocals[0];
-      for (const record of item.linkedLocals) linked.add(record.key);
+      item.linkedLocal = linkedLocals[0];
+      for (const record of linkedLocals) linked.add(record.key);
     }
     const values = [...locals.filter((x) => !linked.has(x.key)), ...remote];
     if (
@@ -75,9 +75,6 @@
   }
   function supported(filename) {
     return /\.(glb|obj|3mf|stl|step|stp)$/i.test(filename);
-  }
-  function workbench(filename) {
-    return /\.(glb|obj)$/i.test(filename);
   }
   function statusLabel(item) {
     if (!item.owned) return "";
@@ -189,7 +186,6 @@
     retainLocalImages,
     safeImage,
     supported,
-    workbench,
     statusLabel,
     accessibleVersions,
     GeometryTransfer,

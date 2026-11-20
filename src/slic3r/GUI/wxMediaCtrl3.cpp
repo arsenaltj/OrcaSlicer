@@ -9,6 +9,7 @@
 #include <chrono>
 #include <thread>
 #include <wx/dcclient.h>
+#include <wx/dcbuffer.h>
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
@@ -51,6 +52,7 @@ wxMediaCtrl3::wxMediaCtrl3(wxWindow *parent)
     , m_thread([this] { PlayThread(); })
 {
     SetBackgroundColour("#000001ff");
+    SetBackgroundStyle(wxBG_STYLE_PAINT);
 }
 
 wxMediaCtrl3::~wxMediaCtrl3()
@@ -72,6 +74,7 @@ void wxMediaCtrl3::Load(wxURI url)
     if (m_external)
         return;
     m_video_size = wxDefaultSize;
+    m_state = wxMEDIASTATE_STOPPED;
     m_frame_is_video = false;
     m_error = 0;
     m_url.reset(new wxURI(url));
@@ -100,7 +103,17 @@ void wxMediaCtrl3::Stop()
     m_frame_is_video = false;
     NotifyStopped();
     m_cond.notify_all();
-    Refresh();
+    QueueRefresh();
+}
+
+void wxMediaCtrl3::QueueRefresh()
+{
+    if (!m_refresh_pending.exchange(true)) {
+        CallAfter([this] {
+            m_refresh_pending.store(false);
+            Refresh(false);
+        });
+    }
 }
 
 void wxMediaCtrl3::SetExternalFrame(const wxImage& frame, wxSize videoSize)
@@ -112,10 +125,12 @@ void wxMediaCtrl3::SetExternalFrame(const wxImage& frame, wxSize videoSize)
         if (!m_external)
             return;
         m_frame = frame;
+        m_frame_is_video = true;
+        m_state = wxMEDIASTATE_PLAYING;
         m_video_size = videoSize.IsFullySpecified() ? videoSize : frame.GetSize();
         adjust_frame_size(m_frame_size, m_video_size, GetSize());
     }
-    CallAfter([this] { Refresh(); });
+    QueueRefresh();
 }
 
 #ifdef _WIN32
@@ -128,10 +143,12 @@ void wxMediaCtrl3::SetExternalFrame(const wxBitmap& frame, wxSize videoSize)
         if (!m_external)
             return;
         m_frame = frame;
+        m_frame_is_video = true;
+        m_state = wxMEDIASTATE_PLAYING;
         m_video_size = videoSize.IsFullySpecified() ? videoSize : frame.GetSize();
         adjust_frame_size(m_frame_size, m_video_size, GetSize());
     }
-    CallAfter([this] { Refresh(); });
+    QueueRefresh();
 }
 #endif
 
@@ -142,6 +159,8 @@ void wxMediaCtrl3::BeginExternalStream()
     m_url.reset();
     m_active_url.reset();
     m_video_size = wxDefaultSize;
+    m_state = wxMEDIASTATE_STOPPED;
+    m_frame_is_video = false;
     m_frame = wxImage(m_idle_image);
     m_cond.notify_all();
     Refresh();
@@ -154,6 +173,8 @@ void wxMediaCtrl3::EndExternalStream()
     m_url.reset();
     m_active_url.reset();
     m_video_size = wxDefaultSize;
+    m_state = wxMEDIASTATE_STOPPED;
+    m_frame_is_video = false;
     m_frame = wxImage(m_idle_image);
     m_cond.notify_all();
     Refresh();
@@ -218,7 +239,9 @@ static void adjust_frame_size(wxSize & frame, wxSize const & video, wxSize const
 
 void wxMediaCtrl3::paintEvent(wxPaintEvent &evt)
 {
-    wxPaintDC dc(this);
+    wxAutoBufferedPaintDC dc(this);
+    dc.SetBackground(wxBrush(GetBackgroundColour()));
+    dc.Clear();
     auto      size = GetSize();
     if (size.x <= 0 || size.y <= 0)
         return;
@@ -339,11 +362,14 @@ int wxMediaCtrl3::ffmpeg_interrupt_callback(void *opaque)
 {
     auto *ctrl = static_cast<wxMediaCtrl3 *>(opaque);
     std::lock_guard<std::mutex> lock(ctrl->m_mutex);
-    return ctrl->m_url != ctrl->m_active_url;
+    return ctrl->m_url != ctrl->m_active_url || std::chrono::steady_clock::now() >= ctrl->m_io_deadline;
 }
 
 int wxMediaCtrl3::PlayFfmpeg(std::shared_ptr<wxURI> const &url, std::unique_lock<std::mutex> &lock)
 {
+    using Clock = std::chrono::steady_clock;
+    using namespace std::chrono_literals;
+
     static std::once_flag logger_once;
     std::call_once(logger_once, install_ffmpeg_logger);
 
@@ -357,8 +383,6 @@ int wxMediaCtrl3::PlayFfmpeg(std::shared_ptr<wxURI> const &url, std::unique_lock
     }
 
     format_context->interrupt_callback = {&wxMediaCtrl3::ffmpeg_interrupt_callback, this};
-    format_context->flags |= AVFMT_FLAG_NOBUFFER;
-    format_context->max_delay = 0;
     m_active_url = url;
 
     auto finish = [&](int error) {
@@ -374,37 +398,33 @@ int wxMediaCtrl3::PlayFfmpeg(std::shared_ptr<wxURI> const &url, std::unique_lock
     const wxString scheme = url->GetScheme();
     const bool http_stream = scheme.CmpNoCase("http") == 0 || scheme.CmpNoCase("https") == 0;
     AVDictionary *options = nullptr;
+    av_dict_set(&options, "rw_timeout", "5000000", 0);
+    av_dict_set(&options, "timeout", "5000000", 0);
+    av_dict_set(&options, "tls_verify", "1", 0);
+    av_dict_set(&options, "protocol_whitelist", "http,https,tcp,tls,rtp,udp", 0);
     if (http_stream) {
-        // Live multipart MJPEG. fflags=nobuffer / AVFMT_FLAG_NOBUFFER / max_delay=0
-        // (set above) are the low-latency levers - they disable the demuxer
-        // read-ahead queue. probesize / analyzeduration only bound the one-off
-        // avformat_find_stream_info() at open; a 32-byte budget returned before a
-        // whole JPEG frame was seen, so width/height came back unset and the open
-        // was rejected. Give it room to identify one frame (a startup cost only).
-        // rw_timeout / timeout bound a wedged connect or read so a stale stream
-        // fails fast and is retried, instead of the reader thread hanging.
-        // avioflags=direct is deliberately NOT set: unbuffered reads make the
-        // mpjpeg demuxer emit "Packet corrupt" and bail on any short read across
-        // a multipart boundary.
-        av_dict_set(&options, "fflags", "nobuffer", 0);
         av_dict_set(&options, "probesize", "5000000", 0);
         av_dict_set(&options, "analyzeduration", "1000000", 0);
-        av_dict_set(&options, "rw_timeout", "5000000", 0);
-        av_dict_set(&options, "timeout", "5000000", 0);
     } else {
-        av_dict_set(&options, "rtsp_transport", "tcp", 0);
+        av_dict_set(&options, "rtsp_transport", "udp+tcp", 0);
+        av_dict_set(&options, "rtsp_flags", "prefer_tcp", 0);
     }
+    m_io_deadline = Clock::now() + 12s;
     lock.unlock();
     int error = avformat_open_input(&format_context, uri.c_str(), nullptr, &options);
     av_dict_free(&options);
     lock.lock();
-    if (error < 0)
+    if (error < 0 || m_url != url)
         return finish(2);
 
+    const bool segmented_stream = std::strcmp(format_context->iformat->name, "hls") == 0;
+    if (std::strcmp(format_context->iformat->name, "mpjpeg") == 0)
+        format_context->flags |= AVFMT_FLAG_NOBUFFER;
+    m_io_deadline = Clock::now() + 12s;
     lock.unlock();
     error = avformat_find_stream_info(format_context, nullptr);
     lock.lock();
-    if (error < 0)
+    if (error < 0 || m_url != url)
         return finish(2);
 
     const int video_stream = av_find_best_stream(format_context, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
@@ -424,7 +444,6 @@ int wxMediaCtrl3::PlayFfmpeg(std::shared_ptr<wxURI> const &url, std::unique_lock
             return false;
         m_video_size = size;
         adjust_frame_size(m_frame_size, m_video_size, GetSize());
-        NotifyStopped();
         return true;
     };
     bool have_size = apply_video_size({format_context->streams[video_stream]->codecpar->width,
@@ -435,7 +454,11 @@ int wxMediaCtrl3::PlayFfmpeg(std::shared_ptr<wxURI> const &url, std::unique_lock
     if (!packet)
         return finish(2);
 
+    Clock::time_point playback_start;
+    std::int64_t start_timestamp = AV_NOPTS_VALUE;
+    const auto time_base = format_context->streams[video_stream]->time_base;
     while (m_url == url) {
+        m_io_deadline = Clock::now() + 12s;
         lock.unlock();
         error = av_read_frame(format_context, packet);
         lock.lock();
@@ -444,7 +467,11 @@ int wxMediaCtrl3::PlayFfmpeg(std::shared_ptr<wxURI> const &url, std::unique_lock
         if (error < 0)
             break;
         if (packet->stream_index == video_stream) {
+            lock.unlock();
             const int decode_error = decoder.decode(*packet);
+            lock.lock();
+            if (m_url != url)
+                break;
             if (decode_error == 0) {
                 if (!have_size) {
                     have_size = apply_video_size(decoder.decoded_frame_size());
@@ -470,14 +497,32 @@ int wxMediaCtrl3::PlayFfmpeg(std::shared_ptr<wxURI> const &url, std::unique_lock
                 lock.lock();
                 if (m_url != url)
                     break;
-                if (frame.IsOk())
-                    m_frame = frame;
-                if (!m_refresh_pending.exchange(true)) {
-                    CallAfter([this] {
-                        m_refresh_pending.store(false);
-                        Refresh();
-                    });
+                if (!frame.IsOk()) {
+                    av_packet_unref(packet);
+                    continue;
                 }
+                if (segmented_stream && decoder.frame_timestamp() != AV_NOPTS_VALUE) {
+                    const auto timestamp = av_rescale_q(decoder.frame_timestamp(), time_base, AVRational{1, 1000});
+                    const auto now = Clock::now();
+                    auto due = start_timestamp == AV_NOPTS_VALUE ? now : playback_start + std::chrono::milliseconds(timestamp - start_timestamp);
+                    if (start_timestamp == AV_NOPTS_VALUE || due < now - 1s || due > now + 3s) {
+                        start_timestamp = timestamp;
+                        playback_start = due = now;
+                    }
+                    if (m_cond.wait_until(lock, due, [this, &url] { return m_url != url; }))
+                        break;
+                }
+                m_frame = frame;
+                if (!m_frame_is_video) {
+                    m_frame_is_video = true;
+                    m_state = wxMEDIASTATE_PLAYING;
+                    BOOST_LOG_TRIVIAL(info) << "[PrinterCamera] first_stream_frame width=" << m_video_size.GetWidth()
+                                           << " height=" << m_video_size.GetHeight();
+                    wxMediaEvent event(wxEVT_MEDIA_STATECHANGED, GetId());
+                    event.SetEventObject(this);
+                    wxPostEvent(this, event);
+                }
+                QueueRefresh();
             }
         }
         av_packet_unref(packet);
@@ -508,7 +553,7 @@ void wxMediaCtrl3::PlayThread()
         } else {
             lk.unlock();
             Bambu_Tunnel tunnel = nullptr;
-            error = Bambu_Create(&tunnel, m_url->BuildURI().ToUTF8());
+            error = Bambu_Create(&tunnel, url->BuildURI().ToUTF8());
             if (error == 0) {
                 Bambu_SetLogger(tunnel, &wxMediaCtrl3::bambu_log, this);
                 error = Bambu_Open(tunnel);
@@ -590,7 +635,7 @@ void wxMediaCtrl3::PlayThread()
                         m_frame = bm;
                         m_frame_is_video = true;
                     }
-                    CallAfter([this] { Refresh(); });
+                    QueueRefresh();
                 }
             }
             if (tunnel) {
@@ -601,8 +646,9 @@ void wxMediaCtrl3::PlayThread()
                 lk.lock();
             }
         }
-        if (m_url == url)
-            m_error = error;
+        if (m_url != url)
+            continue;
+        m_error = error;
         m_frame_size = wxDefaultSize;
         m_video_size = wxDefaultSize;
         NotifyStopped();

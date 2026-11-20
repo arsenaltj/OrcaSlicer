@@ -679,15 +679,21 @@ TEST_CASE("Moonraker webcam parsing prefers an enabled stream and resolves the w
 {
     const nlohmann::json response = {{"result", {{"webcams", nlohmann::json::array({
         {{"name", "disabled"}, {"enabled", false}, {"stream_url", "/ignored"}},
+        {{"name", "snapshot-only"}, {"snapshot_url", "/snapshot.jpg"}},
+        {{"name", "signalling"}, {"service", "webrtc-go2rtc"}, {"stream_url", "/webrtc"}},
         {{"name", "camera"}, {"enabled", true}, {"stream_url", "/webcam/?action=stream"},
          {"snapshot_url", "/webcam/?action=snapshot"}}
     })}}}};
     WebcamParsingAgent::MoonrakerWebcamInfo camera;
     REQUIRE(WebcamParsingAgent::parse_webcam_info(response, "http://10.80.218.120:7125", camera));
-    CHECK(camera.mode == CameraStreamMode::http_snapshot);
+    CHECK(camera.mode == CameraStreamMode::http);
     CHECK(camera.name == "camera");
     CHECK(camera.stream_url == "http://10.80.218.120/webcam/?action=stream");
     CHECK(camera.snapshot_url == "http://10.80.218.120/webcam/?action=snapshot");
+    const nlohmann::json secure_rtsp = nlohmann::json::array({{{"stream_url", "rtsps://camera.example/live"}}});
+    REQUIRE(WebcamParsingAgent::parse_webcam_info(secure_rtsp, "https://printer.example:7125", camera));
+    CHECK(camera.mode == CameraStreamMode::rtsp);
+    CHECK(camera.stream_url == "rtsps://camera.example/live");
 }
 
 TEST_CASE("Moonraker uploads use the project name instead of the temporary G-code path", "[MoonrakerPrinterAgent][Transfer]")

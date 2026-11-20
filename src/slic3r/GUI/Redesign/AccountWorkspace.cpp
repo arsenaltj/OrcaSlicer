@@ -92,8 +92,6 @@ AccountWorkspace::AccountWorkspace(wxWindow* parent,Changed changed,std::functio
     card->AddStretchSpacer(2);
     auto* brand=new wxStaticText(m_summary,wxID_ANY,"HONOR");style_text(brand,primary_text_colour(),28,true);
     card->Add(brand,0,wxALIGN_CENTER|wxBOTTOM,FromDIP(24));
-    m_default_avatar=AccountAvatar::read(text(Slic3r::resources_dir()+"/images/honor_account_avatar.png"));
-    m_guest_avatar=AccountAvatar::read(text(Slic3r::resources_dir()+"/images/account_guest_avatar.png"));
     // Match the accepted summary avatar's on-screen diameter. The former
     // wxStaticBitmap implicitly doubled its untagged bitmap on this Windows UI.
     m_avatar=action(m_summary,"",false,144);
@@ -168,7 +166,6 @@ AccountWorkspace::AccountWorkspace(wxWindow* parent,Changed changed,std::functio
 }
 AccountWorkspace::~AccountWorkspace()
 {
-    m_avatar_scope.cancel();
     m_view_refresh.stop();
     m_timer.Stop();
     m_account->unsubscribe(this); m_changed={};
@@ -178,7 +175,7 @@ void AccountWorkspace::render()
 {
     Presentation::assert_gui_thread();
     // Identity notifications are business results, independent of page visibility.
-    load_avatar();
+    update_avatar();
     if(m_changed)m_changed(m_session.snapshot(),m_avatar_bitmap);
     m_view_refresh.request(Presentation::Dirty::Content | Presentation::Dirty::Layout);
 }
@@ -197,10 +194,11 @@ void AccountWorkspace::commit_view()
     m_clear_login_row->Show(s.has_identity());
     if(!s.has_identity())m_clear_login->SetValue(false);
     m_logout->Show(s.has_identity());
-    m_avatar->Enable(s.has_identity());
+    const bool can_edit_avatar = m_session.access().has_value();
+    m_avatar->Enable(can_edit_avatar);
     m_avatar->SetName(text(s.has_identity()?"更换头像":"未登录头像"));
-    m_avatar->SetToolTip(text(s.has_identity()?"更换头像":"登录后可更换头像"));
-    m_avatar->SetCursor(wxCursor(s.has_identity()?wxCURSOR_HAND:wxCURSOR_ARROW));
+    m_avatar->SetToolTip(text(can_edit_avatar?"更换头像":s.has_identity()?"连接账号服务后可更换头像":"登录后可更换头像"));
+    m_avatar->SetCursor(wxCursor(can_edit_avatar?wxCURSOR_HAND:wxCURSOR_ARROW));
     const bool login_active=s.state==HA::State::Preparing||s.state==HA::State::Authorizing||s.state==HA::State::Exchanging;
     m_browser_status->SetLabel(text(m_browser&&m_browser_initializing?"正在打开荣耀登录页…":s.message));
     m_browser_status->Show(login_active&&!m_clear_only);m_cancel_login->Show(login_active&&!m_clear_only);
@@ -250,35 +248,23 @@ void AccountWorkspace::poll()
     if(m_browser && m_clear_only && !m_browser_initializing && !m_browser_reset) {close_browser();changed=true;}
     if(changed)render();
 }
-void AccountWorkspace::load_avatar()
+void AccountWorkspace::update_avatar()
 {
-    const auto& snapshot=m_session.snapshot();
-    const auto path=AccountAvatar::account_path(text(Slic3r::data_dir()),snapshot.identity.subject);
-    if(m_avatar_loaded&&path==m_avatar_path)return;
-    m_avatar_loaded=true;m_avatar_path=path;
-    m_avatar_image=path.empty()?m_guest_avatar:m_default_avatar;
-    m_avatar_bitmap=wxBitmap(AccountAvatar::circle(m_avatar_image,FromDIP(144)));
+    const auto revision = m_account->avatar_revision();
+    if (m_avatar_bitmap.IsOk() && revision == m_avatar_revision) return;
+    m_avatar_revision = revision;
+    const auto image = AccountAvatar::circle(m_account->avatar().image, FromDIP(144));
+    m_avatar_bitmap = image.IsOk() ? wxBitmap(image) : wxBitmap();
     m_avatar->set_icon(m_avatar_bitmap);
-    const auto task = m_avatar_scope.begin(path.ToStdString(wxConvUTF8),
-        Presentation::TaskLifetime::View, m_session.generation());
-    if (path.empty()) return;
-    wxWeakRef<AccountWorkspace> weak(this);
-    Presentation::background_tasks().submit(task, [path](const Presentation::TaskContext&) {
-        return AccountAvatar::read(path);
-    }, [weak, task, path](Presentation::TaskResult<wxImage> result) {
-        if (!weak || !weak->m_avatar_scope.matches(task) || task.account_epoch != weak->m_session.generation() ||
-            path != weak->m_avatar_path || !result.value || !result.value->IsOk()) return;
-        weak->m_avatar_image = std::move(*result.value);
-        weak->m_avatar_bitmap = wxBitmap(AccountAvatar::circle(weak->m_avatar_image, weak->FromDIP(144)));
-        weak->m_avatar->set_icon(weak->m_avatar_bitmap);
-        if (weak->m_changed) weak->m_changed(weak->m_session.snapshot(), weak->m_avatar_bitmap);
-        weak->m_view_refresh.request(Presentation::Dirty::Paint);
-    });
 }
 void AccountWorkspace::edit_avatar()
 {
-    if(!m_session.snapshot().has_identity())return;
-    const auto path=m_avatar_path;
+    using HA::AvatarUpdate;
+    const auto access = m_session.access();
+    if (!access) return;
+    const auto same_account = [&] {
+        return m_session.generation() == access->generation && m_session.snapshot().identity.subject == access->subject;
+    };
     wxDialog dialog(this,wxID_ANY,text("更换头像"),wxDefaultPosition,wxDefaultSize,wxBORDER_SIMPLE);
     dialog.SetBackgroundColour(panel_colour());
     auto* layout=new wxBoxSizer(wxVERTICAL);dialog.SetSizer(layout);
@@ -287,58 +273,97 @@ void AccountWorkspace::edit_avatar()
     header->Add(new HonorBrandMark(&dialog),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,FromDIP(10));
     header->Add(title,1,wxALIGN_CENTER_VERTICAL);
     layout->Add(header,0,wxEXPAND|wxALL,FromDIP(24));
-    wxImage candidate=m_avatar_image;
+    wxImage candidate = m_account->avatar().image;
     auto preview_bitmap=[&] {
         wxBitmap bitmap(AccountAvatar::circle(candidate,dialog.FromDIP(128)));
         bitmap.SetScaleFactor(dialog.GetDPIScaleFactor());return bitmap;
     };
     auto* preview=new wxStaticBitmap(&dialog,wxID_ANY,preview_bitmap());
     layout->Add(preview,0,wxALIGN_CENTER|wxBOTTOM,FromDIP(16));
-    auto* hint=new wxStaticText(&dialog,wxID_ANY,text("头像仅在本机使用，支持 PNG / JPG\n不超过 10MB，图片宽高不超过 4096 像素"),wxDefaultPosition,wxDefaultSize,wxALIGN_CENTER);
+    auto* hint=new wxStaticText(&dialog,wxID_ANY,text("支持 PNG / JPG，文件不超过 10MB\n图片宽高不超过 4096 像素"),wxDefaultPosition,wxDefaultSize,wxALIGN_CENTER);
     style_text(hint,secondary_text_colour(),10);layout->Add(hint,0,wxALIGN_CENTER|wxLEFT|wxRIGHT|wxBOTTOM,FromDIP(24));
-    auto* choices=new wxBoxSizer(wxHORIZONTAL);
-    auto* choose=action(&dialog,"选择图片",false,150);choices->Add(choose,0,wxRIGHT,FromDIP(12));
-    auto* reset=action(&dialog,"恢复默认头像",false,150);choices->Add(reset);
-    layout->Add(choices,0,wxALIGN_CENTER|wxBOTTOM,FromDIP(18));
+    auto* choose=action(&dialog,"选择图片",false,150);
+    layout->Add(choose,0,wxALIGN_CENTER|wxBOTTOM,FromDIP(18));
     auto* status=new wxStaticText(&dialog,wxID_ANY,wxEmptyString,wxDefaultPosition,FromDIP(wxSize(390,48)),wxALIGN_CENTER);
-    style_text(status,secondary_text_colour(),10);layout->Add(status,0,wxALIGN_CENTER|wxLEFT|wxRIGHT,FromDIP(24));
+    style_text(status,secondary_text_colour(),10);status->SetMinSize(dialog.FromDIP(wxSize(320,42)));
+    layout->Add(status,0,wxALIGN_CENTER|wxLEFT|wxRIGHT,FromDIP(24));
     auto* footer=new wxBoxSizer(wxHORIZONTAL);
     auto* cancel=action(&dialog,"取消",false,150);footer->Add(cancel,0,wxRIGHT,FromDIP(12));
     auto* save=action(&dialog,"保存头像",true,150);save->Enable(false);footer->Add(save);
     layout->Add(footer,0,wxALIGN_CENTER|wxALL,FromDIP(24));
-    bool use_default=false;
-    auto update=[&] {
-        preview->SetBitmap(preview_bitmap());
-        status->SetLabel(wxEmptyString);save->Enable(true);save->Refresh();dialog.Layout();
+    std::string png;
+    bool choosing = false;
+    bool submitted = false;
+    auto update = [&] {
+        const auto state = m_session.snapshot().avatar_update;
+        if (state == AvatarUpdate::Complete && submitted && dialog.IsModal()) {
+            dialog.EndModal(wxID_OK);
+            return;
+        }
+        const bool busy = state == AvatarUpdate::Saving || state == AvatarUpdate::Synchronizing;
+        const bool retry = state == AvatarUpdate::SyncFailed;
+        if (choose->Enable(!busy && !retry)) choose->Refresh();
+        save->SetLabel(text(retry ? "重试同步" : "保存头像"));
+        save->Enable(!busy && (retry || !png.empty()));
+        save->Refresh();
+        const char* message = "";
+        if (state == AvatarUpdate::Saving) message = "正在保存账号头像…";
+        else if (state == AvatarUpdate::Synchronizing) message = "正在同步账号头像…";
+        else if (retry) message = "已保存，待同步";
+        else if (state == AvatarUpdate::SaveFailed && submitted) message = "头像保存失败，原头像已保留。请重试。";
+        status->SetLabel(text(message));
+        dialog.Layout();
     };
     choose->Bind(wxEVT_BUTTON,[&](wxCommandEvent&) {
         wxString selected;
         {
             wxFileDialog picker(&dialog,text("选择头像图片"),wxEmptyString,wxEmptyString,
                 "PNG / JPG (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg",wxFD_OPEN|wxFD_FILE_MUST_EXIST);
-            if(picker.ShowModal()!=wxID_OK)return;
-            selected=picker.GetPath();
+            choosing = true;
+            if (picker.ShowModal() == wxID_OK) selected = picker.GetPath();
+            choosing = false;
         } // Native picker restores its parent's enabled state before painting.
-        const auto source=AccountAvatar::read(selected);
-        if(!source.IsOk()) {
+        if (!same_account()) { dialog.EndModal(wxID_CANCEL); return; }
+        if (selected.empty()) return;
+        auto image = AccountAvatar::square(AccountAvatar::read(selected));
+        auto encoded = AccountAvatar::png_data(image);
+        if (encoded.empty()) {
             status->SetLabel(text("无法读取图片，请选择有效的 PNG / JPG\n文件不超过 10MB，宽高不超过 4096 像素"));return;
         }
-        candidate=AccountAvatar::square(source);use_default=false;update();
+        candidate = std::move(image);
+        png = std::move(encoded);
+        submitted = false;
+        preview->SetBitmap(preview_bitmap());
+        update();
     });
-    reset->Bind(wxEVT_BUTTON,[&](wxCommandEvent&) {candidate=m_default_avatar;use_default=true;update();});
     cancel->Bind(wxEVT_BUTTON,[&](wxCommandEvent&) {dialog.EndModal(wxID_CANCEL);});
     dialog.Bind(wxEVT_CHAR_HOOK,[&](wxKeyEvent& event) {
         if(event.GetKeyCode()==WXK_ESCAPE)dialog.EndModal(wxID_CANCEL);else event.Skip();
     });
     save->Bind(wxEVT_BUTTON,[&](wxCommandEvent&) {
-        // Session polling continues inside modal loops: never apply a pending
-        // image to an account that has logged out or changed meanwhile.
-        if(!m_session.snapshot().has_identity()||path!=m_avatar_path) {dialog.EndModal(wxID_CANCEL);return;}
-        const bool ok=use_default?AccountAvatar::reset(path):AccountAvatar::save(path,candidate);
-        if(!ok) {status->SetLabel(text("头像保存失败，原头像已保留\n请检查用户数据目录是否可写后重试"));return;}
-        m_avatar_loaded=false;render();dialog.EndModal(wxID_OK);
+        if (!same_account()) {
+            dialog.EndModal(wxID_CANCEL);
+            return;
+        }
+        const bool retry = m_session.snapshot().avatar_update == AvatarUpdate::SyncFailed;
+        if (!(retry ? m_session.retry_avatar_sync() : !png.empty() && m_session.save_avatar(png))) {
+            status->SetLabel(text("账号服务暂不可用，请稍后重试"));
+            return;
+        }
+        submitted = true;
+        update();
     });
-    dialog.Fit();dialog.CentreOnParent();choose->SetFocus();dialog.ShowModal();
+    m_account->subscribe(&dialog, [&] {
+        if (!dialog.IsModal() || choosing) return;
+        if (!same_account()) dialog.EndModal(wxID_CANCEL);
+        else update();
+    });
+    update();
+    dialog.Fit();dialog.CentreOnParent();
+    if (choose->IsEnabled()) choose->SetFocus();
+    else if (save->IsEnabled()) save->SetFocus();
+    dialog.ShowModal();
+    m_account->unsubscribe(&dialog);
 }
 void AccountWorkspace::close_browser()
 {
@@ -510,7 +535,7 @@ void AccountWorkspace::login()
 void AccountWorkspace::logout()
 {
     const bool clear=m_clear_login->GetValue();
-    if(!m_session.logout(clear)) {render();return;}
+    if(!m_account->logout(clear)) {render();return;}
     m_logout_message.clear();close_browser();
     if(clear) {
         if(m_session.browser_reset_pending()) {
