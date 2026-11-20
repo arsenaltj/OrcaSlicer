@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -eu
-export PATH="$(cygpath -u "$FFMPEG_MSVC_BIN"):$PATH"
+PATH="$(cygpath -u "$FFMPEG_MSVC_BIN"):$PATH"
+export PATH
 cd "$(cygpath -u "$1")"
 install_dir=$(cygpath -am "$2")
 make_path=$(cygpath -u "$3")
