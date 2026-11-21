@@ -1,3 +1,12 @@
+# V102-16K-MEMORY-01 (2026-11-22)
+
+Mainline: task-20261120-color-model-sdk, MOB-V102-16K-MEMORY-01 round0; correct Linux/Android resident memory accounting without raising the existing budget.
+This round: VmRSS uses explicit KiB units rather than kernel statm pages multiplied by potentially emulated userspace page size. Strict parsing rejects missing, duplicate, malformed, unknown-unit and overflowing measurements; unavailable measurements fail closed as SLICING_FAILED / MEMORY_USAGE_UNAVAILABLE. Windows behavior, 2 GiB default, 2M geometry limit and manufacturing/tool routing remain unchanged.
+Open: new exact-source immutable package, independent review and artifact QA, then updated Mobile consumer and actual 4K/16K six-tool runtime. Same-shell fourfold discrepancy is observed; the original App did not have simultaneous RSS sampling and its failure is not declared uniquely explained yet.
+Next: build and freeze new package; keep8480/aec369 unchanged; no phone/AVD/physical print or paused desktop algorithm work.
+Plan change: native fix is now necessary for the approved runtime gate; no resource-limit increase or desktop918 feature port.
+
+## Earlier records retained
 # MOBILE-COLOR-SDK-20261120
 
 Mainline: isolated task-20261120-color-model-sdk, merged desktop reference f9d52e76ba via d6ba6e4153. User authorized mobile color workbench and native manufacturing implementation; no push, deployment or physical print.

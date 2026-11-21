@@ -2,6 +2,7 @@
 #include "project_support.hpp"
 #include "recommendation_support.hpp"
 #include "smart_slice_bridge.hpp"
+#include "resident_memory.hpp"
 #include "libslic3r/Print.hpp"
 #include "libslic3r/Exception.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
@@ -59,15 +60,15 @@ class Budget {
     std::condition_variable wake;
     bool done=false;
     Slic3r::Print* active=nullptr;
-    std::atomic<int> reason{0}; // 1 timeout, 2 memory, 3 explicit cancel
+    std::atomic<int> reason{0}; // 1 timeout, 2 memory, 3 explicit cancel, 4 memory measurement unavailable
     std::thread monitor;
-    static uint64_t resident_bytes() {
+    static std::optional<uint64_t> resident_bytes() {
 #if defined(__linux__) || defined(__ANDROID__)
-        uint64_t total=0,resident=0;
-        std::ifstream stat("/proc/self/statm");
-        if (stat>>total>>resident) return resident*static_cast<uint64_t>(sysconf(_SC_PAGESIZE));
-#endif
+        std::ifstream status("/proc/self/status");
+        return detail::resident_bytes_from_status(status);
+#else
         return 0;
+#endif
     }
 public:
     Budget(std::atomic<bool>& flag,int64_t maxMs,uint64_t maxBytes):canceled(flag),
@@ -77,7 +78,11 @@ public:
             while (!done) {
                 int why=canceled.load()?3:0;
                 if (!why && Clock::now()>=deadline) why=1;
-                if (!why && memoryLimit && resident_bytes()>memoryLimit) why=2;
+                if (!why && memoryLimit) {
+                    const auto resident = resident_bytes();
+                    if (!resident) why=4;
+                    else if (*resident>memoryLimit) why=2;
+                }
                 if (why) { int expected=0; reason.compare_exchange_strong(expected,why); if (active) active->cancel(); }
                 wake.wait_for(lock,std::chrono::milliseconds(25),[this]{return done;});
             }
@@ -89,6 +94,7 @@ public:
         const int why=reason.load();
         if (why==1) throw std::runtime_error("RECOMMENDATION_TIMEOUT");
         if (why==2) throw std::runtime_error("MEMORY_LIMIT");
+        if (why==4) throw std::runtime_error("MEMORY_USAGE_UNAVAILABLE");
         if (why==3 || canceled.load()) throw std::runtime_error("SLICING_CANCELED");
         if (Clock::now()>=deadline) throw std::runtime_error("RECOMMENDATION_TIMEOUT");
     }

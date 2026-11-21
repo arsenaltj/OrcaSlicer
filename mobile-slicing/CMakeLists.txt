@@ -378,6 +378,8 @@ if(EXISTS "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/c_api.cpp" AND EXISTS
     target_include_directories(orca_mobile_slicing_json_gate PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/include")
     target_link_libraries(orca_mobile_slicing_json_gate PRIVATE orca_mobile_slicing_sdk)
     if(ORCA_SDK_HOST)
+        add_executable(orca_resident_memory_test "${CMAKE_CURRENT_LIST_DIR}/tests/resident_memory_test.cpp")
+        target_include_directories(orca_resident_memory_test PRIVATE "${ORCA_SOURCE_ROOT}/src")
         add_executable(orca_honor_tool_routing_test "${CMAKE_CURRENT_LIST_DIR}/tests/honor_forge_routing_test.cpp")
         target_link_libraries(orca_honor_tool_routing_test PRIVATE OrcaSlicer::Core)
         if(MSVC)
