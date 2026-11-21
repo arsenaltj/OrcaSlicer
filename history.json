@@ -1,6 +1,16 @@
 [
   {
     "pr": 84,
+    "run": 44923474535,
+    "head": "7a97f883be8c2a25b389c3f6c480d1cfcaa29a78",
+    "base": "516f19bc9e0323ef7be10c211b2f7d5afdec80bc",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "整合工作台 Orca 原生切片并完善智能切片",
+    "path": "pr/84/7a97f883be8c2a25b389c3f6c480d1cfcaa29a78/44923474535",
+    "created": "2026-11-21T16:18:49+00:00"
+  },
+  {
+    "pr": 84,
     "run": 44922177011,
     "head": "7a97f883be8c2a25b389c3f6c480d1cfcaa29a78",
     "base": "516f19bc9e0323ef7be10c211b2f7d5afdec80bc",
