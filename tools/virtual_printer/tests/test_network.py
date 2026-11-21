@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -161,7 +162,40 @@ class NetworkTests(unittest.TestCase):
             else:
                 self.fail("No moving status notification received")
             self.assertEqual(message["params"][0]["print_stats"]["state"], "printing")
-            after = self.http.get("/webcam/?action=snapshot").content
+            # A moving status notification can precede the camera's next 5 FPS
+            # frame. Observe the actual JPEG change within a bounded deadline;
+            # another real status event paces observations, never a fixed sleep.
+            observed_at = time.monotonic()
+            deadline = observed_at + 2
+            before_sha = hashlib.sha256(before).hexdigest()
+            after = before
+            observations = []
+            last_status = message
+            while time.monotonic() < deadline:
+                frame = self.http.get("/webcam/?action=snapshot", timeout=max(.001, deadline - time.monotonic()))
+                self.assertEqual(frame.status_code, 200)
+                self.assertIn("image/jpeg", frame.headers["content-type"])
+                after = frame.content
+                jpeg = Image.open(io.BytesIO(after))
+                self.assertEqual(jpeg.format, "JPEG")
+                self.assertEqual(jpeg.size, (640, 360))
+                jpeg.verify()
+                after_sha = hashlib.sha256(after).hexdigest()
+                observations.append({"elapsed": time.monotonic() - observed_at, "sha256": after_sha})
+                if after_sha != before_sha:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    last_status = json.loads(ws.recv(timeout=remaining))
+                except TimeoutError:
+                    break
+            diagnostic = {"beforeSha256": before_sha, "observations": observations,
+                          "elapsedSeconds": time.monotonic() - observed_at, "lastStatus": last_status}
+            self.assertNotEqual(before_sha, hashlib.sha256(after).hexdigest(),
+                                "Camera did not produce a new valid JPEG within 2s: " + json.dumps(diagnostic))
+            print("camera-frame-observation " + json.dumps(diagnostic), flush=True)
             self.assertNotEqual(before, after)
             self.assertEqual(Image.open(io.BytesIO(after)).size, (640, 360))
             self.assertEqual(self.http.post("/printer/print/pause").status_code, 200)
