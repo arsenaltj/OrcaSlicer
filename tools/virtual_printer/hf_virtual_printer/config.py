@@ -29,13 +29,14 @@ def write_json(path: Path, value: object) -> None:
 
 
 def default_config(template: str = "multicolor") -> dict:
-    if template not in {"single", "multicolor", "multihead"}:
+    if template not in {"single", "multicolor", "multihead", "apex"}:
         raise PrinterError("未知硬件模板")
-    heads = 4 if template == "multihead" else 1
-    slots = 1 if template == "single" else 4
-    colors = ["#FF7748", "#49B9F2", "#F2D469", "#A884EA"]
+    heads = 6 if template == "apex" else (4 if template == "multihead" else 1)
+    slots = 6 if template == "apex" else (1 if template == "single" else 4)
+    colors = ["#FF7748", "#49B9F2", "#F2D469", "#A884EA", "#FF0000", "#FFFFFF"]
     return {
-        "schema": 1, "name": "Honor Forge 虚拟打印机", "bed_size": [256, 256, 256],
+        "schema": 1, "name": "Honor Forge APEX 虚拟打印机" if template == "apex" else "Honor Forge 虚拟打印机",
+        "bed_size": [300, 270, 290] if template == "apex" else [256, 256, 256],
         "nozzles": [{"diameter": 0.4, "max_temperature": 300} for _ in range(heads)],
         "slots": [{"material": "PLA", "color": colors[i], "remaining_g": 1000,
                    "nozzle_temperature": 220, "bed_temperature": 60} for i in range(slots)],

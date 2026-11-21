@@ -209,5 +209,58 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(self.http.get("/sim/api/v1/state").status_code, 200)
 
 
+    def test_apex_actual_response_loss_and_websocket_reconciliation(self):
+        import hashlib
+        from websockets.exceptions import ConnectionClosed
+        shared_http = self.http
+        self.http = httpx.Client(base_url=self.base, timeout=10, trust_env=False,
+                                 limits=httpx.Limits(max_keepalive_connections=0))
+        original = self.http.get("/sim/api/v1/config").json()
+        try:
+            apex = self.http.get("/sim/api/v1/templates").json()["apex"]
+            self.assertEqual(self.http.put("/sim/api/v1/config", json=apex).status_code, 200)
+            info = self.http.get("/printer/info").json()["result"]
+            self.assertEqual(info["model"], "Honor Forge")
+            self.assertEqual(info["config"]["extruderCount"], 6)
+            self.assertTrue(info["hf_virtual_printer"])
+            status = self.http.post("/printer/objects/query", json={"objects": {"print_stats": ["state"], "configfile": None}})
+            self.assertEqual(status.status_code, 200)
+            self.assertEqual(set(status.json()["result"]["status"]["print_stats"]), {"state"})
+            self.assertEqual(status.json()["result"]["status"]["configfile"]["config"]["extruderCount"], 6)
+            self.assertEqual(self.http.post("/printer/objects/query", json={"objects": {"print_stats": "state"}}).status_code, 400)
+            raw = b"START_PRINT EXTRUDER=220 BED=35 CHAMBER=0 INITIAL_TOOL=4\nM83\nG1 X25 Y25 E10 F60\n"
+            self.http.post("/sim/api/v1/action", json={"action": "fault", "name": "upload_response_lost", "enabled": True}).raise_for_status()
+            with self.assertRaises(httpx.RemoteProtocolError):
+                self.upload("apex-loss.gcode", raw)
+            metadata = self.http.get("/server/files/metadata", params={"filename": "apex-loss.gcode"}).json()["result"]
+            self.assertEqual(metadata["sha256"], hashlib.sha256(raw).hexdigest())
+            self.assertEqual(self.http.get("/server/files/gcodes/apex-loss.gcode").content, raw)
+            self.http.post("/sim/api/v1/action", json={"action": "fault", "name": "start_response_lost", "enabled": True}).raise_for_status()
+            with self.assertRaises(httpx.RemoteProtocolError):
+                self.http.post("/printer/print/start", json={"filename": "apex-loss.gcode", "commandId": "http-lost-start"})
+            job = self.http.get("/sim/api/v1/state").json()["job"]
+            self.assertEqual(job["state"], "printing")
+            self.assertEqual(job["command_id"], "http-lost-start")
+            self.assertEqual(self.http.post("/printer/print/start", json={"filename": "apex-loss.gcode", "commandId": "http-lost-start"}).status_code, 200)
+            self.assertEqual(self.http.post("/printer/print/start", json={"filename": "apex-loss.gcode"}).status_code, 409)
+            self.assertEqual(self.http.get("/sim/api/v1/state").json()["job"]["job_id"], job["job_id"])
+            self.http.post("/printer/print/cancel").raise_for_status()
+            self.http.post("/sim/api/v1/action", json={"action": "fault", "name": "start_response_lost", "enabled": True}).raise_for_status()
+            with connect(self.base.replace("http:", "ws:") + "/websocket", proxy=None) as ws:
+                ws.send(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "printer.print.start", "params": {"filename": "apex-loss.gcode", "commandId": "ws-lost-start"}}))
+                with self.assertRaises(ConnectionClosed):
+                    ws.recv(timeout=5)
+            ws_job = self.http.get("/sim/api/v1/state").json()["job"]
+            self.assertNotEqual(ws_job["job_id"], job["job_id"])
+            self.assertEqual(ws_job["state"], "printing")
+            self.assertEqual(self.http.post("/printer/print/start", json={"filename": "apex-loss.gcode"}).status_code, 409)
+        finally:
+            self.http.post("/printer/print/cancel")
+            self.http.post("/sim/api/v1/action", json={"action": "recover"})
+            self.http.put("/sim/api/v1/config", json=original).raise_for_status()
+            self.http.close()
+            self.http = shared_http
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

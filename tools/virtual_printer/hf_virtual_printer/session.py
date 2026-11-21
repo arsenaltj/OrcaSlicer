@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import re
@@ -14,7 +15,8 @@ from pathlib import Path
 from .config import PrinterError, default_config, validate_config, write_json
 from .gcode import MAX_FILE, MAX_LINE, TOKEN, Motion, decode, named_parameters, plan_motion, read_metadata
 
-FAULTS = ("offline", "upload_failed", "storage_full", "runout", "overtemperature", "camera_offline")
+FAULTS = ("offline", "upload_failed", "storage_full", "runout", "overtemperature", "camera_offline",
+          "upload_response_lost", "start_response_lost")
 ACTIVE = {"printing", "paused"}
 
 
@@ -30,6 +32,8 @@ class VirtualPrinterSession:
         self.instance_uuid = str(uuid.UUID(identity["instance_uuid"]))
         write_json(directory / "identity.json", identity)
         self.history = self._load("history.json", [])[-100:]
+        self.start_receipts = self._load("start-receipts.json", {})
+        self.command_id = None
         self.events = deque(maxlen=160)
         self.faults = {name: False for name in FAULTS}
         self.endpoint = ""
@@ -83,6 +87,11 @@ class VirtualPrinterSession:
         self.extrusion_factor = 1.
         self.nozzles = [{"temperature": 25., "target": 0.} for _ in self.config["nozzles"]]
         self.bed = {"temperature": 25., "target": 0.}
+        self.chamber = {"temperature": 25., "target": 0.}
+        self._startup_waits = []
+        self.tool_extrusion = [0.] * len(self.config["tools"])
+        self.slot_extrusion = [0.] * len(self.config["slots"])
+        self.tools_used = set()
         self.fan = 0.
         self.light = False
         self.homed = ""
@@ -170,7 +179,34 @@ class VirtualPrinterSession:
             raise PrinterError("G-code 文件不存在", 404)
         metadata = read_metadata(path)
         metadata["filename"] = name
+        with path.open("rb") as stream:
+            metadata["sha256"] = hashlib.file_digest(stream, "sha256").hexdigest()
         return metadata
+
+    def consume_response_loss(self, operation: str) -> bool:
+        """One-shot, armed only through the loopback management fault control."""
+        with self.lock:
+            key = operation + "_response_lost"
+            if not self.faults.get(key):
+                return False
+            self.faults[key] = False
+            self.log("fault", f"已接受{operation}，单次丢弃响应")
+            return True
+
+    def capability_config(self) -> dict:
+        with self.lock:
+            apex = (self.config["bed_size"] == [300, 270, 290] and
+                    len(self.config["nozzles"]) == 6 and
+                    all(n["diameter"] == .4 for n in self.config["nozzles"]) and
+                    self.config["tools"] == [{"nozzle": i, "slot": i} for i in range(6)] and
+                    len(self.config["slots"]) == 6)
+            return {"model": "Honor Forge" if apex else "Honor Forge Virtual Printer",
+                    "firmware": "klipper", "printableVolume": self.config["bed_size"][:],
+                    "extruderCount": len(self.config["nozzles"]),
+                    "nozzleDiameters": [n["diameter"] for n in self.config["nozzles"]],
+                    "physicalSlotCount": len(self.config["slots"]),
+                    "toolMappings": [{"tool": i, **t} for i, t in enumerate(self.config["tools"])],
+                    "simulation": True, "actualFilamentLoadingVerified": False}
 
     def accept_upload(self, stream, name: str) -> dict:
         # Write outside the published gcodes root; aborted uploads never appear as printable files.
@@ -225,8 +261,17 @@ class VirtualPrinterSession:
             path.unlink()
             self.log("file", f"已删除 {name}")
 
-    def start(self, name: str):
+    def start(self, name: str, command_id: str | None = None):
         with self.lock:
+            if command_id is not None and (not isinstance(command_id, str) or re.fullmatch(r"[A-Za-z0-9._-]{1,128}", command_id) is None):
+                raise PrinterError("commandId格式不正确")
+            if command_id in self.start_receipts:
+                receipt = self.start_receipts[command_id]
+                if receipt["filename"] != name or receipt["sha256"] != self.metadata_for(name)["sha256"]:
+                    raise PrinterError("commandId已绑定其它文件", 409)
+                return  # Explicit replay never starts a second task, even after completion/restart.
+            if command_id is not None and len(self.start_receipts) >= 10000:
+                raise PrinterError("启动回执台账已满，请使用新的隔离测试目录", 507)
             if self.state in ACTIVE:
                 raise PrinterError("打印机忙，当前任务尚未结束", 409)
             if self.faults["offline"] or self.faults["overtemperature"] or self.faults["runout"]:
@@ -243,11 +288,24 @@ class VirtualPrinterSession:
             self.absolute = self.e_absolute = True
             self.e_positions = [0.] * len(self.config["tools"])
             self.active_tool = 0
+            self.tool_extrusion = [0.] * len(self.config["tools"])
+            self.slot_extrusion = [0.] * len(self.config["slots"])
+            self.tools_used = set()
+            self._startup_waits = []
             self.speed_factor = self.extrusion_factor = 1.
             self.metadata = metadata
             self.state, self.filename, self.message = "printing", name, "正在模拟打印"
             self.duration = self.total_duration = self.progress = self.file_position = self.layer = self.filament_used = 0
             self.job_id = str(uuid.uuid4())
+            self.command_id = command_id
+            if command_id is not None:
+                self.start_receipts[command_id] = {"filename": name, "sha256": metadata["sha256"], "job_id": self.job_id}
+                # Retain receipts rather than silently evicting a token and making an old retry mutate again.
+                try:
+                    write_json(self.directory / "start-receipts.json", self.start_receipts)
+                except OSError:
+                    self.finish("error", "启动回执无法持久化，任务已终止")
+                    raise
             self.segments.clear()
             self.generation += 1
             self.persist()
@@ -282,7 +340,7 @@ class VirtualPrinterSession:
             self._stream = None
         self._motion = self._wait = None
         self._dwell = 0
-        for heater in [*self.nozzles, self.bed]:
+        for heater in [*self.nozzles, self.bed, self.chamber]:
             heater["target"] = 0.
         self.fan = 0.
         record = self.job_record()
@@ -338,6 +396,8 @@ class VirtualPrinterSession:
     def heater(self, name: str, target: float):
         if name == "heater_bed":
             heater, maximum = self.bed, self.config["bed_max_temperature"]
+        elif name == "chamber":
+            heater, maximum = self.chamber, 120
         else:
             match = re.fullmatch(r"extruder(\d*)", name)
             if not match:
@@ -364,7 +424,7 @@ class VirtualPrinterSession:
         named = named_parameters(rest)
         if manual and self.state in ACTIVE and (re.fullmatch(r"T\d+", command) or command in {
                 "G0", "G1", "G2", "G3", "G28", "G90", "G91", "G92", "M82", "M83",
-                "ACTIVATE_EXTRUDER", "BED_MESH_CALIBRATE"}):
+                "ACTIVATE_EXTRUDER", "BED_MESH_CALIBRATE", "START_PRINT", "PRINT_START"}):
             raise PrinterError("任务运行或暂停时不能手动移动、切换工具或修改坐标模式", 409)
         if manual and command in {"G0", "G1", "G2", "G3", "G92", "G4", "M104", "M109", "M140", "M190", "M106", "M107", "M220", "M221"}:
             if TOKEN.sub("", rest).strip():
@@ -466,14 +526,38 @@ class VirtualPrinterSession:
             self.state = "standby"
             self.discovery_generation += 1
         elif command in {"START_PRINT", "PRINT_START"}:
-            for key, heater in [("BED_TEMP", "heater_bed"), ("EXTRUDER_TEMP", "extruder")]:
-                if key in named:
-                    try:
-                        self.heater(heater, float(named[key]))
-                    except ValueError as exc:
-                        raise PrinterError("起始宏温度参数不正确") from exc
+            # Validate the whole macro before changing any heater or active tool.
+            if len(re.findall(r"\b[A-Za-z_]+\s*=", rest)) != len(named):
+                raise PrinterError("起始宏参数重复或格式不正确")
+            tool_text = named.get("INITIAL_TOOL", str(self.active_tool))
+            if not re.fullmatch(r"[0-9]+", tool_text) or not 0 <= int(tool_text) < len(self.config["tools"]):
+                raise PrinterError("起始宏工具未配置")
+            tool = int(tool_text)
+            nozzle = self.config["tools"][tool]["nozzle"]
+            targets = []
+            for key, legacy, heater, maximum in [
+                ("BED", "BED_TEMP", "heater_bed", self.config["bed_max_temperature"]),
+                ("EXTRUDER", "EXTRUDER_TEMP", "extruder" + (str(nozzle) if nozzle else ""), self.config["nozzles"][nozzle]["max_temperature"]),
+                ("CHAMBER", "CHAMBER_TEMP", "chamber", 120)]:
+                try:
+                    if key in named and legacy in named and float(named[key]) != float(named[legacy]):
+                        raise PrinterError("起始宏新旧参数冲突")
+                    value = named.get(key, named.get(legacy))
+                    if value is None:
+                        continue
+                    target = float(value)
+                    if not math.isfinite(target) or not 0 <= target <= maximum:
+                        raise PrinterError("起始宏温度超出配置范围")
+                    targets.append((heater, target))
+                except ValueError as exc:
+                    raise PrinterError("起始宏温度参数不正确") from exc
+            self.active_tool = tool
+            for heater, target in targets:
+                self.heater(heater, target)
+            if not manual:
+                self._startup_waits = [heater for heater, target in targets if target > 0]
         elif command in {"END_PRINT", "PRINT_END"}:
-            for heater in [*self.nozzles, self.bed]:
+            for heater in [*self.nozzles, self.bed, self.chamber]:
                 heater["target"] = 0
             self.fan = 0
         elif command in {"M18", "M84"}:
@@ -492,8 +576,11 @@ class VirtualPrinterSession:
             return
         extrusion = motion.extrusion * (after - before)
         self.filament_used += extrusion
+        self.tool_extrusion[self.active_tool] += extrusion
+        self.tools_used.add(self.active_tool)
         slot = self.active_slot
         if slot is not None:
+            self.slot_extrusion[slot] += extrusion
             grams = extrusion * math.pi * .875 ** 2 * 1.24 / 1000
             self.config["slots"][slot]["remaining_g"] = max(0, self.config["slots"][slot]["remaining_g"] - grams)
             if self.config["slots"][slot]["remaining_g"] <= 0:
@@ -513,9 +600,9 @@ class VirtualPrinterSession:
     def advance(self, seconds: float):
         with self.lock:
             dt = min(1., max(0., seconds)) * self.config["simulation_speed"]
-            for heater in [*self.nozzles, self.bed]:
+            for heater in [*self.nozzles, self.bed, self.chamber]:
                 target = max(25., heater["target"])
-                rate = (1.5 if heater is self.bed else 4.) if target > heater["temperature"] else .8
+                rate = (1.5 if heater is self.bed or heater is self.chamber else 4.) if target > heater["temperature"] else .8
                 heater["temperature"] += max(-rate * dt, min(rate * dt, target - heater["temperature"]))
             if self.faults["overtemperature"]:
                 self.nozzles[self.active_nozzle]["temperature"] = self.config["nozzles"][self.active_nozzle]["max_temperature"] + 15
@@ -537,10 +624,13 @@ class VirtualPrinterSession:
                         break
                     if self._wait:
                         name = self._wait[0]
-                        heater = self.bed if name == "heater_bed" else self.nozzles[int(name.removeprefix("extruder") or 0)]
+                        heater = self.bed if name == "heater_bed" else (self.chamber if name == "chamber" else self.nozzles[int(name.removeprefix("extruder") or 0)])
                         if abs(heater["temperature"] - heater["target"]) > 1.:
                             break
                         self._wait = None
+                    if self._startup_waits:
+                        self._wait = (self._startup_waits.pop(0), 0)
+                        continue
                     if self._dwell:
                         spent = min(budget, self._dwell)
                         budget -= spent
@@ -587,13 +677,16 @@ class VirtualPrinterSession:
     def job_record(self) -> dict:
         return {"job_id": self.job_id, "filename": self.filename, "state": self.state,
                 "message": self.message, "progress": self.progress, "duration": self.duration,
-                "layer": self.layer, "filament_used": self.filament_used}
+                "layer": self.layer, "filament_used": self.filament_used,
+                "gcode_sha256": self.metadata.get("sha256"), "command_id": self.command_id, "tools_used": sorted(self.tools_used),
+                "tool_extrusion_mm": self.tool_extrusion[:], "slot_extrusion_mm": self.slot_extrusion[:]}
 
     def objects(self) -> dict:
         with self.lock:
             extruder = "extruder" + (str(self.active_nozzle) if self.active_nozzle else "")
             result = {
                 "print_stats": {"state": self.state, "filename": self.filename, "message": self.message,
+                                "job_id": self.job_id, "command_id": self.command_id, "gcode_sha256": self.metadata.get("sha256"),
                                 "print_duration": self.duration, "total_duration": self.total_duration,
                                 "filament_used": self.filament_used,
                                 "info": {"current_layer": self.layer, "total_layer": self.metadata.get("layer_count") or 0}},
@@ -608,6 +701,9 @@ class VirtualPrinterSession:
                 "bed_mesh": {"profile_name": "virtual" if self.mesh_calibrated else "",
                              "mesh_matrix": [[0., .02, 0.], [.01, 0., -.01], [0., -.02, 0.]] if self.mesh_calibrated else []},
                 "pause_resume": {"is_paused": self.state == "paused"},
+                "configfile": {"config": self.capability_config()},
+                "hf_virtual_printer": {**self.capability_config(), "instance_uuid": self.instance_uuid,
+                                       "active_tool": self.active_tool, "chamber": self.chamber.copy()},
             }
             for i, heater in enumerate(self.nozzles):
                 result["extruder" + (str(i) if i else "")] = {**heater, "power": .6 if heater["target"] > heater["temperature"] + 1 else 0,
@@ -618,7 +714,9 @@ class VirtualPrinterSession:
         with self.lock:
             return {f"lane{i}": {"lane": str(i), "material": slot["material"] if slot["remaining_g"] > 0 else "",
                                  "color": slot["color"][1:] + "FF", "nozzle_temp": slot["nozzle_temperature"],
-                                 "bed_temp": slot["bed_temperature"]} for i, slot in enumerate(self.config["slots"])}
+                                 "bed_temp": slot["bed_temperature"], "slot": i, "remaining_g": slot["remaining_g"],
+                                 "tools": [t for t, mapping in enumerate(self.config["tools"]) if mapping["slot"] == i],
+                                 "actualFilamentLoadingVerified": False} for i, slot in enumerate(self.config["slots"])}
 
     def snapshot(self) -> dict:
         with self.lock:
