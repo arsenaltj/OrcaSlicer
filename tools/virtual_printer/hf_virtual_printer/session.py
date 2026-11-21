@@ -33,6 +33,7 @@ class VirtualPrinterSession:
         write_json(directory / "identity.json", identity)
         self.history = self._load("history.json", [])[-100:]
         self.start_receipts = self._load("start-receipts.json", {})
+        self.start_attempts = self._load("start-attempts.json", {})
         self.command_id = None
         self.events = deque(maxlen=160)
         self.faults = {name: False for name in FAULTS}
@@ -265,21 +266,43 @@ class VirtualPrinterSession:
         with self.lock:
             if command_id is not None and (not isinstance(command_id, str) or re.fullmatch(r"[A-Za-z0-9._-]{1,128}", command_id) is None):
                 raise PrinterError("commandId格式不正确")
+            attempt = self.start_attempts.get(command_id)
+            if attempt is not None and (attempt["filename"] != name or attempt["sha256"] != self.metadata_for(name)["sha256"]):
+                raise PrinterError("commandId已绑定其它文件", 409)
+            if attempt is not None and attempt.get("status") != "accepted":
+                raise PrinterError("此commandId启动未提交或失败，请查询任务状态，不可重放启动", 503)
+            if attempt is not None and (command_id not in self.start_receipts or
+                    attempt.get("job_id") != self.start_receipts[command_id].get("job_id")):
+                raise PrinterError("启动提交台账不完整，请查询任务状态", 503)
             if command_id in self.start_receipts:
                 receipt = self.start_receipts[command_id]
                 if receipt["filename"] != name or receipt["sha256"] != self.metadata_for(name)["sha256"]:
                     raise PrinterError("commandId已绑定其它文件", 409)
                 return  # Explicit replay never starts a second task, even after completion/restart.
-            if command_id is not None and len(self.start_receipts) >= 10000:
+            if command_id is not None and len(set(self.start_receipts) | set(self.start_attempts)) >= 10000:
                 raise PrinterError("启动回执台账已满，请使用新的隔离测试目录", 507)
             if self.state in ACTIVE:
                 raise PrinterError("打印机忙，当前任务尚未结束", 409)
             if self.faults["offline"] or self.faults["overtemperature"] or self.faults["runout"]:
                 raise PrinterError("请先清除设备离线、温度或缺料异常", 409)
             metadata = self.metadata_for(name)
+            if command_id is not None:
+                # A durable pending fence must exist before any job is created. If a later
+                # commit fails, a restart cannot mistake the same token for a fresh start.
+                self.start_attempts[command_id] = {"status": "pending", "filename": name, "sha256": metadata["sha256"]}
+                try:
+                    write_json(self.directory / "start-attempts.json", self.start_attempts)
+                except OSError as exc:
+                    self.start_attempts[command_id]["status"] = "failed"
+                    raise PrinterError("启动意图无法持久化，未创建任务", 503) from exc
+            try:
+                stream = self.file_path(name).open("rb")
+            except OSError as exc:
+                # Pending remains a deliberate restart fence, not an accepted receipt.
+                raise PrinterError("启动文件无法打开，未接受启动", 503) from exc
             if self._stream:
                 self._stream.close()
-            self._stream = self.file_path(name).open("rb")
+            self._stream = stream
             self._motion = self._wait = None
             self._dwell = 0
             self._unsupported.clear()
@@ -298,17 +321,32 @@ class VirtualPrinterSession:
             self.duration = self.total_duration = self.progress = self.file_position = self.layer = self.filament_used = 0
             self.job_id = str(uuid.uuid4())
             self.command_id = command_id
-            if command_id is not None:
-                self.start_receipts[command_id] = {"filename": name, "sha256": metadata["sha256"], "job_id": self.job_id}
-                # Retain receipts rather than silently evicting a token and making an old retry mutate again.
-                try:
-                    write_json(self.directory / "start-receipts.json", self.start_receipts)
-                except OSError:
-                    self.finish("error", "启动回执无法持久化，任务已终止")
-                    raise
             self.segments.clear()
+            try:
+                self.persist()
+                if command_id is not None:
+                    self.start_receipts[command_id] = {"filename": name, "sha256": metadata["sha256"], "job_id": self.job_id}
+                    write_json(self.directory / "start-receipts.json", self.start_receipts)
+                    accepted = {**self.start_attempts[command_id], "status": "accepted", "job_id": self.job_id}
+                    attempts = {**self.start_attempts, command_id: accepted}
+                    write_json(self.directory / "start-attempts.json", attempts)
+                    self.start_attempts = attempts
+            except OSError as exc:
+                if command_id is not None:
+                    self.start_receipts.pop(command_id, None)
+                    self.start_attempts[command_id]["status"] = "failed"
+                    # If the disk remains unavailable, the previously committed pending
+                    # record is sufficient to refuse replay after restart.
+                    try:
+                        write_json(self.directory / "start-attempts.json", self.start_attempts)
+                    except OSError:
+                        pass
+                try:
+                    self.finish("error", "启动提交失败，任务未运行")
+                except OSError:
+                    pass  # finish closes the stream and sets error before persisting.
+                raise PrinterError("启动提交失败，未接受启动，请查询状态", 503) from exc
             self.generation += 1
-            self.persist()
             self.log("print", f"开始打印 {name}")
 
     def pause(self):

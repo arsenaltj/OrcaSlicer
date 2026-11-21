@@ -18,4 +18,6 @@ metadata增加sha256（实际原始保存文件字节），job/current/history�
 
 HTTP/WS start接受可选commandId（ASCII字母/数字/._-，1–128字符）。print_stats与job/history投影job_id、command_id、gcode_sha256。相同commandId绑定同filename/SHA只返回原操作，不会在结束或重启后再次启动；同token不同文件拒绝409。隔离目录持久化最多10000条收据，满时拒绝507，不淘汰旧token造成重放。客户端失回后须同command_id、新job_id、同filename/SHA且活跃状态才可核实本次接受；缺这些字段的其它固件保持unknown，不猜成功。upload失回只在metadata的size与sha256精确匹配本次原字节时确认。
 
+启动提交先写start-attempts.json的pending意图围栏，再创建并持久当前任务，最后提交receipt及accepted意图；只有全部完成才响应ok。中途失败返回503、终止未运行流，failed或pending token再次请求及重启后均拒绝503，不重新建任务；即使已有半提交receipt也由意图状态优先阻断。查询后操作者可明确发新commandId。旧版本已成功收据没有意图记录时按原成功合同兼容。若第一步意图本身完全无法写入，任务尚未创建，不能承诺凭空生成跨重启记录；此失败明确返回未创建任务而非accepted。所有台账保留在任务隔离目录，不写用户实例。
+
 仅在隔离实例使用，不改系统代理、hosts、防火墙或用户现有实例。此协议证明软件闭环，不证明实体固件、装料或实物色彩效果。

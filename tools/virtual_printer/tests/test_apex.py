@@ -6,10 +6,14 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from hf_virtual_printer.config import PrinterError, default_config
 from hf_virtual_printer.session import VirtualPrinterSession
+from hf_virtual_printer import session as session_module
+from hf_virtual_printer.server import create_app
+from fastapi.testclient import TestClient
 
 
 class ApexTests(unittest.TestCase):
@@ -91,6 +95,106 @@ class ApexTests(unittest.TestCase):
         self.session.accept_upload(io.BytesIO(b"G90\n"), "id.gcode")
         with self.assertRaises(PrinterError):
             self.session.start("id.gcode", "qa-001")
+
+    def test_failed_receipt_http_replay_and_restart_never_return_success(self):
+        s = self.session
+        s.accept_upload(io.BytesIO(b"G28\n"), "failure.gcode")
+        write = session_module.write_json
+        def fail_receipt(path, value):
+            if path.name == "start-receipts.json":
+                raise OSError("injected receipt disk failure")
+            write(path, value)
+        def request(client):
+            return client.post("/printer/print/start", json={"filename": "failure.gcode", "commandId": "failed-receipt"})
+        with TestClient(create_app(s, engine=False), base_url="http://127.0.0.1:7125",
+                        client=("127.0.0.1", 50000)) as client:
+            with patch.object(session_module, "write_json", side_effect=fail_receipt):
+                first = request(client)
+                job = s.job_id
+                self.assertEqual(first.status_code, 503)
+                self.assertEqual(s.state, "error")
+                self.assertIsNone(s._stream)
+                self.assertEqual(request(client).status_code, 503)
+                self.assertEqual(s.job_id, job)
+                self.assertFalse((s.directory / "start-receipts.json").exists())
+            # Restoring storage must not turn the failed operation into a new job.
+            self.assertEqual(request(client).status_code, 503)
+            self.assertEqual(s.job_id, job)
+        self.session = VirtualPrinterSession(Path(self.temp.name))
+        with TestClient(create_app(self.session, engine=False), base_url="http://127.0.0.1:7125",
+                        client=("127.0.0.1", 50000)) as client:
+            self.assertEqual(request(client).status_code, 503)
+            self.assertEqual(self.session.state, "standby")
+            self.assertEqual(self.session.job_id, "")
+            self.assertEqual(self.session.generation, 0)
+            # A new explicit command is allowed after the failed token has been reconciled.
+            r = client.post("/printer/print/start", json={"filename": "failure.gcode", "commandId": "explicit-new"})
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(self.session.state, "printing")
+
+    def test_pending_fence_survives_secondary_failure_and_partial_commit(self):
+        for stage in ["receipts", "current", "accepted_attempt"]:
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as directory:
+                s = VirtualPrinterSession(Path(directory))
+                s.accept_upload(io.BytesIO(b"G28\n"), "case.gcode")
+                write = session_module.write_json
+                def fail(path, value):
+                    if (stage == "receipts" and path.name == "start-receipts.json" or
+                        stage == "current" and path.name == "current.json" or
+                        stage == "accepted_attempt" and path.name == "start-attempts.json" and
+                            value.get("token", {}).get("status") != "pending"):
+                        raise OSError("injected commit failure")
+                    write(path, value)
+                with patch.object(session_module, "write_json", side_effect=fail):
+                    with self.assertRaises(PrinterError) as first:
+                        s.start("case.gcode", "token")
+                    self.assertEqual(first.exception.status, 503)
+                    self.assertEqual(s.state, "error")
+                    self.assertIsNone(s._stream)
+                    with self.assertRaises(PrinterError):
+                        s.start("case.gcode", "token")
+                s.close()
+                reopened = VirtualPrinterSession(Path(directory))
+                with self.assertRaises(PrinterError) as replay:
+                    reopened.start("case.gcode", "token")
+                self.assertEqual(replay.exception.status, 503)
+                self.assertEqual(reopened.state, "standby")
+                self.assertEqual(reopened.job_id, "")
+                reopened.close()
+
+    def test_intent_write_failure_creates_no_job(self):
+        s = self.session
+        s.accept_upload(io.BytesIO(b"G28\n"), "intent.gcode")
+        before = s.job_record()
+        with patch.object(session_module, "write_json", side_effect=OSError("no writable storage")):
+            with self.assertRaises(PrinterError) as failure:
+                s.start("intent.gcode", "intent")
+            self.assertEqual(failure.exception.status, 503)
+        self.assertEqual(s.job_record(), before)
+        self.assertIsNone(s._stream)
+
+    def test_successful_completion_restart_and_full_ledger_do_not_reexecute(self):
+        s = self.session
+        s.accept_upload(io.BytesIO(b"G28\n"), "complete.gcode")
+        s.start("complete.gcode", "completed-token")
+        job = s.job_id
+        s.advance(1)
+        self.assertEqual(s.state, "complete")
+        s.start("complete.gcode", "completed-token")
+        self.assertEqual((s.state, s.job_id), ("complete", job))
+        s.close()
+        self.session = s = VirtualPrinterSession(Path(self.temp.name))
+        s.start("complete.gcode", "completed-token")
+        self.assertEqual((s.state, s.job_id), ("standby", ""))
+        self.assertEqual(s.start_receipts["completed-token"]["job_id"], job)
+        s.start_attempts.update({f"filled-{i}": {"status": "failed", "filename": "complete.gcode",
+            "sha256": hashlib.sha256(b"G28\n").hexdigest()} for i in range(9999)})
+        with self.assertRaises(PrinterError) as full:
+            s.start("complete.gcode", "new-token")
+        self.assertEqual(full.exception.status, 507)
+        self.assertNotIn("new-token", s.start_attempts)
+        s.start("complete.gcode", "completed-token")
+        self.assertEqual(s.state, "standby")
 
 
 if __name__ == "__main__":
