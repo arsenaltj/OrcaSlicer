@@ -498,6 +498,30 @@ TEST_CASE("Reviewed estimates survive trial cancellation only for their bound na
     CHECK_FALSE(display.for_slice(applied, RecommendationGoal::Speed, plan));
 }
 
+TEST_CASE("Committed slicing statistics follow the current native toolpath and input", "[UiRedesign][SliceDetails]")
+{
+    using namespace Slic3r::AI::SmartSlicing;
+    const WorkspaceRevision first_plate{1, 2, 3, "first"};
+    const WorkspaceRevision second_plate{1, 2, 4, "second"};
+    const WorkspaceRevision moved_tower{1, 2, 3, "moved"};
+    const unsigned int result_id = 17;
+    ExactEstimateView estimate;
+    estimate.status = ExactEstimateStatus::Ready;
+    estimate.revision = first_plate;
+    estimate.parameters = SliceRecommendation{};
+    CHECK_FALSE(committed_estimate_matches(estimate, first_plate, result_id));
+
+    estimate.official_result_id = result_id;
+    CHECK(committed_estimate_matches(estimate, first_plate, result_id));
+    CHECK_FALSE(committed_estimate_matches(estimate, second_plate, result_id));
+    CHECK_FALSE(committed_estimate_matches(estimate, moved_tower, result_id));
+    CHECK_FALSE(committed_estimate_matches(estimate, first_plate, result_id + 1));
+    CHECK(committed_estimate_matches(estimate, first_plate, result_id));
+
+    estimate.status = ExactEstimateStatus::PositionChanged;
+    CHECK_FALSE(committed_estimate_matches(estimate, first_plate, result_id));
+}
+
 TEST_CASE("Only completed estimates for the reviewed recommendation can be retained", "[UiRedesign][SliceDetails]")
 {
     using namespace Slic3r::AI::SmartSlicing;
@@ -523,6 +547,22 @@ TEST_CASE("Only completed estimates for the reviewed recommendation can be retai
     plan.wall_loops += 1;
     display.capture(trial, revision, revision, trial.goal, plan);
     CHECK_FALSE(display.for_slice(revision, trial.goal, plan));
+}
+
+TEST_CASE("A tower moved during an unfinished trial keeps its latest coordinates visible", "[UiRedesign][SliceDetails]")
+{
+    Slic3r::AI::SmartSlicing::SliceRecommendation plan;
+    ExactEstimateView estimate;
+    estimate.status = ExactEstimateStatus::PositionChanged;
+    estimate.moved_tower_position = std::array<double, 2>{122.5, 98.75};
+    const auto rows = exact_estimate_detail_rows(plan, estimate);
+    const auto tower = std::find_if(rows.begin(), rows.end(), [](const auto& row) {
+        return row.label == _L("擦料塔坐标");
+    });
+    REQUIRE(tower != rows.end());
+    CHECK(tower->value == wxString::Format(_L("X %.2f / Y %.2f mm"), 122.5, 98.75));
+    CHECK(rows.front().value == _L("待更新"));
+    CHECK_FALSE(exact_estimate_can_apply(estimate));
 }
 
 TEST_CASE("Formal statistics update the metrics while every recommendation detail remains visible", "[UiRedesign][SliceDetails]")

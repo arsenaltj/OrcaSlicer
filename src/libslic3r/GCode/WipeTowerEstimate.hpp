@@ -69,4 +69,8 @@ bool prime_tower_is_printed(const ConfigBase &config, int used_filaments, int nu
 std::optional<Point> nearest_clear_wipe_tower_anchor(const BoundingBox &anchor_bounds, const Polygon &footprint,
                                                      const Polygons &obstacles, const Point &target);
 
+// Preserve a legal anchor and check the whole outline, including on concave beds.
+std::optional<Point> fit_wipe_tower_anchor(const Polygons& printable, const Polygon& footprint,
+                                          const Polygons& obstacles, const Point& target);
+
 } // namespace Slic3r

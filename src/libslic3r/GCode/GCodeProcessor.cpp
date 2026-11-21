@@ -8247,6 +8247,19 @@ void GCodeProcessor::update_estimated_times_stats()
     m_result.print_statistics.total_volumes_per_extruder = m_used_filaments.total_volumes_per_filament;
 }
 
+std::optional<double> GCodeProcessorResult::material_weight_grams(const std::map<size_t, double>& volumes) const
+{
+    double grams = 0.;
+    for (const auto& [slot, volume] : volumes) {
+        if (volume == 0.) continue;
+        if (slot >= filament_densities.size() || !std::isfinite(volume) || volume < 0. ||
+            !std::isfinite(filament_densities[slot]) || filament_densities[slot] <= 0.)
+            return std::nullopt;
+        grams += volume * double(filament_densities[slot]) * 0.001;
+    }
+    return grams;
+}
+
 double GCodeProcessor::extract_absolute_position_on_axis(Axis axis, const GCodeReader::GCodeLine& line, double area_filament_cross_section)
 {
     if (line.has(Slic3r::Axis(axis))) {

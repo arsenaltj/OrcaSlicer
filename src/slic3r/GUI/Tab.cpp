@@ -403,9 +403,10 @@ void Tab::create_preset_tab()
          Freeze();
         if (m_presets_choice) m_presets_choice->Show();
 
-        m_btn_save_preset->Show();
-        m_btn_delete_preset->Show(); // ORCA: fixes delete preset button visible while search box focused
-        m_undo_btn->Show();          // ORCA: fixes revert preset button visible while search box focused
+        const bool workbench = m_type == Preset::TYPE_PRINT && m_parent->workbench_process_mode() >= 0;
+        m_btn_save_preset->Show(!workbench);
+        m_btn_delete_preset->Show(!workbench);
+        m_undo_btn->Show(!workbench);
         m_btn_search->Show();
         m_search_item->Hide();
 
@@ -533,6 +534,7 @@ void Tab::create_preset_tab()
         m_tabctrl->SetItemBold(sel_item, false);
         });
     m_tabctrl->Bind(wxEVT_TAB_SEL_CHANGED, [this](wxCommandEvent& event) {
+        const auto page_before_selection = m_active_page;
 #ifdef __linux__
         // Events queue is opposite On Linux. wxEVT_SET_FOCUS invokes after wxEVT_TAB_SEL_CHANGED,
         // and a result wxEVT_KILL_FOCUS doesn't invoke for the TextCtrls.
@@ -550,6 +552,11 @@ void Tab::create_preset_tab()
                     } while (this->tree_sel_change_delayed(event));
                     m_page_switch_running = false;
                 }
+            }
+            if (m_type == Preset::TYPE_PRINT && m_parent->workbench_process_mode() >= 0) {
+                // Rebuilding the category buttons also emits selection events.
+                event.SetExtraLong(m_active_page != page_before_selection);
+                event.Skip(); // The mounted workbench styles the newly built controls.
             }
         });
 
@@ -1788,7 +1795,8 @@ void Tab::reload_config()
 
 void Tab::update_mode()
 {
-    m_mode = wxGetApp().get_mode();
+    const int workbench_mode = m_type == Preset::TYPE_PRINT ? m_parent->workbench_process_mode() : -1;
+    m_mode = workbench_mode >= 0 ? static_cast<ConfigOptionMode>(workbench_mode) : wxGetApp().get_mode();
 
     // toggle_options reads m_mode to gate Lines whose contents are mode-mixed
     // (e.g., a multi-option row where some options are Advanced and some Expert):
@@ -2749,10 +2757,11 @@ void Tab::activate_option(const std::string& opt_key, const wxString& category)
 
     // focused selected field
     if (field) {
-        set_focus(field->getWindow());
-        if (!field->getWindow()->HasFocus()) {
+        auto* window = field->getWindow();
+        set_focus(window);
+        if (!m_parent->reveal_workbench_parameter(window) && !window->HasFocus()) {
             wxScrollEvent evt(wxEVT_SCROLL_CHANGED);
-            evt.SetEventObject(field->getWindow());
+            evt.SetEventObject(window);
             wxPostEvent(m_page_view, evt);
         }
     }
@@ -7491,8 +7500,16 @@ void Tab::update_btns_enabling()
     // we can delete any preset from the physical printer
     // and any user preset
     const Preset& preset = m_presets->get_edited_preset();
-    m_btn_delete_preset->Show((m_type == Preset::TYPE_PRINTER && m_preset_bundle->physical_printers.has_selection())
-                              || preset.can_overwrite());
+    const bool workbench = m_type == Preset::TYPE_PRINT && m_parent->workbench_process_mode() >= 0;
+    if (m_type == Preset::TYPE_PRINT) {
+        if (m_presets_choice)
+            m_top_sizer->GetItem(m_presets_choice)->SetBorder(workbench ? 0 : FromDIP(SidebarProps::ElementSpacing()));
+        m_top_sizer->GetItem(m_search_item)->SetBorder(workbench ? 0 : FromDIP(SidebarProps::ContentMargin()));
+        m_btn_save_preset->Show(!workbench && !m_search_item->IsShown());
+        m_undo_btn->Show(!workbench && !m_search_item->IsShown());
+    }
+    m_btn_delete_preset->Show(!workbench &&
+        ((m_type == Preset::TYPE_PRINTER && m_preset_bundle->physical_printers.has_selection()) || preset.can_overwrite()));
 
     //if (m_btn_edit_ph_printer)
     //    m_btn_edit_ph_printer->SetToolTip( m_preset_bundle->physical_printers.has_selection() ?

@@ -128,7 +128,7 @@ public:
     //BBS
     int    get_title_width();
     // BBS
-    void fixup_items_positions();
+    void fixup_items_positions(bool force = false);
 
     void    msw_rescale();
     void    sys_color_changed();

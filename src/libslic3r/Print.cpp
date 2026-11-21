@@ -1807,10 +1807,10 @@ static StringObjectException layered_print_cleareance_valid(const Print &print, 
         }
     }
     if (!intersection(prime_tower_exclude_polys, tower_polys_checked).empty()) {
-        return {L("Prime tower is too close to an exclusion area, and collisions will be caused.\n")};
+        return {L("Prime tower is too close to an exclusion area, and collisions will be caused.\n"), nullptr, "wipe_tower_x"};
     }
     if (print_config.enable_wrapping_detection.value && !intersection({wrapping_poly}, tower_polys_checked).empty()) {
-        return {L("Prime tower is too close to the clumping detection area, and collisions will be caused.\n")};
+        return {L("Prime tower is too close to the clumping detection area, and collisions will be caused.\n"), nullptr, "wipe_tower_x"};
     }
     if (warning && !intersection(prime_tower_exclude_polys, tower_polys_estimated).empty()) {
         warning->string += L("Prime tower is too close to an exclusion area. There may be collisions when printing.") + "\n";
@@ -1828,8 +1828,8 @@ static StringObjectException layered_print_cleareance_valid(const Print &print, 
     if (!diff(tower_polys_checked, printable_polys).empty()) {
         // Moving the tower does not help when no area is reached by every extruder.
         if (printable_polys.empty())
-            return {L("The extruder printable areas share no common area, so the prime tower cannot be printed.\n")};
-        return {L("Prime tower is partially outside the printable area, and it cannot be printed.\n")};
+            return {L("The extruder printable areas share no common area, so the prime tower cannot be printed.\n"), nullptr, "wipe_tower_x"};
+        return {L("Prime tower is partially outside the printable area, and it cannot be printed.\n"), nullptr, "wipe_tower_x"};
     }
     if (warning && !diff(tower_polys_estimated, printable_polys).empty())
         warning->string += L("Prime tower is partially outside the printable area, and it cannot be printed.\n");
@@ -5213,6 +5213,95 @@ Polygons Print::get_extruder_shared_printable_polygon() const
     return shared_printable_polys;
 }
 
+WipeTowerPositionStatus Print::WipeTowerPositionGeometry::check(const Vec2d& position) const
+{
+    if (footprint.points.size() < 3 || !position.allFinite())
+        return WipeTowerPositionStatus::Unavailable;
+    auto placed = footprint;
+    placed.translate(Point::new_scale(position.x(), position.y()));
+    if (printable.empty() || !diff(Polygons{placed}, printable).empty())
+        return WipeTowerPositionStatus::Outside;
+    if (!intersection(Polygons{placed}, exclusions).empty())
+        return WipeTowerPositionStatus::Exclusion;
+    if (!intersection(Polygons{placed}, occupied).empty())
+        return WipeTowerPositionStatus::ModelOverlap;
+    return WipeTowerPositionStatus::Valid;
+}
+
+Print::WipeTowerPositionGeometry Print::wipe_tower_position_geometry(double estimate_reserve_mm) const
+{
+    WipeTowerPositionGeometry geometry;
+    if (!has_wipe_tower() || m_objects.empty())
+        return geometry;
+    const bool generated = bool(m_wipe_tower_data.wipe_tower_mesh_data);
+    Polygon& footprint = geometry.footprint;
+    if (generated) {
+        footprint = m_wipe_tower_data.wipe_tower_mesh_data->bottom;
+    } else {
+        const auto tools = extruders(true);
+        if (tools.empty()) return geometry;
+        const auto& estimate = wipe_tower_data(tools.size());
+        double height = 0.;
+        for (const PrintObject* object : m_objects)
+            height = std::max(height, unscale_(object->size().z()));
+        footprint = estimate_wipe_tower_first_layer_outline(
+            m_config, wipe_tower_type(), estimate.width, estimate.depth, height);
+        if (!footprint.empty()) {
+            // This early suggestion consumes the same single retry as an
+            // exact relocation. Leave room for purge-path rounding and the
+            // generated base, then validate the definitive outline on retry.
+            auto outlines = offset(footprint, float(scaled(estimate.brim_width + estimate_reserve_mm)));
+            if (!outlines.empty()) footprint = std::move(outlines.front());
+        }
+    }
+    if (footprint.points.size() < 3) return geometry;
+    footprint.rotate(Geometry::deg2rad(m_config.wipe_tower_rotation_angle.value));
+    geometry.printable = get_extruder_shared_printable_polygon();
+    geometry.exclusions = get_bed_excluded_area(m_config);
+    if (m_config.enable_wrapping_detection && m_config.wrapping_exclude_area.values.size() >= 3)
+        geometry.exclusions.emplace_back(Polygon::new_scale(m_config.wrapping_exclude_area.values));
+    const Point origin(scale_(m_origin.x()), scale_(m_origin.y()));
+    for (const PrintObject* object : m_objects) {
+        const auto& config = object->config();
+        const double brim = std::max(0., config.brim_width.value) +
+                            std::max(0., config.extra_brim_width.value) +
+                            std::max(0., config.leading_brim_length.value);
+        for (const auto& instance : object->instances()) {
+            Polygon hull = object->model_object()->convex_hull_2d(instance.model_instance->get_matrix());
+            hull.translate(-origin);
+            for (auto& region : offset(hull, float(scale_(brim + 0.2))))
+                geometry.occupied.emplace_back(std::move(region));
+        }
+    }
+    if (generated && std::all_of(m_objects.begin(), m_objects.end(),
+            [](const PrintObject* object) { return !object->layers().empty(); })) {
+        for (Polygon island : first_layer_islands()) {
+            island.translate(-origin);
+            geometry.occupied.emplace_back(std::move(island));
+        }
+    }
+    return geometry;
+}
+
+WipeTowerPositionStatus Print::check_wipe_tower_position(const Vec2d& position) const
+{
+    if (!has_wipe_tower() || m_objects.empty()) return WipeTowerPositionStatus::NotRequired;
+    return wipe_tower_position_geometry().check(position);
+}
+
+std::optional<Vec2d> Print::find_wipe_tower_position() const
+{
+    // Reserve extra room when proposing an anchor from an estimate. The actual
+    // bottom is verified after generation.
+    auto geometry = wipe_tower_position_geometry(2.);
+    append(geometry.occupied, std::move(geometry.exclusions));
+    const Point saved(scale_(m_config.wipe_tower_x.get_at(m_plate_index)),
+                      scale_(m_config.wipe_tower_y.get_at(m_plate_index)));
+    const auto anchor = fit_wipe_tower_anchor(geometry.printable, geometry.footprint, geometry.occupied, saved);
+    if (!anchor) return std::nullopt;
+    return Vec2d(unscaled(anchor->x()), unscaled(anchor->y()));
+}
+
 void Print::set_nozzle_group_result(std::shared_ptr<MultiNozzleUtils::NozzleGroupResultBase> result)
 {
     m_nozzle_group_result         = std::move(result);
@@ -5823,11 +5912,11 @@ void Print::_make_wipe_tower()
             BOOST_LOG_TRIVIAL(error) << boost::format("wipe tower footprint [%1%,%2%]-[%3%,%4%] leaves printable [%5%,%6%]-[%7%,%8%]") %
                 unscaled(fp.min.x()) % unscaled(fp.min.y()) % unscaled(fp.max.x()) % unscaled(fp.max.y()) %
                 unscaled(pr.min.x()) % unscaled(pr.min.y()) % unscaled(pr.max.x()) % unscaled(pr.max.y());
-            throw Slic3r::SlicingError(L("Prime tower is partially outside the printable area, and it cannot be printed.\n"));
+            throw Slic3r::WipeTowerPlacementError(L("Prime tower is partially outside the printable area, and it cannot be printed.\n"));
         }
         // The cutter/purge corner is a physical obstacle — the brim must stay out like the body.
         if (!intersection(get_bed_excluded_area(m_config), Polygons{footprint}).empty())
-            throw Slic3r::SlicingError(L("Prime tower is too close to an exclusion area, and collisions will be caused.\n"));
+            throw Slic3r::WipeTowerPlacementError(L("Prime tower is too close to an exclusion area, and collisions will be caused.\n"));
     }
 }
 

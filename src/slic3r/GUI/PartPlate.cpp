@@ -1161,7 +1161,7 @@ Polygon PartPlate::imex_wipe_tower_hull() const
     // from the wrong column. No shipped preset pairs the two today.
     // plate_extruder_size is a floor, not an override; the scene passes 0, and both counts
     // come from the same object walk.
-    arrangement::ArrangePolygon ap = estimate_wipe_tower_polygon(preset_bundle->full_config(false), m_plate_index, wt_pos, wt_size, plate_extruder_size);
+    arrangement::ArrangePolygon ap = estimate_wipe_tower_polygon(effective_slice_config(*preset_bundle), m_plate_index, wt_pos, wt_size, plate_extruder_size);
     if (wt_size(0) <= 0. || wt_size(1) <= 0. || ap.poly.contour.points.empty())
         return Polygon();
 
@@ -3904,6 +3904,103 @@ bool PartPlate::check_compatible_of_nozzle_and_filament(const DynamicPrintConfig
     return wipe_tower_size;
 }*/
 
+DynamicPrintConfig PartPlate::slice_preset_config(PresetBundle& bundle) const
+{
+    return slice_preset_config(bundle, m_workbench_smart_applied);
+}
+
+DynamicPrintConfig PartPlate::slice_preset_config(PresetBundle& bundle, bool smart) const
+{
+    const auto* process = smart && m_partplate_list ? m_partplate_list->workbench_smart_baseline() : nullptr;
+    if (bundle.get_printer_extruder_count() <= 1)
+        return bundle.full_config(false, std::nullopt, std::nullopt, process);
+    auto mapping = get_real_filament_maps(bundle.project_config);
+    auto volume_mapping = get_filament_volume_maps();
+    if (volume_mapping.empty())
+        volume_mapping = bundle.get_default_nozzle_volume_types_for_filaments(mapping);
+    return bundle.full_config(false, mapping, volume_mapping, process);
+}
+
+void PartPlate::apply_slice_overrides(DynamicPrintConfig& config) const
+{
+    if (m_workbench_smart_applied)
+        config.apply(m_workbench_smart_process);
+    config.apply(m_config);
+}
+
+DynamicPrintConfig PartPlate::effective_slice_config(PresetBundle& bundle) const
+{
+    auto config = slice_preset_config(bundle);
+    apply_slice_overrides(config);
+    return config;
+}
+
+DynamicPrintConfig PartPlate::smart_slice_baseline(PresetBundle& bundle) const
+{
+    auto config = slice_preset_config(bundle, true);
+    config.apply(m_config);
+    return config;
+}
+
+void PartPlate::set_workbench_smart_process(int goal, const DynamicPrintConfig& patch,
+    const std::vector<std::pair<uint64_t, std::vector<coordf_t>>>& layers)
+{
+    m_workbench_smart_goal = goal;
+    m_workbench_smart_process = patch;
+    m_workbench_smart_layers = layers;
+    m_workbench_smart_applied = true;
+}
+
+void PartPlateList::restore_workbench_layer_object_ids(const ModelObjectPtrs& imported,
+                                                       const std::vector<size_t>& inserted)
+{
+    if (std::none_of(m_plate_list.begin(), m_plate_list.end(),
+                     [](const PartPlate* plate) { return !plate->m_workbench_smart_layers.empty(); }))
+        return;
+
+    // A complete project import clones the objects in order, giving them new
+    // IDs. Restore the plate profiles against the objects owned by the plater.
+    std::map<uint64_t, uint64_t> object_ids;
+    if (imported.size() == inserted.size()) {
+        for (size_t i = 0; i < inserted.size(); ++i)
+            object_ids.emplace(imported[i]->id().id, m_model->objects[inserted[i]]->id().id);
+    }
+    for (PartPlate* plate : m_plate_list) {
+        auto& layers = plate->m_workbench_smart_layers;
+        for (auto& layer : layers) {
+            const auto target = object_ids.find(layer.first);
+            if (target != object_ids.end()) {
+                layer.first = target->second;
+            } else {
+                BOOST_LOG_TRIVIAL(warning) << "Ignoring a workbench layer profile for an object absent from the loaded project";
+                layer.first = 0;
+            }
+        }
+        layers.erase(std::remove_if(layers.begin(), layers.end(), [](const auto& layer) {
+            return layer.first == 0;
+        }), layers.end());
+    }
+}
+
+void PartPlateList::prepare_workbench_smart_baseline(PresetBundle& bundle)
+{
+    const auto& printer = bundle.printers.get_edited_preset();
+    const auto* diameters = printer.config.option("nozzle_diameter");
+    const auto identity = printer.name + '\n' + (diameters ? diameters->serialize() : std::string{});
+    if (!m_workbench_smart_baseline.empty() && m_workbench_smart_printer == identity)
+        return;
+
+    // A project can be loaded with the custom tab already open. Its selected
+    // preset may have changed before the first request for a smart baseline.
+    const Preset* preset = nullptr;
+    if (const auto* preferred = printer.config.option<ConfigOptionString>("default_print_profile"))
+        preset = bundle.prints.find_preset(preferred->value);
+    if (!preset || !preset->is_compatible)
+        preset = &bundle.prints.first_compatible();
+    m_workbench_smart_baseline = preset->config;
+    m_workbench_smart_printer = identity;
+}
+
 WipeTowerFootprint PartPlate::estimate_wipe_tower_footprint(const DynamicPrintConfig &config, int plate_extruder_size, bool use_global_objects) const
 {
     // The CLI calls this too, so the plate's filaments are derived from the passed config:
@@ -6266,6 +6363,8 @@ void PartPlateList::set_default_wipe_tower_pos_for_plate(int plate_idx, bool ini
     }
 
     PartPlate *part_plate = get_plate(plate_idx);
+    if (!part_plate || part_plate->get_shape().size() < 3)
+        return;
     Vec3d plate_origin = part_plate->get_origin();
     BoundingBoxf3 plate_bbox = part_plate->get_bounding_box();
     BoundingBoxf plate_bbox_2d(Vec2d(plate_bbox.min(0), plate_bbox.min(1)), Vec2d(plate_bbox.max(0), plate_bbox.max(1)));
@@ -6280,15 +6379,7 @@ void PartPlateList::set_default_wipe_tower_pos_for_plate(int plate_idx, bool ini
     coordf_t plate_bbox_x_max_local_coord = plate_bbox_2d.max(0) - plate_origin(0);
     coordf_t plate_bbox_y_max_local_coord = plate_bbox_2d.max(1) - plate_origin(1);
 
-    std::vector<int> filament_maps = part_plate->get_real_filament_maps(proj_cfg);
-    // Keep this composition consistent with the apply-time injection (plate volume map, else
-    // per-extruder defaults); the config below currently only feeds scalar reads, but a
-    // divergent volume map would silently mis-resolve any future per-filament read here.
-    std::vector<int> f_volume_maps = part_plate->get_filament_volume_maps();
-    if (f_volume_maps.empty()) {
-        f_volume_maps = wxGetApp().preset_bundle->get_default_nozzle_volume_types_for_filaments(filament_maps);
-    }
-    DynamicPrintConfig full_config = wxGetApp().preset_bundle->full_config(false, filament_maps, f_volume_maps);
+    const auto full_config = part_plate->effective_slice_config(*wxGetApp().preset_bundle);
     WipeTowerFootprint footprint = part_plate->estimate_wipe_tower_footprint(full_config, init_pos ? 2 : 0);
 
     if (!init_pos && (is_approx(footprint.width, 0.0) || is_approx(footprint.depth, 0.0))) {
@@ -6330,10 +6421,19 @@ void PartPlateList::set_default_wipe_tower_pos_for_plate(int plate_idx, bool ini
         y += move.y();
     }
 
-    ConfigOptionFloat wt_x_opt(x);
-    ConfigOptionFloat wt_y_opt(y);
-    dynamic_cast<ConfigOptionFloats *>(proj_cfg.option("wipe_tower_x"))->set_at(&wt_x_opt, plate_idx, 0);
-    dynamic_cast<ConfigOptionFloats *>(proj_cfg.option("wipe_tower_y"))->set_at(&wt_y_opt, plate_idx, 0);
+    set_wipe_tower_position_for_plate(plate_idx, Vec2d(x, y), true);
+}
+
+void PartPlateList::set_wipe_tower_position_for_plate(int plate_idx, const Vec2d& position, bool automatic)
+{
+    PartPlate* plate = get_plate(plate_idx);
+    if (!plate || !position.allFinite()) return;
+    plate->set_automatic_wipe_tower_position(automatic);
+    auto& config = wxGetApp().preset_bundle->project_config;
+    const ConfigOptionFloat x(position.x()), y(position.y());
+    config.option<ConfigOptionFloats>("wipe_tower_x")->set_at(&x, plate_idx, 0);
+    config.option<ConfigOptionFloats>("wipe_tower_y")->set_at(&y, plate_idx, 0);
+    sync_wipe_tower_positions_to_model();
 }
 
 //this may be happened after machine changed
@@ -6367,7 +6467,7 @@ void PartPlateList::reset_size(int width, int depth, double height, bool reload_
 		m_plate_width = width;
 		m_plate_depth = depth;
 		m_plate_height = height;
-		update_all_plates_pos_and_size(false, false, true);
+		update_all_plates_pos_and_size(false, false);
 		if (update_shapes) {
 			set_shapes(m_shape, m_exclude_areas, m_wrapping_exclude_areas, m_extruder_areas, m_extruder_heights, m_logo_texture_filename, m_height_to_lid, m_height_to_rod);
 		}
@@ -6403,6 +6503,8 @@ void PartPlateList::clear(bool delete_plates, bool release_print_list, bool exce
 		//also delete print related to the plate
 		m_plate_list.clear();
 		m_current_plate = 0;
+        m_workbench_smart_baseline = {};
+        m_workbench_smart_printer.clear();
 	}
 
 	if (release_print_list)
@@ -7018,7 +7120,7 @@ void PartPlateList::update_plate_cols()
 	return;
 }
 
-void PartPlateList::update_all_plates_pos_and_size(bool adjust_position, bool with_unprintable_move, bool switch_plate_type, bool do_clear)
+void PartPlateList::update_all_plates_pos_and_size(bool adjust_position, bool with_unprintable_move, bool do_clear)
 {
 	Vec3d origin1, origin2;
 	for (unsigned int i = 0; i < (unsigned int)m_plate_list.size(); ++i)
@@ -7029,11 +7131,6 @@ void PartPlateList::update_all_plates_pos_and_size(bool adjust_position, bool wi
 		//compute origin1 for PartPlate
 		origin1 = compute_origin(i, m_plate_cols);
 		plate->set_pos_and_size(origin1, m_plate_width, m_plate_depth, m_plate_height, adjust_position, do_clear);
-
-		// set default wipe pos when switch plate
-        if (switch_plate_type && m_plater/* && plate->get_used_extruders().size() <= 0*/) {
-			set_default_wipe_tower_pos_for_plate(i);
-		}
 	}
 
 	origin2 = compute_origin_for_unprintable();
@@ -8042,6 +8139,8 @@ bool PartPlateList::set_shapes(const Pointfs              &shape,
                                float                       height_to_rod)
 {
 	const std::lock_guard<std::mutex> local_lock(m_plates_mutex);
+    const bool geometry_changed = m_shape != shape || m_exclude_areas != exclude_areas ||
+        m_wrapping_exclude_areas != wrapping_exclude_areas || m_extruder_areas != extruder_areas;
 	m_shape = shape;
 	m_exclude_areas = exclude_areas;
     m_wrapping_exclude_areas = wrapping_exclude_areas;
@@ -8068,6 +8167,12 @@ bool PartPlateList::set_shapes(const Pointfs              &shape,
 	m_next_extruder_only_area_texture = 0;
 	calc_bounding_boxes();
 
+    if (m_plater && geometry_changed && m_shape.size() >= 3) {
+        for (PartPlate* plate : m_plate_list) {
+            if (plate->automatic_wipe_tower_position())
+                set_default_wipe_tower_pos_for_plate(plate->get_index(), true);
+        }
+    }
 	update_logo_texture_filename(texture_filename);
 
 	return true;
@@ -8243,7 +8348,7 @@ int PartPlateList::rebuild_plates_after_deserialize(std::vector<bool>& previous_
         partplate->printer_technology = this->printer_technology;
     }
 	update_plate_cols();
-	update_all_plates_pos_and_size(false, false, false, false);
+	update_all_plates_pos_and_size(false, false, false);
 	set_shapes(m_shape, m_exclude_areas, m_wrapping_exclude_areas, m_extruder_areas, m_extruder_heights, m_logo_texture_filename, m_height_to_lid, m_height_to_rod);
 	for (unsigned int i = 0; i < (unsigned int)m_plate_list.size(); ++i)
 	{
@@ -8386,6 +8491,31 @@ int PartPlateList::rebuild_plates_after_arrangement(bool recycle_plates, bool ex
 	return ret;
 }
 
+static nlohmann::json workbench_process_json(const DynamicPrintConfig& config)
+{
+    auto result = nlohmann::json::object();
+    for (const auto& key : config.keys())
+        if (const auto* option = config.option(key)) result[key] = option->serialize();
+    return result;
+}
+
+static DynamicPrintConfig read_workbench_process(const nlohmann::json& settings,
+    const std::vector<std::string>& allowed)
+{
+    if (!settings.is_object()) throw std::runtime_error("Invalid workbench process fields");
+    DynamicPrintConfig config;
+    for (auto it = settings.begin(); it != settings.end(); ++it) {
+        if (std::find(allowed.begin(), allowed.end(), it.key()) == allowed.end()) continue;
+        config.set_deserialize_strict(it.key(), it.value().get<std::string>());
+    }
+    if (const auto* height = config.option<ConfigOptionFloat>("layer_height")) {
+        const auto* definition = print_config_def.get("layer_height");
+        if (!std::isfinite(height->value) || height->value <= 0 || !definition->is_value_valid(height->value))
+            throw std::runtime_error("Invalid workbench layer height");
+    }
+    return config;
+}
+
 int PartPlateList::store_to_3mf_structure(PlateDataPtrs& plate_data_list, bool with_slice_info, int plate_idx, bool with_statistics)
 {
 	int ret = 0;
@@ -8406,6 +8536,18 @@ int PartPlateList::store_to_3mf_structure(PlateDataPtrs& plate_data_list, bool w
 		BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": plate %1% after load, width %2%, height %3%, size %4%!")
 			%(i+1) %plate_data_item->plate_thumbnail.width %plate_data_item->plate_thumbnail.height %plate_data_item->plate_thumbnail.pixels.size();
 		plate_data_item->config.apply(*m_plate_list[i]->config());
+        const auto& plate = *m_plate_list[i];
+        nlohmann::json workbench{{"automatic_tower", plate.automatic_wipe_tower_position()},
+                                 {"smart_active", plate.uses_workbench_smart_process()},
+                                 {"smart_goal", plate.workbench_smart_goal()},
+                                 {"smart_process", workbench_process_json(plate.m_workbench_smart_process)}};
+        if (!m_workbench_smart_baseline.empty() && (plate_idx < 0 ? i == 0 : int(i) == plate_idx)) {
+            workbench["smart_baseline"] = workbench_process_json(m_workbench_smart_baseline);
+            workbench["smart_printer"] = m_workbench_smart_printer;
+        }
+        plate_data_item->workbench_slicing = workbench.dump();
+        for (const auto& [id, values] : plate.workbench_smart_layers())
+            plate_data_item->workbench_layer_profiles.emplace(id, values);
 
 		if (m_plate_list[i]->no_light_thumbnail_data.is_valid())
 			plate_data_item->no_light_thumbnail_file = "valid_no_light";
@@ -8515,6 +8657,42 @@ int PartPlateList::load_from_3mf_structure(PlateDataPtrs& plate_data_list, int f
 	for (unsigned int i = 0; i < (unsigned int)plate_data_list.size(); ++i)
 	{
 		int index = create_plate(false);
+        auto& plate = *m_plate_list[index];
+        plate.set_automatic_wipe_tower_position(false);
+        if (const auto& stored = plate_data_list[i]->workbench_slicing; !stored.empty()) {
+            try {
+                const auto record = nlohmann::json::parse(stored);
+                const bool automatic_tower = record.at("automatic_tower").get<bool>();
+                const bool smart_active = record.at("smart_active").get<bool>();
+                const int goal = record.value("smart_goal", -1);
+                if (goal < -1 || goal >= 3)
+                    throw std::runtime_error("Invalid workbench slicing goal");
+                static const std::vector<std::string> effect_keys{
+                    "layer_height", "wall_loops", "sparse_infill_density", "sparse_infill_pattern",
+                    "outer_wall_line_width", "outer_wall_speed", "enable_support", "support_type",
+                    "support_threshold_angle", "support_on_build_plate_only", "wall_generator"};
+                auto effect = read_workbench_process(record.at("smart_process"), effect_keys);
+                const auto& curves = plate_data_list[i]->workbench_layer_profiles;
+                decltype(plate.m_workbench_smart_layers) layers(curves.begin(), curves.end());
+                if (record.contains("smart_baseline")) {
+                    if (const auto* bundle = wxGetApp().preset_bundle) {
+                        auto printer = record.at("smart_printer").get<std::string>();
+                        auto baseline = read_workbench_process(record.at("smart_baseline"),
+                            bundle->prints.get_selected_preset().config.keys());
+                        m_workbench_smart_printer = std::move(printer);
+                        m_workbench_smart_baseline = std::move(baseline);
+                    }
+                }
+                plate.set_automatic_wipe_tower_position(automatic_tower);
+                plate.m_has_saved_tower_source = true;
+                plate.m_workbench_smart_process = std::move(effect);
+                plate.m_workbench_smart_layers = std::move(layers);
+                plate.m_workbench_smart_goal = goal;
+                plate.use_workbench_smart_process(smart_active);
+            } catch (const std::exception&) {
+                BOOST_LOG_TRIVIAL(warning) << "Invalid workbench slicing settings for plate " << index;
+            }
+        }
 		m_plate_list[index]->m_locked = plate_data_list[i]->locked;
 		m_plate_list[index]->config()->apply(plate_data_list[i]->config);
 		m_plate_list[index]->set_plate_name(plate_data_list[i]->plate_name);

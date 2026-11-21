@@ -22,11 +22,11 @@
 #include "../AI/ModelGeneration/WorkbenchStyle.hpp"
 #include "../AI/ModelGeneration/WorkbenchImportPresentation.hpp"
 #include "../AI/SmartSlicing/SmartSlicingFeatureHost.hpp"
+#include "../AI/Orca/OrcaTrialSliceExecutor.hpp"
 #include "../GUI_App.hpp"
 #include "../I18N.hpp"
 #include "../MainFrame.hpp"
 #include "../BBLTopbar.hpp"
-#include "../ParamsPanelScrollbar.hpp"
 #include "../Plater.hpp"
 #include "../ParamsPanel.hpp"
 #include "../GLCanvas3D.hpp"
@@ -34,13 +34,18 @@
 #include "../NativeSlicingEvents.hpp"
 #include "../NotificationManager.hpp"
 #include "../PresetComboBoxes.hpp"
+#include "../Widgets/ComboBox.hpp"
 #include "../Widgets/SpinInput.hpp"
 #include "../Widgets/Label.hpp"
+#include "../Widgets/TabCtrl.hpp"
 #include "slic3r/AI/SmartSlicing/Domain/RiskConfirmationPolicy.hpp"
 #include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/Layer.hpp"
 
 #include <wx/choice.h>
 #include <wx/dcclient.h>
+#include <wx/dcbuffer.h>
+#include <wx/button.h>
 #include <wx/glcanvas.h>
 #include <wx/msgdlg.h>
 #include <wx/sizer.h>
@@ -61,6 +66,49 @@
 namespace Slic3r::GUI {
 namespace {
 using namespace AI::SmartSlicing;
+
+bool matching_workbench_result(const PartPlate* plate, bool custom, bool external,
+                               const SmartSlicingWorkbenchState& state)
+{
+    if (!plate) return false;
+    if (external) return true;
+    if (custom) return !plate->uses_workbench_smart_process();
+    return plate->uses_workbench_smart_process() && state.has_selected_goal &&
+        plate->workbench_smart_goal() == static_cast<int>(state.selected_goal);
+}
+
+wxString custom_layer_summary(PartPlate& plate, const PresetBundle& bundle, bool have_result)
+{
+    const auto* global = bundle.prints.get_edited_preset().config.option<ConfigOptionFloat>("layer_height");
+    if (!global) return {};
+    wxString summary = wxString::Format(_L("全局层高 %.2f mm"), global->value);
+    if (const auto* plate_height = plate.config()->option<ConfigOptionFloat>("layer_height"))
+        summary += wxString::Format(_L(" · 盘级 %.2f mm"), plate_height->value);
+    if (!have_result || !plate.fff_print()) return summary;
+
+    bool local = false;
+    double minimum = std::numeric_limits<double>::max();
+    double maximum = 0.;
+    for (const auto* object : plate.fff_print()->objects()) {
+        const auto* source = object->model_object();
+        if (source) {
+            local = local || source->has_custom_layering() || source->config.has("layer_height");
+            for (const auto* volume : source->volumes)
+                local = local || volume->config.has("layer_height");
+        }
+        for (const auto* layer : object->layers()) {
+            minimum = std::min(minimum, double(layer->height));
+            maximum = std::max(maximum, double(layer->height));
+        }
+    }
+    if (maximum > 0.) {
+        summary += std::abs(maximum - minimum) < 0.005
+            ? wxString::Format(_L("\n实际层高 %.2f mm"), maximum)
+            : wxString::Format(_L("\n实际层高 %.2f–%.2f mm"), minimum, maximum);
+        if (local) summary += _L(" · 含对象或分层覆盖");
+    }
+    return summary;
+}
 
 bool fit_slicing_camera(Plater& plater)
 {
@@ -276,6 +324,50 @@ std::vector<SliceDetailRow> candidate_detail_rows(
     return rows;
 }
 
+void add_orientation_preview(wxWindow* parent, wxSizer* row, const wxString& label,
+                             const std::vector<std::array<Vec3f, 3>>& mesh)
+{
+    auto* column = new wxBoxSizer(wxVERTICAL);
+    column->Add(new wxStaticText(parent, wxID_ANY, label), 0, wxALIGN_CENTER | wxBOTTOM, parent->FromDIP(6));
+    auto* canvas = new wxPanel(parent, wxID_ANY, wxDefaultPosition, parent->FromDIP(wxSize(208, 180)));
+    canvas->SetMinSize(parent->FromDIP(wxSize(208, 180)));
+    canvas->SetBackgroundStyle(wxBG_STYLE_PAINT);
+    const auto project = [](const Vec3f& p) { return Vec2f(p.x() + 0.40f * p.y(), p.z() + 0.25f * p.y()); };
+    std::vector<std::array<Vec2f, 3>> triangles;
+    Vec2f lower = Vec2f::Constant(std::numeric_limits<float>::max());
+    Vec2f upper = -lower;
+    for (const auto& face : mesh) {
+        auto& triangle = triangles.emplace_back();
+        for (size_t i = 0; i < 3; ++i) {
+            triangle[i] = project(face[i]);
+            lower = lower.cwiseMin(triangle[i]);
+            upper = upper.cwiseMax(triangle[i]);
+        }
+    }
+    canvas->Bind(wxEVT_PAINT, [canvas, triangles = std::move(triangles), lower, upper](wxPaintEvent&) {
+        wxAutoBufferedPaintDC dc(canvas);
+        dc.SetBackground(wxBrush(RedesignTheme::secondary_text_colour().ChangeLightness(25)));
+        dc.Clear();
+        if (triangles.empty()) return;
+        const auto size = canvas->GetClientSize();
+        const Vec2f extent = (upper - lower).cwiseMax(Vec2f::Constant(1.f));
+        const float scale = 0.82f * std::min(size.x / extent.x(), size.y / extent.y());
+        const Vec2f center = (lower + upper) * 0.5f;
+        dc.SetPen(wxPen(wxColour(168, 181, 190)));
+        dc.SetBrush(wxBrush(wxColour(97, 130, 152)));
+        for (const auto& triangle : triangles) {
+            wxPoint vertices[3];
+            for (size_t i = 0; i < 3; ++i) {
+                const auto p = triangle[i] - center;
+                vertices[i] = {int(size.x * 0.5f + p.x() * scale), int(size.y * 0.5f - p.y() * scale)};
+            }
+            dc.DrawPolygon(3, vertices);
+        }
+    });
+    column->Add(canvas, 1, wxEXPAND);
+    row->Add(column, 1, wxEXPAND | wxALL, parent->FromDIP(6));
+}
+
 std::vector<SliceDetailRow> official_detail_rows(PartPlate* plate)
 {
     std::vector<SliceDetailRow> rows;
@@ -283,20 +375,9 @@ std::vector<SliceDetailRow> official_detail_rows(PartPlate* plate)
         return rows;
     const auto& statistics = plate->get_slice_result()->print_statistics;
     const double seconds = statistics.modes[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time;
-    double volume = 0.0;
-    for (const auto& [_, value] : statistics.total_volumes_per_extruder)
-        if (std::isfinite(value) && value > 0.0) volume += value;
-    double density = 1.24;
-    if (wxGetApp().preset_bundle != nullptr) {
-        DynamicPrintConfig config = wxGetApp().preset_bundle->full_config();
-        config.apply(*plate->config(), true);
-        if (const auto* densities = config.option<ConfigOptionFloats>("filament_density");
-            densities != nullptr && !densities->values.empty() && std::isfinite(densities->values.front()) &&
-            densities->values.front() > 0.0)
-            density = densities->values.front();
-    }
+    const auto grams = plate->get_slice_result()->material_weight_grams(statistics.total_volumes_per_extruder);
     rows.push_back({_L("打印时间"), format_estimated_time(seconds), _L("正式切片结果")});
-    rows.push_back({_L("实际耗材"), wxString::Format(_L("%.2f g"), volume * density / 1000.0), _L("正式切片结果")});
+    rows.push_back({_L("实际耗材"), grams ? wxString::Format(_L("%.2f g"), *grams) : _L("暂无"), _L("正式切片结果")});
     return rows;
 }
 }
@@ -315,9 +396,7 @@ bool RedesignShell::native_workspace_visible() const
 void RedesignShell::start_slicing_from_workspace()
 {
     if (m_import_in_progress || !native_workspace_visible()) return;
-    if (m_native_slicing) {
-        if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this))) frame->slice_native_workspace();
-    } else start_workbench_slice();
+    start_workbench_slice();
 }
 
 bool RedesignShell::slicing_mode_switch_allowed() const
@@ -329,18 +408,33 @@ bool RedesignShell::slicing_mode_switch_allowed() const
 
 void RedesignShell::refresh_native_theme()
 {
-    if (!native_slicing_visible()) return;
-    std::vector<wxWindow*> swatches;
-    for (auto* combo : m_plater->sidebar().combos_filament())
-        if (combo && combo->clr_picker) swatches.push_back(combo->clr_picker);
-    // These controls already have the workbench's selected/disabled styling.
-    for (auto* navigation : {m_native_return_ai, m_native_return_overview, m_native_prepare, m_native_preview})
-        if (navigation) swatches.push_back(navigation);
-    m_native_theme.apply(&m_plater->sidebar(), swatches);
-    if (auto* parameters = wxGetApp().params_panel())
-        set_parameter_scrollbar_theme(parameters->get_paged_view(), true, RedesignTheme::panel_colour());
-    if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this)))
-        if (frame->topbar()) m_native_theme.apply(frame->topbar()->NativeWorkspaceHost(), swatches);
+    if (!m_custom_process_mount.active() || !m_custom_process_content) return;
+    m_native_theme.apply(m_custom_process_content, {});
+    if (auto* parameters = wxGetApp().params_panel()) parameters->Layout();
+}
+
+void RedesignShell::mount_custom_process(bool visible)
+{
+    auto* parameters = wxGetApp().params_panel();
+    if (!m_custom_process_content || !parameters) return;
+    if (visible && !m_custom_process_mount.active()) {
+        if (!m_custom_process_mount.mount(parameters, m_custom_process_content, 0)) return;
+        parameters->set_workbench_scroll_host(m_slicing_scroll);
+        static constexpr ConfigOptionMode modes[] = {comSimple, comAdvanced, comExpert};
+        parameters->set_workbench_process_mode(modes[m_custom_process_level]);
+        parameters->Show();
+        parameters->OnActivate();
+        refresh_native_theme();
+    } else if (!visible && m_custom_process_mount.active()) {
+        parameters->set_workbench_scroll_host(nullptr);
+        m_native_theme.restore();
+        parameters->set_workbench_process_mode(-1);
+        m_custom_process_mount.restore();
+    }
+    if (m_custom_process_content->Show(visible && m_custom_process_mount.active()))
+        m_custom_process_content->InvalidateBestSize();
+    if (m_smart_slicing_content) m_smart_slicing_content->Show(!visible);
+    if (m_slicing_scroll) m_slicing_scroll->Layout();
 }
 
 void RedesignShell::build_model_workflow()
@@ -406,7 +500,7 @@ void RedesignShell::build_model_workflow()
     root->AddSpacer(FromDIP(8));
     root->Add(m_slice_save, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
     m_slice_save->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { save_print_project(); });
-    auto* scroll = new WorkbenchScrolledWindow(settings, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
+    auto* scroll = m_slicing_scroll = new WorkbenchScrolledWindow(settings, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
     scroll->SetBackgroundColour(RedesignTheme::panel_colour());
     scroll->SetScrollRate(0, FromDIP(12));
     auto* controls = new wxBoxSizer(wxVERTICAL);
@@ -497,7 +591,7 @@ void RedesignShell::build_model_workflow()
     m_ai_slicing_controls->SetSizer(ai);
     auto* tabs = new wxBoxSizer(wxHORIZONTAL);
     m_ai_slicing_tab = new SlicingModeButton(m_ai_slicing_controls, _L("智能切片"));
-    m_native_slicing_tab = new SlicingModeButton(m_ai_slicing_controls, _L("Orca 原生"));
+    m_native_slicing_tab = new SlicingModeButton(m_ai_slicing_controls, _L("Orca原生切片"));
     auto* divider = new wxPanel(m_ai_slicing_controls);
     divider->SetBackgroundColour(wxColour(8, 8, 10));
     divider->SetMinSize(FromDIP(wxSize(2, 24)));
@@ -509,32 +603,98 @@ void RedesignShell::build_model_workflow()
     m_ai_slicing_tab->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { select_slicing_tab(false); });
     m_native_slicing_tab->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { select_slicing_tab(true); });
 
+    m_smart_slicing_content = new wxPanel(m_ai_slicing_controls);
+    m_smart_slicing_content->SetBackgroundColour(slicing_control_colour());
+    auto* smart_content = new wxBoxSizer(wxVERTICAL);
+    m_smart_slicing_content->SetSizer(smart_content);
+    ai->Add(m_smart_slicing_content, 0, wxEXPAND);
     auto* goals = new wxGridSizer(2, FromDIP(12), FromDIP(12));
     const std::array<wxString, 3> titles {_L("综合最优"), _L("速度优先"), _L("质量优先")};
     for (size_t i = 0; i < titles.size(); ++i) {
-        auto* button = new SlicingGoalCard(m_ai_slicing_controls, titles[i]);
+        auto* button = new SlicingGoalCard(m_smart_slicing_content, titles[i]);
         button->Bind(wxEVT_BUTTON, [this, i](wxCommandEvent&) {
             if (m_slicing_host) m_slicing_host->select_goal(RECOMMENDATION_GOALS[i]);
         });
         m_slice_goals[i] = button;
         goals->Add(button, 0, wxEXPAND);
     }
-    ai->Add(goals, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-    m_slice_parameter_panel = new wxPanel(m_ai_slicing_controls);
+    smart_content->Add(goals, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
+    m_slice_parameter_panel = new wxPanel(m_smart_slicing_content);
     m_slice_parameter_panel->SetBackgroundColour(m_ai_slicing_controls->GetBackgroundColour());
     auto* parameters = new wxFlexGridSizer(2, FromDIP(12), FromDIP(12)); parameters->AddGrowableCol(0);
     m_slice_parameter_panel->SetSizer(parameters);
-    ai->Add(m_slice_parameter_panel,0,wxEXPAND | wxALL,FromDIP(16));
+    smart_content->Add(m_slice_parameter_panel,0,wxEXPAND | wxALL,FromDIP(16));
     m_slice_parameter_panel->Hide();
-    m_slice_analyze = slicing_link(m_ai_slicing_controls, _L("重新分析"));
-    ai->Add(m_slice_analyze, 0, wxEXPAND | wxALL, FromDIP(8));
+    m_slice_analyze = slicing_link(m_smart_slicing_content, _L("重新分析"));
+    smart_content->Add(m_slice_analyze, 0, wxEXPAND | wxALL, FromDIP(8));
     m_slice_analyze->Hide();
     m_slice_analyze->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (m_slicing_host) { m_slicing_host->analyze_workbench(); apply_slicing_state(m_slicing_host->workbench_snapshot()); }
     });
-    // The mutually exclusive analysis actions share the same position and margins.
-    m_slice_cancel = slicing_link(m_ai_slicing_controls, _L("取消分析"));
-    ai->Add(m_slice_cancel, 0, wxEXPAND | wxALL, FromDIP(8));
+    m_slice_orientation = slicing_link(m_smart_slicing_content, _L("比较摆放角度"));
+    smart_content->Add(m_slice_orientation, 0, wxEXPAND | wxALL, FromDIP(8));
+    m_slice_orientation->Hide();
+    m_slice_orientation->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (!m_slicing_host) return;
+        const auto current = m_slicing_host->workbench_snapshot();
+        if (!current.can_start) return;
+        if (!current.orientation_estimate) {
+            m_slicing_host->request_orientation_comparison();
+            return;
+        }
+        if (!current.orientation_estimate->native_details) return;
+        const auto candidate = *current.orientation_estimate;
+        const auto& effect = *candidate.native_details;
+        wxDialog dialog(this, wxID_ANY, _L("比较摆放角度"));
+        auto* content = new wxBoxSizer(wxVERTICAL);
+        auto* figures = new wxBoxSizer(wxHORIZONTAL);
+        add_orientation_preview(&dialog, figures, _L("原摆放"), effect.original_preview);
+        add_orientation_preview(&dialog, figures, _L("备选摆放"), effect.oriented_preview);
+        content->Add(figures, 1, wxEXPAND | wxALL, FromDIP(8));
+        const auto mass = wxString::Format(_L("旋转 %.1f°，预计总耗材 %.2f g，支撑 %.2f g，清洗 %.2f g，擦料塔 %.2f g"),
+            effect.orientation_degrees, candidate.material_grams.value_or(0.), effect.support_grams.value_or(0.),
+            effect.flush_grams.value_or(0.), effect.tower_grams.value_or(0.));
+        auto* summary = new wxStaticText(&dialog, wxID_ANY, mass + "\n" + _L("预计用时 ") +
+            format_estimated_time(candidate.estimated_time_seconds.value_or(0.)));
+        summary->Wrap(FromDIP(410));
+        content->Add(summary, 0, wxEXPAND | wxALL, FromDIP(12));
+        if (auto* buttons = dialog.CreateButtonSizer(wxOK | wxCANCEL))
+            content->Add(buttons, 0, wxEXPAND | wxALL, FromDIP(12));
+        if (auto* ok = dialog.FindWindow(wxID_OK))
+            ok->SetLabel(_L("选择备选摆放"));
+        dialog.SetSizerAndFit(content);
+        if (dialog.ShowModal() == wxID_OK && m_slicing_host)
+            m_slicing_host->select_orientation(candidate);
+    });
+    m_custom_process_content = new wxPanel(m_ai_slicing_controls);
+    m_custom_process_content->SetBackgroundColour(RedesignTheme::panel_colour());
+    auto* custom_content = new wxBoxSizer(wxVERTICAL);
+    m_custom_process_content->SetSizer(custom_content);
+    m_custom_process_content->Bind(wxEVT_TAB_SEL_CHANGED, [weak](wxCommandEvent& event) {
+        if (weak) {
+            // Search and keyboard reveal requests run after the category has been laid out.
+            if (event.GetExtraLong() && weak->m_slicing_scroll) weak->m_slicing_scroll->Scroll(-1, 0);
+            weak->refresh_native_theme();
+        }
+    });
+    auto* setting_level = new ComboBox(m_custom_process_content, wxID_ANY, wxEmptyString,
+        wxDefaultPosition, FromDIP(wxSize(-1, 28)), 0, nullptr, wxCB_READONLY);
+    setting_level->Append(_L("Simple settings"));
+    setting_level->Append(_L("Advanced settings"));
+    setting_level->Append(_L("Expert settings"));
+    setting_level->SetSelection(0);
+    setting_level->SetName("custom-slicing-settings-level");
+    setting_level->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent& event) {
+        m_custom_process_level = std::clamp(event.GetSelection(), 0, 2);
+        static constexpr ConfigOptionMode modes[] = {comSimple, comAdvanced, comExpert};
+        if (auto* params = wxGetApp().params_panel()) params->set_workbench_process_mode(modes[m_custom_process_level]);
+        refresh_native_theme();
+    });
+    custom_content->Add(setting_level, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+    ai->Add(m_custom_process_content, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(8));
+    m_custom_process_content->Hide();
+    m_slice_cancel = slicing_link(settings, _L("取消分析"));
+    root->Add(m_slice_cancel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
     m_slice_cancel->Hide();
     m_slice_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (workbench_slice_running(m_plater && m_plater->is_background_process_slicing(),
@@ -542,16 +702,16 @@ void RedesignShell::build_model_workflow()
             m_plater->cancel_current_slice();
         else if (m_slicing_host) m_slicing_host->cancel_workbench_analysis();
     });
-    m_slice_status = new wxStaticText(m_ai_slicing_controls, wxID_ANY, wxEmptyString);
+    m_slice_status = new wxStaticText(settings, wxID_ANY, wxEmptyString);
     RedesignTheme::style_text(m_slice_status, RedesignTheme::secondary_text_colour(), 9);
-    ai->Add(m_slice_status, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
+    root->Add(m_slice_status, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
     m_slice_status->Hide();
     m_slice_status->SetCursor(wxCURSOR_HAND);
     m_slice_status->Bind(wxEVT_LEFT_UP,[this](wxMouseEvent&) {
         wxMessageBox(m_slice_status->GetToolTipText(),_L("切片状态"),wxOK,this);
     });
-    m_slice_keep_mesh = command(m_ai_slicing_controls, _L("保留当前网格并分析"));
-    ai->Add(m_slice_keep_mesh, 0, wxEXPAND | wxALL, FromDIP(12)); m_slice_keep_mesh->Hide();
+    m_slice_keep_mesh = command(m_smart_slicing_content, _L("保留当前网格并分析"));
+    smart_content->Add(m_slice_keep_mesh, 0, wxEXPAND | wxALL, FromDIP(12)); m_slice_keep_mesh->Hide();
     m_slice_keep_mesh->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (!m_slicing_host) return;
         const auto reviewed = m_slicing_host->workbench_snapshot();
@@ -560,7 +720,7 @@ void RedesignShell::build_model_workflow()
                 _L("保留当前网格"), {wxYES_NO | wxNO_DEFAULT}) != wxID_YES) return;
         m_slicing_host->keep_current_mesh_and_analyze(reviewed.preflight->revision);
     });
-    m_slice_start = command(m_ai_slicing_controls, _L("开始切片"), true);
+    m_slice_start = command(settings, _L("开始切片"), true);
     static_cast<WorkbenchButton*>(m_slice_start)->SetCornerRadius(FromDIP(12));
     static_cast<WorkbenchButton*>(m_slice_start)->SetBackgroundColor(StateColor(
         std::pair<wxColour,int>(wxColour(68,68,69),StateColor::Disabled),
@@ -569,7 +729,8 @@ void RedesignShell::build_model_workflow()
     static_cast<WorkbenchButton*>(m_slice_start)->SetTextColor(StateColor(
         std::pair<wxColour,int>(wxColour(126,126,130),StateColor::Disabled),
         std::pair<wxColour,int>(wxColour(229,229,230),StateColor::Normal)));
-    ai->Add(m_slice_start, 0, wxEXPAND | wxALL, FromDIP(16));
+    m_slice_start->SetMinSize(FromDIP(wxSize(-1, 40)));
+    root->Add(m_slice_start, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
     controls->Add(m_ai_slicing_controls,0,wxEXPAND);
     m_slice_start->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { start_workbench_slice(); });
     m_slice_export = command(settings, _L("导出 G-code"), true);
@@ -867,11 +1028,6 @@ void RedesignShell::build_model_workflow()
         if (key == 'Z' && weak->m_plater->can_undo()) weak->m_plater->undo();
         if (key == 'Y' && weak->m_plater->can_redo()) weak->m_plater->redo();
     });
-    m_plater->sidebar().Bind(wxEVT_CHILD_FOCUS, [weak](wxChildFocusEvent& event) {
-        event.Skip();
-        if (weak && weak->native_workspace_visible() && weak->m_native_slicing)
-            weak->CallAfter([weak] { if (weak) weak->refresh_native_theme(); });
-    });
     m_model_generation_host->set_workbench_listener([weak](const auto& state) { if (weak) weak->apply_workbench_state(state); });
     Bind(wxEVT_IDLE, [weak](wxIdleEvent& event) {
         event.Skip();
@@ -943,7 +1099,7 @@ bool RedesignShell::show_model_view(ModelView view)
         if (panel_out_of_sync) {
             m_plater->select_view_3D("3D");
             m_plater->get_current_canvas3D()->use_workbench_appearance();
-            m_plater->collapse_sidebar(!m_native_slicing);
+            m_plater->collapse_sidebar(true);
         }
         refresh_workflow_layout();
         present_active_page();
@@ -970,11 +1126,8 @@ bool RedesignShell::show_model_view(ModelView view)
         m_plater->select_view_3D(view == ModelView::Preview ? "Preview" : "3D");
         timing("native-view-loaded");
         m_plater->get_current_canvas3D()->use_workbench_appearance();
-        m_plater->collapse_sidebar(!m_native_slicing);
-        if (m_native_slicing) {
-            if (auto* parameters = wxGetApp().params_panel()) parameters->OnActivate();
-            refresh_native_theme();
-        }
+        m_plater->collapse_sidebar(true);
+
     }
     auto* target_root = page_route_root(Page::Model, view);
     if (!target_root) {
@@ -1228,15 +1381,15 @@ void RedesignShell::refresh_workflow_layout()
     m_workbench_page->Show(presenting_workbench || m_import_target_staged || (model && m_page_coordinator.view() == ModelView::Workbench));
     m_slicing_page->Show(render_slicing);
     m_plater->Show(render_slicing || render_print);
-    m_slicing_settings->Show(!m_native_slicing);
+    m_slicing_settings->Show();
     m_plater->get_current_canvas3D()->enable_render(render_slicing || render_print);
     if (render_slicing || render_print) m_plater->get_current_canvas3D()->set_as_dirty();
     m_slice_export->Hide();
-    m_slice_print->Show(!m_native_slicing);
-    m_slice_start->Show(!m_native_slicing);
+    m_slice_print->Show();
+    m_slice_start->Show();
     m_return_slice->Hide();
     if (m_slicing_host) m_slicing_host->set_workbench_active(slicing, !m_native_slicing);
-    const bool compact = render_print || (render_slicing && !m_native_slicing);
+    const bool compact = render_print || render_slicing;
     if (compact && !m_plater->is_sidebar_collapsed()) m_plater->collapse_sidebar(true);
     m_plater->get_view3D_canvas3D()->use_compact_slicing_tools(compact);
     m_plater->get_preview_canvas3D()->use_compact_slicing_tools(compact);
@@ -1252,19 +1405,10 @@ void RedesignShell::refresh_workflow_layout()
     } else if (!compact && m_saved_collapse_toolbar) {
         m_plater->get_collapse_toolbar().set_enabled(*m_saved_collapse_toolbar); m_saved_collapse_toolbar.reset();
     }
-    const bool native = slicing && m_native_slicing;
-    if (!native) {
-        if (auto* parameters = wxGetApp().params_panel())
-            set_parameter_scrollbar_theme(parameters->get_paged_view(), false);
-        m_native_theme.restore();
-    }
+    mount_custom_process(slicing && m_native_slicing);
     if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this))) {
-        if (native) frame->show_option(true);
-        if (frame->topbar()) {
-            frame->topbar()->SetSlicingTitlebarMode(compact, native);
-        }
+        if (frame->topbar()) frame->topbar()->SetSlicingTitlebarMode(compact, false);
     }
-    if (native) refresh_native_theme();
     m_slice_return_overview->Enable(slicing_mode_switch_allowed());
     if (m_native_return_ai) {
         const bool can_switch = slicing_mode_switch_allowed();
@@ -1622,13 +1766,13 @@ void RedesignShell::stage_import_target_view()
     layout_import_loading();
     {
         wxWindowUpdateLocker layout_lock(m_content_host);
-        m_slicing_settings->Show(!m_native_slicing);
+        m_slicing_settings->Show();
         m_plater->select_view_3D("3D");
         auto* canvas = m_plater->get_current_canvas3D();
         canvas->use_workbench_appearance();
-        m_plater->collapse_sidebar(!m_native_slicing);
-        canvas->use_compact_slicing_tools(!m_native_slicing);
-        canvas->set_slicing_gizmos_visible(!m_native_slicing);
+        m_plater->collapse_sidebar(true);
+        canvas->use_compact_slicing_tools(true);
+        canvas->set_slicing_gizmos_visible(true);
         canvas->suppress_gcode_window(true);
         refresh_workflow_layout();
     }
@@ -1873,8 +2017,11 @@ void RedesignShell::check_import_first_frame()
 
 void RedesignShell::open_print_preparation()
 {
+    auto* plate = m_plater ? m_plater->get_partplate_list().get_curr_plate() : nullptr;
+    const bool matching = matching_workbench_result(plate, m_native_slicing,
+        m_plater && (m_plater->only_gcode_mode() || m_plater->using_exported_file()), m_slicing_state);
     if (block_workbench_navigation() || !m_print_page ||
-        !workbench_print_preparation_allowed(OrcaPrinterAdapter(m_plater).snapshot().gcode_ready,
+        !workbench_print_preparation_allowed(matching && OrcaPrinterAdapter(m_plater).snapshot().gcode_ready,
             m_import_in_progress || m_page_coordinator.transition().active() || (m_slice_tools && m_slice_tools->busy()))) return;
     m_print_page->show_prepare();
     navigate_to(Page::Print);
@@ -2082,7 +2229,7 @@ void RedesignShell::update_slicing_tools()
 void RedesignShell::layout_slicing_overlays()
 {
     if (!m_slice_stats_overlay || !m_plater) return;
-    const bool visible = native_workspace_visible() && !m_native_slicing;
+    const bool visible = native_workspace_visible();
     auto* view = m_plater->get_current_canvas3D();
     auto* canvas = view->get_wxglcanvas();
     bool overlay_changed = false;
@@ -2128,7 +2275,7 @@ void RedesignShell::layout_slicing_camera_loading()
     if (m_slice_camera_loading->GetParent() != canvas)
         m_slice_camera_loading->Reparent(canvas);
     const bool visible = m_slice_camera_loading_pending && !m_import_in_progress &&
-        native_workspace_visible() && !m_native_slicing && m_page_coordinator.view() == ModelView::Slicing;
+        native_workspace_visible() && m_page_coordinator.view() == ModelView::Slicing;
     const auto size = canvas->GetClientSize();
     if (size.x <= 0 || size.y <= 0) {
         m_slice_camera_loading->Hide();
@@ -2147,13 +2294,9 @@ void RedesignShell::select_slicing_tab(bool native)
     if (!m_slicing_host || !slicing_mode_switch_allowed()) return;
     const bool changed = m_native_slicing != native;
     m_native_slicing = native;
-    m_ai_slicing_controls->Show(!native);
     if (m_slice_recommendation_source) m_slice_recommendation_source->Show(!native);
-    m_plater->collapse_sidebar(!native);
-    if (native) {
-        if (auto* parameters = wxGetApp().params_panel()) parameters->OnActivate();
-        refresh_native_theme();
-    }
+    m_plater->collapse_sidebar(true);
+    mount_custom_process(native && native_workspace_visible());
     m_slicing_host->set_workbench_active(native_workspace_visible(), !native);
     if (!native && !changed && !m_slicing_state.analyzing && m_slicing_state.session.state != RecommendationSessionState::Ready)
         m_slicing_host->analyze_workbench();
@@ -2260,7 +2403,7 @@ void RedesignShell::apply_slicing_snapshot()
                 weak->apply_slicing_state(weak->m_slicing_host->workbench_snapshot());
         });
     }
-    if (!m_native_slicing && native_workspace_visible() && running) {
+    if (native_workspace_visible() && running) {
         if (auto* notifications = m_plater->get_notification_manager())
             notifications->set_slicing_progress_hidden();
     }
@@ -2322,6 +2465,23 @@ void RedesignShell::apply_slicing_snapshot()
              cloud_status == CloudRecommendationStatus::Failed ? _L("未完成 · 可重试") : _L("待推荐")) : quick_available ? _L("可用于原生切片") :
             !state.analyzing && state.candidates[i] ? goal_status(goal.status) :
             state.analyzing ? _L("分析中…") : _L("待分析");
+        if (!cloud) {
+            const bool is_selected = workbench_goal_is_currently_selected(state, RECOMMENDATION_GOALS[i]);
+            if (!quick_available && !state.candidates[i] && !is_selected) {
+                availabilities[i] = _L("待计算");
+            } else if (quick_available) {
+                availabilities[i] = _L("已生成推荐参数");
+                if (is_selected) {
+                    if (state.can_start) availabilities[i] = _L("可用于原生切片");
+                    else if (state.exact_estimate.status == ExactEstimateStatus::Running)
+                        availabilities[i] = _L("正在试切");
+                    else if (state.exact_estimate.status == ExactEstimateStatus::Failed)
+                        availabilities[i] = _L("试切未通过");
+                    else if (state.exact_estimate.status == ExactEstimateStatus::PositionChanged)
+                        availabilities[i] = _L("原生预估待更新");
+                }
+            }
+        }
         if (layer.empty()) layer = availabilities[i];
     }
     const auto display_goal = state.has_selected_goal ? state.selected_goal :
@@ -2351,7 +2511,9 @@ void RedesignShell::apply_slicing_snapshot()
         detail_rows = candidate_detail_rows(state.effective_parameters[selected], state.metrics[selected],
             official_ready ? official_detail_rows(plate) : std::vector<SliceDetailRow>{});
     else if (selected_quick != nullptr) {
-        const auto estimate = slicing_display_estimate(state, display_goal, *selected_quick);
+        auto estimate = slicing_display_estimate(state, display_goal, *selected_quick);
+        if (running && !official_ready && estimate.status == ExactEstimateStatus::Failed)
+            estimate.status = ExactEstimateStatus::None;
         detail_rows = exact_estimate_detail_rows(*selected_quick, estimate,
             official_ready ? official_detail_rows(plate) : std::vector<SliceDetailRow>{},
             estimate.revision != state.session.workspace_revision, running);
@@ -2361,21 +2523,17 @@ void RedesignShell::apply_slicing_snapshot()
 
     const bool complete = slicing_parameter_group_complete(state, display_goal, official_ready);
     const bool terminal = slicing_parameter_group_terminal(state, display_goal);
-    if (!complete && !terminal) {
-        // Never expose a new parameter set with numbers from an older estimate.
-        // The presentation cache may retain an entire matching completed group.
-        if (state.analyzing || selected_quick) {
-            for (auto& layer : parameter_group.layers) layer = _L("计算中...");
-            for (auto& row : detail_rows) { row.value = _L("计算中..."); row.section.clear(); }
-        }
-    }
+    // Parameter values belong to the selected recommendation immediately. Its
+    // statistics have their own state and are only shown for matching evidence.
+    if (!complete && !terminal && state.recommendation_source == SlicingRecommendationSource::Cloud && state.analyzing)
+        for (auto& layer : parameter_group.layers) layer = _L("计算中...");
     parameter_group.details = std::move(detail_rows);
     const bool parameters_changed = m_slicing_parameters.submit(state, std::move(parameter_group), complete, terminal);
     const auto& displayed = m_slicing_parameters.group();
     detail_rows = displayed.details;
     for (size_t i = 0; i < titles.size(); ++i) {
         const bool cloud = state.recommendation_source == SlicingRecommendationSource::Cloud;
-        m_slice_goals[i]->Enable(!state.analyzing && (cloud || state.candidates[i].has_value() || quick_recommendation(i)) &&
+        m_slice_goals[i]->Enable((cloud ? !state.analyzing && state.cloud_recommendation.status == CloudRecommendationStatus::Ready : state.native_workspace_available) &&
             !running && !state.official.workspace_mutated && !m_slice_tools->busy());
         auto* button = static_cast<SlicingGoalCard*>(m_slice_goals[i]);
         button->update(displayed.layers[i], workbench_goal_is_currently_selected(state, RECOMMENDATION_GOALS[i]) ||
@@ -2433,7 +2591,9 @@ void RedesignShell::apply_slicing_snapshot()
     else if (recommendation_stage == RecommendationStage::PreparingCloud)
         status = _L("正在准备云端推荐数据…");
     else if (recommendation_stage == RecommendationStage::Analyzing) status = state.session.state == RecommendationSessionState::Canceled
-        ? _L("正在取消分析…") : _L("正在分析三种方案…");
+        ? _L("正在取消分析…")
+        : state.recommendation_source == SlicingRecommendationSource::Local
+            ? _L("正在分析当前方案…") : _L("正在分析三种方案…");
     else if (recommendation_stage == RecommendationStage::CloudFailed) {
         status = state.recommendation_source == SlicingRecommendationSource::Local ?
             _L("云端 AI 推荐未完成，已切回本地推荐。") :
@@ -2470,7 +2630,7 @@ void RedesignShell::apply_slicing_snapshot()
     else if (recommendation_stage == RecommendationStage::EstimatingCloud)
         status = _L("云端参数已返回，正在精确计算…");
     else if (recommendation_stage == RecommendationStage::EstimatingLocal)
-        status = _L("推荐参数已生成，正在计算打印时间和耗材…");
+        status = _L("当前方案正在试切，正在计算打印时间和耗材…");
     else if (recommendation_stage == RecommendationStage::CloudReady)
         status = _L("云端 AI 推荐已生成");
     else if (lightweight_ready && preflight_has_blocking_issue) {
@@ -2485,7 +2645,7 @@ void RedesignShell::apply_slicing_snapshot()
             case IssueCode::UnsupportedMaterialCombination:
                 status += _L("\n耗材兼容性未通过验证：") + capability_reasons(state.material_reasons);
                 break;
-            case IssueCode::IncompatiblePhysicalSlots: status += _L("\n耗材不兼容：请在 Orca 原生页选择兼容耗材。"); break;
+            case IssueCode::IncompatiblePhysicalSlots: status += _L("\n耗材不兼容：请检查当前工程的耗材和喷嘴映射。"); break;
             case IssueCode::MachineCapabilityUnavailable:
                 status += _L("\nAI 机型能力未通过验证：") + capability_reasons(state.machine_reasons) +
                     _L("。本次仍按 Orca 原生流程执行。");
@@ -2495,6 +2655,8 @@ void RedesignShell::apply_slicing_snapshot()
         }
     } else if (lightweight_ready)
         status = _L("推荐方案已生成");
+    else if (state.diagnostic == "smart_slice_layer_height_no_common_range")
+        status = _L("当前参与打印的喷嘴没有共同的层高范围。请检查耗材映射和喷嘴层高设置。");
     else if (state.diagnostic == "workspace_changed") status = _L("工程已变化，请重新分析。");
     else if (!state.diagnostic.empty()) status = _L("分析未完成：") + wxString::FromUTF8(state.diagnostic);
     if (running) status = _L("正在正式切片…");
@@ -2506,6 +2668,7 @@ void RedesignShell::apply_slicing_snapshot()
         else if (diagnostic == "official_slice_canceled") detail = _L("切片已取消。");
         else if (diagnostic == "official_slice_not_started") detail = _L("未能开始切片，请检查模型与打印配置。");
         else if (diagnostic == "official_slice_failed") detail = _L("切片失败，请检查模型与打印配置。");
+        else if (diagnostic == "smart_slice_rollback_unavailable") detail = _L("切片失败，工程在切片期间已变化。请检查当前设置。");
         else detail = wxString::FromUTF8(diagnostic);
         status = (state.official.workspace_mutated ? _L("方案已应用。") : wxString()) + detail;
     }
@@ -2521,7 +2684,42 @@ void RedesignShell::apply_slicing_snapshot()
             status = _L("切片完成，导出前请处理预览中的错误。");
         }
     }
+    const bool position_changed = !m_native_slicing && !running && state.exact_estimate.status == ExactEstimateStatus::PositionChanged;
+    const bool trial_failed = !m_native_slicing && !running && (state.exact_estimate.status == ExactEstimateStatus::Failed ||
+        (position_changed && !state.exact_estimate.diagnostic.empty())) &&
+        state.exact_estimate.revision == state.session.workspace_revision && state.exact_estimate.goal == display_goal;
+    if (trial_failed && state.official.diagnostic_code.empty()) {
+        const auto& code = state.exact_estimate.diagnostic;
+        if (code == "trial_tower_no_clear_position") status = _L("当前打印盘没有可验证的擦料塔位置。");
+        else if (code == "trial_tower_outside") status = _L("擦料塔底面超出可打印区域，请调整位置。");
+        else if (code == "trial_tower_excluded") status = _L("擦料塔底面进入禁打区，请调整位置。");
+        else if (code == "trial_tower_model_overlap") status = _L("擦料塔与模型或首层支撑冲突，请调整位置。");
+        else if (code == "trial_tower_position" && state.exact_estimate.diagnostic_message.empty())
+            status = _L("当前方案的擦料塔需要重新摆放。");
+        else if (code == "trial_support_needed") status = _L("原生试切发现需要支撑的区域。");
+        else if (code == "workflow_timeout") status = _L("试切超时，可以重新分析。");
+        else if (code == "smart_slice_preview_canceled") status = _L("已取消分析，可以重新分析。");
+        else if (code == "trial_toolpath_outside") status = _L("试切路径超出可打印区。");
+        else if (code == "candidate_budget_exceeded") status = _L("本轮试切已达到次数上限。");
+        else if (!state.exact_estimate.diagnostic_message.empty())
+            status = wxString::FromUTF8(state.exact_estimate.diagnostic_message);
+        else status = _L("试切未完成，可以重新分析。");
+    }
+    if (position_changed && !trial_failed)
+        status = _L("擦料塔位置已更新，原生预估待更新。");
+    if (state.orientation_running) status = _L("正在试切备选摆放角度…");
+    else if (state.orientation_diagnostic == "smart_slice_orientation_unavailable")
+        status = _L("未找到符合条件的备选摆放，保留当前摆放。");
+    else if (state.orientation_diagnostic == "smart_slice_orientation_no_benefit")
+        status = _L("备选摆放未达到节料条件，保留当前摆放。");
+    else if (!state.orientation_diagnostic.empty())
+        status = _L("备选摆放试切未通过，保留当前摆放。");
     set_control_tooltip(m_slice_status, status);
+    layout_changed = m_slice_orientation->Show(!m_native_slicing && !running && state.can_start &&
+        state.recommendation_source == SlicingRecommendationSource::Local &&
+        state.exact_estimate.status == ExactEstimateStatus::Ready) || layout_changed;
+    m_slice_orientation->SetLabel(state.orientation_estimate ? _L("查看备选摆放") : _L("比较摆放角度"));
+    m_slice_orientation->Enable(!state.orientation_running);
     const bool needs_attention = !state.analyzing && !state.diagnostic.empty();
     const bool recommendation_ready =
         (recommendation_stage == RecommendationStage::CloudReady || recommendation_stage == RecommendationStage::LocalReady) && !running &&
@@ -2531,43 +2729,63 @@ void RedesignShell::apply_slicing_snapshot()
     // the diagnostic-only SmartSlice preflight reports an issue, so hiding
     // these controls based solely on `diagnostic` made a completed analysis
     // look unavailable and removed the only way to rerun it.
-    const bool show_analysis_status = running || state.analyzing || recommendation_ready || needs_attention ||
+    const bool prior_mode_result = !running && plate && plate->is_slice_result_valid() &&
+        !matching_workbench_result(plate, m_native_slicing, external_toolpath, state);
+    const bool show_analysis_status = running || prior_mode_result || state.analyzing || recommendation_ready || needs_attention || trial_failed ||
+        position_changed || state.orientation_running || !state.orientation_diagnostic.empty() ||
         recommendation_stage == RecommendationStage::EstimatingCloud ||
         recommendation_stage == RecommendationStage::EstimatingLocal ||
         state.official.phase == OfficialSlicePhase::Completed ||
         state.official.phase == OfficialSlicePhase::Failed;
-    layout_changed = m_slice_status->Show(show_analysis_status) || layout_changed;
     const bool cloud_failed = recommendation_stage == RecommendationStage::CloudFailed;
     const bool official_status = running || state.official.phase == OfficialSlicePhase::Completed ||
         !state.official.diagnostic_code.empty();
-    const wxString status_label = official_status
+    if (m_custom_process_content) m_custom_process_content->Enable(!running);
+    wxString status_label = prior_mode_result && !trial_failed
+        ? (plate->uses_workbench_smart_process() ? _L("当前预览：上一次智能切片") : _L("当前预览：Orca原生切片"))
+        : m_native_slicing && !official_status
+        ? (plate && plate->is_slice_result_valid()
+            ? (plate->uses_workbench_smart_process() ? _L("当前预览：智能切片") : _L("当前预览：Orca原生切片"))
+            : wxString{})
+        : official_status
         ? status
+        : trial_failed || position_changed || state.orientation_running || !state.orientation_diagnostic.empty() ||
+          state.diagnostic == "smart_slice_layer_height_no_common_range" ? status
         : cloud_failed
         ? _L("云端推荐未完成 · 查看原因")
         : recommendation_ready && recommendation_stage == RecommendationStage::LocalReady
         ? _L("本地推荐方案已生成")
         : (needs_attention && recommendation_stage == RecommendationStage::Idle ?
             _L("方案暂不可用 · 查看原因") : status);
-    layout_changed = set_wrapped_label(m_slice_status, status_label, FromDIP(285)) || layout_changed;
+    if (m_native_slicing && !running && plate && wxGetApp().preset_bundle) {
+        const auto summary = custom_layer_summary(*plate, *wxGetApp().preset_bundle,
+            plate->is_slice_result_valid() && !plate->uses_workbench_smart_process());
+        if (!summary.empty()) {
+            if (!status_label.empty()) status_label += "\n";
+            status_label += summary;
+        }
+    }
+    layout_changed = m_slice_status->Show(show_analysis_status || (m_native_slicing && !status_label.empty())) || layout_changed;
+    layout_changed = set_wrapped_label(m_slice_status, status_label, FromDIP(316)) || layout_changed;
     layout_changed = m_slice_analyze->Show(workbench_show_reanalyze(state) && !running) || layout_changed;
     m_slice_analyze->SetLabel(_L("重新分析"));
     set_control_tooltip(m_slice_analyze, state.recommendation_source == SlicingRecommendationSource::Cloud ?
         _L("重新请求综合最优、速度优先、质量优先三种方案。") :
-        _L("重新执行本地轻量分析；选择方案后将直接使用 Orca 原生切片。"));
+        _L("重新计算当前选中的方案及其原生预估。"));
     layout_changed = m_slice_keep_mesh->Show(state.can_keep_current_mesh && !state.analyzing && !running) || layout_changed;
     const auto route = workbench_slice_route(m_native_slicing, running || m_import_in_progress || m_slice_tools->busy(),
-        state.can_retry, state.can_start, state.can_start_native);
+        state.can_retry, state.can_start, plate && plate->has_printable_instances());
     m_slice_start->Enable(route != WorkbenchSliceRoute::Unavailable);
     m_slice_start->SetLabel(state.can_retry && !m_native_slicing ? _L("重试切片") : _L("开始切片"));
     if (route == WorkbenchSliceRoute::Unavailable && !m_native_slicing) {
         set_control_tooltip(m_slice_start, lightweight_ready
             ? _L("当前方案还未选择，或 Orca 原生切片暂时不可启动。")
-            : _L("请等待三种方案分析完成后再开始切片。"));
+            : _L("请等待当前方案完成分析后再开始切片。"));
     } else {
         set_control_tooltip(m_slice_start, wxEmptyString);
     }
     m_slice_analyze->Enable(state.can_analyze);
-    layout_changed = m_slice_cancel->Show(workbench_analysis_busy(state) || running) || layout_changed;
+    layout_changed = m_slice_cancel->Show((!m_native_slicing && workbench_analysis_busy(state)) || running) || layout_changed;
     m_slice_cancel->SetLabel(running ? _L("取消切片") : _L("取消分析"));
     const bool can_switch = slicing_mode_switch_allowed();
     m_ai_slicing_tab->Enable(can_switch);
@@ -2577,7 +2795,9 @@ void RedesignShell::apply_slicing_snapshot()
     static_cast<SlicingModeButton*>(m_native_slicing_tab)->SetValue(m_native_slicing);
     m_slice_export->Enable(OrcaPrinterAdapter(m_plater).snapshot().gcode_ready);
     refresh_project_save_actions();
-    const bool can_open_print = !running && !m_import_in_progress && !m_slice_tools->busy() && OrcaPrinterAdapter(m_plater).snapshot().gcode_ready;
+    const bool mode_matches = matching_workbench_result(plate, m_native_slicing, external_toolpath, state);
+    const bool can_open_print = !running && !m_import_in_progress && !m_slice_tools->busy() && mode_matches &&
+        OrcaPrinterAdapter(m_plater).snapshot().gcode_ready;
     m_slice_print->Enable(can_open_print);
     if (m_native_return_ai) {
         m_native_return_ai->Enable(can_switch);
@@ -2653,13 +2873,14 @@ void RedesignShell::start_workbench_slice()
 {
     if (m_import_in_progress || !m_slicing_host || !m_slice_tools || m_slice_tools->busy()) return;
     const auto reviewed = m_slicing_host->workbench_snapshot();
+    auto* plate = m_plater->get_partplate_list().get_curr_plate();
     const auto route = workbench_slice_route(m_native_slicing,
         workbench_slice_running(m_plater && m_plater->is_background_process_slicing(), reviewed.official.phase),
-        reviewed.can_retry, reviewed.can_start, reviewed.can_start_native);
+        reviewed.can_retry, reviewed.can_start, plate && plate->has_printable_instances());
     if (route == WorkbenchSliceRoute::Unavailable) { apply_slicing_state(reviewed); return; }
     if (route == WorkbenchSliceRoute::Native) {
         BOOST_LOG_TRIVIAL(info) << "[WorkbenchSlice] native=" << m_native_slicing << " fallback_reason=" << reviewed.diagnostic;
-        m_slicing_host->start_native_slice();
+        m_slicing_host->start_custom_slice();
         return;
     }
     std::vector<RiskConfirmationKind> confirmations;

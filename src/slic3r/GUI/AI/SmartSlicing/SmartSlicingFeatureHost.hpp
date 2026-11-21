@@ -27,17 +27,26 @@ public:
     bool is_shown() const;
     void show(bool show);
     void notify_slice_completed(bool success, const std::string& failure_code);
+    void notify_plate_selected();
     SmartSlicingWorkbenchState workbench_snapshot() const;
     void set_workbench_listener(SmartSlicingWorkbenchListener listener);
     void set_workbench_active(bool active, bool ai_mode = true);
     bool analyze_workbench();
     bool keep_current_mesh_and_analyze(const AI::SmartSlicing::WorkspaceRevision& reviewed_revision);
     bool set_recommendation_source(SlicingRecommendationSource source);
+    bool request_orientation_comparison();
+    bool select_orientation(const ExactEstimateView& reviewed);
     bool select_goal(AI::SmartSlicing::RecommendationGoal goal);
     AI::SmartSlicing::OfficialSliceResult start_workbench_slice(
         const SmartSlicingWorkbenchState& reviewed,
         const std::vector<AI::SmartSlicing::RiskConfirmationKind>& confirmations);
     bool start_native_slice();
+    bool start_custom_slice();
+    bool workbench_active() const;
+    bool workbench_tower_pinned() const;
+    bool can_retry_custom_tower() const;
+    void rebind_custom_tower_position();
+    bool retry_custom_tower(const Vec2d& position);
     bool undo_workbench_apply();
     void cancel_workbench_analysis();
 
