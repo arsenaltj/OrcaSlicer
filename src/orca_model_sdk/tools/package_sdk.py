@@ -16,7 +16,14 @@ p.add_argument('--windows-slicing-build', type=pathlib.Path)
 p.add_argument('--android-slicing-build', type=pathlib.Path)
 p.add_argument('--windows-runtime-dir',type=pathlib.Path)
 p.add_argument('--cgal-source-archive',type=pathlib.Path)
+p.add_argument('--repair-tbb-source',type=pathlib.Path)
+p.add_argument('--android-strip-tool',type=pathlib.Path)
+p.add_argument('--android-debug-output',type=pathlib.Path)
 args = p.parse_args()
+if bool(args.android_strip_tool) != bool(args.android_debug_output):
+    raise SystemExit('Release Model stripping requires explicit tool and separate debug output together')
+if args.android_debug_output and args.android_debug_output.resolve().is_relative_to(args.output.resolve()):
+    raise SystemExit('Full debug Model must remain outside the consumer SDK')
 if bool(args.windows_slicing_build) != bool(args.android_slicing_build):
     raise SystemExit('Both Slicing build roots must be supplied together')
 source = pathlib.Path(__file__).resolve().parents[1]
@@ -34,6 +41,42 @@ files = {
     'schemas/model-response.schema.json': source/'schemas/model-response.schema.json',
     'licenses/OrcaSlicer-LICENSE.txt': repo / 'LICENSE.txt',
 }
+repair = args.repair_tbb_source is not None
+android_binding = None
+if repair:
+    import sys
+    sys.path.insert(0,str(source/'repair_core'))
+    from verify_approved_tbb import validate
+    binding_path=args.android_build/'approved-tbb-binding.json'
+    if not binding_path.is_file():raise SystemExit('Missing approved Android TBB build binding')
+    android_binding=json.loads(binding_path.read_text(encoding='utf-8'))
+    actual=validate(android_binding['runtimePath'],android_binding['headerRoot'],source/'repair_core/approved_tbb.json')
+    if actual!=android_binding:raise SystemExit('Android TBB build binding no longer matches exact approved input')
+
+    # Explicit Model-only dependency closure; never relabel a Slicing artifact.
+    tbb = args.repair_tbb_source.resolve()
+    if not tbb.is_dir() or not (tbb/'LICENSE.txt').is_file():
+        raise SystemExit('Repair package requires the exact oneTBB source/notice root')
+    files.update({'bin/tbb12.dll':args.windows_build/'Release/tbb12.dll',
+                  'android/arm64-v8a/libtbb.so':pathlib.Path(android_binding['runtimePath'])})
+    files['repair-core/README.md']=source/'repair_core/README.md'
+    if not args.cgal_source_archive or not args.cgal_source_archive.is_file() or hashlib.sha256(args.cgal_source_archive.read_bytes()).hexdigest()!='eebd737d9b7f0199647ba5c1f9f6c7a3d0651aacef9c2fd4dedc52da6c25edbe':
+        raise SystemExit('Repair SDK requires the actual pinned CGAL source archive')
+    files['dependencies/CGAL-6.2.1.zip']=args.cgal_source_archive
+    dependency_root=tbb.parent
+    for build in [args.windows_build,args.android_build]:
+        cache=(build/'CMakeCache.txt').read_text(encoding='utf-8')
+        actual=[line.split('=',1)[1] for line in cache.splitlines() if line.startswith('ORCA_MODEL_DEPENDENCY_ROOT:PATH=')]
+        if len(actual)!=1 or pathlib.Path(actual[0]).resolve()!=dependency_root:
+            raise SystemExit('Repair runtime dependency source does not match build cache')
+        if build==args.android_build:
+            runtime=[line.split('=',1)[1] for line in cache.splitlines() if line.startswith('ORCA_MODEL_ANDROID_TBB_RUNTIME:FILEPATH=')]
+            if len(runtime)!=1 or pathlib.Path(runtime[0]).resolve()!=pathlib.Path(android_binding['runtimePath']).resolve():
+                raise SystemExit('Android build cache does not bind the approved runtime')
+    for directory,pattern in [('boost-src','LICENSE*'),('eigen-src','COPYING*'),('cereal-src','LICENSE*')]:
+        for notice in sorted((dependency_root/directory).glob(pattern)):
+            if notice.is_file():files['licenses/'+directory+'/'+notice.name]=notice
+
 complete = args.windows_slicing_build is not None
 if complete:
     if not args.cgal_source_archive or not args.cgal_source_archive.is_file():
@@ -67,6 +110,12 @@ if complete:
 for name, file in files.items():
     if not file.is_file():
         raise SystemExit(f'Missing required artifact: {file}')
+model_postprocessing = None
+if args.android_strip_tool:
+    # Only this NEW Model binary is transformed. Never strip approved runtimes.
+    from strip_android_model import strip_model
+    name='android/arm64-v8a/liborca_model_sdk_c.so'
+    files[name],model_postprocessing=strip_model(files[name],args.android_strip_tool,args.android_debug_output)
 tracked_diff = subprocess.check_output(['git', '-C', str(repo), 'diff', '--binary', 'HEAD'])
 sources = []
 for file in sorted(source.rglob('*')):
@@ -87,6 +136,14 @@ if complete:
         file=repo/name
         if name not in known and file.is_file():
             sources.append({'path':name,'sha256':hashlib.sha256(file.read_bytes()).hexdigest()})
+if repair:
+    known={item['path'] for item in sources}
+    for folder in ['src/libslic3r','src/orca_mobile_slicing_sdk/platform','deps_src/admesh','deps_src/clipper2','deps_src/qhull','deps_src/libigl']:
+        for file in sorted((repo/folder).rglob('*')):
+            if file.is_file() and '__pycache__' not in file.parts:
+                name=file.relative_to(repo).as_posix()
+                if name not in known:
+                    sources.append({'path':name,'sha256':hashlib.sha256(file.read_bytes()).hexdigest()});known.add(name)
 snapshot = hashlib.sha256(json.dumps(sources, sort_keys=True).encode()).hexdigest()
 args.output.mkdir(parents=True)
 manifest = {'schemaVersion': 1, 'sdkVersion': 'orca-model-sdk/1.0.0',
@@ -101,6 +158,17 @@ manifest = {'schemaVersion': 1, 'sdkVersion': 'orca-model-sdk/1.0.0',
                           'multi-material execution/new Slicing SDK artifact',
                           'actual platform transport supplied by host; real provider calls not tested'],
             'files': []}
+if model_postprocessing:
+    manifest['androidModelPostprocessing']=model_postprocessing
+if repair:
+    manifest['scope']='enhanced-glb-repair-v2-native-compatible-candidate'
+    manifest['repairCore']={'entry':'repair_mesh','coreSourceCommit':'323c6c1c9ca7e5f94c7b7161af64584af0a69f3c',
+      'strictAiChain':False,'tbbSource':str(tbb),'androidRuntimeBuiltByThisProducer':False,'androidRuntimeBinding':android_binding,'tbbFiles':[
+       {'path':p.relative_to(tbb).as_posix(),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}
+       for p in sorted(tbb.rglob('*')) if p.is_file() and '.git' not in p.parts]}
+    manifest['knownGaps']=['Full strict AI/IGL repair dependency remains unsupported',
+       'No Android runtime/resource or physical manufacturing validation',
+       'Only explicit static embedded single primitive UV0 profile; visual pixel identity is not certified']
 for name, file in files.items():
     dest = args.output / name
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -141,6 +209,16 @@ capability_file.write_text(json.dumps(capabilities,indent=2),encoding='utf-8')
 data=capability_file.read_bytes()
 manifest['files'].append({'path':'capabilities.json','sha256':hashlib.sha256(data).hexdigest(),'sizeBytes':len(data)})
 manifest['capabilities']='capabilities.json'
+if repair:
+    manifest['packagingSourceCommit']=manifest['sourceCommit']
+    manifest['sourceCommit']=capabilities['sourceCommit']
+    manifest['buildSourceCommit']=capabilities['sourceCommit']
+    for build in [args.windows_build,args.android_build]:
+        text=(build/'CMakeCache.txt').read_text(encoding='utf-8')
+        values=[line.split('=',1)[1] for line in text.splitlines() if line.startswith('ORCA_MODEL_SOURCE_COMMIT:STRING=')]
+        if values!=[capabilities['sourceCommit']]:
+            raise SystemExit('Runtime/source provenance differs across Model builds')
+
 if complete:
     def record(name):
         data=(args.output/name).read_bytes()

@@ -49,7 +49,7 @@
       "paths": [
         "src/orca_model_sdk"
       ],
-      "purpose": "通过公开 C ABI 提供模型文档、场景、编辑、候选、制造快照及统一平台 API 适配；原生切片通过固定制品桥接"
+      "purpose": "通过公开 C ABI 提供模型文档、场景、编辑、候选、制造快照及统一平台 API 适配；原生切片通过固定制品桥接；原始GLB安全策略在独立无GUI模块执行结构、保真拓扑与可选CGAL严格谓词，未完成检查不发布成功候选；可选repair Core以固定桌面源码接缝复用enhanced repair_mesh，M1仅geometry_only_stage；v2可选Core复用桌面repair_mesh与有序ID读回/外观投影及原子receipt，native_compatible保真实残余、不授制造安全或冒完整strict链；v2候选2M使用分阶段资源账本/紧凑计数/逐面外观映射及私有精确CGAL死workspace释放，完整风险检查与原限额保持；Android Model构建显式IMPORTED既有Slicing批准TBB，runtime及139headers逐SHA守卫，producer分列旧runtime来源、不覆盖旧Slicing闭包"
     },
     {
       "id": "honor_account",
@@ -61,7 +61,7 @@
         "src/slic3r/GUI/Redesign/AccountWorkspace.hpp",
         "src/slic3r/GUI/Redesign/PlatformAccountService.hpp"
       ],
-      "purpose": "应用共享平台Session、官方OAuth校验与本机凭据；账号页与模型库共用身份，不承接AI供应商凭据"
+      "purpose": "共享桌面 OAuth 会话、安全凭据、后端头像读写和展示状态，以及原生积分和云文件服务。模型生成沿用供应商配置"
     },
     {
       "id": "desktop",
@@ -697,6 +697,11 @@
       "id": "honor_identity",
       "path": "src/slic3r/Utils/HonorAccount/HonorSession.hpp",
       "needle": "class Session"
+    },
+    {
+      "id": "honor_native_services",
+      "path": "src/slic3r/Utils/HonorAccount/HonorServices.hpp",
+      "needle": "class Services {"
     },
     {
       "id": "artifact_contract",
@@ -2313,21 +2318,23 @@
       },
       {
         "id": "identity",
-        "label": "OAuth 与本机会话",
+        "label": "桌面 OAuth、会话与账户服务",
         "paths": [
           "src/slic3r/Utils/HonorAccount",
           "src/slic3r/GUI/Redesign/PlatformAccountService*"
         ],
         "evidence": [
           "honor_identity",
+          "honor_native_services",
           "platform_account_service"
         ],
         "tests": [
-          "tests/slic3rutils/test_honor*"
+          "tests/slic3rutils/test_honor*",
+          "tests/slic3rutils/test_account_avatar.cpp"
         ],
-        "state_owner": "应用共享PlatformAccountService拥有唯一HonorAccount Session",
-        "contract": "原生凭据不进入HTML；取消、过期、刷新及注销均使旧请求失效",
-        "note": "应用接入配置与用户令牌应分开维护。",
+        "state_owner": "HonorSession 确认账号资料，PlatformAccountService 持有共享头像展示状态。",
+        "contract": "软件内 WebView 拦截固定桌面回调，再由当前登录代次完成 PKCE 交换。头像经 PATCH 保存和 GET 回读，原生会话约束头像、积分和云文件结果的账号范围。",
+        "note": "后端在成功鉴权请求后统计客户端活跃。积分与云文件服务供未来界面调用。",
         "build_boundary": "HonorAccountSources.cmake 纳入 libslic3r_gui；本地系统凭据存储另有平台实现。"
       },
       {

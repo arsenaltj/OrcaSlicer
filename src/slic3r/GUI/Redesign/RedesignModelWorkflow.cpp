@@ -746,6 +746,7 @@ void RedesignShell::build_model_workflow()
         std::pair<wxColour,int>(wxColour(255,210,78),StateColor::Hovered),
         std::pair<wxColour,int>(RedesignTheme::accent_colour(),StateColor::Normal)));
     m_slice_print->SetMinSize(FromDIP(wxSize(-1,48)));
+    m_slice_print->Disable();
     root->Add(m_slice_print, 0, wxEXPAND | wxALL, FromDIP(16));
     m_slice_print->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { open_print_preparation(); });
     auto* return_slice = m_return_slice = command(settings, _L("返回切片参数"));
@@ -1131,7 +1132,8 @@ bool RedesignShell::show_model_view(ModelView view)
     }
     auto* target_root = page_route_root(Page::Model, view);
     if (!target_root) {
-        m_page_coordinator.transition().rollback(*transition);
+        if (view == ModelView::Preview) cancel_preview_presentation();
+        else m_page_coordinator.transition().rollback(*transition);
         return false;
     }
     if (m_content_host) target_root->SetSize(m_content_host->GetClientRect());
@@ -1176,6 +1178,7 @@ bool RedesignShell::show_model_view(ModelView view)
         m_page_coordinator.transition().rollback(*transition);
         return false;
     }
+    if (view == ModelView::Slicing) refresh_print_preparation_action();
     if (m_model_generation_host)
         m_model_generation_host->set_workbench_presented(view == ModelView::Workbench);
     restore_active_page_focus();
@@ -1214,6 +1217,8 @@ bool RedesignShell::prepare_preview_transition()
     }
     m_preview_frame_gate.begin(*m_preview_transition, plate->get_slice_result()->id,
         std::chrono::steady_clock::now());
+    refresh_print_preparation_action();
+    if (m_slice_print && m_slice_print->IsShownOnScreen()) m_slice_print->Update();
     layout_preview_transition_cover();
     m_preview_transition_cover->Update();
     m_preview_transition_timer.Start(50);
@@ -1230,6 +1235,7 @@ void RedesignShell::cancel_preview_presentation()
     m_preview_transition.reset();
     m_preview_frame_gate.finish();
     if (m_preview_transition_cover) m_preview_transition_cover->Hide();
+    refresh_print_preparation_action();
 }
 
 void RedesignShell::layout_preview_transition_cover()
@@ -1312,6 +1318,7 @@ void RedesignShell::finish_preview_transition(RedesignPageTransition::Token toke
         m_page_coordinator.transition().rollback(token);
     }
     m_preview_transition_cover->Hide();
+    refresh_print_preparation_action();
     if (ready) {
         restore_active_page_focus();
         return;
@@ -2015,16 +2022,49 @@ void RedesignShell::check_import_first_frame()
     }
 }
 
+bool RedesignShell::can_open_print_preparation(bool gcode_ready) const
+{
+    if (!m_print_page || !m_plater) return false;
+    const bool busy = m_import_in_progress || (m_slice_tools && m_slice_tools->busy()) ||
+        workbench_slice_running(false, m_slicing_state.official.phase);
+    const auto* plate = m_plater->get_partplate_list().get_curr_plate();
+    const bool external = m_plater->only_gcode_mode() || m_plater->using_exported_file();
+    const bool matching = matching_workbench_result(plate, m_native_slicing, external, m_slicing_state);
+    return workbench_print_preparation_allowed(gcode_ready && matching, busy, m_page_coordinator.transition().active());
+}
+
+void RedesignShell::refresh_print_preparation_action()
+{
+    if (!m_slice_print || m_presentation_stopping) return;
+    const bool gcode_ready = OrcaPrinterAdapter(m_plater).snapshot().gcode_ready;
+    const bool available = can_open_print_preparation(gcode_ready);
+    const bool changed = m_slice_print->Enable(available);
+    const bool preview_pending = m_preview_transition.has_value();
+    const bool label_changed = set_control_label(m_slice_print,
+        preview_pending ? _L("正在准备切片预览…") : _L("去打印"));
+    if (changed || label_changed)
+        BOOST_LOG_TRIVIAL(info) << "[PrintPreparation] available=" << available
+            << " gcode_ready=" << gcode_ready << " preview_pending=" << preview_pending;
+}
+
 void RedesignShell::open_print_preparation()
 {
-    auto* plate = m_plater ? m_plater->get_partplate_list().get_curr_plate() : nullptr;
-    const bool matching = matching_workbench_result(plate, m_native_slicing,
-        m_plater && (m_plater->only_gcode_mode() || m_plater->using_exported_file()), m_slicing_state);
-    if (block_workbench_navigation() || !m_print_page ||
-        !workbench_print_preparation_allowed(matching && OrcaPrinterAdapter(m_plater).snapshot().gcode_ready,
-            m_import_in_progress || m_page_coordinator.transition().active() || (m_slice_tools && m_slice_tools->busy()))) return;
+    if (block_workbench_navigation()) {
+        BOOST_LOG_TRIVIAL(info) << "[PrintPreparation] click_blocked workbench_modal=true";
+        return;
+    }
+    const auto state = OrcaPrinterAdapter(m_plater).snapshot();
+    if (!can_open_print_preparation(state.gcode_ready)) {
+        BOOST_LOG_TRIVIAL(info) << "[PrintPreparation] click_blocked gcode_ready=" << state.gcode_ready
+            << " slicing=" << workbench_slice_running(state.slicing, m_slicing_state.official.phase)
+            << " importing=" << m_import_in_progress << " tools_busy=" << (m_slice_tools && m_slice_tools->busy())
+            << " transition_active=" << m_page_coordinator.transition().active();
+        refresh_print_preparation_action();
+        return;
+    }
     m_print_page->show_prepare();
-    navigate_to(Page::Print);
+    const bool opened = navigate_to(Page::Print);
+    BOOST_LOG_TRIVIAL(info) << "[PrintPreparation] navigation_opened=" << opened;
 }
 
 bool RedesignShell::update_print_preview(bool active, bool layers, bool support)
@@ -2795,10 +2835,6 @@ void RedesignShell::apply_slicing_snapshot()
     static_cast<SlicingModeButton*>(m_native_slicing_tab)->SetValue(m_native_slicing);
     m_slice_export->Enable(OrcaPrinterAdapter(m_plater).snapshot().gcode_ready);
     refresh_project_save_actions();
-    const bool mode_matches = matching_workbench_result(plate, m_native_slicing, external_toolpath, state);
-    const bool can_open_print = !running && !m_import_in_progress && !m_slice_tools->busy() && mode_matches &&
-        OrcaPrinterAdapter(m_plater).snapshot().gcode_ready;
-    m_slice_print->Enable(can_open_print);
     if (m_native_return_ai) {
         m_native_return_ai->Enable(can_switch);
         m_native_return_overview->Enable(can_switch);
@@ -2820,6 +2856,7 @@ void RedesignShell::apply_slicing_snapshot()
             if (current && !current->is_slice_result_valid()) weak->show_model_view(ModelView::Slicing);
         });
     }
+    refresh_print_preparation_action();
     if (layout_changed) {
         ++m_slicing_layouts;
         m_slice_status->GetParent()->Layout();

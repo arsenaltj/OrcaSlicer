@@ -6,5 +6,7 @@ set(ORCA_HONOR_ACCOUNT_SOURCES
     Utils/HonorAccount/HonorClient.hpp
     Utils/HonorAccount/HonorSession.cpp
     Utils/HonorAccount/HonorSession.hpp
+    Utils/HonorAccount/HonorServices.cpp
+    Utils/HonorAccount/HonorServices.hpp
     Utils/HonorAccount/HonorStore.cpp
 )

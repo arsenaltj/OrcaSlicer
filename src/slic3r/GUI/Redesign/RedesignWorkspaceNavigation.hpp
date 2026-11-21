@@ -37,9 +37,9 @@ inline RedesignWorkspacePage redesign_navigation_page(RedesignWorkspacePage page
     return page == RedesignWorkspacePage::Print ? RedesignWorkspacePage::Model : page;
 }
 
-inline bool workbench_print_preparation_allowed(bool gcode_ready, bool busy)
+inline bool workbench_print_preparation_allowed(bool gcode_ready, bool busy, bool transition_active)
 {
-    return gcode_ready && !busy;
+    return gcode_ready && !busy && !transition_active;
 }
 
 // Monitor and media routes remain accessible without a printable project.

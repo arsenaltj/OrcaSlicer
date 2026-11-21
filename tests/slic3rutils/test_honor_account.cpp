@@ -1,4 +1,5 @@
 #include "slic3r/Utils/HonorAccount/HonorSession.hpp"
+#include "libslic3r_version.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
@@ -107,7 +108,7 @@ std::string session_response(const PlatformSession& value)
 {
     return Json{{"account", account_json(value.identity)},
                 {"sessionId", value.session_id},
-                {"kind", "mobile"},
+                {"kind", "desktop"},
                 {"accessToken", value.access_token},
                 {"refreshToken", value.refresh_token},
                 {"accessExpiresAt", iso_time(value.access_expires_at)},
@@ -115,20 +116,11 @@ std::string session_response(const PlatformSession& value)
         .dump();
 }
 
-Response attempt_response(std::int64_t expires_at = now_seconds() + 600)
+Response authorization_response(std::int64_t expires_at = now_seconds() + 600)
 {
     return {201,
-            Json{{"attemptId", fixture_token('I')},
-                 {"expiresAt", iso_time(expires_at)},
-                 {"sdkAllowed", false}}
-                .dump()};
-}
-
-Response authorization_response()
-{
-    return {200,
-            Json{{"authorizationUrl",
-                  "https://id.example.test/authorize?state=fixture-state"}}
+            Json{{"authorizationUrl", "https://id.example.test/authorize?state=fixture-state"},
+                 {"expiresAt", iso_time(expires_at)}}
                 .dump()};
 }
 
@@ -515,7 +507,7 @@ TEST_CASE("Platform account and session JSON is strict and versioned", "[HonorAc
     REQUIRE_THROWS_AS(parse_timestamp("2027-02-29T12:34:56Z"), Error);
 }
 
-TEST_CASE("Platform client follows the existing mobile browser request contract", "[HonorAccount]")
+TEST_CASE("Platform client follows the desktop authorization and activity header contract", "[HonorAccount]")
 {
     const auto config = configuration();
     auto issued = platform_session();
@@ -527,12 +519,11 @@ TEST_CASE("Platform client follows the existing mobile browser request contract"
     Transport transport = [&](const Request& request, Cancellation) {
         requests.push_back(request);
         switch (requests.size()) {
-        case 1: return attempt_response();
-        case 2: return authorization_response();
-        case 3: return Response{201, session_response(issued)};
-        case 4: return Response{200, account_response(issued.identity)};
-        case 5: return Response{201, session_response(rotated)};
-        case 6: return Response{201, R"({"ok":true})"};
+        case 1: return authorization_response();
+        case 2: return Response{201, session_response(issued)};
+        case 3: return Response{200, account_response(issued.identity)};
+        case 4: return Response{201, session_response(rotated)};
+        case 5: return Response{201, R"({"ok":true})"};
         default: return Response{500, R"({"error":{"code":"UNEXPECTED_REQUEST"}})"};
         }
     };
@@ -547,29 +538,33 @@ TEST_CASE("Platform client follows the existing mobile browser request contract"
     REQUIRE(authorization.url == "https://id.example.test/authorize?state=fixture-state");
     REQUIRE(exchanged.identity.subject == account_id);
     REQUIRE(refreshed.session_id == rotated_session_id);
-    REQUIRE(requests.size() == 6);
+    REQUIRE(requests.size() == 5);
 
     REQUIRE(requests[0].method == Request::Method::Post);
-    REQUIRE(requests[0].url == config.api_url + "/v1/identity/honor/mobile/attempts");
+    REQUIRE(requests[0].url == config.api_url + "/v1/identity/honor/desktop/authorize");
     REQUIRE((Json::parse(requests[0].json) ==
-             Json{{"platform", "ios"}, {"challenge", rfc_challenge}}));
+             Json{{"platform", desktop_platform()}, {"challenge", rfc_challenge}}));
     REQUIRE(requests[0].bearer.empty());
-    REQUIRE(requests[1].method == Request::Method::Get);
-    REQUIRE(requests[1].url == config.api_url +
-                                   "/v1/identity/honor/mobile/authorize?attemptId=" +
-                                   fixture_token('I'));
-    REQUIRE(requests[1].json.empty());
-    REQUIRE(requests[2].url == config.api_url + "/v1/identity/exchange");
-    REQUIRE((Json::parse(requests[2].json) ==
+    REQUIRE(requests[1].method == Request::Method::Post);
+    REQUIRE(requests[1].url == config.api_url + "/v1/identity/exchange");
+    REQUIRE((Json::parse(requests[1].json) ==
              Json{{"code", fixture_token('C')},
                   {"verifier", rfc_verifier},
-                  {"kind", "mobile"}}));
-    REQUIRE(requests[2].url.find(fixture_token('C')) == std::string::npos);
-    REQUIRE(requests[3].url == config.api_url + "/v1/me");
-    REQUIRE(requests[3].bearer == issued.access_token);
-    REQUIRE((Json::parse(requests[4].json) ==
+                  {"kind", "desktop"}}));
+    REQUIRE(requests[1].url.find(fixture_token('C')) == std::string::npos);
+    REQUIRE(requests[2].url == config.api_url + "/v1/me");
+    REQUIRE(requests[2].bearer == issued.access_token);
+    const std::map<std::string, std::string> headers(requests[2].headers.begin(), requests[2].headers.end());
+    REQUIRE(headers.at("X-Orca-Client") == "desktop");
+    REQUIRE(headers.at("X-Orca-Platform") == desktop_platform());
+#ifdef _WIN32
+    REQUIRE(headers.at("X-Orca-OS-Major-Version") != "unknown");
+#endif
+    REQUIRE(headers.at("X-Orca-App-Version") == HONOR_PRODUCT_VERSION);
+    REQUIRE(headers.at("X-Orca-App-Build") == HONOR_PRODUCT_BUILD);
+    REQUIRE((Json::parse(requests[3].json) ==
              Json{{"refreshToken", issued.refresh_token}}));
-    REQUIRE((Json::parse(requests[5].json) ==
+    REQUIRE((Json::parse(requests[4].json) ==
              Json{{"refreshToken", rotated.refresh_token}}));
 }
 
@@ -601,7 +596,7 @@ TEST_CASE("Slow platform attempt can be cancelled without publishing a late URL"
                     [&](const Request&, Cancellation) {
                         ++requests;
                         gate.block();
-                        return attempt_response();
+                        return authorization_response();
                     });
     session.restore();
     REQUIRE(session.snapshot().state == State::SignedOut);
@@ -625,9 +620,7 @@ TEST_CASE("Authorization URL is consumed once and duplicate callbacks exchange o
     Gate exchange_gate;
     std::atomic_int exchanges {0};
     Transport transport = [&](const Request& request, Cancellation) {
-        if (request.url.find("/mobile/attempts") != std::string::npos)
-            return attempt_response();
-        if (request.url.find("/mobile/authorize") != std::string::npos)
+        if (request.url.find("/desktop/authorize") != std::string::npos)
             return authorization_response();
         if (request.url.find("/identity/exchange") != std::string::npos) {
             ++exchanges;
@@ -666,9 +659,7 @@ TEST_CASE("A stale authorization generation cannot complete a newer login",
     auto memory = configured_memory();
     std::atomic_int exchanges {0};
     Transport transport = [&](const Request& request, Cancellation) {
-        if (request.url.find("/mobile/attempts") != std::string::npos)
-            return attempt_response();
-        if (request.url.find("/mobile/authorize") != std::string::npos)
+        if (request.url.find("/desktop/authorize") != std::string::npos)
             return authorization_response();
         if (request.url.find("/identity/exchange") != std::string::npos) {
             ++exchanges;
@@ -718,10 +709,8 @@ TEST_CASE("Expired browser callback fails without exchanging its code", "[HonorA
     std::atomic_int exchanges {0};
     Session session(std::make_unique<MemoryStore>(memory),
                     [&](const Request& request, Cancellation) {
-                        if (request.url.find("/mobile/attempts") != std::string::npos)
-                            return attempt_response(expires_at);
-                        if (request.url.find("/mobile/authorize") != std::string::npos)
-                            return authorization_response();
+                        if (request.url.find("/desktop/authorize") != std::string::npos)
+                            return authorization_response(expires_at);
                         ++exchanges;
                         return Response{201, session_response(platform_session())};
                     });
@@ -737,23 +726,50 @@ TEST_CASE("Expired browser callback fails without exchanging its code", "[HonorA
     REQUIRE_FALSE(session.take_authorization_url().has_value());
 }
 
+TEST_CASE("Upgrading a mobile credential requires login while retaining the platform configuration", "[HonorAccount]")
+{
+    const auto config = configuration();
+    auto memory = configured_memory();
+    auto stored = Json::parse(serialize_session(platform_session()));
+    stored["version"] = 2;
+    stored["kind"] = "mobile";
+    memory->put(session_key(config), stored.dump());
+    std::atomic_int requests{0};
+    Session session(std::make_unique<MemoryStore>(memory), [&](const Request&, Cancellation) {
+        ++requests;
+        return authorization_response();
+    });
+    session.restore();
+    REQUIRE(session.config().api_url == config.api_url);
+    REQUIRE_FALSE(session.snapshot().has_identity());
+    REQUIRE_FALSE(memory->has(session_key(config)));
+    REQUIRE(requests.load() == 0);
+    REQUIRE(session.login());
+    REQUIRE(wait_for_session(session, [&] { return session.snapshot().state == State::Authorizing; }));
+    REQUIRE(requests.load() == 1);
+}
+
 TEST_CASE("Startup validates the saved account and handles offline or mismatched identity",
           "[HonorAccount]")
 {
     SECTION("matching account") {
         const auto saved = platform_session();
+        auto profile = saved.identity;
+        profile.picture = "https://images.example.test/updated-avatar.png";
         auto memory = configured_memory(saved);
         std::atomic_bool bearer_matches {false};
         Session session(std::make_unique<MemoryStore>(memory),
                         [&](const Request& request, Cancellation) {
                             bearer_matches.store(request.bearer == saved.access_token);
-                            return Response{200, account_response(saved.identity)};
+                            return Response{200, account_response(profile)};
                         });
         session.restore();
+        REQUIRE_FALSE(session.snapshot().avatar_url.has_value());
         REQUIRE(wait_for_session(session, [&] {
             return session.snapshot().state == State::SignedIn;
         }));
         REQUIRE(session.snapshot().identity.subject == account_id);
+        REQUIRE(session.snapshot().avatar_url == profile.picture);
         REQUIRE(session.snapshot().persistent);
         REQUIRE(bearer_matches.load());
         const auto access=session.access();
@@ -775,6 +791,7 @@ TEST_CASE("Startup validates the saved account and handles offline or mismatched
             return session.snapshot().state == State::Offline;
         }));
         REQUIRE(session.snapshot().identity.subject == account_id);
+        REQUIRE_FALSE(session.snapshot().avatar_url.has_value());
         REQUIRE(memory->has(session_key(configuration())));
         REQUIRE_FALSE(session.access().has_value());
         REQUIRE(session.snapshot().message.find("UPSTREAM_PRIVATE_DETAIL") == std::string::npos);
@@ -959,7 +976,7 @@ TEST_CASE("Browser cleanup requests persist without restoring the platform sessi
     REQUIRE_FALSE(memory->has("browser-reset-platform-v2"));
 }
 
-TEST_CASE("A failed browser cleanup request remains mandatory before a new login",
+TEST_CASE("Desktop login retains pending cleanup until the embedded browser confirms it",
           "[HonorAccount]")
 {
     const auto saved = platform_session();
@@ -971,7 +988,7 @@ TEST_CASE("A failed browser cleanup request remains mandatory before a new login
                             return Response{200, account_response(saved.identity)};
                         if (request.url.find("/session/revoke") != std::string::npos)
                             return Response{201, R"({"ok":true})"};
-                        return attempt_response();
+                        return authorization_response();
                     });
     session.restore();
     REQUIRE(wait_for_session(session, [&] {
@@ -983,6 +1000,8 @@ TEST_CASE("A failed browser cleanup request remains mandatory before a new login
     REQUIRE(session.browser_reset_pending());
     REQUIRE(session.login());
     REQUIRE(session.browser_reset_pending());
+    REQUIRE(session.complete_browser_reset());
+    REQUIRE_FALSE(session.browser_reset_pending());
     session.cancel();
 }
 
@@ -1073,6 +1092,126 @@ TEST_CASE("An injected account executor keeps cancellation and late session resu
     session.poll();
     REQUIRE(session.snapshot().state != State::SignedIn);
     REQUIRE_FALSE(session.access().has_value());
+}
+
+TEST_CASE("Avatar changes use the confirmed profile and retry readback without resaving", "[HonorAccount]")
+{
+    const auto saved = platform_session();
+    auto initial = saved.identity;
+    initial.picture = "https://images.example.test/initial.png";
+    auto updated = initial;
+    updated.picture = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
+    unsigned reads = 0;
+    unsigned writes = 0;
+    std::vector<Request> requests;
+    Session session(std::make_unique<MemoryStore>(configured_memory(saved)),
+        [&](const Request& request, Cancellation) {
+            requests.push_back(request);
+            if (request.method == Request::Method::Patch)
+                return ++writes == 1 ? Response{503, ""} : Response{200, R"({"ok":true})"};
+            ++reads;
+            if (reads == 2) return Response{503, ""};
+            return Response{200, account_response(reads == 1 ? initial : updated)};
+        }, nullptr, [](std::function<void()> operation) { operation(); return true; });
+
+    session.restore();
+    REQUIRE_FALSE(session.snapshot().avatar_url.has_value());
+    REQUIRE(session.poll());
+    REQUIRE(session.snapshot().avatar_url == initial.picture);
+    REQUIRE(session.save_avatar(*updated.picture));
+    REQUIRE(session.poll());
+    REQUIRE(session.snapshot().avatar_update == AvatarUpdate::SaveFailed);
+    REQUIRE(session.snapshot().avatar_url == initial.picture);
+    REQUIRE(reads == 1);
+
+    REQUIRE(session.save_avatar(*updated.picture));
+    REQUIRE(session.poll());
+    REQUIRE(session.snapshot().avatar_update == AvatarUpdate::Synchronizing);
+    REQUIRE(session.snapshot().avatar_url == initial.picture);
+    REQUIRE(session.poll());
+    REQUIRE(session.snapshot().avatar_update == AvatarUpdate::SyncFailed);
+    REQUIRE(session.snapshot().avatar_url == initial.picture);
+    REQUIRE_FALSE(session.save_avatar(*updated.picture));
+    REQUIRE(session.retry_avatar_sync());
+    REQUIRE(session.poll());
+    REQUIRE(session.snapshot().avatar_update == AvatarUpdate::Complete);
+    REQUIRE(session.snapshot().avatar_url == updated.picture);
+    REQUIRE(writes == 2);
+    REQUIRE(reads == 3);
+    REQUIRE(requests.size() == 5);
+    for (const auto& request : requests) {
+        CHECK(request.url == configuration().api_url + "/v1/me");
+        CHECK(request.bearer == saved.access_token);
+        CHECK(request.headers == desktop_client_headers());
+        if (request.method == Request::Method::Patch) {
+            const auto body = Json::parse(request.json);
+            REQUIRE(body.size() == 1);
+            CHECK(body.at("avatarUrl") == *updated.picture);
+        }
+    }
+}
+
+TEST_CASE("A completed avatar readback cannot publish after logout or account switch", "[HonorAccount][UiLifecycle]")
+{
+    const auto saved = platform_session();
+    auto updated = saved.identity;
+    updated.picture = "https://images.example.test/old-account-update.png";
+    auto next = platform_session(now_seconds() + 3600, now_seconds() + 86400, other_account_id);
+    next.access_token = fixture_token('B');
+    auto next_profile = next.identity;
+    next_profile.picture.reset();
+    unsigned reads = 0;
+    std::vector<std::function<void()>> work;
+    Session session(std::make_unique<MemoryStore>(configured_memory(saved)),
+        [&](const Request& request, Cancellation) {
+            if (request.url == configuration().api_url + "/v1/identity/honor/desktop/authorize")
+                return authorization_response();
+            if (request.url == configuration().api_url + "/v1/identity/exchange")
+                return Response{201, session_response(next)};
+            if (request.url == configuration().api_url + "/v1/identity/session/revoke")
+                return Response{201, R"({"ok":true})"};
+            if (request.method == Request::Method::Patch) return Response{200, R"({"ok":true})"};
+            if (request.bearer == next.access_token) return Response{200, account_response(next_profile)};
+            return Response{200, account_response(++reads == 1 ? saved.identity : updated)};
+        }, nullptr, [&](std::function<void()> operation) { work.push_back(std::move(operation)); return true; });
+    const auto finish = [&] {
+        REQUIRE_FALSE(work.empty());
+        auto operation = std::move(work.front());
+        work.erase(work.begin());
+        operation();
+    };
+    session.restore();
+    finish();
+    REQUIRE(session.poll());
+    REQUIRE(session.snapshot().avatar_url == saved.identity.picture);
+    REQUIRE(session.save_avatar("data:image/png;base64,fixture"));
+    finish();
+    REQUIRE(session.poll());
+    finish();
+    REQUIRE(reads == 2);
+    REQUIRE(session.logout());
+    session.poll();
+    REQUIRE_FALSE(session.snapshot().has_identity());
+    REQUIRE_FALSE(session.snapshot().avatar_url.has_value());
+    REQUIRE(session.snapshot().avatar_update == AvatarUpdate::Idle);
+
+    finish();
+    session.poll();
+    REQUIRE(session.login());
+    finish();
+    REQUIRE(session.poll());
+    REQUIRE(session.take_authorization_url().has_value());
+    REQUIRE(session.callback(configuration().callback_uri + "?code=" + fixture_token('C')));
+    finish();
+    REQUIRE(session.poll());
+    REQUIRE(session.snapshot().identity.subject == other_account_id);
+    REQUIRE_FALSE(session.snapshot().avatar_url.has_value());
+
+    finish();
+    REQUIRE(session.poll());
+    REQUIRE(session.snapshot().avatar_url == std::string());
+    REQUIRE(session.snapshot().avatar_update == AvatarUpdate::Idle);
+    REQUIRE(reads == 2);
 }
 
 TEST_CASE("Account executor rejection and exceptions release the request busy state", "[HonorAccount][UiLifecycle]")

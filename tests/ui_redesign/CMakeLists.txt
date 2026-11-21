@@ -1,6 +1,7 @@
 add_executable(printer_workspace_tests test_printer_workspace.cpp)
-target_link_libraries(printer_workspace_tests PRIVATE Catch2::Catch2WithMain)
-target_include_directories(printer_workspace_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_sources(printer_workspace_tests PRIVATE test_printer_transfer_filaments.cpp)
+target_link_libraries(printer_workspace_tests PRIVATE Catch2::Catch2WithMain nlohmann_json)
+target_include_directories(printer_workspace_tests PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/deps_src)
 orcaslicer_discover_tests(printer_workspace_tests)
 
 # Reuse the mainline revision, connection and media guard cases without building

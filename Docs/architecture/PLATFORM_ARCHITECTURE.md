@@ -133,7 +133,7 @@ DFX 按用户确认定义为**诊断、日志、故障定位、性能与可靠�
 | 3D 后处理/人像/配色 | `GUI/AI/ModelGeneration/BeautyWorkbenchSession*`、`BeautyWorkbenchTransactionController*`、`PostGenerationWorkbench*`、`GUI/AI/ColorMatching` | 候选、当前作品、预览和历史需区分；颜色、几何与实物打印质量分别验证 |
 | 原生导入/应用 | `AI/Contracts/IModelArtifactConsumer.hpp`、`GUI/AI/Orca`、`PlaterWorkbenchImport*.ipp`、`PlaterAITransaction.ipp` | Plater/Model/Config 保有工程真值；明确应用和撤销；侧车不直接修改原生工程 |
 | 智能切片 | `AI/SmartSlicing/{Domain,Application,Ports}`、`GUI/AI/SmartSlicing` | 按工程 revision 绑定几何分析、原生试切证据和正式应用。应用及恢复由 Plater 的快照事务维护 |
-| 账号 | `Redesign/PlatformAccountService*`、AccountWorkspace、`Utils/HonorAccount/{HonorSession,HonorClient,HonorStore}*` | 应用共享服务拥有唯一Session，账号页和模型库共用身份；异步Task隔离取消/晚到结果，凭据只留原生层 |
+| 账号 | `Redesign/PlatformAccountService*`、AccountWorkspace、`Utils/HonorAccount/{HonorSession,HonorClient,HonorStore,HonorServices}*` | 共享会话为账号页、模型库和原生账户接口提供同一身份。凭据保留在原生安全存储，异步结果遵循账号范围与取消状态 |
 | 模型库/资产 | `resources/web/model_library`、AssetsWorkspace、LibraryWorkspaceService、`Utils/PlatformLibrary`、ModelLibraryApplication、Repository/Loader | HTML只展示；C++管理查询、个人记录与下载，登记资产仍由本地库消费；用户目录保留原件与独立编辑成果 |
 | 打印/设备 | 原生 Print/GCode、PrinterWorkspace/OrcaPrinterAdapter、DeviceManager、SendJob/PrintJob、Honor Forge/Moonraker agent、`orca_mobile_device_sdk` | Honor Forge 使用独立 agent ID，mDNS/受控子网候选通过 Moonraker 探测后进入既有 DeviceManager；UI 只选择导出、仅上传或上传并打印，传输继续由既有 Job 和 agent 执行，raw G-code 与 3MF 能力按 agent 显式声明 |
 | CAD/原生编辑 | `libslic3r/CAD`、`GUI/CAD`、Model/Geometry、GLCanvas3D | CAD 文档与求解结果回到原生模型；SLVS/OCCT 版本和构建选项是依赖契约 |
@@ -152,6 +152,14 @@ flowchart LR
   Beauty --> Library
   Native --> Project[3MF 工程]
 ```
+
+## 2026-11-20 桌面账号与原生服务
+
+`HonorSession` 保存本次登录的 PKCE verifier。`HonorClient` 发起 `POST /v1/identity/honor/desktop/authorize`，`AccountWorkspace` 用原有的内嵌 WebView 打开荣耀授权页。WebView 在当前登录代次内拦截 `honorforge://auth/callback`，交给原生会话交换。刷新和撤销沿用平台身份接口，安全存储仅恢复 `desktop` 会话。升级后的旧凭据需重新登录，应用配置与 WebView 登录记录仍按原配置隔离。
+
+`HonorSession` 通过 `GET /v1/me` 确认头像地址。更换头像时，`HonorClient` 用 `PATCH /v1/me` 提交 96×96 PNG 的 `avatarUrl`，收到成功回执后回读资料。回读失败时，重试继续原会话内的读取。`PlatformAccountService` 负责头像解码和会话内展示状态，供账户页、侧栏及本地和自有模型卡片订阅。默认头像随账号状态选择。远程图片使用独立请求，晚到结果按账号与会话代次核对。模型库通过现有桥接收到 PNG 数据，更新对应图片。`HonorClient` 为平台鉴权请求设置五个 `X-Orca-*` 客户端标识头，由后端在成功的鉴权业务请求完成后统计活跃。
+
+`HonorServices` 通过当前会话访问积分、容量和云文件。上传会话返回 `fileId`，传输失联后用原 ID 查询状态。票据和上传会话绑定账号生命周期，原件下载核对大小与 SHA-256 后返回。积分与云空间界面留待 UX 设计稿。现有模型生成入口继续读取供应商和模型配置。
 
 ## 2026-11-11：模型库与网站接缝
 

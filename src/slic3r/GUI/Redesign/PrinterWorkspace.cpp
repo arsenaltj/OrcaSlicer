@@ -1,4 +1,5 @@
 #include "PrinterWorkspace.hpp"
+#include "PrinterTransferDialogStyle.hpp"
 #include "RedesignWidgets.hpp"
 #include "slic3r/GUI/Widgets/Button.hpp"
 #include "RedesignMessageDialog.hpp"
@@ -32,6 +33,7 @@
 #include <wx/scrolwin.h>
 #include <wx/sizer.h>
 #include <wx/stattext.h>
+#include <wx/textctrl.h>
 #include <wx/utils.h>
 #include <wx/weakref.h>
 #include <wx/webview.h>
@@ -57,6 +59,27 @@ wxStaticText* label(wxWindow* parent, const wxString& value, int points = 11, bo
     RedesignTheme::style_text(result, secondary ? RedesignTheme::secondary_text_colour() :
                               RedesignTheme::primary_text_colour(), points);
     return result;
+}
+
+template<class Control>
+void update_label(Control* control, const wxString& value)
+{
+    if (control->GetLabel() != value) control->SetLabel(value);
+}
+
+void update_tooltip(wxWindow* control, const wxString& value)
+{
+    if (control->GetToolTipText() != value) control->SetToolTip(value);
+}
+
+void update_enabled(wxWindow* control, bool value)
+{
+    if (control->IsThisEnabled() != value) control->Enable(value);
+}
+
+bool update_visibility(wxWindow* control, bool value)
+{
+    return control->IsShown() != value && control->Show(value);
 }
 
 wxString phase_label(PrinterTaskPhase phase)
@@ -122,6 +145,24 @@ std::string path_component(const std::string& value)
 std::string media_scope(const PrinterWorkspaceSnapshot& state)
 {
     return state.device_id.empty() ? "profile:" + state.preset_name : "device:" + state.device_id;
+}
+
+std::string camera_config_key(const PrinterWorkspaceSnapshot& state)
+{
+    return "source_" + path_component(state.active_agent_id + ":" + media_scope(state));
+}
+
+std::string custom_camera_url(const PrinterWorkspaceSnapshot& state)
+{
+    return wxGetApp().app_config->get("camera", camera_config_key(state));
+}
+
+std::string camera_play_scope(const PrinterWorkspaceSnapshot& state, const std::string& custom_url)
+{
+    if (!custom_url.empty()) return camera_config_key(state) + ":" + custom_url;
+    if (!state.info_ready || !state.has_camera || state.device_id.empty()) return {};
+    const auto* agent = wxGetApp().getAgent();
+    return camera_config_key(state) + (agent ? ":" + agent->get_local_camera_stream_url() : "");
 }
 
 bool video_extension(const wxString& extension)
@@ -661,8 +702,7 @@ PrinterWorkspace::PrinterWorkspace(wxWindow* parent, Plater* plater)
     SetBackgroundColour(RedesignTheme::flow_background_colour());
     build_workspace();
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) { if (!m_destroying) refresh_state(); });
-    m_snapshot_request_id = wxWindow::NewControlId();
-    Bind(wxEVT_WEBREQUEST_STATE, &PrinterWorkspace::on_snapshot_request_state, this, m_snapshot_request_id);
+    Bind(wxEVT_WEBREQUEST_STATE, &PrinterWorkspace::on_snapshot_request_state, this);
     Bind(wxEVT_SIZE, [this](wxSizeEvent& event) { update_compact_layout(); event.Skip(); });
 }
 
@@ -671,9 +711,8 @@ PrinterWorkspace::~PrinterWorkspace()
     m_destroying = true;
     m_active = false;
     m_timer.Stop();
-    if (m_snapshot_request.IsOk() && m_snapshot_request.GetState() == wxWebRequest::State_Active)
-        m_snapshot_request.Cancel();
-    Unbind(wxEVT_WEBREQUEST_STATE, &PrinterWorkspace::on_snapshot_request_state, this, m_snapshot_request_id);
+    Unbind(wxEVT_WEBREQUEST_STATE, &PrinterWorkspace::on_snapshot_request_state, this);
+    cancel_snapshot_request();
     disconnect_media();
     // MediaPlayCtrl borrows both renderers and owns a worker; destroy it first.
     delete m_media_play; m_media_play = nullptr;
@@ -722,14 +761,6 @@ void PrinterWorkspace::build_workspace()
     prepare->Add(label(m_prepare, text("关键信息"), 14), 0, wxEXPAND | wxBOTTOM, FromDIP(12));
     auto* options = new RoundedPanel(m_prepare, wxDefaultSize, control_colour(), panel_colour(), 12);
     auto* rows = new wxBoxSizer(wxVERTICAL);
-    const std::array<wxString, 3> names { text("打印前自动调平"), text("开启摄像头录制"), text("AI失败预警") };
-    for (size_t i = 0; i < names.size(); ++i) {
-        auto* row = new wxBoxSizer(wxHORIZONTAL);
-        row->Add(label(options, names[i], 12), 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
-        m_options[i] = new PrinterToggle(options, names[i], [this, i](bool value) { request_option(int(i), value); });
-        row->Add(m_options[i], 0, wxALIGN_CENTER_VERTICAL);
-        rows->Add(row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
-    }
     for (int i = 0; i < 2; ++i) {
         auto* row = new wxBoxSizer(wxHORIZONTAL);
         row->Add(label(options, i == 0 ? "G-code" : text("预计打印时间"), 9, true), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(12));
@@ -791,11 +822,12 @@ void PrinterWorkspace::build_workspace()
     monitor->Add(metrics, 0, wxEXPAND | wxBOTTOM, FromDIP(20));
     auto* health = new RoundedPanel(m_monitor, wxDefaultSize, control_colour(), panel_colour(), 12);
     auto* health_rows = new wxBoxSizer(wxVERTICAL);
-    const std::array<wxString, 2> health_headings { text("AI视觉检测"), text("耗材余量") };
+    const std::array<wxString, 2> health_headings { text("设备告警"), text("耗材余量") };
     for (size_t i = 0; i < health_headings.size(); ++i) {
         auto* row = new wxBoxSizer(wxHORIZONTAL);
         row->Add(label(health, health_headings[i], 12), 1, wxALIGN_CENTER_VERTICAL);
-        m_health_status[i] = label(health, "--", 9, true);
+        m_health_status[i] = label(health, text("未上报"), 9, true);
+        m_health_status[i]->SetMinSize(FromDIP(wxSize(68, -1)));
         row->Add(m_health_status[i], 0, wxALIGN_CENTER_VERTICAL);
         health_rows->Add(row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
         m_health_details[i] = label(health, text("未上报"), 9, true);
@@ -803,6 +835,20 @@ void PrinterWorkspace::build_workspace()
     }
     health_rows->AddSpacer(FromDIP(16)); health->SetSizer(health_rows);
     monitor->Add(health, 0, wxEXPAND | wxBOTTOM, FromDIP(16));
+    m_device_print_options = new RoundedPanel(m_monitor, wxDefaultSize, control_colour(), panel_colour(), 12);
+    auto* device_options = new wxBoxSizer(wxVERTICAL);
+    device_options->Add(label(m_device_print_options, text("设备打印选项"), 12), 0, wxEXPAND | wxALL, FromDIP(16));
+    auto* detection_row = new wxBoxSizer(wxHORIZONTAL);
+    detection_row->Add(label(m_device_print_options, text("AI 失败预警"), 11), 1, wxALIGN_CENTER_VERTICAL);
+    m_detection_option = new PrinterToggle(m_device_print_options, text("AI 失败预警"),
+        [this](bool value) { request_detection(value); });
+    detection_row->Add(m_detection_option, 0, wxALIGN_CENTER_VERTICAL);
+    device_options->Add(detection_row, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
+    m_detection_status = label(m_device_print_options, text("等待设备确认"), 9, true);
+    device_options->Add(m_detection_status, 0, wxEXPAND | wxALL, FromDIP(16));
+    m_device_print_options->SetSizer(device_options);
+    monitor->Add(m_device_print_options, 0, wxEXPAND | wxBOTTOM, FromDIP(16));
+    m_device_print_options->Hide();
     auto* back = new RoundedActionButton(m_monitor, text("打印机设置与媒体"), false, 40);
     back->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { set_view(View::Media); });
     monitor->Add(back, 0, wxEXPAND);
@@ -879,6 +925,13 @@ void PrinterWorkspace::build_workspace()
     auto* video = new wxBoxSizer(wxVERTICAL);
     auto* video_header = new wxBoxSizer(wxHORIZONTAL);
     video_header->Add(label(m_video_panel, text("实时视频"), 14), 1, wxALIGN_CENTER_VERTICAL);
+    m_snapshot_mode_label = label(m_video_panel, text("快照模式"), 10, true);
+    video_header->Add(m_snapshot_mode_label, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(12));
+    m_snapshot_mode_label->Hide();
+    auto* camera_settings = new RoundedActionButton(m_video_panel, text("摄像头设置"), false, 40);
+    camera_settings->SetMinSize(FromDIP(wxSize(108, 40)));
+    camera_settings->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show_camera_settings(); });
+    video_header->Add(camera_settings, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
     auto* camera = new RoundedActionButton(m_video_panel, {}, false, 40);
     camera->SetMinSize(FromDIP(wxSize(40, 40))); camera->SetName(text("保存视频截图"));
     camera->set_icon(create_scaled_bitmap("redesign_print_camera", camera, 32));
@@ -946,10 +999,10 @@ void PrinterWorkspace::set_active(bool active)
     else {
         m_timer.Stop();
         if (m_interactive_preview) m_interactive_preview(false, m_layer_preview, m_show_support);
+        cancel_snapshot_request();
         if (m_media_play) m_media_play->SetMachineObject(nullptr);
         m_camera_autoplay_scope.clear();
         m_camera_autoplay_scheduled = false;
-        m_camera_autoplay_attempts = 0;
         m_file_media_requested = false;
         if (m_file_media) m_file_media->Stop();
         disconnect_media();
@@ -1042,9 +1095,11 @@ void PrinterWorkspace::set_view(View view)
     if (entering_monitor) {
         m_camera_autoplay_scope.clear();
         m_camera_autoplay_scheduled = false;
-        m_camera_autoplay_attempts = 0;
     }
-    if (!monitor && m_media_play) m_media_play->SetMachineObject(nullptr);
+    if (!monitor) {
+        cancel_snapshot_request();
+        if (m_media_play) m_media_play->SetMachineObject(nullptr);
+    }
     update_camera_view();
     if (view != View::Media) {
         m_file_media_requested = false;
@@ -1092,21 +1147,33 @@ void PrinterWorkspace::refresh_state()
                                 << " phase=" << static_cast<int>(state.phase)
                                 << " camera_available=" << state.has_camera;
     }
-    const bool device_changed = media_scope(state) != media_scope(m_state);
+    const bool device_changed = state.active_agent_id != m_state.active_agent_id || media_scope(state) != media_scope(m_state);
     const bool connection_lost = m_state.info_ready && !state.info_ready;
     if (device_changed) {
         m_pending.reset(); m_ever_printing = false; m_preview_key.clear(); set_error({});
-        m_camera_autoplay_scope.clear(); m_camera_autoplay_scheduled = false; m_camera_autoplay_attempts = 0;
+        m_pending_detection.reset();
+        cancel_snapshot_request();
+        m_camera_autoplay_scope.clear(); m_camera_autoplay_scheduled = false;
         disconnect_media(); m_media_image->set_image({}); m_media_message.clear();
         m_local_thumbnails.clear(); m_media_limit = 100; m_file_media_requested = false;
         if (m_file_media) { m_file_media->Stop(); m_file_media->Hide(); m_media_image->Show(); }
         m_file_toggle->Hide();
     }
     if (connection_lost) {
+        m_pending_detection.reset();
         disconnect_media(); m_media_message = text("打印机未连接，仅显示本地媒体");
-        m_camera_autoplay_scope.clear(); m_camera_autoplay_scheduled = false; m_camera_autoplay_attempts = 0;
+        cancel_snapshot_request();
+        m_camera_autoplay_scope.clear(); m_camera_autoplay_scheduled = false;
     }
     m_state = state;
+    if (m_pending_detection) {
+        if (!state.can_detect || state.detection_enabled == *m_pending_detection) {
+            m_pending_detection.reset();
+        } else if (std::chrono::steady_clock::now() - m_detection_since > std::chrono::seconds(15)) {
+            m_pending_detection.reset();
+            set_error(text("设备尚未确认 AI 失败预警设置，请检查连接后重试。"));
+        }
+    }
     if (m_pending) {
         const bool target_changed = state.device_id != m_pending_target.device_id || state.task_id != m_pending_target.task_id;
         const bool acknowledged = (*m_pending == PrinterTaskAction::Pause && state.phase == PrinterTaskPhase::Paused) ||
@@ -1129,15 +1196,18 @@ void PrinterWorkspace::refresh_state()
     if (m_active && m_view == View::Monitor && m_media_play) {
         auto* manager = wxGetApp().getDeviceManager();
         auto* machine = manager ? manager->get_selected_machine() : nullptr;
-        m_media_play->SetMachineObject(state.info_ready && state.has_camera ? machine : nullptr);
+        const auto custom_url = custom_camera_url(state);
+        m_media_play->SetMachineObject(state.info_ready && state.has_camera ? machine : nullptr,
+                                       custom_url, camera_config_key(state));
         update_camera_view();
         const auto* agent = wxGetApp().getAgent();
-        const bool snapshot_mode = agent && agent->get_camera_stream_mode() == CameraStreamMode::http_snapshot;
+        const bool snapshot_mode = custom_url.empty() && agent && agent->get_camera_stream_mode() == CameraStreamMode::http_snapshot;
         const bool snapshot_request_active = m_snapshot_request.IsOk() &&
             m_snapshot_request.GetState() == wxWebRequest::State_Active;
-        m_camera->Enable(state.info_ready && state.has_camera && !snapshot_request_active &&
-            (snapshot_mode || m_media_ctrl->GetState() == wxMEDIASTATE_PLAYING));
+        update_enabled(m_camera, !snapshot_request_active &&
+            ((snapshot_mode && state.info_ready && state.has_camera) || m_media_ctrl->GetState() == wxMEDIASTATE_PLAYING));
         schedule_camera_autoplay(state);
+        m_media_play->RetryPlayback();
     }
     if (m_active && m_view == View::Media) { connect_media(); if (m_media_dirty && !m_modal) rebuild_media(); }
     if (m_active && m_view == View::Media && m_file_media && m_file_media_requested) {
@@ -1156,11 +1226,10 @@ void PrinterWorkspace::apply_state(const PrinterWorkspaceSnapshot& state)
 {
     const std::string display_name = printer_device_display_name(state.device_name, state.device_address);
     const bool named_device = state.device_selected && !display_name.empty();
-    m_printer_choice->SetLabel(named_device ? text(display_name) : text("选择打印机"));
-    m_printer_choice->SetToolTip(named_device ? text(display_name) : wxString());
-    m_printer_choice->Enable(!m_modal);
-    m_printer_refresh->Enable(!m_modal);
-    m_printer_choice->Refresh(); m_printer_refresh->Refresh();
+    update_label(m_printer_choice, named_device ? text(display_name) : text("选择打印机"));
+    update_tooltip(m_printer_choice, named_device ? text(display_name) : wxString());
+    update_enabled(m_printer_choice, !m_modal);
+    update_enabled(m_printer_refresh, !m_modal);
     wxString status;
     if (state.device_selected) {
         status = state.connecting ? text("正在连接 · 工作状态未知") :
@@ -1172,58 +1241,62 @@ void PrinterWorkspace::apply_state(const PrinterWorkspaceSnapshot& state)
     } else {
         status = text("请选择真实发现的打印机");
     }
-    m_device_status->SetLabel(status);
-    m_gcode->SetLabel(state.gcode_ready ? text(state.gcode_name) : text("未生成"));
-    m_gcode->SetToolTip(text(state.gcode_name));
-    m_estimate->SetLabel(state.estimated_seconds ? text(printer_duration(*state.estimated_seconds)) : "--");
-    const bool editable = !m_modal && !printer_task_active(state.phase) && !m_pending;
-    const std::array<bool, 3> enabled { state.can_level, state.can_record, state.can_detect };
-    const std::array<bool, 3> values { state.bed_leveling, state.recording, state.detection_enabled };
-    for (size_t i = 0; i < enabled.size(); ++i) {
-        m_options[i]->set_value(values[i]); m_options[i]->Enable(editable && state.info_ready && enabled[i]);
-        m_options[i]->SetToolTip(!state.info_ready ? text("请连接打印机并等待状态上报") :
-            enabled[i] ? wxString() : text("当前设备或存储状态不支持此选项")); m_options[i]->Refresh();
-    }
-    m_start->SetLabel(m_view == View::Media ? text("再次准备打印") :
+    update_label(m_device_status, status);
+    update_label(m_gcode, state.gcode_ready ? text(state.gcode_name) : text("未生成"));
+    update_tooltip(m_gcode, text(state.gcode_name));
+    update_label(m_estimate, state.estimated_seconds ? text(printer_duration(*state.estimated_seconds)) : text("—"));
+    const bool detection_visibility_changed = update_visibility(m_device_print_options, state.can_detect);
+    m_detection_option->set_value(state.detection_enabled);
+    update_enabled(m_detection_option, state.info_ready && !m_modal && !m_pending_detection);
+    update_label(m_detection_status, m_pending_detection ? text("等待设备确认") :
+        !state.info_ready ? text("等待设备状态") : state.detection_enabled ? text("设备已开启") : text("设备已关闭"));
+    update_label(m_start, m_view == View::Media ? text("再次准备打印") :
                      m_view == View::Monitor ? text("G-code 发送选项") :
                      state.slicing ? text("正在切片…") :
                      printer_can_slice(state) ? text("切片并准备打印") : text("开始打印"));
-    m_start->Enable(!m_modal && !m_pending && (m_view == View::Media || printer_can_review(state) || printer_can_slice(state)));
-    m_start->SetToolTip(m_view == View::Media ? text("返回准备页，重新核对当前工程与设备") :
+    update_enabled(m_start, !m_modal && !m_pending && (m_view == View::Media || printer_can_review(state) || printer_can_slice(state)));
+    update_tooltip(m_start, m_view == View::Media ? text("返回准备页，重新核对当前工程与设备") :
         m_view == View::Monitor ? text("打开导出、仅上传 G-code 和上传并打印选项") :
         state.gcode_ready ? text("核对当前切片后，进入设备确认或本地导出") : text("先完成当前工程的正式切片"));
-    m_start->Refresh();
     const bool show_import = !state.gcode_ready && !state.can_slice && !state.slicing;
     if (m_import->IsShown() != show_import) { m_import->Show(show_import); m_prepare_visual->Layout(); }
-    m_import->Enable(!m_modal && m_adapter.can_import_model());
+    update_enabled(m_import, !m_modal && m_adapter.can_import_model());
     m_progress->set_value(state.progress);
-    m_telemetry[0]->SetLabel(temperature_value_label(state.nozzle_temperature));
-    m_telemetry_details[0]->SetLabel(temperature_target_label(state.nozzle_target_temperature));
-    m_telemetry[1]->SetLabel(temperature_value_label(state.bed_temperature));
-    m_telemetry_details[1]->SetLabel(temperature_target_label(state.bed_target_temperature));
+    update_label(m_telemetry[0], temperature_value_label(state.nozzle_temperature));
+    update_label(m_telemetry_details[0], temperature_target_label(state.nozzle_target_temperature));
+    update_label(m_telemetry[1], temperature_value_label(state.bed_temperature));
+    update_label(m_telemetry_details[1], temperature_target_label(state.bed_target_temperature));
     const auto remaining = remaining_time_labels(state.remaining_seconds);
-    m_telemetry[2]->SetLabel(remaining.first);
-    m_telemetry_details[2]->SetLabel(remaining.second);
+    update_label(m_telemetry[2], remaining.first);
+    update_label(m_telemetry_details[2], remaining.second);
     const wxString task_status = m_pending ? text("等待打印机确认…") :
         !state.info_ready ? text("打印机未连接或尚未上报状态") :
         state.phase == PrinterTaskPhase::Failed ? phase_label(state.phase) :
         state.phase == PrinterTaskPhase::Unknown ? text("等待设备工作状态") : wxString();
-    m_task_status->SetLabel(task_status);
-    m_task_status->Show(!task_status.empty());
-    m_task_status->SetToolTip(text(state.task_name));
-    m_health_status[0]->SetLabel(!state.info_ready ? text("未上报") : state.device_warning ? text("设备告警") :
-                               state.detection_enabled ? text("已开启") : text("未开启"));
-    m_health_status[0]->SetForegroundColour(state.device_warning ? wxColour(255, 149, 86) :
-        state.detection_enabled && state.info_ready ? wxColour(56, 204, 150) : RedesignTheme::secondary_text_colour());
-    m_health_details[0]->SetLabel(state.device_warning ? text("请查看打印机告警并检查打印状态") : text("检测详情由设备上报"));
-    m_health_status[1]->SetLabel(state.filament_percent ? wxString::Format("%d%%", *state.filament_percent) : text("未上报"));
-    m_health_details[1]->SetLabel(state.filament_percent ? text("当前耗材剩余比例") : text("设备未提供耗材余量"));
+    update_label(m_task_status, task_status);
+    const bool task_visibility_changed = update_visibility(m_task_status, !task_status.empty());
+    update_tooltip(m_task_status, text(state.task_name));
+    update_label(m_health_status[0], !state.info_ready ? text("未上报") : state.device_warning ? text("有告警") : text("正常"));
+    const wxColour warning_colour = state.info_ready && state.device_warning ? wxColour(255, 149, 86) : RedesignTheme::secondary_text_colour();
+    if (m_health_status[0]->GetForegroundColour() != warning_colour) {
+        m_health_status[0]->SetForegroundColour(warning_colour);
+        m_health_status[0]->Refresh(false);
+    }
+    update_label(m_health_details[0], state.device_warning ? text("请查看打印机告警并检查打印状态") : text("告警详情由设备上报"));
+    update_label(m_health_status[1], state.filament_percent ? wxString::Format("%d%%", *state.filament_percent) : text("未上报"));
+    update_label(m_health_details[1], state.filament_percent ? text("当前耗材剩余比例") : text("设备未提供耗材余量"));
     const PrinterCommandTarget target { state.device_id, state.task_id };
     const auto action = state.phase == PrinterTaskPhase::Paused ? PrinterTaskAction::Resume : PrinterTaskAction::Pause;
-    m_pause->SetLabel(action == PrinterTaskAction::Resume ? text("继续打印") : text("暂停打印"));
-    m_pause->Enable(!m_modal && !m_pending && printer_command_allowed(state, target, action)); m_pause->Refresh();
-    m_stop->Enable(!m_modal && !m_pending && printer_command_allowed(state, target, PrinterTaskAction::Stop)); m_stop->Refresh();
-    m_prepare->Layout(); m_monitor->Layout(); m_settings_scroll->FitInside(); m_settings->Layout();
+    update_label(m_pause, action == PrinterTaskAction::Resume ? text("继续打印") : text("暂停打印"));
+    update_enabled(m_pause, !m_modal && !m_pending && printer_command_allowed(state, target, action));
+    update_enabled(m_stop, !m_modal && !m_pending && printer_command_allowed(state, target, PrinterTaskAction::Stop));
+    if (detection_visibility_changed || task_visibility_changed) {
+        m_monitor->Layout();
+        if (m_view == View::Monitor) {
+            m_settings_scroll->Layout();
+            m_settings_scroll->FitInside();
+        }
+    }
 }
 
 void PrinterWorkspace::request_discovery(PrinterDiscoveryTrigger trigger)
@@ -1301,13 +1374,92 @@ void PrinterWorkspace::request_task_action(PrinterTaskAction action)
     refresh_state();
 }
 
-void PrinterWorkspace::request_option(int index, bool value)
+void PrinterWorkspace::request_detection(bool value)
 {
-    if (m_modal || m_pending || printer_task_active(m_state.phase)) return;
-    const auto id = m_state.device_id;
-    const bool success = index == 0 ? m_adapter.set_bed_leveling(id, value) :
-        index == 1 ? m_adapter.set_recording(id, value) : m_adapter.set_detection(id, value);
-    set_error(success ? wxString() : text("设置未生效，请检查设备连接及存储状态。"));
+    if (m_modal || m_pending_detection) return;
+    if (m_adapter.set_detection(m_state.device_id, value)) {
+        m_pending_detection = value;
+        m_detection_since = std::chrono::steady_clock::now();
+        set_error({});
+    } else {
+        set_error(text("无法发送 AI 失败预警设置，请检查设备连接。"));
+    }
+    refresh_state();
+}
+
+void PrinterWorkspace::show_camera_settings()
+{
+    if (m_modal || m_view != View::Monitor) return;
+    const auto state = m_adapter.snapshot();
+    const auto key = camera_config_key(state);
+    wxMenu menu;
+    auto* source = menu.Append(wxID_ANY, text("自定义视频流地址…"));
+    wxMenuItem* record = nullptr;
+    if (state.info_ready && state.can_record) {
+        record = menu.AppendCheckItem(wxID_ANY, text("打印时自动录像"));
+        record->Check(state.recording);
+    }
+    const int choice = GetPopupMenuSelectionFromUser(menu);
+    if (record && choice == record->GetId()) {
+        if (!m_adapter.set_recording(state.device_id, !state.recording))
+            set_error(text("录像设置发送失败，请检查设备连接和存储状态。"));
+    } else if (choice == source->GetId()) {
+        m_modal = true;
+        const auto title = text("自定义视频流");
+        wxDialog dialog(this, wxID_ANY, title, wxDefaultPosition, wxDefaultSize, printer_transfer_dialog_style(true));
+        dialog.SetBackgroundColour(RedesignTheme::panel_colour());
+        auto* layout = new wxBoxSizer(wxVERTICAL);
+        layout->Add(new PrinterTransferTitleBar(&dialog, title), 0, wxEXPAND);
+        auto* content = new wxBoxSizer(wxVERTICAL);
+        auto* description = new wxStaticText(&dialog, wxID_ANY,
+            text("输入 MJPEG、RTSP 或 HLS 直连地址。留空恢复设备自带摄像头。"));
+        RedesignTheme::style_text(description, RedesignTheme::secondary_text_colour(), 10);
+        description->Wrap(dialog.FromDIP(352));
+        content->Add(description, 0, wxBOTTOM, dialog.FromDIP(10));
+        auto* address = new wxTextCtrl(&dialog, wxID_ANY, text(custom_camera_url(state)),
+                                       wxDefaultPosition, wxDefaultSize, wxTE_PROCESS_ENTER);
+        address->SetMinSize(dialog.FromDIP(wxSize(352, 30)));
+        address->SetBackgroundColour(RedesignTheme::control_colour());
+        address->SetForegroundColour(RedesignTheme::primary_text_colour());
+        address->Bind(wxEVT_TEXT_ENTER, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_OK); });
+        content->Add(address, 0, wxEXPAND | wxBOTTOM, dialog.FromDIP(16));
+        auto* actions = new wxBoxSizer(wxHORIZONTAL);
+        actions->AddStretchSpacer();
+        auto* cancel = new RoundedActionButton(&dialog, text("取消"), false, 36);
+        auto* confirm = new RoundedActionButton(&dialog, text("确认"), true, 36);
+        cancel->SetMinSize(dialog.FromDIP(wxSize(90, 36)));
+        confirm->SetMinSize(dialog.FromDIP(wxSize(90, 36)));
+        cancel->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_CANCEL); });
+        confirm->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_OK); });
+        actions->Add(cancel, 0, wxRIGHT, dialog.FromDIP(8));
+        actions->Add(confirm, 0);
+        content->Add(actions, 0, wxEXPAND);
+        layout->Add(content, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, dialog.FromDIP(20));
+        dialog.SetSizerAndFit(layout);
+        dialog.Bind(wxEVT_CLOSE_WINDOW, [&dialog](wxCloseEvent&) { dialog.EndModal(wxID_CANCEL); });
+        dialog.Bind(wxEVT_CHAR_HOOK, [&dialog](wxKeyEvent& event) {
+            if (event.GetKeyCode() == WXK_ESCAPE) dialog.EndModal(wxID_CANCEL);
+            else event.Skip();
+        });
+        dialog.CentreOnParent();
+        address->SetFocus();
+        address->SelectAll();
+        if (dialog.ShowModal() == wxID_OK && key == camera_config_key(m_adapter.snapshot())) {
+            const wxString value = address->GetValue().Trim(true).Trim(false);
+            const wxURI uri(value);
+            const auto scheme = uri.GetScheme().Lower();
+            if (value.empty() || (uri.HasServer() && (scheme == "http" || scheme == "https" || scheme == "rtsp" || scheme == "rtsps"))) {
+                if (value.empty()) wxGetApp().app_config->erase("camera", key);
+                else wxGetApp().app_config->set("camera", key, std::string(value.ToUTF8().data()));
+                cancel_snapshot_request();
+                m_camera_autoplay_scope.clear();
+                set_error({});
+            } else {
+                set_error(text("视频流地址应以 http://、https://、rtsp:// 或 rtsps:// 开头。"));
+            }
+        }
+        m_modal = false;
+    }
     refresh_state();
 }
 
@@ -1316,7 +1468,12 @@ void PrinterWorkspace::set_error(const wxString& message)
     m_action_error = message;
     wxString shown = m_preparation_notice;
     if (!message.empty()) { if (!shown.empty()) shown += "\n"; shown += message; }
-    m_error->SetLabel(shown); m_error->Wrap(FromDIP(325)); m_error->Show(!shown.empty()); m_settings->Layout();
+    if (m_shown_error == shown) return;
+    m_shown_error = shown;
+    m_error->SetLabel(shown);
+    m_error->Wrap(FromDIP(325));
+    update_visibility(m_error, !shown.empty());
+    m_settings->Layout();
 }
 
 void PrinterWorkspace::update_preview()
@@ -1354,11 +1511,13 @@ wxString PrinterWorkspace::media_directory() const
 
 void PrinterWorkspace::request_snapshot()
 {
-    if (!m_media_ctrl || !m_active || m_view != View::Monitor || !m_state.info_ready || m_modal) return;
+    if (!m_media_ctrl || !m_active || m_view != View::Monitor || m_modal) return;
     const auto current = m_adapter.snapshot();
-    if (current.device_id != m_state.device_id || !current.info_ready) { refresh_state(); return; }
+    if (camera_config_key(current) != camera_config_key(m_state)) { refresh_state(); return; }
+    const auto custom_url = custom_camera_url(current);
+    if (!current.info_ready && custom_url.empty()) return;
     auto* agent = wxGetApp().getAgent();
-    if (agent && agent->get_camera_stream_mode() == CameraStreamMode::http_snapshot) {
+    if (custom_url.empty() && agent && agent->get_camera_stream_mode() == CameraStreamMode::http_snapshot) {
         if (m_snapshot_request.IsOk() && m_snapshot_request.GetState() == wxWebRequest::State_Active) {
             set_error(text("正在获取摄像头画面，请稍候。"));
             return;
@@ -1378,6 +1537,7 @@ void PrinterWorkspace::request_snapshot()
         }
         m_snapshot_request_device = current.device_id;
         m_snapshot_request_path = wxFileName(directory, name).GetFullPath();
+        m_snapshot_request_id = wxWindow::NewControlId();
         m_snapshot_request = wxWebSession::GetDefault().CreateRequest(this, text(url), m_snapshot_request_id);
         if (!m_snapshot_request.IsOk()) {
             m_snapshot_request_device.clear();
@@ -1406,8 +1566,22 @@ void PrinterWorkspace::request_snapshot()
     m_media_dirty = true; set_error(text("截图已保存，可在‘录制视频与截图’中查看。"));
 }
 
+void PrinterWorkspace::cancel_snapshot_request()
+{
+    auto pending = m_snapshot_request;
+    m_snapshot_request = wxWebRequest();
+    m_snapshot_request_device.clear();
+    m_snapshot_request_path.clear();
+    if (pending.IsOk() && pending.GetState() == wxWebRequest::State_Active)
+        pending.Cancel();
+}
+
 void PrinterWorkspace::on_snapshot_request_state(wxWebRequestEvent& event)
 {
+    if (!m_snapshot_request.IsOk() || event.GetId() != m_snapshot_request.GetId()) {
+        event.Skip();
+        return;
+    }
     const auto request_state = event.GetState();
     if (request_state == wxWebRequest::State_Active || request_state == wxWebRequest::State_Idle)
         return;
@@ -1451,50 +1625,39 @@ void PrinterWorkspace::update_camera_view()
         return;
     const auto* agent = wxGetApp().getAgent();
     const auto mode = agent ? agent->get_camera_stream_mode() : CameraStreamMode::none;
-    const bool use_webview = m_view == View::Monitor && mode == CameraStreamMode::http_snapshot;
-    if (use_webview) {
-        if (!m_camera_view->IsShown()) {
-            m_camera_view->Show();
-            m_media_ctrl->Hide();
-            BOOST_LOG_TRIVIAL(info) << "[PrinterCamera] renderer_changed mode=http_snapshot renderer=webview";
-        }
-    } else {
-        if (m_camera_view->IsShown()) {
-            m_camera_view->Hide();
-            m_media_play->StopWebStream();
-            BOOST_LOG_TRIVIAL(info) << "[PrinterCamera] renderer_changed mode="
-                                    << static_cast<int>(mode) << " renderer=media_ctrl";
-        }
-        m_media_ctrl->Show();
+    const bool use_webview = m_view == View::Monitor && m_state.info_ready &&
+                             custom_camera_url(m_state).empty() && mode == CameraStreamMode::http_snapshot;
+    const bool webview_changed = update_visibility(m_camera_view, use_webview);
+    const bool player_changed = update_visibility(m_media_ctrl, !use_webview);
+    const bool label_changed = update_visibility(m_snapshot_mode_label, use_webview);
+    if (webview_changed && !use_webview) m_media_play->StopWebStream();
+    if (webview_changed || player_changed || label_changed) {
+        m_video_panel->Layout();
     }
-    m_video_panel->Layout();
 }
 
 void PrinterWorkspace::schedule_camera_autoplay(const PrinterWorkspaceSnapshot& state)
 {
-    if (!m_active || m_view != View::Monitor || !m_media_play || !state.info_ready || !state.has_camera ||
-        state.device_id.empty() || m_camera_autoplay_scheduled || m_camera_autoplay_attempts >= 3)
+    if (!m_active || m_view != View::Monitor || !m_media_play || m_camera_autoplay_scheduled)
         return;
 
-    const std::string scope = state.active_agent_id + ":" + state.device_id;
-    if (m_camera_autoplay_scope == scope)
+    const std::string scope = camera_play_scope(state, custom_camera_url(state));
+    if (scope.empty() || m_camera_autoplay_scope == scope)
         return;
 
     m_camera_autoplay_scope = scope;
     m_camera_autoplay_scheduled = true;
-    ++m_camera_autoplay_attempts;
     BOOST_LOG_TRIVIAL(info) << "[PrinterCamera] autoplay_decision action=schedule"
                             << " device_ref=" << discovery_device_ref(state.device_id)
-                            << " agent=" << (state.active_agent_id.empty() ? "none" : state.active_agent_id)
-                            << " attempt=" << m_camera_autoplay_attempts;
+                            << " agent=" << (state.active_agent_id.empty() ? "none" : state.active_agent_id);
     CallAfter([this, scope] {
         m_camera_autoplay_scheduled = false;
         if (m_destroying || scope != m_camera_autoplay_scope)
             return;
 
         const auto current = m_adapter.snapshot();
-        const std::string current_scope = current.active_agent_id + ":" + current.device_id;
-        if (!m_active || m_view != View::Monitor || !current.info_ready || !current.has_camera || current_scope != scope) {
+        const std::string current_scope = camera_play_scope(current, custom_camera_url(current));
+        if (!m_active || m_view != View::Monitor || current_scope != scope) {
             BOOST_LOG_TRIVIAL(info) << "[PrinterCamera] autoplay_skipped reason=state_changed";
             m_camera_autoplay_scope.clear();
             return;
@@ -1505,8 +1668,7 @@ void PrinterWorkspace::schedule_camera_autoplay(const PrinterWorkspaceSnapshot& 
                                     << " device_ref=" << discovery_device_ref(current.device_id);
         } else {
             BOOST_LOG_TRIVIAL(info) << "[PrinterCamera] autoplay_decision action=retry"
-                                    << " device_ref=" << discovery_device_ref(current.device_id)
-                                    << " attempt=" << m_camera_autoplay_attempts;
+                                    << " device_ref=" << discovery_device_ref(current.device_id);
             m_camera_autoplay_scope.clear();
         }
     });

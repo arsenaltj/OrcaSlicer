@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <chrono>
 #include <cstring>
 #include <cstdlib>
 #include <filesystem>
@@ -20,6 +21,7 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
+#include <optional>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -27,6 +29,7 @@
 #else
 #include <dlfcn.h>
 #endif
+#include "io_diagnostic.hpp"
 
 namespace orca_model_detail {
 
@@ -38,7 +41,9 @@ constexpr size_t max_bytes = 100u * 1024u * 1024u, max_faces = 2500000, max_vert
 struct Error : std::runtime_error
 {
     std::string code;
+    const std::optional<IoDiagnostic> io_diagnostic;
     Error(const char* c, const std::string& m) : runtime_error(m), code(c) {}
+    Error(const char* m, IoBoundary boundary, IoKind kind) : runtime_error(m), code("IO_ERROR"), io_diagnostic(IoDiagnostic{boundary,kind}) {}
 };
 struct Mesh
 {
@@ -79,6 +84,7 @@ struct Context
     F::path root;
     std::mutex mutex;
     std::atomic<bool> cancel{false};
+    std::chrono::steady_clock::time_point safety_deadline{};
     Document doc, candidate;
     uint64_t candidate_base = 0;
     uint64_t generation = 0, candidate_generation = 0, candidate_geometry = 0;
@@ -120,6 +126,14 @@ J orca_model_select_region(const Document&, const J&, std::atomic<bool>&);
 void expected(Context&, const J&);
 J commit(Context&, Document);
 J execute(Context&, const J&);
+std::string enhanced_core_id(const std::vector<V>&, const std::vector<T>&);
+void enhanced_corner_sources(Context&, const std::vector<V>&, const std::vector<T>&, const std::vector<V>&, const std::vector<T>&, const std::function<void(size_t,const std::array<double,11>&)>&, const std::function<void(uint64_t)>&);
+J enhanced_glb_geometry(Context&, std::vector<V>&, std::vector<T>&, const std::function<void(int)>&);
+J glb_safety(Context&, const J&);
+#ifdef ORCA_MODEL_HAS_GLB_CGAL
+J glb_strict_predicates(Context&, const std::vector<V>&, const std::vector<T>&, const std::function<void(const char*)>& = {});
+J glb_removed_deviation(Context&, const std::vector<V>&, const std::vector<T>&, const std::set<size_t>&);
+#endif
 J open_document(Context&, const J&);
 J manufacturing_bridge(Context&, const J&);
 } // namespace orca_model_detail

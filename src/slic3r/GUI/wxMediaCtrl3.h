@@ -86,6 +86,7 @@ protected:
     int PlayFfmpeg(std::shared_ptr<wxURI> const &url, std::unique_lock<std::mutex> &lock);
 
     void NotifyStopped();
+    void QueueRefresh();
 
 private:
     wxString m_idle_image;
@@ -102,6 +103,7 @@ private:
 
     std::shared_ptr<wxURI> m_url;
     std::shared_ptr<wxURI> m_active_url;
+    std::chrono::steady_clock::time_point m_io_deadline;
     bool m_external = false;
     std::uint64_t m_last_PTS{0};
     std::chrono::system_clock::time_point m_last_PTS_expected;

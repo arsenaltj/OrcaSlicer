@@ -1,6 +1,7 @@
 #include "LibraryWorkspaceService.hpp"
 #include "ModelLibraryLoaderFactory.hpp"
 #include "ModelLibraryThumbnail.hpp"
+#include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/Redesign/PlatformAccountService.hpp"
 #include "slic3r/Utils/HonorAccount/HonorOAuth.hpp"
 #include <wx/base64.h>
@@ -79,6 +80,7 @@ void LibraryWorkspaceService::publish_account() {
     const auto& snapshot=m_account->session().snapshot();
     emit({{"type","account"},{"signedIn",bool(m_account->session().access())},
         {"name",snapshot.identity.name},{"accountTag",HonorAccount::digest(m_subject)},
+        {"avatarData",m_account->avatar().data},
         {"accountGeneration",m_generation},{"projectAvailable",m_project}});
 }
 void LibraryWorkspaceService::visible(bool value) {
@@ -115,7 +117,8 @@ void LibraryWorkspaceService::local_cards() {
     Json cards=Json::array();
     for(const auto& e:m_local->entries()) {
         cards.push_back({{"key",e.job_id},{"title",utf8(e.title)},{"details",utf8(e.details)},
-            {"local",true},{"designOnly",e.design_only},{"generatedAt",e.generated_at},
+            {"local",true},{"designOnly",e.design_only},{"canDirectImport",m_ports.native_import && e.can_direct_import},
+            {"generatedAt",e.generated_at},
             {"printFeedback",e.print_feedback},{"imported",e.imported_at>0},
             {"modelId",e.website_model_id},{"versionId",e.website_version_id},{"sha256",e.website_sha256},
             {"sourceVerified",e.website_original_verified},{"extension",e.model_path.extension().string()}});
@@ -195,8 +198,8 @@ void LibraryWorkspaceService::local_action(const Json& command) {
     const auto id=command.value("key","");const auto revision=command.value("revision",std::uint64_t(0));
     const ModelLibraryActionToken token{revision,id};const auto* entry=m_local->find(token);if(!entry) return;
     const auto action=command.value("action","");auto copy=*entry;
-    if((action=="open" || action=="import") && !copy.design_only &&
-        copy.model_path.extension()!=".glb" && copy.model_path.extension()!=".obj") {
+    const bool native_model = !copy.design_only && AI::model_artifact_format(copy.model_path).empty();
+    if((action=="open" || action=="import") && native_model) {
         if(m_local->can_replace() && m_ports.native_import) m_ports.native_import(copy.model_path);return;
     }
     static const std::map<std::string,ModelLibraryCommand> actions={
@@ -205,8 +208,7 @@ void LibraryWorkspaceService::local_action(const Json& command) {
         {"remove",ModelLibraryCommand::Remove},{"colors",ModelLibraryCommand::MatchColors},
         {"export",ModelLibraryCommand::Export},{"print",ModelLibraryCommand::RecordPrintResult}};
     const auto found=actions.find(action);if(found==actions.end()) return;
-    if(!copy.design_only && copy.model_path.extension()!=".glb" && copy.model_path.extension()!=".obj" &&
-       (action=="colors" || action=="retexture")) return;
+    if(native_model && (action=="colors" || action=="retexture")) return;
     if(!m_local->execute(copy.design_only && action=="open"?ModelLibraryCommand::OpenImage:found->second,token))
         emit({{"type","error"},{"message","当前模型正在处理或此操作暂不可用"}});
     if(found->second==ModelLibraryCommand::Remove) local_cards();else refresh_local();

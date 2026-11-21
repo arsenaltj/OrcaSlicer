@@ -1,5 +1,7 @@
 # 快速开发与跨电脑同步
 
+移动Model来源凭据回归使用独立SDK构建目录的`ctest -C Release -R glb_repair_v2_native --output-on-failure`，或`python src/orca_model_sdk/tests/glb_repair_v2_test.py <本次真实SDK库>`；它执行真实CABI并核候选/receipt/source面数与NORMAL来源，不能以toy替代2M资源/Android运行验收。只改来源元数据时仍重编Host/NDK和封新包，不必重复未改算法大件。
+
 默认单 Agent 完成“定位 → 改动 → 最小充分验证 → 检查 diff → 结束”。逻辑优先自动测试，界面行为检查受影响的真实主窗口；跨模块、共享接口、凭据、付费、上传、删除等按风险升级，不按文件数量判断。完整规则见[根 AGENTS](../../AGENTS.md)。
 
 ## 日常入口
@@ -21,6 +23,8 @@
 默认固定使用 `.tmp/dev/build` 的 Release 配置，运行和测试配置分别为 `.tmp/dev/run`、`.tmp/dev/data`。其他已有目录用 `-BuildDir <目录>`，必要时用 `-Configure`，并行度用 `-Jobs 2`。每台电脑使用自己的源码、依赖和构建目录，不复制 CMakeCache、对象文件、PDB 或运行记录。
 
 每台电脑可在忽略的`.tmp/dev/settings.json`保存`python`、`cmake`、`deps_prefix`工具路径，不进入Git、不放凭据；也可首次显式执行`./dev.ps1 Setup -PythonPath <Python3.12+路径> -CMakePath <cmake.exe路径> -DepsPrefix <已安装依赖前缀>`。Setup使用Visual Studio 2022 x64，开启测试和内部运行文件安装，只配置不编译；已有cache会核对源码归属并重新配置，也可恢复未完成的配置。第三方C++依赖使用该电脑已有前缀；CMake若缺少固定Pillow wheel会尝试从官方PyPI文件站下载。依赖和缓存是否可用以本次检查为准。旧[构建存储说明](local-build-storage.md)保留历史配置，不直接照抄路径。
+
+首次构建 Windows `dep_FFMPEG` 需要 MSVC、MSYS2 的 `make` 与 `perl`，x64 还需要 PATH 中的 `nasm`。可用 `ORCA_FFMPEG_MAKE` 指定 MSYS2 的 `usr/bin/make.exe`。依赖从固定的 FFmpeg 7.0.3 源码构建，生成支持 HTTP(S)、MJPEG、RTSP 和 HLS 的共享库。更新已有依赖时，DLL、头文件、导入库须处于同一前缀并重新配置应用，让安装过程带入本次构建的 DLL。
 
 `Test` 必须指定文件名或 glob，复用现有离线测试器的凭据清理与 Python 外网防护；只需要 Python，不要求 CMake cache，不编译、不复制运行环境、不启动 GUI。测试失败或未匹配均失败。此防护不是 OS 沙箱，测试仍须实际隔离提供商。
 

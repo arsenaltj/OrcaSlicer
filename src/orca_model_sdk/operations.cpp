@@ -7,6 +7,8 @@ J execute(Context& c, const J& r)
     auto op = r.at("operation").get<std::string>();
     if (op == "capabilities")
         return J::parse(orca_model_capabilities());
+    if (op == "inspectGlbArtifact" || op == "repairGlbArtifact")
+        return glb_safety(c, r);
     if (op == "manufacturingSnapshot" || op == "sliceDocument" || op == "recommendDocument")
         return manufacturing_bridge(c, r);
     if (op == "platformAI") {

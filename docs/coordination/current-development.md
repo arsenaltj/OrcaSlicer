@@ -1,12 +1,12 @@
-# 2026-11-21 当前 · 切片工艺与打印资格源码复核
+# 2026-11-21 当前 · 切片工作台同步远端与 Windows 合并候选
 
-**焦点**　`MAINLINE-BUGFIX-001` 已按本地提交 `0fc72966b6` 复核两套切片工艺和打印资格。 [源码复核](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#workbench-slicing-business-review-20261121)
+**焦点**　`MAINLINE-BUGFIX-001` 从 `0fc72966b6` 同步远端 `516f19bc9e`，在 `codex/task/workbench-slicing-20261121` 准备 Windows 运行版和集成 PR。 [同步记录](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#workbench-slicing-integration-20261121)
 
 **返回点**　SS-01 原现场 3MF，SS-36 实物验收。REQ-08 多盘缓存隔离按单列计划。
 
 **未结**　同档换推荐来源的打印匹配、同工艺原生重复开切和缓存依赖待定向验收。TC-07、TC-22 待匹配工程或设备配置。
 
-**下一步**　按评审结论确认修复范围和顺序。`run-r3` 验收版供 Windows 复核。
+**下一步**　验证合并候选的 Windows Release 构建、切片与打印交接，再向集成分支提交 PR。
 
 ---
 
@@ -134,6 +134,102 @@
 
 ---
 
+# MODEL-SDK-DEFAULT-CMAKE-D1 (2026-11-20)
+
+Mainline: task-20261120-model-sdk-default-cmake from d60d3a9; PR82 is now formally open by explicit user request. D1 repair round 1 fixes an absent LINK_LIBRARIES property without disabling default tests.
+This round: default SDK-only MSVC configure/build succeeds; IO diagnostics asserts the CMake-declared RepairCore capability, exercising unsupported + file-read checks when OFF and the complete 52-case fault matrix when ON.
+Open: final RepairCore build/test and independent review then different QA. No new Android bundle, GUI/real-device or manufacturing qualification.
+Next: freeze the minimal build/test/docs increment, review/QA, then root-controlled ordinary update of PR82. No automatic merge or deployment.
+Plan change: four-platform review D1 is accepted for repair; other paused algorithm and product work stays unchanged.
+
+## Earlier records retained
+# MODEL-SDK-PUBLICATION-20261120
+
+Mainline: isolated task-20261120-model-sdk-pr-publication, from qualified SDK source 6aa69c2; explicit user authorization to submit this conversation's changes as PRs.
+This round: normal merge of integration 8f1b, preserving both progress histories; SDK and libslic3r implementation blobs unchanged. Document separate Model/Device SDK consumption and immutable 6aa producer identity.
+Open: independent review and different QA of this publication candidate; Android real-device/visual/manufacturing and full desktop build are not established by this source publication.
+Next: bounded source/contract/integration checks, then root-controlled draft PR to codex/team/integration. No automatic merge, deployment, new SDK package or paid task.
+Plan change: publication is now authorized; earlier no-push entries below are historical scope, not current publication instructions. No paused algorithm work resumes.
+
+## Earlier records retained
+
+# 2026-11-19 Native safe IO diagnostic child
+
+Mainline: task-20261119-native-safe-io-diagnostics from qualified0778; NC-IO-DIAGNOSTIC-01 instrumentation, MC-NATIVE-RECOVERY-IO-01 actual device cause unknown.
+This round: closed optional IO boundary/kind only; file operations, atomic publication, Core and policies unchanged. No hardlink-policy claim or fallback.
+Open: exact new host/NDK package review and different QA, then separate Mobile consumer gates; no phone runtime inference.
+Next: guarded final source builds, actual small helper fault/Windows tests and source/package freeze.
+Plan change: none to paused Desktop work, device/production/paid/PR/push prohibited.
+
+## Previous short-state evidence retained
+
+# 2026-11-19 用户样本静态profile兼容修复
+
+主线：task-20261119-model-gltf-specular-transform，qualified33db独立WT；NG-GLB-STATIC-PROFILE-01 initial旧封存runner150ms明确INVALID_GLB，原SHA不变。
+本轮：首修轮1窄factor-only specular保原描述；活动单实例world TRS/matrix真实POSITION/NORMAL变换与反射corner绑定，Core算法及严格质量/预算不变。
+未结：新source小CABI/用户原样本与host/NDK/新包独立review→不同QA；当前移动f4dd及旧Native不冒本样本已修。
+下一步：冻结源码guarded build，先小fixtures再一次真实样本。
+计划变更：仅本Native独立bugfix，不恢复桌面暂停算法优化；无设备/生产/付费/PRpush。
+
+## 原短状态（保留，不作为本轮新结论）
+# 2026-11-19 独立2M资源子流
+
+当前修复：r1独立review退回NG-MODEL-APPEARANCE-SOURCE-FACES-01首修轮1：释放前固定源面数，normalPolicy使用既有has_normal；仅私有凭据事实修正，四面反绕序/五面重复与有无作者NORMAL实际CABI对照。原r1源包与错误receipt保留；新r2需host/NDK真实重编/新包后原review→不同QA。资源问题轮1仍独立保留，不重跑未受算法影响的2M大件，不更新Mobile锁。
+
+主线：task-20261119-model-2m-resource-envelope，基f0cca33；r5/父包只读。
+本轮：首个844.05MiB超限为NG-MODEL-2M-RESOURCE-ENVELOPE-01初次反馈保；首修轮1两真2M host499.87/518.78MiB已转正，64MiB新布局另实证。紧凑计数/uint32/逐面映射/借用源字节/精确CGAL死set释放，完整检查保留。
+未结：最终待审候选caps2M实际重编、NDK旧cc重链/包及独立review→不同QA；Android/任意模型100%/strict制造安全未验。
+下一步：冻结实际2M/全corner/PBR/validator和资源负例来源，新SDK保持精确旧TBB与19批准库，移动消费等门禁。
+计划变更：DEC-2M-03仅私有同源完整函数clear死set；DEC-2M-04紧凑布局64MiB触发，100MiB/768MiB/120s不变。
+
+## 基线r5记录（保留，不冒本子流已完成）
+
+# 2026-11-19 r5 strip实际加载字节守卫首修
+
+主线：task-20261119-model-approved-tbb-binding；原r4源18214/包保留，NG-ANDROID-STRIP-LOAD-IDENTITY-01初反馈→首修轮1。
+本轮：真实复现旧guard接受section重指向+LOAD代码翻字节；补ALLOC文件/VA映射、真实PT_LOAD字节和精确三项section-only头字段例外。原反例拒绝/官方strip正例保，10项实际负例与正例全过。
+未结：新r5源/包待独立review→不同QA；实际原r4包未发现非预期加载码变化，guard缺口与正式包事实分开。旧TBB/19SO及Core算法不动。
+下一步：沿真实build42d仅新producer封存r5，包装commit独立记录，不重编CXX/NDK/重跑大件，不提前移动消费。
+计划变更：无算法/SDK能力变更；proof更新elf64-load-identity-v2，所有旧失败与轮次保留。
+
+## r4历史开发记录（不倒改）
+
+# 2026-11-19 Android Model批准TBB绑定（独立子流）
+
+主线：task-20261119-model-approved-tbb-binding；从父M2 r3 cb505独立，父现场/包冻结供bounds独立review。
+本轮：显式IMPORTED既有Slicing libtbb.so cc093ffa/726384B，139同源headers逐SHA守卫，producer分列existing-slicing-runtime来源；8项真实Python/CMake/producer边界、5项真实strip-debug/篡改拒绝已过；自有host/NDK完整Model/runner build0，host4CTest全部通过。只对新Model分离调试段，原完整库单独保留。
+未结：完整NDK重链及12symbols missing[]已验证；新包身份封存待独立review/QA，Android同进程/资源/实际渲染仍未测。不改变Core/GLB/PBR/质量/资源限制，旧Slicing及19runtime字节保留。
+下一步：冻结runtime-bound-r4-release制品，分列build42d1与producer-only包装commit；独立review→不同QA，再由根协调移动消费。
+计划变更：采用精确批准旧runtime而非新TBB同名覆盖，不尝试unsupported static或改移动锁；完整strict仍不支持，原M2所有失败/轮次保留。
+
+## 父M2冻结记录（以下保留，不在本子流写父现场）
+
+# 2026-11-19 移动Native修复 M2增强GLB候选
+
+主线：task-20261117023152718-8561d6；M1真实Core接缝9b4755a已独立review/QA限定通过，原SDK04/锁保留。
+本轮：M2 r2独立review发现POSITION缺bounds，NG-GLB-CARRIER-POSITION-BOUNDS-01首修轮1；从实际序列化Core float计算min/max并逐项读回核符，补原反例/负值非等轴回归，冻结r3前host/NDK与两真实件验证。
+未结：独立review/QA、Android设备资源/实际渲染与父移动消费；完整AI strict/IGL仍缺CORE/LEDA，geometry偏差未跑不伪pass，compat不授制造安全。
+下一步：冻结精确新SDK候选及两真实见证/计时/资源和失败记录，独立review→不同QA后才父移动消费。不得覆盖04/Slicing或恢复暂停优化。
+计划变更：用户A允许必要外观重建；保原件和PBR/normal/alpha，strict与native-compatible凭证分列；首轮78资源超限已保留，重排同检查后降峰，768MiB估算/120s合作边界未提高。
+
+## Native04历史短状态原文（已完成有限review/QA，非当前执行队列）
+
+# 2026-11-17 移动原GLB保真安全检查SDK（独立任务）
+
+主线：task-20261117023152718-8561d6，独立worktree基于d3764bdc；承接移动AI原GLB下载后的本地检查/安全修复/复验要求，不接管PR73、平板或其他运行现场。
+
+本轮：native02安全子集已独立review/QA有限通过并封Model-only包。父移动真实host长scope流程发现NG-WINDOWS-LONGPATH-01；native03首修独立review发现合法285字符源的ordinary canonical遗漏，原失败证据保留；native04第2轮补安全模块canonical，及实际308字符root发现的SDK初始化/runner控制IO必要Windows表示适配。身份/私有guard不放宽，普通模型IO和Android算法保持；补真正runner长源/输出/root三矩阵。
+
+未结：最终host/Android受测身份、独立review/QA及父移动FGS集成；895原件保留真实拓扑需处理结果，未完成自交不宣称存在或不存在自交；iOS未验。
+
+下一步：冻结native04双平台实际构建、新真实runner三矩阵及原安全/普通ABI回归，独立review→QA（含新不可变包）后才能父移动消费；旧02包保留，不部署、付费、自动推送或替换用户程序。
+
+计划变更：新增独立移动native支持流；通用补洞/非流形重建不在无UV映射证明时猜测修复。未恢复旧性能持续目标。
+
+
+---
+
+# 最新桌面323c记录（完整保留；不据历史记录恢复暂停工作）
 # 2026-11-19 此前：V1.0.4修订已提交，Draft PR #79已创建
 
 主线：DELIVERY/WINDOWS-INSTALLER-20261119追加交付，codex/task/ai-creation-v1.0.4-20261119，本会话单writer；用户授权的本地提交／专用分支推送／集成PR创建已完成。

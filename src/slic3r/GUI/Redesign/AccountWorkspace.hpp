@@ -27,7 +27,6 @@ private:
     void render();
     void commit_view();
     Presentation::RefreshScheduler m_view_refresh;
-    Presentation::TaskScope m_avatar_scope;
     void login();
     void logout();
     void browser_failed(const char* message);
@@ -37,7 +36,7 @@ private:
     void navigate_authorization();
     void update_browser_zoom();
     void poll();
-    void load_avatar();
+    void update_avatar();
     void edit_avatar();
     std::shared_ptr<PlatformAccountService> m_account;
     HonorAccount::Session& m_session;
@@ -57,10 +56,8 @@ private:
     wxCheckBox* m_clear_login {nullptr};
     RoundedActionButton* m_cancel_login {nullptr};
     wxSizerItem* m_hint_space {nullptr};
-    wxImage m_default_avatar, m_guest_avatar, m_avatar_image;
     wxBitmap m_avatar_bitmap;
-    wxString m_avatar_path;
-    bool m_avatar_loaded {false};
+    std::uint64_t m_avatar_revision {0};
     bool m_browser_initializing {false};
     bool m_browser_ready {false};
     bool m_clear_only {false};

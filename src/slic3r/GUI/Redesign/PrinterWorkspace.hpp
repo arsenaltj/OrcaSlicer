@@ -74,8 +74,10 @@ private:
     void choose_printer();
     void request_start();
     void request_task_action(PrinterTaskAction action);
-    void request_option(int index, bool value);
+    void request_detection(bool value);
+    void show_camera_settings();
     void request_snapshot();
+    void cancel_snapshot_request();
     void on_snapshot_request_state(wxWebRequestEvent& event);
     void update_camera_view();
     void schedule_camera_autoplay(const PrinterWorkspaceSnapshot& state);
@@ -105,6 +107,8 @@ private:
     View m_view { View::Prepare };
     Filter m_filter { Filter::All };
     std::optional<PrinterTaskAction> m_pending;
+    std::optional<bool> m_pending_detection;
+    std::chrono::steady_clock::time_point m_detection_since;
     PrinterCommandTarget m_pending_target;
     std::chrono::steady_clock::time_point m_pending_since;
     std::string m_media_device;
@@ -115,11 +119,11 @@ private:
     wxString m_snapshot_request_path;
     wxString m_media_message;
     wxString m_preparation_notice, m_action_error;
+    wxString m_shown_error;
     std::map<wxString, std::pair<std::time_t, wxBitmap>> m_local_thumbnails;
     wxWebRequest m_snapshot_request;
-    int m_snapshot_request_id { wxID_ANY };
+    wxWindowIDRef m_snapshot_request_id;
     bool m_camera_autoplay_scheduled { false };
-    unsigned m_camera_autoplay_attempts { 0 };
 
     wxPanel* m_settings { nullptr };
     wxScrolledWindow* m_settings_scroll { nullptr };
@@ -146,7 +150,9 @@ private:
     std::array<wxStaticText*, 3> m_telemetry_details {};
     std::array<wxStaticText*, 2> m_health_details {};
     std::array<wxStaticText*, 2> m_health_status {};
-    std::array<PrinterToggle*, 3> m_options {};
+    wxPanel* m_device_print_options { nullptr };
+    PrinterToggle* m_detection_option { nullptr };
+    wxStaticText* m_detection_status { nullptr };
     std::array<RoundedActionButton*, 3> m_filter_buttons {};
     PrinterProgress* m_progress { nullptr };
     PrinterImage* m_model_image { nullptr };
@@ -162,6 +168,7 @@ private:
     RoundedActionButton* m_pause { nullptr };
     RoundedActionButton* m_stop { nullptr };
     wxWindow* m_camera { nullptr };
+    wxStaticText* m_snapshot_mode_label { nullptr };
     wxMediaCtrl3* m_media_ctrl { nullptr };
     wxWebView* m_camera_view { nullptr };
     MediaPlayCtrl* m_media_play { nullptr };

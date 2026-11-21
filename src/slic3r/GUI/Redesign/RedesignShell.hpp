@@ -232,6 +232,8 @@ private:
     void layout_import_transition_cover();
     void restore_import_source_page();
     void check_import_first_frame();
+    bool can_open_print_preparation(bool gcode_ready) const;
+    void refresh_print_preparation_action();
     void open_print_preparation();
     bool update_print_preview(bool active, bool layers, bool support);
     void return_to_slice_preview();

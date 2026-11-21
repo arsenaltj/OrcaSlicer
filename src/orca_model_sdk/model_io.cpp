@@ -32,12 +32,19 @@ std::string read(const F::path& p)
     auto n = F::file_size(p, ec);
     if (ec || n == 0 || n > max_bytes)
         throw Error("FILE_LIMIT", "File missing, empty or above 100 MiB");
-    std::ifstream f(p, std::ios::binary);
+    errno=0;
+    std::ifstream f;
+    if(!io_fault(IoBoundary::file_open))f.open(p, std::ios::binary);
+    else f.setstate(std::ios::failbit);
+    const int open_error=errno;
     if (!f)
-        throw Error("IO_ERROR", "Cannot open input");
+        throw Error("Cannot open input",IoBoundary::file_open,io_errno(open_error));
     std::string s(static_cast<size_t>(n), '\0');
-    if (!f.read(s.data(), s.size()))
-        throw Error("IO_ERROR", "Input changed while reading");
+    errno=0;
+    if(io_fault(IoBoundary::file_read))f.setstate(std::ios::failbit);else f.read(s.data(), s.size());
+    const int read_error=errno;
+    if (!f)
+        throw Error("Input changed while reading",IoBoundary::file_read,io_errno(read_error));
     return s;
 }
 F::path output(Context& c, const std::string& name, bool document_save)
@@ -71,22 +78,29 @@ void atomic_write(const F::path& p, const std::string& bytes)
     auto tmp = p;
     tmp += ".tmp";
     {
+        errno=0;
         std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-        if (!f || !f.write(bytes.data(), bytes.size()))
-            throw Error("IO_ERROR", "Cannot write complete output");
+        const int open_error=errno;
+        if(!f)throw Error("Cannot write complete output",IoBoundary::temp_create,io_errno(open_error));
+        errno=0;f.write(bytes.data(), bytes.size());
+        const int write_error=errno;
+        if (!f)
+            throw Error("Cannot write complete output",IoBoundary::temp_write,io_errno(write_error));
     }
     std::error_code ec;
     F::rename(tmp, p, ec);
+    IoKind publish_kind=ec?io_errno(ec.value()):IoKind::unknown;
     if (ec) {
 #ifdef _WIN32
         // Replace atomically. Deleting the old file before a second rename
         // could destroy the last durable document on a failed replacement.
         if (MoveFileExW(tmp.c_str(), p.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
             ec.clear();
+        else { const auto error=GetLastError();publish_kind=io_windows(error); }
 #endif
     }
     if (ec)
-        throw Error("IO_ERROR", "Cannot commit output");
+        throw Error("Cannot commit output",IoBoundary::output_publish,publish_kind);
 }
 void defaults(Mesh& m)
 {

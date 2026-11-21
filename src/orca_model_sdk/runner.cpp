@@ -5,6 +5,30 @@
 #include <iostream>
 #include <string>
 #include <vector>
+// Control-file I/O needs the same Windows representation independence as the
+// safety DLL. Root containment still compares canonical ordinary identities.
+static std::filesystem::path control_io_path(const std::filesystem::path& path)
+{
+#ifdef _WIN32
+    auto spelling = std::filesystem::absolute(path).lexically_normal().native();
+    if (spelling.rfind(L"\\\\?\\", 0) != 0)
+        spelling = spelling.rfind(L"\\\\", 0) == 0 ? L"\\\\?\\UNC\\" + spelling.substr(2) : L"\\\\?\\" + spelling;
+    return std::filesystem::path(spelling);
+#else
+    return path;
+#endif
+}
+static std::filesystem::path control_identity(std::filesystem::path path)
+{
+#ifdef _WIN32
+    const auto spelling = path.native();
+    if (spelling.rfind(L"\\\\?\\UNC\\", 0) == 0)
+        return std::filesystem::path(L"\\\\" + spelling.substr(8));
+    if (spelling.rfind(L"\\\\?\\", 0) == 0)
+        return std::filesystem::path(spelling.substr(4));
+#endif
+    return path;
+}
 static int run(int argc, char** argv)
 {
     try {
@@ -28,13 +52,14 @@ static int run(int argc, char** argv)
             throw std::runtime_error("Usage: --workspace DIR --request FILE --output FILE");
         namespace f = std::filesystem;
         using J     = nlohmann::json;
-        auto root = f::weakly_canonical(f::absolute(f::u8path(workspace))), dest = f::weakly_canonical(f::absolute(f::u8path(output)));
-        auto rel = dest.lexically_relative(root);
+        auto root   = control_identity(f::weakly_canonical(control_io_path(f::absolute(f::u8path(workspace)))));
+        auto dest   = control_identity(f::weakly_canonical(control_io_path(f::absolute(f::u8path(output)))));
+        auto rel    = dest.lexically_relative(root);
         if (rel.empty() || rel.is_absolute() || *rel.begin() == "..")
             throw std::runtime_error("Result must remain in workspace");
-        if (f::file_size(f::u8path(request)) > 64u * 1024u * 1024u)
+        if (f::file_size(control_io_path(f::u8path(request))) > 64u * 1024u * 1024u)
             throw std::runtime_error("Request limit");
-        std::ifstream input(f::u8path(request));
+        std::ifstream input(control_io_path(f::u8path(request)));
         J commands;
         input >> commands;
         auto* context = orca_model_create(workspace.c_str());
@@ -83,8 +108,8 @@ static int run(int argc, char** argv)
             }
         }
         auto response = commands.contains("operations") ? J{{"ok", ok}, {"schemaVersion", 1}, {"results", results}} : results.at(0);
-        f::create_directories(dest.parent_path());
-        std::ofstream out(dest, std::ios::binary);
+        f::create_directories(control_io_path(dest.parent_path()));
+        std::ofstream out(control_io_path(dest), std::ios::binary);
         out << response.dump();
         if (!out)
             throw std::runtime_error("Cannot write result");

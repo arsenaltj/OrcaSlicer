@@ -1,6 +1,6 @@
 #pragma once
 
-#include "HonorClient.hpp"
+#include "HonorServices.hpp"
 
 #include <cstdint>
 #include <mutex>
@@ -34,11 +34,15 @@ enum class State {
     Failed
 };
 
+enum class AvatarUpdate { Idle, Saving, Synchronizing, SaveFailed, SyncFailed, Complete };
+
 struct Snapshot {
     State state {State::SignedOut};
     Identity identity;
     std::string message;
     bool persistent {false};
+    std::optional<std::string> avatar_url;
+    AvatarUpdate avatar_update {AvatarUpdate::Idle};
 
     bool has_identity() const { return !identity.subject.empty(); }
     bool busy() const
@@ -46,12 +50,6 @@ struct Snapshot {
         return state == State::Checking || state == State::Preparing ||
                state == State::Authorizing || state == State::Exchanging;
     }
-};
-
-// Native request lease; never serialized to a WebView or persisted by consumers.
-struct SessionAccess {
-    std::string api_url, access_token, subject;
-    std::uint64_t generation {0};
 };
 
 // Main-thread state and storage. Managed workers own only an isolated Task;
@@ -68,7 +66,10 @@ public:
     const Snapshot& snapshot() const { return m_snapshot; }
     std::uint64_t generation() const noexcept { return m_generation; }
     std::optional<SessionAccess> access() const;
+    std::optional<Services> services() const;
     bool refresh_access(std::uint64_t expected_generation);
+    bool save_avatar(const std::string& png);
+    bool retry_avatar_sync();
 
     bool configure(const Config&);
     void restore();
@@ -86,8 +87,8 @@ public:
     void stop_accepting();
 
 private:
-    enum class TaskKind { Authorize, Exchange, Validate, Refresh };
-    using TaskResult = std::variant<Authorization, PlatformSession>;
+    enum class TaskKind { Authorize, Exchange, Validate, Refresh, Profile, SaveAvatar, ReadAvatar };
+    using TaskResult = std::variant<Authorization, PlatformSession, std::monostate>;
 
     struct Task {
         TaskKind kind;
@@ -110,8 +111,9 @@ private:
 
     void start(TaskKind, std::function<TaskResult(Cancellation)>);
     bool start_refresh();
+    void start_profile_sync(TaskKind = TaskKind::Profile);
     void start_revoke(const std::string& refresh_token);
-    void cancel_task();
+    void cancel_task(bool retain_avatar = false);
     void cancel_revoke();
     bool execute(std::function<void()>);
     bool save_session(const PlatformSession&);
@@ -141,6 +143,7 @@ private:
     bool m_remote_revoke_pending {false};
     bool m_browser_reset_unconfirmed {false};
     std::uint64_t m_generation {0};
+    Cancellation m_access_lifetime {std::make_shared<std::atomic_bool>(false)};
 };
 
 } // namespace Slic3r::HonorAccount

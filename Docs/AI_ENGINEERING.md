@@ -36,7 +36,9 @@
 | 桌面组合/运行时 | [AIDesktopFeatureHost](../src/slic3r/GUI/AI/AIDesktopFeatureHost.cpp)、集成锁的 ownership | MainFrame/Plater、AIServiceManager/AISidecarClient、network_policy；共享入口需遵守既有集成所有权 |
 | 原生切片/配方 | [Print](../src/libslic3r/Print.cpp)、[ColorDecomposeRecipe](../src/libslic3r/ColorDecomposeRecipe.hpp) | PrintConfig、GCode、ToolOrdering、Format；先与锁定基线对照，区分继承与本地增量 |
 | CAD/原生编辑 | [DesignPanel](../src/slic3r/GUI/CAD/DesignPanel.cpp)、[几何内核](../src/libslic3r/CAD) | CAD文档/求解、Model/GLCanvas；沿用原生工程与撤销边界，兼顾上游同步 |
+| 桌面上传与打印 | [上传弹窗](../src/slic3r/GUI/SendToPrinter.cpp)、[上传并打印弹窗](../src/slic3r/GUI/SelectMachine.cpp)、[共用进度区](../src/slic3r/GUI/Redesign/PrinterTransferProgress.hpp) | `SendJob` 仅上传，`PrintJob` 沿原路径启动打印；耗材对比只读当前切片盘和已确认身份的虚拟机 `config.tools[].slot`，不按料槽顺序猜测。读取失败或差异不参与提交检查，不改写 G-code 或设备映射。定向回归用 `printer_workspace_tests` 的 `PrinterTransferFilaments` 标签；同版本虚拟机联调与 Windows 连续录屏单独验收 |
 | 设备与移动SDK | [设备SDK](../src/orca_mobile_device_sdk/CMakeLists.txt)、[移动切片](../mobile-slicing/CMakeLists.txt) | 各target及其API/适配器；桌面编译不证明移动端或实机打印通过 |
+| 移动GLB修复来源与资源 | [Model契约](../src/orca_model_sdk/CONTRACT.md)、[资源账本](../src/orca_model_sdk/repair_core/RESOURCE_ENVELOPE.md) | `EnhancedGlbCarrier.inc`保存释放前源面数/作者法线事实；`glb_repair_v2_test.py`通过实际CABI和私有receipt核4面反绕序、5→4去重及有/无NORMAL；兼容完成不授制造安全 |
 | DFX诊断/定位/性能/可靠性 | [AI诊断](../tools/ai/ai_diagnostics.py)、[日志导出](../src/slic3r/Utils/DiagnosticLogs.hpp)、[侧车客户端](../src/slic3r/GUI/AISidecarClient.cpp) | 设置→开发者→日志级别下方“导出日志…”；仅当前log目录后台脱敏快照、清单及原子ZIP，复用故障排查写入器；回归DiagnosticLogs。按request/job/产物定位日志和版本 |
 | 已有模型质量复评 | [model-generation-evaluation Skill](../.agents/skills/model-generation-evaluation/SKILL.md) | 按 SOP 读取已有模型、报告和对应测试 |
 | 模型生成团队协作 | [团队 SOP](coordination/team-integration-sop.md) | 只在明确请求团队提交或集成时加载 |

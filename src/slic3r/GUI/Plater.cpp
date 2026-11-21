@@ -7374,19 +7374,19 @@ struct Plater::priv
     // BBS
     void hide_select_machine_dlg()
     {
-        if (m_select_machine_dlg)
+        if (m_select_machine_dlg && !m_select_machine_dlg->is_redesign_presentation())
             m_select_machine_dlg->EndModal(wxID_OK);
     }
 
     void enter_prepare_mode()
     {
-        if (m_select_machine_dlg)
+        if (m_select_machine_dlg && !m_select_machine_dlg->is_redesign_presentation())
             m_select_machine_dlg->prepare_mode();
     }
 
     void hide_send_to_printer_dlg()
     {
-        if (m_send_to_sdcard_dlg && m_send_to_sdcard_dlg->IsModal())
+        if (m_send_to_sdcard_dlg && m_send_to_sdcard_dlg->IsModal() && !m_send_to_sdcard_dlg->is_redesign_presentation())
             m_send_to_sdcard_dlg->EndModal(wxID_OK);
     }
 

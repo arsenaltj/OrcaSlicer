@@ -20,5 +20,7 @@ void check_cancel(Context& c)
 {
     if (c.cancel)
         throw Error("CANCELED", "Operation canceled");
+    if (c.safety_deadline != std::chrono::steady_clock::time_point{} && std::chrono::steady_clock::now() > c.safety_deadline)
+        throw Error("RESOURCE_LIMIT", "GLB safety operation exceeded its cooperative time budget");
 }
-}
+} // namespace orca_model_detail
