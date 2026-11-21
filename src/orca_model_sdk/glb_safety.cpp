@@ -345,8 +345,10 @@ struct Glb
         require(offset <= bin_size && length <= bin_size - offset, "View outside BIN");
         return {bin + offset, length};
     }
-    template<class Value = double>
-    std::vector<Value> accessor(size_t index, const std::string& type, bool indices = false) const
+    // Validate every component while visiting the immutable BIN. Geometry safety
+    // need not retain a second double POSITION/NORMAL/UV or u32 index array.
+    template<class Visit>
+    size_t visit_accessor(size_t index, const std::string& type, bool indices, Visit visit) const
     {
         const auto& a = item("accessors", index);
         require(a.at("type") == type && !a.contains("sparse") && !a.value("normalized", false), "Unsupported accessor layout");
@@ -362,8 +364,6 @@ struct Glb
         require(stride >= components * width && stride <= 252 && stride % width == 0 && offset % width == 0 && offset <= length &&
                     components * width <= length - offset && count - 1 <= (length - offset - components * width) / stride,
                 "Accessor outside view");
-        std::vector<Value> values;
-        values.reserve(count * components);
         for (size_t i = 0; i < count; ++i)
             for (size_t j = 0; j < components; ++j) {
                 size_t at = start + offset + i * stride + j * width;
@@ -380,8 +380,18 @@ struct Glb
                 else
                     value = static_cast<unsigned char>(source[at]);
                 require(std::isfinite(value) && (indices || std::abs(value) <= 1e8), "Invalid attribute value");
-                values.push_back(value);
+                visit(i, j, value);
             }
+        return count;
+    }
+    template<class Value = double>
+    std::vector<Value> accessor(size_t index, const std::string& type, bool indices = false) const
+    {
+        std::vector<Value> values;
+        visit_accessor(index, type, indices, [&](size_t i, size_t j, double value) {
+            if(i==0 && j==0)values.reserve(item("accessors",index).at("count").get<size_t>()*(type=="VEC3"?3:type=="VEC2"?2:1));
+            values.push_back(Value(value));
+        });
         return values;
     }
 };
@@ -426,6 +436,18 @@ Topology topology(Context& c, const Glb& g)
     Topology out;
     std::map<V, uint32_t> canonical;
     out.world = scene_world_transform(g);
+    size_t vertex_capacity=0,face_capacity=0;
+    for(const auto& primitive:g.doc.at("meshes")[0].at("primitives")) {
+        const auto n=g.item("accessors",primitive.at("attributes").at("POSITION").get<size_t>()).at("count").get<size_t>();
+        const auto indices=primitive.contains("indices")?g.item("accessors",primitive.at("indices").get<size_t>()).at("count").get<size_t>():n;
+        require(n<=glb_vertices-vertex_capacity && indices%3==0 && indices/3<=glb_faces-face_capacity,"Combined geometry policy exceeded");
+        vertex_capacity+=n;face_capacity+=indices/3;
+    }
+    out.vertices.reserve(vertex_capacity);out.faces.reserve(face_capacity);
+    // The admission below accounts for exactly these dense capacities. The
+    // supported standard libraries reserve exactly; fail closed otherwise.
+    if(out.vertices.capacity()!=vertex_capacity || out.faces.capacity()!=face_capacity)
+        throw Error("RESOURCE_LIMIT","Dense safety allocation exceeds its admitted capacity");
     size_t total_position_vertices = 0;
     for (const auto& primitive : g.doc.at("meshes")[0].at("primitives")) {
         check_cancel(c);
@@ -437,48 +459,45 @@ Topology topology(Context& c, const Glb& g)
             if (material.dump().find("Texture") != std::string::npos)
                 require(attrs.contains("TEXCOORD_0"), "Textured primitive is missing texture coordinates");
         }
-        auto p       = g.accessor(attrs.at("POSITION").get<size_t>(), "VEC3");
-        size_t count = p.size() / 3;
+        const auto position=attrs.at("POSITION").get<size_t>();
+        size_t count = g.item("accessors",position).at("count").get<size_t>();
         require(count <= glb_vertices - total_position_vertices, "Combined vertex count exceeds safety policy");
         total_position_vertices += count;
         std::vector<uint32_t> remap;
         remap.reserve(count);
-        for (size_t i = 0; i < count; ++i) {
-            if ((i & 4095) == 0)
-                check_cancel(c);
-            V value = out.world.position({p[i * 3], p[i * 3 + 1], p[i * 3 + 2]});
-            auto [it, inserted] = canonical.emplace(value, uint32_t(out.vertices.size()));
+        if(remap.capacity()!=count)throw Error("RESOURCE_LIMIT","Remap allocation exceeds its admitted capacity");
+        V point{};
+        g.visit_accessor(position,"VEC3",false,[&](size_t i,size_t j,double value) {
+            if(j==0 && (i&4095)==0)check_cancel(c);
+            point[j]=value;
+            if(j!=2)return;
+            const V value_world = out.world.position(point);
+            auto [it, inserted] = canonical.emplace(value_world, uint32_t(out.vertices.size()));
             if (inserted)
-                out.vertices.push_back(value);
+                out.vertices.push_back(value_world);
             remap.push_back(it->second);
-        }
+        });
         for (const auto& [name, ref] : attrs.items()) {
             require(name == "POSITION" || name == "NORMAL" || name == "TEXCOORD_0", "Attribute unsupported by safety policy");
             if (name == "POSITION")
                 continue;
-            auto values = g.accessor(ref.get<size_t>(), name == "NORMAL" ? "VEC3" : "VEC2");
-            require(values.size() == count * (name == "NORMAL" ? 3 : 2), "Attribute count mismatch");
+            const auto attribute_count=g.visit_accessor(ref.get<size_t>(),name=="NORMAL"?"VEC3":"VEC2",false,
+                [&](size_t i,size_t j,double){if(j==0 && (i&4095)==0)check_cancel(c);});
+            require(attribute_count==count,"Attribute count mismatch");
         }
-        std::vector<uint32_t> indexes;
-        if (primitive.contains("indices"))
-            indexes = g.accessor<uint32_t>(primitive.at("indices").get<size_t>(), "SCALAR", true);
-        else {
-            indexes.resize(count);
-            std::iota(indexes.begin(), indexes.end(), 0.);
-        }
-        require(indexes.size() % 3 == 0 && out.faces.size() + indexes.size() / 3 <= glb_faces, "Invalid triangle count");
-        out.primitive_faces.push_back(indexes.size() / 3);
-        for (size_t i = 0; i < indexes.size(); i += 3) {
-            if ((i & 4095) == 0)
-                check_cancel(c);
-            T face;
-            for (size_t j = 0; j < 3; ++j) {
-                require(indexes[i + j] < count, "Index out of bounds");
-                face[j] = remap[size_t(indexes[i + j])];
-            }
+        T face{};
+        const auto emit_index=[&](size_t i,size_t,double value) {
+            if((i&4095)==0)check_cancel(c);
+            require(value<count,"Index out of bounds");
+            face[i%3]=remap[size_t(value)];
+            if(i%3!=2)return;
             if (out.world.reflected()) std::swap(face[1], face[2]);
             out.faces.push_back(face);
-        }
+        };
+        const size_t index_count=primitive.contains("indices")?g.visit_accessor(primitive.at("indices").get<size_t>(),"SCALAR",true,emit_index):count;
+        if(!primitive.contains("indices"))for(size_t i=0;i<count;++i)emit_index(i,0,double(i));
+        require(index_count%3==0 && out.faces.size()<=glb_faces,"Invalid triangle count");
+        out.primitive_faces.push_back(index_count/3);
     }
     require(!out.faces.empty() && out.vertices.size() >= 3, "Empty model");
     canonical.clear();
@@ -633,6 +652,38 @@ J glb_safety(Context& c, const J& request)
         }
     J workspace_plan=nullptr;
     uint64_t resource_estimate=uint64_t(bytes.size())*4+estimated_vertices*96+estimated_faces*448;
+    // Inspect alone has no removal maps, candidate BIN, repair Core or carrier.
+    // This admission is tied to streaming accessors and reserved dense output,
+    // not a smaller global face coefficient. The repair paths keep their own
+    // admission. Bounded CGAL releases the directed-edge set before Orienter's
+    // map workspace; all topology and EPICK predicates remain unchanged.
+#ifdef ORCA_MODEL_HAS_REPAIR_CORE
+    if(request.at("operation")=="inspectGlbArtifact" && request.value("policyVersion",std::string())!="glb-repair-v2") {
+        const uint64_t B=bytes.size(),Vn=estimated_vertices,Fn=estimated_faces;
+        const uint64_t dense=Vn*sizeof(V)+Fn*sizeof(T);
+        const uint64_t node_overhead=4*sizeof(void*)+32;
+        const uint64_t canonical_node=sizeof(std::pair<const V,uint32_t>)+node_overhead;
+        const uint64_t directed_node=sizeof(std::pair<const uint32_t,uint32_t>)+node_overhead;
+        const uint64_t orienter_node=sizeof(std::pair<const uint32_t,size_t>)+node_overhead;
+        const uint64_t decode=B+dense+Vn*(sizeof(uint32_t)+canonical_node);
+        const uint64_t counting=B+dense+Fn*(sizeof(T)+3*sizeof(uint64_t));
+        // The pinned Orienter uses a vector of flat_maps/flat_sets. The
+        // allocator-inclusive incidence envelope also covers their capacities
+        // and incident-polygon lists, with 48 bytes per root vertex. The first
+        // directed-edge set is dead and clear before those containers coexist.
+        const uint64_t soup=B+dense+std::max(Fn*3*directed_node,Vn*48+Fn*3*orienter_node);
+        // Pinned Surface_mesh connectivity/properties, temporary point/link
+        // arrays, face boxes/pointers and algorithm scratch; explicit dense
+        // headroom plus the reserve covers allocator and library temporaries.
+        const uint64_t predicates=B+3*dense+Vn*(sizeof(V)+32)+Fn*(3*16+8+72);
+        const uint64_t revalidation=2*B+dense;
+        const uint64_t reserve=128ull*1024*1024+uint64_t(g.bin)*16;
+        resource_estimate=std::max({decode,counting,soup,predicates,revalidation})+reserve;
+        workspace_plan={{"policy","streamed-inspect-live-containers-v1"},{"decodeBytes",decode},{"countingBytes",counting},
+            {"soupBytes",soup},{"predicateBytes",predicates},{"revalidationBytes",revalidation},{"reserveBytes",reserve},
+            {"admissionBytes",resource_estimate},{"hardRssLimit",false}};
+    }
+#endif
     if(request.value("policyVersion",std::string())=="glb-repair-v2") {
         // Phase maxima, not a replacement global face coefficient. Later carrier
         // allocations are separately gated on actual split count/AABB lifetime.
@@ -657,6 +708,10 @@ J glb_safety(Context& c, const J& request)
         throw Error("RESOURCE_LIMIT", "Estimated GLB safety workspace exceeds 768 MiB policy");
     event("geometry");
     auto mesh = topology(c, g);
+    if(!workspace_plan.is_null()) {
+        workspace_plan["denseVertexCapacity"]=mesh.vertices.capacity();
+        workspace_plan["denseFaceCapacity"]=mesh.faces.capacity();
+    }
     if (request.value("policyVersion", std::string()) == "glb-repair-v2") {
 #ifdef ORCA_MODEL_HAS_REPAIR_CORE
         require(request.at("operation") == "repairGlbArtifact", "Repair v2 requires repair operation");
@@ -743,7 +798,7 @@ J glb_safety(Context& c, const J& request)
                                   {"count", nullptr},
                                   {"details", "Topology defects must be resolved before strict predicates"}};
     if (defects == 0) {
-        const auto strict = glb_strict_predicates(c, mesh.vertices, mesh.faces);
+        const auto strict = glb_strict_predicates(c, mesh.vertices, mesh.faces,event);
         if (!strict.at("topologyValid").get<bool>()) {
             checks["topology"]            = check(false, 1, "Non-manifold vertex link or incompatible surface topology");
             checks["topology"]["details"] = strict;
@@ -855,6 +910,7 @@ J glb_safety(Context& c, const J& request)
          {"geometryVerified", verified},
          {"appearanceVerified", appearance_equivalent}};
     result["resourceEstimateBytes"] = resource_estimate;
+    if(!workspace_plan.is_null())result["workspaceAdmission"]=workspace_plan;
     if (!candidate.is_null()) {
         check_cancel(c);
         const auto receipt = result.dump();

@@ -82,6 +82,9 @@ with tempfile.TemporaryDirectory(prefix='orca-glb-safety-tests-') as directory:
     code, result = run('outside_root', fixture(vertices,faces), override=lambda r:r.update(sourcePath=str(root.parent/'outside.glb')))
     assert code != 0
     code, result = run('cancel_before_topology', fixture(vertices,faces), cancel_at='topology')
+    for phase in ['residualSoup','residualSurface','residualVertexLinks','residualIntersections','residualComplete']:
+        canceled_code,canceled_result=run('cancel_'+phase,fixture(vertices,faces),cancel_at=phase)
+        assert canceled_code!=0 and canceled_result['error']['code']=='CANCELED',canceled_result
     assert code == 4 and result['error']['code'] == 'CANCELED', result
     # Two closed tetrahedra overlap without sharing vertices: actual CGAL
     # intersection test must run and reject, rather than treating closed as safe.
@@ -281,10 +284,15 @@ with tempfile.TemporaryDirectory(prefix='orca-glb-safety-tests-') as directory:
                     cases+=1
                 if trap=='none': assert answers[0]==answers[1]
                 assert not list(destination.glob('*.tmp-*'))
-    # A valid, bounded 2M-face container is rejected by workspace preflight,
-    # before allocation of million-entry adjacency and CGAL structures.
+    # Repair retains its conservative removal/publication admission. Inspect
+    # now streams the same 2M-face container, but must report its real duplicate
+    # topology defect rather than claiming safe or skipping the checks.
     large=fixture(vertices,faces);n=struct.unpack_from('<I',large,12)[0]
     doc=json.loads(large[20:20+n]);payload=large[28+n:][:48]+struct.pack('<III',0,2,1)*2000000
     doc['accessors'][1]['count']=6000000;doc['bufferViews'][1]['byteLength']=24000000
-    code,result=run('workspace_budget',encode(doc,payload));assert code!=0 and result['error']['code']=='RESOURCE_LIMIT',result
+    code,result=run('workspace_budget',encode(doc,payload),repair=True);assert code!=0 and result['error']['code']=='RESOURCE_LIMIT',result
+    code,result=run('streamed_duplicate_2m',encode(doc,payload));assert code==0,result
+    proof=result['result'];assert proof['completion']=='needs_attention' and not proof['geometryVerified'],proof
+    assert proof['checks']['topology']['status']=='failed' and proof['checks']['selfIntersection']['performed'] is False,proof
+    assert proof['workspaceAdmission']['admissionBytes']<=805306368,proof
 print(json.dumps({'status':'passed','nativeCases':cases}))

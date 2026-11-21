@@ -90,9 +90,15 @@ pixel decoder or a visual-print quality certificate. Limits remain 100 MiB input
 
 `glbSafetyV1.maxGeneratedFaceLimit` is currently 1,000,000: hosts must reject the
 unsupported 2M generation/local-processing combination before purchasing a
-generation, without silently substituting 1M. Input preflight estimates workspace
-as `inputBytes*4 + positionVertices*96 + triangles*448`, rejecting above 768 MiB;
-this is a bounded-admission estimate, not an OS RSS guarantee. A cooperative
+generation, without silently substituting 1M. In bounded RepairCore builds,
+`inspectionWorkspacePolicy:streamed-inspect-live-containers-v1` admits inspection
+using the maximum live-container phase plus allocator/library/JSON reserve after
+actual accessor streaming and exact dense-capacity reservation. The response
+reports `workspaceAdmission` phases and dense capacities. Limited v1 repair
+keeps `inputBytes*4 + positionVertices*96 + triangles*448` because its removal and
+publication storage differs; `repairWorkspacePolicy` states that boundary.
+Both reject above768MiB. These are bounded-admission estimates, not OS RSS
+guarantees. A cooperative
 120-second deadline is checked in controlled loops and at stage boundaries;
 the synchronous CGAL predicate can overrun before returning. Existing 2M model
 parameter support is unchanged elsewhere; expanding this local SDK combination

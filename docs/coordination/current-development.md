@@ -1,3 +1,12 @@
+# SDK-MODEL-2M-BUDGET-01 (2026-11-22)
+
+Mainline: task-20261122-v102-model-resource-closure, independent child of the frozen1b SDK; round0 existing v1 face coefficient rejects every2M input.
+This round: stream original double accessor values and u32 indices, reserve dense storage, retain full topology/EPICK/appearance/source checks; inspect has a separate phase-live-container admission under the unchanged768MiB cap. Limited v1 repair retains its conservative admission; it is not newly qualified for2M.
+Open: final exact-source host/Android producers, immutable full SDK, independent review and third QA, then Android4K/16K and consumer qualification. Initial development Windows closed2M inspection performed all checks and verified; this is not final frozen-source or Android acceptance.
+Next: complete targeted negative/cancel/precision/resource regressions, freeze actual source and new package, hand off; old1b/fd16/8480 and active Mobile QA remain untouched.
+Plan change: only the necessary Model inspect resource path; no higher caps, v2 substitution, Slicer algorithm change, Mobile prep root-cause inference or device access.
+
+## Earlier records retained
 # V102-16K-MEMORY-01 (2026-11-22)
 
 Mainline: task-20261120-color-model-sdk, MOB-V102-16K-MEMORY-01 round0; correct Linux/Android resident memory accounting without raising the existing budget.

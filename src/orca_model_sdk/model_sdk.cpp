@@ -118,6 +118,10 @@ const char* orca_model_capabilities()
                             {"generalTopologyRepair", false},
                             {"platform", "native"},
                             {"maxGeneratedFaceLimit", 1000000},
+#ifdef ORCA_MODEL_HAS_REPAIR_CORE
+                             {"inspectionWorkspacePolicy", "streamed-inspect-live-containers-v1"},
+#endif
+                             {"repairWorkspacePolicy", "conservative-v1-removal-and-publication"},
                             {"limits",
                              {{"inputBytes", 104857600},
                               {"vertices", 2500000},

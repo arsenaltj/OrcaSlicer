@@ -1,3 +1,11 @@
+# SDK-MODEL-2M-BUDGET-01 (2026-11-22)
+
+- task-20261122-v102-model-resource-closure; session-v102-model-resource-dev-20261122; branch task/task-20261122-v102-model-resource-closure; isolated writer, base1b01. Existing2M v1 admission gap is round0, separate from Mobile Java heap prep failure.
+- Implement actual streamed accessor/index storage and reserved dense geometry; preserve original double/world/appearance semantics and all CGAL checks. Inspect phase admission stays within768MiB; limited v1 repair keeps its previous conservative policy. No existingcap is raised and no v2 repair is used for inspect.
+- Initial Windows development closed2M f943 inspection verified in10.109s at535281664B process HWM; final frozen-source regressions, exact-source Android/Windows producer bundle, independent review/third QA and Android4K/16K/consumer gates remain pending. Old SDK/active Mobile QA/phone/AVD/service state remains frozen.
+- Return point: complete this narrow native resource fix, hand off stable commit/new immutable package, then root coordinates parent integration after original QA releases. No paused desktop algorithm work, push or production action is resumed.
+
+## Earlier records retained
 # MOBILE-COLOR-SDK-20261120
 
 Mainline: isolated task-20261120-color-model-sdk, merged desktop reference f9d52e76ba via d6ba6e4153. User authorized mobile color workbench and native manufacturing implementation; no push, deployment or physical print.
