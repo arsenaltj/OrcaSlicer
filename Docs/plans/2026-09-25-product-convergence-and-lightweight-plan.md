@@ -492,6 +492,19 @@ Windows 工作台验证覆盖首次选档、正式切片后双向换档、3MF �
 
 - 在 `codex/team/integration` 上形成「feat(slicing): 整合工作台原生切片并完善智能切片」本地提交，包含智能切片整改、切片工作台首批实现与 UX 修正，以及对应测试和文档。提交前核对的源码和测试与验收构建 `20261121-175319-667` 的输入一致。
 
+<a id="workbench-slicing-business-review-20261121"></a>
+
+###### 2026-11-21 智能切片与打印资格源码复核
+
+本机 `codex/team/integration` 基线 `0fc72966b6`。两套全局工艺和智能生成层高曲线分别持有，模型与实际打印条件共享。正式切片由用户最近一次点击「开始切片」选中的页签和档位决定。已有实窗证据包括双向出片、三档换档、3MF 恢复、取消、写入失败和两类有效结果进入设备选择页。软件新启动的页签仍默认智能。 [首批验收](2026-11-20-workbench-slicing-implementation-and-test-plan.md#workbench-slicing-acceptance-20261121) · [最终版 UX 复测](2026-11-20-workbench-slicing-implementation-and-test-plan.md#workbench-slicing-ux-retest-20261121)
+
+- 优先补齐同一智能档换推荐来源时的正式产物匹配。当前「去打印」比较模式及档位，本地与云端同档的有效工艺不一致时仍可接受旧结果。工艺详情已经有推荐与正式结果的对应校验，可沿用相同判定口径。原生同输入再次开切也需区分可复用的正式产物和启动失败。 [打印入口](../../src/slic3r/GUI/Redesign/RedesignModelWorkflow.cpp#L70) · [正式结果对应校验](../../src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.cpp#L844) · [后台复用条件](../../src/slic3r/GUI/Plater.cpp#L11860)
+- 缓存仍受非当前盘对象和原生预设影响。按 REQ-08 收窄到当前盘实际使用的对象、共享输入和智能工艺。同一有效智能输入往返时应复用证据。双喷嘴试切和正式切片读取槽位信息的条件不同，沿 TC-07、TC-22 补验离线、已选设备和实际耗材映射变化。 [试切修订输入](../../src/slic3r/GUI/AI/Orca/OrcaSmartSlicingAdapter.cpp#L650) · [缓存失效入口](../../src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.cpp#L1593) · [正式切片槽位信息](../../src/slic3r/GUI/Plater.cpp#L11449)
+- 自动塔位保留实际塔底校验和既有补试预算。估算加余量、保守凸包和有限候选会漏掉部分狭窄落点。区分未找到已验证落点和空间确实不足，按有解及无解夹具对照。 [自动塔位求解](../../src/libslic3r/Print.cpp#L5292) · [候选位置搜索](../../src/libslic3r/GCode/WipeTowerEstimate.cpp#L287)
+- 档位优化优先核对相同打印条件下的真实 G-code 用时和耗材。以匹配输入的原工艺作对照，量化速度档有收益、持平及退化的比例。等待优化分别记录到三档建议出现、到当前档能开切、到正式产物就绪的时间和完整试切次数。质量档以 SS-36 实物核对。 [已登记优化](2026-11-20-workbench-slicing-requirements.md#已登记优化)
+
+本节新增场景为源码复核结论，实窗覆盖待补。实施范围留待后续确认。
+
 ---
 
 <a id="windows-installer-v1.0.4-20261119"></a>

@@ -1,12 +1,12 @@
-# 2026-11-21 当前 · 切片工作台 Windows 试用
+# 2026-11-21 当前 · 切片工艺与打印资格源码复核
 
-**焦点**　`MAINLINE-BUGFIX-001` 智能切片整改、切片工作台首批实现与 UX 修正已本地提交。工作台 UX 实窗验收 9/9 通过。 [切片工作台三项 UX](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#workbench-slicing-ux-feedback-20261121)
+**焦点**　`MAINLINE-BUGFIX-001` 已按本地提交 `0fc72966b6` 复核两套切片工艺和打印资格。 [源码复核](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#workbench-slicing-business-review-20261121)
 
 **返回点**　SS-01 原现场 3MF，SS-36 实物验收。REQ-08 多盘缓存隔离按单列计划。
 
-**未结**　首批 TC-07、TC-22 待匹配工程或设备配置。
+**未结**　同档换推荐来源的打印匹配、同工艺原生重复开切和缓存依赖待定向验收。TC-07、TC-22 待匹配工程或设备配置。
 
-**下一步**　`run-r3` 验收版供 Windows 复核。取得匹配工程、设备配置或实物结果后续验首批遗留项。
+**下一步**　按评审结论确认修复范围和顺序。`run-r3` 验收版供 Windows 复核。
 
 ---
 
