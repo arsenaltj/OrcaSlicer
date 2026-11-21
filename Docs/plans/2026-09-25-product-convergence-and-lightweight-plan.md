@@ -511,6 +511,8 @@ Windows 工作台验证覆盖首次选档、正式切片后双向换档、3MF �
 
 用户授权同步集成、编译 Windows EXE 并提交 PR。会话 `01a1f812-75f9-76a2-8f48-467e416f5aa1` 在 `codex/task/workbench-slicing-20261121` 保留 `63a1e34401`、`0fc72966b6`，将远端集成 `516f19bc9e0323ef7be10c211b2f7d5afdec80bc` 合入。共享源文件集中在切片工作台、Plater 与原生试切适配接缝。打印门槛同时校验当前模式和挡位、G-code 有效性及预览转换状态。智能试切从当前盘兼容基线组装工艺和映射。主计划与短状态保留双方历史。 [同步前记录](../../.tmp/dev/evidence/workbench-slicing-integration-20261121/pre-merge.json)
 
+合并提交 `d759b6b286` 的 Windows Release 已编译、安装至本机开发运行目录并通过运行树与随包 Python 核验。架构评审发现试切阶段图注超出固定宽度，短图注通过单图验证，详细规则见平台架构说明。后续实窗和 PR 结果记录在[本批验收证据](../../.tmp/dev/evidence/workbench-slicing-integration-20261121)。 [合并候选首轮构建](../../.tmp/dev/logs/20261121-225652-030/result.json)
+
 ---
 
 # MODEL-SDK-DEFAULT-CMAKE-D1 (2026-11-20)
