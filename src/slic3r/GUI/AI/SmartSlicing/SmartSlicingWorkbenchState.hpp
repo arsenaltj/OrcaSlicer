@@ -10,6 +10,7 @@
 #include <array>
 #include <algorithm>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <tuple>
 
@@ -247,7 +248,9 @@ private:
 // Lightweight recommendations are not presented as final print-time
 // statistics. The Redesign workbench may run one native trial slice for the
 // currently displayed goal and publish the resulting metrics separately.
-enum class ExactEstimateStatus { None, Running, Ready, Failed };
+enum class ExactEstimateStatus { None, Running, Ready, Failed, PositionChanged };
+
+struct OrcaTrialSliceDetails;
 
 struct ExactEstimateView
 {
@@ -261,17 +264,37 @@ struct ExactEstimateView
     std::string source;
     std::string diagnostic;
     std::optional<AI::SmartSlicing::SliceRecommendation> parameters;
+    std::string diagnostic_message;
+    std::shared_ptr<const OrcaTrialSliceDetails> native_details;
+    // Set only for the goal that produced the current native G-code.
+    std::optional<unsigned int> official_result_id;
+    // Current plate-local coordinates, even when the goal has no trial proof.
+    std::optional<std::array<double, 2>> moved_tower_position;
 };
+
+inline bool committed_estimate_matches(const ExactEstimateView& estimate,
+    const AI::SmartSlicing::WorkspaceRevision& revision, unsigned int result_id)
+{
+    return revision.valid() && estimate.revision == revision && estimate.status == ExactEstimateStatus::Ready &&
+        estimate.parameters && estimate.official_result_id == result_id;
+}
 
 inline bool same_slice_parameters(const AI::SmartSlicing::SliceRecommendation& a,
                                   const AI::SmartSlicing::SliceRecommendation& b)
 {
     const auto key = [](const auto& p) {
-        return std::tie(p.mode, p.layer_height_mm, p.wall_loops, p.sparse_infill_density_percent,
+        return std::tie(p.layer_height_mm, p.wall_loops, p.sparse_infill_density_percent,
             p.sparse_infill_pattern, p.outer_wall_speed_mm_s, p.enable_support, p.support_type,
-            p.support_threshold_angle_deg, p.adaptive_layer_height, p.arachne_wall_generator, p.line_width_mm);
+            p.support_threshold_angle_deg, p.adaptive_layer_height, p.arachne_wall_generator, p.line_width_mm,
+            p.support_on_build_plate_only, p.keep_current_process);
     };
     return key(a) == key(b);
+}
+
+inline bool exact_estimate_can_apply(const ExactEstimateView& estimate)
+{
+    return estimate.native_details && (estimate.status == ExactEstimateStatus::Ready ||
+        estimate.status == ExactEstimateStatus::PositionChanged);
 }
 
 inline bool exact_estimate_matches(const ExactEstimateView& estimate,
@@ -339,6 +362,9 @@ struct SmartSlicingWorkbenchState
     bool can_analyze {true};
     bool can_start {false};
     bool can_retry {false};
+    // Configuration validation of the original plate may fail even when
+    // a reviewed recommendation supplies a legal configuration and tower.
+    bool native_workspace_available {false};
     bool can_start_native {false};
     std::string native_blocked_reason;
     bool native_execution {false};
@@ -356,6 +382,9 @@ struct SmartSlicingWorkbenchState
     bool lightweight_analyzing {false};
     bool lightweight_stale {false};
     ExactEstimateView exact_estimate;
+    bool orientation_running{false};
+    std::string orientation_diagnostic;
+    std::optional<ExactEstimateView> orientation_estimate;
     std::optional<ExactEstimateView> slice_estimate;
 };
 
@@ -417,7 +446,7 @@ inline bool workbench_recommendation_parameters_ready(const SmartSlicingWorkbenc
 inline bool workbench_analysis_busy(const SmartSlicingWorkbenchState& state)
 {
     if (state.official_statistics_ready) return false;
-    return state.analyzing || state.cloud_recommendation.status == CloudRecommendationStatus::Preparing ||
+    return state.analyzing || state.orientation_running || state.cloud_recommendation.status == CloudRecommendationStatus::Preparing ||
         state.cloud_recommendation.status == CloudRecommendationStatus::Requesting ||
         state.exact_estimate.status == ExactEstimateStatus::Running ||
         (state.lightweight_analysis &&

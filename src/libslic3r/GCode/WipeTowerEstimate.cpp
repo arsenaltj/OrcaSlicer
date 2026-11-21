@@ -284,4 +284,66 @@ std::optional<Point> nearest_clear_wipe_tower_anchor(const BoundingBox &anchor_b
     return nearest;
 }
 
+std::optional<Point> fit_wipe_tower_anchor(const Polygons& printable, const Polygon& footprint,
+                                          const Polygons& obstacles, const Point& target)
+{
+    if (printable.empty() || footprint.points.size() < 3) return std::nullopt;
+    const auto fits = [&](const Point& anchor) {
+        Polygon placed = footprint;
+        placed.translate(anchor);
+        return diff(Polygons{placed}, printable).empty() && intersection(Polygons{placed}, obstacles).empty();
+    };
+    if (fits(target)) return target;
+    // Intersect the regions in which each footprint vertex can be placed.
+    // Check the resulting anchor against the full polygon for concave beds.
+    const Polygon hull = Geometry::convex_hull(footprint.points);
+    Polygons feasible;
+    bool first = true;
+    for (const Point& vertex : hull.points) {
+        Polygons translated = printable;
+        for (Polygon& polygon : translated) polygon.translate(-vertex);
+        feasible = first ? std::move(translated) : intersection(feasible, translated);
+        first = false;
+        if (feasible.empty()) return std::nullopt;
+    }
+    Polygons blocked;
+    for (const Polygon& obstacle : obstacles) {
+        if (obstacle.points.size() < 3) continue;
+        Points differences;
+        const Polygon obstacle_hull = Geometry::convex_hull(obstacle.points);
+        differences.reserve(obstacle_hull.size() * hull.size());
+        for (const Point& o : obstacle_hull.points)
+            for (const Point& f : hull.points) differences.push_back(o - f);
+        blocked.emplace_back(Geometry::convex_hull(std::move(differences)));
+    }
+    const ExPolygons clear = diff_ex(feasible, blocked);
+    std::optional<Point> best;
+    double best_distance = std::numeric_limits<double>::max();
+    const auto consider = [&](const Point& p) {
+        const double distance = (p - target).cast<double>().squaredNorm();
+        if ((distance < best_distance || (distance == best_distance && best && p < *best)) && fits(p)) {
+            best = p;
+            best_distance = distance;
+        }
+    };
+    for (const ExPolygon& region : clear) {
+        for (const Line& edge : to_lines(region)) {
+            Point closest;
+            edge.distance_to_squared(target, &closest);
+            consider(closest);
+            consider(edge.a);
+            consider(edge.midpoint());
+        }
+        if (!best) {
+            const auto bounds = get_extents(region.contour);
+            for (int iy = 1; iy < 9; ++iy)
+                for (int ix = 1; ix < 9; ++ix) {
+                    const Point p = bounds.min + Point(bounds.size().x() * ix / 9, bounds.size().y() * iy / 9);
+                    if (region.contains(p)) consider(p);
+                }
+        }
+    }
+    return best;
+}
+
 } // namespace Slic3r

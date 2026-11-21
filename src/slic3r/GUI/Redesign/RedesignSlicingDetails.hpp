@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <vector>
+#include "../AI/Orca/OrcaTrialSliceExecutor.hpp"
 #include <wx/sizer.h>
 #include <wx/window.h>
 
@@ -116,7 +117,8 @@ inline ExactEstimateView slicing_display_estimate(const SmartSlicingWorkbenchSta
         state.slice_estimate->goal == goal && state.slice_estimate->parameters &&
         same_slice_parameters(*state.slice_estimate->parameters, parameters)) estimate = *state.slice_estimate;
     // A canceled or unavailable estimate is terminal, never perpetual "calculating".
-    if (estimate.status != ExactEstimateStatus::Ready && slicing_parameter_group_terminal(state, goal))
+    if (estimate.status != ExactEstimateStatus::Ready && estimate.status != ExactEstimateStatus::PositionChanged &&
+        slicing_parameter_group_terminal(state, goal))
         estimate.status = ExactEstimateStatus::Failed;
     return estimate;
 }
@@ -133,8 +135,13 @@ inline std::vector<SliceDetailRow> exact_estimate_detail_rows(
     const AI::SmartSlicing::SliceRecommendation& recommendation, const ExactEstimateView& estimate,
     const std::vector<SliceDetailRow>& official = {}, bool previous_input = false, bool slicing = false)
 {
-    const auto support = recommendation.enable_support ? _L("树状") : _L("关闭");
-    const auto adaptive = recommendation.adaptive_layer_height ? _L("启用") : _L("关闭");
+    const auto& details = estimate.native_details;
+    auto support = details ? (details->support_type == "tree" ? _L("树状") :
+        details->support_type == "normal" ? _L("普通") :
+        details->support_type == "mixed" ? _L("按对象设置") : _L("关闭")) :
+        recommendation.enable_support ? _L("待试切确认") : _L("关闭");
+    if (details && details->plate_only_support) support += _L(" · 仅底板");
+    const auto adaptive = details && details->variable_layers ? _L("启用") : _L("关闭");
     const auto wall_generator = recommendation.arachne_wall_generator ? _L("Arachne") : _L("经典");
     std::vector<SliceDetailRow> rows = official;
     if (official.empty() && estimate.status == ExactEstimateStatus::Ready) {
@@ -142,6 +149,9 @@ inline std::vector<SliceDetailRow> exact_estimate_detail_rows(
             format_estimated_time(*estimate.estimated_time_seconds) : _L("暂无"), _L("原生模拟结果")});
         rows.push_back({_L("预计耗材"), estimate.material_grams ?
             wxString::Format(_L("%.2f g"), *estimate.material_grams) : _L("暂无"), _L("原生模拟结果")});
+    } else if (official.empty() && estimate.status == ExactEstimateStatus::PositionChanged) {
+        rows.push_back({_L("预计打印时间"), _L("待更新"), _L("原生模拟结果")});
+        rows.push_back({_L("预计耗材"), _L("待更新"), _L("原生模拟结果")});
     } else if (official.empty()) {
         rows.push_back({_L("预计打印时间"), estimate.status == ExactEstimateStatus::Failed ?
             _L("暂无准确时间") : slicing ? _L("等待切片结果") : _L("计算中..."), _L("原生模拟结果")});
@@ -161,16 +171,37 @@ inline std::vector<SliceDetailRow> exact_estimate_detail_rows(
     rows.push_back({_L("表面质量"), wxString::Format(_L("%s (%.0f/100)"),
                                          wxString::FromUTF8(recommendation.surface_quality_rating),
                                          recommendation.surface_quality_score), _L("预估指标")});
-    rows.push_back({_L("悬垂风险"), wxString::Format(_L("%.0f/100"), recommendation.overhang_risk_score * 100.0), _L("预估指标")});
-    rows.push_back({_L("层高"), wxString::Format(_L("%.2f mm"), recommendation.layer_height_mm), _L("推荐参数")});
+    const bool reliable_normals = std::find(recommendation.warnings.begin(), recommendation.warnings.end(),
+        "open_or_non_manifold_mesh") == recommendation.warnings.end();
+    rows.push_back({_L("悬垂风险"), reliable_normals ? wxString::Format(_L("%.0f/100"),
+        recommendation.overhang_risk_score * 100.0) : _L("无法可靠评估"), _L("预估指标")});
+    auto layer = wxString::Format(_L("%.2f mm"), details ? details->effective_layer_height : recommendation.layer_height_mm);
+    if (details && (details->variable_layers || details->mixed_nominal_layer_heights) && details->layer_range)
+        layer = wxString::Format(_L("%.2f–%.2f mm"), details->layer_range->first, details->layer_range->second);
+    rows.push_back({_L("层高"), layer, details ? _L("有效参数") : _L("推荐参数")});
     rows.push_back({_L("墙数"), wxString::Format("%d", recommendation.wall_loops), _L("推荐参数")});
     rows.push_back({_L("填充率"), wxString::Format(_L("%.0f%% · %s"), recommendation.sparse_infill_density_percent,
                                       wxString::FromUTF8(recommendation.sparse_infill_pattern)), _L("推荐参数")});
     rows.push_back({_L("外壁速度"), wxString::Format(_L("%.0f mm/s"), recommendation.outer_wall_speed_mm_s), _L("推荐参数")});
     rows.push_back({_L("支撑"), support, _L("推荐参数")});
-    rows.push_back({_L("支撑角度"), wxString::Format(_L("%.0f°"), recommendation.support_threshold_angle_deg), _L("推荐参数")});
+    const auto angle = details ? (details->support_angle ? wxString::Format(_L("%d°"), *details->support_angle) : _L("—")) :
+        wxString::Format(_L("%.0f°"), recommendation.support_threshold_angle_deg);
+    rows.push_back({_L("支撑角度"), angle, details ? _L("有效参数") : _L("推荐参数")});
     rows.push_back({_L("自适应层高"), adaptive, _L("推荐参数")});
     rows.push_back({_L("墙生成器"), wall_generator, _L("推荐参数")});
+    if (details) {
+        if (details->preserves_manual_settings)
+            rows.push_back({_L("人工设置"), _L("沿用工程中的支撑或层高设置"), _L("有效参数")});
+        if (details->tower_position && !estimate.moved_tower_position)
+            rows.push_back({_L("擦料塔坐标"), wxString::Format(_L("X %.2f / Y %.2f mm"),
+                details->tower_position->x(), details->tower_position->y()), _L("原生试切")});
+        if (details->orientation_degrees > 0.)
+            rows.push_back({_L("备选摆放"), wxString::Format(_L("旋转 %.1f°"), details->orientation_degrees), _L("待应用")});
+    }
+    if (estimate.moved_tower_position) {
+        const auto& [x, y] = *estimate.moved_tower_position;
+        rows.push_back({_L("擦料塔坐标"), wxString::Format(_L("X %.2f / Y %.2f mm"), x, y), _L("有效参数")});
+    }
     return rows;
 }
 

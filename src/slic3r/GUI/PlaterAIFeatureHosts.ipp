@@ -32,6 +32,13 @@ void Plater::show_ai_assistant(bool show)
     p->m_aui_mgr.Update();
 }
 
+void Plater::priv::on_plate_selected(SimpleEvent&)
+{
+    BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << ": received plate selected event";
+    sidebar->obj_list()->on_plate_selected(partplate_list.get_curr_plate_index());
+    if (smart_slicing_host) smart_slicing_host->notify_plate_selected();
+}
+
 bool Plater::is_smart_slicing_shown() const
 {
     return p->smart_slicing_host != nullptr && p->smart_slicing_host->is_shown();
@@ -45,19 +52,29 @@ void Plater::enable_smart_slicing()
     p->smart_slicing_host = std::make_unique<SmartSlicingFeatureHost>(
         *this, p->m_aui_mgr, *p->sidebar,
         [this] {
-            if (printer_technology() != ptFFF ||
-                p->process_completed_with_error == p->partplate_list.get_curr_plate_index())
+            if (printer_technology() != ptFFF)
                 return false;
             PartPlate* plate = p->partplate_list.get_curr_plate();
             if (plate == nullptr || !plate->has_printable_instances())
                 return false;
-            const DynamicPrintConfig& config = wxGetApp().preset_bundle->full_config();
+            // A committed recommendation can repair a tower configuration
+            // that failed the last validation. Revalidate before reslice uses
+            // the cached error for the previous configuration.
+            if (p->process_completed_with_error == plate->get_index()) {
+                const auto validation = p->update_background_process(true);
+                if (validation & priv::UPDATE_BACKGROUND_PROCESS_INVALID)
+                    return false;
+            }
+            const auto config = plate->effective_slice_config(*wxGetApp().preset_bundle);
             Print& print = p->partplate_list.get_current_fff_print();
             Model::setExtruderParams(config, wxGetApp().preset_bundle->filament_presets.size());
             Model::setPrintSpeedTable(config, print.config());
             p->m_slice_all = false;
+            const bool workbench = p->smart_slicing_host && p->smart_slicing_host->workbench_active();
+            p->background_process.set_workbench_placement_check(workbench);
             plate->update_slice_result_valid_state(false);
             reslice();
+            if (!p->m_is_slicing) p->background_process.set_workbench_placement_check(false);
             return p->m_is_slicing;
         });
 }

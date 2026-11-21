@@ -18,6 +18,15 @@ class Plater;
 // Read-only anti-corruption layer for smart slicing. Capturing or inspecting
 // through this adapter must never dirty the project or invalidate official
 // slicing results.
+struct OrcaSliceInputIdentity
+{
+    AI::SmartSlicing::WorkspaceRevision exact;
+    AI::SmartSlicing::WorkspaceRevision process;
+    uint64_t plate_id{0};
+    Vec2d tower_position{Vec2d::Zero()};
+    bool automatic_tower{false};
+};
+
 class OrcaSmartSlicingAdapter final : public AI::SmartSlicing::IOrcaWorkspace
 {
 public:
@@ -33,7 +42,9 @@ public:
     AI::SmartSlicing::ProtectedRegionSourceResult query_user_marked_region(uint64_t object_id,
                                                                             uint64_t volume_id) const;
     OrcaCandidateSearchCaptureResult capture_candidate_search_input() const;
+    OrcaSliceInputIdentity current_slice_input() const;
     OrcaTrialSliceInput capture_trial_slice_input() const;
+    bool current_plate_has_user_marked_surface() const;
     std::vector<AI::SmartSlicing::SliceCandidate>
     candidate_proposals(const AI::SmartSlicing::WorkspaceRevision& revision) const;
     OrcaModelFeatureCaptureResult capture_model_feature_inputs(
@@ -43,7 +54,8 @@ public:
 private:
     std::optional<AI::SmartSlicing::ProtectedRegionBindingTarget> current_region_target(
         uint64_t object_id, uint64_t volume_id) const;
-    AI::SmartSlicing::WorkspaceContext capture_context_impl(bool include_diagnostics) const;
+    AI::SmartSlicing::WorkspaceContext capture_context_impl(bool include_diagnostics,
+        OrcaSliceInputIdentity* slice_input = nullptr) const;
 
     Plater* m_plater{nullptr};
     AI::SmartSlicing::UsagePurpose m_usage_purpose{AI::SmartSlicing::UsagePurpose::General};

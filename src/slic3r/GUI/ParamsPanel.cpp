@@ -7,7 +7,6 @@
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Preset.hpp"
 #include "ParamsPanel.hpp"
-#include "ParamsPanelScrollbar.hpp"
 #include "Tab.hpp"
 #include "MainFrame.hpp"
 #include "GUI_App.hpp"
@@ -17,9 +16,9 @@
 #include "Widgets/SwitchButton.hpp"
 #include "Widgets/Button.hpp"
 #include "GUI_Factories.hpp"
-#include <wx/dcbuffer.h>
+#include <wx/weakref.h>
+#include <cmath>
 #include <algorithm>
-#include <array>
 #include "I18N.hpp"
 #include "libslic3r/Config.hpp"
 #include <string>
@@ -49,146 +48,138 @@ namespace GUI {
 
 namespace
 {
-// Keep the bar outside the scrolled content so native scrolling never moves
-// or bit-blits it. The original PageScrolledWindow still owns all parameters.
+// The native page keeps its controls and layout sizer when mounted in the workbench.
 class ParameterPageViewport final : public wxPanel
 {
 public:
     explicit ParameterPageViewport(wxWindow* parent) : wxPanel(parent, wxID_ANY)
     {
         SetSizer(new wxBoxSizer(wxHORIZONTAL));
-        m_bar = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
-        m_bar->SetBackgroundStyle(wxBG_STYLE_PAINT);
-        m_bar->Hide();
-        m_bar->Bind(wxEVT_PAINT, [this](wxPaintEvent&) { paint_bar(); });
-        m_bar->Bind(wxEVT_ENTER_WINDOW, [this](wxMouseEvent& event) {
-            m_hovered = true; m_bar->Refresh(false); event.Skip();
-        });
-        m_bar->Bind(wxEVT_LEAVE_WINDOW, [this](wxMouseEvent& event) {
-            m_hovered = false; m_bar->Refresh(false); event.Skip();
-        });
-        m_bar->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
-            const auto thumb = thumb_rect();
-            if (thumb.Contains(event.GetPosition())) {
-                m_drag_offset = event.GetY() - thumb.y;
-                m_dragging = true;
-                m_bar->CaptureMouse();
-            } else {
-                int x, y, ux, uy;
-                m_page->GetViewStart(&x, &y);
-                m_page->GetScrollPixelsPerUnit(&ux, &uy);
-                const int page = std::max(1, m_page->GetClientSize().y / std::max(1, uy));
-                m_page->Scroll(x, std::max(0, y + (event.GetY() < thumb.y ? -page : page)));
-            }
-            m_bar->Refresh(false);
-        });
-        m_bar->Bind(wxEVT_MOTION, [this](wxMouseEvent& event) {
-            if (!m_dragging || !m_bar->HasCapture()) return;
-            const int travel = m_bar->GetClientSize().y - thumb_rect().height;
-            const int position = std::clamp(event.GetY() - m_drag_offset, 0, std::max(0, travel));
-            int x, y, ux, uy;
-            m_page->GetViewStart(&x, &y);
-            m_page->GetScrollPixelsPerUnit(&ux, &uy);
-            const int range = std::max(0, m_page->GetVirtualSize().y - m_page->GetClientSize().y);
-            m_page->Scroll(x, travel > 0 ? int(double(position) * range / travel / std::max(1, uy) + .5) : 0);
-            m_bar->Refresh(false);
-        });
-        m_bar->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent&) { end_drag(); });
-        m_bar->Bind(wxEVT_MOUSE_CAPTURE_LOST, [this](wxMouseCaptureLostEvent&) { end_drag(); });
-        m_bar->Bind(wxEVT_MOUSEWHEEL, [this](wxMouseEvent& event) {
-            wxMouseEvent forwarded(event);
-            forwarded.SetEventObject(m_page);
-            m_page->GetEventHandler()->ProcessEvent(forwarded);
-        });
-        // Idle observes final positions after native wheel handling and direct
-        // Scroll()/FitInside(), including search and EnsureVisible(). No timer.
-        Bind(wxEVT_IDLE, [this](wxIdleEvent& event) {
-            if (m_enabled && IsShownOnScreen()) update_bar();
-            event.Skip();
-        });
-        Bind(wxEVT_DPI_CHANGED, [this](wxDPIChangedEvent& event) {
-            m_bar->SetMinSize(FromDIP(wxSize(12, 0)));
-            Layout(); event.Skip();
-        });
     }
 
     void attach(wxScrolledWindow* page)
     {
         m_page = page;
         GetSizer()->Add(page, 1, wxEXPAND);
-        m_bar->SetMinSize(FromDIP(wxSize(12, 0)));
-        GetSizer()->Add(m_bar, 0, wxEXPAND);
     }
 
-    bool themed() const { return m_enabled; }
+    bool using_host_scroll() const { return m_scroll_host.get() != nullptr; }
 
-    void set_theme(bool enabled, const wxColour& track)
+    void set_scroll_host(wxScrolledWindow* host, ParamsPanel& panel)
     {
-        if (m_enabled == enabled && (!enabled || m_track == track)) return;
-        m_enabled = enabled;
-        end_drag();
-        m_track = track;
-        m_page->ShowScrollbars(enabled ? wxSHOW_SB_NEVER : wxSHOW_SB_DEFAULT,
-                              enabled ? wxSHOW_SB_NEVER : wxSHOW_SB_DEFAULT);
-        m_bar->Show(enabled && m_page->GetVirtualSize().y > m_page->GetClientSize().y);
-        m_last = {};
-        Layout();
-        m_page->Layout();
-        m_bar->Refresh(false);
+        if (m_scroll_host.get() == host) return;
+        m_reveal_target = nullptr;
+        m_last_focused_field = nullptr;
+        if (host) {
+            // The original sidebar supplies the height. Its initial size hint
+            // must not override the natural height in the workbench sizer.
+            m_native_panel_min_size = panel.GetMinSize();
+            panel.SetMinSize(wxSize(0, wxDefaultCoord));
+            m_native_min_size = GetMinSize();
+            m_page->GetScrollPixelsPerUnit(&m_native_scroll_step.x, &m_native_scroll_step.y);
+            m_page->Scroll(0, 0);
+            m_scroll_host = host;
+            m_page->SetScrollRate(0, 0);
+            m_page->ShowScrollbars(wxSHOW_SB_NEVER, wxSHOW_SB_NEVER);
+            Bind(wxEVT_IDLE, &ParameterPageViewport::follow_field_focus, this);
+            resize_to_content();
+            queue_host_layout();
+        } else {
+            Unbind(wxEVT_IDLE, &ParameterPageViewport::follow_field_focus, this);
+            m_scroll_host = nullptr;
+            panel.SetMinSize(m_native_panel_min_size);
+            SetMinSize(m_native_min_size);
+            InvalidateBestSize();
+            m_page->SetScrollRate(m_native_scroll_step.x, m_native_scroll_step.y);
+            m_page->ShowScrollbars(wxSHOW_SB_DEFAULT, wxSHOW_SB_DEFAULT);
+            m_page->FitInside();
+        }
+    }
+
+    void resize_to_content()
+    {
+        if (!using_host_scroll() || !m_page->GetSizer()) return;
+        const int height = m_page->GetSizer()->CalcMin().y;
+        const wxSize minimum(m_native_min_size.x, height);
+        if (GetMinSize() == minimum) return;
+        SetMinSize(minimum);
+        InvalidateBestSize();
+        queue_host_layout();
+    }
+
+    bool reveal_in_host(wxWindow* target)
+    {
+        if (!using_host_scroll()) return false;
+        m_reveal_target = target;
+        queue_host_layout();
+        return true;
+    }
+
+    void forward_wheel(wxMouseEvent& event)
+    {
+        auto* host = m_scroll_host.get();
+        if (!host) { event.Skip(); return; }
+        wxMouseEvent forwarded(event);
+        if (auto* source = dynamic_cast<wxWindow*>(event.GetEventObject()))
+            forwarded.SetPosition(host->ScreenToClient(source->ClientToScreen(event.GetPosition())));
+        forwarded.SetId(host->GetId());
+        forwarded.SetEventObject(host);
+        forwarded.StopPropagation();
+        host->GetEventHandler()->ProcessEvent(forwarded);
     }
 
 private:
-    wxRect thumb_rect() const
+    void follow_field_focus(wxIdleEvent& event)
     {
-        const int height = m_bar->GetClientSize().y;
-        const int visible = m_page->GetClientSize().y;
-        const int total = std::max(1, m_page->GetVirtualSize().y);
-        const int thumb = std::min(height, std::max(FromDIP(28), int(double(height) * visible / total)));
-        int x, y, ux, uy;
-        m_page->GetViewStart(&x, &y);
-        m_page->GetScrollPixelsPerUnit(&ux, &uy);
-        const int top = std::clamp(int(double(y) * uy * (height - thumb) / std::max(1, total - visible)),
-                                   0, std::max(0, height - thumb));
-        return wxRect(FromDIP(3), top, std::max(1, m_bar->GetClientSize().x - FromDIP(6)), thumb);
+        event.Skip();
+        if (!using_host_scroll() || !IsShownOnScreen()) return;
+        // Composite native fields may take focus without notifying a scrolled
+        // window whose own scroll rate is disabled. Track the actual field.
+        auto* focus = wxWindow::FindFocus();
+        if (focus && !m_page->IsDescendant(focus)) focus = nullptr;
+        if (focus == m_last_focused_field.get()) return;
+        m_last_focused_field = focus;
+        if (focus && !m_reveal_target.get()) reveal_in_host(focus);
     }
 
-    void paint_bar()
+    void queue_host_layout()
     {
-        wxAutoBufferedPaintDC dc(m_bar);
-        dc.SetBackground(wxBrush(m_track)); dc.Clear();
-        if (!m_enabled || m_page->GetVirtualSize().y <= m_page->GetClientSize().y) return;
-        dc.SetPen(*wxTRANSPARENT_PEN);
-        dc.SetBrush(wxBrush(m_dragging ? wxColour(185,185,192) :
-            m_hovered ? wxColour(150,150,158) : wxColour(105,105,114)));
-        dc.DrawRoundedRectangle(thumb_rect(), FromDIP(3));
-    }
+        if (m_layout_pending) return;
+        m_layout_pending = true;
+        CallAfter([this] {
+            m_layout_pending = false;
+            auto* host = m_scroll_host.get();
+            if (!host || !IsShownOnScreen()) { m_reveal_target = nullptr; return; }
+            // Field visibility and category rebuilding finish before the outer sizer is measured.
+            host->FitInside();
+            auto* target = m_reveal_target.get();
+            m_reveal_target = nullptr;
+            if (!target || !m_page->IsDescendant(target) || !target->IsShownOnScreen()) return;
 
-    void end_drag()
-    {
-        m_dragging = false;
-        if (m_bar->HasCapture()) m_bar->ReleaseMouse();
-        m_bar->Refresh(false);
-    }
-
-    void update_bar()
-    {
-        int x, y;
-        m_page->GetViewStart(&x, &y);
-        const auto visible = m_page->GetClientSize();
-        const auto total = m_page->GetVirtualSize();
-        const std::array<int, 5> state {y, visible.x, visible.y, total.x, total.y};
-        if (state == m_last) return;
-        m_last = state;
-        if (m_bar->Show(total.y > visible.y)) Layout();
-        m_bar->Refresh(false);
+            int step_x, step_y;
+            host->GetScrollPixelsPerUnit(&step_x, &step_y);
+            if (step_y <= 0) return;
+            int view_x, view_y;
+            host->GetViewStart(&view_x, &view_y);
+            const int target_top = host->ScreenToClient(target->GetScreenPosition()).y;
+            const int target_bottom = target_top + target->GetSize().y;
+            const int viewport_height = host->GetClientSize().y;
+            if (target_top < 0 || target->GetSize().y >= viewport_height) {
+                host->Scroll(-1, std::max(0, view_y + int(std::floor(double(target_top) / step_y))));
+            } else if (target_bottom > viewport_height) {
+                host->Scroll(-1, view_y + (target_bottom - viewport_height + step_y - 1) / step_y);
+            }
+        });
     }
 
     wxScrolledWindow* m_page {nullptr};
-    wxPanel* m_bar {nullptr};
-    wxColour m_track {35,35,38};
-    std::array<int, 5> m_last {};
-    int m_drag_offset {0};
-    bool m_enabled {false}, m_hovered {false}, m_dragging {false};
+    wxWeakRef<wxScrolledWindow> m_scroll_host;
+    wxWeakRef<wxWindow> m_reveal_target;
+    wxWeakRef<wxWindow> m_last_focused_field;
+    wxSize m_native_min_size;
+    wxSize m_native_panel_min_size;
+    wxSize m_native_scroll_step;
+    bool m_layout_pending {false};
 };
 
 int mode_to_selection(ConfigOptionMode mode)
@@ -197,13 +188,6 @@ int mode_to_selection(ConfigOptionMode mode)
            mode == comAdvanced ? 1 :
            0;
 }
-}
-
-void set_parameter_scrollbar_theme(wxScrolledWindow* page, bool enabled, const wxColour& track)
-{
-    if (page)
-        if (auto* viewport = dynamic_cast<ParameterPageViewport*>(page->GetParent()))
-            viewport->set_theme(enabled, track);
 }
 
 TipsDialog::TipsDialog(wxWindow *parent, const wxString &title, const wxString &description, std::string app_key, long style,std::map<wxStandardID,wxString> option_map)
@@ -501,7 +485,9 @@ ParamsPanel::ParamsPanel( wxWindow* parent, wxWindowID id, const wxPoint& pos, c
                                | wxTAB_TRAVERSAL    // Allows for traversal via tab key
                             )
         {
-            // ShowScrollBar(GetHandle(), SB_BOTH, FALSE);
+            Bind(wxEVT_MOUSEWHEEL, [this](wxMouseEvent& event) {
+                static_cast<ParameterPageViewport*>(GetParent())->forward_wheel(event);
+            });
             Bind(wxEVT_SCROLL_CHANGED, [this](auto &e) {
                 wxWindow *child = dynamic_cast<wxWindow *>(e.GetEventObject());
                 if (child != this)
@@ -515,35 +501,23 @@ ParamsPanel::ParamsPanel( wxWindow* parent, wxWindowID id, const wxPoint& pos, c
         }
         bool Layout() override
         {
-            auto* viewport = dynamic_cast<ParameterPageViewport*>(GetParent());
-            if (!viewport || !viewport->themed() || !GetSizer())
+            auto* viewport = static_cast<ParameterPageViewport*>(GetParent());
+            if (!viewport->using_host_scroll() || !GetSizer())
                 return wxScrolledWindow::Layout();
-            if (m_laying_out) return true;
-            struct LayoutGuard {
-                bool& active;
-                explicit LayoutGuard(bool& value) : active(value) { active = true; }
-                ~LayoutGuard() { active = false; }
-            } guard(m_laying_out);
-            // wx's default layout uses the visible native scrollbar to decide
-            // whether to expand children. Our hidden scrollbar must still lay
-            // out the whole virtual page, including offscreen option groups.
+            viewport->resize_to_content();
             const auto client = GetClientSize();
-            const wxSize content(client.x, std::max(client.y, GetSizer()->CalcMin().y));
-            if (GetVirtualSize() != content) SetVirtualSize(content);
-            int x, y, ux, uy;
-            GetViewStart(&x, &y);
-            GetScrollPixelsPerUnit(&ux, &uy);
-            GetSizer()->SetDimension(-x * ux, -y * uy, content.x, content.y);
+            GetSizer()->SetDimension(0, 0, client.x, std::max(client.y, GetSizer()->CalcMin().y));
             return true;
         }
         void FitInside() override
         {
-            auto* viewport = dynamic_cast<ParameterPageViewport*>(GetParent());
-            if (viewport && viewport->themed()) Layout();
+            auto* viewport = static_cast<ParameterPageViewport*>(GetParent());
+            if (viewport->using_host_scroll()) Layout();
             else wxScrolledWindow::FitInside();
         }
         void EnsureVisible(wxWindow* win)
         {
+            if (static_cast<ParameterPageViewport*>(GetParent())->reveal_in_host(win)) return;
             const wxRect viewRect(m_targetWindow->GetClientRect());
             const wxRect winRect(m_targetWindow->ScreenToClient(win->GetScreenPosition()), win->GetSize());
             if (viewRect.Contains(winRect)) {
@@ -586,8 +560,6 @@ ParamsPanel::ParamsPanel( wxWindow* parent, wxWindowID id, const wxPoint& pos, c
             }
             Scroll(startx, starty);
         }
-    private:
-        bool m_laying_out {false};
     };
 
     auto* viewport = new ParameterPageViewport(page_parent);
@@ -801,6 +773,10 @@ void ParamsPanel::OnToggled(wxCommandEvent& event)
 // This is special, DO NOT call it from outer except from Tab
 void ParamsPanel::set_active_tab(wxPanel* tab)
 {
+    if (m_workbench_process_mode >= 0 && m_tab_print) {
+        if (m_mode_region) m_mode_region->SetValue(false);
+        tab = m_tab_print;
+    }
     Tab* cur_tab = dynamic_cast<Tab *> (tab);
 
     if (cur_tab == nullptr) {
@@ -868,6 +844,48 @@ bool ParamsPanel::is_active_and_shown_tab(wxPanel* tab)
         return false;
 }
 
+bool ParamsPanel::Layout()
+{
+    if (m_page_view) {
+        auto* viewport = static_cast<ParameterPageViewport*>(m_page_view->GetParent());
+        if (viewport->using_host_scroll()) {
+            viewport->resize_to_content();
+            InvalidateBestSize();
+        }
+    }
+    return wxPanel::Layout();
+}
+
+void ParamsPanel::set_workbench_scroll_host(wxScrolledWindow* host)
+{
+    if (m_page_view)
+        static_cast<ParameterPageViewport*>(m_page_view->GetParent())->set_scroll_host(host, *this);
+    InvalidateBestSize();
+    Layout();
+}
+
+bool ParamsPanel::reveal_workbench_parameter(wxWindow* field)
+{
+    return m_page_view && static_cast<ParameterPageViewport*>(m_page_view->GetParent())->reveal_in_host(field);
+}
+
+void ParamsPanel::set_workbench_process_mode(int mode)
+{
+    if (m_workbench_process_mode == mode) return;
+    m_workbench_process_mode = mode;
+    if (m_left_sizer)
+        m_left_sizer->SetMinSize(wxSize(mode >= 0 ? 0 : 40 * em_unit(this), -1));
+    if (auto* print_tab = dynamic_cast<Tab*>(m_tab_print)) {
+        if (mode >= 0) {
+            select_default_tab();
+            print_tab->restore_last_select_item();
+        }
+        print_tab->update_mode();
+        print_tab->update_preset_choice();
+    }
+    Layout();
+}
+
 void ParamsPanel::update_mode()
 {
     int app_mode = Slic3r::GUI::wxGetApp().get_mode();
@@ -905,7 +923,7 @@ void ParamsPanel::msw_rescale()
     if (m_search_btn) m_search_btn->msw_rescale();
     if (m_compare_btn) m_compare_btn->msw_rescale();
     if (m_tips_arrow) m_tips_arrow->msw_rescale();
-    m_left_sizer->SetMinSize(wxSize(40 * em_unit(this), -1));
+    m_left_sizer->SetMinSize(wxSize(m_workbench_process_mode >= 0 ? 0 : 40 * em_unit(this), -1));
     if (m_mode_sizer)
         m_mode_sizer->SetMinSize(-1, 3 * em_unit(this));
     if (m_mode_region)

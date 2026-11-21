@@ -1,3 +1,139 @@
+# 2026-11-21 当前 · 切片工作台同步远端与 Windows 合并候选
+
+**焦点**　`MAINLINE-BUGFIX-001` 从 `0fc72966b6` 同步远端 `516f19bc9e`，在 `codex/task/workbench-slicing-20261121` 准备 Windows 运行版和集成 PR。 [同步记录](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#workbench-slicing-integration-20261121)
+
+**返回点**　SS-01 原现场 3MF，SS-36 实物验收。REQ-08 多盘缓存隔离按单列计划。
+
+**未结**　同档换推荐来源的打印匹配、同工艺原生重复开切和缓存依赖待定向验收。TC-07、TC-22 待匹配工程或设备配置。
+
+**下一步**　合并候选首轮 Windows Release 已构建。增量复核图注修正后的版本及切片、打印交接，向集成分支提交 PR。
+
+---
+
+# 2026-11-20 此前 · 智能切片后续修复清单评审
+
+**焦点**　`MAINLINE-BUGFIX-001` 采用新版智能切片，按现行门槛校验所选档的有效试切证据。[修复与优化清单](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-next-fixes-review-20261120)
+
+**返回点**　SS-01 原故障 3MF、SS-36 实物验收。
+
+**未结**　连续换档、自动塔位和双盘隔离的修复范围待评审。
+
+**下一步**　评审首批修复及 Windows 工作台验收场景。
+
+---
+
+# 2026-11-20 此前 · 切片工作台三项 UX 用户验证通过，已本地提交
+
+**主线**　MAINLINE-BUGFIX-001，`codex/team/integration`。
+
+**本轮**　用户确认进度浮层对齐、移除检查区和「返回模型编辑」三项修改验证通过。本地提交 `63a1e34401`。[修改与验证](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-progress-and-check-review-20261120)
+
+**未结**　旧现场 3MF 与实物验收按 SS-01、SS-36 追踪。[现场复验结果](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-field-qa-feedback-20261120)
+
+**下一步**　取得原现场 3MF 或实物反馈后，回到对应验收项。
+
+**计划变更**　结项本次三项 UX 改动，登记用户验收与提交记录。
+
+---
+
+# 2026-11-20 此前 · 智能切片整改需求复核
+
+**主线**　MAINLINE-BUGFIX-001，`smartslice-implementation-acceptance-20261119`。当前分支 `codex/team/integration`，基线 `8f1b7bbf98df`。
+
+**本轮**　确认优先修复首次摆塔错误，本地按选中档计算。拖塔复用工艺并更新位置校验的分析见[需求复核](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-selected-goal-and-tower-20261120)。
+
+**未结**　整改待实施。现场复核后 2 项实测未通过，2 项部分覆盖，另有原工程和实物验收各 1 项待补。[42 项记录](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-case-results-20261120)
+
+**下一步**　实施阶段优先处理首次摆塔和原生错误提示，再按选中档落实调度与拖塔行为。
+
+**计划变更**　记录本轮的优先级与选择触发规则，将拖塔行为列为分析建议。
+
+---
+
+# 2026-11-20 此前 · 智能切片直接导入反馈复核
+
+**主线**　MAINLINE-BUGFIX-001，`smartslice-implementation-acceptance-20261119`。当前分支 `codex/team/integration`，基线 `8f1b7bbf98df`。
+
+**本轮**　对照现场截图、正式配置日志、自动备份和运行身份，确认初始塔位越界后原生预校验报错。基线和质量各补试一次，用尽四次额度，三档共用质量结果。[现场复核](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-field-import-20261120)
+
+**未结**　42 项中 36 项通过、2 项实测未通过、2 项部分覆盖、1 项待原工程、1 项待实物。[当前验收](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-case-results-20261120)
+
+**下一步**　直接导入场景的复验覆盖首次摆塔、原生错误提示及三档试切完整性。原故障工程和实物验收沿原编号记录。
+
+**计划变更**　SS-28、SS-37 复开，SS-34 改为部分覆盖。保留此前构建、相关回归及重建工程的原实测证据。
+
+---
+
+# 2026-11-20 此前 · 智能切片实施与 Windows 验收
+
+**主线**　MAINLINE-BUGFIX-001，`smartslice-implementation-acceptance-20261119`，`codex/team/integration`／`8f1b7bbf98df`，单代理。
+
+**本轮**　最终运行版 `20261120-022129-383` 通过 349 项定向回归。六类样本 24 次原生对照全部完成。重建肖像的旧版越界已复现，补修版切片成功。双喷嘴共同层高、原生涂色、写入失败回滚及空腔支撑已实窗复验。[逐项验收](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-case-results-20261120)。
+
+**未结**　42 项中通过 39 项。SS-07 的失败卡同屏用例部分覆盖，SS-01 待原工程，SS-36 待实物。此前 Windows 交付、模型信息面板评审及 62/64 记录保留为返回点。
+
+**下一步**　取得原 3MF 和打印样件后补对应项。SS-07 若需保留失败卡并列交互，按现有本地共享候选与云端独立推荐的差异核对验收边界。
+
+**计划变更**　更新试切截止时间、保护面及双喷嘴验收和证据。新增模型生成调用 0 次。
+
+---
+
+# 2026-11-19 此前 · V1.0.4 智能切片实施及验收
+
+**主线**　MAINLINE-BUGFIX-001，`smartslice-implementation-acceptance-20261119`，`codex/team/integration`／`8f1b7bbf98df`。
+
+**本轮**　已批准并实现四阶段改动。合法塔位的六色肖像试切与正式切片均显示 32 小时 52 分钟、252.17 g。初轮定向 342/345，实窗定位到旧塔状态门槛，补修等待复验。六类样本与 SS-37～SS-42 已备齐。
+
+**未结**　补修版增量构建、完整自动和实窗复验、同原 3MF 及实物确认。
+
+**下一步**　用现场影像所对应的模型副本及可控塔位夹具复核，运行六类原生对照矩阵，逐项记录 [验收状态](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-implementation-acceptance-20261119)。
+
+**计划变更**　保留 36 项原用例，新增六类实测场景和本轮证据。
+
+---
+
+# 2026-11-19 此前 · V1.0.4 智能切片实施方案和 36 项用例待审批
+
+**主线**　MAINLINE-BUGFIX-001／`wipe-tower-bounds-20261119` 补充，`codex/team/integration`／`8f1b7bbf98df`，本会话单代理。
+
+**本轮**　明确统一输入、塔位与失败事务、指标修正、按模型选层高与支撑、姿态备选的分阶段实现和 36 项验收。[评审稿](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-implementation-acceptance-20261119)。
+
+**未结**　审批、实施及验收。同工程复验待原 3MF，先前交付与模型信息面板评审返回点保留。
+
+**下一步**　审批后先落实试切和正式切片一致性，按阶段执行自动及 Windows 实窗验收。
+
+**计划变更**　沿原主线补齐实施规格、验收口径和用例。状态为待审批。
+
+---
+
+# 2026-11-19 此前 · V1.0.4 智能切片三档复查与方案完成
+
+**主线**　MAINLINE-BUGFIX-001／`wipe-tower-bounds-20261119` 补充，`codex/team/integration`／`8f1b7bbf98`，本会话单代理。
+
+**本轮**　三张卡试切成功，正式质量档 0.12 mm 越界。复核发现试切与正式输入、悬垂方向、喷嘴层高读取、变层高落地、失败状态与多材料克重差异。[复查与方案](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#smartslice-followup-20261119)。
+
+**未结**　修复和算法优化待实施。原故障工作台 3MF 待取，原交付记录、62/64 与模型信息面板评审返回点保留。
+
+**下一步**　按已分析的方案先统一试切和正式输入，再用原生能力优化层高、支撑与朝向。建议保留当前摆放和人工设置，角度预览后应用。当前暂无需用户确认的产品取舍。
+
+**计划变更**　沿原问题追加分析与优化建议。本轮交付为源码和既有日志分析。
+
+---
+
+# 2026-11-19 此前：V1.0.4 擦料塔越界提示原因分析完成
+
+主线：MAINLINE-BUGFIX-001／`wipe-tower-bounds-20261119`；当前 `codex/team/integration`／`8f1b7bbf98`，本会话单代理。用户本轮仅授权分析安装后测试问题。
+
+本轮：日志确认两次实际塔底 Y=285.5 mm 超过可打印 Y=270 mm，越界 15.5 mm；源码确认智能方案写入盘级 0.12 mm，而塔预览／自动摆放未叠加盘级配置。切片失败时仍可能显示估计塔。[证据、归因边界与修复建议](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md#wipe-tower-bounds-20261119)。
+
+未结：修复未实施；缺少原故障 3MF，尚未做同工程实窗复现，不把全部越界量定量归因于单个参数。此前交付记录、原62/64与模型信息面板待评审状态保留。
+
+下一步：交付本次原因分析；后续在明确修复范围内统一有效配置及完整占地处理，再做对应复现和回归。
+
+计划变更：挂原Bug主线追加分析记录；仅更新两份进度文档，无产品修改、构建、产品测试、GUI、生成、提交或推送。
+
+---
+
 # MODEL-SDK-DEFAULT-CMAKE-D1 (2026-11-20)
 
 Mainline: task-20261120-model-sdk-default-cmake from d60d3a9; PR82 is now formally open by explicit user request. D1 repair round 1 fixes an absent LINK_LIBRARIES property without disabling default tests.
@@ -94,7 +230,7 @@ Plan change: none to paused Desktop work, device/production/paid/PR/push prohibi
 ---
 
 # 最新桌面323c记录（完整保留；不据历史记录恢复暂停工作）
-# 2026-11-19 当前：V1.0.4修订已提交，Draft PR #79已创建
+# 2026-11-19 此前：V1.0.4修订已提交，Draft PR #79已创建
 
 主线：DELIVERY/WINDOWS-INSTALLER-20261119追加交付，codex/task/ai-creation-v1.0.4-20261119，本会话单writer；用户授权的本地提交／专用分支推送／集成PR创建已完成。
 
