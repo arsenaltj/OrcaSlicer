@@ -22,6 +22,8 @@ library.orca_model_capabilities.restype=ctypes.c_char_p
 capabilities=json.loads(library.orca_model_capabilities())
 assert capabilities['glbSafetyV1']['strictSelfIntersection'] is True
 assert capabilities['glbSafetyV1']['maxGeneratedFaceLimit']==1000000
+streamed_inspection=capabilities['glbSafetyV1'].get('inspectionWorkspacePolicy')=='streamed-inspect-live-containers-v1'
+assert streamed_inspection==('glbRepairV2' in capabilities),capabilities
 
 def encode(document, binary):
     document = json.loads(json.dumps(document))
@@ -291,8 +293,13 @@ with tempfile.TemporaryDirectory(prefix='orca-glb-safety-tests-') as directory:
     doc=json.loads(large[20:20+n]);payload=large[28+n:][:48]+struct.pack('<III',0,2,1)*2000000
     doc['accessors'][1]['count']=6000000;doc['bufferViews'][1]['byteLength']=24000000
     code,result=run('workspace_budget',encode(doc,payload),repair=True);assert code!=0 and result['error']['code']=='RESOURCE_LIMIT',result
-    code,result=run('streamed_duplicate_2m',encode(doc,payload));assert code==0,result
-    proof=result['result'];assert proof['completion']=='needs_attention' and not proof['geometryVerified'],proof
-    assert proof['checks']['topology']['status']=='failed' and proof['checks']['selfIntersection']['performed'] is False,proof
-    assert proof['workspaceAdmission']['admissionBytes']<=805306368,proof
+    code,result=run('streamed_duplicate_2m',encode(doc,payload))
+    if streamed_inspection:
+        assert code==0,result
+        proof=result['result'];assert proof['completion']=='needs_attention' and not proof['geometryVerified'],proof
+        assert proof['checks']['topology']['status']=='failed' and proof['checks']['selfIntersection']['performed'] is False,proof
+        assert proof['workspaceAdmission']['admissionBytes']<=805306368,proof
+    else:
+        # CGAL-only builds keep the original conservative workspace admission.
+        assert code!=0 and result['error']['code']=='RESOURCE_LIMIT',result
 print(json.dumps({'status':'passed','nativeCases':cases}))

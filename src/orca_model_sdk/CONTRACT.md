@@ -128,7 +128,11 @@ source/candidate SHA are reread before return. Raw originals are never replaced.
 
 Progress callbacks carry `schemaVersion:1,type:"glbSafetyProgress",identity`,
 monotonic per-call `sequence`, and actual `phase` (reading, structure, geometry,
-topology, repair, revalidation, publishing). No fabricated percentages. The host
+topology, repair, revalidation, publishing). No fabricated percentages.
+Strict predicate boundaries additionally report residualSoup, residualSurface,
+residualVertexLinks, residualIntersections and residualComplete. They preserve
+the same identity and monotonic sequence, and add cooperative cancellation
+points; they do not imply preemption inside the underlying CGAL call. The host
 owns queued/active scheduling. Cancellation is checked at stage boundaries and
 in parsing/mesh/distance loops; the synchronous CGAL predicate itself has no
 mid-call cancellation hook, so host worker termination must handle an imposed
