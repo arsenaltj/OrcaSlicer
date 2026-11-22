@@ -55,9 +55,20 @@ inline unsigned physical(const std::vector<int>& map,unsigned logical)
 inline unsigned logical(const std::vector<int>& map,unsigned physical)
 {
     validate(map);
+    if(physical>=32)throw std::runtime_error("HONOR_PHYSICAL_TOOL_UNMAPPED");
     const auto found=std::find(map.begin(),map.end(),int(physical)+1);
     if(found==map.end())throw std::runtime_error("HONOR_PHYSICAL_TOOL_UNMAPPED");
     return unsigned(std::distance(map.begin(),found));
+}
+
+// G-code contains physical tools; filters/configuration retain logical material
+// IDs. A mapped but inactive material must never fall through to bucket zero.
+inline unsigned logical_active(const std::vector<int>& map,unsigned physical,const std::vector<unsigned>& active)
+{
+    const auto id=logical(map,physical);
+    if(std::find(active.begin(),active.end(),id)==active.end())
+        throw std::runtime_error("HONOR_LOGICAL_MATERIAL_INACTIVE");
+    return id;
 }
 
 inline unsigned logical_from_zero_based(const std::vector<int>& map,unsigned physical)

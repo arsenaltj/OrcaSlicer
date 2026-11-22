@@ -1,3 +1,12 @@
+# SDK-V102-SPARSE-COOLING-01 (2026-11-22)
+
+Mainline: the same task-20261122-v102-model-resource-closure; af0/40ee remains immutable history. Independent Host QA accepted the Model2M resource subset and requested manufacturing changes for physical/logical cooling-tool confusion, initial round0.
+This round: restore logical ownership in both cooling phases and nonzero pressure equalization, using the strict Honor inverse map plus active membership. Preserve physical output, original mapping, generic valid behavior and existing caps; add unequal fan/speed/diameter Core integration regressions.
+Open: normal new Core build and the actual small integration test passed (PID28472, 16 raw G-code files), including nonzero PE adjustment/diameter sensitivity and invalid tools. Original af0 Core baseline exhibits T5 using logical0 fan values and missing logical1 slowdown. Test-fixture/environment failures remain preserved; no independent correction round has completed.
+Next: freeze this source once, normally rebuild all four real source markers and a new immutable complete package under the root-authorized bounded window, then different review and third QA. Android and consumer gates remain separate; no device operation was performed.
+Plan change: necessary manufacturing regression repair within this unfinished flow; Model resource partial success and all Mobile issue rounds retain their identities.
+
+## Earlier records retained
 # SDK-MODEL-2M-BUDGET-01 (2026-11-22)
 
 Mainline: task-20261122-v102-model-resource-closure, independent child of the frozen1b SDK; round0 existing v1 face coefficient rejects every2M input.

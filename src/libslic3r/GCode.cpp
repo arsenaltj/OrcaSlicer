@@ -3707,6 +3707,8 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
 
     m_cooling_buffer = make_unique<CoolingBuffer>(*this);
     m_cooling_buffer->set_current_extruder(initial_extruder_id, extruder_id);
+    if(m_pressure_equalizer)
+        m_pressure_equalizer->set_tool_routing(print.config(),m_writer.extruder_ids(),initial_extruder_id);
 
     // Orca: Initialise AdaptivePA processor filter
     m_pa_processor = std::make_unique<AdaptivePAProcessor>(*this);
