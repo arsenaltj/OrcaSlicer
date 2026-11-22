@@ -266,3 +266,23 @@ TEST_CASE("recommendations reject empty layer ranges and preserve legal boundari
     CHECK_FALSE(nozzle_limited.completed);
     CHECK(nozzle_limited.diagnostic_code == "smart_slice_layer_height_no_common_range");
 }
+
+TEST_CASE("separately captured reflected bodies preserve aggregate physical risk",
+          "[SmartSlice][SmartSlicingEngine][RecommendationParity]")
+{
+    const SmartSlicingEngine engine;
+    for (double first_z : {0.,4.}) for (double second_z : {0.,4.}) {
+        auto a=recommendation_cube(), b=recommendation_cube();
+        for(auto& v:a.vertices) v.z+=first_z;
+        for(auto& v:b.vertices) {v.x=30.-v.x;v.z+=second_z;}
+        const auto single_a=engine.AnalyzeAndPrecompute(a,{},{});
+        const auto single_b=engine.AnalyzeAndPrecompute(b,{},{});
+        const auto together=engine.AnalyzeAndPrecompute(std::vector<TriangleMeshSnapshot>{a,b},{},{});
+        REQUIRE(together.completed);
+        CHECK(together.metrics.closed_mesh);
+        CHECK_THAT(together.metrics.volume_mm3,Catch::Matchers::WithinAbs(2000.,1e-9));
+        CHECK_THAT(together.metrics.severe_overhang_area_ratio_60_deg,Catch::Matchers::WithinAbs(
+            .5*(single_a.metrics.severe_overhang_area_ratio_60_deg+single_b.metrics.severe_overhang_area_ratio_60_deg),1e-12));
+        for(const auto& plan:together.recommendations) CHECK(plan.enable_support==(first_z>0. || second_z>0.));
+    }
+}
