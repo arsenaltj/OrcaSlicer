@@ -74,12 +74,10 @@ ModelMetrics metrics_from_snapshot(const TriangleMeshSnapshot& mesh)
 
     constexpr double pi = 3.14159265358979323846;
     constexpr double top_micro_slope_degrees = 15.0;
-    constexpr double thin_wall_feature_mm = 0.8;
     double signed_volume = 0.0;
-    double overhang_45_area = 0.0;
-    double overhang_60_area = 0.0;
+    std::array<double, 2> overhang_45_area{};
+    std::array<double, 2> overhang_60_area{};
     double top_micro_area = 0.0;
-    double thin_wall_area = 0.0;
     std::map<std::pair<uint32_t, uint32_t>, size_t> edge_counts;
 
     const auto subtract = [](const MeshPoint3d& lhs, const MeshPoint3d& rhs) {
@@ -95,9 +93,6 @@ ModelMetrics metrics_from_snapshot(const TriangleMeshSnapshot& mesh)
     };
     const auto norm = [&dot](const MeshPoint3d& value) {
         return std::sqrt(dot(value, value));
-    };
-    const auto edge_length = [&subtract, &norm](const MeshPoint3d& lhs, const MeshPoint3d& rhs) {
-        return norm(subtract(lhs, rhs));
     };
 
     for (const MeshTriangle& triangle : mesh.triangles) {
@@ -118,15 +113,16 @@ ModelMetrics metrics_from_snapshot(const TriangleMeshSnapshot& mesh)
         const MeshPoint3d normal{area_vector.x / (2.0 * area),
                                  area_vector.y / (2.0 * area),
                                  area_vector.z / (2.0 * area)};
-        if (normal.z < 0.0) {
-            const double angle = std::acos(std::clamp(-normal.z, 0.0, 1.0)) * 180.0 / pi;
-            if (angle >= 45.0) overhang_45_area += area;
-            if (angle >= 60.0) overhang_60_area += area;
-        } else if (normal.z >= std::cos(top_micro_slope_degrees * pi / 180.0)) {
-            top_micro_area += area;
+        // Support risk increases toward a horizontal underside, not toward a
+        // vertical face. Ignore faces contacting the build plane (Z = 0).
+        if (std::max({a.z, b.z, c.z}) > 0.025) {
+            const double nz = std::abs(normal.z);
+            const size_t side = normal.z < 0.0 ? 0 : 1;
+            if (nz >= std::sqrt(0.5)) overhang_45_area[side] += area;
+            if (nz >= std::cos(30.0 * pi / 180.0)) overhang_60_area[side] += area;
         }
-        if (std::min({edge_length(a, b), edge_length(b, c), edge_length(c, a)}) <= thin_wall_feature_mm)
-            thin_wall_area += area;
+        if (normal.z >= std::cos(top_micro_slope_degrees * pi / 180.0))
+            top_micro_area += area;
 
         const std::array<std::pair<uint32_t, uint32_t>, 3> edges{{
             {std::min(triangle.vertex_indices[0], triangle.vertex_indices[1]),
@@ -139,10 +135,17 @@ ModelMetrics metrics_from_snapshot(const TriangleMeshSnapshot& mesh)
     }
     const double area = metrics.surface_area_mm2;
     metrics.volume_mm3 = std::abs(signed_volume);
-    metrics.high_overhang_area_ratio_45_deg = area > 0.0 ? overhang_45_area / area : 0.0;
-    metrics.severe_overhang_area_ratio_60_deg = area > 0.0 ? overhang_60_area / area : 0.0;
+    // Reflections reverse the winding of a closed mesh.
+    const size_t down = signed_volume < 0.0 ? 1 : 0;
+    metrics.high_overhang_area_ratio_45_deg = area > 0.0 ? overhang_45_area[down] / area : 0.0;
+    metrics.severe_overhang_area_ratio_60_deg = area > 0.0 ? overhang_60_area[down] / area : 0.0;
     metrics.top_micro_slope_surface_ratio = area > 0.0 ? top_micro_area / area : 0.0;
-    metrics.thin_wall_feature_ratio = area > 0.0 ? thin_wall_area / area : 0.0;
+    // A short triangle edge measures tessellation, not wall thickness. A
+    // narrow overall span supplies direct evidence for a plate-like body.
+    const auto& bounds = metrics.bounding_box;
+    const double smallest_span = std::min({bounds.width_mm(), bounds.depth_mm(), bounds.height_mm()});
+    if (smallest_span > 0.0 && smallest_span <= 0.8)
+        metrics.thin_wall_feature_ratio = 1.0;
     metrics.closed_mesh = std::all_of(edge_counts.begin(), edge_counts.end(),
                                       [](const auto& edge) { return edge.second == 2; });
     return metrics;
@@ -219,9 +222,13 @@ SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
     const double nozzle = clamp_finite(machine.nozzle_diameter_mm, MIN_SAFE_NOZZLE_MM, 2.0, 0.4);
     const double minimum_layer = clamp_finite(
         machine.minimum_layer_height_mm, MIN_SAFE_LAYER_MM, MAX_SAFE_LAYER_MM, nozzle * 0.10);
-    const double maximum_layer = std::max(
-        minimum_layer, clamp_finite(machine.maximum_layer_height_mm, minimum_layer,
-                                    MAX_SAFE_LAYER_MM, nozzle * 0.70));
+    const double maximum_layer = std::min(nozzle * 0.75,
+        clamp_finite(machine.maximum_layer_height_mm, MIN_SAFE_LAYER_MM,
+                     MAX_SAFE_LAYER_MM, nozzle * 0.70));
+    if (minimum_layer > maximum_layer) {
+        result.diagnostic_code = "smart_slice_layer_height_no_common_range";
+        return result;
+    }
     // Zero-valued additive fields preserve the existing desktop policy. The
     // machine motion limit is never a substitute for a process wall speed.
     const double legacy_wall = clamp_finite(machine.maximum_outer_wall_speed_mm_s,
