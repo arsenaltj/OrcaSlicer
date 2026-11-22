@@ -21,7 +21,7 @@ Json prepare_color_config(const LoadedProject& source,const Json& request)
     const auto* nozzles=staged.config.option<ConfigOptionFloats>("nozzle_diameter");
     if(!nozzles||nozzles->values.empty())throw std::runtime_error("COLOR_CONFIG_NOZZLES_REQUIRED");
     const size_t count=bindings.size();std::vector<int> maps(count);std::vector<std::string> colors(count),presets(count);
-    const auto& materialKeys=Preset::filament_options();std::set<size_t> ids,slots,tools;
+    std::set<size_t> ids,slots,tools;
     Json resolvedMaterialPresets=Json::array();Json palette=Json::array();
     for(const auto& binding:bindings){
         const size_t id=binding.at("materialId").get<size_t>(),slot=binding.at("slot").get<size_t>(),tool=binding.at("tool").get<size_t>();
@@ -39,11 +39,8 @@ Json prepare_color_config(const LoadedProject& source,const Json& request)
         resolvedMaterialPresets.push_back(Json{{"materialId",id},{"slot",slot},{"id",materialId},
             {"presetVersion",material->at("presetVersion")},{"family",material->at("family")}});
         DynamicPrintConfig native=DynamicPrintConfig::full_print_config();apply_config_overrides(native,material->at("config"));
-        for(const auto& key:materialKeys){const auto* option=native.option(key);if(!option||!option->is_vector())continue;
-            const auto* vector=dynamic_cast<const ConfigOptionVectorBase*>(option);if(!vector||vector->empty())continue;
-            auto* target=dynamic_cast<ConfigOptionVectorBase*>(staged.config.option(key));if(!target)continue;
-            target->resize(count,option);target->set_at(option,id,0);
-        }
+        const auto variant=detail::authorized_tool_variant(staged.config,tool);
+        detail::flatten_authorized_material(staged.config,native,variant,id,count);
         maps[id]=int(tool+1);colors[id]=hex;presets[id]=materialId;
         const auto* types=native.option<ConfigOptionStrings>("filament_type");
         if(!types||types->values.empty())throw std::runtime_error("COLOR_CONFIG_MATERIAL_TYPE_REQUIRED");

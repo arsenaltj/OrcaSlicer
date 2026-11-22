@@ -1,3 +1,12 @@
+# SDK-V102-FILAMENT-VARIANT-01 (2026-11-22)
+
+Mainline: the same native resource/manufacturing task and dev writer. The ca592/c74 complete SDK remains immutable evidence; its actual PLA/PETG C ABI output exposed temperature/fan/flow copied from logical0 during variant gathering. Independent SE confirmed initial0 as a separate manufacturing blocker.
+This round: select the trusted material variant for the resolved physical machine tool, flatten one row per logical material with self IDs1..N, reject unknown/ambiguous/malformed variants, and verify authorized material parameters after Print::apply. Keep the Core's general fallback unchanged.
+Open: the normal one-compiler WIP build, strict variant/normalization-guard unit, Cooling16, full bridge36 negatives, and mixed PLA/PETG complete C ABI identity/sparse/permutation plus supportT3/5+1 all passed development self-tests. Effective220/255, fan100/20, flow.98/1, slow4/8 and self1,2 remain correct; actual fan/F sequences match across physical mappings. WIP DLLs retain the old HEAD marker and are explicitly unqualified. Independent correction review/QA and final exact-source producers remain open; other issue histories are unchanged.
+Next: freeze once, normally rebuild four exact-source producers and a new immutable complete SDK under the coordinated window, then different review and third QA. Android/consumer qualification remains pending; ca/c74 is not a consumable release.
+Plan change: necessary authoritative-material repair in this unfinished flow. Honor's catalog stays DD Standard/1.75mm; non-first machine selection is internal fixture coverage, without new production presets or client authority exceptions.
+
+## Earlier records retained
 # SDK-V102-SPARSE-COOLING-01 (2026-11-22)
 
 Mainline: the same task-20261122-v102-model-resource-closure; af0/40ee remains immutable history. Independent Host QA accepted the Model2M resource subset and requested manufacturing changes for physical/logical cooling-tool confusion, initial round0.
