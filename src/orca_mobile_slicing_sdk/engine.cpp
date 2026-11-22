@@ -276,6 +276,10 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
         if(actualMaterialEvidence.at("manufacturingConfig")!=requestedConfig)
             throw std::runtime_error("ACTUAL_FILAMENT_CONFIG_CHANGED");
     }
+    // Ordinary/manual execution requires the same logical-material integrity.
+    // This does not assert native preset authority for a generic configuration.
+    const auto expectedMaterials=detail::checked_execution_materials(project.config);
+    project.config=expectedMaterials;
     emit(sink,request,"validating",20,"校验实际生效配置与模型");
     Slic3r::Print print;
     PrintScope registration(budget,print);
@@ -286,8 +290,7 @@ Json slice_one(LoadedProject& project,const Json& request,const EventSink& sink,
     auto model=slicing_model(project);
     emit(sink,request,"validating",21,"应用并归一化打印配置",Json{{"nativeStage","print_apply.started"}});
     print.apply(model,project.config);
-    if(!actualMaterialEvidence.is_null())
-        detail::verify_authorized_materials(project.config,print.full_print_config());
+    detail::verify_execution_materials(expectedMaterials,print.full_print_config());
     emit(sink,request,"validating",22,"打印配置归一化完成",Json{{"nativeStage","print_apply.completed"}});
     // Print::apply normalizes a by-value copy (e.g. vase walls/top/infill).
     // Identity, snapshots and confirmed candidate configs must describe that

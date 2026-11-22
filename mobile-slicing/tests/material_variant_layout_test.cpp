@@ -67,6 +67,55 @@ int main()
         rejects([&]{authorized_tool_variant(badMachine,4);},"DEVICE_VARIANT_LAYOUT_INVALID");
         badMachine=machine;dynamic_cast<ConfigOptionEnumsGeneric*>(badMachine.option("nozzle_volume_type"))->values[4]=4;
         rejects([&]{authorized_tool_variant(badMachine,4);},"DEVICE_VARIANT_UNKNOWN");
+        // Ordinary execution may carry several variants per material. A
+        // repeated self1 with distinct variants is valid; a missing self2 in
+        // a two-material job is not the same singleton-broadcast case.
+        auto ordinary=DynamicPrintConfig::full_print_config();
+        ordinary.set_key_value("filament_colour",new ConfigOptionStrings({"#FF0000","#0000FF"}));
+        ordinary.set_key_value("filament_map",new ConfigOptionInts({1,1}));
+        ordinary.set_key_value("filament_self_index",new ConfigOptionInts({1,1,2,2}));
+        ordinary.set_key_value("filament_extruder_variant",new ConfigOptionStrings({
+            "Direct Drive Standard","Direct Drive High Flow","Direct Drive Standard","Direct Drive High Flow"}));
+        ordinary.set_key_value("nozzle_temperature",new ConfigOptionInts({220,230,255,265}));
+        ordinary.set_key_value("fan_min_speed",new ConfigOptionFloats({20,30,80,90}));
+        ordinary.set_key_value("filament_flow_ratio",new ConfigOptionFloats({.98,.97,1.,.99}));
+        ordinary.set_key_value("filament_diameter",new ConfigOptionFloats({1.75,2.85}));
+        auto execution=checked_execution_materials(ordinary);
+        require(execution.option<ConfigOptionInts>("nozzle_temperature")->values==std::vector<int>({220,255}),"ordinary source row ownership");
+        require(execution.option<ConfigOptionFloats>("fan_min_speed")->values==std::vector<double>({20,80}),"ordinary source fan rows");
+        auto coreExecution=execution;auto executionKeys=filament_options_with_variant;executionKeys.insert("filament_self_index");
+        coreExecution.update_values_to_printer_extruders_for_multiple_filaments(execution,1,1,executionKeys,"filament_self_index","filament_extruder_variant");
+        verify_execution_materials(execution,coreExecution);
+        auto singleton=ordinary;singleton.option<ConfigOptionInts>("nozzle_temperature")->values={225};
+        require(checked_execution_materials(singleton).option<ConfigOptionInts>("nozzle_temperature")->values==std::vector<int>({225,225}),"known singleton broadcasts across material variants");
+        singleton=ordinary;singleton.option<ConfigOptionInts>("nozzle_temperature")->values={220,255};
+        require(checked_execution_materials(singleton).option<ConfigOptionInts>("nozzle_temperature")->values==std::vector<int>({220,255}),"one value per material broadcasts to its variants");
+        auto one=DynamicPrintConfig::full_print_config();
+        one.set_key_value("filament_self_index",new ConfigOptionInts({1,1}));
+        one.set_key_value("filament_extruder_variant",new ConfigOptionStrings({"Direct Drive Standard","Direct Drive High Flow"}));
+        one.set_key_value("nozzle_temperature",new ConfigOptionInts({220,230}));
+        require(checked_execution_materials(one).option<ConfigOptionInts>("nozzle_temperature")->values==std::vector<int>({220}),"single material repeated self1 valid variants");
+        one.option<ConfigOptionInts>("filament_self_index")->values={1};
+        require(checked_execution_materials(one).option<ConfigOptionInts>("nozzle_temperature")->values==std::vector<int>({220}),"one-material registered ID1 can own its known variant table");
+        auto metadata=ordinary;
+        metadata.set_key_value("compatible_printers",new ConfigOptionStrings({"Printer A","Printer B","Printer C"}));
+        require(checked_execution_materials(metadata).option<ConfigOptionStrings>("compatible_printers")->values.size()==3,"compatibility list is not a material row table");
+        for(const auto& ids:std::vector<std::vector<int>>{{1},{1,1},{1,3},{0,2},{}}){
+            auto invalid=execution;invalid.option<ConfigOptionInts>("filament_self_index")->values=ids;
+            rejects([&]{checked_execution_materials(invalid);},"MATERIAL_EXECUTION_");
+        }
+        auto invalid=execution;invalid.option<ConfigOptionStrings>("filament_extruder_variant")->values[1]="Bowden Standard";
+        rejects([&]{checked_execution_materials(invalid);},"VARIANT_UNSUPPORTED");
+        invalid=execution;invalid.option<ConfigOptionStrings>("filament_extruder_variant")->values[1]="Unknown";
+        rejects([&]{checked_execution_materials(invalid);},"VARIANT_INVALID");
+        invalid=execution;invalid.option<ConfigOptionFloats>("filament_diameter")->values={1.75,2.85,3};
+        rejects([&]{checked_execution_materials(invalid);},"OPTION_LAYOUT_INVALID:filament_diameter");
+        // Independent postcondition also catches a real Core fallback drift if
+        // a future caller bypasses the precondition. No fake Print result.
+        auto driftInput=execution;driftInput.option<ConfigOptionInts>("filament_self_index")->values={1};
+        auto driftOutput=driftInput;
+        driftOutput.update_values_to_printer_extruders_for_multiple_filaments(driftInput,1,1,executionKeys,"filament_self_index","filament_extruder_variant");
+        rejects([&]{verify_execution_materials(execution,driftOutput);},"NORMALIZATION_CHANGED");
         std::cout<<"PASS: trusted material variant selection, logical flattening, normalization guard and strict negatives\n";
         return 0;
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
