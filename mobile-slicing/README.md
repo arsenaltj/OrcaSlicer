@@ -16,6 +16,10 @@ Set `ORCA_SLICING_TBB_RUNTIME` to the explicit absolute, already qualified share
 
 Fetched dependency URLs and SHA256 pins are in `CMakeLists.txt`. Local dependency sources are referenced from `deps_src`; no desktop superbuild is used.
 
+Choose Boost linkage explicitly with `-DORCA_SDK_BOOST_LINKAGE=STATIC` or `SHARED` before configuring. The default is `SHARED` on Windows and `STATIC` on Android. This choice applies while Boost targets are created, independently of later dependency changes to `BUILD_SHARED_LIBS`. Configuration checks the actual compiled Boost target types and writes `boost-linkage.json`; package runtime dependencies must follow the resulting real imports/NEEDED closure.
+
+Host `ctest -R public_three_mf_component_world --output-on-failure` exercises the actual public SDK import and scene vertices, triangle winding and default face material IDs. It preserves two original component-mirror 3MF fixtures byte for byte and covers first/shared references, translations, rotations, scaling, nonuniform scaling, shear, nested noncommuting transforms, zero-centered meshes and ordinary build-item reflection. Original fixtures also run public recommend/validate/slice. Each run retains a fresh evidence directory printed by the test. This regression does not establish Android execution or complete manufacturing qualification.
+
 ## Color manufacturing contract
 
 `exportColorDocument` exports the replayed native project as authoritative world-space OBJ plus appearance and original object/volume/instance bindings. SC01 remains preview-only. Unsupported annotations or local process semantics fail explicitly. `applyColorDocument` validates the original source/config/revision and geometry/parts before applying a confirmed Model material plan to a detached native 3MF derivative.

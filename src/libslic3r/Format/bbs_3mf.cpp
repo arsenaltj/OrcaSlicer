@@ -5559,15 +5559,18 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             if (shared_volume || !volume->source.mesh_offset.isApprox(Vec3d::Zero()) || !hull || hull->empty())
                 volume->calculate_convex_hull();
 
-            //set transform from 3mf
-            Slic3r::Geometry::Transformation comp_transformatino(sub_comp.transform);
-            volume->set_transformation(comp_transformatino * volume->get_transformation());
             if (shared_volume) {
+                // The shared mesh was centered when its first volume was
+                // created. Restore that center in mesh-local coordinates,
+                // before applying this reference's component transformation.
                 const TriangleMesh& trangle_mesh = volume->mesh();
                 Vec3d shift = trangle_mesh.get_init_shift();
                 if (!shift.isApprox(Vec3d::Zero()))
                     volume->translate(shift);
             }
+            //set transform from 3mf
+            Slic3r::Geometry::Transformation comp_transformatino(sub_comp.transform);
+            volume->set_transformation(comp_transformatino * volume->get_transformation());
 
             // recreate custom supports, seam and mmu segmentation from previously loaded attribute
             {
