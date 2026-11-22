@@ -359,10 +359,10 @@ def create_app(session, *, engine=True, network_changed=None, shutdown=None) -> 
         except PrinterError:
             await ws.close(code=1008)
             return
+        await ws.accept()
         if session.faults["offline"]:
             await ws.close(code=1013)
             return
-        await ws.accept()
         try:
             while True:
                 message = await ws.receive_json()
