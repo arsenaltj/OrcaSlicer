@@ -901,7 +901,8 @@ void ModelGenerationPanel::apply_workbench_snapshot()
         }
     }
     set_workbench_enabled(m_workbench_palette_details,
-        state.can_edit && m_finishing_candidate.empty() && original_appearance_available);
+        state.can_edit && m_finishing_candidate.empty() && original_appearance_available &&
+        m_model_preview->workbench_palette_details_available());
     set_workbench_tooltip(m_workbench_palette_details, original_appearance_available
         ? _L("查看和调整当前模型配色") : original_appearance_reason);
     m_model_preview->set_workbench_palette_editable(state.can_edit && m_finishing_candidate.empty());
@@ -962,9 +963,11 @@ void ModelGenerationPanel::apply_workbench_snapshot()
     }
     const auto trial = m_model_preview->color_trial_state();
     const bool honor_suite_active = m_model_preview->active_honor_filament_suite() != nullptr;
-    const wxString palette_status = from_u8(workbench_palette_status_line(
+    const size_t palette_count = m_model_preview->workbench_palette_color_count();
+    const wxString palette_status = m_model_preview->keeps_original_history_colors() && palette_count == 0 &&
+        original_appearance_available ? _L("模型原色") : from_u8(workbench_palette_status_line(
         appearance_state, honor_suite_active,
-        m_model_preview->honor_suite_used_color_count(), trial.colors.size(),
+        m_model_preview->honor_suite_used_color_count(), palette_count,
         into_u8(trial.honor_suite_fallback_reason)));
     const wxColour palette_status_color = appearance_state == WorkbenchOriginalAppearanceState::Invalid
         ? wxColour(255, 150, 146) : wxColour(170, 170, 176);

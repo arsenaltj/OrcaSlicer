@@ -9,11 +9,14 @@
 
 namespace Slic3r::GUI::LocalPrintModelImport {
 
+// Point the workbench model's +X front toward the plate handle at -Y.
+inline constexpr double workbench_front_yaw = -PI / 2.;
+
 // This route owns one already decoded/color-assigned model, not the ordinary
 // file importer. Placement is completed before taking the project's snapshot.
 inline bool prepare(const ModelObject& source, const Vec2d& placement, const Vec2d& bed_size,
     std::unique_ptr<Model>& destination, std::string& error, bool apply_round_base_preparation = false,
-    const std::optional<AI::ModelBaseBinding>& base_binding = {})
+    const std::optional<AI::ModelBaseBinding>& base_binding = {}, double initial_yaw = 0.)
 {
     auto fail = [&](const char* message) { error = message; return false; };
     error.clear();
@@ -32,6 +35,8 @@ inline bool prepare(const ModelObject& source, const Vec2d& placement, const Vec
     auto* object = prepared->add_object(source);
     object->center_around_origin();
     auto* instance = object->add_instance();
+    instance->set_rotation(Z, initial_yaw);
+    object->invalidate_bounding_box();
     const auto size = object->instance_bounding_box(0).size();
     // Scaling after recipe validation invalidates its region and Z evidence.
     // Ordinary file import retains its existing scale prompt and behavior.
@@ -166,9 +171,10 @@ struct PlacementSnapshot {
     double height {0.};
 
     bool prepare_model(const ModelObject& source, std::unique_ptr<Model>& model, std::string& error,
-        bool apply_round_base_preparation = false, const std::optional<AI::ModelBaseBinding>& base_binding = {}) const
+        bool apply_round_base_preparation = false, const std::optional<AI::ModelBaseBinding>& base_binding = {},
+        double initial_yaw = 0.) const
     {
-        return prepare(source, placement, bed_size, model, error, apply_round_base_preparation, base_binding) &&
+        return prepare(source, placement, bed_size, model, error, apply_round_base_preparation, base_binding, initial_yaw) &&
             place(*model->objects.front(), bed, obstacles, config, height, error);
     }
 };

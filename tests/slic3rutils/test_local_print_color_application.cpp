@@ -24,6 +24,39 @@
 using namespace Slic3r;
 namespace Application = GUI::LocalPrintColorApplication;
 
+TEST_CASE("Workbench placement faces the model toward the plate handle", "[LocalPrintModelImport][WorkbenchImport]")
+{
+    using namespace GUI::LocalPrintModelImport;
+    Test::RecipeApplicationFixture fixture(2);
+    Model source;
+    auto* object = source.add_object();
+    object->input_file = "workbench.glb";
+    auto* volume = object->add_volume(TriangleMesh(its_make_cube(15, 20, 25)));
+    volume->source.input_file = object->input_file;
+    const auto vertices = volume->mesh().its.vertices;
+    const auto triangles = volume->mesh().its.indices;
+    const PlacementSnapshot plate {
+        Vec2d(50, 50), Vec2d(100, 100),
+        Polygon::new_scale({{0, 0}, {100, 0}, {100, 100}, {0, 100}}),
+        {}, fixture.bundle.full_config(), 100.
+    };
+
+    std::unique_ptr<Model> prepared;
+    std::string error;
+    REQUIRE(plate.prepare_model(*object, prepared, error, false, {}, workbench_front_yaw));
+    const auto* placed = prepared->objects.front();
+    const auto* instance = placed->instances.front();
+    const auto matrix = instance->get_matrix();
+    CHECK((matrix.linear() * Vec3d::UnitX()).isApprox(-Vec3d::UnitY()));
+    CHECK((matrix.linear() * Vec3d::UnitY()).isApprox(Vec3d::UnitX()));
+    CHECK((matrix.linear() * Vec3d::UnitZ()).isApprox(Vec3d::UnitZ()));
+    CHECK(instance->get_assemble_transformation().get_matrix().isApprox(matrix));
+    CHECK(placed->instance_bounding_box(0).size().isApprox(Vec3d(20, 15, 25)));
+    CHECK(object->instances.empty());
+    CHECK(volume->mesh().its.vertices == vertices);
+    CHECK(volume->mesh().its.indices == triangles);
+}
+
 TEST_CASE("safe working copy placement retains the native center or nearest empty position", "[LocalPrintModelImport]")
 {
     Test::RecipeApplicationFixture fixture(2);

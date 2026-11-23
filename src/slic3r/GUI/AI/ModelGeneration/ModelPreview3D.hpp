@@ -22,6 +22,7 @@
 #include "slic3r/GUI/View3DNavigator.hpp"
 #include "BeautySourceSnapshot.hpp"
 #include "ModelHistoryMetadata.hpp"
+#include "ModelHistoryOpen.hpp"
 #include "ModelOriginalAppearance.hpp"
 #include "ModelOriginalSurfaceSampler.hpp"
 #include "ModelPreviewPalette.hpp"
@@ -223,6 +224,10 @@ public:
         };
         m_color_trial->on_native_automatic_basis = [this](size_t count) {
             return native_workbench_automatic_basis(count);
+        };
+        m_color_trial->workbench_printer_source = [this]() -> ModelPreviewColorControls::State* {
+            return m_printer_filament_restore && m_printer_filament_restore->geometry_id == m_geometry_id
+                ? &m_printer_filament_restore->color_trial : nullptr;
         };
         m_color_trial->on_changed = [this] {
             m_trial_toggle_started = std::chrono::steady_clock::now();
@@ -490,6 +495,12 @@ public:
     // automatic/manual source can restore the exact editable preview.
     using PrinterFilamentRestoreSnapshot = Slic3r::GUI::PrinterFilamentRestoreSnapshot;
 
+    static bool model_prepare_timing_enabled()
+    {
+        const char* timing = std::getenv("ORCASLICER_MODEL_PREPARE_TIMING");
+        return timing && timing[0] == '1' && timing[1] == '\0';
+    }
+
     // CPU-only data: prepare on a worker, then adopt on the GUI thread. Neither
     // OBJ parsing nor per-triangle color/normal preparation needs an OpenGL context.
     struct PreparedModel {
@@ -522,6 +533,9 @@ public:
                 render_preparation = RenderPreparation::Unprepared;
             if (render_preparation != RenderPreparation::Unprepared)
                 throw std::runtime_error("模型预览准备结果已失效，请重新加载。");
+            const bool trace_prepare = model_prepare_timing_enabled();
+            const auto started = trace_prepare ? std::chrono::steady_clock::now() :
+                std::chrono::steady_clock::time_point{};
             render_preparation = RenderPreparation::Preparing;
             bool was_canceled = false, shared_geometry = false;
             const auto stopped = [&] {
@@ -584,6 +598,9 @@ public:
             surface_colors = std::move(colors);
             surface_attributes_ready = !share_exact_vertices;
             render_preparation = RenderPreparation::Ready;
+            if (trace_prepare)
+                BOOST_LOG_TRIVIAL(info) << "AI preview prepare stage: render_geometry elapsed_ms="
+                    << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             } catch (...) {
                 if (frozen && !shared_geometry) geometry = std::move(*frozen).release_geometry();
                 if (current) current_appearance_geometry = std::move(*current).release_geometry();
@@ -621,6 +638,11 @@ public:
         FaceColorOverrides face_color_overrides;
         std::optional<SelectionState> selection;
         std::optional<ModelPreviewColorControls::State> color_trial;
+        std::vector<PreviewPalette::Color> discrete_colors;
+        std::optional<std::vector<PreviewPalette::Color>> history_colors;
+        std::shared_ptr<const ModelHistoryScene> history_scene;
+        bool reuse_history_scene {false};
+        bool external_texture_dependencies {false};
         std::optional<PrinterFilamentRestoreSnapshot> printer_filament_restore;
         std::shared_ptr<const PortraitColorBlocks::Result> color_blocks;
         std::shared_ptr<const NativePortrait::NativePortraitPartition> native_portrait_partition;
@@ -654,8 +676,7 @@ public:
     {
         if (history_metadata) history_metadata->clear();
         const auto started = std::chrono::steady_clock::now();
-        const char* timing_env = std::getenv("ORCASLICER_MODEL_PREPARE_TIMING");
-        const bool trace_prepare = timing_env && std::string(timing_env) == "1";
+        const bool trace_prepare = model_prepare_timing_enabled();
         auto trace_tick = started;
         const auto trace_stage = [&](const char* stage) {
             if (!trace_prepare) return;
@@ -739,7 +760,7 @@ public:
                 if (metadata.contains("color_trial")) {
                     ModelPreviewColorControls::State trial;
                     if (AI::ColorTrialPersistence::decode(metadata["color_trial"], its.indices.size(), prepared.geometry_id, trial, state_error)) {
-                        AI::ColorTrialPersistence::normalize_for_persistence(trial);
+                        AI::ColorTrialPersistence::restore_workbench_palette_mode(metadata["color_trial"], trial);
                         trial.notice = _L("已恢复此版本保存的试色。");
                         prepared.color_trial = std::move(trial);
                     }
@@ -767,6 +788,7 @@ public:
                         AI::ColorTrialPersistence::decode(restore["color_trial"], its.indices.size(), prepared.geometry_id,
                             restore_trial, restore_error);
                     if (trial_ok) {
+                        AI::ColorTrialPersistence::restore_workbench_palette_mode(restore["color_trial"], restore_trial);
                         snapshot.color_trial = std::move(restore_trial);
                         if (restore.contains("face_color_intent") &&
                             !AI::SurfaceSelectionPersistence::decode_colors(restore["face_color_intent"],
@@ -1091,6 +1113,7 @@ public:
         auto corner_normals = ModelPreviewNormals::corner_normals(its, 45.f, normal_trace);
         if (stop_if_canceled()) return false;
         trace_stage("normals");
+        std::chrono::steady_clock::duration texture_sampling_time{};
         const auto build_geometry = [&](const ObjInfo& appearance, bool collect_evidence,
                                         std::unordered_set<uint32_t>* observed) {
             GLModel::Geometry geometry;
@@ -1101,6 +1124,7 @@ public:
             const bool face_colors = appearance.face_colors.size() == its.indices.size();
             const bool texture_evidence = collect_evidence && prepared.semantic_source &&
                 prepared.semantic_source->sample_original && !prepared.texture_surface.images.empty();
+            const bool trace_sampling = trace_prepare && texture_evidence;
             std::vector<uint32_t> packed_vertex_colors;
             std::vector<uint8_t> counted_vertices;
             if (vertex_colors) {
@@ -1154,7 +1178,11 @@ public:
                 }
                 if (collect_evidence) {
                     if (prepared.semantic_source && prepared.semantic_source->sample_original) {
+                        const auto sample_started = trace_sampling ? std::chrono::steady_clock::now() :
+                            std::chrono::steady_clock::time_point{};
                         unit_color = prepared.semantic_source->sample_original(face_index, {1.f/3,1.f/3,1.f/3});
+                        if (trace_sampling)
+                            texture_sampling_time += std::chrono::steady_clock::now() - sample_started;
                         const uint32_t sampled=preview_rgb8(unit_color[0],unit_color[1],unit_color[2]);
                         // Texture samples replace the carrier's averaged
                         // vertex evidence instead of giving both equal weight.
@@ -1216,13 +1244,30 @@ public:
         }
         if (stop_if_canceled()) return false;
         trace_stage("packed_colors");
+        if (texture_sampling_time != std::chrono::steady_clock::duration::zero())
+            BOOST_LOG_TRIVIAL(info) << "AI preview prepare stage: texture_sampling elapsed_ms="
+                << std::chrono::duration<double, std::milli>(texture_sampling_time).count();
 
         if (stop_if_canceled()) return false;
         trace_stage("render");
         prepared.bounds = mesh.bounding_box();
+        prepared.external_texture_dependencies = (AI::model_artifact_format(path) == "obj" &&
+            (!prepared.current_appearance_texture_surface.images.empty() ||
+                (source_is_current && !prepared.texture_surface.images.empty()))) ||
+            (prepared.original_appearance.valid() &&
+                AI::model_artifact_format(prepared.original_appearance.origin_model) == "obj" &&
+                prepared.direct_original_source &&
+                !prepared.direct_original_source->origin_texture_surface().images.empty());
         prepared.triangles = its.indices.size();
         prepared.vertices = its.vertices.size();
         prepared.colors = observed_colors.size();
+        if (prepared.texture_surface.images.empty() && prepared.current_appearance_texture_surface.images.empty() &&
+            source_is_current && observed_colors.size() <= PreviewPalette::max_preview_colors) {
+            const std::set<uint32_t> sorted(observed_colors.begin(), observed_colors.end());
+            for (const auto rgb : sorted)
+                prepared.discrete_colors.push_back({float((rgb >> 16) & 255) / 255.f,
+                    float((rgb >> 8) & 255) / 255.f, float(rgb & 255) / 255.f});
+        }
         const auto palette_started = std::chrono::steady_clock::now();
         if (trial_histogram) {
             const size_t preview_color_count = std::clamp(prepared.colors, size_t(1), PreviewPalette::max_preview_colors);
@@ -1376,6 +1421,7 @@ public:
         m_original_comparison_error = std::move(prepared.direct_original_error);
         m_models.emplace_back(std::move(model));
         m_gpu_upload_pending = true;
+        m_gpu_upload_driver_ms = model_prepare_timing_enabled() ? std::optional<double>{0.} : std::nullopt;
         m_bounds = prepared.bounds;
         m_pending_mesh = std::move(prepared.mesh);
         m_pending_vertex_colors = std::move(prepared.vertex_colors);
@@ -1415,8 +1461,9 @@ public:
         m_palette = palette;
         m_has_model = true;
         m_restored_persisted_color_trial = prepared.color_trial.has_value();
+        m_history_colors = std::move(prepared.history_colors);
         m_color_trial->load(m_trial_histogram, m_trial_palette, m_geometry_id,
-            std::move(prepared.automatic_color_units), prepared.ai_source_color_count);
+            std::move(prepared.automatic_color_units), m_history_colors ? &*m_history_colors : nullptr);
         if (prepared.color_trial) {
             m_suppress_semantic_change = m_beauty_view || !prepared.saved_semantic_faces.empty() || !prepared.saved_semantic_subfaces.empty();
             m_color_trial->restore(*prepared.color_trial);
@@ -1450,15 +1497,51 @@ public:
         m_render_diagnostics_logged = false;
         if (!keep_workbench_view) default_view();
         if (prepared.round_base_enabled && !set_round_base_preview(true, error)) return false;
+        m_history_scene = std::move(prepared.history_scene);
+        if (m_history_scene) m_saved_history_palette = m_color_trial->state();
         m_pending_library_thumbnail_sha = std::move(prepared.artifact_sha256);
         notify_selection_changed();
         return true;
     }
 
     void retain_history_rollback(bool retain) {
-        if (!retain && m_history_rollback_retained && m_context && m_canvas && m_canvas->SetCurrent(*m_context))
-            m_cached_preview.reset();
+        if (!retain && m_history_rollback_retained) {
+            m_retained_history_palette.reset();
+            if (m_cached_preview && !m_cached_preview->history_scene &&
+                m_context && m_canvas && m_canvas->SetCurrent(*m_context))
+                m_cached_preview.reset();
+        }
         m_history_rollback_retained = retain;
+    }
+
+    std::vector<std::shared_ptr<const ModelHistoryScene>> reusable_history_scenes() const {
+        std::vector<std::shared_ptr<const ModelHistoryScene>> scenes;
+        if (history_scene_reusable()) scenes.push_back(m_history_scene);
+        if (m_cached_preview && m_cached_preview->history_scene) scenes.push_back(m_cached_preview->history_scene);
+        return scenes;
+    }
+
+    bool reuse_verified_history_scene(const std::shared_ptr<const ModelHistoryScene>& scene,
+        const std::vector<std::string>& palette, size_t& triangles, Vec3d& dimensions, size_t& colors)
+    {
+        if (!scene) return false;
+        if (m_history_scene == scene && history_scene_reusable()) {
+            if (!m_saved_history_palette->colors.empty()) {
+                m_retained_history_palette = m_color_trial->state();
+                restore_color_trial_without_recognition(*m_saved_history_palette);
+            } else {
+                m_retained_history_palette = m_color_trial->state();
+                m_color_trial->load(m_trial_histogram, m_trial_palette, m_geometry_id,
+                    m_color_trial->automatic_color_units(), m_history_colors ? &*m_history_colors : nullptr);
+                m_color_trial_enabled = m_color_trial->enabled();
+            }
+            triangles = m_triangle_count;
+            dimensions = m_model_dimensions;
+            colors = m_color_count;
+            return true;
+        }
+        if (!m_cached_preview || m_cached_preview->history_scene != scene) return false;
+        return try_load_cached_model(scene->model, palette, triangles, dimensions, colors, false, true);
     }
 
     bool restore_retained_history_model(const boost::filesystem::path& path,
@@ -1466,6 +1549,7 @@ public:
     {
         if (!m_history_rollback_retained) return false;
         if (m_has_model && m_model_path == path) {
+            if (m_retained_history_palette) restore_color_trial_without_recognition(*m_retained_history_palette);
             triangles = m_triangle_count;
             dimensions = m_model_dimensions;
             colors = m_color_count;
@@ -1476,18 +1560,18 @@ public:
 
     bool try_load_cached_model(const boost::filesystem::path& path, const std::vector<std::string>& palette,
                                size_t& triangle_count, Vec3d& dimensions, size_t& color_count,
-                               bool history_rollback = false)
+                               bool history_rollback = false, bool verified_history = false)
     {
         const bool retained = history_rollback && m_history_rollback_retained;
         if (!m_cached_preview || m_cached_preview->path != path ||
             (!retained && !same_stamp(m_cached_preview->stamp, file_stamp(path))) ||
             m_context == nullptr || !m_context->IsOK() || !m_canvas->SetCurrent(*m_context))
             return false;
-        if (!retained && (m_cached_preview->artifact_sha256.empty() ||
+        if (!retained && !verified_history && (m_cached_preview->artifact_sha256.empty() ||
             AI::model_artifact_sha256(path) != m_cached_preview->artifact_sha256))
             return false;
         const auto& appearance = m_cached_preview->original_appearance;
-        if (!retained && appearance.valid() &&
+        if (!retained && !verified_history && appearance.valid() &&
             (AI::model_artifact_sha256(appearance.carrier_model) != appearance.carrier_sha256 ||
              AI::model_artifact_sha256(appearance.origin_model) != appearance.origin_sha256))
             return false;
@@ -1548,9 +1632,11 @@ public:
         m_palette = palette;
         m_has_model = true;
         m_restored_persisted_color_trial = cached->restored_persisted_color_trial;
+        m_history_colors = std::move(cached->history_colors);
         m_color_trial->load(m_trial_histogram, m_trial_palette, m_geometry_id,
-            std::move(cached->automatic_color_units));
-        if (cached->color_trial) {
+            std::move(cached->automatic_color_units), m_history_colors ? &*m_history_colors : nullptr);
+        if (verified_history) cached->color_trial = cached->saved_history_palette;
+        if (cached->color_trial && !cached->color_trial->colors.empty()) {
             if (m_beauty_view || !saved_faces.empty() || !saved_subfaces.empty())
                 restore_color_trial_without_recognition(*cached->color_trial);
             else m_color_trial->restore(*cached->color_trial);
@@ -1571,6 +1657,9 @@ public:
         }
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
+        m_history_scene = std::move(cached->history_scene);
+        m_saved_history_palette = std::move(cached->saved_history_palette);
+        if (verified_history) m_pending_library_thumbnail_sha = m_model_sha256;
         default_view();
         notify_selection_changed();
         BOOST_LOG_TRIVIAL(info) << "AI model preview cache hit: triangles=" << triangle_count;
@@ -1622,6 +1711,7 @@ private:
         if (m_navigator) m_navigator->reset();
         if (!preserve_frame) m_resize_frame_valid = false;
         m_gpu_upload_pending = m_gpu_upload_failed = false;
+        m_gpu_upload_driver_ms.reset();
         m_installation_frame_completion.cancel();
         ++m_after_preview_sequence;
         m_after_preview_frame = {};
@@ -1713,6 +1803,9 @@ private:
         m_selection_enabled = false;
         m_model_path.clear();
         m_pending_library_thumbnail_sha.clear();
+        m_history_colors.reset();
+        m_history_scene.reset();
+        m_saved_history_palette.reset();
         m_model_stamp = FileStamp {};
         if (m_canvas != nullptr)
             m_canvas->SetCursor(wxCursor(wxCURSOR_ARROW));
@@ -3044,6 +3137,8 @@ public:
     const boost::filesystem::path& model_path() const { return m_model_path; }
     const std::string& model_sha256() const { return m_model_sha256; }
     ModelPreviewColorControls::State color_trial_state() const { return m_color_trial->state(); }
+    size_t workbench_palette_color_count() const { return m_color_trial->workbench_palette_colors().size(); }
+    bool keeps_original_history_colors() const { return m_history_colors.has_value(); }
     const PreviewPalette::AutomaticColorBasis& automatic_color_basis() const {
         static const PreviewPalette::AutomaticColorBasis empty;
         return m_color_trial ? m_color_trial->automatic_color_basis() : empty;
@@ -3299,45 +3394,19 @@ public:
         rebuild_semantic_preview_from_cached_result();
     }
     void set_workbench_palette_editable(bool editable) { m_color_trial->set_workbench_editable(editable); }
+    bool workbench_palette_details_available() const {
+        return m_has_model && m_color_trial->workbench_palette_details_available();
+    }
+    void set_workbench_palette_details_button(wxWindow* button) {
+        m_color_trial->set_workbench_palette_details_button(button);
+    }
     void show_workbench_palette_details() {
-        m_color_trial->refresh_saved_color_packs();
-        if (!m_has_model) return;
-        set_color_controls_visible(false);
-        wxDialog dialog(this, wxID_ANY, _L("色卡详情"), wxDefaultPosition, FromDIP(wxSize(620, 560)),
-                        wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER);
-        dialog.SetBackgroundColour(wxColour(32, 32, 35));
-        dialog.SetName("ai_content_color");
-        dialog.SetFont(GetFont());
-        auto* root = new wxBoxSizer(wxVERTICAL);
-        auto* scroll = new WorkbenchScrolledWindow(&dialog, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
-        scroll->SetBackgroundColour(wxColour(32, 32, 35));
-        scroll->SetScrollRate(0, FromDIP(12));
-        auto* controls = new wxBoxSizer(wxVERTICAL);
-        m_controls_scroll->GetSizer()->Detach(m_color_trial);
-        m_color_trial->Reparent(scroll);
-        WorkbenchAppearanceScope appearance(m_color_trial);
-        m_color_trial->set_workbench_detail_choices(true);
-        controls->Add(m_color_trial, 0, wxEXPAND);
-        scroll->SetSizer(controls);
-        m_color_trial->Show();
-        root->Add(scroll, 1, wxEXPAND | wxALL, FromDIP(12));
-        auto* close = workbench_button(&dialog, _L("完成"));
-        close->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_OK); });
-        root->Add(close, 0, wxALIGN_RIGHT | wxALL, FromDIP(12));
-        dialog.SetSizer(root);
-        scroll->FitInside();
-        dialog.CenterOnParent();
-        dialog.ShowModal();
-        m_color_trial->set_workbench_detail_choices(false);
-        controls->Detach(m_color_trial);
-        m_color_trial->Reparent(m_controls_scroll);
-        m_controls_scroll->GetSizer()->Add(m_color_trial, 0, wxEXPAND);
-        m_color_trial->Hide();
+        if (workbench_palette_details_available()) m_color_trial->show_workbench_palette_details(this);
     }
     nlohmann::json color_trial_metadata() const {
-        AI::ColorTrialPersistence::State saved = m_color_trial->state();
-        AI::ColorTrialPersistence::normalize_for_persistence(saved);
-        return AI::ColorTrialPersistence::encode(saved, m_triangle_count, m_geometry_id);
+        const auto saved = m_color_trial->state();
+        return saved.colors.empty() ? nlohmann::json{} :
+            AI::ColorTrialPersistence::encode_workbench_trial(saved, m_triangle_count, m_geometry_id);
     }
     void restore_color_trial(const ModelPreviewColorControls::State& state) { m_color_trial->restore(state); }
     void restore_color_trial_without_recognition(const ModelPreviewColorControls::State& state) {
@@ -3563,6 +3632,9 @@ private:
         FaceColorOverrides face_color_overrides;
         std::optional<SelectionState> selection;
         std::optional<ModelPreviewColorControls::State> color_trial;
+        std::optional<std::vector<PreviewPalette::Color>> history_colors;
+        std::shared_ptr<const ModelHistoryScene> history_scene;
+        std::optional<ModelPreviewColorControls::State> saved_history_palette;
         std::optional<PrinterFilamentRestoreSnapshot> printer_filament_restore;
         std::shared_ptr<const PortraitColorBlocks::Result> color_blocks;
         std::shared_ptr<const NativePortrait::NativePortraitPartition> native_portrait_partition;
@@ -3605,6 +3677,15 @@ private:
     static bool same_stamp(const FileStamp& first, const FileStamp& second)
     {
         return first.valid && second.valid && first.bytes == second.bytes && first.modified == second.modified;
+    }
+
+    bool history_scene_reusable() const
+    {
+        return m_history_scene && m_saved_history_palette && !m_retain_surface_attributes &&
+            !m_gpu_upload_pending && !m_gpu_upload_failed && !m_leaf_editing &&
+            !m_color_blocks && !m_printer_filament_restore && !m_semantic_model && !m_semantic_ready &&
+            m_face_color_overrides.empty() && !round_base_preview_enabled() &&
+            m_saved_semantic_faces.empty() && m_saved_semantic_subfaces.empty();
     }
 
     void cache_current_preview()
@@ -3656,6 +3737,11 @@ private:
         m_cached_preview->direct_original_sha256 = m_direct_original_sha256;
         m_cached_preview->direct_original_geometry_id = m_direct_original_geometry_id;
         m_cached_preview->restored_persisted_color_trial = m_restored_persisted_color_trial;
+        m_cached_preview->history_colors = m_history_colors;
+        if (bytes <= cache_limit && history_scene_reusable()) {
+            m_cached_preview->history_scene = m_history_scene;
+            m_cached_preview->saved_history_palette = m_saved_history_palette;
+        }
         m_cached_preview->round_base_enabled = round_base_preview_enabled();
         m_cached_preview->face_color_overrides = m_face_color_overrides;
         m_cached_preview->printer_filament_restore = m_printer_filament_restore;
@@ -4377,6 +4463,13 @@ private:
             }
             const double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now()-started).count();
             if (elapsed > 50.) BOOST_LOG_TRIVIAL(info) << "[UiUpload] slow_driver_step_ms=" << elapsed;
+            if (m_gpu_upload_driver_ms && !m_gpu_upload_failed) {
+                *m_gpu_upload_driver_ms += elapsed;
+                if (!m_gpu_upload_pending) {
+                    BOOST_LOG_TRIVIAL(info) << "[UiUpload] completed driver_ms=" << *m_gpu_upload_driver_ms;
+                    m_gpu_upload_driver_ms.reset();
+                }
+            }
             if (m_gpu_upload_pending) {
                 present_resize_frame();
                 if (!m_gpu_upload_failed) m_canvas->Refresh(false);
@@ -4751,13 +4844,6 @@ private:
         }
         const bool frame_submitted = m_canvas->SwapBuffers();
         m_resize_frame_valid = frame_submitted && resize_frame_captured;
-        if (frame_submitted && m_has_model && m_color_shader != nullptr && !m_pending_library_thumbnail_sha.empty()) {
-            // The first visible frame initializes the GL drawing state. Capture once
-            // afterwards, rather than before the newly loaded model has been drawn.
-            auto artifact_sha = std::move(m_pending_library_thumbnail_sha);
-            m_pending_library_thumbnail_sha.clear();
-            cache_library_model_thumbnail(artifact_sha);
-        }
         // Reuse the complete GPU frame beneath the navigation surface. Native
         // GL children are opaque, so clearing that surface alone masks a zoomed
         // model with a rectangle even when the navigator itself is transparent.
@@ -4830,6 +4916,18 @@ private:
                 observer();
             });
         }
+        if (frame_submitted && navigation_submitted && m_has_model && m_color_shader &&
+            !m_gpu_upload_pending && !m_gpu_upload_failed && !m_pending_library_thumbnail_sha.empty()) {
+            // The page commit and first-frame observers run before this work.
+            auto sha = std::exchange(m_pending_library_thumbnail_sha, {});
+            wxWeakRef<ModelPreview3D> weak(this);
+            CallAfter([weak, sha = std::move(sha), path = m_model_path] {
+                if (!weak || weak->m_model_path != path || weak->m_model_sha256 != sha ||
+                    !weak->m_canvas->IsShownOnScreen() || weak->m_gpu_upload_pending ||
+                    !weak->m_context || !weak->m_canvas->SetCurrent(*weak->m_context)) return;
+                weak->cache_library_model_thumbnail(sha);
+            });
+        }
         if (navigation_animating || !navigation_submitted) m_canvas->Refresh(false);
         if (frame_submitted && m_after_preview_frame) {
             const auto sequence = m_after_preview_sequence;
@@ -4863,6 +4961,7 @@ private:
     ModelPreviewFrameState m_preview_frame;
     unsigned int m_resize_frame_texture {0};
     bool m_gpu_upload_pending {false}, m_gpu_upload_failed {false};
+    std::optional<double> m_gpu_upload_driver_ms;
     std::array<unsigned int, 2> m_resize_frame_size {0, 0};
     bool m_resize_frame_valid {false};
     std::uint64_t m_after_preview_sequence {0};
@@ -5005,6 +5104,9 @@ private:
     size_t m_vertex_count {0};
     size_t m_color_count {0};
     bool m_restored_persisted_color_trial {false};
+    std::optional<std::vector<PreviewPalette::Color>> m_history_colors;
+    std::shared_ptr<const ModelHistoryScene> m_history_scene;
+    std::optional<ModelPreviewColorControls::State> m_saved_history_palette, m_retained_history_palette;
     OriginalAppearanceReference m_original_appearance;
     std::string m_original_appearance_error;
     std::string m_original_comparison_error;

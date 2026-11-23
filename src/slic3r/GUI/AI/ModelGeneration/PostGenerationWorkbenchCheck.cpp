@@ -126,7 +126,8 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     const bool saved_appearance = m_model_preview->restored_persisted_color_trial() || bound_edits;
     const auto check_purpose = portrait_recheck ? WorkbenchCheckPurpose::PortraitPostColorReadOnly :
         saved_appearance ? WorkbenchCheckPurpose::SavedModelReadOnly : WorkbenchCheckPurpose::GeneralImport;
-    const bool native_partition_requested = workbench_initial_partition_requested(
+    const bool native_partition_requested = !m_model_preview->keeps_original_history_colors() &&
+        workbench_initial_partition_requested(
         automatic, source_appearance.valid(), portrait_recheck,
         m_model_preview->restored_persisted_color_trial(), bound_edits);
     // Shared v11 partitioning owns automatic repair before clustering. Checks
@@ -139,6 +140,8 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     const auto canceled = m_workbench_check_cancel = std::make_shared<std::atomic<bool>>(false);
     const auto attempts = m_workbench_repair_attempts;
     const auto previous_result = m_workbench_check_result;
+    const auto history_colors = m_model_preview->keeps_original_history_colors()
+        ? std::optional{m_model_preview->color_trial_state().colors} : std::nullopt;
     m_workbench_auto_repair = false;
     if (native_partition_requested) {
         m_workbench_auto_palette_pending = true;
@@ -164,7 +167,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
     try {
         m_workbench_check_worker = std::thread([weak, source, destination, revision, asset, id, canceled,
             attempts, previous_result, repair_allowed, bound_edits, automatic, appearance_carrier,
-            appearance_root, source_appearance, source_appearance_error,
+            appearance_root, source_appearance, source_appearance_error, history_colors,
             check_source = m_workbench_check_source, check_purpose] {
             auto result = inspect_workbench_model(source, [canceled] { return canceled->load(); });
             result.source = check_source;
@@ -292,6 +295,7 @@ bool ModelGenerationPanel::request_check_workbench(bool automatic)
                             ? std::optional<OriginalAppearanceReference>(candidate_appearance) : std::nullopt;
                     ModelPreview3D::prepare_model(destination, *prepared, error, {}, {}, true,
                         [canceled] { return canceled->load(); }, nullptr, appearance_override);
+                    prepared->history_colors = history_colors;
                     if (!source_appearance_error.empty() && !prepared->has_source_appearance)
                         prepared->original_appearance_error = source_appearance_error;
                     if (source_appearance.valid()) {

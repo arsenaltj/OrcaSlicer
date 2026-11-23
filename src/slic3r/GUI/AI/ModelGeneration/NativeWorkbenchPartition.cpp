@@ -414,7 +414,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
             std::string topology_hash;
             nlohmann::json topology_certificate;
             std::optional<WorkbenchCheckResult> restored_check;
-            std::shared_ptr<VerifiedModelFiles> retry_files;
+            std::shared_ptr<const VerifiedModelFiles> retry_files;
+            std::shared_ptr<VerifiedModelFiles> retry_source_file;
             DiagnosticStageTimer timing("ORCASLICER_UI_LATENCY_TRACE", "NativeWorkbenchHandoff");
             std::optional<NativePortrait::BuildStage> active_stage;
             std::chrono::steady_clock::time_point active_started;
@@ -465,7 +466,8 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                     *commit_document = checkpoint.commit;
                     restored_check = retry->check;
                     retry_files = retry->verified_files;
-                    if(!retry_files->verify(context.model_path,context.source_sha256))
+                    retry_source_file = std::make_shared<VerifiedModelFiles>();
+                    if (!retry_source_file->verify(context.model_path, context.source_sha256))
                         throw std::runtime_error("原模型在成果恢复期间发生变化。");
                     report->success = true;
                     for(auto& stage : report->stages) {
@@ -722,7 +724,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
             wxGetApp().CallAfter([weak, context, edit_revision,
                 destination, metadata_path, appearance_carrier, canceled, committed, prepared,
                 partition, report, reference, workbench_certificate, commit_document,
-                output_hash, restored_check, retry_files, report_started, activation_before,
+                output_hash, restored_check, retry_files, retry_source_file, report_started, activation_before,
                 retained_preparation, resource_failure,
                 error = std::move(error)]() mutable {
                 const auto cleanup = [&] {
@@ -754,6 +756,7 @@ bool ModelGenerationPanel::ensure_native_workbench_partition(
                 if (self->m_shutdown || canceled->load() ||
                     !self->native_workbench_context_matches(context) ||
                     (retry_files && !retry_files->current()) ||
+                    (retry_source_file && !retry_source_file->current()) ||
                     self->m_model_preview->leaf_edit_revision() != edit_revision) {
                     release_operation();
                     report->total_ms = portrait_elapsed_ms(*report_started);

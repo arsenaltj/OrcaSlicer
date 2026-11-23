@@ -12,6 +12,7 @@
 #include "slic3r/GUI/PresetComboBoxes.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaPrintPaletteSnapshot.hpp"
+#include <wx/display.h>
 #include <wx/menu.h>
 #include <wx/sizer.h>
 #include <wx/weakref.h>
@@ -21,6 +22,150 @@
 #include <cctype>
 
 namespace Slic3r::GUI {
+
+void ModelPreviewColorControls::show_workbench_palette_details(wxWindow* owner)
+{
+    if (!m_workbench_editable || !workbench_palette_details_available()) return;
+
+    WorkbenchFloatingCard dialog(owner);
+    const auto title = _L("色卡详情");
+    dialog.SetTitle(title);
+    dialog.SetFont(owner->GetFont());
+    auto* root = new wxBoxSizer(wxVERTICAL);
+    auto* header = new wxBoxSizer(wxHORIZONTAL);
+    auto* caption = new WorkbenchStaticText(&dialog, wxID_ANY, title);
+    caption->SetFont(wxGetApp().bold_font());
+    caption->SetForegroundColour(wxColour(235, 235, 235));
+    header->Add(caption, 1, wxALIGN_CENTER_VERTICAL);
+    auto* reset = workbench_button(&dialog, _L("重置试色"));
+    header->Add(reset, 0);
+    root->Add(header, 0, wxEXPAND | wxALL, dialog.FromDIP(12));
+
+    auto* scroll = new WorkbenchScrolledWindow(&dialog, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
+    scroll->SetBackgroundColour(dialog.GetBackgroundColour());
+    auto* list = new wxBoxSizer(wxVERTICAL);
+    scroll->SetSizer(list);
+    root->Add(scroll, 1, wxEXPAND | wxLEFT | wxRIGHT, dialog.FromDIP(12));
+    auto* done = workbench_button(&dialog, _L("完成"));
+    done->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_OK); });
+    root->Add(done, 0, wxALIGN_RIGHT | wxALL, dialog.FromDIP(12));
+    dialog.SetSizer(root);
+
+    struct Row {
+        wxPanel* panel;
+        wxPanel* chip;
+        WorkbenchStaticText* hex;
+        WorkbenchStaticText* label;
+        WorkbenchSwitch* keep;
+    };
+    std::array<Row, PreviewPalette::max_preview_colors> rows;
+    for (auto& row : rows) {
+        row.panel = new wxPanel(scroll, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxCLIP_CHILDREN);
+        row.panel->SetName("ai_content_color");
+        row.panel->SetBackgroundColour(wxColour(38, 38, 42));
+        auto* line = new wxBoxSizer(wxHORIZONTAL);
+        row.chip = new wxPanel(row.panel, wxID_ANY);
+        row.chip->SetName("ai_content_color");
+        row.hex = new WorkbenchStaticText(row.panel, wxID_ANY, wxEmptyString);
+        row.hex->SetForegroundColour(wxColour(235, 235, 235));
+        row.label = new WorkbenchStaticText(row.panel, wxID_ANY, _L("保留"));
+        row.label->SetForegroundColour(wxColour(200, 200, 204));
+        row.keep = new WorkbenchSwitch(row.panel, _L("保留"));
+        line->Add(row.chip, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, dialog.FromDIP(8));
+        line->Add(row.hex, 1, wxALIGN_CENTER_VERTICAL);
+        line->Add(row.label, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, dialog.FromDIP(4));
+        line->Add(row.keep, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, dialog.FromDIP(6));
+        row.panel->SetSizer(line);
+        list->Add(row.panel, 0, wxEXPAND | wxBOTTOM, dialog.FromDIP(4));
+    }
+
+    const auto resize = [&] {
+        const int display = wxDisplay::GetFromWindow(dialog.IsShown() ? &dialog : wxGetTopLevelParent(owner));
+        const wxRect area = wxDisplay(display == wxNOT_FOUND ? 0 : display).GetClientArea();
+        scroll->SetMinSize(wxSize(0, 0));
+        const int controls_height = root->CalcMin().y;
+        const int list_height = std::min(list->CalcMin().y, std::max(0, area.height * 3 / 4 - controls_height));
+        scroll->SetMinSize(wxSize(0, list_height));
+        const wxSize size(std::min(dialog.FromDIP(420), area.width), list_height + controls_height);
+        if (dialog.GetClientSize() != size)
+            dialog.SetClientSize(size);
+        dialog.Layout();
+        scroll->FitInside();
+        apply_workbench_floating_card_shape(&dialog, 8, dialog.GetBackgroundColour());
+    };
+    const auto sync = [&] {
+        const auto& colors = workbench_palette_colors();
+        const bool show_keep = workbench_palette_source() == 0;
+        const auto* original = current_source() == 1 && workbench_printer_source ? workbench_printer_source() : nullptr;
+        for (size_t index = 0; index < rows.size(); ++index) {
+            const auto& row = rows[index];
+            row.panel->Show(index < colors.size());
+            if (index >= colors.size()) continue;
+            const auto color = wx_color(colors[index]);
+            const auto hex = color.GetAsString(wxC2S_HTML_SYNTAX);
+            row.chip->SetBackgroundColour(color);
+            row.chip->Refresh(false);
+            row.hex->SetLabel(hex);
+            row.label->Show(show_keep);
+            row.keep->Show(show_keep);
+            if (show_keep) {
+                const auto label = wxString::Format(_L("保留颜色 %s"), hex);
+                row.keep->SetName(label);
+                row.keep->SetToolTip(label);
+                row.keep->SetValue(original ? original->locks[index] : m_locks[index]->GetValue());
+            }
+            row.panel->Layout();
+        }
+        resize();
+    };
+    const auto rescale = [&] {
+        scroll->SetScrollRate(0, dialog.FromDIP(12));
+        reset->SetMinSize(dialog.FromDIP(wxSize(92, 32)));
+        done->SetMinSize(dialog.FromDIP(wxSize(72, 32)));
+        root->GetItem(header)->SetBorder(dialog.FromDIP(12));
+        root->GetItem(scroll)->SetBorder(dialog.FromDIP(12));
+        root->GetItem(done)->SetBorder(dialog.FromDIP(12));
+        for (const auto& row : rows) {
+            row.panel->SetMinSize(dialog.FromDIP(wxSize(-1, 36)));
+            row.chip->SetMinSize(dialog.FromDIP(wxSize(42, 22)));
+            row.keep->rescale_workbench();
+            list->GetItem(row.panel)->SetBorder(dialog.FromDIP(4));
+        }
+        sync();
+    };
+
+    const auto histogram = m_histogram;
+    const auto can_edit = [this, &histogram] {
+        return m_workbench_editable && m_histogram == histogram && workbench_palette_details_available();
+    };
+    for (size_t index = 0; index < rows.size(); ++index) {
+        auto* keep = rows[index].keep;
+        keep->Bind(wxEVT_TOGGLEBUTTON, [this, index, keep, &can_edit](wxCommandEvent& event) {
+            if (!can_edit() || workbench_palette_source() != 0 || index >= workbench_palette_colors().size()) {
+                keep->SetValue(!event.IsChecked());
+                return;
+            }
+            auto* original = current_source() == 1 && workbench_printer_source ? workbench_printer_source() : nullptr;
+            if (original) original->locks[index] = event.IsChecked();
+            else m_locks[index]->SetValue(event.IsChecked());
+            keep->SetValue(event.IsChecked());
+        });
+    }
+    reset->Bind(wxEVT_BUTTON, [this, &can_edit, &sync, scroll](wxCommandEvent&) {
+        if (!can_edit()) return;
+        reset_trial();
+        scroll->Scroll(0, 0);
+        sync();
+    });
+    dialog.Bind(wxEVT_CHAR_HOOK, [&dialog](wxKeyEvent& event) {
+        if (event.GetKeyCode() == WXK_ESCAPE) dialog.EndModal(wxID_CANCEL);
+        else event.Skip();
+    });
+    dialog.Bind(wxEVT_DPI_CHANGED, [&rescale](wxDPIChangedEvent&) { rescale(); });
+    rescale();
+    dialog.CenterOnParent();
+    dialog.ShowModal();
+}
 
 namespace {
 

@@ -67,7 +67,8 @@ inline std::string workbench_thumbnail_source(const ModelLibraryEntry& entry,
     if (!display.empty()) display += ".display.png";
     const auto manifest = library_model_thumbnail_manifest(root, entry.model_path);
     const auto model_thumbnail = library_model_thumbnail_image(root, entry.model_path);
-    return stamp(entry.model_path) + "|" + stamp(manifest) + "|" + stamp(model_thumbnail) + "|" +
+    return stamp(entry.model_path) + "|" + stamp(manifest) + "|" +
+        stamp(legacy_library_model_thumbnail_manifest(root, entry.model_path)) + "|" + stamp(model_thumbnail) + "|" +
         stamp(entry.ai_image_path) + "|" + stamp(display) + "|" +
         stamp(entry.reference_image_path) + "|" + std::to_string(edge);
 }

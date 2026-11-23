@@ -11,7 +11,6 @@
 #include <wx/dcclient.h>
 #include <wx/glcanvas.h>
 #include <wx/weakref.h>
-#include <wx/control.h>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -249,19 +248,11 @@ void WorkbenchViewNavigator::show_surface(bool visible)
     auto* parent = self.surface->GetParent();
     const wxRect viewport(parent->ScreenToClient(self.preview->ClientToScreen(wxPoint())), self.preview->GetClientSize());
     const wxRect footer(parent->ScreenToClient(self.bottom_anchor->ClientToScreen(wxPoint())), self.bottom_anchor->GetClientSize());
-    std::vector<wxRect> tools;
-    const auto collect_tools = [&](const auto& collect, wxWindow* window) -> void {
-        for (auto* child : window->GetChildren()) {
-            if (!child->IsShownOnScreen()) continue;
-            if (dynamic_cast<wxControl*>(child)) tools.emplace_back(parent->ScreenToClient(child->ClientToScreen(wxPoint())), child->GetClientSize());
-            else collect(collect, child);
-        }
-    };
-    collect_tools(collect_tools, self.bottom_anchor.get());
-    const auto bounds = workbench_navigator_bounds(viewport, footer, parent->GetClientRect(), side, tools);
+    const auto bounds = workbench_navigator_bounds(viewport, footer, parent->GetClientRect(), side);
     self.layout_suppressed = !bounds;
     if (!bounds || !self.preview->IsShownOnScreen()) { reset(); self.surface->Hide(); return; }
-    if (self.surface->GetRect() != *bounds) {
+    const bool bounds_changed = self.surface->GetRect() != *bounds;
+    if (bounds_changed) {
         const auto previous = self.surface->GetRect();
         self.surface->SetSize(*bounds);
         const auto exposed = wxRect(previous).Intersect(parent->GetClientRect());
@@ -271,7 +262,9 @@ void WorkbenchViewNavigator::show_surface(bool visible)
             self.preview->RefreshRect(wxRect(preview_exposed.GetPosition() - viewport.GetPosition(),
                 preview_exposed.GetSize()), false);
     }
-    if (!self.surface->IsShown()) { self.surface->Show(); self.surface->Raise(); }
+    const bool showing = !self.surface->IsShown();
+    if (showing) self.surface->Show();
+    if (showing || bounds_changed) self.surface->Raise();
 }
 
 bool WorkbenchViewNavigator::present_surface(bool visible, bool enabled)

@@ -15,7 +15,9 @@ std::unique_ptr<ModelLibraryLoader> make_model_library_loader(bool include_nativ
                 const std::atomic<bool>& cancelled) {
             ModelLibraryLoader::Thumbnail thumbnail {0, 0};
             wxImage image;
-            const auto model_thumbnail = library_model_thumbnail_image(root, entry.model_path);
+            auto model_thumbnail = library_model_thumbnail_image(root, entry.model_path);
+            if (model_thumbnail.empty())
+                model_thumbnail = recover_library_model_thumbnail(root, entry.model_path, cancelled);
             if (!model_thumbnail.empty())
                 image = load_library_thumbnail(model_thumbnail, edge, cancelled);
             if (!image.IsOk())

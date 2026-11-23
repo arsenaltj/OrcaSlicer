@@ -251,6 +251,7 @@ private:
     void change_slicing_palette();
     void show_slicing_palette_details();
     void layout_slicing_overlays();
+    void request_initial_slicing_camera();
     void layout_slicing_camera_loading();
     void refresh_native_theme();
     bool slicing_mode_switch_allowed() const;

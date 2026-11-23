@@ -324,6 +324,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
             refresh_post_generation_workbench();
         }
     });
+    m_model_preview->set_workbench_palette_details_button(m_workbench_palette_details);
     m_workbench_palette_status = new WorkbenchStaticText(scroll, wxID_ANY, wxEmptyString);
     m_workbench_palette_status->SetForegroundColour(wxColour(170, 170, 176));
     m_model_preview->set_color_trial_changed_callback([this](size_t) {
@@ -634,7 +635,6 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         wxBORDER_NONE | wxCLIP_CHILDREN);
     view_tools_host->SetName("ai_content_color");
     view_tools_host->SetBackgroundColour(workspace->GetBackgroundColour());
-    // Keep this host opaque; its owner-painted children buffer individually.
     auto* view_tools = new wxBoxSizer(wxHORIZONTAL);
     view_tools_host->SetSizer(view_tools);
     auto tool_region = [view_tools_host, view_tools] {
@@ -648,7 +648,6 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     };
     auto* switches_host = tool_region();
     auto* icons_host = tool_region();
-    tool_region();
 
     auto* switches = new wxBoxSizer(wxHORIZONTAL);
     switches_host->SetSizer(switches);
@@ -738,7 +737,11 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     icons->GetItem(model_info)->SetBorder(0);
     switches->AddStretchSpacer();
     icons->AddStretchSpacer();
-    workspace_sizer->Add(view_tools_host, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(8));
+    auto* view_footer = new wxBoxSizer(wxHORIZONTAL);
+    view_footer->Add(view_tools_host, 2, wxEXPAND);
+    // Reserve the last column without a native window painting through the navigator.
+    view_footer->Add(FromDIP(220), 0, 1, wxEXPAND);
+    workspace_sizer->Add(view_footer, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(8));
     m_workbench_footer = new WorkbenchPanel(m_finishing_panel);
     m_workbench_footer->SetBackgroundColour(wxColour(32, 32, 35));
     m_finishing_compare_model->GetContainingSizer()->Detach(m_finishing_compare_model);

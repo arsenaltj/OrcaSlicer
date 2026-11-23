@@ -1,3 +1,39 @@
+# MAINLINE-BUGFIX-001｜工作台首帧导航（2026-11-23）
+
+**主线** `task/mainline-bugfix`，HEAD `cdc9290079`，沿用固定 Release 目录。
+
+**本轮** 修复底栏重绘遮挡导航。Windows 实窗覆盖两个历史版本的首次打开、来回切换、导航点击和「正面视图」。12 项定向回归通过。
+
+**未结** 等待用户复验。
+
+**下一步** 已更新并用「Honor Forge 正式修复验证」入口打开新版，沿用原配置。
+
+**计划变更** 底栏右侧以布局留白。视口过窄时，导航移入视口右下角。 [验证记录](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-navigator-first-frame-20261123/validation.json)
+
+---
+
+# MAINLINE-BUGFIX-001｜历史色卡、缩略图和工作台加载（2026-11-23）
+
+**主线** `task/mainline-bugfix`，HEAD `cdc9290079`，本轮改动保留在工作树。
+
+**本轮** 版本色卡、原位保留、缩略图补建和历史场景复用已实现。固定 Release 构建通过，原生 268 项通过、1 项环境跳过。原历史栏 22 个可见版本完成首帧与配色计时。最终构建复测贴图样本，验证独立阶段耗时和重开跳过解码与上传。
+
+**未结** 两个已删除任务的下载副本仅有离屏基线。独立 GPU 计时已记录代表模型。新生成路径使用原生回归，实窗使用已有历史和本地样本。
+
+**下一步** 目前桌面「Honor Forge 正式修复验证」入口指向本轮构建，原配置可直接启动。
+
+**计划变更** 合并用户提出的历史色卡、缩略图和逐版本耗时要求。原模型文件核验一致，安全修复过程中生成的派生版本由工作台保留。 [验收记录](D:/TEST/artifacts/mainline-bugfix/evidence/history-palette-preview-20261123/validation.json)
+
+---
+
+# MAINLINE-BUGFIX-001｜切片盘正面（2026-11-23）
+
+`task/mainline-bugfix` 以拉手所在的 −Y 边定义切片前方。工作台新模型放置时朝向拉手，已保存工程沿用原摆放。固定验证入口使用原配置。 [构建与实窗证据](D:/TEST/artifacts/mainline-bugfix/evidence/slice-front-palette-20261123/validation.json)
+
+AI 配色详情的初始颜色和「保留」开关留待下一轮按原贴图减色与映射流程讨论。
+
+---
+
 # MAINLINE-BUGFIX-001｜工作台入口与默认正视（2026-11-23）
 
 `task/mainline-bugfix` 本轮完成工作台入口收拢、3D 美颜编辑冻结和默认正视调整。普通工作台页头保留当前工作台操作，旧的返回创作和美颜入口已移除。左侧「AI创作」负责返回创作页，历史美颜成果按普通资产查看并可继续进入切片准备。

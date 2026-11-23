@@ -634,7 +634,7 @@ private:
                              const std::string& job_id, const wxString& title, bool new_asset = false,
                              std::shared_ptr<const ModelHistoryRepairIndex> repairs = {},
                              std::shared_ptr<ModelHistoryOpenRequest> restoration = {},
-                             const std::string& expected_model_sha256 = {});
+                             const std::string& expected_model_sha256 = {}, bool generated = false);
     bool delete_library_entry(const GeneratedModelEntry& entry);
     void apply_library_removal_projection(bool retain_scan = false);
     void notify_library_removal(const ModelLibraryRemovalState::Event& event);

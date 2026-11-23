@@ -17,6 +17,17 @@ namespace Slic3r::GUI {
 // revalidation at handoff, never treating size/time as content evidence.
 class VerifiedModelFiles {
 public:
+    struct Identity {
+        boost::filesystem::path path;
+        std::string sha256;
+        bool missing {false};
+    };
+    std::vector<Identity> identities() const {
+        std::vector<Identity> result;
+        if (!m_failed) for (const auto& file : m_files)
+            result.push_back({file.path, file.sha256, file.missing});
+        return result;
+    }
     ~VerifiedModelFiles() {
 #ifdef _WIN32
         for (const auto& file : m_files)

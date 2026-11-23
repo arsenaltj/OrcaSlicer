@@ -9,8 +9,9 @@ namespace Slic3r::GUI {
 // Optional stage diagnostics share one clock and never retain file contents.
 class DiagnosticStageTimer {
 public:
-    DiagnosticStageTimer(const char* environment, const char* label, std::string operation = {})
-        : m_enabled(std::getenv(environment) != nullptr), m_label(label), m_operation(std::move(operation)) {}
+    DiagnosticStageTimer(const char* environment, const char* label, std::string operation = {},
+                         std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now())
+        : m_enabled(std::getenv(environment) != nullptr), m_label(label), m_operation(std::move(operation)), m_start(start) {}
     void operator()(const char* stage) const
     {
         if (m_enabled)
@@ -22,6 +23,6 @@ private:
     bool m_enabled;
     const char* m_label;
     const std::string m_operation;
-    const std::chrono::steady_clock::time_point m_start{std::chrono::steady_clock::now()};
+    const std::chrono::steady_clock::time_point m_start;
 };
 } // namespace Slic3r::GUI
