@@ -151,7 +151,13 @@ def main():
         assert Path(normal['gcodePath']).is_file()
         incomplete=reserved_context('ordinary-statistics-incomplete','','','ordinary-stats-incomplete')
         ordinary_import=success('ordinary-statistics-incomplete-import',incomplete)['project']
-        assert not ordinary_import['blockingFeatures']
+        # Immutable old/new same-input controls prove the pre-existing Native
+        # warning contract: import succeeds but manufacturing remains blocked.
+        blockers=ordinary_import['blockingFeatures']
+        assert len(blockers)==1 and blockers[0]['id']=='native_import_warning'
+        assert blockers[0]['status']=='blocked' and blockers[0]['blocksAllOutputModes'] is True
+        assert 'Error (no element found) while parsing xml file' in blockers[0]['message']
+        assert all(item['id']!='xml_parse_failure' for item in ordinary_import['threeMfInspection']['features'])
         # A type-valid source without a declared nozzle does not prove an
         # invalid physical source profile. Import remains available; execution
         # will require a legal effective profile, as before.
