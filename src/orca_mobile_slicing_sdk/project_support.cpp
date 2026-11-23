@@ -335,18 +335,32 @@ LoadedProject load_project(const std::string& inputPath, const Json& configOverr
         // Check a sourced plate layer against its source profile before explicit
         // overrides. Native zero is serializable but is not an executable layer.
         const auto& sourcePlates=inspection.at("plates");
+        // Physical limits require a profile actually present in the source.
+        // Do not confuse missing source nozzle data with an invalid target.
+        const bool sourceHasNozzleProfile=config.has("nozzle_diameter");
         for(const auto& plate:sourcePlates) {
-            if(!plate.contains("validatedNativeProcess") || !plate.at("validatedNativeProcess").contains("layer_height")) continue;
+            if(!plate.contains("validatedNativeProcess")) continue;
             DynamicPrintConfig sourcePlate=DynamicPrintConfig::full_print_config();
             sourcePlate.apply(config);
             for(auto it=plate.at("validatedNativeProcess").begin();it!=plate.at("validatedNativeProcess").end();++it)
                 sourcePlate.apply(Slic3r::PlateProcess::parse(it.key(),it.value().get<std::string>()));
+            // NAT-PLATE-SOURCE-PHYS-01: use Native semantic validation before
+            // request overrides, for exactly the options carried by this plate.
+            // In particular a 9mm literal is type-valid but cannot be used with
+            // the source's real 0.4mm nozzle. A later 0.4mm override cannot erase it.
+            for(const auto& invalid:sourcePlate.validate()) {
+                if(!plate.at("validatedNativeProcess").contains(invalid.first)) continue;
+                if(!sourceHasNozzleProfile && (invalid.first=="outer_wall_line_width" || invalid.first=="layer_height")) continue;
+                throw std::runtime_error("PLATE_PROCESS_SOURCE_NATIVE_INVALID:"+invalid.first+":"+invalid.second);
+            }
+            if(!plate.at("validatedNativeProcess").contains("layer_height")) continue;
             const double layer=sourcePlate.opt_float("layer_height");
             const auto* diameters=sourcePlate.option<ConfigOptionFloats>("nozzle_diameter");
             const auto* minima=sourcePlate.option<ConfigOptionFloats>("min_layer_height");
             const auto* maxima=sourcePlate.option<ConfigOptionFloats>("max_layer_height");
             if(!std::isfinite(layer) || layer<=0 || !diameters || diameters->values.empty())
                 throw std::runtime_error("PLATE_PROCESS_SOURCE_LAYER_INVALID");
+            if(!sourceHasNozzleProfile) continue;
             for(size_t i=0;i<diameters->values.size();++i) {
                 const double nozzle=diameters->values[i];
                 const double minimum=minima && !minima->values.empty()?minima->values[std::min(i,minima->values.size()-1)]:nozzle*.1;

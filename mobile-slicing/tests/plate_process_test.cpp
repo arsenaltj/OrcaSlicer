@@ -28,6 +28,15 @@ int main(){try {
     for(const auto value:{"0","10","1000%"})PlateProcess::parse("outer_wall_line_width",value);
     PlateProcess::parse("outer_wall_speed","nil,50");
     for(const auto value:{"normal(auto)","tree(auto)","normal(manual)","tree(manual)"})PlateProcess::parse("support_type",value);
+    // The definition permits a 9mm literal, but the real source 0.4mm
+    // profile rejects it. Source import must run this Native semantic check
+    // before a correct explicit override could erase the invalid source.
+    auto physical=DynamicPrintConfig::full_print_config();
+    physical.set_deserialize_strict("nozzle_diameter","0.4");
+    physical.apply(PlateProcess::parse("outer_wall_line_width","9"));
+    if(!physical.validate().count("outer_wall_line_width"))throw std::runtime_error("Native source physical width error missing");
+    physical.apply(PlateProcess::parse("outer_wall_line_width","110%"));
+    if(physical.validate().count("outer_wall_line_width"))throw std::runtime_error("Native legal relative source width rejected");
     std::cout<<"PASS 11 native keys, 23 invalid values, oversized and duplicate, exact enums/nullable vector/unit boundaries\n";
     return 0;
 } catch(const std::exception& e){std::cerr<<e.what()<<"\n";return 1;}}

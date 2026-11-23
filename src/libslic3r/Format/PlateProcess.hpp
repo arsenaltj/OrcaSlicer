@@ -16,6 +16,9 @@ inline constexpr std::array<std::string_view, 11> keys{
     "outer_wall_line_width", "outer_wall_speed", "enable_support", "support_type",
     "support_threshold_angle", "support_on_build_plate_only", "wall_generator"};
 inline bool has_prefix(const std::string& key) { return key.compare(0, prefix.size(), prefix) == 0; }
+inline bool reserved_key(const std::string& key) {
+    return has_prefix(key) || key.rfind("orca_workbench_slicing_",0)==0 || key.rfind("orca_workbench_curve_",0)==0;
+}
 inline double number(const std::string& text) {
     // Native scalar deserializers accept trailing junk; check complete lexical
     // consumption before invoking them, independently of the process locale.

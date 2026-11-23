@@ -8,11 +8,14 @@ root=pathlib.Path(__file__).resolve().parents[2];build=a.reference_build.resolve
 cache=(build/'CMakeCache.txt').read_text()
 home=next(line.split('=',1)[1] for line in cache.splitlines() if line.startswith('CMAKE_HOME_DIRECTORY:'))
 reference=pathlib.Path(home).parent.resolve()
-# Every reused Core implementation and public header must match this checkout.
-changes=subprocess.check_output(['git','diff','--name-only','273fbf5fe948f51ddffe9d1f85dcc540e7b79bab','--','src/libslic3r','deps_src'],cwd=root,text=True)
-assert not changes, changes
-assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=reference,text=True).strip()=='273fbf5fe948f51ddffe9d1f85dcc540e7b79bab'
-assert not subprocess.check_output(['git','status','--porcelain','--','src/libslic3r','deps_src'],cwd=reference,text=True).strip()
+# Only this checkout's own completed normal producer is eligible. A different
+# worktree's Core or an old marker cannot stand in for the current source.
+assert reference==root.resolve(), (reference,root)
+commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
+assert not subprocess.check_output(['git','status','--porcelain'],cwd=root,text=True).strip()
+raw=build/'Release/orca_mobile_slicing_sdk_c.dll'
+assert commit.encode() in raw.read_bytes(), 'Complete the normal producer for this exact source before bridge regression'
+
 ns={'m':'http://schemas.microsoft.com/developer/msbuild/2003'}
 x=ET.parse(build/'orca_mobile_slicing_sdk.vcxproj').getroot()
 g=next(g for g in x.findall('m:ItemDefinitionGroup',ns) if 'Release' in g.get('Condition',''))
@@ -36,7 +39,10 @@ a.output.write_text(emit('ORCA_BRIDGE_INCLUDES',includes)+emit('ORCA_BRIDGE_DEFI
 print('Generated development-only reference config:',a.output)
 
 # Record the precise native libraries reused by the development harness.
-manifest={'referenceCommit':'273fbf5fe948f51ddffe9d1f85dcc540e7b79bab','referenceBuild':str(build),'kind':'development bridge regression only','libraries':[]}
+manifest={'referenceCommit':commit,'referenceBuild':str(build),'kind':'development bridge regression only; own normal producer Core, no external checkout object reuse','libraries':[],
+          'normalSdkRaw':{'path':str(raw),'sha256':hashlib.sha256(raw.read_bytes()).hexdigest()},
+          'generatedProjectSha256':hashlib.sha256((build/'orca_mobile_slicing_sdk.vcxproj').read_bytes()).hexdigest(),
+          'cacheSha256':hashlib.sha256((build/'CMakeCache.txt').read_bytes()).hexdigest()}
 for lib in libs:
  q=pathlib.Path(lib)
  if q.is_absolute():

@@ -89,10 +89,29 @@ void check_partition_and_errors()
     require(rejected,"invalid quality propagates");
     std::cout << "PASS whole-model partition semantics and transform/quality error recovery\n";
 }
+void check_open_mesh_baseline_support()
+{
+    LoadedProject project;
+    project.config=Slic3r::DynamicPrintConfig::full_print_config();
+    auto geometry=Slic3r::its_make_cube(10.,10.,10.);
+    geometry.indices.pop_back(); // Vertical face, no downward unsupported cap.
+    auto* object=project.model.add_object();
+    object->add_volume(Slic3r::TriangleMesh(geometry));object->add_instance();
+    for(bool baseline:{false,true}) {
+        project.config.set("enable_support",baseline,true);
+        const auto plans=smart_slice_plans(project,Json::object());
+        for(const auto& plan:plans.at("plans")) {
+            require(std::abs(plan.at("overhangRisk").get<double>())<1e-9,"open mesh has no geometric overhang evidence");
+            require(plan.at("patch").at("enable_support").get<bool>()==baseline,"actual source baseline support reaches the core");
+        }
+    }
+    std::cout<<"PASS actual source config baseline support on open mesh\n";
+}
 int main() {
     try {
         check_mixed_orientation();
         check_partition_and_errors();
+        check_open_mesh_baseline_support();
         LoadedProject project;
         project.config = Slic3r::DynamicPrintConfig::full_print_config();
         auto* object = project.model.add_object();

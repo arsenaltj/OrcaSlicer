@@ -15,8 +15,18 @@ template<class A,class B> void emit(const char* name,const A& old,const B& now) 
     check(old.completed && now.completed);
     for(size_t i=0;i<3;++i) {
         const auto& a=old.recommendations[i];const auto& b=now.recommendations[i];
+        const auto valid_estimates=[](const auto& plan) {
+            check(std::isfinite(plan.estimated_time_seconds) && plan.estimated_time_seconds>0.);
+            check(std::isfinite(plan.estimated_material_grams) && plan.estimated_material_grams>0.);
+            check(std::isfinite(plan.surface_quality_score) && plan.surface_quality_score>=0. && plan.surface_quality_score<=100.);
+        };
+        valid_estimates(a);
+        valid_estimates(b);
+
         std::cout<<name<<" mode="<<i<<" old(layer,support,type,angle,adaptive)="<<a.layer_height_mm<<","<<a.enable_support<<","<<a.support_type<<","<<a.support_threshold_angle_deg<<","<<a.adaptive_layer_height
-                 <<" new="<<b.layer_height_mm<<","<<b.enable_support<<","<<b.support_type<<","<<b.support_threshold_angle_deg<<","<<b.adaptive_layer_height<<"\n";
+                 <<" new="<<b.layer_height_mm<<","<<b.enable_support<<","<<b.support_type<<","<<b.support_threshold_angle_deg<<","<<b.adaptive_layer_height
+                 <<" old-estimate(seconds,grams,quality)="<<a.estimated_time_seconds<<","<<a.estimated_material_grams<<","<<a.surface_quality_score
+                 <<" new-estimate="<<b.estimated_time_seconds<<","<<b.estimated_material_grams<<","<<b.surface_quality_score<<"\n";
     }
 }
 int main() {try {

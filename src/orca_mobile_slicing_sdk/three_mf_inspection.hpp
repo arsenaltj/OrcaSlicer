@@ -22,8 +22,9 @@ struct ThreeMfScan {
     static std::string lower(std::string value) {std::transform(value.begin(),value.end(),value.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});return value;}
     std::string file,error,optionKey,optionValue,settingsFile;XML_Parser parser=nullptr;
     Json sourceConfig=Json::object();std::vector<std::pair<std::string,Json>> embeddedProfiles;
-    bool model=false,settings=false,ranges=false,inPlate=false,inMember=false,paint=false,support=false,seam=false,fuzzy=false;
+    bool model=false,settings=false,sliceInfo=false,ranges=false,inPlate=false,inMember=false,paint=false,support=false,seam=false,fuzzy=false;
     Json plate,member;
+    std::vector<std::string> xmlPath;
     void feature(const std::string& id,const std::string& status,const std::string& message) {
         if(!seen.insert(id+":"+file).second) return;
         Json item{{"id",id},{"status",status},{"path",file},{"message",message},
@@ -41,7 +42,7 @@ struct ThreeMfScan {
     }
     static void start(void* data,const XML_Char* raw,const XML_Char** at) {
         auto& s=*static_cast<ThreeMfScan*>(data);
-        try {s.on_start(raw,at);} catch(const std::exception& e) {s.error=e.what();XML_StopParser(s.parser,XML_FALSE);}
+        try {s.xmlPath.push_back(local(raw));s.on_start(raw,at);} catch(const std::exception& e) {s.error=e.what();XML_StopParser(s.parser,XML_FALSE);}
     }
     static void end(void* data,const XML_Char* raw) {
         auto& s=*static_cast<ThreeMfScan*>(data);
@@ -50,6 +51,7 @@ struct ThreeMfScan {
             if(s.ranges && name=="option") {s.config(Json{{s.optionKey,s.optionValue}});s.optionKey.clear();s.optionValue.clear();}
             if(s.settings && name=="model_instance") {s.plate["members"].push_back(s.member);s.inMember=false;}
             if(s.settings && name=="plate") {s.result["plates"].push_back(s.plate);s.inPlate=false;}
+            if(!s.xmlPath.empty())s.xmlPath.pop_back();
         } catch(const std::exception& e) {s.error=e.what();XML_StopParser(s.parser,XML_FALSE);}
     }
     static void text(void* data,const XML_Char* value,int count) {
@@ -62,6 +64,15 @@ struct ThreeMfScan {
     }
     void on_start(const char* raw,const XML_Char** at) {
         const auto name=local(raw);
+        if(name=="metadata") {
+            std::string key=attr(at,"key");if(key.empty())key=attr(at,"name");
+            if(Slic3r::PlateProcess::reserved_key(key) &&
+               (!settings || !inPlate || xmlPath.size()<2 || xmlPath[xmlPath.size()-2]!="plate"))
+                feature("reserved_plate_metadata_context:"+key,"blocked","Reserved plate process/session metadata is outside direct ModelSettings plate metadata");
+        }
+        // Existing statistics retain their old interpretation. Only reserved
+        // new semantic namespaces in this container are rejected above.
+        if(sliceInfo) return;
         const char* separator=std::strrchr(raw,'|');
         if(model && separator) {
             const std::string_view uri(raw,size_t(separator-raw));
@@ -162,7 +173,8 @@ struct ThreeMfScan {
         return XML_Parse(s.parser,static_cast<const char*>(buffer),int(bytes),XML_FALSE)==XML_STATUS_OK?bytes:0;
     }
     void xml(mz_zip_archive& zip,mz_uint index,const std::string& path) {
-        file=path;const std::string kind=lower(path);model=kind.size()>=6&&kind.substr(kind.size()-6)==".model";settings=kind=="metadata/model_settings.config";ranges=kind=="metadata/layer_config_ranges.xml";
+        xmlPath.clear();
+        file=path;const std::string kind=lower(path);model=kind.size()>=6&&kind.substr(kind.size()-6)==".model";settings=kind=="metadata/model_settings.config";sliceInfo=kind=="metadata/slice_info.config";ranges=kind=="metadata/layer_config_ranges.xml";
         if(settings) settingsFile=path;
         namespaces.clear();instanceCounts.clear();paint=support=seam=fuzzy=false;error.clear();inPlate=inMember=false;
         parser=XML_ParserCreateNS(nullptr,'|');if(!parser) throw std::bad_alloc();
@@ -302,7 +314,7 @@ inline Json inspect_archive(const std::string& path) {
     for(mz_uint i=0;i<count;++i) {
         mz_zip_archive_file_stat stat{};if(!mz_zip_reader_file_stat(&zip,i,&stat)) throw std::runtime_error("3MF_ARCHIVE_INDEX_FAILED");
         const std::string name=stat.m_filename,kind=ThreeMfScan::lower(name);scan.file=name;
-        if((kind.size()>=6&&kind.substr(kind.size()-6)==".model") || kind=="metadata/model_settings.config") scan.xml(zip,i,name);
+        if((kind.size()>=6&&kind.substr(kind.size()-6)==".model") || kind=="metadata/model_settings.config" || kind=="metadata/slice_info.config") scan.xml(zip,i,name);
         else if(kind=="metadata/project_settings.config" || kind=="metadata/filament_sequence.json" || kind.rfind("metadata/filament_settings_",0)==0 || kind.rfind("metadata/machine_settings_",0)==0 || kind.rfind("metadata/process_settings_",0)==0) {
             if(stat.m_uncomp_size>8*1024*1024) {scan.feature("settings_size","blocked","Source configuration exceeds inspection budget");continue;}
             size_t bytes=0;void* buffer=mz_zip_reader_extract_to_heap(&zip,i,&bytes,0);

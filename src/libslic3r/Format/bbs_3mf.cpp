@@ -1311,6 +1311,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         //BBS: plater related structures
         bool m_is_bbl_3mf { false };
         bool m_parsing_slice_info { false };
+        std::vector<std::string> m_config_xml_path;
         PlateDataMaps m_plater_data;
         PlateData* m_curr_plater;
         CurrentInstance m_curr_instance;
@@ -3838,6 +3839,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         if (m_xml_parser == nullptr)
             return;
 
+        m_config_xml_path.emplace_back(name);
         bool res = true;
         unsigned int num_attributes = (unsigned int)XML_GetSpecifiedAttributeCount(m_xml_parser);
 
@@ -3912,6 +3914,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         else if (::strcmp(ASSEMBLE_ITEM_TAG, name) == 0)
             res = _handle_end_assemble_item();
 
+        if (!m_config_xml_path.empty()) m_config_xml_path.pop_back();
         if (!res)
             _stop_xml_parser();
     }
@@ -4760,6 +4763,14 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         std::string value = bbs_get_attribute_value_string(attributes, num_attributes, VALUE_ATTR);
         if (key.empty())
             return true;
+        // Reserved process/session metadata belongs to direct plate metadata
+        // in ModelSettings, never statistics or an instance/object/part.
+        if (PlateProcess::reserved_key(key) &&
+            (m_parsing_slice_info || !m_curr_plater || m_config_xml_path.size() < 2 ||
+             m_config_xml_path[m_config_xml_path.size() - 2] != PLATE_TAG)) {
+            add_error("RESERVED_PLATE_METADATA_UNSUPPORTED_CONTEXT:" + key);
+            return false;
+        }
 
         auto get_vector_from_string = [](const std::string& str) -> std::vector<int> {
             std::stringstream stream(str);
@@ -5166,7 +5177,6 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             return false;
         }
 
-        //do nothing
         return true;
     }
 

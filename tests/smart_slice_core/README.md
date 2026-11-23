@@ -11,11 +11,12 @@ ctest --test-dir .tmp/recommendation-core -C Release --output-on-failure
 ```
 
 On Windows, an optional native bridge regression compiles this checkout's actual
-`smart_slice_bridge.cpp` and `project_support.cpp`. A read-only source-matched
-273fbf5 Core build supplies native dependency headers/libraries. Generate a config:
+`smart_slice_bridge.cpp` and `project_support.cpp`. This checkout's own normal frozen-source Core build supplies dependency headers/libraries.
+Record its source, header, flags, dependencies and command identities before
+reusing any object; do not borrow another checkout's Core. Generate a config:
 
 ```text
-python tests/smart_slice_core/configure_bridge_reference.py --reference-build <273-build> --output .tmp/recommendation-core/bridge-reference.cmake
+python tests/smart_slice_core/configure_bridge_reference.py --reference-build <own-frozen-source-Slicing-build> --output .tmp/recommendation-core/bridge-reference.cmake
 cmake -S tests/smart_slice_core -B .tmp/recommendation-core -DORCA_BRIDGE_REFERENCE_CONFIG=<absolute-config-path>
 cmake --build .tmp/recommendation-core --config Release --target smart_slice_bridge_tests --parallel 1
 ```
@@ -58,3 +59,19 @@ source-global < selected-plate < explicit-request order. Malformed source on any
 plate remains blocked before overrides. Workbench sessions and curves remain
 unsupported. New normal producers and independent review/QA are required;
 these source tests do not restore any stopped GLB/resource/safety workflow.
+
+Plate process physical validation uses the Native `DynamicPrintConfig::validate`
+result against the source profile, before request overrides. Only errors for
+options actually carried by that plate are mapped to the new source guard;
+missing source nozzle data is not fabricated from defaults as a physical profile.
+All source plates are checked, including unselected plates. Native layer positivity
+and the known source common layer interval remain required.
+
+Reserved process/session keys are allowed only as direct plate metadata in
+ModelSettings. They cannot alter process config through SliceInfo statistics or
+model-instance metadata. Ordinary statistics remain accepted. Sessions and curves
+remain unsupported in the SDK even in their formal container. The public regression
+keeps wrong-container negatives, ordinary statistics, same-handle recovery, and
+source-versus-effective override and export/reimport checks. The optional source-
+matched bridge target also checks that real source support=true reaches all three
+plans on an open mesh that has no independent geometric overhang evidence.
