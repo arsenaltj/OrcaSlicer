@@ -36,6 +36,23 @@ Every ordinary SDK `slice` entry also checks material layout before execution, i
 
 The user-confirmed APEX alias is native `honor/forge-6-head-0.4`, sourced from the repository Honor Forge profile inheritance. Six nozzles do not imply six loaded spools. Unused tools require no invented bindings. Actual material configuration is verified by the native helper; loading is an operator declaration (`filamentConfirmationSource=operator`, `actualFilamentLoadingVerified=false`). No physical verification is implied.
 
+Only the exact SDK Honor mapped-start context on independent multihead Klipper
+initializes each participating physical heater with an explicit target and wait
+after `START_PRINT`. Participants come from sliced tool ordering (including actual
+support/tower paths, and all sequential objects), rather than every configured
+material or nozzle. The normal layer-temperature transition and user filament
+G-code still run in their original order; ooze-prevention idle/standby targets
+remain authoritative until the existing tool-change restore. Single-head,
+SEMM, ordinary desktop source templates and other printer contexts keep their
+startup behavior. These commands do not prove real hardware reaches temperature.
+
+The host-only `orca_honor_multihead_thermal_test <NEW_OUTPUT>` target exercises
+actual Core export, sparse heater/tool mapping, unused heads, support, sequential
+objects, temperature transitions, ooze and user-macro boundaries. Its execution
+requires the task's separate resource approval; source preparation is not a test
+pass or a new bundle qualification.
+
+
 Honor routing emits physical `T` commands while cooling adjustments, fan configuration and pressure-equalization cross-sections remain indexed by logical material. Cooling parse/apply share the strict inverse mapping and active-material check; planner initial IDs are already logical. Pressure equalization receives the same final active logical set and initial logical ID before any layer filtering, including nonzero volumetric slope. Unmapped/inactive/invalid physical tools fail explicitly; configuration arrays are never expanded to physical positions and emitted G-code/filament_map retain their original identity. Generic valid tool semantics are unchanged, with invalid indices prevented from selecting an unrelated material.
 
 The host `orca_cooling_tool_domain_test <new-evidence-dir>` uses the actual writer/configuration, CoolingBuffer and PressureEqualizer. It saves physical G-code, then compares derived logical analysis views across sparse T4/T5, independent support T3, permutation T1/T0, identity six tools and generic routing. Unequal fan/slowdown/bridge/support parameters and material diameters provide behavioral oracles; tests cover transitions, flush persistence, real fan/feedrate output, nonzero pressure slope and invalid/unmapped/inactive tools. This is a small Core integration regression, not device/firmware or complete manufacturing acceptance. The excluded baseline target is solely for explicitly recorded historical-Core comparison; `BuildProjectReferences=false` must never qualify a production SDK or a fixed implementation.

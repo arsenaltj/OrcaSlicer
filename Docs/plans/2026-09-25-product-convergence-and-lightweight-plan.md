@@ -1,3 +1,11 @@
+# NATIVE-HOST-B6-THERMAL-01 fix1 (2026-11-24)
+
+Mainline: task-20261124-v102-desktop-sdk-sync, authorized Native dev writer; preserve immutable406 bundle and original851/411 failure evidence and all issue histories.
+This round: only exact SDK Honor mapped-template independent Klipper multihead exports initialize actual sliced-tool-order participants after START_PRINT through the existing logical-to-physical Writer once; keep source/mapped templates, config, initial tool, user/ooze and normal-layer semantics. Add a permanent actual-Core export boundary target.
+Open: source prepared; compilation, public SDK self-tests, four exact-source normal producers/new immutable sdk-resource-complete bundle and independent review/affected nonGLB QA remain pending. No runtime success is asserted.
+Next: freeze source, provide resource/producer plan with old raw/object custody before reusing any build site; fresh root GO before any compiler or SDK operation. No Mobile, device, service, GLB/held/collector restart.
+Plan change: necessary real thermal-initialization repair after B5 standalone18-call diagnostic closure; original B5 qualification driver/oracle/profile and samples remain unchanged.
+
 # SDK-V102-FILAMENT-VARIANT-01 (2026-11-22)
 
 - DEC06 repair2: independent review v2 changes_requested on ordinary generic public-CABI logical1 missing-self output, failed repair1/pre-arbitration1 retained. The68d/0c5b artifact/source audit passed its exact scope but cannot qualify erroneous execution. Preserve every old package/request/G-code and all other issue histories.
