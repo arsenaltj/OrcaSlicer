@@ -37,6 +37,8 @@ struct ModelMetrics
     size_t triangle_count{0};
     bool closed_mesh{false};
     bool finite_geometry{true};
+    // Intermediate slope area; horizontal caps do not establish detail.
+    double slope_detail_area_ratio{0.0};
 
     bool usable() const
     {

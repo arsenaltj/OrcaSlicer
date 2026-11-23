@@ -78,6 +78,7 @@ ModelMetrics metrics_from_snapshot(const TriangleMeshSnapshot& mesh)
     std::array<double, 2> overhang_45_area{};
     std::array<double, 2> overhang_60_area{};
     double top_micro_area = 0.0;
+    double slope_area = 0.0;
     std::map<std::pair<uint32_t, uint32_t>, size_t> edge_counts;
 
     const auto subtract = [](const MeshPoint3d& lhs, const MeshPoint3d& rhs) {
@@ -113,16 +114,19 @@ ModelMetrics metrics_from_snapshot(const TriangleMeshSnapshot& mesh)
         const MeshPoint3d normal{area_vector.x / (2.0 * area),
                                  area_vector.y / (2.0 * area),
                                  area_vector.z / (2.0 * area)};
-        // Support risk increases toward a horizontal underside, not toward a
-        // vertical face. Ignore faces contacting the build plane (Z = 0).
-        if (std::max({a.z, b.z, c.z}) > 0.025) {
-            const double nz = std::abs(normal.z);
-            const size_t side = normal.z < 0.0 ? 0 : 1;
-            if (nz >= std::sqrt(0.5)) overhang_45_area[side] += area;
-            if (nz >= std::cos(30.0 * pi / 180.0)) overhang_60_area[side] += area;
-        }
-        if (normal.z >= std::cos(top_micro_slope_degrees * pi / 180.0))
+        const double nz = std::abs(normal.z);
+        const double z_span = std::max({a.z, b.z, c.z}) - std::min({a.z, b.z, c.z});
+        if (z_span > 1e-6 && nz > 0.26 && nz < 0.995)
+            slope_area += area;
+        if (z_span > 1e-6 && nz >= std::cos(top_micro_slope_degrees * pi / 180.0))
             top_micro_area += area;
+        if (std::max({a.z, b.z, c.z}) > 0.025) {
+            // A flat downward face is at zero degrees from the downward
+            // axis. It needs more support than a near-vertical face.
+            const size_t side = normal.z < 0. ? 0 : 1;
+            if (nz >= std::sqrt(0.5)) overhang_45_area[side] += area;
+            if (nz >= std::cos(30. * pi / 180.0)) overhang_60_area[side] += area;
+        }
 
         const std::array<std::pair<uint32_t, uint32_t>, 3> edges{{
             {std::min(triangle.vertex_indices[0], triangle.vertex_indices[1]),
@@ -140,6 +144,7 @@ ModelMetrics metrics_from_snapshot(const TriangleMeshSnapshot& mesh)
     metrics.high_overhang_area_ratio_45_deg = area > 0.0 ? overhang_45_area[down] / area : 0.0;
     metrics.severe_overhang_area_ratio_60_deg = area > 0.0 ? overhang_60_area[down] / area : 0.0;
     metrics.top_micro_slope_surface_ratio = area > 0.0 ? top_micro_area / area : 0.0;
+    metrics.slope_detail_area_ratio = area > 0.0 ? slope_area / area : 0.0;
     // A short triangle edge measures tessellation, not wall thickness. A
     // narrow overall span supplies direct evidence for a plate-like body.
     const auto& bounds = metrics.bounding_box;
@@ -178,6 +183,7 @@ SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
     double overhang_45_area = 0.0;
     double overhang_60_area = 0.0;
     double top_micro_area = 0.0;
+    double slope_area = 0.0;
     double thin_wall_area = 0.0;
     for (const TriangleMeshSnapshot& mesh : meshes) {
         const ModelMetrics metrics = metrics_from_snapshot(mesh);
@@ -197,12 +203,14 @@ SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
         overhang_45_area += metrics.high_overhang_area_ratio_45_deg * metrics.surface_area_mm2;
         overhang_60_area += metrics.severe_overhang_area_ratio_60_deg * metrics.surface_area_mm2;
         top_micro_area += metrics.top_micro_slope_surface_ratio * metrics.surface_area_mm2;
+        slope_area += metrics.slope_detail_area_ratio * metrics.surface_area_mm2;
         thin_wall_area += metrics.thin_wall_feature_ratio * metrics.surface_area_mm2;
     }
     if (combined.surface_area_mm2 > 0.0) {
         combined.high_overhang_area_ratio_45_deg = overhang_45_area / combined.surface_area_mm2;
         combined.severe_overhang_area_ratio_60_deg = overhang_60_area / combined.surface_area_mm2;
         combined.top_micro_slope_surface_ratio = top_micro_area / combined.surface_area_mm2;
+        combined.slope_detail_area_ratio = slope_area / combined.surface_area_mm2;
         combined.thin_wall_feature_ratio = thin_wall_area / combined.surface_area_mm2;
     }
     return AnalyzeAndPrecompute(combined, machine, filament);
@@ -252,7 +260,13 @@ SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
     const double overhang_risk = std::clamp(
         0.70 * metrics.high_overhang_area_ratio_45_deg +
         1.10 * metrics.severe_overhang_area_ratio_60_deg, 0.0, 1.0);
-    const double micro_slope = std::clamp(metrics.top_micro_slope_surface_ratio, 0.0, 1.0);
+    const double slopes = std::max(metrics.slope_detail_area_ratio, metrics.top_micro_slope_surface_ratio);
+    const bool detailed = slopes > 0.12;
+    const bool predominantly_flat = slopes < 0.05;
+    const bool adaptive_worth_testing = metrics.closed_mesh && slopes > 0.16 &&
+        metrics.bounding_box.height_mm() >= 8. && maximum_layer - minimum_layer >= 0.06;
+    const bool support_needed = overhang_risk > 0.025 ||
+        (!metrics.closed_mesh && machine.baseline_support_enabled);
     const double thin_wall = std::clamp(metrics.thin_wall_feature_ratio, 0.0, 1.0);
 
     result.calibrated_to_native_baseline = machine.native_baseline_time_seconds > 0.0;
@@ -279,12 +293,12 @@ SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
         bool arachne;
     };
     const std::array<ModeDefaults, 3> defaults{{
-        {SliceMode::BALANCED, 0.50, 0.20, 3, 15.0, "gyroid", 0.90, 52.0,
-         overhang_risk > 0.04, false, true},
-        {SliceMode::SPEED, 0.65, 0.24, 2, 10.0, "grid", 1.05,
-         60.0, metrics.severe_overhang_area_ratio_60_deg > 0.03, false, true},
-        {SliceMode::QUALITY, 0.30, 0.12, 3, 15.0, "gyroid", 0.72, 45.0,
-         overhang_risk > 0.015, micro_slope > 0.10, true},
+        {SliceMode::BALANCED, detailed ? 0.40 : 0.50, 0.0, 3, 15.0, "gyroid", 0.90, 38.0,
+         support_needed, false, true},
+        {SliceMode::SPEED, detailed ? 0.55 : 0.65, 0.0, 2, 10.0, "grid", 1.05, 35.0,
+         support_needed, false, true},
+        {SliceMode::QUALITY, predominantly_flat ? 0.40 : 0.30, 0.0, 3, 15.0, "gyroid", 0.72, 45.0,
+         support_needed || overhang_risk > 0.015, adaptive_worth_testing, true},
     }};
 
     struct RawEstimate
@@ -382,7 +396,8 @@ SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
             maximum_speed * policy.speed_ratio, MIN_SAFE_SPEED_MM_S, maximum_speed,
             std::max(MIN_SAFE_SPEED_MM_S, maximum_speed * 0.5));
         recommendation.enable_support = policy.support;
-        recommendation.support_type = policy.support ? "tree(auto)" : "none";
+        recommendation.support_type = !policy.support ? "none" :
+            policy.adaptive || metrics.severe_overhang_area_ratio_60_deg >= 0.12 ? "normal(auto)" : "tree(auto)";
         recommendation.support_threshold_angle_deg = clamp_finite(
             policy.support_threshold, 25.0, 75.0, 50.0);
         recommendation.adaptive_layer_height = policy.adaptive;
@@ -422,6 +437,7 @@ SmartAnalysisResult SmartSlicingEngine::AnalyzeAndPrecompute(
             add_warning(recommendation, "open_or_non_manifold_mesh");
         if (recommendation.adaptive_layer_height)
             add_warning(recommendation, "adaptive_layer_height_requires_native_capability");
+        add_warning(recommendation, detailed ? "smart_slice_curve_detail" : "smart_slice_simple_surfaces");
     }
 
     result.completed = true;

@@ -1,0 +1,105 @@
+"""Actual public import/reader/scanner/source-profile/validate/slice regression.
+Run: python plate_process_public_test.py DLL NEW_OUTPUT
+No mock response; every result and original source hash is saved.
+"""
+import argparse,copy,ctypes as C,hashlib,json,os,re,zipfile
+from pathlib import Path
+import xml.etree.ElementTree as ET
+from three_mf_component_world_test import make_source,IDENTITY
+
+def main():
+    ap=argparse.ArgumentParser();ap.add_argument('library',type=Path);ap.add_argument('output',type=Path);a=ap.parse_args()
+    root=a.output.resolve();root.mkdir(parents=True,exist_ok=False)
+    dll_dir=os.add_dll_directory(str(a.library.resolve().parent))
+    lib=C.CDLL(str(a.library.resolve()));CB=C.CFUNCTYPE(None,C.c_char_p,C.c_void_p)
+    lib.orca_mobile_slicing_create.argtypes=[C.c_char_p];lib.orca_mobile_slicing_create.restype=C.c_void_p
+    lib.orca_mobile_slicing_execute.argtypes=[C.c_void_p,C.c_char_p,CB,C.c_void_p,C.POINTER(C.c_void_p)]
+    lib.orca_mobile_slicing_free_string.argtypes=[C.c_void_p];lib.orca_mobile_slicing_destroy.argtypes=[C.c_void_p]
+    h=lib.orca_mobile_slicing_create(str(root).encode());rows=[]
+    def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+    def run(name,path,operation='import',**extra):
+        req=dict(schemaVersion=2,operation=operation,inputPath=str(path),projectId=name,projectRevision=1,maxThreads=1,outputDir=str(root/name),quality='standard',**extra)
+        raw=C.c_void_p();before=sha(path);events=[]
+        @CB
+        def cb(data,_):events.append(json.loads(data))
+        code=lib.orca_mobile_slicing_execute(h,json.dumps(req).encode(),cb,None,C.byref(raw))
+        try:out=json.loads(C.string_at(raw))
+        finally:lib.orca_mobile_slicing_free_string(raw)
+        assert before==sha(path)
+        row=dict(name=name,request=req,status=code,response=out,events=events,sourceSha256=before);rows.append(row)
+        (root/'results.json').write_text(json.dumps(dict(librarySha256=sha(a.library),runs=rows),indent=2))
+        return code,out.get('result',out)
+    def success(name,path,operation='import',**extra):
+        code,out=run(name,path,operation,**extra);assert code==0,(name,out);return out
+    initial=root/'initial.3mf';make_source(initial,[IDENTITY,IDENTITY])
+    basis=success('basis',initial,'exportProject',confirmDerivedProject=True,config={'before_layer_change_gcode':'G92 E0','filament_density':[1.24],'filament_diameter':[1.75]})
+    basis=Path(basis['artifacts'][0]['path'])
+    legal={'layer_height':'0.16','wall_loops':'4','sparse_infill_density':'23%','sparse_infill_pattern':'gyroid','outer_wall_line_width':'110%','outer_wall_speed':'50','enable_support':'0','support_type':'normal(auto)','support_threshold_angle':'38','support_on_build_plate_only':'1','wall_generator':'arachne'}
+    def project(name,values,second=None,duplicates=()):
+        path=root/(name+'.3mf')
+        with zipfile.ZipFile(basis) as src,zipfile.ZipFile(path,'x') as dst:
+            for info in src.infolist():
+                data=src.read(info.filename)
+                if info.filename.lower()=='metadata/model_settings.config':
+                    doc=ET.fromstring(data);plates=doc.findall('plate');assert len(plates)==1
+                    plate=plates[0]
+                    for item in list(plate):
+                        if item.tag=='metadata' and item.get('key','').startswith('orca_plate_process:'):plate.remove(item)
+                    for key,value in list(values.items())+list(duplicates):ET.SubElement(plate,'metadata',key='orca_plate_process:'+key,value=value)
+                    if second is not None:
+                        other=copy.deepcopy(plate)
+                        for item in list(other):
+                            if item.tag=='metadata' and item.get('key')=='plater_id':item.set('value','2')
+                            if item.tag=='metadata' and item.get('key','').startswith('orca_plate_process:'):other.remove(item)
+                        for key,value in second.items():ET.SubElement(other,'metadata',key='orca_plate_process:'+key,value=value)
+                        doc.append(other)
+                    data=ET.tostring(doc,encoding='utf-8')
+                dst.writestr(info,data)
+        return path
+    try:
+        valid=project('all11',legal)
+        imported=success('all11-import',valid)
+        native=imported['project'];assert not native['blockingFeatures'],native['blockingFeatures']
+        source=json.loads(Path(native['sourceProfilePath']).read_text())['config']
+        declared=native['threeMfInspection']['plates'][0]['validatedNativeProcess']
+        assert len(declared)==11
+        for key,value in declared.items():assert source[key]==value,(key,source[key],value)
+        changed=success('explicit-override',valid,config={'layer_height':'0.20','wall_loops':'6'})['project']
+        original=json.loads(Path(changed['sourceProfilePath']).read_text())['config'];assert original['layer_height']=='0.16' and original['wall_loops']=='4'
+        for operation in ('validate','slice'):
+            out=success('all11-'+operation,valid,operation,executeEffectiveConfig=True)
+            if operation=='slice':
+                for key,value in declared.items():assert out['effectiveConfig'][key]==value,(key,out['effectiveConfig'][key],value)
+                assert Path(out['gcodePath']).is_file() and Path(out['previewPath']).is_file()
+                assert re.search(r'^G[123] .*E',Path(out['gcodePath']).read_text(),re.M)
+        other=dict(legal,layer_height='0.24',wall_loops='5');multi=project('two-plates',legal,other)
+        unselected=success('unselected',multi);assert unselected['project']['blockingFeatures']
+        for pid,expected in [('1',legal),('2',other)]:
+            out=success('selected-'+pid,multi,selectedPlateId=pid)['project']
+            cfg=json.loads(Path(out['sourceProfilePath']).read_text())['config']
+            assert cfg['layer_height']==expected['layer_height'] and cfg['wall_loops']==expected['wall_loops']
+        bad=[('layer_height','0'),('layer_height','9'),('layer_height','NaN'),('layer_height','0.2garbage'),('wall_loops','1.5'),('wall_loops','1001'),('sparse_infill_density','101%'),('sparse_infill_pattern','unknown'),('outer_wall_line_width','10.1'),('outer_wall_speed','50,nan'),('outer_wall_speed','0'),('enable_support','true'),('support_type','none'),('support_threshold_angle','91'),('support_on_build_plate_only','false'),('wall_generator','unknown'),('future','1'),('layer_height','1'*1025)]
+        for i,(key,value) in enumerate(bad):
+            values=dict(legal);values[key]=value;path=project('invalid-'+str(i),values)
+            code,out=run('invalid-'+str(i)+'-override',path,'slice',executeEffectiveConfig=True,config={'layer_height':'0.2','wall_loops':'3'})
+            assert code!=0,(key,value,out)
+            assert not list((root/('invalid-'+str(i)+'-override')).rglob('*.gcode'))
+            # Invalid source on an unselected plate is still a blocker.
+            path=project('bad-other-'+str(i),legal,values)
+            code,out=run('bad-other-'+str(i),path,'slice',selectedPlateId='1',executeEffectiveConfig=True)
+            assert code!=0,(key,value,out)
+        conflict=project('conflicting',legal,duplicates=[('wall_loops','9')]);assert run('conflicting',conflict,'slice',executeEffectiveConfig=True)[0]!=0
+        for key in ('orca_workbench_slicing_v1','orca_workbench_curve_v1:1','orca_workbench_curve_v2:1'):
+            path=project('unknown-'+key.replace(':','_'),legal)
+            # Keep actual native archive and add exact unsupported metadata.
+            changed=root/(path.stem+'-session.3mf')
+            with zipfile.ZipFile(path) as src,zipfile.ZipFile(changed,'x') as dst:
+                for info in src.infolist():
+                    data=src.read(info.filename)
+                    if info.filename.lower()=='metadata/model_settings.config':
+                        doc=ET.fromstring(data);ET.SubElement(doc.find('plate'),'metadata',key=key,value='{}');data=ET.tostring(doc)
+                    dst.writestr(info,data)
+            assert run('blocked-'+path.stem,changed,'slice',executeEffectiveConfig=True)[0]!=0
+        print(json.dumps(dict(state='passed',cases=len(rows),scope='actual public native nonGLB source semantics; no independent QA claim')))
+    finally:lib.orca_mobile_slicing_destroy(h)
+if __name__=='__main__':main()

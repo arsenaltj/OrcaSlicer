@@ -438,6 +438,8 @@ if(EXISTS "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/c_api.cpp" AND EXISTS
                     ${CMAKE_CURRENT_LIST_DIR}/tests/three_mf_component_world_test.py
                     $<TARGET_FILE:orca_mobile_slicing_sdk> --public-operations)
         endif()
+        add_executable(orca_plate_process_test "${CMAKE_CURRENT_LIST_DIR}/tests/plate_process_test.cpp")
+        target_link_libraries(orca_plate_process_test PRIVATE OrcaSlicer::Core)
         add_executable(orca_resident_memory_test "${CMAKE_CURRENT_LIST_DIR}/tests/resident_memory_test.cpp")
         target_include_directories(orca_resident_memory_test PRIVATE "${ORCA_SOURCE_ROOT}/src")
         add_executable(orca_honor_tool_routing_test "${CMAKE_CURRENT_LIST_DIR}/tests/honor_forge_routing_test.cpp")
@@ -450,7 +452,7 @@ if(EXISTS "${ORCA_SOURCE_ROOT}/src/orca_mobile_slicing_sdk/c_api.cpp" AND EXISTS
         target_compile_definitions(orca_cooling_tool_domain_baseline PRIVATE ORCA_COOLING_BASELINE)
         target_link_libraries(orca_cooling_tool_domain_baseline PRIVATE OrcaSlicer::Core)
         if(MSVC)
-            foreach(_cooling_target orca_cooling_tool_domain_test orca_cooling_tool_domain_baseline orca_material_variant_layout_test)
+            foreach(_cooling_target orca_plate_process_test orca_cooling_tool_domain_test orca_cooling_tool_domain_baseline orca_material_variant_layout_test)
                 target_compile_options(${_cooling_target} PRIVATE /utf-8 /bigobj)
                 target_compile_definitions(${_cooling_target} PRIVATE BOOST_ALL_NO_LIB __TBB_NO_IMPLICIT_LINKAGE=1 __TBBMALLOC_NO_IMPLICIT_LINKAGE=1)
             endforeach()

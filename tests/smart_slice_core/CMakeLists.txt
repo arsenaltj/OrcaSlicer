@@ -39,3 +39,28 @@ if(ORCA_BRIDGE_REFERENCE_CONFIG)
     target_link_libraries(smart_slice_bridge_tests PRIVATE ${ORCA_BRIDGE_LIBRARIES})
     add_test(NAME SmartSliceBridgeRegression COMMAND smart_slice_bridge_tests)
 endif()
+
+# Compile the immutable pre-sync source in a separate namespace against exactly
+# the same input as the new engine. This is executable evidence, not a copied oracle.
+find_package(Git REQUIRED)
+set(_legacy_root "${CMAKE_CURRENT_BINARY_DIR}/legacy")
+foreach(_file Application/SmartSlicingEngine.cpp Application/SmartSlicingEngine.hpp Domain/SmartSliceTypes.cpp Domain/SmartSliceTypes.hpp)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" show "e8d8dea3b2cb5705c62a41ac7a1a2273cec6539a:src/slic3r/AI/SmartSlicing/${_file}"
+        WORKING_DIRECTORY "${ORCA_ROOT}" OUTPUT_VARIABLE _old RESULT_VARIABLE _result)
+    if(NOT _result EQUAL 0)
+        message(FATAL_ERROR "Pinned e8 baseline source is unavailable")
+    endif()
+    string(REPLACE "Slic3r::AI::SmartSlicing" "Slic3r::AI::LegacySmartSlicing" _old "${_old}")
+    get_filename_component(_parent "${_legacy_root}/${_file}" DIRECTORY)
+    file(MAKE_DIRECTORY "${_parent}")
+    file(WRITE "${_legacy_root}/${_file}" "${_old}")
+endforeach()
+add_executable(smart_slice_old_new old_new.cpp
+    "${_legacy_root}/Application/SmartSlicingEngine.cpp" "${_legacy_root}/Domain/SmartSliceTypes.cpp"
+    "${ORCA_ROOT}/src/slic3r/AI/SmartSlicing/Application/SmartSlicingEngine.cpp"
+    "${ORCA_ROOT}/src/slic3r/AI/SmartSlicing/Domain/SmartSliceTypes.cpp")
+target_include_directories(smart_slice_old_new PRIVATE "${ORCA_ROOT}/src" "${CMAKE_CURRENT_BINARY_DIR}")
+if(MSVC)
+    target_compile_options(smart_slice_old_new PRIVATE /utf-8 /EHsc)
+endif()
+add_test(NAME SmartSliceOldNew COMMAND smart_slice_old_new)

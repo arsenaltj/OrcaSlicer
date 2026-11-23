@@ -1,3 +1,4 @@
+#include "PlateProcess.hpp"
 #include "../libslic3r.h"
 #include "../Exception.hpp"
 #include "../IMEXHelpers.hpp"
@@ -4849,6 +4850,14 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             else if (key == IMEX_HEAD_FILAMENT_MAP_ATTR) {
                 m_curr_plater->config.set_key_value("imex_head_filament_map", new ConfigOptionString(value));
             }
+            else if (m_curr_plater && PlateProcess::has_prefix(key)) {
+                try {
+                    PlateProcess::apply(m_curr_plater->config, key.substr(PlateProcess::prefix.size()), value);
+                } catch (const std::exception& error) {
+                    add_error(error.what());
+                    return false;
+                }
+            }
             else if (key == FILAMENT_MAP_MODE_ATTR)
             {
                 FilamentMapMode map_mode = FilamentMapMode::fmmAutoForFlush;
@@ -8863,6 +8872,15 @@ bool _BBS_3MF_Exporter::_add_model_config_file_to_archive(mz_zip_archive& archiv
                 stream << "    <" << METADATA_TAG << " " << KEY_ATTR << "=\"" << PLATERID_ATTR << "\" " << VALUE_ATTR << "=\"" << plate_data->plate_index + 1 << "\"/>\n";
                 stream << "    <" << METADATA_TAG << " " << KEY_ATTR << "=\"" << PLATER_NAME_ATTR << "\" " << VALUE_ATTR << "=\"" <<  xml_escape(plate_data->plate_name.c_str()) << "\"/>\n";
                 stream << "    <" << METADATA_TAG << " " << KEY_ATTR << "=\"" << LOCK_ATTR << "\" " << VALUE_ATTR << "=\"" << std::boolalpha<< plate_data->locked<< "\"/>\n";
+                // Only serialize process options actually present on this plate.
+                for (const auto key : PlateProcess::keys) {
+                    if (const auto* option = plate_data->config.option(std::string(key))) {
+                        PlateProcess::parse(std::string(key), option->serialize());
+                        stream << "    <" << METADATA_TAG << " " << KEY_ATTR << "=\"" << PlateProcess::prefix << key
+                               << "\" " << VALUE_ATTR << "=\"" << xml_escape_double_quotes_attribute_value(option->serialize())
+                               << "\"/>\n";
+                    }
+                }
                 ConfigOption* bed_type_opt = plate_data->config.option("curr_bed_type");
                 t_config_enum_names bed_type_names = ConfigOptionEnum<BedType>::get_enum_names();
                 if (bed_type_opt != nullptr && bed_type_names.size() > bed_type_opt->getInt())

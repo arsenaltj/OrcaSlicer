@@ -1,5 +1,6 @@
 #pragma once
 // Read-only OPC/XML feature inspection. Never extracts/rewrites the source.
+#include "libslic3r/Format/PlateProcess.hpp"
 #include <expat.h>
 #include <miniz.h>
 #include <cstring>
@@ -129,7 +130,21 @@ struct ThreeMfScan {
                 } else if(inPlate) {
                     if(key=="plater_id") plate["id"]=value;
                     else if(key=="plater_name") plate["name"]=value;
-                    else plate["directives"][key]=value;
+                    else {
+                        if(key.rfind("orca_workbench_slicing_",0)==0 || key.rfind("orca_workbench_curve_",0)==0)
+                            feature("plate_directive:"+key,"blocked","Workbench sessions and layer curves are not executed by this SDK");
+                        if(Slic3r::PlateProcess::has_prefix(key)) {
+                            try {
+                                const auto option=key.substr(Slic3r::PlateProcess::prefix.size());
+                                const auto parsed=Slic3r::PlateProcess::parse(option,value);
+                                const auto canonical=parsed.option(option)->serialize();
+                                if(plate["validatedNativeProcess"].contains(option) && plate["validatedNativeProcess"][option]!=canonical)
+                                    throw std::invalid_argument("PLATE_PROCESS_CONFLICTING_DUPLICATE:"+option);
+                                plate["validatedNativeProcess"][option]=canonical;
+                            } catch(const std::exception& error) {feature("invalid_plate_process:"+key,"blocked",error.what());}
+                        }
+                        plate["directives"][key]=value;
+                    }
                 } else if((key=="post_process" || key=="plugins" || key=="slicing_pipeline_plugin" || key.find("plugin_config_overrides")!=std::string::npos) && active(Json(value))) feature("external_processing:"+key,"blocked","Object or part requires an unavailable external processor");
                 else if(key=="name" || key=="matrix" || key=="extruder" || key.rfind("source_",0)==0 || key=="volume_type" || key=="part_type") { }
                 else if(!Slic3r::print_config_def.get(key)) feature("object_setting:"+key,"blocked","Unrecognized object/part setting");
@@ -217,7 +232,7 @@ struct ThreeMfScan {
             const auto& directives=source_plate.at("directives");
             const std::set<std::string> known{"locked","bed_type","print_sequence","first_layer_print_sequence","other_layers_print_sequence","other_layers_print_sequence_nums","spiral_mode","spiral_vase_mode","filament_map_mode","filament_maps","filament_volume_maps","thumbnail_file","thumbnail_no_light_file","top_file","pick_file"};
             for(auto it=directives.begin();it!=directives.end();++it)
-                if(!known.count(it.key())&&active(it.value()))feature("plate_directive:"+it.key(),"blocked","Unknown per-plate directive cannot be dropped, including selected multi-plate projects");
+                if(!known.count(it.key())&&!Slic3r::PlateProcess::has_prefix(it.key())&&active(it.value()))feature("plate_directive:"+it.key(),"blocked","Unknown per-plate directive cannot be dropped, including selected multi-plate projects");
             for(const char* key:{"filament_maps","filament_volume_maps"}) {
                 if(!directives.contains(key))continue;
                 const auto& raw=directives.at(key);
@@ -249,7 +264,7 @@ struct ThreeMfScan {
             result["currentPlate"]=result["plates"][0]["id"];
             const std::set<std::string> supportedDirectives{"locked","bed_type","print_sequence","first_layer_print_sequence","other_layers_print_sequence","other_layers_print_sequence_nums","spiral_mode","spiral_vase_mode","filament_map_mode","filament_maps","filament_volume_maps","thumbnail_file","thumbnail_no_light_file","top_file","pick_file"};
             for(auto it=result["plates"][0]["directives"].begin();it!=result["plates"][0]["directives"].end();++it)
-                if(!supportedDirectives.count(it.key()) && active(it.value())) feature("plate_directive:"+it.key(),"blocked","Unsupported per-plate directive must not be dropped");
+                if(!supportedDirectives.count(it.key()) && !Slic3r::PlateProcess::has_prefix(it.key()) && active(it.value())) feature("plate_directive:"+it.key(),"blocked","Unsupported per-plate directive must not be dropped");
             std::set<std::string> owned;
             for(const auto& member:result["plates"][0]["members"])
                 owned.insert(member.value("sourceObjectId",std::string())+":"+member.value("sourceInstanceId",std::string()));

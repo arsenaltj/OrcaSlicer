@@ -54,6 +54,7 @@ Json smart_slice_plans(const LoadedProject& project,const Json& request) {
     machine.default_acceleration_mm_s2=std::clamp(machine.default_acceleration_mm_s2,1.0,acceleration_limit);
     machine.outer_wall_acceleration_mm_s2=std::clamp(machine.outer_wall_acceleration_mm_s2,1.0,acceleration_limit);
     machine.travel_acceleration_mm_s2=std::clamp(machine.travel_acceleration_mm_s2,1.0,acceleration_limit);
+    machine.baseline_support_enabled=project.config.opt_bool("enable_support");
     machine.baseline_layer_height_mm=number(cfg,"layer_height",0.2);
     machine.baseline_wall_loops=int(number(cfg,"wall_loops",3));
     machine.baseline_infill_density_percent=number(cfg,"sparse_infill_density",15);

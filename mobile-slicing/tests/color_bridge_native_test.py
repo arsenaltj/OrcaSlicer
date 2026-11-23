@@ -307,8 +307,87 @@ assert result['physicalToolGcodeReparsed'] is True
 generic=S(dict(inputPath=str(source),projectId='generic-unchanged',projectRevision=1,
                outputDir=str(root/'generic'),operation='slice',quality='standard'),'slice-generic-no-adapter')
 assert generic['physicalToolGcodeReparsed'] is False and generic['activeMaterialIds']==[0]
+# Parameterized public manufacture chains: exact requested physical model and
+# support routes, not inferred from a logical support index or a preview color.
+def routed_support_case(name,model_tools,support_tool):
+    import struct
+    count=len(model_tools);path=root/(name+'.obj')
+    if count==5:
+        path=pathlib.Path(__file__).parent/'data/five-closed-parts-native.3mf'
+        assert hashlib.sha256(path.read_bytes()).hexdigest()=='afe4e16c3d3c1e409871dffed0c15c3853cf09621c4bca05351de4a8bb843a6f'
+    else:
+        path.write_text(''.join(box(24+i*14,24,0,26+i*14,26,10,i*16)+box(20+i*14,20,10,30+i*14,30,12,i*16+8) for i in range(count)))
+    source_digest=hashlib.sha256(path.read_bytes()).hexdigest()
+    colors=['#FF0000','#0000FF','#00FF00','#FFFF00','#000000'][:count]
+    route=model_tools+[support_tool]
+    bindings=[dict(materialId=i,slot=tool,tool=tool,materialPresetId='generic/petg' if i==count else 'generic/pla',
+                   color='#FFFFFF' if i==count else colors[i],purpose='support' if i==count else 'model') for i,tool in enumerate(route)]
+    base=dict(inputPath=str(path),projectId=name,projectRevision=1,outputDir=str(root/(name+'-project')),
+              config={'enable_support':'1','support_type':'normal(auto)','support_on_build_plate_only':'0','enable_prime_tower':'0'})
+    prepared=S(dict(**base,operation='prepareColorManufacturingConfig',devicePresetId='honor/forge-6-head-0.4',bindings=bindings),name+'-prepare')
+    exported=S(dict(**base,operation='exportColorDocument'),name+'-export')['artifacts'];mesh,appearance=exported
+    document=M(dict(operation='importConverted',inputPath=mesh['path'],appearancePath=appearance['path'],units='mm'),name+'-import')
+    docid=document['documentId'];rev=document['revision']
+    parts=json.loads(pathlib.Path(appearance['path']).read_text())['parts'] if count==5 else None
+    if count==5:assert len(parts)==5 and sum(p['triangleCount'] for p in parts)==76
+    for i,color in enumerate(colors):
+        rgb=[int(color[j:j+2],16)/255 for j in (1,3,5)]
+        faces=list(range(parts[i]['firstTriangle'],parts[i]['firstTriangle']+parts[i]['triangleCount'])) if parts else list(range(i*24,(i+1)*24))
+        M(dict(operation='paint',documentId=docid,expectedRevision=rev,faces=faces,color=rgb+[1]),name+'-paint-'+str(i));rev+=1
+    candidate=M(dict(operation='matchPrintColors',documentId=docid,expectedRevision=rev,requestedColorCount=count,palette=prepared['palette'],
+        materialFingerprint=prepared['materialFingerprint'],processFingerprint=prepared['processFingerprint']),name+'-match')
+    M(dict(operation='applyPrintColors',documentId=docid,expectedRevision=rev,candidateId=candidate['candidateId'],materialFingerprint=prepared['materialFingerprint'],
+        processFingerprint=prepared['processFingerprint'],confirmMaterialMapping=True,acceptColorError=True),name+'-apply');rev+=1
+    side=M(dict(operation='exportManufacturing',documentId=docid,expectedRevision=rev),name+'-manufacturing')['artifacts'][1]
+    derived=S(dict(**base,operation='applyColorDocument',appearancePath=side['path'],appearanceSha256=side['sha256'],
+        manufacturingConfig=prepared['manufacturingConfig'],materialFingerprint=prepared['materialFingerprint'],processFingerprint=prepared['processFingerprint'],
+        devicePresetId='honor/forge-6-head-0.4',bindings=bindings,confirmMaterialMapping=True),name+'-rebind')['artifacts'][0]
+    result=S(dict(operation='slice',inputPath=derived['path'],projectId=name,projectRevision=1,outputDir=str(root/(name+'-gcode')),
+        quality='standard',executeEffectiveConfig=True,devicePresetId='honor/forge-6-head-0.4',bindings=bindings,confirmMaterialMapping=True,multiMaterialConfirmed=True),name+'-slice')
+    assert hashlib.sha256(path.read_bytes()).hexdigest()==source_digest
+    assert result['filamentVolumePerSlotMm3'][str(count)]>0
+    assert result['activeMaterialIds']==list(range(count+1))
+    assert [(r['materialId'],r['toolId'],r['purpose']) for r in result['activeMaterialRoutes']]==[(i,t,'support' if i==count else 'model') for i,t in enumerate(route)]
+    expected=','.join(['220']*count+['255']);assert result['effectiveConfig']['nozzle_temperature']==expected
+    assert result['effectiveConfig']['nozzle_temperature_initial_layer']==expected
+    assert result['physicalToolGcodeReparsed'] and result['nativeMaterialConfigurationVerified']
+    raw=pathlib.Path(result['gcodePath']).read_text();current=None;first=None;thermal={t:set() for t in route};extrusion_tools=set();last_e=0.
+    for line in raw.splitlines():
+        start=re.match(r'^START_PRINT .*EXTRUDER=([0-9.]+).*INITIAL_TOOL=(\d+)',line)
+        if start:thermal[int(start[2])].add(float(start[1]))
+        tool=re.match(r'^T(\d+)\s*$',line)
+        if tool:current=int(tool[1]);assert current in route
+        if re.match(r'^M10[49] ',line):
+            temp=re.search(r'\bS([0-9.]+)',line);tool=re.search(r'\bT(\d+)',line)
+            if temp and float(temp[1])>0:thermal[int(tool[1]) if tool else current].add(float(temp[1]))
+        reset=re.match(r'^G92 .*\bE(-?[0-9.]+)',line)
+        if reset:last_e=float(reset[1])
+        move=re.match(r'^G[123] .*\bE(-?[0-9.]+)',line)
+        if move:
+            value=float(move[1])
+            if value>last_e+1e-7:
+                assert current in route
+                if first is None:first=current
+                extrusion_tools.add(current)
+            last_e=value
+    assert extrusion_tools==set(route) and first in model_tools
+    for i,t in enumerate(route):assert (255 if i==count else 220) in thermal[t],(t,thermal)
+    preview=pathlib.Path(result['previewPath']).read_bytes();assert preview[:8]==b'ORCAPV01'
+    segments=struct.unpack_from('<I',preview,12)[0];offset=struct.unpack_from('<Q',preview,24)[0]
+    preview_ids={struct.unpack_from('<H',preview,offset+i*32+28)[0] for i in range(segments) if preview[offset+i*32+31]&1}
+    assert preview_ids==set(range(count+1)),preview_ids
+    support_segments=sum(1 for i in range(segments) if preview[offset+i*32+31]&1 and
+        struct.unpack_from('<H',preview,offset+i*32+28)[0]==count and preview[offset+i*32+30] in (14,15,16))
+    assert support_segments>0
+
+    receipt=dict(modelTools=model_tools,supportTool=support_tool,firstExtrusionPhysicalTool=first,extrusionTools=sorted(extrusion_tools),
+        sourceSha256=source_digest,sourcePreserved=True,supportVolumeMm3=result['filamentVolumePerSlotMm3'][str(count)],supportPreviewSegments=support_segments,positiveEIsNotNetConsumption=True,
+        temperaturesByPhysicalTool={str(t):sorted(v) for t,v in thermal.items()},effectiveTemperatures=expected,previewLogicalMaterialIds=sorted(preview_ids),
+        logicalToPhysical=route,gcodeSha256=result['gcodeSha256'],previewSha256=result['previewSha256'],firmwareVerified=False)
+    (root/(name+'-receipt.json')).write_text(json.dumps(receipt,indent=2));return receipt
+supportRouteReceipts=[routed_support_case('T4T5-supportT3',[4,5],3),routed_support_case('T0to4-supportT5',[0,1,2,3,4],5)]
 summary=dict(state='passed',nativeTwoMaterialGcode=True,nativeSingleMaterialReceipt=True,
-             nativeSupportGcode=True,nativeSingleLoadedMaterial=True,negativeCases=negativeCases,enhancedRepairHealthyAndHole=True,
+             nativeSupportGcode=True,targetSupportRouteReceipts=supportRouteReceipts,nativeSingleLoadedMaterial=True,negativeCases=negativeCases,enhancedRepairHealthyAndHole=True,
              modelPaletteAndFaceRgbValidated=True,physicalPrinterVerified=False)
 (root/'summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps(summary))
 s.orca_mobile_slicing_destroy(sh);m.orca_model_destroy(mh)
