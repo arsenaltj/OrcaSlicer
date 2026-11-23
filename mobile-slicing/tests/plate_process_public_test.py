@@ -173,7 +173,33 @@ def main():
                         if item.get('key')=='orca_plate_process:outer_wall_line_width':item.set('value','3')
                     data=ET.tostring(doc)
                 dst.writestr(info,data)
-        preview=success('missing-source-nozzle-import',missing)['project'];assert not preview['blockingFeatures']
+        preview=success('missing-source-nozzle-import',missing)['project']
+        # The original explicit mapping has no source nozzle slot. Both old
+        # and new Native preserve this mapping blocker without a new physical
+        # missing-profile failure; keep this original negative control.
+        mapping_blockers=preview['blockingFeatures']
+        assert len(mapping_blockers)==1 and mapping_blockers[0]['id']=='invalid_plate_mapping:filament_maps'
+        assert mapping_blockers[0]['status']=='blocked' and mapping_blockers[0]['blocksAllOutputModes'] is True
+        assert 'PLATE_PROCESS_SOURCE_NATIVE_INVALID' not in json.dumps(preview)
+        # Independent positive preview control: empty only the explicit map
+        # metadata to Native defaults, keeping absent nozzle and carried width3.
+        # This import preview is not proof of an executable slicing profile.
+        no_map=root/'missing-source-nozzle-empty-default-mappings.3mf'
+        with zipfile.ZipFile(missing) as src,zipfile.ZipFile(no_map,'x') as dst:
+            for info in src.infolist():
+                data=src.read(info.filename)
+                if info.filename.lower()=='metadata/model_settings.config':
+                    doc=ET.fromstring(data)
+                    for item in doc.findall('plate/metadata'):
+                        if item.get('key') in ('filament_maps','filament_volume_maps'):item.set('value','')
+                    data=ET.tostring(doc)
+                dst.writestr(info,data)
+        with zipfile.ZipFile(no_map) as src:
+            assert 'nozzle_diameter' not in json.loads(src.read('Metadata/project_settings.config'))
+            doc=ET.fromstring(src.read('Metadata/model_settings.config'))
+            assert next(item.get('value') for item in doc.findall('plate/metadata') if item.get('key')=='orca_plate_process:outer_wall_line_width')=='3'
+        preview_positive=success('missing-source-nozzle-empty-map-import',no_map)['project']
+        assert not preview_positive['blockingFeatures']
         recovery=success('recovery-after-invalid',valid,'slice',executeEffectiveConfig=True)
         assert Path(recovery['gcodePath']).is_file() and recovery['effectiveConfig']['layer_height']=='0.16'
         print(json.dumps(dict(state='passed',cases=len(rows),scope='actual public native nonGLB source semantics; no independent QA claim')))
