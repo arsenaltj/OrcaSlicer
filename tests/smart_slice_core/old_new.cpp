@@ -33,18 +33,27 @@ int main() {try {
         for(const auto& plan:now.recommendations) {check(plan.enable_support==(z>0));if(z>0)check(plan.support_type=="normal(auto)");}
         equal(now.metrics.slope_detail_area_ratio,0.);
     }
-    auto slopeOld=cube<O::TriangleMeshSnapshot>(0.);auto slopeNew=cube<N::TriangleMeshSnapshot>(0.);
-    // A wider roof supplies >16% genuine slope area: the original 10x10
-    // cube's taller side walls left only ~15%, below the adaptive threshold.
-    for(auto& v:slopeOld.vertices){v.x*=2.;v.y*=2.;}
-    for(auto& v:slopeNew.vertices){v.x*=2.;v.y*=2.;}
-    for(size_t i:{size_t(5),size_t(6)}) {slopeOld.vertices[i].z+=5.;slopeNew.vertices[i].z+=5.;}
-    auto measuredOld=O::SmartSlicingEngine().AnalyzeAndPrecompute(slopeOld,om,of);
-    auto measuredNew=N::SmartSlicingEngine().AnalyzeAndPrecompute(slopeNew,nm,nf);
-    emit("actual-closed-sloped-model",measuredOld,measuredNew);
-    check(measuredNew.metrics.closed_mesh && measuredNew.metrics.slope_detail_area_ratio>.16);
-    equal(measuredNew.recommendations[0].layer_height_mm,.16);equal(measuredNew.recommendations[1].layer_height_mm,.22);
-    check(measuredNew.recommendations[2].adaptive_layer_height);
+    // Keep both roofs: a 10mm square slope is valid but falls below the
+    // adaptive threshold, while a 20mm square has enough sloped surface.
+    // Analytic roof area = depth*hypot(width,rise); total includes the flat
+    // bottom and four vertical walls. This oracle is independent of triangulation.
+    for(double width:{10.,20.}) {
+        auto slopeOld=cube<O::TriangleMeshSnapshot>(0.);auto slopeNew=cube<N::TriangleMeshSnapshot>(0.);
+        for(auto& v:slopeOld.vertices){v.x*=width/10.;v.y*=width/10.;}
+        for(auto& v:slopeNew.vertices){v.x*=width/10.;v.y*=width/10.;}
+        for(size_t i:{size_t(5),size_t(6)}) {slopeOld.vertices[i].z+=5.;slopeNew.vertices[i].z+=5.;}
+        const double roof=width*std::hypot(width,5.);
+        const double fraction=roof/(roof+width*width+2.*width*25.);
+        auto measuredOld=O::SmartSlicingEngine().AnalyzeAndPrecompute(slopeOld,om,of);
+        auto measuredNew=N::SmartSlicingEngine().AnalyzeAndPrecompute(slopeNew,nm,nf);
+        emit(width==10.?"actual-roof-10mm":"actual-roof-20mm",measuredOld,measuredNew);
+        std::cout<<"roof width="<<width<<" analytic slope fraction="<<fraction<<" measured="<<measuredNew.metrics.slope_detail_area_ratio<<"\n";
+        equal(measuredNew.metrics.slope_detail_area_ratio,fraction);
+        check(measuredNew.metrics.closed_mesh);
+        equal(measuredNew.recommendations[0].layer_height_mm,.16);equal(measuredNew.recommendations[1].layer_height_mm,.22);
+        check(measuredNew.recommendations[2].adaptive_layer_height==(fraction>.16));
+        check((width==10. && fraction>.12 && fraction<.16) || (width==20. && fraction>.16));
+    }
     O::ModelMetrics a;N::ModelMetrics b;
     a.bounding_box={0,0,0,20,20,10};b.bounding_box={0,0,0,20,20,10};
     a.volume_mm3=b.volume_mm3=1000;a.surface_area_mm2=b.surface_area_mm2=1000;
