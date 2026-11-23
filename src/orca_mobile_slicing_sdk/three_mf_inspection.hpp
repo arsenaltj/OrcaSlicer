@@ -178,13 +178,16 @@ struct ThreeMfScan {
         if(settings) settingsFile=path;
         namespaces.clear();instanceCounts.clear();paint=support=seam=fuzzy=false;error.clear();inPlate=inMember=false;
         parser=XML_ParserCreateNS(nullptr,'|');if(!parser) throw std::bad_alloc();
-        XML_SetUserData(parser,this);XML_SetElementHandler(parser,start,end);XML_SetNamespaceDeclHandler(parser,ns,nullptr);XML_SetStartDoctypeDeclHandler(parser,doctype);
+        XML_SetUserData(parser,this);XML_SetElementHandler(parser,start,end);XML_SetNamespaceDeclHandler(parser,ns,nullptr);
+        if(!sliceInfo) XML_SetStartDoctypeDeclHandler(parser,doctype);
         if(ranges) XML_SetCharacterDataHandler(parser,text);
         const bool ok=mz_zip_reader_extract_to_callback(&zip,index,chunk,this,0) && XML_Parse(parser,"",0,XML_TRUE)==XML_STATUS_OK;
         std::string why=error;
         if(!ok&&why.empty()) {const char* reason=XML_ErrorString(XML_GetErrorCode(parser));why=reason?reason:"3MF_XML_PARSE_FAILED";}
         XML_ParserFree(parser);parser=nullptr;
-        if(!ok) feature("xml_parse_failure","blocked",why);
+        // Native treats ordinary SliceInfo parse failures as nonfatal. Only
+        // reserved semantic prefixes add a blocker in this statistics file.
+        if(!ok && !sliceInfo) feature("xml_parse_failure","blocked",why);
 #ifdef ORCA_MOBILE_REAL_TRIANGULATION
         if(paint) feature("paint_color","supported_native","Native painted facets retained; actual Print and G-code tool routes require explicit confirmation and validation");
 #else

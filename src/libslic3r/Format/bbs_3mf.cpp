@@ -1311,6 +1311,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         //BBS: plater related structures
         bool m_is_bbl_3mf { false };
         bool m_parsing_slice_info { false };
+        bool m_invalid_reserved_plate_metadata { false };
         std::vector<std::string> m_config_xml_path;
         PlateDataMaps m_plater_data;
         PlateData* m_curr_plater;
@@ -1556,6 +1557,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
     bool _BBS_3MF_Importer::load_model_from_file(const std::string& filename, Model& model, PlateDataPtrs& plate_data_list, std::vector<Preset*>& project_presets, DynamicPrintConfig& config,
         ConfigSubstitutionContext& config_substitutions, LoadStrategy strategy, bool* is_bbl_3mf, bool* is_orca_3mf, Semver& file_version, Import3mfProgressFn proFn, BBLProject *project, int plate_id)
     {
+        m_invalid_reserved_plate_metadata = false;
+        m_parsing_slice_info = false;
+        m_config_xml_path.clear();
         m_version = 0;
         m_fdm_supports_painting_version = 0;
         m_seam_painting_version = 0;
@@ -1685,6 +1689,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
     bool _BBS_3MF_Importer::load_gcode_3mf_from_stream(std::istream &data, Model &model, PlateDataPtrs &plate_data_list, DynamicPrintConfig &config, Semver &file_version)
     {
+        m_invalid_reserved_plate_metadata = false;
+        m_parsing_slice_info = false;
+        m_config_xml_path.clear();
         mz_zip_archive archive;
         mz_zip_zero_struct(&archive);
         archive.m_pRead = mz_zip_read_istream;
@@ -1776,6 +1783,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                     //extract slice info from archive
                     _extract_xml_from_archive(archive, stat, _handle_start_config_xml_element, _handle_end_config_xml_element);
                     m_parsing_slice_info = false;
+                    // Ordinary statistics keep their existing nonfatal parse
+                    // behavior. Reserved process metadata cannot be ignored.
+                    if (m_invalid_reserved_plate_metadata) return false;
                 }
                 else if (boost::algorithm::iequals(name, FILAMENT_SEQUENCE_FILE)) {
                     _extract_filament_sequence_from_archive(archive, stat);
@@ -2239,6 +2249,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                     //extract slice info from archive
                     _extract_xml_from_archive(archive, stat, _handle_start_config_xml_element, _handle_end_config_xml_element);
                     m_parsing_slice_info = false;
+                    // Ordinary statistics keep their existing nonfatal parse
+                    // behavior. Reserved process metadata cannot be ignored.
+                    if (m_invalid_reserved_plate_metadata) return false;
                 }
                 else if (!dont_load_config && boost::algorithm::iequals(name, FILAMENT_SEQUENCE_FILE)) {
                     _extract_filament_sequence_from_archive(archive, stat);
@@ -3839,6 +3852,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         if (m_xml_parser == nullptr)
             return;
 
+        if (::strcmp(CONFIG_TAG, name) == 0) m_config_xml_path.clear();
         m_config_xml_path.emplace_back(name);
         bool res = true;
         unsigned int num_attributes = (unsigned int)XML_GetSpecifiedAttributeCount(m_xml_parser);
@@ -4768,6 +4782,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         if (PlateProcess::reserved_key(key) &&
             (m_parsing_slice_info || !m_curr_plater || m_config_xml_path.size() < 2 ||
              m_config_xml_path[m_config_xml_path.size() - 2] != PLATE_TAG)) {
+            m_invalid_reserved_plate_metadata = true;
             add_error("RESERVED_PLATE_METADATA_UNSUPPORTED_CONTEXT:" + key);
             return false;
         }

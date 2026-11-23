@@ -69,7 +69,7 @@ and the known source common layer interval remain required.
 
 Reserved process/session keys are allowed only as direct plate metadata in
 ModelSettings. They cannot alter process config through SliceInfo statistics or
-model-instance metadata. Ordinary statistics remain accepted. Sessions and curves
+model-instance metadata. Ordinary statistics and their existing nonfatal parse behavior remain accepted. Sessions and curves
 remain unsupported in the SDK even in their formal container. The public regression
 keeps wrong-container negatives, ordinary statistics, same-handle recovery, and
 source-versus-effective override and export/reimport checks. The optional source-

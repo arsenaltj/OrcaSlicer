@@ -121,7 +121,7 @@ def main():
             with zipfile.ZipFile(valid) as src,zipfile.ZipFile(destination,'x') as dst:
                 for info in src.infolist():
                     data=src.read(info.filename)
-                    if info.filename.lower()=='metadata/model_settings.config' and container!='ordinary-stats':
+                    if info.filename.lower()=='metadata/model_settings.config' and not container.startswith('ordinary-stats'):
                         doc=ET.fromstring(data);plate=doc.find('plate')
                         for item in list(plate):
                             if item.tag=='metadata' and item.get('key')==key:plate.remove(item)
@@ -130,9 +130,14 @@ def main():
                             assert target is not None,container
                             ET.SubElement(target,'metadata',key=key,value=value)
                         data=ET.tostring(doc)
-                    if info.filename.lower()=='metadata/slice_info.config':data=ET.tostring(stats);sidecar_seen=True
+                    if info.filename.lower()=='metadata/slice_info.config':
+                        data=ET.tostring(stats);sidecar_seen=True
+                        if container=='ordinary-stats-incomplete':data=data.removesuffix(b'</config>')
                     dst.writestr(info,data)
-                if not sidecar_seen:dst.writestr('Metadata/slice_info.config',ET.tostring(stats))
+                if not sidecar_seen:
+                    stats_data=ET.tostring(stats)
+                    if container=='ordinary-stats-incomplete':stats_data=stats_data.removesuffix(b'</config>')
+                    dst.writestr('Metadata/slice_info.config',stats_data)
             return destination
         for container in ('slice-info','member','object','part','root'):
             for key,value in [('orca_plate_process:outer_wall_line_width','9'),('orca_workbench_slicing_v1','{}'),('orca_workbench_curve_v2:1','{}')]:
@@ -144,6 +149,9 @@ def main():
         statistics=reserved_context('ordinary-statistics','','','ordinary-stats')
         normal=success('ordinary-statistics-slice',statistics,'slice',executeEffectiveConfig=True)
         assert Path(normal['gcodePath']).is_file()
+        incomplete=reserved_context('ordinary-statistics-incomplete','','','ordinary-stats-incomplete')
+        ordinary_import=success('ordinary-statistics-incomplete-import',incomplete)['project']
+        assert not ordinary_import['blockingFeatures']
         # A type-valid source without a declared nozzle does not prove an
         # invalid physical source profile. Import remains available; execution
         # will require a legal effective profile, as before.
