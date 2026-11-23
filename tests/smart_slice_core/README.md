@@ -26,8 +26,8 @@ quality dispatch, transformed geometry and error propagation. These are developm
 source regressions; they do not qualify a new SDK bundle, C ABI release, Android
 runtime, or APK. No old build directory is written by this target.
 
-The default build also creates `smart_slice_old_new`. It reads four exact blobs
-from e8d8dea3b2cb5705c62a41ac7a1a2273cec6539a, changes only their namespace,
+The default build also creates `smart_slice_old_new`. It reads five exact blobs
+from e8d8dea3b2cb5705c62a41ac7a1a2273cec6539a, changes only their namespace and corresponding local include paths,
 and compiles the old and current implementations into the same test process.
 CTest `SmartSliceOldNew` compares the same profile and bed/floating cubes,
 actual closed sloped geometry, a 0.42 slope metric input, a narrow layer interval,
