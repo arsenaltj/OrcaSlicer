@@ -1,3 +1,58 @@
+# MAINLINE-BUGFIX-001｜工作台入口与默认正视（2026-11-23）
+
+本轮按已批准的「精简工作台并默认正视模型」方案实施。普通工作台页头去除返回图像设计、返回 AI 创作和 3D 美颜工作台入口，左侧「AI创作」沿用原页面恢复流程。旧成果页的入口名称为「进入工作台」，3D 美颜编辑与草稿自动恢复暂时冻结，旧源码、草稿和历史版本保留。
+
+工作台预览以 `+X` 为前、`+Y` 为右、`+Z` 为上的约定显示正面。首次加载、正面按钮和导航立方体共用相同基准，朝向只作用于预览层。普通切页返回、同一模型恢复和失败回滚保留原视角，模型切换清除只读问题面高亮。
+
+- Windows Release 在固定目录增量构建完成，原生 198 项通过、1 项环境跳过。新增相机方向回归覆盖普通尺寸和薄模型。
+- 实窗使用固定入口和隔离验证数据，完成非对称 OBJ 首帧正面、右视图、手动旋转后切页返回、资产切换、历史美颜版本普通查看、去切片和问题面只读高亮。问题面高亮通过手动重跑检查后核对，切换模型后已清除。
+- 实窗截图、两个 OBJ 输入和运行日志保存在 [workbench-front-20261123](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-front-20261123)。源文件未改动，当前构建和运行目录沿用既有固定位置。
+
+跨屏 DPI 和真实加载失败回滚保留为后续实窗补验项。本轮不修改虚拟打印机、G-code、切片工程、实体设备或用户模型。
+
+---
+
+# MAINLINE-BUGFIX-001｜虚拟打印机「上传并打印」回归（2026-11-22）
+
+- 默认 Windows Release 在固定构建目录使用经 SHA-256 校验的 ONNX Runtime 1.20.1 和 U2NetP 资源完成构建。隔离实窗使用基于 `f9d52e76ba` 和 19 项 Nightly 回补的运行产物，EXE、应用 DLL、ONNX Runtime DLL 和模型的哈希均复核一致。 [运行产物](D:/TEST/artifacts/mainline-bugfix/evidence/nightly-validation-20261122/default-runtime-validation.json)
+- 在 Windows 实窗载入并切片 `nightly-1122-default-print.3mf`，通过原有「上传并打印」入口向回环虚拟打印机 0.2.2 提交。设备收到 310,205 字节的 G-code 并启动一次打印，约 37 秒后回报 100% 完成。客户端收到 `FINISH`，设备历史新增一条同名完成记录。 [客户端日志](D:/TEST/worktrees/OrcaSlicer-upstream-v2.5.0-alpha/mainline-bugfix/.tmp/dev/validation/nightly-validation-20261122-default-data/log/debug_Sun_Nov_22_22_52_56_38500.log.0:52752) · [设备回执](D:/TEST/artifacts/mainline-bugfix/evidence/nightly-validation-20261122/default-virtual-print-result.json) · [设备轨迹](D:/TEST/artifacts/mainline-bugfix/evidence/nightly-validation-20261122/default-virtual-print-trace.ndjson)
+- 本轮按用户指定以虚拟打印机回归验收。此前的隔离实窗启动拒绝已有本次成功运行记录。ONNX Runtime 空缓存下载已通过，U2NetP 已从原始发布地址分段下载并核对固定 SHA-256。使用最新续传代码的空缓存流程仍待验证。 [下载记录](D:/TEST/artifacts/mainline-bugfix/evidence/nightly-validation-20261122/dependencies/u2netp-remote-receipt.json)
+
+---
+
+# MAINLINE-BUGFIX-001｜官方 Nightly 定向回补（2026-11-20）
+
+- 本地 task/mainline-bugfix 从 f9d52e76ba 按官方 0c62aa085e 回补已批准的 19 项。 耗材映射沿用既有切片错误流程，输入失效时作废旧 G-code。[验证记录](D:/TEST/artifacts/mainline-bugfix/evidence/nightly-backport-20261120/validation.json)
+- Windows Release 定向构建、766 项原生回归、8 项 CLI、21 项模型库网页测试与 AI 集成检查均通过。 隔离运行文件身份已核验。两个正常输入各有 10,861 条非风扇 G-code 指令逐条一致，实际差异来自冷却风扇指令。界面资源、翻译、导航与布局通过源码对照。[G-code 对照](D:/TEST/artifacts/mainline-bugfix/evidence/nightly-backport-20261120/gcode-comparison.json)
+- 固定版 ONNX Runtime 下载超时。自动审批以 blocked by policy 拒绝隔离 GUI 启动，实窗对照待验。 定向构建关闭了原生前景分割，实物打印待验。改动在本地工作树，两份原有未提交文档内容逐字节保全。
+
+---
+
+# MAINLINE-BUGFIX-001｜同步团队主线（2026-11-20）
+
+`task/mainline-bugfix` 从 `685449a3d2` 快进到 `origin/codex/team/integration` 的 `c50da0ef6e0148169ec65bc65c69a49b2f3166a5`。
+
+- 主计划和短状态合并保留两边的进度记录。本地桌面账号、模型库和打印改动恢复到工作树，原始备份为 `757db23767fa4ae7a7d588a4e5d803aceaed700f`。
+- Git 差异、架构检查和网页 20 项通过。Windows Release 编译与原生回归采用关闭原生前景分割的配置，208 项通过、1 项跳过。[原生回归日志](D:/TEST/worktrees/OrcaSlicer-upstream-v2.5.0-alpha/mainline-bugfix/.tmp/dev/logs/20261120-133810-672/cpp-tests.log#L422)
+- 固定版本的 ONNX Runtime 下载地址返回 404，构建开关已恢复默认值。默认 Windows 构建等待该依赖可用。桌面账号的真实授权和线上接口验收接续本地记录。[Windows 构建日志](D:/TEST/worktrees/OrcaSlicer-upstream-v2.5.0-alpha/mainline-bugfix/.tmp/dev/logs/20261120-125318-302/result.json)
+
+## 桌面账号头像
+
+`task/mainline-bugfix` 通过平台资料确认账号头像。账户页、侧栏与本地或账号自有卡片共享头像。编辑保存后回读资料，回读失败可单独重试。
+
+- Windows 固定目录 Run `20261120-144342-203` 完成增量构建及运行时检查。通过「Honor Forge 正式修复验证」入口和原配置，使用获准账号实测保存头像，账户页、侧栏、本地资产和自有云作品同步更新。已下载的他人公共模型仍显示作者头像。
+- 网页 21 项和原生账号、头像与模型库回归 66 项通过。原生覆盖首次读取失败、保存失败、回读失败后的只读重试，以及退出和换号隔离。[原生回归日志](../../.tmp/dev/logs/20261120-150819-239/cpp-tests.log#L136)
+- 在旧目录放置原头像对照，重启后仍显示后端测试头像。通过编辑弹窗恢复原头像，经后端回读比对 96×96 像素一致，已将临时对照图移出原配置。
+- 实窗退出后账户页、侧栏和本地资产均回到访客头像。荣耀授权在客户端内加载，本次未收到扫码登录回执，窗口已回到登录入口。完整重登及切换到第二账号待补验。
+
+## 本地提交与远端审查
+
+- 本地提交 `207d768982` 和 `f9d52e76ba` 均已推送，源分支 `task/mainline-bugfix`。相对集成基线 `c50da0ef6e` 变更 69 个文件。相对远端源分支上一版 `685449a3d2` 同步了 41 个集成线提交，并追加两项桌面改动。源码、测试与维护文档参见 [PR #83 中文变更说明](https://github.com/arsenaltj/OrcaSlicer/pull/83)。
+- Windows Release 定向原生回归两组 261 项和 18 项通过，构建记录分别为 `20261120-154757-909` 和 `20261120-155039-665`。网页 21 项、AI 集成校验、架构映射、差异检查和 PR 文档声明通过。FFmpeg 构建脚本已修复初次 ShellCheck 报告的 `SC2155`，远端复跑通过。
+- 当前 PR 等待集成检查与非作者评审。线上重登和真实换号、默认前景分割构建及其他设备验收仍按原记录执行。
+
+---
+
 # MODEL-SDK-DEFAULT-CMAKE-D1 (2026-11-20)
 
 Mainline: task-20261120-model-sdk-default-cmake from d60d3a9; PR82 is now formally open by explicit user request. D1 repair round 1 fixes an absent LINK_LIBRARIES property without disabling default tests.
@@ -1101,6 +1156,61 @@ Windows证据边界：两项仅验既有原生只读失败详情和共用中文�
 
 ---
 
+# MAINLINE-BUGFIX-001｜桌面账号接入（2026-11-20）
+
+`mainline-desktop-account-20261120` 在 `task/mainline-bugfix` 接续，基线为 `685449a3d2`，平台契约固定到 `4088a8e8`。
+
+- 软件内嵌荣耀授权页使用原 WebView 配置，固定回调绑定当前登录代次。桌面平台和 PKCE challenge 由原生客户端提交，会话保存、恢复、刷新、撤销沿用本机安全存储。
+- `GET /v1/me` 的头像同步到账户页、侧栏和自有资产卡片。更换头像通过 `PATCH /v1/me` 保存到账号，再回读确认。平台鉴权请求附客户端、系统、版本及构建信息，活跃统计由后端处理。
+- 积分查询及云空间的容量、列表、上传、预览、下载和引用管理提供原生服务。界面留待 UX 设计稿，平台 AI、作品管理与升级留在后续批次，模型生成读取现有配置。
+- 固定 Windows 运行目录和既有验证入口已更新，继续使用原数据目录。实窗通过内嵌登录打开与取消、本地 OBJ 打开、普通 3MF 导入切片及已下载公共卡片详情。真实测试账号与审计权限就绪后补验已登录场景、后端授权与活跃统计及在线云文件操作。[源码及实窗验证](D:/TEST/artifacts/mainline-bugfix/evidence/desktop-account-20261120/validation.md)
+
+---
+
+# MAINLINE-BUGFIX-001｜模型卡片菜单（2026-11-19）
+
+本轮沿用 `task/mainline-bugfix` 和基线 `685449a3d2`，由 `mainline-bugfix` 任务续接。工作范围是模型库网页卡片菜单和桌面端资产导入桥接。
+
+- 「我的模型」提供「打开模型」。桌面端在资产扫描时确认可通过原生路径导入的 STL、STEP/STP 和带网格的普通 3MF，网页依据该标记显示「导入切片」。GLB 和 OBJ 通过「打开模型」进入工作台，纯设计图提供「打开设计图」。
+- 「模型库」公共卡片统一提供「模型详情」，已下载的公共卡片也进入选中版本的详情。配色、贴图、导出、删除和全局命令已移出卡片菜单。
+- 网页 20 项、原生 29 项和 Windows x64 Release 构建通过。原桌面入口沿用原配置。实窗确认 OBJ 进入工作台，普通 3MF 经原生选项载入切片准备，以及普通和已下载公共卡片进入各自的详情。纯设计图的菜单与点击消息由网页回归覆盖。[验证记录](D:/TEST/artifacts/mainline-bugfix/evidence/model-card-menu-20261119/validation.md)
+
+---
+
+# MAINLINE-BUGFIX-001｜打印准备、侧栏与实时视频（2026-11-19）
+
+主线沿用 `task/mainline-bugfix` 和基线 `685449a3d2255f4cddb3b054c54ce6c6602c5f5b`。PR #78 继续审查。本轮由 `mainline-live-video-20261119` 接续当天的桌面上传和「去打印」修复。
+
+打印准备显示当前盘的 G-code 显示名和预计耗时。发送确认根据设备能力及实际提交路径显示自动调平。摄像头设置核对设备录像与存储能力。AI 失败预警显示设备回报，等待回执期间保留原状态。沿用既有轮询，状态、进度、温度和操作按钮按显示值增量更新。自定义视频流地址使用深色弹窗，按设备保存。
+
+Moonraker 优先使用设备公布的流地址。Windows x64 的 `dep_FFMPEG` 从固定 FFmpeg 7.0.3 源码完成构建并安装。播放器后台解码，以首帧进入播放状态，保留最新帧，断流后退避重连，离开监控页时关闭连接。RTSP 优先 TCP，在设备拒绝时尝试 UDP。仅有快照地址时标注「快照模式」。拓竹与 WebRTC 使用各自已有的适配通道。标准视频地址可在摄像头设置中填写。
+
+- Windows 实窗使用原版 0.2.2 回环虚拟打印机完成连续 MJPEG 播放、截图、「去打印」、仅上传和上传并打印。仅上传进入设备存储，本次打印任务只由「上传并打印」启动。差异提示后直接提交并使用 `T0 / NOZZLE1`，设备报 100% 完成。切换到已发现的 TM-T1 时读取 `/server/info` 失败，随后重新选择回环设备并恢复连接。TM-T1 的固件和视频仍待核验。
+- 24 fps HLS 和 RTSP/TCP 测试源在 Windows 播放器显示动态画面。RTSP 发送端停约 8 秒再恢复，播放器在发送恢复后约 0.8 秒显示新首帧。手动停止后保持停止。切页后 `18789` 的旧连接关闭。连续录像覆盖回环空闲 22 秒、打印变化 50 秒和 RTSP 断流恢复 30 秒。侧栏 2,700 个采样帧中未观察到整栏白闪或布局跳动。
+- 定向测试中打印工作台和耗材对比 18 项通过，导航及相机 8 项通过，Moonraker 相机与传输 6 项通过。收尾回归覆盖快照解析、显式盘、取消、设备身份等 10 项并全部通过。各组有重叠。最终 Windows x64 Release 和 AI 集成检查通过。随包 DLL 探测确认 HTTP(S)、MJPEG、HLS、H.264 和 HEVC 组件，并验证 RTSP 在 UDP-only 测试源上的传输回退。
+- 最终 Release 已安装到固定 `.tmp/dev/run`，从桌面「Honor Forge 正式修复验证」使用原 `.tmp/dev/data` 启动。入口、进程参数和运行文件 SHA-256 已核对，安装记录见 `.tmp/dev/logs/20261119-155901-582/result.json`。最终实窗复验「去打印」、G-code 名称与预计耗时、深色自定义流地址弹窗。清除回环设备的临时 RTSP 地址后复验原版 5 fps MJPEG 及手动截图。
+- 快照专用解析已通过测试，实窗仍待覆盖。设备级断线恢复、两台均可连接的设备间切换、慢传连续录屏、传输中取消及耗材读取失败后提交仍待实窗验收。本机自动审批拒绝启动回环故障转发夹具，返回 `blocked by policy`。实体机型与固件兼容还需逐台只读验证，已发现的 TM-T1 在 `/server/info` 阶段失败。Windows ARM64 和远端依赖构建待验证。证据见 [实时视频联调目录](D:/TEST/artifacts/mainline-bugfix/evidence/live-camera-20261119)。
+
+计划采用设备能力门控和连续视频解码。Moonraker 走设备上报的摄像头地址，其他标准摄像头可填写直连地址，拓竹和 WebRTC 走原有适配器。回环验收使用原版虚拟打印机 0.2.2、原有 G-code 和配置。实体设备只做只读连接。
+
+---
+# MAINLINE-BUGFIX-001｜桌面上传与「去打印」（2026-11-19）
+
+主线沿用 `task/mainline-bugfix` 和基线 `685449a3d2255f4cddb3b054c54ce6c6602c5f5b`。PR #78 继续审查。本轮 `go-to-print-20261119` 接续 11 月 18 日的桌面弹窗改造和同版验证。
+
+本轮发现旧版按钮可在预览首帧前点亮，同一时段导航仍会等待，旧日志有一次约 3.07 秒等待。用户当次点击的具体原因未能定位。新版让按钮与导航共用就绪判断，等待时显示「正在准备切片预览…」，实窗就绪后可进入打印确认。六色模型的智能切片预估改用与正式切片一致的原始预设输入，同一模型实际完成预估和切片。
+
+两个深色弹窗在同一窗口内更新准备、上传和结果，进度局部缓冲重绘，底栏固定。仅「上传并打印」显示当前盘的「切片用料 → 设备实际用料」。设备料槽根据已核实的设备身份和明确绑定读取。缺少对应关系时显示「未核实」。耗材读取和换料提示独立于原有切片与设备检查，使用原上传／打印链路提交。30 项定向回归全部通过。其后仅调整失败文案翻译时机，Windows Release 和运行时校验通过。快捷方式「Honor Forge 正式修复验证」指向本工作树的 `.tmp/dev/run`，用原 `.tmp/dev/data` 启动，构建与运行 DLL 的 SHA-256 前缀同为 `3BEE29ECD66B`。构建记录见 `.tmp/dev/logs/20261119-111346-675/result.json`。
+
+Windows 联调使用本机 `127.0.0.1:7125` 虚拟打印机和测试立方体。0.2.2 上同色 PLA 无提醒且已启动。最终构建中灰色 PLA 对橙色 PLA 显示换料提示，直接提交后打印完成，工具绑定一致，仅原料槽 1 扣除约 4.01 g。「仅上传」入库 `transfer-qa-match-only-v022.gcode`，没有该文件对应的打印任务。两窗分别实测同窗中文失败提示，复验后内置 `upload_failed` 恢复关闭。提交前关闭两窗，文件和任务列表一致。准备与结果截图的窗口位置、尺寸一致。较早的 0.1.1 异色用槽结果和初版验证分别保存在 [11 月 19 日实窗证据](D:/TEST/artifacts/mainline-bugfix/evidence/go-to-print-20261119) 和 [11 月 18 日验证记录](D:/TEST/artifacts/mainline-bugfix/evidence/desktop-transfer-advisory-20261118/validation.json)。
+
+未结项包括耗材请求实际失败后提交，以及两个弹窗慢传至成功、失败、传输中取消的连续录屏。自动审批以 `blocked by policy` 拒绝限速／故障转发和后续录屏命令，未给出更具体原因。仅上传的已有录像止于提交前。传输中白闪仍待验。另观察到旧主窗口成功通知把 G-code 文件名显示为 `.gcode.3mf`，传输弹窗和设备入库文件名正确。
+
+下一步在可用的耗材读失败、慢速传输和连续录屏条件下复验上述场景，沿用原配置、相同目标和已登记的构建身份。
+
+计划改为只读展示与换料建议。范围限桌面端，沿用原 G-code 和虚拟打印机。实窗验证复用原验证配置，模拟打印按原用槽自然扣料。
+
+---
 # MAINLINE-BUGFIX-001：全部现有成果提交与主线PR（2026-11-18）
 
 主线：沿用task/mainline-bugfix，目标codex/team/integration；本次拉取19400ff9ad14eddf0110ec019eccc819cfb62af0，已合PR77。其源码树与PR77头df36ee3a02完全一致，本轮不重新计入已合的退役清理、窗口批量采集和官方Nightly同步。

@@ -480,17 +480,16 @@ void ModelGenerationPanel::show_workbench_check_details()
 {
     if (!m_workbench_shell) return;
     hide_workbench_check_card();
+    const auto model_hash = m_workbench_check_result.model_sha256;
+    const auto issue_faces = m_workbench_check_result.issue_faces;
     const wxString detail_text = from_u8(workbench_check_detail_text(m_workbench_check_result));
     std::vector<RedesignDialogAction> actions;
-    if (!m_workbench_check_result.issue_faces.empty())
+    if (!model_hash.empty() && !issue_faces.empty())
         actions.push_back({wxID_APPLY, _L("定位问题区域"), false});
     actions.push_back({wxID_OK, _L("关闭"), false});
     if (show_redesign_details(m_workbench_shell, detail_text, _L("检查修复详情"), actions) == wxID_APPLY &&
-        m_model_preview && m_model_preview->model_sha256() == m_workbench_check_result.model_sha256) {
-        m_workbench_editing = true;
-        refresh_post_generation_workbench();
-        m_model_preview->select_face_evidence(m_workbench_check_result.issue_faces);
-        publish_workbench_state();
+        m_model_preview && m_model_preview->model_sha256() == model_hash) {
+        m_model_preview->show_workbench_issue_faces(issue_faces);
     }
 }
 
@@ -645,11 +644,6 @@ void ModelGenerationPanel::rescale_post_generation_workbench()
     m_workbench_model_status->SetFont(wxGetApp().bold_font());
     m_workbench_model_status->SetMinSize(status_size);
     m_workbench_model_status->SetMaxSize(status_size);
-    for (wxWindow* control : {m_workbench_return_to_design_button, m_workbench_edit}) {
-        control->SetFont(wxGetApp().bold_font());
-        control->SetMinSize(FromDIP(wxSize(140, 38)));
-        control->SetMaxSize(FromDIP(wxSize(140, 38)));
-    }
     auto* search = static_cast<TextInput*>(m_workbench_history_search->GetParent());
     auto search_icon = ScalableBitmap(search, "workbench_search", 12).bmp().ConvertToImage();
     search_icon.Replace(0, 0, 0, 235, 235, 235);
@@ -808,7 +802,6 @@ void ModelGenerationPanel::apply_workbench_snapshot()
     layout_changed = set_workbench_shown(m_workbench_footer, show_beauty_actions) || layout_changed;
     const bool history_was_shown = m_workbench_history_panel->IsShown();
     layout_changed = update_workbench_history_visibility() || layout_changed;
-    set_workbench_enabled(m_workbench_edit, state.can_edit && !m_workbench_editing);
     if (m_workbench_project_summary) {
         const auto& filaments = snapshot.printer_filaments;
         const wxString summary = wxString::FromUTF8(filaments.printer)+
@@ -828,12 +821,6 @@ void ModelGenerationPanel::apply_workbench_snapshot()
     set_workbench_enabled(m_workbench_sync_filaments, snapshot.can_edit_project_colors && device);
     set_workbench_tooltip(m_workbench_sync_filaments,
         device ? _L("使用原生设备耗材同步流程") : _L("当前没有可同步的同型号设备；可离线配置耗材"));
-    if (m_workbench_return_to_design_button)
-        layout_changed |= set_workbench_label(m_workbench_return_to_design_button,
-            m_shell_smart_creation ? _L("返回AI创作") : _L("返回图像设计"));
-    if (m_workbench_return_to_design_button)
-        set_workbench_enabled(m_workbench_return_to_design_button,
-            post_generation_return_to_design_allowed(state));
     const bool check_processing = m_native_workbench_partition_running || m_workbench_check_running ||
         (m_workbench_auto_repair && m_finishing_running);
     const bool topology_normal = !check_processing && snapshot.check.status == WorkbenchCheckStatus::Normal &&

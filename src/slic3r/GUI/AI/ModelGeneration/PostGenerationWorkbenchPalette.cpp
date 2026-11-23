@@ -169,6 +169,7 @@ bool ModelGenerationPanel::request_workbench_filament_match(std::function<void(B
 
 bool ModelGenerationPanel::request_beauty_color_gate(bool enter_after_success)
 {
+    if (enter_after_success && !workbench_beauty_editing_available) return false;
     if (m_shutdown || !m_model_preview || !m_model_preview_ready ||
         !ModelGenerationPresentation::is_nonempty_model(m_displayed_model_path)) return false;
     if (enter_after_success) m_beauty_entry_pending = true;

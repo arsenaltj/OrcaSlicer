@@ -688,14 +688,12 @@ private:
     wxStaticText* m_workbench_model_status {nullptr};
     wxStaticText* m_workbench_check_status {nullptr};
     wxStaticText* m_workbench_palette_status {nullptr};
-    wxWindow* m_workbench_edit {nullptr};
     wxWindow* m_workbench_check {nullptr};
     wxWindow* m_workbench_palette_details {nullptr};
     wxToggleButton* m_workbench_original {nullptr};
     wxWindow* m_workbench_slicing {nullptr};
     bool m_open_smart_slicing_after_import {false};
     wxWindow* m_workbench_history_toggle {nullptr};
-    wxWindow* m_workbench_return_to_design_button {nullptr};
     bool m_workbench_editing {false};
     bool m_refreshing_workbench_layout {false};
     bool m_updating_comparison_layout {false};

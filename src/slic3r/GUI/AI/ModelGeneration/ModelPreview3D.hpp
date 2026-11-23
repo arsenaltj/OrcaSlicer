@@ -129,8 +129,11 @@ public:
                 weak->m_canvas->Refresh(false);
             });
     }
-    explicit ModelPreview3D(wxWindow* parent, bool retain_surface_attributes = false)
-        : wxPanel(parent), m_retain_surface_attributes(retain_surface_attributes)
+    enum class InitialView { Automatic, WorkbenchFront };
+
+    explicit ModelPreview3D(wxWindow* parent, bool retain_surface_attributes = false,
+                            InitialView initial_view = InitialView::Automatic)
+        : wxPanel(parent), m_retain_surface_attributes(retain_surface_attributes), m_initial_view(initial_view)
     {
         Presentation::background_tasks().on_shutdown(this, [this] { begin_background_shutdown(); });
         wxString trace_value;
@@ -1353,6 +1356,9 @@ public:
                 direct_original_model.reset();
             }
         }
+        const bool keep_workbench_view = m_initial_view == InitialView::WorkbenchFront &&
+            m_has_model && prepared.path == m_model_path && !m_model_sha256.empty() &&
+            prepared.artifact_sha256 == m_model_sha256;
         cache_current_preview();
         clear_current_preview(true);
         m_manual_color_model = std::move(manual_color_model);
@@ -1442,7 +1448,7 @@ public:
         if(m_portrait_shapes && m_portrait_shapes->derived_boundary()) ensure_region_editor();
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
-        default_view();
+        if (!keep_workbench_view) default_view();
         if (prepared.round_base_enabled && !set_round_base_preview(true, error)) return false;
         m_pending_library_thumbnail_sha = std::move(prepared.artifact_sha256);
         notify_selection_changed();
@@ -1685,6 +1691,7 @@ private:
         m_beauty_pick = {};
         m_selection_model.reset();
         m_protection_model.reset();
+        m_workbench_issue_model.reset();
         m_region_editor = std::make_shared<AI::VertexColorRegionEditor>();
         m_pending_mesh = indexed_triangle_set {};
         m_pending_vertex_colors = std::vector<RGBA> {};
@@ -1752,20 +1759,21 @@ public:
     // The portrait front camera sees the Y-Z projection. Thin X-Z / X-Y
     // assets would collapse to a line, so their initial view uses the existing
     // Z-up three-dimensional angle. Explicit front-view actions stay literal.
-    static std::pair<double, double> initial_view_angles(const Vec3d& dimensions)
+    static std::pair<double, double> initial_view_angles(const Vec3d& dimensions,
+                                                         InitialView initial_view = InitialView::Automatic)
     {
         const double extent = dimensions.maxCoeff();
-        if (extent > 0.0 &&
+        if (initial_view == InitialView::Automatic && extent > 0.0 &&
             std::min(dimensions.y(), dimensions.z()) < extent * 0.02)
             return {-0.65, -1.05};
-        return {-1.5707963267948966, -1.5707963267948966};
+        return ModelPreviewCameraRotation::front_angles;
     }
 
     void default_view()
     {
         set_auto_rotation(false);
         m_pan_x = m_pan_y = 0.0;
-        const auto angles = initial_view_angles(m_bounds.size().cast<double>());
+        const auto angles = initial_view_angles(m_bounds.size().cast<double>(), m_initial_view);
         m_camera_rotation.reset(angles.first, angles.second);
         if (m_navigator) m_navigator->reset();
         m_zoom = 1.0;
@@ -1780,7 +1788,8 @@ public:
         // Generated portrait OBJ files are Z-up and face +X. Rotate +X toward
         // the orthographic camera so identity can be compared without asking
         // the user to find a precise angle by dragging a two-million-face mesh.
-        m_camera_rotation.reset(-1.5707963267948966, -1.5707963267948966);
+        const auto angles = ModelPreviewCameraRotation::front_angles;
+        m_camera_rotation.reset(angles.first, angles.second);
         if (m_navigator) m_navigator->reset();
         m_zoom = 1.0;
         if (m_canvas != nullptr)
@@ -3506,6 +3515,27 @@ public:
         return localized;
     }
 
+    void show_workbench_issue_faces(const std::vector<size_t>& face_indices)
+    {
+        if (!m_has_model || !m_context || !m_canvas->SetCurrent(*m_context)) return;
+        const auto& canonical = m_leaf_editing ? m_leaf_editing->canonical_editor : m_region_editor;
+        const auto& mesh = canonical->ready() ? canonical->mesh()
+            : current_region_preparation() ? m_region_preparation->mesh : m_pending_mesh;
+        GLModel::Geometry geometry;
+        geometry.format = {GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3N3};
+        const std::set<size_t> unique_faces(face_indices.begin(), face_indices.end());
+        for (size_t face_index : unique_faces)
+            if (face_index < mesh.indices.size())
+                append_mask_triangle(geometry, mesh, face_index);
+        m_workbench_issue_model.reset();
+        if (!geometry.is_empty()) {
+            m_workbench_issue_model = std::make_unique<GLModel>();
+            m_workbench_issue_model->init_from(std::move(geometry));
+            m_workbench_issue_model->set_color(ColorRGBA(1.f, .7f, .1f, 1.f));
+        }
+        m_canvas->Refresh(false);
+    }
+
 private:
     struct CachedPreview {
         std::vector<std::unique_ptr<GLModel>> models;
@@ -4130,30 +4160,33 @@ private:
         build_mask_model(m_protected_faces, ColorRGBA(0.3f, 0.5f, 0.95f, 1.0f), m_protection_model);
     }
 
+    static void append_mask_triangle(GLModel::Geometry& geometry, const indexed_triangle_set& mesh, size_t face_index)
+    {
+        const auto& face = mesh.indices[face_index];
+        const Vec3f& first = mesh.vertices[face[0]];
+        const Vec3f& second = mesh.vertices[face[1]];
+        const Vec3f& third = mesh.vertices[face[2]];
+        Vec3f normal = (second - first).cross(third - first);
+        if (normal.squaredNorm() > 1e-12f)
+            normal.normalize();
+        else
+            normal = Vec3f::UnitZ();
+        const auto vertex_offset = static_cast<unsigned int>(geometry.vertices_count());
+        geometry.add_vertex(first, normal);
+        geometry.add_vertex(second, normal);
+        geometry.add_vertex(third, normal);
+        geometry.add_triangle(vertex_offset, vertex_offset + 1, vertex_offset + 2);
+    }
+
     void build_mask_model(const std::vector<uint8_t>& selected, const ColorRGBA& color, std::unique_ptr<GLModel>& target)
     {
         if (selected.size() != m_region_editor->mesh().indices.size()) return;
         GLModel::Geometry geometry;
         geometry.format = {GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3N3};
         const indexed_triangle_set& mesh = m_region_editor->mesh();
-        for (size_t face_index = 0; face_index < mesh.indices.size(); ++face_index) {
-            if (!selected[face_index])
-                continue;
-            const stl_triangle_vertex_indices& face = mesh.indices[face_index];
-            const Vec3f& a = mesh.vertices[face[0]];
-            const Vec3f& b = mesh.vertices[face[1]];
-            const Vec3f& c = mesh.vertices[face[2]];
-            Vec3f normal = (b - a).cross(c - a);
-            if (normal.squaredNorm() > 1e-12f)
-                normal.normalize();
-            else
-                normal = Vec3f::UnitZ();
-            const unsigned int base = static_cast<unsigned int>(geometry.vertices_count());
-            geometry.add_vertex(a, normal);
-            geometry.add_vertex(b, normal);
-            geometry.add_vertex(c, normal);
-            geometry.add_triangle(base, base + 1, base + 2);
-        }
+        for (size_t face_index = 0; face_index < mesh.indices.size(); ++face_index)
+            if (selected[face_index])
+                append_mask_triangle(geometry, mesh, face_index);
         if (!geometry.is_empty()) {
             target = std::make_unique<GLModel>();
             target->init_from(std::move(geometry));
@@ -4600,6 +4633,17 @@ private:
                         shader->set_uniform("preview_lighting", false);
                         m_partition_model->render(shader);
                     }
+                    if (!source_view && m_workbench_issue_model) {
+                        shader->set_uniform("gray_view", false);
+                        shader->set_uniform("use_uniform_color", true);
+                        shader->set_uniform("preview_color_count", 0);
+                        shader->set_uniform("preview_texture_enabled", false);
+                        shader->set_uniform("preview_unlit_overlay", true);
+                        glsafe(::glEnable(GL_POLYGON_OFFSET_FILL));
+                        glsafe(::glPolygonOffset(-1.0f, -1.0f));
+                        m_workbench_issue_model->render(shader);
+                        glsafe(::glDisable(GL_POLYGON_OFFSET_FILL));
+                    }
                 };
 
                 shader->start_using();
@@ -4833,6 +4877,7 @@ private:
     wxSizerItem* m_overlay_top {nullptr};
     wxSizerItem* m_overlay_bottom {nullptr};
     bool m_retain_surface_attributes {false};
+    const InitialView m_initial_view;
     bool m_history_rollback_retained {false};
     bool m_exact_surface_display {false};
     std::vector<float> m_surface_vertices;
@@ -4933,6 +4978,7 @@ private:
     std::unique_ptr<ModelPreviewTexture> m_direct_original_texture_model;
     bool m_direct_original_reuses_current {false};
     std::unique_ptr<GLModel> m_selection_model;
+    std::unique_ptr<GLModel> m_workbench_issue_model;
     std::unique_ptr<GLModel> m_manual_color_model;
     std::vector<Vec3f> m_manual_corner_normals;
     std::function<void(const std::vector<size_t>&)> m_paint_commit;

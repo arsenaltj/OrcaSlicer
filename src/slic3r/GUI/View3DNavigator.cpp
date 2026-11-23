@@ -1,5 +1,6 @@
 #include <glad/gl.h>
 #include "View3DNavigator.hpp"
+#include "AI/ModelGeneration/ModelPreviewCamera.hpp"
 #include "GUI_App.hpp"
 #include "I18N.hpp"
 #include "ImGuiWrapper.hpp"
@@ -162,8 +163,11 @@ bool WorkbenchViewNavigator::begin(Transform3d& rotation, const wxSize& size, do
     self.frame_open = true;
     if (self.surface && self.preview)
         draw_view_navigator_backdrop(self.preview_texture, self.preview->GetScreenRect(), self.surface->GetScreenRect());
-    const auto result = draw_view_navigator(rotation, ImVec2(float(self.bounds.x), float(self.bounds.y)),
+    const auto basis = workbench_model_display_basis();
+    Transform3d navigator_rotation = rotation * basis.inverse(Eigen::Isometry);
+    const auto result = draw_view_navigator(navigator_rotation, ImVec2(float(self.bounds.x), float(self.bounds.y)),
         float(side), dark, self.state, enabled);
+    if (result.changed) rotation = navigator_rotation * basis;
     return result.changed || self.state.interpolation_frames > 0 || self.input.pending();
 }
 

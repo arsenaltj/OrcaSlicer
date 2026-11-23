@@ -564,9 +564,6 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
             _L("保存色卡组合"), wxOK | wxICON_INFORMATION, wxGetTopLevelParent(m_workbench_shell));
     });
     save_filament_pack->SetToolTip(_L("保存已确认的实体耗材颜色和材料预设；混色虚拟槽不会保存。"));
-    // The workbench beauty group is intentionally absent from the sidebar.
-    // Beauty remains available from the fixed top-bar entry, while the check
-    // and palette sections retain their existing layout and state.
     controls = m_workbench_settings_groups[2];
     auto* native_entry = command(scroll, controls, _L("orca原生"), [this](wxCommandEvent&) {
         request_workbench_color_matching();
@@ -618,32 +615,6 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     // exposes its empty backing surface during a restore animation.
     auto* toolbar = new wxBoxSizer(wxHORIZONTAL);
     toolbar_host->SetSizer(toolbar);
-    auto toolbar_command = [this, toolbar_host, toolbar](const wxString& label, auto action) {
-        auto* button = new WorkbenchButton(toolbar_host, label);
-        button->SetFont(wxGetApp().bold_font());
-        button->SetCornerRadius(FromDIP(8));
-        button->SetBorderWidth(0);
-        button->SetBackgroundColor(StateColor(
-            std::pair<wxColour, int>(wxColour(92, 86, 55), StateColor::Disabled),
-            std::pair<wxColour, int>(wxColour(237, 174, 20), StateColor::Pressed),
-            std::pair<wxColour, int>(wxColour(255, 214, 72), StateColor::Hovered),
-            std::pair<wxColour, int>(wxColour(255, 194, 39), StateColor::Normal)));
-        button->SetTextColor(StateColor(
-            std::pair<wxColour, int>(wxColour(125, 120, 92), StateColor::Disabled),
-            std::pair<wxColour, int>(wxColour(35, 35, 30), StateColor::Normal)));
-        button->SetMinSize(FromDIP(wxSize(140, 38)));
-        button->SetMaxSize(FromDIP(wxSize(140, 38)));
-        button->Bind(wxEVT_BUTTON, action);
-        toolbar->Add(button, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
-        return button;
-    };
-    m_workbench_return_to_design_button = toolbar_command(m_shell_smart_creation ? _L("返回AI创作") : _L("返回图像设计"), [this](wxCommandEvent&) {
-        if (m_workbench_return_to_design) m_workbench_return_to_design();
-    });
-    m_workbench_edit = toolbar_command(_L("3D 美颜工作台"), [this](wxCommandEvent&) {
-        request_enter_beauty();
-    });
-    m_workbench_edit->SetToolTip(_L("打开美颜工具，预览后接受修改；原件保留。"));
     m_workbench_model_status = new WorkbenchStaticText(toolbar_host, wxID_ANY, wxEmptyString,
         wxDefaultPosition, FromDIP(wxSize(100, 24)), wxALIGN_CENTER_HORIZONTAL | wxST_NO_AUTORESIZE);
     m_workbench_model_status->SetFont(wxGetApp().bold_font());

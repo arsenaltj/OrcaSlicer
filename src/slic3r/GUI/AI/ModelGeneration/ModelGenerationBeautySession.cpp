@@ -97,7 +97,7 @@ bool ModelGenerationPanel::finishing_workbench_layout_ready(bool enabled) const
         m_preview_message && m_result_summary && m_preview_kind && m_model_decision_panel;
     if (!common_ready) return false;
     return enabled ? m_local_recolor_toggle != nullptr :
-        m_workbench_model_status && m_workbench_edit && m_workbench_history_toggle && m_finishing_gray;
+        m_workbench_model_status && m_workbench_history_toggle && m_finishing_gray;
 }
 
 void ModelGenerationPanel::set_finishing_workbench(bool enabled)
@@ -165,7 +165,7 @@ void ModelGenerationPanel::set_finishing_workbench(bool enabled)
     m_expand_images->Show(!enabled);
     m_zoom_out->Show(!enabled); m_zoom_in->Show(!enabled);
     m_zoom_fit->Show(!enabled); m_preview_zoom->Show(!enabled);
-    m_finishing_shortcut->SetLabel(enabled ? _L("返回作品／导入") : _L("3D 美颜工作台"));
+    m_finishing_shortcut->SetLabel(enabled ? _L("返回作品／导入") : _L("进入工作台"));
     m_preview_stage_hint->Show(!enabled);
     m_preview_message->Show(!enabled);
     m_result_summary->Show(!enabled);
@@ -295,7 +295,7 @@ void ModelGenerationPanel::refresh_model_finishing()
     m_workbench_footer->Show(show_beauty_actions);
     const auto beauty_source = pending ? m_finishing_candidate : m_displayed_model_path;
     const auto ui_state = post_generation_ui_state();
-    if (m_beauty_controls) {
+    if (workbench_beauty_editing_available && m_beauty_controls) {
         m_beauty_controls->set_color_gate(m_beauty_color_gate_state, m_beauty_color_gate_message);
         m_beauty_controls->synchronize(beauty_source, ui_state.can_edit,
             m_finishing_workbench && m_workbench_editing,

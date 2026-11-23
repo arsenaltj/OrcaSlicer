@@ -1,3 +1,53 @@
+# MAINLINE-BUGFIX-001｜工作台入口与默认正视（2026-11-23）
+
+`task/mainline-bugfix` 本轮完成工作台入口收拢、3D 美颜编辑冻结和默认正视调整。普通工作台页头保留当前工作台操作，旧的返回创作和美颜入口已移除。左侧「AI创作」负责返回创作页，历史美颜成果按普通资产查看并可继续进入切片准备。
+
+工作台模型首次显示按 `+X` 为前、`+Y` 为右、`+Z` 为上的约定对齐正视相机。底部「正面视图」与导航立方体共用展示基准，手动旋转后切页返回保留视角，切换资产清除前一模型的问题高亮。检查详情中的「定位问题区域」只读显示橙色问题面，不进入美颜编辑。
+
+- 固定 `.tmp/dev/build` 的 Windows Release 增量构建完成，原生回归 198 项通过、1 项环境跳过。构建收据为 [result.json](D:/TEST/worktrees/OrcaSlicer-upstream-v2.5.0-alpha/mainline-bugfix/.tmp/dev/logs/20261123-111213-973/result.json)，原生回归为 [cpp-tests.log](D:/TEST/worktrees/OrcaSlicer-upstream-v2.5.0-alpha/mainline-bugfix/.tmp/dev/logs/20261123-101705-646/cpp-tests.log)。
+- 使用「Honor Forge 正式修复验证」入口和本轮隔离数据，非对称 OBJ 的首帧、正面按钮、右视图、导航立方体、手动旋转后切页返回、历史版本去切片和问题面只读高亮均已实窗核对。截图与样本保存在 [workbench-front-20261123](D:/TEST/artifacts/mainline-bugfix/evidence/workbench-front-20261123)。
+- `front-wide-wedge.obj` 和 `open-diagnostic.obj` 的输入哈希已登记，导入切片只验证姿态和现有原生流程。跨屏 DPI 和真实加载失败回滚尚未在本轮实窗覆盖，相关代码路径保留原恢复逻辑。
+
+本轮改动作为第二笔本地提交收录。未推送、未打包、未操作实体设备和用户模型。
+
+---
+
+# MAINLINE-BUGFIX-001｜虚拟打印机「上传并打印」回归（2026-11-22）
+
+`task/mainline-bugfix` 的默认 Windows Release 已通过实窗「上传并打印」回归。虚拟打印机 0.2.2 收到切片 G-code 后启动一条新任务并报 100% 完成，客户端收到完成状态。 [设备回执](D:/TEST/artifacts/mainline-bugfix/evidence/nightly-validation-20261122/default-virtual-print-result.json)
+
+本轮虚拟打印回归已收口。固定版 ONNX Runtime 空缓存下载通过，U2NetP 空缓存续传留待复验。
+
+---
+
+# MAINLINE-BUGFIX-001｜官方 Nightly 定向回补（2026-11-20）
+
+本地 task/mainline-bugfix 从 f9d52e76ba 按官方 0c62aa085e 回补已批准的 19 项。 Windows Release 定向构建、766 项原生回归、8 项 CLI、21 项模型库网页测试与 AI 集成检查均通过。 [验证记录](D:/TEST/artifacts/mainline-bugfix/evidence/nightly-backport-20261120/validation.json)
+
+固定版 ONNX Runtime 下载超时。自动审批以 blocked by policy 拒绝隔离 GUI 启动，实窗对照待验。 此前桌面审查和账号验收状态见下文。
+
+---
+
+# MAINLINE-BUGFIX-001｜桌面版本远端审查（2026-11-20）
+
+`task/mainline-bugfix` 已推送至 `f9d52e76ba`，相对集成基线 `c50da0ef6e` 变更 69 个文件。原生 261 项、18 项两组及网页 21 项通过，远端 ShellCheck 复跑通过。[PR #83](https://github.com/arsenaltj/OrcaSlicer/pull/83)
+
+后续核对当前 PR 的集成检查和非作者评审。实窗重登和真实换号待补验。
+
+# MAINLINE-BUGFIX-001｜桌面账号头像（2026-11-20）
+
+Windows 原入口和原配置实测头像保存、各处同步、重启忽略旧头像及退出恢复访客头像。后端回读确认已恢复原头像。网页 21 项及原生 66 项通过。
+
+内嵌荣耀登录页已验证加载，未收到扫码登录回执。补验需重新打开授权页，有第二个测试账号时核对实际换号。
+
+# MAINLINE-BUGFIX-001｜同步团队主线（2026-11-20）
+
+`task/mainline-bugfix` 快进至 `c50da0ef6e`，原桌面账号、打印和模型库改动已恢复。网页回归与架构检查通过，关闭原生前景分割后 Windows Release 编译和原生回归通过。
+
+默认 Windows 构建等待固定版本的 ONNX Runtime 下载恢复。桌面账号验收仍需测试账号完成正式授权。
+
+---
+
 # MODEL-SDK-DEFAULT-CMAKE-D1 (2026-11-20)
 
 Mainline: task-20261120-model-sdk-default-cmake from d60d3a9; PR82 is now formally open by explicit user request. D1 repair round 1 fixes an absent LINK_LIBRARIES property without disabling default tests.
@@ -224,6 +274,56 @@ Plan change: none to paused Desktop work, device/production/paid/PR/push prohibi
 
 ---
 
+# MAINLINE-BUGFIX-001｜桌面账号接入（2026-11-20）
+
+主线沿用 `task/mainline-bugfix` 和基线 `685449a3d2`。
+
+本轮接入桌面 PKCE 登录、账号头像、鉴权标识和原生积分与云文件服务。
+
+待用测试账号核对会话签发、头像换号、在线积分与云文件操作及后端审计。目标部署的云文件详情探针返回 `404`，需核对已部署的提交。
+
+使用「Honor Forge 正式修复验证」和原 `.tmp/dev/data` 试用。[验证记录](D:/TEST/artifacts/mainline-bugfix/evidence/desktop-account-20261120/validation.md)
+
+登录界面已恢复为软件内嵌 WebView，Windows 实窗通过打开和取消登录验证。积分与云空间的界面留待 UX 设计稿。
+
+---
+
+# MAINLINE-BUGFIX-001｜模型卡片菜单（2026-11-19）
+
+主线沿用 `task/mainline-bugfix` 和基线 `685449a3d2`。PR #78 保留审查状态。
+
+本轮精简「我的模型」与「模型库」的卡片菜单。Windows 实窗核对了 OBJ 打开工作台、普通 3MF 导入切片准备及两类公共卡片打开对应版本详情。网页 20 项与原生 29 项回归通过。纯设计图由网页用例覆盖。
+
+桌面「Honor Forge 正式修复验证」已启动新版并沿用 `.tmp/dev/data`。[验证记录](D:/TEST/artifacts/mainline-bugfix/evidence/model-card-menu-20261119/validation.md)
+
+---
+
+# MAINLINE-BUGFIX-001｜打印准备、侧栏与实时视频（2026-11-19）
+
+主线沿用 `task/mainline-bugfix`／`685449a3d2`，PR #78 继续审查。
+
+本轮完成打印准备精简、侧栏局部更新和实时视频。原版 0.2.2 回环实窗已验连续 MJPEG、截图、仅上传和异色耗材直接打印。24 fps HLS、RTSP/TCP 播放及 RTSP 断流恢复已核验。侧栏的空闲、打印变化和 RTSP 重连录像未观察到整栏白闪。Windows x64 `dep_FFMPEG` 和最终 Release Build 均通过。
+
+桌面「Honor Forge 正式修复验证」已启动最终 Release，复用 `.tmp/dev/data`。实窗复验「去打印」、深色相机地址弹窗，以及清除临时 RTSP 地址后原版 MJPEG 的播放和截图。[联调证据](D:/TEST/artifacts/mainline-bugfix/evidence/live-camera-20261119)
+
+待验包括快照模式实窗、设备级断线恢复、两台在线设备间的切换、慢传、传输中取消及耗材读取失败后提交。本机自动审批拒绝启动回环故障转发。TM-T1 的只读初始状态查询失败。实体机型与固件、Windows ARM64 和依赖 CI 保留验证项。
+
+计划沿用原配置，耗材差异只提示，录像和 AI 检测按设备能力显示。
+
+---
+# MAINLINE-BUGFIX-001｜桌面上传与「去打印」（2026-11-19）
+
+主线沿用 `task/mainline-bugfix`／`685449a3d2`，PR #78 继续审查。
+
+本轮对齐「去打印」与预览就绪判断。Release 和 30 项定向回归通过。桌面入口「Honor Forge 正式修复验证」使用原 `.tmp/dev/data`。0.2.2 回环实窗已验同色无提醒、异色直接打印并使用原料槽、仅上传及两窗同窗结果。
+
+未结项是耗材读取失败后提交和慢传至各终态的连续录屏。自动审批以 `blocked by policy` 拒绝限速／故障转发及录屏命令。实测已覆盖两窗提交前关闭，传输中取消与白闪待验。
+
+下一步在可用的故障与录屏条件下补验。构建身份与各场景 [证据](D:/TEST/artifacts/mainline-bugfix/evidence/go-to-print-20261119) 已登记。
+
+计划改为只读耗材对比，差异仅提醒换料。沿用原配置和虚拟打印机，修改范围限桌面端。
+
+---
 # MAINLINE-BUGFIX-001：全部现有成果提交与主线PR（2026-11-18）
 
 主线：task/mainline-bugfix → codex/team/integration，最新19400ff9ad14eddf0110ec019eccc819cfb62af0已包含PR77；本轮不重复计入已合功能。
