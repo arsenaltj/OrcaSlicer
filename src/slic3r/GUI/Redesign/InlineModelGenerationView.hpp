@@ -27,6 +27,7 @@ public:
     void shutdown();
     bool has_content() const;
     bool ready() const;
+    bool loading() const;
     std::optional<WorkbenchOpenRequest> displayed_artifact() const;
 private:
     struct Impl;

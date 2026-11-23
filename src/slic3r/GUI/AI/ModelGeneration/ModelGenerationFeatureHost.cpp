@@ -385,16 +385,16 @@ void ModelGenerationFeatureHost::set_state_listener(ModelGenerationUIStateListen
         m_impl->state_listener(m_impl->latest_state);
 }
 
-bool ModelGenerationFeatureHost::synchronize_input(const ModelGenerationUIInput& input)
+bool ModelGenerationFeatureHost::synchronize_input(const ModelGenerationUIInput& input, GenerationRejected rejected)
 {
     if (creation_editing_locked()) return m_impl->latest_state.input == input;
-    return m_impl->model_generation != nullptr && m_impl->model_generation->synchronize_ui_input(input);
+    return m_impl->model_generation != nullptr && m_impl->model_generation->synchronize_ui_input(input, std::move(rejected));
 }
 
-bool ModelGenerationFeatureHost::synchronize_options(const ModelGenerationUIOptions& options)
+bool ModelGenerationFeatureHost::synchronize_options(const ModelGenerationUIOptions& options, GenerationRejected rejected)
 {
     if (creation_editing_locked()) return m_impl->latest_state.options == options;
-    return m_impl->model_generation != nullptr && m_impl->model_generation->synchronize_ui_options(options);
+    return m_impl->model_generation != nullptr && m_impl->model_generation->synchronize_ui_options(options, std::move(rejected));
 }
 
 void ModelGenerationFeatureHost::get_provider_catalog(
@@ -409,8 +409,14 @@ void ModelGenerationFeatureHost::get_provider_catalog(
         on_error("Model generation panel is unavailable.");
 }
 
-bool ModelGenerationFeatureHost::request_generate_smart()
-{ return !creation_editing_locked() && can_replace_asset() && m_impl->model_generation && m_impl->model_generation->request_generate_smart(); }
+bool ModelGenerationFeatureHost::request_generate_smart(GenerationRejected rejected)
+{
+    if (creation_editing_locked() || !can_replace_asset() || !m_impl->model_generation) {
+        if (rejected) rejected(creation_editing_locked() ? "creation_read_only" : "workbench_guard");
+        return false;
+    }
+    return m_impl->model_generation->request_generate_smart(std::move(rejected));
+}
 
 ModelGenerationSubmissionResult ModelGenerationFeatureHost::request_generate_design()
 {

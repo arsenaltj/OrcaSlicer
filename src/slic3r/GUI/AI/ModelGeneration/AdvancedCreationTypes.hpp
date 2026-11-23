@@ -98,6 +98,8 @@ struct HostGuards {
 };
 
 struct Eligibility {
+    bool click_generate_design {false};
+    bool click_generate_model {false};
     bool generate_design {false};
     bool generate_model {false};
     bool stop {false};

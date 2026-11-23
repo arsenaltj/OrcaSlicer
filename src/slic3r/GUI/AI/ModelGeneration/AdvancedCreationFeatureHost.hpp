@@ -3,6 +3,7 @@
 #include "AdvancedCreationSession.hpp"
 #include "AdvancedMultiviewClient.hpp"
 #include "AdvancedModelTaskMonitor.hpp"
+#include "GenerationActionFeedback.hpp"
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "slic3r/GUI/Presentation/UiRuntime.hpp"
 #include <wx/event.h>
@@ -26,6 +27,7 @@ public:
     AdvancedCreation::Session& session() { return m_session; }
     const AdvancedCreation::Session& session() const { return m_session; }
     AdvancedCreation::Eligibility eligibility() const;
+    std::string generation_rejection(bool model) const;
     const std::string& message() const { return m_message; }
     const Json& history() const { return m_history; }
     bool command_pending() const { return m_command_state != CommandState::Idle; }
@@ -52,6 +54,7 @@ public:
     void set_model_job_listener(std::function<void(const AdvancedCreation::ModelJobEvent&)> listener)
     { m_model_job_listener = std::move(listener); }
     void set_start_guard(std::function<bool()> guard) { m_start_guard = std::move(guard); }
+    void set_generation_guard(std::function<bool()> guard) { m_generation_guard = std::move(guard); }
     void set_editing_guard(std::function<bool()> guard) { m_editing_guard = std::move(guard); }
     void set_service_available(bool available);
     void refresh_capabilities(const std::string& scope = {});
@@ -61,8 +64,8 @@ public:
     void open_group(const std::string& id);
     void rename_group(const std::string& id, std::uint64_t revision, std::string display_name);
     void new_creation();
-    void generate_design(Confirm confirm);
-    void generate_model(Confirm confirm);
+    void generate_design(Confirm confirm, GenerationRejected rejected = {});
+    void generate_model(Confirm confirm, GenerationRejected rejected = {});
     void retry(AdvancedCreation::ViewId view, Confirm confirm);
     void stop();
     void recover(AdvancedCreation::ViewId view);
@@ -110,8 +113,11 @@ private:
     std::uint64_t m_model_request_sequence {0};
     std::string m_stopping_model_job;
     std::function<bool()> m_start_guard;
+    std::function<bool()> m_generation_guard;
     std::function<bool()> m_editing_guard;
     ProviderCatalog m_image_catalog;
+    std::map<std::string, ProviderCatalog> m_feedback_catalogs;
+    std::map<std::string, std::uint64_t> m_feedback_catalog_sequences;
     std::uint64_t m_image_catalog_sequence {0};
     Json m_image_capabilities;
     Json m_geometry_capabilities;

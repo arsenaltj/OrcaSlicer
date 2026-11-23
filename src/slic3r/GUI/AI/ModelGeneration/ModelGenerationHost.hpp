@@ -90,6 +90,9 @@ struct ModelGenerationUIState
     bool service_availability_known { false };
     bool busy { false };
     bool can_generate_design { false };
+    // Accepts input/configuration errors for local click feedback; never used
+    // by the smart flow's automatic generation dispatch.
+    bool can_click_generate_smart { false };
     bool can_generate_model { false };
     bool can_stop { false };
     bool can_retry_service { false };

@@ -43,6 +43,139 @@ Session ready_session()
 }
 }
 
+TEST_CASE("Advanced invalid drafts remain clickable without authorizing generation",
+          "[AdvancedCreation][GenerationClickFeedback]")
+{
+    const std::string invalid = GENERATE("empty", "front", "prompt", "custom-empty", "custom-long");
+    Session session;
+    auto draft = session.draft().design;
+    std::string reason;
+    if (invalid == "empty") reason = "empty_input";
+    if (invalid == "front") { session.set_upload(ViewId::Left, "left.png"); reason = "missing_front"; }
+    if (invalid == "prompt") { draft.prompt.assign(2001,'a'); reason = "prompt_too_long"; }
+    if (invalid == "custom-empty") { draft.prompt = "object"; draft.style = "custom"; reason = "custom_style_empty"; }
+    if (invalid == "custom-long") { draft.prompt = "object"; draft.custom_style.assign(1001,'a'); reason = "custom_style_too_long"; }
+    session.set_design_draft(draft);
+    const auto retained = session.draft().design;
+    const auto eligible = session.eligibility({true,true,true,true,true}, {true,true,true});
+    CHECK(eligible.click_generate_design);
+    CHECK(eligible.click_generate_model);
+    CHECK_FALSE(eligible.generate_design);
+    CHECK_FALSE(eligible.generate_model);
+    CHECK(session.input_rejection() == reason);
+    CHECK_FALSE(session.group().has_value());
+    CHECK(session.draft().design == retained);
+}
+
+TEST_CASE("Advanced interaction guards survive missing views and distinguish unresolved actions",
+          "[AdvancedCreation][GenerationClickFeedback]")
+{
+    const std::string blocker = GENERATE("workbench", "active", "model", "ambiguous", "result_pending", "result_saved", "history");
+    Session session;
+    auto group = complete_group(); ++group.revision;
+    group.views[0] = {}; // No previously verified visible base for this slot.
+    HostGuards guards {true,true,true};
+    if (blocker == "workbench") guards.can_start = false;
+    else if (blocker == "active") group.active_operation_id = "active";
+    else if (blocker == "model") group.model_busy = true;
+    else if (blocker != "history") group.views[1].attempt_state = blocker;
+    REQUIRE(session.apply_snapshot(group,session.begin_open(group.id),true));
+    REQUIRE_FALSE(session.group()->views[0].usable);
+    if (blocker == "history") session.begin_open("different-group");
+    const auto eligible = session.eligibility({true,true,true,true,true},guards);
+    const bool unresolved = blocker == "ambiguous" || blocker == "result_pending" || blocker == "result_saved";
+    CHECK(eligible.click_generate_design == unresolved);
+    CHECK_FALSE(eligible.click_generate_model);
+    CHECK_FALSE(eligible.generate_model);
+    if (blocker == "workbench") CHECK(eligible.model_reason == "missing_current_view");
+    if (unresolved) CHECK(eligible.generate_design);
+}
+
+TEST_CASE("Advanced byte boundaries and selection flushing keep their original command semantics",
+          "[AdvancedCreation][GenerationClickFeedback]")
+{
+    Session session;
+    auto draft = session.draft().design;
+    for (int i=0;i<666;++i) draft.prompt += "猫";
+    draft.prompt += "ab"; draft.style = "custom"; draft.custom_style.assign(1000,'a');
+    REQUIRE(draft.prompt.size() == 2000);
+    session.set_design_draft(draft);
+    REQUIRE(session.eligibility({true,true,true,true,true},{true,true,true}).generate_design);
+    draft.custom_style += "a"; session.set_design_draft(draft);
+    CHECK_FALSE(session.eligibility({true,true,true,true,true},{true,true,true}).generate_design);
+    CHECK(session.eligibility({true,true,true,true,true},{true,true,true}).click_generate_design);
+    session = ready_session();
+    session.click(ViewId::Left,100,500);
+    CHECK_FALSE(session.selection()[index(ViewId::Left)]);
+    CHECK(session.flush_click(600));
+    CHECK(session.selection()[index(ViewId::Left)]);
+    CHECK(session.eligibility({true,true,true,true,true},{true,true,true}).generate_model);
+}
+
+TEST_CASE("Advanced incomplete or stale results accept feedback clicks but never authorize model generation",
+          "[AdvancedCreation][GenerationClickFeedback]")
+{
+    const std::string invalid = GENERATE("missing", "display", "asset", "version", "pending", "draft", "capability");
+    Session session;
+    auto group = complete_group(); ++group.revision;
+    if (invalid == "missing") group.views[0].usable = false;
+    if (invalid == "display") group.views[0].display_error = true;
+    if (invalid == "asset") group.views[0].asset_pending = true;
+    if (invalid == "version") group.views[0].canonical_version_id = "front-v2";
+    if (invalid == "pending") group.pending_views[0] = true;
+    REQUIRE(session.apply_snapshot(group,session.begin_open(group.id),true));
+    if (invalid == "missing") REQUIRE_FALSE(session.group()->views[0].usable);
+    if (invalid == "draft") {
+        auto draft = session.draft().design; draft.prompt = "changed";
+        REQUIRE(session.set_design_draft(draft));
+    }
+    Capabilities capabilities {true,true,true,true,invalid != "capability"};
+    const auto eligible = session.eligibility(capabilities,{true,true,true});
+    CHECK(eligible.click_generate_model);
+    CHECK_FALSE(eligible.generate_model);
+    CHECK_FALSE(eligible.model_reason.empty());
+    CHECK(session.group()->id == group.id);
+}
+
+TEST_CASE("Advanced rejected clicks do not create commands groups receipts or confirmation dialogs",
+          "[AdvancedCreation][GenerationClickFeedback]")
+{
+    const std::string blocker = GENERATE("none", "readonly", "viewport-loading");
+    const bool readonly = blocker == "readonly";
+    bool viewport_loading = blocker == "viewport-loading";
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-generation-rejected-click"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR",temporary.path().string());
+    Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr,"https://not-a-local-service.invalid");
+    host.set_editing_guard([&] { return !readonly; });
+    host.set_generation_guard([&] { return !viewport_loading; });
+    const auto context = host.session().context();
+    int confirmed = 0, rejected = 0;
+    const auto confirm = [&](const auto&) { ++confirmed; return true; };
+    const auto reject = [&](const std::string& reason) { ++rejected; CHECK_FALSE(reason.empty()); };
+    for (int click = 0; click < 3; ++click) {
+        host.generate_design(confirm,reject);
+        host.generate_model(confirm,reject);
+    }
+    CHECK(confirmed == 0);
+    CHECK(rejected == 6);
+    CHECK_FALSE(host.command_pending());
+    CHECK_FALSE(host.has_pending_receipt());
+    CHECK_FALSE(host.session().group().has_value());
+    CHECK(host.session().matches(context));
+    if (readonly || viewport_loading) {
+        CHECK_FALSE(host.eligibility().click_generate_design);
+        CHECK_FALSE(host.eligibility().click_generate_model);
+    }
+    if (!readonly) {
+        viewport_loading = false;
+        CHECK(host.eligibility().click_generate_design);
+        CHECK(host.eligibility().click_generate_model);
+    }
+    host.shutdown();
+    CHECK_FALSE(host.eligibility().click_generate_design);
+}
+
 TEST_CASE("An accepted initial design guides once while historical snapshots do not", "[AdvancedCreation][AdvancedInitialGuidance]")
 {
     auto session = ready_session();

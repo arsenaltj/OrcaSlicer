@@ -42,6 +42,7 @@ public:
     std::optional<ViewId> double_click(ViewId view);
     void cancel_pending_click() { m_pending_click.reset(); }
     Eligibility eligibility(const Capabilities& capabilities, const HostGuards& guards) const;
+    std::string input_rejection() const;
 
 private:
     enum class InitialDesignGuidance { Unarmed, Pending, Consumed };

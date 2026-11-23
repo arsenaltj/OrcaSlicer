@@ -147,13 +147,20 @@ void AdvancedCreationFeatureHost::get_provider_catalog(const std::string& role, 
 {
     auto* weak = this;
     const auto alive = std::weak_ptr<int>(m_lifetime);
-    m_catalog_client.get_provider_catalog(role, provider, [weak, alive, complete](auto catalog) {
-        Presentation::post_gui([weak, alive, complete, catalog = std::move(catalog)]() mutable {
-            if (!alive.expired() && !weak->m_shutdown && complete) complete(std::move(catalog));
+    const auto key = role + ":" + provider;
+    const auto sequence = ++m_feedback_catalog_sequences[key];
+    m_feedback_catalogs[key] = {role, provider, "checking", "", {}, "", "", false};
+    m_catalog_client.get_provider_catalog(role, provider, [weak, alive, complete, key, sequence](auto catalog) {
+        Presentation::post_gui([weak, alive, complete, key, sequence, catalog = std::move(catalog)]() mutable {
+            if (alive.expired() || weak->m_shutdown || weak->m_feedback_catalog_sequences[key] != sequence) return;
+            weak->m_feedback_catalogs[key] = catalog;
+            if (complete) complete(std::move(catalog));
         });
-    }, [weak, alive, error](auto message) {
-        Presentation::post_gui([weak, alive, error, message = std::move(message)]() mutable {
-            if (!alive.expired() && !weak->m_shutdown && error) error(std::move(message));
+    }, [weak, alive, error, key, sequence, role, provider](auto message) {
+        Presentation::post_gui([weak, alive, error, key, sequence, role, provider, message = std::move(message)]() mutable {
+            if (alive.expired() || weak->m_shutdown || weak->m_feedback_catalog_sequences[key] != sequence) return;
+            weak->m_feedback_catalogs[key] = {role, provider, "error", "", {}, "", "", false};
+            if (error) error(std::move(message));
         });
     });
 }
@@ -316,21 +323,47 @@ Capabilities AdvancedCreationFeatureHost::capabilities() const
 
 Eligibility AdvancedCreationFeatureHost::eligibility() const
 {
+    if (m_shutdown) return {};
     HostGuards guards;
-    guards.can_start = !command_pending() && !model_stop_pending() && !m_poll_pending && !has_pending_receipt() && (!m_start_guard || m_start_guard());
+    guards.can_start = !command_pending() && !model_stop_pending() && !m_poll_pending && !has_pending_receipt() &&
+        !m_model_monitor.snapshot().busy && (!m_start_guard || m_start_guard()) &&
+        (!m_generation_guard || m_generation_guard());
     guards.model_service_available = m_service_available;
     auto result = m_session.eligibility(capabilities(), guards);
     if (m_editing_guard && !m_editing_guard()) {
+        result.click_generate_design = result.click_generate_model = false;
         result.generate_design = result.generate_model = result.retry = result.recover = false;
         result.design_reason = result.model_reason = "creation_read_only";
     }
     if (m_model_request && m_model_request->phase == ModelJobEvent::Phase::Requested && m_stopping_model_job.empty())
         result.stop = true;
     if (model_stop_pending()) {
+        result.click_generate_design = result.click_generate_model = false;
         result.generate_design = result.generate_model = false;
         result.stop = !command_pending();
     }
     return result;
+}
+
+std::string AdvancedCreationFeatureHost::generation_rejection(bool model) const
+{
+    const auto allowed = eligibility();
+    if (model ? allowed.generate_model : allowed.generate_design) return {};
+    auto reason = model ? allowed.model_reason : allowed.design_reason;
+    if (reason == "invalid_input") return m_session.input_rejection();
+    if (reason != "unsupported_multiview" && reason != "service_unavailable") return reason;
+    if (!m_service_available) return "service_unavailable";
+    const auto& draft = m_session.draft();
+    const auto& provider = model ? draft.geometry.provider : draft.design.provider;
+    const auto& selected = model ? draft.geometry.model : draft.design.model;
+    if (!model && provider == "yoyoclaw") {
+        if (auto detail = generation_catalog_rejection(m_image_catalog, selected); !detail.empty()) return detail;
+    }
+    const auto catalog = m_feedback_catalogs.find(std::string(model ? "geometry:" : "image:") + provider);
+    if (catalog != m_feedback_catalogs.end()) {
+        if (auto detail = generation_catalog_rejection(catalog->second, selected); !detail.empty()) return detail;
+    }
+    return reason == "service_unavailable" ? reason : model ? "geometry_unsupported" : "image_unsupported";
 }
 
 void AdvancedCreationFeatureHost::changed()
@@ -600,11 +633,12 @@ void AdvancedCreationFeatureHost::new_creation()
     refresh_capabilities();
 }
 
-void AdvancedCreationFeatureHost::generate_design(Confirm confirm)
+void AdvancedCreationFeatureHost::generate_design(Confirm confirm, GenerationRejected rejected)
 {
-    if (m_editing_guard && !m_editing_guard()) return;
+    if (m_shutdown) return;
+    if (m_editing_guard && !m_editing_guard()) { if (rejected) rejected("creation_read_only"); return; }
     m_session.flush_click(std::numeric_limits<std::uint64_t>::max());
-    if (!eligibility().generate_design) return;
+    if (!eligibility().generate_design) { if (rejected) rejected(generation_rejection(false)); return; }
     m_command_state = CommandState::Exclusive; m_message.clear(); m_save_timer.Stop();
     if (!m_session.group()) {
         const auto context = m_session.command_context();
@@ -634,11 +668,12 @@ void AdvancedCreationFeatureHost::generate_design(Confirm confirm)
     publish();
 }
 
-void AdvancedCreationFeatureHost::generate_model(Confirm confirm)
+void AdvancedCreationFeatureHost::generate_model(Confirm confirm, GenerationRejected rejected)
 {
-    if (m_editing_guard && !m_editing_guard()) return;
+    if (m_shutdown) return;
+    if (m_editing_guard && !m_editing_guard()) { if (rejected) rejected("creation_read_only"); return; }
     m_session.flush_click(std::numeric_limits<std::uint64_t>::max());
-    if (!eligibility().generate_model || !m_session.group()) return;
+    if (!eligibility().generate_model || !m_session.group()) { if (rejected) rejected(generation_rejection(true)); return; }
     m_command_state = CommandState::Exclusive; m_message.clear(); m_save_timer.Stop();
     save_draft([this, confirm] {
         const auto context = m_session.command_context();

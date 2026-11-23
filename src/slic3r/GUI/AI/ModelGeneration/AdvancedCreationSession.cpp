@@ -312,6 +312,19 @@ std::optional<ViewId> Session::double_click(ViewId view)
     return view;
 }
 
+std::string Session::input_rejection() const
+{
+    if (m_draft.design.prompt.size() > 2000) return "prompt_too_long";
+    if (m_draft.design.custom_style.size() > 1000) return "custom_style_too_long";
+    if (m_draft.design.style == "custom" &&
+        m_draft.design.custom_style.find_first_not_of(" \r\n\t") == std::string::npos) return "custom_style_empty";
+    const bool any_upload = std::any_of(m_draft.uploads.begin(), m_draft.uploads.end(),
+        [](const std::string& value) { return !value.empty(); });
+    if (any_upload && m_draft.uploads[0].empty()) return "missing_front";
+    if (!any_upload && m_draft.design.prompt.find_first_not_of(" \r\n\t") == std::string::npos) return "empty_input";
+    return {};
+}
+
 Eligibility Session::eligibility(const Capabilities& capabilities, const HostGuards& guards) const
 {
     Eligibility result;
@@ -331,11 +344,13 @@ Eligibility Session::eligibility(const Capabilities& capabilities, const HostGua
     }
     result.stop = busy && !m_group->stop_intent;
     result.recover = unresolved && !busy;
+    // A missing image can precede workbench_guard in model_reason. Project
+    // interaction directly from the guards, not from the first error string.
+    result.click_generate_design = !busy && guards.can_start;
+    result.click_generate_model = result.click_generate_design && !unresolved;
     const bool any_upload = std::any_of(m_draft.uploads.begin(), m_draft.uploads.end(),
                                         [](const std::string& value) { return !value.empty(); });
-    const bool valid = m_draft.design.prompt.size() <= 2000 && m_draft.design.custom_style.size() <= 1000 &&
-        (m_draft.design.style != "custom" || m_draft.design.custom_style.find_first_not_of(" \r\n\t") != std::string::npos) &&
-        (any_upload ? !m_draft.uploads[0].empty() : m_draft.design.prompt.find_first_not_of(" \r\n\t") != std::string::npos);
+    const bool valid = input_rejection().empty();
     const bool initial = !m_group || !m_group->published;
     const bool image_capable = initial ? (any_upload ? capabilities.initial_references : capabilities.initial_text)
                                       : capabilities.edit_current;

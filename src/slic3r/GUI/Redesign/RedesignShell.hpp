@@ -143,6 +143,7 @@ private:
     void recover_smart_generation();
     void open_creation_artifact(CreationSource source);
     void show_generation_completion();
+    void show_generation_error(const std::string& reason);
     void mount_smart_model_history();
     void restore_smart_model_history();
     void sync_smart_model_history();
@@ -502,6 +503,8 @@ private:
     bool m_image_page_view_only { false };
     bool m_input_sync_ok { false };
     bool m_option_sync_ok { false };
+    bool m_generation_input_rejected { false };
+    bool m_generation_options_rejected { false };
     bool m_submit_in_progress { false };
     bool m_applying_model_generation_state { false };
 };

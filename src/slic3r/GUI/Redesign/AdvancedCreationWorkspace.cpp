@@ -1144,6 +1144,7 @@ struct AdvancedCreationWorkspace::Impl {
     InlineModelGenerationView* generation_view {nullptr};
     GenerationCompletionActions* completion_actions {nullptr};
     std::function<void()> open_workbench, completed;
+    std::function<void(const std::string&)> generation_feedback;
     std::function<void()> return_creation;
     std::function<bool()> can_return;
     bool presented {false};
@@ -1270,6 +1271,9 @@ struct AdvancedCreationWorkspace::Impl {
         auto* outer = new wxBoxSizer(wxHORIZONTAL); creation->SetSizer(outer); root->Add(creation, 1, wxEXPAND);
         text_client = std::make_unique<AITextClient>(AISidecarClient::default_endpoint());
         host.set_start_guard([this] { return !polish_pending && !model_host.creation_editing_locked() && model_host.can_replace_asset(); });
+        host.set_generation_guard([this] {
+            return !model_tab || !generation_view || !generation_view->loading();
+        });
         host.set_editing_guard([this] { return !model_host.creation_editing_locked(); });
         wxWeakRef<AdvancedCreationWorkspace> weak(&page);
         host.set_library_commit_listener([weak](ModelLibraryCommit event) {
@@ -1517,17 +1521,17 @@ struct AdvancedCreationWorkspace::Impl {
         generate->SetName("advanced-generate-design"); generate->set_generation_gradient(true); generate->set_corner_radius(22);
         style_smart_creation_text(generate, 16, *wxWHITE, wxFONTWEIGHT_MEDIUM);
         actions->Add(generate, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM, page.FromDIP(16));
-        generate->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { host.generate_design(confirmation()); });
+        generate->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { request_generation(false); });
         model = new RoundedActionButton(action_panel, t("生成3D模型"), true, 44);
         model->SetName("advanced-generate-model"); model->set_generation_gradient(true); model->set_corner_radius(22);
         style_smart_creation_text(model, 16, *wxWHITE, wxFONTWEIGHT_MEDIUM);
         actions->Add(model, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM, page.FromDIP(16));
-        model->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { host.generate_model(model_confirmation()); });
+        model->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { request_generation(true); });
         completion_actions = new GenerationCompletionActions(action_panel,
             [this] {
                 if (model_host.creation_editing_locked()) {
                     if (can_return && can_return() && return_creation) return_creation();
-                } else host.generate_model(model_confirmation());
+                } else request_generation(true);
             },
             [this] { if (open_workbench) open_workbench(); });
         actions->Add(completion_actions, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, page.FromDIP(16));
@@ -1717,7 +1721,7 @@ struct AdvancedCreationWorkspace::Impl {
         if (generation_view) generation_view->shutdown();
         if (polish_request) polish_request->cancel();
         host.set_model_state_listener({});
-        host.set_start_guard({}); host.set_editing_guard({}); host.set_model_job_listener({}); host.set_listener({});
+        host.set_start_guard({}); host.set_generation_guard({}); host.set_editing_guard({}); host.set_model_job_listener({}); host.set_listener({});
     }
     void switch_stage(bool selected_model, bool reset = false) {
         if (!reset && model_tab == selected_model) return;
@@ -1864,7 +1868,8 @@ struct AdvancedCreationWorkspace::Impl {
         }
         show(creation_lock_hint, readonly);
         const auto eligibility = host.eligibility();
-        completion_actions->set_enabled(readonly ? can_restore : eligibility.generate_model,
+        enable(generate, eligibility.click_generate_design); enable(model, eligibility.click_generate_model);
+        completion_actions->set_enabled(readonly ? can_restore : eligibility.click_generate_model,
             readonly || (generation_view->ready() && host.model_state().can_open_workbench && !host.command_pending()));
         generation_view->set_presented(presented && content);
         if (completion_changed) {
@@ -1986,6 +1991,15 @@ struct AdvancedCreationWorkspace::Impl {
                 message += t("\n需先补生成主视角，再生成依赖它的视角；上方范围及张数已包含该主视角。");
             return show_generation_confirmation(target, message, t("确认生成2D设计图")) == wxID_YES;
         };
+    }
+    void request_generation(bool model_action) {
+        if (closing) return;
+        const auto eligible = host.eligibility();
+        if (generation_feedback && (model_action ? eligible.generate_model : eligible.generate_design))
+            generation_feedback({});
+        const auto reject = [this](const std::string& reason) { if (generation_feedback) generation_feedback(reason); };
+        if (model_action) host.generate_model(model_confirmation(), reject);
+        else host.generate_design(confirmation(), reject);
     }
     bool input_editable() const {
         return !model_host.creation_editing_locked() && !polish_pending && model_host.can_replace_asset() && !host.draft_editing_locked() && !host.has_pending_receipt() && (!host.session().group() ||
@@ -2293,7 +2307,7 @@ struct AdvancedCreationWorkspace::Impl {
             smart_creation_opaque_colour(wxColour(255, 255, 255, 115), wxColour(21, 21, 23))); count->Refresh();
         label(count_error, over_limit ? t("描述超过 2000 字节，请缩短后生成。") : wxEmptyString);
         show(count_error, over_limit);
-        enable(generate, eligibility.generate_design); enable(model, eligibility.generate_model);
+        enable(generate, eligibility.click_generate_design); enable(model, eligibility.click_generate_model);
         const auto* group = session.group() ? &*session.group() : nullptr;
         show(stop, eligibility.stop); enable(stop, eligibility.stop);
         show(reconcile, host.has_pending_receipt()); enable(reconcile, !host.command_pending());
@@ -2345,11 +2359,13 @@ AdvancedCreationWorkspace::AdvancedCreationWorkspace(wxWindow* parent, AdvancedC
                                                      std::function<void()> show_smart, ModelGenerationFeatureHost& shared_models,
                                                      std::function<void(const ModelGenerationUIState&)> model_state_changed,
                                                      std::function<void(const AdvancedCreation::ModelJobEvent&)> model_job_event,
-                                                     std::function<void()> open_workbench, std::function<void()> completed)
+                                                     std::function<void()> open_workbench, std::function<void()> completed,
+                                                     std::function<void(const std::string&)> generation_feedback)
     : wxPanel(parent), m_impl(std::make_unique<Impl>(*this, host, std::move(show_smart), shared_models, std::move(model_state_changed), std::move(model_job_event)))
 {
     m_impl->open_workbench = std::move(open_workbench);
     m_impl->completed = std::move(completed);
+    m_impl->generation_feedback = std::move(generation_feedback);
     auto* target = this;
     const auto alive = std::weak_ptr<int>(m_impl->lifetime);
     host.set_listener([target, alive] { if (!alive.expired()) target->render(); });

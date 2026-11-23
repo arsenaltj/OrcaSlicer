@@ -758,6 +758,17 @@ wxWindow* ModelGenerationPanel::create_library_card(const GeneratedModelEntry& e
         return card;
 }
 
+std::string ModelGenerationPanel::generation_provider_rejection(const std::string& role) const
+{
+    if (generation_provider_available(role)) return {};
+    if (!m_service_available) return "service_unavailable";
+    const auto options = current_generation_options();
+    const auto& provider = role == "image" ? options.design_provider : options.provider;
+    const auto found = m_provider_catalogs.find(role + ":" + provider);
+    if (found == m_provider_catalogs.end()) return "provider_checking";
+    return generation_catalog_rejection(found->second, role == "image" ? options.design_model : options.geometry_model);
+}
+
 bool ModelGenerationPanel::generation_provider_available(const std::string& role,
     const AIModelGenerationClient::GenerationOptions* retained_options) const
 {
