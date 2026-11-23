@@ -407,6 +407,16 @@ static constexpr const char* INSTANCEID_ATTR = "instance_id";
 static constexpr const char* IDENTIFYID_ATTR = "identify_id";
 static constexpr const char* PLATERID_ATTR = "plater_id";
 static constexpr const char* PLATER_NAME_ATTR = "plater_name";
+// Store the workbench's process overrides on the plate. Older readers can
+// ignore the prefixed metadata and still load the same model and project.
+static constexpr std::string_view WORKBENCH_SLICING_KEY = "orca_workbench_slicing_v1";
+static constexpr std::string_view WORKBENCH_CURVE_PREFIX = "orca_workbench_curve_v1:";
+static constexpr size_t WORKBENCH_METADATA_LIMIT = 1024 * 1024;
+static constexpr std::string_view ORCA_PLATE_PROCESS_PREFIX = "orca_plate_process:";
+static constexpr std::array<std::string_view, 11> ORCA_PLATE_PROCESS_KEYS{
+    "layer_height", "wall_loops", "sparse_infill_density", "sparse_infill_pattern",
+    "outer_wall_line_width", "outer_wall_speed", "enable_support", "support_type",
+    "support_threshold_angle", "support_on_build_plate_only", "wall_generator"};
 static constexpr const char* PLATE_IDX_ATTR = "index";
 static constexpr const char* PRINTER_MODEL_ID_ATTR = "printer_model_id";
 static constexpr const char* EXTRUDER_TYPE_ATTR = "extruder_type";
@@ -1830,6 +1840,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             plate->pick_file = it->second->pick_file;
             plate->pattern_bbox_file = it->second->pattern_bbox_file;
             plate->config = it->second->config;
+            plate->workbench_slicing = it->second->workbench_slicing;
 
             if (!plate->thumbnail_file.empty())
                 _extract_from_archive(archive, plate->thumbnail_file, [&pixels = plate_data_list[it->first - 1]->plate_thumbnail.pixels](auto &archive, auto const &stat) -> bool {
@@ -2592,6 +2603,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             plate_data_list[it->first-1]->pick_file = (m_load_restore || it->second->pick_file.empty()) ? it->second->pick_file : m_backup_path + "/" + it->second->pick_file;
             plate_data_list[it->first-1]->pattern_bbox_file = (m_load_restore || it->second->pattern_bbox_file.empty()) ? it->second->pattern_bbox_file : m_backup_path + "/" + it->second->pattern_bbox_file;
             plate_data_list[it->first-1]->config = it->second->config;
+            plate_data_list[it->first-1]->workbench_slicing = it->second->workbench_slicing;
+            const auto& archive_profiles = it->second->workbench_layer_profiles;
 
             current_plate_data = plate_data_list[it->first - 1];
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ":" << __LINE__ << boost::format(", plate %1%, thumbnail_file=%2%, no_light_thumbnail_file=%3%")%it->first %plate_data_list[it->first-1]->thumbnail_file %plate_data_list[it->first-1]->no_light_thumbnail_file;
@@ -2632,8 +2645,12 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 }
                 ModelInstance* inst =  obj->instances[inst_index];
                 inst->loaded_id = map_it->second.second;
+                if (const auto curve = archive_profiles.find(obj_id); curve != archive_profiles.end())
+                    current_plate_data->workbench_layer_profiles.emplace(obj->id().id, curve->second);
                 map_it++;
             }
+            if (archive_profiles.size() != current_plate_data->workbench_layer_profiles.size())
+                BOOST_LOG_TRIVIAL(warning) << "Ignoring workbench layer profiles without a matching plate object";
         }
 
         if ((plate_id > 0) && (plate_id <= m_plater_data.size())) {
@@ -4856,6 +4873,47 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             }
             else if (key == IMEX_HEAD_FILAMENT_MAP_ATTR) {
                 m_curr_plater->config.set_key_value("imex_head_filament_map", new ConfigOptionString(value));
+            }
+            else if (m_curr_plater && key == WORKBENCH_SLICING_KEY && value.size() <= WORKBENCH_METADATA_LIMIT) {
+                m_curr_plater->workbench_slicing = value;
+            }
+            else if (m_curr_plater && key.compare(0, WORKBENCH_CURVE_PREFIX.size(), WORKBENCH_CURVE_PREFIX) == 0 &&
+                value.size() <= WORKBENCH_METADATA_LIMIT) {
+                try {
+                    const auto suffix = key.substr(WORKBENCH_CURVE_PREFIX.size());
+                    size_t consumed = 0;
+                    const auto id = std::stoul(suffix, &consumed);
+                    const auto points = nlohmann::json::parse(value).get<std::vector<double>>();
+                    bool valid = consumed == suffix.size() && id > 0 && id <= INT_MAX &&
+                        points.size() >= 4 && points.size() % 2 == 0;
+                    for (size_t index = 0; valid && index < points.size(); index += 2)
+                        valid = std::isfinite(points[index]) && points[index] >= 0 &&
+                            (index == 0 || points[index] >= points[index - 2]) &&
+                            std::isfinite(points[index + 1]) && points[index + 1] > 0 && points[index + 1] <= 2;
+                    if (valid)
+                        m_curr_plater->workbench_layer_profiles.emplace(id, points);
+                    else
+                        BOOST_LOG_TRIVIAL(warning) << "Invalid workbench layer height profile";
+                } catch (const std::exception&) {
+                    BOOST_LOG_TRIVIAL(warning) << "Invalid workbench layer height profile";
+                }
+            }
+            else if (m_curr_plater && (key.rfind("orca_workbench_slicing_", 0) == 0 ||
+                     key.rfind("orca_workbench_curve_", 0) == 0)) {
+                BOOST_LOG_TRIVIAL(warning) << "Ignoring workbench metadata with an unsupported version or size";
+            }
+            else if (m_curr_plater != nullptr && key.compare(0, ORCA_PLATE_PROCESS_PREFIX.size(), ORCA_PLATE_PROCESS_PREFIX) == 0) {
+                const std::string option_key = key.substr(ORCA_PLATE_PROCESS_PREFIX.size());
+                if (std::find(ORCA_PLATE_PROCESS_KEYS.begin(), ORCA_PLATE_PROCESS_KEYS.end(), option_key) !=
+                        ORCA_PLATE_PROCESS_KEYS.end() && value.size() <= 1024) {
+                    try {
+                        DynamicPrintConfig parsed;
+                        parsed.set_deserialize_strict(option_key, value);
+                        m_curr_plater->config.apply(parsed);
+                    } catch (const BadOptionValueException&) {
+                        BOOST_LOG_TRIVIAL(warning) << "Invalid plate process override: " << option_key;
+                    }
+                }
             }
             else if (key == FILAMENT_MAP_MODE_ATTR)
             {
@@ -8868,6 +8926,31 @@ bool _BBS_3MF_Exporter::_add_model_config_file_to_archive(mz_zip_archive& archiv
                 stream << "    <" << METADATA_TAG << " " << KEY_ATTR << "=\"" << PLATERID_ATTR << "\" " << VALUE_ATTR << "=\"" << plate_data->plate_index + 1 << "\"/>\n";
                 stream << "    <" << METADATA_TAG << " " << KEY_ATTR << "=\"" << PLATER_NAME_ATTR << "\" " << VALUE_ATTR << "=\"" <<  xml_escape(plate_data->plate_name.c_str()) << "\"/>\n";
                 stream << "    <" << METADATA_TAG << " " << KEY_ATTR << "=\"" << LOCK_ATTR << "\" " << VALUE_ATTR << "=\"" << std::boolalpha<< plate_data->locked<< "\"/>\n";
+                if (!plate_data->workbench_slicing.empty()) {
+                    stream << "    <" << METADATA_TAG << " " << KEY_ATTR << "=\"" << WORKBENCH_SLICING_KEY
+                           << "\" " << VALUE_ATTR << "=\"" << xml_escape_double_quotes_attribute_value(plate_data->workbench_slicing) << "\"/>\n";
+                    if (!m_skip_model) {
+                        std::set<uint64_t> written;
+                        for (const auto& [obj_index, instance_index] : plate_data->objects_and_instances) {
+                            if (obj_index < 0 || size_t(obj_index) >= model.objects.size()) continue;
+                            const auto* object = model.objects[obj_index];
+                            const auto curve = plate_data->workbench_layer_profiles.find(object->id().id);
+                            const auto archive = objects_data.find(object);
+                            if (curve == plate_data->workbench_layer_profiles.end() || archive == objects_data.end() ||
+                                !written.insert(object->id().id).second) continue;
+                            stream << "    <" << METADATA_TAG << " " << KEY_ATTR << "=\"" << WORKBENCH_CURVE_PREFIX
+                                   << archive->second.object_id << "\" " << VALUE_ATTR << "=\""
+                                   << nlohmann::json(curve->second).dump() << "\"/>\n";
+                        }
+                    }
+                }
+                for (const auto key : ORCA_PLATE_PROCESS_KEYS) {
+                    if (const auto* option = plate_data->config.option(std::string(key))) {
+                        stream << "    <" << METADATA_TAG << " " << KEY_ATTR << "=\"" << ORCA_PLATE_PROCESS_PREFIX << key
+                               << "\" " << VALUE_ATTR << "=\"" << xml_escape_double_quotes_attribute_value(option->serialize())
+                               << "\"/>\n";
+                    }
+                }
                 ConfigOption* bed_type_opt = plate_data->config.option("curr_bed_type");
                 t_config_enum_names bed_type_names = ConfigOptionEnum<BedType>::get_enum_names();
                 if (bed_type_opt != nullptr && bed_type_names.size() > bed_type_opt->getInt())

@@ -1059,6 +1059,8 @@ enum FilamentCompatibilityType {
 };
 
 // The complete print tray with possibly multiple objects.
+enum class WipeTowerPositionStatus { NotRequired, Valid, Outside, Exclusion, ModelOverlap, Unavailable };
+
 class Print : public PrintBaseWithState<PrintStep, psCount>
 {
 private: // Prevents erroneous use by other classes.
@@ -1240,6 +1242,20 @@ public:
     // for single-nozzle printers and whenever extruder_printable_area is not populated (all current
     // single/dual profiles), so the wipe-tower-center clamp is byte-identical to full-bed clamping there.
     Polygons get_extruder_shared_printable_polygon() const;
+    // A suggestion on a private trial Print. Uses the exact bottom when it
+    // has been generated and the estimate when validation failed earlier.
+    std::optional<Vec2d> find_wipe_tower_position() const;
+    // All arguments are plate-local. A trial can reuse its generated bottom and
+    // first-layer obstacles when X/Y is the only change to the process input.
+    struct WipeTowerPositionGeometry {
+        Polygon footprint;
+        Polygons printable;
+        Polygons exclusions;
+        Polygons occupied;
+        WipeTowerPositionStatus check(const Vec2d& position) const;
+    };
+    WipeTowerPositionGeometry wipe_tower_position_geometry(double estimate_reserve_mm = 0.) const;
+    WipeTowerPositionStatus check_wipe_tower_position(const Vec2d& position) const;
 
     // Logical (extruder, nozzle) grouping result produced by ToolOrdering during reorder.
     // Consumed by GCode via get_layered_nozzle_group_result()->get_nozzle_id(filament, layer) etc.

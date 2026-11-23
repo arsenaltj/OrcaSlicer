@@ -83,6 +83,7 @@ extern const float I3_WIPE_TOWER_DEFAULT_Y_POS; // Max y
 
 
 namespace Slic3r {
+class PresetBundle;
 
 class Model;
 class ModelObject;
@@ -125,6 +126,13 @@ private:
     std::set<std::pair<int, int>> instance_outside_set;
     int m_plate_index;
     Vec3d m_origin;
+    // Project provenance. A task can pin its validated coordinates without changing this flag.
+    bool m_automatic_wipe_tower_position{true};
+    bool m_has_saved_tower_source{false};
+    bool m_workbench_smart_applied{false};
+    int m_workbench_smart_goal{-1};
+    DynamicPrintConfig m_workbench_smart_process;
+    std::vector<std::pair<uint64_t, std::vector<coordf_t>>> m_workbench_smart_layers;
     int m_width;
     int m_depth;
     double m_height;
@@ -352,6 +360,8 @@ public:
 
     void reset_skirt_start_angle();
 
+    bool automatic_wipe_tower_position() const { return m_automatic_wipe_tower_position; }
+    void set_automatic_wipe_tower_position(bool automatic) { m_automatic_wipe_tower_position = automatic; }
     DynamicPrintConfig* config() { return &m_config; }
 
     // set print sequence per plate
@@ -500,6 +510,18 @@ public:
     //                      counted, so 0 sizes for exactly those.
     // use_global_objects skips the containment test, which the CLI needs before objects are
     // assigned to plates - the layer height is then the project's thinnest, which over-reserves.
+    DynamicPrintConfig slice_preset_config(PresetBundle& bundle) const;
+    DynamicPrintConfig slice_preset_config(PresetBundle& bundle, bool smart) const;
+    DynamicPrintConfig effective_slice_config(PresetBundle& bundle) const;
+    DynamicPrintConfig smart_slice_baseline(PresetBundle& bundle) const;
+    void apply_slice_overrides(DynamicPrintConfig& config) const;
+    bool uses_workbench_smart_process() const { return m_workbench_smart_applied; }
+    void use_workbench_smart_process(bool smart) { m_workbench_smart_applied = smart; }
+    int workbench_smart_goal() const { return m_workbench_smart_goal; }
+    void set_workbench_smart_process(int goal, const DynamicPrintConfig& patch,
+        const std::vector<std::pair<uint64_t, std::vector<coordf_t>>>& layers);
+    const auto& workbench_smart_layers() const { return m_workbench_smart_layers; }
+    bool has_saved_tower_source() const { return m_has_saved_tower_source; }
     WipeTowerFootprint estimate_wipe_tower_footprint(const DynamicPrintConfig & config, int plate_extruder_size = 0, bool use_global_objects = false) const;
     // relocation: callers that store the returned position pass it, so a re-placed tower is
     // moved clear of the plate's objects where there is room, and they are told it moved.
@@ -752,7 +774,7 @@ public:
         std::vector<std::pair<int, int>>	objects_and_instances;
         std::vector<std::pair<int, int>>	instances_outside;
 
-        ar(m_plate_index, m_name, m_print_index, m_origin, m_width, m_depth, m_height, m_locked, m_selected, m_ready_for_slice, m_slice_result_valid, m_apply_invalid, m_printable, m_tmp_gcode_path, objects_and_instances, instances_outside, m_config);
+        ar(m_plate_index, m_name, m_print_index, m_origin, m_width, m_depth, m_height, m_locked, m_selected, m_ready_for_slice, m_slice_result_valid, m_apply_invalid, m_printable, m_tmp_gcode_path, objects_and_instances, instances_outside, m_config, m_automatic_wipe_tower_position, m_has_saved_tower_source, m_workbench_smart_applied, m_workbench_smart_goal, m_workbench_smart_process, m_workbench_smart_layers);
 
         for (std::vector<std::pair<int, int>>::iterator it = objects_and_instances.begin(); it != objects_and_instances.end(); ++it)
             obj_to_instance_set.insert(std::pair(it->first, it->second));
@@ -772,7 +794,7 @@ public:
         for (std::set<std::pair<int, int>>::iterator it = obj_to_instance_set.begin(); it != obj_to_instance_set.end(); ++it)
             objects_and_instances.emplace_back(it->first, it->second);
 
-        ar(m_plate_index, m_name, m_print_index, m_origin, m_width, m_depth, m_height, m_locked, m_selected, m_ready_for_slice, m_slice_result_valid, m_apply_invalid, m_printable, m_tmp_gcode_path, objects_and_instances, instances_outside, m_config);
+        ar(m_plate_index, m_name, m_print_index, m_origin, m_width, m_depth, m_height, m_locked, m_selected, m_ready_for_slice, m_slice_result_valid, m_apply_invalid, m_printable, m_tmp_gcode_path, objects_and_instances, instances_outside, m_config, m_automatic_wipe_tower_position, m_has_saved_tower_source, m_workbench_smart_applied, m_workbench_smart_goal, m_workbench_smart_process, m_workbench_smart_layers);
     }
     /*template<class Archive> void serialize(Archive& ar)
     {
@@ -796,6 +818,8 @@ class PartPlateList : public ObjectBase
     int m_plate_count;
     int m_plate_cols;
     int m_current_plate;
+    DynamicPrintConfig m_workbench_smart_baseline;
+    std::string m_workbench_smart_printer;
     int m_print_index;
 
     int m_plate_width;
@@ -872,6 +896,7 @@ public:
     // Keep the serialized project position and the model-side wipe tower in sync
     // after a position recalculation. The model copy is consumed by Print/G-code
     // generation and must not retain the previous plate coordinate.
+    void set_wipe_tower_position_for_plate(int plate_idx, const Vec2d& position, bool automatic = false);
     void sync_wipe_tower_positions_to_model();
     class BedTextureInfo {
     public:
@@ -981,6 +1006,10 @@ public:
     }
 
     int get_curr_plate_index() const { return m_current_plate; }
+    void prepare_workbench_smart_baseline(PresetBundle& bundle);
+    void restore_workbench_layer_object_ids(const ModelObjectPtrs& imported, const std::vector<size_t>& inserted);
+    const DynamicPrintConfig* workbench_smart_baseline() const
+        { return m_workbench_smart_baseline.empty() ? nullptr : &m_workbench_smart_baseline; }
     PartPlate* get_curr_plate() { return m_plate_list[m_current_plate]; }
     const PartPlate* get_curr_plate() const { return m_plate_list[m_current_plate]; }
 
@@ -1014,7 +1043,7 @@ public:
     //update the plate cols due to plate count change
     void update_plate_cols();
 
-    void update_all_plates_pos_and_size(bool adjust_position = true, bool with_unprintable_move = true, bool switch_plate_type = false, bool do_clear = true);
+    void update_all_plates_pos_and_size(bool adjust_position = true, bool with_unprintable_move = true, bool do_clear = true);
 
     //get the plate cols
     int get_plate_cols() { return m_plate_cols; }
@@ -1147,7 +1176,8 @@ public:
     {
         //ar(cereal::base_class<ObjectBase>(this));
         //Cancel undo/redo for m_shape ,Because the printing area of different models is different, currently if the grid changes, it cannot correspond to the model on the left ui
-        ar(m_plate_width, m_plate_depth, m_plate_height, m_height_to_lid, m_height_to_rod, m_height_limit_mode, m_plate_count, m_current_plate, m_plate_list, unprintable_plate);
+        ar(m_plate_width, m_plate_depth, m_plate_height, m_height_to_lid, m_height_to_rod, m_height_limit_mode, m_plate_count, m_current_plate, m_plate_list, unprintable_plate,
+           m_workbench_smart_baseline, m_workbench_smart_printer);
         //ar(m_plate_width, m_plate_depth, m_plate_height, m_plate_count, m_current_plate);
     }
     struct Rect

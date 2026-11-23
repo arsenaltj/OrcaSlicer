@@ -1,4 +1,5 @@
 #include "Search.hpp"
+#include "Redesign/RedesignTheme.hpp"
 #include "OptionStateRegistry.hpp"
 
 #include <wx/app.h>
@@ -93,6 +94,18 @@ template<class Close> void close_on_escape(wxWindow* popup, Close close)
 } // namespace
 
 namespace Search {
+
+static bool workbench_process_search(const wxWindow* window)
+{
+    return window && window->GetName() == "workbench_process_search";
+}
+
+static wxColour search_result_surface(const wxWindow* dialog, bool highlighted = false)
+{
+    if (workbench_process_search(dialog))
+        return highlighted ? wxColour(70, 70, 75) : GUI::RedesignTheme::panel_colour();
+    return StateColor::darkModeColorFor(wxColour(highlighted ? "#BFE1DE" : "#FFFFFF"));
+}
 
 static wxString option_availability(const Option& option)
 {
@@ -340,7 +353,7 @@ SearchItem::SearchItem(wxWindow *parent, wxString text, int index, SearchDialog*
 
     this->SetToolTip(tooltip);
 
-    SetBackgroundColour(StateColor::darkModeColorFor(wxColour("#FFFFFF")));
+    SetBackgroundColour(search_result_surface(m_sdialog));
     Bind(wxEVT_ENTER_WINDOW, &SearchItem::on_mouse_enter, this);
     Bind(wxEVT_LEAVE_WINDOW, &SearchItem::on_mouse_leave, this);
     Bind(wxEVT_LEFT_DOWN, &SearchItem::on_mouse_left_down, this);
@@ -357,7 +370,8 @@ wxSize SearchItem::DrawTextString(wxDC &dc, const wxString &text, const wxPoint 
     }
 
     dc.SetBackgroundMode(wxTRANSPARENT);
-    dc.SetTextForeground(StateColor::darkModeColorFor(wxColour("#323A3C")));
+    dc.SetTextForeground(workbench_process_search(m_sdialog) ? GUI::RedesignTheme::primary_text_colour() :
+        StateColor::darkModeColorFor(wxColour("#323A3C")));
     dc.DrawText(text, pt);
     return dc.GetTextExtent(text);
 }
@@ -429,7 +443,8 @@ void SearchItem::OnPaint(wxPaintEvent &event)
     if (!m_availability.empty()) {
         const int status_top = top + dc.GetCharHeight() + FromDIP(3);
         dc.SetFont(Label::Body_12);
-        dc.SetTextForeground(StateColor::darkModeColorFor(wxColour("#6B6B6B")));
+        dc.SetTextForeground(workbench_process_search(m_sdialog) ? GUI::RedesignTheme::secondary_text_colour() :
+            StateColor::darkModeColorFor(wxColour("#6B6B6B")));
         const int width = GetClientSize().x - FromDIP(40);
         if (width > 0)
             dc.DrawText(wxControl::Ellipsize(m_availability.BeforeFirst('\n'), dc, wxELLIPSIZE_END, width),
@@ -439,19 +454,19 @@ void SearchItem::OnPaint(wxPaintEvent &event)
 
 void SearchItem::on_mouse_enter(wxMouseEvent &evt)
 {
-    SetBackgroundColour(StateColor::darkModeColorFor(wxColour("#BFE1DE"))); // ORCA color with %25 opacity
+    SetBackgroundColour(search_result_surface(m_sdialog, true));
     Refresh();
 }
 
 void SearchItem::on_mouse_leave(wxMouseEvent &evt)
 {
-    SetBackgroundColour(StateColor::darkModeColorFor(wxColour(255, 255, 255)));
+    SetBackgroundColour(search_result_surface(m_sdialog));
     Refresh();
 }
 
 void SearchItem::on_mouse_left_down(wxMouseEvent &evt)
 {
-    SetBackgroundColour(StateColor::darkModeColorFor(wxColour("#BFE1DE"))); // ORCA color with %25 opacity
+    SetBackgroundColour(search_result_surface(m_sdialog, true));
     Refresh();
 }
 
@@ -494,12 +509,14 @@ SearchDialog::SearchDialog(OptionsSearcher *searcher, Preset::Type type, wxWindo
 
     // set border color
     Freeze();
-    SetBackgroundColour(wxColour(238, 238, 238));
+    const bool workbench = type == Preset::TYPE_PRINT && parent && parent->GetName() == "ai_content_color";
+    if (workbench) SetName("workbench_process_search");
+    SetBackgroundColour(workbench ? GUI::RedesignTheme::panel_colour() : wxColour(238, 238, 238));
 
     em = GUI::wxGetApp().em_unit();
 
-    m_bg_colour    = wxColour(255, 255, 255);
-    m_thumb_color  = wxColour(196, 196, 196);
+    m_bg_colour    = workbench ? GUI::RedesignTheme::panel_colour() : wxColour(255, 255, 255);
+    m_thumb_color  = workbench ? wxColour(104, 104, 111) : wxColour(196, 196, 196);
 
     SetFont(GUI::wxGetApp().normal_font());
     SetSizeHints(wxDefaultSize, wxDefaultSize);
@@ -667,13 +684,15 @@ void SearchDialog::update_list()
     m_scrolledWindow->Destroy();
 
     m_scrolledWindow = new ScrolledWindow(m_client_panel, wxID_ANY, wxDefaultPosition, wxSize(POPUP_WIDTH * em - (em + em / 2), POPUP_HEIGHT * em - em), wxVSCROLL, 6, 6);
-    m_scrolledWindow->SetMarginColor(StateColor::darkModeColorFor(m_bg_colour));
-    m_scrolledWindow->SetScrollbarColor(StateColor::darkModeColorFor(m_thumb_color));
-    m_scrolledWindow->SetBackgroundColour(StateColor::darkModeColorFor(m_bg_colour));
+    const bool workbench = workbench_process_search(this);
+    const auto surface = workbench ? m_bg_colour : StateColor::darkModeColorFor(m_bg_colour);
+    m_scrolledWindow->SetMarginColor(surface);
+    m_scrolledWindow->SetScrollbarColor(workbench ? m_thumb_color : StateColor::darkModeColorFor(m_thumb_color));
+    m_scrolledWindow->SetBackgroundColour(surface);
 
     auto m_listsizer = new wxBoxSizer(wxVERTICAL);
     auto m_listPanel = new wxWindow(m_scrolledWindow->GetPanel(), -1);
-    m_listPanel->SetBackgroundColour(StateColor::darkModeColorFor(m_bg_colour));
+    m_listPanel->SetBackgroundColour(surface);
     m_listPanel->SetSize(wxSize(m_scrolledWindow->GetSize().GetWidth(), -1));
 
     const std::vector<FoundOption> &filters = searcher->found_options();

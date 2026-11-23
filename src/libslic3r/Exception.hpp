@@ -39,6 +39,14 @@ private:
     size_t objectId_ = 0;
 };
 
+// Allows the caller to propose a new position on a disposable Print while
+// preserving the same native error text in ordinary slicing.
+class WipeTowerPlacementError : public SlicingError
+{
+public:
+    using SlicingError::SlicingError;
+};
+
 class SlicingErrors : public Exception
 {
 public:

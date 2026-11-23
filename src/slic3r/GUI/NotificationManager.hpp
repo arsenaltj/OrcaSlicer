@@ -370,7 +370,7 @@ public:
 	void device_ejected();
 	// renders notifications in queue and deletes expired ones
     void render_notifications(GLCanvas3D &canvas, float overlay_width, float bottom_margin, float right_margin);
-    const std::vector<wxRect>& visible_notification_bounds(GLCanvas3D& canvas) const;
+    const CanvasNotificationBounds& visible_notification_bounds(GLCanvas3D& canvas) const;
 	// finds and closes all notifications of given type
 	void close_notification_of_type(const NotificationType type);
 	// True while a notification of this type is on screen (not closed or finished).
@@ -514,9 +514,10 @@ private:
 		float                  get_current_top() const { return m_top_y; }
         wxRect layout_bounds(const Size& canvas, float right_gap) const
         {
-            return wxRect(int(std::floor(canvas.get_width() - right_gap - m_window_width)),
-                int(std::floor(canvas.get_height() - m_top_y)),
-                int(std::ceil(m_window_width)), int(std::ceil(m_window_height)));
+            const float to_client = 1.0f / canvas.get_scale_factor();
+            return wxRect(int(std::floor((canvas.get_width() - right_gap - m_window_width) * to_client)),
+                int(std::floor((canvas.get_height() - m_top_y) * to_client)),
+                int(std::ceil(m_window_width * to_client)), int(std::ceil(m_window_height * to_client)));
         }
         float overlay_gap() const { return m_line_height * 5; }
 		const NotificationType get_type() const { return m_data.type; }

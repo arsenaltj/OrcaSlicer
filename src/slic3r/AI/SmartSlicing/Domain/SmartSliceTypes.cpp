@@ -1,4 +1,5 @@
 #include "SmartSliceTypes.hpp"
+#include <utility>
 
 namespace Slic3r::AI::SmartSlicing {
 
@@ -14,17 +15,15 @@ const char* slice_mode_id(SliceMode mode)
 
 const SliceRecommendation* SmartAnalysisResult::find(SliceMode mode) const
 {
-    for (const SliceRecommendation& recommendation : recommendations)
-        if (recommendation.mode == mode)
-            return &recommendation;
+    for (size_t i = 0; i < recommendations.size(); ++i)
+        if (recommendation_available[i] && recommendations[i].mode == mode)
+            return &recommendations[i];
     return nullptr;
 }
 
 SliceRecommendation* SmartAnalysisResult::find(SliceMode mode)
 {
-    for (SliceRecommendation& recommendation : recommendations)
-        if (recommendation.mode == mode)
-            return &recommendation;
+    return const_cast<SliceRecommendation*>(std::as_const(*this).find(mode));
     return nullptr;
 }
 

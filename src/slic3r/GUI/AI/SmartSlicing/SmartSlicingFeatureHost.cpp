@@ -189,16 +189,37 @@ double config_speed_or(const DynamicPrintConfig& config, const char* key, double
     return fallback;
 }
 
-AI::SmartSlicing::MachinePreset capture_machine_preset(const DynamicPrintConfig& config)
+AI::SmartSlicing::MachinePreset capture_machine_preset(const DynamicPrintConfig& config,
+                                                       const std::vector<int>& used_filaments)
 {
     AI::SmartSlicing::MachinePreset machine;
     if (const auto* nozzle = config.option<ConfigOptionFloats>("nozzle_diameter");
         nozzle != nullptr && !nozzle->values.empty())
         machine.nozzle_diameter_mm = nozzle->values.front();
-    if (const auto* minimum = config.option<ConfigOptionFloat>("min_layer_height"); minimum != nullptr)
-        machine.minimum_layer_height_mm = minimum->value;
-    if (const auto* maximum = config.option<ConfigOptionFloat>("max_layer_height"); maximum != nullptr)
-        machine.maximum_layer_height_mm = maximum->value;
+    const auto* nozzles = config.option<ConfigOptionFloats>("nozzle_diameter");
+    const auto* lows = config.option<ConfigOptionFloats>("min_layer_height");
+    const auto* highs = config.option<ConfigOptionFloats>("max_layer_height");
+    if (nozzles && lows && highs && !nozzles->values.empty() && !lows->values.empty() && !highs->values.empty()) {
+        const auto* map = config.option<ConfigOptionInts>("filament_map");
+        machine.minimum_layer_height_mm = 0.;
+        machine.maximum_layer_height_mm = 0.8;
+        machine.nozzle_diameter_mm = std::numeric_limits<double>::max();
+        const auto restrict_to_nozzle = [&](size_t slot) {
+            const double diameter = nozzles->get_at(slot);
+            const double minimum = lows->get_at(slot);
+            const double maximum = highs->get_at(slot);
+            machine.nozzle_diameter_mm = std::min(machine.nozzle_diameter_mm, diameter);
+            machine.minimum_layer_height_mm = std::max(machine.minimum_layer_height_mm,
+                minimum > 0. ? minimum : 0.07);
+            machine.maximum_layer_height_mm = std::min(machine.maximum_layer_height_mm,
+                maximum > 0. ? maximum : diameter * 0.75);
+        };
+        if (used_filaments.empty()) restrict_to_nozzle(0);
+        for (const int id : used_filaments) {
+            const int nozzle = map && !map->values.empty() ? map->get_at(std::max(0, id - 1)) : 1;
+            restrict_to_nozzle(size_t(std::max(0, nozzle - 1)));
+        }
+    }
     if (const auto* speed = config.option<ConfigOptionFloatsNullable>("outer_wall_speed");
         speed != nullptr && !speed->values.empty() && std::isfinite(speed->values.front()) &&
         speed->values.front() > 0.0)
@@ -364,12 +385,46 @@ private:
 
 struct SmartSlicingFeatureHost::Impl
 {
+    struct TestedOption
+    {
+        AI::SmartSlicing::SliceRecommendation recommendation;
+        AI::SmartSlicing::TrialSliceResult result;
+        OrcaTrialSliceDetails details;
+    };
+
     struct ExactEstimateResult
     {
         uint64_t attempt{0};
         AI::SmartSlicing::RecommendationGoal goal{AI::SmartSlicing::RecommendationGoal::Balanced};
         AI::SmartSlicing::WorkspaceRevision revision;
-        AI::SmartSlicing::TrialSliceResult result;
+        TestedOption tested;
+        bool orientation{false};
+    };
+
+    struct LightweightInputs
+    {
+        AI::SmartSlicing::WorkspaceRevision process_revision;
+        AI::SmartSlicing::ModelMetrics metrics;
+        AI::SmartSlicing::MachinePreset machine;
+        std::optional<AI::SmartSlicing::MachinePreset> machine_with_support;
+        AI::SmartSlicing::FilamentPreset filament;
+        size_t object_count{0};
+    };
+
+    struct LocalPlateCache
+    {
+        OrcaSliceInputIdentity input;
+        std::optional<LightweightInputs> features;
+        std::optional<AI::SmartSlicing::SmartAnalysisResult> analysis;
+        std::array<ExactEstimateView, 3> estimates;
+        AI::SmartSlicing::RecommendationGoal selected_goal{AI::SmartSlicing::RecommendationGoal::Balanced};
+        bool defer_estimate{false};
+    };
+
+    struct QuickApply
+    {
+        UndoRedo::ActionSnapshotIdentity snapshot;
+        AI::SmartSlicing::WorkspaceRevision applied_revision;
     };
 
     struct CloudCompletion
@@ -586,18 +641,26 @@ struct SmartSlicingFeatureHost::Impl
         // the independent, read-only geometry recommendations.  Keep this
         // worker separate from the trial worker so entering this path never
         // blocks the UI while the quick metrics are computed.
-        if (lightweight_worker.joinable())
-            lightweight_worker.join();
-
+        // On a concurrent edit, let the running worker publish before taking
+        // a fresh snapshot. The owner-thread timer consumes the latest input.
+        drain_lightweight_worker();
+        if (lightweight_worker.joinable()) {
+            lightweight_refresh_pending = true;
+            return;
+        }
+        lightweight_refresh_pending = false;
+        const auto input = current_slice_input();
         std::vector<TriangleMeshSnapshot> meshes;
         MachinePreset machine;
+        std::optional<MachinePreset> machine_with_support;
         FilamentPreset filament;
         if (wxGetApp().preset_bundle != nullptr) {
-            DynamicPrintConfig config = wxGetApp().preset_bundle->full_config();
             PartPlate* plate = plater.get_partplate_list().get_curr_plate();
-            if (plate != nullptr)
-                config.apply(*plate->config(), true);
-            machine = capture_machine_preset(config);
+            auto& bundle = *wxGetApp().preset_bundle;
+            plater.get_partplate_list().prepare_workbench_smart_baseline(bundle);
+            DynamicPrintConfig config = plate ? plate->smart_slice_baseline(bundle) : bundle.full_config(false);
+            const auto used = plate ? plate->get_extruders(true, config, config) : std::vector<int>{};
+            machine = capture_machine_preset(config, used);
             filament = capture_filament_preset(config);
             // A valid native result for the current plate is the most useful
             // calibration anchor available without running three extra full
@@ -606,11 +669,23 @@ struct SmartSlicingFeatureHost::Impl
                 const auto& statistics = plate->get_slice_result()->print_statistics;
                 machine.native_baseline_time_seconds = statistics.modes[
                     static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time;
-                double total_volume_mm3 = 0.0;
-                for (const auto& [_, volume] : statistics.total_volumes_per_extruder)
-                    if (std::isfinite(volume) && volume > 0.0)
-                        total_volume_mm3 += volume;
-                machine.native_baseline_material_grams = total_volume_mm3 * filament.density_g_cm3 / 1000.0;
+                machine.native_baseline_material_grams = plate->get_slice_result()->material_weight_grams(
+                    statistics.total_volumes_per_extruder).value_or(0.);
+            }
+            if (plate != nullptr && !config.opt_bool("enable_support")) {
+                // A recommended support process may activate a nozzle that
+                // is idle in the current process. Resolve it using the same
+                // per-object, plate, and filament rules as the normal input.
+                auto support_config = config;
+                support_config.set_key_value("enable_support", new ConfigOptionBool(true));
+                const auto used_with_support = plate->get_extruders(true, support_config, support_config);
+                if (used_with_support != used) {
+                    const auto bounds = capture_machine_preset(config, used_with_support);
+                    machine_with_support = machine;
+                    machine_with_support->nozzle_diameter_mm = bounds.nozzle_diameter_mm;
+                    machine_with_support->minimum_layer_height_mm = bounds.minimum_layer_height_mm;
+                    machine_with_support->maximum_layer_height_mm = bounds.maximum_layer_height_mm;
+                }
             }
             ModelFeatureAnalysisLimits limits;
             limits.maximum_working_memory_bytes = 256ull * 1024ull * 1024ull;
@@ -629,10 +704,10 @@ struct SmartSlicingFeatureHost::Impl
             attempt = ++last_lightweight_attempt;
             local_lightweight_analysis.reset();
             lightweight_analysis.reset();
+            lightweight_inputs.reset();
             lightweight_analyzing = !meshes.empty();
             lightweight_stale = false;
             lightweight_diagnostic = meshes.empty() ? "smart_slice_geometry_unavailable" : std::string{};
-            cloud_request_seed.reset();
             cloud_start_pending = false;
             if (recommendation_source == SlicingRecommendationSource::Cloud)
                 cloud_view.status = CloudRecommendationStatus::Preparing;
@@ -646,30 +721,21 @@ struct SmartSlicingFeatureHost::Impl
             return;
         }
 
-        const auto revision = current_native_revision();
         const size_t object_count = meshes.size();
+        lightweight_worker_done = false;
         try {
-            lightweight_worker = std::thread([this, meshes = std::move(meshes), machine, filament,
-                                               revision, object_count, attempt]() mutable {
+            lightweight_worker = std::thread([this, meshes = std::move(meshes), machine, machine_with_support,
+                                               filament, input, object_count, attempt]() mutable {
+                ScopeGuard finished([this] { lightweight_worker_done = true; });
                 try {
-                    const SmartAnalysisResult analysis =
-                        SmartSlicingEngine().AnalyzeAndPrecompute(meshes, machine, filament);
+                    const SmartSlicingEngine engine;
+                    auto metrics = engine.MeasureModel(meshes);
                     std::lock_guard<std::mutex> lock(lightweight_mutex);
                     if (attempt == last_lightweight_attempt) {
-                        local_lightweight_analysis = analysis;
-                        lightweight_analysis = analysis;
+                        lightweight_inputs = LightweightInputs{input.process, std::move(metrics),
+                            machine, machine_with_support, filament, object_count};
                         lightweight_analyzing = false;
-                        lightweight_diagnostic = analysis.completed ? std::string{} : analysis.diagnostic_code;
-                        if (analysis.completed) {
-                            cloud_request_seed = SlicingRecommendationRequest{
-                                {}, object_count, analysis.metrics, machine, filament, analysis};
-                            cloud_seed_revision = revision;
-                            cloud_start_pending = recommendation_source == SlicingRecommendationSource::Cloud;
-                            if (cloud_start_pending) cloud_view.status = CloudRecommendationStatus::Preparing;
-                        } else if (recommendation_source == SlicingRecommendationSource::Cloud) {
-                            cloud_view.status = CloudRecommendationStatus::Failed;
-                            cloud_view.diagnostic = analysis.diagnostic_code;
-                        }
+                        cloud_start_pending = recommendation_source == SlicingRecommendationSource::Cloud;
                     }
                 } catch (...) {
                     std::lock_guard<std::mutex> lock(lightweight_mutex);
@@ -706,9 +772,80 @@ struct SmartSlicingFeatureHost::Impl
             AI::SmartSlicing::SliceMode::BALANCED;
     }
 
+    bool ensure_local_goal(AI::SmartSlicing::RecommendationGoal goal)
+    {
+        using namespace AI::SmartSlicing;
+        std::lock_guard<std::mutex> lock(lightweight_mutex);
+        if (recommendation_source != SlicingRecommendationSource::Local || !lightweight_inputs ||
+            !observed_slice_input || lightweight_inputs->process_revision != observed_slice_input->process)
+            return false;
+        const auto mode = slice_mode_for_goal(goal);
+        if (local_lightweight_analysis && local_lightweight_analysis->find(mode)) return true;
+        const auto& inputs = *lightweight_inputs;
+        const SmartSlicingEngine engine;
+        auto analysis = engine.AnalyzeAndPrecompute(inputs.metrics, inputs.machine, inputs.filament);
+        if (!analysis.completed) {
+            lightweight_diagnostic = analysis.diagnostic_code;
+            return false;
+        }
+        if (inputs.machine_with_support && std::any_of(analysis.recommendations.begin(), analysis.recommendations.end(),
+                [](const SliceRecommendation& plan) { return plan.enable_support; })) {
+            const auto with_support = engine.AnalyzeAndPrecompute(inputs.metrics, *inputs.machine_with_support, inputs.filament);
+            for (size_t i = 0; i < analysis.recommendations.size(); ++i) {
+                auto& plan = analysis.recommendations[i];
+                if (!plan.enable_support) continue;
+                if (const auto* support_plan = with_support.find(plan.mode)) {
+                    plan = *support_plan;
+                } else {
+                    analysis.recommendation_available[i] = false;
+                    analysis.diagnostic_code = with_support.diagnostic_code;
+                }
+            }
+        }
+        for (size_t i = 0; i < analysis.recommendations.size(); ++i) {
+            auto& plan = analysis.recommendations[i];
+            // A reviewed plan for this input can contain accepted native effects.
+            if (local_lightweight_analysis) {
+                if (const auto* cached = local_lightweight_analysis->find(plan.mode)) {
+                    plan = *cached;
+                    analysis.recommendation_available[i] = true;
+                    continue;
+                }
+            }
+            if (!analysis.recommendation_available[i]) continue;
+            plan.wall_loops = std::max(plan.wall_loops, inputs.machine.baseline_wall_loops);
+            plan.sparse_infill_density_percent = std::max(plan.sparse_infill_density_percent,
+                inputs.machine.baseline_infill_density_percent);
+            BOOST_LOG_TRIVIAL(info) << "[SmartSlicingParameters] goal=" << static_cast<int>(RECOMMENDATION_GOALS[i])
+                << " plate=" << observed_slice_input->plate_id << " input=" << observed_slice_input->exact.fingerprint
+                << " height=" << plan.layer_height_mm;
+        }
+        const bool selected_ready = analysis.find(mode) != nullptr;
+        lightweight_diagnostic = selected_ready ? std::string{} : analysis.diagnostic_code;
+        local_lightweight_analysis = std::move(analysis);
+        lightweight_analysis = local_lightweight_analysis;
+        return selected_ready;
+    }
+
+    const ExactEstimateView* current_local_completion(const AI::SmartSlicing::WorkspaceRevision& revision) const
+    {
+        if (recommendation_source != SlicingRecommendationSource::Local || native_session.pending() ||
+            plater.is_background_process_slicing()) return nullptr;
+        auto* plate = plater.get_partplate_list().get_curr_plate();
+        if (!plate || !plate->is_slice_result_valid() || !plate->get_slice_result()) return nullptr;
+        const auto result_id = plate->get_slice_result()->id;
+        const auto local_end = estimate_cache.begin() + 3;
+        const auto committed = std::find_if(estimate_cache.begin(), local_end, [&](const auto& estimate) {
+            return committed_estimate_matches(estimate, revision, result_id);
+        });
+        return committed != local_end ? &*committed : nullptr;
+    }
+
     bool has_current_official_statistics(std::optional<AI::SmartSlicing::RecommendationGoal> goal) const
     {
         const auto current = current_native_revision();
+        if (const auto* committed = current_local_completion(current))
+            return !goal || committed->goal == *goal;
         auto* plate = plater.get_partplate_list().get_curr_plate();
         if (workbench_official.phase != AI::SmartSlicing::OfficialSlicePhase::Completed ||
             plate == nullptr || !plate->is_slice_result_valid() || plate->get_slice_result() == nullptr)
@@ -732,170 +869,259 @@ struct SmartSlicingFeatureHost::Impl
 
     void cancel_exact_estimate()
     {
-        trial_executor->cancel_trial_slice();
-        std::lock_guard<std::mutex> lock(exact_estimate_mutex);
-        ++last_exact_estimate_attempt;
-        exact_estimate.status = ExactEstimateStatus::None;
-        exact_estimate.estimated_time_seconds.reset();
-        exact_estimate.material_volume_mm3.reset();
-        exact_estimate.material_grams.reset();
-        exact_estimate.tool_changes.reset();
-        exact_estimate.source.clear();
+        {
+            std::lock_guard<std::mutex> lock(exact_estimate_mutex);
+            ++last_exact_estimate_attempt;
+        }
+        exact_estimate = {};
         exact_estimate.diagnostic = "smart_slice_preview_canceled";
-        exact_estimate_pending.reset();
+        orientation_estimate.reset();
+        orientation_diagnostic.clear();
+        trial_executor->cancel_trial_slice();
+        // This mailbox also signals that the worker can be joined. Drain the
+        // completion and discard its obsolete attempt instead of losing it.
     }
 
-    void start_exact_estimate(AI::SmartSlicing::RecommendationGoal goal)
+    // Owner thread: at most one native worker. The previous attempt drains
+    // before any newly selected goal or explicitly requested comparison runs.
+    void start_exact_estimate(AI::SmartSlicing::RecommendationGoal goal, bool compare_orientation = false)
     {
-        bool lightweight_running = false;
-        bool cloud_blocking = false;
-        {
-            std::lock_guard<std::mutex> lock(lightweight_mutex);
-            lightweight_running = lightweight_analyzing;
-            cloud_blocking = recommendation_source == SlicingRecommendationSource::Cloud &&
-                cloud_view.status != CloudRecommendationStatus::Ready;
-        }
+        using namespace AI::SmartSlicing;
         if (!workbench_active || !workbench_ai_mode || recommendation_worker_state.running() ||
-            lightweight_running || cloud_blocking || native_session.pending() ||
-            plater.is_background_process_slicing() || has_current_official_statistics(goal) ||
-            workbench_official.phase == AI::SmartSlicing::OfficialSlicePhase::Slicing)
+            exact_worker.joinable() || native_session.pending() || plater.is_background_process_slicing() ||
+            workbench_official.phase == OfficialSlicePhase::Slicing || !observed_slice_input)
             return;
+        if (!compare_orientation && has_current_official_statistics(goal)) return;
 
-        {
-            std::lock_guard<std::mutex> lock(exact_estimate_mutex);
-            if (exact_estimate.status == ExactEstimateStatus::Running && exact_estimate.goal == goal &&
-                exact_estimate.revision == current_native_revision())
-                return;
-        }
-        if (exact_worker.joinable())
-            return;
-
-        AI::SmartSlicing::SliceRecommendation recommendation;
+        const auto current = current_slice_input();
+        if (!current.exact.valid() || current.exact != observed_slice_input->exact) return;
+        const bool local = recommendation_source == SlicingRecommendationSource::Local;
+        if (local) ensure_local_goal(goal);
+        SliceRecommendation recommendation;
         {
             std::lock_guard<std::mutex> lock(lightweight_mutex);
-            if (!lightweight_analysis || !lightweight_analysis->completed)
-                return;
+            if (lightweight_analyzing || !lightweight_analysis || !lightweight_analysis->completed ||
+                (!local && cloud_view.status != CloudRecommendationStatus::Ready)) return;
             const auto* found = lightweight_analysis->find(slice_mode_for_goal(goal));
-            if (found == nullptr)
-                return;
+            if (!found) return;
             recommendation = *found;
         }
-
-        const auto revision = current_native_revision();
-        if (!revision.valid()) return;
-        const size_t cache_index = static_cast<size_t>(goal) +
-            (recommendation_source == SlicingRecommendationSource::Cloud ? 3 : 0);
-        {
-            std::lock_guard<std::mutex> lock(exact_estimate_mutex);
-            const auto& cached = estimate_cache[cache_index];
-            if (exact_estimate_matches(cached, revision, goal, recommendation) &&
-                (cached.status == ExactEstimateStatus::Ready || cached.status == ExactEstimateStatus::Failed)) {
+        const size_t cache_index = static_cast<size_t>(goal) + (local ? 0 : 3);
+        const auto& cached = estimate_cache[cache_index];
+        const auto respects_current_position = [&](const ExactEstimateView& result) {
+            return current.automatic_tower || !result.native_details || !result.native_details->tower_position ||
+                (*result.native_details->tower_position - current.tower_position).norm() <= 1e-6;
+        };
+        if (!compare_orientation) {
+            if (exact_estimate_matches(exact_estimate, current.exact, goal, recommendation) &&
+                exact_estimate.status != ExactEstimateStatus::None && respects_current_position(exact_estimate)) return;
+            if (exact_estimate_matches(cached, current.exact, goal, recommendation) &&
+                (cached.status == ExactEstimateStatus::Ready || cached.status == ExactEstimateStatus::Failed) &&
+                respects_current_position(cached)) {
                 exact_estimate = cached;
+                BOOST_LOG_TRIVIAL(info) << "[SmartSlicingEstimate] cache goal=" << static_cast<int>(goal)
+                    << " plate=" << current.plate_id << " input=" << current.exact.fingerprint;
                 return;
             }
-            active_estimate_cache_index = cache_index;
-            exact_estimate.parameters = recommendation;
+            if (local && defer_estimate_after_tower_move) {
+                show_moved_tower_estimate(current, goal);
+                return;
+            }
+        } else if (!local || !exact_estimate.native_details || exact_estimate.status != ExactEstimateStatus::Ready ||
+                   !exact_estimate_matches(exact_estimate, current.exact, goal, recommendation)) {
+            return;
         }
-        if (!goal_selection.selected(revision)) {
-            goal_selection.select(goal, revision);
-            selected_goal = goal;
-        }
+
         OrcaTrialSliceInput input;
         try { input = workspace->capture_trial_slice_input(); }
         catch (...) {
-            std::lock_guard<std::mutex> lock(exact_estimate_mutex);
-            exact_estimate.status = ExactEstimateStatus::Failed;
-            exact_estimate.goal = goal;
-            exact_estimate.revision = revision;
-            exact_estimate.diagnostic = "smart_slice_preview_input_failed";
+            if (compare_orientation) orientation_diagnostic = "smart_slice_preview_input_failed";
+            else {
+                exact_estimate = {};
+                exact_estimate.status = ExactEstimateStatus::Failed;
+                exact_estimate.goal = goal;
+                exact_estimate.revision = current.exact;
+                exact_estimate.parameters = recommendation;
+                exact_estimate.diagnostic = "smart_slice_preview_input_failed";
+            }
             return;
+        }
+
+        if (local && !compare_orientation) {
+            const auto same_input = std::find_if(estimate_cache.begin(), estimate_cache.begin() + 3,
+                [&](const ExactEstimateView& verified) {
+                    return verified.revision == current.exact && verified.status == ExactEstimateStatus::Ready &&
+                        verified.parameters && verified.native_details && verified.native_details->placement.transforms.empty() &&
+                        respects_current_position(verified) &&
+                        OrcaTrialSliceExecutor::same_native_recommendation_input(input, *verified.parameters, recommendation);
+                });
+            if (same_input != estimate_cache.begin() + 3) {
+                const auto original_goal = same_input->goal;
+                exact_estimate = *same_input;
+                exact_estimate.goal = goal;
+                exact_estimate.parameters = recommendation;
+                exact_estimate.official_result_id.reset();
+                estimate_cache[cache_index] = exact_estimate;
+                BOOST_LOG_TRIVIAL(info) << "[SmartSlicingEstimate] reused identical plan goal=" << static_cast<int>(goal)
+                    << " from_goal=" << static_cast<int>(original_goal) << " plate=" << current.plate_id
+                    << " input=" << current.exact.fingerprint;
+                return;
+            }
         }
 
         uint64_t attempt;
         {
             std::lock_guard<std::mutex> lock(exact_estimate_mutex);
             attempt = ++last_exact_estimate_attempt;
+        }
+        orientation_diagnostic.clear();
+        if (compare_orientation) {
+            orientation_running = true;
+        } else {
             exact_estimate = {};
             exact_estimate.status = ExactEstimateStatus::Running;
             exact_estimate.goal = goal;
-            exact_estimate.revision = revision;
+            exact_estimate.revision = current.exact;
             exact_estimate.source = "native_trial";
             exact_estimate.parameters = recommendation;
-            exact_estimate_pending.reset();
         }
+        const auto deadline = std::chrono::steady_clock::now() + WorkflowResourceBudget{}.maximum_elapsed;
+        const auto reference = compare_orientation ? std::optional<ExactEstimateView>(exact_estimate) : std::nullopt;
         try {
-            BOOST_LOG_TRIVIAL(info) << "[SmartSlicingEstimate] started goal=" << static_cast<int>(goal)
-                << " attempt=" << attempt;
-            exact_worker = std::thread([this, attempt, goal, revision,
-                                        recommendation = std::move(recommendation),
-                                        input = std::move(input)]() mutable {
+            exact_worker = std::thread([this, attempt, goal, current, deadline, compare_orientation, reference,
+                                        recommendation = std::move(recommendation), input = std::move(input)]() mutable {
                 ExactEstimateResult pending;
                 pending.attempt = attempt;
                 pending.goal = goal;
-                pending.revision = revision;
-                pending.result = trial_executor->execute_recommendation_slice(
-                    std::move(input), recommendation, revision);
-                {
+                pending.revision = current.exact;
+                pending.orientation = compare_orientation;
+                auto& tested = pending.tested;
+                tested.recommendation = recommendation;
+                const auto canceled = [&] {
                     std::lock_guard<std::mutex> lock(exact_estimate_mutex);
-                    exact_estimate_pending = std::move(pending);
+                    return attempt != last_exact_estimate_attempt;
+                };
+                const auto run = [&](unsigned ordinal) {
+                    const OrcaTrialSliceControl control{deadline, canceled, ordinal == 1};
+                    BOOST_LOG_TRIVIAL(info) << "[SmartSlicingTrial] started goal=" << static_cast<int>(goal)
+                        << " attempt=" << attempt << " plate=" << current.plate_id << " input=" << current.exact.fingerprint
+                        << " run=" << ordinal << " orientation=" << compare_orientation;
+                    tested.result = trial_executor->execute_recommendation_slice(input, recommendation,
+                        current.exact, tested.details, control);
+                    const auto& stats = tested.result.metrics;
+                    BOOST_LOG_TRIVIAL(info) << "[SmartSlicingTrial] finished goal=" << static_cast<int>(goal)
+                        << " attempt=" << attempt << " plate=" << current.plate_id << " input=" << current.exact.fingerprint
+                        << " run=" << ordinal << " status=" << static_cast<int>(tested.result.status)
+                        << " height=" << tested.details.effective_layer_height << " layers=" << tested.details.layer_count
+                        << " seconds=" << (stats ? stats->estimated_time_seconds.value_or(0.) : 0.)
+                        << " grams=" << (stats ? stats->material_grams.value_or(0.) : 0.)
+                        << " diagnostic=" << tested.result.diagnostic_code;
+                };
+                try {
+                    OrcaTrialSliceDetails orientation_preview;
+                    if (compare_orientation && !OrcaTrialSliceExecutor::prepare_orientation(input, orientation_preview, canceled)) {
+                        tested.result.diagnostic_code = "smart_slice_orientation_unavailable";
+                    } else if (!canceled()) {
+                        run(1);
+                        // The one full retry uses a position derived from the generated base.
+                        if (input.automatic_tower && tested.details.tower_retry_position && !canceled() &&
+                            std::chrono::steady_clock::now() < deadline) {
+                            const Vec2d position = *tested.details.tower_retry_position;
+                            BOOST_LOG_TRIVIAL(info) << "[SmartSlicingTower] generated footprint relocation goal="
+                                << static_cast<int>(goal) << " attempt=" << attempt << " plate=" << current.plate_id
+                                << " position=" << position.transpose();
+                            const ConfigOptionFloat x(position.x()), y(position.y());
+                            input.config.option<ConfigOptionFloats>("wipe_tower_x")->set_at(&x, input.plate_index, 0);
+                            input.config.option<ConfigOptionFloats>("wipe_tower_y")->set_at(&y, input.plate_index, 0);
+                            tested.details = {};
+                            run(2);
+                        }
+                        if (compare_orientation && tested.result.status == TrialSliceStatus::Succeeded) {
+                            const auto grams = tested.result.metrics ? tested.result.metrics->material_grams : std::nullopt;
+                            if (!grams || !reference->material_grams || *grams + 0.05 >= *reference->material_grams ||
+                                tested.details.support_grams.value_or(0.) > reference->native_details->support_grams.value_or(0.)) {
+                                tested.result.status = TrialSliceStatus::Failed;
+                                tested.result.diagnostic_code = "smart_slice_orientation_no_benefit";
+                            } else {
+                                tested.details.placement = std::move(orientation_preview.placement);
+                                tested.details.orientation_degrees = orientation_preview.orientation_degrees;
+                                tested.details.original_preview = std::move(orientation_preview.original_preview);
+                                tested.details.oriented_preview = std::move(orientation_preview.oriented_preview);
+                            }
+                        }
+                    }
+                } catch (const std::exception& error) {
+                    tested.result.status = TrialSliceStatus::Failed;
+                    tested.result.diagnostic_code = "trial_slice_exception";
+                    tested.result.diagnostic_message = error.what();
+                } catch (...) {
+                    tested.result.status = TrialSliceStatus::Failed;
+                    tested.result.diagnostic_code = "trial_slice_exception";
                 }
+                std::lock_guard<std::mutex> lock(exact_estimate_mutex);
+                exact_estimate_pending = std::move(pending);
             });
         } catch (...) {
-            std::lock_guard<std::mutex> lock(exact_estimate_mutex);
-            exact_estimate.status = ExactEstimateStatus::Failed;
-            exact_estimate.diagnostic = "smart_slice_preview_worker_start_failed";
+            orientation_running = false;
+            if (compare_orientation) orientation_diagnostic = "smart_slice_preview_worker_start_failed";
+            else {
+                exact_estimate.status = ExactEstimateStatus::Failed;
+                exact_estimate.diagnostic = "smart_slice_preview_worker_start_failed";
+            }
         }
     }
 
     void drain_exact_estimate()
     {
+        using namespace AI::SmartSlicing;
         std::optional<ExactEstimateResult> pending;
         {
             std::lock_guard<std::mutex> lock(exact_estimate_mutex);
-            if (exact_estimate_pending) {
-                pending = std::move(exact_estimate_pending);
-                exact_estimate_pending.reset();
-            }
+            pending = std::exchange(exact_estimate_pending, std::nullopt);
         }
-        if (pending) {
-            if (exact_worker.joinable()) exact_worker.join();
-            std::lock_guard<std::mutex> lock(exact_estimate_mutex);
-            if (pending->attempt != last_exact_estimate_attempt ||
-                pending->revision != current_native_revision())
-                return;
-            const auto& result = pending->result;
-            exact_estimate.goal = pending->goal;
-            exact_estimate.revision = pending->revision;
-            if (result.status == AI::SmartSlicing::TrialSliceStatus::Succeeded && result.metrics) {
-                exact_estimate.status = ExactEstimateStatus::Ready;
-                exact_estimate.estimated_time_seconds = result.metrics->estimated_time_seconds;
-                exact_estimate.material_volume_mm3 = result.metrics->filament_volume_mm3;
-                exact_estimate.material_grams = result.metrics->material_grams;
-                exact_estimate.tool_changes = result.metrics->tool_changes;
-                exact_estimate.source = "native_trial";
-                exact_estimate.diagnostic.clear();
-            } else {
-                exact_estimate.status = ExactEstimateStatus::Failed;
-                exact_estimate.diagnostic = result.diagnostic_code.empty() ?
-                    "smart_slice_preview_failed" : result.diagnostic_code;
-            }
-            estimate_cache[active_estimate_cache_index] = exact_estimate;
-            BOOST_LOG_TRIVIAL(info) << "[SmartSlicingEstimate] completed goal=" << static_cast<int>(pending->goal)
-                << " attempt=" << pending->attempt << " status=" << static_cast<int>(exact_estimate.status);
+        if (!pending) return;
+        if (exact_worker.joinable()) exact_worker.join();
+        orientation_running = false;
+        if (pending->attempt != last_exact_estimate_attempt || pending->goal != selected_goal ||
+            pending->revision != current_native_revision()) return;
+
+        auto& tested = pending->tested;
+        ExactEstimateView view;
+        view.goal = pending->goal;
+        view.revision = pending->revision;
+        view.parameters = tested.recommendation;
+        view.source = "native_trial";
+        if (tested.result.status == TrialSliceStatus::Succeeded && tested.result.metrics) {
+            view.status = ExactEstimateStatus::Ready;
+            view.estimated_time_seconds = tested.result.metrics->estimated_time_seconds;
+            view.material_volume_mm3 = tested.result.metrics->filament_volume_mm3;
+            view.material_grams = tested.result.metrics->material_grams;
+            view.tool_changes = tested.result.metrics->tool_changes;
+            view.native_details = std::make_shared<OrcaTrialSliceDetails>(std::move(tested.details));
+        } else {
+            view.status = ExactEstimateStatus::Failed;
+            view.diagnostic = tested.result.diagnostic_code;
+            view.diagnostic_message = tested.result.diagnostic_message;
         }
+        if (pending->orientation) {
+            if (view.status == ExactEstimateStatus::Ready) orientation_estimate = std::move(view);
+            else orientation_diagnostic = view.diagnostic;
+        } else {
+            exact_estimate = std::move(view);
+            const auto offset = recommendation_source == SlicingRecommendationSource::Cloud ? 3 : 0;
+            estimate_cache[static_cast<size_t>(selected_goal) + offset] = exact_estimate;
+        }
+        BOOST_LOG_TRIVIAL(info) << "[SmartSlicingEstimate] completed goal=" << static_cast<int>(selected_goal)
+            << " attempt=" << pending->attempt << " input=" << pending->revision.fingerprint
+            << " status=" << static_cast<int>(pending->orientation ? view.status : exact_estimate.status)
+            << " orientation=" << pending->orientation
+            << " diagnostic=" << (pending->orientation ? orientation_diagnostic : exact_estimate.diagnostic);
     }
 
     void drain_lightweight_worker()
     {
-        if (lightweight_worker.joinable()) {
-            bool running = false;
-            {
-                std::lock_guard<std::mutex> lock(lightweight_mutex);
-                running = lightweight_analyzing;
-            }
-            if (!running)
-                lightweight_worker.join();
-        }
+        if (lightweight_worker.joinable() && lightweight_worker_done)
+            lightweight_worker.join();
         start_cloud_request_if_ready();
     }
 
@@ -919,18 +1145,32 @@ struct SmartSlicingFeatureHost::Impl
         const auto current = current_native_revision();
         {
             std::lock_guard<std::mutex> lock(lightweight_mutex);
-            if (!cloud_start_pending || cloud_request_handle ||
-                recommendation_source != SlicingRecommendationSource::Cloud ||
-                !cloud_request_seed || !local_lightweight_analysis || !local_lightweight_analysis->completed)
-                return;
+            if (!cloud_start_pending || cloud_request_handle || recommendation_source != SlicingRecommendationSource::Cloud ||
+                !lightweight_inputs || !observed_slice_input) return;
             cloud_start_pending = false;
-            if (!current.valid() || cloud_seed_revision != current) {
+            if (!current.valid() || observed_slice_input->exact != current ||
+                lightweight_inputs->process_revision != observed_slice_input->process) {
                 cloud_view.status = CloudRecommendationStatus::Failed;
                 cloud_view.diagnostic = "workspace_changed";
                 return;
             }
+            const auto& inputs = *lightweight_inputs;
+            auto machine = inputs.machine;
+            const AI::SmartSlicing::SmartSlicingEngine engine;
+            auto analysis = engine.AnalyzeAndPrecompute(inputs.metrics, machine, inputs.filament);
+            if (inputs.machine_with_support && analysis.completed &&
+                std::any_of(analysis.recommendations.begin(), analysis.recommendations.end(),
+                    [](const auto& candidate) { return candidate.enable_support; })) {
+                machine = *inputs.machine_with_support;
+                analysis = engine.AnalyzeAndPrecompute(inputs.metrics, machine, inputs.filament);
+            }
+            if (!analysis.completed) {
+                cloud_view.status = CloudRecommendationStatus::Failed;
+                cloud_view.diagnostic = analysis.diagnostic_code;
+                return;
+            }
             attempt = cloud_gate.begin(current);
-            request = *cloud_request_seed;
+            request = SlicingRecommendationRequest{{}, inputs.object_count, inputs.metrics, machine, inputs.filament, analysis};
             request.request_id = "smart-slicing-" + std::to_string(attempt);
             cloud_view = {};
             cloud_view.status = CloudRecommendationStatus::Requesting;
@@ -1206,52 +1446,15 @@ struct SmartSlicingFeatureHost::Impl
         recommendation_coordinator.check_deadline();
         refresh_recommendation_revision();
         drain_recommendation_results();
+        refresh_workbench_input();
         drain_exact_estimate();
-        // Process real input edits before scheduling a preview. Internal plan
-        // application updates this baseline before starting the native slice.
-        if (workbench_active && workbench_ai_mode && !native_session.pending()) {
-            const auto current = current_native_revision();
-            if (current.valid() && (!observed_workbench_revision || *observed_workbench_revision != current)) {
-                goal_selection.select(selected_goal, current);
-                cancel_cloud_request();
-                cancel_exact_estimate();
-                {
-                    std::lock_guard<std::mutex> lock(lightweight_mutex);
-                    lightweight_analysis.reset();
-                    cloud_view = {};
-                }
-                estimate_cache = {};
-                if (recommendation_worker_state.running()) {
-                    trial_executor->cancel_trial_slice();
-                    cancel_recommendation_session(AI::SmartSlicing::RecommendationCancellationReason::WorkspaceChanged);
-                } else { observed_workbench_revision = current; auto_analyze(); }
-            }
-        }
-        if (workbench_active && workbench_ai_mode && !native_session.pending() &&
-            !plater.is_background_process_slicing() &&
-            !recommendation_worker_state.running()) {
-            bool lightweight_ready = false;
-            {
-                std::lock_guard<std::mutex> lock(lightweight_mutex);
-                lightweight_ready = lightweight_analysis && lightweight_analysis->completed &&
-                    !lightweight_analyzing;
-            }
-            if (lightweight_ready) {
-                const auto current = current_native_revision();
-                const auto goal = goal_selection.selected(current).value_or(
-                    AI::SmartSlicing::RecommendationGoal::Balanced);
-                bool should_start = false;
-                {
-                    std::lock_guard<std::mutex> lock(exact_estimate_mutex);
-                    const auto mode = slice_mode_for_goal(goal);
-                    std::lock_guard<std::mutex> analysis_lock(lightweight_mutex);
-                    const auto* parameters = lightweight_analysis ? lightweight_analysis->find(mode) : nullptr;
-                    const bool current_result = parameters && exact_estimate_matches(exact_estimate, current, goal, *parameters);
-                    should_start = (!current_result || exact_estimate.status == ExactEstimateStatus::None) && !exact_worker.joinable();
-                }
-                if (should_start && !has_current_official_statistics(goal))
-                    start_exact_estimate(goal);
-            }
+        drain_lightweight_worker();
+        if (lightweight_refresh_pending && workbench_active && workbench_ai_mode)
+            start_lightweight_only_analysis();
+        if (workbench_active && workbench_ai_mode && observed_slice_input && !native_session.pending() &&
+            !plater.is_background_process_slicing() && !recommendation_worker_state.running()) {
+            if (recommendation_source == SlicingRecommendationSource::Local) ensure_local_goal(selected_goal);
+            start_exact_estimate(selected_goal);
         }
         const auto& snapshot = recommendation_coordinator.snapshot();
         const bool analyzing = snapshot.recommendation.baseline.status ==
@@ -1337,6 +1540,135 @@ struct SmartSlicingFeatureHost::Impl
         }
     }
 
+    OrcaSliceInputIdentity current_slice_input() const
+    {
+        try { return workspace->current_slice_input(); }
+        catch (...) { return {}; }
+    }
+
+    void show_moved_tower_estimate(const OrcaSliceInputIdentity& input, AI::SmartSlicing::RecommendationGoal goal)
+    {
+        using namespace AI::SmartSlicing;
+        exact_estimate = {};
+        exact_estimate.status = ExactEstimateStatus::PositionChanged;
+        exact_estimate.goal = goal;
+        exact_estimate.revision = input.exact;
+        exact_estimate.moved_tower_position = std::array<double, 2>{input.tower_position.x(), input.tower_position.y()};
+        if (!lightweight_analysis) return;
+        const auto* plan = lightweight_analysis->find(slice_mode_for_goal(goal));
+        if (!plan) return;
+        exact_estimate.parameters = *plan;
+        const auto& previous = estimate_cache[static_cast<size_t>(goal)];
+        if (previous.status != ExactEstimateStatus::Ready || !previous.parameters || !previous.native_details ||
+            !same_slice_parameters(*previous.parameters, *plan) || !previous.native_details->placement.transforms.empty()) {
+            auto* plate = plater.get_partplate_list().get_curr_plate();
+            const auto* print = plate ? plate->fff_print() : nullptr;
+            if (print && !plater.is_background_process_slicing()) {
+                const auto estimated = print->check_wipe_tower_position(input.tower_position);
+                if (estimated == WipeTowerPositionStatus::Outside || estimated == WipeTowerPositionStatus::Exclusion ||
+                    estimated == WipeTowerPositionStatus::ModelOverlap)
+                    exact_estimate.diagnostic = tower_position_diagnostic(estimated);
+                BOOST_LOG_TRIVIAL(info) << "[SmartSlicingEstimate] tower position check goal=" << static_cast<int>(goal)
+                    << " plate=" << input.plate_id << " input=" << input.exact.fingerprint
+                    << " position=" << input.tower_position.transpose() << " status=" << static_cast<int>(estimated);
+            }
+            return;
+        }
+
+        const auto& effect = *previous.native_details;
+        const auto status = effect.tower_geometry ? effect.tower_geometry->check(input.tower_position) :
+            (effect.tower_position ? WipeTowerPositionStatus::Unavailable : WipeTowerPositionStatus::NotRequired);
+        if (status == WipeTowerPositionStatus::Valid || status == WipeTowerPositionStatus::NotRequired) {
+            auto updated = std::make_shared<OrcaTrialSliceDetails>(effect);
+            if (updated->tower_position) updated->tower_position = input.tower_position;
+            exact_estimate.native_details = std::move(updated);
+        } else {
+            exact_estimate.diagnostic = tower_position_diagnostic(status);
+        }
+        BOOST_LOG_TRIVIAL(info) << "[SmartSlicingEstimate] tower position check goal=" << static_cast<int>(goal)
+            << " plate=" << input.plate_id << " input=" << input.exact.fingerprint
+            << " position=" << input.tower_position.transpose() << " status=" << static_cast<int>(status);
+    }
+
+    void refresh_workbench_input()
+    {
+        using namespace AI::SmartSlicing;
+        if (!workbench_active || !workbench_ai_mode || native_session.pending() ||
+            workbench_official.phase == OfficialSlicePhase::Slicing) return;
+        const auto input = current_slice_input();
+        if (!input.exact.valid() || (observed_slice_input && observed_slice_input->exact == input.exact &&
+            observed_slice_input->process == input.process)) return;
+        const auto previous = std::exchange(observed_slice_input, input);
+        cancel_exact_estimate();
+        goal_selection.select(selected_goal, input.exact);
+        observed_workbench_revision = input.exact;
+        const bool local = recommendation_source == SlicingRecommendationSource::Local;
+        const bool position_only = previous && previous->process == input.process &&
+            previous->tower_position != input.tower_position;
+        if (local && position_only) {
+            defer_estimate_after_tower_move = !input.automatic_tower || defer_estimate_after_tower_move;
+            native_session.reset();
+            workbench_official = {};
+            slice_estimate = {};
+            if (defer_estimate_after_tower_move) show_moved_tower_estimate(input, selected_goal);
+            return;
+        }
+
+        cancel_recommendation_session(RecommendationCancellationReason::WorkspaceChanged);
+        native_session.reset();
+        workbench_official = {};
+        slice_estimate = {};
+        bool cached = false;
+        if (!previous || previous->plate_id != input.plate_id) {
+            std::lock_guard<std::mutex> lock(lightweight_mutex);
+            if (previous && local_lightweight_analysis) {
+                // An applied process can keep its verified plan after its
+                // earlier feature-based recommendation inputs become stale.
+                const auto reusable_features = lightweight_inputs && lightweight_inputs->process_revision == previous->process ?
+                    lightweight_inputs : std::nullopt;
+                LocalPlateCache old{*previous, reusable_features, local_lightweight_analysis, {},
+                    selected_goal, defer_estimate_after_tower_move};
+                std::copy_n(estimate_cache.begin(), old.estimates.size(), old.estimates.begin());
+                local_plate_cache[previous->plate_id] = std::move(old);
+                // Removed plates may still be recovered by Undo. Keep the cache bounded.
+                while (local_plate_cache.size() > PartPlateList::MAX_PLATES_COUNT)
+                    local_plate_cache.erase(local_plate_cache.begin());
+            }
+            estimate_cache = {};
+            const auto* plate = plater.get_partplate_list().get_curr_plate();
+            const int saved_goal = plate ? plate->workbench_smart_goal() : -1;
+            selected_goal = saved_goal >= 0 && saved_goal < 3 ? RECOMMENDATION_GOALS[saved_goal] : RecommendationGoal::Balanced;
+            const auto found = local_plate_cache.find(input.plate_id);
+            if (local && found != local_plate_cache.end() && found->second.input.process == input.process) {
+                auto entry = std::move(found->second);
+                local_plate_cache.erase(found);
+                lightweight_inputs = std::move(entry.features);
+                local_lightweight_analysis = std::move(entry.analysis);
+                lightweight_analysis = local_lightweight_analysis;
+                selected_goal = entry.selected_goal;
+                std::move(entry.estimates.begin(), entry.estimates.end(), estimate_cache.begin());
+                defer_estimate_after_tower_move = entry.defer_estimate ||
+                    (entry.input.exact != input.exact && !input.automatic_tower);
+                lightweight_diagnostic.clear();
+                lightweight_stale = false;
+                lightweight_refresh_pending = false;
+                cached = true;
+            }
+            goal_selection.select(selected_goal, input.exact);
+        }
+        if (cached) return;
+        estimate_cache = {};
+        defer_estimate_after_tower_move = false;
+        {
+            std::lock_guard<std::mutex> lock(lightweight_mutex);
+            lightweight_analysis.reset();
+            local_lightweight_analysis.reset();
+            lightweight_inputs.reset();
+            cloud_view = {};
+        }
+        start_lightweight_only_analysis();
+    }
+
     AI::SmartSlicing::WorkspaceRevision current_native_revision() const
     {
         try { return workspace->current_revision(); }
@@ -1372,7 +1704,7 @@ struct SmartSlicingFeatureHost::Impl
         recommendation_event_bindings.unbind();
         cancel_cloud_request();
         cancel_recommendation_session(AI::SmartSlicing::RecommendationCancellationReason::Shutdown);
-        trial_executor->cancel_trial_slice();
+        cancel_exact_estimate();
         join_recommendation_worker();
         if (lightweight_worker.joinable())
             lightweight_worker.join();
@@ -1453,8 +1785,7 @@ struct SmartSlicingFeatureHost::Impl
         }
     }
 
-    bool apply_lightweight_plan(const AI::SmartSlicing::SliceRecommendation& plan,
-                                std::string& diagnostic)
+    bool apply_lightweight_plan(const ExactEstimateView& evidence, std::string& diagnostic)
     {
         if (!wxIsMainThread()) {
             diagnostic = "smart_slice_apply_requires_owner_thread";
@@ -1475,64 +1806,96 @@ struct SmartSlicingFeatureHost::Impl
             return false;
         }
 
-        DynamicPrintConfig base_config = wxGetApp().preset_bundle->full_config();
-        base_config.apply(*plate->config(), true);
-        DynamicPrintConfig patched_config;
-        if (!SmartSliceApplier::BuildConfig(base_config, plan, patched_config, &diagnostic))
+        if (!exact_estimate_can_apply(evidence)) {
+            diagnostic = "smart_slice_preview_required";
             return false;
-
-        static constexpr const char* PLAN_KEYS[] = {
-            "layer_height", "wall_loops", "sparse_infill_density", "sparse_infill_pattern",
-            "outer_wall_line_width", "outer_wall_speed", "enable_support", "support_threshold_angle",
-            "support_type", "wall_generator", "adaptive_layer_height"};
-        bool changed = false;
-        for (const char* key : PLAN_KEYS) {
-            const ConfigOption* before = base_config.option(key);
-            const ConfigOption* after = patched_config.option(key);
-            if (after == nullptr)
-                continue;
-            if (before == nullptr || before->type() != after->type() || *before != *after) {
-                changed = true;
-                break;
-            }
         }
-
+        const auto& effect = *evidence.native_details;
+        const auto config = plate->effective_slice_config(*wxGetApp().preset_bundle);
+        const int plate_index = plate->get_index();
+        const Vec2d saved(config.opt_float("wipe_tower_x", plate_index),
+                          config.opt_float("wipe_tower_y", plate_index));
+        const bool tower_changed = effect.tower_position && (*effect.tower_position - saved).norm() > 1e-6;
+        if (tower_changed && !plate->automatic_wipe_tower_position()) {
+            diagnostic = "reviewed_candidate_changed";
+            return false;
+        }
+        const bool commit_tower = effect.tower_position && plate->automatic_wipe_tower_position();
+        std::vector<TransformTarget> targets;
+        if (!effect.placement.transforms.empty()) {
+            if (workspace->current_plate_has_user_marked_surface()) {
+                diagnostic = "smart_slice_orientation_surface_protected";
+                return false;
+            }
+            AI::SmartSlicing::SliceCandidate candidate;
+            candidate.placement = effect.placement;
+            if (!collect_transform_targets(plater, candidate, targets, diagnostic)) return false;
+        }
+        static constexpr auto action = "Apply SmartSlice Recommendation";
+        std::optional<UndoRedo::ActionSnapshotIdentity> snapshot;
         try {
             plater.select_view_3D("3D");
             {
-                Plater::TakeSnapshot transaction(&plater, "Apply SmartSlice Recommendation");
-                for (const char* key : PLAN_KEYS) {
-                    const ConfigOption* replacement = patched_config.option(key);
-                    if (replacement != nullptr)
-                        plate->config()->set_key_value(key, replacement->clone());
+                Plater::TakeSnapshot transaction(&plater, action);
+                UndoRedo::ActionSnapshotIdentity identity;
+                if (!plater.latest_main_snapshot_identity(action, identity))
+                    throw std::runtime_error("smart_slice_snapshot_unavailable");
+                snapshot = identity;
+                plate->set_workbench_smart_process(static_cast<int>(evidence.goal), effect.plate_patch, effect.layer_profiles);
+                std::vector<size_t> changed_objects;
+                for (const auto& target : targets) {
+                    target.instance->set_transformation(Geometry::Transformation(target.matrix));
+                    plater.model().objects[target.object_index]->invalidate_bounding_box();
+                    changed_objects.push_back(target.object_index);
                 }
-
-                // Recompute the prime tower after the final AI parameters are
-                // installed. The initial plate position may have been chosen
-                // before the model height and effective layer height were
-                // known, which can make the tower/brim grow beyond the bed.
-                // Keep project_config and ModelWipeTower identical so the
-                // native Print/G-code path consumes the corrected coordinate.
-                PartPlateList& plate_list = plater.get_partplate_list();
-                plate_list.set_default_wipe_tower_pos_for_plate(plate->get_index(), false);
-                plate_list.sync_wipe_tower_positions_to_model();
-                if (changed)
-                    plate->update_slice_result_valid_state(false);
+                if (commit_tower)
+                    plater.get_partplate_list().set_wipe_tower_position_for_plate(plate_index, *effect.tower_position, true);
+                if (!changed_objects.empty()) plater.changed_objects(changed_objects);
+                plate->update_slice_result_valid_state(false);
                 plater.update_title_dirty_status();
             }
+            quick_apply = QuickApply{*snapshot, current_native_revision()};
+            return true;
         } catch (const std::exception& error) {
-            if (plater.can_undo())
-                plater.undo();
             diagnostic = error.what();
-            return false;
         } catch (...) {
-            if (plater.can_undo())
-                plater.undo();
             diagnostic = "smart_slice_apply_exception";
-            return false;
         }
-        diagnostic.clear();
-        return true;
+        if (snapshot) {
+            std::string reason;
+            if (!plater.rollback_main_snapshot_exact(*snapshot, reason))
+                diagnostic += " (" + reason + ")";
+        }
+        return false;
+    }
+
+    void finish_lightweight_apply(bool success)
+    {
+        auto transaction = std::exchange(quick_apply, std::nullopt);
+        auto reviewed = std::exchange(official_apply_estimate, std::nullopt);
+        if (success || (!transaction && !reviewed)) return;
+        std::string reason = "workspace_changed";
+        if (transaction && (current_native_revision() != transaction->applied_revision ||
+            !plater.main_snapshot_identity_is_current(transaction->snapshot) ||
+            !plater.rollback_main_snapshot_exact(transaction->snapshot, reason))) {
+            BOOST_LOG_TRIVIAL(warning) << "[SmartSlicing] rollback skipped: " << reason;
+            workbench_official.diagnostic_code = "smart_slice_rollback_unavailable";
+            return;
+        }
+        const auto restored = current_slice_input();
+        observed_workbench_revision = restored.exact;
+        observed_slice_input = restored;
+        goal_selection.select(selected_goal, restored.exact);
+        slice_estimate = {};
+        sliced_recommendation.reset();
+        // Native startup cancels recommendation workers and clears their view.
+        // Restore only the proof the user reviewed for the recovered workspace.
+        if (reviewed && reviewed->revision == restored.exact && reviewed->goal == selected_goal) {
+            exact_estimate = std::move(*reviewed);
+            BOOST_LOG_TRIVIAL(info) << "[SmartSlicingEstimate] restored after official attempt goal="
+                << static_cast<int>(selected_goal) << " input=" << restored.exact.fingerprint
+                << " tower=" << restored.tower_position.transpose();
+        }
     }
 
     OrcaVersionedApplyResult apply_plan(const AI::SmartSlicing::AtomicApplyPlan& plan)
@@ -1796,10 +2159,14 @@ struct SmartSlicingFeatureHost::Impl
         state.has_selected_goal = versioned_apply_workflow->active_transaction() ? goal_selection.has_selection() :
             goal_selection.selected(current_revision).has_value();
         state.pending_slice_goal = slice_goal_history.pending_goal();
-        state.last_sliced_goal = slice_goal_history.last_sliced_goal(current_revision);
+        const auto* committed = current_local_completion(current_revision);
+        state.last_sliced_goal = committed ? std::optional<RecommendationGoal>(committed->goal) :
+            slice_goal_history.last_sliced_goal(current_revision);
         state.official = workbench_official;
         state.official_statistics_ready = has_current_official_statistics(workbench_ai_mode ?
             std::optional<RecommendationGoal>(selected_goal) : std::nullopt);
+        if (committed && state.official_statistics_ready)
+            state.official = {OfficialSlicePhase::Completed, {}};
         state.diagnostic = candidate_session_diagnostic;
         state.analyzing = recommendation_worker_state.running();
         {
@@ -1816,10 +2183,25 @@ struct SmartSlicingFeatureHost::Impl
         }
         {
             std::lock_guard<std::mutex> lock(exact_estimate_mutex);
-            state.exact_estimate = exact_estimate;
+            if (exact_estimate.revision == current_revision && exact_estimate.goal == selected_goal)
+                state.exact_estimate = exact_estimate;
+            state.orientation_running = orientation_running;
+            state.orientation_diagnostic = orientation_diagnostic;
+            if (orientation_estimate && !workspace->current_plate_has_user_marked_surface() &&
+                orientation_estimate->revision == current_revision &&
+                state.recommendation_source == SlicingRecommendationSource::Local)
+                state.orientation_estimate = orientation_estimate;
         }
-        if (native_session.has_result() && native_session.revision() == current_revision &&
-            sliced_recommendation && state.lightweight_analysis) {
+        if (committed) {
+            if (state.lightweight_analysis && state.lightweight_analysis->completed) {
+                const size_t index = static_cast<size_t>(committed->goal);
+                state.lightweight_analysis->recommendations[index] = *committed->parameters;
+                state.lightweight_analysis->recommendation_available[index] = true;
+            }
+            if (state.official_statistics_ready && selected_goal == committed->goal)
+                state.slice_estimate = *committed;
+        } else if (native_session.has_result() && native_session.revision() == current_revision &&
+                   sliced_recommendation && state.lightweight_analysis) {
             if (const auto* plan = state.lightweight_analysis->find(slice_mode_for_goal(selected_goal)))
                 state.slice_estimate = slice_estimate.for_slice(current_revision, selected_goal, *plan);
         }
@@ -1839,9 +2221,12 @@ struct SmartSlicingFeatureHost::Impl
             state.native_blocked_reason = "当前工程模式不支持模型切片。";
         else if (!plate || plate->is_locked() || !plate->has_printable_instances())
             state.native_blocked_reason = "当前打印板没有可切片模型，或打印板已锁定。";
-        else if (!plate->can_slice())
-            state.native_blocked_reason = "请先处理模型摆放、耗材或打印配置中的错误。";
-        else state.can_start_native = true;
+        else {
+            state.native_workspace_available = true;
+            state.can_start_native = plate->can_slice();
+            if (!state.can_start_native)
+                state.native_blocked_reason = "请先处理模型摆放、耗材或打印配置中的错误。";
+        }
         const auto& preflight = coordinator->snapshot();
         state.preflight = preflight.report;
         if (preflight.context) {
@@ -1883,12 +2268,12 @@ struct SmartSlicingFeatureHost::Impl
                 lightweight_analysis->completed && lightweight_analysis->find(selected_mode) != nullptr &&
                 workbench_recommendation_parameters_ready(state);
         }
-        if (quick_plan_ready && !state.analyzing && state.can_start_native && !native_session.pending() &&
+        if (quick_plan_ready && !state.analyzing && !state.orientation_running && state.native_workspace_available && !native_session.pending() &&
             !versioned_apply_workflow->active_transaction()) {
-            // A selected lightweight plan is intentionally sufficient to enter
-            // Orca's native slicer.  SmartSlice capability/preflight evidence
-            // remains diagnostic-only and is never an additional gate here.
-            state.can_start = true;
+            const auto* plan = state.lightweight_analysis->find(selected_mode);
+            state.can_start = state.official_statistics_ready || (plan &&
+                exact_estimate_can_apply(state.exact_estimate) &&
+                exact_estimate_matches(state.exact_estimate, current_revision, selected_goal, *plan));
         } else if (state.recommendation_source == SlicingRecommendationSource::Local &&
                    state.has_selected_goal && candidate && !native_session.pending() &&
                    !versioned_apply_workflow->active_transaction()) {
@@ -1961,7 +2346,9 @@ struct SmartSlicingFeatureHost::Impl
     RecommendationHostEventBindings recommendation_event_bindings;
     std::thread recommendation_worker;
     std::thread lightweight_worker;
+    bool lightweight_refresh_pending{false};
     std::thread exact_worker;
+    std::optional<QuickApply> quick_apply;
     AI::SmartSlicing::RecommendationWorkerState recommendation_worker_state;
     mutable std::mutex recommendation_result_mutex;
     std::deque<AI::SmartSlicing::RecommendationTaskResult> recommendation_results;
@@ -1979,11 +2366,14 @@ struct SmartSlicingFeatureHost::Impl
     WorkbenchPublicationBatch workbench_publication;
     StartOfficialSliceFn native_slice;
     bool workbench_active {false};
+    bool custom_slice_job{false};
+    bool custom_tower_retried{false};
     bool workbench_ai_mode {true};
     WorkbenchGoalSelection goal_selection;
     std::optional<AI::SmartSlicing::WorkspaceRevision> observed_workbench_revision;
     std::optional<AI::SmartSlicing::SliceRecommendation> sliced_recommendation;
     WorkbenchSliceEstimate slice_estimate;
+    std::optional<ExactEstimateView> official_apply_estimate;
     std::function<void()> auto_analyze;
     NativeSliceSession native_session;
     uint64_t workbench_command_sequence {0};
@@ -1992,8 +2382,13 @@ struct SmartSlicingFeatureHost::Impl
     CloudRecommendationView cloud_view;
     std::optional<AI::SmartSlicing::SmartAnalysisResult> local_lightweight_analysis;
     std::optional<AI::SmartSlicing::SmartAnalysisResult> lightweight_analysis;
-    std::optional<SlicingRecommendationRequest> cloud_request_seed;
-    AI::SmartSlicing::WorkspaceRevision cloud_seed_revision;
+    std::optional<LightweightInputs> lightweight_inputs;
+    std::atomic<bool> lightweight_worker_done{false};
+    std::optional<OrcaSliceInputIdentity> observed_slice_input;
+    std::map<uint64_t, LocalPlateCache> local_plate_cache;
+    bool defer_estimate_after_tower_move{false};
+    bool orientation_running{false};
+    std::string orientation_diagnostic;
     bool cloud_start_pending {false};
     std::string lightweight_diagnostic;
     bool lightweight_analyzing {false};
@@ -2001,8 +2396,8 @@ struct SmartSlicingFeatureHost::Impl
     uint64_t last_lightweight_attempt {0};
     mutable std::mutex exact_estimate_mutex;
     ExactEstimateView exact_estimate;
+    std::optional<ExactEstimateView> orientation_estimate;
     std::array<ExactEstimateView, 6> estimate_cache;
-    size_t active_estimate_cache_index {0};
     std::optional<ExactEstimateResult> exact_estimate_pending;
     uint64_t last_exact_estimate_attempt{0};
 };
@@ -2028,11 +2423,15 @@ void SmartSlicingFeatureHost::notify_slice_completed(bool success, const std::st
 {
     BOOST_LOG_TRIVIAL(info) << "[ModelWorkflow] slice completed success=" << success
         << " native_pending=" << m_impl->native_session.pending();
+    const auto reviewed = m_impl->official_apply_estimate;
+    m_impl->custom_slice_job = false;
     if (m_impl->versioned_apply_workflow->active_transaction())
         m_impl->workbench_official = m_impl->versioned_apply_workflow->notify_slice_completed(success, failure_code);
     else if (m_impl->native_session.pending()) {
         m_impl->native_session.complete(success, m_impl->current_native_revision(), failure_code);
         m_impl->workbench_official = m_impl->native_session.result();
+        m_impl->finish_lightweight_apply(success &&
+            m_impl->workbench_official.phase == AI::SmartSlicing::OfficialSlicePhase::Completed);
     }
     else
         m_impl->official_gateway->notify_slice_completed(success, failure_code);
@@ -2041,6 +2440,49 @@ void SmartSlicingFeatureHost::notify_slice_completed(bool success, const std::st
     m_impl->slice_goal_history.complete(
         success && m_impl->workbench_official.phase == AI::SmartSlicing::OfficialSlicePhase::Completed,
         m_impl->current_native_revision());
+    if (success && reviewed && m_impl->observed_slice_input && m_impl->sliced_recommendation &&
+        m_impl->recommendation_source == SlicingRecommendationSource::Local &&
+        m_impl->slice_goal_history.last_sliced_goal(m_impl->current_native_revision()) == m_impl->selected_goal) {
+        const auto input = m_impl->current_slice_input();
+        const size_t index = static_cast<size_t>(m_impl->selected_goal);
+        auto proven = *reviewed;
+        if (proven.native_details && proven.parameters) {
+            auto apply_effect = std::make_shared<OrcaTrialSliceDetails>(*proven.native_details);
+            apply_effect->placement = {};
+            proven.native_details = std::move(apply_effect);
+            m_impl->estimate_cache = {};
+            // The process was committed by the official transaction; its old
+            // recommendation proof can serve the next X/Y-only edit.
+            proven.status = ExactEstimateStatus::Ready;
+            proven.moved_tower_position.reset();
+            auto* plate = m_impl->plater.get_partplate_list().get_curr_plate();
+            const auto* result = plate ? plate->get_slice_result() : nullptr;
+            proven.official_result_id.reset();
+            if (result && plate->is_slice_result_valid()) {
+                proven.official_result_id = result->id;
+                const auto& statistics = result->print_statistics;
+                proven.estimated_time_seconds = statistics.modes[
+                    static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time;
+                proven.material_grams = result->material_weight_grams(statistics.total_volumes_per_extruder);
+            }
+            proven.revision = input.exact;
+            m_impl->estimate_cache[index] = std::move(proven);
+        }
+        const bool process_changed = m_impl->observed_slice_input->process != input.process;
+        m_impl->observed_slice_input = input;
+        m_impl->defer_estimate_after_tower_move = false;
+        if (process_changed) {
+            // Refresh suggestions for the committed inputs while the verified
+            // native result still supplies the active plan and statistics.
+            m_impl->lightweight_refresh_pending = true;
+            std::lock_guard<std::mutex> lock(m_impl->lightweight_mutex);
+            if (m_impl->local_lightweight_analysis) {
+                m_impl->local_lightweight_analysis->recommendation_available.fill(false);
+                m_impl->local_lightweight_analysis->recommendation_available[index] = true;
+                m_impl->lightweight_analysis = m_impl->local_lightweight_analysis;
+            }
+        }
+    }
     if (m_impl->has_current_official_statistics(m_impl->workbench_ai_mode ?
             std::optional<AI::SmartSlicing::RecommendationGoal>(m_impl->selected_goal) : std::nullopt)) {
         // Invalidate late preview callbacks and keep native statistics as the
@@ -2050,6 +2492,14 @@ void SmartSlicingFeatureHost::notify_slice_completed(bool success, const std::st
             << static_cast<int>(m_impl->selected_goal);
     }
     m_impl->publish_workbench();
+}
+
+void SmartSlicingFeatureHost::notify_plate_selected()
+{
+    // Project the new plate in the same event that swaps the native preview.
+    // This also invalidates pending work before a later timer can accept it.
+    if (m_impl->workbench_active && !wxGetApp().is_closing())
+        m_impl->process_recommendation_timer();
 }
 
 SmartSlicingWorkbenchState SmartSlicingFeatureHost::workbench_snapshot() const
@@ -2069,24 +2519,38 @@ void SmartSlicingFeatureHost::set_workbench_active(bool active, bool ai_mode)
     if (m_impl->workbench_active == active && m_impl->workbench_ai_mode == ai_mode) return;
     m_impl->workbench_active = active;
     m_impl->workbench_ai_mode = ai_mode;
+    if (active && wxGetApp().preset_bundle)
+        m_impl->plater.get_partplate_list().prepare_workbench_smart_baseline(*wxGetApp().preset_bundle);
     if (m_impl->entry_button) m_impl->entry_button->Show(!active);
     if (active) {
         m_impl->show(false);
         m_impl->recommendation_revision_timer->Start(1000);
-        if (ai_mode) analyze_workbench();
+        if (ai_mode) {
+            m_impl->cancel_exact_estimate();
+            m_impl->refresh_workbench_input();
+            m_impl->start_exact_estimate(m_impl->selected_goal);
+            m_impl->publish_workbench();
+        }
         else cancel_workbench_analysis();
     } else cancel_workbench_analysis();
 }
 
 void SmartSlicingFeatureHost::cancel_workbench_analysis()
 {
-    m_impl->trial_executor->cancel_trial_slice();
+    m_impl->cancel_exact_estimate();
     m_impl->cancel_recommendation_session(AI::SmartSlicing::RecommendationCancellationReason::ModeChanged);
     m_impl->cancel_cloud_request();
+    const auto revision = m_impl->current_native_revision();
     {
         std::lock_guard<std::mutex> lock(m_impl->exact_estimate_mutex);
         m_impl->exact_estimate.status = ExactEstimateStatus::Failed;
-        m_impl->exact_estimate.diagnostic = "smart_slice_preview_canceled";
+        m_impl->exact_estimate.goal = m_impl->selected_goal;
+        m_impl->exact_estimate.revision = revision;
+        std::lock_guard<std::mutex> analysis_lock(m_impl->lightweight_mutex);
+        if (m_impl->lightweight_analysis) {
+            if (const auto* plan = m_impl->lightweight_analysis->find(Impl::slice_mode_for_goal(m_impl->selected_goal)))
+                m_impl->exact_estimate.parameters = *plan;
+        }
     }
     {
         std::lock_guard<std::mutex> lock(m_impl->lightweight_mutex);
@@ -2109,8 +2573,13 @@ bool SmartSlicingFeatureHost::analyze_workbench()
     m_impl->workbench_official = {};
     m_impl->goal_selection.select(m_impl->selected_goal, m_impl->current_native_revision());
     m_impl->slice_estimate = {};
-    m_impl->estimate_cache = {};
-    m_impl->observed_workbench_revision = m_impl->current_native_revision();
+    const size_t index = static_cast<size_t>(m_impl->selected_goal) +
+        (m_impl->recommendation_source == SlicingRecommendationSource::Cloud ? 3 : 0);
+    m_impl->estimate_cache[index] = {};
+    m_impl->orientation_estimate.reset();
+    m_impl->defer_estimate_after_tower_move = false;
+    m_impl->observed_slice_input = m_impl->current_slice_input();
+    m_impl->observed_workbench_revision = m_impl->observed_slice_input->exact;
     m_impl->workspace->set_usage_purpose(UsagePurpose::General);
     m_impl->cancel_recommendation_session(RecommendationCancellationReason::ModeChanged);
     m_impl->candidate_session_plan.reset();
@@ -2151,6 +2620,7 @@ bool SmartSlicingFeatureHost::set_recommendation_source(SlicingRecommendationSou
         return false;
     if (before.recommendation_source == source) return true;
 
+    m_impl->refresh_workbench_input();
     m_impl->cancel_exact_estimate();
     m_impl->cancel_cloud_request();
     m_impl->slice_estimate = {};
@@ -2165,7 +2635,8 @@ bool SmartSlicingFeatureHost::set_recommendation_source(SlicingRecommendationSou
             const auto goal = m_impl->goal_selection.selected(current).value_or(AI::SmartSlicing::RecommendationGoal::Balanced);
             m_impl->selected_goal = goal;
             m_impl->goal_selection.select(goal, current);
-            if (m_impl->cloud_request_seed && m_impl->cloud_seed_revision == current) {
+            if (m_impl->lightweight_inputs && m_impl->observed_slice_input &&
+                m_impl->lightweight_inputs->process_revision == m_impl->observed_slice_input->process) {
                 m_impl->cloud_start_pending = true;
             } else {
                 needs_analysis = !m_impl->lightweight_analyzing;
@@ -2185,31 +2656,68 @@ bool SmartSlicingFeatureHost::set_recommendation_source(SlicingRecommendationSou
 
 bool SmartSlicingFeatureHost::select_goal(AI::SmartSlicing::RecommendationGoal goal)
 {
-    if (workbench_snapshot().analyzing) return false;
-    if (m_impl->native_session.pending() || m_impl->workbench_official.phase == AI::SmartSlicing::OfficialSlicePhase::Slicing ||
-        m_impl->versioned_apply_workflow->active_transaction()) return false;
-    if (std::find(AI::SmartSlicing::RECOMMENDATION_GOALS.begin(), AI::SmartSlicing::RECOMMENDATION_GOALS.end(), goal) ==
-        AI::SmartSlicing::RECOMMENDATION_GOALS.end()) return false;
-    m_impl->refresh_recommendation_revision();
-    const auto revision = m_impl->current_native_revision();
-    const bool quick_available = [&] {
-        std::lock_guard<std::mutex> lock(m_impl->lightweight_mutex);
-        const auto mode = goal == AI::SmartSlicing::RecommendationGoal::Speed ? AI::SmartSlicing::SliceMode::SPEED :
-            goal == AI::SmartSlicing::RecommendationGoal::Quality ? AI::SmartSlicing::SliceMode::QUALITY :
-            AI::SmartSlicing::SliceMode::BALANCED;
-        return m_impl->lightweight_analysis && m_impl->lightweight_analysis->completed &&
-               m_impl->lightweight_analysis->find(mode) != nullptr;
-    }();
-    if (!m_impl->workbench_candidate(goal) && !quick_available) return false;
-    if (m_impl->goal_selection.selected(revision) == goal) return true;
-    if (!m_impl->goal_selection.select(goal, revision)) return false;
+    using namespace AI::SmartSlicing;
+    if (m_impl->native_session.pending() || m_impl->workbench_official.phase == OfficialSlicePhase::Slicing ||
+        m_impl->versioned_apply_workflow->active_transaction() ||
+        std::find(RECOMMENDATION_GOALS.begin(), RECOMMENDATION_GOALS.end(), goal) == RECOMMENDATION_GOALS.end()) return false;
+    m_impl->refresh_workbench_input();
+    const auto input = m_impl->current_slice_input();
+    const auto before = m_impl->workbench_snapshot();
+    if (!before.native_workspace_available || (m_impl->recommendation_source == SlicingRecommendationSource::Cloud &&
+        before.cloud_recommendation.status != CloudRecommendationStatus::Ready)) return false;
+    if (m_impl->goal_selection.selected(input.exact) == goal) return true;
+    if (!m_impl->goal_selection.select(goal, input.exact)) return false;
     m_impl->cancel_exact_estimate();
     m_impl->native_session.reset();
     m_impl->slice_estimate = {};
     m_impl->workbench_official = {};
     m_impl->selected_goal = goal;
-    m_impl->publish_workbench();
+    if (m_impl->recommendation_source == SlicingRecommendationSource::Local) {
+        if (!m_impl->ensure_local_goal(goal) && !before.lightweight_analyzing)
+            m_impl->start_lightweight_only_analysis();
+        const auto& cached = m_impl->estimate_cache[static_cast<size_t>(goal)];
+        if (cached.status != ExactEstimateStatus::Ready)
+            m_impl->defer_estimate_after_tower_move = false;
+    }
     m_impl->start_exact_estimate(goal);
+    m_impl->publish_workbench();
+    return true;
+}
+
+bool SmartSlicingFeatureHost::request_orientation_comparison()
+{
+    m_impl->refresh_workbench_input();
+    const auto current = workbench_snapshot();
+    if (!current.can_start || current.orientation_running ||
+        current.recommendation_source != SlicingRecommendationSource::Local ||
+        current.exact_estimate.status != ExactEstimateStatus::Ready) return false;
+    m_impl->start_exact_estimate(current.selected_goal, true);
+    m_impl->publish_workbench();
+    return m_impl->orientation_running;
+}
+
+bool SmartSlicingFeatureHost::select_orientation(const ExactEstimateView& reviewed)
+{
+    const auto current = workbench_snapshot();
+    if (!current.can_start || !current.orientation_estimate || !reviewed.parameters ||
+        reviewed.native_details != current.orientation_estimate->native_details ||
+        reviewed.revision != current.session.workspace_revision)
+        return false;
+    auto confirmed = reviewed;
+    confirmed.goal = current.selected_goal;
+    confirmed.parameters->mode = Impl::slice_mode_for_goal(confirmed.goal);
+    {
+        std::lock_guard<std::mutex> lock(m_impl->lightweight_mutex);
+        if (!m_impl->lightweight_analysis) return false;
+        m_impl->lightweight_analysis->recommendations[static_cast<size_t>(confirmed.goal)] = *confirmed.parameters;
+        m_impl->local_lightweight_analysis = m_impl->lightweight_analysis;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_impl->exact_estimate_mutex);
+        m_impl->exact_estimate = confirmed;
+        m_impl->estimate_cache[static_cast<size_t>(confirmed.goal)] = std::move(confirmed);
+        m_impl->orientation_estimate.reset();
+    }
     m_impl->publish_workbench();
     return true;
 }
@@ -2230,6 +2738,7 @@ AI::SmartSlicing::OfficialSliceResult SmartSlicingFeatureHost::start_workbench_s
             m_impl->slice_goal_history.cancel();
     } else {
         m_impl->refresh_recommendation_revision();
+        m_impl->refresh_workbench_input();
         const auto current = workbench_snapshot();
         const auto index = static_cast<size_t>(current.selected_goal);
         if (!current.has_selected_goal || !reviewed.has_selected_goal || !current.can_start ||
@@ -2262,12 +2771,18 @@ AI::SmartSlicing::OfficialSliceResult SmartSlicingFeatureHost::start_workbench_s
             // used by the Orca tab.  Machine/material capability preflight is
             // deliberately not consulted here.
             std::string diagnostic;
-            if (!m_impl->apply_lightweight_plan(*lightweight_plan, diagnostic))
+            if (!reviewed.lightweight_analysis ||
+                !reviewed.lightweight_analysis->find(selected_mode) ||
+                !same_slice_parameters(*reviewed.lightweight_analysis->find(selected_mode), *lightweight_plan) ||
+                reviewed.exact_estimate.native_details != current.exact_estimate.native_details)
+                return {OfficialSlicePhase::Rejected, "reviewed_candidate_changed"};
+            if (!m_impl->apply_lightweight_plan(current.exact_estimate, diagnostic))
                 return {OfficialSlicePhase::Rejected,
                         diagnostic.empty() ? "smart_slice_plan_apply_failed" : std::move(diagnostic)};
             // Applying the reviewed plan changes the plate config and may
             // reposition the wipe tower. It is not a new recommendation input.
             const auto applied_revision = m_impl->current_native_revision();
+            m_impl->official_apply_estimate = current.exact_estimate;
             m_impl->slice_estimate.capture(current.exact_estimate, current.session.workspace_revision,
                 applied_revision, current.selected_goal, *lightweight_plan);
             m_impl->goal_selection.select(current.selected_goal, applied_revision);
@@ -2275,8 +2790,11 @@ AI::SmartSlicing::OfficialSliceResult SmartSlicingFeatureHost::start_workbench_s
             m_impl->sliced_recommendation = *lightweight_plan;
             m_impl->slice_goal_history.begin(current.selected_goal, m_impl->current_native_revision());
             m_impl->workbench_official = {};
-            if (!start_native_slice())
+            if (!start_native_slice()) {
                 m_impl->slice_goal_history.cancel();
+                m_impl->finish_lightweight_apply(false);
+                m_impl->publish_workbench();
+            }
             return m_impl->workbench_official;
         }
 
@@ -2300,10 +2818,80 @@ AI::SmartSlicing::OfficialSliceResult SmartSlicingFeatureHost::start_workbench_s
     return m_impl->workbench_official;
 }
 
+bool SmartSlicingFeatureHost::workbench_active() const
+{
+    return m_impl->workbench_active;
+}
+
+bool SmartSlicingFeatureHost::workbench_tower_pinned() const
+{
+    return m_impl->native_session.pending() &&
+        ((m_impl->official_apply_estimate && m_impl->official_apply_estimate->native_details &&
+          m_impl->official_apply_estimate->native_details->tower_position) ||
+         (m_impl->custom_slice_job && m_impl->custom_tower_retried));
+}
+
+bool SmartSlicingFeatureHost::can_retry_custom_tower() const
+{
+    const auto* plate = m_impl->plater.get_partplate_list().get_curr_plate();
+    return m_impl->custom_slice_job && !m_impl->custom_tower_retried &&
+        m_impl->native_session.pending() && m_impl->native_session.revision() &&
+        *m_impl->native_session.revision() == m_impl->current_native_revision() &&
+        plate && plate->automatic_wipe_tower_position();
+}
+
+void SmartSlicingFeatureHost::rebind_custom_tower_position()
+{
+    if (!m_impl->custom_slice_job || !m_impl->native_session.pending() || !m_impl->quick_apply) return;
+    const auto revision = m_impl->current_native_revision();
+    m_impl->quick_apply->applied_revision = revision;
+    m_impl->native_session.start(revision);
+}
+
+bool SmartSlicingFeatureHost::retry_custom_tower(const Vec2d& position)
+{
+    if (!position.allFinite() || !can_retry_custom_tower()) return false;
+    auto& plates = m_impl->plater.get_partplate_list();
+    plates.set_wipe_tower_position_for_plate(plates.get_curr_plate_index(), position, true);
+    m_impl->custom_tower_retried = true;
+    rebind_custom_tower_position();
+    return m_impl->native_slice && m_impl->native_slice();
+}
+
+bool SmartSlicingFeatureHost::start_custom_slice()
+{
+    using namespace AI::SmartSlicing;
+    auto* plate = m_impl->plater.get_partplate_list().get_curr_plate();
+    if (!plate || !plate->has_printable_instances() || m_impl->native_session.pending() ||
+        m_impl->plater.is_background_process_slicing() || m_impl->plater.inside_snapshot_capture())
+        return false;
+
+    constexpr auto action = "Apply Custom Slicing Process";
+    UndoRedo::ActionSnapshotIdentity snapshot;
+    {
+        Plater::TakeSnapshot transaction(&m_impl->plater, action);
+        if (!m_impl->plater.latest_main_snapshot_identity(action, snapshot))
+            return false;
+        plate->use_workbench_smart_process(false);
+    }
+    m_impl->slice_goal_history.cancel();
+    m_impl->quick_apply = Impl::QuickApply{snapshot, m_impl->current_native_revision()};
+    m_impl->custom_slice_job = true;
+    m_impl->custom_tower_retried = false;
+    if (start_native_slice())
+        return true;
+    m_impl->custom_slice_job = false;
+    m_impl->finish_lightweight_apply(false);
+    m_impl->publish_workbench();
+    return false;
+}
+
 bool SmartSlicingFeatureHost::start_native_slice()
 {
     const auto state = workbench_snapshot();
-    if (!state.can_start_native) {
+    const bool verified_apply = state.native_workspace_available && m_impl->quick_apply &&
+        m_impl->quick_apply->applied_revision == m_impl->current_native_revision();
+    if (!state.can_start_native && !verified_apply) {
         if (!m_impl->native_session.pending() && state.official.phase != AI::SmartSlicing::OfficialSlicePhase::Slicing) {
             m_impl->workbench_official = {AI::SmartSlicing::OfficialSlicePhase::Rejected, state.native_blocked_reason};
             m_impl->publish_workbench();

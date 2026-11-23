@@ -254,6 +254,7 @@ private:
     void request_initial_slicing_camera();
     void layout_slicing_camera_loading();
     void refresh_native_theme();
+    void mount_custom_process(bool visible);
     bool slicing_mode_switch_allowed() const;
     bool block_workbench_navigation(bool leaves_workbench = true);
     bool navigate_to_impl(Page page, bool allow_locked_image_view);
@@ -276,6 +277,7 @@ private:
     wxPanel* m_workbench_page { nullptr };
     wxPanel* m_slicing_page { nullptr };
     wxPanel* m_slicing_settings { nullptr };
+    wxScrolledWindow* m_slicing_scroll { nullptr };
     wxWindow* m_slice_return_overview {nullptr};
     wxWindow* m_native_return_ai {nullptr};
     wxWindow* m_native_return_overview {nullptr};
@@ -287,11 +289,16 @@ private:
     std::function<bool()> m_print_preview_revision_current;
     std::string m_print_preview_gcode;
     wxPanel* m_ai_slicing_controls { nullptr };
+    wxPanel* m_smart_slicing_content { nullptr };
+    wxPanel* m_custom_process_content { nullptr };
+    Presentation::WindowMountLease m_custom_process_mount;
+    int m_custom_process_level{0};
     wxWindow* m_ai_slicing_tab { nullptr };
     wxWindow* m_native_slicing_tab { nullptr };
     wxPanel* m_slice_recommendation_source { nullptr };
     wxWindow* m_slice_start { nullptr };
     wxWindow* m_slice_analyze { nullptr };
+    wxWindow* m_slice_orientation { nullptr };
     wxWindow* m_slice_cancel { nullptr };
     wxWindow* m_slice_keep_mesh { nullptr };
     wxWindow* m_slice_export { nullptr };
@@ -303,7 +310,6 @@ private:
     std::vector<wxStaticText*> m_slice_parameter_labels;
     std::vector<wxStaticText*> m_slice_parameter_values;
     wxStaticText* m_slice_status { nullptr };
-    wxStaticText* m_slice_check_status { nullptr };
     wxStaticText* m_slice_model_stats { nullptr };
     wxBoxSizer* m_slice_palette { nullptr };
     wxPanel* m_slice_palette_host {nullptr};
@@ -312,7 +318,6 @@ private:
     WorkbenchSlider* m_slice_color_count {nullptr};
     wxStaticText* m_slice_color_count_label {nullptr};
     wxWindow* m_slice_palette_all {nullptr};
-    wxWindow* m_slice_check {nullptr};
     std::unique_ptr<RedesignSlicingTools> m_slice_tools;
     SlicingCanvasOverlay* m_slice_stats_overlay {nullptr};
     SlicingCanvasOverlay* m_slice_progress_overlay {nullptr};

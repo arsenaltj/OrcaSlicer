@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <optional>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -37,6 +38,8 @@ struct ModelMetrics
     size_t triangle_count{0};
     bool closed_mesh{false};
     bool finite_geometry{true};
+    // Area of intermediate slopes that can benefit from smaller Z steps.
+    double slope_detail_area_ratio{0.0};
 
     bool usable() const
     {
@@ -128,6 +131,8 @@ struct SliceRecommendation
     std::string surface_quality_rating;
     double overhang_risk_score{0.0};
     std::vector<std::string> warnings;
+    std::optional<bool> support_on_build_plate_only;
+    bool keep_current_process{false};
 };
 
 struct SmartAnalysisResult
@@ -150,6 +155,8 @@ struct SmartAnalysisResult
     std::string algorithm_version{"smart-slicing-core/1"};
     std::string source_commit;
 
+    // Desktop-local partial computation. Existing three-goal producers and wire formats are unchanged.
+    std::array<bool, 3> recommendation_available{{true, true, true}};
     const SliceRecommendation* find(SliceMode mode) const;
     SliceRecommendation* find(SliceMode mode);
 };

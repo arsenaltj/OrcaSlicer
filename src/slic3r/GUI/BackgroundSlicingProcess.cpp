@@ -4,6 +4,8 @@
 #include "MainFrame.hpp"
 #include "format.hpp"
 
+#include <algorithm>
+#include <optional>
 #include <cstddef>
 #include <exception>
 #include "libslic3r/AppConfig.hpp"
@@ -259,6 +261,14 @@ void BackgroundSlicingProcess::process_fff()
 
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: gcode_result reseted, will start print::process") % __LINE__;
         m_print->process();
+        if (m_workbench_placement_check && m_fff_print->has_wipe_tower() &&
+            m_fff_print->wipe_tower_data().wipe_tower_mesh_data) {
+            const auto index = m_current_plate->get_index();
+            const auto& config = m_fff_print->config();
+            const Vec2d position(config.wipe_tower_x.get_at(index), config.wipe_tower_y.get_at(index));
+            if (m_fff_print->check_wipe_tower_position(position) != WipeTowerPositionStatus::Valid)
+                throw WipeTowerPlacementError(_u8L("擦料塔与可打印区域、禁打区或模型首层占地冲突。"));
+        }
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__
                                 << boost::format(" %1%: after print::process, send slicing complete event to gui...") % __LINE__;
         if (m_current_plate->get_real_filament_map_mode(preset_bundle.project_config) < FilamentMapMode::fmmManual) {
@@ -750,10 +760,26 @@ Print::ApplyStatus BackgroundSlicingProcess::apply(const Model& model, const Dyn
 {
     assert(m_print != nullptr);
     assert(config.opt_enum<PrinterTechnology>("printer_technology") == m_print->technology());
-    // TODO: add partplate config
     DynamicPrintConfig new_config = config;
-    new_config.apply(*m_current_plate->config());
-    Print::ApplyStatus invalidated = m_print->apply(model, new_config);
+    m_current_plate->apply_slice_overrides(new_config);
+    std::optional<Model> slice_model;
+    if (m_current_plate->uses_workbench_smart_process() && !m_current_plate->workbench_smart_layers().empty()) {
+        slice_model.emplace(model);
+        for (const auto& [id, values] : m_current_plate->workbench_smart_layers()) {
+            auto target = std::find_if(slice_model->objects.begin(), slice_model->objects.end(),
+                [id](const ModelObject* object) { return object->id().id == id; });
+            if (target == slice_model->objects.end() || (*target)->has_custom_layering())
+                continue;
+            const auto& previous = m_print->model().objects;
+            const auto applied = std::find_if(previous.begin(), previous.end(),
+                [id](const ModelObject* object) { return object->id().id == id; });
+            if (applied != previous.end() && (*applied)->layer_height_profile.get() == values)
+                (*target)->layer_height_profile.assign((*applied)->layer_height_profile);
+            else
+                (*target)->layer_height_profile.set(values);
+        }
+    }
+    Print::ApplyStatus invalidated = m_print->apply(slice_model ? *slice_model : model, new_config);
 
     // Orca: prevent resetting under gcode viewer mode
     if (invalidated != PrintBase::APPLY_STATUS_UNCHANGED) {
