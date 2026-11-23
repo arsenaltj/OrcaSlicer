@@ -1,8 +1,13 @@
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryApplication.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryPublication.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/AdvancedModelTaskMonitor.hpp"
 #include "slic3r/Utils/PlatformLibrary/LibraryClient.hpp"
 #include "../test_utils.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <wx/app.h>
+#include <wx/evtloop.h>
+#include <wx/init.h>
+#include <chrono>
 
 using namespace Slic3r::GUI;
 namespace {
@@ -136,4 +141,156 @@ TEST_CASE("A failed atomic replacement removes its pending file and preserves th
     size_t entries = 0;
     for (auto it = boost::filesystem::directory_iterator(temporary.path()); it != boost::filesystem::directory_iterator(); ++it) ++entries;
     CHECK(entries == 1);
+}
+
+namespace {
+// As in the native partition tests, keep stage access in this translation unit
+// so the real preparation callback is exercised without a new production API.
+template<class Tag, typename Tag::Type Member> struct PreparationStageAccess {
+    friend typename Tag::Type preparation_member(Tag) { return Member; }
+};
+struct PreparationStage {
+    using Type = void (AdvancedModelTaskMonitor::*)(Slic3r::AI::GeneratedModelArtifact,
+        AIModelGenerationClient::JobStatus, boost::filesystem::path,
+        std::function<void(ModelLibraryEntry)>, AIModelGenerationClient::ErrorFn);
+    friend Type preparation_member(PreparationStage);
+};
+template struct PreparationStageAccess<PreparationStage, &AdvancedModelTaskMonitor::prepare>;
+
+struct PreparationRun {
+    AdvancedModelTaskMonitor monitor;
+    std::vector<ModelLibraryEntry> completed;
+    std::vector<ModelLibraryCommit> commits;
+    std::vector<std::string> errors;
+    PreparationRun() {
+        monitor.set_library_commit_listener([this](auto event) { commits.push_back(std::move(event)); });
+    }
+    ~PreparationRun() { monitor.reset(); drain(); }
+    void start(const boost::filesystem::path& model, const std::string& job = "prepared") {
+        Slic3r::AI::GeneratedModelArtifact artifact;
+        artifact.job_id = job; artifact.local_path = model; artifact.format = "obj";
+        AIModelGenerationClient::JobStatus status; status.id = job; status.source = "local_import";
+        (monitor.*preparation_member(PreparationStage{}))(std::move(artifact), std::move(status), {},
+            [this](auto entry) { completed.push_back(std::move(entry)); },
+            [this](auto error) { errors.push_back(std::move(error)); });
+    }
+    static bool drain() {
+        wxEventLoop loop;
+        wxEventLoopActivator active(&loop);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!Presentation::background_tasks().idle() && std::chrono::steady_clock::now() < deadline) {
+            wxTheApp->ProcessPendingEvents();
+            loop.DispatchTimeout(10);
+        }
+        return Presentation::background_tasks().idle();
+    }
+};
+
+boost::filesystem::path preparation_model(const boost::filesystem::path& root, const std::string& name) {
+    const auto model = root / name / "model-vertex-color.obj";
+    boost::filesystem::create_directories(model.parent_path());
+    boost::filesystem::ofstream output(model);
+    output << "# " << name << "\nv 0 0 0\nv 20 0 0\nv 0 20 0\nv 0 0 20\nf 1 3 2\nf 1 2 4\nf 2 3 4\nf 3 1 4\n";
+    return model;
+}
+}
+
+TEST_CASE("Publishing an advanced model retains its prepared identity for the foreground handoff",
+          "[ModelLibraryPublication][AdvancedModelPreparation]")
+{
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary("orca-advanced-preparation-identity");
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.path().string());
+    const auto model = preparation_model(temporary.path(), "prepared");
+    const auto digest = Slic3r::PlatformLibrary::file_digest(model);
+    REQUIRE(publish_model_library_record(ModelGenerationPresentation::library_metadata_path("prepared"),
+        {{"job_id","prepared"},{"model_path","prepared/model-vertex-color.obj"},{"generated_at",12}}));
+    PreparationRun run;
+    run.start(model);
+    REQUIRE(run.drain());
+    CHECK(run.errors.empty());
+    REQUIRE(run.completed.size() == 1);
+    CHECK(run.completed.front().job_id == "prepared");
+    CHECK(run.completed.front().model_path == model);
+    CHECK(run.completed.front().content_sha256 == digest);
+    CHECK(run.completed.front().triangle_count == 4);
+    REQUIRE(run.commits.size() == 1);
+    const auto& event = run.commits.front();
+    CHECK(event.entry.job_id == "prepared");
+    CHECK(event.entry.model_path == model);
+    CHECK(event.entry.content_sha256.empty()); // History remains a lightweight projection.
+    CHECK(event.record_sha256 == Slic3r::PlatformLibrary::file_digest(
+        ModelGenerationPresentation::library_metadata_path("prepared")));
+    CHECK(event.record_sha256 != digest);
+    CHECK(event.foreground);
+    CHECK(event.request != 0);
+    ModelLibraryApplication library(temporary.path());
+    REQUIRE(library.commit(event));
+    REQUIRE(library.entries().size() == 1);
+    CHECK(library.entries().front().model_path == model);
+}
+
+TEST_CASE("An existing certified history path cannot replace the freshly prepared advanced asset",
+          "[ModelLibraryPublication][AdvancedModelPreparation]")
+{
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary("orca-advanced-preparation-distinct-history");
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.path().string());
+    const auto model = preparation_model(temporary.path(), "prepared");
+    const auto historical = preparation_model(temporary.path(), "certified");
+    const auto record = ModelGenerationPresentation::library_metadata_path("prepared");
+    REQUIRE(publish_model_library_record(record, {{"job_id","prepared"},{"source","native_workbench_partition"},
+        {"model_path","certified/model-vertex-color.obj"},
+        {"triangle_count",17},{"workbench_check_certificate",{{"proof","preserved"}}}}));
+    const auto record_digest = Slic3r::PlatformLibrary::file_digest(record);
+    PreparationRun run;
+    run.start(model);
+    REQUIRE(run.drain());
+    CHECK(run.errors.empty());
+    REQUIRE(run.completed.size() == 1);
+    CHECK(run.completed.front().model_path == model);
+    CHECK(run.completed.front().content_sha256 == Slic3r::PlatformLibrary::file_digest(model));
+    CHECK(run.completed.front().triangle_count == 4);
+    REQUIRE(run.commits.size() == 1);
+    CHECK(run.commits.front().entry.model_path == historical);
+    CHECK(run.commits.front().entry.triangle_count == 17);
+    CHECK(run.commits.front().record_sha256 == record_digest);
+    CHECK(Slic3r::PlatformLibrary::file_digest(record) == record_digest);
+}
+
+TEST_CASE("Failed advanced publication keeps the downloaded asset without completing its handoff",
+          "[ModelLibraryPublication][AdvancedModelPreparation]")
+{
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary("orca-advanced-preparation-write-failure");
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.path().string());
+    const auto model = preparation_model(temporary.path(), "prepared");
+    const auto digest = Slic3r::PlatformLibrary::file_digest(model);
+    boost::filesystem::create_directory(ModelGenerationPresentation::library_metadata_path("prepared"));
+    PreparationRun run;
+    run.start(model);
+    REQUIRE(run.drain());
+    CHECK(run.completed.empty());
+    CHECK(run.commits.empty());
+    REQUIRE(run.errors.size() == 1);
+    CHECK_FALSE(run.errors.front().empty());
+    CHECK(Slic3r::PlatformLibrary::file_digest(model) == digest);
+}
+
+TEST_CASE("Canceled advanced preparation cannot complete a foreground handoff",
+          "[ModelLibraryPublication][AdvancedModelPreparation]")
+{
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary("orca-advanced-preparation-cancel");
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.path().string());
+    const auto model = preparation_model(temporary.path(), "prepared");
+    const auto digest = Slic3r::PlatformLibrary::file_digest(model);
+    PreparationRun run;
+    run.start(model);
+    run.monitor.reset();
+    REQUIRE(run.drain());
+    CHECK(run.completed.empty());
+    CHECK(run.errors.empty());
+    for (const auto& event : run.commits) CHECK_FALSE(event.foreground);
+    CHECK(Slic3r::PlatformLibrary::file_digest(model) == digest);
 }
