@@ -34,6 +34,10 @@ int main() {try {
         equal(now.metrics.slope_detail_area_ratio,0.);
     }
     auto slopeOld=cube<O::TriangleMeshSnapshot>(0.);auto slopeNew=cube<N::TriangleMeshSnapshot>(0.);
+    // A wider roof supplies >16% genuine slope area: the original 10x10
+    // cube's taller side walls left only ~15%, below the adaptive threshold.
+    for(auto& v:slopeOld.vertices){v.x*=2.;v.y*=2.;}
+    for(auto& v:slopeNew.vertices){v.x*=2.;v.y*=2.;}
     for(size_t i:{size_t(5),size_t(6)}) {slopeOld.vertices[i].z+=5.;slopeNew.vertices[i].z+=5.;}
     auto measuredOld=O::SmartSlicingEngine().AnalyzeAndPrecompute(slopeOld,om,of);
     auto measuredNew=N::SmartSlicingEngine().AnalyzeAndPrecompute(slopeNew,nm,nf);
