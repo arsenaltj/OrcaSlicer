@@ -1623,6 +1623,7 @@ private:
     // Caller-authored maps before engine expansion/write-back. An unchanged caller
     // may still carry its pre-slice maps; an explicitly restored map must invalidate.
     DynamicPrintConfig m_last_input_filament_mapping;
+    bool has_invalid_input_filament_map() const;
     
     std::vector<std::set<int>> m_geometric_unprintable_filaments;
 

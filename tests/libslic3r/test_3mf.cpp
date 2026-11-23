@@ -1530,6 +1530,7 @@ SCENARIO("BBS 3MF round-trips per-plate IMEX state (parallel mode + head filamen
         plate0->plate_index = 0;
         plate0->config.set_key_value("imex_parallel_mode",     new ConfigOptionString(hostile_mode));
         plate0->config.set_key_value("imex_head_filament_map", new ConfigOptionString(hostile_hfm));
+        plate0->config.set_key_value("skirt_start_angle",      new ConfigOptionFloat(12.5));
         src_plates.push_back(plate0);
 
         WHEN("the model is saved to BBS 3MF and loaded back") {
@@ -1572,6 +1573,12 @@ SCENARIO("BBS 3MF round-trips per-plate IMEX state (parallel mode + head filamen
                 REQUIRE(hfm_opt != nullptr);
                 REQUIRE(hfm_opt->value == hostile_hfm);
             }
+            THEN("skirt_start_angle round-trips with its fraction") {
+                REQUIRE(dst_plates.size() >= 1);
+                auto *angle_opt = dst_plates[0]->config.option<ConfigOptionFloat>("skirt_start_angle");
+                REQUIRE(angle_opt != nullptr);
+                REQUIRE_THAT(angle_opt->value, Catch::Matchers::WithinAbs(12.5, 1e-6));
+            }
 
             release_PlateData_list(dst_plates);
         }
@@ -1599,6 +1606,7 @@ SCENARIO("BBS 3MF round-trips distinct IMEX state across multiple plates", "[3mf
         plate0->plate_index = 0;
         plate0->config.set_key_value("imex_parallel_mode",     new ConfigOptionString("copy_mode"));
         plate0->config.set_key_value("imex_head_filament_map", new ConfigOptionString("1:2"));
+        plate0->config.set_key_value("skirt_start_angle",      new ConfigOptionFloat(-67.25));
         src_plates.push_back(plate0);
 
         auto *plate1 = new PlateData();
@@ -1641,6 +1649,9 @@ SCENARIO("BBS 3MF round-trips distinct IMEX state across multiple plates", "[3mf
                 REQUIRE(hfm  != nullptr);
                 REQUIRE(mode->value == "copy_mode");
                 REQUIRE(hfm->value  == "1:2");
+                const auto *angle = dst_plates[0]->config.option<ConfigOptionFloat>("skirt_start_angle");
+                REQUIRE(angle != nullptr);
+                REQUIRE_THAT(angle->value, Catch::Matchers::WithinAbs(-67.25, 1e-6));
             }
             THEN("plate 1 retains its own IMEX state (mirror_mode, 2:4,3:5) and does not inherit plate 0's") {
                 REQUIRE(dst_plates.size() == 2);
@@ -1650,6 +1661,7 @@ SCENARIO("BBS 3MF round-trips distinct IMEX state across multiple plates", "[3mf
                 REQUIRE(hfm  != nullptr);
                 REQUIRE(mode->value == "mirror_mode");
                 REQUIRE(hfm->value  == "2:4,3:5");
+                CHECK(dst_plates[1]->config.option<ConfigOptionFloat>("skirt_start_angle") == nullptr);
             }
 
             release_PlateData_list(dst_plates);
