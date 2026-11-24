@@ -26,6 +26,7 @@
 #include "slic3r/GUI/I18N.hpp"
 #include <boost/filesystem.hpp>
 #include <nlohmann/json.hpp>
+#include <array>
 #include <wx/button.h>
 #include <wx/checkbox.h>
 #include <wx/choice.h>
@@ -56,30 +57,6 @@ namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
 namespace {
 constexpr int beauty_finishing_tools[] = {4, 1, 3, 5, 1};
-// Native wrapping may keep an entire CJK sentence as one word. Measure the
-// displayed text so a narrow tool panel never truncates its instructions.
-void wrap_workbench_text(wxStaticText* label, int width, bool preserve_lines = false)
-{
-    wxString source = label->GetLabel(), line, result;
-    source.Replace("\r", "");
-    if (!preserve_lines) source.Replace("\n", "");
-    for (wxUniChar character : source) {
-        if (character == '\n') {
-            result += line + "\n"; line.clear();
-            continue;
-        }
-        wxString next = line; next += character;
-        if (!line.empty() && label->GetTextExtent(next).x > width) {
-            result += line + "\n"; line.clear();
-        }
-        line += character;
-    }
-    const wxString wrapped = result + line;
-    label->SetLabel(wrapped);
-    wxClientDC dc(label);
-    dc.SetFont(label->GetFont());
-    label->SetMinSize(wxSize(1, dc.GetMultiLineTextExtent(wrapped).y + label->FromDIP(2)));
-}
 
 void apply_workbench_theme(wxWindow* window, bool enabled,
                            const wxColour& enabled_surface = wxColour(32, 32, 35))
@@ -95,6 +72,80 @@ void apply_workbench_theme(wxWindow* window, bool enabled,
 }
 
 }
+void ModelGenerationPanel::show_workbench_model_info()
+{
+    if (m_preview_loading || !m_model_preview_ready || !m_model_preview || !m_model_preview->has_model())
+        return;
+    const Vec3d dimensions = m_model_preview->workbench_display_dimensions();
+    WorkbenchFloatingCard dialog(m_workbench_shell);
+    dialog.SetTitle(_L("模型信息"));
+    dialog.SetFont(m_workbench_shell->GetFont());
+    const auto text = [](wxWindow* parent, const wxString& label, bool emphasized) {
+        auto* control = new WorkbenchStaticText(parent, wxID_ANY, label);
+        control->SetForegroundColour(emphasized ? wxColour(238, 240, 244) : wxColour(183, 183, 189));
+        if (emphasized) control->SetFont(wxGetApp().bold_font());
+        return control;
+    };
+
+    auto* root = new wxBoxSizer(wxVERTICAL);
+    auto* header = new wxBoxSizer(wxHORIZONTAL);
+    header->Add(text(&dialog, dialog.GetTitle(), true), 1, wxALIGN_CENTER_VERTICAL);
+    if (m_model_preview->round_base_preview_enabled())
+        header->Add(text(&dialog, _L("含 3 mm 底座"), false), 0, wxALIGN_CENTER_VERTICAL);
+    root->Add(header, 0, wxEXPAND | wxBOTTOM);
+
+    auto* measurements = new wxPanel(&dialog);
+    measurements->SetName("ai_content_color");
+    measurements->SetBackgroundColour(wxColour(36, 36, 40));
+    auto* columns = new wxGridSizer(3);
+    const std::array<wxString, 3> labels {_L("X"), _L("Y"), _L("高度")};
+    for (size_t axis = 0; axis < labels.size(); ++axis) {
+        auto* column = new wxBoxSizer(wxVERTICAL);
+        column->Add(text(measurements, labels[axis], false), 0, wxALIGN_CENTER_HORIZONTAL);
+        column->Add(text(measurements, wxString::Format(_L("%.1f mm"), dimensions[axis]), true),
+            0, wxALIGN_CENTER_HORIZONTAL);
+        columns->Add(column, 0, wxEXPAND | wxTOP | wxBOTTOM, dialog.FromDIP(10));
+    }
+    measurements->SetSizer(columns);
+    root->Add(measurements, 0, wxEXPAND | wxBOTTOM);
+
+    const auto faces = wxNumberFormatter::ToString(static_cast<wxLongLong_t>(m_model_preview->triangle_count()));
+    auto* footer = new wxBoxSizer(wxHORIZONTAL);
+    footer->Add(text(&dialog, wxString::Format(_L("主体三角面数  %s"), faces), false), 1, wxALIGN_CENTER_VERTICAL);
+    auto* close = workbench_button(&dialog, _L("关闭"));
+    close->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_CLOSE); });
+    footer->Add(close, 0, wxALIGN_CENTER_VERTICAL);
+    root->Add(footer, 0, wxEXPAND);
+    auto* outer = new wxBoxSizer(wxVERTICAL);
+    outer->Add(root, 1, wxEXPAND | wxALL);
+    dialog.SetSizer(outer);
+
+    const auto resize = [&] {
+        outer->GetItem(root)->SetBorder(dialog.FromDIP(14));
+        root->GetItem(header)->SetBorder(dialog.FromDIP(12));
+        root->GetItem(measurements)->SetBorder(dialog.FromDIP(12));
+        for (auto node = columns->GetChildren().GetFirst(); node; node = node->GetNext())
+            node->GetData()->SetBorder(dialog.FromDIP(10));
+        close->SetMinSize(dialog.FromDIP(wxSize(68, 32)));
+        const auto minimum = outer->CalcMin();
+        dialog.SetClientSize(wxSize(std::max(dialog.FromDIP(360), minimum.x), minimum.y));
+        dialog.Layout();
+        apply_workbench_floating_card_shape(&dialog, 8, dialog.GetBackgroundColour());
+    };
+    dialog.Bind(wxEVT_CHAR_HOOK, [&dialog](wxKeyEvent& event) {
+        if (event.GetKeyCode() == WXK_ESCAPE) dialog.EndModal(wxID_CANCEL);
+        else event.Skip();
+    });
+    dialog.Bind(wxEVT_DPI_CHANGED, [&dialog, resize](wxDPIChangedEvent& event) {
+        event.Skip();
+        dialog.CallAfter(resize);
+    });
+    resize();
+    dialog.CenterOnParent();
+    close->SetFocus();
+    dialog.ShowModal();
+}
+
 wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent)
 {
     auto* shell = new WorkbenchScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
@@ -433,8 +484,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
                     if (!weak || weak->m_shutdown) return;
                     if (!restored) BOOST_LOG_TRIVIAL(error) << "Honor suite could not restore its previous appearance";
                     weak->m_workbench_operation_notice = notice;
-                    weak->m_workbench_printer_filament_notice = notice;
-                    weak->m_workbench_printer_filament_notice_error = true;
+                    weak->m_workbench_printer_filament_error = notice;
                     weak->refresh_controls(); weak->publish_workbench_state();
                 };
                 if (weak->m_model_preview->leaf_edit_revision() == edit_revision || colored) {
@@ -502,16 +552,12 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     controls->Add(m_workbench_printer_filament_trial, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     for (auto* control : {m_workbench_apply_project_filaments, m_workbench_printer_filament_trial}) {
         auto* button = static_cast<WorkbenchButton*>(control);
+        button->EnableTooltipEvenDisabled();
         button->SetFont(Label::Body_14);
         button->SetPaddingSize(FromDIP(wxSize(8, 4)));
         button->SetIconSpacing(FromDIP(5));
         button->set_scaled_icon("workbench_printer", 20);
     }
-    m_workbench_printer_filament_feedback = new WorkbenchStaticText(scroll, wxID_ANY, wxEmptyString,
-        wxDefaultPosition, wxDefaultSize, wxST_NO_AUTORESIZE);
-    m_workbench_printer_filament_feedback->SetForegroundColour(wxColour(190, 190, 196));
-    m_workbench_printer_filament_feedback->Hide();
-    controls->Add(m_workbench_printer_filament_feedback, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     m_workbench_project_colors = new wxPanel(scroll, wxID_ANY, wxDefaultPosition,
         wxDefaultSize, wxBORDER_NONE | wxCLIP_CHILDREN);
     m_workbench_project_colors->SetBackgroundColour(scroll->GetBackgroundColour());
@@ -703,38 +749,11 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     };
     icon_command(_L("正面视图"), "workbench_front", [this](wxCommandEvent&) { m_model_preview->front_view(); });
     icon_command(_L("重置三维视图"), "workbench_object", [this](wxCommandEvent&) { m_model_preview->reset_view(); });
-    auto* model_info = icon_command(_L("模型信息"), "workbench_info", [this](wxCommandEvent&) {
-        wxDialog dialog(this, wxID_ANY, _L("模型信息"), wxDefaultPosition, FromDIP(wxSize(520, 380)),
-                        wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER);
-        dialog.SetName("ai_content_color");
-        dialog.SetBackgroundColour(wxColour(32, 32, 35));
-        dialog.SetFont(m_workbench_shell->GetFont());
-        auto* root = new wxBoxSizer(wxVERTICAL);
-        auto* scroll = new WorkbenchScrolledWindow(&dialog, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
-        scroll->SetBackgroundColour(dialog.GetBackgroundColour());
-        scroll->SetScrollRate(0, FromDIP(12));
-        auto* contents = new wxBoxSizer(wxVERTICAL);
-        const wxString details = m_model_stats->GetLabel() + "\n\n" + m_model_quality_summary->GetLabel();
-        auto* text = new wxStaticText(scroll, wxID_ANY, details);
-        text->SetForegroundColour(wxColour(235, 235, 235));
-        text->Wrap(FromDIP(460));
-        contents->Add(text, 0, wxEXPAND | wxALL, FromDIP(12));
-        scroll->SetSizer(contents);
-        root->Add(scroll, 1, wxEXPAND | wxALL, FromDIP(12));
-        scroll->Bind(wxEVT_SIZE, [scroll, text, details](wxSizeEvent& event) {
-            text->SetLabel(details);
-            wrap_workbench_text(text, std::max(scroll->FromDIP(80), scroll->GetClientSize().x - scroll->FromDIP(34)), true);
-            event.Skip();
-        });
-        auto* close = workbench_button(&dialog, _L("完成"));
-        close->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_OK); });
-        root->Add(close, 0, wxALIGN_RIGHT | wxALL, FromDIP(12));
-        dialog.SetSizer(root);
-        dialog.CenterOnParent();
-        dialog.ShowModal();
-    });
-    icons->GetItem(model_info)->SetFlag(wxALIGN_CENTER_VERTICAL);
-    icons->GetItem(model_info)->SetBorder(0);
+    m_workbench_model_info = icon_command(_L("模型信息"), "workbench_info",
+        [this](wxCommandEvent&) { show_workbench_model_info(); });
+    m_workbench_model_info->Disable();
+    icons->GetItem(m_workbench_model_info)->SetFlag(wxALIGN_CENTER_VERTICAL);
+    icons->GetItem(m_workbench_model_info)->SetBorder(0);
     switches->AddStretchSpacer();
     icons->AddStretchSpacer();
     auto* view_footer = new wxBoxSizer(wxHORIZONTAL);

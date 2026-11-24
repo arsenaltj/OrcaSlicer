@@ -770,13 +770,17 @@ void ModelGenerationPanel::apply_workbench_snapshot()
         m_workbench_model_status->SetForegroundColour(status_colour);
         m_workbench_model_status->Refresh(false);
     }
-    const bool show_status = m_workbench_load_error || m_preview_loading;
+    if (m_workbench_model_info) set_workbench_enabled(m_workbench_model_info, !model_unavailable);
+    const bool show_loading_status = m_workbench_load_error || m_preview_loading;
+    const bool show_filament_error = !model_unavailable && !m_workbench_printer_filament_error.empty();
+    const bool show_status = show_loading_status || show_filament_error;
     layout_changed = set_workbench_shown(m_workbench_state_status, show_status) || layout_changed;
     if (show_status) {
+        const wxString message = show_loading_status ? m_status->GetLabel() : from_u8(m_workbench_printer_filament_error);
         set_workbench_tooltip(m_workbench_state_status,
-            m_workbench_load_error ? m_result_summary->GetLabel() : wxString());
-        layout_changed = set_wrapped_workbench_text(m_workbench_state_status, m_status->GetLabel(),
-            std::max(FromDIP(200), m_workbench_view_host->GetClientSize().x - FromDIP(16))) || layout_changed;
+            m_workbench_load_error ? m_result_summary->GetLabel() : message);
+        layout_changed = set_wrapped_workbench_text(m_workbench_state_status, message,
+            std::max(FromDIP(200), m_workbench_view_host->GetClientSize().x - FromDIP(16)), true) || layout_changed;
     }
     if (m_workbench_settings_editing != m_workbench_editing) {
         // Move whole sizer groups, keeping their controls and Beauty session alive.
@@ -883,22 +887,6 @@ void ModelGenerationPanel::apply_workbench_snapshot()
                 ? _L("按套装顺序绑定六个真实实体耗材；不生成叠色配方。")
                 : _L("将模型配色直接生成实体耗材与叠色配方；成功后一次提交并进入试色。")
                         : disabled_reason);
-        if (m_workbench_printer_filament_feedback) {
-            const wxString feedback = model_unavailable ? wxString{} : !m_workbench_printer_filament_notice.empty()
-                ? wxString::FromUTF8(m_workbench_printer_filament_notice) : disabled_reason;
-            const bool feedback_error = !m_workbench_printer_filament_notice.empty()
-                ? m_workbench_printer_filament_notice_error : false;
-            const wxColour color = feedback_error ? wxColour(255, 150, 146) :
-                (!m_workbench_printer_filament_notice.empty() ? wxColour(91, 205, 137) : wxColour(190, 190, 196));
-            if (m_workbench_printer_filament_feedback->GetForegroundColour() != color) {
-                m_workbench_printer_filament_feedback->SetForegroundColour(color);
-                m_workbench_printer_filament_feedback->Refresh(false);
-            }
-            layout_changed = set_wrapped_workbench_text(m_workbench_printer_filament_feedback,
-                feedback, FromDIP(235), true) || layout_changed;
-            layout_changed = set_workbench_shown(m_workbench_printer_filament_feedback,
-                !feedback.empty()) || layout_changed;
-        }
     }
     set_workbench_enabled(m_workbench_palette_details,
         state.can_edit && m_finishing_candidate.empty() && original_appearance_available &&
@@ -914,7 +902,7 @@ void ModelGenerationPanel::apply_workbench_snapshot()
             m_workbench_base->SetValue(base_enabled);
         set_workbench_enabled(m_workbench_base, state.can_edit && base_available);
         set_workbench_tooltip(m_workbench_base, base_available
-            ? _L("预览 3 mm 圆形底座；导入切片时与当前模型一并生成")
+            ? _L("添加 3 mm 圆形底座，保留主体尺寸")
             : wxString::FromUTF8(base_reason));
     }
     if (m_workbench_original) {

@@ -545,12 +545,15 @@ void ModelGenerationPanel::apply_model_palette_to_filaments(std::function<void(b
     if (m_shutdown || m_beauty_restore_running || m_apply_filaments_saving || !m_model_preview ||
         !wxGetApp().plater() || !wxGetApp().preset_bundle) { if (complete) complete(false); return; }
     if (!workbench_snapshot().can_edit_project_colors || !m_finishing_candidate.empty()) {
-        m_workbench_operation_notice = m_workbench_printer_filament_notice =
+        m_workbench_operation_notice = m_workbench_printer_filament_error =
             "模型处理中或存在未接受候选，请先完成当前操作。";
-        m_workbench_printer_filament_notice_error = true;
         refresh_controls(); publish_workbench_state();
         if (complete) complete(false);
         return;
+    }
+    if (!m_workbench_printer_filament_error.empty()) {
+        m_workbench_printer_filament_error.clear();
+        refresh_post_generation_workbench();
     }
     const auto entry = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
     const auto signature = PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature;
@@ -564,10 +567,9 @@ void ModelGenerationPanel::apply_model_palette_to_filaments(std::function<void(b
         const bool ready = current && prepared && prepared->error.empty() &&
             prepared->model.installation_files && prepared->model.installation_files->current();
         if (!ready) {
-            weak->m_workbench_operation_notice = weak->m_workbench_printer_filament_notice =
+            weak->m_workbench_operation_notice = weak->m_workbench_printer_filament_error =
                 prepared && !prepared->error.empty() ? prepared->error :
                     "模型或工程状态已变化，或正在执行其他处理任务。请完成当前操作后重新导入。";
-            weak->m_workbench_printer_filament_notice_error = true;
             weak->refresh_controls(); weak->publish_workbench_state();
         }
         const bool success = ready && weak->apply_model_palette_to_filaments_prepared(*entry, prepared);
@@ -580,8 +582,7 @@ bool ModelGenerationPanel::apply_model_palette_to_filaments_prepared(const Beaut
 {
     if (m_shutdown || m_apply_filaments_saving || !m_model_preview || !wxGetApp().plater()) return false;
     auto report = [this](std::string message, bool error) {
-        m_workbench_printer_filament_notice = message;
-        m_workbench_printer_filament_notice_error = error;
+        m_workbench_printer_filament_error = error ? message : std::string{};
         m_workbench_operation_notice = std::move(message);
         refresh_controls();
         publish_workbench_state();
@@ -725,8 +726,7 @@ bool ModelGenerationPanel::apply_model_palette_to_filaments_prepared(const Beaut
         : "已导入 " + std::to_string(card->colors.size()) + " 色：" +
             std::to_string(staged.physical_count) + " 个实体槽 + " +
             std::to_string(staged.mixed_count) + " 个叠色槽，已进入试色";
-    m_workbench_printer_filament_notice = success;
-    m_workbench_printer_filament_notice_error = false;
+    m_workbench_printer_filament_error.clear();
     m_workbench_operation_notice = success;
     synchronize_workbench_project_palette(true);
     refresh_controls();
@@ -746,14 +746,14 @@ void ModelGenerationPanel::exit_printer_filament_trial(const wxString& reason)
     m_printer_filament_trial_signature.clear();
     m_workbench_operation_notice = !reason.empty() ? std::string(reason.ToUTF8().data()) :
         (restored ? "已退出打印机耗材试色，模型已恢复进入前外观。" : "耗材试色已失效，请重新载入模型。 ");
-    m_workbench_printer_filament_notice = m_workbench_operation_notice;
-    m_workbench_printer_filament_notice_error = !restored;
+    m_workbench_printer_filament_error = restored ? std::string{} : m_workbench_operation_notice;
     refresh_controls();
     publish_workbench_state();
 }
 
 void ModelGenerationPanel::invalidate_printer_filament_trial_for_model_change()
 {
+    m_workbench_printer_filament_error.clear();
     if (!m_printer_filament_trial_active) return;
     // Clear the panel-owned identity first. Restoring the captured source can
     // synchronously notify the color controls, and that callback must not
@@ -768,6 +768,10 @@ void ModelGenerationPanel::apply_workbench_printer_filaments(bool physical_only)
 {
     if (m_shutdown || m_beauty_restore_running || m_apply_filaments_saving || !m_model_preview ||
         !wxGetApp().preset_bundle || !workbench_snapshot().can_apply_printer_filaments) return;
+    if (!m_workbench_printer_filament_error.empty()) {
+        m_workbench_printer_filament_error.clear();
+        refresh_post_generation_workbench();
+    }
     auto before = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
     before->project_config = std::make_shared<DynamicPrintConfig>(wxGetApp().preset_bundle->project_config);
     before->project_presets = wxGetApp().preset_bundle->filament_presets;
@@ -781,10 +785,9 @@ void ModelGenerationPanel::apply_workbench_printer_filaments(bool physical_only)
             !wxGetApp().preset_bundle ||
             PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature != signature) {
             weak->m_beauty_entry_pending = false;
-            weak->m_workbench_operation_notice = weak->m_workbench_printer_filament_notice =
+            weak->m_workbench_operation_notice = weak->m_workbench_printer_filament_error =
                 prepared && !prepared->error.empty() ? prepared->error :
                     "模型或工程状态已变化，或正在执行其他处理任务。请完成当前操作后重新导入。";
-            weak->m_workbench_printer_filament_notice_error = true;
             weak->refresh_controls(); weak->publish_workbench_state();
             return;
         }
@@ -798,9 +801,8 @@ void ModelGenerationPanel::apply_workbench_printer_filaments_prepared(bool physi
     if (m_shutdown || m_apply_filaments_saving || !m_model_preview || !workbench_snapshot().can_apply_printer_filaments) return;
     auto report = [this](std::string message, bool error) {
         m_beauty_entry_pending = false;
-        m_workbench_operation_notice = message;
-        m_workbench_printer_filament_notice = std::move(message);
-        m_workbench_printer_filament_notice_error = error;
+        m_workbench_printer_filament_error = error ? message : std::string{};
+        m_workbench_operation_notice = std::move(message);
         refresh_controls();
         publish_workbench_state();
     };
@@ -912,8 +914,7 @@ void ModelGenerationPanel::apply_workbench_printer_filaments_prepared(bool physi
                     : captured_match.error.empty()
                     ? std::string("耗材应用没有生成完整面级匹配，原模型和工程配置保持不变")
                     : captured_match.error + " 原模型和工程配置保持不变";
-                self->m_workbench_operation_notice = self->m_workbench_printer_filament_notice = message;
-                self->m_workbench_printer_filament_notice_error = true;
+                self->m_workbench_operation_notice = self->m_workbench_printer_filament_error = message;
                 self->refresh_controls(); self->publish_workbench_state(); return;
             }
             self->m_apply_filaments_before = before;
@@ -926,8 +927,7 @@ void ModelGenerationPanel::apply_workbench_printer_filaments_prepared(bool physi
             self->m_beauty_manual_color_dirty = true;
             if (self->m_beauty_controls) self->m_beauty_controls->set_dirty(true);
             self->m_workbench_operation_notice = "正在应用并自动保存……";
-            self->m_workbench_printer_filament_notice = self->m_workbench_operation_notice;
-            self->m_workbench_printer_filament_notice_error = false;
+            self->m_workbench_printer_filament_error.clear();
             if (!self->request_save_and_return()) self->finish_printer_filament_application(false);
             self->refresh_controls();
             self->publish_workbench_state();
@@ -979,8 +979,7 @@ void ModelGenerationPanel::finish_printer_filament_application(bool success)
                 self->m_workbench_operation_notice = (restored
                     ? "应用未保存，原模型和工程配置保留。 "
                     : "应用未保存，草稿恢复失败；候选及撤销记录保留，请重新加载模型后再试。 ") + self->m_workbench_operation_notice;
-                self->m_workbench_printer_filament_notice = self->m_workbench_operation_notice;
-                self->m_workbench_printer_filament_notice_error = true;
+                self->m_workbench_printer_filament_error = self->m_workbench_operation_notice;
                 self->m_apply_filaments_saving = false;
                 self->m_apply_filaments_before.reset(); self->m_apply_filaments_staged.reset();
                 self->m_apply_filaments_changes.clear(); self->m_apply_filaments_source_identity.clear();
@@ -1001,8 +1000,7 @@ void ModelGenerationPanel::finish_printer_filament_application(bool success)
         m_applied_filaments_saved_model = m_displayed_model_path;
         m_applied_filaments_saved_signature = PrinterFilamentConfig::capture(*wxGetApp().preset_bundle).signature;
         m_workbench_operation_notice = "已应用并保存，可直接导入";
-        m_workbench_printer_filament_notice = m_workbench_operation_notice;
-        m_workbench_printer_filament_notice_error = false;
+        m_workbench_printer_filament_error.clear();
         m_finishing_status->SetLabel(_L("已应用并保存，可直接导入。"));
         m_status->SetLabel(m_finishing_status->GetLabel());
     }

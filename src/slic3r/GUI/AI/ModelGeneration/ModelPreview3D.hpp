@@ -344,8 +344,9 @@ public:
             if (handle_navigator_mouse(event)) return;
             if (event.RightIsDown() && m_canvas->HasCapture()) {
                 const wxPoint current = event.GetPosition();
-                const double radius = std::max(0.001, 0.5 * m_bounds.size().norm());
-                const double scale = 2.0 * fitted_half_height(edit_view_width(), m_canvas->GetClientSize().y)
+                const auto bounds = preview_bounds();
+                const double radius = std::max(0.001, 0.5 * bounds.size().norm());
+                const double scale = 2.0 * fitted_half_height(bounds, edit_view_width(), m_canvas->GetClientSize().y)
                     / std::max(1, m_canvas->GetClientSize().y) / radius;
                 m_pan_x += (current.x - m_last_mouse.x) * scale;
                 m_pan_y -= (current.y - m_last_mouse.y) * scale;
@@ -2744,6 +2745,7 @@ public:
     size_t triangle_count() const { return m_triangle_count; }
     size_t vertex_count() const { return m_vertex_count; }
     const Vec3d& model_dimensions() const { return m_model_dimensions; }
+    Vec3d workbench_display_dimensions() const { return preview_bounds().size(); }
     // Select an already recognized material region for Beauty editing. This
     // only consumes the cached analysis; it never starts recognition. Existing
     // protected faces remain protected so the user can add or subtract detail
@@ -3121,12 +3123,15 @@ public:
         BoundingBoxf3 bounds;
         for (size_t i = 0; i < selected.size(); ++i) if (selected[i])
             for (int k = 0; k < 3; ++k) bounds.merge(mesh.vertices[mesh.indices[i][k]].cast<double>());
+        const auto base = m_round_base_preview.layout(m_geometry_id, m_bounds);
+        const auto& visible_bounds = base ? base->bounds : m_bounds;
+        if (base) bounds.translate(base->body_transform.translation());
         const auto rotation = view_rotation();
-        const Vec3d offset = rotation.linear() * (bounds.center() - m_bounds.center()).cast<double>();
-        const double radius = std::max(0.001, 0.5 * m_bounds.size().norm());
+        const Vec3d offset = rotation.linear() * (bounds.center() - visible_bounds.center());
+        const double radius = std::max(0.001, 0.5 * visible_bounds.size().norm());
         m_pan_x = -offset.x() / radius; m_pan_y = -offset.y() / radius;
         const double aspect = double(std::max(1, m_canvas->GetClientSize().x)) / std::max(1, m_canvas->GetClientSize().y);
-        const Vec3d full = rotation.linear().cwiseAbs() * (0.5 * m_bounds.size().cast<double>());
+        const Vec3d full = rotation.linear().cwiseAbs() * (0.5 * visible_bounds.size());
         const Vec3d patch = rotation.linear().cwiseAbs() * (0.5 * bounds.size().cast<double>());
         m_zoom = std::clamp(std::max(full.y(), full.x() / aspect) /
             std::max(0.001, 1.25 * std::max(patch.y(), patch.x() / aspect)), 0.45, 12.0);
@@ -4023,11 +4028,13 @@ private:
         }
         const int width = edit_view_width();
         const int height = std::max(1, m_canvas->GetClientSize().y);
-        const double radius = std::max(0.001, 0.5 * m_bounds.size().norm());
-        const double half_height = fitted_half_height(width, height);
+        const auto base = m_round_base_preview.layout(m_geometry_id, m_bounds);
+        const auto& bounds = base ? base->bounds : m_bounds;
+        const double radius = std::max(0.001, 0.5 * bounds.size().norm());
+        const double half_height = fitted_half_height(bounds, width, height);
         Transform3d view = Geometry::translation_transform(Vec3d(m_pan_x * radius, m_pan_y * radius, -3.0 * radius)) *
-            view_rotation() * Geometry::translation_transform(-m_bounds.center().cast<double>());
-        if (const auto base = m_round_base_preview.layout(m_geometry_id, m_bounds))
+            view_rotation() * Geometry::translation_transform(-bounds.center());
+        if (base)
             view = view * base->body_transform;
         auto request = [this, stroke = selection_outline(), gesture = m_selection_gesture,
                         brush_radius = m_brush_radius, view, half_height, width, height] {
@@ -4165,18 +4172,19 @@ private:
         width = edit_view_width();
         if (width <= 0 || height <= 0)
             return;
-        const Vec3d size = m_bounds.size().cast<double>();
-        const double radius = std::max(0.001, 0.5 * size.norm());
-        const double half_height = fitted_half_height(width, height);
+        const auto base = m_round_base_preview.layout(m_geometry_id, m_bounds);
+        const auto& bounds = base ? base->bounds : m_bounds;
+        const double radius = std::max(0.001, 0.5 * bounds.size().norm());
+        const double half_height = fitted_half_height(bounds, width, height);
         const double half_width = half_height * double(width) / double(height);
         const double screen_x = 2.0 * double(point.x) / double(width) - 1.0;
         const double screen_y = 1.0 - 2.0 * double(point.y) / double(height);
-        const Vec3d center = m_bounds.center().cast<double>();
+        const Vec3d center = bounds.center();
         Transform3d view_model =
             Geometry::translation_transform(Vec3d(m_pan_x * radius, m_pan_y * radius, -3.0 * radius)) *
             view_rotation() *
             Geometry::translation_transform(-center);
-        if (const auto base = m_round_base_preview.layout(m_geometry_id, m_bounds))
+        if (base)
             view_model = view_model * base->body_transform;
         const Transform3d inverse = view_model.inverse();
         const Vec3d origin = inverse * Vec3d(screen_x * half_width, screen_y * half_height, 0.0);
@@ -4546,17 +4554,17 @@ private:
             if (shader != nullptr) {
                 glsafe(::glEnable(GL_DEPTH_TEST));
                 glsafe(::glDisable(GL_CULL_FACE));
-                const Vec3d size = m_bounds.size().cast<double>();
-                const double radius = std::max(0.001, 0.5 * size.norm());
+                const auto round_base = m_round_base_preview.layout(m_geometry_id, m_bounds);
+                const auto& bounds = round_base ? round_base->bounds : m_bounds;
+                const double radius = std::max(0.001, 0.5 * bounds.size().norm());
                 const double near_z = 0.01 * radius;
                 const double far_z = 8.0 * radius;
-                const Vec3d center = m_bounds.center().cast<double>();
+                const Vec3d center = bounds.center();
                 const Transform3d view_model =
                     Geometry::translation_transform(Vec3d(m_pan_x * radius, m_pan_y * radius, -3.0 * radius)) *
                     view_rotation() *
                     Geometry::translation_transform(-center);
                 const Matrix3d normal_matrix = view_model.matrix().block(0, 0, 3, 3).inverse().transpose();
-                const auto round_base = m_round_base_preview.layout(m_geometry_id, m_bounds);
                 if (round_base && m_round_base_model) {
                     auto color = !m_trial_palette.empty()
                         ? m_trial_palette.front() : PreviewPalette::Color {0.72f, 0.72f, 0.74f};
@@ -4571,8 +4579,9 @@ private:
                     if (!m_workbench_grid || m_workbench_grid_geometry != m_geometry_id) {
                         GLModel::Geometry grid;
                         grid.format = {GLModel::Geometry::EPrimitiveType::Lines, GLModel::Geometry::EVertexLayout::P3N3};
-                        const float extent = float(radius * 1.8);
-                        const float z = m_bounds.min.z() - float(radius * 0.01);
+                        const double grid_radius = std::max(0.001, 0.5 * m_bounds.size().norm());
+                        const float extent = float(grid_radius * 1.8);
+                        const float z = m_bounds.min.z() - float(grid_radius * 0.01);
                         for (unsigned int i = 0; i <= 18; ++i) {
                             const float offset = -extent + 2.f * extent * float(i) / 18.f;
                             const unsigned int base = unsigned(grid.vertices_count());
@@ -4594,7 +4603,7 @@ private:
                 const int source_width = std::max(1, width - current_width);
                 const auto projection_for = [&](int viewport_width) {
                     const double aspect = double(std::max(1, viewport_width)) / double(height);
-                    const double half_height = fitted_half_height(viewport_width, height);
+                    const double half_height = fitted_half_height(bounds, viewport_width, height);
                     const double half_width = half_height * aspect;
                     Transform3d projection = Transform3d::Identity();
                     projection.matrix().setZero();
@@ -5157,10 +5166,16 @@ private:
         return m_camera_rotation.transform();
     }
 
-    double fitted_half_height(int width, int height) const
+    BoundingBoxf3 preview_bounds() const
+    {
+        const auto base = m_round_base_preview.layout(m_geometry_id, m_bounds);
+        return base ? base->bounds : m_bounds;
+    }
+
+    double fitted_half_height(const BoundingBoxf3& bounds, int width, int height) const
     {
         const double aspect = double(std::max(1, width)) / double(std::max(1, height));
-        const Vec3d half_extents = 0.5 * m_bounds.size().cast<double>();
+        const Vec3d half_extents = 0.5 * bounds.size();
         const Vec3d view_extents = view_rotation().linear().cwiseAbs() * half_extents;
         constexpr double fit_margin = 1.08;
         return std::max(0.001, std::max(view_extents.y(), view_extents.x() / aspect) * fit_margin / m_zoom);

@@ -95,6 +95,34 @@ TEST_CASE("safe working copy placement retains the native center or nearest empt
     CHECK(object->instances.empty());
 }
 
+TEST_CASE("Workbench placement checks the combined footprint and height with a base",
+          "[LocalPrintModelImport][OrcaModelPreparation]")
+{
+    using namespace GUI::LocalPrintModelImport;
+    Test::RecipeApplicationFixture fixture(2);
+    Model source;
+    auto* object = source.add_object();
+    object->input_file = "base-limit.glb";
+    const auto* body = object->add_volume(TriangleMesh(its_make_cube(20, 40, 40)));
+    object->volumes.front()->source.input_file = object->input_file;
+
+    const bool height_limit = GENERATE(true, false);
+    const double width = height_limit ? 100.0 : 43.0;
+    const PlacementSnapshot plate {
+        Vec2d(width / 2, 50), Vec2d(width, 100),
+        Polygon::new_scale({{0, 0}, {width, 0}, {width, 100}, {0, 100}}),
+        {}, fixture.bundle.full_config(), height_limit ? 42.0 : 100.0
+    };
+    std::unique_ptr<Model> prepared;
+    std::string error;
+    REQUIRE(plate.prepare_model(*object, prepared, error, false, {}, workbench_front_yaw));
+    CHECK_FALSE(plate.prepare_model(*object, prepared, error, true, {}, workbench_front_yaw));
+    CHECK_FALSE(error.empty());
+    CHECK(object->instances.empty());
+    REQUIRE(object->volumes.size() == 1);
+    CHECK(object->volumes.front() == body);
+}
+
 TEST_CASE("working copy placement uses available plate space without moving fixed obstacles", "[LocalPrintModelImport]")
 {
     Test::RecipeApplicationFixture fixture(2);

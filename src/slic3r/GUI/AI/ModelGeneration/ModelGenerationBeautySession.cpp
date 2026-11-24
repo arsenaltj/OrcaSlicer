@@ -119,7 +119,8 @@ void ModelGenerationPanel::set_finishing_workbench(bool enabled)
     if (enabled) {
         m_model_page->GetSizer()->Detach(m_comparison_panel);
         m_comparison_panel->Reparent(m_workbench_view_host);
-        m_workbench_view_host->GetSizer()->Insert(1, m_comparison_panel, 1, wxEXPAND);
+        // Keep the toolbar and status above the preview.
+        m_workbench_view_host->GetSizer()->Insert(2, m_comparison_panel, 1, wxEXPAND);
     } else {
         m_workbench_view_host->GetSizer()->Detach(m_comparison_panel);
         m_comparison_panel->Reparent(m_model_page);
@@ -455,8 +456,7 @@ void ModelGenerationPanel::reset_beauty_asset()
     m_workbench_check_path.clear();
     m_workbench_check_result = {};
     m_workbench_operation_notice.clear();
-    m_workbench_printer_filament_notice.clear();
-    m_workbench_printer_filament_notice_error = false;
+    m_workbench_printer_filament_error.clear();
     m_applied_filaments_saved_model.clear();
     m_applied_filaments_saved_signature.clear();
     clear_unaccepted_beauty_candidates();

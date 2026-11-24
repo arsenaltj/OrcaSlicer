@@ -44,11 +44,8 @@ inline bool prepare(const ModelObject& source, const Vec2d& placement, const Vec
         return fail("Scale this model before matching colors; confirmed color import does not rescale it.");
     if (base_binding && !base_binding->valid()) return fail("底座实体槽绑定无效，未导入模型。");
     if (apply_round_base_preparation) {
-        if (size.z() <= 3.0)
-            return fail("当前模型尺寸无效，无法安全生成 3 mm 底座。");
         try {
-            const auto proposal = GUI::prepare_model(*object,
-                {double(size.z()), true, 3.0, ModelBaseTemplate::Round});
+            const auto proposal = prepare_workbench_round_base(*object);
             apply_model_preparation(*object, proposal);
             if (base_binding) {
                 auto* base = object->volumes.back();
