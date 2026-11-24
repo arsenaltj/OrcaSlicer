@@ -384,7 +384,6 @@ private:
     wxStaticText* m_workbench_mixed_filament_title {nullptr};
     wxPanel* m_workbench_project_colors {nullptr};
     wxStaticText* m_workbench_project_summary {nullptr};
-    wxStaticText* m_workbench_printer_filament_feedback {nullptr};
     WorkbenchButton* m_workbench_apply_project_filaments {nullptr};
     WorkbenchButton* m_workbench_printer_filament_trial {nullptr};
     WorkbenchButton* m_workbench_configure_filaments {nullptr};
@@ -441,8 +440,7 @@ private:
     bool m_printer_filament_trial_active {false};
     std::string m_printer_filament_trial_geometry;
     std::string m_printer_filament_trial_signature;
-    std::string m_workbench_printer_filament_notice;
-    bool m_workbench_printer_filament_notice_error {false};
+    std::string m_workbench_printer_filament_error;
     void finish_printer_filament_application(bool success);
     bool commit_printer_filament_application(std::string& error);
     std::function<void()> m_workbench_return_to_design;
@@ -634,7 +632,7 @@ private:
                              const std::string& job_id, const wxString& title, bool new_asset = false,
                              std::shared_ptr<const ModelHistoryRepairIndex> repairs = {},
                              std::shared_ptr<ModelHistoryOpenRequest> restoration = {},
-                             const std::string& expected_model_sha256 = {});
+                             const std::string& expected_model_sha256 = {}, bool generated = false);
     bool delete_library_entry(const GeneratedModelEntry& entry);
     void apply_library_removal_projection(bool retain_scan = false);
     void notify_library_removal(const ModelLibraryRemovalState::Event& event);
@@ -660,6 +658,7 @@ private:
     wxWindow* m_finishing_selection_section {nullptr};
     bool m_finishing_selection_open {false};
     wxWindow* build_post_generation_workbench(wxWindow* parent);
+    void show_workbench_model_info();
     void refresh_post_generation_workbench();
     wxWindow* m_generation_header {nullptr};
     wxWindow* m_result_panel {nullptr};
@@ -678,6 +677,7 @@ private:
     WorkbenchButton* m_workbench_check_info {nullptr};
     wxStaticBitmap* m_workbench_beauty_info {nullptr};
     wxToggleButton* m_workbench_base {nullptr};
+    WorkbenchButton* m_workbench_model_info {nullptr};
     wxToggleButton* m_workbench_grid {nullptr};
     wxPanel* m_workbench_footer {nullptr};
     void layout_workbench_history_toggle(bool force = false);
@@ -688,14 +688,12 @@ private:
     wxStaticText* m_workbench_model_status {nullptr};
     wxStaticText* m_workbench_check_status {nullptr};
     wxStaticText* m_workbench_palette_status {nullptr};
-    wxWindow* m_workbench_edit {nullptr};
     wxWindow* m_workbench_check {nullptr};
     wxWindow* m_workbench_palette_details {nullptr};
     wxToggleButton* m_workbench_original {nullptr};
     wxWindow* m_workbench_slicing {nullptr};
     bool m_open_smart_slicing_after_import {false};
     wxWindow* m_workbench_history_toggle {nullptr};
-    wxWindow* m_workbench_return_to_design_button {nullptr};
     bool m_workbench_editing {false};
     bool m_refreshing_workbench_layout {false};
     bool m_updating_comparison_layout {false};

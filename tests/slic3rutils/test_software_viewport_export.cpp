@@ -75,6 +75,32 @@ TEST_CASE("A model thumbnail keeps its source and native top to bottom pixel ord
     CHECK(image.GetBlue(0,1) == 0);
     CHECK(boost::filesystem::file_size(model) == bytes);
 }
+TEST_CASE("A PNG with the current model digest recovers a missing short index", "[ModelLibraryModelThumbnail]")
+{
+    using namespace Slic3r::GUI;
+    ScopedTemporaryDir folder("model-thumbnail-recover");
+    const auto model = folder.path() / "website" / std::string(96, 'x') / "model.glb";
+    boost::filesystem::create_directories(model.parent_path());
+    write_thumbnail_model(model);
+    auto source = thumbnail_source(model);
+    source.sha256 = Slic3r::AI::model_artifact_sha256(model);
+    const auto manifest = library_model_thumbnail_manifest(folder.path(), model);
+    const auto legacy = legacy_library_model_thumbnail_manifest(folder.path(), model);
+    CHECK(manifest.native().size() < legacy.native().size());
+    publish_library_model_thumbnail(folder.path(), model, source, 2, 2, thumbnail_pixels);
+    const auto png = library_model_thumbnail_image(folder.path(), model);
+    REQUIRE_FALSE(png.empty());
+    boost::filesystem::create_directories(legacy.parent_path());
+    boost::filesystem::rename(manifest, legacy);
+    CHECK(library_model_thumbnail_image(folder.path(), model) == png);
+    REQUIRE(boost::filesystem::remove(legacy));
+    std::atomic<bool> canceled {false};
+    CHECK(recover_library_model_thumbnail(folder.path(), model, canceled) == png);
+    CHECK(library_model_thumbnail_image(folder.path(), model) == png);
+    REQUIRE(boost::filesystem::remove(manifest));
+    { boost::filesystem::ofstream changed(model); changed << "updated model"; }
+    CHECK(recover_library_model_thumbnail(folder.path(), model, canceled).empty());
+}
 TEST_CASE("Model thumbnail lookup rejects changed sources and unrelated model paths", "[ModelLibraryModelThumbnail]")
 {
     using namespace Slic3r::GUI;

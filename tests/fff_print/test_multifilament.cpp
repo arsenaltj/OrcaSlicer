@@ -26,6 +26,7 @@
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintBase.hpp"
 #include "libslic3r/CustomGCode.hpp"
+#include "libslic3r/Exception.hpp"
 #include "libslic3r/Layer.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/libslic3r.h"
@@ -2501,4 +2502,77 @@ TEST_CASE("Custom M104 in filament start G-code wins on a T0-only print", "[Mult
     REQUIRE(temps_after_t0.size() >= 2);
     CHECK(temps_after_t0.front() == slicer_temp);
     CHECK(temps_after_t0.back() == custom_temp);
+}
+
+// Two filaments on a two-nozzle Marlin printer that emits its machine limits, with the second
+// filament printing the infill so that its nozzle is used.
+static DynamicPrintConfig two_nozzle_map_config(const std::string &filament_map, const std::string &physical_extruder_map = "0")
+{
+    DynamicPrintConfig config = multifilament_config(2, {
+        { "gcode_flavor",                   "marlin2" },
+        { "emit_machine_limits_to_gcode",   1 },
+        { "single_extruder_multi_material", 0 },
+        { "nozzle_diameter",                "0.4,0.4" },
+        { "extruder_printable_height",      "0,0" },
+        { "printer_extruder_id",            "1,2" },
+        { "printer_extruder_variant",       "Direct Drive Standard,Direct Drive Standard" },
+        { "filament_map_mode",              "Manual" },
+        { "filament_map",                   filament_map },
+        { "physical_extruder_map",          physical_extruder_map },
+        { "sparse_infill_filament_id",      2 },
+        { "enable_prime_tower",             0 },
+        { "skirt_loops",                    0 },
+        { "brim_type",                      "no_brim" },
+        // the nozzles sit at different offsets, so the body shows which nozzle printed
+        { "extruder_offset",                "0x0,10x5" },
+    });
+    size_flush_to_nozzles(config);
+    // one value per nozzle and, for the paired keys, per silent/normal column
+    for (const char *key : { "machine_max_acceleration_x", "machine_max_acceleration_y", "machine_max_acceleration_z",
+                             "machine_max_acceleration_e", "machine_max_acceleration_extruding", "machine_max_acceleration_retracting",
+                             "machine_max_acceleration_travel", "machine_max_speed_x", "machine_max_speed_y", "machine_max_speed_z",
+                             "machine_max_speed_e", "machine_max_jerk_x", "machine_max_jerk_y", "machine_max_jerk_z",
+                             "machine_max_jerk_e", "machine_max_junction_deviation" })
+        config.set_key_value(key, new ConfigOptionFloats({ 500, 0, 1000, 0 }));
+    return config;
+}
+
+TEST_CASE("Invalid filament assignments block slicing and invalidate the previous export", "[MultiFilament][Regression]")
+{
+    const int bad_nozzle = GENERATE(-2, 0, 3, std::numeric_limits<int>::min());
+    auto config = two_nozzle_map_config("1,1");
+    config.set_key_value("layer_change_gcode", new ConfigOptionString("G92 E0\n"));
+    Print print;
+    Model model;
+    init_print({ cube(20) }, print, model, config);
+    const auto initial_error = print.validate();
+    INFO(initial_error.string);
+    REQUIRE(initial_error.string.empty());
+    REQUIRE_FALSE(gcode(print).empty());
+    REQUIRE(print.is_step_done(psGCodeExport));
+
+    config.option<ConfigOptionInts>("filament_map")->values[1] = bad_nozzle;
+    CHECK(print.apply(model, config) == Print::APPLY_STATUS_INVALIDATED);
+    CHECK_FALSE(print.is_step_done(psGCodeExport));
+    const auto error = print.validate();
+    CHECK(error.opt_key == "filament_map");
+    CHECK_FALSE(error.string.empty());
+    CHECK_THROWS_AS(print.process(), SlicingError);
+    CHECK_THROWS_AS(print.export_gcode("", nullptr, {}), SlicingError);
+    CHECK(config.option<ConfigOptionInts>("filament_map")->values[1] == bad_nozzle);
+
+    config.option<ConfigOptionInts>("filament_map")->values[1] = 1;
+    CHECK(print.apply(model, config) != Print::APPLY_STATUS_UNCHANGED);
+    const auto recovered_error = print.validate();
+    INFO(recovered_error.string);
+    REQUIRE(recovered_error.string.empty());
+    CHECK_FALSE(gcode(print).empty());
+}
+
+TEST_CASE("Sparse firmware tool identifiers do not index nozzle placeholders out of bounds", "[MultiFilament][Regression]")
+{
+    const std::string map = GENERATE(as<std::string>(), "0,-1", "0,2", "0,100", "-1,0");
+    const std::string output = slice({ cube(20) }, two_nozzle_map_config("1,2", map));
+    CHECK(output.find("; physical_extruder_map = " + map) != std::string::npos);
+    CHECK(output.find("; EXECUTABLE_BLOCK_END") != std::string::npos);
 }

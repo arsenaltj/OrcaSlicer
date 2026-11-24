@@ -132,7 +132,8 @@ void ModelGenerationPanel::clear_portrait_draft()
 void ModelGenerationPanel::restore_portrait_draft()
 {
     Presentation::assert_gui_thread();
-    if (m_role != Role::WorkbenchAssets || m_shutdown || m_beauty_restore_running ||
+    if (!workbench_beauty_editing_available || m_role != Role::WorkbenchAssets ||
+        m_shutdown || m_beauty_restore_running ||
         !m_model_preview || !m_model_preview_ready || m_portrait_draft_before) return;
     const auto sha = m_model_preview->model_sha256();
     if (!AI::ShapeLockSet::sha256(sha)) return;

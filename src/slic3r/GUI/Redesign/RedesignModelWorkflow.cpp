@@ -25,7 +25,9 @@
 #include "../AI/Orca/OrcaTrialSliceExecutor.hpp"
 #include "../GUI_App.hpp"
 #include "../I18N.hpp"
+#include "../ImGuiWrapper.hpp"
 #include "../MainFrame.hpp"
+#include "../Shortcuts.hpp"
 #include "../BBLTopbar.hpp"
 #include "../Plater.hpp"
 #include "../ParamsPanel.hpp"
@@ -149,24 +151,18 @@ bool fit_slicing_camera(Plater& plater)
     }
     // Include this plate's working area without its printable-height box.
     BoundingBoxf3 bed = plate->get_bounding_box();
-    Vec3d focus_target = model_bounds.center();
     if (bed.defined) {
         bed.min.z() = bed.max.z() = 0.;
         frame_bounds.merge(bed);
-        // Match Orca's native plate view: the bed anchors the initial focus,
-        // while auxiliary volumes only enlarge the framing bounds.
-        focus_target = bed.center();
     }
-    camera.select_view("right");
-    const double distance = camera.get_distance();
-    // Generated people face +X, so frame the current plate from that direction
-    // with a shallow downward angle.
-    camera.look_at(focus_target + distance * Vec3d(.93969262, 0., .34202014),
-        focus_target, Vec3d::UnitZ());
+    // Orca's front is the handle side of the build plate (-Y). Elevate the
+    // initial view enough to show the plate while keeping the model front centered.
+    constexpr double elevation = PI / 6.;
+    const Vec3d target = frame_bounds.center();
+    const Vec3d toward_camera(0., -std::cos(elevation), std::sin(elevation));
+    camera.look_at(target + camera.get_distance() * toward_camera, target, Vec3d::UnitZ());
+    camera.auto_type(Camera::EType::Perspective);
     camera.zoom_to_box(frame_bounds, 1.5);
-    // zoom_to_box() recenters on frame_bounds; restore the plate/model focus
-    // so the wipe tower cannot pull the model toward the edge of the canvas.
-    camera.set_target(focus_target);
     canvas->set_as_dirty();
     BOOST_LOG_TRIVIAL(info) << "[RedesignCamera] plate=" << plate->get_index()
         << " viewport=" << viewport[2] << "x" << viewport[3]
@@ -938,13 +934,15 @@ void RedesignShell::build_model_workflow()
     }, m_import_timer.GetId());
     m_slice_camera_retry_timer.SetOwner(this, wxWindow::NewControlId());
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
-        if (!native_workspace_visible() || m_page_coordinator.view() != ModelView::Slicing || !m_plater) {
+        if (!native_workspace_visible() || m_page_coordinator.view() != ModelView::Slicing ||
+            m_plater->model().objects.empty()) {
             m_slice_camera_retry_timer.Stop();
             m_slice_camera_loading_pending = false;
             m_slice_camera_waiting_for_frame = false;
             layout_slicing_camera_loading();
             return;
         }
+        if (m_plater->is_loading_project()) return;
         auto* canvas = m_plater->get_current_canvas3D();
         if (++m_slice_camera_retry_attempts > 30) {
             BOOST_LOG_TRIVIAL(warning) << "[RedesignCamera] initial fit timed out, reveal current view";
@@ -1011,11 +1009,34 @@ void RedesignShell::build_model_workflow()
         }, wxID_REDO);
     }
     Bind(wxEVT_CHAR_HOOK, [weak](wxKeyEvent& event) {
+        auto* focus = wxWindow::FindFocus();
+        if (weak && weak->native_workspace_visible() && !weak->m_import_in_progress &&
+            !dynamic_cast<wxTextEntry*>(focus)) {
+            const KeyChord chord = KeyChord::from_event(event);
+            const auto shortcut = wxGetApp().shortcuts().lookup(ShortcutContext::Global, chord);
+            const char* direction = nullptr;
+            if (shortcut) {
+                switch (*shortcut) {
+                case Shortcut::ViewTop:    direction = "top"; break;
+                case Shortcut::ViewBottom: direction = "bottom"; break;
+                case Shortcut::ViewFront:  direction = "front"; break;
+                case Shortcut::ViewRear:   direction = "rear"; break;
+                case Shortcut::ViewLeft:   direction = "left"; break;
+                case Shortcut::ViewRight:  direction = "right"; break;
+                default: break;
+                }
+            }
+            const auto* imgui = wxGetApp().imgui();
+            if (direction && (!imgui || !imgui->owns_key(chord))) {
+                weak->m_plater->select_view(direction);
+                return;
+            }
+        }
         const auto key = event.GetKeyCode();
         if (!weak || weak->m_page_coordinator.page() != Page::Model ||
             (weak->m_page_coordinator.view() != ModelView::Workbench && !weak->native_workspace_visible()) ||
             !event.CmdDown() || event.AltDown() || event.ShiftDown() || (key != 'Z' && key != 'Y') ||
-            dynamic_cast<wxTextEntry*>(wxWindow::FindFocus())) {
+            dynamic_cast<wxTextEntry*>(focus)) {
             event.Skip();
             return;
         }
@@ -1436,9 +1457,9 @@ void RedesignShell::refresh_workflow_layout()
         m_native_plater_host->Layout();
         m_plater->Layout();
     }
-    const bool camera_fit_pending = !render_print && compact && m_page_coordinator.view() == ModelView::Slicing &&
-        !m_slice_camera_fitted && m_plater && !m_plater->model().objects.empty();
-    if (camera_fit_pending) {
+    const bool slicing_model_visible = slicing && m_page_coordinator.view() == ModelView::Slicing &&
+        !m_plater->model().objects.empty();
+    if (slicing_model_visible && (!m_slice_camera_fitted || m_slice_camera_waiting_for_frame)) {
         if (!m_slice_camera_loading_pending) {
             m_slice_camera_loading_pending = true;
             m_slice_camera_waiting_for_frame = false;
@@ -1448,8 +1469,7 @@ void RedesignShell::refresh_workflow_layout()
         // committed. Start the camera retry after it is dismissed.
         if (!m_import_in_progress && !m_slice_camera_retry_timer.IsRunning())
             m_slice_camera_retry_timer.Start(100);
-    } else if (!compact || m_page_coordinator.view() != ModelView::Slicing ||
-               !m_plater || m_plater->model().objects.empty()) {
+    } else if (!slicing_model_visible) {
         m_slice_camera_loading_pending = false;
         m_slice_camera_waiting_for_frame = false;
         m_slice_camera_retry_timer.Stop();
@@ -1662,9 +1682,7 @@ void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& reque
                     weak->m_import_view_retry_available = true;
                     weak->m_import_committed_model_path = request.artifact.local_path;
                     weak->update_import_loading(WorkbenchImportPhase::UpdatingView);
-                    weak->m_slice_camera_fitted = false;
-                    weak->m_slice_camera_loading_pending = false;
-                    weak->m_slice_camera_waiting_for_frame = false;
+                    weak->request_initial_slicing_camera();
                     weak->stage_import_target_view();
                 });
             if (!started) {
@@ -1938,7 +1956,7 @@ void RedesignShell::retry_import_target_view()
     show_import_loading();
     update_import_loading(WorkbenchImportPhase::UpdatingView,
         "正在重新准备切片视图；不会重复导入模型……");
-    m_slice_camera_fitted = false;
+    request_initial_slicing_camera();
     stage_import_target_view();
 }
 
@@ -2305,6 +2323,14 @@ void RedesignShell::layout_slicing_overlays()
     }
     if (show_progress && overlay_changed) m_slice_progress_overlay->Raise();
     if (overlay_changed) view->set_as_dirty();
+}
+
+void RedesignShell::request_initial_slicing_camera()
+{
+    m_slice_camera_retry_timer.Stop();
+    m_slice_camera_fitted = false;
+    m_slice_camera_loading_pending = false;
+    m_slice_camera_waiting_for_frame = false;
 }
 
 void RedesignShell::layout_slicing_camera_loading()

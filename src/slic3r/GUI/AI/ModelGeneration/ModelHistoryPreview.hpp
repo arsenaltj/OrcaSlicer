@@ -48,14 +48,37 @@ inline bool prepare_history_preview(std::shared_ptr<ModelPreview3D::PreparedMode
                              const std::shared_ptr<ModelHistoryMetadata>& record) {
         model = std::make_shared<ModelPreview3D::PreparedModel>();
         progress(Stage::Reading);
+        const auto record_file = record_path(entry);
+        for (const auto& scene : request->cached_scenes) {
+            if (scene->model != entry.model_path || scene->record != record_file ||
+                scene->generated != request->generated) continue;
+            auto proof = std::make_shared<VerifiedModelFiles>();
+            if (canceled() || !proof->verify(scene->model, scene->model_hash) ||
+                !proof->verify(scene->record, scene->record_hash, true)) break;
+            const bool current = std::all_of(scene->dependencies.begin(), scene->dependencies.end(),
+                [&](const auto& dependency) {
+                    return !canceled() && proof->verify(dependency.path, dependency.sha256, dependency.missing);
+                });
+            if (!current) break;
+            if (!scene->record_hash.empty() &&
+                (!record->read(record_file, canceled) || record->fingerprint() != scene->record_hash)) break;
+            model->history_scene = scene;
+            model->reuse_history_scene = true;
+            model->path = entry.model_path;
+            model->artifact_sha256 = scene->model_hash;
+            model->geometry_id = scene->geometry;
+            model->installation_files = std::move(proof);
+            return true;
+        }
         return ModelPreview3D::prepare_model(entry.model_path, *model, error, {},
-            record_path(entry), true, canceled, record.get());
+            record_file, true, canceled, record.get());
     };
     const auto certified = [&](const ModelLibraryEntry& entry,
                                const ModelPreview3D::PreparedModel& model) {
         WorkbenchCheckResult restored;
         progress(Stage::Validating);
-        const auto appearance = model.semantic_source ? model.semantic_source->content_id : model.artifact_sha256;
+        const auto appearance = model.reuse_history_scene ? model.history_scene->appearance :
+            model.semantic_source ? model.semantic_source->content_id : model.artifact_sha256;
         if (!read_validated_workbench_history_check(entry.model_path, record_path(entry),
                 model.artifact_sha256, model.geometry_id, appearance, restored, canceled, &request->record_hash)) return false;
         request->check = std::move(restored);
@@ -166,10 +189,25 @@ inline ModelPreviewLoadResult prepare_model_preview_load(const boost::filesystem
             if (result.error.empty()) result.error = "模型预览准备已取消。";
             return result;
         }
+        const bool reused = result.prepared->reuse_history_scene;
+        if (history_open && !reused && !history_open->generated && !result.prepared->color_trial) {
+            auto& prepared = *result.prepared;
+            auto& colors = prepared.history_colors.emplace();
+            const auto& saved = history_metadata->restoration_fields();
+            if (saved.is_object() && saved.contains("palette") && saved["palette"].is_array() &&
+                saved["palette"].size() <= PreviewPalette::max_preview_colors) {
+                for (const auto& item : saved["palette"]) {
+                    const wxColour color(item.is_string() ? wxString::FromUTF8(item.get_ref<const std::string&>()) : wxString{});
+                    if (!color.IsOk()) { colors.clear(); break; }
+                    colors.push_back({color.Red() / 255.f, color.Green() / 255.f, color.Blue() / 255.f});
+                }
+            }
+            if (colors.empty()) colors = std::move(prepared.discrete_colors);
+        }
         result.stage = "render_geometry";
         if (history_open && history_open->progress && !stopped())
             history_open->progress(ModelHistoryOpenEvent::Stage::Preview);
-        result.prepared->prepare_render_geometry(stopped, share_exact_vertices);
+        if (!reused) result.prepared->prepare_render_geometry(stopped, share_exact_vertices);
         if (stopped()) { result.error = "模型预览准备已取消。"; return result; }
         if (history_open) {
             result.stage = "file_validation";
@@ -183,12 +221,52 @@ inline ModelPreviewLoadResult prepare_model_preview_load(const boost::filesystem
             history_open->model_hash = result.prepared->artifact_sha256;
             const auto record = history_open->root / "downloads" /
                 ("orcaslicer-ai-" + history_open->entry.job_id + ".json");
-            if (!history_open->check) history_open->record_hash = AI::model_artifact_sha256(record);
-            auto proof = std::make_shared<VerifiedModelFiles>();
-            if (!proof->verify(history_open->entry.model_path, history_open->model_hash) ||
-                !proof->verify(record, history_open->record_hash, true))
-                result.error = "历史模型或检查凭证在加载期间发生变化，请重新打开。";
-            else history_open->verified_files = std::move(proof);
+            if (reused) {
+                history_open->record_hash = result.prepared->history_scene->record_hash;
+                history_open->verified_files = result.prepared->installation_files;
+            } else {
+                if (!history_open->check) history_open->record_hash = AI::model_artifact_sha256(record);
+                auto proof = std::make_shared<VerifiedModelFiles>();
+                if (!proof->verify(resolved.model_path, history_open->model_hash) ||
+                    !proof->verify(record, history_open->record_hash, true)) {
+                    result.error = "历史模型或检查凭证在加载期间发生变化，请重新打开。";
+                } else {
+                    history_open->verified_files = std::move(proof);
+                    const auto& model = *result.prepared;
+                    const auto& appearance = model.original_appearance;
+                    // Optional editing caches have their own lifetimes and require a full restore.
+                    const auto& saved = history_metadata->restoration_fields();
+                    const bool has_edit_cache = saved.contains("semantic_region_evidence") ||
+                        saved.contains("secondary_region_evidence") || saved.contains("portrait_shape_reference") ||
+                        saved.contains("portrait_color_blocks") || saved.contains("printer_filament_restore");
+                    if (!has_edit_cache && !model.external_texture_dependencies &&
+                        (history_open->record_hash.empty() || history_metadata->fingerprint() == history_open->record_hash) &&
+                        (!saved.contains("native_portrait_partition") || model.native_workbench_checkpoint) &&
+                        (model.original_appearance_error.empty() || appearance.valid())) {
+                        auto scene = std::make_shared<ModelHistoryScene>();
+                        scene->model = resolved.model_path;
+                        scene->record = record;
+                        scene->model_hash = model.artifact_sha256;
+                        scene->record_hash = history_open->record_hash;
+                        scene->geometry = model.geometry_id;
+                        scene->appearance = model.semantic_source ? model.semantic_source->content_id : model.artifact_sha256;
+                        scene->generated = history_open->generated;
+                        if (model.installation_files) scene->dependencies = model.installation_files->identities();
+                        if (appearance.valid()) {
+                            scene->dependencies.push_back({appearance.origin_model, appearance.origin_sha256});
+                            scene->dependencies.push_back({appearance.carrier_model, appearance.carrier_sha256});
+                        }
+                        if (model.native_workbench_checkpoint) {
+                            const auto& ref = model.native_workbench_checkpoint->reference;
+                            const boost::filesystem::path cache(boost::nowide::widen(ref.value("cache_path", std::string{})));
+                            const auto digest = AI::model_artifact_sha256(cache);
+                            if (!digest.empty()) scene->dependencies.push_back({cache, digest});
+                            else scene.reset();
+                        }
+                        result.prepared->history_scene = std::move(scene);
+                    }
+                }
+            }
         }
         if (result.error.empty()) result.stage = "prepared";
     } catch (const std::exception& failure) { result.error = failure.what(); }

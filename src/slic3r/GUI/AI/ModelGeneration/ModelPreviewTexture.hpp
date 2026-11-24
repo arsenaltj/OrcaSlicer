@@ -7,6 +7,8 @@
 #include <glad/gl.h>
 #include <stdexcept>
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <unordered_map>
 #include <optional>
 #include <functional>
@@ -204,6 +206,8 @@ public:
         ::glGetIntegerv(GL_BLEND_SRC_RGB,&src_rgb); ::glGetIntegerv(GL_BLEND_DST_RGB,&dst_rgb);
         ::glGetIntegerv(GL_BLEND_SRC_ALPHA,&src_alpha); ::glGetIntegerv(GL_BLEND_DST_ALPHA,&dst_alpha);
         ::glGetIntegerv(GL_BLEND_EQUATION_RGB,&equation_rgb); ::glGetIntegerv(GL_BLEND_EQUATION_ALPHA,&equation_alpha);
+        const char* trace = std::getenv("ORCASLICER_UI_LATENCY_TRACE");
+        bool log_sampler = !m_sampler_diagnostics_logged && trace && std::strcmp(trace, "1") == 0;
         const auto bind_batch = [&](const Batch& batch) {
             shader->set_uniform("preview_texture_color_lock",batch.color_locked);
             shader->set_uniform("preview_alpha_mode",int(batch.alpha_mode));
@@ -215,12 +219,13 @@ public:
                 ::glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,batch.wrap_t);
                 ::glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,batch.min_filter);
                 ::glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,batch.mag_filter);
-                if (!m_sampler_diagnostics_logged) {
+                if (log_sampler) {
+                    log_sampler = false;
                     GLint min_filter=0,mag_filter=0,last_level=0;
                     ::glGetTexParameteriv(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,&min_filter);
                     ::glGetTexParameteriv(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,&mag_filter);
                     ::glGetTexParameteriv(GL_TEXTURE_2D,GL_TEXTURE_MAX_LEVEL,&last_level);
-                    BOOST_LOG_TRIVIAL(info) << "[preview-sampler-draw] first=" << batch.first
+                    BOOST_LOG_TRIVIAL(info) << "[preview-sampler-draw] batches=" << m_batches.size()
                         << " actual_min=" << min_filter << " actual_mag=" << mag_filter
                         << " max_level=" << last_level;
                 }

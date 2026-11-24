@@ -3,6 +3,7 @@
 #include "PostGenerationWorkbenchState.hpp"
 #include "VerifiedModelFiles.hpp"
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -25,6 +26,13 @@ struct ModelHistoryOpenEvent {
 };
 using ModelHistoryOpenHandler = std::function<bool(const ModelHistoryOpenEvent&)>;
 
+struct ModelHistoryScene {
+    boost::filesystem::path model, record;
+    std::string model_hash, record_hash, geometry, appearance;
+    std::vector<VerifiedModelFiles::Identity> dependencies;
+    bool generated {false};
+};
+
 // Owned by the existing preview-load request, never persisted. A worker writes
 // the resolved entry; only its generation-checked GUI callback can install it.
 struct ModelHistoryOpenRequest {
@@ -34,13 +42,15 @@ struct ModelHistoryOpenRequest {
     uint64_t removal_revision {0};
     boost::filesystem::path root;
     std::string model_hash, record_hash;
-    std::shared_ptr<VerifiedModelFiles> verified_files;
+    std::shared_ptr<const VerifiedModelFiles> verified_files;
     std::string expected_model_sha256; // Optional immutable creator-preview identity.
+    std::vector<std::shared_ptr<const ModelHistoryScene>> cached_scenes;
     std::shared_ptr<const ModelHistoryRepairIndex> repairs;
     std::optional<WorkbenchCheckResult> check, previous_check;
     std::atomic<bool> canceled {false};
-    bool installed {false}, restoring {false};
+    bool installed {false}, restoring {false}, generated {false}, reuse_failed {false};
     bool worker_pending {false}; // GUI-owned, includes the deferred worker start.
+    std::chrono::steady_clock::time_point started {};
     std::function<void(ModelHistoryOpenEvent::Stage)> progress;
     std::function<void()> drained;
     std::function<void()> restored, restore_presentation;

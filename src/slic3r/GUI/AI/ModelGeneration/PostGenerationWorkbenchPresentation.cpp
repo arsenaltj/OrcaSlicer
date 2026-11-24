@@ -480,17 +480,16 @@ void ModelGenerationPanel::show_workbench_check_details()
 {
     if (!m_workbench_shell) return;
     hide_workbench_check_card();
+    const auto model_hash = m_workbench_check_result.model_sha256;
+    const auto issue_faces = m_workbench_check_result.issue_faces;
     const wxString detail_text = from_u8(workbench_check_detail_text(m_workbench_check_result));
     std::vector<RedesignDialogAction> actions;
-    if (!m_workbench_check_result.issue_faces.empty())
+    if (!model_hash.empty() && !issue_faces.empty())
         actions.push_back({wxID_APPLY, _L("定位问题区域"), false});
     actions.push_back({wxID_OK, _L("关闭"), false});
     if (show_redesign_details(m_workbench_shell, detail_text, _L("检查修复详情"), actions) == wxID_APPLY &&
-        m_model_preview && m_model_preview->model_sha256() == m_workbench_check_result.model_sha256) {
-        m_workbench_editing = true;
-        refresh_post_generation_workbench();
-        m_model_preview->select_face_evidence(m_workbench_check_result.issue_faces);
-        publish_workbench_state();
+        m_model_preview && m_model_preview->model_sha256() == model_hash) {
+        m_model_preview->show_workbench_issue_faces(issue_faces);
     }
 }
 
@@ -645,11 +644,6 @@ void ModelGenerationPanel::rescale_post_generation_workbench()
     m_workbench_model_status->SetFont(wxGetApp().bold_font());
     m_workbench_model_status->SetMinSize(status_size);
     m_workbench_model_status->SetMaxSize(status_size);
-    for (wxWindow* control : {m_workbench_return_to_design_button, m_workbench_edit}) {
-        control->SetFont(wxGetApp().bold_font());
-        control->SetMinSize(FromDIP(wxSize(140, 38)));
-        control->SetMaxSize(FromDIP(wxSize(140, 38)));
-    }
     auto* search = static_cast<TextInput*>(m_workbench_history_search->GetParent());
     auto search_icon = ScalableBitmap(search, "workbench_search", 12).bmp().ConvertToImage();
     search_icon.Replace(0, 0, 0, 235, 235, 235);
@@ -776,13 +770,17 @@ void ModelGenerationPanel::apply_workbench_snapshot()
         m_workbench_model_status->SetForegroundColour(status_colour);
         m_workbench_model_status->Refresh(false);
     }
-    const bool show_status = m_workbench_load_error || m_preview_loading;
+    if (m_workbench_model_info) set_workbench_enabled(m_workbench_model_info, !model_unavailable);
+    const bool show_loading_status = m_workbench_load_error || m_preview_loading;
+    const bool show_filament_error = !model_unavailable && !m_workbench_printer_filament_error.empty();
+    const bool show_status = show_loading_status || show_filament_error;
     layout_changed = set_workbench_shown(m_workbench_state_status, show_status) || layout_changed;
     if (show_status) {
+        const wxString message = show_loading_status ? m_status->GetLabel() : from_u8(m_workbench_printer_filament_error);
         set_workbench_tooltip(m_workbench_state_status,
-            m_workbench_load_error ? m_result_summary->GetLabel() : wxString());
-        layout_changed = set_wrapped_workbench_text(m_workbench_state_status, m_status->GetLabel(),
-            std::max(FromDIP(200), m_workbench_view_host->GetClientSize().x - FromDIP(16))) || layout_changed;
+            m_workbench_load_error ? m_result_summary->GetLabel() : message);
+        layout_changed = set_wrapped_workbench_text(m_workbench_state_status, message,
+            std::max(FromDIP(200), m_workbench_view_host->GetClientSize().x - FromDIP(16)), true) || layout_changed;
     }
     if (m_workbench_settings_editing != m_workbench_editing) {
         // Move whole sizer groups, keeping their controls and Beauty session alive.
@@ -808,7 +806,6 @@ void ModelGenerationPanel::apply_workbench_snapshot()
     layout_changed = set_workbench_shown(m_workbench_footer, show_beauty_actions) || layout_changed;
     const bool history_was_shown = m_workbench_history_panel->IsShown();
     layout_changed = update_workbench_history_visibility() || layout_changed;
-    set_workbench_enabled(m_workbench_edit, state.can_edit && !m_workbench_editing);
     if (m_workbench_project_summary) {
         const auto& filaments = snapshot.printer_filaments;
         const wxString summary = wxString::FromUTF8(filaments.printer)+
@@ -828,12 +825,6 @@ void ModelGenerationPanel::apply_workbench_snapshot()
     set_workbench_enabled(m_workbench_sync_filaments, snapshot.can_edit_project_colors && device);
     set_workbench_tooltip(m_workbench_sync_filaments,
         device ? _L("使用原生设备耗材同步流程") : _L("当前没有可同步的同型号设备；可离线配置耗材"));
-    if (m_workbench_return_to_design_button)
-        layout_changed |= set_workbench_label(m_workbench_return_to_design_button,
-            m_shell_smart_creation ? _L("返回AI创作") : _L("返回图像设计"));
-    if (m_workbench_return_to_design_button)
-        set_workbench_enabled(m_workbench_return_to_design_button,
-            post_generation_return_to_design_allowed(state));
     const bool check_processing = m_native_workbench_partition_running || m_workbench_check_running ||
         (m_workbench_auto_repair && m_finishing_running);
     const bool topology_normal = !check_processing && snapshot.check.status == WorkbenchCheckStatus::Normal &&
@@ -896,25 +887,10 @@ void ModelGenerationPanel::apply_workbench_snapshot()
                 ? _L("按套装顺序绑定六个真实实体耗材；不生成叠色配方。")
                 : _L("将模型配色直接生成实体耗材与叠色配方；成功后一次提交并进入试色。")
                         : disabled_reason);
-        if (m_workbench_printer_filament_feedback) {
-            const wxString feedback = model_unavailable ? wxString{} : !m_workbench_printer_filament_notice.empty()
-                ? wxString::FromUTF8(m_workbench_printer_filament_notice) : disabled_reason;
-            const bool feedback_error = !m_workbench_printer_filament_notice.empty()
-                ? m_workbench_printer_filament_notice_error : false;
-            const wxColour color = feedback_error ? wxColour(255, 150, 146) :
-                (!m_workbench_printer_filament_notice.empty() ? wxColour(91, 205, 137) : wxColour(190, 190, 196));
-            if (m_workbench_printer_filament_feedback->GetForegroundColour() != color) {
-                m_workbench_printer_filament_feedback->SetForegroundColour(color);
-                m_workbench_printer_filament_feedback->Refresh(false);
-            }
-            layout_changed = set_wrapped_workbench_text(m_workbench_printer_filament_feedback,
-                feedback, FromDIP(235), true) || layout_changed;
-            layout_changed = set_workbench_shown(m_workbench_printer_filament_feedback,
-                !feedback.empty()) || layout_changed;
-        }
     }
     set_workbench_enabled(m_workbench_palette_details,
-        state.can_edit && m_finishing_candidate.empty() && original_appearance_available);
+        state.can_edit && m_finishing_candidate.empty() && original_appearance_available &&
+        m_model_preview->workbench_palette_details_available());
     set_workbench_tooltip(m_workbench_palette_details, original_appearance_available
         ? _L("查看和调整当前模型配色") : original_appearance_reason);
     m_model_preview->set_workbench_palette_editable(state.can_edit && m_finishing_candidate.empty());
@@ -926,7 +902,7 @@ void ModelGenerationPanel::apply_workbench_snapshot()
             m_workbench_base->SetValue(base_enabled);
         set_workbench_enabled(m_workbench_base, state.can_edit && base_available);
         set_workbench_tooltip(m_workbench_base, base_available
-            ? _L("预览 3 mm 圆形底座；导入切片时与当前模型一并生成")
+            ? _L("添加 3 mm 圆形底座，保留主体尺寸")
             : wxString::FromUTF8(base_reason));
     }
     if (m_workbench_original) {
@@ -975,9 +951,11 @@ void ModelGenerationPanel::apply_workbench_snapshot()
     }
     const auto trial = m_model_preview->color_trial_state();
     const bool honor_suite_active = m_model_preview->active_honor_filament_suite() != nullptr;
-    const wxString palette_status = from_u8(workbench_palette_status_line(
+    const size_t palette_count = m_model_preview->workbench_palette_color_count();
+    const wxString palette_status = m_model_preview->keeps_original_history_colors() && palette_count == 0 &&
+        original_appearance_available ? _L("模型原色") : from_u8(workbench_palette_status_line(
         appearance_state, honor_suite_active,
-        m_model_preview->honor_suite_used_color_count(), trial.colors.size(),
+        m_model_preview->honor_suite_used_color_count(), palette_count,
         into_u8(trial.honor_suite_fallback_reason)));
     const wxColour palette_status_color = appearance_state == WorkbenchOriginalAppearanceState::Invalid
         ? wxColour(255, 150, 146) : wxColour(170, 170, 176);

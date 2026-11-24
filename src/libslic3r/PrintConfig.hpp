@@ -2579,8 +2579,11 @@ std::vector<std::vector<BedExcludeRegion>> get_bed_excluded_regions_by_extruder(
 int bed_exclusion_extruder_for_filament(size_t filament_id, const std::vector<int> &configured_map,
                                         FilamentMapMode map_mode, bool is_bambu, bool automatic_map_resolved,
                                         size_t extruder_count);
+// Filament assignments use one-based logical nozzle ids, distinct from firmware tool ids.
+bool filament_map_has_invalid_nozzle(const std::vector<int> &filament_map, size_t nozzle_count);
 bool is_bed_exclusion_volume_syntax(const std::string &value);
-// Bed exclusion areas must be simple polygons with non-zero area.
+// Allow legacy compound bed exclusion paths with repeated vertices and
+// retraced edges. Reject zero-area paths and proper edge crossings.
 bool is_valid_bed_exclude_area(const Pointfs &points);
 bool is_valid_bed_exclude_volumes_string(const std::string &value, double printable_height);
 // Add shared definitions without replacing existing volumes or changing the

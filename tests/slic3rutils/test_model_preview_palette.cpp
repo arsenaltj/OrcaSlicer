@@ -18,6 +18,26 @@ TEST_CASE("Workbench AI palette starts with six colors",
     CHECK(initial_trial_color_count() <= max_preview_colors);
 }
 
+TEST_CASE("Retained palette colors stay in their rows when recommendations change", "[ModelPreviewPalette]")
+{
+    const Color red {1, 0, 0}, green {0, 1, 0}, blue {0, 0, 1}, black {0, 0, 0}, white {1, 1, 1};
+    const std::vector<Color> previous {red, green, blue, white};
+    RetainedRows retained {};
+    retained[1] = retained[3] = true;
+    std::vector<Color> recommended {green, white, black, red};
+    place_retained_colors(recommended, previous, retained);
+    CHECK(recommended == std::vector<Color>{black, green, red, white});
+    CHECK(retained[1]);
+    CHECK(retained[3]);
+
+    recommended = {green, white, black};
+    place_retained_colors(recommended, previous, retained);
+    CHECK(recommended == std::vector<Color>{white, green, black});
+    CHECK(retained[0]);
+    CHECK(retained[1]);
+    CHECK_FALSE(retained[3]);
+}
+
 TEST_CASE("Approved project portrait colors retain eye and brow roles beside the inherited skin preset",
           "[PortraitPaletteRoles][Regression]")
 {

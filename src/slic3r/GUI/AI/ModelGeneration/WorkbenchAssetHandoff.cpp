@@ -56,7 +56,8 @@ bool ModelGenerationPanel::open_workbench_asset(WorkbenchOpenRequest request)
     return load_library_entry(entry.model_path, entry.reference_image_path, entry.ai_image_path,
         entry.palette, entry.palette_roles, entry.use_printable_colors, entry.color_intent_path,
         entry.color_intent_schema, entry.color_intent_sha256, entry.job_id, entry.title, request.new_asset, entry.repair_index,
-        {}, request.sha256);
+        {}, request.sha256, request.origin == WorkbenchOpenRequest::Origin::Smart ||
+            request.origin == WorkbenchOpenRequest::Origin::Advanced);
 }
 
 } // namespace Slic3r::GUI

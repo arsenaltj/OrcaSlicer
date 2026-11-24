@@ -239,7 +239,8 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                 ui([&] {
                     created = LocalPrintModelImport::prepare(object, prepared->placement.placement,
                         prepared->placement.bed_size, prepared->model, prepared->result.error,
-                        request.apply_round_base_preparation, request.base_binding);
+                        request.apply_round_base_preparation, request.base_binding,
+                        LocalPrintModelImport::workbench_front_yaw);
                 });
                 if (!created || stopped()) return;
                 if (!LocalPrintModelImport::place(*prepared->model->objects.front(), prepared->placement.bed,

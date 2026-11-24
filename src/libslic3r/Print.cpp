@@ -2147,6 +2147,20 @@ bool Print::wipe_tower_certain_before_slicing() const
     return extruders.size() > 1;
 }
 
+static std::string invalid_filament_map_message()
+{
+    return L("Not all filaments used in slicing are mapped to the printer. Please check the mapping of filaments.");
+}
+
+bool Print::has_invalid_input_filament_map() const
+{
+    std::scoped_lock<std::mutex> lock(this->state_mutex());
+    const auto *map = m_last_input_filament_mapping.option<ConfigOptionInts>("filament_map");
+    const auto *nozzles = m_last_input_filament_mapping.option<ConfigOptionFloats>("nozzle_diameter");
+    const size_t nozzle_count = nozzles ? std::max(size_t(1), nozzles->size()) : 1;
+    return map && filament_map_has_invalid_nozzle(map->values, nozzle_count);
+}
+
 StringObjectException Print::validate(std::vector<StringObjectException> *warnings, Polygons* collison_polygons, std::vector<std::pair<Polygon, float>>* height_polygons) const
 {
     auto add_warning = [warnings](StringObjectException w) {
@@ -2162,12 +2176,14 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
         add_warning(std::move(w));
     };
 
-    std::vector<unsigned int> extruders = this->extruders();
-    unsigned int nozzles = m_config.nozzle_diameter.size();
-
     if (m_objects.empty())
         return {std::string()};
 
+    if (has_invalid_input_filament_map())
+        return { invalid_filament_map_message(), nullptr, "filament_map" };
+
+    std::vector<unsigned int> extruders = this->extruders();
+    unsigned int nozzles = m_config.nozzle_diameter.size();
     if (extruders.empty())
         return { L("No extrusions under current settings.") };
 
@@ -3425,6 +3441,8 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": this=%1%, enter, use_cache=%2%, object size=%3%")%this%use_cache%m_objects.size();
     if (m_objects.empty())
         return;
+    if (has_invalid_input_filament_map())
+        throw SlicingError(invalid_filament_map_message());
 
     // Belt purge prism: _plan_belt_purge() (psWipeTower) truncates the prism's
     // layers and drops its unclaimed fills, stashing both so a replan can undo
@@ -4143,6 +4161,9 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
 // It is up to the caller to show an error message.
 std::string Print::export_gcode(const std::string& path_template, GCodeProcessorResult* result, ThumbnailsGeneratorCallback thumbnail_cb)
 {
+    if (has_invalid_input_filament_map())
+        throw SlicingError(invalid_filament_map_message());
+
     // output everything to a G-code file
     // The following call may die if the filename_format template substitution fails.
     std::string path = this->output_filepath(path_template);
@@ -5799,8 +5820,8 @@ void Print::_make_wipe_tower()
 
         // Lets go through the wipe tower layers and determine pairs of extruder changes for each
         // to pass to wipe_tower (so that it can use it for planning the layout of the tower)
-        unsigned int current_extruder_id = m_wipe_tower_data.tool_ordering.all_extruders().back();
         {
+            unsigned int current_extruder_id = m_wipe_tower_data.tool_ordering.all_extruders().back();
             for (auto &layer_tools : m_wipe_tower_data.tool_ordering.layer_tools()) { // for all layers
                 if (!layer_tools.has_wipe_tower)
                     continue;
@@ -5861,12 +5882,14 @@ void Print::_make_wipe_tower()
             } else {
                 // There is yet enough space at this layer of the wipe tower for the final purge.
             }
-        } else if (m_config.single_extruder_multi_material || m_config.filament_multitool_ramming.get_at(current_extruder_id)) {
-            // The tower stops below the last print layer, but the last filament has to ram out. Unload at the
-            // object's top layer so the nozzle doesn't descend into the part on its way to the tower.
+        } else if (m_config.single_extruder_multi_material) {
+            // The tower stops below the last print layer, but a single-extruder MMU still has to unload the last
+            // filament. Unload at the object's top layer so the nozzle doesn't descend into the part on its way
+            // to the tower.
             wipe_tower.set_layer(float(m_wipe_tower_data.tool_ordering.back().print_z), float(layer_height), 0, false, true);
         } else {
-            // The wipe tower does not reach the last print layer and nothing needs ramming.
+            // The wipe tower does not reach the last print layer and nothing needs unloading: without SEMM the
+            // final purge only rams, with no retraction or parking, so it would just extrude in mid-air.
             // Skip final purge to avoid generating purge lines in mid-air.
             generate_final_purge = false;
         }
