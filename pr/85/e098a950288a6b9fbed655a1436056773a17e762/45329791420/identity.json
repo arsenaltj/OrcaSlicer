@@ -1,0 +1,27 @@
+{
+  "pr": 85,
+  "run": 45329791420,
+  "head": "e098a950288a6b9fbed655a1436056773a17e762",
+  "base": "918c1373996aac8bc05c793c198eaa530c096b00",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "回补 Orca Nightly，完善工作台底座、历史色卡与切片视角",
+  "path": "pr/85/e098a950288a6b9fbed655a1436056773a17e762/45329791420",
+  "created": "2026-11-24T05:00:46+00:00",
+  "files": {
+    "index.html": "5982b6aa6901228ab7574450393d781cd9bb541a4ecee4fd2e2d1d5a08d06b5f",
+    "details.html": "306e4141135a50da0b16c10f185c3dbd08da8aa411952b61545ca4204aaec8c0",
+    "report.json": "0c476df11598aaa08285322418baa01cf6e058a479b1d2a8e172a338e94a31fb",
+    "summary.md": "cf65d4445e328796e52a44f9b4d840bb05d9c1b67950940194734e50e47560af",
+    "archify-receipts.json": "0dafae605609aaa6e4474f4445cb9d01cc5109a0832ec2e8d068d8ed66ba0ca2",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l0-platform.html": "99935095d905d448319e796148e04715478224ba9576c63820c2d1ba37e75aa2",
+    "l0-platform.json": "cf11ddcc6ebffc6bb2ab8f18b82871e1b72d147778df05af8f63b1c196dcaefa",
+    "l1-modules.html": "64b7c6a9e6084dda32da3f4841aee392585c898969471f4ade17a2e0aa2e4b8a",
+    "l1-modules.json": "2946656a5547f3dc0fdaaadc56781e836fb456cfcd303856479a32c191bedbd4",
+    "l2-generation.html": "5ab5558ef137d23eda721ae0ddaa25f82afe2839900e0e142691cb8020e85350",
+    "l2-generation.json": "9d870a02f238a819088346855f3b6c4f912a733fb48dec971a7ab4e6ed8caea5",
+    "l2-slicing.html": "d90d8be9e8d358423e04a3e12617d88a0796cd9e9740d2339cbfeeb1b5277a0d",
+    "l2-slicing.json": "5137fddbf8b9b2e17bd079e501454a6cdb667e6e12f11f40f49207ca165d243c"
+  }
+}

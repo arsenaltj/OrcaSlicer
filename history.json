@@ -1,5 +1,15 @@
 [
   {
+    "pr": 85,
+    "run": 45329791420,
+    "head": "e098a950288a6b9fbed655a1436056773a17e762",
+    "base": "918c1373996aac8bc05c793c198eaa530c096b00",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "回补 Orca Nightly，完善工作台底座、历史色卡与切片视角",
+    "path": "pr/85/e098a950288a6b9fbed655a1436056773a17e762/45329791420",
+    "created": "2026-11-24T05:00:46+00:00"
+  },
+  {
     "pr": 84,
     "run": 44923474535,
     "head": "7a97f883be8c2a25b389c3f6c480d1cfcaa29a78",
