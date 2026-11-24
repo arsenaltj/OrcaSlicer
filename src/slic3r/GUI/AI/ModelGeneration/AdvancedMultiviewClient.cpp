@@ -139,6 +139,11 @@ void AdvancedMultiviewClient::update_group(const std::string& group_id, std::uin
     if (!valid_id(group_id)) { if (error) error("The group identity is invalid."); return; }
     auto payload = design_json(draft.design);
     payload["expected_group_revision"] = std::to_string(expected_revision);
+    auto replaced = Json::array();
+    for (auto view : AdvancedCreation::AllViews)
+        if (draft.replaced_uploads[AdvancedCreation::index(view)] && !draft.uploads[AdvancedCreation::index(view)].empty())
+            replaced.push_back(AdvancedCreation::view_name(view));
+    payload["replaced_views"] = replaced.dump();
     auto http = Http::post(m_endpoint + prefix + "/groups/" + group_id + "/inputs");
     for (auto field = payload.begin(); field != payload.end(); ++field)
         http.form_add(field.key(), field.value().get<std::string>());
@@ -223,6 +228,16 @@ std::optional<AdvancedCreation::GroupSnapshot> AdvancedMultiviewClient::parse_gr
         result.input_epoch = value.at("input_epoch").get<std::string>();
         if (!valid_id(result.id) || !valid_id(result.input_epoch) || !value.at("revision").is_number_unsigned()) return {};
         result.revision = value.at("revision").get<std::uint64_t>();
+        if (value.contains("design_targets")) {
+            if (!value["design_targets"].is_array()) return {};
+            result.design_targets.fill(false);
+            for (const auto& name : value["design_targets"]) {
+                if (!name.is_string()) return {};
+                const auto direction = parse_view(name.get<std::string>());
+                if (!direction || result.design_targets[index(*direction)]) return {};
+                result.design_targets[index(*direction)] = true;
+            }
+        }
         if (value.contains("pending_views")) {
             if (!value["pending_views"].is_array()) return {};
             for (const auto& name : value["pending_views"]) {

@@ -41,11 +41,11 @@ inline const char* generation_rejection_message(const std::string& reason)
     if (reason == "unsupported_style") return "当前风格不可用，请重新选择。";
     if (reason == "invalid_image") return "参考图无法使用，请重新上传有效图片。";
     if (reason == "missing_front") return "已上传辅助视角，请补充主参考图。";
-    if (reason == "missing_current_view") return "请先生成完整、可用的四视图设计图。";
+    if (reason == "missing_current_view") return "请先生成可用的主视角及所选设计图。";
     if (reason == "design_regeneration_required") return "图片或风格已修改，请先重新生成对应设计图。";
     if (reason == "draft_changed") return "输入已修改，请先生成对应设计图。";
     if (reason == "image_unsupported") return "当前2D模型不支持本次生成方式，请更换模型。";
-    if (reason == "geometry_unsupported") return "当前3D模型不支持四视图建模，请更换模型。";
+    if (reason == "geometry_unsupported") return "当前3D模型不支持所选设计图建模，请更换模型。";
     if (reason == "gpt_required") return "智能模式需要GPT 2D模型，请检查配置。";
     if (reason == "face_quality_mismatch") return "200万面需要选择精细几何。";
     if (reason == "palette_unavailable") return "当前耗材色板不可用，请选择有效色板。";

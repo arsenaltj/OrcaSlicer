@@ -7,8 +7,8 @@ import shutil
 import time
 from typing import Any, Callable
 
-from advanced_multiview_contracts import VIEWS, CREATION_KIND, check_revision, draft_fields, fingerprint, identity
-from advanced_multiview_model_contracts import SNAPSHOT_SCHEMA, approved_paths
+from advanced_multiview_contracts import VIEWS, CREATION_KIND, check_revision, draft_fields, fingerprint, identity, targets
+from advanced_multiview_model_contracts import SNAPSHOT_SCHEMA, approved_paths, supports_model_input
 from advanced_multiview_model_workflow import AdvancedMultiviewModelWorkflow
 from model_contracts import Job, RequestError
 from model_job_repository import _load_job
@@ -57,14 +57,17 @@ class AdvancedMultiviewModels:
 
     def prepare(self, group_id: str, request: dict[str, Any]) -> dict[str, Any]:
         command = identity(request.get("command_id"), "command_id")
+        selected = targets(request.get("selected_views"), default_all=False) if "selected_views" in request else VIEWS
+        if not selected or "front" not in selected:
+            raise RequestError("missing_front", "Select a usable front design before modeling.", 400)
         provider = _generation_provider(request)
         face_limit = 0 if provider == "yoyoclaw" else _normalize_face_limit(request.get("face_limit", 1000000))
         geometry, texture, output = _generation_options(request, face_limit)
         if provider != "yoyoclaw" and face_limit not in {300000, 1000000, 2000000}:
             raise RequestError("invalid_generation_options", "Choose a supported model generation profile.", 400)
         capability = self.ports.capability(provider, "" if provider == "yoyoclaw" else _geometry_model(request))
-        if capability.get("named_four_view_model") != "supported" or not capability.get("available"):
-            raise RequestError("unsupported_multiview", "The selected model's named four-view input is unavailable.", 503)
+        if not supports_model_input(capability, len(selected)):
+            raise RequestError("unsupported_multiview", "The selected model does not support this image count.", 503)
         options = {"provider": provider, "face_limit": face_limit, "geometry_quality": geometry,
                    "texture_quality": texture, "output_format": output, "geometry_model": capability["model"]}
         with self.repository.transaction():
@@ -73,22 +76,33 @@ class AdvancedMultiviewModels:
             if group["active_operation_id"] or self.busy(group_id):
                 raise RequestError("group_busy", "Finish the active operation before modeling.", 409)
             self._require_resolved(group_id)
-            if group["pending_views"]:
+            if any(view in group["pending_views"] for view in selected):
                 raise RequestError("design_regeneration_required",
                                    "Regenerate design views whose source image or style changed before modeling.", 409)
-            if not group["all_views_available"]:
-                raise RequestError("missing_current_view", "Four usable design views are required.", 409)
+            if any(not group["views"][view]["current"] for view in selected):
+                raise RequestError("missing_current_view", "All selected design views must be usable.", 409)
             if draft_fields(request.get("draft")) != group["latest_submitted_draft"]:
                 raise RequestError("draft_changed", "Generate the changed description before modeling.", 409)
             for view in VIEWS:
                 attempt = group["views"][view].get("latest_attempt") or {}
                 if attempt.get("state") in {"ambiguous", "result_pending", "result_saved"}:
                     raise RequestError("provider_task_ambiguous", "Resolve the outstanding image request first.", 409)
+            if "selected_views" in request:
+                visible = request.get("visible_versions")
+                if (request.get("expected_input_epoch") != group["input_epoch"]
+                        or not isinstance(visible, dict) or set(visible) != set(selected)):
+                    raise RequestError("stale_confirmation", "The visible model inputs changed.", 409)
+                for view in selected:
+                    current = group["views"][view]["current"]
+                    if visible[view] != {"version_id": current["id"], "sha256": current["sha256"]}:
+                        raise RequestError("stale_confirmation", "A selected visible design changed.", 409)
             snapshot = {"schema": SNAPSHOT_SCHEMA, "group_id": group_id, "snapshot_id": command,
+                        "selected_views": list(selected), "input_epoch": group["input_epoch"],
+                        "input_mode": "image" if len(selected) == 1 else "multiview",
                         "views": {v: {"version_id": group["views"][v]["current"]["id"],
-                                     "path": f"inputs/{v}.png", "sha256": group["views"][v]["current"]["sha256"]} for v in VIEWS}}
+                                     "path": f"inputs/{v}.png", "sha256": group["views"][v]["current"]["sha256"]} for v in selected}}
             snapshot["fingerprint"] = fingerprint(snapshot)
-            plan = {"schema": "advanced-multiview-model-plan-v1", "id": command, "job_id": command,
+            plan = {"schema": "advanced-multiview-model-plan-v2", "id": command, "job_id": command,
                     "group_id": group_id, "expected_group_revision": group["revision"],
                     "draft": deepcopy(group["latest_submitted_draft"]), "options": options,
                     "approved_multiview_snapshot": snapshot, "max_new_model_tasks": 1,
@@ -116,8 +130,10 @@ class AdvancedMultiviewModels:
         with self.repository.transaction():
             plan = self.repository.read_record(group_id, f"model-plans/{command}.json")
             if (request.get("plan_id") != command or
-                    request.get("confirmation_fingerprint") != plan["confirmation_fingerprint"]):
-                raise RequestError("stale_confirmation", "Confirm the current four-view model plan.", 409)
+                    request.get("confirmation_fingerprint") != plan["confirmation_fingerprint"] or
+                    fingerprint({key: value for key, value in plan.items()
+                                 if key not in {"confirmation_fingerprint", "expires_at"}}) != plan["confirmation_fingerprint"]):
+                raise RequestError("stale_confirmation", "Confirm the current selected design model plan.", 409)
             if self.repository.path(group_id, f"reconciled-submissions/model/{command}.json", must_exist=False).exists():
                 raise RequestError("submission_not_accepted", "This request was reconciled as not accepted. Confirm a new plan.", 409)
             group = self.repository.load(group_id)
@@ -142,14 +158,15 @@ class AdvancedMultiviewModels:
                         raise RequestError("stale_confirmation", "Confirm a new YOYOClaw plan using its default face count.", 409)
                     if capability is None:
                         return options["provider"], options["geometry_model"]
-                    if capability.get("named_four_view_model") != "supported" or not capability.get("available"):
+                    selected = tuple(v for v in VIEWS if v in plan["approved_multiview_snapshot"]["views"])
+                    if not supports_model_input(capability, len(selected)):
                         raise RequestError("unsupported_multiview", "The confirmed model is no longer available.", 503)
-                    for view in VIEWS:
+                    for view in selected:
                         if group["views"][view]["current_version_id"] != plan["approved_multiview_snapshot"]["views"][view]["version_id"]:
                             raise RequestError("stale_confirmation", "An approved design changed.", 409)
                     directory.mkdir(exist_ok=True)
                     (directory / "inputs").mkdir(exist_ok=True)
-                    for view in VIEWS:
+                    for view in selected:
                         record = self.repository.version(group_id, view, group["views"][view]["current_version_id"])
                         shutil.copyfile(self.repository.path(group_id, record["path"]), directory / f"inputs/{view}.png")
                     approved_paths(plan["approved_multiview_snapshot"], directory)
@@ -157,7 +174,7 @@ class AdvancedMultiviewModels:
                     job = Job(id=command, source="image", directory=directory, creation_kind=CREATION_KIND,
                               approved_multiview_snapshot=deepcopy(plan["approved_multiview_snapshot"]),
                               state="stopped", phase="accepted", progress=15,
-                              message="Four-view model accepted; no supplier task has started.", style=draft["style"], custom_style=draft["custom_style"],
+                              message="Selected model inputs accepted; no supplier task has started.", style=draft["style"], custom_style=draft["custom_style"],
                               user_prompt=draft["prompt"], design_provider=draft["design_provider"], design_model=draft["design_model"],
                               provider=options["provider"], geometry_model=options["geometry_model"], face_limit=options["face_limit"],
                               generation_profile="quality" if options["face_limit"] == 0 or options["face_limit"] >= 500000 else "performance",
@@ -226,6 +243,7 @@ def configured_model_capability(provider: str, model: str) -> dict[str, Any]:
     try:
         configured = tripo_client._config()[2]
         return {"available": not model or model == configured, "named_four_view_model": "supported", "model": configured,
+                "supported_image_counts": [1, 2, 3, 4],
                 "verification": "adapter_contract; real acceptance pending"}
     except tripo_client.TripoError:
         return {"available": False, "named_four_view_model": "unknown", "model": model,

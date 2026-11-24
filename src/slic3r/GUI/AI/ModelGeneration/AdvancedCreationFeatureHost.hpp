@@ -82,6 +82,8 @@ private:
     void ingest(Json group, AdvancedCreation::CallbackContext context, bool restore,
                 std::function<void()> done = {}, std::optional<AdvancedCreation::InputDraft> saved_input = {});
     void save_draft(std::function<void()> done);
+    void save_local_draft();
+    void restore_local_draft(const std::string& group);
     void prepare(const std::string& group, Json request, Confirm confirm,
                  AdvancedCreation::CommandContext context, bool new_group);
     void run_plan(const std::string& group, Json plan, bool new_group);
@@ -125,6 +127,8 @@ private:
     std::uint64_t m_geometry_capability_sequence {0};
     Json m_history = Json::array();
     std::map<std::string, Json> m_pending_receipts;
+    std::map<std::string, Json> m_written_local_drafts;
+    std::set<std::string> m_unreadable_local_drafts;
     std::set<std::string> m_reconciling;
     bool m_restore_receipts {true};
     std::string m_message;

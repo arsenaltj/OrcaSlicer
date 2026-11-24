@@ -43,6 +43,22 @@ std::string png_bytes(bool transparent = true) {
 void write_bytes(const boost::filesystem::path& path,const std::string& bytes) {
     boost::filesystem::ofstream stream(path,std::ios::binary); stream.write(bytes.data(),bytes.size());
 }
+nlohmann::json frozen_job(const std::string& bytes, int mask = 7, bool legacy = false) {
+    nlohmann::json views=nlohmann::json::object(), selected=nlohmann::json::array();
+    const std::array<std::string,4> names {"front","left","back","right"};
+    for (std::size_t slot=0;slot<names.size();++slot) if (slot==0 || (mask & (1 << (slot-1)))) {
+        const auto& name=names[slot]; selected.push_back(name);
+        views[name]={{"version_id",name+"-frozen-v1"},{"path","inputs/"+name+".png"},{"sha256",digest(bytes)}};
+    }
+    nlohmann::json snapshot={{"schema",legacy?"approved-multiview-input-v1":"approved-multiview-input-v2"},
+        {"snapshot_id","job-a"},{"views",views}};
+    if (!legacy) {
+        snapshot["selected_views"]=selected;
+        snapshot["input_mode"]=selected.size()==1?"image":"multiview";
+        snapshot["input_epoch"]="frozen-input-epoch";
+    }
+    return {{"id","job-a"},{"creation_kind","advanced_multiview_v1"},{"approved_multiview_snapshot",snapshot}};
+}
 }
 
 TEST_CASE("A subject has filled particles and bounded proportions for opaque and transparent references", "[GenerationParticles]") {
@@ -366,9 +382,7 @@ TEST_CASE("A frozen advanced front is verified against its original job receipt"
     boost::filesystem::create_directories(directory.path()/"inputs");
     const auto path=directory.path()/"inputs/front.png", manifest=directory.path()/"job.json";
     const auto bytes=png_bytes(); REQUIRE_FALSE(bytes.empty()); write_bytes(path,bytes);
-    nlohmann::json job={{"id","job-a"},{"creation_kind","advanced_multiview_v1"},
-        {"approved_multiview_snapshot",{{"schema","approved-multiview-input-v1"},{"snapshot_id","job-a"},
-            {"views",{{"front",{{"version_id","frozen-v1"},{"path","inputs/front.png"},{"sha256",digest(bytes)}}}}}}}};
+    auto job=frozen_job(bytes,7,true);
     write_bytes(manifest,job.dump());
     ModelGenerationVisualReference source{"job-a","confirmed-front:job-a",path.string(),{},true};
     source.verification_manifest=manifest.string();
@@ -379,6 +393,61 @@ TEST_CASE("A frozen advanced front is verified against its original job receipt"
     job["approved_multiview_snapshot"]["views"]["front"]["sha256"]=digest(bytes);
     job["approved_multiview_snapshot"]["views"]["front"]["path"]="../another/front.png";
     write_bytes(manifest,job.dump()); CHECK_FALSE(GP::load(source,false,{}));
+}
+TEST_CASE("Every supported advanced input subset prepares particles from its frozen front", "[GenerationParticles]") {
+    const std::string provider=GENERATE("tripo","yoyoclaw");
+    const int mask=GENERATE(0,1,2,3,4,5,6,7);
+    wxInitializer initialized; REQUIRE(initialized.IsOk());
+    ScopedTemporaryDir directory("particle-flexible-front");
+    boost::filesystem::create_directories(directory.path()/"inputs");
+    const auto path=directory.path()/"inputs/front.png", manifest=directory.path()/"job.json";
+    const auto bytes=png_bytes(); REQUIRE_FALSE(bytes.empty()); write_bytes(path,bytes);
+    auto job=frozen_job(bytes,mask); job["provider"]=provider;
+    const auto receipt=job.dump(); write_bytes(manifest,receipt);
+    ModelGenerationVisualReference source{"job-a","confirmed-front:job-a",path.string(),{},true};
+    source.verification_manifest=manifest.string();
+    // A later live-group image is deliberately unavailable. The frozen source
+    // must remain sufficient and the receipt must stay untouched.
+    write_bytes(directory.path()/"current-front.png","not the frozen image");
+    GP::PreparationDetails details;
+    const auto shape=GP::load(source,false,{}, {},&details); REQUIRE(shape);
+    CHECK_FALSE(shape->points.empty());
+    CHECK(details.reason=="ready");
+    boost::filesystem::ifstream after(manifest,std::ios::binary);
+    CHECK(std::string((std::istreambuf_iterator<char>(after)),{})==receipt);
+    CHECK_FALSE(GP::load(source,false,[]{return true;}));
+}
+TEST_CASE("Invalid advanced snapshots cannot bind particles to an unapproved image", "[GenerationParticles]") {
+    const std::string invalid=GENERATE("schema","legacy-subset","missing-front","extra-view","selection",
+        "duplicate","unknown-direction","mode","epoch","owner","kind","snapshot","path","version","sha","file");
+    wxInitializer initialized; REQUIRE(initialized.IsOk());
+    ScopedTemporaryDir directory("particle-invalid-snapshot");
+    boost::filesystem::create_directories(directory.path()/"inputs");
+    const auto path=directory.path()/"inputs/front.png", manifest=directory.path()/"job.json";
+    const auto bytes=png_bytes(); REQUIRE_FALSE(bytes.empty()); write_bytes(path,bytes);
+    auto job=frozen_job(bytes,1); auto& snapshot=job["approved_multiview_snapshot"];
+    ModelGenerationVisualReference source{"job-a","confirmed-front:job-a",path.string(),{},true};
+    source.verification_manifest=manifest.string();
+    if (invalid=="schema") snapshot["schema"]="approved-multiview-input-v3";
+    if (invalid=="legacy-subset") snapshot["schema"]="approved-multiview-input-v1";
+    if (invalid=="missing-front") snapshot["views"].erase("front");
+    if (invalid=="extra-view") snapshot["views"]["top"]=snapshot["views"]["front"];
+    if (invalid=="selection") snapshot["selected_views"]={"front","right"};
+    if (invalid=="duplicate") snapshot["selected_views"]={"front","left","left"};
+    if (invalid=="unknown-direction") snapshot["selected_views"]={"front","top"};
+    if (invalid=="mode") snapshot["input_mode"]="image";
+    if (invalid=="epoch") snapshot.erase("input_epoch");
+    if (invalid=="owner") source.owner_id="job-b";
+    if (invalid=="kind") job["creation_kind"]="smart_generation";
+    if (invalid=="snapshot") snapshot["snapshot_id"]="job-b";
+    if (invalid=="path") snapshot["views"]["front"]["path"]="../other/front.png";
+    if (invalid=="version") snapshot["views"]["front"]["version_id"]="";
+    if (invalid=="sha") snapshot["views"]["front"]["sha256"]=std::string(64,'0');
+    if (invalid=="file") boost::filesystem::remove(path);
+    write_bytes(manifest,job.dump());
+    GP::PreparationDetails details;
+    CHECK_FALSE(GP::load(source,false,{}, {},&details));
+    CHECK_FALSE(details.reason.empty());
 }
 TEST_CASE("Missing corrupt and oversized image sources decline without writing them", "[GenerationParticles]") {
     ScopedTemporaryFile file(".image");

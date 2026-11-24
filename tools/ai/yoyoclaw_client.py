@@ -907,13 +907,14 @@ class YoYoClawClient:
         return base64.b64encode(raw).decode("ascii")
 
     def submit_multiview_3d(self, model: str, views: Mapping[str, Path]) -> str:
-        if set(views) != {"front", "left", "right", "back"}:
-            raise YoYoClawError("Four named YOYOClaw design views are required.", code="invalid_model_request", category="validation")
+        if (not isinstance(views, Mapping) or "front" not in views or not 2 <= len(views) <= 4
+                or not set(views).issubset({"front", "left", "right", "back"})):
+            raise YoYoClawError("A front and one to three named auxiliary views are required.", code="invalid_model_request", category="validation")
         # Follow the existing integration script. The supplier chooses face
         # count and validates its own image/request limits on this single POST.
         payload = {"model": model, "image_base64": self._encode_3d_image(views["front"]),
                    "multi_view_images": [{"view_type": view, "view_image_base64": self._encode_3d_image(views[view])}
-                                         for view in ("left", "right", "back")]}
+                                         for view in ("left", "right", "back") if view in views]}
         return self._submit_3d_payload(payload)
 
     def _submit_3d_payload(self, payload: Mapping[str, Any]) -> str:

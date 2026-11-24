@@ -67,6 +67,488 @@ TEST_CASE("Advanced invalid drafts remain clickable without authorizing generati
     CHECK(session.draft().design == retained);
 }
 
+TEST_CASE("Advanced model selection defaults to every available direction and always includes front",
+          "[AdvancedCreation][AdvancedFlexibleViews]")
+{
+    const int mask = GENERATE(0, 1, 2, 3, 4, 5, 6, 7);
+    auto group = complete_group();
+    std::vector<ViewId> expected {ViewId::Front};
+    group.uploads[0] = "front-upload.png";
+    group.design_targets = {true, false, false, false};
+    for (std::size_t slot = 1; slot < 4; ++slot) {
+        if (mask & (1 << (slot - 1))) {
+            expected.push_back(AllViews[slot]);
+            group.design_targets[slot] = true;
+            group.uploads[slot] = std::string(view_name(AllViews[slot])) + "-upload.png";
+        } else group.views[slot] = {};
+    }
+    Session session;
+    REQUIRE(session.apply_snapshot(group, session.begin_open(group.id), true));
+    CHECK(session.effective_views() == expected);
+    CHECK(session.effective_model_views() == expected);
+    Capabilities capabilities {true,true,true,true,true,{true,true,true,true},true};
+    REQUIRE(session.eligibility(capabilities,{true,true,true}).generate_model);
+    session.click(ViewId::Front, 100, 10, SelectionContext::Model);
+    CHECK_FALSE(session.flush_click(110));
+    CHECK(session.effective_model_views() == expected);
+    CHECK(session.double_click(ViewId::Front).has_value());
+    for (ViewId view : expected) if (view != ViewId::Front) {
+        session.click(view, 200, 10, SelectionContext::Model);
+        REQUIRE(session.flush_click(210));
+    }
+    CHECK(session.effective_model_views() == std::vector<ViewId>{ViewId::Front});
+    CHECK(session.eligibility(capabilities,{true,true,true}).generate_model);
+    capabilities.model_image_counts[0] = false;
+    CHECK_FALSE(session.eligibility(capabilities,{true,true,true}).generate_model);
+}
+
+TEST_CASE("Explicit model changes and design repaint selection have independent command identities",
+          "[AdvancedCreation][AdvancedFlexibleViews]")
+{
+    auto session = ready_session();
+    const auto command = session.command_context();
+    session.click(ViewId::Right, 100, 10, SelectionContext::Model);
+    REQUIRE(session.flush_click(110));
+    CHECK(session.selection() == std::array<bool,4>{false,false,false,false});
+    CHECK_FALSE(session.model_selection()[3]);
+    CHECK(session.matches_command(command));
+    CHECK_FALSE(session.matches_model_command(command));
+    session.click(ViewId::Right, 200, 10, SelectionContext::Design);
+    REQUIRE(session.flush_click(210));
+    CHECK(session.effective_views() == std::vector<ViewId>{ViewId::Right});
+    CHECK_FALSE(session.model_selection()[3]);
+    auto changed = *session.group(); ++changed.revision;
+    changed.views[3].version_id = changed.views[3].canonical_version_id = "right-v2";
+    REQUIRE(session.apply_snapshot(changed, session.context()));
+    CHECK_FALSE(session.model_selection()[3]);
+    session.click(ViewId::Left, 300, 10, SelectionContext::DesignForNextModel);
+    REQUIRE(session.flush_click(310));
+    CHECK(session.effective_views() == std::vector<ViewId>{ViewId::Left,ViewId::Right});
+    CHECK(session.effective_model_views() == std::vector<ViewId>{ViewId::Front,ViewId::Left,ViewId::Right});
+}
+
+TEST_CASE("Accepting the first uploaded creation does not retain a pending replacement request",
+          "[AdvancedCreation][AdvancedFlexibleViews]")
+{
+    Session session;
+    REQUIRE(session.set_upload(ViewId::Front,"uploaded.png",true));
+    auto group = complete_group(); group.uploads[0] = "canonical.png";
+    REQUIRE(session.apply_snapshot(group,session.begin_open(group.id),true));
+    CHECK_FALSE(session.draft().replaced_uploads[0]);
+    CHECK_FALSE(session.draft_dirty());
+    auto draft = session.draft().design; draft.prompt = "Changed text";
+    session.set_design_draft(draft);
+    CHECK_FALSE(session.draft().replaced_uploads[0]);
+    CHECK(session.group()->views[0].usable);
+}
+
+TEST_CASE("Automatic draft selection changes preserve model preference while new directions default selected",
+          "[AdvancedCreation][AdvancedFlexibleViews]")
+{
+    auto group = complete_group(); group.views[2] = {};
+    Session session; REQUIRE(session.apply_snapshot(group,session.begin_open(group.id),true));
+    session.click(ViewId::Left,100,10,SelectionContext::Model);
+    REQUIRE(session.flush_click(110));
+    auto draft = session.draft().design; draft.style = "anime"; session.set_design_draft(draft);
+    CHECK_FALSE(session.model_selection()[1]);
+    auto next = complete_group(); next.revision += 1;
+    REQUIRE(session.apply_snapshot(next,session.context()));
+    CHECK(session.model_selection()[2]);
+    CHECK_FALSE(session.model_selection()[1]);
+    const auto saved = session.local_draft();
+    auto context = session.begin_open("group-b"); next.id = "group-b";
+    REQUIRE(session.apply_snapshot(next,context,true));
+    CHECK(session.model_selection()[1]);
+    context = session.begin_open("group-a"); next.id = "group-a";
+    REQUIRE(session.apply_snapshot(next,context,true));
+    session.restore_local_draft(saved);
+    CHECK_FALSE(session.model_selection()[1]);
+    CHECK(session.model_selection()[2]);
+}
+
+TEST_CASE("Upload deletion and same path replacement hide designs through stale snapshots and local recovery",
+          "[AdvancedCreation][AdvancedFlexibleViews][AdvancedDraftInput]")
+{
+    const bool replacement = GENERATE(false,true);
+    auto session = ready_session();
+    auto original = *session.group(); original.uploads[1] = "same-path.png";
+    REQUIRE(session.apply_snapshot(original,session.context(),true));
+    REQUIRE(session.set_upload(ViewId::Left,replacement ? "same-path.png" : "",replacement));
+    REQUIRE_FALSE(session.group()->views[1].usable);
+    CHECK_FALSE(session.model_selection()[1]);
+    REQUIRE(session.apply_snapshot(original,session.context()));
+    CHECK_FALSE(session.group()->views[1].usable);
+    const auto saved = session.local_draft();
+    Session reopened; REQUIRE(reopened.apply_snapshot(original,reopened.begin_open(original.id),true));
+    reopened.restore_local_draft(saved);
+    REQUIRE(reopened.apply_snapshot(original,reopened.context()));
+    CHECK_FALSE(reopened.group()->views[1].usable);
+    auto cleared = original; ++cleared.revision; cleared.input_epoch = "input-b";
+    cleared.views[1] = {}; cleared.uploads[1] = replacement ? "new-canonical.png" : "";
+    cleared.pending_views[1] = replacement;
+    const auto submitted = reopened.draft();
+    REQUIRE(reopened.apply_snapshot(cleared,reopened.context(),false,&submitted));
+    CHECK_FALSE(reopened.group()->views[1].usable);
+    CHECK_FALSE(reopened.draft_dirty());
+    CHECK_FALSE(reopened.apply_snapshot(original,reopened.context()));
+    if (replacement) {
+        auto success = cleared; ++success.revision; success.pending_views[1] = false;
+        success.views[1] = original.views[1]; success.views[1].version_id = "left-v2";
+        success.views[1].canonical_version_id = "left-v2";
+        REQUIRE(reopened.apply_snapshot(success,reopened.context()));
+        CHECK(reopened.group()->views[1].usable);
+        CHECK(reopened.model_selection()[1]);
+    }
+}
+
+TEST_CASE("A save cannot acknowledge a newer same path replacement or shrink initial guidance targets",
+          "[AdvancedCreation][AdvancedFlexibleViews][AdvancedInitialGuidance]")
+{
+    auto original = complete_group();
+    original.uploads = {"front-upload.png", "left-upload.png", "", ""};
+    original.design_targets = {true, true, false, false};
+    original.views[2] = original.views[3] = {};
+    Session session;
+    REQUIRE(session.apply_snapshot(original, session.begin_open(original.id), true));
+    session.arm_initial_design_guidance(session.context(),{ViewId::Front,ViewId::Left},"input-a");
+    REQUIRE(session.set_upload(ViewId::Left,"replacement.png",true));
+    const auto submitted = session.draft();
+    REQUIRE(session.set_upload(ViewId::Left,"replacement.png",true));
+    auto cleared = original; ++cleared.revision; cleared.input_epoch = "input-b";
+    cleared.views[1] = {};
+    REQUIRE(session.apply_snapshot(cleared,session.context(),false,&submitted));
+    CHECK(session.draft_dirty());
+    CHECK_FALSE(session.consume_initial_design_guidance());
+    auto success = original; success.revision += 2; success.input_epoch = "input-b";
+    const auto current = session.draft();
+    success.uploads = current.uploads; success.views[1] = {};
+    REQUIRE(session.apply_snapshot(success,session.context(),false,&current));
+    session.mark_draft_saved(session.draft().design);
+    CHECK_FALSE(session.consume_initial_design_guidance());
+
+    // Saving a smaller input set does not acknowledge a new generation plan.
+    REQUIRE(session.set_upload(ViewId::Left, ""));
+    const auto removed_input = session.draft();
+    auto removed = success; ++removed.revision; removed.input_epoch = "input-c";
+    removed.uploads = removed_input.uploads;
+    removed.design_targets = {true, false, false, false};
+    removed.pending_views.fill(false);
+    REQUIRE(session.apply_snapshot(removed, session.context(), false, &removed_input));
+    REQUIRE(session.inputs_match_results());
+    CHECK_FALSE(session.consume_initial_design_guidance());
+
+    // Only an accepted operation can replace the full guidance target set.
+    session.track_initial_design_plan(session.context(), {ViewId::Front}, "input-c");
+    auto running = removed; ++running.revision; running.active_operation_id = "new-operation";
+    REQUIRE(session.apply_snapshot(running, session.context()));
+    CHECK_FALSE(session.consume_initial_design_guidance());
+    auto completed = running; ++completed.revision; completed.active_operation_id.clear();
+    completed.views[0].version_id = completed.views[0].canonical_version_id = "front-new-plan";
+    REQUIRE(session.apply_snapshot(completed, session.context()));
+    CHECK(session.consume_initial_design_guidance());
+    CHECK_FALSE(session.consume_initial_design_guidance());
+}
+
+TEST_CASE("First and newly created advanced designs guide only after their actual targets succeed",
+          "[AdvancedCreation][AdvancedFlexibleViews][AdvancedInitialGuidance]")
+{
+    const int count = GENERATE(1,2,3,4);
+    Session session;
+    for (int creation = 0; creation < 2; ++creation) {
+        session.new_creation();
+        auto group = complete_group(); const auto context = session.begin_open(group.id);
+        std::vector<ViewId> targets;
+        for (int slot = 0; slot < 4; ++slot) {
+            group.design_targets[slot] = slot < count;
+            if (slot < count) targets.push_back(AllViews[slot]); else group.views[slot] = {};
+        }
+        session.arm_initial_design_guidance(context,targets,group.input_epoch);
+        auto loading = group; loading.active_operation_id = "operation";
+        REQUIRE(session.apply_snapshot(loading,context,true));
+        CHECK_FALSE(session.consume_initial_design_guidance());
+        ++group.revision; REQUIRE(session.apply_snapshot(group,context));
+        CHECK(session.consume_initial_design_guidance());
+        CHECK_FALSE(session.consume_initial_design_guidance());
+    }
+}
+
+TEST_CASE("Three successive upload replacements keep only the newest acknowledged design",
+          "[AdvancedCreation][AdvancedFlexibleViews][AdvancedDraftInput]")
+{
+    const bool same_path = GENERATE(false, true);
+    auto session = ready_session();
+    const auto initial = *session.group();
+    std::array<InputDraft, 3> inputs;
+    std::array<GroupSnapshot, 3> snapshots;
+    for (std::size_t slot = 0; slot < inputs.size(); ++slot) {
+        REQUIRE(session.set_upload(ViewId::Left, same_path ? "replacement.png" :
+            "replacement-" + std::to_string(slot) + ".png", true));
+        inputs[slot] = session.draft();
+        snapshots[slot] = initial;
+        snapshots[slot].revision += slot + 1;
+        snapshots[slot].input_epoch = "replacement-epoch-" + std::to_string(slot);
+        snapshots[slot].uploads = inputs[slot].uploads;
+        snapshots[slot].views[1].version_id = snapshots[slot].views[1].canonical_version_id =
+            "replacement-design-" + std::to_string(slot);
+        snapshots[slot].views[1].image_path = "replacement-design-" + std::to_string(slot) + ".png";
+        CHECK_FALSE(session.group()->views[1].usable);
+    }
+    REQUIRE(session.apply_snapshot(snapshots[2], session.context(), false, &inputs[2]));
+    REQUIRE(session.group()->views[1].usable);
+    const auto newest = session.group()->views[1].version_id;
+    const auto command = session.command_context();
+    for (std::size_t old = 0; old < 2; ++old) {
+        CHECK_FALSE(session.apply_snapshot(snapshots[old], session.context(), false, &inputs[old]));
+        CHECK(session.group()->views[1].version_id == newest);
+        CHECK(session.draft().upload_revisions[1] == inputs[2].upload_revisions[1]);
+        CHECK(session.matches_model_command(command));
+    }
+}
+
+TEST_CASE("A failed local draft write preserves its checkpoint and keeps invalidated designs hidden",
+          "[AdvancedCreation][AdvancedFlexibleViews][AdvancedDraftInput]")
+{
+    wxInitializer init; REQUIRE(init.IsOk());
+    ScopedTemporaryDir temporary {"orca-advanced-local-draft-write"};
+    ScopedEnvVar output("ORCASLICER_AI_OUTPUT_DIR", temporary.string());
+    Slic3r::GUI::AdvancedCreationFeatureHost host(nullptr, "https://not-a-local-service.invalid");
+    auto group = complete_group();
+    group.id = "11111111-1111-4111-8111-111111111111";
+    group.uploads[1] = "left-upload.png";
+    REQUIRE(host.session().apply_snapshot(group, host.session().begin_open(group.id), true));
+    host.changed();
+    const auto checkpoint = temporary.path() / "advanced-cache" / "drafts" / (group.id + ".json");
+    REQUIRE(boost::filesystem::is_regular_file(checkpoint));
+    std::ifstream original_file(checkpoint.string());
+    const auto original = nlohmann::json::parse(original_file);
+    original_file.close();
+    const auto blocked = boost::filesystem::path(checkpoint.string() + ".part");
+    REQUIRE(boost::filesystem::create_directory(blocked));
+    REQUIRE(host.session().set_upload(ViewId::Left, ""));
+    host.changed();
+    CHECK_FALSE(host.session().group()->views[1].usable);
+    CHECK_FALSE(host.session().model_selection()[1]);
+    CHECK(host.session().draft_dirty());
+    CHECK_FALSE(host.command_pending());
+    CHECK_FALSE(host.has_pending_receipt());
+    CHECK(host.message().find("草稿暂时无法保存在本地") != std::string::npos);
+    std::ifstream preserved_file(checkpoint.string());
+    CHECK(nlohmann::json::parse(preserved_file) == original);
+    preserved_file.close();
+
+    REQUIRE(boost::filesystem::remove(blocked));
+    host.changed();
+    std::ifstream recovered_file(checkpoint.string());
+    const auto recovered = nlohmann::json::parse(recovered_file);
+    CHECK(recovered.at("invalidated_uploads").at(1) == true);
+    CHECK(recovered.at("uploads").at(1) == "");
+    CHECK(recovered.at("dirty") == true);
+    CHECK_FALSE(host.session().group()->views[1].usable);
+    CHECK(host.session().draft_dirty());
+    CHECK(host.message().empty());
+    host.shutdown();
+}
+
+TEST_CASE("Delayed image clicks keep their original design or model context",
+          "[AdvancedCreation][AdvancedFlexibleViews]")
+{
+    const auto context = GENERATE(SelectionContext::Design, SelectionContext::Model,
+                                 SelectionContext::DesignForNextModel);
+    auto session = ready_session();
+    session.click(ViewId::Left, 100, 500, context);
+    CHECK_FALSE(session.flush_click(300));
+    const auto command = session.command_context();
+    // A later double click must settle the first card in its captured context.
+    REQUIRE(session.double_click(ViewId::Right).has_value());
+    CHECK_FALSE(session.flush_click(1000));
+    if (context == SelectionContext::Model) {
+        CHECK_FALSE(session.model_selection()[1]);
+        CHECK_FALSE(session.selection()[1]);
+        CHECK(session.matches_command(command));
+        CHECK_FALSE(session.matches_model_command(command));
+    } else {
+        CHECK(session.selection()[1]);
+        CHECK_FALSE(session.matches_command(command));
+        if (context == SelectionContext::DesignForNextModel)
+            CHECK(session.effective_model_views() == std::vector<ViewId>{ViewId::Front, ViewId::Left});
+        else CHECK(session.effective_model_views().size() == 4);
+    }
+    const auto model_selection = session.model_selection();
+    const auto design_selection = session.selection();
+    session.click(ViewId::Back, 1100, 500, context);
+    REQUIRE(session.double_click(ViewId::Back).has_value());
+    CHECK_FALSE(session.flush_click(2000));
+    CHECK(session.model_selection() == model_selection);
+    CHECK(session.selection() == design_selection);
+}
+
+TEST_CASE("Returning from the model tab consumes guidance without preventing manual model generation",
+          "[AdvancedCreation][AdvancedFlexibleViews][AdvancedInitialGuidance]")
+{
+    auto session = ready_session(); session.arm_initial_design_guidance(session.context());
+    session.dismiss_initial_design_guidance();
+    CHECK_FALSE(session.consume_initial_design_guidance());
+    session.arm_initial_design_guidance(session.context());
+    CHECK_FALSE(session.consume_initial_design_guidance());
+    CHECK(session.eligibility({true,true,true,true,true},{true,true,true}).generate_model);
+}
+
+TEST_CASE("Repainting a successful initial view cannot bypass another missing initial target",
+          "[AdvancedCreation][AdvancedFlexibleViews][AdvancedInitialGuidance]")
+{
+    Session session;
+    auto group = complete_group();
+    group.design_targets = {true, true, false, false};
+    group.views[1] = {};
+    group.views[1].attempt_state = "failed";
+    group.views[2] = group.views[3] = {};
+    const auto callback = session.begin_open(group.id);
+    REQUIRE(session.apply_snapshot(group, callback, true));
+    session.arm_initial_design_guidance(callback, {ViewId::Front, ViewId::Left}, group.input_epoch);
+    CHECK_FALSE(session.consume_initial_design_guidance());
+    session.track_initial_design_plan(callback, {ViewId::Front}, group.input_epoch);
+    ++group.revision;
+    group.views[0].version_id = group.views[0].canonical_version_id = "front-repainted";
+    REQUIRE(session.apply_snapshot(group, callback));
+    REQUIRE(session.inputs_match_results());
+    CHECK_FALSE(session.consume_initial_design_guidance());
+    ++group.revision;
+    group.views[1] = complete_group().views[1];
+    REQUIRE(session.apply_snapshot(group, callback));
+    CHECK(session.consume_initial_design_guidance());
+    CHECK_FALSE(session.consume_initial_design_guidance());
+}
+
+TEST_CASE("Selected auxiliary failures can be removed in both model selection contexts without losing pending work",
+          "[AdvancedCreation][AdvancedFlexibleViews]")
+{
+    const auto auxiliary=GENERATE(ViewId::Left,ViewId::Back,ViewId::Right);
+    const auto context=GENERATE(SelectionContext::Model,SelectionContext::DesignForNextModel);
+    const std::string failure=GENERATE("failed","stopped","display","asset");
+    const bool keep_other=GENERATE(false,true);
+    auto group=complete_group();
+    const auto slot=index(auxiliary);
+    const std::size_t other=slot==1?2:1;
+    for (std::size_t i=1;i<4;++i) if (i!=slot && (!keep_other || i!=other)) group.views[i]={};
+    Session session; REQUIRE(session.apply_snapshot(group,session.begin_open(group.id),true));
+    session.click(auxiliary,100,10,SelectionContext::Design);
+    REQUIRE(session.flush_click(110));
+    if (keep_other) {
+        session.click(AllViews[other],200,10,SelectionContext::Design);
+        REQUIRE(session.flush_click(210));
+    }
+    auto failed=*session.group(); ++failed.revision;
+    auto& image=failed.views[slot];
+    if (failure=="failed" || failure=="stopped") {
+        image.attempt_state=failure; failed.pending_views[slot]=true;
+    } else if (failure=="display") image.display_error=true;
+    else { image.asset_pending=true; image.canonical_version_id="unverified-new-version"; }
+    REQUIRE(session.apply_snapshot(failed,session.context()));
+    Capabilities capabilities {true,true,true,true,true,{true,true,true,true},true};
+    CHECK(session.model_selection()[slot]);
+    CHECK_FALSE(session.eligibility(capabilities,{true,true,true}).generate_model);
+    const auto old_command=session.command_context();
+    session.click(auxiliary,300,10,context);
+    REQUIRE(session.flush_click(310));
+    CHECK_FALSE(session.model_selection()[slot]);
+    CHECK_FALSE(session.matches_model_command(old_command));
+    CHECK(session.group()->pending_views[slot]==failed.pending_views[slot]);
+    if (context==SelectionContext::DesignForNextModel) CHECK_FALSE(session.selection()[slot]);
+    std::vector<ViewId> expected {ViewId::Front};
+    if (keep_other) expected.push_back(AllViews[other]);
+    CHECK(session.effective_model_views()==expected);
+    REQUIRE(session.eligibility(capabilities,{true,true,true}).generate_model);
+    const auto canceled_command=session.command_context();
+    session.click(auxiliary,400,10,context);
+    CHECK_FALSE(session.flush_click(410));
+    CHECK(session.matches_model_command(canceled_command));
+    const auto local=session.local_draft();
+    Session reopened; REQUIRE(reopened.apply_snapshot(failed,reopened.begin_open(failed.id),true));
+    reopened.restore_local_draft(local);
+    CHECK(reopened.effective_model_views()==expected);
+    auto recovered=group; recovered.revision=failed.revision+1;
+    recovered.views[slot].version_id=recovered.views[slot].canonical_version_id="recovered-version";
+    REQUIRE(reopened.apply_snapshot(recovered,reopened.context()));
+    CHECK_FALSE(reopened.model_selection()[slot]);
+    CHECK(reopened.effective_model_views()==expected);
+}
+
+TEST_CASE("Removing an unavailable auxiliary does not bypass model generation guards",
+          "[AdvancedCreation][AdvancedFlexibleViews]")
+{
+    const std::string blocker=GENERATE("active","model","stopping","readonly","options","service",
+        "draft","ambiguous","result_pending","result_saved","front");
+    auto group=complete_group(); group.views[2]=group.views[3]={};
+    Session session; REQUIRE(session.apply_snapshot(group,session.begin_open(group.id),true));
+    auto failed=*session.group(); ++failed.revision;
+    failed.pending_views[1]=true; failed.views[1].attempt_state="failed";
+    REQUIRE(session.apply_snapshot(failed,session.context()));
+    session.click(ViewId::Left,100,10,SelectionContext::Model);
+    REQUIRE(session.flush_click(110));
+    CHECK(session.effective_model_views()==std::vector<ViewId>{ViewId::Front});
+    auto blocked=*session.group(); ++blocked.revision;
+    HostGuards guards {true,true,true};
+    if (blocker=="active") blocked.active_operation_id="operation";
+    if (blocker=="model" || blocker=="stopping") blocked.model_busy=true;
+    if (blocker=="stopping") blocked.stop_intent=true;
+    if (blocker=="readonly") guards.can_start=false;
+    if (blocker=="options") guards.model_options_valid=false;
+    if (blocker=="service") guards.model_service_available=false;
+    if (blocker=="front") blocked.views[0].display_error=true;
+    if (blocker=="ambiguous" || blocker=="result_pending" || blocker=="result_saved")
+        blocked.views[1].attempt_state=blocker;
+    REQUIRE(session.apply_snapshot(blocked,session.context()));
+    if (blocker=="draft") {
+        auto draft=session.draft().design; draft.prompt="changed";
+        REQUIRE(session.set_design_draft(draft));
+    }
+    CHECK_FALSE(session.eligibility({true,true,true,true,true,{true,true,true,true},true},guards).generate_model);
+    session.click(ViewId::Front,200,10,SelectionContext::Model);
+    CHECK_FALSE(session.flush_click(210));
+    CHECK(session.model_selection()[0]);
+}
+
+TEST_CASE("Hidden auxiliary slots and ordinary repaint clicks retain their existing selection rules",
+          "[AdvancedCreation][AdvancedFlexibleViews]")
+{
+    const bool replacement=GENERATE(false,true);
+    auto session=ready_session();
+    auto uploaded=*session.group(); uploaded.uploads[1]="original-left.png";
+    REQUIRE(session.apply_snapshot(uploaded,session.context(),true));
+    REQUIRE(session.set_upload(ViewId::Left,replacement?"replacement.png":"",replacement));
+    const auto before=session.local_draft();
+    const auto command=session.command_context();
+    session.click(ViewId::Left,100,10,SelectionContext::Model);
+    CHECK_FALSE(session.flush_click(110));
+    CHECK(session.local_draft().model_selected==before.model_selected);
+    CHECK(session.matches_model_command(command));
+    session.click(ViewId::Left,200,10,SelectionContext::DesignForNextModel);
+    CHECK_FALSE(session.flush_click(210));
+    CHECK(session.local_draft().model_selected==before.model_selected);
+    auto ordinary=ready_session();
+    auto pending=*ordinary.group(); ++pending.revision;
+    pending.pending_views[1]=true; pending.views[1].attempt_state="failed";
+    REQUIRE(ordinary.apply_snapshot(pending,ordinary.context(),true));
+    REQUIRE(ordinary.selection()[1]);
+    ordinary.click(ViewId::Left,300,10,SelectionContext::Design);
+    CHECK_FALSE(ordinary.flush_click(310));
+    CHECK(ordinary.selection()[1]);
+    CHECK(ordinary.model_selection()[1]);
+}
+
+TEST_CASE("Unselected ordinary auxiliary failure does not block modeling but unresolved submission does",
+          "[AdvancedCreation][AdvancedFlexibleViews]")
+{
+    const std::string state = GENERATE("failed","stopped","blocked","ambiguous","result_pending","result_saved");
+    auto group = complete_group(); group.views[2] = {}; group.views[2].attempt_state = state;
+    group.pending_views[2] = true;
+    Session session; REQUIRE(session.apply_snapshot(group,session.begin_open(group.id),true));
+    Capabilities capabilities {true,true,true,true,true,{true,true,true,true},true};
+    const auto allowed = session.eligibility(capabilities,{true,true,true});
+    CHECK(allowed.generate_model == (state == "failed" || state == "stopped" || state == "blocked"));
+    CHECK_FALSE(session.model_selection()[2]);
+}
+
 TEST_CASE("Advanced interaction guards survive missing views and distinguish unresolved actions",
           "[AdvancedCreation][GenerationClickFeedback]")
 {
@@ -409,7 +891,8 @@ TEST_CASE("Restoring the submitted provider model preserves independent input ch
     const Capabilities capabilities {true, true, true, true, true};
     const HostGuards guards {true, true, true};
     CHECK_FALSE(session.eligibility(capabilities, guards).generate_model);
-    CHECK(session.eligibility(capabilities, guards).model_reason == "draft_changed");
+    CHECK(session.eligibility(capabilities, guards).model_reason ==
+          (changed == "upload" ? "missing_current_view" : "draft_changed"));
 }
 
 TEST_CASE("Image provider model restoration uses only the current group's submitted design",

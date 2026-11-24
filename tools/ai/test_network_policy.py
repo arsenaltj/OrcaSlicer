@@ -244,33 +244,45 @@ class NetworkPolicyTests(unittest.TestCase):
                 self.assertEqual(opener.open.call_count, 2)
 
     def test_tripo_paid_creation_does_not_retry_interrupted_response(self) -> None:
-        opener = mock.Mock()
-        opener.open.side_effect = http.client.RemoteDisconnected("connection closed")
-        with mock.patch.dict(os.environ, {"TRIPO_API_KEY": "test-key"}), \
-                mock.patch.object(tripo_client, "build_network_opener", return_value=opener), \
-                mock.patch.object(tripo_client, "diagnostic_event"), \
-                mock.patch.object(tripo_client.time, "sleep") as sleep:
-            with self.assertRaisesRegex(tripo_client.TripoError, "Could not connect"):
-                tripo_client.create_image_task("uploaded-token")
-        opener.open.assert_called_once()
-        sleep.assert_not_called()
+        for mask in range(8):
+            tokens = {"front": "front-token", **{view: f"{view}-token"
+                for slot, view in enumerate(("left", "back", "right")) if mask & (1 << slot)}}
+            for failure in (http.client.RemoteDisconnected("connection closed"), urllib.error.URLError(TimeoutError("timed out"))):
+                with self.subTest(views=list(tokens), failure=type(failure).__name__):
+                    opener = mock.Mock()
+                    opener.open.side_effect = failure
+                    with mock.patch.dict(os.environ, {"TRIPO_API_KEY": "test-key"}), \
+                            mock.patch.object(tripo_client, "build_network_opener", return_value=opener), \
+                            mock.patch.object(tripo_client, "diagnostic_event"), \
+                            mock.patch.object(tripo_client.time, "sleep") as sleep:
+                        with self.assertRaises(tripo_client.TripoError):
+                            if mask == 0: tripo_client.create_image_task(tokens["front"])
+                            else: tripo_client.create_multiview_task(tokens)
+                    opener.open.assert_called_once()
+                    sleep.assert_not_called()
 
     def test_tripo_paid_creation_does_not_retry_truncated_json(self) -> None:
-        interrupted = mock.MagicMock()
-        interrupted.status = 200
-        interrupted.headers = {}
-        interrupted.read.return_value = b'{"code":0,"data":'
-        interrupted.__enter__.return_value = interrupted
-        opener = mock.Mock()
-        opener.open.return_value = interrupted
-        with mock.patch.dict(os.environ, {"TRIPO_API_KEY": "test-key"}), \
-                mock.patch.object(tripo_client, "build_network_opener", return_value=opener), \
-                mock.patch.object(tripo_client, "diagnostic_event"), \
-                mock.patch.object(tripo_client.time, "sleep") as sleep:
-            with self.assertRaisesRegex(tripo_client.TripoError, "invalid response"):
-                tripo_client.create_image_task("uploaded-token")
-        opener.open.assert_called_once()
-        sleep.assert_not_called()
+        for mask in range(8):
+            tokens = {"front": "front-token", **{view: f"{view}-token"
+                for slot, view in enumerate(("left", "back", "right")) if mask & (1 << slot)}}
+            for payload in (b'{"code":0,"data":', b'{"code":0,"data":{}}'):
+                with self.subTest(views=list(tokens), payload=payload):
+                    interrupted = mock.MagicMock()
+                    interrupted.status = 200
+                    interrupted.headers = {}
+                    interrupted.read.return_value = payload
+                    interrupted.__enter__.return_value = interrupted
+                    opener = mock.Mock()
+                    opener.open.return_value = interrupted
+                    with mock.patch.dict(os.environ, {"TRIPO_API_KEY": "test-key"}), \
+                            mock.patch.object(tripo_client, "build_network_opener", return_value=opener), \
+                            mock.patch.object(tripo_client, "diagnostic_event"), \
+                            mock.patch.object(tripo_client.time, "sleep") as sleep:
+                        with self.assertRaisesRegex(tripo_client.TripoError, "invalid response|task reference"):
+                            if mask == 0: tripo_client.create_image_task(tokens["front"])
+                            else: tripo_client.create_multiview_task(tokens)
+                    opener.open.assert_called_once()
+                    sleep.assert_not_called()
 
     def test_tripo_timeout_is_reported_as_timeout(self) -> None:
         opener = mock.Mock()
@@ -280,6 +292,66 @@ class NetworkPolicyTests(unittest.TestCase):
                 mock.patch.object(tripo_client, "diagnostic_event"):
             with self.assertRaisesRegex(tripo_client.TripoError, "timed out"):
                 tripo_client._request("GET", "/tasks/existing-task")
+
+    def test_tripo_task_observers_recover_transient_errors_only_on_the_original_get(self) -> None:
+        def response(payload: bytes):
+            value = mock.MagicMock()
+            value.status = 200
+            value.headers = {"Content-Length": str(len(payload))}
+            value.read.return_value = payload
+            value.__enter__.return_value = value
+            return value
+
+        task_id = "original/task reference"
+        endpoint = "https://tripo.example/v3/tasks/original%2Ftask%20reference"
+        failures = (
+            urllib.error.URLError(TimeoutError("timed out")),
+            http.client.RemoteDisconnected("connection closed"),
+            urllib.error.HTTPError(endpoint, 503, "temporarily unavailable", {}, None),
+            response(b'{"code":0,"data":'),
+            response(b"<html>temporary proxy response</html>"),
+        )
+        for observe in (tripo_client.get_task, tripo_client.wait_for_task):
+            for failure in failures:
+                with self.subTest(observer=observe.__name__, failure=type(failure).__name__):
+                    completed = {"task_id": task_id, "status": "success", "progress": 100}
+                    steps = [failure]
+                    if observe is tripo_client.wait_for_task:
+                        steps.append(response(b'{"code":0,"data":{"status":"running","progress":25}}'))
+                    steps.append(response(json.dumps({"code": 0, "data": completed}).encode()))
+                    opener = mock.Mock()
+                    opener.open.side_effect = steps
+                    with mock.patch.dict(os.environ, {"TRIPO_API_KEY": "test-key",
+                                                      "TRIPO_API_BASE": "https://tripo.example/v3"}), \
+                            mock.patch.object(tripo_client, "build_network_opener", return_value=opener), \
+                            mock.patch.object(tripo_client, "diagnostic_event"), \
+                            mock.patch.object(tripo_client.time, "sleep"):
+                        self.assertEqual(observe(task_id), completed)
+                    self.assertEqual(opener.open.call_count, len(steps))
+                    for call in opener.open.call_args_list:
+                        request = call.args[0]
+                        self.assertEqual(request.get_method(), "GET")
+                        self.assertEqual(request.full_url, endpoint)
+                        self.assertIsNone(request.data)
+
+    def test_tripo_task_polling_exhaustion_or_stop_never_creates_another_task(self) -> None:
+        for outcome in ("exhausted", "stopped"):
+            with self.subTest(outcome=outcome):
+                opener = mock.Mock()
+                opener.open.side_effect = urllib.error.URLError(TimeoutError("timed out"))
+                stop = mock.Mock()
+                stop.is_set.return_value = False
+                stop.wait.return_value = outcome == "stopped"
+                with mock.patch.dict(os.environ, {"TRIPO_API_KEY": "test-key"}), \
+                        mock.patch.object(tripo_client, "build_network_opener", return_value=opener), \
+                        mock.patch.object(tripo_client, "diagnostic_event"):
+                    message = "cancelled" if outcome == "stopped" else "timed out"
+                    with self.assertRaisesRegex(tripo_client.TripoError, message):
+                        tripo_client.wait_for_task("original-task", stop_event=stop)
+                self.assertEqual(opener.open.call_count, 1 if outcome == "stopped" else 4)
+                for call in opener.open.call_args_list:
+                    self.assertEqual(call.args[0].get_method(), "GET")
+                    self.assertTrue(call.args[0].full_url.endswith("/tasks/original-task"))
 
 
 if __name__ == "__main__":

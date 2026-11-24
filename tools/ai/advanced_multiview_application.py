@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 import time
 from typing import Any, Callable
 
 from advanced_multiview_contracts import (
     OPERATION_SCHEMA, PLAN_SCHEMA, VIEWS,
-    check_revision, display_name, draft_fields, fingerprint, identity, new_id, targets, view_contract_snapshot,
+    check_revision, design_targets, display_name, draft_fields, fingerprint, identity, new_id, targets, view_contract_snapshot,
 )
 from advanced_multiview_repository import AdvancedMultiviewRepository
 from model_contracts import RequestError
@@ -58,21 +59,31 @@ class AdvancedMultiviewApplication:
                 raise RequestError("group_busy", "Finish the active operation before changing its draft.", 409)
             style_changed = (draft["style"], draft["custom_style"]) != (
                 group["saved_draft"]["style"], group["saved_draft"]["custom_style"])
+            text_targets_reset = group["source"] == "text" and not design_targets(group) and bool(draft["prompt"])
             group["saved_draft"] = draft
-            if style_changed:
+            if style_changed or text_targets_reset:
                 group["input_epoch"] = new_id()
-                group["pending_views"] = list(VIEWS)
+                group["pending_views"] = list(design_targets(group))
             return self.repository.save(group)
 
     def update_inputs(self, group_id: str, request: dict[str, Any],
                       images: dict[str, bytes]) -> dict[str, Any]:
         draft = draft_fields(request)
+        replaced = request.get("replaced_views", [])
+        if isinstance(replaced, str):
+            try:
+                replaced = json.loads(replaced)
+            except ValueError:
+                raise RequestError("invalid_request", "Replacement directions must be a named list.", 400) from None
+        replaced = targets(replaced, default_all=False)
+        if any(view not in images for view in replaced):
+            raise RequestError("invalid_request", "A replaced direction requires its uploaded image.", 400)
         with self.repository.transaction():
             group = self.repository.load(group_id)
             check_revision(group, request.get("expected_group_revision"))
             if group["active_operation_id"] or self.model_busy(group_id):
                 raise RequestError("group_busy", "Finish the active operation before changing its inputs.", 409)
-            return self.repository.replace_inputs(group, draft, images)
+            return self.repository.replace_inputs(group, draft, images, replaced)
 
     def rename_group(self, group_id: str, request: dict[str, Any]) -> dict[str, Any]:
         name = display_name(request.get("display_name", ""))
@@ -94,21 +105,28 @@ class AdvancedMultiviewApplication:
             check_revision(group, request.get("expected_group_revision"))
             if group["active_operation_id"] or self.model_busy(group_id):
                 raise RequestError("group_busy", "The group already has an active operation.", 409)
+            allowed = design_targets(group)
+            if group["source"] == "image" and "front" not in allowed:
+                raise RequestError("missing_front", "A front reference is required before generating.", 400)
+            if not allowed:
+                raise RequestError("invalid_request", "An image or description is required before generating.", 400)
             retry_uses_current_input = False
             if kind == "initial":
                 if group["published"]:
                     raise RequestError("invalid_group_state", "This group already has an initial operation.", 409)
                 draft = deepcopy(group["saved_draft"])
-                selected = VIEWS
-                bases = dict.fromkeys(VIEWS)
+                selected = allowed
+                bases = dict.fromkeys(selected)
                 retry_of = None
                 initial = True
                 reusable = {}
             elif kind == "edit":
                 draft = draft_fields(request)
-                requested = targets(request.get("target_views"))
+                requested = targets(request.get("target_views"), default_all=False) or allowed
+                if any(view not in allowed for view in requested):
+                    raise RequestError("invalid_request", "A selected direction has no current reference.", 400)
                 selected = tuple(view for view in VIEWS
-                                 if view in requested or view in group["pending_views"])
+                                 if view in allowed and (view in requested or view in group["pending_views"]))
                 supplied_bases = request.get("base_versions")
                 if (not isinstance(supplied_bases, dict)
                         or any(view not in supplied_bases for view in requested)
@@ -129,6 +147,8 @@ class AdvancedMultiviewApplication:
                 retry_of = identity(request.get("operation_id"), "operation_id")
                 old = self.operation(group_id, retry_of)
                 selected = targets(request.get("target_views"), default_all=False)
+                if any(view not in allowed for view in selected):
+                    raise RequestError("invalid_request", "A retry direction has no current reference.", 400)
                 if not selected or any(v not in old["attempts"] for v in selected):
                     raise RequestError("invalid_request", "Explicit failed targets are required for retry.", 400)
                 for view in selected:
@@ -146,7 +166,7 @@ class AdvancedMultiviewApplication:
                     draft["design_provider"] = old["draft"]["design_provider"]
                     draft["design_model"] = old["draft"]["design_model"]
                 if initial and "front" in selected and not group["views"]["front"]["current_version_id"]:
-                    selected = tuple(v for v in VIEWS if not group["views"][v]["current_version_id"])
+                    selected = tuple(v for v in allowed if v in old["attempts"] and not group["views"][v]["current_version_id"])
                 bases = {v: old["attempts"][v]["base_version_id"] for v in selected}
                 if any(group["views"][v]["current_version_id"] != bases[v] for v in selected):
                     raise RequestError("revision_conflict", "A retry base changed; prepare a new edit instead.", 409)
@@ -177,7 +197,7 @@ class AdvancedMultiviewApplication:
                       "source": group["source"], "context": context,
                       "pending_views": list(group["pending_views"]),
                       "changed_upload_views": list(group["changed_upload_views"]),
-                      "view_contract": view_contract_snapshot()}
+                      "view_contract": view_contract_snapshot(), "design_targets": list(allowed)}
             if kind == "retry" and not retry_uses_current_input:
                 frozen = deepcopy(old["frozen"])
                 if initial:

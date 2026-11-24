@@ -132,6 +132,13 @@ def targets(value: Any, *, default_all: bool = True) -> tuple[str, ...]:
     return tuple(view for view in VIEWS if view in value)
 
 
+def design_targets(group: Mapping[str, Any]) -> tuple[str, ...]:
+    """The direction domain is fixed; a user's image operation need not use all of it."""
+    if group.get("source") == "image":
+        return tuple(view for view in VIEWS if group.get("uploads", {}).get(view))
+    return VIEWS if group.get("saved_draft", {}).get("prompt", "").strip() else ()
+
+
 def revision(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise RequestError("invalid_request", "expected_group_revision must be a nonnegative integer.", 400)

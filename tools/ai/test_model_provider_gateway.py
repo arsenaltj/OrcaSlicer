@@ -304,19 +304,31 @@ class ModelTaskGatewayTests(unittest.TestCase):
         dependencies["upload_image"].assert_called_once_with(reference)
 
     def test_invalid_paid_creation_response_remains_ambiguous(self):
-        for message in ("Tripo returned an invalid response.", "Tripo did not return a task reference."):
-            with self.subTest(message=message):
-                create = mock.Mock(side_effect=TripoError(message))
-                gateway, dependencies = self.gateway(create_text_task=create)
-                with self.assertRaises(ProviderGatewayError) as raised:
-                    gateway.start_or_reuse_model_task(
-                        ModelTaskRequest(source="text", prompt="offline test object", face_limit=300000,
-                                         generation_profile="performance"),
-                        authorization=PaidTaskAuthorization.confirmed("job-invalid:model:1"),
-                    )
-                self.assertEqual(raised.exception.code, "invalid_provider_result")
-                self.assertTrue(raised.exception.ambiguous)
-                dependencies["create_text_task"].assert_called_once()
+        with tempfile.TemporaryDirectory() as directory:
+            paths = {view: Path(directory) / f"{view}.png" for view in ("front", "left", "back", "right")}
+            for path in paths.values(): path.write_bytes(b"controlled-reference")
+            routes = [("text", {})] + [
+                ("image" if mask == 0 else "multiview", {
+                    "front": paths["front"], **{view: paths[view] for slot, view in enumerate(("left", "back", "right"))
+                                               if mask & (1 << slot)}}) for mask in range(8)]
+            for source, selected in routes:
+                for outcome in (TripoError("Tripo returned an invalid response."),
+                                TripoError("Tripo did not return a task reference."), None, " ", 42, {}):
+                    with self.subTest(source=source, views=list(selected), outcome=repr(outcome)):
+                        create = mock.Mock(side_effect=outcome) if isinstance(outcome, Exception) else mock.Mock(return_value=outcome)
+                        gateway, dependencies = self.gateway(**{f"create_{source}_task": create})
+                        request = ModelTaskRequest(source=source, prompt="offline test object", face_limit=300000,
+                            generation_profile="performance", image_path=selected.get("front") if source == "image" else None,
+                            image_paths=selected if source == "multiview" else None)
+                        with self.assertRaises(ProviderGatewayError) as raised:
+                            gateway.start_or_reuse_model_task(request,
+                                authorization=PaidTaskAuthorization.confirmed("job-invalid:model:1"))
+                        self.assertEqual(raised.exception.code, "invalid_provider_result")
+                        self.assertTrue(raised.exception.ambiguous)
+                        create.assert_called_once()
+                        self.assertEqual(dependencies["upload_image"].call_count, len(selected))
+                        for other in ("text", "image", "multiview"):
+                            if other != source: dependencies[f"create_{other}_task"].assert_not_called()
 
     def test_multiview_task_uploads_four_named_references_then_creates_one_task(self):
         tokens = iter(("front-token", "left-token", "back-token", "right-token"))
@@ -352,6 +364,48 @@ class ModelTaskGatewayTests(unittest.TestCase):
             "quality",
         )
         dependencies["create_image_task"].assert_not_called()
+
+    def test_each_front_inclusive_subset_uploads_exact_files_and_uses_single_or_multiview_route(self):
+        order = ("front","left","back","right")
+        with tempfile.TemporaryDirectory() as directory:
+            references = {view:Path(directory)/f"{view}.png" for view in order}
+            for view,path in references.items(): path.write_bytes(view.encode())
+            for mask in range(8):
+                selected = ["front"] + [view for slot,view in enumerate(order[1:]) if mask & (1 << slot)]
+                with self.subTest(selected=selected):
+                    gateway,dependencies = self.gateway(upload_image=mock.Mock(side_effect=lambda path: path.stem+"-token"))
+                    source = "image" if len(selected) == 1 else "multiview"
+                    request = ModelTaskRequest(source=source,image_path=references["front"] if source == "image" else None,
+                                               image_paths={v:references[v] for v in reversed(selected)} if source == "multiview" else None)
+                    gateway.start_or_reuse_model_task(request,authorization=PaidTaskAuthorization.confirmed("matrix"))
+                    self.assertEqual(dependencies["upload_image"].call_args_list,[mock.call(references[v]) for v in selected])
+                    if source == "image":
+                        dependencies["create_image_task"].assert_called_once_with("front-token",1000000,"quality")
+                        dependencies["create_multiview_task"].assert_not_called()
+                    else:
+                        dependencies["create_multiview_task"].assert_called_once_with({v:v+"-token" for v in selected},1000000,"quality")
+                        dependencies["create_image_task"].assert_not_called()
+
+    def test_selected_multiview_upload_failure_never_creates_a_partial_model_or_retries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            references = {v:Path(directory)/f"{v}.png" for v in ("front","left","back","right")}
+            for path in references.values(): path.write_bytes(b"image")
+            for mask in range(1, 8):
+                selected = ["front"] + [v for slot, v in enumerate(("left", "back", "right")) if mask & (1 << slot)]
+                for failed in selected:
+                    with self.subTest(selected=selected, failed=failed):
+                        def upload(path):
+                            if path == references[failed]: raise TripoError("upload failed")
+                            return path.stem+"-token"
+                        gateway,dependencies = self.gateway(upload_image=mock.Mock(side_effect=upload))
+                        with self.assertRaises(ProviderGatewayError):
+                            gateway.start_or_reuse_model_task(ModelTaskRequest(source="multiview",
+                                image_paths={v: references[v] for v in reversed(selected)}),
+                                authorization=PaidTaskAuthorization.confirmed("upload-failure"))
+                        dependencies["create_multiview_task"].assert_not_called()
+                        dependencies["create_image_task"].assert_not_called()
+                        self.assertEqual(dependencies["upload_image"].call_args_list,
+                                         [mock.call(references[v]) for v in selected[:selected.index(failed)+1]])
 
     def test_texture_task_preserves_source_geometry_and_requires_scoped_authorization(self):
         gateway, dependencies = self.gateway()

@@ -9,6 +9,7 @@
 namespace Slic3r::GUI::AdvancedCreation {
 
 enum class ViewId : std::size_t { Front, Left, Back, Right };
+enum class SelectionContext { Design, Model, DesignForNextModel };
 inline constexpr std::array<ViewId, 4> AllViews {ViewId::Front, ViewId::Left, ViewId::Back, ViewId::Right};
 inline constexpr std::size_t index(ViewId view) { return static_cast<std::size_t>(view); }
 const char* view_name(ViewId view);
@@ -35,8 +36,17 @@ struct ModelOptions {
 
 struct InputDraft {
     std::array<std::string, 4> uploads;
+    std::array<bool, 4> replaced_uploads {};
+    std::array<std::uint64_t, 4> upload_revisions {};
     DesignDraft design;
     ModelOptions geometry;
+};
+
+struct LocalDraft {
+    InputDraft input;
+    std::array<bool, 4> invalidated_uploads {}, model_selected {}, model_seen {};
+    std::array<std::string, 4> invalidated_versions;
+    bool dirty {false};
 };
 
 struct DesignView {
@@ -63,6 +73,7 @@ struct GroupSnapshot {
     std::uint64_t revision {0};
     std::array<std::string, 4> uploads;
     std::array<bool, 4> pending_views {};
+    std::array<bool, 4> design_targets {true, true, true, true};
     DesignDraft initial_input;
     DesignDraft saved_draft;
     std::optional<DesignDraft> latest_submitted_draft;
@@ -88,6 +99,8 @@ struct Capabilities {
     bool initial_references {false};
     bool edit_current {false};
     bool four_view_model {false};
+    std::array<bool, 4> model_image_counts {};
+    bool model_image_counts_known {false};
 };
 
 struct HostGuards {
@@ -141,6 +154,7 @@ struct CommandContext {
     std::uint64_t draft_revision {0};
     std::uint64_t selection_revision {0};
     std::uint64_t group_revision {0};
+    std::uint64_t model_selection_revision {0};
 };
 
 struct LayoutRect { int x {0}, y {0}, width {0}, height {0}; };

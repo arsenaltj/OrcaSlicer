@@ -35,6 +35,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #ifdef __WXMSW__
 #include <wx/msw/wrapwin.h>
 #endif
@@ -45,11 +46,6 @@ using namespace RedesignTheme;
 namespace {
 wxString t(const char* value) { return wxString::FromUTF8(value); }
 wxString title(ViewId view)
-{
-    static const std::array<wxString, 4> names {t("正视角"), t("左视角"), t("后视角"), t("右视角")};
-    return names.at(index(view));
-}
-wxString central_title(ViewId view)
 {
     static const std::array<wxString, 4> names {t("主视角"), t("左视角"), t("后视角"), t("右视角")};
     return names.at(index(view));
@@ -77,7 +73,7 @@ wxString reason_text(const std::string& reason)
 {
     if (reason == "unsupported_multiview") return t("当前模型尚未确认支持多视角，请检查供应商配置。");
     if (reason == "service_unavailable") return t("等待本地 AI 服务连接。");
-    if (reason == "missing_current_view") return t("请先补齐四个视角的设计图。");
+    if (reason == "missing_current_view") return t("请先生成可用的主视角及所选设计图。");
     if (reason == "recovery_required") return t("存在未完成的请求，请先恢复原任务结果。");
     if (reason == "invalid_input") return t("请上传主参考图或填写描述，描述最多 2000 字节。");
     if (reason == "missing_front") return t("已上传辅助视角，请补充必填的主参考图。");
@@ -1570,11 +1566,14 @@ struct AdvancedCreationWorkspace::Impl {
             [this] { if (completed) completed(); }});
         center_sizer->Add(generation_view, 1, wxEXPAND); generation_view->Hide();
         for (auto view : AllViews) {
-            const auto i = index(view); cards[i] = new ViewCard(grid, central_title(view)); cards[i]->SetName(t("advanced-design-") + t(view_name(view)));
+            const auto i = index(view); cards[i] = new ViewCard(grid, title(view)); cards[i]->SetName(t("advanced-design-") + t(view_name(view)));
             cards[i]->Bind(wxEVT_LEFT_UP, [this, view, i](wxMouseEvent&) {
                 if (model_host.creation_editing_locked()) return;
                 if (now_ms() <= suppress_until[i]) { suppress_until[i] = 0; return; }
-                host.session().click(view, now_ms(), double_click_ms()); click_timer.StartOnce(double_click_ms() + 5); render();
+                const auto context = model_tab ? SelectionContext::Model :
+                    generation_view->has_content() ? SelectionContext::DesignForNextModel : SelectionContext::Design;
+                host.session().click(view, now_ms(), double_click_ms(), context);
+                click_timer.StartOnce(double_click_ms() + 5); render();
             });
             cards[i]->Bind(wxEVT_LEFT_DCLICK, [this, view, i](wxMouseEvent&) {
                 suppress_until[i] = now_ms() + double_click_ms(); click_timer.Stop();
@@ -1591,7 +1590,7 @@ struct AdvancedCreationWorkspace::Impl {
             if (!applying_layout) refresh.request(Presentation::Dirty::Layout);
         });
         page.Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
-            if (!model_host.creation_editing_locked()) host.session().flush_click(now_ms());
+            if (!model_host.creation_editing_locked() && host.session().flush_click(now_ms())) host.changed();
             render();
         }, click_timer.GetId());
         auto* drawer_host = new wxPanel(creation); drawer_host->SetBackgroundColour(background_colour());
@@ -1725,6 +1724,8 @@ struct AdvancedCreationWorkspace::Impl {
     }
     void switch_stage(bool selected_model, bool reset = false) {
         if (!reset && model_tab == selected_model) return;
+        host.session().flush_click(std::numeric_limits<std::uint64_t>::max());
+        if (!reset && model_tab && !selected_model) host.session().dismiss_initial_design_guidance();
         model_tab = selected_model;
         if (input_scroll) input_scroll->Scroll(0, 0);
         if (generate && model) render();
@@ -1760,7 +1761,7 @@ struct AdvancedCreationWorkspace::Impl {
         if (!service_available) return t("未连接");
         if (value.state.empty() || value.state == "checking") return t("检测中");
         if (value.state == "ready") return value.connection_state == "connected" ? t("已连接") : t("已配置");
-        if (value.state == "unsupported_input") return t("四图生成不可用");
+        if (value.state == "unsupported_input") return t("所选图片生成不可用");
         if (value.state == "not_configured") return t("未配置");
         if (value.state == "empty") return t("无可用模型");
         return t("不可用");
@@ -1961,13 +1962,24 @@ struct AdvancedCreationWorkspace::Impl {
         return [target, alive](const nlohmann::json& plan) {
             if (alive.expired()) return false;
             const auto& options = plan.at("options");
-            auto message = t("使用正、左、后、右四张设计图生成同一个3D模型。\n供应商：") +
+            wxString views;
+            const auto& snapshot = plan.at("approved_multiview_snapshot");
+            for (const auto& name : snapshot.at("selected_views")) {
+                if (const auto view = parse_view(name.get<std::string>()); view) {
+                    if (!views.empty()) views += t("、");
+                    views += title(*view);
+                }
+            }
+            auto message = wxString::Format(t("使用 %d 张设计图生成3D模型。"),
+                static_cast<int>(snapshot.at("selected_views").size())) +
+                t("\n生成方式：") + (snapshot.at("input_mode") == "image" ? t("单图生成") : t("多视图生成")) +
+                t("\n生成范围：") + views + t("\n供应商：") +
                 t(options.at("provider").get<std::string>().c_str()) + t("\n模型：") + t(options.at("geometry_model").get<std::string>().c_str()) +
                 (options.at("face_limit") == 0 ? t("\n面数：供应商默认") :
                     wxString::Format(t("\n目标面数：%d"), options.at("face_limit").get<int>())) +
                 t("\n本次最多提交1个3D任务，不会新增生图请求。");
             if (options.at("output_format") == "obj") message += t("\nOBJ 还需最多1次格式转换任务。");
-            return show_generation_confirmation(target, message, t("确认生成3D模型")) == wxID_YES;
+            return show_generation_confirmation(target, message, t("确认生成3D模型"), 105, 240) == wxID_YES;
         };
     }
 
@@ -2019,7 +2031,7 @@ struct AdvancedCreationWorkspace::Impl {
         if (!valid) {
             show_redesign_details(&page, t("请选择宽高至少 64 px、不超过 20MB 的 PNG、JPEG 或静态 WebP 图片。"), t("图片无法使用")); return;
         }
-        host.session().set_upload(view, boost::filesystem::path(path.ToStdWstring()).string());
+        host.session().set_upload(view, boost::filesystem::path(path.ToStdWstring()).string(), true);
         uploads->invalidate_image(view); host.changed();
     }
     void layout_inputs() {
@@ -2233,6 +2245,7 @@ struct AdvancedCreationWorkspace::Impl {
             drawer->SetToolTip(expanded ? t("收起历史套图") : t("展开历史套图"));
         }
         const auto selected = session.effective_views(); const bool all = selected.size() == 4;
+        const auto card_selection = model_tab ? session.model_selection() : session.selection();
         for (auto view : AllViews) {
             const auto i = index(view);
             label(tags[i], all && i == 0 ? t(" 全部视角 ") : t(" ") + title(view) + t(" "));
@@ -2256,7 +2269,7 @@ struct AdvancedCreationWorkspace::Impl {
                                               t("\n可选中该空位，使用当前模型补生成。");
                 } else if (result.usable) state = session.group()->pending_views[i] ? t("待重新生成") : t("设计图");
             }
-            cards[i]->display(path, session.selection()[i], state, loading,
+            cards[i]->display(path, card_selection[i], state, loading,
                 session.group() ? session.group()->views[i].sha256 : std::string{});
             if (detail.empty()) cards[i]->UnsetToolTip(); else cards[i]->SetToolTip(detail);
         }
@@ -2313,7 +2326,7 @@ struct AdvancedCreationWorkspace::Impl {
         show(reconcile, host.has_pending_receipt()); enable(reconcile, !host.command_pending());
         wxString status_text = reason_text(model_tab ? eligibility.model_reason : eligibility.design_reason);
         if (group && group->model_state == "ready" && eligibility.model_reason.empty())
-            status_text = t("已有3D模型，可查看生成时的四视角版本。");
+            status_text = t("已有3D模型，可查看生成时的设计图版本。");
         const auto raw_model_state = host.model_state();
         auto model_display = raw_model_state;
         const bool current_model = group && !group->model_job_id.empty() && group->model_job_id == model_display.job_id;

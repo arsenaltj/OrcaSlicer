@@ -12,6 +12,24 @@ inline constexpr std::uint64_t MAX_REFERENCE_IMAGE_BYTES = 20 * 1024 * 1024;
 inline constexpr std::uint64_t MAX_REFERENCE_IMAGE_PIXELS = 16 * 1024 * 1024;
 
 namespace detail {
+// This display consumer validates the frozen input shape, without changing the
+// job or substituting the group's current images for the accepted reference.
+inline bool valid_advanced_snapshot(const nlohmann::json& snapshot)
+{
+    const auto& views=snapshot.at("views");
+    if (!views.is_object() || !views.contains("front")) return false;
+    const std::array<const char*,4> directions {"front","left","back","right"};
+    auto selected=nlohmann::json::array();
+    for (const auto* direction : directions) if (views.contains(direction)) selected.push_back(direction);
+    if (selected.size()!=views.size()) return false;
+    const auto& schema=snapshot.at("schema");
+    if (schema=="approved-multiview-input-v1") return views.size()==directions.size();
+    if (schema!="approved-multiview-input-v2") return false;
+    return snapshot.at("selected_views")==selected &&
+        snapshot.at("input_mode")== (selected.size()==1 ? "image" : "multiview") &&
+        !snapshot.at("input_epoch").get<std::string>().empty();
+}
+
 // Read only the bounded JPEG APP1/IFD0 orientation. Particle display must not
 // depend on the retired single-image input workflow or follow arbitrary offsets.
 inline int jpeg_orientation(const std::vector<unsigned char>& bytes)
@@ -88,6 +106,7 @@ inline std::shared_ptr<const Shape> load(const ModelGenerationVisualReference& s
     boost::system::error_code error;
     std::string expected = source.sha256;
     if (!source.verification_manifest.empty()) {
+        report={"snapshot","invalid_multiview_snapshot"};
         const auto manifest = boost::filesystem::path(wxString::FromUTF8(source.verification_manifest).ToStdWstring());
         const auto length = boost::filesystem::file_size(manifest, error);
         if (error || !length || length > 2*1024*1024 ||
@@ -101,12 +120,13 @@ inline std::shared_ptr<const Shape> load(const ModelGenerationVisualReference& s
             const auto& snapshot = job.at("approved_multiview_snapshot");
             const auto& front = snapshot.at("views").at("front");
             if (job.at("id") != source.owner_id || job.at("creation_kind") != "advanced_multiview_v1" ||
-                snapshot.at("schema") != "approved-multiview-input-v1" || snapshot.at("snapshot_id") != source.owner_id ||
+                !detail::valid_advanced_snapshot(snapshot) || snapshot.at("snapshot_id") != source.owner_id ||
                 front.at("path") != "inputs/front.png" || front.at("version_id").get<std::string>().empty()) return {};
             expected = front.at("sha256").get<std::string>();
             if (expected.size() != 64) return {};
         } catch (const nlohmann::json::exception&) { return {}; }
     }
+    report={"decode","invalid_or_unavailable_image"};
     const auto bytes_count = boost::filesystem::file_size(path, error);
     if (error || !bytes_count || bytes_count > MAX_REFERENCE_IMAGE_BYTES) return {};
     bool png = false;

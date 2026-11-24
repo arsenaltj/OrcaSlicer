@@ -95,6 +95,7 @@ AdvancedCreationFeatureHost::~AdvancedCreationFeatureHost() { shutdown(); }
 void AdvancedCreationFeatureHost::shutdown()
 {
     if (m_shutdown) return;
+    save_local_draft();
     m_shutdown = true;
     m_lifetime.reset();
     m_poll_timer.Stop(); m_save_timer.Stop(); m_listener = {}; m_model_state_listener = {};
@@ -194,7 +195,73 @@ void AdvancedCreationFeatureHost::observe_model_job(const std::string& job, bool
     m_model_monitor.observe(job, reference, restart, std::move(visual));
     if (open_route && m_model_state_listener) m_model_state_listener(m_model_monitor.snapshot(), true);
 }
-void AdvancedCreationFeatureHost::publish() { if (m_listener) m_listener(); }
+void AdvancedCreationFeatureHost::publish() { save_local_draft(); if (m_listener) m_listener(); }
+
+void AdvancedCreationFeatureHost::save_local_draft()
+{
+    const auto& group = m_session.group();
+    if (!group || group->id != m_session.context().group_id ||
+        !AdvancedMultiviewClient::valid_id(group->id) || m_unreadable_local_drafts.count(group->id)) return;
+    const auto local = m_session.local_draft();
+    const auto& options = local.input.geometry;
+    const Json value = {{"schema", "advanced-local-draft-v1"}, {"group_id", group->id},
+        {"draft", AdvancedMultiviewClient::design_json(local.input.design)}, {"uploads", local.input.uploads},
+        {"replaced_uploads", local.input.replaced_uploads}, {"upload_revisions", local.input.upload_revisions},
+        {"invalidated_uploads", local.invalidated_uploads}, {"invalidated_versions", local.invalidated_versions},
+        {"model_selected", local.model_selected}, {"model_seen", local.model_seen}, {"dirty", local.dirty},
+        {"geometry", {{"provider", options.provider}, {"model", options.model}, {"face_limit", options.face_limit},
+          {"geometry_quality", options.geometry_quality}, {"texture_quality", options.texture_quality}, {"output_format", options.output_format}}}};
+    const auto previous = m_written_local_drafts.find(group->id);
+    if (previous != m_written_local_drafts.end() && previous->second == value) return;
+    try {
+        const auto folder = m_cache / "drafts";
+        boost::filesystem::create_directories(folder);
+        const auto path = folder / (group->id + ".json");
+        const auto partial = boost::filesystem::path(path.string() + ".part");
+        boost::filesystem::ofstream stream(partial, std::ios::binary | std::ios::trunc);
+        stream << value.dump(); stream.close();
+        if (!stream || Slic3r::rename_file(partial.string(), path.string())) throw std::runtime_error("write");
+        m_written_local_drafts[group->id] = value;
+    } catch (const std::exception&) {
+        m_message = "当前创作草稿暂时无法保存在本地，请检查用户模型目录的可用空间。";
+    }
+}
+
+void AdvancedCreationFeatureHost::restore_local_draft(const std::string& group)
+{
+    try {
+        const auto path = m_cache / "drafts" / (group + ".json");
+        if (!boost::filesystem::exists(path)) return;
+        if (!boost::filesystem::is_regular_file(path) || boost::filesystem::file_size(path) > 65536)
+            throw std::runtime_error("draft");
+        boost::filesystem::ifstream stream(path, std::ios::binary);
+        const auto value = Json::parse(stream);
+        if (value.at("schema") != "advanced-local-draft-v1" || value.at("group_id") != group)
+            throw std::runtime_error("identity");
+        LocalDraft local;
+        const auto& draft = value.at("draft");
+        local.input.design = {draft.at("prompt"), draft.at("style"), draft.at("custom_style"),
+                              draft.at("design_provider"), draft.at("design_model")};
+        local.input.uploads = value.at("uploads").get<std::array<std::string,4>>();
+        local.input.replaced_uploads = value.at("replaced_uploads").get<std::array<bool,4>>();
+        local.input.upload_revisions = value.at("upload_revisions").get<std::array<std::uint64_t,4>>();
+        local.invalidated_uploads = value.at("invalidated_uploads").get<std::array<bool,4>>();
+        local.invalidated_versions = value.at("invalidated_versions").get<std::array<std::string,4>>();
+        local.model_selected = value.at("model_selected").get<std::array<bool,4>>();
+        local.model_seen = value.at("model_seen").get<std::array<bool,4>>();
+        local.dirty = value.at("dirty").get<bool>();
+        const auto& options = value.at("geometry");
+        local.input.geometry = {options.at("provider"), options.at("model"), options.at("face_limit"),
+                                options.at("geometry_quality"), options.at("texture_quality"), options.at("output_format")};
+        m_session.restore_local_draft(local);
+        m_written_local_drafts[group] = value;
+        m_unreadable_local_drafts.erase(group);
+        if (local.dirty) m_save_timer.StartOnce(650);
+    } catch (const std::exception&) {
+        m_unreadable_local_drafts.insert(group);
+        m_message = "当前创作的本地草稿无法读取，已保留原记录，请检查后再生成。";
+    }
+}
 
 void AdvancedCreationFeatureHost::set_service_available(bool available)
 {
@@ -314,9 +381,17 @@ Capabilities AdvancedCreationFeatureHost::capabilities() const
     }
     if (m_geometry_capabilities.is_object() && m_geometry_capabilities.value("model_plans", false)) {
         const auto provider = m_geometry_capabilities["model_providers"].find(m_session.draft().geometry.provider);
-        if (provider != m_geometry_capabilities["model_providers"].end())
+        if (provider != m_geometry_capabilities["model_providers"].end()) {
             result.four_view_model = provider->value("named_four_view_model", std::string()) == "supported" &&
                                      provider->value("available", false);
+            if (provider->value("available", false) && provider->contains("supported_image_counts") &&
+                (*provider)["supported_image_counts"].is_array()) {
+                result.model_image_counts_known = true;
+                for (const auto& count : (*provider)["supported_image_counts"])
+                    if (count.is_number_integer() && count.get<int>() >= 1 && count.get<int>() <= 4)
+                        result.model_image_counts[count.get<int>() - 1] = true;
+            }
+        }
     }
     return result;
 }
@@ -326,6 +401,7 @@ Eligibility AdvancedCreationFeatureHost::eligibility() const
     if (m_shutdown) return {};
     HostGuards guards;
     guards.can_start = !command_pending() && !model_stop_pending() && !m_poll_pending && !has_pending_receipt() &&
+        !m_unreadable_local_drafts.count(m_session.context().group_id) &&
         !m_model_monitor.snapshot().busy && (!m_start_guard || m_start_guard()) &&
         (!m_generation_guard || m_generation_guard());
     guards.model_service_available = m_service_available;
@@ -412,6 +488,7 @@ void AdvancedCreationFeatureHost::ingest(Json group, CallbackContext context, bo
     if (!m_session.apply_snapshot(std::move(*parsed), context, restore, saved_input ? &*saved_input : nullptr)) {
         m_poll_pending = false; m_command_state = CommandState::Idle; publish(); return;
     }
+    if (restore) restore_local_draft(context.group_id);
     if (m_session.group() && !m_session.group()->model_job_id.empty())
         observe_model_job(m_session.group()->model_job_id, false);
     m_poll_pending = true;
@@ -525,7 +602,8 @@ void AdvancedCreationFeatureHost::save_draft(std::function<void()> done)
     const auto input = m_session.draft();
     const auto draft = input.design;
     m_command_state = done ? CommandState::Exclusive : CommandState::BackgroundDraftSave;
-    if (input.uploads != m_session.group()->uploads) {
+    if (input.uploads != m_session.group()->uploads ||
+        std::any_of(input.replaced_uploads.begin(), input.replaced_uploads.end(), [](bool value) { return value; })) {
         m_client.update_group(context.group_id, m_session.group()->revision, input,
             complete([this, context, input, draft, done](Json value) {
                 if (!m_session.matches(context)) return;
@@ -684,16 +762,23 @@ void AdvancedCreationFeatureHost::generate_model(Confirm confirm, GenerationReje
             options.texture_quality = "standard";
         }
         const auto group = m_session.group()->id;
+        auto selected = Json::array(); auto visible = Json::object();
+        for (auto view : m_session.effective_model_views()) {
+            selected.push_back(view_name(view));
+            const auto& image = m_session.group()->views[index(view)];
+            visible[view_name(view)] = {{"version_id", image.version_id}, {"sha256", image.sha256}};
+        }
         m_client.request("POST", "/groups/" + group + "/model-plans",
             {{"command_id", new_identity()}, {"expected_group_revision", m_session.group()->revision},
+             {"expected_input_epoch", m_session.group()->input_epoch}, {"selected_views", selected}, {"visible_versions", visible},
              {"draft", AdvancedMultiviewClient::design_json(m_session.draft().design)},
              {"provider", options.provider}, {"geometry_model", options.model}, {"face_limit", options.face_limit},
              {"geometry_quality", options.geometry_quality}, {"texture_quality", options.texture_quality}, {"output_format", options.output_format}},
             complete([this, group, context, confirm](Json value) {
-                if (!m_session.matches_command(context, false)) { m_command_state = CommandState::Idle; publish(); return; }
+                if (!m_session.matches_model_command(context)) { m_command_state = CommandState::Idle; publish(); return; }
                 const auto& plan = value.at("plan");
                 if ((m_editing_guard && !m_editing_guard()) || !confirm || !confirm(plan) ||
-                    (m_editing_guard && !m_editing_guard()) || !m_session.matches_command(context, false)) {
+                    (m_editing_guard && !m_editing_guard()) || !m_session.matches_model_command(context)) {
                     if (m_session.matches(context.callback)) { m_command_state = CommandState::Idle; publish(); }
                     return;
                 }
@@ -805,8 +890,13 @@ void AdvancedCreationFeatureHost::prepare(const std::string& group, Json request
 
 void AdvancedCreationFeatureHost::run_plan(const std::string& group, Json plan, bool new_group)
 {
+    const auto& frozen = plan.at("frozen");
+    // Guidance follows the full creation target set, not this repaint's subset.
+    const auto target_names = frozen.value("design_targets", plan.at("targets"));
+    const auto input_epoch = frozen.at("input_epoch").get<std::string>();
     if (!save_pending_receipt({{"schema", "advanced-desktop-submission-v1"}, {"group_id", group},
-        {"operation_id", plan.at("id")}, {"new_group", new_group}})) {
+        {"operation_id", plan.at("id")}, {"new_group", new_group},
+        {"design_targets", target_names}, {"input_epoch", input_epoch}})) {
         m_command_state = CommandState::Idle; publish(); return;
     }
     const auto context = m_session.context();
@@ -814,12 +904,16 @@ void AdvancedCreationFeatureHost::run_plan(const std::string& group, Json plan, 
     m_client.request("POST", "/groups/" + group + "/operations",
         {{"command_id", plan.at("id")}, {"plan_id", plan.at("id")},
          {"confirmation_fingerprint", plan.at("confirmation_fingerprint")}},
-        complete([this, group, new_group, context, operation](Json) {
+        complete([this, group, new_group, context, operation, target_names, input_epoch](Json) {
             if (!m_session.matches(context)) return;
             m_command_state = CommandState::Idle;
             if (new_group) m_session.begin_open(group);
             const auto callback = m_session.context();
-            if (new_group) m_session.arm_initial_design_guidance(callback);
+            std::vector<ViewId> targets;
+            for (const auto& name : target_names)
+                if (auto view = parse_view(name.get<std::string>()); view) targets.push_back(*view);
+            if (new_group) m_session.arm_initial_design_guidance(callback, targets, input_epoch);
+            else m_session.track_initial_design_plan(callback, targets, input_epoch);
             m_poll_pending = true;
             m_client.request("GET", "/groups/" + group, {}, complete([this, callback, new_group, operation](Json value) {
                 if (!m_session.matches(callback)) return;
@@ -988,8 +1082,12 @@ void AdvancedCreationFeatureHost::settle_receipt(const std::string& operation, b
             // Only a request made in this live Session can introduce guidance.
             // Durable receipts restored at startup have no _session_epoch.
             if (!model_request && receipt.value("new_group", false) &&
-                receipt.value("_session_epoch", std::uint64_t(0)) == context.epoch)
-                m_session.arm_initial_design_guidance(callback);
+                receipt.value("_session_epoch", std::uint64_t(0)) == context.epoch) {
+                std::vector<ViewId> targets;
+                for (const auto& name : receipt.value("design_targets", Json::array()))
+                    if (auto view = parse_view(name.get<std::string>()); view) targets.push_back(*view);
+                m_session.arm_initial_design_guidance(callback, targets, receipt.value("input_epoch", std::string()));
+            }
             // Restart recovery has no installed group yet. Register the real
             // group/task before acceptance; image validation remains asynchronous.
             if (restore && model_request) {

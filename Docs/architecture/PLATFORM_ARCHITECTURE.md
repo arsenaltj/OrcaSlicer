@@ -129,7 +129,7 @@ DFX 按用户确认定义为**诊断、日志、故障定位、性能与可靠�
 | 业务 | 主要入口/状态归属 | 交接约束 |
 | --- | --- | --- |
 | AI 文本/图片/模型工作流 | `tools/ai/model_job_application.py`、`model_job_lifecycle.py`、`model_job_repository.py`；GUI 提交/展示在 ModelGenerationPanel / FeatureHost | 智能／高级每次有效操作新任务；当前操作内幂等和查询，停止／重启不恢复旧生成，完成资产独立保留；HTTP Handler 不产生第二套业务规则 |
-| 高级多视角创作 | `AdvancedCreationSession*` 持有桌面草稿、模型ID、选择及已验证可见版本；Application拥有当前模型的混合编辑／补图计划与依赖预算，workflow校验发布，repository持有组／current和不可变版本；Host拥有任务级回执、缓存和epoch适配 | 独立认证路由 `/v1/orcaslicer/advanced-multiview`；GPT全部参数保持原规格，YOYOClaw实时白名单、精确Qwen默认及最多三张有序参考不变。失败保留旧图／空位，由主按钮以当前模型新生成；旧未知结果保留事实，不锁新2D意图、不自动重发，3D四图／未决状态保护不变。新建立即重置，停止未提交旧视角；按操作回执兼容旧单文件，stop先于execute仍有效。执行器保持串行并投影queued；逐图缓存失败不吞终态，可见基图与服务端current分别冻结并比较。独立Job-v2及智能业务保持；两模式生成等待／结果／编辑进入Shell唯一工作台；编译／离线结果不代替真实供应商或GUI验收 |
+| 高级多视角创作 | `AdvancedCreationSession*`拥有草稿、2D选择、独立3D偏好、输入失效及一次性引导；Application计算图片已上传方向／纯文字四图目标并冻结计划；Repository持有current和不可变版本；Host负责本地草稿检查点、请求与缓存适配 | 原认证路由不变；删除／替换立即清空对应current，失效旧图不回填，缺主图／空输入可保存但不能生成。首次与新建后的受理目标全部成功可用后引导一次，主动返回关闭；原卡片按上下文选图，3D主图必选；已投影选中的失效辅助图可明确取消，首次3D及已有模型后的2D改选均承接，普通2D待重绘事实不清除，未选不可用图禁止加入。Job-v2和嵌套快照v2冻结所选1～4个版本，v1严格四图兼容；仅主图走所选服务单图能力，2～4图走多图，YOYOClaw混元3D保持默认面数。未选辅助普通失败不阻断手动建模，原未决／忙碌／停止／过期／历史及唯一工作台保护保留。验证分层见原主计划 |
 | 3D 后处理/人像/配色 | `GUI/AI/ModelGeneration/BeautyWorkbenchSession*`、`BeautyWorkbenchTransactionController*`、`PostGenerationWorkbench*`、`GUI/AI/ColorMatching` | 候选、当前作品、预览和历史需区分；颜色、几何与实物打印质量分别验证 |
 | 原生导入/应用 | `AI/Contracts/IModelArtifactConsumer.hpp`、`GUI/AI/Orca`、`PlaterWorkbenchImport*.ipp`、`PlaterAITransaction.ipp` | Plater/Model/Config 保有工程真值；明确应用和撤销；侧车不直接修改原生工程 |
 | 智能切片 | `AI/SmartSlicing/{Domain,Application,Ports}`、`GUI/AI/SmartSlicing` | 按工程 revision 绑定几何分析、原生试切证据和正式应用。应用及恢复由 Plater 的快照事务维护 |
@@ -194,6 +194,8 @@ LibraryClient直接使用平台`/v1/library`契约，图片只取已登记的相
 本人作品复用已上线的`GET /v1/me/models?offset=N`，以100条页协议读取完整列表；LibraryCatalog归一化模型／版本／发布状态后执行搜索、排序及24条展示分页。LibraryWorkspaceService只在当前账号代次内缓存成功来源，进入或刷新重新同步，换账号及注销清除；“全部”分别读取个人活动，单路失败保留其他成功来源。本地下载原件仍通过现有摘要规则关联，修复／改色成果保持独立。详情统计及互动为可选数据，缺少时展示未知，私有／草稿／撤回作品不提交公共互动；可选版本只来自当前账号的详情响应。安装页的根背景固定在视口，单一文档内容滚动，不随内容移动渐变。
 
 ## 2026-11-11：开发者日志导出
+
+原生普通日志在既有libslic3r文件／控制台formatter输出前，统一将Windows用户目录及Unix home目录的绝对用户前缀替换为`<user-home>`，保留相对资产位置、任务ID、时间、阶段与错误；JSON转义内容保持可解析。Windows盘符路径紧接诊断标签、没有空格或分隔符时同样处理，Unix相对资源路径和普通URL保持。路径处理归核心日志输出，GUI／HTTP和供应商不另存日志业务状态；导出的凭据／URL脱敏仍由原DiagnosticLogs承担。旧日志作为原始故障证据保留，不回写伪造为新版本结果。
 
 Preferences的日志级别下方通过DiagnosticLogExport适配保存对话框与现有ProgressDialog，无需启用开发者模式。DiagnosticLogs在后台仅快照当前data_dir/log下的日志文件，保留诊断ID、时间、阶段和错误，按AI诊断语义移除凭据及URL认证／查询参数；不读取模型、历史、账号存储或完整配置。有限大小快照避免运行中日志追加导致等待无界，轮转／占用产生清单遗漏；写入失败或取消不发布。生成版本／时间／文件及遗漏清单，复用从TroubleshootDialog提取的ZipArchive写入能力，完成后在同目录原子替换目标。故障排查页原目录选择及打包行为保持；导出不是日志上传或安装包制作。
 
@@ -390,7 +392,7 @@ Panel不再直接写上述五项生命周期状态的引用。进入配色、局
 
 生成等待粒子（2026-11-16）：`ModelGenerationVisualReference`仅投影当前flow／job的只读图源，不拥有业务阶段。智能在本次设计图下载就绪后发布；高级读取该Job-v2受理时冻结的`inputs/front.png`，后台核对原`job.json`中的任务身份、正视图版本及摘要，不能用组中后来更新的图替代。缺图、不可读或前景不可靠时保留随包Logo，不阻塞生成、不新增识别服务或持久格式。
 
-`GenerationParticleImage`按内容签名处理PNG／JPEG及高级缓存，在本展示模块内保留20MiB／16Mi像素限制及有界JPEG方向解析，复用现有图片尺寸读取和冻结正视图收据，不依赖退役单图输入模块，再缩至384边。有效主体alpha直接转换；普通RGB图由`GenerationForeground`使用固定U2NetP／ONNX Runtime 1.20.1 CPU模型提取遮罩，人物、手办、动物、建筑共用同一入口，不分类设置专属阈值。现有Job遮罩没有绑定实际建模图字节的摘要，不能按同名路径冒充同版遮罩；保持这些原件并从当前设计图重新提取。模型结果为空或无效不制造整屏主体；仅运行资源不可用／推理失败等无结果情况，可尝试保守边界颜色回退，最终不可靠则Logo。颜色路径需至少三侧一致、总边界75%支持；背景侧仍严格拒绝零散纹理，裁切侧允许多个正常色段，仅以随边长缩放的频率上限拒绝高频条纹。
+`GenerationParticleImage`按内容签名处理PNG／JPEG及高级缓存，在本展示模块内保留20MiB／16Mi像素限制及有界JPEG方向解析，复用现有图片尺寸读取和冻结主图收据，不依赖退役单图输入模块，再缩至384边。展示读取兼容v1严格四图及v2含主图的1～4图，核对v2方向集合、模式和输入代次；继续绑定本Job身份、冻结主图版本／路径／SHA，拒绝未知格式及错误绑定，不改写收据或替换为实时组图。快照拒绝与实际解码失败分开记录。有效主体alpha直接转换；普通RGB图由`GenerationForeground`使用固定U2NetP／ONNX Runtime 1.20.1 CPU模型提取遮罩，人物、手办、动物、建筑共用同一入口，不分类设置专属阈值。现有Job遮罩没有绑定实际建模图字节的摘要，不能按同名路径冒充同版遮罩；保持这些原件并从当前设计图重新提取。模型结果为空或无效不制造整屏主体；仅运行资源不可用／推理失败等无结果情况，可尝试保守边界颜色回退，最终不可靠则Logo。颜色路径需至少三侧一致、总边界75%支持；背景侧仍严格拒绝零散纹理，裁切侧允许多个正常色段，仅以随边长缩放的频率上限拒绝高频条纹。
 
 `GenerationParticleModel`共用遮罩采样，保留透明区域／模型遮罩的孔洞及有效分离部件，仅去除微小噪点；多侧裁切拒绝只约束颜色猜测，不限制可信遮罩。空、近整屏、尺寸或面积不合格时回退。采样包含内部和特征，局部亮度帮助辨认形状，不代表真实几何或任意图片100%正确分割。准备沿既有TaskRunner与TaskScope；单缓存CPU会话、一个并发推理、两内部CPU线程，等待锁可取消。原生RunOptions每10ms观察取消及5秒总等待／推理截止；初始化和文件解码仍在后台但不承诺硬抢占。进度不重做提取，失败版本不轮询重试；任务／图源／生命周期过滤保持。日志记录method、reason、耗时及点数，不包含私人路径或凭据。
 

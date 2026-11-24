@@ -346,11 +346,12 @@ class ModelProviderGateway:
                 operation="model_generation",
             )
         if source == "multiview":
-            if set(image_paths) != {"front", "left", "back", "right"} or any(
+            if ("front" not in image_paths or not 2 <= len(image_paths) <= 4
+                    or not set(image_paths).issubset({"front", "left", "back", "right"})) or any(
                 not isinstance(path, Path) or not path.is_file() for path in image_paths.values()
             ):
                 raise ProviderGatewayError(
-                    "Four readable front, left, back, and right model references are required.",
+                    "A readable front and one to three named auxiliary references are required.",
                     code="invalid_model_request",
                     category="validation",
                     provider="tripo",
@@ -391,7 +392,7 @@ class ModelProviderGateway:
         else:
             tokens = {
                 view: self._upload_reference(image_paths[view], "model_input_upload")
-                for view in ("front", "left", "back", "right")
+                for view in ("front", "left", "back", "right") if view in image_paths
             }
             try:
                 task_id = self._create_multiview_task(

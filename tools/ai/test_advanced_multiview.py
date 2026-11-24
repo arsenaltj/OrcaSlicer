@@ -106,6 +106,119 @@ class MultiviewTests(unittest.TestCase):
         self.drain()
         return self.repository.load(group["id"]), plan
 
+    def test_all_uploaded_direction_subsets_generate_only_their_own_targets_for_each_provider(self):
+        for provider in ("gpt", "yoyoclaw"):
+            for mask in range(8):
+                selected = ["front"] + [v for slot,v in enumerate(VIEWS[1:]) if mask & (1 << slot)]
+                with self.subTest(provider=provider,selected=selected):
+                    group = self.create({v:png(v == "front" and "red" or "green") for v in selected},
+                                        design_provider=provider,design_model=QWEN_IMAGE if provider == "yoyoclaw" else "")
+                    plan = self.plan(group)
+                    self.assertEqual(plan["targets"],selected)
+                    self.assertEqual(plan["frozen"]["design_targets"],selected)
+                    self.assertEqual(plan["max_new_image_calls"],len(selected))
+                    self.requests.clear(); self.execute(plan); self.drain()
+                    self.assertEqual([r.view for r in self.requests],selected)
+                    snapshot = self.repository.snapshot(group["id"])
+                    self.assertEqual(snapshot["design_targets"],selected)
+                    self.assertEqual([v for v in VIEWS if snapshot["views"][v]["current"]],selected)
+
+    def test_deleted_uploads_stay_empty_across_reload_and_style_changes_preserve_immutable_versions(self):
+        group,_ = self.initial({v:png() for v in VIEWS})
+        versions = {v:group["views"][v]["current_version_id"] for v in VIEWS}
+        inputs = {v:png() for v in ("front","back")}
+        updated = self.application.update_inputs(group["id"],
+            {"expected_group_revision":group["revision"],**group["saved_draft"]},inputs)
+        for view in ("left","right"):
+            self.assertIsNone(updated["views"][view]["current_version_id"])
+            self.assertIsNotNone(self.repository.version(group["id"],view,versions[view]))
+        reloaded = AdvancedMultiviewRepository(self.repository.root.parent).snapshot(group["id"])
+        for view in ("left","right"): self.assertIsNone(reloaded["views"][view]["current"])
+        updated = self.application.save_draft(group["id"],{"expected_group_revision":updated["revision"],
+            "draft":{**group["saved_draft"],"style":"cartoon"}})
+        plan = self.plan(updated,"edit",base_versions={v:versions[v] for v in ("front","back")},**updated["saved_draft"])
+        self.assertEqual(plan["targets"],["front","back"])
+        self.requests.clear(); self.execute(plan); self.drain()
+        self.assertEqual([r.view for r in self.requests],["front","back"])
+
+    def test_explicit_same_content_replacement_invalidates_design_and_failure_does_not_restore_it(self):
+        group,_ = self.initial({"front":png(),"right":png("red")})
+        previous = group["views"]["right"]["current_version_id"]
+        updated = self.application.update_inputs(group["id"],
+            {"expected_group_revision":group["revision"],**group["saved_draft"],"replaced_views":'["right"]'},
+            {"front":png(),"right":png("red")})
+        self.assertNotEqual(updated["input_epoch"],group["input_epoch"])
+        self.assertIsNone(updated["views"]["right"]["current_version_id"])
+        self.failure["right"] = ProviderGatewayError("rejected",code="rejected",category="request")
+        plan = self.plan(updated,"edit",target_views=["right"],base_versions={"right":None})
+        self.execute(plan); self.drain()
+        current = self.repository.snapshot(group["id"])
+        self.assertIsNone(current["views"]["right"]["current"])
+        self.assertIsNotNone(self.repository.version(group["id"],"right",previous))
+        self.assertIsNotNone(current["views"]["front"]["current"])
+
+    def test_incomplete_and_empty_input_drafts_save_without_authorizing_new_generation(self):
+        group,_ = self.initial({"front":png(),"right":png("red")})
+        for images,code in (({"right":png("red")},"missing_front"),({},"invalid_request")):
+            group = self.application.update_inputs(group["id"],
+                {"expected_group_revision":group["revision"],**group["saved_draft"],"prompt":""},images)
+            with self.subTest(code=code),self.assertRaises(RequestError) as caught: self.plan(group,"edit")
+            self.assertEqual(caught.exception.code,code)
+        self.assertTrue(all(self.repository.snapshot(group["id"])["views"][v]["current"] is None for v in VIEWS))
+
+    def test_removing_every_upload_restores_all_text_targets_only_on_explicit_generation(self):
+        for order in (VIEWS, tuple(reversed(VIEWS)), (None,)):
+            for prompt_when_removed in ("A small robot", ""):
+                for save_prompt_with_inputs in (False, True):
+                    with self.subTest(order=order, prompt=prompt_when_removed,
+                                      inputs=save_prompt_with_inputs):
+                        group, _ = self.initial({v: png() for v in VIEWS})
+                        versions = {v: group["views"][v]["current_version_id"] for v in VIEWS}
+                        self.requests.clear()
+                        remaining = {v: png() for v in VIEWS}
+                        for view in order:
+                            if view is None:
+                                remaining.clear()
+                            else:
+                                remaining.pop(view)
+                            group = self.application.update_inputs(group["id"],
+                                {"expected_group_revision": group["revision"],
+                                 **group["saved_draft"], "prompt": prompt_when_removed}, remaining)
+                            self.assertEqual(self.requests, [])
+                            self.assertEqual(self.queue, [])
+                        self.assertTrue(all(self.repository.snapshot(group["id"])["views"][v]["current"]
+                                            is None for v in VIEWS))
+                        if not prompt_when_removed:
+                            with self.assertRaises(RequestError):
+                                self.plan(group, "edit", target_views=["front"], base_versions={"front": None})
+                            draft = {**group["saved_draft"], "prompt": "A small robot"}
+                            if save_prompt_with_inputs:
+                                group = self.application.update_inputs(group["id"],
+                                    {"expected_group_revision": group["revision"], **draft}, {})
+                            else:
+                                group = self.application.save_draft(group["id"],
+                                    {"expected_group_revision": group["revision"], "draft": draft})
+                        group = self.repository.load(group["id"])
+                        self.assertEqual(group["pending_views"], list(VIEWS))
+                        # A stale local repaint selection cannot reduce the new text generation.
+                        plan = self.plan(group, "edit", target_views=["front"],
+                                         base_versions={"front": None}, **group["saved_draft"])
+                        self.assertEqual(plan["targets"], list(VIEWS))
+                        self.assertEqual(plan["max_new_image_calls"], 4)
+                        self.assertEqual(self.requests, [])
+                        self.execute(plan); self.drain()
+                        self.assertEqual([r.view for r in self.requests], list(VIEWS))
+                        for view in VIEWS:
+                            self.assertIsNotNone(self.repository.version(group["id"], view, versions[view]))
+
+    def test_replaced_direction_metadata_rejects_unknown_duplicate_or_unuploaded_directions(self):
+        group = self.create({"front":png()})
+        for replaced in ('not-json','["top"]','["front","front"]','["left"]'):
+            with self.subTest(replaced=replaced),self.assertRaises(RequestError):
+                self.application.update_inputs(group["id"],
+                    {"expected_group_revision":group["revision"],**group["saved_draft"],"replaced_views":replaced},
+                    {"front":png()})
+
     def test_empty_selection_and_explicit_all_share_effective_range(self):
         self.assertEqual(targets([]), VIEWS)
         self.assertEqual(targets(["right", "left"]), ("left", "right"))
@@ -219,15 +332,16 @@ class MultiviewTests(unittest.TestCase):
             self.repository.load(group["id"])
         self.assertEqual(json.loads(path.read_text())["schema"], "future")
 
-    def test_first_generation_always_produces_four_named_views(self):
+    def test_first_generation_uses_uploaded_directions_or_four_text_views(self):
         cases = [()] + [("front",) + extra for count in range(4) for extra in combinations(VIEWS[1:], count)]
         for uploaded in cases:
             with self.subTest(uploaded=uploaded):
                 self.requests.clear()
                 images = {v: png() for v in uploaded}
                 group, _ = self.initial(images)
-                self.assertEqual([r.view for r in self.requests], list(VIEWS))
-                self.assertTrue(self.repository.snapshot(group["id"])["all_views_available"])
+                expected = list(uploaded or VIEWS)
+                self.assertEqual([r.view for r in self.requests], expected)
+                self.assertEqual(self.repository.snapshot(group["id"])["all_views_available"], len(expected) == 4)
                 self.assertEqual([role for role, _ in self.requests[0].references],
                                  ["front_upload"] if "front" in uploaded else [])
                 for request in self.requests:
@@ -243,12 +357,28 @@ class MultiviewTests(unittest.TestCase):
         for request in self.requests:
             self.assertEqual([role for role, _ in request.references], [request.view + "_upload"])
 
-    def test_missing_view_uses_main_upload_and_design_without_other_view_context(self):
-        self.initial({"front": png(), "back": png()})
-        requests = {request.view: request for request in self.requests}
-        self.assertEqual([role for role, _ in requests["left"].references],
-                         ["front_upload", "front_design"])
-        self.assertEqual([role for role, _ in requests["back"].references], ["back_upload"])
+    def test_unuploaded_directions_never_create_extra_design_calls(self):
+        for auxiliary in ("back", "right"):
+            with self.subTest(auxiliary=auxiliary):
+                self.requests.clear()
+                group, _ = self.initial({"front": png(), auxiliary: png()})
+                requests = {request.view: request for request in self.requests}
+                self.assertEqual(set(requests), {"front", auxiliary})
+                self.assertEqual([role for role, _ in requests[auxiliary].references], [auxiliary + "_upload"])
+                self.requests.clear()
+                with self.assertRaises(RequestError) as rejected:
+                    self.plan(group, "edit", target_views=["left"], base_versions={"left": None})
+                self.assertEqual(rejected.exception.code, "invalid_request")
+                self.assertEqual(self.requests, [])
+                self.assertEqual(self.queue, [])
+                for selection in ([], ["front"]):
+                    bases = {view: group["views"][view]["current_version_id"]
+                             for view in (selection or ["front", auxiliary])}
+                    plan = self.plan(group, "edit", target_views=selection, base_versions=bases)
+                    self.assertEqual(plan["targets"], selection or ["front", auxiliary])
+                    self.assertEqual(plan["frozen"]["design_targets"], ["front", auxiliary])
+                self.assertEqual(self.requests, [])
+                self.assertEqual(self.queue, [])
 
     def test_confirmation_cancel_and_unavailable_capability_make_no_calls(self):
         group = self.create()
@@ -321,7 +451,7 @@ class MultiviewTests(unittest.TestCase):
         self.assertEqual(self.queue, [])
 
     def test_edit_uses_current_design_and_only_updates_selected_views(self):
-        group, _ = self.initial({"front": png()})
+        group, _ = self.initial()
         before = {v: group["views"][v]["current_version_id"] for v in VIEWS}
         self.requests.clear()
         plan = self.plan(group, "edit", prompt="Change back accessory", target_views=["back"],
@@ -353,16 +483,17 @@ class MultiviewTests(unittest.TestCase):
         self.assertEqual(updated["pending_views"], ["front"])
         self.assertEqual(updated["changed_upload_views"], ["front"])
         self.assertEqual(len(self.repository.list_groups()), 1)
-        self.assertEqual({view: updated["views"][view]["current_version_id"] for view in VIEWS}, before)
+        self.assertIsNone(updated["views"]["front"]["current_version_id"])
+        self.assertIsNotNone(self.repository.version(group["id"], "front", before["front"]))
 
         self.requests.clear()
         plan = self.plan(updated, "edit", prompt="Use the replacement", target_views=["front"],
-                         base_versions={"front": before["front"]})
+                         base_versions={"front": None})
         self.execute(plan)
         self.drain()
         self.assertEqual([request.view for request in self.requests], ["front"])
         self.assertEqual([role for role, _ in self.requests[0].references],
-                         ["front_upload", "front_design"])
+                         ["front_upload"])
         current = self.repository.load(group["id"])
         self.assertEqual(current["pending_views"], [])
         self.assertEqual(current["changed_upload_views"], [])
@@ -370,12 +501,12 @@ class MultiviewTests(unittest.TestCase):
             self.assertEqual(current["views"][view]["current_version_id"], before[view])
 
     def test_added_upload_is_required_alongside_extra_user_selection(self):
-        group, _ = self.initial({"front": png("navy")})
+        group, _ = self.initial({"front": png("navy"), "right": png("yellow")})
         front = self.repository.path(group["id"], group["uploads"]["front"]["path"]).read_bytes()
         before = {view: group["views"][view]["current_version_id"] for view in VIEWS}
         updated = self.application.update_inputs(group["id"], {
             "expected_group_revision": group["revision"], **group["saved_draft"]},
-            {"front": front, "left": png("purple")})
+            {"front": front, "left": png("purple"), "right": png("yellow")})
         self.assertEqual(updated["pending_views"], ["left"])
 
         plan = self.plan(updated, "edit", prompt="Also refine right", target_views=["right"],
@@ -386,14 +517,14 @@ class MultiviewTests(unittest.TestCase):
         self.drain()
         self.assertEqual([request.view for request in self.requests], ["left", "right"])
         self.assertEqual([role for role, _ in self.requests[0].references],
-                         ["left_upload", "left_design"])
+                         ["left_upload"])
 
     def test_replaced_main_upload_is_available_to_user_selected_side_views(self):
-        group, _ = self.initial({"front": png("navy")})
+        group, _ = self.initial({"front": png("navy"), "right": png("yellow")})
         before = {view: group["views"][view]["current_version_id"] for view in VIEWS}
         updated = self.application.update_inputs(group["id"], {
             "expected_group_revision": group["revision"], **group["saved_draft"]},
-            {"front": png("purple")})
+            {"front": png("purple"), "right": png("yellow")})
         plan = self.plan(updated, "edit", prompt="Align the right view", target_views=["right"],
                          base_versions={"right": before["right"]})
         self.assertEqual(plan["targets"], ["front", "right"])
@@ -402,29 +533,29 @@ class MultiviewTests(unittest.TestCase):
         self.drain()
         requests = {request.view: request for request in self.requests}
         self.assertEqual([role for role, _ in requests["right"].references],
-                         ["right_design", "front_upload"])
+                         ["right_design", "right_upload", "front_upload"])
 
-    def test_style_change_marks_all_views_pending_without_creating_a_group(self):
+    def test_style_change_marks_only_effective_targets_pending(self):
         group, _ = self.initial({"front": png()})
         draft = {**group["saved_draft"], "style": "realistic"}
         updated = self.application.save_draft(group["id"], {
             "expected_group_revision": group["revision"], "draft": draft})
         self.assertEqual(updated["id"], group["id"])
-        self.assertEqual(updated["pending_views"], list(VIEWS))
+        self.assertEqual(updated["pending_views"], ["front"])
         self.assertEqual(updated["changed_upload_views"], [])
         self.assertEqual(len(self.repository.list_groups()), 1)
 
         before = {view: updated["views"][view]["current_version_id"] for view in VIEWS}
-        plan = self.plan(updated, "edit", **draft, target_views=["back"],
-                         base_versions={"back": before["back"]})
-        self.assertEqual(plan["targets"], list(VIEWS))
+        plan = self.plan(updated, "edit", **draft, target_views=["front"],
+                         base_versions={"front": before["front"]})
+        self.assertEqual(plan["targets"], ["front"])
         self.execute(plan)
         self.drain()
         self.assertEqual(self.repository.load(group["id"])["pending_views"], [])
 
     def test_failed_initial_view_retries_with_the_current_style_in_the_same_group(self):
         self.failure["left"] = ProviderGatewayError("rejected", code="rejected", category="request")
-        group, initial = self.initial({"front": png()})
+        group, initial = self.initial()
         self.assertIsNone(group["views"]["left"]["current_version_id"])
         self.failure.clear()
         style = "sculpture" if group["saved_draft"]["style"] != "sculpture" else "realistic"
@@ -446,17 +577,18 @@ class MultiviewTests(unittest.TestCase):
         self.assertEqual([request.view for request in self.requests], ["left"])
         self.assertEqual(self.requests[0].style, style)
 
-    def test_input_update_keeps_required_front_and_durable_group_on_failure(self):
+    def test_incomplete_input_draft_is_saved_but_generation_still_requires_front(self):
         group, _ = self.initial({"front": png()})
+        updated = self.application.update_inputs(group["id"], {
+            "expected_group_revision": group["revision"], **group["saved_draft"]}, {"left": png("purple")})
         with self.assertRaises(RequestError) as error:
-            self.application.update_inputs(group["id"], {
-                "expected_group_revision": group["revision"], **group["saved_draft"]},
-                {"left": png("purple")})
+            self.plan(updated, "edit")
         self.assertEqual(error.exception.code, "missing_front")
         current = self.repository.load(group["id"])
-        self.assertEqual(current["revision"], group["revision"])
-        self.assertIsNotNone(current["uploads"]["front"])
-        self.assertIsNone(current["uploads"]["left"])
+        self.assertGreater(current["revision"], group["revision"])
+        self.assertIsNone(current["uploads"]["front"])
+        self.assertIsNotNone(current["uploads"]["left"])
+        self.assertIsNone(current["views"]["front"]["current_version_id"])
 
     def test_partial_edit_keeps_failed_old_view_and_retries_it_alone(self):
         group, _ = self.initial()
@@ -480,7 +612,7 @@ class MultiviewTests(unittest.TestCase):
 
     def test_missing_initial_view_retry_uses_frozen_original_inputs(self):
         self.failure["back"] = ProviderGatewayError("rejected", code="rejected", category="request")
-        group, plan = self.initial({"front": png()})
+        group, plan = self.initial()
         self.assertFalse(self.repository.snapshot(group["id"])["all_views_available"])
         self.failure.clear()
         self.requests.clear()
@@ -523,7 +655,7 @@ class MultiviewTests(unittest.TestCase):
 
     def test_one_current_model_plan_mixes_edits_and_missing_views_without_extra_calls(self):
         self.failure["left"] = ProviderGatewayError("rejected", code="rejected", category="request")
-        group, _ = self.initial({"front": png()})
+        group, _ = self.initial()
         original = {v: group["views"][v]["current_version_id"] for v in VIEWS}
         self.failure.clear()
         plan = self.plan(group, "edit", design_provider="yoyoclaw", design_model=HY_IMAGE,
@@ -555,7 +687,7 @@ class MultiviewTests(unittest.TestCase):
         self.assertEqual([role for role, _ in self.requests[-1].references], ["front_design"])
 
     def test_existing_upload_avoids_unnecessary_main_dependency_and_failed_anchor_spends_no_extra_call(self):
-        for images in ({"front": png()}, {}):
+        for images in ({"front": png(), "left": png("green")}, {}):
             with self.subTest(has_upload=bool(images)):
                 group = self.create(images)
                 plan = self.plan(group)
@@ -1313,13 +1445,13 @@ class MultiviewTests(unittest.TestCase):
         rejected.rfile = BytesIO(body)
         rejected._require_native_client.return_value = True
         self.assertTrue(dispatch(rejected, runtime, "POST"))
-        rejected._model_error.assert_called_once()
-        self.assertEqual(rejected._model_error.call_args.args[1], "missing_front")
-        self.assertEqual(self.repository.load(group["id"])["revision"], updated["revision"])
+        rejected._model_error.assert_not_called()
+        self.assertIsNone(self.repository.load(group["id"])["uploads"]["front"])
+        self.assertEqual(rejected.send_json.call_args.args[0], 200)
 
     def test_saving_a_draft_returns_current_images_and_model_projection(self):
         from advanced_multiview_runtime import AdvancedMultiviewRuntime
-        group, _ = self.initial({"front": png()})
+        group, _ = self.initial()
         runtime = AdvancedMultiviewRuntime.__new__(AdvancedMultiviewRuntime)
         runtime.repository, runtime.application, runtime.models = self.repository, self.application, None
         handler = mock.Mock()
@@ -1340,7 +1472,7 @@ class MultiviewTests(unittest.TestCase):
 
     def test_renaming_a_group_returns_the_complete_unchanged_design_snapshot(self):
         from advanced_multiview_runtime import AdvancedMultiviewRuntime
-        group, _ = self.initial({"front": png()})
+        group, _ = self.initial()
         runtime = AdvancedMultiviewRuntime.__new__(AdvancedMultiviewRuntime)
         runtime.repository, runtime.application, runtime.models = self.repository, self.application, None
         handler = mock.Mock()

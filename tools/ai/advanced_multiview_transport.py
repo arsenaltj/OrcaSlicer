@@ -99,7 +99,7 @@ def parse_upload(stream: BinaryIO, content_type: str, length: int) -> tuple[dict
     fields: dict[str, Any] = {}
     images: dict[str, bytes] = {}
     allowed = {"request_id", "expected_group_revision", "source", "prompt", "style", "custom_style",
-               "design_provider", "design_model"}
+               "design_provider", "design_model", "replaced_views"}
     header_bytes = 0
     field_bytes = 0
     seen = set()
