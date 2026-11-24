@@ -1,3 +1,12 @@
+# NATIVE-HOST-B6-THERMAL-01 empty-map oracle correction (2026-11-25)
+
+Mainline: original Native task and same B6 issue, pre-arbitration3/post-arbitration1 failures preserved; next actual failed verification would be post2.
+This round: only empty physical({},0) rejection's expected string changes AMBIGUOUS→REQUIRED, per independent e8/406/01 same-blob contract proof. Empty input/rejection, two other negatives, all13 real exports/assertions/order and production code unchanged.
+Open: own01 Windows normal producer passed; post1 generated13Gcodes then target failed this oracle, not a whole-suite pass. Old outputs/failedtarget remain immutable. No new source compile/SDK/selftest has run.
+Next: clean freeze and exact v6 identity-only source/successful-own01 predecessor/fresh Core+cooling output paths/environment review, then root newGO. Original five process PATH prefix/6DLL identities remain scoped and reversible, no globalPATH change.
+Plan change: correct one proven test oracle without weakening mapping safety; snapshot currentWin01 before editing, no intermediateobject copy or new generic framework.
+
+## Prior repair retained
 # NATIVE-HOST-B6-THERMAL-01 round3 test ownership (2026-11-25)
 
 Mainline: same Native task/writer; original406 thermal failure, round1 beda source failure and round2_87 C2280 compile failure remain. Next repair round3; actual Core exports still0. A further failed repair/verification requires root arbitration before another repair.

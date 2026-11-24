@@ -212,7 +212,7 @@ int main(int argc, char** argv)
         require(untouched.heat.size()==1 && !untouched.heat.front().wait && untouched.heat.front().target==219, "Custom machine heater commands must not be replaced");
         auto semm = c; semm.set_deserialize_strict("single_extruder_multi_material", "1");
         require(!HonorForgeToolRouting::enabled(semm), "SEMM cannot enter SDK independent-head initialization");
-        rejects([]{HonorForgeToolRouting::physical({},0);}, "HONOR_TOOL_MAPPING_AMBIGUOUS");
+        rejects([]{HonorForgeToolRouting::physical({},0);}, "HONOR_TOOL_MAPPING_REQUIRED");
         rejects([]{HonorForgeToolRouting::physical({5,5},0);}, "HONOR_TOOL_MAPPING_AMBIGUOUS");
         rejects([]{HonorForgeToolRouting::physical({5},1);}, "HONOR_LOGICAL_MATERIAL_UNMAPPED");
         std::ofstream(out/"result.json") << "{\"state\":\"development_tests_passed\",\"actualCoreExports\":13,\"physicalPrinterVerified\":false}\n";

@@ -1,3 +1,12 @@
+# NATIVE-HOST-B6-THERMAL-01 empty-map oracle correction (2026-11-25)
+
+Mainline: same task/B6 issue, original pre3/post1 history not reset; next real failed verification is post2. Independent oracle review proves e8/406/01 routing same blob: empty map requires REQUIRED, duplicate invalid map AMBIGUOUS, missinglogical UNMAPPED.
+This round: only physical({},0) expected string AMBIGUOUS→REQUIRED; keep empty input/required rejection, other2negative expectations, all13 real export inputs/temperature/preview/assert/order and product code unchanged. Necessary docs maintain actual state.
+Open: normalWin01 fullproducer passed with new rawbc836e/601actualcommands/deps+own87/406audits. Post1 actual13Gcodes exist but whole target failed negative oracle, other3CPP unrun; old files/firsterror preserved. No newly correctedsource compiler/SDK run yet.
+Next: cleanfreeze plus narrow v6 exactnewsource/currentownsuccessful01 predecessor from current3021file/fullCLreadmetadata snapshot, other3still406, cumulative406GCode proof and rawmarker mandatory. Fresh realCore/cooling outputs must not overwrite failed13Gcodes; reviewed sixDLL/fiveprocessPATHprefix preserved, no globalPATH/payload changes. Differentreview/necessary identityfixture before rootGO.
+Plan change: formal1-line oracle correction with exactold/current proof, not sample/config/product safety relaxation, no framework or unchangedmatrix restart. B5tools still need exact future newsourcebinding; all GLBheld/phone/service restrictions remain.
+
+## Prior repair retained
 # NATIVE-HOST-B6-THERMAL-01 round3 test ownership (2026-11-25)
 
 Mainline: same task/writer, stable B6 issue: initial406 missing heat; round1 beda source review failed; round2_87 actual C2280 fixture compile failed, Coreexports0. This is next round3; another failed repair/verification requires root arbitration, not another automatic repair.
