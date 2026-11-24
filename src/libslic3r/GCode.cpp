@@ -4441,7 +4441,11 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
                 for (const unsigned int logical : honor_startup_filaments) {
                     const size_t fi = get_filament_config_index(int(logical));
                     int temperature = print.config().nozzle_temperature_initial_layer.get_at(fi);
-                    if (ooze && logical != initial_extruder_id) {
+                    // Existing OozePrevention::post_toolchange only restores
+                    // the print target when standby delta is nonzero. Without
+                    // that restoration path, initialize to the actual print
+                    // target even when an explicit idle temperature exists.
+                    if (ooze && logical != initial_extruder_id && print.config().standby_temperature_delta.value != 0) {
                         const int idle = print.config().idle_temperature.get_at(logical);
                         temperature = idle == 0 ? temperature + print.config().standby_temperature_delta.value : idle;
                     }

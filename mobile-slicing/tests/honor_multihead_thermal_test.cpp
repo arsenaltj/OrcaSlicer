@@ -170,6 +170,20 @@ int main(int argc, char** argv)
         for (const auto& h : cooling.heat) standby |= h.wait && h.tool==5 && h.target==177;
         require(standby, "Noninitial head must preserve configured idle target");
         require(cooling.target_at_first.at(5)==220 && cooling.wait_at_first.at(5)==220, "Existing ooze post-toolchange must restore actual print temperature and wait");
+        // Zero delta disables the existing post-toolchange restoration path.
+        // Both lower/higher explicit idle targets must retain print heat and
+        // wait at the first extrusion; zero idle is the unchanged control.
+        for (const int idle : {177, 235, 0}) {
+            auto zero_delta = ooze;
+            zero_delta.set_deserialize_strict("standby_temperature_delta", "0");
+            zero_delta.option<ConfigOptionInts>("idle_temperature")->values[1] = idle;
+            const auto exported = export_case(out/("ooze-zero-delta-idle-" + std::to_string(idle) + ".gcode"), zero_delta);
+            initial_heat(exported, {{4,220},{5,220}});
+            const auto zero_trace = trace(exported.text);
+            require(std::none_of(zero_trace.heat.begin(), zero_trace.heat.end(), [&](const Trace::Heat& heat) {
+                return heat.tool==5 && heat.line<zero_trace.first_extrusion.at(5) && heat.target!=220;
+            }), "Zero delta must not leave the noninitial head at a non-print idle target before first extrusion");
+        }
         auto custom = c; custom.set_key_value("filament_start_gcode", new ConfigOptionStrings({"M104 S211 T4 ;USER_THERMAL", "", "", ""}));
         auto user = trace(export_case(out/"user-filament.gcode", custom).text);
         require(user.target_at_first.at(4)==211, "Filament user temperature must run after automatic startup, without overwrite");
@@ -187,7 +201,7 @@ int main(int argc, char** argv)
         rejects([]{HonorForgeToolRouting::physical({},0);}, "HONOR_TOOL_MAPPING_AMBIGUOUS");
         rejects([]{HonorForgeToolRouting::physical({5,5},0);}, "HONOR_TOOL_MAPPING_AMBIGUOUS");
         rejects([]{HonorForgeToolRouting::physical({5},1);}, "HONOR_LOGICAL_MATERIAL_UNMAPPED");
-        std::ofstream(out/"result.json") << "{\"state\":\"development_tests_passed\",\"actualCoreExports\":10,\"physicalPrinterVerified\":false}\n";
+        std::ofstream(out/"result.json") << "{\"state\":\"development_tests_passed\",\"actualCoreExports\":13,\"physicalPrinterVerified\":false}\n";
         std::cout << "PASS actual Core startup/temperature/export boundaries; no hardware qualification\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

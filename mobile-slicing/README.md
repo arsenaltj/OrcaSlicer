@@ -42,15 +42,22 @@ after `START_PRINT`. Participants come from sliced tool ordering (including actu
 support/tower paths, and all sequential objects), rather than every configured
 material or nozzle. The normal layer-temperature transition and user filament
 G-code still run in their original order; ooze-prevention idle/standby targets
-remain authoritative until the existing tool-change restore. Single-head,
+are used when nonzero standby delta enables the existing tool-change restore.
+With zero delta, startup retains the actual first-layer target and wait. Single-head,
 SEMM, ordinary desktop source templates and other printer contexts keep their
 startup behavior. These commands do not prove real hardware reaches temperature.
 
 The host-only `orca_honor_multihead_thermal_test <NEW_OUTPUT>` target exercises
-actual Core export, sparse heater/tool mapping, unused heads, support, sequential
-objects, temperature transitions, ooze and user-macro boundaries. Its execution
-requires the task's separate resource approval; source preparation is not a test
-pass or a new bundle qualification.
+13 real Core exports, including sparse heater/tool mapping, unused heads,
+support, sequential objects, temperature transitions, ooze and user-macro
+boundaries, plus zero standby delta with lower (177), higher
+(235) and zero idle temperatures. In this SDK startup scope, noninitial heads
+use idle/standby targets only when nonzero delta enables the existing
+post-toolchange print-temperature restoration; zero delta keeps the actual
+first-layer print target and wait. The existing negative-delta idle/restore
+control and ordinary desktop behavior remain unchanged. These source controls
+require a new frozen-source build and execution under the task's separate
+resource approval; their presence is not a pass or new bundle qualification.
 
 
 Honor routing emits physical `T` commands while cooling adjustments, fan configuration and pressure-equalization cross-sections remain indexed by logical material. Cooling parse/apply share the strict inverse mapping and active-material check; planner initial IDs are already logical. Pressure equalization receives the same final active logical set and initial logical ID before any layer filtering, including nonzero volumetric slope. Unmapped/inactive/invalid physical tools fail explicitly; configuration arrays are never expanded to physical positions and emitted G-code/filament_map retain their original identity. Generic valid tool semantics are unchanged, with invalid indices prevented from selecting an unrelated material.

@@ -1,3 +1,12 @@
+# NATIVE-HOST-B6-THERMAL-01 zero-delta correction (2026-11-25)
+
+Mainline: task-20261124-v102-desktop-sdk-sync, original isolated Native dev writer; preserve original source fix1 reviewfailed1 and dynamic validation0, all product/tool histories and immutable406/851/411/192 evidence.
+This round: only the exact SDK Honor mapped multihead startup condition now permits noninitial idle/standby targets when standby delta is nonzero, matching unchanged OozePrevention::post_toolchange restoration. Zero delta keeps the actual first-layer print target and wait. Ten original actual-export test sources/assertions remain; add delta0 idle177,235,0 controls (13 exports total).
+Open: no corrected-source compiler/Core/SDK run; real13exports/fourproducer package/source-artifact review/affected Host remain pending. Actual custody copied4151 verified rows but final global rehash failed foreignDart; it is failed_incomplete, not qualification. Existing619 immutable references and both environment stops are preserved.
+Next: corrected clean freeze, different source review and precise producer-v4 identity/CLI preparation. Reuse of4151 partial requires a separate reviewed strict validation design, smallQA and freshGO; do not change fixed619script or automatically repeat custody. Compilation/SDK requires root freshGO, originaltools/flags/owner logic unchanged.
+Plan change: root-authorized narrow SOURCE_OOZE_ZERO_DELTA_IDLE_TARGET correction, no globaldesktop behavior/template/config/profile/thermal oracle changes. Original B5 prepared beda tools require explicit newsource+package binding later, not a historical text replacement. GLB/held/collector/phone/services remain stopped.
+
+## Earlier source preparation (review failed; retained)
 # NATIVE-HOST-B6-THERMAL-01 fix1 (2026-11-24)
 
 Mainline: task-20261124-v102-desktop-sdk-sync, authorized Native dev writer; preserve immutable406 bundle and original851/411 failure evidence and all issue histories.

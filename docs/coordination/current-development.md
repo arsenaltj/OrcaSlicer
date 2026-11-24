@@ -1,3 +1,12 @@
+# NATIVE-HOST-B6-THERMAL-01 zero-delta correction (2026-11-25)
+
+Mainline: same Native dev writer/task; source fix1 independent review failed1 and dynamic repair-validation0 remain recorded.
+This round: within the strict SDK startup branch, use noninitial idle/standby target only with nonzero standby delta, matching the existing restore path. Keep all ten export controls and add delta0 idle177/235/0 real-export test sources.
+Open: source-only correction; compilation/13 actual exports, four-source producers/new package and independent affected Host QA are not run. Both custody foreign-resource failures and their immutable4151/619 mappings remain incomplete evidence.
+Next: freeze corrected source, different source review and new producer-tool identity review; actual resource operations require a new root GO and separately approved custody validation.
+Plan change: narrow confirmed SOURCE_OOZE_ZERO_DELTA_IDLE_TARGET repair; no global desktop ooze behavior, profile/template/oracle or original B5 evidence change. B5 prepared beda binding needs the new source/package later.
+
+## Earlier source preparation (review failed; retained)
 # NATIVE-HOST-B6-THERMAL-01 fix1 (2026-11-24)
 
 Mainline: task-20261124-v102-desktop-sdk-sync, authorized Native dev writer; preserve immutable406 bundle and original851/411 failure evidence and all issue histories.
